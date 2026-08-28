@@ -87,6 +87,7 @@ typedef enum {
 
 #define MDKR_CHARACTER_PREVIEW_CONTACTS 4u
 #define MDKR_CHARACTER_PREVIEW_LANDMARKS 3u
+#define MDKR_CHARACTER_PREVIEW_JOINTS 16u
 #define MDKR_CHARACTER_PREVIEW_OCCLUDERS 3u
 typedef enum MdkrCharacterPreviewLandmark {
     MDKR_CHARACTER_PREVIEW_LANDMARK_HIPS = 0,
@@ -164,6 +165,13 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned fit_landmark_mask;
     long long fit_landmark_micrometres
         [MDKR_CHARACTER_PREVIEW_LANDMARKS][3];
+    /* Exact current post-solve node-local angular distance from each reviewed
+     * humanoid role's compiled bind rotation. Millidegrees avoid carrying
+     * host floats across the game/app boundary. This is advisory evidence,
+     * never a runtime clamp or an anatomical verdict. */
+    unsigned joint_excursion_mask;
+    unsigned joint_excursion_millidegrees
+        [MDKR_CHARACTER_PREVIEW_JOINTS];
     /* Ordinary scene-camera projection of the calibrated volume and anatomy
      * points. Unlike the isolated model capture below, this preserves the
      * gameplay camera and viewport. It proves framing, not depth visibility or
@@ -292,7 +300,7 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned render_height;
 } MdkrCharacterPreviewResult;
 
-#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 21u
+#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 22u
 #define MDKR_CHARACTER_PREVIEW_TRANSITION_DWELL_MILLI \
     MDKR_MODERN_CHARACTER_INSPECTION_TRANSITION_DWELL_MILLI
 #define MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES 12u
@@ -354,7 +362,7 @@ typedef struct MdkrCharacterMotionReviewResult {
         [MDKR_CHARACTER_PREVIEW_CONTACTS];
 } MdkrCharacterMotionReviewResult;
 
-#define MDKR_CHARACTER_MOTION_REVIEW_RESULT_VERSION 5u
+#define MDKR_CHARACTER_MOTION_REVIEW_RESULT_VERSION 6u
 #define MDKR_CHARACTER_CONTACT_STABILITY_MINIMUM_OBSERVATIONS 8u
 #define MDKR_CHARACTER_MOTION_REVIEW_ALL_SAMPLES \
     MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_MASK( \

@@ -76,6 +76,14 @@ typedef struct MdkrModernCharacterContactDiagnostics {
     uint32_t valid_mask;
 } MdkrModernCharacterContactDiagnostics;
 
+/* Latest exact post-solve node-local angular excursion from each semantic
+ * joint's compiled bind rotation. Stable order is MDKR's 16 humanoid roles.
+ * These values are inspection evidence only and never clamp presentation. */
+typedef struct MdkrModernCharacterJointDiagnostics {
+    float excursion_degrees[MDKR_MODERN_HUMANOID_ROLE_COUNT];
+    uint32_t valid_mask;
+} MdkrModernCharacterJointDiagnostics;
+
 typedef struct MdkrModernCharacterVehicleShell {
     const MdkrModernSurfaceTriangle *triangles;
     uint32_t triangle_count;
@@ -176,6 +184,9 @@ int mdkr_modern_character_player_focus(
 int mdkr_modern_character_player_contact_diagnostics(
     int player, MdkrModernCharacterContext context,
     MdkrModernCharacterContactDiagnostics *out);
+int mdkr_modern_character_player_joint_diagnostics(
+    int player, MdkrModernCharacterContext context,
+    MdkrModernCharacterJointDiagnostics *out);
 int mdkr_modern_character_player_lod_diagnostics(
     int player, int view, MdkrModernCharacterContext context,
     MdkrModernCharacterLodDiagnostics *out);

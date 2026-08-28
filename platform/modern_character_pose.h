@@ -85,6 +85,16 @@ int mdkr_modern_pose_has_semantic(const MdkrModernPose *pose,
 /* True only for a complete, author-reviewed source-v4 humanoid role map. */
 int mdkr_modern_pose_humanoid_retarget_ready(const MdkrModernPose *pose);
 
+/* Measures each reviewed semantic joint's current node-local rotation against
+ * its compiled bind rotation. Values are the shortest quaternion angular
+ * distance in degrees (0..180), after reference motion and contact solving.
+ * This is exact inspection evidence, not an anatomical pass/fail or a clamp.
+ * Output changes only after every mapped role validates. */
+int mdkr_modern_pose_joint_excursions(
+    const MdkrModernPose *pose,
+    float degrees[MDKR_MODERN_HUMANOID_ROLE_COUNT],
+    uint32_t *valid_mask);
+
 /* Applies bounded presentation-only hand/foot contact solving for one vehicle
  * context. Target offsets are engine-owned and converted into source space by
  * the validated calibration. Repeating a context in one pose generation is

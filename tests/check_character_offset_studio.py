@@ -168,7 +168,12 @@ def main() -> int:
             "value.fitSha256 == fit" in settings and
             "value.presentationSha256 == presentation" in settings and
             "mdkr-character-test-presentation-v3" in settings and
-            "MDKR_CHARACTER_MOTION_REVIEW_RESULT_VERSION 5u" in entry,
+            "MDKR_CHARACTER_MOTION_REVIEW_RESULT_VERSION 6u" in entry and
+            "characterPreviewJointDiagnosticsValid" in settings and
+            "characterJointDiagnosticsExpected" in settings and
+            "sample.joint_excursion_mask" in settings and
+            "workshop_preview_publish_joint_diagnostics" in game and
+            "mdkr_modern_character_player_joint_diagnostics" in runtime,
             "vehicle approval can bypass current representative renderer evidence or retain an older active approval")
     require("mdkr-fit-history-v9" in settings and
             "kFitExpandedSceneVersion = 18u" in draft_snapshot and
@@ -232,6 +237,11 @@ def main() -> int:
             "CharacterVisualReport::registeredComparison(custom, donor)" in settings and
             "SliderInt" in settings and "Donor %d%%" in settings,
             "the comparison UI can infer an overlay without an exact shared witness or expose an inaccurate blend control")
+    scene_signature = settings.split(
+        "std::string characterSceneRegistrationSignature", 1)[1].split(
+            "bool characterPreviewVehicleSurfaceValid", 1)[0]
+    require("joint_excursion" not in scene_signature,
+            "subject-specific joint travel can make an otherwise registered retail-donor/custom comparison impossible")
     require("result.reference_draws != 0u" in settings and
             "A donor-reference result reached a custom-character route" in settings and
             "Unavailable for retail donor references" in settings,

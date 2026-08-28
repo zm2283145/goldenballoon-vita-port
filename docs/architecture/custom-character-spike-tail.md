@@ -180,7 +180,7 @@ explicitly restricted to the generated fixture and exists only for CI.
   an explicit vehicle-only copy action remains available for intentional reuse.
 - **Implemented for the complete scene-review contract:** visible advisory bands classify floor/seat
   datum error, facing, and unusual volume proportions as Ready, Review, or
-  Action needed. Result v21 also retains the last complete accepted scene MVP,
+  Action needed. Result v22 also retains the last complete accepted scene MVP,
   viewport, and scissor and projects the calibrated volume plus exact
   current-pose hips/chest/head node origins into bounded fixed-point camera
   evidence. Offset Studio reports camera occupancy, clipping, head placement,
@@ -234,8 +234,9 @@ and its head/torso land inside each ordinary vehicle camera without manual JSON.
   limb planes. Near-straight or degenerate chains remain visibly automatic;
   the runtime now converts an authored joint-local fallback into parent space,
   matching the documented contract instead of interpreting it in the wrong
-  frame. Add joint-limit visualization before introducing optional anatomical
-  limits.
+  frame. Exact bind-relative per-role travel visualization is now implemented;
+  optional authored anatomical constraints must build on that evidence rather
+  than inventing a generic limit.
 - **Implemented:** provide a source-bound five-region anatomy checklist that
   clears with mapping/basis edits, participates in undo/redo, and survives
   named-draft resume (v10 with reviewed-draft migration). Provisional solver
@@ -268,8 +269,15 @@ flip, collapse, or mirror inversion.
   generated articulated CC0 humanoid exercises readable select and race
   silhouettes through the linked-ROM WebGPU capture route. This qualifies the
   pipeline, not universal artistic quality for every imported rig.
-- Add joint-limit inspection and optional deterministic hair/tail secondary
-  motion without weakening authored-clip precedence.
+- **Implemented as non-prescriptive inspection:** every exact held sample and
+  complete semantic battery publishes the shortest bind-relative node-local
+  angular excursion for all 16 reviewed humanoid roles after reference motion
+  and contact solving. Animation Studio shows the peak role per state and a
+  focusable, spoken per-role matrix. Partial, non-finite, and out-of-range
+  publications fail closed. No generic anatomy threshold is presented as a
+  pass, limit, or runtime clamp.
+- Add optional author-defined constraint profiles and deterministic hair/tail
+  secondary motion without weakening authored-clip precedence.
 
 Acceptance: the example no longer T-poses in select, every missing authored state
 uses an intentional reviewed reference, and the source/fallback decision appears
@@ -523,8 +531,9 @@ The immediate remaining order is therefore:
 
 1. add bespoke boss, battle, and scripted-cinematic conditions only if those
    scene-owned surfaces become part of package presentation authority;
-2. add joint-limit inspection and optional deterministic secondary hair/tail
-   motion; the linked-ROM articulated unusual-proportion fixture and distinct
+2. add optional author-defined joint constraint profiles and deterministic
+   secondary hair/tail motion; exact bind-relative per-role travel inspection,
+   the linked-ROM articulated unusual-proportion fixture, and the distinct
    13-state bounded reference library are complete, and the comparison overlay
    already requires exact source, fit, presentation, scene, held motion source,
    camera, viewport/scissor, and output-grid registration rather than inferring

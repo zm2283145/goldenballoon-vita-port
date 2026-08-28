@@ -53,6 +53,9 @@ typedef struct MdkrModernRuntimePlayer {
     MdkrModernCharacterContactDiagnostics
         contact_diagnostics[MDKR_CHARACTER_CONTEXT_COUNT];
     uint32_t contact_diagnostics_valid_mask;
+    MdkrModernCharacterJointDiagnostics
+        joint_diagnostics[MDKR_CHARACTER_CONTEXT_COUNT];
+    uint32_t joint_diagnostics_valid_mask;
     float contact_residual_previous[MDKR_CHARACTER_CONTEXT_COUNT]
         [MDKR_MODERN_CHARACTER_CONTACTS][3];
     uint32_t contact_residual_previous_valid_mask;
@@ -1493,6 +1496,7 @@ int mdkr_modern_character_set_tuning(int player,
     s_players[player].focus_valid_mask = 0u;
     s_players[player].fit_diagnostics_valid_mask = 0u;
     s_players[player].contact_diagnostics_valid_mask = 0u;
+    s_players[player].joint_diagnostics_valid_mask = 0u;
     s_players[player].contact_residual_previous_valid_mask = 0u;
     s_players[player].surface_diagnostics_valid_mask = 0u;
     s_players[player].surface_diagnostics_requested_mask = 0u;
@@ -1555,6 +1559,21 @@ int mdkr_modern_character_player_contact_diagnostics(
         (slot->contact_diagnostics_valid_mask &
          (1u << (unsigned)context)) == 0u) return 0;
     *out = slot->contact_diagnostics[context];
+    return 1;
+}
+
+int mdkr_modern_character_player_joint_diagnostics(
+    int player, MdkrModernCharacterContext context,
+    MdkrModernCharacterJointDiagnostics *out) {
+    const MdkrModernRuntimePlayer *slot;
+    if (player < 0 || player >= MDKR_MODERN_CHARACTER_PLAYERS ||
+        context < MDKR_CHARACTER_CONTEXT_SELECT ||
+        context >= MDKR_CHARACTER_CONTEXT_COUNT || out == NULL) return 0;
+    slot = &s_players[player];
+    if (slot->pool < 0 ||
+        (slot->joint_diagnostics_valid_mask &
+         (1u << (unsigned)context)) == 0u) return 0;
+    *out = slot->joint_diagnostics[context];
     return 1;
 }
 
@@ -1992,9 +2011,11 @@ int mdkr_modern_character_emit(int player, int view,
     MdkrModernCalibration calibration;
     MdkrModernCharacterFitDiagnostics fit_diagnostics;
     MdkrModernCharacterContactDiagnostics contact_diagnostics;
+    MdkrModernCharacterJointDiagnostics joint_diagnostics;
     int has_calibration;
     int fit_diagnostics_ready = 0;
     int contact_diagnostics_ready = 0;
+    int joint_diagnostics_ready = 0;
     int contact_solved = 0;
     uint64_t contact_error_micrometres = 0u;
     uint64_t contact_residual_step_micrometres
@@ -2048,6 +2069,10 @@ int mdkr_modern_character_emit(int player, int view,
             (previous_contact_generation != slot->pose.contact_generation ||
              previous_contact_context != slot->pose.contact_context);
     }
+    memset(&joint_diagnostics, 0, sizeof(joint_diagnostics));
+    joint_diagnostics_ready = mdkr_modern_pose_joint_excursions(
+        &slot->pose, joint_diagnostics.excursion_degrees,
+        &joint_diagnostics.valid_mask);
     for (primitive_index = 0u;
          primitive_index < pool->render.gpu.primitive_count;
          primitive_index++) {
@@ -2480,6 +2505,16 @@ int mdkr_modern_character_emit(int player, int view,
         slot->contact_diagnostics_valid_mask |= 1u << (unsigned)context;
     } else {
         slot->contact_diagnostics_valid_mask &= ~(1u << (unsigned)context);
+    }
+    if (!reference_only) {
+        if (joint_diagnostics_ready) {
+            slot->joint_diagnostics[context] = joint_diagnostics;
+            slot->joint_diagnostics_valid_mask |=
+                1u << (unsigned)context;
+        } else {
+            slot->joint_diagnostics_valid_mask &=
+                ~(1u << (unsigned)context);
+        }
     }
     if (inspection_lighting != MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL) {
         mdkr_workshop_preview_note_lighting_override();

@@ -5094,7 +5094,7 @@ aspect-fits that selected viewport into the full output without distortion, and
 publishes bounded fixed-point projections for eight calibrated bounds corners,
 the fitted anchor, and the forward endpoint. The gate installs a second
 reviewed-humanoid package and drives a real car arm through automatic contact
-solving. The current result-v21 contract must publish all four bounded
+solving. The current result-v22 contract must publish all four bounded
 contact witnesses; the gate independently recomputes the left-hand
 target-to-endpoint distance from quantized coordinates and rejects partial,
 detached, or fabricated select-context evidence. Authored-clips-only arms must

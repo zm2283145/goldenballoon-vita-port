@@ -5699,23 +5699,33 @@ const CharacterSemanticLabel kSelectCharacterSemantics[] = {
 };
 
 const CharacterSemanticLabel kHumanoidRigRoles[] = {
-    {"hips", MDKR_CHARACTER_RIG_HIPS},
-    {"spine", MDKR_CHARACTER_RIG_SPINE},
-    {"chest", MDKR_CHARACTER_RIG_CHEST},
-    {"head", MDKR_CHARACTER_RIG_HEAD},
-    {"upper_arm.left", MDKR_CHARACTER_RIG_UPPER_ARM_LEFT},
-    {"lower_arm.left", MDKR_CHARACTER_RIG_LOWER_ARM_LEFT},
-    {"hand.left", MDKR_CHARACTER_RIG_HAND_LEFT},
-    {"upper_arm.right", MDKR_CHARACTER_RIG_UPPER_ARM_RIGHT},
-    {"lower_arm.right", MDKR_CHARACTER_RIG_LOWER_ARM_RIGHT},
-    {"hand.right", MDKR_CHARACTER_RIG_HAND_RIGHT},
-    {"upper_leg.left", MDKR_CHARACTER_RIG_UPPER_LEG_LEFT},
-    {"lower_leg.left", MDKR_CHARACTER_RIG_LOWER_LEG_LEFT},
-    {"foot.left", MDKR_CHARACTER_RIG_FOOT_LEFT},
-    {"upper_leg.right", MDKR_CHARACTER_RIG_UPPER_LEG_RIGHT},
-    {"lower_leg.right", MDKR_CHARACTER_RIG_LOWER_LEG_RIGHT},
-    {"foot.right", MDKR_CHARACTER_RIG_FOOT_RIGHT},
+    {"hips", MDKR_CHARACTER_RIG_HIPS, "Hips"},
+    {"spine", MDKR_CHARACTER_RIG_SPINE, "Spine"},
+    {"chest", MDKR_CHARACTER_RIG_CHEST, "Chest"},
+    {"head", MDKR_CHARACTER_RIG_HEAD, "Head"},
+    {"upper_arm.left", MDKR_CHARACTER_RIG_UPPER_ARM_LEFT, "Left shoulder"},
+    {"lower_arm.left", MDKR_CHARACTER_RIG_LOWER_ARM_LEFT, "Left elbow"},
+    {"hand.left", MDKR_CHARACTER_RIG_HAND_LEFT, "Left hand"},
+    {"upper_arm.right", MDKR_CHARACTER_RIG_UPPER_ARM_RIGHT, "Right shoulder"},
+    {"lower_arm.right", MDKR_CHARACTER_RIG_LOWER_ARM_RIGHT, "Right elbow"},
+    {"hand.right", MDKR_CHARACTER_RIG_HAND_RIGHT, "Right hand"},
+    {"upper_leg.left", MDKR_CHARACTER_RIG_UPPER_LEG_LEFT, "Left hip"},
+    {"lower_leg.left", MDKR_CHARACTER_RIG_LOWER_LEG_LEFT, "Left knee"},
+    {"foot.left", MDKR_CHARACTER_RIG_FOOT_LEFT, "Left foot"},
+    {"upper_leg.right", MDKR_CHARACTER_RIG_UPPER_LEG_RIGHT, "Right hip"},
+    {"lower_leg.right", MDKR_CHARACTER_RIG_LOWER_LEG_RIGHT, "Right knee"},
+    {"foot.right", MDKR_CHARACTER_RIG_FOOT_RIGHT, "Right foot"},
 };
+static_assert(std::size(kHumanoidRigRoles) ==
+              MDKR_CHARACTER_PREVIEW_JOINTS);
+
+bool characterJointDiagnosticsExpected(
+    const MdkrModernCharacterEntry *entry) {
+    return entry != nullptr &&
+        entry->rig_mode == MDKR_MODERN_RIG_HUMANOID_RETARGET_V1 &&
+        (entry->rig_flags & MDKR_MODERN_RIG_REVIEWED) != 0u &&
+        entry->rig_role_mask == MDKR_CHARACTER_RIG_HUMANOID_MASK;
+}
 
 CharacterRigEdit &loadCharacterRigEdit(
     const MdkrModernCharacterEntry *entry) {
@@ -6823,6 +6833,8 @@ bool characterPreviewOpaqueVisibilityValid(
     const MdkrCharacterPreviewResult &result);
 bool characterPreviewContactDiagnosticsValid(
     const MdkrCharacterPreviewResult &result);
+bool characterPreviewJointDiagnosticsValid(
+    const MdkrCharacterPreviewResult &result);
 bool characterMotionReviewContactStabilityValid(
     const MdkrCharacterMotionReviewResult &review);
 MdkrCharacterPreviewResult characterPreviewResultFromEvidence(
@@ -6912,6 +6924,10 @@ bool characterPreviewSessionMatchesTuning(
            characterPreviewOpaqueVisibilityValid(session.result) &&
            characterPreviewProjectionValid(session.result) &&
            characterPreviewContactDiagnosticsValid(session.result) &&
+           characterPreviewJointDiagnosticsValid(session.result) &&
+           (!characterJointDiagnosticsExpected(entry) ||
+            session.result.joint_excursion_mask ==
+                MDKR_CHARACTER_RIG_HUMANOID_MASK) &&
            (session.result.capture_requested
                 ? session.result.capture_kind >=
                       MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE &&
@@ -8098,6 +8114,127 @@ bool characterPreviewAttachmentVisibilityNeedsReview(
     return false;
 }
 
+double characterPreviewPeakJointExcursion(
+    const MdkrCharacterPreviewResult &sample, unsigned &peakRole) {
+    double peak = -1.0;
+    peakRole = 0u;
+    if (sample.joint_excursion_mask !=
+        MDKR_CHARACTER_RIG_HUMANOID_MASK) return peak;
+    for (unsigned role = 0u;
+         role < MDKR_CHARACTER_PREVIEW_JOINTS; ++role) {
+        const double degrees =
+            sample.joint_excursion_millidegrees[role] / 1000.0;
+        if (degrees > peak) {
+            peak = degrees;
+            peakRole = role;
+        }
+    }
+    return peak;
+}
+
+void drawCharacterJointExcursionTable(
+    const MdkrCharacterPreviewResult *samples, unsigned sampleCount,
+    const CharacterMotionReviewDefinition *definitions,
+    const char *tableId) {
+    if (samples == nullptr || sampleCount == 0u || definitions == nullptr ||
+        tableId == nullptr) return;
+    double overallPeak = -1.0;
+    unsigned overallRole = 0u;
+    unsigned overallSample = 0u;
+    for (unsigned sample = 0u; sample < sampleCount; ++sample) {
+        unsigned role = 0u;
+        const double peak = characterPreviewPeakJointExcursion(
+            samples[sample], role);
+        if (peak > overallPeak) {
+            overallPeak = peak;
+            overallRole = role;
+            overallSample = sample;
+        }
+    }
+    if (overallPeak < 0.0) {
+        ImGui::TextDisabled(
+            "Exact joint travel unavailable · use visual anatomy review");
+        return;
+    }
+    std::array<unsigned, MDKR_CHARACTER_PREVIEW_JOINTS> peakSamples{};
+    std::array<unsigned, MDKR_CHARACTER_PREVIEW_JOINTS> peakValues{};
+    std::string spokenDetails =
+        "Shortest bind-relative node-local travel after reference motion and contact solving. ";
+    for (unsigned role = 0u;
+         role < MDKR_CHARACTER_PREVIEW_JOINTS; ++role) {
+        for (unsigned sample = 0u; sample < sampleCount; ++sample) {
+            if (samples[sample].joint_excursion_millidegrees[role] >
+                peakValues[role]) {
+                peakValues[role] =
+                    samples[sample].joint_excursion_millidegrees[role];
+                peakSamples[role] = sample;
+            }
+        }
+        char spokenValue[128];
+        std::snprintf(
+            spokenValue, sizeof(spokenValue), "%s %.1f degrees in %s. ",
+            kHumanoidRigRoles[role].label,
+            peakValues[role] / 1000.0,
+            definitions[peakSamples[role]].label);
+        spokenDetails += spokenValue;
+    }
+    spokenDetails +=
+        "These values support authored visual review; they are not automatic anatomical limits or runtime clamps.";
+    char visibleLabel[160];
+    char nodeLabel[192];
+    std::snprintf(
+        visibleLabel, sizeof(visibleLabel),
+        "Joint travel · %.1f° max at %s (%s)",
+        overallPeak, kHumanoidRigRoles[overallRole].label,
+        definitions[overallSample].label);
+    std::snprintf(nodeLabel, sizeof(nodeLabel), "%s##%s",
+                  visibleLabel, tableId);
+    ImGui::PushID(samples);
+    const bool open = ImGui::TreeNodeEx(
+        nodeLabel, ImGuiTreeNodeFlags_DefaultOpen);
+    ui::SpeakFocusedItem(
+        "Exact joint travel details", visibleLabel,
+        spokenDetails.c_str());
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+        static std::set<std::string> tracedTables;
+        if (tracedTables.insert(tableId).second) {
+            std::fprintf(
+                stderr,
+                "[app-ui] character-joint-travel samples=%u roles=%u max-millidegrees=%u accessible=focusable-summary-plus-numeric-table\n",
+                sampleCount, MDKR_CHARACTER_PREVIEW_JOINTS,
+                static_cast<unsigned>(overallPeak * 1000.0 + 0.5));
+        }
+    }
+    if (!open) {
+        ImGui::PopID();
+        return;
+    }
+    ui::TextSubtleWrapped(
+        "Each value is the shortest node-local quaternion angle from the compiled bind rotation after reference motion and vehicle contact solving. Compare start, middle, end, and transitions visually: a large value can be correct for stylized anatomy, while a small value can still deform badly. No generic threshold approves or rejects a character.");
+    if (ImGui::BeginTable(
+            tableId, 3,
+            ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg |
+                ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("Joint role");
+        ImGui::TableSetupColumn("Largest travel");
+        ImGui::TableSetupColumn("State");
+        ImGui::TableHeadersRow();
+        for (unsigned role = 0u;
+             role < MDKR_CHARACTER_PREVIEW_JOINTS; ++role) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(kHumanoidRigRoles[role].label);
+            ImGui::TableSetColumnIndex(1);
+            ImGui::Text("%.1f°", peakValues[role] / 1000.0);
+            ImGui::TableSetColumnIndex(2);
+            ImGui::TextUnformatted(definitions[peakSamples[role]].label);
+        }
+        ImGui::EndTable();
+    }
+    ImGui::TreePop();
+    ImGui::PopID();
+}
+
 void drawCharacterMotionReviewSummary(
     const CharacterMotionReviewSessionResult &session, bool compact) {
     constexpr unsigned long long kContactStabilityGuideMicrometres = 2000u;
@@ -8131,9 +8268,20 @@ void drawCharacterMotionReviewSummary(
     unsigned unqualifiedVolume = 0u;
     unsigned attachmentReviewStates = 0u;
     unsigned firstAttachmentReview = 0u;
+    double worstJointExcursion = -1.0;
+    unsigned worstJointRole = 0u;
+    unsigned worstJointSample = 0u;
     for (unsigned index = 0u; index < sampleCount; ++index) {
         const MdkrCharacterPreviewResult &sample =
             session.result.samples[index];
+        unsigned samplePeakRole = 0u;
+        const double samplePeakJoint = characterPreviewPeakJointExcursion(
+            sample, samplePeakRole);
+        if (samplePeakJoint > worstJointExcursion) {
+            worstJointExcursion = samplePeakJoint;
+            worstJointRole = samplePeakRole;
+            worstJointSample = index;
+        }
         unsigned cameraBits = 0u;
         for (unsigned flags = characterPreviewCameraReviewFlags(sample);
              flags != 0u; flags >>= 1u) {
@@ -8228,12 +8376,14 @@ void drawCharacterMotionReviewSummary(
         reviewClean ? ImGuiTreeNodeFlags_None
                     : ImGuiTreeNodeFlags_DefaultOpen);
     if (showDetails && ImGui::BeginTable(
-            "##motion-review-states", compact || !vehicle ? 3 : 6,
+            "##motion-review-states",
+            compact ? 3 : vehicle ? 7 : 4,
             ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg |
                 ImGuiTableFlags_SizingStretchProp)) {
         ImGui::TableSetupColumn("State");
         ImGui::TableSetupColumn("Framing");
         ImGui::TableSetupColumn("Visible");
+        if (!compact) ImGui::TableSetupColumn("Peak joint");
         if (!compact && vehicle) {
             ImGui::TableSetupColumn("Vehicle body");
             ImGui::TableSetupColumn("Parts / item");
@@ -8263,8 +8413,21 @@ void drawCharacterMotionReviewSummary(
                     100.0 * sample.opaque_visibility_scene_tiles /
                         sample.opaque_visibility_isolated_tiles);
             }
+            unsigned nextColumn = 3u;
+            if (!compact) {
+                ImGui::TableSetColumnIndex(nextColumn++);
+                unsigned peakRole = 0u;
+                const double peak = characterPreviewPeakJointExcursion(
+                    sample, peakRole);
+                if (peak < 0.0) {
+                    ImGui::TextDisabled("Unavailable");
+                } else {
+                    ImGui::Text("%.1f° · %s", peak,
+                                kHumanoidRigRoles[peakRole].label);
+                }
+            }
             if (!compact && vehicle) {
-                ImGui::TableSetColumnIndex(3);
+                ImGui::TableSetColumnIndex(nextColumn++);
                 if (sample.vehicle_surface_crossing_pairs == 0u &&
                     sample.vehicle_containment_inside_samples == 0u &&
                     sample.vehicle_volume_qualified) {
@@ -8280,7 +8443,7 @@ void drawCharacterMotionReviewSummary(
                         sample.vehicle_surface_crossing_pairs == 1u ? "" : "s",
                         sample.vehicle_containment_inside_samples);
                 }
-                ImGui::TableSetColumnIndex(4);
+                ImGui::TableSetColumnIndex(nextColumn++);
                 bool attachmentPresent = false;
                 bool attachmentUnqualified = false;
                 unsigned attachmentOverlap = 0u;
@@ -8310,7 +8473,7 @@ void drawCharacterMotionReviewSummary(
                 } else {
                     ImGui::TextColored(AppTheme::good(), "No overlap");
                 }
-                ImGui::TableSetColumnIndex(5);
+                ImGui::TableSetColumnIndex(nextColumn);
                 if (sample.contact_witness_mask == 0u) {
                     ImGui::TextDisabled("Not solved");
                 } else {
@@ -8334,11 +8497,15 @@ void drawCharacterMotionReviewSummary(
         ImGui::EndTable();
     }
     if (showDetails && collapsibleDetails) ImGui::TreePop();
+    drawCharacterJointExcursionTable(
+        session.result.samples, sampleCount, definitions,
+        "motion-review-joint-travel");
     char framingSummary[96];
     char bodySummary[128];
     char visibilitySummary[128];
     char attachmentSummary[128];
     char contactSummary[192];
+    char jointSummary[160];
     if (worstCameraBits == 0u) {
         std::snprintf(framingSummary, sizeof(framingSummary),
                       "framing clear in all states");
@@ -8417,9 +8584,20 @@ void drawCharacterMotionReviewSummary(
         std::snprintf(contactSummary, sizeof(contactSummary),
                       "contacts not procedurally solved");
     }
+    if (worstJointExcursion < 0.0) {
+        std::snprintf(jointSummary, sizeof(jointSummary),
+                      "joint travel unavailable");
+    } else {
+        std::snprintf(
+            jointSummary, sizeof(jointSummary),
+            "joint travel %.1f° %s (%s)", worstJointExcursion,
+            kHumanoidRigRoles[worstJointRole].label,
+            definitions[worstJointSample].label);
+    }
     ImGui::TextDisabled(
-        "Review summary: %s · %s · %s · %s · %s", framingSummary,
-        bodySummary, visibilitySummary, attachmentSummary, contactSummary);
+        "Review summary: %s · %s · %s · %s · %s · %s", framingSummary,
+        bodySummary, visibilitySummary, attachmentSummary, contactSummary,
+        jointSummary);
     ui::TextSubtleWrapped(
         vehicle
             ? "Every race semantic is a fresh renderer witness after the authored pose settled and remained visible for at least 60 complete character draws. Contact residual drift is the largest consecutive change in endpoint-minus-target during that held window, not ordinary model movement; 2 mm or less is the starting guide. Run it again whenever you need another look. Warnings remain reviewable for unusual anatomy, transparent materials, and intentional costume overlap; an opaque state with no visible regions still blocks approval."
@@ -8482,6 +8660,15 @@ void publishCharacterMotionReviewSmokeFixture(
             MDKR_CHARACTER_PREVIEW_MOTION_NONE;
         sample.inspection_pose_ticks = 60u;
         sample.inspection_pose_fallback_ticks = 0u;
+        if (characterJointDiagnosticsExpected(entry)) {
+            sample.joint_excursion_mask =
+                MDKR_CHARACTER_RIG_HUMANOID_MASK;
+            for (unsigned role = 0u;
+                 role < MDKR_CHARACTER_PREVIEW_JOINTS; ++role) {
+                sample.joint_excursion_millidegrees[role] =
+                    5000u + role * 3500u + index * 750u;
+            }
+        }
         sample.view_yaw_degrees = sample.view_pitch_degrees = 0;
         sample.lighting = MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
         sample.camera_override_ticks = 0u;
@@ -8583,10 +8770,55 @@ void publishCharacterMotionReviewSmokeFixture(
         characterTestPresentationSignature(), std::string(), disposition,
         publicationBase, &malformed);
     if (currentCharacterMotionReview(entry, edit, context, scene) != nullptr) return;
+    malformed = review;
+    malformed.samples[0].joint_excursion_mask = 1u;
+    malformed.samples[0].joint_excursion_millidegrees[0] = 5000u;
+    Settings_publishCharacterPreviewResult(
+        entry->id, characterDigestHex(entry->source_sha256),
+        characterTestTuningSignature(
+            entry, edit, static_cast<unsigned>(context - 1)),
+        characterTestPresentationSignature(), std::string(), disposition,
+        publicationBase, &malformed);
+    if (currentCharacterMotionReview(entry, edit, context, scene) != nullptr) return;
+    malformed = review;
+    malformed.samples[0].joint_excursion_mask = 0u;
+    malformed.samples[0].joint_excursion_millidegrees[0] = 1u;
+    Settings_publishCharacterPreviewResult(
+        entry->id, characterDigestHex(entry->source_sha256),
+        characterTestTuningSignature(
+            entry, edit, static_cast<unsigned>(context - 1)),
+        characterTestPresentationSignature(), std::string(), disposition,
+        publicationBase, &malformed);
+    if (currentCharacterMotionReview(entry, edit, context, scene) != nullptr) return;
+    if (characterJointDiagnosticsExpected(entry)) {
+        malformed = review;
+        malformed.samples[0].joint_excursion_millidegrees[0] = 180001u;
+        Settings_publishCharacterPreviewResult(
+            entry->id, characterDigestHex(entry->source_sha256),
+            characterTestTuningSignature(
+                entry, edit, static_cast<unsigned>(context - 1)),
+            characterTestPresentationSignature(), std::string(), disposition,
+            publicationBase, &malformed);
+        if (currentCharacterMotionReview(entry, edit, context, scene) != nullptr) {
+            return;
+        }
+    }
     if (sampleCount < MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT) {
         malformed = review;
         malformed.samples[sampleCount].version =
             MDKR_CHARACTER_PREVIEW_RESULT_VERSION;
+        Settings_publishCharacterPreviewResult(
+            entry->id, characterDigestHex(entry->source_sha256),
+            characterTestTuningSignature(
+                entry, edit, static_cast<unsigned>(context - 1)),
+            characterTestPresentationSignature(), std::string(), disposition,
+            publicationBase, &malformed);
+        if (currentCharacterMotionReview(entry, edit, context, scene) != nullptr) {
+            return;
+        }
+        malformed = review;
+        malformed.samples[sampleCount]
+            .joint_excursion_millidegrees[0] = 1u;
         Settings_publishCharacterPreviewResult(
             entry->id, characterDigestHex(entry->source_sha256),
             characterTestTuningSignature(
@@ -11317,6 +11549,30 @@ bool characterPreviewFitDiagnosticsValid(
            forwardLengthSquared <= 1005000LL;
 }
 
+bool characterPreviewJointDiagnosticsValid(
+    const MdkrCharacterPreviewResult &result) {
+    constexpr unsigned kJointDiagnosticsResultVersion = 22u;
+    constexpr unsigned kAllJoints =
+        (1u << MDKR_CHARACTER_PREVIEW_JOINTS) - 1u;
+    if (result.version < kJointDiagnosticsResultVersion &&
+        result.joint_excursion_mask != 0u) {
+        return false;
+    }
+    if (result.joint_excursion_mask != 0u &&
+        result.joint_excursion_mask != kAllJoints) return false;
+    for (unsigned role = 0u;
+         role < MDKR_CHARACTER_PREVIEW_JOINTS; ++role) {
+        const bool present =
+            (result.joint_excursion_mask & (1u << role)) != 0u;
+        const unsigned value =
+            result.joint_excursion_millidegrees[role];
+        if ((!present && value != 0u) || value > 180000u) return false;
+    }
+    return result.joint_excursion_mask == 0u ||
+        (result.replacement_draws != 0u &&
+         result.fit_diagnostics_valid != 0);
+}
+
 bool characterPreviewCameraProjectionValid(
     const MdkrCharacterPreviewResult &result) {
     constexpr unsigned kKnownClipFlags =
@@ -12647,6 +12903,15 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
         ui::CardEnd();
         return;
     }
+    if (!characterPreviewJointDiagnosticsValid(result)) {
+        ImGui::TextColored(
+            AppTheme::bad(),
+            "The engine returned invalid joint-travel evidence.");
+        ui::TextSubtleWrapped(
+            "No motion or performance conclusion was saved. Run the exact context again.");
+        ui::CardEnd();
+        return;
+    }
     if (!characterPreviewCameraProjectionValid(result)) {
         ImGui::TextColored(
             AppTheme::bad(),
@@ -12911,6 +13176,16 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
                 result.contact_error_mean_micrometres / 1000.0,
                 result.contact_error_max_micrometres / 1000.0,
                 result.contact_solves);
+        }
+        if (!transition) {
+            const CharacterMotionReviewDefinition heldDefinition{
+                result.pose, result.pose_phase_milli, pose->label};
+            drawCharacterJointExcursionTable(
+                &result, 1u, &heldDefinition,
+                "held-sample-joint-travel");
+        } else if (result.joint_excursion_mask != 0u) {
+            ui::TextSubtleWrapped(
+                "Joint-travel numbers are intentionally omitted for a continuously alternating transition: use held start, middle, and end samples or the complete motion battery for stable per-state measurements.");
         }
         ui::TextSubtleWrapped(
             exactPose
@@ -14738,6 +15013,15 @@ void drawCharacterTestEvidenceMatrix(
             result.fit_landmark_micrometres[0][1] = 100000;
             result.fit_landmark_micrometres[1][1] = 600000;
             result.fit_landmark_micrometres[2][1] = 1200000;
+            if (characterJointDiagnosticsExpected(entry)) {
+                result.joint_excursion_mask =
+                    MDKR_CHARACTER_RIG_HUMANOID_MASK;
+                for (unsigned role = 0u;
+                     role < MDKR_CHARACTER_PREVIEW_JOINTS; ++role) {
+                    result.joint_excursion_millidegrees[role] =
+                        5000u + role * 3500u;
+                }
+            }
             result.camera_projection_valid = 1;
             result.camera_projection_width = 2560u;
             result.camera_projection_height = 1920u;
@@ -25017,7 +25301,11 @@ void Settings_publishCharacterPreviewResult(
         disposition.representativeMotionReview;
     const bool donorReference = disposition.donorReference;
     if (packageId.empty()) return;
+    const MdkrModernCharacterEntry *resultEntry =
+        characterStudioEntry(packageId.c_str());
     if (representativeMotionReview) {
+        const bool jointDiagnosticsExpected =
+            characterJointDiagnosticsExpected(resultEntry);
         const bool stoppedByAuthor = motionReview != nullptr &&
             motionReview->started && !motionReview->completed &&
             motionReview->failed_sample == 0u;
@@ -25111,6 +25399,10 @@ void Settings_publishCharacterPreviewResult(
                     !sample.capture_written &&
                     sample.capture_png_bytes == 0u &&
                     characterPreviewFitDiagnosticsValid(sample) &&
+                    characterPreviewJointDiagnosticsValid(sample) &&
+                    (!jointDiagnosticsExpected ||
+                     sample.joint_excursion_mask ==
+                         MDKR_CHARACTER_RIG_HUMANOID_MASK) &&
                     sample.fit_diagnostics_valid &&
                     characterPreviewCameraProjectionValid(sample) &&
                     sample.camera_projection_valid &&
@@ -25139,6 +25431,7 @@ void Settings_publishCharacterPreviewResult(
                     unused.reference_draws != 0u ||
                     unused.reference_primitives != 0u ||
                     unused.fit_diagnostics_valid ||
+                    !characterPreviewJointDiagnosticsValid(unused) ||
                     unused.camera_projection_valid ||
                     unused.vehicle_surface_valid ||
                     unused.opaque_visibility_valid) {
@@ -25269,6 +25562,19 @@ void Settings_publishCharacterPreviewResult(
                     expectedCount),
                 fitSha256.c_str());
         }
+        return;
+    }
+    if (!donorReference && characterJointDiagnosticsExpected(resultEntry) &&
+        result.joint_excursion_mask != MDKR_CHARACTER_RIG_HUMANOID_MASK) {
+        if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+            std::fprintf(
+                stderr,
+                "[app-ui] character-preview-result rejected-evidence=joint-travel-contract package=%s mask=%x\n",
+                packageId.c_str(), result.joint_excursion_mask);
+        }
+        setStatus(
+            "The exact renderer omitted complete joint-travel evidence for this reviewed humanoid. No fit, motion, capture, or performance result was recorded.",
+            AppTheme::bad());
         return;
     }
     if (donorReference) {
@@ -25514,6 +25820,7 @@ void Settings_publishCharacterPreviewResult(
             result.version != MDKR_CHARACTER_PREVIEW_RESULT_VERSION ||
             !result.started || !result.warmup_complete ||
             !characterPreviewFitDiagnosticsValid(result) ||
+            !characterPreviewJointDiagnosticsValid(result) ||
             !characterPreviewCameraProjectionValid(result) ||
             !characterPreviewVehicleSurfaceValid(result) ||
             !characterPreviewOpaqueVisibilityValid(result) ||
@@ -25557,6 +25864,7 @@ void Settings_publishCharacterPreviewResult(
                 result.version == MDKR_CHARACTER_PREVIEW_RESULT_VERSION &&
                 result.started && result.warmup_complete &&
                 characterPreviewFitDiagnosticsValid(result) &&
+                characterPreviewJointDiagnosticsValid(result) &&
                 characterPreviewCameraProjectionValid(result) &&
                 characterPreviewVehicleSurfaceValid(result) &&
                 characterPreviewOpaqueVisibilityValid(result) &&
@@ -25840,6 +26148,7 @@ void Settings_publishCharacterPreviewResult(
     }
     if (result.version != MDKR_CHARACTER_PREVIEW_RESULT_VERSION ||
         !result.started || !characterPreviewFitDiagnosticsValid(result) ||
+        !characterPreviewJointDiagnosticsValid(result) ||
         !characterPreviewCameraProjectionValid(result) ||
         !characterPreviewVehicleSurfaceValid(result) ||
         !characterPreviewOpaqueVisibilityValid(result) ||

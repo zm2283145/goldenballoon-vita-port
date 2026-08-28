@@ -1887,7 +1887,8 @@ def main() -> int:
             r"contactMask=([0-9a-f]+) contactMaxUm=(\d+) "
             r"contactStabilityMask=([0-9a-f]+) "
             r"contactSteps=(\d+),(\d+),(\d+),(\d+) "
-            r"contactStepMaxUm=(\d+),(\d+),(\d+),(\d+)",
+            r"contactStepMaxUm=(\d+),(\d+),(\d+),(\d+) "
+            r"joints=([0-9a-f]+) jointMaxMd=(\d+)",
             motion_output,
         )
         expected_motion = [
@@ -1947,16 +1948,18 @@ def main() -> int:
             (_, _, _, draws, _, fallback, camera_flags, crossings,
              inside, scene_tiles, isolated_tiles, contact_solves, contact_mask,
              contact_max, stability_mask, *stability_values) = (
-                int(value, 16) if index in (6, 12, 14) else int(value)
+                int(value, 16) if index in (6, 12, 14, 23) else int(value)
                 for index, value in enumerate(row)
             )
             stability_observations = stability_values[:4]
-            stability_maxima = stability_values[4:]
+            stability_maxima = stability_values[4:8]
+            joint_mask, joint_max = stability_values[8:]
             if (draws < 60 or fallback > draws or camera_flags & ~0x7F or
                     crossings < 0 or inside < 0 or scene_tiles < 0 or
                     scene_tiles > isolated_tiles or contact_solves == 0 or
                     contact_mask != 0xF or contact_max < 0 or
-                    stability_mask != 0xF or
+                    stability_mask != 0xF or joint_mask != 0xFFFF or
+                    joint_max > 180000 or
                     any(value < 8 or value >= contact_solves
                         for value in stability_observations) or
                     any(value < 0 or value > 1_000_000_000
@@ -2010,7 +2013,8 @@ def main() -> int:
                 r"contactMask=([0-9a-f]+) contactMaxUm=(\d+) "
                 r"contactStabilityMask=([0-9a-f]+) "
                 r"contactSteps=(\d+),(\d+),(\d+),(\d+) "
-                r"contactStepMaxUm=(\d+),(\d+),(\d+),(\d+)",
+                r"contactStepMaxUm=(\d+),(\d+),(\d+),(\d+) "
+                r"joints=([0-9a-f]+) jointMaxMd=(\d+)",
                 scene_output,
             )
             observed_scene_motion = [
@@ -2044,9 +2048,12 @@ def main() -> int:
                 contact_solves = int(row[11])
                 stability_mask = int(row[14], 16)
                 stability_observations = [int(value) for value in row[15:19]]
+                joint_mask = int(row[23], 16)
+                joint_max = int(row[24])
                 if (draws < 60 or fallback > draws or
                         scene_tiles > isolated_tiles or
                         stability_mask != 0xF or
+                        joint_mask != 0xFFFF or joint_max > 180000 or
                         any(value < 8 or value >= contact_solves
                             for value in stability_observations)):
                     failures.append(
@@ -2163,7 +2170,8 @@ def main() -> int:
             r"contactMask=([0-9a-f]+) contactMaxUm=(\d+) "
             r"contactStabilityMask=([0-9a-f]+) "
             r"contactSteps=(\d+),(\d+),(\d+),(\d+) "
-            r"contactStepMaxUm=(\d+),(\d+),(\d+),(\d+)",
+            r"contactStepMaxUm=(\d+),(\d+),(\d+),(\d+) "
+            r"joints=([0-9a-f]+) jointMaxMd=(\d+)",
             select_motion_output,
         )
         observed_select_motion = [
@@ -2184,14 +2192,17 @@ def main() -> int:
              inside, scene_tiles, isolated_tiles, contact_solves,
              contact_mask, contact_max, stability_mask,
              *stability_values) = (
-                int(value, 16) if index in (6, 12, 14) else int(value)
+                int(value, 16) if index in (6, 12, 14, 23) else int(value)
                 for index, value in enumerate(row)
             )
+            joint_mask, joint_max = stability_values[-2:]
+            stability_values = stability_values[:-2]
             if (draws < 60 or fallback > draws or camera_flags & ~0x7F or
                     crossings != 0 or inside != 0 or scene_tiles < 0 or
                     scene_tiles > isolated_tiles or contact_solves != 0 or
                     contact_mask != 0 or contact_max != 0 or
-                    stability_mask != 0 or
+                    stability_mask != 0 or joint_mask != 0xFFFF or
+                    joint_max > 180000 or
                     any(stability_values)):
                 failures.append(
                     "select semantic motion returned an inconsistent sample: "

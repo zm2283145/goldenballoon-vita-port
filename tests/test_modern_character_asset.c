@@ -272,6 +272,7 @@ int main(int argc, char **argv) {
     MdkrModernAnimation animation;
     MdkrModernChannel channel;
     MdkrModernKey key;
+    MdkrModernNode node;
     MdkrModernSocket socket;
     MdkrModernAttachment attachment;
     MdkrModernCalibration calibration;
@@ -283,6 +284,7 @@ int main(int argc, char **argv) {
     MdkrModernCharacterRuntimeMetrics runtime_metrics;
     MdkrModernCharacterFitDiagnostics fit_diagnostics;
     MdkrModernCharacterContactDiagnostics contact_diagnostics;
+    MdkrModernCharacterJointDiagnostics joint_diagnostics;
     MdkrModernCharacterLodView lod_view;
     MdkrModernCharacterLodDiagnostics lod_diagnostics;
     MdkrModernSurfaceIntersectionDiagnostics surface_diagnostics;
@@ -300,6 +302,8 @@ int main(int argc, char **argv) {
     float contact_offsets[MDKR_MODERN_CHARACTER_CONTACTS][3] = {{0}};
     float bind_position[3];
     float bind_rotation[4];
+    float joint_excursion_degrees[MDKR_MODERN_HUMANOID_ROLE_COUNT];
+    uint32_t joint_excursion_mask;
     int32_t parent_joint_node;
     float palette[256];
     char error[256];
@@ -735,6 +739,34 @@ int main(int argc, char **argv) {
             "initialize semantic skeletal pose");
     require(mdkr_modern_pose_humanoid_retarget_ready(&pose),
             "reviewed complete humanoid map enables reference motion");
+    require(mdkr_modern_pose_joint_excursions(
+                &pose, joint_excursion_degrees, &joint_excursion_mask) &&
+                joint_excursion_mask == 0xFFFFu &&
+                joint_excursion_degrees[3] < 0.001f,
+            "bind-relative joint excursion starts at zero for every reviewed role");
+    require(mdkr_modern_character_asset_node(
+                &asset, pose.rig_role_nodes[3], &node),
+            "resolve reviewed head role bind rotation");
+    pose.local[pose.rig_role_nodes[3]].rotation[0] = 0.0f;
+    pose.local[pose.rig_role_nodes[3]].rotation[1] = 0.70710678118f;
+    pose.local[pose.rig_role_nodes[3]].rotation[2] = 0.0f;
+    pose.local[pose.rig_role_nodes[3]].rotation[3] = 0.70710678118f;
+    require(mdkr_modern_pose_joint_excursions(
+                &pose, joint_excursion_degrees, &joint_excursion_mask) &&
+                fabsf(joint_excursion_degrees[3] - 90.0f) < 0.01f,
+            "joint excursion measures shortest quaternion distance in degrees");
+    memcpy(pose.local[pose.rig_role_nodes[3]].rotation, node.rotation,
+           sizeof(node.rotation));
+    pose.local[pose.rig_role_nodes[3]].rotation[0] = NAN;
+    joint_excursion_degrees[0] = 123.0f;
+    joint_excursion_mask = 7u;
+    require(!mdkr_modern_pose_joint_excursions(
+                &pose, joint_excursion_degrees, &joint_excursion_mask) &&
+                joint_excursion_degrees[0] == 123.0f &&
+                joint_excursion_mask == 7u,
+            "invalid joint rotation fails without partially publishing diagnostics");
+    memcpy(pose.local[pose.rig_role_nodes[3]].rotation, node.rotation,
+           sizeof(node.rotation));
     require(mdkr_modern_pose_advance(&pose, 0.5f, error, sizeof(error)),
             "advance semantic skeletal pose");
     require(mdkr_modern_pose_socket_matrix(&pose, "head", 0, socket_matrix),
@@ -1680,6 +1712,19 @@ int main(int argc, char **argv) {
                     0, MDKR_CHARACTER_CONTEXT_HOVERCRAFT,
                     &contact_diagnostics),
             "runtime publishes complete contact witnesses only for a successfully rendered solved vehicle context");
+    require(mdkr_modern_character_player_joint_diagnostics(
+                0, MDKR_CHARACTER_CONTEXT_CAR, &joint_diagnostics) &&
+                joint_diagnostics.valid_mask == 0xFFFFu &&
+                isfinite(joint_diagnostics.excursion_degrees[0]) &&
+                isfinite(joint_diagnostics.excursion_degrees[15]) &&
+                joint_diagnostics.excursion_degrees[0] >= 0.0f &&
+                joint_diagnostics.excursion_degrees[15] <= 180.0f &&
+                !mdkr_modern_character_player_joint_diagnostics(
+                    0, MDKR_CHARACTER_CONTEXT_HOVERCRAFT,
+                    &joint_diagnostics) &&
+                !mdkr_modern_character_player_joint_diagnostics(
+                    -1, MDKR_CHARACTER_CONTEXT_CAR, &joint_diagnostics),
+            "runtime publishes exact post-solve joint excursion only for a successful replacement context draw");
     require(command_cursor == commands + 2 && registered_draws == 2u,
             "runtime emits one retained command per selected primitive");
     require(select_model_y - last_model_matrix[13] > 0.70f,

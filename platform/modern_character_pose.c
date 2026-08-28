@@ -234,6 +234,56 @@ int mdkr_modern_pose_humanoid_retarget_ready(const MdkrModernPose *pose) {
     return pose != NULL && pose->valid && pose->humanoid_retarget_ready;
 }
 
+int mdkr_modern_pose_joint_excursions(
+    const MdkrModernPose *pose,
+    float degrees[MDKR_MODERN_HUMANOID_ROLE_COUNT],
+    uint32_t *valid_mask) {
+    float measured[MDKR_MODERN_HUMANOID_ROLE_COUNT];
+    uint32_t measured_mask = 0u;
+    unsigned role;
+    if (pose == NULL || !pose->valid || degrees == NULL ||
+        valid_mask == NULL || !pose->humanoid_retarget_ready ||
+        pose->rig_role_mask != 0xFFFFu) return 0;
+    memset(measured, 0, sizeof(measured));
+    for (role = 0u; role < MDKR_MODERN_HUMANOID_ROLE_COUNT; ++role) {
+        MdkrModernNode bind;
+        const MdkrModernTrs *current;
+        double current_length_squared = 0.0;
+        double bind_length_squared = 0.0;
+        double dot = 0.0;
+        double cosine;
+        double angle;
+        unsigned component;
+        const uint32_t node = pose->rig_role_nodes[role];
+        if (node >= pose->node_count ||
+            !mdkr_modern_character_asset_node(pose->asset, node, &bind)) {
+            return 0;
+        }
+        current = &pose->local[node];
+        for (component = 0u; component < 4u; ++component) {
+            const double current_value = current->rotation[component];
+            const double bind_value = bind.rotation[component];
+            if (!isfinite(current_value) || !isfinite(bind_value)) return 0;
+            current_length_squared += current_value * current_value;
+            bind_length_squared += bind_value * bind_value;
+            dot += current_value * bind_value;
+        }
+        if (current_length_squared < 1.0e-12 ||
+            bind_length_squared < 1.0e-12) return 0;
+        cosine = fabs(dot) /
+            sqrt(current_length_squared * bind_length_squared);
+        if (!isfinite(cosine)) return 0;
+        if (cosine > 1.0) cosine = 1.0;
+        angle = 2.0 * acos(cosine) * (180.0 / 3.14159265358979323846);
+        if (!isfinite(angle) || angle < 0.0 || angle > 180.0001) return 0;
+        measured[role] = (float)(angle > 180.0 ? 180.0 : angle);
+        measured_mask |= 1u << role;
+    }
+    memcpy(degrees, measured, sizeof(measured));
+    *valid_mask = measured_mask;
+    return 1;
+}
+
 int mdkr_modern_pose_has_semantic(const MdkrModernPose *pose,
                                   const char *semantic) {
     const MdkrModernSectionView *semantics;

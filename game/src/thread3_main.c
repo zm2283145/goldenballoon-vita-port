@@ -193,6 +193,9 @@ _Static_assert(
     MDKR_CHARACTER_PREVIEW_CONTACTS == MDKR_MODERN_CHARACTER_CONTACTS,
     "preview and runtime contact order must remain identical");
 _Static_assert(
+    MDKR_CHARACTER_PREVIEW_JOINTS == MDKR_MODERN_HUMANOID_ROLE_COUNT,
+    "preview and runtime humanoid role order must remain identical");
+_Static_assert(
     MDKR_CHARACTER_PREVIEW_LANDMARKS ==
             MDKR_MODERN_CHARACTER_FIT_LANDMARKS &&
         MDKR_CHARACTER_PREVIEW_LANDMARK_HIPS ==
@@ -565,6 +568,35 @@ static s32 workshop_preview_publish_contact_diagnostics(
     return TRUE;
 }
 
+static s32 workshop_preview_publish_joint_diagnostics(
+    MdkrCharacterPreviewResult *result) {
+    MdkrModernCharacterJointDiagnostics joints;
+    unsigned measured[MDKR_CHARACTER_PREVIEW_JOINTS];
+    s32 context;
+    u32 role;
+    if (result == NULL ||
+        result->context < MDKR_CHARACTER_PREVIEW_SELECT ||
+        result->context > MDKR_CHARACTER_PREVIEW_PLANE) return FALSE;
+    context = (s32)result->context -
+        (s32)MDKR_CHARACTER_PREVIEW_SELECT;
+    if (!mdkr_modern_character_player_joint_diagnostics(
+            0, (MdkrModernCharacterContext)context, &joints) ||
+        joints.valid_mask !=
+            ((1u << MDKR_CHARACTER_PREVIEW_JOINTS) - 1u)) return FALSE;
+    for (role = 0u; role < MDKR_CHARACTER_PREVIEW_JOINTS; ++role) {
+        const double millidegrees =
+            (double)joints.excursion_degrees[role] * 1000.0;
+        if (!isfinite(millidegrees) || millidegrees < 0.0 ||
+            millidegrees > 180000.5) return FALSE;
+        measured[role] = (u32)(millidegrees + 0.5);
+        if (measured[role] > 180000u) measured[role] = 180000u;
+    }
+    memcpy(result->joint_excursion_millidegrees, measured,
+           sizeof(measured));
+    result->joint_excursion_mask = joints.valid_mask;
+    return TRUE;
+}
+
 static s32 workshop_preview_publish_vehicle_surface_diagnostics(
     MdkrCharacterPreviewResult *result) {
     MdkrModernSurfaceIntersectionDiagnostics diagnostics;
@@ -878,6 +910,8 @@ static s32 workshop_motion_review_publish_sample(void) {
     MdkrCharacterPreviewResult *sample;
     MdkrModernCharacterRuntimeMetrics metrics;
     u32 contact;
+    u32 joint;
+    u32 joint_max_millidegrees = 0u;
     if (review == NULL ||
         sWorkshopMotionReviewSample >= review->sample_count) return FALSE;
     sample = &review->samples[sWorkshopMotionReviewSample];
@@ -942,6 +976,14 @@ static s32 workshop_motion_review_publish_sample(void) {
         !workshop_preview_publish_opaque_visibility(sample)) {
         return FALSE;
     }
+    (void)workshop_preview_publish_joint_diagnostics(sample);
+    for (joint = 0u; joint < MDKR_CHARACTER_PREVIEW_JOINTS; ++joint) {
+        if (sample->joint_excursion_millidegrees[joint] >
+            joint_max_millidegrees) {
+            joint_max_millidegrees =
+                sample->joint_excursion_millidegrees[joint];
+        }
+    }
     if (review->context != MDKR_CHARACTER_PREVIEW_SELECT &&
         !workshop_preview_publish_contact_diagnostics(sample) &&
         sample->contact_solves != 0u) return FALSE;
@@ -958,7 +1000,7 @@ static s32 workshop_motion_review_publish_sample(void) {
     }
     review->completed_mask |= 1u << sWorkshopMotionReviewSample;
     MDKR_TRACE(
-        "character_motion_review: sample=%u pose=%d phase=%u draws=%llu source=%d fallback=%llu cameraFlags=%x crossings=%u inside=%u visibility=%u/%u contactSolves=%llu contactMask=%x contactMaxUm=%llu contactStabilityMask=%x contactSteps=%llu,%llu,%llu,%llu contactStepMaxUm=%llu,%llu,%llu,%llu",
+        "character_motion_review: sample=%u pose=%d phase=%u draws=%llu source=%d fallback=%llu cameraFlags=%x crossings=%u inside=%u visibility=%u/%u contactSolves=%llu contactMask=%x contactMaxUm=%llu contactStabilityMask=%x contactSteps=%llu,%llu,%llu,%llu contactStepMaxUm=%llu,%llu,%llu,%llu joints=%x jointMaxMd=%u",
         sWorkshopMotionReviewSample, (int)sample->pose,
         sample->pose_phase_milli, sample->replacement_draws,
         (int)sample->transition_from_motion_source,
@@ -987,7 +1029,9 @@ static s32 workshop_motion_review_publish_sample(void) {
         review->contact_stability_max_step_micrometres
             [sWorkshopMotionReviewSample][2],
         review->contact_stability_max_step_micrometres
-            [sWorkshopMotionReviewSample][3]);
+            [sWorkshopMotionReviewSample][3],
+        sample->joint_excursion_mask,
+        joint_max_millidegrees);
     sWorkshopMotionReviewSample++;
     if (sWorkshopMotionReviewSample == review->sample_count) {
         review->completed = TRUE;
@@ -1214,6 +1258,7 @@ static void workshop_preview_measurement_finish(void) {
             if (workshop_preview_publish_fit_diagnostics(result)) {
                 (void)workshop_preview_publish_camera_projection(result);
             }
+            (void)workshop_preview_publish_joint_diagnostics(result);
             (void)workshop_preview_publish_contact_diagnostics(result);
             (void)workshop_preview_publish_vehicle_surface_diagnostics(
                 result);

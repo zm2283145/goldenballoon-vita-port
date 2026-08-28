@@ -71,7 +71,7 @@ struct Evidence {
     uint64_t    tickwallSamples             = 0u;
     uint64_t    tickwallMeanNs              = 0u;
     /* Version zero means the authenticated v1-v3 record predates GPU timing.
-     * Current v9/result-v21 records carry a structurally validated snapshot. */
+     * Current v9/result-v22 records carry a structurally validated snapshot. */
     MdkrModernCharacterGpuTimingMetrics gpuTiming{};
     uint64_t    replacementDraws            = 0u;
     uint64_t    replacementPrimitives       = 0u;

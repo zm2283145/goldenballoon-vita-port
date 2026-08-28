@@ -22,11 +22,11 @@ sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(ROOT / "tools"))
 
 import character_asset_probe as probe  # noqa: E402
-import character_manifest_wizard as wizard  # noqa: E402
 import character_package_manager as manager  # noqa: E402
 from test_character_asset_probe import (  # noqa: E402
-    make_animated_glb,
+    make_humanoid_glb,
     make_portrait_png,
+    make_v4_manifest,
 )
 from character_validation_fixture import accepted_character_validation  # noqa: E402
 
@@ -69,20 +69,22 @@ def install_fixture(root: Path) -> Path:
     manifest_path = source / "manifest.json"
     license_path = source / "LICENSE.txt"
     package = source / "test-evidence-proof.mdkrchar"
-    model.write_bytes(make_animated_glb(with_lod=True))
-    portrait.write_bytes(make_portrait_png(40))
-    manifest, _ = wizard.build_manifest(
-        model,
-        PACKAGE_ID,
-        "Test Evidence Proof",
-        "CC0-1.0",
-        "Generated MDKR fixture",
-        "https://example.invalid/test-evidence-proof",
-        "bumper",
-        ["car", "hovercraft", "plane"],
-        portrait=portrait,
-        minimap_rgb=[80, 210, 150],
-    )
+    model.write_bytes(make_humanoid_glb(with_lod=True))
+    portrait_bytes = make_portrait_png(40)
+    portrait.write_bytes(portrait_bytes)
+    manifest = make_v4_manifest(portrait_bytes, humanoid=True)
+    manifest["id"] = PACKAGE_ID
+    manifest["display_name"] = "Test Evidence Proof"
+    manifest["license"] = {
+        "spdx": "CC0-1.0",
+        "attribution": "Generated MDKR fixture",
+        "source_url": "https://example.invalid/test-evidence-proof",
+    }
+    manifest["gameplay"] = {
+        "donor": "bumper",
+        "vehicles": ["car", "hovercraft", "plane"],
+    }
+    manifest["identity"]["minimap_rgb"] = [80, 210, 150]
     manifest_path.write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
@@ -494,7 +496,7 @@ def main() -> int:
                 or rows[0][0] != "0"
                 or rows[0][1] != PACKAGE_ID
                 or (rows[0][7], rows[0][8]) != ("2", "4")
-                or rows[0][9] != "21"
+                or rows[0][9] != "22"
                 or bytes.fromhex(rows[0][29]).decode("utf-8")
                 != "webgpu-test"
                 or bytes.fromhex(rows[0][30]).decode("utf-8")
@@ -602,6 +604,8 @@ def main() -> int:
                     "exception-required=1 exception-approved=0 "
                     "review-ready=0 exact-contract=1 visibility-block=0 "
                     "scene-reviewed=0 warnings=1",
+                    "character-joint-travel samples=",
+                    "accessible=focusable-summary-plus-numeric-table",
                 ),
                 focus_contact_review=True,
                 tab="vehicles",
@@ -644,6 +648,8 @@ def main() -> int:
                     "exception-required=0 exception-approved=0 "
                     "review-ready=0 exact-contract=1 visibility-block=1 "
                     "scene-reviewed=0 warnings=1",
+                    "character-joint-travel samples=",
+                    "accessible=focusable-summary-plus-numeric-table",
                 ),
                 focus_contact_review=True,
                 tab="vehicles",
