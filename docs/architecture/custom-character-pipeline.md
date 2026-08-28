@@ -698,6 +698,13 @@ License List, and it never interprets whether a declaration grants rights.
   indices, inverse-bind counts, node cycles, and skin roots.
 - Verify texture roles and color spaces: base color/emissive are sRGB;
   normal/occlusion/metallic-roughness are linear.
+- The WebGPU material shader decodes base color, emissive, and game-authored
+  fog with the exact piecewise sRGB transfer function, performs lighting,
+  shadows, occlusion, emission, and fog in linear light, then applies the exact
+  inverse transfer for the existing display-space target. This matches the
+  already color-aware mip builder at every level; the old `pow(2.2)` shortcut
+  is forbidden by a source contract test and the generated fixture compiles
+  and renders through select, all three vehicles, and four-player WebGPU.
 - Generate a deterministic tangent basis when a primitive lacks one. Supplied
   tangents are independently finite-checked, Gram-Schmidt orthogonalized
   against the final normal, and given a stable least-aligned-axis fallback

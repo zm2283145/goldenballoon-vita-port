@@ -148,6 +148,23 @@ def make_grid_glb(
 
 
 class HighFidelityCharacterTests(unittest.TestCase):
+    def test_webgpu_material_shader_uses_exact_srgb_transfer(self) -> None:
+        shader_source = (ROOT / "platform" / "fast3d" /
+                         "gfx_webgpu.c").read_text(encoding="utf-8")
+        self.assertIn("v<=vec3<f32>(0.04045)", shader_source)
+        self.assertIn("v<=vec3<f32>(0.0031308)", shader_source)
+        self.assertIn(
+            "srgbToLinear(u.fog.rgb)", shader_source,
+            "display-space fog must be decoded before linear-light blending",
+        )
+        self.assertNotIn(
+            "pow(baseSample.rgb,vec3<f32>(2.2))", shader_source
+        )
+        self.assertNotIn(
+            "pow(max(rgb,vec3<f32>(0.0)),vec3<f32>(1.0/2.2))",
+            shader_source,
+        )
+
     def test_fifty_thousand_triangle_skinned_grid_compiles(self) -> None:
         model = make_grid_glb()
         inspected = probe.inspect_glb_bytes(model, require_character=True)
