@@ -914,6 +914,8 @@ int runEngineSession(AppHost &host, SessionRuntime &session,
         Overlay_installCharacterStudio(
             host.window(), config.character_preview_package,
             config.character_preview_context);
+    } else if (config.character_motion_review) {
+        Overlay_installCharacterReview(host.window());
     } else {
         Overlay_install(host.window());
         Overlay_setPauseAllowed(session.overlayMayPause());

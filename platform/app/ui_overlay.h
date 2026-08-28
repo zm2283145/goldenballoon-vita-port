@@ -17,6 +17,11 @@ enum class OverlayExitRequest {
 // Register the overlay hooks with the engine. Call before mdkr64_engine_boot().
 void Overlay_install(SDL_Window *window);
 
+// Review sessions use the ordinary paused overlay, but name the destructive
+// action accurately: stopping keeps completed course evidence and returns to
+// the Workshop instead of pretending this is an ordinary race exit.
+void Overlay_installCharacterReview(SDL_Window *window);
+
 // Focused, launcher-owned Offset Studio over the exact preview scene. Unlike
 // the ordinary F1 menu it is always visible, captures all gameplay input, and
 // keeps rendering/simulation alive so each validated tuning edit is visible on

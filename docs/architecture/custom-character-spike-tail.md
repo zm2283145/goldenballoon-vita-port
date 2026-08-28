@@ -193,6 +193,10 @@ explicitly restricted to the generated fixture and exists only for CI.
   deliberate human-visible inspection dwell), and
   returns automatically with aggregated framing, retained-body surface,
   topology-qualified containment, opaque-depth visibility, and contact evidence.
+  A game-native status card keeps the active course, semantic, stage, and
+  held-draw progress visible throughout; Escape/F1 or gamepad Back opens a
+  review-specific stop action that discards only the incomplete course and
+  preserves every completed course for resume.
   Approval requires all current source/fit/LOD/presentation-bound course
   batteries and reopens every legacy approval once. Select approval covers
   idle/hover/confirm; every vehicle approval covers 55 samples in total.

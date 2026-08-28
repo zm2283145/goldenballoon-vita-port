@@ -56,7 +56,7 @@ extern "C" void  gfx_webgpu_current_overlay_size(int *w, int *h);
 namespace {
 
 enum class LastInputDevice { KeyboardMouse, Gamepad, Touch };
-enum class OverlayMode { GameMenu, CharacterStudio };
+enum class OverlayMode { GameMenu, CharacterReview, CharacterStudio };
 enum class ConfirmAction {
     None,
     RestartGame,
@@ -658,10 +658,17 @@ void drawOverlayHeader() {
     // At 640px with 2x UI scale the overlay intentionally caps at the viewport;
     // a single non-wrapping status sentence would cut off the controls needed
     // to leave it.
+    const bool review = g_overlay.mode == OverlayMode::CharacterReview;
     if (usingTouch) {
-        ui::TextSubtleWrapped("Game paused  \xE2\x80\xA2  tap Resume to continue");
+        ui::TextSubtleWrapped(
+            review
+                ? "Character review paused  \xE2\x80\xA2  tap Resume to continue"
+                : "Game paused  \xE2\x80\xA2  tap Resume to continue");
     } else {
-        ui::TextSubtleWrapped("Game paused  \xE2\x80\xA2  %s to resume", resume);
+        ui::TextSubtleWrapped(
+            review ? "Character review paused  \xE2\x80\xA2  %s to resume"
+                   : "Game paused  \xE2\x80\xA2  %s to resume",
+            resume);
     }
     ui::TextSubtleWrapped("%s", nav);
     ui::Gap(ui::kGapS);
@@ -691,19 +698,33 @@ void drawConfirmation(float uiScale) {
     const bool returning =
         g_overlay.confirm == ConfirmAction::ReturnToLauncher || workshop;
     const bool restarting = g_overlay.confirm == ConfirmAction::RestartGame;
-    ui::TextSubtle(
-        restarting
-            ? "Restart and apply saved settings? This ends the current race."
-            : (workshop
-                   ? "Return to the Workshop? Current fit changes will be saved."
-               : returning
-                   ? "Return to the launcher? This ends the current race."
-                   : "Quit to desktop? This ends the current race."));
+    const bool stoppingReview =
+        returning && !workshop &&
+        g_overlay.mode == OverlayMode::CharacterReview;
+    const char *description;
+    const char *primary;
+    if (restarting) {
+        description =
+            "Restart and apply saved settings? This ends the current race.";
+        primary = "Restart & Apply";
+    } else if (workshop) {
+        description =
+            "Return to the Workshop? Current fit changes will be saved.";
+        primary = "Return to Workshop";
+    } else if (stoppingReview) {
+        description =
+            "Stop this course review? Its incomplete measurements will be "
+            "discarded; completed courses remain current and resumable.";
+        primary = "Stop Review";
+    } else if (returning) {
+        description = "Return to the launcher? This ends the current race.";
+        primary = "Return to Launcher";
+    } else {
+        description = "Quit to desktop? This ends the current race.";
+        primary = "Quit";
+    }
+    ui::TextSubtleWrapped("%s", description);
     ui::Gap(ui::kGapM);
-    const char *primary = restarting ? "Restart & Apply"
-                                     : (workshop ? "Return to Workshop"
-                                        : returning ? "Return to Launcher"
-                                                    : "Quit");
     const OverlayButtonPair actions =
         fitButtonPair(ui::kBtnWide(), ui::kBtnSecondary(), uiScale);
     if (ui::PrimaryButton(primary, actions.first)) {
@@ -766,7 +787,10 @@ void drawOverlayMenu(float uiScale) {
     ui::Gap(ui::kGapM);
     const OverlayButtonPair exitActions =
         fitButtonPair(ui::kBtnWide(), ui::kBtnWide(), uiScale);
-    if (ImGui::Button("Return to Launcher", exitActions.first)) {
+    const bool review = g_overlay.mode == OverlayMode::CharacterReview;
+    if (ImGui::Button(
+            review ? "Stop Review & Return" : "Return to Launcher",
+            exitActions.first)) {
         g_overlay.confirm = ConfirmAction::ReturnToLauncher;
     }
     if (exitActions.sameLine) ImGui::SameLine();
@@ -1070,6 +1094,12 @@ void Overlay_install(SDL_Window *window) {
     hooks.wants_render  = onWantsRender;
     hooks.render        = onRender;
     platformSetOverlayHooks(&hooks);
+}
+
+void Overlay_installCharacterReview(SDL_Window *window) {
+    Overlay_install(window);
+    g_overlay.mode = OverlayMode::CharacterReview;
+    g_overlay.pauseAllowed = true;
 }
 
 void Overlay_installCharacterStudio(

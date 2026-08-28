@@ -590,6 +590,8 @@ def main() -> int:
                     "character-motion-review accepted=1 package=" + PACKAGE_ID
                     + " context=2 scene=4 samples=11",
                     "character-motion-review accepted=0 package=" + PACKAGE_ID,
+                    "character-motion-review accepted=0 cancelled=1 package="
+                    + PACKAGE_ID,
                     "character-contact-suggestion package=" + PACKAGE_ID
                     + " context=1 witness-samples=55 mask=f adjustment=1 "
                     "within-limits=1",
@@ -633,6 +635,8 @@ def main() -> int:
                     "character-motion-review accepted=1 package=" + PACKAGE_ID
                     + " context=2 scene=4 samples=11",
                     "character-motion-review accepted=0 package=" + PACKAGE_ID,
+                    "character-motion-review accepted=0 cancelled=1 package="
+                    + PACKAGE_ID,
                     "character-contact-review package=" + PACKAGE_ID
                     + " context=1 measured=1 guide-met=1 "
                     "stability-measured=1 stability-guide-met=1 "

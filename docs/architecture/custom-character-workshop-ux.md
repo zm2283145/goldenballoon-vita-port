@@ -493,7 +493,12 @@ courses for that vehicle. Every session covers
 both steering extremes, reverse, boost, item, damage, spin, airborne, landing,
 and both finishes and returns without manual navigation. Completed courses stay
 current and the launcher resumes only missing evidence after an interrupted
-sequence. Every
+sequence. While the game owns the screen, an always-visible,
+colour-independent status card names the context, course pressure, semantic
+sample, settling versus evidence phase, and exact held-draw progress. It also
+names the keyboard and gamepad route to the paused overlay. Stopping there
+discards only the incomplete course, returns to the Workshop, and presents a
+neutral resumable outcome rather than an evidence failure. Every
 row waits for an engine-owned settled-pose generation and a further sixty
 replacement draws so the state remains human-visible before requesting fresh
 camera/visibility and, for vehicles, surface/contact witnesses. The summary

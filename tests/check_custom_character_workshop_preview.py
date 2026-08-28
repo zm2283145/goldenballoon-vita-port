@@ -8,6 +8,7 @@ import json
 import math
 import os
 import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -283,10 +284,10 @@ def main() -> int:
               file=sys.stderr)
         return 2
 
-    temporary = None
+    temporary: Path | None = None
     if args.evidence_dir is None:
-        temporary = tempfile.TemporaryDirectory(prefix="mdkr-context-preview-")
-        evidence = Path(temporary.name)
+        temporary = Path(tempfile.mkdtemp(prefix="mdkr-context-preview-"))
+        evidence = temporary
     else:
         evidence = args.evidence_dir.resolve()
         evidence.mkdir(parents=True, exist_ok=True)
@@ -1758,9 +1759,13 @@ def main() -> int:
             MDKR_CUSTOM_CHARACTER_P1=CONTACT_PACKAGE_ID,
             MDKR64_HIDDEN="1",
         )
+        motion_ui_dir = evidence / "motion-review-ui"
+        motion_ui_dir.mkdir(parents=True, exist_ok=True)
+        motion_env.update(MDKR_DUMP_FROM="130", MDKR_DUMP_EVERY="1000000")
         process = run([
             str(binary), "--headless-frames", "1400", "--rom",
             str(rom), "--window-size", "1280x960", "--restored",
+            "--dump-frames", str(motion_ui_dir),
         ], env=motion_env)
         motion_output = process.stdout or ""
         output += "\n===== car-representative-motion =====\n" + motion_output
@@ -1797,6 +1802,37 @@ def main() -> int:
             failures.append(
                 "baseline scene did not route the car review to Ancient Lake"
             )
+        if ("character_motion_review_ui: visible=1 context=2 scene=0 "
+                "course=1/5 samples=11 stop=overlay" not in motion_output):
+            failures.append(
+                "representative motion did not render its visible progress "
+                "and safe-stop surface"
+            )
+        motion_ui_frames = sorted(motion_ui_dir.glob("frame_*.ppm"))
+        if len(motion_ui_frames) != 1:
+            failures.append(
+                "representative motion did not publish one bounded visual "
+                f"progress witness: {len(motion_ui_frames)} frame(s)"
+            )
+        else:
+            width, height, pixels = read_ppm(motion_ui_frames[0])
+            card = bytearray()
+            for y in range(min(height, 180)):
+                row = (y * width) * 3
+                card.extend(pixels[row:row + min(width, 1050) * 3])
+            colours = list(zip(card[0::3], card[1::3], card[2::3]))
+            gold = sum(r > 220 and g > 150 and b < 150
+                       for r, g, b in colours)
+            blue = sum(r < 230 and g > 150 and b > 180
+                       for r, g, b in colours)
+            white = sum(r > 220 and g > 220 and b > 220
+                        for r, g, b in colours)
+            if gold < 20 or blue < 20 or white < 40:
+                failures.append(
+                    "representative motion progress card did not render its "
+                    "colour-independent three-tier text witness: "
+                    f"gold={gold} blue={blue} white={white}"
+                )
         for row in samples:
             (_, _, _, draws, _, fallback, camera_flags, crossings,
              inside, scene_tiles, isolated_tiles, contact_solves, contact_mask,
@@ -2203,7 +2239,7 @@ def main() -> int:
     if args.evidence_dir is not None:
         print(f"evidence: {evidence}")
     if temporary is not None:
-        temporary.cleanup()
+        shutil.rmtree(temporary)
     return 0
 
 

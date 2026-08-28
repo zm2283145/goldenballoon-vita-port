@@ -8435,6 +8435,18 @@ void publishCharacterMotionReviewSmokeFixture(
     SettingsCharacterPreviewDisposition disposition;
     disposition.representativeMotionReview = true;
     disposition.scene = scene;
+    MdkrCharacterMotionReviewResult stopped = review;
+    stopped.completed = 0;
+    stopped.completed_mask = 0u;
+    Settings_publishCharacterPreviewResult(
+        entry->id, characterDigestHex(entry->source_sha256),
+        characterTestTuningSignature(
+            entry, edit, static_cast<unsigned>(context - 1)),
+        characterTestPresentationSignature(), std::string(), disposition,
+        publicationBase, &stopped);
+    if (currentCharacterMotionReview(entry, edit, context, scene) != nullptr) {
+        return;
+    }
     MdkrCharacterMotionReviewResult malformed = review;
     malformed.samples[sampleCount - 1u].pose =
         definitions[0].pose;
@@ -23972,6 +23984,29 @@ void Settings_publishCharacterPreviewResult(
     const bool donorReference = disposition.donorReference;
     if (packageId.empty()) return;
     if (representativeMotionReview) {
+        const bool stoppedByAuthor = motionReview != nullptr &&
+            motionReview->started && !motionReview->completed &&
+            motionReview->failed_sample == 0u;
+        if (stoppedByAuthor) {
+            auto queued = g_characterSceneReviewRuns.find(packageId);
+            if (queued != g_characterSceneReviewRuns.end()) {
+                queued->second.active = false;
+                queued->second.refreshAll = false;
+            }
+            setStatus(
+                "Character review stopped safely. The incomplete course was discarded; every previously completed course remains current and resumable.",
+                AppTheme::subtle());
+            if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+                std::fprintf(
+                    stderr,
+                    "[app-ui] character-motion-review accepted=0 "
+                    "cancelled=1 package=%s scene=%u completed-mask=%x\n",
+                    packageId.c_str(),
+                    static_cast<unsigned>(motionReview->scene),
+                    motionReview->completed_mask);
+            }
+            return;
+        }
         unsigned expectedCount = 0u;
         const CharacterMotionReviewDefinition *expected =
             motionReview != nullptr

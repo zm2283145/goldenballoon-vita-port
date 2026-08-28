@@ -223,34 +223,50 @@ static u32 sWorkshopMotionReviewVisibilityAttempts;
 static u64 sWorkshopMotionReviewReplacementBaseline;
 static s32 sWorkshopMotionReviewPoseSettled;
 static s32 sWorkshopMotionReviewDiagnosticsRequested;
+static s32 sWorkshopMotionReviewUiReported;
 static MdkrModernCharacterRuntimeMetrics sWorkshopMotionReviewPoseBaseline;
 
 typedef struct WorkshopMotionReviewDefinition {
     MdkrCharacterPreviewPose pose;
     const char *semantic;
+    const char *label;
     u32 phase_milli;
 } WorkshopMotionReviewDefinition;
 
 static const WorkshopMotionReviewDefinition sWorkshopVehicleMotionReviewDefinitions
     [MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT] = {
-        {MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER, "race.steer", 0u},
-        {MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER, "race.steer", 1000u},
-        {MDKR_CHARACTER_PREVIEW_POSE_RACE_REVERSE, "race.reverse", 500u},
-        {MDKR_CHARACTER_PREVIEW_POSE_RACE_BOOST, "race.boost", 500u},
-        {MDKR_CHARACTER_PREVIEW_POSE_RACE_ITEM, "race.item", 500u},
-        {MDKR_CHARACTER_PREVIEW_POSE_RACE_DAMAGE, "race.damage", 500u},
-        {MDKR_CHARACTER_PREVIEW_POSE_RACE_SPIN, "race.spin", 500u},
-        {MDKR_CHARACTER_PREVIEW_POSE_RACE_AIRBORNE, "race.airborne", 500u},
-        {MDKR_CHARACTER_PREVIEW_POSE_RACE_LAND, "race.land", 500u},
-        {MDKR_CHARACTER_PREVIEW_POSE_RACE_FINISH_WIN, "race.finish_win", 500u},
-        {MDKR_CHARACTER_PREVIEW_POSE_RACE_FINISH_LOSE, "race.finish_lose", 500u},
+        {MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER,
+         "race.steer", "Steer left", 0u},
+        {MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER,
+         "race.steer", "Steer right", 1000u},
+        {MDKR_CHARACTER_PREVIEW_POSE_RACE_REVERSE,
+         "race.reverse", "Reverse", 500u},
+        {MDKR_CHARACTER_PREVIEW_POSE_RACE_BOOST,
+         "race.boost", "Boost", 500u},
+        {MDKR_CHARACTER_PREVIEW_POSE_RACE_ITEM,
+         "race.item", "Use item", 500u},
+        {MDKR_CHARACTER_PREVIEW_POSE_RACE_DAMAGE,
+         "race.damage", "Take damage", 500u},
+        {MDKR_CHARACTER_PREVIEW_POSE_RACE_SPIN,
+         "race.spin", "Spin", 500u},
+        {MDKR_CHARACTER_PREVIEW_POSE_RACE_AIRBORNE,
+         "race.airborne", "Airborne", 500u},
+        {MDKR_CHARACTER_PREVIEW_POSE_RACE_LAND,
+         "race.land", "Land", 500u},
+        {MDKR_CHARACTER_PREVIEW_POSE_RACE_FINISH_WIN,
+         "race.finish_win", "Win finish", 500u},
+        {MDKR_CHARACTER_PREVIEW_POSE_RACE_FINISH_LOSE,
+         "race.finish_lose", "Lose finish", 500u},
 };
 
 static const WorkshopMotionReviewDefinition sWorkshopSelectMotionReviewDefinitions
     [MDKR_CHARACTER_MOTION_REVIEW_SELECT_SAMPLE_COUNT] = {
-        {MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE, "select.idle", 500u},
-        {MDKR_CHARACTER_PREVIEW_POSE_SELECT_HOVER, "select.hover", 500u},
-        {MDKR_CHARACTER_PREVIEW_POSE_SELECT_CONFIRM, "select.confirm", 500u},
+        {MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE,
+         "select.idle", "Idle", 500u},
+        {MDKR_CHARACTER_PREVIEW_POSE_SELECT_HOVER,
+         "select.hover", "Hover", 500u},
+        {MDKR_CHARACTER_PREVIEW_POSE_SELECT_CONFIRM,
+         "select.confirm", "Confirm", 500u},
 };
 
 _Static_assert(
@@ -273,6 +289,105 @@ static const WorkshopMotionReviewDefinition *workshop_motion_review_definition(
     return context == MDKR_CHARACTER_PREVIEW_SELECT
         ? &sWorkshopSelectMotionReviewDefinitions[sample]
         : &sWorkshopVehicleMotionReviewDefinitions[sample];
+}
+
+static const char *workshop_motion_review_context_label(
+    MdkrCharacterPreviewContext context) {
+    switch (context) {
+        case MDKR_CHARACTER_PREVIEW_SELECT: return "SELECT";
+        case MDKR_CHARACTER_PREVIEW_CAR: return "CAR";
+        case MDKR_CHARACTER_PREVIEW_HOVERCRAFT: return "HOVERCRAFT";
+        case MDKR_CHARACTER_PREVIEW_PLANE: return "PLANE";
+        default: return "CHARACTER";
+    }
+}
+
+static const char *workshop_motion_review_scene_label(
+    MdkrCharacterPreviewScene scene) {
+    switch (scene) {
+        case MDKR_CHARACTER_PREVIEW_SCENE_BASELINE: return "OPEN";
+        case MDKR_CHARACTER_PREVIEW_SCENE_DENSE: return "DENSE";
+        case MDKR_CHARACTER_PREVIEW_SCENE_ALTERNATE: return "ALTERNATE";
+        case MDKR_CHARACTER_PREVIEW_SCENE_LOW_VISIBILITY: return "DARK";
+        case MDKR_CHARACTER_PREVIEW_SCENE_EFFECTS: return "EFFECTS";
+        default: return "UNKNOWN";
+    }
+}
+
+static void workshop_motion_review_render_status(void) {
+    MdkrCharacterMotionReviewResult *review =
+        g_mdkrCharacterMotionReviewResult;
+    const WorkshopMotionReviewDefinition *definition;
+    MdkrModernCharacterRuntimeMetrics metrics;
+    u64 stableDraws = 0u;
+    u32 heldDraws;
+    u32 filled;
+    u32 index;
+    u32 courseCount;
+    char progress[11];
+    const char *stage;
+    if (review == NULL || review->completed || review->failed_sample != 0u ||
+        review->context < MDKR_CHARACTER_PREVIEW_SELECT ||
+        review->context > MDKR_CHARACTER_PREVIEW_PLANE ||
+        review->scene < MDKR_CHARACTER_PREVIEW_SCENE_BASELINE ||
+        review->scene >= MDKR_CHARACTER_PREVIEW_SCENE_COUNT) return;
+    definition = workshop_motion_review_definition(
+        review->context, sWorkshopMotionReviewSample);
+    if (definition == NULL) return;
+
+    mdkr_modern_character_runtime_metrics(&metrics);
+    if (sWorkshopMotionReviewPoseSettled &&
+        metrics.replacement_draws >= sWorkshopMotionReviewReplacementBaseline) {
+        stableDraws = metrics.replacement_draws -
+            sWorkshopMotionReviewReplacementBaseline;
+    }
+    heldDraws = stableDraws < WORKSHOP_MOTION_REVIEW_SETTLE_DRAWS
+        ? (u32)stableDraws : WORKSHOP_MOTION_REVIEW_SETTLE_DRAWS;
+    filled = heldDraws * 10u / WORKSHOP_MOTION_REVIEW_SETTLE_DRAWS;
+    for (index = 0u; index < 10u; ++index) {
+        progress[index] = index < filled ? '#' : '-';
+    }
+    progress[10] = '\0';
+    courseCount = review->context == MDKR_CHARACTER_PREVIEW_SELECT
+        ? 1u : MDKR_CHARACTER_PREVIEW_SCENE_COUNT;
+    stage = !sWorkshopPreviewMeasurementStarted
+        ? "PREPARING"
+        : !sWorkshopMotionReviewPoseSettled
+            ? "SETTLING"
+            : sWorkshopMotionReviewDiagnosticsRequested
+                ? "MEASURING"
+                : "INSPECT";
+
+    set_render_printf_position(8, 8);
+    set_render_printf_background_colour(0, 0, 0, 184);
+    set_render_printf_colour(255, 214, 76, 255);
+    render_printf(
+        "REVIEW %s - %s %u/%u\n",
+        workshop_motion_review_context_label(review->context),
+        review->context == MDKR_CHARACTER_PREVIEW_SELECT
+            ? "ROOM" : workshop_motion_review_scene_label(review->scene),
+        (u32)review->scene + 1u, courseCount);
+    set_render_printf_colour(255, 255, 255, 255);
+    render_printf(
+        "%u/%u %s - %s [%s] %u/%u\n",
+        sWorkshopMotionReviewSample + 1u, review->sample_count,
+        definition->label, stage, progress, heldDraws,
+        WORKSHOP_MOTION_REVIEW_SETTLE_DRAWS);
+    set_render_printf_colour(190, 220, 255, 255);
+    /* The trailing newline commits this line's background rectangle before the
+     * colour reset below. Without it, debug_text_print() reaches the reset
+     * command before flushing the final line and the help text loses contrast. */
+    render_printf("Esc/F1 or pad Back: pause / stop safely\n");
+    set_render_printf_background_colour(0, 0, 0, 0);
+    set_render_printf_colour(255, 255, 255, 255);
+    if (!sWorkshopMotionReviewUiReported) {
+        sWorkshopMotionReviewUiReported = TRUE;
+        MDKR_TRACE(
+            "character_motion_review_ui: visible=1 context=%u scene=%u "
+            "course=%u/%u samples=%u stop=overlay",
+            (u32)review->context, (u32)review->scene,
+            (u32)review->scene + 1u, courseCount, review->sample_count);
+    }
 }
 
 static s32 workshop_preview_quantize_micrometres(
@@ -1579,6 +1694,7 @@ void thread3_main(UNUSED void *unused) {
     sWorkshopMotionReviewReplacementBaseline = 0u;
     sWorkshopMotionReviewPoseSettled = FALSE;
     sWorkshopMotionReviewDiagnosticsRequested = FALSE;
+    sWorkshopMotionReviewUiReported = FALSE;
     bzero(&sWorkshopMotionReviewPoseBaseline,
           sizeof(sWorkshopMotionReviewPoseBaseline));
     mdkr_workshop_preview_visual_clear();
@@ -1843,6 +1959,9 @@ void main_game_loop(void) {
     // menus & gameplay.
 
     sound_update_queue(logicUpdateRate);
+#ifdef NATIVE_PORT
+    workshop_motion_review_render_status();
+#endif
     debug_text_print(&gCurrDisplayList);
 #ifdef NATIVE_PORT
     /* Confine the widescreen HUD's expanded draw space to the HUD: the dialogue

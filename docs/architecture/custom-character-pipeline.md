@@ -1222,6 +1222,10 @@ The launcher preserves each course separately, skips already-current evidence
 when resuming, aggregates the most concerning state across all 55 vehicle rows,
 and never stores these samples as clean performance evidence. Long clean race
 detail is collapsible; any warning opens the state table by default.
+The running game renders a bounded three-line status card with current course,
+semantic, settling/hold/diagnostic stage, and held-draw progress. Its stop hint
+opens the ordinary paused overlay with review-specific wording; stopping is a
+neutral, resumable outcome and never records the incomplete course as evidence.
 
 The launcher collects only version-21 captures armed after at least 12 eligible
 frames in bounded session metadata and can export a self-contained HTML

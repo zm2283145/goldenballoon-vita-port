@@ -51,6 +51,14 @@ def main() -> int:
             "launcher state no longer carries studio intent into the boot")
     require("Overlay_installCharacterStudio" in main_app,
             "engine handoff no longer installs the focused studio overlay")
+    require("Overlay_installCharacterReview" in main_app and
+            "OverlayMode::CharacterReview" in overlay and
+            "Stop Review & Return" in overlay and
+            "completed courses remain current and resumable" in overlay and
+            'ui::TextSubtleWrapped("%s", description)' in overlay and
+            "Character review stopped safely" in settings and
+            "cancelled=1" in settings,
+            "a long exact review no longer has a discoverable, non-destructive stop path")
     require("cfg->character_preview_studio || cfg->character_motion_review" in boot and
             "MDKR_CHARACTER_PREVIEW_POSE_LIVE" in boot,
             "boot no longer rejects studio/review modes without a preview or capture/inspection modes masquerading as a live studio")
@@ -125,22 +133,29 @@ def main() -> int:
             "character_motion_review_result" in launcher and
             "g_mdkrCharacterMotionReviewResult" in game,
             "representative motion intent or value-owned evidence was dropped at a layer boundary")
-    require("race.steer\", 0u" in game and
-            "race.steer\", 1000u" in game and
-            "race.airborne\", 500u" in game and
-            "race.land\", 500u" in game and
-            "race.finish_win\", 500u" in game and
-            "race.reverse\", 500u" in game and
-            "race.boost\", 500u" in game and
-            "race.damage\", 500u" in game and
-            "race.item\", 500u" in game and
-            "race.spin\", 500u" in game and
-            "race.finish_lose\", 500u" in game and
-            "select.idle\", 500u" in game and
-            "select.hover\", 500u" in game and
-            "select.confirm\", 500u" in game and
+    require("race.steer\", \"Steer left\", 0u" in game and
+            "race.steer\", \"Steer right\", 1000u" in game and
+            "race.airborne\", \"Airborne\", 500u" in game and
+            "race.land\", \"Land\", 500u" in game and
+            "race.finish_win\", \"Win finish\", 500u" in game and
+            "race.reverse\", \"Reverse\", 500u" in game and
+            "race.boost\", \"Boost\", 500u" in game and
+            "race.damage\", \"Take damage\", 500u" in game and
+            "race.item\", \"Use item\", 500u" in game and
+            "race.spin\", \"Spin\", 500u" in game and
+            "race.finish_lose\", \"Lose finish\", 500u" in game and
+            "select.idle\", \"Idle\", 500u" in game and
+            "select.hover\", \"Hover\", 500u" in game and
+            "select.confirm\", \"Confirm\", 500u" in game and
             "WORKSHOP_MOTION_REVIEW_SETTLE_DRAWS 60u" in game,
             "semantic review no longer settles every select and race state")
+    require("workshop_motion_review_render_status" in game and
+            "REVIEW %s - %s %u/%u" in game and
+            '"INSPECT"' in game and
+            '"MEASURING"' in game and
+            "Esc/F1 or pad Back: pause / stop safely" in game and
+            "character_motion_review_ui: visible=1" in game,
+            "exact review progress is no longer visible while the launcher is hidden")
     require("mdkr_modern_character_inspection_pose_settled(0)" in game and
             "mdkr_modern_character_inspection_pose_settled" in runtime_h and
             "slot->inspection_generation == s_inspection_generation" in runtime,
