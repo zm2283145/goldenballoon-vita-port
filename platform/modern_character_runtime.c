@@ -209,6 +209,19 @@ void mdkr_modern_character_clear_inspection_pose(void) {
     if (s_inspection_generation == 0u) s_inspection_generation++;
 }
 
+int mdkr_modern_character_inspection_pose_settled(int player) {
+    const MdkrModernRuntimePlayer *slot;
+    if (player < 0 || player >= MDKR_MODERN_CHARACTER_PLAYERS ||
+        s_inspection_semantic[0] == '\0' ||
+        s_inspection_to_semantic[0] != '\0') return 0;
+    slot = &s_players[player];
+    return slot->pool >= 0 &&
+           slot->inspection_generation == s_inspection_generation &&
+           strcmp(slot->semantic, s_inspection_semantic) == 0 &&
+           slot->pose.generation != 0u &&
+           slot->pose.blend_elapsed >= slot->pose.blend_duration;
+}
+
 static void matrix_identity(float output[16]) {
     memset(output, 0, sizeof(float) * 16u);
     output[0] = output[5] = output[10] = output[15] = 1.0f;
@@ -1555,6 +1568,14 @@ int mdkr_modern_character_tick_phase(int player, const char *semantic,
     if (transition && inspection_reset) {
         s_inspection_from_blend_milliseconds =
             inspection_blend_milliseconds(&slot->pose);
+    }
+    /* A held inspection pose is a target-state measurement, not a transition
+     * preview. Snap its first evaluated tick to the requested sample so a valid
+     * package with a long authored blend (and especially a slow animation-speed
+     * override) cannot spend minutes producing intermediate evidence. The
+     * explicit two-pose transition route above retains ordinary blending. */
+    if (inspection && !transition && inspection_reset) {
+        slot->pose.blend_elapsed = slot->pose.blend_duration;
     }
     if (inspection) s_inspection_pose_ticks++;
     seconds *= slot->tuning.animation_speed;

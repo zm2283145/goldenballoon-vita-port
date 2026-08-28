@@ -266,6 +266,39 @@ typedef struct MdkrCharacterPreviewResult {
 // underlying bounded counters.
 extern MdkrCharacterPreviewResult *g_mdkrCharacterPreviewResult;
 
+/* A representative-motion review is deliberately a separate contract from
+ * the clean live performance sample above. One exact vehicle session holds
+ * five authored gameplay semantics long enough to collect a fresh fit,
+ * gameplay-camera, retained-body, contact, and opaque-depth witness for each.
+ * Keeping the samples separate prevents a favourable frame from hiding a
+ * different pose's clipping or occlusion, without invalidating durable v18
+ * timing evidence. */
+typedef enum MdkrCharacterMotionReviewSample {
+    MDKR_CHARACTER_MOTION_REVIEW_START = 0,
+    MDKR_CHARACTER_MOTION_REVIEW_STEER,
+    MDKR_CHARACTER_MOTION_REVIEW_AIRBORNE,
+    MDKR_CHARACTER_MOTION_REVIEW_LAND,
+    MDKR_CHARACTER_MOTION_REVIEW_FINISH,
+    MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT,
+} MdkrCharacterMotionReviewSample;
+
+typedef struct MdkrCharacterMotionReviewResult {
+    unsigned version;
+    int started;
+    int completed;
+    MdkrCharacterPreviewContext context;
+    unsigned completed_mask;
+    unsigned failed_sample;
+    MdkrCharacterPreviewResult
+        samples[MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT];
+} MdkrCharacterMotionReviewResult;
+
+#define MDKR_CHARACTER_MOTION_REVIEW_RESULT_VERSION 1u
+#define MDKR_CHARACTER_MOTION_REVIEW_ALL_SAMPLES \
+    ((1u << MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT) - 1u)
+
+extern MdkrCharacterMotionReviewResult *g_mdkrCharacterMotionReviewResult;
+
 typedef struct {
     const char *rom_path;      // NULL/empty => engine default (baserom.us.v80.z64)
     int   video_mode;          // MdkrVideoMode, or -1 for "don't pass a preset"
@@ -294,6 +327,10 @@ typedef struct {
      * over the real preview scene and never admits gameplay input. */
     int character_preview_studio;
     MdkrCharacterPreviewResult *character_preview_result;
+    /* Vehicle-only, one-player, held-pose review. Its result is session
+     * evidence and is never admitted to the performance matrix. */
+    int character_motion_review;
+    MdkrCharacterMotionReviewResult *character_motion_review_result;
     // Staged RESTART-scope settings, as "Video.Key=Value" strings. The settings
     // panel writes these when the player changes a restart-scope key before
     // pressing Play, so the choice takes effect on THIS boot rather than

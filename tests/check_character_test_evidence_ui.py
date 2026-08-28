@@ -508,8 +508,9 @@ def main() -> int:
                 (
                     "character-contact-review-focus package=" + PACKAGE_ID
                     + " context=1 applied=1",
-                    "character-fit-evidence durable=1 package=" + PACKAGE_ID
-                    + " context=2 players=4",
+                    "character-motion-review accepted=1 package=" + PACKAGE_ID
+                    + " context=2 samples=5",
+                    "character-motion-review accepted=0 package=" + PACKAGE_ID,
                     "character-contact-review package=" + PACKAGE_ID
                     + " context=1 measured=1 guide-met=0 "
                     "exception-required=1 exception-approved=0 "
@@ -535,6 +536,9 @@ def main() -> int:
                 root,
                 characters,
                 (
+                    "character-motion-review accepted=1 package=" + PACKAGE_ID
+                    + " context=2 samples=5",
+                    "character-motion-review accepted=0 package=" + PACKAGE_ID,
                     "character-contact-review package=" + PACKAGE_ID
                     + " context=1 measured=1 guide-met=1 "
                     "exception-required=0 exception-approved=0 "

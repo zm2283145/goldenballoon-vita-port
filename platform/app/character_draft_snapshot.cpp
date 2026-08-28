@@ -10,13 +10,14 @@
 namespace {
 
 constexpr uint32_t kFitSceneReviewVersion = 13u;
+constexpr uint32_t kFitMotionReviewVersion = 14u;
 constexpr uint32_t kTransitionInspectionVersion = 12u;
 constexpr uint32_t kContactExceptionsVersion = 11u;
 constexpr uint32_t kRigReviewTasksVersion = 10u;
 constexpr uint32_t kAnimationIntentVersion = 9u;
 constexpr uint32_t kTopInspectionVersion = 8u;
 constexpr uint32_t kPortraitSubjectMaskVersion = 7u;
-constexpr uint32_t kVersion = kFitSceneReviewVersion;
+constexpr uint32_t kVersion = kFitMotionReviewVersion;
 constexpr uint32_t kPortraitSourceVersion = 6u;
 constexpr uint32_t kVisualInspectionVersion = 5u;
 constexpr uint32_t kPoseInspectionVersion = 4u;
@@ -458,6 +459,7 @@ bool decode(const std::string &payload, Snapshot &snapshot,
         payload.compare(0u, 4u, "MDWD") != 0 ||
         !readU32(payload, offset, version) ||
         (version != kVersion &&
+         version != kFitSceneReviewVersion &&
          version != kTransitionInspectionVersion &&
          version != kContactExceptionsVersion &&
          version != kRigReviewTasksVersion &&
@@ -699,6 +701,12 @@ bool decode(const std::string &payload, Snapshot &snapshot,
          * upgraded silently into the stronger exact-scene contract. */
         parsed.reviewedContexts = 0u;
         parsed.contactExceptionContexts = 0u;
+    }
+    if (version >= kFitMotionReviewVersion) {
+        parsed.fitMotionReviewContractPresent = true;
+    } else if (parsed.fitSceneReviewContractPresent) {
+        parsed.reviewedContexts &= 1u;
+        parsed.contactExceptionContexts &= parsed.reviewedContexts;
     }
     if (offset != payload.size() ||
         !snapshotValid(parsed, error, version == kLegacyVersion)) return false;

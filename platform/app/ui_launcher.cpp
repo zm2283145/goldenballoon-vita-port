@@ -132,8 +132,15 @@ void fillBootConfig(LauncherState &state, MdkrBootConfig &boot) {
             state.characterPreviewAutoReturn ? 1 : 0;
         boot.character_preview_studio =
             state.characterPreviewInteractiveStudio ? 1 : 0;
+        boot.character_motion_review =
+            state.characterPreviewRepresentativeMotionReview ? 1 : 0;
         state.characterPreviewResult = MdkrCharacterPreviewResult{};
         boot.character_preview_result = &state.characterPreviewResult;
+        state.characterMotionReviewResult =
+            MdkrCharacterMotionReviewResult{};
+        boot.character_motion_review_result =
+            state.characterPreviewRepresentativeMotionReview
+                ? &state.characterMotionReviewResult : nullptr;
     }
 }
 
@@ -971,6 +978,8 @@ void acceptCharacterPreviewRequest(
     state.characterPreviewPortraitSourceHandoff =
         preview.portraitSourceHandoff;
     state.characterPreviewInteractiveStudio = preview.interactiveStudio;
+    state.characterPreviewRepresentativeMotionReview =
+        preview.representativeMotionReview;
     Launcher_requestTab(state, kLauncherPanelPlay, kLauncherTabPlayer);
 }
 
@@ -1085,6 +1094,8 @@ LauncherAction Launcher::draw(AppHost &host) {
             state_.characterPreviewPortraitSourceHandoff;
         disposition.interactiveStudio =
             state_.characterPreviewInteractiveStudio;
+        disposition.representativeMotionReview =
+            state_.characterPreviewRepresentativeMotionReview;
         Settings_publishCharacterPreviewResult(
             state_.characterPreviewPackage,
             state_.characterPreviewSourceSha256,
@@ -1096,7 +1107,9 @@ LauncherAction Launcher::draw(AppHost &host) {
             state_.characterPreviewPresentationSha256,
             state_.characterPreviewCapturePng,
             disposition,
-            state_.characterPreviewResult);
+            state_.characterPreviewResult,
+            state_.characterPreviewRepresentativeMotionReview
+                ? &state_.characterMotionReviewResult : nullptr);
         Launcher_requestTab(
             state_, kLauncherPanelCharacterWorkshop, kLauncherTabPlayer);
         state_.characterPreviewPackage.clear();
@@ -1121,6 +1134,7 @@ LauncherAction Launcher::draw(AppHost &host) {
         state_.characterPreviewCaptureLauncherOwned = false;
         state_.characterPreviewPortraitSourceHandoff = false;
         state_.characterPreviewInteractiveStudio = false;
+        state_.characterPreviewRepresentativeMotionReview = false;
         state_.characterPreviewDispatched = false;
     }
     state_.hostWindow = host.window();

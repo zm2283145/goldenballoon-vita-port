@@ -162,6 +162,11 @@ int mdkr_modern_character_tick_phase(int player, const char *semantic,
 int mdkr_modern_character_set_inspection_pose(
     const char *semantic, float normalized_phase,
     char *error, size_t error_size);
+/* True only after this player has consumed the current held-pose generation,
+ * evaluated its exact target sample, and completed any residual pose blend.
+ * Exact Workshop evidence uses this as an engine-owned settling witness before
+ * it starts counting stable replacement draws. */
+int mdkr_modern_character_inspection_pose_settled(int player);
 /* Repeatedly alternates between two exact held samples, using the ordinary
  * pose player's semantic-change blend each way. The one-second dwell is an
  * inspection cadence, not an authored animation duration. */

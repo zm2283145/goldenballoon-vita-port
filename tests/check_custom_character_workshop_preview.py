@@ -1423,6 +1423,91 @@ def main() -> int:
             if marker not in arm_output:
                 failures.append(f"{label} did not report its exact refusal")
 
+    if not failures:
+        motion_env = {
+            key: value for key, value in os.environ.items()
+            if not key.startswith(("MDKR", "GE007_"))
+        }
+        motion_env.update(
+            LC_ALL="C", MDKR_AUDIO="0", MDKR_TRACE="1",
+            MDKR_PRESENT_PERF="1", MDKR_RENDERER="webgpu",
+            MDKR_RENDER_SCALE="1", MDKR_VIDEO_CONFIG_PATH=os.devnull,
+            MDKR_CUSTOM_CHARACTER_DIRECTORY=str(characters),
+            MDKR_CHARACTER_WORKSHOP_PREVIEW="car",
+            MDKR_CHARACTER_WORKSHOP_PREVIEW_PLAYERS="1",
+            MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE="race.steer",
+            MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE_PHASE="0",
+            MDKR_CHARACTER_WORKSHOP_MOTION_REVIEW="1",
+            MDKR_CUSTOM_CHARACTER_P1=CONTACT_PACKAGE_ID,
+            MDKR64_HIDDEN="1",
+        )
+        process = run([
+            str(binary), "--headless-frames", "720", "--rom",
+            str(rom), "--window-size", "1280x960", "--restored",
+        ], env=motion_env)
+        motion_output = process.stdout or ""
+        output += "\n===== car-representative-motion =====\n" + motion_output
+        samples = re.findall(
+            r"character_motion_review: sample=(\d+) pose=(\d+) phase=(\d+) "
+            r"draws=(\d+) source=([1-3]) fallback=(\d+) "
+            r"cameraFlags=([0-9a-f]+) crossings=(\d+) inside=(\d+) "
+            r"visibility=(\d+)/(\d+) contactSolves=(\d+) "
+            r"contactMask=([0-9a-f]+) contactMaxUm=(\d+)",
+            motion_output,
+        )
+        expected_motion = [
+            (0, 4, 0), (1, 4, 1000), (2, 10, 500),
+            (3, 11, 500), (4, 12, 500),
+        ]
+        observed_motion = [tuple(map(int, row[:3])) for row in samples]
+        if process.returncode != 0:
+            failures.append(
+                f"representative motion exited with {process.returncode}"
+            )
+        if observed_motion != expected_motion:
+            failures.append(
+                "representative motion did not publish the exact fixed "
+                f"five-state sequence: {observed_motion!r}"
+            )
+        for row in samples:
+            (_, _, _, draws, _, fallback, camera_flags, crossings,
+             inside, scene_tiles, isolated_tiles, contact_solves, contact_mask,
+             contact_max) = (
+                int(value, 16) if index in (6, 12) else int(value)
+                for index, value in enumerate(row)
+            )
+            if (draws < 60 or fallback > draws or camera_flags & ~0x7F or
+                    crossings < 0 or inside < 0 or scene_tiles < 0 or
+                    scene_tiles > isolated_tiles or contact_solves == 0 or
+                    contact_mask != 0xF or contact_max < 0):
+                failures.append(
+                    "representative motion returned an inconsistent sample: "
+                    f"{row!r}"
+                )
+                break
+        if ("character_motion_review: complete samples=5 mask=1f" not in
+                motion_output or "[SDL] headless: reached" in motion_output):
+            failures.append(
+                "representative motion did not return automatically after "
+                "five fresh renderer witnesses"
+            )
+        invalid_motion_env = dict(motion_env)
+        invalid_motion_env["MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE_PHASE"] = "500"
+        process = run([
+            str(binary), "--headless-frames", "60", "--rom", str(rom),
+            "--window-size", "1280x960", "--restored",
+        ], env=invalid_motion_env)
+        invalid_motion_output = process.stdout or ""
+        output += ("\n===== invalid-representative-motion =====\n" +
+                   invalid_motion_output)
+        if (process.returncode == 0 or
+                "representative motion review requires" not in
+                invalid_motion_output):
+            failures.append(
+                "malformed representative motion did not fail closed at the "
+                "engine boundary"
+            )
+
     visual_rejection_arms = [
         ("unpaired-view", "car", "race.steer", "500", "90", None,
          None, None, None, 60,
@@ -1549,7 +1634,8 @@ def main() -> int:
         "measurements, exclusive stabilized "
         "RGB gameplay and transparent RGBA model-only PNG capture, "
         "exact four-contact post-solve witnesses and qualified retained-vehicle "
-        "surface intersection samples, exact isolated-versus-scene "
+        "surface intersection samples, a bounded one-session start/steer/"
+        "airborne/land/finish representative-motion battery, exact isolated-versus-scene "
         "opaque-depth region evidence with recoverable, bounded optional-GPU "
         "allocation failure, one-to-four-player WebGPU "
         "stress, exact nonblocking scene/character GPU timestamp contracts "

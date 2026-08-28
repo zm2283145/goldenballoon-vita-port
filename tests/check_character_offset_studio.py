@@ -31,6 +31,10 @@ def main() -> int:
     main_app = source("platform/app/main_app.cpp")
     boot = source("platform/app/engine_boot.cpp")
     bridge = source("platform/modern_character_studio_bridge.h")
+    runtime_h = source("platform/modern_character_runtime.h")
+    runtime = source("platform/modern_character_runtime.c")
+    entry = source("platform/app/engine_entry.h")
+    game = source("game/src/thread3_main.c")
 
     require("interactiveStudio" in settings and
             "g_characterPreviewRequest.interactiveStudio" in settings,
@@ -40,9 +44,9 @@ def main() -> int:
             "launcher state no longer carries studio intent into the boot")
     require("Overlay_installCharacterStudio" in main_app,
             "engine handoff no longer installs the focused studio overlay")
-    require("cfg->character_preview_studio &&" in boot and
+    require("cfg->character_preview_studio || cfg->character_motion_review" in boot and
             "MDKR_CHARACTER_PREVIEW_POSE_LIVE" in boot,
-            "boot no longer rejects capture/inspection modes masquerading as a live studio")
+            "boot no longer rejects studio/review modes without a preview or capture/inspection modes masquerading as a live studio")
 
     require("if (g_overlay.mode == OverlayMode::CharacterStudio) return 0;" in overlay,
             "the studio must not pause the scene it claims to preview live")
@@ -90,8 +94,36 @@ def main() -> int:
     require("PR/gbi.h" not in bridge,
             "the app-safe studio bridge regressed into renderer/display-list coupling")
 
+    require("Review representative motion" in settings and
+            "representativeMotionReviewRoute" in settings and
+            "MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT" in entry,
+            "vehicle fitting lost its one-action five-state review workflow")
+    require("character_motion_review" in launcher and
+            "character_motion_review_result" in launcher and
+            "g_mdkrCharacterMotionReviewResult" in game,
+            "representative motion intent or value-owned evidence was dropped at a layer boundary")
+    require("race.steer\", 0u" in game and
+            "race.steer\", 1000u" in game and
+            "race.airborne\", 500u" in game and
+            "race.land\", 500u" in game and
+            "race.finish_win\", 500u" in game and
+            "WORKSHOP_MOTION_REVIEW_SETTLE_DRAWS 60u" in game,
+            "representative review no longer settles the fixed start/steer/airborne/land/finish battery")
+    require("mdkr_modern_character_inspection_pose_settled(0)" in game and
+            "mdkr_modern_character_inspection_pose_settled" in runtime_h and
+            "slot->inspection_generation == s_inspection_generation" in runtime,
+            "representative review lacks an engine-owned exact-pose settling witness")
+    require("representativeMotionReady" in settings and
+            "mdkr-character-fit-review-v3-motion-battery" in settings and
+            "all five exact motion states" in settings and
+            "currentCharacterMotionReview" in settings and
+            "value.fitSha256 == fit" in settings and
+            "value.presentationSha256 == presentation" in settings,
+            "vehicle approval can bypass current representative renderer evidence")
+
     print("character Offset Studio contract passed: exact live scene, input isolation, "
-          "post-edit fit handoff, truthful evidence, and bounded recovery")
+          "post-edit fit handoff, one-action representative motion evidence, "
+          "truthful approval, and bounded recovery")
     return 0
 
 

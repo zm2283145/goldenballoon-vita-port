@@ -118,8 +118,10 @@ struct LauncherState {
     bool characterPreviewCaptureLauncherOwned = false;
     bool characterPreviewPortraitSourceHandoff = false;
     bool characterPreviewInteractiveStudio = false;
+    bool characterPreviewRepresentativeMotionReview = false;
     bool characterPreviewDispatched = false;
     MdkrCharacterPreviewResult characterPreviewResult{};
+    MdkrCharacterMotionReviewResult characterMotionReviewResult{};
     // No discovery state: the launcher never searches the disk. The ROM arrives
     // by drag-and-drop, a native open-panel, a typed path, or the remembered
     // choice in the app's own prefs. See ui_rom.cpp's header for why.

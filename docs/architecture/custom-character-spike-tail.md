@@ -178,15 +178,22 @@ explicitly restricted to the generated fixture and exists only for CI.
 - **Implemented:** fit each context independently. The guided sequence never
   treats a car/hovercraft/plane correction or review as evidence for another;
   an explicit vehicle-only copy action remains available for intentional reuse.
-- **Partially implemented:** visible advisory bands now classify floor/seat
+- **Implemented for the fixed representative review contract:** visible advisory bands classify floor/seat
   datum error, facing, and unusual volume proportions as Ready, Review, or
   Action needed. Result v15 also retains the last complete accepted scene MVP,
   viewport, and scissor and projects the calibrated volume plus exact
   current-pose hips/chest/head node origins into bounded fixed-point camera
   evidence. Offset Studio reports camera occupancy, clipping, head placement,
-  torso placement, and seat-to-hips displacement across restart. This proves
-  framing, not depth visibility: vehicle occlusion and shell penetration remain
-  explicitly visual-only until a qualified shell/depth ownership seam exists.
+  torso placement, and seat-to-hips displacement across restart. For every
+  vehicle, one action now runs start, full steer, airborne, land, and finish in
+  one exact session; each held generation snaps to its target sample, publishes
+  only after the runtime reports it settled plus sixty replacement draws (a
+  deliberate human-visible inspection dwell), and
+  returns automatically with aggregated framing, retained-body surface,
+  topology-qualified containment, opaque-depth visibility, and contact evidence.
+  Approval requires that current source/fit/LOD/presentation-bound battery and
+  reopens legacy vehicle approvals once. This still does not identify a specific
+  occluding attachment or prove unsampled motion/course conditions.
 
 Acceptance: the example faces the camera in select, its feet are floor-aligned,
 and its head/torso land inside each ordinary vehicle camera without manual JSON.
@@ -278,8 +285,11 @@ in the package review and durable evidence.
   survives named-draft v13 resume, and rolls back if persistence fails.
   Named attached-part attribution and frame-to-frame oscillation still require
   renderer-derived witnesses before they can be qualified honestly.
-- Test car, hovercraft, and plane across representative start, steer, airborne,
-  and finish states rather than one parked frame.
+- **Implemented:** test car, hovercraft, and plane across start, full steer,
+  airborne, land, and finish rather than one favourable parked frame. The UI
+  names only an actual framing/body problem, truthfully distinguishes an
+  unqualified volume or blended-material visual check, and reports the minimum
+  qualified visibility and maximum contact residual across all five rows.
 
 Acceptance: each example context is visually seated, ordinary cameras show the
 intended body region, and residuals/approved exceptions are source- and
@@ -409,16 +419,19 @@ by M6. M8 begins with M0 and remains a release gate throughout.
 The forward-axis thumbnail studio, structural/symmetry rig proposal, derived
 rest/bend bases, 72%-occupancy isolated capture, portrait handoff, exact
 retained-body surface intersection, topology-qualified bounded containment,
-final opaque-depth visibility witness, and fresh five-context/performance
-fixture qualification are complete. Fit approval now requires a current warmed
-exact contract plus explicit composed-scene inspection; a completed zero-fragment
-opaque/masked replay blocks approval, while unusual anatomy, intentional
-occlusion, transparent materials, and contact exceptions retain an explicit
-author-acknowledgement path. The immediate remaining order is therefore:
+final opaque-depth visibility witness, one-session five-state vehicle motion
+battery, and fresh five-context/performance fixture qualification are complete.
+Fit approval now requires a current warmed exact contract, current aggregated
+vehicle motion evidence, and explicit composed-scene inspection; a completed
+zero-fragment opaque/masked replay blocks approval, while unusual anatomy,
+intentional occlusion, transparent materials, and contact exceptions retain an
+explicit author-acknowledgement path. Detailed battery rows are session-only;
+the durable approval remains source/fit/LOD/presentation and contract bound.
+The immediate remaining order is therefore:
 
-1. aggregate surface, containment, contact, framing, and visibility evidence
-   across start, steer, airborne, land, and finish samples per vehicle, and
-   attribute separately drawn donor attachments where stable identities exist;
+1. attribute separately drawn donor attachments where stable identities exist,
+   and add representative course/vehicle-condition variants beyond the fixed
+   Workshop scene;
 2. add a donor-reference silhouette/occlusion comparison and a real linked-ROM
    unusual-proportion fixture, then qualify richer reference clips, joint limits,
    and optional deterministic secondary hair/tail motion;

@@ -41,12 +41,14 @@ struct SettingsCharacterPreviewRequest {
     bool launcherOwnedCapture = false;
     bool portraitSourceHandoff = false;
     bool interactiveStudio = false;
+    bool representativeMotionReview = false;
 };
 
 struct SettingsCharacterPreviewDisposition {
     bool launcherOwnedCapture = false;
     bool portraitSourceHandoff = false;
     bool interactiveStudio = false;
+    bool representativeMotionReview = false;
 };
 
 struct SettingsCharacterStudioFrame {
@@ -115,7 +117,8 @@ void Settings_publishCharacterPreviewResult(
     const std::string &presentationSha256,
     const std::string &capturePng,
     const SettingsCharacterPreviewDisposition &disposition,
-    const MdkrCharacterPreviewResult &result);
+    const MdkrCharacterPreviewResult &result,
+    const MdkrCharacterMotionReviewResult *motionReview = nullptr);
 
 // Discard any in-progress audible Audio slider preview. Used when navigation
 // removes the settings panel before ImGui can emit a normal deactivation.

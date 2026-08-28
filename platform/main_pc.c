@@ -55,6 +55,7 @@
 #include "app/engine_entry.h"
 
 MdkrCharacterPreviewResult *g_mdkrCharacterPreviewResult = NULL;
+MdkrCharacterMotionReviewResult *g_mdkrCharacterMotionReviewResult = NULL;
 
 /* Game audio owns this teardown; keep the platform TU out of PR/os_libc.h,
  * whose N64 libc declarations intentionally conflict with host fortified libc. */
