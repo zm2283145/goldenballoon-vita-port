@@ -129,7 +129,9 @@ bool splitFields(const std::string &line, size_t expected,
 namespace CharacterCandidateIndex {
 
 bool parse(const std::string &text, Candidate &output) {
-    static const std::string latestHeader =
+    static const std::string textureHeader =
+        "mdkr-character-candidate-v7\n";
+    static const std::string tangentHeader =
         "mdkr-character-candidate-v6\n";
     static const std::string authoredMotionHeader =
         "mdkr-character-candidate-v5\n";
@@ -139,21 +141,26 @@ bool parse(const std::string &text, Candidate &output) {
         "mdkr-character-candidate-v3\n";
     Candidate parsed;
     std::vector<std::string> fields;
-    uint64_t numbers[43] = {};
-    const bool latest =
-        text.compare(0u, latestHeader.size(), latestHeader) == 0;
+    uint64_t numbers[49] = {};
+    const bool textureDiagnostics =
+        text.compare(0u, textureHeader.size(), textureHeader) == 0;
+    const bool tangentDiagnostics = textureDiagnostics ||
+        text.compare(0u, tangentHeader.size(), tangentHeader) == 0;
     const bool authoredMotion =
         text.compare(0u, authoredMotionHeader.size(), authoredMotionHeader) == 0;
     const bool current =
         text.compare(0u, currentHeader.size(), currentHeader) == 0;
-    const std::string &header = latest ? latestHeader
+    const std::string &header = textureDiagnostics ? textureHeader
+        : tangentDiagnostics ? tangentHeader
         : authoredMotion ? authoredMotionHeader
         : current ? currentHeader : legacyHeader;
-    const bool hasAuthoredMotion = latest || authoredMotion;
+    const bool hasAuthoredMotion = tangentDiagnostics || authoredMotion;
     const bool hasSemanticIntent = hasAuthoredMotion || current;
-    const size_t numberCount = latest ? 43u
+    const size_t numberCount = textureDiagnostics ? 49u
+        : tangentDiagnostics ? 43u
         : authoredMotion ? 37u : current ? 34u : 32u;
-    const size_t provenanceField = latest ? 50u
+    const size_t provenanceField = textureDiagnostics ? 56u
+        : tangentDiagnostics ? 50u
         : authoredMotion ? 44u : current ? 41u : 39u;
     const size_t encodedIndex = hasAuthoredMotion ? 21u : 18u;
     const size_t decodedIndex = hasAuthoredMotion ? 22u : 19u;
@@ -161,13 +168,14 @@ bool parse(const std::string &text, Candidate &output) {
     const size_t lodTriangleIndex = hasAuthoredMotion ? 27u : 24u;
     const size_t lodPrimitiveIndex = hasAuthoredMotion ? 31u : 28u;
     const size_t semanticIndex = hasAuthoredMotion ? 35u : 32u;
-    if ((!latest && !authoredMotion && !current &&
+    if ((!tangentDiagnostics && !authoredMotion && !current &&
          text.compare(0u, legacyHeader.size(), legacyHeader) != 0) ||
         text.empty() || text.back() != '\n' ||
         text.find('\n', header.size()) != text.size() - 1u ||
         !splitFields(
             text.substr(header.size(), text.size() - header.size() - 1u),
-            latest ? 54u : authoredMotion ? 48u : current ? 45u : 43u,
+            textureDiagnostics ? 60u : tangentDiagnostics ? 54u
+                : authoredMotion ? 48u : current ? 45u : 43u,
             fields) ||
         !idValid(fields[0]) ||
         !decodeText(fields[1], 96u, parsed.displayName) ||
@@ -176,7 +184,8 @@ bool parse(const std::string &text, Candidate &output) {
         !decodeText(fields[4], 96u, parsed.sortLabel) ||
         !digestValid(fields[5]) || !digestValid(fields[6])) return false;
     for (size_t index = 0u; index < numberCount; ++index) {
-        const uint64_t maximum = index == encodedIndex || index == decodedIndex
+        const uint64_t maximum = index == encodedIndex ||
+            index == decodedIndex || (textureDiagnostics && index == 44u)
             ? UINT64_MAX : UINT_MAX;
         if (!parseUnsigned(fields[index + 7u], maximum, numbers[index])) {
             return false;
@@ -193,10 +202,22 @@ bool parse(const std::string &text, Candidate &output) {
           (numbers[15] == 0u && numbers[18] != 0u) ||
           ((numbers[19] == 0u) != (numbers[20] == 0u)) ||
           numbers[19] > numbers[20])) ||
-        (latest &&
+        (tangentDiagnostics &&
          (numbers[37] > 512u || numbers[38] > 512u ||
           numbers[39] > 1000000u || numbers[40] > 2000000u ||
           numbers[41] > 1000000u || numbers[42] > numbers[41])) ||
+        (textureDiagnostics &&
+         (numbers[43] > numbers[7] ||
+          numbers[44] > numbers[encodedIndex] ||
+          numbers[45] + numbers[46] != numbers[43] ||
+          ((numbers[43] == 0u) !=
+           (numbers[44] == 0u && numbers[45] == 0u &&
+            numbers[46] == 0u && numbers[47] == 0u &&
+            numbers[48] == 0u)) ||
+          (numbers[43] != 0u &&
+           (numbers[44] == 0u || numbers[47] == 0u ||
+            numbers[47] > numbers[48] ||
+            numbers[48] > 13u)))) ||
         numbers[decodedIndex] > 512u * 1024u * 1024u ||
         (numbers[15] == 0u && (numbers[16] != 0u || numbers[17] != 0u)) ||
         (numbers[15] == 1u && numbers[17] != 0u) ||
@@ -268,7 +289,7 @@ bool parse(const std::string &text, Candidate &output) {
         parsed.secondaryChains = static_cast<uint32_t>(numbers[19]);
         parsed.secondaryJoints = static_cast<uint32_t>(numbers[20]);
     }
-    if (latest) {
+    if (tangentDiagnostics) {
         parsed.authoredTangentPrimitives =
             static_cast<uint32_t>(numbers[37]);
         parsed.generatedTangentPrimitives =
@@ -282,6 +303,15 @@ bool parse(const std::string &text, Candidate &output) {
         parsed.normalMapTangentFallbackVertices =
             static_cast<uint32_t>(numbers[42]);
         parsed.tangentDiagnosticsPresent = true;
+    }
+    if (textureDiagnostics) {
+        parsed.ktx2Textures = static_cast<uint32_t>(numbers[43]);
+        parsed.ktx2SourceBytes = numbers[44];
+        parsed.ktx2Etc1sTextures = static_cast<uint32_t>(numbers[45]);
+        parsed.ktx2UastcTextures = static_cast<uint32_t>(numbers[46]);
+        parsed.ktx2MipLevelsMin = static_cast<uint32_t>(numbers[47]);
+        parsed.ktx2MipLevelsMax = static_cast<uint32_t>(numbers[48]);
+        parsed.textureFormatDiagnosticsPresent = true;
     }
     parsed.encodedTextureBytes = numbers[encodedIndex];
     parsed.decodedTextureBytes = numbers[decodedIndex];

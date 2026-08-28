@@ -615,6 +615,8 @@ static int portable_package_operation(
             result->secondary_joints = stats.secondary_joints;
             result->encoded_texture_bytes = stats.encoded_texture_bytes;
             result->decoded_texture_bytes = stats.decoded_texture_bytes;
+            result->ktx2_textures = stats.ktx2_textures;
+            result->ktx2_source_bytes = stats.ktx2_source_bytes;
             {
                 uint32_t primitive_index;
                 for (primitive_index = 0u;

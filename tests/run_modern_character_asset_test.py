@@ -24,7 +24,7 @@ import character_asset_compiler as compiler  # noqa: E402
 import character_asset_probe as probe  # noqa: E402
 import character_package_manager as manager  # noqa: E402
 from test_character_asset_probe import (  # noqa: E402
-    make_v5_character,
+    make_ktx2_glb, make_manifest, make_v5_character,
 )
 from character_validation_fixture import accepted_validation  # noqa: E402
 
@@ -48,6 +48,13 @@ def main() -> int:
             model_bytes, manifest_data, bytes(range(32)), portrait_bytes
         )
         cache.write_bytes(compiled)
+        ktx_directory = Path(directory) / "ktx-fixture"
+        ktx_directory.mkdir()
+        ktx_cache = ktx_directory / "generated-ktx2.mdkc"
+        ktx_compiled, _ = compiler.compile_character(
+            make_ktx2_glb(), make_manifest(), bytes(range(32))
+        )
+        ktx_cache.write_bytes(ktx_compiled)
         fixture_directory = Path(directory) / "fixtures"
         fixture_directory.mkdir()
         donors = (
@@ -182,7 +189,7 @@ def main() -> int:
              str(portable_package), str(install_directory),
              str(corrupt_portable), str(mismatched_portable),
              str(legacy_portable), str(legacy_v5_portable),
-             str(fixture_directory)],
+             str(fixture_directory), str(ktx_cache)],
             check=False, text=True
         )
         return completed.returncode

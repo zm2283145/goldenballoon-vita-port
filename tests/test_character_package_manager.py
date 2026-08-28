@@ -458,9 +458,9 @@ class CharacterPackageManagerTests(unittest.TestCase):
                 source, character_dir, index_path
             )
             index_lines = index_path.read_text(encoding="ascii").splitlines()
-            self.assertEqual("mdkr-character-candidate-v6", index_lines[0])
+            self.assertEqual("mdkr-character-candidate-v7", index_lines[0])
             fields = index_lines[1].split("\t")
-            self.assertEqual(54, len(fields))
+            self.assertEqual(60, len(fields))
             self.assertEqual(inspected["id"], fields[0])
             self.assertEqual(inspected["display_name"], bytes.fromhex(
                 fields[1]
@@ -540,18 +540,27 @@ class CharacterPackageManagerTests(unittest.TestCase):
                 inspected["report"]["lod_primitives"],
                 [int(value) for value in fields[38:42]],
             )
-            self.assertEqual("1", fields[50])
+            for offset, name in enumerate((
+                "ktx2_texture_count",
+                "ktx2_source_bytes",
+                "ktx2_etc1s_count",
+                "ktx2_uastc_count",
+                "ktx2_mip_levels_min",
+                "ktx2_mip_levels_max",
+            )):
+                self.assertEqual(inspected["report"][name], int(fields[50 + offset]))
+            self.assertEqual("1", fields[56])
             self.assertEqual(
                 inspected["license_spdx"],
-                bytes.fromhex(fields[51]).decode("utf-8"),
+                bytes.fromhex(fields[57]).decode("utf-8"),
             )
             self.assertEqual(
                 inspected["attribution"],
-                bytes.fromhex(fields[52]).decode("utf-8"),
+                bytes.fromhex(fields[58]).decode("utf-8"),
             )
             self.assertEqual(
                 inspected["source_url"],
-                bytes.fromhex(fields[53]).decode("utf-8"),
+                bytes.fromhex(fields[59]).decode("utf-8"),
             )
             with self.assertRaisesRegex(manager.ManagerError, "exact file"):
                 manager.write_candidate_index(

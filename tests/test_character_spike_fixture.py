@@ -20,6 +20,24 @@ import character_spike_fixture as fixture  # noqa: E402
 
 
 class CharacterSpikeFixtureTests(unittest.TestCase):
+    def test_ktx2_variant_preserves_geometry_and_reports_delivery(self) -> None:
+        model = fixture.model_glb("ktx2")
+        self.assertEqual(model, fixture.model_glb("ktx2"))
+        inspected = probe.inspect_glb_bytes(model, require_character=True)
+        self.assertEqual([], inspected["errors"])
+        self.assertIn("KHR_texture_basisu", inspected["extensions_required"])
+        _, report = compiler.compile_character(
+            model, fixture.manifest(fixture.portrait_png()), bytes(range(32)),
+            fixture.portrait_png(),
+        )
+        self.assertEqual(504, report["vertices"])
+        self.assertEqual(252, report["triangles"])
+        self.assertEqual(2, report["ktx2_texture_count"])
+        self.assertEqual(2, report["ktx2_etc1s_count"])
+        self.assertEqual(0, report["ktx2_uastc_count"])
+        self.assertEqual(4, report["ktx2_mip_levels_min"])
+        self.assertEqual(4, report["ktx2_mip_levels_max"])
+
     def test_fixture_is_deterministic_auditable_and_adversarial(self) -> None:
         model = fixture.model_glb()
         portrait = fixture.portrait_png()

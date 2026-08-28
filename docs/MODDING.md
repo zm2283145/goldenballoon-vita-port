@@ -442,6 +442,19 @@ for complete glTF conformance. Reports retain the first 256 exact GLB
 diagnostics and one suppression count, so a hostile file cannot turn error text
 itself into an allocation problem.
 
+Character materials may embed ordinary PNG images or Basis Universal KTX2
+images through required `KHR_texture_basisu`. KTX2 must be a single 2D ETC1S or
+UASTC image, no larger than 4096 pixels per side, with 1–13 authored mip levels;
+UASTC may use Zstandard supercompression. Encode base-colour and emissive maps
+with an sRGB transfer function, and metallic/roughness, normal, and occlusion
+maps as linear. The importer rejects a mismatch instead of letting lighting
+look subtly wrong. Do not choose BC, ASTC, or ETC at export time: the WebGPU
+renderer automatically transcodes to BC7, ASTC 4x4, or ETC2 when granted by the
+device and otherwise uses bounded RGBA8. Workshop review reports the exact
+source codec, mip range, compressed bytes, and RGBA-equivalent safety budget;
+runtime diagnostics record the format actually selected. PNG remains the
+simple universal source option and receives a generated full mip chain.
+
 This is not an install shortcut. A resumable first-import draft fingerprints and
 inventories the bounded GLB, then requires a stable package ID, display name,
 exact license/notice file, SPDX expression, attribution, source URL, built-in

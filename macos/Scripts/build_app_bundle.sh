@@ -581,6 +581,16 @@ PHONE_PARTY_NOTICE_DEST="${OUTPUT_APP}/Contents/Resources/ThirdParty/NativePhone
 mkdir -p "$(dirname "${PHONE_PARTY_NOTICE_DEST}")"
 ditto "${PHONE_PARTY_NOTICE_SRC}" "${PHONE_PARTY_NOTICE_DEST}" ||
     die "Failed to copy native Phone Party notices into the app bundle."
+THIRD_PARTY_RESOURCE_DIR="${OUTPUT_APP}/Contents/Resources/ThirdParty"
+ditto "${PROJECT_ROOT}/third_party/basisu/LICENSE.txt" \
+    "${THIRD_PARTY_RESOURCE_DIR}/BasisU-LICENSE.txt" ||
+    die "Failed to copy the Basis Universal license."
+ditto "${PROJECT_ROOT}/third_party/basisu/Zstd-LICENSE.txt" \
+    "${THIRD_PARTY_RESOURCE_DIR}/BasisU-Zstd-LICENSE.txt" ||
+    die "Failed to copy the Basis Universal Zstandard license."
+ditto "${PROJECT_ROOT}/third_party/basisu/README.md" \
+    "${THIRD_PARTY_RESOURCE_DIR}/BasisU-README.md" ||
+    die "Failed to copy the Basis Universal provenance notice."
 
 CHARACTER_IMPORTER_BUNDLED=""
 CHARACTER_IMPORTER_MANIFEST_DEST=""

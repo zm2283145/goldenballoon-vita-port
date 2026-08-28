@@ -366,8 +366,8 @@ int main(int argc, char **argv) {
     uint64_t roster_identity_revision[MDKR_MODERN_CHARACTER_PLAYERS];
     uint64_t reference_pose_signatures[12];
 
-    require(argc == 11,
-            "usage: test_modern_character_asset <generated.mdkc> <directory> <source.mdkrchar> <portable.mdkrchar> <install-directory> <corrupt-portable.mdkrchar> <mismatched-portable.mdkrchar> <legacy-portable.mdkrchar> <legacy-v5-portable.mdkrchar> <transaction-fixture-directory>");
+    require(argc == 12,
+            "usage: test_modern_character_asset <generated.mdkc> <directory> <source.mdkrchar> <portable.mdkrchar> <install-directory> <corrupt-portable.mdkrchar> <mismatched-portable.mdkrchar> <legacy-portable.mdkrchar> <legacy-v5-portable.mdkrchar> <transaction-fixture-directory> <generated-ktx2.mdkc>");
     test_retained_pose_interpolation();
     require(mdkr_modern_character_asset_load_file(argv[1], &asset,
                                                    error, sizeof(error)),
@@ -1199,6 +1199,27 @@ int main(int argc, char **argv) {
     mdkr_modern_render_asset_shutdown(&render);
     mdkr_modern_pose_shutdown(&pose);
     mdkr_modern_character_asset_unload(&asset);
+    {
+        MdkrModernCharacterAsset ktx_asset;
+        MdkrModernRenderAsset ktx_render;
+        require(mdkr_modern_character_asset_load_file(
+                    argv[11], &ktx_asset, error, sizeof(error)),
+                "load compiled KTX2 character cache");
+        require(mdkr_modern_render_asset_init(
+                    &ktx_render, &ktx_asset, error, sizeof(error)),
+                "retain compressed KTX2 until backend capability selection");
+        require(ktx_render.gpu.texture_count == 1u &&
+                    ktx_render.decoded_texture_bytes == 0u &&
+                    ktx_render.gpu.textures[0].ktx2_data != NULL &&
+                    ktx_render.gpu.textures[0].ktx2_size == 559u &&
+                    ktx_render.gpu.textures[0].ktx2_flags == 1u &&
+                    ktx_render.gpu.textures[0].level_count == 0 &&
+                    ktx_render.gpu.textures[0].level_width[0] == 8 &&
+                    ktx_render.gpu.textures[0].level_height[0] == 8,
+                "renderer preserves bounded KTX2 bytes without an eager RGBA expansion");
+        mdkr_modern_render_asset_shutdown(&ktx_render);
+        mdkr_modern_character_asset_unload(&ktx_asset);
+    }
     mdkr_modern_character_registry_shutdown(&registry);
 
     require(!mdkr_modern_character_install_portable(

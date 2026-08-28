@@ -461,9 +461,32 @@ int mdkr_modern_render_asset_init(MdkrModernRenderAsset *render,
         uint8_t *rgba;
         uint32_t material_index;
         (void)mdkr_modern_character_asset_texture(asset, index, &source);
+        if (source.mime == 2u) {
+            const uint32_t packed_width = source.dimensions & 0xFFFFu;
+            const uint32_t packed_height = source.dimensions >> 16u;
+            if (packed_width == 0u || packed_height == 0u ||
+                packed_width > MODERN_TEXTURE_DIMENSION_MAX ||
+                packed_height > MODERN_TEXTURE_DIMENSION_MAX) {
+                mdkr_modern_render_asset_shutdown(render);
+                set_error(error, error_size,
+                          "character KTX2 has invalid compiled dimensions");
+                return 0;
+            }
+            destination->ktx2_data =
+                texture_data->data + source.data_offset;
+            destination->ktx2_size = source.data_size;
+            destination->ktx2_flags = source.flags;
+            destination->level_width[0] = (int)packed_width;
+            destination->level_height[0] = (int)packed_height;
+            destination->wrap_s = source.wrap_s;
+            destination->wrap_t = source.wrap_t;
+            destination->min_filter = source.min_filter;
+            destination->mag_filter = source.mag_filter;
+            continue;
+        }
         if (source.mime != 1u) {
             mdkr_modern_render_asset_shutdown(render);
-            set_error(error, error_size, "KTX2 texture decode is unavailable in this build");
+            set_error(error, error_size, "character texture encoding is unsupported");
             return 0;
         }
         if (!stbi_info_from_memory(texture_data->data + source.data_offset,

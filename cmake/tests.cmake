@@ -2052,6 +2052,16 @@ endif()
 # Repository-publication policy is backend-independent and must run in every
 # native CTest configuration, including OpenGL-only and sanitizer lanes.
 if(BUILD_TESTING)
+    if(MDKR_CHARACTER_KTX2)
+        add_executable(mdkr_modern_character_ktx2_test
+            ${CMAKE_SOURCE_DIR}/tests/test_modern_character_ktx2.cpp)
+        target_link_libraries(mdkr_modern_character_ktx2_test PRIVATE
+            mdkr_character_ktx2_bridge)
+        target_compile_options(mdkr_modern_character_ktx2_test PRIVATE
+            $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall;-Wextra;-Wpedantic;-Werror>)
+        add_test(NAME modern_character_ktx2
+            COMMAND mdkr_modern_character_ktx2_test)
+    endif()
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
     find_program(MDKR_NODE_EXECUTABLE NAMES node nodejs)
     add_test(

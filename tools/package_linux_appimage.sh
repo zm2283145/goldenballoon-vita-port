@@ -101,6 +101,9 @@ verify_linux_tarball() {
     printf '%s\n' \
       Golden-Balloon.AppDir/AppRun \
       Golden-Balloon.AppDir/LICENSE \
+      Golden-Balloon.AppDir/BasisU-LICENSE.txt \
+      Golden-Balloon.AppDir/BasisU-Zstd-LICENSE.txt \
+      Golden-Balloon.AppDir/BasisU-README.md \
       Golden-Balloon.AppDir/NativePhoneParty-NOTICES.txt \
       Golden-Balloon.AppDir/README.md \
       Golden-Balloon.AppDir/RUN_ME.txt \
@@ -155,6 +158,12 @@ with tarfile.open(sys.argv[1], "r:gz") as archive:
         if stream is None:
             raise SystemExit(f"packaged importer member is not a file: {name}")
         return stream.read()
+    def root_payload(name: str) -> bytes:
+        member = archive.getmember("Golden-Balloon.AppDir/" + name)
+        stream = archive.extractfile(member)
+        if stream is None:
+            raise SystemExit(f"packaged notice member is not a file: {name}")
+        return stream.read()
     importer = payload("character_importer")
     manifest = json.loads(payload("character_importer.manifest.json"))
     if manifest.get("executable") != "character_importer":
@@ -172,6 +181,17 @@ with tarfile.open(sys.argv[1], "r:gz") as archive:
     for name, expected in notices.items():
         if hashlib.sha256(payload(name)).hexdigest() != expected:
             raise SystemExit(f"packaged importer notice changed: {name}")
+    basis_notices = {
+        "BasisU-LICENSE.txt":
+            "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+        "BasisU-Zstd-LICENSE.txt":
+            "2c1a7fa704df8f3a606f6fc010b8b5aaebf403f3aeec339a12048f1ba7331a0b",
+        "BasisU-README.md":
+            "d15b94b7cb320ed39156c8ddf7d8e814185c6d0de51005113f1d18784785975c",
+    }
+    for name, expected in basis_notices.items():
+        if hashlib.sha256(root_payload(name)).hexdigest() != expected:
+            raise SystemExit(f"packaged BasisU notice changed: {name}")
     validator = payload("validators/gltf_validator")
     validator_manifest = json.loads(payload(
         "validators/gltf_validator.manifest.json"))
@@ -203,6 +223,9 @@ if [[ "$self_test" == true ]]; then
   for path in AppRun LICENSE README.md RUN_ME.txt mdkr64.desktop mdkr64.png; do
     : >"$test_appdir/$path"
   done
+  cp third_party/basisu/LICENSE.txt "$test_appdir/BasisU-LICENSE.txt"
+  cp third_party/basisu/Zstd-LICENSE.txt "$test_appdir/BasisU-Zstd-LICENSE.txt"
+  cp third_party/basisu/README.md "$test_appdir/BasisU-README.md"
   cp third_party/native_phone_party/NOTICE.txt \
     "$test_appdir/NativePhoneParty-NOTICES.txt"
   : >"$test_appdir/usr/bin/gamecontrollerdb.txt"
@@ -312,6 +335,9 @@ cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
 appdir="$work/Golden-Balloon.AppDir"
 mkdir -p "$appdir/usr/bin" "$appdir/usr/lib"
+cp third_party/basisu/LICENSE.txt "$appdir/BasisU-LICENSE.txt"
+cp third_party/basisu/Zstd-LICENSE.txt "$appdir/BasisU-Zstd-LICENSE.txt"
+cp third_party/basisu/README.md "$appdir/BasisU-README.md"
 
 cp "$binary" "$appdir/usr/bin/mdkr64"
 mkdir -p "$appdir/usr/bin/tools"

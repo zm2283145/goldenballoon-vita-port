@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import importlib.util
 import io
 import json
@@ -25,6 +26,14 @@ probe = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(probe)
 sys.path.insert(0, str(ROOT / "tools"))
 import character_asset_compiler as compiler  # noqa: E402
+
+
+KTX2_ETC1S_SRGB = base64.b64decode(
+    "q0tUWCAyMLsNChoKAAAAAAEAAAAIAAAACAAAAAAAAAAAAAAAAQAAAAQAAAABAAAAsAAAACwAAADcAAAAbAAAAEgBAAAAAAAA4QAAAAAAAAAsAgAAAAAAAAMAAAAAAAAAAAAAAAAAAAArAgAAAAAAAAEAAAAAAAAAAAAAAAAAAAAqAgAAAAAAAAEAAAAAAAAAAAAAAAAAAAApAgAAAAAAAAEAAAAAAAAAAAAAAAAAAAAsAAAAAAAAAAIAKACjAQIAAwMAAAgAAAAAAAAAAAA/AAAAAAAAAAAA/////xIAAABLVFhvcmllbnRhdGlvbgByZAAAACcAAABLVFh3cml0ZXIAdG9rdHggdjQuNC4yIC8gbGlia3R4IHY0LjQuMgAAIQAAAEtUWHdyaXRlclNjUGFyYW1zAC0tZW5jb2RlIGV0YzFzAAAAAAcABwA0AAAAHQAAACwAAAAAAAAAAAAAAAAAAAADAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAABwAQAAAAAAAACBHgYMAAAEEiaJ1AFABMAAAAAAACIAyACgAAAACDELSqnEwcEdjkkcr4fVPv7MTD4eFPj6UtNgyRHR83N5ydVVVVV9aeiogIAwUQAAAAAAADy3yuAARABQAAAABCyBgGIgCAAAAAIojUAmAAAAAAAAEAAARs9bxZRAA=="
+)
+KTX2_UASTC_LINEAR_ZSTD = base64.b64decode(
+    "q0tUWCAyMLsNChoKAAAAAAEAAAAIAAAACAAAAAAAAAAAAAAAAQAAAAQAAAACAAAAsAAAACwAAADcAAAAdAAAAAAAAAAAAAAAAAAAAAAAAACbAQAAAAAAAEkAAAAAAAAAQAAAAAAAAACCAQAAAAAAABkAAAAAAAAAEAAAAAAAAABpAQAAAAAAABkAAAAAAAAAEAAAAAAAAABQAQAAAAAAABkAAAAAAAAAEAAAAAAAAAAsAAAAAAAAAAIAKACmAQEAAwMAABAAAAAAAAAAAAB/AAAAAAAAAAAA/////xIAAABLVFhvcmllbnRhdGlvbgByZAAAACcAAABLVFh3cml0ZXIAdG9rdHggdjQuNC4yIC8gbGlia3R4IHY0LjQuMgAAKgAAAEtUWHdyaXRlclNjUGFyYW1zAC0tZW5jb2RlIHVhc3RjIC0temNtcCAzAAAAKLUv/SAQgQAAV4or8D9O6gEAAAAAAAAAACi1L/0gEIEAAPuDpgz67cf8191vZm9mb2YotS/9IBCBAACTO5/XKJMBgj3GvQz/8ygAKLUv/SBAAQIAW1rlcw4CemCJmMh2nDPcIltKYGcAgjqBTMhnhLtF7wETJgDakLsFIMLhRJGwqlMAW2YkyjVBZqaQ/pX0ALW2ew=="
+)
 
 
 def _align(data: bytearray, alignment: int = 4) -> None:
@@ -308,6 +317,36 @@ def rewrite_glb_binary(data: bytes, update) -> bytes:
     output += struct.pack("<II", len(payload), probe.GLB_BIN_CHUNK) + payload
     struct.pack_into("<I", output, 8, len(output))
     return bytes(output)
+
+
+def make_ktx2_glb(payload: bytes = KTX2_ETC1S_SRGB) -> bytes:
+    def update(document: dict, binary: bytearray) -> None:
+        _align(binary, 8)
+        offset = len(binary)
+        binary.extend(payload)
+        buffer_length = len(binary)
+        _align(binary, 4)
+        view = len(document["bufferViews"])
+        document["bufferViews"].append({
+            "buffer": 0, "byteOffset": offset, "byteLength": len(payload),
+        })
+        document["buffers"][0]["byteLength"] = buffer_length
+        document["images"].append({
+            "name": "body-basis", "mimeType": "image/ktx2",
+            "bufferView": view,
+        })
+        document["textures"][0].pop("source", None)
+        document["textures"][0]["extensions"] = {
+            "KHR_texture_basisu": {"source": len(document["images"]) - 1},
+        }
+        used = document.setdefault("extensionsUsed", [])
+        if "KHR_texture_basisu" not in used:
+            used.append("KHR_texture_basisu")
+        required = document.setdefault("extensionsRequired", [])
+        if "KHR_texture_basisu" not in required:
+            required.append("KHR_texture_basisu")
+
+    return rewrite_glb_binary(make_animated_glb(), update)
 
 
 def make_humanoid_glb(
@@ -892,7 +931,7 @@ class CharacterAssetProbeTests(unittest.TestCase):
             }),
         )
         rejected(
-            "mimeType must be 'image/png'",
+            "mimeType must be 'image/png' or 'image/ktx2'",
             lambda document: document["images"][0].update({
                 "mimeType": ["image/png"],
             }),
@@ -940,6 +979,91 @@ class CharacterAssetProbeTests(unittest.TestCase):
             for error in report["errors"]
         ), report["errors"])
 
+    def test_basisu_ktx2_intake_and_compiler_contract(self) -> None:
+        model = make_ktx2_glb()
+        report = probe.inspect_glb_bytes(model, require_character=True)
+        self.assertEqual([], report["errors"])
+        self.assertIn("KHR_texture_basisu", report["extensions_required"])
+
+        compiled, compile_report = compiler.compile_character(
+            model, make_manifest(), bytes(32)
+        )
+        self.assertEqual(340, compile_report["decoded_texture_bytes"])
+        self.assertEqual(1, compile_report["ktx2_texture_count"])
+        self.assertEqual(len(KTX2_ETC1S_SRGB), compile_report["ktx2_source_bytes"])
+        self.assertEqual(1, compile_report["ktx2_etc1s_count"])
+        self.assertEqual(0, compile_report["ktx2_uastc_count"])
+        self.assertEqual(4, compile_report["ktx2_mip_levels_min"])
+        self.assertEqual(4, compile_report["ktx2_mip_levels_max"])
+        sections = _compiled_sections(compiled)
+        texture_section = sections[compiler.SECTION_TEXTURES]
+        texture_record = struct.unpack_from(
+            compiler.TEXTURE_FORMAT, compiled, texture_section["offset"]
+        )
+        self.assertEqual(2, texture_record[1])
+        self.assertEqual(8 | (8 << 16), texture_record[9])
+
+        def escape_first_mip(document: dict, output: bytearray) -> None:
+            basis_source = document["textures"][0]["extensions"][
+                "KHR_texture_basisu"
+            ]["source"]
+            view = document["bufferViews"][
+                document["images"][basis_source]["bufferView"]
+            ]
+            struct.pack_into(
+                "<Q", output, view["byteOffset"] + 80,
+                view["byteLength"] + 4096,
+            )
+
+        malformed = rewrite_glb_binary(model, escape_first_mip)
+        malformed_report = probe.inspect_glb_bytes(
+            malformed, require_character=True
+        )
+        self.assertTrue(any(
+            "KTX2 mip" in error
+            for error in malformed_report["errors"]
+        ), malformed_report["errors"])
+
+        impossible_mips = bytearray(KTX2_ETC1S_SRGB)
+        struct.pack_into("<I", impossible_mips, 40, 5)
+        with self.assertRaisesRegex(probe.ProbeError, "unsupported mip count"):
+            probe._inspect_texture_ktx2(impossible_mips, 0)
+
+        wrong_supercompression = bytearray(KTX2_ETC1S_SRGB)
+        struct.pack_into("<I", wrong_supercompression, 44, 0)
+        with self.assertRaisesRegex(
+            probe.ProbeError, "payload and supercompression disagree"
+        ):
+            probe._inspect_texture_ktx2(wrong_supercompression, 0)
+
+        null_basis_extension = rewrite_glb_document(
+            model,
+            lambda document: document["textures"][0]["extensions"].update({
+                "KHR_texture_basisu": None,
+            }),
+        )
+        null_basis_report = probe.inspect_glb_bytes(
+            null_basis_extension, require_character=True
+        )
+        self.assertTrue(any(
+            "KHR_texture_basisu must be an object" in error
+            for error in null_basis_report["errors"]
+        ), null_basis_report["errors"])
+
+        uastc = probe._inspect_texture_ktx2(KTX2_UASTC_LINEAR_ZSTD, 0)
+        self.assertTrue(uastc["uastc"])
+        self.assertFalse(uastc["srgb"])
+        self.assertEqual(4, uastc["levels"])
+        with self.assertRaisesRegex(
+            compiler.CompileError,
+            "linear KTX2 transfer metadata.*requires sRGB color/emissive",
+        ):
+            compiler.compile_character(
+                make_ktx2_glb(KTX2_UASTC_LINEAR_ZSTD),
+                make_manifest(),
+                bytes(32),
+            )
+
     def test_compiler_metadata_helpers_reject_hostile_types(self) -> None:
         with self.assertRaises(compiler.CompileError):
             compiler._finite({"x": 1}, "factor")
@@ -949,6 +1073,10 @@ class CharacterAssetProbeTests(unittest.TestCase):
             compiler._source_name({"x": 1}, "fallback", "node[0]")
         with self.assertRaises(compiler.CompileError):
             compiler._texture_source({"extensions": None, "source": 0})
+        with self.assertRaises(compiler.CompileError):
+            compiler._texture_source({
+                "extensions": {"KHR_texture_basisu": None}, "source": 0,
+            })
         with self.assertRaises(compiler.CompileError):
             compiler._item([{}], False, "node")
 

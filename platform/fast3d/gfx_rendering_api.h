@@ -87,6 +87,12 @@ struct GfxModernTexture {
     int wrap_t;
     int min_filter;
     int mag_filter;
+    /* A BasisU KTX2 stays compressed in the immutable MDKC mapping until the
+     * active backend chooses a device-native block format. PNGs leave these
+     * fields zero and retain the decoded level_rgba path above. */
+    const uint8_t *ktx2_data;
+    size_t ktx2_size;
+    uint32_t ktx2_flags; /* material role: sRGB colour, linear data, or normal */
 };
 
 struct GfxModernMaterial {

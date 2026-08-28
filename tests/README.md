@@ -494,6 +494,14 @@ production coverage:
   expanded WIDE_HUD ortho -- so the intro/menu/lockup dialogue path is left
   untouched. A self-test replays all three assertions against the pre-fix source
   to prove they fail red.
+- `check_widescreen_hud_layers.py` renders the real 1P/2P HUD at 4:3 and
+  ultrawide aspect ratios, checks that world expansion remains visible while
+  HUD groups preserve their authored safe-area relationships, and carries
+  detector controls so an empty or unchanged capture cannot pass.
+- `check_save_options_scroll_band.py` drives the real Save Options pak-switch
+  scroll and proves inverted off-screen glyph rectangles are skipped without
+  erasing valid text, sky, or wood-panel pixels. Its calibrated band detector
+  and nonzero `[RECT-SKIP]` witness close both the original defect and vacuity.
 - `check_live_toggle_settings.py` gates the same settings being CHANGED
   mid-run. `Video.FrameLimit`, `Video.MotionSmoothing` and
   `Video.AllowTearing` apply at the host-frame boundary and
@@ -1393,6 +1401,11 @@ SIGSTOPs the driver for three seconds mid-stream and requires a Connected
 controller with fresh input within five seconds of resuming, which drives the
 bounded transport queue and the host's custody self-heal through the true
 stack.
+
+`tests/check_online_live_transport_e2e.py` joins two production live-transport
+drivers through the real service protocol and proves creator/joiner convergence,
+bounded recovery, and fail-neutral teardown without relying on launcher UI or
+an in-process transport stub.
 
 `tests/check_party_lan_e2e.py` is the no-internet crown gate: it runs the same
 `mdkr_native_party_e2e_driver` under `--lan`, where the embedded

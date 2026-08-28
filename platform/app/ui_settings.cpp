@@ -3823,6 +3823,9 @@ CharacterCandidateIndex::Candidate installedCharacterSummary(
     summary.secondaryJoints = entry.stats.secondary_joints;
     summary.encodedTextureBytes = entry.stats.encoded_texture_bytes;
     summary.decodedTextureBytes = entry.stats.decoded_texture_bytes;
+    summary.ktx2Textures = entry.stats.ktx2_textures;
+    summary.ktx2SourceBytes = entry.stats.ktx2_source_bytes;
+    summary.textureFormatDiagnosticsPresent = true;
     summary.provenancePresent = entry.provenance_present != 0u;
     if (summary.provenancePresent) {
         summary.licenseSpdx = entry.license_spdx;
@@ -3873,6 +3876,9 @@ CharacterCandidateIndex::Candidate nativeCharacterSummary(
     summary.secondaryJoints = result.secondary_joints;
     summary.encodedTextureBytes = result.encoded_texture_bytes;
     summary.decodedTextureBytes = result.decoded_texture_bytes;
+    summary.ktx2Textures = result.ktx2_textures;
+    summary.ktx2SourceBytes = result.ktx2_source_bytes;
+    summary.textureFormatDiagnosticsPresent = true;
     summary.provenancePresent = result.provenance_present != 0u;
     if (summary.provenancePresent) {
         summary.licenseSpdx = result.license_spdx;
@@ -11294,9 +11300,9 @@ void drawCharacterPerformanceAssembly(
         "Explains which high-fidelity model features are executable and which still require source authoring or future renderer work.");
     if (fidelityLimitsOpen) {
         ui::TextSubtleWrapped(
-            "Available now: WebGPU GPU skinning, 32-bit indexed high-detail geometry, PBR-style embedded PNG materials with generated mipmaps, authored animation, up to four authored LODs, and deterministic per-view primitive ordering. OPAQUE and MASK parts draw first; BLEND parts sort back-to-front from their live posed centroids. Import limits are safety ceilings, not performance recommendations.");
+            "Available now: WebGPU GPU skinning, 32-bit indexed high-detail geometry, PBR-style embedded PNG or KTX2/BasisU materials, authored mip chains, authored animation, up to four authored LODs, and deterministic per-view primitive ordering. KTX2 automatically negotiates BC7, ASTC 4×4, ETC2, or the portable RGBA8 fallback per device. OPAQUE and MASK parts draw first; BLEND parts sort back-to-front from their live posed centroids. Import limits are safety ceilings, not performance recommendations.");
         ui::TextSubtleWrapped(
-            "World shadows follow the exact fitted pose in Remastered mode: OPAQUE and MASK parts cast into the mapped cascades, including MASK texture cutouts, and every visible material can receive them. BLEND parts intentionally do not cast a solid shadow. Still review transparent triangles that overlap or intersect inside one primitive, plus transparency ordering against independently rendered vehicle or world surfaces. KTX2/BasisU texture transcode and automatic offline mesh simplification are not implemented. Camera-aware LOD is available for authored levels. Prefer MASK for hair/fur cutouts, separate large transparent layers into primitives, author LODs in the source, and prove the result in every exact context.");
+            "World shadows follow the exact fitted pose in Remastered mode: OPAQUE and MASK parts cast into the mapped cascades, including MASK texture cutouts, and every visible material can receive them. BLEND parts intentionally do not cast a solid shadow. Still review transparent triangles that overlap or intersect inside one primitive, plus transparency ordering against independently rendered vehicle or world surfaces. Automatic offline mesh simplification is not implemented; camera-aware LOD uses authored levels. Prefer MASK for hair/fur cutouts, separate large transparent layers into primitives, author LODs in the source, and prove the result in every exact context.");
         ImGui::TreePop();
     }
     const bool hasMultipleLods = entry->stats.lod_levels > 1u;
@@ -11629,7 +11635,7 @@ void drawCharacterPerformanceAssembly(
         countRow("Character draw submissions", draws);
         countRow("Current + previous bone matrices prepared", paletteMatrices);
         memoryRow("Shared geometry upload", geometryBytes);
-        memoryRow("Shared decoded texture upload",
+        memoryRow("RGBA-equivalent texture budget",
                   entry->stats.decoded_texture_bytes);
         ImGui::EndTable();
     }
@@ -22924,6 +22930,14 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
                     (1024.0 * 1024.0),
                 static_cast<double>(entry->stats.encoded_texture_bytes) /
                     (1024.0 * 1024.0));
+            if (entry->stats.ktx2_textures != 0u) {
+                ImGui::TextDisabled(
+                    "Texture delivery: %u KTX2/BasisU of %u · %.1f MiB compressed source · runtime format chosen per device",
+                    entry->stats.ktx2_textures,
+                    entry->stats.textures,
+                    static_cast<double>(entry->stats.ktx2_source_bytes) /
+                        (1024.0 * 1024.0));
+            }
         } else if (entry->stats.textures != 0u) {
             ImGui::TextDisabled(
                 "Texture memory: unavailable in this legacy cache; recompile for exact accounting");
@@ -23512,6 +23526,53 @@ std::string candidateTangentSummary(
         (candidate.tangentFallbackVertices == 1u ? "ex" : "ices");
 }
 
+std::string candidateTextureFormatSummary(
+    const CharacterCandidateIndex::Candidate &candidate) {
+    if (!candidate.textureFormatDiagnosticsPresent) {
+        return "Unavailable (legacy summary)";
+    }
+    if (candidate.ktx2Textures == 0u) {
+        return "PNG · portable RGBA8 upload";
+    }
+    std::string summary = std::to_string(candidate.ktx2Textures) +
+        " KTX2/BasisU texture" +
+        (candidate.ktx2Textures == 1u ? "" : "s") + " · " +
+        candidateBytes(candidate.ktx2SourceBytes) + " compressed source";
+    if (candidate.ktx2Etc1sTextures + candidate.ktx2UastcTextures ==
+        candidate.ktx2Textures) {
+        summary += " · " + std::to_string(candidate.ktx2Etc1sTextures) +
+            " ETC1S · " + std::to_string(candidate.ktx2UastcTextures) +
+            " UASTC · ";
+        if (candidate.ktx2MipLevelsMin == candidate.ktx2MipLevelsMax) {
+            summary += std::to_string(candidate.ktx2MipLevelsMin) +
+                " authored mip levels";
+        } else {
+            summary += std::to_string(candidate.ktx2MipLevelsMin) + "–" +
+                std::to_string(candidate.ktx2MipLevelsMax) +
+                " authored mip levels";
+        }
+    } else {
+        summary += " · codec details unavailable in installed summary";
+    }
+    return summary;
+}
+
+std::string candidateTextureDeliveryClass(
+    const CharacterCandidateIndex::Candidate &candidate) {
+    if (!candidate.textureFormatDiagnosticsPresent) {
+        return "Unavailable (legacy summary)";
+    }
+    if (candidate.ktx2Textures == 0u) return "PNG";
+    const uint32_t pngTextures = candidate.textures >= candidate.ktx2Textures
+        ? candidate.textures - candidate.ktx2Textures : 0u;
+    std::string summary = std::to_string(candidate.ktx2Textures) +
+        " KTX2/BasisU";
+    if (pngTextures != 0u) {
+        summary += " · " + std::to_string(pngTextures) + " PNG";
+    }
+    return summary;
+}
+
 std::string candidateDelta(uint64_t current, uint64_t next) {
     if (current == next) return "No change";
     if (next > current) return "+" + std::to_string(next - current);
@@ -23633,6 +23694,7 @@ bool drawCharacterCandidateReview(bool compact) {
     addCandidateNumberRow(rows, "Dynamic joints", current.secondaryJoints, next.secondaryJoints, review.installed);
     addCandidateTextRow(rows, "Performance profile", candidatePerformanceTier(current), candidatePerformanceTier(next), review.installed);
     addCandidateTextRow(rows, "Tangent basis", candidateTangentSummary(current), candidateTangentSummary(next), review.installed);
+    addCandidateTextRow(rows, "Texture delivery", candidateTextureDeliveryClass(current), candidateTextureDeliveryClass(next), review.installed);
     addCandidateNumberRow(rows, "LOD0 vertices", current.lodVertices[0], next.lodVertices[0], review.installed);
     addCandidateNumberRow(rows, "LOD0 triangles", current.lodTriangles[0], next.lodTriangles[0], review.installed);
     addCandidateNumberRow(rows, "LOD0 draw parts", current.lodPrimitives[0], next.lodPrimitives[0], review.installed);
@@ -23722,6 +23784,13 @@ bool drawCharacterCandidateReview(bool compact) {
                     : "package fallback animation"
                 : "compatible package, but humanoid review is still required before normal play");
         ImGui::TextWrapped("Surface detail: %s", tangentReadiness);
+        ImGui::TextWrapped(
+            "Textures: %s",
+            candidateTextureFormatSummary(next).c_str());
+        if (next.ktx2Textures != 0u) {
+            ui::TextSubtleWrapped(
+                "The renderer automatically selects BC7, ASTC 4×4, or ETC2 when the device grants it, and safely falls back to RGBA8. Authored mip levels remain intact; the exact chosen format is recorded in runtime diagnostics.");
+        }
         ImGui::TextWrapped(
             "Import estimate: %s · %u LOD level%s · not a measured device result",
             performanceTier, next.lodLevels,
@@ -23879,6 +23948,8 @@ bool drawCharacterCandidateReview(bool compact) {
                                    : "unavailable in legacy cache");
         ImGui::TextWrapped("Encoded texture data: %s",
                            candidateBytes(next.encodedTextureBytes).c_str());
+        ImGui::TextWrapped("Texture delivery: %s",
+                           candidateTextureFormatSummary(next).c_str());
         ImGui::Text("Nodes: %u · Skins: %u", next.nodes, next.skins);
         ImGui::TreePop();
     }

@@ -802,10 +802,12 @@ diagnostic overrides. Older per-player preferences are read only as a migration
 fallback and are no longer synthesized into overrides that could contaminate a
 different package selected later.
 
-V1 deliberately accepts embedded PNG only. KTX2/BasisU is the preferred future
-portable texture payload because it can carry mip levels and transcode to a
-GPU-supported block format, but accepting it before a bounded transcoder exists
-would create a package that compiles and then fails at runtime. Likewise,
+The source contract accepts embedded PNG and the exact ordinary 2D
+`KHR_texture_basisu` profile. KTX2 inputs retain their authored mip chain and
+are bounded and color-role checked offline, then independently authenticated by
+the pinned Basis Universal runtime before WebGPU selects BC7, ASTC 4x4, ETC2,
+or RGBA8. A provider that advertises but refuses compression features cannot
+prevent device creation; the portable RGBA8 path remains mandatory. Likewise,
 `EXT_meshopt_compression` is a later source option only after the decoder and
 decompression-size gates exist; the private cache may eventually use
 meshoptimizer without requiring a glTF extension at runtime.
@@ -1423,7 +1425,7 @@ legacy-engine representation blockers:
 |---|---|---|
 | Geometry | 1,000,000 vertices and 2,000,000 triangles per source | Profile/device-tier budgets, measured LODs, culling and GPU timing; importing a multi-million-poly sculpt directly remains inappropriate |
 | Skin | 256 joints, four linear influences, GPU skinned; non-uniform joint bind scale and joint scale tracks rejected | Normal palettes and joint-scale animation in a later profile; dual-quaternion skinning only if art requires it |
-| Textures | Embedded PNG, max 4096 per side, 512 MiB decoded with full generated mips | Bounded KTX2/BasisU transcode and GPU block compression before allowing larger sets |
+| Textures | Embedded PNG or BasisU KTX2, max 4096 per side and 512 MiB RGBA-equivalent budget; authored KTX2 mips transcode to BC7, ASTC 4x4, ETC2, or RGBA8 | Device evidence before raising safety budgets; optional additional material profiles need their own transfer/format contracts |
 | Materials | Core PBR-like factors/maps plus DKR fog/sun/ambient; OPAQUE/MASK/BLEND | IBL, calibrated tone mapping, shadow receive/cast, transparent ordering, then optional hair/clearcoat/subsurface profiles |
 | Animation | TRS tracks, LINEAR/STEP/CUBICSPLINE, cross-fade, semantic clips, immutable previous/current replay interpolation | Real authored clips, local-TRS/quaternion presentation interpolation, additive masks, root-motion policy and possibly morph/facial animation |
 | Morphs | Rejected | Cache v2 storage, bounded weight tracks and shader path |
@@ -1474,7 +1476,9 @@ affecting authoritative hashes.
 
 - Validated GLB loading and transactional sectioned `.mdkc` cache generation
   are implemented through the bounded offline/package-manager toolchain.
-- Integrate meshoptimizer and KTX2/BasisU behind bounded compilation stages.
+- Integrate optional deterministic meshoptimizer simplification behind a
+  bounded, recorded compilation stage. Bounded KTX2/BasisU intake,
+  transcoding, capability selection, reporting, and RGBA8 fallback are complete.
 - Content-addressed cache invalidation, diagnostic reports and teardown are
   implemented. The dedicated failed-import inventory retains metadata and a
   bounded validator report but never source bytes; its native Workshop surface

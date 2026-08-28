@@ -100,6 +100,9 @@ verify_windows_archive() {
     GoldenBalloon/tools/validators/LICENSE.txt \
     GoldenBalloon/tools/validators/NOTICES.txt \
     GoldenBalloon/LICENSE \
+    GoldenBalloon/BasisU-LICENSE.txt \
+    GoldenBalloon/BasisU-Zstd-LICENSE.txt \
+    GoldenBalloon/BasisU-README.md \
     GoldenBalloon/NativePhoneParty-NOTICES.txt \
     GoldenBalloon/README.md \
     GoldenBalloon/RUN_ME.txt \
@@ -145,6 +148,12 @@ with zipfile.ZipFile(sys.argv[1], "r") as archive:
             "78b12c3a81360b357002334f0e70ea0e92eebf7a9b358805c03c48484945f3bb",
         "GoldenBalloon/tools/PyInstaller-COPYING.txt":
             "dcf75fdb959db1e3b41c0f8505069d2ece781b5ec6b3d0a4d30975cfc6580245",
+        "GoldenBalloon/BasisU-LICENSE.txt":
+            "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+        "GoldenBalloon/BasisU-Zstd-LICENSE.txt":
+            "2c1a7fa704df8f3a606f6fc010b8b5aaebf403f3aeec339a12048f1ba7331a0b",
+        "GoldenBalloon/BasisU-README.md":
+            "d15b94b7cb320ed39156c8ddf7d8e814185c6d0de51005113f1d18784785975c",
     }
     for name, expected in notices.items():
         if hashlib.sha256(archive.read(name)).hexdigest() != expected:
@@ -184,6 +193,12 @@ if [[ "$self_test" == true ]]; then
   mkdir -p "$test_root/GoldenBalloon/tools/validators"
   : >"$test_root/GoldenBalloon/GoldenBalloon.exe"
   : >"$test_root/GoldenBalloon/LICENSE"
+  cp third_party/basisu/LICENSE.txt \
+    "$test_root/GoldenBalloon/BasisU-LICENSE.txt"
+  cp third_party/basisu/Zstd-LICENSE.txt \
+    "$test_root/GoldenBalloon/BasisU-Zstd-LICENSE.txt"
+  cp third_party/basisu/README.md \
+    "$test_root/GoldenBalloon/BasisU-README.md"
   tr -d '\r' < third_party/native_phone_party/NOTICE.txt \
     > "$test_root/GoldenBalloon/NativePhoneParty-NOTICES.txt"
   : >"$test_root/GoldenBalloon/README.md"
@@ -296,6 +311,9 @@ cp third_party/gltf_validator/LICENSE.txt \
   third_party/gltf_validator/NOTICES.txt "$stage/tools/validators/"
 
 cp LICENSE README.md "$stage/"
+cp third_party/basisu/LICENSE.txt "$stage/BasisU-LICENSE.txt"
+cp third_party/basisu/Zstd-LICENSE.txt "$stage/BasisU-Zstd-LICENSE.txt"
+cp third_party/basisu/README.md "$stage/BasisU-README.md"
 # A Windows Git checkout may materialize tracked text with CRLF. Canonicalize
 # the distributed notice to the reviewed LF byte sequence pinned above.
 tr -d '\r' < third_party/native_phone_party/NOTICE.txt \

@@ -148,6 +148,32 @@ def make_grid_glb(
 
 
 class HighFidelityCharacterTests(unittest.TestCase):
+    def test_ktx2_runtime_dependency_and_device_fallback_are_pinned(self) -> None:
+        dependency = (ROOT / "cmake" / "character_basisu.cmake").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            'set(MDKR_BASISU_COMMIT "4d6fc70eaf62ad0558e63e8d97eb9766118327a6")',
+            dependency,
+        )
+        self.assertEqual(15, dependency.count('"external/basisu/'))
+        self.assertIn('EXPECTED_HASH "SHA256=${sha256}"', dependency)
+        self.assertIn("TLS_VERIFY ON", dependency)
+        self.assertIn("MDKR_BASISU_LOCAL_CACHE", dependency)
+        self.assertIn("file://${candidate}", dependency)
+
+        backend = (ROOT / "platform" / "fast3d" /
+                   "gfx_webgpu.c").read_text(encoding="utf-8")
+        for feature in (
+            "WGPUFeatureName_TextureCompressionBC",
+            "WGPUFeatureName_TextureCompressionETC2",
+            "WGPUFeatureName_TextureCompressionASTC",
+        ):
+            self.assertIn(feature, backend)
+        self.assertIn("required_feature_count_without_compression", backend)
+        self.assertIn("portable RGBA8 fallback", backend)
+        self.assertIn("[WGPU-CHARACTER-KTX2]", backend)
+
     def test_webgpu_material_shader_uses_exact_srgb_transfer(self) -> None:
         shader_source = (ROOT / "platform" / "fast3d" /
                          "gfx_webgpu.c").read_text(encoding="utf-8")

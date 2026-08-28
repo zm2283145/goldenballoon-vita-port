@@ -67,6 +67,20 @@ PHONE_PARTY_NOTICE="${APP_PATH}/Contents/Resources/ThirdParty/NativePhoneParty-N
 PHONE_PARTY_NOTICE_SHA256="$(shasum -a 256 "${PHONE_PARTY_NOTICE}" | awk '{print $1}')"
 [[ "${PHONE_PARTY_NOTICE_SHA256}" == "dc48863706380100072297911937267b5eaee28a40a972516e07b285cc7635dd" ]] ||
     die "bundled native Phone Party notices do not match the reviewed manifest"
+BASISU_NOTICE_DIR="${APP_PATH}/Contents/Resources/ThirdParty"
+for BASISU_NOTICE_SPEC in \
+    "BasisU-LICENSE.txt:c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4" \
+    "BasisU-Zstd-LICENSE.txt:2c1a7fa704df8f3a606f6fc010b8b5aaebf403f3aeec339a12048f1ba7331a0b" \
+    "BasisU-README.md:d15b94b7cb320ed39156c8ddf7d8e814185c6d0de51005113f1d18784785975c"; do
+    BASISU_NOTICE_NAME="${BASISU_NOTICE_SPEC%%:*}"
+    BASISU_NOTICE_HASH="${BASISU_NOTICE_SPEC#*:}"
+    BASISU_NOTICE_PATH="${BASISU_NOTICE_DIR}/${BASISU_NOTICE_NAME}"
+    [[ -f "${BASISU_NOTICE_PATH}" && ! -L "${BASISU_NOTICE_PATH}" ]] ||
+        die "bundled Basis Universal notice is missing or linked: ${BASISU_NOTICE_NAME}"
+    [[ "$(shasum -a 256 "${BASISU_NOTICE_PATH}" | awk '{print $1}')" ==
+       "${BASISU_NOTICE_HASH}" ]] ||
+        die "bundled Basis Universal notice changed: ${BASISU_NOTICE_NAME}"
+done
 CHARACTER_IMPORTER="${APP_PATH}/Contents/MacOS/tools/character_importer"
 CHARACTER_IMPORTER_MANIFEST="${APP_PATH}/Contents/Resources/ThirdParty/CharacterImporter-MANIFEST.json"
 CHARACTER_CPYTHON_LICENSE="${APP_PATH}/Contents/Resources/ThirdParty/CharacterImporter-CPython-LICENSE.txt"

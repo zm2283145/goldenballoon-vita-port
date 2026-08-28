@@ -839,6 +839,7 @@ static int validate_references(const MdkrModernCharacterAsset *asset,
     }
     for (index = 0u; index < textures->count; index++) {
         MdkrModernTexture texture;
+        const uint8_t *texture_bytes;
         (void)mdkr_modern_character_asset_texture(asset, index, &texture);
         if (mdkr_modern_character_asset_string(asset, texture.name) == NULL ||
             (texture.mime != 1u && texture.mime != 2u) || texture.data_size == 0u ||
@@ -850,6 +851,19 @@ static int validate_references(const MdkrModernCharacterAsset *asset,
               (texture.dimensions >> 16u) == 0u ||
               (texture.dimensions >> 16u) > 4096u))) {
             set_error(error, error_size, "compiled texture is invalid");
+            return 0;
+        }
+        texture_bytes = texture_data->data + texture.data_offset;
+        if (texture.mime == 2u &&
+            (texture.data_size < 44u ||
+             memcmp(texture_bytes, "\xABKTX 20\xBB\r\n\x1A\n", 12u) != 0 ||
+             read_u32(texture_bytes + 20u) !=
+                 (texture.dimensions & 0xFFFFu) ||
+             read_u32(texture_bytes + 24u) !=
+                 (texture.dimensions >> 16u) ||
+             read_u32(texture_bytes + 40u) == 0u ||
+             read_u32(texture_bytes + 40u) > 13u)) {
+            set_error(error, error_size, "compiled KTX2 texture is invalid");
             return 0;
         }
     }
@@ -1624,11 +1638,23 @@ void mdkr_modern_character_asset_stats(const MdkrModernCharacterAsset *asset,
         MdkrModernTexture texture;
         uint32_t width;
         uint32_t height;
+        uint32_t levels = 0u;
+        uint32_t level;
         (void)mdkr_modern_character_asset_texture(asset, texture_index,
                                                   &texture);
+        if (texture.mime == 2u) {
+            out->ktx2_textures++;
+            out->ktx2_source_bytes += texture.data_size;
+            levels = read_u32(
+                asset->sections[MDKR_MDKC_TEXTURE_DATA].data +
+                texture.data_offset + 40u);
+        }
         width = texture.dimensions & 0xFFFFu;
         height = texture.dimensions >> 16u;
-        while (width != 0u && height != 0u) {
+        for (level = 0u;
+             width != 0u && height != 0u &&
+             (levels == 0u || level < levels);
+             ++level) {
             out->decoded_texture_bytes +=
                 (uint64_t)width * (uint64_t)height * 4u;
             if (width == 1u && height == 1u) break;

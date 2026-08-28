@@ -395,10 +395,18 @@ external image editor.
    authored BLEND subset. Intersecting/self-overlapping triangles inside one
    primitive and independent vehicle/world transparency queues remain visual
    qualification work; MASK remains the preferred hair/fur path.
-3. **Texture compression:** add bounded KTX2/BasisU validation/transcoding,
-   authenticated compiler records, format-capability selection, mip accounting,
-   and PNG fallback. Preserve the current 4096-side/512 MiB decoded safety
-   profile until device evidence supports a change.
+3. **Texture compression (implemented):** bounded KTX2/BasisU container and
+   transfer-role validation, pinned ETC1S/UASTC plus Zstandard transcoding,
+   authenticated compiler/review records, BC7/ASTC/ETC2 capability selection,
+   authored-mip accounting, and portable RGBA8 fallback are executable. The
+   current 4096-side/512 MiB RGBA-equivalent safety profile remains until
+   device evidence supports a change.
+   The generated CC0 adversarial fixture has an ETC1S/sRGB variant with four
+   authored mips. Linked-ROM evidence covers select, car 1P/4P, hovercraft, and
+   plane; the Apple M4 Max run selected BC7 for both textures with zero KTX2
+   failures and met the exact-context performance target. Non-block-aligned
+   base dimensions deliberately select RGBA8, while compressed tail mips upload
+   their complete physical 4x4 blocks.
 4. **Projected LOD (implemented):** calibrated bounds use exact object MVP and
    logical viewport height with thresholds, 8% hysteresis, per-view state,
    sparse authored-level fallback, and deterministic split-screen behavior;

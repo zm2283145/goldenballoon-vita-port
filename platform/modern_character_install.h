@@ -53,6 +53,8 @@ typedef struct MdkrModernCharacterInstallResult {
     uint32_t secondary_joints;
     uint64_t encoded_texture_bytes;
     uint64_t decoded_texture_bytes;
+    uint32_t ktx2_textures;
+    uint64_t ktx2_source_bytes;
     uint32_t lod_vertices[4];
     uint32_t lod_triangles[4];
     uint32_t lod_primitives[4];

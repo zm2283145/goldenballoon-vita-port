@@ -542,7 +542,8 @@ They are assembly profiles, not a vague “detail” slider:
 - inspect the exact fixed projected-height bands after package/local bias,
   clamping and sparse-level fallback; live cameras add the documented 8%
   hysteresis guard;
-- choose texture transcode/maximum resolution once KTX2 is implemented;
+- inspect exact KTX2 codec, authored mip range, compressed source bytes, and
+  RGBA-equivalent budget; runtime transcode format is selected per device;
 - optionally build recorded offline simplifications;
 - reject a target when no qualifying LOD exists rather than pretending the
   runtime can invent one;
@@ -723,7 +724,8 @@ stories. Each has an owner in the audit above and must retain its stated gate:
    per-view, live-pose aware, and fail-visible; intersecting/self-overlapping
    transparent triangles inside one primitive and transparency ordering against
    independent vehicle/world render queues still require visual review.
-   KTX2/BasisU import is absent; optional recorded simplification is absent; and
+   KTX2/BasisU intake and capability-selected transcode are implemented with a
+   portable RGBA8 fallback; optional recorded simplification is absent; and
    expanded hair/clearcoat/subsurface/morph capabilities need new authenticated
    format contracts and measured fallbacks.
 8. Modern-character rendering is currently WebGPU-only; OpenGL deliberately

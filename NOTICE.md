@@ -199,6 +199,12 @@ package. Exact source, archive, toolchain, lockfile, and executable hashes are
 recorded in [THIRD_PARTY.md](THIRD_PARTY.md) and the generated adjacent build
 manifest.
 
+The optional high-fidelity custom-character texture path statically compiles a
+bounded Basis Universal KTX2 transcoder and its Zstandard decoder from exact,
+SHA-256-pinned source files. Their complete Apache-2.0 and BSD license texts,
+plus immutable source provenance, are retained in `third_party/basisu/` and
+travel with every native package. No encoder or example texture is included.
+
 `third_party/qrcodegen/qrcodegen.ts`, its C++ port and the generated browser
 artifact `dist/web/party/qrcodegen.js` are Project Nayuki's QR Code generator library at
 commit `2c9044de6b049ca25cb3cd1649ed7e27aa055138`, under the MIT License. Both

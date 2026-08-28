@@ -79,6 +79,16 @@ def main() -> int:
         "third_party/gltf_validator/README.md": (
             "2.0.0-dev.3.10", "Dart SDK 2.19.6", "pubspec.lock",
         ),
+        "third_party/basisu/LICENSE.txt": (
+            "Apache License", "Version 2.0, January 2004",
+        ),
+        "third_party/basisu/Zstd-LICENSE.txt": (
+            "BSD License", "For Zstandard software",
+        ),
+        "third_party/basisu/README.md": (
+            "4d6fc70eaf62ad0558e63e8d97eb9766118327a6",
+            "MDKR_BASISU_LOCAL_CACHE", "No encoder",
+        ),
         "cmake/patches/libdatachannel-windows-mbedtls-verify.patch": (
             "defined(_WIN32) && !USE_MBEDTLS",
             "TLS certificate verification with root CA is not supported on Windows",
@@ -130,6 +140,12 @@ def main() -> int:
             "d7a1cefe85110c1308632d0384b7a67a18c125193e54175c50d1982d8c81a2f4",
         "third_party/gltf_validator/pubspec.lock":
             "9fec69b760a6789506e1d03881e48c0b9024779559b67ba427a1b0309c841749",
+        "third_party/basisu/LICENSE.txt":
+            "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+        "third_party/basisu/Zstd-LICENSE.txt":
+            "2c1a7fa704df8f3a606f6fc010b8b5aaebf403f3aeec339a12048f1ba7331a0b",
+        "third_party/basisu/README.md":
+            "d15b94b7cb320ed39156c8ddf7d8e814185c6d0de51005113f1d18784785975c",
         "cmake/patches/libdatachannel-windows-mbedtls-verify.patch":
             "b47d81ee765b2eed51f75b9cb599522fdd6f9eda7511b025214c63cc4c3336a7",
     }
@@ -196,6 +212,9 @@ def main() -> int:
             "third_party/character_importer/PyInstaller-COPYING.txt",
             "tools/character_importer_build_requirements.txt",
             "third_party/gltf_validator/",
+            "third_party/basisu/",
+            "4d6fc70eaf62ad0558e63e8d97eb9766118327a6",
+            "Zstd-LICENSE.txt",
             "KhronosGroup/glTF-Validator",
             "bcd52cc4ba5f333b2999a58f67cc05ddf28b4fb1",
             "Dart SDK 2.19.6",
@@ -225,6 +244,8 @@ def main() -> int:
             "PyInstaller 6.22.2",
             "Khronos glTF Validator 2.0.0-dev.3.10",
             "third_party/gltf_validator/",
+            "third_party/basisu/",
+            "Basis Universal KTX2",
         ):
             if needle not in notice_text:
                 problems.append(f"NOTICE.md is missing expected text: {needle!r}")

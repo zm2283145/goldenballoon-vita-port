@@ -95,7 +95,7 @@ typedef struct MdkrModernMaterial {
 
 typedef struct MdkrModernTexture {
     uint32_t name;
-    uint32_t mime; /* 1 PNG; other encodings are reserved for later profiles */
+    uint32_t mime; /* 1 PNG, 2 Basis Universal KTX2 */
     uint32_t data_offset;
     uint32_t data_size;
     int32_t wrap_s;
@@ -341,6 +341,8 @@ typedef struct MdkrModernCharacterStats {
     uint32_t secondary_joints;
     uint64_t encoded_texture_bytes;
     uint64_t decoded_texture_bytes;
+    uint32_t ktx2_textures;
+    uint64_t ktx2_source_bytes;
 } MdkrModernCharacterStats;
 
 /* Copies and validates `bytes`; a failed load leaves `out` empty. */

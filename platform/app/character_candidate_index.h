@@ -45,6 +45,13 @@ struct Candidate {
     uint32_t generatedTangentDegenerateUvTriangles = 0u;
     uint32_t tangentFallbackVertices = 0u;
     uint32_t normalMapTangentFallbackVertices = 0u;
+    bool textureFormatDiagnosticsPresent = false;
+    uint32_t ktx2Textures = 0u;
+    uint64_t ktx2SourceBytes = 0u;
+    uint32_t ktx2Etc1sTextures = 0u;
+    uint32_t ktx2UastcTextures = 0u;
+    uint32_t ktx2MipLevelsMin = 0u;
+    uint32_t ktx2MipLevelsMax = 0u;
     uint64_t encodedTextureBytes = 0u;
     uint64_t decodedTextureBytes = 0u;
     bool provenancePresent = false;

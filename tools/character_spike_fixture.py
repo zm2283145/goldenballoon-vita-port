@@ -17,6 +17,7 @@ license still applies to integration code outside this generated fixture.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import struct
@@ -28,6 +29,12 @@ from typing import Iterable
 
 FIXTURE_ID = "org.mdkr.adversarial-humanoid"
 FIXTURE_NAME = "Adversarial Humanoid"
+BODY_KTX2_ETC1S_SRGB = base64.b64decode(
+    "q0tUWCAyMLsNChoKAAAAAAEAAAAIAAAACAAAAAAAAAAAAAAAAQAAAAQAAAABAAAAsAAAACwAAADcAAAAbAAAAEgBAAAAAAAAwQAAAAAAAAAMAgAAAAAAAAEAAAAAAAAAAAAAAAAAAAALAgAAAAAAAAEAAAAAAAAAAAAAAAAAAAAKAgAAAAAAAAEAAAAAAAAAAAAAAAAAAAAJAgAAAAAAAAEAAAAAAAAAAAAAAAAAAAAsAAAAAAAAAAIAKACjAQIAAwMAAAgAAAAAAAAAAAA/AAAAAAAAAAAA/////xIAAABLVFhvcmllbnRhdGlvbgByZAAAACcAAABLVFh3cml0ZXIAdG9rdHggdjQuNC4yIC8gbGlia3R4IHY0LjQuMgAAIQAAAEtUWHdyaXRlclNjUGFyYW1zAC0tZW5jb2RlIGV0YzFzAAAAAAEAAQArAAAABQAAAC0AAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAABwAQAAAAAAADCA5gSAAAAAACCqg9MBAATAAAAAAAACAFgAkAAAAAAAJEMVFVVVQUAwUQAAAAAAAAS4b9VADABAAAAAACAEAImBAgAAAAAkEwjAEwACAAAAAAgAgEBAQEE"
+)
+HAIR_KTX2_ETC1S_SRGB = base64.b64decode(
+    "q0tUWCAyMLsNChoKAAAAAAEAAAAIAAAACAAAAAAAAAAAAAAAAQAAAAQAAAABAAAAsAAAACwAAADcAAAAbAAAAEgBAAAAAAAAwQAAAAAAAAAMAgAAAAAAAAEAAAAAAAAAAAAAAAAAAAALAgAAAAAAAAEAAAAAAAAAAAAAAAAAAAAKAgAAAAAAAAEAAAAAAAAAAAAAAAAAAAAJAgAAAAAAAAEAAAAAAAAAAAAAAAAAAAAsAAAAAAAAAAIAKACjAQIAAwMAAAgAAAAAAAAAAAA/AAAAAAAAAAAA/////xIAAABLVFhvcmllbnRhdGlvbgByZAAAACcAAABLVFh3cml0ZXIAdG9rdHggdjQuNC4yIC8gbGlia3R4IHY0LjQuMgAAIQAAAEtUWHdyaXRlclNjUGFyYW1zAC0tZW5jb2RlIGV0YzFzAAAAAAEAAQArAAAABQAAAC0AAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAABwAQAAAAAAADiApgSMAAAAADChiHCA4AJAAAAAAAAhAAwASAAAAAAgMgCVFVVVQUAwUQAAAAAAAAS4b9VADABAAAAAACAEAImBAgAAAAAkEwjAEwACAAAAAAgAgEBAQEE"
+)
 BIND_POSE_FALLBACK = "$bind"
 FIXTURE_ATTRIBUTION = "Golden Balloon contributors; procedural CC0 fixture"
 FIXTURE_SOURCE_URL = (
@@ -238,7 +245,9 @@ def portrait_png() -> bytes:
     return _png(40, 40, bytes(pixels))
 
 
-def model_glb() -> bytes:
+def model_glb(texture_format: str = "png") -> bytes:
+    if texture_format not in ("png", "ktx2"):
+        raise ValueError("fixture texture format must be png or ktx2")
     builder = BufferBuilder()
     body = Geometry()
     hair = Geometry()
@@ -344,10 +353,12 @@ def model_glb() -> bytes:
         struct.pack(f"<{len(inverse_values)}f", *inverse_values),
         5126, "MAT4", len(node_specs),
     )
-    body_png = _png(1, 1, bytes((204, 112, 62, 255)))
-    hair_png = _png(1, 1, bytes((184, 54, 142, 255)))
-    body_view = builder.add_blob_view(body_png)
-    hair_view = builder.add_blob_view(hair_png)
+    body_image = (BODY_KTX2_ETC1S_SRGB if texture_format == "ktx2" else
+                  _png(1, 1, bytes((204, 112, 62, 255))))
+    hair_image = (HAIR_KTX2_ETC1S_SRGB if texture_format == "ktx2" else
+                  _png(1, 1, bytes((184, 54, 142, 255))))
+    body_view = builder.add_blob_view(body_image)
+    hair_view = builder.add_blob_view(hair_image)
 
     document = {
         "asset": {
@@ -399,15 +410,25 @@ def model_glb() -> bytes:
             },
         ],
         "images": [
-            {"name": "BodyPixel", "mimeType": "image/png",
+            {"name": "BodyPixel", "mimeType":
+             "image/ktx2" if texture_format == "ktx2" else "image/png",
              "bufferView": body_view},
-            {"name": "HairPixel", "mimeType": "image/png",
+            {"name": "HairPixel", "mimeType":
+             "image/ktx2" if texture_format == "ktx2" else "image/png",
              "bufferView": hair_view},
         ],
         "textures": [
-            {"name": "BodyPixel", "source": 0},
-            {"name": "HairPixel", "source": 1},
+            {"name": "BodyPixel", **(
+                {"extensions": {"KHR_texture_basisu": {"source": 0}}}
+                if texture_format == "ktx2" else {"source": 0})},
+            {"name": "HairPixel", **(
+                {"extensions": {"KHR_texture_basisu": {"source": 1}}}
+                if texture_format == "ktx2" else {"source": 1})},
         ],
+        **({
+            "extensionsUsed": ["KHR_texture_basisu"],
+            "extensionsRequired": ["KHR_texture_basisu"],
+        } if texture_format == "ktx2" else {}),
         "skins": [{
             "name": "AdversarialRig",
             "joints": list(range(len(node_specs))),
@@ -510,9 +531,9 @@ def manifest(portrait: bytes) -> dict[str, object]:
     }
 
 
-def write_fixture(directory: Path) -> dict[str, object]:
+def write_fixture(directory: Path, texture_format: str = "png") -> dict[str, object]:
     directory.mkdir(parents=True, exist_ok=True)
-    model = model_glb()
+    model = model_glb(texture_format)
     portrait = portrait_png()
     manifest_bytes = (
         json.dumps(manifest(portrait), indent=2, sort_keys=True) + "\n"
@@ -543,6 +564,7 @@ def write_fixture(directory: Path) -> dict[str, object]:
             "materials": 3,
             "animationless_skin": True,
             "unusual_proportions": True,
+            "texture_format": texture_format,
         },
     }
 
@@ -551,9 +573,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--report", type=Path)
+    parser.add_argument(
+        "--texture-format", choices=("png", "ktx2"), default="png",
+    )
     args = parser.parse_args()
     try:
-        report = write_fixture(args.output_dir.resolve())
+        report = write_fixture(args.output_dir.resolve(), args.texture_format)
         payload = json.dumps(report, indent=2, sort_keys=True) + "\n"
         if args.report is not None:
             args.report.write_text(payload, encoding="utf-8")

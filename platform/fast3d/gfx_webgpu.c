@@ -43,6 +43,9 @@
 #include "gpu_diagnostics.h"
 #include "modern_character_limits.h"
 #include "modern_character_capture_projection.h"
+#ifdef MDKR_CHARACTER_KTX2
+#include "modern_character_ktx2.h"
+#endif
 #include "present_sched.h"
 #include "viewport_route_cache.h"
 
@@ -847,6 +850,9 @@ static MdkrModernCharacterGpuTimingAccumulator
     s_character_gpu_timing_accumulator;
 static bool s_character_gpu_timestamp_supported = false;
 static bool s_character_gpu_inside_pass_supported = false;
+static bool s_character_texture_bc_supported = false;
+static bool s_character_texture_etc2_supported = false;
+static bool s_character_texture_astc_supported = false;
 static bool s_character_gpu_timing_active = false;
 static bool s_character_gpu_timing_begun = false;
 static uint64_t s_character_gpu_timing_generation = 1u;
@@ -995,6 +1001,21 @@ static void wgpu_character_gpu_timing_refresh_features(void) {
             ? MDKR_MODERN_CHARACTER_GPU_TIMING_IDLE
             : MDKR_MODERN_CHARACTER_GPU_TIMING_UNSUPPORTED;
     }
+}
+
+static void wgpu_character_texture_refresh_features(void) {
+    s_character_texture_bc_supported =
+        s_device != NULL &&
+        wgpuDeviceHasFeature(
+            s_device, WGPUFeatureName_TextureCompressionBC) != 0;
+    s_character_texture_etc2_supported =
+        s_device != NULL &&
+        wgpuDeviceHasFeature(
+            s_device, WGPUFeatureName_TextureCompressionETC2) != 0;
+    s_character_texture_astc_supported =
+        s_device != NULL &&
+        wgpuDeviceHasFeature(
+            s_device, WGPUFeatureName_TextureCompressionASTC) != 0;
 }
 
 static void wgpu_character_gpu_timing_next_generation(void) {
@@ -2486,6 +2507,9 @@ bool gfx_webgpu_bringup(void *metal_layer, void *sdl_window,
     bool candidate_unclipped_depth_supported = false;
     bool candidate_timestamp_supported = false;
     bool candidate_inside_pass_supported = false;
+    bool candidate_texture_bc_supported = false;
+    bool candidate_texture_etc2_supported = false;
+    bool candidate_texture_astc_supported = false;
 
     instance = WGPU_FAULT_CREATE(
         BRINGUP_INSTANCE, wgpuCreateInstance(NULL));
@@ -2586,7 +2610,7 @@ bool gfx_webgpu_bringup(void *metal_layer, void *sdl_window,
      * depth — so distant horizon geometry silently vanished (sky slivers over
      * the Dam cliffs; any far terrain on any level). Make the claim honest:
      * request depth-clip-control and set unclippedDepth on the 3D pipelines. */
-    WGPUFeatureName required_features[3];
+    WGPUFeatureName required_features[6];
     size_t required_feature_count = 0u;
     candidate_unclipped_depth_supported =
         !gfx_webgpu_fault_hit(GFX_WEBGPU_FAULT_CAPS_DEPTH_CLIP_ABSENT) &&
@@ -2599,6 +2623,33 @@ bool gfx_webgpu_bringup(void *metal_layer, void *sdl_window,
                 "[webgpu] adapter lacks depth-clip-control: far-plane-crossing "
                 "geometry will use the frontend's homogeneous-z clamp\n");
     }
+#ifdef MDKR_CHARACTER_KTX2
+    const size_t required_feature_count_without_compression =
+        required_feature_count;
+    candidate_texture_bc_supported =
+        wgpuAdapterHasFeature(
+            adapter, WGPUFeatureName_TextureCompressionBC) != 0;
+    candidate_texture_etc2_supported =
+        wgpuAdapterHasFeature(
+            adapter, WGPUFeatureName_TextureCompressionETC2) != 0;
+    candidate_texture_astc_supported =
+        wgpuAdapterHasFeature(
+            adapter, WGPUFeatureName_TextureCompressionASTC) != 0;
+    if (candidate_texture_bc_supported) {
+        required_features[required_feature_count++] =
+            WGPUFeatureName_TextureCompressionBC;
+    }
+    if (candidate_texture_etc2_supported) {
+        required_features[required_feature_count++] =
+            WGPUFeatureName_TextureCompressionETC2;
+    }
+    if (candidate_texture_astc_supported) {
+        required_features[required_feature_count++] =
+            WGPUFeatureName_TextureCompressionASTC;
+    }
+#endif
+    const size_t required_feature_count_without_timing =
+        required_feature_count;
     candidate_timestamp_supported =
         wgpu_character_gpu_timing_requested() &&
         wgpuAdapterHasFeature(adapter, WGPUFeatureName_TimestampQuery) != 0;
@@ -2655,28 +2706,55 @@ bool gfx_webgpu_bringup(void *metal_layer, void *sdl_window,
              * retry once without only the timing features. Do not bypass the
              * deterministic default-device failure point: that test owns the
              * terminal outcome of its selected attempt. */
-            if (candidate_timestamp_supported &&
+            bool optional_feature_fallback_succeeded = false;
+            const bool may_retry_optional_features =
                 !gfx_webgpu_fault_selected(
-                    GFX_WEBGPU_FAULT_BRINGUP_DEVICE_DEFAULTS)) {
+                    GFX_WEBGPU_FAULT_BRINGUP_DEVICE_DEFAULTS);
+            if (candidate_timestamp_supported && may_retry_optional_features) {
                 fprintf(stderr,
                         "[webgpu] optional timestamp feature request failed; retrying without GPU timing\n");
                 candidate_timestamp_supported = false;
                 candidate_inside_pass_supported = false;
                 ddesc.requiredFeatureCount =
-                    candidate_unclipped_depth_supported ? 1u : 0u;
+                    required_feature_count_without_timing;
                 ddesc.requiredFeatures = ddesc.requiredFeatureCount != 0u
                     ? required_features : NULL;
-                if (!wgpu_request_device_attempt(
+                optional_feature_fallback_succeeded =
+                    wgpu_request_device_attempt(
                         instance, adapter, &ddesc, false, &device,
-                        &device_generation, &device_status)) {
+                        &device_generation, &device_status);
+                if (!optional_feature_fallback_succeeded) {
                     fprintf(stderr,
-                            "[webgpu] device request failed after optional-feature fallback (status=%d)\n",
+                            "[webgpu] device request still failed without GPU timing (status=%d)\n",
                             (int)device_status);
-                    goto fail;
                 }
-            } else {
+            }
+#ifdef MDKR_CHARACTER_KTX2
+            if (!optional_feature_fallback_succeeded &&
+                may_retry_optional_features &&
+                (candidate_texture_bc_supported ||
+                 candidate_texture_etc2_supported ||
+                 candidate_texture_astc_supported)) {
                 fprintf(stderr,
-                        "[webgpu] device request failed after default-limits retry (status=%d)\n",
+                        "[webgpu] optional texture-compression feature request failed; retrying with portable RGBA8 fallback\n");
+                candidate_texture_bc_supported = false;
+                candidate_texture_etc2_supported = false;
+                candidate_texture_astc_supported = false;
+                candidate_timestamp_supported = false;
+                candidate_inside_pass_supported = false;
+                ddesc.requiredFeatureCount =
+                    required_feature_count_without_compression;
+                ddesc.requiredFeatures = ddesc.requiredFeatureCount != 0u
+                    ? required_features : NULL;
+                optional_feature_fallback_succeeded =
+                    wgpu_request_device_attempt(
+                        instance, adapter, &ddesc, false, &device,
+                        &device_generation, &device_status);
+            }
+#endif
+            if (!optional_feature_fallback_succeeded) {
+                fprintf(stderr,
+                        "[webgpu] device request failed after optional-feature fallbacks (status=%d)\n",
                         (int)device_status);
                 goto fail;
             }
@@ -2754,10 +2832,26 @@ bool gfx_webgpu_bringup(void *metal_layer, void *sdl_window,
         candidate_inside_pass_supported &&
         wgpuDeviceHasFeature(
             device, WGPU_COMPAT_TIMESTAMP_INSIDE_PASS_FEATURE) != 0;
+    s_character_texture_bc_supported =
+        candidate_texture_bc_supported &&
+        wgpuDeviceHasFeature(
+            device, WGPUFeatureName_TextureCompressionBC) != 0;
+    s_character_texture_etc2_supported =
+        candidate_texture_etc2_supported &&
+        wgpuDeviceHasFeature(
+            device, WGPUFeatureName_TextureCompressionETC2) != 0;
+    s_character_texture_astc_supported =
+        candidate_texture_astc_supported &&
+        wgpuDeviceHasFeature(
+            device, WGPUFeatureName_TextureCompressionASTC) != 0;
     fprintf(stderr,
-            "[WGPU-CHARACTER-GPU] timestamps=%d characterRanges=%d\n",
+            "[WGPU-CHARACTER-GPU] timestamps=%d characterRanges=%d "
+            "textureBC=%d textureETC2=%d textureASTC=%d\n",
             s_character_gpu_timestamp_supported ? 1 : 0,
-            s_character_gpu_inside_pass_supported ? 1 : 0);
+            s_character_gpu_inside_pass_supported ? 1 : 0,
+            s_character_texture_bc_supported ? 1 : 0,
+            s_character_texture_etc2_supported ? 1 : 0,
+            s_character_texture_astc_supported ? 1 : 0);
 
     *out_instance = instance;
     *out_adapter  = adapter;
@@ -2853,6 +2947,7 @@ static bool wgpu_init(void) {
             wgpuDeviceHasFeature(
                 s_device, WGPUFeatureName_DepthClipControl) != 0;
         wgpu_character_gpu_timing_refresh_features();
+        wgpu_character_texture_refresh_features();
         if (s_character_gpu_timestamp_supported) {
             (void)wgpu_character_gpu_timing_resources();
         }
@@ -2883,6 +2978,7 @@ static bool wgpu_init(void) {
     }
     s_surface_format = (WGPUTextureFormat)fmt;
     wgpu_character_gpu_timing_refresh_features();
+    wgpu_character_texture_refresh_features();
     if (s_character_gpu_timestamp_supported) {
         (void)wgpu_character_gpu_timing_resources();
     }
@@ -9904,7 +10000,46 @@ static uint64_t s_skinned_triangles = 0u;
 static uint64_t s_skinned_refused_draws = 0u;
 static uint64_t s_skinned_camera_eye_draws = 0u;
 static uint64_t s_skinned_camera_fallback_draws = 0u;
+static uint64_t s_skinned_ktx2_uploads = 0u;
+static uint64_t s_skinned_ktx2_bc7_uploads = 0u;
+static uint64_t s_skinned_ktx2_etc2_uploads = 0u;
+static uint64_t s_skinned_ktx2_astc_uploads = 0u;
+static uint64_t s_skinned_ktx2_rgba_uploads = 0u;
+static uint64_t s_skinned_ktx2_transcode_failures = 0u;
+static uint64_t s_skinned_ktx2_gpu_bytes = 0u;
 static bool wgpu_skinned_layout(void);
+
+#ifdef MDKR_CHARACTER_KTX2
+static MdkrKtx2TargetFormat wgpu_skinned_ktx2_target(
+    WGPUTextureFormat *texture_format) {
+    if (s_character_texture_bc_supported) {
+        *texture_format = WGPUTextureFormat_BC7RGBAUnorm;
+        return MDKR_KTX2_TARGET_BC7;
+    }
+    if (s_character_texture_astc_supported) {
+        *texture_format = WGPUTextureFormat_ASTC4x4Unorm;
+        return MDKR_KTX2_TARGET_ASTC_4X4;
+    }
+    if (s_character_texture_etc2_supported) {
+        *texture_format = WGPUTextureFormat_ETC2RGBA8Unorm;
+        return MDKR_KTX2_TARGET_ETC2_RGBA8;
+    }
+    *texture_format = WGPUTextureFormat_RGBA8Unorm;
+    return MDKR_KTX2_TARGET_RGBA8;
+}
+
+static void wgpu_skinned_note_ktx2_target(
+    MdkrKtx2TargetFormat target, size_t bytes) {
+    s_skinned_ktx2_uploads++;
+    s_skinned_ktx2_gpu_bytes += bytes;
+    switch (target) {
+    case MDKR_KTX2_TARGET_BC7: s_skinned_ktx2_bc7_uploads++; break;
+    case MDKR_KTX2_TARGET_ETC2_RGBA8: s_skinned_ktx2_etc2_uploads++; break;
+    case MDKR_KTX2_TARGET_ASTC_4X4: s_skinned_ktx2_astc_uploads++; break;
+    case MDKR_KTX2_TARGET_RGBA8: s_skinned_ktx2_rgba_uploads++; break;
+    }
+}
+#endif
 
 static void wgpu_skinned_shadow_bind_groups_invalidate(void) {
     for (int entry_index = 0; entry_index < s_skinned_count;
@@ -10570,6 +10705,118 @@ static struct WgpuSkinnedEntry *wgpu_skinned_resources(
     for (uint32_t texture_index = 0u; texture_index < entry->texture_count; texture_index++) {
         const struct GfxModernTexture *source = &asset->textures[texture_index];
         WGPUTextureDescriptor descriptor = {0};
+#ifdef MDKR_CHARACTER_KTX2
+        if (source->ktx2_data != NULL && source->ktx2_size != 0u) {
+            MdkrKtx2Info info = {0};
+            MdkrKtx2Image image = {0};
+            WGPUTextureFormat gpu_format = WGPUTextureFormat_Undefined;
+            MdkrKtx2TargetFormat target =
+                wgpu_skinned_ktx2_target(&gpu_format);
+            char transcode_error[192];
+            if (!mdkr_ktx2_inspect(
+                    source->ktx2_data, source->ktx2_size, &info,
+                    transcode_error, sizeof(transcode_error)) ||
+                info.width != (uint32_t)source->level_width[0] ||
+                info.height != (uint32_t)source->level_height[0] ||
+                ((source->ktx2_flags == 1u) != (info.srgb != 0u))) {
+                fprintf(stderr,
+                        "[WGPU-CHARACTER-KTX2] texture=%u rejected: %s%s\n",
+                        texture_index,
+                        transcode_error[0] != '\0' ? transcode_error
+                                                   : "metadata mismatch",
+                        transcode_error[0] != '\0' ? "" :
+                            " (dimensions, role, or transfer function)");
+                s_skinned_ktx2_transcode_failures++;
+                goto fail;
+            }
+            if (target != MDKR_KTX2_TARGET_RGBA8 &&
+                ((info.width & 3u) != 0u || (info.height & 3u) != 0u)) {
+                /* WebGPU compressed texture creation requires a block-aligned
+                 * base extent. Padding would change normalized sampling and
+                 * authored mip semantics, so preserve exact appearance with
+                 * the mandatory portable target instead. */
+                target = MDKR_KTX2_TARGET_RGBA8;
+                gpu_format = WGPUTextureFormat_RGBA8Unorm;
+            }
+            if (!mdkr_ktx2_transcode(
+                    source->ktx2_data, source->ktx2_size, target, &image,
+                    transcode_error, sizeof(transcode_error))) {
+                /* A device-native target is an optimization, never a reason
+                 * to hide an otherwise valid character. Retry once through
+                 * the universally supported bounded RGBA path. */
+                if (target == MDKR_KTX2_TARGET_RGBA8 ||
+                    !mdkr_ktx2_transcode(
+                        source->ktx2_data, source->ktx2_size,
+                        MDKR_KTX2_TARGET_RGBA8, &image, transcode_error,
+                        sizeof(transcode_error))) {
+                    fprintf(stderr,
+                            "[WGPU-CHARACTER-KTX2] texture=%u transcode failed: %s\n",
+                            texture_index, transcode_error);
+                    s_skinned_ktx2_transcode_failures++;
+                    goto fail;
+                }
+                fprintf(stderr,
+                        "[WGPU-CHARACTER-KTX2] texture=%u %s transcode failed; using bounded RGBA8 fallback\n",
+                        texture_index, mdkr_ktx2_target_name(target));
+                target = MDKR_KTX2_TARGET_RGBA8;
+                gpu_format = WGPUTextureFormat_RGBA8Unorm;
+            }
+            descriptor.usage =
+                WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+            descriptor.dimension = WGPUTextureDimension_2D;
+            descriptor.size.width = info.width;
+            descriptor.size.height = info.height;
+            descriptor.size.depthOrArrayLayers = 1u;
+            descriptor.format = gpu_format;
+            descriptor.mipLevelCount = image.level_count;
+            descriptor.sampleCount = 1u;
+            entry->textures[texture_index] = WGPU_FAULT_CREATE(
+                SKINNED_TEXTURE,
+                wgpuDeviceCreateTexture(s_device, &descriptor));
+            if (entry->textures[texture_index] == NULL) {
+                mdkr_ktx2_image_release(&image);
+                goto fail;
+            }
+            for (uint32_t level = 0u; level < image.level_count; ++level) {
+                const MdkrKtx2Level *source_level = &image.levels[level];
+                WGPUTexelCopyTextureInfo destination = {0};
+                WGPUTexelCopyBufferLayout layout = {0};
+                WGPUExtent3D extent = {
+                    source_level->width, source_level->height, 1u};
+                if (target != MDKR_KTX2_TARGET_RGBA8) {
+                    /* WebGPU addresses the complete physical block at the
+                     * 2x2/1x1 tail of a compressed mip chain. BasisU already
+                     * returned that padded block and its exact row stride. */
+                    if (extent.width < 4u) extent.width = 4u;
+                    if (extent.height < 4u) extent.height = 4u;
+                }
+                destination.texture = entry->textures[texture_index];
+                destination.mipLevel = level;
+                destination.aspect = WGPUTextureAspect_All;
+                layout.bytesPerRow = source_level->bytes_per_row;
+                layout.rowsPerImage = source_level->rows;
+                wgpuQueueWriteTexture(
+                    s_queue, &destination, source_level->data,
+                    source_level->size, &layout, &extent);
+            }
+            wgpu_skinned_note_ktx2_target(target, image.allocation_size);
+            fprintf(stderr,
+                    "[WGPU-CHARACTER-KTX2] texture=%u format=%s source=%s "
+                    "size=%ux%u levels=%u gpuBytes=%zu\n",
+                    texture_index, mdkr_ktx2_target_name(target),
+                    info.uastc != 0u ? "uastc" : "etc1s", info.width,
+                    info.height, image.level_count, image.allocation_size);
+            mdkr_ktx2_image_release(&image);
+            entry->views[texture_index] = WGPU_FAULT_CREATE(
+                SKINNED_VIEW,
+                wgpuTextureCreateView(
+                    entry->textures[texture_index], NULL));
+            if (entry->views[texture_index] == NULL) goto fail;
+            continue;
+        }
+#else
+        if (source->ktx2_data != NULL) goto fail;
+#endif
         if (source->level_count <= 0 || source->level_count > 13 || source->level_rgba[0] == NULL ||
             source->level_width[0] <= 0 || source->level_height[0] <= 0 ||
             (uint32_t)source->level_width[0] > s_max_tex_dim ||
@@ -13175,6 +13422,9 @@ static void wgpu_shutdown(void) {
     s_unclipped_depth_supported = false;
     s_character_gpu_timestamp_supported = false;
     s_character_gpu_inside_pass_supported = false;
+    s_character_texture_bc_supported = false;
+    s_character_texture_etc2_supported = false;
+    s_character_texture_astc_supported = false;
     s_character_gpu_timestamp_period_ns = 0.0f;
     s_character_gpu_timing_status =
         MDKR_MODERN_CHARACTER_GPU_TIMING_UNSUPPORTED;
@@ -13214,7 +13464,9 @@ static void wgpu_shutdown(void) {
             "shadowDrawn=%llu shadowReceived=%llu "
             "shadowReceiveFallbacks=%llu shadowDropped=%llu "
             "shadowOverflows=%llu cameraEyeDraws=%llu "
-            "cameraFallbackDraws=%llu\n",
+            "cameraFallbackDraws=%llu ktx2Uploads=%llu ktx2BC7=%llu "
+            "ktx2ETC2=%llu ktx2ASTC=%llu ktx2RGBA=%llu "
+            "ktx2Failures=%llu ktx2GpuBytes=%llu\n",
             (unsigned long long)s_skinned_asset_uploads,
             (unsigned long long)s_skinned_draws,
             (unsigned long long)s_skinned_triangles,
@@ -13226,13 +13478,27 @@ static void wgpu_shutdown(void) {
             (unsigned long long)s_skinned_shadow_dropped,
             (unsigned long long)s_skinned_shadow_overflows,
             (unsigned long long)s_skinned_camera_eye_draws,
-            (unsigned long long)s_skinned_camera_fallback_draws);
+            (unsigned long long)s_skinned_camera_fallback_draws,
+            (unsigned long long)s_skinned_ktx2_uploads,
+            (unsigned long long)s_skinned_ktx2_bc7_uploads,
+            (unsigned long long)s_skinned_ktx2_etc2_uploads,
+            (unsigned long long)s_skinned_ktx2_astc_uploads,
+            (unsigned long long)s_skinned_ktx2_rgba_uploads,
+            (unsigned long long)s_skinned_ktx2_transcode_failures,
+            (unsigned long long)s_skinned_ktx2_gpu_bytes);
     s_skinned_asset_uploads = 0u;
     s_skinned_draws = 0u;
     s_skinned_triangles = 0u;
     s_skinned_refused_draws = 0u;
     s_skinned_camera_eye_draws = 0u;
     s_skinned_camera_fallback_draws = 0u;
+    s_skinned_ktx2_uploads = 0u;
+    s_skinned_ktx2_bc7_uploads = 0u;
+    s_skinned_ktx2_etc2_uploads = 0u;
+    s_skinned_ktx2_astc_uploads = 0u;
+    s_skinned_ktx2_rgba_uploads = 0u;
+    s_skinned_ktx2_transcode_failures = 0u;
+    s_skinned_ktx2_gpu_bytes = 0u;
     s_skinned_shadow_captured = 0u;
     s_skinned_shadow_drawn = 0u;
     s_skinned_shadow_received = 0u;

@@ -571,6 +571,12 @@ if [[ "${APP_BUNDLE_INPUT}" == true ]]; then
                     # Exact, hash-pinned license/source-form manifest for the
                     # static native Phone Party transport and QR generator.
                     ;;
+                Contents/Resources/ThirdParty/BasisU-LICENSE.txt|\
+                Contents/Resources/ThirdParty/BasisU-Zstd-LICENSE.txt|\
+                Contents/Resources/ThirdParty/BasisU-README.md)
+                    # Exact runtime transcoder terms and immutable source
+                    # provenance; verify_unsigned_release.sh pins every file.
+                    ;;
                 Contents/Resources/ThirdParty/CharacterImporter-MANIFEST.json|\
                 Contents/Resources/ThirdParty/CharacterImporter-CPython-LICENSE.txt|\
                 Contents/Resources/ThirdParty/CharacterImporter-PyInstaller-COPYING.txt)

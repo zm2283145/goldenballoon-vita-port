@@ -524,6 +524,12 @@ def _exact_context(
         raise EvidenceError(
             f"{label} screenshot run did not render a clean modern character"
         )
+    ktx2_rows = re.findall(
+        r"\[WGPU-MODERN-CHARACTER\].*?ktx2Uploads=(\d+).*?"
+        r"ktx2BC7=(\d+).*?ktx2ETC2=(\d+).*?ktx2ASTC=(\d+).*?"
+        r"ktx2RGBA=(\d+)",
+        capture_output,
+    )
     ppm_files = sorted(arm.glob("frame_*.ppm"))
     if len(ppm_files) != 1:
         raise EvidenceError(f"{label} produced {len(ppm_files)} screenshots")
@@ -543,6 +549,13 @@ def _exact_context(
             **_file_record(screenshot),
         },
         "log": log_name,
+        "ktx2": {
+            "uploads": int(ktx2_rows[-1][0]) if ktx2_rows else 0,
+            "bc7": int(ktx2_rows[-1][1]) if ktx2_rows else 0,
+            "etc2": int(ktx2_rows[-1][2]) if ktx2_rows else 0,
+            "astc": int(ktx2_rows[-1][3]) if ktx2_rows else 0,
+            "rgba8": int(ktx2_rows[-1][4]) if ktx2_rows else 0,
+        },
     })
     return parsed
 
@@ -577,6 +590,9 @@ def run_evidence(args: argparse.Namespace) -> dict[str, Any]:
     if not os.access(binary, os.X_OK):
         raise EvidenceError("selected game binary is not executable")
     fixture_source = args.source == "fixture"
+    texture_format = getattr(args, "texture_format", "png")
+    if not fixture_source and texture_format != "png":
+        raise EvidenceError("--texture-format applies only to the generated fixture")
     if args.synthetic_validation_seam and not fixture_source:
         raise EvidenceError(
             "the synthetic validation seam is forbidden for external sources"
@@ -611,7 +627,7 @@ def run_evidence(args: argparse.Namespace) -> dict[str, Any]:
         characters = work / "characters"
         package = work / "candidate.mdkrchar"
         if fixture_source:
-            fixture_report = fixture.write_fixture(source_work)
+            fixture_report = fixture.write_fixture(source_work, texture_format)
             model = source_work / "model.glb"
             portrait = source_work / "portrait.png"
             manifest_path = source_work / "manifest.json"
@@ -695,6 +711,8 @@ def run_evidence(args: argparse.Namespace) -> dict[str, Any]:
             raise EvidenceError("installation omitted compiler or validator evidence")
         if report.get("rig_reviewed") is not True or report.get("rig_roles") != 16:
             raise EvidenceError("installed source is not a reviewed 16-role humanoid")
+        if texture_format == "ktx2" and report.get("ktx2_texture_count") != 2:
+            raise EvidenceError("generated KTX2 fixture did not retain both textures")
 
         context_results = []
         comparison_environment = None
@@ -703,6 +721,10 @@ def run_evidence(args: argparse.Namespace) -> dict[str, Any]:
                 binary, rom, characters, install_result["id"], context,
                 players, semantic, work, evidence, secrets,
             )
+            if texture_format == "ktx2" and result["ktx2"]["uploads"] <= 0:
+                raise EvidenceError(
+                    f"{context} evidence did not upload a KTX2 texture"
+                )
             if context == "select" and result["contacts"]["solves"] != 0:
                 raise EvidenceError("select evidence fabricated vehicle contacts")
             if context != "select" and result["contacts"]["solves"] <= 0:
@@ -773,6 +795,9 @@ def run_evidence(args: argparse.Namespace) -> dict[str, Any]:
                 "triangles": report.get("triangles"),
                 "materials": report.get("materials"),
                 "textures": report.get("textures"),
+                "texture_format": texture_format,
+                "ktx2_textures": report.get("ktx2_texture_count"),
+                "ktx2_source_bytes": report.get("ktx2_source_bytes"),
                 "joints": report.get("joints"),
                 "animations": report.get("animations"),
                 "motion_channels": report.get("motion_channels"),
@@ -815,6 +840,10 @@ def main() -> int:
     parser.add_argument("--build", type=Path, default=ROOT / "build")
     parser.add_argument("--binary", type=Path)
     parser.add_argument("--validator", type=Path)
+    parser.add_argument(
+        "--texture-format", choices=("png", "ktx2"), default="png",
+        help="generated fixture texture delivery used for runtime evidence",
+    )
     parser.add_argument(
         "--synthetic-validation-seam", action="store_true",
         help="CI-only: permitted exclusively with --source fixture",

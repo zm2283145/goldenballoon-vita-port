@@ -44,7 +44,10 @@ int main() {
     expect(v6Insertion != std::string::npos,
            "version-six tangent insertion point is present");
     fields.insert(v6Insertion, "\t2\t1\t5\t7\t11\t3");
-    const std::string valid = "mdkr-character-candidate-v6\n" + fields + "\n";
+    const std::string v6Fields = fields;
+    fields.insert(fields.rfind("\t1\t43432d42592d342e30"),
+                  "\t1\t512\t1\t0\t4\t4");
+    const std::string valid = "mdkr-character-candidate-v7\n" + fields + "\n";
     CharacterCandidateIndex::Candidate candidate;
     expect(CharacterCandidateIndex::parse(valid, candidate),
            "valid candidate index parses");
@@ -66,6 +69,13 @@ int main() {
                candidate.generatedTangentDegenerateUvTriangles == 7u &&
                candidate.tangentFallbackVertices == 11u &&
                candidate.normalMapTangentFallbackVertices == 3u &&
+               candidate.textureFormatDiagnosticsPresent &&
+               candidate.ktx2Textures == 1u &&
+               candidate.ktx2SourceBytes == 512u &&
+               candidate.ktx2Etc1sTextures == 1u &&
+               candidate.ktx2UastcTextures == 0u &&
+               candidate.ktx2MipLevelsMin == 4u &&
+               candidate.ktx2MipLevelsMax == 4u &&
                candidate.animationChannels == 30u &&
                candidate.animationKeys == 400u &&
                candidate.semanticIntentPresent &&
@@ -113,7 +123,7 @@ int main() {
     {
         std::string overlappingIntent = valid;
         const size_t intent =
-            overlappingIntent.rfind("\t1\t0\t2\t1\t5\t7\t11\t3\t1\t43432d42592d342e30");
+            overlappingIntent.rfind("\t1\t0\t2\t1\t5\t7\t11\t3\t1\t512\t1\t0\t4\t4\t1\t43432d42592d342e30");
         expect(intent != std::string::npos,
                "candidate animation-intent fixture is present");
         overlappingIntent.replace(intent, 4u, "\t1\t1");
@@ -131,9 +141,18 @@ int main() {
                "version-five candidate summaries migrate with explicit unavailable tangent diagnostics");
     }
     {
+        CharacterCandidateIndex::Candidate v6Candidate;
+        expect(CharacterCandidateIndex::parse(
+                   "mdkr-character-candidate-v6\n" + v6Fields + "\n",
+                   v6Candidate) &&
+                   v6Candidate.tangentDiagnosticsPresent &&
+                   !v6Candidate.textureFormatDiagnosticsPresent,
+               "version-six candidate summaries migrate with explicit unavailable texture diagnostics");
+    }
+    {
         std::string invalidTangent = valid;
         const size_t tangent =
-            invalidTangent.rfind("\t2\t1\t5\t7\t11\t3\t1\t43432d42592d342e30");
+            invalidTangent.rfind("\t2\t1\t5\t7\t11\t3\t1\t512\t1\t0\t4\t4\t1\t43432d42592d342e30");
         expect(tangent != std::string::npos,
                "tangent diagnostic fixture is present");
         const std::string validCounts = "\t2\t1\t5\t7\t11\t3";
@@ -141,6 +160,30 @@ int main() {
                                "\t2\t1\t5\t7\t2\t3");
         expect(!CharacterCandidateIndex::parse(invalidTangent, candidate),
                "normal-map tangent fallback cannot exceed all fallback vertices");
+    }
+    {
+        std::string inconsistentTextures = valid;
+        const std::string textureFields = "\t1\t512\t1\t0\t4\t4";
+        const size_t texture = inconsistentTextures.rfind(textureFields);
+        expect(texture != std::string::npos,
+               "texture diagnostic fixture is present");
+        inconsistentTextures.replace(
+            texture, textureFields.size(), "\t1\t512\t1\t1\t4\t4");
+        expect(!CharacterCandidateIndex::parse(
+                   inconsistentTextures, candidate),
+               "KTX2 codec counts must equal the texture count");
+    }
+    {
+        std::string impossibleTextureMips = valid;
+        const std::string textureFields = "\t1\t512\t1\t0\t4\t4";
+        const size_t texture = impossibleTextureMips.rfind(textureFields);
+        expect(texture != std::string::npos,
+               "texture mip diagnostic fixture is present");
+        impossibleTextureMips.replace(
+            texture, textureFields.size(), "\t1\t512\t1\t0\t4\t14");
+        expect(!CharacterCandidateIndex::parse(
+                   impossibleTextureMips, candidate),
+               "KTX2 summary mip bounds respect the runtime ceiling");
     }
     {
         const size_t provenance = valid.rfind("\t1\t43432d42592d342e30");

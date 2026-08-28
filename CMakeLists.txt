@@ -87,6 +87,12 @@ endif()
 # Python contract checks -- extracted to keep the build definition below from
 # being buried under a thousand lines of test registration. See that file's
 # header for why it is included at this exact point.
+option(MDKR_CHARACTER_KTX2
+       "Enable bounded Basis Universal transcoding for custom-character KTX2" ON)
+if(MDKR_CHARACTER_KTX2)
+    enable_language(CXX)
+    include(${CMAKE_SOURCE_DIR}/cmake/character_basisu.cmake)
+endif()
 include(${CMAKE_SOURCE_DIR}/cmake/tests.cmake)
 
 if(NOT EMSCRIPTEN)
@@ -741,6 +747,12 @@ if(NOT EMSCRIPTEN)
     if(MDKR_WEBGPU_BACKEND)
         target_compile_definitions(${MDKR_TARGET} PRIVATE MDKR_WEBGPU_BACKEND)
         target_link_libraries(${MDKR_TARGET} PRIVATE webgpu)
+        if(MDKR_CHARACTER_KTX2)
+            target_compile_definitions(${MDKR_TARGET} PRIVATE
+                MDKR_CHARACTER_KTX2=1)
+            target_link_libraries(${MDKR_TARGET} PRIVATE
+                mdkr_character_ktx2_bridge)
+        endif()
     endif()
 
     # =======================================================================
@@ -2240,6 +2252,11 @@ else()
     # ======================================================================
     target_compile_definitions(${MDKR_TARGET} PRIVATE MDKR_WEBGPU_BACKEND)
     target_link_libraries(${MDKR_TARGET} PRIVATE webgpu)   # --use-port=emdawnwebgpu
+    if(MDKR_CHARACTER_KTX2)
+        target_compile_definitions(${MDKR_TARGET} PRIVATE MDKR_CHARACTER_KTX2=1)
+        target_link_libraries(${MDKR_TARGET} PRIVATE
+            mdkr_character_ktx2_bridge)
+    endif()
     target_compile_options(${MDKR_TARGET} PRIVATE "-sUSE_SDL=2")
     target_link_options(${MDKR_TARGET} PRIVATE
         "-sUSE_SDL=2"

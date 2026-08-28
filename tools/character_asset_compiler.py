@@ -139,7 +139,7 @@ SOURCE_FORWARD_ROTATIONS = {
 }
 PATH_IDS = {"translation": 0, "rotation": 1, "scale": 2, "weights": 3}
 INTERPOLATION_IDS = {"LINEAR": 0, "STEP": 1, "CUBICSPLINE": 2}
-MIME_IDS = {"image/png": 1}
+MIME_IDS = {"image/png": 1, "image/ktx2": 2}
 SEMANTIC_DISABLED = 1 << 1
 SEMANTIC_MASK_BITS = {
     "fallback": 1 << 0,
@@ -632,7 +632,12 @@ def _image_bytes(document: dict[str, Any], binary: bytes,
             or offset < 0 or size <= 0 or offset + size > len(binary)):
         raise CompileError(f"image[{image_index}] exceeds the GLB BIN chunk")
     payload = binary[offset:offset + size]
-    width, height = _png_dimensions(payload, image_index)
+    if mime == "image/png":
+        width, height = _png_dimensions(payload, image_index)
+    else:
+        inspected = probe._inspect_texture_ktx2(payload, image_index)
+        width = int(inspected["width"])
+        height = int(inspected["height"])
     return payload, MIME_IDS[mime], width, height
 
 
@@ -641,11 +646,13 @@ def _texture_source(texture: dict[str, Any]) -> int:
     if not isinstance(extensions, dict):
         raise CompileError("texture extensions must be an object")
     basis = extensions.get("KHR_texture_basisu")
+    if "KHR_texture_basisu" in extensions and not isinstance(basis, dict):
+        raise CompileError("KHR_texture_basisu must be an object")
     if isinstance(basis, dict):
-        raise CompileError(
-            "KHR_texture_basisu is reserved for a later renderer profile; "
-            "modern-skeletal-v1 requires embedded PNG images"
-        )
+        source = basis.get("source")
+        if not isinstance(source, int) or isinstance(source, bool):
+            raise CompileError("KHR_texture_basisu does not name an image source")
+        return source
     source = texture.get("source")
     if not isinstance(source, int) or isinstance(source, bool):
         raise CompileError("texture does not name an image source")
@@ -939,14 +946,40 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
     texture_data = bytearray()
     texture_records = []
     decoded_texture_bytes = 0
+    ktx2_texture_count = 0
+    ktx2_source_bytes = 0
+    ktx2_etc1s_count = 0
+    ktx2_uastc_count = 0
+    ktx2_mip_levels: list[int] = []
     samplers = _array(document, "samplers")
     for texture_index, texture in enumerate(textures_source):
         if not isinstance(texture, dict):
             raise CompileError(f"texture[{texture_index}] must be an object")
+        image_index = _texture_source(texture)
         payload, mime_id, width, height = _image_bytes(
-            document, binary, _texture_source(texture)
+            document, binary, image_index
         )
-        decoded_texture_bytes += _rgba_mip_bytes(width, height)
+        if mime_id == MIME_IDS["image/ktx2"]:
+            ktx2 = probe._inspect_texture_ktx2(payload, image_index)
+            role = texture_roles[texture_index] or 1
+            expects_srgb = role == 1
+            if bool(ktx2["srgb"]) != expects_srgb:
+                semantic = "sRGB color/emissive" if expects_srgb else "linear data/normal"
+                encoded = "sRGB" if ktx2["srgb"] else "linear"
+                raise CompileError(
+                    f"texture[{texture_index}] uses {encoded} KTX2 transfer "
+                    f"metadata but its material role requires {semantic} data"
+                )
+            ktx2_texture_count += 1
+            ktx2_source_bytes += len(payload)
+            if ktx2["uastc"]:
+                ktx2_uastc_count += 1
+            else:
+                ktx2_etc1s_count += 1
+            ktx2_mip_levels.append(int(ktx2["levels"]))
+            decoded_texture_bytes += int(ktx2["decoded_bytes"])
+        else:
+            decoded_texture_bytes += _rgba_mip_bytes(width, height)
         if decoded_texture_bytes > MAX_DECODED_TEXTURE_BYTES:
             raise CompileError("decoded RGBA character textures exceed the 512 MiB v1 budget")
         data_offset = len(texture_data)
@@ -1544,6 +1577,12 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
         "textures": len(texture_records),
         "encoded_texture_bytes": len(texture_data),
         "decoded_texture_bytes": decoded_texture_bytes,
+        "ktx2_texture_count": ktx2_texture_count,
+        "ktx2_source_bytes": ktx2_source_bytes,
+        "ktx2_etc1s_count": ktx2_etc1s_count,
+        "ktx2_uastc_count": ktx2_uastc_count,
+        "ktx2_mip_levels_min": min(ktx2_mip_levels, default=0),
+        "ktx2_mip_levels_max": max(ktx2_mip_levels, default=0),
         "authored_tangent_primitives": authored_tangent_primitives,
         "generated_tangent_primitives": generated_tangent_primitives,
         "authored_tangent_repaired_vertices": (

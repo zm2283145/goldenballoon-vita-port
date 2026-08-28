@@ -75,6 +75,7 @@ LICENSE_NAMES = {
     "copyright.txt",
 }
 SUPPORTED_REQUIRED_EXTENSIONS = {
+    "KHR_texture_basisu",
     "MSFT_lod",
 }
 GAMEPLAY_DONORS = {
@@ -637,6 +638,120 @@ def _inspect_texture_png(
             raise ProbeError(f"{label} PNG has an unknown critical chunk")
         offset = end
     raise ProbeError(f"{label} PNG is missing IEND")
+
+
+def _inspect_texture_ktx2(
+    data: bytes | memoryview, image_index: int
+) -> dict[str, int | bool]:
+    """Bound the exact 2D BasisU/KTX2 profile consumed by the renderer.
+
+    The pinned runtime transcoder independently authenticates the DFD,
+    codebooks, and every selected mip before GPU upload. This intake pass owns
+    the cheap container/range checks so malformed offsets cannot turn into
+    expensive native work during review.
+    """
+    label = f"images[{image_index}]"
+    source = memoryview(data)
+    identifier = b"\xABKTX 20\xBB\r\n\x1A\n"
+    if len(source) < 104 or bytes(source[:12]) != identifier:
+        raise ProbeError(f"{label} is not a KTX2 file")
+    (
+        vk_format, type_size, width, height, depth, layers, faces, levels,
+        supercompression, dfd_offset, dfd_length, kvd_offset, kvd_length,
+        sgd_offset, sgd_length,
+    ) = struct.unpack_from("<13I2Q", source, 12)
+    if vk_format != 0 or type_size != 1:
+        raise ProbeError(f"{label} KTX2 must contain Basis Universal payloads")
+    if (
+        width == 0 or height == 0 or depth != 0 or layers != 0 or faces != 1
+        or width > MAX_TEXTURE_DIMENSION or height > MAX_TEXTURE_DIMENSION
+    ):
+        raise ProbeError(
+            f"{label} KTX2 must be one 2D image no larger than "
+            f"{MAX_TEXTURE_DIMENSION}x{MAX_TEXTURE_DIMENSION}"
+        )
+    maximum_levels = max(width, height).bit_length()
+    if levels == 0 or levels > maximum_levels:
+        raise ProbeError(f"{label} KTX2 has an unsupported mip count")
+    if supercompression not in (0, 1, 2):
+        raise ProbeError(
+            f"{label} KTX2 uses unsupported supercompression scheme "
+            f"{supercompression}"
+        )
+
+    level_index_end = 80 + levels * 24
+    if level_index_end > len(source):
+        raise ProbeError(f"{label} KTX2 level index is truncated")
+
+    occupied: list[tuple[int, int, str]] = [(0, level_index_end, "header")]
+
+    def region(offset: int, length: int, name: str, *, alignment: int = 1) -> None:
+        if length == 0:
+            if offset != 0:
+                raise ProbeError(f"{label} KTX2 empty {name} has a nonzero offset")
+            return
+        if offset < level_index_end or offset % alignment != 0 or offset + length > len(source):
+            raise ProbeError(f"{label} KTX2 {name} range is invalid")
+        occupied.append((offset, offset + length, name))
+
+    if dfd_length not in (44, 60):
+        raise ProbeError(f"{label} KTX2 has an unsupported BasisU DFD")
+    region(dfd_offset, dfd_length, "DFD", alignment=4)
+    region(kvd_offset, kvd_length, "key/value data", alignment=4)
+    region(sgd_offset, sgd_length, "supercompression global data", alignment=8)
+
+    decoded_bytes = 0
+    level_width = width
+    level_height = height
+    for level in range(levels):
+        offset, length, uncompressed = struct.unpack_from(
+            "<QQQ", source, 80 + level * 24
+        )
+        if length == 0:
+            raise ProbeError(f"{label} KTX2 mip {level} is empty")
+        # BasisLZ and UASTC levels are byte-oriented; the KTX2 writer may pack
+        # tiny tail mips back-to-back without block alignment.
+        region(offset, length, f"mip {level}")
+        if supercompression == 1 and uncompressed != 0:
+            raise ProbeError(
+                f"{label} KTX2 BasisLZ mip {level} has an invalid expanded size"
+            )
+        if supercompression == 2 and uncompressed == 0:
+            raise ProbeError(
+                f"{label} KTX2 Zstandard mip {level} omits its expanded size"
+            )
+        decoded_bytes += level_width * level_height * 4
+        if decoded_bytes > MAX_DECODED_TEXTURE_BYTES:
+            raise ProbeError(f"{label} KTX2 exceeds the decoded texture budget")
+        level_width = max(1, level_width // 2)
+        level_height = max(1, level_height // 2)
+
+    occupied.sort()
+    for previous, current in zip(occupied, occupied[1:]):
+        if current[0] < previous[1]:
+            raise ProbeError(
+                f"{label} KTX2 {current[2]} overlaps {previous[2]}"
+            )
+
+    total_dfd = struct.unpack_from("<I", source, dfd_offset)[0]
+    dfd_bits = struct.unpack_from("<I", source, dfd_offset + 12)[0]
+    colour_model = dfd_bits & 0xFF
+    transfer = (dfd_bits >> 16) & 0xFF
+    if total_dfd != dfd_length or colour_model not in (163, 166) or transfer not in (1, 2):
+        raise ProbeError(f"{label} KTX2 BasisU DFD is invalid")
+    if ((colour_model == 163 and supercompression != 1) or
+            (colour_model == 166 and supercompression not in (0, 2))):
+        raise ProbeError(
+            f"{label} KTX2 BasisU payload and supercompression disagree"
+        )
+    return {
+        "width": width,
+        "height": height,
+        "levels": levels,
+        "decoded_bytes": decoded_bytes,
+        "srgb": transfer == 2,
+        "uastc": colour_model == 166,
+    }
 
 
 def package_members_for_schema(schema: object, portable: bool = False) -> tuple[str, ...]:
@@ -1219,8 +1334,29 @@ def _validate_glb_scene_and_materials(
             continue
         optional_name(texture, prefix)
         source = texture.get("source")
-        if not _gltf_integer(source) or source >= len(images):
+        extensions = texture.get("extensions", {})
+        has_basis = (
+            isinstance(extensions, dict) and
+            "KHR_texture_basisu" in extensions
+        )
+        basis = extensions.get("KHR_texture_basisu") if has_basis else None
+        if has_basis:
+            if "KHR_texture_basisu" not in used_extension_set:
+                errors.append(f"{prefix} uses KHR_texture_basisu without extensionsUsed")
+            if not isinstance(basis, dict):
+                errors.append(f"{prefix}.extensions.KHR_texture_basisu must be an object")
+            else:
+                basis_source = basis.get("source")
+                if not _gltf_integer(basis_source) or basis_source >= len(images):
+                    errors.append(
+                        f"{prefix}.extensions.KHR_texture_basisu.source is invalid"
+                    )
+        if source is not None and (
+            not _gltf_integer(source) or source >= len(images)
+        ):
             errors.append(f"{prefix}.source is invalid")
+        if source is None and basis is None:
+            errors.append(f"{prefix} has no image source")
         if "sampler" in texture and (
             not _gltf_integer(texture["sampler"])
             or texture["sampler"] >= len(samplers)
@@ -1834,9 +1970,11 @@ def _validate_glb_accessor_usage(
                 f"images[{image_index}] bufferView must not define byteStride "
                 "or target"
             )
-        if image.get("mimeType") != "image/png":
+        mime = image.get("mimeType")
+        if mime not in ("image/png", "image/ktx2"):
             errors.append(
-                f"images[{image_index}].mimeType must be 'image/png' for "
+                f"images[{image_index}].mimeType must be 'image/png' or "
+                f"'image/ktx2' for "
                 "modern-skeletal-v1"
             )
             continue
@@ -1847,9 +1985,11 @@ def _validate_glb_accessor_usage(
             and offset + length <= len(binary)
         ):
             try:
-                _inspect_texture_png(
-                    memoryview(binary)[offset:offset + length], image_index
-                )
+                payload = memoryview(binary)[offset:offset + length]
+                if mime == "image/png":
+                    _inspect_texture_png(payload, image_index)
+                else:
+                    _inspect_texture_ktx2(payload, image_index)
             except ProbeError as exc:
                 errors.append(str(exc))
 
