@@ -245,8 +245,11 @@ int adventure_party_participant_count(const AdventurePartySession *session) {
 }
 
 int adventure_party_host_seat(const AdventurePartySession *session) {
-    (void)session; /* read for symmetry; v1 has exactly one answer */
-    return ADVENTURE_PARTY_HOST_SEAT;
+    /* v1 has exactly one legal answer, but what is returned is the SESSION'S
+     * stored field, not the constant: a regression that moves the host is
+     * visible here, in the tests that call this, and in every AP-05 trace
+     * that reads the struct directly — they can never disagree. */
+    return session ? session->host_seat : ADVENTURE_PARTY_HOST_SEAT;
 }
 
 int adventure_party_character_for_seat(const AdventurePartySession *session,

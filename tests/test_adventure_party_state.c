@@ -640,6 +640,12 @@ static void test_host_seat_never_changes(void) {
         snprintf(what, sizeof what, "host: still seat 0 after step %zu", i);
         expect(adventure_party_host_seat(&s) == ADVENTURE_PARTY_HOST_SEAT,
                what);
+        /* The STORED field too, not just the accessor: the two must never
+         * be separately right, or a trace reading the struct directly could
+         * disagree with every caller of the query. */
+        snprintf(what, sizeof what,
+                 "host: stored field still seat 0 after step %zu", i);
+        expect(s.host_seat == ADVENTURE_PARTY_HOST_SEAT, what);
     }
 }
 
@@ -670,6 +676,8 @@ static void test_race_winner_never_changes_seats(void) {
            "winner: roster identical after a non-host win");
     expect(adventure_party_host_seat(&s) == ADVENTURE_PARTY_HOST_SEAT,
            "winner: host unchanged after a non-host win");
+    expect(s.host_seat == ADVENTURE_PARTY_HOST_SEAT,
+           "winner: stored host seat field untouched by a non-host win");
 
     /* No human winner at all (CPUs took it) is a legal result too. */
     apply(&s, ADVENTURE_PARTY_EVENT_RACE_START, 2);
@@ -679,6 +687,8 @@ static void test_race_winner_never_changes_seats(void) {
            "winner: NO_SEAT (CPU win) committed");
     expect(memcmp(&s.roster, &before.roster, sizeof s.roster) == 0,
            "winner: roster identical after a CPU win");
+    expect(s.host_seat == ADVENTURE_PARTY_HOST_SEAT,
+           "winner: stored host seat field untouched by a CPU win");
 }
 
 /* --- seeded property test --------------------------------------------- */
@@ -781,6 +791,8 @@ static void test_property_random_sequences(uint64_t seed,
 
         check(adventure_party_host_seat(&s) == ADVENTURE_PARTY_HOST_SEAT,
               "property: host is always seat 0", i);
+        check(s.host_seat == ADVENTURE_PARTY_HOST_SEAT,
+              "property: stored host seat field is always seat 0", i);
         check(s.has_suspended_roster ==
               (s.state == ADVENTURE_PARTY_STATE_SOLO_ACTIVITY ||
                s.state == ADVENTURE_PARTY_STATE_RESTORING_PARTY),

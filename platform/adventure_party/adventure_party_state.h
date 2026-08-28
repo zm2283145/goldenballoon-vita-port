@@ -235,8 +235,11 @@ int adventure_party_is_active(const AdventurePartySession *session);
  * those are adventure_party_policy.h queries and are not substitutes. */
 int adventure_party_participant_count(const AdventurePartySession *session);
 
-/* ADVENTURE_PARTY_HOST_SEAT, for as long as v1 stands; reads the session so
- * the invariant "the host never changes" is a checkable fact, not a define. */
+/* The session's stored host_seat field (ADVENTURE_PARTY_HOST_SEAT for as
+ * long as v1 stands; also the answer for NULL). Returning the FIELD rather
+ * than the constant is deliberate: it keeps this query, the tests, and any
+ * trace reading the struct directly in agreement, so a regression that
+ * moves the host cannot hide behind a constant accessor. */
 int adventure_party_host_seat(const AdventurePartySession *session);
 
 /* Stable character identity for a seat, or -1 if the seat is not occupied
