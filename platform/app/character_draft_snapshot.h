@@ -17,6 +17,8 @@ constexpr size_t kPortraitBytes = 40u * 40u * 4u;
 constexpr size_t kContexts = 4u;
 constexpr size_t kContacts = 4u;
 constexpr size_t kRoles = 16u;
+constexpr size_t kSecondaryChains = 8u;
+constexpr size_t kSecondaryJointsPerChain = 16u;
 constexpr uint32_t kNoNode = UINT32_MAX;
 constexpr uint32_t kAnimationSemanticMask = 0x3FFEu;
 
@@ -41,6 +43,23 @@ struct RigRole {
     float confidence = 1.0f;
     float rest[4] = {0.0f, 0.0f, 0.0f, 1.0f};
     float bend[3] = {};
+    bool constraintEnabled = false;
+    float twistAxis[3] = {1.0f, 0.0f, 0.0f};
+    float swingLimitDegrees = 180.0f;
+    float twistMinDegrees = -180.0f;
+    float twistMaxDegrees = 180.0f;
+};
+
+struct SecondaryChain {
+    std::string name;
+    uint32_t rootNode = kNoNode;
+    uint32_t jointCount = 0u;
+    uint32_t joints[kSecondaryJointsPerChain] = {};
+    float bendAxis[3] = {0.0f, 0.0f, 1.0f};
+    float stiffnessHz = 6.0f;
+    float dampingRatio = 0.8f;
+    float inertia = 0.65f;
+    float maxAngleDegrees = 35.0f;
 };
 
 struct Snapshot {
@@ -95,6 +114,11 @@ struct Snapshot {
     bool animationIntentPresent = false;
     uint32_t disabledSemanticMask = 0u;
     RigRole roles[kRoles];
+    /* Decode-only migration witness. Older drafts retain the active source's
+     * limits and secondary chains rather than treating absence as deletion. */
+    bool motionAuthoringContractPresent = false;
+    uint32_t secondaryChainCount = 0u;
+    SecondaryChain secondaryChains[kSecondaryChains];
 
     std::array<uint8_t, kPortraitBytes> portrait{};
     CharacterPortraitStudio::Canvas portraitStyleSource{};

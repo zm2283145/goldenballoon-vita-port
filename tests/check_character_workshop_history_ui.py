@@ -194,6 +194,16 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
                 "rig route omitted its source-bound anatomy checklist and "
                 "exact motion-battery handoff\n" + process.stdout[-8000:]
             )
+        motion_marker = (
+            "character-motion-authoring constraints=16 secondary-chains=8 "
+            "dynamic-joints=64 direct-path=1 presets=4 normalized-axes=1 "
+            "source-bound=1 undo=rig-review-reset spoken=1 responsive="
+        )
+        if motion_marker not in process.stdout:
+            raise RuntimeError(
+                "rig route omitted bounded direct-manipulation limits and "
+                "secondary-chain authoring\n" + process.stdout[-8000:]
+            )
         if "text=Apply 16-role humanoid proposal" not in process.stdout:
             raise RuntimeError(
                 "keyboard/speech traversal could not reach the structural "

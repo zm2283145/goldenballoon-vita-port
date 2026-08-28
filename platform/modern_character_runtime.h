@@ -82,6 +82,12 @@ typedef struct MdkrModernCharacterContactDiagnostics {
 typedef struct MdkrModernCharacterJointDiagnostics {
     float excursion_degrees[MDKR_MODERN_HUMANOID_ROLE_COUNT];
     uint32_t valid_mask;
+    uint32_t constraint_clamped_mask;
+    uint32_t secondary_chain_count;
+    uint32_t secondary_joint_count;
+    uint32_t secondary_active_joint_count;
+    float secondary_max_deflection_degrees;
+    uint64_t secondary_discontinuity_resets;
 } MdkrModernCharacterJointDiagnostics;
 
 typedef struct MdkrModernCharacterVehicleShell {

@@ -581,19 +581,51 @@ static s32 workshop_preview_publish_joint_diagnostics(
         (s32)MDKR_CHARACTER_PREVIEW_SELECT;
     if (!mdkr_modern_character_player_joint_diagnostics(
             0, (MdkrModernCharacterContext)context, &joints) ||
-        joints.valid_mask !=
-            ((1u << MDKR_CHARACTER_PREVIEW_JOINTS) - 1u)) return FALSE;
-    for (role = 0u; role < MDKR_CHARACTER_PREVIEW_JOINTS; ++role) {
-        const double millidegrees =
-            (double)joints.excursion_degrees[role] * 1000.0;
-        if (!isfinite(millidegrees) || millidegrees < 0.0 ||
-            millidegrees > 180000.5) return FALSE;
-        measured[role] = (u32)(millidegrees + 0.5);
-        if (measured[role] > 180000u) measured[role] = 180000u;
+        (joints.valid_mask != 0u &&
+         joints.valid_mask !=
+            ((1u << MDKR_CHARACTER_PREVIEW_JOINTS) - 1u)) ||
+        (joints.constraint_clamped_mask &
+         ~((1u << MDKR_CHARACTER_PREVIEW_JOINTS) - 1u)) != 0u ||
+        (joints.constraint_clamped_mask & ~joints.valid_mask) != 0u ||
+        joints.secondary_chain_count > 8u ||
+        joints.secondary_joint_count > 64u ||
+        joints.secondary_chain_count > joints.secondary_joint_count ||
+        ((joints.secondary_chain_count == 0u) !=
+         (joints.secondary_joint_count == 0u)) ||
+        joints.secondary_active_joint_count > joints.secondary_joint_count ||
+        !isfinite(joints.secondary_max_deflection_degrees) ||
+        joints.secondary_max_deflection_degrees < 0.0f ||
+        joints.secondary_max_deflection_degrees > 90.0005f ||
+        (joints.secondary_joint_count == 0u &&
+         (joints.secondary_active_joint_count != 0u ||
+          joints.secondary_max_deflection_degrees != 0.0f ||
+          joints.secondary_discontinuity_resets != 0u))) return FALSE;
+    memset(measured, 0, sizeof(measured));
+    if (joints.valid_mask != 0u) {
+        for (role = 0u; role < MDKR_CHARACTER_PREVIEW_JOINTS; ++role) {
+            const double millidegrees =
+                (double)joints.excursion_degrees[role] * 1000.0;
+            if (!isfinite(millidegrees) || millidegrees < 0.0 ||
+                millidegrees > 180000.5) return FALSE;
+            measured[role] = (u32)(millidegrees + 0.5);
+            if (measured[role] > 180000u) measured[role] = 180000u;
+        }
     }
     memcpy(result->joint_excursion_millidegrees, measured,
            sizeof(measured));
     result->joint_excursion_mask = joints.valid_mask;
+    result->constraint_clamped_mask = joints.constraint_clamped_mask;
+    result->secondary_chain_count = joints.secondary_chain_count;
+    result->secondary_joint_count = joints.secondary_joint_count;
+    result->secondary_active_joint_count =
+        joints.secondary_active_joint_count;
+    result->secondary_max_deflection_millidegrees = (u32)(
+        (double)joints.secondary_max_deflection_degrees * 1000.0 + 0.5);
+    if (result->secondary_max_deflection_millidegrees > 90000u) {
+        result->secondary_max_deflection_millidegrees = 90000u;
+    }
+    result->secondary_discontinuity_resets =
+        joints.secondary_discontinuity_resets;
     return TRUE;
 }
 

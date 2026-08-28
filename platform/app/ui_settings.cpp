@@ -2470,6 +2470,22 @@ struct CharacterRigEdit {
         float confidence = 1.0f;
         float rest[4] = {0.0f, 0.0f, 0.0f, 1.0f};
         float bend[3] = {0.0f, 0.0f, 0.0f};
+        bool constraintEnabled = false;
+        float twistAxis[3] = {1.0f, 0.0f, 0.0f};
+        float swingLimitDegrees = 180.0f;
+        float twistMinDegrees = -180.0f;
+        float twistMaxDegrees = 180.0f;
+    };
+    struct SecondaryChain {
+        char name[65] = {};
+        uint32_t rootNode = UINT32_MAX;
+        uint32_t jointCount = 0u;
+        int joints[16] = {};
+        float bendAxis[3] = {0.0f, 0.0f, 1.0f};
+        float stiffnessHz = 6.0f;
+        float dampingRatio = 0.8f;
+        float inertia = 0.65f;
+        float maxAngleDegrees = 35.0f;
     };
     bool loaded = false;
     int mode = MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY;
@@ -2479,7 +2495,9 @@ struct CharacterRigEdit {
     uint8_t sourceSha256[32] = {};
     std::vector<Joint> joints;
     std::vector<int32_t> nodeParents;
+    std::vector<std::string> nodeNames;
     Role roles[MDKR_MODERN_HUMANOID_ROLE_COUNT];
+    std::vector<SecondaryChain> secondaryChains;
     int selectedRole = -1;
     int selectedJoint = -1;
     int skeletonView = 0;
@@ -2487,7 +2505,25 @@ struct CharacterRigEdit {
     std::string error;
 };
 
-constexpr uint32_t kCharacterRigReviewTaskMask = 0x1Fu;
+constexpr uint32_t kCharacterRigAnatomyReviewTaskMask = 0x1Fu;
+constexpr uint32_t kCharacterRigConstraintReviewTask = 1u << 5u;
+constexpr uint32_t kCharacterRigSecondaryReviewTask = 1u << 6u;
+constexpr uint32_t kCharacterRigReviewTaskMask = 0x7Fu;
+
+uint32_t requiredCharacterRigReviewTaskMask(const CharacterRigEdit &edit) {
+    uint32_t required = kCharacterRigAnatomyReviewTaskMask;
+    if (edit.mode == MDKR_MODERN_RIG_HUMANOID_RETARGET_V1 && std::any_of(
+            std::begin(edit.roles), std::end(edit.roles),
+            [](const CharacterRigEdit::Role &role) {
+                return role.constraintEnabled;
+            })) {
+        required |= kCharacterRigConstraintReviewTask;
+    }
+    if (!edit.secondaryChains.empty()) {
+        required |= kCharacterRigSecondaryReviewTask;
+    }
+    return required;
+}
 
 void invalidateCharacterRigReview(CharacterRigEdit &edit) {
     edit.reviewed = false;
@@ -5746,7 +5782,6 @@ CharacterRigEdit &loadCharacterRigEdit(
         ? static_cast<int>(entry->rig_mode)
         : MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY;
     edit.reviewed = (entry->rig_flags & MDKR_MODERN_RIG_REVIEWED) != 0u;
-    edit.reviewTaskMask = edit.reviewed ? kCharacterRigReviewTaskMask : 0u;
     edit.disabledSemanticMask = entry->disabled_semantic_mask;
     MdkrModernCharacterAsset asset{};
     char error[256];
@@ -5757,10 +5792,14 @@ CharacterRigEdit &loadCharacterRigEdit(
         return edit;
     }
     edit.nodeParents.resize(entry->stats.nodes, -1);
+    edit.nodeNames.resize(entry->stats.nodes);
     for (uint32_t nodeIndex = 0u; nodeIndex < entry->stats.nodes; ++nodeIndex) {
         MdkrModernNode node;
         if (mdkr_modern_character_asset_node(&asset, nodeIndex, &node)) {
             edit.nodeParents[nodeIndex] = node.parent;
+            const char *name = mdkr_modern_character_asset_string(
+                &asset, node.name);
+            edit.nodeNames[nodeIndex] = name != nullptr ? name : "";
         }
     }
     for (uint32_t jointIndex = 0u; jointIndex < entry->stats.joints;
@@ -5799,7 +5838,6 @@ CharacterRigEdit &loadCharacterRigEdit(
         }
         edit.joints.push_back(std::move(target));
     }
-    mdkr_modern_character_asset_unload(&asset);
     std::vector<int> nodeToJoint(edit.nodeParents.size(), -1);
     for (size_t joint = 0u; joint < edit.joints.size(); ++joint) {
         nodeToJoint[edit.joints[joint].node] = static_cast<int>(joint);
@@ -5832,6 +5870,74 @@ CharacterRigEdit &loadCharacterRigEdit(
         std::memcpy(role.bend, entry->rig_role_bend_axis[slot],
                     sizeof(role.bend));
     }
+    for (uint32_t index = 0u; index < entry->stats.joint_constraints;
+         ++index) {
+        MdkrModernJointConstraint source;
+        if (!mdkr_modern_character_asset_joint_constraint(
+                &asset, index, &source) ||
+            source.role >= MDKR_MODERN_HUMANOID_ROLE_COUNT) {
+            edit.error = "A compiled joint constraint is invalid.";
+            continue;
+        }
+        CharacterRigEdit::Role &target = edit.roles[source.role];
+        target.constraintEnabled = true;
+        std::copy(std::begin(source.twist_axis),
+                  std::end(source.twist_axis), target.twistAxis);
+        target.swingLimitDegrees = source.swing_limit_degrees;
+        target.twistMinDegrees = source.twist_min_degrees;
+        target.twistMaxDegrees = source.twist_max_degrees;
+    }
+    for (uint32_t chainIndex = 0u;
+         chainIndex < entry->stats.secondary_chains; ++chainIndex) {
+        MdkrModernSecondaryChain source;
+        if (!mdkr_modern_character_asset_secondary_chain(
+                &asset, chainIndex, &source) || source.joint_count > 16u) {
+            edit.error = "A compiled secondary-motion chain is invalid.";
+            continue;
+        }
+        CharacterRigEdit::SecondaryChain target;
+        const char *name = mdkr_modern_character_asset_string(
+            &asset, source.name);
+        std::snprintf(target.name, sizeof(target.name), "%s",
+                      name != nullptr ? name : "");
+        target.rootNode = source.root_node;
+        target.jointCount = source.joint_count;
+        std::copy(std::begin(source.bend_axis),
+                  std::end(source.bend_axis), target.bendAxis);
+        target.stiffnessHz = source.stiffness_hz;
+        target.dampingRatio = source.damping_ratio;
+        target.inertia = source.inertia;
+        target.maxAngleDegrees = source.max_angle_degrees;
+        bool resolved = true;
+        for (uint32_t order = 0u; order < source.joint_count; ++order) {
+            MdkrModernSecondaryJoint dynamicJoint;
+            if (!mdkr_modern_character_asset_secondary_joint(
+                    &asset, source.first_joint + order, &dynamicJoint)) {
+                resolved = false;
+                break;
+            }
+            const auto mapped = std::find_if(
+                edit.joints.begin(), edit.joints.end(),
+                [&dynamicJoint](const CharacterRigEdit::Joint &candidate) {
+                    return candidate.node == dynamicJoint.node;
+                });
+            if (mapped == edit.joints.end()) {
+                resolved = false;
+                break;
+            }
+            target.joints[order] = static_cast<int>(
+                std::distance(edit.joints.begin(), mapped));
+        }
+        if (!resolved) {
+            edit.error =
+                "A compiled secondary-motion joint is absent from the skin.";
+            continue;
+        }
+        edit.secondaryChains.push_back(target);
+    }
+    edit.reviewTaskMask = edit.reviewed
+        ? requiredCharacterRigReviewTaskMask(edit) : 0u;
+    mdkr_modern_character_asset_unload(&asset);
     edit.loaded = true;
     return edit;
 }
@@ -6058,6 +6164,127 @@ std::string characterRigHierarchyError(const CharacterRigEdit &edit) {
     return {};
 }
 
+bool characterMotionSlugValid(const char *value) {
+    if (value == nullptr) return false;
+    const size_t length = std::strlen(value);
+    if (length == 0u || length > 64u || value[0] < 'a' || value[0] > 'z') {
+        return false;
+    }
+    for (size_t index = 1u; index < length; ++index) {
+        const unsigned char byte = static_cast<unsigned char>(value[index]);
+        if (!(std::islower(byte) || std::isdigit(byte) || byte == '.' ||
+              byte == '_' || byte == '-')) return false;
+    }
+    return true;
+}
+
+std::string characterMotionAuthoringError(const CharacterRigEdit &edit) {
+    std::set<uint32_t> roleNodes;
+    for (const CharacterRigEdit::Role &role : edit.roles) {
+        if (role.joint >= 0 &&
+            role.joint < static_cast<int>(edit.joints.size())) {
+            roleNodes.insert(edit.joints[role.joint].node);
+        }
+        if (edit.mode != MDKR_MODERN_RIG_HUMANOID_RETARGET_V1 ||
+            !role.constraintEnabled) continue;
+        const float axisLength =
+            role.twistAxis[0] * role.twistAxis[0] +
+            role.twistAxis[1] * role.twistAxis[1] +
+            role.twistAxis[2] * role.twistAxis[2];
+        if (role.joint < 0 ||
+            role.joint >= static_cast<int>(edit.joints.size())) {
+            return "Every enabled joint limit must belong to a mapped role.";
+        }
+        if (!std::isfinite(axisLength) || axisLength < 0.999f ||
+            axisLength > 1.001f ||
+            !std::isfinite(role.swingLimitDegrees) ||
+            role.swingLimitDegrees < 0.0f ||
+            role.swingLimitDegrees > 180.0f ||
+            !std::isfinite(role.twistMinDegrees) ||
+            !std::isfinite(role.twistMaxDegrees) ||
+            role.twistMinDegrees < -180.0f ||
+            role.twistMaxDegrees > 180.0f ||
+            role.twistMinDegrees > role.twistMaxDegrees) {
+            return "A joint limit has an invalid axis or degree range.";
+        }
+    }
+    if (edit.secondaryChains.size() > 8u) {
+        return "Secondary motion supports at most eight chains.";
+    }
+    std::set<std::string> names;
+    std::set<uint32_t> roots;
+    std::set<uint32_t> dynamics;
+    for (const CharacterRigEdit::SecondaryChain &chain :
+         edit.secondaryChains) {
+        if (!characterMotionSlugValid(chain.name) ||
+            !names.insert(chain.name).second) {
+            return "Every secondary chain needs a unique lowercase name.";
+        }
+        if (chain.rootNode >= edit.nodeParents.size() ||
+            chain.rootNode >= edit.nodeNames.size() ||
+            edit.nodeNames[chain.rootNode].empty()) {
+            return std::string("Choose a named root for secondary chain ") +
+                chain.name + ".";
+        }
+        roots.insert(chain.rootNode);
+        if (chain.jointCount == 0u || chain.jointCount > 16u) {
+            return std::string("Secondary chain ") + chain.name +
+                " needs one to sixteen dynamic joints.";
+        }
+        const float axisLength =
+            chain.bendAxis[0] * chain.bendAxis[0] +
+            chain.bendAxis[1] * chain.bendAxis[1] +
+            chain.bendAxis[2] * chain.bendAxis[2];
+        if (!std::isfinite(axisLength) || axisLength < 0.999f ||
+            axisLength > 1.001f ||
+            !std::isfinite(chain.stiffnessHz) ||
+            chain.stiffnessHz < 0.1f || chain.stiffnessHz > 30.0f ||
+            !std::isfinite(chain.dampingRatio) ||
+            chain.dampingRatio < 0.0f || chain.dampingRatio > 2.0f ||
+            !std::isfinite(chain.inertia) ||
+            chain.inertia < 0.0f || chain.inertia > 1.0f ||
+            !std::isfinite(chain.maxAngleDegrees) ||
+            chain.maxAngleDegrees < 0.0f ||
+            chain.maxAngleDegrees > 90.0f) {
+            return std::string("Secondary chain ") + chain.name +
+                " has an invalid response or bend axis.";
+        }
+        uint32_t parent = chain.rootNode;
+        for (uint32_t order = 0u; order < chain.jointCount; ++order) {
+            const int jointIndex = chain.joints[order];
+            if (jointIndex < 0 ||
+                jointIndex >= static_cast<int>(edit.joints.size())) {
+                return std::string("Secondary chain ") + chain.name +
+                    " contains a missing skin joint.";
+            }
+            const uint32_t node = edit.joints[jointIndex].node;
+            if (node >= edit.nodeParents.size() ||
+                edit.nodeParents[node] < 0 ||
+                static_cast<uint32_t>(edit.nodeParents[node]) != parent) {
+                return std::string("Secondary chain ") + chain.name +
+                    " must follow direct parent-to-child skin joints.";
+            }
+            if (roleNodes.count(node) != 0u) {
+                return std::string("Secondary chain ") + chain.name +
+                    " cannot move a humanoid role joint.";
+            }
+            if (!dynamics.insert(node).second) {
+                return "A dynamic joint can belong to only one secondary chain.";
+            }
+            parent = node;
+        }
+    }
+    for (uint32_t root : roots) {
+        if (dynamics.count(root) != 0u) {
+            return "A secondary chain root cannot be dynamic in another chain.";
+        }
+    }
+    if (dynamics.size() > 64u) {
+        return "Secondary motion supports at most 64 dynamic joints total.";
+    }
+    return {};
+}
+
 void normalizeCharacterRigVector(float *value, size_t count,
                                  bool allowZero) {
     double lengthSquared = 0.0;
@@ -6071,6 +6298,347 @@ void normalizeCharacterRigVector(float *value, size_t count,
     }
     const float inverse = static_cast<float>(1.0 / std::sqrt(lengthSquared));
     for (size_t index = 0u; index < count; ++index) value[index] *= inverse;
+}
+
+bool characterSecondaryNodeUsed(const CharacterRigEdit &edit,
+                                size_t exceptChain, uint32_t node) {
+    for (size_t chainIndex = 0u;
+         chainIndex < edit.secondaryChains.size(); ++chainIndex) {
+        if (chainIndex == exceptChain) continue;
+        const CharacterRigEdit::SecondaryChain &chain =
+            edit.secondaryChains[chainIndex];
+        if (chain.rootNode == node) return true;
+        for (uint32_t order = 0u; order < chain.jointCount; ++order) {
+            const int joint = chain.joints[order];
+            if (joint >= 0 && joint < static_cast<int>(edit.joints.size()) &&
+                edit.joints[joint].node == node) return true;
+        }
+    }
+    return false;
+}
+
+bool characterSecondaryRoleNode(const CharacterRigEdit &edit,
+                                uint32_t node) {
+    return std::any_of(
+        std::begin(edit.roles), std::end(edit.roles),
+        [&edit, node](const CharacterRigEdit::Role &role) {
+            return role.joint >= 0 &&
+                role.joint < static_cast<int>(edit.joints.size()) &&
+                edit.joints[role.joint].node == node;
+        });
+}
+
+void drawCharacterMotionAuthoringStudio(CharacterRigEdit &edit,
+                                        bool compact) {
+    ImGui::SeparatorText("Motion limits and follow-through");
+    ui::TextSubtleWrapped(
+        "Optional limits keep procedural poses inside this rig's believable range. Secondary chains add deterministic follow-through to hair, cloth, tails, or accessories. Every edit is source-bound, undoable, compiler-validated, and inactive until the complete revision saves.");
+
+    const bool humanoidLimitsActive =
+        edit.mode == MDKR_MODERN_RIG_HUMANOID_RETARGET_V1;
+    if (!humanoidLimitsActive) {
+        ui::TextSubtleWrapped(
+            "Joint limits apply only to reviewed humanoid reference motion. Any retained limit settings are dormant, omitted from authored-clips-only revisions, and restored if you switch back before saving. Secondary follow-through below remains available for unusual skeletons.");
+    }
+    if (!humanoidLimitsActive) ImGui::BeginDisabled();
+    const bool limitsOpen = ImGui::TreeNodeEx(
+        "Joint limits##character-joint-limits",
+        humanoidLimitsActive && std::any_of(
+                    std::begin(edit.roles), std::end(edit.roles),
+                    [](const CharacterRigEdit::Role &role) {
+                        return role.constraintEnabled;
+                    }) ? ImGuiTreeNodeFlags_DefaultOpen : 0);
+    ui::SpeakFocusedItem(
+        "Joint limits", limitsOpen ? "expanded" : "collapsed",
+        "Authors optional bind-relative cone and twist limits for mapped humanoid roles. Limits are safety rails, not automatic anatomical guesses.");
+    if (limitsOpen) {
+        ui::TextSubtleWrapped(
+            "Start broad and tighten only after exact motion review. The twist axis is joint-local; swing is a cone around the GLB bind rotation. Removing a limit restores the authored and solver motion without a hidden fallback clamp.");
+        for (size_t slot = 0u; slot < std::size(kHumanoidRigRoles); ++slot) {
+            CharacterRigEdit::Role &role = edit.roles[slot];
+            ImGui::PushID(static_cast<int>(slot));
+            const std::string title = std::string(kHumanoidRigRoles[slot].label) +
+                (role.constraintEnabled ? " · limited" : " · unrestricted");
+            const bool roleOpen = ImGui::TreeNode(title.c_str());
+            ui::SpeakFocusedItem(
+                kHumanoidRigRoles[slot].label,
+                role.constraintEnabled ? "limit enabled" : "unrestricted",
+                "Expand to enable, remove, preset, or precisely edit this mapped role's bind-relative cone and twist range.");
+            if (roleOpen) {
+                bool enabled = role.constraintEnabled;
+                if (role.joint < 0) ImGui::BeginDisabled();
+                if (ImGui::Checkbox("Use safety limit", &enabled)) {
+                    role.constraintEnabled = enabled;
+                    invalidateCharacterRigReview(edit);
+                }
+                if (role.joint < 0) ImGui::EndDisabled();
+                ui::SpeakFocusedItem(
+                    "Use safety limit", enabled ? "on" : "off",
+                    role.joint >= 0
+                        ? "Adds or removes this role's explicit source-v5 limit and clears review."
+                        : "Map this role before adding a limit.");
+                if (role.constraintEnabled) {
+                    if (ImGui::SmallButton("Broad ball preset")) {
+                        role.swingLimitDegrees = 120.0f;
+                        role.twistMinDegrees = -90.0f;
+                        role.twistMaxDegrees = 90.0f;
+                        invalidateCharacterRigReview(edit);
+                    }
+                    ui::SpeakFocusedItem(
+                        "Broad ball preset", nullptr,
+                        "Applies a permissive 120 degree swing cone and plus or minus 90 degree twist; it still requires exact review.");
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Hinge-like preset")) {
+                        role.swingLimitDegrees = 55.0f;
+                        role.twistMinDegrees = -20.0f;
+                        role.twistMaxDegrees = 20.0f;
+                        invalidateCharacterRigReview(edit);
+                    }
+                    ui::SpeakFocusedItem(
+                        "Hinge-like preset", nullptr,
+                        "Applies a provisional 55 degree cone and plus or minus 20 degree twist; confirm the local axis and exact poses yourself.");
+                    (void)ImGui::DragFloat3(
+                        "Local twist axis", role.twistAxis, 0.01f,
+                        -1.0f, 1.0f, "%.3f",
+                        ImGuiSliderFlags_AlwaysClamp);
+                    if (ImGui::IsItemDeactivatedAfterEdit()) {
+                        normalizeCharacterRigVector(
+                            role.twistAxis, 3u, false);
+                        if (role.twistAxis[0] == 0.0f &&
+                            role.twistAxis[1] == 0.0f &&
+                            role.twistAxis[2] == 0.0f) {
+                            role.twistAxis[0] = 1.0f;
+                        }
+                        invalidateCharacterRigReview(edit);
+                    }
+                    if (ImGui::SliderFloat(
+                            "Swing cone", &role.swingLimitDegrees,
+                            0.0f, 180.0f, "%.1f°",
+                            ImGuiSliderFlags_AlwaysClamp)) {
+                        invalidateCharacterRigReview(edit);
+                    }
+                    if (ImGui::SliderFloat(
+                            "Twist minimum", &role.twistMinDegrees,
+                            -180.0f, 180.0f, "%.1f°",
+                            ImGuiSliderFlags_AlwaysClamp)) {
+                        role.twistMinDegrees = std::min(
+                            role.twistMinDegrees, role.twistMaxDegrees);
+                        invalidateCharacterRigReview(edit);
+                    }
+                    if (ImGui::SliderFloat(
+                            "Twist maximum", &role.twistMaxDegrees,
+                            -180.0f, 180.0f, "%.1f°",
+                            ImGuiSliderFlags_AlwaysClamp)) {
+                        role.twistMaxDegrees = std::max(
+                            role.twistMaxDegrees, role.twistMinDegrees);
+                        invalidateCharacterRigReview(edit);
+                    }
+                }
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
+        }
+        ImGui::TreePop();
+    }
+    if (!humanoidLimitsActive) ImGui::EndDisabled();
+
+    const bool secondaryOpen = ImGui::TreeNodeEx(
+        "Secondary motion##character-secondary-motion",
+        !edit.secondaryChains.empty() ? ImGuiTreeNodeFlags_DefaultOpen : 0);
+    ui::SpeakFocusedItem(
+        "Secondary motion", secondaryOpen ? "expanded" : "collapsed",
+        "Builds up to eight direct parent-to-child dynamic chains with bounded deterministic spring response.");
+    if (secondaryOpen) {
+        ui::TextSubtleWrapped(
+            "Choose a stable root that follows ordinary animation, then extend through direct child skin joints. Humanoid role joints and joints already owned by another chain are intentionally unavailable, preventing two solvers from fighting.");
+        if (edit.secondaryChains.size() >= 8u) ImGui::BeginDisabled();
+        if (ImGui::Button("Add secondary chain") &&
+            edit.secondaryChains.size() < 8u) {
+            CharacterRigEdit::SecondaryChain chain;
+            std::snprintf(chain.name, sizeof(chain.name), "secondary.chain%zu",
+                          edit.secondaryChains.size() + 1u);
+            edit.secondaryChains.push_back(chain);
+            invalidateCharacterRigReview(edit);
+        }
+        if (edit.secondaryChains.size() >= 8u) ImGui::EndDisabled();
+        ui::SpeakFocusedItem(
+            "Add secondary chain",
+            edit.secondaryChains.size() >= 8u ? "Eight-chain limit reached"
+                                               : nullptr,
+            "Adds a reversible chain draft with balanced starter response; choose its root and at least one direct child skin joint.");
+
+        for (size_t chainIndex = 0u;
+             chainIndex < edit.secondaryChains.size();) {
+            CharacterRigEdit::SecondaryChain &chain =
+                edit.secondaryChains[chainIndex];
+            ImGui::PushID(static_cast<int>(chainIndex));
+            const std::string title = std::string(
+                chain.name[0] != '\0' ? chain.name : "Unnamed chain") +
+                " · " + std::to_string(chain.jointCount) + " joint" +
+                (chain.jointCount == 1u ? "" : "s");
+            const bool open = ImGui::TreeNodeEx(
+                title.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
+            bool removed = false;
+            if (open) {
+                if (ImGui::InputText(
+                        "Chain name", chain.name, sizeof(chain.name))) {
+                    invalidateCharacterRigReview(edit);
+                }
+                ui::SpeakFocusedItem(
+                    "Chain name", chain.name,
+                    "Use a unique lowercase slug beginning with a letter; dots, dashes, and underscores are allowed.");
+                const char *rootPreview = chain.rootNode < edit.nodeNames.size()
+                    ? edit.nodeNames[chain.rootNode].c_str() : "Choose root";
+                if (ImGui::BeginCombo("Stable root", rootPreview)) {
+                    for (uint32_t node = 0u;
+                         node < edit.nodeNames.size(); ++node) {
+                        if (edit.nodeNames[node].empty() ||
+                            characterSecondaryNodeUsed(
+                                edit, chainIndex, node)) continue;
+                        const bool selected = chain.rootNode == node;
+                        const std::string label = "#" +
+                            std::to_string(node) + " · " +
+                            edit.nodeNames[node];
+                        if (ImGui::Selectable(label.c_str(), selected) &&
+                            !selected) {
+                            chain.rootNode = node;
+                            chain.jointCount = 0u;
+                            invalidateCharacterRigReview(edit);
+                        }
+                        if (selected) ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+                ui::SpeakFocusedItem(
+                    "Stable root", rootPreview,
+                    "Chooses the non-dynamic node whose evaluated rotation drives this chain. Changing it clears the draft path.");
+                uint32_t tip = chain.rootNode;
+                for (uint32_t order = 0u; order < chain.jointCount; ++order) {
+                    const int joint = chain.joints[order];
+                    if (joint >= 0 &&
+                        joint < static_cast<int>(edit.joints.size())) {
+                        tip = edit.joints[joint].node;
+                        ImGui::BulletText("%u · #%u · %s", order + 1u, tip,
+                                          edit.joints[joint].name.c_str());
+                    }
+                }
+                const bool pathFull = chain.jointCount >= 16u ||
+                    chain.rootNode >= edit.nodeParents.size();
+                std::vector<int> children;
+                if (!pathFull) {
+                    for (size_t joint = 0u; joint < edit.joints.size(); ++joint) {
+                        const uint32_t node = edit.joints[joint].node;
+                        if (node < edit.nodeParents.size() &&
+                            edit.nodeParents[node] >= 0 &&
+                            static_cast<uint32_t>(edit.nodeParents[node]) == tip &&
+                            !characterSecondaryRoleNode(edit, node) &&
+                            !characterSecondaryNodeUsed(
+                                edit, chainIndex, node)) {
+                            children.push_back(static_cast<int>(joint));
+                        }
+                    }
+                }
+                if (children.empty()) ImGui::BeginDisabled();
+                if (ImGui::BeginCombo(
+                        chain.jointCount == 0u ? "First dynamic joint"
+                                               : "Extend with child",
+                        children.empty() ? "No eligible direct child"
+                                         : "Choose direct child")) {
+                    for (int joint : children) {
+                        const std::string label = "#" +
+                            std::to_string(edit.joints[joint].node) + " · " +
+                            edit.joints[joint].name;
+                        if (ImGui::Selectable(label.c_str(), false)) {
+                            chain.joints[chain.jointCount++] = joint;
+                            invalidateCharacterRigReview(edit);
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+                if (children.empty()) ImGui::EndDisabled();
+                ui::SpeakFocusedItem(
+                    chain.jointCount == 0u ? "First dynamic joint"
+                                           : "Extend with child",
+                    children.empty() ? "No eligible direct child" : nullptr,
+                    "Adds exactly one direct child skin joint; roles and joints owned by another chain are excluded.");
+                if (chain.jointCount == 0u) ImGui::BeginDisabled();
+                if (ImGui::SmallButton("Remove tip") &&
+                    chain.jointCount != 0u) {
+                    --chain.jointCount;
+                    invalidateCharacterRigReview(edit);
+                }
+                if (chain.jointCount == 0u) ImGui::EndDisabled();
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Soft hair / cloth")) {
+                    chain.stiffnessHz = 3.5f;
+                    chain.dampingRatio = 0.65f;
+                    chain.inertia = 0.8f;
+                    chain.maxAngleDegrees = 50.0f;
+                    invalidateCharacterRigReview(edit);
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Stiff accessory")) {
+                    chain.stiffnessHz = 12.0f;
+                    chain.dampingRatio = 1.0f;
+                    chain.inertia = 0.35f;
+                    chain.maxAngleDegrees = 18.0f;
+                    invalidateCharacterRigReview(edit);
+                }
+                (void)ImGui::DragFloat3(
+                    "Local bend axis", chain.bendAxis, 0.01f,
+                    -1.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+                if (ImGui::IsItemDeactivatedAfterEdit()) {
+                    normalizeCharacterRigVector(chain.bendAxis, 3u, false);
+                    if (chain.bendAxis[0] == 0.0f &&
+                        chain.bendAxis[1] == 0.0f &&
+                        chain.bendAxis[2] == 0.0f) chain.bendAxis[2] = 1.0f;
+                    invalidateCharacterRigReview(edit);
+                }
+                const bool stiffnessChanged = ImGui::SliderFloat(
+                    "Stiffness", &chain.stiffnessHz, 0.1f, 30.0f,
+                    "%.1f Hz", ImGuiSliderFlags_Logarithmic |
+                                  ImGuiSliderFlags_AlwaysClamp);
+                const bool dampingChanged = ImGui::SliderFloat(
+                    "Damping", &chain.dampingRatio, 0.0f, 2.0f,
+                    "%.2f", ImGuiSliderFlags_AlwaysClamp);
+                const bool inertiaChanged = ImGui::SliderFloat(
+                    "Inertia", &chain.inertia, 0.0f, 1.0f,
+                    "%.2f", ImGuiSliderFlags_AlwaysClamp);
+                const bool maximumChanged = ImGui::SliderFloat(
+                    "Maximum deflection", &chain.maxAngleDegrees,
+                    0.0f, 90.0f, "%.1f°",
+                    ImGuiSliderFlags_AlwaysClamp);
+                if (stiffnessChanged || dampingChanged || inertiaChanged ||
+                    maximumChanged) {
+                    invalidateCharacterRigReview(edit);
+                }
+                if (ImGui::Button("Remove this chain")) {
+                    edit.secondaryChains.erase(
+                        edit.secondaryChains.begin() +
+                        static_cast<std::ptrdiff_t>(chainIndex));
+                    invalidateCharacterRigReview(edit);
+                    removed = true;
+                }
+                ui::SpeakFocusedItem(
+                    "Remove this chain", nullptr,
+                    "Removes only this reversible draft chain; Undo Rig restores it and installed data is unchanged until save.");
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
+            if (!removed) ++chainIndex;
+        }
+        ImGui::TreePop();
+    }
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+        static bool traced = false;
+        if (!traced) {
+            std::fprintf(
+                stderr,
+                "[app-ui] character-motion-authoring constraints=16 secondary-chains=8 dynamic-joints=64 direct-path=1 presets=4 normalized-axes=1 source-bound=1 undo=rig-review-reset spoken=1 responsive=%s\n",
+                compact ? "compact" : "wide");
+            traced = true;
+        }
+    }
 }
 
 std::string characterJsonString(const std::string &value) {
@@ -6094,7 +6662,7 @@ std::string characterJsonString(const std::string &value) {
 }
 
 std::string characterRigDraftJson(const CharacterRigEdit &edit) {
-    std::string json = "{\n  \"schema\": \"mdkr-character-rig-draft-v2\",\n";
+    std::string json = "{\n  \"schema\": \"mdkr-character-rig-draft-v3\",\n";
     json += "  \"mode\": \"";
     json += edit.mode == MDKR_MODERN_RIG_HUMANOID_RETARGET_V1
         ? "humanoid-retarget-v1" : "authored-clips-only";
@@ -6140,10 +6708,62 @@ std::string characterRigDraftJson(const CharacterRigEdit &edit) {
             if (axis != 0u) json += ", ";
             json += characterFloatText(role.bend[axis]);
         }
-        json += "]}";
+        json += "]";
+        if (edit.mode == MDKR_MODERN_RIG_HUMANOID_RETARGET_V1 &&
+            role.constraintEnabled) {
+            json += ", \"constraint\": {\"twist_axis\": [";
+            for (size_t axis = 0u; axis < 3u; ++axis) {
+                if (axis != 0u) json += ", ";
+                json += characterFloatText(role.twistAxis[axis]);
+            }
+            json += "], \"swing_limit_degrees\": " +
+                characterFloatText(role.swingLimitDegrees) +
+                ", \"twist_min_degrees\": " +
+                characterFloatText(role.twistMinDegrees) +
+                ", \"twist_max_degrees\": " +
+                characterFloatText(role.twistMaxDegrees) + "}";
+        }
+        json += "}";
     }
     if (!first) json += "\n";
-    json += "  }\n}\n";
+    json += "  },\n  \"secondary_motion\": ";
+    if (edit.secondaryChains.empty()) {
+        json += "null\n";
+    } else {
+        json += "{\"chains\": [";
+        for (size_t index = 0u; index < edit.secondaryChains.size(); ++index) {
+            const CharacterRigEdit::SecondaryChain &chain =
+                edit.secondaryChains[index];
+            if (index != 0u) json += ",";
+            json += "\n    {\"name\": " +
+                characterJsonString(chain.name) + ", \"root\": " +
+                characterJsonString(
+                    chain.rootNode < edit.nodeNames.size()
+                        ? edit.nodeNames[chain.rootNode] : "") +
+                ", \"joints\": [";
+            for (uint32_t joint = 0u; joint < chain.jointCount; ++joint) {
+                if (joint != 0u) json += ", ";
+                const int mapped = chain.joints[joint];
+                json += characterJsonString(
+                    mapped >= 0 && mapped < static_cast<int>(edit.joints.size())
+                        ? edit.joints[static_cast<size_t>(mapped)].name : "");
+            }
+            json += "], \"bend_axis\": [";
+            for (size_t axis = 0u; axis < 3u; ++axis) {
+                if (axis != 0u) json += ", ";
+                json += characterFloatText(chain.bendAxis[axis]);
+            }
+            json += "], \"stiffness_hz\": " +
+                characterFloatText(chain.stiffnessHz) +
+                ", \"damping_ratio\": " +
+                characterFloatText(chain.dampingRatio) +
+                ", \"inertia\": " + characterFloatText(chain.inertia) +
+                ", \"max_angle_degrees\": " +
+                characterFloatText(chain.maxAngleDegrees) + "}";
+        }
+        json += "\n  ]}\n";
+    }
+    json += "}\n";
     return json;
 }
 
@@ -6229,7 +6849,7 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
     CharacterHistoryFrame history = beginCharacterHistory(
         entry, CharacterHistoryTool::Rig);
     ui::TextSubtleWrapped(
-        "Map semantic anatomy to the model's actual skin joints. Saving creates a validated source-v4 revision, or preserves an existing source-v5 revision; the current playable cache remains active unless the complete compile succeeds.");
+        "Map semantic anatomy to the model's actual skin joints. Saving creates a validated source-v5 revision; the current playable cache remains active unless the complete compile succeeds.");
     const char *modeNames[] = {
         "Authored clips only", "Reviewed humanoid reference motion"
     };
@@ -6340,6 +6960,7 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
         if (!applicable) ImGui::BeginDisabled();
         if (ImGui::Button("Apply 16-role proposal to draft") && applicable) {
             for (size_t role = 0u; role < rigSuggestion.roles.size(); ++role) {
+                const CharacterRigEdit::Role prior = edit.roles[role];
                 edit.roles[role] = CharacterRigEdit::Role{};
                 edit.roles[role].joint = rigSuggestion.roles[role].joint;
                 edit.roles[role].inferred = true;
@@ -6354,6 +6975,19 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
                     std::copy(rigSuggestion.roles[role].bendAxis.begin(),
                               rigSuggestion.roles[role].bendAxis.end(),
                               edit.roles[role].bend);
+                }
+                if (prior.joint == edit.roles[role].joint) {
+                    edit.roles[role].constraintEnabled =
+                        prior.constraintEnabled;
+                    std::copy(std::begin(prior.twistAxis),
+                              std::end(prior.twistAxis),
+                              edit.roles[role].twistAxis);
+                    edit.roles[role].swingLimitDegrees =
+                        prior.swingLimitDegrees;
+                    edit.roles[role].twistMinDegrees =
+                        prior.twistMinDegrees;
+                    edit.roles[role].twistMaxDegrees =
+                        prior.twistMaxDegrees;
                 }
             }
             invalidateCharacterRigReview(edit);
@@ -6677,11 +7311,16 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
             ImGui::PopID();
         }
     }
+    drawCharacterMotionAuthoringStudio(edit, compact);
     const std::string hierarchyError = edit.mode ==
             MDKR_MODERN_RIG_HUMANOID_RETARGET_V1
         ? characterRigHierarchyError(edit) : std::string{};
     if (!hierarchyError.empty()) {
         ImGui::TextColored(AppTheme::bad(), "%s", hierarchyError.c_str());
+    }
+    const std::string motionError = characterMotionAuthoringError(edit);
+    if (!motionError.empty()) {
+        ImGui::TextColored(AppTheme::bad(), "%s", motionError.c_str());
     }
     if (edit.mode == MDKR_MODERN_RIG_HUMANOID_RETARGET_V1) {
         ImGui::SeparatorText("Guided anatomy review");
@@ -6711,10 +7350,64 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
         }
         if (!tasksAvailable) ImGui::EndDisabled();
         const unsigned completedTasks = countCharacterBits(
-            edit.reviewTaskMask & kCharacterRigReviewTaskMask);
+            edit.reviewTaskMask & kCharacterRigAnatomyReviewTaskMask);
         ImGui::TextColored(
             completedTasks == 5u ? AppTheme::good() : AppTheme::accent(),
             "%u of 5 anatomy regions checked", completedTasks);
+
+        const bool hasConstraints = std::any_of(
+            std::begin(edit.roles), std::end(edit.roles),
+            [](const CharacterRigEdit::Role &role) {
+                return role.constraintEnabled;
+            });
+        if (hasConstraints) {
+            bool checked = (edit.reviewTaskMask &
+                            kCharacterRigConstraintReviewTask) != 0u;
+            if (motionError.empty() && hierarchyError.empty()) {
+                if (ImGui::Checkbox(
+                        "Limits: checked clamp indicators and every constrained role at exact motion endpoints",
+                        &checked)) {
+                    if (checked) edit.reviewTaskMask |=
+                        kCharacterRigConstraintReviewTask;
+                    else edit.reviewTaskMask &=
+                        ~kCharacterRigConstraintReviewTask;
+                    edit.reviewed = false;
+                }
+            } else {
+                ImGui::BeginDisabled();
+                (void)ImGui::Checkbox(
+                    "Limits: fix authoring errors before review", &checked);
+                ImGui::EndDisabled();
+            }
+            ui::SpeakFocusedItem(
+                "Joint limit review", checked ? "Checked" : "Not checked",
+                "Confirms exact endpoint poses and visible clamp diagnostics for every constrained role in this source-bound draft.");
+        }
+        if (!edit.secondaryChains.empty()) {
+            bool checked = (edit.reviewTaskMask &
+                            kCharacterRigSecondaryReviewTask) != 0u;
+            if (motionError.empty() && hierarchyError.empty()) {
+                if (ImGui::Checkbox(
+                        "Follow-through: checked start, stop, turn, landing, and hitch-reset behavior",
+                        &checked)) {
+                    if (checked) edit.reviewTaskMask |=
+                        kCharacterRigSecondaryReviewTask;
+                    else edit.reviewTaskMask &=
+                        ~kCharacterRigSecondaryReviewTask;
+                    edit.reviewed = false;
+                }
+            } else {
+                ImGui::BeginDisabled();
+                (void)ImGui::Checkbox(
+                    "Follow-through: fix authoring errors before review",
+                    &checked);
+                ImGui::EndDisabled();
+            }
+            ui::SpeakFocusedItem(
+                "Secondary motion review",
+                checked ? "Checked" : "Not checked",
+                "Confirms bounded follow-through across acceleration, stopping, steering, landing, and a presentation discontinuity for this source-bound draft.");
+        }
 
         ImGui::SeparatorText("Exact motion battery");
         ui::TextSubtleWrapped(
@@ -6773,22 +7466,24 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
             }
         }
     }
+    const uint32_t requiredReviewTasks =
+        requiredCharacterRigReviewTaskMask(edit);
     const bool reviewTasksComplete =
-        (edit.reviewTaskMask & kCharacterRigReviewTaskMask) ==
-        kCharacterRigReviewTaskMask;
+        (edit.reviewTaskMask & requiredReviewTasks) == requiredReviewTasks;
     const bool canReview = edit.mode == MDKR_MODERN_RIG_HUMANOID_RETARGET_V1 &&
-        hierarchyError.empty() && reviewTasksComplete;
+        hierarchyError.empty() && motionError.empty() && reviewTasksComplete;
     if (!canReview) ImGui::BeginDisabled();
     (void)ImGui::Checkbox(
-        "I approve these mappings and bases for provisional reference-motion testing",
+        "I approve this rig, limits, and follow-through for provisional exact testing",
         &edit.reviewed);
     if (!canReview) ImGui::EndDisabled();
     ui::SpeakFocusedItem(
         "Rig review", edit.reviewed ? "Approved" : "Not approved",
         canReview
-            ? "Approves this exact mapping and basis revision so it can be saved and exercised through the exact motion battery. Any later role or basis change clears the anatomy checklist and approval."
-            : "Complete the structurally valid mapping and five guided anatomy checks before provisional approval becomes available.");
+            ? "Approves this exact mapping, basis, limit, and secondary-motion revision so it can be saved and exercised through the exact motion battery. Any later authoring change clears its checklist and approval."
+            : "Complete the structurally valid mapping, motion configuration, and every displayed review check before provisional approval becomes available.");
     const bool canSave = invalidDisabledSemantics == 0u &&
+        motionError.empty() &&
         (edit.mode == MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY ||
          hierarchyError.empty());
     const bool stagingDraft = g_characterActiveDrafts.find(entry->id) !=
@@ -8241,6 +8936,74 @@ void drawCharacterJointExcursionTable(
     ImGui::PopID();
 }
 
+void drawCharacterMotionRuntimeDiagnostics(
+    const MdkrCharacterPreviewResult *samples, unsigned sampleCount) {
+    if (samples == nullptr || sampleCount == 0u) return;
+    unsigned clampMask = 0u;
+    unsigned chainCount = 0u;
+    unsigned jointCount = 0u;
+    unsigned activeJoints = 0u;
+    unsigned maxDeflection = 0u;
+    unsigned long long resets = 0u;
+    for (unsigned sample = 0u; sample < sampleCount; ++sample) {
+        if (samples[sample].version < 23u) return;
+        clampMask |= samples[sample].constraint_clamped_mask;
+        chainCount = std::max(chainCount,
+                              samples[sample].secondary_chain_count);
+        jointCount = std::max(jointCount,
+                              samples[sample].secondary_joint_count);
+        activeJoints = std::max(
+            activeJoints, samples[sample].secondary_active_joint_count);
+        maxDeflection = std::max(
+            maxDeflection,
+            samples[sample].secondary_max_deflection_millidegrees);
+        resets = std::max(
+            resets, samples[sample].secondary_discontinuity_resets);
+    }
+    if (clampMask == 0u && chainCount == 0u) return;
+    ImGui::SeparatorText("Authored motion safeguards");
+    if (clampMask != 0u) {
+        std::string roles;
+        for (unsigned role = 0u;
+             role < MDKR_CHARACTER_PREVIEW_JOINTS; ++role) {
+            if ((clampMask & (1u << role)) == 0u) continue;
+            if (!roles.empty()) roles += ", ";
+            roles += kHumanoidRigRoles[role].label;
+        }
+        ImGui::TextColored(
+            AppTheme::accent(), "Joint limits engaged: %s", roles.c_str());
+        ui::TextSubtleWrapped(
+            "An engaged limit is evidence that this exact pose reached its authored safety rail. Inspect the silhouette and contact error; it is not automatically a defect or an approval.");
+    } else {
+        ImGui::TextDisabled(
+            "Joint limits: none engaged in the sampled state%s",
+            sampleCount == 1u ? "" : "s");
+    }
+    if (chainCount != 0u) {
+        ImGui::Text(
+            "Follow-through: %u chain%s · %u dynamic joint%s · %u active · %.2f° peak",
+            chainCount, chainCount == 1u ? "" : "s", jointCount,
+            jointCount == 1u ? "" : "s", activeJoints,
+            maxDeflection / 1000.0);
+        ImGui::TextDisabled(
+            "%llu presentation discontinuity reset%s observed",
+            resets, resets == 1u ? "" : "s");
+        ui::TextSubtleWrapped(
+            "The fixed-step spring reports its largest current deflection and safe hitch resets. Review starts, stops, turns, and landings visually; these numbers prove bounded runtime behavior, not artistic quality.");
+    }
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+        static bool traced = false;
+        if (!traced) {
+            std::fprintf(
+                stderr,
+                "[app-ui] character-motion-runtime-diagnostics clamp-mask=%u chains=%u joints=%u active=%u max-millidegrees=%u discontinuity-resets=%llu exact=1 spoken=1\n",
+                clampMask, chainCount, jointCount, activeJoints,
+                maxDeflection, resets);
+            traced = true;
+        }
+    }
+}
+
 void drawCharacterMotionReviewSummary(
     const CharacterMotionReviewSessionResult &session, bool compact) {
     constexpr unsigned long long kContactStabilityGuideMicrometres = 2000u;
@@ -8506,6 +9269,8 @@ void drawCharacterMotionReviewSummary(
     drawCharacterJointExcursionTable(
         session.result.samples, sampleCount, definitions,
         "motion-review-joint-travel");
+    drawCharacterMotionRuntimeDiagnostics(
+        session.result.samples, sampleCount);
     char framingSummary[96];
     char bodySummary[128];
     char visibilitySummary[128];
@@ -8789,6 +9554,26 @@ void publishCharacterMotionReviewSmokeFixture(
     malformed = review;
     malformed.samples[0].joint_excursion_mask = 0u;
     malformed.samples[0].joint_excursion_millidegrees[0] = 1u;
+    Settings_publishCharacterPreviewResult(
+        entry->id, characterDigestHex(entry->source_sha256),
+        characterTestTuningSignature(
+            entry, edit, static_cast<unsigned>(context - 1)),
+        characterTestPresentationSignature(), std::string(), disposition,
+        publicationBase, &malformed);
+    if (currentCharacterMotionReview(entry, edit, context, scene) != nullptr) return;
+    malformed = review;
+    malformed.samples[0].constraint_clamped_mask = 1u;
+    malformed.samples[0].joint_excursion_mask = 0u;
+    Settings_publishCharacterPreviewResult(
+        entry->id, characterDigestHex(entry->source_sha256),
+        characterTestTuningSignature(
+            entry, edit, static_cast<unsigned>(context - 1)),
+        characterTestPresentationSignature(), std::string(), disposition,
+        publicationBase, &malformed);
+    if (currentCharacterMotionReview(entry, edit, context, scene) != nullptr) return;
+    malformed = review;
+    malformed.samples[0].secondary_chain_count = 1u;
+    malformed.samples[0].secondary_joint_count = 0u;
     Settings_publishCharacterPreviewResult(
         entry->id, characterDigestHex(entry->source_sha256),
         characterTestTuningSignature(
@@ -11558,6 +12343,7 @@ bool characterPreviewFitDiagnosticsValid(
 bool characterPreviewJointDiagnosticsValid(
     const MdkrCharacterPreviewResult &result) {
     constexpr unsigned kJointDiagnosticsResultVersion = 22u;
+    constexpr unsigned kMotionDiagnosticsResultVersion = 23u;
     constexpr unsigned kAllJoints =
         (1u << MDKR_CHARACTER_PREVIEW_JOINTS) - 1u;
     if (result.version < kJointDiagnosticsResultVersion &&
@@ -11573,6 +12359,30 @@ bool characterPreviewJointDiagnosticsValid(
         const unsigned value =
             result.joint_excursion_millidegrees[role];
         if ((!present && value != 0u) || value > 180000u) return false;
+    }
+    if (result.version < kMotionDiagnosticsResultVersion) {
+        if (result.constraint_clamped_mask != 0u ||
+            result.secondary_chain_count != 0u ||
+            result.secondary_joint_count != 0u ||
+            result.secondary_active_joint_count != 0u ||
+            result.secondary_max_deflection_millidegrees != 0u ||
+            result.secondary_discontinuity_resets != 0u) return false;
+    } else if ((result.constraint_clamped_mask & ~kAllJoints) != 0u ||
+               (result.constraint_clamped_mask &
+                ~result.joint_excursion_mask) != 0u ||
+               result.secondary_chain_count > 8u ||
+               result.secondary_joint_count > 64u ||
+               result.secondary_chain_count > result.secondary_joint_count ||
+               ((result.secondary_chain_count == 0u) !=
+                (result.secondary_joint_count == 0u)) ||
+               result.secondary_active_joint_count >
+                   result.secondary_joint_count ||
+               result.secondary_max_deflection_millidegrees > 90000u ||
+               (result.secondary_joint_count == 0u &&
+                (result.secondary_active_joint_count != 0u ||
+                 result.secondary_max_deflection_millidegrees != 0u ||
+                 result.secondary_discontinuity_resets != 0u))) {
+        return false;
     }
     return result.joint_excursion_mask == 0u ||
         (result.replacement_draws != 0u &&
@@ -13189,6 +13999,7 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
             drawCharacterJointExcursionTable(
                 &result, 1u, &heldDefinition,
                 "held-sample-joint-travel");
+            drawCharacterMotionRuntimeDiagnostics(&result, 1u);
         } else if (result.joint_excursion_mask != 0u) {
             ui::TextSubtleWrapped(
                 "Joint-travel numbers are intentionally omitted for a continuously alternating transition: use held start, middle, and end samples or the complete motion battery for stable per-state measurements.");
@@ -18915,7 +19726,7 @@ bool captureCharacterHistoryPayload(
     } else if (tool == CharacterHistoryTool::Rig) {
         const CharacterRigEdit &edit = loadCharacterRigEdit(entry);
         if (!edit.error.empty()) return false;
-        payload = "mdkr-rig-history-v3\n";
+        payload = "mdkr-rig-history-v4\n";
         appendCharacterHistoryValue(payload, edit.mode);
         const uint8_t reviewed = edit.reviewed ? 1u : 0u;
         appendCharacterHistoryValue(payload, reviewed);
@@ -18932,6 +19743,34 @@ bool captureCharacterHistoryPayload(
             for (float value : role.bend) {
                 appendCharacterHistoryValue(payload, value);
             }
+            const uint8_t constraintEnabled =
+                role.constraintEnabled ? 1u : 0u;
+            appendCharacterHistoryValue(payload, constraintEnabled);
+            for (float value : role.twistAxis) {
+                appendCharacterHistoryValue(payload, value);
+            }
+            appendCharacterHistoryValue(payload, role.swingLimitDegrees);
+            appendCharacterHistoryValue(payload, role.twistMinDegrees);
+            appendCharacterHistoryValue(payload, role.twistMaxDegrees);
+        }
+        const uint32_t chainCount = static_cast<uint32_t>(
+            edit.secondaryChains.size());
+        appendCharacterHistoryValue(payload, chainCount);
+        for (const CharacterRigEdit::SecondaryChain &chain :
+             edit.secondaryChains) {
+            payload.append(chain.name, sizeof(chain.name));
+            appendCharacterHistoryValue(payload, chain.rootNode);
+            appendCharacterHistoryValue(payload, chain.jointCount);
+            for (int joint : chain.joints) {
+                appendCharacterHistoryValue(payload, joint);
+            }
+            for (float value : chain.bendAxis) {
+                appendCharacterHistoryValue(payload, value);
+            }
+            appendCharacterHistoryValue(payload, chain.stiffnessHz);
+            appendCharacterHistoryValue(payload, chain.dampingRatio);
+            appendCharacterHistoryValue(payload, chain.inertia);
+            appendCharacterHistoryValue(payload, chain.maxAngleDegrees);
         }
     } else if (tool == CharacterHistoryTool::Fit) {
         const CharacterTuningEdit &edit = loadCharacterTuning(0, entry->id);
@@ -19249,7 +20088,9 @@ bool applyCharacterHistoryPayload(
         }
         g_characterProfileEdits[entry->id] = std::move(replacement);
     } else if (tool == CharacterHistoryTool::Rig) {
-        const bool hasReviewTasks =
+        const bool hasMotionAuthoring =
+            consumeHeader("mdkr-rig-history-v4\n");
+        const bool hasReviewTasks = hasMotionAuthoring ||
             consumeHeader("mdkr-rig-history-v3\n");
         const bool hasAnimationIntent = hasReviewTasks ||
             consumeHeader("mdkr-rig-history-v2\n");
@@ -19279,7 +20120,7 @@ bool applyCharacterHistoryPayload(
             }
         } else {
             replacement.reviewTaskMask = replacement.reviewed
-                ? kCharacterRigReviewTaskMask : 0u;
+                ? kCharacterRigAnatomyReviewTaskMask : 0u;
         }
         if (hasAnimationIntent &&
             (!readCharacterHistoryValue(
@@ -19311,6 +20152,33 @@ bool applyCharacterHistoryPayload(
                     return false;
                 }
             }
+            if (hasMotionAuthoring) {
+                uint8_t constraintEnabled = 0u;
+                if (!readCharacterHistoryValue(
+                        payload, offset, constraintEnabled) ||
+                    constraintEnabled > 1u) {
+                    error = "Rig history joint limit is truncated.";
+                    return false;
+                }
+                role.constraintEnabled = constraintEnabled != 0u;
+                for (float &value : role.twistAxis) {
+                    if (!readCharacterHistoryValue(payload, offset, value)) {
+                        error = "Rig history joint-limit axis is truncated.";
+                        return false;
+                    }
+                }
+                if (!readCharacterHistoryValue(
+                        payload, offset, role.swingLimitDegrees) ||
+                    !readCharacterHistoryValue(
+                        payload, offset, role.twistMinDegrees) ||
+                    !readCharacterHistoryValue(
+                        payload, offset, role.twistMaxDegrees)) {
+                    error = "Rig history joint-limit range is truncated.";
+                    return false;
+                }
+            } else {
+                role.constraintEnabled = false;
+            }
             if (inferred > 1u || role.joint < -1 ||
                 role.joint >= static_cast<int>(replacement.joints.size()) ||
                 (role.joint >= 0 && !mappedJoints.insert(role.joint).second) ||
@@ -19331,11 +20199,72 @@ bool applyCharacterHistoryPayload(
             }
             role.inferred = inferred != 0u;
         }
+        replacement.secondaryChains.clear();
+        if (hasMotionAuthoring) {
+            uint32_t chainCount = 0u;
+            if (!readCharacterHistoryValue(payload, offset, chainCount) ||
+                chainCount > 8u) {
+                error = "Rig history secondary-chain count is invalid.";
+                return false;
+            }
+            for (uint32_t chainIndex = 0u; chainIndex < chainCount;
+                 ++chainIndex) {
+                CharacterRigEdit::SecondaryChain chain;
+                if (offset > payload.size() ||
+                    sizeof(chain.name) > payload.size() - offset) {
+                    error = "Rig history secondary-chain name is truncated.";
+                    return false;
+                }
+                std::memcpy(chain.name, payload.data() + offset,
+                            sizeof(chain.name));
+                offset += sizeof(chain.name);
+                if (chain.name[sizeof(chain.name) - 1u] != '\0' ||
+                    std::memchr(chain.name, '\0', sizeof(chain.name)) ==
+                        nullptr ||
+                    !readCharacterHistoryValue(
+                        payload, offset, chain.rootNode) ||
+                    !readCharacterHistoryValue(
+                        payload, offset, chain.jointCount) ||
+                    chain.jointCount > 16u) {
+                    error = "Rig history secondary-chain header is invalid.";
+                    return false;
+                }
+                for (int &joint : chain.joints) {
+                    if (!readCharacterHistoryValue(payload, offset, joint)) {
+                        error = "Rig history secondary path is truncated.";
+                        return false;
+                    }
+                }
+                for (float &value : chain.bendAxis) {
+                    if (!readCharacterHistoryValue(payload, offset, value)) {
+                        error = "Rig history secondary axis is truncated.";
+                        return false;
+                    }
+                }
+                if (!readCharacterHistoryValue(
+                        payload, offset, chain.stiffnessHz) ||
+                    !readCharacterHistoryValue(
+                        payload, offset, chain.dampingRatio) ||
+                    !readCharacterHistoryValue(
+                        payload, offset, chain.inertia) ||
+                    !readCharacterHistoryValue(
+                        payload, offset, chain.maxAngleDegrees)) {
+                    error = "Rig history secondary response is truncated.";
+                    return false;
+                }
+                replacement.secondaryChains.push_back(chain);
+            }
+        }
+        const uint32_t requiredTasks =
+            requiredCharacterRigReviewTaskMask(replacement);
+        const std::string motionError =
+            characterMotionAuthoringError(replacement);
         if (offset != payload.size() ||
             (replacement.mode == MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY &&
              replacement.reviewed) ||
             (replacement.reviewed &&
-             replacement.reviewTaskMask != kCharacterRigReviewTaskMask)) {
+             (replacement.reviewTaskMask & requiredTasks) != requiredTasks) ||
+            !motionError.empty()) {
             error = "Rig history has trailing or inconsistent state.";
             return false;
         }
@@ -19840,6 +20769,38 @@ bool captureCharacterDraftSnapshot(
         target.confidence = source.confidence;
         std::copy(std::begin(source.rest), std::end(source.rest), target.rest);
         std::copy(std::begin(source.bend), std::end(source.bend), target.bend);
+        target.constraintEnabled = source.constraintEnabled;
+        std::copy(std::begin(source.twistAxis),
+                  std::end(source.twistAxis), target.twistAxis);
+        target.swingLimitDegrees = source.swingLimitDegrees;
+        target.twistMinDegrees = source.twistMinDegrees;
+        target.twistMaxDegrees = source.twistMaxDegrees;
+    }
+    snapshot.motionAuthoringContractPresent = true;
+    snapshot.secondaryChainCount = static_cast<uint32_t>(
+        rig.secondaryChains.size());
+    for (uint32_t index = 0u; index < snapshot.secondaryChainCount; ++index) {
+        const CharacterRigEdit::SecondaryChain &source =
+            rig.secondaryChains[index];
+        CharacterDraftSnapshot::SecondaryChain &target =
+            snapshot.secondaryChains[index];
+        target.name = source.name;
+        target.rootNode = source.rootNode;
+        target.jointCount = source.jointCount;
+        for (uint32_t order = 0u; order < source.jointCount; ++order) {
+            const int joint = source.joints[order];
+            if (joint < 0 || joint >= static_cast<int>(rig.joints.size())) {
+                error = "A secondary-motion draft joint is unavailable.";
+                return false;
+            }
+            target.joints[order] = rig.joints[joint].node;
+        }
+        std::copy(std::begin(source.bendAxis),
+                  std::end(source.bendAxis), target.bendAxis);
+        target.stiffnessHz = source.stiffnessHz;
+        target.dampingRatio = source.dampingRatio;
+        target.inertia = source.inertia;
+        target.maxAngleDegrees = source.maxAngleDegrees;
     }
     int assemblyPlayers = g_characterAssemblyPlayers[entry->id];
     int testPlayers = g_characterTestPlayers[entry->id];
@@ -19955,6 +20916,7 @@ bool applyCharacterDraftSnapshot(
          slot < CharacterDraftSnapshot::kRoles; ++slot) {
         const CharacterDraftSnapshot::RigRole &source = snapshot.roles[slot];
         CharacterRigEdit::Role &target = rig.roles[slot];
+        const CharacterRigEdit::Role active = target;
         target = CharacterRigEdit::Role{};
         if (source.node != CharacterDraftSnapshot::kNoNode) {
             const auto joint = std::find_if(
@@ -19973,12 +20935,73 @@ bool applyCharacterDraftSnapshot(
         target.confidence = source.confidence;
         std::copy(std::begin(source.rest), std::end(source.rest), target.rest);
         std::copy(std::begin(source.bend), std::end(source.bend), target.bend);
+        if (snapshot.motionAuthoringContractPresent) {
+            target.constraintEnabled = source.constraintEnabled;
+            std::copy(std::begin(source.twistAxis),
+                      std::end(source.twistAxis), target.twistAxis);
+            target.swingLimitDegrees = source.swingLimitDegrees;
+            target.twistMinDegrees = source.twistMinDegrees;
+            target.twistMaxDegrees = source.twistMaxDegrees;
+        } else if (active.joint == target.joint) {
+            target.constraintEnabled = active.constraintEnabled;
+            std::copy(std::begin(active.twistAxis),
+                      std::end(active.twistAxis), target.twistAxis);
+            target.swingLimitDegrees = active.swingLimitDegrees;
+            target.twistMinDegrees = active.twistMinDegrees;
+            target.twistMaxDegrees = active.twistMaxDegrees;
+        }
+    }
+    if (snapshot.motionAuthoringContractPresent) {
+        rig.secondaryChains.clear();
+        for (uint32_t index = 0u; index < snapshot.secondaryChainCount;
+             ++index) {
+            const CharacterDraftSnapshot::SecondaryChain &source =
+                snapshot.secondaryChains[index];
+            CharacterRigEdit::SecondaryChain target;
+            std::snprintf(target.name, sizeof(target.name), "%s",
+                          source.name.c_str());
+            target.rootNode = source.rootNode;
+            target.jointCount = source.jointCount;
+            for (uint32_t order = 0u; order < source.jointCount; ++order) {
+                const uint32_t node = source.joints[order];
+                const auto joint = std::find_if(
+                    rig.joints.begin(), rig.joints.end(),
+                    [node](const CharacterRigEdit::Joint &candidate) {
+                        return candidate.node == node;
+                    });
+                if (joint == rig.joints.end()) {
+                    error = "A draft secondary joint is absent from its exact base source.";
+                    return false;
+                }
+                target.joints[order] = static_cast<int>(
+                    std::distance(rig.joints.begin(), joint));
+            }
+            std::copy(std::begin(source.bendAxis),
+                      std::end(source.bendAxis), target.bendAxis);
+            target.stiffnessHz = source.stiffnessHz;
+            target.dampingRatio = source.dampingRatio;
+            target.inertia = source.inertia;
+            target.maxAngleDegrees = source.maxAngleDegrees;
+            rig.secondaryChains.push_back(target);
+        }
     }
     rig.mode = static_cast<int>(snapshot.rigMode);
     rig.reviewed = snapshot.rigReviewed;
     rig.reviewTaskMask = snapshot.rigReviewTaskMask;
     rig.disabledSemanticMask = snapshot.animationIntentPresent
         ? snapshot.disabledSemanticMask : entry->disabled_semantic_mask;
+    if (!snapshot.motionAuthoringContractPresent &&
+        requiredCharacterRigReviewTaskMask(rig) !=
+            kCharacterRigAnatomyReviewTaskMask) {
+        rig.reviewed = false;
+        rig.reviewTaskMask &= kCharacterRigAnatomyReviewTaskMask;
+    }
+    const std::string motionError = characterMotionAuthoringError(rig);
+    if (!motionError.empty()) {
+        error = "The draft motion contract is invalid for its exact base: " +
+            motionError;
+        return false;
+    }
 
     CharacterTuningEdit tuning = characterTuningFromDraftSnapshot(snapshot);
 
@@ -21934,6 +22957,14 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
                 "Rig contract: %s · no humanoid roles mapped",
                 rigStatus);
         }
+        ImGui::TextDisabled(
+            "Authored safeguards: %u joint limit%s · %u secondary chain%s · %u dynamic joint%s",
+            entry->stats.joint_constraints,
+            entry->stats.joint_constraints == 1u ? "" : "s",
+            entry->stats.secondary_chains,
+            entry->stats.secondary_chains == 1u ? "" : "s",
+            entry->stats.secondary_joints,
+            entry->stats.secondary_joints == 1u ? "" : "s");
         if (entry->rig_present != 0u) {
             ImGuiTreeNodeFlags roleFlags = 0;
             if (humanoidRig && (!humanoidRolesComplete || !rigReviewed)) {

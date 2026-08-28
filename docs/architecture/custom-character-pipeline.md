@@ -100,8 +100,12 @@ content-addressed paths;
   binding, direct parent paths, uniqueness and every numeric bound. The pose
   player clamps bind-relative swing/twist before and after vehicle contacts,
   and advances secondary deflection on a fixed 240 Hz accumulator with bounded
-  hitch resets and exact held-sample resets. The corresponding Studio is the
-  next implementation gate.
+  hitch resets and exact held-sample resets. Rig Studio authors both contracts
+  directly with named-node paths, normalized-axis controls, bounded presets,
+  source-bound undo/drafts, conditional review tasks, and exact runtime clamp,
+  activity, deflection, and reset diagnostics. Joint limits are admitted only
+  for humanoid-reference mode; authored-clips-only revisions omit them while
+  still supporting secondary follow-through for unusual skeletons.
 
 This is deliberately a vertical slice, not a claim of production readiness.
 OpenGL intentionally falls back to the retail driver, while WebGPU now has an
@@ -1195,7 +1199,7 @@ character material to form a large contiguous component inside the central safe
 frame, and proves the RGBA product has a nonempty bounded subject, a genuinely
 transparent background, and no hidden matte color in zero-alpha pixels. It also
 proves an existing capture stays byte-identical.
-Every valid custom-character arm also requires result-v22's asynchronous 8 x 8 opaque-depth
+Every valid custom-character arm also requires result-v23's asynchronous 8 x 8 opaque-depth
 witness: one exact replay records isolated occupied regions and a second replay
 uses equality against the completed scene depth. Portable WebGPU occlusion
 queries are treated only as booleans. Exact masks and popcounts are retained;
@@ -1205,7 +1209,7 @@ evidence rather than an unavailable result. The output-sized private depth
 surface is released immediately after submission and the readback never blocks.
 Vehicle contexts additionally replay game-tagged retained-body,
 vehicle-part-sprite, and held-object batches into the private target, then test
-the exact posed subject with a greater-depth diagnostic pipeline. Result v22
+the exact posed subject with a greater-depth diagnostic pipeline. Result v23
 retains per-class presence, qualification, batch counts, and boolean overlap
 masks. A named overlap means that class lies in front geometrically in this
 sample, not that it is the final frontmost pixel; blended classes and an absent
@@ -1258,7 +1262,7 @@ Fewer than 60 intervals
 and synthetic pacing are explicitly diagnostic-only. Visual-inspection results
 remain session-only and cannot contaminate durable timing evidence.
 Offset Studio also has a separate version-6 scene-review result containing
-three complete v22 select samples or eleven complete v22 vehicle samples bound
+three complete v23 select samples or eleven complete v23 vehicle samples bound
 to one of five qualified course families. Procedurally solved vehicle states
 also carry a per-limb count and maximum consecutive change in endpoint-minus-
 target after settling, isolating contact drift from ordinary model movement. A
@@ -1335,7 +1339,7 @@ anchor, normalized facing direction, and four exact post-solve
 root/bend/target/end/error contact witnesses from the successful replacement
 draw, retained-vehicle topology and containment facts, and the opaque-depth
 grid plus named vehicle-body/part/held-object attribution, so Fit and
-Performance retain the same renderer measurement after restart. The v22 result
+Performance retain the same renderer measurement after restart. The v23 result
 contract requires either all four self-consistent
 witnesses or none; a vehicle result with nonzero automatic solve count cannot
 omit or partially publish them. It also carries a versioned GPU timing contract:
@@ -1466,7 +1470,7 @@ fail before GPU allocation; decoded cost accounting matches actual allocations.
   fixture exercises readable silhouettes through the linked-ROM WebGPU route.
   Package-specific artistic review remains required.
 - Exact Animation Studio review holds 0/50/100% samples or alternates two
-  distinct semantics through those same cross-fades. The current result-v22
+  distinct semantics through those same cross-fades. The current result-v23
   contract reports both
   motion sources, per-destination blend milliseconds, switches, blended ticks,
   completions, package-fallback ticks, and the shortest bind-relative node-local

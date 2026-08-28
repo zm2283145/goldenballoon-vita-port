@@ -1512,15 +1512,22 @@ def _read_bounded_json_object(path: Path, maximum: int,
 
 
 def _validated_rig_draft(
-        draft: dict[str, Any]) -> tuple[dict[str, Any], list[str] | None]:
+        draft: dict[str, Any]
+        ) -> tuple[dict[str, Any], list[str] | None,
+                   dict[str, Any] | None, bool]:
     schema = draft.get("schema")
     expected = {"schema", "mode", "reviewed", "roles"}
-    if schema == "mdkr-character-rig-draft-v2":
+    if schema in (
+            "mdkr-character-rig-draft-v2",
+            "mdkr-character-rig-draft-v3"):
         expected.add("disabled_semantics")
+    if schema == "mdkr-character-rig-draft-v3":
+        expected.add("secondary_motion")
     unknown = set(draft) - expected
     missing = expected - set(draft)
     if unknown or missing or schema not in (
-            "mdkr-character-rig-draft-v1", "mdkr-character-rig-draft-v2"):
+            "mdkr-character-rig-draft-v1", "mdkr-character-rig-draft-v2",
+            "mdkr-character-rig-draft-v3"):
         detail = []
         if unknown:
             detail.append("unknown: " + ", ".join(sorted(unknown)))
@@ -1528,19 +1535,22 @@ def _validated_rig_draft(
             detail.append("missing: " + ", ".join(sorted(missing)))
         if schema not in (
                 "mdkr-character-rig-draft-v1",
-                "mdkr-character-rig-draft-v2"):
+                "mdkr-character-rig-draft-v2",
+                "mdkr-character-rig-draft-v3"):
             detail.append("unsupported schema")
         raise ManagerError("invalid rig draft (" + "; ".join(detail) + ")")
     disabled = (
         draft.get("disabled_semantics")
-        if schema == "mdkr-character-rig-draft-v2" else None
+        if schema in (
+            "mdkr-character-rig-draft-v2",
+            "mdkr-character-rig-draft-v3") else None
     )
     if disabled is None and schema == "mdkr-character-rig-draft-v1":
         return ({
             "mode": draft["mode"],
             "reviewed": draft["reviewed"],
             "roles": draft["roles"],
-        }, None)
+        }, None, None, False)
     if (
         not isinstance(disabled, list)
         or any(
@@ -1556,11 +1566,17 @@ def _validated_rig_draft(
             "rig draft disabled_semantics must contain at most 64 unique "
             "supported engine semantic names"
         )
+    secondary = draft.get("secondary_motion")
+    if schema == "mdkr-character-rig-draft-v3" and not (
+            secondary is None or isinstance(secondary, dict)):
+        raise ManagerError(
+            "rig draft secondary_motion must be an object or null"
+        )
     return ({
         "mode": draft["mode"],
         "reviewed": draft["reviewed"],
         "roles": draft["roles"],
-    }, list(disabled))
+    }, list(disabled), secondary, schema == "mdkr-character-rig-draft-v3")
 
 
 def _apply_disabled_semantics(
@@ -1591,6 +1607,8 @@ def _retain_v5_constraints(
         manifest: dict[str, Any], revised_rig: dict[str, Any]) -> dict[str, Any]:
     """Carry limits across non-anatomical edits; remapped roles invalidate them."""
     if manifest.get("schema") != probe.PACKAGE_SCHEMA_V5:
+        return revised_rig
+    if revised_rig.get("mode") != "humanoid-retarget-v1":
         return revised_rig
     original_rig = manifest.get("rig")
     original_roles = (
@@ -1626,7 +1644,7 @@ def revise_rig(package_id: str, rig_draft_path: Path,
     draft = _read_bounded_json_object(
         rig_draft_path, 128 * 1024, "rig draft"
     )
-    rig, disabled = _validated_rig_draft(draft)
+    rig, disabled, secondary, motion_contract = _validated_rig_draft(draft)
 
     def transform(manifest: dict[str, Any], _: dict[str, Any]) -> dict[str, Any]:
         schema = manifest.get("schema")
@@ -1637,10 +1655,17 @@ def revise_rig(package_id: str, rig_draft_path: Path,
         revised = dict(manifest)
         revised["schema"] = (
             probe.PACKAGE_SCHEMA_V5
-            if schema == probe.PACKAGE_SCHEMA_V5
+            if motion_contract or schema == probe.PACKAGE_SCHEMA_V5
             else probe.PACKAGE_SCHEMA_V4
         )
-        revised["rig"] = _retain_v5_constraints(manifest, rig)
+        revised["rig"] = (
+            rig if motion_contract else _retain_v5_constraints(manifest, rig)
+        )
+        if motion_contract:
+            if secondary is None:
+                revised.pop("secondary_motion", None)
+            else:
+                revised["secondary_motion"] = secondary
         _apply_disabled_semantics(revised, disabled)
         return revised
 
@@ -1730,7 +1755,7 @@ def build_workshop_draft(package_id: str, draft_path: Path,
     rig_draft = draft["rig_draft"]
     if not isinstance(rig_draft, dict):
         raise ManagerError("rig_draft must be an object")
-    rig, disabled = _validated_rig_draft(rig_draft)
+    rig, disabled, secondary, motion_contract = _validated_rig_draft(rig_draft)
 
     root = _prepare_directory(directory)
     package, based_on_sha, based_on_digest = _active_source_snapshot(
@@ -1792,10 +1817,17 @@ def build_workshop_draft(package_id: str, draft_path: Path,
         revised["presentation"] = presentation
         revised["schema"] = (
             probe.PACKAGE_SCHEMA_V5
-            if manifest.get("schema") == probe.PACKAGE_SCHEMA_V5
+            if motion_contract or manifest.get("schema") == probe.PACKAGE_SCHEMA_V5
             else probe.PACKAGE_SCHEMA_V4
         )
-        revised["rig"] = _retain_v5_constraints(manifest, rig)
+        revised["rig"] = (
+            rig if motion_contract else _retain_v5_constraints(manifest, rig)
+        )
+        if motion_contract:
+            if secondary is None:
+                revised.pop("secondary_motion", None)
+            else:
+                revised["secondary_motion"] = secondary
         _apply_disabled_semantics(revised, disabled)
 
         model_path = work / "model.glb"

@@ -2539,6 +2539,10 @@ def validate_manifest(manifest: dict[str, Any], glb_report: dict[str, Any]) -> l
                             errors.append(
                                 f"{constraint_path} requires mdkr-character-source-v5"
                             )
+                        elif mode != "humanoid-retarget-v1":
+                            errors.append(
+                                f"{constraint_path} requires humanoid-retarget-v1 mode"
+                            )
                         elif not isinstance(constraint, dict):
                             errors.append(f"{constraint_path} must be an object")
                         else:

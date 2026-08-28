@@ -1243,12 +1243,15 @@ static int validate_references(const MdkrModernCharacterAsset *asset,
     if (asset->sections[MDKR_MDKC_JOINT_CONSTRAINTS].data != NULL) {
         const MdkrModernSectionView *constraints =
             &asset->sections[MDKR_MDKC_JOINT_CONSTRAINTS];
+        MdkrModernRig constraint_rig;
         uint32_t constraint_mask = 0u;
         uint32_t constraint_index;
         if (asset->sections[MDKR_MDKC_RIG].data == NULL ||
+            !mdkr_modern_character_asset_rig(asset, &constraint_rig) ||
+            constraint_rig.mode != MDKR_MODERN_RIG_HUMANOID_RETARGET_V1 ||
             constraints->count > MDKR_MODERN_HUMANOID_ROLE_COUNT) {
             set_error(error, error_size,
-                      "compiled character joint constraints have no rig");
+                      "compiled character joint constraints require a humanoid rig");
             return 0;
         }
         for (constraint_index = 0u; constraint_index < constraints->count;

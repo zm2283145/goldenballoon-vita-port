@@ -671,6 +671,20 @@ int main(int argc, char **argv) {
 
     bytes = read_file(argv[1], &size);
     {
+        unsigned char *rig_bytes = section_payload(bytes, MDKR_MDKC_RIG);
+        require(rig_bytes != NULL,
+                "locate compiled rig mode for constraint mutation test");
+        write_u32_le(rig_bytes, MDKR_MODERN_RIG_AUTHORED_CLIPS_ONLY);
+        refresh_payload_crc(bytes, size);
+        require(!mdkr_modern_character_asset_load_memory(
+                    bytes, size, &refused, error, sizeof(error)) &&
+                    strstr(error, "joint constraints require a humanoid rig") != NULL,
+                "native admission rejects constraints on an authored-clips-only rig");
+    }
+    free(bytes);
+
+    bytes = read_file(argv[1], &size);
+    {
         unsigned char *constraint = section_payload(
             bytes, MDKR_MDKC_JOINT_CONSTRAINTS);
         require(constraint != NULL,
@@ -1840,12 +1854,20 @@ int main(int argc, char **argv) {
                 isfinite(joint_diagnostics.excursion_degrees[15]) &&
                 joint_diagnostics.excursion_degrees[0] >= 0.0f &&
                 joint_diagnostics.excursion_degrees[15] <= 180.0f &&
+                (joint_diagnostics.constraint_clamped_mask & ~0xFFFFu) == 0u &&
+                joint_diagnostics.secondary_chain_count == 1u &&
+                joint_diagnostics.secondary_joint_count == 2u &&
+                joint_diagnostics.secondary_active_joint_count <= 2u &&
+                isfinite(
+                    joint_diagnostics.secondary_max_deflection_degrees) &&
+                joint_diagnostics.secondary_max_deflection_degrees >= 0.0f &&
+                joint_diagnostics.secondary_max_deflection_degrees <= 35.001f &&
                 !mdkr_modern_character_player_joint_diagnostics(
                     0, MDKR_CHARACTER_CONTEXT_HOVERCRAFT,
                     &joint_diagnostics) &&
                 !mdkr_modern_character_player_joint_diagnostics(
                     -1, MDKR_CHARACTER_CONTEXT_CAR, &joint_diagnostics),
-            "runtime publishes exact post-solve joint excursion only for a successful replacement context draw");
+            "runtime publishes exact post-solve joint, clamp, and secondary-motion diagnostics only for a successful replacement context draw");
     require(command_cursor == commands + 2 && registered_draws == 2u,
             "runtime emits one retained command per selected primitive");
     require(select_model_y - last_model_matrix[13] > 0.70f,

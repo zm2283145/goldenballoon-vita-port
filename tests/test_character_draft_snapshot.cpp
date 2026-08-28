@@ -52,7 +52,7 @@ int main() {
     source.contexts[1].contacts[0][0] = -0.25f;
     source.rigMode = 1u;
     source.rigReviewed = true;
-    source.rigReviewTaskMask = 0x1Fu;
+    source.rigReviewTaskMask = 0x7Fu;
     source.disabledSemanticMask = 1u << 11u;
     for (size_t role = 0u; role < kRoles; ++role) {
         source.roles[role].node = static_cast<uint32_t>(role * 2u);
@@ -60,6 +60,19 @@ int main() {
         source.roles[role].confidence = 0.5f +
             static_cast<float>(role) / 32.0f;
     }
+    source.roles[5].constraintEnabled = true;
+    source.roles[5].twistAxis[0] = 0.0f;
+    source.roles[5].twistAxis[1] = 1.0f;
+    source.roles[5].swingLimitDegrees = 55.0f;
+    source.roles[5].twistMinDegrees = -25.0f;
+    source.roles[5].twistMaxDegrees = 35.0f;
+    source.motionAuthoringContractPresent = true;
+    source.secondaryChainCount = 1u;
+    source.secondaryChains[0].name = "hair.main";
+    source.secondaryChains[0].rootNode = 31u;
+    source.secondaryChains[0].jointCount = 2u;
+    source.secondaryChains[0].joints[0] = 32u;
+    source.secondaryChains[0].joints[1] = 33u;
     for (size_t index = 0u; index < source.portrait.size(); ++index) {
         source.portrait[index] = static_cast<uint8_t>(index * 31u);
         source.portraitStyleSource[index] = static_cast<uint8_t>(index * 17u);
@@ -97,7 +110,9 @@ int main() {
 
     std::string encoded;
     std::string error;
-    expect(encode(source, encoded, error), "valid full snapshot encodes");
+    const bool sourceEncoded = encode(source, encoded, error);
+    if (!sourceEncoded) std::fprintf(stderr, "encode error: %s\n", error.c_str());
+    expect(sourceEncoded, "valid full snapshot encodes");
     Snapshot parsed;
     expect(decode(encoded, parsed, error), "valid full snapshot decodes");
     expect(parsed.donor == 7u && parsed.packageVehicleMask == 5u &&
@@ -123,7 +138,16 @@ int main() {
                parsed.offset[1] == -12.5f &&
                parsed.contexts[1].contacts[0][0] == -0.25f &&
                parsed.rigReviewed &&
-               parsed.rigReviewTaskMask == 0x1Fu &&
+               parsed.rigReviewTaskMask == 0x7Fu &&
+               parsed.motionAuthoringContractPresent &&
+               parsed.roles[5].constraintEnabled &&
+               parsed.roles[5].twistAxis[1] == 1.0f &&
+               parsed.roles[5].swingLimitDegrees == 55.0f &&
+               parsed.secondaryChainCount == 1u &&
+               parsed.secondaryChains[0].name == "hair.main" &&
+               parsed.secondaryChains[0].rootNode == 31u &&
+               parsed.secondaryChains[0].jointCount == 2u &&
+               parsed.secondaryChains[0].joints[1] == 33u &&
                parsed.animationIntentPresent &&
                parsed.disabledSemanticMask == (1u << 11u) &&
                parsed.roles[15].node == 30u &&
@@ -176,7 +200,19 @@ int main() {
     constexpr size_t contactExceptionTailBytes = 4u;
     constexpr size_t transitionInspectionTailBytes = 12u;
     constexpr size_t fitSceneReviewTailBytes = 4u;
-    std::string versionSeventeen = encoded;
+    const size_t motionAuthoringTailBytes =
+        kRoles * 28u + 4u + 104u + source.secondaryChains[0].name.size();
+    std::string versionEighteen = encoded.substr(
+        0u, encoded.size() - motionAuthoringTailBytes);
+    writeU32(versionEighteen, 4u, 18u);
+    writeU32(versionEighteen, 8u,
+             static_cast<uint32_t>(versionEighteen.size()));
+    expect(decode(versionEighteen, parsed, error) &&
+               !parsed.motionAuthoringContractPresent &&
+               parsed.secondaryChainCount == 0u &&
+               !parsed.roles[5].constraintEnabled,
+           "version-eighteen drafts retain active motion settings during UI migration");
+    std::string versionSeventeen = versionEighteen;
     writeU32(versionSeventeen, 4u, 17u);
     expect(decode(versionSeventeen, parsed, error) &&
                parsed.reviewedContexts == 0u &&
@@ -184,7 +220,7 @@ int main() {
                parsed.fitContactStabilityContractPresent &&
                !parsed.fitExpandedSceneContractPresent,
            "version-seventeen drafts reopen every approval for the expanded scene battery");
-    std::string versionSixteen = encoded;
+    std::string versionSixteen = versionEighteen;
     writeU32(versionSixteen, 4u, 16u);
     expect(decode(versionSixteen, parsed, error) &&
                parsed.reviewedContexts == 0u &&
@@ -193,7 +229,7 @@ int main() {
                !parsed.fitContactStabilityContractPresent &&
                !parsed.fitExpandedSceneContractPresent,
            "version-sixteen drafts reopen every approval for settled contact stability");
-    std::string versionFifteen = encoded;
+    std::string versionFifteen = versionEighteen;
     writeU32(versionFifteen, 4u, 15u);
     expect(decode(versionFifteen, parsed, error) &&
                parsed.reviewedContexts == 0u &&
@@ -202,7 +238,7 @@ int main() {
                !parsed.fitMultiSceneReviewContractPresent &&
                !parsed.fitContactStabilityContractPresent,
            "version-fifteen drafts reopen every approval for the multi-scene battery");
-    std::string versionFourteen = encoded;
+    std::string versionFourteen = versionEighteen;
     writeU32(versionFourteen, 4u, 14u);
     expect(decode(versionFourteen, parsed, error) &&
                parsed.reviewedContexts == 0u &&
@@ -211,7 +247,7 @@ int main() {
                !parsed.fitSemanticReviewContractPresent &&
                !parsed.fitMultiSceneReviewContractPresent,
            "version-fourteen drafts reopen every approval for complete select and race semantic review");
-    std::string versionThirteen = encoded;
+    std::string versionThirteen = versionEighteen;
     writeU32(versionThirteen, 4u, 13u);
     expect(decode(versionThirteen, parsed, error) &&
                parsed.reviewedContexts == 0u &&
@@ -220,8 +256,8 @@ int main() {
                !parsed.fitSemanticReviewContractPresent &&
                !parsed.fitMultiSceneReviewContractPresent,
            "version-thirteen drafts reopen every approval for complete semantic review");
-    std::string versionTwelve = encoded.substr(
-        0u, encoded.size() - fitSceneReviewTailBytes);
+    std::string versionTwelve = versionEighteen.substr(
+        0u, versionEighteen.size() - fitSceneReviewTailBytes);
     writeU32(versionTwelve, 4u, 12u);
     writeU32(versionTwelve, 8u,
              static_cast<uint32_t>(versionTwelve.size()));
@@ -230,8 +266,8 @@ int main() {
                parsed.contactExceptionContexts == 0u &&
                !parsed.fitSceneReviewContractPresent,
            "version-twelve drafts reopen fit reviews for exact-scene acknowledgement");
-    std::string versionEleven = encoded.substr(
-        0u, encoded.size() - fitSceneReviewTailBytes -
+    std::string versionEleven = versionEighteen.substr(
+        0u, versionEighteen.size() - fitSceneReviewTailBytes -
             transitionInspectionTailBytes);
     writeU32(versionEleven, 4u, 11u);
     writeU32(versionEleven, 8u,
@@ -241,32 +277,36 @@ int main() {
                parsed.testTransitionFromPose == 5u &&
                parsed.testTransitionFromPhaseMilli == 500u,
            "version-eleven drafts migrate with a safe held-sample default");
-    std::string versionTen = encoded.substr(
-        0u, encoded.size() - fitSceneReviewTailBytes -
+    std::string versionTen = versionEighteen.substr(
+        0u, versionEighteen.size() - fitSceneReviewTailBytes -
             transitionInspectionTailBytes -
             contactExceptionTailBytes);
     writeU32(versionTen, 4u, 10u);
     writeU32(versionTen, 8u,
              static_cast<uint32_t>(versionTen.size()));
     expect(decode(versionTen, parsed, error) &&
-               parsed.rigReviewTaskMask == 0x1Fu &&
+               parsed.rigReviewTaskMask == 0x7Fu &&
                parsed.contactExceptionContexts == 0u,
            "version-ten drafts migrate without inventing contact exceptions");
-    std::string versionNine = encoded.substr(
-        0u, encoded.size() - fitSceneReviewTailBytes -
+    std::string versionNine = versionEighteen.substr(
+        0u, versionEighteen.size() - fitSceneReviewTailBytes -
             transitionInspectionTailBytes -
             contactExceptionTailBytes -
             rigReviewTasksTailBytes);
     writeU32(versionNine, 4u, 9u);
     writeU32(versionNine, 8u,
              static_cast<uint32_t>(versionNine.size()));
-    expect(decode(versionNine, parsed, error) &&
+    const bool versionNineDecoded = decode(versionNine, parsed, error);
+    if (!versionNineDecoded) {
+        std::fprintf(stderr, "v9 error: %s\n", error.c_str());
+    }
+    expect(versionNineDecoded &&
                parsed.animationIntentPresent &&
                parsed.disabledSemanticMask == source.disabledSemanticMask &&
                parsed.rigReviewTaskMask == 0x1Fu,
            "version-nine reviewed drafts migrate with all anatomy checks complete");
-    std::string versionEight = encoded.substr(
-        0u, encoded.size() - fitSceneReviewTailBytes -
+    std::string versionEight = versionEighteen.substr(
+        0u, versionEighteen.size() - fitSceneReviewTailBytes -
             transitionInspectionTailBytes -
             animationIntentTailBytes -
             rigReviewTasksTailBytes - contactExceptionTailBytes);
@@ -279,8 +319,8 @@ int main() {
                parsed.rigReviewTaskMask == 0x1Fu &&
                parsed.testViewPitchDegrees == source.testViewPitchDegrees,
            "version-eight drafts migrate with active animation mappings");
-    std::string versionSeven = encoded.substr(
-        0u, encoded.size() - fitSceneReviewTailBytes -
+    std::string versionSeven = versionEighteen.substr(
+        0u, versionEighteen.size() - fitSceneReviewTailBytes -
             transitionInspectionTailBytes -
             animationIntentTailBytes -
             rigReviewTasksTailBytes - contactExceptionTailBytes);
@@ -395,7 +435,7 @@ int main() {
     std::string trailing = encoded + "x";
     expect(!decode(trailing, parsed, error),
            "trailing payload bytes are rejected");
-    std::string badMaskEnabled = encoded;
+    std::string badMaskEnabled = versionEighteen;
     writeU32(badMaskEnabled,
              badMaskEnabled.size() - animationIntentTailBytes -
                  rigReviewTasksTailBytes - contactExceptionTailBytes -
@@ -405,7 +445,7 @@ int main() {
              2u);
     expect(!decode(badMaskEnabled, parsed, error),
            "subject-mask enabled state is strictly bounded");
-    std::string badReserved = encoded;
+    std::string badReserved = versionEighteen;
     badReserved[27] = 1;
     expect(!decode(badReserved, parsed, error),
            "nonzero reserved header byte is rejected");
@@ -419,11 +459,11 @@ int main() {
     expect(!encode(hostile, encoded, error),
            "fallback cannot be disabled in a persisted animation decision");
     hostile = source;
-    hostile.rigReviewTaskMask = 0x3Fu;
+    hostile.rigReviewTaskMask = 0x80u;
     expect(!encode(hostile, encoded, error),
            "unknown rig review tasks are rejected");
     hostile = source;
-    hostile.rigReviewTaskMask = 0x0Fu;
+    hostile.rigReviewTaskMask = 0x3Fu;
     expect(!encode(hostile, encoded, error),
            "approved rigs require every anatomy review task");
     hostile = source;
@@ -487,6 +527,22 @@ int main() {
     hostile.roles[0].rest[3] = 0.5f;
     expect(!encode(hostile, encoded, error),
            "non-normalized rig solver bases are rejected");
+    hostile = source;
+    hostile.roles[5].twistAxis[1] = 0.0f;
+    expect(!encode(hostile, encoded, error),
+           "non-normalized joint-limit axes are rejected");
+    hostile = source;
+    hostile.secondaryChains[0].joints[0] = source.roles[0].node;
+    expect(!encode(hostile, encoded, error),
+           "secondary chains cannot overlap humanoid role nodes");
+    hostile = source;
+    hostile.secondaryChainCount = 2u;
+    hostile.secondaryChains[1] = hostile.secondaryChains[0];
+    hostile.secondaryChains[1].rootNode = 34u;
+    hostile.secondaryChains[1].joints[0] = 35u;
+    hostile.secondaryChains[1].joints[1] = 36u;
+    expect(!encode(hostile, encoded, error),
+           "secondary chain names must be unique");
     hostile = source;
     hostile.portraitSourcePath = "line\nbreak.png";
     expect(!encode(hostile, encoded, error),

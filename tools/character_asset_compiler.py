@@ -1229,6 +1229,11 @@ def compile_character(model: bytes, manifest: dict[str, Any], source_digest: byt
             ))
             constraint = mapping.get("constraint")
             if constraint is not None:
+                if rig_manifest["mode"] != "humanoid-retarget-v1":
+                    raise CompileError(
+                        f"rig role {role!r} constraint requires "
+                        "humanoid-retarget-v1 mode"
+                    )
                 joint_constraint_records.append((
                     RIG_ROLE_IDS[role], node_index,
                     *map(float, constraint["twist_axis"]),

@@ -2073,6 +2073,25 @@ int mdkr_modern_character_emit(int player, int view,
     joint_diagnostics_ready = mdkr_modern_pose_joint_excursions(
         &slot->pose, joint_diagnostics.excursion_degrees,
         &joint_diagnostics.valid_mask);
+    joint_diagnostics.constraint_clamped_mask =
+        mdkr_modern_pose_constraint_clamped_mask(&slot->pose);
+    {
+        MdkrModernSecondaryDiagnostics secondary;
+        if (mdkr_modern_pose_secondary_diagnostics(
+                &slot->pose, &secondary)) {
+            joint_diagnostics.secondary_chain_count = secondary.chain_count;
+            joint_diagnostics.secondary_joint_count = secondary.joint_count;
+            joint_diagnostics.secondary_active_joint_count =
+                secondary.active_joint_count;
+            joint_diagnostics.secondary_max_deflection_degrees =
+                secondary.max_deflection_degrees;
+            joint_diagnostics.secondary_discontinuity_resets =
+                secondary.discontinuity_resets;
+            joint_diagnostics_ready = joint_diagnostics_ready ||
+                joint_diagnostics.constraint_clamped_mask != 0u ||
+                secondary.chain_count != 0u;
+        }
+    }
     for (primitive_index = 0u;
          primitive_index < pool->render.gpu.primitive_count;
          primitive_index++) {

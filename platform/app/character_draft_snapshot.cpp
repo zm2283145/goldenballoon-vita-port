@@ -14,6 +14,7 @@ constexpr uint32_t kFitSemanticReviewVersion = 15u;
 constexpr uint32_t kFitMultiSceneReviewVersion = 16u;
 constexpr uint32_t kFitContactStabilityVersion = 17u;
 constexpr uint32_t kFitExpandedSceneVersion = 18u;
+constexpr uint32_t kMotionAuthoringVersion = 19u;
 constexpr uint32_t kFitMotionReviewVersion = 14u;
 constexpr uint32_t kTransitionInspectionVersion = 12u;
 constexpr uint32_t kContactExceptionsVersion = 11u;
@@ -21,7 +22,7 @@ constexpr uint32_t kRigReviewTasksVersion = 10u;
 constexpr uint32_t kAnimationIntentVersion = 9u;
 constexpr uint32_t kTopInspectionVersion = 8u;
 constexpr uint32_t kPortraitSubjectMaskVersion = 7u;
-constexpr uint32_t kVersion = kFitExpandedSceneVersion;
+constexpr uint32_t kVersion = kMotionAuthoringVersion;
 constexpr uint32_t kPortraitSourceVersion = 6u;
 constexpr uint32_t kVisualInspectionVersion = 5u;
 constexpr uint32_t kPoseInspectionVersion = 4u;
@@ -205,6 +206,18 @@ bool identityText(const std::string &text, size_t maximum, bool allowEmpty) {
     return nonSpace;
 }
 
+bool semanticSlug(const std::string &text) {
+    if (text.empty() || text.size() > 64u || text[0] < 'a' ||
+        text[0] > 'z') return false;
+    for (size_t index = 1u; index < text.size(); ++index) {
+        const unsigned char byte = static_cast<unsigned char>(text[index]);
+        if (!((byte >= 'a' && byte <= 'z') ||
+              (byte >= '0' && byte <= '9') || byte == '.' || byte == '_' ||
+              byte == '-')) return false;
+    }
+    return true;
+}
+
 bool snapshotValid(const CharacterDraftSnapshot::Snapshot &snapshot,
                    std::string &error, bool allowLegacyNames) {
     using namespace CharacterDraftSnapshot;
@@ -268,13 +281,13 @@ bool snapshotValid(const CharacterDraftSnapshot::Snapshot &snapshot,
     }
     if (snapshot.rigMode > 1u ||
         (snapshot.rigMode == 0u && snapshot.rigReviewed) ||
-        (snapshot.rigReviewTaskMask & ~0x1Fu) != 0u ||
-        (snapshot.rigReviewed && snapshot.rigReviewTaskMask != 0x1Fu) ||
+        (snapshot.rigReviewTaskMask & ~0x7Fu) != 0u ||
         (snapshot.disabledSemanticMask & ~kAnimationSemanticMask) != 0u) {
         error = "draft rig mode or review state is invalid";
         return false;
     }
     std::set<uint32_t> nodes;
+    bool hasConstraints = false;
     for (const RigRole &role : snapshot.roles) {
         const float restLength = role.rest[0] * role.rest[0] +
             role.rest[1] * role.rest[1] + role.rest[2] * role.rest[2] +
@@ -294,6 +307,74 @@ bool snapshotValid(const CharacterDraftSnapshot::Snapshot &snapshot,
             error = "draft rig role basis is invalid";
             return false;
         }
+        const float twistLength = role.twistAxis[0] * role.twistAxis[0] +
+            role.twistAxis[1] * role.twistAxis[1] +
+            role.twistAxis[2] * role.twistAxis[2];
+        if (role.constraintEnabled &&
+            (role.node == kNoNode ||
+             !vectorInRange(role.twistAxis, 3u, -1.0f, 1.0f) ||
+             !inRange(twistLength, 0.999f, 1.001f) ||
+             !inRange(role.swingLimitDegrees, 0.0f, 180.0f) ||
+             !inRange(role.twistMinDegrees, -180.0f, 180.0f) ||
+             !inRange(role.twistMaxDegrees, -180.0f, 180.0f) ||
+             role.twistMinDegrees > role.twistMaxDegrees)) {
+            error = "draft joint constraint is invalid";
+            return false;
+        }
+        hasConstraints = hasConstraints || role.constraintEnabled;
+    }
+    if (snapshot.secondaryChainCount > kSecondaryChains) {
+        error = "draft secondary-chain count is invalid";
+        return false;
+    }
+    std::set<std::string> chainNames;
+    std::set<uint32_t> chainRoots;
+    std::set<uint32_t> dynamicNodes;
+    for (uint32_t index = 0u; index < snapshot.secondaryChainCount; ++index) {
+        const SecondaryChain &chain = snapshot.secondaryChains[index];
+        const float bendLength = chain.bendAxis[0] * chain.bendAxis[0] +
+            chain.bendAxis[1] * chain.bendAxis[1] +
+            chain.bendAxis[2] * chain.bendAxis[2];
+        if (!semanticSlug(chain.name) || !chainNames.insert(chain.name).second ||
+            chain.rootNode == kNoNode || chain.jointCount == 0u ||
+            chain.jointCount > kSecondaryJointsPerChain ||
+            !vectorInRange(chain.bendAxis, 3u, -1.0f, 1.0f) ||
+            !inRange(bendLength, 0.999f, 1.001f) ||
+            !inRange(chain.stiffnessHz, 0.1f, 30.0f) ||
+            !inRange(chain.dampingRatio, 0.0f, 2.0f) ||
+            !inRange(chain.inertia, 0.0f, 1.0f) ||
+            !inRange(chain.maxAngleDegrees, 0.0f, 90.0f)) {
+            error = "draft secondary chain is invalid";
+            return false;
+        }
+        chainRoots.insert(chain.rootNode);
+        for (uint32_t joint = 0u; joint < chain.jointCount; ++joint) {
+            if (chain.joints[joint] == kNoNode ||
+                nodes.count(chain.joints[joint]) != 0u ||
+                !dynamicNodes.insert(chain.joints[joint]).second) {
+                error = "draft secondary joints overlap";
+                return false;
+            }
+        }
+    }
+    for (uint32_t root : chainRoots) {
+        if (dynamicNodes.count(root) != 0u) {
+            error = "draft secondary root is also dynamic";
+            return false;
+        }
+    }
+    if (dynamicNodes.size() > 64u) {
+        error = "draft secondary joint count is invalid";
+        return false;
+    }
+    const uint32_t requiredReviewTasks = 0x1Fu |
+        (hasConstraints ? 0x20u : 0u) |
+        (snapshot.secondaryChainCount != 0u ? 0x40u : 0u);
+    if (snapshot.rigReviewed &&
+        (snapshot.rigReviewTaskMask & requiredReviewTasks) !=
+            requiredReviewTasks) {
+        error = "draft motion review state is incomplete";
+        return false;
     }
     if (!pathUtf8(snapshot.portraitSourcePath)) {
         error = "draft portrait source path is invalid UTF-8";
@@ -337,12 +418,17 @@ bool encode(const Snapshot &snapshot, std::string &payload,
     const size_t namesBytes = snapshot.displayName.size() +
         snapshot.shortName.size() + snapshot.narrationName.size() +
         snapshot.sortLabel.size();
+    size_t motionBytes = kRoles * 28u + 4u;
+    for (uint32_t index = 0u; index < snapshot.secondaryChainCount; ++index) {
+        motionBytes += 104u + snapshot.secondaryChains[index].name.size();
+    }
     result.reserve(kFixedBytes + 16u + snapshot.portraitSourcePath.size() +
-                   namesBytes);
+                   namesBytes + motionBytes);
     result.append("MDWD", 4u);
     appendU32(result, kVersion);
     appendU32(result, static_cast<uint32_t>(
-        kFixedBytes + 16u + snapshot.portraitSourcePath.size() + namesBytes));
+        kFixedBytes + 16u + snapshot.portraitSourcePath.size() + namesBytes +
+        motionBytes));
     appendU32(result, snapshot.flags);
     appendU32(result, snapshot.donor);
     appendU32(result, snapshot.packageVehicleMask);
@@ -440,8 +526,29 @@ bool encode(const Snapshot &snapshot, std::string &payload,
     appendU32(result, snapshot.testTransitionFromPose);
     appendU32(result, snapshot.testTransitionFromPhaseMilli);
     appendU32(result, 1u);
+    for (const RigRole &role : snapshot.roles) {
+        appendU32(result, role.constraintEnabled ? 1u : 0u);
+        for (float value : role.twistAxis) appendF32(result, value);
+        appendF32(result, role.swingLimitDegrees);
+        appendF32(result, role.twistMinDegrees);
+        appendF32(result, role.twistMaxDegrees);
+    }
+    appendU32(result, snapshot.secondaryChainCount);
+    for (uint32_t index = 0u; index < snapshot.secondaryChainCount; ++index) {
+        const SecondaryChain &chain = snapshot.secondaryChains[index];
+        appendU32(result, static_cast<uint32_t>(chain.name.size()));
+        result += chain.name;
+        appendU32(result, chain.rootNode);
+        appendU32(result, chain.jointCount);
+        for (uint32_t node : chain.joints) appendU32(result, node);
+        for (float value : chain.bendAxis) appendF32(result, value);
+        appendF32(result, chain.stiffnessHz);
+        appendF32(result, chain.dampingRatio);
+        appendF32(result, chain.inertia);
+        appendF32(result, chain.maxAngleDegrees);
+    }
     if (result.size() != kFixedBytes + 16u +
-            snapshot.portraitSourcePath.size() + namesBytes) {
+            snapshot.portraitSourcePath.size() + namesBytes + motionBytes) {
         error = "draft snapshot encoder size invariant failed";
         return false;
     }
@@ -463,6 +570,7 @@ bool decode(const std::string &payload, Snapshot &snapshot,
         payload.compare(0u, 4u, "MDWD") != 0 ||
         !readU32(payload, offset, version) ||
         (version != kVersion &&
+         version != kFitExpandedSceneVersion &&
          version != kFitContactStabilityVersion &&
          version != kFitMultiSceneReviewVersion &&
          version != kFitSemanticReviewVersion &&
@@ -744,6 +852,50 @@ bool decode(const std::string &payload, Snapshot &snapshot,
          * review rows. */
         parsed.reviewedContexts = 0u;
         parsed.contactExceptionContexts = 0u;
+    }
+    if (version >= kMotionAuthoringVersion) {
+        for (RigRole &role : parsed.roles) {
+            uint32_t enabled;
+            if (!readU32(payload, offset, enabled) || enabled > 1u) {
+                goto malformed;
+            }
+            role.constraintEnabled = enabled != 0u;
+            for (float &value : role.twistAxis) {
+                if (!readF32(payload, offset, value)) goto malformed;
+            }
+            if (!readF32(payload, offset, role.swingLimitDegrees) ||
+                !readF32(payload, offset, role.twistMinDegrees) ||
+                !readF32(payload, offset, role.twistMaxDegrees)) {
+                goto malformed;
+            }
+        }
+        if (!readU32(payload, offset, parsed.secondaryChainCount) ||
+            parsed.secondaryChainCount > kSecondaryChains) goto malformed;
+        for (uint32_t index = 0u; index < parsed.secondaryChainCount;
+             ++index) {
+            SecondaryChain &chain = parsed.secondaryChains[index];
+            uint32_t nameSize;
+            if (!readU32(payload, offset, nameSize) || nameSize > 64u ||
+                nameSize > payload.size() - offset) goto malformed;
+            chain.name.assign(payload.data() + offset, nameSize);
+            offset += nameSize;
+            if (!readU32(payload, offset, chain.rootNode) ||
+                !readU32(payload, offset, chain.jointCount) ||
+                chain.jointCount > kSecondaryJointsPerChain) goto malformed;
+            for (uint32_t &node : chain.joints) {
+                if (!readU32(payload, offset, node)) goto malformed;
+            }
+            for (float &value : chain.bendAxis) {
+                if (!readF32(payload, offset, value)) goto malformed;
+            }
+            if (!readF32(payload, offset, chain.stiffnessHz) ||
+                !readF32(payload, offset, chain.dampingRatio) ||
+                !readF32(payload, offset, chain.inertia) ||
+                !readF32(payload, offset, chain.maxAngleDegrees)) {
+                goto malformed;
+            }
+        }
+        parsed.motionAuthoringContractPresent = true;
     }
     if (offset != payload.size() ||
         !snapshotValid(parsed, error, version == kLegacyVersion)) return false;

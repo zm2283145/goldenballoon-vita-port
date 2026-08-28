@@ -132,6 +132,21 @@ class CharacterPackageManagerTests(unittest.TestCase):
         invalidated = manager._retain_v5_constraints(manifest, revised)
         self.assertNotIn("constraint", invalidated["roles"]["lower_arm.left"])
         self.assertNotIn("constraint", revised_roles["lower_arm.left"])
+        revised_roles = {
+            role: {
+                key: value for key, value in mapping.items()
+                if key != "constraint"
+            }
+            for role, mapping in original_roles.items()
+        }
+        authored_only = manager._retain_v5_constraints(manifest, {
+            "mode": "authored-clips-only",
+            "reviewed": False,
+            "roles": revised_roles,
+        })
+        self.assertNotIn(
+            "constraint", authored_only["roles"]["lower_arm.left"]
+        )
 
     def test_disable_preserves_history_updates_and_workshop_revisions(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1134,6 +1149,63 @@ class CharacterPackageManagerTests(unittest.TestCase):
                 "idle", manifest["animations"]["states"]["select.idle"]
             )
 
+    def test_rig_v3_draft_authors_and_removes_source_v5_motion(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            installed = root / "characters"
+            model, portrait, motion_source = make_v5_character()
+            source = json.loads(json.dumps(motion_source))
+            constraint = source["rig"]["roles"]["lower_arm.left"].pop(
+                "constraint"
+            )
+            secondary = source.pop("secondary_motion")
+            source["schema"] = probe.PACKAGE_SCHEMA_V4
+            original = manager.install(
+                self.make_package(root, source, model), installed
+            )
+            draft = root / "motion-authoring-draft.json"
+            source["rig"]["roles"]["lower_arm.left"]["constraint"] = (
+                constraint
+            )
+            draft.write_text(json.dumps({
+                "schema": "mdkr-character-rig-draft-v3",
+                **source["rig"],
+                "disabled_semantics": [],
+                "secondary_motion": secondary,
+            }), encoding="utf-8")
+            authored = manager.revise_rig(original["id"], draft, installed)
+            self.assertEqual(1, authored["report"]["joint_constraints"])
+            self.assertEqual(1, authored["report"]["secondary_chains"])
+            self.assertEqual(2, authored["report"]["secondary_joints"])
+            with zipfile.ZipFile(self.active_source(installed)) as archive:
+                manifest = probe.json_loads_strict(archive.read("manifest.json"))
+            self.assertEqual(probe.PACKAGE_SCHEMA_V5, manifest["schema"])
+            self.assertEqual(
+                constraint,
+                manifest["rig"]["roles"]["lower_arm.left"]["constraint"],
+            )
+            self.assertEqual(secondary, manifest["secondary_motion"])
+
+            clean_rig = json.loads(json.dumps(manifest["rig"]))
+            clean_rig["roles"]["lower_arm.left"].pop("constraint")
+            draft.write_text(json.dumps({
+                "schema": "mdkr-character-rig-draft-v3",
+                **clean_rig,
+                "disabled_semantics": [],
+                "secondary_motion": None,
+            }), encoding="utf-8")
+            removed = manager.revise_rig(original["id"], draft, installed)
+            self.assertEqual(0, removed["report"]["joint_constraints"])
+            self.assertEqual(0, removed["report"]["secondary_chains"])
+            self.assertEqual(0, removed["report"]["secondary_joints"])
+            with zipfile.ZipFile(self.active_source(installed)) as archive:
+                manifest = probe.json_loads_strict(archive.read("manifest.json"))
+            self.assertNotIn("secondary_motion", manifest)
+            self.assertNotIn(
+                "constraint",
+                manifest["rig"]["roles"]["lower_arm.left"],
+            )
+
     def test_invalid_rig_revision_never_replaces_active_cache(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1195,6 +1267,12 @@ class CharacterPackageManagerTests(unittest.TestCase):
             )
             rig = json.loads(json.dumps(source["rig"]))
             rig["reviewed"] = True
+            rig["roles"]["lower_arm.left"]["constraint"] = {
+                "twist_axis": [1.0, 0.0, 0.0],
+                "swing_limit_degrees": 60.0,
+                "twist_min_degrees": -30.0,
+                "twist_max_degrees": 30.0,
+            }
             draft = root / "workshop-draft.json"
             draft.write_text(json.dumps({
                 "schema": "mdkr-workshop-build-v1",
@@ -1208,8 +1286,10 @@ class CharacterPackageManagerTests(unittest.TestCase):
                 "portrait_rgba_hex": rgba.hex(),
                 "minimap_rgb": [19, 83, 211],
                 "rig_draft": {
-                    "schema": "mdkr-character-rig-draft-v1",
+                    "schema": "mdkr-character-rig-draft-v3",
                     **rig,
+                    "disabled_semantics": [],
+                    "secondary_motion": None,
                 },
             }), encoding="utf-8")
 
@@ -1243,7 +1323,7 @@ class CharacterPackageManagerTests(unittest.TestCase):
                 manifest = probe.json_loads_strict(
                     archive.read("manifest.json"), "manifest"
                 )
-                self.assertEqual(probe.PACKAGE_SCHEMA_V4, manifest["schema"])
+                self.assertEqual(probe.PACKAGE_SCHEMA_V5, manifest["schema"])
                 self.assertEqual("Dixie Kong", manifest["display_name"])
                 self.assertEqual("Dixie", manifest["identity"]["short_name"])
                 self.assertEqual(

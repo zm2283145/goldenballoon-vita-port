@@ -172,6 +172,15 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned joint_excursion_mask;
     unsigned joint_excursion_millidegrees
         [MDKR_CHARACTER_PREVIEW_JOINTS];
+    /* Exact source-v5 runtime witnesses from the same latest replacement
+     * draw. Clamp bits use stable humanoid-role order. Secondary values are
+     * bounded authoring diagnostics, not a quality score. */
+    unsigned constraint_clamped_mask;
+    unsigned secondary_chain_count;
+    unsigned secondary_joint_count;
+    unsigned secondary_active_joint_count;
+    unsigned secondary_max_deflection_millidegrees;
+    unsigned long long secondary_discontinuity_resets;
     /* Ordinary scene-camera projection of the calibrated volume and anatomy
      * points. Unlike the isolated model capture below, this preserves the
      * gameplay camera and viewport. It proves framing, not depth visibility or
@@ -300,7 +309,7 @@ typedef struct MdkrCharacterPreviewResult {
     unsigned render_height;
 } MdkrCharacterPreviewResult;
 
-#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 22u
+#define MDKR_CHARACTER_PREVIEW_RESULT_VERSION 23u
 #define MDKR_CHARACTER_PREVIEW_TRANSITION_DWELL_MILLI \
     MDKR_MODERN_CHARACTER_INSPECTION_TRANSITION_DWELL_MILLI
 #define MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES 12u

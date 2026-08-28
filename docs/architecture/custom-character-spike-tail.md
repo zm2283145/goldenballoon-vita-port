@@ -180,7 +180,7 @@ explicitly restricted to the generated fixture and exists only for CI.
   an explicit vehicle-only copy action remains available for intentional reuse.
 - **Implemented for the complete scene-review contract:** visible advisory bands classify floor/seat
   datum error, facing, and unusual volume proportions as Ready, Review, or
-  Action needed. Result v22 also retains the last complete accepted scene MVP,
+  Action needed. Result v23 also retains the last complete accepted scene MVP,
   viewport, and scissor and projects the calibrated volume plus exact
   current-pose hips/chest/head node origins into bounded fixed-point camera
   evidence. Offset Studio reports camera occupancy, clipping, head placement,
@@ -283,7 +283,11 @@ flip, collapse, or mirror inversion.
   review discloses all three counts. Bind-relative constraints run before and
   after vehicle contacts; secondary motion uses a bounded fixed-step spring,
   explicit hitch resets, and exact held-sample resets without weakening
-  authored-clip precedence. The matching direct-manipulation Studio remains.
+  authored-clip precedence. Rig Studio now directly authors both contracts with
+  normalized-axis and named-path controls, bounded presets, undo/history,
+  named-draft v19 persistence, conditional review tasks, and exact result-v23
+  clamp/activity/deflection/reset feedback. Authored-clips-only mode omits
+  dormant humanoid limits while retaining secondary-motion support.
 
 Acceptance: the example no longer T-poses in select, every missing authored state
 uses an intentional reviewed reference, and the source/fallback decision appears
@@ -537,8 +541,8 @@ The immediate remaining order is therefore:
 
 1. add bespoke boss, battle, and scripted-cinematic conditions only if those
    scene-owned surfaces become part of package presentation authority;
-2. add optional author-defined joint constraint profiles and deterministic
-   secondary hair/tail motion; exact bind-relative per-role travel inspection,
+2. observe and device-qualify the implemented direct joint-limit and secondary
+   hair/tail authoring gestures; exact bind-relative per-role travel inspection,
    the linked-ROM articulated unusual-proportion fixture, and the distinct
    13-state bounded reference library are complete, and the comparison overlay
    already requires exact source, fit, presentation, scene, held motion source,

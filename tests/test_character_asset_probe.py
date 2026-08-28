@@ -556,6 +556,20 @@ class CharacterAssetProbeTests(unittest.TestCase):
         self.assertTrue(any("secondary_motion" in error for error in errors))
         self.assertTrue(any("constraint" in error for error in errors))
 
+    def test_joint_constraints_require_humanoid_runtime_motion(self) -> None:
+        model, portrait, manifest = make_v5_character()
+        manifest["rig"]["mode"] = "authored-clips-only"
+        policy = probe.inspect_glb_bytes(model, require_character=True)
+        errors = probe.validate_manifest(manifest, policy)
+        self.assertTrue(any(
+            "constraint requires humanoid-retarget-v1 mode" in error
+            for error in errors
+        ))
+        with self.assertRaisesRegex(
+            compiler.CompileError, "requires humanoid-retarget-v1 mode"
+        ):
+            compiler.compile_character(model, manifest, bytes(32), portrait)
+
     def test_semantic_playback_policy_is_engine_owned(self) -> None:
         self.assertEqual((0, 0.15), compiler._semantic_policy("race.land"))
         self.assertEqual((0, 0.15), compiler._semantic_policy("select.confirm"))
