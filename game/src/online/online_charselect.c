@@ -670,9 +670,14 @@ void mdkr_online_charselect_enter(void) {
 
     /* Borrow the real portraits: load the portrait-only texture group and bind
      * them into gRacerPortraits[] -- the same two calls the offline results
-     * screen makes. A clean solid backdrop reads as native without a 3D scene. */
+     * screen makes. */
     menu_assetgroup_load(sPortraitAssetIds);
     menu_racer_portraits();
+
+    /* Borrow the real per-world sky tiles (read-only, the same asset-group borrow
+     * as the portraits) so the backdrop is the retail scrolling sky, not a flat
+     * fill. Balanced by the menu_assetgroup_free() in _exit(). */
+    menu_assetgroup_load(sOnlineSkyAssetIds);
 
     /* load_fonts() at boot only builds the font TABLE; each screen must load the
      * glyph textures for the fonts it draws with (refcounted; unload_font() on
@@ -681,7 +686,8 @@ void mdkr_online_charselect_enter(void) {
     load_font(ASSET_FONTS_SMALLFONT);
 
     sCs.assets = 1u;
-    bgdraw_fillcolour(16, 24, 48);
+    /* Neutral hub sky (Dino Domain) -- charselect is world-agnostic. */
+    mdkr_online_screen_backdrop((u8) MDKR_ONLINE_SKY_WORLD_NEUTRAL);
 
     fprintf(stderr,
             "[online-charselect] enter: native screen up defaultVehicle=%u "
@@ -691,6 +697,9 @@ void mdkr_online_charselect_enter(void) {
 
 void mdkr_online_charselect_exit(void) {
     if (sCs.assets) {
+        /* Disarm the borrowed scrolling sky BEFORE freeing its tiles, so the
+         * engine's per-frame bgdraw_render() can never DMA a freed sky. */
+        mdkr_online_screen_backdrop_clear();
         /* Symmetric free: the same group loader's free path releases the ten
          * portrait textures (and, once the menu asset count returns to zero, the
          * shared portrait bookkeeping) before the race loader reuses the pool.
@@ -698,6 +707,7 @@ void mdkr_online_charselect_exit(void) {
         unload_font(ASSET_FONTS_SMALLFONT);
         unload_font(ASSET_FONTS_BIGFONT);
         menu_assetgroup_free(sPortraitAssetIds);
+        menu_assetgroup_free(sOnlineSkyAssetIds);
         sCs.assets = 0u;
         fprintf(stderr, "[online-charselect] exit: freed portrait assets\n");
     }

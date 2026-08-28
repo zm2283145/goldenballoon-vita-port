@@ -521,14 +521,23 @@ void mdkr_online_results_enter(u8 isFinalRace, u8 raceIndex) {
         }
     }
 
-    /* Borrow the real portraits + fonts (the charselect asset-borrow discipline). */
+    /* Borrow the real portraits + fonts + per-world sky tiles (the charselect
+     * asset-borrow discipline; the sky group is freed symmetrically in _exit()). */
     menu_assetgroup_load(sPortraitAssetIds);
     menu_racer_portraits();
+    menu_assetgroup_load(sOnlineSkyAssetIds);
     load_font(ASSET_FONTS_BIGFONT);
     load_font(ASSET_FONTS_SMALLFONT);
     load_font(ASSET_FONTS_FUNFONT);
     sRes.assets = 1u;
-    bgdraw_fillcolour(16, 24, 48); /* match the charselect/trackselect backdrop */
+    /* Retail scrolling sky of the RACED world (from the forward-feed snapshot),
+     * so the results screen wears the track the player just raced. */
+    {
+        MdkrPartyLinkSnapshot bg;
+        bool haveBg = mdkr_party_link_read(&bg);
+        mdkr_online_screen_backdrop(
+            mdkr_online_screen_sky_world_for_snapshot(&bg, haveBg));
+    }
 
     fprintf(stderr,
             "[online-results] enter: native results up race=%u final=%u "
@@ -542,10 +551,13 @@ void mdkr_online_results_enter(u8 isFinalRace, u8 raceIndex) {
 
 void mdkr_online_results_exit(void) {
     if (sRes.assets) {
+        /* Disarm the borrowed sky before freeing its tiles (bgdraw_render lifetime). */
+        mdkr_online_screen_backdrop_clear();
         unload_font(ASSET_FONTS_FUNFONT);
         unload_font(ASSET_FONTS_SMALLFONT);
         unload_font(ASSET_FONTS_BIGFONT);
         menu_assetgroup_free(sPortraitAssetIds);
+        menu_assetgroup_free(sOnlineSkyAssetIds);
         sRes.assets = 0u;
         fprintf(stderr, "[online-results] exit: freed portrait assets\n");
     }

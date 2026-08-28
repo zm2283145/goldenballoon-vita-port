@@ -81,11 +81,10 @@
 #define TS_SCREEN_W 320
 #define TS_SCREEN_W_HALF 160
 
-/* The menu asset table. Declared here (menu.h does not export gMenuAssets) rather
- * than by editing menu.c. gMenuAssets[k] holds a TextureHeader* for a loaded
- * TEXTURE_* id (see menu_asset_load). gCurrDisplayList (the live 2D frame list) is
- * declared in online_screen_util.h, shared with the other native screens. */
-extern void *gMenuAssets[128];
+/* gMenuAssets[] (the menu texture table; menu.h does not export it) and
+ * gCurrDisplayList (the live 2D frame list) are both declared in
+ * online_screen_util.h, shared with the other native screens. gMenuAssets[k]
+ * holds a TextureHeader* for a loaded TEXTURE_* id (see menu_asset_load). */
 
 /* ---- Local mirrors of the launcher lobby's id space (no launcher headers) */
 #define TS_CHAR_COUNT 10u            /* MDKR_ONLINE_CHARACTER_COUNT */
@@ -177,15 +176,11 @@ static const char *const sVehicleNames[TS_PLAYER_VEHICLE_COUNT] = {
     "CAR", "HOVERCRAFT", "PLANE",
 };
 
-/* The -1-terminated asset group: the five worlds' TOP sky tiles only. */
-static s16 sWorldBgAssetIds[] = {
-    TEXTURE_BACKGROUND_DINO_DOMAIN_TOP,
-    TEXTURE_BACKGROUND_SNOWFLAKE_MOUNTAIN_TOP,
-    TEXTURE_BACKGROUND_SHERBERT_ISLAND_TOP,
-    TEXTURE_BACKGROUND_DRAGON_FOREST_TOP,
-    TEXTURE_BACKGROUND_FUTURE_FUN_LAND_TOP,
-    -1,
-};
+/* The world sky tiles the banner strip + full-screen backdrop draw are loaded
+ * READ-ONLY as the shared ten-tile group sOnlineSkyAssetIds (five worlds x
+ * TOP+BOTTOM, online_screen_util.h). The banner strip binds each world's TOP from
+ * sCupBgTop[] below; the full-screen scrolling backdrop pairs TOP+BOTTOM via the
+ * shared mdkr_online_screen_backdrop() helper. */
 
 /* ---- Session-owned screen state (never an offline global) ------------------ */
 typedef struct MdkrOnlineTrackselectState {
@@ -921,6 +916,13 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
                                   : "A: SELECT   B: BACK",
                          ALIGN_MIDDLE_CENTER, 255, 255, 255);
     }
+
+    /* Live retail preview: re-arm the scrolling sky to the FOCUSED world (the
+     * host's hovered cup column, or the joiner's authoritative locked world).
+     * focusWorld is in cup display order; the shared helper maps it to the sky
+     * WORLD and the engine's next bgdraw_render() draws it. All tiles are already
+     * resident (loaded once in _enter), so this is a cheap pointer re-bind. */
+    mdkr_online_screen_backdrop(mdkr_online_screen_sky_world_for_cup(focusWorld));
 }
 
 /* Bounded stderr witness: one line only when the visible/config state changes. */
@@ -1040,9 +1042,11 @@ void mdkr_online_trackselect_enter(void) {
     sWitnessKey = 0xFFFFFFFFu;
     trackselect_test_reset();
 
-    /* Borrow the real per-world sky tiles (TOP only; the charselect asset-borrow
-     * discipline; menu_asset_load routes each id to load_texture). */
-    menu_assetgroup_load(sWorldBgAssetIds);
+    /* Borrow the real per-world sky tiles (the charselect asset-borrow discipline;
+     * menu_asset_load routes each id to load_texture). The shared ten-tile group
+     * carries every world's TOP+BOTTOM, so the banner strip binds each TOP here and
+     * the full-screen backdrop can preview ANY hovered world without a reload. */
+    menu_assetgroup_load(sOnlineSkyAssetIds);
     for (c = 0u; c < TS_COLS; c++) {
         sCupBgTopTex[c] = (TextureHeader *) gMenuAssets[sCupBgTop[c]];
     }
@@ -1051,7 +1055,10 @@ void mdkr_online_trackselect_enter(void) {
     load_font(ASSET_FONTS_SMALLFONT);
 
     sTs.assets = 1u;
-    bgdraw_fillcolour(16, 24, 48); /* match charselect's backdrop family */
+    /* Retail scrolling sky of the initially-focused world (cursorCol is in cup
+     * display order); the per-frame render re-arms it as the host browses. */
+    mdkr_online_screen_backdrop(
+        mdkr_online_screen_sky_world_for_cup(sTs.cursorCol));
 
     if (mdkr_online_trackselect_test_active()) {
         sTsEntryCount++;
@@ -1069,9 +1076,11 @@ void mdkr_online_trackselect_enter(void) {
 void mdkr_online_trackselect_exit(void) {
     u8 c;
     if (sTs.assets) {
+        /* Disarm the borrowed sky before freeing its tiles (bgdraw_render lifetime). */
+        mdkr_online_screen_backdrop_clear();
         unload_font(ASSET_FONTS_SMALLFONT);
         unload_font(ASSET_FONTS_BIGFONT);
-        menu_assetgroup_free(sWorldBgAssetIds);
+        menu_assetgroup_free(sOnlineSkyAssetIds);
         for (c = 0u; c < TS_COLS; c++) {
             sCupBgTopTex[c] = NULL;
         }

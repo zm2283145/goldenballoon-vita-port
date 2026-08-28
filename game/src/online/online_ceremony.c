@@ -336,15 +336,18 @@ void mdkr_online_ceremony_enter(const MdkrOnlineStandings *finalRanking) {
                               : 0u;
     }
 
-    /* Borrow the real portraits + fonts (the charselect/results asset-borrow
-     * discipline), set the shared online backdrop, and cue a crowd cheer. */
+    /* Borrow the real portraits + fonts + per-world sky tiles (the charselect/
+     * results asset-borrow discipline), set the retail scrolling sky of the raced
+     * world (from the forward-feed snapshot read above), and cue a crowd cheer. */
     menu_assetgroup_load(sPortraitAssetIds);
     menu_racer_portraits();
+    menu_assetgroup_load(sOnlineSkyAssetIds);
     load_font(ASSET_FONTS_BIGFONT);
     load_font(ASSET_FONTS_SMALLFONT);
     load_font(ASSET_FONTS_FUNFONT);
     sCer.assets = 1u;
-    bgdraw_fillcolour(16, 24, 48); /* match the charselect/trackselect/results backdrop */
+    mdkr_online_screen_backdrop(
+        mdkr_online_screen_sky_world_for_snapshot(&snap, haveSnap));
     sound_play(CER_SFX_CELEBRATE, NULL);
 
     /* Resolve the champion name from the CAPTURED character id (ceremony_champ_name):
@@ -363,10 +366,13 @@ void mdkr_online_ceremony_enter(const MdkrOnlineStandings *finalRanking) {
 
 void mdkr_online_ceremony_exit(void) {
     if (sCer.assets) {
+        /* Disarm the borrowed sky before freeing its tiles (bgdraw_render lifetime). */
+        mdkr_online_screen_backdrop_clear();
         unload_font(ASSET_FONTS_FUNFONT);
         unload_font(ASSET_FONTS_SMALLFONT);
         unload_font(ASSET_FONTS_BIGFONT);
         menu_assetgroup_free(sPortraitAssetIds);
+        menu_assetgroup_free(sOnlineSkyAssetIds);
         sCer.assets = 0u;
         fprintf(stderr, "[online-ceremony] exit: freed portrait assets\n");
     }
