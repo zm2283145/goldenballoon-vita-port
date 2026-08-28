@@ -1242,7 +1242,9 @@ u8 race_starting(void) {
 static void hud_render_taj_identity(const Object_Racer *racer) {
     s32 x = SCREEN_WIDTH_HALF;
     s32 y = 9;
-    const char *label;
+    /* The legacy text renderer accepts mutable character pointers even though
+     * it only reads them. Keep this local type aligned with that ABI. */
+    char *label;
 
     if (taj_physics_is_taj(racer)) {
         label = is_in_time_trial() ? "TAJ - NO RECORD" : "TAJ MAGIC";
