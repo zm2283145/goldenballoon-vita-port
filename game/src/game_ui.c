@@ -16,6 +16,11 @@
 #include "objects.h"
 #ifdef NATIVE_PORT
 #include "asset_swap.h"
+#ifndef MDKR_ADVENTURE_PARTY_OMIT
+/* AP-08 hub HUD adapter: behind NATIVE_PORT && !MDKR_ADVENTURE_PARTY_OMIT so
+ * the OMIT build and the N64 path compile the party HUD path out entirely. */
+#include "adventure_party/adventure_party_runtime.h"
+#endif
 #include "display_config.h"
 #include "enh_speedometer.h"
 #include "hud_layout.h"
@@ -2763,6 +2768,23 @@ void hud_main_hub(Object *obj, s32 updateRate) {
     Object_Racer *racer;
     HudElement *portrait;
 
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    /* AP-08 adapter 6 (hub HUD): the retail hub HUD (below) draws only for the
+     * single-player layout. A party lobby uses the 2/3/4-player layout, so draw
+     * the SAME hub HUD (balloons + speedometer) for THIS viewport — once per
+     * human seat, via the existing per-viewport dispatch (hud_render_player).
+     * No sitting-out portrait: that is the retail 2P-adventure presentation and
+     * a party never engages it (AP-01). Reuses existing draw calls, no new HUD
+     * art (native-feel item 8). */
+    if (adventure_party_runtime_is_active() && cam_get_viewport_layout() != PLAYER_ONE) {
+        racer = obj->racer;
+        cam_set_sprite_anim_mode(SPRITE_ANIM_FRAME_INDEX);
+        hud_balloons(racer);
+        hud_speedometre(obj, updateRate);
+        cam_set_sprite_anim_mode(SPRITE_ANIM_NORMALIZED);
+        return;
+    }
+#endif
     if (cam_get_viewport_layout() == PLAYER_ONE) {
         racer = obj->racer;
         cam_set_sprite_anim_mode(SPRITE_ANIM_FRAME_INDEX);
