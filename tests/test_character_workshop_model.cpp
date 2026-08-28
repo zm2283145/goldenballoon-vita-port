@@ -209,16 +209,16 @@ void testPerformanceTargets() {
 
 void testRuntimeEquivalentLodSelection() {
     CharacterWorkshopLodBand bands[4] = {};
-    assert(CharacterWorkshop_selectLod(0.0f, 0.0f, 0.0f, 0xFu) == 0u);
-    assert(CharacterWorkshop_selectLod(650.0f, 0.0f, 0.0f, 0xFu) == 1u);
-    assert(CharacterWorkshop_selectLod(1300.0f, 0.0f, 0.0f, 0xFu) == 2u);
-    assert(CharacterWorkshop_selectLod(2400.0f, 0.0f, 0.0f, 0xFu) == 3u);
-    assert(CharacterWorkshop_selectLod(0.0f, 0.0f, -2.0f, 0xFu) == 2u);
-    assert(CharacterWorkshop_selectLod(2400.0f, 0.0f, 2.0f, 0xFu) == 1u);
-    assert(CharacterWorkshop_selectLod(0.0f, 0.0f, -3.0f, 0x3u) == 1u);
-    assert(CharacterWorkshop_selectLod(1300.0f, 0.0f, 0.0f, 0xBu) == 1u);
-    assert(CharacterWorkshop_selectLod(650.0f, 0.5f, 0.0f, 0xFu) == 0u);
-    assert(CharacterWorkshop_selectLod(-1.0f, 0.0f, 0.0f, 0x1u) == 0u);
+    assert(CharacterWorkshop_selectLod(12.0f, 0.0f, 0.0f, 0xFu) == 0u);
+    assert(CharacterWorkshop_selectLod(6.0f, 0.0f, 0.0f, 0xFu) == 1u);
+    assert(CharacterWorkshop_selectLod(3.0f, 0.0f, 0.0f, 0xFu) == 2u);
+    assert(CharacterWorkshop_selectLod(0.0f, 0.0f, 0.0f, 0xFu) == 3u);
+    assert(CharacterWorkshop_selectLod(12.0f, 0.0f, -2.0f, 0xFu) == 2u);
+    assert(CharacterWorkshop_selectLod(0.0f, 0.0f, 2.0f, 0xFu) == 1u);
+    assert(CharacterWorkshop_selectLod(12.0f, 0.0f, -3.0f, 0x3u) == 1u);
+    assert(CharacterWorkshop_selectLod(3.0f, 0.0f, 0.0f, 0xBu) == 1u);
+    assert(CharacterWorkshop_selectLod(6.0f, 0.5f, 0.0f, 0xFu) == 0u);
+    assert(CharacterWorkshop_selectLod(-1.0f, 0.0f, 0.0f, 0x1u) == UINT32_MAX);
     assert(CharacterWorkshop_selectLod(0.0f, 0.0f, 0.0f, 0u) == UINT32_MAX);
     assert(CharacterWorkshop_selectLod(0.0f, 0.0f, 0.0f, 0x10u) ==
            UINT32_MAX);
@@ -226,48 +226,50 @@ void testRuntimeEquivalentLodSelection() {
     assert(CharacterWorkshop_selectLod(0.0f, 0.0f, NAN, 1u) == UINT32_MAX);
     assert(CharacterWorkshop_selectLod(0.0f, 5.0f, 0.0f, 1u) == UINT32_MAX);
     assert(CharacterWorkshop_lodBands(0.0f, 0.0f, 0xFu, bands) == 4u &&
-           bands[0].minimumDistance == 0.0f &&
-           bands[0].maximumDistance == 650.0f && bands[0].lod == 0u &&
-           bands[1].minimumDistance == 650.0f && bands[1].lod == 1u &&
-           bands[2].minimumDistance == 1300.0f && bands[2].lod == 2u &&
-           bands[3].minimumDistance == 2400.0f &&
-           std::isinf(bands[3].maximumDistance) && bands[3].lod == 3u);
+           bands[0].minimumProjectedHeight == 0.0f &&
+           bands[0].maximumProjectedHeight == 3.0f && bands[0].lod == 3u &&
+           bands[1].minimumProjectedHeight == 3.0f && bands[1].lod == 2u &&
+           bands[2].minimumProjectedHeight == 6.0f && bands[2].lod == 1u &&
+           bands[3].minimumProjectedHeight == 12.0f &&
+           std::isinf(bands[3].maximumProjectedHeight) && bands[3].lod == 0u);
     assert(CharacterWorkshop_lodBands(0.0f, 0.0f, 0xBu, bands) == 3u &&
-           bands[0].lod == 0u && bands[0].maximumDistance == 650.0f &&
-           bands[1].lod == 1u && bands[1].maximumDistance == 2400.0f &&
-           bands[2].lod == 3u);
+           bands[0].lod == 3u && bands[0].maximumProjectedHeight == 3.0f &&
+           bands[1].lod == 1u && bands[1].maximumProjectedHeight == 12.0f &&
+           bands[2].lod == 0u);
     assert(CharacterWorkshop_lodBands(0.0f, 2.0f, 0xFu, bands) == 2u &&
-           bands[0].lod == 0u && bands[0].maximumDistance == 2400.0f &&
-           bands[1].lod == 1u && std::isinf(bands[1].maximumDistance));
+           bands[0].lod == 1u && bands[0].maximumProjectedHeight == 3.0f &&
+           bands[1].lod == 0u &&
+           std::isinf(bands[1].maximumProjectedHeight));
     assert(CharacterWorkshop_lodBands(0.0f, 0.0f, 0x1u, bands) == 1u &&
-           bands[0].lod == 0u && std::isinf(bands[0].maximumDistance));
+           bands[0].lod == 0u &&
+           std::isinf(bands[0].maximumProjectedHeight));
     const CharacterWorkshopLodBand sentinel = bands[0];
     assert(CharacterWorkshop_lodBands(NAN, 0.0f, 0xFu, bands) == 0u &&
-           bands[0].minimumDistance == sentinel.minimumDistance &&
-           bands[0].maximumDistance == sentinel.maximumDistance &&
+           bands[0].minimumProjectedHeight == sentinel.minimumProjectedHeight &&
+           bands[0].maximumProjectedHeight == sentinel.maximumProjectedHeight &&
            bands[0].lod == sentinel.lod);
     assert(CharacterWorkshop_lodBands(0.0f, 0.0f, 0xFu, nullptr) == 0u);
 }
 
 void testRuntimeLodHysteresis() {
-    assert(mdkr_modern_character_select_lod_hysteretic(
-               650.0f, 0.0f, 0.0f, 0xFu, 0u, 1) == 0u);
-    assert(mdkr_modern_character_select_lod_hysteretic(
-               706.0f, 0.0f, 0.0f, 0xFu, 0u, 1) == 0u);
-    assert(mdkr_modern_character_select_lod_hysteretic(
-               707.0f, 0.0f, 0.0f, 0xFu, 0u, 1) == 1u);
-    assert(mdkr_modern_character_select_lod_hysteretic(
-               649.0f, 0.0f, 0.0f, 0xFu, 1u, 1) == 1u);
-    assert(mdkr_modern_character_select_lod_hysteretic(
-               601.0f, 0.0f, 0.0f, 0xFu, 1u, 1) == 0u);
-    assert(mdkr_modern_character_select_lod_hysteretic(
-               2400.0f, 0.0f, 0.0f, 0xBu, 1u, 1) == 1u);
-    assert(mdkr_modern_character_select_lod_hysteretic(
-               2610.0f, 0.0f, 0.0f, 0xBu, 1u, 1) == 3u);
-    assert(mdkr_modern_character_select_lod_hysteretic(
-               650.0f, 0.0f, 0.0f, 0xFu, 9u, 1) == 1u);
-    assert(mdkr_modern_character_select_lod_hysteretic(
-               650.0f, 0.0f, 0.0f, 0xFu, 0u, 0) == 1u);
+    assert(mdkr_modern_character_select_lod_projected_hysteretic(
+               12.0f, 0.0f, 0.0f, 0xFu, 1u, 1) == 1u);
+    assert(mdkr_modern_character_select_lod_projected_hysteretic(
+               13.0f, 0.0f, 0.0f, 0xFu, 1u, 1) == 1u);
+    assert(mdkr_modern_character_select_lod_projected_hysteretic(
+               13.1f, 0.0f, 0.0f, 0xFu, 1u, 1) == 0u);
+    assert(mdkr_modern_character_select_lod_projected_hysteretic(
+               11.2f, 0.0f, 0.0f, 0xFu, 0u, 1) == 0u);
+    assert(mdkr_modern_character_select_lod_projected_hysteretic(
+               11.1f, 0.0f, 0.0f, 0xFu, 0u, 1) == 1u);
+    assert(mdkr_modern_character_select_lod_projected_hysteretic(
+               3.0f, 0.0f, 0.0f, 0xBu, 1u, 1) == 1u);
+    assert(mdkr_modern_character_select_lod_projected_hysteretic(
+               2.7f, 0.0f, 0.0f, 0xBu, 1u, 1) == 3u);
+    assert(mdkr_modern_character_select_lod_projected_hysteretic(
+               6.0f, 0.0f, 0.0f, 0xFu, 9u, 1) == 1u);
+    assert(mdkr_modern_character_select_lod_projected_hysteretic(
+               6.0f, 0.0f, 0.0f, 0xFu, 0u, 0) == 1u);
 }
 
 void testExactFitSuggestions() {

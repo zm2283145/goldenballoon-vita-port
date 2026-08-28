@@ -81,6 +81,23 @@ typedef struct MdkrModernCharacterVehicleShell {
     uint32_t triangle_count;
 } MdkrModernCharacterVehicleShell;
 
+/* Immutable camera evidence captured after the donor object's model push.
+ * object_mvp maps donor-object local coordinates directly to clip space. */
+typedef struct MdkrModernCharacterLodView {
+    float object_mvp[16];
+    float logical_viewport_height;
+    uint64_t projection_generation;
+} MdkrModernCharacterLodView;
+
+typedef struct MdkrModernCharacterLodDiagnostics {
+    float projected_height_pixels;
+    float fallback_distance;
+    uint64_t projection_generation;
+    uint32_t selected_lod;
+    uint32_t authored_lod_mask;
+    uint32_t used_projected_height;
+} MdkrModernCharacterLodDiagnostics;
+
 /* Lightweight, borrowed library record for menu/workshop roster surfaces.
  * Catalog inspection never loads GPU mesh data; pointers remain valid until
  * runtime shutdown. `has_identity` is false for legacy donor-fallback media. */
@@ -150,6 +167,9 @@ int mdkr_modern_character_player_focus(
 int mdkr_modern_character_player_contact_diagnostics(
     int player, MdkrModernCharacterContext context,
     MdkrModernCharacterContactDiagnostics *out);
+int mdkr_modern_character_player_lod_diagnostics(
+    int player, int view, MdkrModernCharacterContext context,
+    MdkrModernCharacterLodDiagnostics *out);
 
 /* Presentation-only adapter. Vehicle is 0 car, 1 hovercraft, 2 plane. */
 int mdkr_modern_character_matches(int player, int donor, int vehicle);
@@ -188,6 +208,7 @@ int mdkr_modern_character_emit(int player, int view,
                                MdkrModernCharacterContext context,
                                const float target_frame[16],
                                const MdkrModernCharacterVehicleShell *shell,
+                               const MdkrModernCharacterLodView *lod_view,
                                float view_distance, Gfx **display_list,
                                char *error, size_t error_size);
 

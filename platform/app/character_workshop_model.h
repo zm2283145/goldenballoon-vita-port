@@ -112,8 +112,8 @@ struct CharacterWorkshopPerformancePreset {
 };
 
 struct CharacterWorkshopLodBand {
-    float minimumDistance = 0.0f;
-    float maximumDistance = 0.0f; // +infinity is the final open interval.
+    float minimumProjectedHeight = 0.0f;
+    float maximumProjectedHeight = 0.0f; // +infinity is the final interval.
     uint32_t lod = 0u;
 };
 
@@ -303,13 +303,13 @@ CharacterWorkshop_performancePreset(
     CharacterWorkshopPerformanceTarget target);
 CharacterWorkshopPerformanceTarget CharacterWorkshop_performanceTarget(
     int players, float lodBias);
-/* Uses the renderer's shared policy: distance chooses a base band, source and
+/* Uses the renderer's shared policy: projected height chooses a base band, source and
  * local biases shift it, and sparse authored levels fall back toward the
  * nearest more-detailed level. UINT32_MAX means invalid input. */
 uint32_t CharacterWorkshop_selectLod(
-    float viewDistance, float sourceLodBias, float localLodBias,
+    float projectedHeightPixels, float sourceLodBias, float localLodBias,
     uint32_t authoredLodMask);
-/* Returns the renderer policy's merged distance intervals. Adjacent base
+/* Returns the renderer policy's merged projected-height intervals. Adjacent base
  * bands that resolve to the same authored level after bias, clamping, and
  * sparse fallback are intentionally coalesced. Zero means invalid input. */
 size_t CharacterWorkshop_lodBands(

@@ -2195,7 +2195,7 @@ std::string g_donorGameplayProfilesUnavailableReason;
 std::set<std::string> g_characterDonorProfileTraceKeys;
 std::map<std::string, int> g_characterAssemblyPlayers;
 std::map<std::string, float> g_characterPerformanceLodGestureStarts;
-std::map<std::string, float> g_characterLodInspectionDistances;
+std::map<std::string, float> g_characterLodInspectionHeights;
 std::set<std::string> g_characterPerformanceTracePackages;
 std::map<std::string, int> g_characterTestPlayers;
 std::map<std::string, int> g_characterTestPoses;
@@ -4872,7 +4872,7 @@ AppConfig::PersistResult forgetCharacterPackagePreferences(
     g_characterTuning.erase(id);
     g_characterAssemblyPlayers.erase(id);
     g_characterPerformanceLodGestureStarts.erase(id);
-    g_characterLodInspectionDistances.erase(id);
+    g_characterLodInspectionHeights.erase(id);
     g_characterPerformanceTracePackages.erase(id);
     g_characterTestPlayers.erase(id);
     g_characterTestPoses.erase(id);
@@ -10165,7 +10165,7 @@ void drawCharacterPerformanceAssembly(
         ui::TextSubtleWrapped(
             "Available now: WebGPU GPU skinning, 32-bit indexed high-detail geometry, PBR-style embedded PNG materials with generated mipmaps, authored animation, and up to four authored LODs. Import limits are safety ceilings, not performance recommendations.");
         ui::TextSubtleWrapped(
-            "Not qualification-ready yet: custom-character geometry does not cast the world's mapped shadows; BLEND material parts render in authored primitive order rather than per-frame depth order; KTX2/BasisU texture transcode, projected-pixel LOD thresholds, and automatic offline mesh simplification are not implemented. Use MASK materials for hair/fur cutouts, author LODs in the source, and prove the result in every exact context.");
+            "Not qualification-ready yet: custom-character geometry does not cast the world's mapped shadows; BLEND material parts render in authored primitive order rather than per-frame depth order; KTX2/BasisU texture transcode and automatic offline mesh simplification are not implemented. Camera-aware LOD is available for authored levels. Use MASK materials for hair/fur cutouts, author LODs in the source, and prove the result in every exact context.");
         ImGui::TreePop();
     }
     const bool hasMultipleLods = entry->stats.lod_levels > 1u;
@@ -10243,7 +10243,7 @@ void drawCharacterPerformanceAssembly(
     }
     ui::SpeakFocusedItem(
         "Authored LOD preference", nullptr,
-        "Shifts the package's authored distance bands without changing geometry, textures, physics, or import limits.");
+        "Shifts the package's authored screen-coverage bands without changing geometry, textures, physics, or import limits.");
     if (ImGui::IsItemDeactivatedAfterEdit()) {
         const auto start = g_characterPerformanceLodGestureStarts.find(
             entry->id);
@@ -10283,33 +10283,34 @@ void drawCharacterPerformanceAssembly(
     CharacterWorkshopLodBand lodBands[MDKR_MODERN_CHARACTER_LOD_LEVELS] = {};
     const size_t lodBandCount = CharacterWorkshop_lodBands(
         entry->source_lod_bias, tuning.lodBias, authoredLodMask, lodBands);
-    float &inspectionDistance =
-        g_characterLodInspectionDistances[entry->id];
-    if (!std::isfinite(inspectionDistance) || inspectionDistance < 0.0f ||
-        inspectionDistance > 3200.0f) inspectionDistance = 0.0f;
+    auto inspectionInsert =
+        g_characterLodInspectionHeights.try_emplace(entry->id, 12.0f);
+    float &inspectionHeight = inspectionInsert.first->second;
+    if (!std::isfinite(inspectionHeight) || inspectionHeight < 0.0f ||
+        inspectionHeight > 24.0f) inspectionHeight = 12.0f;
     const uint32_t inspectionLod = CharacterWorkshop_selectLod(
-        inspectionDistance, entry->source_lod_bias, tuning.lodBias,
+        inspectionHeight, entry->source_lod_bias, tuning.lodBias,
         authoredLodMask);
     const uint32_t safeInspectionLod =
         inspectionLod < MDKR_MODERN_CHARACTER_LOD_LEVELS
             ? inspectionLod : 0u;
     ImGui::SeparatorText("LOD transition inspector");
     ui::TextSubtleWrapped(
-        "Scrub the renderer's exact DKR camera-distance policy. These are engine world units, not metres or a screen-size claim. The control changes only this explanation; it does not move the game camera or alter the saved character.");
+        "Scrub the renderer's camera-aware screen coverage policy. The primary runtime path uses the character's calibrated bounds, exact donor-object MVP, and current logical viewport without a vertex walk; unavailable projection evidence falls back visibly to legacy distance selection. This explanation does not move the game camera or alter the saved character.");
     (void)ImGui::SliderFloat(
-        "Inspection distance", &inspectionDistance, 0.0f, 3200.0f,
-        "%.0f world units", ImGuiSliderFlags_AlwaysClamp);
+        "Projected character height", &inspectionHeight, 0.0f, 24.0f,
+        "%.1f logical px", ImGuiSliderFlags_AlwaysClamp);
     char inspectionSpeech[192];
     std::snprintf(
         inspectionSpeech, sizeof(inspectionSpeech),
-        "At %.0f DKR world units the exact current policy selects authored LOD %u. This session-only scrubber does not change saved settings",
-        static_cast<double>(inspectionDistance), safeInspectionLod);
+        "At %.1f logical pixels of projected height the exact current policy selects authored LOD %u. This session-only scrubber does not change saved settings",
+        static_cast<double>(inspectionHeight), safeInspectionLod);
     ui::SpeakFocusedItem(
-        "Inspection distance", inspectionSpeech,
-        "Direct entry and arrow keys are supported. Distance bands include package and local bias, clamping, and sparse authored-level fallback.");
+        "Projected character height", inspectionSpeech,
+        "Direct entry and arrow keys are supported. Coverage bands include package and local bias, clamping, sparse authored-level fallback, and an eight-percent live-camera guard band.");
     ImGui::TextColored(
-        AppTheme::good(), "At %.0f units: LOD%u · %u triangles · %u vertices",
-        static_cast<double>(inspectionDistance), safeInspectionLod,
+        AppTheme::good(), "At %.1f logical px: LOD%u · %u triangles · %u vertices",
+        static_cast<double>(inspectionHeight), safeInspectionLod,
         entry->lod_triangles[safeInspectionLod],
         entry->lod_vertices[safeInspectionLod]);
     const ImVec2 plotOrigin = ImGui::GetCursorScreenPos();
@@ -10317,11 +10318,11 @@ void drawCharacterPerformanceAssembly(
         std::max(1.0f, ImGui::GetContentRegionAvail().x),
         44.0f * AppTheme::uiScale());
     (void)ImGui::Selectable(
-        "Exact LOD distance bands", false, ImGuiSelectableFlags_None,
+        "Exact projected-height LOD bands", false, ImGuiSelectableFlags_None,
         plotSize);
     const bool plotFocused = ImGui::IsItemFocused();
     ui::SpeakFocusedItem(
-        "Exact LOD distance bands", inspectionSpeech,
+        "Exact projected-height LOD bands", inspectionSpeech,
         "The exact interval list following this plot is authoritative and keyboard-readable.");
     ImDrawList *lodDraw = ImGui::GetWindowDrawList();
     static const ImU32 lodColours[] = {
@@ -10334,12 +10335,14 @@ void drawCharacterPerformanceAssembly(
         plotOrigin, plotMaximum, IM_COL32(12, 17, 24, 255), 5.0f);
     for (size_t band = 0u; band < lodBandCount; ++band) {
         const float minimum = std::clamp(
-            lodBands[band].minimumDistance, 0.0f, 3200.0f);
-        const float maximum = std::isinf(lodBands[band].maximumDistance)
-            ? 3200.0f
-            : std::clamp(lodBands[band].maximumDistance, 0.0f, 3200.0f);
-        const float left = plotOrigin.x + plotSize.x * minimum / 3200.0f;
-        const float right = plotOrigin.x + plotSize.x * maximum / 3200.0f;
+            lodBands[band].minimumProjectedHeight, 0.0f, 24.0f);
+        const float maximum =
+            std::isinf(lodBands[band].maximumProjectedHeight)
+                ? 24.0f
+                : std::clamp(
+                    lodBands[band].maximumProjectedHeight, 0.0f, 24.0f);
+        const float left = plotOrigin.x + plotSize.x * minimum / 24.0f;
+        const float right = plotOrigin.x + plotSize.x * maximum / 24.0f;
         lodDraw->AddRectFilled(
             ImVec2(left, plotOrigin.y), ImVec2(right, plotMaximum.y),
             lodColours[lodBands[band].lod]);
@@ -10354,7 +10357,7 @@ void drawCharacterPerformanceAssembly(
         }
     }
     const float marker = plotOrigin.x +
-        plotSize.x * inspectionDistance / 3200.0f;
+        plotSize.x * inspectionHeight / 24.0f;
     lodDraw->AddLine(
         ImVec2(marker, plotOrigin.y), ImVec2(marker, plotMaximum.y),
         IM_COL32(255, 255, 255, 255), 3.0f * AppTheme::uiScale());
@@ -10370,26 +10373,26 @@ void drawCharacterPerformanceAssembly(
     for (size_t band = 0u; band < lodBandCount; ++band) {
         const uint32_t triangles = entry->lod_triangles[lodBands[band].lod];
         if (band != 0u) {
-            nonMonotonic |= triangles > priorTriangles;
-            dramaticStep |= triangles != 0u &&
-                static_cast<uint64_t>(triangles) * 4u < priorTriangles;
+            nonMonotonic |= triangles < priorTriangles;
+            dramaticStep |= priorTriangles != 0u &&
+                static_cast<uint64_t>(priorTriangles) * 4u < triangles;
         }
         priorTriangles = triangles;
     }
     if (compactLodTable) {
         for (size_t band = 0u; band < lodBandCount; ++band) {
             const CharacterWorkshopLodBand &range = lodBands[band];
-            if (std::isinf(range.maximumDistance)) {
+            if (std::isinf(range.maximumProjectedHeight)) {
                 ImGui::BulletText(
-                    "%.0f+ units → LOD%u · %u triangles · %u vertices",
-                    static_cast<double>(range.minimumDistance), range.lod,
+                    "%.1f+ px → LOD%u · %u triangles · %u vertices",
+                    static_cast<double>(range.minimumProjectedHeight), range.lod,
                     entry->lod_triangles[range.lod],
                     entry->lod_vertices[range.lod]);
             } else {
                 ImGui::BulletText(
-                    "%.0f–%.0f units → LOD%u · %u triangles · %u vertices",
-                    static_cast<double>(range.minimumDistance),
-                    static_cast<double>(range.maximumDistance), range.lod,
+                    "%.1f–%.1f px → LOD%u · %u triangles · %u vertices",
+                    static_cast<double>(range.minimumProjectedHeight),
+                    static_cast<double>(range.maximumProjectedHeight), range.lod,
                     entry->lod_triangles[range.lod],
                     entry->lod_vertices[range.lod]);
             }
@@ -10398,7 +10401,7 @@ void drawCharacterPerformanceAssembly(
                    "##lod-transition-bands", 4,
                    ImGuiTableFlags_RowBg |
                        ImGuiTableFlags_SizingStretchProp)) {
-        ImGui::TableSetupColumn("Exact distance interval");
+        ImGui::TableSetupColumn("Projected-height interval");
         ImGui::TableSetupColumn("Selected authored level");
         ImGui::TableSetupColumn("Triangles");
         ImGui::TableSetupColumn("Vertices");
@@ -10407,12 +10410,12 @@ void drawCharacterPerformanceAssembly(
             const CharacterWorkshopLodBand &range = lodBands[band];
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
-            if (std::isinf(range.maximumDistance)) {
-                ImGui::Text("%.0f+", static_cast<double>(range.minimumDistance));
+            if (std::isinf(range.maximumProjectedHeight)) {
+                ImGui::Text("%.1f+ px", static_cast<double>(range.minimumProjectedHeight));
             } else {
-                ImGui::Text("%.0f–%.0f",
-                            static_cast<double>(range.minimumDistance),
-                            static_cast<double>(range.maximumDistance));
+                ImGui::Text("%.1f–%.1f px",
+                            static_cast<double>(range.minimumProjectedHeight),
+                            static_cast<double>(range.maximumProjectedHeight));
             }
             ImGui::TableNextColumn(); ImGui::Text("LOD%u", range.lod);
             ImGui::TableNextColumn();
@@ -10425,18 +10428,18 @@ void drawCharacterPerformanceAssembly(
     if (nonMonotonic) {
         ImGui::TextColored(
             AppTheme::bad(),
-            "Farther distance selects more triangles at least once — review authored LOD ordering.");
+            "Larger on-screen size selects fewer triangles at least once — review authored LOD ordering.");
     } else if (dramaticStep) {
         ImGui::TextColored(
             AppTheme::accent(),
-            "At least one transition removes more than 75%% of triangles — inspect silhouette and material popping in the exact game.");
+            "At least one transition adds more than 4× the triangles — inspect silhouette and material popping in the exact game.");
     } else {
         ImGui::TextColored(
             AppTheme::good(),
-            "Triangle counts descend without an extreme greater-than-4× step.");
+            "Triangle counts increase monotonically with screen size without an extreme greater-than-4× step.");
     }
     const uint32_t selectedLod = CharacterWorkshop_selectLod(
-        0.0f, entry->source_lod_bias, tuning.lodBias, authoredLodMask);
+        24.0f, entry->source_lod_bias, tuning.lodBias, authoredLodMask);
     const uint32_t assemblyLod = selectedLod <
             MDKR_MODERN_CHARACTER_LOD_LEVELS
         ? selectedLod : 0u;
@@ -10512,15 +10515,15 @@ void drawCharacterPerformanceAssembly(
             entry->lod_primitives[lod]);
     }
     ui::TextSubtleWrapped(
-        "Near-view selection uses the same distance thresholds, package bias, local bias, clamping, and sparse-LOD fallback as the runtime. Farther cameras can select lower authored levels. These are exact structural counts, not a frame-time prediction: materials, transparency, overdraw, skinning, visibility, GPU, resolution, and other racers still require an exact-context test.");
+        "Near-view selection uses the same projected-height thresholds, package bias, local bias, clamping, and sparse-LOD fallback as the runtime. Live cameras add an 8%% guard band to prevent transition chatter; invalid projection evidence explicitly falls back to the legacy distance policy. These are exact structural counts, not a frame-time prediction: materials, transparency, overdraw, skinning, visibility, GPU, resolution, and other racers still require an exact-context test.");
     if (std::getenv("MDKR_APP_UI_TRACE") != nullptr &&
         g_characterPerformanceTracePackages.insert(entry->id).second) {
         std::fprintf(
             stderr,
-            "[app-ui] character-performance-targets package=%s targets=quality,balanced,performance,four-player custom=1 sourceBias=%.1f localBias=%.1f players=%d selectedLod=%u exactAssembly=1 lodBands=%zu inspectionDistance=%.0f inspectionLod=%u monotonic=%d dramatic=%d importCeiling=unchanged history=performance\n",
+            "[app-ui] character-performance-targets package=%s targets=quality,balanced,performance,four-player custom=1 sourceBias=%.1f localBias=%.1f players=%d selectedLod=%u exactAssembly=1 lodBands=%zu inspectionHeight=%.1f inspectionLod=%u monotonic=%d dramatic=%d importCeiling=unchanged history=performance projectedPolicy=1 hysteresis=8%% fallback=distance\n",
             entry->id, static_cast<double>(entry->source_lod_bias),
             static_cast<double>(tuning.lodBias), players, assemblyLod,
-            lodBandCount, static_cast<double>(inspectionDistance),
+            lodBandCount, static_cast<double>(inspectionHeight),
             safeInspectionLod, nonMonotonic ? 0 : 1,
             dramaticStep ? 1 : 0);
     }
@@ -19738,7 +19741,7 @@ void closeCharacterDraftEditor(const std::string &packageId,
     if (!preserveFitEditor) {
         g_characterTuning.erase(packageId);
         g_characterAssemblyPlayers.erase(packageId);
-        g_characterLodInspectionDistances.erase(packageId);
+        g_characterLodInspectionHeights.erase(packageId);
         g_characterTestPlayers.erase(packageId);
         g_characterTestPoses.erase(packageId);
         g_characterTestPosePhases.erase(packageId);

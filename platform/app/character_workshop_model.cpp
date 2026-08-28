@@ -661,7 +661,7 @@ CharacterWorkshop_performancePreset(
          "Keeps the most detailed authored LOD longer for a one-player layout.",
          1, 2.0f},
         {"Balanced",
-         "Uses authored distance bands unchanged and inspects a two-player layout.",
+         "Uses authored screen-coverage bands unchanged and inspects a two-player layout.",
          2, 0.0f},
         {"Performance",
          "Moves two authored LOD bands toward lower geometry for a one-player layout.",
@@ -697,18 +697,24 @@ CharacterWorkshopPerformanceTarget CharacterWorkshop_performanceTarget(
 }
 
 uint32_t CharacterWorkshop_selectLod(
-    float viewDistance, float sourceLodBias, float localLodBias,
+    float projectedHeightPixels, float sourceLodBias, float localLodBias,
     uint32_t authoredLodMask) {
-    return mdkr_modern_character_select_lod(
-        viewDistance, sourceLodBias, localLodBias, authoredLodMask);
+    return mdkr_modern_character_select_lod_projected(
+        projectedHeightPixels, sourceLodBias, localLodBias, authoredLodMask);
 }
 
 size_t CharacterWorkshop_lodBands(
     float sourceLodBias, float localLodBias, uint32_t authoredLodMask,
     CharacterWorkshopLodBand output[MDKR_MODERN_CHARACTER_LOD_LEVELS]) {
-    static constexpr float minimums[] = {0.0f, 650.0f, 1300.0f, 2400.0f};
+    static constexpr float minimums[] = {
+        0.0f, MDKR_MODERN_CHARACTER_LOD2_MIN_PIXELS,
+        MDKR_MODERN_CHARACTER_LOD1_MIN_PIXELS,
+        MDKR_MODERN_CHARACTER_LOD0_MIN_PIXELS,
+    };
     static constexpr float maximums[] = {
-        650.0f, 1300.0f, 2400.0f, INFINITY,
+        MDKR_MODERN_CHARACTER_LOD2_MIN_PIXELS,
+        MDKR_MODERN_CHARACTER_LOD1_MIN_PIXELS,
+        MDKR_MODERN_CHARACTER_LOD0_MIN_PIXELS, INFINITY,
     };
     CharacterWorkshopLodBand resolved[MDKR_MODERN_CHARACTER_LOD_LEVELS];
     size_t count = 0u;
@@ -718,7 +724,7 @@ size_t CharacterWorkshop_lodBands(
             minimums[base], sourceLodBias, localLodBias, authoredLodMask);
         if (selected == UINT32_MAX) return 0u;
         if (count != 0u && resolved[count - 1u].lod == selected) {
-            resolved[count - 1u].maximumDistance = maximums[base];
+            resolved[count - 1u].maximumProjectedHeight = maximums[base];
         } else {
             resolved[count++] = {
                 minimums[base], maximums[base], selected,

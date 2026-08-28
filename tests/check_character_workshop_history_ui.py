@@ -285,9 +285,10 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
             "exactAssembly=1"
         )
         transition = re.search(
-            r"lodBands=(\d+) inspectionDistance=0 inspectionLod=0 "
+            r"lodBands=(\d+) inspectionHeight=12\.0 inspectionLod=0 "
             r"monotonic=([01]) dramatic=([01]) "
-            r"importCeiling=unchanged history=performance",
+            r"importCeiling=unchanged history=performance "
+            r"projectedPolicy=1 hysteresis=8% fallback=distance",
             process.stdout,
         )
         if marker not in process.stdout or transition is None or \
@@ -299,7 +300,8 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
         for spoken in (
             "text=Quality", "text=Balanced", "text=Performance",
             "text=Four-player", "text=Authored LOD preference",
-            "text=Inspection distance", "text=Exact LOD distance bands",
+            "text=Projected character height",
+            "text=Exact projected-height LOD bands",
         ):
             if spoken not in process.stdout:
                 raise RuntimeError(

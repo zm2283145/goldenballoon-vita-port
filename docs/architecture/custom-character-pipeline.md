@@ -569,8 +569,9 @@ Later schema versions should add, without changing the principles above:
 - package version and minimum/maximum engine asset API;
 - optional homepage and package-description display fields beyond the
   authenticated SPDX, attribution, and source declarations already present;
-- projected-size LOD thresholds and hysteresis (v1 already reads authored
-  `MSFT_lod` chains and a package LOD bias);
+- optional package-authored projected-size threshold overrides (v1 already
+  reads authored `MSFT_lod` chains and package bias, then applies the engine's
+  fixed projected-height thresholds and per-view hysteresis);
 - per-semantic loop/once behavior, playback scale, blend duration, normalized
   parameters, and optional additive masks;
 - optional richer/additive project-owned reference animation beyond the
@@ -1097,14 +1098,19 @@ including current/previous bone palettes, while reporting immutable geometry
 and decoded texture uploads once because a repeated package shares its runtime
 pool. Quality, Balanced, Performance, and Four-player are responsive named
 starting points over local-player layout and the bounded local shift of authored
-LOD distance bands; both controls remain directly editable. Near-view assembly
-selection mirrors the runtime's exact thresholds, compiled source bias, local
-bias, clamping, and sparse authored-level fallback instead of always reporting
-LOD0. One-LOD packages reject the false optimization affordance without being
-rejected at import. Performance history owns layout and LOD preference
-independently from vehicle Fit. These structural counts are deliberately
-advisory rather than import ceilings; measured frame time still belongs to
-exact-context device stress tests.
+LOD screen-coverage bands; both controls remain directly editable. The runtime
+projects eight corners of the stable calibrated source bounds through the exact
+donor-object MVP, converts the NDC span to logical viewport pixels, and applies
+an 8% stateful guard band independently per player, context, and viewport. It
+does not skin or scan source vertices to choose a level. Invalid or unavailable
+projection evidence is recorded and falls back to the legacy distance policy.
+The Workshop's projected-height scrubber mirrors the stateless thresholds,
+compiled source bias, local bias, clamping, and sparse authored-level fallback.
+One-LOD packages reject the false optimization affordance without being rejected
+at import. Performance history owns layout and LOD preference independently from
+vehicle Fit. These structural counts are deliberately advisory rather than
+import ceilings; measured frame time still belongs to exact-context device
+stress tests.
 
 The launcher now has a typed, one-shot exact-context test request for character
 select and car, hovercraft, or plane races in every one- through four-player
@@ -1348,7 +1354,7 @@ legacy-engine representation blockers:
 | Materials | Core PBR-like factors/maps plus DKR fog/sun/ambient; OPAQUE/MASK/BLEND | IBL, calibrated tone mapping, shadow receive/cast, transparent ordering, then optional hair/clearcoat/subsurface profiles |
 | Animation | TRS tracks, LINEAR/STEP/CUBICSPLINE, cross-fade, semantic clips, immutable previous/current replay interpolation | Real authored clips, local-TRS/quaternion presentation interpolation, additive masks, root-motion policy and possibly morph/facial animation |
 | Morphs | Rejected | Cache v2 storage, bounded weight tracks and shader path |
-| LOD | Authored `MSFT_lod`, per-player/context/viewport distance bands with runtime hysteresis, exact merged-band scrubber, sparse fallback and structural transition warnings | Projected-size thresholds and optional offline simplification; GPU-timed 4P targets are required by the playability gate |
+| LOD | Authored `MSFT_lod`, exact calibrated projected-height thresholds per player/context/viewport, 8% runtime hysteresis, explicit distance fallback, merged-band scrubber, sparse fallback and structural transition warnings | Optional offline simplification; GPU-timed 4P targets are required by the playability gate |
 | Backends | WebGPU; retail fallback on OpenGL | Implement GL parity or formally ship the modern profile as WebGPU-only |
 
 The closest thing to a firm blocker is not polygon count. It is finishing the
@@ -1443,9 +1449,9 @@ pipeline explosion or transparent ordering regression.
 
 - Compile authored LODs first; optionally generate lower LODs with recorded
   simplification error.
-- The current per-viewport distance selector has an 8% stateful hysteresis
-  guard; replace its distance thresholds with projected-size thresholds while
-  preserving that no-chatter contract.
+- Retain the completed calibrated projected-height selector and its 8%
+  per-viewport stateful hysteresis guard; exercise the explicit legacy-distance
+  fallback in camera-seam tests.
 - Add bone/primitive/material batching metrics and GPU timing.
 - Exercise ten visible racers across four viewports and character select at the
   low-end WebGPU device tier.

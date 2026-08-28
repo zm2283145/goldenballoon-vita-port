@@ -211,6 +211,24 @@ static s32 modern_character_donor_target_frame(
     return TRUE;
 }
 
+static s32 modern_character_lod_view(
+    s32 viewport, MdkrModernCharacterLodView *output) {
+    MdkrCameraProjection projection;
+    MtxF *objectMvp;
+    if (output == NULL ||
+        !cam_get_latched_effective_projection_for_viewport(
+            viewport, &projection) ||
+        !isfinite(projection.logical_viewport_height) ||
+        projection.logical_viewport_height <= 0.0f ||
+        projection.generation == 0u ||
+        (objectMvp = mtx_get_modelmtx_s16()) == NULL) return FALSE;
+    memset(output, 0, sizeof(*output));
+    memcpy(output->object_mvp, objectMvp, sizeof(output->object_mvp));
+    output->logical_viewport_height = projection.logical_viewport_height;
+    output->projection_generation = projection.generation;
+    return TRUE;
+}
+
 static s32 modern_character_affine_inverse(
     const f32 input[16], f32 output[16]) {
     const f32 a00 = input[0], a01 = input[4], a02 = input[8];
@@ -6509,6 +6527,11 @@ void render_3d_model(Object *obj) {
                 } else {
                     char modernError[192];
                     f32 targetFrame[16];
+                    MdkrModernCharacterLodView lodView;
+                    const MdkrModernCharacterLodView *lodViewPtr =
+                        modern_character_lod_view(
+                            get_current_viewport(), &lodView)
+                            ? &lodView : NULL;
                     if (!modern_character_donor_target_frame(
                             objModel, obj, player, donor, -1, 0,
                             MDKR_CHARACTER_CONTEXT_SELECT, targetFrame)) {
@@ -6521,6 +6544,7 @@ void render_3d_model(Object *obj) {
                             player, get_current_viewport(),
                             MDKR_CHARACTER_CONTEXT_SELECT,
                             targetFrame, NULL,
+                            lodViewPtr,
                             obj->distanceToCamera,
                             &gObjectCurrDisplayList,
                             modernError, sizeof(modernError))) {
@@ -6572,6 +6596,11 @@ modern_select_done:;
             } else {
                 char modernError[192];
                 f32 targetFrame[16];
+                MdkrModernCharacterLodView lodView;
+                const MdkrModernCharacterLodView *lodViewPtr =
+                    modern_character_lod_view(
+                        get_current_viewport(), &lodView)
+                        ? &lodView : NULL;
                 MdkrModernCharacterVehicleShell vehicleShell;
                 const MdkrModernCharacterVehicleShell *vehicleShellPtr = NULL;
                 const MdkrModernCharacterContext context =
@@ -6605,6 +6634,7 @@ modern_select_done:;
                 if (mdkr_modern_character_emit(
                         player, get_current_viewport(),
                         context, targetFrame, vehicleShellPtr,
+                        lodViewPtr,
                         gSceneDrawDistanceValid ? gSceneDrawDistance
                                                 : obj->distanceToCamera,
                         &gObjectCurrDisplayList,

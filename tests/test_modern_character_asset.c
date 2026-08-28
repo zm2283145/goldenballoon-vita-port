@@ -56,6 +56,7 @@ static uint32_t registered_draws;
 static uint32_t released_assets;
 static float last_model_matrix[16];
 static bool modern_character_supported = true;
+static bool reject_modern_draw;
 
 bool gfx_modern_character_supported(void) {
     return modern_character_supported;
@@ -90,6 +91,7 @@ uint32_t gfx_modern_character_register_draw(
                 "runtime retains both immutable skinning endpoints");
     }
     memcpy(last_model_matrix, draw->model_matrix, sizeof(last_model_matrix));
+    if (reject_modern_draw) return 0u;
     return ++registered_draws;
 }
 
@@ -246,6 +248,8 @@ int main(int argc, char **argv) {
     MdkrModernCharacterRuntimeMetrics runtime_metrics;
     MdkrModernCharacterFitDiagnostics fit_diagnostics;
     MdkrModernCharacterContactDiagnostics contact_diagnostics;
+    MdkrModernCharacterLodView lod_view;
+    MdkrModernCharacterLodDiagnostics lod_diagnostics;
     MdkrModernSurfaceIntersectionDiagnostics surface_diagnostics;
     MdkrModernSurfaceTriangle shell_triangle;
     MdkrModernCharacterVehicleShell vehicle_shell;
@@ -1507,15 +1511,44 @@ int main(int argc, char **argv) {
                 0, 0, MDKR_WORKSHOP_PREVIEW_LIGHTING_BRIGHT,
                 error, sizeof(error)),
             "exact renderer accepts a bounded character-light preset");
+    memset(&lod_view, 0, sizeof(lod_view));
+    lod_view.object_mvp[0] = lod_view.object_mvp[5] =
+        lod_view.object_mvp[10] = lod_view.object_mvp[15] = 1.0f;
+    lod_view.logical_viewport_height = 240.0f;
+    lod_view.projection_generation = 42u;
+    reject_modern_draw = true;
+    require(!mdkr_modern_character_emit(
+                0, 0, MDKR_CHARACTER_CONTEXT_SELECT, NULL, NULL, &lod_view,
+                0.0f, &command_cursor, error, sizeof(error)) &&
+                command_cursor == commands &&
+                !mdkr_modern_character_player_lod_diagnostics(
+                    0, 0, MDKR_CHARACTER_CONTEXT_SELECT, &lod_diagnostics),
+            "a refused renderer command cannot publish LOD evidence for an incomplete replacement");
+    reject_modern_draw = false;
     require(mdkr_modern_character_emit(0, 0, MDKR_CHARACTER_CONTEXT_SELECT,
-                                       NULL, NULL, 0.0f, &command_cursor,
+                                       NULL, NULL, &lod_view, 0.0f,
+                                       &command_cursor,
                                        error, sizeof(error)),
             error);
+    require(mdkr_modern_character_player_lod_diagnostics(
+                0, 0, MDKR_CHARACTER_CONTEXT_SELECT, &lod_diagnostics) &&
+                lod_diagnostics.used_projected_height == 1u &&
+                lod_diagnostics.projected_height_pixels > 0.0f &&
+                lod_diagnostics.projection_generation == 42u &&
+                lod_diagnostics.selected_lod == 0u &&
+                lod_diagnostics.authored_lod_mask == 1u,
+            "runtime LOD evidence binds calibrated screen coverage to the exact projection generation");
     select_model_y = last_model_matrix[13];
     require(mdkr_modern_character_emit(0, 0, MDKR_CHARACTER_CONTEXT_CAR,
-                                       NULL, NULL, 0.0f, &command_cursor,
+                                       NULL, NULL, NULL, 0.0f, &command_cursor,
                                        error, sizeof(error)),
             error);
+    require(mdkr_modern_character_player_lod_diagnostics(
+                0, 0, MDKR_CHARACTER_CONTEXT_CAR, &lod_diagnostics) &&
+                lod_diagnostics.used_projected_height == 0u &&
+                isnan(lod_diagnostics.projected_height_pixels) &&
+                lod_diagnostics.projection_generation == 0u,
+            "runtime discloses the distance fallback when no camera projection is available");
     require(mdkr_modern_character_player_focus(
                 0, MDKR_CHARACTER_CONTEXT_SELECT,
                 focus_center, &focus_radius) &&
@@ -1605,12 +1638,12 @@ int main(int argc, char **argv) {
             "held contact-stability test enters an exact semantic pose");
     mdkr_modern_character_contact_metrics_reset();
     require(mdkr_modern_character_emit(
-                0, 0, MDKR_CHARACTER_CONTEXT_CAR, NULL, NULL, 0.0f,
+                0, 0, MDKR_CHARACTER_CONTEXT_CAR, NULL, NULL, NULL, 0.0f,
                 &command_cursor, error, sizeof(error)) &&
                 mdkr_modern_character_tick_phase(
                     0, "race.steer", 0.5f, 1.0f, error, sizeof(error)) &&
                 mdkr_modern_character_emit(
-                    0, 0, MDKR_CHARACTER_CONTEXT_CAR, NULL, NULL, 0.0f,
+                    0, 0, MDKR_CHARACTER_CONTEXT_CAR, NULL, NULL, NULL, 0.0f,
                     &command_cursor, error, sizeof(error)),
             "two successful held-pose solves publish a temporal witness");
     mdkr_modern_character_runtime_metrics(&runtime_metrics);
@@ -1642,18 +1675,19 @@ int main(int argc, char **argv) {
                 "each local player owns an independent semantic pose");
     }
     require(mdkr_modern_character_emit(3, 3, MDKR_CHARACTER_CONTEXT_CAR,
-                                       NULL, NULL, 0.0f, &command_cursor,
+                                       NULL, NULL, NULL, 0.0f, &command_cursor,
                                        error, sizeof(error)) &&
                 command_cursor == commands + 5 && registered_draws == 5u,
             "four-player assignment reuses GPU ownership and emits independently");
     require(mdkr_modern_character_emit(3, 7, MDKR_CHARACTER_CONTEXT_CAR,
-                                       NULL, NULL, 0.0f, &command_cursor,
+                                       NULL, NULL, NULL, 0.0f, &command_cursor,
                                        error, sizeof(error)) &&
                 command_cursor == commands + 6 && registered_draws == 6u,
             "cutscene camera ownership remains a valid ordinary draw");
     require(!mdkr_modern_character_emit(
                 3, MDKR_MODERN_CHARACTER_VIEWS,
-                MDKR_CHARACTER_CONTEXT_CAR, NULL, NULL, 0.0f, &command_cursor,
+                MDKR_CHARACTER_CONTEXT_CAR, NULL, NULL, NULL, 0.0f,
+                &command_cursor,
                 error, sizeof(error)) &&
                 command_cursor == commands + 6 && registered_draws == 6u,
             "out-of-range camera ownership fails before draw publication");
@@ -1672,7 +1706,7 @@ int main(int argc, char **argv) {
                     3, MDKR_CHARACTER_CONTEXT_CAR) &&
                 mdkr_modern_character_emit(
                     3, 3, MDKR_CHARACTER_CONTEXT_CAR, NULL, &vehicle_shell,
-                    0.0f, &command_cursor, error, sizeof(error)) &&
+                    NULL, 0.0f, &command_cursor, error, sizeof(error)) &&
                 command_cursor == commands + 7 && registered_draws == 7u &&
                 !mdkr_modern_character_surface_diagnostics_requested(
                     3, MDKR_CHARACTER_CONTEXT_CAR) &&

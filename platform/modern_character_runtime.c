@@ -62,6 +62,10 @@ typedef struct MdkrModernRuntimePlayer {
     uint32_t selected_lod[MDKR_CHARACTER_CONTEXT_COUNT]
                          [MDKR_MODERN_CHARACTER_VIEWS];
     uint32_t selected_lod_valid_mask;
+    MdkrModernCharacterLodDiagnostics
+        lod_diagnostics[MDKR_CHARACTER_CONTEXT_COUNT]
+                       [MDKR_MODERN_CHARACTER_VIEWS];
+    uint32_t lod_diagnostics_valid_mask;
     uint64_t inspection_generation;
     float inspection_dwell_seconds;
     int inspection_to_pose;
@@ -342,6 +346,61 @@ static void matrix_transform_point(const float matrix[16],
                 matrix[9] * point[2] + matrix[13];
     output[2] = matrix[2] * point[0] + matrix[6] * point[1] +
                 matrix[10] * point[2] + matrix[14];
+}
+
+/* Project the stable calibrated source box through the exact donor-object MVP
+ * and final character attachment. This is eight corners per replacement, not
+ * a vertex/skin walk, so model complexity does not increase LOD CPU cost. */
+static int projected_calibration_height(
+    const MdkrModernCalibration *calibration,
+    const float anchored_transform[16],
+    const MdkrModernCharacterLodView *view, float *height_pixels) {
+    float clip_transform[16];
+    float minimum = INFINITY;
+    float maximum = -INFINITY;
+    unsigned corner;
+    unsigned axis;
+    if (calibration == NULL || anchored_transform == NULL || view == NULL ||
+        height_pixels == NULL ||
+        !isfinite(view->logical_viewport_height) ||
+        view->logical_viewport_height <= 0.0f ||
+        view->projection_generation == 0u) return 0;
+    for (axis = 0u; axis < 16u; ++axis) {
+        if (!isfinite(view->object_mvp[axis])) return 0;
+    }
+    matrix_multiply(view->object_mvp, anchored_transform, clip_transform);
+    for (corner = 0u; corner < 8u; ++corner) {
+        float source[4];
+        float clip_y;
+        float clip_w;
+        float ndc_y;
+        for (axis = 0u; axis < 3u; ++axis) {
+            if (!isfinite(calibration->bounds_min[axis]) ||
+                !isfinite(calibration->bounds_max[axis]) ||
+                calibration->bounds_min[axis] >
+                    calibration->bounds_max[axis]) return 0;
+            source[axis] = (corner & (1u << axis)) != 0u
+                ? calibration->bounds_max[axis]
+                : calibration->bounds_min[axis];
+        }
+        source[3] = 1.0f;
+        clip_y = clip_transform[1] * source[0] +
+            clip_transform[5] * source[1] +
+            clip_transform[9] * source[2] + clip_transform[13];
+        clip_w = clip_transform[3] * source[0] +
+            clip_transform[7] * source[1] +
+            clip_transform[11] * source[2] + clip_transform[15];
+        if (!isfinite(clip_y) || !isfinite(clip_w) || clip_w <= 1.0e-9f) {
+            return 0;
+        }
+        ndc_y = clip_y / clip_w;
+        if (!isfinite(ndc_y)) return 0;
+        if (ndc_y < minimum) minimum = ndc_y;
+        if (ndc_y > maximum) maximum = ndc_y;
+    }
+    *height_pixels = (maximum - minimum) *
+        view->logical_viewport_height * 0.5f;
+    return isfinite(*height_pixels) && *height_pixels >= 0.0f;
 }
 
 static int calibration_fit_diagnostics(
@@ -1384,6 +1443,7 @@ int mdkr_modern_character_set_tuning(int player,
     s_players[player].surface_diagnostics_valid_mask = 0u;
     s_players[player].surface_diagnostics_requested_mask = 0u;
     s_players[player].selected_lod_valid_mask = 0u;
+    s_players[player].lod_diagnostics_valid_mask = 0u;
     return 1;
 }
 
@@ -1441,6 +1501,24 @@ int mdkr_modern_character_player_contact_diagnostics(
         (slot->contact_diagnostics_valid_mask &
          (1u << (unsigned)context)) == 0u) return 0;
     *out = slot->contact_diagnostics[context];
+    return 1;
+}
+
+int mdkr_modern_character_player_lod_diagnostics(
+    int player, int view, MdkrModernCharacterContext context,
+    MdkrModernCharacterLodDiagnostics *out) {
+    const MdkrModernRuntimePlayer *slot;
+    uint32_t state;
+    if (player < 0 || player >= MDKR_MODERN_CHARACTER_PLAYERS ||
+        view < 0 || view >= MDKR_MODERN_CHARACTER_VIEWS ||
+        context < MDKR_CHARACTER_CONTEXT_SELECT ||
+        context >= MDKR_CHARACTER_CONTEXT_COUNT || out == NULL) return 0;
+    slot = &s_players[player];
+    state = (uint32_t)context * MDKR_MODERN_CHARACTER_VIEWS +
+        (uint32_t)view;
+    if (slot->pool < 0 ||
+        (slot->lod_diagnostics_valid_mask & (1u << state)) == 0u) return 0;
+    *out = slot->lod_diagnostics[context][view];
     return 1;
 }
 
@@ -1833,6 +1911,7 @@ int mdkr_modern_character_emit(int player, int view,
                                MdkrModernCharacterContext context,
                                const float target_frame[16],
                                const MdkrModernCharacterVehicleShell *shell,
+                               const MdkrModernCharacterLodView *lod_view,
                                float view_distance, Gfx **display_list,
                                char *error, size_t error_size) {
     MdkrModernRuntimePlayer *slot;
@@ -1870,6 +1949,11 @@ int mdkr_modern_character_emit(int player, int view,
     uint32_t primitive_index;
     uint32_t selected_lod;
     uint32_t authored_lod_mask = 0u;
+    uint32_t lod_state;
+    uint32_t lod_state_bit;
+    MdkrModernCharacterLodDiagnostics lod_diagnostics;
+    float projected_height_pixels = NAN;
+    int used_projected_height = 0;
     uint32_t emitted = 0u;
     const MdkrWorkshopPreviewLighting inspection_lighting =
         mdkr_workshop_preview_lighting();
@@ -1909,25 +1993,6 @@ int mdkr_modern_character_emit(int player, int view,
         if (lod < MDKR_MODERN_CHARACTER_LOD_LEVELS) {
             authored_lod_mask |= 1u << lod;
         }
-    }
-    {
-        const uint32_t lod_state =
-            (uint32_t)context * MDKR_MODERN_CHARACTER_VIEWS +
-            (uint32_t)view;
-        const uint32_t lod_state_bit = 1u << lod_state;
-        selected_lod = mdkr_modern_character_select_lod_hysteretic(
-            view_distance, pool->definition.lod_bias, slot->tuning.lod_bias,
-            authored_lod_mask, slot->selected_lod[context][view],
-            (slot->selected_lod_valid_mask & lod_state_bit) != 0u);
-        if (selected_lod != UINT32_MAX) {
-            slot->selected_lod[context][view] = selected_lod;
-            slot->selected_lod_valid_mask |= lod_state_bit;
-        }
-    }
-    if (selected_lod == UINT32_MAX) {
-        set_error(error, error_size,
-                  "character LOD policy or authored levels are invalid");
-        return 0;
     }
     if (!attachment_for_context(&pool->asset, context, &attachment)) {
         set_error(error, error_size,
@@ -2019,6 +2084,50 @@ int mdkr_modern_character_emit(int player, int view,
     matrix_multiply(target_context, adjusted_transform, anchored_transform);
     matrix_multiply(target_context, previous_adjusted_transform,
                     previous_anchored_transform);
+    {
+        lod_state = (uint32_t)context * MDKR_MODERN_CHARACTER_VIEWS +
+            (uint32_t)view;
+        lod_state_bit = 1u << lod_state;
+        int previous_valid =
+            (slot->selected_lod_valid_mask & lod_state_bit) != 0u;
+        if (has_calibration && projected_calibration_height(
+                &calibration, anchored_transform, lod_view,
+                &projected_height_pixels)) {
+            used_projected_height = 1;
+            if ((slot->lod_diagnostics_valid_mask & lod_state_bit) == 0u ||
+                slot->lod_diagnostics[context][view]
+                    .used_projected_height == 0u) previous_valid = 0;
+            selected_lod =
+                mdkr_modern_character_select_lod_projected_hysteretic(
+                    projected_height_pixels, pool->definition.lod_bias,
+                    slot->tuning.lod_bias, authored_lod_mask,
+                    slot->selected_lod[context][view], previous_valid);
+        } else {
+            if ((slot->lod_diagnostics_valid_mask & lod_state_bit) == 0u ||
+                slot->lod_diagnostics[context][view]
+                    .used_projected_height != 0u) previous_valid = 0;
+            selected_lod = mdkr_modern_character_select_lod_hysteretic(
+                view_distance, pool->definition.lod_bias,
+                slot->tuning.lod_bias, authored_lod_mask,
+                slot->selected_lod[context][view], previous_valid);
+        }
+        if (selected_lod != UINT32_MAX) {
+            lod_diagnostics.projected_height_pixels =
+                used_projected_height ? projected_height_pixels : NAN;
+            lod_diagnostics.fallback_distance = view_distance;
+            lod_diagnostics.projection_generation =
+                used_projected_height ? lod_view->projection_generation : 0u;
+            lod_diagnostics.selected_lod = selected_lod;
+            lod_diagnostics.authored_lod_mask = authored_lod_mask;
+            lod_diagnostics.used_projected_height =
+                used_projected_height ? 1u : 0u;
+        }
+    }
+    if (selected_lod == UINT32_MAX) {
+        set_error(error, error_size,
+                  "character LOD policy or authored levels are invalid");
+        return 0;
+    }
     if (has_calibration) {
         fit_diagnostics_ready = calibration_fit_diagnostics(
             &calibration, adjusted_transform, source_anchor,
@@ -2229,6 +2338,10 @@ int mdkr_modern_character_emit(int player, int view,
         gMoveWd((*display_list)++, G_MW_DKR_MODERN_CHARACTER, 0,
                 slot->tokens[primitive_index]);
     }
+    slot->selected_lod[context][view] = selected_lod;
+    slot->selected_lod_valid_mask |= lod_state_bit;
+    slot->lod_diagnostics[context][view] = lod_diagnostics;
+    slot->lod_diagnostics_valid_mask |= lod_state_bit;
     {
         const uint32_t context_bit = 1u << (unsigned)context;
         if ((slot->surface_diagnostics_requested_mask & context_bit) != 0u) {
