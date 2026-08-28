@@ -224,3 +224,12 @@ int adventure_party_seat_may_act(int seat, uint8_t active_seat_mask,
         return 0;
     }
 }
+
+int adventure_party_disconnect_should_pause(uint8_t active_seat_mask,
+                                            uint8_t present_mask) {
+    /* Hold the shared pause while any BOUND seat's controller is absent. The
+     * bound seats are the set bits of active_seat_mask; a bound seat is missing
+     * when its bit is clear in present_mask. Bits outside the roster never
+     * force a pause, so an idle spare port cannot. */
+    return (active_seat_mask & (uint8_t)~present_mask) != 0;
+}

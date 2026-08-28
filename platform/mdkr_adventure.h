@@ -15,4 +15,8 @@ void mdkr_trophy_control_collision(Object *cabinet, Object *player);
 void mdkr_trophy_complete_race(Object **racers, s32 racerCount,
                                s32 requiredLaps);
 
+/* AP-10 test injector: 1 if seat's controller should read ABSENT now
+ * (MDKR_AP_DROP_PAD). No-op (returns 0) with no env set; always defined. */
+int mdkr_test_pad_absent(int seat);
+
 #endif

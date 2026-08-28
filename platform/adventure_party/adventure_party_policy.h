@@ -219,6 +219,15 @@ typedef enum AdventurePartyActionKind {
 int adventure_party_seat_may_act(int seat, uint8_t active_seat_mask,
                                  AdventurePartyActionKind action);
 
+/* Controller-disconnect pause authority (AP-10). Returns 1 when the shared
+ * pause must be held: any bound seat (a set bit in active_seat_mask) whose
+ * controller is not present (its bit is clear in present_mask). Returns 0 only
+ * when every bound seat's pad is present. Pure and ROM-free so the disconnect
+ * decision is unit-testable without a controller; the game adapter builds
+ * present_mask from the platform pad-presence API. */
+int adventure_party_disconnect_should_pause(uint8_t active_seat_mask,
+                                            uint8_t present_mask);
+
 #ifdef __cplusplus
 }
 #endif

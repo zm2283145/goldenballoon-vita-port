@@ -541,6 +541,181 @@ static s32 sAdvStall = 0;
 static s32 sAdvReverse = 0;
 static s32 sAdvHalt = 0; /* update-rate units the active H<frames> step has held */
 
+/* ------------------------------------------------------------------ AP-10 --
+ *
+ * Two test-only injectors the Adventure Party lobby-interaction gate needs and
+ * the input-script layer cannot provide.  Both are no-ops unless their env var
+ * is set, same contract as every hook above; neither carries production party
+ * state (that lives in platform/adventure_party and the game adapters).
+ *
+ *   MDKR_AP_SEAT_ROUTE="<seat>=<step>[|<step>...][;<seat>=...]"
+ *       Steer ONE named seat along its OWN ordered route, overriding the shared
+ *       MDKR_DRIVE_ROUTE for that seat only (seats with no route fall through to
+ *       the shared route, or idle). This is the only way to send different seats
+ *       to different doors, or exactly one seat at a door while the rest idle --
+ *       the shared route drives every human racer at one target. Steps:
+ *         <x>,<z>   a waypoint, retired within MDKR_DRIVE_WPR units
+ *         E<id>     the BHV_EXIT to destinationMapId <id> (terminal: racer_enter_door takes over once obj_loop_exit latches)
+ *         B<id>     the BHV_GOLDEN_BALLOON <id>, retired when its collected flag is set
+ *
+ *   MDKR_AP_DROP_PAD="<seat>@<tick>[,<seat>@<tick>]"
+ *       Report a bound seat's controller as ABSENT from g_simTickCounter >=
+ *       <tick> onward.  The input-script presence mask is whole-route (a scripted
+ *       pad looks plugged in from boot to shutdown), so a headless run cannot
+ *       otherwise simulate a mid-session disconnect; this reports absence to the
+ *       game's disconnect adapter without touching any real pad state. */
+enum { MDKR_AP_STEP_POINT = 0, MDKR_AP_STEP_EXIT, MDKR_AP_STEP_BALLOON };
+#define MDKR_AP_SEAT_STEPS 16
+static s32 sApTestInited = 0;
+static s32 sApSeatStepKind[4][MDKR_AP_SEAT_STEPS];
+static f32 sApSeatStepX[4][MDKR_AP_SEAT_STEPS];
+static f32 sApSeatStepZ[4][MDKR_AP_SEAT_STEPS];
+static s32 sApSeatStepId[4][MDKR_AP_SEAT_STEPS];
+static s32 sApSeatStepCount[4];
+static s32 sApSeatStepIdx[4];
+static s32 sApDropTick[4]; /* -1 = never dropped */
+
+extern int g_simTickCounter;
+
+static void mdkr_ap_parse_seat_routes(const char *s) {
+    while (*s != '\0') {
+        s32 seat, n = 0;
+        while (*s == ';' || *s == ' ') {
+            s++;
+        }
+        if (*s == '\0') {
+            break;
+        }
+        seat = (s32) strtol(s, (char **) &s, 10);
+        if (*s != '=' || seat < 0 || seat >= 4) {
+            break; /* malformed -- stop rather than guess */
+        }
+        s++;
+        while (*s != '\0' && *s != ';' && n < MDKR_AP_SEAT_STEPS) {
+            if (*s == 'E' || *s == 'e') {
+                s++;
+                sApSeatStepKind[seat][n] = MDKR_AP_STEP_EXIT;
+                sApSeatStepId[seat][n] = (s32) strtol(s, (char **) &s, 10);
+            } else if (*s == 'B' || *s == 'b') {
+                s++;
+                sApSeatStepKind[seat][n] = MDKR_AP_STEP_BALLOON;
+                sApSeatStepId[seat][n] = (s32) strtol(s, (char **) &s, 10);
+            } else {
+                sApSeatStepKind[seat][n] = MDKR_AP_STEP_POINT;
+                sApSeatStepX[seat][n] = (f32) strtod(s, (char **) &s);
+                if (*s != ',') {
+                    break;
+                }
+                s++;
+                sApSeatStepZ[seat][n] = (f32) strtod(s, (char **) &s);
+            }
+            n++;
+            if (*s == '|') {
+                s++;
+            }
+        }
+        sApSeatStepCount[seat] = n;
+    }
+}
+
+static void mdkr_ap_test_init(void) {
+    const char *e;
+    s32 i;
+    if (sApTestInited) {
+        return;
+    }
+    sApTestInited = 1;
+    for (i = 0; i < 4; i++) {
+        sApSeatStepCount[i] = 0;
+        sApSeatStepIdx[i] = 0;
+        sApDropTick[i] = -1;
+    }
+    e = getenv("MDKR_AP_SEAT_ROUTE");
+    if (e != NULL && e[0] != '\0') {
+        mdkr_ap_parse_seat_routes(e);
+    }
+    e = getenv("MDKR_AP_DROP_PAD");
+    if (e != NULL && e[0] != '\0') {
+        while (*e != '\0') {
+            s32 seat = (s32) strtol(e, (char **) &e, 10);
+            if (*e == '@') {
+                e++;
+                if (seat >= 0 && seat < 4) {
+                    sApDropTick[seat] = (s32) strtol(e, (char **) &e, 10);
+                }
+            }
+            while (*e == ',' || *e == ' ') {
+                e++;
+            }
+            if (*e != '\0' && (*e < '0' || *e > '9')) {
+                break;
+            }
+        }
+    }
+}
+
+static Object *mdkr_adv_find(s32 behaviorId, s32 wantId);
+static s32 mdkr_adv_balloon_collected(Settings *settings, s32 balloonID);
+static void mdkr_adv_steer(Object_Racer *racer, f32 dx, f32 dz, s32 reverse);
+
+/* 1 if this seat's own route drove the racer this tick (caller returns). */
+static s32 mdkr_ap_seat_route_drive(Object *obj, Object_Racer *racer) {
+    Settings *settings;
+    s32 seat = racer->playerIndex;
+    if (seat < 0 || seat >= 4 || sApSeatStepCount[seat] == 0) {
+        return 0;
+    }
+    settings = get_settings();
+    while (sApSeatStepIdx[seat] < sApSeatStepCount[seat]) {
+        s32 idx = sApSeatStepIdx[seat];
+        s32 kind = sApSeatStepKind[seat][idx];
+        Object *tgt;
+        f32 dx, dz;
+        if (kind == MDKR_AP_STEP_BALLOON) {
+            if (settings != NULL && mdkr_adv_balloon_collected(settings, sApSeatStepId[seat][idx])) {
+                sApSeatStepIdx[seat]++;
+                continue;
+            }
+            tgt = mdkr_adv_find(BHV_GOLDEN_BALLOON, sApSeatStepId[seat][idx]);
+            if (tgt == NULL) {
+                sApSeatStepIdx[seat]++;
+                continue;
+            }
+            mdkr_adv_steer(racer, tgt->trans.x_position - obj->trans.x_position,
+                           tgt->trans.z_position - obj->trans.z_position, 0);
+            return 1;
+        } else if (kind == MDKR_AP_STEP_EXIT) {
+            tgt = mdkr_adv_find(BHV_EXIT, sApSeatStepId[seat][idx]);
+            if (tgt == NULL) {
+                return 1; /* hold position until the exit spawns */
+            }
+            mdkr_adv_steer(racer, tgt->trans.x_position - obj->trans.x_position,
+                           tgt->trans.z_position - obj->trans.z_position, 0);
+            return 1; /* terminal: racer_enter_door takes over once latched */
+        } else {
+            dx = sApSeatStepX[seat][idx] - obj->trans.x_position;
+            dz = sApSeatStepZ[seat][idx] - obj->trans.z_position;
+            if ((dx * dx + dz * dz) < (sAdvWpRadius * sAdvWpRadius)) {
+                sApSeatStepIdx[seat]++;
+                continue;
+            }
+            mdkr_adv_steer(racer, dx, dz, 0);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* 1 if this bound seat's controller should read as ABSENT now (test injector).
+ * Always defined (both build arms); returns 0 with no env set. */
+int mdkr_test_pad_absent(int seat) {
+    mdkr_ap_test_init();
+    if (seat < 0 || seat >= 4) {
+        return 0;
+    }
+    return sApDropTick[seat] >= 0 && g_simTickCounter >= sApDropTick[seat];
+}
+
 static f32 mdkr_adv_num(const char **p) {
     char *end = NULL;
     f32 v = (f32) strtod(*p, &end);
@@ -855,6 +1030,13 @@ void mdkr_adventure_drive(Object *obj, Object_Racer *racer, s32 updateRate) {
     mdkr_taj_p2_lead_prepare(racer);
     mdkr_taj_p2_lead_trace(racer);
     mdkr_adv_init();
+    mdkr_ap_test_init();
+    /* AP-10 per-seat routes preempt the shared route for the seats they name and
+     * work with no MDKR_DRIVE_ROUTE set, so they run before the shared-route
+     * early-out. A seat still latched into an exit is left to racer_enter_door. */
+    if (racer->exitObj == NULL && mdkr_ap_seat_route_drive(obj, racer)) {
+        return;
+    }
     if (sAdvLevelCount == 0 && !sAdvObjdump && !sAdvBossRoute && !sAdvSilverRoute) {
         return;
     }

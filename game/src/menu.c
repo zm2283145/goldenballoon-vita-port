@@ -18,6 +18,7 @@
 /* AP-06 admission/session adapters. These headers (and every call to them) live
  * behind NATIVE_PORT && !MDKR_ADVENTURE_PARTY_OMIT so the OMIT build and the
  * matching N64 path compile the feature out entirely. */
+#include "adventure_party/adventure_party_policy.h"
 #include "adventure_party/adventure_party_runtime.h"
 #include "adventure_party/adventure_party_state.h"
 #include "adventure_party/adventure_party_trace.h"
@@ -12713,6 +12714,35 @@ void menu_pause_init(void) {
     if (gLastPlayerWhoPaused < 0) {
         gLastPlayerWhoPaused = 0;
     }
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    if (adventure_party_runtime_is_active()) {
+        AdventurePartySession *apSession = adventure_party_runtime_session();
+        int apSeat, apCount = adventure_party_participant_count(apSession);
+        int apInitiator = -1;
+        /* Any seat may have opened the pause; the retail loop above only scans
+         * get_active_player_count() seats (a party collapses that to one), so
+         * rescan the whole roster to name the true initiator in the trace. */
+        for (apSeat = 0; apSeat < apCount && apInitiator < 0; apSeat++) {
+            if (input_held(apSeat) & START_BUTTON) {
+                apInitiator = apSeat;
+            }
+        }
+        if (apInitiator < 0) {
+            apInitiator = adventure_party_host_seat(apSession);
+        }
+        adventure_party_trace_emit_interaction(
+            (uint8_t) apInitiator, ADVENTURE_PARTY_ACTION_PAUSE_DECISION,
+            adventure_party_seat_may_act(apInitiator, apSession->roster.seat_mask,
+                                         ADVENTURE_PARTY_ACTION_PAUSE_DECISION)
+                ? ADVENTURE_PARTY_ARBITRATE_LATCHED
+                : ADVENTURE_PARTY_ARBITRATE_REJECTED_SEAT);
+        /* Host (player one) owns the shared pause menu: navigation and confirm
+         * read gLastPlayerWhoPaused, so pin it to the host seat -- the Task 6
+         * file-select host-only pattern. There is one gIsPaused / one pause
+         * menu, so this is inherently a single shared pause, never per-viewport. */
+        gLastPlayerWhoPaused = adventure_party_host_seat(apSession);
+    }
+#endif
     gMenuOptionText[0] = gMenuText[ASSET_MENU_TEXT_CONTINUE];
     gMenuOptionCap = 1;
     if (gTrophyRaceWorldId == 0) {

@@ -69,6 +69,16 @@
 #include "presentation_snapshot.h"
 #include "rollback/rollback_game_runtime.h"
 #include "taj_mod.h"
+#ifndef MDKR_ADVENTURE_PARTY_OMIT
+/* AP-10 shared pause + controller-disconnect authority. Behind
+ * NATIVE_PORT && !OMIT with an immediate stock else at every call, so OMIT /
+ * matching N64 compile the feature out. */
+#include "adventure_party/adventure_party_policy.h"
+#include "adventure_party/adventure_party_runtime.h"
+#include "adventure_party/adventure_party_state.h"
+#include "adventure_party/adventure_party_trace.h"
+#include "mdkr_adventure.h" /* mdkr_test_pad_absent test injector */
+#endif
 #endif
 
 /************ .rodata ************/
@@ -697,6 +707,62 @@ void unload_level_game(void) {
  * The main behaviour function involving all of the ingame stuff.
  * Involves the updating of all objects and setting up the render scene.
  */
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+/* Controller-disconnect shared pause (AP-10), lobby-scoped this task. While any
+ * bound seat's pad is absent during ACTIVE_LOBBY, force the ONE shared pause and
+ * block unpause (re-asserting *paused after the pause menu has run); when every
+ * bound pad is present again the host may confirm resume as normal. Pad presence
+ * is the platform API, overridable by the MDKR_AP_DROP_PAD test injector so a
+ * headless route can simulate a mid-session drop (the input-script presence mask
+ * is whole-route and cannot). */
+static void adventure_party_disconnect_tick(s8 *paused) {
+    AdventurePartySession *s = adventure_party_runtime_session();
+    static int sPrevHold;
+    int seat, n, present_mask, hold, dropped;
+    if (!adventure_party_runtime_is_active() ||
+        s->state != ADVENTURE_PARTY_STATE_ACTIVE_LOBBY) {
+        sPrevHold = 0;
+        return;
+    }
+    n = adventure_party_participant_count(s);
+    present_mask = 0;
+    for (seat = 0; seat < n; seat++) {
+        /* Hub binding is identity (seat i -> controller port i, Task 7). */
+        int absent = !platform_pad_present(seat) ||
+                     mdkr_test_pad_absent(seat);
+        if (!absent) {
+            present_mask |= (1 << seat);
+        }
+    }
+    hold = adventure_party_disconnect_should_pause(s->roster.seat_mask,
+                                                   (uint8_t) present_mask);
+    if (hold) {
+        if (!*paused) {
+            *paused = TRUE;
+            menu_pause_init();
+        } else {
+            *paused = TRUE; /* block unpause while a bound pad is missing */
+        }
+        if (!sPrevHold) {
+            dropped = adventure_party_host_seat(s);
+            for (seat = 0; seat < n; seat++) {
+                if (!(present_mask & (1 << seat))) { dropped = seat; break; }
+            }
+            adventure_party_trace_emit_interaction(
+                (uint8_t) dropped, ADVENTURE_PARTY_ACTION_PAUSE_DECISION,
+                ADVENTURE_PARTY_ARBITRATE_REJECTED_SEAT);
+        }
+    } else if (sPrevHold) {
+        /* Every bound pad is back: resume is unblocked (host confirms). */
+        adventure_party_trace_emit_interaction(
+            (uint8_t) adventure_party_host_seat(s),
+            ADVENTURE_PARTY_ACTION_PAUSE_DECISION,
+            ADVENTURE_PARTY_ARBITRATE_LATCHED);
+    }
+    sPrevHold = hold;
+}
+#endif
+
 void mode_game(s32 updateRate) {
     s32 buttonPressedInputs, buttonHeldInputs, i, loadContext, sp3C;
 
@@ -710,6 +776,19 @@ void mode_game(s32 updateRate) {
         buttonHeldInputs |= input_held(i);
         buttonPressedInputs |= input_pressed(i);
     }
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    /* Any party seat may REQUEST the one shared pause: fold in each participant
+     * seat's START so a non-host press opens it too (host authority over the menu
+     * itself is applied in menu_pause_init). Only START is added, so no other
+     * seat's input leaks into the retail load/quit paths. */
+    if (adventure_party_runtime_is_active()) {
+        AdventurePartySession *apPauseSession = adventure_party_runtime_session();
+        int apSeat, apCount = adventure_party_participant_count(apPauseSession);
+        for (apSeat = 0; apSeat < apCount; apSeat++) {
+            buttonPressedInputs |= (input_pressed(apSeat) & START_BUTTON);
+        }
+    }
+#endif
 #ifdef ANTI_TAMPER
     // Spam the start button, making the game unplayable because it's constantly paused.
     if (sAntiPiracyTriggered) {
@@ -898,6 +977,18 @@ void mode_game(s32 updateRate) {
         switch (i) {
             case PAUSE_CONTINUE:
                 gIsPaused = FALSE;
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+                /* The host owns the shared pause decision; record the confirm.
+                 * If a bound pad is still missing the disconnect tick below
+                 * re-asserts the pause, so this unpause does not actually take. */
+                if (adventure_party_runtime_is_active()) {
+                    adventure_party_trace_emit_interaction(
+                        (uint8_t) adventure_party_host_seat(
+                            adventure_party_runtime_session()),
+                        ADVENTURE_PARTY_ACTION_PAUSE_DECISION,
+                        ADVENTURE_PARTY_ARBITRATE_LATCHED);
+                }
+#endif
                 break;
             case PAUSE_RESET:
                 sound_clear_delayed();
@@ -941,6 +1032,12 @@ void mode_game(s32 updateRate) {
                 break;
         }
     }
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    /* After the pause menu has run, force/hold the shared pause if a bound
+     * controller is missing (runs last so it overrides a host CONTINUE that
+     * would otherwise unpause while a pad is still absent). */
+    adventure_party_disconnect_tick(&gIsPaused);
+#endif
     if (!sRollbackResimulating
 #ifdef NATIVE_PORT
         && (!mdkr_net_roster_runtime_active() ||
