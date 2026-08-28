@@ -523,6 +523,17 @@ static void charselect_render(const CsRemoteView *rv) {
         }
         if (taken) {
             char tag[16];
+            /* Persistent tile-level TAKEN cue on the rival's locked racer,
+             * mirroring the local pick's "YOU" marker slot (dy=56). Same-
+             * character online is DISALLOWED (charselect_apply_input rejects a
+             * confirm on the rival's cell), so the local player must read
+             * "unavailable" AT THE TILE -- the dimmed portrait + a lone name
+             * label were not being read as a taken/greyed state, and the
+             * "TAKEN BY x" flash only appears AFTER a rejected confirm attempt.
+             * Colour + this word + the luminance drop are three redundant cues
+             * (also aids colourblind players). */
+            charselect_draw_label(id, 56, ASSET_FONTS_SMALLFONT, "TAKEN", 255,
+                                  120, 120);
             (void) snprintf(tag, sizeof(tag), "%.7s", rname);
             charselect_draw_label(id, 66, ASSET_FONTS_SMALLFONT, tag, 255, 160,
                                   160);
