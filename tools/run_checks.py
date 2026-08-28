@@ -1059,6 +1059,7 @@ ONLINE_TAKEOVER_SCRIPTS = {
     "check_online_session_boot.py",
     "check_online_session_end.py",
     "check_online_session_results.py",
+    "check_online_single_race_replay.py",
     "check_online_tournament.py",
     "check_online_trackselect.py",
     "check_online_vehicleselect.py",
