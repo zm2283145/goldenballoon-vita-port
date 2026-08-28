@@ -23551,9 +23551,21 @@ bool Settings_importCharacterPackage(const char *path) {
         }
         if (!queueCharacterRawGlbInspection(
                 path, [](bool inspected) {
+                    const bool importerUnavailable = !inspected &&
+                        g_characterManagerReport.find(
+                            "regular, trusted character importer") !=
+                            std::string::npos;
+                    if (importerUnavailable &&
+                        std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+                        std::fprintf(
+                            stderr,
+                            "[app-ui] character-importer-recovery missing_or_untrusted=1 draft_preserved=1 source_mutated=0\n");
+                    }
                     setStatus(
                         inspected
                             ? "GLB inspected; complete and review the resumable authoring draft."
+                            : importerUnavailable
+                            ? "Character importer is missing or untrusted. Reinstall the complete app; developers can set MDKR_CHARACTER_MANAGER to an absolute tool path. Your raw draft and source are unchanged."
                             : "GLB inspection failed; no package was built or installed.",
                         inspected ? AppTheme::good() : AppTheme::bad());
                 })) {

@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Exercise raw-model intake through a built Character Workshop importer."""
+"""Exercise an offline authoring lifecycle through a Character Workshop importer."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -51,10 +52,84 @@ def _load_result(path: Path) -> dict[str, Any]:
     return result
 
 
-def check(executable_path: Path) -> None:
+def _offline_environment() -> dict[str, str]:
+    """Make accidental network dependencies fail quickly and consistently."""
+    environment = os.environ.copy()
+    dead_proxy = "http://127.0.0.1:9"
+    for name in (
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+        "http_proxy", "https_proxy", "all_proxy",
+    ):
+        environment[name] = dead_proxy
+    environment["NO_PROXY"] = ""
+    environment["no_proxy"] = ""
+    environment["PIP_NO_INDEX"] = "1"
+    return environment
+
+
+def _invoke(command_prefix: list[str], character_dir: Path,
+            result_path: Path, temporary: Path, arguments: list[str], *,
+            succeeds: bool = True) -> dict[str, Any]:
+    result_path.unlink(missing_ok=True)
+    command = [
+        *command_prefix, "--directory", str(character_dir),
+        "--result-file", str(result_path), *arguments,
+    ]
+    try:
+        completed = subprocess.run(
+            command, cwd=temporary, check=False, env=_offline_environment(),
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise SmokeError(f"could not execute character importer: {exc}") from exc
+    if (len(completed.stdout) > MAX_OUTPUT_BYTES or
+            len(completed.stderr) > MAX_OUTPUT_BYTES):
+        raise SmokeError("character importer emitted oversized output")
+    if not result_path.is_file() or result_path.is_symlink():
+        raise SmokeError("character importer did not write a regular result file")
+    result = _load_result(result_path)
+    expected_status = 0 if succeeds else 2
+    if completed.returncode != expected_status:
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise SmokeError(
+            f"character importer {arguments[0]!r} exited "
+            f"{completed.returncode}, expected {expected_status}: "
+            f"{detail or result.get('error', 'no diagnostic')}"
+        )
+    if result.get("ok") is not succeeds:
+        raise SmokeError(
+            f"character importer result success mismatch: {result!r}"
+        )
+    return result
+
+
+def _encoded(value: str) -> str:
+    return value.encode("utf-8").hex()
+
+
+def _digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _installed_snapshot(character_dir: Path) -> dict[str, str]:
+    """Fingerprint durable installed state, excluding launcher scratch files."""
+    return {
+        path.name: _digest(path)
+        for path in character_dir.iterdir()
+        if path.is_file() and not path.is_symlink()
+        and path.name not in {INDEX_NAME, RESULT_NAME}
+        and not path.name.startswith(".launcher-character-")
+    }
+
+
+def check(executable_path: Path, *, source_python: bool = False) -> None:
     if executable_path.is_symlink() or not executable_path.is_file():
         raise SmokeError("importer must be a regular, non-symlink file")
     executable = executable_path.resolve(strict=True)
+    command_prefix = (
+        [sys.executable, str(executable)] if source_python else [str(executable)]
+    )
     with tempfile.TemporaryDirectory(prefix="mdkr-frozen-importer-smoke.") as raw:
         temporary = Path(raw)
         character_dir = temporary / "player data"
@@ -64,28 +139,10 @@ def check(executable_path: Path) -> None:
         model.write_bytes(model_payload)
         result_path = character_dir / RESULT_NAME
         index_path = character_dir / INDEX_NAME
-        command = [
-            str(executable), "--directory", str(character_dir),
-            "--result-file", str(result_path), "write-raw-glb-index",
-            str(model), str(index_path),
-        ]
-        try:
-            completed = subprocess.run(
-                command, cwd=temporary, check=False,
-                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, timeout=30,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise SmokeError(f"could not execute frozen importer: {exc}") from exc
-        if (len(completed.stdout) > MAX_OUTPUT_BYTES or
-                len(completed.stderr) > MAX_OUTPUT_BYTES):
-            raise SmokeError("frozen importer emitted oversized output")
-        if completed.returncode != 0:
-            detail = completed.stderr.decode("utf-8", errors="replace").strip()
-            raise SmokeError(
-                f"frozen importer exited {completed.returncode}: {detail}"
-            )
-        result = _load_result(result_path)
+        result = _invoke(
+            command_prefix, character_dir, result_path, temporary,
+            ["write-raw-glb-index", str(model), str(index_path)],
+        )
         expected = {
             "ok": True,
             "schema": "mdkr-character-glb-intake-v2",
@@ -148,17 +205,213 @@ def check(executable_path: Path) -> None:
                 INDEX_NAME, RESULT_NAME]:
             raise SmokeError("raw inventory smoke published unexpected files")
 
+        # Prove the same shipped executable can complete the user-facing,
+        # source-only authoring lifecycle without its build tree or a network.
+        package_id = "org.mdkr.packaged-lifecycle"
+        license_file = temporary / "fixture LICENSE.txt"
+        license_payload = b"CC0-1.0 packaged lifecycle fixture\n"
+        license_file.write_bytes(license_payload)
+        model_before = _digest(model)
+        license_before = _digest(license_file)
+        built = _invoke(
+            command_prefix, character_dir, result_path, temporary,
+            [
+                "build-raw-glb", _encoded(str(model)),
+                _encoded(str(license_file)), _encoded(package_id),
+                _encoded("Packaged Lifecycle"), _encoded("CC0-1.0"),
+                _encoded("MDKR generated fixture"),
+                _encoded("https://example.invalid/packaged-lifecycle"),
+                _encoded("diddy"), _encoded("+z"), _encoded("idle"),
+                _encoded("root"), _encoded("head"), model_before, "7", "1.0",
+            ],
+        )
+        candidate = Path(str(built.get("candidate", "")))
+        if (
+            built.get("action") != "build-raw-glb-candidate"
+            or built.get("id") != package_id
+            or built.get("model_sha256") != model_before
+            or built.get("license_sha256") != license_before
+            or not isinstance(built.get("package_sha256"), str)
+            or len(built["package_sha256"]) != 64
+            or candidate.parent.resolve() != character_dir.resolve()
+            or candidate.is_symlink()
+            or not candidate.is_file()
+            or _digest(candidate) != built["package_sha256"]
+        ):
+            raise SmokeError("raw candidate build contract is malformed")
+
+        inspected = _invoke(
+            command_prefix, character_dir, result_path, temporary,
+            ["inspect", str(candidate)],
+        )
+        source_sha = inspected.get("source_sha256")
+        if (
+            inspected.get("action") != "inspect"
+            or inspected.get("id") != package_id
+            or inspected.get("portable") is not False
+            or source_sha != built["package_sha256"]
+        ):
+            raise SmokeError("candidate review contract is malformed")
+
+        installed = _invoke(
+            command_prefix, character_dir, result_path, temporary,
+            ["install-reviewed", str(candidate), source_sha, "absent"],
+        )
+        active_cache = character_dir / f"{package_id}.mdkc"
+        retained_source = character_dir / f"{package_id}.{source_sha}.mdkrchar"
+        provenance = character_dir / f"{package_id}.{source_sha}.json"
+        if (
+            installed.get("action") != "install-reviewed"
+            or installed.get("id") != package_id
+            or installed.get("source_sha256") != source_sha
+            or installed.get("enabled") is not True
+            or any(path.is_symlink() or not path.is_file() for path in (
+                active_cache, retained_source, provenance,
+            ))
+            or retained_source.read_bytes() != candidate.read_bytes()
+        ):
+            raise SmokeError("reviewed install contract is malformed")
+        cache_payload = active_cache.read_bytes()
+
+        listing = _invoke(
+            command_prefix, character_dir, result_path, temporary, ["list"],
+        )
+        entries = listing.get("entries")
+        if (
+            not isinstance(entries, list) or len(entries) != 1
+            or entries[0].get("id") != package_id
+            or entries[0].get("active") is not True
+            or entries[0].get("enabled") is not True
+            or entries[0].get("source_present") is not True
+        ):
+            raise SmokeError("installed character inventory is malformed")
+
+        disabled = _invoke(
+            command_prefix, character_dir, result_path, temporary,
+            ["disable", package_id],
+        )
+        disabled_cache = character_dir / f"{package_id}.mdkc.disabled"
+        if (
+            disabled.get("enabled") is not False
+            or disabled.get("id") != package_id
+            or active_cache.exists()
+            or disabled_cache.is_symlink()
+            or not disabled_cache.is_file()
+            or disabled_cache.read_bytes() != cache_payload
+        ):
+            raise SmokeError("disable transition did not preserve the cache")
+
+        rebuilt = _invoke(
+            command_prefix, character_dir, result_path, temporary,
+            ["rebuild", package_id],
+        )
+        if (
+            rebuilt.get("action") != "rebuild-current"
+            or rebuilt.get("id") != package_id
+            or rebuilt.get("rebuilt_source_sha256") != source_sha
+            or rebuilt.get("enabled") is not False
+            or active_cache.exists()
+            or disabled_cache.read_bytes() != cache_payload
+        ):
+            raise SmokeError("disabled rebuild contract is malformed")
+        installed_before_export = _installed_snapshot(character_dir)
+
+        portable = temporary / "portable export.mdkrchar"
+        exported = _invoke(
+            command_prefix, character_dir, result_path, temporary,
+            ["export-portable", package_id, source_sha, str(portable)],
+        )
+        if (
+            exported.get("action") != "export-portable-revision"
+            or exported.get("source_sha256") != source_sha
+            or portable.is_symlink()
+            or not portable.is_file()
+        ):
+            raise SmokeError("portable export contract is malformed")
+        portable_payload = portable.read_bytes()
+        portable_review = _invoke(
+            command_prefix, character_dir, result_path, temporary,
+            ["inspect", str(portable)],
+        )
+        if (
+            portable_review.get("id") != package_id
+            or portable_review.get("portable") is not True
+            or portable_review.get("compiled_sha256") !=
+                installed.get("compiled_sha256")
+            or portable_review.get("license_spdx") != "CC0-1.0"
+            or portable_review.get("attribution") !=
+                "MDKR generated fixture"
+            or portable_review.get("source_url") !=
+                "https://example.invalid/packaged-lifecycle"
+        ):
+            raise SmokeError("portable package did not pass independent review")
+
+        refused = _invoke(
+            command_prefix, character_dir, result_path, temporary,
+            ["export-portable", package_id, source_sha, str(portable)],
+            succeeds=False,
+        )
+        if (
+            "already exists" not in str(refused.get("error", ""))
+            or portable.read_bytes() != portable_payload
+            or _installed_snapshot(character_dir) != installed_before_export
+        ):
+            raise SmokeError(
+                "portable export mutated installed state or violated "
+                "no-overwrite safety"
+            )
+
+        enabled = _invoke(
+            command_prefix, character_dir, result_path, temporary,
+            ["enable", package_id],
+        )
+        if (
+            enabled.get("enabled") is not True
+            or enabled.get("id") != package_id
+            or disabled_cache.exists()
+            or active_cache.read_bytes() != cache_payload
+        ):
+            raise SmokeError("enable transition did not preserve the cache")
+
+        removed = _invoke(
+            command_prefix, character_dir, result_path, temporary,
+            ["remove", package_id],
+        )
+        expected_removed = {
+            active_cache.name, retained_source.name, provenance.name,
+        }
+        removed_files = removed.get("removed")
+        if (
+            removed.get("id") != package_id
+            or not isinstance(removed_files, list)
+            or set(removed_files) != expected_removed
+        ):
+            raise SmokeError("remove contract is malformed")
+        if any(
+            path.name == f"{package_id}.mdkc"
+            or path.name == f"{package_id}.mdkc.disabled"
+            or path.name.startswith(f"{package_id}.")
+            for path in character_dir.iterdir()
+        ):
+            raise SmokeError("remove left package-owned files behind")
+        if _digest(model) != model_before or _digest(license_file) != license_before:
+            raise SmokeError("authoring lifecycle mutated external source files")
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--source-python", action="store_true",
+        help="run the supplied source script with this Python interpreter",
+    )
     parser.add_argument("executable", type=Path)
     args = parser.parse_args(argv)
     try:
-        check(args.executable)
+        check(args.executable, source_python=args.source_python)
     except (OSError, SmokeError) as exc:
         print(f"frozen character importer smoke failed: {exc}", file=sys.stderr)
         return 2
-    print("frozen character importer raw-GLB smoke: PASS")
+    print("character importer offline lifecycle: PASS")
     return 0
 
 

@@ -428,6 +428,18 @@ Acceptance: a normal player can install a reviewed portable package without a
 development environment; an author can use external adapters without weakening
 the native trust boundary; multiplayer never disagrees about simulation.
 
+The release workflows now execute a complete network-independent lifecycle
+through both the freshly frozen and packaged importer on macOS, Windows, and
+Linux: raw inventory, source candidate build, independent review, optimistic
+clean install, inventory, disable, deterministic disabled rebuild, no-overwrite
+portable export plus independent review, re-enable, scoped removal, and exact
+external-source preservation. Common network routes are deliberately made
+unusable during the gate. The rendered launcher suite also covers a missing or
+untrusted importer with actionable repair guidance and a preserved resumable
+draft. Signed/notarized clean-machine launch, in-place application upgrade, and
+physical offline/device observation remain release qualification rather than
+unimplemented pipeline behavior.
+
 ### M8 — Human and device qualification (ongoing release gate)
 
 - Run observed first-use sessions with a finished package, a raw GLB, a nested
@@ -482,6 +494,8 @@ The immediate remaining order is therefore:
    transparency qualification, compressed textures, recorded simplification,
    and expanded material profiles); custom world-shadow casting/receiving,
    per-view primitive ordering, and projected LOD are complete;
-4. complete packaged cross-platform/offline/adapter/online contracts; and
+4. complete signed clean-machine/upgrade observation plus adapter/recipient/
+   online contracts; the frozen and packaged importer lifecycle is automated
+   on all three release operating systems; and
 5. run the observed human, controller/screen-reader, perceptual, and maintained
    multi-device qualification matrix in M8.

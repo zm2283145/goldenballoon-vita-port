@@ -150,6 +150,38 @@ def main() -> int:
                 model_b: hashlib.sha256(model_b.read_bytes()).hexdigest(),
             }
 
+            missing_importer = root / "missing-importer"
+            missing_importer.mkdir()
+            missing_shot = missing_importer / "missing-importer.bmp"
+            missing_environment = isolated_environment(
+                missing_importer, model, missing_shot,
+                compact=False, drop=True,
+            )
+            missing_environment["MDKR_CHARACTER_MANAGER"] = str(
+                missing_importer / "tools" / "character_importer"
+            )
+            run(
+                binary, missing_importer, missing_environment,
+                (
+                    "active-panel=Character Workshop",
+                    "character-importer-recovery missing_or_untrusted=1 "
+                    "draft_preserved=1 source_mutated=0",
+                ),
+            )
+            check_bmp(missing_shot, 1280, 720)
+            _, missing_rows = raw_inventory(missing_importer)
+            if (
+                hashlib.sha256(model.read_bytes()).hexdigest()
+                    != source_before[model]
+                or len(missing_rows) != 1
+                or row_text(missing_rows[0], 2) != str(model)
+                or any((missing_importer / "characters").iterdir())
+            ):
+                raise RuntimeError(
+                    "missing importer recovery did not preserve exactly one "
+                    "resumable source-path draft without installed state"
+                )
+
             guidance_cases = (
                 ("author-model.FBX", "FBX"),
                 ("author-model.obj", "OBJ"),
@@ -870,6 +902,7 @@ def main() -> int:
         return 1
     print("check_character_raw_intake_ui: PASS -- bounded DAE/ZIP conversion, "
           "ZIP-bomb, invalid-SPDX, and hostile-GLB refusal, "
+          "actionable missing-importer recovery, "
           "mutation-free FBX/OBJ/BLEND/glTF/USD/DCC export guidance, "
           "multi-draft GLB intake, "
           "same-source branching, source-bound mapping restore, exact "

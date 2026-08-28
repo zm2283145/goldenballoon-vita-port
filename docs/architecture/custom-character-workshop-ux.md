@@ -690,9 +690,14 @@ stories. Each has an owner in the audit above and must retain its stated gate:
    workflow remain performance follow-up. Projected-height thresholds and
    per-view hysteresis are complete; their explicit legacy-distance fallback
    remains part of the supported fail-visible contract.
-5. Bulk draft transfer, recipient compatibility/diff review, packaged
-   cross-platform/offline repair qualification, and online visual-package
-   negotiation remain downstream of a finalized portable sharing contract;
+5. Bulk draft transfer, recipient compatibility/diff review, signed
+   clean-machine/upgrade/offline observation, and online visual-package
+   negotiation remain downstream of a finalized portable sharing contract.
+   Every macOS, Windows, and Linux release workflow now runs raw intake through
+   review, clean install, disable/rebuild, no-overwrite portable export,
+   re-enable, and scoped removal through both its frozen and packaged importer
+   with common network routes disabled; the rendered launcher also proves
+   actionable missing/untrusted-importer recovery without source loss;
    third-party format adapters remain outside the trusted runtime until
    sandbox, signature, and update policy are explicit.
 6. Any future character-indexed game surface must still declare package,
@@ -722,13 +727,13 @@ an automated contract; it does not waive the named release qualification.
 
 | Story | Current closure | Residual release work |
 |---|---|---|
-| Install a finished package | Executable: inspect, rights-confirm, transactional install, enable, and assign | Cross-platform/offline packaged importer qualification |
+| Install a finished package | Executable: inspect, rights-confirm, transactional install, enable, and assign; every macOS/Windows/Linux release job exercises the frozen and packaged importer through the complete network-independent lifecycle | Signed/notarized clean-machine and physical offline observation |
 | Start from an artist model | Executable for GLB and one unambiguous DAE/ZIP conversion, with DCC-specific GLB guidance and resumable named drafts | Sandboxed/signed third-party adapter policy |
 | Correct scale, floor, facing, seating, and contacts | Executable with exact per-context previews, bounded measured starting points, direct/numeric controls, undo, stale-evidence invalidation, and settled residual-stability witnesses | Bespoke scene-owned boss/battle/cinematic witnesses only if presentation authority expands; authored pole only if the solver gains that contract |
 | Create recognizable identity everywhere | Executable for the currently audited select/HUD/results/rankings/minimap/collection surfaces and exact 40x40 Portrait Studio | Localization-aware shaping and ownership declarations for future surfaces |
 | Choose fair gameplay | Executable: donor simulation/audio/save/ghost/network authority is separate and visible | Separate hashed custom-gameplay system only if later desired |
 | Target real hardware | Executable for exact 1P-4P source/fit/LOD/device-bound evidence, projected-height LOD with per-view hysteresis, and honest local exceptions | Maintained device corpus, remaining renderer-tail features, and broader scenarios |
-| Update and recover work | Executable: async acknowledgement, named drafts, last-known-good revisions, transactional rebuild/install, and durable deletion cleanup | Packaged clean-install/upgrade/missing-tool/offline matrix on macOS, Windows, and Linux |
+| Update and recover work | Executable: async acknowledgement, named drafts, last-known-good revisions, transactional rebuild/install, durable deletion cleanup, packaged disable/rebuild/enable/remove gates on all release operating systems, and rendered actionable missing-importer recovery that preserves the source draft | Signed/notarized in-place upgrade and clean-machine repair observation on macOS, Windows, and Linux |
 | Share responsibly | Partially executable: no-overwrite portable export with authenticated source/runtime/license/provenance | Recipient diff/compatibility, bulk draft transfer, and online package negotiation/privacy |
 | Disable or delete safely | Executable: reversible disable plus scoped, journalled permanent removal that preserves the external source | Observed recovery qualification across supported platforms |
 
