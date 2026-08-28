@@ -84,6 +84,16 @@ BOUNDARY_WRITE_RE = re.compile(
 SET_CHEAT_RE = re.compile(
     r"(?<![=!<>])=(?!=)\s*(?:[^;]*\|\s*)?CHEAT_TWO_PLAYER_ADVENTURE\b"
 )
+# R15 disengage exception: a NATIVE_PORT Adventure Party adapter may DISENGAGE the
+# retail flag by assigning it literal FALSE/0 (the safe direction — a party session
+# clears the flag, it never engages it). This matches ONLY a whole-statement
+# `gIsInTwoPlayerAdventure = FALSE;` / `= 0;`. A plain `=` (not `|=` etc.), only
+# gIsInTwoPlayerAdventure (never gTwoPlayerAdvRace), and only the literals FALSE/0 —
+# so TRUE, 1, a nonzero literal, or any computed expression still fails, as does any
+# write inside platform/adventure_party/** (that module must never touch the flag).
+DISENGAGE_WRITE_RE = re.compile(
+    r"^\s*gIsInTwoPlayerAdventure\s*=\s*(?:FALSE|0)\s*;\s*$"
+)
 
 # --- Rules 3-5. ---
 AUTH_COUNT_RE = re.compile(r"\bmdkr_authoritative_player_count\b")
@@ -289,6 +299,12 @@ def rule2_party_writes(sources: dict[str, str]) -> list[str]:
                 continue
             near_party = any(abs(i - j) <= PROXIMITY_LINES for j in party_lines)
             if flags[i] and near_party:
+                # R15: permit ONLY a literal-FALSE/0 disengage of
+                # gIsInTwoPlayerAdventure inside the adapter region; every other
+                # write (TRUE, nonzero, computed, or any gTwoPlayerAdvRace / cheat
+                # set) still fails.
+                if DISENGAGE_WRITE_RE.match(line) and not SET_CHEAT_RE.search(line):
+                    continue
                 failures.append(
                     f"{path}:{i + 1}: NATIVE_PORT adventure-party adapter sets a "
                     f"retail 2P boundary flag/cheat: {line.strip()}"
@@ -415,6 +431,44 @@ def run_self_tests(
     clean("rule2-native-noparty-clean", rule2_party_writes(
         {"game/src/game.c":
          "#ifdef NATIVE_PORT\n    gTwoPlayerAdvRace = TRUE;\n#endif\n"}))
+
+    # Rule 2 — R15 disengage exception. A literal-FALSE write to
+    # gIsInTwoPlayerAdventure inside a NATIVE_PORT party adapter is PERMITTED (the
+    # safe clear direction); TRUE and a computed expression each still FAIL.
+    clean("rule2-disengage-false", rule2_party_writes(
+        {"game/src/menu.c":
+         "#ifdef NATIVE_PORT\n"
+         "    if (adventure_party_menu_admits()) {\n"
+         "        gIsInTwoPlayerAdventure = FALSE;\n"
+         "    }\n"
+         "#endif\n"}))
+    fires("rule2-disengage-true", rule2_party_writes(
+        {"game/src/menu.c":
+         "#ifdef NATIVE_PORT\n"
+         "    if (adventure_party_menu_admits()) {\n"
+         "        gIsInTwoPlayerAdventure = TRUE;\n"
+         "    }\n"
+         "#endif\n"}))
+    fires("rule2-disengage-expr", rule2_party_writes(
+        {"game/src/menu.c":
+         "#ifdef NATIVE_PORT\n"
+         "    if (adventure_party_menu_admits()) {\n"
+         "        gIsInTwoPlayerAdventure = (gNumberOfActivePlayers == 2);\n"
+         "    }\n"
+         "#endif\n"}))
+    # The disengage exception is gIsInTwoPlayerAdventure-only: gTwoPlayerAdvRace
+    # may never be written from a party adapter, not even to FALSE.
+    fires("rule2-disengage-other-flag", rule2_party_writes(
+        {"game/src/menu.c":
+         "#ifdef NATIVE_PORT\n"
+         "    if (adventure_party_menu_admits()) {\n"
+         "        gTwoPlayerAdvRace = FALSE;\n"
+         "    }\n"
+         "#endif\n"}))
+    # And it does not license platform/adventure_party/** to touch the flag at all.
+    fires("rule2-disengage-party-dir", rule2_party_writes(
+        {"platform/adventure_party/adventure_party_state.c":
+         "void f(void) { gIsInTwoPlayerAdventure = FALSE; }\n"}))
 
     # Rule 3 — party reference vs the legitimate game/src reference.
     fires("rule3-party-ref", rule3_authoritative_count(

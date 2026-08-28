@@ -10542,13 +10542,20 @@ s32 menu_file_select_loop(s32 updateRate) {
         }
 #if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
         if (adventure_party_menu_admits()) {
-            /* Enhancements.AdventureParty owns 2-4 Adventure admission, so the
-             * retail two-player record below must NOT run: a party session never
-             * sets gIsInTwoPlayerAdventure (the compatibility invariant). An
-             * existing save forms the session here (FORM + RESUME_SAVE); a new
-             * file keeps the stock 1P path — the new-game shared-scene envelope
-             * is AP-11. gNumberOfActivePlayers still collapses to 1 below exactly
-             * as retail does; the campaign load protocol is unchanged. */
+            /* Enhancements.AdventureParty owns 2-4 Adventure admission. Retail's
+             * unconditional assignment (the else below) also CLEARS a stale flag;
+             * the party arm skips that assignment, so it must disengage itself.
+             * Force the retail two-player record OFF — literal FALSE, the
+             * disengage direction only — so a stale gIsInTwoPlayerAdventure (e.g.
+             * from a prior JOINTVENTURE 2P that quit to title, the row being
+             * SCOPE_LIVE) can never leak into a party session and reach
+             * reset_lead_player_index() or the retail-2P consumers below. A party
+             * session never SETS the flag; this only ever clears it (R15). An
+             * existing save then forms the session here (FORM + RESUME_SAVE); a
+             * new file keeps the stock 1P path — the new-game shared-scene
+             * envelope is AP-11. gNumberOfActivePlayers still collapses to 1 below
+             * exactly as retail; the campaign load protocol is unchanged. */
+            gIsInTwoPlayerAdventure = FALSE;
             if (!settings->newGame) {
                 adventure_party_menu_begin_session();
             }

@@ -94,6 +94,20 @@ CONFIG_OFFSET = 120
 RECORD_OFFSETS = (128, 320)
 RECORD_BYTES = 192
 
+# Expected FORM roster: the exact donor character identity (voice ID) each seat
+# records, derived from the fixed cursor selections the adventure_party_{N}p_admit
+# scripts confirm. Seat 0 is the host (player one), who starts on Diddy (voice ID
+# 9); each joined pad lands deterministically on the next grid character it is
+# offered. Captured from the FORM roster trace and reproduced here so a FORM
+# adapter that recorded, say, every seat as 0 would FAIL rather than pass on a
+# seat-key-only check. If Character Select layout/defaults change, re-derive these
+# from the aparty_roster line (n= mask= c<seat>=<voice>).
+EXPECTED_CHARACTERS = {
+    2: {0: 9, 1: 0},
+    3: {0: 9, 1: 0, 2: 1},
+    4: {0: 9, 1: 0, 2: 1, 3: 5},
+}
+
 
 @dataclass(frozen=True)
 class SessionLine:
@@ -278,6 +292,12 @@ def check_on_arm(output: str, players: int) -> list[str]:
             failures.append(
                 f"{label}: roster seats {sorted(r.characters)}, expected "
                 f"{list(range(players))} (dense from host seat 0)")
+        expected_chars = EXPECTED_CHARACTERS[players]
+        if r.characters != expected_chars:
+            failures.append(
+                f"{label}: roster characters {r.characters}, expected "
+                f"{expected_chars} (exact donor identity per seat, host seat 0 = "
+                f"Diddy/9)")
 
     # The campaign actually loads after file entry (the session is ACTIVE_LOBBY).
     load_frames = [int(m.group(3)) for m in LEVEL_RE.finditer(output)]

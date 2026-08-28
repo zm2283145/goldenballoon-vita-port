@@ -441,6 +441,17 @@
     },
     {
       "file": "game/src/menu.c",
+      "line": "gIsInTwoPlayerAdventure = FALSE;",
+      "count": 1,
+      "kinds": [
+        "gIsInTwoPlayerAdventure"
+      ],
+      "classification": "adventure-party-disengage",
+      "treatment": "adapter-seam",
+      "note": "AP-06 (R15): the party session-creation arm forces the retail 2P flag OFF (literal FALSE, disengage direction only) so a stale gIsInTwoPlayerAdventure from a prior JOINTVENTURE 2P cannot leak into a party session and reach reset_lead_player_index() / the retail-2P consumers. Retail relied on the unconditional else assignment below to clear it; the party arm skips the else, so it disengages itself. Scanner rule 2 permits ONLY this literal-FALSE write in a party adapter; TRUE/nonzero/computed still fail, and a party session never SETS the flag."
+    },
+    {
+      "file": "game/src/menu.c",
       "line": "gIsInTwoPlayerAdventure = (gNumberOfActivePlayers == 2);",
       "count": 1,
       "kinds": [
