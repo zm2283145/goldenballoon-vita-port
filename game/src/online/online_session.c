@@ -37,6 +37,7 @@
 #include "online/online_race_boot.h"   /* PD-T4 direct race boot (extracted) */
 #include "online/online_results.h"     /* PD-T5 native RESULTS/STANDINGS phase */
 #include "online/online_ceremony.h"    /* PD-T6f native champion CEREMONY phase */
+#include "online/online_standings.h"   /* I-1: capture the final ranking (shared sort) */
 
 /* The engine's live game-mode selector. Defined (external linkage) in
  * thread3_main.c; no shared header declares it, so the session declares the
@@ -166,6 +167,15 @@ typedef struct MdkrOnlineSessionState {
      * instant a remote reappears (or the room leaves LOBBY). On a sustained absence
      * the session notes LEFT + exits. Inert for a descriptor-first begin. */
     u16 remoteAbsentTicks;
+    /* I-1: the COMPLETE final ranking captured at the final standings while BOTH
+     * seats were present (via the shared mdkr_online_standings_compute), and a
+     * latch that a capture happened. Re-captured every final-standings tick that
+     * still seats both players, so it always holds the last-known-good full
+     * ordering. Handed to mdkr_online_ceremony_enter on the RESULTS->CEREMONY
+     * transition so a host that disconnects during the dwell cannot make the
+     * ceremony re-crown the surviving joiner from a 1-seat live snapshot. */
+    MdkrOnlineStandings finalRanking;
+    u8 finalRankingCaptured;
 } MdkrOnlineSessionState;
 
 /* Session-owned state -- deliberately NOT any offline global. */
@@ -1289,6 +1299,28 @@ void mdkr_online_session_tick(s32 updateRate) {
             online_session_descless_wallclock_arm();
         }
         r = mdkr_online_results_tick(updateRate);
+        /* I-1: while the FINAL standings are shown with BOTH seats still present,
+         * (re)capture the COMPLETE ranking with the SAME shared sort the STANDINGS
+         * render runs (DRY). The champion CEREMONY celebrates THIS captured winner
+         * rather than recomputing from a live snapshot that may have lost the host
+         * seat to a genuine disconnect during the ~10s dwell -- so a departed host
+         * can never re-crown the surviving (possibly losing) joiner from a 1-seat
+         * snapshot. Recomputing each 2-seat tick is cheap and always keeps the
+         * freshest last-known-good ordering; the LAST such capture (both present)
+         * is what the RESULTS->CEREMONY transition below hands to the ceremony. */
+        if (sOnlineSession.resultsIsFinal) {
+            MdkrPartyLinkSnapshot fsnap;
+            if (mdkr_party_link_read(&fsnap) &&
+                online_session_snapshot_has_local_seat(&fsnap) &&
+                online_session_snapshot_has_remote_seat(&fsnap)) {
+                MdkrOnlineStandings ranked;
+                mdkr_online_standings_compute(&fsnap, true, &ranked);
+                if (ranked.count >= 2u) {
+                    sOnlineSession.finalRanking = ranked;
+                    sOnlineSession.finalRankingCaptured = 1u;
+                }
+            }
+        }
         /* PD-T6h2c (Minor-A): bound the RESULTS hold. The results screen returns STAY
          * during both its countdown and the post-commit REMATCH-convergence hold; the
          * wall-clock deadline (armed at enter) covers both. On a non-final race a wedge
@@ -1379,10 +1411,20 @@ void mdkr_online_session_tick(s32 updateRate) {
                  * The FINISHED note + platform_request_exit(0) below moved INTACT
                  * into the CEREMONY case, so it still fires EXACTLY ONCE (with the
                  * same reason/result the launcher reads) once the celebration ends.
-                 * The ceremony reads the champion from the SAME snapshot + sort the
-                 * final STANDINGS just showed. */
+                 * The ceremony crowns the ranking CAPTURED above (the SAME shared
+                 * sort the final STANDINGS showed, while both seats were present),
+                 * so its champion agrees with the standings even if the winner's
+                 * seat then departs (I-1). */
                 sOnlineSession.phase = MDKR_ONLINE_SESSION_CEREMONY;
-                mdkr_online_ceremony_enter();
+                /* I-1: hand the ceremony the ranking captured while both seats
+                 * were present. If nothing was captured (a disconnect so early the
+                 * final standings never latched with two present), pass NULL and the
+                 * ceremony falls back to a live compute (and refuses to crown a lone
+                 * survivor). */
+                mdkr_online_ceremony_enter(
+                    sOnlineSession.finalRankingCaptured
+                        ? &sOnlineSession.finalRanking
+                        : NULL);
                 fprintf(stderr,
                         "[online-session] phase=CEREMONY: final standings A:FINISH "
                         "-> champion celebration (FINISHED deferred until it "

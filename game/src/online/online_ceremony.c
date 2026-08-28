@@ -129,6 +129,31 @@ static u32 sWitnessKey = 0xFFFFFFFFu;
 /* ---- forward decls (test seams at the bottom) ----------------------------- */
 static u8 ceremony_skip_active(void);
 static u8 ceremony_vacate_forced(void);
+static u8 ceremony_remote_absent_forced(void);
+
+/* Read the party_link snapshot for the ceremony. Normally a straight
+ * mdkr_party_link_read; with the remote-absent seam armed it additionally DROPS
+ * every occupied non-local seat, so the LIVE snapshot the ceremony reads is
+ * genuinely seat-absent -- standing in for a real host disconnect at ceremony
+ * enter, which no loopback rig can cheaply stage. This exercises the REAL
+ * downstream condition (the champion resolution over a snapshot that has lost the
+ * winner's seat), unlike a seam that only feeds a predicate the shipped code never
+ * reaches. Inert unless the env is set. */
+static bool ceremony_read_snapshot(MdkrPartyLinkSnapshot *snap) {
+    bool haveSnap = mdkr_party_link_read(snap);
+    if (haveSnap && ceremony_remote_absent_forced()) {
+        unsigned i;
+        for (i = 0u; i < MDKR_PARTY_LINK_SEATS; i++) {
+            if (snap->seats[i].occupied && !snap->seats[i].is_local) {
+                snap->seats[i].occupied = 0u;
+                snap->seats[i].connected = 0u;
+                snap->seats[i].character_id = 0xFFu; /* no name / no portrait */
+                snap->seats[i].name[0] = '\0';
+            }
+        }
+    }
+    return haveSnap;
+}
 
 /* ======================================================================== *
  * Small helpers
@@ -308,9 +333,11 @@ static void ceremony_witness(void) {
 /* ======================================================================== *
  * Lifecycle
  * ======================================================================== */
-void mdkr_online_ceremony_enter(void) {
+void mdkr_online_ceremony_enter(const MdkrOnlineStandings *finalRanking) {
     MdkrPartyLinkSnapshot snap;
     bool haveSnap;
+    bool useCaptured;
+    bool crown;
     s32 localSeat;
     char name[32];
 
@@ -319,15 +346,39 @@ void mdkr_online_ceremony_enter(void) {
     sCer.champChar = 0xFFu;
     sWitnessKey = 0xFFFFFFFFu;
 
-    /* Resolve the champion from the SAME snapshot + the SAME sort the RESULTS
-     * STANDINGS ran, so the two screens can never disagree about who won. */
-    haveSnap = mdkr_party_link_read(&snap);
+    /* The local seat identity is stable even after the remote leaves (this
+     * endpoint has not departed), so resolve it from the live snapshot for the
+     * champLocal / host affordance either way. */
+    haveSnap = ceremony_read_snapshot(&snap);
     localSeat = haveSnap ? ceremony_local_seat(&snap) : -1;
-    mdkr_online_standings_compute(&snap, haveSnap, &sCer.st);
-    if (sCer.st.count > 0u) {
+
+    /* Prefer the ranking the session CAPTURED at the final standings while BOTH
+     * seats were present (the SAME sort the STANDINGS screen ran, so the two
+     * screens can never disagree). Only when nothing was captured -- a disconnect
+     * so early the final standings never latched with two present -- fall back to
+     * a live compute from the current snapshot. */
+    useCaptured = (finalRanking != NULL && finalRanking->count > 0u);
+    if (useCaptured) {
+        sCer.st = *finalRanking;
+    } else {
+        mdkr_online_standings_compute(&snap, haveSnap, &sCer.st);
+    }
+
+    /* Crown the captured winner directly. In the FALLBACK live path only, refuse
+     * to crown a lone survivor: if fewer than two seats remain, the winner the
+     * human saw was never latched, so render an honest neutral screen instead of
+     * declaring whoever is left the champion. */
+    crown = (sCer.st.count > 0u) && (useCaptured || sCer.st.count >= 2u);
+    if (crown) {
         sCer.champSeat = sCer.st.order[0];
         sCer.champPoints = sCer.st.points[0];
+        /* champChar is resolved from the live snapshot's captured seat only when
+         * that seat is still occupied. On a real disconnect the champion (host)
+         * seat is gone, so no portrait is drawn -- honest, and it never draws a
+         * different racer's face. On the happy path the seat is present, so this
+         * is byte-identical to the prior resolution. */
         if (haveSnap && sCer.champSeat < MDKR_PARTY_LINK_SEATS &&
+            snap.seats[sCer.champSeat].occupied &&
             snap.seats[sCer.champSeat].character_id < CER_CHAR_COUNT) {
             sCer.champChar = snap.seats[sCer.champSeat].character_id;
         }
@@ -358,10 +409,10 @@ void mdkr_online_ceremony_enter(void) {
     }
     fprintf(stderr,
             "[online-ceremony] enter: champion seat=%u name=%.12s points=%u "
-            "seats=%u (native cup celebration; offline trophy cinematic "
+            "seats=%u local=%u (native cup celebration; offline trophy cinematic "
             "bypassed)\n",
             (unsigned) sCer.champSeat, name, (unsigned) sCer.champPoints,
-            (unsigned) sCer.st.count);
+            (unsigned) sCer.st.count, (unsigned) sCer.champLocal);
 }
 
 void mdkr_online_ceremony_exit(void) {
@@ -386,7 +437,7 @@ MdkrOnlineCeremonyResult mdkr_online_ceremony_tick(s32 updateRate) {
         updateRate = 1;
     }
 
-    haveSnap = mdkr_party_link_read(&snap);
+    haveSnap = ceremony_read_snapshot(&snap);
     localSeat = haveSnap ? ceremony_local_seat(&snap) : -1;
     /* A feed-less endpoint owns its own progression (host); with a feed present be
      * the host only if the resolved local seat is the leader. The host may skip
@@ -495,6 +546,23 @@ static u8 ceremony_vacate_forced(void) {
         sVacateForced = (e != NULL && e[0] != '\0') ? 1 : 0;
     }
     return (u8) (sVacateForced > 0 ? 1 : 0);
+}
+
+/* Forced REMOTE-ABSENT (env MDKR_TEST_ONLINE_CEREMONY_REMOTE_ABSENT): drop the
+ * remote (non-local) seats from the snapshot the CEREMONY reads (see
+ * ceremony_read_snapshot), so the champion resolution runs over a genuinely
+ * seat-absent live snapshot -- the real downstream effect of a host disconnect at
+ * ceremony enter. Unlike the VACATE seam (which only forces the mid-ceremony
+ * detector's "remote gone" predicate), this makes the seat ACTUALLY absent, so it
+ * proves the champion is taken from the CAPTURED final ranking rather than a
+ * degraded live recompute (I-1). Off in every normal run. */
+static s8 sRemoteAbsentForced = -1;
+static u8 ceremony_remote_absent_forced(void) {
+    if (sRemoteAbsentForced < 0) {
+        const char *e = getenv("MDKR_TEST_ONLINE_CEREMONY_REMOTE_ABSENT");
+        sRemoteAbsentForced = (e != NULL && e[0] != '\0') ? 1 : 0;
+    }
+    return (u8) (sRemoteAbsentForced > 0 ? 1 : 0);
 }
 
 u8 mdkr_online_ceremony_test_active(void) {

@@ -30,6 +30,7 @@
 #if MDKR_ENABLE_ONLINE_BETA
 
 #include "types.h"
+#include "online/online_standings.h" /* MdkrOnlineStandings: the captured final ranking */
 
 #ifdef __cplusplus
 extern "C" {
@@ -43,11 +44,27 @@ typedef enum MdkrOnlineCeremonyResult {
 } MdkrOnlineCeremonyResult;
 
 /* Load the screen's borrowed game assets (portraits + fonts) and reset the local
- * screen state. Reads the party_link snapshot ONCE here + runs the shared
- * standings sort (online_standings.h) to resolve the champion (order[0]), so the
- * ceremony's winner always agrees with the STANDINGS the RESULTS screen showed.
- * Symmetric with _exit(). */
-void mdkr_online_ceremony_enter(void);
+ * screen state, then resolve the champion the celebration crowns. Symmetric with
+ * _exit().
+ *
+ * `finalRanking` is the COMPLETE ranking the session CAPTURED at the final
+ * standings while BOTH seats were still present (online_session.c, via the shared
+ * mdkr_online_standings_compute). When it is non-NULL with count >= 1 the ceremony
+ * crowns THAT winner directly (order[0]) -- NOT a fresh recompute from the live
+ * party_link snapshot. This is the load-bearing robustness: on a genuine host
+ * disconnect during the final-standings dwell the live snapshot loses the host
+ * seat, so a recompute would rank only the lone survivor and mis-crown the
+ * (possibly LOSING) joiner; the captured ranking is the winner the human actually
+ * saw, so the two screens can never disagree even across a departure.
+ *
+ * Pass NULL only when nothing was captured (a disconnect so early the final
+ * standings never latched with both present -- a pre-existing degraded case): the
+ * ceremony falls back to a live compute, and if THAT yields fewer than two seats
+ * it renders an honest neutral "cup complete" rather than crowning a lone
+ * survivor. On the connected happy path the captured ranking equals what a live
+ * compute at enter would produce, so the crowned champion and every witness lane
+ * are byte-behaviour-unchanged. */
+void mdkr_online_ceremony_enter(const MdkrOnlineStandings *finalRanking);
 
 /* Free the borrowed portrait assets and fonts (mirrors online_results_exit).
  * Safe to call more than once (guarded), so a vacate-trip exit + the normal exit
