@@ -3482,6 +3482,75 @@ static s32 scene_camera_obstruction_opacity(const Object *obj) {
     return scene_camera_obstruction_clamp(obj, obj->opacity);
 }
 
+#if MDKR_ENABLE_ONLINE_BETA
+/* The blend pass's own visible/opacity derivation (tracks.c, transparent pass),
+ * recomputed against a given opacity so the online fix can refresh BOTH halves of
+ * the route -- the render opacity AND the visible render gate -- for THIS viewport
+ * without re-reading the pre-check value. Kept byte-for-byte in step with the
+ * inline derivation it mirrors; beta-only, so the OFF blend pass is untouched. It
+ * deliberately does NOT re-evaluate the visible<255 pass-selection gate (that
+ * staleness is out of scope): it only recomputes the stored value. */
+static s32 scene_blend_route_visible(const Object *obj, s32 objFlags,
+                                     s32 visibleFlags, s32 opacity) {
+    s32 visible = 255;
+    if (objFlags & OBJ_FLAGS_UNK_0080) {
+        visible = 1;
+    } else if (!(objFlags & OBJ_FLAGS_PARTICLE)) {
+        visible = opacity;
+    }
+    if (objFlags & visibleFlags) {
+        visible = 0;
+    }
+    if (obj->behaviorId == BHV_RACER && visible >= 255) {
+        visible = 0;
+    }
+    if (obj->behaviorId == BHV_RACER && opacity < 255) {
+        visible = opacity;
+    }
+    return visible;
+}
+
+/* Translucent-pickup discriminator (env MDKR_TEST_ROUTE_OPACITY_WITNESS; NOT
+ * roster-gated, so a beta build can observe it OFFLINE 2P too). Reports every
+ * default-arm pickup (weapon balloon / banana) reaching a viewport route store,
+ * tagging STALE when the value about to be cached differs -- in EITHER direction
+ * -- from what check_if_in_draw_range just wrote for THIS viewport. Two-directional
+ * and over BOTH the render opacity and the visible render gate, so a stale fully-
+ * opaque cache (holds opaque when the fresh value fades) and a stale invisible
+ * cache (holds gate=0 when the fresh value renders) are both caught. Throttled. */
+static s32 mdkr_route_opacity_witness_enabled(void) {
+    static s32 state = -1;
+    if (state < 0) {
+        const char *v = getenv("MDKR_TEST_ROUTE_OPACITY_WITNESS");
+        state = (v != NULL && v[0] != '\0' && v[0] != '0') ? 1 : 0;
+    }
+    return state;
+}
+
+static void mdkr_route_opacity_witness(const Object *obj, s32 storedOpacity,
+                                       s32 storedVisible, s32 freshOpacity,
+                                       s32 freshVisible) {
+    static s32 fired;
+    s32 stale;
+    if (!mdkr_route_opacity_witness_enabled() || obj == NULL) {
+        return;
+    }
+    if (obj->behaviorId != BHV_WEAPON_BALLOON && obj->behaviorId != BHV_BANANA) {
+        return;
+    }
+    if (fired >= 256) {
+        return;
+    }
+    fired++;
+    stale = (storedOpacity != freshOpacity) || (storedVisible != freshVisible);
+    fprintf(stderr,
+            "[route-opacity-witness] pickup behavior=%d storedOpacity=%d "
+            "freshOpacity=%d storedVisible=%d freshVisible=%d%s\n",
+            (s32) obj->behaviorId, storedOpacity, freshOpacity, storedVisible,
+            freshVisible, stale ? " STALE" : "");
+}
+#endif
+
 static void scene_viewport_route_store(
     Object *obj, MdkrViewportRoutePass pass, s32 opacity, s32 visible) {
     s32 viewport = get_current_viewport();
@@ -3740,6 +3809,23 @@ void scene_authoritative_render_tick(s32 updateRate) {
             if (visible == 255 && check_if_in_draw_range(obj) &&
                 (sTickObjectsVisible[obj->segmentID + 1] ||
                  obj->unk34 > 1000.0)) {
+#if MDKR_ENABLE_ONLINE_BETA
+                {
+                    /* Mirror of the blend-pass fix for the opaque route: the
+                     * pre-check objectOpacity that gated admission (visible==255)
+                     * may still hold another canonical seat's fully-opaque value,
+                     * while check_if_in_draw_range just wrote THIS viewport's fade.
+                     * Cache the fresh opacity. The opaque route's visible is a pure
+                     * admission flag (255) the opaque draw does not gate on at the
+                     * authored draw distance, so only the opacity needs refreshing. */
+                    s32 freshOpacity = scene_camera_obstruction_opacity(obj);
+                    if (mdkr_net_roster_runtime_active()) {
+                        objectOpacity = freshOpacity;
+                    }
+                    mdkr_route_opacity_witness(obj, objectOpacity, visible,
+                                               freshOpacity, visible);
+                }
+#endif
                 scene_viewport_route_store(
                     obj, MDKR_VIEWPORT_ROUTE_OPAQUE,
                     objectOpacity, visible);
@@ -3802,6 +3888,28 @@ void scene_authoritative_render_tick(s32 updateRate) {
                     obj->opacity = 64;
                     objectOpacity = 64;
                 }
+#if MDKR_ENABLE_ONLINE_BETA
+                {
+                    /* Retail drew blend-pass objects with the opacity AND the render
+                     * gate check_if_in_draw_range just wrote for THIS viewport, not
+                     * the pre-check values that may still hold another canonical
+                     * seat's distance fade -- which otherwise renders a local pickup
+                     * translucent (stale opacity) or, in the extreme band, fully
+                     * invisible (stale visible==0 gates the draw off). Refresh both.
+                     * The route cache is presentation-only; the visible<255 pass-
+                     * selection gate above is intentionally left on the pre-check
+                     * value (that staleness is out of scope). */
+                    s32 freshOpacity = scene_camera_obstruction_opacity(obj);
+                    s32 freshVisible = scene_blend_route_visible(
+                        obj, objFlags, visibleFlags, freshOpacity);
+                    if (mdkr_net_roster_runtime_active()) {
+                        objectOpacity = freshOpacity;
+                        visible = freshVisible;
+                    }
+                    mdkr_route_opacity_witness(obj, objectOpacity, visible,
+                                               freshOpacity, freshVisible);
+                }
+#endif
                 scene_viewport_route_store(
                     obj, MDKR_VIEWPORT_ROUTE_BLEND,
                     objectOpacity, visible);

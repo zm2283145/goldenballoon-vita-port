@@ -79,6 +79,22 @@ JOINER_FOLLOW_RE = re.compile(
     re.MULTILINE)
 JOINER_DEPART_RE = re.compile(
     r"^\[online-results\] test-reducer: joiner-mirror feed departed", re.MULTILINE)
+# The removed blind bailout: the joiner mirror ending its own session on a 10s
+# dwell (or a stray press) while the host is merely deliberating.
+JOINER_DWELL_LEAVE_RE = re.compile(
+    r"^\[online-results\] chooser: joiner terminal \((?:press|dwell)\) -> LEAVE$",
+    re.MULTILINE)
+# Positive control: the mirror survived past the old dwell threshold, host present.
+JOINER_HELD_RE = re.compile(
+    r"^\[online-results\] chooser: joiner mirror still up past dwell "
+    r"\(units=(\d+)\)$", re.MULTILINE)
+# The stand-in host seat leaving, and the mirror's own vanished-host exit.
+JOINER_SEAT_VACATED_RE = re.compile(
+    r"^\[online-results\] test-reducer: joiner-mirror host seat vacated",
+    re.MULTILINE)
+JOINER_VACATE_LEAVE_RE = re.compile(
+    r"^\[online-results\] chooser: joiner mirror host vacated -> LEAVE$",
+    re.MULTILINE)
 SESSION_ROUTE_RE = re.compile(
     r"^\[online-session\] results -> (.+?) \(chooser: (.+?)\)", re.MULTILINE)
 PHASE_CEREMONY_RE = re.compile(
@@ -283,6 +299,78 @@ def check_joiner(binary, rom, verbose) -> int | None:
     return None
 
 
+def check_joiner_hold(binary, rom, verbose) -> int | None:
+    """The joiner mirror must NOT bail on a blind countdown while the host is only
+    deliberating. Hold the stand-in feed in RESULTS (host present) well past the old
+    600-unit (10s) dwell and require the mirror to stay up: no joiner-terminal
+    (dwell/press) LEAVE, while proving it actually crossed that dwell point."""
+    tag = "joiner-hold"
+    try:
+        rc, output = run(binary, rom, "joiner-hold", 12000, 500, verbose)
+    except subprocess.TimeoutExpired as error:
+        return fail(f"[{tag}] engine run timed out: {error}")
+    if rc != 0:
+        return fail(f"[{tag}] process exited {rc}", output)
+    guard = _isolation_ok(tag, output)
+    if guard is not None:
+        return guard
+    mirror = [m for m in CHOOSER_RENDER_RE.finditer(output)
+              if int(m.group(3)) == 1]
+    if not mirror:
+        return fail(f"[{tag}] the joiner never rendered the display-only mirror",
+                    output)
+    if JOINER_DWELL_LEAVE_RE.search(output):
+        return fail(f"[{tag}] the joiner mirror still bailed on the blind terminal "
+                    f"dwell/press while the host was present -- the 10s countdown "
+                    f"must no longer end the joiner's session", output)
+    # Assert on REAL behavior, not just the absence of the tombstoned log line: the
+    # host is present throughout, so the mirror must not have LEFT via ANY path --
+    # no champion CEREMONY, no FINISHED handshake, no platform session-end request.
+    if PHASE_CEREMONY_RE.search(output):
+        return fail(f"[{tag}] the mirror ended into the champion CEREMONY while the "
+                    f"host was still present (a premature leave by some path)",
+                    output)
+    if FINISHED_ENGINE_RE.search(output):
+        return fail(f"[{tag}] the session FINISHED while the host was still present "
+                    f"-- the mirror must keep waiting, not end", output)
+    if POSTRACE_EXIT in output:
+        return fail(f"[{tag}] a platform session-end was requested while the host "
+                    f"was still present", output)
+    held = JOINER_HELD_RE.search(output)
+    if not held:
+        return fail(f"[{tag}] the mirror never crossed the old dwell threshold, so "
+                    f"the hold scenario did not exercise the fix (positive control)",
+                    output)
+    return None
+
+
+def check_joiner_vacate(binary, rom, verbose) -> int | None:
+    """Negative control: a genuinely vanished host (the sole remote seat leaves while
+    the feed stays in RESULTS) MUST still end the joiner's session. The MORE-RACES
+    chooser fronts at the tournament FINAL standings, where the online_session
+    RESULTS remote-vacate detector is gated off (!resultsIsFinal), so the mirror
+    carries its own debounced vanished-host exit."""
+    tag = "joiner-vacate"
+    try:
+        rc, output = run(binary, rom, "joiner-vacate", 12000, 500, verbose)
+    except subprocess.TimeoutExpired as error:
+        return fail(f"[{tag}] engine run timed out (the vanished-host exit never "
+                    f"fired -- a reintroduced hang?): {error}")
+    if rc != 0:
+        return fail(f"[{tag}] process exited {rc}", output)
+    guard = _isolation_ok(tag, output)
+    if guard is not None:
+        return guard
+    if not JOINER_SEAT_VACATED_RE.search(output):
+        return fail(f"[{tag}] the host seat never vacated -- the control did not "
+                    f"stage a vanished host", output)
+    if not JOINER_VACATE_LEAVE_RE.search(output):
+        return fail(f"[{tag}] the joiner mirror did not end the session on the "
+                    f"vanished host (a reintroduced hang without the old dwell)",
+                    output)
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", default="build-beta")
@@ -320,7 +408,8 @@ def main() -> int:
         if err is not None:
             return err
 
-    for scenario in (check_race_again, check_finish, check_joiner):
+    for scenario in (check_race_again, check_finish, check_joiner,
+                     check_joiner_hold, check_joiner_vacate):
         err = scenario(binary, rom, args.verbose)
         if err is not None:
             return err

@@ -77,16 +77,6 @@
  * rather than by editing menu.c. */
 extern char *gRacePlacementsArray[8];
 
-/* The engine's live frame-dump directory (platform_os.h; set by --dump-frames on
- * the automation path). The native online screens are reached ONLY on the
- * INTERACTIVE launcher/autoplay path (the resident soak), where --dump-frames
- * cannot be passed, so the T4 chooser "show" seam ARMS this global from an env dir
- * (MDKR_TEST_ONLINE_RESULTS_CHOOSER_SHOT) once the chooser fronts -- reusing the
- * existing engine capture to produce the visual (PNG) proof of the native screen.
- * Beta-only + env-gated + declared locally (the gGameMode extern pattern), so the
- * OFF build never sees it and no lane arms it. */
-extern const char *g_dumpFramesDir;
-
 /* ---- Local mirrors of the launcher lobby's id space (no launcher headers) --- */
 #define RES_CHAR_COUNT 10u        /* MDKR_ONLINE_CHARACTER_COUNT */
 #define RES_NO_CHARACTER 0xFFu    /* MDKR_ONLINE_NO_CHARACTER */
@@ -163,6 +153,18 @@ static const MdkrResChooserOption sChooserTournament[] = {
  * per-endpoint CEREMONY -> FINISHED. The host is never auto-bounded here. */
 #define RES_JOINER_TERMINAL_UNITS RES_STANDINGS_UNITS /* 10s */
 
+/* Joiner chooser mirror: sustained-absence debounce before the mirror ends the
+ * session on a vanished host (the room down to just this seat). Mirrors the
+ * online_session RESULTS remote-vacate detector's 45-tick debounce; the mirror
+ * needs its own because that detector is gated to !resultsIsFinal and the "MORE
+ * RACES?" chooser fronts at the tournament FINAL standings (resultsIsFinal).
+ * SEMANTIC DELTA (intentional): the session detector resets its debounce unless
+ * the LOCAL seat still occupies the room, so a fully-empty snapshot is NOT a
+ * vacate there; this mirror keys only on "no remote seat present", so a fully-
+ * empty room also counts as vanished -- which is still the correct end for the
+ * mirror (a room with no remote to wait on cannot continue). */
+#define RES_CHOOSER_VACATE_DEBOUNCE 45u
+
 /* Menu SFX (the real DKR enums; same reuse as CHARSELECT). */
 #define RES_SFX_ADVANCE SOUND_SELECT3
 #define RES_SFX_TICK SOUND_MENU_PICK2
@@ -210,6 +212,9 @@ typedef struct MdkrOnlineResultsState {
     u8 chooserChoice;    /* the committed MdkrOnlineResultsChoice (0 == none yet) */
     u8 chooserCommitted; /* host committed -> republish the intent to convergence */
     u8 chooserJoiner;    /* render as the joiner mirror (host-only drives) */
+    u8 chooserLeaveArm;  /* joiner mirror: B armed a confirm-to-leave (2nd B commits) */
+    u8 chooserVacateTicks; /* joiner mirror: debounce for a vanished-host exit */
+    u8 chooserHeldNoted;   /* joiner mirror: one-shot "survived past the old dwell" */
 } MdkrOnlineResultsState;
 
 static MdkrOnlineResultsState sRes;
@@ -233,6 +238,8 @@ static s8 results_chooser_seam_select(void);         /* -1 none / 0..N option id
 static void results_chooser_seam_mark_fired(void);   /* one-shot scripted select */
 static u8 results_chooser_seam_show(void);           /* display-only (PNG capture) */
 static u8 results_chooser_seam_joiner(void);         /* force the joiner mirror */
+static u8 results_chooser_seam_joiner_hold(void);    /* mirror + feed HELD in RESULTS */
+static u8 results_chooser_seam_joiner_vacate(void);  /* mirror + host seat vacates */
 static u8 results_chooser_seam_single(void);         /* single-race stand-in room */
 static const MdkrResChooserOption *results_chooser_options(u8 *countOut);
 static MdkrOnlineResultsResult results_chooser_tick(const MdkrPartyLinkSnapshot *snap,
@@ -257,6 +264,19 @@ static void results_host_name(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
             return;
         }
     }
+}
+
+/* TRUE while any seat other than the local player is still occupied. The joiner
+ * chooser mirror waits on the host through this; a sustained FALSE (every remote
+ * gone) is the vanished-host signal the mirror ends the session on. */
+static u8 results_chooser_remote_present(const MdkrPartyLinkSnapshot *snap) {
+    unsigned i;
+    for (i = 0u; i < MDKR_PARTY_LINK_SEATS; i++) {
+        if (snap->seats[i].occupied && !snap->seats[i].is_local) {
+            return 1u;
+        }
+    }
+    return 0u;
 }
 
 /* ======================================================================== *
@@ -847,8 +867,13 @@ static void results_chooser_render(const MdkrPartyLinkSnapshot *snap,
     } else if (sRes.chooserJoiner) {
         char host[16];
         s32 c = 170 + tri * 5;
-        results_host_name(snap, haveSnap, host, sizeof(host));
-        (void) snprintf(line, sizeof(line), "WAITING FOR %.12s...", host);
+        if (sRes.chooserLeaveArm) {
+            (void) snprintf(line, sizeof(line), "PRESS B AGAIN TO LEAVE");
+        } else {
+            results_host_name(snap, haveSnap, host, sizeof(host));
+            (void) snprintf(line, sizeof(line), "WAITING FOR %.12s...   B: LEAVE",
+                            host);
+        }
         results_chooser_text(RES_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT, line,
                              ALIGN_MIDDLE_CENTER, c, c, c);
     } else {
@@ -957,8 +982,11 @@ static MdkrOnlineResultsResult results_chooser_tick(const MdkrPartyLinkSnapshot 
     }
 
     /* JOINER mirror: display-only. Follow the host's authoritative choice once the
-     * room leaves RESULTS (re-select); else a dwell / local press ends it (the same
-     * terminal self-advance the old joiner had -> ceremony/leave). */
+     * room leaves RESULTS (re-select). While the host is still deliberating the
+     * mirror WAITS -- it must not bail on a blind countdown (the host is entitled
+     * to take longer than 10s deciding "more races"), and it must not quit on a
+     * stray A/START. It ends the session on only two events: a vanished host (the
+     * room down to just this seat, debounced) and a deliberate, confirmed B. */
     if (sRes.chooserJoiner) {
         if (haveSnap && snap->phase != (uint8_t) RES_PHASE_RESULTS) {
             sRes.chooserChoice = (u8) MDKR_ONLINE_RESULTS_CHOICE_JOINER_FOLLOW;
@@ -967,17 +995,47 @@ static MdkrOnlineResultsResult results_chooser_tick(const MdkrPartyLinkSnapshot 
                     "choice -> ADVANCE (re-select)\n");
             return MDKR_ONLINE_RESULTS_ADVANCE;
         }
-        {
-            u8 press = ((in.advanceEdge || in.bEdge) &&
-                        sRes.stageTicks >= RES_INPUT_GRACE)
-                           ? 1u
-                           : 0u;
-            u8 dwell = (sRes.stageTicks >= RES_JOINER_TERMINAL_UNITS) ? 1u : 0u;
-            if (press || dwell) {
-                fprintf(stderr,
-                        "[online-results] chooser: joiner terminal (%s) -> LEAVE\n",
-                        press ? "press" : "dwell");
+        /* Vanished-host exit. The online_session RESULTS remote-vacate detector is
+         * gated to !resultsIsFinal, but this "MORE RACES?" mirror fronts at the
+         * tournament FINAL standings (resultsIsFinal), so the mirror carries its
+         * own vacated-host exit: a sustained absence of every remote seat means the
+         * room dissolved and the session must end. Debounced against a transient. */
+        if (haveSnap && !results_chooser_remote_present(snap)) {
+            if (sRes.chooserVacateTicks < 0xFFu) {
+                sRes.chooserVacateTicks++;
+            }
+            if (sRes.chooserVacateTicks >= RES_CHOOSER_VACATE_DEBOUNCE) {
+                fprintf(stderr, "[online-results] chooser: joiner mirror host "
+                                "vacated -> LEAVE\n");
                 return MDKR_ONLINE_RESULTS_LEAVE;
+            }
+        } else {
+            sRes.chooserVacateTicks = 0u;
+        }
+        /* Observability: the mirror survived past the old blind 10s dwell with the
+         * host present -- exactly the case that used to end the joiner's session. */
+        if (!sRes.chooserHeldNoted &&
+            sRes.stageTicks >= RES_JOINER_TERMINAL_UNITS) {
+            sRes.chooserHeldNoted = 1u;
+            fprintf(stderr, "[online-results] chooser: joiner mirror still up past "
+                            "dwell (units=%u)\n",
+                    (unsigned) sRes.stageTicks);
+        }
+        /* B is an intentional leave with a confirm step (the charselect-backout
+         * idiom): the first B arms it and the footer prompts, a second B commits.
+         * A/START (advanceEdge) cancels an armed leave; every other button is inert
+         * on the mirror -- only the host drives the option list. */
+        if (sRes.stageTicks >= RES_INPUT_GRACE) {
+            if (in.bEdge) {
+                if (sRes.chooserLeaveArm) {
+                    fprintf(stderr, "[online-results] chooser: joiner confirmed "
+                                    "B -> LEAVE\n");
+                    return MDKR_ONLINE_RESULTS_LEAVE;
+                }
+                sRes.chooserLeaveArm = 1u;
+                sound_play(RES_SFX_TICK, NULL);
+            } else if (in.advanceEdge && sRes.chooserLeaveArm) {
+                sRes.chooserLeaveArm = 0u; /* A cancels an armed leave */
             }
         }
     }
@@ -1103,18 +1161,10 @@ MdkrOnlineResultsResult mdkr_online_results_tick(s32 updateRate) {
                     tournament ? "tournament-final" : "single-race",
                     (unsigned) sRes.chooserMode, (unsigned) sRes.host,
                     (unsigned) sRes.chooserJoiner);
-            /* Visual proof: on the "show" seam arm the engine frame-dump so the
-             * interactive resident soak captures the chooser frames (see the
-             * g_dumpFramesDir extern note). Inert unless the env dir is set. */
-            if (results_chooser_seam_show() && g_dumpFramesDir == NULL) {
-                const char *shot = getenv("MDKR_TEST_ONLINE_RESULTS_CHOOSER_SHOT");
-                if (shot != NULL && shot[0] != '\0') {
-                    g_dumpFramesDir = shot;
-                    fprintf(stderr,
-                            "[online-results] chooser: frame-dump armed -> %s\n",
-                            shot);
-                }
-            }
+            /* Visual proof of the native chooser is a PLATFORM facility: the
+             * launcher arms the engine frame-dump from the shot env when it sets
+             * up the resident soak (main_app.cpp). Game code no longer touches the
+             * platform g_dumpFramesDir global. */
             return results_chooser_tick(&snap, haveSnap, localSeat, updateRate);
         }
     }
@@ -1395,10 +1445,28 @@ static void results_test_pump(void) {
     if (results_chooser_seam_joiner() &&
         sTestRoom.phase == (uint8_t) RES_PHASE_RESULTS &&
         sRes.stage == RES_STAGE_CHOOSER && sRes.stageTicks >= 200u) {
-        sTestRoom.phase = 1u; /* MDKR_ONLINE_LOBBY -- host REMATCH landed */
-        fprintf(stderr,
-                "[online-results] test-reducer: joiner-mirror feed departed "
-                "RESULTS -> LOBBY (host authoritative REMATCH stand-in)\n");
+        if (results_chooser_seam_joiner_vacate()) {
+            /* Vanished-host control: the sole remote seat departs the room while
+             * the feed stays in RESULTS. The mirror's own vacated-host exit must
+             * then end the session (the online_session detector is gated off the
+             * final-standings chooser). */
+            if (sTestRoom.seats[1].occupied) {
+                sTestRoom.seats[1].occupied = 0u;
+                sTestRoom.seats[1].connected = 0u;
+                fprintf(stderr,
+                        "[online-results] test-reducer: joiner-mirror host seat "
+                        "vacated (feed held in RESULTS)\n");
+            }
+        } else if (!results_chooser_seam_joiner_hold()) {
+            /* Default joiner lane: the host's authoritative REMATCH lands, so the
+             * feed leaves RESULTS and the mirror follows into re-selection. */
+            sTestRoom.phase = 1u; /* MDKR_ONLINE_LOBBY -- host REMATCH landed */
+            fprintf(stderr,
+                    "[online-results] test-reducer: joiner-mirror feed departed "
+                    "RESULTS -> LOBBY (host authoritative REMATCH stand-in)\n");
+        }
+        /* joiner-hold: do nothing -- the host stays present and deliberating in
+         * RESULTS well past the old 10s dwell, so the mirror must keep waiting. */
     }
     mdkr_party_link_publish(&sTestRoom);
 }
@@ -1532,9 +1600,14 @@ u8 mdkr_online_results_test_active(void) {
  *   "joiner" the chooser renders as the display-only joiner mirror (role-flipped
  *            on the host-seat rig, the results_joiner_terminal_seam pattern), and
  *            the stand-in feed later departs RESULTS so the follow path runs
+ *   "joiner-hold"   the joiner mirror with the feed HELD in RESULTS (host present,
+ *            deliberating past the old 10s dwell) -- the mirror must keep waiting
+ *   "joiner-vacate" the joiner mirror, then the sole remote (host) seat vacates
+ *            while the feed stays in RESULTS -- the mirror must end the session
  * The env being set at all forces the chooser ON (mdkr_online_results_chooser_test_
  * active), so the dedicated lane can ride the RESIDENT soak to reach a terminal. */
-static s8 sChooserSeamKind = -1; /* -1 unresolved; 0 off; 1 select; 2 show; 3 joiner */
+static s8 sChooserSeamKind = -1; /* -1 unresolved; 0 off; 1 select; 2 show; 3 joiner;
+                                  * 4 joiner-hold; 5 joiner-vacate */
 static s8 sChooserSeamIndex = -1;
 static u8 sChooserSeamSingle;    /* the "single:" prefix -> SINGLE-race chooser */
 static void results_chooser_seam_resolve(void) {
@@ -1555,6 +1628,12 @@ static void results_chooser_seam_resolve(void) {
             sChooserSeamKind = 2;
         } else if (strcmp(e, "joiner") == 0) {
             sChooserSeamKind = 3;
+        } else if (strcmp(e, "joiner-hold") == 0) {
+            sChooserSeamKind = 4; /* mirror, but the feed HOLDS in RESULTS (host
+                                   * present, deliberating past the old dwell) */
+        } else if (strcmp(e, "joiner-vacate") == 0) {
+            sChooserSeamKind = 5; /* mirror, then the host seat vacates while the
+                                   * feed stays in RESULTS (vanished-host control) */
         } else if (e[0] >= '0' && e[0] <= '9') {
             sChooserSeamKind = 1;
             sChooserSeamIndex = (s8) strtol(e, NULL, 10);
@@ -1587,7 +1666,18 @@ static u8 results_chooser_seam_show(void) {
 }
 static u8 results_chooser_seam_joiner(void) {
     results_chooser_seam_resolve();
-    return (u8) (sChooserSeamKind == 3 ? 1 : 0);
+    return (u8) ((sChooserSeamKind == 3 || sChooserSeamKind == 4 ||
+                  sChooserSeamKind == 5)
+                     ? 1
+                     : 0);
+}
+static u8 results_chooser_seam_joiner_hold(void) {
+    results_chooser_seam_resolve();
+    return (u8) (sChooserSeamKind == 4 ? 1 : 0);
+}
+static u8 results_chooser_seam_joiner_vacate(void) {
+    results_chooser_seam_resolve();
+    return (u8) (sChooserSeamKind == 5 ? 1 : 0);
 }
 
 u8 mdkr_online_results_chooser_test_active(void) {

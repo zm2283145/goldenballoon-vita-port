@@ -79,6 +79,17 @@ CONFIG_TRACK_RE = re.compile(
     re.MULTILINE,
 )
 
+# The route-opacity witness (armed below): one line per default-arm pickup (weapon
+# balloon / banana) that reached a viewport route store, tagged STALE when the
+# cached render opacity OR the cached visible render-gate differed -- in either
+# direction -- from the value check_if_in_draw_range wrote for THIS viewport
+# (another canonical seat's distance fade / obstruction).
+ROUTE_OPACITY_RE = re.compile(
+    r"^\[route-opacity-witness\] pickup behavior=\d+ storedOpacity=-?\d+ "
+    r"freshOpacity=-?\d+ storedVisible=-?\d+ freshVisible=-?\d+( STALE)?$",
+    re.MULTILINE,
+)
+
 
 fail = make_fail("engine boot (direct)")
 
@@ -117,7 +128,13 @@ def main() -> int:
     # the manifest + boot alone. MDKR_TEST_SCRIPT_ONLY_INPUT (in the shared env)
     # stays on so no stray host input can reach the game -- the only inputs are the
     # live match transport (canonical) and MDKR_AUTOPILOT (driving line).
-    extra_env = {"MDKR_APP_TEST_ONLINE_LIVE": "1"}
+    extra_env = {
+        "MDKR_APP_TEST_ONLINE_LIVE": "1",
+        # Blend-pass route-opacity regression guard: arm the witness so this online
+        # race (two canonical viewports sharing one obj->opacity) asserts that no
+        # default-arm pickup caches another seat's stale distance fade.
+        "MDKR_TEST_ROUTE_OPACITY_WITNESS": "1",
+    }
     if args.track is not None:
         extra_env["MDKR_APP_TEST_ONLINE_TRACK"] = str(args.track)
     try:
@@ -232,6 +249,25 @@ def main() -> int:
                 f"canonical deterministic race sim (a determinism drift, or a "
                 f"legit ROM/toolchain change that needs GOLDEN_RACE_HASH bumped)",
                 output)
+
+    # The blend-pass route-opacity guard. Online presents two canonical viewports
+    # sharing one obj->opacity; the transparent pass cached the PRE-refresh opacity
+    # (another seat's distance fade) rather than the value check_if_in_draw_range
+    # wrote for THIS viewport, so a local pickup drew translucent. The witness
+    # reports every default-arm pickup that reached the blend route store; a STALE
+    # tag means the cached value was cross-seat. The scenario must exercise pickups
+    # at all (>=1 line, a positive control) and, post-fix, none may be STALE.
+    route_lines = ROUTE_OPACITY_RE.findall(output)
+    if not route_lines:
+        return fail("the route-opacity witness never fired -- no pickup reached "
+                    "the blend-pass route store, so this run cannot prove the "
+                    "fix (positive control)", output)
+    stale = [tag for tag in route_lines if tag == " STALE"]
+    if stale:
+        return fail(
+            f"{len(stale)} of {len(route_lines)} pickup blend-route store(s) "
+            f"cached a STALE cross-seat distance fade -- a local pickup drew "
+            f"translucent; expected none post-fix", output)
 
     direct_track, direct_players = direct[0]
     narrow = ""
