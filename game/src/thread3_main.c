@@ -810,9 +810,16 @@ void mode_game(s32 updateRate) {
      * seat's input leaks into the retail load/quit paths. */
     if (adventure_party_runtime_is_active()) {
         AdventurePartySession *apPauseSession = adventure_party_runtime_session();
-        int apSeat, apCount = adventure_party_participant_count(apPauseSession);
-        for (apSeat = 0; apSeat < apCount; apSeat++) {
-            buttonPressedInputs |= (input_pressed(apSeat) & START_BUTTON);
+        /* AP-17: during a host-solo special challenge/boss (SOLO_ACTIVITY) or its
+         * restore, the host plays alone — fold in NO non-host START, so the
+         * activity's pause is host-only exactly as retail 1P. Every other state
+         * (lobby, race) keeps the any-seat pause REQUEST (AP-10). */
+        if (apPauseSession->state != ADVENTURE_PARTY_STATE_SOLO_ACTIVITY &&
+            apPauseSession->state != ADVENTURE_PARTY_STATE_RESTORING_PARTY) {
+            int apSeat, apCount = adventure_party_participant_count(apPauseSession);
+            for (apSeat = 0; apSeat < apCount; apSeat++) {
+                buttonPressedInputs |= (input_pressed(apSeat) & START_BUTTON);
+            }
         }
     }
 #endif

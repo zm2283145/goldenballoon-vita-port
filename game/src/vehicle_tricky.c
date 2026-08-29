@@ -4,6 +4,12 @@
 #include "mdkr_trace.h"
 #include "taj_mod.h"
 #endif
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+#include "adventure_party/adventure_party_policy.h"
+#include "adventure_party/adventure_party_runtime.h"
+#include "adventure_party/adventure_party_state.h"
+#include "adventure_party/adventure_party_trace.h"
+#endif
 #include "audio.h"
 #include "audio_spatial.h"
 #include "audio_vehicle.h"
@@ -266,6 +272,63 @@ void play_random_boss_sound(s32 offset) {
     sound_play(gBossSoundIDOffset[offset], NULL);
 }
 
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+/*
+ * AP-17: witness the exact-once first-win of a party HOST-SOLO boss. The retail
+ * win branch below already commits progression exactly once (its own
+ * courseFlags & RACE_CLEARED / bosses-bit guards make a re-race idempotent, and
+ * the host is the sole racer[0] human of the host-solo field), so this mirrors
+ * that first-win with a completion token keyed to the session/level generation:
+ * exact-once is a STRUCTURAL property of the retail bit AND observable as one
+ * aparty_award issue+consume pair. A defeat (finishPos != 1) mints nothing; a
+ * re-race of an already-beaten boss (courseFlags & RACE_CLEARED) emits one refused
+ * ISSUE (result=0), matching the AP-13 race-permit fail-closed diagnostic. Called
+ * once per boss race (inside the sceneTimer==1 finish gate). Read BEFORE the
+ * retail write, on the same per-course RACE_CLEARED bit the win branch tests.
+ */
+static void adventure_party_boss_award_note(Settings *settings, s32 finishPos) {
+    AdventurePartySession *session = adventure_party_runtime_session();
+    AdventurePartyCompletionToken token;
+    AdventurePartyResult consumed;
+    int issued;
+    int alreadyCleared;
+
+    if (!adventure_party_runtime_is_active() || session == NULL ||
+        session->state != ADVENTURE_PARTY_STATE_SOLO_ACTIVITY || settings == NULL) {
+        return; /* not a party host-solo boss */
+    }
+    alreadyCleared =
+        (settings->courseFlagsPtr[settings->courseId] & RACE_CLEARED) != 0;
+    if (finishPos != 1) {
+        return; /* defeat: no token, exactly as retail awards nothing on a loss */
+    }
+    if (alreadyCleared) {
+        /* Rematch / re-race of a beaten boss: refuse, one observable diagnostic.
+         * All five token fields are set (they ARE the key), so no zero-fill. */
+        token.session_generation = session->session_generation;
+        token.level_generation = session->level_generation;
+        token.course = (uint16_t) settings->courseId;
+        token.activity = (uint8_t) ADVENTURE_PARTY_RACE_KIND_BOSS;
+        token.completion_kind = (uint8_t) ADVENTURE_PARTY_COMPLETION_BOSS;
+        adventure_party_trace_emit_award(ADVENTURE_PARTY_TRACE_AWARD_ISSUE, &token,
+                                         0);
+        return;
+    }
+    issued = adventure_party_completion_token_issue(
+        ADVENTURE_PARTY_OUTCOME_TEAM_WIN, session->session_generation,
+        session->level_generation, (uint16_t) settings->courseId,
+        ADVENTURE_PARTY_RACE_KIND_BOSS, ADVENTURE_PARTY_COMPLETION_BOSS, &token);
+    adventure_party_trace_emit_award(ADVENTURE_PARTY_TRACE_AWARD_ISSUE, &token,
+                                     issued);
+    if (!issued) {
+        return;
+    }
+    consumed = adventure_party_consume_completion_token(session, &token);
+    adventure_party_trace_emit_award(ADVENTURE_PARTY_TRACE_AWARD_CONSUME, &token,
+                                     (int) consumed);
+}
+#endif
+
 /**
  * Trigger a post-race cutscene that depends on which boss was fought, which attempt it was and if the player won or
  * not. Save the game afterwards, writing the victory, and the cutscene having been seen.
@@ -322,6 +385,11 @@ void racer_boss_finish(Object_Racer *racer, s8 *sceneTimer) {
     }
 #endif
     if (arg1_ret == 1) {
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+        /* AP-17: witness the party host-solo boss first-win exact-once, keyed to
+         * the pre-write per-course RACE_CLEARED bit. Inert for 1P/off/OMIT. */
+        adventure_party_boss_award_note(settings, finishPos);
+#endif
         if (finishPos == 1) {
             music_play(SEQUENCE_BATTLE_VICTORY);
         } else {

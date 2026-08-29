@@ -2738,6 +2738,28 @@ static s32 adventure_party_hub_formation(u8 raceType, s32 *spawnX, s32 *spawnY,
 }
 
 /*
+ * AP-15/AP-17: rebuild the RosterRequest (the (seat,character) LIST the reducer
+ * validates) from the live session roster, so RESTORE_COMMIT can hand back
+ * EXACTLY the party a solo activity borrowed. Session seats are dense 0..N-1, so
+ * this is the identity mapping the state module re-validates and then compares
+ * field-for-field against suspended_roster (refusing ROSTER_MISMATCH on any diff).
+ */
+static void adventure_party_roster_request_from_roster(
+    const AdventurePartyRoster *roster, AdventurePartyRosterRequest *req) {
+    s32 i;
+    memset(req, 0, sizeof *req);
+    if (roster == NULL) {
+        return;
+    }
+    req->participant_count = roster->participant_count;
+    for (i = 0; i < roster->participant_count && i < ADVENTURE_PARTY_MAX_SEATS;
+         i++) {
+        req->seat[i] = (u8) i;
+        req->character[i] = roster->character_by_seat[i];
+    }
+}
+
+/*
  * AP-12 / R16 arrival adapter. When a level finishes loading, advance the party
  * session to match the level just entered. This is the arrival half of Task 8's
  * door transition: the departure latched a winner in obj_loop_exit and
@@ -2746,16 +2768,22 @@ static s32 adventure_party_hub_formation(u8 raceType, s32 *spawnX, s32 *spawnY,
  * latched door so the next door can latch again. Keyed off the state being left
  * and the kind of level that loaded:
  *
- *   ACTIVE_LOBBY + a lobby (latch set)  -> LOBBY_TRANSITION      (lobby->lobby, R16)
- *   ACTIVE_LOBBY + a default race       -> RACE_START            (lobby->race)
- *   ACTIVE_RACE  + a lobby              -> RACE_RESULT_COMMITTED  (race->lobby: finish/return/quit-to-lobby)
+ *   ACTIVE_LOBBY   + a lobby (latch set) -> LOBBY_TRANSITION      (lobby->lobby, R16)
+ *   ACTIVE_LOBBY   + a default race      -> RACE_START            (lobby->race)
+ *   ACTIVE_RACE    + a lobby             -> RACE_RESULT_COMMITTED  (race->lobby: finish/return/quit-to-lobby)
+ *   ACTIVE_LOBBY   + a challenge/boss    -> SOLO_START            (AP-15/AP-17: suspend to host-solo)
+ *   SOLO_ACTIVITY  + a lobby             -> SOLO_EXIT + RESTORE_COMMIT (restore the exact party)
  *
  * The first lobby entry after RESUME_SAVE has no latch set (no door was
  * pressed), so it is NOT a lobby->lobby hop; a default-race retry
- * (ACTIVE_RACE + default race) applies nothing and stays in the race. Challenge
- * and boss loads apply nothing (their party envelope is a later task); a
- * challenge that returns to a lobby still clears its stale door latch through
- * the LOBBY_TRANSITION arm, which is what keeps subsequent doors working.
+ * (ACTIVE_RACE + default race) applies nothing and stays in the race, and a
+ * challenge/boss retry (SOLO_ACTIVITY + challenge/boss) likewise stays in the
+ * host-solo activity. SOLO_START suspends the party's roster as the facts the
+ * later RESTORE_COMMIT must reproduce EXACTLY; the activity itself runs as retail
+ * host-solo (numPlayers=1, retail challenge=4/boss=2 field) because no count
+ * adapter fires for a non-lobby, non-default load. The destination-lobby return
+ * runs SOLO_EXIT then RESTORE_COMMIT, and the lobby's Task 7 roster machinery
+ * re-forms the identical party from the restored ACTIVE_LOBBY state.
  *
  * winner_seat is left NO_SEAT: it is informational to the state module (it never
  * remaps a seat), and the exact team-condition winner AP-13 will record is out
@@ -2778,6 +2806,36 @@ static void adventure_party_apply_arrival(u8 raceType) {
              * for a CPU win / loss / quit. The reducer only validates it; it never
              * remaps a seat, so a finish, return or quit-to-lobby all land here. */
             ev.winner_seat = sApRaceWinnerSeat;
+        } else if (session->state == ADVENTURE_PARTY_STATE_SOLO_ACTIVITY) {
+            /* AP-15/AP-17: return to the destination lobby from a host-solo
+             * challenge/boss (finish, defeat, cutscene-then-lobby all land here).
+             * Two reducer steps: SOLO_EXIT (SOLO_ACTIVITY -> RESTORING_PARTY) then
+             * RESTORE_COMMIT, which re-validates the live roster and refuses
+             * ROSTER_MISMATCH on any difference from the suspended facts. The
+             * aparty_restore trace records the match; the lobby's hub formation /
+             * HUD / binding then re-form the identical party below. */
+            AdventurePartyEvent exitEv;
+            AdventurePartyResult restoreResult;
+            u32 suspendLgen = session->level_generation;
+            memset(&exitEv, 0, sizeof exitEv);
+            exitEv.kind = ADVENTURE_PARTY_EVENT_SOLO_EXIT;
+            if (adventure_party_session_apply(session, &exitEv) !=
+                ADVENTURE_PARTY_OK) {
+                return;
+            }
+            adventure_party_trace_emit_session(session); /* RESTORING_PARTY */
+            ev.kind = ADVENTURE_PARTY_EVENT_RESTORE_COMMIT;
+            adventure_party_roster_request_from_roster(&session->roster,
+                                                       &ev.roster);
+            restoreResult = adventure_party_session_apply(session, &ev);
+            adventure_party_trace_emit_restore(suspendLgen,
+                                               session->level_generation,
+                                               restoreResult ==
+                                                   ADVENTURE_PARTY_OK);
+            if (restoreResult == ADVENTURE_PARTY_OK) {
+                adventure_party_trace_emit_session(session); /* ACTIVE_LOBBY */
+            }
+            return;
         } else if (session->state == ADVENTURE_PARTY_STATE_ACTIVE_LOBBY &&
                    session->transition_latch.latched) {
             ev.kind = ADVENTURE_PARTY_EVENT_LOBBY_TRANSITION;
@@ -2797,11 +2855,26 @@ static void adventure_party_apply_arrival(u8 raceType) {
         /* AP-13: a fresh race starts with no recorded winner; the finish seam sets
          * it only when a party human actually finishes first. */
         sApRaceWinnerSeat = ADVENTURE_PARTY_NO_SEAT;
+    } else if (raceType == RACETYPE_BOSS || (raceType & RACETYPE_CHALLENGE)) {
+        /* AP-15/AP-17: enter a host-solo special challenge or boss from a party
+         * lobby. Only from ACTIVE_LOBBY: a challenge/boss retry that reloads while
+         * already SOLO_ACTIVITY applies nothing and stays in the activity (mirrors
+         * the default-race retry above). SOLO_START suspends the roster facts the
+         * restore transaction must reproduce and bumps the generation. */
+        if (session->state != ADVENTURE_PARTY_STATE_ACTIVE_LOBBY) {
+            return;
+        }
+        ev.kind = ADVENTURE_PARTY_EVENT_SOLO_START;
     } else {
-        return; /* challenge / boss / other: not this task's envelope */
+        return; /* horseshoe gulch / other: not this task's envelope */
     }
     if (adventure_party_session_apply(session, &ev) == ADVENTURE_PARTY_OK) {
         adventure_party_trace_emit_session(session);
+        if (ev.kind == ADVENTURE_PARTY_EVENT_SOLO_START) {
+            /* Publish the suspended facts alongside the SOLO_ACTIVITY entry so a
+             * gate can prove the EXACT party was captured for the later restore. */
+            adventure_party_trace_emit_roster(&session->suspended_roster);
+        }
     }
 }
 
@@ -2952,6 +3025,83 @@ static s32 adventure_party_race_award_permit(Settings *settings, s32 seat) {
         ADVENTURE_PARTY_OUTCOME_TEAM_WIN, session->session_generation,
         session->level_generation, (uint16_t) settings->courseId, kind,
         ADVENTURE_PARTY_COMPLETION_COURSE, &token);
+    adventure_party_trace_emit_award(ADVENTURE_PARTY_TRACE_AWARD_ISSUE, &token,
+                                     issued);
+    if (!issued) {
+        return 0;
+    }
+    consumed = adventure_party_consume_completion_token(session, &token);
+    adventure_party_trace_emit_award(ADVENTURE_PARTY_TRACE_AWARD_CONSUME, &token,
+                                     (int) consumed);
+    return consumed == ADVENTURE_PARTY_OK;
+}
+
+/*
+ * AP-15/AP-17: is a party host-solo activity (special challenge or boss) the thing
+ * being finished right now? True only while a live party session is in
+ * SOLO_ACTIVITY — which the arrival adapter enters exclusively for a challenge/boss
+ * load. When true the party host-solo award arm decides the campaign commit and
+ * the retail arm is bypassed; when false the stock retail path runs unchanged.
+ */
+static s32 adventure_party_solo_award_active(void) {
+    AdventurePartySession *session = adventure_party_runtime_session();
+    return adventure_party_runtime_is_active() && session != NULL &&
+           session->state == ADVENTURE_PARTY_STATE_SOLO_ACTIVITY;
+}
+
+/* Map a challenge race_type to its capability race kind (the token key's activity
+ * component). Any RACETYPE_CHALLENGE-flagged type resolves to a challenge kind;
+ * the exact sub-kind keeps the key faithful. */
+static AdventurePartyRaceKind adventure_party_challenge_race_kind(u8 raceType) {
+    switch (raceType) {
+    case RACETYPE_CHALLENGE_BATTLE:
+        return ADVENTURE_PARTY_RACE_KIND_BATTLE_CHALLENGE;
+    case RACETYPE_CHALLENGE_EGGS:
+        return ADVENTURE_PARTY_RACE_KIND_EGG_CHALLENGE;
+    case RACETYPE_CHALLENGE_BANANAS:
+    default:
+        return ADVENTURE_PARTY_RACE_KIND_BANANA_CHALLENGE;
+    }
+}
+
+/*
+ * AP-15 exact-once award gate for a party host-solo special challenge (the
+ * four-racer amulet challenges). Mirrors adventure_party_race_award_permit: fails
+ * closed if the course already carries RACE_CLEARED (so a consumed token always
+ * corresponds to a real amulet write — one-to-one, and a re-race mints nothing);
+ * otherwise mints (TEAM_WIN, activity=challenge kind, kind=COMPLETION_CHALLENGE)
+ * and consumes the token, emitting the aparty_award issue/consume traces. Returns
+ * 1 only on a successful fresh consume. The host is racer[0] in the host-solo
+ * field, so the caller's finishPosition==1 is exactly a host win.
+ */
+static s32 adventure_party_challenge_award_permit(Settings *settings,
+                                                  u8 raceType) {
+    AdventurePartySession *session = adventure_party_runtime_session();
+    AdventurePartyCompletionToken token;
+    AdventurePartyRaceKind kind;
+    AdventurePartyResult consumed;
+    int issued;
+
+    if (session == NULL || settings == NULL) {
+        return 0;
+    }
+    kind = adventure_party_challenge_race_kind(raceType);
+    if (settings->courseFlagsPtr[settings->courseId] & RACE_CLEARED) {
+        AdventurePartyCompletionToken skip;
+        memset(&skip, 0, sizeof skip);
+        skip.session_generation = session->session_generation;
+        skip.level_generation = session->level_generation;
+        skip.course = (uint16_t) settings->courseId;
+        skip.activity = (uint8_t) kind;
+        skip.completion_kind = (uint8_t) ADVENTURE_PARTY_COMPLETION_CHALLENGE;
+        adventure_party_trace_emit_award(ADVENTURE_PARTY_TRACE_AWARD_ISSUE, &skip,
+                                         0);
+        return 0;
+    }
+    issued = adventure_party_completion_token_issue(
+        ADVENTURE_PARTY_OUTCOME_TEAM_WIN, session->session_generation,
+        session->level_generation, (uint16_t) settings->courseId, kind,
+        ADVENTURE_PARTY_COMPLETION_CHALLENGE, &token);
     adventure_party_trace_emit_award(ADVENTURE_PARTY_TRACE_AWARD_ISSUE, &token,
                                      issued);
     if (!issued) {
@@ -10688,6 +10838,29 @@ void race_check_finish(s32 updateRate) {
 
                     gSwapLeadPlayer = FALSE;
                     // Award the winner a TT amulet if not in tracks mode.
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+                    /* AP-15: a host-solo party special challenge gates the SAME
+                     * retail amulet commit on an exact-once token. The host is
+                     * racer[0] in the host-solo field (a party never engages
+                     * is_in_two_player_adventure — AP-01), so racer[0]->
+                     * finishPosition == 1 is exactly a host win; the permit fails
+                     * closed on the RACE_CLEARED bit (one-to-one with the write).
+                     * The retail arm below is preserved verbatim as the stock
+                     * else, so 1P/off/OMIT is byte-identical. */
+                    if (adventure_party_solo_award_active()) {
+                        if (!is_in_tracks_mode() && racer[0]->finishPosition == 1 &&
+                            adventure_party_challenge_award_permit(
+                                settings, (u8) someBool2)) {
+                            settings->courseFlagsPtr[settings->courseId] |=
+                                RACE_CLEARED;
+                            i = settings->ttAmulet + 1;
+                            if (i > 4) {
+                                i = 4;
+                            }
+                            settings->ttAmulet = i;
+                        }
+                    } else
+#endif
                     if (!is_in_tracks_mode() &&
                         (racer[0]->finishPosition == 1 ||
                          (is_in_two_player_adventure() && racer[1]->finishPosition == 1)) &&
