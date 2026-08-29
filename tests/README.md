@@ -1625,9 +1625,14 @@ immediately: the wrap's RESULTS-out-and-back was the rising edge). `--through`: 
 stops after the CHARSELECT -> VEHICLESELECT advance; `e` stops after (a)-(e) (a
 faster intermediate stop -- needs `--tournament CUP`, since a single race never
 auto-finals); `full` (all seven assertions) is the GREEN bar. Convergence on this
-descriptor-less path is the reducer-agreed finish order (both processes commit the
-SAME placements per race_index -- there is no `ENGINE-ONLINE-LIVE` fold line on the
-resident path). Default `--build build-beta`. The tournament-final joiner strand
+descriptor-less path is DUAL-witnessed per race: the reducer-agreed finish order
+(both processes commit the SAME placements per race_index) AND the cross-process
+STATE-HASH fold -- each endpoint's resident coordinator folds the same
+firstTick-anchored window of CONFIRMED canonical input frames into an FNV state
+hash (`[online-resident-live] race fold ...`, log-only, session-gated) and the
+capstone requires the identical span + identical hash on both processes, so
+identical finish orders can no longer mask divergent simulations. Default
+`--build build-beta`. The tournament-final joiner strand
 this lane originally caught (the host's FINISH was a purely local leave that sent
 NO reducer command, so neither of the joiner mirror's exits -- room-left-RESULTS /
 vanished-host -- could ever fire) is fixed by the FINISH wrap above; the local
@@ -1668,6 +1673,32 @@ is NOT the shipping cloud route (that is `check_online_native_flow_cloud.py`). I
 reaches its final-standings FINISH by the host committing the native chooser's
 FINISH option (`[online-results] chooser: committed option=FINISH -> LEAVE`).
 Default `--build build-beta`.
+
+`check_online_final_replay.py` (run-checks registered in
+`tools/run_online_checks.py`) is the RULED two-real-peer FINAL-REPLAY proof: at
+the tournament FINAL standings the host commits NEW TOURNAMENT instead of FINISH
+(`MDKR_TEST_ONLINE_RESULTS_CHOOSER=3,5`), which dispatches the SAME leader-only
+REMATCH wrap (fresh series, race_index 3 -> 0) -- the host then CONTINUES
+in-session (results -> TRACKSELECT, re-locks the cup, STARTs) while a real second
+peer's road is the ceremony -> FINISHED -> automatic re-take into the freshly
+wrapped room. The ruling holds because both roads re-converge through REDUCER
+AUTHORITY, and this lane proves the re-convergence on the loopback 2-endpoint
+rig: `MDKR_APP_TEST_ONLINE_SINGLE_ENDPOINT=1` drives the peer adapter as the
+stand-in remote process (re-readying itself in the wrapped room exactly as the
+re-taken joiner's fresh session does), the launcher's coordinator takes the
+OBSERVE-ONLY re-cycle on the observed final wrap (`tournament final wrap: room
+left RESULTS -> LOBBY (fresh series...)` -- never the auto-driving mid-cup
+advance, which would race the host's own re-selection), the match-input re-arms
+on the FRESH epoch 5, and race 5 boots as the fresh series' round 1
+(race_index=0) -- then the full second cup races ([13,6,9,28] x 2, results
+race_index 0..3 twice, 8/8 cross-endpoint state-hash folds converged=1) and its
+FINISH ends cleanly (wrap -> CEREMONY -> single FINISHED). RED at the pre-fix
+build: the coordinator's tournament re-cycle trigger was `race_index >
+rs->raceIndex`, which the final wrap (3 -> 0) never satisfies -- the coordinator
+parked in Results forever and the continuing host's race 5 never booted. **Scope
+class:** seam-injection (input seams on an in-process loopback); the shipping
+cloud route's FINISH leg is `check_online_native_flow_cloud.py`. Default
+`--build build-beta`.
 
 `check_online_session_end.py` (run-checks registered in
 `tools/run_online_checks.py`) is the

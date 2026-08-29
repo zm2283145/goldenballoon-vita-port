@@ -1164,18 +1164,26 @@ struct LiveResidentState {
      * re-wait wall-clock watchdog trips at "per-round re-wait" (the deterministic
      * per-round proof). None in normal runs. */
     bool wedgeSkipRearm = false;
-    /* SINGLE-RACE replay re-cycle (T5). A single race's REMATCH keeps race_index
-     * (only a tournament advances it), so the tournament "race_index advanced"
-     * re-cycle trigger never fires for a single race. When the room LEAVES RESULTS
-     * back to LOBBY for a SINGLE race, arm this OBSERVE-ONLY re-cycle instead of the
-     * auto-driving tournament advance: the ENGINE drives the re-Ready + START (a
-     * native CHANGE-picks screen, or the LOBBY_WAIT auto-start for RACE AGAIN), and
-     * the launcher only clears the stale roster/match-input and re-arms the
-     * match-input once the room reaches a FRESH race-ready transport. NOT auto-
-     * driving is what lets a CHANGE-picks native screen own the re-selection without
-     * the launcher racing it to START on the old config. */
+    /* OBSERVE-ONLY re-cycle (T5 single-race replay + the tournament FINAL wrap).
+     * A single race's REMATCH keeps race_index (only a tournament advances it),
+     * so the tournament "race_index advanced" re-cycle trigger never fires for a
+     * single race; and the tournament FINAL's REMATCH wrap RESETS race_index to
+     * 0 (a fresh series -- lobby_core.c reset_tournament_series), which that
+     * same `advanced` trigger also misses. In both cases the room LEAVES
+     * RESULTS back to LOBBY with the ENGINE owning the re-drive (the native
+     * re-selection screen the chooser routed to, or the LOBBY_WAIT auto-start
+     * for RACE AGAIN), so arm this OBSERVE-ONLY re-cycle instead of the
+     * auto-driving mid-cup advance: the launcher only clears the stale
+     * roster/match-input and re-arms the match-input once the room reaches a
+     * FRESH race-ready transport. NOT auto-driving is what lets the engine's
+     * re-selection own the new config without the launcher racing it to START
+     * on the old config. */
     bool singleObserve = false;
     unsigned singleObserveFrames = 0u; /* observe-only re-cycle watchdog */
+    /* state-hash witness (log-only): the epoch whose confirmed-input
+     * fold hash was already emitted, so each race logs exactly one fold line
+     * (the Racing phase in liveResidentServiceStep). */
+    std::uint32_t foldEmittedEpoch = 0u;
 };
 LiveResidentState *g_liveResident = nullptr;
 static void liveResidentServiceStep(void);
@@ -1881,6 +1889,23 @@ void reportOnlineRaceResults(
  * belt-and-suspenders launcher-side ceiling. */
 static const unsigned kSingleObserveFrameBudget = 3000u;
 
+/* state-hash witness window for the resident descriptor-less path
+ * (log-only; asserted by the cloud capstone's (d)/(e)). The reducer-agreed
+ * finish order proves the reducer heard the same placements; a fold hash over
+ * the CONFIRMED canonical input frames proves the two endpoints simulated the
+ * SAME race (the finish order is a much weaker projection of that state). The
+ * window must be IDENTICAL on both endpoints to be comparable, so it is
+ * anchored to the race's authored origin (firstTick) -- never to each
+ * endpoint's own drain frontier, which differs by wall-clock jitter -- and it
+ * is folded EARLY, once this endpoint's frontier passes the probe point, while
+ * the net_input ring (last 128 authored ticks) still retains it. If a tick in
+ * the window is not yet confirmed the fold retries next frame; a window that
+ * never confirms emits no line and the capstone fails visibly. */
+static const std::uint32_t kResidentFoldSkipTicks = 8u;    /* skip the ragged start */
+static const std::uint32_t kResidentFoldWindowTicks = 60u; /* the compared span */
+static const std::uint32_t kResidentFoldProbeTicks = 90u;  /* fold once nextTick
+                                                            * >= firstTick + 90 */
+
 /* RESIDENT LIVE per-frame coordinator (see LiveResidentState). Runs from
  * liveOverlayService every engine frame while g_liveResident is set. */
 static void liveResidentServiceStep(void) {
@@ -1911,6 +1936,62 @@ static void liveResidentServiceStep(void) {
     }
 
     if (rs->phase == LiveResidentState::Phase::Racing) {
+        /* state-hash witness (log-only): once per epoch, once this
+         * endpoint's drain frontier clears the probe point, fold the FIXED
+         * firstTick-anchored confirmed-input window into the same FNV state
+         * hash the per-race path emits, and log it. Two endpoints that
+         * simulated the same race print the identical span AND hash; the cloud
+         * capstone asserts that equality for (d)/(e) on top of the
+         * reducer-agreed finish order. Retries silently until the whole window
+         * is confirmed (never blocks; O(window) reads per attempt). */
+        MdkrOnlineLiveRaceInfo foldInfo{};
+        if (mdkr_online_live_adapter_race_info(rs->visible, &foldInfo) &&
+            foldInfo.ready && foldInfo.matchEpoch != 0u &&
+            foldInfo.matchEpoch != rs->foldEmittedEpoch &&
+            foldInfo.nextTick >= foldInfo.firstTick + kResidentFoldProbeTicks) {
+            const std::uint32_t foldStart =
+                foldInfo.firstTick + kResidentFoldSkipTicks;
+            const std::uint32_t foldEnd =
+                foldStart + kResidentFoldWindowTicks - 1u;
+            std::uint64_t hashVisible = 0u;
+            const std::uint32_t folded =
+                foldConfirmedRace(rs->visible, foldStart, foldEnd,
+                                  foldInfo.activeSlotMask, &hashVisible);
+            if (folded == kResidentFoldWindowTicks) {
+                MdkrOnlineLobby foldLobby{};
+                (void)mdkr_online_live_adapter_lobby(rs->visible, &foldLobby);
+                rs->foldEmittedEpoch = foldInfo.matchEpoch;
+                std::fprintf(stderr,
+                             "[online-resident-live] race fold epoch=%u "
+                             "race_index=%u span=%u..%u hash=%016llx\n",
+                             static_cast<unsigned>(foldInfo.matchEpoch),
+                             static_cast<unsigned>(foldLobby.race_index),
+                             static_cast<unsigned>(foldStart),
+                             static_cast<unsigned>(foldEnd),
+                             static_cast<unsigned long long>(hashVisible));
+                /* Loopback corroboration (test rigs only; production has no
+                 * local peer): the peer endpoint's fold over the SAME span must
+                 * match in-process too. */
+                if (rs->peer != nullptr) {
+                    std::uint64_t hashPeer = 0u;
+                    const std::uint32_t foldedPeer =
+                        foldConfirmedRace(rs->peer, foldStart, foldEnd,
+                                          foldInfo.activeSlotMask, &hashPeer);
+                    std::fprintf(
+                        stderr,
+                        "[online-resident-live] race fold peer epoch=%u "
+                        "span=%u..%u hash=%016llx converged=%d\n",
+                        static_cast<unsigned>(foldInfo.matchEpoch),
+                        static_cast<unsigned>(foldStart),
+                        static_cast<unsigned>(foldEnd),
+                        static_cast<unsigned long long>(hashPeer),
+                        (foldedPeer == kResidentFoldWindowTicks &&
+                         hashPeer == hashVisible)
+                            ? 1
+                            : 0);
+                }
+            }
+        }
         /* POLL-CONTENTION single owner: the launcher pump owns the one-shot engine
          * results poll. When THIS race captures a finish order, PUBLISH_RESULTS to
          * the reducer (-> RESULTS phase) so the native RESULTS screen fronts on the
@@ -1996,6 +2077,45 @@ static void liveResidentServiceStep(void) {
              * re-Readies its own seat afresh for this round. */
             if (rs->remoteSim) OnlineRoom_lobbyStartResetJoiner();
             rs->phase = LiveResidentState::Phase::Advancing;
+            return;
+        }
+        if (lobby.phase == MDKR_ONLINE_LOBBY && lobby.race_index < rs->raceIndex) {
+            /* TOURNAMENT FINAL WRAP: the room left RESULTS with race_index
+             * RESET (the leader REMATCH at the last cup round starts a fresh
+             * series -- lobby_core.c reset_tournament_series), which the
+             * `advanced` trigger above by definition misses (0 is never >
+             * 3). This is the host CONTINUING in-session after a final-replay
+             * chooser option (NEW TOURNAMENT / CHANGE CUP / CHANGE MODE /
+             * RACE AGAIN / CHANGE CHARACTER) -- or the FINISH wrap right
+             * before the session exits, in which case the residency is
+             * retired at the engine return and this arm is moot. The ENGINE
+             * owns the re-drive (the chooser routed it to a native
+             * re-selection screen, or armed the LOBBY_WAIT auto-start), so
+             * take the OBSERVE-ONLY re-cycle exactly like the single-race
+             * replay: clear the stale roster/match-input and wait in
+             * Advancing for the engine-driven BEGIN_LOADING to mint a fresh
+             * race-ready epoch, then re-arm the match-input. Auto-driving the
+             * mid-cup advance here would race the host's own re-selection to
+             * START on the old config. Without this arm the coordinator
+             * parked in Results forever and the continuing host's next race
+             * never booted (the engine's re-wait watchdog then tripped
+             * ERROR) -- caught red-first by check_online_final_replay.py. */
+            if (rs->remoteSim) OnlineRoom_lobbyStartResetJoiner();
+            mdkr_net_roster_runtime_clear();
+            if (mdkr_match_input_runtime_active()) {
+                mdkr_match_input_runtime_clear();
+            }
+            rs->singleObserve = true;
+            rs->singleObserveFrames = 0u;
+            rs->phase = LiveResidentState::Phase::Advancing;
+            std::fprintf(stderr,
+                         "[online-resident-live] tournament final wrap: room "
+                         "left RESULTS -> LOBBY (fresh series, race_index %u -> "
+                         "%u) -> observe-only re-cycle (the chooser's "
+                         "re-selection owns the drive; launcher re-arms "
+                         "match-input on the fresh epoch)\n",
+                         static_cast<unsigned>(rs->raceIndex),
+                         static_cast<unsigned>(lobby.race_index));
         }
         return;
     }
@@ -2061,6 +2181,10 @@ static void liveResidentServiceStep(void) {
             rs->phase = LiveResidentState::Phase::Done;
             return;
         }
+        /* Witness text note: "single race" is the historical label the
+         * single-race replay lane pins; the SAME observe-only completion now
+         * also serves the tournament FINAL-wrap re-cycle (its own distinct
+         * arm-time witness names that case). */
         std::fprintf(stderr,
                      "[online-resident-live] single race race-ready epoch=%u "
                      "active=0x%02x frames=%u (observe-only re-cycle; match-input "

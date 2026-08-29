@@ -70,6 +70,9 @@ LANES = (
     "check_online_left_reentry.py",         # LEFT/ERROR return: "Return to game" re-takes
                                             #  native (no auto re-arm; press-gated re-take)
     "check_online_lobby_tournament.py",
+    "check_online_final_replay.py",         # RULED final-replay: host continues via
+                                            #  the wrap; both endpoints re-converge
+                                            #  through the reducer into tournament #2
     "check_online_tournament.py",           # keystone: 34,30 + peer==peer race-hash
 )                                           #  convergence (the GOLDEN literal is
 #                                            pinned only by check_online_engine_boot_direct.py)

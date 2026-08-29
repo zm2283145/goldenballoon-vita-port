@@ -38,8 +38,11 @@ The seven assertions (from both processes' stderr + exit codes):
      line -- its descriptor is built LIVE at BEGIN_LOADING -- so that line is NOT a
      discriminator; the BEGIN path is)
   c. selections synced through the reducer (joiner's racer appears on creator's side)
-  d. race 1 converges (identical ENGINE-ONLINE-LIVE fold hash, both raced > N ticks)
-  e. chooser round-trip: race 2 boots and converges too
+  d. race 1 converges on BOTH witnesses: the reducer-agreed finish order AND the
+     cross-process state-hash fold (each resident coordinator folds the same
+     firstTick-anchored confirmed-input window into an FNV state hash and logs
+     it; identical span + identical hash across the two processes)
+  e. chooser round-trip: race 2 boots and converges the same two ways
   f. clean return: both end FINISHED, the launcher room alive, exit 0 -- the
      host's FINISH first dispatches the REMATCH wrap (the room leaves RESULTS,
      reducer-observable), so the real joiner's chooser mirror exits to its OWN
@@ -151,13 +154,17 @@ TO_VEHICLESELECT_RE = re.compile(
     r"^\[online-session\] charselect -> vehicleselect", re.MULTILINE)
 
 # ---- Assertions (d)/(e): race convergence -----------------------------------
-# The descriptor-less native/resident takeover does NOT emit the
-# ENGINE-ONLINE-LIVE fold-hash line (that is runOnlineLiveEngineSession's, the
-# single-race loopback/cloud lane). Its cross-process convergence proof is the
-# reducer-agreed FINISH ORDER: both endpoints independently commit the SAME
-# placements for the SAME race_index (a deterministic rollback race folds the
-# same inputs -> the same order on both), reported over the real cloud via
-# PUBLISH_RESULTS. Both booting each race on the same track corroborates it.
+# TWO independent witnesses per race, both required:
+#   1. the reducer-agreed FINISH ORDER: both endpoints independently commit the
+#      SAME placements for the SAME race_index (PUBLISH_RESULTS over the real
+#      cloud) -- reducer-level agreement, but a weak projection of the race
+#      state (identical finish orders can mask divergent simulations);
+#   2. the STATE-HASH fold: each endpoint's resident coordinator folds a FIXED
+#      firstTick-anchored window of CONFIRMED canonical input frames into an
+#      FNV state hash (the same fold the per-race path emits) and logs it
+#      per epoch -- two endpoints that simulated the same race print the
+#      IDENTICAL span AND hash. Cross-process equality of that hash is the
+#      strong convergence bar.
 RACE_BOOT_RE = re.compile(
     r"^\[online-session\] phase=RACE booting", re.MULTILINE)
 DIRECT_BOOT_RE = re.compile(
@@ -165,6 +172,9 @@ DIRECT_BOOT_RE = re.compile(
 RESULTS_REPORTED_RE = re.compile(
     r"^\[online-resident-live\] race results reported placements=([0-9,]+) "
     r"accepted=(\d+) race_index=(\d+)", re.MULTILINE)
+RACE_FOLD_RE = re.compile(
+    r"^\[online-resident-live\] race fold epoch=(\d+) race_index=(\d+) "
+    r"span=(\d+)\.\.(\d+) hash=([0-9a-f]{16})$", re.MULTILINE)
 
 
 def placements_for(output: str, race_index: int) -> Optional[str]:
@@ -173,6 +183,15 @@ def placements_for(output: str, race_index: int) -> Optional[str]:
     for m in RESULTS_REPORTED_RE.finditer(output):
         if int(m.group(3)) == race_index and m.group(2) == "1":
             return m.group(1)
+    return None
+
+
+def fold_for(output: str, race_index: int) -> Optional[tuple]:
+    """The (span_start, span_end, hash) state-fold witness a process emitted for
+    a given race_index, or None if that race's fold never confirmed."""
+    for m in RACE_FOLD_RE.finditer(output):
+        if int(m.group(2)) == race_index:
+            return (m.group(3), m.group(4), m.group(5))
     return None
 
 FORBIDDEN_MARKERS = (
@@ -490,13 +509,36 @@ def run(args: argparse.Namespace) -> dict:
                     "round-trip and the FINISHED session-end need a tournament; a "
                     "single race never auto-finals)")
 
-            # --- (d) race 1 converges (reducer-agreed finish order) ----------
+            # --- (d) race 1 converges: finish order AND state hash -----------
             def both_reported(idx: int):
                 def pred(_line: str):
                     pc = placements_for(creator.full_output(), idx)
                     pj = placements_for(joiner.full_output(), idx)
                     return (pc, pj) if (pc is not None and pj is not None) else None
                 return pred
+
+            def assert_state_fold(idx: int, label: str) -> str:
+                """Both endpoints emitted the race's state-hash fold witness over
+                the IDENTICAL span with the IDENTICAL hash. The fold lands
+                mid-race (well before the results report), so by the time both
+                results are in it is present or genuinely missing -- a missing
+                fold means the window never fully confirmed, which is itself a
+                convergence failure worth failing on."""
+                fc = fold_for(creator.full_output(), idx)
+                fj = fold_for(joiner.full_output(), idx)
+                if fc is None or fj is None:
+                    raise ProofFailure(
+                        f"{label}: a state-hash fold witness is missing "
+                        f"(create={fc!r} join={fj!r}) -- the confirmed-input "
+                        f"window never converged on one endpoint")
+                if fc != fj:
+                    raise ProofFailure(
+                        f"{label}: the state-hash folds DIVERGED across the two "
+                        f"processes: create=span {fc[0]}..{fc[1]} hash={fc[2]} "
+                        f"join=span {fj[0]}..{fj[1]} hash={fj[2]} -- identical "
+                        f"finish orders cannot excuse divergent simulations")
+                return fc[2]
+
             for drv in (creator, joiner):
                 drv.wait_line(RACE_BOOT_RE.search, f"{drv.name} race 1 boot",
                               args.race_timeout)
@@ -507,9 +549,11 @@ def run(args: argparse.Namespace) -> dict:
                 raise ProofFailure(
                     f"race 1 finish order diverged across processes: "
                     f"create={pc0!r} join={pj0!r}")
+            hash0 = assert_state_fold(0, "race 1")
             phase(True, "race1_converged",
-                  f"assertion (d): both raced race 1 and the reducer agreed the "
-                  f"IDENTICAL finish order {pc0} across the two processes")
+                  f"assertion (d): both raced race 1 and converged on BOTH "
+                  f"witnesses -- reducer-agreed finish order {pc0} AND the "
+                  f"cross-process state-hash fold {hash0}")
 
             # --- (e) chooser round-trip: race 2 boots + converges ------------
             # A tournament's non-final RESULTS round-trips through the reducer
@@ -521,9 +565,11 @@ def run(args: argparse.Namespace) -> dict:
                 raise ProofFailure(
                     f"race 2 finish order diverged across processes: "
                     f"create={pc1!r} join={pj1!r}")
+            hash1 = assert_state_fold(1, "race 2")
             phase(True, "chooser_round_trip",
                   f"assertion (e): the RESULTS round-trip booted a converged "
-                  f"race 2 (reducer-agreed finish order {pc1})")
+                  f"race 2 (reducer-agreed finish order {pc1}, cross-process "
+                  f"state-hash fold {hash1})")
 
             if args.through == "e":
                 # (a)-(e) stop: the full multi-race production flow over the real
