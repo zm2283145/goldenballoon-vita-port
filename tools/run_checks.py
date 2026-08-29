@@ -1038,6 +1038,7 @@ WORKFLOW_COMPANION_SCRIPTS = {
 # browser_local capstone, so they are deliberately absent from this set.)
 ONLINE_TAKEOVER_SCRIPTS = {
     "check_online_beta_handoff.py",
+    "check_online_camera_capture_continuity.py",
     "check_online_camera_lens.py",
     "check_online_ceremony.py",
     "check_online_charselect.py",

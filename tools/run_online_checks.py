@@ -65,6 +65,9 @@ LANES = (
                                            #  + latency room channel (the two-peer
                                            #  cloud CHARSELECT-wedge regression gate)
     "check_online_lobby_single_endpoint.py",
+    "check_online_camera_capture_continuity.py",  # correction ticks keep their
+                                           #  captured cameras (authored-camera
+                                           #  latch survives the restore reset)
     "check_online_room_ready_rearm.py",
     "check_online_rearm_third.py",          # 3 consecutive tournaments: re-arm repeatable
     "check_online_left_reentry.py",         # LEFT/ERROR return: "Return to game" re-takes
