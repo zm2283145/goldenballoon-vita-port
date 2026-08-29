@@ -97,16 +97,31 @@
 #define TS_NONE 0xFFu
 
 /* Two-stage layout geometry. */
-#define TS_TITLE_Y 18
-#define TS_MODE_Y 32
-#define TS_BANNER_Y 42     /* top of the 64x32 sky-tile strip */
-#define TS_BANNER_LABEL_Y 62
-#define TS_TRACK_Y0 88     /* first track row of the hovered world */
-#define TS_TRACK_DY 14
-#define TS_VEHICLE_Y 150
-#define TS_STATUS_Y 170
-#define TS_SEAT_Y 196      /* YOU / rival pair (charselect parity) */
-#define TS_HELP_Y 224
+/* Layout (retail menu-board discipline): a title strip up top, the 5 world
+ * banners with a dark label rail, the hovered world's tracks on a centred
+ * board, and one bottom board holding seats / status / controls. Body text
+ * never floats naked over the scrolling sky. */
+#define TS_STRIP_Y0 6      /* title strip band */
+#define TS_STRIP_Y1 41
+#define TS_TITLE_Y 20
+#define TS_MODE_Y 34
+#define TS_BANNER_Y 44     /* top of the 64x32 sky-tile strip */
+#define TS_RAIL_Y0 59      /* dark label rail across the banner row */
+#define TS_RAIL_Y1 73
+#define TS_BANNER_LABEL_Y 66
+#define TS_PANEL_X0 70     /* the hovered world's track board */
+#define TS_PANEL_X1 250
+#define TS_PANEL_Y0 84
+#define TS_PANEL_Y1 150
+#define TS_TRACK_Y0 95     /* first track row of the hovered world */
+#define TS_TRACK_DY 15
+#define TS_FOOT_X0 10      /* bottom board: seats / status / controls */
+#define TS_FOOT_X1 310
+#define TS_FOOT_Y0 182
+#define TS_FOOT_Y1 236
+#define TS_SEAT_Y 193      /* YOU / rival pair (charselect parity) */
+#define TS_STATUS_Y 209
+#define TS_HELP_Y 226
 
 /* Menu SFX (the real DKR enums, same reuse as CHARSELECT). */
 #define TS_SFX_MOVE SOUND_MENU_PICK2
@@ -397,9 +412,13 @@ typedef struct TsInput {
  *   0 SINGLE_HOST (default) -- host locks a single track; also the B-back lane.
  *   1 JOINER          -- local seat is a JOINER; the seam scripts a remote HOST
  *                        locking a tournament cup, to prove the joiner renders the
- *                        room and narrows to the cup's round-0 track. */
+ *                        room and narrows to the cup's round-0 track.
+ *   2 HOLD            -- frame-dump only (the VS_SCN_HOLD sibling): lock a track,
+ *                        browse away, then park with no START so a shot can be
+ *                        taken of the fully revealed screen. */
 #define TS_SCN_SINGLE_HOST 0
 #define TS_SCN_JOINER 1
+#define TS_SCN_HOLD 2
 static s8 sTsScenario = -1;
 
 /* Scripted headless input (env MDKR_TEST_ONLINE_TRACKSELECT). Keyed on the
@@ -417,6 +436,27 @@ static void trackselect_input_scripted(TsInput *in) {
     memset(in, 0, sizeof(*in));
     if (sTsScenario == TS_SCN_JOINER) {
         return; /* joiner: watch only, the seam drives the host */
+    }
+    if (sTsScenario == TS_SCN_HOLD) {
+        /* Dump seam: walk to Whale Bay (col2/row0), LOCK it, browse away to
+         * the FFL column, then PARK (no START) so a frame dump catches the
+         * revealed locked-while-browsing state. */
+        switch (sTs.ticks) {
+        case 2u:
+        case 3u:
+            in->dx = 1;
+            break;
+        case 6u:
+            in->aEdge = 1u;
+            break;
+        case 9u:
+        case 10u:
+            in->dx = 1;
+            break;
+        default:
+            break;
+        }
+        return;
     }
     if (sTsEntryCount <= 1u) {
         if (sTs.ticks == 3u) {
@@ -701,6 +741,7 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
     bool bothReady;
     u8 c;
     u8 r;
+    s32 bannerLabel[TS_COLS][3]; /* per-banner label colour, drawn after the rail */
     char line[64];
     const char *rname = (rv->name[0] != '\0') ? rv->name : "RIVAL";
 
@@ -735,19 +776,21 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
     }
     bothReady = haveSnap && localReady && rv->present && rv->ready;
 
-    /* Title + mode line (P3: title y/backdrop match charselect's family). */
+    /* Grounds first (retail figure-ground): the title strip, the hovered
+     * world's track board and the bottom seats/status/controls board -- all the
+     * text below sits on one of these, never naked over the scrolling sky. */
+    mdkr_online_screen_strip(TS_STRIP_Y0, TS_STRIP_Y1);
+    mdkr_online_screen_panel(TS_PANEL_X0, TS_PANEL_Y0, TS_PANEL_X1, TS_PANEL_Y1);
+    mdkr_online_screen_panel(TS_FOOT_X0, TS_FOOT_Y0, TS_FOOT_X1, TS_FOOT_Y1);
+
+    /* Title + mode line on the strip. The host's Z: MODE affordance lives with
+     * the other controls in the footer, not up here. */
     mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, TS_TITLE_Y, ASSET_FONTS_BIGFONT,
                      effMode == MDKR_ONLINE_SCREEN_MODE_SINGLE ? "SELECT TRACK" : "SELECT CUP",
                      ALIGN_MIDDLE_CENTER, 255, 224, 96);
-    if (host) {
-        (void) snprintf(line, sizeof(line), "%s   Z: MODE",
-                        effMode == MDKR_ONLINE_SCREEN_MODE_SINGLE ? "SINGLE RACE" : "TOURNAMENT");
-    } else {
-        (void) snprintf(line, sizeof(line), "%s",
-                        effMode == MDKR_ONLINE_SCREEN_MODE_SINGLE ? "SINGLE RACE" : "TOURNAMENT");
-    }
-    mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, TS_MODE_Y, ASSET_FONTS_SMALLFONT, line,
-                     ALIGN_MIDDLE_CENTER, 200, 200, 255);
+    mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, TS_MODE_Y, ASSET_FONTS_SMALLFONT,
+                     effMode == MDKR_ONLINE_SCREEN_MODE_SINGLE ? "SINGLE RACE" : "TOURNAMENT",
+                     ALIGN_MIDDLE_CENTER, 210, 210, 210);
 
     /* STAGE 1: the 5 world/cup sky banners. Hovered bright, others dim. The
      * joiner has no cursor, so it brightens the FOCUSED (locked) world instead. */
@@ -768,20 +811,30 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
         bool worldHoldsLock =
             (effMode == MDKR_ONLINE_SCREEN_MODE_SINGLE && lockedTrackIdx != TS_NONE &&
              (u8) (lockedTrackIdx / TS_ROWS) == c);
-        u8 dim = (onFocus || cupLocked || worldHoldsLock) ? 210u : 110u;
+        u8 dim = (onFocus || cupLocked || worldHoldsLock) ? 210u : 96u;
         s32 lr, lg, lb;
 
         trackselect_draw_banner(c, dim);
         if (cupLocked || worldHoldsLock) {
             lr = 120; lg = 255; lb = 120;
         } else if (onFocus) {
-            lr = 255; lg = 240; lb = 160;
+            lr = 255; lg = 224; lb = 96;
         } else {
             lr = 190; lg = 190; lb = 190;
         }
+        bannerLabel[c][0] = lr;
+        bannerLabel[c][1] = lg;
+        bannerLabel[c][2] = lb;
+    }
+    /* One dark label rail across the banner row (drawn over the tiles, under
+     * the labels) so the five world names share a solid ground. */
+    mdkr_online_screen_strip(TS_RAIL_Y0, TS_RAIL_Y1);
+    for (c = 0u; c < TS_COLS; c++) {
+        s32 cx = (s32) c * TS_COL_W + (TS_COL_W / 2);
         mdkr_online_screen_text(cx, TS_BANNER_LABEL_Y, ASSET_FONTS_SMALLFONT,
-                         (char *) sWorldLabels[c], ALIGN_MIDDLE_CENTER, lr, lg,
-                         lb);
+                         (char *) sWorldLabels[c], ALIGN_MIDDLE_CENTER,
+                         bannerLabel[c][0], bannerLabel[c][1],
+                         bannerLabel[c][2]);
     }
 
     /* STAGE 2: the focused world's 4 tracks, full-width + untruncated. In single
@@ -818,22 +871,13 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
                          ALIGN_MIDDLE_CENTER, nr, ng, nb);
     }
 
-    /* the always-on VEHICLE line (the screen visibly knows the track's
-     * legal vehicles), with a brief highlight when the auto-narrow changes it. */
-    {
-        bool flash = sTs.ticks < sTs.vehFlashEnd;
-        const char *vn = sTs.vehicle < MDKR_ONLINE_SCREEN_VEHICLE_COUNT
-                             ? mdkr_online_vehicle_names[sTs.vehicle]
-                             : "CAR";
-        (void) snprintf(line, sizeof(line), "VEHICLE: %s", vn);
-        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, TS_VEHICLE_Y, ASSET_FONTS_SMALLFONT,
-                         line, ALIGN_MIDDLE_CENTER, flash ? 255 : 180,
-                         flash ? 240 : 180, flash ? 120 : 180);
-    }
-
     /* Status line: names the pick + reflects the START / host-choosing state so a
-     * deferred/refused start is never a dead screen. */
+     * deferred/refused start is never a dead screen. The old always-on
+     * "VEHICLE: X" line is gone (the vehicle screen already owns that fact --
+     * one status line suffices); the auto-narrow "your vehicle changed" moment
+     * still surfaces here as a transient gold flash below. */
     {
+        bool vehFlash = sTs.ticks < sTs.vehFlashEnd;
         char pickName[24];
         const char *pick = "";
         bool haveLock = (effMode == MDKR_ONLINE_SCREEN_MODE_SINGLE) ? (lockedTrackIdx != TS_NONE)
@@ -862,6 +906,14 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
                 mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, TS_STATUS_Y,
                                  ASSET_FONTS_SMALLFONT, "STARTING...",
                                  ALIGN_MIDDLE_CENTER, 120, 255, 120);
+            } else if (vehFlash) {
+                const char *vn = sTs.vehicle < MDKR_ONLINE_SCREEN_VEHICLE_COUNT
+                                     ? mdkr_online_vehicle_names[sTs.vehicle]
+                                     : "CAR";
+                (void) snprintf(line, sizeof(line), "VEHICLE CHANGED: %s", vn);
+                mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, TS_STATUS_Y,
+                                 ASSET_FONTS_SMALLFONT, line, ALIGN_MIDDLE_CENTER,
+                                 255, 224, 96);
             } else if (haveLock) {
                 (void) snprintf(line, sizeof(line), "HOST PICKED: %s", pick);
                 mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, TS_STATUS_Y,
@@ -872,7 +924,7 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
                                 hostName);
                 mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, TS_STATUS_Y,
                                  ASSET_FONTS_SMALLFONT, line, ALIGN_MIDDLE_CENTER,
-                                 150 + tri * 4, 150 + tri * 4, 120);
+                                 150 + tri * 4, 150 + tri * 4, 150 + tri * 4);
             }
         } else if (sTs.startReq && haveLock) {
             if (bothReady) {
@@ -886,6 +938,14 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
                                  ASSET_FONTS_SMALLFONT, line, ALIGN_MIDDLE_CENTER,
                                  255, 240, 120);
             }
+        } else if (vehFlash) {
+            const char *vn = sTs.vehicle < MDKR_ONLINE_SCREEN_VEHICLE_COUNT
+                                 ? mdkr_online_vehicle_names[sTs.vehicle]
+                                 : "CAR";
+            (void) snprintf(line, sizeof(line), "VEHICLE CHANGED: %s", vn);
+            mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, TS_STATUS_Y,
+                             ASSET_FONTS_SMALLFONT, line, ALIGN_MIDDLE_CENTER,
+                             255, 224, 96);
         } else if (haveLock) {
             (void) snprintf(line, sizeof(line), "%s LOCKED - PRESS START", pick);
             mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, TS_STATUS_Y, ASSET_FONTS_SMALLFONT,
@@ -931,8 +991,8 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
         bool haveLock = (effMode == MDKR_ONLINE_SCREEN_MODE_SINGLE) ? (lockedTrackIdx != TS_NONE)
                                                     : (lockedCup != TS_NONE);
         mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, TS_HELP_Y, ASSET_FONTS_SMALLFONT,
-                         haveLock ? "START: BEGIN   A: CHANGE PICK   B: BACK"
-                                  : "A: SELECT   B: BACK",
+                         haveLock ? "START: BEGIN  A: CHANGE PICK  Z: MODE  B: BACK"
+                                  : "A: SELECT   Z: MODE   B: BACK",
                          ALIGN_MIDDLE_CENTER, 255, 255, 255);
     }
 
@@ -1223,9 +1283,13 @@ static void trackselect_test_resolve(void) {
         sTsTestActive = (e != NULL) ? 1 : 0;
         /* Scenario from the env VALUE: "joiner" selects the joiner-render lane,
          * anything else is the default single-race host lane. */
-        sTsScenario = (e != NULL && strstr(e, "joiner") != NULL)
-                          ? (s8) TS_SCN_JOINER
-                          : (s8) TS_SCN_SINGLE_HOST;
+        if (e != NULL && strstr(e, "joiner") != NULL) {
+            sTsScenario = (s8) TS_SCN_JOINER;
+        } else if (e != NULL && strstr(e, "hold") != NULL) {
+            sTsScenario = (s8) TS_SCN_HOLD;
+        } else {
+            sTsScenario = (s8) TS_SCN_SINGLE_HOST;
+        }
     }
 }
 

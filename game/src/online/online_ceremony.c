@@ -208,24 +208,44 @@ static void ceremony_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap) {
     s32 rowY;
     unsigned i;
 
-    /* Headline: a big gold "CHAMPION" + a smaller congratulations line. */
-    mdkr_online_screen_text(CER_SCREEN_W_HALF, 34, ASSET_FONTS_BIGFONT, "CHAMPION",
-                  ALIGN_MIDDLE_CENTER, 255, 224, 96);
-    mdkr_online_screen_text(CER_SCREEN_W_HALF, 56, ASSET_FONTS_SMALLFONT, "CONGRATULATIONS!",
-                  ALIGN_MIDDLE_CENTER, 200, 200, 255);
+    /* Grounds first: title strip, the champion board, the runners-up card (only
+     * when there are runners-up) and the footer strip -- retail figure-ground,
+     * no naked body text over the sky. */
+    mdkr_online_screen_strip(8, 48);
+    if (sCer.champSeat != 0xFFu) {
+        mdkr_online_screen_panel(92, 64, 228, 186);
+    } else {
+        mdkr_online_screen_panel(92, 104, 228, 136);
+    }
+    if (sCer.st.count > 1u) {
+        s32 nRunners = (s32) (sCer.st.count - 1u);
+        if (nRunners > 2) {
+            nRunners = 2; /* two podium rows fit above the footer strip */
+        }
+        mdkr_online_screen_panel(60, 188, 260, 192 + nRunners * 12);
+    }
+    mdkr_online_screen_strip(218, 240);
 
-    /* The champion: a prominent centred portrait + name + point total. The
-     * winner's name is BIGFONT gold (unmistakable); the total is FUNFONT because
-     * BIGFONT has no digit glyphs (the RESULTS rank/points reason). */
+    /* Headline: a big gold "CHAMPION" + a smaller congratulations line. */
+    mdkr_online_screen_text(CER_SCREEN_W_HALF, 24, ASSET_FONTS_BIGFONT, "CHAMPION",
+                  ALIGN_MIDDLE_CENTER, 255, 224, 96);
+    mdkr_online_screen_text(CER_SCREEN_W_HALF, 40, ASSET_FONTS_SMALLFONT, "CONGRATULATIONS!",
+                  ALIGN_MIDDLE_CENTER, 210, 210, 210);
+
+    /* The champion: a prominent centred portrait + name + point total on the
+     * board. The winner's name is BIGFONT gold (unmistakable); the total is
+     * FUNFONT because BIGFONT has no digit glyphs (the RESULTS rank/points
+     * reason). BIGFONT also has no '['/']' glyphs, so the local-winner tag
+     * rides the small CUP CHAMPION line, never the BIGFONT name. */
     if (sCer.champSeat != 0xFFu) {
         ceremony_champ_name(name, sizeof(name));
         mdkr_online_screen_draw_portrait(sCer.champChar, CER_SCREEN_W_HALF - 22, 74,
                                255, 224, 96);
-        (void) snprintf(line, sizeof(line), "%.12s%s", name,
-                        sCer.champLocal ? " [YOU]" : "");
+        (void) snprintf(line, sizeof(line), "%.12s", name);
         mdkr_online_screen_text(CER_SCREEN_W_HALF, 138, ASSET_FONTS_BIGFONT, line,
                       ALIGN_MIDDLE_CENTER, 255, 224, 96);
-        (void) snprintf(line, sizeof(line), "CUP CHAMPION");
+        (void) snprintf(line, sizeof(line), "CUP CHAMPION%s",
+                        sCer.champLocal ? " - YOU!" : "");
         mdkr_online_screen_text(CER_SCREEN_W_HALF, 158, ASSET_FONTS_SMALLFONT, line,
                       ALIGN_MIDDLE_CENTER, 255, 255, 255);
         (void) snprintf(line, sizeof(line), "%u", (unsigned) sCer.champPoints);
@@ -239,8 +259,8 @@ static void ceremony_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap) {
     /* Runners-up: the rest of the podium in small rows below (2ND, 3RD, ...),
      * reusing the real place labels -- so the standings are still legible under
      * the champion, not just the winner in isolation. */
-    rowY = 194;
-    for (i = 1u; i < sCer.st.count && i < 4u; i++) {
+    rowY = 196;
+    for (i = 1u; i < sCer.st.count && i < 3u; i++) {
         unsigned slot = sCer.st.order[i];
         mdkr_online_screen_seat_name(snap, haveSnap, slot, name, sizeof(name));
         (void) snprintf(line, sizeof(line), "%s  %.10s  %u",
@@ -248,7 +268,7 @@ static void ceremony_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap) {
                         (unsigned) sCer.st.points[i]);
         mdkr_online_screen_text(CER_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT, line,
                       ALIGN_MIDDLE_CENTER, 200, 200, 200);
-        rowY += 14;
+        rowY += 12;
     }
 
     /* Footer: a pulsed "returning" heartbeat (never a dead hold) + the host's

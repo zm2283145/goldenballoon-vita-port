@@ -98,27 +98,30 @@
 #define VS_REJECT_FLASH_TICKS 45u /* "NOT ON THIS TRACK" flash (~1.5s @ 30Hz) */
 
 /* ---- Layout geometry (320x240) -------------------------------------------- */
+/* Layout (retail menu-board discipline): title strip, one picker board holding
+ * the chosen racer + the three vehicle cards, and a footer board with the
+ * track / seats / controls lines. */
+#define VS_STRIP_Y0 6
+#define VS_STRIP_Y1 30
 #define VS_TITLE_Y 18
+#define VS_BOARD_Y0 34         /* the picker board */
+#define VS_BOARD_Y1 176
 #define VS_PORTRAIT_X (MDKR_ONLINE_SCREEN_W_HALF - 22) /* centered ~44px portrait */
-#define VS_PORTRAIT_Y 34
-#define VS_CHARNAME_Y 82
+#define VS_PORTRAIT_Y 38
+#define VS_CHARNAME_Y 88
 #define VS_ART_Y 98            /* top edge of the real car/hover/plane art */
-#define VS_CARD_Y 150          /* vehicle name row (caption below the art) */
-#define VS_CARD_STATE_Y 164    /* per-vehicle state label */
-#define VS_TRACK_Y 182
-#define VS_STATUS_Y 204        /* YOU / rival pair (charselect parity) */
+#define VS_RAIL_Y0 143         /* caption rail: a darker card over the art feet */
+#define VS_RAIL_Y1 172
+#define VS_CARD_Y 150          /* vehicle name row (on the caption rail) */
+#define VS_CARD_STATE_Y 164    /* per-vehicle state label (on the rail) */
+#define VS_FOOT_Y0 180         /* footer board */
+#define VS_FOOT_Y1 236
+#define VS_TRACK_Y 189
+#define VS_STATUS_Y 206        /* YOU / rival pair (charselect parity) */
 #define VS_HELP_Y 226
 /* Three vehicle cards centered across the width. */
 #define VS_CARD_X0 64
 #define VS_CARD_DX 96
-
-/* Per-vehicle accent colour (display chrome only). The vehicle NAMES are shared
- * with TRACKSELECT via mdkr_online_vehicle_names (online_trackselect.h). */
-static const u8 sVehicleAccent[MDKR_ONLINE_SCREEN_VEHICLE_COUNT][3] = {
-    {230u, 110u, 110u}, /* CAR       -- warm red */
-    {110u, 190u, 230u}, /* HOVERCRAFT-- cool blue */
-    {235u, 205u, 110u}, /* PLANE     -- gold */
-};
 
 /* the real vehicle art tile group (three vehicles x TOP+BOTTOM) + the
  * -1 terminator menu_assetgroup_load/free stop on. Borrowed READ-ONLY the same way
@@ -496,6 +499,12 @@ static void vehicleselect_render(const VsRemoteView *rv) {
     s32 tri = mdkr_online_screen_pulse(sVs.ticks);
     u8 v;
 
+    /* Grounds first (retail figure-ground): title strip, the picker board and
+     * the footer board -- portrait, cards and every label sit on a dark card. */
+    mdkr_online_screen_strip(VS_STRIP_Y0, VS_STRIP_Y1);
+    mdkr_online_screen_panel(20, VS_BOARD_Y0, 300, VS_BOARD_Y1);
+    mdkr_online_screen_panel(10, VS_FOOT_Y0, 310, VS_FOOT_Y1);
+
     /* Title. */
     mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, VS_TITLE_Y, ASSET_FONTS_BIGFONT,
                             "CHOOSE YOUR VEHICLE", ALIGN_MIDDLE_CENTER, 255, 224,
@@ -511,19 +520,14 @@ static void vehicleselect_render(const VsRemoteView *rv) {
                                 ALIGN_MIDDLE_CENTER, 200, 200, 200);
     }
 
-    /* The three vehicle cards. Colour + shape carry the state so a colourblind
-     * player still reads it: cursor = pulsing gold >NAME<, committed = green,
-     * illegal = big luminance drop + "N/A". */
+    /* The three vehicle cards. Art first, then a darker caption rail over the
+     * art feet (so the labels never fight the bright icon backdrops), then the
+     * captions. Colour + shape carry the state so a colourblind player still
+     * reads it: cursor = pulsing gold >NAME<, committed = green, illegal = big
+     * luminance drop + "N/A". Body copy stays plain light grey (one accent). */
     for (v = 0u; v < MDKR_ONLINE_SCREEN_VEHICLE_COUNT; v++) {
         s32 x = VS_CARD_X0 + (s32) v * VS_CARD_DX;
         bool legal = vehicleselect_vehicle_legal(v, sVs.mask);
-        bool onCursor = (v == sVs.cursor);
-        bool committed = (v == sVs.vehicle);
-        s32 r = sVehicleAccent[v][0];
-        s32 g = sVehicleAccent[v][1];
-        s32 b = sVehicleAccent[v][2];
-        char label[24];
-        const char *state;
 
         /* the REAL vehicle picture per card (like the charselect grid's
          * real portraits) -- full colour when legal, ghosted (dim + half alpha,
@@ -534,11 +538,21 @@ static void vehicleselect_render(const VsRemoteView *rv) {
         } else {
             mdkr_online_screen_draw_vehicle(v, x, VS_ART_Y, 150u, 150u, 150u, 128u);
         }
+    }
+    mdkr_online_screen_panel(26, VS_RAIL_Y0, 294, VS_RAIL_Y1);
+    for (v = 0u; v < MDKR_ONLINE_SCREEN_VEHICLE_COUNT; v++) {
+        s32 x = VS_CARD_X0 + (s32) v * VS_CARD_DX;
+        bool legal = vehicleselect_vehicle_legal(v, sVs.mask);
+        bool onCursor = (v == sVs.cursor);
+        bool committed = (v == sVs.vehicle);
+        s32 r = 210, g = 210, b = 210;
+        char label[24];
+        const char *state;
 
         if (!legal) {
-            r = 96;
-            g = 96;
-            b = 96;
+            r = 120;
+            g = 120;
+            b = 120;
         }
         if (committed && legal) {
             r = 120;
@@ -584,7 +598,7 @@ static void vehicleselect_render(const VsRemoteView *rv) {
         }
         mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, VS_TRACK_Y,
                                 ASSET_FONTS_SMALLFONT, line, ALIGN_MIDDLE_CENTER,
-                                190, 190, 210);
+                                200, 200, 200);
     }
 
     /* Status lines (charselect parity): local committed vehicle + the rival. */

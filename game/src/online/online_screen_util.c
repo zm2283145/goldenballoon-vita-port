@@ -20,8 +20,10 @@
 #include "audio.h"            /* music_play / music_current_sequence */
 #include "sequence_ids.h"     /* SEQUENCE_MAIN_MENU */
 #include "fade_transition.h"  /* transition_begin + FADE_TRANSITION */
+#include "textures_sprites.h" /* rendermode_reset (panel fill-state restore) */
 #include "online/online_portraits.h" /* sOnlineToPortrait, sOnlineNames,
                                         MDKR_ONLINE_PORTRAIT_COUNT */
+#include "online/online_screen_constants.h" /* MDKR_ONLINE_SCREEN_W (strip width) */
 
 #include <stdio.h>
 #include <string.h>
@@ -37,59 +39,129 @@ s32 mdkr_online_screen_local_seat(const MdkrPartyLinkSnapshot *snap) {
     return -1;
 }
 
-/* Alpha of the body-text dark backing band. ~0.75 opaque near-black: strong enough
- * to read the light body faces over the BRIGHTEST world sky (Dino gold), still
- * translucent so the scrolling sky reads through it (a nameplate, not an opaque
- * box). Tuned against the bright/dark frame dumps. */
-#define MDKR_ONLINE_TEXT_BAND_ALPHA 190
-
-/* Draw text into the engine frame's display list with the given font + colour,
- * wrapped in a legibility SCRIM + a dark backing band for body text.
+/* Draw text into the engine frame's display list with the given font + colour.
  *
- * The scrim is an 8-direction near-black halo drawn behind every glyph -- a
- * per-glyph dark backing that keeps body text crisp over even the brightest world
- * sky. The authentic scrolling skies washed out light body text on
- * trackselect/results even with a single 1px drop shadow; a full halo fixes it.
- * This is the retail "outline the font" technique, NOT a heavy opaque box, and the
- * halo lives in the SAME virtual coordinate space as the glyphs, so it can never
- * mis-register the way a framebuffer-space fill-rect panel would on the
- * aspect-scaled widescreen host.
+ * Presentation contract (the retail-menu discipline): body text NEVER floats
+ * naked over the bright scrolling skies -- it sits on a dark panel/strip drawn
+ * by mdkr_online_screen_panel/_strip below (figure-ground comes from LAYOUT,
+ * exactly like the retail options/pause boards). The old per-string treatment
+ * (dark band + 8-direction halo + face = 10 draw_text passes) smeared the small
+ * ROM glyphs into unreadable blobs AND overran the frame display list on the
+ * dense chooser (8354 of 7000 Gfx commands); it is deliberately gone.
  *
- * The compact body faces over the BRIGHT skies (Dino gold / Sherbet / Snowflake)
- * still washed out with the halo alone, worst on the pure-text MORE RACES chooser +
- * the charselect labels. BIGFONT (ASSET_FONTS_BIGFONT) carries its own thick dark
- * outline (the GAME SELECT face) and stays crisp over any sky -- online already uses
- * it for TITLES -- but it is ~24px tall and does not fit the dense option lists /
- * grid nameplates, so for the compact faces we add a genuine dark backing BAND: the
- * engine's OWN text-background fillrect (set_text_background_colour), which
- * render_text_string emits in the SAME glyph coordinate space (co-registers with the
- * text on the widescreen host, unlike a raw framebuffer fill-rect). BIGFONT
- * (self-outlined) skips the band so titles keep their exact retail look; every other
- * face (SMALLFONT / FUNFONT) gets it. The band is drawn ONCE (with the first halo
- * pass) then disabled, so it is a single flat plate, not nine stacked ones. */
+ * What remains per string: ONE 1px drop shadow (crisp, retail-style depth cue)
+ * + ONE face pass. BIGFONT carries its own authored thick outline (the GAME
+ * SELECT face), so it skips even the shadow and keeps its exact retail look.
+ * Glyphs render at the authored size only (draw_text has no scale parameter;
+ * scale is always 1.0) -- integer-crisp, never fractionally resampled.
+ *
+ * COLOUR (root-cause note): set_text_colour's 4th argument is the ENV-ALPHA
+ * blend factor of the text combiner (G_CC_BLENDT_ENV_ALPHA_A_TxP: colour =
+ * lerp(TEXEL, ENV, envA)) -- NOT an unused alpha. The old halo stack passed 0
+ * there, so every one of its 9 "dark" passes actually drew the RAW WHITE
+ * glyph texel: nine overlapping white copies WAS the owner-reported blur, and
+ * none of the screens' colour vocabulary ever reached the frame. 255 applies
+ * the requested colour fully; the shadow uses retail's own translucent-black
+ * shadow recipe (menu.c draws its shadows at opacity 180). BIGFONT and
+ * FUNFONT are AUTHORED-COLOUR faces (the gold title art / the rainbow trophy
+ * digits): they keep envA 0 so their authored art shows untinted, exactly as
+ * retail renders them. */
 void mdkr_online_screen_text(s32 x, s32 y, s32 fontId, char *text,
                              AlignmentFlags align, s32 r, s32 g, s32 b) {
-    /* +-1 virtual unit == a clean thin halo at the menu font scale. */
-    static const s32 ox[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
-    static const s32 oy[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
-    unsigned i;
+    bool authoredFace = (fontId == (s32) ASSET_FONTS_BIGFONT) ||
+                        (fontId == (s32) ASSET_FONTS_FUNFONT);
     set_text_font(fontId);
+    set_text_background_colour(0, 0, 0, 0);
     if (fontId != (s32) ASSET_FONTS_BIGFONT) {
-        /* One dark backing band (a throwaway near-black glyph carries the fillrect
-         * behind the whole string), then disable it for the halo/main passes. */
-        set_text_background_colour(0, 0, 0, MDKR_ONLINE_TEXT_BAND_ALPHA);
-        set_text_colour(0, 0, 0, 0, 255);
-        draw_text(&gCurrDisplayList, x, y, text, align);
-        set_text_background_colour(0, 0, 0, 0);
+        set_text_colour(0, 0, 0, 255, 180);
+        draw_text(&gCurrDisplayList, x + 1, y + 1, text, align);
+    }
+    if (authoredFace) {
+        set_text_colour(r, g, b, 0, 255); /* authored art, untinted */
     } else {
-        set_text_background_colour(0, 0, 0, 0);
-        set_text_colour(0, 0, 0, 0, 255);
+        set_text_colour(r, g, b, 255, 255);
     }
-    for (i = 0u; i < 8u; i++) {
-        draw_text(&gCurrDisplayList, x + ox[i], y + oy[i], text, align);
-    }
-    set_text_colour(r, g, b, 0, 255);
     draw_text(&gCurrDisplayList, x, y, text, align);
+}
+
+/* ======================================================================== *
+ * Panels (retail menu-board style: dark rounded quad + subtle border)
+ * ------------------------------------------------------------------------
+ * The screens group their text blocks on these boards so light text always has
+ * a solid dark ground, whatever the sky behind. Drawn with the FONT module's
+ * own flat-fill vocabulary -- dDialogueBoxBegin + dDialogueBoxDrawModes[1]
+ * (env-colour XLU fill) + fillrects -- i.e. the exact command sequence
+ * render_dialogue_box() uses for the retail dialogue boards, so the quads live
+ * in the same logical 320x240 space as the glyph texrects and co-register with
+ * the text on the aspect-scaled host. State is reset afterwards the same way
+ * the font module resets it (pipesync + rendermode_reset).
+ * ======================================================================== */
+
+/* Board palette: near-black navy fill (dark enough for white body text over
+ * the brightest Dino sand, still translucent so the scrolling sky reads
+ * through) + a muted tan 1px border (subtle, NOT the selection gold). */
+#define MDKR_ONLINE_PANEL_FILL_R 0
+#define MDKR_ONLINE_PANEL_FILL_G 0
+#define MDKR_ONLINE_PANEL_FILL_B 20
+#define MDKR_ONLINE_PANEL_FILL_A 208
+#define MDKR_ONLINE_PANEL_EDGE_R 132
+#define MDKR_ONLINE_PANEL_EDGE_G 112
+#define MDKR_ONLINE_PANEL_EDGE_B 64
+#define MDKR_ONLINE_PANEL_EDGE_A 176
+#define MDKR_ONLINE_STRIP_FILL_A 168
+
+/* Engine-owned draw-mode lists the flat fills borrow (authoritative
+ * definitions: font.c; external linkage, same borrow discipline as the
+ * gRacerPortraits/gMenuAssets decls above). */
+extern Gfx dDialogueBoxBegin[];
+extern Gfx dDialogueBoxDrawModes[][2];
+
+/* Arm the font module's flat env-colour fill (dialogue-board vocabulary). */
+static void online_screen_fill_begin(s32 r, s32 g, s32 b, s32 a) {
+    gSPDisplayList(gCurrDisplayList++, dDialogueBoxBegin);
+    gDkrDmaDisplayList(gCurrDisplayList++,
+                       OS_K0_TO_PHYSICAL(dDialogueBoxDrawModes[1]), 2);
+    gDPSetEnvColor(gCurrDisplayList++, r, g, b, a);
+}
+
+/* Restore neutral render state exactly the way the font module does. */
+static void online_screen_fill_end(void) {
+    gDPPipeSync(gCurrDisplayList++);
+    rendermode_reset(&gCurrDisplayList);
+    gDPPipeSync(gCurrDisplayList++);
+}
+
+/* One dark menu-board card: rounded (2px-notched) dark quad + subtle 1px
+ * border. (x1,y1)-(x2,y2) inclusive-ish logical 320x240 coords. ~14 Gfx
+ * commands total -- vs ~700 for one halo-stacked string block it replaces. */
+void mdkr_online_screen_panel(s32 x1, s32 y1, s32 x2, s32 y2) {
+    /* Fill: three non-overlapping strips (top cap / middle / bottom cap) so the
+     * translucent fill never double-blends. */
+    online_screen_fill_begin(MDKR_ONLINE_PANEL_FILL_R, MDKR_ONLINE_PANEL_FILL_G,
+                             MDKR_ONLINE_PANEL_FILL_B, MDKR_ONLINE_PANEL_FILL_A);
+    render_fill_rectangle(&gCurrDisplayList, x1 + 2, y1, x2 - 2, y1 + 2);
+    render_fill_rectangle(&gCurrDisplayList, x1, y1 + 2, x2, y2 - 2);
+    render_fill_rectangle(&gCurrDisplayList, x1 + 2, y2 - 2, x2 - 2, y2);
+    /* Border: four 1px edge lines over the fill's rim. */
+    gDPPipeSync(gCurrDisplayList++);
+    gDPSetEnvColor(gCurrDisplayList++, MDKR_ONLINE_PANEL_EDGE_R,
+                   MDKR_ONLINE_PANEL_EDGE_G, MDKR_ONLINE_PANEL_EDGE_B,
+                   MDKR_ONLINE_PANEL_EDGE_A);
+    render_fill_rectangle(&gCurrDisplayList, x1 + 2, y1, x2 - 2, y1 + 1);
+    render_fill_rectangle(&gCurrDisplayList, x1 + 2, y2 - 1, x2 - 2, y2);
+    render_fill_rectangle(&gCurrDisplayList, x1, y1 + 2, x1 + 1, y2 - 2);
+    render_fill_rectangle(&gCurrDisplayList, x2 - 1, y1 + 2, x2, y2 - 2);
+    online_screen_fill_end();
+}
+
+/* Full-width borderless band (title strip / footer ground): the ONE place text
+ * may overlay the scene directly, so it gets a lighter flat band rather than a
+ * bordered board. */
+void mdkr_online_screen_strip(s32 y1, s32 y2) {
+    online_screen_fill_begin(MDKR_ONLINE_PANEL_FILL_R, MDKR_ONLINE_PANEL_FILL_G,
+                             MDKR_ONLINE_PANEL_FILL_B, MDKR_ONLINE_STRIP_FILL_A);
+    render_fill_rectangle(&gCurrDisplayList, 0, y1, MDKR_ONLINE_SCREEN_W, y2);
+    online_screen_fill_end();
 }
 
 /* Triangle-wave pulse 0..16 off a tick counter -- the shared native highlight /
