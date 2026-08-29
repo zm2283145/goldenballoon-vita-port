@@ -57,9 +57,9 @@ from pathlib import Path
 
 from harness_utils import resolve_binary
 from online_lane_util import (
-    CUP_ROUNDS, DIRECT_BOOT_RE, FINISHED_ENGINE_RE, FORBIDDEN_ONLINE,
-    GAMEMODE_ONLINE_SESSION, PLACE_NONE, SESSION_END_RE, SESSION_RACE_RE,
-    forbidden_marker, make_fail,
+    CHOOSER_FINISH_RE, CUP_ROUNDS, DIRECT_BOOT_RE, FINISHED_ENGINE_RE,
+    FORBIDDEN_ONLINE, GAMEMODE_ONLINE_SESSION, PLACE_NONE, SESSION_END_RE,
+    SESSION_RACE_RE, forbidden_marker, make_fail,
 )
 from online_lane_util import run_engine as _run_engine
 
@@ -405,6 +405,14 @@ def main() -> int:
     # launcher reads reason=FINISHED and returns cleanly to the room -- so the run
     # terminates ON the FINISH (rc 0), AFTER all 4 boots / RESULTS / REMATCH
     # witnesses above (which is why every count assertion still holds).
+    # Pin the route explicitly: the FINISH at the final standings is the host
+    # committing the native chooser's FINISH option (index 5), so a wrong committed
+    # route fails here directly rather than as a bare downstream FINISHED.
+    if not CHOOSER_FINISH_RE.search(output):
+        return fail("the native chooser never committed the FINISH option at the "
+                    "final standings (no '[online-results] chooser: committed "
+                    "option=FINISH -> LEAVE') -- FINISHED was not reached via FINISH",
+                    output)
     if not FINISHED_ENGINE_RE.search(output):
         return fail("the engine never noted FINISHED at the final standings -- the "
                     "PD-T6d FINISH handshake did not fire (final standings would "

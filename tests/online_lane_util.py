@@ -103,6 +103,15 @@ SESSION_END_RE = re.compile(
 FINISHED_ENGINE_RE = re.compile(
     r"^\[online-session\] FINISHED: final standings", re.MULTILINE)
 
+# The native "more races" RESULTS chooser committing the FINISH option: the host
+# navigated to FINISH (index 5) and pressed A. This is online_results.c's own
+# commit-path line, emitted just before the chooser returns LEAVE at the final
+# standings. Lanes that reach FINISHED via MDKR_TEST_ONLINE_RESULTS_CHOOSER=5 assert
+# THIS in addition to the downstream FINISHED so a wrong chooser route (a different
+# committed option, or a FINISHED reached by some other path) fails loudly + directly.
+CHOOSER_FINISH_RE = re.compile(
+    r"^\[online-results\] chooser: committed option=FINISH -> LEAVE$", re.MULTILINE)
+
 
 # --------------------------------------------------------------------------- #
 #  Environment + runner

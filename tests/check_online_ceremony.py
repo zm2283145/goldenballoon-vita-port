@@ -39,8 +39,8 @@ from pathlib import Path
 
 from harness_utils import resolve_binary
 from online_lane_util import (
-    CUP_ROUNDS, DIRECT_BOOT_RE, FINISHED_ENGINE_RE, FORBIDDEN_ONLINE,
-    SESSION_END_RE, forbidden_marker, make_fail,
+    CHOOSER_FINISH_RE, CUP_ROUNDS, DIRECT_BOOT_RE, FINISHED_ENGINE_RE,
+    FORBIDDEN_ONLINE, SESSION_END_RE, forbidden_marker, make_fail,
 )
 from online_lane_util import run_engine as _run_engine
 
@@ -132,6 +132,14 @@ def _common_finish_asserts(tag: str, rc: int, output: str) -> int | None:
     if not PHASE_CEREMONY_RE.search(output):
         return fail(f"[{tag}] the session never detoured into the CEREMONY phase "
                     f"(RESULTS went straight to FINISHED)", output)
+    # The FINAL standings were left via the host committing the native chooser's
+    # FINISH option (index 5) -> LEAVE -> this ceremony detour; pin that route so a
+    # wrong committed option fails here directly, not as a bare downstream FINISHED.
+    if not CHOOSER_FINISH_RE.search(output):
+        return fail(f"[{tag}] the native chooser never committed the FINISH option "
+                    f"(no '[online-results] chooser: committed option=FINISH -> "
+                    f"LEAVE') -- the ceremony/FINISHED was not reached via FINISH",
+                    output)
     # FINISHED fires EXACTLY ONCE, after the ceremony, unchanged.
     finished = FINISHED_ENGINE_RE.findall(output)
     if len(finished) != 1:
@@ -367,6 +375,13 @@ def check_champion_on_disconnect(binary: Path, rom: Path, verbose: bool) -> int 
         return fail(f"[{tag}] process exited {rc} (expected clean 0)", output)
     if not PHASE_CEREMONY_RE.search(output):
         return fail(f"[{tag}] the session never detoured into the CEREMONY phase",
+                    output)
+    # The local (losing) host leaves the FINAL standings by committing the native
+    # chooser's FINISH option (index 5); pin that route explicitly here too.
+    if not CHOOSER_FINISH_RE.search(output):
+        return fail(f"[{tag}] the native chooser never committed the FINISH option "
+                    f"(no '[online-results] chooser: committed option=FINISH -> "
+                    f"LEAVE') -- the ceremony was not reached via the FINISH route",
                     output)
     boots = DIRECT_BOOT_RE.findall(output)
     if len(boots) != CUP_ROUNDS:

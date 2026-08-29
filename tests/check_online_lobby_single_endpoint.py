@@ -12,16 +12,11 @@ drive ONLY its own endpoint and the REMOTE readies itself over the transport:
       poke a peer adapter); a SEPARATE remote-sim drives the stand-in remote (peer B)
       so the reducer converges over the real loopback transport. Assert >= 2 boots in
       ONE process on the single endpoint, on FRESH (strictly rising) epochs, with the
-      single-endpoint witness on every round advance.
+      single-endpoint witness on every round advance. The final standings then reach
+      FINISH via the native "more races" chooser (host commits FINISH -> LEAVE) into
+      the single FINISHED handshake.
 
-  (b) ROOM-READY trigger -- the production detection fires EXACTLY ONCE on first-
-      SELECTING + 2 members + LOBBY and routes to lobby-start (native takeover) for
-      ANY mode: T2 dropped the former TOURNAMENT-only gate, so a SINGLE-RACE room now
-      takes the SAME native takeover a tournament room does (both fire once + route to
-      lobby-start). Proven via a test seam (the full interactive loop needs a live
-      cloud adapter + a human).
-
-  (c) WALL-CLOCK watchdog over ALL THREE descriptor-less waits, with an ERROR signal:
+  (b) WALL-CLOCK watchdog over ALL THREE descriptor-less waits, with an ERROR signal:
       - W1 race-1 re-wait: START but the descriptor/match-input never arms -> the
         wall-clock deadline trips at "race-1 re-wait" and the run exits NONZERO
         (ERROR, distinguishable from a normal finish), bounded, NOT a hang.
@@ -35,6 +30,13 @@ Two loopback adapters stand in for the two processes; single-endpoint mode
 (MDKR_APP_TEST_ONLINE_SINGLE_ENDPOINT) makes the LOCAL advance drive only the visible
 endpoint while the remote-sim drives peer B. The engine session runs in the WALL-CLOCK
 watchdog + error-signal path (singleEndpoint latch from the party_link note).
+
+The room-ready GATE probe (production detection fires ONCE on first-SELECTING + 2
+members + LOBBY and routes to lobby-start) used to run here too, but it is the
+byte-identical probe check_online_lobby_start.py already carries (there holding the
+PRODUCTION OwningLiveAdapter wrapper + asserting the [online-room-ready] latch/publish
+diagnostics -- the load-bearing coverage), so it lives in that one lane now to avoid a
+duplicate probe run.
 """
 
 from __future__ import annotations
@@ -49,8 +51,8 @@ from pathlib import Path
 
 from harness_utils import resolve_binary
 from online_lane_util import (
-    CUP_ROUNDS, DIRECT_BOOT_RE, FINISHED_ENGINE_RE, SESSION_END_RE,
-    forbidden_marker, make_fail,
+    CHOOSER_FINISH_RE, CUP_ROUNDS, DIRECT_BOOT_RE, FINISHED_ENGINE_RE,
+    SESSION_END_RE, forbidden_marker, make_fail,
 )
 from online_lane_util import run_engine as _run_engine
 
@@ -77,10 +79,6 @@ MID_UNWIND_RE = re.compile(
     r"^\[online-session\] mid-tournament UNWIND: room regressed to LOBBY",
     re.MULTILINE)
 CHARSELECT_ENTER_RE = re.compile(r"^\[online-charselect\] enter:", re.MULTILINE)
-# PD-T6d engine->launcher FINISH/RETURN handshake witnesses.
-ROOM_READY_PROBE_RE = re.compile(
-    r"^\[online-room-ready-probe\] fires=(\d+) conditionHeld=(\d+) "
-    r"published=(\d+) route=(\S+)", re.MULTILINE)
 
 
 fail = make_fail("lobby-single-endpoint")
@@ -156,6 +154,14 @@ def check_single_endpoint_advance(binary: Path, rom: Path, ticks: int,
     # PD-T6d re-audit: the final standings no longer HOLD to the tick budget -- the
     # host's "A: FINISH" now fires the FINISHED handshake (engine note + launcher
     # read + clean return), so the run terminates ON the FINISH with rc 0.
+    # Pin the CHOOSER route explicitly: the FINISHED above must be reached via the host
+    # committing the "more races" FINISH option (index 5) -- so a wrong committed route
+    # fails here, directly, instead of masquerading as a downstream FINISHED.
+    if not CHOOSER_FINISH_RE.search(output):
+        return fail("[single-advance] the native chooser never committed the FINISH "
+                    "option (no '[online-results] chooser: committed option=FINISH -> "
+                    "LEAVE') -- the FINISHED was not reached via the FINISH route",
+                    output)
     if not FINISHED_ENGINE_RE.search(output):
         return fail("[single-advance] the engine never noted FINISHED at the final "
                     "standings (the FINISH handshake did not fire)", output)
@@ -163,51 +169,6 @@ def check_single_endpoint_advance(binary: Path, rom: Path, ticks: int,
     if not any(reason == "FINISHED" and code == "0" for reason, code in ends):
         return fail("[single-advance] the launcher never read the FINISHED session "
                     f"end (reason=FINISHED result=0); saw {ends}", output)
-    return None
-
-
-def check_room_ready_trigger(binary: Path, rom: Path, verbose: bool) -> int | None:
-    """(b) The room-ready trigger fires ONCE and routes to lobby-start for ANY mode.
-
-    T2 dropped the former TOURNAMENT-only gate, so BOTH a tournament room AND a
-    single-race room now take the native takeover (fire exactly once, route=lobby-
-    start). Before T2 the single-race branch asserted zero fires + the race-ready
-    ImGui fallback; that behaviour is gone."""
-    rc, output = run_engine(
-        binary, rom, ticks=2000, timeout=120, verbose=verbose,
-        extra_env={
-            "MDKR_APP_TEST_ONLINE_ROOM_READY_PROBE": "1",
-            "MDKR_APP_TEST_ONLINE_MODE": "tournament",
-            "MDKR_APP_TEST_ONLINE_CUP": str(CUP),
-        })
-    if rc != 0:
-        return fail(f"[room-ready] tournament probe exited {rc} (expected 0)",
-                    output)
-    m = ROOM_READY_PROBE_RE.search(output)
-    if not m:
-        return fail("[room-ready] tournament probe emitted no result line", output)
-    fires, held, published, route = m.groups()
-    if fires != "1" or held != "1" or published != "1" or route != "lobby-start":
-        return fail(f"[room-ready] tournament room did not route to lobby-start "
-                    f"exactly once (fires={fires} held={held} published={published} "
-                    f"route={route})", output)
-
-    # T2: a SINGLE-RACE room (no tournament env) now fires the SAME native takeover.
-    rc, output = run_engine(
-        binary, rom, ticks=2000, timeout=120, verbose=verbose,
-        extra_env={"MDKR_APP_TEST_ONLINE_ROOM_READY_PROBE": "1"})
-    if rc != 0:
-        return fail(f"[room-ready] single-race probe exited {rc} (expected 0)",
-                    output)
-    m = ROOM_READY_PROBE_RE.search(output)
-    if not m:
-        return fail("[room-ready] single-race probe emitted no result line", output)
-    fires, held, published, route = m.groups()
-    if fires != "1" or held != "1" or published != "1" or route != "lobby-start":
-        return fail(f"[room-ready] single-race room did NOT take the native takeover "
-                    f"(T2 routes it to lobby-start exactly once, same as a tournament): "
-                    f"fires={fires} held={held} published={published} route={route}",
-                    output)
     return None
 
 
@@ -323,13 +284,7 @@ def main() -> int:
     if result is not None:
         return result
 
-    # (b) room-ready trigger (T2: tournament AND single-race both fire once ->
-    #     lobby-start; the pre-T2 single-race race-ready fallback is gone)
-    result = check_room_ready_trigger(binary, rom, args.verbose)
-    if result is not None:
-        return result
-
-    # (c) wall-clock watchdog over the three descriptor-less waits + error signal
+    # (b) wall-clock watchdog over the three descriptor-less waits + error signal
     result = check_wallclock_wait(binary, rom, args.verbose, "descriptor",
                                   "race-1 re-wait", ticks=6000, timeout=200)
     if result is not None:
@@ -351,13 +306,12 @@ def main() -> int:
     print(
         "PASS online lobby-single-endpoint: the SINGLE-ENDPOINT per-round advance "
         f"drove ONLY the local endpoint (advance handed a NULL peer) for {CUP_ROUNDS} "
-        f"boots on fresh epochs [2..{CUP_ROUNDS}]; the room-ready trigger fired ONCE "
-        "for a tournament room (route=lobby-start) AND fired ONCE for a single-race "
-        "room too (T2: same native takeover, route=lobby-start); the WALL-CLOCK "
+        f"boots on fresh epochs [2..{CUP_ROUNDS}]; the WALL-CLOCK "
         "watchdog bounded all three "
         "descriptor-less waits (race-1 re-wait, results rematch-hold, per-round) with "
         "a nonzero ERROR exit + a launcher reason=ERROR read; the final standings "
-        "fired the PD-T6d FINISHED handshake (engine note + launcher reason=FINISHED "
+        "reached FINISH via the native chooser (committed option=FINISH -> LEAVE) into "
+        "the PD-T6d FINISHED handshake (engine note + launcher reason=FINISHED "
         "+ clean return); and a mid-tournament CANCEL returned cleanly to the room "
         "(reason=LEFT, exit 0) instead of a re-front-into-error (never a hang).")
     return 0
