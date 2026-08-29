@@ -159,8 +159,10 @@ static const char *const sCupNames[TS_COLS] = {
     "FUTURE FUN CUP",
 };
 
-/* Vehicle names for the always-on VEHICLE line. */
-static const char *const sVehicleNames[MDKR_ONLINE_SCREEN_VEHICLE_COUNT] = {
+/* Vehicle names for the always-on VEHICLE line. Defined here and shared with
+ * VEHICLESELECT via online_trackselect.h (one table -- both screens label
+ * identically). */
+const char *const mdkr_online_vehicle_names[MDKR_ONLINE_SCREEN_VEHICLE_COUNT] = {
     "CAR", "HOVERCRAFT", "PLANE",
 };
 
@@ -257,6 +259,30 @@ static u8 trackselect_index_of(u16 trackId) {
     return TS_NONE;
 }
 
+/* The retail 2-player picker narrowing table (menu.c menu_track_select V79+): at
+ * 2+ players each listed track drops one vehicle from the usable mask. Shared by
+ * TRACKSELECT + VEHICLESELECT (declared in online_trackselect.h) so both narrow
+ * from the SAME data -- extend here in one place, never per screen. */
+u8 mdkr_online_trackselect_narrow_2p(u8 mask, u16 trackId, unsigned occupied) {
+    static const struct {
+        u16 track;  /* track whose usable set shrinks at 2+ players */
+        u8 dropBit; /* the vehicle bit removed from the mask */
+    } narrow[] = {
+        {MDKR_ONLINE_SCREEN_TRACK_SPACEPORT_ALPHA, (u8) (1u << VEHICLE_HOVERCRAFT)},
+        {MDKR_ONLINE_SCREEN_TRACK_FROSTY_VILLAGE, (u8) (1u << VEHICLE_PLANE)},
+    };
+    unsigned i;
+    if (occupied < 2u) {
+        return mask;
+    }
+    for (i = 0u; i < sizeof(narrow) / sizeof(narrow[0]); i++) {
+        if (trackId == narrow[i].track) {
+            mask = (u8) (mask & (u8) ~narrow[i].dropBit);
+        }
+    }
+    return mask;
+}
+
 /* The usable-vehicle mask for a track at this player count: engine truth from
  * leveltable_vehicle_usable(), then the retail 2-player narrowing. */
 static u8 trackselect_track_mask(u8 trackId, unsigned occupied) {
@@ -264,15 +290,7 @@ static u8 trackselect_track_mask(u8 trackId, unsigned occupied) {
     if (mask == 0u) {
         mask = (u8) (1u << VEHICLE_CAR); /* fail-safe: never empty */
     }
-    if (occupied >= 2u) {
-        if (trackId == MDKR_ONLINE_SCREEN_TRACK_SPACEPORT_ALPHA) {
-            mask &= (u8) ~(1u << VEHICLE_HOVERCRAFT);
-        }
-        if (trackId == MDKR_ONLINE_SCREEN_TRACK_FROSTY_VILLAGE) {
-            mask &= (u8) ~(1u << VEHICLE_PLANE);
-        }
-    }
-    return mask;
+    return mdkr_online_trackselect_narrow_2p(mask, trackId, occupied);
 }
 
 /* The track the vehicle auto-narrow resolves against. Once the HOST has
@@ -805,7 +823,7 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
     {
         bool flash = sTs.ticks < sTs.vehFlashEnd;
         const char *vn = sTs.vehicle < MDKR_ONLINE_SCREEN_VEHICLE_COUNT
-                             ? sVehicleNames[sTs.vehicle]
+                             ? mdkr_online_vehicle_names[sTs.vehicle]
                              : "CAR";
         (void) snprintf(line, sizeof(line), "VEHICLE: %s", vn);
         mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, TS_VEHICLE_Y, ASSET_FONTS_SMALLFONT,

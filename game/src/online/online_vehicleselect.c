@@ -112,10 +112,8 @@
 #define VS_CARD_X0 64
 #define VS_CARD_DX 96
 
-/* Vehicle names + a per-vehicle accent colour (display chrome only). */
-static const char *const sVehicleNames[MDKR_ONLINE_SCREEN_VEHICLE_COUNT] = {
-    "CAR", "HOVERCRAFT", "PLANE",
-};
+/* Per-vehicle accent colour (display chrome only). The vehicle NAMES are shared
+ * with TRACKSELECT via mdkr_online_vehicle_names (online_trackselect.h). */
 static const u8 sVehicleAccent[MDKR_ONLINE_SCREEN_VEHICLE_COUNT][3] = {
     {230u, 110u, 110u}, /* CAR       -- warm red */
     {110u, 190u, 230u}, /* HOVERCRAFT-- cool blue */
@@ -234,14 +232,8 @@ static u8 vehicleselect_track_mask(u16 trackId, unsigned occupied) {
     if (mask == 0u) {
         return VS_ALL_VEHICLES; /* unknown id -> permissive, not car-only */
     }
-    if (occupied >= 2u) {
-        if (trackId == MDKR_ONLINE_SCREEN_TRACK_SPACEPORT_ALPHA) {
-            mask &= (u8) ~(1u << VEHICLE_HOVERCRAFT);
-        }
-        if (trackId == MDKR_ONLINE_SCREEN_TRACK_FROSTY_VILLAGE) {
-            mask &= (u8) ~(1u << VEHICLE_PLANE);
-        }
-    }
+    mask = (u8) (mdkr_online_trackselect_narrow_2p(mask, trackId, occupied) &
+                 VS_ALL_VEHICLES);
     if ((mask & VS_ALL_VEHICLES) == 0u) {
         mask = (u8) (1u << VEHICLE_CAR); /* fail-safe: never empty */
     }
@@ -553,9 +545,9 @@ static void vehicleselect_render(const VsRemoteView *rv) {
                 g = 190 + tri * 4;
                 b = 60 + tri * 3;
             }
-            (void) snprintf(label, sizeof(label), ">%s<", sVehicleNames[v]);
+            (void) snprintf(label, sizeof(label), ">%s<", mdkr_online_vehicle_names[v]);
         } else {
-            (void) snprintf(label, sizeof(label), "%s", sVehicleNames[v]);
+            (void) snprintf(label, sizeof(label), "%s", mdkr_online_vehicle_names[v]);
         }
         mdkr_online_screen_text(x, VS_CARD_Y, ASSET_FONTS_SMALLFONT, label,
                                 ALIGN_MIDDLE_CENTER, r, g, b);
@@ -594,7 +586,7 @@ static void vehicleselect_render(const VsRemoteView *rv) {
         char line[64];
         (void) snprintf(line, sizeof(line), "YOU: %s",
                         sVs.vehicle < MDKR_ONLINE_SCREEN_VEHICLE_COUNT
-                            ? sVehicleNames[sVs.vehicle]
+                            ? mdkr_online_vehicle_names[sVs.vehicle]
                             : "-");
         mdkr_online_screen_text(24, VS_STATUS_Y, ASSET_FONTS_SMALLFONT, line,
                                 ALIGN_MIDDLE_LEFT, 120, 255, 120);
@@ -606,7 +598,7 @@ static void vehicleselect_render(const VsRemoteView *rv) {
         } else {
             (void) snprintf(line, sizeof(line), "%.12s: %s", rname,
                             rv->vehicle < MDKR_ONLINE_SCREEN_VEHICLE_COUNT
-                                ? sVehicleNames[rv->vehicle]
+                                ? mdkr_online_vehicle_names[rv->vehicle]
                                 : "CHOOSING");
             mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W - 24, VS_STATUS_Y,
                                     ASSET_FONTS_SMALLFONT, line,
