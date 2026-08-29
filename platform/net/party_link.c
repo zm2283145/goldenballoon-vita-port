@@ -259,10 +259,19 @@ static uint8_t party_link_kind_state(uint8_t kind,
          * re-sends and can land AFTER the READY. The synchronous loopback
          * lanes converge the seat the same pump, so this holds READY back
          * there by at most one pump. */
+        /* NOTE (fenced 2-endpoint beta): `local` is built from the FIRST
+         * local seat only (partyLinkBuildLocalView stops at the first
+         * is_local hit), which matches the single-local-seat native flow;
+         * a future multi-local-seat endpoint is backstopped by the reducer,
+         * whose SET_READY gate checks EVERY seat the actor owns. */
         if (!have || local->character_id == MDKR_ONLINE_NO_CHARACTER ||
             local->vehicle_id == MDKR_ONLINE_NO_VEHICLE) return 0u;
         if (intent->confirmed &&
             local->character_id != intent->hover_character) return 0u;
+        /* An out-of-range non-sentinel vehicle_id deliberately BYPASSES the
+         * per-field match (CHOOSE_VEHICLE never wants it either, so there is
+         * no pending SET_VEHICLE to order behind); if such a value ever
+         * reached the wire the reducer's own range/mask gate refuses it. */
         if (intent->vehicle_id != MDKR_ONLINE_NO_VEHICLE &&
             intent->vehicle_id < MDKR_ONLINE_PLAYER_VEHICLE_COUNT &&
             local->vehicle_id != intent->vehicle_id) return 0u;

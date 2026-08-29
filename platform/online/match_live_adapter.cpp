@@ -431,6 +431,13 @@ private:
         uint32_t seat = 0u;
         uint32_t value = 0u;
         uint32_t expectedRevision = 0u; /* the revision the send carried */
+        /* Stale re-sends already burned on THIS command, carried across every
+         * park/re-send cycle so the retry cap is a PER-COMMAND bound. A shared
+         * counter here was reviewed out: it was reset by ANY fresh send of ANY
+         * type, so under a continuous cross-type intent stream a persistently
+         * stale-refused command could retry forever. Pinned by the
+         * cross-type-traffic unit test in tests/test_online_live_adapter.cpp. */
+        unsigned retries = 0u;
     };
 
     MdkrOnlineAdapterStep step(bool accepted, uint32_t error) {
@@ -518,7 +525,6 @@ private:
         lastSeat_ = seat;
         lastValue_ = value;
         haveLast_ = true;
-        staleRetries_ = 0u;
         /* A FRESH command supersedes any parked stale re-send of the same
          * type: the caller's newest intent wins, and re-sending the stale
          * older value AFTER it would silently revert the newer one. */
@@ -533,7 +539,7 @@ private:
     }
 
     bool sendLobbyCommandRaw(MdkrOnlineCommandType type, uint32_t seat,
-                             uint32_t value) {
+                             uint32_t value, unsigned retries = 0u) {
         MdkrOnlineCommand c;
         std::memset(&c, 0, sizeof(c));
         c.protocol_version = MDKR_ONLINE_PROTOCOL_VERSION;
@@ -555,6 +561,7 @@ private:
         sent.seat = seat;
         sent.value = value;
         sent.expectedRevision = c.expected_revision;
+        sent.retries = retries; /* re-sends inherit + advance their count */
         inFlight_[c.command_id] = sent;
         if (inFlight_.size() > 64u) inFlight_.erase(inFlight_.begin());
         return opts_.room && opts_.room->submitCommand(c);
@@ -631,8 +638,11 @@ private:
      *                                    (an immediate re-send would carry the
      *                                    same stale revision -- guaranteed
      *                                    refusal, the old retry churn).
-     * Bounded by staleRetries_ exactly like the old path: exhaustion surfaces
-     * the refusal (one-shot) so the reverse-feed planner re-drives. */
+     * Bounded PER COMMAND (SentCommand::retries, kStaleRetryCap): exhaustion
+     * surfaces the refusal (one-shot) so the reverse-feed planner re-drives.
+     * The count rides the command through every park/re-send cycle, so
+     * unrelated fresh traffic can never reset it (the cross-type-traffic
+     * unit pin). */
     void handleStaleRefusal(const SentCommand &cmd, uint32_t error) {
         if (commandEffectApplied(cmd)) {
             MDKR_ONLINE_LOG(
@@ -641,32 +651,26 @@ private:
                 lobbyCommandName(cmd.type), haveLobby_ ? lobby_.revision : 0u);
             return;
         }
-        if (staleRetries_ >= 8u) {
-            MDKR_ONLINE_LOG(
-                "[ONLINE] command REJECTED type=%s error=%s "
-                "(stale retries exhausted)\n",
-                lobbyCommandName(cmd.type),
-                lobbyErrorName(static_cast<MdkrOnlineError>(error)));
-            refusalType_ = static_cast<uint32_t>(cmd.type);
-            refusalError_ = error;
-            haveRefusal_ = true;
-            staleRetries_ = 0u;
-            bump();
+        if (cmd.retries >= kStaleRetryCap) {
+            surfaceStaleExhaustion(cmd, error);
             return;
         }
         if (!haveLobby_ || lobby_.revision != cmd.expectedRevision ||
             error == MDKR_ONLINE_ERROR_STALE_COMMAND) {
-            ++staleRetries_;
             MDKR_ONLINE_LOG(
                 "[ONLINE] command stale type=%s error=%s retry=%u "
                 "(re-sending against fresh revision %u)\n",
                 lobbyCommandName(cmd.type),
                 lobbyErrorName(static_cast<MdkrOnlineError>(error)),
-                staleRetries_, haveLobby_ ? lobby_.revision : 0u);
-            (void)sendLobbyCommandRaw(cmd.type, cmd.seat, cmd.value);
+                cmd.retries + 1u, haveLobby_ ? lobby_.revision : 0u);
+            (void)sendLobbyCommandRaw(cmd.type, cmd.seat, cmd.value,
+                                      cmd.retries + 1u);
             return;
         }
-        /* Park (latest per type wins). */
+        /* Park (latest per type wins; the entry KEEPS its retry count). The
+         * age counter is deliberately NOT reset here: it measures how long
+         * ANY entry has sat parked without the queue emptying, so a
+         * park/re-park cycle cannot hold the age-out off forever. */
         for (auto it = staleParked_.begin(); it != staleParked_.end();) {
             if (it->type == cmd.type) {
                 it = staleParked_.erase(it);
@@ -675,13 +679,27 @@ private:
             }
         }
         staleParked_.push_back(cmd);
-        staleParkedAgeServices_ = 0u;
         MDKR_ONLINE_LOG(
             "[ONLINE] command stale type=%s error=%s at rev=%u -- parked "
             "until the next authoritative state (no blind re-send)\n",
             lobbyCommandName(cmd.type),
             lobbyErrorName(static_cast<MdkrOnlineError>(error)),
             cmd.expectedRevision);
+    }
+
+    /* A command burned its per-command stale-retry budget: surface the
+     * refusal (one-shot) so the reverse-feed planner's guard clears and it
+     * re-drives from the current intent. */
+    void surfaceStaleExhaustion(const SentCommand &cmd, uint32_t error) {
+        MDKR_ONLINE_LOG(
+            "[ONLINE] command REJECTED type=%s error=%s "
+            "(stale retries exhausted at %u)\n",
+            lobbyCommandName(cmd.type),
+            lobbyErrorName(static_cast<MdkrOnlineError>(error)), cmd.retries);
+        refusalType_ = static_cast<uint32_t>(cmd.type);
+        refusalError_ = error;
+        haveRefusal_ = true;
+        bump();
     }
 
     /* Belt-and-braces bound: a parked stale re-send waits for a State that --
@@ -726,15 +744,25 @@ private:
                 continue;
             }
             staleParked_.pop_front();
-            ++staleRetries_;
+            if (cmd.retries >= kStaleRetryCap) {
+                /* Its budget is gone: surface instead of burning another
+                 * round trip; keep draining the rest against this state. */
+                surfaceStaleExhaustion(cmd, MDKR_ONLINE_ERROR_STALE_REVISION);
+                continue;
+            }
             MDKR_ONLINE_LOG(
                 "[ONLINE] parked stale type=%s re-sent against fresh state "
                 "rev=%u (retry=%u)\n",
-                lobbyCommandName(cmd.type), lobby_.revision, staleRetries_);
-            (void)sendLobbyCommandRaw(cmd.type, cmd.seat, cmd.value);
+                lobbyCommandName(cmd.type), lobby_.revision, cmd.retries + 1u);
+            (void)sendLobbyCommandRaw(cmd.type, cmd.seat, cmd.value,
+                                      cmd.retries + 1u);
             break;
         }
-        staleParkedAgeServices_ = 0u;
+        /* The age counter is NOT reset here: entries still parked behind the
+         * head keep aging toward the age-out, and a head that re-parks (the
+         * semi-live-room cycle) must not restart the clock -- ageStaleParked
+         * resets it only once the queue is genuinely empty. Both bounds are
+         * pinned by unit tests (dead-room age-out; cross-type termination). */
     }
 
     /* The launcher panel addresses a LOCAL seat index (0-based within this
@@ -1051,17 +1079,22 @@ private:
                     attrCmd.value = lastValue_;
                     /* Fallback (no echoed id): the expected revision the send
                      * carried is unknown -- an impossible sentinel keeps the
-                     * stale path on its immediate-re-send arm, matching the
-                     * historical no-echo behavior. */
+                     * stale path on its immediate-re-send arm, and the
+                     * consecutive-no-echo counter stands in for the
+                     * per-command budget (a transport that never echoes ids
+                     * must still terminate at the cap). */
                     attrCmd.expectedRevision = UINT32_MAX;
+                    attrCmd.retries = noEchoStaleRetries_;
                     MdkrOnlineCommandType attrType = lastType_;
                     bool attrValid = haveLast_;
+                    bool attrFromMap = false;
                     if (ev.commandId != 0u) {
                         const auto found = inFlight_.find(ev.commandId);
                         if (found != inFlight_.end()) {
                             attrCmd = found->second;
                             attrType = attrCmd.type;
                             attrValid = true;
+                            attrFromMap = true;
                             inFlight_.erase(found);
                         }
                     }
@@ -1076,7 +1109,10 @@ private:
                             lobbyErrorName(ev.step.error), ev.step.revision);
                     }
                     if (ev.step.accepted) {
-                        staleRetries_ = 0u;
+                        /* Per-command retry budgets retire with their
+                         * inFlight_ entries; only the no-echo fallback's
+                         * consecutive counter needs the reset. */
+                        noEchoStaleRetries_ = 0u;
                     } else if (ev.step.error == MDKR_ONLINE_ERROR_INCOMPATIBLE) {
                         MDKR_ONLINE_LOG(
                             "[ONLINE] command REJECTED type=%s error=%s "
@@ -1097,6 +1133,7 @@ private:
                          * would carry the SAME stale revision: over the real
                          * transport the CommandResult routinely arrives
                          * BEFORE the State that explains the staleness). */
+                        if (!attrFromMap) ++noEchoStaleRetries_;
                         handleStaleRefusal(attrCmd, ev.step.error);
                     } else {
                         /* Non-silent: any other refusal (e.g. NOT_READY,
@@ -2768,7 +2805,6 @@ private:
     uint32_t lastSeat_ = 0u;
     uint32_t lastValue_ = 0u;
     bool haveLast_ = false;
-    unsigned staleRetries_ = 0u;
     /* In-flight command correlation: command_id -> the command sent under it,
      * so a CommandResult refusal is attributed to the command the server
      * actually answered (two can be in flight) rather than to lastType_.
@@ -2784,9 +2820,25 @@ private:
      * it (often the effect has landed via the concurrent peer's interleaving
      * and nothing needs sending), and re-send at most ONE per State so a
      * chain of parked commands drains in order, one accepted revision at a
-     * time. Bounded by staleParkedAgeServices_ (see service()). */
+     * time. Bounded two ways -- BOTH pinned by dedicated unit tests in
+     * tests/test_online_live_adapter.cpp (keep the literals in lock-step with
+     * those pins):
+     *   - kStaleRetryCap: a PER-COMMAND re-send budget (SentCommand::retries)
+     *     that unrelated fresh traffic can never reset -- a persistently
+     *     stale-refused command terminates in a surfaced refusal even on a
+     *     live room under continuous cross-type intents;
+     *   - kStaleParkedMaxServices: the service-call age-out for a room that
+     *     stops delivering States at all -- the counter accumulates while ANY
+     *     entry remains parked (only an EMPTY queue resets it), so periodic
+     *     states that never resolve the head cannot hold the age-out off. */
     std::deque<SentCommand> staleParked_;
     unsigned staleParkedAgeServices_ = 0u;
+    /* Consecutive stale refusals attributed via the NO-ECHO fallback (the
+     * server returned no command id): stands in for the per-command budget
+     * on a transport that never echoes, reset by any accepted result. All
+     * shipped transports echo ids; this is the belt-and-braces bound. */
+    unsigned noEchoStaleRetries_ = 0u;
+    static constexpr unsigned kStaleRetryCap = 8u;
     static constexpr unsigned kStaleParkedMaxServices = 300u; /* ~10 s @30Hz */
     std::function<uint64_t()> nowMs_;
     std::vector<MdkrMatchPeerIceServer> iceServers_;

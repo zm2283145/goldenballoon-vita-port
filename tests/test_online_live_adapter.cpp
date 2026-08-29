@@ -2713,13 +2713,17 @@ void test_native_selection_converges_over_room_latency() {
     }
     CHECK(stayedReady);
 
-    /* ANTI-CHURN: each endpoint changed its character/vehicle ONCE; a healthy
-     * dispatch layer never lands more than a couple of accepted SETs (each
-     * accepted redundant SET is a ready-reset time bomb on a live room). */
-    CHECK(transportA.acceptedSetCharacter <= 3u);
-    CHECK(transportB.acceptedSetCharacter <= 3u);
-    CHECK(transportA.acceptedSetVehicle <= 3u);
-    CHECK(transportB.acceptedSetVehicle <= 3u);
+    /* ANTI-CHURN: each endpoint changed its character/vehicle ONCE, so a
+     * healthy dispatch layer lands EXACTLY ONE accepted SET per field per
+     * endpoint -- the guard dedupes the send, the convergence check drops a
+     * stale retry whose effect already landed, and a re-send after a genuine
+     * stale refusal replaces (never duplicates) the refused attempt. Any
+     * second accepted SET is a ready-reset time bomb on a live room (the
+     * pre-fix misattributed retry produced exactly that: setCharB=2). */
+    CHECK(transportA.acceptedSetCharacter == 1u);
+    CHECK(transportB.acceptedSetCharacter == 1u);
+    CHECK(transportA.acceptedSetVehicle == 1u);
+    CHECK(transportB.acceptedSetVehicle == 1u);
 
     /* HOST TRACK LOCK + START (native TRACKSELECT shape): the config clears
      * every member's ready; both peers' continuous intents re-ready; the
@@ -2747,6 +2751,181 @@ void test_native_selection_converges_over_room_latency() {
     mdkr_net_roster_runtime_clear();
 }
 
+/* ---- The stale-parked machinery's BOUNDS, pinned --------------------------
+ *
+ * Two review-established regressions the bounds must survive:
+ *  (i) DEAD ROOM: an entry parked awaiting a State that never comes must
+ *      surface a refusal within the service-call age-out -- and the age
+ *      counter must ACCUMULATE while anything stays parked (an earlier draft
+ *      reset it on every State/park, so a semi-live room deferred it forever).
+ * (ii) LIVE-BUT-HOSTILE ROOM + CROSS-TYPE TRAFFIC: a command that is
+ *      persistently stale-refused across park -> resync -> re-send cycles
+ *      must TERMINATE at the per-command retry cap even while OTHER command
+ *      types keep being freshly sent and accepted (an earlier draft's shared
+ *      retry counter was reset by any fresh send of any type).
+ * Lock-step literals: kStaleParkedMaxServices == 300, kStaleRetryCap == 8
+ * (match_live_adapter.cpp -- the comments there point back at these pins). */
+
+/* Shared setup: one leader adapter at a live ROOM with deferred results, so
+ * the test owns exactly when (and how) every CommandResult and State lands. */
+struct StaleBoundsRig {
+    FakeMatchRoom room;
+    FakeHub hub;
+    FakeClock clock;
+    FakeRoomTransport transport{&room, 1u};
+    HubMeshBackend backend{&hub};
+    std::unique_ptr<IMdkrOnlineAdapter> adapter;
+
+    bool init() {
+        mdkr_net_roster_runtime_clear();
+        adapter = mdkr_online_live_adapter_create(
+            baseOptions(&transport, &backend, &clock,
+                        MDKR_ONLINE_JOURNEY_CREATE));
+        CHECK(adapter != nullptr);
+        if (!adapter) return false;
+        adapter->submit(cmd(adapter.get(), MDKR_ONLINE_VIEW_ACTION_CREATE_ROOM));
+        const bool up = pumpUntil({adapter.get()}, clock, [&]() {
+            return viewOf(adapter.get()).kind == MDKR_ONLINE_VIEW_ROOM;
+        }, 3000u);
+        CHECK(up);
+        transport.setDeferResults(true);
+        return up;
+    }
+
+    /* Park a SET_CONFIG_TRACK(5): send it, then stale-refuse it while the
+     * adapter's lobby still holds the very revision the send carried (no
+     * State in between) -- the park arm, never a blind re-send. */
+    bool parkVictim() {
+        const size_t base = transport.submitted().size();
+        CHECK(mdkr_online_live_adapter_set_config_track(adapter.get(), 5u));
+        if (transport.submitted().size() != base + 1u) {
+            CHECK(false);
+            return false;
+        }
+        transport.injectCommandResult(transport.submitted().back().command_id,
+                                      false,
+                                      MDKR_ONLINE_ERROR_STALE_REVISION);
+        adapter->service();
+        /* Parked: no re-send, and nothing surfaced yet. */
+        CHECK(transport.submitted().size() == base + 1u);
+        uint32_t rtype = 0u, rerr = 0u;
+        CHECK(!mdkr_online_live_adapter_take_refusal(adapter.get(), &rtype,
+                                                     &rerr));
+        return true;
+    }
+};
+
+/* (i) Dead room: the parked entry's age-out surfaces the refusal within its
+ * bound -- never a silent forever-park, never an early fire. */
+void test_stale_parked_ageout_surfaces_on_dead_room() {
+    const unsigned kBound = 300u; /* == kStaleParkedMaxServices (lock-step) */
+    StaleBoundsRig rig;
+    if (!rig.init() || !rig.parkVictim()) return;
+    const size_t sendsAfterPark = rig.transport.submitted().size();
+
+    uint32_t rtype = 0u, rerr = 0u;
+    bool surfaced = false;
+    unsigned services = 0u;
+    for (; services < kBound + 50u; ++services) {
+        rig.adapter->service(); /* the room is DEAD: no states, no results */
+        if (mdkr_online_live_adapter_take_refusal(rig.adapter.get(), &rtype,
+                                                  &rerr)) {
+            surfaced = true;
+            break;
+        }
+    }
+    CHECK(surfaced);
+    /* Within the bound, and not wildly early (the park itself consumed one
+     * service, so the fire lands a hair under kBound loop iterations). */
+    CHECK(services + 10u >= kBound);
+    CHECK(services <= kBound + 10u);
+    CHECK(rtype == static_cast<uint32_t>(MDKR_ONLINE_SET_CONFIG_TRACK));
+    CHECK(rerr == static_cast<uint32_t>(MDKR_ONLINE_ERROR_STALE_REVISION));
+    /* A dead room offers nothing to resync against: zero re-sends. */
+    CHECK(rig.transport.submitted().size() == sendsAfterPark);
+    std::fprintf(stderr,
+                 "[stale-bounds] dead-room age-out surfaced after %u "
+                 "services (bound %u)\n", services + 1u, kBound);
+    mdkr_net_roster_runtime_clear();
+}
+
+/* (ii) Semi-live room + continuous cross-type traffic: the victim command is
+ * stale-refused on EVERY attempt while fresh SET_MODE commands keep being
+ * sent and ACCEPTED each cycle; the victim must still terminate at the
+ * per-command retry cap (surfaced refusal), then never be re-sent again. */
+void test_stale_retry_cap_terminates_under_cross_type_traffic() {
+    const unsigned kCap = 8u; /* == kStaleRetryCap (lock-step) */
+    StaleBoundsRig rig;
+    if (!rig.init() || !rig.parkVictim()) return;
+
+    auto configSends = [&]() {
+        unsigned n = 0u;
+        for (const MdkrOnlineCommand &c : rig.transport.submitted()) {
+            if (c.type == MDKR_ONLINE_SET_CONFIG_TRACK) ++n;
+        }
+        return n;
+    };
+    CHECK(configSends() == 1u);
+
+    bool surfaced = false;
+    uint32_t rtype = 0u, rerr = 0u;
+    unsigned cycle = 0u;
+    for (; cycle < kCap + 6u && !surfaced; ++cycle) {
+        /* Cross-type churn: a fresh SET_MODE, ACCEPTED -- under a shared
+         * retry counter this reset the victim's budget every cycle. */
+        CHECK(mdkr_online_live_adapter_set_mode(rig.adapter.get(), 1u));
+        const MdkrOnlineCommand mode = rig.transport.submitted().back();
+        CHECK(mode.type == MDKR_ONLINE_SET_MODE);
+        rig.transport.injectCommandResult(mode.command_id, true,
+                                          MDKR_ONLINE_OK);
+        /* Semi-live room: a fresh State (the peer bumped the revision, the
+         * victim's effect still absent) re-arms the parked re-send... */
+        MdkrOnlineLobby snap{};
+        CHECK(mdkr_online_live_adapter_lobby(rig.adapter.get(), &snap));
+        snap.revision += 1u; /* configured_track stays NO_VOTE: not applied */
+        rig.transport.injectState(snap);
+        const unsigned sendsBefore = configSends();
+        rig.adapter->service();
+        if (mdkr_online_live_adapter_take_refusal(rig.adapter.get(), &rtype,
+                                                  &rerr)) {
+            surfaced = true;
+            break;
+        }
+        /* ...and that re-send is stale-refused AGAIN. */
+        CHECK(configSends() == sendsBefore + 1u);
+        rig.transport.injectCommandResult(
+            rig.transport.submitted().back().command_id, false,
+            MDKR_ONLINE_ERROR_STALE_REVISION);
+        rig.adapter->service();
+        if (mdkr_online_live_adapter_take_refusal(rig.adapter.get(), &rtype,
+                                                  &rerr)) {
+            surfaced = true;
+        }
+    }
+    CHECK(surfaced);
+    CHECK(cycle <= kCap + 2u); /* terminated AT the per-command cap */
+    CHECK(rtype == static_cast<uint32_t>(MDKR_ONLINE_SET_CONFIG_TRACK));
+    const unsigned totalConfigSends = configSends();
+    CHECK(totalConfigSends <= kCap + 1u); /* original + at most cap re-sends */
+
+    /* TERMINATED: further states re-arm nothing -- the victim is gone (the
+     * planner would re-drive from the intent; this layer stays quiet). */
+    for (unsigned extra = 0u; extra < 3u; ++extra) {
+        MdkrOnlineLobby snap{};
+        CHECK(mdkr_online_live_adapter_lobby(rig.adapter.get(), &snap));
+        snap.revision += 1u;
+        rig.transport.injectState(snap);
+        rig.adapter->service();
+    }
+    CHECK(configSends() == totalConfigSends);
+    std::fprintf(stderr,
+                 "[stale-bounds] cross-type termination: %u re-send cycles, "
+                 "%u total SET_CONFIG_TRACK sends (cap %u), refusal "
+                 "surfaced type=%u\n",
+                 cycle, totalConfigSends, kCap, rtype);
+    mdkr_net_roster_runtime_clear();
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -2771,6 +2950,8 @@ int main(int argc, char **argv) {
     }
     if (latencyOnly) {
         test_native_selection_converges_over_room_latency();
+        test_stale_parked_ageout_surfaces_on_dead_room();
+        test_stale_retry_cap_terminates_under_cross_type_traffic();
         std::fprintf(stderr,
                      "online_live_latency_rig: %d checks, %d failures\n",
                      g_checks, g_failures);
@@ -2795,6 +2976,8 @@ int main(int argc, char **argv) {
     test_tournament_points_accrue();
     test_phrase_mismatch_rekeys_both_sides();
     test_native_selection_converges_over_room_latency();
+    test_stale_parked_ageout_surfaces_on_dead_room();
+    test_stale_retry_cap_terminates_under_cross_type_traffic();
     std::fprintf(stderr, "online_live_adapter: %d checks, %d failures\n",
                  g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
