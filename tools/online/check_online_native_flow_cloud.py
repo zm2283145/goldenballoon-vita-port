@@ -113,6 +113,11 @@ DESCRIPTOR_FIRST_RE = re.compile(r"source=launch-descriptor", re.MULTILINE)
 # creator's native CHARSELECT render.
 CHARSELECT_REMOTE_RE = re.compile(
     r"^\[online-charselect\] render .*remote\{seat=\d+ char=(\d+) ", re.MULTILINE)
+# CHARSELECT completes (seat.ready latched + persisted through the reducer over
+# the real network) exactly when the session hands off to the native VEHICLE
+# screen -- the wedge the two-peer selection-convergence fix removed.
+TO_VEHICLESELECT_RE = re.compile(
+    r"^\[online-session\] charselect -> vehicleselect", re.MULTILINE)
 
 # ---- Assertions (d)/(e): race convergence -----------------------------------
 ENGINE_LIVE_RE = re.compile(
@@ -131,6 +136,10 @@ FORBIDDEN_MARKERS = (
 
 class ProofFailure(RuntimeError):
     """Harness-level failure; message names the stuck phase."""
+
+
+class ProofStopEarly(Exception):
+    """--through stop: the requested phases passed; end the run cleanly."""
 
 
 def clean_environment(**updates: str) -> dict:
@@ -359,20 +368,55 @@ def run(args: argparse.Namespace) -> dict:
                   "endpoints (no source=launch-descriptor)")
 
             # --- (c) reducer-synced selections -------------------------------
-            # The joiner picked col 0 (Diddy). The creator's native CHARSELECT
-            # must render the remote seat holding that racer.
-            def creator_sees_joiner_pick(_line: str):
+            # A racer picked on ONE endpoint must render as the REMOTE seat on
+            # the OTHER endpoint's native CHARSELECT -- the cross-endpoint
+            # reducer-sync proof. Either direction suffices: each endpoint
+            # advances off CHARSELECT on its OWN seat's ready, so a fast local
+            # flow can leave the screen before the slower peer's pick lands
+            # (post-fix the creator readies in ~2 s), and the remaining screens
+            # do not render the remote racer. Requiring specifically the
+            # creator-sees-joiner direction raced the very convergence it
+            # asserts; the joiner-sees-creator witness is the same reducer
+            # round-trip over the same cloud room.
+            def selections_synced(_line: str):
                 for m in CHARSELECT_REMOTE_RE.finditer(creator.full_output()):
                     if m.group(1) == JOIN_PICK:
-                        return True
+                        return "creator rendered the joiner's racer"
+                for m in CHARSELECT_REMOTE_RE.finditer(joiner.full_output()):
+                    if m.group(1) == HOST_PICK:
+                        return "joiner rendered the creator's racer"
                 return None
-            creator.wait_line(
-                creator_sees_joiner_pick,
-                "creator's CHARSELECT shows the joiner's racer (reducer sync)",
-                args.select_timeout)
+            sync_how = creator.wait_line(
+                selections_synced,
+                "a native CHARSELECT shows the OTHER endpoint's racer "
+                "(reducer sync)", args.select_timeout)
             phase(True, "selections_synced",
-                  "assertion (c): the joiner's picked racer synced through the "
-                  "reducer onto the creator's native CHARSELECT")
+                  f"assertion (c): a picked racer synced through the reducer "
+                  f"onto the other endpoint's native CHARSELECT ({sync_how})")
+
+            if args.through == "c":
+                # (a)-(c) qualification stop: prove CHARSELECT actually
+                # COMPLETES -- seat.ready latched + persisted through the
+                # reducer over real latency on BOTH endpoints, witnessed by the
+                # session's hand-off to the native VEHICLE screen (the exact
+                # spot the two-peer convergence wedge parked forever) -- then
+                # end the run cleanly without driving the remaining phases.
+                for drv in (creator, joiner):
+                    drv.wait_line(
+                        TO_VEHICLESELECT_RE.search,
+                        f"{drv.name} charselect -> vehicleselect (READY "
+                        f"latched + persisted)", args.select_timeout)
+                for drv in (creator, joiner):
+                    assert_no_forbidden(drv.name, drv.full_output())
+                phase(True, "advance_past_charselect",
+                      "both endpoints' seats readied through the reducer and "
+                      "the session advanced CHARSELECT -> VEHICLESELECT")
+                report["verdict"] = "PASS"
+                report["detail"] = (
+                    "phases (a)-(c) + advance-past-CHARSELECT over the real "
+                    "cloud (run stopped at --through c; the remaining phases "
+                    "are the full capstone's)")
+                raise ProofStopEarly()
 
             # --- (d) race 1 converges ---------------------------------------
             for drv in (creator, joiner):
@@ -429,6 +473,8 @@ def run(args: argparse.Namespace) -> dict:
             report["detail"] = (
                 "the full production native flow ran over the real cloud on two "
                 "separate processes with only pairing + pad-input automation")
+        except ProofStopEarly:
+            pass  # verdict/detail already recorded by the --through stop
         except ProofFailure as error:
             report["verdict"] = "FAIL"
             report["detail"] = str(error)
@@ -457,6 +503,12 @@ def main() -> int:
     parser.add_argument("--race-timeout", type=float, default=180.0,
                         help="bound on a race boot + convergence")
     parser.add_argument("--log-dir", type=Path, default=None)
+    parser.add_argument("--through", choices=("c", "full"), default="full",
+                        help="'c' stops (PASS) after assertions (a)-(c) plus "
+                        "the CHARSELECT -> VEHICLESELECT advance on both "
+                        "endpoints -- the two-peer selection-convergence "
+                        "qualification -- without driving the race/chooser/"
+                        "return phases; 'full' (default) runs all seven")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
