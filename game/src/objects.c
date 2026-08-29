@@ -2786,6 +2786,11 @@ static void adventure_party_apply_arrival(u8 raceType) {
         }
     } else if (raceType == RACETYPE_DEFAULT) {
         if (session->state != ADVENTURE_PARTY_STATE_ACTIVE_LOBBY) {
+            /* Retry: the same race reloads with no RACE_START (no lgen bump).
+             * Clear the recorded winner here too, so a retried race that is QUIT —
+             * which never reaches the finish seam's unconditional capture — cannot
+             * report a prior finish's stale seat in RACE_RESULT_COMMITTED. */
+            sApRaceWinnerSeat = ADVENTURE_PARTY_NO_SEAT;
             return; /* retry: already ACTIVE_RACE, stay in the race */
         }
         ev.kind = ADVENTURE_PARTY_EVENT_RACE_START;
@@ -2922,8 +2927,22 @@ static s32 adventure_party_race_award_permit(Settings *settings, s32 seat) {
     }
     /* AP-13 owns the DEFAULT first-clear only. An already-cleared course replayed
      * is a silver-coin race (AP-14); leave its award to the retail silver path.
-     * This is the same bit set_course_finish_flags tests before writing. */
+     * This is the same bit set_course_finish_flags tests before writing. Emit ONE
+     * aparty_award diagnostic (an ISSUE refused, result=0) so this deferred no-op
+     * stays observable rather than silent — the AP-14 silver-replay behaviour and
+     * any duplicate re-entry of a cleared course are then witnessable in the log. */
     if (settings->courseFlagsPtr[settings->courseId] & RACE_CLEARED) {
+        AdventurePartyCompletionToken skip;
+        memset(&skip, 0, sizeof skip);
+        skip.session_generation = session->session_generation;
+        skip.level_generation = session->level_generation;
+        skip.course = (uint16_t) settings->courseId;
+        skip.activity = (uint8_t)(gIsSilverCoinRace
+                                      ? ADVENTURE_PARTY_RACE_KIND_SILVER_COIN
+                                      : ADVENTURE_PARTY_RACE_KIND_DEFAULT);
+        skip.completion_kind = (uint8_t) ADVENTURE_PARTY_COMPLETION_COURSE;
+        adventure_party_trace_emit_award(ADVENTURE_PARTY_TRACE_AWARD_ISSUE, &skip,
+                                         0);
         return 0;
     }
     /* Deliverable 0: the token key carries the real activity kind. */
@@ -10821,11 +10840,16 @@ void race_check_finish(s32 updateRate) {
              * no token is issued and gFirstTimeFinish stays FALSE. */
             if (adventure_party_race_award_active()) {
                 s32 apWinnerSeat = adventure_party_race_winner_seat();
-                if (apWinnerSeat != ADVENTURE_PARTY_NO_SEAT) {
-                    sApRaceWinnerSeat = (u8) apWinnerSeat;
-                    if (adventure_party_race_award_permit(settings, apWinnerSeat)) {
-                        gFirstTimeFinish = TRUE;
-                    }
+                /* Record the winner seat UNCONDITIONALLY (NO_SEAT for a CPU-first
+                 * or lost finish), so RACE_RESULT_COMMITTED never reports a stale
+                 * human seat left by a PRIOR finish: a retry reload skips the
+                 * RACE_START reset (the arrival adapter early-returns for a DEFAULT
+                 * race already in ACTIVE_RACE), so this finish is the sole
+                 * authority on who won it. */
+                sApRaceWinnerSeat = (u8) apWinnerSeat;
+                if (apWinnerSeat != ADVENTURE_PARTY_NO_SEAT &&
+                    adventure_party_race_award_permit(settings, apWinnerSeat)) {
+                    gFirstTimeFinish = TRUE;
                 }
             } else
 #endif
