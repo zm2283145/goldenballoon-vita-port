@@ -236,6 +236,14 @@ bool manifestFromLobby(const MdkrOnlineLobby &lobby,
     return true;
 }
 
+}  // namespace
+
+/* LiveAdapter has EXTERNAL linkage (outside the anonymous namespace of helpers
+ * above) so match_live_adapter.h can forward-declare it for the mdkrResolveLive()
+ * downcast hook -- the header's `::LiveAdapter` and this definition are then the
+ * SAME type, which a covariant override and the C accessors both require. Its
+ * inline methods still freely use the internal-linkage helpers above (visible at
+ * file scope in this translation unit). */
 class LiveAdapter final : public IMdkrOnlineAdapter {
 public:
     explicit LiveAdapter(const MdkrOnlineLiveAdapterOptions &opts)
@@ -278,6 +286,12 @@ public:
     }
 
     /* ---- IMdkrOnlineAdapter ------------------------------------------- */
+
+    /* Cross-cast-free downcast hook (see IMdkrOnlineAdapter): the concrete live
+     * adapter resolves to itself, so every C accessor reaches it through the
+     * owning wrapper without a sibling cast. */
+    LiveAdapter *mdkrResolveLive() override { return this; }
+    const LiveAdapter *mdkrResolveLive() const override { return this; }
 
     MdkrOnlineAdapterStep submit(
         const MdkrOnlineAdapterCommand &command) override {
@@ -2638,8 +2652,6 @@ public:
 private:
 };
 
-}  // namespace
-
 std::unique_ptr<IMdkrOnlineAdapter> mdkr_online_live_adapter_create(
     const MdkrOnlineLiveAdapterOptions &options, std::string *error) {
     if (options.room == nullptr || options.meshBackend == nullptr) {
@@ -2658,7 +2670,7 @@ std::unique_ptr<IMdkrOnlineAdapter> mdkr_online_live_adapter_create(
 bool mdkr_online_live_adapter_probe(const IMdkrOnlineAdapter *adapter,
                                     MdkrOnlineLiveLaunchProbe *out) {
     if (adapter == nullptr || out == nullptr) return false;
-    const LiveAdapter *live = dynamic_cast<const LiveAdapter *>(adapter);
+    const LiveAdapter *live = adapter->mdkrResolveLive();
     if (live == nullptr) return false;
     live->fillProbe(out);
     return true;
@@ -2667,7 +2679,7 @@ bool mdkr_online_live_adapter_probe(const IMdkrOnlineAdapter *adapter,
 bool mdkr_online_live_adapter_race_info(const IMdkrOnlineAdapter *adapter,
                                         MdkrOnlineLiveRaceInfo *out) {
     if (adapter == nullptr || out == nullptr) return false;
-    const LiveAdapter *live = dynamic_cast<const LiveAdapter *>(adapter);
+    const LiveAdapter *live = adapter->mdkrResolveLive();
     if (live == nullptr) return false;
     live->raceInfo(out);
     return true;
@@ -2675,14 +2687,14 @@ bool mdkr_online_live_adapter_race_info(const IMdkrOnlineAdapter *adapter,
 
 bool mdkr_online_live_adapter_race_peer_lost(const IMdkrOnlineAdapter *adapter) {
     if (adapter == nullptr) return false;
-    const LiveAdapter *live = dynamic_cast<const LiveAdapter *>(adapter);
+    const LiveAdapter *live = adapter->mdkrResolveLive();
     return live != nullptr && live->racePeerLost();
 }
 
 bool mdkr_online_live_adapter_set_race_end_failure(
     IMdkrOnlineAdapter *adapter, MdkrOnlineViewFailure failure) {
     if (adapter == nullptr) return false;
-    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    LiveAdapter *live = adapter->mdkrResolveLive();
     if (live == nullptr) return false;
     live->setRaceEndFailure(failure);
     return true;
@@ -2691,7 +2703,7 @@ bool mdkr_online_live_adapter_set_race_end_failure(
 bool mdkr_online_live_adapter_walk_engine_out_of_race(
     IMdkrOnlineAdapter *adapter) {
     if (adapter == nullptr) return false;
-    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    LiveAdapter *live = adapter->mdkrResolveLive();
     if (live == nullptr) return false;
     live->makeRaceEndCardActionable();
     return true;
@@ -2723,7 +2735,7 @@ bool mdkr_online_live_adapter_test_reverify_clears_peer_loss(bool via_abort) {
 
 bool mdkr_online_live_adapter_race_send_abort(IMdkrOnlineAdapter *adapter) {
     if (adapter == nullptr) return false;
-    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    LiveAdapter *live = adapter->mdkrResolveLive();
     if (live == nullptr) return false;
     live->raceSendAbort();
     return true;
@@ -2732,7 +2744,7 @@ bool mdkr_online_live_adapter_race_send_abort(IMdkrOnlineAdapter *adapter) {
 bool mdkr_online_live_adapter_clear_race_loss_failure(
     IMdkrOnlineAdapter *adapter) {
     if (adapter == nullptr) return false;
-    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    LiveAdapter *live = adapter->mdkrResolveLive();
     if (live == nullptr) return false;
     live->clearRaceLossFailure();
     return true;
@@ -2740,14 +2752,14 @@ bool mdkr_online_live_adapter_clear_race_loss_failure(
 
 bool mdkr_online_live_adapter_race_advance(IMdkrOnlineAdapter *adapter) {
     if (adapter == nullptr) return false;
-    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    LiveAdapter *live = adapter->mdkrResolveLive();
     return live != nullptr && live->raceAdvance();
 }
 
 bool mdkr_online_live_adapter_race_set_synthetic_input(
     IMdkrOnlineAdapter *adapter, bool on) {
     if (adapter == nullptr) return false;
-    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    LiveAdapter *live = adapter->mdkrResolveLive();
     if (live == nullptr) return false;
     live->raceSetSyntheticInput(on);
     return true;
@@ -2756,7 +2768,7 @@ bool mdkr_online_live_adapter_race_set_synthetic_input(
 bool mdkr_online_live_adapter_race_set_local_input(
     IMdkrOnlineAdapter *adapter, const MdkrPadSample *local, unsigned count) {
     if (adapter == nullptr) return false;
-    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    LiveAdapter *live = adapter->mdkrResolveLive();
     if (live == nullptr) return false;
     live->raceSetLocalInput(local, count);
     return true;
@@ -2765,13 +2777,13 @@ bool mdkr_online_live_adapter_race_set_local_input(
 bool mdkr_online_live_adapter_race_resend(IMdkrOnlineAdapter *adapter,
                                           uint32_t newestTick) {
     if (adapter == nullptr) return false;
-    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    LiveAdapter *live = adapter->mdkrResolveLive();
     return live != nullptr && live->raceSendInputForTick(newestTick);
 }
 
 bool mdkr_online_live_adapter_race_drain_local(IMdkrOnlineAdapter *adapter) {
     if (adapter == nullptr) return false;
-    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    LiveAdapter *live = adapter->mdkrResolveLive();
     return live != nullptr && live->raceDrainLocal();
 }
 
@@ -2779,14 +2791,14 @@ bool mdkr_online_live_adapter_race_inputs_for_tick(IMdkrOnlineAdapter *adapter,
                                                    uint32_t tick,
                                                    MdkrInputSet *out) {
     if (adapter == nullptr || out == nullptr) return false;
-    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    LiveAdapter *live = adapter->mdkrResolveLive();
     return live != nullptr && live->raceInputsForTick(tick, out);
 }
 
 bool mdkr_online_live_adapter_race_stats(const IMdkrOnlineAdapter *adapter,
                                          MdkrOnlineLiveRaceStats *out) {
     if (adapter == nullptr || out == nullptr) return false;
-    const LiveAdapter *live = dynamic_cast<const LiveAdapter *>(adapter);
+    const LiveAdapter *live = adapter->mdkrResolveLive();
     if (live == nullptr) return false;
     live->raceStats(out);
     return true;
@@ -2795,35 +2807,35 @@ bool mdkr_online_live_adapter_race_stats(const IMdkrOnlineAdapter *adapter,
 bool mdkr_online_live_adapter_race_take_dirty(IMdkrOnlineAdapter *adapter,
                                               uint32_t *tick) {
     if (adapter == nullptr || tick == nullptr) return false;
-    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    LiveAdapter *live = adapter->mdkrResolveLive();
     return live != nullptr && live->raceTakeDirty(tick);
 }
 
 bool mdkr_online_live_adapter_race_ai_mask(IMdkrOnlineAdapter *adapter,
                                            uint32_t tick, uint8_t *slot_mask) {
     if (adapter == nullptr || slot_mask == nullptr) return false;
-    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    LiveAdapter *live = adapter->mdkrResolveLive();
     return live != nullptr && live->raceAiMask(tick, slot_mask);
 }
 
 bool mdkr_online_live_adapter_race_remote_ready(IMdkrOnlineAdapter *adapter,
                                                 uint32_t tick) {
     if (adapter == nullptr) return false;
-    const LiveAdapter *live = dynamic_cast<const LiveAdapter *>(adapter);
+    const LiveAdapter *live = adapter->mdkrResolveLive();
     return live != nullptr && live->raceRemoteReceivedForTick(tick);
 }
 
 bool mdkr_online_live_adapter_report_results(IMdkrOnlineAdapter *adapter,
                                              const uint8_t placements[4]) {
     if (adapter == nullptr || placements == nullptr) return false;
-    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    LiveAdapter *live = adapter->mdkrResolveLive();
     return live != nullptr && live->reportResults(placements);
 }
 
 bool mdkr_online_live_adapter_set_mode(IMdkrOnlineAdapter *adapter,
                                        unsigned mode) {
     if (adapter == nullptr) return false;
-    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    LiveAdapter *live = adapter->mdkrResolveLive();
     return live != nullptr &&
            live->sendSessionConfig(MDKR_ONLINE_SET_MODE,
                                    static_cast<uint32_t>(mode));
@@ -2832,7 +2844,7 @@ bool mdkr_online_live_adapter_set_mode(IMdkrOnlineAdapter *adapter,
 bool mdkr_online_live_adapter_set_config_track(IMdkrOnlineAdapter *adapter,
                                                unsigned trackId) {
     if (adapter == nullptr) return false;
-    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    LiveAdapter *live = adapter->mdkrResolveLive();
     return live != nullptr &&
            live->sendSessionConfig(MDKR_ONLINE_SET_CONFIG_TRACK,
                                    static_cast<uint32_t>(trackId));
@@ -2841,7 +2853,7 @@ bool mdkr_online_live_adapter_set_config_track(IMdkrOnlineAdapter *adapter,
 bool mdkr_online_live_adapter_set_cup(IMdkrOnlineAdapter *adapter,
                                       unsigned cupId) {
     if (adapter == nullptr) return false;
-    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    LiveAdapter *live = adapter->mdkrResolveLive();
     return live != nullptr &&
            live->sendSessionConfig(MDKR_ONLINE_SET_CUP,
                                    static_cast<uint32_t>(cupId));
@@ -2850,13 +2862,13 @@ bool mdkr_online_live_adapter_set_cup(IMdkrOnlineAdapter *adapter,
 bool mdkr_online_live_adapter_lobby(const IMdkrOnlineAdapter *adapter,
                                     MdkrOnlineLobby *out) {
     if (adapter == nullptr || out == nullptr) return false;
-    const LiveAdapter *live = dynamic_cast<const LiveAdapter *>(adapter);
+    const LiveAdapter *live = adapter->mdkrResolveLive();
     return live != nullptr && live->lobbySnapshot(out);
 }
 
 bool mdkr_online_live_adapter_retract_race_boot(IMdkrOnlineAdapter *adapter) {
     if (adapter == nullptr) return false;
-    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    LiveAdapter *live = adapter->mdkrResolveLive();
     return live != nullptr && live->retractRaceBoot();
 }
 
@@ -2864,15 +2876,28 @@ bool mdkr_online_live_adapter_take_refusal(IMdkrOnlineAdapter *adapter,
                                            uint32_t *command_type,
                                            uint32_t *error) {
     if (adapter == nullptr) return false;
-    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    LiveAdapter *live = adapter->mdkrResolveLive();
     return live != nullptr && live->takeRefusal(command_type, error);
 }
 
 bool mdkr_online_live_adapter_race_prime_start(IMdkrOnlineAdapter *adapter) {
     if (adapter == nullptr) return false;
-    LiveAdapter *live = dynamic_cast<LiveAdapter *>(adapter);
+    LiveAdapter *live = adapter->mdkrResolveLive();
     return live != nullptr && live->racePrimeStart();
 }
+
+#if MDKR_ENABLE_ONLINE_BETA
+/* Resolve the RAW concrete live adapter behind the panel's owning wrapper (a raw
+ * adapter passes through unchanged; the fake resolves to nullptr) via the SAME
+ * mdkrResolveLive hook the C accessors use, so the room-ready / race-boot
+ * registries key on the identical raw pointer those accessors act on. It lives in
+ * THIS translation unit -- not the wiring TU that owns the other OnlineRoom_ seams
+ * -- because the LiveAdapter -> IMdkrOnlineAdapter upcast on the result needs
+ * LiveAdapter's complete type, which only this TU has. */
+IMdkrOnlineAdapter *OnlineRoom_resolveRawLiveAdapter(IMdkrOnlineAdapter *adapter) {
+    return adapter != nullptr ? adapter->mdkrResolveLive() : nullptr;
+}
+#endif
 
 /* OnlineRoom_makeGatedLiveAdapter is a header-inline stub (returns nullptr)
  * so the launcher panel never links this translation unit; the production

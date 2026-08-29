@@ -3384,11 +3384,10 @@ static void teardownAdapterAsync(std::unique_ptr<IMdkrOnlineAdapter> adapter) {
     // destruction would race OnlineRoom_pollEngineRaceBoot() against a dying
     // adapter. race-boot is PUBLISHED with the RESOLVED RAW inner LiveAdapter
     // (setUpRace -> OnlineRoom_publishEngineRaceBoot(this)), so it must be
-    // RETRACTED with that same raw pointer -- the panel owns the OwningLiveAdapter
-    // WRAPPER, and mdkr_online_live_adapter_retract_race_boot's inner
-    // dynamic_cast<LiveAdapter*>(wrapper) is a sibling cross-cast that yields
-    // nullptr, making a retract-by-wrapper a silent no-op (matches the room-ready
-    // resolve-raw two lines below).
+    // RETRACTED with that same raw pointer for the registry's pointer-identity
+    // match -- the panel owns the OwningLiveAdapter WRAPPER, so resolve to the
+    // concrete inner adapter (via the mdkrResolveLive hook) exactly as the
+    // room-ready resolve-raw two lines below does.
     (void)mdkr_online_live_adapter_retract_race_boot(
         OnlineRoom_resolveRawLiveAdapter(adapter.get()));
     // Same hazard class for the room-ready registry: the

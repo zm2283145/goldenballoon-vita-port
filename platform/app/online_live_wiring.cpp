@@ -155,15 +155,21 @@ public:
         return belt != nullptr ? belt->inner() : room_.get();
     }
 
-    /* The RAW inner LiveAdapter. The wrapper's submit/view/service just
-     * delegate to inner_ (the belt lives on room_, not on the adapter methods), but
-     * mdkr_online_live_adapter_lobby / _race_info / _race_set_local_input all
-     * dynamic_cast their argument to the CONCRETE LiveAdapter and so fail-closed on
-     * this wrapper. The descriptor-less room-ready boot must drive the party_link
-     * FORWARD feed + the race arm through the concrete adapter, so it resolves this
-     * inner pointer once and uses it throughout. Lifetime is this wrapper's (the
-     * panel-owned adapter), which outlives the blocking engine boot. */
-    IMdkrOnlineAdapter *innerLiveAdapter() const { return inner_.get(); }
+    /* Cross-cast-free downcast hook (see IMdkrOnlineAdapter): forward to the
+     * inner adapter so every mdkr_online_live_adapter_* C accessor resolves the
+     * concrete LiveAdapter THROUGH this wrapper. The wrapper's submit/view/service
+     * already delegate to inner_; before this hook the accessors instead cast their
+     * argument to the concrete adapter and fail-closed on the wrapper (both derive
+     * IMdkrOnlineAdapter, a sibling cast), which made the entire native online flow
+     * dead code in production. Lifetime is this wrapper's (the panel-owned
+     * adapter), which outlives the blocking engine boot. */
+    LiveAdapter *mdkrResolveLive() override {
+        return inner_ ? inner_->mdkrResolveLive() : nullptr;
+    }
+    const LiveAdapter *mdkrResolveLive() const override {
+        const IMdkrOnlineAdapter *in = inner_.get();
+        return in != nullptr ? in->mdkrResolveLive() : nullptr;
+    }
 
 private:
     std::unique_ptr<MdkrOnlineRoomTransport> room_;
@@ -726,16 +732,9 @@ bool sRoomReadyLatched = false;
 bool sRoomReadyRearmPending = false;
 }  // namespace
 
-IMdkrOnlineAdapter *OnlineRoom_resolveRawLiveAdapter(IMdkrOnlineAdapter *adapter) {
-    if (adapter == nullptr) return nullptr;
-    /* The panel builds an OwningLiveAdapter wrapper; the loopback lanes hand back a
-     * raw LiveAdapter directly. Resolve to the concrete adapter the race_* / lobby
-     * accessors dynamic_cast to, so the descriptor-less room-ready boot's forward-feed
-     * pump + race arm actually see the room state. */
-    OwningLiveAdapter *wrapper = dynamic_cast<OwningLiveAdapter *>(adapter);
-    if (wrapper != nullptr) return wrapper->innerLiveAdapter();
-    return adapter;
-}
+/* OnlineRoom_resolveRawLiveAdapter is defined in match_live_adapter.cpp (where
+ * LiveAdapter is a complete type for the resolve-and-upcast), thin over the same
+ * mdkrResolveLive hook OwningLiveAdapter forwards above. */
 
 void OnlineRoom_publishEngineRoomReady(IMdkrOnlineAdapter *adapter) {
     sRoomReady.publish(adapter);
@@ -761,10 +760,10 @@ void OnlineRoom_resetRoomReadyLatch(void) {
 
 bool OnlineRoom_roomReadyConditionHolds(IMdkrOnlineAdapter *adapter) {
     /* Resolve the concrete LiveAdapter: the panel passes its OwningLiveAdapter
-     * wrapper, on which mdkr_online_live_adapter_lobby() (a dynamic_cast) fails
-     * closed. view() delegates through the virtual interface, but the lobby check
-     * below needs the concrete adapter. The loopback probe passes a raw adapter
-     * (resolve returns it unchanged). */
+     * wrapper, which forwards the mdkrResolveLive hook to its inner adapter; the
+     * loopback probe passes a raw adapter (resolve returns it unchanged). view()
+     * delegates through the virtual interface, but the lobby check below reads the
+     * resolved concrete adapter. */
     IMdkrOnlineAdapter *raw = OnlineRoom_resolveRawLiveAdapter(adapter);
     if (raw == nullptr) return false;
     MdkrOnlineViewModel vm{};

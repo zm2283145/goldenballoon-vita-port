@@ -2422,9 +2422,10 @@ int runOnlineLobbyStartEngineSession(AppHost &host, const MdkrBootConfig &config
  * routes back to the room). */
 int runOnlineLobbyStartLiveSession(AppHost &host, const MdkrBootConfig &config,
                                    IMdkrOnlineAdapter *visibleWrapper) {
-    /* Resolve the concrete LiveAdapter behind the panel's owning wrapper: the
-     * race_* / lobby accessors dynamic_cast to it, and the forward-feed pump + race
-     * arm below must see the real room state (a wrapper fails those closed). */
+    /* Resolve the concrete LiveAdapter behind the panel's owning wrapper so the
+     * forward-feed pump + race arm below drive the real inner adapter (and the
+     * room-ready registry keyed on that raw pointer). The C accessors reach it via
+     * the mdkrResolveLive hook whether handed the wrapper or the raw adapter. */
     IMdkrOnlineAdapter *visible = OnlineRoom_resolveRawLiveAdapter(visibleWrapper);
     if (visible == nullptr) return 2;
 

@@ -59,6 +59,12 @@ struct MdkrOnlineAdapterStep {
 
 /* ---- The adapter seam ---------------------------------------------------- */
 
+/* The concrete live adapter (defined out-of-line in match_live_adapter.cpp).
+ * Forward-declared here so the seam base can expose a typed downcast hook to it.
+ * It has EXTERNAL linkage precisely so this declaration names the same type the
+ * .cpp defines -- the covariant override and the C accessors both require it. */
+class LiveAdapter;
+
 class IMdkrOnlineAdapter {
 public:
     virtual ~IMdkrOnlineAdapter() = default;
@@ -89,6 +95,16 @@ public:
      * "Finish Preview Race" result stub. The live adapter returns nullptr:
      * those are development tools that never run against a real match. */
     virtual MdkrOnlineFakeAdapter *fakeAdapter() { return nullptr; }
+
+    /* Cross-cast-free downcast to the concrete live adapter. The base returns
+     * nullptr (the fake adapter and any other implementation); LiveAdapter
+     * returns itself; a wrapping adapter forwards to the adapter it owns. Every
+     * mdkr_online_live_adapter_* C accessor resolves the raw live adapter through
+     * this hook instead of casting between two sibling IMdkrOnlineAdapter
+     * subclasses -- a sibling cast yields nullptr on the production owning wrapper
+     * and silently fails the whole native online flow closed. */
+    virtual LiveAdapter *mdkrResolveLive() { return nullptr; }
+    virtual const LiveAdapter *mdkrResolveLive() const { return nullptr; }
 };
 
 /* ---- Fake adapter, adapted onto the seam (header-only, light) ------------ */
