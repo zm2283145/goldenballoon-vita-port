@@ -1608,25 +1608,27 @@ launcher only builds frames with a real drawable). The seven assertions: (a) the
 `[online-room-ready]` latch/publish/boot-enter fire on BOTH -- takeover self-fired;
 (b) the native session enters CHARSELECT descriptor-less (no
 `source=launch-descriptor`); (c) selections sync through the reducer; (d) race 1
-converges; (e) the chooser round-trips a converged race 2; (f) both end FINISHED;
-(g) the takeover latch re-fires. `--through`: `c` stops after the CHARSELECT ->
-VEHICLESELECT advance; `e` stops after (a)-(e) (the GREEN achievable bar over the
-real cloud -- needs `--tournament CUP`, since a single race never auto-finals); `full`
-adds the tournament-final (f)/(g) legs. Convergence on this descriptor-less path is
-the reducer-agreed finish order (both processes commit the SAME placements per
-race_index -- there is no `ENGINE-ONLINE-LIVE` fold line on the resident path).
-Default `--build build-beta`. STATUS (2026-08-29): `--through e --tournament 1` is
-3x consecutively GREEN over the real cloud (pairing + self-firing takeover +
-descriptor-less native CHARSELECT/VEHICLE/TRACK + reducer-synced selections + two
-converged tournament races, all four cup rounds racing and the HOST reaching a clean
-FINISHED). `--through full` currently (correctly) FAILS at (f)/(g) on a real
-structural production bug the lane caught: when the host commits FINISH at the
-tournament final, a second real peer's chooser mirror is stranded forever, because
-the host's FINISH is a purely local leave that sends NO reducer command and the
-re-arm design keeps the host in the room -- so neither of the joiner mirror's exits
-(room-left-RESULTS / vanished-host) fires. A clean fix needs a reducer "tournament
-finished" signal, but lobby_core.c + the Worker are protocol-frozen; it awaits a
-product decision.
+converges; (e) the chooser round-trips a converged race 2; (f) both end FINISHED --
+the host's FINISH first dispatches the EXISTING leader-only REMATCH wrap
+(`lobby_core.c`: RESULTS -> LOBBY + a fresh series), so the transition is
+reducer-observable and the real joiner's chooser mirror exits to its OWN champion
+ceremony from its latched final standings (no new reducer command, no Worker
+change); (g) the takeover re-fires on BOTH endpoints AND a second descriptor-less
+native session reaches CHARSELECT -- the automatic FINISHED re-take into the
+freshly wrapped fresh-series tournament room (the panel's re-arm observer completes
+immediately: the wrap's RESULTS-out-and-back was the rising edge). `--through`: `c`
+stops after the CHARSELECT -> VEHICLESELECT advance; `e` stops after (a)-(e) (a
+faster intermediate stop -- needs `--tournament CUP`, since a single race never
+auto-finals); `full` (all seven assertions) is the GREEN bar. Convergence on this
+descriptor-less path is the reducer-agreed finish order (both processes commit the
+SAME placements per race_index -- there is no `ENGINE-ONLINE-LIVE` fold line on the
+resident path). Default `--build build-beta`. The tournament-final joiner strand
+this lane originally caught (the host's FINISH was a purely local leave that sent
+NO reducer command, so neither of the joiner mirror's exits -- room-left-RESULTS /
+vanished-host -- could ever fire) is fixed by the FINISH wrap above; the local
+red-first pins live in `check_online_lobby_tournament.py` (the host's wrap must
+land before the ceremony) and `check_online_results_chooser.py` (the final mirror
+exits to its own ceremony, never re-selection).
 
 `check_online_lobby_tournament.py` (standalone lane, not run-checks registered)
 is the PD-T6h2b KEYSTONE gate: it COMPOSES the T6h2a lobby-start boot with the
@@ -1708,20 +1710,24 @@ registered) is the PD-T6e MINOR-4 gate: the safe 2nd-tournament room-ready
 RE-ARM state machine. The native takeover latch
 (`OnlineRoom_pollRoomReadyTransition`) is one-shot per adapter, so before Minor-4
 a SECOND tournament in the SAME session fell back to the per-race ImGui path
-instead of the native takeover; the re-arm is edge-triggered and reason-aware (a
+instead of the native takeover; the re-arm is reason-aware and FINISHED-gated (a
 FINISHED native return ARMS `OnlineRoom_armRoomReadyRearm`; LEFT/ERROR/NONE do
-NOT; the panel's per-frame `OnlineRoom_observeRoomReadyRearm` clears the latch
-ONLY while the room-ready condition is FALSE, so the next
-SELECTING+2+LOBBY+tournament arrival is a genuine rising edge). The full
+NOT; the panel's per-frame `OnlineRoom_observeRoomReadyRearm` completes a pending
+arm IMMEDIATELY -- the tournament-final FINISH wrap already took the room out of
+the takeover window at RESULTS and back to a fresh-series SELECTING during the
+session, which IS the rising edge -- so the next poll re-takes native exactly once
+per FINISHED return; a room transition alone never re-fires). The full
 interactive two-tournament loop needs a live cloud adapter + a human, so this
 lane drives the loopback tournament room through the wiring edges DIRECTLY via the
 `MDKR_APP_TEST_ONLINE_ROOM_READY_REARM_PROBE` seam and asserts every sub-flag of
-the probe verdict: `totalFires=2` (exactly one native takeover per tournament --
-no re-boot loop), `t1Once` (tournament #1 fired once), `leftNoRearm` (a LEFT/ERROR
-return never re-fires even with the condition still TRUE), `finishedNoInstant` (a
-FINISHED return does not instantly re-fire while the condition holds),
-`clearedWhileFalse` (the latch clears only out of the takeover window), and
-`t2Once`/`routed2` (tournament #2 re-takes native once, route=lobby-start). Like
+the probe verdict: `totalFires=3` (exactly one native takeover per tournament +
+the reset coda's fresh adapter -- no re-boot loop), `t1Once` (tournament #1 fired
+once), `leftNoRearm` (a LEFT/ERROR return never re-fires even with the condition
+still TRUE), `wrapAloneNoRefire` (the RESULTS-park -> FINISH-wrap round trip alone
+re-fires nothing), `finishedRetakeOnce`/`routed2` (the FINISHED arm completes and
+re-takes native exactly once, route=lobby-start), `noRetakeWithoutFinished` (a
+later condition cycle without a FINISHED return never re-fires), and
+`resetDropsPending` (a fresh adapter drops a stale pending arm). Like
 the sibling engine lanes it needs the local US 1.1 ROM; run it standalone with
 `--build <dir> --rom <path>`.
 

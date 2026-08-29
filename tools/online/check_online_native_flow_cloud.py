@@ -40,8 +40,13 @@ The seven assertions (from both processes' stderr + exit codes):
   c. selections synced through the reducer (joiner's racer appears on creator's side)
   d. race 1 converges (identical ENGINE-ONLINE-LIVE fold hash, both raced > N ticks)
   e. chooser round-trip: race 2 boots and converges too
-  f. clean return: both end FINISHED, the launcher room alive, exit 0
-  g. re-take: a SECOND [online-room-ready] latch after the return (FINISHED re-arm)
+  f. clean return: both end FINISHED, the launcher room alive, exit 0 -- the
+     host's FINISH first dispatches the REMATCH wrap (the room leaves RESULTS,
+     reducer-observable), so the real joiner's chooser mirror exits to its OWN
+     ceremony instead of stranding
+  g. re-take: a SECOND [online-room-ready] latch AND a second descriptor-less
+     native session reaching CHARSELECT on BOTH endpoints (the FINISHED re-arm
+     completes into the freshly wrapped fresh-series tournament room)
 
 RECORDED RED (assertions a+b against the pre-fix build eac1e8c0):
   The pre-fix commit eac1e8c0 has NO interactive room-ready takeover and NO autopair
@@ -301,7 +306,9 @@ def make_env(role: str, join_code: Optional[str], pick: str, rom: Path,
         # both processes converge byte-for-byte over the real mesh.
         MDKR_APP_TEST_ONLINE_SYNTH_RACE_INPUT="1",
         # The more-races chooser: at the FINAL standings the host commits FINISH
-        # (index 5) -> CEREMONY -> the single FINISHED handshake.
+        # (index 5) -> the REMATCH wrap (room leaves RESULTS; the joiner's mirror
+        # follows into its OWN ceremony) -> CEREMONY -> the single FINISHED
+        # handshake on each endpoint.
         MDKR_TEST_ONLINE_RESULTS_CHOOSER="5",
     )
     if join_code is not None:
@@ -520,13 +527,13 @@ def run(args: argparse.Namespace) -> dict:
 
             if args.through == "e":
                 # (a)-(e) stop: the full multi-race production flow over the real
-                # cloud, up to and including a converged race 2. This is the
-                # GREEN achievable bar today; the (f)/(g) tournament-final
-                # two-peer clean-finish + re-take is blocked on a structural gap:
-                # the host's FINISH is a purely local leave that sends no reducer
-                # command, so a second real peer (the joiner) never observes it,
-                # and the re-arm design keeps the host in the room -- so the
-                # joiner mirror is never released.
+                # cloud, up to and including a converged race 2. Historically the
+                # green achievable bar while the tournament-final two-peer
+                # clean-finish was blocked (the host's FINISH used to be a purely
+                # local leave that sent no reducer command, stranding the second
+                # real peer's chooser mirror); the FINISH now dispatches the
+                # REMATCH wrap, so `full` is the green bar and this stop remains
+                # as a faster intermediate qualification.
                 for drv in (creator, joiner):
                     assert_no_forbidden(drv.name, drv.full_output())
                 report["verdict"] = "PASS"
@@ -537,10 +544,14 @@ def run(args: argparse.Namespace) -> dict:
                 raise ProofStopEarly()
 
             # --- (f) clean FINISHED return + (g) re-take ---------------------
-            # The tournament runs to its final round; the chooser commits FINISH
-            # -> CEREMONY -> the single FINISHED handshake. Wait for that on both
-            # (do not require process exit -- the launcher room stays alive; a
-            # scripted quit / SIGTERM at teardown is the exit-0 leg).
+            # The tournament runs to its final round; the host's chooser commits
+            # FINISH, which first dispatches the REMATCH wrap (the room leaves
+            # RESULTS -- the reducer-observable transition the real joiner's
+            # chooser mirror exits on), then -> CEREMONY -> the single FINISHED
+            # handshake ON BOTH endpoints (the joiner reaches its OWN ceremony
+            # from its latched final standings). Wait for that on both (do not
+            # require process exit -- the launcher room stays alive; a scripted
+            # quit / SIGTERM at teardown is the exit-0 leg).
             for drv in (creator, joiner):
                 drv.wait_line(
                     lambda _l, d=drv: (any(
@@ -550,26 +561,50 @@ def run(args: argparse.Namespace) -> dict:
                     f"{drv.name} FINISHED session-end", args.finish_timeout)
             phase(True, "clean_finished_return",
                   "assertion (f): both endpoints ended the session FINISHED "
-                  "(FINISH -> CEREMONY -> FINISHED) with the launcher room alive")
+                  "(FINISH -> wrap -> CEREMONY -> FINISHED) with the launcher "
+                  "room alive")
 
-            # (g) re-take: the FINISHED return armed the re-arm; the room's next
-            # fresh SELECTING+2+LOBBY rising edge re-fires the takeover latch. The
-            # host starts a new tournament from the room (autopair re-take).
+            # (g) re-take: each FINISHED return arms the re-arm; the panel's
+            # observer completes it immediately (the FINISH wrap already returned
+            # the room to a fresh-series SELECTING+2+LOBBY), so the takeover
+            # re-fires BY ITSELF on both endpoints and a SECOND descriptor-less
+            # native session must reach CHARSELECT on both -- the re-take into a
+            # fresh tournament, fully hands-off.
             for drv in (creator, joiner):
                 drv.wait_line(
                     lambda _l, d=drv: (len(RR_LATCH_RE.findall(
                         d.full_output())) >= 2 or None),
                     f"{drv.name} second takeover latch (FINISHED re-arm re-take)",
                     args.retake_timeout)
-            phase(True, "retake",
-                  "assertion (g): the takeover latch re-fired after the FINISHED "
-                  "return on both endpoints (a second session self-took)")
-
-            # Clean scripted quit: SIGTERM both; a live launcher exits 0.
             for drv in (creator, joiner):
+                drv.wait_line(
+                    lambda _l, d=drv: ((len(BEGIN_LOBBY_RE.findall(
+                        d.full_output())) >= 2 and len(
+                        CHARSELECT_ENTER_RE.findall(d.full_output())) >= 2)
+                        or None),
+                    f"{drv.name} second descriptor-less session reached native "
+                    f"CHARSELECT (re-take)", args.retake_timeout)
+            phase(True, "retake",
+                  "assertion (g): the takeover re-fired after the FINISHED "
+                  "return on BOTH endpoints and a second descriptor-less native "
+                  "session reached CHARSELECT (re-take into a fresh tournament)")
+
+            # Clean scripted quit. The (g) re-take leaves both processes INSIDE
+            # the second native session (by design -- the automatic re-take), so
+            # the first SIGTERM is consumed by the ENGINE session (a clean engine
+            # shutdown; the launcher reads reason=NONE and does NOT re-arm -- no
+            # boot loop) and the launcher keeps drawing the room. A second
+            # SIGTERM then quits the launcher itself. Accept a one-step exit too
+            # (a process caught at the panel quits on the first).
+            def scripted_quit(drv) -> int:
                 drv.proc.terminate()
-            exit_c = creator.wait_exit(30.0)
-            exit_j = joiner.wait_exit(30.0)
+                try:
+                    return drv.proc.wait(timeout=20)
+                except subprocess.TimeoutExpired:
+                    drv.proc.terminate()
+                return drv.wait_exit(20.0)
+            exit_c = scripted_quit(creator)
+            exit_j = scripted_quit(joiner)
             report["exit"] = {"create": exit_c, "join": exit_j}
             # SIGTERM (-15) is a clean scripted quit; a nonzero/crash code is not.
             for label, code_ in (("create", exit_c), ("join", exit_j)):

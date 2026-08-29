@@ -89,13 +89,13 @@ LANES = (
 # check_online_native_flow_cloud.py is the production-path acceptance instrument:
 # the ONLY automation is pairing bootstrap + injected pad input; everything after
 # pairing is the production code path (self-firing takeover, native screens,
-# reducer-synced selections, race, chooser, return, re-take). `--through e` (pairing
-# + self-firing takeover + descriptor-less CHARSELECT/VEHICLE/TRACK + reducer-synced
-# selections + two converged tournament races) is GREEN over the real cloud;
-# `--through full` additionally drives the tournament-final (f) FINISHED / (g)
-# re-take legs, which currently (correctly) fail -- the host finishes cleanly but a
-# second real peer's chooser mirror is stranded because the host's FINISH sends no
-# reducer signal. See tests/README.md for the full description.
+# reducer-synced selections, race, chooser, return, re-take). `--through full` is
+# the GREEN bar: all seven assertions, including the tournament-final (f) both-
+# endpoint FINISHED (the host's FINISH dispatches the REMATCH wrap so the joiner's
+# chooser mirror observes the room leave RESULTS and exits to its OWN ceremony)
+# and (g) the automatic FINISHED re-take reaching a second native CHARSELECT on
+# BOTH endpoints. `--through e` / `--through c` remain as faster intermediate
+# stops. See tests/README.md for the full description.
 MANUAL_NETWORK_LANES = (
     "tools/online/check_online_native_flow_cloud.py",
     "tools/online/cloud_two_process_engine_boot.py",
