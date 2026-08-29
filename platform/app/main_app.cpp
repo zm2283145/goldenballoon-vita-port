@@ -1230,6 +1230,28 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         host.shutdown();
         return 2;
     }
+    const char *smokeQuitDuringCharacterWork =
+        std::getenv("MDKR_APP_SMOKE_QUIT_DURING_CHARACTER_WORK");
+    const char *smokeQuitDuringCharacterWorkToken =
+        std::getenv("MDKR_APP_SMOKE_QUIT_DURING_CHARACTER_WORK_TOKEN");
+    const bool anyCharacterQuitContract =
+        (smokeQuitDuringCharacterWork &&
+         smokeQuitDuringCharacterWork[0]) ||
+        (smokeQuitDuringCharacterWorkToken &&
+         smokeQuitDuringCharacterWorkToken[0]);
+    const bool quitDuringCharacterWork = anyCharacterQuitContract &&
+        waitForCharacterJobs && smokeQuitDuringCharacterWork &&
+        std::strcmp(smokeQuitDuringCharacterWork, "1") == 0 &&
+        smokeQuitDuringCharacterWorkToken &&
+        std::strcmp(smokeQuitDuringCharacterWorkToken,
+                    "mdkr64-character-quit-v1") == 0;
+    if (anyCharacterQuitContract && !quitDuringCharacterWork) {
+        std::fprintf(
+            stderr,
+            "[app] smoke: invalid Character Workshop quit contract\n");
+        host.shutdown();
+        return 2;
+    }
     // Drag-and-drop coverage (Q2): the picker's NSOpenPanel and path-field
     // paths run through the same RomPanel_setRom() the C++ unit tests already
     // exercise directly, but the SDL_DROPFILE handler — used by a real
@@ -1250,6 +1272,9 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         std::getenv("MDKR_APP_SMOKE_REPLACEMENT_PLAY");
     const int   dropFrame = (frames > 1) ? 1 : 0;
     bool        sawQuit   = false;
+    bool characterQuitRequested = false;
+    bool characterQuitPublished = false;
+    bool characterQuitPublishedWhilePending = false;
     /* Starts false whenever an image was requested: only the final frame's
      * successful write may set it. A break before that frame must not leave
      * the AUDIT-0046 capture gate reporting an image nobody produced. */
@@ -1301,6 +1326,13 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         ++smokePlayActions;
         smokePlayActionRom = action.boot.rom_path ? action.boot.rom_path : "";
     };
+    auto observeSmokeQuit = [&](const LauncherAction &action) {
+        if (action.type != LauncherActionType::Quit) return;
+        characterQuitPublished = true;
+        characterQuitPublishedWhilePending =
+            characterQuitPublishedWhilePending ||
+            Settings_characterWorkPending();
+    };
     int characterServiceFrames = 0;
     bool characterJobsSettled = true;
     if (smokeDropPlayMutate && !smokeDropPlay) {
@@ -1334,10 +1366,14 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         if (smokeDrop && smokeDrop[0] && i == dropFrame) {
             host.queueDropFileForSmoke(smokeDrop);
         }
-        if (host.pumpAndShouldQuit()) sawQuit = true;
+        if (host.pumpAndShouldQuit()) {
+            sawQuit = true;
+            launcher.requestQuit();
+        }
         host.beginFrame();
         const LauncherAction action = launcher.draw(host);
         observeSmokePlay(action);
+        observeSmokeQuit(action);
         const bool smokeSequenceFinalFrame = smokeA11yWalk
             ? !launcher.state().romValidationPending &&
                   smokeA11yWalkFrame == frames - 1
@@ -1353,6 +1389,12 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
          * invalid atlas handle. Stop at the first failed presentation. */
         if (!ok) break;
 
+        if (quitDuringCharacterWork && !characterQuitRequested &&
+            Settings_characterWorkPending()) {
+            launcher.requestQuit();
+            characterQuitRequested = true;
+        }
+
         /* Character authoring chains multiple real subprocess publications
          * (for example ZIP conversion followed by GLB inspection).
          * Unthrottled smoke frames are not a clock and can all render before
@@ -1364,10 +1406,14 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
             const Uint64 characterDeadline = SDL_GetTicks64() + 15000u;
             while (Settings_smokeCharacterWorkPending() &&
                    SDL_GetTicks64() < characterDeadline && renderOk) {
-                if (host.waitAndPump(1)) sawQuit = true;
+                if (host.waitAndPump(1)) {
+                    sawQuit = true;
+                    launcher.requestQuit();
+                }
                 host.beginFrame();
                 const LauncherAction serviceAction = launcher.draw(host);
                 observeSmokePlay(serviceAction);
+                observeSmokeQuit(serviceAction);
                 renderOk = host.endFrame() && renderOk;
                 ++characterServiceFrames;
             }
@@ -1376,10 +1422,14 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
                 renderOk = false;
             }
             if (i == frames - 1 && renderOk) {
-                if (host.waitAndPump(1)) sawQuit = true;
+                if (host.waitAndPump(1)) {
+                    sawQuit = true;
+                    launcher.requestQuit();
+                }
                 host.beginFrame();
                 const LauncherAction settledAction = launcher.draw(host);
                 observeSmokePlay(settledAction);
+                observeSmokeQuit(settledAction);
                 const bool settledFrameOk = host.endFrame(shot);
                 renderOk = renderOk && settledFrameOk;
                 captureOk = settledFrameOk;
@@ -1815,6 +1865,19 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
             stderr,
             "[app] smoke: Character Workshop serviceFrames=%d settled=%d\n",
             characterServiceFrames, characterJobsSettled ? 1 : 0);
+    }
+    if (quitDuringCharacterWork) {
+        std::fprintf(
+            stderr,
+            "[app-ui-test] character quit lifecycle requested=%d published=%d pending-at-publication=%d settled=%d\n",
+            characterQuitRequested ? 1 : 0,
+            characterQuitPublished ? 1 : 0,
+            characterQuitPublishedWhilePending ? 1 : 0,
+            Settings_characterWorkPending() ? 0 : 1);
+        renderOk = renderOk && characterQuitRequested &&
+            characterQuitPublished &&
+            !characterQuitPublishedWhilePending &&
+            !Settings_characterWorkPending();
     }
 
     if (smokeTouch) {
@@ -2592,6 +2655,8 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
     int  exitCode = 0;
     bool finishStudioSmokeAfterFrame = false;
     while (running) {
+        Settings_serviceCharacterWork();
+        if (launcher.quitReady()) break;
         const bool drawableAvailable =
             host.drawableWidth() > 0 && host.drawableHeight() > 0;
         const AppUiIdleDecision idle = AppUi_idleDecision(
@@ -2601,10 +2666,14 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
             // Occluded WebGPU surfaces are retried at a bounded 40 Hz. A truly
             // minimized zero-drawable window skips ImGui construction entirely
             // until restore, while close/quit remains event-driven and prompt.
-            if (host.waitAndPump(static_cast<int>(idle.waitMilliseconds))) break;
+            if (host.waitAndPump(static_cast<int>(idle.waitMilliseconds))) {
+                launcher.requestQuit();
+                if (launcher.quitReady()) break;
+            }
             if (!idle.buildFrame) continue;
         } else if (host.pumpAndShouldQuit()) {
-            break;
+            launcher.requestQuit();
+            if (launcher.quitReady()) break;
         }
         host.beginFrame();
         const LauncherAction action = launcher.draw(host);

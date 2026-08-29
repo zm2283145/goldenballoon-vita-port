@@ -12,6 +12,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
+#include <process.h>
+#include <windows.h>
+#elif !defined(__EMSCRIPTEN__)
+#include <signal.h>
+#include <unistd.h>
+#endif
+
 #define SOURCE_PACKAGE_MAX (512u * 1024u * 1024u)
 #define MANIFEST_MAX (1024u * 1024u)
 #define LICENSE_MAX (1024u * 1024u)
@@ -26,6 +34,70 @@
 #define LEGACY_COMPILER_ID_V1 "mdkr-character-compiler/1"
 
 static unsigned s_stage_serial;
+
+static long native_process_id(void) {
+#if defined(__EMSCRIPTEN__)
+    return 1;
+#elif defined(_WIN32)
+    return (long)_getpid();
+#else
+    return (long)getpid();
+#endif
+}
+
+static int native_process_alive(long process_id) {
+    if (process_id <= 0) return 1;
+#if defined(__EMSCRIPTEN__)
+    return process_id == 1;
+#elif defined(_WIN32)
+    HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, (DWORD)process_id);
+    DWORD wait_result;
+    if (process == NULL) {
+        return GetLastError() != ERROR_INVALID_PARAMETER;
+    }
+    wait_result = WaitForSingleObject(process, 0);
+    CloseHandle(process);
+    return wait_result == WAIT_TIMEOUT;
+#else
+    if (kill((pid_t)process_id, 0) == 0) return 1;
+    return errno != ESRCH;
+#endif
+}
+
+static int retire_stale_native_lock(const char *path) {
+    FILE *input = mdkr_fopen_utf8(path, "rb");
+    char magic[32] = {0};
+    long owner = 0;
+    int parsed;
+    if (input == NULL) return 0;
+    parsed = fscanf(input, "%31s %ld", magic, &owner);
+    (void)fclose(input);
+    if (parsed != 2 || strcmp(magic, "mdkr-native-lock-v1") != 0 ||
+        native_process_alive(owner)) return 0;
+    if (mdkr_remove_utf8(path) != 0) return 0;
+    (void)mdkr_parent_directory_sync_utf8(path);
+    return 1;
+}
+
+static FILE *open_native_lock(const char *path, const char *operation) {
+    FILE *lock;
+    int attempt;
+    for (attempt = 0; attempt < 2; ++attempt) {
+        lock = mdkr_fopen_utf8(path, "wbx");
+        if (lock != NULL) {
+            if (fprintf(lock, "mdkr-native-lock-v1 %ld\n%s\n",
+                        native_process_id(), operation) >= 0 &&
+                mdkr_file_sync(lock) == 0) {
+                return lock;
+            }
+            (void)fclose(lock);
+            (void)mdkr_remove_utf8(path);
+            return NULL;
+        }
+        if (errno != EEXIST || !retire_stale_native_lock(path)) break;
+    }
+    return NULL;
+}
 
 static void result_reset(MdkrModernCharacterInstallResult *result) {
     if (result != NULL) memset(result, 0, sizeof(*result));
@@ -769,13 +841,12 @@ static int portable_package_operation(
             goto done;
         }
     }
-    lock = mdkr_fopen_utf8(lock_path, "wbx");
+    lock = open_native_lock(lock_path, "install");
     if (lock == NULL) {
         result_message(result, "another character import is active (or left a stale import lock)");
         goto done;
     }
     lock_owned = 1;
-    (void)fputs("native-launcher\n", lock);
     if (fclose(lock) != 0) {
         lock = NULL;
         result_message(result, "character import lock could not be committed");
@@ -901,13 +972,12 @@ int mdkr_modern_character_set_enabled(
     }
     source = enabled ? disabled_path : active_path;
     destination = enabled ? active_path : disabled_path;
-    lock = mdkr_fopen_utf8(lock_path, "wbx");
+    lock = open_native_lock(
+        lock_path, enabled ? "enable" : "disable");
     if (lock == NULL) {
         result_message(result, "another character import or lifecycle change is active");
         return 0;
     }
-    (void)fputs(enabled ? "native-launcher-enable\n"
-                        : "native-launcher-disable\n", lock);
     if (fclose(lock) != 0) {
         lock = NULL;
         (void)mdkr_remove_utf8(lock_path);
@@ -969,15 +1039,48 @@ static int content_addressed_leaf(const char *name, const char *package_id,
     return 1;
 }
 
+typedef struct RemovalCandidate {
+    char source[4096];
+    char quarantine[4096];
+    int source_revision;
+    int provenance_report;
+} RemovalCandidate;
+
+static int removal_owned_leaf(const char *name, const char *package_id,
+                              int *source_revision,
+                              int *provenance_report) {
+    const size_t id_length = strlen(package_id);
+    int source = 0;
+    int report = 0;
+    int cache = strlen(name) == id_length + 5u &&
+                strncmp(name, package_id, id_length) == 0 &&
+                strcmp(name + id_length, ".mdkc") == 0;
+    if (!cache) {
+        cache = strlen(name) == id_length + 14u &&
+                strncmp(name, package_id, id_length) == 0 &&
+                strcmp(name + id_length, ".mdkc.disabled") == 0;
+    }
+    if (!cache) {
+        source = content_addressed_leaf(name, package_id, ".mdkrchar");
+        report = content_addressed_leaf(name, package_id, ".json");
+    }
+    if (source_revision != NULL) *source_revision = source;
+    if (provenance_report != NULL) *provenance_report = report;
+    return cache || source || report;
+}
+
+static int removal_candidate_compare(const void *left, const void *right) {
+    const RemovalCandidate *a = (const RemovalCandidate *)left;
+    const RemovalCandidate *b = (const RemovalCandidate *)right;
+    const int a_cache = !a->source_revision && !a->provenance_report;
+    const int b_cache = !b->source_revision && !b->provenance_report;
+    if (a_cache != b_cache) return a_cache - b_cache;
+    return strcmp(a->source, b->source);
+}
+
 int mdkr_modern_character_remove_installed(
     const char *package_id, const char *directory,
     MdkrModernCharacterInstallResult *result) {
-    typedef struct RemovalCandidate {
-        char source[4096];
-        char quarantine[4096];
-        int source_revision;
-        int provenance_report;
-    } RemovalCandidate;
     DIR *handle;
     struct dirent *item;
     char lock_path[4096];
@@ -988,7 +1091,6 @@ int mdkr_modern_character_remove_installed(
     size_t candidate_capacity = 0u;
     size_t moved = 0u;
     unsigned nonce;
-    const size_t id_length = package_id != NULL ? strlen(package_id) : 0u;
     int removed_sources = 0;
     int removed_reports = 0;
     int failed = 0;
@@ -1001,12 +1103,11 @@ int mdkr_modern_character_remove_installed(
         result_message(result, "installed character directory or id is invalid");
         return 0;
     }
-    lock = mdkr_fopen_utf8(lock_path, "wbx");
+    lock = open_native_lock(lock_path, "remove");
     if (lock == NULL) {
         result_message(result, "another character import or removal is active");
         return 0;
     }
-    (void)fputs("native-launcher-remove\n", lock);
     if (fclose(lock) != 0 || (handle = opendir(directory)) == NULL) {
         (void)mdkr_remove_utf8(lock_path);
         result_message(result, "installed character directory could not be opened");
@@ -1015,22 +1116,11 @@ int mdkr_modern_character_remove_installed(
     while ((item = readdir(handle)) != NULL) {
         int regular = 0;
         const char *name = item->d_name;
-        int candidate = strlen(name) == id_length + 5u &&
-                        strncmp(name, package_id, id_length) == 0 &&
-                        strcmp(name + id_length, ".mdkc") == 0;
-        if (!candidate) {
-            candidate = strlen(name) == id_length + 14u &&
-                        strncmp(name, package_id, id_length) == 0 &&
-                        strcmp(name + id_length, ".mdkc.disabled") == 0;
-        }
+        int source_revision = 0;
+        int provenance_report = 0;
+        const int candidate = removal_owned_leaf(
+            name, package_id, &source_revision, &provenance_report);
         {
-            int source_revision = content_addressed_leaf(
-                name, package_id, ".mdkrchar");
-            int provenance_report = content_addressed_leaf(
-                name, package_id, ".json");
-            if (!candidate) {
-                candidate = source_revision || provenance_report;
-            }
             if (!candidate) continue;
             if (candidate_count == candidate_capacity) {
                 const size_t next_capacity = candidate_capacity == 0u
@@ -1079,6 +1169,10 @@ int mdkr_modern_character_remove_installed(
         result_message(result, "no regular installed files matched that character id");
         goto done;
     }
+    /* The cache is the durable commit witness used by restart recovery. Move
+     * every retained source/report first and the discoverable cache last. */
+    qsort(candidates, candidate_count, sizeof(*candidates),
+          removal_candidate_compare);
     for (nonce = 0u; nonce < 1024u; ++nonce) {
         char leaf[65u + 48u];
         int exists = 0;
@@ -1108,6 +1202,14 @@ int mdkr_modern_character_remove_installed(
         }
 #endif
         leaf = leaf != NULL ? leaf + 1 : candidates[moved].source;
+        if (moved + 1u == candidate_count && candidate_count > 1u) {
+            /* The last element is the cache. The pre-commit moves must reach
+             * both directory journals before that final rename can retire
+             * runtime discovery. */
+            (void)mdkr_parent_directory_sync_utf8(
+                candidates[moved - 1u].quarantine);
+            (void)mdkr_parent_directory_sync_utf8(quarantine_path);
+        }
         if (!path_join(candidates[moved].quarantine,
                        sizeof(candidates[moved].quarantine),
                        quarantine_path, leaf) ||
@@ -1128,6 +1230,10 @@ int mdkr_modern_character_remove_installed(
                     : "Character deletion rollback needs recovery from the private character trash directory.");
             goto done;
         }
+    }
+    if (candidate_count != 0u) {
+        (void)mdkr_parent_directory_sync_utf8(
+            candidates[candidate_count - 1u].quarantine);
     }
     (void)mdkr_parent_directory_sync_utf8(quarantine_path);
     for (moved = 0u; moved < candidate_count; ++moved) {
@@ -1154,5 +1260,191 @@ int mdkr_modern_character_remove_installed(
 done:
     free(candidates);
     (void)mdkr_remove_utf8(lock_path);
+    return okay;
+}
+
+static int reconcile_removal_quarantine(
+    const char *package_id, const char *directory,
+    const char *quarantine_path, int retire, unsigned *changed) {
+    DIR *handle;
+    struct dirent *item;
+    int valid = 1;
+
+    /* Validate the complete quarantine before changing any entry. A private
+     * directory containing anything not owned by this exact package is never
+     * treated as launcher trash. */
+    handle = opendir(quarantine_path);
+    if (handle == NULL) return 0;
+    while ((item = readdir(handle)) != NULL) {
+        char source[4096];
+        char destination[4096];
+        int exists = 0;
+        int regular = 0;
+        if (strcmp(item->d_name, ".") == 0 ||
+            strcmp(item->d_name, "..") == 0) continue;
+        if (!removal_owned_leaf(item->d_name, package_id, NULL, NULL) ||
+            !path_join(source, sizeof(source), quarantine_path,
+                       item->d_name) ||
+            mdkr_path_query_utf8(source, NULL, &regular, NULL) != 0 ||
+            !regular || mdkr_path_is_link_or_reparse_utf8(source) != 0) {
+            valid = 0;
+            break;
+        }
+        if (!retire &&
+            (!path_join(destination, sizeof(destination), directory,
+                        item->d_name) ||
+             !query_path_state(destination, &exists, NULL) || exists)) {
+            valid = 0;
+            break;
+        }
+    }
+    (void)closedir(handle);
+    if (!valid) return 0;
+
+    handle = opendir(quarantine_path);
+    if (handle == NULL) return 0;
+    while ((item = readdir(handle)) != NULL) {
+        char source[4096];
+        char destination[4096];
+        int operation;
+        if (strcmp(item->d_name, ".") == 0 ||
+            strcmp(item->d_name, "..") == 0) continue;
+        if (!path_join(source, sizeof(source), quarantine_path,
+                       item->d_name)) {
+            valid = 0;
+            break;
+        }
+        if (retire) {
+            operation = mdkr_remove_utf8(source);
+        } else if (path_join(destination, sizeof(destination), directory,
+                             item->d_name)) {
+            operation = mdkr_move_utf8(source, destination, 0, 1);
+        } else {
+            operation = -1;
+        }
+        if (operation != 0) {
+            valid = 0;
+            break;
+        }
+        if (changed != NULL) ++*changed;
+    }
+    (void)closedir(handle);
+    if (valid && mdkr_rmdir_utf8(quarantine_path) != 0) valid = 0;
+    (void)mdkr_parent_directory_sync_utf8(quarantine_path);
+    return valid;
+}
+
+static int retire_removal_roots(const char *package_id,
+                                const char *directory,
+                                unsigned *changed) {
+    DIR *handle;
+    struct dirent *item;
+    int valid = 1;
+    handle = opendir(directory);
+    if (handle == NULL) return 0;
+    while ((item = readdir(handle)) != NULL) {
+        char path[4096];
+        int regular = 0;
+        if (!removal_owned_leaf(item->d_name, package_id, NULL, NULL)) continue;
+        if (!path_join(path, sizeof(path), directory, item->d_name) ||
+            mdkr_path_query_utf8(path, NULL, &regular, NULL) != 0 ||
+            !regular || mdkr_path_is_link_or_reparse_utf8(path) != 0) {
+            valid = 0;
+            break;
+        }
+    }
+    (void)closedir(handle);
+    if (!valid) return 0;
+    handle = opendir(directory);
+    if (handle == NULL) return 0;
+    while ((item = readdir(handle)) != NULL) {
+        char path[4096];
+        int regular = 0;
+        if (!removal_owned_leaf(item->d_name, package_id, NULL, NULL)) continue;
+        if (!path_join(path, sizeof(path), directory, item->d_name) ||
+            mdkr_path_query_utf8(path, NULL, &regular, NULL) != 0 ||
+            !regular || mdkr_path_is_link_or_reparse_utf8(path) != 0 ||
+            mdkr_remove_utf8(path) != 0) {
+            valid = 0;
+            break;
+        }
+        if (changed != NULL) ++*changed;
+    }
+    (void)closedir(handle);
+    return valid;
+}
+
+int mdkr_modern_character_reconcile_removal(
+    const char *package_id, const char *directory, int retire,
+    MdkrModernCharacterInstallResult *result) {
+    char lock_path[4096];
+    FILE *lock = NULL;
+    unsigned nonce;
+    unsigned changed = 0u;
+    int okay = 1;
+
+    result_reset(result);
+    if (!id_valid(package_id) || directory == NULL ||
+        !path_join(lock_path, sizeof(lock_path), directory,
+                   ".character-import.lock")) {
+        result_message(result, "character removal recovery path or id is invalid");
+        return 0;
+    }
+    lock = open_native_lock(
+        lock_path, retire ? "remove-finish" : "remove-rollback");
+    if (lock == NULL) {
+        result_message(result,
+            "another character import or removal recovery is active");
+        return 0;
+    }
+    if (fclose(lock) != 0) {
+        (void)mdkr_remove_utf8(lock_path);
+        result_message(result, "character removal recovery lock could not be committed");
+        return 0;
+    }
+    lock = NULL;
+
+    for (nonce = 0u; nonce < 1024u; ++nonce) {
+        char leaf[65u + 48u];
+        char quarantine_path[4096];
+        int exists = 0;
+        int is_directory = 0;
+        if (snprintf(leaf, sizeof(leaf), ".character-trash.%s.%u",
+                     package_id, nonce) < 0 ||
+            !path_join(quarantine_path, sizeof(quarantine_path),
+                       directory, leaf) ||
+            !query_path_state(quarantine_path, &exists, NULL)) {
+            okay = 0;
+            break;
+        }
+        if (!exists) continue;
+        if (mdkr_path_query_utf8(quarantine_path, NULL, NULL,
+                                 &is_directory) != 0 || !is_directory ||
+            mdkr_path_is_link_or_reparse_utf8(quarantine_path) != 0 ||
+            !reconcile_removal_quarantine(
+                package_id, directory, quarantine_path, retire, &changed)) {
+            okay = 0;
+            break;
+        }
+    }
+    if (okay && retire &&
+        !retire_removal_roots(package_id, directory, &changed)) {
+        okay = 0;
+    }
+    (void)mdkr_remove_utf8(lock_path);
+    (void)mdkr_parent_directory_sync_utf8(lock_path);
+    if (result != NULL) {
+        (void)snprintf(result->id, sizeof(result->id), "%s", package_id);
+        result->removed_files = retire ? changed : 0u;
+        result->cleanup_pending_files = okay ? 0u : 1u;
+    }
+    result_message(
+        result,
+        okay ? retire
+                   ? "Interrupted character deletion cleanup completed."
+                   : "Interrupted character deletion rolled back safely."
+             : retire
+                   ? "Character deletion recovery still has private trash pending."
+                   : "Character deletion rollback could not restore every quarantined file without overwrite.");
     return okay;
 }

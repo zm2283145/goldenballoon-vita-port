@@ -36,6 +36,27 @@ static void require(int condition, const char *message) {
     }
 }
 
+static int path_absent(const char *path) {
+    int exists = 1;
+    return mdkr_path_query_utf8(path, &exists, NULL, NULL) != 0 || !exists;
+}
+
+static int move_to_directory(const char *source, const char *directory,
+                             char *target, size_t target_size) {
+    const char *leaf = strrchr(source, '/');
+#if defined(_WIN32)
+    const char *backslash = strrchr(source, '\\');
+    if (backslash != NULL && (leaf == NULL || backslash > leaf)) {
+        leaf = backslash;
+    }
+#endif
+    leaf = leaf != NULL ? leaf + 1 : source;
+    const int written = snprintf(
+        target, target_size, "%s/%s", directory, leaf);
+    return written > 0 && (size_t)written < target_size &&
+           mdkr_move_utf8(source, target, 0, 1) == 0;
+}
+
 static void test_shadow_bounds(void) {
     float world[16] = {0};
     float target[16] = {0};
@@ -344,6 +365,12 @@ int main(int argc, char **argv) {
     Gfx *command_cursor = commands;
     char import_lock[4096];
     char prefix_witness[4096];
+    char removal_recovery_cache[4096];
+    char removal_recovery_source[4096];
+    char removal_recovery_report[4096];
+    char removal_recovery_quarantine[4096];
+    char removal_recovery_target[4096];
+    char removal_recovery_hash[65];
     test_shadow_bounds();
     test_camera_object_position();
     char deletion_failure_witness[4096];
@@ -1481,6 +1508,85 @@ int main(int argc, char **argv) {
             "native removal preserves provenance for a longer package id");
     require(mdkr_remove_utf8(prefix_witness) == 0,
             "retire prefix-collision provenance witness");
+
+    require(mdkr_modern_character_install_portable(
+                argv[4], argv[5], &install_result),
+            "reinstall package for interrupted-removal recovery");
+    require(snprintf(removal_recovery_hash,
+                     sizeof(removal_recovery_hash), "%s",
+                     install_result.package_sha256) > 0 &&
+                snprintf(removal_recovery_cache,
+                         sizeof(removal_recovery_cache), "%s/%s.mdkc",
+                         argv[5], "org.example.pipeline-proof") > 0 &&
+                snprintf(removal_recovery_source,
+                         sizeof(removal_recovery_source), "%s/%s.%s.mdkrchar",
+                         argv[5], "org.example.pipeline-proof",
+                         removal_recovery_hash) > 0 &&
+                snprintf(removal_recovery_report,
+                         sizeof(removal_recovery_report), "%s/%s.%s.json",
+                         argv[5], "org.example.pipeline-proof",
+                         removal_recovery_hash) > 0,
+            "construct interrupted-removal owned paths");
+
+    require(snprintf(removal_recovery_quarantine,
+                     sizeof(removal_recovery_quarantine),
+                     "%s/.character-trash.%s.1000", argv[5],
+                     "org.example.pipeline-proof") > 0 &&
+                mdkr_mkdir_utf8(removal_recovery_quarantine) == 0 &&
+                snprintf(removal_recovery_target,
+                         sizeof(removal_recovery_target), "%s/%s.mdkc",
+                         removal_recovery_quarantine,
+                         "org.example.pipeline-proof") > 0 &&
+                mdkr_move_utf8(removal_recovery_cache,
+                               removal_recovery_target, 0, 1) == 0,
+            "simulate a pre-commit deletion interruption");
+    lock_file = mdkr_fopen_utf8(import_lock, "wbx");
+    require(lock_file != NULL &&
+                fputs("mdkr-native-lock-v1 2147483647\ncrashed-fixture\n",
+                      lock_file) >= 0 &&
+                fclose(lock_file) == 0,
+            "simulate a dead native deletion lock owner");
+    require(mdkr_modern_character_reconcile_removal(
+                "org.example.pipeline-proof", argv[5], 0,
+                &install_result),
+            install_result.message);
+    lock_file = mdkr_fopen_utf8(removal_recovery_cache, "rb");
+    require(lock_file != NULL && fclose(lock_file) == 0,
+            "armed deletion recovery restores the playable cache");
+    require(path_absent(import_lock),
+            "restart recovery retires only a proven-dead native lock");
+    require(path_absent(removal_recovery_quarantine),
+            "armed deletion recovery removes its empty quarantine");
+
+    require(snprintf(removal_recovery_quarantine,
+                     sizeof(removal_recovery_quarantine),
+                     "%s/.character-trash.%s.1001", argv[5],
+                     "org.example.pipeline-proof") > 0 &&
+                mdkr_mkdir_utf8(removal_recovery_quarantine) == 0,
+            "create committed-removal recovery quarantine");
+    require(move_to_directory(
+                removal_recovery_source, removal_recovery_quarantine,
+                removal_recovery_target,
+                sizeof(removal_recovery_target)) &&
+                move_to_directory(
+                    removal_recovery_report, removal_recovery_quarantine,
+                    removal_recovery_target,
+                    sizeof(removal_recovery_target)) &&
+                move_to_directory(
+                    removal_recovery_cache, removal_recovery_quarantine,
+                    removal_recovery_target,
+                    sizeof(removal_recovery_target)),
+            "stage committed-removal recovery files");
+    require(mdkr_modern_character_reconcile_removal(
+                "org.example.pipeline-proof", argv[5], 1,
+                &install_result),
+            install_result.message);
+    require(mdkr_modern_character_registry_init(&registry, argv[5]) == 0 &&
+                mdkr_modern_character_registry_count(&registry) == 0,
+            "retired deletion recovery removes cache and retained history");
+    mdkr_modern_character_registry_shutdown(&registry);
+    require(path_absent(removal_recovery_quarantine),
+            "retired deletion recovery removes its private quarantine");
 
     for (fixture = 0; fixture < TRANSACTION_FIXTURES; fixture++) {
         int source_length = snprintf(

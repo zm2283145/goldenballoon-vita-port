@@ -96,6 +96,14 @@ int mdkr_modern_character_remove_installed(
     const char *package_id, const char *directory,
     MdkrModernCharacterInstallResult *result);
 
+/* Completes or rolls back private deletion quarantines after an interrupted
+ * launcher transaction. `retire` removes every exact package-owned root/trash
+ * file; zero restores quarantined files without overwrite. The caller keeps
+ * its durable cleanup marker until this returns success. */
+int mdkr_modern_character_reconcile_removal(
+    const char *package_id, const char *directory, int retire,
+    MdkrModernCharacterInstallResult *result);
+
 #ifdef __cplusplus
 }
 #endif

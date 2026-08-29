@@ -1,3 +1,6 @@
+/* Assert-driven test: release builds must not compile its checks away. */
+#undef NDEBUG
+
 #include "character_adapter_output_index.h"
 
 #include <cassert>

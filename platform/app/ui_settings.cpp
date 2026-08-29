@@ -6,6 +6,7 @@
 #include "app_version.h"
 #include "app_window.h"
 #include "character_adapter_output_index.h"
+#include "character_async_job.h"
 #include "character_candidate_index.h"
 #include "character_draft_snapshot.h"
 #include "character_draft_store.h"
@@ -45,6 +46,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <cerrno>
 #include <cmath>
@@ -56,10 +58,8 @@
 #include <filesystem>
 #include <functional>
 #include <map>
-#include <mutex>
 #include <set>
 #include <string>
-#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -1906,38 +1906,44 @@ struct CharacterImportCandidate {
 
 CharacterImportCandidate g_characterImportCandidate;
 
+std::string describeCharacterWorkerFailure(std::exception_ptr error) {
+    if (error == nullptr) return "The background operation did not return a result.";
+    try {
+        std::rethrow_exception(error);
+    } catch (const std::exception &failure) {
+        return std::string("The background operation stopped unexpectedly: ") +
+               failure.what();
+    } catch (...) {
+        return "The background operation stopped because of an unknown internal error.";
+    }
+}
+
+struct CharacterPortableInstallWorkResult {
+    MdkrModernCharacterInstallResult detail{};
+    bool installed = false;
+};
+
 class CharacterPortableInstallWorker {
 public:
-    ~CharacterPortableInstallWorker() {
-        if (thread_.joinable()) thread_.join();
-    }
-
     bool start(CharacterImportCandidate reviewed, std::string directory,
                std::function<void(bool)> completion) {
-        std::lock_guard<std::mutex> guard(mutex_);
-        if (running_ || ready_) return false;
-        running_ = true;
+        if (job_.busy()) return false;
         reviewed_ = std::move(reviewed);
         completion_ = std::move(completion);
-        result_ = {};
-        try {
-            thread_ = std::thread(
-                [this, directory = std::move(directory)]() {
-                    MdkrModernCharacterInstallResult result{};
-                    const bool installed =
+        const std::string packagePath = reviewed_.packagePath;
+        const std::string packageDigest = reviewed_.next.packageSha256;
+        const std::string installedDigest = reviewed_.reviewedInstalledDigest;
+        if (!job_.start(
+                [packagePath, packageDigest, installedDigest,
+                 directory = std::move(directory)] {
+                    CharacterPortableInstallWorkResult outcome;
+                    outcome.installed =
                         mdkr_modern_character_install_portable_reviewed(
-                            reviewed_.packagePath.c_str(), directory.c_str(),
-                            reviewed_.next.packageSha256.c_str(),
-                            reviewed_.reviewedInstalledDigest.c_str(),
-                            &result) != 0;
-                    std::lock_guard<std::mutex> finished(mutex_);
-                    result_ = result;
-                    installed_ = installed;
-                    running_ = false;
-                    ready_ = true;
-                });
-        } catch (...) {
-            running_ = false;
+                            packagePath.c_str(), directory.c_str(),
+                            packageDigest.c_str(), installedDigest.c_str(),
+                            &outcome.detail) != 0;
+                    return outcome;
+                })) {
             reviewed_ = {};
             completion_ = {};
             return false;
@@ -1946,36 +1952,32 @@ public:
     }
 
     bool busy() const {
-        std::lock_guard<std::mutex> guard(mutex_);
-        return running_ || ready_;
+        return job_.busy();
     }
 
     bool poll(CharacterImportCandidate &reviewed,
               MdkrModernCharacterInstallResult &result, bool &installed,
               std::function<void(bool)> &completion) {
-        std::thread completed;
-        {
-            std::lock_guard<std::mutex> guard(mutex_);
-            if (!ready_) return false;
-            reviewed = std::move(reviewed_);
-            result = result_;
-            installed = installed_;
-            completion = std::move(completion_);
-            ready_ = false;
-            completed = std::move(thread_);
+        std::unique_ptr<CharacterPortableInstallWorkResult> outcome;
+        std::exception_ptr error;
+        if (!job_.poll(outcome, error)) return false;
+        reviewed = std::move(reviewed_);
+        completion = std::move(completion_);
+        if (outcome) {
+            result = outcome->detail;
+            installed = outcome->installed;
+        } else {
+            const std::string message = describeCharacterWorkerFailure(error);
+            std::snprintf(result.message, sizeof(result.message), "%s",
+                          message.c_str());
+            installed = false;
         }
-        if (completed.joinable()) completed.join();
         return true;
     }
 
 private:
-    mutable std::mutex mutex_;
-    std::thread thread_;
-    bool running_ = false;
-    bool ready_ = false;
-    bool installed_ = false;
+    CharacterAsyncJob<CharacterPortableInstallWorkResult> job_;
     CharacterImportCandidate reviewed_;
-    MdkrModernCharacterInstallResult result_{};
     std::function<void(bool)> completion_;
 };
 
@@ -1983,72 +1985,57 @@ CharacterPortableInstallWorker g_characterPortableInstallWorker;
 
 class CharacterPackageInspectionWorker {
 public:
-    ~CharacterPackageInspectionWorker() {
-        if (thread_.joinable()) thread_.join();
-    }
-
     bool start(std::string path) {
-        std::lock_guard<std::mutex> guard(mutex_);
-        if (running_ || ready_) return false;
-        running_ = true;
-        discard_ = false;
-        path_ = std::move(path);
-        result_ = {};
-        try {
-            thread_ = std::thread([this]() {
-                MdkrModernCharacterInstallResult result{};
-                const int valid = mdkr_modern_character_inspect_portable(
-                    path_.c_str(), &result);
-                std::lock_guard<std::mutex> finished(mutex_);
-                result_ = result;
-                valid_ = valid != 0;
-                running_ = false;
-                ready_ = true;
-            });
-        } catch (...) {
-            running_ = false;
-            path_.clear();
+        if (job_.busy()) return false;
+        discard_.store(false);
+        if (!job_.start([path = std::move(path)] {
+                struct Result outcome;
+                outcome.path = path;
+                outcome.valid = mdkr_modern_character_inspect_portable(
+                    path.c_str(), &outcome.detail) != 0;
+                return outcome;
+            })) {
             return false;
         }
         return true;
     }
 
     bool busy() const {
-        std::lock_guard<std::mutex> guard(mutex_);
-        return running_ || ready_;
+        return job_.busy();
     }
 
     void discardResult() {
-        std::lock_guard<std::mutex> guard(mutex_);
-        discard_ = true;
+        discard_.store(true);
     }
 
     bool poll(std::string &path, MdkrModernCharacterInstallResult &result,
               bool &valid, bool &discarded) {
-        std::thread completed;
-        {
-            std::lock_guard<std::mutex> guard(mutex_);
-            if (!ready_) return false;
-            path = path_;
-            result = result_;
-            valid = valid_;
-            discarded = discard_;
-            ready_ = false;
-            completed = std::move(thread_);
+        std::unique_ptr<Result> outcome;
+        std::exception_ptr error;
+        if (!job_.poll(outcome, error)) return false;
+        discarded = discard_.exchange(false);
+        if (outcome) {
+            path = std::move(outcome->path);
+            result = outcome->detail;
+            valid = outcome->valid;
+        } else {
+            const std::string message = describeCharacterWorkerFailure(error);
+            std::snprintf(result.message, sizeof(result.message), "%s",
+                          message.c_str());
+            valid = false;
         }
-        if (completed.joinable()) completed.join();
         return true;
     }
 
 private:
-    mutable std::mutex mutex_;
-    std::thread thread_;
-    bool running_ = false;
-    bool ready_ = false;
-    bool valid_ = false;
-    bool discard_ = false;
-    std::string path_;
-    MdkrModernCharacterInstallResult result_{};
+    struct Result {
+        std::string path;
+        MdkrModernCharacterInstallResult detail{};
+        bool valid = false;
+    };
+
+    CharacterAsyncJob<Result> job_;
+    std::atomic<bool> discard_{false};
 };
 
 CharacterPackageInspectionWorker g_characterPackageInspection;
@@ -3337,34 +3324,20 @@ CharacterManagerRunResult invokeCharacterManager(
 
 class CharacterManagerWorker {
 public:
-    ~CharacterManagerWorker() {
-        if (thread_.joinable()) thread_.join();
-    }
-
     bool start(std::string directory, std::string command,
                std::vector<std::string> arguments, bool refreshOnSuccess,
                std::function<void(bool)> completion) {
-        std::lock_guard<std::mutex> guard(mutex_);
-        if (running_ || ready_) return false;
-        running_ = true;
+        if (job_.busy()) return false;
         label_ = std::move(command);
         refreshOnSuccess_ = refreshOnSuccess;
         completion_ = std::move(completion);
         const std::string workerCommand = label_;
-        try {
-            thread_ = std::thread(
-                [this, directory = std::move(directory),
-                 command = workerCommand,
-                 arguments = std::move(arguments)]() {
-                    CharacterManagerRunResult result = invokeCharacterManager(
+        if (!job_.start(
+                [directory = std::move(directory), command = workerCommand,
+                 arguments = std::move(arguments)] {
+                    return invokeCharacterManager(
                         directory, command.c_str(), arguments);
-                    std::lock_guard<std::mutex> finished(mutex_);
-                    result_ = std::move(result);
-                    running_ = false;
-                    ready_ = true;
-                });
-        } catch (...) {
-            running_ = false;
+                })) {
             refreshOnSuccess_ = false;
             completion_ = {};
             label_.clear();
@@ -3374,40 +3347,34 @@ public:
     }
 
     bool busy() const {
-        std::lock_guard<std::mutex> guard(mutex_);
-        return running_ || ready_;
+        return job_.busy();
     }
 
     std::string label() const {
-        std::lock_guard<std::mutex> guard(mutex_);
         return label_;
     }
 
     bool poll(CharacterManagerRunResult &result, bool &refreshOnSuccess,
               std::function<void(bool)> &completion) {
-        std::thread completed;
-        {
-            std::lock_guard<std::mutex> guard(mutex_);
-            if (!ready_) return false;
-            result = std::move(result_);
-            refreshOnSuccess = refreshOnSuccess_;
-            completion = std::move(completion_);
-            label_.clear();
-            ready_ = false;
-            completed = std::move(thread_);
+        std::unique_ptr<CharacterManagerRunResult> outcome;
+        std::exception_ptr error;
+        if (!job_.poll(outcome, error)) return false;
+        if (outcome) {
+            result = std::move(*outcome);
+        } else {
+            result.success = false;
+            result.report = describeCharacterWorkerFailure(error);
         }
-        if (completed.joinable()) completed.join();
+        refreshOnSuccess = refreshOnSuccess_;
+        completion = std::move(completion_);
+        label_.clear();
         return true;
     }
 
 private:
-    mutable std::mutex mutex_;
-    std::thread thread_;
-    bool running_ = false;
-    bool ready_ = false;
+    CharacterAsyncJob<CharacterManagerRunResult> job_;
     bool refreshOnSuccess_ = false;
     std::string label_;
-    CharacterManagerRunResult result_;
     std::function<void(bool)> completion_;
 };
 
@@ -5077,6 +5044,12 @@ void serviceCharacterPortableInstallWorker() {
     if (completion) completion(installed);
 }
 
+void serviceAllCharacterWork() {
+    serviceCharacterManagerWorker();
+    serviceCharacterPackageInspection();
+    serviceCharacterPortableInstallWorker();
+}
+
 bool queueReviewedCompilerCharacterPackage(
     std::function<void(bool)> completion) {
     if (!g_characterImportCandidate.ready ||
@@ -5363,16 +5336,22 @@ CharacterCleanupRecord characterCleanupRecord() {
 bool persistCharacterCleanupRecord(CharacterCleanupPhase phase,
                                    const std::string &packageId) {
     if (!characterCleanupIdValid(packageId)) return false;
+    const std::string previous = AppConfig::get(kCharacterCleanupJournalKey);
     AppConfig::set(
         kCharacterCleanupJournalKey,
         std::string(phase == CharacterCleanupPhase::Armed
                         ? "armed:" : "retired:") + packageId);
-    return AppConfig::persistResultApplied(AppConfig::save());
+    if (AppConfig::save() == AppConfig::PersistResult::Durable) return true;
+    AppConfig::set(kCharacterCleanupJournalKey, previous);
+    return false;
 }
 
 bool clearCharacterCleanupRecord() {
+    const std::string previous = AppConfig::get(kCharacterCleanupJournalKey);
     AppConfig::set(kCharacterCleanupJournalKey, "");
-    return AppConfig::persistResultApplied(AppConfig::save());
+    if (AppConfig::save() == AppConfig::PersistResult::Durable) return true;
+    AppConfig::set(kCharacterCleanupJournalKey, previous);
+    return false;
 }
 
 bool finishCharacterPackageCleanup(const std::string &id) {
@@ -5380,9 +5359,18 @@ bool finishCharacterPackageCleanup(const std::string &id) {
         forgetCharacterPackagePreferences(id);
     const bool drafts = forgetCharacterPackageDrafts(id);
     const bool evidence = forgetCharacterPackageTestEvidence(id);
-    if (!AppConfig::persistResultApplied(preferences) || !drafts ||
+    if (preferences != AppConfig::PersistResult::Durable || !drafts ||
         !evidence) return false;
     return clearCharacterCleanupRecord();
+}
+
+bool reconcileCharacterPackageFiles(const std::string &id, bool retire) {
+    MdkrModernCharacterInstallResult result{};
+    const bool reconciled = mdkr_modern_character_reconcile_removal(
+        id.c_str(), g_characterRegistryDirectory.c_str(),
+        retire ? 1 : 0, &result) != 0;
+    if (!reconciled) g_characterManagerReport = result.message;
+    return reconciled;
 }
 
 bool removeCharacterPackage(const std::string &id) {
@@ -5407,11 +5395,13 @@ bool removeCharacterPackage(const std::string &id) {
         // can distinguish those states without guessing.
         return false;
     }
-    (void)persistCharacterCleanupRecord(
+    const bool retiredRecord = persistCharacterCleanupRecord(
         CharacterCleanupPhase::Retired, id);
-    if (!finishCharacterPackageCleanup(id)) {
+    const bool nativeCleanup = reconcileCharacterPackageFiles(id, true);
+    if (!retiredRecord || !nativeCleanup ||
+        !finishCharacterPackageCleanup(id)) {
         g_characterManagerReport +=
-            " Package files are retired; launcher metadata cleanup will retry on the next rescan or launch.";
+            " Package files are retired; private trash or launcher metadata cleanup will retry on the next rescan or launch.";
     }
     refreshCharacterRegistry();
     return true;
@@ -5436,19 +5426,25 @@ void reconcileCharacterPackageCleanup() {
     const bool stillInstalled = mdkr_modern_character_registry_find(
         &g_characterRegistry, record.packageId.c_str()) >= 0;
     if (record.phase == CharacterCleanupPhase::Armed && stillInstalled) {
-        if (!clearCharacterCleanupRecord()) {
+        if (!reconcileCharacterPackageFiles(record.packageId, false)) {
+            g_characterManagerReport =
+                "An interrupted character deletion could not yet restore every quarantined file; the installed cache remains available and recovery will retry.";
+        } else if (!clearCharacterCleanupRecord()) {
             g_characterManagerReport =
                 "The package remains installed, but its unused deletion recovery marker could not be cleared.";
         }
     } else {
-        (void)persistCharacterCleanupRecord(
+        const bool nativeCleanup = reconcileCharacterPackageFiles(
+            record.packageId, true);
+        const bool retiredRecord = persistCharacterCleanupRecord(
             CharacterCleanupPhase::Retired, record.packageId);
-        if (finishCharacterPackageCleanup(record.packageId)) {
+        if (nativeCleanup && retiredRecord &&
+            finishCharacterPackageCleanup(record.packageId)) {
             g_characterManagerReport =
                 "Finished recovery cleanup for a previously retired custom character.";
         } else {
             g_characterManagerReport =
-                "A retired character still has launcher metadata pending cleanup; rescan after repairing local storage.";
+                "A retired character still has private trash or launcher metadata pending cleanup; rescan after repairing local storage.";
         }
     }
     g_characterCleanupReconcileActive = false;
@@ -26585,8 +26581,7 @@ void drawSkippedCharacterInventory() {
 
 bool drawCustomCharactersSection(bool compact) {
     bool changed = false;
-    serviceCharacterManagerWorker();
-    serviceCharacterPortableInstallWorker();
+    serviceAllCharacterWork();
     if (!g_characterRegistryLoaded) refreshCharacterRegistry();
     ui::TextSubtleWrapped(
         compact
@@ -27219,10 +27214,18 @@ bool Settings_takeCharacterWorkshopOpenRequest() {
     return true;
 }
 
-bool Settings_smokeCharacterWorkPending() {
+void Settings_serviceCharacterWork() {
+    serviceAllCharacterWork();
+}
+
+bool Settings_characterWorkPending() {
     return g_characterManagerWorker.busy() ||
            g_characterPackageInspection.busy() ||
            g_characterPortableInstallWorker.busy();
+}
+
+bool Settings_smokeCharacterWorkPending() {
+    return Settings_characterWorkPending();
 }
 
 bool Settings_takeCharacterPreviewRequest(

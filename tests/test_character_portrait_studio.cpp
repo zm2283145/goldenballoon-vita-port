@@ -1,3 +1,6 @@
+/* Assert-driven test: release builds must not compile its checks away. */
+#undef NDEBUG
+
 #include "character_portrait_studio.h"
 #include "character_portrait_import.h"
 #include "fs_utf8.h"

@@ -404,6 +404,14 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     target_compile_features(mdkr_character_workshop_model_test PRIVATE cxx_std_17)
     add_test(NAME character_workshop_model
         COMMAND mdkr_character_workshop_model_test)
+    add_executable(mdkr_character_async_job_test
+        ${CMAKE_SOURCE_DIR}/tests/test_character_async_job.cpp)
+    target_include_directories(mdkr_character_async_job_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform/app)
+    target_compile_features(mdkr_character_async_job_test PRIVATE cxx_std_17)
+    target_link_libraries(mdkr_character_async_job_test PRIVATE Threads::Threads)
+    add_test(NAME character_async_job
+        COMMAND mdkr_character_async_job_test)
     add_executable(mdkr_modern_character_gpu_timing_test
         ${CMAKE_SOURCE_DIR}/tests/test_modern_character_gpu_timing.c
         ${CMAKE_SOURCE_DIR}/platform/modern_character_gpu_timing.c)

@@ -1956,6 +1956,15 @@ if(NOT EMSCRIPTEN)
                     LABELS gpu
                     TIMEOUT 180)
 
+                add_test(NAME app_character_quit_lifecycle
+                    COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_SOURCE_DIR}/tests/check_character_quit_lifecycle_ui.py
+                        --build ${CMAKE_CURRENT_BINARY_DIR})
+                set_tests_properties(app_character_quit_lifecycle PROPERTIES
+                    DEPENDS app_character_workshop_smoke
+                    LABELS gpu
+                    TIMEOUT 90)
+
                 add_test(NAME app_character_workshop_history
                     COMMAND ${Python3_EXECUTABLE}
                         ${CMAKE_SOURCE_DIR}/tests/check_character_workshop_history_ui.py

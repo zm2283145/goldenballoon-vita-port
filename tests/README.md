@@ -4979,6 +4979,27 @@ registered as the `character_source_adapter` Python CTest and the native
 reference pack/inspect commands are documented in
 `docs/architecture/character-source-adapter-contract.md`.
 
+## Character-work shutdown lifecycle — `tests/check_character_quit_lifecycle_ui.py`
+
+This ROM-free rendered gate drops a generated, license-clean GLB into the real
+launcher and deliberately holds the real background manager long enough to
+request window shutdown while work is active. It requires a visible,
+cancellable finishing card, disables Play/import, services the result after
+navigation, and permits Quit only after no worker result remains unpublished.
+It also proves that the external GLB stays byte-identical and no private
+launcher result file is stranded in the isolated catalog. The native
+`character_async_job` test independently proves single-operation exclusion,
+result publication, exception transfer without `std::terminate`, and the final
+destructor join.
+
+```bash
+python3 tests/check_character_quit_lifecycle_ui.py \
+  --build build-character-tests
+```
+
+The rendered gate is registered as `app_character_quit_lifecycle`; it needs no
+ROM, network, or community model.
+
 ## Workshop tool history — `tests/check_character_workshop_history_ui.py`
 
 This WebGPU gate generates and installs an isolated CC0 fixture, then opens the

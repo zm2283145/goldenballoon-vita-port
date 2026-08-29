@@ -197,6 +197,7 @@ GPU_SERIAL_NAMES = frozenset({
     "custom_character_identity_surfaces",
     "custom_character_flag_portrait",
     "character_raw_intake_ui",
+    "character_quit_lifecycle_ui",
     "character_workshop_history_ui",
     "character_draft_transfer_ui",
     "character_portrait_studio_ui",
@@ -749,6 +750,11 @@ CHECKS = (
           "cleanup, legacy migration, source-byte "
           "purity, corruption refusal, keyboard speech, and 200% compact "
           "Workshop rendering"),
+    Check("character_quit_lifecycle_ui",
+          "check_character_quit_lifecycle_ui.py", "native",
+          "ROM-free visible/cancellable shutdown settlement, global result "
+          "publication, Play/import exclusion, source purity, and private "
+          "result-file cleanup"),
     Check("character_workshop_history_ui",
           "check_character_workshop_history_ui.py", "native",
           "ROM-free exact-source Identity/Profile/Rig/Fit/Performance/Test "

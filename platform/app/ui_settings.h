@@ -172,10 +172,18 @@ bool Settings_smokePresentationPaceCenter(const char *pace, int *x, int *y);
 // widget does not move underneath that pointer before the edit is committed.
 bool Settings_smokeUiScaleRect(int *minX, int *minY, int *maxX, int *maxY);
 
+// Publish completed Character Workshop jobs on the UI thread. The launcher
+// calls this on every destination, not only while the Workshop is visible, so
+// navigation cannot strand a ready result or make safe shutdown wait in a
+// static destructor with no visible progress.
+void Settings_serviceCharacterWork();
+
 // True while any Character Workshop compiler, validation, or install result
-// still needs to finish or publish on the UI thread. Shell smoke uses this
-// read-only observation to wait on actual job state instead of guessing that a
-// fixed number of unthrottled frames is long enough.
+// still needs to finish or publish on the UI thread. This is product lifecycle
+// state; Play and shutdown use it as well as the shell smoke.
+bool Settings_characterWorkPending();
+
+// Backward-compatible name for the existing smoke harness.
 bool Settings_smokeCharacterWorkPending();
 
 // Collect the settings the player has staged but that the running/next engine

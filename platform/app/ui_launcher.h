@@ -150,6 +150,10 @@ struct LauncherState {
      * re-truncates what the verdict buffers were widened to carry. */
     char    bootError[1280] = {0};
     bool    bootErrorVisible = false;
+    // A normal Quit/window-close request waits for the current transactional
+    // character operation to publish while the launcher remains visible and
+    // responsive. The player can cancel this request from the progress card.
+    bool    quitRequested = false;
 };
 
 // Deferred navigation. `priority` orders the frame's competing writers; use
@@ -178,6 +182,8 @@ public:
     ~Launcher();
     LauncherAction draw(AppHost &host);
     void setBootError(const char *message);
+    void requestQuit();
+    bool quitReady() const;
 
     // Test-only entry point for the shell smoke.  It uses the exact same
     // asynchronous final recheck as the Play widget, while leaving the smoke

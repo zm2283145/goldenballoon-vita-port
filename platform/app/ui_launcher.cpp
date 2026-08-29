@@ -209,16 +209,58 @@ void preparePlay(LauncherState &state) {
     RomPanel_requestPlayValidation(state);
 }
 
+void requestLauncherQuit(LauncherState &state) {
+    if (state.quitRequested) return;
+    state.quitRequested = true;
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+        std::fprintf(
+            stderr,
+            "[app-ui] character-workshop-quit request=%s\n",
+            Settings_characterWorkPending() ? "deferred" : "ready");
+    }
+}
+
+bool drawLauncherQuitButton(LauncherState &state, const ImVec2 &size) {
+    const bool waiting = state.quitRequested &&
+                         Settings_characterWorkPending();
+    if (waiting) ImGui::BeginDisabled();
+    const bool pressed = ImGui::Button(waiting ? "Closing…" : "Quit", size);
+    if (waiting) ImGui::EndDisabled();
+    ui::SpeakFocusedItem(
+        waiting ? "Closing after character work" : "Quit",
+        waiting ? "waiting for the current character job" : nullptr,
+        waiting
+            ? "The launcher remains open until the current transactional character operation publishes safely. Use Keep launcher open in the progress card to cancel the quit request."
+            : "Closes the launcher without starting the game. A current character operation finishes visibly before the process exits.");
+    if (pressed) requestLauncherQuit(state);
+    return pressed;
+}
+
 void drawPrimaryLauncherAction(LauncherState &state, const ImVec2 &size,
                                bool workshopActive) {
     const bool ready = !state.romPath.empty() && state.romInfo.valid;
-    const bool busy = !workshopActive &&
-                      (state.romPlayValidationPending ||
-                       (!ready && state.romValidationPending));
+    const bool characterBusy = Settings_characterWorkPending();
+    const bool busy = state.quitRequested || characterBusy ||
+        (!workshopActive &&
+         (state.romPlayValidationPending ||
+          (!ready && state.romValidationPending)));
     const float actionWidth = size.x > 0.0f
         ? size.x : ImGui::GetContentRegionAvail().x;
+    if (characterBusy && std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+        static bool tracedCharacterPrimaryGate = false;
+        if (!tracedCharacterPrimaryGate) {
+            tracedCharacterPrimaryGate = true;
+            std::fprintf(
+                stderr,
+                "[app-ui] character-workshop-lifecycle primary-gated=1 play-gated=1 import-gated=1\n");
+        }
+    }
     const char *label = "Play";
-    if (workshopActive) {
+    if (state.quitRequested) {
+        label = "Closing…";
+    } else if (characterBusy) {
+        label = "Character job running…";
+    } else if (workshopActive) {
         const char *fullLabel = "Browse character source…";
         const float fullLabelWidth = ImGui::CalcTextSize(fullLabel).x +
             ImGui::GetStyle().FramePadding.x * 2.0f;
@@ -419,8 +461,7 @@ float measuredRegionHeight(float regionTop, float contentTop) {
     return ImGui::GetItemRectMax().y - regionTop + padding;
 }
 
-void drawNavigation(int &activePanel, LauncherState &state,
-                    LauncherAction &action) {
+void drawNavigation(int &activePanel, LauncherState &state) {
     /*
      * The footer reservation splits the rail, so overstating it steals rows
      * from the destination list rather than from anything the footer owns. It
@@ -524,18 +565,13 @@ void drawNavigation(int &activePanel, LauncherState &state,
         state, ImVec2(-1, ui::kBtnPrimary().y),
         activePanel == kLauncherPanelCharacterWorkshop);
 
-    if (ImGui::Button("Quit", ui::kBtnFullWidth())) {
-        action.type = LauncherActionType::Quit;
-    }
-    ui::SpeakFocusedItem("Quit", nullptr,
-                         "Closes the launcher without starting the game.");
+    drawLauncherQuitButton(state, ui::kBtnFullWidth());
     measuredFooterHeight = measuredRegionHeight(footerTop, footerContentTop);
     ImGui::EndChild();
     ImGui::EndChild();
 }
 
-void drawTopNavigation(int &activePanel, LauncherState &state,
-                       LauncherAction &action) {
+void drawTopNavigation(int &activePanel, LauncherState &state) {
     const float scale = AppTheme::uiScale();
     const float availableWidth = ImGui::GetContentRegionAvail().x;
     const bool dense = availableWidth < 720.0f * scale;
@@ -616,14 +652,10 @@ void drawTopNavigation(int &activePanel, LauncherState &state,
         ui::SpeakFocusedItem("Section", spokenLabel,
                              "Choose which launcher section to view.");
         ImGui::SameLine();
-        if (ImGui::Button(
-                "Quit", ImVec2(quitWidth, ui::kBtnSecondary().y))) {
-            action.type = LauncherActionType::Quit;
-        }
+        drawLauncherQuitButton(
+            state, ImVec2(quitWidth, ui::kBtnSecondary().y));
         quitMin = ImGui::GetItemRectMin();
         quitMax = ImGui::GetItemRectMax();
-        ui::SpeakFocusedItem("Quit", nullptr,
-                             "Closes the launcher without starting the game.");
     } else {
         ui::BrandWordmark();
         ImGui::SameLine();
@@ -632,12 +664,8 @@ void drawTopNavigation(int &activePanel, LauncherState &state,
         ImGui::PopFont();
 
         ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - quitWidth);
-        if (ImGui::Button(
-                "Quit", ImVec2(quitWidth, ui::kBtnSecondary().y))) {
-            action.type = LauncherActionType::Quit;
-        }
-        ui::SpeakFocusedItem("Quit", nullptr,
-                             "Closes the launcher without starting the game.");
+        drawLauncherQuitButton(
+            state, ImVec2(quitWidth, ui::kBtnSecondary().y));
 
         ui::BrandRule();
         drawTopPanelTabs(activePanel, state);
@@ -781,6 +809,37 @@ void drawActivePanel(int activePanel, LauncherState &state, LauncherAction &acti
         ui::SpeakSection(kPanels[activePanel].label);
     }
     ImGui::BeginChild("##content", ImVec2(0, 0), panelChildFlags(0));
+    if (state.quitRequested && Settings_characterWorkPending()) {
+        if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+            static bool tracedCharacterQuitProgress = false;
+            if (!tracedCharacterQuitProgress) {
+                tracedCharacterQuitProgress = true;
+                std::fprintf(
+                    stderr,
+                    "[app-ui] character-workshop-quit progress-visible=1 cancel-visible=1\n");
+            }
+        }
+        if (ui::CardBegin("##character-work-quit", AppTheme::accent(), 0.0f)) {
+            ImGui::PushFont(AppTheme::fonts().section);
+            ImGui::TextUnformatted("Finishing character work before closing");
+            ImGui::PopFont();
+            ui::TextSubtleWrapped(
+                "The launcher is still responsive. The current bounded, transactional operation will publish its complete result, then Golden Balloon will close automatically; the installed last-known-good character remains usable throughout.");
+            if (ImGui::Button("Keep launcher open")) {
+                state.quitRequested = false;
+                if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+                    std::fprintf(
+                        stderr,
+                        "[app-ui] character-workshop-quit cancelled=1\n");
+                }
+            }
+            ui::SpeakFocusedItem(
+                "Keep launcher open", nullptr,
+                "Cancels only the pending quit request. The current character operation continues and no source, draft, or installed character is changed by this button.");
+        }
+        ui::CardEnd();
+        ui::Gap(ui::kGapM);
+    }
     if (state.bootErrorVisible) {
         if (ui::CardBegin("##boot-recovery", AppTheme::bad(), 0.0f)) {
             ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
@@ -913,6 +972,14 @@ void Launcher::applyLanStop() {
 }
 
 Launcher::~Launcher() = default;
+
+void Launcher::requestQuit() {
+    requestLauncherQuit(state_);
+}
+
+bool Launcher::quitReady() const {
+    return state_.quitRequested && !Settings_characterWorkPending();
+}
 
 void Launcher_requestTab(LauncherState &s, int panel, int priority) {
     if (panel < 0 || panel >= kPanelCount) return;
@@ -1164,6 +1231,11 @@ void drawAboutPanel(LauncherState &s, LauncherAction &out) {
 }  // namespace
 
 LauncherAction Launcher::draw(AppHost &host) {
+    // Character subprocesses publish through launcher-owned UI state. Service
+    // them on every destination so leaving the Workshop cannot strand a ready
+    // result, race Play against a directory transaction, or turn application
+    // shutdown into an invisible global-destructor join.
+    Settings_serviceCharacterWork();
     if (state_.characterPreviewDispatched) {
         SettingsCharacterPreviewDisposition disposition;
         disposition.launcherOwnedCapture =
@@ -1289,13 +1361,23 @@ LauncherAction Launcher::draw(AppHost &host) {
                 state_.romValidationBytes, state_.romValidationTotal);
         }
     }
-    if (state_.romPlayValidationPassed) {
+    if (state_.romPlayValidationPassed &&
+        !Settings_characterWorkPending() && !state_.quitRequested) {
         state_.romPlayValidationPassed = false;
         action.type = LauncherActionType::Play;
         fillBootConfig(state_, action.boot);
-        state_.characterPreviewDispatched =
-            action.boot.character_preview_context !=
-                MDKR_CHARACTER_PREVIEW_NONE;
+    }
+    if (state_.quitRequested && !Settings_characterWorkPending()) {
+        action.type = LauncherActionType::Quit;
+        if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+            static bool tracedSafeQuit = false;
+            if (!tracedSafeQuit) {
+                tracedSafeQuit = true;
+                std::fprintf(
+                    stderr,
+                    "[app-ui] character-workshop-quit completed=1 pending=0\n");
+            }
+        }
     }
 
     const ImGuiViewport *vp = ImGui::GetMainViewport();
@@ -1316,9 +1398,9 @@ LauncherAction Launcher::draw(AppHost &host) {
         vp->Size.x < 860.0f * AppTheme::uiScale() ||
         vp->Size.y < 620.0f * AppTheme::uiScale();
     if (compactNavigation) {
-        drawTopNavigation(active_, state_, action);
+        drawTopNavigation(active_, state_);
     } else {
-        drawNavigation(active_, state_, action);
+        drawNavigation(active_, state_);
         ImGui::SameLine();
     }
     drawActivePanel(active_, state_, action);
@@ -1346,6 +1428,22 @@ LauncherAction Launcher::draw(AppHost &host) {
     if (panelAtFrameStart == kLauncherPanelSettings &&
         active_ != kLauncherPanelSettings) {
         Settings_cancelAudioPreview();
+    }
+
+    // A drop or Workshop action can start a character transaction after ROM
+    // validation was consumed near the top of this frame. Preserve the passed
+    // verdict and defer Play rather than entering the engine while that new
+    // transaction owns the character directory. This closes the same-frame
+    // edge, while the primary action's disabled state covers ordinary input.
+    if (action.type == LauncherActionType::Play &&
+        (Settings_characterWorkPending() || state_.quitRequested)) {
+        state_.romPlayValidationPassed = true;
+        action = LauncherAction{};
+    }
+    if (action.type == LauncherActionType::Play) {
+        state_.characterPreviewDispatched =
+            action.boot.character_preview_context !=
+                MDKR_CHARACTER_PREVIEW_NONE;
     }
 
     return action;

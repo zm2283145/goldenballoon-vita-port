@@ -29,18 +29,18 @@ def main() -> int:
     # Both ordinary shell-preference save paths in this settings unit must
     # accept a visible-but-unconfirmed write through the shared applied
     # predicate: the initial UI-scale commit and its Retry action. Permanent
-    # character cleanup now lives in
-    # the idempotent cleanup-journal reconciler and names its PersistResult
-    # `preferences`; pin that applied predicate separately instead of forcing
-    # production code to preserve one obsolete local-variable spelling/count.
+    # character cleanup now lives in the idempotent cleanup-journal reconciler.
+    # Unlike an ordinary preference, its pre-mutation marker and final removal
+    # must be confirmed durable before the file transaction can advance.
     require(SETTINGS.count("AppConfig::persistResultApplied(persist)") == 2,
             "both ordinary settings-panel save paths must accept visible "
             "unconfirmed writes")
     require("forgetCharacterPackagePreferences(id)" in SETTINGS and
-            "AppConfig::persistResultApplied(preferences)" in SETTINGS and
-            "character_workshop_cleanup_pending" in SETTINGS,
+            "preferences != AppConfig::PersistResult::Durable" in SETTINGS and
+            "character_workshop_cleanup_pending" in SETTINGS and
+            "mdkr_modern_character_reconcile_removal" in SETTINGS,
             "permanent character deletion must durably reconcile its "
-            "package-owned preference cleanup")
+            "native quarantine and package-owned preference cleanup")
     require("g_characterRegistryInventoryAvailable" in SETTINGS and
             "destructive recovery and deletion remain disabled" in SETTINGS and
             "record.present" in SETTINGS,

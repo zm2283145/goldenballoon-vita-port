@@ -1,3 +1,6 @@
+/* Assert-driven test: release builds must not compile its checks away. */
+#undef NDEBUG
+
 #include "modern_character_gpu_timing.h"
 
 #include <assert.h>

@@ -1,3 +1,6 @@
+/* Assert-driven test: release builds must not compile its checks away. */
+#undef NDEBUG
+
 #include "character_workshop_model.h"
 #include "modern_character_lod.h"
 #include "modern_character_sort.h"
