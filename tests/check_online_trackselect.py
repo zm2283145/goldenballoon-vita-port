@@ -12,9 +12,12 @@ It stands up the same in-process two-adapter live session as the charselect lane
 (real libdatachannel DTLS over the loopback hub) and runs TWO scenarios via the
 MDKR_TEST_ONLINE_TRACKSELECT env value (with MDKR_TEST_ONLINE_CHARSELECT=1 so the
 CHARSELECT seam installs the feed + scripts the character pick and then DEFERS its
-self-start so the session hands off CHARSELECT -> TRACKSELECT on local-ready):
+self-start so the session hands the flow forward one native screen at a time --
+CHARSELECT -> VEHICLESELECT -> TRACKSELECT -- on local-ready; the native VEHICLE
+screen (always in the flow) is scripted to confirm and pass through):
 
-  * "1"      SINGLE-RACE HOST: first proves B -> CHARSELECT back (no wedge), then
+  * "1"      SINGLE-RACE HOST: first proves B -> back one level (to the native
+             VEHICLE screen, no wedge; it re-confirms and re-advances), then
              on re-entry locks Whale Bay (track 8, hovercraft-only 0x2) -- the R-A
              auto-narrow moves the seat off Car -- then browses AWAY to Spaceport
              Alpha (whose 2P mask drops hovercraft) to prove F-D5 (the publishable
@@ -69,17 +72,23 @@ TS_ENTER_RE = re.compile(
     re.MULTILINE)
 TS_TRACKS_RE = re.compile(r"^\[online-trackselect\] tracks: (.+)$",
                           re.MULTILINE)
-TS_BACK_RE = re.compile(r"^\[online-trackselect\] back to charselect$",
+TS_BACK_RE = re.compile(r"^\[online-trackselect\] back one level$",
                         re.MULTILINE)
 TS_ADVANCE_RE = re.compile(
     r"^\[online-trackselect\] advance: lobby left LOBBY \(phase=(\d+)\)",
     re.MULTILINE)
 TS_EXIT_RE = re.compile(
     r"^\[online-trackselect\] exit: freed world bg assets", re.MULTILINE)
-SESS_CS_TO_TS_RE = re.compile(
-    r"^\[online-session\] charselect -> trackselect", re.MULTILINE)
-SESS_TS_TO_CS_RE = re.compile(
-    r"^\[online-session\] trackselect -> charselect", re.MULTILINE)
+# The native flow always inserts the VEHICLE select screen between CHARSELECT and
+# TRACKSELECT, so the hand-offs are CHARSELECT -> VEHICLESELECT -> TRACKSELECT and a
+# TRACKSELECT B-back steps ONE level to VEHICLESELECT (not straight to CHARSELECT).
+VS_ENTER_RE = re.compile(r"^\[online-vehicleselect\] enter:", re.MULTILINE)
+SESS_CS_TO_VS_RE = re.compile(
+    r"^\[online-session\] charselect -> vehicleselect", re.MULTILINE)
+SESS_VS_TO_TS_RE = re.compile(
+    r"^\[online-session\] vehicleselect -> trackselect", re.MULTILINE)
+SESS_TS_TO_VS_RE = re.compile(
+    r"^\[online-session\] trackselect -> vehicleselect", re.MULTILINE)
 TS_RENDER_RE = re.compile(
     r"^\[online-trackselect\] render mode=(\d+) col=(\d+) row=(\d+) host=(\d+) "
     r"track=(\d+) mask=0x([0-9a-f]+) vehicle=(\d+) locked\{track=(-?\d+) "
@@ -217,8 +226,13 @@ def check_common(scn: str, rc: int, output: str) -> int | None:
     if not CS_ENTER_RE.search(output):
         return fail(scn, "CHARSELECT was never entered (flow must pass through "
                     "charselect first)", output)
-    if not SESS_CS_TO_TS_RE.search(output):
-        return fail(scn, "CHARSELECT never handed off to TRACKSELECT", output)
+    if not SESS_CS_TO_VS_RE.search(output):
+        return fail(scn, "CHARSELECT never handed off to VEHICLESELECT", output)
+    if not VS_ENTER_RE.search(output):
+        return fail(scn, "VEHICLESELECT was never entered (native flow inserts it "
+                    "between charselect and trackselect)", output)
+    if not SESS_VS_TO_TS_RE.search(output):
+        return fail(scn, "VEHICLESELECT never handed off to TRACKSELECT", output)
     if not TS_ENTER_RE.search(output):
         return fail(scn, "TRACKSELECT was never entered", output)
     tracks_line = TS_TRACKS_RE.search(output)
@@ -241,31 +255,35 @@ def check_single_host(output: str) -> int | None:
         return err
     renders = TS_RENDER_RE.findall(output)
 
-    # B -> CHARSELECT round-trip (no wedge): >=2 handoffs, a back log, and the
-    # PD-T6 charselect leave stub EXACTLY once across the whole run.
-    if len(SESS_CS_TO_TS_RE.findall(output)) < 2:
-        return fail(scn, "expected CHARSELECT -> TRACKSELECT at least twice (the "
+    # B round-trip (no wedge): a TRACKSELECT B steps back ONE level to the native
+    # VEHICLE screen, which re-confirms and re-advances to TRACKSELECT -- so the
+    # round-trip is VEHICLESELECT -> TRACKSELECT at least twice, a back log, a
+    # TRACKSELECT -> VEHICLESELECT transition, and the PD-T6 charselect leave stub
+    # EXACTLY once across the whole run (charselect is fronted once, browse-B once).
+    if len(SESS_VS_TO_TS_RE.findall(output)) < 2:
+        return fail(scn, "expected VEHICLESELECT -> TRACKSELECT at least twice (the "
                     "B round-trip)", output)
     if max(int(e) for e in TS_ENTER_RE.findall(output)) < 2:
         return fail(scn, "TRACKSELECT entered < 2 times (B round-trip)", output)
     if not TS_BACK_RE.search(output):
-        return fail(scn, "B on TRACKSELECT never returned to CHARSELECT", output)
-    if not SESS_TS_TO_CS_RE.search(output):
-        return fail(scn, "no TRACKSELECT -> CHARSELECT back transition", output)
+        return fail(scn, "B on TRACKSELECT never stepped back one level", output)
+    if not SESS_TS_TO_VS_RE.search(output):
+        return fail(scn, "no TRACKSELECT -> VEHICLESELECT back transition", output)
     leave_stub = output.count(CS_LEAVE_STUB)
     if leave_stub != 1:
         return fail(scn, f"charselect leave stub logged {leave_stub} times "
                     f"(expected EXACTLY 1)", output)
 
-    # F-I1 regression: the back-out keeps CHARSELECT for more than one tick (the
-    # session gates the re-advance on the screen's OWN confirmed+ready latch, not
-    # only the lagging snapshot). NOTE the synchronous seam cannot inject the live
-    # reduce lag, so this guards no one-frame bounce; the async correctness is by
-    # construction (the screen latch resets on _enter, independent of snapshot).
-    cs_enters = len(CS_ENTER_RE.findall(output))
-    if cs_enters < 2:
-        return fail(scn, f"CHARSELECT re-entered {cs_enters}x; the back-out did "
-                    f"not return to a fresh charselect", output)
+    # F-I1 regression: the back-out returns to a FRESH VEHICLE screen (the one level
+    # up the back-stack) rather than one-frame bouncing forward -- the session gates
+    # the re-advance on each screen's OWN confirm latch, which resets on _enter. The
+    # synchronous seam cannot inject the live reduce lag, so this guards no one-frame
+    # bounce; the async correctness is by construction (the latch resets on _enter,
+    # independent of the snapshot).
+    vs_enters = len(VS_ENTER_RE.findall(output))
+    if vs_enters < 2:
+        return fail(scn, f"VEHICLESELECT re-entered {vs_enters}x; the back-out did "
+                    f"not return to a fresh vehicle screen", output)
 
     # Host lock reached the reducer: configured_track converged to 8.
     if not [r for r in renders if int(r[12]) == LOCKED_TRACK]:
@@ -419,7 +437,8 @@ def main() -> int:
 
     print(
         "PASS online trackselect: two-stage native screen -- SINGLE-HOST "
-        "(B->charselect no-wedge; locked Whale Bay -> configured_track converged; "
+        "(B-> back one level to VEHICLESELECT no-wedge; locked Whale Bay -> "
+        "configured_track converged; "
         "auto-narrow to hovercraft; F-D5 vehicle stays legal browsing Spaceport "
         "Alpha; ready clear->reconverge; host-start; LOCKED==BOOTED: manifest "
         "honored track 8, engine loadedTrack 8) and TOURNAMENT-JOINER (renders "

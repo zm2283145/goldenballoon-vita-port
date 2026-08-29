@@ -19,7 +19,8 @@ real descriptor lands.
 Assertions:
   * the session BEGAN descriptor-less        -> [online-session] begin: lobby-start
   * the descriptor-first begin was NOT taken -> no "begin: separated boot path"
-  * CHARSELECT then TRACKSELECT fronted (native), offline menus bypassed
+  * CHARSELECT then VEHICLESELECT then TRACKSELECT fronted (native), offline menus
+    bypassed
   * the race-1 readiness gate DEFERRED the boot when the descriptor was not ready
     -> [online-session] race-1 boot deferred ... -> LOBBY_WAIT re-wait
   * the launcher then built + armed race 1    -> [online-lobby-start] race-1 armed
@@ -73,8 +74,12 @@ BEGIN_DESCRIPTOR_RE = re.compile(
     r"^\[online-session\] begin: separated boot path entered", re.MULTILINE)
 CHARSELECT_ENTER_RE = re.compile(
     r"^\[online-charselect\] enter:", re.MULTILINE)
+TO_VEHICLESELECT_RE = re.compile(
+    r"^\[online-session\] charselect -> vehicleselect", re.MULTILINE)
+VEHICLESELECT_ENTER_RE = re.compile(
+    r"^\[online-vehicleselect\] enter:", re.MULTILINE)
 TO_TRACKSELECT_RE = re.compile(
-    r"^\[online-session\] charselect -> trackselect", re.MULTILINE)
+    r"^\[online-session\] vehicleselect -> trackselect", re.MULTILINE)
 TRACKSELECT_ENTER_RE = re.compile(
     r"^\[online-trackselect\] enter:", re.MULTILINE)
 DEFER_RE = re.compile(
@@ -205,19 +210,29 @@ def main() -> int:
         return fail("the descriptor-FIRST begin fired -- the lobby-start fork "
                     "must be the ONLY begin on this lane", output)
 
-    # --- CHARSELECT then TRACKSELECT fronted (native), ordered ---------------
+    # --- CHARSELECT -> VEHICLESELECT -> TRACKSELECT fronted (native), ordered -
+    # The native flow always inserts the VEHICLE select screen between CHARSELECT
+    # and TRACKSELECT (the player picks car/hovercraft/plane); the lobby-start lane
+    # scripts a confirm on it, so the full production flow-shape runs here.
     cs = CHARSELECT_ENTER_RE.search(output)
+    to_vs = TO_VEHICLESELECT_RE.search(output)
+    vs = VEHICLESELECT_ENTER_RE.search(output)
     to_ts = TO_TRACKSELECT_RE.search(output)
     ts = TRACKSELECT_ENTER_RE.search(output)
     if cs is None:
         return fail("native CHARSELECT never fronted", output)
+    if to_vs is None or vs is None:
+        return fail("native VEHICLESELECT never fronted after CHARSELECT", output)
     if to_ts is None or ts is None:
-        return fail("native TRACKSELECT never fronted after CHARSELECT", output)
-    # CHARSELECT is entered first; the hand-off calls trackselect_enter() and then
-    # logs "charselect -> trackselect", so both TRACKSELECT markers follow the
-    # CHARSELECT enter.
-    if not (cs.start() < ts.start() and cs.start() < to_ts.start()):
-        return fail("CHARSELECT -> TRACKSELECT ordering was violated", output)
+        return fail("native TRACKSELECT never fronted after VEHICLESELECT", output)
+    # CHARSELECT is entered first; the hand-off enters each next screen then logs
+    # the transition, so every downstream marker follows the CHARSELECT enter and
+    # the chain is strictly ordered.
+    if not (cs.start() < vs.start() < ts.start()):
+        return fail("CHARSELECT -> VEHICLESELECT -> TRACKSELECT ordering was "
+                    "violated", output)
+    if not (cs.start() < to_vs.start() < to_ts.start()):
+        return fail("the native screen hand-off ordering was violated", output)
 
     # --- Race-1 readiness gate: DEFERRED then ARMED then booted --------------
     defer = DEFER_RE.search(output)
@@ -327,8 +342,9 @@ def main() -> int:
 
     print(
         "PASS online lobby-start: NATIVE owns race 1 -- session BEGAN "
-        "descriptor-less (party_link fork, no descriptor), native CHARSELECT then "
-        "TRACKSELECT fronted (offline menu bypassed), the race-1 readiness gate "
+        "descriptor-less (party_link fork, no descriptor), native CHARSELECT -> "
+        "VEHICLESELECT -> TRACKSELECT fronted (offline menu bypassed), the race-1 "
+        "readiness gate "
         f"DEFERRED the boot until the launcher built + armed the descriptor (epoch "
         f"{armed.group(1)}), then race 1 booted EXACTLY ONCE and ONLY THEN on the "
         f"NATIVE-TRACKSELECT-selected track {direct_track} (Fossil Canyon; the host "
