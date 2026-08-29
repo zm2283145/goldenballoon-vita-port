@@ -29,9 +29,19 @@ What this proves (Enhancements.AdventureParty ON, a party in the central hub)
   (the [RACERINPUT] witness: port == player == racer) and the roster characters
   are unchanged.
 
+* R27 challenge refusal: the in-hub Taj CHALLENGE rows are not classified for a
+  party yet (a challenge would spawn a lone Taj-vs-host race and strand the other
+  seats). A host CHALLENGE-row selection during the party SHARED_DIALOGUE is
+  fail-closed refused (`aparty_taj_challenge: ... refused=1`), no challenge race
+  starts (run with MDKR_TAJ_PROBE=1 so `[TAJ] phase=accept` would appear if
+  init_racer_for_challenge ran -- it must NOT), no extra racer spawns, the party
+  is intact, and a vehicle TRANSFORM still works afterward (the same whole-party
+  transform oracle, live==3). The refusal keys on a live party SESSION, never on
+  player count, so retail JOINTVENTURE 2P challenges are untouched (the off arm).
+
 Everything is read from aparty_ traces the running binary emits (AP-05 schema)
-plus the aparty_transform diagnostic; the facts come from the pure reducer and
-the game adapters, not from "the process did not crash".
+plus the aparty_transform / aparty_taj_challenge diagnostics; the facts come from
+the pure reducer and the game adapters, not from "the process did not crash".
 
 Driving
 -------
@@ -90,6 +100,14 @@ ROSTER_RE = re.compile(r"aparty_roster: n=(\d+) mask=0x([0-9a-fA-F]+)((?: c\d+=\
 LAYOUT_RE = re.compile(r"aparty_layout: viewports=(\d+) layout=(\d+)")
 TRANS_RE = re.compile(r"aparty_transition: seat=(\d+) tick=(\d+)")
 SOUND_RE = re.compile(r"aparty_taj_sound: seat=(\d+) reinit=1")
+# R27: the in-hub Taj CHALLENGE row is fail-closed refused for a party session.
+CHALLENGE_RE = re.compile(r"aparty_taj_challenge: seat=(-?\d+) refused=(\d+) choice=(\d+)")
+# [TAJ] phase=accept fires ONLY from init_racer_for_challenge (a challenge race
+# actually starting). With MDKR_TAJ_PROBE=1 its ABSENCE proves no race started.
+TAJ_ACCEPT_RE = re.compile(r"\[TAJ\] phase=accept\b")
+# TAJ_FLAGS_CAR_CHAL_UNLOCKED (game/include/structs.h) -- exposes the CHALLENGES
+# row in Taj's hub ROOT menu so the R27 refusal path is reachable.
+TAJ_FLAGS_CAR_CHAL_UNLOCKED = 0x01
 RACERINPUT_RE = re.compile(
     r"\[RACERINPUT\] tick=(\d+) player=(-?\d+) racer=(\d+) port=(\d+)")
 BAD_RE = re.compile(
@@ -97,16 +115,20 @@ BAD_RE = re.compile(
     r"runtime error:|Assertion failed")
 
 
-def run_arm(binary, rom, fixture, seat_route, frames=6000, verbose=False):
+def run_arm(binary, rom, fixture, seat_route, frames=6000, verbose=False,
+            eeprom=None, extra_env=None):
     with tempfile.TemporaryDirectory(prefix="mdkr_ap_taj_") as tmp:
         root = Path(tmp)
         save_dir = root / "save"
         save_dir.mkdir()
-        (save_dir / "eeprom.bin").write_bytes(eeprom_image())
+        (save_dir / "eeprom.bin").write_bytes(eeprom if eeprom is not None
+                                              else eeprom_image())
         env = {k: v for k, v in os.environ.items()
                if not k.startswith(("MDKR", "GE007_"))}
         env.update(LC_ALL="C", MDKR_AUDIO="0", MDKR_TRACE="1",
                    MDKR_RACER_INPUT_TRACE="1", MDKR_AP_SEAT_ROUTE=seat_route)
+        if extra_env:
+            env.update(extra_env)
         save_env(env, str(save_dir))
         env["MDKR_VIDEO_CONFIG_PATH"] = str(root / "mdkr64.ini")
         command = [
@@ -247,6 +269,49 @@ def assert_identity(lines, players, transform_line_idx, label):
     return f
 
 
+def assert_challenge_refusal(out, players, label):
+    """R27: a host CHALLENGE-row selection during a party SHARED_DIALOGUE is
+    fail-closed refused -- no TAJ_MODE_RACE starts, no extra racer spawns, the
+    party is intact, and a vehicle transform still works afterward.
+
+    Run with MDKR_TAJ_PROBE=1 so ``[TAJ] phase=accept`` (init_racer_for_challenge)
+    would appear IF a challenge race started; its absence is the direct
+    no-race oracle.
+    """
+    f = []
+    if bad := BAD_RE.search(out):
+        f.append(f"{label}: fatal marker {bad.group(0)!r}")
+        return f
+    lines = out.splitlines()
+
+    # --- The challenge row was refused, and it is OBSERVABLE ------------------
+    chal = [(i, m) for i, m in enumerate(CHALLENGE_RE.search(l) for l in lines) if m]
+    refused = [(i, m) for i, m in chal if int(m.group(2)) == 1]
+    if not refused:
+        f.append(f"{label}: no aparty_taj_challenge refused=1 -- the challenge row "
+                 f"was not fail-closed refused")
+        refuse_idx = 1 << 30
+    else:
+        refuse_idx = refused[0][0]
+
+    # --- No challenge race ever started (no extra racer spawn) ----------------
+    if TAJ_ACCEPT_RE.search(out):
+        f.append(f"{label}: '[TAJ] phase=accept' present -- a challenge race was "
+                 f"accepted (init_racer_for_challenge ran) despite the party refusal")
+
+    # --- The party is intact and a vehicle transform STILL WORKS afterward ----
+    # Reuse the whole-party transform oracle: it proves the summon latched, the
+    # host owns the choice, and the WHOLE party (live==N, never a collapse)
+    # transforms and republishes the roster/layout -- i.e. the refused challenge
+    # left the session healthy and the transform path unaffected.
+    tf, ti = assert_transform_scene(out, players, f"{label} post-refusal transform")
+    f += tf
+    if ti >= 0 and refuse_idx > ti:
+        f.append(f"{label}: the refusal did not precede the transform -- the "
+                 f"challenge was selected AFTER the transform, not before it")
+    return f
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
@@ -258,8 +323,9 @@ def main():
     rom = str(Path(args.rom).resolve())
     taj3 = "tests/input_scripts/adventure_party_3p_taj.txt"
     taj2 = "tests/input_scripts/adventure_party_2p_taj.txt"
+    chal3 = "tests/input_scripts/adventure_party_3p_taj_challenge.txt"
     off = ROOT / "tests" / "check_taj_p2_adventure.py"
-    required = [binary, rom, *(str(ROOT / p) for p in (taj3, taj2)), str(off)]
+    required = [binary, rom, *(str(ROOT / p) for p in (taj3, taj2, chal3)), str(off)]
     missing = [p for p in required if not os.path.exists(p)]
     if missing:
         for p in missing:
@@ -279,6 +345,33 @@ def main():
     out2 = run_arm(binary, rom, taj2, TAJ_SEAT_ROUTE, verbose=args.verbose)
     f2, _ = assert_transform_scene(out2, 2, "2P transform")
     failures += f2
+
+    # --- R27 challenge refusal: a host CHALLENGE-row selection during a 3P
+    #     party dialogue is refused (no TAJ_MODE_RACE, no extra racer, party
+    #     intact, transform still works). Run with MDKR_TAJ_PROBE=1 so
+    #     '[TAJ] phase=accept' would appear IF a race started. ---
+    chal_eeprom = eeprom_image(TAJ_FLAGS_CAR_CHAL_UNLOCKED)
+    out_chal = run_arm(binary, rom, chal3, TAJ_SEAT_ROUTE, verbose=args.verbose,
+                       eeprom=chal_eeprom, extra_env={"MDKR_TAJ_PROBE": "1"})
+    failures += assert_challenge_refusal(out_chal, 3, "3P challenge-refusal")
+
+    # --- Positive control 3: strip the refusal diagnostic -> the refusal
+    #     assertion must FAIL (otherwise the gate cannot tell a refused challenge
+    #     from an unguarded one). ---
+    chal_stripped = "\n".join(l for l in out_chal.splitlines()
+                              if "aparty_taj_challenge" not in l)
+    pc3 = assert_challenge_refusal(chal_stripped, 3, "PC-strip-challenge")
+    if not pc3:
+        failures.append("positive control: output with the aparty_taj_challenge "
+                        "refusal line stripped PASSED the R27 refusal assertion")
+
+    # --- Positive control 4: inject a '[TAJ] phase=accept' -> the no-race
+    #     oracle must FAIL (a challenge race that actually started must not pass). ---
+    chal_accepted = out_chal + "\n[TAJ] phase=accept vehicle=0 flags=0x1 balloons=0\n"
+    pc4 = assert_challenge_refusal(chal_accepted, 3, "PC-inject-accept")
+    if not pc4:
+        failures.append("positive control: output with a '[TAJ] phase=accept' "
+                        "injected PASSED the R27 no-race assertion")
 
     # --- Positive control 1: collapse the post-transform roster to one -------
     collapsed = re.sub(r"(aparty_transform: path=party vehicle=\d+ n=\d+ live=)\d+",
@@ -318,7 +411,10 @@ def main():
           "transforms transactionally to the new vehicle with the same seat->character "
           "identities and split layout (live==N, never a collapse to 1), and the "
           "dialogue releases to ACTIVE_LOBBY in the same generation (R10) with no door "
-          "firing during it; both positive controls fired")
+          "firing during it; a host CHALLENGE-row selection during the party dialogue "
+          "is fail-closed refused (R27: aparty_taj_challenge refused, no '[TAJ] "
+          "phase=accept', no extra racer, party intact, transform still works after); "
+          "four positive controls fired")
     print(f"  OFF arm: {off_quote}")
     return 0
 

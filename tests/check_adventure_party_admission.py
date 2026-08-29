@@ -22,6 +22,21 @@ With the enhancement OFF, three/four players route to TRACK_SELECT exactly as
 stock and no ``aparty_`` line ever appears. One player is unchanged in both arms
 and never forms a party.
 
+Two file-authority facts are also asserted here:
+
+* R26 new-game refusal. A party formation cannot begin a NEW campaign yet (the
+  new-game shared-scene envelope is AP-11), so confirming an UN-STARTED file is
+  fail-closed refused (``aparty_file_refused: reason=newgame``, cursor stays, no
+  session, no campaign load) instead of silently collapsing to a 1P new game;
+  the STARTED fixture file then confirms and forms the session normally.
+* FIX 1 host-only copy/erase authority. ``fileselect_input_copy`` /
+  ``fileselect_input_erase`` skip player-two aggregation in a party exactly as
+  ``fileselect_input_root`` does. That guard is token-identical to the ROOT guard
+  the ON arm already exercises behaviourally; a headless copy/erase confirm drive
+  with a null-effect oracle would need gFileConfirm observability the build does
+  not emit, so this is a source-level guard-presence assertion (see
+  ``check_copy_erase_guard``).
+
 Positive controls (mutating the route/env, never the sources)
 -------------------------------------------------------------
 * Admission clamped to two: the OFF-arm 3-player run (which routes to Tracks, the
@@ -84,6 +99,8 @@ ROSTER_RE = re.compile(r"aparty_roster: n=(\d+) mask=0x([0-9a-fA-F]+)((?: c\d+=\
 LAYOUT_RE = re.compile(r"aparty_layout: viewports=(\d+) layout=(\d+)")
 # JOINTVENTURE is magic code id 24 (see tests/check_taj_p2_adventure.py).
 JOINTVENTURE_RE = re.compile(r"magic_code_submit: accepted=1 id=24")
+# R26 interim refusal: confirming an UN-STARTED file in a party fails closed.
+REFUSE_RE = re.compile(r"aparty_file_refused: reason=(\w+) slot=(\d+)")
 BAD_RE = re.compile(
     r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
     r"runtime error:|Assertion failed"
@@ -125,12 +142,19 @@ class RosterLine:
     characters: dict[int, int]
 
 
-def started_adventure_one_slot() -> bytes:
-    """A started, checksum-valid Adventure One save with no campaign progress."""
+def started_adventure_one_slot(taj_flags: int = 0) -> bytes:
+    """A started, checksum-valid Adventure One save with no campaign progress.
+
+    ``taj_flags`` seeds the 6-bit Taj-challenge field (structs.h:
+    0x01/0x02/0x04 = car/hover/plane unlocked, 0x08/0x10/0x20 = completed). It is
+    0 by default (no challenge offered), which every caller but the Taj-challenge
+    gate relies on; that gate passes ``TAJ_FLAGS_CAR_CHAL_UNLOCKED`` so the hub
+    Taj ROOT menu exposes the CHALLENGES row the R27 refusal guards.
+    """
     bits: list[int] = []
     put_bits(bits, 16, 0)       # checksum, sealed below
     put_bits(bits, 68, 0)       # per-course flags
-    put_bits(bits, 6, 0)        # Taj flags
+    put_bits(bits, 6, taj_flags & 0x3F)  # Taj flags
     put_bits(bits, 10, 0)       # trophies
     put_bits(bits, 12, 0)       # bosses
     for _ in range(6):
@@ -152,9 +176,9 @@ def started_adventure_one_slot() -> bytes:
     return bytes(seal_slot(out))
 
 
-def eeprom_image() -> bytes:
+def eeprom_image(taj_flags: int = 0) -> bytes:
     out = bytearray(EEPROM_BYTES)
-    out[:SLOT_BYTES] = started_adventure_one_slot()
+    out[:SLOT_BYTES] = started_adventure_one_slot(taj_flags)
     out[SLOT_BYTES:CONFIG_OFFSET] = b"\xFF" * (CONFIG_OFFSET - SLOT_BYTES)
     # Adventure Two unlocked + retail subtitle bit: the same valid config
     # check_adventure_two.py's resume arms run on. Adventure One stays option 0.
@@ -355,6 +379,120 @@ def check_one_player(output: str) -> list[str]:
     return failures
 
 
+def check_newgame_refuse_arm(output: str, players: int) -> list[str]:
+    """R26: a party host confirming an UN-STARTED file is refused, then the
+    started fixture file confirms and forms the session normally.
+
+    The script drives the host to an EMPTY slot and confirms it (refused, no
+    session, no campaign load), then back to the started slot 0 and confirms it.
+    Returns failures.
+    """
+    failures: list[str] = []
+    label = f"{players}P newgame-refuse"
+
+    if bad := BAD_RE.search(output):
+        failures.append(f"{label}: fatal marker {bad.group(0)!r}")
+
+    # The empty-file confirm is refused, and it is OBSERVABLE.
+    refusals = list(REFUSE_RE.finditer(output))
+    if not refusals:
+        failures.append(
+            f"{label}: no aparty_file_refused diagnostic — an empty-file confirm "
+            f"was not fail-closed refused")
+        refuse_pos = 1 << 30
+    else:
+        refuse_pos = refusals[0].start()
+        if refusals[0].group(1) != "newgame":
+            failures.append(
+                f"{label}: refusal reason was {refusals[0].group(1)!r}, "
+                f"expected 'newgame'")
+
+    # The empty-file confirm forms NO session (exactly one FORMING, from the
+    # later started confirm) and starts NO campaign load before the refusal.
+    sessions = session_lines(output)
+    forming = [s for s in sessions if s.state == "FORMING"]
+    if len(forming) != 1:
+        failures.append(
+            f"{label}: expected exactly ONE FORMING session (the empty confirm "
+            f"forms none, the started confirm forms one), saw {len(forming)}: "
+            f"{[s.state for s in sessions]}")
+
+    # The session only forms AFTER the refusal (i.e. from the started confirm),
+    # never from the refused empty confirm. (Only aparty_session lines are
+    # position-compared; the many pre-menu attract/title level_loads make a raw
+    # level_load position meaningless, so the campaign-load-after-file-select
+    # proof is delegated to check_on_arm's frame-aware assertion below.)
+    session_pos = [m.start() for m in SESSION_RE.finditer(output)]
+    if session_pos and min(session_pos) < refuse_pos:
+        failures.append(
+            f"{label}: an aparty_session formed BEFORE the refusal — the empty "
+            f"confirm was not fully fail-closed")
+
+    # After the refusal the party proceeds EXACTLY as the ordinary ON arm: it
+    # forms the session on the started fixture file and loads the campaign (the
+    # campaign level_load is asserted to happen after FILE_SELECT there).
+    failures.extend(check_on_arm(output, players))
+    return failures
+
+
+def check_copy_erase_guard() -> list[str]:
+    """FIX 1 guard-presence assertion (source-level).
+
+    Driving a headless party into the COPY/ERASE confirmation dance and then
+    OBSERVING a null player-two effect would need new gFileConfirm/gFileCopy
+    observability the build does not emit, which is disproportionate for a guard
+    that is TOKEN-IDENTICAL to the behaviourally-proven fileselect_input_root
+    guard (Task 6 Adapter 2, exercised by this gate's ON arm — the party forms
+    its session through player one's file confirm with player two never
+    aggregated). So instead this asserts, at the source, that
+    fileselect_input_copy and fileselect_input_erase each wrap their
+    ``gNumberOfActivePlayers == 2`` player-two aggregation body in the same
+    ``if (!adventure_party_menu_admits())`` party guard under
+    ``NATIVE_PORT && !MDKR_ADVENTURE_PARTY_OMIT``. A regression that drops either
+    guard (letting a non-host drive the party's copy/erase decision) fails here.
+    """
+    failures: list[str] = []
+    menu_c = ROOT / "game" / "src" / "menu.c"
+    try:
+        text = menu_c.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return [f"copy/erase guard: cannot read {menu_c}: {exc}"]
+
+    for func in ("fileselect_input_copy", "fileselect_input_erase"):
+        # Anchor on the DEFINITION (`void <func>(`), not the earlier call site in
+        # menu_file_select_loop, whose window would otherwise catch an unrelated
+        # gNumberOfActivePlayers == 2 line.
+        start = text.find("void " + func + "(")
+        if start < 0:
+            failures.append(f"copy/erase guard: {func} definition not found in menu.c")
+            continue
+        # Bound the search to this function body (up to the next function or EOF).
+        body = text[start:start + 4000]
+        two_player = body.find("gNumberOfActivePlayers == 2")
+        if two_player < 0:
+            failures.append(
+                f"copy/erase guard: {func} lost its player-two aggregation block")
+            continue
+        # Wide enough to span the count line, the guard comment, and the guard
+        # itself (the copy comment is long); no other count comparison lives in
+        # either function within this span, so it cannot false-pass.
+        window = body[two_player:two_player + 900]
+        if "adventure_party_menu_admits()" not in window:
+            failures.append(
+                f"copy/erase guard: {func}'s player-two aggregation is NOT wrapped "
+                f"in the adventure_party_menu_admits() party guard — a non-host "
+                f"could drive the party's file copy/erase decision")
+        elif "!adventure_party_menu_admits()" not in window:
+            failures.append(
+                f"copy/erase guard: {func} references the party predicate but not "
+                f"as the skip guard `if (!adventure_party_menu_admits())`")
+        if "MDKR_ADVENTURE_PARTY_OMIT" not in window:
+            failures.append(
+                f"copy/erase guard: {func}'s party guard is not behind "
+                f"NATIVE_PORT && !MDKR_ADVENTURE_PARTY_OMIT (OMIT must be retail)")
+    return failures
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
@@ -370,7 +508,9 @@ def main() -> int:
         3: "tests/input_scripts/adventure_party_3p_admit.txt",
         4: "tests/input_scripts/adventure_party_4p_admit.txt",
     }
-    required = [binary, rom, *(str(ROOT / s) for s in scripts.values())]
+    refuse_script = "tests/input_scripts/adventure_party_3p_newgame_refuse.txt"
+    required = [binary, rom, str(ROOT / refuse_script),
+                *(str(ROOT / s) for s in scripts.values())]
     missing = [p for p in required if not os.path.exists(p)]
     if missing:
         for p in missing:
@@ -398,6 +538,15 @@ def main() -> int:
     one = run_arm(binary, rom, scripts[1], True, ON_FRAMES, args.verbose)
     failures.extend(check_one_player(one))
 
+    # --- R26 new-game refusal arm: a 3P party's empty-file confirm is refused
+    #     (no session, no campaign load, refusal observable), then the started
+    #     fixture file confirms and proceeds normally. ---
+    refuse_out = run_arm(binary, rom, refuse_script, True, ON_FRAMES, args.verbose)
+    failures.extend(check_newgame_refuse_arm(refuse_out, 3))
+
+    # --- FIX 1 copy/erase host-only file authority: source guard-presence. ---
+    failures.extend(check_copy_erase_guard())
+
     # --- Positive control 1: admission clamped to two (== the OFF 3P route)
     #     must FAIL the ON-arm assertions. ---
     clamp_failures = check_on_arm(off_outputs[3], 3)
@@ -418,14 +567,27 @@ def main() -> int:
             "passed with every aparty_session line removed — the gate does not "
             "actually require a formed session")
 
+    # --- Positive control 3: a missing refusal diagnostic must FAIL the R26
+    #     new-game refusal arm (otherwise the gate cannot tell a fail-closed
+    #     refusal from a silent new-game collapse). ---
+    refuse_stripped = "\n".join(
+        ln for ln in refuse_out.splitlines() if "aparty_file_refused" not in ln)
+    if not check_newgame_refuse_arm(refuse_stripped, 3):
+        failures.append(
+            "positive control (missing refusal diagnostic): the R26 refusal arm "
+            "passed with every aparty_file_refused line removed — the gate does "
+            "not actually require the empty-file confirm to be refused")
+
     if failures:
         print("check_adventure_party_admission: FAIL", file=sys.stderr)
         for f in failures:
             print(f"  - {f}", file=sys.stderr)
         return 1
     print("check_adventure_party_admission: PASS -- 2/3/4-player parties take the "
-          "ordinary Adventure route and form a session; 1P and the off arm are "
-          "stock; both positive controls fired")
+          "ordinary Adventure route and form a session; a party's UN-STARTED file "
+          "confirm is fail-closed refused (R26) then the started file proceeds; "
+          "copy/erase keep host-only file authority (FIX 1 guard present); 1P and "
+          "the off arm are stock; three positive controls fired")
     return 0
 
 

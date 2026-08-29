@@ -767,8 +767,10 @@ CHECKS = (
     Check("adventure_party_admission", "check_adventure_party_admission.py",
           "native",
           "AP-06 Adventure Party menu admission: 2/3/4 players reach the ordinary "
-          "Adventure route and form a session with the enhancement on; 1P and the "
-          "off arm are stock; retail 2P globals never engaged"),
+          "Adventure route and form a session with the enhancement on; a party's "
+          "UN-STARTED file confirm is fail-closed refused (R26) then the started "
+          "file proceeds; copy/erase keep host-only file authority (FIX 1); 1P and "
+          "the off arm are stock; retail 2P globals never engaged"),
     Check("adventure_party_hub", "check_adventure_party_hub.py", "native",
           "AP-08 Adventure Party hub roster: 2/3/4 humans spawn atomically with N "
           "viewports (3P minimap), per-seat input binding, and a per-viewport hub "
@@ -792,8 +794,10 @@ CHECKS = (
           "WHOLE party (2P/3P) transforms transactionally to the new vehicle with the "
           "same seat->character identities and split layout (live==N, never a collapse "
           "to 1); the dialogue releases to ACTIVE_LOBBY in the same generation (R10); "
-          "two positive controls fire and retail 2P Taj (check_taj_p2_adventure) is "
-          "untouched"),
+          "a host CHALLENGE-row selection during the party dialogue is fail-closed "
+          "refused (R27: no TAJ_MODE_RACE, no extra racer, transform still works "
+          "after); four positive controls fire and retail 2P Taj "
+          "(check_taj_p2_adventure) is untouched"),
     Check("adventure_party_progress", "check_adventure_party_progress.py",
           "native",
           "AP-13 exact-once campaign progression: a party default-race win at "

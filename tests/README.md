@@ -5692,17 +5692,33 @@ With the enhancement off, three/four players route to Tracks exactly as stock an
 no `aparty_` line appears; one player is unchanged in both arms and never forms a
 party.
 
-Two positive controls run inside the gate and mutate the route/env, never the
-sources: the OFF-arm 3-player run (the behaviour a clamped-to-two admission would
-produce) must FAIL the ON-arm assertions, and an ON-arm run with its
-`aparty_session` lines stripped must FAIL them too.
+The gate also proves two file-authority facts. **R26 new-game refusal:** a party
+cannot begin a NEW campaign yet (the new-game shared-scene envelope is AP-11), so
+a party host confirming an UN-STARTED file is fail-closed refused
+(`aparty_file_refused: reason=newgame`, the cursor stays, no session, no campaign
+load) instead of silently collapsing to a 1P new game; the started fixture file
+then confirms and forms the session normally. **FIX 1 copy/erase host-only
+authority:** `fileselect_input_copy` / `fileselect_input_erase` skip player-two
+aggregation in a party exactly as `fileselect_input_root` does — a source-level
+guard-presence assertion (`check_copy_erase_guard`), because that guard is
+token-identical to the ROOT guard the ON arm already exercises behaviourally, and
+a headless copy/erase confirm drive with a null-effect oracle would need
+gFileConfirm observability the build does not emit.
+
+Three positive controls run inside the gate and mutate the route/env or the
+captured output, never the sources: the OFF-arm 3-player run (the behaviour a
+clamped-to-two admission would produce) must FAIL the ON-arm assertions, an ON-arm
+run with its `aparty_session` lines stripped must FAIL them too, and the R26
+refuse-arm output with its `aparty_file_refused` line stripped must FAIL the
+refusal arm.
 
 Save fixture: the check writes its own EEPROM image — a started, checksum-valid
 Adventure One save in slot 0, built with the `harness_utils` bit-stream encoders
 (the same slot shape `check_adventure_two.py` resumes on its Adventure One arm,
 minus its progress) — so the host's single FILE_SELECT confirm resumes an
-existing file. The new-game shared-scene envelope is AP-11, out of scope here. No
-developer save is read or written; every run uses a private temporary directory.
+existing file (slots 1 and 2 are empty, which the R26 refuse arm confirms first).
+The new-game shared-scene envelope is AP-11, out of scope here. No developer save
+is read or written; every run uses a private temporary directory.
 
 ### Adventure Party hub roster — `tests/check_adventure_party_hub.py`
 
@@ -6113,11 +6129,26 @@ SHARED_DIALOGUE envelope. Read from the running binary's `aparty_` traces plus t
   the release (retail freezes racer input during the scene, and the arbiter
   rejects any door while the session is not `ACTIVE_LOBBY`). Doors working FROM
   `ACTIVE_LOBBY` is proven by `check_adventure_party_transition`.
+- **R27 challenge refusal.** The in-hub Taj CHALLENGE rows are not classified for
+  a party yet (a challenge would spawn a lone Taj-vs-host race and strand the other
+  seats), so a host CHALLENGE-row selection during the party `SHARED_DIALOGUE` is
+  fail-closed refused (`aparty_taj_challenge: ... refused=1`) instead of starting a
+  race. Run with `MDKR_TAJ_PROBE=1` so `[TAJ] phase=accept`
+  (`init_racer_for_challenge`) would appear IF a challenge race started — it must
+  NOT; no extra racer spawns; the party is intact; and a vehicle TRANSFORM still
+  works afterward (the same whole-party oracle, `live==3`). The refusal keys on a
+  live party SESSION, never on player count — the fixture unlocks a challenge
+  (`TAJ_FLAGS_CAR_CHAL_UNLOCKED`) so the row is reachable, and vehicle-transform
+  rows are unaffected.
 - **Positive controls.** Rewriting the transform line to `live=1` (a collapsed
   roster) must FAIL the whole-party assertion; stripping the `SHARED_DIALOGUE`
-  lines must FAIL the latch assertion.
+  lines must FAIL the latch assertion; stripping the `aparty_taj_challenge` line
+  must FAIL the R27 refusal arm; and injecting a `[TAJ] phase=accept` line must
+  FAIL the R27 no-race oracle.
 - **Off arm.** `check_taj_p2_adventure.py` is run and quoted (retail JOINTVENTURE
-  2P Taj, the lead-swap machinery a party never engages, is untouched).
+  2P Taj, the lead-swap machinery a party never engages, is untouched — and it
+  reaches challenges normally, which the R27 refusal must never block: the refusal
+  keys on a party session, not on player count).
 
 Only the summoner drives: a second moving racer near a lobby door raises a door
 textbox that blocks `npc_dialogue_loop` (and diverges shell-vs-headless), so the

@@ -1,0 +1,42 @@
+# Adventure Party R26 new-game refusal -- THREE local players.
+#
+# Admission prologue is byte-identical to adventure_party_3p_admit.txt (routes to
+# GAME_SELECT -> Adventure -> FILE_SELECT with three joined seats). Then, at FILE
+# SELECT, the host (player one) first confirms an UN-STARTED slot -- which for an
+# admitted party is fail-closed refused (R26: the new-game shared-scene envelope
+# is AP-11), observable as `aparty_file_refused: reason=newgame`, cursor stays --
+# and then confirms the STARTED fixture slot 0, which resumes it and forms the
+# 3-seat session exactly as the ordinary admission route.
+#
+# Save fixture: tests/check_adventure_party_admission.py writes a started
+# Adventure One save in slot 0; slots 1 and 2 are empty (0xFF, checksum-invalid).
+
+# --- Title: reveal Start/Options, then Character Select ---
+1250 START 4
+1330 START 4
+
+# --- PLAYER SELECT: players two and three join on their own controllers ---
+1450 A 4 P2
+1490 A 4 P3
+
+# --- Each player confirms their own character ---
+1580 A 4 P1
+1640 A 4 P2
+1700 A 4 P3
+
+# --- "OK?" accept -> GAME_SELECT ---
+1800 A 4 P1
+
+# --- GAME_SELECT: Adventure One is option 0 -> FILE_SELECT ---
+2050 A 4 P1
+
+# --- FILE_SELECT: host moves RIGHT to the empty slot 1 and confirms it. For an
+#     admitted party this is REFUSED (aparty_file_refused: reason=newgame); the
+#     cursor stays, no session forms, no campaign loads. ---
+2300 RIGHT 4 P1
+2440 A 4 P1
+
+# --- Host moves LEFT back to the started slot 0 and confirms it -> the session
+#     forms (FORMING -> ACTIVE_LOBBY) and the campaign loads, exactly as stock. ---
+2620 LEFT 4 P1
+2760 A 4 P1
