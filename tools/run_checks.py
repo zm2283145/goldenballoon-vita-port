@@ -786,6 +786,15 @@ CHECKS = (
           "N viewports, per-seat binding) at 2P/3P/4P, and a host/non-host/CPU "
           "win, a retry and a mid-race quit-to-lobby each return the same party "
           "to the lobby (sgen stable, lgen advanced); two positive controls fire"),
+    Check("adventure_party_progress", "check_adventure_party_progress.py",
+          "native",
+          "AP-13 exact-once campaign progression: a party default-race win at "
+          "each winner seat (P1/P2/P3/P4, by stable racerIndex) persists a slot "
+          "BYTE-IDENTICAL to a 1P win (empty whitelist), gated by one aparty_award "
+          "token issue+consume and one RACE_CLEARED write; a CPU-first loss and a "
+          "quit write nothing, a win + re-entry of the cleared course still writes "
+          "exactly one clear, and the save round-trips into 1P Adventure; two "
+          "positive controls fire (CPU-as-win, doubled-award)"),
     Check("adventure_hub", "check_adventure_hub.py", "native",
           "Adventure hub traversal"),
     Check("adventure_two", "check_adventure_two.py", "native",

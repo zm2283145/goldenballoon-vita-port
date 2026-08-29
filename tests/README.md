@@ -5862,6 +5862,55 @@ Save fixture: the started Adventure One slot-0 save from
 `check_adventure_party_admission.py` (imported), resumed by the host's FILE_SELECT
 confirm. No developer save is read or written.
 
+### Adventure Party exact-once progression — `tests/check_adventure_party_progress.py`
+
+```bash
+python3 tests/check_adventure_party_progress.py            # ~10 min, muted + headless
+python3 tests/check_adventure_party_progress.py -v
+```
+
+The AP-13 gate: a co-op default-race win writes EXACTLY ONE existing retail
+campaign commit, and nothing else does. Proven from the running binary + the
+persisted EEPROM:
+
+- **Byte-equivalence, per winner seat.** A party win with seat 0/1/2/3 forced
+  first (2P/3P/4P, by stable `racerIndex` — `apracewinner`) persists a 40-byte
+  slot **byte-identical** to a 1P win of Ancient Lake driven from the same started
+  save. The tolerated-difference whitelist is **EMPTY**: the save slot holds only
+  campaign progression (no character/start-order rows — those live in the runtime
+  `Settings.racers[]`, never serialised), so a party win writes the same bytes as
+  a 1P win. The commit is decided by the PARTY team condition + an exact-once
+  token (`aparty_award op=issue…result=1` then `op=consume…result=0`), NOT the
+  retail arm — which for a party would fire by accident on `settings->gNumRacers
+  == 1` and could neither enforce exact-once nor survive the finish/door hand-off
+  relabelling the winner `PLAYER_COMPUTER`.
+- **Exact-once.** Each fresh win emits exactly one token issue+consume(ok) pair
+  and exactly one `RACE_CLEARED` write (`[BOSSW]`). After the win auto-returns,
+  the shared route **re-enters the now-cleared course**; the permit fails closed
+  on the `RACE_CLEARED` bit, so the second race mints no token and writes no flag
+  — the save still shows one clear and balloons `(2,1)`.
+- **No mutation on a non-win.** A CPU-first loss (`MDKR_AP_RACE_WINNER=cpu`) and a
+  mid-race quit-to-lobby persist status VISITED only, write no `RACE_CLEARED`, and
+  consume no token.
+- **Round-trip.** The party-progressed save loads + resumes with the enhancement
+  OFF: a 1P process reads Ancient Lake back as CLEARED (`[BOSSW]`) and its
+  checksum survives.
+- **Positive controls (output/replay only).** A CPU-loss output replayed through
+  the win assertions must FAIL; a win output with its token consume + flag write
+  duplicated must FAIL the exactly-once assertion.
+
+Keys and hub balloons are exact-once + collector-agnostic *structurally* and are
+NOT re-plumbed (see the report): `obj_loop_worldkey` commits `settings->keys` for
+ANY live human (`playerIndex != PLAYER_COMPUTER` — every party seat qualifies),
+the bit is idempotent, `free_object` retires the key, and `obj_init_worldkey`
+deletes an already-collected key on re-entry. A read-only `worldkey:` trace
+(mirroring `silvercoin:`) and an `MDKR_OBJDUMP` `WORLDKEY` line make the collector
+observable.
+
+Save fixture: the same started Adventure One slot-0 save; every run is in a
+private temp dir. Off arm — 1P awards unchanged — is `check_adventure_race_loop.py`
+and `check_campaign_progression.py`.
+
 ### Harness isolation — `tests/check_harness_isolation.py`
 
 ```bash
