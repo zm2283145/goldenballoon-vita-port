@@ -73,6 +73,10 @@ LANES = (
     "check_online_left_reentry.py",         # LEFT/ERROR return: "Return to game" re-takes
                                             #  native (no auto re-arm; press-gated re-take)
     "check_online_lobby_tournament.py",
+    "check_online_tournament_cup_vehicle.py",  # mixed-vehicle cup (0) boots all 4
+                                            #  rounds: the pick auto-narrows to the
+                                            #  cup intersection so round-3 Hot Top
+                                            #  Volcano never rejects with ILLEGAL_VEHICLE
     "check_online_final_replay.py",         # RULED final-replay: host continues via
                                             #  the wrap; both endpoints re-converge
                                             #  through the reducer into tournament #2

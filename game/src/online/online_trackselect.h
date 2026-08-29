@@ -73,6 +73,14 @@ extern const char *const mdkr_online_vehicle_names[];
  * VEHICLESELECT so both narrow identically. */
 u8 mdkr_online_trackselect_narrow_2p(u8 mask, u16 trackId, unsigned occupied);
 
+/* The vehicle mask legal for EVERY round of a tournament cup (the AND of all four
+ * rounds' 2-player-narrowed usable masks). A tournament persists ONE vehicle
+ * across all rounds, so the pick must be clamped to this whole-cup intersection --
+ * clamping only to the round-0 track let a car chosen for cup-0 round-0 be
+ * rejected (ILLEGAL_VEHICLE) at round-3 Hot Top Volcano, stalling the tournament.
+ * Shared by TRACKSELECT and VEHICLESELECT. An out-of-range cup returns ALL. */
+u8 mdkr_online_trackselect_cup_vehicle_mask(unsigned cup, unsigned occupied);
+
 /* Headless test seam only (inert unless the env above is set): from LOBBY_WAIT,
  * install the party_link forward feed if nothing else has (the CHARSELECT seam
  * normally owns install in this lane). No-op in a normal run, so it never

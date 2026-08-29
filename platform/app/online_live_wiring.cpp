@@ -1989,12 +1989,36 @@ void OnlineRoom_lobbyStartServiceJoiner(IMdkrOnlineAdapter *joiner,
                                         0u, character))
                    .accepted;
         break;
-    case MDKR_ONLINE_VIEW_ACTION_CHOOSE_VEHICLE:
+    case MDKR_ONLINE_VIEW_ACTION_CHOOSE_VEHICLE: {
+        /* Pick a vehicle legal for the WHOLE cup (a real remote endpoint's native
+         * TRACKSELECT auto-narrows to the cup intersection). A hardcoded car
+         * stalled a mixed-vehicle cup: cup-0 round-3 Hot Top Volcano is
+         * hovercraft/plane only, so BEGIN_LOADING would reject the car seat
+         * (ILLEGAL_VEHICLE). Single race / a car-legal cup keeps car (bit 0). */
+        unsigned vehicle = 0u;
+        MdkrOnlineLobby lobby{};
+        if (mdkr_online_live_adapter_lobby(joiner, &lobby) &&
+            lobby.mode == MDKR_ONLINE_MODE_TOURNAMENT &&
+            lobby.cup_id != MDKR_ONLINE_NO_CUP) {
+            uint8_t mask = 0x7u;
+            for (unsigned r = 0u; r < MDKR_ONLINE_CUP_ROUNDS; ++r) {
+                mask &= mdkr_online_track_picker_mask(
+                    mdkr_online_cup_track_id(lobby.cup_id, r), 2u);
+            }
+            for (unsigned v = 0u; v < 3u; ++v) {
+                if (mask & (uint8_t)(1u << v)) {
+                    vehicle = v;
+                    break;
+                }
+            }
+        }
         sent = joiner
-                   ->submit(loopbackCmd(
-                       joiner, MDKR_ONLINE_VIEW_ACTION_CHOOSE_VEHICLE, 0u, 0u))
+                   ->submit(loopbackCmd(joiner,
+                                        MDKR_ONLINE_VIEW_ACTION_CHOOSE_VEHICLE,
+                                        0u, vehicle))
                    .accepted;
         break;
+    }
     case MDKR_ONLINE_VIEW_ACTION_VOTE_TRACK:
         sent = joiner
                    ->submit(loopbackCmd(

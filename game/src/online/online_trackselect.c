@@ -308,6 +308,31 @@ static u8 trackselect_track_mask(u8 trackId, unsigned occupied) {
     return mdkr_online_trackselect_narrow_2p(mask, trackId, occupied);
 }
 
+/* The vehicle mask legal for EVERY round of a TOURNAMENT cup: the AND of all
+ * TS_ROWS rounds' engine-truth masks (leveltable_vehicle_usable + the retail
+ * 2-player narrowing). A tournament persists ONE vehicle across all rounds (the
+ * resident coordinator re-Readies + STARTs each round with the SAME seat vehicle;
+ * there is no per-round re-selection), so the picked vehicle MUST be legal for the
+ * whole cup. Narrowing the pick against only the round-0 track let a car chosen
+ * for cup-0 round-0 (Ancient Lake, all vehicles) survive to round-3 Hot Top
+ * Volcano (hovercraft/plane only, mask 0x6), where the reducer's all_vehicles_legal
+ * gate REJECTS BEGIN_LOADING (ILLEGAL_VEHICLE) -> the round never boots and the
+ * tournament stalls at raceCount=3. Every cup's 2-player intersection is non-empty
+ * (cup0 0x6, cup1 0x3, cup2 0x2, cup3 0x2, cup4 0x1), so a legal pick always
+ * exists. */
+u8 mdkr_online_trackselect_cup_vehicle_mask(unsigned cup, unsigned occupied) {
+    const u8 all = (u8) ((1u << MDKR_ONLINE_SCREEN_VEHICLE_COUNT) - 1u);
+    u8 mask = all;
+    unsigned r;
+    if (cup >= TS_COLS) {
+        return all; /* unknown cup: nothing cup-wide to clamp to yet */
+    }
+    for (r = 0u; r < TS_ROWS; r++) {
+        mask &= trackselect_track_mask(sTrackIds[(cup * TS_ROWS) + r], occupied);
+    }
+    return mask;
+}
+
 /* The track the vehicle auto-narrow resolves against. Once the HOST has
  * LOCKED a selection, resolve against the LOCKED track (single) / the locked
  * cup's round-0 track (tournament), NOT the hovered one -- otherwise browsing a
@@ -348,15 +373,44 @@ static u8 trackselect_resolve_narrow_track(const MdkrPartyLinkSnapshot *snap,
     return TS_NONE;
 }
 
-/* keep the local seat's vehicle inside a track's mask (lowest legal bit when
- * the current one is illegal). Flags a change so the VEHICLE line can flash. */
-static void trackselect_autonarrow_vehicle(u8 trackId, unsigned occupied) {
-    u8 mask;
-    u8 v;
-    if (trackId == TS_NONE) {
-        return; /* nothing to narrow against yet */
+/* The vehicle mask the local seat's pick must stay inside this frame. A
+ * TOURNAMENT clamps to the whole locked/hovered cup's INTERSECTION (the pick
+ * persists across every round, so it must be legal for all of them -- see
+ * mdkr_online_trackselect_cup_vehicle_mask); a single race clamps to the resolved
+ * track. When nothing is resolved yet return ALL (keep the seed vehicle). */
+static u8 trackselect_resolve_narrow_mask(const MdkrPartyLinkSnapshot *snap,
+                                          bool haveSnap, unsigned occupied) {
+    const u8 all = (u8) ((1u << MDKR_ONLINE_SCREEN_VEHICLE_COUNT) - 1u);
+    if (sTs.mode == MDKR_ONLINE_SCREEN_MODE_TOURNAMENT) {
+        u8 cup = TS_NONE;
+        if (sTs.host) {
+            /* locked cup once locked, else the hovered cup preview. */
+            cup = (sTs.lockedCup != TS_NONE) ? sTs.lockedCup : (u8) sTs.cursorCol;
+        } else if (haveSnap && snap->cup_id < TS_COLS) {
+            cup = (u8) snap->cup_id; /* joiner follows the host's locked cup */
+        }
+        if (cup >= TS_COLS) {
+            return all; /* cup not known yet: keep the seed */
+        }
+        return mdkr_online_trackselect_cup_vehicle_mask(cup, occupied);
     }
-    mask = trackselect_track_mask(trackId, occupied);
+    {
+        u8 trackId = trackselect_resolve_narrow_track(snap, haveSnap);
+        if (trackId == TS_NONE) {
+            return all; /* nothing to narrow against yet */
+        }
+        return trackselect_track_mask(trackId, occupied);
+    }
+}
+
+/* keep the local seat's vehicle inside `mask` (lowest legal bit when the current
+ * one is illegal). Flags a change so the VEHICLE line can flash. An ALL mask (no
+ * lock resolved) leaves any valid seed vehicle untouched. */
+static void trackselect_autonarrow_vehicle(u8 mask) {
+    u8 v;
+    if (mask == 0u) {
+        return; /* nothing legal to clamp to (malformed table): keep as-is */
+    }
     if (mask & (u8) (1u << sTs.vehicle)) {
         return; /* already legal */
     }
@@ -1206,7 +1260,8 @@ MdkrOnlineTrackselectResult mdkr_online_trackselect_tick(s32 updateRate) {
      * or the host's locked track/cup from the snapshot (joiner) -- never the
      * merely-hovered track once something is locked. */
     narrowTrack = trackselect_resolve_narrow_track(&snap, haveSnap);
-    trackselect_autonarrow_vehicle(narrowTrack, occupied);
+    trackselect_autonarrow_vehicle(
+        trackselect_resolve_narrow_mask(&snap, haveSnap, occupied));
 
     trackselect_gather_input(&in);
     trackselect_apply_input(&in);
@@ -1214,7 +1269,8 @@ MdkrOnlineTrackselectResult mdkr_online_trackselect_tick(s32 updateRate) {
     /* Re-resolve after input (the lock/cursor may have moved) so the published
      * vehicle + the witness reflect this frame. */
     narrowTrack = trackselect_resolve_narrow_track(&snap, haveSnap);
-    trackselect_autonarrow_vehicle(narrowTrack, occupied);
+    trackselect_autonarrow_vehicle(
+        trackselect_resolve_narrow_mask(&snap, haveSnap, occupied));
     witnessTrack = (narrowTrack != TS_NONE)
                        ? narrowTrack
                        : (u8) (sTs.host
