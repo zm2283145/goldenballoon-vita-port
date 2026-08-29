@@ -2447,12 +2447,31 @@ int runOnlineLobbyStartLiveSession(AppHost &host, const MdkrBootConfig &config,
         return 2;
     }
 
+    /* Scripted PAD-INPUT injection for the race (test-only; production leaves it
+     * unset). The descriptor-less native takeover normally commits the real
+     * controller fed through liveDrainMatchInput -> race_set_local_input. A
+     * headless two-process cloud capstone has no human at the pad, so this seam
+     * stands the deterministic per-tick raceLocalSample fixture in for the local
+     * controller: both processes drive their car from the identical fixture and
+     * therefore converge byte-for-byte across the real mesh -- the SAME synthetic
+     * race-input the loopback lobby-start + cloud lanes already use, here on the
+     * production peer==nullptr path. It is INPUT only (the car's stick/buttons),
+     * never a phase/route override. Set once at boot; the resident re-cycle keeps
+     * the adapter flag for races 2..N (matching the loopback lobby-start lane). */
+    if (std::getenv("MDKR_APP_TEST_ONLINE_SYNTH_RACE_INPUT") != nullptr) {
+        mdkr_online_live_adapter_race_set_synthetic_input(visible, true);
+        std::fprintf(stderr,
+                     "[online-autopair] synthetic race-input injection enabled "
+                     "(headless controller stand-in; production path unchanged)\n");
+    }
+
     /* Match-input CONTEXT only (epoch 0, NO runtime install yet; the coordinator
      * installs the source once race 1 is ready). peer == nullptr: the real remote
-     * supplies its input over the mesh. NO synthetic input -- the real controller
-     * drives the race. paceAdvanceHz 0: interactive play is naturally paced by vsync
-     * (the drain frontier cannot outrun the remote's confirmations), unlike the
-     * headless cloud lane which needs an explicit 30 Hz pace. */
+     * supplies its input over the mesh. NO synthetic input by default -- the real
+     * controller drives the race. paceAdvanceHz 0: interactive play is naturally
+     * paced by vsync (the drain frontier cannot outrun the remote's
+     * confirmations), unlike the headless cloud lane which needs an explicit 30 Hz
+     * pace. */
     LiveMatchInputContext context;
     context.visible = visible;
     context.peer = nullptr;
