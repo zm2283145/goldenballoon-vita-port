@@ -6,6 +6,9 @@
 
 #include "camera.h"
 #include "camera_obstruction_runtime.h"
+#if defined(MDKR_ENABLE_ONLINE_BETA)
+#include "net/net_roster_runtime.h"
+#endif
 #include "audio_spatial.h"
 #include "fade_transition.h"
 #include "joypad.h"
@@ -302,9 +305,51 @@ bool mdkr_rollback_game_authority_validate_dynamic_coverage(
     return true;
 }
 
+#if defined(MDKR_ENABLE_ONLINE_BETA)
+static uint64_t sRestoreSerial;
+
+uint64_t mdkr_rollback_game_authority_restore_serial(void) {
+    return sRestoreSerial;
+}
+#endif
+
 static void rebuild_presentation_after_restore(void *context) {
     (void)context;
+#if defined(MDKR_ENABLE_ONLINE_BETA)
+    sRestoreSerial++;
+#endif
     presentation_snapshot_stage_reset();
+#if defined(MDKR_ENABLE_ONLINE_BETA)
+    /*
+     * The stage reset above just wiped the authored-camera latch that
+     * presentation_task_authoring_begin armed for the authored tick THIS
+     * restore is part of: thread3_main stamps the main display list (and
+     * arms the latch) BEFORE prepare_tick's online reconcile runs, and the
+     * corrected pass renders -- and records its cameras -- only AFTER this
+     * hook returns. Left wiped, camSetProjMtx's records for the corrected
+     * pass are refused, so every correction tick publishes a snapshot with
+     * ZERO cameras: camera interpolation stays down one tick longer than
+     * object interpolation (objects re-identify at the correction tick's
+     * capture; the camera cannot even hold a pose there), which presents a
+     * gliding world under a stepping camera exactly at the abrupt-kart-state
+     * moments where corrections cluster. Re-arm the latch for the in-flight
+     * tick so the corrected pass's own cameras are captured; the camera
+     * history was still cleared, so this tick's capture stays a
+     * DISCONTINUITY and nothing ever blends across the correction.
+     *
+     * Measured on the loopback rig (MDKR_CAMERA_OOB_CENSUS): pre-fix a
+     * 2415-correction race captured cameras on 16 of 2431 ticks.
+     *
+     * Roster-gated: only a live online race changes behavior; the offline
+     * rollback laboratory restores keep their historical bytes.
+     */
+    if (mdkr_net_roster_runtime_active()) {
+        const uint64_t authoring_tick = presentation_task_authoring_tick();
+        if (authoring_tick != 0u) {
+            presentation_snapshot_authored_cameras_begin(authoring_tick);
+        }
+    }
+#endif
     camera_obstruction_runtime_reset();
 }
 
