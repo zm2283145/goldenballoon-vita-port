@@ -42,8 +42,8 @@ from pathlib import Path
 
 from harness_utils import resolve_binary
 from online_lane_util import (
-    CUP_ROUNDS, DIRECT_BOOT_RE, FINISHED_ENGINE_RE, SESSION_END_RE,
-    forbidden_marker, make_fail,
+    CHOOSER_FINISH_RE, CUP_ROUNDS, DIRECT_BOOT_RE, FINISHED_ENGINE_RE,
+    SESSION_END_RE, forbidden_marker, make_fail,
 )
 from online_lane_util import run_engine as _run_engine
 
@@ -119,6 +119,13 @@ def check_finished(binary: Path, rom: Path, verbose: bool) -> int | None:
         return guard
     if rc != 0:
         return fail(f"[FINISHED] exited {rc} (expected clean 0)", output)
+    # This scenario reaches FINISHED via the host committing the native chooser's
+    # FINISH option (index 5); pin that route so a wrong committed option fails here
+    # directly instead of hiding behind the downstream FINISHED note/read.
+    if not CHOOSER_FINISH_RE.search(output):
+        return fail("[FINISHED] the native chooser never committed the FINISH option "
+                    "(no '[online-results] chooser: committed option=FINISH -> LEAVE') "
+                    "-- the FINISHED was not reached via the host FINISH route", output)
     if not FINISHED_ENGINE_RE.search(output):
         return fail("[FINISHED] engine never noted FINISHED at the final standings",
                     output)

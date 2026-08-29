@@ -32,7 +32,7 @@ line appears EXACTLY TWICE (once for the first takeover, once after the re-entry
 press -- the takeover re-fired), and the "[online-room-ready] re-entry requested"
 line appears exactly once (the press cleared the latch).
 
-Standalone lane (not run-checks registered), mirroring the sibling online lanes.
+Run-checks registered (tools/run_online_checks.py), mirroring the sibling online lanes.
 """
 
 from __future__ import annotations

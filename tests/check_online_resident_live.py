@@ -43,8 +43,8 @@ from pathlib import Path
 
 from harness_utils import resolve_binary
 from online_lane_util import (
-    DIRECT_BOOT_RE, FINISHED_ENGINE_RE, FORBIDDEN_ONLINE, GAMEMODE_ONLINE_SESSION,
-    PLACE_NONE, SESSION_RACE_RE, forbidden_marker, make_fail,
+    CHOOSER_FINISH_RE, DIRECT_BOOT_RE, FINISHED_ENGINE_RE, FORBIDDEN_ONLINE,
+    GAMEMODE_ONLINE_SESSION, PLACE_NONE, SESSION_RACE_RE, forbidden_marker, make_fail,
 )
 from online_lane_util import run_engine as _run_engine
 
@@ -283,6 +283,14 @@ def main() -> int:
     # final standings (host "A: FINISH"), not the old hold-to-tick-budget. Pin that
     # witness so a regression to the indefinite hold would FAIL here. (This path has
     # the engine note only -- no launcher [online-session-end] read.)
+    # Pin the route explicitly first: the FINISH is reached by the host committing the
+    # native chooser's FINISH option (index 5), so a wrong committed route fails here
+    # directly rather than as a bare downstream FINISHED.
+    if not CHOOSER_FINISH_RE.search(output):
+        return fail("the native chooser never committed the FINISH option (no "
+                    "'[online-results] chooser: committed option=FINISH -> LEAVE') -- "
+                    "the resident FINISHED was not reached via the FINISH route",
+                    output)
     if not FINISHED_ENGINE_RE.search(output):
         return fail("the resident session did not terminate via the FINISHED "
                     "handshake at the final standings (regressed to the old "

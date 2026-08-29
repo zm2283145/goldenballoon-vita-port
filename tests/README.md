@@ -1585,7 +1585,12 @@ track 3. The unit-level twin is `mdkr_online_live_adapter_test --latency`
 live adapters + per-endpoint replicas of the reverse-feed pump over a
 latency/ordering room double, asserting bounded both-ready convergence, ready
 STAYING latched, no redundant accepted-SET churn, and the host lock + START
-reaching LOADING. Default `--build build-beta`.
+reaching LOADING. **Scope class:** seam-injection (config + fault + input
+injection) -- it reproduces the PRODUCTION room SHAPE (no pre-config) on an
+in-process loopback via the `MDKR_APP_TEST_ONLINE_UNCONFIGURED` config seam and the
+`MDKR_APP_TEST_ONLINE_ROOM_LATENCY` fault seam, driven by scripted native-screen
+input; it is NOT the shipping two-process cloud route (that is
+`check_online_native_flow_cloud.py`). Default `--build build-beta`.
 
 `tools/online/check_online_native_flow_cloud.py` (MANUAL network lane -- NOT in
 `run_online_checks.py`'s default sweep; needs live Wi-Fi + the deployed
@@ -1629,9 +1634,10 @@ vanished-host -- could ever fire) is fixed by the FINISH wrap above; the local
 red-first pins live in `check_online_lobby_tournament.py` (the host's wrap must
 land before the ceremony) and `check_online_results_chooser.py` (the final mirror
 exits to its own ceremony, never re-selection).
+**Scope class:** production-path -- the real two-process cloud route exercised end-to-end, the ONLY automation being the pairing bootstrap and injected pad input standing in for the two absent human controllers; everything after pairing is the production code path choosing its own route. This is the one production-path acceptance lane the other online lanes' seam-injection scenarios stand in for.
 
-`check_online_lobby_tournament.py` (standalone lane, not run-checks registered)
-is the PD-T6h2b KEYSTONE gate: it COMPOSES the T6h2a lobby-start boot with the
+`check_online_lobby_tournament.py` (run-checks registered in
+`tools/run_online_checks.py`) is the PD-T6h2b KEYSTONE gate: it COMPOSES the T6h2a lobby-start boot with the
 T6ac/T6h1 resident multi-race coordinator so a descriptor-less session runs a FULL
 tournament IN ONE engine process. Same descriptor-less begin as the lobby-start
 lane, but `MDKR_APP_TEST_ONLINE_MODE=tournament` + `MDKR_APP_TEST_ONLINE_CUP=1`
@@ -1654,10 +1660,17 @@ match-input never arms, so the engine's WALL-CLOCK WATCHDOG
 (`descless wait TIMEOUT`) fires + exits clean; (W2) `...=cancel` -- the leader
 CANCEL_LOADINGs while a boot is pending, so the session UNWINDS (`lobby-start
 UNWIND`) + re-fronts CHARSELECT + recovers (race 1 still boots). A source-scan pins
-`MDKR_ONLINE_SESSION_CUP_ROUNDS == MDKR_ONLINE_CUP_ROUNDS` (Minor-3). Default
-`--build build-beta`.
+`MDKR_ONLINE_SESSION_CUP_ROUNDS == MDKR_ONLINE_CUP_ROUNDS` (Minor-3). **Scope
+class:** seam-injection (input + fault injection) -- the full descriptor-less
+tournament runs on an in-process loopback driven by scripted native-screen input +
+host-press seams (with the wedge/watchdog fault seams for the safety sub-tests); it
+is NOT the shipping cloud route (that is `check_online_native_flow_cloud.py`). It
+reaches its final-standings FINISH by the host committing the native chooser's
+FINISH option (`[online-results] chooser: committed option=FINISH -> LEAVE`).
+Default `--build build-beta`.
 
-`check_online_session_end.py` (standalone lane, not run-checks registered) is the
+`check_online_session_end.py` (run-checks registered in
+`tools/run_online_checks.py`) is the
 PD-T6d gate for the engine->launcher FINISH/RETURN handshake (the session
 end-reason channel). After a native online session ends the engine notes WHY on
 the party_link channel (`mdkr_party_link_note_session_end`) + requests the platform
@@ -1674,7 +1687,12 @@ browse-B backout (`MDKR_TEST_ONLINE_CHARSELECT_BACKOUT`; the scripted lanes' tic
 I1 browse-B still STAYs), LEFT via a pre-START remote-vacated seat
 (`MDKR_TEST_ONLINE_REMOTE_VACATE`, Minor-3; debounced), LEFT via a mid-tournament
 leader cancel (Minor-4; a clean return replacing the PD-T6h2c re-front-into-error),
-and ERROR via the wall-clock watchdog (nonzero exit). Default `--build build-beta`.
+and ERROR via the wall-clock watchdog (nonzero exit). **Scope class:**
+seam-injection (input + fault injection) -- each session-end reason is stood up on
+the in-process loopback lobby-start rig via input/fault seams (the host FINISH via
+the native chooser, a charselect backout, a remote-vacate, a mid-tournament cancel,
+and a wall-clock wedge); it is NOT the shipping cloud route (that is
+`check_online_native_flow_cloud.py`). Default `--build build-beta`.
 
 `check_online_tournament.py` (standalone lane, not run-checks registered)
 drives a FULL 4-race Dino Domain cup (mode
