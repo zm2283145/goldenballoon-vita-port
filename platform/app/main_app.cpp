@@ -3790,6 +3790,22 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
         /* The flag is the RACE COUNT -- arm only for a positive value, so all
          * three readers (here, online_session.c, online_results.c) agree that
          * "=0" is OFF and a half-armed harness cannot prove nothing. */
+        /* Visual proof of the native online screens (e.g. the RESULTS "more races"
+         * chooser) is a PLATFORM facility, armed here rather than by game code: the
+         * interactive resident soak reaches those screens on a path that cannot be
+         * given --dump-frames, so the launcher arms the engine frame-dump from the
+         * shot env directory when it stands the soak up. Inert unless the env dir is
+         * set, and never overrides an explicit --dump-frames. */
+        if (g_dumpFramesDir == nullptr) {
+            if (const char *shot =
+                    std::getenv("MDKR_TEST_ONLINE_RESULTS_CHOOSER_SHOT");
+                shot != nullptr && shot[0] != '\0') {
+                g_dumpFramesDir = shot;
+                std::fprintf(stderr,
+                             "[online-resident] chooser: frame-dump armed -> %s\n",
+                             shot);
+            }
+        }
         MdkrMatchManifestV1 manifest{};
         MdkrNetRoster roster{};
         MdkrMatchLaunchDescriptorV1 desc{};
