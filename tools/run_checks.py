@@ -786,6 +786,14 @@ CHECKS = (
           "N viewports, per-seat binding) at 2P/3P/4P, and a host/non-host/CPU "
           "win, a retry and a mid-race quit-to-lobby each return the same party "
           "to the lobby (sgen stable, lgen advanced); two positive controls fire"),
+    Check("adventure_party_taj", "check_adventure_party_taj.py", "native",
+          "AP-11 Taj transaction + shared-scene envelope: a non-host summons Taj "
+          "(shared dialogue latched once), the host owns the vehicle choice, and the "
+          "WHOLE party (2P/3P) transforms transactionally to the new vehicle with the "
+          "same seat->character identities and split layout (live==N, never a collapse "
+          "to 1); the dialogue releases to ACTIVE_LOBBY in the same generation (R10); "
+          "two positive controls fire and retail 2P Taj (check_taj_p2_adventure) is "
+          "untouched"),
     Check("adventure_party_progress", "check_adventure_party_progress.py",
           "native",
           "AP-13 exact-once campaign progression: a party default-race win at "

@@ -5911,6 +5911,49 @@ Save fixture: the same started Adventure One slot-0 save; every run is in a
 private temp dir. Off arm — 1P awards unchanged — is `check_adventure_race_loop.py`
 and `check_campaign_progression.py`.
 
+### Adventure Party Taj transaction — `tests/check_adventure_party_taj.py`
+
+```bash
+python3 tests/check_adventure_party_taj.py            # ~5-6 min, muted + headless
+python3 tests/check_adventure_party_taj.py -v
+```
+
+The AP-11 gate: Taj's vehicle transform rebuilds the WHOLE party transactionally
+instead of the retail single racer, and the shared dialogue is a proper
+SHARED_DIALOGUE envelope. Read from the running binary's `aparty_` traces plus the
+`aparty_transform` diagnostic:
+
+- **Non-host summon, host choice.** Seat 1 drives into Taj (`MDKR_AP_SEAT_ROUTE`);
+  any occupied seat may trigger the interaction (`aparty_interaction seat=1
+  action=2 verdict=0` then `aparty_session state=SHARED_DIALOGUE`), and the host
+  owns the menu regardless of who summoned (`taj_menu_loop` reads
+  `input_pressed(PLAYER_ONE)`; `aparty_interaction seat=0 action=0 verdict=0`).
+- **Whole-party transform.** Retail `transform_player_vehicle` rebuilds the roster
+  as exactly ONE racer; the party path rebuilds ALL N with the new shared vehicle
+  and the same seat->character identities. The oracle is `aparty_transform
+  path=party n=N live=N` — `live` is the post-rebuild `gNumRacers`, so a collapse
+  reads `live=1`. Exactly one transform is emitted (rebuilt once), the roster
+  (`aparty_roster`, characters unchanged) and split layout (`aparty_layout
+  viewports=N`) are republished, and the `[RACERINPUT]` witness confirms
+  `port == player == racer` for every seat afterward (binding survives the
+  transform).
+- **R10 latch lifecycle.** The dialogue latch RELEASES on completion
+  (`SHARED_DIALOGUE -> ACTIVE_LOBBY` at the SAME level generation — the transform
+  is within-lobby, never a reload), and no transition fires between the latch and
+  the release (retail freezes racer input during the scene, and the arbiter
+  rejects any door while the session is not `ACTIVE_LOBBY`). Doors working FROM
+  `ACTIVE_LOBBY` is proven by `check_adventure_party_transition`.
+- **Positive controls.** Rewriting the transform line to `live=1` (a collapsed
+  roster) must FAIL the whole-party assertion; stripping the `SHARED_DIALOGUE`
+  lines must FAIL the latch assertion.
+- **Off arm.** `check_taj_p2_adventure.py` is run and quoted (retail JOINTVENTURE
+  2P Taj, the lead-swap machinery a party never engages, is untouched).
+
+Only the summoner drives: a second moving racer near a lobby door raises a door
+textbox that blocks `npc_dialogue_loop` (and diverges shell-vs-headless), so the
+deterministic route keeps exactly one mover and the menu is host input. Save
+fixture: the started Adventure One slot-0 save; every run is in a private temp dir.
+
 ### Harness isolation — `tests/check_harness_isolation.py`
 
 ```bash
