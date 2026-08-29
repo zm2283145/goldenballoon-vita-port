@@ -121,18 +121,18 @@ public:
                       std::unique_ptr<MdkrOnlineMeshSignalBackend> mesh)
         : room_(std::move(room)), mesh_(std::move(mesh)) {}
 
-    /* Adopt-inner constructor (room-ready PROBE seam, A2). Wrap an ALREADY-built
+    /* Adopt-inner constructor (room-ready gate-probe seam). Wrap an ALREADY-built
      * inner adapter -- a loopback LiveAdapter driven to SELECTING -- in this REAL
      * production wrapper so the probe holds the SAME wrapper shape the panel does
-     * and exercises the mdkrResolveLive resolve hook end-to-end (A1's unit test
-     * could only use a stand-in). room_/mesh_ stay null: the loopback inner owns
-     * its transports via the loopback race struct (which MUST outlive this wrapper).
-     * Every delegating method + the resolve hook read inner_, so behaviour matches
-     * the built wrapper exactly. */
+     * and exercises the mdkrResolveLive resolve override end-to-end (a unit test can
+     * only reach a stand-in wrapper; this is the sole coverage of the real one).
+     * room_/mesh_ stay null: the loopback inner owns its transports via the loopback
+     * race struct (which MUST outlive this wrapper). Every delegating method + the
+     * resolve hook read inner_, so behaviour matches the built wrapper exactly. */
     explicit OwningLiveAdapter(std::unique_ptr<IMdkrOnlineAdapter> inner)
         : inner_(std::move(inner)) {}
 
-    /* Give the adopted inner back (room-ready PROBE seam, A2): the probe returns
+    /* Give the adopted inner back (room-ready gate-probe seam): the probe returns
      * the loopback inner to the loopback race struct BEFORE destroying it, so the
      * struct's carefully-ordered teardown + tournament continuation still see their
      * adapter. Only meaningful on an adopt-constructed wrapper. */
@@ -780,11 +780,11 @@ void OnlineRoom_resetRoomReadyLatch(void) {
 bool OnlineRoom_roomReadyConditionHolds(IMdkrOnlineAdapter *adapter) {
     /* Resolve the concrete LiveAdapter: the panel passes its OwningLiveAdapter
      * wrapper, which forwards the mdkrResolveLive hook to its inner adapter. The
-     * room-ready GATE probe (main_app.cpp) now ALSO passes the production
-     * OwningLiveAdapter wrapper (A2), so this resolve hook is exercised end-to-end
-     * there too; the other loopback lanes / re-arm probes still pass a raw adapter
-     * (resolve returns it unchanged). view() delegates through the virtual
-     * interface, but the lobby check below reads the resolved concrete adapter. */
+     * room-ready gate probe (main_app.cpp) also passes the production
+     * OwningLiveAdapter wrapper, so this resolve hook is exercised end-to-end there
+     * too; the other loopback lanes / re-arm probes pass a raw adapter (resolve
+     * returns it unchanged). view() delegates through the virtual interface, but the
+     * lobby check below reads the resolved concrete adapter. */
     IMdkrOnlineAdapter *raw = OnlineRoom_resolveRawLiveAdapter(adapter);
     if (raw == nullptr) return false;
     MdkrOnlineViewModel vm{};
@@ -2032,15 +2032,15 @@ IMdkrOnlineAdapter *OnlineRoom_testLoopbackPeer(
 
 std::unique_ptr<IMdkrOnlineAdapter> OnlineRoom_wrapVisibleAsOwningAdapter(
     MdkrOnlineTestLoopbackRace *race) {
-    /* Room-ready GATE probe seam (A2, LOAD-BEARING): hand the probe the SAME
-     * OwningLiveAdapter wrapper shape the Online Room panel holds, wrapping the
-     * loopback VISIBLE adapter. Built through this production wiring TU using the
-     * REAL OwningLiveAdapter class + its mdkrResolveLive override (NOT a test
-     * stand-in), so the probe proves the wrapper's resolve hook end-to-end. The
-     * wrapper ADOPTS the already-driven loopback inner (moved out of `race`); the
-     * loopback `race` still owns the transports the inner borrows, so `race` MUST
-     * outlive the returned wrapper. Returns nullptr if the visible adapter is
-     * unavailable. */
+    /* Room-ready gate-probe seam: hand the probe the SAME OwningLiveAdapter wrapper
+     * shape the Online Room panel holds, wrapping the loopback VISIBLE adapter. Built
+     * through this production wiring TU using the REAL OwningLiveAdapter class + its
+     * mdkrResolveLive override (NOT a test stand-in), so the probe is the only
+     * coverage of the production wrapper's resolve override end-to-end -- keep it
+     * holding the real OwningLiveAdapter. The wrapper ADOPTS the already-driven
+     * loopback inner (moved out of `race`); the loopback `race` still owns the
+     * transports the inner borrows, so `race` MUST outlive the returned wrapper.
+     * Returns nullptr if the visible adapter is unavailable. */
     if (race == nullptr) return nullptr;
     std::unique_ptr<IMdkrOnlineAdapter> &slot =
         race->joinerVisible ? race->b : race->a;
@@ -2059,7 +2059,16 @@ void OnlineRoom_unwrapVisibleOwningAdapter(
      * adopt wrapper. */
     if (race == nullptr || !wrapper) return;
     OwningLiveAdapter *owning = dynamic_cast<OwningLiveAdapter *>(wrapper.get());
-    if (owning == nullptr) return;
+    if (owning == nullptr) {
+        /* Not the adopt wrapper -- returning here would silently destroy `wrapper`
+         * (and its inner) as it goes out of scope, leaving the race's visible slot
+         * empty so the caller's teardown/continuation dereferences null. Never
+         * expected (the probe only passes the wrap helper's output); warn loudly. */
+        std::fprintf(stderr,
+                     "[online-room-ready] WARN unwrap given a non-owning wrapper; "
+                     "visible slot NOT restored\n");
+        return;
+    }
     std::unique_ptr<IMdkrOnlineAdapter> &slot =
         race->joinerVisible ? race->b : race->a;
     slot = owning->releaseInner();

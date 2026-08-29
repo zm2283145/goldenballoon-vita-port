@@ -97,9 +97,9 @@ REVERSE_TRACK_RE = re.compile(
 ROOM_READY_PROBE_RE = re.compile(
     r"^\[online-room-ready-probe\] fires=(\d+) conditionHeld=(\d+) "
     r"published=(\d+) route=(\S+)", re.MULTILINE)
-# A2 diagnostics: the poll emits these [online-room-ready] lines when it fires.
-# The probe drives the poll directly (it never runs the launcher loop), so both the
-# latch-set and the publish lines must appear in the probe run's output.
+# The poll emits these [online-room-ready] diagnostic lines when it fires. The probe
+# drives the poll directly (it never runs the launcher loop), so both the latch-set
+# and the publish lines must appear in the probe run's output.
 ROOM_READY_LATCH_RE = re.compile(
     r"^\[online-room-ready\] latch set", re.MULTILINE)
 ROOM_READY_PUBLISH_RE = re.compile(
@@ -118,11 +118,12 @@ def check_room_ready_gate_single_race(binary, rom, verbose):
     room deferred to the race-ready ImGui fallback (fires=0), so single race never
     reached the native path in production; T2 dropped that tournament-only clause.
 
-    A2: the probe now holds the visible endpoint as the PRODUCTION OwningLiveAdapter
-    wrapper (the same wrapper class the Online Room panel builds), not a raw
-    LiveAdapter, so published=1 proves the wrapper resolved through the mdkrResolveLive
-    hook end-to-end (A1's unit test could only use a stand-in wrapper). It also asserts
-    the poll's [online-room-ready] latch-set + publish diagnostics appear."""
+    The probe holds the visible endpoint as the PRODUCTION OwningLiveAdapter wrapper
+    (the same wrapper class the Online Room panel builds), not a raw LiveAdapter, so
+    published=1 proves the wrapper resolved through the mdkrResolveLive hook end-to-end
+    -- this probe is the only coverage of the production wrapper's resolve override, so
+    keep it holding the real wrapper. It also asserts the poll's [online-room-ready]
+    latch-set + publish diagnostics appear."""
     try:
         returncode, output = run_engine(
             binary, rom, ticks=2000, timeout=120, verbose=verbose,
@@ -141,17 +142,17 @@ def check_room_ready_gate_single_race(binary, rom, verbose):
                     f"native takeover (T2 expects fires=1 held=1 published=1 "
                     f"route=lobby-start): fires={fires} held={held} "
                     f"published={published} route={route}", output)
-    # A2: the probe now holds the visible endpoint as the PRODUCTION OwningLiveAdapter
-    # wrapper (published=1 above == the poll resolved that wrapper through
-    # mdkrResolveLive to the exact inner it published). Confirm the poll's
-    # [online-room-ready] diagnostics fired -- at least the latch-set + publish lines --
-    # so a real-hardware takeover is diagnosable from the log.
+    # The probe holds the visible endpoint as the PRODUCTION OwningLiveAdapter wrapper
+    # (published=1 above == the poll resolved that wrapper through mdkrResolveLive to
+    # the exact inner it published). Confirm the poll's [online-room-ready] diagnostics
+    # fired -- at least the latch-set + publish lines -- so a real-hardware takeover is
+    # diagnosable from the log.
     if ROOM_READY_LATCH_RE.search(output) is None:
         return fail("the poll emitted no '[online-room-ready] latch set' line in the "
-                    "probe run (A2 diagnostics missing)", output)
+                    "probe run (room-ready diagnostics missing)", output)
     if ROOM_READY_PUBLISH_RE.search(output) is None:
         return fail("the poll emitted no '[online-room-ready] published adapter' line "
-                    "in the probe run (A2 diagnostics missing)", output)
+                    "in the probe run (room-ready diagnostics missing)", output)
     return None
 
 

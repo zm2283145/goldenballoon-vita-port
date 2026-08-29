@@ -750,7 +750,7 @@ IMdkrOnlineAdapter *OnlineRoom_pollEngineRoomReady(void);
 bool OnlineRoom_roomReadyConditionHolds(IMdkrOnlineAdapter *adapter);
 /* Resolve the RAW concrete LiveAdapter behind the panel's owning wrapper (or the
  * adapter itself for the loopback lanes' raw adapters) via the virtual
- * mdkrResolveLive() hook (A1): the wrapper forwards it to its inner adapter, a raw
+ * mdkrResolveLive() hook: the wrapper forwards it to its inner adapter, a raw
  * LiveAdapter returns itself, and a fake returns nullptr -- no dynamic_cast. The
  * mdkr_online_live_adapter_lobby / _race_info accessors resolve through the SAME
  * hook, so the descriptor-less room-ready boot resolves this once and drives the
@@ -825,13 +825,14 @@ IMdkrOnlineAdapter *OnlineRoom_testLoopbackPeer(
     MdkrOnlineTestLoopbackRace *race);
 void OnlineRoom_destroyTestLoopbackRace(MdkrOnlineTestLoopbackRace *race);
 
-/* Room-ready GATE probe seam (A2, LOAD-BEARING): wrap the loopback VISIBLE adapter
- * in the REAL production OwningLiveAdapter wrapper -- the exact wrapper shape the
- * Online Room panel holds -- so the probe proves the wrapper's mdkrResolveLive
- * resolve hook end-to-end (A1's unit test could only use a stand-in). The wrapper
- * ADOPTS the driven loopback inner (moved out of `race`); `race` still owns the
- * borrowed transports, so it MUST outlive the returned wrapper. Returns nullptr if
- * the visible adapter is unavailable. Defined in online_live_wiring.cpp. */
+/* Room-ready gate-probe seam: wrap the loopback VISIBLE adapter in the REAL
+ * production OwningLiveAdapter wrapper -- the exact wrapper shape the Online Room
+ * panel holds -- so the probe is the only coverage of the production wrapper's
+ * mdkrResolveLive resolve override end-to-end; keep it holding the real
+ * OwningLiveAdapter. The wrapper ADOPTS the driven loopback inner (moved out of
+ * `race`); `race` still owns the borrowed transports, so it MUST outlive the
+ * returned wrapper. Returns nullptr if the visible adapter is unavailable. Defined
+ * in online_live_wiring.cpp. */
 std::unique_ptr<IMdkrOnlineAdapter> OnlineRoom_wrapVisibleAsOwningAdapter(
     MdkrOnlineTestLoopbackRace *race);
 /* Inverse of the above: return the adopted inner to `race`'s visible slot BEFORE

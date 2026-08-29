@@ -2425,22 +2425,27 @@ int runOnlineLobbyStartEngineSession(AppHost &host, const MdkrBootConfig &config
  * routes back to the room). */
 int runOnlineLobbyStartLiveSession(AppHost &host, const MdkrBootConfig &config,
                                    IMdkrOnlineAdapter *visibleWrapper,
-                                   MdkrPartyLinkSessionEndReason *endReasonOut =
-                                       nullptr) {
+                                   MdkrPartyLinkSessionEndReason *endReasonOut) {
     if (endReasonOut != nullptr) *endReasonOut = MDKR_PARTY_LINK_SESSION_END_NONE;
+    /* DIAGNOSTIC [4/5] -- native session boot entered. Logged BEFORE the resolve
+     * below so even a resolve failure produces an explicit boot line (never a missing
+     * bracket); paired with the launcher's boot-result line so a real-hardware
+     * takeover shows a clear boot/return bracket in the log. */
+    std::fprintf(stderr,
+                 "[online-room-ready] native session boot entered (descriptor-less, "
+                 "peer=nullptr)\n");
+
     /* Resolve the concrete LiveAdapter behind the panel's owning wrapper so the
      * forward-feed pump + race arm below drive the real inner adapter (and the
      * room-ready registry keyed on that raw pointer). The C accessors reach it via
      * the mdkrResolveLive hook whether handed the wrapper or the raw adapter. */
     IMdkrOnlineAdapter *visible = OnlineRoom_resolveRawLiveAdapter(visibleWrapper);
-    if (visible == nullptr) return 2;
-
-    /* DIAGNOSTIC [4/5] -- native session boot entered. Paired with the launcher's
-     * boot-result line below so a real-hardware takeover shows a clear boot/return
-     * bracket in the log. */
-    std::fprintf(stderr,
-                 "[online-room-ready] native session boot entered (descriptor-less, "
-                 "peer=nullptr)\n");
+    if (visible == nullptr) {
+        std::fprintf(stderr,
+                     "[online-room-ready] boot aborted: adapter resolve returned "
+                     "null (no concrete live adapter)\n");
+        return 2;
+    }
 
     /* Match-input CONTEXT only (epoch 0, NO runtime install yet; the coordinator
      * installs the source once race 1 is ready). peer == nullptr: the real remote
@@ -3922,13 +3927,14 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
             host.shutdown();
             return 2;
         }
-        /* LOAD-BEARING (A2): hold the VISIBLE endpoint as the PRODUCTION
-         * OwningLiveAdapter wrapper -- the exact wrapper class the Online Room panel
-         * builds -- and hand THAT to the poll, so this probe proves the real wrapper's
-         * mdkrResolveLive resolve hook end-to-end (A1's unit test could only cover a
-         * stand-in wrapper). Pre-A2 the probe handed the poll a RAW LiveAdapter. The
-         * wrapper adopts the loopback visible inner; `race` still owns the transports
-         * the inner borrows, so the wrapper MUST be destroyed BEFORE `race`. */
+        /* Hold the VISIBLE endpoint as the PRODUCTION OwningLiveAdapter wrapper --
+         * the exact wrapper class the Online Room panel builds -- and hand THAT to the
+         * poll, so this probe is the only coverage of the production wrapper's
+         * mdkrResolveLive resolve override end-to-end (a unit test can only reach a
+         * stand-in wrapper); keep it holding the real OwningLiveAdapter, not a raw
+         * LiveAdapter. The wrapper adopts the loopback visible inner; `race` still owns
+         * the transports the inner borrows, so the wrapper MUST be destroyed BEFORE
+         * `race`. */
         std::unique_ptr<IMdkrOnlineAdapter> visibleWrapper =
             OnlineRoom_wrapVisibleAsOwningAdapter(race);
         IMdkrOnlineAdapter *visible = visibleWrapper.get();
@@ -3967,8 +3973,8 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
         /* Return the adopted inner to the loopback race's visible slot BEFORE
          * destroying it: OnlineRoom_destroyTestLoopbackRace runs the struct's
          * ordered teardown and (in tournament mode) its transport-level continuation,
-         * both of which drive that adapter. This restores the exact pre-A2 destruction
-         * path -- the wrapper existed only for the poll loop above. */
+         * both of which drive that adapter. This restores the struct's original
+         * destruction path -- the wrapper existed only for the poll loop above. */
         OnlineRoom_unwrapVisibleOwningAdapter(race, std::move(visibleWrapper));
         OnlineRoom_destroyTestLoopbackRace(race);
         host.shutdown();

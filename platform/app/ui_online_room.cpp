@@ -2766,8 +2766,8 @@ void drawBetaRoom(LauncherState &state) {
      * inside the rich-body SELECTING branch -- makes the takeover deterministic every
      * frame regardless of which body draws. Single-race / unconfigured rooms whose
      * READY is vote-gated simply never satisfy the condition and keep the ImGui
-     * fallback. Post-A1 the panel's OwningLiveAdapter wrapper resolves the concrete
-     * adapter through the mdkrResolveLive hook, so handing the wrapper here is fine. */
+     * fallback. The panel's OwningLiveAdapter wrapper resolves the concrete adapter
+     * through the mdkrResolveLive hook, so handing the wrapper here is fine. */
     (void)OnlineRoom_pollRoomReadyTransition(g_online.adapter.get());
 
     // Snapshot-backed rich bodies (they own the PRIMARY slot); everything
