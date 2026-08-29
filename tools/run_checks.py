@@ -837,6 +837,16 @@ CHECKS = (
           "longer a silver race (no coins, no second award); two positive controls "
           "fire (seven-coins, stripped-collection). Adventure Two: NOT RUN "
           "(AP-16 owns the A2 matrix)"),
+    Check("adventure_party_trophy", "check_adventure_party_trophy.py", "native",
+          "AP-16 Part A = SPLIT: a party enters the real Adventure trophy series "
+          "(forced past the headless-unreachable cabinet via the R20/R24 retarget "
+          "precedent), every round fields the retail EIGHT-racer split (total=8, N "
+          "humans + 8-N CPUs, N viewports -- the measured 4P DL high-water 6354 fits "
+          "the 11000 budget), all four production rounds run with accumulating "
+          "standings, and a gold championship writes the Dino trophy exactly once via "
+          "ONE COMPLETION_TROPHY token, persisting gold (0x3) byte-equal to a 1P gold; "
+          "a 1P-ref awards the same gold with NO party token; the party returns to the "
+          "same lobby; two positive controls fire (duplicate-consume, stripped-field)"),
     Check("adventure_hub", "check_adventure_hub.py", "native",
           "Adventure hub traversal"),
     Check("adventure_two", "check_adventure_two.py", "native",

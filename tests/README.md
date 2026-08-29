@@ -6023,6 +6023,38 @@ counter and award are the game's own party path. Adventure Two: **NOT RUN**
 (AP-16 owns the A2 matrix). Off arm — 1P silver unchanged — is
 `check_campaign_progression.py` (seam A).
 
+### Adventure Party trophy series — `tests/check_adventure_party_trophy.py`
+
+```
+python3 tests/check_adventure_party_trophy.py            # ~20 min, muted + headless
+python3 tests/check_adventure_party_trophy.py -v
+python3 tests/check_adventure_party_trophy.py --players 3
+```
+
+AP-16 Part A (the last v1 activity ticket). **Measurement first:** the retail
+Adventure trophy race fields EIGHT racers (`track_setup_racers` defaults
+`gNumRacers` to 8, a 1P trophy keeps it, and the rankings width is 8). Part A
+measured that this eight-racer field renders four viewports within the per-frame
+DL/matrix/vertex budgets — the 4P DL high-water is **6354 Gfx**, far under the
+**11000** 4P budget (and under the always-present 4-viewport hub's 9670) — so the
+trophy row is a **SPLIT** (N humans + 8-N CPUs to the retail eight-racer total, N
+viewports), never a shrunken/improvised field. The gate proves, for a 4P (or
+`--players 3`) party: entry to the real trophy series, every round is the retail
+8-racer split (`racefield total=8`), all four production rounds run with
+accumulating standings (`trophyround points0` climbs, four `trophyrankings`), and
+a gold championship writes the Dino trophy exactly once via **one
+`COMPLETION_TROPHY` token** (`aparty_award` issue+consume, activity=8 kind=3)
+beside the upgrade-only retail write, persisting gold `0x3` **byte-equal to a 1P
+gold**; the series is one `ACTIVE_RACE` span returning to the same lobby. A 1P-ref
+awards the same gold with **no** party token. Two positive controls fire
+(duplicate-consume, stripped-field). **Route reachability (R20/R24 precedent):** a
+headless party cannot drive the world-lobby cabinet (a boss-beaten fixture wedges
+on a central-hub Taj-summon `SHARED_DIALOGUE`; the boss-beaten lobby repositions
+the party), so the gate keeps the reachable boss-not-beaten lobby (the AP-13
+progress route) and `MDKR_TROPHY_FORCE_ENTER` forces the cabinet's own
+`begin_trophy_race_teleport()` there — the least-fake entry; the cabinet's
+precondition-gated collision/dialogue is covered 1P by `check_trophy_series.py`.
+
 ### Adventure Party Taj transaction — `tests/check_adventure_party_taj.py`
 
 ```bash
