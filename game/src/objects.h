@@ -311,6 +311,17 @@ void reset_lead_player_index(void);
 s8 find_non_car_racers(void);
 s8 check_if_silver_coin_race(void);
 void despawn_player_racer(Object *obj, s32 vehicleID);
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+/* AP-11 Taj party transform transaction. despawn_player_racer/transform_player_vehicle
+ * rebuild a transformed roster as EXACTLY ONE racer, which would destroy a
+ * party. These two entry points replace that with a transactional whole-party
+ * rebuild: the Taj loop calls _begin() (capture + free ALL N racers, arm the
+ * deferred rebuild) instead of despawn_player_racer, and transform_player_vehicle
+ * runs the deferred commit when _pending() is set. Both live in objects.c beside
+ * the retail machinery they mirror; the retail path is byte-identical off/omit. */
+void adventure_party_taj_transform_begin(s32 vehicle);
+s32 adventure_party_taj_transform_pending(void);
+#endif
 void set_time_trial_enabled(s32 status);
 u8 is_time_trial_enabled(void);
 u8 is_in_time_trial(void);

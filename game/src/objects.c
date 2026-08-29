@@ -3786,6 +3786,10 @@ void despawn_player_racer(Object *obj, s32 vehicleID) {
     gNumRacers = 0;
 }
 
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+static void adventure_party_taj_transform_commit(void);
+#endif
+
 /**
  * Spawn a new racer object and set the initial position and rotation to what was set
  * before the old one was freed.
@@ -3804,6 +3808,15 @@ void transform_player_vehicle(void) {
     if (gTransformTimer) {
         return;
     }
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    /* AP-11: a party transform rebuilds the WHOLE roster here instead of the one
+     * racer below. Armed by adventure_party_taj_transform_begin(); this is the
+     * deferred, out-of-object-loop commit seam the retail transform already uses. */
+    if (adventure_party_taj_transform_pending()) {
+        adventure_party_taj_transform_commit();
+        return;
+    }
+#endif
     settings = get_settings();
     spawnObj.unkE = 0;
     spawnObj.common.size = 16;
@@ -3844,7 +3857,200 @@ void transform_player_vehicle(void) {
     player->level_entry = NULL;
     player->trans.rotation.y_rotation = gTransformAngleY;
     player->trans.y_position = gTransformPosY;
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    /* A live party session that reached this RETAIL single-racer transform is the
+     * party-destroying collapse AP-11 exists to prevent: gNumRacers is now 1 and
+     * seats 1..N-1 have been orphaned. It must be unreachable while the party
+     * transform path is engaged (adventure_party_taj_transform_begin arms the
+     * deferred whole-party rebuild above). Report the live roster unconditionally
+     * for a party so the gate can catch a regression that bypasses the party
+     * transform -- the "post-transform roster collapses to 1" central scene. */
+    if (adventure_party_runtime_is_active() && mdkr_trace_enabled()) {
+        mdkr_trace("aparty_transform: path=retail vehicle=%d n=%d live=%d",
+                   (int) gOverworldVehicle,
+                   adventure_party_participant_count(adventure_party_runtime_session()),
+                   (int) gNumRacers);
+    }
+#endif
 }
+
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+/* ------------------------------------------------------------------ AP-11 ----
+ * Taj party vehicle-transform transaction.
+ *
+ * Retail Taj transforms exactly one racer: despawn_player_racer() frees player
+ * one and sets gNumRacers = 0, then transform_player_vehicle() (deferred to the
+ * end of obj_update, out of the object-iteration loop) spawns a single new racer
+ * and sets gNumRacers = 1. Run that for a party and seats 1..N-1 vanish.
+ *
+ * The party path keeps the SAME two-phase lifecycle -- free inside the Taj loop,
+ * rebuild deferred -- but over the WHOLE roster and transactionally:
+ *
+ *   begin()  captures every seat's stable identity (character) and CURRENT
+ *            position/heading, frees all N racer objects, sets gNumRacers = 0,
+ *            and arms the deferred rebuild (reusing gTransformTimer's countdown).
+ *   commit() (deferred) rebuilds all N with the new shared vehicle at their
+ *            captured seats, republishes the racer arrays / viewport count, sets
+ *            gNumRacers = N, and emits the roster/layout/binding facts.
+ *
+ * Object-lifecycle safety (why this needs no change to retail free/spawn order):
+ * between begin() and commit() gNumRacers == 0, exactly as in the retail single
+ * transform, so every gNumRacers-bounded access (get_racer_object[s],
+ * audspat_update_all, the finish loop, the Taj loop's own racerObj==NULL early
+ * return) skips the freed pointers -- the same guard the stock transform relies
+ * on. Freeing N objects mid-loop is the stock free_object() path used one racer
+ * at a time here and many objects at a time in the object filter above. Positions
+ * are the racers' own current, already-validated ground, and freeing then
+ * respawning the same count is object-slot neutral, so the only rebuild failure
+ * is a NULL spawn (a corrupt header / exhausted sub-pool) -- a port bug handled
+ * by the same abort() convention track_setup_racers uses, never a recoverable
+ * partial roster. */
+typedef struct AdventurePartyTajSeatPlan {
+    s16 x;
+    s16 y;
+    s16 z;
+    u16 angleY;
+    u8 character;
+} AdventurePartyTajSeatPlan;
+
+static AdventurePartyTajSeatPlan sApTajPlan[ADVENTURE_PARTY_MAX_SEATS];
+static s32 sApTajTransformPending;
+static s32 sApTajTransformCount;
+static s32 sApTajTransformVehicle;
+
+s32 adventure_party_taj_transform_pending(void) {
+    return sApTajTransformPending;
+}
+
+void adventure_party_taj_transform_begin(s32 vehicle) {
+    AdventurePartySession *session = adventure_party_runtime_session();
+    s32 count;
+    s32 i;
+
+    if (session == NULL) {
+        /* Should be unreachable (the caller checks a live party session first),
+         * but never free racers without a roster to rebuild them from. */
+        return;
+    }
+    count = adventure_party_participant_count(session);
+    if (count < ADVENTURE_PARTY_MIN_PARTICIPANTS ||
+        count > ADVENTURE_PARTY_MAX_PARTICIPANTS) {
+        return;
+    }
+    taj_physics_reset();
+    for (i = 0; i < count; i++) {
+        Object *racerObj = (*gRacers)[i];
+        Object_Racer *racer;
+        if (racerObj == NULL || racerObj->racer == NULL) {
+            /* A missing seat before a transform means the roster was already
+             * broken; abort loudly rather than rebuild a partial party. */
+            fprintf(stderr,
+                    "[FATAL] adventure_party_taj_transform_begin: seat %d missing before transform\n",
+                    (int) i);
+            abort();
+        }
+        racer = racerObj->racer;
+        sApTajPlan[i].x = (s16) racerObj->trans.x_position;
+        sApTajPlan[i].y = (s16) racerObj->trans.y_position;
+        sApTajPlan[i].z = (s16) racerObj->trans.z_position;
+        sApTajPlan[i].angleY = (u16) racerObj->trans.rotation.y_rotation;
+        sApTajPlan[i].character = (u8) racer->characterId;
+    }
+    for (i = 0; i < count; i++) {
+        free_object((*gRacers)[i]);
+    }
+    gNumRacers = 0;
+    sApTajTransformVehicle = vehicle;
+    sApTajTransformCount = count;
+    sApTajTransformPending = TRUE;
+    /* Reuse the retail deferred-transform countdown so the rebuild lands at the
+     * same end-of-obj_update seam transform_player_vehicle already runs at. */
+    gTransformTimer = 4;
+    gOverworldVehicle = (s8) vehicle;
+}
+
+/* Deferred whole-party rebuild, run from transform_player_vehicle() when the
+ * countdown reaches zero and a party transform is pending. Mirrors the retail
+ * single-racer respawn per seat. */
+static void adventure_party_taj_transform_commit(void) {
+    AdventurePartySession *session = adventure_party_runtime_session();
+    LevelObjectEntry8000E2B4 spawnObj;
+    s32 count = sApTajTransformCount;
+    s32 vehicle = sApTajTransformVehicle;
+    s32 i;
+    s16 objectID;
+
+    sApTajTransformPending = FALSE;
+    set_level_default_vehicle(vehicle);
+    set_taj_status(TAJ_DIALOGUE);
+    for (i = 0; i < count; i++) {
+        Object *player;
+        Object_Racer *racer;
+        u8 character = sApTajPlan[i].character;
+
+        spawnObj.unkE = 0;
+        spawnObj.common.size = 16;
+        if (vehicle < VEHICLE_BOSSES) {
+            objectID = ((s16 *) gRacerObjectTable)[character + vehicle * NUM_CHARACTERS];
+        } else {
+            objectID = gRacerObjectTable[vehicle + 45];
+        }
+        spawnObj.common.size |= (objectID & 0x100) >> 1;
+        spawnObj.unkA = 0;
+        spawnObj.unk8 = 0;
+        spawnObj.common.objectID = objectID;
+        spawnObj.common.x = sApTajPlan[i].x;
+        spawnObj.common.y = sApTajPlan[i].y;
+        spawnObj.common.z = sApTajPlan[i].z;
+        spawnObj.unkC = sApTajPlan[i].angleY;
+        player = spawn_object(&spawnObj.common, OBJECT_SPAWN_NO_LODS | OBJECT_SPAWN_UNK01);
+        if (player == NULL) {
+            fprintf(stderr,
+                    "[FATAL] adventure_party_taj_transform_commit: spawn_object failed for seat %d\n",
+                    (int) i);
+            abort();
+        }
+        (*gRacers)[i] = player;
+        gRacersByPort[i] = player;
+        gRacersByPosition[i] = player;
+        racer = player->racer;
+        racer->vehicleID = vehicle;
+        racer->vehicleIDPrev = vehicle;
+        racer->racerIndex = i;
+        racer->characterId = character;
+        racer->playerIndex = i;
+        racer->vehicleSound = 0;
+        if (get_filtered_cheats() & CHEAT_BIG_CHARACTERS) {
+            player->trans.scale *= 1.4f;
+        }
+        if (get_filtered_cheats() & CHEAT_SMALL_CHARACTERS) {
+            player->trans.scale *= 0.714f;
+        }
+        player->level_entry = NULL;
+        player->trans.rotation.y_rotation = sApTajPlan[i].angleY;
+        player->trans.y_position = sApTajPlan[i].y;
+    }
+    gNumRacers = count;
+    /* Republish the split layout with the roster and HUD count (v1 presentation
+     * keeps the split, so the viewport count is unchanged; re-assert it so a
+     * regression that shipped a collapsed layout is caught). */
+    set_scene_viewport_num(count - 1);
+    if (mdkr_trace_enabled()) {
+        s32 seat;
+        /* live == n is the transaction's success oracle: the whole party was
+         * rebuilt, not collapsed. */
+        mdkr_trace("aparty_transform: path=party vehicle=%d n=%d live=%d",
+                   (int) vehicle, (int) count, (int) gNumRacers);
+        if (session != NULL) {
+            adventure_party_trace_emit_roster(&session->roster);
+        }
+        adventure_party_trace_emit_layout(count, count - 1);
+        for (seat = 0; seat < count; seat++) {
+            adventure_party_trace_emit_binding((uint8_t) seat, (uint8_t) seat);
+        }
+    }
+}
+#endif
 
 /**
  * Enables or Disables time trial mode.
