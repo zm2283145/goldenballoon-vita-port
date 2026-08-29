@@ -424,7 +424,7 @@ def run(args: argparse.Namespace) -> dict:
             phase(True, "takeover_and_charselect",
                   "assertions (a)+(b): the room-ready takeover fired BY ITSELF "
                   "and the descriptor-less native CHARSELECT fronted on BOTH "
-                  "endpoints (no source=launch-descriptor)")
+                  "endpoints (begin: lobby-start, not separated boot path)")
 
             # --- (c) reducer-synced selections -------------------------------
             # A racer picked on ONE endpoint must render as the REMOTE seat on
