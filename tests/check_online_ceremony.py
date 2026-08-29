@@ -312,6 +312,64 @@ def check_vacate(binary: Path, rom: Path, verbose: bool) -> int | None:
     return None
 
 
+def check_uncaptured_wrap_fallback(binary: Path, rom: Path, verbose: bool) -> int | None:
+    """(uncaptured-wrap-fallback) The ceremony must NOT crown from the live table
+    when the session captured no final ranking AND the room has already WRAPPED.
+
+    The tournament-final FINISH dispatches the REMATCH wrap (RESULTS -> LOBBY +
+    reset_tournament_series) BEFORE the ceremony runs, so the live reducer feed at
+    ceremony enter carries an all-zero fresh-series points table. Normally the
+    ceremony crowns from the ranking the session LATCHED while the phase was still
+    RESULTS -- but over the WAN the wrap State can land before this endpoint's
+    FIRST RESULTS-phase capture tick, in which case finalRankingCaptured is 0 and
+    mdkr_online_ceremony_enter(NULL) falls back to a LIVE compute. Pre-fix that
+    fallback happily ranked the wrapped zero-point table and crowned by seat
+    order: 'champion seat=0 ... points=0'. The fix refuses to crown in the
+    fallback once the live phase has left RESULTS (or with no snapshot at all),
+    degrading to the honest neutral 'CUP COMPLETE' screen; FINISHED still fires
+    exactly once.
+
+    Staged with MDKR_TEST_ONLINE_CEREMONY_UNCAPTURED (online_session.c): the
+    session hands the ceremony NULL exactly as the real ordering window does,
+    over the GENUINELY wrapped live loopback reducer feed (real lobby_core wrap,
+    real zeroed points) -- the downstream refusal condition runs for real.
+
+    RED at the pre-fix build: the enter witness crowns 'seat=0 ... points=0'
+    from the wrapped table."""
+    tag = "uncaptured-wrap-fallback"
+    try:
+        rc, output = run_engine(
+            binary, rom, TICKS, 900, verbose,
+            extra_env={**TOURNAMENT_ENV,
+                       "MDKR_TEST_ONLINE_CEREMONY_SKIP": "1",
+                       "MDKR_TEST_ONLINE_CEREMONY_UNCAPTURED": "1"})
+    except subprocess.TimeoutExpired as error:
+        return fail(f"[{tag}] run timed out: {error}")
+    guard = _common_finish_asserts(tag, rc, output)
+    if guard is not None:
+        return guard
+    # Non-vacuous: the wrap genuinely landed before the ceremony (the live feed
+    # the fallback reads is the fresh-series LOBBY room, points zeroed).
+    if "[online-results] chooser: FINISH wrap converged" not in output:
+        return fail(f"[{tag}] the FINISH wrap never converged -- the scenario did "
+                    f"not stage a wrapped feed at ceremony enter", output)
+    enter = CEREMONY_ENTER_LOCAL_RE.search(output)
+    if not enter:
+        return fail(f"[{tag}] no ceremony enter witness", output)
+    seat, name, points, seats, local = enter.groups()
+    if int(seat) != 255:
+        return fail(f"[{tag}] the fallback CROWNED over the wrapped zero-point "
+                    f"table (champion seat={seat} name={name} points={points} "
+                    f"seats={seats} local={local}) -- with no captured ranking and "
+                    f"the room already out of RESULTS the ceremony must refuse to "
+                    f"crown (neutral CUP COMPLETE), never rank the fresh-series "
+                    f"zeros by seat order", output)
+    if not CEREMONY_DONE_SKIP_RE.search(output):
+        return fail(f"[{tag}] the (uncrowned) ceremony did not still end via the "
+                    f"scripted skip into the single FINISHED", output)
+    return None
+
+
 def check_champion_on_disconnect(binary: Path, rom: Path, verbose: bool) -> int | None:
     """(host-gone-champion, I-1) The champion CEREMONY must crown the TRUE cup
     winner even when the winning seat has disconnected by ceremony enter -- it must
@@ -470,6 +528,7 @@ def main() -> int:
             parser.error(f"missing {label}: {path}")
 
     for scenario in (check_skip, check_auto, check_vacate,
+                     check_uncaptured_wrap_fallback,
                      check_champion_on_disconnect):
         result = scenario(binary, rom, args.verbose)
         if result is not None:
@@ -491,7 +550,11 @@ def main() -> int:
         "character name+portrait resolved from the captured char_id (canonical "
         "'BUMPER', not the 'Pn' fallback) -- NOT the surviving local loser a 1-seat "
         "live recompute would mis-crown -- and still reaches the single FINISHED via "
-        "the real remote-vacate path.")
+        "the real remote-vacate path; (uncaptured-wrap-fallback) with NO captured "
+        "ranking and the room already WRAPPED out of RESULTS (the real ordering "
+        "window over the WAN), the fallback live compute REFUSES to crown the "
+        "fresh-series zero-point table (neutral CUP COMPLETE, champion seat=255) "
+        "and still reaches the single FINISHED.")
     return 0
 
 

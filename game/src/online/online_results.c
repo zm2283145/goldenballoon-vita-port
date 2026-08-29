@@ -1015,22 +1015,29 @@ static MdkrOnlineResultsResult results_chooser_tick(const MdkrPartyLinkSnapshot 
              * FINISH leave (the pre-fix behavior) parked the room in RESULTS with
              * the host still seated (the FINISHED re-arm keeps the host in the
              * room for the re-take), so a real joiner was stranded forever. At a
-             * GENUINE tournament final -- the feed's last cup round, read at
-             * commit time while the phase is still RESULTS -- commit the EXISTING
-             * leader-only REMATCH wrap first (lobby_core.c: RESULTS -> LOBBY +
-             * reset_tournament_series, i.e. a fresh series in the same room),
-             * republished to convergence exactly like every other chooser option,
-             * and only LEAVE once the room has left RESULTS. The ceremony then
-             * renders from the ranking the session LATCHED while the phase was
-             * still RESULTS (online_session.c), never from the wrapped points.
-             * Every NON-final FINISH (a single race, or an env-shortened resident
-             * soak whose feed is mid-cup) keeps the historical direct LEAVE --
-             * dispatching a mid-cup REMATCH there would advance a series the
-             * room is still playing. */
+             * GENUINE tournament final -- the ENTRY-LATCHED last cup round --
+             * commit the EXISTING leader-only REMATCH wrap first (lobby_core.c:
+             * RESULTS -> LOBBY + reset_tournament_series, i.e. a fresh series in
+             * the same room), republished to convergence exactly like every
+             * other chooser option, and only LEAVE once the room has left
+             * RESULTS. The ceremony then renders from the ranking the session
+             * LATCHED while the phase was still RESULTS (online_session.c),
+             * never from the wrapped points. Every NON-final FINISH (a single
+             * race, or an env-shortened resident soak whose feed is mid-cup --
+             * sRes.raceIndex is the session's own 0-based round, so an env-final
+             * at reducer round 0/1 stays excluded) keeps the historical direct
+             * LEAVE -- dispatching a mid-cup REMATCH there would advance a
+             * series the room is still playing.
+             *
+             * The gate reads ONLY entry-latched state (isFinal / chooserMode /
+             * raceIndex, all fixed at mdkr_online_results_enter): a live
+             * snapshot read here could transiently fail on the commit tick, and
+             * a haveSnap-gated wrap would then silently take the purely-local
+             * leave at a genuine final -- re-opening the exact strand this
+             * exists to close. */
             u8 finalWrap = (sRes.isFinal &&
                             sRes.chooserMode == (u8) MDKR_ONLINE_SCREEN_MODE_TOURNAMENT &&
-                            haveSnap &&
-                            (u32) snap->race_index + 1u >= RES_CUP_ROUNDS)
+                            (u32) sRes.raceIndex + 1u >= RES_CUP_ROUNDS)
                                ? 1u
                                : 0u;
             if (!finalWrap) {

@@ -58,6 +58,7 @@
 #include "joypad.h"     /* input_pressed */
 #include "PR/os_cont.h" /* A_BUTTON / START_BUTTON */
 #include "net/party_link.h"
+#include "online/online_screen_constants.h" /* shared id-space mirrors (phase bytes) */
 #include "online/online_standings.h" /* the shared champion sort (DRY with results) */
 #include "online/online_portraits.h" /* the shared portrait/name/asset
                                         tables (DRY with charselect/results) */
@@ -314,10 +315,23 @@ void mdkr_online_ceremony_enter(const MdkrOnlineStandings *finalRanking) {
     }
 
     /* Crown the captured winner directly. In the FALLBACK live path only, refuse
-     * to crown a lone survivor: if fewer than two seats remain, the winner the
-     * human saw was never latched, so render an honest neutral screen instead of
-     * declaring whoever is left the champion. */
-    crown = (sCer.st.count > 0u) && (useCaptured || sCer.st.count >= 2u);
+     * to crown when the live table cannot be trusted:
+     *   - a lone survivor (fewer than two seats remain): the winner the human
+     *     saw was never latched, so declaring whoever is left would mis-crown;
+     *   - the room has ALREADY LEFT RESULTS (or there is no snapshot at all):
+     *     the tournament-final wrap RESETS the live points to a fresh series
+     *     (lobby_core.c reset_tournament_series), so a live compute over a
+     *     wrapped/absent feed ranks an all-zero table and crowns by seat order.
+     *     This window is real over the WAN: if the wrap State lands before the
+     *     joiner's FIRST RESULTS-phase capture, the session hands the ceremony
+     *     NULL and only this refusal stands between the screen and a zero-point
+     *     champion.
+     * The honest degradation is the neutral "CUP COMPLETE" screen (no crown);
+     * FINISHED still fires exactly once downstream either way. */
+    crown = (sCer.st.count > 0u) &&
+            (useCaptured ||
+             (sCer.st.count >= 2u && haveSnap &&
+              snap.phase == (uint8_t) MDKR_ONLINE_SCREEN_RESULTS_PHASE));
     if (crown) {
         sCer.champSeat = sCer.st.order[0];
         sCer.champPoints = sCer.st.points[0];

@@ -826,6 +826,23 @@ static bool online_session_remote_vacate_final_forced(void) {
     return sRemoteVacateFinalResolved > 0 && sOnlineSession.resultsIsFinal;
 }
 
+/* UNCAPTURED-latch seam (env MDKR_TEST_ONLINE_CEREMONY_UNCAPTURED): hand the
+ * ceremony NULL even though a final ranking WAS captured -- standing in for the
+ * real WAN ordering window where the host's wrap State lands before this
+ * endpoint's FIRST RESULTS-phase capture tick (finalRankingCaptured genuinely 0
+ * at ceremony enter). The downstream condition is exercised for REAL: the
+ * ceremony's fallback live-compute runs over the already-wrapped feed (the
+ * faithful stand-in wrap zeroes the points and departs RESULTS), which is
+ * exactly what it must refuse to crown. Off in every normal run. */
+static s8 sCeremonyUncapturedResolved = -1;
+static bool online_session_ceremony_uncaptured_seam(void) {
+    if (sCeremonyUncapturedResolved < 0) {
+        sCeremonyUncapturedResolved =
+            (getenv("MDKR_TEST_ONLINE_CEREMONY_UNCAPTURED") != NULL) ? 1 : 0;
+    }
+    return sCeremonyUncapturedResolved > 0;
+}
+
 /* Any occupied seat that is NOT the local player -- the remote(s) still present in
  * the room. Mirrors online_session_snapshot_has_local_seat. */
 static bool online_session_snapshot_has_remote_seat(
@@ -1771,11 +1788,18 @@ void mdkr_online_session_tick(s32 updateRate) {
                 sOnlineSession.phase = MDKR_ONLINE_SESSION_CEREMONY;
                 /* hand the ceremony the ranking captured while both seats
                  * were present. If nothing was captured (a disconnect so early the
-                 * final standings never latched with two present), pass NULL and the
-                 * ceremony falls back to a live compute (and refuses to crown a lone
-                 * survivor). */
+                 * final standings never latched with two present -- or, over the
+                 * WAN, the host's wrap State landing before this endpoint's FIRST
+                 * RESULTS-phase capture tick), pass NULL and the ceremony falls
+                 * back to a live compute, which refuses to crown a lone survivor
+                 * AND refuses to crown once the room has already left RESULTS
+                 * (the wrap resets the live points -- online_ceremony.c). The
+                 * UNCAPTURED seam below stages exactly that ordering window
+                 * headlessly (a NULL handoff over an already-wrapped feed);
+                 * inert in every normal run. */
                 mdkr_online_ceremony_enter(
-                    sOnlineSession.finalRankingCaptured
+                    (sOnlineSession.finalRankingCaptured &&
+                     !online_session_ceremony_uncaptured_seam())
                         ? &sOnlineSession.finalRanking
                         : NULL);
                 fprintf(stderr,
