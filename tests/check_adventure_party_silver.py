@@ -189,8 +189,13 @@ def assert_party_silver_win(label, out, save, players, failures, rom):
     if not FORCE_RE.search(out):
         failures.append(f"{label}: MDKR_SILVER_FORCE never fired (course not made silver)")
     loads = race_loads(out)
-    if len(loads) < 1:
-        failures.append(f"{label}: Ancient Lake never loaded (route did not reach the race)")
+    if len(loads) < 2:
+        failures.append(f"{label}: Ancient Lake loaded {len(loads)} time(s), want >=2 -- a "
+                        f"WIN then a post-clear REPLAY re-entry. The replay deliverable "
+                        f"(no coins, no second award, no crash) and the exactly-once "
+                        f"issue/consume/write counts across win+replay are only exercised "
+                        f"when the second load occurs; a route/frame-budget regression that "
+                        f"silently drops the re-entry must FAIL here, not pass win-only")
 
     # --- Team-shared collection: counts 1..8 once each, all viewports retired ---
     coins = coin_collects(out)
