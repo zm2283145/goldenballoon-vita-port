@@ -67,12 +67,14 @@ RENDER_RE = re.compile(
     r"^\[online-charselect\] render cursor=(\d+) name=(\S+) portrait=(\d+) "
     r"local\{conf=(\d+) ready=(\d+) seatChar=(\d+) seatReady=(\d+)\} "
     r"remote\{seat=(-?\d+) char=(\d+) ready=(\d+) name=(\S+)\} "
+    r"taken=(-?\d+) dim=(\d+) "
     r"intent\{hover=(\d+) vehicle=(\d+) confirmed=(\d+) ready=(\d+)\}$",
     re.MULTILINE)
 # Named groups of RENDER_RE (1-based -> 0-based tuple index in findall):
 #  0 cursor  1 name  2 portrait  3 conf  4 ready(latch)  5 seatChar  6 seatReady
 #  7 remoteSeat  8 remoteChar  9 remoteReady  10 remoteName
-#  11 hover  12 vehicle  13 confirmed  14 ready(intent)
+#  11 takenTile 12 takenDim
+#  13 hover  14 vehicle  15 confirmed  16 ready(intent)
 LEAVE_STUB = "[online-charselect] leave requested"
 ADVANCE_RE = re.compile(
     r"^\[online-charselect\] advance: lobby left LOBBY \(phase=(\d+)\)",
@@ -152,6 +154,25 @@ def main() -> int:
         return fail(f"no render row showed the remote seat from the snapshot "
                     f"(char={REMOTE_CHARACTER} ready=1 name={REMOTE_NAME})", output)
 
+    # --- The greyed/"TAKEN" tile cue (T9 NIT-1) -----------------------------
+    #     When the rival has LOCKED (confirmed) a racer, that tile MUST render
+    #     greyed (a hard luminance drop) so the local player reads "unavailable"
+    #     at the tile, not just after a rejected confirm. Prove the cue is drawn
+    #     on the rival's exact racer AND that the dim really dropped (< a normal
+    #     tile's 255) -- the T8 gate saw the tile "not greyed"; this locks it in.
+    taken_rows = [
+        r for r in renders
+        if int(r[8]) == REMOTE_CHARACTER and int(r[9]) == 1
+        and int(r[11]) == REMOTE_CHARACTER
+    ]
+    if not taken_rows:
+        return fail(f"the rival locked char {REMOTE_CHARACTER} but no render row "
+                    f"greyed that tile (taken={REMOTE_CHARACTER})", output)
+    taken_dim = int(taken_rows[0][12])
+    if taken_dim >= 255:
+        return fail(f"the taken tile was flagged but not dimmed (dim={taken_dim}, "
+                    f"expected a hard luminance drop)", output)
+
     # --- Portrait/character mapping (M4): a swapped sOnlineToPortrait[] entry
     #     would draw the wrong face; the cursor->character->portrait slot must
     #     hold for the moved-to character. ----------------------------------
@@ -167,12 +188,12 @@ def main() -> int:
     # --- The published intent (character + default vehicle + ready) ---------
     intent_rows = [
         r for r in renders
-        if int(r[11]) == TARGET_CHARACTER and int(r[13]) == 1 and int(r[14]) == 1
+        if int(r[13]) == TARGET_CHARACTER and int(r[15]) == 1 and int(r[16]) == 1
     ]
     if not intent_rows:
         return fail(f"the local intent never reached character={TARGET_CHARACTER} "
                     f"confirmed=1 ready=1", output)
-    intent_vehicle = int(intent_rows[0][12])
+    intent_vehicle = int(intent_rows[0][14])
     if intent_vehicle != default_vehicle:
         return fail(f"published intent vehicle {intent_vehicle} != enter()'s "
                     f"default vehicle {default_vehicle}", output)

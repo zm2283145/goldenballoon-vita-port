@@ -115,6 +115,13 @@
 #define CS_GRID_Y 44 /* top-left y of row 0's portrait */
 #define CS_PORTRAIT_HALF 22 /* ~half a portrait, for centering labels */
 #define CS_TAKEN_FLASH_TICKS 45u /* "TAKEN BY x" flash duration (~1.5s @ 30Hz) */
+/* Portrait luminance for a racer the rival has LOCKED (confirmed). ~0.28 of full:
+ * an unmistakable greyed/"unavailable" drop (T9 NIT-1 -- the T8 gate read the old
+ * 80 as merely "a bit darker"). Prim-colour modulation cannot desaturate a decoded
+ * portrait, so a hard luminance drop + the band-backed TAKEN/RIVAL labels are the
+ * three redundant cues. One constant, shared by the render + the witness so the
+ * headless taken-tile coverage can never drift from what is drawn. */
+#define CS_TAKEN_DIM 72u
 
 /* Menu SFX (the real DKR enums -- same reuse as the portraits; verified against
  * menu.c:4564/4577/4778). */
@@ -481,7 +488,7 @@ static void charselect_render(const CsRemoteView *rv) {
         char label[24];
 
         if (taken) {
-            pr = pg = pb = 80u;
+            pr = pg = pb = CS_TAKEN_DIM;
             nr = ng = nb = 90;
         }
         if (onCursor && !localPick) {
@@ -632,18 +639,27 @@ static void charselect_witness(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
     sWitnessKey = key;
     sWitnessRemoteSeat = rv->seat;
 
-    fprintf(stderr,
-            "[online-charselect] render cursor=%u name=%s portrait=%u "
-            "local{conf=%u ready=%u seatChar=%u seatReady=%u} "
-            "remote{seat=%d char=%u ready=%u name=%.*s} "
-            "intent{hover=%u vehicle=%u confirmed=%u ready=%u}\n",
-            sCs.cursor, sOnlineNames[sCs.cursor],
-            (unsigned) sOnlineToPortrait[sCs.cursor], sCs.confirmed, sCs.ready,
-            (unsigned) localSeatChar, (unsigned) localSeatReady, (int) rv->seat,
-            (unsigned) rv->character, (unsigned) rv->ready,
-            (int) MDKR_PARTY_LINK_NAME_BYTES,
-            rv->name[0] != '\0' ? rv->name : "-", sCs.cursor,
-            (unsigned) sCs.vehicle, sCs.confirmed, sCs.ready);
+    /* T9 NIT-1 coverage: the greyed/"TAKEN" tile cue. When the rival has LOCKED
+     * (confirmed) a racer its tile is drawn at CS_TAKEN_DIM luminance + a TAKEN/
+     * RIVAL nameplate; report which tile is greyed and to what luminance so a
+     * headless lane can ASSERT the cue genuinely shows (the render greys tile
+     * id==rv->character; -1/255 when the rival holds no lock). */
+    {
+        s32 takenTile = (rv->character < CS_CHAR_COUNT) ? (s32) rv->character : -1;
+        unsigned takenDim = (takenTile >= 0) ? (unsigned) CS_TAKEN_DIM : 255u;
+        fprintf(stderr,
+                "[online-charselect] render cursor=%u name=%s portrait=%u "
+                "local{conf=%u ready=%u seatChar=%u seatReady=%u} "
+                "remote{seat=%d char=%u ready=%u name=%.*s} taken=%d dim=%u "
+                "intent{hover=%u vehicle=%u confirmed=%u ready=%u}\n",
+                sCs.cursor, sOnlineNames[sCs.cursor],
+                (unsigned) sOnlineToPortrait[sCs.cursor], sCs.confirmed, sCs.ready,
+                (unsigned) localSeatChar, (unsigned) localSeatReady, (int) rv->seat,
+                (unsigned) rv->character, (unsigned) rv->ready,
+                (int) MDKR_PARTY_LINK_NAME_BYTES,
+                rv->name[0] != '\0' ? rv->name : "-", takenTile, takenDim,
+                sCs.cursor, (unsigned) sCs.vehicle, sCs.confirmed, sCs.ready);
+    }
 }
 
 /* ======================================================================== *
