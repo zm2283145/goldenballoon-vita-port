@@ -3495,6 +3495,31 @@ void obj_loop_parkwarden(Object *obj, s32 updateRate) {
             }
             if (dialogueID & 0x40) {
                 gTajDialogueChoice = dialogueID & 0xF;
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+                if (adventure_party_taj_active()) {
+                    /* R27: the in-hub Taj CHALLENGE race is not yet classified for
+                     * a party -- it would spawn a lone Taj-vs-host race and strand
+                     * the other seats. Fail closed at the dialogue-choice seam:
+                     * refuse the challenge row in BOTH forms (the direct
+                     * choice==current-vehicle race and the transform-then-race
+                     * form), so no TAJ_MODE_SET_CHALLENGE / TAJ_MODE_RACE ever
+                     * starts during a party session. Keyed on a live party SESSION
+                     * (adventure_party_taj_active), NEVER on player count, so retail
+                     * JOINTVENTURE 2P challenges are byte-untouched. Vehicle-
+                     * transform rows (dialogueID & 0x80, the CHANGE VEHICLE menu)
+                     * are unaffected. Least-surprising native behaviour: reopen
+                     * Taj's ROOT menu -- the same set_menu_id_if_option_equal escape
+                     * retail already uses to back out of a dead submenu -- with the
+                     * menu-back jingle, so the shared dialogue stays open and the
+                     * host can still transform or leave. */
+                    sound_play(SOUND_MENU_BACK3, NULL);
+                    set_menu_id_if_option_equal(DIALOGUEPAGE_TAJ_CHALLENGES_2, DIALOGUEPAGE_TAJ_ROOT);
+                    if (mdkr_trace_enabled()) {
+                        mdkr_trace("aparty_taj_challenge: seat=%d refused=1 choice=%d",
+                                   (int) sApTajFocusSeat, (int) (dialogueID & 0xF));
+                    }
+                } else
+#endif
                 if (gTajDialogueChoice != racer->vehicleID) {
                     gTajDialogueChoice |= 0x80;
                     obj->properties.taj.action = TAJ_MODE_TRANSFORM_BEGIN;

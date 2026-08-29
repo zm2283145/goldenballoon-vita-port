@@ -10185,6 +10185,26 @@ s32 fileselect_input_root(UNUSED s32 updateRate) {
                         break;
                     }
                 }
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+                if (adventure_party_menu_admits() && !gSavefileInfo[gSaveFileIndex].isStarted) {
+                    /* R26 interim: a party formation cannot begin a NEW campaign
+                     * yet (the new-game shared-scene envelope is AP-11). Retail
+                     * confirming an UN-STARTED file starts a new game, which for
+                     * an admitted party would silently collapse the formation to a
+                     * 1P new campaign. Fail closed at this confirm seam -- refuse
+                     * with the SAME feedback as the A2-mismatch refusal above
+                     * (SOUND_HORN_DRUMSTICK, cursor stays via break) and emit one
+                     * diagnostic. A STARTED file confirms exactly as today. Off
+                     * (or OMIT) this is compiled out and the retail confirm is
+                     * byte-identical. */
+                    if (mdkr_trace_enabled()) {
+                        mdkr_trace("aparty_file_refused: reason=newgame slot=%d",
+                                   (int) gSaveFileIndex);
+                    }
+                    sound_play(SOUND_HORN_DRUMSTICK, NULL);
+                    break;
+                }
+#endif
                 sound_play(SOUND_SELECT2, NULL);
                 return 1;
             case 1:
@@ -10264,9 +10284,19 @@ void fileselect_input_copy(UNUSED s32 updateRate) {
     buttonsPressed = input_pressed(PLAYER_ONE);
     xAxisDirection = gControllersXAxisDirection[PLAYER_ONE];
     if (gNumberOfActivePlayers == 2) {
-        buttonsPressedPlayerTwo = input_pressed(PLAYER_TWO);
-        buttonsPressed |= buttonsPressedPlayerTwo;
-        xAxisDirection += gControllersXAxisDirection[PLAYER_TWO];
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+        /* In an Adventure Party formation the host (player one) owns the shared
+         * file decision, so player two's confirm/navigation is not aggregated
+         * into the copy submenu either (same guard shape as fileselect_input_root).
+         * Retail JOINTVENTURE two-player file select is unchanged: off (or OMIT)
+         * this guard is absent/true and the aggregation runs exactly as stock. */
+        if (!adventure_party_menu_admits())
+#endif
+        {
+            buttonsPressedPlayerTwo = input_pressed(PLAYER_TWO);
+            buttonsPressed |= buttonsPressedPlayerTwo;
+            xAxisDirection += gControllersXAxisDirection[PLAYER_TWO];
+        }
     }
     if (gFileConfirm == 0) {
         if (buttonsPressed & (B_BUTTON)) {
@@ -10359,8 +10389,18 @@ void fileselect_input_erase(UNUSED s32 updateRate) {
     controllerXAxisDirection = gControllersXAxisDirection[0];
 
     if (gNumberOfActivePlayers == 2) {
-        buttonsPressed |= input_pressed(PLAYER_TWO);
-        controllerXAxisDirection += gControllersXAxisDirection[1];
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+        /* Host-only file authority in a party: player two's confirm/navigation is
+         * not aggregated into the erase submenu (same guard shape as
+         * fileselect_input_root). Retail JOINTVENTURE two-player file select is
+         * unchanged: off (or OMIT) this guard is absent/true and the aggregation
+         * runs exactly as stock. */
+        if (!adventure_party_menu_admits())
+#endif
+        {
+            buttonsPressed |= input_pressed(PLAYER_TWO);
+            controllerXAxisDirection += gControllersXAxisDirection[1];
+        }
     }
 
     if (gFileConfirm == 0) {
