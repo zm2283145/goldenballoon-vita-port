@@ -177,15 +177,23 @@ static void test_capability_table_trophy_row(void) {
         expect(cap.policy_active == 1 && cap.fail_closed == 0 &&
                cap.presentation == ADVENTURE_PARTY_PRESENT_SPLIT &&
                cap.human_count == n && cap.viewport_count == n, what);
+        /* AP-16 Part A DECIDED: the retail 8-racer trophy field fits four
+         * viewports within the measured DL/matrix/vertex budgets (DL high-water
+         * 6354 << 11000 at 4P; see task-14-report.md), so the trophy row is a
+         * split of the party's humans plus CPUs to the RETAIL EIGHT-racer total,
+         * one-for-one, total unchanged. The field size is now decided, not
+         * deferred. */
         snprintf(what, sizeof what,
-                 "trophy(%d): field size deferred to AP-16, not asserted", n);
-        expect(cap.field_size_undecided == 1 && cap.total_racer_count == 0,
+                 "trophy(%d): retail 8-racer field, decided (AP-16)", n);
+        expect(cap.field_size_undecided == 0 &&
+               cap.total_racer_count == ADVENTURE_PARTY_TROPHY_FIELD_TOTAL &&
+               cap.total_racer_count == 8,
                what);
         snprintf(what, sizeof what, "trophy(%d): one shared series result", n);
         expect(cap.progress == ADVENTURE_PARTY_PROGRESS_SHARED_SERIES_RESULT,
                what);
     }
-    /* No other row defers its field size. */
+    /* No row defers its field size any more (AP-16 resolved the last one). */
     {
         AdventurePartyActivityDescriptor d =
             desc(ADVENTURE_PARTY_RACE_KIND_DEFAULT,

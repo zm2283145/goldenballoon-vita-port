@@ -37,6 +37,15 @@ extern "C" {
  * field size. */
 #define ADVENTURE_PARTY_RACE_FIELD_TOTAL 6
 
+/* Trophy-series races field EIGHT racers: the retail Adventure trophy field
+ * (track_setup_racers defaults gNumRacers to 8, and a 1P trophy race keeps it —
+ * game/src/objects.c, game/src/menu.c rankings gRankingPlayerCount==8). AP-16
+ * Part A measured that this eight-racer field fits four viewports within the
+ * per-frame DL/matrix/vertex budgets (4P DL high-water 6354 << the 11000 budget;
+ * see task-14-report.md), so the party trophy race is a SPLIT of the humans plus
+ * CPUs to this retail total, one-for-one — never a shrunken or improvised field. */
+#define ADVENTURE_PARTY_TROPHY_FIELD_TOTAL 8
+
 /* What kind of race/challenge the requested level runs. UNKNOWN is the zero
  * value on purpose: a descriptor someone forgot to classify fails closed. */
 typedef enum AdventurePartyRaceKind {

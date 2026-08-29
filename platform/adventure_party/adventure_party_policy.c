@@ -106,15 +106,19 @@ AdventurePartyCapability adventure_party_classify_activity(
             return cap;
 
         case ADVENTURE_PARTY_RACE_KIND_TROPHY:
-            /* Supported and split, but the field size is deliberately NOT
-             * asserted here: AP-04 measures whether the retail trophy field
-             * survives four viewports and AP-16 owns the decision. Total
-             * stays 0 and the flag says why. */
+            /* Split, all humans, with the RETAIL EIGHT-racer trophy field: the
+             * party's humans plus enough CPUs to make eight, one-for-one, total
+             * unchanged. AP-16 Part A MEASURED that this eight-racer field fits
+             * four viewports within the per-frame DL/matrix/vertex budgets (4P
+             * DL high-water 6354 << the 11000 budget — task-14-report.md), so the
+             * field size is now DECIDED here (field_size_undecided=0), not the
+             * six-racer default and not a shrunken/improvised field. One shared
+             * series result feeds the existing trophy progression exactly once. */
             cap.presentation = ADVENTURE_PARTY_PRESENT_SPLIT;
             cap.human_count = (uint8_t)participant_count;
             cap.viewport_count = (uint8_t)participant_count;
-            cap.total_racer_count = 0;
-            cap.field_size_undecided = 1;
+            cap.total_racer_count = ADVENTURE_PARTY_TROPHY_FIELD_TOTAL;
+            cap.field_size_undecided = 0;
             cap.progress = ADVENTURE_PARTY_PROGRESS_SHARED_SERIES_RESULT;
             return cap;
 
