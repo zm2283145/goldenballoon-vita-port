@@ -12889,6 +12889,37 @@ s32 menu_pause_loop(UNUSED Gfx **dl, s32 updateRate) {
     if (gIgnorePlayerInputTime == 0) {
         buttonsPressed = input_pressed(gLastPlayerWhoPaused);
     }
+#ifdef NATIVE_PORT
+    /* Closed-loop fixture control (MDKR_TEST_PAUSE_QUIT): drive the open pause
+     * menu to RETURN TO LOBBY and confirm, from the menu's own live option list
+     * rather than a hardcoded frame -- the mid-race quit-to-lobby leg for
+     * check_adventure_party_race_loop. Inert unless set; this stage only, only
+     * while no confirm sub-dialog is open. RETURN TO LOBBY is not QUITGAME, so it
+     * selects immediately (no sub-dialog) and menu_pause_loop returns
+     * PAUSE_QUIT_LOBBY on the next iteration. */
+    {
+    extern char *getenv(const char *);
+    if (getenv("MDKR_TEST_PAUSE_QUIT") != NULL && gMenuDelay == 0 &&
+        gMenuSubOption == 0 && gMenuOptionCap > 0) {
+        s32 apQuitRow = -1;
+        s32 apRow;
+        for (apRow = 0; apRow < gMenuOptionCap; apRow++) {
+            if (gMenuOptionText[apRow] == gMenuText[ASSET_MENU_TEXT_RETURNTOLOBBY]) {
+                apQuitRow = apRow;
+                break;
+            }
+        }
+        if (apQuitRow >= 0) {
+            if (gMenuOption != apQuitRow) {
+                gMenuOption = apQuitRow;
+                buttonsPressed = 0;
+            } else {
+                buttonsPressed |= A_BUTTON;
+            }
+        }
+    }
+    }
+#endif
 
     if (gMenuDelay == 0) {
         if (gMenuSubOption != 0) {
