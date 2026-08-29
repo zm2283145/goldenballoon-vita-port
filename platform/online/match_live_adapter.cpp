@@ -58,6 +58,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <map>
 #include <set>
 #include <string>
@@ -375,6 +376,7 @@ public:
 
     void service() override {
         pumpRoom();
+        ageStaleParked();
         followLobbyPhase();
         pumpMesh();
         runLoadingBarrier();
@@ -416,6 +418,20 @@ public:
 
 private:
     enum class Pending { None, Create, Join };
+
+    /* A fully-recorded sent lobby command: enough to (a) attribute a refusal
+     * to the exact command the server answered, (b) re-send THAT command (not
+     * merely the most recent one -- with two in flight the old lastType_-only
+     * re-send duplicated the newer command and silently dropped the refused
+     * one; every redundant accepted SET_CHARACTER/SET_VEHICLE then reset the
+     * seat's ready on a live room), and (c) re-EVALUATE against the current
+     * lobby whether the command is still needed at all before re-sending. */
+    struct SentCommand {
+        MdkrOnlineCommandType type = MDKR_ONLINE_JOIN;
+        uint32_t seat = 0u;
+        uint32_t value = 0u;
+        uint32_t expectedRevision = 0u; /* the revision the send carried */
+    };
 
     MdkrOnlineAdapterStep step(bool accepted, uint32_t error) {
         MdkrOnlineAdapterStep s;
@@ -503,6 +519,16 @@ private:
         lastValue_ = value;
         haveLast_ = true;
         staleRetries_ = 0u;
+        /* A FRESH command supersedes any parked stale re-send of the same
+         * type: the caller's newest intent wins, and re-sending the stale
+         * older value AFTER it would silently revert the newer one. */
+        for (auto it = staleParked_.begin(); it != staleParked_.end();) {
+            if (it->type == type) {
+                it = staleParked_.erase(it);
+            } else {
+                ++it;
+            }
+        }
         return sendLobbyCommandRaw(type, seat, value);
     }
 
@@ -518,14 +544,197 @@ private:
         c.target_endpoint_id = seat;
         c.value = value;
         c.compatibility = opts_.compatibility;
-        /* Correlation: remember what each command_id was, so the CommandResult
-         * drain can attribute a refusal to the command the server answered even
-         * with two in flight. Bounded (a server that echoes no id never lets us
-         * consume entries): drop the oldest once the window is comfortably past
-         * any realistic in-flight depth. */
-        inFlight_[c.command_id] = type;
+        /* Correlation: remember what each command_id carried, so the
+         * CommandResult drain can attribute a refusal to the command the
+         * server answered even with two in flight -- and re-send / re-evaluate
+         * THAT command, never merely the most recent one. Bounded (a server
+         * that echoes no id never lets us consume entries): drop the oldest
+         * once the window is comfortably past any realistic in-flight depth. */
+        SentCommand sent;
+        sent.type = type;
+        sent.seat = seat;
+        sent.value = value;
+        sent.expectedRevision = c.expected_revision;
+        inFlight_[c.command_id] = sent;
         if (inFlight_.size() > 64u) inFlight_.erase(inFlight_.begin());
         return opts_.room && opts_.room->submitCommand(c);
+    }
+
+    /* Does the CURRENT authoritative lobby already reflect `cmd`'s effect?
+     * The stale-refusal path uses this to drop a re-send whose outcome has
+     * already landed (typically via the concurrent peer's interleaving):
+     * re-applying it anyway is never free -- an accepted redundant
+     * SET_CHARACTER / SET_VEHICLE / SET_VOTE resets the seat's ready
+     * (lobby_core.c), which is exactly how the retry churn kept knocking a
+     * latched READY back down on a real two-peer room. Conservative: an
+     * unknown type reports false (keep the retry). */
+    bool commandEffectApplied(const SentCommand &cmd) const {
+        if (!haveLobby_) return false;
+        const MdkrOnlineMember *self = nullptr;
+        for (unsigned i = 0u; i < MDKR_ONLINE_MAX_ENDPOINTS; ++i) {
+            if (lobby_.members[i].occupied &&
+                lobby_.members[i].endpoint_id == localEndpointId_) {
+                self = &lobby_.members[i];
+                break;
+            }
+        }
+        switch (cmd.type) {
+        case MDKR_ONLINE_SET_CHARACTER:
+        case MDKR_ONLINE_SET_VEHICLE:
+        case MDKR_ONLINE_SET_VOTE: {
+            if (cmd.seat >= MDKR_ONLINE_MAX_SEATS) return false;
+            const MdkrOnlineSeat &s = lobby_.seats[cmd.seat];
+            if (!s.occupied || s.endpoint_id != localEndpointId_) return false;
+            if (cmd.type == MDKR_ONLINE_SET_CHARACTER) {
+                return s.character_id == static_cast<uint8_t>(cmd.value);
+            }
+            if (cmd.type == MDKR_ONLINE_SET_VEHICLE) {
+                return s.vehicle_id == static_cast<uint8_t>(cmd.value);
+            }
+            return s.vote_track == static_cast<uint16_t>(cmd.value);
+        }
+        case MDKR_ONLINE_SET_READY:
+            return self != nullptr && self->ready == (cmd.value != 0u);
+        case MDKR_ONLINE_ACK_LOADED:
+            return self != nullptr && self->loaded;
+        case MDKR_ONLINE_SET_MODE:
+            return lobby_.mode == static_cast<uint8_t>(cmd.value);
+        case MDKR_ONLINE_SET_CONFIG_TRACK:
+            return lobby_.configured_track == static_cast<uint16_t>(cmd.value);
+        case MDKR_ONLINE_SET_CUP:
+            return lobby_.cup_id == static_cast<uint8_t>(cmd.value);
+        case MDKR_ONLINE_BEGIN_LOADING:
+            return lobby_.phase != MDKR_ONLINE_LOBBY;
+        case MDKR_ONLINE_CANCEL_LOADING:
+            return lobby_.phase == MDKR_ONLINE_LOBBY;
+        case MDKR_ONLINE_BEGIN_RACE:
+            return lobby_.phase != MDKR_ONLINE_LOADING;
+        case MDKR_ONLINE_PUBLISH_RESULTS:
+            return lobby_.phase == MDKR_ONLINE_RESULTS;
+        case MDKR_ONLINE_REMATCH:
+            return lobby_.phase != MDKR_ONLINE_RESULTS;
+        default:
+            return false;
+        }
+    }
+
+    /* Launcher-owned optimistic-concurrency recovery for a STALE_REVISION /
+     * STALE_COMMAND refusal of `cmd` (the ATTRIBUTED command, by echoed id).
+     * Order of business:
+     *   1. already applied?           -> drop (nothing to re-send);
+     *   2. our lobby view has moved
+     *      past the refused revision
+     *      (or only the command id
+     *      was stale)                 -> re-send NOW against the fresh view;
+     *   3. our view IS the refused
+     *      revision                   -> PARK until the next State resyncs
+     *                                    (an immediate re-send would carry the
+     *                                    same stale revision -- guaranteed
+     *                                    refusal, the old retry churn).
+     * Bounded by staleRetries_ exactly like the old path: exhaustion surfaces
+     * the refusal (one-shot) so the reverse-feed planner re-drives. */
+    void handleStaleRefusal(const SentCommand &cmd, uint32_t error) {
+        if (commandEffectApplied(cmd)) {
+            MDKR_ONLINE_LOG(
+                "[ONLINE] command stale type=%s -- effect already in lobby "
+                "rev=%u (dropped, no re-send)\n",
+                lobbyCommandName(cmd.type), haveLobby_ ? lobby_.revision : 0u);
+            return;
+        }
+        if (staleRetries_ >= 8u) {
+            MDKR_ONLINE_LOG(
+                "[ONLINE] command REJECTED type=%s error=%s "
+                "(stale retries exhausted)\n",
+                lobbyCommandName(cmd.type),
+                lobbyErrorName(static_cast<MdkrOnlineError>(error)));
+            refusalType_ = static_cast<uint32_t>(cmd.type);
+            refusalError_ = error;
+            haveRefusal_ = true;
+            staleRetries_ = 0u;
+            bump();
+            return;
+        }
+        if (!haveLobby_ || lobby_.revision != cmd.expectedRevision ||
+            error == MDKR_ONLINE_ERROR_STALE_COMMAND) {
+            ++staleRetries_;
+            MDKR_ONLINE_LOG(
+                "[ONLINE] command stale type=%s error=%s retry=%u "
+                "(re-sending against fresh revision %u)\n",
+                lobbyCommandName(cmd.type),
+                lobbyErrorName(static_cast<MdkrOnlineError>(error)),
+                staleRetries_, haveLobby_ ? lobby_.revision : 0u);
+            (void)sendLobbyCommandRaw(cmd.type, cmd.seat, cmd.value);
+            return;
+        }
+        /* Park (latest per type wins). */
+        for (auto it = staleParked_.begin(); it != staleParked_.end();) {
+            if (it->type == cmd.type) {
+                it = staleParked_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        staleParked_.push_back(cmd);
+        staleParkedAgeServices_ = 0u;
+        MDKR_ONLINE_LOG(
+            "[ONLINE] command stale type=%s error=%s at rev=%u -- parked "
+            "until the next authoritative state (no blind re-send)\n",
+            lobbyCommandName(cmd.type),
+            lobbyErrorName(static_cast<MdkrOnlineError>(error)),
+            cmd.expectedRevision);
+    }
+
+    /* Belt-and-braces bound: a parked stale re-send waits for a State that --
+     * on a genuinely dead room -- may never come. After ~10 s of service()
+     * calls with entries still parked, surface the head as a refusal (the
+     * reverse-feed planner's guard clears and it re-drives from the intent)
+     * and drop the rest; never a silent forever-park. */
+    void ageStaleParked() {
+        if (staleParked_.empty()) {
+            staleParkedAgeServices_ = 0u;
+            return;
+        }
+        if (++staleParkedAgeServices_ < kStaleParkedMaxServices) return;
+        const SentCommand head = staleParked_.front();
+        MDKR_ONLINE_LOG(
+            "[ONLINE] parked stale type=%s TIMED OUT waiting for a state "
+            "resync -- surfacing refusal (dropping %u parked)\n",
+            lobbyCommandName(head.type),
+            static_cast<unsigned>(staleParked_.size()));
+        staleParked_.clear();
+        staleParkedAgeServices_ = 0u;
+        refusalType_ = static_cast<uint32_t>(head.type);
+        refusalError_ = MDKR_ONLINE_ERROR_STALE_REVISION;
+        haveRefusal_ = true;
+        bump();
+    }
+
+    /* A fresh authoritative State landed: re-evaluate the parked stale
+     * re-sends against it. Drop everything already applied; re-send AT MOST
+     * ONE (the head) -- its accept broadcasts the next State, which drains the
+     * next entry, so a chain replays in original order with exactly one
+     * speculative expected_revision outstanding at a time. */
+    void drainStaleParked() {
+        while (!staleParked_.empty()) {
+            const SentCommand cmd = staleParked_.front();
+            if (commandEffectApplied(cmd)) {
+                staleParked_.pop_front();
+                MDKR_ONLINE_LOG(
+                    "[ONLINE] parked stale type=%s resolved by state rev=%u "
+                    "(dropped, no re-send)\n",
+                    lobbyCommandName(cmd.type), lobby_.revision);
+                continue;
+            }
+            staleParked_.pop_front();
+            ++staleRetries_;
+            MDKR_ONLINE_LOG(
+                "[ONLINE] parked stale type=%s re-sent against fresh state "
+                "rev=%u (retry=%u)\n",
+                lobbyCommandName(cmd.type), lobby_.revision, staleRetries_);
+            (void)sendLobbyCommandRaw(cmd.type, cmd.seat, cmd.value);
+            break;
+        }
+        staleParkedAgeServices_ = 0u;
     }
 
     /* The launcher panel addresses a LOCAL seat index (0-based within this
@@ -549,10 +758,24 @@ private:
          * is back in its selection phase, even when the view model's primary
          * control has already moved on to Ready/Start (the reducer accepts a
          * re-pick and clears ready). Without this the pickers are one-shot:
-         * "Change Selection" could never actually change anything. */
+         * "Change Selection" could never actually change anything.
+         *
+         * READY / CHANGE_SELECTION (SET_READY 1/0) are reducer-authoritative in
+         * the LOBBY phase too. The view model's SELECTING surface gates its
+         * Ready button behind a TRACK VOTE for an unconfigured single-race room
+         * -- a step that exists only for the legacy ImGui picker flow. The
+         * native descriptor-less flow never casts a vote (its TRACKSELECT
+         * screen SET_CONFIG_TRACKs later), so on a FRESH production room the
+         * reverse-feed READY was refused HERE, silently, forever: the seat
+         * never readied and both real peers wedged at CHARSELECT. The reducer
+         * itself requires only member_selection_complete (character + vehicle)
+         * for SET_READY 1 -- exactly the gate that should decide -- and any
+         * genuinely early READY comes back as a surfaced NOT_READY refusal. */
         if ((action == MDKR_ONLINE_VIEW_ACTION_CHOOSE_CHARACTER ||
              action == MDKR_ONLINE_VIEW_ACTION_CHOOSE_VEHICLE ||
-             action == MDKR_ONLINE_VIEW_ACTION_VOTE_TRACK) &&
+             action == MDKR_ONLINE_VIEW_ACTION_VOTE_TRACK ||
+             action == MDKR_ONLINE_VIEW_ACTION_READY ||
+             action == MDKR_ONLINE_VIEW_ACTION_CHANGE_SELECTION) &&
             haveLobby_ && lobby_.phase == MDKR_ONLINE_LOBBY) {
             return true;
         }
@@ -809,6 +1032,9 @@ private:
                             lobby_.match_epoch);
                         followLobbyPhase();
                         bump();
+                        /* The resync the parked stale re-sends were waiting
+                         * for: re-evaluate them against THIS revision. */
+                        drainStaleParked();
                     }
                     break;
                 case MdkrOnlineRoomEvent::Type::CommandResult: {
@@ -819,12 +1045,22 @@ private:
                      * (see MdkrOnlineRoomEvent::commandId); fall back to lastType_
                      * only when the server echoed no id. Consume the map entry so
                      * it cannot grow or be matched twice. */
+                    SentCommand attrCmd;
+                    attrCmd.type = lastType_;
+                    attrCmd.seat = lastSeat_;
+                    attrCmd.value = lastValue_;
+                    /* Fallback (no echoed id): the expected revision the send
+                     * carried is unknown -- an impossible sentinel keeps the
+                     * stale path on its immediate-re-send arm, matching the
+                     * historical no-echo behavior. */
+                    attrCmd.expectedRevision = UINT32_MAX;
                     MdkrOnlineCommandType attrType = lastType_;
                     bool attrValid = haveLast_;
                     if (ev.commandId != 0u) {
                         const auto found = inFlight_.find(ev.commandId);
                         if (found != inFlight_.end()) {
-                            attrType = found->second;
+                            attrCmd = found->second;
+                            attrType = attrCmd.type;
                             attrValid = true;
                             inFlight_.erase(found);
                         }
@@ -851,19 +1087,17 @@ private:
                         bump();
                     } else if ((ev.step.error == MDKR_ONLINE_ERROR_STALE_REVISION ||
                                 ev.step.error == MDKR_ONLINE_ERROR_STALE_COMMAND) &&
-                               haveLast_ && staleRetries_ < 8u) {
-                        /* Launcher-owned optimistic-concurrency retry: the room
-                         * advanced under us (a concurrent peer). The State
-                         * carrying that advance was applied earlier in this same
-                         * drain, so re-send the most recent command against the
-                         * fresh revision (its seat/value are what we retain). */
-                        ++staleRetries_;
-                        MDKR_ONLINE_LOG(
-                            "[ONLINE] command stale type=%s error=%s retry=%u "
-                            "(re-sending against fresh revision)\n",
-                            lobbyCommandName(lastType_),
-                            lobbyErrorName(ev.step.error), staleRetries_);
-                        (void)sendLobbyCommandRaw(lastType_, lastSeat_, lastValue_);
+                               attrValid) {
+                        /* Launcher-owned optimistic-concurrency recovery: the
+                         * room advanced under us (a concurrent peer). Recover
+                         * the ATTRIBUTED command -- drop it when its effect
+                         * already landed, re-send when our view has already
+                         * resynced past the refused revision, otherwise park
+                         * it for the next State (a blind immediate re-send
+                         * would carry the SAME stale revision: over the real
+                         * transport the CommandResult routinely arrives
+                         * BEFORE the State that explains the staleness). */
+                        handleStaleRefusal(attrCmd, ev.step.error);
                     } else {
                         /* Non-silent: any other refusal (e.g. NOT_READY,
                          * ILLEGAL_VEHICLE, exhausted stale retries) is logged so a
@@ -2535,11 +2769,25 @@ private:
     uint32_t lastValue_ = 0u;
     bool haveLast_ = false;
     unsigned staleRetries_ = 0u;
-    /* In-flight command correlation: command_id -> the type sent under it, so a
-     * CommandResult refusal is attributed to the command the server actually
-     * answered (two can be in flight) rather than to lastType_. Bounded in
-     * sendLobbyCommandRaw; entries consumed as their results drain. */
-    std::map<uint64_t, MdkrOnlineCommandType> inFlight_;
+    /* In-flight command correlation: command_id -> the command sent under it,
+     * so a CommandResult refusal is attributed to the command the server
+     * actually answered (two can be in flight) rather than to lastType_.
+     * Bounded in sendLobbyCommandRaw; entries consumed as their results
+     * drain. */
+    std::map<uint64_t, SentCommand> inFlight_;
+    /* Stale-refused commands whose refusal arrived while lobby_ still holds
+     * the very revision the send carried (the production ordering: the HTTP
+     * CommandResult beats the WS State that explains the staleness). A blind
+     * immediate re-send would carry the SAME stale revision and be refused
+     * again -- the retry churn the first real two-peer run drowned in --
+     * so these wait for the next authoritative State, get re-checked against
+     * it (often the effect has landed via the concurrent peer's interleaving
+     * and nothing needs sending), and re-send at most ONE per State so a
+     * chain of parked commands drains in order, one accepted revision at a
+     * time. Bounded by staleParkedAgeServices_ (see service()). */
+    std::deque<SentCommand> staleParked_;
+    unsigned staleParkedAgeServices_ = 0u;
+    static constexpr unsigned kStaleParkedMaxServices = 300u; /* ~10 s @30Hz */
     std::function<uint64_t()> nowMs_;
     std::vector<MdkrMatchPeerIceServer> iceServers_;
     std::string roomIdStr_;

@@ -246,8 +246,28 @@ static uint8_t party_link_kind_state(uint8_t kind,
         return 1u;
     case MDKR_PARTY_LINK_DISPATCH_READY:
         if (!intent->ready) return 0u;
+        /* Client-side mirror of the reducer's member_selection_complete gate,
+         * strengthened per-field: READY is not WANTED until the AUTHORITATIVE
+         * seat already shows a character AND a vehicle, and -- when this
+         * intent itself carries a pick -- shows THAT pick. Every accepted
+         * SET_CHARACTER / SET_VEHICLE clears the seat's ready in the reducer,
+         * so a READY dispatched while its own selection commands are still
+         * landing is either refused (NOT_READY) or latched-then-stomped by a
+         * late selection command -- over a real-latency two-peer room that
+         * churn wedged the native CHARSELECT forever (ready never persisted).
+         * In-plan ordering is NOT enough: a stale-refused selection command
+         * re-sends and can land AFTER the READY. The synchronous loopback
+         * lanes converge the seat the same pump, so this holds READY back
+         * there by at most one pump. */
+        if (!have || local->character_id == MDKR_ONLINE_NO_CHARACTER ||
+            local->vehicle_id == MDKR_ONLINE_NO_VEHICLE) return 0u;
+        if (intent->confirmed &&
+            local->character_id != intent->hover_character) return 0u;
+        if (intent->vehicle_id != MDKR_ONLINE_NO_VEHICLE &&
+            intent->vehicle_id < MDKR_ONLINE_PLAYER_VEHICLE_COUNT &&
+            local->vehicle_id != intent->vehicle_id) return 0u;
         *value = 1u;
-        *converged = have && local->ready;
+        *converged = local->ready;
         return 1u;
     case MDKR_PARTY_LINK_DISPATCH_START_RACE:
         /* Converged once the room left the lobby phase (loading started). */

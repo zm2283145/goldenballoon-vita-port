@@ -1169,6 +1169,7 @@ if(NOT EMSCRIPTEN)
                     ${CMAKE_SOURCE_DIR}/platform/online/match_launch_builder.c
                     ${CMAKE_SOURCE_DIR}/platform/online/lobby_view_model.c
                     ${CMAKE_SOURCE_DIR}/platform/online/lobby_core.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/party_link.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_preflight.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_roster_runtime.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_roster.c

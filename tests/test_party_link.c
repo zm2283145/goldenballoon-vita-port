@@ -371,8 +371,15 @@ static void test_dispatch_plan(void) {
         CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER) < 0);
     }
 
-    /* ORDER: {character, vehicle, ready} on a fresh seat plans CHOOSE_CHARACTER,
-     * then CHOOSE_VEHICLE, then READY -- vehicle strictly before ready. */
+    /* ORDER + READY GATING: {character, vehicle, ready} on a fresh seat plans
+     * CHOOSE_CHARACTER then CHOOSE_VEHICLE -- and NOT READY yet. READY is held
+     * back until the AUTHORITATIVE seat shows the selection complete (the
+     * client-side mirror of the reducer's member_selection_complete gate):
+     * over a real-latency room every accepted SET_CHARACTER / SET_VEHICLE
+     * clears that seat's ready, so a READY racing its own selection commands
+     * is either refused (NOT_READY) or latched-then-stomped -- the exact
+     * two-peer cloud wedge. Ordering within a plan is not enough because a
+     * stale-refused selection command can land AFTER the READY. */
     mdkr_party_link_dispatch_state_reset(&st);
     in = intent_new();
     in.confirmed = 1u;
@@ -380,12 +387,34 @@ static void test_dispatch_plan(void) {
     in.vehicle_id = 1u;
     in.ready = 1u;
     mdkr_party_link_plan_dispatch(&st, &in, &none, &plan);
-    CHECK(plan.count == 3u);
+    CHECK(plan.count == 2u);
     CHECK(plan.actions[0].kind == MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER &&
           plan.actions[0].value == 3u);
     CHECK(plan.actions[1].kind == MDKR_PARTY_LINK_DISPATCH_CHOOSE_VEHICLE &&
           plan.actions[1].value == 1u);
-    CHECK(plan.actions[2].kind == MDKR_PARTY_LINK_DISPATCH_READY);
+    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_READY) < 0);
+    /* Character landed but the vehicle is still missing -> STILL no READY. */
+    {
+        MdkrPartyLinkLocalView charOnly =
+            lv(3u, MDKR_ONLINE_NO_VEHICLE, 0u, (uint8_t)MDKR_ONLINE_LOBBY);
+        mdkr_party_link_plan_dispatch(&st, &in, &charOnly, &plan);
+        CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_READY) < 0);
+    }
+    /* Per-field: the seat is selection-complete but with STALE values (the
+     * re-pick has not landed yet) -> STILL no READY: the pending
+     * SET_CHARACTER / SET_VEHICLE would clear the ready right back off. */
+    {
+        MdkrPartyLinkLocalView staleChar =
+            lv(9u, 1u, 0u, (uint8_t)MDKR_ONLINE_LOBBY); /* old racer */
+        mdkr_party_link_plan_dispatch(&st, &in, &staleChar, &plan);
+        CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_READY) < 0);
+    }
+    {
+        MdkrPartyLinkLocalView staleVeh =
+            lv(3u, 2u, 0u, (uint8_t)MDKR_ONLINE_LOBBY); /* old vehicle */
+        mdkr_party_link_plan_dispatch(&st, &in, &staleVeh, &plan);
+        CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_READY) < 0);
+    }
     /* Character + vehicle converged, ready not yet -> only READY remains. */
     {
         MdkrPartyLinkLocalView got = lv(3u, 1u, 0u, (uint8_t)MDKR_ONLINE_LOBBY);
@@ -442,19 +471,25 @@ static void test_dispatch_plan(void) {
     }
 
     /* SAFETY-NET BOUND: an in-flight command that never converges and gets no
-     * refusal re-fires after MDKR_PARTY_LINK_INFLIGHT_MAX_PUMPS. */
+     * refusal re-fires after MDKR_PARTY_LINK_INFLIGHT_MAX_PUMPS. (The seat is
+     * selection-complete so READY is genuinely wanted; only its ready flag
+     * never converges.) */
     mdkr_party_link_dispatch_state_reset(&st);
     in = intent_new();
     in.ready = 1u;
-    mdkr_party_link_plan_dispatch(&st, &in, &none, &plan);
-    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_READY) >= 0);
-    mark_sent_kind(&st, &plan, MDKR_PARTY_LINK_DISPATCH_READY);
-    for (pump = 0u; pump < MDKR_PARTY_LINK_INFLIGHT_MAX_PUMPS - 1u; pump++) {
-        mdkr_party_link_plan_dispatch(&st, &in, &none, &plan);
-        CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_READY) < 0);
+    {
+        MdkrPartyLinkLocalView unready =
+            lv(4u, 0u, 0u, (uint8_t)MDKR_ONLINE_LOBBY);
+        mdkr_party_link_plan_dispatch(&st, &in, &unready, &plan);
+        CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_READY) >= 0);
+        mark_sent_kind(&st, &plan, MDKR_PARTY_LINK_DISPATCH_READY);
+        for (pump = 0u; pump < MDKR_PARTY_LINK_INFLIGHT_MAX_PUMPS - 1u; pump++) {
+            mdkr_party_link_plan_dispatch(&st, &in, &unready, &plan);
+            CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_READY) < 0);
+        }
+        mdkr_party_link_plan_dispatch(&st, &in, &unready, &plan); /* elapsed */
+        CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_READY) >= 0);
     }
-    mdkr_party_link_plan_dispatch(&st, &in, &none, &plan); /* bound elapsed */
-    CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_READY) >= 0);
 }
 
 /* PD-T3: the host-only session-config dispatch kinds (SET_MODE /
@@ -548,18 +583,21 @@ static void test_dispatch_session_config(void) {
 
     /* ORDER vs READY: on a config change the reducer clears all ready, so a host
      * plan carrying BOTH SET_CONFIG_TRACK and READY must send config FIRST so the
-     * re-asserted ready sticks. */
+     * re-asserted ready sticks. (The host seat is selection-complete: READY's
+     * observed-selection gate must not hold it back here.) */
     mdkr_party_link_dispatch_state_reset(&st);
     in = intent_new();
     in.mode = MDKR_ONLINE_MODE_SINGLE_RACE;
     in.config_track = 8u; /* Whale Bay */
     in.ready = 1u;
     {
-        /* Host lobby: single mode already, no track, not ready. */
+        /* Host lobby: single mode already, no track, seat picked, not ready. */
         MdkrPartyLinkLocalView host = lv_host(MDKR_ONLINE_MODE_SINGLE_RACE,
                                               MDKR_PARTY_LINK_TRACK_UNSET,
                                               MDKR_PARTY_LINK_CUP_UNSET, 0u,
                                               (uint8_t)MDKR_ONLINE_LOBBY);
+        host.character_id = 3u;
+        host.vehicle_id = 1u;
         mdkr_party_link_plan_dispatch(&st, &in, &host, &plan);
         CHECK(plan_index_of(&plan,
                             MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK) >= 0);

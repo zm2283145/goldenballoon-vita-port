@@ -13,6 +13,7 @@
 
 #include "net/net_impairment.h"
 #include "net/net_roster_runtime.h"
+#include "net/party_link.h"
 
 #include <cassert>
 #include <chrono>
@@ -468,7 +469,7 @@ void test_token_gate_required() {
     CHECK(!mdkr_online_live_lobby_gate_open());
 }
 
-MdkrOnlineLiveAdapterOptions baseOptions(FakeRoomTransport *room,
+MdkrOnlineLiveAdapterOptions baseOptions(MdkrOnlineRoomTransport *room,
                                          HubMeshBackend *backend,
                                          FakeClock *clock,
                                          MdkrOnlineJourney journey) {
@@ -2235,12 +2236,525 @@ void test_impairment_matrix() {
     }
 }
 
+/* ==========================================================================
+ * Two-peer NATIVE selection convergence over a LATENCY room channel.
+ *
+ * The production two-process native flow drives BOTH peers' selections through
+ * the party_link reverse feed (native CHARSELECT publishes intent per frame;
+ * OnlineRoom_pumpPartyLinkIntent plans + submits reducer commands) against the
+ * REAL cloud MatchRoom, where CommandResults come back on the HTTP leg while
+ * State broadcasts ride the (slower) WS leg. The first-ever real two-peer run
+ * wedged at CHARSELECT: the seat CHARACTER converged but seat.ready NEVER
+ * latched, so the room revision froze and the session never advanced.
+ *
+ * This lane is the fast local repro: two REAL LiveAdapters share one
+ * reducer-backed room through a transport that delays the command apply, the
+ * CommandResult AND (slightly more) the State delivery -- the exact production
+ * ordering hazard (a stale refusal arrives BEFORE the state carrying the
+ * concurrent peer's advance). Each endpoint runs a faithful per-endpoint
+ * replica of the wiring's intent pump over a native-CHARSELECT-shaped intent
+ * stream (per-frame republish; confirm, then ready; the host later locks the
+ * track + starts, exactly like native TRACKSELECT). The room is a FRESH
+ * single-race room with NO configured track -- the production capstone shape.
+ *
+ * MUST hold (the B1 regression bar):
+ *   - both seats' characters/vehicles converge AND both members' READY latches
+ *     (simultaneously) within a bounded number of ticks;
+ *   - ready then STAYS latched (no SET-resets-ready churn knocking it down);
+ *   - no redundant self-SET storm (accepted SET_CHARACTER/SET_VEHICLE per
+ *     endpoint stays tiny);
+ *   - the host's native track lock + START then take the room to LOADING.
+ * ======================================================================== */
+
+/* Shared virtual room-channel clock, advanced once per test tick. */
+struct LatencyRoomClock {
+    unsigned now = 0u;
+};
+
+/* Room transport over the shared reducer double with SEEDED latency:
+ *   submit -> apply after `up` ticks (the request leg),
+ *   CommandResult delivered `down` ticks after the apply (the response leg),
+ *   State delivered `down + stateExtra` ticks after the revision is observed
+ *   (the broadcast leg -- slightly slower than the response leg, exactly the
+ *   production HTTP-result-beats-WS-state ordering that starves the stale
+ *   retry of the fresh revision). */
+class LatencyRoomTransport final : public MdkrOnlineRoomTransport {
+public:
+    LatencyRoomTransport(FakeMatchRoom *room, LatencyRoomClock *clock,
+                         unsigned up, unsigned down, unsigned stateExtra)
+        : room_(room), clock_(clock), up_(up), down_(down),
+          stateExtra_(stateExtra) {}
+
+    /* Server-side accepted/refused counters for the anti-churn assertions. */
+    unsigned acceptedSetCharacter = 0u;
+    unsigned acceptedSetVehicle = 0u;
+    unsigned acceptedSetReady = 0u;
+    unsigned refusedStaleRevision = 0u;
+
+    bool beginCreate(const MdkrOnlineCompatibilityV1 &compat,
+                     unsigned seatCount) override {
+        kind_ = Kind::Create;
+        compat_ = compat;
+        seats_ = seatCount;
+        return true;
+    }
+    bool beginJoin(const std::string &, const MdkrOnlineCompatibilityV1 &compat,
+                   unsigned seatCount) override {
+        kind_ = Kind::Join;
+        compat_ = compat;
+        seats_ = seatCount;
+        return true;
+    }
+    bool beginJoinByCode(const std::string &,
+                         const MdkrOnlineCompatibilityV1 &compat,
+                         unsigned seatCount) override {
+        kind_ = Kind::Join;
+        compat_ = compat;
+        seats_ = seatCount;
+        return true;
+    }
+
+    bool submitCommand(const MdkrOnlineCommand &command) override {
+        pending_.push_back(PendingCommand{command, clock_->now + up_});
+        return true;
+    }
+
+    void pump(std::vector<MdkrOnlineRoomEvent> &out) override {
+        out.clear();
+        if (kind_ != Kind::None && !ready_) {
+            MdkrOnlineRoomEvent ev;
+            const uint64_t ep = kind_ == Kind::Create
+                                    ? room_->create(compat_, seats_)
+                                    : room_->join(compat_, seats_);
+            if (ep == 0u) {
+                ev.type = MdkrOnlineRoomEvent::Type::Failure;
+                ev.failure = MDKR_ONLINE_VIEW_FAILURE_SERVICE_UNAVAILABLE;
+                out.push_back(ev);
+                return;
+            }
+            ev.type = MdkrOnlineRoomEvent::Type::Ready;
+            ev.localEndpointId = ep;
+            ev.roomId = canonicalRoomId();
+            ev.credential = kCredential;
+            ev.lobby = room_->lobby;
+            ev.haveLobby = true;
+            lastRevision_ = room_->lobby.revision;
+            ready_ = true;
+            out.push_back(ev);
+            return;
+        }
+        /* Request leg: apply due commands to the shared reducer, in order. */
+        while (!pending_.empty() && pending_.front().dueAt <= clock_->now) {
+            const MdkrOnlineCommand c = pending_.front().command;
+            pending_.pop_front();
+            MdkrOnlineRoomEvent ev;
+            ev.type = MdkrOnlineRoomEvent::Type::CommandResult;
+            ev.step = room_->command(c);
+            ev.commandId = c.command_id;
+            if (ev.step.accepted) {
+                if (c.type == MDKR_ONLINE_SET_CHARACTER) ++acceptedSetCharacter;
+                if (c.type == MDKR_ONLINE_SET_VEHICLE) ++acceptedSetVehicle;
+                if (c.type == MDKR_ONLINE_SET_READY) ++acceptedSetReady;
+            } else if (ev.step.error == MDKR_ONLINE_ERROR_STALE_REVISION) {
+                ++refusedStaleRevision;
+            }
+            deferred_.push_back(Deferred{ev, clock_->now + up_ + down_});
+        }
+        /* Broadcast leg: a fresh revision is observed now, delivered later. */
+        if (ready_ && room_->lobby.revision != lastRevision_) {
+            MdkrOnlineRoomEvent ev;
+            ev.type = MdkrOnlineRoomEvent::Type::State;
+            ev.lobby = room_->lobby;
+            ev.haveLobby = true;
+            lastRevision_ = room_->lobby.revision;
+            deferred_.push_back(
+                Deferred{ev, clock_->now + down_ + stateExtra_});
+        }
+        /* Deliver everything due, preserving relative order among due items
+         * (a due CommandResult behind a not-yet-due State must NOT be held --
+         * that inversion is precisely the production ordering under test). */
+        for (auto it = deferred_.begin(); it != deferred_.end();) {
+            if (it->dueAt <= clock_->now) {
+                out.push_back(it->event);
+                it = deferred_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    void close() override {}
+
+private:
+    enum class Kind { None, Create, Join };
+    struct PendingCommand {
+        MdkrOnlineCommand command;
+        unsigned dueAt;
+    };
+    struct Deferred {
+        MdkrOnlineRoomEvent event;
+        unsigned dueAt;
+    };
+    FakeMatchRoom *room_;
+    LatencyRoomClock *clock_;
+    unsigned up_;
+    unsigned down_;
+    unsigned stateExtra_;
+    Kind kind_ = Kind::None;
+    MdkrOnlineCompatibilityV1 compat_{};
+    unsigned seats_ = 1u;
+    bool ready_ = false;
+    uint32_t lastRevision_ = 0u;
+    std::deque<PendingCommand> pending_;
+    std::deque<Deferred> deferred_;
+};
+
+/* ---- Per-endpoint replica of the wiring's reverse-feed intent pump -------
+ *
+ * KEEP IN LOCKSTEP with OnlineRoom_pumpPartyLinkIntent /
+ * partyLinkBuildLocalView / partyLinkSubmit / partyLinkKindForCommand in
+ * platform/app/online_live_wiring.cpp. The wiring pump drives ONE process-wide
+ * party_link; this lane needs TWO endpoints' pumps in one process, so it
+ * instantiates the same plan/submit/refusal discipline per endpoint. The logic
+ * under test (the pure planner in party_link.c and the live adapter's
+ * revision/refusal handling) is the REAL production code either way. */
+
+uint8_t replicaKindForCommand(uint32_t command_type) {
+    switch (command_type) {
+    case MDKR_ONLINE_SET_CHARACTER:
+        return MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER;
+    case MDKR_ONLINE_SET_VEHICLE:
+        return MDKR_PARTY_LINK_DISPATCH_CHOOSE_VEHICLE;
+    case MDKR_ONLINE_SET_READY:
+        return MDKR_PARTY_LINK_DISPATCH_READY;
+    case MDKR_ONLINE_BEGIN_LOADING:
+        return MDKR_PARTY_LINK_DISPATCH_START_RACE;
+    case MDKR_ONLINE_SET_MODE:
+        return MDKR_PARTY_LINK_DISPATCH_SET_MODE;
+    case MDKR_ONLINE_SET_CONFIG_TRACK:
+        return MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK;
+    case MDKR_ONLINE_SET_CUP:
+        return MDKR_PARTY_LINK_DISPATCH_SET_CUP;
+    case MDKR_ONLINE_REMATCH:
+        return MDKR_PARTY_LINK_DISPATCH_REMATCH;
+    default:
+        return MDKR_PARTY_LINK_DISPATCH_NONE;
+    }
+}
+
+void replicaBuildLocalView(IMdkrOnlineAdapter *adapter,
+                           MdkrPartyLinkLocalView *out) {
+    std::memset(out, 0, sizeof(*out));
+    out->character_id = MDKR_ONLINE_NO_CHARACTER;
+    out->vehicle_id = MDKR_ONLINE_NO_VEHICLE;
+    MdkrOnlineLobby lobby{};
+    if (!mdkr_online_live_adapter_lobby(adapter, &lobby)) return;
+    out->phase = static_cast<uint8_t>(lobby.phase);
+    out->mode = lobby.mode;
+    out->configured_track = lobby.configured_track;
+    out->cup_id = lobby.cup_id;
+    MdkrOnlineViewModel vm{};
+    const bool haveView = adapter->view(&vm);
+    MdkrPartyLinkSnapshot snap;
+    mdkr_party_link_snapshot_from_lobby(&snap, haveView ? &vm : nullptr, &lobby,
+                                        0u);
+    for (unsigned i = 0u; i < MDKR_PARTY_LINK_SEATS; ++i) {
+        if (snap.seats[i].occupied && snap.seats[i].is_local) {
+            out->have_seat = 1u;
+            out->is_host = snap.seats[i].is_host;
+            out->character_id = snap.seats[i].character_id;
+            out->vehicle_id = snap.seats[i].vehicle_id;
+            out->ready = snap.seats[i].ready;
+            break;
+        }
+    }
+}
+
+struct ReplicaIntentPump {
+    MdkrPartyLinkDispatchState dispatch{};
+
+    void reset() { mdkr_party_link_dispatch_state_reset(&dispatch); }
+
+    MdkrOnlineAdapterStep submit(IMdkrOnlineAdapter *adapter,
+                                 MdkrOnlineViewAction action, unsigned value) {
+        static uint64_t nextId = 1000000u; /* distinct from cmd()'s ids */
+        MdkrOnlineAdapterCommand c;
+        c.expectedRevision = adapter->revision();
+        c.requestId = nextId++;
+        c.action = action;
+        c.seat = 0u;
+        c.value = value;
+        return adapter->submit(c);
+    }
+
+    void pump(IMdkrOnlineAdapter *adapter,
+              const MdkrPartyLinkLocalIntent &intent) {
+        uint32_t refusedCommand = 0u;
+        uint32_t refusedError = 0u;
+        if (mdkr_online_live_adapter_take_refusal(adapter, &refusedCommand,
+                                                  &refusedError)) {
+            const uint8_t kind = replicaKindForCommand(refusedCommand);
+            if (kind != MDKR_PARTY_LINK_DISPATCH_NONE) {
+                mdkr_party_link_dispatch_note_refusal(&dispatch, kind);
+            }
+        }
+        MdkrPartyLinkLocalView local;
+        replicaBuildLocalView(adapter, &local);
+        MdkrPartyLinkDispatchPlan plan;
+        mdkr_party_link_plan_dispatch(&dispatch, &intent, &local, &plan);
+        for (unsigned i = 0u; i < plan.count; ++i) {
+            const MdkrPartyLinkDispatchAction &action = plan.actions[i];
+            bool sent = false;
+            switch (action.kind) {
+            case MDKR_PARTY_LINK_DISPATCH_CHOOSE_CHARACTER:
+                sent = submit(adapter, MDKR_ONLINE_VIEW_ACTION_CHOOSE_CHARACTER,
+                              action.value)
+                           .accepted;
+                break;
+            case MDKR_PARTY_LINK_DISPATCH_CHOOSE_VEHICLE:
+                sent = submit(adapter, MDKR_ONLINE_VIEW_ACTION_CHOOSE_VEHICLE,
+                              action.value)
+                           .accepted;
+                break;
+            case MDKR_PARTY_LINK_DISPATCH_CHANGE_SELECTION:
+                sent = submit(adapter, MDKR_ONLINE_VIEW_ACTION_CHANGE_SELECTION,
+                              0u)
+                           .accepted;
+                break;
+            case MDKR_PARTY_LINK_DISPATCH_READY:
+                sent = submit(adapter, MDKR_ONLINE_VIEW_ACTION_READY, 1u)
+                           .accepted;
+                break;
+            case MDKR_PARTY_LINK_DISPATCH_START_RACE:
+                /* Ancient Lake (5): raw usable-vehicle mask 0x07 -- what the
+                 * wiring's partyLinkStartVehicleMask resolves for it. */
+                sent = submit(adapter, MDKR_ONLINE_VIEW_ACTION_START_RACE, 0x07u)
+                           .accepted;
+                break;
+            case MDKR_PARTY_LINK_DISPATCH_SET_MODE:
+                sent = mdkr_online_live_adapter_set_mode(adapter, action.value);
+                break;
+            case MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK:
+                sent = mdkr_online_live_adapter_set_config_track(adapter,
+                                                                 action.value);
+                break;
+            case MDKR_PARTY_LINK_DISPATCH_SET_CUP:
+                sent = mdkr_online_live_adapter_set_cup(adapter, action.value);
+                break;
+            default:
+                break;
+            }
+            if (sent) mdkr_party_link_dispatch_mark_sent(&dispatch, &action);
+        }
+    }
+};
+
+/* Native-CHARSELECT-shaped intent for `tick` (mirrors online_charselect.c's
+ * continuous publish: legality-safe vehicle seed from entry, confirm a few
+ * ticks in, ready a few ticks later; backout mirrors !ready). The host's
+ * TRACKSELECT phase (hostLock) later adds the single-race track lock + START,
+ * mirroring online_trackselect.c. */
+MdkrPartyLinkLocalIntent nativeSelectionIntent(unsigned tick, unsigned character,
+                                               bool hostLock) {
+    MdkrPartyLinkLocalIntent in;
+    mdkr_party_link_intent_init(&in);
+    in.hover_character = static_cast<uint8_t>(character);
+    in.vehicle_id = 0u; /* car -- the charselect legality-safe seed */
+    in.confirmed = tick >= 4u ? 1u : 0u;
+    in.ready = tick >= 12u ? 1u : 0u;
+    in.backout = in.ready ? 0u : 1u;
+    if (hostLock) {
+        in.mode = MDKR_PARTY_LINK_MODE_SINGLE;
+        in.config_track = 5u; /* Ancient Lake */
+        in.start_requested = 1u;
+    }
+    return in;
+}
+
+void test_native_selection_converges_over_room_latency() {
+    mdkr_net_roster_runtime_clear();
+
+    FakeMatchRoom room;
+    FakeHub hub;
+    FakeClock clock;
+    LatencyRoomClock roomClock;
+    /* Request leg 2 ticks, response leg 2 ticks, State broadcast 2 ticks
+     * behind the response -- a CommandResult refusal always lands BEFORE the
+     * State that would explain it, the production hazard. */
+    LatencyRoomTransport transportA(&room, &roomClock, 2u, 2u, 2u);
+    LatencyRoomTransport transportB(&room, &roomClock, 2u, 2u, 2u);
+    HubMeshBackend backendA(&hub);
+    HubMeshBackend backendB(&hub);
+
+    auto A = mdkr_online_live_adapter_create(
+        baseOptions(&transportA, &backendA, &clock,
+                    MDKR_ONLINE_JOURNEY_CREATE));
+    auto B = mdkr_online_live_adapter_create(
+        baseOptions(&transportB, &backendB, &clock,
+                    MDKR_ONLINE_JOURNEY_JOIN));
+    CHECK(A != nullptr);
+    CHECK(B != nullptr);
+    if (!A || !B) return;
+    std::vector<IMdkrOnlineAdapter *> both{A.get(), B.get()};
+
+    /* One tick of the latency world: the room channel advances, both adapters
+     * service (drain events + mesh), the fake ms clock moves a frame. */
+    auto tickWorld = [&]() {
+        ++roomClock.now;
+        A->service();
+        B->service();
+        clock.nowMs += 33u;
+    };
+    auto pumpLatencyUntil = [&](const std::function<bool()> &done,
+                                unsigned maxTicks,
+                                unsigned sleepMs) -> bool {
+        for (unsigned t = 0u; t < maxTicks; ++t) {
+            tickWorld();
+            if (done()) return true;
+            if (sleepMs != 0u) {
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(sleepMs));
+            }
+        }
+        return done();
+    };
+
+    /* Pair the room through the latency channel to SELECTING -- a FRESH
+     * single-race room: NO configured track, NO votes (the production
+     * two-process capstone shape; the native screens never cast a vote). */
+    A->submit(cmd(A.get(), MDKR_ONLINE_VIEW_ACTION_CREATE_ROOM));
+    CHECK(pumpLatencyUntil([&]() {
+        return viewOf(A.get()).kind == MDKR_ONLINE_VIEW_ROOM;
+    }, 200u, 0u));
+    B->submit(cmd(B.get(), MDKR_ONLINE_VIEW_ACTION_JOIN_ROOM));
+    CHECK(pumpLatencyUntil([&]() {
+        return viewOf(A.get()).member_count == 2u &&
+               viewOf(B.get()).member_count == 2u;
+    }, 200u, 0u));
+    A->submit(cmd(A.get(), MDKR_ONLINE_VIEW_ACTION_CHECK_SETUP));
+    B->submit(cmd(B.get(), MDKR_ONLINE_VIEW_ACTION_CHECK_SETUP));
+    hub.welcome(backendA.began);
+    hub.welcome(backendB.began);
+    CHECK(pumpLatencyUntil([&]() {
+        return viewOf(A.get()).verification_phrase[0] != '\0' &&
+               viewOf(B.get()).verification_phrase[0] != '\0';
+    }, 6000u, 5u));
+    A->submit(cmd(A.get(), MDKR_ONLINE_VIEW_ACTION_CONFIRM_PHRASE));
+    B->submit(cmd(B.get(), MDKR_ONLINE_VIEW_ACTION_CONFIRM_PHRASE));
+    CHECK(pumpLatencyUntil([&]() {
+        return viewOf(A.get()).kind == MDKR_ONLINE_VIEW_SELECTING &&
+               viewOf(B.get()).kind == MDKR_ONLINE_VIEW_SELECTING;
+    }, 400u, 1u));
+
+    MdkrOnlineLobby check{};
+    CHECK(mdkr_online_live_adapter_lobby(A.get(), &check));
+    CHECK(check.configured_track == MDKR_ONLINE_NO_VOTE); /* genuinely fresh */
+
+    /* Both peers now run the native selection: per-frame intent republish
+     * through the per-endpoint replica pumps (host picks Timber 1, joiner
+     * Pipsy 2 -- distinct racers, as the per-role scripted pick guarantees). */
+    ReplicaIntentPump pumpA;
+    ReplicaIntentPump pumpB;
+    pumpA.reset();
+    pumpB.reset();
+
+    auto bothMembersReady = [&]() {
+        unsigned readyCount = 0u;
+        for (unsigned i = 0u; i < MDKR_ONLINE_MAX_ENDPOINTS; ++i) {
+            if (room.lobby.members[i].occupied && room.lobby.members[i].ready) {
+                ++readyCount;
+            }
+        }
+        return readyCount == 2u;
+    };
+
+    unsigned selTick = 0u;
+    bool converged = false;
+    const unsigned kSelectionBudget = 1500u;
+    for (; selTick < kSelectionBudget; ++selTick) {
+        tickWorld();
+        pumpA.pump(A.get(), nativeSelectionIntent(selTick, 1u, false));
+        pumpB.pump(B.get(), nativeSelectionIntent(selTick, 2u, false));
+        if (bothMembersReady()) {
+            converged = true;
+            break;
+        }
+    }
+    CHECK(converged); /* B1: seat.ready must latch for BOTH peers, bounded */
+    std::fprintf(stderr,
+                 "[latency-rig] both-ready tick=%u staleA=%u staleB=%u "
+                 "setCharA=%u setCharB=%u setVehA=%u setVehB=%u\n",
+                 selTick, transportA.refusedStaleRevision,
+                 transportB.refusedStaleRevision,
+                 transportA.acceptedSetCharacter,
+                 transportB.acceptedSetCharacter,
+                 transportA.acceptedSetVehicle, transportB.acceptedSetVehicle);
+    if (!converged) return; /* the wedge -- nothing below is meaningful */
+
+    /* Seat truth at the reducer: distinct characters, seeded vehicles. */
+    CHECK(room.lobby.seats[0].character_id == 1u ||
+          room.lobby.seats[0].character_id == 2u);
+    CHECK(room.lobby.seats[1].character_id == 1u ||
+          room.lobby.seats[1].character_id == 2u);
+    CHECK(room.lobby.seats[0].character_id !=
+          room.lobby.seats[1].character_id);
+    CHECK(room.lobby.seats[0].vehicle_id == 0u);
+    CHECK(room.lobby.seats[1].vehicle_id == 0u);
+
+    /* STABILITY: keep republishing the same intents; ready must STAY latched
+     * (a redundant self-SET storm would knock it back down -- the reducer
+     * clears ready on EVERY accepted SET_CHARACTER/SET_VEHICLE). */
+    bool stayedReady = true;
+    for (unsigned hold = 0u; hold < 120u; ++hold) {
+        tickWorld();
+        pumpA.pump(A.get(), nativeSelectionIntent(selTick + hold, 1u, false));
+        pumpB.pump(B.get(), nativeSelectionIntent(selTick + hold, 2u, false));
+        if (!bothMembersReady()) stayedReady = false;
+    }
+    CHECK(stayedReady);
+
+    /* ANTI-CHURN: each endpoint changed its character/vehicle ONCE; a healthy
+     * dispatch layer never lands more than a couple of accepted SETs (each
+     * accepted redundant SET is a ready-reset time bomb on a live room). */
+    CHECK(transportA.acceptedSetCharacter <= 3u);
+    CHECK(transportB.acceptedSetCharacter <= 3u);
+    CHECK(transportA.acceptedSetVehicle <= 3u);
+    CHECK(transportB.acceptedSetVehicle <= 3u);
+
+    /* HOST TRACK LOCK + START (native TRACKSELECT shape): the config clears
+     * every member's ready; both peers' continuous intents re-ready; the
+     * host's START takes the room to LOADING. */
+    bool loading = false;
+    for (unsigned t = 0u; t < 1500u && !loading; ++t) {
+        tickWorld();
+        pumpA.pump(A.get(),
+                   nativeSelectionIntent(selTick + 200u + t, 1u, true));
+        pumpB.pump(B.get(),
+                   nativeSelectionIntent(selTick + 200u + t, 2u, false));
+        loading = room.lobby.phase != MDKR_ONLINE_LOBBY;
+    }
+    CHECK(loading);
+    CHECK(room.lobby.phase == MDKR_ONLINE_LOADING);
+    CHECK(room.lobby.configured_track == 5u);
+    CHECK(room.lobby.selected_track == 5u);
+
+    std::fprintf(stderr,
+                 "[latency-rig] LOADING reached: track=%u staleA=%u staleB=%u "
+                 "readyAccA=%u readyAccB=%u\n",
+                 room.lobby.selected_track, transportA.refusedStaleRevision,
+                 transportB.refusedStaleRevision, transportA.acceptedSetReady,
+                 transportB.acceptedSetReady);
+    mdkr_net_roster_runtime_clear();
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
     bool matrixOnly = false;
+    bool latencyOnly = false;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--matrix") == 0) matrixOnly = true;
+        if (std::strcmp(argv[i], "--latency") == 0) latencyOnly = true;
     }
     /* The token gate must be open for the live adapter to construct. The
      * matrix lane runs in its own process, so set it there too. */
@@ -2252,6 +2766,13 @@ int main(int argc, char **argv) {
     if (matrixOnly) {
         test_impairment_matrix();
         std::fprintf(stderr, "online_live_matrix: %d checks, %d failures\n",
+                     g_checks, g_failures);
+        return g_failures == 0 ? 0 : 1;
+    }
+    if (latencyOnly) {
+        test_native_selection_converges_over_room_latency();
+        std::fprintf(stderr,
+                     "online_live_latency_rig: %d checks, %d failures\n",
                      g_checks, g_failures);
         return g_failures == 0 ? 0 : 1;
     }
@@ -2273,6 +2794,7 @@ int main(int argc, char **argv) {
     test_race_end_card_survives_late_state();
     test_tournament_points_accrue();
     test_phrase_mismatch_rekeys_both_sides();
+    test_native_selection_converges_over_room_latency();
     std::fprintf(stderr, "online_live_adapter: %d checks, %d failures\n",
                  g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
