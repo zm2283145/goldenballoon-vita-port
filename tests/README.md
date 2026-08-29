@@ -6055,6 +6055,30 @@ progress route) and `MDKR_TROPHY_FORCE_ENTER` forces the cabinet's own
 `begin_trophy_race_teleport()` there — the least-fake entry; the cabinet's
 precondition-gated collision/dialogue is covered 1P by `check_trophy_series.py`.
 
+### Adventure Party — Adventure Two matrix — `tests/check_adventure_party_adventure_two.py`
+
+```
+python3 tests/check_adventure_party_adventure_two.py     # ~30 min, muted + headless
+python3 tests/check_adventure_party_adventure_two.py -v
+```
+
+AP-16 Part C. Adventure Two is a **required matrix arm, not a separate
+implementation**: an A2-flagged party fixture (`CUTSCENE_ADVENTURE_TWO` set,
+Adventure Two picked at GAME SELECT via a DOWN) drives the SAME party policy with
+**no new game-side branch** (the boundary scanner is unchanged; the party
+admission, hub-formation, race-field, silver and award adapters are all
+A1/A2-agnostic — the A2-specific mirroring / A2 coin init is orthogonal retail code
+keyed on `is_in_adventure_two`). Three arms: (1) 3P admission → hub on A2 (the party
+forms a 3-seat session and resumes the A2 save); (2) a default race win is exact-once
+(`aparty_award` + one `RACE_CLEARED`) and its save slot is **byte-identical** to a 1P
+A2 win of the same mirrored course; (3) a silver scene banks ONE team tally over the
+**A2 coin object set** (`obj_init_silvercoin_adv2`) — any human collect, `invis=0x600`
+for all viewports, one SILVER award — the AP-14 machinery unchanged. The load-bearing
+no-new-adapters witness is `racefield: level=5 humans=3 cpus=3 total=6 viewports=3`
+with `adventure_mode: level=5 adventureTwo=1 mirrored=1` (the identical six-racer
+party split on the mirrored course). Positive controls fire. If A2 had needed any new
+game-side branch this would be BLOCKED (it did not).
+
 ### Adventure Party Taj transaction — `tests/check_adventure_party_taj.py`
 
 ```bash

@@ -847,6 +847,15 @@ CHECKS = (
           "ONE COMPLETION_TROPHY token, persisting gold (0x3) byte-equal to a 1P gold; "
           "a 1P-ref awards the same gold with NO party token; the party returns to the "
           "same lobby; two positive controls fire (duplicate-consume, stripped-field)"),
+    Check("adventure_party_adventure_two", "check_adventure_party_adventure_two.py",
+          "native",
+          "AP-16 Part C matrix: an Adventure-Two-flagged party fixture drives the "
+          "SAME party policy with no new game-side branch -- (1) 3P admission -> hub "
+          "on A2 (party forms, A2 save resumed), (2) a default race win is exact-once "
+          "and byte-identical to a 1P A2 win of the same mirrored course, (3) a silver "
+          "scene banks one team tally over the A2 coin object set (any human collect, "
+          "invis=0x600, one SILVER award); adventure_mode adventureTwo=1 mirrored=1 "
+          "throughout; two positive controls fire"),
     Check("adventure_hub", "check_adventure_hub.py", "native",
           "Adventure hub traversal"),
     Check("adventure_two", "check_adventure_two.py", "native",
