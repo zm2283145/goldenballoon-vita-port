@@ -143,6 +143,13 @@ def main() -> int:
                 "MDKR_APP_TEST_ONLINE_LIVE_RESIDENT": str(args.races),
                 "MDKR_APP_TEST_ONLINE_MODE": "tournament",
                 "MDKR_TEST_ONLINE_RESULTS_HOST_PRESS": "1",
+                # The MORE-RACES chooser is the sole RESULTS terminal now, so the
+                # host reaches FINISH the way a player would: navigate to the FINISH
+                # option (index 5) and press A. FINISH -> LEAVE -> (resultsIsFinal)
+                # champion CEREMONY -> the single FINISHED handshake this lane asserts.
+                # Inert on the non-final rounds (the chooser fronts only at the FINAL
+                # standings; races 1..N-1 still auto-REMATCH to the next round).
+                "MDKR_TEST_ONLINE_RESULTS_CHOOSER": "5",
                 # PD-T6f: the final standings now detours through the champion
                 # CEREMONY before the FINISHED handshake this lane asserts; skip its
                 # bounded hold so the resident frame budget is preserved.

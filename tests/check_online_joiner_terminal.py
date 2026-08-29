@@ -1,45 +1,53 @@
 #!/usr/bin/env python3
 """Exit-gate C1: the JOINER's FINAL-standings terminal has a bound INDEPENDENT of
-the host -- it can no longer hang forever on the last screen of a tournament.
+the host -- it can no longer hang forever on the last screen of a tournament --
+proven through the now-unconditional native "MORE RACES" chooser.
 
-THE BUG (masked by a test seam): on the final race BOTH consoles take the native
-takeover and reach the terminal FINAL STANDINGS. The HOST exits on A:FINISH ->
-CEREMONY -> FINISHED. The JOINER's only terminal exit USED to be "wait for the
-forward feed to leave the RESULTS phase" -- but after the host finishes, the
-reducer PARKS in RESULTS (no REMATCH, no CLOSE on a final race), the wall-clock
-watchdog is excluded for the final standings, and pad B was swallowed at the
-terminal. So in real 2-console play the joiner wedged: no watchdog, no manual
-escape, no launcher escape -> a hard hang requiring force-quit. The headless proof
-of record used MDKR_TEST_ONLINE_RESULTS_JOINER_FINISH, which FORCED a fake feed
-departure -- masking exactly the production condition (feed STAYS in RESULTS).
+THE BUG (historically masked by a test seam): on the final race BOTH consoles reach
+the terminal FINAL STANDINGS. The HOST exits; the JOINER's only terminal exit USED
+to be "wait for the forward feed to leave the RESULTS phase" -- but after the host
+finishes, the reducer PARKS in RESULTS (no REMATCH, no CLOSE on a final race), the
+wall-clock watchdog is excluded for the final standings, and pad B was swallowed at
+the terminal. So in real 2-console play the joiner wedged: a hard hang.
 
-THE FIX: the joiner terminal now LEAVEs on ANY of an honored A/B press, a generous
-self-advance DWELL (so it advances with NO input at all), or a genuine phase
-departure -- all routing to LEAVE -> CEREMONY -> FINISHED (its own per-endpoint
-celebration, already no-hang). The host's interactive hold is UNCHANGED.
+THE CHOOSER-FLOW FIX (Track D3 + this migration): the RESULTS terminal is now the
+unconditional MORE-RACES chooser. A non-host endpoint renders the display-only
+joiner MIRROR, which ends the session on TWO events, each a bound INDEPENDENT of the
+host: a VANISHED host (the room down to just this seat, debounced by
+RES_CHOOSER_VACATE_DEBOUNCE) and a deliberate confirmed B. The old BLIND
+self-advance dwell was deliberately REMOVED (it wrongly bailed while the host was
+merely deliberating, D3) -- so the mirror WAITS while the host is present and only
+ends when the host is genuinely gone. Either exit routes LEAVE -> the joiner's OWN
+per-endpoint champion CEREMONY -> FINISHED (no hang).
 
-THIS LANE proves the fix on the REAL no-seam path -- it NEVER sets
-MDKR_TEST_ONLINE_RESULTS_JOINER_FINISH (the seam that masked the bug). It uses a
-terminal-only role-flip seam (MDKR_TEST_ONLINE_RESULTS_JOINER_TERMINAL) that only
-routes the terminal into the joiner branch; the forward feed genuinely STAYS in
-RESULTS (feedDeparted never fires), so the joiner leaves ONLY via the real
-self-advance/press paths:
+THIS LANE proves the migrated contract on the two rigs that matter:
 
-  (press)        full descriptor-less TOURNAMENT loopback (same rig as the ceremony
-                 lane) + a scripted terminal press -> the joiner honors A ->
-                 CEREMONY -> the SINGLE FINISHED, launcher reads reason=FINISHED
-                 result=0, rc 0. Proves the honored-press path end-to-end WITH the
-                 launcher read, feed still in RESULTS (NOT feed-departed).
+  (vanished-host)  RESIDENT soak (single final race) driving the chooser JOINER
+                   MIRROR (MDKR_TEST_ONLINE_RESULTS_CHOOSER=joiner-vacate): the sole
+                   remote (host) seat vacates while the feed stays in RESULTS, so the
+                   mirror ends the session via its OWN debounced vanished-host exit
+                   -> CEREMONY -> the SINGLE FINISHED. The impossible-to-hang proof:
+                   the joiner needs no press of its own, and it is the MIRROR's exit
+                   (not the removed blind dwell, not a host press) that leaves.
 
-  (self-advance) RESIDENT soak (single final race) + NO input at the terminal ->
-                 the joiner SELF-ADVANCES on its own countdown DWELL (the
-                 impossible-to-hang proof: it needs no press from anyone) ->
-                 CEREMONY -> the SINGLE FINISHED, rc 0. The final-standings
-                 countdown visibly decremented to ~0 before it fired, so this is
-                 the DWELL, not an instant exit.
+  (remote-gone-final, P2 / online_session !resultsIsFinal gate) a full descriptor-
+                   less TOURNAMENT reaches the FINAL standings with the remote seat
+                   FORCED GONE (MDKR_TEST_ONLINE_REMOTE_VACATE_AT_RESULTS_FINAL,
+                   scoped to resultsIsFinal so it is inert on the non-final rounds).
+                   The chooser terminal still reaches FINISHED (+ the launcher
+                   reason=FINISHED read on the loopback lobby-start dispatch), and --
+                   the P2 assertion -- the online_session RESULTS remote-vacate
+                   detector must NOT trip a LEFT at the final standings: its
+                   !resultsIsFinal gate keeps the 0.75s detector OFF the earned
+                   terminal even though the host has vanished. Without the gate the
+                   detector would trip LEFT first (the remote is forced gone); this
+                   lane fails (VACATE_LEFT appears / reason != FINISHED) in that case.
+                   The detector is only reachable on the descriptor-less
+                   (beganWithoutDescriptor) loopback rig, so the gate is proven
+                   LOAD-BEARING here, not vacuously on a resident soak.
 
-Both assert the terminal advance was NOT `(feed-departed)` -- i.e. the masking
-mechanism did NOT fire -- and that the host-press terminal path did NOT run.
+Both assert the session ends via the chooser flow (never the removed blind dwell)
+and detour through the champion CEREMONY into EXACTLY ONE FINISHED.
 """
 
 from __future__ import annotations
@@ -62,21 +70,33 @@ from online_lane_util import run_engine as _run_engine
 ROOT = Path(__file__).resolve().parent.parent
 CUP = 1
 
-JOINER_TERMINAL_RE = re.compile(
-    r"^\[online-results\] finish: joiner terminal advance \((press|self-advance|"
+# The chooser JOINER MIRROR: rendered display-only (joiner=1), its own debounced
+# vanished-host exit, and the stand-in reducer's host-seat departure that stages it.
+CHOOSER_MIRROR_RE = re.compile(
+    r"^\[online-results\] chooser render mode=\d+ host=\d+ joiner=1 ", re.MULTILINE)
+JOINER_VACATE_LEAVE_RE = re.compile(
+    r"^\[online-results\] chooser: joiner mirror host vacated -> LEAVE$",
+    re.MULTILINE)
+JOINER_SEAT_VACATED_RE = re.compile(
+    r"^\[online-results\] test-reducer: joiner-mirror host seat vacated",
+    re.MULTILINE)
+# The host's committed chooser option (a MIRROR must NEVER publish one -- watch-only).
+CHOOSER_COMMIT_RE = re.compile(
+    r"^\[online-results\] chooser: committed option=", re.MULTILINE)
+CHOOSER_FINISH_RE = re.compile(
+    r"^\[online-results\] chooser: committed option=FINISH -> LEAVE$", re.MULTILINE)
+# The removed BLIND terminal dwell/press LEAVE (the old, now-dead legacy terminal).
+LEGACY_TERMINAL_RE = re.compile(
+    r"^\[online-results\] finish: joiner terminal advance \((?:press|self-advance|"
     r"feed-departed)\) -> LEAVE$", re.MULTILINE)
-HOST_FINISH_RE = re.compile(
+HOST_FINISH_LEGACY_RE = re.compile(
     r"^\[online-results\] finish: host A -> LEAVE", re.MULTILINE)
 PHASE_CEREMONY_RE = re.compile(
     r"^\[online-session\] phase=CEREMONY: final standings", re.MULTILINE)
-# The RESULTS remote-vacate detector's LEFT note (M2 wording). It must NOT appear at
-# the FINAL standings -- that is the LEFT the P2 gate (!resultsIsFinal) suppresses.
+# The RESULTS remote-vacate detector's LEFT note. It must NOT appear at the FINAL
+# standings -- that is the LEFT the P2 gate (!resultsIsFinal) suppresses.
 VACATE_LEFT_RE = re.compile(
     r"^\[online-session\] LEFT: remote seat vacated at ", re.MULTILINE)
-# Final-standings render witness (RESULTS screen); secs is the countdown.
-STANDINGS_FINAL_RE = re.compile(
-    r"^\[online-results\] render stage=standings mode=\d+ race=\d+ host=\d+ "
-    r"placements=[\d,]+ points=[\d,]+ secs=(\d+) final=1$", re.MULTILINE)
 POSTRACE_EXIT = "[online-postrace] session end requested"
 
 
@@ -90,133 +110,91 @@ def run_engine(binary: Path, rom: Path, ticks: int, timeout: int, verbose: bool,
                        prefix="mdkr64-joiner-terminal-")
 
 
-def _common_joiner_asserts(tag: str, rc: int, output: str,
-                           want_kind: str) -> int | None:
-    """Shared contract for both no-seam scenarios: the joiner LEFT the terminal via
-    the REAL path (`want_kind`, never `feed-departed`), the host-press path did NOT
-    fire, the session detoured through the CEREMONY into EXACTLY ONE FINISHED, and
-    the run exited cleanly with no forbidden markers / no park."""
-    marker = forbidden_marker(output, *FORBIDDEN_ONLINE)
-    if marker:
-        return fail(f"[{tag}] observed forbidden marker {marker!r}", output)
-    if rc != 0:
-        return fail(f"[{tag}] process exited {rc} (a joiner hang would time out; a "
-                    f"nonzero is a wrong end reason)", output)
-    advances = JOINER_TERMINAL_RE.findall(output)
-    if not advances:
-        return fail(f"[{tag}] the joiner never advanced off the FINAL standings "
-                    f"terminal (it would have parked forever)", output)
-    if "feed-departed" in advances:
-        return fail(f"[{tag}] the joiner advanced via `feed-departed` -- that is the "
-                    f"MASKED mechanism; the no-seam proof must fire the real "
-                    f"self-advance/press path, saw {advances}", output)
-    if want_kind not in advances:
-        return fail(f"[{tag}] expected a `{want_kind}` joiner terminal advance, saw "
-                    f"{advances}", output)
-    if HOST_FINISH_RE.search(output):
-        return fail(f"[{tag}] the host-press `finish: host A -> LEAVE` path fired -- "
-                    f"the terminal role-flip must exercise the JOINER, not the host",
+def _no_legacy_terminal(tag: str, output: str) -> int | None:
+    """Neither of the removed legacy-terminal LEAVE paths may fire: the whole point
+    of the migration is that the unconditional chooser OWNS the terminal now."""
+    if LEGACY_TERMINAL_RE.search(output):
+        return fail(f"[{tag}] the removed legacy joiner-terminal advance fired -- the "
+                    f"unconditional chooser must own the terminal, not the old blind "
+                    f"press/dwell/feed-departed path", output)
+    if HOST_FINISH_LEGACY_RE.search(output):
+        return fail(f"[{tag}] the removed legacy `finish: host A -> LEAVE` path fired",
                     output)
-    if not PHASE_CEREMONY_RE.search(output):
-        return fail(f"[{tag}] the session never detoured into CEREMONY off the "
-                    f"joiner LEAVE", output)
-    finished = FINISHED_ENGINE_RE.findall(output)
-    if len(finished) != 1:
-        return fail(f"[{tag}] FINISHED must fire EXACTLY ONCE across the joiner "
-                    f"self-advance path, saw {len(finished)}", output)
     return None
 
 
-def check_press(binary: Path, rom: Path, verbose: bool) -> int | None:
-    """(press) full TOURNAMENT loopback + honored terminal press -> CEREMONY ->
-    the single FINISHED, WITH the launcher reason=FINISHED result=0 read; the feed
-    genuinely stays in RESULTS (NOT feed-departed)."""
-    tag = "press"
-    try:
-        rc, output = run_engine(
-            binary, rom, ticks=30000, timeout=900, verbose=verbose,
-            extra_env={
-                "MDKR_APP_TEST_ONLINE_LIVE_LOBBY_START": "1",
-                "MDKR_APP_TEST_ONLINE_MODE": "tournament",
-                "MDKR_APP_TEST_ONLINE_CUP": str(CUP),
-                "MDKR_TEST_ONLINE_LOBBY_START": "1",
-                "MDKR_TEST_ONLINE_LOBBY_TOURNAMENT": "1",
-                "MDKR_TEST_ONLINE_RESULTS_HOST_PRESS": "1",
-                "MDKR_TEST_ONLINE_RESULTS_JOINER_TERMINAL": "1",
-                "MDKR_TEST_ONLINE_CEREMONY_SKIP": "1",
-            })
-    except subprocess.TimeoutExpired as error:
-        return fail(f"[{tag}] run timed out (the joiner parked on the final "
-                    f"standings instead of self-advancing?): {error}")
-    guard = _common_joiner_asserts(tag, rc, output, "press")
-    if guard is not None:
-        return guard
-    if POSTRACE_EXIT in output:
-        return fail(f"[{tag}] took the platform-exit path mid-cup", output)
-    boots = DIRECT_BOOT_RE.findall(output)
-    if len(boots) != CUP_ROUNDS:
-        return fail(f"[{tag}] expected {CUP_ROUNDS} direct boots (the full cup must "
-                    f"run before the joiner FINISH), saw {len(boots)}", output)
-    ends = SESSION_END_RE.findall(output)
-    if not any(reason == "FINISHED" and code == "0" for reason, code in ends):
-        return fail(f"[{tag}] launcher never read reason=FINISHED result=0; saw "
-                    f"{ends}", output)
-    for reason, _code in ends:
-        if reason != "FINISHED":
-            return fail(f"[{tag}] an unexpected session-end reason {reason!r} leaked",
-                        output)
-    return None
-
-
-def check_self_advance(binary: Path, rom: Path, verbose: bool) -> int | None:
-    """(self-advance) RESIDENT single-final-race soak with NO terminal input -> the
-    joiner SELF-ADVANCES on its own countdown DWELL -> CEREMONY -> the single
-    FINISHED. The final-standings countdown visibly decremented to ~0 first, so it
-    is the DWELL that fired, not an instant exit."""
-    tag = "self-advance"
+def check_vacate(binary: Path, rom: Path, verbose: bool) -> int | None:
+    """(vanished-host) RESIDENT single-final-race soak driving the chooser JOINER
+    MIRROR: the sole remote (host) seat vacates while the feed stays in RESULTS, so
+    the mirror ends the session via its OWN debounced vanished-host exit -> CEREMONY
+    -> the single FINISHED. The joiner needs no press of its own (impossible-to-hang),
+    and it is the MIRROR's exit -- not the removed blind dwell -- that leaves."""
+    tag = "vanished-host"
     try:
         rc, output = run_engine(
             binary, rom, ticks=12000, timeout=600, verbose=verbose,
             extra_env={
                 "MDKR_TEST_ONLINE_RESIDENT": "1",  # single race == the final race
-                "MDKR_TEST_ONLINE_RESULTS_JOINER_TERMINAL": "1",
+                "MDKR_TEST_ONLINE_RESULTS_CHOOSER": "joiner-vacate",
                 "MDKR_TEST_ONLINE_CEREMONY_SKIP": "1",
-                # NOTE: deliberately NO host-press env, so the terminal receives NO
-                # input and must fire the self-advance DWELL backstop.
+                # NOTE: deliberately NO host-press env -- the joiner mirror ignores
+                # host input, and the vanished-host exit needs no press from anyone.
             })
     except subprocess.TimeoutExpired as error:
-        return fail(f"[{tag}] run timed out (the self-advance dwell never fired -- a "
-                    f"joiner hang): {error}")
-    guard = _common_joiner_asserts(tag, rc, output, "self-advance")
+        return fail(f"[{tag}] run timed out (the mirror never ended on the vanished "
+                    f"host -- a reintroduced joiner hang): {error}")
+    marker = forbidden_marker(output, *FORBIDDEN_ONLINE)
+    if marker:
+        return fail(f"[{tag}] observed forbidden marker {marker!r}", output)
+    if rc != 0:
+        return fail(f"[{tag}] process exited {rc}", output)
+    guard = _no_legacy_terminal(tag, output)
     if guard is not None:
         return guard
+    if not CHOOSER_MIRROR_RE.search(output):
+        return fail(f"[{tag}] the terminal never rendered the display-only joiner "
+                    f"mirror (joiner=1)", output)
+    if CHOOSER_COMMIT_RE.search(output):
+        return fail(f"[{tag}] the joiner mirror published a chooser commit (it must "
+                    f"be watch-only, never drive the option list)", output)
+    if not JOINER_SEAT_VACATED_RE.search(output):
+        return fail(f"[{tag}] the host seat never vacated -- the control did not "
+                    f"stage a vanished host", output)
+    if not JOINER_VACATE_LEAVE_RE.search(output):
+        return fail(f"[{tag}] the joiner mirror did not end the session on the "
+                    f"vanished host via its own debounced exit (a reintroduced hang)",
+                    output)
+    if VACATE_LEFT_RE.search(output):
+        return fail(f"[{tag}] the online_session RESULTS remote-vacate detector "
+                    f"tripped a LEFT at the final standings -- the mirror, not the "
+                    f"detector, must own the vanished-host exit here", output)
+    if not PHASE_CEREMONY_RE.search(output):
+        return fail(f"[{tag}] the session never detoured into CEREMONY off the joiner "
+                    f"mirror's LEAVE", output)
+    finished = FINISHED_ENGINE_RE.findall(output)
+    if len(finished) != 1:
+        return fail(f"[{tag}] FINISHED must fire EXACTLY ONCE across the mirror's "
+                    f"vanished-host exit, saw {len(finished)}", output)
     boots = DIRECT_BOOT_RE.findall(output)
     if len(boots) < 1:
         return fail(f"[{tag}] no race booted before the final standings", output)
-    # The DWELL really counted down: a final-standings render showed the countdown
-    # near 0 before the advance (an instant exit would never reach ~0).
-    final_secs = [int(s) for s in STANDINGS_FINAL_RE.findall(output)]
-    if not final_secs:
-        return fail(f"[{tag}] no FINAL standings render to time the dwell", output)
-    if min(final_secs) > 1:
-        return fail(f"[{tag}] the final-standings countdown never approached 0 "
-                    f"(min={min(final_secs)}s) -- the self-advance did not wait out "
-                    f"the dwell", output)
     return None
 
 
 def check_remote_gone_final(binary: Path, rom: Path, verbose: bool) -> int | None:
-    """(remote-gone-final, final-review P2 / code M5 / design C-4) a descriptor-less
+    """(remote-gone-final, P2 / online_session !resultsIsFinal gate) a descriptor-less
     TOURNAMENT reaches the FINAL standings with the remote seat FORCED GONE
     (MDKR_TEST_ONLINE_REMOTE_VACATE_AT_RESULTS_FINAL, scoped to resultsIsFinal so it
-    is inert on the non-final rounds). The joiner terminal must STILL reach FINISHED
-    via its self-advance DWELL: the P2 gate (!resultsIsFinal on the RESULTS remote-
-    vacate detector) keeps the 0.75s vacate detector OFF the final standings, so the
-    joiner's earned FINISHED -> CEREMONY is NOT pre-empted by a LEFT even though the
-    host has vanished during the ~10s dwell. Without the gate the detector would trip
-    LEFT first; this lane fails (LEFT appears / reason != FINISHED) in that case.
-    The host is NOT pressed at the terminal (the probe suppresses it), so the DWELL
-    -- not a press -- is unambiguously what leaves. Rounds 1..N-1 proceed normally."""
+    is inert on the non-final rounds). The chooser terminal still reaches FINISHED
+    (+ the launcher reason=FINISHED read), and -- THE P2 ASSERTION -- the
+    online_session RESULTS remote-vacate detector must NOT trip a LEFT at the final
+    standings: its !resultsIsFinal gate keeps the 0.75s detector OFF the earned
+    terminal even though the host has vanished. Without the gate the detector would
+    trip LEFT first; this lane fails (LEFT appears / reason != FINISHED) in that case.
+    The detector is only reachable on the descriptor-less (beganWithoutDescriptor)
+    loopback rig, so the gate is proven LOAD-BEARING here (a resident soak begins
+    descriptor-first and never runs the detector at all). Rounds 1..N-1 proceed
+    normally; the FINAL terminal is the unconditional chooser's FINISH."""
     tag = "remote-gone-final"
     try:
         rc, output = run_engine(
@@ -228,23 +206,45 @@ def check_remote_gone_final(binary: Path, rom: Path, verbose: bool) -> int | Non
                 "MDKR_TEST_ONLINE_LOBBY_START": "1",
                 "MDKR_TEST_ONLINE_LOBBY_TOURNAMENT": "1",
                 "MDKR_TEST_ONLINE_RESULTS_HOST_PRESS": "1",
-                "MDKR_TEST_ONLINE_RESULTS_JOINER_TERMINAL": "1",
+                # The unconditional MORE-RACES chooser owns the terminal: the host
+                # reaches FINISH the way a player would (navigate to FINISH, index 5).
+                # With the remote forced gone at the final, the online_session vacate
+                # detector is gated OFF (!resultsIsFinal) and the terminal earns its
+                # FINISHED rather than being pre-empted by a spurious LEFT.
+                "MDKR_TEST_ONLINE_RESULTS_CHOOSER": "5",
                 "MDKR_TEST_ONLINE_REMOTE_VACATE_AT_RESULTS_FINAL": "1",
                 "MDKR_TEST_ONLINE_CEREMONY_SKIP": "1",
             })
     except subprocess.TimeoutExpired as error:
         return fail(f"[{tag}] run timed out (a reintroduced hang, or the vacate "
-                    f"detector pre-empted the dwell without a clean exit?): {error}")
-    guard = _common_joiner_asserts(tag, rc, output, "self-advance")
+                    f"detector pre-empted the terminal without a clean exit?): {error}")
+    marker = forbidden_marker(output, *FORBIDDEN_ONLINE)
+    if marker:
+        return fail(f"[{tag}] observed forbidden marker {marker!r}", output)
+    if rc != 0:
+        return fail(f"[{tag}] process exited {rc}", output)
+    guard = _no_legacy_terminal(tag, output)
     if guard is not None:
         return guard
+    if POSTRACE_EXIT in output:
+        return fail(f"[{tag}] took the platform-exit path mid-cup", output)
     # THE P2 ASSERTION: the RESULTS remote-vacate detector must NOT have tripped at
-    # the final standings. A "vacated at" LEFT here is exactly the earned-FINISHED
-    # pre-emption the gate exists to prevent.
+    # the final standings. A "vacated at" LEFT here is exactly the earned-terminal
+    # pre-emption the !resultsIsFinal gate exists to prevent.
     if VACATE_LEFT_RE.search(output):
         return fail(f"[{tag}] the RESULTS remote-vacate detector tripped a LEFT at "
                     f"the final standings -- the P2 gate (!resultsIsFinal) is NOT "
-                    f"holding; the joiner's earned FINISHED was pre-empted", output)
+                    f"holding; the earned FINISHED was pre-empted", output)
+    if not CHOOSER_FINISH_RE.search(output):
+        return fail(f"[{tag}] the chooser terminal never committed FINISH (the "
+                    f"unconditional chooser must own the terminal)", output)
+    if not PHASE_CEREMONY_RE.search(output):
+        return fail(f"[{tag}] the session never detoured into CEREMONY off the "
+                    f"terminal FINISH", output)
+    finished = FINISHED_ENGINE_RE.findall(output)
+    if len(finished) != 1:
+        return fail(f"[{tag}] FINISHED must fire EXACTLY ONCE, saw {len(finished)}",
+                    output)
     ends = SESSION_END_RE.findall(output)
     if not any(reason == "FINISHED" and code == "0" for reason, code in ends):
         return fail(f"[{tag}] launcher never read reason=FINISHED result=0 (a LEFT "
@@ -252,7 +252,7 @@ def check_remote_gone_final(binary: Path, rom: Path, verbose: bool) -> int | Non
     for reason, _code in ends:
         if reason != "FINISHED":
             return fail(f"[{tag}] an unexpected session-end reason {reason!r} leaked "
-                        f"-- the completed-cup joiner must finish FINISHED, not LEFT",
+                        f"-- the completed-cup terminal must finish FINISHED, not LEFT",
                         output)
     boots = DIRECT_BOOT_RE.findall(output)
     if len(boots) != CUP_ROUNDS:
@@ -275,26 +275,26 @@ def main() -> int:
         if not path.is_file():
             parser.error(f"missing {label}: {path}")
 
-    for scenario in (check_press, check_self_advance, check_remote_gone_final):
+    for scenario in (check_vacate, check_remote_gone_final):
         result = scenario(binary, rom, args.verbose)
         if result is not None:
             return result
 
     print(
         "PASS online joiner-terminal: the JOINER's FINAL-standings terminal has a "
-        "bound INDEPENDENT of the host, proven on the REAL no-seam path (feed STAYS "
-        "in RESULTS -- NEVER feed-departed, NEVER the masking "
-        "MDKR_TEST_ONLINE_RESULTS_JOINER_FINISH seam): (press) a full descriptor-"
-        "less tournament + an honored terminal A press -> CEREMONY -> the single "
-        "FINISHED, launcher reads reason=FINISHED result=0, rc 0; (self-advance) a "
-        "RESIDENT single-final-race soak with NO terminal input -> the joiner "
-        "self-advances on its own countdown DWELL (impossible-to-hang) -> CEREMONY "
-        "-> the single FINISHED, rc 0, the final-standings countdown having "
-        "decremented to ~0 first; (remote-gone-final, P2) with the remote seat FORCED "
-        "GONE at the final standings the joiner STILL reaches FINISHED via the dwell "
-        "-- the !resultsIsFinal gate keeps the RESULTS remote-vacate detector from "
-        "pre-empting the earned FINISHED with a LEFT (no 'vacated at' LEFT, reason "
-        "FINISHED, full 4-round cup). The host-press terminal path never fired.")
+        "bound INDEPENDENT of the host, proven through the unconditional MORE-RACES "
+        "chooser (never the removed blind dwell/press): (vanished-host) a RESIDENT "
+        "single-final-race soak drives the display-only joiner MIRROR, the sole "
+        "remote (host) seat vacates while the feed stays in RESULTS, and the mirror "
+        "ends the session via its OWN debounced vanished-host exit -> CEREMONY -> the "
+        "single FINISHED (no press from anyone -- impossible to hang; the mirror "
+        "never commits a chooser option); (remote-gone-final, P2) a full descriptor-"
+        "less tournament reaches the FINAL standings with the remote FORCED GONE, the "
+        "chooser terminal earns its FINISHED (launcher reads reason=FINISHED "
+        "result=0, full 4-round cup) and the online_session RESULTS remote-vacate "
+        "detector does NOT pre-empt it with a LEFT -- the !resultsIsFinal gate holds "
+        "LOAD-BEARINGLY on the beganWithoutDescriptor rig where the detector actually "
+        "runs (no 'vacated at' LEFT). The removed legacy terminal never fired.")
     return 0
 
 

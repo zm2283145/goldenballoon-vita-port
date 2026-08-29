@@ -107,6 +107,13 @@ def check_single_endpoint_advance(binary: Path, rom: Path, ticks: int,
             "MDKR_TEST_ONLINE_LOBBY_TOURNAMENT": "1",
             "MDKR_TEST_ONLINE_RESULTS_HOST_PRESS": "1",
             "MDKR_APP_TEST_ONLINE_SINGLE_ENDPOINT": "1",
+            # The MORE-RACES chooser is the sole RESULTS terminal now: at the FINAL
+            # standings the host reaches FINISH the way a player would -- navigate to
+            # the FINISH option (index 5) and press A -> LEAVE -> champion CEREMONY
+            # -> the single FINISHED handshake this lane asserts. Inert on the non-
+            # final rounds (the chooser fronts only at the FINAL standings; the
+            # single-endpoint per-round re-cycle below is unchanged).
+            "MDKR_TEST_ONLINE_RESULTS_CHOOSER": "5",
             # PD-T6f: skip the champion CEREMONY's bounded hold so this lane's
             # single-endpoint frame budget + FINISHED assertion are preserved.
             "MDKR_TEST_ONLINE_CEREMONY_SKIP": "1",

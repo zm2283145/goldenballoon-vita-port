@@ -255,6 +255,13 @@ def main() -> int:
                 "MDKR_TEST_ONLINE_LOBBY_START": "1",
                 "MDKR_TEST_ONLINE_LOBBY_TOURNAMENT": "1",
                 "MDKR_TEST_ONLINE_RESULTS_HOST_PRESS": "1",
+                # The MORE-RACES chooser is the sole RESULTS terminal now: at the
+                # FINAL standings the host reaches FINISH the way a player would --
+                # navigate to the FINISH option (index 5) and press A -> LEAVE ->
+                # champion CEREMONY -> the single FINISHED handshake. Inert on the
+                # non-final rounds (the chooser fronts only at the FINAL standings;
+                # rounds 1..N-1 still auto-REMATCH to the next round below).
+                "MDKR_TEST_ONLINE_RESULTS_CHOOSER": "5",
                 # PD-T6f: the final-standings FINISH now detours through the native
                 # champion CEREMONY before FINISHED. Skip its (bounded) real-time
                 # hold so this lane's frame budget/counts are preserved -- FINISHED

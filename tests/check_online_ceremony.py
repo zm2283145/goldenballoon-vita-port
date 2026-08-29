@@ -95,6 +95,12 @@ TOURNAMENT_ENV = {
     "MDKR_TEST_ONLINE_LOBBY_START": "1",
     "MDKR_TEST_ONLINE_LOBBY_TOURNAMENT": "1",
     "MDKR_TEST_ONLINE_RESULTS_HOST_PRESS": "1",
+    # The MORE-RACES chooser is the sole RESULTS terminal now: at the FINAL
+    # standings the host reaches FINISH the way a player would -- navigate to the
+    # FINISH option (index 5) and press A -> LEAVE -> the champion CEREMONY this
+    # lane witnesses -> the single FINISHED. Inert on the non-final rounds (the
+    # chooser fronts only at the FINAL standings; rounds 1..N-1 auto-REMATCH).
+    "MDKR_TEST_ONLINE_RESULTS_CHOOSER": "5",
 }
 
 
@@ -338,7 +344,14 @@ def check_champion_on_disconnect(binary: Path, rom: Path, verbose: bool) -> int 
             extra_env={
                 "MDKR_TEST_ONLINE_RESIDENT": str(CUP_ROUNDS),  # a full 4-round cup
                 "MDKR_TEST_ONLINE_RESULTS_HOST_PRESS": "1",    # advance rounds fast
-                "MDKR_TEST_ONLINE_RESULTS_JOINER_TERMINAL": "1",
+                # The MORE-RACES chooser is the sole RESULTS terminal now, so the
+                # local (losing) host leaves the FINAL standings the way a player
+                # would: navigate to FINISH (index 5) and press A -> LEAVE ->
+                # CEREMONY. The champion is crowned from the ranking CAPTURED at the
+                # final standings (both seats present), so it is independent of which
+                # seat leaves the terminal -- the old JOINER_TERMINAL role-flip was
+                # only a way to leave it, which FINISH now does directly.
+                "MDKR_TEST_ONLINE_RESULTS_CHOOSER": "5",
                 "MDKR_TEST_ONLINE_RESIDENT_REMOTE_WINS": "1",
                 "MDKR_TEST_ONLINE_CEREMONY_REMOTE_ABSENT": "1",
                 # NO CEREMONY_SKIP: let the genuine remote-vacate end the ceremony,
