@@ -1065,6 +1065,152 @@ void drawBetaChooser(LauncherState &state) {
     }
 }
 
+// ===========================================================================
+// AUTOPAIR (test-only): drive ONLY the interactive pairing steps.
+//
+// It synthesizes the SAME UI actions a player would take to pair -- the
+// create/join chooser choice, the 6-digit join code, and the Words-Match
+// confirmation -- then goes hands-off. Everything after pairing (the room-ready
+// takeover, the native online screens, the race, the chooser, the return, the
+// re-take) is left to the PRODUCTION code path to drive itself; this function
+// never touches takeover/boot/selection logic. It exists so the two-process
+// cloud capstone lane can bootstrap pairing without a human. Inert unless
+// MDKR_APP_TEST_ONLINE_AUTOPAIR is set (create|join); compiled only under the
+// beta build. It calls buildBetaLiveAdapter / dispatch(CONFIRM_PHRASE) -- the
+// exact functions the "Host a Race" / "Join" / "Confirm" buttons call.
+void autopairService(LauncherState &state) {
+    static int resolved = -1;   // -1 unresolved, 0 off, 1 create, 2 join
+    static std::string joinCode;
+    if (resolved < 0) {
+        const char *role = std::getenv("MDKR_APP_TEST_ONLINE_AUTOPAIR");
+        if (role == nullptr || role[0] == '\0') {
+            resolved = 0;
+        } else if (std::strcmp(role, "create") == 0) {
+            resolved = 1;
+        } else if (std::strcmp(role, "join") == 0) {
+            resolved = 2;
+            const char *code = std::getenv("MDKR_APP_TEST_ONLINE_JOIN_CODE");
+            joinCode = (code != nullptr) ? code : "";
+        } else {
+            std::fprintf(stderr,
+                         "[online-autopair] invalid MDKR_APP_TEST_ONLINE_AUTOPAIR="
+                         "%s (expected create|join)\n", role);
+            resolved = 0;
+        }
+        if (resolved == 2 && joinCode.size() != 6u) {
+            std::fprintf(stderr,
+                         "[online-autopair] role=join requires a 6-digit "
+                         "MDKR_APP_TEST_ONLINE_JOIN_CODE (got %zu chars)\n",
+                         joinCode.size());
+            resolved = 0;
+        }
+    }
+    if (resolved <= 0) return;
+
+    // Step 1: the ROM. The Online Room tab is reachable without a validated ROM,
+    // and this panel (unlike RomPanel_draw) never services validation, so drive
+    // the remembered-ROM validation here until it passes -- exactly what a player
+    // who validated their ROM on the Play panel first would have done. No adapter
+    // can be built until betaValidatedRomRevision succeeds (its own gate).
+    if (betaValidatedRomRevision(state.romInfo) == 0u) {
+        RomPanel_ensureInit(state);
+        RomPanel_serviceValidation(state);
+        static bool waitedRomLogged = false;
+        if (!waitedRomLogged) {
+            waitedRomLogged = true;
+            std::fprintf(stderr,
+                         "[online-autopair] waiting for the remembered ROM to "
+                         "validate before pairing\n");
+        }
+        return;
+    }
+
+    // Step 2: the chooser choice (create or join).
+    if (!g_online.adapter || !g_online.initialized) {
+        const MdkrOnlineJourney journey =
+            resolved == 1 ? MDKR_ONLINE_JOURNEY_CREATE : MDKR_ONLINE_JOURNEY_JOIN;
+        if (resolved == 2) {
+            std::snprintf(g_online.betaJoinCode, sizeof(g_online.betaJoinCode),
+                          "%s", joinCode.c_str());
+        }
+        std::fprintf(stderr, "[online-autopair] role=%s dispatching %s\n",
+                     resolved == 1 ? "create" : "join",
+                     resolved == 1 ? "CREATE_ROOM" : "JOIN_ROOM");
+        if (!buildBetaLiveAdapter(state, journey,
+                                  resolved == 2 ? joinCode : std::string())) {
+            static bool buildFailLogged = false;
+            if (!buildFailLogged) {
+                buildFailLogged = true;
+                std::fprintf(stderr,
+                             "[online-autopair] buildBetaLiveAdapter refused "
+                             "(reason: %s)\n",
+                             g_online.betaBuildFailedReason[0] != '\0'
+                                 ? g_online.betaBuildFailedReason
+                                 : "service unreachable / no provenance");
+            }
+        }
+        return;
+    }
+
+    // Step 3+: surface the invite code (create), then confirm the safety phrase
+    // exactly once when PREFLIGHT fronts it. After that, hands-off -- the
+    // production room-ready poll (drawBetaRoom, every frame) fires the takeover.
+    MdkrOnlineViewModel model{};
+    if (!g_online.adapter->view(&model)) return;
+
+    if (resolved == 1) {
+        static bool codeLogged = false;
+        if (!codeLogged) {
+            std::string code;
+            std::string url;
+            if (OnlineRoom_liveInvite(g_online.adapter.get(), &code, &url) &&
+                code.size() == 6u) {
+                codeLogged = true;
+                std::fprintf(stderr, "[online-autopair] code=%s\n", code.c_str());
+            }
+        }
+    }
+
+    static bool membersLogged = false;
+    if (!membersLogged && model.member_count >= 2u) {
+        membersLogged = true;
+        std::fprintf(stderr, "[online-autopair] members=2\n");
+    }
+
+    // Step 4: "Check Setup" -- the secure-handshake step that brings up the mesh
+    // and computes the safety phrase. It is the ROOM view's primary action (the
+    // "Check Setup" button); both endpoints press it. Without it the room sits in
+    // the open lobby and the verification phrase never appears.
+    static bool checkSetupDispatched = false;
+    if (!checkSetupDispatched && model.kind == MDKR_ONLINE_VIEW_ROOM &&
+        model.member_count >= 2u &&
+        model.primary.action == MDKR_ONLINE_VIEW_ACTION_CHECK_SETUP) {
+        checkSetupDispatched = true;
+        std::fprintf(stderr, "[online-autopair] dispatching CHECK_SETUP\n");
+        dispatch(MDKR_ONLINE_VIEW_ACTION_CHECK_SETUP);
+    }
+
+    static bool phraseConfirmed = false;
+    if (!phraseConfirmed && model.kind == MDKR_ONLINE_VIEW_PREFLIGHT &&
+        model.verification_phrase[0] != '\0') {
+        std::fprintf(stderr, "[online-autopair] phrase=%s\n",
+                     model.verification_phrase);
+        dispatch(MDKR_ONLINE_VIEW_ACTION_CONFIRM_PHRASE);
+        phraseConfirmed = true;
+        std::fprintf(stderr,
+                     "[online-autopair] confirm dispatched -- handing off to the "
+                     "production room-ready takeover\n");
+    }
+
+    static bool selectingLogged = false;
+    if (!selectingLogged && model.kind == MDKR_ONLINE_VIEW_SELECTING) {
+        selectingLogged = true;
+        std::fprintf(stderr,
+                     "[online-autopair] SELECTING reached -- pairing complete, "
+                     "hands-off\n");
+    }
+}
+
 const char *betaStatusLine(const MdkrOnlineViewModel &model) {
     switch (model.kind) {
     case MDKR_ONLINE_VIEW_ENTRY: return "Getting ready…";
@@ -3323,6 +3469,11 @@ void OnlineRoomPanel_draw(LauncherState &state, LauncherAction &action) {
     // on the player's choice, so before that g_online.adapter is intentionally
     // null (ensureInitialized deferred it) -- this must come first.
     if (!fakeEnabled()) {
+        // Test-only pairing bootstrap: drive the create/join + confirm steps
+        // (inert unless MDKR_APP_TEST_ONLINE_AUTOPAIR is set) BEFORE the panel
+        // draws, so the frame it builds the adapter the panel below services it
+        // and polls the production room-ready takeover.
+        autopairService(state);
         drawBetaOnlinePanel(state);
         return;
     }
