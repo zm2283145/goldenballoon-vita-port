@@ -7,7 +7,9 @@
  * vehicleselect / results / ceremony) needs, lifted DRY so the four screens can
  * never drift:
  *   - mdkr_online_screen_local_seat    which snapshot seat is the local player
- *   - mdkr_online_screen_text          font + colour + halo/band draw into the frame
+ *   - mdkr_online_screen_text          font + colour + 1px drop-shadow text draw
+ *   - mdkr_online_screen_panel/strip   the dark menu-board card / full-width band
+ *                                      the text blocks sit on (retail figure-ground)
  *   - mdkr_online_screen_pulse         the 0..16 triangle-wave cursor/heartbeat
  *   - mdkr_online_screen_seat_name     one seat's short name (snapshot / char / Pn)
  *   - mdkr_online_screen_seconds_left  ceil of a 60ths-of-a-second countdown
@@ -66,6 +68,8 @@ extern s16 sOnlineSkyAssetIds[];
 s32 mdkr_online_screen_local_seat(const MdkrPartyLinkSnapshot *snap);
 void mdkr_online_screen_text(s32 x, s32 y, s32 fontId, char *text,
                              AlignmentFlags align, s32 r, s32 g, s32 b);
+void mdkr_online_screen_panel(s32 x1, s32 y1, s32 x2, s32 y2);
+void mdkr_online_screen_strip(s32 y1, s32 y2);
 s32 mdkr_online_screen_pulse(u32 ticks);
 void mdkr_online_screen_seat_name(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
                                   unsigned slot, char *out, size_t cap);

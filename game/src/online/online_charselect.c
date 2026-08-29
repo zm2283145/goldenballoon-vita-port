@@ -508,6 +508,13 @@ static void charselect_render(const CsRemoteView *rv) {
     bool witnessArmed = mdkr_online_charselect_test_active() ? true : false;
     sTakenTileDrawLum = -1;
 
+    /* Grounds first (retail figure-ground): title strip, the racer-grid board
+     * and the seats/controls footer board -- the portraits and every label sit
+     * on a solid dark card, never naked over the bright hub sky. */
+    mdkr_online_screen_strip(6, 30);
+    mdkr_online_screen_panel(12, 36, 308, 190);
+    mdkr_online_screen_panel(10, 194, 310, 236);
+
     /* Title. */
     mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 18, ASSET_FONTS_BIGFONT,
                             "CHOOSE YOUR RACER", ALIGN_MIDDLE_CENTER, 255, 224,
@@ -605,20 +612,20 @@ static void charselect_render(const CsRemoteView *rv) {
         const char *you = sCs.ready ? "READY" : (sCs.confirmed ? "PICKED"
                                                               : "CHOOSING");
         (void) snprintf(line, sizeof(line), "YOU: %s", you);
-        mdkr_online_screen_text(24, 196, ASSET_FONTS_SMALLFONT, line,
+        mdkr_online_screen_text(24, 204, ASSET_FONTS_SMALLFONT, line,
                                 ALIGN_MIDDLE_LEFT, sCs.ready ? 120 : 220,
                                 sCs.ready ? 255 : 220, sCs.ready ? 120 : 220);
 
         /* Right status is ALWAYS drawn: a first-time host must see the
          * remote's presence/waiting state, not an empty half. */
         if (!rv->present) {
-            mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W - 24, 196, ASSET_FONTS_SMALLFONT,
+            mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W - 24, 204, ASSET_FONTS_SMALLFONT,
                                     "WAITING FOR PLAYER...", ALIGN_MIDDLE_RIGHT,
                                     150, 150, 150);
         } else {
             (void) snprintf(line, sizeof(line), "%.12s: %s", rname,
                             rv->ready ? "READY" : "CHOOSING");
-            mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W - 24, 196, ASSET_FONTS_SMALLFONT,
+            mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W - 24, 204, ASSET_FONTS_SMALLFONT,
                                     line, ALIGN_MIDDLE_RIGHT,
                                     rv->ready ? 120 : 220, rv->ready ? 255 : 220,
                                     rv->ready ? 120 : 220);

@@ -302,6 +302,7 @@ static void results_render_complete(const MdkrPartyLinkSnapshot *snap,
     u8 pg = (u8) (170 + tri * 5); /* 170..255 pulse */
     char line[48];
 
+    mdkr_online_screen_strip(200, 234); /* footer ground */
     mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 208, ASSET_FONTS_SMALLFONT, (char *) label,
                  ALIGN_MIDDLE_CENTER, 120, pg, 120);
     if (sRes.host) {
@@ -333,9 +334,10 @@ static void results_render_countdown(const MdkrPartyLinkSnapshot *snap,
     s32 tri = mdkr_online_screen_pulse(sRes.pulseTicks);
     char line[48];
 
+    mdkr_online_screen_strip(200, 234); /* footer ground */
     (void) snprintf(line, sizeof(line), "%s IN %us", nextLabel, secs);
     mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 208, ASSET_FONTS_SMALLFONT, line,
-                 ALIGN_MIDDLE_CENTER, 200, 200, 255);
+                 ALIGN_MIDDLE_CENTER, 210, 210, 210);
     if (sRes.host) {
         /* Advertise the non-final back-out. B on a
          * non-final results/standings is a mid-tournament LEAVE-to-room, so surface
@@ -366,17 +368,33 @@ static void results_render_results(const MdkrPartyLinkSnapshot *snap,
     u32 secs = mdkr_online_screen_seconds_left(sRes.stageTicks,RES_RESULTS_UNITS);
     s32 rowY = 60;
     u8 place;
+    unsigned nrows = 0u;
     char line[64];
 
-    mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 18, ASSET_FONTS_BIGFONT, "RACE RESULTS",
+    /* Grounds: title strip + the finishing-order board (sized to the rows
+     * actually present, so two seats get a snug card, not a hollow one). */
+    {
+        unsigned slot;
+        for (slot = 0u; slot < RES_SLOTS; slot++) {
+            if (sRes.placements[slot] != RES_PLACE_NONE) {
+                nrows++;
+            }
+        }
+    }
+    mdkr_online_screen_strip(6, 46);
+    if (nrows > 0u) {
+        mdkr_online_screen_panel(30, 52, 290, 66 + (s32) nrows * 40);
+    }
+    mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 20, ASSET_FONTS_BIGFONT, "RACE RESULTS",
                  ALIGN_MIDDLE_CENTER, 255, 224, 96);
     /* Tournament: name the round on RESULTS too (parity with STANDINGS). */
     if (tournament) {
         (void) snprintf(line, sizeof(line), "RACE %u/%u",
                         (unsigned) (snap->race_index + 1u), RES_CUP_ROUNDS);
         mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 38, ASSET_FONTS_SMALLFONT, line,
-                     ALIGN_MIDDLE_CENTER, 200, 200, 255);
+                     ALIGN_MIDDLE_CENTER, 210, 210, 210);
     }
+    rowY = 64;
 
     /* Walk placements in finishing order (place 0 == 1st). Each canonical slot
      * carries its own placement, so scan for the slot at each place. */
@@ -450,17 +468,6 @@ static void results_render_standings(const MdkrPartyLinkSnapshot *snap,
     s32 rowY = 64;
     char line[64];
 
-    mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 18, ASSET_FONTS_BIGFONT,
-                 sRes.isFinal ? "FINAL STANDINGS" : "STANDINGS",
-                 ALIGN_MIDDLE_CENTER, 255, 224, 96);
-    /* never show "RACE n/N" alongside the FINAL banner (the cup is over). */
-    if (haveSnap && !sRes.isFinal) {
-        (void) snprintf(line, sizeof(line), "RACE %u/%u",
-                        (unsigned) (snap->race_index + 1u), RES_CUP_ROUNDS);
-        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 38, ASSET_FONTS_SMALLFONT, line,
-                     ALIGN_MIDDLE_CENTER, 200, 200, 255);
-    }
-
     /* Collect the occupied seats + their (reducer-accrued) points from the
      * snapshot, then selection-sort by points descending, tie-broken on THIS
      * race's finish (lower last_placement wins) so equal totals are not
@@ -476,6 +483,22 @@ static void results_render_standings(const MdkrPartyLinkSnapshot *snap,
             points[i] = st.points[i];
             lastpl[i] = st.lastpl[i];
         }
+    }
+
+    /* Grounds: title strip + the points-table board (sized to the seats). */
+    mdkr_online_screen_strip(6, 46);
+    if (nseats > 0u) {
+        mdkr_online_screen_panel(24, 52, 308, 66 + (s32) nseats * 40);
+    }
+    mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 20, ASSET_FONTS_BIGFONT,
+                 sRes.isFinal ? "FINAL STANDINGS" : "STANDINGS",
+                 ALIGN_MIDDLE_CENTER, 255, 224, 96);
+    /* never show "RACE n/N" alongside the FINAL banner (the cup is over). */
+    if (haveSnap && !sRes.isFinal) {
+        (void) snprintf(line, sizeof(line), "RACE %u/%u",
+                        (unsigned) (snap->race_index + 1u), RES_CUP_ROUNDS);
+        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 38, ASSET_FONTS_SMALLFONT, line,
+                     ALIGN_MIDDLE_CENTER, 210, 210, 210);
     }
 
     for (i = 0u; i < nseats; i++) {
@@ -876,37 +899,37 @@ static void results_chooser_witness(void) {
             (unsigned) sRes.chooserCommitted, (unsigned) sRes.chooserChoice);
 }
 
-/* Chooser text. The BOLD 8-direction black legibility halo this used to draw
- * locally was promoted into the shared mdkr_online_screen_text scrim, which
- * now applies it uniformly to EVERY native online screen -- so this is a thin
- * forwarder, kept only so the chooser's many call sites read unchanged and never
- * double-halo (which a local outline + the shared scrim would now do). */
-static void results_chooser_text(s32 x, s32 y, s32 fontId, char *text,
-                                 AlignmentFlags align, s32 r, s32 g, s32 b) {
-    mdkr_online_screen_text(x, y, fontId, text, align, r, g, b);
-}
-
-/* Render the "more races" menu into the engine frame list over the scrolling sky.
- * Every line wears the bold black outline (results_chooser_text) for legibility;
- * the highlighted host option pulses gold inside "> <" brackets, the rest are a
- * bright near-white, a joiner shows the list dimmer (no cursor) + a pulsing
- * "WAITING FOR <host>..." line -- the display-only mirror. */
+/* Render the "more races" menu into the engine frame list: the option list on a
+ * dark menu-board card (retail figure-ground -- no per-string halo), the
+ * highlighted host option pulsing gold inside "> <" brackets, the rest plain
+ * light grey; a joiner shows the list dimmer (no cursor) + a pulsing
+ * "WAITING FOR <host>..." footer -- the display-only mirror. */
+#define RES_CHOOSER_ROW_Y0 88
+#define RES_CHOOSER_ROW_DY 18
 static void results_chooser_render(const MdkrPartyLinkSnapshot *snap,
                                    bool haveSnap, s32 localSeat) {
     s32 tri = mdkr_online_screen_pulse(sRes.pulseTicks);
-    s32 rowY = 92;
+    s32 rowY = RES_CHOOSER_ROW_Y0;
     unsigned i;
     char line[48];
 
     (void) localSeat;
 
-    results_chooser_text(MDKR_ONLINE_SCREEN_W_HALF, 44, ASSET_FONTS_BIGFONT,
-                         "MORE RACES?", ALIGN_MIDDLE_CENTER, 255, 224, 96);
-    results_chooser_text(MDKR_ONLINE_SCREEN_W_HALF, 66, ASSET_FONTS_SMALLFONT,
-                         sRes.chooserMode == MDKR_ONLINE_SCREEN_MODE_TOURNAMENT
-                             ? (char *) "TOURNAMENT COMPLETE"
-                             : (char *) "RACE COMPLETE",
-                         ALIGN_MIDDLE_CENTER, 210, 210, 255);
+    /* Grounds: title strip, the option board (sized to the option count), and
+     * the footer strip. */
+    mdkr_online_screen_strip(28, 72);
+    mdkr_online_screen_panel(84, 78, 236,
+                             RES_CHOOSER_ROW_Y0 +
+                                 (s32) sRes.chooserCount * RES_CHOOSER_ROW_DY + 4);
+    mdkr_online_screen_strip(200, 222);
+
+    mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 44, ASSET_FONTS_BIGFONT,
+                            "MORE RACES?", ALIGN_MIDDLE_CENTER, 255, 224, 96);
+    mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 62, ASSET_FONTS_SMALLFONT,
+                            sRes.chooserMode == MDKR_ONLINE_SCREEN_MODE_TOURNAMENT
+                                ? (char *) "TOURNAMENT COMPLETE"
+                                : (char *) "RACE COMPLETE",
+                            ALIGN_MIDDLE_CENTER, 210, 210, 210);
 
     for (i = 0u; i < sRes.chooserCount; i++) {
         bool selected = (!sRes.chooserJoiner && (u8) i == sRes.chooserCursor);
@@ -914,23 +937,23 @@ static void results_chooser_render(const MdkrPartyLinkSnapshot *snap,
             s32 pg = 200 + tri * 3; /* 200..248 gold pulse */
             (void) snprintf(line, sizeof(line), "> %s <",
                             results_chooser_option(i)->label);
-            results_chooser_text(MDKR_ONLINE_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT,
-                                 line, ALIGN_MIDDLE_CENTER, 255, (u8) pg, 80);
+            mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT,
+                                    line, ALIGN_MIDDLE_CENTER, 255, (u8) pg, 80);
         } else {
-            s32 c = sRes.chooserJoiner ? 200 : 235;
-            results_chooser_text(MDKR_ONLINE_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT,
-                                 (char *) results_chooser_option(i)->label,
-                                 ALIGN_MIDDLE_CENTER, c, c, c);
+            s32 c = sRes.chooserJoiner ? 190 : 220;
+            mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT,
+                                    (char *) results_chooser_option(i)->label,
+                                    ALIGN_MIDDLE_CENTER, c, c, c);
         }
-        rowY += 22;
+        rowY += RES_CHOOSER_ROW_DY;
     }
 
-    rowY += 6;
+    rowY = 210; /* the footer strip's text line */
     if (sRes.chooserCommitted) {
         (void) snprintf(line, sizeof(line), "%s...",
                         results_chooser_option(sRes.chooserCursor)->label);
-        results_chooser_text(MDKR_ONLINE_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT, line,
-                             ALIGN_MIDDLE_CENTER, 140, (u8) (200 + tri * 3), 140);
+        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT, line,
+                                ALIGN_MIDDLE_CENTER, 140, (u8) (200 + tri * 3), 140);
     } else if (sRes.chooserJoiner) {
         char host[16];
         s32 c = 170 + tri * 5;
@@ -941,12 +964,12 @@ static void results_chooser_render(const MdkrPartyLinkSnapshot *snap,
             (void) snprintf(line, sizeof(line), "WAITING FOR %.12s...   B: LEAVE",
                             host);
         }
-        results_chooser_text(MDKR_ONLINE_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT, line,
-                             ALIGN_MIDDLE_CENTER, c, c, c);
+        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT, line,
+                                ALIGN_MIDDLE_CENTER, c, c, c);
     } else {
-        results_chooser_text(MDKR_ONLINE_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT,
-                             "A: SELECT   UP/DOWN: MOVE", ALIGN_MIDDLE_CENTER, 255,
-                             255, 255);
+        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT,
+                                "A: SELECT   UP/DOWN: MOVE", ALIGN_MIDDLE_CENTER, 255,
+                                255, 255);
     }
     results_chooser_witness();
 }
