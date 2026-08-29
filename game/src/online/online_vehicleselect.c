@@ -218,26 +218,25 @@ static u16 vehicleselect_resolve_track(const MdkrPartyLinkSnapshot *snap,
 }
 
 /* The usable-vehicle mask for the resolved track at this player count. Engine
- * truth from leveltable_vehicle_usable(), then the retail 2-player narrowing.
- * VS_TRACK_NONE (nothing locked) is PERMISSIVE (all three) -- the pick is a
- * preference until TRACKSELECT locks a track, and the reducer only enforces the
- * mask at START. Never returns an empty mask. */
+ * truth from leveltable_vehicle_usable(), then the retail 2-player narrowing. FAIL
+ * CLOSED: VS_TRACK_NONE (nothing locked yet) is the ONLY permissive (all three)
+ * case -- a real preference until TRACKSELECT locks a track (the reducer enforces
+ * the mask at START). A resolved track returns its engine-truth base mask
+ * (leveltable itself fail-closes an out-of-range id to CAR-only), NEVER the
+ * permissive ALL; if that base is empty, or the 2-player narrowing empties it, the
+ * mask stays EMPTY so the caller refuses + surfaces it rather than silently
+ * substituting CAR (which might itself be illegal on that track). Every REAL track
+ * yields >=1 usable vehicle and the narrowing drops at most one, so a resolved real
+ * track never empties -- only a malformed/unknown table entry does, which now fails
+ * closed (empty) instead of open (ALL). */
 static u8 vehicleselect_track_mask(u16 trackId, unsigned occupied) {
-    u8 mask;
+    u8 base;
     if (trackId == VS_TRACK_NONE) {
         return VS_ALL_VEHICLES;
     }
-    mask = (u8) leveltable_vehicle_usable((s32) trackId);
-    mask &= (u8) VS_ALL_VEHICLES;
-    if (mask == 0u) {
-        return VS_ALL_VEHICLES; /* unknown id -> permissive, not car-only */
-    }
-    mask = (u8) (mdkr_online_trackselect_narrow_2p(mask, trackId, occupied) &
+    base = (u8) (leveltable_vehicle_usable((s32) trackId) & VS_ALL_VEHICLES);
+    return (u8) (mdkr_online_trackselect_narrow_2p(base, trackId, occupied) &
                  VS_ALL_VEHICLES);
-    if ((mask & VS_ALL_VEHICLES) == 0u) {
-        mask = (u8) (1u << VEHICLE_CAR); /* fail-safe: never empty */
-    }
-    return (u8) (mask & VS_ALL_VEHICLES);
 }
 
 static bool vehicleselect_vehicle_legal(u8 vehicle, u8 mask) {
@@ -246,8 +245,11 @@ static bool vehicleselect_vehicle_legal(u8 vehicle, u8 mask) {
 }
 
 /* Clamp the COMMITTED vehicle into the mask (lowest legal bit when illegal). This
- * is the R3 guarantee: the published vehicle is always legal, so the seat can
- * never READY / START with an illegal vehicle. */
+ * is the R3 guarantee: for any track with a usable vehicle the published vehicle is
+ * always legal, so the seat can never READY / START with an illegal vehicle. When
+ * the mask is EMPTY (only a malformed/unknown track reaches that -- see
+ * vehicleselect_track_mask) there is nothing legal to clamp to, so the committed
+ * vehicle is left as-is and stays illegal (fail closed) rather than picking CAR. */
 static void vehicleselect_autonarrow(u8 mask) {
     u8 v;
     if (vehicleselect_vehicle_legal(sVs.vehicle, mask)) {
@@ -259,7 +261,10 @@ static void vehicleselect_autonarrow(u8 mask) {
             return;
         }
     }
-    sVs.vehicle = (u8) VEHICLE_CAR; /* mask never empty, but stay defined */
+    /* Empty mask -- no vehicle is legal for this track. Leave the committed vehicle
+     * as-is (a defined 0..2 seed): it stays illegal, so every card renders N/A and
+     * the reducer refuses START -- fail closed, never a silent CAR that could itself
+     * be illegal on the track. */
 }
 
 static void vehicleselect_resolve_remote(const MdkrPartyLinkSnapshot *snap,
@@ -310,6 +315,7 @@ typedef struct VsInput {
 #define VS_SCN_REJECT 0
 #define VS_SCN_DIVERGE 1
 #define VS_SCN_HOLD 2 /* frame-dump only: park the screen so a shot can be taken */
+#define VS_SCN_UNKNOWN 3 /* pin an out-of-range track: prove the mask fails CLOSED */
 static s8 sVsScenario = -1;
 
 static void vehicleselect_input_scripted(VsInput *in) {
@@ -849,17 +855,21 @@ static MdkrPartyLinkSnapshot sVsRoom;
  * the vehicle screen through the race. */
 #define VS_TEST_TRACK 8u
 #define VS_TEST_REMOTE_VEHICLE 1u /* hovercraft -- legal for Whale Bay */
+#define VS_TEST_UNKNOWN_TRACK 900u /* out of range (!= VS_TRACK_NONE): fail-closed probe */
 
 static void vehicleselect_test_resolve(void) {
     if (sVsTestActive < 0) {
         const char *e = getenv("MDKR_TEST_ONLINE_VEHICLESELECT");
         sVsTestActive = (e != NULL) ? 1 : 0;
         /* Scenario from the env VALUE: "diverge" -> divergent-pick lane, "hold" ->
-         * the frame-dump hold, anything else -> the default reject+chain+boot lane. */
+         * the frame-dump hold, "unknown" -> the fail-closed out-of-range probe,
+         * anything else -> the default reject+chain+boot lane. */
         if (e != NULL && strstr(e, "diverge") != NULL) {
             sVsScenario = (s8) VS_SCN_DIVERGE;
         } else if (e != NULL && strstr(e, "hold") != NULL) {
             sVsScenario = (s8) VS_SCN_HOLD;
+        } else if (e != NULL && strstr(e, "unknown") != NULL) {
+            sVsScenario = (s8) VS_SCN_UNKNOWN;
         } else {
             sVsScenario = (s8) VS_SCN_REJECT;
         }
@@ -932,6 +942,11 @@ static void vehicleselect_test_reduce_and_script(void) {
              * pick a vehicle DIFFERENT from the scripted remote (which keeps its
              * CHARSELECT default, CAR) -- both converge over the reverse feed. */
             sVsRoom.configured_track = (uint16_t) VS_TRACK_NONE;
+        } else if (sVsScenario == VS_SCN_UNKNOWN) {
+            /* Pin an OUT-OF-RANGE resolved track: the mask must fail CLOSED (the
+             * engine-truth base -- leveltable itself yields CAR-only for an unknown
+             * id -- never the permissive ALL). Guards the fail-closed contract. */
+            sVsRoom.configured_track = (uint16_t) VS_TEST_UNKNOWN_TRACK;
         } else {
             /* Pin the resolved track so the legality mask is non-trivial (Whale
              * Bay, hovercraft-only), whichever seam installed the room, and give
