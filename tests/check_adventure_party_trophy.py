@@ -26,8 +26,10 @@ What this proves (Enhancements.AdventureParty ON, a party resumed to the hub)
   token (one aparty_award issue result=1 + one consume result=0, activity=8 TROPHY,
   kind=3 TROPHY) -- the party's ONE shared series result, keyed to the host (racer 0)
   the ceremony reads (a party collapses to gNumberOfActivePlayers==1, so the trophy
-  machinery runs exactly like 1P). The persisted trophy is Dino gold (0x3), the same
-  value a 1P gold writes (check_trophy_series is the retail anchor).
+  machinery runs exactly like 1P). The persisted save slot is BYTE-IDENTICAL to a 1P
+  gold's (whole 40-byte progression slot, empty whitelist) -- which also proves a
+  trophy round writes NO balloon / RACE_CLEARED beyond what a 1P trophy does
+  (check_trophy_series is the retail anchor).
 * Same-party return. The whole series is ONE ACTIVE_RACE span; on the series exit
   the session returns to ACTIVE_LOBBY with the same party (a later hub load re-forms
   N viewports).
@@ -287,12 +289,32 @@ def main():
         failures.append(f"1P-ref: runtime marker {BAD_RE.search(ref_out).group(0)!r}")
     if trophy_issues(ref_out) or trophy_consumes(ref_out) or AWARD_RE.search(ref_out):
         failures.append("1P-ref: aparty_award emitted on a non-party (retail) trophy award")
+    if args.verbose:
+        print("  1P-ref: persisted=", hex(dino_trophy(ref_save)),
+              "full_slot_equal=", bool(save) and bool(ref_save)
+              and save[:SLOT_BYTES] == ref_save[:SLOT_BYTES])
     if not TROPHYAWARD_RE.search(ref_out):
         failures.append("1P-ref: retail trophy award did not resolve")
     if dino_trophy(ref_save) != DINO_GOLD:
         failures.append(f"1P-ref: retail trophy {dino_trophy(ref_save):#x}, expected gold {DINO_GOLD:#x}")
-    if save and ref_save and dino_trophy(save) != dino_trophy(ref_save):
-        failures.append("byte target: party trophy != 1P trophy")
+    # FULL-SLOT byte-identity: the party gold slot == the 1P gold slot, whole
+    # 40-byte progression slot, empty whitelist (the house compare, as this task's
+    # A2 gate and check_adventure_party_progress use). This SUBSUMES a
+    # no-balloon / no-RACE_CLEARED-write assertion for the trophy rounds: a party
+    # trophy round must persist NOTHING a 1P trophy round does not (Adapter B gates
+    # the balloon award off for a trophy round), so a spurious balloon count or
+    # cleared bit written during a round would change the slot and fail here. If a
+    # field ever legitimately differs it must be whitelisted with file:line
+    # provenance per the house pattern, not silently widened.
+    if not (save and ref_save):
+        failures.append(f"byte target: missing save(s) (party={bool(save)} ref={bool(ref_save)})")
+    elif save[:SLOT_BYTES] != ref_save[:SLOT_BYTES]:
+        diffs = [(i, save[i], ref_save[i]) for i in range(SLOT_BYTES)
+                 if save[i] != ref_save[i]]
+        failures.append(
+            f"byte target: party gold slot != 1P gold slot (whitelist is empty); "
+            f"byte diffs (offset, party, 1P) = {diffs} -- a trophy round must "
+            f"persist no balloon/RACE_CLEARED write beyond what a 1P trophy does")
 
     # --- Positive controls (mutate Arm A's OUTPUT; the assertions must catch it).
     pc_dupe = re.sub(r"(aparty_award: op=consume[^\n]*\n)", r"\1\1", out, count=1)
@@ -317,9 +339,11 @@ def main():
           "round fields the retail EIGHT-racer split (total=8, N humans + 8-N CPUs, N "
           "viewports -- Part A decision), all four rounds run with accumulating standings, "
           "and a gold championship writes the Dino trophy exactly once via one "
-          "COMPLETION_TROPHY token (issue+consume), persisting gold (0x3) BYTE-EQUAL to a 1P "
-          "gold; the 1P-ref awards the same gold with NO party token; the party returns to "
-          "the same lobby. Two positive controls fired (duplicate-consume, stripped-field)")
+          "COMPLETION_TROPHY token (issue+consume), persisting a save slot BYTE-IDENTICAL "
+          "to a 1P gold (whole 40-byte slot, empty whitelist -- which subsumes a "
+          "no-balloon / no-RACE_CLEARED-write assertion for the trophy rounds); the 1P-ref "
+          "awards the same gold with NO party token; the party returns to the same lobby. "
+          "Two positive controls fired (duplicate-consume, stripped-field)")
     return 0
 
 

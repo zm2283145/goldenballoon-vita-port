@@ -6044,8 +6044,10 @@ viewports), never a shrunken/improvised field. The gate proves, for a 4P (or
 accumulating standings (`trophyround points0` climbs, four `trophyrankings`), and
 a gold championship writes the Dino trophy exactly once via **one
 `COMPLETION_TROPHY` token** (`aparty_award` issue+consume, activity=8 kind=3)
-beside the upgrade-only retail write, persisting gold `0x3` **byte-equal to a 1P
-gold**; the series is one `ACTIVE_RACE` span returning to the same lobby. A 1P-ref
+beside the upgrade-only retail write, persisting a save slot **byte-identical to a
+1P gold** (the whole 40-byte progression slot, empty whitelist — which subsumes a
+no-balloon / no-`RACE_CLEARED`-write assertion for the trophy rounds); the series is
+one `ACTIVE_RACE` span returning to the same lobby. A 1P-ref
 awards the same gold with **no** party token. Two positive controls fire
 (duplicate-consume, stripped-field). **Route reachability (R20/R24 precedent):** a
 headless party cannot drive the world-lobby cabinet (a boss-beaten fixture wedges

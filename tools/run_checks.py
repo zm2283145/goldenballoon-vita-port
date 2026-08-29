@@ -844,9 +844,11 @@ CHECKS = (
           "humans + 8-N CPUs, N viewports -- the measured 4P DL high-water 6354 fits "
           "the 11000 budget), all four production rounds run with accumulating "
           "standings, and a gold championship writes the Dino trophy exactly once via "
-          "ONE COMPLETION_TROPHY token, persisting gold (0x3) byte-equal to a 1P gold; "
-          "a 1P-ref awards the same gold with NO party token; the party returns to the "
-          "same lobby; two positive controls fire (duplicate-consume, stripped-field)"),
+          "ONE COMPLETION_TROPHY token, persisting a save slot BYTE-IDENTICAL to a 1P "
+          "gold (whole 40-byte slot, empty whitelist -- subsumes no-balloon/no-RACE_CLEARED "
+          "write for the rounds); a 1P-ref awards the same gold with NO party token; the "
+          "party returns to the same lobby; two positive controls fire "
+          "(duplicate-consume, stripped-field)"),
     Check("adventure_party_adventure_two", "check_adventure_party_adventure_two.py",
           "native",
           "AP-16 Part C matrix: an Adventure-Two-flagged party fixture drives the "
