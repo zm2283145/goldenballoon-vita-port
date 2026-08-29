@@ -1564,6 +1564,34 @@ rollback race (`loadedTrack=5`). This is the descriptor-less-begin + race-1
 readiness-gate proof (never a NULL/stale descriptor deref). Default
 `--build build-beta`.
 
+`tools/online/check_online_native_flow_cloud.py` (MANUAL network lane -- NOT in
+`run_online_checks.py`'s default sweep; needs live Wi-Fi + the deployed
+party.goldenballoon.net service; run standalone, never two cloud runs concurrent)
+is the two-process real-cloud PRODUCTION-PATH acceptance instrument. Where `check_online_lobby_
+start.py` proves the descriptor-less native path on an IN-PROCESS loopback with a
+pre-configured room, this launches TWO SEPARATE `mdkr64` app processes over the
+REAL cloud and exercises the full flow with the ONLY automation being (a) pairing
+bootstrap -- `MDKR_APP_TEST_ONLINE_AUTOPAIR=create|join` (+ `_JOIN_CODE`) drives the
+interactive launcher's create/join chooser, join code, "Check Setup" secure
+handshake and Words-Match confirm (`ui_online_room.cpp` `autopairService`), then
+goes HANDS-OFF -- and (b) injected PAD INPUT: the input-only native-screen seams
+(`MDKR_TEST_ONLINE_LOBBY_START` for CHARSELECT/VEHICLE/TRACKSELECT, per-role
+`MDKR_TEST_ONLINE_CHARSELECT_PICK` so the two seats never collide,
+`MDKR_TEST_ONLINE_RESULTS_CHOOSER` for the more-races chooser) plus the
+deterministic race-input fixture (`MDKR_APP_TEST_ONLINE_SYNTH_RACE_INPUT`) standing
+in for the two absent human controllers. Everything after pairing is the PRODUCTION
+code path choosing its own route. Runs with VISIBLE windows (the interactive
+launcher only builds frames with a real drawable). The seven assertions: (a) the
+`[online-room-ready]` latch/publish/boot-enter fire on BOTH -- takeover self-fired;
+(b) the native session enters CHARSELECT descriptor-less (no
+`source=launch-descriptor`); (c) selections sync through the reducer; (d) race 1
+converges (identical `ENGINE-ONLINE-LIVE` fold hash); (e) the chooser round-trips a
+converged race 2; (f) both end FINISHED, exit 0; (g) the takeover latch re-fires.
+Default `--build build-beta`. NOTE (2026-08-29): (a)+(b) are PROVEN over the real
+cloud; the lane currently FAILS at (c) on a real production convergence defect (the
+native charselect's two-peer reverse-feed selection never converges to a persisted
+seat ready over real network latency) that the lane exists to catch.
+
 `check_online_lobby_tournament.py` (standalone lane, not run-checks registered)
 is the PD-T6h2b KEYSTONE gate: it COMPOSES the T6h2a lobby-start boot with the
 T6ac/T6h1 resident multi-race coordinator so a descriptor-less session runs a FULL

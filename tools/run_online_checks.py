@@ -71,6 +71,25 @@ LANES = (
 )                                           #  convergence (the GOLDEN literal is
 #                                            pinned only by check_online_engine_boot_direct.py)
 
+# NON-DEFAULT / MANUAL: real-cloud network lanes. These are NOT part of the
+# default sweep -- they require live Wi-Fi + the deployed party.goldenballoon.net
+# service, spawn TWO app processes, and must run standalone (never two cloud runs
+# concurrent). Run each by hand from tools/online/ when qualifying the real cloud:
+#
+#   python3 tools/online/check_online_native_flow_cloud.py --build build-beta \
+#       --rom baserom.us.v80.z64            # the two-process production capstone
+#   python3 tools/online/cloud_two_process_engine_boot.py --build build-beta \
+#       --rom baserom.us.v80.z64            # the legacy descriptor-first cloud boot
+#
+# check_online_native_flow_cloud.py is the production-path acceptance instrument:
+# the ONLY automation is pairing bootstrap + injected pad input; everything after
+# pairing is the production code path (self-firing takeover, native screens,
+# reducer-synced selections, race, chooser, return, re-take). See tests/README.md.
+MANUAL_NETWORK_LANES = (
+    "tools/online/check_online_native_flow_cloud.py",
+    "tools/online/cloud_two_process_engine_boot.py",
+)
+
 
 def run_lane(lane: str, build: str, rom: str, verbose: bool) -> tuple[bool, float]:
     cmd = [sys.executable, str(TESTS / lane), "--build", build, "--rom", rom]
