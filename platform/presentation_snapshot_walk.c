@@ -258,6 +258,16 @@ typedef struct CamOobCensus {
      * those windows. */
     uint64_t miss_near, miss_far;
     uint64_t liveoob_near, liveoob_far;
+    /* Continuity lifecycle. Sticky/last_* state survives CORRECTION stage
+     * resets on purpose (that is the whole point of the live probe), but it
+     * must NOT survive a census gap (we left INGAME: menus between races,
+     * a level load) or a stage-generation change that no restore caused
+     * (level boundary, present rebase) -- a retired viewport would otherwise
+     * count phantom misses for the rest of a long owner session. */
+    uint64_t last_stage_generation;
+    uint64_t last_census_tick;
+    uint8_t stage_gen_seen;
+    uint8_t census_tick_seen;
     /* Cross-correction pose continuity, independent of the snapshot store's
      * stage generation (which a restore deliberately resets). */
     float last_pos[PRESENTATION_SNAPSHOT_MAX_VIEWPORTS][3];
@@ -321,10 +331,10 @@ static void cam_oob_track_pose(CamOobCensus *c, size_t vp, uint64_t tick,
                                float x, float y, float z, int16_t yaw_raw,
                                s32 seg, int near_correction) {
     if (c->last_valid[vp]) {
-        const float dx = x - c->last_pos[vp][0];
-        const float dy = y - c->last_pos[vp][1];
-        const float dz = z - c->last_pos[vp][2];
-        const double step = sqrtf(dx * dx + dy * dy + dz * dz);
+        const double dx = (double)x - c->last_pos[vp][0];
+        const double dy = (double)y - c->last_pos[vp][1];
+        const double dz = (double)z - c->last_pos[vp][2];
+        const double step = sqrt(dx * dx + dy * dy + dz * dz);
         const float yaw = mdkr_yaw_delta_deg(
             (uint16_t)c->last_yaw[vp], (uint16_t)yaw_raw);
         if (near_correction) {
@@ -387,11 +397,35 @@ static void cam_oob_census_tick(uint64_t authored_tick) {
     }
 
     restore_serial = mdkr_rollback_game_authority_restore_serial();
-    if (restore_serial != c->last_restore_serial) {
-        c->corrections += restore_serial - c->last_restore_serial;
-        c->last_restore_serial = restore_serial;
-        c->last_restore_tick = authored_tick;
-        c->restore_seen = 1;
+    {
+        const int restored_this_tick = restore_serial != c->last_restore_serial;
+        if (restored_this_tick) {
+            c->corrections += restore_serial - c->last_restore_serial;
+            c->last_restore_serial = restore_serial;
+            c->last_restore_tick = authored_tick;
+            c->restore_seen = 1;
+        }
+        /* Continuity lifecycle (see the struct note): drop sticky/last_*
+         * state across a census gap, or across a stage-generation change
+         * that no restore caused. A CORRECTION's own stage bump keeps them
+         * -- the live probe exists precisely to see through that reset. */
+        current = presentation_snapshot_current();
+        if (c->census_tick_seen && authored_tick != c->last_census_tick + 1u) {
+            memset(c->sticky_valid, 0, sizeof(c->sticky_valid));
+            memset(c->last_valid, 0, sizeof(c->last_valid));
+        }
+        if (current != NULL && current->valid) {
+            if (c->stage_gen_seen &&
+                current->stage_generation != c->last_stage_generation &&
+                !restored_this_tick) {
+                memset(c->sticky_valid, 0, sizeof(c->sticky_valid));
+                memset(c->last_valid, 0, sizeof(c->last_valid));
+            }
+            c->last_stage_generation = current->stage_generation;
+            c->stage_gen_seen = 1;
+        }
+        c->last_census_tick = authored_tick;
+        c->census_tick_seen = 1;
     }
     near_correction = c->restore_seen &&
                       authored_tick >= c->last_restore_tick &&
@@ -402,7 +436,6 @@ static void cam_oob_census_tick(uint64_t authored_tick) {
         c->ticks_near++;
     }
 
-    current = presentation_snapshot_current();
     previous = presentation_snapshot_previous();
     {
         const size_t captured =
@@ -420,7 +453,8 @@ static void cam_oob_census_tick(uint64_t authored_tick) {
             }
             if (near_correction) c->miss_near++;
             else c->miss_far++;
-            live = &gCameras[c->sticky_camera_id[vp] & 7];
+            live = &gCameras[(size_t)c->sticky_camera_id[vp] %
+                             PRESENTATION_SNAPSHOT_MAX_CAMERAS];
             seg = get_level_segment_index_from_position(
                 live->trans.x_position, live->trans.y_position,
                 live->trans.z_position);

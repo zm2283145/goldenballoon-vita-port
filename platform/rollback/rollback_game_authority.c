@@ -8,9 +8,6 @@
 #include "camera_obstruction_runtime.h"
 #if defined(MDKR_ENABLE_ONLINE_BETA)
 #include "net/net_roster_runtime.h"
-/* rcp_dkr.h needs the ultra64 headers, which this host TU cannot include;
- * the u64 return is uint64_t on every native target. */
-extern uint64_t presentation_task_authoring_tick(void);
 #endif
 #include "audio_spatial.h"
 #include "fade_transition.h"
