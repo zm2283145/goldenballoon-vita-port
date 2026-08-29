@@ -280,8 +280,11 @@ def main():
               f"restores={restores(win_out)} awards={ca} "
               f"racers={challenge_racers(win_out)} decode={decode_slot(win_save) if win_save else None}")
 
-    # --- 1P reference: the same challenge won with the enhancement OFF writes the
-    #     same amulet delta (ttAmulet 1, challenge CLEARED). Save-delta target.
+    # --- 1P reference: the same challenge won with the enhancement OFF, resumed
+    #     from the SAME started save. The party win must persist a 40-byte slot
+    #     BYTE-IDENTICAL to it (empty whitelist -- the slot holds only campaign
+    #     progression, no character/position rows; the house test from
+    #     check_adventure_party_progress).
     ref_out, ref_save, ref_rc = run(
         binary, rom, script=RESUME_1P, enabled=False, frames=7000,
         values={"MDKR_CHALLENGE_OUTCOME": "win"}, timeout=900)
@@ -293,10 +296,14 @@ def main():
         if rst["tt_amulet"] != 1 or rst["chal_status"] != RACE_CLEARED_STATUS:
             failures.append(f"1P-ref: unexpected 1P challenge win save {rst}")
         if win_save is not None:
-            pst = decode_slot(win_save)
-            if (pst["tt_amulet"], pst["chal_status"]) != (rst["tt_amulet"], rst["chal_status"]):
-                failures.append(f"save-delta: party win {pst} != 1P win {rst} "
-                                f"(amulet/status differ)")
+            ref_slot = ref_save[:SLOT_BYTES]
+            win_slot = win_save[:SLOT_BYTES]
+            if win_slot != ref_slot:
+                diff = [i for i in range(SLOT_BYTES) if win_slot[i] != ref_slot[i]]
+                failures.append(
+                    f"byte-equivalence: party challenge win slot differs from the "
+                    f"1P win at bytes {diff} (party={[win_slot[i] for i in diff]} "
+                    f"1P={[ref_slot[i] for i in diff]}) -- whitelist is EMPTY")
 
     # --- 3P DEFEAT: suspend host-solo, lose (no token, no amulet), still restore.
     loss_out, loss_save, loss_rc = run(
@@ -353,7 +360,7 @@ def main():
           "to a host-solo four-racer special challenge (SOLO_ACTIVITY + suspended "
           "roster, [CHALLENGE] racers=4, no party race field), a host WIN commits one "
           "T.T. amulet piece exactly once (one aparty_award challenge token "
-          "issue+consume, ttAmulet 0->1 CLEARED, byte-equal to a 1P win), a re-entry "
+          "issue+consume, ttAmulet 0->1 CLEARED, slot BYTE-IDENTICAL to a 1P win), a re-entry "
           "of the cleared challenge refuses a second token, and a DEFEAT commits "
           "nothing; two positive controls fired (defeat-as-win, strip-suspension). "
           "The shared return-to-lobby RESTORE seam is proven by "

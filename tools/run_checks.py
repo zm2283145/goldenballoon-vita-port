@@ -809,9 +809,11 @@ CHECKS = (
           "suspends to a retail four-racer host-solo challenge (SOLO_ACTIVITY + "
           "suspended roster, [CHALLENGE] racers=4, no party race field), a host WIN "
           "commits one T.T. amulet piece exactly once (one aparty_award challenge "
-          "token issue+consume, ttAmulet 0->1, byte-equal to a 1P win), a defeat "
-          "commits nothing, and EVERY return restores the exact party (aparty_restore "
-          "match=1); two positive controls fire (different-roster, strip-suspension)"),
+          "token issue+consume, ttAmulet 0->1 CLEARED, byte-identical to a 1P win), "
+          "a re-entry of the cleared challenge refuses a second token, and a defeat "
+          "commits nothing; two positive controls fire (defeat-as-win, "
+          "strip-suspension). The shared return-to-lobby RESTORE is proven by "
+          "check_adventure_party_boss_restore (identical arrival-adapter code)"),
     Check("adventure_party_boss_restore", "check_adventure_party_boss_restore.py",
           "native",
           "AP-17 host-solo boss envelope: a 3P party suspends to a retail host-solo "

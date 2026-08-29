@@ -5929,8 +5929,9 @@ from the running binary + the persisted EEPROM (3P, a 2P arm, and a 1P reference
 - **Exact-once win.** A host win commits the retail amulet EXACTLY once
   (`courseFlags RACE_CLEARED` + `ttAmulet++`) through the unchanged challenge-finish
   path, gated by one `aparty_award` challenge token issue+consume
-  (`kind=COMPLETION_CHALLENGE`); the save gains one T.T. amulet piece, byte-equal to
-  the same fields a **1P** win of the challenge writes.
+  (`kind=COMPLETION_CHALLENGE`); the persisted 40-byte slot is BYTE-IDENTICAL to a
+  **1P** win of the same challenge resumed from the same started save (empty
+  whitelist, the house compare from `check_adventure_party_progress.py`).
 - **No commit on defeat.** `MDKR_CHALLENGE_OUTCOME=loss` mints no token, leaves
   `ttAmulet` unchanged, and still restores the party.
 - **Restore + re-entry.** Every return runs `RESTORING_PARTY` and
