@@ -321,6 +321,15 @@ void despawn_player_racer(Object *obj, s32 vehicleID);
  * the retail machinery they mirror; the retail path is byte-identical off/omit. */
 void adventure_party_taj_transform_begin(s32 vehicle);
 s32 adventure_party_taj_transform_pending(void);
+/* AP-14 team-shared silver coins. One team tally (a file-scope counter in
+ * objects.c — NOT a racer/settings field, so the save layout is untouched) is
+ * incremented once per coin by the collect adapter (object_functions.c) and read
+ * by the HUD (game_ui.c) and finish so every viewport shows one total and the
+ * >= 8 win test scores the team, not the leading racer. _race_active gates all
+ * three arms; it is TRUE only for a live party session on a silver-coin course. */
+s32 adventure_party_silver_race_active(void);
+s32 adventure_party_silver_team_coins(void);
+void adventure_party_silver_team_collect(void);
 #endif
 void set_time_trial_enabled(s32 status);
 u8 is_time_trial_enabled(void);

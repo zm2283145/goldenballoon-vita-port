@@ -5315,6 +5315,42 @@ void obj_loop_silvercoin(Object *obj, s32 updateRate) {
             if (racerObj != NULL && racerObj->header->behaviorId == BHV_RACER) {
                 racer = racerObj->racer;
                 if (racer->playerIndex != PLAYER_COMPUTER) {
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+                    /* AP-14 team-shared silver coins. The FIRST human to touch an
+                     * active coin retires it for EVERY viewport and advances the ONE
+                     * team tally — do NOT engage the retail per-player ownership path
+                     * (SILVER_COIN_COLLECTED/INVIS_PLAYER1 << playerIndex), which
+                     * gives each player their own copy and is unrepresentable for a
+                     * party (only two invisibility bits exist; viewports 2/3 alias
+                     * viewports 0/1 via viewport & 1). Setting BOTH invisibility bits
+                     * is the full-invisibility retirement (the 1P/inactive path), so
+                     * every viewport sees it vanish. Marking the coin INACTIVE drops
+                     * it from the loop's active test next frame — exactly once per
+                     * coin, by the object state machine (like Task 8 balloons). */
+                    if (adventure_party_silver_race_active()) {
+                        if (racer->raceFinished == FALSE &&
+                            obj->properties.silverCoin.action == SILVER_COIN_ACTIVE) {
+                            obj->properties.silverCoin.action = SILVER_COIN_INACTIVE;
+                            obj->properties.silverCoin.timer = 16;
+                            obj->trans.flags |=
+                                OBJ_FLAGS_INVIS_PLAYER1 | OBJ_FLAGS_INVIS_PLAYER2;
+                            /* Jingle pitch rises with the TEAM total (pre-increment),
+                             * so the whole party hears one shared 1..8 progression
+                             * no matter which human collected. */
+                            music_jingle_play(SEQUENCE_SILVER_COIN_1 +
+                                              adventure_party_silver_team_coins());
+                            adventure_party_silver_team_collect();
+                            /* Post-increment team count, matching the retail trace's
+                             * post-increment count; playerIndex names the collector
+                             * (a non-host proves any-human collection). */
+                            MDKR_TRACE("silvercoin: playerIndex=%d count=%d action=0x%x @frame~%d",
+                                       (int) racer->playerIndex,
+                                       (int) adventure_party_silver_team_coins(),
+                                       (unsigned) obj->properties.silverCoin.action,
+                                       (int) g_frameCounter);
+                        }
+                    } else
+#endif
                     if (racer->raceFinished == FALSE &&
                         !(obj->properties.silverCoin.action & (SILVER_COIN_COLLECTED << racer->playerIndex))) {
                         obj->properties.silverCoin.action |= SILVER_COIN_COLLECTED << racer->playerIndex;

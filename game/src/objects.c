@@ -2601,6 +2601,20 @@ s32 func_8000CC20(Object *obj) {
  * value can only be observed as a wrong trace, never as a moved kart. */
 static u8 sApRaceWinnerSeat = ADVENTURE_PARTY_NO_SEAT;
 
+/* AP-14: the ONE team-shared silver-coin tally for a party silver-coin race.
+ * The retail per-racer counter is racer->silverCoinCount (game/src/racer struct);
+ * the party design is team-shared precisely because the engine exposes only two
+ * object-invisibility bits (viewports 3/4 alias them via viewport & 1), so
+ * per-player coin copies are unrepresentable. Storing the team total in a
+ * FILE-SCOPE counter — not a new racer/settings field — keeps the racer struct
+ * layout (and therefore the save/state serialisation) byte-identical: this is
+ * the storage choice the STOP condition guards. Reset on every silver-race
+ * (re)start in the arrival adapter; incremented once per coin by the collect
+ * adapter (object_functions.c obj_loop_silvercoin); read by the finish permit,
+ * set_course_finish_flags and every viewport's HUD so the whole party sees one
+ * total. */
+static s32 sApSilverTeamCoins;
+
 /* AP-08 formation spacing, in world units, anchored on player one's authored
  * setup point. Deliberately modest: a lobby is not a start grid, so the humans
  * appear abreast of the host with enough gap to read as distinct karts (the
@@ -2847,14 +2861,19 @@ static void adventure_party_apply_arrival(u8 raceType) {
             /* Retry: the same race reloads with no RACE_START (no lgen bump).
              * Clear the recorded winner here too, so a retried race that is QUIT —
              * which never reaches the finish seam's unconditional capture — cannot
-             * report a prior finish's stale seat in RACE_RESULT_COMMITTED. */
+             * report a prior finish's stale seat in RACE_RESULT_COMMITTED. AP-14:
+             * a retry re-spawns the coin objects (active again), so the team tally
+             * must restart at zero alongside the winner reset. */
             sApRaceWinnerSeat = ADVENTURE_PARTY_NO_SEAT;
+            sApSilverTeamCoins = 0;
             return; /* retry: already ACTIVE_RACE, stay in the race */
         }
         ev.kind = ADVENTURE_PARTY_EVENT_RACE_START;
         /* AP-13: a fresh race starts with no recorded winner; the finish seam sets
-         * it only when a party human actually finishes first. */
+         * it only when a party human actually finishes first. AP-14: and no team
+         * silver coins yet — the collect adapter counts them during the race. */
         sApRaceWinnerSeat = ADVENTURE_PARTY_NO_SEAT;
+        sApSilverTeamCoins = 0;
     } else if (raceType == RACETYPE_BOSS || (raceType & RACETYPE_CHALLENGE)) {
         /* AP-15/AP-17: enter a host-solo special challenge or boss from a party
          * lobby. Only from ACTIVE_LOBBY: a challenge/boss retry that reloads while
@@ -2938,6 +2957,34 @@ static s32 adventure_party_race_award_active(void) {
 }
 
 /*
+ * AP-14: is a party SILVER-COIN race the thing being run right now? True only
+ * when a party default-race session is live (award_active) AND this course is a
+ * silver-coin replay (gIsSilverCoinRace, decided once at object-map spawn). This
+ * one predicate gates every team-shared silver arm — the coin collect adapter,
+ * the HUD team total and the finish permit — so they engage together or not at
+ * all, and are byte-inert for a 1P/2P silver race (no party session) and for a
+ * party's first, non-silver clear (gIsSilverCoinRace FALSE). Non-static: the
+ * collect adapter (object_functions.c) and HUD (game_ui.c) call it.
+ */
+s32 adventure_party_silver_race_active(void) {
+    return adventure_party_race_award_active() && gIsSilverCoinRace;
+}
+
+/* AP-14: the team-shared silver-coin total, read by the collect adapter (jingle
+ * pitch), the finish permit / set_course_finish_flags (the >= 8 win test) and
+ * every viewport's HUD. */
+s32 adventure_party_silver_team_coins(void) {
+    return sApSilverTeamCoins;
+}
+
+/* AP-14: one coin collected by ANY party human. The collect adapter has already
+ * proven the collector is a human and retired the coin for all viewports; this
+ * only advances the single team tally. */
+void adventure_party_silver_team_collect(void) {
+    sApSilverTeamCoins++;
+}
+
+/*
  * AP-13 winner identity. Returns the winning PARTY SEAT (0..N-1) when a party
  * default race is active and the first-place racer is one of the party's humans,
  * else ADVENTURE_PARTY_NO_SEAT (a CPU won, or this is not a party race).
@@ -2998,25 +3045,51 @@ static s32 adventure_party_race_award_permit(Settings *settings, s32 seat) {
     if (session == NULL || settings == NULL) {
         return 0;
     }
-    /* AP-13 owns the DEFAULT first-clear only. An already-cleared course replayed
-     * is a silver-coin race (AP-14); leave its award to the retail silver path.
-     * This is the same bit set_course_finish_flags tests before writing. Emit ONE
-     * aparty_award diagnostic (an ISSUE refused, result=0) so this deferred no-op
-     * stays observable rather than silent — the AP-14 silver-replay behaviour and
-     * any duplicate re-entry of a cleared course are then witnessable in the log. */
+    /* An already-cleared course being finished again is a REPLAY. Two outcomes:
+     *
+     *   AP-14 team-silver win: a party silver-coin race (gIsSilverCoinRace) whose
+     *     classified progress row is TEAM_COINS_ANY_HUMAN_FIRST and whose ONE team
+     *     tally reached eight coins — the caller already verified any-human-first
+     *     (seat != NO_SEAT). This mints the SILVER completion token below (kind
+     *     resolves to SILVER because gIsSilverCoinRace), exactly once per level
+     *     generation, and set_course_finish_flags then writes
+     *     RACE_CLEARED_SILVER_COINS. Consuming the pure policy verdict here keeps
+     *     the finish rule in the policy module rather than an ad-hoc test.
+     *
+     *   Every other replay — a cleared non-silver course re-entered, or a silver
+     *     replay with fewer than eight team coins — fails closed with one refused
+     *     ISSUE diagnostic (result=0), unchanged AP-13 behaviour, so the deferred
+     *     no-op / retail loss stays observable rather than silent. */
     if (settings->courseFlagsPtr[settings->courseId] & RACE_CLEARED) {
-        AdventurePartyCompletionToken skip;
-        memset(&skip, 0, sizeof skip);
-        skip.session_generation = session->session_generation;
-        skip.level_generation = session->level_generation;
-        skip.course = (uint16_t) settings->courseId;
-        skip.activity = (uint8_t)(gIsSilverCoinRace
-                                      ? ADVENTURE_PARTY_RACE_KIND_SILVER_COIN
-                                      : ADVENTURE_PARTY_RACE_KIND_DEFAULT);
-        skip.completion_kind = (uint8_t) ADVENTURE_PARTY_COMPLETION_COURSE;
-        adventure_party_trace_emit_award(ADVENTURE_PARTY_TRACE_AWARD_ISSUE, &skip,
-                                         0);
-        return 0;
+        AdventurePartyActivityDescriptor desc;
+        AdventurePartyCapability cap;
+        int silverTeamWin;
+        desc.race_kind = ADVENTURE_PARTY_RACE_KIND_SILVER_COIN;
+        desc.course_class = ADVENTURE_PARTY_COURSE_TRACK;
+        cap = adventure_party_classify_activity(
+            &desc, adventure_party_participant_count(session));
+        /* The literal 8 mirrors set_course_finish_flags's own silver >= 8 test,
+         * which reads this same team tally for a party (Adapter D). */
+        silverTeamWin =
+            gIsSilverCoinRace &&
+            cap.progress ==
+                ADVENTURE_PARTY_PROGRESS_TEAM_COINS_ANY_HUMAN_FIRST &&
+            adventure_party_silver_team_coins() >= 8;
+        if (!silverTeamWin) {
+            AdventurePartyCompletionToken skip;
+            memset(&skip, 0, sizeof skip);
+            skip.session_generation = session->session_generation;
+            skip.level_generation = session->level_generation;
+            skip.course = (uint16_t) settings->courseId;
+            skip.activity = (uint8_t)(gIsSilverCoinRace
+                                          ? ADVENTURE_PARTY_RACE_KIND_SILVER_COIN
+                                          : ADVENTURE_PARTY_RACE_KIND_DEFAULT);
+            skip.completion_kind = (uint8_t) ADVENTURE_PARTY_COMPLETION_COURSE;
+            adventure_party_trace_emit_award(ADVENTURE_PARTY_TRACE_AWARD_ISSUE,
+                                             &skip, 0);
+            return 0;
+        }
+        /* else: fall through to mint the SILVER team-win token. */
     }
     /* Deliverable 0: the token key carries the real activity kind. */
     kind = gIsSilverCoinRace ? ADVENTURE_PARTY_RACE_KIND_SILVER_COIN
@@ -11297,8 +11370,22 @@ void race_check_finish(s32 updateRate) {
  */
 s8 set_course_finish_flags(Settings *settings) {
     Object_Racer *racer;
+    s32 silverCoins;
 
     racer = gRacersByPosition[PLAYER_ONE]->racer;
+    silverCoins = racer->silverCoinCount;
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    /* AP-14: a party silver-coin race banks ONE team tally — any human collects a
+     * coin and it vanishes for every viewport — so the >= 8 clear test below reads
+     * that team total, not the leading racer's own count (a non-host winner may
+     * have personally collected fewer than the eight the party banked together).
+     * The permit above gates the exact-once token on this same team total, so the
+     * token and this write stay one-to-one. Not a party silver race (1P/2P silver,
+     * a non-silver clear, off/omit) -> the retail per-racer count, byte-identical. */
+    if (adventure_party_silver_race_active()) {
+        silverCoins = adventure_party_silver_team_coins();
+    }
+#endif
 #ifdef NATIVE_PORT
     /* NATIVE_PORT, read-only: the whole silver-coin seam converges on this one
      * function, and every branch it can take is invisible from outside. The
@@ -11307,10 +11394,10 @@ s8 set_course_finish_flags(Settings *settings) {
      * so RACE_CLEARED is written and the coins are irrelevant, and (c) it was a
      * silver-coin replay, in which case the coin count decides. Printed before
      * the branch so the inputs are the pre-write values. One line per race. */
-    MDKR_TRACE("silvercoinfinish: courseId=%d leadPlayerIndex=%d coins=%d silverRace=%d "
+    MDKR_TRACE("silvercoinfinish: courseId=%d leadPlayerIndex=%d coins=%d teamCoins=%d silverRace=%d "
                "timeTrial=%d courseFlags=0x%x",
                (int) settings->courseId, (int) racer->playerIndex, (int) racer->silverCoinCount,
-               (int) gIsSilverCoinRace, (int) gIsTimeTrial,
+               (int) silverCoins, (int) gIsSilverCoinRace, (int) gIsTimeTrial,
                (unsigned) settings->courseFlagsPtr[settings->courseId]);
 #endif
     if (racer->playerIndex == PLAYER_COMPUTER
@@ -11333,7 +11420,7 @@ s8 set_course_finish_flags(Settings *settings) {
             gFirstTimeFinish = TRUE;
             settings->courseFlagsPtr[settings->courseId] |= RACE_CLEARED;
         }
-    } else if (gIsSilverCoinRace && racer->silverCoinCount >= 8 && gIsTimeTrial == FALSE) {
+    } else if (gIsSilverCoinRace && silverCoins >= 8 && gIsTimeTrial == FALSE) {
         gFirstTimeFinish = TRUE;
         settings->courseFlagsPtr[settings->courseId] |= RACE_CLEARED_SILVER_COINS;
     }

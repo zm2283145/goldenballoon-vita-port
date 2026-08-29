@@ -3527,19 +3527,30 @@ void hud_treasure(Object_Racer *racer) {
 void hud_silver_coins(Object_Racer *racer, s32 updateRate) {
     s32 i;
     s32 prevY;
+    s32 silverCoins = racer->silverCoinCount;
 
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    /* AP-14: every viewport's HUD shows the ONE team tally in a party silver race,
+     * so all humans read the same total (the coins are team-shared). This function
+     * runs once per viewport with that viewport's own racer; reading the team
+     * counter here makes all N of them agree. Not a party silver race -> the retail
+     * per-racer count, byte-identical. */
+    if (adventure_party_silver_race_active()) {
+        silverCoins = adventure_party_silver_team_coins();
+    }
+#endif
     gCurrentHud->entry[HUD_SILVER_COIN_TALLY].pos.y =
         (s32) gCurrentHud->entry[HUD_SILVER_COIN_TALLY].pos.y; // Rounds float down to it's int value.
     prevY = gCurrentHud->entry[HUD_SILVER_COIN_TALLY].pos.y;
     for (i = 0; i < 8; i++) {
-        if (i >= racer->silverCoinCount) {
+        if (i >= silverCoins) {
             gHudColour = COLOUR_RGBA32(128, 128, 128, 128);
         }
         hud_element_render(&gHudDL, &gHudMtx, &gHudVtx, &gCurrentHud->entry[HUD_SILVER_COIN_TALLY]);
         gCurrentHud->entry[HUD_SILVER_COIN_TALLY].pos.y -=
             gCurrentHud->entry[HUD_SILVER_COIN_TALLY].silverCoinTally.offsetY;
     }
-    if (racer->silverCoinCount == 8) {
+    if (silverCoins == 8) {
         if (gCurrentHud->entry[HUD_SILVER_COIN_TALLY].silverCoinTally.soundTimer < 30) {
             gCurrentHud->entry[HUD_SILVER_COIN_TALLY].silverCoinTally.soundTimer += updateRate;
         }
