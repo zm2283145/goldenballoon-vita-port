@@ -94,6 +94,7 @@ BETA_TU_OBJECTS = (
     "game/src/online/online_session.c.o",
     "game/src/online/online_screen_util.c.o",
     "game/src/online/online_charselect.c.o",
+    "game/src/online/online_vehicleselect.c.o",
     "game/src/online/online_trackselect.c.o",
     "game/src/online/online_race_boot.c.o",
     "game/src/online/online_results.c.o",

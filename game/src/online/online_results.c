@@ -200,7 +200,7 @@ typedef struct MdkrOnlineResultsState {
     u8 leave;         /* B: back-out request (edge; the LEFT return) */
     u8 haveResults;   /* THIS race's placements were read from the reducer feed */
     u8 advanced;      /* an ADVANCE was already returned for this stage (edge) */
-    u8 advanceCommitted; /* T6ac: host committed the rematch advance -- republish
+    u8 advanceCommitted; /* host committed the rematch advance -- republish
                           * rematch_requested EVERY tick until the room leaves
                           * RESULTS, THEN return ADVANCE (convergence, not a
                           * one-shot edge a dropped reverse-feed pump could lose) */

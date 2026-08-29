@@ -391,8 +391,8 @@ static bool online_session_descless_boot_ready(void) {
  * re-cycle in ~7 (the launcher-side kResidentAdvanceFrameBudget is 900). 2700 is
  * 3x that launcher budget -- ample headroom for a cold DTLS re-handshake / loaded
  * CI host at high headless frame rates -- while at a vsynced 30-60 fps it is ~45-90
- * s of wall clock, which is generous for a real WAN/DTLS re-cycle. NOTE (for
- * T6h2c): a real WAN is far slower than warm loopback; T6h2c should convert this
+ * s of wall clock, which is generous for a real WAN/DTLS re-cycle. NOTE: a real
+ * WAN is far slower than warm loopback; a follow-up should convert this
  * to an actual wall-clock deadline (this engine TU has no cheap clock, so a frame
  * budget stands in here) and retune against measured WAN convergence. */
 #define MDKR_ONLINE_SESSION_DESCLESS_WAIT_FRAME_BUDGET 2700u
