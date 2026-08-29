@@ -5342,11 +5342,18 @@ void obj_loop_silvercoin(Object *obj, s32 updateRate) {
                             adventure_party_silver_team_collect();
                             /* Post-increment team count, matching the retail trace's
                              * post-increment count; playerIndex names the collector
-                             * (a non-host proves any-human collection). */
-                            MDKR_TRACE("silvercoin: playerIndex=%d count=%d action=0x%x @frame~%d",
+                             * (a non-host proves any-human collection). invis prints
+                             * the coin's two engine invisibility bits AFTER the retire:
+                             * both set (0x600 = INVIS_PLAYER1|INVIS_PLAYER2) is the
+                             * per-viewport object-state witness that the coin vanished
+                             * for EVERY viewport (0/1 direct, 2/3 aliased). */
+                            MDKR_TRACE("silvercoin: playerIndex=%d count=%d action=0x%x invis=0x%x @frame~%d",
                                        (int) racer->playerIndex,
                                        (int) adventure_party_silver_team_coins(),
                                        (unsigned) obj->properties.silverCoin.action,
+                                       (unsigned) (obj->trans.flags &
+                                                   (OBJ_FLAGS_INVIS_PLAYER1 |
+                                                    OBJ_FLAGS_INVIS_PLAYER2)),
                                        (int) g_frameCounter);
                         }
                     } else

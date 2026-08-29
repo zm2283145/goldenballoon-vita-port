@@ -3537,6 +3537,19 @@ void hud_silver_coins(Object_Racer *racer, s32 updateRate) {
      * per-racer count, byte-identical. */
     if (adventure_party_silver_race_active()) {
         silverCoins = adventure_party_silver_team_coins();
+        /* Per-viewport witness: this viewport (racer->playerIndex) is drawing the
+         * ONE team total. Change-detected per viewport so a gate can prove all N
+         * viewports display the same running total without per-frame spam. */
+        {
+            extern int g_frameCounter;
+            static s32 sHudLastTeam[4] = {-1, -1, -1, -1};
+            s32 pidx = racer->playerIndex;
+            if (pidx >= 0 && pidx < 4 && sHudLastTeam[pidx] != silverCoins) {
+                sHudLastTeam[pidx] = silverCoins;
+                MDKR_TRACE("silverhud: viewport=%d teamCoins=%d @frame~%d",
+                           (int) pidx, (int) silverCoins, g_frameCounter);
+            }
+        }
     }
 #endif
     gCurrentHud->entry[HUD_SILVER_COIN_TALLY].pos.y =

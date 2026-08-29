@@ -1288,7 +1288,6 @@ void mdkr_adventure_drive(Object *obj, Object_Racer *racer, s32 updateRate) {
     if (sAdvSilverRoute && !racer->raceFinished) {
         Object *coin = NULL;
         f32 best = sAdvSilverRadius * sAdvSilverRadius;
-        s32 collectedBit = 1 << racer->playerIndex; /* SILVER_COIN_COLLECTED << playerIndex */
         s32 i;
         for (i = 0; i < gObjectCount; i++) {
             Object *cand = gObjPtrList[i];
@@ -1299,9 +1298,15 @@ void mdkr_adventure_drive(Object *obj, Object_Racer *racer, s32 updateRate) {
             if (cand->behaviorId != BHV_SILVER_COIN && cand->behaviorId != BHV_SILVER_COIN_2) {
                 continue;
             }
-            /* INACTIVE coins free themselves at init, so anything still in the
-             * list is live; skip only the ones this player already has. */
-            if (cand->properties.silverCoin.action & collectedBit) {
+            /* Skip a coin that is no longer collectable. Retail marks a collected
+             * coin with the per-player bit (action & (1 << playerIndex)); AP-14's
+             * team-shared collect retires it for EVERYONE (action set out of
+             * SILVER_COIN_ACTIVE). Testing "not ACTIVE" covers both: in 1P the only
+             * collector is player 0, so action is 0 (seek) or 1 (skip) -- identical
+             * to the old per-player bit -- while for a party it skips any coin the
+             * team already banked, so seats 2/3 (whose per-player bit a team collect
+             * never sets) do not fixate on an already-invisible coin. */
+            if (cand->properties.silverCoin.action != SILVER_COIN_ACTIVE) {
                 continue;
             }
             cx = cand->trans.x_position - obj->trans.x_position;

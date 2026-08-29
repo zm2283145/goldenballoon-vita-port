@@ -761,6 +761,45 @@ void level_load(s32 levelId, s32 numberOfPlayers, s32 entranceId, Vehicle vehicl
     }
     settings->courseId = levelId;
 #ifdef NATIVE_PORT
+    /*
+     * TEST HOOK -- MDKR_SILVER_FORCE=<levelId> makes THIS race load a silver-coin
+     * race, and ONLY at its own load. gIsSilverCoinRace (objects.c track_spawn_objects)
+     * is true iff the course already carries RACE_CLEARED and the world's boss is
+     * beaten; a headless party cannot reach that lobby state and drive its
+     * silver-coin door (the boss-beaten lobby repositions the party far from the
+     * door -- measured, tests/check_adventure_party_silver.py header). Setting the
+     * two preconditions HERE, gated on levelId == target and only when the level is
+     * actually loading, leaves the WORLD LOBBY untouched (boss not beaten there, so
+     * the first-race door stays reachable exactly as the started save the party
+     * navigates), then flips the race itself to silver just before
+     * track_spawn_objects reads the verdict. This is the R20 retarget precedent
+     * (like MDKR_LOAD_TRACK / MDKR_BOSS_PRECLEARED): it moves nothing the game does
+     * not already do on a real silver replay, and it never touches silverCoinCount,
+     * the coin objects or any award -- those stay the game's own path. No-op unless
+     * set. */
+    {
+        extern int g_frameCounter;
+        extern char *getenv(const char *);
+        extern int atoi(const char *);
+        static s32 sSilverForceLevel = -2;
+        if (sSilverForceLevel == -2) {
+            const char *e = getenv("MDKR_SILVER_FORCE");
+            sSilverForceLevel = (e != NULL && e[0] != '\0') ? atoi(e) : -1;
+        }
+        if (sSilverForceLevel >= 0 && levelId == sSilverForceLevel && gIsInRace &&
+            settings->courseFlagsPtr != NULL) {
+            settings->courseFlagsPtr[levelId] |= RACE_VISITED | RACE_CLEARED;
+            if (settings->worldId >= 0 && settings->worldId < 16) {
+                settings->bosses |= (u16) (1 << settings->worldId);
+            }
+            if (mdkr_trace_enabled()) {
+                mdkr_trace("silverforce: level=%d world=%d courseFlags=0x%x bosses=0x%x @frame~%d",
+                           (int) levelId, (int) settings->worldId,
+                           (unsigned) settings->courseFlagsPtr[levelId],
+                           (unsigned) settings->bosses, g_frameCounter);
+            }
+        }
+    }
     if (mdkr_trace_enabled() && gIsInRace) {
         mdkr_trace("adventure_mode: level=%d adventureTwo=%d mirrored=%d saveFlags=0x%x",
                    (int) levelId, (int) is_in_adventure_two(),
