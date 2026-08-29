@@ -2756,21 +2756,25 @@ void drawBetaRoom(LauncherState &state) {
      * a LEFT/ERROR return (which does not arm anyway) can never re-boot-loop. */
     OnlineRoom_observeRoomReadyRearm(g_online.adapter.get());
 
+    /* PRODUCTION ROOM-READY takeover, polled UNCONDITIONALLY every panel frame
+     * (immediately after the re-arm observer, BEFORE the body branches below). The
+     * poll is self-guarded (a one-shot latch + the room-ready condition check inside,
+     * online_live_wiring.cpp), so calling it every frame is idempotent: it fires
+     * EXACTLY ONCE on the first frame a room reaches SELECTING with 2 members in
+     * LOBBY (any mode), publishing this adapter for the descriptor-less native boot
+     * that the launcher's interactive loop consumes. Polling here -- rather than only
+     * inside the rich-body SELECTING branch -- makes the takeover deterministic every
+     * frame regardless of which body draws. Single-race / unconfigured rooms whose
+     * READY is vote-gated simply never satisfy the condition and keep the ImGui
+     * fallback. Post-A1 the panel's OwningLiveAdapter wrapper resolves the concrete
+     * adapter through the mdkrResolveLive hook, so handing the wrapper here is fine. */
+    (void)OnlineRoom_pollRoomReadyTransition(g_online.adapter.get());
+
     // Snapshot-backed rich bodies (they own the PRIMARY slot); everything
     // else keeps the generic control stack.
     bool primaryDrawn = false;
     if (haveLobby && model.kind == MDKR_ONLINE_VIEW_SELECTING &&
         lobby.phase == MDKR_ONLINE_LOBBY) {
-        /* PRODUCTION ROOM-READY takeover: the instant a TOURNAMENT room
-         * first reaches this SELECTING body with 2 members in LOBBY, publish this
-         * adapter for the descriptor-less native takeover (consume-once). The
-         * launcher's interactive loop polls it and boots the engine so native
-         * CHARSELECT -> TRACKSELECT own race 1. Single-race / unconfigured rooms do
-         * NOT match (READY there is vote-gated, which native never casts) -> they
-         * keep drawing this ImGui SELECTING body and use the race-boot fallback. The
-         * detection is inert until the condition holds, so this body still draws
-         * every frame until the boot fires. */
-        (void)OnlineRoom_pollRoomReadyTransition(g_online.adapter.get());
         drawBetaSelectingBody(state, model, lobby);
         primaryDrawn = true;
     } else if (haveLobby && model.kind == MDKR_ONLINE_VIEW_RESULTS &&

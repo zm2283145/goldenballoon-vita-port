@@ -121,6 +121,25 @@ public:
                       std::unique_ptr<MdkrOnlineMeshSignalBackend> mesh)
         : room_(std::move(room)), mesh_(std::move(mesh)) {}
 
+    /* Adopt-inner constructor (room-ready PROBE seam, A2). Wrap an ALREADY-built
+     * inner adapter -- a loopback LiveAdapter driven to SELECTING -- in this REAL
+     * production wrapper so the probe holds the SAME wrapper shape the panel does
+     * and exercises the mdkrResolveLive resolve hook end-to-end (A1's unit test
+     * could only use a stand-in). room_/mesh_ stay null: the loopback inner owns
+     * its transports via the loopback race struct (which MUST outlive this wrapper).
+     * Every delegating method + the resolve hook read inner_, so behaviour matches
+     * the built wrapper exactly. */
+    explicit OwningLiveAdapter(std::unique_ptr<IMdkrOnlineAdapter> inner)
+        : inner_(std::move(inner)) {}
+
+    /* Give the adopted inner back (room-ready PROBE seam, A2): the probe returns
+     * the loopback inner to the loopback race struct BEFORE destroying it, so the
+     * struct's carefully-ordered teardown + tournament continuation still see their
+     * adapter. Only meaningful on an adopt-constructed wrapper. */
+    std::unique_ptr<IMdkrOnlineAdapter> releaseInner() {
+        return std::move(inner_);
+    }
+
     bool build(const MdkrOnlineLiveAdapterOptions &options, std::string *error) {
         inner_ = mdkr_online_live_adapter_create(options, error);
         return inner_ != nullptr;
@@ -760,10 +779,12 @@ void OnlineRoom_resetRoomReadyLatch(void) {
 
 bool OnlineRoom_roomReadyConditionHolds(IMdkrOnlineAdapter *adapter) {
     /* Resolve the concrete LiveAdapter: the panel passes its OwningLiveAdapter
-     * wrapper, which forwards the mdkrResolveLive hook to its inner adapter; the
-     * loopback probe passes a raw adapter (resolve returns it unchanged). view()
-     * delegates through the virtual interface, but the lobby check below reads the
-     * resolved concrete adapter. */
+     * wrapper, which forwards the mdkrResolveLive hook to its inner adapter. The
+     * room-ready GATE probe (main_app.cpp) now ALSO passes the production
+     * OwningLiveAdapter wrapper (A2), so this resolve hook is exercised end-to-end
+     * there too; the other loopback lanes / re-arm probes still pass a raw adapter
+     * (resolve returns it unchanged). view() delegates through the virtual
+     * interface, but the lobby check below reads the resolved concrete adapter. */
     IMdkrOnlineAdapter *raw = OnlineRoom_resolveRawLiveAdapter(adapter);
     if (raw == nullptr) return false;
     MdkrOnlineViewModel vm{};
@@ -801,14 +822,46 @@ bool OnlineRoom_roomReadyConditionHolds(IMdkrOnlineAdapter *adapter) {
 bool OnlineRoom_pollRoomReadyTransition(IMdkrOnlineAdapter *adapter) {
     if (sRoomReadyLatched) return false;
     if (!OnlineRoom_roomReadyConditionHolds(adapter)) return false;
-    sRoomReadyLatched = true;
-    /* Publish the RAW concrete adapter (resolve the panel's wrapper) so the
-     * descriptor-less boot's forward-feed pump + race arm see the real room state. */
-    OnlineRoom_publishEngineRoomReady(OnlineRoom_resolveRawLiveAdapter(adapter));
+
+    /* Resolve once for both the diagnostics below and the publish: the panel's
+     * wrapper forwards mdkrResolveLive to its inner adapter (a raw adapter / the
+     * probe wrapper resolve the same way). */
+    IMdkrOnlineAdapter *raw = OnlineRoom_resolveRawLiveAdapter(adapter);
+
+    /* DIAGNOSTIC [1/5] -- condition first evaluates TRUE for this room (once per
+     * latch cycle). Log the shape (kind/phase/member_count/mode) so a real-hardware
+     * takeover is diagnosable from the log: the owner's failed 2-machine run had ZERO
+     * takeover lines. Re-read the resolved concrete adapter (the pure condition check
+     * above returns only a bool). */
+    MdkrOnlineViewModel vm{};
+    MdkrOnlineLobby lobby{};
+    if (raw != nullptr) {
+        (void)raw->view(&vm);
+        (void)mdkr_online_live_adapter_lobby(raw, &lobby);
+    }
     std::fprintf(stderr,
-                 "[online-room-ready] room at SELECTING (2 members, LOBBY, any "
-                 "mode) -> route=lobby-start (native takeover; descriptor-less "
-                 "engine boot, peer=nullptr)\n");
+                 "[online-room-ready] condition holds: kind=%d phase=%d "
+                 "member_count=%u mode=%s -> route=lobby-start\n",
+                 static_cast<int>(vm.kind), static_cast<int>(lobby.phase),
+                 static_cast<unsigned>(vm.member_count),
+                 lobby.mode == MDKR_ONLINE_MODE_TOURNAMENT ? "tournament"
+                                                           : "single-race");
+
+    /* DIAGNOSTIC [2/5] -- latch set (exactly once per adapter; reset by
+     * OnlineRoom_resetRoomReadyLatch on a fresh session or a re-arm). */
+    sRoomReadyLatched = true;
+    std::fprintf(stderr,
+                 "[online-room-ready] latch set (first frame the condition held; "
+                 "consume-once armed)\n");
+
+    /* Publish the RAW concrete adapter (resolve the panel's wrapper) so the
+     * descriptor-less boot's forward-feed pump + race arm see the real room state.
+     * Logged so the room-ready GATE probe -- which never runs the launcher loop --
+     * still witnesses the publish (proving the wrapper resolved end-to-end). */
+    OnlineRoom_publishEngineRoomReady(raw);
+    std::fprintf(stderr,
+                 "[online-room-ready] published adapter -> descriptor-less native "
+                 "takeover (peer=nullptr)\n");
     return true;
 }
 
@@ -868,6 +921,8 @@ bool OnlineRoom_roomReadyTakeoverEngaged(void) {
      * just fired and the launcher has not yet consumed + booted. */
     return !sRoomReadyLatched || sRoomReady.pending != nullptr;
 }
+
+bool OnlineRoom_roomReadyRearmPending(void) { return sRoomReadyRearmPending; }
 
 void OnlineRoom_setRosterOwner(uint64_t token) {
     /* Ownership is meaningful only while a roster is installed. */
@@ -1973,6 +2028,41 @@ IMdkrOnlineAdapter *OnlineRoom_testLoopbackPeer(
     MdkrOnlineTestLoopbackRace *race) {
     if (race == nullptr) return nullptr;
     return (race->joinerVisible ? race->a : race->b).get();
+}
+
+std::unique_ptr<IMdkrOnlineAdapter> OnlineRoom_wrapVisibleAsOwningAdapter(
+    MdkrOnlineTestLoopbackRace *race) {
+    /* Room-ready GATE probe seam (A2, LOAD-BEARING): hand the probe the SAME
+     * OwningLiveAdapter wrapper shape the Online Room panel holds, wrapping the
+     * loopback VISIBLE adapter. Built through this production wiring TU using the
+     * REAL OwningLiveAdapter class + its mdkrResolveLive override (NOT a test
+     * stand-in), so the probe proves the wrapper's resolve hook end-to-end. The
+     * wrapper ADOPTS the already-driven loopback inner (moved out of `race`); the
+     * loopback `race` still owns the transports the inner borrows, so `race` MUST
+     * outlive the returned wrapper. Returns nullptr if the visible adapter is
+     * unavailable. */
+    if (race == nullptr) return nullptr;
+    std::unique_ptr<IMdkrOnlineAdapter> &slot =
+        race->joinerVisible ? race->b : race->a;
+    if (!slot) return nullptr;
+    return std::make_unique<OwningLiveAdapter>(std::move(slot));
+}
+
+void OnlineRoom_unwrapVisibleOwningAdapter(
+    MdkrOnlineTestLoopbackRace *race,
+    std::unique_ptr<IMdkrOnlineAdapter> wrapper) {
+    /* Inverse of OnlineRoom_wrapVisibleAsOwningAdapter: return the adopted inner to
+     * the loopback race's visible slot BEFORE OnlineRoom_destroyTestLoopbackRace runs,
+     * so the struct's ordered teardown (and, in tournament mode, its transport-level
+     * continuation, which drives race->a) still finds its adapter. The emptied wrapper
+     * destructs on return. A no-op if either side is missing / the wrapper is not the
+     * adopt wrapper. */
+    if (race == nullptr || !wrapper) return;
+    OwningLiveAdapter *owning = dynamic_cast<OwningLiveAdapter *>(wrapper.get());
+    if (owning == nullptr) return;
+    std::unique_ptr<IMdkrOnlineAdapter> &slot =
+        race->joinerVisible ? race->b : race->a;
+    slot = owning->releaseInner();
 }
 
 /* ======================================================================== *

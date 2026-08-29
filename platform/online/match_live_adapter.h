@@ -749,9 +749,12 @@ IMdkrOnlineAdapter *OnlineRoom_pollEngineRoomReady(void);
  * no latch) -- exposed for direct headless assertion. */
 bool OnlineRoom_roomReadyConditionHolds(IMdkrOnlineAdapter *adapter);
 /* Resolve the RAW concrete LiveAdapter behind the panel's owning wrapper (or the
- * adapter itself for the loopback lanes' raw adapters). The mdkr_online_live_adapter_
- * lobby / _race_info accessors dynamic_cast to the concrete type, so the descriptor-
- * less room-ready boot resolves this once and drives the feed + race arm through it. */
+ * adapter itself for the loopback lanes' raw adapters) via the virtual
+ * mdkrResolveLive() hook (A1): the wrapper forwards it to its inner adapter, a raw
+ * LiveAdapter returns itself, and a fake returns nullptr -- no dynamic_cast. The
+ * mdkr_online_live_adapter_lobby / _race_info accessors resolve through the SAME
+ * hook, so the descriptor-less room-ready boot resolves this once and drives the
+ * feed + race arm through it. */
 IMdkrOnlineAdapter *OnlineRoom_resolveRawLiveAdapter(IMdkrOnlineAdapter *adapter);
 /* Per-frame driver: on the FIRST frame the condition holds, publish `adapter` for
  * room-ready and latch so it is not re-published. Returns true on that first frame.
@@ -784,6 +787,11 @@ void OnlineRoom_observeRoomReadyRearm(IMdkrOnlineAdapter *adapter);
  * live continuation and its Ready/Start UI must show, not the tournament hand-off
  * card. The panel ANDs this into the hand-off gate so the card never lies. */
 bool OnlineRoom_roomReadyTakeoverEngaged(void);
+/* True while a FINISHED native return has requested a re-arm that the panel's
+ * per-frame observer has not yet completed (the latch clears once the room is
+ * observed out of the takeover condition). The launcher logs it as part of the
+ * room-ready boot-result diagnostic so a real-hardware return is diagnosable. */
+bool OnlineRoom_roomReadyRearmPending(void);
 
 /* ---- Engine-roster ownership guard (local-Play beach-ball fix, beta only) -- *
  *
@@ -816,6 +824,23 @@ IMdkrOnlineAdapter *OnlineRoom_testLoopbackVisible(
 IMdkrOnlineAdapter *OnlineRoom_testLoopbackPeer(
     MdkrOnlineTestLoopbackRace *race);
 void OnlineRoom_destroyTestLoopbackRace(MdkrOnlineTestLoopbackRace *race);
+
+/* Room-ready GATE probe seam (A2, LOAD-BEARING): wrap the loopback VISIBLE adapter
+ * in the REAL production OwningLiveAdapter wrapper -- the exact wrapper shape the
+ * Online Room panel holds -- so the probe proves the wrapper's mdkrResolveLive
+ * resolve hook end-to-end (A1's unit test could only use a stand-in). The wrapper
+ * ADOPTS the driven loopback inner (moved out of `race`); `race` still owns the
+ * borrowed transports, so it MUST outlive the returned wrapper. Returns nullptr if
+ * the visible adapter is unavailable. Defined in online_live_wiring.cpp. */
+std::unique_ptr<IMdkrOnlineAdapter> OnlineRoom_wrapVisibleAsOwningAdapter(
+    MdkrOnlineTestLoopbackRace *race);
+/* Inverse of the above: return the adopted inner to `race`'s visible slot BEFORE
+ * OnlineRoom_destroyTestLoopbackRace, so the struct's ordered teardown + (tournament
+ * mode) transport-level continuation still find their adapter. The emptied wrapper
+ * destructs when `wrapper` goes out of scope. Defined in online_live_wiring.cpp. */
+void OnlineRoom_unwrapVisibleOwningAdapter(
+    MdkrOnlineTestLoopbackRace *race,
+    std::unique_ptr<IMdkrOnlineAdapter> wrapper);
 
 /* LOBBY-START loopback room (MDKR_APP_TEST_ONLINE_LIVE_LOBBY_START).
  * Same two loopback adapters as OnlineRoom_makeTestLoopbackRace but STOPPED at

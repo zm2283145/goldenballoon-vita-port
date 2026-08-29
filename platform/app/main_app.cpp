@@ -2262,17 +2262,20 @@ static void liveLobbyStartServiceStep(void) {
  * session ended without a native verdict (app-quit / a non-session postrace exit)
  * -- treated as before. The launcher loop already re-draws the room with the
  * adapter intact, so this needs NO teardown; it is the witness + reason surface. */
+static const char *onlineSessionEndLabel(MdkrPartyLinkSessionEndReason reason) {
+    switch (reason) {
+    case MDKR_PARTY_LINK_SESSION_END_FINISHED: return "FINISHED";
+    case MDKR_PARTY_LINK_SESSION_END_LEFT:     return "LEFT";
+    case MDKR_PARTY_LINK_SESSION_END_ERROR:    return "ERROR";
+    case MDKR_PARTY_LINK_SESSION_END_NONE:
+    default:                                   return "NONE";
+    }
+}
+
 static MdkrPartyLinkSessionEndReason onlineTakeSessionEndWitness(int result) {
     const MdkrPartyLinkSessionEndReason reason =
         mdkr_party_link_take_session_end();
-    const char *label = "NONE";
-    switch (reason) {
-    case MDKR_PARTY_LINK_SESSION_END_FINISHED: label = "FINISHED"; break;
-    case MDKR_PARTY_LINK_SESSION_END_LEFT:     label = "LEFT"; break;
-    case MDKR_PARTY_LINK_SESSION_END_ERROR:    label = "ERROR"; break;
-    case MDKR_PARTY_LINK_SESSION_END_NONE:
-    default: break;
-    }
+    const char *label = onlineSessionEndLabel(reason);
     if (reason != MDKR_PARTY_LINK_SESSION_END_NONE) {
         std::fprintf(stderr,
                      "[online-session-end] reason=%s result=%d -> returning to "
@@ -2421,13 +2424,23 @@ int runOnlineLobbyStartEngineSession(AppHost &host, const MdkrBootConfig &config
  * returns the engine result (a watchdog error trip is a nonzero code the launcher
  * routes back to the room). */
 int runOnlineLobbyStartLiveSession(AppHost &host, const MdkrBootConfig &config,
-                                   IMdkrOnlineAdapter *visibleWrapper) {
+                                   IMdkrOnlineAdapter *visibleWrapper,
+                                   MdkrPartyLinkSessionEndReason *endReasonOut =
+                                       nullptr) {
+    if (endReasonOut != nullptr) *endReasonOut = MDKR_PARTY_LINK_SESSION_END_NONE;
     /* Resolve the concrete LiveAdapter behind the panel's owning wrapper so the
      * forward-feed pump + race arm below drive the real inner adapter (and the
      * room-ready registry keyed on that raw pointer). The C accessors reach it via
      * the mdkrResolveLive hook whether handed the wrapper or the raw adapter. */
     IMdkrOnlineAdapter *visible = OnlineRoom_resolveRawLiveAdapter(visibleWrapper);
     if (visible == nullptr) return 2;
+
+    /* DIAGNOSTIC [4/5] -- native session boot entered. Paired with the launcher's
+     * boot-result line below so a real-hardware takeover shows a clear boot/return
+     * bracket in the log. */
+    std::fprintf(stderr,
+                 "[online-room-ready] native session boot entered (descriptor-less, "
+                 "peer=nullptr)\n");
 
     /* Match-input CONTEXT only (epoch 0, NO runtime install yet; the coordinator
      * installs the source once race 1 is ready). peer == nullptr: the real remote
@@ -2483,6 +2496,7 @@ int runOnlineLobbyStartLiveSession(AppHost &host, const MdkrBootConfig &config,
      * the adapter/room (no teardown here), so the human is back in the room. */
     const MdkrPartyLinkSessionEndReason endReason =
         onlineTakeSessionEndWitness(result);
+    if (endReasonOut != nullptr) *endReasonOut = endReason;
     /* A FINISHED native session parks the reducer in RESULTS (room-ready
      * condition FALSE), so arm the re-arm here -- the panel's per-frame observer then
      * clears the latch while the room is out of the takeover window, and the host's
@@ -3908,8 +3922,26 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
             host.shutdown();
             return 2;
         }
-        IMdkrOnlineAdapter *visible = OnlineRoom_testLoopbackVisible(race);
+        /* LOAD-BEARING (A2): hold the VISIBLE endpoint as the PRODUCTION
+         * OwningLiveAdapter wrapper -- the exact wrapper class the Online Room panel
+         * builds -- and hand THAT to the poll, so this probe proves the real wrapper's
+         * mdkrResolveLive resolve hook end-to-end (A1's unit test could only cover a
+         * stand-in wrapper). Pre-A2 the probe handed the poll a RAW LiveAdapter. The
+         * wrapper adopts the loopback visible inner; `race` still owns the transports
+         * the inner borrows, so the wrapper MUST be destroyed BEFORE `race`. */
+        std::unique_ptr<IMdkrOnlineAdapter> visibleWrapper =
+            OnlineRoom_wrapVisibleAsOwningAdapter(race);
+        IMdkrOnlineAdapter *visible = visibleWrapper.get();
         IMdkrOnlineAdapter *peer = OnlineRoom_testLoopbackPeer(race);
+        if (visible == nullptr || peer == nullptr) {
+            std::fprintf(stderr,
+                         "[online-room-ready-probe] visible wrapper/peer "
+                         "unavailable\n");
+            OnlineRoom_unwrapVisibleOwningAdapter(race, std::move(visibleWrapper));
+            OnlineRoom_destroyTestLoopbackRace(race);
+            host.shutdown();
+            return 2;
+        }
         OnlineRoom_resetRoomReadyLatch();
         int fires = 0;
         bool everHeld = false;
@@ -3920,12 +3952,24 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
             if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
         }
         IMdkrOnlineAdapter *published = OnlineRoom_pollEngineRoomReady();
-        const bool routed = (published == visible);
+        /* The poll publishes the RESOLVED raw inner (OnlineRoom_resolveRawLiveAdapter),
+         * so a correctly-resolving wrapper yields published == resolve(wrapper): a
+         * STRONGER end-to-end proof of the wrapper's mdkrResolveLive hook than the
+         * old raw-pointer identity (published == the wrapper itself would be wrong). */
+        const bool routed =
+            published != nullptr &&
+            published == OnlineRoom_resolveRawLiveAdapter(visible);
         std::fprintf(stderr,
                      "[online-room-ready-probe] fires=%d conditionHeld=%d "
                      "published=%d route=%s\n",
                      fires, everHeld ? 1 : 0, routed ? 1 : 0,
                      routed ? "lobby-start" : "race-ready-fallback");
+        /* Return the adopted inner to the loopback race's visible slot BEFORE
+         * destroying it: OnlineRoom_destroyTestLoopbackRace runs the struct's
+         * ordered teardown and (in tournament mode) its transport-level continuation,
+         * both of which drive that adapter. This restores the exact pre-A2 destruction
+         * path -- the wrapper existed only for the poll loop above. */
+        OnlineRoom_unwrapVisibleOwningAdapter(race, std::move(visibleWrapper));
         OnlineRoom_destroyTestLoopbackRace(race);
         host.shutdown();
         /* T2: EITHER mode fires exactly once + routes to lobby-start. Before T2 a
@@ -4647,11 +4691,28 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
             const std::string lobbyRom = AppConfig::get("rom_path", "");
             lobbyConfig.rom_path = lobbyRom.c_str();
             lobbyConfig.video_mode = -1;
+            /* DIAGNOSTIC [3/5] -- publish consumed by the launcher loop (the poll's
+             * consume-once handoff fired non-null). */
+            std::fprintf(stderr,
+                         "[online-room-ready] publish consumed by launcher; "
+                         "booting descriptor-less native session\n");
             std::fprintf(stderr,
                          "[online-live] engine ROOM-READY takeover accepted "
                          "(descriptor-less; native owns race 1)\n");
-            const int lobbyResult =
-                runOnlineLobbyStartLiveSession(host, lobbyConfig, roomReady);
+            MdkrPartyLinkSessionEndReason lobbyEndReason =
+                MDKR_PARTY_LINK_SESSION_END_NONE;
+            const int lobbyResult = runOnlineLobbyStartLiveSession(
+                host, lobbyConfig, roomReady, &lobbyEndReason);
+            /* DIAGNOSTIC [5/5] -- boot RESULT: exit code + session-end reason
+             * (FINISHED/LEFT/ERROR) + whether a re-arm is now pending (a FINISHED
+             * return arms it; the panel's per-frame observer completes it). Logged
+             * for EVERY return so a real-hardware takeover no longer returns silently
+             * (before, only a nonzero result got a single line). */
+            std::fprintf(stderr,
+                         "[online-room-ready] boot result=%d reason=%s "
+                         "rearmPending=%d\n",
+                         lobbyResult, onlineSessionEndLabel(lobbyEndReason),
+                         OnlineRoom_roomReadyRearmPending() ? 1 : 0);
             if (lobbyResult != 0) {
                 std::fprintf(stderr,
                              "[online-live] lobby-start session ended result=%d "
