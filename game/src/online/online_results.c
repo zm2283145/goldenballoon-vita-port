@@ -111,25 +111,32 @@ typedef struct MdkrResChooserOption {
     u8 choice; /* MdkrOnlineResultsChoice */
 } MdkrResChooserOption;
 
-/* SINGLE-race chooser: pick a track, flip to a tournament, or replay the race. */
-static const MdkrResChooserOption sChooserSingle[] = {
-    {"RACE AGAIN", (u8) MDKR_ONLINE_RESULTS_CHOICE_RACE_AGAIN},
-    {"CHANGE TRACK", (u8) MDKR_ONLINE_RESULTS_CHOICE_CHANGE_TRACK},
-    {"CHANGE MODE", (u8) MDKR_ONLINE_RESULTS_CHOICE_CHANGE_MODE},
-    {"NEW TOURNAMENT", (u8) MDKR_ONLINE_RESULTS_CHOICE_NEW_TOURNAMENT},
-    {"CHANGE CHARACTER", (u8) MDKR_ONLINE_RESULTS_CHOICE_CHANGE_CHAR},
-    {"FINISH", (u8) MDKR_ONLINE_RESULTS_CHOICE_FINISH},
-};
-/* TOURNAMENT chooser: pick a cup, flip to single, replay/new the cup. */
-static const MdkrResChooserOption sChooserTournament[] = {
-    {"RACE AGAIN", (u8) MDKR_ONLINE_RESULTS_CHOICE_RACE_AGAIN},
-    {"CHANGE CUP", (u8) MDKR_ONLINE_RESULTS_CHOICE_CHANGE_CUP},
-    {"CHANGE MODE", (u8) MDKR_ONLINE_RESULTS_CHOICE_CHANGE_MODE},
-    {"NEW TOURNAMENT", (u8) MDKR_ONLINE_RESULTS_CHOICE_NEW_TOURNAMENT},
-    {"CHANGE CHARACTER", (u8) MDKR_ONLINE_RESULTS_CHOICE_CHANGE_CHAR},
-    {"FINISH", (u8) MDKR_ONLINE_RESULTS_CHOICE_FINISH},
-};
 #define RES_CHOOSER_MAX 6u
+#define RES_CHOOSER_ROW_CHANGE 1u /* the sole per-mode row (CHANGE TRACK / CHANGE CUP) */
+
+/* The "more races" option list. Both modes share every row except
+ * RES_CHOOSER_ROW_CHANGE, so the base list is the SINGLE-race one and a tournament
+ * substitutes only that one row (results_chooser_option()) -- one table, one
+ * per-mode row. Every distinct MdkrOnlineResultsChoice is reachable across the two. */
+static const MdkrResChooserOption sChooser[RES_CHOOSER_MAX] = {
+    {"RACE AGAIN", (u8) MDKR_ONLINE_RESULTS_CHOICE_RACE_AGAIN},
+    {"CHANGE TRACK", (u8) MDKR_ONLINE_RESULTS_CHOICE_CHANGE_TRACK}, /* tournament -> CHANGE CUP */
+    {"CHANGE MODE", (u8) MDKR_ONLINE_RESULTS_CHOICE_CHANGE_MODE},
+    {"NEW TOURNAMENT", (u8) MDKR_ONLINE_RESULTS_CHOICE_NEW_TOURNAMENT},
+    {"CHANGE CHARACTER", (u8) MDKR_ONLINE_RESULTS_CHOICE_CHANGE_CHAR},
+    {"FINISH", (u8) MDKR_ONLINE_RESULTS_CHOICE_FINISH},
+};
+/* The one tournament override, substituted at row RES_CHOOSER_ROW_CHANGE. */
+static const MdkrResChooserOption sChooserTournamentChange = {
+    "CHANGE CUP", (u8) MDKR_ONLINE_RESULTS_CHOICE_CHANGE_CUP
+};
+
+/* FINISH is the LAST row (index RES_CHOOSER_MAX-1 == 5) in BOTH modes: the headless
+ * chooser lanes script cursor "5" to pick it, and the only per-mode substitution
+ * touches row RES_CHOOSER_ROW_CHANGE (1), never this one -- so FINISH's index never
+ * moves. Keep FINISH last. */
+_Static_assert(RES_CHOOSER_MAX == 6u,
+               "the chooser lanes script cursor 5 == FINISH, the last of 6 rows");
 
 /* Visible countdowns: results 15s, standings 10s. updateRate accumulates in
  * 60ths of a second, so seconds*60. */
@@ -236,7 +243,7 @@ static u8 results_chooser_seam_joiner(void);         /* force the joiner mirror 
 static u8 results_chooser_seam_joiner_hold(void);    /* mirror + feed HELD in RESULTS */
 static u8 results_chooser_seam_joiner_vacate(void);  /* mirror + host seat vacates */
 static u8 results_chooser_seam_single(void);         /* single-race stand-in room */
-static const MdkrResChooserOption *results_chooser_options(u8 *countOut);
+static const MdkrResChooserOption *results_chooser_option(unsigned i);
 static MdkrOnlineResultsResult results_chooser_tick(const MdkrPartyLinkSnapshot *snap,
                                                     bool haveSnap, s32 localSeat,
                                                     s32 updateRate);
@@ -748,20 +755,16 @@ static void results_publish_rematch(void) {
  * option -> intent -> routing table.
  * ======================================================================== */
 
-/* The current mode's option list + its length (single offers CHANGE TRACK, a
- * tournament CHANGE CUP -- the retail-faithful pick). */
-static const MdkrResChooserOption *results_chooser_options(u8 *countOut) {
-    if (sRes.chooserMode == MDKR_ONLINE_SCREEN_MODE_TOURNAMENT) {
-        if (countOut != NULL) {
-            *countOut = (u8) (sizeof(sChooserTournament) /
-                              sizeof(sChooserTournament[0]));
-        }
-        return sChooserTournament;
+/* One "more races" option for the current chooser mode + row. Both modes share
+ * every row except RES_CHOOSER_ROW_CHANGE (single CHANGE TRACK / tournament CHANGE
+ * CUP), so this substitutes that one row for a tournament and otherwise returns the
+ * shared row. Callers bound `i` to < RES_CHOOSER_MAX (chooserCount). */
+static const MdkrResChooserOption *results_chooser_option(unsigned i) {
+    if (i == RES_CHOOSER_ROW_CHANGE &&
+        sRes.chooserMode == (u8) MDKR_ONLINE_SCREEN_MODE_TOURNAMENT) {
+        return &sChooserTournamentChange;
     }
-    if (countOut != NULL) {
-        *countOut = (u8) (sizeof(sChooserSingle) / sizeof(sChooserSingle[0]));
-    }
-    return sChooserSingle;
+    return &sChooser[i];
 }
 
 /* The host's committed intent for a more-races option: REMATCH always (return the
@@ -790,7 +793,6 @@ static void results_chooser_witness(void) {
               ((u32) sRes.chooserJoiner << 5) | ((u32) sRes.host << 6) |
               ((u32) sRes.chooserCommitted << 7) |
               ((u32) sRes.chooserChoice << 8);
-    const MdkrResChooserOption *opts = results_chooser_options(NULL);
     if (key == sChooserKey) {
         return;
     }
@@ -800,8 +802,8 @@ static void results_chooser_witness(void) {
             "option=%s committed=%u choice=%u\n",
             (unsigned) sRes.chooserMode, (unsigned) sRes.host,
             (unsigned) sRes.chooserJoiner, (unsigned) sRes.chooserCursor,
-            opts[sRes.chooserCursor].label, (unsigned) sRes.chooserCommitted,
-            (unsigned) sRes.chooserChoice);
+            results_chooser_option(sRes.chooserCursor)->label,
+            (unsigned) sRes.chooserCommitted, (unsigned) sRes.chooserChoice);
 }
 
 /* Chooser text. The BOLD 8-direction black legibility halo this used to draw
@@ -821,7 +823,6 @@ static void results_chooser_text(s32 x, s32 y, s32 fontId, char *text,
  * "WAITING FOR <host>..." line -- the display-only mirror. */
 static void results_chooser_render(const MdkrPartyLinkSnapshot *snap,
                                    bool haveSnap, s32 localSeat) {
-    const MdkrResChooserOption *opts = results_chooser_options(NULL);
     s32 tri = mdkr_online_screen_pulse(sRes.pulseTicks);
     s32 rowY = 92;
     unsigned i;
@@ -841,14 +842,15 @@ static void results_chooser_render(const MdkrPartyLinkSnapshot *snap,
         bool selected = (!sRes.chooserJoiner && (u8) i == sRes.chooserCursor);
         if (selected) {
             s32 pg = 200 + tri * 3; /* 200..248 gold pulse */
-            (void) snprintf(line, sizeof(line), "> %s <", opts[i].label);
+            (void) snprintf(line, sizeof(line), "> %s <",
+                            results_chooser_option(i)->label);
             results_chooser_text(MDKR_ONLINE_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT,
                                  line, ALIGN_MIDDLE_CENTER, 255, (u8) pg, 80);
         } else {
             s32 c = sRes.chooserJoiner ? 200 : 235;
             results_chooser_text(MDKR_ONLINE_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT,
-                                 (char *) opts[i].label, ALIGN_MIDDLE_CENTER, c, c,
-                                 c);
+                                 (char *) results_chooser_option(i)->label,
+                                 ALIGN_MIDDLE_CENTER, c, c, c);
         }
         rowY += 22;
     }
@@ -856,7 +858,7 @@ static void results_chooser_render(const MdkrPartyLinkSnapshot *snap,
     rowY += 6;
     if (sRes.chooserCommitted) {
         (void) snprintf(line, sizeof(line), "%s...",
-                        opts[sRes.chooserCursor].label);
+                        results_chooser_option(sRes.chooserCursor)->label);
         results_chooser_text(MDKR_ONLINE_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT, line,
                              ALIGN_MIDDLE_CENTER, 140, (u8) (200 + tri * 3), 140);
     } else if (sRes.chooserJoiner) {
@@ -886,14 +888,13 @@ static void results_chooser_render(const MdkrPartyLinkSnapshot *snap,
 static MdkrOnlineResultsResult results_chooser_tick(const MdkrPartyLinkSnapshot *snap,
                                                     bool haveSnap, s32 localSeat,
                                                     s32 updateRate) {
-    const MdkrResChooserOption *opts = results_chooser_options(NULL);
     ResInput in;
 
     if (updateRate <= 0) {
         updateRate = 1;
     }
     if (sRes.chooserCount == 0u) {
-        (void) results_chooser_options(&sRes.chooserCount);
+        sRes.chooserCount = RES_CHOOSER_MAX;
     }
 
     results_gather_input(&in); /* zeroed on the CHOOSER stage under the seams */
@@ -931,7 +932,7 @@ static MdkrOnlineResultsResult results_chooser_tick(const MdkrPartyLinkSnapshot 
     if (sRes.host && !sRes.chooserJoiner && !sRes.chooserCommitted &&
         !results_chooser_seam_show() && in.advanceEdge &&
         sRes.stageTicks >= RES_INPUT_GRACE) {
-        u8 choice = opts[sRes.chooserCursor].choice;
+        u8 choice = results_chooser_option(sRes.chooserCursor)->choice;
         sRes.chooserChoice = choice;
         if (results_chooser_seam_select() >= 0) {
             results_chooser_seam_mark_fired(); /* one-shot: no soak re-race loop */
@@ -956,8 +957,8 @@ static MdkrOnlineResultsResult results_chooser_tick(const MdkrPartyLinkSnapshot 
             fprintf(stderr,
                     "[online-results] chooser: committed option=%s choice=%u "
                     "intent{rematch=1 mode=%u}\n",
-                    opts[sRes.chooserCursor].label, (unsigned) choice,
-                    (unsigned) mode);
+                    results_chooser_option(sRes.chooserCursor)->label,
+                    (unsigned) choice, (unsigned) mode);
         }
     }
 
@@ -1144,7 +1145,7 @@ MdkrOnlineResultsResult mdkr_online_results_tick(s32 updateRate) {
                 (u8) (tournament ? MDKR_ONLINE_SCREEN_MODE_TOURNAMENT : MDKR_ONLINE_SCREEN_MODE_SINGLE);
             sRes.chooserCursor = 0u;
             sRes.chooserPrevCursor = 0xFFu;
-            (void) results_chooser_options(&sRes.chooserCount);
+            sRes.chooserCount = RES_CHOOSER_MAX;
             /* A joiner (or the forced-joiner seam) renders the display-only mirror
              * and follows the host; only the host drives the option list. */
             sRes.chooserJoiner =
