@@ -1610,6 +1610,14 @@ static s8 sChooserSeamKind = -1; /* -1 unresolved; 0 off; 1 select; 2 show; 3 jo
                                   * 4 joiner-hold; 5 joiner-vacate */
 static s8 sChooserSeamIndex = -1;
 static u8 sChooserSeamSingle;    /* the "single:" prefix -> SINGLE-race chooser */
+/* A scripted SEQUENCE of option indices: the Nth chooser commit selects
+ * sChooserSeq[N]. A lone index is a sequence of length 1 (the historical
+ * one-shot). The capstone needs "0,5" == RACE AGAIN then FINISH across two
+ * RESULTS terminals; every prior lane passes a single index and is unchanged. */
+#define CHOOSER_SEQ_MAX 8u
+static s8 sChooserSeq[CHOOSER_SEQ_MAX];
+static u8 sChooserSeqLen;
+static u8 sChooserSeqPos;
 static void results_chooser_seam_resolve(void) {
     if (sChooserSeamKind >= 0) {
         return;
@@ -1635,8 +1643,16 @@ static void results_chooser_seam_resolve(void) {
             sChooserSeamKind = 5; /* mirror, then the host seat vacates while the
                                    * feed stays in RESULTS (vanished-host control) */
         } else if (e[0] >= '0' && e[0] <= '9') {
+            /* One index, or a comma-separated SEQUENCE (e.g. "0,5"). Each commit
+             * advances to the next; after the last, the chooser holds. */
             sChooserSeamKind = 1;
-            sChooserSeamIndex = (s8) strtol(e, NULL, 10);
+            sChooserSeqLen = 0u;
+            while (*e >= '0' && *e <= '9' && sChooserSeqLen < CHOOSER_SEQ_MAX) {
+                sChooserSeq[sChooserSeqLen++] = (s8) strtol(e, NULL, 10);
+                while (*e >= '0' && *e <= '9') e++;
+                if (*e == ',') e++;
+            }
+            sChooserSeamIndex = sChooserSeqLen > 0u ? sChooserSeq[0] : (s8) -1;
         } else {
             sChooserSeamKind = 2; /* any other non-empty value: show-only */
         }
@@ -1646,19 +1662,19 @@ static u8 results_chooser_seam_single(void) {
     results_chooser_seam_resolve();
     return sChooserSeamSingle;
 }
-/* Fires exactly once: after a scripted select commits, subsequent chooser entries
- * (e.g. a RACE AGAIN re-boot reaching a fresh terminal) HOLD rather than auto-
- * selecting again, so a soak cannot loop re-races to the tick budget. */
-static u8 sChooserSelectFired;
+/* Fires the SEQUENCE in order: the Nth commit selects sChooserSeq[N]. After the
+ * last element subsequent chooser entries HOLD (return -1) rather than auto-
+ * selecting again, so a soak cannot loop re-races to the tick budget. A lone
+ * index is a length-1 sequence -- the historical one-shot behaviour. */
 static s8 results_chooser_seam_select(void) {
     results_chooser_seam_resolve();
-    if (sChooserSeamKind != 1 || sChooserSelectFired) {
+    if (sChooserSeamKind != 1 || sChooserSeqPos >= sChooserSeqLen) {
         return (s8) -1;
     }
-    return sChooserSeamIndex;
+    return sChooserSeq[sChooserSeqPos];
 }
 static void results_chooser_seam_mark_fired(void) {
-    sChooserSelectFired = 1u;
+    if (sChooserSeqPos < sChooserSeqLen) sChooserSeqPos++;
 }
 static u8 results_chooser_seam_show(void) {
     results_chooser_seam_resolve();
