@@ -1081,6 +1081,7 @@ void drawBetaChooser(LauncherState &state) {
 void autopairService(LauncherState &state) {
     static int resolved = -1;   // -1 unresolved, 0 off, 1 create, 2 join
     static std::string joinCode;
+    static int tournamentCup = -1;  // -1 single race; >=0 tournament with that cup
     if (resolved < 0) {
         const char *role = std::getenv("MDKR_APP_TEST_ONLINE_AUTOPAIR");
         if (role == nullptr || role[0] == '\0') {
@@ -1103,6 +1104,21 @@ void autopairService(LauncherState &state) {
                          "MDKR_APP_TEST_ONLINE_JOIN_CODE (got %zu chars)\n",
                          joinCode.size());
             resolved = 0;
+        }
+        // Optional TOURNAMENT capstone: the host configures the room as a
+        // tournament (mode + cup) BEFORE Check Setup, so the native takeover
+        // fires on a tournament room -- the SAME pre-config shape the native
+        // TRACKSELECT tournament path reads from the forward feed. Set on BOTH
+        // processes so each waits for the mode to propagate before Check Setup.
+        // A single race can never reach the FINISHED session-end the capstone's
+        // clean-return + re-take assertions need; a tournament finals on its
+        // last cup round. Value = cup id (0..4).
+        if (const char *cupEnv =
+                std::getenv("MDKR_APP_TEST_ONLINE_AUTOPAIR_TOURNAMENT")) {
+            if (cupEnv[0] != '\0') {
+                tournamentCup = std::atoi(cupEnv);
+                if (tournamentCup < 0 || tournamentCup > 4) tournamentCup = 1;
+            }
         }
     }
     if (resolved <= 0) return;
@@ -1177,16 +1193,47 @@ void autopairService(LauncherState &state) {
         std::fprintf(stderr, "[online-autopair] members=2\n");
     }
 
+    // Step 3b (tournament capstone only): the leader configures the room as a
+    // tournament + cup while both are in the open lobby, so the takeover fires on
+    // a tournament room. Leader-gated helpers (a joiner submit is a no-op).
+    MdkrOnlineLobby autopairLobby{};
+    const bool haveAutopairLobby =
+        mdkr_online_live_adapter_lobby(g_online.adapter.get(), &autopairLobby);
+    static bool tournamentConfigured = false;
+    if (tournamentCup >= 0 && !tournamentConfigured && resolved == 1 &&
+        model.member_count >= 2u) {
+        tournamentConfigured = true;
+        std::fprintf(stderr,
+                     "[online-autopair] configuring TOURNAMENT cup=%d\n",
+                     tournamentCup);
+        mdkr_online_live_adapter_set_mode(g_online.adapter.get(),
+                                          MDKR_ONLINE_MODE_TOURNAMENT);
+        mdkr_online_live_adapter_set_cup(
+            g_online.adapter.get(), static_cast<unsigned>(tournamentCup));
+    }
+    // A tournament capstone must not proceed until the room mode has propagated
+    // to THIS endpoint (the leader's SET_MODE/SET_CUP reaches both via the feed),
+    // so the native takeover lands on a tournament room on both sides.
+    const bool tournamentReady =
+        tournamentCup < 0 ||
+        (haveAutopairLobby &&
+         autopairLobby.mode == MDKR_ONLINE_MODE_TOURNAMENT &&
+         autopairLobby.cup_id == static_cast<std::uint8_t>(tournamentCup));
+
     // Step 4: "Check Setup" -- the secure-handshake step that brings up the mesh
     // and computes the safety phrase. It is the ROOM view's primary action (the
     // "Check Setup" button); both endpoints press it. Without it the room sits in
     // the open lobby and the verification phrase never appears.
     static bool checkSetupDispatched = false;
     if (!checkSetupDispatched && model.kind == MDKR_ONLINE_VIEW_ROOM &&
-        model.member_count >= 2u &&
+        model.member_count >= 2u && tournamentReady &&
         model.primary.action == MDKR_ONLINE_VIEW_ACTION_CHECK_SETUP) {
         checkSetupDispatched = true;
-        std::fprintf(stderr, "[online-autopair] dispatching CHECK_SETUP\n");
+        std::fprintf(stderr,
+                     tournamentCup >= 0
+                         ? "[online-autopair] tournament room ready; dispatching "
+                           "CHECK_SETUP\n"
+                         : "[online-autopair] dispatching CHECK_SETUP\n");
         dispatch(MDKR_ONLINE_VIEW_ACTION_CHECK_SETUP);
     }
 
