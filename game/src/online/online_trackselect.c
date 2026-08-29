@@ -412,9 +412,13 @@ typedef struct TsInput {
  *   0 SINGLE_HOST (default) -- host locks a single track; also the B-back lane.
  *   1 JOINER          -- local seat is a JOINER; the seam scripts a remote HOST
  *                        locking a tournament cup, to prove the joiner renders the
- *                        room and narrows to the cup's round-0 track. */
+ *                        room and narrows to the cup's round-0 track.
+ *   2 HOLD            -- frame-dump only (the VS_SCN_HOLD sibling): lock a track,
+ *                        browse away, then park with no START so a shot can be
+ *                        taken of the fully revealed screen. */
 #define TS_SCN_SINGLE_HOST 0
 #define TS_SCN_JOINER 1
+#define TS_SCN_HOLD 2
 static s8 sTsScenario = -1;
 
 /* Scripted headless input (env MDKR_TEST_ONLINE_TRACKSELECT). Keyed on the
@@ -432,6 +436,27 @@ static void trackselect_input_scripted(TsInput *in) {
     memset(in, 0, sizeof(*in));
     if (sTsScenario == TS_SCN_JOINER) {
         return; /* joiner: watch only, the seam drives the host */
+    }
+    if (sTsScenario == TS_SCN_HOLD) {
+        /* Dump seam: walk to Whale Bay (col2/row0), LOCK it, browse away to
+         * the FFL column, then PARK (no START) so a frame dump catches the
+         * revealed locked-while-browsing state. */
+        switch (sTs.ticks) {
+        case 2u:
+        case 3u:
+            in->dx = 1;
+            break;
+        case 6u:
+            in->aEdge = 1u;
+            break;
+        case 9u:
+        case 10u:
+            in->dx = 1;
+            break;
+        default:
+            break;
+        }
+        return;
     }
     if (sTsEntryCount <= 1u) {
         if (sTs.ticks == 3u) {
@@ -1258,9 +1283,13 @@ static void trackselect_test_resolve(void) {
         sTsTestActive = (e != NULL) ? 1 : 0;
         /* Scenario from the env VALUE: "joiner" selects the joiner-render lane,
          * anything else is the default single-race host lane. */
-        sTsScenario = (e != NULL && strstr(e, "joiner") != NULL)
-                          ? (s8) TS_SCN_JOINER
-                          : (s8) TS_SCN_SINGLE_HOST;
+        if (e != NULL && strstr(e, "joiner") != NULL) {
+            sTsScenario = (s8) TS_SCN_JOINER;
+        } else if (e != NULL && strstr(e, "hold") != NULL) {
+            sTsScenario = (s8) TS_SCN_HOLD;
+        } else {
+            sTsScenario = (s8) TS_SCN_SINGLE_HOST;
+        }
     }
 }
 
