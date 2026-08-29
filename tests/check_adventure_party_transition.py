@@ -352,6 +352,19 @@ def main():
                            if lv == HUB_LEVEL_ID and fr > lobby_loads[0]), None)
     if not lobby_loads:
         failures.append("two-hop: never loaded the world lobby (hop 1 did not complete)")
+    else:
+        # Party intact at the INTERMEDIATE lobby (hop 1): the full 3-seat roster
+        # must be published in the segment after the first world-lobby load, so a
+        # fail-closed hop-1 formation (stock 1P at the lobby) cannot pass while
+        # the banner claims "party intact both hops".
+        lobby_pos = twohop.find("levelId=%d" % DEST_LEVEL_ID)
+        end_pos = twohop.find("levelId=%d" % HUB_LEVEL_ID, lobby_pos)
+        inter_seg = twohop[lobby_pos:end_pos] if end_pos >= 0 else twohop[lobby_pos:]
+        full_at_lobby = any(int(m.group(1)) == 3 and int(m.group(2), 16) == 0x7
+                            for m in ROSTER_RE.finditer(inter_seg))
+        if not full_at_lobby:
+            failures.append("two-hop: the party did not form whole at the "
+                            "intermediate world lobby (hop 1 fail-closed to 1P?)")
     if hub_return is None:
         failures.append("two-hop: never returned to the central hub (hop 2 did not complete)")
     else:

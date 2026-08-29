@@ -87,6 +87,11 @@ LEVEL_RE = re.compile(r"level_load: levelId=(-?\d+) numPlayers=(-?\d+).*@frame~(
 ROSTER_RE = re.compile(r"aparty_roster: n=(\d+) mask=0x([0-9a-fA-F]+)")
 LAYOUT_RE = re.compile(r"aparty_layout: viewports=(\d+) layout=(\d+)")
 BINDING_RE = re.compile(r"aparty_binding: seat=(\d+) port=(\d+)")
+# racer.c's own per-frame input dispatch (MDKR_RACER_INPUT_TRACE) -- an
+# INDEPENDENT seam from the AP trace adapter: for every non-CPU racer it reports
+# the racerIndex it carries and the controller port that racer actually reads.
+RACERINPUT_RE = re.compile(
+    r"\[RACERINPUT\] tick=(\d+) player=(-?\d+) racer=(-?\d+) port=(-?\d+)")
 BAD_RE = re.compile(
     r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
     r"runtime error:|Assertion failed")
@@ -124,8 +129,73 @@ def party_facts(segment, players):
     return full, layout, bindings
 
 
+def racerinputs(out):
+    """(tick, player, racer, port) for every [RACERINPUT] row (humans only --
+    a finished/CPU racer is not on this input path)."""
+    return [(int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4)))
+            for m in RACERINPUT_RE.finditer(out)]
+
+
+def race_entry_tick(out):
+    """The simulation tick the lobby->race door latched on (the dest=5
+    aparty_transition), in the same tick clock [RACERINPUT] uses."""
+    ticks = [int(m.group(2)) for m in TRANS_RE.finditer(out)
+             if int(m.group(4)) == RACE_LEVEL_ID]
+    return ticks[0] if ticks else None
+
+
+def assert_race_binding(out, players, label):
+    """Real per-seat binding witness for the race, from the INDEPENDENT racer.c
+    input-dispatch seam (not the AP adapter that emits seat=i port=i by
+    construction). Windowed to mid-race by tick so it is the RACE, not the hub /
+    return lobby: every human racer reads its OWN controller port (player==port
+    -- would break only if a party wrongly engaged the retail 2P input swap) and
+    carries its own seat identity (player==racer), and exactly the N seats
+    0..N-1 are actively driven as humans (so seats 1..N-1 are real human racers,
+    not CPUs). Returns a list of failures."""
+    f = []
+    entry = race_entry_tick(out)
+    if entry is None:
+        return [f"{label}: no lobby->race transition tick (cannot window the race)"]
+    rows = racerinputs(out)
+    if not rows:
+        return [f"{label}: no [RACERINPUT] rows (MDKR_RACER_INPUT_TRACE off?)"]
+    maxtick = max(t for t, *_ in rows)
+    lo, hi = entry + 200, min(entry + 1800, maxtick - 50)
+    win = [(t, pl, rc, pt) for (t, pl, rc, pt) in rows if lo <= t <= hi]
+    if len(win) < players * 20:
+        f.append(f"{label}: too few mid-race [RACERINPUT] rows in tick window "
+                 f"[{lo},{hi}] (saw {len(win)}) -- cannot witness the binding")
+        return f
+    bad = [(t, pl, rc, pt) for (t, pl, rc, pt) in win if pl != pt or pl != rc]
+    if bad:
+        f.append(f"{label}: race binding broken -- {len(bad)} row(s) where "
+                 f"player!=port or player!=racer, e.g. {bad[0]} "
+                 f"(seat did not read its own port / carried a wrong identity)")
+    seats = sorted({rc for (_t, _pl, rc, _pt) in win})
+    if seats != list(range(players)):
+        f.append(f"{label}: race drove human racerIndices {seats}, expected "
+                 f"{list(range(players))} (a seat is missing or a CPU is human)")
+    return f
+
+
+def swap_racerinput_port(out, seat, players):
+    """Positive-control mutation: rewrite the target seat's [RACERINPUT] rows so
+    it reads a DIFFERENT controller port (a swapped binding). assert_race_binding
+    must then fail -- otherwise the check cannot discriminate a real swap."""
+    lines = []
+    for line in out.splitlines():
+        m = RACERINPUT_RE.search(line)
+        if m and int(m.group(3)) == seat:
+            wrong = (int(m.group(4)) + 1) % players
+            line = line[:m.start(4)] + str(wrong) + line[m.end(4):]
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def run_arm(binary, rom, fixture, players, winner=None, postrace=None,
-            pause_quit=False, enabled=True, frames=8500, verbose=False):
+            pause_quit=False, enabled=True, frames=8500, verbose=False,
+            racer_trace=False):
     with tempfile.TemporaryDirectory(prefix="mdkr_ap_race_") as tmp:
         root = Path(tmp)
         save_dir = root / "save"
@@ -143,6 +213,8 @@ def run_arm(binary, rom, fixture, players, winner=None, postrace=None,
             env["MDKR_TEST_POSTRACE_OPTION"] = str(postrace)
         if pause_quit:
             env["MDKR_TEST_PAUSE_QUIT"] = "1"
+        if racer_trace:
+            env["MDKR_RACER_INPUT_TRACE"] = "1"
         save_env(env, str(save_dir))
         env["MDKR_VIDEO_CONFIG_PATH"] = str(root / "mdkr64.ini")
         command = [
@@ -153,9 +225,12 @@ def run_arm(binary, rom, fixture, players, winner=None, postrace=None,
         ]
         if verbose:
             print(f"$ {' '.join(command)}", flush=True)
+        # Generous per-arm ceiling, scaled by viewport count (N viewports render
+        # ~N x slower headless) with wide margin for a loaded host -- a slow box
+        # must not turn into a spurious timeout.
         proc = subprocess.run(command, cwd=root, env=env, text=True,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                              timeout=max(300, frames // 8), check=False)
+                              timeout=max(600, (frames // 6) * players), check=False)
     return proc.stdout or ""
 
 
@@ -340,11 +415,13 @@ def main():
 
     failures = []
 
-    # --- 3P host win: full door->race + return assertions ---
+    # --- 3P host win: full door->race + return assertions (with the real
+    #     input-path binding witness from the independent racer.c seam) ---
     host3 = run_arm(binary, rom, admit3, 3, winner=0, postrace=1,
-                    frames=8500, verbose=args.verbose)
+                    frames=8500, verbose=args.verbose, racer_trace=True)
     fe, _ = assert_race_entry(host3, 3, "3P host-win entry")
     failures += fe
+    failures += assert_race_binding(host3, 3, "3P host-win binding")
     failures += assert_winner(host3, 1, 0, "3P host-win")
     failures += assert_return_intact(host3, 3, "3P host-win return")
 
@@ -400,20 +477,22 @@ def main():
                for l in quit3out.splitlines()):
         failures.append("3P quit-to-lobby: host never took the pause decision")
 
-    # --- 2P field rule + return ---
+    # --- 2P field rule + return (+ binding witness) ---
     p2 = run_arm(binary, rom, admit2, 2, winner=0, postrace=1,
-                 frames=8500, verbose=args.verbose)
+                 frames=8500, verbose=args.verbose, racer_trace=True)
     fe2, _ = assert_race_entry(p2, 2, "2P entry")
     failures += fe2
+    failures += assert_race_binding(p2, 2, "2P binding")
     failures += assert_return_intact(p2, 2, "2P return")
 
-    # --- 4P field rule (race entry only: 4 viewports render ~4x slower, and the
-    #     brief scopes 4P to the field rule; the full winner/return matrix is the
-    #     3P arms above). Stop just past the race load. ---
+    # --- 4P field rule + binding (race entry only: 4 viewports render ~4x
+    #     slower, and the brief scopes 4P to the field rule; the full winner/
+    #     return matrix is the 3P arms above). Stop just past the race load. ---
     p4 = run_arm(binary, rom, admit4, 4, winner=0, postrace=1,
-                 frames=4600, verbose=args.verbose)
+                 frames=4600, verbose=args.verbose, racer_trace=True)
     fe4, _ = assert_race_entry(p4, 4, "4P entry")
     failures += fe4
+    failures += assert_race_binding(p4, 4, "4P binding")
 
     # --- Positive control 1: strip aparty_roster -> return-intact must FAIL ---
     stripped = "\n".join(l for l in host3.splitlines()
@@ -428,6 +507,15 @@ def main():
         failures.append("positive control: a 2P output PASSED the 4P field "
                         "assertions (field rule does not discriminate N)")
 
+    # --- Positive control 3: swap seat 1's read-port in the 3P host output and
+    #     require the binding witness to FAIL (otherwise it cannot discriminate a
+    #     real seat->port swap -- the whole point of the finding). ---
+    swapped = swap_racerinput_port(host3, seat=1, players=3)
+    if not assert_race_binding(swapped, 3, "PC-swapbind"):
+        failures.append("positive control: race binding witness PASSED with seat "
+                        "1's controller port swapped (it does not discriminate a "
+                        "swapped binding)")
+
     if failures:
         print("check_adventure_party_race_loop: FAIL", file=sys.stderr)
         for x in failures:
@@ -435,10 +523,11 @@ def main():
         return 1
     print("check_adventure_party_race_loop: PASS -- party crosses hub->lobby->race "
           "(R16 two-hop), a default race fields six racers (N humans + 6-N CPUs, N "
-          "viewports, per-seat binding) at 2P/3P/4P, and a host win, a non-host "
-          "win, a CPU win, a retry and a mid-race quit-to-lobby each return the "
-          "same party to the lobby (sgen stable, lgen advanced); both positive "
-          "controls fired")
+          "viewports, per-seat binding proven from racer.c's own input dispatch) at "
+          "2P/3P/4P, and a host win, a non-host win, a CPU win, a retry and a "
+          "mid-race quit-to-lobby each return the same party to the lobby (sgen "
+          "stable, lgen advanced); three positive controls fired (roster-strip, "
+          "2P-as-4P field, swapped-binding)")
     return 0
 
 
