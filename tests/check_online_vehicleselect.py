@@ -73,7 +73,8 @@ VS_REJECT_RE = re.compile(
 VS_ADVANCE_RE = re.compile(
     r"^\[online-vehicleselect\] advance: lobby left LOBBY", re.MULTILINE)
 VS_EXIT_RE = re.compile(
-    r"^\[online-vehicleselect\] exit: freed portrait assets", re.MULTILINE)
+    r"^\[online-vehicleselect\] exit: freed portrait \+ vehicle assets",
+    re.MULTILINE)
 SESS_CS_TO_VS_RE = re.compile(
     r"^\[online-session\] charselect -> vehicleselect", re.MULTILINE)
 SESS_VS_TO_TS_RE = re.compile(

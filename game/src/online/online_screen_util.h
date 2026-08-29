@@ -195,6 +195,59 @@ static inline void mdkr_online_screen_draw_portrait(u8 character, s32 x, s32 y,
     }
 }
 
+/* T9 NIT-2: blit the REAL vehicle art (car / hovercraft / plane) the same way the
+ * charselect grid blits the real racer portraits -- so the native vehicle screen
+ * shows the vehicle pictures, not just text names. The tiles are the offline race-
+ * select's own TOP+BOTTOM vehicle-icon pair (TEXTURE_ICON_VEHICLE_*_TOP/_BOTTOM),
+ * borrowed READ-ONLY from gMenuAssets exactly as the portraits are -- the native
+ * screen CAN decode ROM art (unlike the launcher shell). The caller loads the
+ * group with menu_assetgroup_load(sOnlineVehicleAssetIds) (see online_vehicle-
+ * select.c) and frees it on exit. Centred horizontally on cx, TOP edge at topY,
+ * modulated by (r,g,b,a) so the card can dim an illegal vehicle / tint the picked
+ * one. Returns FALSE (drawing nothing) when the tiles are not resident, so the
+ * caller keeps its text label and this never DMAs a NULL tile -- the same fail-
+ * safe the portrait blit and the scrolling-sky backdrop use. */
+static inline bool mdkr_online_screen_draw_vehicle(u8 vehicle, s32 cx, s32 topY,
+                                                   u8 r, u8 g, u8 b, u8 a) {
+    static const s16 topId[3] = {
+        TEXTURE_ICON_VEHICLE_CAR_TOP,
+        TEXTURE_ICON_VEHICLE_HOVERCRAFT_TOP,
+        TEXTURE_ICON_VEHICLE_PLANE_TOP,
+    };
+    static const s16 botId[3] = {
+        TEXTURE_ICON_VEHICLE_CAR_BOTTOM,
+        TEXTURE_ICON_VEHICLE_HOVERCRAFT_BOTTOM,
+        TEXTURE_ICON_VEHICLE_PLANE_BOTTOM,
+    };
+    TextureHeader *tTop;
+    TextureHeader *tBot;
+    DrawTexture art[3];
+    s32 halfW;
+
+    if (vehicle > 2u) {
+        return false;
+    }
+    tTop = (TextureHeader *) gMenuAssets[topId[vehicle]];
+    tBot = (TextureHeader *) gMenuAssets[botId[vehicle]];
+    if (tTop == NULL || tBot == NULL) {
+        return false;
+    }
+    /* The offline pair anchors TOP at (0,0) and BOTTOM one tile-height below;
+     * centre it on cx by offsetting each tile left by half its width. */
+    halfW = (s32) tTop->width / 2;
+    art[0].texture = tTop;
+    art[0].xOffset = (s16) -halfW;
+    art[0].yOffset = 0;
+    art[1].texture = tBot;
+    art[1].xOffset = (s16) -halfW;
+    art[1].yOffset = (s16) tTop->height;
+    art[2].texture = NULL;
+    art[2].xOffset = 0;
+    art[2].yOffset = 0;
+    texrect_draw(&gCurrDisplayList, art, cx, topY, r, g, b, a);
+    return true;
+}
+
 /* ======================================================================== *
  * T7b: seamless phase transitions + menu ambiance (isolation-safe primitive
  * borrows -- the SAME discipline the scrolling-sky backdrop uses for bgdraw).

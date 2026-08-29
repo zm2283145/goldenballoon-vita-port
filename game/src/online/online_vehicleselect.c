@@ -112,13 +112,14 @@
 /* ---- Layout geometry (320x240) -------------------------------------------- */
 #define VS_TITLE_Y 18
 #define VS_PORTRAIT_X (VS_SCREEN_W_HALF - 22) /* centered ~44px portrait */
-#define VS_PORTRAIT_Y 40
-#define VS_CHARNAME_Y 90
-#define VS_CARD_Y 116          /* vehicle name row */
-#define VS_CARD_STATE_Y 132    /* per-vehicle state label */
-#define VS_TRACK_Y 158
-#define VS_STATUS_Y 196        /* YOU / rival pair (charselect parity) */
-#define VS_HELP_Y 224
+#define VS_PORTRAIT_Y 34
+#define VS_CHARNAME_Y 82
+#define VS_ART_Y 98            /* top edge of the real car/hover/plane art (T9) */
+#define VS_CARD_Y 150          /* vehicle name row (caption below the art) */
+#define VS_CARD_STATE_Y 164    /* per-vehicle state label */
+#define VS_TRACK_Y 182
+#define VS_STATUS_Y 204        /* YOU / rival pair (charselect parity) */
+#define VS_HELP_Y 226
 /* Three vehicle cards centered across the width. */
 #define VS_CARD_X0 64
 #define VS_CARD_DX 96
@@ -131,6 +132,20 @@ static const u8 sVehicleAccent[VS_PLAYER_VEHICLE_COUNT][3] = {
     {230u, 110u, 110u}, /* CAR       -- warm red */
     {110u, 190u, 230u}, /* HOVERCRAFT-- cool blue */
     {235u, 205u, 110u}, /* PLANE     -- gold */
+};
+
+/* T9 NIT-2: the real vehicle art tile group (three vehicles x TOP+BOTTOM) + the
+ * -1 terminator menu_assetgroup_load/free stop on. Borrowed READ-ONLY the same way
+ * sPortraitAssetIds borrows the racer faces -- menu_asset_load routes each texture
+ * id to load_texture, so this loads the six vehicle tiles into gMenuAssets[] and
+ * spawns NO menu objects. NON-const because the loader takes s16* and this TU owns
+ * its own copy (the sPortraitAssetIds discipline). Defined HERE (not the shared
+ * header) because only the vehicle screen uses it. */
+static s16 sOnlineVehicleAssetIds[] = {
+    TEXTURE_ICON_VEHICLE_CAR_TOP,        TEXTURE_ICON_VEHICLE_CAR_BOTTOM,
+    TEXTURE_ICON_VEHICLE_HOVERCRAFT_TOP, TEXTURE_ICON_VEHICLE_HOVERCRAFT_BOTTOM,
+    TEXTURE_ICON_VEHICLE_PLANE_TOP,      TEXTURE_ICON_VEHICLE_PLANE_BOTTOM,
+    -1,
 };
 
 /* ---- Session-owned screen state (never an offline global) ------------------ */
@@ -492,6 +507,16 @@ static void vehicleselect_render(const VsRemoteView *rv) {
         char label[24];
         const char *state;
 
+        /* T9 NIT-2: the REAL vehicle picture per card (like the charselect grid's
+         * real portraits) -- full colour when legal, ghosted (dim + half alpha,
+         * the offline race-select's own "not available" treatment) when not. Falls
+         * back to the text caption below when the tiles are not resident. */
+        if (legal) {
+            mdkr_online_screen_draw_vehicle(v, x, VS_ART_Y, 255u, 255u, 255u, 255u);
+        } else {
+            mdkr_online_screen_draw_vehicle(v, x, VS_ART_Y, 150u, 150u, 150u, 128u);
+        }
+
         if (!legal) {
             r = 96;
             g = 96;
@@ -680,6 +705,9 @@ void mdkr_online_vehicleselect_enter(void) {
     menu_assetgroup_load(sPortraitAssetIds);
     menu_racer_portraits();
     menu_assetgroup_load(sOnlineSkyAssetIds);
+    /* T9 NIT-2: the real car/hovercraft/plane art (read-only borrow, freed in
+     * _exit before the group is released -- balanced with the portrait/sky loads). */
+    menu_assetgroup_load(sOnlineVehicleAssetIds);
 
     load_font(ASSET_FONTS_BIGFONT);
     load_font(ASSET_FONTS_SMALLFONT);
@@ -710,8 +738,10 @@ void mdkr_online_vehicleselect_exit(void) {
         unload_font(ASSET_FONTS_BIGFONT);
         menu_assetgroup_free(sPortraitAssetIds);
         menu_assetgroup_free(sOnlineSkyAssetIds);
+        menu_assetgroup_free(sOnlineVehicleAssetIds);
         sVs.assets = 0u;
-        fprintf(stderr, "[online-vehicleselect] exit: freed portrait assets\n");
+        fprintf(stderr,
+                "[online-vehicleselect] exit: freed portrait + vehicle assets\n");
     }
 }
 
