@@ -1030,6 +1030,15 @@ static void mdkr_adv_dump_level(s32 levelId) {
                        (int) entry->balloonID, (int) entry->challengeID,
                        (int) obj->properties.goldenBalloon.action);
             nBalloon++;
+        } else if (obj->behaviorId == BHV_WORLD_KEY) {
+            /* The hidden course key. obj_loop_worldkey collects it for ANY live
+             * human (playerIndex != PLAYER_COMPUTER), so a party's non-host seat
+             * can grab it; a route needs its world position, which no other dump
+             * prints. keyID is read from the live spawned object. */
+            mdkr_trace("objdump:   WORLDKEY i=%d pos=(%.1f, %.1f, %.1f) keyID=%d",
+                       (int) i, obj->trans.x_position, obj->trans.y_position,
+                       obj->trans.z_position, (int) obj->properties.worldKey.keyID);
+            nNpc++;
         } else if (obj->behaviorId == BHV_STOPWATCH_MAN || obj->behaviorId == BHV_PARK_WARDEN ||
                    obj->behaviorId == BHV_PARK_WARDEN_2 || obj->behaviorId == BHV_TROPHY_CABINET) {
             /* T.T., Taj and the trophy cabinet all call disable_racer_input()
