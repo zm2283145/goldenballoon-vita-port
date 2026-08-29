@@ -109,8 +109,14 @@ FINISHED_ENGINE_RE = re.compile(
 # standings. Lanes that reach FINISHED via MDKR_TEST_ONLINE_RESULTS_CHOOSER=5 assert
 # THIS in addition to the downstream FINISHED so a wrong chooser route (a different
 # committed option, or a FINISHED reached by some other path) fails loudly + directly.
+# Two authoritative forms: the direct commit (single-race / non-wrap paths) and the
+# tournament-final wrap commit, where FINISH is deferred until the room's departure
+# from RESULTS converges (the reducer-observable wrap) before returning LEAVE.
 CHOOSER_FINISH_RE = re.compile(
-    r"^\[online-results\] chooser: committed option=FINISH -> LEAVE$", re.MULTILINE)
+    r"^\[online-results\] chooser: "
+    r"(?:committed option=FINISH -> LEAVE"
+    r"|FINISH wrap converged \(room left RESULTS\) -> LEAVE \(ceremony\))$",
+    re.MULTILINE)
 
 
 # --------------------------------------------------------------------------- #
