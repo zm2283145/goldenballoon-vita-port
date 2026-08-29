@@ -32,8 +32,11 @@ engine windows are acceptable for this lane.
 
 The seven assertions (from both processes' stderr + exit codes):
   a. [online-room-ready] latch + publish + boot-enter on BOTH -- takeover self-fired
-  b. native session enters CHARSELECT descriptor-less (begin: lobby-start; NO
-     source=launch-descriptor on race 1)
+  b. native session enters CHARSELECT descriptor-less (begin: lobby-start (no
+     descriptor); the descriptor-FIRST "begin: separated boot path" did NOT fire.
+     NOTE: the native path still logs a "source=launch-descriptor" NET-SELECTIONS
+     line -- its descriptor is built LIVE at BEGIN_LOADING -- so that line is NOT a
+     discriminator; the BEGIN path is)
   c. selections synced through the reducer (joiner's racer appears on creator's side)
   d. race 1 converges (identical ENGINE-ONLINE-LIVE fold hash, both raced > N ticks)
   e. chooser round-trip: race 2 boots and converges too
@@ -50,13 +53,17 @@ RECORDED RED (assertions a+b against the pre-fix build eac1e8c0):
   -DMDKR_PARTY_ORIGIN=https://party.goldenballoon.net -DMDKR_BUILD_STAMP=<eac1e8c0>
   + the three FETCHCONTENT_SOURCE_DIR_* deps + the pinned PKG_CONFIG_PATH, then
   `tools/online/cloud_two_process_engine_boot.py`):
-    (b) FAIL -- the race boots DESCRIPTOR-FIRST on BOTH endpoints:
-        "[NET-SELECTIONS] epoch=1 racers=0:1/0,1:2/0,2:2/0,3:3/0 source=launch-descriptor"
+    (b) FAIL -- the DESCRIPTOR-FIRST begin fired on BOTH endpoints:
+        "[online-session] begin: separated boot path entered" (a pre-supplied
+        descriptor booted; NO "begin: lobby-start", zero native CHARSELECT); the
+        race's "[NET-SELECTIONS] ... source=launch-descriptor" confirms it (that
+        source line ALSO appears on the native path, so the BEGIN path is the
+        discriminator, not the source label).
     (a) FAIL -- ZERO "[online-room-ready]" latch/publish/native-boot lines on either
-        endpoint (the self-firing native takeover does not exist pre-fix), and zero
-        native CHARSELECT / "begin: lobby-start".
-  On HEAD the same two assertions PASS (the takeover self-fires, no launch-descriptor)
-  -- so the lane detects the exact descriptor-first defect the owner shipped twice.
+        endpoint (the self-firing native takeover does not exist pre-fix).
+  On HEAD the same two assertions PASS (the takeover self-fires; the begin is
+  lobby-start, not separated boot path) -- so the lane detects the exact
+  descriptor-first defect the owner shipped twice.
 
 Usage:
     python3 tools/online/check_online_native_flow_cloud.py \\
@@ -114,10 +121,18 @@ RR_BOOT_RESULT_RE = re.compile(
     r"rearmPending=(\d+)$", re.MULTILINE)
 
 # ---- Assertion (b): descriptor-less native CHARSELECT ------------------------
+# The discriminator is the BEGIN path, NOT the NET-SELECTIONS source: the native
+# takeover builds its descriptor LIVE at BEGIN_LOADING, so the race still boots
+# reading a "source=launch-descriptor" -- that line appears on BOTH the native and
+# the descriptor-first paths and is therefore useless as a discriminator. The
+# descriptor-FIRST defect is "begin: separated boot path entered" (a pre-supplied
+# descriptor, no native screens); the native takeover is "begin: lobby-start (no
+# descriptor)". Same signals the loopback lobby-start lane uses.
 BEGIN_LOBBY_RE = re.compile(
     r"^\[online-session\] begin: lobby-start \(no descriptor\)", re.MULTILINE)
 CHARSELECT_ENTER_RE = re.compile(r"^\[online-charselect\] enter:", re.MULTILINE)
-DESCRIPTOR_FIRST_RE = re.compile(r"source=launch-descriptor", re.MULTILINE)
+DESCRIPTOR_FIRST_RE = re.compile(
+    r"^\[online-session\] begin: separated boot path entered", re.MULTILINE)
 
 # ---- Assertion (c): reducer-synced selections -------------------------------
 # The joiner's picked racer (char id) shows up as the REMOTE seat on the
@@ -332,8 +347,9 @@ def assert_descriptorless_charselect(name: str, output: str) -> None:
     """Assertion (b): the native session enters CHARSELECT descriptor-less."""
     if DESCRIPTOR_FIRST_RE.search(output):
         raise ProofFailure(
-            f"{name}: race 1 began source=launch-descriptor -- the descriptor-"
-            f"first path fired instead of the native takeover")
+            f"{name}: the descriptor-FIRST begin fired ([online-session] begin: "
+            f"separated boot path) -- a pre-supplied descriptor booted instead of "
+            f"the native takeover")
     if BEGIN_LOBBY_RE.search(output) is None:
         raise ProofFailure(
             f"{name}: the native session never began descriptor-less "
