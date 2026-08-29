@@ -56,6 +56,9 @@ FAILURE_SCHEMA = "mdkr-character-import-failure-v1"
 FAILURE_INDEX_SCHEMA = "mdkr-character-import-failures-v1"
 FAILURE_DIRECTORY_NAME = ".failed-character-imports"
 FAILURE_INDEX_NAME = ".launcher-character-failures.tsv"
+REMOVAL_JOURNAL_NAME = ".removal-journal.json"
+REMOVAL_JOURNAL_SCHEMA = "mdkr-character-removal-journal-v1"
+MAX_REMOVAL_QUARANTINES = 256
 MAX_FAILURE_RECORDS = 4096
 MAX_UI_FAILURES = 256
 MAX_FAILURE_TEXT_BYTES = 8192
@@ -2763,12 +2766,203 @@ def _owned_provenance_name(name: str, package_id: str, suffix: str) -> bool:
                                      for character in digest)
 
 
+def _retire_owned_file(source: Path, destination: Path) -> None:
+    """Move one prevalidated file into a private same-filesystem quarantine."""
+    source.rename(destination)
+
+
+def _delete_retired_file(path: Path) -> None:
+    """Finalise one already-committed retirement (split out for fault tests)."""
+    path.unlink()
+
+
+def _removal_journal(operation: str, phase: str,
+                     names: list[str]) -> bytes:
+    return (json.dumps({
+        "schema": REMOVAL_JOURNAL_SCHEMA,
+        "operation": operation,
+        "phase": phase,
+        "files": names,
+    }, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+def _retire_file_set(root: Path, operation: str,
+                     owned_files: list[tuple[Path, os.stat_result]]) -> dict[str, Any]:
+    """Atomically retire a prevalidated set, with restart-safe cleanup state."""
+    names = [path.name for path, _identity in owned_files]
+    quarantine = Path(tempfile.mkdtemp(prefix=".remove-", dir=root))
+    if (quarantine.is_symlink() or not quarantine.is_dir() or
+            quarantine.resolve().parent != root):
+        raise ManagerError("could not create a private removal quarantine")
+    journal = quarantine / REMOVAL_JOURNAL_NAME
+    try:
+        _write_exclusive(journal, _removal_journal(operation, "armed", names))
+    except OSError:
+        try:
+            quarantine.rmdir()
+        except OSError:
+            pass
+        raise
+
+    retired: list[tuple[Path, Path, os.stat_result]] = []
+    try:
+        for source, identity in owned_files:
+            latest = source.lstat()
+            if (not stat.S_ISREG(latest.st_mode) or
+                    not _same_file_identity(latest, identity)):
+                raise ManagerError(
+                    f"{source.name} changed while removal was being prepared"
+                )
+            destination = quarantine / source.name
+            _retire_owned_file(source, destination)
+            retired.append((source, destination, identity))
+            moved = destination.lstat()
+            if (not stat.S_ISREG(moved.st_mode) or
+                    not _same_file_identity(moved, identity)):
+                raise ManagerError(
+                    f"{source.name} changed while entering quarantine"
+                )
+        _write_atomic(journal, _removal_journal(operation, "retired", names))
+    except (OSError, ManagerError) as exc:
+        rollback_failed: list[str] = []
+        for source, destination, identity in reversed(retired):
+            try:
+                if source.exists() or source.is_symlink():
+                    raise OSError("original path was unexpectedly recreated")
+                moved = destination.lstat()
+                if (not stat.S_ISREG(moved.st_mode) or
+                        not _same_file_identity(moved, identity)):
+                    raise OSError("quarantined file identity changed")
+                destination.rename(source)
+            except OSError:
+                rollback_failed.append(source.name)
+        if not rollback_failed:
+            try:
+                journal.unlink()
+                quarantine.rmdir()
+            except OSError:
+                # The armed journal makes an empty leftover self-describing;
+                # the ordinary clean command can finish it safely.
+                pass
+            raise ManagerError(f"removal made no changes: {exc}") from exc
+        detail = ", ".join(rollback_failed[:8])
+        raise ManagerError(
+            "removal was interrupted and automatic recovery was not complete "
+            f"for: {detail}; retained files remain in {quarantine.name}"
+        ) from exc
+
+    # Crossing the journal transition commits the logical removal. Cleanup
+    # errors never create a half-installed set; the retired journal gives a
+    # later clean operation the exact bounded retry scope.
+    cleanup_failed: list[str] = []
+    for _source, destination, _identity in retired:
+        try:
+            _delete_retired_file(destination)
+        except OSError:
+            cleanup_failed.append(destination.name)
+    if not cleanup_failed:
+        try:
+            journal.unlink()
+            quarantine.rmdir()
+        except OSError:
+            cleanup_failed.append("private quarantine metadata")
+
+    result: dict[str, Any] = {
+        "removed": names,
+        "cleanup_pending": bool(cleanup_failed),
+    }
+    if cleanup_failed:
+        result["cleanup_pending_files"] = cleanup_failed
+        result["cleanup_quarantine"] = quarantine.name
+    return result
+
+
+def _read_removal_journal(quarantine: Path) -> dict[str, Any]:
+    journal = quarantine / REMOVAL_JOURNAL_NAME
+    if journal.is_symlink() or not journal.is_file():
+        raise ManagerError("removal quarantine has no regular journal")
+    payload = journal.read_bytes()
+    if len(payload) > MAX_REPORT_BYTES:
+        raise ManagerError("removal quarantine journal exceeds its bound")
+    record = probe.json_loads_strict(payload, "removal quarantine journal")
+    if (set(record) != {"schema", "operation", "phase", "files"} or
+            record.get("schema") != REMOVAL_JOURNAL_SCHEMA or
+            record.get("phase") not in ("armed", "retired") or
+            not isinstance(record.get("operation"), str) or
+            not record["operation"] or len(record["operation"]) > 128 or
+            not isinstance(record.get("files"), list) or
+            not record["files"] or len(record["files"]) > 1024):
+        raise ManagerError("removal quarantine journal is malformed")
+    names = record["files"]
+    if (any(not isinstance(name, str) or not name or len(name) > 255 or
+            Path(name).name != name or name == REMOVAL_JOURNAL_NAME
+            for name in names) or len(set(names)) != len(names)):
+        raise ManagerError("removal quarantine journal has unsafe file names")
+    actual = {path.name for path in quarantine.iterdir()}
+    if not actual.issubset(set(names) | {REMOVAL_JOURNAL_NAME}):
+        raise ManagerError("removal quarantine contains an unjournalled entry")
+    for name in names:
+        path = quarantine / name
+        if not (path.exists() or path.is_symlink()):
+            continue
+        identity = path.lstat()
+        if not stat.S_ISREG(identity.st_mode):
+            raise ManagerError("removal quarantine contains a non-regular entry")
+    return record
+
+
+def _recover_removal_quarantines(root: Path) -> dict[str, list[str]]:
+    candidates = sorted(root.glob(".remove-*"))
+    if len(candidates) > MAX_REMOVAL_QUARANTINES:
+        raise ManagerError(
+            f"more than {MAX_REMOVAL_QUARANTINES} removal quarantines need review"
+        )
+    restored: list[str] = []
+    retired: list[str] = []
+    pending: list[str] = []
+    for quarantine in candidates:
+        try:
+            if (quarantine.is_symlink() or not quarantine.is_dir() or
+                    quarantine.resolve().parent != root):
+                raise ManagerError("removal quarantine is not a private directory")
+            record = _read_removal_journal(quarantine)
+            names = record["files"]
+            if record["phase"] == "armed":
+                present = [name for name in names
+                           if (quarantine / name).exists()]
+                if any((root / name).exists() or (root / name).is_symlink()
+                       for name in present):
+                    raise ManagerError("an original removal path was recreated")
+                moved: list[str] = []
+                try:
+                    for name in present:
+                        (quarantine / name).rename(root / name)
+                        moved.append(name)
+                except OSError:
+                    for name in reversed(moved):
+                        try:
+                            (root / name).rename(quarantine / name)
+                        except OSError:
+                            pass
+                    raise
+                restored.extend(present)
+            else:
+                for name in names:
+                    path = quarantine / name
+                    if path.exists():
+                        _delete_retired_file(path)
+                        retired.append(name)
+            (quarantine / REMOVAL_JOURNAL_NAME).unlink()
+            quarantine.rmdir()
+        except (OSError, ManagerError):
+            pending.append(quarantine.name)
+    return {"restored": restored, "retired": retired, "pending": pending}
+
+
 def remove(package_id: str, directory: Path) -> dict[str, Any]:
     if probe.ID_RE.fullmatch(package_id) is None:
         raise ManagerError("invalid package id")
     root = _prepare_directory(directory)
-    removed: list[str] = []
-    failed: list[str] = []
     with _locked(root):
         candidates = [
             root / f"{package_id}.mdkc",
@@ -2776,6 +2970,8 @@ def remove(package_id: str, directory: Path) -> dict[str, Any]:
         ]
         candidates.extend(sorted(root.glob(f"{package_id}.*.mdkrchar")))
         candidates.extend(sorted(root.glob(f"{package_id}.*.json")))
+        owned_files: list[tuple[Path, os.stat_result]] = []
+        unsafe: list[str] = []
         for path in candidates:
             if path.parent != root:
                 continue
@@ -2787,25 +2983,34 @@ def remove(package_id: str, directory: Path) -> dict[str, Any]:
             )
             if not owned or not (path.exists() or path.is_symlink()):
                 continue
-            if path.is_symlink() or not path.is_file():
-                failed.append(path.name)
-                continue
             try:
-                path.unlink()
-                removed.append(path.name)
+                identity = path.lstat()
             except OSError:
-                failed.append(path.name)
-    if failed:
-        detail = ", ".join(failed[:8])
-        if len(failed) > 8:
-            detail += f", and {len(failed) - 8} more"
-        raise ManagerError(
-            f"partial deletion removed {len(removed)} owned file(s), but "
-            f"{len(failed)} could not be removed: {detail}"
-        )
-    if not removed:
-        raise ManagerError("no regular installed files matched that character id")
-    return {"id": package_id, "removed": removed}
+                unsafe.append(path.name)
+                continue
+            if not stat.S_ISREG(identity.st_mode):
+                unsafe.append(path.name)
+                continue
+            owned_files.append((path, identity))
+
+        # Validate the complete mutation set before moving even the first byte.
+        # This is the same last-known-good rule used by install and rebuild: a
+        # malformed or hostile owned-looking entry cannot turn removal into a
+        # partial operation.
+        if unsafe:
+            detail = ", ".join(unsafe[:8])
+            if len(unsafe) > 8:
+                detail += f", and {len(unsafe) - 8} more"
+            raise ManagerError(
+                "removal made no changes because owned-looking entries were "
+                f"not real regular files: {detail}"
+            )
+        if not owned_files:
+            raise ManagerError("no regular installed files matched that character id")
+
+        result = _retire_file_set(root, f"remove:{package_id}", owned_files)
+    result["id"] = package_id
+    return result
 
 
 def set_enabled(package_id: str, directory: Path,
@@ -2845,8 +3050,10 @@ def set_enabled(package_id: str, directory: Path,
 
 def clean(directory: Path) -> dict[str, Any]:
     root = _prepare_directory(directory)
-    removed: list[str] = []
     with _locked(root):
+        recovery = _recover_removal_quarantines(root)
+        stale: dict[str, tuple[Path, os.stat_result]] = {}
+        unsafe: list[str] = []
         for path in sorted(root.glob("*.json")):
             try:
                 report = _read_report(path)
@@ -2864,14 +3071,41 @@ def clean(directory: Path) -> dict[str, Any]:
                         cache_data[20:52].hex() == report.get("cache_source_digest")):
                     continue
                 source = root / report.get("source_file", "")
-                if source.parent == root and source.is_file() and not source.is_symlink():
-                    source.unlink()
-                    removed.append(source.name)
-                path.unlink()
-                removed.append(path.name)
+                if source.parent != root:
+                    unsafe.append(path.name)
+                    continue
+                candidates = [path]
+                if source.exists() or source.is_symlink():
+                    candidates.append(source)
+                candidate_safe = True
+                for candidate in candidates:
+                    identity = candidate.lstat()
+                    if not stat.S_ISREG(identity.st_mode):
+                        unsafe.append(candidate.name)
+                        candidate_safe = False
+                        break
+                    stale[candidate.name] = (candidate, identity)
+                if not candidate_safe:
+                    for candidate in candidates:
+                        stale.pop(candidate.name, None)
             except (OSError, TypeError, ValueError, ManagerError):
                 continue
-    return {"removed": removed}
+        if unsafe:
+            detail = ", ".join(unsafe[:8])
+            raise ManagerError(
+                "clean made no changes because stale owned entries were "
+                f"unsafe: {detail}"
+            )
+        if stale:
+            result = _retire_file_set(
+                root, "clean", [stale[name] for name in sorted(stale)]
+            )
+        else:
+            result = {"removed": [], "cleanup_pending": False}
+        result["recovered_files"] = recovery["restored"]
+        result["retired_cleanup_files"] = recovery["retired"]
+        result["recovery_pending"] = recovery["pending"]
+    return result
 
 
 def _parser() -> argparse.ArgumentParser:

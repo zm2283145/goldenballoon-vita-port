@@ -1070,12 +1070,30 @@ void drawSettingsPanel(LauncherState &s, LauncherAction &out) {
 
 void drawCharacterWorkshopPanel(LauncherState &s, LauncherAction &out) {
     (void)out;
-    ui::SectionHeader(
-        "Character Workshop",
-        "Import, author, test, and package local character presentation. "
-        "Built-in donor profiles remain authoritative for gameplay.");
+    const ImVec2 available = ImGui::GetContentRegionAvail();
+    const float scale = AppTheme::uiScale();
+    // The shell's top-navigation decision is viewport-wide, but the Workshop
+    // must respond to the space it actually receives after that navigation is
+    // laid out. Passing `false` unconditionally made the 640x480/200% smoke
+    // exercise only the compact shell while every editor still chose its wide
+    // tables, copy density, and multi-column controls.
+    const bool compact = available.x < 720.0f * scale ||
+                         available.y < 540.0f * scale;
+    if (compact) {
+        // The compact shell already labels this page "Workshop". A full
+        // section hero at 200% UI scale consumed the entire 640x480 content
+        // viewport, leaving the editor present in the document but neither
+        // visible nor reachable through ImGui navigation.
+        ImGui::TextDisabled(
+            "Character Workshop · local appearance authoring");
+    } else {
+        ui::SectionHeader(
+            "Character Workshop",
+            "Import, author, test, and package local character presentation. "
+            "Built-in donor profiles remain authoritative for gameplay.");
+    }
     const bool romReady = !s.romPath.empty() && s.romInfo.valid;
-    if (!romReady && !s.romValidationPending) {
+    if (!romReady && !s.romValidationPending && !compact) {
         ui::TextSubtleWrapped(
             "A ROM is optional while you import and author. Add your own base-game ROM only when you want exact vehicle/scene previews, final tests, or play.");
         if (ImGui::SmallButton("Add ROM for exact tests…")) {
@@ -1099,7 +1117,18 @@ void drawCharacterWorkshopPanel(LauncherState &s, LauncherAction &out) {
     }
     Settings_setDonorGameplayProfiles(
         &s.romInfo.donor_profiles, s.romInfo.donor_profiles_message);
-    Settings_drawCharacterWorkshop(s.hostWindow, /*compact=*/false);
+    Settings_drawCharacterWorkshop(s.hostWindow, compact);
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+        static int tracedCompact = -1;
+        if (tracedCompact != (compact ? 1 : 0)) {
+            tracedCompact = compact ? 1 : 0;
+            std::fprintf(
+                stderr,
+                "[app-ui] character-workshop-layout compact=%d width=%.1f height=%.1f scale=%.2f\n",
+                tracedCompact, static_cast<double>(available.x),
+                static_cast<double>(available.y), static_cast<double>(scale));
+        }
+    }
     SettingsCharacterPreviewRequest preview;
     if (Settings_takeCharacterPreviewRequest(preview)) {
         acceptCharacterPreviewRequest(s, std::move(preview));

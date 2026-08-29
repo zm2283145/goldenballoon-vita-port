@@ -176,6 +176,31 @@ class GltfValidatorAdapterTests(unittest.TestCase):
             )
             self.assertEqual(manifest.resolve(), resolved_manifest)
 
+    def test_macos_absolute_override_uses_its_own_sealed_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            contents = Path(raw) / "GoldenBalloon.app" / "Contents"
+            executable = (
+                contents / "MacOS" / "tools" / "validators" / "gltf_validator"
+            )
+            manifest = (
+                contents
+                / "Resources"
+                / "ThirdParty"
+                / "GltfValidator-MANIFEST.json"
+            )
+            executable.parent.mkdir(parents=True)
+            executable.write_bytes(b"fixture")
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text("{}", encoding="utf-8")
+            with mock.patch.dict(
+                    os.environ, {"MDKR_GLTF_VALIDATOR": str(executable)}):
+                with mock.patch.object(sys, "frozen", False, create=True):
+                    with mock.patch.object(sys, "platform", "darwin"):
+                        resolved = adapter.resolve_installation()
+            self.assertEqual(
+                (executable, manifest.resolve()), resolved
+            )
+
     def test_validation_uses_private_canonical_model_and_preserves_report(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             temporary = Path(raw)

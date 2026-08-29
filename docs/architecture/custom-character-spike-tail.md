@@ -523,9 +523,10 @@ permission, signing, update, and revocation policy.
 - Run observed first-use sessions with a finished package, a raw GLB, a nested
   DAE ZIP, a bad rig, a missing license, an oversized character, and a failed
   update. Measure time-to-first-preview, wrong turns, recovery, and completion.
-- Qualify mouse, keyboard, controller, touch, screen reader, 200% scale, narrow
-  layout, reduced motion, and color-vision treatments. Freeform spatial gestures
-  must always have equivalent numeric/nudge controls.
+- Qualify mouse, keyboard, controller, touch, the app's own spoken guidance,
+  200% scale, narrow layout, reduced motion, and color-vision treatments.
+  Spoken guidance is not a screen-reader semantic tree. Freeform spatial
+  gestures must always have equivalent numeric/nudge controls.
 - Maintain GPU/driver/device evidence for quality presets, scene variants,
   one-to-four players, capture, shadows, and LOD transitions.
 - Add screenshot/perceptual fixtures for floor, facing, camera occupancy,
@@ -577,7 +578,7 @@ The immediate remaining order is therefore:
    the data-only adapter contract, recipient compatibility/diff review,
    exact-base draft transfer, and the frozen and packaged importer lifecycle are automated
    on all three release operating systems; and
-5. run the observed human controller/screen-reader, perceptual, and maintained
+5. run the observed human controller/spoken-guidance, perceptual, and maintained
    multi-device qualification matrix in M8; automated 200% keyboard held-mode
    and virtual-controller transition-mode traversal of Animation Studio is
    complete, but it is not a substitute for observed assistive-technology use.

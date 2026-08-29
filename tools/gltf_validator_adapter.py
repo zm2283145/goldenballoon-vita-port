@@ -250,15 +250,25 @@ def resolve_installation(validator: Path | None = None,
         # nested code. Keep the signed executable there, but place its JSON
         # attestation in the canonical resource area. Standalone frozen tools
         # and the Windows/Linux packages retain the adjacent-manifest layout.
-        contents_directory = tool_directory.parent.parent
-        resource_manifest = (
-            contents_directory
-            / "Resources"
-            / "ThirdParty"
-            / "GltfValidator-MANIFEST.json"
+        # An explicit absolute override can legitimately point at the same
+        # sealed validator inside an app bundle. Do not derive Contents from
+        # the frozen importer's directory: that local does not exist on the
+        # override path (and, more importantly, it is not the validator's
+        # authority). Walk only the executable's resolved ancestors.
+        contents_directory = next(
+            (parent for parent in executable.resolve().parents
+             if parent.name == "Contents"),
+            None,
         )
-        if resource_manifest.is_file():
-            return executable, resource_manifest
+        if contents_directory is not None:
+            resource_manifest = (
+                contents_directory
+                / "Resources"
+                / "ThirdParty"
+                / "GltfValidator-MANIFEST.json"
+            )
+            if resource_manifest.is_file():
+                return executable, resource_manifest
     return executable, adjacent_manifest
 
 

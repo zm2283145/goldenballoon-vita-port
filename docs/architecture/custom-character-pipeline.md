@@ -48,9 +48,12 @@ This gives three deliberately separate formats:
   tangents, animation tracks, semantics, sockets, materials and authored
   `MSFT_lod` levels;
 - locked, transactional local install/list/enable/disable/remove/clean
-operations; updates preserve enabled state, disable retains source and
-provenance outside runtime discovery, and permanent removal owns only exact
-content-addressed paths;
+operations; remove and stale-history cleanup preflight their complete owned
+sets, retire them through a same-filesystem armed/retired quarantine journal,
+roll back pre-commit failures, and recover interrupted work on the next clean;
+updates preserve enabled state, disable retains source and provenance outside
+runtime discovery, and permanent removal owns only exact content-addressed
+paths;
 - authenticated retained-revision enumeration, optimistic-concurrency restore
   of any exact source digest, and no-overwrite source export;
 - bounded native cache loading, shared immutable render assets and per-player

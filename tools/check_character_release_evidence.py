@@ -36,9 +36,9 @@ ROLE_PLATFORM = {
     "linux_appimage": "linux",
     "linux_tarball": "linux",
 }
-MODALITIES = ("mouse", "keyboard", "controller", "touch", "screen_reader")
+MODALITIES = ("mouse", "keyboard", "controller", "touch")
 LAYOUTS = ("ordinary", "scale_200_percent", "narrow_640x480")
-ACCESSIBILITY = ("reduced_motion", "colour_vision")
+ACCESSIBILITY = ("spoken_guidance", "reduced_motion", "colour_vision")
 JOURNEYS = (
     "rom_free_intake",
     "failure_recovery",

@@ -219,19 +219,143 @@ class CharacterPackageManagerTests(unittest.TestCase):
             self.assertEqual(before, active.read_bytes())
             self.assertEqual(before, disabled.read_bytes())
 
-    def test_partial_deletion_fails_visible_with_completed_scope(self) -> None:
+    def test_unsafe_deletion_candidate_preserves_the_complete_install(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             installed = root / "characters"
             report = manager.install(self.make_package(root), installed)
             witness = installed / (report["id"] + "." + "b" * 64 + ".json")
             witness.mkdir()
+            before = {
+                path.name: path.read_bytes()
+                for path in installed.iterdir()
+                if path.is_file() and not path.is_symlink()
+            }
             with self.assertRaisesRegex(
                     manager.ManagerError,
-                    r"partial deletion removed 3 owned file\(s\).+1 could not"):
+                    r"removal made no changes.+not real regular files"):
                 manager.remove(report["id"], installed)
             self.assertTrue(witness.is_dir())
+            after = {
+                path.name: path.read_bytes()
+                for path in installed.iterdir()
+                if path.is_file() and not path.is_symlink()
+            }
+            self.assertEqual(before, after)
+            self.assertTrue((installed / f"{report['id']}.mdkc").is_file())
+
+    def test_mid_retirement_failure_rolls_back_every_owned_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            installed = root / "characters"
+            report = manager.install(self.make_package(root), installed)
+            before = {
+                path.name: path.read_bytes()
+                for path in installed.iterdir()
+                if path.is_file() and not path.is_symlink()
+            }
+            real_move = manager._retire_owned_file
+            moves = 0
+
+            def fail_second_move(source: Path, destination: Path) -> None:
+                nonlocal moves
+                moves += 1
+                if moves == 2:
+                    raise OSError("injected retirement failure")
+                real_move(source, destination)
+
+            with mock.patch.object(
+                    manager, "_retire_owned_file", side_effect=fail_second_move):
+                with self.assertRaisesRegex(
+                        manager.ManagerError, r"removal made no changes"):
+                    manager.remove(report["id"], installed)
+            after = {
+                path.name: path.read_bytes()
+                for path in installed.iterdir()
+                if path.is_file() and not path.is_symlink()
+            }
+            self.assertEqual(before, after)
+            self.assertEqual([], list(installed.glob(".remove-*")))
+
+    def test_committed_removal_reports_deferred_quarantine_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            installed = root / "characters"
+            report = manager.install(self.make_package(root), installed)
+            with mock.patch.object(
+                    manager, "_delete_retired_file",
+                    side_effect=OSError("injected cleanup failure")):
+                removed = manager.remove(report["id"], installed)
+            self.assertTrue(removed["cleanup_pending"])
+            self.assertEqual(3, len(removed["cleanup_pending_files"]))
+            quarantine = installed / removed["cleanup_quarantine"]
+            self.assertTrue(quarantine.is_dir())
+            self.assertEqual(
+                3,
+                len([
+                    path for path in quarantine.iterdir()
+                    if path.name != manager.REMOVAL_JOURNAL_NAME
+                ]),
+            )
             self.assertFalse((installed / f"{report['id']}.mdkc").exists())
+            cleaned = manager.clean(installed)
+            self.assertEqual(3, len(cleaned["retired_cleanup_files"]))
+            self.assertFalse(quarantine.exists())
+
+    def test_armed_removal_journal_restores_files_after_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            installed = root / "characters"
+            report = manager.install(self.make_package(root), installed)
+            cache = installed / f"{report['id']}.mdkc"
+            expected = cache.read_bytes()
+            quarantine = Path(tempfile.mkdtemp(prefix=".remove-", dir=installed))
+            journal = quarantine / manager.REMOVAL_JOURNAL_NAME
+            manager._write_exclusive(
+                journal,
+                manager._removal_journal("remove:test", "armed", [cache.name]),
+            )
+            cache.rename(quarantine / cache.name)
+
+            cleaned = manager.clean(installed)
+            self.assertEqual([cache.name], cleaned["recovered_files"])
+            self.assertEqual(expected, cache.read_bytes())
+            self.assertFalse(quarantine.exists())
+
+    def test_clean_rolls_back_a_mid_retirement_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            installed = root / "characters"
+            report = manager.install(self.make_package(root), installed)
+            cache = installed / f"{report['id']}.mdkc"
+            cache.write_bytes(b"invalid cache makes retained history stale")
+            before = {
+                path.name: path.read_bytes()
+                for path in installed.iterdir()
+                if path.is_file() and not path.is_symlink()
+            }
+            real_move = manager._retire_owned_file
+            moves = 0
+
+            def fail_second_move(source: Path, destination: Path) -> None:
+                nonlocal moves
+                moves += 1
+                if moves == 2:
+                    raise OSError("injected clean retirement failure")
+                real_move(source, destination)
+
+            with mock.patch.object(
+                    manager, "_retire_owned_file", side_effect=fail_second_move):
+                with self.assertRaisesRegex(
+                        manager.ManagerError, r"removal made no changes"):
+                    manager.clean(installed)
+            after = {
+                path.name: path.read_bytes()
+                for path in installed.iterdir()
+                if path.is_file() and not path.is_symlink()
+            }
+            self.assertEqual(before, after)
+            self.assertEqual([], list(installed.glob(".remove-*")))
 
     def test_invalid_package_never_publishes_cache(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

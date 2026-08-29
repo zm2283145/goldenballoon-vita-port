@@ -167,9 +167,9 @@ failing statuses so an untouched or partial record can never look approved.
 During data entry, `--structure-only` provides an explicitly non-approving
 preflight. A release approval always requires `--artifact-dir`; the tool refuses
 to print an approving verdict without rehashing the artifact and provenance
-bytes itself. Name the normalized physical device or assistive tool in every
-passing modality note (for example, controller model or screen-reader version),
-without recording an operator identity.
+bytes itself. Name the normalized physical device in every passing modality
+note (for example, the controller or touch-display model), without recording an
+operator identity.
 
 1. Start with no ROM selected. Open **Character Workshop**, import a GLB, review
    its validator report and rights, choose a donor profile, create a named
@@ -218,14 +218,16 @@ without recording an operator identity.
    negotiation or transfer exists.
 
 Observe the complete flow at both ordinary and 200% UI scale, including a
-narrow 640x480 layout. Cover mouse, keyboard, controller, touch, and screen
-reader; enable reduced motion and inspect the colour-vision views. Record each
-cell as `pass`, `fail`, or `not available` with platform, OS, GPU/driver, display,
-controller/touch device, screen reader, package/source digest, candidate
-artifact SHA-256, and evidence-report SHA-256. A failed or unobserved required
-cell blocks release; `not available` is acceptable only for a modality the
-tested platform genuinely cannot provide and must be covered on another
-supported test system.
+narrow 640x480 layout. Cover mouse, keyboard, controller, and touch; enable and
+verify the app's own spoken focus guidance, enable reduced motion, and inspect
+the colour-vision views. Spoken guidance is deliberately not recorded as a
+screen-reader pass: the ImGui shell has no native assistive-technology semantic
+tree and the product does not claim one. Record each cell as `pass`, `fail`, or
+`not available` with platform, OS, GPU/driver, display, controller/touch device,
+package/source digest, candidate artifact SHA-256, and evidence-report SHA-256.
+A failed or unobserved required cell blocks release; `not available` is
+acceptable only for an input modality the tested platform genuinely cannot
+provide and must be covered on another supported test system.
 
 After all observations, place the four candidate artifacts and their provenance
 sidecars in one directory and run:

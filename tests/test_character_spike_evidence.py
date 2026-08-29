@@ -107,6 +107,17 @@ class CharacterSpikeEvidenceTests(unittest.TestCase):
             self.assertEqual("preserve",
                              (occupied / "evidence.json").read_text(encoding="utf-8"))
 
+    def test_external_conversion_uses_the_isolated_manager_directory(self) -> None:
+        command = evidence._authoring_conversion_command(
+            Path("/private/work/characters"),
+            Path("/private/source/model.zip"),
+            Path("/private/work/model.glb"),
+        )
+        self.assertEqual(
+            ["--directory", "/private/work/characters"], command[2:4]
+        )
+        self.assertEqual("convert-authoring-source", command[4])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -17383,13 +17383,7 @@ void drawCharacterTestEvidenceMatrix(
     }
 }
 
-void drawCharacterExactTests(const MdkrModernCharacterEntry *entry,
-                             bool compact) {
-    if (compact) {
-        ui::TextSubtleWrapped(
-            "Return to the launcher Workshop to start an exact game-context test. A running engine cannot safely start a second engine inside itself.");
-        return;
-    }
+void drawCharacterExactTests(const MdkrModernCharacterEntry *entry) {
     int &players = g_characterTestPlayers[entry->id];
     int &inspectionPose = g_characterTestPoses.try_emplace(
         entry->id, MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER).first->second;
@@ -23667,6 +23661,21 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
                             donorName(entry->donor));
     }
     drawCharacterWorkshopTabs();
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+        static std::string tracedInspectorRoute;
+        const std::string traceKey = std::string(entry->id) + "\n" +
+            CharacterWorkshop_tabStorageId(g_characterWorkshopTab) + "\n" +
+            (compact ? "compact" : "wide");
+        if (traceKey != tracedInspectorRoute) {
+            tracedInspectorRoute = traceKey;
+            std::fprintf(
+                stderr,
+                "[app-ui] character-workshop-editor package=%s tab=%s compact=%d\n",
+                entry->id,
+                CharacterWorkshop_tabStorageId(g_characterWorkshopTab),
+                compact ? 1 : 0);
+        }
+    }
 
     if (g_characterWorkshopTab == CharacterWorkshopTab::Overview) {
         ImGui::SeparatorText("Overview");
@@ -24034,7 +24043,7 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
             ui::TextSubtleWrapped(
                 "Workshop test mode temporarily admits this disabled package for the requested exact scene only. It remains unavailable to ordinary play and retained player assignments.");
         }
-        drawCharacterExactTests(entry, compact);
+        drawCharacterExactTests(entry);
     }
 
     if (g_characterWorkshopTab == CharacterWorkshopTab::Package) {
@@ -26255,10 +26264,23 @@ void drawCharacterImportControls(bool rail) {
                                                      index);
             if (entry != nullptr && entry->enabled != 0u) ++enabledCount;
         }
-        ImGui::TextDisabled("%d enabled · %d disabled · Folder: %s",
-                            enabledCount,
-                            inventoryCount - enabledCount,
-                            g_characterRegistryDirectory.c_str());
+        if (rail) {
+            ImGui::TextDisabled("%d enabled · %d disabled · Folder: %s",
+                                enabledCount,
+                                inventoryCount - enabledCount,
+                                g_characterRegistryDirectory.c_str());
+        } else {
+            ImGui::TextDisabled("%d enabled · %d disabled",
+                                enabledCount,
+                                inventoryCount - enabledCount);
+            const size_t separator =
+                g_characterRegistryDirectory.find_last_of("/\\");
+            const char *leaf = separator == std::string::npos
+                ? g_characterRegistryDirectory.c_str()
+                : g_characterRegistryDirectory.c_str() + separator + 1u;
+            ui::TextSubtleWrapped("Library folder: %s", leaf[0] != '\0'
+                ? leaf : "character storage");
+        }
     }
     if (!g_characterManagerReport.empty() &&
         ImGui::TreeNode("Last importer report")) {
@@ -26567,7 +26589,9 @@ bool drawCustomCharactersSection(bool compact) {
     serviceCharacterPortableInstallWorker();
     if (!g_characterRegistryLoaded) refreshCharacterRegistry();
     ui::TextSubtleWrapped(
-        "Appearance packages are local presentation only. The selected fingerprint-qualified built-in donor still owns simulation, collision, audio, ghosts, records, and network/rollback identity; no second ROM is required.");
+        compact
+            ? "Local appearance only. A qualified built-in donor still owns gameplay, audio, records, and online identity."
+            : "Appearance packages are local presentation only. The selected fingerprint-qualified built-in donor still owns simulation, collision, audio, ghosts, records, and network/rollback identity; no second ROM is required.");
     if (mdkr_render_backend() != MDKR_BACKEND_WEBGPU) {
         ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
         ImGui::TextWrapped(
@@ -26596,21 +26620,58 @@ bool drawCustomCharactersSection(bool compact) {
                           980.0f * AppTheme::uiScale();
     if (!rail) {
         ImGui::Indent(ui::kGapM);
-        drawCharacterImportControls(false);
+        loadCharacterRawIntake();
+        serviceCharacterPackageInspection();
         bool editorRouteRendered = false;
+        bool importControlsRendered = false;
         if (g_characterImportCandidate.ready) {
             editorRouteRendered = true;
+            drawCharacterImportControls(false);
+            importControlsRendered = true;
             changed |= drawCharacterCandidateReview(compact);
         } else if (g_characterRawEditorOpen &&
                    g_characterRawIntake.modelPath[0] != '\0') {
             editorRouteRendered = true;
+            drawCharacterImportControls(false);
+            importControlsRendered = true;
             drawCharacterRawIntakeEditor(false);
+        } else if (mdkr_modern_character_registry_count(
+                       &g_characterRegistry) <= 0) {
+            // First use starts with the action that can create an editor.
+            drawCharacterImportControls(false);
+            importControlsRendered = true;
         }
         const MdkrModernCharacterEntry *entry =
             drawCharacterLibrary(false);
+        if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+            static std::string tracedCompactRoute;
+            const std::string route = g_characterImportCandidate.ready
+                ? "candidate"
+                : g_characterRawEditorOpen &&
+                      g_characterRawIntake.modelPath[0] != '\0'
+                    ? "raw-draft"
+                    : entry != nullptr ? "installed" : "first-use";
+            const std::string traceKey = route + "\n" +
+                (entry != nullptr ? entry->id : "");
+            if (traceKey != tracedCompactRoute) {
+                tracedCompactRoute = traceKey;
+                std::fprintf(
+                    stderr,
+                    "[app-ui] character-workshop-compact-route route=%s selected=%s editor=%d\n",
+                    route.c_str(), entry != nullptr ? entry->id : "none",
+                    editorRouteRendered ? 1 : 0);
+            }
+        }
         if (!editorRouteRendered && !g_characterImportCandidate.ready &&
             !g_characterRawEditorOpen && entry != nullptr) {
             changed |= drawCharacterPackageInspector(entry, compact);
+        }
+        // On a narrow/tall phone-style viewport the active editor is the
+        // user's task, so keep it ahead of secondary library operations. On
+        // first use there is no editor and import remains the first action.
+        if (!editorRouteRendered && !importControlsRendered) {
+            if (entry != nullptr) ImGui::SeparatorText("Add or recover");
+            drawCharacterImportControls(false);
         }
         changed |= drawCharacterAssignments();
         drawSkippedCharacterInventory();

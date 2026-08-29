@@ -246,10 +246,12 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
                 "offset studio omitted its exact-preview and measured-fit "
                 "contract\n" + process.stdout[-8000:]
             )
+        facing_columns = 1 if accessible else 4
         facing_marker = (
             "character-facing-studio package=" + PACKAGE_ID +
             " candidates=+z,-z,+x,-x equal-thumbnails=1 "
-            "responsive-columns=4 available=0 source-fit-context=current "
+            f"responsive-columns={facing_columns} available=0 "
+            "source-fit-context=current "
             "comparison=1p-select.idle@500-bright "
             "selection=reversible-global-yaw capture=model-alpha exact-rom=1"
         )

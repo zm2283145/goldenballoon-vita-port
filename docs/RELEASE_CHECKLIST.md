@@ -410,8 +410,9 @@ Before publishing any build that exposes the Workshop:
 - [ ] Run **Custom Character Workshop acceptance** in
       [`RELEASE_CANDIDATE_TEST_GUIDE.md`](RELEASE_CANDIDATE_TEST_GUIDE.md) on
       the exact packaged candidate, not a source-tree executable.
-- [ ] Complete its mouse, keyboard, controller, touch, screen-reader, 200%
-      scale, narrow-layout, reduced-motion, and colour-vision matrix. Record
+- [ ] Complete its mouse, keyboard, controller, touch, app-spoken-guidance, 200%
+      scale, narrow-layout, reduced-motion, and colour-vision matrix. Do not
+      record spoken guidance as screen-reader compatibility. Record
       `not available` honestly where a platform lacks a modality; do not turn
       an unobserved cell into a pass.
 - [ ] Exercise clean install, offline relaunch, disable, rebuild/update,
@@ -425,7 +426,7 @@ Before publishing any build that exposes the Workshop:
       amber/error row; a local performance exception is evidence, not a
       manufactured pass.
 - [ ] Verify both a native mixed-direction name and a missing-glyph fallback,
-      including their keyboard/screen-reader descriptions and exact live
+      including their keyboard/spoken-guidance descriptions and exact live
       roster pixels.
 - [ ] Verify the package contains the HarfBuzz and SheenBidi notices alongside
       the importer, validator, BasisU, and meshoptimizer notices. Keep the

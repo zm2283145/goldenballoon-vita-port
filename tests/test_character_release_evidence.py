@@ -241,14 +241,24 @@ class CharacterReleaseEvidenceTests(unittest.TestCase):
             problems,
         )
 
-    def test_passing_modality_names_observed_device_or_tool(self) -> None:
+    def test_passing_modality_names_observed_device(self) -> None:
         record = valid_record()
-        record["runs"][0]["modalities"]["screen_reader"]["note"] = ""
+        record["runs"][0]["modalities"]["controller"]["note"] = ""
         problems = evidence.validate_record(record)
         self.assertTrue(
-            any("screen_reader.note" in item and "description" in item for item in problems),
+            any("controller.note" in item and "description" in item for item in problems),
             problems,
         )
+
+    def test_spoken_guidance_is_required_without_claiming_screen_reader_support(self) -> None:
+        record = valid_record()
+        record["runs"][0]["accessibility"]["spoken_guidance"] = {
+            "status": "fail",
+            "note": "No focus announcement was audible.",
+        }
+        problems = evidence.validate_record(record)
+        self.assertTrue(any("spoken_guidance" in item for item in problems), problems)
+        self.assertNotIn("screen_reader", json.dumps(record))
 
     def test_performance_exception_is_visible_and_justified(self) -> None:
         record = valid_record()

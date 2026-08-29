@@ -122,13 +122,12 @@
     "modalities": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["mouse", "keyboard", "controller", "touch", "screen_reader"],
+      "required": ["mouse", "keyboard", "controller", "touch"],
       "properties": {
         "mouse": {"$ref": "#/$defs/statusNote"},
         "keyboard": {"$ref": "#/$defs/statusNote"},
         "controller": {"$ref": "#/$defs/statusNote"},
-        "touch": {"$ref": "#/$defs/statusNote"},
-        "screen_reader": {"$ref": "#/$defs/statusNote"}
+        "touch": {"$ref": "#/$defs/statusNote"}
       }
     },
     "layouts": {
@@ -144,8 +143,9 @@
     "accessibility": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["reduced_motion", "colour_vision"],
+      "required": ["spoken_guidance", "reduced_motion", "colour_vision"],
       "properties": {
+        "spoken_guidance": {"$ref": "#/$defs/passStatus"},
         "reduced_motion": {"$ref": "#/$defs/passStatus"},
         "colour_vision": {"$ref": "#/$defs/passStatus"}
       }

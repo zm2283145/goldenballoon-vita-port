@@ -315,6 +315,17 @@ def _redact(text: str, secrets: list[str]) -> str:
     return redacted
 
 
+def _authoring_conversion_command(directory: Path, source: Path,
+                                  output: Path) -> list[str]:
+    """Build the public manager invocation without bypassing its custody root."""
+    return [
+        sys.executable,
+        str(ROOT / "tools" / "character_package_manager.py"),
+        "--directory", str(directory),
+        "convert-authoring-source", str(source), str(output),
+    ]
+
+
 def _parse_result(output: str, label: str) -> dict[str, Any]:
     result_lines = [line for line in output.splitlines()
                     if "character_workshop_result:" in line]
@@ -625,6 +636,7 @@ def run_evidence(args: argparse.Namespace) -> dict[str, Any]:
         source_work = work / "source"
         source_work.mkdir()
         characters = work / "characters"
+        characters.mkdir()
         package = work / "candidate.mdkrchar"
         if fixture_source:
             fixture_report = fixture.write_fixture(source_work, texture_format)
@@ -665,11 +677,9 @@ def run_evidence(args: argparse.Namespace) -> dict[str, Any]:
                     convert_env["MDKR_GLTF_VALIDATOR"] = str(
                         args.validator.resolve(strict=True)
                     )
-                converted = _run([
-                    sys.executable, str(ROOT / "tools" /
-                                         "character_package_manager.py"),
-                    "convert-authoring-source", str(source_path), str(model),
-                ], env=convert_env)
+                converted = _run(_authoring_conversion_command(
+                    characters, source_path, model
+                ), env=convert_env)
                 _json_result(converted, "authoring conversion")
             else:
                 raise EvidenceError("--source must be fixture, GLB, DAE, or ZIP")
