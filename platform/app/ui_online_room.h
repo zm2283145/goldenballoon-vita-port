@@ -46,6 +46,17 @@ void OnlineRoom_requestLeave();
 // teardown -- never blocking the UI thread on WebRTC/WebSocket close -- resets
 // the session UI to the chooser and returns the shell to the launcher home.
 void OnlineRoom_serviceLobbyLeave(LauncherState &state);
+
+// ORDERED app-exit teardown of the live room adapter, called by the launcher
+// once its main loop has ended (before main returns). The adapter owns mesh /
+// signal-client worker threads whose callbacks keep firing until its destructor
+// joins them; leaving destruction to static teardown lets those threads race
+// destroyed globals (observed: an uncaught "mutex lock failed" SIGABRT when the
+// app was quit while a live room was up). Destroys the adapter INLINE on the
+// calling thread -- blocking on the join is fine at app exit -- after retracting
+// both engine registries, exactly like the async leave path. No-op without a
+// live adapter.
+void OnlineRoom_shutdownForAppExit();
 #endif  // MDKR_ENABLE_ONLINE_BETA
 
 #endif

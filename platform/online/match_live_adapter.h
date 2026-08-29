@@ -769,17 +769,23 @@ void OnlineRoom_resetRoomReadyLatch(void);
  * The room-ready latch above stays set for the whole lifetime of ONE adapter, so
  * after the first tournament's native session returns the takeover can never
  * re-fire and a SECOND tournament in the SAME session would silently fall back to
- * the per-race ImGui path. These two seams re-arm it safely, edge-triggered and
- * reason-aware:
+ * the per-race ImGui path. These two seams re-arm it safely, reason-aware and
+ * FINISHED-gated:
  *   - OnlineRoom_armRoomReadyRearm(): the launcher calls it ONLY after a FINISHED
  *     native return (never LEFT/ERROR/NONE). It requests a re-arm but does NOT clear
  *     the latch, so nothing can re-boot on the return frame.
  *   - OnlineRoom_observeRoomReadyRearm(adapter): the panel calls it every frame. It
- *     is a no-op unless a re-arm is pending, and it clears the latch ONLY while the
- *     room-ready condition is FALSE (parked in RESULTS after FINISHED). That makes
- *     the next SELECTING+2+LOBBY+tournament arrival a genuine rising edge the poll
- *     re-fires on -- and makes a re-boot loop impossible (LEFT/ERROR never arm, and a
- *     still-holding condition is never cleared). Defined in online_live_wiring.cpp. */
+ *     is a no-op unless a re-arm is pending, and then completes it IMMEDIATELY
+ *     (latch + pending consumed in one observation). The rising edge the old
+ *     deferred clear waited for has already happened by the time a FINISHED return
+ *     reaches the panel: the tournament-final FINISH dispatches the REMATCH wrap,
+ *     so the room went out of the takeover window at RESULTS and came back to a
+ *     fresh-series SELECTING during the session -- the next poll therefore
+ *     re-takes natively, once per FINISHED return, on BOTH real endpoints (the
+ *     automatic FINISHED re-take). A re-boot loop stays impossible: LEFT/ERROR
+ *     never arm, each completion consumes the one arm, and a re-taken session
+ *     parks at native CHARSELECT without human input. Defined in
+ *     online_live_wiring.cpp. */
 void OnlineRoom_armRoomReadyRearm(void);
 void OnlineRoom_observeRoomReadyRearm(IMdkrOnlineAdapter *adapter);
 /* True only when the native takeover can still fire this frame (latch not yet set)
@@ -789,9 +795,9 @@ void OnlineRoom_observeRoomReadyRearm(IMdkrOnlineAdapter *adapter);
  * card. The panel ANDs this into the hand-off gate so the card never lies. */
 bool OnlineRoom_roomReadyTakeoverEngaged(void);
 /* True while a FINISHED native return has requested a re-arm that the panel's
- * per-frame observer has not yet completed (the latch clears once the room is
- * observed out of the takeover condition). The launcher logs it as part of the
- * room-ready boot-result diagnostic so a real-hardware return is diagnosable. */
+ * per-frame observer has not yet completed (the observer consumes it on its next
+ * run). The launcher logs it as part of the room-ready boot-result diagnostic so
+ * a real-hardware return is diagnosable. */
 bool OnlineRoom_roomReadyRearmPending(void);
 
 /* ---- LEFT/ERROR native re-entry ("Return to game") ----------------------- *

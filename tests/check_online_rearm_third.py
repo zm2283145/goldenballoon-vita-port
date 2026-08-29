@@ -12,7 +12,11 @@ explicitly ("Then a 3rd for good measure -- unexercised by any lane").
 This lane drives the MDKR_APP_TEST_ONLINE_ROOM_READY_REARM3_PROBE seam
 (main_app.cpp), which runs THREE consecutive tournaments through the wiring's real
 re-arm edges (OnlineRoom_armRoomReadyRearm / observeRoomReadyRearm /
-pollRoomReadyTransition) over the loopback tournament room, and asserts every
+pollRoomReadyTransition) over the loopback tournament room. Each cycle replays the
+production FINISHED shape -- the final race parks the room in RESULTS, the host's
+FINISH wraps it back to a fresh-series SELECTING via the leader REMATCH, THEN the
+session returns FINISHED and arms; the observer completes the arm immediately (the
+wrap was the rising edge) and the next poll re-takes exactly once. It asserts every
 sub-flag so a regression names itself:
 
   totalFires=3          -- exactly one native takeover per tournament (#1,#2,#3),
@@ -21,12 +25,13 @@ sub-flag so a regression names itself:
   leftNoRearm=1         -- a LEFT return WEDGED BETWEEN #1 and #2 (no arm) never
                            re-fires even with the room-ready condition STILL TRUE
                            -- the no-re-boot-loop invariant, held mid-run
-  finishedNoInstant2=1  -- the FINISHED return before #2 armed but did NOT instantly
-                           re-fire while the condition still held (latch waits for
-                           the RESULTS park)
-  t2Once=1              -- tournament #2 re-took native exactly once
-  finishedNoInstant3=1  -- a SECOND FINISHED return on the SAME adapter armed
-                           without an instant re-fire (repeatability of the guard)
+  wrapHeld2=1           -- before #2, the RESULTS-park -> FINISH-wrap round trip
+                           ALONE (no FINISHED return yet) re-fired nothing: the
+                           latch stays set until an arm consumes it
+  t2Once=1              -- the FINISHED arm completed on the next observation and
+                           tournament #2 re-took native exactly once
+  wrapHeld3=1           -- a SECOND wrap round trip on the SAME adapter also held
+                           without an arm (repeatability of the guard)
   t3Once=1              -- tournament #3 re-took native exactly once (the gap this
                            lane closes)
 
@@ -52,8 +57,8 @@ from online_lane_util import run_engine as _run_engine
 
 VERDICT_RE = re.compile(
     r"^\[online-room-ready-rearm3-probe\] totalFires=(\d+) t1Once=(\d+) "
-    r"leftNoRearm=(\d+) finishedNoInstant2=(\d+) t2Once=(\d+) "
-    r"finishedNoInstant3=(\d+) t3Once=(\d+) verdict=(PASS|FAIL)$",
+    r"leftNoRearm=(\d+) wrapHeld2=(\d+) t2Once=(\d+) "
+    r"wrapHeld3=(\d+) t3Once=(\d+) verdict=(PASS|FAIL)$",
     re.MULTILINE)
 
 REARM_ARMED_RE = re.compile(
@@ -104,15 +109,15 @@ def main() -> int:
     if match is None:
         return fail(f"no probe verdict line (rc={rc}); the REARM3 seam did not run")
 
-    (total_fires, t1_once, left_no_rearm, finished_no_instant2, t2_once,
-     finished_no_instant3, t3_once, verdict) = match.groups()
+    (total_fires, t1_once, left_no_rearm, wrap_held2, t2_once,
+     wrap_held3, t3_once, verdict) = match.groups()
 
     flags = {
         "t1Once": t1_once,
         "leftNoRearm": left_no_rearm,
-        "finishedNoInstant2": finished_no_instant2,
+        "wrapHeld2": wrap_held2,
         "t2Once": t2_once,
-        "finishedNoInstant3": finished_no_instant3,
+        "wrapHeld3": wrap_held3,
         "t3Once": t3_once,
     }
     bad = [name for name, value in flags.items() if value != "1"]
@@ -136,13 +141,14 @@ def main() -> int:
         "PASS online room-ready re-arm x3: the re-arm is REPEATABLE across THREE "
         "consecutive tournaments on the SAME adapter -- #1 took over native exactly "
         "once; a LEFT return wedged between #1 and #2 did NOT re-arm even with the "
-        "room-ready condition still TRUE (no mid-run re-boot loop); each of the two "
-        "FINISHED returns armed WITHOUT an instant re-fire and then re-took native "
-        "exactly once on the fresh SELECTING rising edge (#2 and #3), for exactly "
-        "three total takeovers; and the wiring logged 're-arm armed'/'re-arm "
-        "complete' EXACTLY TWICE each in armed->complete order (one re-arm per "
-        "FINISHED return, not a one-shot). This closes the 3rd-tournament gap the "
-        "single-cycle probe could not reach.")
+        "room-ready condition still TRUE (no mid-run re-boot loop); each cycle's "
+        "RESULTS-park -> FINISH-wrap round trip ALONE re-fired nothing, and each of "
+        "the two FINISHED arms completed on the next observation and re-took native "
+        "exactly once (#2 and #3), for exactly three total takeovers; and the "
+        "wiring logged 're-arm armed'/'re-arm complete' EXACTLY TWICE each in "
+        "armed->complete order (one re-take per FINISHED return, not a one-shot). "
+        "This closes the 3rd-tournament gap the single-cycle probe could not "
+        "reach.")
     return 0
 
 

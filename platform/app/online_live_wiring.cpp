@@ -742,12 +742,15 @@ bool sRoomReadyLatched = false;
  * adapter) would silently fall back to the per-race ImGui path instead of the native
  * takeover. This flag lets a *FINISHED* return (tournament complete) request a single
  * re-arm: it is armed ONLY on FINISHED (never LEFT/ERROR/NONE -- those land with the
- * room-ready condition still TRUE, so an instant re-arm would re-boot the session the
- * player just left) and it clears the latch only once the room is observed OUT of the
- * takeover condition (parked in RESULTS after FINISHED). Because the latch is cleared
- * while the condition is FALSE, the NEXT SELECTING+2+LOBBY+tournament arrival (the
- * host's New Tournament) is a genuine false->true rising edge that re-fires the
- * takeover exactly once. It CANNOT re-boot-loop: see OnlineRoom_observeRoomReadyRearm. */
+ * room-ready condition still TRUE and no completed tournament behind them, so a
+ * re-arm would re-boot the session the player just left) and the panel's per-frame
+ * observer completes it IMMEDIATELY -- one latch clear per FINISHED return. A
+ * FINISHED return arrives with the tournament-final REMATCH wrap already landed
+ * (the FINISH dispatched it before leaving), i.e. the room went RESULTS (out of the
+ * takeover window) and came back to a fresh-series SELECTING+2+LOBBY during the
+ * session: that IS the rising edge, so completing the re-arm lets the next poll
+ * re-take natively on BOTH endpoints -- the automatic FINISHED re-take. It CANNOT
+ * re-boot-loop: see OnlineRoom_observeRoomReadyRearm. */
 bool sRoomReadyRearmPending = false;
 /* Records that the most recent native session returned LEFT or ERROR. Unlike a
  * FINISHED return (which parks the room in RESULTS and auto re-arms), a LEFT/ERROR
@@ -883,44 +886,55 @@ void OnlineRoom_armRoomReadyRearm(void) {
     /* Called from the launcher ONLY after a FINISHED native session return (never
      * LEFT/ERROR/NONE). Requests one re-arm of the room-ready latch so a 2nd native
      * SESSION in the same room re-takes the native path -- mode-agnostic: a 2nd
-     * tournament (New Tournament) OR, symmetrically, a fresh single-race session
-     * after a prior one FINISHED. (T5 note: single-race "Race Again" / "change picks"
-     * do NOT come through here -- they re-cycle IN-PROCESS via the resident
-     * coordinator's single-race observe-only re-cycle, so no engine re-boot and no
-     * re-arm is involved for a same-session replay. This re-arm is only the
-     * whole-new-session path.) Completion is deferred to
-     * OnlineRoom_observeRoomReadyRearm (condition-false gated) -- arming here does NOT
-     * touch the latch, so nothing can re-boot on this frame. */
+     * tournament OR, symmetrically, a fresh single-race session after a prior one
+     * FINISHED. (T5 note: single-race "Race Again" / "change picks" do NOT come
+     * through here -- they re-cycle IN-PROCESS via the resident coordinator's
+     * single-race observe-only re-cycle, so no engine re-boot and no re-arm is
+     * involved for a same-session replay. This re-arm is only the
+     * whole-new-session path.) Completion happens on the panel's next per-frame
+     * OnlineRoom_observeRoomReadyRearm -- arming here does NOT touch the latch, so
+     * nothing can re-boot on this frame; the tournament-final wrap already
+     * supplied the out-and-back rising edge, so the observer completes
+     * unconditionally and a room sitting at the freshly wrapped SELECTING
+     * re-takes on the next poll. */
     sRoomReadyRearmPending = true;
     std::fprintf(stderr,
-                 "[online-room-ready] re-arm armed (FINISHED return) -- latch "
-                 "clears once the room is observed out of the takeover condition\n");
+                 "[online-room-ready] re-arm armed (FINISHED return) -- the "
+                 "panel's next observation clears the latch (one re-take per "
+                 "FINISHED)\n");
 }
 
 void OnlineRoom_observeRoomReadyRearm(IMdkrOnlineAdapter *adapter) {
     /* Per-frame driver the panel calls every drawBetaRoom frame. It COMPLETES a
      * pending re-arm, and only then: it is a no-op unless a FINISHED return armed
-     * sRoomReadyRearmPending, so LEFT/ERROR returns (which can land with the
+     * sRoomReadyRearmPending, so LEFT/ERROR returns (which land with the
      * room-ready condition still TRUE) never reach the clear below -> no re-boot
-     * loop. When a re-arm IS pending it clears the latch ONLY while the room-ready
-     * condition is FALSE (after FINISHED the reducer is parked in RESULTS). Clearing
-     * the latch during a condition-FALSE frame guarantees the next
-     * SELECTING+2+LOBBY arrival (ANY mode -- a new tournament OR a fresh single race;
-     * the takeover condition is mode-agnostic since T2) is a real false->true rising
-     * edge that OnlineRoom_pollRoomReadyTransition fires on exactly once -- the poll is
-     * only
-     * reachable from the SELECTING branch, so it never observes the RESULTS frames
-     * itself; this observation is what supplies the "condition was false" half of the
-     * edge. If the condition still HOLDS (belt-and-suspenders vs a hypothetical
-     * FINISHED that skipped RESULTS) we wait, so the latch is never cleared while the
-     * takeover would immediately re-fire. */
+     * loop. When a re-arm IS pending it completes IMMEDIATELY (latch + pending
+     * consumed in one observation). The rising edge the old deferred clear waited
+     * for has ALREADY happened by the time a FINISHED return reaches the panel:
+     * the tournament-final FINISH dispatches the REMATCH wrap, so the room went
+     * out of the takeover window at RESULTS (during the session, while the panel
+     * was not drawing) and came back at the wrap's RESULTS -> LOBBY. Waiting for
+     * a condition-FALSE frame here would therefore wait FOREVER (the wrapped room
+     * sits at SELECTING+2+LOBBY) and permanently strand the FINISHED re-take.
+     * When the condition already holds at completion (both peers back in the
+     * freshly wrapped room) the very next poll re-fires the takeover -- the
+     * automatic both-endpoint re-take into the fresh series; when it does not
+     * (e.g. a joiner FINISHED via vanished-host, room down to 1 member), the next
+     * genuine SELECTING+2+LOBBY arrival is still a clean false->true edge, as
+     * before. The no-loop proof no longer leans on a condition-FALSE frame: each
+     * completion consumes the one arm, arming is FINISHED-only, and a FINISHED
+     * return costs a full tournament + the host's explicit FINISH -- a session
+     * re-taken this way parks at native CHARSELECT and cannot FINISH again
+     * without human input, so no automatic cycle exists. */
     if (!sRoomReadyRearmPending) return;
-    if (OnlineRoom_roomReadyConditionHolds(adapter)) return;
+    (void)adapter;
     sRoomReadyLatched = false;
     sRoomReadyRearmPending = false;
     std::fprintf(stderr,
-                 "[online-room-ready] re-arm complete (room out of takeover "
-                 "condition) -- next fresh SELECTING (any mode) re-takes native\n");
+                 "[online-room-ready] re-arm complete (FINISHED return consumed) "
+                 "-- the takeover window re-opens; a room already back at "
+                 "SELECTING (the final-FINISH wrap) re-takes on the next poll\n");
 }
 
 bool OnlineRoom_roomReadyTakeoverEngaged(void) {
@@ -2026,19 +2040,20 @@ bool OnlineRoom_lobbyStartCancelLoading(IMdkrOnlineAdapter *leader) {
 /* ======================================================================== *
  * Re-arm probe condition toggle (T2)
  *
- * The room-ready re-arm probes (main_app.cpp) exercise the arm -> clear-while-
- * condition-false -> rising-edge state machine, which needs to drive the loopback
- * room OUT of the takeover window (OnlineRoom_roomReadyConditionHolds == false)
- * and back (== true). They historically toggled lobby.mode tournament<->single
- * race, which flipped the condition ONLY because the condition was tournament-
- * scoped. T2 drops that scope (single race now ALSO takes the native path), so a
- * mode flip no longer changes the condition. These two helpers give the probes a
- * mode-independent, production-FAITHFUL toggle: park the room in RESULTS (a
- * finished race -- phase != LOBBY and kind != SELECTING => condition false) and
- * return it to SELECTING via the leader's REMATCH (=> condition true) -- exactly
- * the RESULTS-park -> New-selection transition the production re-arm rides. The
- * loopback rooms make endpoint A the room leader; BEGIN_LOADING / PUBLISH_RESULTS
- * / REMATCH are all leader-only, so `leader` MUST be that endpoint.
+ * The room-ready re-arm probes (main_app.cpp) exercise the wrap -> FINISHED-arm
+ * -> immediate-completion re-take state machine, which needs to drive the
+ * loopback room OUT of the takeover window (OnlineRoom_roomReadyConditionHolds
+ * == false) and back (== true). They historically toggled lobby.mode
+ * tournament<->single race, which flipped the condition ONLY because the
+ * condition was tournament-scoped. T2 drops that scope (single race now ALSO
+ * takes the native path), so a mode flip no longer changes the condition. These
+ * two helpers give the probes a mode-independent, production-FAITHFUL toggle:
+ * park the room in RESULTS (a finished race -- phase != LOBBY and kind !=
+ * SELECTING => condition false) and return it to SELECTING via the leader's
+ * REMATCH (=> condition true) -- exactly the RESULTS-park -> final-FINISH-wrap
+ * transition the production FINISHED re-take rides. The loopback rooms make
+ * endpoint A the room leader; BEGIN_LOADING / PUBLISH_RESULTS / REMATCH are all
+ * leader-only, so `leader` MUST be that endpoint.
  * ======================================================================== */
 bool OnlineRoom_testParkRoomInResults(IMdkrOnlineAdapter *leader,
                                       IMdkrOnlineAdapter *peer) {

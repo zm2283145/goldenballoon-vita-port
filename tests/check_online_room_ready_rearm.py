@@ -5,14 +5,21 @@ The native online screens take over a TOURNAMENT room via the one-shot room-read
 latch (OnlineRoom_pollRoomReadyTransition). That latch is set for the whole lifetime
 of one adapter, so before this fix a SECOND tournament in the SAME session silently
 fell back to the per-race ImGui path instead of the native takeover. Minor-4 re-arms
-the latch, edge-triggered and reason-aware:
+the latch, reason-aware; with the tournament-final FINISH now dispatching the
+REMATCH wrap (RESULTS -> LOBBY + fresh series) BEFORE the session returns, the
+re-arm completes IMMEDIATELY on the panel's next observation and the re-take is
+automatic:
 
   - a FINISHED native return ARMS a re-arm (OnlineRoom_armRoomReadyRearm);
     LEFT/ERROR/NONE do NOT arm;
-  - the panel's per-frame observer (OnlineRoom_observeRoomReadyRearm) clears the latch
-    ONLY while the room-ready condition is FALSE (after FINISHED the reducer parks in
-    RESULTS), so the next SELECTING+2+LOBBY+tournament arrival is a genuine false->true
-    rising edge the trigger re-fires on -- exactly once, for tournament #2.
+  - the panel's per-frame observer (OnlineRoom_observeRoomReadyRearm) completes a
+    pending arm in one observation -- the wrap already took the room out of the
+    takeover window (RESULTS) and back to a fresh-series SELECTING during the
+    session, which IS the rising edge -- so the very next poll re-takes native
+    exactly once for session #2 on this endpoint (both real endpoints do the same
+    on their own FINISHED returns);
+  - a room transition ALONE (the wrap without a FINISHED return) never re-fires:
+    the latch stays set until an arm consumes it -- one re-take per FINISHED.
 
 The full interactive 2-tournament loop needs a live cloud adapter + a human, so this
 lane drives the loopback tournament room through the wiring's re-arm edges DIRECTLY via
@@ -24,17 +31,26 @@ its own verdict; this harness asserts every sub-flag so a regression names itsel
   t1Once=1          -- tournament #1 fired the takeover exactly once
   leftNoRearm=1     -- a LEFT/ERROR return (no arm) never re-fires even with the
                        condition still TRUE (SELECTING+2+LOBBY+tournament) -> no loop
-  finishedNoInstant=1 -- a FINISHED return (arm) does NOT instantly re-fire while the
-                       condition still holds (the latch waits for the RESULTS park)
-  clearedWhileFalse=1 -- the latch actually cleared (takeover-engaged flipped
-                       false->true) ONLY while out of the takeover condition
-  t2Once=1 routed2=1 -- tournament #2 re-takes native exactly once (route=lobby-start)
+  wrapAloneNoRefire=1 -- the production RESULTS-park -> FINISH-wrap round trip alone
+                       (no FINISHED return yet) re-fires NOTHING: the latch is still
+                       set and nothing is pending
+  finishedRetakeOnce=1 routed2=1 -- the FINISHED arm completes on the next
+                       observation and the takeover re-fires EXACTLY ONCE for
+                       session #2 (route=lobby-start), with no further fires after
+                       the consume -- the automatic FINISHED re-take
+  noRetakeWithoutFinished=1 -- a later condition false->true cycle WITHOUT a
+                       FINISHED return does not re-fire (one re-take per FINISHED)
   resetDropsPending=1 -- OnlineRoom_resetRoomReadyLatch drops a pending re-arm, so a
                        stale FINISHED cannot leak into a fresh adapter (no 4th fire)
 
 The harness also asserts the "re-arm complete" wiring log appears exactly once (the
-step-4a clear) -- a direct witness of the latch clearing, and that the reset coda did
-NOT clear a second time.
+step-4 completion) -- a direct witness of the latch clearing, and that neither the
+wrap-alone step nor the reset coda cleared a second time.
+
+RED at the deferred-clear build: the observer waited for a condition-FALSE frame
+that a FINISHED-with-wrap return never shows again (the wrapped room sits at
+SELECTING+2+LOBBY forever), so the re-arm never completed and the re-take was
+permanently stranded at the panel.
 
 Standalone lane (not run-checks registered), mirroring the sibling online engine lanes.
 """
@@ -55,12 +71,13 @@ from online_lane_util import run_engine as _run_engine
 
 VERDICT_RE = re.compile(
     r"^\[online-room-ready-rearm-probe\] totalFires=(\d+) t1Once=(\d+) "
-    r"leftNoRearm=(\d+) finishedNoInstant=(\d+) clearedWhileFalse=(\d+) "
-    r"t2Once=(\d+) routed2=(\d+) resetDropsPending=(\d+) verdict=(PASS|FAIL)$",
+    r"leftNoRearm=(\d+) wrapAloneNoRefire=(\d+) finishedRetakeOnce=(\d+) "
+    r"routed2=(\d+) noRetakeWithoutFinished=(\d+) resetDropsPending=(\d+) "
+    r"verdict=(PASS|FAIL)$",
     re.MULTILINE)
 
-# Direct witness that the latch actually cleared during the condition-false window
-# (step 4a) -- the wiring emits this the frame the observer drops the latch.
+# Direct witness that the pending arm actually completed (the step-4 observation)
+# -- the wiring emits this the frame the observer consumes the arm.
 REARM_COMPLETE_RE = re.compile(
     r"^\[online-room-ready\] re-arm complete ", re.MULTILINE)
 
@@ -109,23 +126,23 @@ def main() -> int:
     if match is None:
         return fail(f"no probe verdict line (rc={rc}); the seam did not run")
 
-    (total_fires, t1_once, left_no_rearm, finished_no_instant,
-     cleared_while_false, t2_once, routed2, reset_drops_pending,
-     verdict) = match.groups()
+    (total_fires, t1_once, left_no_rearm, wrap_alone_no_refire,
+     finished_retake_once, routed2, no_retake_without_finished,
+     reset_drops_pending, verdict) = match.groups()
 
     flags = {
         "t1Once": t1_once,
         "leftNoRearm": left_no_rearm,
-        "finishedNoInstant": finished_no_instant,
-        "clearedWhileFalse": cleared_while_false,
-        "t2Once": t2_once,
+        "wrapAloneNoRefire": wrap_alone_no_refire,
+        "finishedRetakeOnce": finished_retake_once,
         "routed2": routed2,
+        "noRetakeWithoutFinished": no_retake_without_finished,
         "resetDropsPending": reset_drops_pending,
     }
     bad = [name for name, value in flags.items() if value != "1"]
-    # Direct log witness that the latch cleared during the condition-false window
-    # (Minor-1): the "re-arm complete" line must appear -- and, in a correct run,
-    # exactly once (the step-4a clear; the reset coda must NOT clear again).
+    # Direct log witness that the pending arm completed (Minor-1): the "re-arm
+    # complete" line must appear -- and, in a correct run, exactly once (the step-4
+    # completion; neither the wrap-alone step nor the reset coda may clear again).
     rearm_complete_count = len(REARM_COMPLETE_RE.findall(output))
     if verdict != "PASS" or rc != 0 or total_fires != "3" or bad or \
             rearm_complete_count != 1:
@@ -136,14 +153,15 @@ def main() -> int:
 
     print(
         "PASS online room-ready re-arm: the 2nd-tournament re-arm state machine is "
-        "safe and edge-triggered -- tournament #1 took over native EXACTLY ONCE; a "
+        "safe and FINISHED-gated -- tournament #1 took over native EXACTLY ONCE; a "
         "LEFT/ERROR return did NOT re-arm even with the room-ready condition still "
-        "TRUE (no re-boot loop); a FINISHED return armed but did NOT instantly "
-        "re-fire while the condition held; the latch cleared ONLY once the room left "
-        "the takeover window; and the fresh SELECTING+2+LOBBY+tournament rising edge "
-        "re-took native EXACTLY ONCE for tournament #2 (route=lobby-start); and "
-        "resetRoomReadyLatch dropped a pending re-arm so a stale FINISHED cannot leak "
-        f"into a fresh adapter (no spurious fire, totalFires={total_fires})")
+        "TRUE (no re-boot loop); the production RESULTS-park -> FINISH-wrap round "
+        "trip alone re-fired NOTHING; the FINISHED arm completed on the next "
+        "observation and re-took native EXACTLY ONCE for session #2 "
+        "(route=lobby-start, the automatic re-take); a later condition cycle "
+        "without a FINISHED return did not re-fire; and resetRoomReadyLatch "
+        "dropped a pending re-arm so a stale FINISHED cannot leak into a fresh "
+        f"adapter (no spurious fire, totalFires={total_fires})")
     return 0
 
 

@@ -3004,11 +3004,13 @@ void drawBetaRoom(LauncherState &state) {
     drawBetaStartRaceFeedback(model);
 
     /* Complete a pending room-ready re-arm every frame, BEFORE the
-     * SELECTING branch polls the trigger. A no-op unless a FINISHED return armed it;
-     * then it clears the latch while the room is out of the takeover condition (here,
-     * parked in RESULTS), so the host's next New Tournament re-fires the native
-     * takeover for tournament #2. It never clears while the condition still holds, so
-     * a LEFT/ERROR return (which does not arm anyway) can never re-boot-loop. */
+     * SELECTING branch polls the trigger. A no-op unless a FINISHED return armed
+     * it; then it consumes the arm and clears the latch immediately -- the
+     * tournament-final FINISH wrap already took the room out of the takeover
+     * window (RESULTS) and back to a fresh-series SELECTING during the session,
+     * so the very next poll re-takes native: the automatic FINISHED re-take on
+     * both endpoints. One clear per FINISHED arm; a LEFT/ERROR return never arms,
+     * so it can never re-boot-loop. */
     OnlineRoom_observeRoomReadyRearm(g_online.adapter.get());
 
     /* PRODUCTION ROOM-READY takeover, polled UNCONDITIONALLY every panel frame
@@ -3713,6 +3715,26 @@ static void leaveOnlineSession(LauncherState &state) {
 }
 
 void OnlineRoom_requestLeave() { g_online.leavePending = true; }
+
+void OnlineRoom_shutdownForAppExit() {
+    // ORDERED app-exit teardown (see the header). Unlike the in-session leave
+    // (teardownAdapterAsync, which detaches destruction so the UI never
+    // beach-balls), the app is exiting: destroy the live adapter INLINE on this
+    // thread so its mesh / signal-client worker threads are joined BEFORE main
+    // returns and static destruction begins. Without this, quitting the app
+    // with a live room up let an ICE-state callback race destroyed globals --
+    // an uncaught "mutex lock failed" SIGABRT (first observed on the capstone's
+    // scripted quit right after the FINISHED re-take put both endpoints back in
+    // a live session). The registries are retracted with the same resolved-raw
+    // pointers the async path uses.
+    if (!g_online.adapter) return;
+    (void)mdkr_online_live_adapter_retract_race_boot(
+        OnlineRoom_resolveRawLiveAdapter(g_online.adapter.get()));
+    OnlineRoom_retractEngineRoomReady(
+        OnlineRoom_resolveRawLiveAdapter(g_online.adapter.get()));
+    g_online.adapter.reset();
+    g_online.initialized = false;
+}
 
 void OnlineRoom_serviceLobbyLeave(LauncherState &state) {
     // A body control that navigates home (Return Home / Play Here / confirmed

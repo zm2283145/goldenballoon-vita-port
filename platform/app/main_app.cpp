@@ -1782,6 +1782,17 @@ int runOnlineLiveEngineSession(AppHost &host, const MdkrBootConfig &config,
      * process-global roster between races") when the lobby returns to LOBBY,
      * so the next BEGIN_LOADING re-installs a fresh roster for race 2. */
     mdkr_net_roster_runtime_clear();
+    /* The engine has fully unwound (mdkr64_engine_boot is blocking). Re-arm
+     * exactly one launcher video-config handoff so a LATER engine boot in this
+     * same process (the per-race fallback's next race, or a later native
+     * takeover) can pass mdkr_video_config_handoff_to_engine again -- the
+     * handoff is one-shot per engine session, and runEngineSession's teardown
+     * does the same. Without this, the SECOND boot in a process stops at
+     * "[app] video-config handoff was missing or repeated". */
+    if (!mdkr_video_config_engine_session_complete()) {
+        std::fprintf(stderr,
+                     "[session] video-config engine epoch did not close cleanly\n");
+    }
     return result;
 }
 
@@ -2406,6 +2417,12 @@ int runOnlineLobbyStartEngineSession(AppHost &host, const MdkrBootConfig &config
     if (mdkr_match_input_runtime_active()) mdkr_match_input_runtime_clear();
     OnlineRoom_clearPartyLink();
     mdkr_net_roster_runtime_clear();
+    /* Re-arm the one-shot video-config handoff for a later boot in this
+     * process (same rationale + shape as runEngineSession's teardown). */
+    if (!mdkr_video_config_engine_session_complete()) {
+        std::fprintf(stderr,
+                     "[session] video-config engine epoch did not close cleanly\n");
+    }
     return result;
 }
 
@@ -2521,19 +2538,23 @@ int runOnlineLobbyStartLiveSession(AppHost &host, const MdkrBootConfig &config,
     const MdkrPartyLinkSessionEndReason endReason =
         onlineTakeSessionEndWitness(result);
     if (endReasonOut != nullptr) *endReasonOut = endReason;
-    /* A FINISHED native session parks the reducer in RESULTS (room-ready
-     * condition FALSE), so arm the re-arm here -- the panel's per-frame observer then
-     * clears the latch while the room is out of the takeover window, and the host's
-     * next fresh SELECTING+2+LOBBY rising edge (ANY mode: a New Tournament, or a fresh
-     * single race after a prior one finished) re-takes native for session #2. T5:
-     * single-race "Race Again" / "change picks" never reach here -- they re-cycle
-     * IN-PROCESS (the session stays booted; see the resident coordinator's single-race
-     * observe-only re-cycle), so this arm is purely the whole-new-session path, still
-     * one arm per FINISHED return. LEFT/ERROR/NONE land with the condition potentially
-     * still TRUE (a mid-tournament / mid-re-cycle cancel or peer drop drops the room
-     * straight back to SELECTING), so they must NOT arm: an instant re-arm there would
-     * re-boot the session the player just left. Reason-gating here is the load-bearing
-     * half of the no-loop proof. */
+    /* A FINISHED native session returns with the tournament-final REMATCH
+     * wrap already landed (the host's FINISH dispatched it before leaving; a joiner's
+     * FINISHED followed that same observed wrap), so the room is normally already
+     * back at a fresh-series SELECTING+2+LOBBY. Arm the re-arm here -- the panel's
+     * per-frame observer completes it immediately (the wrap's RESULTS-out-and-back
+     * WAS the rising edge, it just happened while the engine owned the frames), and
+     * the next poll re-takes native for session #2 on THIS endpoint; the second real
+     * peer does the same on its own FINISHED return -- the automatic both-endpoint
+     * re-take into the freshly wrapped room. T5: single-race "Race Again" / "change
+     * picks" never reach here -- they re-cycle IN-PROCESS (the session stays booted;
+     * see the resident coordinator's single-race observe-only re-cycle), so this arm
+     * is purely the whole-new-session path, still one arm per FINISHED return.
+     * LEFT/ERROR/NONE land with the condition potentially still TRUE but with NO
+     * completed tournament behind them, so they must NOT arm: a re-take there would
+     * re-boot the session the player just left. Reason-gating here is the
+     * load-bearing half of the no-loop proof (the other half: one latch clear per
+     * arm, and a re-taken session parks at CHARSELECT without human input). */
     if (endReason == MDKR_PARTY_LINK_SESSION_END_FINISHED) {
         OnlineRoom_armRoomReadyRearm();
     }
@@ -2555,6 +2576,17 @@ int runOnlineLobbyStartLiveSession(AppHost &host, const MdkrBootConfig &config,
     if (mdkr_match_input_runtime_active()) mdkr_match_input_runtime_clear();
     OnlineRoom_clearPartyLink(); /* also clears the single-endpoint note */
     mdkr_net_roster_runtime_clear();
+    /* Re-arm the one-shot video-config handoff. The FINISHED re-take boots a
+     * SECOND descriptor-less native session in this same process (the automatic
+     * both-endpoint re-take into the freshly wrapped room), and that boot must
+     * pass mdkr_video_config_handoff_to_engine again -- the first real second
+     * boot ever taken stopped at "[app] video-config handoff was missing or
+     * repeated" because no online runner re-armed it (runEngineSession's
+     * teardown always has). Same rationale + shape as that teardown. */
+    if (!mdkr_video_config_engine_session_complete()) {
+        std::fprintf(stderr,
+                     "[session] video-config engine epoch did not close cleanly\n");
+    }
     return result;
 }
 #endif /* MDKR_ENABLE_ONLINE_BETA */
@@ -4036,20 +4068,23 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
          *   2. a LEFT/ERROR return (no arm) does NOT re-fire even though the room-ready
          *      condition is STILL TRUE (SELECTING+2+LOBBY+tournament) -- no re-boot
          *      loop;
-         *   3. a FINISHED return (arm) does NOT instantly re-fire while the condition
-         *      still holds -- the latch clears only once the room is OUT of the takeover
-         *      window;
-         *   4. the next false->true condition rising edge (a New Tournament arrival)
-         *      re-fires the takeover EXACTLY ONCE for tournament #2 (route=lobby-start).
+         *   3. the production FINISHED shape -- the tournament's final race parks the
+         *      room in RESULTS, the host's FINISH wraps it back to a fresh-series
+         *      SELECTING via the leader REMATCH, and only THEN does the session
+         *      return FINISHED -- does NOT re-fire on the wrap alone (the latch is
+         *      still set; a room transition without a FINISHED return never
+         *      re-takes);
+         *   4. the FINISHED return (arm) completes on the next observation and the
+         *      takeover re-fires EXACTLY ONCE for session #2 (route=lobby-start) --
+         *      the automatic FINISHED re-take -- with no further fires after the
+         *      one consume;
+         *   5. a later condition false->true cycle WITHOUT a FINISHED return does
+         *      NOT re-fire (one re-take per FINISHED, not per room transition).
          * The room-ready condition is toggled by PARKING the room in RESULTS (a real
          * finished race: ready both seats -> leader START -> RACING -> leader
          * PUBLISH_RESULTS => phase RESULTS => condition false) and RETURNING it to
          * SELECTING via the leader's REMATCH (=> condition true) -- the exact
-         * RESULTS-park -> New-selection transition production rides. (Before T2 this
-         * used a lobby.mode tournament<->single flip; that stopped changing the
-         * condition once T2 made single race take the native path too, so the toggle
-         * moved to the mode-independent RESULTS park -- which is also strictly MORE
-         * faithful.) */
+         * final-standings-park -> FINISH-wrap transition production rides. */
         std::string probeErr;
         MdkrOnlineTestLoopbackRace *race =
             OnlineRoom_makeTestLobbyStartRoom(&probeErr);
@@ -4095,68 +4130,78 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
         const bool leftNoRearm =
             fires == 1 && OnlineRoom_roomReadyConditionHolds(visible);
 
-        /* (3) FINISHED return: arm. While the condition STILL holds (the instant of
-         * return, before the room parks in RESULTS) the observer must NOT clear the
-         * latch, so the takeover cannot instantly re-fire. */
-        OnlineRoom_armRoomReadyRearm();
-        for (int i = 0; i < 60; ++i) {
-            OnlineRoom_observeRoomReadyRearm(visible);
+        /* (3) The production FINISHED shape happens BEFORE the return: the final
+         * race parks the room in RESULTS (condition false), then the host's FINISH
+         * wraps it back to a fresh-series SELECTING via the leader REMATCH
+         * (condition true again) -- all while the session still owns the frames.
+         * The wrap ALONE must NOT re-fire: the latch from tournament #1 is still
+         * set and nothing is pending (the observer runs throughout as the panel
+         * would, and must stay a no-op). */
+        const bool wentFalse = OnlineRoom_testParkRoomInResults(visible, peer);
+        for (int i = 0; i < 30; ++i) {
+            OnlineRoom_observeRoomReadyRearm(visible); /* no-op: nothing pending */
             pump(1);
             if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
         }
-        const bool finishedNoInstant =
-            fires == 1 && OnlineRoom_roomReadyConditionHolds(visible);
-        /* DIRECT witness: with the latch SET and nothing pending (armed but
-         * not yet cleared), the takeover is NOT engaged -- this is the post-return
-         * state whose card would lie. It must flip to engaged once the latch clears. */
-        const bool engagedBeforeClear = OnlineRoom_roomReadyTakeoverEngaged();
+        const bool wentTrue = OnlineRoom_testReturnRoomToSelecting(visible, peer);
+        for (int i = 0; i < 30; ++i) {
+            OnlineRoom_observeRoomReadyRearm(visible); /* still a no-op */
+            pump(1);
+            if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
+        }
+        const bool wrapAloneNoRefire =
+            wentFalse && wentTrue && fires == 1 &&
+            OnlineRoom_roomReadyConditionHolds(visible);
+        /* DIRECT witness: latch set, nothing pending -- the takeover is NOT
+         * engaged. It must flip once the FINISHED arm completes below. */
+        const bool engagedBeforeArm = OnlineRoom_roomReadyTakeoverEngaged();
 
-        /* (4a) Drive the room OUT of the takeover condition by PARKING a finished race
-         * in RESULTS (the real FINISHED->RESULTS park). The armed observer clears the
-         * latch HERE -- and only here, because the condition is now false; the trigger
-         * must NOT fire. */
-        const bool wentFalse = OnlineRoom_testParkRoomInResults(visible, peer);
+        /* (4) FINISHED return: arm. The next observation COMPLETES the re-arm
+         * immediately ("re-arm complete" -- the wrap above already supplied the
+         * out-and-back rising edge) and the following poll re-fires EXACTLY ONCE
+         * for session #2 (route=lobby-start): the automatic FINISHED re-take.
+         * Once the fire consumes the latch, further polls must not fire. */
+        OnlineRoom_armRoomReadyRearm();
+        OnlineRoom_observeRoomReadyRearm(visible);
+        const bool engagedAfterComplete = OnlineRoom_roomReadyTakeoverEngaged();
+        if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
+        const int firesAfterRetake = fires; /* expect 2 */
+        IMdkrOnlineAdapter *published2 = OnlineRoom_pollEngineRoomReady();
+        const bool routed2 = published2 == visible;
+        for (int i = 0; i < 60; ++i) {
+            pump(1);
+            if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
+        }
+        const bool finishedRetakeOnce =
+            !engagedBeforeArm && engagedAfterComplete && firesAfterRetake == 2 &&
+            fires == 2 && routed2;
+
+        /* (5a) ONE re-take per FINISHED: a later condition false->true cycle
+         * WITHOUT a FINISHED return (no arm) must NOT re-fire -- a room transition
+         * alone never re-takes. */
+        (void)OnlineRoom_testParkRoomInResults(visible, peer);
         for (int i = 0; i < 30; ++i) {
             OnlineRoom_observeRoomReadyRearm(visible);
             pump(1);
             if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
         }
-        /* DIRECT witness: the latch actually cleared (engaged flipped
-         * false->true). This proves the CLEAR itself, not just "no fire while the
-         * condition is false" (which is trivially true regardless of latch state);
-         * the harness additionally asserts the "re-arm complete" log line. */
-        const bool engagedAfterClear = OnlineRoom_roomReadyTakeoverEngaged();
-        const bool clearedWhileFalse = wentFalse &&
-            !OnlineRoom_roomReadyConditionHolds(visible) && fires == 1 &&
-            !engagedBeforeClear && engagedAfterClear;
-
-        /* (4b) Fresh New-selection rising edge: the leader's REMATCH returns the room
-         * to SELECTING (condition true again) and the re-armed latch lets the trigger
-         * fire EXACTLY ONCE for tournament #2. */
-        const bool wentTrue = OnlineRoom_testReturnRoomToSelecting(visible, peer);
+        (void)OnlineRoom_testReturnRoomToSelecting(visible, peer);
         pump(5);
-        OnlineRoom_observeRoomReadyRearm(visible); /* no-op: rearm already completed */
+        OnlineRoom_observeRoomReadyRearm(visible);
         if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
-        const int firesAfterT2 = fires;
-        for (int i = 0; i < 60; ++i) {
-            pump(1);
-            if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
-        }
-        IMdkrOnlineAdapter *published2 = OnlineRoom_pollEngineRoomReady();
-        const bool routed2 = published2 == visible;
-        const bool t2Once =
-            wentTrue && firesAfterT2 == 2 && fires == 2 && routed2;
+        const bool noRetakeWithoutFinished = fires == 2;
 
-        /* (5) Coda: OnlineRoom_resetRoomReadyLatch must DROP a pending re-arm
-         * (wiring: fresh adapter = clean slate), so a stale FINISHED cannot leak into a
-         * successor room. Model it: arm (a stale FINISHED), reset (a fresh adapter is
-         * built), then let the fresh room fire its own tournament #1 ONCE -- after
-         * which a full condition false->true cycle must NOT manufacture a spurious
-         * re-take. If reset had NOT dropped the pending re-arm, the observer would clear
-         * the latch on the false frame and the true edge would fire a bogus 4th time. */
+        /* (5b) Coda: OnlineRoom_resetRoomReadyLatch must DROP a pending re-arm
+         * (wiring: fresh adapter = clean slate), so a stale FINISHED cannot leak
+         * into a successor room. Model it: arm (a stale FINISHED), reset (a fresh
+         * adapter is built), then let the fresh room fire its own tournament #1
+         * ONCE -- after which a full condition false->true cycle with the observer
+         * running must NOT manufacture a spurious re-take. If reset had NOT
+         * dropped the pending re-arm, the leaked arm would complete on the first
+         * observation and the SELECTING return would fire a bogus 4th time. */
         OnlineRoom_armRoomReadyRearm();
         OnlineRoom_resetRoomReadyLatch(); /* must clear latch AND the pending re-arm */
-        /* The room is already at SELECTING from step (4b)'s REMATCH, so the condition
+        /* The room is already at SELECTING from step (5a)'s REMATCH, so the condition
          * holds again with no drive needed. */
         pump(5);
         if (OnlineRoom_pollRoomReadyTransition(visible)) fires++; /* fresh #1 fires once */
@@ -4175,16 +4220,18 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
         const bool resetDropsPending =
             firesAfterFreshBoot == 3 && fires == 3; /* no spurious 4th fire */
 
-        const bool ok = t1Once && leftNoRearm && finishedNoInstant &&
-                        clearedWhileFalse && t2Once && resetDropsPending;
+        const bool ok = t1Once && leftNoRearm && wrapAloneNoRefire &&
+                        finishedRetakeOnce && noRetakeWithoutFinished &&
+                        resetDropsPending;
         std::fprintf(stderr,
                      "[online-room-ready-rearm-probe] totalFires=%d t1Once=%d "
-                     "leftNoRearm=%d finishedNoInstant=%d clearedWhileFalse=%d "
-                     "t2Once=%d routed2=%d resetDropsPending=%d verdict=%s\n",
+                     "leftNoRearm=%d wrapAloneNoRefire=%d finishedRetakeOnce=%d "
+                     "routed2=%d noRetakeWithoutFinished=%d resetDropsPending=%d "
+                     "verdict=%s\n",
                      fires, t1Once ? 1 : 0, leftNoRearm ? 1 : 0,
-                     finishedNoInstant ? 1 : 0, clearedWhileFalse ? 1 : 0,
-                     t2Once ? 1 : 0, routed2 ? 1 : 0, resetDropsPending ? 1 : 0,
-                     ok ? "PASS" : "FAIL");
+                     wrapAloneNoRefire ? 1 : 0, finishedRetakeOnce ? 1 : 0,
+                     routed2 ? 1 : 0, noRetakeWithoutFinished ? 1 : 0,
+                     resetDropsPending ? 1 : 0, ok ? "PASS" : "FAIL");
         OnlineRoom_destroyTestLoopbackRace(race);
         host.shutdown();
         return ok ? 0 : 3;
@@ -4302,15 +4349,15 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
          * would pass #1->#2 yet silently drop tournament #3. The human plan calls the
          * 3rd tournament out explicitly ("a 3rd for good measure -- unexercised by any
          * lane"). This seam drives THREE consecutive tournaments through the wiring's
-         * arm -> clear (condition-false) -> rising-edge cycle, so the re-arm must fire
-         * once PER FINISHED return (twice), for a total of exactly three takeovers, and
-         * a LEFT return WEDGED BETWEEN #1 and #2 must NOT re-arm even with the room-ready
-         * condition still TRUE (no re-boot loop across cycles). The condition is toggled
-         * by PARKING a real finished race in RESULTS (=> condition false) and RETURNING
-         * to SELECTING via the leader's REMATCH (=> condition true) -- the production
-         * RESULTS-park -> New-selection transition, exactly as the single-cycle probe
-         * does. (Pre-T2 this flipped lobby.mode tournament<->single; that no longer
-         * changes the condition once single race also takes the native path.) */
+         * wrap -> FINISHED-arm -> immediate-completion re-take cycle, so the re-arm
+         * must fire once PER FINISHED return (twice), for a total of exactly three
+         * takeovers, and a LEFT return WEDGED BETWEEN #1 and #2 must NOT re-arm even
+         * with the room-ready condition still TRUE (no re-boot loop across cycles).
+         * Each cycle first replays the production shape -- PARK a real finished race
+         * in RESULTS (=> condition false), RETURN to SELECTING via the leader's
+         * REMATCH (the FINISH wrap => condition true) -- and asserts the wrap ALONE
+         * re-fires nothing (latch still set, nothing pending); only the FINISHED
+         * arm + observation re-takes, exactly once. */
         std::string probeErr;
         MdkrOnlineTestLoopbackRace *race =
             OnlineRoom_makeTestLobbyStartRoom(&probeErr);
@@ -4357,56 +4404,57 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
         const bool leftNoRearm =
             fires == 1 && OnlineRoom_roomReadyConditionHolds(visible);
 
-        /* One FINISHED re-arm cycle to the next tournament: arm (no instant re-fire
-         * while the condition holds), drive the condition false (RESULTS park; the
-         * armed observer clears the latch HERE, emitting "re-arm complete"), then a
-         * fresh SELECTING rising edge fires the takeover exactly once. Returns
-         * {no-instant held, this-cycle fired once + routed}. */
+        /* One FINISHED re-take cycle to the next tournament, in the production
+         * order: park the finished final in RESULTS, wrap back to SELECTING via
+         * the leader REMATCH (the FINISH wrap; the wrap ALONE must re-fire
+         * nothing -- latch still set, nothing pending, observer a no-op), THEN the
+         * FINISHED return arms and the next observation completes the re-arm
+         * ("re-arm complete") so the following poll re-takes exactly once.
+         * Returns {wrap-alone-held, this-cycle fired once + routed}. */
         auto rearmCycle = [&](int expectFires) -> std::pair<bool, bool> {
-            OnlineRoom_armRoomReadyRearm(); /* FINISHED return arms (once per cycle) */
             const int before = fires;
-            for (int i = 0; i < 60; ++i) { /* condition still holds: must NOT clear */
-                OnlineRoom_observeRoomReadyRearm(visible);
-                pump(1);
-                if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
-            }
-            const bool noInstant =
-                fires == before && OnlineRoom_roomReadyConditionHolds(visible);
             const bool wentFalse = OnlineRoom_testParkRoomInResults(visible, peer);
-            for (int i = 0; i < 30; ++i) { /* condition false: latch clears here */
+            for (int i = 0; i < 30; ++i) { /* parked: nothing pending, no fire */
                 OnlineRoom_observeRoomReadyRearm(visible);
                 pump(1);
                 if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
             }
             const bool wentTrue = OnlineRoom_testReturnRoomToSelecting(visible, peer);
-            pump(5);
-            OnlineRoom_observeRoomReadyRearm(visible); /* already cleared: no-op */
+            for (int i = 0; i < 30; ++i) { /* wrapped back: latch still set, no fire */
+                OnlineRoom_observeRoomReadyRearm(visible);
+                pump(1);
+                if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
+            }
+            const bool wrapHeld =
+                fires == before && OnlineRoom_roomReadyConditionHolds(visible);
+            OnlineRoom_armRoomReadyRearm(); /* FINISHED return arms (once per cycle) */
+            OnlineRoom_observeRoomReadyRearm(visible); /* completes immediately */
             if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
-            for (int i = 0; i < 30; ++i) {
+            for (int i = 0; i < 30; ++i) { /* consumed: no further fires */
                 pump(1);
                 if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
             }
             const bool routed = OnlineRoom_pollEngineRoomReady() == visible;
             const bool once =
                 wentFalse && wentTrue && fires == expectFires && routed;
-            return {noInstant, once};
+            return {wrapHeld, once};
         };
 
-        /* (3) FINISHED re-arm #1 -> tournament #2 (total fires 2). */
-        auto [finishedNoInstant2, t2Once] = rearmCycle(2);
-        /* (4) FINISHED re-arm #2 on the SAME adapter -> tournament #3 (total 3): the
+        /* (3) FINISHED re-take #1 -> tournament #2 (total fires 2). */
+        auto [wrapHeld2, t2Once] = rearmCycle(2);
+        /* (4) FINISHED re-take #2 on the SAME adapter -> tournament #3 (total 3): the
          * repeatability the single-cycle probe cannot prove. */
-        auto [finishedNoInstant3, t3Once] = rearmCycle(3);
+        auto [wrapHeld3, t3Once] = rearmCycle(3);
 
-        const bool ok = t1Once && leftNoRearm && finishedNoInstant2 && t2Once &&
-                        finishedNoInstant3 && t3Once && fires == 3;
+        const bool ok = t1Once && leftNoRearm && wrapHeld2 && t2Once &&
+                        wrapHeld3 && t3Once && fires == 3;
         std::fprintf(stderr,
                      "[online-room-ready-rearm3-probe] totalFires=%d t1Once=%d "
-                     "leftNoRearm=%d finishedNoInstant2=%d t2Once=%d "
-                     "finishedNoInstant3=%d t3Once=%d verdict=%s\n",
+                     "leftNoRearm=%d wrapHeld2=%d t2Once=%d "
+                     "wrapHeld3=%d t3Once=%d verdict=%s\n",
                      fires, t1Once ? 1 : 0, leftNoRearm ? 1 : 0,
-                     finishedNoInstant2 ? 1 : 0, t2Once ? 1 : 0,
-                     finishedNoInstant3 ? 1 : 0, t3Once ? 1 : 0,
+                     wrapHeld2 ? 1 : 0, t2Once ? 1 : 0,
+                     wrapHeld3 ? 1 : 0, t3Once ? 1 : 0,
                      ok ? "PASS" : "FAIL");
         OnlineRoom_destroyTestLoopbackRace(race);
         host.shutdown();
@@ -4967,6 +5015,14 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
             }
         }
     }
+#if MDKR_ENABLE_ONLINE_BETA
+    /* ORDERED app-exit teardown of any live online room adapter: join its
+     * mesh/signal worker threads on this thread BEFORE main returns, so a late
+     * ICE/data-channel callback can never race static destruction (an uncaught
+     * "mutex lock failed" SIGABRT, first observed quitting the app right after
+     * the FINISHED re-take put the endpoint back in a live session). */
+    OnlineRoom_shutdownForAppExit();
+#endif
     return exitCode;
 }
 
