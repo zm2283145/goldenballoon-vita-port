@@ -80,14 +80,22 @@ LANES = (
 # concurrent). Run each by hand from tools/online/ when qualifying the real cloud:
 #
 #   python3 tools/online/check_online_native_flow_cloud.py --build build-beta \
-#       --rom baserom.us.v80.z64            # the two-process production capstone
+#       --rom baserom.us.v80.z64 --through e --tournament 1   # GREEN achievable bar
+#   python3 tools/online/check_online_native_flow_cloud.py --build build-beta \
+#       --rom baserom.us.v80.z64 --through full --tournament 1 # full 7-assertion run
 #   python3 tools/online/cloud_two_process_engine_boot.py --build build-beta \
 #       --rom baserom.us.v80.z64            # the legacy descriptor-first cloud boot
 #
 # check_online_native_flow_cloud.py is the production-path acceptance instrument:
 # the ONLY automation is pairing bootstrap + injected pad input; everything after
 # pairing is the production code path (self-firing takeover, native screens,
-# reducer-synced selections, race, chooser, return, re-take). See tests/README.md.
+# reducer-synced selections, race, chooser, return, re-take). `--through e` (pairing
+# + self-firing takeover + descriptor-less CHARSELECT/VEHICLE/TRACK + reducer-synced
+# selections + two converged tournament races) is GREEN over the real cloud;
+# `--through full` additionally drives the tournament-final (f) FINISHED / (g)
+# re-take legs, which currently (correctly) fail -- the host finishes cleanly but a
+# second real peer's chooser mirror is stranded because the host's FINISH sends no
+# reducer signal. See tests/README.md for the full description.
 MANUAL_NETWORK_LANES = (
     "tools/online/check_online_native_flow_cloud.py",
     "tools/online/cloud_two_process_engine_boot.py",

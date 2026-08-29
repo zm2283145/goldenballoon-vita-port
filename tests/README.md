@@ -1608,12 +1608,25 @@ launcher only builds frames with a real drawable). The seven assertions: (a) the
 `[online-room-ready]` latch/publish/boot-enter fire on BOTH -- takeover self-fired;
 (b) the native session enters CHARSELECT descriptor-less (no
 `source=launch-descriptor`); (c) selections sync through the reducer; (d) race 1
-converges (identical `ENGINE-ONLINE-LIVE` fold hash); (e) the chooser round-trips a
-converged race 2; (f) both end FINISHED, exit 0; (g) the takeover latch re-fires.
-Default `--build build-beta`. NOTE (2026-08-29): (a)+(b) are PROVEN over the real
-cloud; the lane currently FAILS at (c) on a real production convergence defect (the
-native charselect's two-peer reverse-feed selection never converges to a persisted
-seat ready over real network latency) that the lane exists to catch.
+converges; (e) the chooser round-trips a converged race 2; (f) both end FINISHED;
+(g) the takeover latch re-fires. `--through`: `c` stops after the CHARSELECT ->
+VEHICLESELECT advance; `e` stops after (a)-(e) (the GREEN achievable bar over the
+real cloud -- needs `--tournament CUP`, since a single race never auto-finals); `full`
+adds the tournament-final (f)/(g) legs. Convergence on this descriptor-less path is
+the reducer-agreed finish order (both processes commit the SAME placements per
+race_index -- there is no `ENGINE-ONLINE-LIVE` fold line on the resident path).
+Default `--build build-beta`. STATUS (2026-08-29): `--through e --tournament 1` is
+3x consecutively GREEN over the real cloud (pairing + self-firing takeover +
+descriptor-less native CHARSELECT/VEHICLE/TRACK + reducer-synced selections + two
+converged tournament races, all four cup rounds racing and the HOST reaching a clean
+FINISHED). `--through full` currently (correctly) FAILS at (f)/(g) on a real
+structural production bug the lane caught: when the host commits FINISH at the
+tournament final, a second real peer's chooser mirror is stranded forever, because
+the host's FINISH is a purely local leave that sends NO reducer command and the
+re-arm design keeps the host in the room -- so neither of the joiner mirror's exits
+(room-left-RESULTS / vanished-host) fires. A clean fix needs a reducer "tournament
+finished" signal, but lobby_core.c + the Worker are protocol-frozen; it awaits a
+product decision.
 
 `check_online_lobby_tournament.py` (standalone lane, not run-checks registered)
 is the PD-T6h2b KEYSTONE gate: it COMPOSES the T6h2a lobby-start boot with the
