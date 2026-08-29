@@ -5911,6 +5911,72 @@ Save fixture: the same started Adventure One slot-0 save; every run is in a
 private temp dir. Off arm — 1P awards unchanged — is `check_adventure_race_loop.py`
 and `check_campaign_progression.py`.
 
+### Adventure Party host-solo challenge — `tests/check_adventure_party_challenges.py`
+
+```bash
+python3 tests/check_adventure_party_challenges.py         # ~15 min, muted + headless
+python3 tests/check_adventure_party_challenges.py -v
+```
+
+The AP-15 gate: a party entering a four-racer special challenge SUSPENDS to a
+retail host-solo challenge and is RESTORED to the exact party on return. Proven
+from the running binary + the persisted EEPROM (3P, a 2P arm, and a 1P reference):
+
+- **Suspension envelope.** The challenge loads host-solo — `aparty_session
+  state=SOLO_ACTIVITY` with the party roster captured as the suspended facts, the
+  retail FOUR-racer field (`[CHALLENGE] racers=4`), and NO party race field (no
+  `racefield:`).
+- **Exact-once win.** A host win commits the retail amulet EXACTLY once
+  (`courseFlags RACE_CLEARED` + `ttAmulet++`) through the unchanged challenge-finish
+  path, gated by one `aparty_award` challenge token issue+consume
+  (`kind=COMPLETION_CHALLENGE`); the save gains one T.T. amulet piece, byte-equal to
+  the same fields a **1P** win of the challenge writes.
+- **No commit on defeat.** `MDKR_CHALLENGE_OUTCOME=loss` mints no token, leaves
+  `ttAmulet` unchanged, and still restores the party.
+- **Restore + re-entry.** Every return runs `RESTORING_PARTY` and
+  `aparty_restore match=1`; the challenge re-enters (a 2nd `SOLO_ACTIVITY`).
+- **Positive controls (output only):** a restore-with-different-roster replay must
+  FAIL restore; stripping the suspension traces must FAIL suspend.
+
+Entry: the world-lobby challenge/key door is unreachable by a headless AI line, so
+the party drives a reachable race door and that load is retargeted to the challenge
+(`MDKR_LOAD_TRACK`) — the same arrival-adapter seam (`ACTIVE_LOBBY` →
+`RACETYPE_CHALLENGE` load → `SOLO_START` → restore). `MDKR_CHALLENGE_OUTCOME` drives
+the production challenge to its win/loss. Off arm — 1P challenges unchanged — is
+`check_challenge_modes.py` / `check_campaign_progression.py`.
+
+### Adventure Party host-solo boss — `tests/check_adventure_party_boss_restore.py`
+
+```bash
+python3 tests/check_adventure_party_boss_restore.py       # ~15 min, muted + headless
+python3 tests/check_adventure_party_boss_restore.py -v
+```
+
+The AP-17 gate: a 3P party entering a boss SUSPENDS to a retail host-solo boss and
+is RESTORED on return. Proven from the running binary + the persisted EEPROM:
+
+- **Suspension envelope.** `aparty_session state=SOLO_ACTIVITY` with the suspended
+  roster; no party race field (`racefield:` absent); the host (`playerIndex 0`) is
+  the sole human at the boss finish.
+- **Exact-once first win.** A first win commits `settings->bosses |= worldBit`
+  (save delta `bosses 0x0 -> 0x2`, boss course CLEARED) through the unchanged
+  `racer_boss_finish` path, witnessed by one `aparty_award` boss token issue+consume
+  (`kind=COMPLETION_BOSS`); the win cutscene (level 57) presents.
+- **No award on defeat.** A loss sets no boss bit and consumes no token, and still
+  restores the party.
+- **Rematch.** Re-entering the beaten boss re-suspends host-solo (a 2nd
+  `SOLO_ACTIVITY`) and refuses a new token (`aparty_award op=issue result=0`).
+- **Restore.** `aparty_restore match=1` on the returns.
+- **Positive controls (output only):** a return-with-one-racer replay must FAIL
+  restore; a doubled boss-award replay must FAIL exactly-once.
+
+Entry is by the same reachable-race-door retarget as the challenge gate (the boss
+door is behind geometry no headless line paths through, and the production
+balloon-race route that reaches it crashes a party's spatial audio — a pre-existing
+AP-12 defect, see `check_adventure_party_boss_restore.py`'s docstring and the task
+report). The boss-door warp and `racer_boss_finish` are retail, 1P-anchored by
+`check_first_boss_progression.py` / `check_boss_win_verdict.py`.
+
 ### Adventure Party Taj transaction — `tests/check_adventure_party_taj.py`
 
 ```bash

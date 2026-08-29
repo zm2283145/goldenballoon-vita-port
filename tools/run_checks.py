@@ -803,6 +803,24 @@ CHECKS = (
           "quit write nothing, a win + re-entry of the cleared course still writes "
           "exactly one clear, and the save round-trips into 1P Adventure; two "
           "positive controls fire (CPU-as-win, doubled-award)"),
+    Check("adventure_party_challenges", "check_adventure_party_challenges.py",
+          "native",
+          "AP-15 host-solo special-challenge envelope: a party (3P + a 2P arm) "
+          "suspends to a retail four-racer host-solo challenge (SOLO_ACTIVITY + "
+          "suspended roster, [CHALLENGE] racers=4, no party race field), a host WIN "
+          "commits one T.T. amulet piece exactly once (one aparty_award challenge "
+          "token issue+consume, ttAmulet 0->1, byte-equal to a 1P win), a defeat "
+          "commits nothing, and EVERY return restores the exact party (aparty_restore "
+          "match=1); two positive controls fire (different-roster, strip-suspension)"),
+    Check("adventure_party_boss_restore", "check_adventure_party_boss_restore.py",
+          "native",
+          "AP-17 host-solo boss envelope: a 3P party suspends to a retail host-solo "
+          "boss (SOLO_ACTIVITY + suspended roster, no party race field, host "
+          "finishes), a first WIN commits the world boss bit exactly once (one "
+          "aparty_award boss token issue+consume, save delta), a LOSS awards nothing, "
+          "the beaten boss re-suspends on a rematch and refuses a new token, and "
+          "EVERY return restores the exact party (aparty_restore match=1); two "
+          "positive controls fire (one-racer, doubled-award)"),
     Check("adventure_hub", "check_adventure_hub.py", "native",
           "Adventure hub traversal"),
     Check("adventure_two", "check_adventure_two.py", "native",
