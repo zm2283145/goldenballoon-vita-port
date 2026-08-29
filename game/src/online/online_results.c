@@ -1339,7 +1339,16 @@ static void results_test_capture(void) {
     sTestRoom.seats[0].is_host = 1u;
     sTestRoom.seats[0].connected = 1u;
     sTestRoom.seats[0].character_id = sTestSeatChar[0];
-    memcpy(sTestRoom.seats[0].name, "YOU", sizeof("YOU"));
+    /* T9 NIT-3 (RESULTS "YOU/YOU"): give the local seat a REALISTIC placeholder
+     * name ("P1") -- NOT the literal "YOU". The render correctly tags the local
+     * player's OWN row with a " [YOU]" marker (retail-authentic), so a seat literally
+     * named "YOU" rendered the confusing "YOU [YOU]" doubling the T8 gate flagged.
+     * That doubling was ALWAYS a test-harness artifact of the placeholder name (the
+     * results witness never emits names, so nothing asserts on it), NOT a 2-endpoint
+     * bug: in real play the seat carries the launcher-provided player name and the
+     * row reads "<name> [YOU]". Naming it "P1" makes future captures read that way
+     * too, without changing any render logic (nothing is masked). */
+    memcpy(sTestRoom.seats[0].name, "P1", sizeof("P1"));
     sTestRoom.seats[1].occupied = 1u;
     sTestRoom.seats[1].connected = 1u;
     sTestRoom.seats[1].character_id = sTestSeatChar[1];

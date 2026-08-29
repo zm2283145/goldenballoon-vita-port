@@ -749,11 +749,24 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
         s32 cx = (s32) c * TS_COL_W + (TS_COL_W / 2);
         bool onFocus = (c == focusWorld);
         bool cupLocked = (effMode == TS_MODE_TOURNAMENT && lockedCup == c);
-        u8 dim = onFocus ? 210u : 110u;
+        /* T9 NIT-3 (trackselect "LOCKED while browsing"): the SINGLE-race host can
+         * lock a track then move the cursor to PREVIEW another world without locking
+         * a new one (the lock is sticky -- START still uses it, which is truthful).
+         * The T8 capture caught exactly that scripted state ("WHALE BAY LOCKED" while
+         * the cursor browsed FFL) and it read as a bug because nothing on-screen tied
+         * the status to a world. It is NOT a 2-endpoint bug (the joiner's focus ALWAYS
+         * follows the lock, so its view is always coherent), but to make the host view
+         * coherent too, mark the WORLD banner that holds the current single-race lock
+         * green -- the same cue tournament already gives a locked cup. Now the status
+         * "<track> LOCKED" always has a matching green banner, even mid-browse. */
+        bool worldHoldsLock =
+            (effMode == TS_MODE_SINGLE && lockedTrackIdx != TS_NONE &&
+             (u8) (lockedTrackIdx / TS_ROWS) == c);
+        u8 dim = (onFocus || cupLocked || worldHoldsLock) ? 210u : 110u;
         s32 lr, lg, lb;
 
         trackselect_draw_banner(c, dim);
-        if (cupLocked) {
+        if (cupLocked || worldHoldsLock) {
             lr = 120; lg = 255; lb = 120;
         } else if (onFocus) {
             lr = 255; lg = 240; lb = 160;
