@@ -507,6 +507,26 @@ static u8 online_session_feed_isfinal(void) {
     return 0u;
 }
 
+/* The FEED's 0-based cup round of the CURRENT race, read at RESULTS ENTER (where
+ * the snapshot's race_index still names the just-finished race, before the host's
+ * REMATCH advances it). Companion to online_session_feed_isfinal(): the RESULTS
+ * chooser's final-wrap gate needs the TRUE round, and sRes.raceCount is only the
+ * SESSION's own boot count -- it under-counts for a leader whose session joined a
+ * cup mid-way (leader migration), so raceCount-1 could read a genuine final as a
+ * non-final and take the purely-local FINISH leave that strands a second peer.
+ * Reading the feed (the same source isFinal uses) fixes that. Returns 0 outside a
+ * configured tournament (where the chooser's TOURNAMENT gate excludes the wrap
+ * anyway). */
+static u8 online_session_feed_race_index(void) {
+    MdkrPartyLinkSnapshot snap;
+    if (mdkr_party_link_read(&snap) &&
+        snap.mode == (uint8_t) MDKR_PARTY_LINK_MODE_TOURNAMENT &&
+        snap.cup_id != MDKR_PARTY_LINK_CUP_UNSET) {
+        return snap.race_index;
+    }
+    return 0u;
+}
+
 /* SINGLE-RACE "Race Again" auto-start publish. Publish a reverse-feed
  * intent, from the LOBBY_WAIT re-wait, that re-cycles the room to a fresh race
  * with NO human input: keep the local seat's persisted character + vehicle (so
@@ -1539,9 +1559,20 @@ void mdkr_online_session_tick(s32 updateRate) {
                                  : ((sOnlineSession.raceCount >= sResidentRaces)
                                         ? 1u
                                         : 0u);
-                u8 raceIndex = (sOnlineSession.raceCount > 0u)
-                                   ? (u8) (sOnlineSession.raceCount - 1u)
-                                   : 0u;
+                /* size the round from the FEED for a descriptor-less
+                 * session (the same source isFinal uses), NOT raceCount-1:
+                 * raceCount is only this SESSION's own boot count, which
+                 * under-counts for a leader whose session joined the cup mid-way
+                 * (leader migration) -- raceCount-1 would then read a genuine
+                 * final as a non-final, and the RESULTS chooser's final-wrap gate
+                 * (online_results.c) would take the purely-local FINISH leave that
+                 * strands a second peer. The ENV path stays raceCount-1 FIRST, so
+                 * the two resident soak lanes are byte-unchanged. */
+                u8 raceIndex = sOnlineSession.beganWithoutDescriptor
+                                   ? online_session_feed_race_index()
+                                   : ((sOnlineSession.raceCount > 0u)
+                                          ? (u8) (sOnlineSession.raceCount - 1u)
+                                          : 0u);
                 /* latch finality NOW (race_index still names this race) so
                  * the ADVANCE decision below is not fooled by the REMATCH advancing
                  * race_index before the screen returns ADVANCE. */

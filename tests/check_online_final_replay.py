@@ -48,8 +48,9 @@ Primary assertions:
       re-cycle re-armed the match-input on the FRESH epoch 5 (both seats ready
       again -> BEGIN_LOADING landed), and race 5's results report carries
       race_index=0 accepted=1 -- the fresh series' round 1
-  (e) RESULTS enters read race=0..7 with feed-isFinal set at races 4 and 8 ONLY
-      (the wrap genuinely reset the series' finality)
+  (e) RESULTS enters read the FEED's per-cup race_index -- 0..3 twice (the fresh
+      series resets it) -- with feed-isFinal set at races 4 and 8 ONLY (the wrap
+      genuinely reset the series' round AND finality)
   (f) every race's state-hash fold witness converged across the two endpoints
       (8 visible fold lines, 8 peer folds, all converged=1) -- the cross-endpoint
       state proof, not just the reducer-agreed finish order
@@ -244,15 +245,21 @@ def main() -> int:
         return fail(f"reported race_index sequence must wrap 0..3 twice (the "
                     f"fresh series), got {[ri for _a, ri in reports]}", output)
 
-    # (e) RESULTS enters: race 0..7 with feed-isFinal at races 4 and 8 ONLY.
+    # (e) RESULTS enters: the per-cup round WRAPS 0..3 twice (the second
+    # tournament is a FRESH series), with feed-isFinal at races 4 and 8 ONLY.
+    # The results-enter race is now the FEED's per-cup race_index (latched from
+    # the snapshot at enter), matching the reported/fold sequences above -- NOT
+    # the session's cumulative boot count (which would read 4..7 for the second
+    # cup, disagreeing with the reducer's own race_index for the same race).
     enters = ENTER_RE.findall(output)
     if len(enters) != 8:
         return fail(f"expected 8 RESULTS enters, got {len(enters)}", output)
     for idx, (race_i, final, have) in enumerate(enters):
+        want_race = idx % 4  # fresh series resets the feed race_index to 0
         want_final = 1 if idx in (3, 7) else 0
-        if int(race_i) != idx or int(final) != want_final or int(have) != 1:
+        if int(race_i) != want_race or int(final) != want_final or int(have) != 1:
             return fail(f"RESULTS enter {idx} was race={race_i} final={final} "
-                        f"haveResults={have} (expected race={idx} "
+                        f"haveResults={have} (expected race={want_race} "
                         f"final={want_final} haveResults=1)", output)
 
     # (f) the state-hash fold witness converged on every race, across both
