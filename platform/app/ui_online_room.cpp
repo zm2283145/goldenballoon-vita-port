@@ -23,10 +23,14 @@
 #include "qrcodegen.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 // Defined at the bottom of this file (beta lobby-takeover support); declared
 // here so handleAction's ENTER_ANOTHER_CODE contract can retire the live
@@ -3640,14 +3644,38 @@ int OnlineRoom_lobbyProbeViewKind() {
     return static_cast<int>(onlineCurrentViewKind());
 }
 
+// Tracker for the background adapter-teardown threads spawned by
+// teardownAdapterAsync below. The threads used to be DETACHED, which left a
+// SECOND door into the app-exit static-destruction race the ordered
+// OnlineRoom_shutdownForAppExit closes for the PANEL-owned adapter: quit the
+// app within seconds of an in-session Leave and the still-running teardown
+// destructor (mesh/WebSocket close, worker joins) races destroyed globals
+// after main returns -- the same uncaught "mutex lock failed" SIGABRT class,
+// via the other path. The threads are now kept JOINABLE here, counted with a
+// condition variable, and OnlineRoom_shutdownForAppExit waits (bounded) for
+// the count to drain before joining them -- so every teardown destructor
+// finishes before static destruction begins. Launcher-thread only (spawn and
+// join both happen on the UI thread); the mutex guards against the worker
+// threads' own decrements.
+namespace {
+struct AdapterTeardownTracker {
+    std::mutex mutex;
+    std::condition_variable done;
+    unsigned live = 0u;            // teardown destructors still running
+    std::vector<std::thread> threads;  // joinable handles (joined at app exit)
+};
+AdapterTeardownTracker sAdapterTeardowns;
+}  // namespace
+
 // Non-blocking teardown of the live adapter. Its destructor joins the room /
 // mesh / signal-client worker threads and closes the WebRTC data channels and
 // WebSocket -- any of which can stall for seconds. Doing that on the ImGui/main
-// thread is the observed beach-ball, so the live adapter is handed to a detached
-// thread and destroyed there while the UI returns home immediately. The
-// launcher thread never touches the adapter again after the hand-off, so
-// single-owner off-thread destruction is safe. The deterministic fake owns no
-// worker threads, so it is destroyed inline.
+// thread is the observed beach-ball, so the live adapter is handed to a
+// TRACKED background thread (joined, bounded, at app exit -- see
+// AdapterTeardownTracker) and destroyed there while the UI returns home
+// immediately. The launcher thread never touches the adapter again after the
+// hand-off, so single-owner off-thread destruction is safe. The deterministic
+// fake owns no worker threads, so it is destroyed inline.
 static void teardownAdapterAsync(std::unique_ptr<IMdkrOnlineAdapter> adapter) {
     if (!adapter) return;
     if (adapter->fakeAdapter() != nullptr) {
@@ -3674,9 +3702,22 @@ static void teardownAdapterAsync(std::unique_ptr<IMdkrOnlineAdapter> adapter) {
     // resolution the publish used (a retract-by-wrapper-pointer would not match).
     OnlineRoom_retractEngineRoomReady(
         OnlineRoom_resolveRawLiveAdapter(adapter.get()));
-    std::thread([owned = std::move(adapter)]() mutable {
+    {
+        std::lock_guard<std::mutex> lock(sAdapterTeardowns.mutex);
+        ++sAdapterTeardowns.live;
+    }
+    std::thread worker([owned = std::move(adapter)]() mutable {
         owned.reset();
-    }).detach();
+        {
+            std::lock_guard<std::mutex> lock(sAdapterTeardowns.mutex);
+            --sAdapterTeardowns.live;
+        }
+        sAdapterTeardowns.done.notify_all();
+    });
+    {
+        std::lock_guard<std::mutex> lock(sAdapterTeardowns.mutex);
+        sAdapterTeardowns.threads.push_back(std::move(worker));
+    }
 }
 
 // The single, clean exit from an active online session. Hands the live adapter
@@ -3718,7 +3759,7 @@ void OnlineRoom_requestLeave() { g_online.leavePending = true; }
 
 void OnlineRoom_shutdownForAppExit() {
     // ORDERED app-exit teardown (see the header). Unlike the in-session leave
-    // (teardownAdapterAsync, which detaches destruction so the UI never
+    // (teardownAdapterAsync, which backgrounds destruction so the UI never
     // beach-balls), the app is exiting: destroy the live adapter INLINE on this
     // thread so its mesh / signal-client worker threads are joined BEFORE main
     // returns and static destruction begins. Without this, quitting the app
@@ -3727,13 +3768,42 @@ void OnlineRoom_shutdownForAppExit() {
     // scripted quit right after the FINISHED re-take put both endpoints back in
     // a live session). The registries are retracted with the same resolved-raw
     // pointers the async path uses.
-    if (!g_online.adapter) return;
-    (void)mdkr_online_live_adapter_retract_race_boot(
-        OnlineRoom_resolveRawLiveAdapter(g_online.adapter.get()));
-    OnlineRoom_retractEngineRoomReady(
-        OnlineRoom_resolveRawLiveAdapter(g_online.adapter.get()));
-    g_online.adapter.reset();
-    g_online.initialized = false;
+    if (g_online.adapter) {
+        (void)mdkr_online_live_adapter_retract_race_boot(
+            OnlineRoom_resolveRawLiveAdapter(g_online.adapter.get()));
+        OnlineRoom_retractEngineRoomReady(
+            OnlineRoom_resolveRawLiveAdapter(g_online.adapter.get()));
+        g_online.adapter.reset();
+        g_online.initialized = false;
+    }
+    // SECOND DOOR into the same race: an adapter handed to
+    // teardownAdapterAsync moments before quit (an in-session Leave) is still
+    // being destroyed on its background thread. Wait -- BOUNDED -- for every
+    // in-flight teardown destructor to finish, then join the (now-returning)
+    // handles, so no teardown thread can outlive main. The bound is generous
+    // for a mesh/WebSocket close; if a pathological close exceeds it, detach
+    // the stragglers with a loud diagnostic (the pre-fix behavior, now
+    // impossible to hit silently) rather than hanging exit forever.
+    std::vector<std::thread> teardowns;
+    bool drained = true;
+    {
+        std::unique_lock<std::mutex> lock(sAdapterTeardowns.mutex);
+        drained = sAdapterTeardowns.done.wait_for(
+            lock, std::chrono::seconds(10),
+            [] { return sAdapterTeardowns.live == 0u; });
+        teardowns.swap(sAdapterTeardowns.threads);
+    }
+    for (std::thread &worker : teardowns) {
+        if (!worker.joinable()) continue;
+        if (drained) {
+            worker.join(); // destructor finished; join returns promptly
+        } else {
+            std::fprintf(stderr,
+                         "[online-room] app-exit: an adapter teardown exceeded "
+                         "the 10s drain bound; detaching it (exit proceeds)\n");
+            worker.detach();
+        }
+    }
 }
 
 void OnlineRoom_serviceLobbyLeave(LauncherState &state) {

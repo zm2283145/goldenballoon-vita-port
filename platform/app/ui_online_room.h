@@ -52,10 +52,13 @@ void OnlineRoom_serviceLobbyLeave(LauncherState &state);
 // signal-client worker threads whose callbacks keep firing until its destructor
 // joins them; leaving destruction to static teardown lets those threads race
 // destroyed globals (observed: an uncaught "mutex lock failed" SIGABRT when the
-// app was quit while a live room was up). Destroys the adapter INLINE on the
-// calling thread -- blocking on the join is fine at app exit -- after retracting
-// both engine registries, exactly like the async leave path. No-op without a
-// live adapter.
+// app was quit while a live room was up). Destroys the panel-owned adapter
+// INLINE on the calling thread -- blocking on the join is fine at app exit --
+// after retracting both engine registries, exactly like the async leave path,
+// AND drains the tracked background teardown threads an in-session Leave may
+// have spawned moments earlier (teardownAdapterAsync), joining them under a
+// bounded wait so no teardown destructor can outlive main. No-op with neither
+// a live adapter nor an in-flight teardown.
 void OnlineRoom_shutdownForAppExit();
 #endif  // MDKR_ENABLE_ONLINE_BETA
 
