@@ -1233,21 +1233,10 @@ void betaComposeStatusLine(const MdkrOnlineViewModel &model,
     }
     switch (model.kind) {
     case MDKR_ONLINE_VIEW_SELECTING: {
-        const bool everyoneReady = model.member_count >= 2u &&
-            model.ready_count == model.member_count;
-        const char *next;
-        if (everyoneReady) {
-            next = model.local_member_is_leader
-                ? "Everyone is ready — press Start Race"
-                : "Everyone is ready — waiting for the host to start";
-        } else if (model.member_count >= 2u &&
-                   model.ready_count == model.member_count - 1u &&
-                   model.primary.action ==
-                       MDKR_ONLINE_VIEW_ACTION_CHANGE_SELECTION) {
-            next = "Waiting for the other player to ready up";
-        } else {
-            next = "Choose your racer and vehicle, then Ready up";
-        }
+        // The game owns racer/vehicle/track select and readiness after pairing, so
+        // the strip is just the pre-hand-off "Room ready" (with the tournament
+        // series prefix when present) -- not the retired launcher Ready/Start copy.
+        const char *next = "Room ready";
         if (series[0] != '\0') {
             std::snprintf(out, size, "%s. %s", series, next);
         } else {
@@ -1301,7 +1290,7 @@ void drawBetaBootRampBreadcrumb(const MdkrOnlineViewModel &model) {
         {MDKR_ONLINE_VIEW_CONNECTING, "Connect"},
         {MDKR_ONLINE_VIEW_ROOM, "Room"},
         {MDKR_ONLINE_VIEW_PREFLIGHT, "Safety Check"},
-        {MDKR_ONLINE_VIEW_SELECTING, "Pick Racers"},
+        {MDKR_ONLINE_VIEW_SELECTING, "In Game"},
     };
     constexpr unsigned kCount = sizeof(kCrumbs) / sizeof(kCrumbs[0]);
     unsigned active = kCount;
@@ -1340,8 +1329,9 @@ void drawBetaStatusLine(const MdkrOnlineViewModel &model,
             ui::TextSubtleWrapped("%s", betaFailureCopy(model.failure));
         } else {
             drawBetaBootRampBreadcrumb(model);
-            ui::TextSubtle("%u of 2 players • %u ready", model.member_count,
-                           model.ready_count);
+            // The game owns readiness after pairing, so the strip drops the
+            // launcher-era ready counter; the member count stays.
+            ui::TextSubtle("%u of 2 players", model.member_count);
         }
     }
     ui::CardEnd();
@@ -1845,6 +1835,31 @@ void drawBetaResultsHandoff(const MdkrOnlineViewModel &model,
     drawBetaNativeResultsHandoffCard();
 }
 
+// The section header above every beta room surface. Post-pairing the SELECTING
+// surface is the private-room hand-off, so it reads "Private Room" + a subtitle
+// that names the native-takeover reality (the old "Pick Your Racer" / "Choose a
+// racer and vehicle" copy described the retired grid and contradicted the hand-off
+// card). The RESULTS surface keeps a SINGLE heading -- the section title -- with no
+// subtitle, since the strip line already states the outcome; stacking a subtitle
+// like "The trophy is decided." repeated a third same-meaning header. Every other
+// kind keeps its view-model title (animated "…") + explanation.
+void drawBetaSectionHeader(const MdkrOnlineViewModel &model) {
+    if (model.kind == MDKR_ONLINE_VIEW_SELECTING) {
+        ui::SectionHeader(
+            "Private Room",
+            "You're connected. Picking racers, tracks, and racing all happen "
+            "in the game.");
+        return;
+    }
+    char sectionTitle[128];
+    std::snprintf(sectionTitle, sizeof(sectionTitle), "%s",
+                  model.title != nullptr ? model.title : "");
+    betaAnimateEllipsis(sectionTitle, sizeof(sectionTitle));
+    ui::SectionHeader(sectionTitle, model.kind == MDKR_ONLINE_VIEW_RESULTS
+                                        ? nullptr
+                                        : model.explanation);
+}
+
 void drawBetaRoom(LauncherState &state) {
     g_online.adapter->service();
     MdkrOnlineViewModel model{};
@@ -1855,6 +1870,13 @@ void drawBetaRoom(LauncherState &state) {
         return;
     }
 
+    // The recovery view's "Play Here" secondary leaves the room for OFFLINE play
+    // (handleAction PLAY_HERE requests the Play tab), so label it by that effect.
+    if (model.kind == MDKR_ONLINE_VIEW_RECOVERY &&
+        model.secondary.action == MDKR_ONLINE_VIEW_ACTION_PLAY_HERE) {
+        model.secondary.label = "Play Offline Instead";
+    }
+
     // The authoritative lobby snapshot behind the roster strip / hand-off bodies.
     MdkrOnlineLobby lobby{};
     const bool haveLobby =
@@ -1862,15 +1884,7 @@ void drawBetaRoom(LauncherState &state) {
 
     announceView(model);
     drawBetaStatusLine(model, haveLobby ? &lobby : nullptr);
-    // Animate the section title's trailing "…" the same way the status line and
-    // invite placeholder do, so a "…"-terminated title (e.g. "Creating Private
-    // Room…") reads as motion instead of a lone static ellipsis on an otherwise
-    // animated screen. Non-ellipsis titles pass through untouched.
-    char sectionTitle[128];
-    std::snprintf(sectionTitle, sizeof(sectionTitle), "%s",
-                  model.title != nullptr ? model.title : "");
-    betaAnimateEllipsis(sectionTitle, sizeof(sectionTitle));
-    ui::SectionHeader(sectionTitle, model.explanation);
+    drawBetaSectionHeader(model);
 
     // The host's invite card renders through the CONNECTING create round trip
     // too, not just the open ROOM: the transport learns the fallback code
@@ -2101,11 +2115,13 @@ void betaFakeBuildSelectingStage(MdkrOnlineViewModel *model,
     if (!tournament) lobby->members[1].ready = true;  // friend ready; you choosing
     *haveLobby = true;
     model->kind = MDKR_ONLINE_VIEW_SELECTING;
-    model->title = tournament ? "Trophy Tournament" : "Pick Your Racer";
+    // The section header is drawn by drawBetaSectionHeader, which renders the
+    // native-takeover copy for the SELECTING kind; these fields mirror it so the
+    // model stays coherent with what shows.
+    model->title = "Private Room";
     model->explanation =
-        tournament
-            ? "Pick your cup, racer and vehicle in the game on the next screen."
-            : "Choose a racer and vehicle, then Ready up.";
+        "You're connected. Picking racers, tracks, and racing all happen in the "
+        "game.";
     model->primary = betaFakeControl(MDKR_ONLINE_VIEW_ACTION_READY, "Ready");
     model->secondary = betaFakeControl(
         MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS, "Connection Details");
@@ -2245,8 +2261,8 @@ bool betaFakeBuildStage(const char *stage, MdkrOnlineViewModel *model,
             "everyone compares a new phrase.";
         model->primary =
             betaFakeControl(MDKR_ONLINE_VIEW_ACTION_RETRY, "Reconnect Securely");
-        model->secondary =
-            betaFakeControl(MDKR_ONLINE_VIEW_ACTION_PLAY_HERE, "Play Here");
+        model->secondary = betaFakeControl(MDKR_ONLINE_VIEW_ACTION_PLAY_HERE,
+                                           "Play Offline Instead");
         model->cancel =
             betaFakeControl(MDKR_ONLINE_VIEW_ACTION_LEAVE_ROOM, "Leave Room");
         model->announcement = MDKR_ONLINE_ANNOUNCE_ASSERTIVE;
@@ -2292,11 +2308,7 @@ void drawBetaRoomFake(LauncherState &state) {
 
     announceView(model);
     drawBetaStatusLine(model, haveLobby ? &lobby : nullptr);
-    char sectionTitle[128];
-    std::snprintf(sectionTitle, sizeof(sectionTitle), "%s",
-                  model.title != nullptr ? model.title : "");
-    betaAnimateEllipsis(sectionTitle, sizeof(sectionTitle));
-    ui::SectionHeader(sectionTitle, model.explanation);
+    drawBetaSectionHeader(model);
 
     if (model.kind == MDKR_ONLINE_VIEW_CONNECTING) {
         drawBetaInviteCard(g_online.betaHostJourney);
