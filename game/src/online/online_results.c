@@ -767,21 +767,85 @@ static const MdkrResChooserOption *results_chooser_option(unsigned i) {
     return &sChooser[i];
 }
 
+/* ------------------------------------------------------------------------- *
+ * The ONE chooser-choice routing table: each committed "more races" choice ->
+ * (a) the SET_MODE the host publishes with its REMATCH and (b) the native screen
+ * the session re-fronts. results_publish_chooser_intent + the commit-log line read
+ * the mode column (via results_chooser_intent_mode); the session routing switch
+ * reads the refront column (via mdkr_online_results_choice_refront). Single source
+ * of truth -- the MdkrOnlineResultsChoice prose in online_results.h mirrors it.
+ * ------------------------------------------------------------------------- */
+typedef enum {
+    RES_CHOOSER_MODE_KEEP = 0,       /* REMATCH only, no SET_MODE (mode UNSET) */
+    RES_CHOOSER_MODE_TOGGLE,         /* SET_MODE single <-> tournament */
+    RES_CHOOSER_MODE_SET_TOURNAMENT  /* SET_MODE tournament */
+} ResChooserModeAction;
+
+typedef struct {
+    u8 modeAction; /* ResChooserModeAction: the SET_MODE the REMATCH carries */
+    u8 refront;    /* MdkrOnlineResultsRefront: the session re-front target */
+} ResChooserRoute;
+
+/* Indexed by MdkrOnlineResultsChoice. */
+static const ResChooserRoute sChooserRoutes[] = {
+    [MDKR_ONLINE_RESULTS_CHOICE_NONE] =
+        {RES_CHOOSER_MODE_KEEP, MDKR_ONLINE_RESULTS_REFRONT_SAME},
+    [MDKR_ONLINE_RESULTS_CHOICE_RACE_AGAIN] =
+        {RES_CHOOSER_MODE_KEEP, MDKR_ONLINE_RESULTS_REFRONT_SAME},
+    [MDKR_ONLINE_RESULTS_CHOICE_CHANGE_TRACK] =
+        {RES_CHOOSER_MODE_KEEP, MDKR_ONLINE_RESULTS_REFRONT_TRACKSELECT},
+    [MDKR_ONLINE_RESULTS_CHOICE_CHANGE_CUP] =
+        {RES_CHOOSER_MODE_KEEP, MDKR_ONLINE_RESULTS_REFRONT_TRACKSELECT},
+    [MDKR_ONLINE_RESULTS_CHOICE_CHANGE_MODE] =
+        {RES_CHOOSER_MODE_TOGGLE, MDKR_ONLINE_RESULTS_REFRONT_TRACKSELECT},
+    [MDKR_ONLINE_RESULTS_CHOICE_NEW_TOURNAMENT] =
+        {RES_CHOOSER_MODE_SET_TOURNAMENT, MDKR_ONLINE_RESULTS_REFRONT_TRACKSELECT},
+    [MDKR_ONLINE_RESULTS_CHOICE_CHANGE_CHAR] =
+        {RES_CHOOSER_MODE_KEEP, MDKR_ONLINE_RESULTS_REFRONT_CHARSELECT},
+    [MDKR_ONLINE_RESULTS_CHOICE_FINISH] =
+        {RES_CHOOSER_MODE_KEEP, MDKR_ONLINE_RESULTS_REFRONT_LEAVE},
+    [MDKR_ONLINE_RESULTS_CHOICE_JOINER_FOLLOW] =
+        {RES_CHOOSER_MODE_KEEP, MDKR_ONLINE_RESULTS_REFRONT_CHARSELECT},
+};
+
+/* The SET_MODE value a committed choice publishes with its REMATCH
+ * (MDKR_PARTY_LINK_MODE_UNSET == no SET_MODE). TOGGLE reads the current chooser
+ * mode. Consumed by both the intent publish and the commit-log line. */
+static u8 results_chooser_intent_mode(u8 choice) {
+    u8 action =
+        (choice < (u8) (sizeof(sChooserRoutes) / sizeof(sChooserRoutes[0])))
+            ? sChooserRoutes[choice].modeAction
+            : (u8) RES_CHOOSER_MODE_KEEP;
+    switch (action) {
+    case RES_CHOOSER_MODE_TOGGLE:
+        return (sRes.chooserMode == (u8) MDKR_ONLINE_SCREEN_MODE_TOURNAMENT)
+                   ? (u8) MDKR_ONLINE_SCREEN_MODE_SINGLE
+                   : (u8) MDKR_ONLINE_SCREEN_MODE_TOURNAMENT;
+    case RES_CHOOSER_MODE_SET_TOURNAMENT:
+        return (u8) MDKR_ONLINE_SCREEN_MODE_TOURNAMENT;
+    default:
+        return (u8) MDKR_PARTY_LINK_MODE_UNSET;
+    }
+}
+
+MdkrOnlineResultsRefront mdkr_online_results_choice_refront(
+    MdkrOnlineResultsChoice choice) {
+    if ((unsigned) choice >=
+        sizeof(sChooserRoutes) / sizeof(sChooserRoutes[0])) {
+        return MDKR_ONLINE_RESULTS_REFRONT_SAME;
+    }
+    return (MdkrOnlineResultsRefront) sChooserRoutes[choice].refront;
+}
+
 /* The host's committed intent for a more-races option: REMATCH always (return the
- * room to LOBBY), plus SET_MODE for the mode-changing options. Republished every
- * tick until the room leaves RESULTS (the convergence model results_publish_rematch
- * uses). A joiner never calls this (watch-only). */
+ * room to LOBBY), plus the table's SET_MODE for the mode-changing options.
+ * Republished every tick until the room leaves RESULTS (the convergence model
+ * results_publish_rematch uses). A joiner never calls this (watch-only). */
 static void results_publish_chooser_intent(u8 choice) {
     MdkrPartyLinkLocalIntent intent;
     mdkr_party_link_intent_init(&intent);
     intent.rematch_requested = 1u;
-    if (choice == (u8) MDKR_ONLINE_RESULTS_CHOICE_CHANGE_MODE) {
-        intent.mode = (sRes.chooserMode == MDKR_ONLINE_SCREEN_MODE_TOURNAMENT)
-                          ? (uint8_t) MDKR_ONLINE_SCREEN_MODE_SINGLE
-                          : (uint8_t) MDKR_ONLINE_SCREEN_MODE_TOURNAMENT;
-    } else if (choice == (u8) MDKR_ONLINE_RESULTS_CHOICE_NEW_TOURNAMENT) {
-        intent.mode = (uint8_t) MDKR_ONLINE_SCREEN_MODE_TOURNAMENT;
-    }
+    intent.mode = results_chooser_intent_mode(choice);
     mdkr_party_link_intent_publish(&intent);
 }
 
@@ -945,15 +1009,7 @@ static MdkrOnlineResultsResult results_chooser_tick(const MdkrPartyLinkSnapshot 
         }
         sRes.chooserCommitted = 1u;
         {
-            u8 mode = (uint8_t) MDKR_PARTY_LINK_MODE_UNSET;
-            if (choice == (u8) MDKR_ONLINE_RESULTS_CHOICE_CHANGE_MODE) {
-                mode = (sRes.chooserMode == MDKR_ONLINE_SCREEN_MODE_TOURNAMENT)
-                           ? (uint8_t) MDKR_ONLINE_SCREEN_MODE_SINGLE
-                           : (uint8_t) MDKR_ONLINE_SCREEN_MODE_TOURNAMENT;
-            } else if (choice ==
-                       (u8) MDKR_ONLINE_RESULTS_CHOICE_NEW_TOURNAMENT) {
-                mode = (uint8_t) MDKR_ONLINE_SCREEN_MODE_TOURNAMENT;
-            }
+            u8 mode = results_chooser_intent_mode(choice);
             fprintf(stderr,
                     "[online-results] chooser: committed option=%s choice=%u "
                     "intent{rematch=1 mode=%u}\n",

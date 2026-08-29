@@ -1576,11 +1576,8 @@ void mdkr_online_session_tick(s32 updateRate) {
                  * BYTE-FOR-BYTE unchanged. */
                 MdkrOnlineResultsChoice choice = mdkr_online_results_choice();
                 if (choice != MDKR_ONLINE_RESULTS_CHOICE_NONE) {
-                    switch (choice) {
-                    case MDKR_ONLINE_RESULTS_CHOICE_CHANGE_TRACK:
-                    case MDKR_ONLINE_RESULTS_CHOICE_CHANGE_CUP:
-                    case MDKR_ONLINE_RESULTS_CHOICE_CHANGE_MODE:
-                    case MDKR_ONLINE_RESULTS_CHOICE_NEW_TOURNAMENT:
+                    switch (mdkr_online_results_choice_refront(choice)) {
+                    case MDKR_ONLINE_RESULTS_REFRONT_TRACKSELECT:
                         /* re-front TRACKSELECT: the host re-locks the new track/cup/
                          * mode over SET_CONFIG_TRACK / SET_CUP / SET_MODE (SET_CUP +
                          * SET_MODE reset the tournament series to round 1). */
@@ -1594,8 +1591,7 @@ void mdkr_online_session_tick(s32 updateRate) {
                                 "%s)\n",
                                 online_session_chooser_name(choice));
                         break;
-                    case MDKR_ONLINE_RESULTS_CHOICE_CHANGE_CHAR:
-                    case MDKR_ONLINE_RESULTS_CHOICE_JOINER_FOLLOW:
+                    case MDKR_ONLINE_RESULTS_REFRONT_CHARSELECT:
                         /* re-front CHARSELECT (-> VEHICLE -> TRACKSELECT): change
                          * character + vehicle between races. The display-only joiner
                          * follows here too -- CHARSELECT is the safe universal
@@ -1611,7 +1607,7 @@ void mdkr_online_session_tick(s32 updateRate) {
                                 "%s)\n",
                                 online_session_chooser_name(choice));
                         break;
-                    case MDKR_ONLINE_RESULTS_CHOICE_RACE_AGAIN:
+                    case MDKR_ONLINE_RESULTS_REFRONT_SAME:
                     default:
                         /* re-race the SAME config. T5: the in-process single-race
                          * re-cycle re-enters LOBBY_WAIT and, because there is NO

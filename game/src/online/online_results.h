@@ -35,29 +35,32 @@ typedef enum MdkrOnlineResultsResult {
     MDKR_ONLINE_RESULTS_LEAVE     /* local player backed out (the LEFT return) */
 } MdkrOnlineResultsResult;
 
-/* T4 -- the native "more races" chooser. After a race the terminal RESULTS/
- * STANDINGS screen no longer offers a binary continue/leave: the HOST picks one of
- * the full retail replay options and the session routes back to the right native
- * screen. Each option maps to the EXISTING party_link reverse-feed intents (REMATCH
- * + SET_MODE) already reduced by the launcher lobby -- no new reducer command:
- *   RACE_AGAIN     -> REMATCH (same config: single re-races the same track; a
- *                     finished tournament REMATCH resets the cup series to round 1)
- *   CHANGE_TRACK   -> REMATCH, then re-front native TRACKSELECT (host locks a new
- *                     single-race track over the SET_CONFIG_TRACK feed)
- *   CHANGE_CUP     -> REMATCH, then re-front native TRACKSELECT (host locks a new
- *                     cup over the SET_CUP feed -- SET_CUP resets the series)
- *   CHANGE_MODE    -> REMATCH + SET_MODE(toggled single<->tournament), re-front
- *                     TRACKSELECT
- *   NEW_TOURNAMENT -> REMATCH + SET_MODE(tournament), re-front TRACKSELECT (the
- *                     host locks a cup -> the series resets from round 1)
- *   CHANGE_CHAR    -> REMATCH, then re-front native CHARSELECT (-> VEHICLE ->
- *                     TRACKSELECT: change character + vehicle between races)
- *   FINISH         -> the LEAVE return (the session detours to the champion
- *                     CEREMONY for a finished tournament, else returns to the room)
+/* The native "more races" chooser. After a race the terminal RESULTS / STANDINGS
+ * screen offers the full retail replay menu instead of a binary continue/leave: the
+ * HOST picks an option and the session routes back to the right native screen. Each
+ * option maps to the EXISTING party_link reverse-feed intents (REMATCH + SET_MODE)
+ * already reduced by the launcher lobby -- no new reducer command. That mapping is
+ * ONE table (sChooserRoutes in online_results.c), consumed by the intent publish,
+ * the commit-log line and the session routing switch (via
+ * mdkr_online_results_choice_refront); keep this prose in step with that table:
+ *   RACE_AGAIN     REMATCH, same config       -> re-race in process (single re-races
+ *                                                the same track; a finished
+ *                                                tournament REMATCH resets to round 1)
+ *   CHANGE_TRACK   REMATCH                     -> TRACKSELECT (host locks a new track
+ *                                                over the SET_CONFIG_TRACK feed)
+ *   CHANGE_CUP     REMATCH                     -> TRACKSELECT (host locks a new cup;
+ *                                                SET_CUP resets the series)
+ *   CHANGE_MODE    REMATCH + SET_MODE toggle   -> TRACKSELECT (single<->tournament)
+ *   NEW_TOURNAMENT REMATCH + SET_MODE tourn.   -> TRACKSELECT (series resets to
+ *                                                round 1)
+ *   CHANGE_CHAR    REMATCH                     -> CHARSELECT (-> VEHICLE ->
+ *                                                TRACKSELECT: change char + vehicle)
+ *   FINISH         no publish                  -> LEAVE (champion CEREMONY for a
+ *                                                finished tournament, else the room)
  * JOINER_FOLLOW is not a host option: the joiner is display-only (it renders the
- * "more races" mirror + "waiting for host"), and once the host's authoritative
- * choice drives the room out of RESULTS the joiner reports this so the session
- * re-fronts its own native selection. */
+ * "more races" mirror + "waiting for host") and, once the host's authoritative
+ * choice drives the room out of RESULTS, follows into CHARSELECT (the safe universal
+ * re-selection entry that mirrors the host's config downstream). */
 typedef enum MdkrOnlineResultsChoice {
     MDKR_ONLINE_RESULTS_CHOICE_NONE = 0, /* not the chooser (the pre-existing paths) */
     MDKR_ONLINE_RESULTS_CHOICE_RACE_AGAIN,
@@ -69,6 +72,15 @@ typedef enum MdkrOnlineResultsChoice {
     MDKR_ONLINE_RESULTS_CHOICE_FINISH,
     MDKR_ONLINE_RESULTS_CHOICE_JOINER_FOLLOW
 } MdkrOnlineResultsChoice;
+
+/* Where the session re-fronts after a committed chooser choice -- the routing column
+ * of sChooserRoutes (online_results.c), read by the session's post-ADVANCE switch. */
+typedef enum MdkrOnlineResultsRefront {
+    MDKR_ONLINE_RESULTS_REFRONT_SAME = 0,    /* re-race the same config (RACE_AGAIN) */
+    MDKR_ONLINE_RESULTS_REFRONT_TRACKSELECT, /* CHANGE_TRACK/CUP/MODE, NEW_TOURNAMENT */
+    MDKR_ONLINE_RESULTS_REFRONT_CHARSELECT,  /* CHANGE_CHAR, JOINER_FOLLOW */
+    MDKR_ONLINE_RESULTS_REFRONT_LEAVE        /* FINISH (returns LEAVE, not ADVANCE) */
+} MdkrOnlineResultsRefront;
 
 /* Load the screen's borrowed game assets (portraits + fonts) and reset the local
  * screen state. `isFinalRace` is the session's knowledge that no further race
@@ -112,6 +124,12 @@ u8 mdkr_online_results_chooser_test_active(void);
  * (the tournament round re-cycle / scripted soak), which the session must handle
  * exactly as before. */
 MdkrOnlineResultsChoice mdkr_online_results_choice(void);
+
+/* The native screen the session re-fronts for a committed chooser choice (the
+ * routing column of sChooserRoutes). NONE / unknown -> SAME (re-race the same
+ * config), matching the session switch's historical default. */
+MdkrOnlineResultsRefront mdkr_online_results_choice_refront(
+    MdkrOnlineResultsChoice choice);
 
 #ifdef __cplusplus
 }
