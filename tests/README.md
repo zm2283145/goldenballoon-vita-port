@@ -1564,6 +1564,29 @@ rollback race (`loadedTrack=5`). This is the descriptor-less-begin + race-1
 readiness-gate proof (never a NULL/stale descriptor deref). Default
 `--build build-beta`.
 
+`check_online_lobby_unconfigured.py` (run-checks registered) is the PRODUCTION
+ROOM SHAPE regression gate for the two-peer cloud CHARSELECT wedge. The
+lobby-start lane's room carries a track-5 pre-config whose only purpose is to
+"unlock READY at SELECTING"; the REAL production pairing creates a FRESH
+single-race room with NO configured track, and on that shape the SELECTING view
+gates READY behind a track VOTE the native screens never cast -- so the first
+real two-process cloud run wedged at CHARSELECT forever (seat character
+converged, `seat.ready` never latched, stale-retry churn). This lane re-runs the
+same descriptor-less native flow with `MDKR_APP_TEST_ONLINE_UNCONFIGURED=1` (the
+room builder SKIPS the pre-config, witnessed) and
+`MDKR_APP_TEST_ONLINE_ROOM_LATENCY=3` (the loopback room channel gains 3 pumps
+of latency per leg with the State broadcast one pump SLOWER than a
+CommandResult -- the real transport's ordering, which starves a blind stale
+retry of the fresh revision). Asserts the full CHARSELECT -> VEHICLESELECT ->
+TRACKSELECT -> deferred/armed/booted chain with the native TRACKSELECT's
+`SET_CONFIG_TRACK=3` as the room's FIRST-EVER config and race 1 booting on
+track 3. The unit-level twin is `mdkr_online_live_adapter_test --latency`
+(tests/test_online_live_adapter.cpp, `online_live_adapter` ctest): two REAL
+live adapters + per-endpoint replicas of the reverse-feed pump over a
+latency/ordering room double, asserting bounded both-ready convergence, ready
+STAYING latched, no redundant accepted-SET churn, and the host lock + START
+reaching LOADING. Default `--build build-beta`.
+
 `tools/online/check_online_native_flow_cloud.py` (MANUAL network lane -- NOT in
 `run_online_checks.py`'s default sweep; needs live Wi-Fi + the deployed
 party.goldenballoon.net service; run standalone, never two cloud runs concurrent)

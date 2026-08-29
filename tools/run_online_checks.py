@@ -61,6 +61,9 @@ LANES = (
     "check_online_joiner_terminal.py",      # exit-gate C1 no-seam joiner proof
     "check_online_ceremony.py",
     "check_online_lobby_start.py",
+    "check_online_lobby_unconfigured.py",  # PRODUCTION room shape: no pre-config
+                                           #  + latency room channel (the two-peer
+                                           #  cloud CHARSELECT-wedge regression gate)
     "check_online_lobby_single_endpoint.py",
     "check_online_room_ready_rearm.py",
     "check_online_rearm_third.py",          # 3 consecutive tournaments: re-arm repeatable

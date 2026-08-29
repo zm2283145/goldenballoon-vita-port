@@ -1100,9 +1100,28 @@ struct LoopbackMatchRoom {
     }
 };
 
+/* Test-only room-channel latency (MDKR_APP_TEST_ONLINE_ROOM_LATENCY, in PUMPS
+ * == engine frames): with N > 0 the loopback room stops being synchronous --
+ * a submitted command APPLIES N pumps later, its CommandResult returns N pumps
+ * after that, and a State broadcast lands one pump LATER STILL than a result
+ * (the production ordering: the HTTP command result beats the WS state that
+ * explains a concurrent peer's revision bump). This is what lets an in-process
+ * lane reproduce the real-cloud optimistic-revision interleaving the two-peer
+ * capstone drowned in. Unset/0 keeps the historical synchronous behavior
+ * byte-for-byte (the default lanes are unchanged). Clamped to <= 30. */
+static unsigned loopbackRoomLatencyPumps(void) {
+    const char *e = std::getenv("MDKR_APP_TEST_ONLINE_ROOM_LATENCY");
+    if (e == nullptr || e[0] == '\0') return 0u;
+    char *end = nullptr;
+    const unsigned long v = std::strtoul(e, &end, 10);
+    if (end == e || *end != '\0' || v > 30u) return 0u;
+    return static_cast<unsigned>(v);
+}
+
 class LoopbackRoomTransport final : public MdkrOnlineRoomTransport {
 public:
-    explicit LoopbackRoomTransport(LoopbackMatchRoom *room) : room_(room) {}
+    explicit LoopbackRoomTransport(LoopbackMatchRoom *room)
+        : room_(room), latency_(loopbackRoomLatencyPumps()) {}
 
     bool beginCreate(const MdkrOnlineCompatibilityV1 &compat,
                      unsigned seatCount) override {
@@ -1127,6 +1146,12 @@ public:
         return true;
     }
     bool submitCommand(const MdkrOnlineCommand &command) override {
+        if (latency_ != 0u) {
+            /* Request leg: the command reaches the room `latency_` pumps from
+             * now (applied in pump(), in submit order). */
+            pendingCmds_.push_back(PendingCommand{command, pumps_ + latency_});
+            return true;
+        }
         MdkrOnlineRoomEvent ev;
         ev.type = MdkrOnlineRoomEvent::Type::CommandResult;
         ev.step = room_->command(command);
@@ -1136,6 +1161,7 @@ public:
     }
     void pump(std::vector<MdkrOnlineRoomEvent> &out) override {
         out.clear();
+        ++pumps_;
         if (kind_ != Kind::None && !ready_) {
             MdkrOnlineRoomEvent ev;
             const uint64_t ep = kind_ == Kind::Create
@@ -1158,6 +1184,40 @@ public:
             out.push_back(ev);
             return;
         }
+        if (latency_ != 0u) {
+            /* Apply due commands to the shared room; their results ride the
+             * response leg (another `latency_` pumps). */
+            while (!pendingCmds_.empty() && pendingCmds_.front().dueAt <= pumps_) {
+                const MdkrOnlineCommand c = pendingCmds_.front().command;
+                pendingCmds_.pop_front();
+                MdkrOnlineRoomEvent ev;
+                ev.type = MdkrOnlineRoomEvent::Type::CommandResult;
+                ev.step = room_->command(c);
+                ev.commandId = c.command_id;
+                deferred_.push_back(Deferred{ev, pumps_ + latency_});
+            }
+            /* Broadcast leg: one pump SLOWER than a result, so a stale
+             * CommandResult can (and does) beat the State explaining it. */
+            if (ready_ && room_->lobby.revision != lastRevision_) {
+                MdkrOnlineRoomEvent ev;
+                ev.type = MdkrOnlineRoomEvent::Type::State;
+                ev.lobby = room_->lobby;
+                ev.haveLobby = true;
+                lastRevision_ = room_->lobby.revision;
+                deferred_.push_back(Deferred{ev, pumps_ + latency_ + 1u});
+            }
+            /* Deliver everything due; a due result must never be held behind
+             * a not-yet-due state (that inversion is the point). */
+            for (auto it = deferred_.begin(); it != deferred_.end();) {
+                if (it->dueAt <= pumps_) {
+                    out.push_back(it->event);
+                    it = deferred_.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            return;
+        }
         if (ready_ && room_->lobby.revision != lastRevision_) {
             MdkrOnlineRoomEvent ev;
             ev.type = MdkrOnlineRoomEvent::Type::State;
@@ -1173,13 +1233,25 @@ public:
 
 private:
     enum class Kind { None, Create, Join };
+    struct PendingCommand {
+        MdkrOnlineCommand command;
+        unsigned dueAt;
+    };
+    struct Deferred {
+        MdkrOnlineRoomEvent event;
+        unsigned dueAt;
+    };
     LoopbackMatchRoom *room_;
+    unsigned latency_;
+    unsigned pumps_ = 0u;
     Kind kind_ = Kind::None;
     MdkrOnlineCompatibilityV1 compat_{};
     unsigned seats_ = 1u;
     bool ready_ = false;
     uint32_t lastRevision_ = 0u;
     std::deque<MdkrOnlineRoomEvent> queue_;
+    std::deque<PendingCommand> pendingCmds_;
+    std::deque<Deferred> deferred_;
 };
 
 class LoopbackHub;
@@ -1811,6 +1883,21 @@ MdkrOnlineTestLoopbackRace *OnlineRoom_makeTestLobbyStartRoom(std::string *error
                      "round track, native TRACKSELECT rides + STARTs it)\n",
                      lobbyCfg.cup,
                      static_cast<unsigned>(mdkr_online_cup_track(lobbyCfg.cup, 0u)));
+    } else if (std::getenv("MDKR_APP_TEST_ONLINE_UNCONFIGURED") != nullptr) {
+    /* PRODUCTION-SHAPE room (test-only): skip the READY-unlock pre-config
+     * entirely, leaving a FRESH single-race room with NO configured track --
+     * exactly what the interactive launcher's pairing produces over the real
+     * cloud (nothing in AUTOPAIR or the human flow ever sets a config track
+     * before the native screens front). This is the room shape whose first
+     * real two-process run wedged at CHARSELECT: with configured_track unset
+     * the SELECTING view gates READY behind a track VOTE the native screens
+     * never cast, so the reverse-feed READY was refused locally forever. The
+     * unconfigured lane drives THIS shape end-to-end; the default lanes keep
+     * the historical pre-config below, byte-for-byte. */
+    std::fprintf(stderr,
+                 "[online-lobby-start] pre-config SKIPPED (unconfigured "
+                 "single-race room, no configured track -- the production "
+                 "capstone shape; READY must unlock on char+vehicle alone)\n");
     } else {
     /* Configure a fixed single-race track (Ancient Lake, id 5, mask 0x07 -- legal
      * for Car) so the SELECTING view offers READY directly instead of a track VOTE.
