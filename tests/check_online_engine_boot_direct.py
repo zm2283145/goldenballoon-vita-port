@@ -79,13 +79,14 @@ CONFIG_TRACK_RE = re.compile(
     re.MULTILINE,
 )
 
-# The blend-pass route-opacity witness (armed below): one line per default-arm
-# pickup (weapon balloon / banana) that reached the transparent-pass route store,
-# tagged STALE when the cached opacity differed from the value
-# check_if_in_draw_range wrote for THIS viewport (another canonical seat's fade).
+# The route-opacity witness (armed below): one line per default-arm pickup (weapon
+# balloon / banana) that reached a viewport route store, tagged STALE when the
+# cached render opacity OR the cached visible render-gate differed -- in either
+# direction -- from the value check_if_in_draw_range wrote for THIS viewport
+# (another canonical seat's distance fade / obstruction).
 ROUTE_OPACITY_RE = re.compile(
-    r"^\[route-opacity-witness\] pickup behavior=\d+ stored=\d+ fresh=\d+"
-    r"( STALE)?$",
+    r"^\[route-opacity-witness\] pickup behavior=\d+ storedOpacity=-?\d+ "
+    r"freshOpacity=-?\d+ storedVisible=-?\d+ freshVisible=-?\d+( STALE)?$",
     re.MULTILINE,
 )
 
