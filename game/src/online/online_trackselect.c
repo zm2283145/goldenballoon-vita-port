@@ -755,10 +755,10 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
         s32 cx = (s32) c * TS_COL_W + (TS_COL_W / 2);
         bool onFocus = (c == focusWorld);
         bool cupLocked = (effMode == MDKR_ONLINE_SCREEN_MODE_TOURNAMENT && lockedCup == c);
-        /* T9 NIT-3 (trackselect "LOCKED while browsing"): the SINGLE-race host can
+        /* Trackselect "LOCKED while browsing": the SINGLE-race host can
          * lock a track then move the cursor to PREVIEW another world without locking
          * a new one (the lock is sticky -- START still uses it, which is truthful).
-         * The T8 capture caught exactly that scripted state ("WHALE BAY LOCKED" while
+         * A capture caught exactly that scripted state ("WHALE BAY LOCKED" while
          * the cursor browsed FFL) and it read as a bug because nothing on-screen tied
          * the status to a world. It is NOT a 2-endpoint bug (the joiner's focus ALWAYS
          * follows the lock, so its view is always coherent), but to make the host view
@@ -1084,7 +1084,7 @@ void mdkr_online_trackselect_enter(void) {
     }
     trackselect_witness_tracks();
 
-    /* T7b: reveal from black (retail fade cadence) + keep the retail menu music
+    /* reveal from black (retail fade cadence) + keep the retail menu music
      * (isolation-safe primitive borrows -- see online_screen_util.h). */
     mdkr_online_screen_fade_in_from_black();
     mdkr_online_screen_menu_music();

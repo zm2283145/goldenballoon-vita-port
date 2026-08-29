@@ -103,8 +103,8 @@
 #define CS_PORTRAIT_HALF 22 /* ~half a portrait, for centering labels */
 #define CS_TAKEN_FLASH_TICKS 45u /* "TAKEN BY x" flash duration (~1.5s @ 30Hz) */
 /* Portrait luminance for a racer the rival has LOCKED (confirmed). ~0.28 of full:
- * an unmistakable greyed/"unavailable" drop (T9 NIT-1 -- the T8 gate read the old
- * 80 as merely "a bit darker"). Prim-colour modulation cannot desaturate a decoded
+ * an unmistakable greyed/"unavailable" drop (72 rather than the old 80, which read
+ * as merely "a bit darker"). Prim-colour modulation cannot desaturate a decoded
  * portrait, so a hard luminance drop + the band-backed TAKEN/RIVAL labels are the
  * three redundant cues. The render applies this drop; the witness reports the
  * luminance it ACTUALLY handed the blit (see sTakenTileDrawLum), NOT this constant,
@@ -459,7 +459,7 @@ static void charselect_draw_label(u8 onlineId, s32 dy, s32 fontId, char *text,
     s32 cx = CS_GRID_X + col * CS_CELL_W + CS_PORTRAIT_HALF;
     s32 y = CS_GRID_Y + row * CS_CELL_H + dy;
     /* Route through the shared scrim helper so the grid labels get the SAME
-     * legibility halo as every other native online screen (T7b) -- they sit over
+     * legibility halo as every other native online screen -- they sit over
      * the bright hub sky and were the one text block still bypassing it (a raw
      * draw_text). */
     mdkr_online_screen_text(cx, y, fontId, text, ALIGN_MIDDLE_CENTER, r, g, b);
@@ -763,7 +763,7 @@ void mdkr_online_charselect_enter(void) {
     /* Neutral hub sky (Dino Domain) -- charselect is world-agnostic. */
     mdkr_online_screen_backdrop((u8) MDKR_ONLINE_SKY_WORLD_NEUTRAL);
 
-    /* T7b: reveal this screen from black (retail fade cadence) and start the
+    /* reveal this screen from black (retail fade cadence) and start the
      * retail menu music. Charselect is the FIRST native screen after the launcher
      * hand-off, so its reveal is also what makes that hand-off read as one
      * continuous motion instead of a black-frame jump. Isolation-safe primitive

@@ -170,7 +170,7 @@ typedef struct MdkrOnlineSessionState {
      * instant a remote reappears (or the room leaves LOBBY). On a sustained absence
      * the session notes LEFT + exits. Inert for a descriptor-first begin. */
     u16 remoteAbsentTicks;
-    /* SINGLE-RACE "Race Again" auto-start (T5). The host committed RACE AGAIN
+    /* SINGLE-RACE "Race Again" auto-start. The host committed RACE AGAIN
      * (same config) on the RESULTS chooser, so the session re-entered LOBBY_WAIT
      * with NO native selection screen to re-Ready + host-START the next race. While
      * set, the live re-wait auto-publishes a reverse-feed intent each tick -- keep
@@ -497,7 +497,7 @@ static u8 online_session_feed_isfinal(void) {
     return 0u;
 }
 
-/* SINGLE-RACE "Race Again" auto-start publish (T5). Publish a reverse-feed
+/* SINGLE-RACE "Race Again" auto-start publish. Publish a reverse-feed
  * intent, from the LOBBY_WAIT re-wait, that re-cycles the room to a fresh race
  * with NO human input: keep the local seat's persisted character + vehicle (so
  * the launcher planner's CHOOSE_CHARACTER / CHOOSE_VEHICLE stay CONVERGED no-ops),
@@ -902,7 +902,7 @@ static bool online_session_detect_remote_vacated(const char *where) {
  *     which resume_results below preserves by returning false when no finish was
  *     captured. */
 
-/* THE PEER-LOSS CLEAN RETURN -- the P0 crash fix (race-start AND mid-race).
+/* THE PEER-LOSS CLEAN RETURN -- the crash fix (race-start AND mid-race).
  *
  * The engine's rollback runtime (rollback_game_runtime.c) reports a RECOVERABLE
  * online-input starvation from TWO tick-loop sites:
@@ -1145,7 +1145,7 @@ void mdkr_online_session_tick(s32 updateRate) {
                             break;
                         }
                     }
-                    /* SINGLE-RACE "Race Again" auto-start (T5). No native screen
+                    /* SINGLE-RACE "Race Again" auto-start. No native screen
                      * re-fronted for RACE AGAIN, so drive the re-Ready + host-START
                      * from here: while the room is still in LOBBY, publish the
                      * keep-selection/ready/start intent each tick (the launcher's
@@ -1326,7 +1326,7 @@ void mdkr_online_session_tick(s32 updateRate) {
                 sCharselectLeaveWarned = 1u;
                 fprintf(stderr,
                         "[online-charselect] leave requested; engine->launcher "
-                        "return is PD-T6, staying on screen\n");
+                        "return handled by the launcher, staying on screen\n");
             }
         }
         break;
@@ -1566,7 +1566,7 @@ void mdkr_online_session_tick(s32 updateRate) {
              * screen forever. */
             mdkr_online_results_exit();
             {
-                /* T4 "more races" chooser routing. When the host committed a replay
+                /* "more races" chooser routing. When the host committed a replay
                  * option (or a joiner followed the host), the screen returned ADVANCE
                  * only once its REMATCH drove the room out of RESULTS -> LOBBY. Route
                  * back to the right native screen so the host re-locks the new config
@@ -1609,7 +1609,7 @@ void mdkr_online_session_tick(s32 updateRate) {
                         break;
                     case MDKR_ONLINE_RESULTS_REFRONT_SAME:
                     default:
-                        /* re-race the SAME config. T5: the in-process single-race
+                        /* re-race the SAME config. The in-process single-race
                          * re-cycle re-enters LOBBY_WAIT and, because there is NO
                          * native selection screen to drive the re-Ready + host-START,
                          * arms replayAutoStart so the live re-wait auto-publishes that

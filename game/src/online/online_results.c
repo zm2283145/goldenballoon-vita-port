@@ -91,7 +91,7 @@ extern char *gRacePlacementsArray[8];
 
 /* Visible stages of the post-race screen. A single race shows RESULTS; a
  * tournament walks RESULTS -> STANDINGS. When the native "more races" chooser is
- * armed (real play / the T4 lane) the SESSION DECISION POINT (a single race's
+ * armed (real play / the chooser lane) the SESSION DECISION POINT (a single race's
  * RESULTS, or a tournament's FINAL standings) hands to the CHOOSER stage instead
  * of the old terminal hold -- the full retail replay menu (online_results.h). */
 #define RES_STAGE_RESULTS 0u
@@ -211,7 +211,7 @@ typedef struct MdkrOnlineResultsState {
     u32 stageTicks;   /* countdown accumulator for the current stage */
     u32 pulseTicks;   /* free-running (drives the terminal-hold pulse, never reset) */
     u8 placements[RES_SLOTS]; /* THIS race's canonical-slot -> placement (poll) */
-    /* T4 "more races" chooser (host-driven; joiner mirror). */
+    /* "more races" chooser (host-driven; joiner mirror). */
     u8 chooserEnabled;   /* the chooser arms at the session decision point */
     u8 chooserMode;      /* forward-feed mode cached at chooser entry (option list) */
     u8 chooserCursor;    /* the host's highlighted option index */
@@ -241,7 +241,7 @@ static u8 results_joiner_finish_departed(u32 stageTicks);
 static u8 results_joiner_terminal_seam(void);        /* no-seam proof */
 static u8 results_remote_vacate_final_probe(void);   /* probe */
 static u8 results_resident_remote_wins(void);        /* champion-on-disconnect */
-/* T4 chooser seam + stage (test seam resolves at the bottom). */
+/* chooser seam + stage (test seam resolves at the bottom). */
 static s8 results_chooser_seam_select(void);         /* -1 none / 0..N option idx */
 static void results_chooser_seam_mark_fired(void);   /* one-shot scripted select */
 static u8 results_chooser_seam_show(void);           /* display-only (PNG capture) */
@@ -635,7 +635,7 @@ void mdkr_online_results_enter(u8 isFinalRace, u8 raceIndex, u8 chooserEnabled) 
             mdkr_online_screen_sky_world_for_snapshot(&bg, haveBg));
     }
 
-    /* T7b: reveal from black (retail fade cadence) + restore the retail menu music
+    /* reveal from black (retail fade cadence) + restore the retail menu music
      * for the post-race screen (the race level -- and its track music -- was
      * unloaded on RESULTS entry). Isolation-safe primitive borrows -- see
      * online_screen_util.h. */
@@ -651,7 +651,7 @@ void mdkr_online_results_enter(u8 isFinalRace, u8 raceIndex, u8 chooserEnabled) 
             (unsigned) sRes.placements[1], (unsigned) sRes.placements[2],
             (unsigned) sRes.placements[3]);
     /* chooser status on its OWN line so existing lanes' enter-line regexes are
-     * unaffected; the T4 lane reads this + the "chooser: fronted" line. */
+     * unaffected; the chooser lane reads this + the "chooser: fronted" line. */
     fprintf(stderr, "[online-results] enter: chooser=%u\n",
             (unsigned) sRes.chooserEnabled);
 }
@@ -675,7 +675,7 @@ void mdkr_online_results_exit(void) {
 typedef struct ResInput {
     u8 advanceEdge;
     u8 bEdge;
-    u8 upEdge;   /* T4 chooser navigation (dpad + stick) */
+    u8 upEdge;   /* chooser navigation (dpad + stick) */
     u8 downEdge;
 } ResInput;
 
@@ -749,7 +749,7 @@ static void results_publish_rematch(void) {
 }
 
 /* ======================================================================== *
- * T4 -- native "more races" chooser (host-driven; joiner mirror)
+ * native "more races" chooser (host-driven; joiner mirror)
  *
  * At the session decision point (a single race's RESULTS, or a tournament's FINAL
  * standings) the terminal hands to this menu instead of the old binary
@@ -877,7 +877,7 @@ static void results_chooser_witness(void) {
 }
 
 /* Chooser text. The BOLD 8-direction black legibility halo this used to draw
- * locally was promoted (T7b) into the shared mdkr_online_screen_text scrim, which
+ * locally was promoted into the shared mdkr_online_screen_text scrim, which
  * now applies it uniformly to EVERY native online screen -- so this is a thin
  * forwarder, kept only so the chooser's many call sites read unchanged and never
  * double-halo (which a local outline + the shared scrim would now do). */
@@ -1136,7 +1136,7 @@ MdkrOnlineResultsResult mdkr_online_results_tick(s32 updateRate) {
     }
     tournament = haveSnap && snap.mode == MDKR_ONLINE_SCREEN_MODE_TOURNAMENT;
 
-    /* T4: once the native "more races" chooser has been fronted it OWNS the tick
+    /* once the native "more races" chooser has been fronted it OWNS the tick
      * (its own render + host list / joiner mirror + intent publish + routing). */
     if (sRes.stage == RES_STAGE_CHOOSER) {
         return results_chooser_tick(&snap, haveSnap, localSeat, updateRate);
@@ -1182,9 +1182,9 @@ MdkrOnlineResultsResult mdkr_online_results_tick(s32 updateRate) {
     }
     sRes.prevSecs = (u8) (secs > 255u ? 255u : secs);
 
-    /* T4: at the SESSION DECISION POINT hand off to the native "more races" chooser
+    /* at the SESSION DECISION POINT hand off to the native "more races" chooser
      * instead of the old terminal hold / single-race auto-advance. Armed only for
-     * real play + the dedicated T4 lane (sRes.chooserEnabled); every pre-existing
+     * real play + the dedicated chooser lane (sRes.chooserEnabled); every pre-existing
      * scripted/loopback lane has it OFF and reaches the historical terminal + stage
      * logic below byte-for-byte unchanged. A tournament reaches the chooser ONLY at
      * its FINAL standings (non-final rounds still auto-REMATCH to the next round
@@ -1447,10 +1447,10 @@ static void results_test_capture(void) {
     sTestRoom.seats[0].is_host = 1u;
     sTestRoom.seats[0].connected = 1u;
     sTestRoom.seats[0].character_id = sTestSeatChar[0];
-    /* T9 NIT-3 (RESULTS "YOU/YOU"): give the local seat a REALISTIC placeholder
+    /* RESULTS "YOU/YOU": give the local seat a REALISTIC placeholder
      * name ("P1") -- NOT the literal "YOU". The render correctly tags the local
      * player's OWN row with a " [YOU]" marker (retail-authentic), so a seat literally
-     * named "YOU" rendered the confusing "YOU [YOU]" doubling the T8 gate flagged.
+     * named "YOU" rendered the confusing "YOU [YOU]" doubling the acceptance gate flagged.
      * That doubling was ALWAYS a test-harness artifact of the placeholder name (the
      * results witness never emits names, so nothing asserts on it), NOT a 2-endpoint
      * bug: in real play the seat carries the launcher-provided player name and the
@@ -1461,7 +1461,7 @@ static void results_test_capture(void) {
     sTestRoom.seats[1].connected = 1u;
     sTestRoom.seats[1].character_id = sTestSeatChar[1];
     memcpy(sTestRoom.seats[1].name, "RIVAL", sizeof("RIVAL"));
-    /* T4 SINGLE-race chooser variant (env MDKR_TEST_ONLINE_RESULTS_CHOOSER=single*):
+    /* SINGLE-race chooser variant (env MDKR_TEST_ONLINE_RESULTS_CHOOSER=single*):
      * publish a SINGLE-race room (no cup, a configured track, no points) so the
      * chooser fronts its SINGLE list (CHANGE TRACK etc.). Inert otherwise, so the
      * tournament resident soak + every existing lane are byte-behaviour-unchanged. */
@@ -1495,7 +1495,7 @@ static void results_test_pump(void) {
         (void) mdkr_party_link_install();
         sTestInstalled = 1u;
     }
-    /* T4 joiner-mirror lane: the joiner never publishes REMATCH (watch-only), so
+    /* joiner-mirror lane: the joiner never publishes REMATCH (watch-only), so
      * the stand-in reducer would never leave RESULTS on its own. After the joiner
      * mirror has been shown for a while, depart the feed (-> LOBBY) to STAND IN for
      * the host's authoritative REMATCH landing over the transport, so the joiner
@@ -1650,7 +1650,7 @@ u8 mdkr_online_results_test_active(void) {
 }
 
 /* ======================================================================== *
- * T4 chooser seam (env MDKR_TEST_ONLINE_RESULTS_CHOOSER; inert in a normal run):
+ * chooser seam (env MDKR_TEST_ONLINE_RESULTS_CHOOSER; inert in a normal run):
  *   "<n>"    the host auto-navigates to option index n and presses A (drives the
  *            intent + routing for that option, per scenario)
  *   "show"   the chooser is fronted and HELD (no auto-select) -- the frame-dump /

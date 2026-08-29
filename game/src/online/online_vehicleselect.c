@@ -37,7 +37,7 @@
  * reverse-feed intent. The forward feed (both seats + the host's resolved track/cup)
  * is read from platform/net/party_link; the remote seat is display-only.
  *
- * R3 (legality): the PUBLISHED vehicle is ALWAYS inside the resolved track's mask.
+ * Legality: the PUBLISHED vehicle is ALWAYS inside the resolved track's mask.
  * It is seeded from the CHARSELECT default clamped to a legal bit, auto-narrowed
  * every tick against the resolved track (single -> snapshot configured_track;
  * tournament -> cup round-0 track; none resolved yet -> all three legal), and only
@@ -102,7 +102,7 @@
 #define VS_PORTRAIT_X (MDKR_ONLINE_SCREEN_W_HALF - 22) /* centered ~44px portrait */
 #define VS_PORTRAIT_Y 34
 #define VS_CHARNAME_Y 82
-#define VS_ART_Y 98            /* top edge of the real car/hover/plane art (T9) */
+#define VS_ART_Y 98            /* top edge of the real car/hover/plane art */
 #define VS_CARD_Y 150          /* vehicle name row (caption below the art) */
 #define VS_CARD_STATE_Y 164    /* per-vehicle state label */
 #define VS_TRACK_Y 182
@@ -120,7 +120,7 @@ static const u8 sVehicleAccent[MDKR_ONLINE_SCREEN_VEHICLE_COUNT][3] = {
     {235u, 205u, 110u}, /* PLANE     -- gold */
 };
 
-/* T9 NIT-2: the real vehicle art tile group (three vehicles x TOP+BOTTOM) + the
+/* the real vehicle art tile group (three vehicles x TOP+BOTTOM) + the
  * -1 terminator menu_assetgroup_load/free stop on. Borrowed READ-ONLY the same way
  * sPortraitAssetIds borrows the racer faces -- menu_asset_load routes each texture
  * id to load_texture, so this loads the six vehicle tiles into gMenuAssets[] and
@@ -245,7 +245,7 @@ static bool vehicleselect_vehicle_legal(u8 vehicle, u8 mask) {
 }
 
 /* Clamp the COMMITTED vehicle into the mask (lowest legal bit when illegal). This
- * is the R3 guarantee: for any track with a usable vehicle the published vehicle is
+ * is the legality guarantee: for any track with a usable vehicle the published vehicle is
  * always legal, so the seat can never READY / START with an illegal vehicle. When
  * the mask is EMPTY (only a malformed/unknown track reaches that -- see
  * vehicleselect_track_mask) there is nothing legal to clamp to, so the committed
@@ -456,7 +456,7 @@ static void vehicleselect_apply_input(const VsInput *in) {
             sVs.confirmed = 1u;
             sound_play(VS_SFX_CONFIRM, NULL);
         } else {
-            /* R3: never commit an illegal vehicle; flash + negative cue. */
+            /* Legality: never commit an illegal vehicle; flash + negative cue. */
             sVs.rejectFlashEnd = sVs.ticks + VS_REJECT_FLASH_TICKS;
             sound_play(VS_SFX_REJECT, NULL);
             fprintf(stderr,
@@ -470,7 +470,7 @@ static void vehicleselect_apply_input(const VsInput *in) {
 
 /* Publish the FULL local intent every frame (continuous republish: the reducer
  * clears ready on any selection change, so republishing reconverges within a
- * pump). The COMMITTED vehicle is always mask-legal (R3). The character is carried
+ * pump). The COMMITTED vehicle is always mask-legal. The character is carried
  * from the local seat snapshot so CHOOSE_CHARACTER stays converged; ready is held
  * (the player readied on CHARSELECT and refines the vehicle here). start_requested
  * stays 0 -- host-start belongs to TRACKSELECT. */
@@ -525,7 +525,7 @@ static void vehicleselect_render(const VsRemoteView *rv) {
         char label[24];
         const char *state;
 
-        /* T9 NIT-2: the REAL vehicle picture per card (like the charselect grid's
+        /* the REAL vehicle picture per card (like the charselect grid's
          * real portraits) -- full colour when legal, ghosted (dim + half alpha,
          * the offline race-select's own "not available" treatment) when not. Falls
          * back to the text caption below when the tiles are not resident. */
@@ -690,7 +690,7 @@ void mdkr_online_vehicleselect_enter(void) {
     vehicleselect_test_reset();
 
     /* Seed the committed vehicle from the CHARSELECT default (same source), or the
-     * last committed one, then clamp to the resolved track's mask (R3). */
+     * last committed one, then clamp to the resolved track's mask. */
     defaultVehicle = get_player_selected_vehicle(MDKR_ONLINE_SCREEN_LOCAL_PAD);
     if (defaultVehicle < 0 || (u8) defaultVehicle >= MDKR_ONLINE_SCREEN_VEHICLE_COUNT) {
         defaultVehicle = (s8) VEHICLE_CAR;
@@ -723,7 +723,7 @@ void mdkr_online_vehicleselect_enter(void) {
     menu_assetgroup_load(sPortraitAssetIds);
     menu_racer_portraits();
     menu_assetgroup_load(sOnlineSkyAssetIds);
-    /* T9 NIT-2: the real car/hovercraft/plane art (read-only borrow, freed in
+    /* the real car/hovercraft/plane art (read-only borrow, freed in
      * _exit before the group is released -- balanced with the portrait/sky loads). */
     menu_assetgroup_load(sOnlineVehicleAssetIds);
 
@@ -734,7 +734,7 @@ void mdkr_online_vehicleselect_enter(void) {
     /* Neutral hub sky (Dino Domain) -- the vehicle screen is world-agnostic. */
     mdkr_online_screen_backdrop((u8) MDKR_ONLINE_SKY_WORLD_NEUTRAL);
 
-    /* T7b: reveal from black (retail fade cadence) + keep the retail menu music
+    /* reveal from black (retail fade cadence) + keep the retail menu music
      * (isolation-safe primitive borrows -- see online_screen_util.h). */
     mdkr_online_screen_fade_in_from_black();
     mdkr_online_screen_menu_music();
@@ -778,7 +778,7 @@ MdkrOnlineVehicleselectResult mdkr_online_vehicleselect_tick(s32 updateRate) {
     occupied = vehicleselect_occupied_seats(&snap, haveSnap);
 
     /* Track the local seat's character (portrait) + the resolved-track mask each
-     * frame; auto-narrow the committed vehicle into the mask (R3) BEFORE input so
+     * frame; auto-narrow the committed vehicle into the mask BEFORE input so
      * the cursor's legality reads this frame's mask. */
     if (haveSnap && localSeat >= 0 &&
         snap.seats[localSeat].character_id < MDKR_ONLINE_SCREEN_CHAR_COUNT) {

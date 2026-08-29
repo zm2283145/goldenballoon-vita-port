@@ -95,7 +95,7 @@ typedef enum MdkrOnlineResultsRefront {
  * computes it: ON for real interactive play (and the dedicated chooser lane), OFF
  * for every pre-existing scripted/loopback lane -- so the terminal keeps its exact
  * historical behaviour (A: FINISH / joiner self-advance) whenever the chooser is
- * off, and only real play (and the T4 lane) gets the full replay menu. */
+ * off, and only real play (and the chooser lane) gets the full replay menu. */
 void mdkr_online_results_enter(u8 isFinalRace, u8 raceIndex, u8 chooserEnabled);
 
 /* Free the borrowed portrait assets and fonts. Safe to call more than once. */
