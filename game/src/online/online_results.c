@@ -157,7 +157,12 @@ static const MdkrResChooserOption sChooserTournament[] = {
  * session on a vanished host (the room down to just this seat). Mirrors the
  * online_session RESULTS remote-vacate detector's 45-tick debounce; the mirror
  * needs its own because that detector is gated to !resultsIsFinal and the "MORE
- * RACES?" chooser fronts at the tournament FINAL standings (resultsIsFinal). */
+ * RACES?" chooser fronts at the tournament FINAL standings (resultsIsFinal).
+ * SEMANTIC DELTA (intentional): the session detector resets its debounce unless
+ * the LOCAL seat still occupies the room, so a fully-empty snapshot is NOT a
+ * vacate there; this mirror keys only on "no remote seat present", so a fully-
+ * empty room also counts as vanished -- which is still the correct end for the
+ * mirror (a room with no remote to wait on cannot continue). */
 #define RES_CHOOSER_VACATE_DEBOUNCE 45u
 
 /* Menu SFX (the real DKR enums; same reuse as CHARSELECT). */
@@ -1018,8 +1023,8 @@ static MdkrOnlineResultsResult results_chooser_tick(const MdkrPartyLinkSnapshot 
         }
         /* B is an intentional leave with a confirm step (the charselect-backout
          * idiom): the first B arms it and the footer prompts, a second B commits.
-         * Any other input disarms it. A/START and every other button are inert on
-         * the mirror -- only the host drives the option list. */
+         * A/START (advanceEdge) cancels an armed leave; every other button is inert
+         * on the mirror -- only the host drives the option list. */
         if (sRes.stageTicks >= RES_INPUT_GRACE) {
             if (in.bEdge) {
                 if (sRes.chooserLeaveArm) {

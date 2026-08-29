@@ -323,6 +323,19 @@ def check_joiner_hold(binary, rom, verbose) -> int | None:
         return fail(f"[{tag}] the joiner mirror still bailed on the blind terminal "
                     f"dwell/press while the host was present -- the 10s countdown "
                     f"must no longer end the joiner's session", output)
+    # Assert on REAL behavior, not just the absence of the tombstoned log line: the
+    # host is present throughout, so the mirror must not have LEFT via ANY path --
+    # no champion CEREMONY, no FINISHED handshake, no platform session-end request.
+    if PHASE_CEREMONY_RE.search(output):
+        return fail(f"[{tag}] the mirror ended into the champion CEREMONY while the "
+                    f"host was still present (a premature leave by some path)",
+                    output)
+    if FINISHED_ENGINE_RE.search(output):
+        return fail(f"[{tag}] the session FINISHED while the host was still present "
+                    f"-- the mirror must keep waiting, not end", output)
+    if POSTRACE_EXIT in output:
+        return fail(f"[{tag}] a platform session-end was requested while the host "
+                    f"was still present", output)
     held = JOINER_HELD_RE.search(output)
     if not held:
         return fail(f"[{tag}] the mirror never crossed the old dwell threshold, so "
