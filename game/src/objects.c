@@ -2593,6 +2593,14 @@ s32 func_8000CC20(Object *obj) {
 }
 
 #if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+/* AP-13: the winning party seat of the just-finished default race, captured at
+ * the finish/award seam (race_check_finish) and read once by the arrival adapter
+ * to populate RACE_RESULT_COMMITTED.winner_seat. ADVENTURE_PARTY_NO_SEAT means no
+ * party human won (CPU first, loss, quit, retry): reset on every RACE_START. It
+ * is informational to the session (the reducer never remaps a seat), so a stale
+ * value can only be observed as a wrong trace, never as a moved kart. */
+static u8 sApRaceWinnerSeat = ADVENTURE_PARTY_NO_SEAT;
+
 /* AP-08 formation spacing, in world units, anchored on player one's authored
  * setup point. Deliberately modest: a lobby is not a start grid, so the humans
  * appear abreast of the host with enough gap to read as distinct karts (the
@@ -2766,6 +2774,10 @@ static void adventure_party_apply_arrival(u8 raceType) {
     if (raceType == RACETYPE_HUBWORLD) {
         if (session->state == ADVENTURE_PARTY_STATE_ACTIVE_RACE) {
             ev.kind = ADVENTURE_PARTY_EVENT_RACE_RESULT_COMMITTED;
+            /* AP-13: the authoritative winner captured at the finish seam. NO_SEAT
+             * for a CPU win / loss / quit. The reducer only validates it; it never
+             * remaps a seat, so a finish, return or quit-to-lobby all land here. */
+            ev.winner_seat = sApRaceWinnerSeat;
         } else if (session->state == ADVENTURE_PARTY_STATE_ACTIVE_LOBBY &&
                    session->transition_latch.latched) {
             ev.kind = ADVENTURE_PARTY_EVENT_LOBBY_TRANSITION;
@@ -2777,6 +2789,9 @@ static void adventure_party_apply_arrival(u8 raceType) {
             return; /* retry: already ACTIVE_RACE, stay in the race */
         }
         ev.kind = ADVENTURE_PARTY_EVENT_RACE_START;
+        /* AP-13: a fresh race starts with no recorded winner; the finish seam sets
+         * it only when a party human actually finishes first. */
+        sApRaceWinnerSeat = ADVENTURE_PARTY_NO_SEAT;
     } else {
         return; /* challenge / boss / other: not this task's envelope */
     }
@@ -2807,7 +2822,15 @@ static s32 adventure_party_race_field(u8 raceType, s32 *humans, s32 *total,
         return 0;
     }
     count = adventure_party_participant_count(session);
-    desc.race_kind = ADVENTURE_PARTY_RACE_KIND_DEFAULT;
+    /* Deliverable 0: record the REAL activity kind, not a hardcoded default. A
+     * replay of an already-cleared course is a silver-coin race — decided once at
+     * object-map spawn (gIsSilverCoinRace, objects.c track_spawn_objects, which
+     * runs before this). The v1 capability table resolves both DEFAULT and
+     * SILVER_COIN to the same six-racer split, so the field is unchanged; the
+     * point is that the classification, the token key, and later AP-14 policy see
+     * the truth rather than an assumption. */
+    desc.race_kind = gIsSilverCoinRace ? ADVENTURE_PARTY_RACE_KIND_SILVER_COIN
+                                       : ADVENTURE_PARTY_RACE_KIND_DEFAULT;
     desc.course_class = ADVENTURE_PARTY_COURSE_TRACK;
     cap = adventure_party_classify_activity(&desc, count);
     if (!cap.policy_active || cap.fail_closed ||
@@ -2820,6 +2843,105 @@ static s32 adventure_party_race_field(u8 raceType, s32 *humans, s32 *total,
     *total = cap.total_racer_count;
     *viewports = cap.viewport_count;
     return cap.human_count;
+}
+
+/*
+ * AP-13: is a party default race the thing being finished right now? True only
+ * while a live party session is in ACTIVE_RACE — which the arrival adapter enters
+ * exclusively for a RACETYPE_DEFAULT party race (RACE_START), never for a
+ * challenge/boss/lobby — so this is precisely "a party default race is on". When
+ * true, the party award arm decides the campaign commit and the retail arm is
+ * bypassed; when false, the stock retail path runs unchanged.
+ */
+static s32 adventure_party_race_award_active(void) {
+    AdventurePartySession *session = adventure_party_runtime_session();
+    return adventure_party_runtime_is_active() && session != NULL &&
+           session->state == ADVENTURE_PARTY_STATE_ACTIVE_RACE;
+}
+
+/*
+ * AP-13 winner identity. Returns the winning PARTY SEAT (0..N-1) when a party
+ * default race is active and the first-place racer is one of the party's humans,
+ * else ADVENTURE_PARTY_NO_SEAT (a CPU won, or this is not a party race).
+ *
+ * The team condition is read from the STABLE racer identity, gRacersByPosition[0]
+ * ->racer->racerIndex, NOT its playerIndex: the finish/door hand-off relabels a
+ * finished human PLAYER_COMPUTER (racer.c racer_enter_door), so an early-finishing
+ * human winner can read as a CPU by playerIndex at the "5 of 6 finished" finalize.
+ * racerIndex is assigned once at spawn and never changed, and the AP-12 field
+ * binds session seat i -> racerIndex i (proven per-seat by the race-loop gate's
+ * independent racer.c input-dispatch witness: player==racer==port), so
+ * racerIndex < participant_count is exactly "a party human finished first".
+ */
+static s32 adventure_party_race_winner_seat(void) {
+    AdventurePartySession *session = adventure_party_runtime_session();
+    Object_Racer *leader;
+    s32 seat;
+    s32 count;
+
+    if (!adventure_party_runtime_is_active() || session == NULL ||
+        session->state != ADVENTURE_PARTY_STATE_ACTIVE_RACE) {
+        return ADVENTURE_PARTY_NO_SEAT;
+    }
+    if (gNumRacers <= 0 || gRacersByPosition[0] == NULL ||
+        gRacersByPosition[0]->racer == NULL) {
+        return ADVENTURE_PARTY_NO_SEAT;
+    }
+    leader = gRacersByPosition[0]->racer;
+    seat = leader->racerIndex;
+    count = adventure_party_participant_count(session);
+    if (seat < 0 || seat >= count) {
+        return ADVENTURE_PARTY_NO_SEAT; /* a CPU finished first */
+    }
+    return seat;
+}
+
+/*
+ * AP-13 exact-once award gate for a party default race. Returns 1 exactly once
+ * per first-clear: when a party human won (team condition), this is a fresh clear
+ * (mirrors set_course_finish_flags's own RACE_CLEARED-first test so a consumed
+ * token always corresponds to a real write — one-to-one), and the completion
+ * token both mints (TEAM_WIN) and consumes successfully. A second invocation in
+ * the same level generation (cutscene re-entry, results re-run, a simultaneous
+ * finish path) finds the token already consumed and returns 0. Loss/quit/retry
+ * never reach here with a team win, so the policy module never issues them a
+ * token: the guarantee is structural, not a flag check.
+ *
+ * `seat` is the winner seat the caller already resolved (never NO_SEAT here).
+ */
+static s32 adventure_party_race_award_permit(Settings *settings, s32 seat) {
+    AdventurePartySession *session = adventure_party_runtime_session();
+    AdventurePartyCompletionToken token;
+    AdventurePartyRaceKind kind;
+    AdventurePartyResult consumed;
+    int issued;
+
+    (void) seat;
+    if (session == NULL || settings == NULL) {
+        return 0;
+    }
+    /* AP-13 owns the DEFAULT first-clear only. An already-cleared course replayed
+     * is a silver-coin race (AP-14); leave its award to the retail silver path.
+     * This is the same bit set_course_finish_flags tests before writing. */
+    if (settings->courseFlagsPtr[settings->courseId] & RACE_CLEARED) {
+        return 0;
+    }
+    /* Deliverable 0: the token key carries the real activity kind. */
+    kind = gIsSilverCoinRace ? ADVENTURE_PARTY_RACE_KIND_SILVER_COIN
+                             : ADVENTURE_PARTY_RACE_KIND_DEFAULT;
+    issued = adventure_party_completion_token_issue(
+        ADVENTURE_PARTY_OUTCOME_TEAM_WIN, session->session_generation,
+        session->level_generation, (uint16_t) settings->courseId, kind,
+        ADVENTURE_PARTY_COMPLETION_COURSE, &token);
+    adventure_party_trace_emit_award(ADVENTURE_PARTY_TRACE_AWARD_ISSUE, &token,
+                                     issued);
+    if (!issued) {
+        return 0;
+    }
+    consumed = adventure_party_consume_completion_token(session, &token);
+    adventure_party_trace_emit_award(ADVENTURE_PARTY_TRACE_AWARD_CONSUME, &token,
+                                     (int) consumed);
+    return consumed == ADVENTURE_PARTY_OK;
 }
 #endif
 
@@ -10683,6 +10805,30 @@ void race_check_finish(s32 updateRate) {
             }
             curRacer = (*gRacersByPosition)->racer;
             gFirstTimeFinish = FALSE;
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+            /* AP-13: a party default race decides its campaign commit from the
+             * PARTY team condition and an exact-once token, not from the retail
+             * arm's reading of settings->gNumRacers (which is 1 for a party — the
+             * shared 1P Adventure save — so the retail arm would fire by accident
+             * and could never enforce exactly-once or survive the finish/door
+             * hand-off relabelling the winner PLAYER_COMPUTER). This is the
+             * "NATIVE_PORT + !OMIT arm, stock retail path as the else" pattern:
+             * the retail condition line below is preserved verbatim for every
+             * non-party race. A party human first-place (by stable racerIndex)
+             * mints and consumes the token; only a successful consume permits the
+             * unchanged set_course_finish_flags + balloon commit to run, exactly
+             * once. Loss / quit / retry / CPU-first reach here with no team win, so
+             * no token is issued and gFirstTimeFinish stays FALSE. */
+            if (adventure_party_race_award_active()) {
+                s32 apWinnerSeat = adventure_party_race_winner_seat();
+                if (apWinnerSeat != ADVENTURE_PARTY_NO_SEAT) {
+                    sApRaceWinnerSeat = (u8) apWinnerSeat;
+                    if (adventure_party_race_award_permit(settings, apWinnerSeat)) {
+                        gFirstTimeFinish = TRUE;
+                    }
+                }
+            } else
+#endif
             if ((settings->gNumRacers == 1 || is_in_two_player_adventure()) &&
                 curRacer->playerIndex != PLAYER_COMPUTER && !is_in_tracks_mode() && get_trophy_race_world_id() == 0) {
                 gFirstTimeFinish = TRUE;
@@ -10755,7 +10901,18 @@ s8 set_course_finish_flags(Settings *settings) {
                (int) gIsSilverCoinRace, (int) gIsTimeTrial,
                (unsigned) settings->courseFlagsPtr[settings->courseId]);
 #endif
-    if (racer->playerIndex == PLAYER_COMPUTER) {
+    if (racer->playerIndex == PLAYER_COMPUTER
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+        /* AP-13: the retail guard reads playerIndex to mean "a CPU led, write
+         * nothing". In a party race the finish/door hand-off can already have
+         * relabelled the leading HUMAN winner PLAYER_COMPUTER (racer.c
+         * racer_enter_door), so this arm keeps the retail meaning for a genuine
+         * CPU winner (winner seat NO_SEAT) while letting a party human winner
+         * through. NO_SEAT for every non-party race, so retail behaviour is
+         * byte-identical. */
+        && adventure_party_race_winner_seat() == ADVENTURE_PARTY_NO_SEAT
+#endif
+    ) {
         return FALSE;
     }
     gFirstTimeFinish = FALSE;

@@ -5139,6 +5139,21 @@ void obj_loop_worldkey(Object *worldKeyObj, s32 updateRate) {
                     settings = get_settings();
                     settings->keys |= 1 << worldKeyObj->properties.worldKey.keyID; // Set key flag
                     free_object(worldKeyObj);                                      // Makes the key unload.
+#ifdef NATIVE_PORT
+                    /* NATIVE_PORT, read-only: the key commit gates on
+                     * "playerIndex != PLAYER_COMPUTER" -- ANY live human, so in an
+                     * Adventure Party race any seat (not just the host) collects,
+                     * and the write is already exact-once (the flag is idempotent
+                     * and free_object retires the object; obj_init_worldkey deletes
+                     * an already-collected key on re-entry, so it never re-spawns).
+                     * Nothing else prints the collector, so this makes the seat
+                     * that grabbed it observable to tests/check_adventure_party_progress.py.
+                     * Trace-gated; one line per key collected. */
+                    MDKR_TRACE("worldkey: keyID=%d playerIndex=%d keys=0x%x @frame~%d",
+                               (int) worldKeyObj->properties.worldKey.keyID,
+                               (int) racer->playerIndex, (unsigned) settings->keys,
+                               g_frameCounter);
+#endif
                 }
             }
         }
