@@ -83,8 +83,16 @@ JOINER_SEAT_VACATED_RE = re.compile(
 # The host's committed chooser option (a MIRROR must NEVER publish one -- watch-only).
 CHOOSER_COMMIT_RE = re.compile(
     r"^\[online-results\] chooser: committed option=", re.MULTILINE)
-CHOOSER_FINISH_RE = re.compile(
-    r"^\[online-results\] chooser: committed option=FINISH -> LEAVE$", re.MULTILINE)
+# The tournament-final FINISH on a REAL feed-final room (race_index == 3) now
+# commits the REMATCH wrap first (reducer-observable) and LEAVEs on convergence;
+# the old purely-local "committed option=FINISH -> LEAVE" is the stand-in/mid-cup
+# arm only.
+CHOOSER_FINISH_COMMIT_RE = re.compile(
+    r"^\[online-results\] chooser: committed option=FINISH choice=7 "
+    r"intent\{rematch=1 mode=255\}$", re.MULTILINE)
+FINISH_WRAP_LEAVE_RE = re.compile(
+    r"^\[online-results\] chooser: FINISH wrap converged \(room left RESULTS\) "
+    r"-> LEAVE \(ceremony\)$", re.MULTILINE)
 # The removed BLIND terminal dwell/press LEAVE (the old, now-dead legacy terminal).
 LEGACY_TERMINAL_RE = re.compile(
     r"^\[online-results\] finish: joiner terminal advance \((?:press|self-advance|"
@@ -235,9 +243,12 @@ def check_remote_gone_final(binary: Path, rom: Path, verbose: bool) -> int | Non
         return fail(f"[{tag}] the RESULTS remote-vacate detector tripped a LEFT at "
                     f"the final standings -- the P2 gate (!resultsIsFinal) is NOT "
                     f"holding; the earned FINISHED was pre-empted", output)
-    if not CHOOSER_FINISH_RE.search(output):
+    if not CHOOSER_FINISH_COMMIT_RE.search(output):
         return fail(f"[{tag}] the chooser terminal never committed FINISH (the "
                     f"unconditional chooser must own the terminal)", output)
+    if not FINISH_WRAP_LEAVE_RE.search(output):
+        return fail(f"[{tag}] the feed-final FINISH did not converge its REMATCH "
+                    f"wrap before leaving (the reducer-observable finish)", output)
     if not PHASE_CEREMONY_RE.search(output):
         return fail(f"[{tag}] the session never detoured into CEREMONY off the "
                     f"terminal FINISH", output)

@@ -22,10 +22,14 @@ pressing A (or, for "joiner", renders the display-only mirror):
 
 Per option it asserts the committed reverse-feed intent (rematch + the SET_MODE
 value) AND the session's RESULTS -> native-screen routing witness. FINISH keeps the
-LEAVE path (a finished tournament detours to the champion CEREMONY -> FINISHED).
-RACE AGAIN re-races the same config (>= 2 direct boots). The joiner mirror never
-publishes REMATCH (watch-only) and, when the host's choice drives the room out of
-RESULTS, follows into re-selection (-> CHARSELECT).
+LEAVE path (a finished tournament detours to the champion CEREMONY -> FINISHED; at
+a GENUINE feed-final -- last cup round -- the host first commits the REMATCH wrap so
+the finish is reducer-observable, covered by check_online_lobby_tournament.py; this
+lane's stand-in feed sits at round 1, pinning the direct-LEAVE arm). RACE AGAIN
+re-races the same config (>= 2 direct boots). The joiner mirror never publishes
+REMATCH (watch-only); at the tournament FINAL it exits to the joiner's OWN champion
+CEREMONY -> FINISHED once the room leaves RESULTS (the ruled two-real-peer end --
+never a re-selection wait on a host that may no longer be in-session).
 """
 
 from __future__ import annotations
@@ -77,6 +81,16 @@ CHOOSER_ADVANCE_RE = re.compile(
 JOINER_FOLLOW_RE = re.compile(
     r"^\[online-results\] chooser: joiner follows host authoritative choice",
     re.MULTILINE)
+# The ruled tournament-FINAL mirror exit: the cup is COMPLETE, so when the room
+# leaves RESULTS (the host's FINISH/replay wrap -- the joiner cannot and need not
+# distinguish which), the mirror exits to the joiner's OWN champion CEREMONY ->
+# FINISHED instead of re-selection. The pre-fix mirror followed into CHARSELECT
+# here -- which, when the host had FINISHed (left the session but stayed seated
+# for the re-take), left the joiner waiting in a selection screen for a host that
+# was no longer in-session.
+JOINER_WRAP_LEAVE_RE = re.compile(
+    r"^\[online-results\] chooser: joiner mirror observed the final wrap "
+    r"-> LEAVE \(ceremony\)$", re.MULTILINE)
 JOINER_DEPART_RE = re.compile(
     r"^\[online-results\] test-reducer: joiner-mirror feed departed", re.MULTILINE)
 # The removed blind bailout: the joiner mirror ending its own session on a 10s
@@ -263,9 +277,14 @@ def check_finish(binary, rom, verbose) -> int | None:
 
 
 def check_joiner(binary, rom, verbose) -> int | None:
-    """The joiner mirror: display-only (never publishes REMATCH), renders the
-    "more races" mirror + "waiting for host", and follows the host's authoritative
-    choice once the room leaves RESULTS -> re-selection (CHARSELECT)."""
+    """The joiner mirror at the tournament FINAL: display-only (never publishes
+    REMATCH), renders the "more races" mirror + "waiting for host", and -- the cup
+    being COMPLETE -- exits to the joiner's OWN champion CEREMONY -> FINISHED once
+    the room leaves RESULTS (the host's authoritative wrap). It must NOT follow
+    into re-selection: when the host FINISHed (left the session but stayed seated
+    for the re-take) a re-selecting joiner waits on a host that is no longer
+    in-session. RED at the pre-fix build: the mirror followed the wrap into
+    CHARSELECT ("joiner follows host authoritative choice -> ADVANCE")."""
     tag = "joiner"
     try:
         rc, output = run(binary, rom, "joiner", 12000, 500, verbose)
@@ -288,14 +307,25 @@ def check_joiner(binary, rom, verbose) -> int | None:
     if not JOINER_DEPART_RE.search(output):
         return fail(f"[{tag}] the host's authoritative REMATCH stand-in never "
                     f"departed the feed", output)
-    if not JOINER_FOLLOW_RE.search(output):
-        return fail(f"[{tag}] the joiner never followed the host's choice out of "
-                    f"RESULTS", output)
-    route = [m for m in SESSION_ROUTE_RE.finditer(output)
-             if m.group(2) == "joiner follow"]
-    if not route or route[0].group(1) != "charselect":
-        return fail(f"[{tag}] the joiner did not route RESULTS -> charselect on "
-                    f"the follow", output)
+    if not JOINER_WRAP_LEAVE_RE.search(output):
+        return fail(f"[{tag}] the joiner mirror did not exit on the observed final "
+                    f"wrap (room left RESULTS) -> its own ceremony; a tournament-"
+                    f"final mirror must end the joiner's session, not re-select",
+                    output)
+    if JOINER_FOLLOW_RE.search(output):
+        return fail(f"[{tag}] the FINAL mirror still took the joiner-follow "
+                    f"re-selection path (the pre-fix behavior that waits on a host "
+                    f"no longer in-session)", output)
+    for m in SESSION_ROUTE_RE.finditer(output):
+        return fail(f"[{tag}] the FINAL mirror wrongly routed RESULTS -> "
+                    f"{m.group(1)} (chooser: {m.group(2)}) instead of ending the "
+                    f"joiner's session", output)
+    if not PHASE_CEREMONY_RE.search(output):
+        return fail(f"[{tag}] the joiner's session did not detour into its own "
+                    f"champion CEREMONY after the final wrap", output)
+    if len(FINISHED_ENGINE_RE.findall(output)) != 1:
+        return fail(f"[{tag}] FINISHED did not fire exactly once after the "
+                    f"joiner's ceremony", output)
     return None
 
 
@@ -423,8 +453,10 @@ def main() -> int:
         "TRACKSELECT (rematch + SET_MODE tournament, cup resets), CHANGE CHARACTER "
         "-> CHARSELECT, RACE AGAIN -> re-race same config in process (>=2 boots), "
         "FINISH -> champion CEREMONY -> single FINISHED; the joiner is display-only "
-        "(mirror + waiting-for-host, never publishes REMATCH) and follows the host "
-        "out of RESULTS -> CHARSELECT; gGameMode=2 gCurrentMenuId=0 throughout")
+        "(mirror + waiting-for-host, never publishes REMATCH), exits the tournament-"
+        "FINAL mirror to its OWN ceremony -> FINISHED on the observed wrap, keeps "
+        "waiting while the host deliberates (no blind dwell), and still ends on a "
+        "vanished host; gGameMode=2 gCurrentMenuId=0 throughout")
     return 0
 
 

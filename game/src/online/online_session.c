@@ -192,6 +192,16 @@ typedef struct MdkrOnlineSessionState {
      * ceremony re-crown the surviving joiner from a 1-seat live snapshot. */
     MdkrOnlineStandings finalRanking;
     u8 finalRankingCaptured;
+    /* the FOURTH single-endpoint descriptor-less wait: the final-FINISH
+     * WRAP hold. Once the host commits FINISH at the tournament final, the
+     * chooser republishes the REMATCH wrap intent and holds STAY until the room
+     * leaves RESULTS -- over a real WAN a link drop there would park the host in
+     * the chooser forever. Set when the committed FINISH hold is first observed;
+     * arms a FRESH wall-clock deadline at that moment (the host's interactive
+     * deliberation before the commit must never be bounded), after which the
+     * shared watchdog bounds only the post-commit convergence and surfaces a
+     * genuine ERROR (never a fake FINISHED). Single-endpoint only. */
+    u8 finishWrapHoldArmed;
 } MdkrOnlineSessionState;
 
 /* Session-owned state -- deliberately NOT any offline global. */
@@ -402,8 +412,8 @@ static bool online_session_descless_boot_ready(void) {
  * frame count: a cross-process DTLS handshake + preflight is seconds and variable,
  * and a frame count over-/under-shoots as the interactive frame rate varies. The
  * deadline is armed (absolute ns) when a wait BEGINS -- see arm below -- so each of
- * the THREE waits (race-1 re-wait, per-round re-wait, RESULTS REMATCH-hold) gets a
- * fresh budget. Default is generous for a real WAN; MDKR_ONLINE_SESSION_DESCLESS_
+ * the FOUR waits (race-1 re-wait, per-round re-wait, RESULTS REMATCH-hold, and the
+ * final-FINISH wrap-hold) gets a fresh budget. Default is generous for a real WAN; MDKR_ONLINE_SESSION_DESCLESS_
  * WAIT_DEADLINE_MS overrides it (the single-endpoint test lanes pin a short one). */
 #define MDKR_ONLINE_SESSION_DESCLESS_WAIT_DEADLINE_MS_DEFAULT 45000u
 /* 10-minute sanity ceiling on the env override: a value above this (or 0) is
@@ -1006,6 +1016,20 @@ bool mdkr_online_session_resume_results(void) {
     return true;
 }
 
+bool mdkr_online_session_postrace_results_retry(void) {
+    /* Read by the post-race hook (menu.c) AFTER the race ended -- the session
+     * struct persists across the in-session race (boot_race clears only
+     * `active`), so begin()'s latches are still authoritative here. TRUE only
+     * for the descriptor-less SINGLE-ENDPOINT session (a real 2-process room):
+     * there the RESULTS resume signal is the reducer snapshot, which needs the
+     * LEADER's PUBLISH_RESULTS to round-trip the real network. Every loopback
+     * descriptor-less lane is two-adapter (singleEndpoint 0) or publishes the
+     * reducer RESULTS synchronously before the post-race grace elapses, so the
+     * historical one-shot decision stays byte-timed everywhere else. */
+    return sOnlineSession.beganWithoutDescriptor != 0u &&
+           sOnlineSession.singleEndpoint != 0u;
+}
+
 void mdkr_online_session_tick(s32 updateRate) {
     if (!sOnlineSession.active) {
         /* Only reachable if something set GAMEMODE_ONLINE_SESSION without a
@@ -1533,7 +1557,17 @@ void mdkr_online_session_tick(s32 updateRate) {
          * is what the RESULTS->CEREMONY transition below hands to the ceremony. */
         if (sOnlineSession.resultsIsFinal) {
             MdkrPartyLinkSnapshot fsnap;
+            /* phase gate: capture ONLY while the room is still authoritatively
+             * in RESULTS. The final FINISH now dispatches the REMATCH wrap
+             * (RESULTS -> LOBBY + reset_tournament_series) BEFORE the screen
+             * returns LEAVE, so on the convergence tick the live snapshot
+             * already carries the ZEROED fresh-series points -- an ungated
+             * recapture here would overwrite the true final ranking with an
+             * all-zero table one tick before the ceremony reads it (crowning by
+             * seat order). Both seats remain present across the wrap, so the
+             * seat-presence checks alone cannot stop that. */
             if (mdkr_party_link_read(&fsnap) &&
+                fsnap.phase == (uint8_t) MDKR_ONLINE_SESSION_RESULTS_PHASE &&
                 online_session_snapshot_has_local_seat(&fsnap) &&
                 online_session_snapshot_has_remote_seat(&fsnap)) {
                 MdkrOnlineStandings ranked;
@@ -1555,6 +1589,28 @@ void mdkr_online_session_tick(s32 updateRate) {
             r == MDKR_ONLINE_RESULTS_STAY &&
             online_session_descless_watchdog_tick("results rematch-hold")) {
             break;
+        }
+        /* the final-FINISH WRAP hold gets its own bound. The FINAL
+         * standings themselves legitimately hold un-bounded (the host may
+         * deliberate the chooser forever, and the joiner mirror deliberately
+         * waits on the host) -- but once the HOST has COMMITTED FINISH the
+         * screen is only waiting for its own REMATCH wrap to land, and a WAN
+         * drop there must surface as a bounded ERROR, not a silent park. Arm a
+         * FRESH wall-clock budget on the first committed-FINISH STAY tick (the
+         * pre-commit deliberation is never counted), then run the shared
+         * watchdog. Single-endpoint only; the loopback lanes converge the wrap
+         * synchronously and never accumulate this hold. */
+        if (sOnlineSession.singleEndpoint && sOnlineSession.resultsIsFinal &&
+            r == MDKR_ONLINE_RESULTS_STAY &&
+            mdkr_online_results_choice() == MDKR_ONLINE_RESULTS_CHOICE_FINISH) {
+            if (!sOnlineSession.finishWrapHoldArmed) {
+                sOnlineSession.finishWrapHoldArmed = 1u;
+                sOnlineSession.desclessWaitDeadlineNs = 0u;
+                online_session_descless_wallclock_arm();
+            } else if (online_session_descless_watchdog_tick(
+                           "final FINISH wrap-hold")) {
+                break;
+            }
         }
         if (r == MDKR_ONLINE_RESULTS_ADVANCE) {
             /* Exit-symmetry: free the RESULTS screen on the ADVANCE

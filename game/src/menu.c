@@ -13761,31 +13761,45 @@ s32 menu_postrace(Gfx **dList, Mtx **matrices, Vertex **vertices, s32 updateRate
                 sOnlinePostraceTicks += updateRate;
                 /* 150 time units ~= 2.5 s (see normalise_time(240) == 4 s). */
                 if (sOnlinePostraceTicks > 150 && !sOnlinePostraceEndRequested) {
-                    sOnlinePostraceEndRequested = TRUE;
                     /* PD-T5 resident soak (scoping ruling R-A/R-B): re-enter the
                      * separated session's RESULTS phase in THIS engine process
                      * instead of exiting, proving >=2 races + RESULTS per process
-                     * via the session loop. mdkr_online_session_resume_results()
-                     * returns true ONLY when resident mode is on (the scripted
-                     * soak's MDKR_TEST_ONLINE_RESIDENT flag) AND this race
-                     * captured a finish order; for EVERY live lane (flag OFF) and
-                     * every abnormal end it returns false and we call
-                     * platform_request_exit(0) EXACTLY as before -- zero
-                     * behaviour change on any existing lane. On resume we run the
-                     * same teardown the normal POSTRACE_STAGE_END arm does before
-                     * leaving postrace; the just-finished race level is freed by
-                     * the session right before it re-boots the next race. */
+                     * via the session loop. On resume we run the same teardown
+                     * the normal POSTRACE_STAGE_END arm does before leaving
+                     * postrace; the just-finished race level is freed by the
+                     * session right before it re-boots the next race.
+                     *
+                     * RESUME DISCIPLINE. A DESCRIPTOR-LESS SINGLE-ENDPOINT
+                     * session's (a real 2-process room's) RESULTS signal is the
+                     * reducer snapshot, which arrives only after the LEADER's
+                     * PUBLISH_RESULTS round-trips the real network -- observed
+                     * slower than this 2.5 s grace on a real WAN, and a one-shot
+                     * decision here then ended the session reason=NONE with the
+                     * results screens never shown (a latency coin-flip). So for
+                     * that shape the resume is RETRIED every tick up to a
+                     * bounded window (+10 s), and only a still-absent RESULTS at
+                     * the bound takes the exit. Every other path -- the
+                     * descriptor-first boots, the scripted soaks, and the
+                     * two-adapter loopback descriptor-less lanes, whose resume
+                     * signal is process-local/synchronous and already present at
+                     * the grace -- keeps the historical one-shot decision,
+                     * byte-for-byte. */
                     if (mdkr_online_session_resume_results()) {
+                        sOnlinePostraceEndRequested = TRUE;
                         camDisableUserView(0, FALSE);
                         postrace_free();
                         dialogue_close(7);
                         dialogue_clear(7);
                         gPostRaceViewPort = FALSE;
-                    } else {
+                    } else if (!mdkr_online_session_postrace_results_retry() ||
+                               sOnlinePostraceTicks > 750) {
+                        sOnlinePostraceEndRequested = TRUE;
                         fprintf(stderr,
                                 "[online-postrace] session end requested\n");
                         platform_request_exit(0);
                     }
+                    /* else: descriptor-less live session still waiting on the
+                     * reducer RESULTS over the network -- retry next tick. */
                 }
                 break;
             }

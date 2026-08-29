@@ -76,6 +76,19 @@ void mdkr_online_session_tick(s32 updateRate);
  * behaviour change. */
 bool mdkr_online_session_resume_results(void);
 
+/* True when the current session began DESCRIPTOR-LESS in SINGLE-ENDPOINT mode
+ * (the production room-ready takeover over a real 2-process room). The
+ * post-race hook (menu.c) uses it to pick the resume discipline: there the
+ * RESULTS resume signal is the reducer snapshot, whose arrival needs the
+ * leader's PUBLISH_RESULTS to round-trip the real network (observed slower
+ * than the 2.5 s post-race grace), so the hook RETRIES the resume up to a
+ * bounded window instead of deciding once. Every other path -- descriptor-first
+ * boots, the scripted soaks, and the two-adapter loopback descriptor-less
+ * lanes (whose resume signal is synchronous/process-local) -- keeps the
+ * historical one-shot decision, byte-for-byte. Persists across the in-session
+ * race (begin() set the latches; nothing clears them until the next begin). */
+bool mdkr_online_session_postrace_results_retry(void);
+
 /* P0 CRASH FIX: route a RECOVERABLE race-start (or mid-race) peer loss to a clean
  * return-to-room instead of abort()ing the app. Called from the engine tick loop
  * (thread3_main.c, beta-gated) ONLY when the boundary validator reports the

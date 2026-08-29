@@ -943,9 +943,37 @@ static MdkrOnlineResultsResult results_chooser_tick(const MdkrPartyLinkSnapshot 
         }
         sound_play(RES_SFX_ADVANCE, NULL);
         if (choice == (u8) MDKR_ONLINE_RESULTS_CHOICE_FINISH) {
-            fprintf(stderr,
-                    "[online-results] chooser: committed option=FINISH -> LEAVE\n");
-            return MDKR_ONLINE_RESULTS_LEAVE;
+            /* The tournament-final FINISH must be REDUCER-OBSERVABLE. A second
+             * REAL peer's chooser mirror can only observe reducer STATE, and its
+             * only exits are room-left-RESULTS and vanished-host; a purely local
+             * FINISH leave (the pre-fix behavior) parked the room in RESULTS with
+             * the host still seated (the FINISHED re-arm keeps the host in the
+             * room for the re-take), so a real joiner was stranded forever. At a
+             * GENUINE tournament final -- the feed's last cup round, read at
+             * commit time while the phase is still RESULTS -- commit the EXISTING
+             * leader-only REMATCH wrap first (lobby_core.c: RESULTS -> LOBBY +
+             * reset_tournament_series, i.e. a fresh series in the same room),
+             * republished to convergence exactly like every other chooser option,
+             * and only LEAVE once the room has left RESULTS. The ceremony then
+             * renders from the ranking the session LATCHED while the phase was
+             * still RESULTS (online_session.c), never from the wrapped points.
+             * Every NON-final FINISH (a single race, or an env-shortened resident
+             * soak whose feed is mid-cup) keeps the historical direct LEAVE --
+             * dispatching a mid-cup REMATCH there would advance a series the
+             * room is still playing. */
+            u8 finalWrap = (sRes.isFinal &&
+                            sRes.chooserMode == (u8) RES_MODE_TOURNAMENT &&
+                            haveSnap &&
+                            (u32) snap->race_index + 1u >= RES_CUP_ROUNDS)
+                               ? 1u
+                               : 0u;
+            if (!finalWrap) {
+                fprintf(stderr,
+                        "[online-results] chooser: committed option=FINISH -> "
+                        "LEAVE\n");
+                return MDKR_ONLINE_RESULTS_LEAVE;
+            }
+            /* fall through: latch committed below and converge the wrap. */
         }
         sRes.chooserCommitted = 1u;
         {
@@ -972,6 +1000,16 @@ static MdkrOnlineResultsResult results_chooser_tick(const MdkrPartyLinkSnapshot 
         results_publish_chooser_intent(sRes.chooserChoice);
         results_test_reduce(); /* stand-in reducer (inert in a live run) */
         if (haveSnap && snap->phase != (uint8_t) RES_PHASE_RESULTS) {
+            if (sRes.chooserChoice == (u8) MDKR_ONLINE_RESULTS_CHOICE_FINISH) {
+                /* The final-FINISH wrap landed: the room is back in LOBBY with a
+                 * fresh series (reducer-observable by the second real peer), so
+                 * NOW the host may leave -- LEAVE routes to the champion
+                 * CEREMONY (from the session's latched ranking) -> FINISHED. */
+                fprintf(stderr,
+                        "[online-results] chooser: FINISH wrap converged (room "
+                        "left RESULTS) -> LEAVE (ceremony)\n");
+                return MDKR_ONLINE_RESULTS_LEAVE;
+            }
             fprintf(stderr,
                     "[online-results] chooser: room left RESULTS -> ADVANCE "
                     "(choice=%u)\n",
@@ -989,6 +1027,27 @@ static MdkrOnlineResultsResult results_chooser_tick(const MdkrPartyLinkSnapshot 
      * room down to just this seat, debounced) and a deliberate, confirmed B. */
     if (sRes.chooserJoiner) {
         if (haveSnap && snap->phase != (uint8_t) RES_PHASE_RESULTS) {
+            if (sRes.isFinal && sRes.chooserMode == (u8) RES_MODE_TOURNAMENT) {
+                /* The TOURNAMENT-FINAL mirror: the cup is COMPLETE, and the
+                 * room's departure from RESULTS is the host's authoritative wrap
+                 * (its FINISH, or a replay option -- the mirror cannot and need
+                 * not distinguish: the joiner has EARNED its celebration either
+                 * way). Exit to the joiner's OWN champion CEREMONY -> FINISHED,
+                 * rendered from the ranking the session LATCHED while the phase
+                 * was still RESULTS (the wrap has already reset the live
+                 * points). Following into re-selection here -- the pre-fix
+                 * behavior -- left the joiner waiting in CHARSELECT on a host
+                 * that had FINISHed out of its session; after FINISHED the
+                 * joiner's own re-arm re-takes natively into the freshly
+                 * wrapped room, which is where a continuing host is heading
+                 * too. NOTE the finality gate is the ENTRY-latched isFinal, not
+                 * the live race_index: by observation time the wrap has already
+                 * reset race_index to 0. */
+                fprintf(stderr,
+                        "[online-results] chooser: joiner mirror observed the "
+                        "final wrap -> LEAVE (ceremony)\n");
+                return MDKR_ONLINE_RESULTS_LEAVE;
+            }
             sRes.chooserChoice = (u8) MDKR_ONLINE_RESULTS_CHOICE_JOINER_FOLLOW;
             fprintf(stderr,
                     "[online-results] chooser: joiner follows host authoritative "
@@ -1486,7 +1545,24 @@ static void results_test_reduce(void) {
     }
     if (mdkr_party_link_intent_poll(&intent) && intent.rematch_requested) {
         if (sTestRoom.phase == (uint8_t) RES_PHASE_RESULTS) {
-            if (sTestRaceIndex < 0xFFu) {
+            if (sTestRaceIndex >= RES_CUP_ROUNDS - 1u) {
+                /* The FINAL wrap, mirrored from lobby_core.c's REMATCH at the
+                 * last cup round: the next round starts a FRESH series --
+                 * race_index back to 0 and the points/placements RESET. Keeping
+                 * the stand-in faithful here is load-bearing: the ceremony must
+                 * crown from the session's LATCHED ranking, and a stand-in that
+                 * kept the points alive after the wrap would mask a latch that
+                 * wrongly re-reads live points. */
+                unsigned slot;
+                sTestRaceIndex = 0u;
+                for (slot = 0u; slot < RES_SLOTS; slot++) {
+                    sTestPoints[slot] = 0u;
+                    sTestLastPlacements[slot] = RES_PLACE_NONE;
+                    sTestRoom.points[slot] = 0u;
+                    sTestRoom.last_placements[slot] = RES_PLACE_NONE;
+                }
+                sTestRoom.race_index = 0u;
+            } else if (sTestRaceIndex < 0xFFu) {
                 sTestRaceIndex++;
             }
             sTestRoom.phase = 1u; /* MDKR_ONLINE_LOBBY -- convergence signal */

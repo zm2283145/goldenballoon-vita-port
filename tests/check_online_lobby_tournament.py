@@ -8,7 +8,9 @@ IN-PROCESS:
 
   lobby-start begin (no descriptor) -> native CHARSELECT -> TRACKSELECT -> START
     -> race 1 boots (T6h2a gate) -> RESULTS (real reducer snapshot) -> REMATCH
-    -> race 2 -> race 3 -> race 4 -> FINAL standings HELD (feed-final; no 5th boot)
+    -> race 2 -> race 3 -> race 4 -> FINAL standings -> chooser FINISH commits the
+    REMATCH wrap (RESULTS -> LOBBY, fresh series; reducer-observable by a second
+    real peer) -> champion CEREMONY -> the single FINISHED handshake (no 5th boot)
 
 The lobby-start coordinator fronts race 1, then HANDS OFF to the resident
 coordinator (g_liveResident) so rounds 2..4 re-cycle via the SAME mid-residency
@@ -104,6 +106,23 @@ CANCEL_SUBMIT_RE = re.compile(
     r"^\[online-lobby-start\] WEDGE cancel-loading:.*submitted=1$", re.MULTILINE)
 # PD-T6d engine->launcher FINISH/RETURN handshake witnesses.
 POSTRACE_EXIT = "[online-postrace] session end requested"
+# The tournament-final FINISH must be REDUCER-OBSERVABLE: the host's commit
+# dispatches the EXISTING leader-only REMATCH wrap (RESULTS -> LOBBY + fresh
+# series, lobby_core.c) and only LEAVEs to the ceremony once the room has left
+# RESULTS -- so a second REAL peer's chooser mirror always gets an authoritative
+# transition to exit on. RED at the pre-fix build: FINISH was a purely LOCAL
+# leave ("committed option=FINISH -> LEAVE", no reducer command), the room parked
+# in RESULTS with the host still seated, and a real joiner's mirror -- whose only
+# exits are room-left-RESULTS and vanished-host -- was stranded forever.
+CHOOSER_FINISH_COMMIT_RE = re.compile(
+    r"^\[online-results\] chooser: committed option=FINISH choice=7 "
+    r"intent\{rematch=1 mode=255\}$", re.MULTILINE)
+FINISH_WRAP_LEAVE_RE = re.compile(
+    r"^\[online-results\] chooser: FINISH wrap converged \(room left RESULTS\) "
+    r"-> LEAVE \(ceremony\)$", re.MULTILINE)
+FINISH_LOCAL_LEAVE_RE = re.compile(
+    r"^\[online-results\] chooser: committed option=FINISH -> LEAVE$",
+    re.MULTILINE)
 
 # A stalled resident-round or tournament advance is fatal for this lane, on top of
 # the shared engine/online forbidden markers.
@@ -414,6 +433,24 @@ def main() -> int:
         return fail("the launcher never read the FINISHED session end (reason="
                     f"FINISHED result=0) -- no clean return-to-room; saw {ends}",
                     output)
+
+    # The final FINISH is REDUCER-OBSERVABLE (the two-real-peer joiner-strand fix):
+    # the host commits the wrap intent (rematch, no SET_MODE), the REMATCH wrap
+    # lands (RESULTS -> LOBBY + fresh series), and only THEN does the host leave to
+    # the ceremony. A purely-local FINISH leave (the pre-fix behavior) parks the
+    # room in RESULTS with the host still seated and strands any real joiner's
+    # chooser mirror forever.
+    if FINISH_LOCAL_LEAVE_RE.search(output):
+        return fail("the tournament-final FINISH took the OLD purely-local leave "
+                    "(no reducer transition) -- a second real peer's chooser mirror "
+                    "would be stranded in RESULTS forever", output)
+    if not CHOOSER_FINISH_COMMIT_RE.search(output):
+        return fail("the final FINISH never committed the wrap intent "
+                    "(rematch=1, no SET_MODE)", output)
+    if not FINISH_WRAP_LEAVE_RE.search(output):
+        return fail("the final FINISH never converged the REMATCH wrap (room left "
+                    "RESULTS) before leaving to the ceremony -- the FINISH is not "
+                    "reducer-observable by a second real peer", output)
 
     # Wedge sub-tests (the deferred safety findings fire cleanly, never hang).
     result = check_watchdog_wedge(binary, rom, args.verbose)
