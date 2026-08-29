@@ -40,12 +40,23 @@ The seven assertions (from both processes' stderr + exit codes):
   f. clean return: both end FINISHED, the launcher room alive, exit 0
   g. re-take: a SECOND [online-room-ready] latch after the return (FINISHED re-arm)
 
-RECORDED RED (assertions a+b against a pre-fix build):
-  A minimal a+b run against a detached worktree at the pre-fix commit eac1e8c0 MUST
-  FAIL with the descriptor-first signature -- zero [online-room-ready] lines and a
-  race that begins source=launch-descriptor -- proving the lane detects the exact
-  defect the owner shipped twice. (The RED build is a separate configure+build of
-  the pre-fix commit with FETCHCONTENT source dirs + the pinned PKG_CONFIG_PATH.)
+RECORDED RED (assertions a+b against the pre-fix build eac1e8c0):
+  The pre-fix commit eac1e8c0 has NO interactive room-ready takeover and NO autopair
+  (both are later work), so the capstone's own pairing cannot run there; the RED is
+  captured by running the LEGACY cloud two-process path (which eac1e8c0 does have)
+  over the real cloud and observing the exact defect the capstone's (a)+(b) detect.
+  Captured 2026-08-29 (RED build: a detached eac1e8c0 worktree configured with
+  -DCMAKE_BUILD_TYPE=Release -DMDKR_ENABLE_ONLINE_BETA=ON
+  -DMDKR_PARTY_ORIGIN=https://party.goldenballoon.net -DMDKR_BUILD_STAMP=<eac1e8c0>
+  + the three FETCHCONTENT_SOURCE_DIR_* deps + the pinned PKG_CONFIG_PATH, then
+  `tools/online/cloud_two_process_engine_boot.py`):
+    (b) FAIL -- the race boots DESCRIPTOR-FIRST on BOTH endpoints:
+        "[NET-SELECTIONS] epoch=1 racers=0:1/0,1:2/0,2:2/0,3:3/0 source=launch-descriptor"
+    (a) FAIL -- ZERO "[online-room-ready]" latch/publish/native-boot lines on either
+        endpoint (the self-firing native takeover does not exist pre-fix), and zero
+        native CHARSELECT / "begin: lobby-start".
+  On HEAD the same two assertions PASS (the takeover self-fires, no launch-descriptor)
+  -- so the lane detects the exact descriptor-first defect the owner shipped twice.
 
 Usage:
     python3 tools/online/check_online_native_flow_cloud.py \\
