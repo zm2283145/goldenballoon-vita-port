@@ -195,7 +195,7 @@ def swap_racerinput_port(out, seat, players):
 
 def run_arm(binary, rom, fixture, players, winner=None, postrace=None,
             pause_quit=False, enabled=True, frames=8500, verbose=False,
-            racer_trace=False):
+            racer_trace=False, window_size="320x240"):
     with tempfile.TemporaryDirectory(prefix="mdkr_ap_race_") as tmp:
         root = Path(tmp)
         save_dir = root / "save"
@@ -220,7 +220,7 @@ def run_arm(binary, rom, fixture, players, winner=None, postrace=None,
         command = [
             binary, "--headless-frames", str(frames),
             "--input-script", str(ROOT / fixture), "--rom", rom,
-            "--window-size", "320x240",
+            "--window-size", window_size,
             "--video-set", f"Enhancements.AdventureParty={1 if enabled else 0}",
         ]
         if verbose:
@@ -488,8 +488,26 @@ def main():
     # --- 4P field rule + binding (race entry only: 4 viewports render ~4x
     #     slower, and the brief scopes 4P to the field rule; the full winner/
     #     return matrix is the 3P arms above). Stop just past the race load. ---
+    #
+    # QUARANTINE PIN (controller ruling R23): this ONE arm runs at 640x480, not the
+    # gate default 320x240. It is NOT a rendering-detail preference -- it steps
+    # around a PRE-EXISTING fast3d renderer bug that is out of this feature's scope
+    # and is escalated as a standalone repo finding:
+    #   dkr_scan_overlay_order (platform/fast3d/gfx_pc_dkr.c) recurses into a
+    #   segment-resolved sub-display-list Gfx* that is in-arena-bounds but points at
+    #   unmapped/stale memory, and SIGSEGVs on the deref (backtrace:
+    #   dkr_scan_overlay_order+0x2a8 <- gfx_run). It fires ONLY on the native-UI
+    #   output-overlay path, which is gated (gfx_pc_dkr.c ~:8130) on a render/output
+    #   DIMENSION MISMATCH -- present at 320x240, absent at 640x480. The 4-viewport
+    #   party hub is the trigger DL; check_adventure_party_hub renders the same 2/3/4P
+    #   hub crash-free at 640x480, and the pre-Task-12 base (2cd0d4e9) runs this arm
+    #   clean at 320x240 too, so it is binary-layout-perturbation-triggered, not a
+    #   Task-12 logic regression and not the R21 dangling-gRacersByPort class. Full
+    #   free-site/bisect analysis: task-12 report addendum (race_loop 4P investigation).
+    # Only the 4P arm hits it (2P/3P pass at 320x240); pin stays as narrow as possible.
     p4 = run_arm(binary, rom, admit4, 4, winner=0, postrace=1,
-                 frames=4600, verbose=args.verbose, racer_trace=True)
+                 frames=4600, verbose=args.verbose, racer_trace=True,
+                 window_size="640x480")
     fe4, _ = assert_race_entry(p4, 4, "4P entry")
     failures += fe4
     failures += assert_race_binding(p4, 4, "4P binding")
