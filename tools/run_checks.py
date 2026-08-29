@@ -823,6 +823,20 @@ CHECKS = (
           "the beaten boss re-suspends on a rematch and refuses a new token, and "
           "EVERY return restores the exact party (aparty_restore match=1); two "
           "positive controls fire (one-racer, doubled-award)"),
+    Check("adventure_party_silver", "check_adventure_party_silver.py",
+          "native",
+          "AP-14 team-shared silver coins: a party silver-coin race (3P central "
+          "scene + a 2P arm) banks ONE team tally -- any human (incl. a non-host "
+          "seat) collects a coin, it vanishes for ALL viewports (invis=0x600), the "
+          "tally increments 1..8 once each, every viewport's HUD shows the same "
+          "total, and EIGHT team coins + a human first awards "
+          "RACE_CLEARED_SILVER_COINS exactly once via a SILVER completion token "
+          "(the finish reading the TEAM total, not the leading racer's own count), "
+          "persisting a slot BYTE-IDENTICAL to a 1P silver win; a CPU-first finish "
+          "with eight team coins awards nothing, and the post-clear replay is no "
+          "longer a silver race (no coins, no second award); two positive controls "
+          "fire (seven-coins, stripped-collection). Adventure Two: NOT RUN "
+          "(AP-16 owns the A2 matrix)"),
     Check("adventure_hub", "check_adventure_hub.py", "native",
           "Adventure hub traversal"),
     Check("adventure_two", "check_adventure_two.py", "native",

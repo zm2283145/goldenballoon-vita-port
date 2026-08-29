@@ -5978,6 +5978,51 @@ AP-12 defect, see `check_adventure_party_boss_restore.py`'s docstring and the ta
 report). The boss-door warp and `racer_boss_finish` are retail, 1P-anchored by
 `check_first_boss_progression.py` / `check_boss_win_verdict.py`.
 
+### Adventure Party team-shared silver coins — `tests/check_adventure_party_silver.py`
+
+```bash
+python3 tests/check_adventure_party_silver.py            # ~20 min, muted + headless
+python3 tests/check_adventure_party_silver.py -v
+```
+
+The AP-14 gate: in a party silver-coin race the coins are TEAM-SHARED — any human
+collects, all viewports see it vanish, one team counter, eight team coins plus any
+human first wins, awarding the retail silver clear exactly once. Proven from the
+running binary + the persisted EEPROM (3P central scene, a 2P arm, a 1P reference):
+
+- **Team-shared collection, any human.** The `silvercoin` trace shows a NON-HOST
+  seat (`playerIndex>0`) collecting a coin, every coin retired for ALL viewports
+  (`invis=0x600` = both engine invisibility bits, so viewports 0/1 directly and
+  2/3 by the `(viewport & 1)` alias), and the ONE team tally incrementing `1..8`
+  each exactly once (no double-collect).
+- **HUD parity.** Every party viewport draws the same one team total
+  (`silverhud viewport=N teamCoins=..`, all N reaching 8).
+- **Exact-once win.** Eight team coins + a human first commits
+  `RACE_CLEARED_SILVER_COINS` once through the unchanged `set_course_finish_flags`
+  path — reading the TEAM total, not the leading racer's own `silverCoinCount`
+  (`silvercoinfinish teamCoins=8 coins=0`) — gated by one `aparty_award` SILVER
+  token (`activity=3`) issue+consume; the persisted 40-byte slot is BYTE-IDENTICAL
+  to a **1P** silver win of the same course (empty whitelist, the house compare).
+- **No award on a CPU-first finish.** With eight team coins banked but no human
+  first (no `MDKR_ADVENTURE_WIN` rotation), no token is minted and no silver flag
+  written.
+- **Replay.** Re-entering after the silver clear is no longer a silver race
+  (`RACE_CLEARED_SILVER_COINS` -> `gIsSilverCoinRace` FALSE): no coins, no second
+  award, no crash — driven directly by the win arm's two Ancient Lake loads.
+- **Positive controls (output only):** a seven-team-coin output must FAIL the win
+  assertions; a coin-trace-stripped output must FAIL them too.
+
+Entry: a headless party cannot drive a boss-beaten world lobby's silver-coin door
+(the door only appears with the boss beaten + course cleared, and that lobby
+repositions the party far from it — measured across 15 attempts). So, per the R20
+retarget precedent, the party drives the PROVEN started-save route into Ancient
+Lake (which `check_adventure_party_progress.py` navigates and wins) and
+`MDKR_SILVER_FORCE=5` flips THAT course to silver at its own load only — the world
+lobby stays the reachable boss-not-beaten started-save lobby, and the coins,
+counter and award are the game's own party path. Adventure Two: **NOT RUN**
+(AP-16 owns the A2 matrix). Off arm — 1P silver unchanged — is
+`check_campaign_progression.py` (seam A).
+
 ### Adventure Party Taj transaction — `tests/check_adventure_party_taj.py`
 
 ```bash
