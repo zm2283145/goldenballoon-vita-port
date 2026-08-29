@@ -80,21 +80,41 @@ static inline s32 mdkr_online_screen_local_seat(
     return -1;
 }
 
+/* Alpha of the body-text dark backing band (T9 POLISH-1). ~0.75 opaque near-black:
+ * strong enough to read the light body faces over the BRIGHTEST world sky (Dino
+ * gold), still translucent so the scrolling sky reads through it (a nameplate, not
+ * an opaque box). Tuned against the bright/dark frame dumps. */
+#define MDKR_ONLINE_TEXT_BAND_ALPHA 190
+
 /* Draw text into the engine frame's display list with the given font + colour,
- * wrapped in a legibility SCRIM (T7b).
+ * wrapped in a legibility SCRIM (T7b) + a dark backing band for body text (T9).
  *
  * The scrim is an 8-direction near-black halo drawn behind every glyph -- a
  * per-glyph dark backing that keeps body text crisp over even the brightest
  * world sky. T7 flagged that the authentic scrolling skies washed out light body
  * text on trackselect/results even WITH the former single 1px drop shadow; a full
  * halo fixes it. This is the retail "outline the font" technique, NOT a heavy
- * opaque box, and it is deliberately built from proven draw_text calls only -- no
- * raw fill-rect microcode (the RDP-state hazard online_results.c's chooser text
- * documented) and, crucially, the halo lives in the SAME virtual coordinate space
+ * opaque box, and, crucially, the halo lives in the SAME virtual coordinate space
  * as the glyphs, so it can never mis-register the way a framebuffer-space
- * fill-rect panel would on the aspect-scaled widescreen host. Applied here once so
- * EVERY native online screen's text (charselect / vehicle / track / results /
- * ceremony) pops uniformly over the busy sky (DRY -- the screens cannot drift). */
+ * fill-rect panel would on the aspect-scaled widescreen host.
+ *
+ * T9 POLISH-1: the T8 acceptance gate found the halo alone STILL washed out the
+ * compact body faces over the BRIGHT skies (Dino gold / Sherbet / Snowflake) --
+ * worst on the pure-text MORE RACES chooser + the charselect labels. The retail
+ * fix is the heavy multi-colour BUBBLE font (ASSET_FONTS_BIGFONT), whose glyph
+ * texture carries its own thick dark outline (the GAME SELECT face) and so stays
+ * crisp over any sky -- online already uses it for TITLES. But BIGFONT is ~24px
+ * tall and does not fit the dense option lists / grid nameplates, so for the
+ * compact faces we add a genuine dark backing BAND: the engine's OWN text-
+ * background fillrect (set_text_background_colour, the exact primitive the offline
+ * magic-codes menu uses at menu.c:7949). render_text_string emits it in the SAME
+ * glyph coordinate space (co-registers with the text on the widescreen host -- NOT
+ * the raw framebuffer fill-rect T7b rejected). BIGFONT (self-outlined) skips the
+ * band so titles keep their exact retail look; every other face (SMALLFONT /
+ * FUNFONT) gets the band. The band is drawn ONCE (with the first halo pass) then
+ * disabled, so it is a single flat plate, not nine stacked ones. Applied here so
+ * EVERY native online screen's text pops uniformly over the busy sky (DRY -- the
+ * screens cannot drift). */
 static inline void mdkr_online_screen_text(s32 x, s32 y, s32 fontId, char *text,
                                            AlignmentFlags align, s32 r, s32 g,
                                            s32 b) {
@@ -104,8 +124,17 @@ static inline void mdkr_online_screen_text(s32 x, s32 y, s32 fontId, char *text,
     static const s32 oy[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
     unsigned i;
     set_text_font(fontId);
-    set_text_background_colour(0, 0, 0, 0);
-    set_text_colour(0, 0, 0, 0, 255);
+    if (fontId != (s32) ASSET_FONTS_BIGFONT) {
+        /* One dark backing band (a throwaway near-black glyph carries the fillrect
+         * behind the whole string), then disable it for the halo/main passes. */
+        set_text_background_colour(0, 0, 0, MDKR_ONLINE_TEXT_BAND_ALPHA);
+        set_text_colour(0, 0, 0, 0, 255);
+        draw_text(&gCurrDisplayList, x, y, text, align);
+        set_text_background_colour(0, 0, 0, 0);
+    } else {
+        set_text_background_colour(0, 0, 0, 0);
+        set_text_colour(0, 0, 0, 0, 255);
+    }
     for (i = 0u; i < 8u; i++) {
         draw_text(&gCurrDisplayList, x + ox[i], y + oy[i], text, align);
     }
