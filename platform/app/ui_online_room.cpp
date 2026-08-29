@@ -747,8 +747,9 @@ bool buildBetaLiveAdapter(const LauncherState &state, MdkrOnlineJourney journey,
      * routing through teardownAdapterAsync, or a registry pointer will dangle. */
     g_online.adapter = std::move(adapter);
     /* A fresh adapter/session -- re-arm the one-shot room-ready latch so
-     * the next tournament SELECTING transition can publish this adapter for the
-     * native descriptor-less takeover. */
+     * the next SELECTING transition (ANY online mode -- the takeover is
+     * mode-agnostic) can publish this adapter for the native descriptor-less
+     * takeover. */
     OnlineRoom_resetRoomReadyLatch();
     g_online.initialized = true;
     g_online.betaHostJourney = journey == MDKR_ONLINE_JOURNEY_CREATE;
@@ -2597,7 +2598,7 @@ static void teardownAdapterAsync(std::unique_ptr<IMdkrOnlineAdapter> adapter) {
     // Same hazard class for the room-ready registry: the
     // room-ready poll publishes the RESOLVED RAW inner LiveAdapter pointer, so a
     // "Leave Race" click on the very frame the room first hits SELECTING+2members+
-    // LOBBY+TOURNAMENT could hand runInteractiveLauncher a dying adapter (UAF on
+    // LOBBY (any mode) could hand runInteractiveLauncher a dying adapter (UAF on
     // visible->service() + engine boot on freed memory). Retract it here, on the
     // launcher thread, BEFORE the detached destruction -- using the SAME wrapper->raw
     // resolution the publish used (a retract-by-wrapper-pointer would not match).

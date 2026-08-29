@@ -5000,8 +5000,9 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
 #if MDKR_ENABLE_ONLINE_BETA
         /* PRODUCTION ROOM-READY takeover (polled BEFORE the race-boot
          * handoff below). The panel (inside launcher.draw above) published its live
-         * adapter the first frame a TOURNAMENT room reached SELECTING with 2 members
-         * in LOBBY. Boot the visible engine DESCRIPTOR-LESS (peer == nullptr) so the
+         * adapter the first frame an online room (ANY mode -- the takeover is
+         * mode-agnostic since T2) reached SELECTING with 2 members in LOBBY. Boot the
+         * visible engine DESCRIPTOR-LESS (peer == nullptr) so the
          * NATIVE CHARSELECT -> TRACKSELECT own race 1 for the human, and the resident
          * coordinator re-cycles races 2..N single-endpoint in this one process. The
          * race-boot handoff below stays the UNCHANGED fallback for every non-takeover
@@ -5057,6 +5058,14 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
          * transport, then fall back into this loop. No UI change is required --
          * the trigger is adapter state, not a panel callback. */
         if (IMdkrOnlineAdapter *raceBoot = OnlineRoom_pollEngineRaceBoot()) {
+            /* BACKOUT BELT: the native room-ready takeover did NOT claim this boot
+             * (single-race, a room that never armed room-ready, or a post-LEFT/ERROR
+             * return). This per-race fallback is the intended safety net, but the
+             * native takeover is the production path -- WARN so any PRODUCTION use of
+             * the fallback is visible in the logs. */
+            std::fprintf(stderr,
+                         "[online-room-ready] WARN race-boot fallback engaged "
+                         "(native room-ready takeover did not claim this boot)\n");
             MdkrBootConfig onlineConfig{};
             const std::string onlineRom = AppConfig::get("rom_path", "");
             onlineConfig.rom_path = onlineRom.c_str();
