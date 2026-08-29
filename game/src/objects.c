@@ -5929,6 +5929,46 @@ void obj_animate_tick(void) {
 }
 #endif
 
+#if defined(NATIVE_PORT) && MDKR_ENABLE_ONLINE_BETA
+/* Racer drawn-LOD animation discriminator (env MDKR_TEST_ANIM_LOD_WITNESS; NOT
+ * roster-gated, so a beta build can observe it OFFLINE 2P too). At the authored
+ * draw, reports every racer whose DRAWN model index differs from the
+ * authoritative obj->modelIndex, together with the drawn instance's
+ * animationID. The model_instance_init sentinel animationID == -1 means the
+ * drawn instance has NEVER been posed by obj_animate and presents the bind
+ * pose. Read-only: every access is a load. */
+static s32 mdkr_anim_lod_witness_enabled(void) {
+    static s32 state = -1;
+    if (state < 0) {
+        const char *v = getenv("MDKR_TEST_ANIM_LOD_WITNESS");
+        state = (v != NULL && v[0] != '\0' && v[0] != '0') ? 1 : 0;
+    }
+    return state;
+}
+
+static void mdkr_anim_lod_witness(const Object *obj) {
+    s32 renderIndex;
+    const ModelInstance *drawn;
+    if (!mdkr_anim_lod_witness_enabled() || obj->behaviorId != BHV_RACER ||
+        obj->modelInstances == NULL) {
+        return;
+    }
+    renderIndex = object_render_model_index(obj);
+    if (renderIndex == obj->modelIndex) {
+        return;
+    }
+    drawn = obj->modelInstances[renderIndex];
+    if (drawn == NULL || drawn->modelType != MODELTYPE_ANIMATED) {
+        return;
+    }
+    fprintf(stderr,
+            "[anim-lod-witness] renderIndex=%d authoritativeIndex=%d "
+            "drawnAnimationID=%d drawnAnimationFrame=%d\n",
+            renderIndex, obj->modelIndex, (s32) drawn->animationID,
+            (s32) drawn->animationFrame);
+}
+#endif
+
 /**
  * Renders a 3D object, with support for vehicle part entities as part of the process.
  * Loads materials, and sets environment and/or primitive colours based on the material type.
@@ -5959,6 +5999,9 @@ void render_3d_model(Object *obj) {
 
 #ifdef NATIVE_PORT
     modInst = obj->modelInstances[object_render_model_index(obj)];
+#if MDKR_ENABLE_ONLINE_BETA
+    mdkr_anim_lod_witness(obj);
+#endif
 #else
     modInst = obj->modelInstances[obj->modelIndex];
 #endif
@@ -6615,7 +6658,36 @@ static s32 racer_model_index_for_view(Object *obj, Object_Racer *racer,
      * would have picked anyway -- and because that is the only point at which
      * the setting can honestly report whether it changed anything. */
     if (allowLodBias && fromDistanceLadder) {
-        modelIndex = mdkr_enh_lod_bias_apply(modelIndex, firstModel, lastModel);
+#if MDKR_ENABLE_ONLINE_BETA
+        /* Enhancements.LodBias holds a MORE-detailed model than the ladder
+         * chose -- but only obj_animate_tick() poses vertices, and it poses
+         * ONLY modelInstances[obj->modelIndex]. In the online 2P canonical
+         * layout the racer band table's first two thresholds are zero, so the
+         * authoritative ladder never returns index 0 or 1: a bias onto either
+         * selects an instance obj_animate has NEVER posed, and
+         * model_instance_init left it as the bind pose. That drew every
+         * biased remote racer as a sustained T-pose in a real online race.
+         * When the biased instance still carries the init sentinel
+         * (animationID == -1), keep the ladder's own choice -- exactly what
+         * LodBias=0 draws, whose divergences are all posed (witness-proven).
+         * Presentation-only either way: obj->modelIndex is not written. */
+        if (mdkr_net_roster_runtime_active()) {
+            s32 biasedIndex =
+                mdkr_enh_lod_bias_apply(modelIndex, firstModel, lastModel);
+            if (biasedIndex != modelIndex) {
+                const ModelInstance *held = obj->modelInstances[biasedIndex];
+                if (held != NULL && held->modelType == MODELTYPE_ANIMATED &&
+                    held->animationID == -1) {
+                    biasedIndex = modelIndex;
+                }
+            }
+            modelIndex = biasedIndex;
+        } else
+#endif
+        {
+            modelIndex =
+                mdkr_enh_lod_bias_apply(modelIndex, firstModel, lastModel);
+        }
     }
     /* Bonus-racer donor LOD cap. Gated on allowLodBias for exactly the reason the bias above is:
      * this is presentation-only, and `allowLodBias` is TRUE only on the draw seam in
