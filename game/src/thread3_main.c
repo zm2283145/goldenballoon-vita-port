@@ -2085,6 +2085,31 @@ void alloc_displaylist_heap(s32 numberOfPlayers) {
     s32 num;
     s32 totalSize;
 
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    /* A party renders up to participant_count viewports in levels retail
+     * loads as 1P (the central hub / world lobbies load with
+     * numberOfPlayers=0, AP-08 re-forms N viewports after the load). Sizing
+     * these per-frame heaps by the retail index then under-provisions them:
+     * a 4-viewport party hub authors ~7900-8800 Gfx against the 1P budget of
+     * 4500, so gCurrDisplayList overflows into gMatrixHeap[] in the same
+     * allocation and the submitted task list ends in matrix/vertex bytes.
+     * Both DL walkers then parse those bytes as commands until one decodes
+     * as a G_DL whose segment-resolved target lies outside the arena --
+     * the AP-12 4P party-hub SIGSEGV (ASAN: heap-buffer-overflow past
+     * g_dkrArenaBase; see task-12b-asan-report.md). Size by the stable 2-4
+     * roster count instead while a session exists: the roster is the upper
+     * bound of viewports a party ever forms, and the retail 4P table row is
+     * the budget retail itself uses for 4 viewports. Stock (no session) and
+     * OMIT arms are byte-unchanged. */
+    {
+        int apCount = adventure_party_participant_count(
+            adventure_party_runtime_session());
+        if (apCount > 0 && numberOfPlayers < apCount - 1) {
+            numberOfPlayers = apCount - 1;
+        }
+    }
+#endif
+
     if (numberOfPlayers != gPrevPlayerCount) {
         gPrevPlayerCount = numberOfPlayers;
         num = numberOfPlayers;
