@@ -1625,8 +1625,8 @@ for the two absent human controllers; everything after pairing is the production
 code path choosing its own route. This is the one production-path acceptance lane
 the other online lanes' seam-injection scenarios stand in for.
 
-`check_online_lobby_tournament.py` (standalone lane, not run-checks registered)
-is the PD-T6h2b KEYSTONE gate: it COMPOSES the T6h2a lobby-start boot with the
+`check_online_lobby_tournament.py` (run-checks registered in
+`tools/run_online_checks.py`) is the PD-T6h2b KEYSTONE gate: it COMPOSES the T6h2a lobby-start boot with the
 T6ac/T6h1 resident multi-race coordinator so a descriptor-less session runs a FULL
 tournament IN ONE engine process. Same descriptor-less begin as the lobby-start
 lane, but `MDKR_APP_TEST_ONLINE_MODE=tournament` + `MDKR_APP_TEST_ONLINE_CUP=1`
@@ -1658,7 +1658,8 @@ reaches its final-standings FINISH by the host committing the native chooser's
 FINISH option (`[online-results] chooser: committed option=FINISH -> LEAVE`).
 Default `--build build-beta`.
 
-`check_online_session_end.py` (standalone lane, not run-checks registered) is the
+`check_online_session_end.py` (run-checks registered in
+`tools/run_online_checks.py`) is the
 PD-T6d gate for the engine->launcher FINISH/RETURN handshake (the session
 end-reason channel). After a native online session ends the engine notes WHY on
 the party_link channel (`mdkr_party_link_note_session_end`) + requests the platform
