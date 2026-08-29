@@ -779,6 +779,13 @@ CHECKS = (
           "door transition (single + conflicting, 2P/3P), any-seat balloon "
           "collect-once, non-host pause open with host resume authority, and "
           "disconnect-forced shared pause; two positive controls fire"),
+    Check("adventure_party_race_loop", "check_adventure_party_race_loop.py",
+          "native",
+          "AP-12/R16 default party race loop: party crosses hub->lobby->race "
+          "(R16 two-hop), a default race fields six racers (N humans + 6-N CPUs, "
+          "N viewports, per-seat binding) at 2P/3P/4P, and a host/non-host/CPU "
+          "win, a retry and a mid-race quit-to-lobby each return the same party "
+          "to the lobby (sgen stable, lgen advanced); two positive controls fire"),
     Check("adventure_hub", "check_adventure_hub.py", "native",
           "Adventure hub traversal"),
     Check("adventure_two", "check_adventure_two.py", "native",

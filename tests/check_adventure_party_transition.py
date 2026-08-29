@@ -68,6 +68,14 @@ DEST_LEVEL_ID = 12  # the one reliably reachable central-hub exit (dest 12)
 HUB_TO_E12 = "200,500|-1004,946|-1858,1099|-3381,1946|-3948,2180|E12"
 HUB_TO_B10 = "200,500|-1004,946|-1858,1099|B10"  # golden balloon 10, on the way
 
+# R16 two-hop shared route (MDKR_DRIVE_ROUTE syntax, level-scoped): central hub
+# (0) collect balloon 10 then take the door to the Dino Domain world lobby (12);
+# in the lobby, take the door BACK to the central hub (E0). Two lobby->lobby
+# doors in two generations -- the second only latches because the arrival
+# LOBBY_TRANSITION (R16) cleared the first hop's terminal latch.
+TWO_HOP_ROUTE = ("0:200,500:-1004,946:-1858,1099:B10:-3381,1946:-3948,2180:E12"
+                 ";12:E0")
+
 # aparty action / verdict enum values (adventure_party_policy.h), emitted raw.
 ACTION_PAUSE = 1
 ACTION_TRIGGER = 2
@@ -129,7 +137,7 @@ def dest_roster_layout(out, players):
 
 
 def run_arm(binary, rom, fixture, players, seat_route=None, drop=None,
-            enabled=True, frames=3500, verbose=False):
+            enabled=True, frames=3500, verbose=False, drive_route=None):
     with tempfile.TemporaryDirectory(prefix="mdkr_ap_trans_") as tmp:
         root = Path(tmp)
         save_dir = root / "save"
@@ -140,6 +148,11 @@ def run_arm(binary, rom, fixture, players, seat_route=None, drop=None,
         env.update(LC_ALL="C", MDKR_AUDIO="0", MDKR_TRACE="1")
         if seat_route:
             env["MDKR_AP_SEAT_ROUTE"] = seat_route
+        if drive_route:
+            # The shared level-scoped route (hub/lobby doors) + autopilot, for a
+            # multi-hop lobby->lobby->lobby scene the per-seat routes cannot span.
+            env["MDKR_DRIVE_ROUTE"] = drive_route
+            env["MDKR_AUTOPILOT"] = "1"
         if drop:
             env["MDKR_AP_DROP_PAD"] = drop
         save_env(env, str(save_dir))
@@ -307,6 +320,48 @@ def main():
                         "lobby loaded -- a pad drop bypassed the door-transition pause "
                         "lockout (retail open guards)")
 
+    # --- R16 two-hop: central hub -> world lobby -> back, two lobby->lobby
+    #     transitions in two generations, the party intact at both destinations.
+    #     Proves the arrival LOBBY_TRANSITION generation bump releases the first
+    #     hop's terminal latch so the second door can latch (Task 8's single-hop
+    #     limitation). ---
+    twohop = run_arm(binary, rom, admit3, 3, drive_route=TWO_HOP_ROUTE,
+                     frames=9000, verbose=args.verbose)
+    th_tr = transitions(twohop)
+    hop_dests = [(dest, lgen) for _s, dest, lgen in th_tr]
+    if len(th_tr) < 2:
+        failures.append(f"two-hop: expected two lobby->lobby transitions, saw {th_tr}")
+    else:
+        d1, g1 = hop_dests[0]
+        d2, g2 = hop_dests[1]
+        if d1 != DEST_LEVEL_ID:
+            failures.append(f"two-hop: first hop dest={d1}, expected {DEST_LEVEL_ID} (hub->lobby)")
+        if d2 != HUB_LEVEL_ID:
+            failures.append(f"two-hop: second hop dest={d2}, expected {HUB_LEVEL_ID} (lobby->back)")
+        if not (g2 > g1):
+            failures.append(f"two-hop: two latches were not in two generations "
+                            f"(lgen {g1} then {g2}) -- the LOBBY_TRANSITION bump did not fire")
+    # party intact at BOTH destinations: a full 3-seat roster published after the
+    # lobby load (hop 1) and again after the return hub load (hop 2).
+    th_levels = [(int(m.group(1)), int(m.group(3))) for m in LEVEL_RE.finditer(twohop)]
+    hub_after_start = [fr for lv, fr in th_levels if lv == HUB_LEVEL_ID and fr > 2000]
+    lobby_loads = [fr for lv, fr in th_levels if lv == DEST_LEVEL_ID]
+    hub_return = None
+    if lobby_loads:
+        hub_return = next((fr for lv, fr in th_levels
+                           if lv == HUB_LEVEL_ID and fr > lobby_loads[0]), None)
+    if not lobby_loads:
+        failures.append("two-hop: never loaded the world lobby (hop 1 did not complete)")
+    if hub_return is None:
+        failures.append("two-hop: never returned to the central hub (hop 2 did not complete)")
+    else:
+        tail = twohop[twohop.rfind("levelId=%d" % HUB_LEVEL_ID):]
+        full_at_return = any(int(m.group(1)) == 3 and int(m.group(2), 16) == 0x7
+                             for m in ROSTER_RE.finditer(tail))
+        if not full_at_return:
+            failures.append("two-hop: the party did not re-form whole at the "
+                            "central hub after the second hop")
+
     # --- Positive control 1: single-door output must FAIL conflicting asserts ---
     if not assert_conflicting(single3, 3, "PC-conflict"):
         failures.append("positive control: single-door output PASSED the conflicting "
@@ -325,11 +380,12 @@ def main():
             print(f"  - {x}", file=sys.stderr)
         return 1
     print("check_adventure_party_transition: PASS -- one arbitrated whole-party "
-          "transition per generation (single + conflicting doors, 2P/3P), any-seat "
-          "balloon collect-once, non-host pause open with host resume authority, "
-          "disconnect-forced shared pause, and a mid-door-window drop that waits for "
-          "the destination lobby (no pause bypasses the transition lockout); both "
-          "positive controls fired")
+          "transition per generation (single + conflicting doors, 2P/3P), a R16 "
+          "two-hop (hub->lobby->back: two latches in two generations, party intact "
+          "both hops), any-seat balloon collect-once, non-host pause open with host "
+          "resume authority, disconnect-forced shared pause, and a mid-door-window "
+          "drop that waits for the destination lobby (no pause bypasses the "
+          "transition lockout); both positive controls fired")
     return 0
 
 

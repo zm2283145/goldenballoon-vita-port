@@ -5791,12 +5791,76 @@ Save fixture: the started Adventure One slot-0 save from
 `check_adventure_party_admission.py` (imported), resumed by the host's FILE_SELECT
 confirm. No developer save is read or written.
 
-Scope note: the session's `level_generation` is not bumped on a lobby→lobby
-(hub→hub) transition, because the AP-02 state machine models all lobbies as one
-`ACTIVE_LOBBY` state with no lobby-transition event. The arbiter latch is
-correctly terminal for the departing generation (the anti-double-load guarantee),
-and each test scene performs a single hop; releasing the latch for a *subsequent*
-hop needs a lobby-transition generation bump (see the task-8 report concern).
+R16 two-hop: the gate also drives central hub → world lobby → **back** (the
+shared `MDKR_DRIVE_ROUTE`, level-scoped, which per-seat routes cannot span) and
+asserts two lobby→lobby `aparty_transition` latches in two consecutive
+generations with the full 3-seat roster re-formed at BOTH destinations. This is
+the R16 fix (Task 9): `ADVENTURE_PARTY_EVENT_LOBBY_TRANSITION` takes a
+lobby→lobby door through the one `enter_level` generation bump, which clears the
+first hop's terminal latch so the second door can latch — the release the
+arbiter latch otherwise never gets within a session (the Task 8 single-hop
+limitation is resolved).
+
+### Adventure Party default race loop — `tests/check_adventure_party_race_loop.py`
+
+```bash
+python3 tests/check_adventure_party_race_loop.py            # ~8 min, muted + headless
+python3 tests/check_adventure_party_race_loop.py -v
+```
+
+The AP-12 / R16 focused route: with a party resumed into the central hub, the
+whole party crosses **hub → world lobby** (a lobby→lobby door, the R16
+`LOBBY_TRANSITION` bump) and then **lobby → race**, each as one arbitrated
+whole-party transition, and a DEFAULT balloon race then runs with ALL N humans
+plus CPUs filling to a SIX-racer total. Proven from the running binary's traces:
+
+- **Six-racer field** — the `racefield:` adapter diagnostic reports
+  `humans=N cpus=6-N total=6 viewports=N` for N in {2,3,4} (2P=4 CPUs, 3P=3,
+  4P=2); the field rule (a humans-only field would auto-award a co-op win) is a
+  direct assertion. The race entry publishes the full N-seat `aparty_roster`, the
+  `aparty_layout viewports=N`, and N `aparty_binding seat=i port=i` — the party
+  entered the race whole, per-seat binding held.
+- **Winner independence** — a **host win**, a **non-host-human win**, and a
+  **CPU win** each returns the SAME party to the lobby: the returned lobby
+  publishes the identical roster / layout / per-seat binding, the session
+  generation (sgen) is unchanged, and the level generation (lgen) advanced
+  (`RACE_START` then `RACE_RESULT_COMMITTED`). No lead swap, no roster swap — all
+  the retail lead-swap paths are gated on `is_in_two_player_adventure()`, which a
+  party never sets. Winners are forced with the `MDKR_AP_RACE_WINNER` test hook
+  (by stable `racerIndex`), because an AI-driven CPU field never naturally lets a
+  chosen human win — the host finishes first and the non-host humans are
+  force-finished last; the hook permutes finish positions after the port-1 human
+  has genuinely finished (it changes the verdict, not the drive).
+- **Retry** — postrace TRY AGAIN reloads the SAME race (two race loads with no
+  lobby load between them, the party six-racer field re-fielded both times) and
+  the session stays `ACTIVE_RACE` (exactly one `ACTIVE_RACE` entry — no
+  `RACE_RESULT_COMMITTED` between the loads).
+- **Quit-to-lobby** — a mid-race host pause → RETURN TO LOBBY
+  (`PAUSE_QUIT_LOBBY`, driven by the `MDKR_TEST_PAUSE_QUIT` hook) returns the
+  party to the lobby (`RACE_RESULT_COMMITTED`), roster/layout/binding intact, no
+  double-load.
+
+Driving: the shared `MDKR_DRIVE_ROUTE` steers every human at the hub/lobby doors
+(the party travels as one; the arbiter latches a single whole-party transition);
+in the race, unrouted, `MDKR_AUTOPILOT` drives all humans while the CPUs fill the
+field; `MDKR_FORCE_LAPS=1` keeps each arm short. Two positive controls run inside
+the gate: stripping `aparty_roster` from a return output must FAIL the
+party-returned-intact assertion, and replaying a 2P output through the 4P field
+assertions must FAIL (a 2P field is humans=2/cpus=4, not humans=4/cpus=2). The 4P
+arm is field-rule only (four viewports render ~4× slower; the winner/return
+matrix is the 3P arms). The off arm — the 1P adventure race loop unchanged — is
+`check_adventure_race_loop.py`.
+
+Award semantics are OUT OF SCOPE here (AP-13 owns team-condition → exact-once
+commit): the gate asserts no save/award bytes. For the record, the interim retail
+finish code writes a first-clear reward (RACE_CLEARED + a world balloon) iff the
+first-place racer (`gRacersByPosition[0]`) is a human and `settings->gNumRacers ==
+1` — so a host OR non-host human win writes it and a CPU win writes nothing; AP-13
+reconciles this.
+
+Save fixture: the started Adventure One slot-0 save from
+`check_adventure_party_admission.py` (imported), resumed by the host's FILE_SELECT
+confirm. No developer save is read or written.
 
 ### Harness isolation — `tests/check_harness_isolation.py`
 
