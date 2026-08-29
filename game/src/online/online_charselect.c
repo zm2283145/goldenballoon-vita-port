@@ -77,6 +77,8 @@
 #include "online/online_vehicleselect.h" /* defer self-start to VEHICLESELECT */
 #include "online/online_portraits.h" /* the shared portrait/name/asset
                                         tables (DRY with results/ceremony) */
+#include "online/online_screen_constants.h" /* shared screen size + lobby id-space
+                                               mirrors (DRY across screens) */
 #include "online/online_screen_util.h" /* shared local_seat / text / pulse /
                                           draw_portrait helpers (DRY across screens) */
 
@@ -85,26 +87,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Screen space (SCREEN_WIDTH/HEIGHT live in camera.h/video.h; mirrored here so
- * this TU does not pull those in just for two constants). */
-#define CS_SCREEN_W 320
-#define CS_SCREEN_W_HALF 160
-
 /* gCurrDisplayList (the engine's live 2D frame list) and gRacerPortraits[] (the
  * decoded racer faces) are declared in online_screen_util.h, shared with the other
  * native screens. Both are drawn into the same frame-tail display list
- * menu_missing_controller() uses. */
-
-/* ---- Local mirrors of the launcher lobby's id space -----------------------
- * party_link.h is deliberately dependency-free, so (exactly like online_session.c)
- * we mirror the handful of lobby_core.h constants we need rather than pull the
- * launcher headers into an engine TU. Kept in lock-step by the comment. */
-#define CS_CHAR_COUNT 10u            /* MDKR_ONLINE_CHARACTER_COUNT */
-#define CS_NO_CHARACTER 0xFFu        /* MDKR_ONLINE_NO_CHARACTER */
-#define CS_NO_VEHICLE 0xFFu          /* MDKR_ONLINE_NO_VEHICLE */
-#define CS_PLAYER_VEHICLE_COUNT 3u   /* car / hovercraft / plane (0x07 mask) */
-#define CS_LOBBY_PHASE 1u            /* MDKR_ONLINE_LOBBY */
-#define CS_LOCAL_PAD 0               /* PLAYER_ONE */
+ * menu_missing_controller() uses. The screen size + launcher lobby id-space mirrors
+ * this screen shares with the others live in online_screen_constants.h. */
 
 /* ---- Grid geometry (5x2, screen space; SCREEN_WIDTH 320 x SCREEN_HEIGHT 240) */
 #define CS_COLS 5
@@ -193,7 +180,7 @@ static s32 sTakenTileDrawLum = -1;
 typedef struct CsRemoteView {
     s8 seat;      /* remote seat index, -1 when none */
     u8 present;   /* an occupied remote seat exists */
-    u8 character; /* CS_NO_CHARACTER when no pick yet */
+    u8 character; /* MDKR_ONLINE_SCREEN_NO_CHARACTER when no pick yet */
     u8 ready;
     char name[MDKR_PARTY_LINK_NAME_BYTES + 1u];
 } CsRemoteView;
@@ -295,9 +282,9 @@ static void charselect_input_scripted(CsInput *in) {
 
 /* Live pad: D-pad edges plus a latched analog stick, local player only. */
 static void charselect_input_live(CsInput *in) {
-    u32 pressed = input_pressed(CS_LOCAL_PAD);
-    s32 sx = input_clamp_stick_x(CS_LOCAL_PAD);
-    s32 sy = input_clamp_stick_y(CS_LOCAL_PAD);
+    u32 pressed = input_pressed(MDKR_ONLINE_SCREEN_LOCAL_PAD);
+    s32 sx = input_clamp_stick_x(MDKR_ONLINE_SCREEN_LOCAL_PAD);
+    s32 sy = input_clamp_stick_y(MDKR_ONLINE_SCREEN_LOCAL_PAD);
     s8 wantX = 0;
     s8 wantY = 0;
 
@@ -366,7 +353,7 @@ static void charselect_gather_input(CsInput *in) {
 }
 
 /* Apply one input step to the local cursor/confirm/ready latches. `remoteChar`
- * is the remote seat's taken racer (CS_NO_CHARACTER when none) so a confirm on a
+ * is the remote seat's taken racer (MDKR_ONLINE_SCREEN_NO_CHARACTER when none) so a confirm on a
  * taken cell can be REJECTED (ruling: DISALLOW -- matches offline DKR and avoids
  * the SELECTION_CONFLICT divergence). */
 static void charselect_apply_input(const CsInput *in, u8 remoteChar) {
@@ -392,7 +379,7 @@ static void charselect_apply_input(const CsInput *in, u8 remoteChar) {
             sCs.takenFlashEnd = 0u;
         }
         if (in->aEdge) {
-            if (remoteChar != CS_NO_CHARACTER && sCs.cursor == remoteChar) {
+            if (remoteChar != MDKR_ONLINE_SCREEN_NO_CHARACTER && sCs.cursor == remoteChar) {
                 /* DISALLOW: do not publish a confirm for a taken racer; flash a
                  * TAKEN notice and play a negative cue. */
                 sCs.takenFlashEnd = sCs.ticks + CS_TAKEN_FLASH_TICKS;
@@ -487,7 +474,7 @@ static void charselect_resolve_remote(const MdkrPartyLinkSnapshot *snap,
     unsigned i;
     memset(out, 0, sizeof(*out));
     out->seat = -1;
-    out->character = CS_NO_CHARACTER;
+    out->character = MDKR_ONLINE_SCREEN_NO_CHARACTER;
     if (!haveSnap) {
         return;
     }
@@ -498,7 +485,7 @@ static void charselect_resolve_remote(const MdkrPartyLinkSnapshot *snap,
         }
         out->seat = (s8) i;
         out->present = 1u;
-        if (seat->character_id < CS_CHAR_COUNT) {
+        if (seat->character_id < MDKR_ONLINE_SCREEN_CHAR_COUNT) {
             out->character = seat->character_id;
         }
         out->ready = seat->ready ? 1u : 0u;
@@ -522,7 +509,7 @@ static void charselect_render(const CsRemoteView *rv) {
     sTakenTileDrawLum = -1;
 
     /* Title. */
-    mdkr_online_screen_text(CS_SCREEN_W_HALF, 18, ASSET_FONTS_BIGFONT,
+    mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 18, ASSET_FONTS_BIGFONT,
                             "CHOOSE YOUR RACER", ALIGN_MIDDLE_CENTER, 255, 224,
                             96);
 
@@ -530,10 +517,10 @@ static void charselect_render(const CsRemoteView *rv) {
      * a colorblind player still reads it: cursor = pulsing gold + >NAME< brackets
      *, local confirmed pick = green + YOU tag, remote's taken pick = big
      * luminance drop + name tag. */
-    for (id = 0u; id < CS_CHAR_COUNT; id++) {
+    for (id = 0u; id < MDKR_ONLINE_SCREEN_CHAR_COUNT; id++) {
         u8 pr = 210u, pg = 210u, pb = 210u;
         s32 nr = 200, ng = 200, nb = 200;
-        bool taken = (rv->character != CS_NO_CHARACTER && id == rv->character);
+        bool taken = (rv->character != MDKR_ONLINE_SCREEN_NO_CHARACTER && id == rv->character);
         bool onCursor = (id == sCs.cursor);
         bool localPick = (sCs.confirmed && id == sCs.cursor);
         char label[24];
@@ -625,13 +612,13 @@ static void charselect_render(const CsRemoteView *rv) {
         /* Right status is ALWAYS drawn: a first-time host must see the
          * remote's presence/waiting state, not an empty half. */
         if (!rv->present) {
-            mdkr_online_screen_text(CS_SCREEN_W - 24, 196, ASSET_FONTS_SMALLFONT,
+            mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W - 24, 196, ASSET_FONTS_SMALLFONT,
                                     "WAITING FOR PLAYER...", ALIGN_MIDDLE_RIGHT,
                                     150, 150, 150);
         } else {
             (void) snprintf(line, sizeof(line), "%.12s: %s", rname,
                             rv->ready ? "READY" : "CHOOSING");
-            mdkr_online_screen_text(CS_SCREEN_W - 24, 196, ASSET_FONTS_SMALLFONT,
+            mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W - 24, 196, ASSET_FONTS_SMALLFONT,
                                     line, ALIGN_MIDDLE_RIGHT,
                                     rv->ready ? 120 : 220, rv->ready ? 255 : 220,
                                     rv->ready ? 120 : 220);
@@ -645,14 +632,14 @@ static void charselect_render(const CsRemoteView *rv) {
     if (sCs.ticks < sCs.takenFlashEnd) {
         char msg[32];
         (void) snprintf(msg, sizeof(msg), "TAKEN BY %.7s", rname);
-        mdkr_online_screen_text(CS_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT, msg,
+        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT, msg,
                                 ALIGN_MIDDLE_CENTER, 255, 80, 80);
     } else if (!sCs.confirmed) {
-        mdkr_online_screen_text(CS_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT,
+        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT,
                                 "A: SELECT   B: LEAVE", ALIGN_MIDDLE_CENTER,
                                 255, 255, 255);
     } else if (!sCs.ready) {
-        mdkr_online_screen_text(CS_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT,
+        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT,
                                 "A: READY   B: CHANGE PICK", ALIGN_MIDDLE_CENTER,
                                 255, 255, 255);
     } else {
@@ -664,7 +651,7 @@ static void charselect_render(const CsRemoteView *rv) {
             (void) snprintf(msg, sizeof(msg),
                             "READY! WAITING FOR %.12s...   B: UNREADY", rname);
         }
-        mdkr_online_screen_text(CS_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT, msg,
+        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT, msg,
                                 ALIGN_MIDDLE_CENTER, 120, 255, 120);
     }
 }
@@ -675,7 +662,7 @@ static void charselect_render(const CsRemoteView *rv) {
  * remote-only change still emits a row. */
 static void charselect_witness(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
                                s32 localSeat, const CsRemoteView *rv) {
-    u8 localSeatChar = CS_NO_CHARACTER;
+    u8 localSeatChar = MDKR_ONLINE_SCREEN_NO_CHARACTER;
     u8 localSeatReady = 0u;
     u8 remoteNibble;
     u32 key;
@@ -685,7 +672,7 @@ static void charselect_witness(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
         localSeatReady = snap->seats[localSeat].ready;
     }
 
-    remoteNibble = (rv->character < CS_CHAR_COUNT) ? rv->character : 0xFu;
+    remoteNibble = (rv->character < MDKR_ONLINE_SCREEN_CHAR_COUNT) ? rv->character : 0xFu;
     key = ((u32) sCs.cursor) | ((u32) sCs.confirmed << 8) |
           ((u32) sCs.ready << 9) | ((u32) remoteNibble << 10) |
           ((u32) (rv->ready ? 1u : 0u) << 14) | ((u32) rv->present << 15) |
@@ -705,7 +692,7 @@ static void charselect_witness(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
      * a constant re-derived from the same taken condition. taken=-1 / dim=255 when
      * the rival holds no lock (or the witness seam is unarmed). */
     {
-        s32 takenTile = (rv->character < CS_CHAR_COUNT) ? (s32) rv->character : -1;
+        s32 takenTile = (rv->character < MDKR_ONLINE_SCREEN_CHAR_COUNT) ? (s32) rv->character : -1;
         unsigned takenDim = (sTakenTileDrawLum >= 0)
                                 ? (unsigned) sTakenTileDrawLum
                                 : 255u;
@@ -733,7 +720,7 @@ void mdkr_online_charselect_enter(void) {
     memset(&sCs, 0, sizeof(sCs));
     /* start on the last confirmed racer (or Diddy the first time). A valid
      * first snapshot may re-seed this (see tick). sLastConfirmedChar persists. */
-    sCs.cursor = sLastConfirmedChar < CS_CHAR_COUNT ? sLastConfirmedChar : 0u;
+    sCs.cursor = sLastConfirmedChar < MDKR_ONLINE_SCREEN_CHAR_COUNT ? sLastConfirmedChar : 0u;
 
     /* reset the witness change-detect + the headless seam so a second entry
      * is clean (a re-entered CHARSELECT re-scripts from scratch). */
@@ -749,8 +736,8 @@ void mdkr_online_charselect_enter(void) {
      * dedicated native VEHICLE select screen (online_vehicleselect.c), which the
      * session fronts right after this one (CHARSELECT -> VEHICLESELECT ->
      * TRACKSELECT); TRACKSELECT's auto-narrow remains the final legality clamp. */
-    defaultVehicle = get_player_selected_vehicle(CS_LOCAL_PAD);
-    if (defaultVehicle < 0 || (u8) defaultVehicle >= CS_PLAYER_VEHICLE_COUNT) {
+    defaultVehicle = get_player_selected_vehicle(MDKR_ONLINE_SCREEN_LOCAL_PAD);
+    if (defaultVehicle < 0 || (u8) defaultVehicle >= MDKR_ONLINE_SCREEN_VEHICLE_COUNT) {
         defaultVehicle = (s8) VEHICLE_CAR;
     }
     sCs.vehicle = (u8) defaultVehicle;
@@ -827,7 +814,7 @@ MdkrOnlineCharselectResult mdkr_online_charselect_tick(s32 updateRate) {
      * lands on your existing racer), once, before input. */
     if (!sCs.seeded && haveSnap) {
         if (localSeat >= 0 &&
-            snap.seats[localSeat].character_id < CS_CHAR_COUNT) {
+            snap.seats[localSeat].character_id < MDKR_ONLINE_SCREEN_CHAR_COUNT) {
             sCs.cursor = snap.seats[localSeat].character_id;
         }
         sCs.seeded = 1u;
@@ -853,7 +840,7 @@ MdkrOnlineCharselectResult mdkr_online_charselect_tick(s32 updateRate) {
     /* the authoritative lobby leaving LOBBY (host started / loading) is the
      * signal to move on, and it WINS over a pending leave -- otherwise a stray B
      * would keep this endpoint from ever booting while the room raced on. */
-    if (haveSnap && snap.phase != (uint8_t) CS_LOBBY_PHASE) {
+    if (haveSnap && snap.phase != (uint8_t) MDKR_ONLINE_SCREEN_LOBBY_PHASE) {
         fprintf(stderr,
                 "[online-charselect] advance: lobby left LOBBY (phase=%u) -> hand "
                 "off\n",
@@ -892,10 +879,10 @@ static void charselect_test_resolve(void) {
 static void charselect_test_init_room(void) {
     unsigned i;
     memset(&sTestRoom, 0, sizeof(sTestRoom));
-    sTestRoom.phase = (uint8_t) CS_LOBBY_PHASE;
+    sTestRoom.phase = (uint8_t) MDKR_ONLINE_SCREEN_LOBBY_PHASE;
     for (i = 0u; i < MDKR_PARTY_LINK_SEATS; i++) {
-        sTestRoom.seats[i].character_id = CS_NO_CHARACTER;
-        sTestRoom.seats[i].vehicle_id = CS_NO_VEHICLE;
+        sTestRoom.seats[i].character_id = MDKR_ONLINE_SCREEN_NO_CHARACTER;
+        sTestRoom.seats[i].vehicle_id = MDKR_ONLINE_SCREEN_NO_VEHICLE;
     }
     /* Seat 0: the local player (also host). Seat 1: a scripted remote who has
      * already locked a character + readied, so the screen has a live remote pick
@@ -953,14 +940,14 @@ static void charselect_test_reduce_and_script(void) {
 
     /* Minimal launcher reducer: converge the local seat to the polled intent. */
     if (mdkr_party_link_intent_poll(&intent)) {
-        if (intent.confirmed && intent.hover_character < CS_CHAR_COUNT) {
+        if (intent.confirmed && intent.hover_character < MDKR_ONLINE_SCREEN_CHAR_COUNT) {
             sTestRoom.seats[0].character_id = intent.hover_character;
         }
-        if (intent.vehicle_id < CS_PLAYER_VEHICLE_COUNT) {
+        if (intent.vehicle_id < MDKR_ONLINE_SCREEN_VEHICLE_COUNT) {
             sTestRoom.seats[0].vehicle_id = intent.vehicle_id;
         }
-        if (intent.ready && sTestRoom.seats[0].character_id != CS_NO_CHARACTER &&
-            sTestRoom.seats[0].vehicle_id != CS_NO_VEHICLE) {
+        if (intent.ready && sTestRoom.seats[0].character_id != MDKR_ONLINE_SCREEN_NO_CHARACTER &&
+            sTestRoom.seats[0].vehicle_id != MDKR_ONLINE_SCREEN_NO_VEHICLE) {
             sTestRoom.seats[0].ready = 1u;
         } else if (intent.backout) {
             sTestRoom.seats[0].ready = 0u;
@@ -984,7 +971,7 @@ static void charselect_test_reduce_and_script(void) {
     if (sTestRoom.seats[0].ready && sTestRoom.seats[1].ready &&
         !mdkr_online_trackselect_test_active() &&
         !mdkr_online_vehicleselect_test_active()) {
-        sTestRoom.phase = (uint8_t) (CS_LOBBY_PHASE + 1u); /* LOADING */
+        sTestRoom.phase = (uint8_t) (MDKR_ONLINE_SCREEN_LOBBY_PHASE + 1u); /* LOADING */
     }
 
     mdkr_party_link_publish(&sTestRoom);

@@ -72,6 +72,8 @@
 #include "online/online_trackselect.h" /* cup_track resolver (engine-truth table) */
 #include "online/online_portraits.h" /* sOnlineToPortrait / sOnlineNames /
                                         sPortraitAssetIds (DRY with the other screens) */
+#include "online/online_screen_constants.h" /* shared screen size + lobby id-space
+                                               mirrors (DRY across screens) */
 #include "online/online_screen_util.h" /* shared local_seat / text / pulse /
                                           draw_portrait + scrolling-sky backdrop */
 
@@ -80,26 +82,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Screen space (mirrored, like online_charselect.c). */
-#define VS_SCREEN_W 320
-#define VS_SCREEN_W_HALF 160
-
-/* ---- Local mirrors of the launcher lobby's id space (no launcher headers) --- */
-#define VS_CHAR_COUNT 10u            /* MDKR_ONLINE_CHARACTER_COUNT */
-#define VS_NO_CHARACTER 0xFFu        /* MDKR_ONLINE_NO_CHARACTER */
-#define VS_NO_VEHICLE 0xFFu          /* MDKR_ONLINE_NO_VEHICLE */
-#define VS_PLAYER_VEHICLE_COUNT 3u   /* car / hovercraft / plane (0x07 mask) */
+/* The screen size + shared launcher lobby id-space mirrors (and the 2-player-
+ * narrowing track ids) live in online_screen_constants.h. These three are used
+ * only by this screen. */
 #define VS_ALL_VEHICLES 0x07u        /* MDKR_ONLINE_PLAYER_VEHICLE_MASK */
 #define VS_CUP_COUNT 5u              /* 5 cups (== 5 worlds) */
-#define VS_LOBBY_PHASE 1u            /* MDKR_ONLINE_LOBBY */
-#define VS_MODE_TOURNAMENT 1u        /* MDKR_ONLINE_MODE_TOURNAMENT */
 #define VS_TRACK_NONE 0xFFFFu        /* configured_track "none" sentinel */
-#define VS_LOCAL_PAD 0               /* PLAYER_ONE */
-
-/* Retail 2-player narrowing (mirrors online_trackselect.c: menu_track_select V79+
- * -- engine truth for the two tracks whose usable set shrinks at 2 players). */
-#define VS_TRACK_SPACEPORT_ALPHA 15u
-#define VS_TRACK_FROSTY_VILLAGE 28u
 
 /* Menu SFX (the real DKR enums, same reuse as the other native screens). */
 #define VS_SFX_MOVE SOUND_MENU_PICK2
@@ -111,7 +99,7 @@
 
 /* ---- Layout geometry (320x240) -------------------------------------------- */
 #define VS_TITLE_Y 18
-#define VS_PORTRAIT_X (VS_SCREEN_W_HALF - 22) /* centered ~44px portrait */
+#define VS_PORTRAIT_X (MDKR_ONLINE_SCREEN_W_HALF - 22) /* centered ~44px portrait */
 #define VS_PORTRAIT_Y 34
 #define VS_CHARNAME_Y 82
 #define VS_ART_Y 98            /* top edge of the real car/hover/plane art (T9) */
@@ -125,10 +113,10 @@
 #define VS_CARD_DX 96
 
 /* Vehicle names + a per-vehicle accent colour (display chrome only). */
-static const char *const sVehicleNames[VS_PLAYER_VEHICLE_COUNT] = {
+static const char *const sVehicleNames[MDKR_ONLINE_SCREEN_VEHICLE_COUNT] = {
     "CAR", "HOVERCRAFT", "PLANE",
 };
-static const u8 sVehicleAccent[VS_PLAYER_VEHICLE_COUNT][3] = {
+static const u8 sVehicleAccent[MDKR_ONLINE_SCREEN_VEHICLE_COUNT][3] = {
     {230u, 110u, 110u}, /* CAR       -- warm red */
     {110u, 190u, 230u}, /* HOVERCRAFT-- cool blue */
     {235u, 205u, 110u}, /* PLANE     -- gold */
@@ -178,7 +166,7 @@ static s32 sWitnessRemoteSeat = -2;
 typedef struct VsRemoteView {
     s8 seat;
     u8 present;
-    u8 vehicle;   /* VS_NO_VEHICLE when none */
+    u8 vehicle;   /* MDKR_ONLINE_SCREEN_NO_VEHICLE when none */
     u8 ready;
     char name[MDKR_PARTY_LINK_NAME_BYTES + 1u];
 } VsRemoteView;
@@ -218,7 +206,7 @@ static u16 vehicleselect_resolve_track(const MdkrPartyLinkSnapshot *snap,
     if (!haveSnap) {
         return VS_TRACK_NONE;
     }
-    if (snap->mode == VS_MODE_TOURNAMENT) {
+    if (snap->mode == MDKR_ONLINE_SCREEN_MODE_TOURNAMENT) {
         if (snap->cup_id < VS_CUP_COUNT) {
             return mdkr_online_trackselect_cup_track(snap->cup_id, 0u);
         }
@@ -247,10 +235,10 @@ static u8 vehicleselect_track_mask(u16 trackId, unsigned occupied) {
         return VS_ALL_VEHICLES; /* unknown id -> permissive, not car-only */
     }
     if (occupied >= 2u) {
-        if (trackId == VS_TRACK_SPACEPORT_ALPHA) {
+        if (trackId == MDKR_ONLINE_SCREEN_TRACK_SPACEPORT_ALPHA) {
             mask &= (u8) ~(1u << VEHICLE_HOVERCRAFT);
         }
-        if (trackId == VS_TRACK_FROSTY_VILLAGE) {
+        if (trackId == MDKR_ONLINE_SCREEN_TRACK_FROSTY_VILLAGE) {
             mask &= (u8) ~(1u << VEHICLE_PLANE);
         }
     }
@@ -261,7 +249,7 @@ static u8 vehicleselect_track_mask(u16 trackId, unsigned occupied) {
 }
 
 static bool vehicleselect_vehicle_legal(u8 vehicle, u8 mask) {
-    return vehicle < VS_PLAYER_VEHICLE_COUNT &&
+    return vehicle < MDKR_ONLINE_SCREEN_VEHICLE_COUNT &&
            (mask & (u8) (1u << vehicle)) != 0u;
 }
 
@@ -273,7 +261,7 @@ static void vehicleselect_autonarrow(u8 mask) {
     if (vehicleselect_vehicle_legal(sVs.vehicle, mask)) {
         return;
     }
-    for (v = 0u; v < VS_PLAYER_VEHICLE_COUNT; v++) {
+    for (v = 0u; v < MDKR_ONLINE_SCREEN_VEHICLE_COUNT; v++) {
         if (mask & (u8) (1u << v)) {
             sVs.vehicle = v;
             return;
@@ -288,7 +276,7 @@ static void vehicleselect_resolve_remote(const MdkrPartyLinkSnapshot *snap,
     unsigned i;
     memset(out, 0, sizeof(*out));
     out->seat = -1;
-    out->vehicle = VS_NO_VEHICLE;
+    out->vehicle = MDKR_ONLINE_SCREEN_NO_VEHICLE;
     if (!haveSnap) {
         return;
     }
@@ -299,7 +287,7 @@ static void vehicleselect_resolve_remote(const MdkrPartyLinkSnapshot *snap,
         }
         out->seat = (s8) i;
         out->present = 1u;
-        if (seat->vehicle_id < VS_PLAYER_VEHICLE_COUNT) {
+        if (seat->vehicle_id < MDKR_ONLINE_SCREEN_VEHICLE_COUNT) {
             out->vehicle = seat->vehicle_id;
         }
         out->ready = seat->ready ? 1u : 0u;
@@ -380,8 +368,8 @@ static void vehicleselect_input_scripted(VsInput *in) {
 
 /* Live pad: L/R edges plus a latched analog stick, local player only. */
 static void vehicleselect_input_live(VsInput *in) {
-    u32 pressed = input_pressed(VS_LOCAL_PAD);
-    s32 sx = input_clamp_stick_x(VS_LOCAL_PAD);
+    u32 pressed = input_pressed(MDKR_ONLINE_SCREEN_LOCAL_PAD);
+    s32 sx = input_clamp_stick_x(MDKR_ONLINE_SCREEN_LOCAL_PAD);
     s8 wantX = 0;
 
     memset(in, 0, sizeof(*in));
@@ -456,7 +444,7 @@ static void vehicleselect_apply_input(const VsInput *in) {
     }
     if (in->dx != 0) {
         s32 col = (s32) sVs.cursor + in->dx;
-        col = (col + (s32) VS_PLAYER_VEHICLE_COUNT) % (s32) VS_PLAYER_VEHICLE_COUNT;
+        col = (col + (s32) MDKR_ONLINE_SCREEN_VEHICLE_COUNT) % (s32) MDKR_ONLINE_SCREEN_VEHICLE_COUNT;
         if ((u8) col != sVs.cursor) {
             sVs.cursor = (u8) col;
             sound_play(VS_SFX_MOVE, NULL);
@@ -491,7 +479,7 @@ static void vehicleselect_apply_input(const VsInput *in) {
 static void vehicleselect_publish_intent(void) {
     MdkrPartyLinkLocalIntent intent;
     mdkr_party_link_intent_init(&intent);
-    if (sVs.character < VS_CHAR_COUNT) {
+    if (sVs.character < MDKR_ONLINE_SCREEN_CHAR_COUNT) {
         intent.hover_character = sVs.character;
         intent.confirmed = 1u;
     }
@@ -511,15 +499,15 @@ static void vehicleselect_render(const VsRemoteView *rv) {
     u8 v;
 
     /* Title. */
-    mdkr_online_screen_text(VS_SCREEN_W_HALF, VS_TITLE_Y, ASSET_FONTS_BIGFONT,
+    mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, VS_TITLE_Y, ASSET_FONTS_BIGFONT,
                             "CHOOSE YOUR VEHICLE", ALIGN_MIDDLE_CENTER, 255, 224,
                             96);
 
     /* The chosen racer's portrait for context (borrowed, guarded). */
-    if (sVs.character < VS_CHAR_COUNT) {
+    if (sVs.character < MDKR_ONLINE_SCREEN_CHAR_COUNT) {
         mdkr_online_screen_draw_portrait(sVs.character, VS_PORTRAIT_X,
                                          VS_PORTRAIT_Y, 220u, 220u, 220u);
-        mdkr_online_screen_text(VS_SCREEN_W_HALF, VS_CHARNAME_Y,
+        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, VS_CHARNAME_Y,
                                 ASSET_FONTS_SMALLFONT,
                                 (char *) sOnlineNames[sVs.character],
                                 ALIGN_MIDDLE_CENTER, 200, 200, 200);
@@ -528,7 +516,7 @@ static void vehicleselect_render(const VsRemoteView *rv) {
     /* The three vehicle cards. Colour + shape carry the state so a colourblind
      * player still reads it: cursor = pulsing gold >NAME<, committed = green,
      * illegal = big luminance drop + "N/A". */
-    for (v = 0u; v < VS_PLAYER_VEHICLE_COUNT; v++) {
+    for (v = 0u; v < MDKR_ONLINE_SCREEN_VEHICLE_COUNT; v++) {
         s32 x = VS_CARD_X0 + (s32) v * VS_CARD_DX;
         bool legal = vehicleselect_vehicle_legal(v, sVs.mask);
         bool onCursor = (v == sVs.cursor);
@@ -596,7 +584,7 @@ static void vehicleselect_render(const VsRemoteView *rv) {
         } else {
             (void) snprintf(line, sizeof(line), "TRACK: ANY (CHOOSE NEXT)");
         }
-        mdkr_online_screen_text(VS_SCREEN_W_HALF, VS_TRACK_Y,
+        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, VS_TRACK_Y,
                                 ASSET_FONTS_SMALLFONT, line, ALIGN_MIDDLE_CENTER,
                                 190, 190, 210);
     }
@@ -605,22 +593,22 @@ static void vehicleselect_render(const VsRemoteView *rv) {
     {
         char line[64];
         (void) snprintf(line, sizeof(line), "YOU: %s",
-                        sVs.vehicle < VS_PLAYER_VEHICLE_COUNT
+                        sVs.vehicle < MDKR_ONLINE_SCREEN_VEHICLE_COUNT
                             ? sVehicleNames[sVs.vehicle]
                             : "-");
         mdkr_online_screen_text(24, VS_STATUS_Y, ASSET_FONTS_SMALLFONT, line,
                                 ALIGN_MIDDLE_LEFT, 120, 255, 120);
         if (!rv->present) {
-            mdkr_online_screen_text(VS_SCREEN_W - 24, VS_STATUS_Y,
+            mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W - 24, VS_STATUS_Y,
                                     ASSET_FONTS_SMALLFONT,
                                     "WAITING FOR PLAYER...", ALIGN_MIDDLE_RIGHT,
                                     150, 150, 150);
         } else {
             (void) snprintf(line, sizeof(line), "%.12s: %s", rname,
-                            rv->vehicle < VS_PLAYER_VEHICLE_COUNT
+                            rv->vehicle < MDKR_ONLINE_SCREEN_VEHICLE_COUNT
                                 ? sVehicleNames[rv->vehicle]
                                 : "CHOOSING");
-            mdkr_online_screen_text(VS_SCREEN_W - 24, VS_STATUS_Y,
+            mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W - 24, VS_STATUS_Y,
                                     ASSET_FONTS_SMALLFONT, line,
                                     ALIGN_MIDDLE_RIGHT,
                                     rv->ready ? 120 : 220, rv->ready ? 255 : 220,
@@ -630,11 +618,11 @@ static void vehicleselect_render(const VsRemoteView *rv) {
 
     /* Context help / transient reject flash. */
     if (sVs.ticks < sVs.rejectFlashEnd) {
-        mdkr_online_screen_text(VS_SCREEN_W_HALF, VS_HELP_Y, ASSET_FONTS_SMALLFONT,
+        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, VS_HELP_Y, ASSET_FONTS_SMALLFONT,
                                 "NOT ALLOWED ON THIS TRACK", ALIGN_MIDDLE_CENTER,
                                 255, 80, 80);
     } else {
-        mdkr_online_screen_text(VS_SCREEN_W_HALF, VS_HELP_Y, ASSET_FONTS_SMALLFONT,
+        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, VS_HELP_Y, ASSET_FONTS_SMALLFONT,
                                 "A: SELECT   B: BACK", ALIGN_MIDDLE_CENTER, 255,
                                 255, 255);
     }
@@ -645,7 +633,7 @@ static void vehicleselect_render(const VsRemoteView *rv) {
  * remote-only change still emits a row (the "both converge" proof). */
 static void vehicleselect_witness(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
                                   s32 localSeat, const VsRemoteView *rv) {
-    u8 localSeatVeh = VS_NO_VEHICLE;
+    u8 localSeatVeh = MDKR_ONLINE_SCREEN_NO_VEHICLE;
     u8 localSeatReady = 0u;
     u8 remoteNibble;
     u32 key;
@@ -654,13 +642,13 @@ static void vehicleselect_witness(const MdkrPartyLinkSnapshot *snap, bool haveSn
         localSeatVeh = snap->seats[localSeat].vehicle_id;
         localSeatReady = snap->seats[localSeat].ready;
     }
-    remoteNibble = (rv->vehicle < VS_PLAYER_VEHICLE_COUNT) ? rv->vehicle : 0xFu;
+    remoteNibble = (rv->vehicle < MDKR_ONLINE_SCREEN_VEHICLE_COUNT) ? rv->vehicle : 0xFu;
 
     key = ((u32) sVs.cursor) | ((u32) sVs.vehicle << 2) |
           ((u32) sVs.confirmed << 4) | ((u32) sVs.mask << 5) |
           ((u32) remoteNibble << 9) | ((u32) (rv->ready ? 1u : 0u) << 13) |
           ((u32) rv->present << 14) |
-          ((u32) ((localSeatVeh < VS_PLAYER_VEHICLE_COUNT) ? localSeatVeh : 7u)
+          ((u32) ((localSeatVeh < MDKR_ONLINE_SCREEN_VEHICLE_COUNT) ? localSeatVeh : 7u)
            << 15) |
           ((u32) localSeatReady << 18) | ((u32) (sVs.track & 0x3Fu) << 19);
     if (key == sWitnessKey && rv->seat == sWitnessRemoteSeat) {
@@ -693,7 +681,7 @@ void mdkr_online_vehicleselect_enter(void) {
     unsigned occupied;
 
     memset(&sVs, 0, sizeof(sVs));
-    sVs.character = VS_NO_CHARACTER;
+    sVs.character = MDKR_ONLINE_SCREEN_NO_CHARACTER;
     sVs.track = VS_TRACK_NONE;
     sVs.mask = VS_ALL_VEHICLES;
 
@@ -705,11 +693,11 @@ void mdkr_online_vehicleselect_enter(void) {
 
     /* Seed the committed vehicle from the CHARSELECT default (same source), or the
      * last committed one, then clamp to the resolved track's mask (R3). */
-    defaultVehicle = get_player_selected_vehicle(VS_LOCAL_PAD);
-    if (defaultVehicle < 0 || (u8) defaultVehicle >= VS_PLAYER_VEHICLE_COUNT) {
+    defaultVehicle = get_player_selected_vehicle(MDKR_ONLINE_SCREEN_LOCAL_PAD);
+    if (defaultVehicle < 0 || (u8) defaultVehicle >= MDKR_ONLINE_SCREEN_VEHICLE_COUNT) {
         defaultVehicle = (s8) VEHICLE_CAR;
     }
-    sVs.vehicle = (sLastVehicle < VS_PLAYER_VEHICLE_COUNT) ? sLastVehicle
+    sVs.vehicle = (sLastVehicle < MDKR_ONLINE_SCREEN_VEHICLE_COUNT) ? sLastVehicle
                                                            : (u8) defaultVehicle;
 
     /* Read the first snapshot so the initial mask/character/committed vehicle are
@@ -719,10 +707,10 @@ void mdkr_online_vehicleselect_enter(void) {
     localSeat = haveSnap ? mdkr_online_screen_local_seat(&snap) : -1;
     occupied = vehicleselect_occupied_seats(&snap, haveSnap);
     if (haveSnap && localSeat >= 0) {
-        if (snap.seats[localSeat].character_id < VS_CHAR_COUNT) {
+        if (snap.seats[localSeat].character_id < MDKR_ONLINE_SCREEN_CHAR_COUNT) {
             sVs.character = snap.seats[localSeat].character_id;
         }
-        if (snap.seats[localSeat].vehicle_id < VS_PLAYER_VEHICLE_COUNT) {
+        if (snap.seats[localSeat].vehicle_id < MDKR_ONLINE_SCREEN_VEHICLE_COUNT) {
             sVs.vehicle = snap.seats[localSeat].vehicle_id;
         }
     }
@@ -795,7 +783,7 @@ MdkrOnlineVehicleselectResult mdkr_online_vehicleselect_tick(s32 updateRate) {
      * frame; auto-narrow the committed vehicle into the mask (R3) BEFORE input so
      * the cursor's legality reads this frame's mask. */
     if (haveSnap && localSeat >= 0 &&
-        snap.seats[localSeat].character_id < VS_CHAR_COUNT) {
+        snap.seats[localSeat].character_id < MDKR_ONLINE_SCREEN_CHAR_COUNT) {
         sVs.character = snap.seats[localSeat].character_id;
     }
     sVs.track = vehicleselect_resolve_track(&snap, haveSnap);
@@ -832,7 +820,7 @@ MdkrOnlineVehicleselectResult mdkr_online_vehicleselect_tick(s32 updateRate) {
     /* The authoritative lobby leaving LOBBY (host started / loading) wins over a
      * pending leave -- otherwise a stray B would keep this endpoint from booting
      * while the room raced on (charselect parity). */
-    if (haveSnap && snap.phase != (uint8_t) VS_LOBBY_PHASE) {
+    if (haveSnap && snap.phase != (uint8_t) MDKR_ONLINE_SCREEN_LOBBY_PHASE) {
         fprintf(stderr,
                 "[online-vehicleselect] advance: lobby left LOBBY (phase=%u) -> "
                 "hand off\n",
@@ -905,10 +893,10 @@ void mdkr_online_vehicleselect_test_lobby_pump(void) {
         MdkrPartyLinkSnapshot room;
         unsigned i;
         memset(&room, 0, sizeof(room));
-        room.phase = (uint8_t) VS_LOBBY_PHASE;
+        room.phase = (uint8_t) MDKR_ONLINE_SCREEN_LOBBY_PHASE;
         for (i = 0u; i < MDKR_PARTY_LINK_SEATS; i++) {
-            room.seats[i].character_id = VS_NO_CHARACTER;
-            room.seats[i].vehicle_id = VS_NO_VEHICLE;
+            room.seats[i].character_id = MDKR_ONLINE_SCREEN_NO_CHARACTER;
+            room.seats[i].vehicle_id = MDKR_ONLINE_SCREEN_NO_VEHICLE;
         }
         room.configured_track = (uint16_t) VS_TEST_TRACK;
         room.cup_id = 0xFFu;
@@ -967,16 +955,16 @@ static void vehicleselect_test_reduce_and_script(void) {
      * character + (mask-legal) vehicle + ready. The screen only ever publishes a
      * legal vehicle, so this simply mirrors it. */
     if (mdkr_party_link_intent_poll(&intent)) {
-        if (intent.confirmed && intent.hover_character < VS_CHAR_COUNT) {
+        if (intent.confirmed && intent.hover_character < MDKR_ONLINE_SCREEN_CHAR_COUNT) {
             sVsRoom.seats[0].character_id = intent.hover_character;
         }
-        if (intent.vehicle_id < VS_PLAYER_VEHICLE_COUNT) {
+        if (intent.vehicle_id < MDKR_ONLINE_SCREEN_VEHICLE_COUNT) {
             sVsRoom.seats[0].vehicle_id = intent.vehicle_id;
         }
         sVsRoom.seats[1].ready = 1u; /* scripted remote republishes ready */
         if (intent.ready &&
-            sVsRoom.seats[0].character_id != VS_NO_CHARACTER &&
-            sVsRoom.seats[0].vehicle_id != VS_NO_VEHICLE) {
+            sVsRoom.seats[0].character_id != MDKR_ONLINE_SCREEN_NO_CHARACTER &&
+            sVsRoom.seats[0].vehicle_id != MDKR_ONLINE_SCREEN_NO_VEHICLE) {
             sVsRoom.seats[0].ready = 1u;
         } else if (intent.backout) {
             sVsRoom.seats[0].ready = 0u;
