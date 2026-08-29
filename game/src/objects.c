@@ -11409,6 +11409,24 @@ void race_transition_adventure(s32 updateRate) {
                 racer->playerIndex = 0;
             }
         }
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+        /* R21: collapse the party's N split-screen viewports to the single
+         * balloon-cutscene viewport BEFORE the per-racer teardown below frees the
+         * non-winner humans -- exactly as retail 2P does just above (a party is
+         * never is_in_two_player_adventure, AP-01). Otherwise the per-viewport HUD
+         * and audio passes (hud_render_general in mode_game, audspat_update_all in
+         * obj_update) keep reading gRacersByPort slots for humans this loop frees
+         * and SIGSEGV on the dangling entries. After the collapse only the winner
+         * ((*gRacers)[0], swapped in above) is addressable, in port 0, and
+         * numCameras==1 so no freed slot is ever read. Retail is untouched (only a
+         * party reaches here with >1 live viewport). The lobby the party returns
+         * to re-forms N viewports via the AP-08 hub formation. */
+        else if (adventure_party_runtime_is_active()) {
+            set_scene_viewport_num(0);
+            cam_set_layout(VIEWPORT_LAYOUT_1_PLAYER);
+            gRacersByPort[0] = (*gRacers)[0];
+        }
+#endif
         gNumRacersSaved = gNumRacers;
         gRaceEndStage = 1;
     }
