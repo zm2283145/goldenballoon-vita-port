@@ -226,6 +226,27 @@ static u8 charselect_remote_vacate_active(void) {
     return (u8) (sRemoteVacateInput > 0 ? 1 : 0);
 }
 
+/* Test-only: which row-0 racer the scripted cursor picks. Two paired endpoints
+ * MUST pick DIFFERENT racers or the second SET_CHARACTER is rejected forever with
+ * SELECTION_CONFLICT (both claim the same seat). The default (env unset) keeps the
+ * historical Pipsy(2) sequence byte-for-byte, so every existing lane is unchanged;
+ * the two-process cloud capstone sets it per role (host=2, joiner=0). Input only:
+ * it changes which cell the pad navigates to, never a phase/route. Column 0..4. */
+static s16 sCsScriptedPick = -2; /* -2 unresolved, -1 default(Pipsy 2), >=0 col */
+static s16 charselect_scripted_pick(void) {
+    if (sCsScriptedPick == -2) {
+        const char *e = getenv("MDKR_TEST_ONLINE_CHARSELECT_PICK");
+        sCsScriptedPick = -1;
+        if (e != NULL && e[0] != '\0') {
+            long v = strtol(e, NULL, 10);
+            if (v >= 0 && v < CS_COLS) {
+                sCsScriptedPick = (s16) v;
+            }
+        }
+    }
+    return sCsScriptedPick;
+}
+
 static void charselect_input_scripted(CsInput *in) {
     memset(in, 0, sizeof(*in));
     /* proof: keep the local seat BROWSING (never confirm/ready) so
@@ -234,6 +255,22 @@ static void charselect_input_scripted(CsInput *in) {
      * eventually host-start, leaving LOBBY before the debounce elapses. */
     if (charselect_remote_vacate_active()) {
         return;
+    }
+    {
+        const s16 pick = charselect_scripted_pick();
+        if (pick >= 0) {
+            /* Navigate to column `pick` in row 0 (one dx per tick from tick 2),
+             * then confirm and ready with a couple ticks of settle each. */
+            const u32 lastMove = (pick > 0) ? (1u + (u32) pick) : 1u;
+            if (pick > 0 && sCs.ticks >= 2u && sCs.ticks <= (1u + (u32) pick)) {
+                in->dx = 1;
+            } else if (sCs.ticks == lastMove + 2u) {
+                in->aEdge = 1u; /* confirm */
+            } else if (sCs.ticks == lastMove + 8u) {
+                in->aEdge = 1u; /* ready */
+            }
+            return;
+        }
     }
     switch (sCs.ticks) {
     case 2u:
