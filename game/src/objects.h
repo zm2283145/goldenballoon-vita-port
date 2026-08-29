@@ -330,6 +330,10 @@ s32 adventure_party_taj_transform_pending(void);
 s32 adventure_party_silver_race_active(void);
 s32 adventure_party_silver_team_coins(void);
 void adventure_party_silver_team_collect(void);
+/* AP-16 trophy-series award token witness. Called from the trophy rankings
+ * ceremony (menu.c) when a party's championship upgrades a trophy, to mint+consume
+ * one COMPLETION_TROPHY token beside the exact-once retail write. */
+void adventure_party_trophy_award_note(Settings *settings);
 #endif
 void set_time_trial_enabled(s32 status);
 u8 is_time_trial_enabled(void);

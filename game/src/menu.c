@@ -15358,6 +15358,14 @@ s32 menu_trophy_race_rankings_loop(s32 updateRate) {
                                         settings->trophies &= ~(3 << temp0);
                                         settings->trophies |= (prevOption << temp0);
                                         safe_mark_write_save_file(get_save_file_index());
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+                                        /* AP-16: witness the party's ONE shared
+                                         * series result with an exact-once
+                                         * COMPLETION_TROPHY token beside this
+                                         * upgrade-only retail write. No-op for a
+                                         * 1P/non-party trophy award. */
+                                        adventure_party_trophy_award_note(settings);
+#endif
                                     }
                                 }
                             }

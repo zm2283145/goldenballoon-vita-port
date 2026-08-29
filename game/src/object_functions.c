@@ -703,6 +703,46 @@ void obj_loop_trophycab(Object *obj, s32 updateRate) {
         if (worldBalloons) {
             worldBalloons = ((1 << (settings->worldId + 6)) & bossFlags) != 0;
         }
+#ifdef NATIVE_PORT
+        {
+            /* AP-16 gate reachability (R20/R24 retarget precedent). A headless
+             * party cannot drive the world-lobby trophy cabinet's collision/
+             * dialogue: with the cabinet's real precondition set (world boss
+             * beaten), the party wedges on a central-hub Taj-summon SHARED_DIALOGUE
+             * before it ever reaches the lobby (the exact boss-beaten-fixture wall
+             * AP-14 documented), and the boss-beaten lobby also repositions the
+             * party away from the cabinet. So the gate keeps the REACHABLE
+             * boss-not-beaten world lobby (a plain started save the AP-13 progress
+             * route drives into) and, when MDKR_TROPHY_FORCE_ENTER is set, forces
+             * the cabinet's OWN begin_trophy_race_teleport() once this loop is
+             * running (so the party is in a world lobby and worldId is set). This
+             * is the least-fake entry: the real trophy-series machinery
+             * (trophyround_adventure, the four rounds, the rankings/championship,
+             * the trophy award) runs unchanged; only the cabinet's precondition-
+             * gated collision+dialogue is bypassed (that gate is covered 1P by the
+             * retail check_trophy_series anchor). A plain NATIVE_PORT diagnostic
+             * (no adventure-party symbol, like MDKR_TROPHY_COLLIDE), inert without
+             * the env var and byte-neutral for OMIT and the retail anchor. */
+            static s32 sMdkrTrophyForcedEnter;
+            const char *forceEnter = getenv("MDKR_TROPHY_FORCE_ENTER");
+            if (forceEnter != NULL && forceEnter[0] != '\0' &&
+                forceEnter[0] != '0' && !sMdkrTrophyForcedEnter &&
+                obj->properties.trophyCabinet.action == 0) {
+                /* begin_trophy_race_teleport() itself no-ops unless the level
+                 * load timer is idle, so no extra guard is needed here. */
+                sMdkrTrophyForcedEnter = TRUE;
+                if (mdkr_trace_enabled()) {
+                    mdkr_trace("trophycabinet: FORCED-ENTER world=%d "
+                               "balloons=%d bosses=0x%x @frame~%d",
+                               (int) settings->worldId,
+                               (int) settings->balloonsPtr[settings->worldId],
+                               (unsigned) settings->bosses, g_frameCounter);
+                }
+                begin_trophy_race_teleport();
+                obj->properties.trophyCabinet.action = 2;
+            }
+        }
+#endif
         if (obj->properties.trophyCabinet.action == 0 && textbox_visible() == FALSE) {
             if (obj->collisionData->collidedObj != NULL) {
                 if (jingle_state->cooldown == 0) {

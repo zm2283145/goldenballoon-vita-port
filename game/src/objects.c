@@ -2898,12 +2898,14 @@ static void adventure_party_apply_arrival(u8 raceType) {
 }
 
 /*
- * AP-12 default-race field. Resolve the six-racer field for a party DEFAULT race
- * from the pure capability table (consume the row; never hardcode six). Returns
- * the human count to spawn (2..4) and fills *humans / *total / *viewports, or 0
- * when this is not a party default race — challenge/boss/lobby/cutscene, no
- * session, the session is not ACTIVE_RACE (the arrival adapter above must have
- * accepted RACE_START first), or the capability failed closed. */
+ * AP-12/AP-16 race field. Resolve the party split field for a RACETYPE_DEFAULT
+ * track load from the pure capability table (consume the row; never hardcode the
+ * total): the six-racer default/silver field, OR — inside a trophy series — the
+ * retail EIGHT-racer trophy field (Part A decision). Returns the human count to
+ * spawn (2..4) and fills *humans / *total / *viewports, or 0 when this is not a
+ * party track race — challenge/boss/lobby/cutscene, no session, the session is
+ * not ACTIVE_RACE (the arrival adapter above must have accepted RACE_START
+ * first), or the capability failed closed. */
 static s32 adventure_party_race_field(u8 raceType, s32 *humans, s32 *total,
                                       s32 *viewports) {
     AdventurePartySession *session = adventure_party_runtime_session();
@@ -2926,8 +2928,19 @@ static s32 adventure_party_race_field(u8 raceType, s32 *humans, s32 *total,
      * SILVER_COIN to the same six-racer split, so the field is unchanged; the
      * point is that the classification, the token key, and later AP-14 policy see
      * the truth rather than an assumption. */
-    desc.race_kind = gIsSilverCoinRace ? ADVENTURE_PARTY_RACE_KIND_SILVER_COIN
-                                       : ADVENTURE_PARTY_RACE_KIND_DEFAULT;
+    /* AP-16: a trophy-series round loads as a RACETYPE_DEFAULT track race but is
+     * distinguished by the live trophy world id (set in trophyround_adventure /
+     * cleared at series exit). It classifies as TROPHY so the capability table
+     * gives the RETAIL EIGHT-racer split (Part A decision), not the six-racer
+     * default field. gIsSilverCoinRace is false inside a trophy series (the round
+     * courses are not silver replays), so trophy is tested first. */
+    if (get_trophy_race_world_id() != 0) {
+        desc.race_kind = ADVENTURE_PARTY_RACE_KIND_TROPHY;
+    } else {
+        desc.race_kind = gIsSilverCoinRace
+                             ? ADVENTURE_PARTY_RACE_KIND_SILVER_COIN
+                             : ADVENTURE_PARTY_RACE_KIND_DEFAULT;
+    }
     desc.course_class = ADVENTURE_PARTY_COURSE_TRACK;
     cap = adventure_party_classify_activity(&desc, count);
     if (!cap.policy_active || cap.fail_closed ||
@@ -3184,6 +3197,48 @@ static s32 adventure_party_challenge_award_permit(Settings *settings,
     adventure_party_trace_emit_award(ADVENTURE_PARTY_TRACE_AWARD_CONSUME, &token,
                                      (int) consumed);
     return consumed == ADVENTURE_PARTY_OK;
+}
+
+/*
+ * AP-16 trophy-series award token WITNESS. The retail trophy-championship award
+ * (game/src/menu.c rankings_update, RANKINGS_EXIT after round four) upgrades
+ * settings->trophies only when the new podium rank beats the stored one
+ * (temp6 < prevOption), so it is already exact-once across re-runs by that
+ * upgrade-only guard; and a party collapses to gNumberOfActivePlayers==1, so the
+ * shared-result human the ceremony reads is the host (racer 0), exactly as retail
+ * 1P. This mints+consumes ONE COMPLETION_TROPHY token beside that exact-once
+ * write to make the party's ONE shared series result OBSERVABLE and
+ * generation-keyed (the boss first-win witness pattern, Task 12 section 3): a
+ * re-run of the series in a fresh generation that upgrades no trophy writes
+ * nothing and mints nothing, and a duplicate call within one generation cannot
+ * re-consume. The retail write is UNTOUCHED. Course key = worldId (the trophy is
+ * per-world). Called only for a live party session; a 1P/off trophy award never
+ * reaches it (adventure_party_runtime_is_active() is false) and it is compiled
+ * out with the feature.
+ */
+void adventure_party_trophy_award_note(Settings *settings) {
+    AdventurePartySession *session = adventure_party_runtime_session();
+    AdventurePartyCompletionToken token;
+    AdventurePartyResult consumed;
+    int issued;
+
+    if (!adventure_party_runtime_is_active() || session == NULL ||
+        settings == NULL) {
+        return;
+    }
+    issued = adventure_party_completion_token_issue(
+        ADVENTURE_PARTY_OUTCOME_TEAM_WIN, session->session_generation,
+        session->level_generation, (uint16_t) settings->worldId,
+        ADVENTURE_PARTY_RACE_KIND_TROPHY, ADVENTURE_PARTY_COMPLETION_TROPHY,
+        &token);
+    adventure_party_trace_emit_award(ADVENTURE_PARTY_TRACE_AWARD_ISSUE, &token,
+                                     issued);
+    if (!issued) {
+        return;
+    }
+    consumed = adventure_party_consume_completion_token(session, &token);
+    adventure_party_trace_emit_award(ADVENTURE_PARTY_TRACE_AWARD_CONSUME, &token,
+                                     (int) consumed);
 }
 #endif
 
@@ -11298,8 +11353,19 @@ void race_check_finish(s32 updateRate) {
              * mints and consumes the token; only a successful consume permits the
              * unchanged set_course_finish_flags + balloon commit to run, exactly
              * once. Loss / quit / retry / CPU-first reach here with no team win, so
-             * no token is issued and gFirstTimeFinish stays FALSE. */
-            if (adventure_party_race_award_active()) {
+             * no token is issued and gFirstTimeFinish stays FALSE.
+             *
+             * AP-16: a party trophy-series ROUND is also a RACETYPE_DEFAULT race
+             * in ACTIVE_RACE, so it reaches here — but a trophy round must NOT
+             * award the balloon/RACE_CLEARED (retail gates that on
+             * get_trophy_race_world_id()==0 on the else arm below; the trophy's
+             * own championship award is committed separately in the rankings menu,
+             * gated by a COMPLETION_TROPHY token). Excluding a trophy round here
+             * keeps gFirstTimeFinish FALSE so the round finish flows to the
+             * rankings postrace exactly as retail 1P, and the party balloon award
+             * stays default-race-only. */
+            if (adventure_party_race_award_active() &&
+                get_trophy_race_world_id() == 0) {
                 s32 apWinnerSeat = adventure_party_race_winner_seat();
                 /* Record the winner seat UNCONDITIONALLY (NO_SEAT for a CPU-first
                  * or lost finish), so RACE_RESULT_COMMITTED never reports a stale
