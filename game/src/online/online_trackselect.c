@@ -382,7 +382,7 @@ typedef struct TsInput {
     s8 dx;        /* -1 / 0 / +1 column step (edge) */
     s8 dy;        /* -1 / 0 / +1 row step (edge) */
     u8 aEdge;     /* A: lock track/cup */
-    u8 bEdge;     /* B: back to charselect */
+    u8 bEdge;     /* B: back one level (to the native VEHICLE screen) */
     u8 startEdge; /* Start: begin the race (host, once locked) */
     u8 modeEdge;  /* Z: toggle single/tournament (host) */
 } TsInput;
@@ -1178,7 +1178,9 @@ MdkrOnlineTrackselectResult mdkr_online_trackselect_tick(s32 updateRate) {
     }
     if (sTs.leave) {
         sTs.leave = 0u; /* edge: return LEAVE once, never shadow ADVANCE */
-        fprintf(stderr, "[online-trackselect] back to charselect\n");
+        /* B steps back ONE level -- to the native VEHICLE screen (the session owns
+         * the back-stack), not straight to charselect. */
+        fprintf(stderr, "[online-trackselect] back one level\n");
         return MDKR_ONLINE_TRACKSELECT_LEAVE;
     }
     return MDKR_ONLINE_TRACKSELECT_STAY;

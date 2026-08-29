@@ -818,7 +818,6 @@ MdkrOnlineCharselectResult mdkr_online_charselect_tick(s32 updateRate) {
 static s8 sTestActive = -1; /* -1 unresolved, 0 off, 1 on */
 static u8 sTestInstalled;
 static MdkrPartyLinkSnapshot sTestRoom;
-static u8 sTestStartArmed;
 
 #define CS_TEST_REMOTE_CHARACTER 5u /* Bumper, in online id space */
 
@@ -860,7 +859,6 @@ static void charselect_test_reset(void) {
     if (!sTestActive) {
         return;
     }
-    sTestStartArmed = 0u;
     sTestInstalled = 0u;
     charselect_test_init_room();
 }
@@ -907,22 +905,24 @@ static void charselect_test_reduce_and_script(void) {
         }
     }
 
-    /* Script the host-start: once both seats are ready, hold a few frames (so the
-     * converged, both-ready screen is genuinely rendered) then advance the lobby
-     * to LOADING -- the authoritative signal the screen reacts to.
+    /* Script the host-start: once both seats are ready, advance the lobby to
+     * LOADING -- the authoritative signal the screen reacts to (the next tick reads
+     * the LEFT-LOBBY snapshot, renders the converged both-ready state, and returns
+     * ADVANCE). The advance is IMMEDIATE (same reduce tick both seats first read
+     * ready): the native VEHICLESELECT screen is now always in the flow, so the
+     * session would otherwise hand CHARSELECT -> VEHICLESELECT on the local-ready
+     * signal before a held self-start could fire. Advancing at once leaves the
+     * session no LOBBY-phase local-ready tick to divert on, so the standalone
+     * CHARSELECT lane keeps its historical CHARSELECT -> race ADVANCE hand-off.
      *
-     * when the TRACKSELECT headless seam is ALSO armed (the combined
-     * trackselect lane), do NOT self-start here -- leave the room in LOBBY so the
-     * session hands off CHARSELECT -> TRACKSELECT on the local-ready signal and
-     * the TRACKSELECT seam drives the eventual host-start. The standalone
-     * CHARSELECT lane (trackselect seam off) keeps its historical self-start. */
+     * when the TRACKSELECT / VEHICLESELECT headless seam is ALSO armed (the combined
+     * screen lanes), do NOT self-start here -- leave the room in LOBBY so the
+     * session hands the flow forward one native screen at a time and the downstream
+     * seam drives the eventual host-start. */
     if (sTestRoom.seats[0].ready && sTestRoom.seats[1].ready &&
         !mdkr_online_trackselect_test_active() &&
         !mdkr_online_vehicleselect_test_active()) {
-        sTestStartArmed++;
-        if (sTestStartArmed >= 6u) {
-            sTestRoom.phase = (uint8_t) (CS_LOBBY_PHASE + 1u); /* LOADING */
-        }
+        sTestRoom.phase = (uint8_t) (CS_LOBBY_PHASE + 1u); /* LOADING */
     }
 
     mdkr_party_link_publish(&sTestRoom);

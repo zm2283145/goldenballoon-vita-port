@@ -714,53 +714,19 @@ static bool online_session_trackselect_enabled(void) {
              !mdkr_online_trackselect_test_active());
 }
 
-/* whether the native VEHICLE select screen participates in the flow (inserted
- * between CHARSELECT and TRACKSELECT). It does in REAL play (the whole point of
- * T1: the player picks car/hovercraft/plane) and whenever its own seam is armed.
- * It is deliberately SKIPPED for the pre-existing scripted lanes (the standalone
- * CHARSELECT / TRACKSELECT seams and the loopback LOBBY-START lanes) that were
- * authored around the CHARSELECT -> TRACKSELECT hand-off, so those lanes stay
- * byte-behaviour-unchanged and green -- the exact discipline
- * online_session_trackselect_enabled() already models for TRACKSELECT. The new
- * screen is proven by its OWN dedicated lane (which arms the vehicle seam). */
+/* the native VEHICLE select screen (inserted between CHARSELECT and TRACKSELECT)
+ * is ALWAYS part of the flow -- the player picks car/hovercraft/plane. Env
+ * presence never removes it: a production run can no longer silently lose the
+ * screen just because a test var happens to be set in the environment. */
 static bool online_session_vehicleselect_enabled(void) {
-    if (mdkr_online_vehicleselect_test_active()) {
-        return true; /* the dedicated vehicle lane forces the screen on */
-    }
-    /* Any OTHER scripted lane driving the flow without the vehicle seam: OFF. */
-    if (mdkr_online_charselect_test_active() ||
-        mdkr_online_trackselect_test_active() ||
-        getenv("MDKR_TEST_ONLINE_LOBBY_START") != NULL ||
-        getenv("MDKR_TEST_ONLINE_LOBBY_TOURNAMENT") != NULL) {
-        return false;
-    }
-    return true; /* pure live play: the player chooses their vehicle */
+    return true; /* the vehicle screen is always on */
 }
 
-/* T4: whether the native "more races" chooser owns the RESULTS terminal. ON for
- * real interactive play (and the dedicated chooser lane, which forces it via its
- * own seam); OFF for EVERY pre-existing scripted/loopback lane -- each sets one of
- * these "entry" seams while real play sets none -- so the terminal keeps its exact
- * historical behaviour (A: FINISH / joiner self-advance / tournament round
- * re-cycle) whenever the chooser is off, and only real play + the T4 lane get the
- * replay menu. The SAME discipline online_session_vehicleselect_enabled() models. */
+/* the native "more races" chooser ALWAYS owns the RESULTS terminal. Env presence
+ * never demotes it to the legacy terminal behaviour: a production run always gets
+ * the replay menu, regardless of which test vars are set in the environment. */
 static bool online_session_results_chooser_enabled(void) {
-    if (mdkr_online_results_chooser_test_active()) {
-        return true; /* the dedicated chooser lane forces the menu on */
-    }
-    if (mdkr_online_results_test_active() ||                    /* RESIDENT soak */
-        getenv("MDKR_TEST_ONLINE_LOBBY_START") != NULL ||
-        getenv("MDKR_TEST_ONLINE_LOBBY_TOURNAMENT") != NULL ||
-        getenv("MDKR_APP_TEST_ONLINE_LIVE") != NULL ||
-        getenv("MDKR_APP_TEST_ONLINE_LIVE_LOBBY_START") != NULL ||
-        getenv("MDKR_APP_TEST_ONLINE_LIVE_RESIDENT") != NULL ||
-        getenv("MDKR_APP_TEST_ONLINE_ROOM_READY_PROBE") != NULL ||
-        getenv("MDKR_APP_TEST_ONLINE_ROOM_READY_REARM_PROBE") != NULL ||
-        getenv("MDKR_APP_TEST_ONLINE_ROOM_READY_REARM") != NULL ||
-        getenv("MDKR_APP_TEST_ONLINE_LOBBY_WEDGE") != NULL) {
-        return false;
-    }
-    return true; /* real interactive play: the chooser is the terminal */
+    return true; /* the results chooser is always on */
 }
 
 /* Short name of a committed "more races" choice, for the routing witness. */

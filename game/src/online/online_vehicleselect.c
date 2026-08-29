@@ -405,9 +405,41 @@ static void vehicleselect_input_live(VsInput *in) {
     in->bEdge = (pressed & B_BUTTON) ? 1u : 0u;
 }
 
+/* minimal scripted input for every OTHER headless lane that drives the native flow
+ * through this screen but does NOT arm the dedicated VEHICLESELECT choreography
+ * seam: the LOBBY-START / LOBBY-TOURNAMENT loopback lanes (which ride a REAL
+ * launcher reducer) and the self-contained CHARSELECT / TRACKSELECT screen lanes
+ * (whose own reducer converged the room through CHARSELECT). It stays trivial: the
+ * cursor seeds on the committed, always-mask-legal vehicle, so a single A confirms
+ * it and the session hands VEHICLESELECT -> TRACKSELECT. It never moves the cursor
+ * -- the auto-narrow keeps the committed vehicle legal for the resolved track, so
+ * the confirm is never rejected. Inert (unresolved -> off) in a run that arms none
+ * of these seams, so live play uses the real pad. Resolved once. */
+static s8 sVsScriptedConfirm = -1; /* -1 unresolved, 0 off, 1 on */
+static u8 vehicleselect_scripted_confirm_active(void) {
+    if (sVsScriptedConfirm < 0) {
+        sVsScriptedConfirm = (getenv("MDKR_TEST_ONLINE_LOBBY_START") != NULL ||
+                              getenv("MDKR_TEST_ONLINE_LOBBY_TOURNAMENT") != NULL ||
+                              getenv("MDKR_TEST_ONLINE_CHARSELECT") != NULL ||
+                              getenv("MDKR_TEST_ONLINE_TRACKSELECT") != NULL)
+                                 ? 1
+                                 : 0;
+    }
+    return (u8) (sVsScriptedConfirm > 0 ? 1 : 0);
+}
+
+static void vehicleselect_input_scripted_confirm(VsInput *in) {
+    memset(in, 0, sizeof(*in));
+    if (sVs.ticks == 2u) {
+        in->aEdge = 1u; /* confirm the seeded (mask-legal) vehicle -> advance */
+    }
+}
+
 static void vehicleselect_gather_input(VsInput *in) {
     if (mdkr_online_vehicleselect_test_active()) {
         vehicleselect_input_scripted(in);
+    } else if (vehicleselect_scripted_confirm_active()) {
+        vehicleselect_input_scripted_confirm(in);
     } else {
         vehicleselect_input_live(in);
     }
