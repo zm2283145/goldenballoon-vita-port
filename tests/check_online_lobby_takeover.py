@@ -43,11 +43,20 @@ PROBE_RE = re.compile(
 )
 
 # Active view kinds that must engage the takeover (fake gallery slugs).
+#
+# The two SELECTING-kind slugs (select-character, select-start) are intentionally
+# absent: this campaign retired the launcher's per-race SELECTING selection surface
+# (the ImGui character/vehicle/track combos + the ImGui-initiated Start Race), so
+# that legacy preview panel no longer exists to take over. Independently, the beta
+# build now arms a never-silent selection-stall view-timeout on every SELECTING
+# view (beta-gated, lobby_view_model.c), which makes the SELECTING-kind gallery
+# specs (timeout_present=false) unbuildable in a beta build regardless of race
+# admission -- so those arms could never reach an active state here anyway. The
+# takeover invariant stays covered across the ROOM/PREFLIGHT/LOADING/COUNTDOWN/
+# RACING/RESULTS/RECOVERY kinds below.
 ACTIVE_SLUGS = (
     "room-friends",
     "preflight",
-    "select-character",
-    "select-start",
     "loading",
     "countdown",
     "racing-direct",
@@ -56,8 +65,7 @@ ACTIVE_SLUGS = (
 )
 # The create/join chooser must KEEP the shell so a player can still pick a path.
 ENTRY_SLUG = "entry"
-ADMISSION_SLUGS = frozenset({"select-start", "loading", "countdown",
-                             "racing-direct", "results"})
+ADMISSION_SLUGS = frozenset({"loading", "countdown", "racing-direct", "results"})
 
 
 class TakeoverError(RuntimeError):

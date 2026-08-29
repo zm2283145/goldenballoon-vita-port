@@ -17,23 +17,27 @@ MDKR_APP_ONLINE_BETA_STAGE) headlessly through the REAL drawBeta* widgets and re
 the per-render [online-beta-selecting] / [online-beta-results] witnesses. The
 invariants:
 
-    room-single           -> the native takeover IS engaged -> render=handoff
-    room-tournament       -> the native takeover IS engaged -> render=handoff
-    room-single-fallback  -> a LEFT/ERROR native return (takeover NOT engaged)
-                             -> render=reentry (the "Return to game" re-entry card
-                             is shown so a mid-session drop is never a dead end)
+    room-single           -> the post-pairing surface is roster + hand-off card
+                             -> render=handoff
+    room-tournament       -> same, for tournament -> render=handoff
+    room-single-fallback  -> a LEFT/ERROR native return -> render=reentry (the
+                             "Return to game" re-entry card is shown so a
+                             mid-session drop is never a dead end)
     room-tournament-fallback -> same, for tournament
-    results               -> native takeover engaged -> render=handoff (single)
-    finished              -> native takeover engaged -> render=handoff (tournament
-                             final: champion decided)
-    results-fallback      -> LEFT/ERROR return -> render=full-results (the ImGui
-                             results/standings/replay body IS reachable, R7)
-    finished-fallback     -> same, for the tournament-final champion body
+    results               -> the post-pairing surface is roster + results hand-off
+                             card -> render=handoff (single)
+    finished              -> same, for the tournament final -> render=handoff
+
+The per-race ImGui SELECTING grid and the RESULTS standings/replay body are both
+retired: the RESULTS surface is now the concise hand-off card unconditionally (no
+full-results fallback), so the results-fallback / finished-fallback stages are
+gone from the catalog. The SELECTING fallback stages remain -- they render the
+re-entry card (a variant of the same hand-off card), not the deleted grid.
 
 It also captures each stage to a BMP and proves (a) every stage renders a
-non-flat readable frame and (b) each hand-off capture is byte-DIFFERENT from its
-same-mode fallback capture -- i.e. the editable grid / standings-replay body was
-actually removed, not merely the witness string.
+non-flat readable frame and (b) each SELECTING hand-off capture is byte-DIFFERENT
+from its same-mode re-entry (fallback) capture -- i.e. the editable grid was
+actually removed and replaced by a card, not merely the witness string.
 
 The seam requires the beta build (MDKR_ENABLE_ONLINE_BETA); it needs no ROM and
 boots no engine, so --rom is accepted (for the shared online-lane contract) and
@@ -65,7 +69,7 @@ WITNESS_RE = {
     "results": re.compile(
         r"\[online-beta-results\] stage=(?P<stage>[a-z0-9-]+) "
         r"mode=(?P<mode>single|tournament) "
-        r"render=(?P<render>handoff|full-results|none)"
+        r"render=(?P<render>handoff|none)"
     ),
 }
 
@@ -76,21 +80,19 @@ CASES = {
     "room-tournament": ("tournament", "handoff", "selecting"),
     "room-single-fallback": ("single", "reentry", "selecting"),
     "room-tournament-fallback": ("tournament", "reentry", "selecting"),
-    # RESULTS body (T6).
+    # RESULTS body (T6): the concise hand-off card, both modes. No fallback stage --
+    # the full ImGui results/standings/replay body is retired, so RESULTS hands off
+    # unconditionally.
     "results": ("single", "handoff", "results"),
     "finished": ("tournament", "handoff", "results"),
-    "results-fallback": ("single", "full-results", "results"),
-    "finished-fallback": ("tournament", "full-results", "results"),
 }
-# Each hand-off stage paired with its same-mode fallback; the captures must differ.
-# SELECTING: the forward hand-off card vs the "Return to game" re-entry card (the
-# editable grid is gone from both -- the fallback replaced it with the re-entry card).
-# RESULTS: the concise hand-off card vs the full standings/replay recovery body.
+# Each SELECTING hand-off stage paired with its same-mode re-entry (fallback); the
+# captures must differ: the forward hand-off card vs the "Return to game" re-entry
+# card. The editable grid is gone from both -- the fallback now renders the re-entry
+# card, so a differing capture proves the grid was replaced, not merely relabeled.
 DISTINCT_PAIRS = (
     ("room-single", "room-single-fallback"),
     ("room-tournament", "room-tournament-fallback"),
-    ("results", "results-fallback"),
-    ("finished", "finished-fallback"),
 )
 
 
@@ -224,8 +226,7 @@ def main() -> int:
     print(
         "PASS online beta handoff: "
         "selecting-handoff=2 results-handoff=2 (single+tournament each) "
-        "fallbacks=4 grid-retired=1 standings-replay-retired=1 "
-        "recovery-reachable=1")
+        "selecting-reentry=2 grid-retired=1 standings-replay-retired=1")
     return 0
 
 
