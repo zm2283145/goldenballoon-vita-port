@@ -78,10 +78,20 @@ static int event_is_legal(AdventurePartySessionState state,
     case ADVENTURE_PARTY_STATE_OFF:
         return kind == ADVENTURE_PARTY_EVENT_FORM;
     case ADVENTURE_PARTY_STATE_FORMING:
+        /* R22: QUIT is legal from EVERY live state — the title seam is the
+         * universal escape hatch, and refusing it from any state the session
+         * can rest in (here: a party that has formed but not yet chosen new
+         * game vs. resume) recreates the strand-bug class Task 12 fixed for
+         * the solo states: quit-to-title (menu.c) applies QUIT then DESTROY
+         * with results IGNORED, so a QUIT refused here leaves the session
+         * active into the next 1P game. */
         return kind == ADVENTURE_PARTY_EVENT_START_NEW_GAME ||
-               kind == ADVENTURE_PARTY_EVENT_RESUME_SAVE;
+               kind == ADVENTURE_PARTY_EVENT_RESUME_SAVE ||
+               kind == ADVENTURE_PARTY_EVENT_QUIT;
     case ADVENTURE_PARTY_STATE_SHARED_SCENE:
-        return kind == ADVENTURE_PARTY_EVENT_SCENE_COMPLETE;
+        /* R22: quit-to-title during the shared new-game scene. */
+        return kind == ADVENTURE_PARTY_EVENT_SCENE_COMPLETE ||
+               kind == ADVENTURE_PARTY_EVENT_QUIT;
     case ADVENTURE_PARTY_STATE_ACTIVE_LOBBY:
         return kind == ADVENTURE_PARTY_EVENT_DIALOGUE_START ||
                kind == ADVENTURE_PARTY_EVENT_RACE_START ||
@@ -89,7 +99,9 @@ static int event_is_legal(AdventurePartySessionState state,
                kind == ADVENTURE_PARTY_EVENT_LOBBY_TRANSITION ||
                kind == ADVENTURE_PARTY_EVENT_QUIT;
     case ADVENTURE_PARTY_STATE_SHARED_DIALOGUE:
-        return kind == ADVENTURE_PARTY_EVENT_DIALOGUE_COMPLETE;
+        /* R22: quit-to-title during a shared dialogue. */
+        return kind == ADVENTURE_PARTY_EVENT_DIALOGUE_COMPLETE ||
+               kind == ADVENTURE_PARTY_EVENT_QUIT;
     case ADVENTURE_PARTY_STATE_ACTIVE_RACE:
         return kind == ADVENTURE_PARTY_EVENT_RACE_RESULT_COMMITTED ||
                kind == ADVENTURE_PARTY_EVENT_QUIT;
@@ -226,10 +238,13 @@ AdventurePartyResult adventure_party_session_apply(
 
     case ADVENTURE_PARTY_EVENT_QUIT:
         session->state = ADVENTURE_PARTY_STATE_EXITING;
-        /* A quit from a solo activity (or a wedged restore) abandons the
-         * borrowed party: drop the suspended facts so EXITING never carries a
-         * half-restore, keeping "has_suspended_roster only in SOLO/RESTORING"
-         * true. A no-op for a lobby/race quit, where nothing was suspended. */
+        /* R22: QUIT is now legal from every live state. A quit from a solo
+         * activity (or a wedged restore) abandons the borrowed party: drop the
+         * suspended facts so EXITING never carries a half-restore, keeping
+         * "has_suspended_roster only in SOLO/RESTORING" true after a quit from
+         * anywhere. A no-op for a forming/scene/lobby/dialogue/race quit, where
+         * nothing was suspended; the latch drop is likewise a no-op unless a
+         * lobby door was mid-latch. */
         session->has_suspended_roster = 0;
         memset(&session->suspended_roster, 0,
                sizeof session->suspended_roster);

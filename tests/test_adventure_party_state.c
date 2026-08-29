@@ -132,10 +132,13 @@ static int pair_is_legal(AdventurePartySessionState st,
     case ADVENTURE_PARTY_STATE_OFF:
         return k == ADVENTURE_PARTY_EVENT_FORM;
     case ADVENTURE_PARTY_STATE_FORMING:
+        /* R22: QUIT is the universal title-seam escape from every live state. */
         return k == ADVENTURE_PARTY_EVENT_START_NEW_GAME ||
-               k == ADVENTURE_PARTY_EVENT_RESUME_SAVE;
+               k == ADVENTURE_PARTY_EVENT_RESUME_SAVE ||
+               k == ADVENTURE_PARTY_EVENT_QUIT;
     case ADVENTURE_PARTY_STATE_SHARED_SCENE:
-        return k == ADVENTURE_PARTY_EVENT_SCENE_COMPLETE;
+        return k == ADVENTURE_PARTY_EVENT_SCENE_COMPLETE ||
+               k == ADVENTURE_PARTY_EVENT_QUIT;
     case ADVENTURE_PARTY_STATE_ACTIVE_LOBBY:
         return k == ADVENTURE_PARTY_EVENT_DIALOGUE_START ||
                k == ADVENTURE_PARTY_EVENT_RACE_START ||
@@ -143,7 +146,8 @@ static int pair_is_legal(AdventurePartySessionState st,
                k == ADVENTURE_PARTY_EVENT_LOBBY_TRANSITION ||
                k == ADVENTURE_PARTY_EVENT_QUIT;
     case ADVENTURE_PARTY_STATE_SHARED_DIALOGUE:
-        return k == ADVENTURE_PARTY_EVENT_DIALOGUE_COMPLETE;
+        return k == ADVENTURE_PARTY_EVENT_DIALOGUE_COMPLETE ||
+               k == ADVENTURE_PARTY_EVENT_QUIT;
     case ADVENTURE_PARTY_STATE_ACTIVE_RACE:
         return k == ADVENTURE_PARTY_EVENT_RACE_RESULT_COMMITTED ||
                k == ADVENTURE_PARTY_EVENT_QUIT;
@@ -660,6 +664,60 @@ static void test_quit_from_solo_activity(void) {
     expect(s.has_suspended_roster == 0, "title-seam: no suspended residue");
 }
 
+/* R22: QUIT is the universal title-seam escape hatch — legal from EVERY live
+ * state, not just the lobby/race/solo/restore ones. Refusing it from FORMING,
+ * SHARED_SCENE or SHARED_DIALOGUE recreates the strand-bug class (a session
+ * left active leaks into the next 1P game), because the Task 6 title seam
+ * (menu.c) applies QUIT then DESTROY with results IGNORED. Each of the three
+ * newly-legal states must QUIT -> EXITING -> DESTROY -> OFF, and QUIT must
+ * still drop any latch/suspended residue so the "has_suspended_roster only in
+ * SOLO/RESTORING" invariant holds after a quit from anywhere. */
+static void test_quit_from_forming_and_shared_states(void) {
+    static const AdventurePartySessionState from[] = {
+        ADVENTURE_PARTY_STATE_FORMING,
+        ADVENTURE_PARTY_STATE_SHARED_SCENE,
+        ADVENTURE_PARTY_STATE_SHARED_DIALOGUE,
+    };
+    for (size_t i = 0; i < sizeof from / sizeof from[0]; i++) {
+        AdventurePartySession s;
+        char what[128];
+
+        drive(&s, from[i], 3);
+        snprintf(what, sizeof what, "quit-%s: QUIT legal",
+                 adventure_party_state_name(from[i]));
+        expect(apply(&s, ADVENTURE_PARTY_EVENT_QUIT, 3) == ADVENTURE_PARTY_OK,
+               what);
+        snprintf(what, sizeof what, "quit-%s: -> EXITING",
+                 adventure_party_state_name(from[i]));
+        expect(s.state == ADVENTURE_PARTY_STATE_EXITING, what);
+        snprintf(what, sizeof what, "quit-%s: no suspended residue",
+                 adventure_party_state_name(from[i]));
+        expect(s.has_suspended_roster == 0, what);
+        snprintf(what, sizeof what, "quit-%s: latch dropped",
+                 adventure_party_state_name(from[i]));
+        expect(s.transition_latch.latched == 0, what);
+        snprintf(what, sizeof what, "quit-%s: DESTROY legal from EXITING",
+                 adventure_party_state_name(from[i]));
+        expect(apply(&s, ADVENTURE_PARTY_EVENT_DESTROY, 3) == ADVENTURE_PARTY_OK,
+               what);
+        snprintf(what, sizeof what, "quit-%s: -> OFF",
+                 adventure_party_state_name(from[i]));
+        expect(s.state == ADVENTURE_PARTY_STATE_OFF, what);
+        snprintf(what, sizeof what, "quit-%s: session inactive",
+                 adventure_party_state_name(from[i]));
+        expect(adventure_party_is_active(&s) == 0, what);
+
+        /* The exact title seam: QUIT then DESTROY with results IGNORED (mirrors
+         * menu.c quit-to-title) must land the session OFF from this state too. */
+        drive(&s, from[i], 4);
+        apply(&s, ADVENTURE_PARTY_EVENT_QUIT, 4);
+        apply(&s, ADVENTURE_PARTY_EVENT_DESTROY, 4);
+        snprintf(what, sizeof what, "title-seam-%s: quit-to-title leaves OFF",
+                 adventure_party_state_name(from[i]));
+        expect(s.state == ADVENTURE_PARTY_STATE_OFF, what);
+    }
+}
+
 /* "Restoring a roster that differs from the suspended one fails" — count,
  * seat and character legs each get a named refusal. */
 static void test_restore_mismatches_fail(void) {
@@ -948,6 +1006,7 @@ int main(int argc, char **argv) {
     test_token_capacity_is_a_typed_refusal();
     test_solo_suspend_and_restore_roundtrip();
     test_quit_from_solo_activity();
+    test_quit_from_forming_and_shared_states();
     test_restore_mismatches_fail();
     test_participant_count_fixed_mid_session();
     test_host_seat_never_changes();
