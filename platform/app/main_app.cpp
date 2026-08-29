@@ -2518,6 +2518,11 @@ int runOnlineLobbyStartLiveSession(AppHost &host, const MdkrBootConfig &config,
     if (endReason == MDKR_PARTY_LINK_SESSION_END_FINISHED) {
         OnlineRoom_armRoomReadyRearm();
     }
+    /* Record the return so the SELECTING body can offer a "Return to game" control
+     * after a LEFT/ERROR return (FINISHED/NONE clear the offer). This is a pure
+     * record and never re-arms -- a LEFT/ERROR return still lands with the latch SET
+     * and nothing pending, so the takeover cannot re-fire until the player presses. */
+    OnlineRoom_noteSessionReturn(endReason);
 
     liveEngineHostUnbind();
     g_liveMatchInput = nullptr;
@@ -4145,6 +4150,111 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
                      finishedNoInstant ? 1 : 0, clearedWhileFalse ? 1 : 0,
                      t2Once ? 1 : 0, routed2 ? 1 : 0, resetDropsPending ? 1 : 0,
                      ok ? "PASS" : "FAIL");
+        OnlineRoom_destroyTestLoopbackRace(race);
+        host.shutdown();
+        return ok ? 0 : 3;
+    }
+    if (std::getenv("MDKR_APP_TEST_ONLINE_LEFT_REENTRY_PROBE") != nullptr) {
+        /* Headless proof of the LEFT/ERROR native RE-ENTRY control ("Return to
+         * game"). After a native session returns LEFT or ERROR the room lands back at
+         * SELECTING+2+LOBBY with the latch SET and nothing pending, so the takeover
+         * deliberately never re-fires on its own (no re-boot loop) -- but with the
+         * per-race ImGui fallback retired that is a dead end, so the SELECTING body
+         * offers an explicit re-entry control. This seam drives the loopback room and
+         * exercises the wiring's re-entry edges DIRECTLY, proving in ONE process:
+         *   (a) the control is OFFERED -- a LEFT return records a re-entry reason while
+         *       the takeover is NOT engaged and the room-ready condition still holds
+         *       (the exact gate under which the SELECTING body draws the button);
+         *   (b) WITHOUT a press the takeover does NOT re-fire within the frame budget,
+         *       even with the per-frame re-arm observer running (LEFT/ERROR never arms);
+         *   (c) the scripted press (OnlineRoom_requestRoomReadyReentry) re-fires the
+         *       takeover EXACTLY ONCE -- the next poll re-takes native (route
+         *       lobby-start) and the "[online-room-ready] latch set" line appears again.
+         * The room is held at SELECTING throughout (no engine boot); the condition is
+         * continuously TRUE, which is exactly the post-LEFT/ERROR state whose card would
+         * be a dead end without this control. */
+        std::string probeErr;
+        MdkrOnlineTestLoopbackRace *race =
+            OnlineRoom_makeTestLobbyStartRoom(&probeErr);
+        if (race == nullptr) {
+            std::fprintf(stderr,
+                         "[online-left-reentry-probe] loopback room setup failed: "
+                         "%s\n",
+                         probeErr.c_str());
+            host.shutdown();
+            return 2;
+        }
+        IMdkrOnlineAdapter *visible = OnlineRoom_testLoopbackVisible(race);
+        IMdkrOnlineAdapter *peer = OnlineRoom_testLoopbackPeer(race);
+        auto pump = [&](int n) {
+            for (int i = 0; i < n; ++i) {
+                visible->service();
+                peer->service();
+            }
+        };
+
+        OnlineRoom_resetRoomReadyLatch();
+        pump(30);
+        int fires = 0;
+
+        /* (1) The native takeover fires once, then the one-shot latch holds. */
+        if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
+        (void)OnlineRoom_pollEngineRoomReady(); /* the launcher would boot here */
+        const int firesAfterBoot = fires;       /* expect 1 */
+
+        /* (2) Simulate a LEFT native return: record the reason, do NOT arm. */
+        OnlineRoom_noteSessionReturn(MDKR_PARTY_LINK_SESSION_END_LEFT);
+        /* (a) The control is offered: a LEFT reason is recorded, the takeover is NOT
+         * engaged (latch set, nothing pending), and the room-ready condition still
+         * holds (room back at SELECTING+2+LOBBY) -- the panel's exact draw gate. */
+        const bool controlOffered =
+            OnlineRoom_roomReadyReentryReason() ==
+                MDKR_PARTY_LINK_SESSION_END_LEFT &&
+            !OnlineRoom_roomReadyTakeoverEngaged() &&
+            OnlineRoom_roomReadyConditionHolds(visible);
+
+        /* (b) No press: with the condition still TRUE the per-frame observer is a
+         * no-op (LEFT never armed) and the trigger must NOT re-fire -- no re-boot. */
+        for (int i = 0; i < 120; ++i) {
+            OnlineRoom_observeRoomReadyRearm(visible);
+            pump(1);
+            if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
+        }
+        const bool noRebootWithoutPress =
+            fires == 1 && OnlineRoom_roomReadyConditionHolds(visible) &&
+            !OnlineRoom_roomReadyTakeoverEngaged();
+
+        /* (c) Scripted press: request re-entry. The latch clears immediately (a human
+         * gesture is required per re-entry, so this cannot loop), the offer retires,
+         * and the takeover becomes engaged again. */
+        OnlineRoom_requestRoomReadyReentry();
+        const bool engagedAfterPress = OnlineRoom_roomReadyTakeoverEngaged();
+        const bool offerClearedAfterPress =
+            OnlineRoom_roomReadyReentryReason() ==
+            MDKR_PARTY_LINK_SESSION_END_NONE;
+        pump(5);
+        if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
+        const int firesAfterPress = fires; /* expect 2 */
+        IMdkrOnlineAdapter *published = OnlineRoom_pollEngineRoomReady();
+        const bool routed =
+            published != nullptr &&
+            published == OnlineRoom_resolveRawLiveAdapter(visible);
+        /* No spurious further fires: the re-take is EXACTLY ONE. */
+        for (int i = 0; i < 60; ++i) {
+            pump(1);
+            if (OnlineRoom_pollRoomReadyTransition(visible)) fires++;
+        }
+        const bool reentryRefires = engagedAfterPress && offerClearedAfterPress &&
+                                    firesAfterPress == 2 && fires == 2 && routed;
+
+        const bool ok = firesAfterBoot == 1 && controlOffered &&
+                        noRebootWithoutPress && reentryRefires;
+        std::fprintf(stderr,
+                     "[online-left-reentry-probe] totalFires=%d controlOffered=%d "
+                     "noRebootWithoutPress=%d reentryRefires=%d routed=%d "
+                     "verdict=%s\n",
+                     fires, controlOffered ? 1 : 0, noRebootWithoutPress ? 1 : 0,
+                     reentryRefires ? 1 : 0, routed ? 1 : 0, ok ? "PASS" : "FAIL");
         OnlineRoom_destroyTestLoopbackRace(race);
         host.shutdown();
         return ok ? 0 : 3;

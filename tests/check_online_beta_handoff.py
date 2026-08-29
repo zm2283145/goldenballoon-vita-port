@@ -20,8 +20,8 @@ invariants:
     room-single           -> the native takeover IS engaged -> render=handoff
     room-tournament       -> the native takeover IS engaged -> render=handoff
     room-single-fallback  -> a LEFT/ERROR native return (takeover NOT engaged)
-                             -> render=full-select (the ImGui recovery grid IS
-                             reachable, R7: recovery is never worse than BASE)
+                             -> render=reentry (the "Return to game" re-entry card
+                             is shown so a mid-session drop is never a dead end)
     room-tournament-fallback -> same, for tournament
     results               -> native takeover engaged -> render=handoff (single)
     finished              -> native takeover engaged -> render=handoff (tournament
@@ -60,7 +60,7 @@ WITNESS_RE = {
     "selecting": re.compile(
         r"\[online-beta-selecting\] stage=(?P<stage>[a-z0-9-]+) "
         r"mode=(?P<mode>single|tournament) "
-        r"render=(?P<render>handoff|full-select|none)"
+        r"render=(?P<render>handoff|reentry|full-select|none)"
     ),
     "results": re.compile(
         r"\[online-beta-results\] stage=(?P<stage>[a-z0-9-]+) "
@@ -74,17 +74,18 @@ CASES = {
     # SELECTING body (T3).
     "room-single": ("single", "handoff", "selecting"),
     "room-tournament": ("tournament", "handoff", "selecting"),
-    "room-single-fallback": ("single", "full-select", "selecting"),
-    "room-tournament-fallback": ("tournament", "full-select", "selecting"),
+    "room-single-fallback": ("single", "reentry", "selecting"),
+    "room-tournament-fallback": ("tournament", "reentry", "selecting"),
     # RESULTS body (T6).
     "results": ("single", "handoff", "results"),
     "finished": ("tournament", "handoff", "results"),
     "results-fallback": ("single", "full-results", "results"),
     "finished-fallback": ("tournament", "full-results", "results"),
 }
-# Each hand-off stage paired with its same-mode fallback; the captures must differ
-# (the editable grid / standings-replay body is really gone in the hand-off, present
-# in the fallback).
+# Each hand-off stage paired with its same-mode fallback; the captures must differ.
+# SELECTING: the forward hand-off card vs the "Return to game" re-entry card (the
+# editable grid is gone from both -- the fallback replaced it with the re-entry card).
+# RESULTS: the concise hand-off card vs the full standings/replay recovery body.
 DISTINCT_PAIRS = (
     ("room-single", "room-single-fallback"),
     ("room-tournament", "room-tournament-fallback"),

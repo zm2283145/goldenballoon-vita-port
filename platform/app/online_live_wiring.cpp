@@ -749,6 +749,17 @@ bool sRoomReadyLatched = false;
  * host's New Tournament) is a genuine false->true rising edge that re-fires the
  * takeover exactly once. It CANNOT re-boot-loop: see OnlineRoom_observeRoomReadyRearm. */
 bool sRoomReadyRearmPending = false;
+/* Records that the most recent native session returned LEFT or ERROR. Unlike a
+ * FINISHED return (which parks the room in RESULTS and auto re-arms), a LEFT/ERROR
+ * return lands the room back at SELECTING+2+LOBBY with the latch SET and nothing
+ * pending, so the takeover deliberately never re-fires on its own. That is the
+ * no-re-boot-loop state -- but with the per-race ImGui fallback retired it would be a
+ * dead end, so the SELECTING body offers the player an explicit "Return to game"
+ * control while this reason is set. It is a PURE record: it never touches the latch,
+ * so noting a LEFT/ERROR return introduces no automatic re-arm. FINISHED and NONE
+ * clear it (FINISHED re-arms automatically; NONE is a non-verdict return). A player
+ * pressing the control, or a fresh adapter, clears it. */
+MdkrPartyLinkSessionEndReason sReentryReason = MDKR_PARTY_LINK_SESSION_END_NONE;
 }  // namespace
 
 /* OnlineRoom_resolveRawLiveAdapter is defined in match_live_adapter.cpp (where
@@ -775,6 +786,9 @@ void OnlineRoom_resetRoomReadyLatch(void) {
      * (main_app.cpp) resets here and never arms, so its exactly-1-fire contract is
      * unaffected. */
     sRoomReadyRearmPending = false;
+    /* A fresh adapter also retires any pending "Return to game" offer from the prior
+     * session -- the new room has never taken over, so there is nothing to re-enter. */
+    sReentryReason = MDKR_PARTY_LINK_SESSION_END_NONE;
 }
 
 bool OnlineRoom_roomReadyConditionHolds(IMdkrOnlineAdapter *adapter) {
@@ -923,6 +937,41 @@ bool OnlineRoom_roomReadyTakeoverEngaged(void) {
 }
 
 bool OnlineRoom_roomReadyRearmPending(void) { return sRoomReadyRearmPending; }
+
+void OnlineRoom_noteSessionReturn(MdkrPartyLinkSessionEndReason reason) {
+    /* Record a LEFT/ERROR native-session return so the SELECTING body offers the
+     * player a "Return to game" control -- the room lands back at SELECTING+2+LOBBY
+     * with the latch SET and nothing pending, so the takeover cannot re-fire on its
+     * own by design. FINISHED re-arms automatically and NONE is a non-verdict return,
+     * so both clear the offer. This is a PURE record: it never touches the latch, so
+     * a LEFT/ERROR return still introduces NO automatic re-arm. */
+    sReentryReason = (reason == MDKR_PARTY_LINK_SESSION_END_LEFT ||
+                      reason == MDKR_PARTY_LINK_SESSION_END_ERROR)
+                         ? reason
+                         : MDKR_PARTY_LINK_SESSION_END_NONE;
+}
+
+MdkrPartyLinkSessionEndReason OnlineRoom_roomReadyReentryReason(void) {
+    return sReentryReason;
+}
+
+void OnlineRoom_requestRoomReadyReentry(void) {
+    /* The "Return to game" press handler. A LEFT/ERROR return leaves the room at
+     * SELECTING+2+LOBBY with the takeover condition typically STILL TRUE, so the
+     * FINISHED-style deferred clear (OnlineRoom_observeRoomReadyRearm, which waits for
+     * a condition-FALSE frame) would never complete from here. Because a human must
+     * press for EACH re-entry -- never automatic -- clearing the latch immediately is
+     * safe: the next unconditional room-ready poll re-takes native EXACTLY ONCE per
+     * press, never in a loop. Drop any pending auto re-arm and the recovery offer so
+     * the re-take is a single clean fire. */
+    sRoomReadyLatched = false;
+    sRoomReadyRearmPending = false;
+    sReentryReason = MDKR_PARTY_LINK_SESSION_END_NONE;
+    std::fprintf(stderr,
+                 "[online-room-ready] re-entry requested (player pressed Return to "
+                 "game after a LEFT/ERROR return) -- latch cleared, next poll "
+                 "re-takes native\n");
+}
 
 void OnlineRoom_setRosterOwner(uint64_t token) {
     /* Ownership is meaningful only while a roster is installed. */

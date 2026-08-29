@@ -767,11 +767,13 @@ struct BetaFakeInviteOverride {
 BetaFakeInviteOverride g_betaFakeInvite;
 
 // Records which branch drawBetaSelectingBody last rendered: the universal native
-// hand-off card, or the full ImGui per-race fallback (racer grid + vehicle chips +
-// Race Settings picker + Ready/Start). The render seam (drawBetaRoomFake) emits it
-// as a semantic witness a headless test asserts on. Written by a single enum
-// assignment on the live path too (negligible), consulted only by the seam.
-enum class BetaSelectingRender { None, Handoff, FullSelect };
+// hand-off card (Handoff), the "Return to game" re-entry control shown after a
+// LEFT/ERROR native return (Reentry), or the full ImGui per-race fallback (racer grid
+// + vehicle chips + Race Settings picker + Ready/Start). The render seam
+// (drawBetaRoomFake) emits it as a semantic witness a headless test asserts on.
+// Written by a single enum assignment on the live path too (negligible), consulted
+// only by the seam.
+enum class BetaSelectingRender { None, Handoff, Reentry, FullSelect };
 BetaSelectingRender g_betaSelectingRender = BetaSelectingRender::None;
 
 // Records which branch drawBetaResultsBody last rendered: the concise native "the
@@ -786,10 +788,12 @@ BetaResultsRender g_betaResultsRender = BetaResultsRender::None;
 
 // TEST-ONLY: when the render seam builds a "*-fallback" stage it sets this so
 // drawBetaSelectingBody / drawBetaResultsBody read the native takeover as NOT
-// engaged, reproducing the post-LEFT/ERROR state (latch SET, nothing pending) in
-// which the full ImGui recovery grid (SELECTING) or results/standings/replay body
-// (RESULTS) is reachable at BASE. The live/production beta path never sets it, so the
-// real takeover gate (OnlineRoom_roomReadyTakeoverEngaged) is unchanged.
+// engaged, reproducing the post-LEFT/ERROR state (latch SET, nothing pending). On the
+// SELECTING body that state now shows the "Return to game" re-entry card (the seam
+// also injects the reason via OnlineRoom_noteSessionReturn); on the RESULTS body it
+// still reaches the full standings/replay recovery body. The live/production beta path
+// never sets it, so the real takeover gate (OnlineRoom_roomReadyTakeoverEngaged) is
+// unchanged.
 bool g_betaFakeForceFallback = false;
 
 // Restrict the join-code field to the 6 digits the fallback code uses. This
@@ -2171,6 +2175,23 @@ bool drawBetaSelection(const MdkrOnlineViewModel &model) {
     return drawSelectionControl(model);
 }
 
+// Truthful re-entry reason line, mirroring the betaFailureCopy conventions (plain
+// sentences, no wire codes): LEFT is a player backing out / a seat vacating / a
+// cancel; ERROR is the wall-clock watchdog or an unplayable connection. Both now end
+// with re-entry available -- the room is NOT done -- so neither says "create a new
+// one".
+const char *betaReentryReasonCopy(MdkrPartyLinkSessionEndReason reason) {
+    switch (reason) {
+    case MDKR_PARTY_LINK_SESSION_END_ERROR:
+        return "The connection ran into trouble mid-race, so the race stopped. "
+               "You're both still in the room — return to the game to try again.";
+    case MDKR_PARTY_LINK_SESSION_END_LEFT:
+    default:
+        return "That race ended early. You're both still in the room — return to "
+               "the game to pick and race again.";
+    }
+}
+
 // ---- Native hand-off card ---------------------------------------------------
 // After pairing, the descriptor-less native online screens (CHARSELECT ->
 // VEHICLE SELECT -> TRACKSELECT) boot within a frame or two and OWN character,
@@ -2179,21 +2200,42 @@ bool drawBetaSelection(const MdkrOnlineViewModel &model) {
 // the room-ready takeover now fires for both). This concise card replaces the
 // WHOLE ImGui per-race selection surface (racer grid, vehicle chips, Race
 // Settings mode/cup/track picker, Ready/Start) so the human never lands on a
-// stale editable grid the game is about to own. It is shown ONLY while the
-// takeover is engaged (OnlineRoom_roomReadyTakeoverEngaged); after a LEFT/ERROR
-// return that predicate is false and the full ImGui fallback shows instead, so
-// this card never lies.
-void drawBetaNativeHandoffCard(bool tournament) {
+// stale editable grid the game is about to own.
+//
+// Two variants, one card:
+//   - reentryReason == NONE: the FORWARD hand-off, shown while the takeover is
+//     engaged (starting / boot pending) -- "handing to the game", no button.
+//   - reentryReason == LEFT/ERROR: the RE-ENTRY control, shown after a native
+//     session returned early. The takeover latch stays SET on a LEFT/ERROR return
+//     (it must never auto re-fire -- the re-boot-loop hazard), so without an explicit
+//     gesture the room would be a dead end now that the per-race ImGui fallback is
+//     retired. This variant states the reason and offers a "Return to game" button
+//     that re-arms (OnlineRoom_requestRoomReadyReentry) so the next poll re-takes
+//     native. Returns true the frame the button is pressed.
+bool drawBetaNativeHandoffCard(bool tournament,
+                               MdkrPartyLinkSessionEndReason reentryReason) {
+    const bool reentry = reentryReason == MDKR_PARTY_LINK_SESSION_END_LEFT ||
+                         reentryReason == MDKR_PARTY_LINK_SESSION_END_ERROR;
+    bool pressed = false;
     if (ui::CardBegin("##beta-native-handoff", AppTheme::accent(), 0.0f)) {
-        ImGui::TextUnformatted("Starting — handing to the game…");
-        ui::TextSubtleWrapped(
-            tournament
-                ? "The game takes over from here. Pick your cup, racer, and "
-                  "vehicle on the next screen."
-                : "The game takes over from here. Pick your racer, vehicle, and "
-                  "track on the next screen.");
+        if (reentry) {
+            ImGui::TextUnformatted("Back in the room");
+            ui::TextSubtleWrapped(betaReentryReasonCopy(reentryReason));
+            ui::Gap(ui::kGapS);
+            pressed = ui::BrandPrimaryButton("Return to game",
+                                             ui::kBtnFullWidth());
+        } else {
+            ImGui::TextUnformatted("Starting — handing to the game…");
+            ui::TextSubtleWrapped(
+                tournament
+                    ? "The game takes over from here. Pick your cup, racer, and "
+                      "vehicle on the next screen."
+                    : "The game takes over from here. Pick your racer, vehicle, "
+                      "and track on the next screen.");
+        }
     }
     ui::CardEnd();
+    return pressed;
 }
 
 // ---- Native RESULTS hand-off card -------------------------------------------
@@ -2240,14 +2282,13 @@ void drawBetaSelectingBody(LauncherState &state,
     // fire (or just fired, boot pending). After a LEFT/ERROR return the room lands
     // back at SELECTING+2+LOBBY but the latch stays SET with nothing pending (by
     // design -- LEFT/ERROR must not re-arm), so the takeover NEVER re-fires here; the
-    // predicate is then false and the FULL ImGui per-race fallback (character grid /
-    // vehicle / Ready / Start -- the working recovery at BASE) shows instead of a
-    // lying hand-off card. Consistency with the live poll: it runs on the same
-    // adapter one call earlier in drawBetaRoom (before this body) over the same
-    // reducer snapshot, so when the base condition holds with `!sRoomReadyLatched`
-    // the poll fires this frame -> `engaged` is true. (The render seam forces
-    // g_betaFakeForceFallback for its "*-fallback" stages to capture that recovery
-    // state headlessly; the live path never sets it.)
+    // predicate is then false and the "Return to game" RE-ENTRY card (below) shows
+    // instead of a lying hand-off card, so a mid-session drop is never a dead end.
+    // Consistency with the live poll: it runs on the same adapter one call earlier in
+    // drawBetaRoom (before this body) over the same reducer snapshot, so when the base
+    // condition holds with `!sRoomReadyLatched` the poll fires this frame -> `engaged`
+    // is true. (The render seam forces g_betaFakeForceFallback for its "*-fallback"
+    // stages to capture that recovery state headlessly; the live path never sets it.)
     bool takeoverEngaged = OnlineRoom_roomReadyTakeoverEngaged();
     if (g_betaFakeForceFallback) takeoverEngaged = false;
     const bool nativeHandoff =
@@ -2292,11 +2333,32 @@ void drawBetaSelectingBody(LauncherState &state,
     // Settings mode/cup/track picker AND the Ready/Start region -- is dead. Show only
     // the roster strip (already drawn above) and a clean hand-off card; rendering an
     // editable-looking grid above a card that says "pick on the next screen" reads as
-    // contradictory. A LEFT/ERROR return (takeover no longer engaged) or a room still
-    // filling to 2 members falls through to the full ImGui fallback below.
+    // contradictory. A room still filling to 2 members falls through to the full
+    // ImGui fallback below; a LEFT/ERROR return is handled by the re-entry card next.
     if (nativeHandoff) {
         g_betaSelectingRender = BetaSelectingRender::Handoff;
-        drawBetaNativeHandoffCard(lobby.mode == MDKR_ONLINE_MODE_TOURNAMENT);
+        drawBetaNativeHandoffCard(lobby.mode == MDKR_ONLINE_MODE_TOURNAMENT,
+                                  MDKR_PARTY_LINK_SESSION_END_NONE);
+        return;
+    }
+
+    // Re-entry after a LEFT/ERROR native return. The room is back at SELECTING+2+LOBBY
+    // with the takeover latch SET and nothing pending, so it will NOT re-fire on its
+    // own (auto re-arm on LEFT/ERROR is the proven re-boot-loop hazard). Rather than
+    // strand the player, show the reason and a "Return to game" button that re-arms so
+    // the next unconditional room-ready poll re-takes native. The seam injects the
+    // reason via OnlineRoom_noteSessionReturn for its "*-fallback" stages; the live
+    // launcher notes it after every LEFT/ERROR session return.
+    const MdkrPartyLinkSessionEndReason reentryReason =
+        OnlineRoom_roomReadyReentryReason();
+    if ((reentryReason == MDKR_PARTY_LINK_SESSION_END_LEFT ||
+         reentryReason == MDKR_PARTY_LINK_SESSION_END_ERROR) &&
+        lobby.phase == MDKR_ONLINE_LOBBY && model.member_count == 2u) {
+        g_betaSelectingRender = BetaSelectingRender::Reentry;
+        if (drawBetaNativeHandoffCard(lobby.mode == MDKR_ONLINE_MODE_TOURNAMENT,
+                                      reentryReason)) {
+            OnlineRoom_requestRoomReadyReentry();
+        }
         return;
     }
     g_betaSelectingRender = BetaSelectingRender::FullSelect;
@@ -2894,13 +2956,16 @@ MdkrOnlineViewControl betaFakeControl(MdkrOnlineViewAction action,
 
 // A faithful 2-seat SELECTING lobby + view model for the native-takeover body,
 // for either mode. `fallback` reproduces the post-LEFT/ERROR recovery state (the
-// takeover is no longer engaged), which is the ONLY state in which the full ImGui
-// per-race grid is reachable -- so the seam can capture both the universal
-// hand-off card (fallback=false) and the recovery grid (fallback=true).
+// takeover is no longer engaged): it forces the engaged predicate false AND records a
+// LEFT re-entry reason, so the seam captures both the universal forward hand-off card
+// (fallback=false) and the "Return to game" re-entry card (fallback=true).
 void betaFakeBuildSelectingStage(MdkrOnlineViewModel *model,
                                  MdkrOnlineLobby *lobby, bool *haveLobby,
                                  bool tournament, bool fallback) {
     g_betaFakeForceFallback = fallback;
+    // The fallback stages simulate a LEFT native return so the SELECTING body draws
+    // the re-entry control the live launcher would offer after such a return.
+    if (fallback) OnlineRoom_noteSessionReturn(MDKR_PARTY_LINK_SESSION_END_LEFT);
     betaFakeInitLobby(lobby,
                       tournament ? MDKR_ONLINE_MODE_TOURNAMENT
                                  : MDKR_ONLINE_MODE_SINGLE_RACE,
@@ -2989,6 +3054,9 @@ bool betaFakeBuildStage(const char *stage, MdkrOnlineViewModel *model,
     *haveLobby = false;
     g_betaFakeInvite.active = false;
     g_betaFakeForceFallback = false;
+    // Clear any re-entry offer so a non-fallback stage renders the forward hand-off,
+    // not the "Return to game" recovery card; the fallback stages re-arm it below.
+    OnlineRoom_noteSessionReturn(MDKR_PARTY_LINK_SESSION_END_NONE);
     g_online.betaHostJourney = true;  // the fake local player hosts
 
     if (std::strcmp(stage, "invite") == 0) {
@@ -3035,8 +3103,8 @@ bool betaFakeBuildStage(const char *stage, MdkrOnlineViewModel *model,
         return true;
     }
     // SELECTING body, native takeover NOT engaged (a LEFT/ERROR native return): the
-    // full ImGui per-race recovery grid IS reachable, exactly as at BASE -- proof
-    // R7 recovery is never worse than base for either mode.
+    // "Return to game" re-entry card IS shown so a mid-session drop is never a dead
+    // end -- pressing it re-arms the native takeover, for either mode.
     if (std::strcmp(stage, "room-single-fallback") == 0) {
         betaFakeBuildSelectingStage(model, lobby, haveLobby, false, true);
         return true;
@@ -3171,7 +3239,8 @@ void drawBetaRoomFake(LauncherState &state) {
         drawBetaSelectingBody(state, model, lobby);
         primaryDrawn = true;
         // Semantic witness for the headless takeover-retire test: which SELECTING
-        // surface drawBetaSelectingBody produced -- the universal hand-off card, or
+        // surface drawBetaSelectingBody produced -- the universal forward hand-off
+        // card, the "Return to game" re-entry card (a LEFT/ERROR native return), or
         // the full ImGui per-race fallback grid (racer + vehicle + Race Settings +
         // Ready/Start). Emitted only from the render seam, never the live path.
         std::fprintf(
@@ -3180,9 +3249,11 @@ void drawBetaRoomFake(LauncherState &state) {
             lobby.mode == MDKR_ONLINE_MODE_TOURNAMENT ? "tournament" : "single",
             g_betaSelectingRender == BetaSelectingRender::Handoff
                 ? "handoff"
-                : g_betaSelectingRender == BetaSelectingRender::FullSelect
-                      ? "full-select"
-                      : "none");
+                : g_betaSelectingRender == BetaSelectingRender::Reentry
+                      ? "reentry"
+                      : g_betaSelectingRender == BetaSelectingRender::FullSelect
+                            ? "full-select"
+                            : "none");
     } else if (haveLobby && model.kind == MDKR_ONLINE_VIEW_RESULTS &&
                lobby.phase == MDKR_ONLINE_RESULTS) {
         drawBetaResultsBody(state, model, lobby);

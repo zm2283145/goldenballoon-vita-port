@@ -24,6 +24,7 @@
 #include "online/lobby_view_model.h"
 #include "online/match_launch_builder.h"
 #include "online/match_peer_transport.h"
+#include "net/party_link.h"  /* MdkrPartyLinkSessionEndReason (session-end / re-entry) */
 #include "session/session_bridge.h"
 #include "session/session_types.h"
 
@@ -792,6 +793,31 @@ bool OnlineRoom_roomReadyTakeoverEngaged(void);
  * observed out of the takeover condition). The launcher logs it as part of the
  * room-ready boot-result diagnostic so a real-hardware return is diagnosable. */
 bool OnlineRoom_roomReadyRearmPending(void);
+
+/* ---- LEFT/ERROR native re-entry ("Return to game") ----------------------- *
+ *
+ * A FINISHED native return auto re-arms; a LEFT/ERROR return must NOT (the room
+ * lands back at SELECTING+2+LOBBY with the takeover condition typically still TRUE,
+ * so an automatic re-arm would instantly re-boot the session the player just left --
+ * the proven re-boot-loop hazard). With the per-race ImGui fallback retired that
+ * would leave the player stranded, so these seams offer an EXPLICIT human re-entry:
+ *   - OnlineRoom_noteSessionReturn(reason): the launcher calls it after every native
+ *     session return. It records a LEFT/ERROR return (so the SELECTING body offers a
+ *     "Return to game" control) and clears the offer on FINISHED/NONE. Pure record --
+ *     it never touches the latch, so it adds no automatic re-arm.
+ *   - OnlineRoom_roomReadyReentryReason(): the SELECTING body reads it to decide
+ *     whether to draw the re-entry control and which reason line to show. NONE means
+ *     no offer.
+ *   - OnlineRoom_requestRoomReadyReentry(): the control's press handler. Because a
+ *     human gesture is required for each re-entry (never automatic), it clears the
+ *     latch IMMEDIATELY -- so the next unconditional room-ready poll re-takes native
+ *     EXACTLY ONCE -- even though the condition still holds; a deferred, condition-
+ *     false-gated clear (as FINISHED uses) would never complete from SELECTING. Drops
+ *     any pending auto re-arm and the recovery reason so the re-take is a single clean
+ *     fire. Defined in online_live_wiring.cpp. */
+void OnlineRoom_noteSessionReturn(MdkrPartyLinkSessionEndReason reason);
+MdkrPartyLinkSessionEndReason OnlineRoom_roomReadyReentryReason(void);
+void OnlineRoom_requestRoomReadyReentry(void);
 
 /* ---- Engine-roster ownership guard (local-Play beach-ball fix, beta only) -- *
  *

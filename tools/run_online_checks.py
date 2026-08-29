@@ -34,9 +34,11 @@ TESTS = ROOT / "tests"
 # The full native-takeover lane set: the 13 exit-gate lanes + the C1 no-seam proof,
 # plus coverage-fill lanes -- the isolation-guard self-test (proves the OFF
 # isolation gate is non-vacuous), the 3-consecutive-tournament re-arm lane (proves
-# the re-arm is repeatable, not one-shot), and the T3 beta hand-off render-seam lane
-# (proves the launcher retired its per-race SELECTING widgets for BOTH modes and
-# still recovers to the ImGui fallback after a LEFT/ERROR return -- no engine boot).
+# the re-arm is repeatable, not one-shot), the LEFT/ERROR re-entry lane (proves a
+# mid-session drop is not a dead end -- "Return to game" re-takes native, press-gated,
+# with no auto re-arm loop), and the T3 beta hand-off render-seam lane (proves the
+# launcher retired its per-race SELECTING widgets for BOTH modes and shows the
+# re-entry card after a LEFT/ERROR return -- no engine boot).
 # Order is deliberate: the fast structural/meta checks first, the long multi-race
 # loopback soaks last, so a quick break surfaces early.
 LANES = (
@@ -62,6 +64,8 @@ LANES = (
     "check_online_lobby_single_endpoint.py",
     "check_online_room_ready_rearm.py",
     "check_online_rearm_third.py",          # 3 consecutive tournaments: re-arm repeatable
+    "check_online_left_reentry.py",         # LEFT/ERROR return: "Return to game" re-takes
+                                            #  native (no auto re-arm; press-gated re-take)
     "check_online_lobby_tournament.py",
     "check_online_tournament.py",           # keystone: 34,30 + peer==peer race-hash
 )                                           #  convergence (the GOLDEN literal is
