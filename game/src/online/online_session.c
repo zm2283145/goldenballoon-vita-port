@@ -170,7 +170,7 @@ typedef struct MdkrOnlineSessionState {
      * instant a remote reappears (or the room leaves LOBBY). On a sustained absence
      * the session notes LEFT + exits. Inert for a descriptor-first begin. */
     u16 remoteAbsentTicks;
-    /* SINGLE-RACE "Race Again" auto-start (T5). The host committed RACE AGAIN
+    /* SINGLE-RACE "Race Again" auto-start. The host committed RACE AGAIN
      * (same config) on the RESULTS chooser, so the session re-entered LOBBY_WAIT
      * with NO native selection screen to re-Ready + host-START the next race. While
      * set, the live re-wait auto-publishes a reverse-feed intent each tick -- keep
@@ -401,8 +401,8 @@ static bool online_session_descless_boot_ready(void) {
  * re-cycle in ~7 (the launcher-side kResidentAdvanceFrameBudget is 900). 2700 is
  * 3x that launcher budget -- ample headroom for a cold DTLS re-handshake / loaded
  * CI host at high headless frame rates -- while at a vsynced 30-60 fps it is ~45-90
- * s of wall clock, which is generous for a real WAN/DTLS re-cycle. NOTE (for
- * T6h2c): a real WAN is far slower than warm loopback; T6h2c should convert this
+ * s of wall clock, which is generous for a real WAN/DTLS re-cycle. NOTE: a real
+ * WAN is far slower than warm loopback; a follow-up should convert this
  * to an actual wall-clock deadline (this engine TU has no cheap clock, so a frame
  * budget stands in here) and retune against measured WAN convergence. */
 #define MDKR_ONLINE_SESSION_DESCLESS_WAIT_FRAME_BUDGET 2700u
@@ -507,7 +507,7 @@ static u8 online_session_feed_isfinal(void) {
     return 0u;
 }
 
-/* SINGLE-RACE "Race Again" auto-start publish (T5). Publish a reverse-feed
+/* SINGLE-RACE "Race Again" auto-start publish. Publish a reverse-feed
  * intent, from the LOBBY_WAIT re-wait, that re-cycles the room to a fresh race
  * with NO human input: keep the local seat's persisted character + vehicle (so
  * the launcher planner's CHOOSE_CHARACTER / CHOOSE_VEHICLE stay CONVERGED no-ops),
@@ -912,7 +912,7 @@ static bool online_session_detect_remote_vacated(const char *where) {
  *     which resume_results below preserves by returning false when no finish was
  *     captured. */
 
-/* THE PEER-LOSS CLEAN RETURN -- the P0 crash fix (race-start AND mid-race).
+/* THE PEER-LOSS CLEAN RETURN -- the crash fix (race-start AND mid-race).
  *
  * The engine's rollback runtime (rollback_game_runtime.c) reports a RECOVERABLE
  * online-input starvation from TWO tick-loop sites:
@@ -1169,7 +1169,7 @@ void mdkr_online_session_tick(s32 updateRate) {
                             break;
                         }
                     }
-                    /* SINGLE-RACE "Race Again" auto-start (T5). No native screen
+                    /* SINGLE-RACE "Race Again" auto-start. No native screen
                      * re-fronted for RACE AGAIN, so drive the re-Ready + host-START
                      * from here: while the room is still in LOBBY, publish the
                      * keep-selection/ready/start intent each tick (the launcher's
@@ -1350,7 +1350,7 @@ void mdkr_online_session_tick(s32 updateRate) {
                 sCharselectLeaveWarned = 1u;
                 fprintf(stderr,
                         "[online-charselect] leave requested; engine->launcher "
-                        "return is PD-T6, staying on screen\n");
+                        "return handled by the launcher, staying on screen\n");
             }
         }
         break;
@@ -1622,7 +1622,7 @@ void mdkr_online_session_tick(s32 updateRate) {
              * screen forever. */
             mdkr_online_results_exit();
             {
-                /* T4 "more races" chooser routing. When the host committed a replay
+                /* "more races" chooser routing. When the host committed a replay
                  * option (or a joiner followed the host), the screen returned ADVANCE
                  * only once its REMATCH drove the room out of RESULTS -> LOBBY. Route
                  * back to the right native screen so the host re-locks the new config
@@ -1632,11 +1632,8 @@ void mdkr_online_session_tick(s32 updateRate) {
                  * BYTE-FOR-BYTE unchanged. */
                 MdkrOnlineResultsChoice choice = mdkr_online_results_choice();
                 if (choice != MDKR_ONLINE_RESULTS_CHOICE_NONE) {
-                    switch (choice) {
-                    case MDKR_ONLINE_RESULTS_CHOICE_CHANGE_TRACK:
-                    case MDKR_ONLINE_RESULTS_CHOICE_CHANGE_CUP:
-                    case MDKR_ONLINE_RESULTS_CHOICE_CHANGE_MODE:
-                    case MDKR_ONLINE_RESULTS_CHOICE_NEW_TOURNAMENT:
+                    switch (mdkr_online_results_choice_refront(choice)) {
+                    case MDKR_ONLINE_RESULTS_REFRONT_TRACKSELECT:
                         /* re-front TRACKSELECT: the host re-locks the new track/cup/
                          * mode over SET_CONFIG_TRACK / SET_CUP / SET_MODE (SET_CUP +
                          * SET_MODE reset the tournament series to round 1). */
@@ -1650,8 +1647,7 @@ void mdkr_online_session_tick(s32 updateRate) {
                                 "%s)\n",
                                 online_session_chooser_name(choice));
                         break;
-                    case MDKR_ONLINE_RESULTS_CHOICE_CHANGE_CHAR:
-                    case MDKR_ONLINE_RESULTS_CHOICE_JOINER_FOLLOW:
+                    case MDKR_ONLINE_RESULTS_REFRONT_CHARSELECT:
                         /* re-front CHARSELECT (-> VEHICLE -> TRACKSELECT): change
                          * character + vehicle between races. The display-only joiner
                          * follows here too -- CHARSELECT is the safe universal
@@ -1667,9 +1663,9 @@ void mdkr_online_session_tick(s32 updateRate) {
                                 "%s)\n",
                                 online_session_chooser_name(choice));
                         break;
-                    case MDKR_ONLINE_RESULTS_CHOICE_RACE_AGAIN:
+                    case MDKR_ONLINE_RESULTS_REFRONT_SAME:
                     default:
-                        /* re-race the SAME config. T5: the in-process single-race
+                        /* re-race the SAME config. The in-process single-race
                          * re-cycle re-enters LOBBY_WAIT and, because there is NO
                          * native selection screen to drive the re-Ready + host-START,
                          * arms replayAutoStart so the live re-wait auto-publishes that

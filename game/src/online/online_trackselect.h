@@ -61,6 +61,18 @@ u8 mdkr_online_trackselect_test_active(void);
  * for an out-of-range cup/round. */
 u16 mdkr_online_trackselect_cup_track(unsigned cup, unsigned round);
 
+/* Shared retail vehicle names ("CAR" / "HOVERCRAFT" / "PLANE"), defined once so
+ * TRACKSELECT and VEHICLESELECT label the vehicle line identically. Indexed by
+ * player vehicle id (0..MDKR_ONLINE_SCREEN_VEHICLE_COUNT-1). */
+extern const char *const mdkr_online_vehicle_names[];
+
+/* Apply the retail 2-player picker narrowing to a usable-vehicle mask (menu.c
+ * menu_track_select V79+): at 2+ players Spaceport Alpha drops hovercraft and
+ * Frosty Village drops plane; below 2 players (or a track not in the table) the
+ * mask is returned unchanged. One definition shared by TRACKSELECT and
+ * VEHICLESELECT so both narrow identically. */
+u8 mdkr_online_trackselect_narrow_2p(u8 mask, u16 trackId, unsigned occupied);
+
 /* Headless test seam only (inert unless the env above is set): from LOBBY_WAIT,
  * install the party_link forward feed if nothing else has (the CHARSELECT seam
  * normally owns install in this lane). No-op in a normal run, so it never

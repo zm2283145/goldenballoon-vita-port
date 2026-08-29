@@ -50,6 +50,8 @@ TICKS = 3000
 
 LOCKED_TRACK = 8       # Whale Bay (cup 2 round 0), hovercraft-only 0x2
 LOCKED_MASK = 0x2
+UNKNOWN_TRACK = 900    # out-of-range resolved track: the fail-closed mask probe
+ALL_VEHICLES = 0x7     # car+hovercraft+plane -- the permissive mask that must NOT appear
 HOVERCRAFT = 1         # VEHICLE_HOVERCRAFT -- the legal pick for Whale Bay
 CAR = 0                # VEHICLE_CAR -- the CHARSELECT default; illegal for Whale Bay
 PLANE = 2              # VEHICLE_PLANE -- the DIVERGE local pick
@@ -252,6 +254,41 @@ def check_diverge(output: str) -> int | None:
     return None
 
 
+def check_unknown(output: str) -> int | None:
+    """FAIL-CLOSED contract: a resolved OUT-OF-RANGE track must yield the engine-truth
+    base mask (leveltable fail-closes an unknown id to CAR-only 0x1), NEVER the
+    permissive ALL (0x7) and never a silent CAR substituted over an empty mask. Note:
+    this is a contract guard, not a red-first probe -- leveltable's own out-of-range
+    -> CAR fallback means an unknown id can never reach the removed fail-open branch;
+    that branch only fired for a malformed in-range table entry, which no reachable
+    track id produces (see the vehicleselect_track_mask comment)."""
+    scn = "unknown"
+    marker = forbidden_marker(output, *FORBIDDEN_ONLINE)
+    if marker:
+        return fail(f"[{scn}] observed forbidden marker {marker!r}", output)
+    if not VS_ENTER_RE.search(output):
+        return fail(f"[{scn}] the VEHICLE screen was never entered", output)
+    renders = VS_RENDER_RE.findall(output)
+    if not renders:
+        return fail(f"[{scn}] the VEHICLE screen produced no render witnesses",
+                    output)
+    unknown_rows = [r for r in renders if int(r[3]) == UNKNOWN_TRACK]
+    if not unknown_rows:
+        return fail(f"[{scn}] no render row resolved the out-of-range track "
+                    f"{UNKNOWN_TRACK} (the seam did not pin it)", output)
+    for r in unknown_rows:
+        legal = int(r[2], 16)
+        if legal == ALL_VEHICLES:
+            return fail(f"[{scn}] FAIL-OPEN: the unknown track offered ALL three "
+                        f"vehicles (mask 0x{legal:x}) instead of failing closed "
+                        f"(row={r})", output)
+        if legal != (1 << CAR):
+            return fail(f"[{scn}] the unknown track's mask was 0x{legal:x}; expected "
+                        f"engine-truth CAR-only 0x1 (fail-closed)", output)
+    # R3 still holds: the published vehicle is inside the fail-closed mask.
+    return assert_r3_published_legal(scn, unknown_rows, output)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", default="build-beta")
@@ -273,6 +310,7 @@ def main() -> int:
           "MDKR_APP_TEST_ONLINE_TRACK": str(LOCKED_TRACK)}, args.ticks,
          args.timeout),
         ("diverge", check_diverge, {}, 2000, args.timeout),
+        ("unknown", check_unknown, {}, 2000, args.timeout),
     )
     for vs_value, checker, extra, ticks, timeout in scenarios:
         try:
@@ -294,8 +332,10 @@ def main() -> int:
         "CHARSELECT->VEHICLESELECT->TRACKSELECT with the TRACKSELECT->VEHICLESELECT "
         "back-stack; R3 held -- published vehicle legal every frame, no "
         "ILLEGAL_VEHICLE; race booted track 8, two endpoints converged) and "
-        "DIVERGE (local PLANE vs remote CAR -- both seats picked, both converged) "
-        "-- gGameMode=2 gCurrentMenuId=0, offline menu bypassed throughout"
+        "DIVERGE (local PLANE vs remote CAR -- both seats picked, both converged); "
+        "UNKNOWN (an out-of-range resolved track fails CLOSED to CAR-only, never the "
+        "permissive ALL) -- gGameMode=2 gCurrentMenuId=0, offline menu bypassed "
+        "throughout"
     )
     return 0
 

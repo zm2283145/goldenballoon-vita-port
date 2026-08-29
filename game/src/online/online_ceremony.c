@@ -350,7 +350,7 @@ void mdkr_online_ceremony_enter(const MdkrOnlineStandings *finalRanking) {
         mdkr_online_screen_sky_world_for_snapshot(&snap, haveSnap));
     sound_play(CER_SFX_CELEBRATE, NULL);
 
-    /* T7b: reveal the champion celebration from black (retail fade cadence) + keep
+    /* reveal the champion celebration from black (retail fade cadence) + keep
      * the retail menu music underneath the crowd cheer (isolation-safe primitive
      * borrows -- see online_screen_util.h). */
     mdkr_online_screen_fade_in_from_black();

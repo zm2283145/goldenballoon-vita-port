@@ -89,7 +89,7 @@ bool mdkr_online_session_resume_results(void);
  * race (begin() set the latches; nothing clears them until the next begin). */
 bool mdkr_online_session_postrace_results_retry(void);
 
-/* P0 CRASH FIX: route a RECOVERABLE race-start (or mid-race) peer loss to a clean
+/* PEER-LOSS CRASH FIX: route a RECOVERABLE race-start (or mid-race) peer loss to a clean
  * return-to-room instead of abort()ing the app. Called from the engine tick loop
  * (thread3_main.c, beta-gated) ONLY when the boundary validator reports the
  * recoverable online-input starvation (mdkr_rollback_game_runtime_online_input_-
