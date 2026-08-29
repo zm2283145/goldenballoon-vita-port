@@ -3140,6 +3140,40 @@ static void adventure_party_taj_fade_others(s32 focus, s32 amount) {
         }
     }
 }
+
+/* Restore every party seat's engine (vehicle) sound at Taj's END_DIALOGUE re-init
+ * moment, matching retail timing. Retail frees the focus racer's vehicleSound on
+ * summon (racer_sound_free at the accept) and re-inits it here, and the transform
+ * additionally freed+rebuilt ALL seats with vehicleSound=0. Re-initialising here
+ * (not in the commit) keeps the karts silent during the fade/rebuild exactly as
+ * retail does, and brings the sound back when Taj says goodbye. The NULL guard
+ * makes this leak-free and correct on both paths: after a transform every seat is
+ * NULL and gets a sound; after a no-transform summon only the focus is NULL, so a
+ * seat that still holds a live vehicleSound is left untouched. */
+static void adventure_party_taj_reinit_sounds(void) {
+    AdventurePartySession *s = adventure_party_runtime_session();
+    s32 count;
+    s32 i;
+
+    if (!adventure_party_runtime_is_active() || s == NULL) {
+        return;
+    }
+    count = adventure_party_participant_count(s);
+    for (i = 0; i < count; i++) {
+        Object *r = get_racer_object(i);
+        Object_Racer *rr;
+        if (r == NULL || r->racer == NULL) {
+            continue;
+        }
+        rr = r->racer;
+        if (rr->vehicleSound == NULL) {
+            rr->vehicleSound = racer_sound_init(rr->characterId, rr->vehicleID);
+            if (mdkr_trace_enabled()) {
+                mdkr_trace("aparty_taj_sound: seat=%d reinit=1", (int) i);
+            }
+        }
+    }
+}
 #endif
 
 /**
@@ -3528,7 +3562,18 @@ void obj_loop_parkwarden(Object *obj, s32 updateRate) {
                 }
                 obj->properties.taj.action = TAJ_MODE_TELEPORT_AWAY_BEGIN;
                 sound_play(SOUND_WHOOSH4, NULL);
-                racer->vehicleSound = racer_sound_init(racer->characterId, racer->vehicleID);
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+                if (adventure_party_taj_active()) {
+                    /* The whole-party transform freed+rebuilt every seat with
+                     * vehicleSound=0; retail re-inits only the focus here, which
+                     * would leave seats 1..N-1 driving silently until the next
+                     * level load. Re-init every seat at this same retail moment. */
+                    adventure_party_taj_reinit_sounds();
+                } else
+#endif
+                {
+                    racer->vehicleSound = racer_sound_init(racer->characterId, racer->vehicleID);
+                }
             }
             break;
         case TAJ_MODE_TELEPORT_TO_PLAYER_BEGIN:

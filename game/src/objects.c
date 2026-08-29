@@ -4033,7 +4033,16 @@ static void adventure_party_taj_transform_commit(void) {
     gNumRacers = count;
     /* Republish the split layout with the roster and HUD count (v1 presentation
      * keeps the split, so the viewport count is unchanged; re-assert it so a
-     * regression that shipped a collapsed layout is caught). */
+     * regression that shipped a collapsed layout is caught).
+     *
+     * Controller ruling R18: this in-lobby transform deliberately does NOT bump
+     * the session's level generation. "Roster generation" maps to the level-entry
+     * generation semantics of Task 7 (bumped on level entry, which clears that
+     * generation's one-latched-action and consumed-token space); a Taj transform
+     * happens WITHIN a single lobby visit, so bumping here would wrongly wipe the
+     * lobby's latch/token space mid-visit. The transaction instead republishes the
+     * roster once (the aparty_transform/roster/layout below) at the SAME level
+     * generation -- that single republish is the "rebuilt exactly once" property. */
     set_scene_viewport_num(count - 1);
     if (mdkr_trace_enabled()) {
         s32 seat;
