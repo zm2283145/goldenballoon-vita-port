@@ -89,6 +89,7 @@ INTER_RE = re.compile(
 ROSTER_RE = re.compile(r"aparty_roster: n=(\d+) mask=0x([0-9a-fA-F]+)((?: c\d+=\d+)*)")
 LAYOUT_RE = re.compile(r"aparty_layout: viewports=(\d+) layout=(\d+)")
 TRANS_RE = re.compile(r"aparty_transition: seat=(\d+) tick=(\d+)")
+SOUND_RE = re.compile(r"aparty_taj_sound: seat=(\d+) reinit=1")
 RACERINPUT_RE = re.compile(
     r"\[RACERINPUT\] tick=(\d+) player=(-?\d+) racer=(\d+) port=(\d+)")
 BAD_RE = re.compile(
@@ -191,6 +192,17 @@ def assert_transform_scene(out, players, label):
                        pred=lambda m: int(m.group(1)) == players)
     if yi < 0:
         f.append(f"{label}: transform did not restore the {players}-viewport split layout")
+
+    # Engine sound restored for EVERY seat: the transform freed+rebuilt all N
+    # racers with vehicleSound=0, so every seat must be re-initialised at Taj's
+    # END_DIALOGUE (retail re-inits only the focus -- seats 1..N-1 would drive
+    # silently). One aparty_taj_sound reinit line per seat, after the transform.
+    sound_seats = {int(m.group(1)) for m in
+                   (SOUND_RE.search(l) for l in lines[ti:]) if m}
+    if sound_seats != set(range(players)):
+        f.append(f"{label}: engine sound re-init after transform covered seats "
+                 f"{sorted(sound_seats)}, expected all of {sorted(range(players))} "
+                 f"(seats 1..N-1 would drive silently)")
 
     # --- R10 release: SHARED_DIALOGUE -> ACTIVE_LOBBY, same lgen, after xform --
     rel_i, rel_m = find_line(lines, SESSION_RE, start=ti,
