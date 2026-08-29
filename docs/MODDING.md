@@ -396,7 +396,11 @@ Profile Studio revision preserves that state. Player assignments, package fit,
 and review evidence remain stored while disabled; the built-in racer is used
 until the package is enabled again. Permanent deletion is separate and removes
 the cache, all content-addressed Workshop source revisions and reports, and the
-package-owned local preferences.
+package-owned local preferences. Its source-generation-bound recovery marker
+and private quarantine are committed under the same cross-process lifecycle
+lock as those launcher preferences, named drafts, and exact-test records. A
+concurrent same-ID reinstall waits; restart recovery never deletes a newly
+installed same-ID package or its current metadata.
 
 The Package tab authenticates every retained revision before offering recovery.
 **Export selected source** copies those exact authoring bytes. **Export portable

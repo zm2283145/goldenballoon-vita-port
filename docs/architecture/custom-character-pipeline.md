@@ -50,7 +50,12 @@ This gives three deliberately separate formats:
 - locked, transactional local install/list/enable/disable/remove/clean
 operations; remove and stale-history cleanup preflight their complete owned
 sets, retire them through a same-filesystem armed/retired quarantine journal,
-roll back pre-commit failures, and recover interrupted work on the next clean;
+roll back pre-commit failures, and recover interrupted work on the next clean.
+The generation-bound native/Python lifecycle journal and lock remain held
+across launcher preference, named-draft and exact-test cleanup, so a concurrent
+same-ID reinstall cannot be mistaken for the retired generation; recovery
+retires only validated private trash and never a newly published same-ID root
+package;
 updates preserve enabled state, disable retains source and provenance outside
 runtime discovery, and permanent removal owns only exact content-addressed
 paths;
@@ -1031,8 +1036,12 @@ than being distorted by mandatory solving.
 10. Permanent deletion resolves the exact cache and content-addressed source/
    provenance paths, counts named drafts in the confirmation, and clears both
    drafts and package-owned local preferences. It is locked if draft state
-   cannot be read safely. Ordinary saves, records, ghosts, physics, and roster
-   identity never embed the package.
+   cannot be read safely. The durable marker binds the source digest, and the
+   same cross-process lifecycle lock spans the file decision and
+   launcher-metadata commit; a same-ID reinstall therefore either waits or is
+   recognized as a different current generation and preserved during restart
+   recovery. Ordinary saves, records, ghosts, physics, and roster identity
+   never embed the package.
 11. Revision recovery authenticates the exact source and provenance pair.
    Restore snapshots those bytes, recompiles against an optimistic current-cache
    digest, and preserves enabled/disabled state; export uses exclusive creation

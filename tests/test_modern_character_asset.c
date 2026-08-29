@@ -57,6 +57,37 @@ static int move_to_directory(const char *source, const char *directory,
            mdkr_move_utf8(source, target, 0, 1) == 0;
 }
 
+typedef struct LifecycleCommitWitness {
+    const char *directory;
+    const char *package_path;
+    unsigned calls;
+    unsigned native_cleanup_pending;
+    int return_value;
+} LifecycleCommitWitness;
+
+static int witness_lifecycle_commit(void *opaque,
+                                    unsigned native_cleanup_pending) {
+    LifecycleCommitWitness *witness = (LifecycleCommitWitness *)opaque;
+    MdkrModernCharacterInstallResult competing_result;
+    char lock_path[4096];
+    int exists = 0;
+    require(witness != NULL && witness->directory != NULL &&
+                witness->package_path != NULL,
+            "lifecycle commit receives its caller-owned context");
+    require(snprintf(lock_path, sizeof(lock_path), "%s/%s",
+                     witness->directory, ".character-import.lock") > 0 &&
+                mdkr_path_query_utf8(lock_path, &exists, NULL, NULL) == 0 &&
+                exists,
+            "lifecycle commit runs before the shared import lock is released");
+    require(!mdkr_modern_character_install_portable(
+                witness->package_path, witness->directory,
+                &competing_result),
+            "same-id mutation cannot cross the coordinated commit callback");
+    witness->calls++;
+    witness->native_cleanup_pending = native_cleanup_pending;
+    return witness->return_value;
+}
+
 static void test_shadow_bounds(void) {
     float world[16] = {0};
     float target[16] = {0};
@@ -1490,15 +1521,23 @@ int main(int argc, char **argv) {
                     &registry, "org.example.pipeline-proof") >= 0,
             "refused deletion preserves the complete installed package");
     mdkr_modern_character_registry_shutdown(&registry);
-    require(mdkr_modern_character_remove_installed(
-                "org.example.pipeline-proof", argv[5], &install_result),
+    {
+        LifecycleCommitWitness commit_witness = {
+            argv[5], argv[4], 0u, 1u, 1};
+        require(mdkr_modern_character_remove_installed_coordinated(
+                    "org.example.pipeline-proof", argv[5],
+                    witness_lifecycle_commit, &commit_witness,
+                    &install_result),
             install_result.message);
-    require(install_result.removed_files == 3u &&
-                install_result.removed_source_revisions == 1u &&
-                install_result.removed_provenance_reports == 1u &&
-                install_result.failed_files == 0u &&
-                install_result.cleanup_pending_files == 0u,
-            "transactional removal reports its exact cache/source/report scope");
+        require(commit_witness.calls == 1u &&
+                    commit_witness.native_cleanup_pending == 0u &&
+                    install_result.removed_files == 3u &&
+                    install_result.removed_source_revisions == 1u &&
+                    install_result.removed_provenance_reports == 1u &&
+                    install_result.failed_files == 0u &&
+                    install_result.cleanup_pending_files == 0u,
+                "transactional removal serializes its metadata commit and reports its exact cache/source/report scope");
+    }
     require(mdkr_modern_character_registry_init(&registry, argv[5]) == 0 &&
                 mdkr_modern_character_registry_count(&registry) == 0,
             "native removal retires the cache and retained package source");
@@ -1540,23 +1579,61 @@ int main(int argc, char **argv) {
                 mdkr_move_utf8(removal_recovery_cache,
                                removal_recovery_target, 0, 1) == 0,
             "simulate a pre-commit deletion interruption");
+    {
+        size_t duplicate_size = 0u;
+        unsigned char *duplicate = read_file(
+            removal_recovery_target, &duplicate_size);
+        write_file(removal_recovery_cache, duplicate, duplicate_size);
+        free(duplicate);
+    }
     lock_file = mdkr_fopen_utf8(import_lock, "wbx");
     require(lock_file != NULL &&
                 fputs("mdkr-native-lock-v1 2147483647\ncrashed-fixture\n",
                       lock_file) >= 0 &&
                 fclose(lock_file) == 0,
             "simulate a dead native deletion lock owner");
-    require(mdkr_modern_character_reconcile_removal(
-                "org.example.pipeline-proof", argv[5], 0,
-                &install_result),
-            install_result.message);
+    {
+        LifecycleCommitWitness commit_witness = {
+            argv[5], argv[4], 0u, 1u, 1};
+        require(mdkr_modern_character_reconcile_removal_coordinated(
+                    "org.example.pipeline-proof", argv[5], 0,
+                    witness_lifecycle_commit, &commit_witness,
+                    &install_result),
+                install_result.message);
+        require(commit_witness.calls == 1u &&
+                    commit_witness.native_cleanup_pending == 0u,
+                "restart rollback serializes launcher recovery before unlocking");
+    }
     lock_file = mdkr_fopen_utf8(removal_recovery_cache, "rb");
     require(lock_file != NULL && fclose(lock_file) == 0,
             "armed deletion recovery restores the playable cache");
     require(path_absent(import_lock),
             "restart recovery retires only a proven-dead native lock");
     require(path_absent(removal_recovery_quarantine),
-            "armed deletion recovery removes its empty quarantine");
+            "armed deletion recovery deduplicates a completed POSIX link step");
+
+    require(snprintf(removal_recovery_quarantine,
+                     sizeof(removal_recovery_quarantine),
+                     "%s/.character-trash.%s.1002", argv[5],
+                     "org.example.pipeline-proof") > 0 &&
+                mdkr_mkdir_utf8(removal_recovery_quarantine) == 0 &&
+                move_to_directory(
+                    removal_recovery_cache, removal_recovery_quarantine,
+                    removal_recovery_target,
+                    sizeof(removal_recovery_target)),
+            "stage a removal rollback collision");
+    write_file(removal_recovery_cache,
+               (const unsigned char *)"different replacement", 21u);
+    require(!mdkr_modern_character_reconcile_removal(
+                "org.example.pipeline-proof", argv[5], 0,
+                &install_result) &&
+                !path_absent(removal_recovery_quarantine),
+            "rollback refuses to overwrite a different same-id file");
+    require(mdkr_remove_utf8(removal_recovery_cache) == 0 &&
+                mdkr_modern_character_reconcile_removal(
+                    "org.example.pipeline-proof", argv[5], 0,
+                    &install_result),
+            "rollback resumes after the conflicting file is removed");
 
     require(snprintf(removal_recovery_quarantine,
                      sizeof(removal_recovery_quarantine),
@@ -1577,10 +1654,24 @@ int main(int argc, char **argv) {
                     removal_recovery_target,
                     sizeof(removal_recovery_target)),
             "stage committed-removal recovery files");
-    require(mdkr_modern_character_reconcile_removal(
-                "org.example.pipeline-proof", argv[5], 1,
-                &install_result),
-            install_result.message);
+    {
+        LifecycleCommitWitness commit_witness = {
+            argv[5], argv[4], 0u, 1u, 0};
+        require(!mdkr_modern_character_reconcile_removal_coordinated(
+                    "org.example.pipeline-proof", argv[5], 1,
+                    witness_lifecycle_commit, &commit_witness,
+                    &install_result) &&
+                    commit_witness.calls == 1u &&
+                    strstr(install_result.message, "metadata cleanup") != NULL,
+                "recovery remains pending when its coordinated launcher commit fails");
+        commit_witness.return_value = 1;
+        require(mdkr_modern_character_reconcile_removal_coordinated(
+                    "org.example.pipeline-proof", argv[5], 1,
+                    witness_lifecycle_commit, &commit_witness,
+                    &install_result) &&
+                    commit_witness.calls == 2u,
+                "coordinated recovery retries its idempotent launcher commit");
+    }
     require(mdkr_modern_character_registry_init(&registry, argv[5]) == 0 &&
                 mdkr_modern_character_registry_count(&registry) == 0,
             "retired deletion recovery removes cache and retained history");

@@ -36,11 +36,16 @@ def main() -> int:
             "both ordinary settings-panel save paths must accept visible "
             "unconfirmed writes")
     require("forgetCharacterPackagePreferences(id)" in SETTINGS and
-            "preferences != AppConfig::PersistResult::Durable" in SETTINGS and
+            "preferences == AppConfig::PersistResult::Durable" in SETTINGS and
             "character_workshop_cleanup_pending" in SETTINGS and
-            "mdkr_modern_character_reconcile_removal" in SETTINGS,
+            "mdkr_modern_character_reconcile_removal_coordinated" in SETTINGS and
+            "mdkr_modern_character_remove_installed_coordinated" in SETTINGS and
+            "commitCharacterPackageCleanup" in SETTINGS and
+            "differentGeneration" in SETTINGS and
+            "sourceDigest" in SETTINGS,
             "permanent character deletion must durably reconcile its "
-            "native quarantine and package-owned preference cleanup")
+            "native quarantine and package-owned preference cleanup under "
+            "one generation-bound cross-process lifecycle boundary")
     require("g_characterRegistryInventoryAvailable" in SETTINGS and
             "destructive recovery and deletion remain disabled" in SETTINGS and
             "record.present" in SETTINGS,

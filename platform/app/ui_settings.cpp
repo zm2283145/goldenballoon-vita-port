@@ -5164,18 +5164,6 @@ bool reviseCharacterRig(
     return queued;
 }
 
-bool removeCharacterPackageFiles(const std::string &id) {
-    MdkrModernCharacterInstallResult result{};
-    if (!g_characterRegistryDirectory.empty() &&
-        mdkr_modern_character_remove_installed(
-            id.c_str(), g_characterRegistryDirectory.c_str(), &result)) {
-        g_characterManagerReport = result.message;
-        return true;
-    }
-    g_characterManagerReport = result.message;
-    return false;
-}
-
 bool setCharacterPackageEnabled(const std::string &id, bool enabled) {
     MdkrModernCharacterInstallResult result{};
     if (g_characterRegistryDirectory.empty()) refreshCharacterRegistry();
@@ -5307,6 +5295,7 @@ struct CharacterCleanupRecord {
     CharacterCleanupPhase phase = CharacterCleanupPhase::Invalid;
     bool present = false;
     std::string packageId;
+    std::string sourceDigest;
 };
 
 bool characterCleanupIdValid(const std::string &id) {
@@ -5325,8 +5314,16 @@ CharacterCleanupRecord characterCleanupRecord() {
     record.present = true;
     const size_t separator = encoded.find(':');
     if (separator == std::string::npos) return record;
-    record.packageId = encoded.substr(separator + 1u);
+    const size_t digestSeparator = encoded.find(':', separator + 1u);
+    record.packageId = encoded.substr(
+        separator + 1u,
+        digestSeparator == std::string::npos
+            ? std::string::npos : digestSeparator - separator - 1u);
     if (!characterCleanupIdValid(record.packageId)) return record;
+    if (digestSeparator != std::string::npos) {
+        record.sourceDigest = encoded.substr(digestSeparator + 1u);
+        if (!characterDigestTextValid(record.sourceDigest)) return record;
+    }
     const std::string phase = encoded.substr(0u, separator);
     if (phase == "armed") record.phase = CharacterCleanupPhase::Armed;
     if (phase == "retired") record.phase = CharacterCleanupPhase::Retired;
@@ -5334,13 +5331,17 @@ CharacterCleanupRecord characterCleanupRecord() {
 }
 
 bool persistCharacterCleanupRecord(CharacterCleanupPhase phase,
-                                   const std::string &packageId) {
-    if (!characterCleanupIdValid(packageId)) return false;
+                                   const std::string &packageId,
+                                   const std::string &sourceDigest) {
+    if (!characterCleanupIdValid(packageId) ||
+        (!sourceDigest.empty() &&
+         !characterDigestTextValid(sourceDigest))) return false;
     const std::string previous = AppConfig::get(kCharacterCleanupJournalKey);
     AppConfig::set(
         kCharacterCleanupJournalKey,
         std::string(phase == CharacterCleanupPhase::Armed
-                        ? "armed:" : "retired:") + packageId);
+                        ? "armed:" : "retired:") + packageId +
+            (sourceDigest.empty() ? "" : ":" + sourceDigest));
     if (AppConfig::save() == AppConfig::PersistResult::Durable) return true;
     AppConfig::set(kCharacterCleanupJournalKey, previous);
     return false;
@@ -5354,21 +5355,57 @@ bool clearCharacterCleanupRecord() {
     return false;
 }
 
-bool finishCharacterPackageCleanup(const std::string &id) {
+bool forgetCharacterPackageMetadata(const std::string &id) {
     const AppConfig::PersistResult preferences =
         forgetCharacterPackagePreferences(id);
     const bool drafts = forgetCharacterPackageDrafts(id);
     const bool evidence = forgetCharacterPackageTestEvidence(id);
-    if (preferences != AppConfig::PersistResult::Durable || !drafts ||
-        !evidence) return false;
-    return clearCharacterCleanupRecord();
+    return preferences == AppConfig::PersistResult::Durable && drafts &&
+        evidence;
 }
 
-bool reconcileCharacterPackageFiles(const std::string &id, bool retire) {
+enum class CharacterCleanupCommitAction {
+    RetireAndForget,
+    PreserveAndClear,
+};
+
+struct CharacterCleanupCommitContext {
+    const std::string *packageId = nullptr;
+    const std::string *sourceDigest = nullptr;
+    CharacterCleanupCommitAction action =
+        CharacterCleanupCommitAction::RetireAndForget;
+};
+
+int commitCharacterPackageCleanup(void *opaque,
+                                  unsigned nativeCleanupPending) {
+    const auto *context =
+        static_cast<const CharacterCleanupCommitContext *>(opaque);
+    if (context == nullptr || context->packageId == nullptr ||
+        context->sourceDigest == nullptr) return 0;
+    if (context->action == CharacterCleanupCommitAction::PreserveAndClear) {
+        return clearCharacterCleanupRecord() ? 1 : 0;
+    }
+    if (!persistCharacterCleanupRecord(
+            CharacterCleanupPhase::Retired, *context->packageId,
+            *context->sourceDigest) ||
+        !forgetCharacterPackageMetadata(*context->packageId)) {
+        return 0;
+    }
+    /* Keep the retired marker until native private trash is also gone. */
+    return (nativeCleanupPending != 0u || clearCharacterCleanupRecord())
+        ? 1 : 0;
+}
+
+bool reconcileCharacterPackageFiles(
+    const std::string &id, bool retire,
+    const std::string &sourceDigest, CharacterCleanupCommitAction action) {
     MdkrModernCharacterInstallResult result{};
-    const bool reconciled = mdkr_modern_character_reconcile_removal(
-        id.c_str(), g_characterRegistryDirectory.c_str(),
-        retire ? 1 : 0, &result) != 0;
+    CharacterCleanupCommitContext context{&id, &sourceDigest, action};
+    const bool reconciled =
+        mdkr_modern_character_reconcile_removal_coordinated(
+            id.c_str(), g_characterRegistryDirectory.c_str(),
+            retire ? 1 : 0, commitCharacterPackageCleanup, &context,
+            &result) != 0;
     if (!reconciled) g_characterManagerReport = result.message;
     return reconciled;
 }
@@ -5384,25 +5421,37 @@ bool removeCharacterPackage(const std::string &id) {
             "Permanent deletion was refused because the installed-character inventory could not be verified.";
         return false;
     }
-    if (!persistCharacterCleanupRecord(CharacterCleanupPhase::Armed, id)) {
+    const int installedIndex = mdkr_modern_character_registry_find(
+        &g_characterRegistry, id.c_str());
+    const MdkrModernCharacterEntry *installed =
+        mdkr_modern_character_registry_entry(
+            &g_characterRegistry, installedIndex);
+    if (installed == nullptr) {
+        g_characterManagerReport =
+            "Permanent deletion was refused because that character is no longer installed; rescan and try again.";
+        return false;
+    }
+    const std::string sourceDigest =
+        characterDigestHex(installed->source_sha256);
+    if (!persistCharacterCleanupRecord(
+            CharacterCleanupPhase::Armed, id, sourceDigest)) {
         g_characterManagerReport =
             "Permanent deletion was refused because its recovery journal could not be saved.";
         return false;
     }
-    if (!removeCharacterPackageFiles(id)) {
+    MdkrModernCharacterInstallResult result{};
+    CharacterCleanupCommitContext context{
+        &id, &sourceDigest, CharacterCleanupCommitAction::RetireAndForget};
+    if (!mdkr_modern_character_remove_installed_coordinated(
+            id.c_str(), g_characterRegistryDirectory.c_str(),
+            commitCharacterPackageCleanup, &context, &result)) {
+        g_characterManagerReport = result.message;
         // The native transaction either changed no owned file or published a
         // complete retirement. Keep the durable armed record until a rescan
         // can distinguish those states without guessing.
         return false;
     }
-    const bool retiredRecord = persistCharacterCleanupRecord(
-        CharacterCleanupPhase::Retired, id);
-    const bool nativeCleanup = reconcileCharacterPackageFiles(id, true);
-    if (!retiredRecord || !nativeCleanup ||
-        !finishCharacterPackageCleanup(id)) {
-        g_characterManagerReport +=
-            " Package files are retired; private trash or launcher metadata cleanup will retry on the next rescan or launch.";
-    }
+    g_characterManagerReport = result.message;
     refreshCharacterRegistry();
     return true;
 }
@@ -5423,23 +5472,36 @@ void reconcileCharacterPackageCleanup() {
         return;
     }
     g_characterCleanupReconcileActive = true;
-    const bool stillInstalled = mdkr_modern_character_registry_find(
-        &g_characterRegistry, record.packageId.c_str()) >= 0;
-    if (record.phase == CharacterCleanupPhase::Armed && stillInstalled) {
-        if (!reconcileCharacterPackageFiles(record.packageId, false)) {
+    const int currentIndex = mdkr_modern_character_registry_find(
+        &g_characterRegistry, record.packageId.c_str());
+    const bool stillInstalled = currentIndex >= 0;
+    if (stillInstalled) {
+        const MdkrModernCharacterEntry *current =
+            mdkr_modern_character_registry_entry(
+                &g_characterRegistry, currentIndex);
+        const bool differentGeneration = current != nullptr &&
+            !record.sourceDigest.empty() &&
+            characterDigestHex(current->source_sha256) != record.sourceDigest;
+        const bool retireOldTrash =
+            record.phase == CharacterCleanupPhase::Retired ||
+            differentGeneration;
+        if (!reconcileCharacterPackageFiles(
+                record.packageId, retireOldTrash,
+                record.sourceDigest,
+                CharacterCleanupCommitAction::PreserveAndClear)) {
             g_characterManagerReport =
-                "An interrupted character deletion could not yet restore every quarantined file; the installed cache remains available and recovery will retry.";
-        } else if (!clearCharacterCleanupRecord()) {
+                retireOldTrash
+                    ? "A newly installed same-ID character remains available, but private trash from its predecessor still needs cleanup; no current package metadata was removed."
+                    : "An interrupted character deletion could not yet restore every quarantined file; the installed cache remains available and recovery will retry.";
+        } else if (retireOldTrash) {
             g_characterManagerReport =
-                "The package remains installed, but its unused deletion recovery marker could not be cleared.";
+                "Finished private-trash cleanup for a prior same-ID character without changing the newly installed package or its metadata.";
         }
     } else {
-        const bool nativeCleanup = reconcileCharacterPackageFiles(
-            record.packageId, true);
-        const bool retiredRecord = persistCharacterCleanupRecord(
-            CharacterCleanupPhase::Retired, record.packageId);
-        if (nativeCleanup && retiredRecord &&
-            finishCharacterPackageCleanup(record.packageId)) {
+        if (reconcileCharacterPackageFiles(
+                record.packageId, true,
+                record.sourceDigest,
+                CharacterCleanupCommitAction::RetireAndForget)) {
             g_characterManagerReport =
                 "Finished recovery cleanup for a previously retired custom character.";
         } else {

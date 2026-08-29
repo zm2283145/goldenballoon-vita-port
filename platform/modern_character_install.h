@@ -61,6 +61,14 @@ typedef struct MdkrModernCharacterInstallResult {
     char message[256];
 } MdkrModernCharacterInstallResult;
 
+/* Runs after file retirement/recovery has reached its durable decision but
+ * before the cross-process character lifecycle lock is released. This lets a
+ * launcher commit its own metadata without racing a same-id reinstall in a
+ * second process. `native_cleanup_pending` is nonzero when only private trash
+ * cleanup remains; the package itself is already retired. */
+typedef int (*MdkrModernCharacterLifecycleCommit)(
+    void *context, unsigned native_cleanup_pending);
+
 /* Performs every portable-package/cache/digest validation and publishes the
  * exact compiled summary without creating a directory or installing bytes. */
 int mdkr_modern_character_inspect_portable(
@@ -96,12 +104,32 @@ int mdkr_modern_character_remove_installed(
     const char *package_id, const char *directory,
     MdkrModernCharacterInstallResult *result);
 
+/* Coordinated form used when the caller owns metadata outside the installed
+ * directory. The callback is invoked exactly once after durable retirement,
+ * while `.character-import.lock` still excludes every native/Python mutator.
+ * A callback failure is reported as pending cleanup but cannot roll back an
+ * already committed package retirement. */
+int mdkr_modern_character_remove_installed_coordinated(
+    const char *package_id, const char *directory,
+    MdkrModernCharacterLifecycleCommit commit, void *context,
+    MdkrModernCharacterInstallResult *result);
+
 /* Completes or rolls back private deletion quarantines after an interrupted
- * launcher transaction. `retire` removes every exact package-owned root/trash
- * file; zero restores quarantined files without overwrite. The caller keeps
- * its durable cleanup marker until this returns success. */
+ * launcher transaction. `retire` removes only validated private trash and
+ * never a current same-id package in the installed root; zero restores
+ * quarantined files without overwriting different bytes. The caller keeps its
+ * durable cleanup marker until this returns success. */
 int mdkr_modern_character_reconcile_removal(
     const char *package_id, const char *directory, int retire,
+    MdkrModernCharacterInstallResult *result);
+
+/* Coordinated recovery counterpart. The callback runs only after every
+ * quarantine was reconciled successfully and before the lifecycle lock is
+ * released. Unlike first-time retirement, callback failure means recovery is
+ * incomplete and this function returns zero so the durable marker is kept. */
+int mdkr_modern_character_reconcile_removal_coordinated(
+    const char *package_id, const char *directory, int retire,
+    MdkrModernCharacterLifecycleCommit commit, void *context,
     MdkrModernCharacterInstallResult *result);
 
 #ifdef __cplusplus
