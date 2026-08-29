@@ -98,9 +98,15 @@ extern char *gRacePlacementsArray[8];
 #define RES_STAGE_STANDINGS 1u
 #define RES_STAGE_CHOOSER 2u
 
-/* Single-race RESULTS dwell before the chooser fronts, so the finishing order is
- * readable first (host A skips it early); ~2s at 60Hz. */
-#define RES_CHOOSER_SINGLE_DWELL 120u
+/* Dwell before the "more races" chooser fronts -- a single race's RESULTS OR a
+ * tournament's FINAL standings, so the finishing order / standings is readable first
+ * (host A skips it early); ~2s at 60Hz. */
+#define RES_CHOOSER_FRONT_DWELL 120u
+
+/* The joiner-mirror test seam departs the feed (-> LOBBY) after this many
+ * CHOOSER-stage ticks, standing in for the host's authoritative REMATCH landing so
+ * the joiner follows into re-selection. Test seam only (inert in a normal run). */
+#define RES_CHOOSER_JOINER_STANDIN_DWELL 200u
 
 /* One entry in a mode's "more races" option list: the on-screen label + the choice
  * the session routes on. The list is per-mode (single offers CHANGE TRACK, a
@@ -1187,11 +1193,11 @@ MdkrOnlineResultsResult mdkr_online_results_tick(s32 updateRate) {
     if (sRes.chooserEnabled) {
         bool tournFinal = tournament && sRes.isFinal &&
                           sRes.stage == RES_STAGE_STANDINGS &&
-                          (sRes.stageTicks >= RES_CHOOSER_SINGLE_DWELL ||
+                          (sRes.stageTicks >= RES_CHOOSER_FRONT_DWELL ||
                            (sRes.host && in.advanceEdge &&
                             sRes.stageTicks >= RES_INPUT_GRACE));
         bool singleDone = !tournament && sRes.stage == RES_STAGE_RESULTS &&
-                          (sRes.stageTicks >= RES_CHOOSER_SINGLE_DWELL ||
+                          (sRes.stageTicks >= RES_CHOOSER_FRONT_DWELL ||
                            (sRes.host && in.advanceEdge &&
                             sRes.stageTicks >= RES_INPUT_GRACE));
         if (tournFinal || singleDone) {
@@ -1496,7 +1502,7 @@ static void results_test_pump(void) {
      * follows into re-selection. Inert unless MDKR_TEST_ONLINE_RESULTS_CHOOSER=joiner. */
     if (results_chooser_seam_joiner() &&
         sTestRoom.phase == (uint8_t) RES_PHASE_RESULTS &&
-        sRes.stage == RES_STAGE_CHOOSER && sRes.stageTicks >= 200u) {
+        sRes.stage == RES_STAGE_CHOOSER && sRes.stageTicks >= RES_CHOOSER_JOINER_STANDIN_DWELL) {
         if (results_chooser_seam_joiner_vacate()) {
             /* Vanished-host control: the sole remote seat departs the room while
              * the feed stays in RESULTS. The mirror's own vacated-host exit must
