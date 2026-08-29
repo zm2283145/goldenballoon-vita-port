@@ -148,9 +148,11 @@ static int pair_is_legal(AdventurePartySessionState st,
         return k == ADVENTURE_PARTY_EVENT_RACE_RESULT_COMMITTED ||
                k == ADVENTURE_PARTY_EVENT_QUIT;
     case ADVENTURE_PARTY_STATE_SOLO_ACTIVITY:
-        return k == ADVENTURE_PARTY_EVENT_SOLO_EXIT;
+        return k == ADVENTURE_PARTY_EVENT_SOLO_EXIT ||
+               k == ADVENTURE_PARTY_EVENT_QUIT;
     case ADVENTURE_PARTY_STATE_RESTORING_PARTY:
-        return k == ADVENTURE_PARTY_EVENT_RESTORE_COMMIT;
+        return k == ADVENTURE_PARTY_EVENT_RESTORE_COMMIT ||
+               k == ADVENTURE_PARTY_EVENT_QUIT;
     case ADVENTURE_PARTY_STATE_EXITING:
         return k == ADVENTURE_PARTY_EVENT_DESTROY;
     default:
@@ -618,6 +620,46 @@ static void test_solo_suspend_and_restore_roundtrip(void) {
            "restore: roster identical to what was borrowed");
 }
 
+/* A quit-to-title from INSIDE a host-solo activity must tear the session down.
+ * The Task 6 title seam (menu.c) applies QUIT then DESTROY with results ignored,
+ * so QUIT must be legal from SOLO_ACTIVITY and RESTORING_PARTY — otherwise a quit
+ * mid-boss/challenge leaves the session active and it leaks into the next 1P
+ * game. This also un-wedges a RESTORING_PARTY that can never match its restore. */
+static void test_quit_from_solo_activity(void) {
+    AdventurePartySession s;
+
+    /* Quit straight out of a host-solo challenge/boss. */
+    drive(&s, ADVENTURE_PARTY_STATE_SOLO_ACTIVITY, 3);
+    expect(s.has_suspended_roster == 1, "quit-solo: suspended before quit");
+    expect(apply(&s, ADVENTURE_PARTY_EVENT_QUIT, 3) == ADVENTURE_PARTY_OK,
+           "quit-solo: QUIT legal from SOLO_ACTIVITY");
+    expect(s.state == ADVENTURE_PARTY_STATE_EXITING, "quit-solo: -> EXITING");
+    expect(s.has_suspended_roster == 0,
+           "quit-solo: suspended facts dropped on quit");
+    expect(apply(&s, ADVENTURE_PARTY_EVENT_DESTROY, 3) == ADVENTURE_PARTY_OK,
+           "quit-solo: DESTROY legal from EXITING");
+    expect(s.state == ADVENTURE_PARTY_STATE_OFF, "quit-solo: -> OFF");
+    expect(adventure_party_is_active(&s) == 0, "quit-solo: session inactive");
+
+    /* Quit out of a (possibly wedged) restore. */
+    drive(&s, ADVENTURE_PARTY_STATE_RESTORING_PARTY, 2);
+    expect(apply(&s, ADVENTURE_PARTY_EVENT_QUIT, 2) == ADVENTURE_PARTY_OK,
+           "quit-restore: QUIT legal from RESTORING_PARTY");
+    expect(s.state == ADVENTURE_PARTY_STATE_EXITING, "quit-restore: -> EXITING");
+    expect(apply(&s, ADVENTURE_PARTY_EVENT_DESTROY, 2) == ADVENTURE_PARTY_OK,
+           "quit-restore: DESTROY -> OFF");
+    expect(s.state == ADVENTURE_PARTY_STATE_OFF, "quit-restore: -> OFF");
+
+    /* The exact title seam: QUIT then DESTROY with results IGNORED, from a live
+     * solo activity, must land the session OFF (mirrors menu.c quit-to-title). */
+    drive(&s, ADVENTURE_PARTY_STATE_SOLO_ACTIVITY, 4);
+    apply(&s, ADVENTURE_PARTY_EVENT_QUIT, 4);
+    apply(&s, ADVENTURE_PARTY_EVENT_DESTROY, 4);
+    expect(s.state == ADVENTURE_PARTY_STATE_OFF,
+           "title-seam: quit-from-solo leaves the session OFF");
+    expect(s.has_suspended_roster == 0, "title-seam: no suspended residue");
+}
+
 /* "Restoring a roster that differs from the suspended one fails" — count,
  * seat and character legs each get a named refusal. */
 static void test_restore_mismatches_fail(void) {
@@ -905,6 +947,7 @@ int main(int argc, char **argv) {
     test_token_needs_an_activity_state();
     test_token_capacity_is_a_typed_refusal();
     test_solo_suspend_and_restore_roundtrip();
+    test_quit_from_solo_activity();
     test_restore_mismatches_fail();
     test_participant_count_fixed_mid_session();
     test_host_seat_never_changes();

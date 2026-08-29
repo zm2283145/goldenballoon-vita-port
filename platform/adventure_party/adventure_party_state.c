@@ -94,9 +94,15 @@ static int event_is_legal(AdventurePartySessionState state,
         return kind == ADVENTURE_PARTY_EVENT_RACE_RESULT_COMMITTED ||
                kind == ADVENTURE_PARTY_EVENT_QUIT;
     case ADVENTURE_PARTY_STATE_SOLO_ACTIVITY:
-        return kind == ADVENTURE_PARTY_EVENT_SOLO_EXIT;
+        /* QUIT: a quit-to-title from inside a host-solo challenge/boss must tear
+         * the session down (else it strands, active, into the next 1P game). */
+        return kind == ADVENTURE_PARTY_EVENT_SOLO_EXIT ||
+               kind == ADVENTURE_PARTY_EVENT_QUIT;
     case ADVENTURE_PARTY_STATE_RESTORING_PARTY:
-        return kind == ADVENTURE_PARTY_EVENT_RESTORE_COMMIT;
+        /* QUIT: also the escape from a wedged restore (a roster that never
+         * matches leaves RESTORING_PARTY with only RESTORE_COMMIT otherwise). */
+        return kind == ADVENTURE_PARTY_EVENT_RESTORE_COMMIT ||
+               kind == ADVENTURE_PARTY_EVENT_QUIT;
     case ADVENTURE_PARTY_STATE_EXITING:
         return kind == ADVENTURE_PARTY_EVENT_DESTROY;
     default:
@@ -220,6 +226,13 @@ AdventurePartyResult adventure_party_session_apply(
 
     case ADVENTURE_PARTY_EVENT_QUIT:
         session->state = ADVENTURE_PARTY_STATE_EXITING;
+        /* A quit from a solo activity (or a wedged restore) abandons the
+         * borrowed party: drop the suspended facts so EXITING never carries a
+         * half-restore, keeping "has_suspended_roster only in SOLO/RESTORING"
+         * true. A no-op for a lobby/race quit, where nothing was suspended. */
+        session->has_suspended_roster = 0;
+        memset(&session->suspended_roster, 0,
+               sizeof session->suspended_roster);
         memset(&session->transition_latch, 0,
                sizeof session->transition_latch);
         return ADVENTURE_PARTY_OK;
