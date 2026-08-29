@@ -176,14 +176,18 @@ def main() -> int:
     #     mutation proof). A normal (undimmed) portrait tile is drawn at 210; a
     #     genuinely greyed tile is CS_TAKEN_DIM (72). Require a hard drop to well
     #     under half a normal tile, so a dropped OR merely token dim is caught. The
-    #     scripted cursor never rests on the taken tile, so every taken row is the
-    #     pure greyed value (never the on-cursor highlight).
+    #     cursor-on-taken tile uses a distinct dimmed-gold highlight (not the pure
+    #     greyed value), so the filter EXCLUDES rows where the local cursor rests on
+    #     the taken tile (int(r[0]) != REMOTE_CHARACTER) -- confining the dim check to
+    #     the pure greyed cue rather than relying on the scripted cursor never landing
+    #     there.
     NORMAL_TILE_LUM = 210
     DIM_CEILING = NORMAL_TILE_LUM // 2   # 105: clears the 72 drop, catches 210
     taken_rows = [
         r for r in renders
         if int(r[8]) == REMOTE_CHARACTER and int(r[9]) == 1
         and int(r[11]) == REMOTE_CHARACTER
+        and int(r[0]) != REMOTE_CHARACTER
     ]
     if not taken_rows:
         return fail(f"the rival locked char {REMOTE_CHARACTER} but no render row "
