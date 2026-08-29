@@ -119,8 +119,10 @@
  * an unmistakable greyed/"unavailable" drop (T9 NIT-1 -- the T8 gate read the old
  * 80 as merely "a bit darker"). Prim-colour modulation cannot desaturate a decoded
  * portrait, so a hard luminance drop + the band-backed TAKEN/RIVAL labels are the
- * three redundant cues. One constant, shared by the render + the witness so the
- * headless taken-tile coverage can never drift from what is drawn. */
+ * three redundant cues. The render applies this drop; the witness reports the
+ * luminance it ACTUALLY handed the blit (see sTakenTileDrawLum), NOT this constant,
+ * so the headless taken-tile coverage observes the drawn cue instead of re-deriving
+ * it from the same condition. */
 #define CS_TAKEN_DIM 72u
 
 /* Menu SFX (the real DKR enums -- same reuse as the portraits; verified against
@@ -178,6 +180,13 @@ static u8 sLastConfirmedChar;
  * clean second entry. */
 static u32 sWitnessKey = 0xFFFFFFFFu;
 static s32 sWitnessRemoteSeat = -2;
+
+/* The luminance the render ACTUALLY handed the rival's locked (taken) tile's
+ * portrait blit on the frame just drawn -- captured at the draw site, then reported
+ * as the witness 'dim' so the taken-dim coverage observes what reached the screen
+ * rather than re-deriving CS_TAKEN_DIM from the same taken condition. -1 = no taken
+ * tile was drawn this frame (or the witness seam is unarmed -> witness prints 255). */
+static s32 sTakenTileDrawLum = -1;
 
 /* Resolved (display-only) view of the remote seat, with a bounded, NUL-forced
  * name copy -- seat->name is untrusted (remote-controlled). */
@@ -469,6 +478,11 @@ static void charselect_render(const CsRemoteView *rv) {
      * highlight feel with zero assets. */
     s32 tri = mdkr_online_screen_pulse(sCs.ticks);
     u8 id;
+    /* Capture the taken tile's ACTUAL drawn luminance for the witness only when the
+     * headless test seam is armed -- reset every frame so no stale value can leak,
+     * and gated so a normal (unarmed) run pays nothing. */
+    bool witnessArmed = mdkr_online_charselect_test_active() ? true : false;
+    sTakenTileDrawLum = -1;
 
     /* Title. */
     mdkr_online_screen_text(CS_SCREEN_W_HALF, 18, ASSET_FONTS_BIGFONT,
@@ -519,6 +533,12 @@ static void charselect_render(const CsRemoteView *rv) {
             nb = 120;
         }
 
+        if (taken && witnessArmed) {
+            /* The luminance actually handed to THIS frame's taken-tile blit
+             * (r==g==b for the greyed state). Plumbed into the witness so the
+             * coverage reports the drawn value, not a re-derived constant. */
+            sTakenTileDrawLum = (s32) pr;
+        }
         charselect_draw_portrait(id, pr, pg, pb);
         /* Shape redundancy for the hover cursor. */
         if (onCursor) {
@@ -639,14 +659,19 @@ static void charselect_witness(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
     sWitnessKey = key;
     sWitnessRemoteSeat = rv->seat;
 
-    /* T9 NIT-1 coverage: the greyed/"TAKEN" tile cue. When the rival has LOCKED
-     * (confirmed) a racer its tile is drawn at CS_TAKEN_DIM luminance + a TAKEN/
-     * RIVAL nameplate; report which tile is greyed and to what luminance so a
-     * headless lane can ASSERT the cue genuinely shows (the render greys tile
-     * id==rv->character; -1/255 when the rival holds no lock). */
+    /* Coverage for the greyed/"TAKEN" tile cue: when the rival has LOCKED
+     * (confirmed) a racer its tile is drawn at a hard luminance drop + a TAKEN/
+     * RIVAL nameplate. Report WHICH tile is greyed (from the snapshot pick) and the
+     * luminance the render ACTUALLY drew it at (sTakenTileDrawLum, captured at the
+     * draw site above) so a headless lane can ASSERT the cue genuinely shows -- and
+     * so DROPPING the render's dim line reports a normal-bright tile here rather than
+     * a constant re-derived from the same taken condition. taken=-1 / dim=255 when
+     * the rival holds no lock (or the witness seam is unarmed). */
     {
         s32 takenTile = (rv->character < CS_CHAR_COUNT) ? (s32) rv->character : -1;
-        unsigned takenDim = (takenTile >= 0) ? (unsigned) CS_TAKEN_DIM : 255u;
+        unsigned takenDim = (sTakenTileDrawLum >= 0)
+                                ? (unsigned) sTakenTileDrawLum
+                                : 255u;
         fprintf(stderr,
                 "[online-charselect] render cursor=%u name=%s portrait=%u "
                 "local{conf=%u ready=%u seatChar=%u seatReady=%u} "

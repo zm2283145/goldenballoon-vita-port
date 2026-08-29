@@ -37,6 +37,17 @@ Assertions:
   * assets were freed on exit ([online-charselect] exit)
   * the session handed off to the race WITHOUT the offline menu (gGameMode=2,
     gCurrentMenuId=0) and the race still boots + converges byte-for-byte
+
+Mutation proof (the taken-dim cue coverage is NON-VACUOUS -- re-runnable):
+  Delete/neutralize the taken-tile portrait dim in
+  game/src/online/online_charselect.c (the `pr = pg = pb = CS_TAKEN_DIM;` line in
+  charselect_render's `if (taken)` block), rebuild build-beta, and re-run this lane:
+  it MUST FAIL. The witness 'dim' field is the luminance the render ACTUALLY handed
+  the taken tile's portrait blit, so a dropped dim renders the tile normal-bright
+  (210) and the DIM_CEILING assertion below catches it. Restore the line and the
+  lane is GREEN again. (Before the witness reported the drawn value it re-derived
+  CS_TAKEN_DIM from the same taken condition, so this exact mutation left the lane
+  GREEN -- the cue was certified but never observed.)
 """
 
 from __future__ import annotations
@@ -154,12 +165,21 @@ def main() -> int:
         return fail(f"no render row showed the remote seat from the snapshot "
                     f"(char={REMOTE_CHARACTER} ready=1 name={REMOTE_NAME})", output)
 
-    # --- The greyed/"TAKEN" tile cue (T9 NIT-1) -----------------------------
+    # --- The greyed/"TAKEN" tile cue ----------------------------------------
     #     When the rival has LOCKED (confirmed) a racer, that tile MUST render
     #     greyed (a hard luminance drop) so the local player reads "unavailable"
-    #     at the tile, not just after a rejected confirm. Prove the cue is drawn
-    #     on the rival's exact racer AND that the dim really dropped (< a normal
-    #     tile's 255) -- the T8 gate saw the tile "not greyed"; this locks it in.
+    #     AT the tile, not just after a rejected confirm. The 'dim' field is the
+    #     luminance the render ACTUALLY handed the taken tile's portrait blit
+    #     (plumbed from the draw site in online_charselect.c), NOT a re-derivation of
+    #     the CS_TAKEN_DIM constant -- so dropping the render's dim line reports a
+    #     normal-bright tile here and this assertion FAILS (see the docstring's
+    #     mutation proof). A normal (undimmed) portrait tile is drawn at 210; a
+    #     genuinely greyed tile is CS_TAKEN_DIM (72). Require a hard drop to well
+    #     under half a normal tile, so a dropped OR merely token dim is caught. The
+    #     scripted cursor never rests on the taken tile, so every taken row is the
+    #     pure greyed value (never the on-cursor highlight).
+    NORMAL_TILE_LUM = 210
+    DIM_CEILING = NORMAL_TILE_LUM // 2   # 105: clears the 72 drop, catches 210
     taken_rows = [
         r for r in renders
         if int(r[8]) == REMOTE_CHARACTER and int(r[9]) == 1
@@ -168,10 +188,12 @@ def main() -> int:
     if not taken_rows:
         return fail(f"the rival locked char {REMOTE_CHARACTER} but no render row "
                     f"greyed that tile (taken={REMOTE_CHARACTER})", output)
-    taken_dim = int(taken_rows[0][12])
-    if taken_dim >= 255:
-        return fail(f"the taken tile was flagged but not dimmed (dim={taken_dim}, "
-                    f"expected a hard luminance drop)", output)
+    not_dimmed = [int(r[12]) for r in taken_rows if int(r[12]) >= DIM_CEILING]
+    if not_dimmed:
+        return fail(f"the taken tile was flagged but NOT genuinely dimmed (drawn "
+                    f"luminance {not_dimmed[0]} >= {DIM_CEILING}; a normal tile is "
+                    f"{NORMAL_TILE_LUM}, a greyed tile is 72) -- the render's "
+                    f"taken-dim line was dropped or weakened", output)
 
     # --- Portrait/character mapping (M4): a swapped sOnlineToPortrait[] entry
     #     would draw the wrong face; the cursor->character->portrait slot must
