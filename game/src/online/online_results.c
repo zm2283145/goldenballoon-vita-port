@@ -1028,7 +1028,7 @@ static MdkrOnlineResultsResult results_chooser_tick(const MdkrPartyLinkSnapshot 
              * dispatching a mid-cup REMATCH there would advance a series the
              * room is still playing. */
             u8 finalWrap = (sRes.isFinal &&
-                            sRes.chooserMode == (u8) RES_MODE_TOURNAMENT &&
+                            sRes.chooserMode == (u8) MDKR_ONLINE_SCREEN_MODE_TOURNAMENT &&
                             haveSnap &&
                             (u32) snap->race_index + 1u >= RES_CUP_ROUNDS)
                                ? 1u
@@ -1085,7 +1085,7 @@ static MdkrOnlineResultsResult results_chooser_tick(const MdkrPartyLinkSnapshot 
      * room down to just this seat, debounced) and a deliberate, confirmed B. */
     if (sRes.chooserJoiner) {
         if (haveSnap && snap->phase != (uint8_t) RES_PHASE_RESULTS) {
-            if (sRes.isFinal && sRes.chooserMode == (u8) RES_MODE_TOURNAMENT) {
+            if (sRes.isFinal && sRes.chooserMode == (u8) MDKR_ONLINE_SCREEN_MODE_TOURNAMENT) {
                 /* The TOURNAMENT-FINAL mirror: the cup is COMPLETE, and the
                  * room's departure from RESULTS is the host's authoritative wrap
                  * (its FINISH, or a replay option -- the mirror cannot and need
