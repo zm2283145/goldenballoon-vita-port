@@ -712,18 +712,6 @@ static bool online_session_snapshot_has_local_seat(
     return false;
 }
 
-/* whether CHARSELECT should hand off to the native TRACKSELECT screen once
- * the local seat is confirmed+ready. It does in real play and in the TRACKSELECT
- * lane; the STANDALONE CHARSELECT lane (which scripts its own host-start straight
- * to LOADING and asserts the historical charselect->race hand-off) deliberately
- * keeps that behaviour, so we DON'T insert TRACKSELECT when the CHARSELECT seam is
- * armed WITHOUT the TRACKSELECT seam. This is the smallest wiring that satisfies
- * while keeping check_online_charselect.py green unchanged. */
-static bool online_session_trackselect_enabled(void) {
-    return !(mdkr_online_charselect_test_active() &&
-             !mdkr_online_trackselect_test_active());
-}
-
 /* the native VEHICLE select screen (inserted between CHARSELECT and TRACKSELECT)
  * is ALWAYS part of the flow -- the player picks car/hovercraft/plane. Env
  * presence never removes it: a production run can no longer silently lose the
@@ -1312,36 +1300,25 @@ void mdkr_online_session_tick(s32 updateRate) {
             mdkr_online_charselect_exit();
             online_session_boot_race();
         } else if (r == MDKR_ONLINE_CHARSELECT_STAY &&
-                   (online_session_vehicleselect_enabled() ||
-                    online_session_trackselect_enabled()) &&
+                   online_session_vehicleselect_enabled() &&
                    mdkr_online_charselect_local_ready()) {
             /* once the local seat is confirmed+ready while the room
-             * is still in LOBBY, hand off to the next native screen: the VEHICLE
-             * select screen if it participates (real play), otherwise straight to
-             * TRACKSELECT (the pre-existing scripted lanes, which are byte-behaviour
-             * unchanged). gate on the SCREEN's own confirmed+ready latch AS WELL AS
-             * the snapshot's ready flag. The snapshot ready lags un-ready by >=1
-             * pump after a back-out, so relying on it alone would one-frame flash
-             * charselect and re-advance; the screen latch resets immediately on
-             * _enter(), so requiring it keeps the player on charselect until they
-             * genuinely re-confirm+re-ready. */
+             * is still in LOBBY, hand off to the native VEHICLE select screen
+             * (always part of the flow). gate on the SCREEN's own confirmed+ready
+             * latch AS WELL AS the snapshot's ready flag. The snapshot ready lags
+             * un-ready by >=1 pump after a back-out, so relying on it alone would
+             * one-frame flash charselect and re-advance; the screen latch resets
+             * immediately on _enter(), so requiring it keeps the player on charselect
+             * until they genuinely re-confirm+re-ready. */
             MdkrPartyLinkSnapshot snap;
             if (mdkr_party_link_read(&snap) &&
                 online_session_local_seat_ready_in_lobby(&snap)) {
                 mdkr_online_charselect_exit();
-                if (online_session_vehicleselect_enabled()) {
-                    sOnlineSession.phase = MDKR_ONLINE_SESSION_VEHICLESELECT;
-                    mdkr_online_vehicleselect_enter();
-                    fprintf(stderr,
-                            "[online-session] charselect -> vehicleselect (local "
-                            "seat ready in LOBBY)\n");
-                } else {
-                    sOnlineSession.phase = MDKR_ONLINE_SESSION_TRACKSELECT;
-                    mdkr_online_trackselect_enter();
-                    fprintf(stderr,
-                            "[online-session] charselect -> trackselect (local "
-                            "seat ready in LOBBY)\n");
-                }
+                sOnlineSession.phase = MDKR_ONLINE_SESSION_VEHICLESELECT;
+                mdkr_online_vehicleselect_enter();
+                fprintf(stderr,
+                        "[online-session] charselect -> vehicleselect (local "
+                        "seat ready in LOBBY)\n");
             }
         } else if (r == MDKR_ONLINE_CHARSELECT_LEAVE) {
             if (sOnlineSession.beganWithoutDescriptor &&
