@@ -31,6 +31,13 @@
 
 #include "presentation_snapshot.h"
 
+#if defined(MDKR_ENABLE_ONLINE_BETA)
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include "rollback/rollback_game_authority.h"
+#endif
+
 extern Camera gCameras[PRESENTATION_SNAPSHOT_MAX_CAMERAS];
 extern f32 gCurCamFOV;
 extern s32 gNoCamShake;
@@ -208,6 +215,340 @@ static void capture_cameras(uint64_t authored_tick) {
     }
 }
 
+#if defined(MDKR_ENABLE_ONLINE_BETA)
+/*
+ * Camera out-of-bounds census (log-only, env-armed, beta-only).
+ *
+ * MDKR_CAMERA_OOB_CENSUS=1 accumulates counters and prints a [CAM-OOB]
+ * summary row every 300 census ticks (and one final row at exit); =2 adds a
+ * [CAM-OOB-EVT] row per event. Nothing here writes game state: the probes are
+ * get_level_segment_index_from_position (a pure bounding-box scan, the game's
+ * own "which segment holds the camera" answer -- -1 IS the game's out-of-
+ * bounds verdict, the one that makes initialise_player_viewport_vars fall
+ * back to gSceneStartSegment = -1) and presentation_snapshot_resolve_camera
+ * (read-only over the published pair).
+ *
+ * Every counter is split near/far of a rollback correction: "near" means
+ * within MDKR_CAMERA_OOB_CENSUS_WINDOW (default 8) authored ticks after the
+ * game-authority restore serial advanced. Corrections are where rollback
+ * mispredictions concentrate, so this split is the discriminator between
+ * "online camera leaks are correction-correlated" and "same as offline".
+ */
+typedef struct CamOobCensus {
+    int level;                 /* 0 off, 1 counters, 2 +event rows */
+    uint64_t window;           /* "near" horizon in authored ticks */
+    uint64_t last_restore_serial;
+    uint64_t last_restore_tick;
+    int restore_seen;
+    uint64_t ticks, ticks_near, corrections, cams;
+    uint64_t authored_oob_near, authored_oob_far;
+    uint64_t interp_checked_near, interp_checked_far;
+    uint64_t interp_oob_near, interp_oob_far;
+    uint64_t hold_near, hold_far, blend_near, blend_far;
+    uint64_t step10_near, step30_near, step100_near;
+    uint64_t step10_far, step30_far, step100_far;
+    double maxstep_near, maxstep_far;
+    uint64_t yaw45_near, yaw45_far;
+    uint64_t segchange_near, segchange_far;
+    /* Ticks where a viewport that HAS been publishing a camera published
+     * none. Pre-fix, every online correction tick lands here (the stage
+     * reset wiped the authored-camera latch the in-flight pass had already
+     * armed), which is why the counters above go blind exactly where the
+     * defect lives. The live gCameras probe below keeps measuring through
+     * those windows. */
+    uint64_t miss_near, miss_far;
+    uint64_t liveoob_near, liveoob_far;
+    /* Cross-correction pose continuity, independent of the snapshot store's
+     * stage generation (which a restore deliberately resets). */
+    float last_pos[PRESENTATION_SNAPSHOT_MAX_VIEWPORTS][3];
+    int16_t last_yaw[PRESENTATION_SNAPSHOT_MAX_VIEWPORTS];
+    s32 last_seg[PRESENTATION_SNAPSHOT_MAX_VIEWPORTS];
+    uint8_t last_valid[PRESENTATION_SNAPSHOT_MAX_VIEWPORTS];
+    int32_t sticky_camera_id[PRESENTATION_SNAPSHOT_MAX_VIEWPORTS];
+    uint8_t sticky_valid[PRESENTATION_SNAPSHOT_MAX_VIEWPORTS];
+} CamOobCensus;
+
+static CamOobCensus sCamOob = { .level = -1 };
+
+static void cam_oob_census_report(void) {
+    CamOobCensus *c = &sCamOob;
+    if (c->level <= 0 || c->ticks == 0u) {
+        return;
+    }
+    fprintf(stderr,
+            "[CAM-OOB] ticks=%llu near=%llu corr=%llu cams=%llu "
+            "authoob_near=%llu authoob_far=%llu "
+            "interpchk_near=%llu interpchk_far=%llu "
+            "interpoob_near=%llu interpoob_far=%llu "
+            "hold_near=%llu hold_far=%llu blend_near=%llu blend_far=%llu "
+            "step10_near=%llu step30_near=%llu step100_near=%llu "
+            "step10_far=%llu step30_far=%llu step100_far=%llu "
+            "maxstep_near=%.1f maxstep_far=%.1f "
+            "yaw45_near=%llu yaw45_far=%llu "
+            "segchg_near=%llu segchg_far=%llu "
+            "miss_near=%llu miss_far=%llu "
+            "liveoob_near=%llu liveoob_far=%llu\n",
+            (unsigned long long)c->ticks, (unsigned long long)c->ticks_near,
+            (unsigned long long)c->corrections, (unsigned long long)c->cams,
+            (unsigned long long)c->authored_oob_near,
+            (unsigned long long)c->authored_oob_far,
+            (unsigned long long)c->interp_checked_near,
+            (unsigned long long)c->interp_checked_far,
+            (unsigned long long)c->interp_oob_near,
+            (unsigned long long)c->interp_oob_far,
+            (unsigned long long)c->hold_near, (unsigned long long)c->hold_far,
+            (unsigned long long)c->blend_near,
+            (unsigned long long)c->blend_far,
+            (unsigned long long)c->step10_near,
+            (unsigned long long)c->step30_near,
+            (unsigned long long)c->step100_near,
+            (unsigned long long)c->step10_far,
+            (unsigned long long)c->step30_far,
+            (unsigned long long)c->step100_far,
+            c->maxstep_near, c->maxstep_far,
+            (unsigned long long)c->yaw45_near,
+            (unsigned long long)c->yaw45_far,
+            (unsigned long long)c->segchange_near,
+            (unsigned long long)c->segchange_far,
+            (unsigned long long)c->miss_near, (unsigned long long)c->miss_far,
+            (unsigned long long)c->liveoob_near,
+            (unsigned long long)c->liveoob_far);
+}
+
+/* Shared cross-tick pose-step tracker for captured and live-probed poses, so
+ * the continuity measurement never pauses while captures are blind. */
+static void cam_oob_track_pose(CamOobCensus *c, size_t vp, uint64_t tick,
+                               float x, float y, float z, int16_t yaw_raw,
+                               s32 seg, int near_correction) {
+    if (c->last_valid[vp]) {
+        const float dx = x - c->last_pos[vp][0];
+        const float dy = y - c->last_pos[vp][1];
+        const float dz = z - c->last_pos[vp][2];
+        const double step = sqrtf(dx * dx + dy * dy + dz * dz);
+        const float yaw = mdkr_yaw_delta_deg(
+            (uint16_t)c->last_yaw[vp], (uint16_t)yaw_raw);
+        if (near_correction) {
+            if (step > 10.0) c->step10_near++;
+            if (step > 30.0) c->step30_near++;
+            if (step > 100.0) c->step100_near++;
+            if (step > c->maxstep_near) c->maxstep_near = step;
+            if (yaw > 45.0f || yaw < -45.0f) c->yaw45_near++;
+            if (seg != c->last_seg[vp]) c->segchange_near++;
+        } else {
+            if (step > 10.0) c->step10_far++;
+            if (step > 30.0) c->step30_far++;
+            if (step > 100.0) c->step100_far++;
+            if (step > c->maxstep_far) c->maxstep_far = step;
+            if (yaw > 45.0f || yaw < -45.0f) c->yaw45_far++;
+            if (seg != c->last_seg[vp]) c->segchange_far++;
+        }
+        if ((c->level >= 2) && step > 30.0) {
+            fprintf(stderr,
+                    "[CAM-OOB-EVT] tick=%llu vp=%zu kind=step "
+                    "step=%.1f yaw=%.1f seg=%d near=%d\n",
+                    (unsigned long long)tick, vp, step,
+                    (double)yaw, seg, near_correction);
+        }
+    }
+    c->last_pos[vp][0] = x;
+    c->last_pos[vp][1] = y;
+    c->last_pos[vp][2] = z;
+    c->last_yaw[vp] = yaw_raw;
+    c->last_seg[vp] = seg;
+    c->last_valid[vp] = 1;
+}
+
+static void cam_oob_census_tick(uint64_t authored_tick) {
+    CamOobCensus *c = &sCamOob;
+    const PresentationSnapshot *current;
+    const PresentationSnapshot *previous;
+    uint64_t restore_serial;
+    int near_correction;
+    size_t vp;
+
+    if (c->level < 0) {
+        const char *value = getenv("MDKR_CAMERA_OOB_CENSUS");
+        c->level = value != NULL && value[0] != '\0' && value[0] != '0'
+            ? (value[0] == '2' ? 2 : 1) : 0;
+        if (c->level > 0) {
+            const char *window = getenv("MDKR_CAMERA_OOB_CENSUS_WINDOW");
+            c->window = 8u;
+            if (window != NULL && window[0] != '\0') {
+                long parsed = strtol(window, NULL, 10);
+                if (parsed > 0 && parsed < 1000) {
+                    c->window = (uint64_t)parsed;
+                }
+            }
+            atexit(cam_oob_census_report);
+        }
+    }
+    if (c->level == 0 || get_game_mode() != GAMEMODE_INGAME) {
+        return;
+    }
+
+    restore_serial = mdkr_rollback_game_authority_restore_serial();
+    if (restore_serial != c->last_restore_serial) {
+        c->corrections += restore_serial - c->last_restore_serial;
+        c->last_restore_serial = restore_serial;
+        c->last_restore_tick = authored_tick;
+        c->restore_seen = 1;
+    }
+    near_correction = c->restore_seen &&
+                      authored_tick >= c->last_restore_tick &&
+                      authored_tick - c->last_restore_tick < c->window;
+
+    c->ticks++;
+    if (near_correction) {
+        c->ticks_near++;
+    }
+
+    current = presentation_snapshot_current();
+    previous = presentation_snapshot_previous();
+    {
+        const size_t captured =
+            (current != NULL && current->valid &&
+             current->authored_tick == authored_tick)
+                ? current->camera_count : 0u;
+        /* Viewports that have been publishing a camera but did not this tick:
+         * measure the AUTHORED camera live so the census cannot go blind on
+         * exactly the (correction) ticks it exists to characterize. */
+        for (vp = captured; vp < PRESENTATION_SNAPSHOT_MAX_VIEWPORTS; vp++) {
+            const Camera *live;
+            s32 seg;
+            if (!c->sticky_valid[vp]) {
+                continue;
+            }
+            if (near_correction) c->miss_near++;
+            else c->miss_far++;
+            live = &gCameras[c->sticky_camera_id[vp] & 7];
+            seg = get_level_segment_index_from_position(
+                live->trans.x_position, live->trans.y_position,
+                live->trans.z_position);
+            if (seg == -1) {
+                if (near_correction) c->liveoob_near++;
+                else c->liveoob_far++;
+                if (c->level >= 2) {
+                    fprintf(stderr,
+                            "[CAM-OOB-EVT] tick=%llu vp=%zu kind=live seg=-1 "
+                            "pos=(%.1f,%.1f,%.1f) near=%d\n",
+                            (unsigned long long)authored_tick, vp,
+                            (double)live->trans.x_position,
+                            (double)live->trans.y_position,
+                            (double)live->trans.z_position, near_correction);
+                }
+            }
+            cam_oob_track_pose(c, vp, authored_tick,
+                               live->trans.x_position,
+                               live->trans.y_position,
+                               live->trans.z_position,
+                               live->trans.rotation.y_rotation,
+                               seg, near_correction);
+        }
+        if (captured == 0u) {
+            if (c->ticks % 300u == 0u) {
+                cam_oob_census_report();
+            }
+            return;
+        }
+    }
+
+    for (vp = 0; vp < current->camera_count &&
+                 vp < PRESENTATION_SNAPSHOT_MAX_VIEWPORTS; vp++) {
+        const PresentationCameraEntry *entry = &current->cameras[vp];
+        const s32 seg = get_level_segment_index_from_position(
+            entry->position[0], entry->position[1], entry->position[2]);
+        PresentationCameraPose pose;
+        int blendable = 0;
+
+        c->cams++;
+        if (seg == -1) {
+            if (near_correction) c->authored_oob_near++;
+            else c->authored_oob_far++;
+            if (c->level >= 2) {
+                fprintf(stderr,
+                        "[CAM-OOB-EVT] tick=%llu vp=%zu kind=authored seg=-1 "
+                        "pos=(%.1f,%.1f,%.1f) near=%d\n",
+                        (unsigned long long)authored_tick, vp,
+                        (double)entry->position[0], (double)entry->position[1],
+                        (double)entry->position[2], near_correction);
+            }
+        }
+
+        if (presentation_snapshot_resolve_camera(
+                (int)vp, 1u, 2u, &pose) && pose.interpolated) {
+            blendable = 1;
+        }
+        if (blendable) {
+            if (near_correction) c->blend_near++;
+            else c->blend_far++;
+        } else {
+            if (near_correction) c->hold_near++;
+            else c->hold_far++;
+        }
+
+        /* Sub-tick interpolation probes: does the production blend path pass
+         * through out-of-bounds space while BOTH endpoints are in bounds?
+         * (The falls-flash class: a defect that exists only on interpolated
+         * presentation slots and never on an authored endpoint.) */
+        if (blendable && seg != -1 && previous != NULL && previous->valid &&
+            vp < previous->camera_count) {
+            const PresentationCameraEntry *prev_entry =
+                &previous->cameras[vp];
+            const s32 prev_seg = get_level_segment_index_from_position(
+                prev_entry->position[0], prev_entry->position[1],
+                prev_entry->position[2]);
+            if (prev_seg != -1) {
+                uint64_t k;
+                if (near_correction) c->interp_checked_near++;
+                else c->interp_checked_far++;
+                for (k = 1u; k < 8u; k++) {
+                    PresentationCameraPose sample;
+                    if (!presentation_snapshot_resolve_camera(
+                            (int)vp, k, 8u, &sample) ||
+                        !sample.interpolated) {
+                        continue;
+                    }
+                    if (get_level_segment_index_from_position(
+                            sample.position[0], sample.position[1],
+                            sample.position[2]) == -1) {
+                        if (near_correction) c->interp_oob_near++;
+                        else c->interp_oob_far++;
+                        if (c->level >= 2) {
+                            fprintf(stderr,
+                                    "[CAM-OOB-EVT] tick=%llu vp=%zu "
+                                    "kind=interp alpha=%llu/8 seg=-1 "
+                                    "pos=(%.1f,%.1f,%.1f) near=%d\n",
+                                    (unsigned long long)authored_tick, vp,
+                                    (unsigned long long)k,
+                                    (double)sample.position[0],
+                                    (double)sample.position[1],
+                                    (double)sample.position[2],
+                                    near_correction);
+                        }
+                    }
+                }
+            }
+        }
+
+        /* Cross-tick pose continuity, tracked outside the snapshot store so a
+         * stage reset (which every correction restore performs) cannot hide
+         * the step it just caused. */
+        cam_oob_track_pose(c, vp, authored_tick,
+                           entry->position[0], entry->position[1],
+                           entry->position[2], entry->rotation_y,
+                           seg, near_correction);
+        c->sticky_camera_id[vp] = entry->camera_id;
+        c->sticky_valid[vp] = 1;
+    }
+
+    if (c->ticks % 300u == 0u) {
+        cam_oob_census_report();
+    }
+}
+#else
+#define cam_oob_census_tick(authored_tick) ((void)(authored_tick))
+#endif /* MDKR_ENABLE_ONLINE_BETA */
+
 void presentation_snapshot_capture(uint64_t authored_tick) {
     Object **objects;
     s32 first = 0;
@@ -244,4 +585,5 @@ void presentation_snapshot_capture(uint64_t authored_tick) {
     capture_external_transforms();
     capture_cameras(authored_tick);
     presentation_snapshot_capture_commit();
+    cam_oob_census_tick(authored_tick);
 }

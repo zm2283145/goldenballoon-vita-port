@@ -23,6 +23,15 @@ bool mdkr_rollback_game_authority_validate_dynamic_coverage(
     const MdkrRollbackSnapshotRegistry *registry);
 bool mdkr_rollback_game_authority_is_input_tag(uint32_t tag);
 
+#if defined(MDKR_ENABLE_ONLINE_BETA)
+#include <stdint.h>
+/* Monotonic count of snapshot RESTORES observed by the game-authority rebuild
+ * hook (every rollback correction runs exactly one restore before its resim).
+ * Diagnostic read-only feed for the presentation-side camera census; nothing
+ * branches on it. Beta-only so the beta-off objects stay byte-identical. */
+uint64_t mdkr_rollback_game_authority_restore_serial(void);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

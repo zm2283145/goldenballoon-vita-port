@@ -302,8 +302,19 @@ bool mdkr_rollback_game_authority_validate_dynamic_coverage(
     return true;
 }
 
+#if defined(MDKR_ENABLE_ONLINE_BETA)
+static uint64_t sRestoreSerial;
+
+uint64_t mdkr_rollback_game_authority_restore_serial(void) {
+    return sRestoreSerial;
+}
+#endif
+
 static void rebuild_presentation_after_restore(void *context) {
     (void)context;
+#if defined(MDKR_ENABLE_ONLINE_BETA)
+    sRestoreSerial++;
+#endif
     presentation_snapshot_stage_reset();
     camera_obstruction_runtime_reset();
 }
