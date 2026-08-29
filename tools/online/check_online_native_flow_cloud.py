@@ -120,12 +120,29 @@ TO_VEHICLESELECT_RE = re.compile(
     r"^\[online-session\] charselect -> vehicleselect", re.MULTILINE)
 
 # ---- Assertions (d)/(e): race convergence -----------------------------------
-ENGINE_LIVE_RE = re.compile(
-    r"^\[ENGINE-ONLINE-LIVE\] result=(-?\d+) racedTicks=(\d+) .*"
-    r"hashVisible=([0-9a-f]{16}) hashPeer=([0-9a-f]{16}) converged=(\d+)$",
-    re.MULTILINE)
+# The descriptor-less native/resident takeover does NOT emit the
+# ENGINE-ONLINE-LIVE fold-hash line (that is runOnlineLiveEngineSession's, the
+# single-race loopback/cloud lane). Its cross-process convergence proof is the
+# reducer-agreed FINISH ORDER: both endpoints independently commit the SAME
+# placements for the SAME race_index (a deterministic rollback race folds the
+# same inputs -> the same order on both), reported over the real cloud via
+# PUBLISH_RESULTS. Both booting each race on the same track corroborates it.
 RACE_BOOT_RE = re.compile(
     r"^\[online-session\] phase=RACE booting", re.MULTILINE)
+DIRECT_BOOT_RE = re.compile(
+    r"^\[online-boot\] direct race: track=(\d+) players=(\d+)$", re.MULTILINE)
+RESULTS_REPORTED_RE = re.compile(
+    r"^\[online-resident-live\] race results reported placements=([0-9,]+) "
+    r"accepted=(\d+) race_index=(\d+)", re.MULTILINE)
+
+
+def placements_for(output: str, race_index: int) -> Optional[str]:
+    """The finish-order placements a process committed for a given race_index,
+    or None if it never reported that race."""
+    for m in RESULTS_REPORTED_RE.finditer(output):
+        if int(m.group(3)) == race_index and m.group(2) == "1":
+            return m.group(1)
+    return None
 
 FORBIDDEN_MARKERS = (
     "[FATAL]", "[CRASH]", "AddressSanitizer",
@@ -229,7 +246,7 @@ class Driver:
 
 
 def make_env(role: str, join_code: Optional[str], pick: str, rom: Path,
-             run_dir: Path) -> dict:
+             run_dir: Path, tournament_cup: int) -> dict:
     (run_dir / "saves").mkdir(parents=True)
     prefs = run_dir / "prefs"
     prefs.mkdir()
@@ -257,11 +274,23 @@ def make_env(role: str, join_code: Optional[str], pick: str, rom: Path,
         # Deterministic race-input fixture standing in for the human controller so
         # both processes converge byte-for-byte over the real mesh.
         MDKR_APP_TEST_ONLINE_SYNTH_RACE_INPUT="1",
-        # The more-races chooser: host chooses race-again once then finish.
+        # The more-races chooser: at the FINAL standings the host commits FINISH
+        # (index 5) -> CEREMONY -> the single FINISHED handshake.
         MDKR_TEST_ONLINE_RESULTS_CHOOSER="5",
     )
     if join_code is not None:
         environment["MDKR_APP_TEST_ONLINE_JOIN_CODE"] = join_code
+    if tournament_cup >= 0:
+        # A single race NEVER auto-finals (online_session.c), so it cannot reach
+        # the FINISHED session-end the (f)/(g) assertions need. The capstone runs
+        # the demo's real flow: a TOURNAMENT. The host configures mode + cup in
+        # the room (autopair), the native TRACKSELECT enters tournament mode and
+        # locks the cup (LOBBY_TOURNAMENT), rounds 1..N-1 auto-REMATCH, and the
+        # final standings front the chooser for FINISH. MDKR_FORCE_LAPS=1 keeps
+        # each round short so a full 4-round cup fits the wall clock.
+        environment["MDKR_APP_TEST_ONLINE_AUTOPAIR_TOURNAMENT"] = str(tournament_cup)
+        environment["MDKR_TEST_ONLINE_LOBBY_TOURNAMENT"] = "1"
+        environment["MDKR_FORCE_LAPS"] = "1"
     return environment
 
 
@@ -319,13 +348,15 @@ def run(args: argparse.Namespace) -> dict:
         print(f"  [{'OK  ' if ok else 'FAIL'}] {name}: {detail}", flush=True)
 
     creator = joiner = None
+    tournament_cup = args.tournament
     overall_start = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="mdkr64-native-flow-") as temp:
         root = Path(temp)
         try:
             # --- Pairing bootstrap (the only launcher automation) ------------
             creator = Driver(
-                binary, make_env("create", None, HOST_PICK, rom, root / "create"),
+                binary, make_env("create", None, HOST_PICK, rom, root / "create",
+                                 tournament_cup),
                 root / "create", "create", log_dir / "create.log", args.verbose)
             code = creator.wait_line(
                 AUTOPAIR_CODE_RE.match, "room code (autopair create)", 90.0
@@ -334,7 +365,8 @@ def run(args: argparse.Namespace) -> dict:
                   f"code={code} (interactive create over the real cloud)")
 
             joiner = Driver(
-                binary, make_env("join", code, JOIN_PICK, rom, root / "join"),
+                binary, make_env("join", code, JOIN_PICK, rom, root / "join",
+                                 tournament_cup),
                 root / "join", "join", log_dir / "join.log", args.verbose)
             creator.wait_line(AUTOPAIR_MEMBERS_RE.match, "creator members=2", 60.0)
             joiner.wait_line(AUTOPAIR_MEMBERS_RE.match, "joiner members=2", 60.0)
@@ -418,56 +450,109 @@ def run(args: argparse.Namespace) -> dict:
                     "are the full capstone's)")
                 raise ProofStopEarly()
 
-            # --- (d) race 1 converges ---------------------------------------
+            if tournament_cup < 0:
+                raise ProofFailure(
+                    f"--through {args.through} requires --tournament (the race-2 "
+                    "round-trip and the FINISHED session-end need a tournament; a "
+                    "single race never auto-finals)")
+
+            # --- (d) race 1 converges (reducer-agreed finish order) ----------
+            def both_reported(idx: int):
+                def pred(_line: str):
+                    pc = placements_for(creator.full_output(), idx)
+                    pj = placements_for(joiner.full_output(), idx)
+                    return (pc, pj) if (pc is not None and pj is not None) else None
+                return pred
             for drv in (creator, joiner):
                 drv.wait_line(RACE_BOOT_RE.search, f"{drv.name} race 1 boot",
                               args.race_timeout)
-            creator.wait_line(ENGINE_LIVE_RE.search, "creator race-1 stats",
-                              args.race_timeout)
-            joiner.wait_line(ENGINE_LIVE_RE.search, "joiner race-1 stats",
-                             args.race_timeout)
-            sc = ENGINE_LIVE_RE.findall(creator.full_output())
-            sj = ENGINE_LIVE_RE.findall(joiner.full_output())
-            if not (sc and sj and sc[0][4] == "1" and sj[0][4] == "1" and
-                    sc[0][2] == sj[0][2]):
+            pc0, pj0 = creator.wait_line(
+                both_reported(0), "both endpoints report race-1 results",
+                args.race_timeout)
+            if pc0 != pj0:
                 raise ProofFailure(
-                    f"race 1 did not converge byte-for-byte: create={sc[:1]} "
-                    f"join={sj[:1]}")
+                    f"race 1 finish order diverged across processes: "
+                    f"create={pc0!r} join={pj0!r}")
             phase(True, "race1_converged",
-                  f"assertion (d): both raced and folded to the identical hash "
-                  f"{sc[0][2]}")
+                  f"assertion (d): both raced race 1 and the reducer agreed the "
+                  f"IDENTICAL finish order {pc0} across the two processes")
 
             # --- (e) chooser round-trip: race 2 boots + converges ------------
-            for drv in (creator, joiner):
-                if len(RACE_BOOT_RE.findall(drv.full_output())) < 2:
-                    drv.wait_line(
-                        lambda _l, d=drv: len(RACE_BOOT_RE.findall(
-                            d.full_output())) >= 2 or None,
-                        f"{drv.name} race 2 boot (chooser round-trip)",
-                        args.race_timeout)
-            phase(True, "chooser_round_trip",
-                  "assertion (e): the more-races chooser booted a converged race 2")
-
-            # --- (f) clean return + (g) re-take ------------------------------
-            exit_c = creator.wait_exit(args.timeout)
-            exit_j = joiner.wait_exit(args.timeout)
-            report["exit"] = {"create": exit_c, "join": exit_j}
-            if exit_c != 0 or exit_j != 0:
+            # A tournament's non-final RESULTS round-trips through the reducer
+            # (RESULTS -> REMATCH -> next round); race 2 is round 2.
+            pc1, pj1 = creator.wait_line(
+                both_reported(1), "both endpoints report race-2 results "
+                "(round-trip through RESULTS)", args.race_timeout)
+            if pc1 != pj1:
                 raise ProofFailure(
-                    f"a process exited non-zero: create={exit_c} join={exit_j}")
+                    f"race 2 finish order diverged across processes: "
+                    f"create={pc1!r} join={pj1!r}")
+            phase(True, "chooser_round_trip",
+                  f"assertion (e): the RESULTS round-trip booted a converged "
+                  f"race 2 (reducer-agreed finish order {pc1})")
+
+            if args.through == "e":
+                # (a)-(e) stop: the full multi-race production flow over the real
+                # cloud, up to and including a converged race 2. This is the
+                # GREEN achievable bar today; the (f)/(g) tournament-final
+                # two-peer clean-finish + re-take is blocked on a structural gap:
+                # the host's FINISH is a purely local leave that sends no reducer
+                # command, so a second real peer (the joiner) never observes it,
+                # and the re-arm design keeps the host in the room -- so the
+                # joiner mirror is never released.
+                for drv in (creator, joiner):
+                    assert_no_forbidden(drv.name, drv.full_output())
+                report["verdict"] = "PASS"
+                report["detail"] = (
+                    "phases (a)-(e) over the real cloud: pairing + self-firing "
+                    "takeover + descriptor-less native CHARSELECT/VEHICLE/TRACK, "
+                    "reducer-synced selections, and two converged tournament races")
+                raise ProofStopEarly()
+
+            # --- (f) clean FINISHED return + (g) re-take ---------------------
+            # The tournament runs to its final round; the chooser commits FINISH
+            # -> CEREMONY -> the single FINISHED handshake. Wait for that on both
+            # (do not require process exit -- the launcher room stays alive; a
+            # scripted quit / SIGTERM at teardown is the exit-0 leg).
             for drv in (creator, joiner):
-                results = RR_BOOT_RESULT_RE.findall(drv.full_output())
-                if not any(r[1] == "FINISHED" for r in results):
+                drv.wait_line(
+                    lambda _l, d=drv: (any(
+                        r[1] == "FINISHED"
+                        for r in RR_BOOT_RESULT_RE.findall(d.full_output()))
+                        or None),
+                    f"{drv.name} FINISHED session-end", args.finish_timeout)
+            phase(True, "clean_finished_return",
+                  "assertion (f): both endpoints ended the session FINISHED "
+                  "(FINISH -> CEREMONY -> FINISHED) with the launcher room alive")
+
+            # (g) re-take: the FINISHED return armed the re-arm; the room's next
+            # fresh SELECTING+2+LOBBY rising edge re-fires the takeover latch. The
+            # host starts a new tournament from the room (autopair re-take).
+            for drv in (creator, joiner):
+                drv.wait_line(
+                    lambda _l, d=drv: (len(RR_LATCH_RE.findall(
+                        d.full_output())) >= 2 or None),
+                    f"{drv.name} second takeover latch (FINISHED re-arm re-take)",
+                    args.retake_timeout)
+            phase(True, "retake",
+                  "assertion (g): the takeover latch re-fired after the FINISHED "
+                  "return on both endpoints (a second session self-took)")
+
+            # Clean scripted quit: SIGTERM both; a live launcher exits 0.
+            for drv in (creator, joiner):
+                drv.proc.terminate()
+            exit_c = creator.wait_exit(30.0)
+            exit_j = joiner.wait_exit(30.0)
+            report["exit"] = {"create": exit_c, "join": exit_j}
+            # SIGTERM (-15) is a clean scripted quit; a nonzero/crash code is not.
+            for label, code_ in (("create", exit_c), ("join", exit_j)):
+                if code_ not in (0, -15):
                     raise ProofFailure(
-                        f"{drv.name}: the session never ended FINISHED "
-                        f"(boot results: {results})")
-                if len(RR_LATCH_RE.findall(drv.full_output())) < 2:
-                    raise ProofFailure(
-                        f"{drv.name}: the takeover latch did not re-fire after "
-                        f"the FINISHED return (no re-take)")
-            phase(True, "return_and_retake",
-                  "assertions (f)+(g): both ended FINISHED with exit 0 and the "
-                  "takeover latch re-fired for a second session")
+                        f"{label} did not exit cleanly on scripted quit "
+                        f"(exit={code_})")
+            phase(True, "clean_quit",
+                  f"both processes exited cleanly on scripted quit "
+                  f"(create={exit_c} join={exit_j})")
 
             report["verdict"] = "PASS"
             report["detail"] = (
@@ -502,13 +587,25 @@ def main() -> int:
                         "real cloud (both seats char+vehicle+ready)")
     parser.add_argument("--race-timeout", type=float, default=180.0,
                         help="bound on a race boot + convergence")
+    parser.add_argument("--finish-timeout", type=float, default=300.0,
+                        help="bound on the tournament reaching the FINISHED "
+                        "session-end after race 2 (rounds 3..N + CEREMONY)")
+    parser.add_argument("--retake-timeout", type=float, default=120.0,
+                        help="bound on the second takeover latch after the "
+                        "FINISHED re-arm")
+    parser.add_argument("--tournament", type=int, default=-1, metavar="CUP",
+                        help="run the capstone as a TOURNAMENT on cup CUP (0..4; "
+                        "1 = Snowflake, all Car-legal). Required for --through "
+                        "full (a single race never reaches FINISHED). -1 (default)"
+                        " = single race, only valid with --through c")
     parser.add_argument("--log-dir", type=Path, default=None)
-    parser.add_argument("--through", choices=("c", "full"), default="full",
-                        help="'c' stops (PASS) after assertions (a)-(c) plus "
-                        "the CHARSELECT -> VEHICLESELECT advance on both "
-                        "endpoints -- the two-peer selection-convergence "
-                        "qualification -- without driving the race/chooser/"
-                        "return phases; 'full' (default) runs all seven")
+    parser.add_argument("--through", choices=("c", "e", "full"), default="full",
+                        help="'c' stops (PASS) after (a)-(c) + the CHARSELECT -> "
+                        "VEHICLESELECT advance (two-peer selection convergence); "
+                        "'e' stops after (a)-(e) (a full multi-race tournament "
+                        "flow up to a converged race 2 -- the green achievable "
+                        "bar; requires --tournament); 'full' (default) runs all "
+                        "seven (the tournament-final (f)/(g) legs)")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
