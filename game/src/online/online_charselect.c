@@ -524,13 +524,16 @@ static void charselect_bigfont_shadowed(s32 x, s32 y, char *text) {
 }
 
 /* Retail P1/P2 seat-number block, mimicked in 2D: a small gold card above the
- * tile with the seat digit (FUNFONT -- BIGFONT has no digit glyphs). */
-static void charselect_draw_seat_marker(u8 onlineId, s32 number) {
+ * tile with the seat digit (FUNFONT -- BIGFONT has no digit glyphs). `xoff` shifts
+ * the card horizontally off the tile centre so two markers on the SAME tile (local
+ * cursor hovering the remote's claimed racer) can sit side-by-side instead of
+ * stacking; 0 keeps the single-marker case centred as before. */
+static void charselect_draw_seat_marker(u8 onlineId, s32 number, s32 xoff) {
     s32 x, y;
     char digit[2];
     s32 cx;
     charselect_cell_xy(onlineId, &x, &y);
-    cx = x + CS_PORTRAIT_HALF;
+    cx = x + CS_PORTRAIT_HALF + xoff;
     mdkr_online_screen_card(cx - 9, y - 15, cx + 9, y - 1, 255, 200, 40, 235);
     digit[0] = (char) ('0' + ((number > 0 && number < 10) ? number : 0));
     digit[1] = '\0';
@@ -664,10 +667,20 @@ static void charselect_render(const CsRemoteView *rv, s32 localSeat) {
 
     /* Retail P1/P2 seat blocks: the local seat's number on the hovered tile (the
      * cursor IS the block, retail-style), the remote seat's number on its claimed
-     * tile. Drawn AFTER the grid so they sit on top. */
-    charselect_draw_seat_marker(sCs.cursor, localNum);
-    if (rv->character != MDKR_ONLINE_SCREEN_NO_CHARACTER) {
-        charselect_draw_seat_marker(rv->character, remoteNum);
+     * tile. Drawn AFTER the grid so they sit on top. When the local cursor is parked
+     * on the SAME tile the remote has claimed (moving onto a claimed tile is legal --
+     * only confirm is blocked), both cards would otherwise draw at identical coords:
+     * the remote card (drawn last) would occlude the local one and the two
+     * translucent cards would double-blend. So on coincidence, split the pair
+     * side-by-side above the tile (local "1" shifted left, remote "2" shifted right)
+     * so BOTH read; the single-marker cases stay centred (xoff 0). */
+    {
+        bool coincide = (rv->character != MDKR_ONLINE_SCREEN_NO_CHARACTER &&
+                         sCs.cursor == rv->character);
+        charselect_draw_seat_marker(sCs.cursor, localNum, coincide ? -11 : 0);
+        if (rv->character != MDKR_ONLINE_SCREEN_NO_CHARACTER) {
+            charselect_draw_seat_marker(rv->character, remoteNum, coincide ? 11 : 0);
+        }
     }
 
     /* Online-only status footer (no retail counterpart): each seat's ready state,
@@ -702,6 +715,12 @@ static void charselect_render(const CsRemoteView *rv, s32 localSeat) {
         sCs.bothReadyTicks++;
         charselect_bigfont_shadowed(MDKR_ONLINE_SCREEN_W_HALF, 208, "OK?");
         if (sCs.bothReadyTicks > CS_OK_WAIT_TICKS) {
+            /* This online-only line sits BELOW the footer band (which ends at
+             * y=216), so extend the dark band down to cover it -- every footer
+             * line must read on a band, never float over the sky. The extension
+             * abuts the main strip (drawn contiguously from y=216) and reaches
+             * y=238, as the pre-W1 panel did. */
+            mdkr_online_screen_strip(216, 238);
             mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 228,
                                     ASSET_FONTS_SMALLFONT,
                                     "WAITING FOR HOST TO START...   B: UNREADY",
@@ -826,8 +845,8 @@ void mdkr_online_charselect_enter(void) {
 
     /* load_fonts() at boot only builds the font TABLE; each screen must load the
      * glyph textures for the fonts it draws with (refcounted; unload_font() on
-     * exit). BIGFONT = title / OK?; FUNFONT = the retail body face (names + seat
-     * digits); SMALLFONT = online-only footers + the one over-long name. */
+     * exit). BIGFONT = title / OK?; FUNFONT = the retail body face (ALL portrait
+     * names + seat digits); SMALLFONT = online-only footers only. */
     load_font(ASSET_FONTS_BIGFONT);
     load_font(ASSET_FONTS_FUNFONT);
     load_font(ASSET_FONTS_SMALLFONT);
