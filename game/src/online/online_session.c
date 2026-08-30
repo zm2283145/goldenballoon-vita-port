@@ -1641,13 +1641,28 @@ void mdkr_online_session_tick(s32 updateRate) {
              * carries over). The setup latch resets on trackselect _enter, so a
              * B-back from the vehicle stage re-requires a fresh lock (no
              * one-frame bounce). */
-            mdkr_online_trackselect_exit();
-            sOnlineSession.phase = MDKR_ONLINE_SESSION_VEHICLESELECT;
-            mdkr_online_screen_fade_skip_once();
-            mdkr_online_vehicleselect_enter();
-            fprintf(stderr,
-                    "[online-session] trackselect -> vehicleselect (track "
-                    "locked: retail vehicle stage)\n");
+            /* A lock can land INSIDE the 18-tick exit-fade hold armed by a prior
+             * browse-B (the host re-locks before the veil is down): the fade-
+             * skipped stage flip below would otherwise never end that FADE_STAY
+             * veil -- stranding black over the vehicle stage AND leaving the latch
+             * armed to poison the next vehicle->trackselect B-back. Reveal it away
+             * so the veil never outlives the branch that armed it (no-op when none
+             * is armed -- the common lock path). Mirrors boot_race's clear and the
+             * other aborts. veilOnLock witnesses that a lock DID land inside the
+             * hold; veil= reports the resulting latch (must never be STRANDED). */
+            {
+                u8 veilOnLock = sOnlineSession.exitFadeArmed;
+                online_session_exit_fade_cancel();
+                mdkr_online_trackselect_exit();
+                sOnlineSession.phase = MDKR_ONLINE_SESSION_VEHICLESELECT;
+                mdkr_online_screen_fade_skip_once();
+                mdkr_online_vehicleselect_enter();
+                fprintf(stderr,
+                        "[online-session] trackselect -> vehicleselect (track "
+                        "locked: retail vehicle stage; veilOnLock=%u veil=%s)\n",
+                        (unsigned) veilOnLock,
+                        sOnlineSession.exitFadeArmed ? "STRANDED" : "clear");
+            }
         } else if (r == MDKR_ONLINE_TRACKSELECT_LEAVE ||
                    sOnlineSession.exitFadeArmed) {
             /* B on the track BROWSE is a clean "back one level" to CHARSELECT

@@ -533,6 +533,13 @@ typedef struct TsInput {
 #define TS_SCN_JOINER 1
 #define TS_SCN_HOLD 2
 #define TS_SCN_REMATCH 3
+/* LOCK-IN-FADE (regression arm for the exit-fade-hold strand): host, single mode,
+ * IDENTICAL reducer/vehicle-stage machinery to SINGLE_HOST -- only the entry-1
+ * input differs. Entry 1 arms the retail exit fade with a browse-B, then presses A
+ * to LOCK the track while the 18-tick veil is still held. The session's STAY+lock
+ * branch must cancel the armed veil (else it strands black over the vehicle stage
+ * and poisons the next vehicle->trackselect B-back). */
+#define TS_SCN_LOCKFADE 4
 static s8 sTsScenario = -1;
 
 /* Scripted headless input (env MDKR_TEST_ONLINE_TRACKSELECT). Keyed on the
@@ -568,6 +575,39 @@ static void trackselect_input_scripted(TsInput *in) {
             break;
         default:
             break;
+        }
+        return;
+    }
+    if (sTsScenario == TS_SCN_LOCKFADE) {
+        /* LOCK-IN-FADE regression arm. Entry 1: walk to Whale Bay (col2/row0),
+         * ARM the retail exit fade with a browse-B (tick 5 -> the session holds
+         * the 18-tick veil), then LOCK the track with A (tick 10) WHILE the veil
+         * is still held -- the session's STAY+lock branch must cancel the armed
+         * veil rather than strand it. The A lands ~5 ticks into the 18-tick hold,
+         * comfortably inside it. Entry 2+ (back from the vehicle stage's B):
+         * re-lock the restored Whale Bay cell so the flow confirms + boots (proving
+         * the veil never poisoned the vehicle->trackselect B-back either). */
+        if (sTsEntryCount <= 1u) {
+            switch (sTs.ticks) {
+            case 2u:
+                in->dx = 1; /* col 0 -> 1 */
+                break;
+            case 3u:
+                in->dx = 1; /* col 1 -> 2 (Sherbet); row 0 == Whale Bay (track 8) */
+                break;
+            case 5u:
+                in->bEdge = 1u; /* arm the exit fade (browse-B -> 18-tick veil hold) */
+                break;
+            case 10u:
+                in->aEdge = 1u; /* LOCK inside the hold -> STAY+lock w/ veil armed */
+                break;
+            default:
+                break;
+            }
+            return;
+        }
+        if (sTs.ticks == 2u) {
+            in->aEdge = 1u; /* re-lock the restored cell -> vehicle stage -> boot */
         }
         return;
     }
@@ -1589,6 +1629,8 @@ static void trackselect_test_resolve(void) {
             sTsScenario = (s8) TS_SCN_REMATCH;
         } else if (e != NULL && strstr(e, "joiner") != NULL) {
             sTsScenario = (s8) TS_SCN_JOINER;
+        } else if (e != NULL && strstr(e, "lockfade") != NULL) {
+            sTsScenario = (s8) TS_SCN_LOCKFADE;
         } else if (e != NULL && strstr(e, "hold") != NULL) {
             sTsScenario = (s8) TS_SCN_HOLD;
         } else {

@@ -108,6 +108,12 @@ SESS_TS_TO_CS_RE = re.compile(
 SESS_TS_TO_VS_RE = re.compile(
     r"^\[online-session\] trackselect -> vehicleselect \(track locked",
     re.MULTILINE)
+# The STAY+lock flip's exit-fade witness (P1 fix): veilOnLock=1 means a lock landed
+# INSIDE the 18-tick exit-fade hold; veil= is the resulting latch, which must be
+# "clear" (revealed away), never "STRANDED" (left black over the vehicle stage).
+SESS_TS_TO_VS_FADE_RE = re.compile(
+    r"^\[online-session\] trackselect -> vehicleselect \(track locked: retail "
+    r"vehicle stage; veilOnLock=(\d+) veil=(\w+)\)$", re.MULTILINE)
 SESS_VS_TO_TS_RE = re.compile(
     r"^\[online-session\] vehicleselect -> trackselect \(back one stage\)",
     re.MULTILINE)
@@ -534,6 +540,45 @@ def check_rematch(output: str) -> int | None:
     return assert_locked_equals_booted(scn, output, LOCKED_TRACK)
 
 
+def check_lockfade(output: str) -> int | None:
+    """LOCK-IN-FADE regression (P1 fix): the host arms the retail exit fade with a
+    browse-B, then LOCKS the track while the 18-tick veil is still held. The
+    session's STAY+lock branch must CANCEL the armed veil -- else it strands black
+    over the vehicle stage and poisons the next vehicle->trackselect B-back. The
+    flip witness reports veilOnLock (a lock DID land inside the hold) and the
+    resulting latch, which must be 'clear', never 'STRANDED'."""
+    scn = "lockfade"
+    err = check_common(scn, 0, output)
+    if err is not None:
+        return err
+
+    flips = SESS_TS_TO_VS_FADE_RE.findall(output)
+    if not flips:
+        return fail(scn, "no trackselect -> vehicleselect flip carried the "
+                    "exit-fade witness (veilOnLock/veil)", output)
+    # The arm MUST have reproduced the defect path: at least one lock landed with
+    # the veil still armed. Without this the scenario would pass vacuously.
+    if not any(int(v) == 1 for v, _ in flips):
+        return fail(scn, f"the lock never landed inside the exit-fade hold "
+                    f"(no veilOnLock=1 flip) -- the B-then-A-in-18-ticks arm did "
+                    f"not reproduce; flips={flips!r}", output)
+    # THE FINDING: a lock inside the hold must reveal the veil away, never strand
+    # it. Pre-fix the STAY+lock branch flipped fade-skipped with exitFadeArmed
+    # latched, so the FADE_STAY veil was never ended (veil=STRANDED).
+    stranded = [f for f in flips if f[1] != "clear"]
+    if stranded:
+        return fail(scn, f"a lock inside the exit-fade hold left the veil "
+                    f"STRANDED (veil never revealed away over the vehicle stage; "
+                    f"stranded flips={stranded!r})", output)
+
+    # The veil never poisoned the flow: it still boots + converges on the locked
+    # track, exactly like the clean single-host lane.
+    err = assert_race_converges(scn, output)
+    if err is not None:
+        return err
+    return assert_locked_equals_booted(scn, output, LOCKED_TRACK)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", default="build-beta")
@@ -565,6 +610,11 @@ def main() -> int:
         # genuine no-config-change re-front (no reducer ready-clear).
         ("rematch", check_rematch,
          {"MDKR_APP_TEST_ONLINE_TRACK": str(LOCKED_TRACK)}, args.timeout),
+        # LOCK-IN-FADE: host, single-race, identical machinery to single-host; the
+        # entry-1 script arms the exit fade (browse-B) then locks the track inside
+        # the 18-tick veil hold. Manifest pinned to the same Whale Bay (8).
+        ("lockfade", check_lockfade,
+         {"MDKR_APP_TEST_ONLINE_TRACK": str(LOCKED_TRACK)}, args.timeout),
     )
     for ts_value, checker, extra_env, scn_timeout in scenarios:
         try:
@@ -589,7 +639,10 @@ def main() -> int:
         "SAME-TRACK-REMATCH (identical-track re-lock never ready-clears; the "
         "host's early OK was refused NOT_READY and re-fired until the joiner's "
         "vehicle stage fronted + confirmed, then booted + converged -- the "
-        "per-player CONFIRM cannot be bypassed) -- all "
+        "per-player CONFIRM cannot be bypassed) and LOCK-IN-FADE (a browse-B arms "
+        "the exit fade, then A locks the track inside the 18-tick veil hold: the "
+        "STAY+lock branch cancelled the armed veil -- veilOnLock=1 veil=clear, "
+        "never STRANDED -- and the flow still booted + converged) -- all "
         "handed off gGameMode=2 gCurrentMenuId=0, offered ids == reducer set, "
         "no track divergence"
     )
