@@ -1248,7 +1248,55 @@ static void liveOverlayService(void) {
 }
 static int liveOverlayProcessEvent(const void * /*sdl_event*/) { return 0; }
 static int liveOverlayWantsInput(void) { return 0; }
-static int liveOverlayWantsPause(void) { return 0; }
+static int liveOverlayWantsPause(void) {
+    /* TEST-ONLY (beta rigs): MDKR_APP_TEST_ONLINE_APP_OVERLAY_PAUSE="A-B"
+     * answers the engine's wants-pause query with 1 over the authored-tick
+     * window [A,B) -- byte-for-byte the FACT the real app overlay reports
+     * while open with pause allowed (ui_overlay.cpp onWantsPause). The live
+     * sessions bind these minimal hooks, so the real F1/Escape overlay is not
+     * constructible here; this injects only that app-boundary input, and
+     * everything the engine does with it is production code. Inert (constant
+     * 0, the shipped behavior) without the env. */
+    static long openTick = -1;
+    static long closeTick = -1;
+    static int resolved = 0;
+    static int announced = 0;
+    if (!resolved) {
+        resolved = 1;
+        if (const char *env =
+                std::getenv("MDKR_APP_TEST_ONLINE_APP_OVERLAY_PAUSE")) {
+            char *end = nullptr;
+            const long open = std::strtol(env, &end, 10);
+            if (end != env && *end == '-' && open > 0) {
+                const char *rest = end + 1;
+                const long close = std::strtol(rest, &end, 10);
+                if (end != rest && *end == '\0' && close > open) {
+                    openTick = open;
+                    closeTick = close;
+                }
+            }
+        }
+    }
+    if (openTick < 0) return 0;
+    const long tick = static_cast<long>(g_simTickCounter);
+    if (tick < openTick || tick >= closeTick) {
+        if (announced == 1 && tick >= closeTick) {
+            announced = 2;
+            std::fprintf(stderr,
+                         "[overlay-test] app overlay pause window CLOSED "
+                         "tick=%ld\n", tick);
+        }
+        return 0;
+    }
+    if (announced == 0) {
+        announced = 1;
+        std::fprintf(stderr,
+                     "[overlay-test] app overlay pause window OPEN tick=%ld "
+                     "(wants-pause asserted; window %ld-%ld)\n",
+                     tick, openTick, closeTick);
+    }
+    return 1;
+}
 static int liveOverlayWantsRender(void) { return 0; }
 static int liveOverlayRender(void) { return 1; }
 }  // extern "C"
