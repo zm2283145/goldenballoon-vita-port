@@ -492,9 +492,11 @@ static void trackselect_input_scripted(TsInput *in) {
         return; /* joiner: watch only, the seam drives the host */
     }
     if (sTsScenario == TS_SCN_HOLD) {
-        /* Dump seam: walk to Whale Bay (col2/row0), LOCK it, browse away to
-         * the FFL column, then PARK (no START) so a frame dump catches the
-         * revealed locked-while-browsing state. */
+        /* Dump seam: walk to Whale Bay (col2/row0), LOCK it, DWELL on the locked
+         * world past the reveal fade (so a dump catches the focused-on-locked
+         * state: gold banner + gold *Whale Bay* row + gold LOCKED notice), then
+         * browse away to the FFL column and PARK (no START) so a later dump catches
+         * the revealed locked-while-browsing state too. */
         switch (sTs.ticks) {
         case 2u:
         case 3u:
@@ -503,8 +505,8 @@ static void trackselect_input_scripted(TsInput *in) {
         case 6u:
             in->aEdge = 1u;
             break;
-        case 9u:
-        case 10u:
+        case 40u:
+        case 41u:
             in->dx = 1;
             break;
         default:
@@ -849,7 +851,6 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
     /* STAGE 1: the 5 world/cup sky banners. Hovered bright, others dim. The
      * joiner has no cursor, so it brightens the FOCUSED (locked) world instead. */
     for (c = 0u; c < TS_COLS; c++) {
-        s32 cx = (s32) c * TS_COL_W + (TS_COL_W / 2);
         bool onFocus = (c == focusWorld);
         bool cupLocked = (effMode == MDKR_ONLINE_SCREEN_MODE_TOURNAMENT && lockedCup == c);
         /* Trackselect "LOCKED while browsing": the SINGLE-race host can
@@ -860,8 +861,12 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
          * the status to a world. It is NOT a 2-endpoint bug (the joiner's focus ALWAYS
          * follows the lock, so its view is always coherent), but to make the host view
          * coherent too, mark the WORLD banner that holds the current single-race lock
-         * green -- the same cue tournament already gives a locked cup. Now the status
-         * "<track> LOCKED" always has a matching green banner, even mid-browse. */
+         * gold -- the same accent cue tournament already gives a locked cup. Now the
+         * status "<track> LOCKED - PRESS START" always has a matching gold banner,
+         * even mid-browse. Gold (not green): green is reserved for go/READY semantics,
+         * so a committed-but-not-yet-started LOCK reads as the selection accent, not a
+         * false "go". The status notice and this banner cue are a PAIR -- keep them
+         * the same colour. */
         bool worldHoldsLock =
             (effMode == MDKR_ONLINE_SCREEN_MODE_SINGLE && lockedTrackIdx != TS_NONE &&
              (u8) (lockedTrackIdx / TS_ROWS) == c);
@@ -870,7 +875,8 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
 
         trackselect_draw_banner(c, dim);
         if (cupLocked || worldHoldsLock) {
-            lr = 120; lg = 255; lb = 120;
+            lr = 255; lg = 224; lb = 96; /* lock accent (gold), paired with the
+                                          * "<track> LOCKED - PRESS START" notice */
         } else if (onFocus) {
             lr = 255; lg = 224; lb = 96;
         } else {
@@ -909,8 +915,12 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
             name = (char *) "?";
         }
         if (locked) {
-            nr = 120; ng = 255; nb = 120;
-            /* text redundancy, not colour alone. */
+            /* Gold, not green: the locked track is the committed selection accent,
+             * matching the gold lock banner + "<track> LOCKED - PRESS START"
+             * notice (green stays reserved for READY/go). The *name* brackets keep
+             * the lock distinct from the >name< cursor row -- text redundancy, not
+             * colour alone. */
+            nr = 255; ng = 224; nb = 96;
             (void) snprintf(label, sizeof(label), "*%s*", name);
         } else if (onCursor) {
             nr = 255; ng = 190 + tri * 4; nb = 60 + tri * 3;
@@ -972,7 +982,7 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
                 (void) snprintf(line, sizeof(line), "HOST PICKED: %s", pick);
                 mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, TS_STATUS_Y,
                                  ASSET_FONTS_SMALLFONT, line, ALIGN_MIDDLE_CENTER,
-                                 120, 255, 120);
+                                 255, 224, 96);
             } else {
                 (void) snprintf(line, sizeof(line), "%s IS CHOOSING...",
                                 hostName);
@@ -1001,9 +1011,12 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
                              ASSET_FONTS_SMALLFONT, line, ALIGN_MIDDLE_CENTER,
                              255, 224, 96);
         } else if (haveLock) {
+            /* Gold, not green: a LOCK is the committed selection accent, not a
+             * go/READY cue (green stays reserved for READY/STARTING). Paired with
+             * the gold lock banner above -- keep the two the same colour. */
             (void) snprintf(line, sizeof(line), "%s LOCKED - PRESS START", pick);
             mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, TS_STATUS_Y, ASSET_FONTS_SMALLFONT,
-                             line, ALIGN_MIDDLE_CENTER, 120, 255, 120);
+                             line, ALIGN_MIDDLE_CENTER, 255, 224, 96);
         } else {
             mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, TS_STATUS_Y, ASSET_FONTS_SMALLFONT,
                              effMode == MDKR_ONLINE_SCREEN_MODE_SINGLE ? "CHOOSE A TRACK"

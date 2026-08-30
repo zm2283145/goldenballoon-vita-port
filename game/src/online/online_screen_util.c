@@ -72,6 +72,18 @@ void mdkr_online_screen_text(s32 x, s32 y, s32 fontId, char *text,
                         (fontId == (s32) ASSET_FONTS_FUNFONT);
     set_text_font(fontId);
     set_text_background_colour(0, 0, 0, 0);
+    /* KERNING (owner "above reproach" polish): the ROM font's authored per-glyph
+     * advances read airy at the aspect-scaled host size ("DRA GON", "BE GIN").
+     * set_kerning(TRUE) tightens body/list glyphs by 1px each (the exact public
+     * API menu.c uses for the Snowflake hub name + the pak menu). Applied ONLY to
+     * the ROM body faces (SMALLFONT / SUBTITLEFONT) -- the authored-art BIGFONT /
+     * FUNFONT headers keep their own designed spacing (they are excluded from the
+     * authoredFace kern just as they are from the tint/shadow). The shadow and
+     * face passes share the same kerning so they stay registered; state is
+     * restored to the module default (FALSE) before returning. */
+    if (!authoredFace) {
+        set_kerning(TRUE);
+    }
     if (fontId != (s32) ASSET_FONTS_BIGFONT) {
         set_text_colour(0, 0, 0, 255, 180);
         draw_text(&gCurrDisplayList, x + 1, y + 1, text, align);
@@ -82,6 +94,9 @@ void mdkr_online_screen_text(s32 x, s32 y, s32 fontId, char *text,
         set_text_colour(r, g, b, 255, 255);
     }
     draw_text(&gCurrDisplayList, x, y, text, align);
+    if (!authoredFace) {
+        set_kerning(FALSE);
+    }
 }
 
 /* ======================================================================== *

@@ -212,10 +212,15 @@ static void ceremony_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap) {
      * when there are runners-up) and the footer strip -- retail figure-ground,
      * no naked body text over the sky. */
     mdkr_online_screen_strip(8, 48);
+    /* Champion board width sized for the WIDEST retail roster name at BIGFONT
+     * scale: DRUMSTICK measures 142px, and the no-champion "CUP COMPLETE" 183px
+     * -- both overspilled the former 136px (92..228) board. 60..260 (200px)
+     * clears the widest content and shares its edges with the runners-up card
+     * below, so the two stack as one tidy column. */
     if (sCer.champSeat != 0xFFu) {
-        mdkr_online_screen_panel(92, 64, 228, 186);
+        mdkr_online_screen_panel(60, 64, 260, 186);
     } else {
-        mdkr_online_screen_panel(92, 104, 228, 136);
+        mdkr_online_screen_panel(60, 104, 260, 136);
     }
     if (sCer.st.count > 1u) {
         s32 nRunners = (s32) (sCer.st.count - 1u);
@@ -248,9 +253,21 @@ static void ceremony_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap) {
                         sCer.champLocal ? " - YOU!" : "");
         mdkr_online_screen_text(CER_SCREEN_W_HALF, 158, ASSET_FONTS_SMALLFONT, line,
                       ALIGN_MIDDLE_CENTER, 255, 255, 255);
-        (void) snprintf(line, sizeof(line), "%u", (unsigned) sCer.champPoints);
-        mdkr_online_screen_text(CER_SCREEN_W_HALF, 176, ASSET_FONTS_FUNFONT, line,
-                      ALIGN_MIDDLE_CENTER, 255, 224, 96);
+        /* Points: the FUNFONT total is no longer an orphan number -- pair it with
+         * a SMALLFONT "POINTS" caption (the runner rows read as "PLACE name pts",
+         * so the lone champion figure needs the same "these are points" cue). The
+         * FUNFONT figure + the caption are centred as one unit via get_text_width. */
+        {
+            s32 numW, lblW, leftX;
+            (void) snprintf(line, sizeof(line), "%u", (unsigned) sCer.champPoints);
+            numW = get_text_width(line, 0, ASSET_FONTS_FUNFONT);
+            lblW = get_text_width((char *) "POINTS", 0, ASSET_FONTS_SMALLFONT);
+            leftX = CER_SCREEN_W_HALF - (numW + 5 + lblW) / 2;
+            mdkr_online_screen_text(leftX, 176, ASSET_FONTS_FUNFONT, line,
+                          ALIGN_MIDDLE_LEFT, 255, 224, 96);
+            mdkr_online_screen_text(leftX + numW + 5, 176, ASSET_FONTS_SMALLFONT,
+                          "POINTS", ALIGN_MIDDLE_LEFT, 210, 210, 210);
+        }
     } else {
         mdkr_online_screen_text(CER_SCREEN_W_HALF, 120, ASSET_FONTS_BIGFONT, "CUP COMPLETE",
                       ALIGN_MIDDLE_CENTER, 255, 224, 96);
