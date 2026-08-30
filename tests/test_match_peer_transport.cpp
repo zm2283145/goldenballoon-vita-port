@@ -1325,8 +1325,11 @@ void rekeyGenerationBumpKeepsHonestPeers() {
     std::string phraseBefore;
     assert(meshA->phrase(phraseBefore));
 
-    /* B's signaling socket reconnects: gone at generation 2, back at 5. */
+    /* B's signaling socket reconnects: gone at generation 2, back at 5. The
+     * DEFAULT close is the internal/rebuild teardown and must stay silent --
+     * a goodbye here would present the reconnect as a departure. */
     meshB->close();
+    assert(harness.hub.countSent(200u, "peer_end", "close") == 0u);
     harness.hub.setGeneration(200u, 5u);
     MdkrMatchSignalEvent bump;
     bump.type = MdkrMatchSignalEventType::PeerPresence;
@@ -2119,6 +2122,50 @@ void flappingPresenceWithSlowPongsIsNotPeerLoss() {
     std::printf("flappingPresenceWithSlowPongsIsNotPeerLoss: ok\n");
 }
 
+/* A DELIBERATE local end (the announcing close: the player left / the adapter
+ * was torn down) must resolve on the survivor IMMEDIATELY and typed: teardown
+ * announces the wire contract's peer_end "close" goodbye to every viable peer,
+ * and the receiving mesh maps it to PeerLost(PeerEnded) on its next pump --
+ * never the restart episodes (~21 s) or the vanish dwell (10 s) that a CRASH
+ * rightly takes. The clock is held to a 3 s fake window, far inside every
+ * ladder bound, so a ladder-timed resolution cannot masquerade as the goodbye.
+ * (The default close(false) stays silent -- the reconnect model in
+ * rekeyGenerationBumpKeepsHonestPeers pins that no goodbye fires there.) */
+void deliberateCloseIsImmediateTypedPeerEnd() {
+    PairHarness pair;
+    assert(pair.connect());
+    const uint64_t closedAtMs = pair.harness.clock.nowMs;
+    pair.low->close(/*announcePeerEnd=*/true);
+    bool lost = false;
+    for (unsigned index = 0u; index < 30u && !lost; index++) {
+        pair.harness.pumpOnce();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        pair.harness.clock.nowMs += 100u;
+        lost = pair.harness.countEvents(
+                   200u, MdkrMatchPeerMeshEventType::PeerLost, 100u) >= 1u;
+    }
+    const uint64_t detectMs = pair.harness.clock.nowMs - closedAtMs;
+    if (!lost) {
+        std::fprintf(stderr,
+                     "FAIL deliberateCloseIsImmediateTypedPeerEnd: no PeerLost "
+                     "within %llu fake ms of the peer's deliberate close -- the "
+                     "survivor is grinding the restart/vanish ladders against "
+                     "an endpoint that said nothing on its way out\n",
+                     (unsigned long long)detectMs);
+        assert(lost);
+    }
+    /* The goodbye must be ON THE WIRE (not a ladder coincidence), and the
+     * verdict must carry the deliberate-end reason. */
+    assert(pair.harness.hub.countSent(100u, "peer_end", "close") >= 1u);
+    const MdkrMatchPeerMeshEvent *event = pair.harness.lastEvent(
+        200u, MdkrMatchPeerMeshEventType::PeerLost, 100u);
+    assert(event != nullptr &&
+           event->lostReason == MdkrMatchPeerLostReason::PeerEnded);
+    assert(detectMs <= 3000u);
+    std::printf("deliberateCloseIsImmediateTypedPeerEnd: ok (%llu fake ms)\n",
+                (unsigned long long)detectMs);
+}
+
 }  // namespace
 
 int main() {
@@ -2152,6 +2199,8 @@ int main() {
     presenceBlipWithHealthyChannelsIsNotPeerLoss();
     presenceReassertBeforeDwellExpiryDisarms();
     flappingPresenceWithSlowPongsIsNotPeerLoss();
+    /* Deliberate end: the teardown goodbye reaches the survivor typed. */
+    deliberateCloseIsImmediateTypedPeerEnd();
     std::printf("all match_peer_transport cases passed\n");
     return 0;
 }

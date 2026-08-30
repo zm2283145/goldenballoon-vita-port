@@ -373,6 +373,12 @@ public:
         if (haveLobby_ && localEndpointId_ != 0u) {
             (void)sendLobbyCommandRaw(MDKR_ONLINE_LEAVE, 0u, 0u);
         }
+        /* The mesh-level goodbye, same discipline: adapter destruction is the
+         * one DELIBERATE session end (room leave / new code / app teardown),
+         * so the announcing close lets each survivor resolve this endpoint as
+         * the immediate typed PeerLost(PeerEnded) instead of its loss ladders.
+         * Internal mesh rebuilds (forcePhraseRekey) stay silent. */
+        if (mesh_) mesh_->close(/*announcePeerEnd=*/true);
         mesh_.reset(); /* mesh borrows the backend's feed: kill it first */
         if (opts_.meshBackend) opts_.meshBackend->reset();
     }

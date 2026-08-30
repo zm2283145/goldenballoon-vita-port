@@ -50,6 +50,8 @@ Arms (each a full engine boot):
   C. local START under the storm: overlay OPEN -> CLOSED (resume; race still
      running -- corrections keep reconciling while it is open) -> reOPEN ->
      D-pad DOWN -> A == LEAVE RACE -> the clean LEFT return, rc 0, zero leaks.
+     The deliberate leave notifies the peer NOW (reliable-control race-abort;
+     the survivor drains it typed) -- never the 20-30 s loss ladders.
   D. THE BELT (legacy engage allowed): the exact pre-fix abort branch fires --
      `game-tick completion rejected ... paused=1` -- and is routed to
      `replay refused (sim-state; recoverable)` -> clean LEFT, rc 0, no abort.
@@ -100,6 +102,15 @@ LEAVE_SELECTED_RE = re.compile(
     re.MULTILINE)
 LEAVE_LEFT_RE = re.compile(
     r"^\[online-session\] LEFT: local player left the race \(pause overlay\)",
+    re.MULTILINE)
+# Deliberate-leave peer notification: the leaver tells the survivor NOW over
+# the reliable control channel; the survivor's adapter reacts typed the moment
+# it drains it -- never the 20-30 s loss ladders.
+LEAVE_NOTIFY_RE = re.compile(
+    r"^\[online-live\] deliberate leave: race-abort sent to the peer",
+    re.MULTILINE)
+SURVIVOR_ABORT_RE = re.compile(
+    r"^\[MESH\] race-abort received from peer -> ending local race",
     re.MULTILINE)
 BELT_ALLOWED_RE = re.compile(
     r"^\[online-pause\] TEST: retail pause engage ALLOWED \(belt lane\)",
@@ -287,13 +298,25 @@ def main() -> int:
     if not LEAVE_LEFT_RE.search(output):
         return fail("[leave] LEAVE RACE did not take the clean LEFT return",
                     output)
+    # THE SURVIVOR IS TOLD IMMEDIATELY: the deliberate leave sends the
+    # reliable-control race-abort, and the (in-process) surviving endpoint
+    # reacts typed on its very next drain -- the peer must never be left to
+    # resolve a deliberate leave through the 20-30 s loss ladders.
+    if not LEAVE_NOTIFY_RE.search(output):
+        return fail("[leave] the deliberate leave never notified the peer "
+                    "(race-abort not sent) -- the survivor is left to the "
+                    "loss ladders", output)
+    if not SURVIVOR_ABORT_RE.search(output):
+        return fail("[leave] the surviving endpoint never drained the typed "
+                    "race-abort after the deliberate leave", output)
     shutdown = HOST_SHUTDOWN_RE.findall(output)
     if not shutdown or tuple(map(int, shutdown[-1])) != (0, 0, 0):
         return fail(f"[leave] host teardown leaked: "
                     f"{shutdown[-1] if shutdown else 'no witness'}", output)
     leave_summary = (f"open={opens[0]} resume={closes[0]} reopen={opens[1]} "
                      f"leave={leave_tick} "
-                     f"({len(open_window)} corrections while open)")
+                     f"({len(open_window)} corrections while open; "
+                     f"peer notified + typed abort drained)")
 
     # --- Arm D: THE BELT (legacy engage allowed) -- refuse, never abort ------
     result = run_arm(

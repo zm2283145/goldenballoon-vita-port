@@ -260,7 +260,7 @@ struct MdkrMatchPeerMesh::State
     std::deque<InternalEvent> internalQueue;
     uint64_t droppedInternal = 0u;
 
-    ~State() { teardown(); }
+    ~State() { teardown(/*announcePeerEnd=*/false); }
 
     uint64_t now() const {
         const uint64_t value = clock ? clock() : steadyNowMs();
@@ -1516,9 +1516,29 @@ struct MdkrMatchPeerMesh::State
 
     /* ---- Teardown ------------------------------------------------------------*/
 
-    void teardown() {
+    void teardown(bool announcePeerEnd) {
         if (closed) return;
         closed = true;
+        /* DELIBERATE local end only (see close()): announce peer_end "close"
+         * (the wire contract's goodbye -- handlePeerEnd on every conforming
+         * endpoint, relayed and sender-stamped by the service) to each
+         * still-viable peer BEFORE the connections come down, so a survivor
+         * resolves this endpoint as the immediate typed PeerLost(PeerEnded)
+         * instead of grinding the restart episodes / vanish dwell against a
+         * connection that will never return. Best-effort by design: a crash
+         * sends nothing (survivors keep the ladder-typed resolution), a send
+         * into a dead feed is inert, and an internal rebuild (announce false)
+         * says nothing at all. */
+        if (announcePeerEnd) {
+            for (auto &entry : peers) {
+                PeerRuntime &peer = entry.second;
+                if (peer.lost || peer.generation == 0u) continue;
+                MdkrMatchSignalOutbound goodbye;
+                goodbye.type = "peer_end";
+                goodbye.reason = "close";
+                (void)sendSignal(peer, std::move(goodbye));
+            }
+        }
         std::vector<std::shared_ptr<rtc::PeerConnection>> connections;
         for (auto &entry : peers) {
             PeerRuntime &peer = entry.second;
@@ -1694,8 +1714,8 @@ MdkrMatchPeerMeshStats MdkrMatchPeerMesh::stats() const {
     return stats;
 }
 
-void MdkrMatchPeerMesh::close() {
-    if (state_) state_->teardown();
+void MdkrMatchPeerMesh::close(bool announcePeerEnd) {
+    if (state_) state_->teardown(announcePeerEnd);
 }
 
 /* ---- Test seams -------------------------------------------------------------*/

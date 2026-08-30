@@ -1978,6 +1978,32 @@ void reportOnlineRaceResults(
                  static_cast<int>(endReason));
 }
 
+/* Deliberate local leave (session end LEFT) with the race transport still up:
+ * tell the peer NOW over the reliable control channel -- the existing
+ * race_abort, the same message the race-start barrier sends -- so the survivor
+ * ends its race on the immediate typed opponent-left path instead of
+ * ghost-racing into the 20-30 s loss ladders. Nothing transport-level says
+ * anything otherwise: the leaver returns to the ROOM, so its mesh stays up and
+ * keeps answering pings. Skipped when no race transport ever armed (pre-race
+ * backouts have their own vacate handling) and when the LEFT was itself caused
+ * by the PEER's loss (nobody is left to notify). */
+void notifyPeerOfDeliberateLeave(IMdkrOnlineAdapter *adapter,
+                                 MdkrPartyLinkSessionEndReason reason) {
+    if (adapter == nullptr || reason != MDKR_PARTY_LINK_SESSION_END_LEFT) {
+        return;
+    }
+    MdkrOnlineLiveRaceInfo info{};
+    if (!mdkr_online_live_adapter_race_info(adapter, &info) || !info.ready) {
+        return;
+    }
+    if (mdkr_online_live_adapter_race_peer_lost(adapter)) return;
+    if (mdkr_online_live_adapter_race_send_abort(adapter)) {
+        std::fprintf(stderr,
+                     "[online-live] deliberate leave: race-abort sent to the "
+                     "peer\n");
+    }
+}
+
 /* Non-blocking frame budget for the SINGLE-RACE observe-only re-cycle: the max
  * serviced frames the launcher waits for the ENGINE-driven re-cycle to reach a
  * fresh race-ready transport before it gives up (logs + ends residency, never
@@ -2642,7 +2668,11 @@ int runOnlineLobbyStartEngineSession(AppHost &host, const MdkrBootConfig &config
      * room-ready re-arm -- the probe + lanes own the latch state and assert exact fire
      * counts, so arming here would pollute them. The production native path
      * (runOnlineLobbyStartLiveSession) is the sole arm site. */
-    (void)onlineTakeSessionEndWitness(result);
+    const MdkrPartyLinkSessionEndReason lobbyStartEndReason =
+        onlineTakeSessionEndWitness(result);
+    /* Same immediate peer notify as the production path: a deliberate mid-race
+     * leave must not strand the survivor on the loss ladders. */
+    notifyPeerOfDeliberateLeave(visible, lobbyStartEndReason);
 
     liveEngineHostUnbind();
     g_liveMatchInput = nullptr;
@@ -2775,6 +2805,9 @@ int runOnlineLobbyStartLiveSession(AppHost &host, const MdkrBootConfig &config,
     const MdkrPartyLinkSessionEndReason endReason =
         onlineTakeSessionEndWitness(result);
     if (endReasonOut != nullptr) *endReasonOut = endReason;
+    /* A deliberate mid-race leave must notify the surviving peer immediately
+     * (its race is still running against our now-frozen seat). */
+    notifyPeerOfDeliberateLeave(visible, endReason);
     /* A FINISHED native session returns with the tournament-final REMATCH
      * wrap already landed (the host's FINISH dispatched it before leaving; a joiner's
      * FINISHED followed that same observed wrap), so the room is normally already
@@ -4790,6 +4823,20 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
             host, config, OnlineRoom_testLoopbackVisible(race),
             OnlineRoom_testLoopbackPeer(race), 0u, /*syntheticInput=*/true,
             &liveEndReason);
+        /* Same post-session seam as the interactive handoff: read WHY the
+         * session ended and notify the peer of a deliberate mid-race leave
+         * immediately (the survivor must not wait out the loss ladders). */
+        notifyPeerOfDeliberateLeave(
+            OnlineRoom_testLoopbackVisible(race),
+            mdkr_party_link_take_session_end());
+        /* In-process, the surviving endpoint's pump stopped with the engine;
+         * service it so it drains what a real remote process would drain in
+         * its own loop -- the lanes witness the typed reaction. */
+        if (IMdkrOnlineAdapter *survivor = OnlineRoom_testLoopbackPeer(race)) {
+            for (int drainPass = 0; drainPass < 8; ++drainPass) {
+                survivor->service();
+            }
+        }
         /* Same race-end seam as the interactive handoff: the results poll +
          * report must fire whenever the online engine session returns, and
          * this loopback proof is the fixture that witnesses it. */

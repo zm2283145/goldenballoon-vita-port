@@ -426,8 +426,17 @@ public:
     MdkrMatchPeerMeshStats stats() const;
 
     /* Terminal, idempotent, bounded: closes every peer connection and
-     * zeroizes the keyring. Never blocks on a remote peer. */
-    void close();
+     * zeroizes the keyring. Never blocks on a remote peer.
+     *
+     * announcePeerEnd distinguishes a DELIBERATE session end from an internal
+     * teardown. True (the owner is leaving for good -- adapter destruction):
+     * peer_end "close" is sent to every viable peer first, so each survivor
+     * resolves this endpoint as the immediate typed PeerLost(PeerEnded)
+     * instead of grinding its restart episodes / vanish dwell. False (the
+     * default -- destructor backstop, SAS-mismatch rekey, any rebuild that
+     * continues the session): nothing is announced, exactly as before, so a
+     * legitimate mesh rebuild is never presented to peers as a departure. */
+    void close(bool announcePeerEnd = false);
 
 private:
     struct State;
