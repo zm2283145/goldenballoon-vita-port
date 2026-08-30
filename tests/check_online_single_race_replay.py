@@ -87,6 +87,14 @@ AUTOSTART_RE = re.compile(
 MID_UNWIND_RE = re.compile(
     r"^\[online-session\] mid-tournament UNWIND: room regressed to LOBBY "
     r"during the per-round re-wait", re.MULTILINE)
+# Per-round re-wait LIVENESS: visible forward-feed progress (the joiner
+# re-confirming / the room re-cycling) re-arms the wall-clock watchdog, so the
+# deadline bounds only a room that has genuinely stopped moving.
+PROGRESS_REARM_RE = re.compile(
+    r"^\[online-session\] per-round re-wait progress: room/seat movement "
+    r"observed -> watchdog re-armed \(tick=(\d+)\)$", re.MULTILINE)
+WATCHDOG_TRIP_RE = re.compile(
+    r"^\[online-session\] descless wait TIMEOUT:", re.MULTILINE)
 WEDGE_CANCEL_RE = re.compile(
     r"^\[online-resident-live\] WEDGE single-race re-cycle cancel:", re.MULTILINE)
 # The single-race FINISH wrap (the reducer-observable finish): the commit carries
@@ -229,6 +237,58 @@ def check_race_again(binary: Path, rom: Path, verbose: bool) -> int | None:
     return None
 
 
+def check_slow_joiner_liveness(binary: Path, rom: Path,
+                               verbose: bool) -> int | None:
+    """RACE AGAIN with a SLOW joiner: the per-round re-wait watchdog must treat
+    visible room progress as LIVENESS (re-arm), not ERROR-exit a live room.
+
+    The defect (audit stories gap #5): after the host's TRY AGAIN the per-round
+    re-wait spans the JOINER's whole human-paced re-confirm, bounded by ONE fixed
+    wall-clock deadline (45 s default) with no re-arm -- a joiner slower than the
+    deadline ERROR-exited the host with "connection trouble" copy while the peer
+    was alive and choosing. Repro (task-bp-native, pre-fix): this exact rig with
+    the deadline pinned INSIDE the joiner's re-confirm window (80 ms under
+    ROOM_LATENCY=30) tripped "per-round re-wait" -> reason=ERROR exit 2, while
+    the control run (same rig, big deadline) completed the identical re-cycle
+    milliseconds later.
+
+    This green pins the fix deterministically: ROOM_LATENCY=30 stretches the
+    joiner's re-Ready across the re-wait, so the progress fingerprint MUST
+    observe movement (>=1 re-arm witness) and the run must complete both boots
+    with NO watchdog trip. RED at the pre-fix build: the progress witness does
+    not exist."""
+    tag = "slow-joiner"
+    env = _base_env("single:0")  # RACE AGAIN: the LOBBY_WAIT re-wait fronts
+    env["MDKR_APP_TEST_ONLINE_ROOM_LATENCY"] = "30"
+    env["MDKR_ONLINE_SESSION_DESCLESS_WAIT_DEADLINE_MS"] = "600000"
+    try:
+        rc, out = run_engine(binary, rom, ticks=16000, timeout=400,
+                             verbose=verbose, extra_env=env,
+                             prefix="mdkr64-t5-slow-joiner-")
+    except subprocess.TimeoutExpired as error:
+        return fail(f"[{tag}] run HUNG: {error}")
+    if rc != 0:
+        return fail(f"[{tag}] process exited {rc} (a slow-but-alive joiner must "
+                    f"never end the session)", out)
+    guard = _isolation_ok(tag, out)
+    if guard is not None:
+        return guard
+    boots = [int(t) for t, _p in DIRECT_BOOT_RE.findall(out)]
+    if len(boots) != 2 or boots[0] != boots[1]:
+        return fail(f"[{tag}] expected two boots on the SAME track (RACE AGAIN "
+                    f"through the latency-carrying room), got {boots}", out)
+    rearms = PROGRESS_REARM_RE.findall(out)
+    if not rearms:
+        return fail(f"[{tag}] the per-round re-wait never observed the joiner's "
+                    f"re-confirm as PROGRESS (no watchdog re-arm witness) -- a "
+                    f"joiner slower than the fixed deadline still ERROR-exits a "
+                    f"live room", out)
+    if WATCHDOG_TRIP_RE.search(out):
+        return fail(f"[{tag}] the watchdog tripped on a LIVE room (progress must "
+                    f"re-arm the deadline)", out)
+    return None
+
+
 def check_finish(binary: Path, rom: Path, verbose: bool) -> int | None:
     """race 1 -> MORE RACES -> FINISH: the host's single-race FINISH is
     REDUCER-OBSERVABLE (the two-real-peer strand fix). The chooser commits the
@@ -358,7 +418,8 @@ def main() -> int:
         if not path.is_file():
             parser.error(f"missing {label}: {path}")
 
-    for scenario in (check_change_track, check_race_again, check_finish,
+    for scenario in (check_change_track, check_race_again,
+                     check_slow_joiner_liveness, check_finish,
                      check_peer_drop):
         err = scenario(binary, rom, args.verbose)
         if err is not None:
@@ -371,7 +432,10 @@ def main() -> int:
         f"auto-starts (LOBBY_WAIT, no human input) straight into a fresh race on the "
         f"SAME track ({TRACK_RACE1} -> {TRACK_RACE1}); the observe-only re-cycle "
         "re-arms the match-input EXACTLY once per chooser commit (exactly two boots, "
-        "no re-boot loop); FINISH is REDUCER-OBSERVABLE (the REMATCH wrap returns "
+        "no re-boot loop); a SLOW joiner's re-confirm through the latency-carrying "
+        "room reads as PROGRESS (the per-round re-wait watchdog RE-ARMS on visible "
+        "room movement instead of ERROR-exiting a live room); FINISH is "
+        "REDUCER-OBSERVABLE (the REMATCH wrap returns "
         "the room out of RESULTS on the real loopback reducer before the leave) and "
         "ends via the race-winner CEREMONY (crowned from the latched single-race "
         "ranking, points=0) into exactly one FINISHED (reason=FINISHED, never LEFT); "

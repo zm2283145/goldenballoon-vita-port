@@ -176,6 +176,19 @@ typedef struct MdkrOnlineSessionState {
      * initial next-round SELECTING the re-wait first observes). Reset at each boot.
      * Single-endpoint only. */
     u8 desclessRoundLeftLobby;
+    /* PER-ROUND RE-WAIT LIVENESS (single-endpoint only). The wall-clock
+     * watchdog alone reads a SLOW room the same as a DEAD one: after the host's
+     * RACE AGAIN the re-wait spans the JOINER's whole human-paced re-confirm
+     * (charselect -> vehicle stage on the other machine), so one fixed deadline
+     * ERROR-exits a live room whose peer is merely choosing. Fingerprint the
+     * reducer-visible forward-feed state (phase / config / per-seat picks +
+     * readies -- NEVER the per-publish generation counter) each re-wait tick;
+     * any change is visible progress and RE-ARMS the deadline, so the wall
+     * clock bounds only a room that has genuinely stopped moving. Seen==0
+     * means no baseline sampled yet this wait (the first sample never counts
+     * as progress); both reset when a per-round wait begins. */
+    u8 desclessProgressSeen;
+    u32 desclessProgressKey;
     /* debounce counter for the pre-START remote-seat-vacated
      * detector. Incremented each CHARSELECT/TRACKSELECT tick the forward feed shows
      * a LOBBY-phase room seating the LOCAL player but NO remote seat; reset the
@@ -461,6 +474,77 @@ static void online_session_descless_wallclock_arm(void) {
         platform_perf_monotonic_ns() + online_session_descless_deadline_ns();
 }
 
+/* PROGRESS fingerprint of a forward-feed snapshot: the reducer-visible fields
+ * that MOVE while a live room converges (phase / session config / per-seat
+ * occupancy, picks, readies / points / placements), folded FNV-1a. Deliberately
+ * EXCLUDES snapshot->generation (a per-publish counter that bumps every frame
+ * regardless of progress -- folding it would re-arm the watchdog forever on a
+ * dead room) and the seat names/host flags (static). Pure read. */
+static u32 online_session_feed_progress_key(const MdkrPartyLinkSnapshot *snap) {
+    u32 h = 2166136261u;
+    unsigned i;
+#define MDKR_ONLINE_SESSION_FOLD(v) \
+    do {                            \
+        h ^= (u32) (v);             \
+        h *= 16777619u;             \
+    } while (0)
+    MDKR_ONLINE_SESSION_FOLD(snap->phase);
+    MDKR_ONLINE_SESSION_FOLD(snap->mode);
+    MDKR_ONLINE_SESSION_FOLD(snap->configured_track);
+    MDKR_ONLINE_SESSION_FOLD(snap->cup_id);
+    MDKR_ONLINE_SESSION_FOLD(snap->race_index);
+    for (i = 0u; i < MDKR_PARTY_LINK_SEATS; i++) {
+        const MdkrPartyLinkSeat *seat = &snap->seats[i];
+        MDKR_ONLINE_SESSION_FOLD(seat->occupied);
+        MDKR_ONLINE_SESSION_FOLD(seat->ready);
+        MDKR_ONLINE_SESSION_FOLD(seat->connected);
+        MDKR_ONLINE_SESSION_FOLD(seat->character_id);
+        MDKR_ONLINE_SESSION_FOLD(seat->vehicle_id);
+        MDKR_ONLINE_SESSION_FOLD(snap->points[i]);
+        MDKR_ONLINE_SESSION_FOLD(snap->last_placements[i]);
+    }
+#undef MDKR_ONLINE_SESSION_FOLD
+    return h;
+}
+
+/* Begin a fresh per-round re-wait liveness window: drop the fingerprint
+ * baseline so the first snapshot observed never reads as progress. */
+static void online_session_descless_progress_reset(void) {
+    sOnlineSession.desclessProgressSeen = 0u;
+    sOnlineSession.desclessProgressKey = 0u;
+}
+
+/* Per-round re-wait LIVENESS tick (single-endpoint descriptor-less only --
+ * inert everywhere else, so every loopback/descriptor-first lane is
+ * byte-behaviour-unchanged). A CHANGED fingerprint is visible progress (the
+ * joiner re-confirming through its screens / the launcher re-cycling the room):
+ * RE-ARM the wall-clock deadline so the watchdog bounds only a room that has
+ * genuinely stopped moving -- the fix for the 45s deadline ERROR-exiting the
+ * host mid-way through a slow human joiner's post-RACE-AGAIN re-confirm. */
+static void online_session_descless_progress_tick(
+    const MdkrPartyLinkSnapshot *snap) {
+    u32 key;
+    if (!sOnlineSession.beganWithoutDescriptor ||
+        !sOnlineSession.singleEndpoint) {
+        return;
+    }
+    key = online_session_feed_progress_key(snap);
+    if (!sOnlineSession.desclessProgressSeen) {
+        sOnlineSession.desclessProgressSeen = 1u;
+        sOnlineSession.desclessProgressKey = key;
+        return;
+    }
+    if (key == sOnlineSession.desclessProgressKey) {
+        return;
+    }
+    sOnlineSession.desclessProgressKey = key;
+    online_session_descless_wallclock_arm();
+    fprintf(stderr,
+            "[online-session] per-round re-wait progress: room/seat movement "
+            "observed -> watchdog re-armed (tick=%u)\n",
+            sOnlineSession.lobbyWaitTicks);
+}
+
 /* Advance the descriptor-less wait watchdog; return true (after logging + routing to
  * the platform exit) if the current wait has exceeded its budget. Called only from
  * the descriptor-less waits, only under beganWithoutDescriptor.
@@ -655,6 +739,7 @@ static void online_session_boot_race(void) {
      * fresh. */
     sOnlineSession.desclessWaitDeadlineNs = 0u;
     sOnlineSession.desclessRoundLeftLobby = 0u;
+    online_session_descless_progress_reset(); /* fresh liveness baseline */
     sOnlineSession.remoteAbsentTicks = 0u; /* fresh vacate debounce */
 
     sOnlineSession.raceCount++; /* count engine races booted this process */
@@ -1257,6 +1342,12 @@ void mdkr_online_session_tick(s32 updateRate) {
                 MdkrPartyLinkSnapshot rsnap;
                 if (mdkr_party_link_read(&rsnap)) {
                     online_session_stash_intended(&rsnap);
+                    /* LIVENESS: visible feed progress (the joiner
+                     * re-confirming / the launcher re-cycling) re-arms the
+                     * wall-clock deadline, so the watchdog below bounds only a
+                     * genuinely dead room. Single-endpoint descriptor-less
+                     * only; inert for every other lane. */
+                    online_session_descless_progress_tick(&rsnap);
                     /* MID-TOURNAMENT CANCEL unwind.
                      * SINGLE-ENDPOINT only: rounds 2..N re-cycle the room from the
                      * launcher (LOBBY -> LOADING -> race-ready). If the LEADER cancels
@@ -1854,6 +1945,7 @@ void mdkr_online_session_tick(s32 updateRate) {
                             sOnlineSession.phase = MDKR_ONLINE_SESSION_LOBBY_WAIT;
                             sOnlineSession.replayAutoStart = 1u;
                             sOnlineSession.desclessWaitDeadlineNs = 0u;
+                            online_session_descless_progress_reset();
                             online_session_descless_wallclock_arm();
                             fprintf(stderr,
                                     "[online-session] results -> re-race same config "
@@ -1909,6 +2001,7 @@ void mdkr_online_session_tick(s32 updateRate) {
                      * wall-clock budget (single-endpoint only), separate from the
                      * RESULTS hold's budget just consumed. */
                     sOnlineSession.desclessWaitDeadlineNs = 0u;
+                    online_session_descless_progress_reset();
                     online_session_descless_wallclock_arm();
                     fprintf(stderr,
                             "[online-session] results -> awaiting next race (LIVE "
