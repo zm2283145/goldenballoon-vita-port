@@ -95,6 +95,10 @@ def main() -> int:
             "!result.warmup_complete" in settings and
             "performance approval remains a separate clean test" in settings,
             "interactive editor time must not be published as clean performance evidence")
+    require('"No exact capture yet"' in settings and
+            "std::max(1.0f, ImGui::GetContentRegionAvail().x)" in settings and
+            "ImVec2(placeholderWidth, 72.0f)" in settings,
+            "missing facing captures can collapse into an unreadable negative-width placeholder")
     require("persistedCharacterTuning" in settings and
             "persistedActiveCharacterDraftTuning" in settings and
             "persistCharacterStudioTuning" in settings and

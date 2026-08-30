@@ -118,7 +118,7 @@ def run_gamepad_import_focus(binary: Path, root: Path,
         "MDKR_A11Y_TRACE": "1",
     })
     process = subprocess.run(
-        [str(binary)], cwd=root, env=environment, text=True,
+        [str(binary)], cwd=tab_root, env=environment, text=True,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         timeout=180, check=False,
     )
@@ -195,7 +195,7 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
             "MDKR_A11Y_TRACE": "1",
         })
     process = subprocess.run(
-        [str(binary)], cwd=root, env=environment, text=True,
+        [str(binary)], cwd=tab_root, env=environment, text=True,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         timeout=180, check=False,
     )

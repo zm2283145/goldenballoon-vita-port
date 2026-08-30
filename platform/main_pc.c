@@ -522,19 +522,8 @@ int main(int argc, char **argv) {
                mdkr_render_backend_name(), renderer_width, renderer_height);
     {
         char characterDirectory[4096];
-        const char *characterDirectoryOverride =
-            getenv("MDKR_CUSTOM_CHARACTER_DIRECTORY");
-        if (characterDirectoryOverride != NULL &&
-            characterDirectoryOverride[0] != '\0' &&
-            strlen(characterDirectoryOverride) < sizeof(characterDirectory)) {
-            memcpy(characterDirectory, characterDirectoryOverride,
-                   strlen(characterDirectoryOverride) + 1u);
-            fprintf(stderr,
-                    "[modern-character] catalog directory override: %s\n",
-                    characterDirectory);
-            (void)mdkr_modern_characters_init(characterDirectory);
-        } else if (mdkr_user_characters_directory(
-                       characterDirectory, sizeof(characterDirectory))) {
+        if (mdkr_user_characters_directory(
+                characterDirectory, sizeof(characterDirectory))) {
             (void)mdkr_modern_characters_init(characterDirectory);
         } else {
             (void)mdkr_modern_characters_init(NULL);

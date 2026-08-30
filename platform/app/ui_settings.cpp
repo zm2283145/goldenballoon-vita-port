@@ -15180,9 +15180,12 @@ bool drawCharacterFacingStudio(
                     choose.c_str(), "Exact rendered candidate available",
                     "Rotates the complete custom appearance so this captured target-space side becomes forward. This is reversible Fit history and invalidates prior fit evidence.");
             } else {
+                const float placeholderWidth =
+                    std::max(1.0f, ImGui::GetContentRegionAvail().x);
                 (void)ImGui::Selectable(
                     "No exact capture yet", false,
-                    ImGuiSelectableFlags_Disabled, ImVec2(-1.0f, 72.0f));
+                    ImGuiSelectableFlags_Disabled,
+                    ImVec2(placeholderWidth, 72.0f));
                 ui::SpeakFocusedItem(
                     (std::string("Model side ") +
                      candidates[candidate].axis).c_str(),
@@ -26935,7 +26938,7 @@ bool drawCustomCharactersSection(bool compact) {
     }
     if (!g_characterImportCandidate.ready && !characterWorkBusy) {
         ui::TextSubtleWrapped(
-            "Ctrl/Cmd+I or controller Back/View jumps safely to character import from anywhere in this workspace. Esc or controller B returns focus to the launcher action row. Both shortcuts only move focus; press the main confirm button after reviewing the focused control.");
+            "Shortcuts: Ctrl/Cmd+I or controller Back/View focuses Import. Esc or controller B focuses launcher actions. Confirm separately.");
     }
     if (characterWorkBusy) {
         if (ui::CardBegin("##character-manager-running", AppTheme::accent(),
@@ -27031,8 +27034,7 @@ bool drawCustomCharactersSection(bool compact) {
         ImGui::BeginChild(
             "##character-workshop-library-rail",
             ImVec2(0.0f, 0.0f),
-            ImGuiChildFlags_NavFlattened,
-            ImGuiWindowFlags_AlwaysVerticalScrollbar);
+            ImGuiChildFlags_NavFlattened);
         ImGui::PushFont(AppTheme::fonts().section);
         ImGui::TextUnformatted("Library");
         ImGui::PopFont();
@@ -27054,8 +27056,7 @@ bool drawCustomCharactersSection(bool compact) {
         ImGui::BeginChild(
             "##character-workshop-editor",
             ImVec2(0.0f, 0.0f),
-            ImGuiChildFlags_NavFlattened,
-            ImGuiWindowFlags_AlwaysVerticalScrollbar);
+            ImGuiChildFlags_NavFlattened);
         if (g_characterImportCandidate.ready) {
             changed |= drawCharacterCandidateReview(false);
         } else if (g_characterRawEditorOpen &&

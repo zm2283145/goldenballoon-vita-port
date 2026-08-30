@@ -154,6 +154,7 @@ int main(int argc, char **argv) {
     char override_dir[4096];
     char override_config[4096];
     char override_save[4096];
+    char override_characters[4096];
     char path[4096];
     char other[4096];
     char interrupted_stage[4096];
@@ -267,11 +268,17 @@ int main(int argc, char **argv) {
                 override_dir, "video.ini"));
     expect("override save path",
            join(override_save, sizeof(override_save), override_dir, "save"));
+    expect("override characters path",
+           join(override_characters, sizeof(override_characters),
+                override_dir, "characters"));
     expect("set video override",
            mdkr_test_env_set(
                "MDKR_VIDEO_CONFIG_PATH", override_config, 1) == 0);
     expect("set save override",
            mdkr_test_env_set("MDKR_SAVE_DIR", override_save, 1) == 0);
+    expect("set character catalog override",
+           mdkr_test_env_set("MDKR_CUSTOM_CHARACTER_DIRECTORY",
+                             override_characters, 1) == 0);
     expect("entered launch cwd", chdir(cwd) == 0);
     s_mock_pref = pref;
     expect("packaged paths initialized", mdkr_user_paths_init(executable) == 1);
@@ -282,6 +289,9 @@ int main(int argc, char **argv) {
     expect("save override wins",
            mdkr_user_save_directory(path, sizeof(path)) &&
            strcmp(path, override_save) == 0);
+    expect("character catalog override wins",
+           mdkr_user_characters_directory(path, sizeof(path)) &&
+           strcmp(path, override_characters) == 0);
     expect("override config not migrated", missing(override_config));
     expect("override save not migrated", missing(override_save));
     expect("default config absent while override active",
@@ -291,6 +301,7 @@ int main(int argc, char **argv) {
 
     (void) mdkr_test_env_unset("MDKR_VIDEO_CONFIG_PATH");
     (void) mdkr_test_env_unset("MDKR_SAVE_DIR");
+    (void) mdkr_test_env_unset("MDKR_CUSTOM_CHARACTER_DIRECTORY");
     /* A killed prior copier can leave only a sibling stage. It must never be
      * interpreted as the live save directory or partly installed over it. */
     expect("interrupted stage path",
@@ -377,6 +388,11 @@ int main(int argc, char **argv) {
            mdkr_user_save_directory(path, sizeof(path)) &&
            join(other, sizeof(other), pref, "save") &&
            strcmp(path, other) == 0);
+    expect("packaged character catalog resolves below prefs",
+           mdkr_user_characters_directory(path, sizeof(path)) &&
+           join(override_characters, sizeof(override_characters),
+                pref, "characters") &&
+           strcmp(path, override_characters) == 0);
     expect("migrated EEPROM path",
            join(path, sizeof(path), other, "eeprom.bin"));
     expect("resource EEPROM won migration precedence",

@@ -984,6 +984,10 @@ int mdkr_user_characters_directory(char *output, size_t output_size) {
     return path_copy(output, output_size, "/characters");
 #else
     char relocation[MDKR_USER_PATH_MAX];
+    const char *override = getenv("MDKR_CUSTOM_CHARACTER_DIRECTORY");
+    if (override != NULL && override[0] != '\0') {
+        return path_copy(output, output_size, override);
+    }
     if (active_relocation_dir(relocation, sizeof(relocation))) {
         return path_join(output, output_size, relocation, "characters");
     }
