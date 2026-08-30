@@ -843,7 +843,11 @@ CHECKS = (
           "with eight team coins awards nothing, and the post-clear replay is no "
           "longer a silver race (no coins, no second award); two positive controls "
           "fire (seven-coins, stripped-collection). Adventure Two: NOT RUN "
-          "(AP-16 owns the A2 matrix)"),
+          "(AP-16 owns the A2 matrix)",
+          # Five full-race arms plus two replayed positive controls: the gate
+          # finishes but can exceed the default 30-minute task ceiling. Wedge
+          # bound only; the arms keep their own per-run frame budgets.
+          timeout=3600),
     Check("adventure_party_trophy", "check_adventure_party_trophy.py", "native",
           "AP-16 Part A = SPLIT: a party enters the real Adventure trophy series "
           "(forced past the headless-unreachable cabinet via the R20/R24 retarget "
