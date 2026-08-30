@@ -90,6 +90,15 @@ struct OnlineRoomUiState {
     // Deferred, non-blocking "Leave Race": set when the persistent takeover
     // control is pressed, consumed after the frame's lobby body has drawn.
     bool leavePending = false;
+    // App-clock second (ImGui::GetTime) at which the creator's invite code
+    // first became shareable; 0 until then. Drives the panel-local invite-TTL
+    // clock: the service expires an unredeemed invite ~10 minutes after
+    // minting (MATCH_LIMITS.inviteTtlMs), and the adapter never reports that
+    // expiry, so without this the host keeps showing a dead code with a live
+    // Copy button forever. Anchored at code-ready (>= the service's mint
+    // time), so the panel clock always errs LATE -- it never calls a live
+    // code expired. Reset with every fresh adapter.
+    double betaInviteReadyAtSec = 0.0;
 #endif
 };
 
@@ -101,6 +110,11 @@ OnlineRoomUiState g_online;
 // same journey the moment the sentinel lands.
 bool buildBetaLiveAdapter(const LauncherState &state, MdkrOnlineJourney journey,
                           const std::string &code);
+// The shared tear-down-and-reconstruct step behind every genuine transport
+// re-attempt (the RETRY rebuild sentinel; the expired-invite "Host a New
+// Race" affordance). Defined with buildBetaLiveAdapter below.
+void betaRebuildLiveAdapter(LauncherState &state, MdkrOnlineJourney journey,
+                            const std::string &code);
 #endif
 
 #if MDKR_ENABLE_ONLINE_BETA
@@ -500,22 +514,7 @@ void handleAction(MdkrOnlineViewAction action, LauncherState &state) {
             step.error == kMdkrOnlineLiveStepRetryRebuild) {
             const bool hostJourney = g_online.betaHostJourney;
             const std::string joinCode = g_online.betaJoinCode;
-            teardownAdapterAsync(std::move(g_online.adapter));
-            g_online.initialized = false;
-            g_online.detailsOpen = false;
-            g_online.connectionDoctorOpen = false;
-            g_online.updateHelpOpen = false;
-            g_online.leaveRaceConfirm = false;
-            g_online.announcedKind = static_cast<MdkrOnlineViewKind>(0);
-            g_online.announcedFailure = MDKR_ONLINE_VIEW_FAILURE_NONE;
-            g_online.announcedVerificationPhrase[0] = '\0';
-            // On a refused rebuild the chooser fronts with the specific
-            // reason; land the player on the side they came from, with the
-            // typed code preserved for a joiner.
-            g_online.betaStage = hostJourney
-                                     ? OnlineRoomUiState::BetaStage::Chooser
-                                     : OnlineRoomUiState::BetaStage::JoinCode;
-            (void)buildBetaLiveAdapter(
+            betaRebuildLiveAdapter(
                 state, hostJourney ? MDKR_ONLINE_JOURNEY_CREATE
                                    : MDKR_ONLINE_JOURNEY_JOIN,
                 hostJourney ? std::string() : joinCode);
@@ -660,8 +659,29 @@ void drawRoomPanel(LauncherState &state) {
 struct BetaFakeInviteOverride {
     bool active = false;
     std::string code;
+    // Force the invite card's EXPIRED presentation (the panel-local TTL clock
+    // elapsed with the friend still absent), so the headless seam can capture
+    // it without waiting 10 minutes.
+    bool expired = false;
 };
 BetaFakeInviteOverride g_betaFakeInvite;
+
+// The invite-redemption TTL the service enforces (MATCH_LIMITS.inviteTtlMs,
+// ~10 minutes). The invite card's copy has always said "about 10 minutes";
+// this clock is what makes the card (and the status strip) stop lying once it
+// has passed with the friend still absent.
+constexpr double kBetaInviteTtlSeconds = 600.0;
+
+// Whether the creator's shareable code is past the panel-local TTL clock
+// (anchored by drawBetaInviteCard the first frame the code is ready, so it
+// only ever errs LATE against the service's own mint-time clock). The fake
+// render seam forces it for the headless expired-card capture.
+bool betaInviteClockExpired() {
+    if (g_betaFakeInvite.active) return g_betaFakeInvite.expired;
+    return g_online.betaInviteReadyAtSec != 0.0 &&
+           ImGui::GetTime() - g_online.betaInviteReadyAtSec >=
+               kBetaInviteTtlSeconds;
+}
 
 // Records which post-pairing SELECTING surface last rendered: the forward native
 // hand-off card (Handoff) or the "Return to Game" re-entry control shown after a
@@ -818,7 +838,34 @@ bool buildBetaLiveAdapter(const LauncherState &state, MdkrOnlineJourney journey,
     dispatch(journey == MDKR_ONLINE_JOURNEY_CREATE
                  ? MDKR_ONLINE_VIEW_ACTION_CREATE_ROOM
                  : MDKR_ONLINE_VIEW_ACTION_JOIN_ROOM);
+    g_online.betaInviteReadyAtSec = 0.0;  // fresh room -> fresh invite clock
     return true;
+}
+
+// The shared tear-down-and-reconstruct step behind every genuine transport
+// re-attempt: the RETRY rebuild sentinel (a pre-Ready Try Again) and the
+// expired-invite "Host a New Race" affordance. The room transport begins
+// exactly once per adapter, so the room's own create/join journey is the ONLY
+// honest retry that exists -- this funnels every such retry through the same
+// teardown discipline the ENTER_ANOTHER_CODE contract uses. On a refused
+// rebuild the chooser fronts with the specific reason; the player lands on
+// the side they came from, with a joiner's typed code preserved.
+void betaRebuildLiveAdapter(LauncherState &state, MdkrOnlineJourney journey,
+                            const std::string &code) {
+    teardownAdapterAsync(std::move(g_online.adapter));
+    g_online.initialized = false;
+    g_online.detailsOpen = false;
+    g_online.connectionDoctorOpen = false;
+    g_online.updateHelpOpen = false;
+    g_online.leaveRaceConfirm = false;
+    g_online.announcedKind = static_cast<MdkrOnlineViewKind>(0);
+    g_online.announcedFailure = MDKR_ONLINE_VIEW_FAILURE_NONE;
+    g_online.announcedVerificationPhrase[0] = '\0';
+    g_online.betaInviteReadyAtSec = 0.0;
+    g_online.betaStage = journey == MDKR_ONLINE_JOURNEY_CREATE
+                             ? OnlineRoomUiState::BetaStage::Chooser
+                             : OnlineRoomUiState::BetaStage::JoinCode;
+    (void)buildBetaLiveAdapter(state, journey, code);
 }
 
 void drawBetaChooser(LauncherState &state) {
@@ -1189,8 +1236,12 @@ const char *betaStatusLine(const MdkrOnlineViewModel &model) {
     case MDKR_ONLINE_VIEW_ENTRY: return "Getting ready…";
     case MDKR_ONLINE_VIEW_CONNECTING: return "Connecting…";
     case MDKR_ONLINE_VIEW_ROOM:
-        return model.member_count >= 2u ? "Connected — both players are here"
-                                        : "Waiting for the other player…";
+        if (model.member_count >= 2u) return "Connected — both players are here";
+        /* Never keep "waiting" over a code the service can no longer redeem:
+         * once the panel-local TTL clock has elapsed the wait cannot end. */
+        return betaInviteClockExpired()
+                   ? "That code expired — host a new race for a fresh one"
+                   : "Waiting for the other player…";
     case MDKR_ONLINE_VIEW_PREFLIGHT:
         return model.verification_phrase[0] != '\0'
                    ? "Almost there — confirm the safety phrase"
@@ -1488,7 +1539,7 @@ bool betaCenteredCardBegin(const char *id, const ImVec4 &border,
 // the capability and shows a "not enabled in this build" notice. The 6-digit
 // code the friend types into their own copy of the game is the one thing that
 // works, so it is the only thing shared.
-void drawBetaInviteCard(bool isHost) {
+void drawBetaInviteCard(LauncherState &state, bool isHost) {
     std::string code;
     bool ready;
     if (g_betaFakeInvite.active) {
@@ -1499,11 +1550,52 @@ void drawBetaInviteCard(bool isHost) {
     } else {
         ready = OnlineRoom_liveInvite(g_online.adapter.get(), &code, nullptr) &&
                 !code.empty();
+        // Anchor the panel-local invite-TTL clock the first frame the code is
+        // shareable (>= the service's mint time, so it only ever errs LATE):
+        // past the TTL with the friend still absent, the code is dead
+        // server-side and the card must say so instead of offering a live
+        // Copy button on a code that can no longer be redeemed.
+        if (ready && g_online.betaInviteReadyAtSec == 0.0) {
+            g_online.betaInviteReadyAtSec = ImGui::GetTime();
+        }
     }
+    const bool expired = ready && betaInviteClockExpired();
     // Cap and center the card: at wide sizes a full-width card leaves a dead
     // right column beside the naturally-narrow code. Both the placeholder and the
     // real card use the SAME cap so the swap-in never shifts sideways.
     const float kInviteMaxWidth = 480.0f * AppTheme::uiScale();
+    if (ready && expired) {
+        if (!isHost) return;
+        // The code is past the service's redemption TTL and nobody joined:
+        // showing it with a live Copy button would send a dead code to the
+        // friend. Tell the truth and offer the working regenerate -- a fresh
+        // CREATE journey (the same rebuild step every genuine retry uses).
+        ui::Gap(ui::kGapM);
+        if (betaCenteredCardBegin("##beta-invite", AppTheme::accent(),
+                                  kInviteMaxWidth)) {
+            ImGui::TextUnformatted("Invite a Friend");
+            ui::TextSubtleWrapped(
+                "That code expired — codes last about 10 minutes, and your "
+                "friend hasn't joined yet.");
+            ui::Gap(ui::kGapS);
+            if (ui::BrandPrimaryButton("Host a New Race",
+                                       ui::kBtnFullWidth()) &&
+                !g_betaFakeInvite.active) {
+                betaRebuildLiveAdapter(state, MDKR_ONLINE_JOURNEY_CREATE,
+                                       std::string());
+            }
+            ui::SpeakFocusedItem(
+                "Host a New Race", "Fresh code",
+                "Makes a fresh private room with a new code to share.");
+            ui::Gap(ui::kGapS);
+            ui::TextSubtleWrapped(
+                "Hosting again makes a fresh room with a new code — your "
+                "friend hasn't missed anything. Leave Room exits online "
+                "instead.");
+        }
+        ui::CardEnd();
+        return;
+    }
     if (!ready) {
         if (!isHost) return;  // a joiner has no room of its own to share
         ui::Gap(ui::kGapM);
@@ -1561,6 +1653,15 @@ void drawBetaInviteCard(bool isHost) {
         ui::TextSubtleWrapped(
             "Invite-only — the code expires after about 10 minutes. Keep this "
             "window open until your friend joins.");
+        // The one refusal the service never reports to this side: a friend on
+        // a DIFFERENT build is turned away at join with no host-visible event
+        // (the Worker records nothing a client can poll). Pre-arm the host
+        // with the always-true rule so a silent "waiting forever" has a named
+        // first suspect.
+        ui::TextSubtleWrapped(
+            "If your friend can't get in, check you're both on the same game "
+            "version — a different build is turned away without a notice "
+            "here.");
     }
     ui::CardEnd();
 }
@@ -2117,13 +2218,13 @@ void drawBetaRoom(LauncherState &state) {
     // a lobby snapshot exists, so the launcher-side betaHostJourney flag is the
     // host source for the pre-room state.
     if (model.kind == MDKR_ONLINE_VIEW_CONNECTING) {
-        drawBetaInviteCard(g_online.betaHostJourney);
+        drawBetaInviteCard(state, g_online.betaHostJourney);
     } else if (model.kind == MDKR_ONLINE_VIEW_ROOM) {
         // Once the friend has joined, the invite step is done -- the invite card
         // yields to the roster + the Check Setup step below it.
         if (model.member_count < 2u) {
-            drawBetaInviteCard(g_online.betaHostJourney ||
-                               model.local_member_is_leader);
+            drawBetaInviteCard(state, g_online.betaHostJourney ||
+                                          model.local_member_is_leader);
         }
         if (haveLobby) {
             ui::Gap(ui::kGapM);
@@ -2428,6 +2529,7 @@ bool betaFakeBuildStage(const char *stage, MdkrOnlineViewModel *model,
     std::memset(model, 0, sizeof(*model));
     *haveLobby = false;
     g_betaFakeInvite.active = false;
+    g_betaFakeInvite.expired = false;
     // Clear any re-entry offer so a non-fallback stage renders the forward hand-off,
     // not the "Return to Game" re-entry card; the fallback stages re-arm it below.
     OnlineRoom_noteSessionReturn(MDKR_PARTY_LINK_SESSION_END_NONE);
@@ -2447,6 +2549,23 @@ bool betaFakeBuildStage(const char *stage, MdkrOnlineViewModel *model,
             betaFakeControl(MDKR_ONLINE_VIEW_ACTION_RETURN_HOME, "Cancel");
         g_betaFakeInvite.active = true;
         g_betaFakeInvite.code = "123456";
+        return true;
+    }
+    // The host's invite card once the panel-local TTL clock has elapsed with
+    // the friend still absent: the truthful expired copy + the "Host a New
+    // Race" regenerate affordance (never a live Copy button on a dead code).
+    if (std::strcmp(stage, "invite-expired") == 0) {
+        model->kind = MDKR_ONLINE_VIEW_ROOM;
+        model->title = "Private Room";
+        model->explanation =
+            "Invite friends, then check everyone's setup together.";
+        model->member_count = 1u;
+        model->local_member_is_leader = true;
+        model->cancel =
+            betaFakeControl(MDKR_ONLINE_VIEW_ACTION_LEAVE_ROOM, "Leave Room");
+        g_betaFakeInvite.active = true;
+        g_betaFakeInvite.code = "123456";
+        g_betaFakeInvite.expired = true;
         return true;
     }
     if (std::strcmp(stage, "phrase") == 0) {
@@ -2569,9 +2688,9 @@ void drawBetaRoomFake(LauncherState &state) {
         ui::CautionBox(
             "Unknown Beta Stage",
             "Set MDKR_APP_ONLINE_BETA_STAGE to one of: chooser, joincode, "
-            "invite, phrase, room-single, room-tournament, handoff, "
-            "room-single-fallback, room-tournament-fallback, results, "
-            "finished, recovery, recovery-opponent-left.");
+            "invite, invite-expired, phrase, room-single, room-tournament, "
+            "handoff, room-single-fallback, room-tournament-fallback, "
+            "results, finished, recovery, recovery-opponent-left.");
         return;
     }
 
@@ -2584,10 +2703,10 @@ void drawBetaRoomFake(LauncherState &state) {
     drawBetaSectionHeader(model);
 
     if (model.kind == MDKR_ONLINE_VIEW_CONNECTING) {
-        drawBetaInviteCard(g_online.betaHostJourney);
+        drawBetaInviteCard(state, g_online.betaHostJourney);
     } else if (model.kind == MDKR_ONLINE_VIEW_ROOM) {
-        drawBetaInviteCard(g_online.betaHostJourney ||
-                           model.local_member_is_leader);
+        drawBetaInviteCard(state, g_online.betaHostJourney ||
+                                      model.local_member_is_leader);
         if (haveLobby) {
             ui::Gap(ui::kGapM);
             drawBetaRosterStrip(
@@ -2921,6 +3040,7 @@ static void leaveOnlineSession(LauncherState &state) {
     g_online.betaJoinCode[0] = '\0';
     g_online.betaHostJourney = false;
     g_online.betaBuildFailed = false;
+    g_online.betaInviteReadyAtSec = 0.0;
     Launcher_requestTab(state, kLauncherPanelPlay, kLauncherTabPlayer);
 }
 
