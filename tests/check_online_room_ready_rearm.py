@@ -52,7 +52,8 @@ that a FINISHED-with-wrap return never shows again (the wrapped room sits at
 SELECTING+2+LOBBY forever), so the re-arm never completed and the re-take was
 permanently stranded at the panel.
 
-Standalone lane (not run-checks registered), mirroring the sibling online engine lanes.
+Registered in the tools/run_online_checks.py sweep (like the sibling online engine
+lanes); also runnable standalone.
 """
 
 from __future__ import annotations

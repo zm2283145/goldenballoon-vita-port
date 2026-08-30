@@ -2060,13 +2060,17 @@ void drawBetaRoom(LauncherState &state) {
      * poll is self-guarded (a one-shot latch + the room-ready condition check inside,
      * online_live_wiring.cpp), so calling it every frame is idempotent: it fires
      * EXACTLY ONCE on the first frame a room reaches SELECTING with 2 members in
-     * LOBBY (any mode), publishing this adapter for the descriptor-less native boot
-     * that the launcher's interactive loop consumes. Polling here -- rather than only
-     * inside the rich-body SELECTING branch -- makes the takeover deterministic every
-     * frame regardless of which body draws. Single-race / unconfigured rooms whose
-     * READY is vote-gated simply never satisfy the condition and keep the ImGui
-     * fallback. The panel's OwningLiveAdapter wrapper resolves the concrete adapter
-     * through the mdkrResolveLive hook, so handing the wrapper here is fine. */
+     * LOBBY (ANY mode -- single-race rooms take over too: the reducer's READY needs
+     * only char+vehicle, never a track vote, and the native TRACKSELECT sets
+     * configured_track before START; the full derivation lives at
+     * OnlineRoom_roomReadyConditionHolds, online_live_wiring.cpp), publishing this
+     * adapter for the descriptor-less native boot that the launcher's interactive
+     * loop consumes. Polling here -- rather than only inside the rich-body SELECTING
+     * branch -- makes the takeover deterministic every frame regardless of which
+     * body draws. There is no per-race ImGui fallback anymore: every mode's rooms
+     * go native through this one poll. The panel's OwningLiveAdapter wrapper
+     * resolves the concrete adapter through the mdkrResolveLive hook, so handing
+     * the wrapper here is fine. */
     (void)OnlineRoom_pollRoomReadyTransition(g_online.adapter.get());
 
     // Snapshot-backed hand-off bodies (they own the PRIMARY slot); every other
