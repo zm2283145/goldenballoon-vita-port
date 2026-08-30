@@ -24,7 +24,7 @@ Post-fix assertions (the ruled behavior):
   * detection is TRANSPORT-STATE-KEYED and bounded: `[MESH] peer LOST
     reason=1` (PingTimeout -- the control-ping ladder, which now runs
     regardless of signal presence) within the named bound
-    kMdkrMatchMidRaceLossDetectBoundMs (= ping interval + ping timeout,
+    kMdkrMatchMidRaceLossPingBoundMs (= ping interval + ping timeout,
     parsed from match_peer_transport.h) of the sever, measured in authored
     ticks (30 Hz);
   * the TRUTHFUL attribution: the adapter maps the loss to OPPONENT_LEFT
@@ -162,7 +162,7 @@ def main() -> int:
     if interval is None or stale is None:
         return fail("could not parse the control-ping constants from "
                     f"{MESH_HEADER}")
-    bound_ms = interval + stale  # == kMdkrMatchMidRaceLossDetectBoundMs
+    bound_ms = interval + stale  # == kMdkrMatchMidRaceLossPingBoundMs
     bound_ticks = ((bound_ms // 1000) + DETECT_SLACK_SECONDS) * AUTHORED_HZ
 
     ping_timeout_reason = parse_enum_index(
@@ -252,7 +252,7 @@ def main() -> int:
         return fail(f"latch fired at tick {latch_tick}, "
                     f"{latch_tick - sever_tick} ticks after the sever at "
                     f"{sever_tick} -- beyond the named bound "
-                    f"kMdkrMatchMidRaceLossDetectBoundMs ({bound_ms} ms "
+                    f"kMdkrMatchMidRaceLossPingBoundMs ({bound_ms} ms "
                     f"+ {DETECT_SLACK_SECONDS}s slack = {bound_ticks} ticks "
                     f"@ {AUTHORED_HZ} Hz)", output)
     if not TRIGGER_RE.search(output):

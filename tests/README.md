@@ -1860,7 +1860,7 @@ the in-process peer's pump and drops its loopback signal presence, refusing
 NOTHING -- detection must come from the transport's own liveness ladders. The
 severed race runs at the authored 30 Hz (the seam arms `paceAdvanceHz`),
 because detection is wall-clock (ping interval + stale bound =
-`kMdkrMatchMidRaceLossDetectBoundMs`, parsed from the header, never a magic
+`kMdkrMatchMidRaceLossPingBoundMs`, parsed from the header, never a magic
 number) while the unthrottled headless drain finishes a race in ~2 real
 seconds. Asserts: typed `[MESH] peer LOST` reason=PingTimeout within the named
 bound of the sever (tick-denominated), the truthful OPPONENT_LEFT mapping (the

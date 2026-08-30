@@ -236,19 +236,26 @@ SESSION_END_RE = re.compile(
 # The bounded-watchdog recovery paths a PROMPT mid-race peer-loss detection
 # makes unnecessary -- FORBIDDEN on the mid-race-kill survivor.
 SURVIVOR_WATCHDOG_MARKERS = ("round advance TIMEOUT", "descless wait TIMEOUT")
-# Slack on top of the named detection bound for real-cloud scheduling /
-# line-flush jitter (the bound itself is ping interval + stale, parsed below).
+# Slack on top of the named COMPOSITE detection bound for real-cloud
+# scheduling / line-flush jitter (the bound itself is ping interval + stale +
+# vanish dwell -- kMdkrMatchMidRaceLossDetectBoundMs -- parsed below, so a
+# shipped-behavior-in-contract run can never flake on WAN jitter alone).
 KILL_DETECT_SLACK_S = 15.0
 
 
 def mesh_detect_bound_ms() -> int:
-    """kMdkrMatchMidRaceLossDetectBoundMs from the source of truth (the mesh
-    header), never a magic instrument number."""
+    """kMdkrMatchMidRaceLossDetectBoundMs -- the COMPOSITE worst case across
+    both detection orderings -- from the source of truth (the mesh header),
+    never a magic instrument number. Ping ordering: ping interval + stale.
+    ICE-first ordering: a teardown can preempt the ping ladder only INSIDE
+    that window, then the vanish dwell runs -- so the worst case is ping
+    interval + stale + vanish dwell."""
     text = (ROOT / "platform/online/match_peer_transport.h").read_text(
         encoding="utf-8")
     values = []
     for name in ("kMdkrMatchControlPingIntervalMs",
-                 "kMdkrMatchControlPingTimeoutMs"):
+                 "kMdkrMatchControlPingTimeoutMs",
+                 "kMdkrMatchPeerVanishTimeoutMs"):
         m = re.search(rf"unsigned {name} = (\d+)u", text)
         if m is None:
             raise ProofFailure(f"could not parse {name} from the mesh header")
@@ -632,12 +639,15 @@ def run(args: argparse.Namespace) -> dict:
                           f"scenario {scen})")
                     if args.drop == "mid-race":
                         # STRICT contract: a real mid-race kill must be
-                        # detected PROMPTLY by the transport's own liveness
-                        # ladder (within the named bound
-                        # kMdkrMatchMidRaceLossDetectBoundMs + slack), latch
-                        # the truthful OPPONENT_LEFT, and end the survivor's
-                        # race via the EXISTING mid-race latch -> crash-fix
-                        # LEFT. The watchdog is FORBIDDEN as the recovery.
+                        # detected PROMPTLY by the transport's own ladders
+                        # within the COMPOSITE worst-case bound
+                        # kMdkrMatchMidRaceLossDetectBoundMs (ping interval +
+                        # stale + vanish dwell -- covers BOTH orderings: the
+                        # ping path and ICE-first teardown + dwell) + slack,
+                        # latch the truthful OPPONENT_LEFT, and end the
+                        # survivor's race via the EXISTING mid-race latch ->
+                        # crash-fix LEFT. The watchdog is FORBIDDEN as the
+                        # recovery.
                         bound_s = mesh_detect_bound_ms() / 1000.0
                         opponent_left = opponent_left_failure_value()
                         survivor.wait_line(

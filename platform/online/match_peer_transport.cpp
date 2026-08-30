@@ -1011,6 +1011,17 @@ struct MdkrMatchPeerMesh::State
             peerLost(peer, MdkrMatchPeerLostReason::TransportFailed);
             return;
         }
+        if (!peer.present) {
+            /* An ABSENT peer can receive neither the peer_end "restart" nor
+             * a fresh offer, so a restart episode here is pure waste (it
+             * burns one of the three bounded episodes against the void).
+             * Just retire the dead connection; recovery is either the
+             * peer's presence returning (the offer ladder / a fresh offer
+             * re-drive from a clean slate) or the vanish dwell resolving
+             * the loss typed and bounded. */
+            silentTeardown(peer);
+            return;
+        }
         if (peer.restartEpisodes >= kMdkrMatchMaxRestartEpisodes) {
             peerLost(peer, MdkrMatchPeerLostReason::ConnectTimeout);
             return;
@@ -1262,7 +1273,13 @@ struct MdkrMatchPeerMesh::State
              * down. Both facts are transport state; either recovering
              * disarms the dwell (a signal blip with healthy channels never
              * arms it, and a reconnect bump re-admits the peer even after
-             * expiry via rekeyPeer's lost=false). */
+             * expiry via rekeyPeer's lost=false). Bounded residual: a
+             * re-welcome that omits a simultaneously-blipping (still
+             * reconnecting) peer marks it absent and starts this clock, so
+             * a peer whose bump lands after expiry is declared lost even
+             * though it may have been returning -- accepted as the bounded
+             * corner (the bump still re-admits the mesh peer; only the
+             * already-latched race end stands). */
             if (!peer.present && !peer.channelsReady) {
                 if (peer.vanishedSinceMs == 0u) {
                     peer.vanishedSinceMs = nowMs;
@@ -1345,8 +1362,9 @@ struct MdkrMatchPeerMesh::State
             /* Control ping ladder (5 s cadence, 15 s stale) -- runs on the
              * ESTABLISHED channels regardless of signal presence (see the
              * presence note above): kMdkrMatchControlPingIntervalMs +
-             * kMdkrMatchControlPingTimeoutMs is the mid-race loss detection
-             * bound (kMdkrMatchMidRaceLossDetectBoundMs). */
+             * kMdkrMatchControlPingTimeoutMs is the ping-path loss bound
+             * (kMdkrMatchMidRaceLossPingBoundMs; the composite worst case
+             * across orderings is kMdkrMatchMidRaceLossDetectBoundMs). */
             if (peer.channelsReady) {
                 if (peer.pingOutstandingSinceMs != 0u &&
                     nowMs - peer.pingOutstandingSinceMs >=
