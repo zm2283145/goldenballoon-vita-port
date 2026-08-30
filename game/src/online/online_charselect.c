@@ -102,10 +102,6 @@
 #define CS_GRID_X 22 /* top-left x of column 0's portrait */
 #define CS_GRID_Y 46 /* top-left y of row 0's portrait */
 #define CS_PORTRAIT_HALF 22 /* ~half a portrait, for centering labels */
-/* Name budget: FUNFONT (the retail body face) is wider than SMALLFONT, so a name
- * that overruns a cell falls back to SMALLFONT (only DRUMSTICK does at this width)
- * -- keeps the retail body face everywhere it fits without overlapping neighbours. */
-#define CS_NAME_MAX_W 64
 /* All seats ready + no host-start yet: after this many ticks the online-only
  * "waiting for host" footer appears under the retail "OK?" (host-start latency). */
 #define CS_OK_WAIT_TICKS 150u
@@ -542,17 +538,28 @@ static void charselect_draw_seat_marker(u8 onlineId, s32 number) {
                             ALIGN_MIDDLE_CENTER, 255, 255, 255);
 }
 
-/* One portrait name label. Retail body face is FUNFONT; fall back to SMALLFONT for
- * a name that would overrun its cell (only DRUMSTICK at this width). */
+/* One portrait name label. EVERY name draws in the retail body face (FUNFONT) with
+ * the shared helper's pink authored art + 1px drop shadow -- no name ever drops to
+ * the plain white SMALLFONT. The widest name (DRUMSTICK) overruns its 60px cell in
+ * the authored FUNFONT advance and crowds its neighbour, and the retail text path
+ * has no per-glyph horizontal scale (draw_text is fixed 1.0). So EVERY name is drawn
+ * with the letter-spacing squeeze uniformly (set_kerning(TRUE) -- one pixel tighter
+ * per glyph, the exact kern menu.c uses for the hub names and the one that fixed the
+ * "DRA GON"/"BE GIN" airiness on the other online screens): consistency over size.
+ * The squeeze keeps every label in the identical pink FUNFONT treatment AND opens
+ * the inter-name gaps enough that DRUMSTICK clears BUMPER. Both get_text_width and
+ * draw_text honour gCompactKerning, so the centred alignment and the shadow/face
+ * passes stay registered under the squeeze. FUNFONT is an authored-art face, so
+ * mdkr_online_screen_text never touches gCompactKerning itself; we set it for the
+ * label draw and restore the module default (FALSE) afterwards. */
 static void charselect_draw_name(u8 onlineId) {
     s32 x, y;
     char *name = (char *) sOnlineNames[onlineId];
-    s32 fontId = (get_text_width(name, 0, ASSET_FONTS_FUNFONT) <= CS_NAME_MAX_W)
-                     ? (s32) ASSET_FONTS_FUNFONT
-                     : (s32) ASSET_FONTS_SMALLFONT;
     charselect_cell_xy(onlineId, &x, &y);
-    mdkr_online_screen_text(x + CS_PORTRAIT_HALF, y + 46, fontId, name,
-                            ALIGN_MIDDLE_CENTER, 255, 255, 255);
+    set_kerning(TRUE);
+    mdkr_online_screen_text(x + CS_PORTRAIT_HALF, y + 46, (s32) ASSET_FONTS_FUNFONT,
+                            name, ALIGN_MIDDLE_CENTER, 255, 255, 255);
+    set_kerning(FALSE);
 }
 
 /* Resolve the (first occupied, non-local) remote seat into a bounded view.
