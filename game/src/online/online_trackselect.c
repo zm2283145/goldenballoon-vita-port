@@ -928,7 +928,7 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
                 (void) snprintf(line, sizeof(line), "HOST PICKED: %s", pick);
                 mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, TS_STATUS_Y,
                                  ASSET_FONTS_SMALLFONT, line, ALIGN_MIDDLE_CENTER,
-                                 120, 255, 120);
+                                 255, 224, 96);
             } else {
                 (void) snprintf(line, sizeof(line), "%s IS CHOOSING...",
                                 hostName);
