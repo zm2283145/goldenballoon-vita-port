@@ -1673,7 +1673,16 @@ NO reducer command, so neither of the joiner mirror's exits -- room-left-RESULTS
 vanished-host -- could ever fire) is fixed by the FINISH wrap above; the local
 red-first pins live in `check_online_lobby_tournament.py` (the host's wrap must
 land before the ceremony) and `check_online_results_chooser.py` (the final mirror
-exits to its own ceremony, never re-selection).
+exits to its own ceremony, never re-selection). The SAME strand class existed for
+a SINGLE-RACE room's FINISH (a mandatory pre-beta extension): the host
+now commits the same REMATCH wrap there (phase-only in single-race), leaves via
+the race-winner ceremony into FINISHED, and the joiner's mirror KEEPS THE FOLLOW
+on the observed wrap (FINISH and RACE AGAIN are reducer-indistinguishable in
+single-race; the follow and the host's automatic FINISHED re-take re-converge both
+peers in CHARSELECT of the wrapped room). Its local red-first pins live in
+`check_online_single_race_replay.py` (the `finish` scenario: wrap committed +
+converged on the REAL loopback reducer, reason=FINISHED never LEFT) and
+`check_online_results_chooser.py` (`single-finish` / `single-joiner`).
 **Scope class:** production-path -- the real two-process cloud route exercised end-to-end, the ONLY automation being the pairing bootstrap and injected pad input standing in for the two absent human controllers; everything after pairing is the production code path choosing its own route. This is the one production-path acceptance lane the other online lanes' seam-injection scenarios stand in for.
 
 `check_online_lobby_tournament.py` (run-checks registered in

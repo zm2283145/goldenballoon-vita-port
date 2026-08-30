@@ -55,8 +55,14 @@ typedef enum MdkrOnlineResultsResult {
  *                                                round 1)
  *   CHANGE_CHAR    REMATCH                     -> CHARSELECT (-> VEHICLE ->
  *                                                TRACKSELECT: change char + vehicle)
- *   FINISH         no publish                  -> LEAVE (champion CEREMONY for a
- *                                                finished tournament, else the room)
+ *   FINISH         REMATCH at a decision point -> LEAVE once the room left RESULTS
+ *                                                (tournament final: fresh-series
+ *                                                wrap; single race: phase-only) so
+ *                                                a second real peer OBSERVES the
+ *                                                finish; -> champion / race-winner
+ *                                                CEREMONY -> FINISHED. Mid-cup
+ *                                                env-soaks + feed-less boots keep
+ *                                                the direct leave (no publish).
  * JOINER_FOLLOW is not a host option: the joiner is display-only (it renders the
  * "more races" mirror + "waiting for host") and, once the host's authoritative
  * choice drives the room out of RESULTS, follows into CHARSELECT (the safe universal
@@ -130,6 +136,22 @@ MdkrOnlineResultsChoice mdkr_online_results_choice(void);
  * config), matching the session switch's historical default. */
 MdkrOnlineResultsRefront mdkr_online_results_choice_refront(
     MdkrOnlineResultsChoice choice);
+
+/* True while the "more races" chooser is fronted and UNDECIDED (host deliberating
+ * / joiner mirroring, no commit yet). The session consults it so the single-race
+ * decision point holds INTERACTIVELY -- never bounded by the RESULTS
+ * rematch-convergence watchdog (the same discipline the tournament FINAL standings
+ * get via resultsIsFinal). A committed choice (deciding false) is a genuine
+ * convergence hold and stays bounded. */
+u8 mdkr_online_results_chooser_deciding(void);
+
+/* True when the committed chooser choice was a SINGLE-race FINISH whose wrap was
+ * dispatched (chooser mode SINGLE with a feed present -- the entry-latched wrap
+ * gate). The session's LEAVE routing reads it to take the race-winner CEREMONY ->
+ * FINISHED road (resultsIsFinal is 0 for a descriptor-less single race, so the
+ * old routing read this LEAVE as a mid-tournament LEFT). Feed-less direct leaves
+ * return 0 and keep the historical LEFT return. */
+u8 mdkr_online_results_single_finish(void);
 
 #ifdef __cplusplus
 }

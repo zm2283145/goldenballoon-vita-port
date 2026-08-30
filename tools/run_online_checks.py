@@ -53,7 +53,9 @@ LANES = (
     "check_online_session_results.py",
     "check_online_results_chooser.py",    # T4: native "more races" RESULTS chooser
     "check_online_single_race_replay.py", # T5: single-race replay re-cycle (2 races
-                                          #  back-to-back in-session + no re-boot loop)
+                                          #  back-to-back in-session + no re-boot
+                                          #  loop) + the reducer-observable
+                                          #  single-race FINISH wrap
     "check_online_resident_live.py",
     "check_online_session_end.py",          # incl. joiner-follow seam scenario
     "check_online_race_start_peer_loss.py", # P0: peer-loss at race start -> clean

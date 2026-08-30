@@ -111,6 +111,10 @@ extern char *gRacePlacementsArray[8];
 typedef struct MdkrOnlineCeremonyState {
     u8 assets;        /* portrait group + fonts loaded */
     u8 host;          /* local seat is the room leader (may skip early) */
+    u8 single;        /* the room is SINGLE-race (snapshot mode at enter; the mode
+                       * survives the REMATCH wrap): the copy reads "RACE WINNER"/
+                       * "RACE COMPLETE" and the meaningless zero POINTS figures
+                       * are dropped. Tournament copy is byte-identical. */
     MdkrOnlineStandings st; /* the ranked seats (order[0] == champion), from enter */
     u8 champSeat;     /* champion canonical seat slot, or 0xFF if unresolved */
     u8 champChar;     /* champion character id, or 0xFF */
@@ -249,15 +253,18 @@ static void ceremony_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap) {
         (void) snprintf(line, sizeof(line), "%.12s", name);
         mdkr_online_screen_text(CER_SCREEN_W_HALF, 138, ASSET_FONTS_BIGFONT, line,
                       ALIGN_MIDDLE_CENTER, 255, 224, 96);
-        (void) snprintf(line, sizeof(line), "CUP CHAMPION%s",
+        (void) snprintf(line, sizeof(line), "%s%s",
+                        sCer.single ? "RACE WINNER" : "CUP CHAMPION",
                         sCer.champLocal ? " - YOU!" : "");
         mdkr_online_screen_text(CER_SCREEN_W_HALF, 158, ASSET_FONTS_SMALLFONT, line,
                       ALIGN_MIDDLE_CENTER, 255, 255, 255);
         /* Points: the FUNFONT total is no longer an orphan number -- pair it with
          * a SMALLFONT "POINTS" caption (the runner rows read as "PLACE name pts",
          * so the lone champion figure needs the same "these are points" cue). The
-         * FUNFONT figure + the caption are centred as one unit via get_text_width. */
-        {
+         * FUNFONT figure + the caption are centred as one unit via get_text_width.
+         * A SINGLE race has no cup total (points are structurally 0), so the
+         * figure is dropped there -- a "0 POINTS" crown would read as broken. */
+        if (!sCer.single) {
             s32 numW, lblW, leftX;
             (void) snprintf(line, sizeof(line), "%u", (unsigned) sCer.champPoints);
             numW = get_text_width(line, 0, ASSET_FONTS_FUNFONT);
@@ -269,7 +276,9 @@ static void ceremony_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap) {
                           "POINTS", ALIGN_MIDDLE_LEFT, 210, 210, 210);
         }
     } else {
-        mdkr_online_screen_text(CER_SCREEN_W_HALF, 120, ASSET_FONTS_BIGFONT, "CUP COMPLETE",
+        mdkr_online_screen_text(CER_SCREEN_W_HALF, 120, ASSET_FONTS_BIGFONT,
+                      sCer.single ? (char *) "RACE COMPLETE"
+                                  : (char *) "CUP COMPLETE",
                       ALIGN_MIDDLE_CENTER, 255, 224, 96);
     }
 
@@ -280,9 +289,16 @@ static void ceremony_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap) {
     for (i = 1u; i < sCer.st.count && i < 3u; i++) {
         unsigned slot = sCer.st.order[i];
         mdkr_online_screen_seat_name(snap, haveSnap, slot, name, sizeof(name));
-        (void) snprintf(line, sizeof(line), "%s  %.10s  %u",
-                        (i < 8u) ? gRacePlacementsArray[i] : "-", name,
-                        (unsigned) sCer.st.points[i]);
+        if (sCer.single) {
+            /* single race: place + name only (a zero points column would read
+             * as broken -- there is no cup total to show). */
+            (void) snprintf(line, sizeof(line), "%s  %.10s",
+                            (i < 8u) ? gRacePlacementsArray[i] : "-", name);
+        } else {
+            (void) snprintf(line, sizeof(line), "%s  %.10s  %u",
+                            (i < 8u) ? gRacePlacementsArray[i] : "-", name,
+                            (unsigned) sCer.st.points[i]);
+        }
         mdkr_online_screen_text(CER_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT, line,
                       ALIGN_MIDDLE_CENTER, 200, 200, 200);
         rowY += 12;
@@ -338,6 +354,14 @@ void mdkr_online_ceremony_enter(const MdkrOnlineStandings *finalRanking) {
      * champLocal / host affordance either way. */
     haveSnap = ceremony_read_snapshot(&snap);
     localSeat = haveSnap ? mdkr_online_screen_local_seat(&snap) : -1;
+    /* SINGLE-race copy gate: read the mode once at enter. The REMATCH wrap that
+     * preceded this ceremony never touches the mode (lobby_core.c), so the
+     * post-wrap snapshot still names the raced mode; a feed-less endpoint keeps
+     * the historical tournament copy. */
+    sCer.single = (haveSnap &&
+                   snap.mode == (uint8_t) MDKR_ONLINE_SCREEN_MODE_SINGLE)
+                      ? 1u
+                      : 0u;
 
     /* Prefer the ranking the session CAPTURED at the final standings while BOTH
      * seats were present (the SAME sort the STANDINGS screen ran, so the two

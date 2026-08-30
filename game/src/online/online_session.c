@@ -192,16 +192,22 @@ typedef struct MdkrOnlineSessionState {
      * ceremony re-crown the surviving joiner from a 1-seat live snapshot. */
     MdkrOnlineStandings finalRanking;
     u8 finalRankingCaptured;
-    /* the FOURTH single-endpoint descriptor-less wait: the final-FINISH
-     * WRAP hold. Once the host commits FINISH at the tournament final, the
-     * chooser republishes the REMATCH wrap intent and holds STAY until the room
-     * leaves RESULTS -- over a real WAN a link drop there would park the host in
-     * the chooser forever. Set when the committed FINISH hold is first observed;
-     * arms a FRESH wall-clock deadline at that moment (the host's interactive
-     * deliberation before the commit must never be bounded), after which the
-     * shared watchdog bounds only the post-commit convergence and surfaces a
-     * genuine ERROR (never a fake FINISHED). Single-endpoint only. */
+    /* the FOURTH single-endpoint descriptor-less wait: the committed-FINISH
+     * WRAP hold (tournament final AND the single-race chooser). Once the host
+     * commits FINISH, the chooser republishes the REMATCH wrap intent and holds
+     * STAY until the room leaves RESULTS -- over a real WAN a link drop there
+     * would park the host in the chooser forever. Set when the committed FINISH
+     * hold is first observed; arms a FRESH wall-clock deadline at that moment
+     * (the host's interactive deliberation before the commit must never be
+     * bounded), after which the shared watchdog bounds only the post-commit
+     * convergence and surfaces a genuine ERROR (never a fake FINISHED).
+     * Single-endpoint only. */
     u8 finishWrapHoldArmed;
+    /* the committed FINISH was the SINGLE-RACE wrap (chooser mode SINGLE): the
+     * CEREMONY/FINISHED witnesses name the single-race road truthfully instead
+     * of "final standings" (which a single race never shows). Latched at the
+     * LEAVE routing, read by the CEREMONY case's FINISHED note. */
+    u8 ceremonySingle;
 } MdkrOnlineSessionState;
 
 /* Session-owned state -- deliberately NOT any offline global. */
@@ -1535,6 +1541,15 @@ void mdkr_online_session_tick(s32 updateRate) {
              * (defensive -- it is normally cleared when the prior re-cycle left
              * LOBBY) so this terminal's chooser choice, not the last one, decides. */
             sOnlineSession.replayAutoStart = 0u;
+            /* Drop the PREVIOUS race's ranking latch too. Single-race sessions
+             * capture at EVERY race (each single race is its own decision point),
+             * so without this a race-N wrap landing before race N's first
+             * RESULTS-phase capture tick would hand the ceremony race N-1's STALE
+             * table (captured=1 from the previous race) and silently crown the
+             * wrong winner -- the ceremony's refusal only guards the UNCAPTURED
+             * window. A tournament captures only at its final, where this clear
+             * is a no-op. */
+            sOnlineSession.finalRankingCaptured = 0u;
             /* LIVE residency: FREE the just-finished race level NOW, on
              * RESULTS entry, before showing the screen. Unlike the scripted soak
              * (a transport-less autopilot race, harmless to keep loaded), a LIVE
@@ -1591,28 +1606,36 @@ void mdkr_online_session_tick(s32 updateRate) {
             online_session_descless_wallclock_arm();
         }
         r = mdkr_online_results_tick(updateRate);
-        /* while the FINAL standings are shown with BOTH seats still present,
+        /* while a SESSION DECISION POINT is shown with BOTH seats still present,
          * (re)capture the COMPLETE ranking with the SAME shared sort the STANDINGS
-         * render runs (DRY). The champion CEREMONY celebrates THIS captured winner
-         * rather than recomputing from a live snapshot that may have lost the host
-         * seat to a genuine disconnect during the ~10s dwell -- so a departed host
-         * can never re-crown the surviving (possibly losing) joiner from a 1-seat
-         * snapshot. Recomputing each 2-seat tick is cheap and always keeps the
-         * freshest last-known-good ordering; the LAST such capture (both present)
-         * is what the RESULTS->CEREMONY transition below hands to the ceremony. */
-        if (sOnlineSession.resultsIsFinal) {
+         * render runs (DRY). Two decision points capture: the tournament FINAL
+         * standings (resultsIsFinal) and EVERY single-race RESULTS (each single
+         * race fronts its own chooser whose FINISH ceremonies from this latch --
+         * points are structurally 0 there, so the shared sort ranks by this
+         * race's placements). The champion CEREMONY celebrates THIS captured
+         * winner rather than recomputing from a live snapshot that may have lost
+         * the host seat to a genuine disconnect during the dwell -- so a departed
+         * host can never re-crown the surviving (possibly losing) joiner from a
+         * 1-seat snapshot. Recomputing each 2-seat tick is cheap and always keeps
+         * the freshest last-known-good ordering; the LAST such capture (both
+         * present) is what the RESULTS->CEREMONY transition below hands to the
+         * ceremony. */
+        {
             MdkrPartyLinkSnapshot fsnap;
             /* phase gate: capture ONLY while the room is still authoritatively
-             * in RESULTS. The final FINISH now dispatches the REMATCH wrap
-             * (RESULTS -> LOBBY + reset_tournament_series) BEFORE the screen
-             * returns LEAVE, so on the convergence tick the live snapshot
-             * already carries the ZEROED fresh-series points -- an ungated
-             * recapture here would overwrite the true final ranking with an
-             * all-zero table one tick before the ceremony reads it (crowning by
-             * seat order). Both seats remain present across the wrap, so the
-             * seat-presence checks alone cannot stop that. */
+             * in RESULTS. A committed FINISH now dispatches the REMATCH wrap
+             * (RESULTS -> LOBBY; at the tournament final also
+             * reset_tournament_series, in single-race a placement clear) BEFORE
+             * the screen returns LEAVE, so on the convergence tick the live
+             * snapshot already carries the WRAPPED table -- an ungated recapture
+             * here would overwrite the true ranking with it one tick before the
+             * ceremony reads it (crowning by seat order). Both seats remain
+             * present across the wrap, so the seat-presence checks alone cannot
+             * stop that. */
             if (mdkr_party_link_read(&fsnap) &&
                 fsnap.phase == (uint8_t) MDKR_ONLINE_SESSION_RESULTS_PHASE &&
+                (sOnlineSession.resultsIsFinal ||
+                 fsnap.mode == (uint8_t) MDKR_PARTY_LINK_MODE_SINGLE) &&
                 online_session_snapshot_has_local_seat(&fsnap) &&
                 online_session_snapshot_has_remote_seat(&fsnap)) {
                 MdkrOnlineStandings ranked;
@@ -1624,36 +1647,53 @@ void mdkr_online_session_tick(s32 updateRate) {
             }
         }
         /* bound the RESULTS hold. The results screen returns STAY
-         * during both its countdown and the post-commit REMATCH-convergence hold; the
-         * wall-clock deadline (armed at enter) covers both. On a non-final race a wedge
-         * after PUBLISH_RESULTS (REMATCH never lands) trips it -> route to a clean
-         * ERROR exit rather than a silent RESULTS hang. The final STANDINGS
-         * legitimately hold (resultsIsFinal), so do NOT bound that -- only a non-final
-         * race is waiting for the next round. Single-endpoint only. */
+         * during its countdown and the post-commit REMATCH-convergence hold; the
+         * wall-clock deadline (armed at enter) covers both. On a non-final race a
+         * wedge after PUBLISH_RESULTS (REMATCH never lands) trips it -> route to
+         * a clean ERROR exit rather than a silent RESULTS hang. The final
+         * STANDINGS legitimately hold (resultsIsFinal), so do NOT bound that.
+         * The SINGLE-RACE chooser DECISION POINT (fronted, undecided) holds
+         * interactively too -- the host may deliberate forever and the joiner
+         * mirror deliberately waits on the host (its own exits: the observed
+         * wrap, a vanished host, a confirmed B) -- so it gets the SAME unbounded
+         * discipline the final standings get; each deciding tick REFRESHES the
+         * wall-clock budget so a later committed choice still gets its full
+         * convergence window (the deadline is wall-clock, so merely skipping the
+         * watchdog would let the deliberation eat the commit's budget). A
+         * committed non-FINISH choice (deciding false) is a genuine convergence
+         * hold and stays bounded; a committed FINISH takes its own wrap hold
+         * below. Single-endpoint only. */
         if (sOnlineSession.singleEndpoint && !sOnlineSession.resultsIsFinal &&
-            r == MDKR_ONLINE_RESULTS_STAY &&
-            online_session_descless_watchdog_tick("results rematch-hold")) {
-            break;
+            r == MDKR_ONLINE_RESULTS_STAY) {
+            if (mdkr_online_results_chooser_deciding()) {
+                online_session_descless_wallclock_arm();
+            } else if (mdkr_online_results_choice() !=
+                           MDKR_ONLINE_RESULTS_CHOICE_FINISH &&
+                       online_session_descless_watchdog_tick(
+                           "results rematch-hold")) {
+                break;
+            }
         }
-        /* the final-FINISH WRAP hold gets its own bound. The FINAL
-         * standings themselves legitimately hold un-bounded (the host may
-         * deliberate the chooser forever, and the joiner mirror deliberately
-         * waits on the host) -- but once the HOST has COMMITTED FINISH the
+        /* the committed-FINISH WRAP hold gets its own bound (tournament final
+         * AND the single-race chooser). The decision point itself legitimately
+         * holds un-bounded (above) -- but once the HOST has COMMITTED FINISH the
          * screen is only waiting for its own REMATCH wrap to land, and a WAN
          * drop there must surface as a bounded ERROR, not a silent park. Arm a
          * FRESH wall-clock budget on the first committed-FINISH STAY tick (the
          * pre-commit deliberation is never counted), then run the shared
-         * watchdog. Single-endpoint only; the loopback lanes converge the wrap
-         * synchronously and never accumulate this hold. */
-        if (sOnlineSession.singleEndpoint && sOnlineSession.resultsIsFinal &&
-            r == MDKR_ONLINE_RESULTS_STAY &&
+         * watchdog. A STAY with the FINISH choice latched happens ONLY on the
+         * wrap roads (the excluded direct-leave shapes return LEAVE on the
+         * commit tick), so no resultsIsFinal gate is needed. Single-endpoint
+         * only; the loopback lanes converge the wrap synchronously and never
+         * accumulate this hold. */
+        if (sOnlineSession.singleEndpoint && r == MDKR_ONLINE_RESULTS_STAY &&
             mdkr_online_results_choice() == MDKR_ONLINE_RESULTS_CHOICE_FINISH) {
             if (!sOnlineSession.finishWrapHoldArmed) {
                 sOnlineSession.finishWrapHoldArmed = 1u;
                 sOnlineSession.desclessWaitDeadlineNs = 0u;
                 online_session_descless_wallclock_arm();
             } else if (online_session_descless_watchdog_tick(
-                           "final FINISH wrap-hold")) {
+                           "FINISH wrap-hold")) {
                 break;
             }
         }
@@ -1798,21 +1838,26 @@ void mdkr_online_session_tick(s32 updateRate) {
         } else if (r == MDKR_ONLINE_RESULTS_LEAVE) {
             /* engine->launcher FINISH/RETURN handshake. The results screen
              * returns LEAVE for the host's
-             * "A: FINISH" on the FINAL standings (resultsIsFinal) or a non-final
-             * B-back. Free the screen assets, note the reason, and request the
-             * clean platform exit so the launcher reads the reason + resumes the
-             * Online Room. */
+             * "A: FINISH" on the FINAL standings (resultsIsFinal), the converged
+             * SINGLE-RACE chooser FINISH wrap (resultsIsFinal is 0 there -- a
+             * single race is never the feed-final -- so the screen's own latched
+             * verdict routes it), or a non-final B-back. Free the screen assets,
+             * note the reason, and request the clean platform exit so the
+             * launcher reads the reason + resumes the Online Room. */
+            u8 singleFinish = mdkr_online_results_single_finish();
             mdkr_online_results_exit();
-            if (sOnlineSession.resultsIsFinal) {
-                /* DETOUR: the tournament is over, so instead of the FINISHED
-                 * handshake firing HERE, run the native champion CEREMONY first.
+            if (sOnlineSession.resultsIsFinal || singleFinish) {
+                /* DETOUR: the match is over (the tournament's final standings,
+                 * or a single race whose host chose FINISH), so instead of the
+                 * FINISHED handshake firing HERE, run the native CEREMONY first.
                  * The FINISHED note + platform_request_exit(0) below moved INTACT
                  * into the CEREMONY case, so it still fires EXACTLY ONCE (with the
                  * same reason/result the launcher reads) once the celebration ends.
                  * The ceremony crowns the ranking CAPTURED above (the SAME shared
-                 * sort the final STANDINGS showed, while both seats were present),
-                 * so its champion agrees with the standings even if the winner's
-                 * seat then departs. */
+                 * sort the standings/results showed, while both seats were
+                 * present), so its champion agrees with that screen even if the
+                 * winner's seat then departs. */
+                sOnlineSession.ceremonySingle = singleFinish;
                 sOnlineSession.phase = MDKR_ONLINE_SESSION_CEREMONY;
                 /* hand the ceremony the ranking captured while both seats
                  * were present. If nothing was captured (a disconnect so early the
@@ -1830,10 +1875,17 @@ void mdkr_online_session_tick(s32 updateRate) {
                      !online_session_ceremony_uncaptured_seam())
                         ? &sOnlineSession.finalRanking
                         : NULL);
-                fprintf(stderr,
-                        "[online-session] phase=CEREMONY: final standings A:FINISH "
-                        "-> champion celebration (FINISHED deferred until it "
-                        "ends)\n");
+                /* Mode-truthful witness: the tournament line is byte-identical
+                 * to the pre-existing one (lanes pin it); the single-race road
+                 * names itself (a single race has no "final standings"). */
+                fprintf(stderr, "%s",
+                        singleFinish
+                            ? "[online-session] phase=CEREMONY: single-race "
+                              "FINISH -> race-winner celebration (FINISHED "
+                              "deferred until it ends)\n"
+                            : "[online-session] phase=CEREMONY: final standings "
+                              "A:FINISH -> champion celebration (FINISHED "
+                              "deferred until it ends)\n");
             } else {
                 /* Non-final local back-out = a mid-tournament LEFT. (The scripted
                  * resident lanes never press B, so this fires only for a live
@@ -1861,9 +1913,14 @@ void mdkr_online_session_tick(s32 updateRate) {
             mdkr_online_ceremony_exit();
             mdkr_party_link_note_session_end(
                 MDKR_PARTY_LINK_SESSION_END_FINISHED);
-            fprintf(stderr,
-                    "[online-session] FINISHED: final standings A:FINISH -> "
-                    "return to room (exit 0)\n");
+            /* Mode-truthful witness (see the CEREMONY-enter note above): the
+             * tournament line stays byte-identical for the lanes that pin it. */
+            fprintf(stderr, "%s",
+                    sOnlineSession.ceremonySingle
+                        ? "[online-session] FINISHED: single-race FINISH -> "
+                          "return to room (exit 0)\n"
+                        : "[online-session] FINISHED: final standings A:FINISH -> "
+                          "return to room (exit 0)\n");
             platform_request_exit(0);
         }
         break;

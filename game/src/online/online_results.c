@@ -214,6 +214,11 @@ typedef struct MdkrOnlineResultsState {
     /* "more races" chooser (host-driven; joiner mirror). */
     u8 chooserEnabled;   /* the chooser arms at the session decision point */
     u8 chooserMode;      /* forward-feed mode cached at chooser entry (option list) */
+    u8 chooserFeed;      /* a forward-feed snapshot was PRESENT at chooser entry.
+                          * The FINISH wrap requires an observable room to converge
+                          * against; a feed-less legacy boot (chooserMode reads
+                          * SINGLE there too) keeps the historical direct leave,
+                          * else its convergence hold could never end. */
     u8 chooserCursor;    /* the host's highlighted option index */
     u8 chooserCount;     /* number of options in the current mode's list */
     u8 chooserPrevCursor;/* last cursor drawn (nav SFX edge) */
@@ -1037,38 +1042,49 @@ static MdkrOnlineResultsResult results_chooser_tick(const MdkrPartyLinkSnapshot 
         }
         sound_play(RES_SFX_ADVANCE, NULL);
         if (choice == (u8) MDKR_ONLINE_RESULTS_CHOICE_FINISH) {
-            /* The tournament-final FINISH must be REDUCER-OBSERVABLE. A second
-             * REAL peer's chooser mirror can only observe reducer STATE, and its
-             * only exits are room-left-RESULTS and vanished-host; a purely local
-             * FINISH leave (the pre-fix behavior) parked the room in RESULTS with
-             * the host still seated (the FINISHED re-arm keeps the host in the
-             * room for the re-take), so a real joiner was stranded forever. At a
-             * GENUINE tournament final -- the ENTRY-LATCHED last cup round --
-             * commit the EXISTING leader-only REMATCH wrap first (lobby_core.c:
-             * RESULTS -> LOBBY + reset_tournament_series, i.e. a fresh series in
-             * the same room), republished to convergence exactly like every
-             * other chooser option, and only LEAVE once the room has left
-             * RESULTS. The ceremony then renders from the ranking the session
-             * LATCHED while the phase was still RESULTS (online_session.c),
-             * never from the wrapped points. Every NON-final FINISH (a single
-             * race, or an env-shortened resident soak whose feed is mid-cup --
-             * sRes.raceIndex is the session's own 0-based round, so an env-final
-             * at reducer round 0/1 stays excluded) keeps the historical direct
-             * LEAVE -- dispatching a mid-cup REMATCH there would advance a
-             * series the room is still playing.
+            /* A FINISH at a SESSION DECISION POINT must be REDUCER-OBSERVABLE. A
+             * second REAL peer's chooser mirror can only observe reducer STATE,
+             * and its only exits are room-left-RESULTS and vanished-host; a
+             * purely local FINISH leave (the pre-fix behavior) parked the room in
+             * RESULTS with the host still seated (the FINISHED re-arm keeps the
+             * host in the room for the re-take), so a real joiner was stranded
+             * and the room could never return to SELECTING for a re-take. The
+             * fix is the EXISTING leader-only REMATCH wrap (no new reducer
+             * command), committed first and republished to convergence exactly
+             * like every other chooser option; LEAVE only once the room has left
+             * RESULTS. Two decision points wrap:
+             *   - the GENUINE tournament final (the ENTRY-LATCHED last cup
+             *     round): lobby_core.c REMATCH there runs RESULTS -> LOBBY +
+             *     reset_tournament_series -- a fresh series in the same room;
+             *   - EVERY single-race chooser (each single race is its own
+             *     decision point): single-race REMATCH is PHASE-ONLY --
+             *     RESULTS -> LOBBY + placements/votes cleared, race_index,
+             *     points, mode and configured_track untouched (lobby_core.c) --
+             *     so there is no series to wrongly advance.
+             * The ceremony then renders from the ranking the session LATCHED
+             * while the phase was still RESULTS (online_session.c), never from
+             * the wrapped table. The direct LEAVE remains for exactly two
+             * shapes: an env-shortened resident soak whose feed is MID-CUP
+             * (sRes.raceIndex is the session's own 0-based round, so an
+             * env-final at reducer round 0/1 stays excluded -- a mid-cup REMATCH
+             * would advance a series the room is still playing) and a FEED-LESS
+             * legacy boot (chooserFeed 0 -- no room to observe, so a wrap hold
+             * could never converge).
              *
              * The gate reads ONLY entry-latched state (isFinal / chooserMode /
-             * raceIndex, all fixed at mdkr_online_results_enter): a live
+             * raceIndex / chooserFeed, all fixed at enter/front): a live
              * snapshot read here could transiently fail on the commit tick, and
              * a haveSnap-gated wrap would then silently take the purely-local
-             * leave at a genuine final -- re-opening the exact strand this
-             * exists to close. */
-            u8 finalWrap = (sRes.isFinal &&
-                            sRes.chooserMode == (u8) MDKR_ONLINE_SCREEN_MODE_TOURNAMENT &&
-                            (u32) sRes.raceIndex + 1u >= RES_CUP_ROUNDS)
-                               ? 1u
-                               : 0u;
-            if (!finalWrap) {
+             * leave at a genuine decision point -- re-opening the exact strand
+             * this exists to close. */
+            u8 finishWrap = ((sRes.isFinal &&
+                              sRes.chooserMode == (u8) MDKR_ONLINE_SCREEN_MODE_TOURNAMENT &&
+                              (u32) sRes.raceIndex + 1u >= RES_CUP_ROUNDS) ||
+                             (sRes.chooserMode == (u8) MDKR_ONLINE_SCREEN_MODE_SINGLE &&
+                              sRes.chooserFeed))
+                                ? 1u
+                                : 0u;
+            if (!finishWrap) {
                 fprintf(stderr,
                         "[online-results] chooser: committed option=FINISH -> "
                         "LEAVE\n");
@@ -1141,6 +1157,15 @@ static MdkrOnlineResultsResult results_chooser_tick(const MdkrPartyLinkSnapshot 
                         "final wrap -> LEAVE (ceremony)\n");
                 return MDKR_ONLINE_RESULTS_LEAVE;
             }
+            /* The SINGLE-RACE mirror KEEPS THE FOLLOW on the observed wrap --
+             * deliberately NOT the tournament-final ceremony exit. A single-race
+             * wrap is reducer-INDISTINGUISHABLE between the host's FINISH and
+             * RACE AGAIN (both are the same phase-only REMATCH), and ceremonying
+             * on every wrap would tear the joiner's session down on every
+             * replay. The follow lands the joiner in CHARSELECT of the freshly
+             * wrapped room -- exactly where a FINISHing host's automatic
+             * FINISHED re-take arrives, so the two peers re-converge whichever
+             * option the host picked. */
             sRes.chooserChoice = (u8) MDKR_ONLINE_RESULTS_CHOICE_JOINER_FOLLOW;
             fprintf(stderr,
                     "[online-results] chooser: joiner follows host authoritative "
@@ -1299,6 +1324,7 @@ MdkrOnlineResultsResult mdkr_online_results_tick(s32 updateRate) {
             sRes.stageTicks = 0u;
             sRes.chooserMode =
                 (u8) (tournament ? MDKR_ONLINE_SCREEN_MODE_TOURNAMENT : MDKR_ONLINE_SCREEN_MODE_SINGLE);
+            sRes.chooserFeed = haveSnap ? 1u : 0u;
             sRes.chooserCursor = 0u;
             sRes.chooserPrevCursor = 0xFFu;
             sRes.chooserCount = RES_CHOOSER_MAX;
@@ -1911,6 +1937,18 @@ u8 mdkr_online_results_chooser_test_active(void) {
 
 MdkrOnlineResultsChoice mdkr_online_results_choice(void) {
     return (MdkrOnlineResultsChoice) sRes.chooserChoice;
+}
+
+u8 mdkr_online_results_chooser_deciding(void) {
+    return (sRes.stage == RES_STAGE_CHOOSER && !sRes.chooserCommitted) ? 1u : 0u;
+}
+
+u8 mdkr_online_results_single_finish(void) {
+    return (sRes.chooserChoice == (u8) MDKR_ONLINE_RESULTS_CHOICE_FINISH &&
+            sRes.chooserMode == (u8) MDKR_ONLINE_SCREEN_MODE_SINGLE &&
+            sRes.chooserFeed)
+               ? 1u
+               : 0u;
 }
 
 #endif /* MDKR_ENABLE_ONLINE_BETA */

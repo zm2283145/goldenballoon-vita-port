@@ -27,6 +27,16 @@ for "Race Again":
     the room to LOBBY; the engine's per-round re-wait mid-cancel unwind notes LEFT +
     exits(0) -- a CLEAN return to the room (no hang, no abort, no re-arm, no extra
     boot). This is the crash-fix guarantee, inherited by the single-race re-cycle.
+  - FINISH (the two-real-peer strand): the host's single-race FINISH must be
+    REDUCER-OBSERVABLE, exactly like the tournament-final wrap. The chooser
+    commits the REMATCH wrap (rematch, no SET_MODE -- phase-only in single-race:
+    lobby_core.c returns the room RESULTS -> LOBBY and clears placements/votes),
+    LEAVEs only once the REAL loopback reducer's room has left RESULTS (the
+    launcher coordinator witnesses the phase return), and ends via the race-winner
+    CEREMONY -> the single FINISHED handshake (reason=FINISHED, never LEFT). The
+    pre-fix purely-local leave (LEFT, no reducer command) parked the room in
+    RESULTS forever: a real joiner's mirror never saw the room leave RESULTS and
+    the room could never return to SELECTING for a re-take.
 
 Two loopback adapters stand in for the two processes (single-endpoint mode: the
 LOCAL/host endpoint runs the native screens; a remote-sim drives peer B); the
@@ -79,6 +89,30 @@ MID_UNWIND_RE = re.compile(
     r"during the per-round re-wait", re.MULTILINE)
 WEDGE_CANCEL_RE = re.compile(
     r"^\[online-resident-live\] WEDGE single-race re-cycle cancel:", re.MULTILINE)
+# The single-race FINISH wrap (the reducer-observable finish): the commit carries
+# the same REMATCH intent every replay option publishes, and the LEAVE is deferred
+# until the room has genuinely left RESULTS.
+WRAP_COMMIT_RE = re.compile(
+    r"^\[online-results\] chooser: committed option=FINISH choice=7 "
+    r"intent\{rematch=1 mode=255\}$", re.MULTILINE)
+WRAP_CONVERGED_RE = re.compile(
+    r"^\[online-results\] chooser: FINISH wrap converged \(room left RESULTS\) "
+    r"-> LEAVE \(ceremony\)$", re.MULTILINE)
+# The pre-fix purely-local FINISH leave (no reducer command) -- must NOT appear.
+DIRECT_FINISH_RE = re.compile(
+    r"^\[online-results\] chooser: committed option=FINISH -> LEAVE$",
+    re.MULTILINE)
+# The single-race FINISH ends through the race-winner ceremony into FINISHED.
+CEREMONY_SINGLE_RE = re.compile(
+    r"^\[online-session\] phase=CEREMONY: single-race FINISH", re.MULTILINE)
+FINISHED_SINGLE_RE = re.compile(
+    r"^\[online-session\] FINISHED: single-race FINISH", re.MULTILINE)
+# The ceremony crowned a champion (seat != 255) from the latched single-race
+# ranking: a single race has no cup points, so the crown carries points=0 with
+# both seats present -- the refusal path would show seat=255 instead.
+CEREMONY_CROWN_RE = re.compile(
+    r"^\[online-ceremony\] enter: champion seat=(\d+) name=\S+ points=(\d+) "
+    r"seats=(\d+) local=(\d+)", re.MULTILINE)
 
 fail = make_fail("single-race replay")
 
@@ -195,6 +229,85 @@ def check_race_again(binary: Path, rom: Path, verbose: bool) -> int | None:
     return None
 
 
+def check_finish(binary: Path, rom: Path, verbose: bool) -> int | None:
+    """race 1 -> MORE RACES -> FINISH: the host's single-race FINISH is
+    REDUCER-OBSERVABLE (the two-real-peer strand fix). The chooser commits the
+    REMATCH wrap and LEAVEs only once the REAL loopback reducer's room left
+    RESULTS (the launcher coordinator witnesses the phase return -- the room is
+    back in the SELECTING window a joiner's mirror / the FINISHED re-take needs);
+    the session then ends via the race-winner CEREMONY (crowned from the ranking
+    latched while the phase was still RESULTS -- points=0, a single race has no
+    cup total) into exactly one FINISHED (reason=FINISHED result=0, never LEFT).
+    RED at the pre-fix build: the FINISH took the purely-local leave (no reducer
+    command, reason=LEFT) and the room stayed parked in RESULTS forever."""
+    tag = "finish"
+    env = _base_env("single:5")  # single:5 == FINISH (index 5 in both modes)
+    env["MDKR_ONLINE_SESSION_DESCLESS_WAIT_DEADLINE_MS"] = "600000"
+    try:
+        rc, out = run_engine(binary, rom, ticks=16000, timeout=400,
+                             verbose=verbose, extra_env=env,
+                             prefix="mdkr64-t5-finish-")
+    except subprocess.TimeoutExpired as error:
+        return fail(f"[{tag}] run HUNG (the FINISH wrap hold must converge on the "
+                    f"loopback reducer): {error}")
+    if rc != 0:
+        return fail(f"[{tag}] process exited {rc} (expected a clean 0)", out)
+    guard = _isolation_ok(tag, out)
+    if guard is not None:
+        return guard
+
+    # Exactly ONE boot: FINISH never re-races.
+    boots = [int(t) for t, _p in DIRECT_BOOT_RE.findall(out)]
+    if boots != [TRACK_RACE1]:
+        return fail(f"[{tag}] expected EXACTLY one boot [{TRACK_RACE1}] (FINISH "
+                    f"ends the session), got {boots}", out)
+    # The wrap commit: FINISH publishes the same REMATCH every replay option does.
+    if not WRAP_COMMIT_RE.search(out):
+        return fail(f"[{tag}] the single-race FINISH did not commit the REMATCH "
+                    f"wrap (no 'committed option=FINISH choice=7 intent{{rematch=1 "
+                    f"mode=255}}') -- a second real peer's mirror could never "
+                    f"observe the finish", out)
+    if DIRECT_FINISH_RE.search(out):
+        return fail(f"[{tag}] the FINISH took the OLD purely-local leave (no "
+                    f"reducer transition) -- the room stays parked in RESULTS and "
+                    f"can never re-take", out)
+    if not WRAP_CONVERGED_RE.search(out):
+        return fail(f"[{tag}] the FINISH wrap never converged (the room never left "
+                    f"RESULTS before the leave)", out)
+    # The LAUNCHER (real loopback reducer) witnessed the phase return -- the room
+    # is genuinely back out of RESULTS, where a mirror follow / re-take can see it.
+    if not SINGLE_REPLAY_RE.search(out):
+        return fail(f"[{tag}] the launcher coordinator never observed the room "
+                    f"leave RESULTS -> LOBBY (the wrap did not land on the real "
+                    f"reducer)", out)
+    # The single-FINISHED flow: race-winner ceremony -> exactly one FINISHED.
+    if not CEREMONY_SINGLE_RE.search(out):
+        return fail(f"[{tag}] the session did not detour into the single-race "
+                    f"race-winner CEREMONY after the wrap", out)
+    crown = CEREMONY_CROWN_RE.search(out)
+    if not crown:
+        return fail(f"[{tag}] no ceremony enter witness", out)
+    if int(crown.group(1)) == 255:
+        return fail(f"[{tag}] the ceremony refused to crown (champion seat=255) -- "
+                    f"the single-race ranking was never latched while the phase "
+                    f"was still RESULTS", out)
+    if int(crown.group(2)) != 0 or int(crown.group(3)) != 2:
+        return fail(f"[{tag}] the crown is not the latched single-race table "
+                    f"(expected points=0 seats=2, saw points={crown.group(2)} "
+                    f"seats={crown.group(3)})", out)
+    if len(FINISHED_SINGLE_RE.findall(out)) != 1:
+        return fail(f"[{tag}] FINISHED did not fire exactly once after the "
+                    f"ceremony", out)
+    ends = SESSION_END_RE.findall(out)
+    if not any(reason == "FINISHED" and code == "0" for reason, code in ends):
+        return fail(f"[{tag}] the launcher never read reason=FINISHED result=0 "
+                    f"(the strand: a single-race FINISH ended as {ends})", out)
+    if any(reason == "LEFT" for reason, _code in ends):
+        return fail(f"[{tag}] the FINISH still ended as LEFT (the purely-local "
+                    f"leave)", out)
+    return None
+
+
 def check_peer_drop(binary: Path, rom: Path, verbose: bool) -> int | None:
     """A peer drop mid re-cycle (leader CANCEL_LOADING) -> the engine UNWINDS to a
     CLEAN LEFT return (exit 0), NO re-arm, NO extra boot, never a hang/abort."""
@@ -245,7 +358,8 @@ def main() -> int:
         if not path.is_file():
             parser.error(f"missing {label}: {path}")
 
-    for scenario in (check_change_track, check_race_again, check_peer_drop):
+    for scenario in (check_change_track, check_race_again, check_finish,
+                     check_peer_drop):
         err = scenario(binary, rom, args.verbose)
         if err is not None:
             return err
@@ -257,7 +371,11 @@ def main() -> int:
         f"auto-starts (LOBBY_WAIT, no human input) straight into a fresh race on the "
         f"SAME track ({TRACK_RACE1} -> {TRACK_RACE1}); the observe-only re-cycle "
         "re-arms the match-input EXACTLY once per chooser commit (exactly two boots, "
-        "no re-boot loop); and a peer drop mid re-cycle (leader CANCEL_LOADING) "
+        "no re-boot loop); FINISH is REDUCER-OBSERVABLE (the REMATCH wrap returns "
+        "the room out of RESULTS on the real loopback reducer before the leave) and "
+        "ends via the race-winner CEREMONY (crowned from the latched single-race "
+        "ranking, points=0) into exactly one FINISHED (reason=FINISHED, never LEFT); "
+        "and a peer drop mid re-cycle (leader CANCEL_LOADING) "
         "UNWINDS to a CLEAN LEFT return (exit 0, no re-arm, no extra boot, never a "
         "hang). gGameMode=2 gCurrentMenuId=0 throughout.")
     return 0
