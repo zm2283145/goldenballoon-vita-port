@@ -643,8 +643,31 @@ struct MdkrMatchPeerMesh::State
             return nullptr;
         }
         const auto found = peers.find(id);
-        if (found == peers.end() || found->second.generation == 0u ||
-            found->second.generation != fromGeneration) {
+        if (found == peers.end() || found->second.generation == 0u) {
+            counters.ignoredStaleSignals++;
+            return nullptr;
+        }
+        /* A STRICTLY NEWER sender generation is the service's own attestation
+         * that the peer's replacement socket is live: from/generation on every
+         * delivered signal event are stamped by the relay from the
+         * authenticated sending socket (match-room injects them; a client
+         * cannot claim either), and generations are service-assigned,
+         * strictly increasing. Adopt it exactly like the presence bump it
+         * proves happened -- because that bump's broadcast is MISSABLE: when
+         * BOTH endpoints blip near-simultaneously, the peer's presence bump
+         * goes out while OUR socket is down, our own re-welcome then lists
+         * the still-reconnecting peer as absent, and every message the peer
+         * re-drives at us arrives under its new generation only to be dropped
+         * here as stale -- the vanish dwell (or, slower, the setup ladders)
+         * then declares a RETURNING peer gone. Not for a peer already
+         * declared lost: past the dwell's expiry the verdict stands and only
+         * the real presence bump re-admits, as before. */
+        if (fromGeneration > found->second.generation && !found->second.lost) {
+            rekeyPeer(found->second, fromGeneration);
+            found->second.present = true;
+            return &found->second;
+        }
+        if (found->second.generation != fromGeneration) {
             counters.ignoredStaleSignals++;
             return nullptr;
         }
@@ -1273,13 +1296,15 @@ struct MdkrMatchPeerMesh::State
              * down. Both facts are transport state; either recovering
              * disarms the dwell (a signal blip with healthy channels never
              * arms it, and a reconnect bump re-admits the peer even after
-             * expiry via rekeyPeer's lost=false). Bounded residual: a
-             * re-welcome that omits a simultaneously-blipping (still
-             * reconnecting) peer marks it absent and starts this clock, so
-             * a peer whose bump lands after expiry is declared lost even
-             * though it may have been returning -- accepted as the bounded
-             * corner (the bump still re-admits the mesh peer; only the
-             * already-latched race end stands). */
+             * expiry via rekeyPeer's lost=false). A double blip -- our own
+             * re-welcome omitting a simultaneously-blipping peer whose bump
+             * broadcast we missed -- is covered by rosterPeer's adoption of
+             * a service-stamped newer sender generation: the returning
+             * peer's re-driven traffic cancels this clock before expiry.
+             * Residual: a reconnected peer that stays completely silent
+             * through the whole dwell is still declared lost at expiry;
+             * its later bump re-admits the mesh peer, only the
+             * already-latched race end stands. */
             if (!peer.present && !peer.channelsReady) {
                 if (peer.vanishedSinceMs == 0u) {
                     peer.vanishedSinceMs = nowMs;
