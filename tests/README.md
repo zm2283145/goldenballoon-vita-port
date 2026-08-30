@@ -1882,6 +1882,30 @@ layer by `test_match_peer_transport.cpp`'s
 (loopback transport) -- the real-transport confirmation is
 `check_online_native_flow_cloud.py --drop mid-race --drop-method kill`.
 
+`check_online_pause_overlay.py` (registered) pins the two-machine PAUSE crash
+fix: pressing START in a live ONLINE race must never stop -- or crash -- the
+networked sim. Pre-fix, mode_game's retail pause branch consumed the CANONICAL
+input of every seat, so any START edge (local or remote, live or replayed by a
+rollback correction) engaged gIsPaused inside the online sim, and a paused sim
+made `mdkr_game_resimulate_tick` refuse every later correction replay
+(`game-tick completion rejected ... paused=1`) which
+`reconcile_network_inputs` escalated to abort() -- the non-pausing beta
+machine died with a crash dialog at the pause tick. Four arms on the
+in-process two-adapter loopback race, using the synthetic-pad button script
+(`MDKR_APP_TEST_ONLINE_SYNTH_PAD_SLOT`/`_SCRIPT`) to drive REAL canonical
+START/D-pad/A edges and `MDKR_APP_TEST_ONLINE_LIVE_PREDICT` to sustain the
+WAN-shaped correction storm: [storm] a remote START inside the storm (the
+exact beta crash shape) reconciles and the race converges to the budget;
+[live] an on-time remote START fires the deterministic suppression witness
+and opens NO local overlay; [leave] a local START opens the non-blocking
+CONTINUE/LEAVE overlay, resumes, reopens, and LEAVE RACE takes the clean
+note-LEFT return (exit 0, zero leaks) while corrections keep reconciling with
+the overlay open (the sim provably never stops); [belt] with the legacy
+engage re-allowed (`MDKR_APP_TEST_ONLINE_ALLOW_RETAIL_PAUSE`, test-only), the
+exact pre-fix abort trigger fires and is routed as `online correction replay
+refused (sim-state; recoverable)` -> clean LEFT -- never abort. **Scope
+class:** engine flow (loopback transport).
+
 `tests/check_lan_controller_assets.py` keeps the local-play controller asset set
 identical across the three places that must never disagree: the C++
 `kControllerAssets` manifest in `lan_party_launch.cpp` that the embedded server

@@ -64,6 +64,11 @@ LANES = (
                                             #  pump + presence drop, the real
                                             #  kill signature) -> bounded typed
                                             #  peer LOST -> latch -> OPPONENT_LEFT
+    "check_online_pause_overlay.py",        # START mid-race online: non-blocking
+                                            #  overlay (sim never stops; remote
+                                            #  START opens nothing; LEAVE -> clean
+                                            #  LEFT) + the paused-replay belt
+                                            #  (refuse recoverable, never abort)
     "check_online_joiner_terminal.py",      # exit-gate C1 no-seam joiner proof
     "check_online_ceremony.py",
     "check_online_lobby_start.py",

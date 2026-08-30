@@ -162,6 +162,80 @@ uint64_t steadyNowMs() {
             .count());
 }
 
+#if MDKR_ENABLE_ONLINE_BETA
+/* TEST-ONLY (beta loopback rigs): override the synthetic fixture's BUTTONS for
+ * ONE canonical slot over scripted authored-tick windows, so a lane can drive
+ * the REAL in-race button paths (a START press = the real pause path) through
+ * the sealed canonical input stream. Env (both required; inert otherwise):
+ *   MDKR_APP_TEST_ONLINE_SYNTH_PAD_SLOT=<canonical slot>
+ *   MDKR_APP_TEST_ONLINE_SYNTH_PAD_SCRIPT="tick[-endtick]:0xNNNN,..."
+ * Within a window the fixture's buttons are REPLACED by the scripted value
+ * (sticks untouched); later entries override earlier ones, so a window can
+ * carve precise edges (e.g. "600-699:0x0,610-699:0x1000" = release everything
+ * at 600, press START at 610 and hold it). Because BOTH in-process endpoints
+ * compute the identical override for the slot, seal-history convergence -- the
+ * transport invariant every loopback lane rests on -- is preserved. */
+struct SynthPadScriptEntry {
+    uint32_t first;
+    uint32_t last;
+    uint16_t buttons;
+};
+
+const std::vector<SynthPadScriptEntry> &synthPadScript(int *slotOut) {
+    static std::vector<SynthPadScriptEntry> entries;
+    static int slot = -1;
+    static bool parsed = false;
+    if (!parsed) {
+        parsed = true;
+        const char *slotEnv =
+            std::getenv("MDKR_APP_TEST_ONLINE_SYNTH_PAD_SLOT");
+        const char *script =
+            std::getenv("MDKR_APP_TEST_ONLINE_SYNTH_PAD_SCRIPT");
+        if (slotEnv != nullptr && script != nullptr) {
+            char *end = nullptr;
+            const long parsedSlot = std::strtol(slotEnv, &end, 10);
+            if (end != slotEnv && parsedSlot >= 0 &&
+                parsedSlot < MDKR_SESSION_MAX_PLAYERS) {
+                slot = static_cast<int>(parsedSlot);
+                const char *cursor = script;
+                while (*cursor != '\0') {
+                    SynthPadScriptEntry entry{};
+                    char *stop = nullptr;
+                    entry.first = static_cast<uint32_t>(
+                        std::strtoul(cursor, &stop, 10));
+                    entry.last = entry.first;
+                    if (stop == cursor) break;
+                    cursor = stop;
+                    if (*cursor == '-') {
+                        ++cursor;
+                        entry.last = static_cast<uint32_t>(
+                            std::strtoul(cursor, &stop, 10));
+                        if (stop == cursor) break;
+                        cursor = stop;
+                    }
+                    if (*cursor != ':') break;
+                    ++cursor;
+                    entry.buttons = static_cast<uint16_t>(
+                        std::strtoul(cursor, &stop, 0));
+                    if (stop == cursor) break;
+                    cursor = stop;
+                    entries.push_back(entry);
+                    if (*cursor == ',') ++cursor;
+                }
+                if (!entries.empty()) {
+                    std::fprintf(stderr,
+                                 "[online-live] TEST: synthetic pad script "
+                                 "armed slot=%d windows=%zu\n",
+                                 slot, entries.size());
+                }
+            }
+        }
+    }
+    *slotOut = slot;
+    return entries;
+}
+#endif
+
 /* Deterministic per-slot input for the O-T6 race. Both endpoints compute the
  * SAME sample for a given (canonical slot, authored tick), so the frame this
  * endpoint seals for a future tick equals the frame the peer later drains for
@@ -187,6 +261,23 @@ MdkrPadSample raceLocalSample(uint8_t canonicalSlot, uint32_t tick) {
     s.stick_x = static_cast<int8_t>(static_cast<int>((h >> 16) % 161u) - 80);
     s.stick_y = static_cast<int8_t>(static_cast<int>((h >> 8) % 161u) - 80);
     s.present = 1u;
+#if MDKR_ENABLE_ONLINE_BETA
+    /* Test-only scripted button override (see synthPadScript above). The LAST
+     * matching window wins, so scripts can layer precise edges. Inert without
+     * the env pair. */
+    {
+        int scriptSlot = -1;
+        const std::vector<SynthPadScriptEntry> &script =
+            synthPadScript(&scriptSlot);
+        if (scriptSlot == static_cast<int>(canonicalSlot)) {
+            for (const SynthPadScriptEntry &entry : script) {
+                if (tick >= entry.first && tick <= entry.last) {
+                    s.buttons = entry.buttons;
+                }
+            }
+        }
+    }
+#endif
     return s;
 }
 
