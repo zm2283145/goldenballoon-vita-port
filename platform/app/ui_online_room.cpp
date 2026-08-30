@@ -834,16 +834,32 @@ void drawBetaChooser(LauncherState &state) {
             ImGui::SetNextItemWidth(ui::kControlWidth());
             // CallbackCharFilter sanitizes both typing AND paste (see
             // betaDigitsOnlyFilter); the 7-byte buffer keeps the first 6 digits.
-            // Transparent text hides the raw digits (and the caret) so only the
-            // grouped overlay below shows.
+            // TWO style pushes make the field visually empty so only the grouped
+            // overlay shows. Transparent ImGuiCol_Text hides the raw digits.
+            // Transparent ImGuiCol_InputTextCursor hides the caret: in this ImGui
+            // (1.92) the caret is a SEPARATE color slot -- imgui_widgets.cpp
+            // draws it with ImGuiCol_InputTextCursor, NOT ImGuiCol_Text -- and
+            // the app theme never sets that slot, so it would otherwise default
+            // to opaque white and blink against the field's UNGROUPED raw text,
+            // one group-space left of the overlay boundary after the third digit.
+            // The grouped overlay's dot placeholders already communicate the
+            // entry position, so the caret adds nothing.
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+            ImGui::PushStyleColor(ImGuiCol_InputTextCursor,
+                                  ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
             ImGui::InputText("##beta-join-code", g_online.betaJoinCode,
                              sizeof(g_online.betaJoinCode),
                              ImGuiInputTextFlags_CallbackCharFilter,
                              betaDigitsOnlyFilter);
-            ImGui::PopStyleColor();
+            ImGui::PopStyleColor(2);
             // Paint the grouped code over the (transparent) field text. AddText
-            // and CalcTextSize both read the pushed title font.
+            // and CalcTextSize both read the pushed title font. Bounded-by-design
+            // divergence: a click hit-tests against the field's UNGROUPED raw
+            // text (the group space is overlay-only, absent from the buffer), and
+            // this overlay does not track the field's horizontal scroll. Both are
+            // harmless here because six digits in the title font never overflow
+            // the fixed-width field -- it never scrolls, and the caret column and
+            // each drawn glyph stay within a group-space of where a click lands.
             {
                 const std::size_t shown = std::strlen(g_online.betaJoinCode);
                 ImDrawList *draw = ImGui::GetWindowDrawList();
@@ -1920,7 +1936,9 @@ void drawBetaResultsHandoff(const MdkrOnlineViewModel &model,
 // card). The RESULTS surface keeps a SINGLE heading -- the section title -- with no
 // subtitle, since the strip line already states the outcome; stacking a subtitle
 // like "The trophy is decided." repeated a third same-meaning header. Every other
-// kind keeps its view-model title (animated "…") + explanation.
+// kind renders its view-model title -- with any trailing in-progress ellipsis
+// stripped so it reads as a clean heading (the waiting motion stays in the status
+// strip above, which animates its own ellipsis) -- plus its explanation.
 void drawBetaSectionHeader(const MdkrOnlineViewModel &model) {
     if (model.kind == MDKR_ONLINE_VIEW_SELECTING) {
         ui::SectionHeader(

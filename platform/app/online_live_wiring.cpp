@@ -944,11 +944,13 @@ bool OnlineRoom_roomReadyTakeoverEngaged(void) {
      * and a boot is pending; false once a LEFT/ERROR return has left the latch
      * SET with nothing pending -- the intended no-re-boot-loop state, in which
      * the takeover will NEVER re-fire in this room on its own (the launcher's
-     * re-entry gesture re-arms it). The interactive re-entry/re-arm bookkeeping
-     * (main_app.cpp) reads this to tell "still engaged" from "waiting on a
-     * re-entry press"; the SELECTING body itself no longer gates on it -- it
-     * always draws the hand-off card (forward) or the re-entry card, so there is
-     * no editable fallback left for it to keep honest. `!sRoomReadyLatched` means
+     * re-entry gesture re-arms it). Its only readers are the headless autoplay
+     * probes in runAutoplay (main_app.cpp), which sample it to distinguish "still
+     * engaged" from "waiting on a re-entry press" while witnessing the FINISHED
+     * re-take and the LEFT/ERROR re-entry sequences; no production launcher path
+     * reads it, and the SELECTING body does not gate on it -- the body always
+     * draws the hand-off card (forward) or the re-entry card, so there is no
+     * editable fallback left for it to keep honest. `!sRoomReadyLatched` means
      * the SELECTING-branch poll (run BEFORE the body each frame) will fire this
      * frame; `sRoomReady.pending != nullptr` means it just fired and the launcher
      * has not yet consumed + booted. */
