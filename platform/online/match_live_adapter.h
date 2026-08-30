@@ -519,6 +519,13 @@ bool mdkr_online_live_adapter_test_reverify_clears_peer_loss(bool via_abort);
  * instead of the presence-drop vanish path. Used by the mid-race transport-
  * loss lane's lingering-presence arm; never called by the launcher. */
 bool mdkr_online_live_adapter_test_kill_peer_channels(IMdkrOnlineAdapter *adapter);
+/* Pin the RETRY tiers (see the kMdkrOnlineLiveStepRetryRebuild contract):
+ * drives apply(RETRY) on a mesh-free adapter staged per `tier` (0 pre-Ready
+ * failure / 1 pre-Ready nothing / 2 pre-Ready timeout / 3 live-room failure /
+ * 4 preflight timeout) and returns the step note, reporting acceptance via
+ * *accepted. Never called by the launcher. */
+uint32_t mdkr_online_live_adapter_test_retry_step(unsigned tier,
+                                                  bool *accepted);
 #endif
 
 /* Seal + fan out the race's OPENING input window (firstTick..firstTick+
@@ -543,6 +550,25 @@ bool mdkr_online_live_adapter_race_prime_start(IMdkrOnlineAdapter *adapter);
  * nonzero error, so the sentinel cannot collide with the 1..4 refusal codes
  * (those arrive only with accepted == false). */
 inline constexpr uint32_t kMdkrOnlineLiveStepEnterAnotherCode = 100u;
+
+/* ---- RETRY rebuild step contract ---------------------------------------- *
+ *
+ * A RETRY dispatched BEFORE the room ever reached Ready (the create/join
+ * round trip failed or stalled: the HTTP worker has already exited, or is
+ * wedged) cannot re-attempt in place -- the room transport begins exactly
+ * once per adapter, so the old behavior (clear failure_, return true) only
+ * re-fronted the spinner over a dead transport: a "Try Again" that never
+ * tried. submit(MDKR_ONLINE_VIEW_ACTION_RETRY) in that pre-Ready state now
+ * mirrors the ENTER_ANOTHER_CODE contract: reset the session to HOME, clear
+ * lobby/failure state, and return accepted == true with step.error ==
+ * kMdkrOnlineLiveStepRetryRebuild. The panel keys on THAT step value: destroy
+ * this adapter and construct a fresh one on the SAME journey (create again,
+ * or join again with the same 6-digit code) -- the room's own create/join
+ * path IS the retry. A RETRY on a live room (Ready reached) keeps the
+ * original clear-and-recover behavior, except a PREFLIGHT timeout with no
+ * latched failure, which re-attempts the secure setup itself (fresh
+ * keys/mesh via the SAS-rekey path) instead of refusing. */
+inline constexpr uint32_t kMdkrOnlineLiveStepRetryRebuild = 101u;
 
 /* ---- O-T6b engine match-input seam --------------------------------------- *
  *

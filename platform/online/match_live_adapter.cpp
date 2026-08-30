@@ -906,6 +906,16 @@ private:
         }
         MdkrOnlineViewModel m;
         if (!view(&m)) return false;
+        /* The timeout card's Try Again / Retry Checks: the card is DRAWN from
+         * model.timeout once timeoutExpired(), but its RETRY is not one of
+         * the three main controls, so it used to be refused right here -- a
+         * visible button that could never dispatch. Allow exactly the
+         * timeout-card RETRY while the card is actually showing. */
+        if (action == MDKR_ONLINE_VIEW_ACTION_RETRY && m.timeout.present &&
+            m.timeout.primary.visible && m.timeout.primary.enabled &&
+            m.timeout.primary.action == action && timeoutExpired()) {
+            return true;
+        }
         return (m.primary.visible && m.primary.enabled &&
                 m.primary.action == action) ||
                (m.secondary.visible && m.secondary.enabled &&
@@ -1074,7 +1084,49 @@ private:
                 stepNote_ = kMdkrOnlineLiveStepEnterAnotherCode;
                 return true;
             case MDKR_ONLINE_VIEW_ACTION_RETRY:
-                if (failure_ == MDKR_ONLINE_VIEW_FAILURE_NONE) return false;
+                /* PRE-READY (the create/join round trip failed or stalled --
+                 * no endpoint id was ever assigned): the room transport
+                 * begins exactly once per adapter and its worker has already
+                 * exited (or is wedged), so clearing the failure would only
+                 * re-front the spinner over a dead transport -- the audited
+                 * "Try Again that does not try". Mirror the
+                 * ENTER_ANOTHER_CODE contract instead: park the session at
+                 * HOME and hand the panel kMdkrOnlineLiveStepRetryRebuild so
+                 * it rebuilds a fresh adapter on the SAME journey (create
+                 * again / join again with the same code) -- the room's own
+                 * create/join path IS the genuine retry. Accepted only when
+                 * there is actually something to retry (a latched failure or
+                 * an expired view timeout). */
+                if (localEndpointId_ == 0u && !haveLobby_) {
+                    if (failure_ == MDKR_ONLINE_VIEW_FAILURE_NONE &&
+                        !timeoutExpired()) {
+                        return false;
+                    }
+                    if (!sessionDispatch(MDKR_SESSION_COMMAND_CANCEL, 0u))
+                        return false;
+                    inviteReady_ = false;
+                    pending_ = Pending::None;
+                    failure_ = MDKR_ONLINE_VIEW_FAILURE_NONE;
+                    stepNote_ = kMdkrOnlineLiveStepRetryRebuild;
+                    return true;
+                }
+                if (failure_ == MDKR_ONLINE_VIEW_FAILURE_NONE) {
+                    /* "Setup Check Took Too Long" -> Retry Checks: with no
+                     * latched failure this was a refused no-op. A genuine
+                     * retry of the secure setup is the existing SAS-rekey
+                     * path -- retire the mesh session and bring it back up on
+                     * fresh keys (a fresh signaling socket + a fresh
+                     * transcript), exactly what "Reconnect Securely" already
+                     * does after a mismatch. Re-anchor the view timeout so
+                     * the re-attempt gets its own full window. */
+                    if (session_.state.room == MDKR_ROOM_PREFLIGHT &&
+                        timeoutExpired()) {
+                        forcePhraseRekey("preflight-timeout retry");
+                        viewAnchorMs_ = nowMs_();
+                        return true;
+                    }
+                    return false;
+                }
                 failure_ = MDKR_ONLINE_VIEW_FAILURE_NONE;
                 return true;
             case MDKR_ONLINE_VIEW_ACTION_LEAVE_ROOM:
@@ -1553,15 +1605,17 @@ private:
         ++raceResendSweeps_;
     }
 
-    /* Retire the WHOLE mesh session after a reported SAS mismatch --
-     * keys, channels and signaling -- and bring it back up through the
-     * backend so fresh ephemeral keys derive a fresh transcript (and thus a
-     * fresh phrase). Without this, RETRY would re-present the identical phrase
-     * the humans just refused. The preflight barrier resets with it; the
+    /* Retire the WHOLE mesh session -- keys, channels and signaling -- and
+     * bring it back up through the backend so fresh ephemeral keys derive a
+     * fresh transcript (and thus a fresh phrase). Two honest callers, `why`
+     * names which: the reported SAS mismatch (without this, RETRY would
+     * re-present the identical phrase the humans just refused) and the
+     * preflight-timeout RETRY (a genuine re-attempt of the secure setup
+     * instead of a refused no-op). The preflight barrier resets with it; the
      * room stays. */
-    void forcePhraseRekey() {
+    void forcePhraseRekey(const char *why = "SAS mismatch") {
         MDKR_ONLINE_LOG(
-            "[MESH] SAS mismatch: retiring mesh keys/session and re-keying\n");
+            "[MESH] %s: retiring mesh keys/session and re-keying\n", why);
         mesh_.reset(); /* borrows the backend's feed: kill it first */
         if (opts_.meshBackend) opts_.meshBackend->reset();
         meshUp_ = false;
@@ -2486,6 +2540,53 @@ public:
         return a.racePeerLost();
     }
 
+    /* Test-only (beta): pin the RETRY tiers on a mesh-free, transport-free
+     * adapter (see the kMdkrOnlineLiveStepRetryRebuild contract in the
+     * header). Drives the SAME private apply() the panel's dispatch reaches
+     * and reports (accepted, step note). Tiers:
+     *   0 -> pre-Ready, latched SERVICE_UNAVAILABLE: accept + rebuild
+     *        sentinel (the dead-transport "Try Again" must genuinely retry);
+     *   1 -> pre-Ready, nothing to retry (no failure, no expired timeout):
+     *        refuse;
+     *   2 -> pre-Ready, no failure but the view timeout expired (the "Room
+     *        Took Too Long" card): accept + rebuild sentinel;
+     *   3 -> live room (endpoint assigned), latched failure: accept + clear
+     *        with NO sentinel (the retained-room recovery, unchanged);
+     *   4 -> live room at PREFLIGHT, no failure, timeout expired (the
+     *        "Setup Check Took Too Long" card): accept with NO sentinel (the
+     *        genuine secure-setup re-attempt via the rekey path). */
+    static uint32_t testRetryStep(unsigned tier, bool *accepted) {
+        MdkrOnlineLiveAdapterOptions o;
+        o.sessionId = 1u;
+        LiveAdapter a(o);
+        (void)a.sessionDispatch(MDKR_SESSION_COMMAND_BEGIN_ONLINE, 0u);
+        switch (tier) {
+            case 0u:
+                a.failure_ = MDKR_ONLINE_VIEW_FAILURE_SERVICE_UNAVAILABLE;
+                break;
+            case 1u:
+                break;
+            case 2u:
+                a.viewAnchorMs_ = 1u; /* anchored in the distant past */
+                break;
+            case 3u:
+                a.localEndpointId_ = 7u;
+                a.failure_ = MDKR_ONLINE_VIEW_FAILURE_SERVICE_UNAVAILABLE;
+                break;
+            case 4u:
+            default:
+                a.localEndpointId_ = 7u;
+                a.session_.state.room = MDKR_ROOM_PREFLIGHT;
+                a.viewAnchorMs_ = 1u;
+                break;
+        }
+        const bool ok = a.apply(MDKR_ONLINE_VIEW_ACTION_RETRY, 0u, 0u);
+        if (accepted != nullptr) *accepted = ok;
+        const uint32_t note = a.stepNote_;
+        a.stepNote_ = 0u;
+        return note;
+    }
+
     /* Test-only (beta): force an ICE-down on every REMOTE peer connection of
      * this LIVE mesh via the transport's existing kill-channels seam, while
      * leaving signal presence untouched -- the lingering-presence mid-race
@@ -3168,6 +3269,11 @@ bool mdkr_online_live_adapter_test_kill_peer_channels(
     if (adapter == nullptr) return false;
     LiveAdapter *live = adapter->mdkrResolveLive();
     return live != nullptr && live->killPeerChannelsForTest();
+}
+
+uint32_t mdkr_online_live_adapter_test_retry_step(unsigned tier,
+                                                  bool *accepted) {
+    return LiveAdapter::testRetryStep(tier, accepted);
 }
 #endif
 

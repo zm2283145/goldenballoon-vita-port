@@ -143,6 +143,38 @@ static void test_reverify_paths_clear_stale_peer_loss() {
     CHECK(!mdkr_online_live_adapter_test_reverify_clears_peer_loss(true));
 }
 
+/* RETRY must genuinely retry (audit story gap #2). Pre-Ready -- the create/
+ * join round trip failed or stalled, the transport worker is gone -- a RETRY
+ * must hand the panel the rebuild sentinel (kMdkrOnlineLiveStepRetryRebuild)
+ * so a FRESH adapter re-runs the same create/join journey, never merely clear
+ * the failure back to a spinner over a dead transport. On a live room the
+ * retained-room clear stays; a PREFLIGHT timeout with no latched failure
+ * re-attempts the secure setup (accepted, no sentinel) instead of refusing. */
+static void test_retry_genuinely_retries() {
+    bool accepted = false;
+    /* Tier 0: pre-Ready with a latched failure -> rebuild sentinel. */
+    CHECK(mdkr_online_live_adapter_test_retry_step(0u, &accepted) ==
+          kMdkrOnlineLiveStepRetryRebuild);
+    CHECK(accepted);
+    /* Tier 1: pre-Ready with nothing to retry -> refused (no false hope). */
+    CHECK(mdkr_online_live_adapter_test_retry_step(1u, &accepted) == 0u);
+    CHECK(!accepted);
+    /* Tier 2: pre-Ready, no failure, view timeout expired (the "Room Took
+     * Too Long" card's Try Again) -> rebuild sentinel. */
+    CHECK(mdkr_online_live_adapter_test_retry_step(2u, &accepted) ==
+          kMdkrOnlineLiveStepRetryRebuild);
+    CHECK(accepted);
+    /* Tier 3: live room with a latched failure -> the retained-room clear
+     * (accepted, NO sentinel) -- the soft-recovery contract is unchanged. */
+    CHECK(mdkr_online_live_adapter_test_retry_step(3u, &accepted) == 0u);
+    CHECK(accepted);
+    /* Tier 4: live room at PREFLIGHT, no failure, timeout expired (the
+     * "Setup Check Took Too Long" card's Retry Checks) -> accepted genuine
+     * secure-setup re-attempt, NO sentinel. */
+    CHECK(mdkr_online_live_adapter_test_retry_step(4u, &accepted) == 0u);
+    CHECK(accepted);
+}
+
 /* ---- Owning-wrapper accessor regression --------------------------------- *
  *
  * Production holds the live adapter as an OwningLiveAdapter wrapper
@@ -451,6 +483,7 @@ int main() {
     test_map_lost_reason_in_race_branches();
     test_race_end_no_demotion_rule();
     test_reverify_paths_clear_stale_peer_loss();
+    test_retry_genuinely_retries();
     test_owning_wrapper_accessors_resolve_through_wrapper();
     std::fprintf(stderr, "online_live_adapter_beta: %d checks, %d failures\n",
                  g_checks, g_failures);

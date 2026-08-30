@@ -96,6 +96,14 @@ struct OnlineRoomUiState {
 OnlineRoomUiState g_online;
 
 #if MDKR_ENABLE_ONLINE_BETA
+// Defined further down (beta chooser section); forward-declared so
+// handleAction's RETRY-rebuild contract can reconstruct the adapter on the
+// same journey the moment the sentinel lands.
+bool buildBetaLiveAdapter(const LauncherState &state, MdkrOnlineJourney journey,
+                          const std::string &code);
+#endif
+
+#if MDKR_ENABLE_ONLINE_BETA
 // Base-racer / vehicle labels for the beta roster strip. Only the beta lobby
 // surfaces name racers and vehicles now (the legacy selection combos are
 // retired), so these live under the beta gate to keep the OFF build clean.
@@ -479,6 +487,38 @@ void handleAction(MdkrOnlineViewAction action, LauncherState &state) {
             g_online.betaHostJourney = false;  // re-entering a code -> joiner
             g_online.betaBuildFailed = false;
             g_online.betaBuildFailedReason[0] = '\0';
+        }
+        // RETRY rebuild contract (live adapter only): a pre-Ready "Try Again"
+        // cannot re-attempt in place (the room transport begins exactly once
+        // per adapter and its worker is gone), so an accepted RETRY carrying
+        // kMdkrOnlineLiveStepRetryRebuild means "destroy this adapter and
+        // re-run the SAME journey" -- create again (a fresh room), or join
+        // again with the SAME 6-digit code the player already typed. This is
+        // the room's own create/join path, so the button finally does what it
+        // says.
+        if (action == MDKR_ONLINE_VIEW_ACTION_RETRY && step.accepted &&
+            step.error == kMdkrOnlineLiveStepRetryRebuild) {
+            const bool hostJourney = g_online.betaHostJourney;
+            const std::string joinCode = g_online.betaJoinCode;
+            teardownAdapterAsync(std::move(g_online.adapter));
+            g_online.initialized = false;
+            g_online.detailsOpen = false;
+            g_online.connectionDoctorOpen = false;
+            g_online.updateHelpOpen = false;
+            g_online.leaveRaceConfirm = false;
+            g_online.announcedKind = static_cast<MdkrOnlineViewKind>(0);
+            g_online.announcedFailure = MDKR_ONLINE_VIEW_FAILURE_NONE;
+            g_online.announcedVerificationPhrase[0] = '\0';
+            // On a refused rebuild the chooser fronts with the specific
+            // reason; land the player on the side they came from, with the
+            // typed code preserved for a joiner.
+            g_online.betaStage = hostJourney
+                                     ? OnlineRoomUiState::BetaStage::Chooser
+                                     : OnlineRoomUiState::BetaStage::JoinCode;
+            (void)buildBetaLiveAdapter(
+                state, hostJourney ? MDKR_ONLINE_JOURNEY_CREATE
+                                   : MDKR_ONLINE_JOURNEY_JOIN,
+                hostJourney ? std::string() : joinCode);
         }
 #else
         (void)step;
