@@ -48,7 +48,8 @@
                            menu_racer_portraits, gRacePlacementsArray,
                            TEXTURE_ICON_PORTRAIT_*, font.h (draw_text, ...) */
 #include "rcp_dkr.h"    /* texrect_draw, bgdraw_fillcolour */
-#include "textures_sprites.h" /* rendermode_reset (TU-local blue-box fill restore) */
+#include "textures_sprites.h" /* rendermode_reset (pulled transitively; the blue-box
+                                 fill-restore now lives behind mdkr_online_screen_box) */
 #include "audio.h"      /* sound_play */
 #include "sound_ids.h"  /* SOUND_SELECT2 / SOUND_MENU_PICK2 / ... */
 #include "joypad.h"     /* input_pressed */
@@ -77,15 +78,6 @@
  * rather than by editing menu.c. The screen size + shared launcher lobby id-space
  * mirrors live in online_screen_constants.h. */
 extern char *gRacePlacementsArray[8];
-
-/* Engine flat-fill vocabulary for the TU-LOCAL translucent BLUE dialogue box (the
- * retail RANKINGS options ground -- set_current_dialogue_background_colour(7,
- * 64,64,255,...)). The SAME read-only borrow of the font module's draw-mode lists
- * that online_screen_util.c makes for its navy panel, declared HERE too so the blue
- * box is a TU-local helper: the shared panel is a navy board other screens depend
- * on and this wave must not change it (results_blue_box below). */
-extern Gfx dDialogueBoxBegin[];
-extern Gfx dDialogueBoxDrawModes[][2];
 
 /* ---- Local mirrors of the launcher lobby's id space (no launcher headers) --- */
 #define RES_SLOTS 4u              /* MDKR_ONLINE_RACE_RESULT_SLOTS / seats */
@@ -355,12 +347,12 @@ static s32 results_winner_pulse(u32 ticks) {
     return (b < 32) ? (b * 4 + 128) : (0x17F - b * 4);
 }
 
-/* One translucent BLUE dialogue box (the retail RANKINGS option ground). Byte-for-
- * byte the flat-fill command sequence online_screen_util.c's navy panel emits
- * (dDialogueBoxBegin + dDialogueBoxDrawModes[1] env-colour XLU fill + rim), only
- * the colour differs -- retail's dialogue blue instead of the near-black navy. It
- * is a TU-LOCAL copy (not a call into the shared panel) so this wave changes no
- * shared helper. (x1,y1)-(x2,y2) logical 320x240 coords. */
+/* One translucent BLUE dialogue box (the retail RANKINGS option ground) -- retail's
+ * dialogue blue (set_current_dialogue_background_colour(7, 64,64,255,...)) instead
+ * of the near-black navy. Now a thin wrapper over the shared mdkr_online_screen_box
+ * (parameterised fill + edge colour): the byte-for-byte fill sequence that used to
+ * live here -- plus the second dDialogueBox* re-extern it needed -- is gone, folded
+ * into the one shared box vocabulary. (x1,y1)-(x2,y2) logical 320x240 coords. */
 #define RES_BOX_FILL_R 40
 #define RES_BOX_FILL_G 52
 #define RES_BOX_FILL_B 200
@@ -370,24 +362,9 @@ static s32 results_winner_pulse(u32 ticks) {
 #define RES_BOX_EDGE_B 255
 #define RES_BOX_EDGE_A 208
 static void results_blue_box(s32 x1, s32 y1, s32 x2, s32 y2) {
-    gSPDisplayList(gCurrDisplayList++, dDialogueBoxBegin);
-    gDkrDmaDisplayList(gCurrDisplayList++,
-                       OS_K0_TO_PHYSICAL(dDialogueBoxDrawModes[1]), 2);
-    gDPSetEnvColor(gCurrDisplayList++, RES_BOX_FILL_R, RES_BOX_FILL_G,
-                   RES_BOX_FILL_B, RES_BOX_FILL_A);
-    render_fill_rectangle(&gCurrDisplayList, x1 + 2, y1, x2 - 2, y1 + 2);
-    render_fill_rectangle(&gCurrDisplayList, x1, y1 + 2, x2, y2 - 2);
-    render_fill_rectangle(&gCurrDisplayList, x1 + 2, y2 - 2, x2 - 2, y2);
-    gDPPipeSync(gCurrDisplayList++);
-    gDPSetEnvColor(gCurrDisplayList++, RES_BOX_EDGE_R, RES_BOX_EDGE_G,
-                   RES_BOX_EDGE_B, RES_BOX_EDGE_A);
-    render_fill_rectangle(&gCurrDisplayList, x1 + 2, y1, x2 - 2, y1 + 1);
-    render_fill_rectangle(&gCurrDisplayList, x1 + 2, y2 - 1, x2 - 2, y2);
-    render_fill_rectangle(&gCurrDisplayList, x1, y1 + 2, x1 + 1, y2 - 2);
-    render_fill_rectangle(&gCurrDisplayList, x2 - 1, y1 + 2, x2, y2 - 2);
-    gDPPipeSync(gCurrDisplayList++);
-    rendermode_reset(&gCurrDisplayList);
-    gDPPipeSync(gCurrDisplayList++);
+    mdkr_online_screen_box(x1, y1, x2, y2, RES_BOX_FILL_R, RES_BOX_FILL_G,
+                           RES_BOX_FILL_B, RES_BOX_FILL_A, RES_BOX_EDGE_R,
+                           RES_BOX_EDGE_G, RES_BOX_EDGE_B, RES_BOX_EDGE_A);
 }
 
 /* FUNFONT drawn with a REAL tint (envA 255) -- the shared text helper forces

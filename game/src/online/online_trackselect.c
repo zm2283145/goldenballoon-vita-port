@@ -891,7 +891,6 @@ static void trackselect_upper(const char *src, char *dst, u32 cap) {
  * the frame edges). Modulated white so the authored blue shows; a no-op if the
  * icon is not resident (same fail-safe as the portrait / vehicle blits). */
 static void trackselect_draw_arrow(u8 dir, s32 cx, s32 cy) {
-    DrawTexture dt[2];
     TextureHeader *tex;
     if (dir >= 4u) {
         return;
@@ -900,14 +899,8 @@ static void trackselect_draw_arrow(u8 dir, s32 cx, s32 cy) {
     if (tex == NULL) {
         return;
     }
-    dt[0].texture = tex;
-    dt[0].xOffset = 0;
-    dt[0].yOffset = 0;
-    dt[1].texture = NULL;
-    dt[1].xOffset = 0;
-    dt[1].yOffset = 0;
-    texrect_draw(&gCurrDisplayList, dt, cx - (s32) tex->width / 2,
-                 cy - (s32) tex->height / 2, 255, 255, 255, 255);
+    mdkr_online_screen_blit(tex, cx - (s32) tex->width / 2,
+                            cy - (s32) tex->height / 2, 255, 255, 255, 255);
 }
 
 /* Draw the wooden picture frame around a per-world sky "postcard". The wood tile
@@ -917,36 +910,25 @@ static void trackselect_draw_arrow(u8 dir, s32 cx, s32 cy) {
  * mimicry of retail's live fly-through, which is the forbidden level-load class).
  * Fails safe: no wood -> just the postcard; no sky -> a dark inner fill. */
 static void trackselect_draw_frame(u8 world) {
-    DrawTexture dt[2];
     TextureHeader *sky = (world < TS_COLS) ? sCupBgTopTex[world] : NULL;
     s32 ix0 = TS_FRAME_X0 + TS_FRAME_BORDER;
     s32 iy0 = TS_FRAME_Y0 + TS_FRAME_BORDER;
     s32 ix1 = TS_FRAME_X1 - TS_FRAME_BORDER;
     s32 iy1 = TS_FRAME_Y1 - TS_FRAME_BORDER;
 
-    dt[1].texture = NULL;
-    dt[1].xOffset = 0;
-    dt[1].yOffset = 0;
-
     if (sWoodTex != NULL && sWoodTex->width != 0 && sWoodTex->height != 0) {
-        dt[0].texture = sWoodTex;
-        dt[0].xOffset = 0;
-        dt[0].yOffset = 0;
-        texrect_draw_scaled(
-            &gCurrDisplayList, dt, (f32) TS_FRAME_X0, (f32) TS_FRAME_Y0,
+        mdkr_online_screen_blit_scaled(
+            sWoodTex, (f32) TS_FRAME_X0, (f32) TS_FRAME_Y0,
             (f32) (TS_FRAME_X1 - TS_FRAME_X0) / (f32) sWoodTex->width,
             (f32) (TS_FRAME_Y1 - TS_FRAME_Y0) / (f32) sWoodTex->height,
-            COLOUR_RGBA32(255, 255, 255, 255), 0);
+            COLOUR_RGBA32(255, 255, 255, 255));
     }
 
     if (sky != NULL && sky->width != 0 && sky->height != 0) {
-        dt[0].texture = sky;
-        dt[0].xOffset = 0;
-        dt[0].yOffset = 0;
-        texrect_draw_scaled(&gCurrDisplayList, dt, (f32) ix0, (f32) iy0,
-                            (f32) (ix1 - ix0) / (f32) sky->width,
-                            (f32) (iy1 - iy0) / (f32) sky->height,
-                            COLOUR_RGBA32(255, 255, 255, 255), 0);
+        mdkr_online_screen_blit_scaled(sky, (f32) ix0, (f32) iy0,
+                                       (f32) (ix1 - ix0) / (f32) sky->width,
+                                       (f32) (iy1 - iy0) / (f32) sky->height,
+                                       COLOUR_RGBA32(255, 255, 255, 255));
     } else {
         mdkr_online_screen_card(ix0, iy0, ix1, iy1, 8, 12, 32, 255);
     }

@@ -88,6 +88,11 @@ void mdkr_online_screen_hd_text_reset(void);
 
 void mdkr_online_screen_text(s32 x, s32 y, s32 fontId, char *text,
                              AlignmentFlags align, s32 r, s32 g, s32 b);
+/* One rounded dialogue-box quad + 1px border, fill AND edge colours parameterised
+ * -- the ONE box vocabulary the navy menu-board (mdkr_online_screen_panel) and the
+ * retail RANKINGS blue dialogue box (online_results.c) both build on. */
+void mdkr_online_screen_box(s32 x1, s32 y1, s32 x2, s32 y2, s32 fr, s32 fg, s32 fb,
+                           s32 fa, s32 er, s32 eg, s32 eb, s32 ea);
 void mdkr_online_screen_panel(s32 x1, s32 y1, s32 x2, s32 y2);
 void mdkr_online_screen_strip(s32 y1, s32 y2);
 /* A small solid card (e.g. the retail P1/P2 seat-number block): flat fill +
@@ -102,6 +107,13 @@ s32 mdkr_online_screen_blink(u32 timer);
 void mdkr_online_screen_seat_name(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
                                   unsigned slot, char *out, size_t cap);
 u32 mdkr_online_screen_seconds_left(u32 done, u32 limit);
+/* Generic borrowed-tile texrect blits (the DRY of trackselect / vehicleselect's
+ * hand-rolled DrawTexture dt[2] + texrect_draw(_scaled) art draws). Both keep the
+ * not-resident / zero-dims no-op guards those sites carried. */
+void mdkr_online_screen_blit(TextureHeader *tex, s32 x, s32 y, u8 r, u8 g, u8 b,
+                             u8 a);
+void mdkr_online_screen_blit_scaled(TextureHeader *tex, f32 x, f32 y, f32 sx,
+                                    f32 sy, u32 rgba);
 void mdkr_online_screen_draw_portrait(u8 character, s32 x, s32 y, u8 r, u8 g, u8 b);
 bool mdkr_online_screen_draw_vehicle(u8 vehicle, s32 cx, s32 topY, u8 r, u8 g, u8 b,
                                      u8 a);
