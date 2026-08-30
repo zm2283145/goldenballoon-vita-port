@@ -48,6 +48,7 @@
                            menu_racer_portraits, gRacePlacementsArray,
                            TEXTURE_ICON_PORTRAIT_*, font.h (draw_text, ...) */
 #include "rcp_dkr.h"    /* texrect_draw, bgdraw_fillcolour */
+#include "textures_sprites.h" /* rendermode_reset (TU-local blue-box fill restore) */
 #include "audio.h"      /* sound_play */
 #include "sound_ids.h"  /* SOUND_SELECT2 / SOUND_MENU_PICK2 / ... */
 #include "joypad.h"     /* input_pressed */
@@ -77,6 +78,15 @@
  * mirrors live in online_screen_constants.h. */
 extern char *gRacePlacementsArray[8];
 
+/* Engine flat-fill vocabulary for the TU-LOCAL translucent BLUE dialogue box (the
+ * retail RANKINGS options ground -- set_current_dialogue_background_colour(7,
+ * 64,64,255,...)). The SAME read-only borrow of the font module's draw-mode lists
+ * that online_screen_util.c makes for its navy panel, declared HERE too so the blue
+ * box is a TU-local helper: the shared panel is a navy board other screens depend
+ * on and this wave must not change it (results_blue_box below). */
+extern Gfx dDialogueBoxBegin[];
+extern Gfx dDialogueBoxDrawModes[][2];
+
 /* ---- Local mirrors of the launcher lobby's id space (no launcher headers) --- */
 #define RES_SLOTS 4u              /* MDKR_ONLINE_RACE_RESULT_SLOTS / seats */
 #define RES_PLACE_COUNT 8u        /* MDKR_ONLINE_PLACEMENT_COUNT -- a placement is a
@@ -92,6 +102,16 @@ extern char *gRacePlacementsArray[8];
 #define RES_INPUT_GRACE 30u       /* manual-advance lockout at each stage entry
                                    * (~0.5s), so a host still mashing at the finish
                                    * line cannot skip the results on frame one. */
+
+/* Session-scoped per-seat placement tally (DISPLAY-ONLY): how many times each
+ * canonical seat finished 1st/2nd/3rd/... across every race of this session -- the
+ * native mirror of retail's settings->racers[].placements the RANKINGS screen
+ * shows. NOT part of sRes (which _enter memsets each race): it survives the per-race
+ * re-enter, and the engine process lifetime IS the session lifetime in the
+ * separated-boot online flow, so this accrues across TRY AGAIN replays exactly as
+ * the retail session standings do. The reducer never reads it (presentation only);
+ * _enter accrues this race's placements into it (once per RESULTS entry). */
+static u16 sSessionTally[RES_SLOTS][RES_PLACE_COUNT];
 
 /* Visible stages of the post-race screen. A single race shows RESULTS; a
  * tournament walks RESULTS -> STANDINGS. When the native "more races" chooser is
@@ -177,9 +197,28 @@ _Static_assert(RES_CHOOSER_MAX == 6u,
  * mirror (a room with no remote to wait on cannot continue). */
 #define RES_CHOOSER_VACATE_DEBOUNCE 45u
 
-/* Menu SFX (the real DKR enums; same reuse as CHARSELECT). */
+/* Menu SFX (the real DKR enums; same reuse as CHARSELECT). The RANKINGS options
+ * use the retail post-race vocabulary: nav PICK2 (RES_SFX_TICK), select SELECT2
+ * (RES_SFX_SELECT), back BACK3 (RES_SFX_BACK) -- menu.c menu_results_loop. */
 #define RES_SFX_ADVANCE SOUND_SELECT3
 #define RES_SFX_TICK SOUND_MENU_PICK2
+#define RES_SFX_SELECT SOUND_SELECT2
+#define RES_SFX_BACK SOUND_MENU_BACK3
+
+/* The single-race RANKINGS options reveal: the retail gOpacityDecayTimer>=60 cue
+ * (options appear ~1s after the board slides in). Single-race only, so the
+ * tournament FINAL standings keep their longer RES_CHOOSER_FRONT_DWELL read. */
+#define RES_RANK_OPTIONS_DWELL 60u
+
+/* RANKINGS board layout (320x240, the retail results_render coordinates lifted up
+ * ~4px so our SIX online options -- vs retail's three -- fit the blue box beneath).
+ * Title top, one portrait column per seat, then the 1ST..4TH session-tally rows. */
+#define RES_RANK_TITLE_Y 30
+#define RES_RANK_PORTRAIT_Y 46
+#define RES_RANK_TALLY_Y0 92
+#define RES_RANK_TALLY_DY 13
+#define RES_RANK_TALLY_ROWS 4
+#define RES_RANK_ANIM_UNITS 40 /* retail slide: ~40 units, portraits drop + board in */
 
 /* Trophy weights {9,7,5,3,1,0,0,0} == gTrophyRacePointsArray (menu.c) /
  * kTrophyPoints (lobby_core.c). Two honest uses: (1) the headless stand-in
@@ -212,6 +251,7 @@ typedef struct MdkrOnlineResultsState {
                           * 0 == host press (preserved across the convergence wait
                           * so the witness still reads "(auto)"/"(host)") */
     u8 prevSecs;      /* last countdown second drawn (for the hurry-up SFX edge) */
+    u8 whooshed;      /* the single-race RANKINGS slide-in SOUND_WHOOSH1 fired (edge) */
     u32 stageTicks;   /* countdown accumulator for the current stage */
     u32 pulseTicks;   /* free-running (drives the terminal-hold pulse, never reset) */
     u8 placements[RES_SLOTS]; /* THIS race's canonical-slot -> placement (poll) */
@@ -301,6 +341,179 @@ static u8 results_chooser_remote_present(const MdkrPartyLinkSnapshot *snap) {
  * Render (native: real portraits + real font, into the engine frame list)
  * ======================================================================== */
 
+/* Retail selected-option blink (menu.c: spA0 = gOptionBlinkTimer*8; if(spA0>255)
+ * spA0 = 511-spA0) -- a 0..255 triangle over the 0x3F (64-tick) period, the slow
+ * retail cadence. TU-LOCAL on purpose: the shared mdkr_online_screen_pulse is a
+ * faster/dimmer 0..16 wave the OTHER screens depend on and this wave must not
+ * change it; a later wave unifies (online_screen_util). */
+static s32 results_retail_blink(u32 ticks) {
+    s32 v = (s32) ((ticks & 0x3Fu) * 8u); /* 0..504 over the 64-tick period */
+    if (v > 255) {
+        v = 511 - v; /* fold to a 0..255 triangle */
+    }
+    return v;
+}
+
+/* Retail RANKINGS winner-portrait pulse (menu.c: if(blink<32) spA0=blink*4+128;
+ * else spA0=0x17F-blink*4) -- brightness 128..255 over the same 64-tick period,
+ * so the race winner's portrait breathes bright/dim while the rest stay full. */
+static s32 results_winner_pulse(u32 ticks) {
+    s32 b = (s32) (ticks & 0x3Fu);
+    return (b < 32) ? (b * 4 + 128) : (0x17F - b * 4);
+}
+
+/* One translucent BLUE dialogue box (the retail RANKINGS option ground). Byte-for-
+ * byte the flat-fill command sequence online_screen_util.c's navy panel emits
+ * (dDialogueBoxBegin + dDialogueBoxDrawModes[1] env-colour XLU fill + rim), only
+ * the colour differs -- retail's dialogue blue instead of the near-black navy. It
+ * is a TU-LOCAL copy (not a call into the shared panel) so this wave changes no
+ * shared helper. (x1,y1)-(x2,y2) logical 320x240 coords. */
+#define RES_BOX_FILL_R 40
+#define RES_BOX_FILL_G 52
+#define RES_BOX_FILL_B 200
+#define RES_BOX_FILL_A 184
+#define RES_BOX_EDGE_R 120
+#define RES_BOX_EDGE_G 150
+#define RES_BOX_EDGE_B 255
+#define RES_BOX_EDGE_A 208
+static void results_blue_box(s32 x1, s32 y1, s32 x2, s32 y2) {
+    gSPDisplayList(gCurrDisplayList++, dDialogueBoxBegin);
+    gDkrDmaDisplayList(gCurrDisplayList++,
+                       OS_K0_TO_PHYSICAL(dDialogueBoxDrawModes[1]), 2);
+    gDPSetEnvColor(gCurrDisplayList++, RES_BOX_FILL_R, RES_BOX_FILL_G,
+                   RES_BOX_FILL_B, RES_BOX_FILL_A);
+    render_fill_rectangle(&gCurrDisplayList, x1 + 2, y1, x2 - 2, y1 + 2);
+    render_fill_rectangle(&gCurrDisplayList, x1, y1 + 2, x2, y2 - 2);
+    render_fill_rectangle(&gCurrDisplayList, x1 + 2, y2 - 2, x2 - 2, y2);
+    gDPPipeSync(gCurrDisplayList++);
+    gDPSetEnvColor(gCurrDisplayList++, RES_BOX_EDGE_R, RES_BOX_EDGE_G,
+                   RES_BOX_EDGE_B, RES_BOX_EDGE_A);
+    render_fill_rectangle(&gCurrDisplayList, x1 + 2, y1, x2 - 2, y1 + 1);
+    render_fill_rectangle(&gCurrDisplayList, x1 + 2, y2 - 1, x2 - 2, y2);
+    render_fill_rectangle(&gCurrDisplayList, x1, y1 + 2, x1 + 1, y2 - 2);
+    render_fill_rectangle(&gCurrDisplayList, x2 - 1, y1 + 2, x2, y2 - 2);
+    gDPPipeSync(gCurrDisplayList++);
+    rendermode_reset(&gCurrDisplayList);
+    gDPPipeSync(gCurrDisplayList++);
+}
+
+/* FUNFONT drawn with a REAL tint (envA 255) -- the shared text helper forces
+ * FUNFONT to authored-untinted (envA 0), but the RANKINGS "1ST..4TH" labels carry
+ * retail's per-row dimming ramp, so this TU-local draw applies the colour. One
+ * black drop shadow + the tinted face. */
+static void results_label_tinted(s32 x, s32 y, char *text, AlignmentFlags align,
+                                 s32 r, s32 g, s32 b) {
+    set_text_font(ASSET_FONTS_FUNFONT);
+    set_text_background_colour(0, 0, 0, 0);
+    set_text_colour(0, 0, 0, 255, 180);
+    draw_text(&gCurrDisplayList, x + 1, y + 1, text, align);
+    set_text_colour(r, g, b, 255, 255);
+    draw_text(&gCurrDisplayList, x, y, text, align);
+}
+
+/* On-screen (retail-worded) label for a chooser option. The sChooser table keeps
+ * its ORIGINAL labels (the witness + routing + every headless lane index/regex are
+ * keyed on them, and the option->intent mapping must not move); this maps them to
+ * the retail RANKINGS vocabulary for DISPLAY only. SELECT TRACK/CUP (change track/
+ * cup), TRY AGAIN (race again), QUIT (finish); the online-only options are shown
+ * verbatim. Rendering-only -- the stderr witness still prints the canonical label. */
+static const char *results_chooser_display_label(const char *canonical) {
+    if (strcmp(canonical, "RACE AGAIN") == 0) {
+        return "TRY AGAIN";
+    }
+    if (strcmp(canonical, "CHANGE TRACK") == 0) {
+        return "SELECT TRACK";
+    }
+    if (strcmp(canonical, "CHANGE CUP") == 0) {
+        return "SELECT CUP";
+    }
+    if (strcmp(canonical, "FINISH") == 0) {
+        return "QUIT";
+    }
+    return canonical; /* CHANGE MODE / NEW TOURNAMENT / CHANGE CHARACTER */
+}
+
+/* The retail RANKINGS board: "RANKINGS" title, one portrait column per seat (the
+ * race winner's portrait pulsing bright/dim), and the 1ST..4TH session-tally rows
+ * beneath -- the exact read of menu.c's results_render, from our snapshot + the
+ * DISPLAY-ONLY sSessionTally. dropOffset/slideOffset are the entry-motion layout
+ * offsets (portraits drop from the top, the board slides in); both 0 once settled.
+ * No new assets: real portraits (already borrowed) + FUNFONT digits. */
+static void results_render_rankings_board(const MdkrPartyLinkSnapshot *snap,
+                                          bool haveSnap, s32 localSeat,
+                                          s32 dropOffset, s32 slideOffset) {
+    unsigned cols[RES_SLOTS];
+    unsigned ncols = 0u;
+    unsigned c;
+    s32 pitch, startX;
+    s32 winnerPulse = results_winner_pulse(sRes.pulseTicks);
+    s32 row;
+    char line[16];
+
+    (void) localSeat;
+
+    /* One column per occupied seat (finishing order is not needed here: retail
+     * lays columns out in seat order and shows each seat's whole-session tally). */
+    for (c = 0u; c < RES_SLOTS; c++) {
+        bool present = haveSnap ? (snap->seats[c].occupied != 0u)
+                                : (sRes.placements[c] != RES_PLACE_NONE);
+        if (present) {
+            cols[ncols++] = c;
+        }
+    }
+    if (ncols == 0u) {
+        return;
+    }
+    pitch = (ncols <= 2u) ? 64 : 56; /* retail offsetX2: 64 for <=2 seats, 56 for 4 */
+    startX = 160 - (s32) (ncols - 1u) * (pitch / 2);
+
+    /* Title (BIGFONT authored art; white == untinted, exactly retail's RANKINGS). */
+    mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, RES_RANK_TITLE_Y,
+                            ASSET_FONTS_BIGFONT, "RANKINGS", ALIGN_MIDDLE_CENTER,
+                            255, 255, 255);
+
+    /* Portrait row: the race winner (placement 0) pulses bright/dim; others full. */
+    for (c = 0u; c < ncols; c++) {
+        unsigned slot = cols[c];
+        s32 cx = startX + (s32) c * pitch + slideOffset;
+        u8 character = MDKR_ONLINE_SCREEN_NO_CHARACTER;
+        u8 bright;
+        if (haveSnap &&
+            snap->seats[slot].character_id < MDKR_ONLINE_SCREEN_CHAR_COUNT) {
+            character = snap->seats[slot].character_id;
+        }
+        bright = (sRes.placements[slot] == 0u) ? (u8) winnerPulse : 255u;
+        mdkr_online_screen_draw_portrait(character, cx - 22,
+                                         RES_RANK_PORTRAIT_Y + dropOffset, bright,
+                                         bright, bright);
+    }
+
+    /* Tally: 1ST..4TH labels (retail gold dim ramp G=255-64*row-ish) on the left,
+     * each column's whole-session count in FUNFONT (authored colourful digits). */
+    for (row = 0; row < RES_RANK_TALLY_ROWS; row++) {
+        s32 ry = RES_RANK_TALLY_Y0 + row * RES_RANK_TALLY_DY;
+        s32 g = 224 - 48 * row;
+        s32 b = 96 - 22 * row;
+        if (g < 64) {
+            g = 64;
+        }
+        if (b < 16) {
+            b = 16;
+        }
+        results_label_tinted(startX - 34 + slideOffset, ry,
+                             (char *) gRacePlacementsArray[row], ALIGN_MIDDLE_CENTER,
+                             255, g, b);
+        for (c = 0u; c < ncols; c++) {
+            unsigned slot = cols[c];
+            s32 cx = startX + (s32) c * pitch + slideOffset;
+            (void) snprintf(line, sizeof(line), "%u",
+                            (unsigned) sSessionTally[slot][row]);
+            mdkr_online_screen_text(cx, ry, ASSET_FONTS_FUNFONT, line,
+                                    ALIGN_MIDDLE_CENTER, 255, 255, 255);
+        }
+    }
+}
+
 /* The "this screen is over, what does a button do now" footer, shared by the
  * single-race RESULTS terminal ("RACE COMPLETE") and the tournament STANDINGS
  * terminal ("CUP COMPLETE"): a pulsed label + an explicit host affordance
@@ -380,6 +593,39 @@ static void results_render_results(const MdkrPartyLinkSnapshot *snap,
     u8 place;
     unsigned nrows = 0u;
     char line[64];
+
+    /* SINGLE RACE: the retail RANKINGS read. The old "RACE RESULTS" place-row
+     * card and the chooser "MORE RACES?" board are now ONE screen -- this stage
+     * is the rankings sliding in (portraits drop from the top, the board slides
+     * in over ~40 units, SOUND_WHOOSH1), and the option list arrives when the
+     * chooser fronts (results_chooser_render). Pure layout offsets, zero assets. */
+    if (!tournament) {
+        u32 t = sRes.stageTicks;
+        s32 rem = (t < (u32) RES_RANK_ANIM_UNITS)
+                      ? (s32) ((u32) RES_RANK_ANIM_UNITS - t)
+                      : 0;
+        s32 dropOffset = -(rem * 120 / RES_RANK_ANIM_UNITS);  /* -120..0 */
+        s32 slideOffset = -(rem * 90 / RES_RANK_ANIM_UNITS);  /* -90..0 (from left) */
+        if (!sRes.whooshed) {
+            sound_play(SOUND_WHOOSH1, NULL); /* the retail board slide-in cue */
+            sRes.whooshed = 1u;
+        }
+        results_render_rankings_board(snap, haveSnap, localSeat, dropOffset,
+                                      slideOffset);
+        /* Legacy terminal (chooser OFF -- the historical scripted/loopback lanes):
+         * keep the host "A: FINISH" affordance / countdown so their behaviour is
+         * byte-unchanged. With the chooser ON the options appear on the chooser
+         * stage, so this stage shows just the rankings board entering. */
+        if (!sRes.chooserEnabled) {
+            if (sRes.isFinal) {
+                results_render_complete(snap, haveSnap, "RACE COMPLETE");
+            } else {
+                results_render_countdown(snap, haveSnap, "NEXT RACE", "A: CONTINUE",
+                                         secs);
+            }
+        }
+        return;
+    }
 
     /* Grounds: title strip + the finishing-order board (sized to the rows
      * actually present, so two seats get a snug card, not a hollow one). */
@@ -650,6 +896,16 @@ void mdkr_online_results_enter(u8 isFinalRace, u8 raceIndex, u8 chooserEnabled) 
                 sRes.placements[i] = snap.last_placements[i];
             }
             sRes.haveResults = 1u;
+            /* Accrue THIS race's finishing order into the session-scoped placement
+             * tally (DISPLAY-ONLY -- the RANKINGS "1ST..4TH" counts). Once per
+             * genuine RESULTS entry (this block runs once per race), so each TRY
+             * AGAIN replay adds one, exactly like retail's session standings. */
+            for (i = 0u; i < RES_SLOTS; i++) {
+                u8 place = sRes.placements[i];
+                if (place < RES_PLACE_COUNT) {
+                    sSessionTally[i][place]++;
+                }
+            }
         }
     }
 
@@ -912,64 +1168,82 @@ static void results_chooser_witness(void) {
             (unsigned) sRes.chooserCommitted, (unsigned) sRes.chooserChoice);
 }
 
-/* Render the "more races" menu into the engine frame list: the option list on a
- * dark menu-board card (retail figure-ground -- no per-string halo), the
- * highlighted host option pulsing gold inside "> <" brackets, the rest plain
- * light grey; a joiner shows the list dimmer (no cursor) + a pulsing
- * "WAITING FOR <host>..." footer -- the display-only mirror. */
-#define RES_CHOOSER_ROW_Y0 88
-#define RES_CHOOSER_ROW_DY 18
+/* Render the "more races" chooser as the retail RANKINGS options moment. Single
+ * race: the same board this race entered on (title + portrait columns + session
+ * tallies) with the option list in the translucent blue dialogue box beneath.
+ * Tournament final: the MORE RACES? banner + the same blue-box option list. The
+ * host's selected option blinks at the retail cadence (results_retail_blink); a
+ * joiner shows the list dimmer (no cursor) + a "WAITING FOR <host>..." footer --
+ * the display-only mirror. Option labels are the retail wording
+ * (results_chooser_display_label); the stderr witness keeps the canonical labels. */
 static void results_chooser_render(const MdkrPartyLinkSnapshot *snap,
                                    bool haveSnap, s32 localSeat) {
-    s32 tri = mdkr_online_screen_pulse(sRes.pulseTicks);
-    s32 rowY = RES_CHOOSER_ROW_Y0;
+    s32 blink = results_retail_blink(sRes.pulseTicks);
+    bool single = (sRes.chooserMode == (u8) MDKR_ONLINE_SCREEN_MODE_SINGLE);
+    s32 boxTop, boxBot, rowDy, rowY, fy;
     unsigned i;
     char line[48];
 
-    (void) localSeat;
-
-    /* Grounds: title strip, the option board (sized to the option count), and
-     * the footer strip. */
-    mdkr_online_screen_strip(28, 72);
-    mdkr_online_screen_panel(84, 78, 236,
-                             RES_CHOOSER_ROW_Y0 +
-                                 (s32) sRes.chooserCount * RES_CHOOSER_ROW_DY + 4);
-    mdkr_online_screen_strip(200, 222);
-
-    mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 44, ASSET_FONTS_BIGFONT,
-                            "MORE RACES?", ALIGN_MIDDLE_CENTER, 255, 224, 96);
-    mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 62, ASSET_FONTS_SMALLFONT,
-                            sRes.chooserMode == MDKR_ONLINE_SCREEN_MODE_TOURNAMENT
-                                ? (char *) "TOURNAMENT COMPLETE"
-                                : (char *) "RACE COMPLETE",
-                            ALIGN_MIDDLE_CENTER, 210, 210, 210);
-
-    for (i = 0u; i < sRes.chooserCount; i++) {
-        bool selected = (!sRes.chooserJoiner && (u8) i == sRes.chooserCursor);
-        if (selected) {
-            s32 pg = 200 + tri * 3; /* 200..248 gold pulse */
-            (void) snprintf(line, sizeof(line), "> %s <",
-                            results_chooser_option(i)->label);
-            mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT,
-                                    line, ALIGN_MIDDLE_CENTER, 255, (u8) pg, 80);
-        } else {
-            s32 c = sRes.chooserJoiner ? 190 : 220;
-            mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT,
-                                    (char *) results_chooser_option(i)->label,
-                                    ALIGN_MIDDLE_CENTER, c, c, c);
-        }
-        rowY += RES_CHOOSER_ROW_DY;
+    if (single) {
+        /* The retail RANKINGS "options" moment: the SAME board this race entered
+         * on (title + portrait columns + session tallies), now settled, with the
+         * option list in the translucent blue dialogue box beneath it -- one
+         * unified RANKINGS read (retail-rankings-options.png). */
+        results_render_rankings_board(snap, haveSnap, localSeat, 0, 0);
+        boxTop = 142;
+        rowDy = 13;
+    } else {
+        /* Tournament FINAL: keep the MORE RACES? banner (the cup STANDINGS precede
+         * this, so no per-race rankings board), options in the same blue box. */
+        (void) localSeat;
+        mdkr_online_screen_strip(28, 60);
+        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 40, ASSET_FONTS_BIGFONT,
+                                "MORE RACES?", ALIGN_MIDDLE_CENTER, 255, 224, 96);
+        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 56, ASSET_FONTS_SMALLFONT,
+                                "TOURNAMENT COMPLETE", ALIGN_MIDDLE_CENTER, 210, 210,
+                                210);
+        boxTop = 72;
+        rowDy = 16;
     }
 
-    rowY = 210; /* the footer strip's text line */
+    /* Option list in the translucent blue dialogue box. */
+    boxBot = boxTop + (s32) sRes.chooserCount * rowDy + 8;
+    results_blue_box(92, boxTop, 228, boxBot);
+    rowY = boxTop + 10;
+    for (i = 0u; i < sRes.chooserCount; i++) {
+        bool selected = (!sRes.chooserJoiner && (u8) i == sRes.chooserCursor);
+        /* Retail wording on screen; the witness/routing keep the canonical label. */
+        const char *label =
+            results_chooser_display_label(results_chooser_option(i)->label);
+        if (selected) {
+            /* retail selected blink: the option pulses bright<->gold on the 0..255
+             * cadence (menu.c gOptionBlinkTimer*8). */
+            s32 c = 150 + blink * 105 / 255; /* 150..255 */
+            mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, rowY,
+                                    ASSET_FONTS_SMALLFONT, (char *) label,
+                                    ALIGN_MIDDLE_CENTER, 255, (u8) c,
+                                    (u8) (60 + c / 3));
+        } else {
+            s32 g = sRes.chooserJoiner ? 180 : 224;
+            mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, rowY,
+                                    ASSET_FONTS_SMALLFONT, (char *) label,
+                                    ALIGN_MIDDLE_CENTER, g, g, g);
+        }
+        rowY += rowDy;
+    }
+
+    /* Footer: committed hold / joiner waiting / host help. Below the box, clamped
+     * to the last on-screen line. */
+    fy = (boxBot + 12 <= 236) ? boxBot + 12 : 236;
     if (sRes.chooserCommitted) {
         (void) snprintf(line, sizeof(line), "%s...",
-                        results_chooser_option(sRes.chooserCursor)->label);
-        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT, line,
-                                ALIGN_MIDDLE_CENTER, 140, (u8) (200 + tri * 3), 140);
+                        results_chooser_display_label(
+                            results_chooser_option(sRes.chooserCursor)->label));
+        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, fy, ASSET_FONTS_SMALLFONT,
+                                line, ALIGN_MIDDLE_CENTER, 140,
+                                (u8) (150 + blink * 105 / 255), 140);
     } else if (sRes.chooserJoiner) {
         char host[16];
-        s32 c = 170 + tri * 5;
         if (sRes.chooserLeaveArm) {
             (void) snprintf(line, sizeof(line), "PRESS B AGAIN TO LEAVE");
         } else {
@@ -977,10 +1251,10 @@ static void results_chooser_render(const MdkrPartyLinkSnapshot *snap,
             (void) snprintf(line, sizeof(line), "WAITING FOR %.12s...   B: LEAVE",
                             host);
         }
-        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT, line,
-                                ALIGN_MIDDLE_CENTER, c, c, c);
+        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, fy, ASSET_FONTS_SMALLFONT,
+                                line, ALIGN_MIDDLE_CENTER, 200, 200, 210);
     } else {
-        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, rowY, ASSET_FONTS_SMALLFONT,
+        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, fy, ASSET_FONTS_SMALLFONT,
                                 "A: SELECT   UP/DOWN: MOVE", ALIGN_MIDDLE_CENTER, 255,
                                 255, 255);
     }
@@ -1047,7 +1321,7 @@ static MdkrOnlineResultsResult results_chooser_tick(const MdkrPartyLinkSnapshot 
         if (results_chooser_seam_select() >= 0) {
             results_chooser_seam_mark_fired(); /* one-shot: no soak re-race loop */
         }
-        sound_play(RES_SFX_ADVANCE, NULL);
+        sound_play(RES_SFX_SELECT, NULL); /* retail RANKINGS option select = SELECT2 */
         if (choice == (u8) MDKR_ONLINE_RESULTS_CHOICE_FINISH) {
             /* A FINISH at a SESSION DECISION POINT must be REDUCER-OBSERVABLE. A
              * second REAL peer's chooser mirror can only observe reducer STATE,
@@ -1217,7 +1491,7 @@ static MdkrOnlineResultsResult results_chooser_tick(const MdkrPartyLinkSnapshot 
                     return MDKR_ONLINE_RESULTS_LEAVE;
                 }
                 sRes.chooserLeaveArm = 1u;
-                sound_play(RES_SFX_TICK, NULL);
+                sound_play(RES_SFX_BACK, NULL); /* retail RANKINGS back = BACK3 */
             } else if (in.advanceEdge && sRes.chooserLeaveArm) {
                 sRes.chooserLeaveArm = 0u; /* A cancels an armed leave */
             }
@@ -1322,8 +1596,11 @@ MdkrOnlineResultsResult mdkr_online_results_tick(s32 updateRate) {
                           (sRes.stageTicks >= RES_CHOOSER_FRONT_DWELL ||
                            (sRes.host && in.advanceEdge &&
                             sRes.stageTicks >= RES_INPUT_GRACE));
+        /* Single-race: the RANKINGS options appear ~1s after the board slides in
+         * (RES_RANK_OPTIONS_DWELL, the retail gOpacityDecayTimer>=60 cue), so the
+         * unified read matches retail's reveal; the host A still skips the wait. */
         bool singleDone = !tournament && sRes.stage == RES_STAGE_RESULTS &&
-                          (sRes.stageTicks >= RES_CHOOSER_FRONT_DWELL ||
+                          (sRes.stageTicks >= RES_RANK_OPTIONS_DWELL ||
                            (sRes.host && in.advanceEdge &&
                             sRes.stageTicks >= RES_INPUT_GRACE));
         if (tournFinal || singleDone) {
