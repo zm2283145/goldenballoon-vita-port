@@ -709,6 +709,13 @@ std::unique_ptr<IMdkrOnlineAdapter> OnlineRoom_makeGatedLiveAdapter(
 bool OnlineRoom_liveInvite(IMdkrOnlineAdapter *adapter, std::string *code,
                            std::string *inviteUrl);
 
+/* Beta-only sibling of the invite accessor: true when the join-by-code round
+ * trip was refused because the code matched no live room (mistype/stale-code
+ * -- re-typing can fix it) rather than a genuine invite-TTL expiry. Lets the
+ * panel word the shared INVITE_EXPIRED recovery card truthfully without
+ * touching the pinned view model. Defined in online_live_wiring.cpp. */
+bool OnlineRoom_liveJoinCodeInvalid(IMdkrOnlineAdapter *adapter);
+
 /* ---- P2-T1 live selection bridge wiring (beta only) ---------------------- *
  *
  * FORWARD FEED: OnlineRoom_pumpPartyLink projects the adapter's live lobby +

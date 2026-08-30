@@ -1317,6 +1317,29 @@ Json compatibilityJson(const MdkrOnlineCompatibilityV1 &c) {
     return out;
 }
 
+/* Classify a refused create/join response for the panel's copy detail (see
+ * MdkrOnlineRoomJoinRefusalDetail): the failure VIEW routing stays with
+ * statusToFailure below; this only records which of the two INVITE_EXPIRED
+ * shapes the service actually reported. */
+MdkrOnlineRoomJoinRefusalDetail classifyJoinRefusal(int status,
+                                                    const std::string &body) {
+    std::string code;
+    try {
+        code = Json::parse(body).value("error", std::string());
+    } catch (...) {
+    }
+    if (code == "invite_expired") {
+        /* The service checked the TTL first: only a fresh code fixes this. */
+        return MDKR_ONLINE_ROOM_JOIN_REFUSAL_INVITE_EXPIRED;
+    }
+    if (code == "invalid_code" || code == "invalid_invite" || status == 404) {
+        /* The code matched no live room (or the wrong room's digest):
+         * re-typing the digits fixes this -- never "ask for a fresh code". */
+        return MDKR_ONLINE_ROOM_JOIN_REFUSAL_CODE_INVALID;
+    }
+    return MDKR_ONLINE_ROOM_JOIN_REFUSAL_NONE;
+}
+
 /* ---- The room transport -------------------------------------------------- */
 
 class RoomHttpTransport final : public MdkrOnlineRoomTransport {
@@ -1376,6 +1399,11 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         *out = invite_;
         return invite_.ready;
+    }
+
+    MdkrOnlineRoomJoinRefusalDetail joinRefusal() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return joinRefusal_;
     }
 
 private:
@@ -1455,6 +1483,12 @@ private:
             return;
         }
         if (res.status != 201) {
+            {
+                /* Record the refusal detail BEFORE the failure event so the
+                 * launcher's drain always observes a coherent pair. */
+                std::lock_guard<std::mutex> lock(mutex_);
+                joinRefusal_ = classifyJoinRefusal(res.status, res.body);
+            }
             enqueueFailure(statusToFailure(res.status, res.body));
             return;
         }
@@ -1736,6 +1770,11 @@ private:
     uint64_t localEndpointId_ = 0u;
     uint32_t lastRevision_ = 0u;
     bool roomClosedSeen_ = false;
+    /* The last refused create/join round trip's detail (mutex_-guarded; see
+     * MdkrOnlineRoomJoinRefusalDetail). The round trip runs once per adapter,
+     * so this is one-shot in practice. */
+    MdkrOnlineRoomJoinRefusalDetail joinRefusal_ =
+        MDKR_ONLINE_ROOM_JOIN_REFUSAL_NONE;
 
     std::thread worker_;
 };
@@ -1885,6 +1924,22 @@ bool mdkr_online_room_http_transport_invite(MdkrOnlineRoomTransport *transport,
     if (transport == nullptr || out == nullptr) return false;
     RoomHttpTransport *room = dynamic_cast<RoomHttpTransport *>(transport);
     return room != nullptr && room->invite(out);
+}
+
+MdkrOnlineRoomJoinRefusalDetail mdkr_online_room_http_transport_join_refusal(
+    MdkrOnlineRoomTransport *transport) {
+    if (transport == nullptr) return MDKR_ONLINE_ROOM_JOIN_REFUSAL_NONE;
+    RoomHttpTransport *room = dynamic_cast<RoomHttpTransport *>(transport);
+    return room != nullptr ? room->joinRefusal()
+                           : MDKR_ONLINE_ROOM_JOIN_REFUSAL_NONE;
+}
+
+MdkrOnlineRoomJoinRefusalDetail
+mdkr_online_room_transport_classify_refusal_for_test(int status,
+                                                     const char *body) {
+    return classifyJoinRefusal(status,
+                               body != nullptr ? std::string(body)
+                                               : std::string());
 }
 
 std::unique_ptr<MdkrOnlineMeshSignalBackend>

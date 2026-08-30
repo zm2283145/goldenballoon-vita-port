@@ -375,6 +375,18 @@ bool OnlineRoom_liveInvite(IMdkrOnlineAdapter *adapter, std::string *code,
     return true;
 }
 
+/* Beta-only sibling of the invite accessor (see match_live_adapter.h): the
+ * join-by-code refusal detail, reached through the same STUN-only-belt
+ * unwrap. */
+bool OnlineRoom_liveJoinCodeInvalid(IMdkrOnlineAdapter *adapter) {
+    OwningLiveAdapter *owning = dynamic_cast<OwningLiveAdapter *>(adapter);
+    if (owning == nullptr) return false;
+    MdkrOnlineRoomTransport *http = owning->httpTransportForInvite();
+    return http != nullptr &&
+           mdkr_online_room_http_transport_join_refusal(http) ==
+               MDKR_ONLINE_ROOM_JOIN_REFUSAL_CODE_INVALID;
+}
+
 /* ======================================================================== *
  * Live selection bridge wiring (platform/net/party_link)
  *

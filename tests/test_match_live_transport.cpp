@@ -896,6 +896,46 @@ void meshBackendReplacesADeadSignalSocket() {
     std::fprintf(stderr, "meshBackendReplacesADeadSignalSocket: ok\n");
 }
 
+/* Story gap #8: a mistyped 6-digit code must be distinguishable from a
+ * genuinely expired invite wherever the SERVICE response allows, so the
+ * launcher can say "check the digits" instead of sending the player to nag
+ * the host for a fresh code. The failure VIEW routing (both -> the pinned
+ * INVITE_EXPIRED recovery) is unchanged; only the detail is classified.
+ * Driven through the exact shipped classifier via the for_test seam. */
+void joinRefusalDetailDistinguishesMistypeFromExpiry() {
+    /* Genuine TTL expiry: only a fresh code can fix it. */
+    assert(mdkr_online_room_transport_classify_refusal_for_test(
+               409, "{\"error\":\"invite_expired\"}") ==
+           MDKR_ONLINE_ROOM_JOIN_REFUSAL_INVITE_EXPIRED);
+    /* The mistype family: a code that matched no live room (worker 404 /
+     * not_found), or resolved to a room whose digest it does not match
+     * (invalid_invite), or the legacy invalid_code shape. Re-typing fixes
+     * these; "expired" copy sends the player to the wrong remedy. */
+    assert(mdkr_online_room_transport_classify_refusal_for_test(
+               409, "{\"error\":\"invalid_invite\"}") ==
+           MDKR_ONLINE_ROOM_JOIN_REFUSAL_CODE_INVALID);
+    assert(mdkr_online_room_transport_classify_refusal_for_test(
+               409, "{\"error\":\"invalid_code\"}") ==
+           MDKR_ONLINE_ROOM_JOIN_REFUSAL_CODE_INVALID);
+    assert(mdkr_online_room_transport_classify_refusal_for_test(
+               404, "{\"error\":\"not_found\"}") ==
+           MDKR_ONLINE_ROOM_JOIN_REFUSAL_CODE_INVALID);
+    /* Non-invite refusals carry no detail (their own views already word
+     * themselves). */
+    assert(mdkr_online_room_transport_classify_refusal_for_test(
+               409, "{\"error\":\"incompatible\"}") ==
+           MDKR_ONLINE_ROOM_JOIN_REFUSAL_NONE);
+    assert(mdkr_online_room_transport_classify_refusal_for_test(
+               503, "{\"error\":\"service_budget_safe\"}") ==
+           MDKR_ONLINE_ROOM_JOIN_REFUSAL_NONE);
+    /* Malformed body: fail closed to no detail unless the 404 status alone
+     * names the mistype family. */
+    assert(mdkr_online_room_transport_classify_refusal_for_test(500, "!") ==
+           MDKR_ONLINE_ROOM_JOIN_REFUSAL_NONE);
+    std::fprintf(stderr,
+                 "joinRefusalDetailDistinguishesMistypeFromExpiry: ok\n");
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -915,6 +955,7 @@ int main(int argc, char **argv) {
         {"stall", closeDuringResolverStallReturnsPromptly},
         {"badcommand", malformedCommandResultIsTypedProtocolError},
         {"backend", meshBackendReplacesADeadSignalSocket},
+        {"refusaldetail", joinRefusalDetailDistinguishesMistypeFromExpiry},
     };
     for (const auto &c : cases) {
         if (argc > 1 && std::strcmp(argv[1], c.name) != 0) continue;

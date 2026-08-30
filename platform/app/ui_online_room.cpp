@@ -683,6 +683,22 @@ bool betaInviteClockExpired() {
                kBetaInviteTtlSeconds;
 }
 
+// TEST-ONLY: force the mistyped-code presentation of the INVITE_EXPIRED
+// recovery card (drawBetaRoomFake's recovery-code-mistyped stage). Reset per
+// stage build; the live path never sets it.
+bool g_betaFakeJoinCodeInvalid = false;
+
+// Whether the latched INVITE_EXPIRED failure was actually the MISTYPE shape
+// (the service refused the code as matching no live room, not as expired) --
+// the transport records the service's own distinction, so the card can say
+// "check the digits" instead of sending the player to nag the host for a
+// fresh code that would not help.
+bool betaJoinCodeLookedMistyped() {
+    if (g_betaFakeJoinCodeInvalid) return true;
+    return g_online.adapter != nullptr &&
+           OnlineRoom_liveJoinCodeInvalid(g_online.adapter.get());
+}
+
 // Records which post-pairing SELECTING surface last rendered: the forward native
 // hand-off card (Handoff), the "Return to Game" re-entry control shown after a
 // LEFT/ERROR native return (Reentry), or the truthful STRANDED card for a
@@ -1263,6 +1279,12 @@ const char *betaStatusLine(const MdkrOnlineViewModel &model) {
          * honest generic retry line. */
         switch (model.failure) {
         case MDKR_ONLINE_VIEW_FAILURE_INVITE_EXPIRED:
+            /* The transport knows whether the service refused the code as
+             * NOT MATCHING any live room (a mistype -- re-typing fixes it)
+             * rather than genuinely expired. */
+            return betaJoinCodeLookedMistyped()
+                       ? "That code didn't match — check the digits"
+                       : "That invite expired — get a fresh code";
         case MDKR_ONLINE_VIEW_FAILURE_INVITE_ROTATED:
             return "That invite expired — get a fresh code";
         case MDKR_ONLINE_VIEW_FAILURE_ROOM_FULL:
@@ -1313,6 +1335,12 @@ const char *betaStatusLine(const MdkrOnlineViewModel &model) {
 const char *betaFailureCopy(MdkrOnlineViewFailure failure) {
     switch (failure) {
     case MDKR_ONLINE_VIEW_FAILURE_INVITE_EXPIRED:
+        /* Mistype vs genuine expiry: the remedies differ (re-type the digits
+         * vs ask the host for a fresh code), so the sentence must too. */
+        return betaJoinCodeLookedMistyped()
+                   ? "That code didn't match a room — check the digits and "
+                     "try again."
+                   : "That invite expired. Ask the host for a fresh code.";
     case MDKR_ONLINE_VIEW_FAILURE_INVITE_ROTATED:
         return "That invite expired. Ask the host for a fresh code.";
     case MDKR_ONLINE_VIEW_FAILURE_ROOM_FULL:
@@ -2183,8 +2211,23 @@ void betaApplyDrawOverrides(MdkrOnlineViewModel &model) {
         // ("the display", a 4-seat claim in a 2-player beta); replace the ones a
         // real player hits with plain 2-player truth.
         if (model.failure == MDKR_ONLINE_VIEW_FAILURE_INVITE_EXPIRED) {
-            model.explanation =
-                "That code expired. Ask the host for a fresh code.";
+            if (betaJoinCodeLookedMistyped()) {
+                /* The service said the code matched no live room -- the fix
+                 * is re-typing, not nagging the host for a fresh code. The
+                 * primary already returns to the code field, so it is named
+                 * for exactly that. */
+                model.title = "Code Didn't Match";
+                model.explanation =
+                    "That code didn't match a room — check the digits and "
+                    "try again.";
+                if (model.primary.action ==
+                    MDKR_ONLINE_VIEW_ACTION_ENTER_ANOTHER_CODE) {
+                    model.primary.label = "Re-enter the Code";
+                }
+            } else {
+                model.explanation =
+                    "That code expired. Ask the host for a fresh code.";
+            }
         } else if (model.failure == MDKR_ONLINE_VIEW_FAILURE_INVITE_ROTATED) {
             model.explanation =
                 "The host made a new invite. Use the newest code.";
@@ -2586,6 +2629,7 @@ bool betaFakeBuildStage(const char *stage, MdkrOnlineViewModel *model,
     *haveLobby = false;
     g_betaFakeInvite.active = false;
     g_betaFakeInvite.expired = false;
+    g_betaFakeJoinCodeInvalid = false;
     // Clear any re-entry offer so a non-fallback stage renders the forward hand-off,
     // not the "Return to Game" re-entry card; the fallback stages re-arm it below.
     OnlineRoom_noteSessionReturn(MDKR_PARTY_LINK_SESSION_END_NONE);
@@ -2715,6 +2759,27 @@ bool betaFakeBuildStage(const char *stage, MdkrOnlineViewModel *model,
         model->announcement = MDKR_ONLINE_ANNOUNCE_ASSERTIVE;
         return true;
     }
+    // The MISTYPED-code recovery: the transport recorded the service's
+    // "matched no live room" refusal, so the shared INVITE_EXPIRED card must
+    // read "check the digits" (title/copy/primary via betaApplyDrawOverrides),
+    // never send the player to nag the host for a fresh code. Built with the
+    // RAW view-model shape so the capture proves the overrides re-word it.
+    if (std::strcmp(stage, "recovery-code-mistyped") == 0) {
+        model->kind = MDKR_ONLINE_VIEW_RECOVERY;
+        model->failure = MDKR_ONLINE_VIEW_FAILURE_INVITE_EXPIRED;
+        model->title = "Invite Expired";
+        model->explanation =
+            "That invite expired. Show a new code on the display.";
+        model->primary = betaFakeControl(
+            MDKR_ONLINE_VIEW_ACTION_ENTER_ANOTHER_CODE, "Enter Another Code");
+        model->secondary =
+            betaFakeControl(MDKR_ONLINE_VIEW_ACTION_PLAY_HERE, "Play Here");
+        model->cancel =
+            betaFakeControl(MDKR_ONLINE_VIEW_ACTION_RETURN_HOME, "Return Home");
+        model->announcement = MDKR_ONLINE_ANNOUNCE_ASSERTIVE;
+        g_betaFakeJoinCodeInvalid = true;
+        return true;
+    }
     // The failure card real players hit most: an opponent dropping mid-race. Built
     // with the RAW view-model shape (primary PLAY_HERE labelled "Play Here") so the
     // capture proves betaApplyDrawOverrides relabels the primary too.
@@ -2767,7 +2832,7 @@ void drawBetaRoomFake(LauncherState &state) {
             "invite, invite-expired, phrase, room-single, room-tournament, "
             "handoff, room-single-fallback, room-tournament-fallback, "
             "room-stranded, results, finished, recovery, "
-            "recovery-opponent-left.");
+            "recovery-opponent-left, recovery-code-mistyped.");
         return;
     }
 

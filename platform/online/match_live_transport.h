@@ -57,6 +57,29 @@ struct MdkrOnlineRoomHttpInvite {
 bool mdkr_online_room_http_transport_invite(MdkrOnlineRoomTransport *transport,
                                             MdkrOnlineRoomHttpInvite *out);
 
+/* Why the create/join round trip was refused, at the granularity the SERVICE
+ * response actually carries: `invalid_code` / `invalid_invite` / 404 mean the
+ * code matched no live room (the mistype/stale-code shape -- re-typing can
+ * fix it), while `invite_expired` means the redemption TTL genuinely passed
+ * (only a fresh code from the host can fix it). Both still map onto the SAME
+ * INVITE_EXPIRED failure/recovery view (the shared view model is pinned);
+ * this detail exists so the launcher panel can word that card truthfully.
+ * NONE until a refusal of either shape has been observed. Thread-safe. */
+enum MdkrOnlineRoomJoinRefusalDetail {
+    MDKR_ONLINE_ROOM_JOIN_REFUSAL_NONE = 0,
+    MDKR_ONLINE_ROOM_JOIN_REFUSAL_CODE_INVALID,
+    MDKR_ONLINE_ROOM_JOIN_REFUSAL_INVITE_EXPIRED,
+};
+MdkrOnlineRoomJoinRefusalDetail mdkr_online_room_http_transport_join_refusal(
+    MdkrOnlineRoomTransport *transport);
+
+/* Test seam: classify a refused create/join HTTP response exactly as the
+ * shipped worker-thread path does (the same parser and precedence), with no
+ * socket and no thread. */
+MdkrOnlineRoomJoinRefusalDetail
+mdkr_online_room_transport_classify_refusal_for_test(int status,
+                                                     const char *body);
+
 /* The real-signal-client mesh backend. `origin` is the same service origin the
  * room transport uses; each beginSignaling() opens a fresh authenticated
  * /signal socket for the local endpoint and adopts the service-assigned
