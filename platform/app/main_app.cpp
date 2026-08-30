@@ -4669,6 +4669,27 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
         host.shutdown();
         return liveResult;
     }
+    /* Resolve the ROM's validated region up front so the in-process loopback
+     * lanes below stage the manifest a real endpoint of THAT region would: a PAL
+     * v80 payload authors the sim at 25 Hz, so its fixture compat must carry
+     * revision 2 / cadence 25 for the engine's cadence admission to accept it
+     * (bug #11). The engine loads the ROM only when a loopback session boots --
+     * after the fixture compat is frozen -- so this is the one point where the
+     * region is known first. mdkr_validate_rom is the same pure contract the
+     * launcher's ROM picker uses; a US ROM (or none) resolves to the historical
+     * US identity, so the NTSC loopback is byte-behaviour unchanged. */
+    if (config.rom_path != nullptr && config.rom_path[0] != '\0') {
+        const RomInfo loopbackRom = mdkr_validate_rom(config.rom_path);
+        uint8_t loopbackRev = 0u;
+        if (loopbackRom.valid && loopbackRom.integrity_verified) {
+            if (std::strcmp(loopbackRom.build, "pal.v80") == 0) {
+                loopbackRev = 2u;
+            } else if (std::strcmp(loopbackRom.build, "us.v80") == 0) {
+                loopbackRev = 1u;
+            }
+        }
+        OnlineRoom_setTestLoopbackRomRevision(loopbackRev);
+    }
     /* KEYSTONE PROOF: the LIVE-loopback RESIDENT lane. Stand up the SAME
      * two-real-adapter loopback race the MDKR_APP_TEST_ONLINE_LIVE lane below
      * uses, but make the engine session RESIDENT: ONE mdkr64_engine_boot spans
