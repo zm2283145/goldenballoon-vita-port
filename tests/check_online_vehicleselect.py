@@ -353,6 +353,16 @@ def check_defer(output: str) -> int | None:
     if VS_ADVANCE_RE.search(output):
         return fail(f"[{scn}] the stage advanced although the start stayed "
                     f"refused (the room must not leave LOBBY)", output)
+    # (d) the re-confirm against the still-un-ready rival parks the seat
+    # CONFIRMED-AND-WAITING (conf=1, intent ready=1, remote ready=0) -- the
+    # state whose footer must read "READY! WAITING FOR ..." (never an inert
+    # "A: SELECT").
+    waiting = [m for m in VS_RENDER_RE.finditer(output)
+               if m.start() > defer.end() and int(m.group(7)) == 1
+               and int(m.group(13)) == 1 and int(m.group(10)) == 0]
+    if not waiting:
+        return fail(f"[{scn}] the re-confirm never parked the seat "
+                    f"confirmed-and-waiting against the un-ready rival", output)
     return None
 
 

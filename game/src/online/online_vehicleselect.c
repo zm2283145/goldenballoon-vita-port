@@ -427,6 +427,12 @@ static void vehicleselect_input_scripted(VsInput *in) {
         case 40u:
             in->bEdge = 1u; /* back the deferred start out (B: CHANGE) */
             break;
+        case 50u:
+            in->aEdge = 1u; /* re-confirm against the still-un-ready rival:
+                             * parks the CONFIRMED-AND-WAITING footer state
+                             * ("READY! WAITING FOR ...") for the lane pin +
+                             * the capture */
+            break;
         default:
             break;
         }
@@ -899,10 +905,32 @@ static void vehicleselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSna
         mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, VS_HELP_Y,
                                 ASSET_FONTS_SMALLFONT, line,
                                 ALIGN_MIDDLE_CENTER, 200, 200, 200);
-    } else if (sVs.host && bothReady) {
+    } else if (bothReady) {
+        if (sVs.host) {
+            mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, VS_HELP_Y,
+                                    ASSET_FONTS_SMALLFONT, "A: GO   B: CHANGE",
+                                    ALIGN_MIDDLE_CENTER, 255, 255, 255);
+        } else {
+            /* both seats confirmed but the GO is the HOST's -- the joiner's A
+             * is inert here, so never advertise it; name the actual wait
+             * (charselect's "WAITING FOR HOST TO START..." family) and keep
+             * the truthful B (un-confirm). */
+            (void) snprintf(line, sizeof(line),
+                            "WAITING FOR %.12s TO START...   B: CHANGE", rname);
+            mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, VS_HELP_Y,
+                                    ASSET_FONTS_SMALLFONT, line,
+                                    ALIGN_MIDDLE_CENTER, 200, 200, 200);
+        }
+    } else if (sVs.confirmed) {
+        /* confirmed-and-waiting: A is inert until the rival confirms too, so
+         * "A: SELECT" would be a lie -- mirror charselect's confirmed-seat
+         * read ("READY! WAITING FOR <name>...") with the truthful B verb
+         * (un-confirm to change the pick). */
+        (void) snprintf(line, sizeof(line),
+                        "READY! WAITING FOR %.12s...   B: CHANGE", rname);
         mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, VS_HELP_Y,
-                                ASSET_FONTS_SMALLFONT, "A: GO   B: CHANGE",
-                                ALIGN_MIDDLE_CENTER, 255, 255, 255);
+                                ASSET_FONTS_SMALLFONT, line,
+                                ALIGN_MIDDLE_CENTER, 120, 255, 120);
     } else {
         /* (no "VEHICLE" literal here: the kerned SMALLFONT swallows the narrow
          * I between H and C -- it rendered as "VEHCLE" on capture.) */
