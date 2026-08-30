@@ -1,15 +1,14 @@
 #ifndef MDKR_ONLINE_VEHICLESELECT_H
 #define MDKR_ONLINE_VEHICLESELECT_H
 
-/* SEPARATED-BOOT-PATH (Strategy D2) native online VEHICLE select.
+/* SEPARATED-BOOT-PATH (Strategy D2) native online VEHICLE stage of the track
+ * screen.
  *
- * The player-facing screen inserted between the native CHARSELECT
- * (online_charselect.{c,h}) and the native TRACKSELECT (online_trackselect.{c,h}):
- * the player CHOOSES car / hovercraft / plane. Before this screen existed the
- * native flow only auto-narrowed a default vehicle to the resolved track's legal
- * mask -- the player never picked. It is driven by the online session
- * (game/src/online/online_session.c) as its MDKR_ONLINE_SESSION_VEHICLESELECT
- * phase, NOT by the offline menu state machine: it deliberately does NOT call any
+ * Retail 2P picks vehicles AFTER the track, as a stage of the track-select
+ * screen; this screen is that stage for the native flow. The session enters it
+ * from TRACKSELECT once the host's pick is locked (charselect -> track browse ->
+ * lock -> THIS -> OK -> race) as its MDKR_ONLINE_SESSION_VEHICLESELECT phase,
+ * NOT by the offline menu state machine: it deliberately does NOT call any
  * menu.c _loop. See the file header in online_vehicleselect.c for the full D2
  * reuse boundary (what game assets it borrows vs. what it owns).
  *
@@ -33,9 +32,9 @@ extern "C" {
 
 /* What one VEHICLESELECT tick tells the session to do next. */
 typedef enum MdkrOnlineVehicleselectResult {
-    MDKR_ONLINE_VEHICLESELECT_STAY = 0, /* keep showing the screen */
+    MDKR_ONLINE_VEHICLESELECT_STAY = 0, /* keep showing the stage */
     MDKR_ONLINE_VEHICLESELECT_ADVANCE,  /* authoritative lobby left LOBBY: boot */
-    MDKR_ONLINE_VEHICLESELECT_LEAVE     /* B: back one level, to CHARSELECT */
+    MDKR_ONLINE_VEHICLESELECT_LEAVE     /* B: back to the track browse stage */
 } MdkrOnlineVehicleselectResult;
 
 /* Load the screen's borrowed game assets (portraits + fonts + sky are
@@ -48,21 +47,30 @@ void mdkr_online_vehicleselect_enter(void);
 void mdkr_online_vehicleselect_exit(void);
 
 /* One per-frame step: read the party_link snapshot, resolve the legal vehicle
- * mask for the resolved track, apply local pad input to the cursor / confirm,
- * publish the FULL local intent (continuously) with the chosen (always mask-legal)
- * vehicle_id, and render the native screen. Returns whether the session should
- * stay, advance (boot) or leave (back to CHARSELECT). */
+ * mask for the LOCKED track/cup, apply local pad input to the pick / confirm /
+ * host OK, publish the FULL local intent (continuously) with the always
+ * mask-legal vehicle_id + the host's locked config + start_requested, and render
+ * the retail setup composition. Returns whether the session should stay, advance
+ * (boot) or leave (back to the track browse stage). */
 MdkrOnlineVehicleselectResult mdkr_online_vehicleselect_tick(s32 updateRate);
 
 /* True when the headless VEHICLESELECT test seam is armed (env
  * MDKR_TEST_ONLINE_VEHICLESELECT). Ordinary runs always return false. */
 u8 mdkr_online_vehicleselect_test_active(void);
 
-/* True once the LOCAL player has confirmed a (legal) vehicle on THIS screen (the
- * screen's own latch, not the lagging lobby snapshot). The session gates the
- * VEHICLESELECT -> TRACKSELECT hand-off on this so a back-out cannot one-frame
- * bounce forward before the player re-confirms. Resets to false on _enter(). */
-u8 mdkr_online_vehicleselect_local_confirmed(void);
+/* True once the LOCAL seat has A-confirmed a (legal) vehicle on THIS round's
+ * stage and has not B-un-confirmed since -- the PER-ROUND stage-confirm latch.
+ * Ready may latch ONLY through the stage's confirm, per round: the track
+ * BROWSE publishes this as its ready, so a rematch re-front whose host
+ * re-locks the identical config (no reducer ready-clear) can never re-latch a
+ * stale ready from the browse. Survives _enter/_exit; cleared only by the B
+ * un-confirm and by the round reset below. */
+u8 mdkr_online_vehicleselect_stage_confirmed_round(void);
+
+/* Round reset: clears the per-round stage-confirm latch. Called by the session
+ * at begin and at every race boot (the engine-side analog of the reducer's
+ * clear_round), so each round's selection re-confirms on the stage. */
+void mdkr_online_vehicleselect_round_reset(void);
 
 /* Headless test seam only (inert unless the env above is set): from LOBBY_WAIT,
  * install the party_link forward feed if nothing else has (the CHARSELECT seam

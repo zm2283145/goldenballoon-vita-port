@@ -451,6 +451,10 @@ void mdkr_online_ceremony_enter(const MdkrOnlineStandings *finalRanking) {
 
 void mdkr_online_ceremony_exit(void) {
     if (sCer.assets) {
+        /* Retire the frame's authored display list FIRST (this frame's texrects
+         * reference the tiles freed below -- the freed-texture DL corruption fix,
+         * see mdkr_online_screen_dl_retire). */
+        mdkr_online_screen_dl_retire();
         /* Disarm the borrowed sky before freeing its tiles (bgdraw_render lifetime). */
         mdkr_online_screen_backdrop_clear();
         mdkr_online_screen_hd_text_unref();

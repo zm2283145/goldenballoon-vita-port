@@ -27,7 +27,7 @@ entire tick budget parked on CHARSELECT --
         ... intent{hover=2 vehicle=0 confirmed=1 ready=1}
     [ONLINE] command stale type=SET_CHARACTER error=STALE_REVISION retry=6
         (re-sending against fresh revision)   <- blind re-sends, same stale rev
-    FAIL online lobby-unconfigured: native VEHICLESELECT never fronted after
+    FAIL online lobby-unconfigured: native TRACKSELECT never fronted after
     CHARSELECT (the unconfigured-room READY wedge: seat.ready never latched)
 -- the exact two-peer cloud wedge (seat CHARACTER converged, seat.ready never
 latched, stale-retry churn), reproduced in-process in under a minute.
@@ -71,14 +71,15 @@ PRECONFIG_RE = re.compile(
     r"^\[online-lobby-start\] pre-config track=(\d+)", re.MULTILINE)
 CHARSELECT_ENTER_RE = re.compile(
     r"^\[online-charselect\] enter:", re.MULTILINE)
-TO_VEHICLESELECT_RE = re.compile(
-    r"^\[online-session\] charselect -> vehicleselect", re.MULTILINE)
-VEHICLESELECT_ENTER_RE = re.compile(
-    r"^\[online-vehicleselect\] enter:", re.MULTILINE)
 TO_TRACKSELECT_RE = re.compile(
-    r"^\[online-session\] vehicleselect -> trackselect", re.MULTILINE)
+    r"^\[online-session\] charselect -> trackselect", re.MULTILINE)
 TRACKSELECT_ENTER_RE = re.compile(
     r"^\[online-trackselect\] enter:", re.MULTILINE)
+TO_VEHICLESELECT_RE = re.compile(
+    r"^\[online-session\] trackselect -> vehicleselect \(track locked",
+    re.MULTILINE)
+VEHICLESELECT_ENTER_RE = re.compile(
+    r"^\[online-vehicleselect\] enter:", re.MULTILINE)
 DEFER_RE = re.compile(
     r"^\[online-session\] race-1 boot deferred: descriptor not ready",
     re.MULTILINE)
@@ -152,26 +153,26 @@ def main() -> int:
     if BEGIN_DESCRIPTOR_RE.search(output):
         return fail("the descriptor-FIRST begin fired", output)
 
-    # --- The full native chain fronted, in order ------------------------------
+    # --- The full native chain fronted, in the RETAIL order -------------------
     # THE regression bar: at HEAD (pre-fix) the flow never left CHARSELECT --
-    # seat.ready never latched on the unconfigured room, so VEHICLESELECT below
-    # is precisely where the RED run died.
+    # seat.ready never latched on the unconfigured room, so the TRACKSELECT
+    # hand-off below is precisely where the RED run died.
     cs = CHARSELECT_ENTER_RE.search(output)
-    to_vs = TO_VEHICLESELECT_RE.search(output)
-    vs = VEHICLESELECT_ENTER_RE.search(output)
     to_ts = TO_TRACKSELECT_RE.search(output)
     ts = TRACKSELECT_ENTER_RE.search(output)
+    to_vs = TO_VEHICLESELECT_RE.search(output)
+    vs = VEHICLESELECT_ENTER_RE.search(output)
     if cs is None:
         return fail("native CHARSELECT never fronted", output)
-    if to_vs is None or vs is None:
-        return fail("native VEHICLESELECT never fronted after CHARSELECT (the "
+    if to_ts is None or ts is None:
+        return fail("native TRACKSELECT never fronted after CHARSELECT (the "
                     "unconfigured-room READY wedge: seat.ready never latched)",
                     output)
-    if to_ts is None or ts is None:
-        return fail("native TRACKSELECT never fronted after VEHICLESELECT",
-                    output)
-    if not (cs.start() < vs.start() < ts.start()):
-        return fail("CHARSELECT -> VEHICLESELECT -> TRACKSELECT ordering was "
+    if to_vs is None or vs is None:
+        return fail("the native VEHICLE stage never fronted after the track "
+                    "lock (retail order)", output)
+    if not (cs.start() < ts.start() < vs.start()):
+        return fail("CHARSELECT -> TRACKSELECT -> VEHICLE-stage ordering was "
                     "violated", output)
 
     # --- Readiness gate: deferred, armed, booted exactly once -----------------
@@ -240,7 +241,7 @@ def main() -> int:
         "track (pre-config SKIPPED, witnessed) over a 3-pump-per-leg latency "
         "room channel (State one pump behind CommandResult). CHARSELECT "
         "readied on char+vehicle alone (the reducer's own gate; no track "
-        "vote), VEHICLESELECT and TRACKSELECT fronted in order, the host lock "
+        "vote), TRACKSELECT and the VEHICLE stage fronted in retail order, the host lock "
         f"dispatched SET_CONFIG_TRACK={HOST_TRACK} as the room's FIRST-EVER "
         f"config, and race 1 booted exactly once on track {direct_track} "
         f"(players={direct_players}, honored, race={race_index}, "

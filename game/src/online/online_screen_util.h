@@ -106,6 +106,21 @@ void mdkr_online_screen_draw_portrait(u8 character, s32 x, s32 y, u8 r, u8 g, u8
 bool mdkr_online_screen_draw_vehicle(u8 vehicle, s32 cx, s32 topY, u8 r, u8 g, u8 b,
                                      u8 a);
 void mdkr_online_screen_fade_in_from_black(void);
+/* One-shot: the NEXT fade_in_from_black() call is skipped (no black veil). The
+ * session arms this for the INTRA-track-screen stage flips (browse <-> vehicle
+ * stage), which retail presents as ONE screen -- a fade there would read as a
+ * separate menu. Cleared by the next fade_in_from_black() call. */
+void mdkr_online_screen_fade_skip_once(void);
+/* Retire the CURRENT frame's authored display list BEFORE freeing screen assets
+ * it references. texrect_draw() embeds gDkrDmaDisplayList(tex->cmd) pointers INTO
+ * each texture allocation, so menu_assetgroup_free() while this frame's list (or
+ * the still-in-flight previous task) references the tiles makes the task walker
+ * interpret freed/reused texture bytes as display-list commands ("[DL] unknown
+ * display-list opcode" spew, intermittent SEGV). This mirrors the engine's own
+ * unload discipline (unload_level_game, thread3_main.c: gfxtask_wait + truncate
+ * the authored list + skip this frame's task). Every screen _exit() that frees a
+ * texture group MUST call this first. */
+void mdkr_online_screen_dl_retire(void);
 void mdkr_online_screen_menu_music(void);
 /* Start / keep a specific menu-family sequence via the self-contained music_play()
  * primitive (idempotent). menu_music() is this with SEQUENCE_MAIN_MENU; charselect

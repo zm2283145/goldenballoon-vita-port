@@ -45,6 +45,12 @@
 #include "online/online_results.h"     /* native RESULTS/STANDINGS phase */
 #include "online/online_ceremony.h"    /* native champion CEREMONY phase */
 #include "online/online_standings.h"   /* capture the final ranking (shared sort) */
+
+/* fade-skip primitive (online_screen_util.c). Declared directly rather than
+ * pulling online_screen_util.h in: that header drags rcp_dkr.h -> ultra64.h,
+ * whose os_libc sprintf declarations must PRECEDE the system <stdio.h> this TU
+ * includes first (the screen TUs' include-ordering rationale, inverted). */
+void mdkr_online_screen_fade_skip_once(void);
 #include "rollback/rollback_game_runtime.h" /* clean rollback teardown on the
                                               recoverable peer-loss unwind */
 
@@ -576,6 +582,15 @@ static void online_session_boot_race(void) {
     u16 intended;
     s32 manifestTrack;
 
+    /* A boot request means THIS round's selection is over (the room left
+     * LOBBY): clear the vehicle stage's per-round confirm latch, so the next
+     * round's screens (a rematch re-front, or the CANCEL_LOADING unwind's
+     * re-front) publish ready only after a FRESH stage confirm -- the engine
+     * mirror of the reducer's clear_round. At the top, before any deferral
+     * return, so the descriptor-less deferred boot clears it too; idempotent
+     * across the re-wait's repeated calls. */
+    mdkr_online_vehicleselect_round_reset();
+
     /* RE-FETCH the launch descriptor each boot. mdkr_online_session_begin
      * stashed race 1's; but in a resident LIVE session the launcher clears +
      * re-installs the roster/descriptor per round (a fresh match_epoch and, in a
@@ -697,6 +712,10 @@ void mdkr_online_session_begin(const MdkrMatchLaunchDescriptorV1 *launch) {
     sOnlineSession.lastModeSeen = 0xFFu; /* no forward-feed mode observed yet */
     sOnlineSession.liveReWaitLastReady = 0xFFu; /* re-wait witness unthrottled */
     sOnlineSession.desclessReWaitLastReady = 0xFFu; /* ditto */
+    /* fresh session: no round's vehicle stage has confirmed yet, so the
+     * per-round ready latch starts clear (screen TU statics survive an
+     * in-process session restart). */
+    mdkr_online_vehicleselect_round_reset();
     sOnlineSession.active = 1;
     /* Enter the SEPARATED mode. Offline code never produces this value, so the
      * offline menu state machine is never entered on this route. */
@@ -750,12 +769,13 @@ static bool online_session_snapshot_has_local_seat(
     return false;
 }
 
-/* the native VEHICLE select screen (inserted between CHARSELECT and TRACKSELECT)
+/* the native VEHICLE stage of the track screen (AFTER the track lock -- the
+ * retail order: charselect -> track browse -> lock -> vehicles -> OK -> race)
  * is ALWAYS part of the flow -- the player picks car/hovercraft/plane. Env
  * presence never removes it: a production run can no longer silently lose the
- * screen just because a test var happens to be set in the environment. */
+ * stage just because a test var happens to be set in the environment. */
 static bool online_session_vehicleselect_enabled(void) {
-    return true; /* the vehicle screen is always on */
+    return true; /* the vehicle stage is always on */
 }
 
 /* the native "more races" chooser ALWAYS owns the RESULTS terminal. Env presence
@@ -1408,11 +1428,12 @@ void mdkr_online_session_tick(s32 updateRate) {
             mdkr_online_charselect_exit();
             online_session_boot_race();
         } else if (r == MDKR_ONLINE_CHARSELECT_STAY &&
-                   online_session_vehicleselect_enabled() &&
                    mdkr_online_charselect_local_ready()) {
             /* once the local seat is confirmed+ready while the room
-             * is still in LOBBY, hand off to the native VEHICLE select screen
-             * (always part of the flow). gate on the SCREEN's own confirmed+ready
+             * is still in LOBBY, hand off to the native TRACKSELECT screen --
+             * the RETAIL order: the track browse comes right after PLAYER
+             * SELECT, and the vehicle pick is a later STAGE of that track
+             * screen (after the lock). Gate on the SCREEN's own confirmed+ready
              * latch AS WELL AS the snapshot's ready flag. The snapshot ready lags
              * un-ready by >=1 pump after a back-out, so relying on it alone would
              * one-frame flash charselect and re-advance; the screen latch resets
@@ -1422,10 +1443,10 @@ void mdkr_online_session_tick(s32 updateRate) {
             if (mdkr_party_link_read(&snap) &&
                 online_session_local_seat_ready_in_lobby(&snap)) {
                 mdkr_online_charselect_exit();
-                sOnlineSession.phase = MDKR_ONLINE_SESSION_VEHICLESELECT;
-                mdkr_online_vehicleselect_enter();
+                sOnlineSession.phase = MDKR_ONLINE_SESSION_TRACKSELECT;
+                mdkr_online_trackselect_enter();
                 fprintf(stderr,
-                        "[online-session] charselect -> vehicleselect (local "
+                        "[online-session] charselect -> trackselect (local "
                         "seat ready in LOBBY)\n");
             }
         } else if (r == MDKR_ONLINE_CHARSELECT_LEAVE) {
@@ -1469,8 +1490,10 @@ void mdkr_online_session_tick(s32 updateRate) {
         {
             /* track the host-intended pick as the room converges. Stashing
              * PRE-tick is correct (like CHARSELECT, unlike TRACKSELECT): the
-             * VEHICLE screen reduces NO host session config, so its tick cannot
-             * change the intended track -- the pre-tick snapshot is the freshest. */
+             * VEHICLE stage republishes the browse's LOCKED config and owns
+             * start_requested, but it cannot CHANGE the config -- its tick
+             * never moves the intended track, so the pre-tick snapshot is
+             * already the freshest. */
             MdkrPartyLinkSnapshot vsSnap;
             if (mdkr_party_link_read(&vsSnap)) {
                 online_session_stash_intended(&vsSnap);
@@ -1478,37 +1501,25 @@ void mdkr_online_session_tick(s32 updateRate) {
         }
         r = mdkr_online_vehicleselect_tick(updateRate);
         if (r == MDKR_ONLINE_VEHICLESELECT_ADVANCE) {
-            /* The authoritative lobby left LOBBY (host started / loading) -- the
-             * safety path: boot the race directly (charselect parity). */
+            /* The authoritative lobby left LOBBY (the host's OK started loading)
+             * -- the vehicle stage is the LAST selection stop in the retail
+             * order, so this is the normal race hand-off now. */
             mdkr_online_vehicleselect_exit();
             online_session_boot_race();
-        } else if (r == MDKR_ONLINE_VEHICLESELECT_STAY &&
-                   mdkr_online_vehicleselect_local_confirmed()) {
-            /* Once the local seat confirmed a legal vehicle while the room is still
-             * in LOBBY, hand off to TRACKSELECT. Gate on the SCREEN's own confirm
-             * latch AS WELL AS the snapshot's ready flag (the confirm latch resets
-             * on _enter, so a back-out to this screen re-requires a confirm before
-             * re-advancing -- no one-frame bounce). */
-            MdkrPartyLinkSnapshot snap;
-            if (mdkr_party_link_read(&snap) &&
-                online_session_local_seat_ready_in_lobby(&snap)) {
-                mdkr_online_vehicleselect_exit();
-                sOnlineSession.phase = MDKR_ONLINE_SESSION_TRACKSELECT;
-                mdkr_online_trackselect_enter();
-                fprintf(stderr,
-                        "[online-session] vehicleselect -> trackselect (local "
-                        "seat ready in LOBBY)\n");
-            }
         } else if (r == MDKR_ONLINE_VEHICLESELECT_LEAVE) {
-            /* B on VEHICLESELECT is a clean "back one level" to CHARSELECT. Same
-             * continuation discipline as the TRACKSELECT back-out (do NOT reset
-             * sCharselectLeaveWarned). */
+            /* B on the vehicle stage is a clean "back one stage" to the track
+             * BROWSE (retail: backing out of the setup stage returns to the
+             * browse frame; the lock latch resets on _enter, so re-advancing
+             * requires a fresh lock). Same intra-screen presentation: skip the
+             * reveal fade. Do NOT reset sCharselectLeaveWarned (continuation of
+             * the same session). */
             mdkr_online_vehicleselect_exit();
-            sOnlineSession.phase = MDKR_ONLINE_SESSION_CHARSELECT;
-            mdkr_online_charselect_enter();
+            sOnlineSession.phase = MDKR_ONLINE_SESSION_TRACKSELECT;
+            mdkr_online_screen_fade_skip_once();
+            mdkr_online_trackselect_enter();
             fprintf(stderr,
-                    "[online-session] vehicleselect -> charselect (back one "
-                    "level)\n");
+                    "[online-session] vehicleselect -> trackselect (back one "
+                    "stage)\n");
         }
         break;
     }
@@ -1531,31 +1542,39 @@ void mdkr_online_session_tick(s32 updateRate) {
             }
         }
         if (r == MDKR_ONLINE_TRACKSELECT_ADVANCE) {
-            /* Host started -> lobby left LOBBY -> boot the race. */
+            /* The room left LOBBY under the browse stage (a safety path: the
+             * OK normally lands while the vehicle stage fronts) -> boot. */
             mdkr_online_trackselect_exit();
             online_session_boot_race();
-        } else if (r == MDKR_ONLINE_TRACKSELECT_LEAVE) {
-            /* B on TRACKSELECT is a clean "back one level" (NOT the leave-to-
-             * launcher stub): to VEHICLESELECT when the vehicle screen participates
-             * (real play -- the natural back-stack TRACKSELECT -> VEHICLE ->
-             * CHARSELECT), otherwise straight to CHARSELECT (the pre-existing
-             * scripted lanes, byte-behaviour-unchanged). Deliberately do NOT reset
-             * sCharselectLeaveWarned: this is a continuation of the same session,
-             * so the leave-to-launcher warn-once latch is preserved. */
+        } else if (r == MDKR_ONLINE_TRACKSELECT_STAY &&
+                   online_session_vehicleselect_enabled() &&
+                   mdkr_online_trackselect_setup_ready()) {
+            /* The browse stage is done -- the host LOCKED a track/cup (or the
+             * joiner observed the host's lock): flip to the VEHICLE stage of
+             * the track screen, the RETAIL order (track first, vehicles after,
+             * on the same screen -- so the reveal fade is skipped; the ground
+             * carries over). The setup latch resets on trackselect _enter, so a
+             * B-back from the vehicle stage re-requires a fresh lock (no
+             * one-frame bounce). */
             mdkr_online_trackselect_exit();
-            if (online_session_vehicleselect_enabled()) {
-                sOnlineSession.phase = MDKR_ONLINE_SESSION_VEHICLESELECT;
-                mdkr_online_vehicleselect_enter();
-                fprintf(stderr,
-                        "[online-session] trackselect -> vehicleselect (back one "
-                        "level)\n");
-            } else {
-                sOnlineSession.phase = MDKR_ONLINE_SESSION_CHARSELECT;
-                mdkr_online_charselect_enter();
-                fprintf(stderr,
-                        "[online-session] trackselect -> charselect (back one "
-                        "level)\n");
-            }
+            sOnlineSession.phase = MDKR_ONLINE_SESSION_VEHICLESELECT;
+            mdkr_online_screen_fade_skip_once();
+            mdkr_online_vehicleselect_enter();
+            fprintf(stderr,
+                    "[online-session] trackselect -> vehicleselect (track "
+                    "locked: retail vehicle stage)\n");
+        } else if (r == MDKR_ONLINE_TRACKSELECT_LEAVE) {
+            /* B on the track BROWSE is a clean "back one level" to CHARSELECT
+             * (the retail back-stack: track screen -> PLAYER SELECT).
+             * Deliberately do NOT reset sCharselectLeaveWarned: this is a
+             * continuation of the same session, so the leave-to-launcher
+             * warn-once latch is preserved. */
+            mdkr_online_trackselect_exit();
+            sOnlineSession.phase = MDKR_ONLINE_SESSION_CHARSELECT;
+            mdkr_online_charselect_enter();
+            fprintf(stderr,
+                    "[online-session] trackselect -> charselect (back one "
+                    "level)\n");
         }
         break;
     }
@@ -1805,8 +1824,8 @@ void mdkr_online_session_tick(s32 updateRate) {
                                 online_session_chooser_name(choice));
                         break;
                     case MDKR_ONLINE_RESULTS_REFRONT_CHARSELECT:
-                        /* re-front CHARSELECT (-> VEHICLE -> TRACKSELECT): change
-                         * character + vehicle between races. The display-only joiner
+                        /* re-front CHARSELECT (-> TRACKSELECT -> vehicle stage):
+                         * change character + vehicle between races. The display-only joiner
                          * follows here too -- CHARSELECT is the safe universal
                          * re-selection entry that mirrors the host's config downstream. */
                         if (!sOnlineSession.liveResident) {

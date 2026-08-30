@@ -373,6 +373,14 @@ bool mdkr_online_screen_draw_vehicle(u8 vehicle, s32 cx, s32 topY, u8 r, u8 g,
 static FadeTransition sOnlineRevealTransition =
     FADE_TRANSITION(FADE_FULLSCREEN, FADE_FLAG_OUT, FADE_COLOR_BLACK, 18, 0);
 
+/* One-shot latch: skip the next reveal fade (armed by the session for the
+ * intra-track-screen stage flips, which retail presents as ONE screen). */
+static u8 sOnlineFadeSkipOnce;
+
+void mdkr_online_screen_fade_skip_once(void) {
+    sOnlineFadeSkipOnce = 1u;
+}
+
 /* REVEAL the screen from black. The engine's per-frame driver (transition_update()
  * + transition_render() at thread3_main.c:536, run every frame AFTER the gamemode
  * tick REGARDLESS of mode) then draws the receding black veil on top of whatever the
@@ -382,7 +390,60 @@ static FadeTransition sOnlineRevealTransition =
  * screen calls this from its _enter(), so EVERY phase change -- and the first native
  * screen after the launcher hand-off -- fades up from black instead of snapping in. */
 void mdkr_online_screen_fade_in_from_black(void) {
+    if (sOnlineFadeSkipOnce) {
+        sOnlineFadeSkipOnce = 0u;
+        return;
+    }
     transition_begin(&sOnlineRevealTransition);
+}
+
+/* ======================================================================== *
+ * Display-list retire (the freed-texture-still-referenced crash fix)
+ * ------------------------------------------------------------------------
+ * texrect_draw() (rcp_dkr.c) references every blitted tile by EMBEDDING a
+ * gDkrDmaDisplayList(tex->cmd, ...) pointer INTO the texture allocation, and the
+ * authored frame list is consumed by the gfx task asynchronously (double-buffered
+ * gSPTaskNum). A screen transition that frees its texture groups mid-tick --
+ * AFTER the outgoing screen already drew this frame -- therefore leaves the
+ * frame's list (and possibly the still-in-flight previous task) pointing at
+ * freed memory, which the incoming screen's loads immediately reuse: the task
+ * walker then interprets texture pixel bytes as commands ("[DL] unknown
+ * display-list opcode" spew, intermittent SEGV -- reproduced on the
+ * single-race-replay lane at the first screen transitions). The engine's own
+ * unload path (unload_level_game, thread3_main.c) shows the required discipline:
+ * wait out the in-flight task, then truncate the authored list to a trivial
+ * FullSync+End so no consumer ever walks the stale references. Mirror it here;
+ * the cost is ONE dropped frame per screen transition (invisible behind the
+ * entry fades / the intra-screen stage flip). Beta-only borrow: these globals
+ * all have external linkage in thread3_main.c; the OFF build never compiles
+ * this TU, so the release engine object is untouched. */
+extern s8 gSkipGfxTask;      /* thread3_main.c */
+extern s8 gDrawFrameTimer;   /* thread3_main.c */
+extern Gfx *gDisplayLists[2];/* thread3_main.c */
+extern s32 gSPTaskNum;       /* thread3_main.c */
+
+void mdkr_online_screen_dl_retire(void) {
+    if (gSkipGfxTask == FALSE) {
+        if (gDrawFrameTimer != 1) {
+            (void) gfxtask_wait();
+        }
+        gSkipGfxTask = TRUE;
+    }
+    /* Truncate the current authored list: this frame's already-drawn commands
+     * reference the tiles the caller is about to free, so they must never be
+     * consumed. Identical to unload_level_game's own truncation. */
+    gCurrDisplayList = gDisplayLists[gSPTaskNum];
+    gDPFullSync(gCurrDisplayList++);
+    gSPEndDisplayList(gCurrDisplayList++);
+    /* Hold the LAST presented image over the retired frame(s): without this
+     * the empty truncated task presents one BLACK frame -- a visible blink on
+     * the fade-skipped intra-track-screen stage flips (captured on the joiner
+     * flow dump). gDrawFrameTimer=2 is the engine's own loading-hold: the task
+     * submit is skipped while it counts down (thread3_main.c:378) and the
+     * previous framebuffer is copied over the current one (:598-608), so the
+     * outgoing screen's last real frame persists until the incoming screen's
+     * first frame is authored. */
+    gDrawFrameTimer = 2;
 }
 
 /* Start / keep the retail menu music on the native menu-family screens via the

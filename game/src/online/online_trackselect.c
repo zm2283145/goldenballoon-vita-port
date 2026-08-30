@@ -70,6 +70,8 @@
 #include "joypad.h"     /* input_pressed, input_clamp_stick_x/y */
 #include "PR/os_cont.h" /* A_BUTTON / B_BUTTON / *_JPAD / START_BUTTON / Z_TRIG */
 #include "net/party_link.h"
+#include "online/online_vehicleselect.h" /* the per-round stage-confirm latch:
+                                            the browse's ready publication */
 #include "online/online_screen_constants.h" /* shared screen size + lobby id-space
                                                mirrors (DRY across the native screens) */
 #include "online/online_screen_util.h" /* shared local_seat / text / pulse helpers
@@ -122,11 +124,10 @@
 /* Menu SFX (the real DKR enums, same reuse as CHARSELECT). */
 #define TS_SFX_MOVE SOUND_MENU_PICK2
 #define TS_SFX_LOCK SOUND_SELECT2
-#define TS_SFX_START SOUND_SELECT3
 #define TS_SFX_BACK SOUND_MENU_BACK3
 /* Retail's rejected/unavailable-cell blip (menu.c menu_track_select uses
  * SOUND_UNK_6A for picking an unavailable track), replacing the non-retail
- * electric buzz for a blocked move / start-with-nothing-locked. */
+ * electric buzz for a blocked move. */
 #define TS_SFX_REJECT SOUND_UNK_6A
 #define TS_SFX_MODE SOUND_MENU_PICK2 /* distinct from the lock sound */
 
@@ -135,8 +136,14 @@
  * 0), so rapid browsing never stacks voice lines. */
 #define TS_TT_VOICE_DELAY 7
 
-#define TS_LOCK_FLASH_TICKS 15u /* short flash; START works during it */
+#define TS_LOCK_FLASH_TICKS 15u /* short flash on the lock frame */
 #define TS_VEH_FLASH_TICKS 20u  /* auto-narrow "vehicle changed" highlight */
+/* JOINER browse dwell before following a lock that was ALREADY configured when
+ * the screen entered (a pre-configured room / a re-front's stale pick). MUST
+ * exceed the session's remote-vacate debounce (45 ticks) so a joiner whose host
+ * vanished at the browse trips LEFT there instead of warping into the vehicle
+ * stage on the stale pick. A FRESH lock is followed immediately (retail). */
+#define TS_JOINER_STALE_FOLLOW_TICKS 70u
 
 /* The 20 selectable track ids, cup-major then round order -- MIRRORS kCupTracks
  * in platform/online/lobby_core.c (the reducer's authoritative accepted set) and
@@ -228,7 +235,18 @@ typedef struct MdkrOnlineTrackselectState {
     u8 lockedCup;    /* locked cup (0..4), or TS_NONE */
     u8 vehicle;      /* auto-narrowed, mask-legal local vehicle id */
     u8 host;         /* the local seat is the room leader */
-    u8 startReq;     /* host pressed Start with something locked (latched) */
+    u8 setupReady;   /* the browse stage is done: host locked a pick (A), or the
+                      * joiner observed the host's lock in the snapshot. The
+                      * session reads this to advance to the VEHICLE stage of the
+                      * track screen (retail order: vehicles AFTER the track). */
+    u8 entryLockMode;   /* joiner stale-lock latch: the lock already visible at
+                         * _enter (mode + track/cup), so a PRE-EXISTING config
+                         * (a pre-configured room / a results re-front's stale
+                         * pick) is followed only after a short browse dwell,
+                         * while a FRESH host lock is followed immediately
+                         * (retail's zoom-into-setup). 0xFF == none at entry. */
+    u16 entryLockTrack;
+    u8 entryLockCup;
     u8 assets;       /* world bg group + fonts loaded */
     u8 leave;        /* B: back-to-charselect request (edge; see tick) */
     u32 ticks;       /* TRACKSELECT ticks elapsed (also drives the test input) */
@@ -490,9 +508,8 @@ static void trackselect_resolve_remote(const MdkrPartyLinkSnapshot *snap,
 typedef struct TsInput {
     s8 dx;        /* -1 / 0 / +1 column step (edge) */
     s8 dy;        /* -1 / 0 / +1 row step (edge) */
-    u8 aEdge;     /* A: lock track/cup */
-    u8 bEdge;     /* B: back one level (to the native VEHICLE screen) */
-    u8 startEdge; /* Start: begin the race (host, once locked) */
+    u8 aEdge;     /* A: lock track/cup -> the vehicle stage (retail track pick) */
+    u8 bEdge;     /* B: back one level (to the native CHARSELECT) */
     u8 modeEdge;  /* Z: toggle single/tournament (host) */
 } TsInput;
 
@@ -503,10 +520,19 @@ typedef struct TsInput {
  *                        room and narrows to the cup's round-0 track.
  *   2 HOLD            -- frame-dump only (the VS_SCN_HOLD sibling): lock a track,
  *                        browse away, then park with no START so a shot can be
- *                        taken of the fully revealed screen. */
+ *                        taken of the fully revealed screen.
+ *   3 REMATCH         -- local seat is a JOINER on a SAME-TRACK rematch re-front:
+ *                        the room enters carrying LAST round's config + persisted
+ *                        seats (REMATCH's clear_round drops only ready), and the
+ *                        scripted remote HOST presses OK while the joiner is
+ *                        still inside its stale-lock browse dwell. Proves the
+ *                        per-player CONFIRM cannot be bypassed: the OK must be
+ *                        refused NOT_READY until the joiner's vehicle stage
+ *                        fronts and confirms. */
 #define TS_SCN_SINGLE_HOST 0
 #define TS_SCN_JOINER 1
 #define TS_SCN_HOLD 2
+#define TS_SCN_REMATCH 3
 static s8 sTsScenario = -1;
 
 /* Scripted headless input (env MDKR_TEST_ONLINE_TRACKSELECT). Keyed on the
@@ -522,22 +548,19 @@ static u8 sTsEntryCount; /* incremented each _enter (test), persists across a ru
 
 static void trackselect_input_scripted(TsInput *in) {
     memset(in, 0, sizeof(*in));
-    if (sTsScenario == TS_SCN_JOINER) {
+    if (sTsScenario == TS_SCN_JOINER || sTsScenario == TS_SCN_REMATCH) {
         return; /* joiner: watch only, the seam drives the host */
     }
     if (sTsScenario == TS_SCN_HOLD) {
-        /* Dump seam: walk to Whale Bay (col2/row0), LOCK it, DWELL on the locked
-         * world past the reveal fade (so a dump catches the focused-on-locked
-         * state: gold banner + gold *Whale Bay* row + gold LOCKED notice), then
-         * browse away to the FFL column and PARK (no START) so a later dump catches
-         * the revealed locked-while-browsing state too. */
+        /* Dump seam: walk to Whale Bay (col2/row0) and PARK there browsing (a
+         * lock now flips straight into the vehicle stage, so the browse dump
+         * must NOT lock; the vehicle-stage dumps come from the VEHICLESELECT
+         * hold seam instead), then browse away to the FFL column so a later dump
+         * catches a second world's postcard too. */
         switch (sTs.ticks) {
         case 2u:
         case 3u:
             in->dx = 1;
-            break;
-        case 6u:
-            in->aEdge = 1u;
             break;
         case 40u:
         case 41u:
@@ -548,42 +571,40 @@ static void trackselect_input_scripted(TsInput *in) {
         }
         return;
     }
+    /* Retail-order choreography (the lane walks the whole track screen):
+     *   entry 1: B at tick 3 -- the browse-stage back-out steps to CHARSELECT
+     *            (whose seam re-confirms + re-readies and hands back here);
+     *   entry 2: walk to Whale Bay (col2/row0, track 8, hovercraft-only) and
+     *            LOCK it -- the session flips to the vehicle stage, whose own
+     *            script Bs back once (the stage back-stack proof) ...
+     *   entry 3: ... so re-lock the restored cursor cell (Whale Bay again) and
+     *            hand the flow forward for good (vehicle confirm + host OK). */
     if (sTsEntryCount <= 1u) {
         if (sTs.ticks == 3u) {
             in->bEdge = 1u;
         }
         return;
     }
-    switch (sTs.ticks) {
-    case 2u:
-        in->dx = 1; /* col 0 -> 1 */
-        break;
-    case 3u:
-        in->dx = 1; /* col 1 -> 2 (Sherbet); row 0 == Whale Bay (track 8) */
-        break;
-    case 6u:
-        in->aEdge = 1u; /* lock track 8 -> SET_CONFIG_TRACK(8) (clears ready) */
-        break;
-    /* browse AWAY from the locked track to Spaceport Alpha (col4,row3). Its
-     * 2P mask drops hovercraft, so the OLD (hovered-track) narrow would flip the
-     * seat to Car -- illegal for the LOCKED Whale Bay -- wedging Start. The fix
-     * narrows against the LOCKED track, so the vehicle must stay hovercraft. */
-    case 9u:
-        in->dx = 1; /* col 2 -> 3 */
-        break;
-    case 10u:
-        in->dx = 1; /* col 3 -> 4 (Future Fun Land) */
-        break;
-    case 11u:
-    case 12u:
-    case 13u:
-        in->dy = 1; /* row 0 -> 3 (Spaceport Alpha, track 15) */
-        break;
-    case 24u:
-        in->startEdge = 1u; /* host start once reconverged to all-ready */
-        break;
-    default:
-        break;
+    if (sTsEntryCount == 2u) {
+        switch (sTs.ticks) {
+        case 2u:
+            in->dx = 1; /* col 0 -> 1 */
+            break;
+        case 3u:
+            in->dx = 1; /* col 1 -> 2 (Sherbet); row 0 == Whale Bay (track 8) */
+            break;
+        case 6u:
+            in->aEdge = 1u; /* lock track 8 -> SET_CONFIG_TRACK(8) + vehicle stage */
+            break;
+        default:
+            break;
+        }
+        return;
+    }
+    /* entry 3+ (back from the vehicle stage's B): cursor restored to the last
+     * locked cell -- re-lock it. */
+    if (sTs.ticks == 2u) {
+        in->aEdge = 1u;
     }
 }
 
@@ -625,9 +646,9 @@ static void trackselect_input_live(TsInput *in) {
     sTs.stickLatchX = wantX;
     sTs.stickLatchY = wantY;
 
-    in->aEdge = (pressed & A_BUTTON) ? 1u : 0u;
+    /* START picks like A (retail lets either commit the track cell). */
+    in->aEdge = (pressed & (A_BUTTON | START_BUTTON)) ? 1u : 0u;
     in->bEdge = (pressed & B_BUTTON) ? 1u : 0u;
-    in->startEdge = (pressed & START_BUTTON) ? 1u : 0u;
     in->modeEdge = (pressed & Z_TRIG) ? 1u : 0u;
 }
 
@@ -676,13 +697,34 @@ static void trackselect_input_lobby_start(TsInput *in) {
         in->dy = 1; /* row 0 -> 1: track index 1 == Fossil Canyon (id 3) */
         break;
     case 5u:
-        in->aEdge = 1u; /* lock track index 1 -> id 3 (SET_CONFIG_TRACK clears ready) */
-        break;
-    case 10u:
-        in->startEdge = 1u; /* host start; startReq latches + re-fires each frame */
+        in->aEdge = 1u; /* lock track index 1 -> id 3 (SET_CONFIG_TRACK clears
+                         * ready) -> the vehicle stage; the host START moved to
+                         * that stage's script (retail order) */
         break;
     default:
         break;
+    }
+}
+
+/* minimal scripted input for the VEHICLESELECT-seam lanes that do NOT arm this
+ * screen's own seam (diverge/unknown scenarios): the retail-order flow passes
+ * the track browse BEFORE the vehicle stage now, so those lanes need a lock to
+ * reach it -- a single A on the entry cell. The vehicle seam then ADOPTS the
+ * room and pins its own scenario track, so which cell is locked is immaterial.
+ * Resolved once; inert without the env. */
+static s8 sTsVsLaneInput = -1; /* -1 unresolved, 0 off, 1 on */
+static u8 trackselect_vslane_input_active(void) {
+    if (sTsVsLaneInput < 0) {
+        sTsVsLaneInput =
+            (getenv("MDKR_TEST_ONLINE_VEHICLESELECT") != NULL) ? 1 : 0;
+    }
+    return (u8) (sTsVsLaneInput > 0 ? 1 : 0);
+}
+
+static void trackselect_input_vslane(TsInput *in) {
+    memset(in, 0, sizeof(*in));
+    if (sTs.ticks == 2u) {
+        in->aEdge = 1u; /* lock the entry cell -> the vehicle stage */
     }
 }
 
@@ -691,6 +733,8 @@ static void trackselect_gather_input(TsInput *in) {
         trackselect_input_scripted(in);
     } else if (trackselect_lobby_input_active()) {
         trackselect_input_lobby_start(in);
+    } else if (trackselect_vslane_input_active()) {
+        trackselect_input_vslane(in);
     } else {
         trackselect_input_live(in);
     }
@@ -714,7 +758,6 @@ static void trackselect_apply_input(const TsInput *in) {
         sTs.lockedTrack = TS_NONE; /* the reducer clears ready too; republish
                                     * reconverges */
         sTs.lockedCup = TS_NONE;
-        sTs.startReq = 0u;
         sTs.cursorRow = 0u;
         sound_play(TS_SFX_MODE, NULL); /* distinct from the lock sound */
         return;
@@ -749,6 +792,11 @@ static void trackselect_apply_input(const TsInput *in) {
     }
 
     if (in->aEdge) {
+        /* Retail order: picking the track/cup IS the stage advance -- the same A
+         * that locks the pick hands the screen to the vehicle stage (the session
+         * reads the setupReady latch below). No separate host START lives here
+         * any more; the race start moved to the vehicle stage's OK beat, exactly
+         * where retail puts it (after every seat's vehicle is confirmed). */
         if (sTs.mode == MDKR_ONLINE_SCREEN_MODE_SINGLE) {
             sTs.lockedTrack = (u8) ((sTs.cursorCol * TS_ROWS) + sTs.cursorRow);
             sLastLockedTrack = sTs.lockedTrack; /* persistence */
@@ -757,19 +805,9 @@ static void trackselect_apply_input(const TsInput *in) {
             sLastLockedCup = sTs.lockedCup; /* persistence */
         }
         sLastMode = sTs.mode;
-        sTs.startReq = 0u; /* a fresh lock re-arms Start */
+        sTs.setupReady = 1u; /* the session advances to the vehicle stage */
         sTs.lockFlashEnd = sTs.ticks + TS_LOCK_FLASH_TICKS;
         sound_play(TS_SFX_LOCK, NULL);
-    } else if (in->startEdge) {
-        bool locked = (sTs.mode == MDKR_ONLINE_SCREEN_MODE_SINGLE)
-                          ? (sTs.lockedTrack != TS_NONE)
-                          : (sTs.lockedCup != TS_NONE);
-        if (locked) {
-            sTs.startReq = 1u;
-            sound_play(TS_SFX_START, NULL);
-        } else {
-            sound_play(TS_SFX_REJECT, NULL); /* nothing to start yet */
-        }
     }
 }
 
@@ -786,8 +824,23 @@ static void trackselect_publish_intent(u8 localSeatChar) {
         intent.confirmed = 1u;
     }
     intent.vehicle_id = sTs.vehicle;
-    intent.ready = 1u;
-    intent.backout = 0u;
+    /* Ready latches ONLY via the vehicle stage's A-confirm, per round (the
+     * retail per-player CONFIRM). The browse publishes the stage's per-round
+     * confirm latch -- 0 until the LOCAL seat has confirmed on THIS round's
+     * stage -- and emits the un-ready otherwise (backout -> CHANGE_SELECTION;
+     * ready=0 alone plans nothing, party_link.c). An unconditional ready=1
+     * here let a rematch re-front re-latch a stale ready: a re-lock of the
+     * IDENTICAL track is no config change, so the reducer never ready-clears
+     * (lobby_core.c:756) and the host's OK could BEGIN_LOADING while the other
+     * seat was still browsing -- race-booted without its stage ever fronting.
+     * The planner absorbs the interim: an OK before every stage confirm is
+     * refused NOT_READY and re-fired off the refusal note once the confirm
+     * lands (party_link.h:229-241). */
+    {
+        u8 stageReady = mdkr_online_vehicleselect_stage_confirmed_round();
+        intent.ready = stageReady;
+        intent.backout = stageReady ? 0u : 1u;
+    }
 
     if (sTs.host) {
         intent.mode = sTs.mode; /* host always drives the mode */
@@ -796,7 +849,9 @@ static void trackselect_publish_intent(u8 localSeatChar) {
         } else if (sTs.mode == MDKR_ONLINE_SCREEN_MODE_TOURNAMENT && sTs.lockedCup != TS_NONE) {
             intent.cup_id = sTs.lockedCup;
         }
-        intent.start_requested = sTs.startReq ? 1u : 0u;
+        /* start_requested stays 0 here: the race start belongs to the VEHICLE
+         * stage's OK beat now (retail order -- START_RACE fires only after both
+         * seats confirmed their vehicles). */
     }
     mdkr_party_link_intent_publish(&intent);
 }
@@ -905,7 +960,11 @@ static void trackselect_draw_frame(u8 world) {
 static void trackselect_tt_announce(s32 rate) {
     u16 tid;
     s16 voice;
-    if (!sTs.host || sTs.ttVoiceDelay == 0) {
+    /* SINGLE mode only: a tournament cell picks a CUP, and announcing the cup's
+     * round-0 track name over it misnames the selection (retail's announcer only
+     * ever voices a hovered TRACK). */
+    if (!sTs.host || sTs.mode != MDKR_ONLINE_SCREEN_MODE_SINGLE ||
+        sTs.ttVoiceDelay == 0) {
         return;
     }
     sTs.ttVoiceDelay += (rate > 0) ? rate : 1;
@@ -934,7 +993,6 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
     u8 lockedTrackIdx = TS_NONE; /* which of the 20 is the effective lock */
     u8 lockedCup = TS_NONE;
     u8 localReady = 0u;
-    bool bothReady;
     u8 cellTrackIdx;            /* the framed cell's track INDEX (0..19) */
     char nameBuf[32];          /* upper-cased track name for the bottom BIGFONT */
     const char *worldName;
@@ -971,7 +1029,6 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
     if (haveSnap && localSeat >= 0) {
         localReady = snap->seats[localSeat].ready ? 1u : 0u;
     }
-    bothReady = haveSnap && localReady && rv->present && rv->ready;
 
     /* Resolve the framed cell's track INDEX + the two BIGFONT names. Host: the
      * cursor's cell (single) / the focused cup (tournament). Joiner (no cursor):
@@ -989,7 +1046,9 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
                           sizeof(nameBuf));
         bottomName = nameBuf;
     } else {
-        bottomName = "CHAMPIONSHIP"; /* the whole cup, not a single track */
+        /* Tournament: name the hovered/locked CUP itself (e.g. "SHERBET CUP"),
+         * not a generic literal -- the cup IS the pick on this screen. */
+        bottomName = sCupNames[focusWorld];
     }
 
     /* Ground: ONLY the bottom seats/status/controls board now. The framed cell +
@@ -1093,18 +1152,6 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
                                  ASSET_FONTS_SMALLFONT, line, ALIGN_MIDDLE_CENTER,
                                  150 + tri * 4, 150 + tri * 4, 150 + tri * 4);
             }
-        } else if (sTs.startReq && haveLock) {
-            if (bothReady) {
-                mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, TS_STATUS_Y,
-                                 ASSET_FONTS_SMALLFONT, "STARTING...",
-                                 ALIGN_MIDDLE_CENTER, 120, 255, 120);
-            } else {
-                (void) snprintf(line, sizeof(line), "WAITING FOR %.12s...",
-                                rname);
-                mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, TS_STATUS_Y,
-                                 ASSET_FONTS_SMALLFONT, line, ALIGN_MIDDLE_CENTER,
-                                 255, 240, 120);
-            }
         } else if (vehFlash) {
             const char *vn = sTs.vehicle < MDKR_ONLINE_SCREEN_VEHICLE_COUNT
                                  ? mdkr_online_vehicle_names[sTs.vehicle]
@@ -1115,9 +1162,10 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
                              255, 224, 96);
         } else if (haveLock) {
             /* Gold, not green: a LOCK is the committed selection accent, not a
-             * go/READY cue (green stays reserved for READY/STARTING). Paired with
-             * the gold lock banner above -- keep the two the same colour. */
-            (void) snprintf(line, sizeof(line), "%s LOCKED - PRESS START", pick);
+             * go/READY cue (green stays reserved for READY/STARTING). Only
+             * visible for the flip frame(s) now -- the lock advances straight to
+             * the vehicle stage (retail order). */
+            (void) snprintf(line, sizeof(line), "%s LOCKED", pick);
             mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, TS_STATUS_Y, ASSET_FONTS_SMALLFONT,
                              line, ALIGN_MIDDLE_CENTER, 255, 224, 96);
         } else {
@@ -1130,12 +1178,14 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
 
     /* always-visible seat presence/ready pair (charselect family). Hold the
      * displayed READY through the lock-flash window so the reducer's 1-2-frame
-     * ready-clear does not flicker CHOOSING. */
+     * ready-clear does not flicker CHOOSING. The local un-ready label is
+     * CHOOSING (the family vocabulary): un-ready IS the browse's steady state
+     * -- ready latches only at the vehicle stage's confirm, per round. */
     {
         bool holdReady = sTs.ticks < sTs.lockFlashEnd;
         bool youReady = localReady || holdReady;
         (void) snprintf(line, sizeof(line), "YOU: %s",
-                        youReady ? "READY" : "SYNCING");
+                        youReady ? "READY" : "CHOOSING");
         mdkr_online_screen_text(24, TS_SEAT_Y, ASSET_FONTS_SMALLFONT, line,
                          ALIGN_MIDDLE_LEFT, youReady ? 120 : 220,
                          youReady ? 255 : 220, youReady ? 120 : 220);
@@ -1158,11 +1208,10 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
         mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, TS_HELP_Y, ASSET_FONTS_SMALLFONT,
                          "B: BACK", ALIGN_MIDDLE_CENTER, 255, 255, 255);
     } else {
-        bool haveLock = (effMode == MDKR_ONLINE_SCREEN_MODE_SINGLE) ? (lockedTrackIdx != TS_NONE)
-                                                    : (lockedCup != TS_NONE);
+        /* A picks the track/cup and moves straight into the vehicle stage
+         * (retail order); the start prompt lives there now. */
         mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, TS_HELP_Y, ASSET_FONTS_SMALLFONT,
-                         haveLock ? "START: BEGIN  A: CHANGE PICK  Z: MODE  B: BACK"
-                                  : "A: SELECT   Z: MODE   B: BACK",
+                         "A: SELECT   Z: MODE   B: BACK",
                          ALIGN_MIDDLE_CENTER, 255, 255, 255);
     }
 
@@ -1204,7 +1253,7 @@ static void trackselect_witness(const MdkrPartyLinkSnapshot *snap, bool haveSnap
           ((u32) resolvedTrack << 13) |
           ((u32) ((snapCfg == 0xFFFFu) ? 0x3Fu : (snapCfg & 0x3Fu)) << 20) |
           ((u32) ((snapCup >= TS_COLS) ? 0x7u : snapCup) << 26) |
-          ((u32) sTs.startReq << 29) | ((u32) snapMode << 30);
+          ((u32) sTs.setupReady << 29) | ((u32) snapMode << 30);
     if (key == sWitnessKey) {
         return;
     }
@@ -1214,7 +1263,7 @@ static void trackselect_witness(const MdkrPartyLinkSnapshot *snap, bool haveSnap
             "[online-trackselect] render mode=%u col=%u row=%u host=%u "
             "track=%u mask=0x%x vehicle=%u locked{track=%d cup=%d} "
             "seat{r0=%u r1=%u} snap{mode=%u cfgTrack=%u cup=%u phase=%u} "
-            "start=%u\n",
+            "setup=%u\n",
             (unsigned) sTs.mode, (unsigned) sTs.cursorCol,
             (unsigned) sTs.cursorRow, (unsigned) sTs.host,
             (unsigned) resolvedTrack, (unsigned) mask, (unsigned) sTs.vehicle,
@@ -1222,7 +1271,7 @@ static void trackselect_witness(const MdkrPartyLinkSnapshot *snap, bool haveSnap
             sTs.lockedCup != TS_NONE ? (int) sTs.lockedCup : -1,
             (unsigned) seat0Ready, (unsigned) seat1Ready, (unsigned) snapMode,
             (unsigned) snapCfg, (unsigned) snapCup, (unsigned) snapPhase,
-            (unsigned) sTs.startReq);
+            (unsigned) sTs.setupReady);
 }
 
 /* Emit the offered track-id list ONCE so the lane can assert it equals the
@@ -1263,6 +1312,28 @@ void mdkr_online_trackselect_enter(void) {
         sTs.cursorRow = (u8) (sLastLockedTrack % TS_ROWS);
     } else if (sTs.mode == MDKR_ONLINE_SCREEN_MODE_TOURNAMENT && sLastLockedCup != TS_NONE) {
         sTs.cursorCol = sLastLockedCup;
+    }
+
+    /* latch the lock already visible at entry (a pre-configured room / a
+     * re-front's stale pick) so the JOINER stage-follow can tell a FRESH host
+     * lock (follow immediately) from a stale one (browse dwell first). */
+    sTs.entryLockMode = 0xFFu;
+    sTs.entryLockTrack = 0xFFFFu;
+    sTs.entryLockCup = 0xFFu;
+    {
+        MdkrPartyLinkSnapshot esnap;
+        if (mdkr_party_link_read(&esnap)) {
+            if (esnap.mode == MDKR_ONLINE_SCREEN_MODE_TOURNAMENT) {
+                if (esnap.cup_id < TS_COLS) {
+                    sTs.entryLockMode = MDKR_ONLINE_SCREEN_MODE_TOURNAMENT;
+                    sTs.entryLockCup = esnap.cup_id;
+                }
+            } else if (esnap.configured_track != 0xFFFFu &&
+                       trackselect_index_of(esnap.configured_track) != TS_NONE) {
+                sTs.entryLockMode = MDKR_ONLINE_SCREEN_MODE_SINGLE;
+                sTs.entryLockTrack = esnap.configured_track;
+            }
+        }
     }
 
     /* the lobby-start TOURNAMENT lane enters in TOURNAMENT mode focused on
@@ -1343,6 +1414,10 @@ void mdkr_online_trackselect_enter(void) {
 void mdkr_online_trackselect_exit(void) {
     u8 c;
     if (sTs.assets) {
+        /* Retire the frame's authored display list FIRST (this frame's frame/
+         * arrow/postcard texrects reference the tiles freed below -- the
+         * freed-texture DL corruption fix, see mdkr_online_screen_dl_retire). */
+        mdkr_online_screen_dl_retire();
         /* Disarm the borrowed sky before freeing its tiles (bgdraw_render lifetime). */
         mdkr_online_screen_backdrop_clear();
         unload_font(ASSET_FONTS_SMALLFONT);
@@ -1400,6 +1475,42 @@ MdkrOnlineTrackselectResult mdkr_online_trackselect_tick(s32 updateRate) {
 
     trackselect_gather_input(&in);
     trackselect_apply_input(&in);
+
+    /* JOINER stage-follow: the joiner has no cursor -- its browse stage is done
+     * once the HOST's lock is visible in the authoritative snapshot (single: a
+     * known configured_track; tournament: a locked cup). Retail's track pick
+     * moves every player into the vehicle stage at once, so a FRESH lock (one
+     * that differs from whatever was already configured when this screen
+     * entered) is followed IMMEDIATELY. A lock that was ALREADY PRESENT at
+     * entry (a pre-configured room, or a results re-front's stale pick while
+     * the host re-browses) is followed only after a short browse dwell -- the
+     * joiner gets the "HOST PICKED" beat, and the session's remote-vacate
+     * detector (45-tick debounce) keeps its trackselect arm: a vanished host
+     * trips LEFT during the dwell instead of the joiner warping into the
+     * vehicle stage on a stale pick. */
+    if (!sTs.host && haveSnap && !sTs.setupReady) {
+        u8 lockMode = 0xFFu;
+        u16 lockTrack = 0xFFFFu;
+        u8 lockCup = 0xFFu;
+        if (snap.mode == MDKR_ONLINE_SCREEN_MODE_TOURNAMENT) {
+            if (snap.cup_id < TS_COLS) {
+                lockMode = MDKR_ONLINE_SCREEN_MODE_TOURNAMENT;
+                lockCup = snap.cup_id;
+            }
+        } else if (snap.configured_track != 0xFFFFu &&
+                   trackselect_index_of(snap.configured_track) != TS_NONE) {
+            lockMode = MDKR_ONLINE_SCREEN_MODE_SINGLE;
+            lockTrack = snap.configured_track;
+        }
+        if (lockMode != 0xFFu) {
+            bool fresh = lockMode != sTs.entryLockMode ||
+                         lockTrack != sTs.entryLockTrack ||
+                         lockCup != sTs.entryLockCup;
+            if (fresh || sTs.ticks >= TS_JOINER_STALE_FOLLOW_TICKS) {
+                sTs.setupReady = 1u;
+            }
+        }
+    }
 
     /* Re-resolve after input (the lock/cursor may have moved) so the published
      * vehicle + the witness reflect this frame. */
@@ -1469,13 +1580,24 @@ static u8 sTsAdopted;
 static MdkrPartyLinkSnapshot sTsRoom;
 static u8 sTsStartArmed;
 
+/* REMATCH-scenario refusal bookkeeping: the scripted host's OK before the
+ * joiner's stage confirm is refused NOT_READY (mirroring BEGIN_LOADING's
+ * all_ready gate) and re-fires each tick (the planner's refusal-note cadence);
+ * the first refusal and the eventual convergence are witnessed once each. */
+#define TS_REMATCH_OK_TICK 16u /* well inside the joiner's 70-tick browse dwell */
+static u8 sTsRematchRefused;        /* first-refusal witness fired */
+static u32 sTsRematchRefusedTicks;  /* how many ticks the OK stayed refused */
+static u8 sTsRematchConvergedLogged;
+
 static void trackselect_test_resolve(void) {
     if (sTsTestActive < 0) {
         const char *e = getenv("MDKR_TEST_ONLINE_TRACKSELECT");
         sTsTestActive = (e != NULL) ? 1 : 0;
         /* Scenario from the env VALUE: "joiner" selects the joiner-render lane,
          * anything else is the default single-race host lane. */
-        if (e != NULL && strstr(e, "joiner") != NULL) {
+        if (e != NULL && strstr(e, "rematch") != NULL) {
+            sTsScenario = (s8) TS_SCN_REMATCH;
+        } else if (e != NULL && strstr(e, "joiner") != NULL) {
             sTsScenario = (s8) TS_SCN_JOINER;
         } else if (e != NULL && strstr(e, "hold") != NULL) {
             sTsScenario = (s8) TS_SCN_HOLD;
@@ -1492,6 +1614,9 @@ static void trackselect_test_reset(void) {
     }
     sTsAdopted = 0u;
     sTsStartArmed = 0u;
+    sTsRematchRefused = 0u;
+    sTsRematchRefusedTicks = 0u;
+    sTsRematchConvergedLogged = 0u;
 }
 
 void mdkr_online_trackselect_test_lobby_pump(void) {
@@ -1563,15 +1688,27 @@ static void trackselect_test_reduce_and_script(void) {
             sTsRoom.seats[1].is_host = 1u;
             sTsRoom.seats[1].is_local = 0u;
             sTsRoom.seats[1].vehicle_id = (uint8_t) VEHICLE_HOVERCRAFT;
+        } else if (sTsScenario == TS_SCN_REMATCH) {
+            /* SAME-TRACK rematch re-front: the CHARSELECT seam already
+             * pre-seeded the stale config + joiner roles (it must be in the
+             * snapshot BEFORE _enter latches the stale-lock dwell); enforce
+             * them defensively here so the scenario cannot silently degrade
+             * into the host shape. */
+            sTsRoom.seats[0].is_host = 0u;
+            sTsRoom.seats[0].is_local = 1u;
+            sTsRoom.seats[1].is_host = 1u;
+            sTsRoom.seats[1].is_local = 0u;
+            sTsRoom.seats[1].vehicle_id = (uint8_t) VEHICLE_HOVERCRAFT;
         }
         sTsAdopted = 1u;
     }
 
     /* JOINER scenario: the seam plays the REMOTE HOST -- it locks a tournament cup
      * (Sherbet, cup 2; round 0 == Whale Bay, hovercraft-only) so the joiner must
-     * render the room and narrow its own vehicle to the cup's round-0 track
-     *, then it starts. The local joiner publishes only its char/vehicle/
-     * ready (no config), which we converge below. */
+     * render the room and narrow its own vehicle to the cup's round-0 track.
+     * The local joiner publishes only its char/vehicle/ready (no config), which
+     * we converge below; the host's OK (start) fires from the VEHICLE-stage pump
+     * once both seats confirmed there (retail order). */
     if (sTsScenario == TS_SCN_JOINER) {
         u8 configChangedJ = 0u;
         if (mdkr_party_link_intent_poll(&intent)) {
@@ -1599,12 +1736,58 @@ static void trackselect_test_reduce_and_script(void) {
                 sTsRoom.seats[0].ready = 1u;
             }
         }
-        /* Scripted host start once the cup is locked and both are ready. */
-        if (sTs.ticks >= 24u && sTsRoom.cup_id == 2u &&
-            sTsRoom.seats[0].ready && sTsRoom.seats[1].ready) {
-            sTsStartArmed++;
-            if (sTsStartArmed >= 6u) {
-                sTsRoom.phase = (uint8_t) TS_LOADING_PHASE;
+        mdkr_party_link_publish(&sTsRoom);
+        return;
+    }
+
+    /* SAME-TRACK REMATCH scenario: the seam plays the REMOTE HOST of a
+     * post-race re-front whose room still carries LAST round's config (the
+     * reducer's REMATCH clear_round drops only ready + votes, lobby_core.c:407)
+     * -- so re-locking the IDENTICAL track never ready-clears (no config
+     * change, lobby_core.c:756). The host is fast on its own endpoint: it
+     * holds ready and, from TS_REMATCH_OK_TICK (well inside the local joiner's
+     * 70-tick stale-lock browse dwell), presses OK every tick. The reduce
+     * models the real machinery: seat ready latches from intent.ready only
+     * with char+vehicle set (SET_READY's member_selection_complete), DROPS on
+     * !ready/backout (the planner's CHANGE_SELECTION), and the OK is
+     * BEGIN_LOADING's all_ready gate -- refused NOT_READY while any seat is
+     * un-ready, re-fired each tick (the refusal-note cadence), converging the
+     * first tick both seats are ready. */
+    if (sTsScenario == TS_SCN_REMATCH) {
+        if (mdkr_party_link_intent_poll(&intent)) {
+            if (intent.confirmed &&
+                intent.hover_character < MDKR_ONLINE_SCREEN_CHAR_COUNT) {
+                sTsRoom.seats[0].character_id = intent.hover_character;
+            }
+            if (intent.vehicle_id < MDKR_ONLINE_SCREEN_VEHICLE_COUNT) {
+                sTsRoom.seats[0].vehicle_id = intent.vehicle_id;
+            }
+            if (intent.ready &&
+                sTsRoom.seats[0].character_id != MDKR_ONLINE_SCREEN_NO_CHARACTER &&
+                sTsRoom.seats[0].vehicle_id != MDKR_ONLINE_SCREEN_NO_VEHICLE) {
+                sTsRoom.seats[0].ready = 1u;
+            } else if (intent.backout || !intent.ready) {
+                sTsRoom.seats[0].ready = 0u;
+            }
+        }
+        sTsRoom.seats[1].ready = 1u; /* the host re-asserts ready */
+        if (sTs.ticks >= TS_REMATCH_OK_TICK &&
+            sTsRoom.phase == (uint8_t) MDKR_ONLINE_SCREEN_LOBBY_PHASE) {
+            if (sTsRoom.seats[0].ready && sTsRoom.seats[1].ready) {
+                sTsStartArmed++;
+                if (sTsStartArmed >= 2u) {
+                    sTsRoom.phase = (uint8_t) TS_LOADING_PHASE;
+                }
+            } else {
+                sTsStartArmed = 0u;
+                sTsRematchRefusedTicks++;
+                if (!sTsRematchRefused) {
+                    sTsRematchRefused = 1u;
+                    fprintf(stderr,
+                            "[online-trackselect] test-script host OK refused "
+                            "NOT_READY (joiner not stage-confirmed; re-fire "
+                            "armed)\n");
+                }
             }
         }
         mdkr_party_link_publish(&sTsRoom);
@@ -1651,19 +1834,103 @@ static void trackselect_test_reduce_and_script(void) {
                 sTsRoom.seats[0].ready = 0u;
             }
         }
+        /* No start handling here: the host's START moved to the vehicle stage
+         * (retail order), where mdkr_online_trackselect_test_vehicle_pump owns
+         * the LOADING flip for this seam's lanes. */
+    }
 
-        {
-            bool configReady =
-                (sTsRoom.mode == MDKR_ONLINE_SCREEN_MODE_TOURNAMENT)
-                    ? (sTsRoom.cup_id != 0xFFu)
-                    : (sTsRoom.configured_track != 0xFFFFu);
-            if (intent.start_requested && configReady &&
-                sTsRoom.seats[0].ready && sTsRoom.seats[1].ready) {
-                sTsStartArmed++;
-                if (sTsStartArmed >= 6u) {
-                    sTsRoom.phase = (uint8_t) TS_LOADING_PHASE;
-                }
+    mdkr_party_link_publish(&sTsRoom);
+}
+
+/* VEHICLE-stage reducer pump for the TRACKSELECT seam's lanes. The flow now ENDS
+ * at the vehicle stage (retail order: browse -> lock -> vehicles -> OK), so the
+ * seam's minimal reducer must keep converging the room -- and own the LOADING
+ * flip -- while the VEHICLESELECT screen ticks (this TU's own reduce runs only
+ * from trackselect_tick). Called from vehicleselect_tick; inert unless this seam
+ * is armed and has adopted a room. SINGLE-HOST: converge the local seat's
+ * vehicle/ready + the host's republished config, flip to LOADING on the polled
+ * start_requested once both seats are ready. JOINER: the scripted remote HOST
+ * presses OK once both seats are ready (the local joiner never starts). */
+void mdkr_online_trackselect_test_vehicle_pump(void) {
+    MdkrPartyLinkLocalIntent intent;
+    bool haveIntent;
+
+    trackselect_test_resolve();
+    if (!sTsTestActive || !mdkr_party_link_active() || !sTsAdopted) {
+        return;
+    }
+
+    haveIntent = mdkr_party_link_intent_poll(&intent);
+    if (haveIntent) {
+        if (intent.confirmed && intent.hover_character < MDKR_ONLINE_SCREEN_CHAR_COUNT) {
+            sTsRoom.seats[0].character_id = intent.hover_character;
+        }
+        if (intent.vehicle_id < MDKR_ONLINE_SCREEN_VEHICLE_COUNT) {
+            sTsRoom.seats[0].vehicle_id = intent.vehicle_id;
+        }
+        if (sTsScenario != TS_SCN_JOINER && sTsScenario != TS_SCN_REMATCH) {
+            /* the host's vehicle-stage republish of its locked config (same
+             * accept rules as the browse-stage reduce; a re-publish of the SAME
+             * value is change-detected and never re-clears ready). */
+            if (intent.mode != MDKR_PARTY_LINK_MODE_UNSET &&
+                sTsRoom.mode != intent.mode) {
+                sTsRoom.mode = intent.mode;
             }
+            if (intent.config_track != MDKR_PARTY_LINK_TRACK_UNSET &&
+                sTsRoom.configured_track != intent.config_track &&
+                trackselect_test_known_track(intent.config_track)) {
+                sTsRoom.configured_track = intent.config_track;
+            }
+            if (intent.cup_id != MDKR_PARTY_LINK_CUP_UNSET &&
+                sTsRoom.cup_id != intent.cup_id) {
+                sTsRoom.cup_id = intent.cup_id;
+            }
+        }
+        sTsRoom.seats[1].ready = 1u; /* the scripted remote republishes ready */
+        if (intent.ready &&
+            sTsRoom.seats[0].character_id != MDKR_ONLINE_SCREEN_NO_CHARACTER &&
+            sTsRoom.seats[0].vehicle_id != MDKR_ONLINE_SCREEN_NO_VEHICLE) {
+            sTsRoom.seats[0].ready = 1u;
+        } else if (!intent.ready) {
+            sTsRoom.seats[0].ready = 0u; /* vehicle un-confirmed (B) */
+        }
+    }
+
+    {
+        bool configReady =
+            (sTsRoom.mode == MDKR_ONLINE_SCREEN_MODE_TOURNAMENT)
+                ? (sTsRoom.cup_id != 0xFFu)
+                : (sTsRoom.configured_track != 0xFFFFu);
+        bool bothReady = sTsRoom.seats[0].ready && sTsRoom.seats[1].ready;
+        bool wantStart = (sTsScenario == TS_SCN_JOINER ||
+                          sTsScenario == TS_SCN_REMATCH)
+                             ? bothReady /* remote host OKs the converged room */
+                             : (haveIntent && intent.start_requested &&
+                                bothReady);
+        if (wantStart && configReady) {
+            sTsStartArmed++;
+            if (sTsStartArmed >= 6u) {
+                if (sTsScenario == TS_SCN_REMATCH && sTsRematchRefused &&
+                    !sTsRematchConvergedLogged &&
+                    sTsRoom.phase == (uint8_t) MDKR_ONLINE_SCREEN_LOBBY_PHASE) {
+                    /* the re-fired OK finally converged: the joiner's stage
+                     * confirm landed ready=1, so the all_ready gate opened. */
+                    sTsRematchConvergedLogged = 1u;
+                    fprintf(stderr,
+                            "[online-trackselect] test-script host OK converged "
+                            "after %u refused tick(s) (joiner stage-confirmed) "
+                            "-> LOADING\n",
+                            (unsigned) sTsRematchRefusedTicks);
+                }
+                sTsRoom.phase = (uint8_t) TS_LOADING_PHASE;
+            }
+        } else if (sTsScenario == TS_SCN_REMATCH &&
+                   sTs.ticks >= TS_REMATCH_OK_TICK &&
+                   sTsRoom.phase == (uint8_t) MDKR_ONLINE_SCREEN_LOBBY_PHASE) {
+            /* the host's OK keeps re-firing against a not-yet-ready room while
+             * the stage fronts too (the refusal-note cadence spans screens). */
+            sTsStartArmed = 0u;
+            sTsRematchRefusedTicks++;
         }
     }
 
@@ -1673,6 +1940,48 @@ static void trackselect_test_reduce_and_script(void) {
 u8 mdkr_online_trackselect_test_active(void) {
     trackselect_test_resolve();
     return (u8) (sTsTestActive > 0 ? 1 : 0);
+}
+
+/* the seam's SAME-TRACK REMATCH scenario is armed (env value "rematch").
+ * The CHARSELECT seam consults this to pre-seed its scripted room with LAST
+ * round's persisted config + joiner roles BEFORE trackselect _enter latches
+ * the stale-lock browse dwell from the live snapshot (pre-seeding at this
+ * seam's own adoption would be one screen too late). Test-only; inert in a
+ * normal run. */
+u8 mdkr_online_trackselect_test_scenario_rematch(void) {
+    trackselect_test_resolve();
+    return (u8) ((sTsTestActive > 0 && sTsScenario == (s8) TS_SCN_REMATCH) ? 1
+                                                                           : 0);
+}
+
+/* the screen's OWN browse-stage-done latch (reset by _enter's memset): host set
+ * it by locking a pick (A); a joiner set it on observing the host's lock in the
+ * snapshot. The session gates the TRACKSELECT -> vehicle-stage hand-off on this,
+ * so a B-back from the vehicle stage re-requires a fresh lock before
+ * re-advancing (no one-frame bounce). */
+u8 mdkr_online_trackselect_setup_ready(void) {
+    return (u8) (sTs.setupReady ? 1 : 0);
+}
+
+/* The host's LAST LOCKED session config, for the vehicle stage's publisher: the
+ * stage must keep republishing the locked mode + track/cup every frame (the
+ * reverse-feed planner re-fires an un-converged SET_* only while an intent still
+ * carries it -- a single lock-tick publish could be lost on a real transport).
+ * Reads the file-scope persistence latches, which the A-lock refreshes. Fields
+ * with no lock carry the party_link UNSET sentinels. */
+void mdkr_online_trackselect_locked_config(u8 *mode, u16 *configTrack, u8 *cupId) {
+    *mode = (u8) MDKR_PARTY_LINK_MODE_UNSET;
+    *configTrack = (u16) MDKR_PARTY_LINK_TRACK_UNSET;
+    *cupId = (u8) MDKR_PARTY_LINK_CUP_UNSET;
+    if (sLastMode == MDKR_ONLINE_SCREEN_MODE_SINGLE) {
+        if (sLastLockedTrack != TS_NONE) {
+            *mode = sLastMode;
+            *configTrack = (u16) sTrackIds[sLastLockedTrack];
+        }
+    } else if (sLastLockedCup != TS_NONE) {
+        *mode = sLastMode;
+        *cupId = sLastLockedCup;
+    }
 }
 
 /* cup round -> track id from the authoritative sTrackIds mirror (track

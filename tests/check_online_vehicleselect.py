@@ -1,34 +1,38 @@
 #!/usr/bin/env python3
-"""Prove the native online VEHICLE SELECT screen.
+"""Prove the native online VEHICLE stage of the track screen.
 
-Where check_online_charselect.py proves the FIRST player-facing screen of the
-separated online path and check_online_trackselect.py the track/cup screen, THIS
-lane proves the NEW screen inserted between them (game/src/online/
-online_vehicleselect.c): the player CHOOSES car / hovercraft / plane. Before it the
-native flow only auto-narrowed a DEFAULT vehicle -- the player never picked.
+Retail 2P picks vehicles AFTER the track, as a stage of the track-select screen
+(menu.c trackmenu_setup_render). THIS lane proves that stage for the native flow
+(game/src/online/online_vehicleselect.c): the session fronts it from TRACKSELECT
+once the host's pick is locked (charselect -> track browse -> lock -> VEHICLES ->
+OK -> race), and the player picks car / hovercraft / plane there.
 
-The crux the recon called out: the party_link reverse feed ALREADY carries
-vehicle_id and the reducer ALREADY validates CHOOSE_VEHICLE + refuses START
-(BEGIN_LOADING) with ILLEGAL_VEHICLE, so the screen only drives intent.vehicle_id
-from a player cursor. This lane closes that cursor -> intent -> reducer -> snapshot
+The crux the recon called out still holds: the party_link reverse feed ALREADY
+carries vehicle_id and the reducer ALREADY validates CHOOSE_VEHICLE + refuses
+START (BEGIN_LOADING) with ILLEGAL_VEHICLE, so the stage only drives
+intent.vehicle_id from the player's pick, maps the retail per-player CONFIRM onto
+intent.ready, and republishes the host's locked config + the OK
+(start_requested). This lane closes that pick -> intent -> reducer -> snapshot
 round trip headless, with the SAME in-process two-adapter live session the other
-screen lanes use, over TWO scenarios keyed on the MDKR_TEST_ONLINE_VEHICLESELECT
+screen lanes use, over three scenarios keyed on the MDKR_TEST_ONLINE_VEHICLESELECT
 env value:
 
-  * "1"       REJECT + CHAIN + BOOT: the combined lane pins Whale Bay (track 8,
-              hovercraft-only 0x2), so the cursor seeds on the only legal slot
-              (hovercraft, id 1 -- already DIFFERENT from the CHARSELECT default
-              CAR 0). The scripted input moves to CAR and presses A to prove the
-              ILLEGAL pick is REJECTED (buzz, no change, no ILLEGAL_VEHICLE ever),
-              then confirms hovercraft. The session advances
-              CHARSELECT -> VEHICLESELECT -> TRACKSELECT (and the TRACKSELECT B-back
-              proves the back-stack TRACKSELECT -> VEHICLESELECT), the host starts,
-              and the two endpoints converge byte-for-byte on track 8. R3: the
-              PUBLISHED vehicle is legal every frame and START is never refused.
-  * "diverge" DIVERGENT PICK: no track pinned (all three legal), so the local seat
-              picks PLANE (2) while the scripted remote keeps CAR (0) -- the two
-              endpoints hold DIFFERENT vehicles and BOTH converge in the snapshot
-              (the per-seat vehicle two-endpoint proof).
+  * "1"       SKIP-CLAMP + OK + BOOT: the combined lane pins Whale Bay (track 8,
+              hovercraft-only 0x2). Retail's pick cycle SKIPS unavailable
+              vehicles and CLAMPS at the ends (menu.c:12066-12086) -- it can
+              never even HOVER an illegal vehicle -- so the scripted input tries
+              to cycle BOTH ways (the pick must stay HOVERCRAFT, never CAR/PLANE)
+              then confirms and the host OKs. The session runs the retail order
+              CHARSELECT -> TRACKSELECT -> VEHICLE stage (with the browse B-back
+              to CHARSELECT and the stage B-back to the browse exercised), the OK
+              starts the race, and the two endpoints converge byte-for-byte on
+              track 8. R3: the PUBLISHED vehicle is legal every frame and START
+              is never refused.
+  * "diverge" DIVERGENT PICK: no track pinned by the stage seam (all three
+              legal), so the local seat picks PLANE (2) while the scripted remote
+              keeps CAR (0) -- the two endpoints hold DIFFERENT vehicles and BOTH
+              converge in the snapshot (the per-seat vehicle two-endpoint proof).
+  * "unknown" FAIL-CLOSED mask contract (see check_unknown below).
 """
 
 from __future__ import annotations
@@ -52,7 +56,7 @@ LOCKED_TRACK = 8       # Whale Bay (cup 2 round 0), hovercraft-only 0x2
 LOCKED_MASK = 0x2
 UNKNOWN_TRACK = 900    # out-of-range resolved track: the fail-closed mask probe
 ALL_VEHICLES = 0x7     # car+hovercraft+plane -- the permissive mask that must NOT appear
-HOVERCRAFT = 1         # VEHICLE_HOVERCRAFT -- the legal pick for Whale Bay
+HOVERCRAFT = 1         # VEHICLE_HOVERCRAFT -- the only legal pick for Whale Bay
 CAR = 0                # VEHICLE_CAR -- the CHARSELECT default; illegal for Whale Bay
 PLANE = 2              # VEHICLE_PLANE -- the DIVERGE local pick
 
@@ -65,24 +69,30 @@ VS_RENDER_RE = re.compile(
     r"^\[online-vehicleselect\] render cursor=(\d+) vehicle=(\d+) "
     r"legal=0x([0-9a-f]+) track=(\d+) local\{seatVeh=(\d+) seatReady=(\d+) "
     r"conf=(\d+)\} remote\{seat=(-?\d+) veh=(\d+) ready=(\d+) name=(\S+)\} "
-    r"intent\{vehicle=(\d+) ready=1\}$", re.MULTILINE)
+    r"intent\{vehicle=(\d+) ready=(\d+)\}$", re.MULTILINE)
 # findall tuple indices:
 #  0 cursor 1 vehicle 2 legal 3 track 4 seatVeh 5 seatReady 6 conf
-#  7 rSeat 8 rVeh 9 rReady 10 rName 11 intentVeh
-VS_REJECT_RE = re.compile(
-    r"^\[online-vehicleselect\] reject vehicle=(\d+) \(illegal for track=(\d+) "
-    r"mask=0x([0-9a-f]+)\)$", re.MULTILINE)
+#  7 rSeat 8 rVeh 9 rReady 10 rName 11 intentVeh 12 intentReady
 VS_ADVANCE_RE = re.compile(
     r"^\[online-vehicleselect\] advance: lobby left LOBBY", re.MULTILINE)
 VS_EXIT_RE = re.compile(
-    r"^\[online-vehicleselect\] exit: freed portrait \+ vehicle assets",
+    r"^\[online-vehicleselect\] exit: freed vehicle-stage assets",
     re.MULTILINE)
-SESS_CS_TO_VS_RE = re.compile(
-    r"^\[online-session\] charselect -> vehicleselect", re.MULTILINE)
-SESS_VS_TO_TS_RE = re.compile(
-    r"^\[online-session\] vehicleselect -> trackselect", re.MULTILINE)
+VS_OK_RE = re.compile(
+    r"^\[online-vehicleselect\] host OK -> start requested$", re.MULTILINE)
+VS_REV_RE = re.compile(
+    r"^\[online-vehicleselect\] all vehicles confirmed \(CAR_REV2\)$",
+    re.MULTILINE)
+VS_BACK_RE = re.compile(
+    r"^\[online-vehicleselect\] back to track browse$", re.MULTILINE)
+SESS_CS_TO_TS_RE = re.compile(
+    r"^\[online-session\] charselect -> trackselect", re.MULTILINE)
 SESS_TS_TO_VS_RE = re.compile(
-    r"^\[online-session\] trackselect -> vehicleselect", re.MULTILINE)
+    r"^\[online-session\] trackselect -> vehicleselect \(track locked",
+    re.MULTILINE)
+SESS_VS_TO_TS_RE = re.compile(
+    r"^\[online-session\] vehicleselect -> trackselect \(back one stage\)",
+    re.MULTILINE)
 
 
 fail = make_fail("vehicleselect")
@@ -112,8 +122,8 @@ def run(binary, rom, vs_value, ticks, timeout, verbose, extra):
                       extra_env=seams, prefix="mdkr64-online-vehicleselect-")
 
 
-def check_reject_boot(output: str) -> int | None:
-    scn = "reject-boot"
+def check_skip_boot(output: str) -> int | None:
+    scn = "skip-boot"
     marker = forbidden_marker(output, *FORBIDDEN_ONLINE)
     if marker:
         return fail(f"[{scn}] observed forbidden marker {marker!r}", output)
@@ -125,58 +135,68 @@ def check_reject_boot(output: str) -> int | None:
     if not CS_ENTER_RE.search(output):
         return fail(f"[{scn}] CHARSELECT never entered (flow must pass through it)",
                     output)
-    if not SESS_CS_TO_VS_RE.search(output):
-        return fail(f"[{scn}] CHARSELECT never handed off to VEHICLESELECT", output)
+    if not SESS_CS_TO_TS_RE.search(output):
+        return fail(f"[{scn}] CHARSELECT never handed off to TRACKSELECT (retail "
+                    f"order: the track browse follows PLAYER SELECT)", output)
+    ts_enter = TS_ENTER_RE.search(output)
+    if ts_enter is None:
+        return fail(f"[{scn}] TRACKSELECT was never entered", output)
+    to_vs = SESS_TS_TO_VS_RE.search(output)
+    if to_vs is None:
+        return fail(f"[{scn}] the track lock never handed off to the VEHICLE "
+                    f"stage (retail order: vehicles AFTER the track)", output)
     enter = VS_ENTER_RE.search(output)
     if not enter:
-        return fail(f"[{scn}] the VEHICLE screen was never entered", output)
+        return fail(f"[{scn}] the VEHICLE stage was never entered", output)
+    # Ordering: charselect enter < trackselect enter < vehicle-stage enter.
+    if not (CS_ENTER_RE.search(output).start() < ts_enter.start() < enter.start()):
+        return fail(f"[{scn}] the CHARSELECT -> TRACKSELECT -> VEHICLE-stage "
+                    f"ordering was violated", output)
 
     renders = VS_RENDER_RE.findall(output)
     if not renders:
-        return fail(f"[{scn}] the VEHICLE screen produced no render witnesses",
+        return fail(f"[{scn}] the VEHICLE stage produced no render witnesses",
                     output)
-
     err = assert_r3_published_legal(scn, renders, output)
     if err is not None:
         return err
 
-    # --- Illegal pick REJECTED (CAR on the hovercraft-only track) ------------
-    rejects = VS_REJECT_RE.findall(output)
-    car_rejects = [r for r in rejects
-                   if int(r[0]) == CAR and int(r[2], 16) == LOCKED_MASK]
-    if not car_rejects:
-        return fail(f"[{scn}] the illegal CAR pick was never REJECTED on the "
-                    f"hovercraft-only track (rejects seen: {rejects!r})", output)
+    # --- Retail skip-clamp: on the hovercraft-only track the pick can NEVER
+    # leave HOVERCRAFT (the scripted input tries both cycle directions). -------
+    wb_rows = [r for r in renders if int(r[3]) == LOCKED_TRACK]
+    if not wb_rows:
+        return fail(f"[{scn}] no render row resolved track {LOCKED_TRACK}", output)
+    strays = [r for r in wb_rows if int(r[1]) != HOVERCRAFT]
+    if strays:
+        return fail(f"[{scn}] the pick left HOVERCRAFT on the hovercraft-only "
+                    f"track (retail skip-clamp broken): {strays[:3]}", output)
+    if any(int(r[2], 16) != LOCKED_MASK for r in wb_rows):
+        return fail(f"[{scn}] a Whale Bay row resolved a mask != "
+                    f"0x{LOCKED_MASK:x}", output)
 
-    # --- Local seat CONVERGED to the CHOSEN vehicle (hovercraft) -------------
-    # Non-vacuous: the CHARSELECT default is CAR (0); the screen chose HOVERCRAFT.
-    converged = [r for r in renders
+    # --- Local seat CONVERGED to the pick (hovercraft) -----------------------
+    converged = [r for r in wb_rows
                  if int(r[4]) == HOVERCRAFT and int(r[11]) == HOVERCRAFT]
     if not converged:
-        return fail(f"[{scn}] the local seat never converged to the chosen vehicle "
-                    f"HOVERCRAFT ({HOVERCRAFT}) (seatVeh + intent)", output)
+        return fail(f"[{scn}] the local seat never converged to HOVERCRAFT "
+                    f"({HOVERCRAFT}) (seatVeh + intent)", output)
 
-    # --- Phase chain CHARSELECT -> VEHICLESELECT -> TRACKSELECT --------------
-    to_ts = SESS_VS_TO_TS_RE.search(output)
-    if to_ts is None:
-        return fail(f"[{scn}] VEHICLESELECT never handed off to TRACKSELECT (the "
-                    f"CHARSELECT->VEHICLE->TRACKSELECT chain broke)", output)
-    ts_enter = TS_ENTER_RE.search(output)
-    if ts_enter is None:
-        return fail(f"[{scn}] TRACKSELECT was never entered after VEHICLESELECT",
-                    output)
-    # Ordering: charselect enter < vehicle enter < vehicle->trackselect.
-    if not (CS_ENTER_RE.search(output).start() < enter.start() < to_ts.start()):
-        return fail(f"[{scn}] the CHARSELECT -> VEHICLESELECT -> TRACKSELECT "
-                    f"ordering was violated", output)
+    # --- The retail beats: both confirmed -> CAR_REV2 -> host OK -> start ----
+    if not VS_REV_RE.search(output):
+        return fail(f"[{scn}] the all-vehicles-confirmed CAR_REV2 beat never "
+                    f"fired", output)
+    if not VS_OK_RE.search(output):
+        return fail(f"[{scn}] the host OK (start request) never fired", output)
 
-    # --- Back-stack bonus: TRACKSELECT B returned to VEHICLESELECT -----------
-    if not SESS_TS_TO_VS_RE.search(output):
-        return fail(f"[{scn}] TRACKSELECT B-back never returned to VEHICLESELECT "
-                    f"(the native back-stack TRACKSELECT->VEHICLE broke)", output)
+    # (The stage back-stack round trip -- vehicle-stage B -> browse -> re-lock ->
+    # stage -- is proven by check_online_trackselect.py's single-host scenario,
+    # whose choreography owns the B beats.)
 
+    if not VS_ADVANCE_RE.search(output):
+        return fail(f"[{scn}] the stage never advanced on the room leaving "
+                    f"LOBBY", output)
     if not VS_EXIT_RE.search(output):
-        return fail(f"[{scn}] the VEHICLE screen never freed its assets on exit",
+        return fail(f"[{scn}] the VEHICLE stage never freed its assets on exit",
                     output)
 
     # --- Offline isolation preserved + the race booted and converged --------
@@ -223,11 +243,12 @@ def check_diverge(output: str) -> int | None:
     if marker:
         return fail(f"[{scn}] observed forbidden marker {marker!r}", output)
 
-    if not SESS_CS_TO_VS_RE.search(output):
-        return fail(f"[{scn}] CHARSELECT never handed off to VEHICLESELECT", output)
+    if not SESS_TS_TO_VS_RE.search(output):
+        return fail(f"[{scn}] the track lock never handed off to the VEHICLE "
+                    f"stage", output)
     renders = VS_RENDER_RE.findall(output)
     if not renders:
-        return fail(f"[{scn}] the VEHICLE screen produced no render witnesses",
+        return fail(f"[{scn}] the VEHICLE stage produced no render witnesses",
                     output)
 
     err = assert_r3_published_legal(scn, renders, output)
@@ -236,7 +257,7 @@ def check_diverge(output: str) -> int | None:
 
     # --- Two endpoints hold DIFFERENT vehicles and BOTH converge ------------
     # Local seat converges to PLANE (2), the scripted remote keeps CAR (0); both
-    # are present and legal (all three legal on the unpinned track).
+    # are present and legal (all three legal on the stage-seam's unpinned track).
     diverged = [
         r for r in renders
         if int(r[4]) == PLANE and int(r[8]) == CAR and int(r[7]) >= 0
@@ -247,10 +268,12 @@ def check_diverge(output: str) -> int | None:
                     f"converged (local seatVeh={PLANE} plane, remote veh={CAR} "
                     f"car)", output)
 
-    # The confirm advanced the flow (chain still reaches TRACKSELECT).
-    if not SESS_VS_TO_TS_RE.search(output):
-        return fail(f"[{scn}] the confirmed vehicle never advanced "
-                    f"VEHICLESELECT -> TRACKSELECT", output)
+    # The confirm latched ready over the reverse feed (intent ready=1 with the
+    # divergent pick still published).
+    ready_rows = [r for r in diverged if int(r[12]) == 1]
+    if not ready_rows:
+        return fail(f"[{scn}] the confirmed divergent pick never published "
+                    f"ready=1", output)
     return None
 
 
@@ -267,10 +290,10 @@ def check_unknown(output: str) -> int | None:
     if marker:
         return fail(f"[{scn}] observed forbidden marker {marker!r}", output)
     if not VS_ENTER_RE.search(output):
-        return fail(f"[{scn}] the VEHICLE screen was never entered", output)
+        return fail(f"[{scn}] the VEHICLE stage was never entered", output)
     renders = VS_RENDER_RE.findall(output)
     if not renders:
-        return fail(f"[{scn}] the VEHICLE screen produced no render witnesses",
+        return fail(f"[{scn}] the VEHICLE stage produced no render witnesses",
                     output)
     unknown_rows = [r for r in renders if int(r[3]) == UNKNOWN_TRACK]
     if not unknown_rows:
@@ -305,7 +328,7 @@ def main() -> int:
             parser.error(f"missing {label}: {path}")
 
     scenarios = (
-        ("1", check_reject_boot,
+        ("1", check_skip_boot,
          {"MDKR_TEST_ONLINE_TRACKSELECT": "1",
           "MDKR_APP_TEST_ONLINE_TRACK": str(LOCKED_TRACK)}, args.ticks,
          args.timeout),
@@ -317,7 +340,7 @@ def main() -> int:
             rc, output = run(binary, rom, vs_value, ticks, timeout, args.verbose,
                              extra)
         except subprocess.TimeoutExpired as error:
-            return fail(f"[{vs_value}] engine run timed out (a VEHICLE-select "
+            return fail(f"[{vs_value}] engine run timed out (a VEHICLE-stage "
                         f"stall would look like this): {error}")
         if rc != 0:
             return fail(f"[{vs_value}] process exited {rc}", output)
@@ -326,17 +349,14 @@ def main() -> int:
             return result
 
     print(
-        "PASS online vehicleselect: native VEHICLE select -- REJECT+BOOT (illegal "
-        "CAR rejected on hovercraft-only Whale Bay; local seat converged to the "
-        "chosen HOVERCRAFT (!= CHARSELECT default CAR); phase advanced "
-        "CHARSELECT->VEHICLESELECT->TRACKSELECT with the TRACKSELECT->VEHICLESELECT "
-        "back-stack; R3 held -- published vehicle legal every frame, no "
-        "ILLEGAL_VEHICLE; race booted track 8, two endpoints converged) and "
-        "DIVERGE (local PLANE vs remote CAR -- both seats picked, both converged); "
-        "UNKNOWN (an out-of-range resolved track fails CLOSED to CAR-only, never the "
-        "permissive ALL) -- gGameMode=2 gCurrentMenuId=0, offline menu bypassed "
-        "throughout"
-    )
+        "PASS online vehicleselect: native VEHICLE stage of the track screen "
+        "(retail order: charselect -> track browse -> lock -> vehicles) -- "
+        "SKIP-CLAMP+OK+BOOT (the pick cycles only inside hovercraft-only Whale "
+        "Bay's mask, both seats confirmed -> CAR_REV2 -> host OK -> race booted "
+        "track 8, endpoints converged); DIVERGE (local PLANE vs remote "
+        "CAR both converged, ready published on the divergent pick); UNKNOWN "
+        "(out-of-range track fails CLOSED to the engine-truth CAR-only mask). "
+        "R3 held on every frame; gGameMode=2 gCurrentMenuId=0 at hand-off.")
     return 0
 
 

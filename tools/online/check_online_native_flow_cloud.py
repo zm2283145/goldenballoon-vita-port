@@ -148,10 +148,12 @@ DESCRIPTOR_FIRST_RE = re.compile(
 CHARSELECT_REMOTE_RE = re.compile(
     r"^\[online-charselect\] render .*remote\{seat=\d+ char=(\d+) ", re.MULTILINE)
 # CHARSELECT completes (seat.ready latched + persisted through the reducer over
-# the real network) exactly when the session hands off to the native VEHICLE
-# screen -- the wedge the two-peer selection-convergence fix removed.
-TO_VEHICLESELECT_RE = re.compile(
-    r"^\[online-session\] charselect -> vehicleselect", re.MULTILINE)
+# the real network) exactly when the session hands off to the native TRACKSELECT
+# (retail order: the track browse follows PLAYER SELECT; the vehicle pick is a
+# later stage of the track screen) -- the wedge the two-peer
+# selection-convergence fix removed.
+TO_TRACKSELECT_RE = re.compile(
+    r"^\[online-session\] charselect -> trackselect", re.MULTILINE)
 
 # ---- Assertions (d)/(e): race convergence -----------------------------------
 # TWO independent witnesses per race, both required:
@@ -808,19 +810,20 @@ def run(args: argparse.Namespace) -> dict:
                 # (a)-(c) qualification stop: prove CHARSELECT actually
                 # COMPLETES -- seat.ready latched + persisted through the
                 # reducer over real latency on BOTH endpoints, witnessed by the
-                # session's hand-off to the native VEHICLE screen (the exact
-                # spot the two-peer convergence wedge parked forever) -- then
-                # end the run cleanly without driving the remaining phases.
+                # session's hand-off to the native TRACKSELECT (retail order --
+                # the exact spot the two-peer convergence wedge parked forever)
+                # -- then end the run cleanly without driving the remaining
+                # phases.
                 for drv in (creator, joiner):
                     drv.wait_line(
-                        TO_VEHICLESELECT_RE.search,
-                        f"{drv.name} charselect -> vehicleselect (READY "
+                        TO_TRACKSELECT_RE.search,
+                        f"{drv.name} charselect -> trackselect (READY "
                         f"latched + persisted)", args.select_timeout)
                 for drv in (creator, joiner):
                     assert_no_forbidden(drv.name, drv.full_output())
                 phase(True, "advance_past_charselect",
                       "both endpoints' seats readied through the reducer and "
-                      "the session advanced CHARSELECT -> VEHICLESELECT")
+                      "the session advanced CHARSELECT -> TRACKSELECT")
                 report["verdict"] = "PASS"
                 report["detail"] = (
                     "phases (a)-(c) + advance-past-CHARSELECT over the real "
@@ -1052,7 +1055,7 @@ def main() -> int:
     parser.add_argument("--log-dir", type=Path, default=None)
     parser.add_argument("--through", choices=("c", "e", "full"), default="full",
                         help="'c' stops (PASS) after (a)-(c) + the CHARSELECT -> "
-                        "VEHICLESELECT advance (two-peer selection convergence); "
+                        "TRACKSELECT advance (two-peer selection convergence); "
                         "'e' stops after (a)-(e) (a full multi-race tournament "
                         "flow up to a converged race 2 -- the green achievable "
                         "bar; requires --tournament); 'full' (default) runs all "
