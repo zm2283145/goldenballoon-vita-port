@@ -649,6 +649,9 @@ const char *betaEllipsis() {
     return kFrames[step < 0 ? 0 : step];
 }
 
+// Whether the headless render seam is driving this frame (defined lower down).
+bool betaFakeStageEnabled();
+
 // If a composed status line ends in the "…" the copy catalog uses, swap that
 // static ellipsis for the animated dot run above so a waiting line visibly
 // animates. Any line that does not end in an ellipsis is left untouched.
@@ -656,6 +659,12 @@ void betaAnimateEllipsis(char *line, std::size_t size) {
     const std::size_t len = std::strlen(line);
     static const char kEllipsis[] = "\xE2\x80\xA6";  // U+2026 HORIZONTAL ELLIPSIS
     if (len < 3u || std::memcmp(line + len - 3u, kEllipsis, 3u) != 0) return;
+    // The headless render seam runs on the wall clock, not a frame the reviewer
+    // controls, so a captured waiting line would freeze on an arbitrary 1-3 dot
+    // phase -- which reads as a stray trailing period. Keep the static "…" glyph
+    // there so captures are stable and read as a waiting line; the live path
+    // still animates.
+    if (betaFakeStageEnabled()) return;
     std::snprintf(line + (len - 3u), size - (len - 3u), "%s", betaEllipsis());
 }
 
@@ -808,45 +817,61 @@ void drawBetaChooser(LauncherState &state) {
         if (ui::CardBegin("##beta-join", AppTheme::accent(), 0.0f)) {
             ImGui::TextUnformatted("Enter the 6-digit code from your host");
             ui::Gap(ui::kGapS);
-            // Grouped ECHO ("123 456") drawn ABOVE a plain 6-digit field, in the
-            // same title font as the host's invite card so both sides read the
-            // code the same way. The editable buffer stays the RAW digits on
-            // purpose: inserting the group space into the buffer itself would
-            // fight ImGui's cursor bookkeeping (the space sits at a fixed index,
-            // so a mid-string edit or a backspace desyncs it) and break the
-            // "value is exactly 6 digits" contract the Join path relies on. A
-            // read-only echo gives the grouping affordance with none of that
-            // risk. It reflects the buffer as of the start of the frame (the
-            // field mutates it below); a one-frame lag on a decorative echo is
-            // imperceptible. Filled slots draw in the normal color; unfilled "·"
+            // ONE grouped code field: the big "123 4··" grouping IS the input,
+            // not a separate echo above a plain box. The editable buffer stays
+            // the RAW digits on purpose -- inserting the group space into the
+            // buffer would fight ImGui's cursor bookkeeping (the space sits at a
+            // fixed index, so a mid-string edit or a backspace desyncs it) and
+            // break the "value is exactly 6 digits" contract the Join path
+            // relies on. So the InputText draws its own text TRANSPARENTLY and a
+            // grouped overlay is painted over it in the same title font the
+            // host's invite card uses, so both sides read the code the same way.
+            // Filled slots draw in the normal color; the remaining "·"
             // placeholders are dimmed so the code shape reads without competing
-            // with the digits already entered.
-            const std::size_t shown = std::strlen(g_online.betaJoinCode);
-            std::string filled;
-            std::string rest;
-            for (unsigned i = 0u; i < 6u; ++i) {
-                std::string &seg = i < shown ? filled : rest;
-                if (i == 3u) seg += ' ';  // visual grouping only
-                if (i < shown) seg += g_online.betaJoinCode[i];
-                else seg += "\xC2\xB7";  // U+00B7 MIDDLE DOT placeholder
-            }
+            // with the digits already entered. The overlay is drawn AFTER the
+            // field applies this frame's edit, so it is never a frame stale.
             ImGui::PushFont(AppTheme::fonts().title);
-            if (!filled.empty()) ImGui::TextUnformatted(filled.c_str());
-            if (!rest.empty()) {
-                if (!filled.empty()) ImGui::SameLine(0.0f, 0.0f);
-                ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::subtle());
-                ImGui::TextUnformatted(rest.c_str());
-                ImGui::PopStyleColor();
-            }
-            ImGui::PopFont();
-            ui::Gap(ui::kGapXS);
             ImGui::SetNextItemWidth(ui::kControlWidth());
             // CallbackCharFilter sanitizes both typing AND paste (see
             // betaDigitsOnlyFilter); the 7-byte buffer keeps the first 6 digits.
+            // Transparent text hides the raw digits (and the caret) so only the
+            // grouped overlay below shows.
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
             ImGui::InputText("##beta-join-code", g_online.betaJoinCode,
                              sizeof(g_online.betaJoinCode),
                              ImGuiInputTextFlags_CallbackCharFilter,
                              betaDigitsOnlyFilter);
+            ImGui::PopStyleColor();
+            // Paint the grouped code over the (transparent) field text. AddText
+            // and CalcTextSize both read the pushed title font.
+            {
+                const std::size_t shown = std::strlen(g_online.betaJoinCode);
+                ImDrawList *draw = ImGui::GetWindowDrawList();
+                const ImVec2 fieldMin = ImGui::GetItemRectMin();
+                const ImVec2 pad = ImGui::GetStyle().FramePadding;
+                const ImU32 filledCol = ImGui::GetColorU32(ImGuiCol_Text);
+                const ImU32 restCol = ImGui::GetColorU32(AppTheme::subtle());
+                const float spaceW = ImGui::CalcTextSize(" ").x;
+                float x = fieldMin.x + pad.x;
+                const float y = fieldMin.y + pad.y;
+                for (unsigned i = 0u; i < 6u; ++i) {
+                    if (i == 3u) x += spaceW;  // visual grouping only
+                    const bool isFilled = i < shown;
+                    char glyph[4];
+                    if (isFilled) {
+                        glyph[0] = g_online.betaJoinCode[i];
+                        glyph[1] = '\0';
+                    } else {
+                        glyph[0] = '\xC2';  // U+00B7 MIDDLE DOT placeholder
+                        glyph[1] = '\xB7';
+                        glyph[2] = '\0';
+                    }
+                    draw->AddText(ImVec2(x, y), isFilled ? filledCol : restCol,
+                                  glyph);
+                    x += ImGui::CalcTextSize(glyph).x;
+                }
+            }
+            ImGui::PopFont();
             // Recompute AFTER the field applied this frame's edit: the spoken
             // string, the "N of 6" hint and Join enablement must all read the
             // SAME post-edit count, or the a11y announcer speaks a stale count
@@ -873,12 +898,21 @@ void drawBetaChooser(LauncherState &state) {
                                static_cast<unsigned>(typed));
             }
             ui::Gap(ui::kGapS);
-            ImGui::BeginDisabled(!ready);
-            if (ui::BrandPrimaryButton("Join", ui::kBtnFullWidth())) {
-                buildBetaLiveAdapter(state, MDKR_ONLINE_JOURNEY_JOIN,
-                                     std::string(g_online.betaJoinCode));
+            if (ready) {
+                if (ui::BrandPrimaryButton("Join", ui::kBtnFullWidth())) {
+                    buildBetaLiveAdapter(state, MDKR_ONLINE_JOURNEY_JOIN,
+                                         std::string(g_online.betaJoinCode));
+                }
+            } else {
+                // A dimmed NEUTRAL slab, not a dimmed gold CTA: a disabled gold
+                // button still reads as the button to press. This makes the
+                // not-yet-pressable state visibly different from the gold it
+                // becomes once six digits are in. BeginDisabled also drops it
+                // from keyboard/gamepad focus.
+                ImGui::BeginDisabled();
+                ImGui::Button("Join", ui::kBtnFullWidth());
+                ImGui::EndDisabled();
             }
-            ImGui::EndDisabled();
             ui::SpeakFocusedItem("Join", ready ? "Ready" : "Enter 6 digits",
                                  "Joins the room your host created.");
             ui::Gap(ui::kGapS);
@@ -1338,39 +1372,74 @@ void drawBetaStatusLine(const MdkrOnlineViewModel &model,
     ui::CardEnd();
 }
 
-// Draw-only QR of an arbitrary string, mirroring the phone-party invite QR.
+// The white margin drawn around the QR modules -- its quiet zone. Published so
+// the pre-code invite placeholder can reserve the same footprint the real QR
+// fills, and both the code grid and the placeholder stay in step.
+float betaQrMargin() { return 10.0f * AppTheme::uiScale(); }
+
+// Draw-only QR of an arbitrary string, mirroring the phone-party invite QR. The
+// code sits on a padded white panel (its quiet zone) with a short caption, so it
+// reads cleanly on the dark surface and scans reliably.
 void drawBetaQr(const std::string &text) {
     if (text.empty()) return;
     try {
         const qrcodegen::QrCode qr = qrcodegen::QrCode::encodeText(
             text.c_str(), qrcodegen::QrCode::Ecc::QUARTILE);
-        const float maxSize = 220.0f * AppTheme::uiScale();
+        // Sized so the padded panel + caption keep the whole invite card on one
+        // 960x720 screen (the quiet-zone margin and caption cost the height the
+        // 220px code used to take).
+        const float maxSize = 150.0f * AppTheme::uiScale();
+        const float margin = betaQrMargin();
         const float available = ImGui::GetContentRegionAvail().x;
-        const float size = (std::max)(96.0f, (std::min)(maxSize, available));
+        const float size = (std::max)(
+            96.0f, (std::min)(maxSize, available - margin * 2.0f));
         const int quiet = 4;
         const int modules = qr.getSize() + quiet * 2;
         const float pixel = std::floor(size / static_cast<float>(modules));
         const float actual = pixel * static_cast<float>(modules);
+        const float panel = actual + margin * 2.0f;
         const ImVec2 origin = ImGui::GetCursorScreenPos();
         ImDrawList *draw = ImGui::GetWindowDrawList();
         const ImU32 light = ImGui::GetColorU32(AppTheme::qrLight());
         const ImU32 dark = ImGui::GetColorU32(AppTheme::qrDark());
-        draw->AddRectFilled(origin, ImVec2(origin.x + actual, origin.y + actual),
-                            light);
+        // White quiet-zone panel behind the code (the margin IS the quiet zone a
+        // reader needs), rounded so it reads as a tidy card, not a bare block.
+        draw->AddRectFilled(origin, ImVec2(origin.x + panel, origin.y + panel),
+                            light, 6.0f * AppTheme::uiScale());
         for (int y = 0; y < qr.getSize(); ++y) {
             for (int x = 0; x < qr.getSize(); ++x) {
                 if (!qr.getModule(x, y)) continue;
-                const float left = origin.x + (x + quiet) * pixel;
-                const float top = origin.y + (y + quiet) * pixel;
+                const float left = origin.x + margin + (x + quiet) * pixel;
+                const float top = origin.y + margin + (y + quiet) * pixel;
                 draw->AddRectFilled(ImVec2(left, top),
                                     ImVec2(left + pixel, top + pixel), dark);
             }
         }
-        ImGui::Dummy(ImVec2(actual, actual));
+        ImGui::Dummy(ImVec2(panel, panel));
+        ui::Gap(ui::kGapXS);
+        ui::TextSubtle("Scan to join");
     } catch (...) {
         ui::TextSubtleWrapped(
             "The QR code could not be shown. Share the 6-digit code instead.");
     }
+}
+
+// Begin a bordered card capped at `maxWidth` and centered in the available
+// content region, so a wide window no longer leaves a dead right column beside a
+// card whose content (code + QR) is naturally narrow. Falls back to full width
+// when the region is narrower than the cap. Pair with ui::CardEnd().
+bool betaCenteredCardBegin(const char *id, const ImVec4 &border,
+                           float maxWidth) {
+    const float avail = ImGui::GetContentRegionAvail().x;
+    const float width = (std::min)(maxWidth, avail);
+    if (avail > width) {
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - width) * 0.5f);
+    }
+    ImGui::PushStyleColor(ImGuiCol_Border,
+                          ImVec4(border.x, border.y, border.z, 0.55f));
+    return ImGui::BeginChild(
+        id, ImVec2(width, 0.0f),
+        ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
 }
 
 // The creator's invite card: big shareable code + Copy + a QR of the invite
@@ -1397,10 +1466,15 @@ void drawBetaInviteCard(bool isHost) {
         ready = OnlineRoom_liveInvite(g_online.adapter.get(), &code, &url) &&
                 !code.empty();
     }
+    // Cap and center the card: at wide sizes a full-width card leaves a dead
+    // right column beside the naturally-narrow code + QR. Both the placeholder
+    // and the real card use the SAME cap so the swap-in never shifts sideways.
+    const float kInviteMaxWidth = 480.0f * AppTheme::uiScale();
     if (!ready) {
         if (!isHost) return;  // a joiner has no room of its own to share
         ui::Gap(ui::kGapM);
-        if (ui::CardBegin("##beta-invite", AppTheme::accent(), 0.0f)) {
+        if (betaCenteredCardBegin("##beta-invite", AppTheme::accent(),
+                                  kInviteMaxWidth)) {
             ImGui::TextUnformatted("Invite a Friend");
             ui::TextSubtleWrapped(
                 "Your private room code is on its way — share it the moment it "
@@ -1417,16 +1491,20 @@ void drawBetaInviteCard(bool isHost) {
             ImGui::TextUnformatted(waiting);
             ImGui::PopFont();
             // Reserve the exact blocks the real card fills (Copy button row +
-            // the up-to-220px QR), computed the same way drawBetaQr sizes the
-            // QR, so the placeholder->real swap does not shift the layout under
-            // the host's cursor.
+            // the padded QR panel + its caption line), computed the same way
+            // drawBetaQr sizes them, so the placeholder->real swap does not
+            // shift the layout under the host's cursor.
             ui::Gap(ui::kGapS);
             ImGui::Dummy(ImVec2(0.0f, ui::kBtnSecondary().y));
             ui::Gap(ui::kGapS);
-            const float qrMax = 220.0f * AppTheme::uiScale();
+            const float qrMax = 150.0f * AppTheme::uiScale();
+            const float margin = betaQrMargin();
             const float qrSide = (std::max)(
-                96.0f, (std::min)(qrMax, ImGui::GetContentRegionAvail().x));
-            ImGui::Dummy(ImVec2(qrSide, qrSide));
+                96.0f, (std::min)(qrMax,
+                                  ImGui::GetContentRegionAvail().x - margin * 2.0f));
+            ImGui::Dummy(ImVec2(qrSide + margin * 2.0f, qrSide + margin * 2.0f));
+            ui::Gap(ui::kGapXS);
+            ImGui::Dummy(ImVec2(0.0f, ImGui::GetTextLineHeight()));  // caption line
             ui::TextSubtleWrapped(
                 "Invite-only and expires. Keep this window open — the code and "
                 "its QR appear here in a moment.");
@@ -1435,7 +1513,8 @@ void drawBetaInviteCard(bool isHost) {
         return;
     }
     ui::Gap(ui::kGapM);
-    if (ui::CardBegin("##beta-invite", AppTheme::accent(), 0.0f)) {
+    if (betaCenteredCardBegin("##beta-invite", AppTheme::accent(),
+                              kInviteMaxWidth)) {
         ImGui::TextUnformatted("Invite a Friend");
         ui::TextSubtleWrapped(
             "Share this code. Your friend picks \"Join a Race\" and types it in.");
@@ -1855,7 +1934,17 @@ void drawBetaSectionHeader(const MdkrOnlineViewModel &model) {
     char sectionTitle[128];
     std::snprintf(sectionTitle, sizeof(sectionTitle), "%s",
                   model.title != nullptr ? model.title : "");
-    betaAnimateEllipsis(sectionTitle, sizeof(sectionTitle));
+    // A section title is a HEADING, not a waiting line, so it reads as a clean
+    // title with no trailing punctuation: strip the in-progress ellipsis some
+    // view-model titles carry ("Creating Private Room…" -> "Creating Private
+    // Room"). The waiting MOTION still lives in the status strip above, which
+    // animates its own ellipsis.
+    const std::size_t titleLen = std::strlen(sectionTitle);
+    static const char kEllipsis[] = "\xE2\x80\xA6";  // U+2026
+    if (titleLen >= 3u &&
+        std::memcmp(sectionTitle + titleLen - 3u, kEllipsis, 3u) == 0) {
+        sectionTitle[titleLen - 3u] = '\0';
+    }
     ui::SectionHeader(sectionTitle, model.kind == MDKR_ONLINE_VIEW_RESULTS
                                         ? nullptr
                                         : model.explanation);
