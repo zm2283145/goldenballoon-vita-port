@@ -917,6 +917,10 @@ void mdkr_online_results_enter(u8 isFinalRace, u8 raceIndex, u8 chooserEnabled) 
     load_font(ASSET_FONTS_BIGFONT);
     load_font(ASSET_FONTS_SMALLFONT);
     load_font(ASSET_FONTS_FUNFONT);
+    /* High-definition text while this screen is up (retail letterforms at
+     * native-window resolution; see online_screen_util.h). Balanced by the
+     * unref in _exit(), inside the same sRes.assets guard as the fonts. */
+    mdkr_online_screen_hd_text_ref();
     sRes.assets = 1u;
     /* Retail scrolling sky of the RACED world (from the forward-feed snapshot),
      * so the results screen wears the track the player just raced. */
@@ -952,6 +956,7 @@ void mdkr_online_results_exit(void) {
     if (sRes.assets) {
         /* Disarm the borrowed sky before freeing its tiles (bgdraw_render lifetime). */
         mdkr_online_screen_backdrop_clear();
+        mdkr_online_screen_hd_text_unref();
         unload_font(ASSET_FONTS_FUNFONT);
         unload_font(ASSET_FONTS_SMALLFONT);
         unload_font(ASSET_FONTS_BIGFONT);

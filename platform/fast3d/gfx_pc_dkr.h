@@ -179,6 +179,27 @@ bool gfx_dkr_font_texture_register(
     size_t region_count);
 bool gfx_dkr_font_texture_unregister(const void *source);
 
+/*
+ * Native screens that are NEW content (no byte-exact retail reference) may
+ * request high-resolution SDF derivation of the coloured display faces (the
+ * GFX_FONT_FACE_NONE atlases: BigFont/FunFont) while they are on screen,
+ * without the player opting into the full Remastered presentation. The two
+ * plain faces already gain resolution from the Video.HighResolutionText
+ * outline path in Restored; this latch extends the SAME authored letterforms
+ * to the display faces via the existing Remastered SDF machinery.
+ *
+ * Constraints this setter must keep true:
+ *  - The request takes effect only while Video.HighResolutionText is enabled,
+ *    so Pure stays byte-exact and the player's text switch stays authoritative.
+ *  - Nothing offline ever calls this, so with the latch clear the derivation
+ *    gates reduce EXACTLY to their historical RemasterFX-only form: offline
+ *    uploads, cache keys and sampler policy are unchanged.
+ *  - The request flows through the texture-cache key's existing
+ *    font_remastered intent bit, so flipping it mid-run can never serve a
+ *    stale derivation from cache.
+ */
+void gfx_dkr_font_display_hd_set(bool active);
+
 /** Count of cache hits that returned a texture uploaded from different bytes.
  *  Only maintained when MDKR_TEXCACHE_VERIFY=1. */
 extern uint32_t gfx_dkr_texcache_stale_hits;

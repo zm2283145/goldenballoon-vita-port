@@ -24,6 +24,9 @@
 #include "online/online_portraits.h" /* sOnlineToPortrait, sOnlineNames,
                                         MDKR_ONLINE_PORTRAIT_COUNT */
 #include "online/online_screen_constants.h" /* MDKR_ONLINE_SCREEN_W (strip width) */
+#include "fast3d/gfx_pc_dkr.h" /* gfx_dkr_font_display_hd_set (HD display-face
+                                  derivation latch; same header font.c already
+                                  uses for gfx_dkr_font_texture_register) */
 
 #include <stdio.h>
 #include <string.h>
@@ -37,6 +40,27 @@ s32 mdkr_online_screen_local_seat(const MdkrPartyLinkSnapshot *snap) {
         }
     }
     return -1;
+}
+
+/* ======================================================================== *
+ * High-definition text (see online_screen_util.h for the player-facing
+ * contract). A refcount rather than a boolean: RESULTS -> CEREMONY (and any
+ * future screen chain) may overlap _enter/_exit in either order, and the
+ * renderer latch must only drop when NO online screen is up. The count lives
+ * here (one TU) so every screen shares the same latch discipline.
+ * ======================================================================== */
+static u32 sHdTextRefs = 0u;
+
+void mdkr_online_screen_hd_text_ref(void) {
+    sHdTextRefs++;
+    gfx_dkr_font_display_hd_set(true);
+}
+
+void mdkr_online_screen_hd_text_unref(void) {
+    if (sHdTextRefs > 0u) {
+        sHdTextRefs--;
+    }
+    gfx_dkr_font_display_hd_set(sHdTextRefs != 0u);
 }
 
 /* Draw text into the engine frame's display list with the given font + colour.

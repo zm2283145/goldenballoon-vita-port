@@ -208,6 +208,34 @@ static bool dkr_font_sdf_enabled(void) {
     return enabled != 0;
 }
 
+/*
+ * Latched by new-content native screens (see gfx_dkr_font_display_hd_set in
+ * gfx_pc_dkr.h) that want the coloured display faces derived at high
+ * resolution outside Remastered. OFFLINE-INERTNESS CONSTRAINT: no offline
+ * code path ever sets this, so it stays false for the whole life of an
+ * offline process and dkr_font_sdf_requested() below reduces to the
+ * historical `g_pcRemasterFX && dkr_font_sdf_enabled()` expression --
+ * offline decoded bytes, uploads and cache keys are bit-identical.
+ */
+static bool dkr_font_display_hd;
+
+void gfx_dkr_font_display_hd_set(bool active) {
+    dkr_font_display_hd = active;
+}
+
+/*
+ * Should this bind/fill derive SDF coverage for a registered display-face
+ * atlas? Remastered opts the whole game in (the historical arm, unchanged);
+ * the display-HD latch opts in only the requesting screens, and only while
+ * Video.HighResolutionText is on -- g_pcHiresText is structurally 0 in Pure
+ * (video_config_runtime.c), so Pure can never derive a glyph through either
+ * arm. MDKR_FONT_SDF stays the test-only override for both arms.
+ */
+static bool dkr_font_sdf_requested(void) {
+    return (g_pcRemasterFX || (dkr_font_display_hd && g_pcHiresText)) &&
+           dkr_font_sdf_enabled();
+}
+
 /* MDKR_FONT_OUTLINE=0 is a test control, not a user-facing setting: the
  * player-facing switch is Video.HighResolutionText. This exists so a gate can
  * hold the mode fixed and vary only the glyph source. */
@@ -2321,7 +2349,9 @@ static bool dkr_upload_tile_texture(uint8_t td, bool cutout,
 
     /*
      * Derive high-resolution coverage only for atlases registered at the
-     * ASSET_FONTS load boundary, and only in Remastered. The source atlas
+     * ASSET_FONTS load boundary, and only when a derivation arm requests it
+     * (Remastered for the whole game, or the display-HD latch for the native
+     * screens that hold it -- see dkr_font_sdf_requested). The source atlas
      * remains the cache identity; no derived bytes leave this process.
      *
      * Region-isolated construction prevents adjacent packed glyphs from
@@ -2371,7 +2401,7 @@ static bool dkr_upload_tile_texture(uint8_t td, bool cutout,
         }
 
         bool remaster_font =
-            is_font_atlas && g_pcRemasterFX && dkr_font_sdf_enabled();
+            is_font_atlas && dkr_font_sdf_requested();
         if (remaster_font) {
             size_t output_bytes =
                 gfx_font_sdf_output_bytes(width, height, DKR_FONT_UPSCALE);
@@ -2674,8 +2704,7 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
         font_atlas_draw && g_pcHiresText && dkr_font_outline_enabled() &&
         gfx_font_outline_available(font_entry->face);
     bool font_remastered =
-        font_atlas_draw && !font_outline &&
-        g_pcRemasterFX && dkr_font_sdf_enabled();
+        font_atlas_draw && !font_outline && dkr_font_sdf_requested();
     const struct DkrTexCacheKey key = {
         .addr = source_identity,
         .source_line_bytes = source_line_bytes,

@@ -420,6 +420,10 @@ void mdkr_online_ceremony_enter(const MdkrOnlineStandings *finalRanking) {
     load_font(ASSET_FONTS_BIGFONT);
     load_font(ASSET_FONTS_SMALLFONT);
     load_font(ASSET_FONTS_FUNFONT);
+    /* High-definition text while this screen is up (retail letterforms at
+     * native-window resolution; see online_screen_util.h). Balanced by the
+     * unref in _exit(), inside the same sCer.assets guard as the fonts. */
+    mdkr_online_screen_hd_text_ref();
     sCer.assets = 1u;
     mdkr_online_screen_backdrop(
         mdkr_online_screen_sky_world_for_snapshot(&snap, haveSnap));
@@ -449,6 +453,7 @@ void mdkr_online_ceremony_exit(void) {
     if (sCer.assets) {
         /* Disarm the borrowed sky before freeing its tiles (bgdraw_render lifetime). */
         mdkr_online_screen_backdrop_clear();
+        mdkr_online_screen_hd_text_unref();
         unload_font(ASSET_FONTS_FUNFONT);
         unload_font(ASSET_FONTS_SMALLFONT);
         unload_font(ASSET_FONTS_BIGFONT);

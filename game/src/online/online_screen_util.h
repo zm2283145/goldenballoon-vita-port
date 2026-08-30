@@ -66,6 +66,22 @@ extern s16 sOnlineSkyAssetIds[];
 #define MDKR_ONLINE_SKY_WORLD_NEUTRAL 0u
 
 s32 mdkr_online_screen_local_seat(const MdkrPartyLinkSnapshot *snap);
+
+/* High-definition text for the native online screens. While at least one
+ * screen holds a ref, the renderer derives the coloured display faces
+ * (BIGFONT / FUNFONT) at high resolution through the SAME machinery the
+ * Remastered preset uses for them (fast3d's ROM-derived SDF upscale); the two
+ * plain body faces are already high-resolution in Restored via the
+ * Video.HighResolutionText outline path. RETAIL-LOOK CONSTRAINT: this is a
+ * resolution upgrade of the authored ROM letterforms (colours, gradients and
+ * layout unchanged), never a font change, and it follows the player's
+ * Video.HighResolutionText switch -- structurally never active in Pure.
+ * Refcounted (ref in _enter beside the load_font group, unref in _exit beside
+ * the unload_font group) so adjacent screens' enter/exit interleavings can
+ * never strand the renderer latch. */
+void mdkr_online_screen_hd_text_ref(void);
+void mdkr_online_screen_hd_text_unref(void);
+
 void mdkr_online_screen_text(s32 x, s32 y, s32 fontId, char *text,
                              AlignmentFlags align, s32 r, s32 g, s32 b);
 void mdkr_online_screen_panel(s32 x1, s32 y1, s32 x2, s32 y2);

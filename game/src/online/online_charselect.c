@@ -850,6 +850,10 @@ void mdkr_online_charselect_enter(void) {
     load_font(ASSET_FONTS_BIGFONT);
     load_font(ASSET_FONTS_FUNFONT);
     load_font(ASSET_FONTS_SMALLFONT);
+    /* High-definition text while this screen is up (retail letterforms at
+     * native-window resolution; see online_screen_util.h). Balanced by the
+     * unref in _exit(), inside the same sCs.assets guard as the fonts. */
+    mdkr_online_screen_hd_text_ref();
 
     sCs.assets = 1u;
     /* Neutral hub sky (Dino Domain) -- charselect is world-agnostic. */
@@ -894,6 +898,7 @@ void mdkr_online_charselect_exit(void) {
          * portrait textures (and, once the menu asset count returns to zero, the
          * shared portrait bookkeeping) before the race loader reuses the pool.
          * Balance the three load_font() refs taken in _enter(). */
+        mdkr_online_screen_hd_text_unref();
         unload_font(ASSET_FONTS_SMALLFONT);
         unload_font(ASSET_FONTS_FUNFONT);
         unload_font(ASSET_FONTS_BIGFONT);
