@@ -97,6 +97,12 @@ bool mdkr_online_session_postrace_results_retry(void);
  * cleanly, and requests platform_request_exit(0) so the launcher resumes the room. */
 void mdkr_online_session_return_to_room_on_peer_loss(void);
 
+/* THE LOCAL LEAVE: the non-blocking online pause overlay's "LEAVE RACE" action
+ * (game/src/online/online_race_pause.c). Notes the session end (LEFT -- the
+ * truthful reason: this player left), tears the rollback runtime down cleanly
+ * and requests platform_request_exit(0), exactly the peer-loss return above. */
+void mdkr_online_session_leave_race(void);
+
 #ifdef __cplusplus
 }
 #endif

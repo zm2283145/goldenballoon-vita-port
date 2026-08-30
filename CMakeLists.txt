@@ -302,7 +302,8 @@ if(MDKR_ENABLE_ONLINE_BETA)
         ${CMAKE_SOURCE_DIR}/game/src/online/online_trackselect.c # native online track/cup select
         ${CMAKE_SOURCE_DIR}/game/src/online/online_race_boot.c   # direct online race boot
         ${CMAKE_SOURCE_DIR}/game/src/online/online_results.c    # native online results/standings
-        ${CMAKE_SOURCE_DIR}/game/src/online/online_ceremony.c)  # native online champion ceremony
+        ${CMAKE_SOURCE_DIR}/game/src/online/online_ceremony.c   # native online champion ceremony
+        ${CMAKE_SOURCE_DIR}/game/src/online/online_race_pause.c) # non-blocking online pause overlay
 endif()
 
 # Native platform layer (this project's own M1 code). Listed explicitly rather

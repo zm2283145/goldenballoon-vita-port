@@ -69,6 +69,10 @@
  * below. Dependency-free header; the TU (party_link.c) is beta-only, so the OFF
  * build never sees this include and thread3_main.o stays byte-identical. */
 #include "net/party_link.h"
+/* NON-BLOCKING online race pause: the deterministic retail-pause suppression
+ * (mode_game) + the per-frame local overlay (main_game_loop). Beta-only TU
+ * (game/src/online/, CMake-gated); the OFF build never sees this include. */
+#include "online/online_race_pause.h"
 #endif
 #include "platform_os.h"
 #include "app_overlay_hooks.h"
@@ -511,6 +515,17 @@ void main_game_loop(void) {
             break;
     }
 
+#if MDKR_ENABLE_ONLINE_BETA
+    /* NON-BLOCKING online race pause overlay (beta only): serviced AFTER the
+     * mode dispatch so it reads this frame's canonical local-seat edges and
+     * draws over the completed race frame -- and never during resimulation
+     * (resim re-enters mode_game directly, not this loop), so overlay state is
+     * pure local presentation the rollback authority never sees. Inert unless
+     * a live online rollback race is running. The OFF build strips this block
+     * and thread3_main.c.o stays byte-identical. */
+    mdkr_online_race_overlay_frame(logicUpdateRate);
+#endif
+
     // This is a good spot to place custom text if you want it to overlay it over ALL the
     // menus & gameplay.
 
@@ -779,9 +794,33 @@ void mode_game(s32 updateRate) {
             if (buttonPressedInputs & START_BUTTON && level_properties_get() == 0 && gDrumstickSceneLoadTimer == 0 &&
                 gGameMode == GAMEMODE_INGAME && gPostRaceViewPort == FALSE && gLevelLoadTimer == 0 &&
                 gPauseLockTimer == 0) {
-                buttonPressedInputs = 0;
-                gIsPaused = TRUE;
-                menu_pause_init();
+#if MDKR_ENABLE_ONLINE_BETA
+                /* ONLINE PAUSE CRASH FIX (beta only): in an online rollback race
+                 * the retail pause NEVER engages -- this branch consumes the
+                 * CANONICAL input of every seat, so a START press (local or the
+                 * remote player's, live or replayed by a correction) would pause
+                 * the networked sim itself, and a paused sim makes every later
+                 * correction replay refuse (mdkr_game_resimulate_tick admission/
+                 * completion) -- the two-machine beta abort. The suppression is
+                 * keyed only on the online input runtime (constant for the race,
+                 * identical on both machines and in resim), so both sims skip the
+                 * engage deterministically; the LOCAL non-blocking overlay in
+                 * main_game_loop owns the local START instead. Wrapped in
+                 * MDKR_ENABLE_ONLINE_BETA so the OFF build's thread3_main.c.o
+                 * (anchor) strips this block and offline pause is byte-identical. */
+                if (mdkr_online_race_pause_suppressed()) {
+                    if (!sRollbackResimulating) {
+                        fprintf(stderr,
+                                "[online-pause] retail pause suppressed "
+                                "(online race; overlay owns START)\n");
+                    }
+                } else
+#endif
+                {
+                    buttonPressedInputs = 0;
+                    gIsPaused = TRUE;
+                    menu_pause_init();
+                }
             }
         }
     } else {

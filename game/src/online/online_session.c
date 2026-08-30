@@ -1008,6 +1008,23 @@ void mdkr_online_session_return_to_room_on_peer_loss(void) {
     platform_request_exit(0);
 }
 
+/* THE LOCAL LEAVE (the pause overlay's "LEAVE RACE" row). The player chose to
+ * leave a live online race: the SAME clean note-LEFT return-to-room every other
+ * abnormal online end takes (see the peer-loss path above -- reason LEFT is the
+ * truthful one here: this player left). The launcher takes the note, logs
+ * [online-session-end] reason=LEFT and resumes the Online Room; the remote peer
+ * sees this process end and resolves it through the mesh's own bounded loss
+ * ladders onto the truthful OPPONENT_LEFT card. Same teardown discipline:
+ * release the pinned rollback runtime here so nothing leaks on the unwind. */
+void mdkr_online_session_leave_race(void) {
+    mdkr_party_link_note_session_end(MDKR_PARTY_LINK_SESSION_END_LEFT);
+    fprintf(stderr,
+            "[online-session] LEFT: local player left the race (pause overlay) "
+            "-> return to room (exit 0)\n");
+    mdkr_rollback_game_runtime_level_end();
+    platform_request_exit(0);
+}
+
 /* post-race RE-ENTRY. Called from the online
  * post-race hook (menu.c) when the grace period elapses. Returns true -- and
  * re-arms the session into its RESULTS phase in THIS engine process -- ONLY when
