@@ -1,4 +1,5 @@
 #include "object_models.h"
+#include "rollback/rollback_game_runtime.h"
 #include "asset_enums.h"
 #include "asset_loading.h"
 #ifdef NATIVE_PORT
@@ -107,7 +108,13 @@ ModelInstance *object_model_init(s32 modelID, s32 flags) {
         if (modelID == gModelCache[ASSETCACHE_ID(i)]) {
             objMdl = DKR_PTR(ObjectModel, gModelCache[ASSETCACHE_PTR(i)]);
             instance = model_instance_init(objMdl, flags);
-            if (instance != NULL) {
+            if (instance != NULL
+#ifdef NATIVE_PORT
+                /* Replayed spawns must not re-count the shared model: see
+                 * mdkr_asset_refcount_frozen() in textures_sprites.c. */
+                && mdkr_rollback_game_runtime_presentation_allowed()
+#endif
+            ) {
                 objMdl->references++;
             }
             return instance;
@@ -348,6 +355,16 @@ void free_3d_model(ModelInstance *modInst) {
     }
 
     model = modInst->objModel;
+#ifdef NATIVE_PORT
+    /* Resimulation: the instance memory is rollback-pool state and stays
+     * symmetric with the replayed spawn's allocation, but the shared model's
+     * reference count is host state already counted by the live pass -- see
+     * mdkr_asset_refcount_frozen() in textures_sprites.c. */
+    if (!mdkr_rollback_game_runtime_presentation_allowed()) {
+        mempool_free(modInst);
+        return;
+    }
+#endif
     model->references--;
     if (model->references > 0) { // Model is still used, so free the reference and return.
         mempool_free(modInst);

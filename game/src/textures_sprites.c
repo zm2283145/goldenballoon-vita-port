@@ -1,4 +1,24 @@
 #include "textures_sprites.h"
+#include "rollback/rollback_game_runtime.h"
+
+#ifdef NATIVE_PORT
+/* Rollback correction replays re-execute object lifecycle events whose asset
+ * loads and frees already ran (or will run) on the live authored pass. The
+ * texture/sprite/model caches and their reference counts are host state
+ * OUTSIDE the rollback snapshot, so a replayed spawn/despawn must not mutate
+ * them: a correction storm replays one despawn tick many times, and each
+ * extra replay net-decrements a shared count until it hits zero and frees an
+ * asset that other live objects still draw. The freed block is later re-used
+ * (e.g. by the lap-banner HUD texture load) and the stale embedded display
+ * lists turn into texel garbage -- the online camera/pause lane crash class
+ * (SIGSEGV in the DL walk; SIGABRT when the wild follow-on writes land on
+ * runtime state). Counting happens exactly once, on the live pass;
+ * resimulation reuses the cached asset without counting -- the same replay
+ * discipline sounds already follow through the side-effect journal. */
+static bool mdkr_asset_refcount_frozen(void) {
+    return !mdkr_rollback_game_runtime_presentation_allowed();
+}
+#endif
 #include "asset_loading.h"
 #ifdef NATIVE_PORT
 #include "asset_swap.h"
@@ -563,6 +583,9 @@ TextureHeader *load_texture(s32 id) {
     for (i = 0; i < gNumberOfLoadedTextures; i++) {
         if (id == gTextureCache[ASSETCACHE_ID(i)]) {
             tex = DKR_PTR(TextureHeader, gTextureCache[ASSETCACHE_PTR(i)]);
+#ifdef NATIVE_PORT
+            if (!mdkr_asset_refcount_frozen())
+#endif
             tex->numberOfInstances++;
             return tex;
         }
@@ -814,6 +837,11 @@ TextureHeader *load_texture(s32 id) {
 void tex_free(TextureHeader *tex) {
     s32 i;
 
+#ifdef NATIVE_PORT
+    if (mdkr_asset_refcount_frozen()) {
+        return;
+    }
+#endif
     if (tex != NULL) {
         if ((--tex->numberOfInstances) <= 0) {
             for (i = 0; i < gNumberOfLoadedTextures; i++) {
@@ -1185,6 +1213,9 @@ Sprite *tex_load_sprite(s32 spriteID, s32 arg1) {
     for (i = 0, cacheExtended = FALSE; i < gSpriteCacheCount; i++) {
         if (spriteID == gSpriteCache[ASSETCACHE_ID(i)]) {
             refSprite = DKR_PTR(Sprite, gSpriteCache[ASSETCACHE_PTR(i)]);
+#ifdef NATIVE_PORT
+            if (!mdkr_asset_refcount_frozen())
+#endif
             refSprite->numberOfInstances++;
             return refSprite;
         }
@@ -1542,6 +1573,11 @@ void sprite_free(Sprite *sprite) {
     s32 i;
     s32 frame;
 
+#ifdef NATIVE_PORT
+    if (mdkr_asset_refcount_frozen()) {
+        return;
+    }
+#endif
     if (sprite != NULL) {
         sprite->numberOfInstances--;
         if (sprite->numberOfInstances <= 0) {
