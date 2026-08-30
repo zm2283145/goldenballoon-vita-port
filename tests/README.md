@@ -1612,8 +1612,8 @@ room builder SKIPS the pre-config, witnessed) and
 `MDKR_APP_TEST_ONLINE_ROOM_LATENCY=3` (the loopback room channel gains 3 pumps
 of latency per leg with the State broadcast one pump SLOWER than a
 CommandResult -- the real transport's ordering, which starves a blind stale
-retry of the fresh revision). Asserts the full CHARSELECT -> VEHICLESELECT ->
-TRACKSELECT -> deferred/armed/booted chain with the native TRACKSELECT's
+retry of the fresh revision). Asserts the full CHARSELECT -> TRACKSELECT ->
+VEHICLESELECT -> deferred/armed/booted chain with the native TRACKSELECT's
 `SET_CONFIG_TRACK=3` as the room's FIRST-EVER config and race 1 booting on
 track 3. The unit-level twin is `mdkr_online_live_adapter_test --latency`
 (tests/test_online_live_adapter.cpp, `online_live_adapter` ctest): two REAL
@@ -1657,7 +1657,7 @@ change); (g) the takeover re-fires on BOTH endpoints AND a second descriptor-les
 native session reaches CHARSELECT -- the automatic FINISHED re-take into the
 freshly wrapped fresh-series tournament room (the panel's re-arm observer completes
 immediately: the wrap's RESULTS-out-and-back was the rising edge). `--through`: `c`
-stops after the CHARSELECT -> VEHICLESELECT advance; `e` stops after (a)-(e) (a
+stops after the CHARSELECT -> TRACKSELECT advance; `e` stops after (a)-(e) (a
 faster intermediate stop -- needs `--tournament CUP`, since a single race never
 auto-finals); `full` (all seven assertions) is the GREEN bar. Convergence on this
 descriptor-less path is DUAL-witnessed per race: the reducer-agreed finish order
