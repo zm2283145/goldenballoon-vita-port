@@ -759,8 +759,8 @@ void drawActivePanel(int activePanel, LauncherState &state, LauncherAction &acti
 
 #if MDKR_ENABLE_ONLINE_BETA
 // The modal online lobby. Owns the whole launcher window: a persistent header
-// (title, live status, player slots and the single Leave Race exit) over the
-// state-driven room body. The body is drawn through the SAME panel path the
+// (title, live status and the single Leave Room exit) over the state-driven
+// room body. The body is drawn through the SAME panel path the
 // normal router uses, so the online-room controls keep their ImGui IDs -- and
 // therefore their keyboard/gamepad focus -- across the shell->takeover
 // transition. The nav rail, top tabs and generic offline Play are simply never
@@ -773,51 +773,35 @@ void drawLobbyTakeover(LauncherState &state, LauncherAction &action) {
 
     ImGui::PushFont(AppTheme::fonts().title);
     ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::brandSky());
-    ImGui::TextUnformatted("Online Race — Private Room");
+    ImGui::TextUnformatted("Private Online Room");
     ImGui::PopStyleColor();
     ImGui::PopFont();
 
     const float leaveWidth = 160.0f * scale;
     ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - leaveWidth);
-    if (ImGui::Button("Leave Race", ImVec2(leaveWidth, ui::kBtnSecondary().y))) {
+    // Every live-room exit shares one name; the body's cancel is also "Leave
+    // Room", and there may be no race yet (this shows from the first CONNECTING
+    // frame), so "Leave Race" overclaimed.
+    if (ImGui::Button("Leave Room", ImVec2(leaveWidth, ui::kBtnSecondary().y))) {
         OnlineRoom_requestLeave();
     }
     ui::SpeakFocusedItem(
-        "Leave Race", "Exit online",
-        "Leaves the online race, closes the connection and returns to the "
+        "Leave Room", "Exit online",
+        "Leaves the private room, closes the connection and returns to the "
         "launcher home.");
 
     if (haveInfo) {
         ImGui::PushFont(AppTheme::fonts().small);
         ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::subtle());
+        // The composed, lobby- and reentry-aware line from the room panel; it
+        // agrees with the body below. Per-player "ready" chips were dropped: the
+        // model reports only aggregate counts, so the projection could crown the
+        // wrong player Ready, it duplicated the roster strip, and readiness is a
+        // game-owned concept after the takeover.
         ImGui::TextUnformatted(info.statusLine != nullptr ? info.statusLine
                                                           : "Online race");
         ImGui::PopStyleColor();
         ImGui::PopFont();
-
-        // Per-player slots. The view model reports aggregate counts only, so the
-        // first `readyCount` occupied slots show Ready and the rest show their
-        // occupancy -- an honest projection of "N of 2 players, M ready".
-        const int slots =
-            info.seatCount > 0 ? (info.seatCount > 4 ? 4 : info.seatCount) : 2;
-        for (int i = 0; i < slots; ++i) {
-            if (i > 0) ImGui::SameLine();
-            const char *stateText;
-            ImVec4 color;
-            if (i < info.readyCount) {
-                stateText = "Ready";
-                color = AppTheme::good();
-            } else if (i < info.memberCount) {
-                stateText = "Here";
-                color = AppTheme::brandSky();
-            } else {
-                stateText = "Waiting…";
-                color = AppTheme::subtle();
-            }
-            char label[32];
-            std::snprintf(label, sizeof(label), "P%d · %s", i + 1, stateText);
-            ui::Chip(label, color);
-        }
     }
     ui::BrandRule();
 
