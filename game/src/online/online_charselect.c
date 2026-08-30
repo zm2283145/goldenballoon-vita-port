@@ -868,6 +868,11 @@ void mdkr_online_charselect_enter(void) {
 
 void mdkr_online_charselect_exit(void) {
     if (sCs.assets) {
+        /* Retire the frame's authored display list FIRST: this frame's portrait/
+         * sky texrects reference the tiles freed below, and the in-flight gfx
+         * task may still be walking the previous frame's (see
+         * mdkr_online_screen_dl_retire -- the freed-texture DL corruption fix). */
+        mdkr_online_screen_dl_retire();
         /* Disarm the borrowed scrolling sky BEFORE freeing its tiles, so the
          * engine's per-frame bgdraw_render() can never DMA a freed sky. */
         mdkr_online_screen_backdrop_clear();

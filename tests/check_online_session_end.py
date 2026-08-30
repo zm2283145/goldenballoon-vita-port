@@ -63,7 +63,7 @@ VACATE_LEFT_RE = re.compile(
 VACATE_TRACKSELECT_LEFT_RE = re.compile(
     r"^\[online-session\] LEFT: remote seat vacated at trackselect ", re.MULTILINE)
 TO_TRACKSELECT_RE = re.compile(
-    r"^\[online-session\] vehicleselect -> trackselect", re.MULTILINE)
+    r"^\[online-session\] charselect -> trackselect", re.MULTILINE)
 MID_UNWIND_LEFT_RE = re.compile(
     r"^\[online-session\] mid-tournament UNWIND: .* -> LEFT: return to room",
     re.MULTILINE)
@@ -257,8 +257,9 @@ def check_left_trackselect_vacate(binary: Path, rom: Path,
                                   verbose: bool) -> int | None:
     """LEFT (B2 scenario 3): the remote seat vacates at TRACKSELECT -> clean
     return-to-room. The screen-scoped seam (MDKR_TEST_ONLINE_REMOTE_VACATE_AT=
-    trackselect) keeps the remote present through CHARSELECT + VEHICLESELECT, so
-    the session REACHES trackselect, and only there reads the remote as gone --
+    trackselect) keeps the remote present through CHARSELECT, so the session
+    REACHES trackselect (right after charselect in the retail order), and only
+    there reads the remote as gone --
     the trackselect arm of the (role-agnostic) remote-vacate detector, i.e. a
     joiner watching the host leave at track select. It must end the session
     cleanly (LEFT, exit 0), never wedge, and never boot a race (the vacate is
@@ -285,7 +286,7 @@ def check_left_trackselect_vacate(binary: Path, rom: Path,
     if rc != 0:
         return fail(f"[LEFT-track-vacate] exited {rc} (expected clean 0)", output)
     # Non-vacuous: the session must have REACHED trackselect (the scoped seam let
-    # it past charselect/vehicleselect), else the arm is not testing trackselect.
+    # it past charselect), else the arm is not testing trackselect.
     if not TO_TRACKSELECT_RE.search(output):
         return fail("[LEFT-track-vacate] the session never reached TRACKSELECT -- "
                     "the scoped vacate seam is not screen-scoped (it would have "

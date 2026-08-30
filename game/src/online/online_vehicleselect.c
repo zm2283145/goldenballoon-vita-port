@@ -1,54 +1,62 @@
-/* SEPARATED-BOOT-PATH (Strategy D2) native online VEHICLE select.
+/* SEPARATED-BOOT-PATH (Strategy D2) native online VEHICLE stage of the track
+ * screen.
  *
  * ============================ THE D2 REUSE BOUNDARY ========================
- * The player-facing SCREEN inserted between the native CHARSELECT
- * (online_charselect.c) and the native TRACKSELECT (online_trackselect.c). Before
- * it existed the native flow only auto-narrowed a DEFAULT vehicle to the resolved
- * track's legal mask -- the player never chose car / hovercraft / plane. Strategy
- * D2 means: RE-IMPLEMENT the presentation here using the GAME'S OWN decoded assets
- * (real racer portrait for context, real DKR font + menu SFX, real per-track
- * vehicle mask) rather than calling any offline menu _loop.
+ * Retail 2P picks vehicles AFTER the track, as a STAGE of the track-select
+ * screen (menu.c trackmenu_setup_render / func_80092188 case 0): the live
+ * scene continues behind, the track name stays up top, and each player's
+ * column -- a PLAYER n label, a framed vehicle icon and the CAR/HOVER/PLANE
+ * word list -- confirms independently; all-confirmed plays SOUND_CAR_REV2 and
+ * moves to the racer-count / OK beat. This TU is that stage for the native
+ * online flow: the session enters it from TRACKSELECT once the host's pick is
+ * locked (browse -> lock -> THIS -> OK -> race), and the composition mirrors
+ * the retail one at the retail coordinates. The racer-count stage is skipped
+ * (online v1 is a fixed 2 racers) and the OK beat is the host's A/START here.
  *
  * THE CRUX (why this is a small, plumbing-free screen): the party_link reverse
- * feed ALREADY carries vehicle_id and the reducer ALREADY validates CHOOSE_VEHICLE
- * (any of the three player vehicles) + refuses START (BEGIN_LOADING) with
- * ILLEGAL_VEHICLE when a seat's vehicle is outside the resolved track's mask. So
- * this screen only drives intent.vehicle_id from a player CURSOR instead of the
- * auto-narrow default -- a new screen writing an EXISTING field. No new transport,
- * no new reducer command, no new sync protocol.
+ * feed ALREADY carries vehicle_id and the reducer ALREADY validates
+ * CHOOSE_VEHICLE + refuses START (BEGIN_LOADING) with ILLEGAL_VEHICLE when a
+ * seat's vehicle is outside the resolved track's mask. So this stage only
+ * drives intent.vehicle_id from the player's pick, maps the retail per-player
+ * CONFIRM onto intent.ready, and republishes the host's locked config +
+ * start_requested. No new transport, no new reducer command, no new sync
+ * protocol -- ONLY the local sequencing/presentation moved (the vote kinds and
+ * every published intent field are the ones the launcher already plans).
  *
- * WHAT IT BORROWS (read-only reuse of already-compiled game code/data; NO edit to
- * menu.c is required -- every symbol below already has external linkage):
- *   - gRacerPortraits[10] / menu_assetgroup_load/free / menu_racer_portraits
- *                                (menu.c) the decoded racer portrait, for context.
- *   - leveltable_vehicle_usable(id) (game.c) the REAL per-track vehicle mask --
- *                                engine truth for the legality gate, zero drift.
- *   - level_name(id)             (game.c) the REAL track name for the resolved
- *                                track line.
- *   - get_player_selected_vehicle(menu.c) the same default seed CHARSELECT applies.
- *   - draw_text / set_text_* / texrect_draw / bgdraw_* / sound_play / SOUND_* /
- *     input_pressed / stick   -- the real font, 2D blit, scrolling sky + SFX + pad.
- *   - mdkr_online_trackselect_cup_track (online_trackselect.c) resolve a tournament
- *     cup's round-0 track from the SAME authoritative table the lane pins -- so the
- *     legality mask for a tournament room is engine truth without a launcher header.
+ * WHAT IT BORROWS (read-only reuse of already-compiled game code/data; NO edit
+ * to menu.c -- every symbol below already has external linkage):
+ *   - gMenuAssets[] + menu_assetgroup_load/free (menu.c): the retail setup
+ *     stage's own art, by RAW TEXTURE id (the ids retail binds in
+ *     trackmenu_assets, menu.c:10810+): TEXTURE_ICON_PLAYER_1/2 label art,
+ *     TEXTURE_ICON_VEHICLE_SELECT_{CAR,HOVERCRAFT,PLANE}[_HIGHLIGHT] word art,
+ *     TEXTURE_ICON_VEHICLE_*_TOP/BOTTOM icon pairs, and the wood tile for the
+ *     icon frames. NOTE: gMenuImages / menu_imagegroup_load / menu_element_render
+ *     (retail's own frame path) are OFFLINE-MENU-ONLY -- NULL allocations on the
+ *     separated boot path -- so the frames are texrects of the same wood texture
+ *     (the proven W2 pattern), never menu elements.
+ *   - leveltable_vehicle_usable(id) (game.c): the REAL per-track vehicle mask
+ *     (+ the shared retail v79 2-player narrowing / whole-cup intersection via
+ *     online_trackselect.h) -- engine truth for legality, zero drift.
+ *   - level_name(id) (game.c): the REAL track name for the header.
+ *   - draw_text / texrect_draw / bgdraw_* / sound_play / input_* -- the real
+ *     font, 2D blit, scrolling sky, SFX and pad.
  *
- * WHAT IT OWNS (all state lives HERE, never an offline global): the browse cursor,
- * the committed (always mask-legal) vehicle, the confirm latch, and the continuous
- * reverse-feed intent. The forward feed (both seats + the host's resolved track/cup)
- * is read from platform/net/party_link; the remote seat is display-only.
+ * WHAT IT OWNS (all state lives HERE, never an offline global): the per-seat
+ * local pick (retail gPlayerSelectVehicle analog), the confirm latch (retail
+ * gPlayerSelectConfirm analog -> intent.ready), the host OK latch
+ * (start_requested), and the continuous reverse-feed intent. The remote seat's
+ * column renders LIVE from the snapshot (its pick + ready), exactly like
+ * retail's second player column follows the second pad.
  *
- * Legality: the PUBLISHED vehicle is ALWAYS inside the resolved track's mask.
- * It is seeded from the CHARSELECT default clamped to a legal bit, auto-narrowed
- * every tick against the resolved track (single -> snapshot configured_track;
- * tournament -> cup round-0 track; none resolved yet -> all three legal), and only
- * ever changed to another LEGAL vehicle on confirm. An A press on an ILLEGAL slot
- * is REJECTED (buzz, no change). So a seat can never READY / START with an illegal
- * vehicle even before TRACKSELECT locks the track -- TRACKSELECT's own auto-narrow
- * remains the final clamp if the host later locks a track that outlaws the pick.
+ * Legality: the pick CYCLES ONLY WITHIN the resolved mask, exactly like retail
+ * (menu.c:12066-12086 skips unavailable vehicles and clamps at the ends), so
+ * the published vehicle is legal on every frame by construction; the reducer's
+ * ILLEGAL_VEHICLE gate stays the final authority at START.
  *
  * The ENTIRE TU is #if MDKR_ENABLE_ONLINE_BETA and it is added to the build only
  * inside the beta CMake gate (game/src/online/ is not globbed), so a normal (beta
- * OFF) build never compiles a byte of it and the release engine object is untouched.
+ * OFF) build never compiles a byte of it and the release engine object is
+ * untouched.
  * ==========================================================================
  */
 #include "online/online_vehicleselect.h"
@@ -57,25 +65,26 @@
 
 /* Game/PR headers FIRST (same sprintf-ordering rationale as online_charselect.c). */
 #include "types.h"
+#include "macros.h"     /* COLOUR_RGBA32 (texrect_draw_scaled packed colour) */
 #include "thread3_main.h"
 #include "enums.h"      /* VEHICLE_CAR / HOVERCRAFT / PLANE, AlignmentFlags */
 #include "game.h"       /* level_name, leveltable_vehicle_usable */
-#include "menu.h"       /* gRacerPortraits, menu_assetgroup_load/free,
-                           menu_racer_portraits, get_player_selected_vehicle,
-                           TEXTURE_ICON_PORTRAIT_*, font.h (draw_text, ...) */
-#include "rcp_dkr.h"    /* texrect_draw, bgdraw_fillcolour */
+#include "menu.h"       /* gMenuAssets, menu_assetgroup_load/free,
+                           get_player_selected_vehicle, TEXTURE_ICON_*,
+                           font.h (draw_text, ...) */
+#include "rcp_dkr.h"    /* texrect_draw, texrect_draw_scaled */
 #include "audio.h"      /* sound_play */
-#include "sound_ids.h"  /* SOUND_MENU_PICK2 / SOUND_SELECT2 / ... */
-#include "joypad.h"     /* input_pressed, input_clamp_stick_x/y */
-#include "PR/os_cont.h" /* A_BUTTON / B_BUTTON / *_JPAD / START_BUTTON */
+#include "sound_ids.h"  /* SOUND_MENU_PICK2 / SOUND_SELECT2 / SOUND_CAR_REV2 ... */
+#include "joypad.h"     /* input_pressed, input_clamp_stick_y */
+#include "PR/os_cont.h" /* A_BUTTON / B_BUTTON / U_JPAD / D_JPAD / START_BUTTON */
 #include "net/party_link.h"
-#include "online/online_trackselect.h" /* cup_track resolver (engine-truth table) */
-#include "online/online_portraits.h" /* sOnlineToPortrait / sOnlineNames /
-                                        sPortraitAssetIds (DRY with the other screens) */
+#include "online/online_trackselect.h" /* cup_track resolver + 2P narrowing +
+                                          cup intersection + locked-config +
+                                          the seam's vehicle-stage pump */
 #include "online/online_screen_constants.h" /* shared screen size + lobby id-space
                                                mirrors (DRY across screens) */
-#include "online/online_screen_util.h" /* shared local_seat / text / pulse /
-                                          draw_portrait + scrolling-sky backdrop */
+#include "online/online_screen_util.h" /* shared local_seat / text / blink /
+                                          card + scrolling-sky backdrop + retire */
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -89,73 +98,94 @@
 #define VS_CUP_COUNT 5u              /* 5 cups (== 5 worlds) */
 #define VS_TRACK_NONE 0xFFFFu        /* configured_track "none" sentinel */
 
-/* Menu SFX (the real DKR enums, same reuse as the other native screens). */
+/* Menu SFX -- the retail setup stage's own set (menu.c:12200-12207):
+ * change PICK2, confirm/OK SELECT2, back BACK3, all-confirmed CAR_REV2. */
 #define VS_SFX_MOVE SOUND_MENU_PICK2
 #define VS_SFX_CONFIRM SOUND_SELECT2
 #define VS_SFX_BACK SOUND_MENU_BACK3
-#define VS_SFX_REJECT SOUND_ELECTRIC_BUZZ
+#define VS_SFX_REJECT SOUND_UNK_6A   /* retail unavailable-cell blip */
+#define VS_SFX_ALL_READY SOUND_CAR_REV2
 
-#define VS_REJECT_FLASH_TICKS 45u /* "NOT ON THIS TRACK" flash (~1.5s @ 30Hz) */
+/* ---- Layout geometry (320x240): the RETAIL 2P setup coordinates ----------- */
+/* trackmenu_setup_render (menu.c): track name BIGFONT y43; PLAYER labels at
+ * gTracksMenuPlayerNamePositions 2P = (68,114)/(204,114) with the pulsing
+ * dialogue-box highlight at (x-2,y-2)-(x+50,y+23) behind the un-confirmed seat;
+ * vehicle icons at x=79 (P1) / x=176 (P2), y=139 (+2 for plane); word columns at
+ * gTracksMenuVehicleNamePositions 2P = x 33 / 251, y=139 step 24 per AVAILABLE
+ * vehicle (a disallowed vehicle's row is NOT drawn -- retail omits it). */
+#define VS_TRACKNAME_Y 43
+#define VS_OK_Y 124              /* "OK?" cue, centred between the PLAYER labels */
+#define VS_LABEL_Y 114
+#define VS_ICON_Y 139
+#define VS_WORD_Y0 139
+#define VS_WORD_STEP 24
+#define VS_ICON_W 64             /* the TOP+BOTTOM icon pair is 64x64 */
+#define VS_FRAME_BORDER 5        /* wood frame border around each icon */
+/* Online-only footer board (connection status/help; retail has no footer --
+ * kept for continuity with the browse stage's board). Sits below the icon
+ * frames (icon bottom 203 + border). */
+#define VS_FOOT_Y0 210
+#define VS_FOOT_Y1 238
+#define VS_SEAT_Y 218
+#define VS_HELP_Y 230
 
-/* ---- Layout geometry (320x240) -------------------------------------------- */
-/* Layout (retail menu-board discipline): title strip, one picker board holding
- * the chosen racer + the three vehicle cards, and a footer board with the
- * track / seats / controls lines. */
-#define VS_STRIP_Y0 6
-#define VS_STRIP_Y1 30
-#define VS_TITLE_Y 18
-#define VS_BOARD_Y0 34         /* the picker board */
-#define VS_BOARD_Y1 176
-#define VS_PORTRAIT_X (MDKR_ONLINE_SCREEN_W_HALF - 22) /* centered ~44px portrait */
-#define VS_PORTRAIT_Y 38
-#define VS_CHARNAME_Y 88
-#define VS_ART_Y 98            /* top edge of the real car/hover/plane art */
-#define VS_RAIL_Y0 143         /* caption rail: a darker card over the art feet */
-#define VS_RAIL_Y1 172
-#define VS_CARD_Y 150          /* vehicle name row (on the caption rail) */
-#define VS_CARD_STATE_Y 164    /* per-vehicle state label (on the rail) */
-#define VS_FOOT_Y0 180         /* footer board */
-#define VS_FOOT_Y1 236
-#define VS_TRACK_Y 189
-#define VS_STATUS_Y 206        /* YOU / rival pair (charselect parity) */
-#define VS_HELP_Y 226
-/* Three vehicle cards centered across the width. */
-#define VS_CARD_X0 64
-#define VS_CARD_DX 96
+/* Per-seat retail column anchors (seat 0 == PLAYER 1, seat 1 == PLAYER 2). */
+static const s16 sVsLabelX[2] = { 68, 204 };
+static const s16 sVsIconX[2] = { 79, 176 };
+static const s16 sVsWordX[2] = { 33, 251 };
 
-/* the real vehicle art tile group (three vehicles x TOP+BOTTOM) + the
- * -1 terminator menu_assetgroup_load/free stop on. Borrowed READ-ONLY the same way
- * sPortraitAssetIds borrows the racer faces -- menu_asset_load routes each texture
- * id to load_texture, so this loads the six vehicle tiles into gMenuAssets[] and
- * spawns NO menu objects. NON-const because the loader takes s16* and this TU owns
- * its own copy (the sPortraitAssetIds discipline). Defined HERE (not the shared
- * header) because only the vehicle screen uses it. */
+/* the retail setup art, by RAW texture id (the exact ids retail binds in
+ * trackmenu_assets, menu.c:10810+), + the -1 terminator menu_assetgroup_load/free
+ * stop on. Borrowed READ-ONLY -- menu_asset_load routes each id to load_texture,
+ * so this loads the tiles into gMenuAssets[] and spawns NO menu objects.
+ * NON-const because the loader takes s16* (the sPortraitAssetIds discipline). */
 static s16 sOnlineVehicleAssetIds[] = {
     TEXTURE_ICON_VEHICLE_CAR_TOP,        TEXTURE_ICON_VEHICLE_CAR_BOTTOM,
     TEXTURE_ICON_VEHICLE_HOVERCRAFT_TOP, TEXTURE_ICON_VEHICLE_HOVERCRAFT_BOTTOM,
     TEXTURE_ICON_VEHICLE_PLANE_TOP,      TEXTURE_ICON_VEHICLE_PLANE_BOTTOM,
+    TEXTURE_ICON_PLAYER_1,               TEXTURE_ICON_PLAYER_2,
+    TEXTURE_ICON_VEHICLE_SELECT_CAR,
+    TEXTURE_ICON_VEHICLE_SELECT_CAR_HIGHLIGHT,
+    TEXTURE_ICON_VEHICLE_SELECT_HOVERCRAFT,
+    TEXTURE_ICON_VEHICLE_SELECT_HOVERCRAFT_HIGHLIGHT,
+    TEXTURE_ICON_VEHICLE_SELECT_PLANE,
+    TEXTURE_ICON_VEHICLE_SELECT_PLANE_HIGHLIGHT,
+    TEXTURE_SURFACE_BUTTON_WOOD,
     -1,
 };
 
+/* Resolved word-art tiles: [v][0] = highlighted (the seat's pick), [v][1] = dim.
+ * Bound from gMenuAssets after the group load; every blit fails safe to a text
+ * label if a tile is not resident (never trust a symbol name -- the pairing
+ * below is VERIFIED BY FRAME DUMP against retail-tracksetup-vehicles-2p.png). */
+static TextureHeader *sVsWordTex[3][2];
+static TextureHeader *sVsPlayerTex[2]; /* PLAYER 1 / PLAYER 2 label art */
+static TextureHeader *sVsWoodTex;      /* icon frame wood tile */
+
 /* ---- Session-owned screen state (never an offline global) ------------------ */
 typedef struct MdkrOnlineVehicleselectState {
-    u8 cursor;         /* browse position 0..2 (may sit on an illegal slot) */
-    u8 vehicle;        /* COMMITTED, always mask-legal, published every frame */
-    u8 confirmed;      /* local player confirmed a legal vehicle (advance latch) */
-    u8 character;      /* local seat's chosen racer (for the portrait), or NONE */
-    u8 mask;           /* the resolved track's legal-vehicle mask this frame */
+    u8 vehicle;        /* the LOCAL seat's live pick (retail gPlayerSelectVehicle
+                        * analog); always mask-legal, published every frame */
+    u8 confirmed;      /* local confirm latch (retail gPlayerSelectConfirm ->
+                        * intent.ready) */
+    u8 host;           /* the local seat is the room leader (owns the OK beat) */
+    u8 startReq;       /* host pressed A/START at the OK beat (latched,
+                        * republished -- async-reducer-safe) */
+    u8 character;      /* local seat's chosen racer (carried in the intent) */
+    u8 mask;           /* the resolved track/cup's legal-vehicle mask this frame */
     u16 track;         /* the resolved track id, or VS_TRACK_NONE */
-    u8 assets;         /* portraits + sky + fonts loaded */
-    u8 leave;          /* B: back-to-charselect request (edge; see tick) */
+    u8 assets;         /* art + sky + fonts loaded */
+    u8 leave;          /* B: back to the track browse stage (edge; see tick) */
     u8 seeded;         /* first-snapshot seed applied */
-    u32 ticks;         /* VEHICLESELECT ticks elapsed (also drives test input) */
-    u32 rejectFlashEnd;/* "NOT ON THIS TRACK" flash deadline, in ticks */
-    s8 stickLatchX;
+    u8 bothReadyPrev;  /* CAR_REV2 rising-edge latch */
+    u32 ticks;         /* stage ticks elapsed (also drives test input) */
+    u32 blinkTimer;    /* retail gOptionBlinkTimer mirror ((t + rate) & 0x3F) */
+    s8 stickLatchY;
 } MdkrOnlineVehicleselectState;
 
 static MdkrOnlineVehicleselectState sVs;
 
-/* persists ACROSS entries (NOT reset by _enter's memset) so a re-entered screen
+/* persists ACROSS entries (NOT reset by _enter's memset) so a re-entered stage
  * restarts on the vehicle you last committed. */
 static u8 sLastVehicle = (u8) VEHICLE_CAR;
 
@@ -198,10 +228,9 @@ static unsigned vehicleselect_occupied_seats(const MdkrPartyLinkSnapshot *snap,
 
 /* Which track the vehicle legality resolves against, from the forward feed:
  *   tournament  -> the locked cup's round-0 track (engine-truth cup schedule);
- *   single race -> the host's configured_track once locked;
- *   nothing locked yet (the common first-race case) -> VS_TRACK_NONE (no
- *   constraint: all three vehicles are pickable, and TRACKSELECT's own auto-narrow
- *   is the final clamp when the host later locks a track). */
+ *   single race -> the host's configured_track (locked before this stage runs);
+ *   nothing resolved (defensive; the browse stage normally locks first) ->
+ *   VS_TRACK_NONE (no constraint). */
 static u16 vehicleselect_resolve_track(const MdkrPartyLinkSnapshot *snap,
                                        bool haveSnap) {
     if (!haveSnap) {
@@ -223,15 +252,12 @@ static u16 vehicleselect_resolve_track(const MdkrPartyLinkSnapshot *snap,
 /* The usable-vehicle mask for the resolved track at this player count. Engine
  * truth from leveltable_vehicle_usable(), then the retail 2-player narrowing. FAIL
  * CLOSED: VS_TRACK_NONE (nothing locked yet) is the ONLY permissive (all three)
- * case -- a real preference until TRACKSELECT locks a track (the reducer enforces
- * the mask at START). A resolved track returns its engine-truth base mask
- * (leveltable itself fail-closes an out-of-range id to CAR-only), NEVER the
- * permissive ALL; if that base is empty, or the 2-player narrowing empties it, the
- * mask stays EMPTY so the caller refuses + surfaces it rather than silently
- * substituting CAR (which might itself be illegal on that track). Every REAL track
- * yields >=1 usable vehicle and the narrowing drops at most one, so a resolved real
- * track never empties -- only a malformed/unknown table entry does, which now fails
- * closed (empty) instead of open (ALL). */
+ * case. A resolved track returns its engine-truth base mask (leveltable itself
+ * fail-closes an out-of-range id to CAR-only), NEVER the permissive ALL; if that
+ * base is empty, or the 2-player narrowing empties it, the mask stays EMPTY so the
+ * caller refuses + surfaces it rather than silently substituting CAR (which might
+ * itself be illegal on that track). Every REAL track yields >=1 usable vehicle and
+ * the narrowing drops at most one, so a resolved real track never empties. */
 static u8 vehicleselect_track_mask(u16 trackId, unsigned occupied) {
     u8 base;
     if (trackId == VS_TRACK_NONE) {
@@ -244,10 +270,8 @@ static u8 vehicleselect_track_mask(u16 trackId, unsigned occupied) {
 
 /* The legality mask for the local seat's pick this frame. For a TOURNAMENT with a
  * known cup this is the whole cup's INTERSECTION (the pick persists across every
- * round, so it must be legal for all of them -- resolving against only the cup's
- * round-0 track let a car chosen for cup-0 survive to round-3 Hot Top Volcano and
- * be rejected there). Single race (or a tournament whose cup is not yet locked)
- * keeps the resolved-track mask. */
+ * round, so it must be legal for all of them). Single race keeps the resolved
+ * (locked) track's mask. */
 static u8 vehicleselect_resolve_mask(const MdkrPartyLinkSnapshot *snap,
                                      bool haveSnap, unsigned occupied) {
     if (haveSnap && snap->mode == MDKR_ONLINE_SCREEN_MODE_TOURNAMENT &&
@@ -265,12 +289,10 @@ static bool vehicleselect_vehicle_legal(u8 vehicle, u8 mask) {
            (mask & (u8) (1u << vehicle)) != 0u;
 }
 
-/* Clamp the COMMITTED vehicle into the mask (lowest legal bit when illegal). This
- * is the legality guarantee: for any track with a usable vehicle the published vehicle is
- * always legal, so the seat can never READY / START with an illegal vehicle. When
- * the mask is EMPTY (only a malformed/unknown track reaches that -- see
- * vehicleselect_track_mask) there is nothing legal to clamp to, so the committed
- * vehicle is left as-is and stays illegal (fail closed) rather than picking CAR. */
+/* Clamp the pick into the mask (lowest legal bit when illegal). When the mask is
+ * EMPTY (only a malformed/unknown track reaches that) there is nothing legal to
+ * clamp to, so the pick is left as-is and stays illegal (fail closed) rather
+ * than picking CAR. */
 static void vehicleselect_autonarrow(u8 mask) {
     u8 v;
     if (vehicleselect_vehicle_legal(sVs.vehicle, mask)) {
@@ -282,10 +304,8 @@ static void vehicleselect_autonarrow(u8 mask) {
             return;
         }
     }
-    /* Empty mask -- no vehicle is legal for this track. Leave the committed vehicle
-     * as-is (a defined 0..2 seed): it stays illegal, so every card renders N/A and
-     * the reducer refuses START -- fail closed, never a silent CAR that could itself
-     * be illegal on the track. */
+    /* Empty mask -- no vehicle is legal for this track. The pick stays illegal,
+     * A refuses, and the reducer refuses START -- fail closed. */
 }
 
 static void vehicleselect_resolve_remote(const MdkrPartyLinkSnapshot *snap,
@@ -319,45 +339,46 @@ static void vehicleselect_resolve_remote(const MdkrPartyLinkSnapshot *snap,
  * Input
  * ======================================================================== */
 typedef struct VsInput {
-    s8 dx;    /* -1 / 0 / +1 column step (edge) */
-    u8 aEdge; /* A: confirm the hovered vehicle */
-    u8 bEdge; /* B: back to charselect */
+    s8 step;      /* -1 (up) / 0 / +1 (down) pick cycle (edge) */
+    u8 aEdge;     /* A/START: confirm the pick; host OK once both confirmed */
+    u8 bEdge;     /* B: un-confirm, or (host, un-confirmed) back to the browse */
 } VsInput;
 
 /* Headless scenario, resolved from the env VALUE (see vehicleselect_test_resolve):
- *   REJECT (default) -- the combined lane pins Whale Bay (hovercraft-only 0x2), so
- *     the cursor seeds on the only legal slot (hovercraft); move LEFT to CAR and
- *     press A to prove the ILLEGAL pick is REJECTED (buzz, no change), then move
- *     back and confirm. Hands off to TRACKSELECT (which boots the live race).
- *   DIVERGE -- no track pinned (all three legal); the cursor seeds on CAR (the
- *     CHARSELECT default), moves RIGHT to PLANE and confirms, so the local seat
- *     converges to a vehicle DIFFERENT from the scripted remote's (car) -- the
- *     two-endpoint per-seat vehicle divergence + convergence proof (no boot). */
-#define VS_SCN_REJECT 0
+ *   SKIP (default "1") -- the combined lane pins Whale Bay (hovercraft-only 0x2):
+ *     the pick seeds on the only legal vehicle; the script tries to cycle BOTH
+ *     ways (both must skip-clamp inside the mask, retail menu.c:12066-12086 --
+ *     the pick never leaves HOVERCRAFT), confirms, and the host OKs. Proves the
+ *     published vehicle can never leave the mask.
+ *   DIVERGE -- no track pinned (all three legal); the pick cycles CAR -> PLANE
+ *     and confirms, so the local seat converges to a vehicle DIFFERENT from the
+ *     scripted remote's (car) -- the per-seat divergence + convergence proof.
+ *   HOLD -- frame-dump only: park the stage un-confirmed so a shot can be taken.
+ *   UNKNOWN -- pin an out-of-range track: prove the mask fails CLOSED. */
+#define VS_SCN_SKIP 0
 #define VS_SCN_DIVERGE 1
-#define VS_SCN_HOLD 2 /* frame-dump only: park the screen so a shot can be taken */
-#define VS_SCN_UNKNOWN 3 /* pin an out-of-range track: prove the mask fails CLOSED */
+#define VS_SCN_HOLD 2
+#define VS_SCN_UNKNOWN 3
 static s8 sVsScenario = -1;
 
 static void vehicleselect_input_scripted(VsInput *in) {
     memset(in, 0, sizeof(*in));
     if (sVsScenario == VS_SCN_HOLD) {
-        /* Dump seam: rest the cursor on CAR (illegal on the pinned hovercraft-only
-         * track) at tick 2 and never confirm/leave, so a single frame dump shows
-         * ALL card states at once: cursor-gold on the illegal CAR ("N/A"), the
-         * committed HOVERCRAFT ("SET", green), and the illegal PLANE ("N/A"). */
+        /* Dump seam: nudge the pick once (a legal move when the mask allows it;
+         * a skip-clamp no-op otherwise) and park un-confirmed, so a single frame
+         * dump shows the un-confirmed pulsing highlight + the word states. */
         if (sVs.ticks == 2u) {
-            in->dx = -1;
+            in->step = 1;
         }
         return;
     }
     if (sVsScenario == VS_SCN_DIVERGE) {
         switch (sVs.ticks) {
         case 2u:
-            in->dx = 1; /* CAR -> HOVERCRAFT */
+            in->step = 1; /* CAR -> HOVERCRAFT */
             break;
         case 3u:
-            in->dx = 1; /* HOVERCRAFT -> PLANE (id 2) */
+            in->step = 1; /* HOVERCRAFT -> PLANE (id 2) */
             break;
         case 6u:
             in->aEdge = 1u; /* confirm PLANE (legal; differs from remote CAR) */
@@ -367,68 +388,119 @@ static void vehicleselect_input_scripted(VsInput *in) {
         }
         return;
     }
+    if (sVsScenario == VS_SCN_UNKNOWN) {
+        if (sVs.ticks == 3u) {
+            in->aEdge = 1u; /* confirm the fail-closed CAR-only pick; park */
+        }
+        return;
+    }
+    /* SKIP (default): both cycle directions must skip-clamp inside the
+     * hovercraft-only mask, then confirm + host OK. The OK press repeats each
+     * tick: a reducer ready-clear (the host's config republish landing over a
+     * latency-carrying room) can hollow out any single OK press, and the apply
+     * is idempotent (confirm re-latch is a no-op; the OK fires only at
+     * bothReady && !startReq). */
     switch (sVs.ticks) {
     case 2u:
-        in->dx = -1; /* toward CAR (id 0) */
+        in->step = -1; /* toward CAR: must clamp (stays HOVERCRAFT) */
         break;
     case 3u:
-        in->aEdge = 1u; /* A on the illegal slot -> REJECT */
+        in->step = 1; /* toward PLANE: must clamp (stays HOVERCRAFT) */
         break;
-    case 5u:
-        in->dx = 1; /* back toward the legal slot */
-        break;
-    case 7u:
-        in->aEdge = 1u; /* confirm a legal vehicle -> advance */
+    case 6u:
+        in->aEdge = 1u; /* confirm the (only) legal vehicle */
         break;
     default:
+        if (sVs.ticks >= 12u) {
+            in->aEdge = 1u; /* host OK once both seats read ready */
+        }
         break;
     }
 }
 
-/* Live pad: L/R edges plus a latched analog stick, local player only. */
+/* Live pad: U/D edges plus a latched analog stick (retail cycles the pick with
+ * the stick, menu.c:12066), local player only. A and START both confirm/OK
+ * (retail accepts either, menu.c:12059). */
 static void vehicleselect_input_live(VsInput *in) {
     u32 pressed = input_pressed(MDKR_ONLINE_SCREEN_LOCAL_PAD);
-    s32 sx = input_clamp_stick_x(MDKR_ONLINE_SCREEN_LOCAL_PAD);
-    s8 wantX = 0;
+    s32 sy = input_clamp_stick_y(MDKR_ONLINE_SCREEN_LOCAL_PAD);
+    s8 wantY = 0;
 
     memset(in, 0, sizeof(*in));
 
-    if (pressed & R_JPAD) {
-        in->dx = 1;
-    } else if (pressed & L_JPAD) {
-        in->dx = -1;
+    if (pressed & D_JPAD) {
+        in->step = 1;
+    } else if (pressed & U_JPAD) {
+        in->step = -1;
     }
-    if (sx > 40) {
-        wantX = 1;
-    } else if (sx < -40) {
-        wantX = -1;
+    if (sy > 40) {
+        wantY = -1;
+    } else if (sy < -40) {
+        wantY = 1;
     }
-    if (in->dx == 0 && wantX != 0 && sVs.stickLatchX == 0) {
-        in->dx = wantX;
+    if (in->step == 0 && wantY != 0 && sVs.stickLatchY == 0) {
+        in->step = wantY;
     }
-    sVs.stickLatchX = wantX;
+    sVs.stickLatchY = wantY;
 
     in->aEdge = (pressed & (A_BUTTON | START_BUTTON)) ? 1u : 0u;
     in->bEdge = (pressed & B_BUTTON) ? 1u : 0u;
 }
 
-/* minimal scripted input for every OTHER headless lane that drives the native flow
- * through this screen but does NOT arm the dedicated VEHICLESELECT choreography
- * seam: the LOBBY-START / LOBBY-TOURNAMENT loopback lanes (which ride a REAL
- * launcher reducer) and the self-contained CHARSELECT / TRACKSELECT screen lanes
- * (whose own reducer converged the room through CHARSELECT). It stays trivial: the
- * cursor seeds on the committed, always-mask-legal vehicle, so a single A confirms
- * it and the session hands VEHICLESELECT -> TRACKSELECT. It never moves the cursor
- * -- the auto-narrow keeps the committed vehicle legal for the resolved track, so
- * the confirm is never rejected. Inert (unresolved -> off) in a run that arms none
- * of these seams, so live play uses the real pad. Resolved once. */
+/* the TRACKSELECT lane's stage choreography (env MDKR_TEST_ONLINE_TRACKSELECT
+ * armed WITHOUT the dedicated VEHICLESELECT seam). Keyed on the stage ENTRY
+ * count: entry 1 proves the stage back-stack (B -> back to the browse, which
+ * re-locks); entry 2+ confirms the seeded (mask-legal) vehicle and, for the
+ * single-host scenario, presses the host OK. The joiner/hold scenario values
+ * only confirm (the seam's remote host owns the OK). */
+static u8 sVsTsLaneEntries; /* incremented each _enter while the flavor is armed */
+static s8 sVsTsLaneFlavor = -1; /* -1 unresolved, 0 off, 1 single-host, 2 confirm-only */
+static u8 vehicleselect_tslane_flavor(void) {
+    if (sVsTsLaneFlavor < 0) {
+        const char *e = getenv("MDKR_TEST_ONLINE_TRACKSELECT");
+        if (e == NULL) {
+            sVsTsLaneFlavor = 0;
+        } else if (strstr(e, "joiner") != NULL || strstr(e, "hold") != NULL) {
+            sVsTsLaneFlavor = 2;
+        } else {
+            sVsTsLaneFlavor = 1;
+        }
+    }
+    return (u8) sVsTsLaneFlavor;
+}
+
+static void vehicleselect_input_tslane(VsInput *in) {
+    memset(in, 0, sizeof(*in));
+    if (vehicleselect_tslane_flavor() == 1u && sVsTsLaneEntries <= 1u) {
+        if (sVs.ticks == 3u) {
+            in->bEdge = 1u; /* stage back-stack: vehicle stage -> browse */
+        }
+        return;
+    }
+    if (sVs.ticks == 2u) {
+        in->aEdge = 1u; /* confirm the seeded (mask-legal) vehicle */
+    } else if (vehicleselect_tslane_flavor() == 1u && sVs.ticks >= 10u) {
+        in->aEdge = 1u; /* host OK; repeats so a ready-clear window cannot
+                         * swallow the single press (idempotent apply) */
+    }
+}
+
+/* minimal scripted input for the headless lanes that drive the native flow
+ * through this stage but arm neither the dedicated VEHICLESELECT choreography
+ * nor the TRACKSELECT-lane flavor above: the LOBBY-START / LOBBY-TOURNAMENT
+ * loopback lanes (a REAL launcher reducer) and the self-contained CHARSELECT
+ * lane. It stays trivial: the pick seeds on the committed, always-mask-legal
+ * vehicle, so a single A confirms it and -- when the local seat is the host --
+ * a later A presses the OK (start latches + republishes, so an ASYNC reducer
+ * converges regardless of timing; a joiner's publish never carries start).
+ * Inert (unresolved -> off) in a run that arms none of these seams, so live
+ * play uses the real pad. Resolved once. */
 static s8 sVsScriptedConfirm = -1; /* -1 unresolved, 0 off, 1 on */
 static u8 vehicleselect_scripted_confirm_active(void) {
     if (sVsScriptedConfirm < 0) {
         sVsScriptedConfirm = (getenv("MDKR_TEST_ONLINE_LOBBY_START") != NULL ||
                               getenv("MDKR_TEST_ONLINE_LOBBY_TOURNAMENT") != NULL ||
-                              getenv("MDKR_TEST_ONLINE_CHARSELECT") != NULL ||
-                              getenv("MDKR_TEST_ONLINE_TRACKSELECT") != NULL)
+                              getenv("MDKR_TEST_ONLINE_CHARSELECT") != NULL)
                                  ? 1
                                  : 0;
     }
@@ -438,13 +510,20 @@ static u8 vehicleselect_scripted_confirm_active(void) {
 static void vehicleselect_input_scripted_confirm(VsInput *in) {
     memset(in, 0, sizeof(*in));
     if (sVs.ticks == 2u) {
-        in->aEdge = 1u; /* confirm the seeded (mask-legal) vehicle -> advance */
+        in->aEdge = 1u; /* confirm the seeded (mask-legal) vehicle */
+    } else if (sVs.ticks >= 8u) {
+        in->aEdge = 1u; /* host OK (a joiner's publish drops it); repeats so a
+                         * reducer ready-clear window -- the host's config
+                         * republish landing over a latency-carrying room --
+                         * cannot swallow the single press (idempotent apply) */
     }
 }
 
 static void vehicleselect_gather_input(VsInput *in) {
     if (mdkr_online_vehicleselect_test_active()) {
         vehicleselect_input_scripted(in);
+    } else if (vehicleselect_tslane_flavor() != 0u) {
+        vehicleselect_input_tslane(in);
     } else if (vehicleselect_scripted_confirm_active()) {
         vehicleselect_input_scripted_confirm(in);
     } else {
@@ -452,49 +531,77 @@ static void vehicleselect_gather_input(VsInput *in) {
     }
 }
 
-/* Apply one input step. The cursor wraps across the three slots (native DKR 2D
- * menus wrap); A on a LEGAL slot commits it + latches confirm; A on an ILLEGAL
- * slot is REJECTED (buzz, flash, no change). B backs out one level. */
-static void vehicleselect_apply_input(const VsInput *in) {
+/* Apply one input step -- a line-for-line mirror of retail's stage-0 handler
+ * (menu.c func_80092188 case 0) for the LOCAL seat:
+ *   stick/pad step: cycle the pick, SKIPPING vehicles outside the mask and
+ *     CLAMPING at the ends (retail's do/while walk; no wrap);
+ *   A/START: confirm the pick (SELECT2); once BOTH seats are confirmed, the
+ *     host's A/START is the OK beat (start_requested latches);
+ *   B: un-confirm if confirmed (BACK3); a host's un-confirmed B backs the
+ *     stage out to the track browse. (Retail backs the whole 2P group out only
+ *     when NObody is confirmed; online the remote republishes ready
+ *     continuously, so the local-latch analog keeps the host un-strandable. A
+ *     joiner's un-confirmed B is a no-op -- it has no track cursor to return
+ *     to, and its exit remains the charselect back-stack.) */
+static void vehicleselect_apply_input(const VsInput *in, u8 bothReady) {
     if (in->bEdge) {
-        sVs.leave = 1u;
-        sound_play(VS_SFX_BACK, NULL);
+        if (sVs.confirmed) {
+            sVs.confirmed = 0u;
+            sVs.startReq = 0u;
+            sound_play(VS_SFX_BACK, NULL);
+        } else if (sVs.host) {
+            sVs.leave = 1u;
+            sound_play(VS_SFX_BACK, NULL);
+        }
         return;
     }
-    if (in->dx != 0) {
-        s32 col = (s32) sVs.cursor + in->dx;
-        col = (col + (s32) MDKR_ONLINE_SCREEN_VEHICLE_COUNT) % (s32) MDKR_ONLINE_SCREEN_VEHICLE_COUNT;
-        if ((u8) col != sVs.cursor) {
-            sVs.cursor = (u8) col;
+    if (in->step != 0 && !sVs.confirmed) {
+        s32 v = (s32) sVs.vehicle;
+        do {
+            v += in->step;
+        } while (v >= 0 && v < (s32) MDKR_ONLINE_SCREEN_VEHICLE_COUNT &&
+                 (sVs.mask & (u8) (1u << v)) == 0u);
+        if (v >= 0 && v < (s32) MDKR_ONLINE_SCREEN_VEHICLE_COUNT &&
+            (u8) v != sVs.vehicle) {
+            sVs.vehicle = (u8) v;
+            sLastVehicle = sVs.vehicle; /* persistence */
             sound_play(VS_SFX_MOVE, NULL);
-            sVs.rejectFlashEnd = 0u; /* leaving the slot ends the reject flash */
         }
+        /* out of range: clamp -- keep the current pick (retail restores orig) */
     }
     if (in->aEdge) {
-        if (vehicleselect_vehicle_legal(sVs.cursor, sVs.mask)) {
-            sVs.vehicle = sVs.cursor;
-            sLastVehicle = sVs.vehicle; /* persistence */
-            sVs.confirmed = 1u;
+        if (!sVs.confirmed) {
+            if (vehicleselect_vehicle_legal(sVs.vehicle, sVs.mask)) {
+                sVs.confirmed = 1u;
+                sLastVehicle = sVs.vehicle;
+                sound_play(VS_SFX_CONFIRM, NULL);
+            } else {
+                /* only an EMPTY mask (malformed track) reaches this: nothing is
+                 * legal to confirm -- refuse loudly, never a silent commit. */
+                sound_play(VS_SFX_REJECT, NULL);
+                fprintf(stderr,
+                        "[online-vehicleselect] reject vehicle=%u (illegal for "
+                        "track=%u mask=0x%x)\n",
+                        (unsigned) sVs.vehicle, (unsigned) sVs.track,
+                        (unsigned) sVs.mask);
+            }
+        } else if (sVs.host && bothReady && !sVs.startReq) {
+            /* the OK beat: retail's post-CAR_REV2 confirm (racer count is
+             * skipped -- online v1 is a fixed 2 racers). */
+            sVs.startReq = 1u;
             sound_play(VS_SFX_CONFIRM, NULL);
-        } else {
-            /* Legality: never commit an illegal vehicle; flash + negative cue. */
-            sVs.rejectFlashEnd = sVs.ticks + VS_REJECT_FLASH_TICKS;
-            sound_play(VS_SFX_REJECT, NULL);
-            fprintf(stderr,
-                    "[online-vehicleselect] reject vehicle=%u (illegal for "
-                    "track=%u mask=0x%x)\n",
-                    (unsigned) sVs.cursor, (unsigned) sVs.track,
-                    (unsigned) sVs.mask);
+            fprintf(stderr, "[online-vehicleselect] host OK -> start requested\n");
         }
     }
 }
 
 /* Publish the FULL local intent every frame (continuous republish: the reducer
  * clears ready on any selection change, so republishing reconverges within a
- * pump). The COMMITTED vehicle is always mask-legal. The character is carried
- * from the local seat snapshot so CHOOSE_CHARACTER stays converged; ready is held
- * (the player readied on CHARSELECT and refines the vehicle here). start_requested
- * stays 0 -- host-start belongs to TRACKSELECT. */
+ * pump). The pick is always mask-legal; ready mirrors the retail per-player
+ * CONFIRM. The HOST also republishes its locked session config (the browse
+ * stage's pick -- a single lock-tick publish could be lost on a real transport)
+ * and the latched OK (start_requested). A joiner leaves every host-only field
+ * at the UNSET sentinels. */
 static void vehicleselect_publish_intent(void) {
     MdkrPartyLinkLocalIntent intent;
     mdkr_party_link_intent_init(&intent);
@@ -503,159 +610,249 @@ static void vehicleselect_publish_intent(void) {
         intent.confirmed = 1u;
     }
     intent.vehicle_id = sVs.vehicle;
-    intent.ready = 1u;
+    intent.ready = sVs.confirmed ? 1u : 0u;
     intent.backout = 0u;
-    intent.start_requested = 0u;
+    if (sVs.host) {
+        mdkr_online_trackselect_locked_config(&intent.mode, &intent.config_track,
+                                              &intent.cup_id);
+        intent.start_requested = sVs.startReq ? 1u : 0u;
+    }
     mdkr_party_link_intent_publish(&intent);
 }
 
 /* ======================================================================== *
- * Render (native: real portrait + real font, into the engine frame list)
+ * Render (the retail 2P track-setup composition, at the retail coordinates)
  * ======================================================================== */
-static void vehicleselect_render(const VsRemoteView *rv) {
-    const char *rname = rv->name[0] != '\0' ? rv->name : "RIVAL";
-    s32 tri = mdkr_online_screen_pulse(sVs.ticks);
+
+/* Upper-case copy (the authored-art BIGFONT is an all-caps face). */
+static void vehicleselect_upper(const char *src, char *dst, u32 cap) {
+    u32 i;
+    if (src == NULL) {
+        src = "?";
+    }
+    for (i = 0u; src[i] != '\0' && i + 1u < cap; i++) {
+        char c = src[i];
+        if (c >= 'a' && c <= 'z') {
+            c = (char) (c - 'a' + 'A');
+        }
+        dst[i] = c;
+    }
+    dst[i] = '\0';
+}
+
+/* Tournament cup display names for the header (cup display order). */
+static const char *const sVsCupNames[VS_CUP_COUNT] = {
+    "DINO DOMAIN CUP", "SNOWFLAKE CUP", "SHERBET CUP", "DRAGON FOREST CUP",
+    "FUTURE FUN CUP",
+};
+
+/* One word-art cell: the highlighted variant for the seat's pick, the dim
+ * variant otherwise (retail [v*3+1] / [v*3+2]). Falls back to a SMALLFONT
+ * label styled to the same read if the tile is not resident. */
+static void vehicleselect_draw_word(u8 vehicle, u8 seatCol, bool picked, s32 y) {
+    TextureHeader *tex =
+        (vehicle < 3u) ? sVsWordTex[vehicle][picked ? 0 : 1] : NULL;
+    s32 x = (s32) sVsWordX[seatCol];
+    if (tex != NULL) {
+        DrawTexture dt[2];
+        dt[0].texture = tex;
+        dt[0].xOffset = 0;
+        dt[0].yOffset = 0;
+        dt[1].texture = NULL;
+        dt[1].xOffset = 0;
+        dt[1].yOffset = 0;
+        texrect_draw(&gCurrDisplayList, dt, x, y, 255, 255, 255, 255);
+        return;
+    }
+    /* fallback (art not resident): text styled to the retail read. */
+    mdkr_online_screen_text(x, y + 8, ASSET_FONTS_SMALLFONT,
+                            (char *) mdkr_online_vehicle_names[vehicle],
+                            ALIGN_MIDDLE_LEFT, picked ? 255 : 140,
+                            picked ? 224 : 140, picked ? 96 : 140);
+}
+
+/* One seat column: the pulsing highlight card behind an un-confirmed seat
+ * (retail's dialogue box 7, colour (255, blink, 0) -- menu.c:11659+11764), the
+ * PLAYER n label art, the framed vehicle icon and the word list states. */
+static void vehicleselect_draw_column(u8 seatCol, u8 pick, u8 confirmed,
+                                      u8 present, s32 blink) {
+    s32 labelX = (s32) sVsLabelX[seatCol];
+    s32 iconX = (s32) sVsIconX[seatCol];
+    s32 y;
     u8 v;
 
-    /* Grounds first (retail figure-ground): title strip, the picker board and
-     * the footer board -- portrait, cards and every label sit on a dark card. */
-    mdkr_online_screen_strip(VS_STRIP_Y0, VS_STRIP_Y1);
-    mdkr_online_screen_panel(20, VS_BOARD_Y0, 300, VS_BOARD_Y1);
-    mdkr_online_screen_panel(10, VS_FOOT_Y0, 310, VS_FOOT_Y1);
-
-    /* Title. */
-    mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, VS_TITLE_Y, ASSET_FONTS_BIGFONT,
-                            "CHOOSE YOUR VEHICLE", ALIGN_MIDDLE_CENTER, 255, 224,
-                            96);
-
-    /* The chosen racer's portrait for context (borrowed, guarded). */
-    if (sVs.character < MDKR_ONLINE_SCREEN_CHAR_COUNT) {
-        mdkr_online_screen_draw_portrait(sVs.character, VS_PORTRAIT_X,
-                                         VS_PORTRAIT_Y, 220u, 220u, 220u);
-        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, VS_CHARNAME_Y,
-                                ASSET_FONTS_SMALLFONT,
-                                (char *) sOnlineNames[sVs.character],
-                                ALIGN_MIDDLE_CENTER, 200, 200, 200);
+    /* the retail pulsing box behind the seat that has NOT yet confirmed
+     * (set_current_dialogue_box_coords(7, x-2, y-2, x+50, y+23) with background
+     * (255, blink, 0); drawn with the same fill vocabulary render_dialogue_box
+     * uses -- the dialogue-slot state machine itself is offline-owned). */
+    if (present && !confirmed) {
+        mdkr_online_screen_card(labelX - 2, VS_LABEL_Y - 2, labelX + 50,
+                                VS_LABEL_Y + 23, 255, blink, 0, 176);
     }
 
-    /* The three vehicle cards. Art first, then a darker caption rail over the
-     * art feet (so the labels never fight the bright icon backdrops), then the
-     * captions. Colour + shape carry the state so a colourblind player still
-     * reads it: cursor = pulsing gold >NAME<, committed = green, illegal = big
-     * luminance drop + "N/A". Body copy stays plain light grey (one accent). */
-    for (v = 0u; v < MDKR_ONLINE_SCREEN_VEHICLE_COUNT; v++) {
-        s32 x = VS_CARD_X0 + (s32) v * VS_CARD_DX;
-        bool legal = vehicleselect_vehicle_legal(v, sVs.mask);
-
-        /* the REAL vehicle picture per card (like the charselect grid's
-         * real portraits) -- full colour when legal, ghosted (dim + half alpha,
-         * the offline race-select's own "not available" treatment) when not. Falls
-         * back to the text caption below when the tiles are not resident. */
-        if (legal) {
-            mdkr_online_screen_draw_vehicle(v, x, VS_ART_Y, 255u, 255u, 255u, 255u);
-        } else {
-            mdkr_online_screen_draw_vehicle(v, x, VS_ART_Y, 150u, 150u, 150u, 128u);
-        }
-    }
-    mdkr_online_screen_panel(26, VS_RAIL_Y0, 294, VS_RAIL_Y1);
-    for (v = 0u; v < MDKR_ONLINE_SCREEN_VEHICLE_COUNT; v++) {
-        s32 x = VS_CARD_X0 + (s32) v * VS_CARD_DX;
-        bool legal = vehicleselect_vehicle_legal(v, sVs.mask);
-        bool onCursor = (v == sVs.cursor);
-        bool committed = (v == sVs.vehicle);
-        s32 r = 210, g = 210, b = 210;
-        char label[24];
-        const char *state;
-
-        if (!legal) {
-            r = 120;
-            g = 120;
-            b = 120;
-        }
-        if (committed && legal) {
-            r = 120;
-            g = 255;
-            b = 120;
-        }
-        if (onCursor) {
-            if (legal && !committed) {
-                r = 255;
-                g = 190 + tri * 4;
-                b = 60 + tri * 3;
-            }
-            (void) snprintf(label, sizeof(label), ">%s<", mdkr_online_vehicle_names[v]);
-        } else {
-            (void) snprintf(label, sizeof(label), "%s", mdkr_online_vehicle_names[v]);
-        }
-        mdkr_online_screen_text(x, VS_CARD_Y, ASSET_FONTS_SMALLFONT, label,
-                                ALIGN_MIDDLE_CENTER, r, g, b);
-
-        if (!legal) {
-            state = "N/A";
-        } else if (committed) {
-            state = "SET";
-        } else {
-            state = "";
-        }
-        if (state[0] != '\0') {
-            mdkr_online_screen_text(x, VS_CARD_STATE_Y, ASSET_FONTS_SMALLFONT,
-                                    (char *) state, ALIGN_MIDDLE_CENTER,
-                                    committed ? 120 : 200, committed ? 255 : 120,
-                                    committed ? 120 : 120);
-        }
-    }
-
-    /* The resolved track (or ANY when nothing is locked yet). */
-    {
-        char line[48];
-        if (sVs.track != VS_TRACK_NONE) {
-            (void) snprintf(line, sizeof(line), "TRACK: %s",
-                            level_name((s32) sVs.track));
-        } else {
-            (void) snprintf(line, sizeof(line), "TRACK: ANY (CHOOSE NEXT)");
-        }
-        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, VS_TRACK_Y,
-                                ASSET_FONTS_SMALLFONT, line, ALIGN_MIDDLE_CENTER,
-                                200, 200, 200);
-    }
-
-    /* Status lines (charselect parity): local committed vehicle + the rival. */
-    {
-        char line[64];
-        (void) snprintf(line, sizeof(line), "YOU: %s",
-                        sVs.vehicle < MDKR_ONLINE_SCREEN_VEHICLE_COUNT
-                            ? mdkr_online_vehicle_names[sVs.vehicle]
-                            : "-");
-        mdkr_online_screen_text(24, VS_STATUS_Y, ASSET_FONTS_SMALLFONT, line,
-                                ALIGN_MIDDLE_LEFT, 120, 255, 120);
-        if (!rv->present) {
-            mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W - 24, VS_STATUS_Y,
-                                    ASSET_FONTS_SMALLFONT,
-                                    "WAITING FOR PLAYER...", ALIGN_MIDDLE_RIGHT,
-                                    150, 150, 150);
-        } else {
-            (void) snprintf(line, sizeof(line), "%.12s: %s", rname,
-                            rv->vehicle < MDKR_ONLINE_SCREEN_VEHICLE_COUNT
-                                ? mdkr_online_vehicle_names[rv->vehicle]
-                                : "CHOOSING");
-            mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W - 24, VS_STATUS_Y,
-                                    ASSET_FONTS_SMALLFONT, line,
-                                    ALIGN_MIDDLE_RIGHT,
-                                    rv->ready ? 120 : 220, rv->ready ? 255 : 220,
-                                    rv->ready ? 120 : 220);
-        }
-    }
-
-    /* Context help / transient reject flash. */
-    if (sVs.ticks < sVs.rejectFlashEnd) {
-        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, VS_HELP_Y, ASSET_FONTS_SMALLFONT,
-                                "NOT ALLOWED ON THIS TRACK", ALIGN_MIDDLE_CENTER,
-                                255, 80, 80);
+    /* PLAYER n label art (fallback: text). Dim the label when the seat is
+     * absent (online-only state; retail always has both). */
+    if (sVsPlayerTex[seatCol] != NULL) {
+        DrawTexture dt[2];
+        dt[0].texture = sVsPlayerTex[seatCol];
+        dt[0].xOffset = 0;
+        dt[0].yOffset = 0;
+        dt[1].texture = NULL;
+        dt[1].xOffset = 0;
+        dt[1].yOffset = 0;
+        texrect_draw(&gCurrDisplayList, dt, labelX, VS_LABEL_Y,
+                     present ? 255 : 120, present ? 255 : 120,
+                     present ? 255 : 120, 255);
     } else {
-        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, VS_HELP_Y, ASSET_FONTS_SMALLFONT,
-                                "A: SELECT   B: BACK", ALIGN_MIDDLE_CENTER, 255,
-                                255, 255);
+        mdkr_online_screen_text(labelX + 25, VS_LABEL_Y + 10, ASSET_FONTS_FUNFONT,
+                                seatCol == 0u ? "PLAYER 1" : "PLAYER 2",
+                                ALIGN_MIDDLE_CENTER, present ? 255 : 120,
+                                present ? 255 : 120, present ? 255 : 120);
     }
+
+    if (!present) {
+        return; /* no pick/words/icon for an empty seat */
+    }
+
+    /* Word list: one row per AVAILABLE vehicle (retail omits a disallowed
+     * vehicle's row entirely -- menu.c:11777), highlighted for this seat's
+     * pick, dim otherwise. */
+    y = VS_WORD_Y0;
+    for (v = 0u; v < MDKR_ONLINE_SCREEN_VEHICLE_COUNT; v++) {
+        if (sVs.mask & (u8) (1u << v)) {
+            vehicleselect_draw_word(v, seatCol, pick == v, y);
+            y += VS_WORD_STEP;
+        }
+    }
+
+    /* Framed vehicle icon: wood tile under the 64x64 icon pair (the retail
+     * frame element gMenuImages[7] is offline-only, so the frame is a texrect
+     * of the same wood texture -- the W2 pattern), +2px for the plane (retail
+     * menu.c:11803). */
+    if (pick < MDKR_ONLINE_SCREEN_VEHICLE_COUNT) {
+        s32 iconY = VS_ICON_Y + ((pick == (u8) VEHICLE_PLANE) ? 2 : 0);
+        if (sVsWoodTex != NULL && sVsWoodTex->width != 0 &&
+            sVsWoodTex->height != 0) {
+            DrawTexture dt[2];
+            dt[0].texture = sVsWoodTex;
+            dt[0].xOffset = 0;
+            dt[0].yOffset = 0;
+            dt[1].texture = NULL;
+            dt[1].xOffset = 0;
+            dt[1].yOffset = 0;
+            texrect_draw_scaled(
+                &gCurrDisplayList, dt, (f32) (iconX - VS_FRAME_BORDER),
+                (f32) (iconY - VS_FRAME_BORDER),
+                (f32) (VS_ICON_W + 2 * VS_FRAME_BORDER) / (f32) sVsWoodTex->width,
+                (f32) (VS_ICON_W + 2 * VS_FRAME_BORDER) / (f32) sVsWoodTex->height,
+                COLOUR_RGBA32(255, 255, 255, 255), 0);
+        }
+        (void) mdkr_online_screen_draw_vehicle(pick, iconX + VS_ICON_W / 2,
+                                               iconY, 255u, 255u, 255u, 255u);
+    }
+}
+
+static void vehicleselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
+                                 s32 localSeat, const VsRemoteView *rv,
+                                 u8 bothReady) {
+    const char *rname = rv->name[0] != '\0' ? rv->name : "RIVAL";
+    s32 blink = mdkr_online_screen_blink(sVs.blinkTimer);
+    char nameBuf[32];
+    char line[64];
+    u8 seatCol;
+
+    /* Header: the locked track's name (single) / the locked cup (tournament),
+     * BIGFONT at the retail y (menu.c:11648 draws it at y=43 -- authored art,
+     * untinted, exactly how mdkr_online_screen_text renders BIGFONT). */
+    if (haveSnap && snap->mode == MDKR_ONLINE_SCREEN_MODE_TOURNAMENT &&
+        snap->cup_id < VS_CUP_COUNT) {
+        (void) snprintf(nameBuf, sizeof(nameBuf), "%s", sVsCupNames[snap->cup_id]);
+    } else if (sVs.track != VS_TRACK_NONE) {
+        vehicleselect_upper(level_name((s32) sVs.track), nameBuf, sizeof(nameBuf));
+    } else {
+        (void) snprintf(nameBuf, sizeof(nameBuf), "ANY TRACK");
+    }
+    mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, VS_TRACKNAME_Y,
+                            ASSET_FONTS_BIGFONT, nameBuf, ALIGN_MIDDLE_CENTER,
+                            255, 224, 96);
+
+    /* The two seat columns, SEAT-ordered (seat 0 == PLAYER 1, seat 1 == PLAYER 2
+     * -- retail's columns are pad-ordered, not local/remote-ordered). */
+    for (seatCol = 0u; seatCol < 2u; seatCol++) {
+        u8 pick = MDKR_ONLINE_SCREEN_NO_VEHICLE;
+        u8 confirmed = 0u;
+        u8 present = 0u;
+        if (haveSnap && seatCol < MDKR_PARTY_LINK_SEATS &&
+            snap->seats[seatCol].occupied) {
+            present = 1u;
+            if ((s32) seatCol == localSeat) {
+                pick = sVs.vehicle;
+                confirmed = sVs.confirmed;
+            } else {
+                /* the REMOTE pick, live from the snapshot (retail's second
+                 * column follows the second pad; ours follows the feed). */
+                pick = (snap->seats[seatCol].vehicle_id <
+                        MDKR_ONLINE_SCREEN_VEHICLE_COUNT)
+                           ? snap->seats[seatCol].vehicle_id
+                           : (u8) MDKR_ONLINE_SCREEN_NO_VEHICLE;
+                confirmed = snap->seats[seatCol].ready ? 1u : 0u;
+            }
+        } else if (!haveSnap && seatCol == 0u) {
+            present = 1u; /* defensive solo render */
+            pick = sVs.vehicle;
+            confirmed = sVs.confirmed;
+        }
+        vehicleselect_draw_column(seatCol, pick, confirmed, present, blink);
+    }
+
+    /* The OK beat: both seats confirmed -> retail's "OK?" read (racer count is
+     * skipped online). BIGFONT authored art, centred between the labels. */
+    if (bothReady) {
+        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, VS_OK_Y,
+                                ASSET_FONTS_BIGFONT, "OK?", ALIGN_MIDDLE_CENTER,
+                                255, 224, 96);
+    }
+
+    /* Online-only footer (connection truth + verbs; retail has no footer). */
+    mdkr_online_screen_panel(10, VS_FOOT_Y0, 310, VS_FOOT_Y1);
+    (void) snprintf(line, sizeof(line), "YOU: %s",
+                    sVs.confirmed ? "READY" : "CHOOSING");
+    mdkr_online_screen_text(24, VS_SEAT_Y, ASSET_FONTS_SMALLFONT, line,
+                            ALIGN_MIDDLE_LEFT, sVs.confirmed ? 120 : 220,
+                            sVs.confirmed ? 255 : 220, sVs.confirmed ? 120 : 220);
+    if (!rv->present) {
+        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W - 24, VS_SEAT_Y,
+                                ASSET_FONTS_SMALLFONT, "WAITING FOR PLAYER...",
+                                ALIGN_MIDDLE_RIGHT, 150, 150, 150);
+    } else {
+        (void) snprintf(line, sizeof(line), "%.12s: %s", rname,
+                        rv->ready ? "READY" : "CHOOSING");
+        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W - 24, VS_SEAT_Y,
+                                ASSET_FONTS_SMALLFONT, line, ALIGN_MIDDLE_RIGHT,
+                                rv->ready ? 120 : 220, rv->ready ? 255 : 220,
+                                rv->ready ? 120 : 220);
+    }
+    if (sVs.startReq) {
+        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, VS_HELP_Y,
+                                ASSET_FONTS_SMALLFONT, "STARTING...",
+                                ALIGN_MIDDLE_CENTER, 120, 255, 120);
+    } else if (sVs.host && bothReady) {
+        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, VS_HELP_Y,
+                                ASSET_FONTS_SMALLFONT, "A: GO   B: CHANGE",
+                                ALIGN_MIDDLE_CENTER, 255, 255, 255);
+    } else {
+        /* (no "VEHICLE" literal here: the kerned SMALLFONT swallows the narrow
+         * I between H and C -- it rendered as "VEHCLE" on capture.) */
+        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, VS_HELP_Y,
+                                ASSET_FONTS_SMALLFONT,
+                                sVs.host ? "A: SELECT   B: BACK" : "A: SELECT",
+                                ALIGN_MIDDLE_CENTER, 255, 255, 255);
+    }
+
+    /* Ground: keep the LOCKED world's scrolling sky armed (the same ground the
+     * browse stage showed -- the stage flip keeps the track screen's ground). */
+    mdkr_online_screen_backdrop(
+        mdkr_online_screen_sky_world_for_snapshot(snap, haveSnap));
 }
 
 /* Bounded stderr witness: one line only when the visible state changes. Folds the
@@ -674,30 +871,35 @@ static void vehicleselect_witness(const MdkrPartyLinkSnapshot *snap, bool haveSn
     }
     remoteNibble = (rv->vehicle < MDKR_ONLINE_SCREEN_VEHICLE_COUNT) ? rv->vehicle : 0xFu;
 
-    key = ((u32) sVs.cursor) | ((u32) sVs.vehicle << 2) |
+    key = ((u32) sVs.vehicle) | ((u32) sVs.vehicle << 2) |
           ((u32) sVs.confirmed << 4) | ((u32) sVs.mask << 5) |
           ((u32) remoteNibble << 9) | ((u32) (rv->ready ? 1u : 0u) << 13) |
           ((u32) rv->present << 14) |
           ((u32) ((localSeatVeh < MDKR_ONLINE_SCREEN_VEHICLE_COUNT) ? localSeatVeh : 7u)
            << 15) |
-          ((u32) localSeatReady << 18) | ((u32) (sVs.track & 0x3Fu) << 19);
+          ((u32) localSeatReady << 18) | ((u32) (sVs.track & 0x3Fu) << 19) |
+          ((u32) sVs.startReq << 25);
     if (key == sWitnessKey && rv->seat == sWitnessRemoteSeat) {
         return;
     }
     sWitnessKey = key;
     sWitnessRemoteSeat = rv->seat;
 
+    /* "cursor" is the live pick itself now (retail has no separate cursor:
+     * moving the stick IS changing the pick); kept in the row so the lane
+     * regex shape stays familiar. */
     fprintf(stderr,
             "[online-vehicleselect] render cursor=%u vehicle=%u legal=0x%x "
             "track=%u local{seatVeh=%u seatReady=%u conf=%u} "
             "remote{seat=%d veh=%u ready=%u name=%.*s} "
-            "intent{vehicle=%u ready=1}\n",
-            (unsigned) sVs.cursor, (unsigned) sVs.vehicle, (unsigned) sVs.mask,
+            "intent{vehicle=%u ready=%u}\n",
+            (unsigned) sVs.vehicle, (unsigned) sVs.vehicle, (unsigned) sVs.mask,
             (unsigned) sVs.track, (unsigned) localSeatVeh,
             (unsigned) localSeatReady, (unsigned) sVs.confirmed, (int) rv->seat,
             (unsigned) rv->vehicle, (unsigned) rv->ready,
             (int) MDKR_PARTY_LINK_NAME_BYTES,
-            rv->name[0] != '\0' ? rv->name : "-", (unsigned) sVs.vehicle);
+            rv->name[0] != '\0' ? rv->name : "-", (unsigned) sVs.vehicle,
+            (unsigned) (sVs.confirmed ? 1u : 0u));
 }
 
 /* ======================================================================== *
@@ -716,13 +918,16 @@ void mdkr_online_vehicleselect_enter(void) {
     sVs.mask = VS_ALL_VEHICLES;
 
     /* reset the witness change-detect + the headless seam so a second entry
-     * is clean (a re-entered screen re-scripts from scratch). */
+     * is clean (a re-entered stage re-scripts from scratch). */
     sWitnessKey = 0xFFFFFFFFu;
     sWitnessRemoteSeat = -2;
     vehicleselect_test_reset();
+    if (vehicleselect_tslane_flavor() != 0u) {
+        sVsTsLaneEntries++;
+    }
 
-    /* Seed the committed vehicle from the CHARSELECT default (same source), or the
-     * last committed one, then clamp to the resolved track's mask. */
+    /* Seed the pick from the CHARSELECT default (same source), or the last
+     * committed one, then clamp to the resolved track's mask. */
     defaultVehicle = get_player_selected_vehicle(MDKR_ONLINE_SCREEN_LOCAL_PAD);
     if (defaultVehicle < 0 || (u8) defaultVehicle >= MDKR_ONLINE_SCREEN_VEHICLE_COUNT) {
         defaultVehicle = (s8) VEHICLE_CAR;
@@ -730,50 +935,69 @@ void mdkr_online_vehicleselect_enter(void) {
     sVs.vehicle = (sLastVehicle < MDKR_ONLINE_SCREEN_VEHICLE_COUNT) ? sLastVehicle
                                                            : (u8) defaultVehicle;
 
-    /* Read the first snapshot so the initial mask/character/committed vehicle are
-     * resolved before the first render (the local seat carries the CHARSELECT
-     * pick + the host's resolved track/cup if any). */
+    /* Read the first snapshot so the initial mask/character/pick are resolved
+     * before the first render (the local seat carries the CHARSELECT pick + the
+     * host's locked track/cup). */
     haveSnap = mdkr_party_link_read(&snap);
     localSeat = haveSnap ? mdkr_online_screen_local_seat(&snap) : -1;
     occupied = vehicleselect_occupied_seats(&snap, haveSnap);
     if (haveSnap && localSeat >= 0) {
+        sVs.host = snap.seats[localSeat].is_host ? 1u : 0u;
         if (snap.seats[localSeat].character_id < MDKR_ONLINE_SCREEN_CHAR_COUNT) {
             sVs.character = snap.seats[localSeat].character_id;
         }
         if (snap.seats[localSeat].vehicle_id < MDKR_ONLINE_SCREEN_VEHICLE_COUNT) {
             sVs.vehicle = snap.seats[localSeat].vehicle_id;
         }
+    } else {
+        sVs.host = 1u; /* UI-only default (launcher-side dispatch is host-gated) */
     }
     sVs.track = vehicleselect_resolve_track(&snap, haveSnap);
     sVs.mask = vehicleselect_resolve_mask(&snap, haveSnap, occupied);
     vehicleselect_autonarrow(sVs.mask);
-    sVs.cursor = sVs.vehicle; /* start the cursor on the committed legal vehicle */
     sVs.seeded = 1u;
 
-    /* Borrow the real portraits (context) + the shared scrolling-sky group, the
-     * same two-call asset borrow the other native screens make. */
-    menu_assetgroup_load(sPortraitAssetIds);
-    menu_racer_portraits();
-    menu_assetgroup_load(sOnlineSkyAssetIds);
-    /* the real car/hovercraft/plane art (read-only borrow, freed in
-     * _exit before the group is released -- balanced with the portrait/sky loads). */
+    /* Borrow the retail setup art (labels + word art + icons + frame wood) and
+     * the shared scrolling-sky group -- the same raw-texrect asset borrow the
+     * other native screens make (menu_imagegroup_load / gMenuImages is
+     * offline-only, so every id here is a plain texture id). */
     menu_assetgroup_load(sOnlineVehicleAssetIds);
+    menu_assetgroup_load(sOnlineSkyAssetIds);
+    sVsWordTex[VEHICLE_CAR][0] =
+        (TextureHeader *) gMenuAssets[TEXTURE_ICON_VEHICLE_SELECT_CAR_HIGHLIGHT];
+    sVsWordTex[VEHICLE_CAR][1] =
+        (TextureHeader *) gMenuAssets[TEXTURE_ICON_VEHICLE_SELECT_CAR];
+    sVsWordTex[VEHICLE_HOVERCRAFT][0] = (TextureHeader *)
+        gMenuAssets[TEXTURE_ICON_VEHICLE_SELECT_HOVERCRAFT_HIGHLIGHT];
+    sVsWordTex[VEHICLE_HOVERCRAFT][1] =
+        (TextureHeader *) gMenuAssets[TEXTURE_ICON_VEHICLE_SELECT_HOVERCRAFT];
+    sVsWordTex[VEHICLE_PLANE][0] =
+        (TextureHeader *) gMenuAssets[TEXTURE_ICON_VEHICLE_SELECT_PLANE_HIGHLIGHT];
+    sVsWordTex[VEHICLE_PLANE][1] =
+        (TextureHeader *) gMenuAssets[TEXTURE_ICON_VEHICLE_SELECT_PLANE];
+    sVsPlayerTex[0] = (TextureHeader *) gMenuAssets[TEXTURE_ICON_PLAYER_1];
+    sVsPlayerTex[1] = (TextureHeader *) gMenuAssets[TEXTURE_ICON_PLAYER_2];
+    sVsWoodTex = (TextureHeader *) gMenuAssets[TEXTURE_SURFACE_BUTTON_WOOD];
 
     load_font(ASSET_FONTS_BIGFONT);
+    load_font(ASSET_FONTS_FUNFONT);
     load_font(ASSET_FONTS_SMALLFONT);
 
     sVs.assets = 1u;
-    /* Neutral hub sky (Dino Domain) -- the vehicle screen is world-agnostic. */
-    mdkr_online_screen_backdrop((u8) MDKR_ONLINE_SKY_WORLD_NEUTRAL);
+    /* The LOCKED world's scrolling sky -- the SAME ground the browse stage
+     * showed, so the stage flip reads as one track screen. */
+    mdkr_online_screen_backdrop(
+        mdkr_online_screen_sky_world_for_snapshot(&snap, haveSnap));
 
-    /* reveal from black (retail fade cadence) + keep the retail menu music
-     * (isolation-safe primitive borrows -- see online_screen_util.h). */
+    /* Entry fade: the session arms a one-shot skip for the intra-screen stage
+     * flip (browse -> vehicles); a fresh entry from anywhere else keeps the
+     * retail reveal. Menu music continues either way (idempotent). */
     mdkr_online_screen_fade_in_from_black();
     mdkr_online_screen_menu_music();
 
     fprintf(stderr,
             "[online-vehicleselect] enter: native screen up character=%u "
-            "vehicle=%u track=%u mask=0x%x (portraits loaded, offline _loop "
+            "vehicle=%u track=%u mask=0x%x (retail vehicle stage, offline _loop "
             "bypassed)\n",
             (unsigned) sVs.character, (unsigned) sVs.vehicle,
             (unsigned) sVs.track, (unsigned) sVs.mask);
@@ -781,17 +1005,25 @@ void mdkr_online_vehicleselect_enter(void) {
 
 void mdkr_online_vehicleselect_exit(void) {
     if (sVs.assets) {
+        /* Retire the frame's authored display list FIRST (this frame's label/
+         * word/icon/wood texrects reference the tiles freed below -- the
+         * freed-texture DL corruption fix, see mdkr_online_screen_dl_retire). */
+        mdkr_online_screen_dl_retire();
         /* Disarm the borrowed sky BEFORE freeing its tiles (bgdraw_render
-         * lifetime, R6), then balance the loads _enter() took. */
+         * lifetime), then balance the loads _enter() took. */
         mdkr_online_screen_backdrop_clear();
         unload_font(ASSET_FONTS_SMALLFONT);
+        unload_font(ASSET_FONTS_FUNFONT);
         unload_font(ASSET_FONTS_BIGFONT);
-        menu_assetgroup_free(sPortraitAssetIds);
         menu_assetgroup_free(sOnlineSkyAssetIds);
         menu_assetgroup_free(sOnlineVehicleAssetIds);
+        memset(sVsWordTex, 0, sizeof(sVsWordTex));
+        sVsPlayerTex[0] = NULL;
+        sVsPlayerTex[1] = NULL;
+        sVsWoodTex = NULL;
         sVs.assets = 0u;
         fprintf(stderr,
-                "[online-vehicleselect] exit: freed portrait + vehicle assets\n");
+                "[online-vehicleselect] exit: freed vehicle-stage assets\n");
     }
 }
 
@@ -800,54 +1032,77 @@ MdkrOnlineVehicleselectResult mdkr_online_vehicleselect_tick(s32 updateRate) {
     bool haveSnap;
     s32 localSeat;
     unsigned occupied;
+    u8 bothReady;
     VsRemoteView rv;
     VsInput in;
 
-    (void) updateRate;
+    /* retail blink cadence for the un-confirmed highlight (gOptionBlinkTimer). */
+    sVs.blinkTimer = (sVs.blinkTimer + (u32) ((updateRate > 0) ? updateRate : 1)) &
+                     0x3Fu;
 
     haveSnap = mdkr_party_link_read(&snap);
     localSeat = haveSnap ? mdkr_online_screen_local_seat(&snap) : -1;
     occupied = vehicleselect_occupied_seats(&snap, haveSnap);
 
-    /* Track the local seat's character (portrait) + the resolved-track mask each
-     * frame; auto-narrow the committed vehicle into the mask BEFORE input so
-     * the cursor's legality reads this frame's mask. */
-    if (haveSnap && localSeat >= 0 &&
-        snap.seats[localSeat].character_id < MDKR_ONLINE_SCREEN_CHAR_COUNT) {
-        sVs.character = snap.seats[localSeat].character_id;
+    /* Track the local seat's role/character + the resolved-track mask each
+     * frame; auto-narrow the pick into the mask BEFORE input so the cycle walks
+     * this frame's mask. */
+    if (haveSnap && localSeat >= 0) {
+        sVs.host = snap.seats[localSeat].is_host ? 1u : 0u;
+        if (snap.seats[localSeat].character_id < MDKR_ONLINE_SCREEN_CHAR_COUNT) {
+            sVs.character = snap.seats[localSeat].character_id;
+        }
     }
     sVs.track = vehicleselect_resolve_track(&snap, haveSnap);
     sVs.mask = vehicleselect_resolve_mask(&snap, haveSnap, occupied);
     vehicleselect_autonarrow(sVs.mask);
 
-    vehicleselect_gather_input(&in);
-    vehicleselect_apply_input(&in);
+    /* Both seats confirmed = the retail all-ready beat. Local truth is the
+     * screen latch (the snapshot lags a pump); the remote's is its seat ready. */
+    vehicleselect_resolve_remote(&snap, haveSnap, localSeat, &rv);
+    bothReady = (u8) ((sVs.confirmed && rv.present && rv.ready) ? 1u : 0u);
+    if (bothReady && !sVs.bothReadyPrev) {
+        /* retail: the LAST confirm plays the rev (menu.c:12098). */
+        sound_play(VS_SFX_ALL_READY, NULL);
+        fprintf(stderr, "[online-vehicleselect] all vehicles confirmed "
+                        "(CAR_REV2)\n");
+    }
+    sVs.bothReadyPrev = bothReady;
 
-    /* Re-narrow after input (a confirm may have moved the committed vehicle). */
+    vehicleselect_gather_input(&in);
+    vehicleselect_apply_input(&in, bothReady);
+
+    /* Re-narrow after input (a cycle may have been applied against a mask that
+     * a same-tick config change replaced). */
     vehicleselect_autonarrow(sVs.mask);
 
     vehicleselect_publish_intent();
 
-    /* Headless test seam: reflect the intent into the scripted room + publish the
-     * converged snapshot. Inert (and installs nothing) in a normal run. Run it
-     * BEFORE the render so this frame's render/witness (and the advance check
-     * below) reflect the just-converged room -- otherwise a confirm that both
-     * converges the seat AND triggers the session's immediate hand-off would never
-     * emit a render row showing the converged seat vehicle. */
-    vehicleselect_test_reduce_and_script();
+    /* Headless test seams: reflect the intent into the scripted room + publish
+     * the converged snapshot. Both are inert (and install nothing) in a normal
+     * run. Run them BEFORE the render so this frame's render/witness (and the
+     * advance check below) reflect the just-converged room. The intent poll is
+     * one-shot, so exactly ONE seam may reduce: the dedicated VEHICLESELECT
+     * seam owns its lanes; the TRACKSELECT seam's stage pump covers the lanes
+     * that armed only MDKR_TEST_ONLINE_TRACKSELECT. */
+    if (mdkr_online_vehicleselect_test_active()) {
+        vehicleselect_test_reduce_and_script();
+    } else {
+        mdkr_online_trackselect_test_vehicle_pump();
+    }
 
     /* Re-read so the render/witness/advance reflect the freshest forward feed
-     * (post-reduce in the test; the launcher's live snapshot in a normal run). */
+     * (post-reduce in the tests; the launcher's live snapshot in a normal run). */
     haveSnap = mdkr_party_link_read(&snap);
     localSeat = haveSnap ? mdkr_online_screen_local_seat(&snap) : -1;
 
     vehicleselect_resolve_remote(&snap, haveSnap, localSeat, &rv);
-    vehicleselect_render(&rv);
+    vehicleselect_render(&snap, haveSnap, localSeat, &rv, bothReady);
     vehicleselect_witness(&snap, haveSnap, localSeat, &rv);
 
     sVs.ticks++;
 
-    /* The authoritative lobby leaving LOBBY (host started / loading) wins over a
+    /* The authoritative lobby leaving LOBBY (start / loading) wins over a
      * pending leave -- otherwise a stray B would keep this endpoint from booting
      * while the room raced on (charselect parity). */
     if (haveSnap && snap.phase != (uint8_t) MDKR_ONLINE_SCREEN_LOBBY_PHASE) {
@@ -859,7 +1114,7 @@ MdkrOnlineVehicleselectResult mdkr_online_vehicleselect_tick(s32 updateRate) {
     }
     if (sVs.leave) {
         sVs.leave = 0u; /* edge: return LEAVE once, never shadow ADVANCE */
-        fprintf(stderr, "[online-vehicleselect] back to charselect\n");
+        fprintf(stderr, "[online-vehicleselect] back to track browse\n");
         return MDKR_ONLINE_VEHICLESELECT_LEAVE;
     }
     return MDKR_ONLINE_VEHICLESELECT_STAY;
@@ -870,21 +1125,21 @@ MdkrOnlineVehicleselectResult mdkr_online_vehicleselect_tick(s32 updateRate) {
  *
  * Stands in for the launcher during a headless VEHICLESELECT lane: it ADOPTS the
  * room the CHARSELECT seam converged (the lane runs both), pins a resolved
- * configured_track so the legality mask is non-trivial (Whale Bay, hovercraft-only
- * -- so CAR/PLANE are illegal and the reject path is exercised), then each tick
+ * configured_track so the legality mask is non-trivial (Whale Bay,
+ * hovercraft-only -- so the cycle's skip-clamp is exercised), then each tick
  * acts as a minimal reducer: converge the local seat to the polled intent's
- * vehicle (only accepting a mask-legal value) + ready, and hold the scripted
- * remote seat's ready. It NEVER self-starts: the session hands VEHICLESELECT ->
- * TRACKSELECT on the confirm, and the TRACKSELECT seam owns the host-start. Nothing
- * here runs unless MDKR_TEST_ONLINE_VEHICLESELECT is set.
+ * vehicle + ready, hold the scripted remote's ready, and flip to LOADING on the
+ * host's OK (the stage owns the start beat now -- retail order). Nothing here
+ * runs unless MDKR_TEST_ONLINE_VEHICLESELECT is set.
  * ======================================================================== */
 static s8 sVsTestActive = -1; /* -1 unresolved, 0 off, 1 on */
 static u8 sVsAdopted;
+static u8 sVsStartArmed;
 static MdkrPartyLinkSnapshot sVsRoom;
 
 /* Whale Bay (cup 2 round 0): hovercraft-only 0x2 -- the SAME track the combined
- * lane's TRACKSELECT seam locks + boots, so the legality mask is consistent from
- * the vehicle screen through the race. */
+ * lane locks + boots, so the legality mask is consistent from the vehicle stage
+ * through the race. */
 #define VS_TEST_TRACK 8u
 #define VS_TEST_REMOTE_VEHICLE 1u /* hovercraft -- legal for Whale Bay */
 #define VS_TEST_UNKNOWN_TRACK 900u /* out of range (!= VS_TRACK_NONE): fail-closed probe */
@@ -895,7 +1150,7 @@ static void vehicleselect_test_resolve(void) {
         sVsTestActive = (e != NULL) ? 1 : 0;
         /* Scenario from the env VALUE: "diverge" -> divergent-pick lane, "hold" ->
          * the frame-dump hold, "unknown" -> the fail-closed out-of-range probe,
-         * anything else -> the default reject+chain+boot lane. */
+         * anything else -> the default skip-clamp+OK+boot lane. */
         if (e != NULL && strstr(e, "diverge") != NULL) {
             sVsScenario = (s8) VS_SCN_DIVERGE;
         } else if (e != NULL && strstr(e, "hold") != NULL) {
@@ -903,7 +1158,7 @@ static void vehicleselect_test_resolve(void) {
         } else if (e != NULL && strstr(e, "unknown") != NULL) {
             sVsScenario = (s8) VS_SCN_UNKNOWN;
         } else {
-            sVsScenario = (s8) VS_SCN_REJECT;
+            sVsScenario = (s8) VS_SCN_SKIP;
         }
     }
 }
@@ -914,6 +1169,17 @@ static void vehicleselect_test_reset(void) {
         return;
     }
     sVsAdopted = 0u;
+    sVsStartArmed = 0u;
+}
+
+/* Optional dump-seam track override (frame captures of specific mask states,
+ * e.g. Frosty Village's 2P no-plane row omission). Test-only. */
+static u16 vehicleselect_test_track(void) {
+    const char *e = getenv("MDKR_TEST_ONLINE_VEHICLESELECT_TRACK");
+    if (e != NULL && e[0] != '\0') {
+        return (u16) strtoul(e, NULL, 10);
+    }
+    return (u16) VS_TEST_TRACK;
 }
 
 void mdkr_online_vehicleselect_test_lobby_pump(void) {
@@ -932,7 +1198,7 @@ void mdkr_online_vehicleselect_test_lobby_pump(void) {
             room.seats[i].character_id = MDKR_ONLINE_SCREEN_NO_CHARACTER;
             room.seats[i].vehicle_id = MDKR_ONLINE_SCREEN_NO_VEHICLE;
         }
-        room.configured_track = (uint16_t) VS_TEST_TRACK;
+        room.configured_track = vehicleselect_test_track();
         room.cup_id = 0xFFu;
         room.seats[0].occupied = 1u;
         room.seats[0].is_local = 1u;
@@ -952,12 +1218,13 @@ void mdkr_online_vehicleselect_test_lobby_pump(void) {
         fprintf(stderr,
                 "[online-vehicleselect] test-script standalone install "
                 "(track=%u)\n",
-                (unsigned) VS_TEST_TRACK);
+                (unsigned) room.configured_track);
     }
 }
 
 static void vehicleselect_test_reduce_and_script(void) {
     MdkrPartyLinkLocalIntent intent;
+    bool haveIntent;
 
     vehicleselect_test_resolve();
     if (!sVsTestActive || !mdkr_party_link_active()) {
@@ -981,9 +1248,10 @@ static void vehicleselect_test_reduce_and_script(void) {
             sVsRoom.configured_track = (uint16_t) VS_TEST_UNKNOWN_TRACK;
         } else {
             /* Pin the resolved track so the legality mask is non-trivial (Whale
-             * Bay, hovercraft-only), whichever seam installed the room, and give
-             * the scripted remote a track-legal vehicle for a coherent display. */
-            sVsRoom.configured_track = (uint16_t) VS_TEST_TRACK;
+             * Bay hovercraft-only by default; the HOLD dump seam may override),
+             * whichever seam installed the room, and give the scripted remote a
+             * track-legal vehicle for a coherent display. */
+            sVsRoom.configured_track = vehicleselect_test_track();
             sVsRoom.seats[1].vehicle_id = (uint8_t) VS_TEST_REMOTE_VEHICLE;
         }
         sVsRoom.seats[1].ready = 1u;
@@ -992,8 +1260,11 @@ static void vehicleselect_test_reduce_and_script(void) {
 
     /* Minimal launcher reducer: converge the local seat to the polled intent's
      * character + (mask-legal) vehicle + ready. The screen only ever publishes a
-     * legal vehicle, so this simply mirrors it. */
-    if (mdkr_party_link_intent_poll(&intent)) {
+     * legal vehicle, so this simply mirrors it. The stage owns the OK beat now,
+     * so the host's start_requested flips the room to LOADING here (the boot
+     * proof lane rides the REAL loopback reducer; this mirrors its shape). */
+    haveIntent = mdkr_party_link_intent_poll(&intent);
+    if (haveIntent) {
         if (intent.confirmed && intent.hover_character < MDKR_ONLINE_SCREEN_CHAR_COUNT) {
             sVsRoom.seats[0].character_id = intent.hover_character;
         }
@@ -1005,8 +1276,15 @@ static void vehicleselect_test_reduce_and_script(void) {
             sVsRoom.seats[0].character_id != MDKR_ONLINE_SCREEN_NO_CHARACTER &&
             sVsRoom.seats[0].vehicle_id != MDKR_ONLINE_SCREEN_NO_VEHICLE) {
             sVsRoom.seats[0].ready = 1u;
-        } else if (intent.backout) {
+        } else if (!intent.ready || intent.backout) {
             sVsRoom.seats[0].ready = 0u;
+        }
+        if (intent.start_requested && sVsRoom.seats[0].ready &&
+            sVsRoom.seats[1].ready) {
+            sVsStartArmed++;
+            if (sVsStartArmed >= 4u) {
+                sVsRoom.phase = 2u; /* MDKR_ONLINE_LOADING */
+            }
         }
     }
 
@@ -1018,9 +1296,9 @@ u8 mdkr_online_vehicleselect_test_active(void) {
     return (u8) (sVsTestActive > 0 ? 1 : 0);
 }
 
-/* the screen's OWN confirm latch (reset by _enter's memset), used by the session
- * to gate the VEHICLESELECT -> TRACKSELECT hand-off so a back-out cannot one-frame
- * bounce forward before the player re-confirms a legal vehicle. */
+/* the screen's OWN confirm latch (reset by _enter's memset). Kept as a public
+ * probe (the session used to gate a forward hand-off on it; the stage is the
+ * LAST selection stop now, so it is informational/back-compat only). */
 u8 mdkr_online_vehicleselect_local_confirmed(void) {
     return (u8) (sVs.confirmed ? 1 : 0);
 }

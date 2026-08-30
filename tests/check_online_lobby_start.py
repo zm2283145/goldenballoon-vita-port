@@ -19,7 +19,8 @@ real descriptor lands.
 Assertions:
   * the session BEGAN descriptor-less        -> [online-session] begin: lobby-start
   * the descriptor-first begin was NOT taken -> no "begin: separated boot path"
-  * CHARSELECT then VEHICLESELECT then TRACKSELECT fronted (native), offline menus
+  * CHARSELECT then TRACKSELECT then the VEHICLE stage fronted (native, the
+    retail order -- vehicles AFTER the track lock), offline menus
     bypassed
   * the race-1 readiness gate DEFERRED the boot when the descriptor was not ready
     -> [online-session] race-1 boot deferred ... -> LOBBY_WAIT re-wait
@@ -74,14 +75,15 @@ BEGIN_DESCRIPTOR_RE = re.compile(
     r"^\[online-session\] begin: separated boot path entered", re.MULTILINE)
 CHARSELECT_ENTER_RE = re.compile(
     r"^\[online-charselect\] enter:", re.MULTILINE)
-TO_VEHICLESELECT_RE = re.compile(
-    r"^\[online-session\] charselect -> vehicleselect", re.MULTILINE)
-VEHICLESELECT_ENTER_RE = re.compile(
-    r"^\[online-vehicleselect\] enter:", re.MULTILINE)
 TO_TRACKSELECT_RE = re.compile(
-    r"^\[online-session\] vehicleselect -> trackselect", re.MULTILINE)
+    r"^\[online-session\] charselect -> trackselect", re.MULTILINE)
 TRACKSELECT_ENTER_RE = re.compile(
     r"^\[online-trackselect\] enter:", re.MULTILINE)
+TO_VEHICLESELECT_RE = re.compile(
+    r"^\[online-session\] trackselect -> vehicleselect \(track locked",
+    re.MULTILINE)
+VEHICLESELECT_ENTER_RE = re.compile(
+    r"^\[online-vehicleselect\] enter:", re.MULTILINE)
 DEFER_RE = re.compile(
     r"^\[online-session\] race-1 boot deferred: descriptor not ready", re.MULTILINE)
 ARMED_RE = re.compile(
@@ -210,28 +212,30 @@ def main() -> int:
         return fail("the descriptor-FIRST begin fired -- the lobby-start fork "
                     "must be the ONLY begin on this lane", output)
 
-    # --- CHARSELECT -> VEHICLESELECT -> TRACKSELECT fronted (native), ordered -
-    # The native flow always inserts the VEHICLE select screen between CHARSELECT
-    # and TRACKSELECT (the player picks car/hovercraft/plane); the lobby-start lane
-    # scripts a confirm on it, so the full production flow-shape runs here.
+    # --- CHARSELECT -> TRACKSELECT -> VEHICLE stage fronted (native), ordered -
+    # The RETAIL order: the track browse follows PLAYER SELECT, and the vehicle
+    # pick is a stage OF the track screen, AFTER the host's lock (the lobby-start
+    # lane scripts the lock, the vehicle confirm and the host OK -- the full
+    # production flow-shape runs here).
     cs = CHARSELECT_ENTER_RE.search(output)
-    to_vs = TO_VEHICLESELECT_RE.search(output)
-    vs = VEHICLESELECT_ENTER_RE.search(output)
     to_ts = TO_TRACKSELECT_RE.search(output)
     ts = TRACKSELECT_ENTER_RE.search(output)
+    to_vs = TO_VEHICLESELECT_RE.search(output)
+    vs = VEHICLESELECT_ENTER_RE.search(output)
     if cs is None:
         return fail("native CHARSELECT never fronted", output)
-    if to_vs is None or vs is None:
-        return fail("native VEHICLESELECT never fronted after CHARSELECT", output)
     if to_ts is None or ts is None:
-        return fail("native TRACKSELECT never fronted after VEHICLESELECT", output)
+        return fail("native TRACKSELECT never fronted after CHARSELECT", output)
+    if to_vs is None or vs is None:
+        return fail("the native VEHICLE stage never fronted after the track "
+                    "lock (retail order: vehicles AFTER the track)", output)
     # CHARSELECT is entered first; the hand-off enters each next screen then logs
     # the transition, so every downstream marker follows the CHARSELECT enter and
     # the chain is strictly ordered.
-    if not (cs.start() < vs.start() < ts.start()):
-        return fail("CHARSELECT -> VEHICLESELECT -> TRACKSELECT ordering was "
+    if not (cs.start() < ts.start() < vs.start()):
+        return fail("CHARSELECT -> TRACKSELECT -> VEHICLE-stage ordering was "
                     "violated", output)
-    if not (cs.start() < to_vs.start() < to_ts.start()):
+    if not (cs.start() < to_ts.start() < to_vs.start()):
         return fail("the native screen hand-off ordering was violated", output)
 
     # --- Race-1 readiness gate: DEFERRED then ARMED then booted --------------
@@ -343,7 +347,7 @@ def main() -> int:
     print(
         "PASS online lobby-start: NATIVE owns race 1 -- session BEGAN "
         "descriptor-less (party_link fork, no descriptor), native CHARSELECT -> "
-        "VEHICLESELECT -> TRACKSELECT fronted (offline menu bypassed), the race-1 "
+        "TRACKSELECT -> VEHICLE stage fronted (retail order, offline menu bypassed), the race-1 "
         "readiness gate "
         f"DEFERRED the boot until the launcher built + armed the descriptor (epoch "
         f"{armed.group(1)}), then race 1 booted EXACTLY ONCE and ONLY THEN on the "

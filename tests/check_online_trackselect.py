@@ -12,24 +12,25 @@ It stands up the same in-process two-adapter live session as the charselect lane
 (real libdatachannel DTLS over the loopback hub) and runs TWO scenarios via the
 MDKR_TEST_ONLINE_TRACKSELECT env value (with MDKR_TEST_ONLINE_CHARSELECT=1 so the
 CHARSELECT seam installs the feed + scripts the character pick and then DEFERS its
-self-start so the session hands the flow forward one native screen at a time --
-CHARSELECT -> VEHICLESELECT -> TRACKSELECT -- on local-ready; the native VEHICLE
-screen (always in the flow) is scripted to confirm and pass through):
+self-start so the session hands the flow forward in the RETAIL order --
+CHARSELECT -> TRACKSELECT (browse + lock) -> the VEHICLE stage of the track
+screen -- on local-ready; the vehicle stage is scripted per scenario):
 
-  * "1"      SINGLE-RACE HOST: first proves B -> back one level (to the native
-             VEHICLE screen, no wedge; it re-confirms and re-advances), then
+  * "1"      SINGLE-RACE HOST: first proves the browse B -> back one level to
+             CHARSELECT (no wedge; charselect re-confirms and re-advances), then
              on re-entry locks Whale Bay (track 8, hovercraft-only 0x2) -- the
-             auto-narrow moves the seat off Car -- then browses AWAY to Spaceport
-             Alpha (whose 2P mask drops hovercraft) to prove the publishable
-             vehicle stays legal for the LOCKED track, not the hovered one, then
-             starts. The reducer's ready-clear on the lock is followed by both
-             seats reconverging to ready, the host starts, the race boots +
-             converges byte-for-byte, all without the offline menu.
+             lock flips straight into the VEHICLE stage (retail order), whose
+             auto-narrow moves the seat off Car -- then the stage's B steps back
+             to the browse (the intra-screen back-stack), the browse re-locks,
+             the stage confirms + the host OKs. The reducer's ready-clear on the
+             lock is followed by both seats reconverging to ready, the race boots
+             + converges byte-for-byte, all without the offline menu.
   * "joiner" TOURNAMENT JOINER: the local seat is a JOINER; the seam scripts a
              remote HOST locking cup 2 (Sherbet; round 0 == Whale Bay). Proves the
              joiner renders the ROOM snapshot (host=0, snap.mode=TOURNAMENT,
-             snap.cup=2) and auto-narrows its OWN vehicle to the cup's round-0
-             track so BEGIN_LOADING is never refused, and the race boots.
+             snap.cup=2), FOLLOWS the host's lock into the vehicle stage (the
+             retail zoom-into-setup analog) and narrows its OWN vehicle to the
+             cup so BEGIN_LOADING is never refused, and the race boots.
 """
 
 from __future__ import annotations
@@ -79,25 +80,40 @@ TS_ADVANCE_RE = re.compile(
     re.MULTILINE)
 TS_EXIT_RE = re.compile(
     r"^\[online-trackselect\] exit: freed world bg assets", re.MULTILINE)
-# The native flow always inserts the VEHICLE select screen between CHARSELECT and
-# TRACKSELECT, so the hand-offs are CHARSELECT -> VEHICLESELECT -> TRACKSELECT and a
-# TRACKSELECT B-back steps ONE level to VEHICLESELECT (not straight to CHARSELECT).
+# RETAIL order: the track browse follows CHARSELECT, and the VEHICLE pick is a
+# STAGE of the track screen entered on the lock; the stage B steps back to the
+# browse, and the browse B steps back to CHARSELECT.
 VS_ENTER_RE = re.compile(r"^\[online-vehicleselect\] enter:", re.MULTILINE)
-SESS_CS_TO_VS_RE = re.compile(
-    r"^\[online-session\] charselect -> vehicleselect", re.MULTILINE)
-SESS_VS_TO_TS_RE = re.compile(
-    r"^\[online-session\] vehicleselect -> trackselect", re.MULTILINE)
+VS_ADVANCE_RE = re.compile(
+    r"^\[online-vehicleselect\] advance: lobby left LOBBY \(phase=(\d+)\)",
+    re.MULTILINE)
+VS_BACK_RE = re.compile(
+    r"^\[online-vehicleselect\] back to track browse$", re.MULTILINE)
+SESS_CS_TO_TS_RE = re.compile(
+    r"^\[online-session\] charselect -> trackselect", re.MULTILINE)
+SESS_TS_TO_CS_RE = re.compile(
+    r"^\[online-session\] trackselect -> charselect \(back one level\)",
+    re.MULTILINE)
 SESS_TS_TO_VS_RE = re.compile(
-    r"^\[online-session\] trackselect -> vehicleselect", re.MULTILINE)
+    r"^\[online-session\] trackselect -> vehicleselect \(track locked",
+    re.MULTILINE)
+SESS_VS_TO_TS_RE = re.compile(
+    r"^\[online-session\] vehicleselect -> trackselect \(back one stage\)",
+    re.MULTILINE)
+VS_RENDER_RE = re.compile(
+    r"^\[online-vehicleselect\] render cursor=(\d+) vehicle=(\d+) "
+    r"legal=0x([0-9a-f]+) track=(\d+) local\{seatVeh=(\d+) seatReady=(\d+) "
+    r"conf=(\d+)\} remote\{seat=(-?\d+) veh=(\d+) ready=(\d+) name=(\S+)\} "
+    r"intent\{vehicle=(\d+) ready=(\d+)\}$", re.MULTILINE)
 TS_RENDER_RE = re.compile(
     r"^\[online-trackselect\] render mode=(\d+) col=(\d+) row=(\d+) host=(\d+) "
     r"track=(\d+) mask=0x([0-9a-f]+) vehicle=(\d+) locked\{track=(-?\d+) "
     r"cup=(-?\d+)\} seat\{r0=(\d+) r1=(\d+)\} snap\{mode=(\d+) cfgTrack=(\d+) "
-    r"cup=(\d+) phase=(\d+)\} start=(\d+)$",
+    r"cup=(\d+) phase=(\d+)\} setup=(\d+)$",
     re.MULTILINE)
 # findall tuple indices:
 #  0 mode 1 col 2 row 3 host 4 track 5 mask 6 vehicle 7 lockedTrack 8 lockedCup
-#  9 r0 10 r1 11 snapMode 12 snapCfgTrack 13 snapCup 14 snapPhase 15 start
+#  9 r0 10 r1 11 snapMode 12 snapCfgTrack 13 snapCup 14 snapPhase 15 setup
 
 # PD-T4: the observable agreement check the session logs at the RACE hand-off.
 # "honored" == the last-seen host-intended track (from the forward feed) equals
@@ -226,15 +242,16 @@ def check_common(scn: str, rc: int, output: str) -> int | None:
     if not CS_ENTER_RE.search(output):
         return fail(scn, "CHARSELECT was never entered (flow must pass through "
                     "charselect first)", output)
-    if not SESS_CS_TO_VS_RE.search(output):
-        return fail(scn, "CHARSELECT never handed off to VEHICLESELECT", output)
-    if not VS_ENTER_RE.search(output):
-        return fail(scn, "VEHICLESELECT was never entered (native flow inserts it "
-                    "between charselect and trackselect)", output)
-    if not SESS_VS_TO_TS_RE.search(output):
-        return fail(scn, "VEHICLESELECT never handed off to TRACKSELECT", output)
+    if not SESS_CS_TO_TS_RE.search(output):
+        return fail(scn, "CHARSELECT never handed off to TRACKSELECT (retail "
+                    "order: the track browse follows PLAYER SELECT)", output)
     if not TS_ENTER_RE.search(output):
         return fail(scn, "TRACKSELECT was never entered", output)
+    if not SESS_TS_TO_VS_RE.search(output):
+        return fail(scn, "the track lock never handed off to the VEHICLE stage "
+                    "(retail order: vehicles AFTER the track)", output)
+    if not VS_ENTER_RE.search(output):
+        return fail(scn, "the VEHICLE stage was never entered", output)
     tracks_line = TS_TRACKS_RE.search(output)
     if not tracks_line:
         return fail(scn, "the screen never emitted its offered track-id list",
@@ -254,84 +271,86 @@ def check_single_host(output: str) -> int | None:
     if err is not None:
         return err
     renders = TS_RENDER_RE.findall(output)
+    vs_renders = VS_RENDER_RE.findall(output)
 
-    # B round-trip (no wedge): a TRACKSELECT B steps back ONE level to the native
-    # VEHICLE screen, which re-confirms and re-advances to TRACKSELECT -- so the
-    # round-trip is VEHICLESELECT -> TRACKSELECT at least twice, a back log, a
-    # TRACKSELECT -> VEHICLESELECT transition, and the PD-T6 charselect leave stub
-    # EXACTLY once across the whole run (charselect is fronted once, browse-B once).
-    if len(SESS_VS_TO_TS_RE.findall(output)) < 2:
-        return fail(scn, "expected VEHICLESELECT -> TRACKSELECT at least twice (the "
-                    "B round-trip)", output)
-    if max(int(e) for e in TS_ENTER_RE.findall(output)) < 2:
-        return fail(scn, "TRACKSELECT entered < 2 times (B round-trip)", output)
+    # Browse B round-trip (no wedge): the browse B steps back ONE level to
+    # CHARSELECT (whose seam re-confirms + re-readies and hands back), so
+    # CHARSELECT -> TRACKSELECT fires at least twice, TRACKSELECT is entered at
+    # least twice, and the charselect leave stub fires EXACTLY twice (each
+    # charselect entry replays its browse-B script once).
     if not TS_BACK_RE.search(output):
-        return fail(scn, "B on TRACKSELECT never stepped back one level", output)
-    if not SESS_TS_TO_VS_RE.search(output):
-        return fail(scn, "no TRACKSELECT -> VEHICLESELECT back transition", output)
+        return fail(scn, "B on the track browse never stepped back one level",
+                    output)
+    if not SESS_TS_TO_CS_RE.search(output):
+        return fail(scn, "no TRACKSELECT -> CHARSELECT back transition", output)
+    if len(SESS_CS_TO_TS_RE.findall(output)) < 2:
+        return fail(scn, "expected CHARSELECT -> TRACKSELECT at least twice (the "
+                    "browse B round-trip)", output)
+    # The PD-T6 charselect leave stub is warn-ONCE per session continuation:
+    # the TRACKSELECT -> CHARSELECT back-out deliberately does NOT reset the
+    # latch (continuation of the same session), so the second entry's scripted
+    # browse-B stays silent -- EXACTLY one stub across the whole run.
     leave_stub = output.count(CS_LEAVE_STUB)
     if leave_stub != 1:
         return fail(scn, f"charselect leave stub logged {leave_stub} times "
-                    f"(expected EXACTLY 1)", output)
+                    f"(expected EXACTLY 1: warn-once across the session)", output)
 
-    # F-I1 regression: the back-out returns to a FRESH VEHICLE screen (the one level
-    # up the back-stack) rather than one-frame bouncing forward -- the session gates
-    # the re-advance on each screen's OWN confirm latch, which resets on _enter. The
-    # synchronous seam cannot inject the live reduce lag, so this guards no one-frame
-    # bounce; the async correctness is by construction (the latch resets on _enter,
-    # independent of the snapshot).
+    # Stage back-stack (retail: B at the setup stage returns to the browse):
+    # the vehicle stage's B stepped back to the browse, the browse RE-LOCKED (a
+    # fresh lock is required -- the setup latch resets on _enter, the F-I1
+    # no-bounce discipline), and the stage re-entered.
+    if not VS_BACK_RE.search(output):
+        return fail(scn, "the vehicle stage's B never stepped back to the "
+                    "browse", output)
+    if not SESS_VS_TO_TS_RE.search(output):
+        return fail(scn, "no vehicle-stage -> browse back transition", output)
+    if len(SESS_TS_TO_VS_RE.findall(output)) < 2:
+        return fail(scn, "the browse never re-locked back into the vehicle stage "
+                    "(lock -> stage must fire at least twice)", output)
+    if max(int(e) for e in TS_ENTER_RE.findall(output)) < 3:
+        return fail(scn, "TRACKSELECT entered < 3 times (charselect round-trip + "
+                    "stage round-trip)", output)
     vs_enters = len(VS_ENTER_RE.findall(output))
     if vs_enters < 2:
-        return fail(scn, f"VEHICLESELECT re-entered {vs_enters}x; the back-out did "
-                    f"not return to a fresh vehicle screen", output)
+        return fail(scn, f"the vehicle stage re-entered {vs_enters}x; the "
+                    f"back-out did not return through a fresh lock", output)
 
-    # Host lock reached the reducer: configured_track converged to 8.
-    if not [r for r in renders if int(r[12]) == LOCKED_TRACK]:
-        return fail(scn, f"snapshot configured_track never converged to "
-                    f"{LOCKED_TRACK}", output)
+    # The lock flipped the browse into the stage (the setup latch was witnessed).
+    if not [r for r in renders if int(r[15]) == 1]:
+        return fail(scn, "no browse render row witnessed setup=1 (the lock -> "
+                    "stage latch)", output)
 
-    # Vehicle auto-narrow held for Whale Bay's 0x2 mask (R-A).
-    narrow_rows = [r for r in renders
-                   if int(r[4]) == LOCKED_TRACK and int(r[5], 16) == LOCKED_MASK]
+    # Host lock reached the reducer: the VEHICLE stage resolved the locked track
+    # (the browse exits on the lock tick, so convergence is read on the stage).
+    narrow_rows = [r for r in vs_renders
+                   if int(r[3]) == LOCKED_TRACK and int(r[2], 16) == LOCKED_MASK]
     if not narrow_rows:
-        return fail(scn, f"no render row resolved track {LOCKED_TRACK} mask "
-                    f"0x{LOCKED_MASK:x}", output)
-    if any(int(r[6]) != NARROWED_VEHICLE for r in narrow_rows):
-        return fail(scn, f"vehicle did not auto-narrow to {NARROWED_VEHICLE}",
-                    output)
-    if any(((1 << int(r[6])) & LOCKED_MASK) == 0 for r in narrow_rows):
-        return fail(scn, "a resolved vehicle bit was NOT inside the track mask",
-                    output)
+        return fail(scn, f"no vehicle-stage render row resolved track "
+                    f"{LOCKED_TRACK} mask 0x{LOCKED_MASK:x} (the lock never "
+                    f"converged)", output)
 
-    # F-D5: after the lock, browsing to Spaceport Alpha (col4,row3, 2P mask drops
-    # hovercraft) must NOT re-narrow off the LOCKED track's legal vehicle.
-    spaceport_rows = [r for r in renders
-                      if int(r[1]) == SPACEPORT_COL and int(r[2]) == SPACEPORT_ROW]
-    if not spaceport_rows:
-        return fail(scn, "cursor never browsed to Spaceport Alpha after locking "
-                    "(F-D5 coverage would be silently skipped)", output)
-    locked_while_browsing = [r for r in spaceport_rows if int(r[7]) == LOCKED_TRACK]
-    if not locked_while_browsing:
-        return fail(scn, "no Spaceport Alpha hover row while Whale Bay was locked",
-                    output)
-    if any(int(r[6]) != NARROWED_VEHICLE for r in locked_while_browsing):
-        bad = [int(r[6]) for r in locked_while_browsing
-               if int(r[6]) != NARROWED_VEHICLE]
-        return fail(scn, f"F-D5: after locking Whale Bay, hovering Spaceport "
-                    f"Alpha re-narrowed the published vehicle to {bad} (must stay "
-                    f"{NARROWED_VEHICLE}, legal for the LOCKED track)", output)
+    # Vehicle auto-narrow held for Whale Bay's 0x2 mask (R-A): the stage moved
+    # the seat off the CAR charselect default and published only hovercraft.
+    if any(int(r[1]) != NARROWED_VEHICLE or int(r[11]) != NARROWED_VEHICLE
+           for r in narrow_rows):
+        return fail(scn, f"the stage's pick did not auto-narrow to "
+                    f"{NARROWED_VEHICLE} on the locked track", output)
 
-    # Ready cleared then reconverged around the config change (R-B).
-    cfg_rows = [r for r in renders if int(r[12]) == LOCKED_TRACK]
-    if not [r for r in cfg_rows if int(r[9]) == 0 and int(r[10]) == 0]:
+    # Ready cleared then reconverged around the config change (R-B): the lock's
+    # ready-clear leaves the stage un-confirmed (seatReady=0), then the confirm +
+    # remote republish reconverge both (seatReady=1, remote ready=1).
+    if not [r for r in narrow_rows if int(r[5]) == 0]:
         return fail(scn, "never witnessed the ready-clear after the config "
-                    "change", output)
-    if not [r for r in cfg_rows if int(r[9]) == 1 and int(r[10]) == 1]:
+                    "change (no un-ready stage row)", output)
+    if not [r for r in narrow_rows
+            if int(r[5]) == 1 and int(r[6]) == 1 and int(r[9]) == 1]:
         return fail(scn, "both seats never reconverged to ready after the "
                     "config-clear", output)
 
-    if not TS_ADVANCE_RE.search(output):
-        return fail(scn, "never advanced on the scripted host-start", output)
+    # The room left LOBBY under the VEHICLE stage (the host's OK), not the browse.
+    if not VS_ADVANCE_RE.search(output):
+        return fail(scn, "the vehicle stage never advanced on the host OK",
+                    output)
     if not TS_EXIT_RE.search(output):
         return fail(scn, "never freed world bg assets on exit", output)
 
@@ -367,20 +386,26 @@ def check_joiner(output: str) -> int | None:
     if not room_rows:
         return fail(scn, f"joiner never reflected the room snapshot "
                     f"(host=0, snap.mode=TOURNAMENT, snap.cup={TOURN_CUP}) -- "
-                    f"F-D3 render-from-snapshot", output)
+                    f"F-D3 render-from-snapshot; the joiner must witness the "
+                    f"host's lock on the browse before following it into the "
+                    f"vehicle stage", output)
 
-    # F-I2: the joiner auto-narrowed its OWN vehicle to the cup's round-0 track
-    # (Whale Bay, hovercraft-only) so BEGIN_LOADING is never refused.
-    if not [r for r in room_rows if int(r[6]) == NARROWED_VEHICLE]:
-        return fail(scn, f"joiner never narrowed its vehicle to "
-                    f"{NARROWED_VEHICLE} for the cup's round-0 track (F-I2)",
-                    output)
+    # F-I2: the joiner narrowed its OWN vehicle to the cup (hovercraft-only
+    # intersection) so BEGIN_LOADING is never refused. The joiner FOLLOWS the
+    # host's lock into the vehicle stage (retail zoom-into-setup analog), so the
+    # narrow is read on the stage's renders.
+    vs_renders = VS_RENDER_RE.findall(output)
+    if not [r for r in vs_renders
+            if int(r[1]) == NARROWED_VEHICLE and int(r[11]) == NARROWED_VEHICLE]:
+        return fail(scn, f"joiner's vehicle stage never narrowed the pick to "
+                    f"{NARROWED_VEHICLE} for the locked cup (F-I2)", output)
     if "ILLEGAL_VEHICLE" in output:
         return fail(scn, "a BEGIN_LOADING ILLEGAL_VEHICLE refusal was observed "
                     "(F-I2 livelock)", output)
 
-    if not TS_ADVANCE_RE.search(output):
-        return fail(scn, "never advanced on the scripted host-start", output)
+    if not VS_ADVANCE_RE.search(output):
+        return fail(scn, "the joiner's vehicle stage never advanced on the "
+                    "scripted host-start", output)
 
     # PD-T4 LOCKED==BOOTED: the loopback ran tournament cup 2, whose round-0 track
     # is Whale Bay (8) -- the SAME track the joiner's screen resolves the room's
@@ -436,16 +461,17 @@ def main() -> int:
             return result
 
     print(
-        "PASS online trackselect: two-stage native screen -- SINGLE-HOST "
-        "(B-> back one level to VEHICLESELECT no-wedge; locked Whale Bay -> "
-        "configured_track converged; "
-        "auto-narrow to hovercraft; F-D5 vehicle stays legal browsing Spaceport "
-        "Alpha; ready clear->reconverge; host-start; LOCKED==BOOTED: manifest "
-        "honored track 8, engine loadedTrack 8) and TOURNAMENT-JOINER (renders "
-        "room snapshot host=0/mode=TOURNAMENT/cup=2; narrows to the cup round-0 "
-        "track; no ILLEGAL_VEHICLE; LOCKED==BOOTED: cup-2 round-0 manifest honored "
-        "track 8, engine loadedTrack 8) -- both handed off gGameMode=2 "
-        "gCurrentMenuId=0, offered ids == reducer set, no track divergence"
+        "PASS online trackselect: retail-order track screen -- SINGLE-HOST "
+        "(browse B -> CHARSELECT no-wedge; locked Whale Bay -> the VEHICLE stage "
+        "fronted on the lock; stage B -> browse -> re-lock -> stage; the stage "
+        "auto-narrowed to hovercraft and converged; ready clear->reconverge; "
+        "host OK started; LOCKED==BOOTED: manifest honored track 8, engine "
+        "loadedTrack 8) and TOURNAMENT-JOINER (renders room snapshot "
+        "host=0/mode=TOURNAMENT/cup=2 on the browse, follows the lock into the "
+        "vehicle stage, narrows to the cup; no ILLEGAL_VEHICLE; LOCKED==BOOTED: "
+        "cup-2 round-0 manifest honored track 8, engine loadedTrack 8) -- both "
+        "handed off gGameMode=2 gCurrentMenuId=0, offered ids == reducer set, "
+        "no track divergence"
     )
     return 0
 

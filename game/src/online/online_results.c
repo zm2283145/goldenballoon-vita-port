@@ -694,6 +694,10 @@ void mdkr_online_results_enter(u8 isFinalRace, u8 raceIndex, u8 chooserEnabled) 
 
 void mdkr_online_results_exit(void) {
     if (sRes.assets) {
+        /* Retire the frame's authored display list FIRST (this frame's texrects
+         * reference the tiles freed below -- the freed-texture DL corruption fix,
+         * see mdkr_online_screen_dl_retire). */
+        mdkr_online_screen_dl_retire();
         /* Disarm the borrowed sky before freeing its tiles (bgdraw_render lifetime). */
         mdkr_online_screen_backdrop_clear();
         unload_font(ASSET_FONTS_FUNFONT);
