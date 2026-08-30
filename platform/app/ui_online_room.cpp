@@ -20,7 +20,6 @@
 // UX. None of this compiles into a shipping (OFF) build, so the OFF object stays
 // byte-identical.
 #include "online/online_track_table.h"
-#include "qrcodegen.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -356,16 +355,30 @@ void drawVerificationPhrase(const MdkrOnlineViewModel &model) {
     ui::CardEnd();
 }
 
-void drawConnectionDetails(const MdkrOnlineViewModel &model) {
+void drawConnectionDetails(const MdkrOnlineViewModel &model, bool betaPath) {
     if (!g_online.detailsOpen) return;
     ui::Gap(ui::kGapS);
     if (ui::CardBegin("##online-details", AppTheme::subtle(), 0.0f)) {
         ImGui::TextUnformatted("Connection Details");
-        ui::TextSubtleWrapped(
-            "Preview adapter • no external service • no addresses, invite "
-            "secrets, names or input samples in diagnostics");
-        ui::TextSubtle("Members %u • Racer seats %u • Ready %u",
-                       model.member_count, model.seat_count, model.ready_count);
+        if (betaPath) {
+            // A live private room: describe the real connection instead of the
+            // preview adapter, and count players -- the racer-seat / ready
+            // aggregates are launcher-era concepts the game owns after pairing.
+            ui::TextSubtleWrapped(
+                "Private, invite-only room. Game traffic flows directly between "
+                "you and your friend whenever possible.");
+            ui::TextSubtleWrapped(
+                "Diagnostics never show IP addresses, invite secrets, names, or "
+                "controller inputs.");
+            ui::TextSubtle("Players %u of 2", model.member_count);
+        } else {
+            ui::TextSubtleWrapped(
+                "Preview adapter • no external service • no addresses, invite "
+                "secrets, names or input samples in diagnostics");
+            ui::TextSubtle("Members %u • Racer seats %u • Ready %u",
+                           model.member_count, model.seat_count,
+                           model.ready_count);
+        }
     }
     ui::CardEnd();
     if (g_online.connectionDoctorOpen &&
@@ -478,8 +491,7 @@ void drawLeaveRaceConfirmation(LauncherState &state) {
     ui::Gap(ui::kGapM);
     ui::CautionBox(
         "Leave This Race?",
-        "The race keeps running for your friends. This display will stop the "
-        "game and leave the private room.");
+        "Leaving ends the online race for both players and closes the room.");
     ui::Gap(ui::kGapS);
     if (ImGui::Button("Keep Racing", ui::kBtnFullWidth())) {
         g_online.leaveRaceConfirm = false;
@@ -582,7 +594,7 @@ void drawRoomPanel(LauncherState &state) {
         ImGui::EndDisabled();
     }
     drawLeaveRaceConfirmation(state);
-    drawConnectionDetails(model);
+    drawConnectionDetails(model, false);
     drawUpdateHelp();
 
 }
@@ -608,12 +620,11 @@ void drawRoomPanel(LauncherState &state) {
 struct BetaFakeInviteOverride {
     bool active = false;
     std::string code;
-    std::string url;
 };
 BetaFakeInviteOverride g_betaFakeInvite;
 
 // Records which post-pairing SELECTING surface last rendered: the forward native
-// hand-off card (Handoff) or the "Return to game" re-entry control shown after a
+// hand-off card (Handoff) or the "Return to Game" re-entry control shown after a
 // LEFT/ERROR native return (Reentry). The per-race ImGui grid is retired, so there
 // is no third state. The render seam (drawBetaRoomFake) emits it as a semantic
 // witness a headless test asserts on; written by a single enum assignment on the
@@ -1144,7 +1155,7 @@ const char *betaStatusLine(const MdkrOnlineViewModel &model) {
         return model.verification_phrase[0] != '\0'
                    ? "Almost there — confirm the safety phrase"
                    : "Checking setup…";
-    case MDKR_ONLINE_VIEW_SELECTING: return "Connected — choose your racer";
+    case MDKR_ONLINE_VIEW_SELECTING: return "Connected — the game takes it from here";
     case MDKR_ONLINE_VIEW_LOADING: return "Loading the race…";
     case MDKR_ONLINE_VIEW_COUNTDOWN: return "Get ready!";
     case MDKR_ONLINE_VIEW_RACING: return "Racing";
@@ -1247,7 +1258,7 @@ const char *betaFailureCopy(MdkrOnlineViewFailure failure) {
         return "The race couldn't start. Leave and try again.";
     case MDKR_ONLINE_VIEW_FAILURE_VERIFICATION_MISMATCH:
         return "The safety phrases didn't match — stopped for your protection. "
-               "Leave and reconnect.";
+               "Reconnect to compare a fresh phrase.";
 #if MDKR_ENABLE_ONLINE_BETA
     case MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT:
         return "Your opponent lost connection, so this race ended. This room is "
@@ -1287,7 +1298,17 @@ void betaComposeStatusLine(const MdkrOnlineViewModel &model,
         // The game owns racer/vehicle/track select and readiness after pairing, so
         // the strip is just the pre-hand-off "Room ready" (with the tournament
         // series prefix when present) -- not the retired launcher Ready/Start copy.
-        const char *next = "Room ready";
+        // After a LEFT/ERROR native return the room lands back at SELECTING with the
+        // re-entry card offered, so the strip must tell that same story instead of
+        // an out-of-context "Room ready".
+        const MdkrPartyLinkSessionEndReason reentry =
+            OnlineRoom_roomReadyReentryReason();
+        const bool isReentry =
+            reentry == MDKR_PARTY_LINK_SESSION_END_LEFT ||
+            reentry == MDKR_PARTY_LINK_SESSION_END_ERROR;
+        const char *next = isReentry
+            ? "Race ended early — you're back in the room"
+            : "Room ready";
         if (series[0] != '\0') {
             std::snprintf(out, size, "%s. %s", series, next);
         } else {
@@ -1315,13 +1336,13 @@ void betaComposeStatusLine(const MdkrOnlineViewModel &model,
                               static_cast<unsigned>(lobby->race_index) + 1u,
                               static_cast<unsigned>(MDKR_ONLINE_CUP_ROUNDS),
                               model.local_member_is_leader
-                                  ? "press Next Race to continue"
-                                  : "waiting for the host to start the next race");
+                                  ? "pick what's next in the game"
+                                  : "the host picks what's next in the game");
             }
         } else if (!model.local_member_is_leader) {
             std::snprintf(out, size,
-                          "Race complete — waiting for the host to choose "
-                          "what's next");
+                          "Race complete — the host picks what's next in the "
+                          "game");
         }
         break;
     default:
@@ -1381,68 +1402,20 @@ void drawBetaStatusLine(const MdkrOnlineViewModel &model,
         } else {
             drawBetaBootRampBreadcrumb(model);
             // The game owns readiness after pairing, so the strip drops the
-            // launcher-era ready counter; the member count stays.
-            ui::TextSubtle("%u of 2 players", model.member_count);
+            // launcher-era ready counter; the member count stays. It is hidden
+            // while CONNECTING, where the room does not exist yet and "0 of 2"
+            // reads like an error rather than a count.
+            if (model.kind != MDKR_ONLINE_VIEW_CONNECTING) {
+                ui::TextSubtle("%u of 2 players", model.member_count);
+            }
         }
     }
     ui::CardEnd();
 }
 
-// The white margin drawn around the QR modules -- its quiet zone. Published so
-// the pre-code invite placeholder can reserve the same footprint the real QR
-// fills, and both the code grid and the placeholder stay in step.
-float betaQrMargin() { return 10.0f * AppTheme::uiScale(); }
-
-// Draw-only QR of an arbitrary string, mirroring the phone-party invite QR. The
-// code sits on a padded white panel (its quiet zone) with a short caption, so it
-// reads cleanly on the dark surface and scans reliably.
-void drawBetaQr(const std::string &text) {
-    if (text.empty()) return;
-    try {
-        const qrcodegen::QrCode qr = qrcodegen::QrCode::encodeText(
-            text.c_str(), qrcodegen::QrCode::Ecc::QUARTILE);
-        // Sized so the padded panel + caption keep the whole invite card on one
-        // 960x720 screen (the quiet-zone margin and caption cost the height the
-        // 220px code used to take).
-        const float maxSize = 150.0f * AppTheme::uiScale();
-        const float margin = betaQrMargin();
-        const float available = ImGui::GetContentRegionAvail().x;
-        const float size = (std::max)(
-            96.0f, (std::min)(maxSize, available - margin * 2.0f));
-        const int quiet = 4;
-        const int modules = qr.getSize() + quiet * 2;
-        const float pixel = std::floor(size / static_cast<float>(modules));
-        const float actual = pixel * static_cast<float>(modules);
-        const float panel = actual + margin * 2.0f;
-        const ImVec2 origin = ImGui::GetCursorScreenPos();
-        ImDrawList *draw = ImGui::GetWindowDrawList();
-        const ImU32 light = ImGui::GetColorU32(AppTheme::qrLight());
-        const ImU32 dark = ImGui::GetColorU32(AppTheme::qrDark());
-        // White quiet-zone panel behind the code (the margin IS the quiet zone a
-        // reader needs), rounded so it reads as a tidy card, not a bare block.
-        draw->AddRectFilled(origin, ImVec2(origin.x + panel, origin.y + panel),
-                            light, 6.0f * AppTheme::uiScale());
-        for (int y = 0; y < qr.getSize(); ++y) {
-            for (int x = 0; x < qr.getSize(); ++x) {
-                if (!qr.getModule(x, y)) continue;
-                const float left = origin.x + margin + (x + quiet) * pixel;
-                const float top = origin.y + margin + (y + quiet) * pixel;
-                draw->AddRectFilled(ImVec2(left, top),
-                                    ImVec2(left + pixel, top + pixel), dark);
-            }
-        }
-        ImGui::Dummy(ImVec2(panel, panel));
-        ui::Gap(ui::kGapXS);
-        ui::TextSubtle("Scan to join");
-    } catch (...) {
-        ui::TextSubtleWrapped(
-            "The QR code could not be shown. Share the 6-digit code instead.");
-    }
-}
-
 // Begin a bordered card capped at `maxWidth` and centered in the available
 // content region, so a wide window no longer leaves a dead right column beside a
-// card whose content (code + QR) is naturally narrow. Falls back to full width
+// card whose content (the code) is naturally narrow. Falls back to full width
 // when the region is narrower than the cap. Pair with ui::CardEnd().
 bool betaCenteredCardBegin(const char *id, const ImVec4 &border,
                            float maxWidth) {
@@ -1458,33 +1431,38 @@ bool betaCenteredCardBegin(const char *id, const ImVec4 &border,
         ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
 }
 
-// The creator's invite card: big shareable code + Copy + a QR of the invite
-// link. A joiner (isHost false) renders nothing. The host ALWAYS renders the
-// same card frame -- through the CONNECTING create round trip AND the open ROOM,
-// before the fallback code has been learned, it shows an animated "Getting your
-// room code…" placeholder, then swaps in the real code + QR + Copy buttons the
-// instant OnlineRoom_liveInvite reports ready (which can be mid-CONNECTING,
-// before the Ready event advances the view to ROOM). The placeholder reserves
-// the Copy-row + QR footprint the real card will fill, so the swap-in never
-// jumps the layout. This is why the host is never left staring at a bare
-// "Connecting…" with nothing to share or anticipate.
+// The creator's invite card: the big shareable 6-digit code + Copy Code. A
+// joiner (isHost false) renders nothing. The host ALWAYS renders the same card
+// frame -- through the CONNECTING create round trip AND the open ROOM, before the
+// fallback code has been learned it shows an animated "Getting your room code…"
+// placeholder, then swaps in the real code + Copy Code the instant
+// OnlineRoom_liveInvite reports ready (which can be mid-CONNECTING, before the
+// Ready event advances the view to ROOM). The placeholder reserves the Copy-row
+// footprint the real card will fill, so the swap-in never jumps the layout. This
+// is why the host is never left staring at a bare "Connecting…" with nothing to
+// share or anticipate.
+//
+// Copy Link and the QR are intentionally NOT offered: the invite URL only opens
+// the web room-entry page, which cannot get a second player into this native
+// beta race -- with private rooms disabled in the published web build it erases
+// the capability and shows a "not enabled in this build" notice. The 6-digit
+// code the friend types into their own copy of the game is the one thing that
+// works, so it is the only thing shared.
 void drawBetaInviteCard(bool isHost) {
     std::string code;
-    std::string url;
     bool ready;
     if (g_betaFakeInvite.active) {
         // Test-only synthetic invite (drawBetaRoomFake): render the REAL code +
-        // Copy + QR card without a live transport. Never taken on the live path.
+        // Copy Code card without a live transport. Never taken on the live path.
         code = g_betaFakeInvite.code;
-        url = g_betaFakeInvite.url;
         ready = !code.empty();
     } else {
-        ready = OnlineRoom_liveInvite(g_online.adapter.get(), &code, &url) &&
+        ready = OnlineRoom_liveInvite(g_online.adapter.get(), &code, nullptr) &&
                 !code.empty();
     }
     // Cap and center the card: at wide sizes a full-width card leaves a dead
-    // right column beside the naturally-narrow code + QR. Both the placeholder
-    // and the real card use the SAME cap so the swap-in never shifts sideways.
+    // right column beside the naturally-narrow code. Both the placeholder and the
+    // real card use the SAME cap so the swap-in never shifts sideways.
     const float kInviteMaxWidth = 480.0f * AppTheme::uiScale();
     if (!ready) {
         if (!isHost) return;  // a joiner has no room of its own to share
@@ -1506,24 +1484,15 @@ void drawBetaInviteCard(bool isHost) {
             ImGui::PushFont(AppTheme::fonts().title);
             ImGui::TextUnformatted(waiting);
             ImGui::PopFont();
-            // Reserve the exact blocks the real card fills (Copy button row +
-            // the padded QR panel + its caption line), computed the same way
-            // drawBetaQr sizes them, so the placeholder->real swap does not
-            // shift the layout under the host's cursor.
+            // Reserve the Copy Code row footprint the real card fills, so the
+            // placeholder->real swap does not shift the layout under the host's
+            // cursor.
             ui::Gap(ui::kGapS);
             ImGui::Dummy(ImVec2(0.0f, ui::kBtnSecondary().y));
             ui::Gap(ui::kGapS);
-            const float qrMax = 150.0f * AppTheme::uiScale();
-            const float margin = betaQrMargin();
-            const float qrSide = (std::max)(
-                96.0f, (std::min)(qrMax,
-                                  ImGui::GetContentRegionAvail().x - margin * 2.0f));
-            ImGui::Dummy(ImVec2(qrSide + margin * 2.0f, qrSide + margin * 2.0f));
-            ui::Gap(ui::kGapXS);
-            ImGui::Dummy(ImVec2(0.0f, ImGui::GetTextLineHeight()));  // caption line
             ui::TextSubtleWrapped(
-                "Invite-only and expires. Keep this window open — the code and "
-                "its QR appear here in a moment.");
+                "Invite-only — the code expires after about 10 minutes. Keep "
+                "this window open; your room code appears here in a moment.");
         }
         ui::CardEnd();
         return;
@@ -1548,26 +1517,10 @@ void drawBetaInviteCard(bool isHost) {
         }
         ui::SpeakFocusedItem("Copy Code", grouped.c_str(),
                              "Copies the 6-digit race code to the clipboard.");
-        if (!url.empty()) {
-            ImGui::SameLine();
-            if (ImGui::Button("Copy Link", ui::kBtnSecondary())) {
-                ImGui::SetClipboardText(url.c_str());
-            }
-            ui::SpeakFocusedItem("Copy Link", "Invite link",
-                                 "Copies the full invite link to the clipboard.");
-        }
         ui::Gap(ui::kGapS);
-        std::string qrTarget = url;
-#ifdef MDKR_PARTY_ORIGIN
-        if (!qrTarget.empty() && qrTarget[0] == '/') {
-            qrTarget = std::string(MDKR_PARTY_ORIGIN) + qrTarget;
-        }
-#endif
-        if (qrTarget.empty()) qrTarget = code;
-        drawBetaQr(qrTarget);
         ui::TextSubtleWrapped(
-            "Invite-only and expires. Keep this window open until your friend "
-            "joins.");
+            "Invite-only — the code expires after about 10 minutes. Keep this "
+            "window open until your friend joins.");
     }
     ui::CardEnd();
 }
@@ -1773,12 +1726,18 @@ void drawBetaRosterStrip(const MdkrOnlineLobby &lobby,
                 ui::TextSubtle("· %s", kVehicles[seat.vehicle_id]);
             }
         } else {
-            ui::TextSubtle("Choosing…");
+            // Picks happen in the game after the takeover, so an unpicked seat is
+            // a placeholder, not the launcher-era "Choosing…".
+            ui::TextSubtle("—");
         }
 
-        // Right-aligned state: Ready in the lobby, place on results.
+        // Right-aligned state: the finishing place on results; READY only when a
+        // member is genuinely ready. Readiness is game-owned after the takeover,
+        // so an unready seat shows nothing rather than a "Not Ready" that
+        // contradicts the "Room ready" strip above it.
         char stateText[32];
         ImVec4 stateColor = AppTheme::subtle();
+        bool drawState = true;
         if (resultsPhase) {
             const std::uint8_t place = lobby.last_placements[i];
             std::snprintf(stateText, sizeof(stateText), "%s",
@@ -1789,15 +1748,17 @@ void drawBetaRosterStrip(const MdkrOnlineLobby &lobby,
             std::snprintf(stateText, sizeof(stateText), "READY");
             stateColor = AppTheme::good();
         } else {
-            std::snprintf(stateText, sizeof(stateText), "Not Ready");
+            drawState = false;
         }
-        const float textWidth = ImGui::CalcTextSize(stateText).x;
-        ImGui::SameLine(ImGui::GetWindowWidth() - textWidth -
-                        ImGui::GetStyle().WindowPadding.x -
-                        ImGui::GetStyle().ItemSpacing.x);
-        ImGui::PushStyleColor(ImGuiCol_Text, stateColor);
-        ImGui::TextUnformatted(stateText);
-        ImGui::PopStyleColor();
+        if (drawState) {
+            const float textWidth = ImGui::CalcTextSize(stateText).x;
+            ImGui::SameLine(ImGui::GetWindowWidth() - textWidth -
+                            ImGui::GetStyle().WindowPadding.x -
+                            ImGui::GetStyle().ItemSpacing.x);
+            ImGui::PushStyleColor(ImGuiCol_Text, stateColor);
+            ImGui::TextUnformatted(stateText);
+            ImGui::PopStyleColor();
+        }
     }
     ui::CardEnd();
 }
@@ -1836,7 +1797,7 @@ const char *betaReentryReasonCopy(MdkrPartyLinkSessionEndReason reason) {
 //     session returned early. The takeover latch stays SET on a LEFT/ERROR return
 //     (it must never auto re-fire -- the re-boot-loop hazard), so without an explicit
 //     gesture the room would be a dead end now that the per-race ImGui fallback is
-//     retired. This variant states the reason and offers a "Return to game" button
+//     retired. This variant states the reason and offers a "Return to Game" button
 //     that re-arms (OnlineRoom_requestRoomReadyReentry) so the next poll re-takes
 //     native. Returns true the frame the button is pressed.
 bool drawBetaNativeHandoffCard(bool tournament,
@@ -1849,7 +1810,7 @@ bool drawBetaNativeHandoffCard(bool tournament,
             ImGui::TextUnformatted("Back in the room");
             ui::TextSubtleWrapped(betaReentryReasonCopy(reentryReason));
             ui::Gap(ui::kGapS);
-            pressed = ui::BrandPrimaryButton("Return to game",
+            pressed = ui::BrandPrimaryButton("Return to Game",
                                              ui::kBtnFullWidth());
         } else {
             ImGui::TextUnformatted("Starting — handing to the game…");
@@ -1889,7 +1850,7 @@ void drawBetaNativeResultsHandoffCard() {
 // After pairing the native game owns character / vehicle / track / cup / mode
 // select, so the launcher's SELECTING surface is only the roster strip plus the
 // native hand-off card: the FORWARD "handing to the game" card normally, or the
-// "Return to game" RE-ENTRY card after a LEFT/ERROR native return (the takeover
+// "Return to Game" RE-ENTRY card after a LEFT/ERROR native return (the takeover
 // latch stays set with nothing pending in that state, so the room-ready poll will
 // not re-fire on its own -- the re-entry press re-arms it). Consumes the view
 // model's PRIMARY slot (no Ready/Start button); the shared code below still draws
@@ -1927,6 +1888,124 @@ void drawBetaResultsHandoff(const MdkrOnlineViewModel &model,
     ui::Gap(ui::kGapM);
     g_betaResultsRender = BetaResultsRender::Handoff;
     drawBetaNativeResultsHandoffCard();
+}
+
+// The never-gold rule: a primary control whose only effect is toggling the
+// passive Connection Details card (the CONNECTING / LOADING / COUNTDOWN /
+// RACING views, the checking PREFLIGHT and the joiner RESULTS all expose that
+// toggle as the model's primary) must not wear the gold CTA -- the gold slot is
+// reserved for a genuine next action. Returns the control to draw, relabelled to
+// the one name the card uses everywhere, and reports whether it stays gold.
+MdkrOnlineViewControl betaPrimaryControl(const MdkrOnlineViewControl &primary,
+                                         bool *gold) {
+    MdkrOnlineViewControl out = primary;
+    if (primary.action == MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS) {
+        out.label = "Connection Details";
+        *gold = false;
+    } else {
+        *gold = true;
+    }
+    return out;
+}
+
+// Relabel a recovery control by its action so every failure card reads honestly:
+// the vague "Play Here" states its real effect, the "Update Game"/"Update &
+// Rejoin" help toggle admits no update happens, and the relay-capacity retry
+// drops the "Try Direct Again" jargon.
+void betaRelabelRecoveryControl(MdkrOnlineViewControl *c,
+                                MdkrOnlineViewFailure failure) {
+    if (c == nullptr || !c->visible) return;
+    switch (c->action) {
+    case MDKR_ONLINE_VIEW_ACTION_PLAY_HERE:
+        c->label = "Play Offline Instead";
+        break;
+    case MDKR_ONLINE_VIEW_ACTION_UPDATE_GAME:
+        c->label = "How to Update";
+        break;
+    case MDKR_ONLINE_VIEW_ACTION_RETRY:
+        if (failure == MDKR_ONLINE_VIEW_FAILURE_RELAY_CAPACITY) {
+            c->label = "Try Again";
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+// BETA-PANEL-LOCAL draw-layer overrides applied to a COPY of the shared view
+// model before it is drawn (never to the audited model itself). Each makes a
+// surface read honestly for the native-takeover reality without touching the
+// shared lobby_view_model.c the browser-parity / a11y / unit lanes pin. Applied
+// on both the live and the render-seam paths, so a capture shows what a player
+// sees. Actions are never mutated except where a control is repointed to the
+// behavior it already had (the RESULTS "Change Track" rematch trap); autopair /
+// capstone read actions, so no live action semantics change here.
+void betaApplyDrawOverrides(MdkrOnlineViewModel &model) {
+    switch (model.kind) {
+    case MDKR_ONLINE_VIEW_ROOM:
+        // Both players present means the invite step is over: suppress the no-op
+        // Share Invite control (its apply() does nothing -- the invite card is
+        // the share surface) and tell both players their real next move.
+        if (model.primary.action == MDKR_ONLINE_VIEW_ACTION_SHARE_INVITE) {
+            model.primary.visible = false;
+        }
+        if (model.secondary.action == MDKR_ONLINE_VIEW_ACTION_SHARE_INVITE) {
+            model.secondary.visible = false;
+        }
+        if (model.member_count >= 2u) {
+            model.explanation =
+                "You're both here. Press Check Setup — it checks your games "
+                "match and secures the connection. You both press it.";
+        }
+        break;
+    case MDKR_ONLINE_VIEW_PREFLIGHT:
+        // The checking view (no phrase yet): the most common stall is the friend
+        // not having pressed Check Setup, which nothing says. Append the hint so
+        // the presser can answer "waiting on them or me?".
+        if (model.verification_phrase[0] == '\0') {
+            static char s_checkingExplanation[256];
+            std::snprintf(s_checkingExplanation, sizeof(s_checkingExplanation),
+                          "%s If this takes more than a moment, make sure your "
+                          "friend pressed Check Setup too.",
+                          model.explanation != nullptr ? model.explanation : "");
+            model.explanation = s_checkingExplanation;
+        }
+        break;
+    case MDKR_ONLINE_VIEW_RESULTS:
+        // The single-race leader's "Change Track" secondary actually fires an
+        // instant rematch (CHANGE_TRACK -> RACE_AGAIN) that fights the native
+        // more-races chooser, so it becomes the Connection Details toggle every
+        // other screen uses; "Return Home" tears the room down, so it is named
+        // for that effect.
+        if (model.secondary.action == MDKR_ONLINE_VIEW_ACTION_CHANGE_TRACK) {
+            model.secondary.action = MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS;
+            model.secondary.label = "Connection Details";
+        }
+        if (model.cancel.action == MDKR_ONLINE_VIEW_ACTION_RETURN_HOME) {
+            model.cancel.label = "Leave Room";
+        }
+        break;
+    case MDKR_ONLINE_VIEW_RECOVERY:
+        betaRelabelRecoveryControl(&model.primary, model.failure);
+        betaRelabelRecoveryControl(&model.secondary, model.failure);
+        betaRelabelRecoveryControl(&model.timeout.primary, model.failure);
+        // The section-header explanations still carry phone-party-era jargon
+        // ("the display", a 4-seat claim in a 2-player beta); replace the ones a
+        // real player hits with plain 2-player truth.
+        if (model.failure == MDKR_ONLINE_VIEW_FAILURE_INVITE_EXPIRED) {
+            model.explanation =
+                "That code expired. Ask the host for a fresh code.";
+        } else if (model.failure == MDKR_ONLINE_VIEW_FAILURE_INVITE_ROTATED) {
+            model.explanation =
+                "The host made a new invite. Use the newest code.";
+        } else if (model.failure == MDKR_ONLINE_VIEW_FAILURE_ROOM_FULL) {
+            model.explanation =
+                "This room already has 2 players — the online beta is 2 players.";
+        }
+        break;
+    default:
+        break;
+    }
 }
 
 // The section header above every beta room surface. Post-pairing the SELECTING
@@ -1976,12 +2055,10 @@ void drawBetaRoom(LauncherState &state) {
         return;
     }
 
-    // The recovery view's "Play Here" secondary leaves the room for OFFLINE play
-    // (handleAction PLAY_HERE requests the Play tab), so label it by that effect.
-    if (model.kind == MDKR_ONLINE_VIEW_RECOVERY &&
-        model.secondary.action == MDKR_ONLINE_VIEW_ACTION_PLAY_HERE) {
-        model.secondary.label = "Play Offline Instead";
-    }
+    // BETA-PANEL-LOCAL draw overrides (honest labels / explanations for the
+    // native-takeover reality) on this copy of the shared model; the audited view
+    // model is never mutated.
+    betaApplyDrawOverrides(model);
 
     // The authoritative lobby snapshot behind the roster strip / hand-off bodies.
     MdkrOnlineLobby lobby{};
@@ -2002,8 +2079,12 @@ void drawBetaRoom(LauncherState &state) {
     if (model.kind == MDKR_ONLINE_VIEW_CONNECTING) {
         drawBetaInviteCard(g_online.betaHostJourney);
     } else if (model.kind == MDKR_ONLINE_VIEW_ROOM) {
-        drawBetaInviteCard(g_online.betaHostJourney ||
-                           model.local_member_is_leader);
+        // Once the friend has joined, the invite step is done -- the invite card
+        // yields to the roster + the Check Setup step below it.
+        if (model.member_count < 2u) {
+            drawBetaInviteCard(g_online.betaHostJourney ||
+                               model.local_member_is_leader);
+        }
         if (haveLobby) {
             ui::Gap(ui::kGapM);
             drawBetaRosterStrip(
@@ -2017,13 +2098,26 @@ void drawBetaRoom(LauncherState &state) {
         model.verification_phrase[0] != '\0') {
         drawBetaPhraseDecision(model, state);
         drawLeaveRaceConfirmation(state);
-        drawConnectionDetails(model);
+        drawConnectionDetails(model, true);
         return;
     }
 
-    const MdkrOnlineViewAction timeoutAction =
+    MdkrOnlineViewAction timeoutAction =
         model.timeout.present && g_online.adapter->timeoutExpired()
             ? model.timeout.primary.action : MDKR_ONLINE_VIEW_ACTION_NONE;
+    // Suppress the SELECTING "Selection Took Too Long" caution while a LEFT/ERROR
+    // re-entry card is offered: the room is waiting on this player's "Return to
+    // Game" press, not on anyone's choices, so the caution would only stack a
+    // duplicate Leave Room above the re-entry card.
+    if (timeoutAction != MDKR_ONLINE_VIEW_ACTION_NONE &&
+        model.kind == MDKR_ONLINE_VIEW_SELECTING) {
+        const MdkrPartyLinkSessionEndReason reentry =
+            OnlineRoom_roomReadyReentryReason();
+        if (reentry == MDKR_PARTY_LINK_SESSION_END_LEFT ||
+            reentry == MDKR_PARTY_LINK_SESSION_END_ERROR) {
+            timeoutAction = MDKR_ONLINE_VIEW_ACTION_NONE;
+        }
+    }
     // Only lead with a gap when something separable follows -- the roster +
     // hand-off body or an expired-timeout box. A generic invite/recovery body
     // no longer floats the section rule above a dead band.
@@ -2085,9 +2179,13 @@ void drawBetaRoom(LauncherState &state) {
         drawBetaResultsHandoff(model, lobby);
         primaryDrawn = true;
     }
-    if (!primaryDrawn && model.primary.action != timeoutAction &&
-        drawActionButton(model.primary, true)) {
-        handleAction(model.primary.action, state);
+    if (!primaryDrawn && model.primary.action != timeoutAction) {
+        bool gold = true;
+        const MdkrOnlineViewControl primary =
+            betaPrimaryControl(model.primary, &gold);
+        if (drawActionButton(primary, gold)) {
+            handleAction(primary.action, state);
+        }
     }
     if (model.secondary.visible && model.secondary.action != timeoutAction) {
         ui::Gap(ui::kGapS);
@@ -2103,7 +2201,7 @@ void drawBetaRoom(LauncherState &state) {
     }
 
     drawLeaveRaceConfirmation(state);
-    drawConnectionDetails(model);
+    drawConnectionDetails(model, true);
     drawUpdateHelp();
 }
 
@@ -2197,12 +2295,12 @@ MdkrOnlineViewControl betaFakeControl(MdkrOnlineViewAction action,
 // for either mode. `fallback` reproduces the post-LEFT/ERROR recovery state (the
 // takeover is no longer engaged): it forces the engaged predicate false AND records a
 // LEFT re-entry reason, so the seam captures both the universal forward hand-off card
-// (fallback=false) and the "Return to game" re-entry card (fallback=true).
+// (fallback=false) and the "Return to Game" re-entry card (fallback=true).
 void betaFakeBuildSelectingStage(MdkrOnlineViewModel *model,
                                  MdkrOnlineLobby *lobby, bool *haveLobby,
                                  bool tournament, bool fallback) {
     // The fallback stages simulate a LEFT native return so the SELECTING surface
-    // draws the "Return to game" re-entry card the live launcher would offer after
+    // draws the "Return to Game" re-entry card the live launcher would offer after
     // such a return; a non-fallback stage draws the forward hand-off card.
     if (fallback) OnlineRoom_noteSessionReturn(MDKR_PARTY_LINK_SESSION_END_LEFT);
     betaFakeInitLobby(lobby,
@@ -2291,7 +2389,7 @@ bool betaFakeBuildStage(const char *stage, MdkrOnlineViewModel *model,
     *haveLobby = false;
     g_betaFakeInvite.active = false;
     // Clear any re-entry offer so a non-fallback stage renders the forward hand-off,
-    // not the "Return to game" re-entry card; the fallback stages re-arm it below.
+    // not the "Return to Game" re-entry card; the fallback stages re-arm it below.
     OnlineRoom_noteSessionReturn(MDKR_PARTY_LINK_SESSION_END_NONE);
     g_online.betaHostJourney = true;  // the fake local player hosts
 
@@ -2302,9 +2400,13 @@ bool betaFakeBuildStage(const char *stage, MdkrOnlineViewModel *model,
             "Share the code with your friend — the lobby opens once they join.";
         model->member_count = 1u;
         model->local_member_is_leader = true;
+        // The live CONNECTING view carries a "Cancel" that tears the create
+        // round trip down; the seam mirrors it so the capture matches the live
+        // button stack.
+        model->cancel =
+            betaFakeControl(MDKR_ONLINE_VIEW_ACTION_RETURN_HOME, "Cancel");
         g_betaFakeInvite.active = true;
         g_betaFakeInvite.code = "123456";
-        g_betaFakeInvite.url = "/join#123456";
         return true;
     }
     if (std::strcmp(stage, "phrase") == 0) {
@@ -2378,6 +2480,23 @@ bool betaFakeBuildStage(const char *stage, MdkrOnlineViewModel *model,
         model->announcement = MDKR_ONLINE_ANNOUNCE_ASSERTIVE;
         return true;
     }
+    // The failure card real players hit most: an opponent dropping mid-race. Built
+    // with the RAW view-model shape (primary PLAY_HERE labelled "Play Here") so the
+    // capture proves betaApplyDrawOverrides relabels the primary too.
+    if (std::strcmp(stage, "recovery-opponent-left") == 0) {
+        model->kind = MDKR_ONLINE_VIEW_RECOVERY;
+        model->failure = MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT;
+        model->title = "Opponent Disconnected";
+        model->explanation =
+            "Your opponent lost connection, so this race ended. This room is "
+            "done — create or join a new one to keep playing.";
+        model->primary =
+            betaFakeControl(MDKR_ONLINE_VIEW_ACTION_PLAY_HERE, "Play Here");
+        model->cancel =
+            betaFakeControl(MDKR_ONLINE_VIEW_ACTION_RETURN_HOME, "Return Home");
+        model->announcement = MDKR_ONLINE_ANNOUNCE_ASSERTIVE;
+        return true;
+    }
     return false;
 }
 
@@ -2412,9 +2531,13 @@ void drawBetaRoomFake(LauncherState &state) {
             "Set MDKR_APP_ONLINE_BETA_STAGE to one of: chooser, joincode, "
             "invite, phrase, room-single, room-tournament, handoff, "
             "room-single-fallback, room-tournament-fallback, results, "
-            "finished, recovery.");
+            "finished, recovery, recovery-opponent-left.");
         return;
     }
+
+    // Same BETA-PANEL-LOCAL overrides the live path applies, so a capture shows
+    // exactly the copy a player sees.
+    betaApplyDrawOverrides(model);
 
     announceView(model);
     drawBetaStatusLine(model, haveLobby ? &lobby : nullptr);
@@ -2435,7 +2558,7 @@ void drawBetaRoomFake(LauncherState &state) {
     if (model.kind == MDKR_ONLINE_VIEW_PREFLIGHT &&
         model.verification_phrase[0] != '\0') {
         drawBetaPhraseDecision(model, state);
-        drawConnectionDetails(model);
+        drawConnectionDetails(model, true);
         return;
     }
 
@@ -2485,8 +2608,13 @@ void drawBetaRoomFake(LauncherState &state) {
             g_betaResultsRender == BetaResultsRender::Handoff ? "handoff"
                                                              : "none");
     }
-    if (!primaryDrawn && drawActionButton(model.primary, true)) {
-        handleAction(model.primary.action, state);
+    if (!primaryDrawn) {
+        bool gold = true;
+        const MdkrOnlineViewControl primary =
+            betaPrimaryControl(model.primary, &gold);
+        if (drawActionButton(primary, gold)) {
+            handleAction(primary.action, state);
+        }
     }
     if (model.secondary.visible) {
         ui::Gap(ui::kGapS);
@@ -2500,7 +2628,7 @@ void drawBetaRoomFake(LauncherState &state) {
             handleAction(model.cancel.action, state);
         }
     }
-    drawConnectionDetails(model);
+    drawConnectionDetails(model, true);
 }
 
 void drawBetaOnlinePanel(LauncherState &state) {
@@ -2828,7 +2956,18 @@ bool OnlineRoom_lobbyHeaderInfo(OnlineLobbyHeaderInfo *out) {
     out->readyCount = model.ready_count;
     out->seatCount = model.seat_count;
     out->localIsLeader = model.local_member_is_leader;
-    out->statusLine = betaStatusLine(model);
+    // The persistent takeover header shares the strip's composed, lobby- and
+    // reentry-aware line so it never contradicts the body (e.g. the SELECTING
+    // "the game takes it from here" or the re-entry "Race ended early" line)
+    // instead of the raw per-kind status. Static because the header reads it
+    // synchronously this same frame; the launcher UI is single-threaded.
+    MdkrOnlineLobby lobby{};
+    const bool haveLobby =
+        mdkr_online_live_adapter_lobby(g_online.adapter.get(), &lobby);
+    static char s_headerStatus[192];
+    betaComposeStatusLine(model, haveLobby ? &lobby : nullptr, s_headerStatus,
+                          sizeof(s_headerStatus));
+    out->statusLine = s_headerStatus;
     return true;
 }
 #endif  // MDKR_ENABLE_ONLINE_BETA
