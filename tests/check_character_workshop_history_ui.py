@@ -70,6 +70,74 @@ def inventory(directory: Path) -> dict[str, str]:
     }
 
 
+def run_gamepad_import_focus(binary: Path, root: Path,
+                             characters: Path) -> None:
+    tab_root = root / "vehicles-gamepad-import-focus"
+    prefs = tab_root / "prefs"
+    saves = tab_root / "saves"
+    prefs.mkdir(parents=True)
+    saves.mkdir()
+    (prefs / "mdkr64_app.ini").write_text(
+        f"character_workshop_last_selected={PACKAGE_ID}\n"
+        "character_workshop_last_tab=vehicles\n"
+        "ui_scale=2.0\n",
+        encoding="utf-8",
+    )
+    (tab_root / "video.ini").write_text(
+        "[Accessibility]\nSpeech=1\n", encoding="utf-8"
+    )
+    environment = {
+        key: value for key, value in os.environ.items()
+        if not key.startswith(("MDKR", "GE007_"))
+    }
+    environment.update({
+        "LC_ALL": "C",
+        "MDKR_APP_SMOKE_FRAMES": "40",
+        "MDKR_APP_SMOKE_WINDOW_SIZE": "1280x720",
+        "MDKR_APP_PANEL": "Character Workshop",
+        "MDKR_APP_UI_TRACE": "1",
+        "MDKR_APP_PREFS_DIR": str(prefs),
+        "MDKR_VIDEO_CONFIG_PATH": str(tab_root / "video.ini"),
+        "MDKR_SAVE_DIR": str(saves),
+        "MDKR_CUSTOM_CHARACTER_DIRECTORY": str(characters),
+        "MDKR_CHARACTER_MANAGER": str(
+            ROOT / "tests" / "run_character_manager_fixture.py"
+        ),
+        "MDKR_NO_CRASH_HANDLER": "1",
+        "MDKR64_HIDDEN": "1",
+        "MDKR_AUDIO": "0",
+        "MDKR_APP_SMOKE_A11Y_WALK": "1",
+        "MDKR_APP_SMOKE_INPUT": "gamepad",
+        "MDKR_APP_SMOKE_INPUT_TOKEN": "mdkr64-app-ui-input-v1",
+        "MDKR_APP_SMOKE_CHARACTER_IMPORT_FOCUS": "1",
+        "MDKR_APP_SMOKE_CHARACTER_IMPORT_FOCUS_TOKEN":
+            "mdkr64-character-import-focus-v1",
+        "MDKR_APP_SMOKE_CHARACTER_WORKSHOP_RETURN": "1",
+        "MDKR_APP_SMOKE_CHARACTER_WORKSHOP_RETURN_TOKEN":
+            "mdkr64-character-workshop-return-v1",
+        "MDKR_A11Y_TRACE": "1",
+    })
+    process = subprocess.run(
+        [str(binary)], cwd=root, env=environment, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        timeout=180, check=False,
+    )
+    required = (
+        "character import-focus shortcut queued input=gamepad",
+        "character-import-focus shortcut=1 mutation=0",
+        "text=Browse for another character source",
+        "character Workshop return shortcut queued input=gamepad",
+        "character-workshop-return shortcut=1 mutation=0",
+        "character-workshop-return focus=primary",
+    )
+    if process.returncode != 0 or any(
+            marker not in process.stdout for marker in required):
+        raise RuntimeError(
+            "controller Back/View could not escape the dense editor and "
+            "focus safe character import\n" + process.stdout[-8000:]
+        )
+
+
 def run_tab(binary: Path, root: Path, characters: Path, tab: str,
             expected: tuple[str, ...], rom: Path | None) -> None:
     tab_root = root / tab
@@ -118,6 +186,12 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
             "MDKR_APP_SMOKE_A11Y_WALK": "1",
             "MDKR_APP_SMOKE_INPUT": "keyboard",
             "MDKR_APP_SMOKE_INPUT_TOKEN": "mdkr64-app-ui-input-v1",
+            "MDKR_APP_SMOKE_CHARACTER_IMPORT_FOCUS": "1",
+            "MDKR_APP_SMOKE_CHARACTER_IMPORT_FOCUS_TOKEN":
+                "mdkr64-character-import-focus-v1",
+            "MDKR_APP_SMOKE_CHARACTER_WORKSHOP_RETURN": "1",
+            "MDKR_APP_SMOKE_CHARACTER_WORKSHOP_RETURN_TOKEN":
+                "mdkr64-character-workshop-return-v1",
             "MDKR_A11Y_TRACE": "1",
         })
     process = subprocess.run(
@@ -143,13 +217,37 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
             "task in the persistent primary action\n" + process.stdout[-8000:]
         )
     if (
-        "character-source-secondary-picker rendered=1 keyboard=1 "
+        "character-source-secondary-picker rendered=1 focusable=1 "
         "mutation=deferred-review" not in process.stdout
     ):
         raise RuntimeError(
             f"{tab} omitted the secondary source picker while the "
             "persistent primary action owned installed-character readiness\n" +
             process.stdout[-8000:]
+        )
+    if accessible and (
+        "text=Browse for another character source" not in process.stdout
+    ):
+        raise RuntimeError(
+            f"{tab} keyboard/speech traversal could not reach the secondary "
+            "source picker\n" + process.stdout[-8000:]
+        )
+    if accessible and (
+        "character-import-focus shortcut=1 mutation=0" not in process.stdout
+    ):
+        raise RuntimeError(
+            f"{tab} did not route the import-focus shortcut through the "
+            "Workshop\n" + process.stdout[-8000:]
+        )
+    if accessible and any(
+        marker not in process.stdout for marker in (
+            "character-workshop-return shortcut=1 mutation=0",
+            "character-workshop-return focus=primary",
+        )
+    ):
+        raise RuntimeError(
+            f"{tab} could not return from its dense editor to the persistent "
+            "launcher action row\n" + process.stdout[-8000:]
         )
     if tab == "profile":
         profile_marker = (
@@ -363,6 +461,7 @@ def main() -> int:
             )
             for tab, tools in routes:
                 run_tab(binary, root, characters, tab, tools, rom)
+            run_gamepad_import_focus(binary, root, characters)
             if inventory(characters) != before:
                 raise RuntimeError(
                     "rendering history controls mutated installed character bytes"
@@ -376,6 +475,7 @@ def main() -> int:
           "Profile, Rig, Fit, Performance, Test history, project-owned "
           "accessible donor metric badges, reversible animation intent, "
           "spatial fit/contact controls, "
+          "keyboard/controller dense-editor escape routes, "
           "accessible performance targets with runtime-equivalent "
           "LOD assembly math, and all semantic pose inspection controls render "
           "without mutating installed bytes")

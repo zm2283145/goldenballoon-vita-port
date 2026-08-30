@@ -96,6 +96,7 @@ ImVec2 g_smokePanelScrollMax;
 float g_smokePanelScrollY = 0.0f;
 bool g_smokePanelScrollValid = false;
 bool g_smokePrimaryActionLabelContained = true;
+bool g_characterWorkshopReturnFocusRequested = false;
 
 void fillBootConfig(LauncherState &state, MdkrBootConfig &boot) {
     boot = MdkrBootConfig{};
@@ -296,9 +297,20 @@ void drawPrimaryLauncherAction(LauncherState &state, const ImVec2 &size,
         ImGui::CalcTextSize(label).x +
             ImGui::GetStyle().FramePadding.x * 2.0f <= actionWidth + 0.5f;
 
+    if (g_characterWorkshopReturnFocusRequested && workshopActive && !busy) {
+        ImGui::SetKeyboardFocusHere();
+    }
     if (busy) ImGui::BeginDisabled();
     const bool pressed = ui::BrandPrimaryButton(label, size);
     if (busy) ImGui::EndDisabled();
+    if (g_characterWorkshopReturnFocusRequested && workshopActive && !busy) {
+        g_characterWorkshopReturnFocusRequested = false;
+        if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+            std::fprintf(
+                stderr,
+                "[app-ui] character-workshop-return focus=primary\n");
+        }
+    }
     // The launcher's single most important control was the one control it never
     // said out loud: the settings rows, the ROM controls and the phone-party
     // buttons all voice on focus, but the persistent Play action did not, so a
@@ -825,6 +837,27 @@ void drawActivePanel(int activePanel, LauncherState &state, LauncherAction &acti
         activePanel < kPanelCount) {
         g_spokenPanel = activePanel;
         ui::SpeakSection(kPanels[activePanel].label);
+    }
+    const bool workshopActive =
+        activePanel == kLauncherPanelCharacterWorkshop;
+    if (!workshopActive || Settings_characterWorkPending()) {
+        g_characterWorkshopReturnFocusRequested = false;
+    }
+    const ImGuiInputFlags returnShortcutFlags =
+        ImGuiInputFlags_RouteGlobal |
+        ImGuiInputFlags_RouteOverFocused |
+        ImGuiInputFlags_RouteUnlessBgFocused;
+    if (workshopActive && !Settings_characterWorkPending() &&
+        !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId) &&
+        (ImGui::Shortcut(ImGuiKey_Escape, returnShortcutFlags) ||
+         ImGui::Shortcut(ImGuiKey_GamepadFaceRight,
+                         returnShortcutFlags))) {
+        g_characterWorkshopReturnFocusRequested = true;
+        if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+            std::fprintf(
+                stderr,
+                "[app-ui] character-workshop-return shortcut=1 mutation=0\n");
+        }
     }
     ImGui::BeginChild("##content", ImVec2(0, 0), panelChildFlags(0));
     if (state.quitRequested && Settings_characterWorkPending()) {

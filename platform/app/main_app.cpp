@@ -1065,6 +1065,53 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
      * that a player's input can reach them.
      */
     const bool smokeA11yWalk = AppUi_a11yWalkArmed();
+    const char *smokeCharacterImportFocus =
+        std::getenv("MDKR_APP_SMOKE_CHARACTER_IMPORT_FOCUS");
+    const char *smokeCharacterImportFocusToken =
+        std::getenv("MDKR_APP_SMOKE_CHARACTER_IMPORT_FOCUS_TOKEN");
+    const bool anyCharacterImportFocusContract =
+        (smokeCharacterImportFocus && smokeCharacterImportFocus[0]) ||
+        (smokeCharacterImportFocusToken &&
+         smokeCharacterImportFocusToken[0]);
+    const bool smokeCharacterImportFocusArmed =
+        anyCharacterImportFocusContract && smokeA11yWalk &&
+        smokeCharacterImportFocus &&
+        std::strcmp(smokeCharacterImportFocus, "1") == 0 &&
+        smokeCharacterImportFocusToken &&
+        std::strcmp(smokeCharacterImportFocusToken,
+                    "mdkr64-character-import-focus-v1") == 0;
+    if (anyCharacterImportFocusContract &&
+        !smokeCharacterImportFocusArmed) {
+        std::fprintf(
+            stderr,
+            "[app] smoke: invalid Character Workshop import-focus contract\n");
+        host.shutdown();
+        return 2;
+    }
+    const char *smokeCharacterWorkshopReturn =
+        std::getenv("MDKR_APP_SMOKE_CHARACTER_WORKSHOP_RETURN");
+    const char *smokeCharacterWorkshopReturnToken =
+        std::getenv("MDKR_APP_SMOKE_CHARACTER_WORKSHOP_RETURN_TOKEN");
+    const bool anyCharacterWorkshopReturnContract =
+        (smokeCharacterWorkshopReturn &&
+         smokeCharacterWorkshopReturn[0]) ||
+        (smokeCharacterWorkshopReturnToken &&
+         smokeCharacterWorkshopReturnToken[0]);
+    const bool smokeCharacterWorkshopReturnArmed =
+        anyCharacterWorkshopReturnContract && smokeA11yWalk &&
+        smokeCharacterWorkshopReturn &&
+        std::strcmp(smokeCharacterWorkshopReturn, "1") == 0 &&
+        smokeCharacterWorkshopReturnToken &&
+        std::strcmp(smokeCharacterWorkshopReturnToken,
+                    "mdkr64-character-workshop-return-v1") == 0;
+    if (anyCharacterWorkshopReturnContract &&
+        !smokeCharacterWorkshopReturnArmed) {
+        std::fprintf(
+            stderr,
+            "[app] smoke: invalid Character Workshop return contract\n");
+        host.shutdown();
+        return 2;
+    }
     const char *smokeUiScale =
         std::getenv("MDKR_APP_SMOKE_UI_SCALE_DRAG");
     const char *smokeTouchScroll =
@@ -1720,7 +1767,48 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
              * the shorter directional-reversal phase.
              */
             const int tabFrames = frames - frames / 4;
-            if (smokeA11yWalkFrame < tabFrames) {
+            const int importFocusFrame = 16;
+            const int workshopReturnFrame = 24;
+            const bool shortcutSettle =
+                (smokeCharacterImportFocusArmed &&
+                 (smokeA11yWalkFrame == importFocusFrame ||
+                  smokeA11yWalkFrame == importFocusFrame + 1)) ||
+                (smokeCharacterWorkshopReturnArmed &&
+                 (smokeA11yWalkFrame == workshopReturnFrame ||
+                  smokeA11yWalkFrame == workshopReturnFrame + 1));
+            if (smokeA11yWalkFrame == importFocusFrame &&
+                smokeCharacterImportFocusArmed) {
+                if (smokeUsesGamepad) {
+                    renderOk = host.queueGamepadPressForSmoke(
+                                   SDL_CONTROLLER_BUTTON_BACK) &&
+                        renderOk;
+                } else {
+                    host.queueKeyChordForSmoke(SDLK_i, KMOD_CTRL);
+                }
+                std::fprintf(
+                    stderr,
+                    "[app-ui-test] character import-focus shortcut queued input=%s\n",
+                    smokeUsesGamepad ? "gamepad" : "keyboard");
+            }
+            if (smokeA11yWalkFrame == workshopReturnFrame &&
+                smokeCharacterWorkshopReturnArmed) {
+                if (smokeUsesGamepad) {
+                    renderOk = host.queueGamepadPressForSmoke(
+                                   SDL_CONTROLLER_BUTTON_B) &&
+                        renderOk;
+                } else {
+                    host.queueKeyPressForSmoke(SDLK_ESCAPE);
+                }
+                std::fprintf(
+                    stderr,
+                    "[app-ui-test] character Workshop return shortcut queued input=%s\n",
+                    smokeUsesGamepad ? "gamepad" : "keyboard");
+            }
+            if (shortcutSettle) {
+                // Leave one complete post-shortcut frame free of navigation
+                // input so the newly focused source control is both rendered
+                // and announced before the ordinary traversal resumes.
+            } else if (smokeA11yWalkFrame < tabFrames) {
                 if (smokeUsesGamepad) {
                     // Sweep across each responsive row before advancing. A
                     // D-pad-only vertical walk can skip every second radio

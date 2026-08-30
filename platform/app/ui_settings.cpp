@@ -1898,6 +1898,7 @@ enum class CharacterWorkshopFocusRequest : uint8_t {
 
 CharacterWorkshopFocusRequest g_characterWorkshopFocusRequest =
     CharacterWorkshopFocusRequest::None;
+bool g_characterWorkshopImportFocusRequest = false;
 
 void persistCharacterWorkshopTab(CharacterWorkshopTab tab,
                                  bool forceSelection);
@@ -26247,6 +26248,10 @@ void drawCharacterImportControls(bool rail) {
                 : "Saved source draft",
             "Opens the selected local raw draft and closes any uninstalled candidate review. External model and license files remain unchanged; source reinspection is required.");
     }
+    const bool sourcePickerIsSecondary = filedialog::isAvailable() &&
+        (g_characterImportPath[0] != '\0' ||
+         mdkr_modern_character_registry_count(&g_characterRegistry) > 0 ||
+         !g_characterRawDrafts.selectedId.empty());
     ImGui::SetNextItemWidth(-1.0f);
     const CharacterSourceKind focusSourceKind = characterSourceKind(
         g_characterImportPath);
@@ -26255,7 +26260,9 @@ void drawCharacterImportControls(bool rail) {
             CharacterWorkshopFocusRequest::SourcePath ||
         (g_characterWorkshopFocusRequest ==
              CharacterWorkshopFocusRequest::SourceWorkflow &&
-         characterSourceNeedsDccExport(focusSourceKind));
+         characterSourceNeedsDccExport(focusSourceKind)) ||
+        (g_characterWorkshopImportFocusRequest &&
+         !sourcePickerIsSecondary);
     if (focusSourcePath) {
         ImGui::SetKeyboardFocusHere();
     }
@@ -26267,20 +26274,20 @@ void drawCharacterImportControls(bool rail) {
         ImGui::SetScrollHereY(0.0f);
         g_characterWorkshopFocusRequest =
             CharacterWorkshopFocusRequest::None;
+        g_characterWorkshopImportFocusRequest = false;
     }
-    const bool sourcePickerIsSecondary = filedialog::isAvailable() &&
-        (g_characterImportPath[0] != '\0' ||
-         mdkr_modern_character_registry_count(&g_characterRegistry) > 0 ||
-         !g_characterRawDrafts.selectedId.empty());
     if (sourcePickerIsSecondary) {
         if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
             static bool tracedSecondarySourcePicker = false;
             if (!tracedSecondarySourcePicker) {
                 std::fprintf(
                     stderr,
-                    "[app-ui] character-source-secondary-picker rendered=1 keyboard=1 mutation=deferred-review\n");
+                    "[app-ui] character-source-secondary-picker rendered=1 focusable=1 mutation=deferred-review\n");
                 tracedSecondarySourcePicker = true;
             }
+        }
+        if (g_characterWorkshopImportFocusRequest) {
+            ImGui::SetKeyboardFocusHere();
         }
         if (ImGui::Button("Browse for another source…")) {
             (void)Settings_chooseCharacterSource();
@@ -26288,6 +26295,10 @@ void drawCharacterImportControls(bool rail) {
         ui::SpeakFocusedItem(
             "Browse for another character source", nullptr,
             "Chooses a different local source for validation. It does not change the active draft, candidate, or installed library until the new source completes its own explicit review.");
+        if (g_characterWorkshopImportFocusRequest) {
+            ImGui::SetScrollHereY(0.0f);
+            g_characterWorkshopImportFocusRequest = false;
+        }
     }
     const bool inlineActions = !rail &&
                                ImGui::GetContentRegionAvail().x >=
@@ -26889,6 +26900,29 @@ bool drawCustomCharactersSection(bool compact) {
     bool changed = false;
     serviceAllCharacterWork();
     if (!g_characterRegistryLoaded) refreshCharacterRegistry();
+    const bool characterWorkBusy = g_characterManagerWorker.busy() ||
+        g_characterPortableInstallWorker.busy();
+    const ImGuiInputFlags importShortcutFlags =
+        ImGuiInputFlags_RouteGlobal |
+        ImGuiInputFlags_RouteOverFocused |
+        ImGuiInputFlags_RouteUnlessBgFocused;
+    const bool importFocusShortcut =
+        ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_I,
+                        importShortcutFlags) ||
+        ImGui::Shortcut(ImGuiMod_Super | ImGuiKey_I,
+                        importShortcutFlags) ||
+        ImGui::Shortcut(ImGuiKey_GamepadBack,
+                        importShortcutFlags);
+    if (g_characterImportCandidate.ready || characterWorkBusy) {
+        g_characterWorkshopImportFocusRequest = false;
+    } else if (importFocusShortcut) {
+        g_characterWorkshopImportFocusRequest = true;
+        if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+            std::fprintf(
+                stderr,
+                "[app-ui] character-import-focus shortcut=1 mutation=0\n");
+        }
+    }
     ui::TextSubtleWrapped(
         compact
             ? "Local appearance only. A qualified built-in donor still owns gameplay, audio, records, and online identity."
@@ -26899,8 +26933,11 @@ bool drawCustomCharactersSection(bool compact) {
             "Modern characters require the WebGPU renderer. This backend keeps the built-in racer visible, so installed packages remain safe but cannot appear in game.");
         ImGui::PopStyleColor();
     }
-    if (g_characterManagerWorker.busy() ||
-        g_characterPortableInstallWorker.busy()) {
+    if (!g_characterImportCandidate.ready && !characterWorkBusy) {
+        ui::TextSubtleWrapped(
+            "Ctrl/Cmd+I or controller Back/View jumps safely to character import from anywhere in this workspace. Esc or controller B returns focus to the launcher action row. Both shortcuts only move focus; press the main confirm button after reviewing the focused control.");
+    }
+    if (characterWorkBusy) {
         if (ui::CardBegin("##character-manager-running", AppTheme::accent(),
                           0.0f)) {
             ImGui::TextUnformatted("Character job running in the background");
