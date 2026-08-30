@@ -733,6 +733,19 @@ BetaSelectingRender g_betaSelectingRender = BetaSelectingRender::None;
 enum class BetaResultsRender { None, Handoff };
 BetaResultsRender g_betaResultsRender = BetaResultsRender::None;
 
+// Records the TITLE the last card body actually drew this frame. The render seam
+// (drawBetaRoomFake) emits it as a per-stage CONTENT witness the handoff lane
+// asserts a non-empty expected title against, so an emptied or wrong-content card
+// turns the lane RED -- the byte-distinct capture check alone missed an emptied
+// card this wave (it passed empty-vs-nonempty). Set by betaDrawCardTitle and by
+// drawBetaSectionHeader on both paths (negligible on the live path); consulted
+// only by the seam.
+const char *g_betaCardTitle = nullptr;
+void betaDrawCardTitle(const char *title) {
+    g_betaCardTitle = title;
+    ImGui::TextUnformatted(title);
+}
+
 // Restrict the join-code field to the 6 digits the fallback code uses. This
 // same filter also sanitizes PASTE: ImGui runs every clipboard character
 // through the CallbackCharFilter (imgui_widgets.cpp InputTextFilterCharacter,
@@ -1355,11 +1368,14 @@ const char *betaStatusLine(const MdkrOnlineViewModel &model) {
 const char *betaFailureCopy(MdkrOnlineViewFailure failure) {
     switch (failure) {
     case MDKR_ONLINE_VIEW_FAILURE_INVITE_EXPIRED:
-        /* Mistype vs genuine expiry: the remedies differ (re-type the digits
-         * vs ask the host for a fresh code), so the sentence must too. */
+        /* The service evicts an expired code from its directory BEFORE the
+         * room's invite_expired can fire on the native path, so a genuinely
+         * expired code arrives here classified as "matched no room" too. Until
+         * the Worker follow-up disambiguates, this branch must be honest for
+         * BOTH cases -- name the mistype remedy AND the expiry remedy. */
         return betaJoinCodeLookedMistyped()
-                   ? "That code didn't match a room — check the digits and "
-                     "try again."
+                   ? "That code didn't match a room — check the digits, or ask "
+                     "the host for a fresh code (codes last about 10 minutes)."
                    : "That invite expired. Ask the host for a fresh code.";
     case MDKR_ONLINE_VIEW_FAILURE_INVITE_ROTATED:
         return "That invite expired. Ask the host for a fresh code.";
@@ -1643,7 +1659,7 @@ void drawBetaInviteCard(LauncherState &state, bool isHost) {
         ui::Gap(ui::kGapM);
         if (betaCenteredCardBegin("##beta-invite", AppTheme::accent(),
                                   kInviteMaxWidth)) {
-            ImGui::TextUnformatted("Invite a Friend");
+            betaDrawCardTitle("Invite a Friend");
             ui::TextSubtleWrapped(
                 "That code expired — codes last about 10 minutes, and your "
                 "friend hasn't joined yet.");
@@ -1671,7 +1687,7 @@ void drawBetaInviteCard(LauncherState &state, bool isHost) {
         ui::Gap(ui::kGapM);
         if (betaCenteredCardBegin("##beta-invite", AppTheme::accent(),
                                   kInviteMaxWidth)) {
-            ImGui::TextUnformatted("Invite a Friend");
+            betaDrawCardTitle("Invite a Friend");
             ui::TextSubtleWrapped(
                 "Your private room code is on its way — share it the moment it "
                 "appears.");
@@ -1702,7 +1718,7 @@ void drawBetaInviteCard(LauncherState &state, bool isHost) {
     ui::Gap(ui::kGapM);
     if (betaCenteredCardBegin("##beta-invite", AppTheme::accent(),
                               kInviteMaxWidth)) {
-        ImGui::TextUnformatted("Invite a Friend");
+        betaDrawCardTitle("Invite a Friend");
         ui::TextSubtleWrapped(
             "Share this code. Your friend picks \"Join a Race\" and types it in.");
         ui::Gap(ui::kGapS);
@@ -2023,7 +2039,7 @@ bool drawBetaNativeHandoffCard(bool tournament,
     bool pressed = false;
     if (ui::CardBegin("##beta-native-handoff", AppTheme::accent(), 0.0f)) {
         if (reentry) {
-            ImGui::TextUnformatted("Back in the room");
+            betaDrawCardTitle("Back in the room");
             ui::TextSubtleWrapped(betaReentryReasonCopy(reentryReason));
             ui::Gap(ui::kGapS);
             if (reentryReason == MDKR_PARTY_LINK_SESSION_END_LEFT) {
@@ -2040,7 +2056,7 @@ bool drawBetaNativeHandoffCard(bool tournament,
                                                  ui::kBtnFullWidth());
             }
         } else {
-            ImGui::TextUnformatted("Starting — handing to the game…");
+            betaDrawCardTitle("Starting — handing to the game…");
             ui::TextSubtleWrapped(
                 tournament
                     ? "The game takes over from here. Pick your cup, racer, and "
@@ -2065,7 +2081,7 @@ bool drawBetaNativeHandoffCard(bool tournament,
 // already owns. It is the RESULTS mirror of the SELECTING hand-off card.
 void drawBetaNativeResultsHandoffCard() {
     if (ui::CardBegin("##beta-native-results-handoff", AppTheme::accent(), 0.0f)) {
-        ImGui::TextUnformatted("The game is showing results…");
+        betaDrawCardTitle("The game is showing results…");
         ui::TextSubtleWrapped(
             "Standings, the trophy ceremony, and your options for more races "
             "are all in the game — pick what's next on screen.");
@@ -2084,19 +2100,40 @@ void drawBetaNativeResultsHandoffCard() {
 // left is named from the construction-fixed journey (betaHostJourney), not the
 // lobby's leader bit -- the reducer promotes the survivor to leader of the
 // 1-member room, so the leader bit would misname the departed side.
-void drawBetaStrandedRoomCard() {
-    if (ui::CardBegin("##beta-native-handoff", AppTheme::accent(), 0.0f)) {
+void drawBetaStrandedRoomCard(LauncherState &state) {
+    if (ui::CardBegin("##beta-stranded-room", AppTheme::accent(), 0.0f)) {
         const bool hosted = g_online.betaHostJourney;
-        ImGui::TextUnformatted(hosted ? "Your friend left" : "The host left");
+        betaDrawCardTitle(hosted ? "Your friend left" : "The host left");
         ui::TextSubtleWrapped(
             hosted ? "This room is done. Host a new race for a fresh code, "
                      "or play offline."
                    : "This room is done. Host or join a new room to keep "
                      "racing online, or play offline.");
         ui::Gap(ui::kGapS);
-        if (ui::BrandPrimaryButton("Play Offline Instead",
-                                   ui::kBtnFullWidth())) {
-            OnlineRoom_requestLeave();
+        if (hosted) {
+            // The host CAN regenerate in place, and the copy above promises it:
+            // reuse the invite-expired card's exact gold "Host a New Race"
+            // regenerate affordance (a fresh CREATE journey through the shared
+            // rebuild step). Play Offline drops to an ordinary button below it.
+            if (ui::BrandPrimaryButton("Host a New Race", ui::kBtnFullWidth()) &&
+                !g_betaFakeInvite.active) {
+                betaRebuildLiveAdapter(state, MDKR_ONLINE_JOURNEY_CREATE,
+                                       std::string());
+            }
+            ui::SpeakFocusedItem(
+                "Host a New Race", "Fresh code",
+                "Makes a fresh private room with a new code to share.");
+            ui::Gap(ui::kGapS);
+            if (ImGui::Button("Play Offline Instead", ui::kBtnFullWidth())) {
+                OnlineRoom_requestLeave();
+            }
+        } else {
+            // The joiner has no room of its own to regenerate, so the ordinary
+            // leave stays the primary, gold affordance.
+            if (ui::BrandPrimaryButton("Play Offline Instead",
+                                       ui::kBtnFullWidth())) {
+                OnlineRoom_requestLeave();
+            }
         }
         ui::SpeakFocusedItem(
             "Play Offline Instead", "Leaves this finished room",
@@ -2117,14 +2154,15 @@ void drawBetaStrandedRoomCard() {
 // never start; the re-entry gold button could never fire). Consumes the view
 // model's PRIMARY slot (no Ready/Start button); the shared code below still draws
 // secondary (Connection Details) and cancel (Leave Room).
-void drawBetaSelectingHandoff(const MdkrOnlineViewModel &model,
+void drawBetaSelectingHandoff(LauncherState &state,
+                              const MdkrOnlineViewModel &model,
                               const MdkrOnlineLobby &lobby) {
     drawBetaRosterStrip(lobby,
                         betaLocalEndpoint(lobby, model.local_member_is_leader));
     ui::Gap(ui::kGapM);
     if (lobby.member_count < 2u) {
         g_betaSelectingRender = BetaSelectingRender::Stranded;
-        drawBetaStrandedRoomCard();
+        drawBetaStrandedRoomCard(state);
         return;
     }
     const bool tournament = lobby.mode == MDKR_ONLINE_MODE_TOURNAMENT;
@@ -2261,14 +2299,16 @@ void betaApplyDrawOverrides(MdkrOnlineViewModel &model) {
         // real player hits with plain 2-player truth.
         if (model.failure == MDKR_ONLINE_VIEW_FAILURE_INVITE_EXPIRED) {
             if (betaJoinCodeLookedMistyped()) {
-                /* The service said the code matched no live room -- the fix
-                 * is re-typing, not nagging the host for a fresh code. The
-                 * primary already returns to the code field, so it is named
-                 * for exactly that. */
+                /* The service said the code matched no live room -- BUT it also
+                 * evicts an expired code before invite_expired can fire on the
+                 * native path, so a genuine expiry lands here too. Until the
+                 * Worker follow-up separates them, the copy owns both remedies
+                 * (re-type OR ask for a fresh code); the primary already returns
+                 * to the code field, so it is named for exactly that. */
                 model.title = "Code Didn't Match";
                 model.explanation =
-                    "That code didn't match a room — check the digits and "
-                    "try again.";
+                    "That code didn't match a room — check the digits, or ask "
+                    "the host for a fresh code (codes last about 10 minutes).";
                 if (model.primary.action ==
                     MDKR_ONLINE_VIEW_ACTION_ENTER_ANOTHER_CODE) {
                     model.primary.label = "Re-enter the Code";
@@ -2315,6 +2355,9 @@ void drawBetaSectionHeader(const MdkrOnlineViewModel &model) {
         /* A 1-member SELECTING room is STRANDED (the peer left the room), so
          * "You're connected" would be false -- the header must agree with the
          * stranded card below it. */
+        // The body card (hand-off / stranded / re-entry) below overwrites this
+        // with its own title for the render-seam content witness.
+        g_betaCardTitle = "Private Room";
         ui::SectionHeader(
             "Private Room",
             model.member_count < 2u
@@ -2337,6 +2380,10 @@ void drawBetaSectionHeader(const MdkrOnlineViewModel &model) {
         std::memcmp(sectionTitle + titleLen - 3u, kEllipsis, 3u) == 0) {
         sectionTitle[titleLen - 3u] = '\0';
     }
+    // Record the header title for the render-seam content witness (the recovery
+    // and invite stages carry their title here; a body card overwrites it where
+    // one is drawn). model.title outlives the frame -- it is a string literal.
+    g_betaCardTitle = model.title;
     ui::SectionHeader(sectionTitle, model.kind == MDKR_ONLINE_VIEW_RESULTS
                                         ? nullptr
                                         : model.explanation);
@@ -2387,6 +2434,16 @@ void drawBetaRoom(LauncherState &state) {
             drawBetaRosterStrip(
                 lobby, betaLocalEndpoint(lobby, model.local_member_is_leader));
         }
+    }
+
+    // The invite card's expired-code "Host a New Race" tears this adapter down
+    // and re-runs the CREATE journey (betaRebuildLiveAdapter). A REFUSED rebuild
+    // leaves g_online.adapter null, so the model computed above is stale and the
+    // g_online.adapter->timeoutExpired() deref below would fault -- end the panel
+    // draw for this frame; the next frame redraws against the fresh (or absent)
+    // adapter.
+    if (!g_online.adapter || !g_online.initialized) {
+        return;
     }
 
     // The secure-phrase confirmation is the prominent, side-by-side decision;
@@ -2471,7 +2528,7 @@ void drawBetaRoom(LauncherState &state) {
     bool primaryDrawn = false;
     if (haveLobby && model.kind == MDKR_ONLINE_VIEW_SELECTING &&
         lobby.phase == MDKR_ONLINE_LOBBY) {
-        drawBetaSelectingHandoff(model, lobby);
+        drawBetaSelectingHandoff(state, model, lobby);
         primaryDrawn = true;
     } else if (haveLobby && model.kind == MDKR_ONLINE_VIEW_RESULTS &&
                lobby.phase == MDKR_ONLINE_RESULTS) {
@@ -2790,6 +2847,24 @@ bool betaFakeBuildStage(const char *stage, MdkrOnlineViewModel *model,
         model->local_member_is_leader = true;  // survivor inherits leadership
         return true;
     }
+    // The stranded card from the HOST's chair (betaHostJourney true, the friend
+    // left): the host gets the gold "Host a New Race" regenerate affordance the
+    // joiner room-stranded stage above deliberately omits (a joiner has no room
+    // of its own to regenerate, so it keeps Play Offline as its primary).
+    if (std::strcmp(stage, "room-stranded-host") == 0) {
+        betaFakeBuildSelectingStage(model, lobby, haveLobby, false, true);
+        g_online.betaHostJourney = true;  // the local player HOSTED
+        lobby->members[1].occupied = false;
+        lobby->members[1].connected = false;
+        lobby->seats[1].occupied = false;
+        lobby->member_count = 1u;
+        lobby->seat_count = 1u;
+        lobby->leader_endpoint_id = lobby->seats[0].endpoint_id;
+        model->member_count = 1u;
+        model->seat_count = 1u;
+        model->local_member_is_leader = true;
+        return true;
+    }
     // RESULTS surface, the shipping post-race state for BOTH modes: roster + the
     // concise "showing results" hand-off card -- the native RESULTS + MORE-RACES
     // chooser + ceremony own placements, standings and every replay choice. There is
@@ -2912,7 +2987,7 @@ void drawBetaRoomFake(LauncherState &state) {
             "Set MDKR_APP_ONLINE_BETA_STAGE to one of: chooser, joincode, "
             "invite, invite-expired, phrase, room-single, room-tournament, "
             "handoff, room-single-fallback, room-tournament-fallback, "
-            "room-stranded, results, finished, recovery, "
+            "room-stranded, room-stranded-host, results, finished, recovery, "
             "recovery-opponent-left, recovery-code-mistyped, "
             "recovery-worker-lost.");
         return;
@@ -2961,7 +3036,7 @@ void drawBetaRoomFake(LauncherState &state) {
     bool primaryDrawn = false;
     if (haveLobby && model.kind == MDKR_ONLINE_VIEW_SELECTING &&
         lobby.phase == MDKR_ONLINE_LOBBY) {
-        drawBetaSelectingHandoff(model, lobby);
+        drawBetaSelectingHandoff(state, model, lobby);
         primaryDrawn = true;
         // Semantic witness for the headless takeover-retire test: which SELECTING
         // surface rendered -- the forward native hand-off card or the "Return to
@@ -3014,6 +3089,14 @@ void drawBetaRoomFake(LauncherState &state) {
         }
     }
     drawConnectionDetails(model, true);
+
+    // Per-stage CONTENT witness: the TITLE this stage's card body actually drew
+    // (recorded by betaDrawCardTitle / drawBetaSectionHeader). The handoff lane
+    // asserts a non-empty expected title per stage, so an emptied or
+    // wrong-content card turns it RED -- the byte-distinct capture check alone
+    // missed an emptied card this wave. Render seam only, never the live path.
+    std::fprintf(stderr, "[online-beta-stage] stage=%s title=%s\n", stage,
+                 g_betaCardTitle != nullptr ? g_betaCardTitle : "");
 }
 
 void drawBetaOnlinePanel(LauncherState &state) {

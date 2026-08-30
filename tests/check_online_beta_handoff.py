@@ -13,8 +13,11 @@ both hand-offs are now UNIVERSAL.
 
 This gate drives the beta render seam (MDKR_APP_ONLINE_BETA_FAKE +
 MDKR_APP_ONLINE_BETA_STAGE) headlessly through the REAL drawBeta* widgets and reads
-the per-render [online-beta-selecting] / [online-beta-results] witnesses. The
-invariants:
+two kinds of stderr witness per stage: the per-render
+[online-beta-selecting] / [online-beta-results] retire-witness (which surface drew)
+AND the [online-beta-stage] CONTENT witness (the exact card TITLE that drew). The
+content witness is what catches an emptied or mis-worded card -- the byte-distinct
+capture check alone passed an empty card against a non-empty one. The invariants:
 
     room-single           -> the post-pairing surface is roster + hand-off card
                              -> render=handoff
@@ -72,23 +75,68 @@ WITNESS_RE = {
     ),
 }
 
-# stage -> (expected mode, expected render, witness kind).
+# The per-stage CONTENT witness: the TITLE the stage's card body actually drew.
+# EVERY rendered stage emits it, so the gate can assert a non-empty expected
+# title per stage. The byte-distinct capture check below is necessary but not
+# sufficient -- it passes an empty card against a non-empty one (it missed a real
+# emptied-card regression this wave); the title witness closes that hole and also
+# catches wrong-content cards (a leaked body renders the wrong title).
+TITLE_RE = re.compile(
+    r"\[online-beta-stage\] stage=(?P<stage>[a-z0-9-]+) title=(?P<title>.*)"
+)
+
+# stage -> case: the exact non-empty card title the stage must render, plus
+# (for the SELECTING/RESULTS surfaces) the (mode, render, witness-kind) triple
+# the retire-witness must report.
 CASES = {
     # SELECTING body.
-    "room-single": ("single", "handoff", "selecting"),
-    "room-tournament": ("tournament", "handoff", "selecting"),
-    "room-single-fallback": ("single", "reentry", "selecting"),
-    "room-tournament-fallback": ("tournament", "reentry", "selecting"),
+    "room-single": {
+        "title": "Starting — handing to the game…",
+        "render": ("single", "handoff", "selecting"),
+    },
+    "room-tournament": {
+        "title": "Starting — handing to the game…",
+        "render": ("tournament", "handoff", "selecting"),
+    },
+    "room-single-fallback": {
+        "title": "Back in the room",
+        "render": ("single", "reentry", "selecting"),
+    },
+    "room-tournament-fallback": {
+        "title": "Back in the room",
+        "render": ("tournament", "reentry", "selecting"),
+    },
     # A 1-member SELECTING room (the peer left the ROOM entirely): the body
     # must be the truthful stranded card ("this room is done" + working
     # exits), never the re-entry card's dead gold "Return to Game" (room-ready
-    # needs 2 members, so that press could never fire).
-    "room-stranded": ("single", "stranded", "selecting"),
+    # needs 2 members, so that press could never fire). The JOINER chair keeps
+    # Play Offline as its primary; the HOST chair adds the "Host a New Race"
+    # regenerate affordance -- each names who left from its own vantage.
+    "room-stranded": {
+        "title": "The host left",
+        "render": ("single", "stranded", "selecting"),
+    },
+    "room-stranded-host": {
+        "title": "Your friend left",
+        "render": ("single", "stranded", "selecting"),
+    },
     # RESULTS body: the concise hand-off card, both modes. No fallback stage --
     # the full ImGui results/standings/replay body is retired, so RESULTS hands off
     # unconditionally.
-    "results": ("single", "handoff", "results"),
-    "finished": ("tournament", "handoff", "results"),
+    "results": {
+        "title": "The game is showing results…",
+        "render": ("single", "handoff", "results"),
+    },
+    "finished": {
+        "title": "The game is showing results…",
+        "render": ("tournament", "handoff", "results"),
+    },
+    # Recovery / invite surfaces carry no retire-witness (no SELECTING/RESULTS
+    # body), but each must still render a non-empty card title -- the content
+    # witness guards them against an emptied or mis-worded card.
+    "invite-expired": {"title": "Invite a Friend"},
+    "recovery-code-mistyped": {"title": "Code Didn't Match"},
+    "recovery-worker-lost": {"title": "Lost Contact With the Party Service"},
 }
 # Each SELECTING hand-off stage paired with its same-mode re-entry (fallback); the
 # captures must differ: the forward hand-off card vs the "Return to game" re-entry
@@ -145,8 +193,8 @@ def inspect_bmp(path: Path) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def render_stage(binary: str, root: Path, stage: str, kind: str,
-                 timeout: int) -> tuple[str, str, str]:
+def render_stage(binary: str, root: Path, stage: str, case: dict,
+                 timeout: int) -> str:
     case_root = root / stage
     prefs = case_root / "prefs"
     saves = case_root / "saves"
@@ -175,20 +223,53 @@ def render_stage(binary: str, root: Path, stage: str, kind: str,
         raise HandoffError(
             f"{stage}: process exited {completed.returncode}\n"
             f"{completed.stdout[-4000:]}")
-    witness_re = WITNESS_RE[kind]
-    witnesses = [m.groupdict() for m in witness_re.finditer(completed.stdout)]
-    if not witnesses:
+
+    # CONTENT witness: every rendered stage must emit a NON-EMPTY card title,
+    # and it must be the one this stage owns. An emptied card (the regression the
+    # byte-distinct check missed) emits title=<empty>; a leaked/mis-worded card
+    # emits the wrong title -- both fail here.
+    titles = [m.group("title") for m in TITLE_RE.finditer(completed.stdout)]
+    if not titles:
         raise HandoffError(
-            f"{stage}: no [online-beta-{kind}] witness emitted\n"
+            f"{stage}: no [online-beta-stage] title witness emitted\n"
             f"{completed.stdout[-4000:]}")
-    # Every rendered frame must agree (the body is deterministic per stage).
-    modes = {w["mode"] for w in witnesses}
-    renders = {w["render"] for w in witnesses}
-    if len(modes) != 1 or len(renders) != 1:
+    distinct_titles = set(titles)
+    if len(distinct_titles) != 1:
         raise HandoffError(
-            f"{stage}: inconsistent witnesses modes={modes} renders={renders}")
-    digest = inspect_bmp(capture)
-    return witnesses[0]["mode"], witnesses[0]["render"], digest
+            f"{stage}: inconsistent title witnesses {distinct_titles}")
+    title = titles[0]
+    if not title:
+        raise HandoffError(
+            f"{stage}: EMPTY card title witness -- the card body drew no title")
+    if title != case["title"]:
+        raise HandoffError(
+            f"{stage}: card title {title!r}, expected {case['title']!r}")
+
+    # SELECTING / RESULTS stages also carry the retire-witness (which surface
+    # actually rendered); recovery / invite stages carry only the title witness.
+    render = case.get("render")
+    if render is not None:
+        want_mode, want_render, kind = render
+        witnesses = [m.groupdict()
+                     for m in WITNESS_RE[kind].finditer(completed.stdout)]
+        if not witnesses:
+            raise HandoffError(
+                f"{stage}: no [online-beta-{kind}] witness emitted\n"
+                f"{completed.stdout[-4000:]}")
+        # Every rendered frame must agree (the body is deterministic per stage).
+        modes = {w["mode"] for w in witnesses}
+        renders = {w["render"] for w in witnesses}
+        if len(modes) != 1 or len(renders) != 1:
+            raise HandoffError(
+                f"{stage}: inconsistent witnesses modes={modes} "
+                f"renders={renders}")
+        if witnesses[0]["mode"] != want_mode or witnesses[0]["render"] != want_render:
+            raise HandoffError(
+                f"{stage}: rendered mode={witnesses[0]['mode']} "
+                f"render={witnesses[0]['render']}, expected "
+                f"mode={want_mode} render={want_render}")
+
+    return inspect_bmp(capture)
 
 
 def main() -> int:
@@ -208,16 +289,14 @@ def main() -> int:
         with tempfile.TemporaryDirectory(prefix="mdkr-beta-handoff-") as tmp:
             root = Path(tmp)
             digests: dict[str, str] = {}
-            for stage, (want_mode, want_render, kind) in CASES.items():
-                mode, render, digest = render_stage(
-                    binary, root, stage, kind, args.timeout)
-                if mode != want_mode or render != want_render:
-                    raise HandoffError(
-                        f"{stage}: rendered mode={mode} render={render}, "
-                        f"expected mode={want_mode} render={want_render}")
+            for stage, case in CASES.items():
+                digest = render_stage(binary, root, stage, case, args.timeout)
                 digests[stage] = digest
                 if args.verbose:
-                    print(f"  {stage}: mode={mode} render={render} "
+                    render = case.get("render")
+                    detail = (f"mode={render[0]} render={render[1]} "
+                              if render is not None else "")
+                    print(f"  {stage}: {detail}title={case['title']!r} "
                           f"sha={digest[:12]}")
             for handoff, fallback in DISTINCT_PAIRS:
                 if digests[handoff] == digests[fallback]:
@@ -230,7 +309,9 @@ def main() -> int:
     print(
         "PASS online beta handoff: "
         "selecting-handoff=2 results-handoff=2 (single+tournament each) "
-        "selecting-reentry=2 grid-retired=1 standings-replay-retired=1")
+        "selecting-reentry=2 stranded=2 (joiner+host) grid-retired=1 "
+        "standings-replay-retired=1 "
+        f"per-stage-title-witnesses={len(CASES)}")
     return 0
 
 
