@@ -93,7 +93,10 @@ typedef struct MdkrRollbackGameRuntime {
     bool tick_prepared;
     /* Set by validate_boundary when its LAST false return was a RECOVERABLE
      * online-input starvation (an online race whose peer/bootstrap input for the
-     * boundary never arrived -- the peer LOST at race start / mid-race), as
+     * boundary never arrived -- the peer LOST at race start / mid-race), or by
+     * prepare_tick's correction path when a replay tick was REFUSED by the sim's
+     * own admission/completion gates (a paused/zero-rate/level-ending state the
+     * replay cannot lawfully re-run -- the two-machine pause crash), as
      * opposed to a genuine rollback INVARIANT violation (allocation lifetime or
      * coverage changed, snapshot capture failed, side-effect journal rejected,
      * tick counter exhausted). Cleared at the top of every validate_boundary so it
@@ -920,11 +923,37 @@ static bool reconcile_network_inputs(
         MdkrRollbackInputHistory *history =
             &runtime->input_history[tick % MDKR_ROLLBACK_LAB_SLOTS];
         begin_effect_tick(runtime, tick);
+        /* THE SIM-REFUSAL BELT (the owner-reported two-machine pause crash).
+         *
+         * mdkr_game_resimulate_tick REFUSES a replay tick when the sim state
+         * cannot lawfully re-run it -- its admission/completion gates reject a
+         * paused game (a START press that reached the canonical stream engaged
+         * the retail pause: pre-overlay-fix this was the crash; the gate also
+         * covers textboxes and the level-end latches), and a zero update_rate
+         * history tick (the app overlay's pause boundary authored it) refuses
+         * the same way. That is a SIM-STATE refusal on a live online race, NOT
+         * rollback invariant corruption -- yet this loop used to lump it with
+         * the fatal arms below and thread3_main escalated it to abort(): the
+         * non-pausing machine died with a crash dialog the instant the peer's
+         * START edge landed as a correction (reproduced: rc 134, "game-tick
+         * completion rejected ... paused=1" -> "correction replay failed").
+         * Route it as RECOVERABLE instead: the same clean note-LEFT return to
+         * the room every other online-input starvation takes. The allocation
+         * lifetime / dynamic coverage / snapshot capture arms below keep their
+         * CLEAR flag and stay fatal, byte-for-byte. */
         if (history->update_rate == 0u || history->update_rate > INT_MAX ||
             !mdkr_match_input_runtime_begin_tick(tick) ||
             !resimulate_timed(
-                runtime, (int)history->update_rate, history->input) ||
-            !mdkr_rollback_validate_live_allocations(&runtime->registry) ||
+                runtime, (int)history->update_rate, history->input)) {
+            force_clear_effects(runtime);
+            fprintf(stderr,
+                    "[ROLLBACK] online correction replay refused tick=%u "
+                    "(sim-state; recoverable)\n",
+                    tick);
+            runtime->recoverable_online_input_failure = true;
+            return false;
+        }
+        if (!mdkr_rollback_validate_live_allocations(&runtime->registry) ||
             !mdkr_rollback_game_authority_validate_dynamic_coverage(
                 &runtime->registry) ||
             !mdkr_rollback_ring_capture(&runtime->ring, tick)) {
