@@ -189,6 +189,19 @@ static MdkrOnlineVehicleselectState sVs;
  * restarts on the vehicle you last committed. */
 static u8 sLastVehicle = (u8) VEHICLE_CAR;
 
+/* PER-ROUND stage-confirm latch: the LOCAL seat has A-confirmed a (legal)
+ * vehicle on THIS round's stage and has not B-un-confirmed since. Ready may
+ * latch ONLY through this confirm, per round: the track BROWSE publishes this
+ * latch as its ready (see trackselect_publish_intent), so a rematch re-front
+ * whose host re-locks the IDENTICAL track -- which the reducer does NOT
+ * ready-clear (no config change, lobby_core.c:756) -- can never carry a stale
+ * ready into BEGIN_LOADING while a seat is still browsing. Deliberately NOT
+ * reset by _enter's memset (it must outlive the screen for the browse to
+ * read); cleared by the B un-confirm and by the session's round reset
+ * (mdkr_online_vehicleselect_round_reset: session begin + every race boot --
+ * the engine-side analog of the reducer's clear_round). */
+static u8 sVsStageConfirmedRound;
+
 /* witness change-detect (file scope so _enter() resets it for a clean re-entry). */
 static u32 sWitnessKey = 0xFFFFFFFFu;
 static s32 sWitnessRemoteSeat = -2;
@@ -460,7 +473,10 @@ static u8 vehicleselect_tslane_flavor(void) {
         const char *e = getenv("MDKR_TEST_ONLINE_TRACKSELECT");
         if (e == NULL) {
             sVsTsLaneFlavor = 0;
-        } else if (strstr(e, "joiner") != NULL || strstr(e, "hold") != NULL) {
+        } else if (strstr(e, "joiner") != NULL || strstr(e, "hold") != NULL ||
+                   strstr(e, "rematch") != NULL) {
+            /* joiner-side scenarios (incl. the same-track REMATCH arm): confirm
+             * only -- the seam's scripted remote host owns the OK. */
             sVsTsLaneFlavor = 2;
         } else {
             sVsTsLaneFlavor = 1;
@@ -547,6 +563,7 @@ static void vehicleselect_apply_input(const VsInput *in, u8 bothReady) {
     if (in->bEdge) {
         if (sVs.confirmed) {
             sVs.confirmed = 0u;
+            sVsStageConfirmedRound = 0u; /* un-confirm drops the round latch */
             sVs.startReq = 0u;
             sound_play(VS_SFX_BACK, NULL);
         } else if (sVs.host) {
@@ -573,6 +590,7 @@ static void vehicleselect_apply_input(const VsInput *in, u8 bothReady) {
         if (!sVs.confirmed) {
             if (vehicleselect_vehicle_legal(sVs.vehicle, sVs.mask)) {
                 sVs.confirmed = 1u;
+                sVsStageConfirmedRound = 1u; /* THE per-round ready latch */
                 sLastVehicle = sVs.vehicle;
                 sound_play(VS_SFX_CONFIRM, NULL);
             } else {
@@ -611,7 +629,12 @@ static void vehicleselect_publish_intent(void) {
     }
     intent.vehicle_id = sVs.vehicle;
     intent.ready = sVs.confirmed ? 1u : 0u;
-    intent.backout = 0u;
+    /* an un-confirmed stage emits the UN-ready (the ready-XOR-backout pair
+     * charselect publishes): the planner converges un-ready only through
+     * backout -> CHANGE_SELECTION (SET_READY 0) -- ready=0 alone plans nothing
+     * (party_link.c) and would leave a stale room ready standing after a B
+     * un-confirm on an unchanged config. */
+    intent.backout = sVs.confirmed ? 0u : 1u;
     if (sVs.host) {
         mdkr_online_trackselect_locked_config(&intent.mode, &intent.config_track,
                                               &intent.cup_id);
@@ -1301,6 +1324,24 @@ u8 mdkr_online_vehicleselect_test_active(void) {
  * LAST selection stop now, so it is informational/back-compat only). */
 u8 mdkr_online_vehicleselect_local_confirmed(void) {
     return (u8) (sVs.confirmed ? 1 : 0);
+}
+
+/* the PER-ROUND stage-confirm latch, for the track BROWSE's ready publication
+ * (see the sVsStageConfirmedRound comment): true once the LOCAL seat has
+ * A-confirmed a legal vehicle on THIS round's stage and has not un-confirmed
+ * since. Survives the screen (never reset by _enter); cleared only by the B
+ * un-confirm and by round_reset below. */
+u8 mdkr_online_vehicleselect_stage_confirmed_round(void) {
+    return (u8) (sVsStageConfirmedRound ? 1 : 0);
+}
+
+/* ROUND RESET: a new round's selection must re-confirm on the stage before any
+ * screen may publish ready again. The session calls this at begin and at every
+ * race boot -- the engine-side analog of the reducer's clear_round -- so a
+ * post-race re-front (rematch / CANCEL_LOADING unwind) starts un-latched.
+ * Idempotent. */
+void mdkr_online_vehicleselect_round_reset(void) {
+    sVsStageConfirmedRound = 0u;
 }
 
 #endif /* MDKR_ENABLE_ONLINE_BETA */

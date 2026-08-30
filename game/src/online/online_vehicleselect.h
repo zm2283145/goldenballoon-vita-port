@@ -64,6 +64,20 @@ u8 mdkr_online_vehicleselect_test_active(void);
  * is the reducer's BEGIN_LOADING). Resets to false on _enter(). */
 u8 mdkr_online_vehicleselect_local_confirmed(void);
 
+/* True once the LOCAL seat has A-confirmed a (legal) vehicle on THIS round's
+ * stage and has not B-un-confirmed since -- the PER-ROUND stage-confirm latch.
+ * Ready may latch ONLY through the stage's confirm, per round: the track
+ * BROWSE publishes this as its ready, so a rematch re-front whose host
+ * re-locks the identical config (no reducer ready-clear) can never re-latch a
+ * stale ready from the browse. Survives _enter/_exit; cleared only by the B
+ * un-confirm and by the round reset below. */
+u8 mdkr_online_vehicleselect_stage_confirmed_round(void);
+
+/* Round reset: clears the per-round stage-confirm latch. Called by the session
+ * at begin and at every race boot (the engine-side analog of the reducer's
+ * clear_round), so each round's selection re-confirms on the stage. */
+void mdkr_online_vehicleselect_round_reset(void);
+
 /* Headless test seam only (inert unless the env above is set): from LOBBY_WAIT,
  * install the party_link forward feed if nothing else has (the CHARSELECT seam
  * normally owns install in this lane). No-op in a normal run, so it never

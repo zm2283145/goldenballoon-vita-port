@@ -967,6 +967,9 @@ static u8 sTestInstalled;
 static MdkrPartyLinkSnapshot sTestRoom;
 
 #define CS_TEST_REMOTE_CHARACTER 5u /* Bumper, in online id space */
+/* Whale Bay (mirrors the trackselect lane's LOCKED_TRACK): the stale
+ * single-race config the SAME-TRACK REMATCH scenario re-fronts with. */
+#define CS_TEST_REMATCH_TRACK 8u
 
 static void charselect_test_resolve(void) {
     if (sTestActive < 0) {
@@ -995,6 +998,27 @@ static void charselect_test_init_room(void) {
     sTestRoom.seats[1].vehicle_id = 0u;
     sTestRoom.seats[1].ready = 1u;
     memcpy(sTestRoom.seats[1].name, "RIVAL", sizeof("RIVAL"));
+
+    /* SAME-TRACK REMATCH arm (the trackselect seam's "rematch" scenario):
+     * model the post-race re-front -- the room still carries LAST round's
+     * single-race config and persisted seat selections (the reducer's REMATCH
+     * clear_round drops only ready + votes), and the LOCAL seat is the JOINER
+     * while seat 1 is the fast remote HOST (already re-confirmed, ready). The
+     * pre-seed must happen HERE, not at the trackselect seam's adoption:
+     * trackselect _enter latches its stale-lock browse dwell from the snapshot
+     * that is live BEFORE that seam first reduces, so the stale config has to
+     * be visible from the first published room. Test-only; inert otherwise. */
+    if (mdkr_online_trackselect_test_scenario_rematch()) {
+        sTestRoom.mode = (uint8_t) MDKR_PARTY_LINK_MODE_SINGLE;
+        sTestRoom.configured_track = (uint16_t) CS_TEST_REMATCH_TRACK;
+        sTestRoom.seats[0].is_host = 0u;
+        sTestRoom.seats[1].is_host = 1u;
+        /* persisted picks: seat 1 hovercraft (Whale-Bay-legal); seat 0's
+         * vehicle persists too (the charselect script re-confirms the racer,
+         * the legitimate charselect ready flap). */
+        sTestRoom.seats[0].vehicle_id = 1u; /* VEHICLE_HOVERCRAFT */
+        sTestRoom.seats[1].vehicle_id = 1u;
+    }
 }
 
 /* called from _enter so a re-entered CHARSELECT re-scripts from scratch. The

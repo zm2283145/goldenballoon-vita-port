@@ -70,6 +70,8 @@
 #include "joypad.h"     /* input_pressed, input_clamp_stick_x/y */
 #include "PR/os_cont.h" /* A_BUTTON / B_BUTTON / *_JPAD / START_BUTTON / Z_TRIG */
 #include "net/party_link.h"
+#include "online/online_vehicleselect.h" /* the per-round stage-confirm latch:
+                                            the browse's ready publication */
 #include "online/online_screen_constants.h" /* shared screen size + lobby id-space
                                                mirrors (DRY across the native screens) */
 #include "online/online_screen_util.h" /* shared local_seat / text / pulse helpers
@@ -518,10 +520,19 @@ typedef struct TsInput {
  *                        room and narrows to the cup's round-0 track.
  *   2 HOLD            -- frame-dump only (the VS_SCN_HOLD sibling): lock a track,
  *                        browse away, then park with no START so a shot can be
- *                        taken of the fully revealed screen. */
+ *                        taken of the fully revealed screen.
+ *   3 REMATCH         -- local seat is a JOINER on a SAME-TRACK rematch re-front:
+ *                        the room enters carrying LAST round's config + persisted
+ *                        seats (REMATCH's clear_round drops only ready), and the
+ *                        scripted remote HOST presses OK while the joiner is
+ *                        still inside its stale-lock browse dwell. Proves the
+ *                        per-player CONFIRM cannot be bypassed: the OK must be
+ *                        refused NOT_READY until the joiner's vehicle stage
+ *                        fronts and confirms. */
 #define TS_SCN_SINGLE_HOST 0
 #define TS_SCN_JOINER 1
 #define TS_SCN_HOLD 2
+#define TS_SCN_REMATCH 3
 static s8 sTsScenario = -1;
 
 /* Scripted headless input (env MDKR_TEST_ONLINE_TRACKSELECT). Keyed on the
@@ -537,7 +548,7 @@ static u8 sTsEntryCount; /* incremented each _enter (test), persists across a ru
 
 static void trackselect_input_scripted(TsInput *in) {
     memset(in, 0, sizeof(*in));
-    if (sTsScenario == TS_SCN_JOINER) {
+    if (sTsScenario == TS_SCN_JOINER || sTsScenario == TS_SCN_REMATCH) {
         return; /* joiner: watch only, the seam drives the host */
     }
     if (sTsScenario == TS_SCN_HOLD) {
@@ -813,8 +824,23 @@ static void trackselect_publish_intent(u8 localSeatChar) {
         intent.confirmed = 1u;
     }
     intent.vehicle_id = sTs.vehicle;
-    intent.ready = 1u;
-    intent.backout = 0u;
+    /* Ready latches ONLY via the vehicle stage's A-confirm, per round (the
+     * retail per-player CONFIRM). The browse publishes the stage's per-round
+     * confirm latch -- 0 until the LOCAL seat has confirmed on THIS round's
+     * stage -- and emits the un-ready otherwise (backout -> CHANGE_SELECTION;
+     * ready=0 alone plans nothing, party_link.c). An unconditional ready=1
+     * here let a rematch re-front re-latch a stale ready: a re-lock of the
+     * IDENTICAL track is no config change, so the reducer never ready-clears
+     * (lobby_core.c:756) and the host's OK could BEGIN_LOADING while the other
+     * seat was still browsing -- race-booted without its stage ever fronting.
+     * The planner absorbs the interim: an OK before every stage confirm is
+     * refused NOT_READY and re-fired off the refusal note once the confirm
+     * lands (party_link.h:229-241). */
+    {
+        u8 stageReady = mdkr_online_vehicleselect_stage_confirmed_round();
+        intent.ready = stageReady;
+        intent.backout = stageReady ? 0u : 1u;
+    }
 
     if (sTs.host) {
         intent.mode = sTs.mode; /* host always drives the mode */
@@ -1152,12 +1178,14 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
 
     /* always-visible seat presence/ready pair (charselect family). Hold the
      * displayed READY through the lock-flash window so the reducer's 1-2-frame
-     * ready-clear does not flicker CHOOSING. */
+     * ready-clear does not flicker CHOOSING. The local un-ready label is
+     * CHOOSING (the family vocabulary): un-ready IS the browse's steady state
+     * -- ready latches only at the vehicle stage's confirm, per round. */
     {
         bool holdReady = sTs.ticks < sTs.lockFlashEnd;
         bool youReady = localReady || holdReady;
         (void) snprintf(line, sizeof(line), "YOU: %s",
-                        youReady ? "READY" : "SYNCING");
+                        youReady ? "READY" : "CHOOSING");
         mdkr_online_screen_text(24, TS_SEAT_Y, ASSET_FONTS_SMALLFONT, line,
                          ALIGN_MIDDLE_LEFT, youReady ? 120 : 220,
                          youReady ? 255 : 220, youReady ? 120 : 220);
@@ -1552,13 +1580,24 @@ static u8 sTsAdopted;
 static MdkrPartyLinkSnapshot sTsRoom;
 static u8 sTsStartArmed;
 
+/* REMATCH-scenario refusal bookkeeping: the scripted host's OK before the
+ * joiner's stage confirm is refused NOT_READY (mirroring BEGIN_LOADING's
+ * all_ready gate) and re-fires each tick (the planner's refusal-note cadence);
+ * the first refusal and the eventual convergence are witnessed once each. */
+#define TS_REMATCH_OK_TICK 16u /* well inside the joiner's 70-tick browse dwell */
+static u8 sTsRematchRefused;        /* first-refusal witness fired */
+static u32 sTsRematchRefusedTicks;  /* how many ticks the OK stayed refused */
+static u8 sTsRematchConvergedLogged;
+
 static void trackselect_test_resolve(void) {
     if (sTsTestActive < 0) {
         const char *e = getenv("MDKR_TEST_ONLINE_TRACKSELECT");
         sTsTestActive = (e != NULL) ? 1 : 0;
         /* Scenario from the env VALUE: "joiner" selects the joiner-render lane,
          * anything else is the default single-race host lane. */
-        if (e != NULL && strstr(e, "joiner") != NULL) {
+        if (e != NULL && strstr(e, "rematch") != NULL) {
+            sTsScenario = (s8) TS_SCN_REMATCH;
+        } else if (e != NULL && strstr(e, "joiner") != NULL) {
             sTsScenario = (s8) TS_SCN_JOINER;
         } else if (e != NULL && strstr(e, "hold") != NULL) {
             sTsScenario = (s8) TS_SCN_HOLD;
@@ -1575,6 +1614,9 @@ static void trackselect_test_reset(void) {
     }
     sTsAdopted = 0u;
     sTsStartArmed = 0u;
+    sTsRematchRefused = 0u;
+    sTsRematchRefusedTicks = 0u;
+    sTsRematchConvergedLogged = 0u;
 }
 
 void mdkr_online_trackselect_test_lobby_pump(void) {
@@ -1646,6 +1688,17 @@ static void trackselect_test_reduce_and_script(void) {
             sTsRoom.seats[1].is_host = 1u;
             sTsRoom.seats[1].is_local = 0u;
             sTsRoom.seats[1].vehicle_id = (uint8_t) VEHICLE_HOVERCRAFT;
+        } else if (sTsScenario == TS_SCN_REMATCH) {
+            /* SAME-TRACK rematch re-front: the CHARSELECT seam already
+             * pre-seeded the stale config + joiner roles (it must be in the
+             * snapshot BEFORE _enter latches the stale-lock dwell); enforce
+             * them defensively here so the scenario cannot silently degrade
+             * into the host shape. */
+            sTsRoom.seats[0].is_host = 0u;
+            sTsRoom.seats[0].is_local = 1u;
+            sTsRoom.seats[1].is_host = 1u;
+            sTsRoom.seats[1].is_local = 0u;
+            sTsRoom.seats[1].vehicle_id = (uint8_t) VEHICLE_HOVERCRAFT;
         }
         sTsAdopted = 1u;
     }
@@ -1681,6 +1734,60 @@ static void trackselect_test_reduce_and_script(void) {
                 sTsRoom.seats[0].character_id != MDKR_ONLINE_SCREEN_NO_CHARACTER &&
                 sTsRoom.seats[0].vehicle_id != MDKR_ONLINE_SCREEN_NO_VEHICLE) {
                 sTsRoom.seats[0].ready = 1u;
+            }
+        }
+        mdkr_party_link_publish(&sTsRoom);
+        return;
+    }
+
+    /* SAME-TRACK REMATCH scenario: the seam plays the REMOTE HOST of a
+     * post-race re-front whose room still carries LAST round's config (the
+     * reducer's REMATCH clear_round drops only ready + votes, lobby_core.c:407)
+     * -- so re-locking the IDENTICAL track never ready-clears (no config
+     * change, lobby_core.c:756). The host is fast on its own endpoint: it
+     * holds ready and, from TS_REMATCH_OK_TICK (well inside the local joiner's
+     * 70-tick stale-lock browse dwell), presses OK every tick. The reduce
+     * models the real machinery: seat ready latches from intent.ready only
+     * with char+vehicle set (SET_READY's member_selection_complete), DROPS on
+     * !ready/backout (the planner's CHANGE_SELECTION), and the OK is
+     * BEGIN_LOADING's all_ready gate -- refused NOT_READY while any seat is
+     * un-ready, re-fired each tick (the refusal-note cadence), converging the
+     * first tick both seats are ready. */
+    if (sTsScenario == TS_SCN_REMATCH) {
+        if (mdkr_party_link_intent_poll(&intent)) {
+            if (intent.confirmed &&
+                intent.hover_character < MDKR_ONLINE_SCREEN_CHAR_COUNT) {
+                sTsRoom.seats[0].character_id = intent.hover_character;
+            }
+            if (intent.vehicle_id < MDKR_ONLINE_SCREEN_VEHICLE_COUNT) {
+                sTsRoom.seats[0].vehicle_id = intent.vehicle_id;
+            }
+            if (intent.ready &&
+                sTsRoom.seats[0].character_id != MDKR_ONLINE_SCREEN_NO_CHARACTER &&
+                sTsRoom.seats[0].vehicle_id != MDKR_ONLINE_SCREEN_NO_VEHICLE) {
+                sTsRoom.seats[0].ready = 1u;
+            } else if (intent.backout || !intent.ready) {
+                sTsRoom.seats[0].ready = 0u;
+            }
+        }
+        sTsRoom.seats[1].ready = 1u; /* the host re-asserts ready */
+        if (sTs.ticks >= TS_REMATCH_OK_TICK &&
+            sTsRoom.phase == (uint8_t) MDKR_ONLINE_SCREEN_LOBBY_PHASE) {
+            if (sTsRoom.seats[0].ready && sTsRoom.seats[1].ready) {
+                sTsStartArmed++;
+                if (sTsStartArmed >= 2u) {
+                    sTsRoom.phase = (uint8_t) TS_LOADING_PHASE;
+                }
+            } else {
+                sTsStartArmed = 0u;
+                sTsRematchRefusedTicks++;
+                if (!sTsRematchRefused) {
+                    sTsRematchRefused = 1u;
+                    fprintf(stderr,
+                            "[online-trackselect] test-script host OK refused "
+                            "NOT_READY (joiner not stage-confirmed; re-fire "
+                            "armed)\n");
+                }
             }
         }
         mdkr_party_link_publish(&sTsRoom);
@@ -1761,7 +1868,7 @@ void mdkr_online_trackselect_test_vehicle_pump(void) {
         if (intent.vehicle_id < MDKR_ONLINE_SCREEN_VEHICLE_COUNT) {
             sTsRoom.seats[0].vehicle_id = intent.vehicle_id;
         }
-        if (sTsScenario != TS_SCN_JOINER) {
+        if (sTsScenario != TS_SCN_JOINER && sTsScenario != TS_SCN_REMATCH) {
             /* the host's vehicle-stage republish of its locked config (same
              * accept rules as the browse-stage reduce; a re-publish of the SAME
              * value is change-detected and never re-clears ready). */
@@ -1795,15 +1902,35 @@ void mdkr_online_trackselect_test_vehicle_pump(void) {
                 ? (sTsRoom.cup_id != 0xFFu)
                 : (sTsRoom.configured_track != 0xFFFFu);
         bool bothReady = sTsRoom.seats[0].ready && sTsRoom.seats[1].ready;
-        bool wantStart = (sTsScenario == TS_SCN_JOINER)
+        bool wantStart = (sTsScenario == TS_SCN_JOINER ||
+                          sTsScenario == TS_SCN_REMATCH)
                              ? bothReady /* remote host OKs the converged room */
                              : (haveIntent && intent.start_requested &&
                                 bothReady);
         if (wantStart && configReady) {
             sTsStartArmed++;
             if (sTsStartArmed >= 6u) {
+                if (sTsScenario == TS_SCN_REMATCH && sTsRematchRefused &&
+                    !sTsRematchConvergedLogged &&
+                    sTsRoom.phase == (uint8_t) MDKR_ONLINE_SCREEN_LOBBY_PHASE) {
+                    /* the re-fired OK finally converged: the joiner's stage
+                     * confirm landed ready=1, so the all_ready gate opened. */
+                    sTsRematchConvergedLogged = 1u;
+                    fprintf(stderr,
+                            "[online-trackselect] test-script host OK converged "
+                            "after %u refused tick(s) (joiner stage-confirmed) "
+                            "-> LOADING\n",
+                            (unsigned) sTsRematchRefusedTicks);
+                }
                 sTsRoom.phase = (uint8_t) TS_LOADING_PHASE;
             }
+        } else if (sTsScenario == TS_SCN_REMATCH &&
+                   sTs.ticks >= TS_REMATCH_OK_TICK &&
+                   sTsRoom.phase == (uint8_t) MDKR_ONLINE_SCREEN_LOBBY_PHASE) {
+            /* the host's OK keeps re-firing against a not-yet-ready room while
+             * the stage fronts too (the refusal-note cadence spans screens). */
+            sTsStartArmed = 0u;
+            sTsRematchRefusedTicks++;
         }
     }
 
@@ -1813,6 +1940,18 @@ void mdkr_online_trackselect_test_vehicle_pump(void) {
 u8 mdkr_online_trackselect_test_active(void) {
     trackselect_test_resolve();
     return (u8) (sTsTestActive > 0 ? 1 : 0);
+}
+
+/* the seam's SAME-TRACK REMATCH scenario is armed (env value "rematch").
+ * The CHARSELECT seam consults this to pre-seed its scripted room with LAST
+ * round's persisted config + joiner roles BEFORE trackselect _enter latches
+ * the stale-lock browse dwell from the live snapshot (pre-seeding at this
+ * seam's own adoption would be one screen too late). Test-only; inert in a
+ * normal run. */
+u8 mdkr_online_trackselect_test_scenario_rematch(void) {
+    trackselect_test_resolve();
+    return (u8) ((sTsTestActive > 0 && sTsScenario == (s8) TS_SCN_REMATCH) ? 1
+                                                                           : 0);
 }
 
 /* the screen's OWN browse-stage-done latch (reset by _enter's memset): host set

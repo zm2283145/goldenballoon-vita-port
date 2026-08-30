@@ -31,6 +31,17 @@ screen -- on local-ready; the vehicle stage is scripted per scenario):
              snap.cup=2), FOLLOWS the host's lock into the vehicle stage (the
              retail zoom-into-setup analog) and narrows its OWN vehicle to the
              cup so BEGIN_LOADING is never refused, and the race boots.
+  * "rematch" SAME-TRACK REMATCH (joiner view): the room re-fronts carrying
+             LAST round's config + persisted picks (REMATCH's clear_round drops
+             only ready), so the host's re-lock of the IDENTICAL track never
+             ready-clears in the reducer; the scripted host presses OK while the
+             joiner is still inside its 70-tick stale-lock browse dwell. Proves
+             the per-round CONFIRM contract: ready latches ONLY via the vehicle
+             stage's confirm, so the OK is REFUSED (NOT_READY, re-fired) until
+             the joiner's stage fronts + confirms, and only then does the race
+             boot. The pre-fix screen republished ready=1 from the browse: the
+             OK landed instantly and the joiner was race-booted without its
+             vehicle stage ever fronting.
 """
 
 from __future__ import annotations
@@ -132,6 +143,16 @@ CONFIG_SINGLE_RE = re.compile(
 CONFIG_TOURNAMENT_RE = re.compile(
     r"^\[online-live\] loopback config mode=tournament cup=(\d+) "
     r"round1Track=(\d+) startMask=0x([0-9a-f]{2}) vehicle=(\d+)$", re.MULTILINE)
+
+# The SAME-TRACK REMATCH scenario's refusal machinery witnesses: the scripted
+# host's OK before the joiner's stage confirm is refused NOT_READY and re-fires
+# (the planner refusal-note cadence), converging once the confirm lands.
+TS_REMATCH_REFUSED_RE = re.compile(
+    r"^\[online-trackselect\] test-script host OK refused NOT_READY "
+    r"\(joiner not stage-confirmed; re-fire armed\)$", re.MULTILINE)
+TS_REMATCH_CONVERGED_RE = re.compile(
+    r"^\[online-trackselect\] test-script host OK converged after (\d+) refused "
+    r"tick\(s\) \(joiner stage-confirmed\) -> LOADING$", re.MULTILINE)
 
 # M3 (PD-T4 carry-forward): the tournament joiner scenario drives a teardown-time
 # transport continuation that logs "[online-tournament] result=error step=..." on
@@ -423,6 +444,96 @@ def check_joiner(output: str) -> int | None:
     return assert_locked_equals_booted(scn, output, LOCKED_TRACK)
 
 
+def check_rematch(output: str) -> int | None:
+    """SAME-TRACK rematch re-front, joiner view: the per-player CONFIRM cannot
+    be bypassed. The identical-track re-lock never ready-clears in the reducer
+    (no config change), so ONLY the per-round stage-confirm contract keeps the
+    scripted host's early OK refused until the joiner's vehicle stage fronts
+    and confirms; the re-fired OK then converges and the race boots."""
+    scn = "rematch"
+    marker = forbidden_marker(output, *FORBIDDEN_ONLINE, *FORBIDDEN_EXTRA)
+    if marker:
+        return fail(scn, f"observed forbidden marker {marker!r}", output)
+
+    # The boot itself must happen (the deferral must never wedge the flow) --
+    # checked FIRST so the bypass regression below reads unambiguously.
+    boot = DIRECT_BOOT_RE.search(output)
+    if not boot:
+        return fail(scn, "the race never booted (the deferred OK never "
+                    "converged -- the rematch flow wedged)", output)
+
+    # THE FINDING: the joiner's vehicle stage must front before the boot. On
+    # the pre-fix screen the browse's unconditional ready=1 republish re-latched
+    # the stale ready (char+vehicle persist; the same-track re-lock never
+    # ready-clears), the host's OK landed instantly, and the race booted with
+    # NO vehicle-stage witness.
+    vs = VS_ENTER_RE.search(output)
+    if vs is None:
+        return fail(scn, "the race BOOTED but the joiner's VEHICLE stage never "
+                    "fronted -- the per-player CONFIRM was bypassed on the "
+                    "same-track rematch (stale browse ready accepted "
+                    "BEGIN_LOADING)", output)
+    if boot.start() < vs.start():
+        return fail(scn, "the race booted BEFORE the joiner's vehicle stage "
+                    "fronted", output)
+    if TS_ADVANCE_RE.search(output):
+        return fail(scn, "the room left LOBBY under the BROWSE (the joiner was "
+                    "race-booted from the browse; the OK was never deferred)",
+                    output)
+
+    # The refusal/re-fire machinery absorbed the interim: the host's early OK
+    # was refused NOT_READY BEFORE the stage fronted, then the re-fired OK
+    # converged once the joiner's stage confirm landed.
+    refused = TS_REMATCH_REFUSED_RE.search(output)
+    if refused is None:
+        return fail(scn, "the scripted host's early OK was never refused "
+                    "NOT_READY (the joiner's ready re-latched from the browse)",
+                    output)
+    converged = TS_REMATCH_CONVERGED_RE.search(output)
+    if converged is None:
+        return fail(scn, "the refused OK never converged after the joiner's "
+                    "stage confirm", output)
+    if not (refused.start() < vs.start() < converged.start()):
+        return fail(scn, "refusal -> stage front -> converged OK ordering was "
+                    "violated", output)
+    if int(converged.group(1)) < 1:
+        return fail(scn, "the OK converged with zero refused ticks (the "
+                    "deferral window never existed)", output)
+
+    # Flow shape + the joiner's browse deferral rows: while the stale lock
+    # lingered (snapCfgTrack == the re-locked track) the LOCAL seat stayed
+    # un-ready (r0=0) in the browse (setup=0) -- ready no longer co-occurs with
+    # the browse's transient state; it latches only at the stage confirm.
+    if not SESS_CS_TO_TS_RE.search(output):
+        return fail(scn, "no CHARSELECT -> TRACKSELECT hand-off", output)
+    if not SESS_TS_TO_VS_RE.search(output):
+        return fail(scn, "the dwell never followed the stale lock into the "
+                    "vehicle stage", output)
+    renders = TS_RENDER_RE.findall(output)
+    defer_rows = [r for r in renders
+                  if int(r[3]) == 0 and int(r[12]) == LOCKED_TRACK and
+                  int(r[15]) == 0 and int(r[9]) == 0]
+    if not defer_rows:
+        return fail(scn, f"no browse render row witnessed the deferral state "
+                    f"(host=0 cfgTrack={LOCKED_TRACK} setup=0 r0=0)", output)
+
+    # The joiner genuinely confirmed on the stage (conf=1), and the stage owned
+    # the advance out of LOBBY.
+    vs_renders = VS_RENDER_RE.findall(output)
+    if not [r for r in vs_renders if int(r[6]) == 1]:
+        return fail(scn, "no vehicle-stage render row with conf=1 (the joiner "
+                    "never stage-confirmed)", output)
+    if not VS_ADVANCE_RE.search(output):
+        return fail(scn, "the vehicle stage never advanced on the converged OK",
+                    output)
+
+    # The race then boots + converges on the re-locked track, exactly once.
+    err = assert_race_converges(scn, output)
+    if err is not None:
+        return err
+    return assert_locked_equals_booted(scn, output, LOCKED_TRACK)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", default="build-beta")
@@ -449,6 +560,11 @@ def main() -> int:
         ("joiner", check_joiner,
          {"MDKR_APP_TEST_ONLINE_MODE": "tournament",
           "MDKR_APP_TEST_ONLINE_CUP": str(TOURN_CUP)}, max(args.timeout, 600)),
+        # SAME-TRACK rematch: the manifest is pinned to the SAME track the stale
+        # room config carries (Whale Bay), so the identical-track re-lock is a
+        # genuine no-config-change re-front (no reducer ready-clear).
+        ("rematch", check_rematch,
+         {"MDKR_APP_TEST_ONLINE_TRACK": str(LOCKED_TRACK)}, args.timeout),
     )
     for ts_value, checker, extra_env, scn_timeout in scenarios:
         try:
@@ -469,7 +585,11 @@ def main() -> int:
         "loadedTrack 8) and TOURNAMENT-JOINER (renders room snapshot "
         "host=0/mode=TOURNAMENT/cup=2 on the browse, follows the lock into the "
         "vehicle stage, narrows to the cup; no ILLEGAL_VEHICLE; LOCKED==BOOTED: "
-        "cup-2 round-0 manifest honored track 8, engine loadedTrack 8) -- both "
+        "cup-2 round-0 manifest honored track 8, engine loadedTrack 8) and "
+        "SAME-TRACK-REMATCH (identical-track re-lock never ready-clears; the "
+        "host's early OK was refused NOT_READY and re-fired until the joiner's "
+        "vehicle stage fronted + confirmed, then booted + converged -- the "
+        "per-player CONFIRM cannot be bypassed) -- all "
         "handed off gGameMode=2 gCurrentMenuId=0, offered ids == reducer set, "
         "no track divergence"
     )

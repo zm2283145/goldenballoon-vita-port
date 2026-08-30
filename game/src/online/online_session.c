@@ -576,6 +576,15 @@ static void online_session_boot_race(void) {
     u16 intended;
     s32 manifestTrack;
 
+    /* A boot request means THIS round's selection is over (the room left
+     * LOBBY): clear the vehicle stage's per-round confirm latch, so the next
+     * round's screens (a rematch re-front, or the CANCEL_LOADING unwind's
+     * re-front) publish ready only after a FRESH stage confirm -- the engine
+     * mirror of the reducer's clear_round. At the top, before any deferral
+     * return, so the descriptor-less deferred boot clears it too; idempotent
+     * across the re-wait's repeated calls. */
+    mdkr_online_vehicleselect_round_reset();
+
     /* RE-FETCH the launch descriptor each boot. mdkr_online_session_begin
      * stashed race 1's; but in a resident LIVE session the launcher clears +
      * re-installs the roster/descriptor per round (a fresh match_epoch and, in a
@@ -697,6 +706,10 @@ void mdkr_online_session_begin(const MdkrMatchLaunchDescriptorV1 *launch) {
     sOnlineSession.lastModeSeen = 0xFFu; /* no forward-feed mode observed yet */
     sOnlineSession.liveReWaitLastReady = 0xFFu; /* re-wait witness unthrottled */
     sOnlineSession.desclessReWaitLastReady = 0xFFu; /* ditto */
+    /* fresh session: no round's vehicle stage has confirmed yet, so the
+     * per-round ready latch starts clear (screen TU statics survive an
+     * in-process session restart). */
+    mdkr_online_vehicleselect_round_reset();
     sOnlineSession.active = 1;
     /* Enter the SEPARATED mode. Offline code never produces this value, so the
      * offline menu state machine is never entered on this route. */

@@ -53,6 +53,13 @@ MdkrOnlineTrackselectResult mdkr_online_trackselect_tick(s32 updateRate);
  * MDKR_TEST_ONLINE_TRACKSELECT). Ordinary runs always return false. */
 u8 mdkr_online_trackselect_test_active(void);
 
+/* Headless test seam only: true when the seam's SAME-TRACK REMATCH scenario is
+ * armed (env value "rematch"). The CHARSELECT seam consults it to pre-seed its
+ * scripted room with last round's persisted config + joiner roles before
+ * trackselect _enter latches the stale-lock browse dwell. Ordinary runs always
+ * return false. */
+u8 mdkr_online_trackselect_test_scenario_rematch(void);
+
 /* Resolve a tournament cup's scheduled round track id from the screen's
  * authoritative sTrackIds mirror (cup-major, round order -- the same table the
  * lane already asserts equals the reducer's kCupTracks). The online session uses
