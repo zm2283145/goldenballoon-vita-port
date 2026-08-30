@@ -121,21 +121,22 @@
 #define CS_SFX_REJECT SOUND_ELECTRIC_BUZZ
 
 /* ---- Online character id -> gRacerPortraits index -------------------------
- * THREE different orderings exist for the ten racers and mixing them silently
+ * TWO different orderings exist for the ten racers and mixing them silently
  * draws the wrong face, so the mapping is explicit and named:
  *
  *   online id space   (party_link seats[].character_id; ui_online_room kCharacters):
  *     0 Diddy 1 Timber 2 Pipsy 3 Tiptup 4 Conker 5 Bumper 6 Banjo 7 Krunch
  *     8 Drumstick 9 T.T.
- *   gRacerPortraits[] order (menu.c literal):
- *     0 Krunch 1 Diddy 2 Drumstick 3 Bumper 4 Banjo 5 Conker 6 Tiptup 7 T.T.
- *     8 Pipsy 9 Timber
+ *   gRacerPortraits[] index == the engine Character enum (enums.h) -- NOT the
+ *   order the symbols appear in menu.c's array initializer:
+ *     0 Krunch 1 Bumper 2 Tiptup 3 Conker 4 Timber 5 Banjo 6 Drumstick 7 Pipsy
+ *     8 T.T. 9 Diddy
  *
  * The screen is laid out in ONLINE id order (grid cell index == online char id
  * == what we publish as hover_character and what the reducer validates), so the
- * sOnlineToPortrait[] table maps that id to the portrait slot to blit. The
- * headless lane emits the resolved slot (witness `portrait=`) and asserts the
- * mapping, so a swapped entry is caught.
+ * sOnlineToPortrait[] table maps that id to the racer's Character-enum slot to
+ * blit. The headless lane emits the resolved slot (witness `portrait=`) and
+ * asserts the mapping, so a swapped entry is caught.
  *
  * that table + sOnlineNames[] + sPortraitAssetIds[] are the DRY lift
  * into the shared online_portraits.h (byte-identical across charselect / results /

@@ -26,27 +26,41 @@
 #if MDKR_ENABLE_ONLINE_BETA
 
 #include "types.h"
-#include "menu.h" /* gRacerPortraits, TEXTURE_ICON_PORTRAIT_* */
+#include "enums.h" /* Character enum (CHARACTER_*) -- the REAL gRacerPortraits index */
+#include "menu.h"  /* gRacerPortraits, TEXTURE_ICON_PORTRAIT_* */
 
 /* Ten racers (== MDKR_ONLINE_CHARACTER_COUNT). Each screen keeps its own
  * *_CHAR_COUNT bound for its own indexing; this is the table dimension. */
 #define MDKR_ONLINE_PORTRAIT_COUNT 10u
 
-/* Online character id -> gRacerPortraits[] index. The screen is laid out in
- * ONLINE id order (grid cell index == online char id == the published
- * hover_character the reducer validates), so this maps that id to the portrait
- * slot to blit. */
+/* Online character id -> gRacerPortraits[] index.
+ *
+ * gRacerPortraits[] IS INDEXED BY THE ENGINE Character ENUM (enums.h), NOT by the
+ * order the symbols happen to appear in menu.c's array initializer. The offline
+ * game always reaches it as gRacerPortraits[characterId] where characterId is a
+ * CHARACTER_* value (see menu.c: gRacerPortraits[CHARACTER_KRUNCH], the ghost/
+ * cinematic/results paths, menu_racer_portrait_for_player), and the ROM's own
+ * portrait TEXTURE_ICON_PORTRAIT_* group is laid down so that binding lands each
+ * face at its Character-enum slot. The Character enum order is:
+ *   0 KRUNCH 1 BUMPER 2 TIPTUP 3 CONKER 4 TIMBER 5 BANJO 6 DRUMSTICK 7 PIPSY
+ *   8 TT 9 DIDDY
+ * -- which is DIFFERENT from the menu.c initializer's symbol order. An earlier
+ * version of this table was derived from that initializer order and so drew every
+ * face except Krunch's under the wrong name (owner-reported "player portraits
+ * incorrect order"). The screen is laid out in ONLINE id order (grid cell index ==
+ * online char id == the published hover_character the reducer validates), so map
+ * each online id straight to that racer's Character-enum slot. */
 static const u8 sOnlineToPortrait[MDKR_ONLINE_PORTRAIT_COUNT] = {
-    1u, /* 0 Diddy     -> gRacerPortraits[1] */
-    9u, /* 1 Timber    -> [9] */
-    8u, /* 2 Pipsy     -> [8] */
-    6u, /* 3 Tiptup    -> [6] */
-    5u, /* 4 Conker    -> [5] */
-    3u, /* 5 Bumper    -> [3] */
-    4u, /* 6 Banjo     -> [4] */
-    0u, /* 7 Krunch    -> [0] */
-    2u, /* 8 Drumstick -> [2] */
-    7u, /* 9 T.T.      -> [7] */
+    (u8) CHARACTER_DIDDY,     /* 0 Diddy */
+    (u8) CHARACTER_TIMBER,    /* 1 Timber */
+    (u8) CHARACTER_PIPSY,     /* 2 Pipsy */
+    (u8) CHARACTER_TIPTUP,    /* 3 Tiptup */
+    (u8) CHARACTER_CONKER,    /* 4 Conker */
+    (u8) CHARACTER_BUMPER,    /* 5 Bumper */
+    (u8) CHARACTER_BANJO,     /* 6 Banjo */
+    (u8) CHARACTER_KRUNCH,    /* 7 Krunch */
+    (u8) CHARACTER_DRUMSTICK, /* 8 Drumstick */
+    (u8) CHARACTER_TT,        /* 9 T.T. */
 };
 
 /* Short display names, in online id order (matches the launcher's kCharacters). */
