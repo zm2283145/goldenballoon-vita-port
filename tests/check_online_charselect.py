@@ -94,9 +94,21 @@ EXIT_RE = re.compile(
     r"^\[online-charselect\] exit: freed portrait assets", re.MULTILINE)
 
 TARGET_CHARACTER = 2    # Pipsy, in the online id space (== grid cell == hover)
-TARGET_PORTRAIT = 8     # sOnlineToPortrait[2] == gRacerPortraits[8] (Pipsy)
+TARGET_PORTRAIT = 7     # sOnlineToPortrait[2] == CHARACTER_PIPSY == gRacerPortraits[7]
 REMOTE_CHARACTER = 5    # Bumper, the scripted remote pick
 REMOTE_NAME = "RIVAL"
+
+# The CORRECT online id -> portrait-slot mapping is the engine Character enum
+# (enums.h): gRacerPortraits[] is indexed by CHARACTER_*, NOT by the order the
+# portrait SYMBOLS appear in menu.c's array initializer (those symbol names are
+# mislabelled in the decomp). Keyed by the name the grid draws under each face so a
+# future symbol-name-derived regression -- which draws the wrong face under a name --
+# is caught here (verified against retail-ref-shots/ keyframes).
+#   name -> CHARACTER enum value == gRacerPortraits slot the witness must report
+NAME_TO_PORTRAIT = {
+    "DIDDY": 9, "TIMBER": 4, "PIPSY": 7, "TIPTUP": 2, "CONKER": 3,
+    "BUMPER": 1, "BANJO": 5, "KRUNCH": 0, "DRUMSTICK": 6, "T.T.": 8,
+}
 
 
 fail = make_fail("charselect")
@@ -210,6 +222,19 @@ def main() -> int:
         return fail(f"character {TARGET_CHARACTER} mapped to portrait "
                     f"{bad_portrait[0][2]}, expected {TARGET_PORTRAIT} "
                     f"(sOnlineToPortrait[] is wrong)", output)
+
+    # EVERY witnessed cell must draw the portrait slot that BELONGS to the name
+    # under it (name -> Character-enum slot). This is the direct guard against the
+    # symbol-name-derived mapping bug: a table rebuilt from menu.c's mislabelled
+    # portrait symbols draws e.g. PIPSY's name over T.T.'s face, which this catches.
+    for r in renders:
+        name, slot = r[1], int(r[2])
+        want = NAME_TO_PORTRAIT.get(name)
+        if want is not None and slot != want:
+            return fail(f"name {name} drew portrait slot {slot}, expected {want} "
+                        f"(gRacerPortraits is Character-enum ordered; "
+                        f"sOnlineToPortrait[] must map online id -> CHARACTER_*)",
+                        output)
 
     # --- The published intent (character + default vehicle + ready) ---------
     intent_rows = [

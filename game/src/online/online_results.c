@@ -79,6 +79,10 @@ extern char *gRacePlacementsArray[8];
 
 /* ---- Local mirrors of the launcher lobby's id space (no launcher headers) --- */
 #define RES_SLOTS 4u              /* MDKR_ONLINE_RACE_RESULT_SLOTS / seats */
+#define RES_PLACE_COUNT 8u        /* MDKR_ONLINE_PLACEMENT_COUNT -- a placement is a
+                                   * finish position among the FULL grid (up to 8
+                                   * racers once AI fill / >4 players ship), so the
+                                   * finishing-order scan must range 0..7, not 0..3. */
 #define RES_PLACE_NONE 0xFFu      /* MDKR_ONLINE_RACE_RESULT_NONE */
 #define RES_CUP_ROUNDS 4u         /* a DKR cup is four rounds (RACE n/4 copy) */
 #define RES_PHASE_RESULTS 4u      /* MDKR_ONLINE_RESULTS (party_link phase byte;
@@ -403,8 +407,11 @@ static void results_render_results(const MdkrPartyLinkSnapshot *snap,
     rowY = 64;
 
     /* Walk placements in finishing order (place 0 == 1st). Each canonical slot
-     * carries its own placement, so scan for the slot at each place. */
-    for (place = 0u; place < RES_SLOTS; place++) {
+     * carries its own placement, so scan for the slot at each place. Range over the
+     * full placement space (0..7): with AI fill / >4-player rooms a human can finish
+     * 5th-8th, and bounding the scan at RES_SLOTS(4) would silently DROP that seat's
+     * row. */
+    for (place = 0u; place < RES_PLACE_COUNT; place++) {
         unsigned slot;
         for (slot = 0u; slot < RES_SLOTS; slot++) {
             bool isLocal;
