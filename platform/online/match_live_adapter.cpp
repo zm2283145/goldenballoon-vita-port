@@ -1822,6 +1822,12 @@ public:
                 return MDKR_ONLINE_VIEW_FAILURE_CONNECTION_CHECK;
             case MdkrMatchPeerLostReason::PingTimeout:
             case MdkrMatchPeerLostReason::PeerEnded:
+            /* PeerVanished: the signal service saw the peer's socket die AND
+             * its transport went down (the mid-race kill/quit signature) --
+             * the peer DEPARTED. Same truthful attribution as a ping-out:
+             * mid-race it is OPPONENT_LEFT, never a connection-establishment
+             * demotion. */
+            case MdkrMatchPeerLostReason::PeerVanished:
             default:
 #if MDKR_ENABLE_ONLINE_BETA
                 if (raceBegun)

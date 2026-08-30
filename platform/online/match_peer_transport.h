@@ -127,6 +127,43 @@ inline constexpr unsigned kMdkrMatchOfferRetryDeadlineMs = 7000u;
 inline constexpr unsigned kMdkrMatchAnswererSetupDeadlineMs =
     3u * kMdkrMatchOfferRetryDeadlineMs;
 
+/* A peer that is BOTH absent from signaling (the service closed its socket
+ * and broadcast presence=false -- what a killed/quit process looks like to
+ * the relay) AND without ready channels can never complete a connection
+ * restart: no offer or answer can reach it. Bound that state instead of
+ * waiting forever. This dwell is keyed on two persistent TRANSPORT facts
+ * (signal presence + channel state), never on gameplay input; a peer whose
+ * signal socket merely blips while its channels stay healthy never arms it,
+ * and a peer that reconnects (presence bump) before it expires disarms it. */
+inline constexpr unsigned kMdkrMatchPeerVanishTimeoutMs = 10000u;
+
+/* MID-RACE PEER-LOSS DETECTION BOUND. On a hard mid-race transport loss
+ * (peer process killed / machine gone) detection is whichever transport
+ * verdict lands FIRST:
+ *   - the control-ping ladder: the next ping goes out within
+ *     kMdkrMatchControlPingIntervalMs of the last pong and goes stale after
+ *     kMdkrMatchControlPingTimeoutMs, so peerLost(PingTimeout) fires within
+ *     their SUM (this constant) while the channels still claim ready; or
+ *   - ICE's own Disconnected/Closed verdict (libdatachannel's timeout,
+ *     observed 15-24 s post-SIGKILL on the real cloud) -> ConnectionDown
+ *     tears the channels down, which disarms the ping ladder and, with the
+ *     peer's signal presence already dropped, arms the vanish dwell above ->
+ *     peerLost(PeerVanished) at ICE-detect + kMdkrMatchPeerVanishTimeoutMs.
+ * MEASURED FLOOR (real-cloud mid-race SIGKILL, 2026-08-30, the drop
+ * instrument): kill -> [MESH] peer LOST in 25.0 s (ICE at kill+15 s + the
+ * 10 s vanish dwell, preempting the 20 s ping bound), truthful
+ * OPPONENT_LEFT latched and survivor session end (clean LEFT) 30 ms later
+ * -- vs the pre-fix ~119 s watchdog ERROR with no card. The instrument
+ * (tools/online/check_online_native_flow_cloud.py --drop mid-race
+ * --drop-method kill) re-measures kill -> peer LOST -> session end and
+ * asserts it within this bound + real-cloud slack on every run. Tightening
+ * toward the ruled <=10 s target would mean shortening the shipped ping
+ * cadence/stale constants themselves (shared by every launcher-pumped
+ * phase) at real false-positive risk on WAN jitter -- ruled out here;
+ * detection stays keyed on transport state, never input starvation. */
+inline constexpr unsigned kMdkrMatchMidRaceLossDetectBoundMs =
+    kMdkrMatchControlPingIntervalMs + kMdkrMatchControlPingTimeoutMs;
+
 /*
  * Injectable signaling seam. The mesh consumes validated match-signal
  * events and produces outbound messages through this interface only, so
@@ -216,6 +253,12 @@ enum class MdkrMatchPeerLostReason {
     PeerEnded,
     /* The channel died and no recovery path remains (signaling lost). */
     TransportFailed,
+    /* The peer VANISHED: the signal service closed its socket (presence
+     * dropped -- a killed/quit process) AND its channels are down, and the
+     * kMdkrMatchPeerVanishTimeoutMs dwell expired with neither recovering.
+     * No restart can complete against an endpoint signaling cannot reach.
+     * Appended so the prior reasons' logged values never shift. */
+    PeerVanished,
 };
 
 enum class MdkrMatchPeerMeshFailure {

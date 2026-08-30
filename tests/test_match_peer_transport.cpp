@@ -1834,6 +1834,149 @@ void reWelcomeAfterSignalLossRestoresRecoveryLadders() {
     std::printf("reWelcomeAfterSignalLossRestoresRecoveryLadders: ok\n");
 }
 
+/* ---- Mid-race loss vs a vanished peer ------------------------------------ */
+
+/* Pump ONLY the surviving mesh (100), stepping the shared fake clock -- the
+ * frozen peer (200) is a corpse: its libdatachannel threads still ack at the
+ * SCTP layer (exactly like a killed remote whose kernel/socket lingers), but
+ * its pump never runs, so it never pongs, never answers offers, never drains
+ * its feed. */
+bool pumpSurvivorUntil(PairHarness &pair, const std::function<bool()> &done,
+                       unsigned iterations, uint64_t fakeStepMs) {
+    for (unsigned index = 0u; index < iterations; index++) {
+        std::vector<MdkrMatchPeerMeshEvent> drained;
+        pair.low->pump();
+        pair.low->drainEvents(drained);
+        for (MdkrMatchPeerMeshEvent &event : drained) {
+            pair.harness.events[100u].push_back(std::move(event));
+        }
+        if (done()) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        pair.harness.clock.nowMs += fakeStepMs;
+    }
+    return done();
+}
+
+MdkrMatchSignalEvent presenceEvent(uint64_t about, uint32_t generation,
+                                   bool present) {
+    MdkrMatchSignalEvent event;
+    event.type = MdkrMatchSignalEventType::PeerPresence;
+    event.endpointId = std::to_string(about);
+    event.connectionGeneration = generation;
+    event.present = present;
+    return event;
+}
+
+/* THE production kill signature (real-cloud mid-race SIGKILL): the killed
+ * process's signal socket dies, the service broadcasts presence=false, and
+ * the peer goes silent with its channels still nominally up. The survivor's
+ * control-ping ladder MUST still run -- the ladder is the transport's own
+ * liveness probe and presence is irrelevant to it -- so the loss resolves as
+ * a typed PingTimeout within kMdkrMatchMidRaceLossDetectBoundMs. Pre-fix the
+ * `!peer.present` gate froze EVERY ladder for exactly this peer, so nothing
+ * ever fired and the survivor ghost-raced to a watchdog. */
+void presenceDropDoesNotStarveTheLossLadders() {
+    PairHarness pair;
+    assert(pair.connect());
+    /* The kill: presence drops (service saw the socket die), the peer's pump
+     * freezes (the process is gone). Channels stay nominally open. */
+    pair.harness.hub.inject(100u, presenceEvent(200u, 2u, false));
+    const uint64_t droppedAtMs = pair.harness.clock.nowMs;
+    const bool lost = pumpSurvivorUntil(pair, [&]() {
+        return pair.harness.countEvents(
+                   100u, MdkrMatchPeerMeshEventType::PeerLost, 200u) >= 1u;
+    }, /*iterations=*/80u, /*fakeStepMs=*/500u);
+    if (!lost) {
+        std::fprintf(stderr,
+                     "FAIL presenceDropDoesNotStarveTheLossLadders: no PeerLost "
+                     "within %llu fake ms of the presence drop -- the loss "
+                     "ladders are starved for a vanished peer (the mid-race "
+                     "kill signature: the survivor would ghost-race to the "
+                     "watchdog)\n",
+                     (unsigned long long)(pair.harness.clock.nowMs - droppedAtMs));
+        assert(lost);
+    }
+    const MdkrMatchPeerMeshEvent *event = pair.harness.lastEvent(
+        100u, MdkrMatchPeerMeshEventType::PeerLost, 200u);
+    assert(event != nullptr &&
+           event->lostReason == MdkrMatchPeerLostReason::PingTimeout);
+    const uint64_t detectMs = pair.harness.clock.nowMs - droppedAtMs;
+    /* The named bound + one fake step of slack. */
+    assert(detectMs <= kMdkrMatchMidRaceLossDetectBoundMs + 1000u);
+    std::printf("presenceDropDoesNotStarveTheLossLadders: ok (%llu fake ms)\n",
+                (unsigned long long)detectMs);
+}
+
+/* The other ordering: the transport verdict lands FIRST (ICE Disconnected /
+ * channel close -> ConnectionDown) on a peer whose presence is already gone.
+ * A restart can never complete against an endpoint signaling cannot reach,
+ * so the absent+down state must resolve as a typed PeerVanished within the
+ * kMdkrMatchPeerVanishTimeoutMs dwell instead of parking forever in the
+ * (unreachable) restart ladder. */
+void vanishedPeerConnectionDownResolvesBounded() {
+    PairHarness pair;
+    assert(pair.connect());
+    pair.harness.hub.inject(100u, presenceEvent(200u, 2u, false));
+    /* Absorb the presence drop, then the hard transport kill. */
+    assert(pumpSurvivorUntil(pair, []() { return true; }, 1u, 0u));
+    assert(mdkr_match_peer_mesh_kill_channels_for_test(*pair.low, 200u));
+    const uint64_t downAtMs = pair.harness.clock.nowMs;
+    const bool lost = pumpSurvivorUntil(pair, [&]() {
+        return pair.harness.countEvents(
+                   100u, MdkrMatchPeerMeshEventType::PeerLost, 200u) >= 1u;
+    }, /*iterations=*/80u, /*fakeStepMs=*/500u);
+    if (!lost) {
+        std::fprintf(stderr,
+                     "FAIL vanishedPeerConnectionDownResolvesBounded: no "
+                     "PeerLost within %llu fake ms of ConnectionDown on an "
+                     "absent peer -- the restart ladder parks forever against "
+                     "an endpoint signaling cannot reach\n",
+                     (unsigned long long)(pair.harness.clock.nowMs - downAtMs));
+        assert(lost);
+    }
+    const MdkrMatchPeerMeshEvent *event = pair.harness.lastEvent(
+        100u, MdkrMatchPeerMeshEventType::PeerLost, 200u);
+    assert(event != nullptr &&
+           event->lostReason == MdkrMatchPeerLostReason::PeerVanished);
+    const uint64_t detectMs = pair.harness.clock.nowMs - downAtMs;
+    assert(detectMs <= kMdkrMatchPeerVanishTimeoutMs + 1500u);
+    std::printf("vanishedPeerConnectionDownResolvesBounded: ok (%llu fake ms)\n",
+                (unsigned long long)detectMs);
+}
+
+/* The false-positive guard the ruling demands: a peer whose SIGNAL socket
+ * blips (presence=false) while its channels stay healthy and responsive is
+ * NOT lost -- pings keep ponging, no ladder fires, and a presence re-assert
+ * plus live input prove the mesh carried play through the blip. This is the
+ * documented "room updates reconnecting" posture, now with the liveness
+ * ladder actually running through it. */
+void presenceBlipWithHealthyChannelsIsNotPeerLoss() {
+    PairHarness pair;
+    assert(pair.connect());
+    pair.harness.hub.inject(100u, presenceEvent(200u, 2u, false));
+    /* 40 s of fake clock with BOTH endpoints alive and pumping. */
+    for (unsigned index = 0u; index < 40u; index++) {
+        pair.harness.pumpOnce();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        pair.harness.clock.nowMs += 1000u;
+    }
+    pair.harness.pumpOnce();
+    assert(pair.harness.countEvents(
+               100u, MdkrMatchPeerMeshEventType::PeerLost) == 0u);
+    assert(pair.harness.countEvents(
+               200u, MdkrMatchPeerMeshEventType::PeerLost) == 0u);
+    /* The blip ends; input still crosses on the SAME keys (no rekey, no
+     * teardown happened underneath). */
+    pair.harness.hub.inject(100u, presenceEvent(200u, 2u, true));
+    const auto payload = payloadFixture(0x3Cu);
+    assert(pair.low->sendInput(payload.data()) == 1u);
+    assert(pair.harness.pumpUntil([&]() {
+        return pair.harness.countEvents(
+                   200u, MdkrMatchPeerMeshEventType::InputEnvelope, 100u) >= 1u;
+    }, 5000u));
+    std::printf("presenceBlipWithHealthyChannelsIsNotPeerLoss: ok\n");
+}
+
 }  // namespace
 
 int main() {
@@ -1861,6 +2004,10 @@ int main() {
     reWelcomeAfterSignalLossRestoresRecoveryLadders();
     peerBumpRefreshesLocalCommitment();
     batchedRewelcomeChangesDigestInOnePump();
+    /* Mid-race loss of a VANISHED peer (presence dropped + silent). */
+    presenceDropDoesNotStarveTheLossLadders();
+    vanishedPeerConnectionDownResolvesBounded();
+    presenceBlipWithHealthyChannelsIsNotPeerLoss();
     std::printf("all match_peer_transport cases passed\n");
     return 0;
 }

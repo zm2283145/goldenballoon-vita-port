@@ -195,6 +195,14 @@ struct PeerRuntime {
     uint64_t nextPingAtMs = 0u;
     uint64_t pingOutstandingSinceMs = 0u;
 
+    /* Vanish dwell (0 = disarmed): first tick at which this peer was BOTH
+     * absent from signaling AND without ready channels. Armed/disarmed by
+     * tick() from those two live facts each pump, so a presence re-assert or
+     * a channel recovery disarms it; expiry is PeerVanished. Deliberately
+     * NOT cleared by silentTeardown -- a teardown while absent is exactly
+     * the state the dwell bounds. */
+    uint64_t vanishedSinceMs = 0u;
+
     /* Derived directional keys (slots in the mesh keyring) + replay. The
      * two channels are independent streams over one sender sequence space:
      * a reliable control fragment delayed behind >64 lossy state envelopes
@@ -401,6 +409,7 @@ struct MdkrMatchPeerMesh::State
         peer.gaveUp = false;
         peer.restartEpisodes = 0u;
         peer.lost = false;
+        peer.vanishedSinceMs = 0u; /* a reconnected peer starts a fresh dwell */
         silentTeardown(peer);
         if (retireTranscript) {
             /* Every pairwise key was salted with the old transcript digest;
@@ -1244,7 +1253,37 @@ struct MdkrMatchPeerMesh::State
         const uint64_t nowMs = now();
         for (auto &entry : peers) {
             PeerRuntime &peer = entry.second;
-            if (peer.lost || !peer.present || peer.generation == 0u) continue;
+            if (peer.lost || peer.generation == 0u) continue;
+            /* Vanish dwell: ABSENT from signaling AND channels down. Neither
+             * setup ladder can run against an endpoint the relay cannot
+             * reach (no offer/answer/hello can be delivered), so without
+             * this bound that state parks forever -- the real-cloud mid-race kill
+             * left the survivor exactly there once ICE tore the connection
+             * down. Both facts are transport state; either recovering
+             * disarms the dwell (a signal blip with healthy channels never
+             * arms it, and a reconnect bump re-admits the peer even after
+             * expiry via rekeyPeer's lost=false). */
+            if (!peer.present && !peer.channelsReady) {
+                if (peer.vanishedSinceMs == 0u) {
+                    peer.vanishedSinceMs = nowMs;
+                } else if (nowMs - peer.vanishedSinceMs >=
+                           kMdkrMatchPeerVanishTimeoutMs) {
+                    peerLost(peer, MdkrMatchPeerLostReason::PeerVanished);
+                    continue;
+                }
+            } else {
+                peer.vanishedSinceMs = 0u;
+            }
+            /* The SETUP ladders (hellos, offers, the answerer's deadline)
+             * require a present peer: every step is a signaling delivery,
+             * and a re-appearing peer resumes them where they stood. The
+             * LIVENESS ladder (control ping, below) deliberately does NOT --
+             * it probes the established channels themselves, and gating it
+             * on presence starved mid-race loss detection whenever the
+             * relay truthfully reported the killed peer's socket closing
+             * (the shipped defect: presence dropped seconds after the SIGKILL,
+             * freezing the very ladder that would have caught it). */
+            if (peer.present) {
             /* Hellos: commit eagerly; reveal only after the peer commits.
              * Each of the three sends is guarded independently, so a
              * refused send (relay said peer_unavailable mid-blip) is
@@ -1302,7 +1341,12 @@ struct MdkrMatchPeerMesh::State
                     }
                 }
             }
-            /* Control ping ladder (5 s cadence, 15 s stale). */
+            } /* peer.present (setup ladders only) */
+            /* Control ping ladder (5 s cadence, 15 s stale) -- runs on the
+             * ESTABLISHED channels regardless of signal presence (see the
+             * presence note above): kMdkrMatchControlPingIntervalMs +
+             * kMdkrMatchControlPingTimeoutMs is the mid-race loss detection
+             * bound (kMdkrMatchMidRaceLossDetectBoundMs). */
             if (peer.channelsReady) {
                 if (peer.pingOutstandingSinceMs != 0u &&
                     nowMs - peer.pingOutstandingSinceMs >=

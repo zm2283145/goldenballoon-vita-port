@@ -59,6 +59,11 @@ static void test_map_lost_reason_in_race_branches() {
           MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT);
     CHECK(mapLost(MdkrMatchPeerLostReason::PeerEnded, true) ==
           MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT);
+    /* A VANISHED peer (signal presence dropped + transport down, the
+     * mid-race kill/quit signature) DEPARTED: truthful OPPONENT_LEFT, never
+     * a connection-establishment demotion. */
+    CHECK(mapLost(MdkrMatchPeerLostReason::PeerVanished, true) ==
+          MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT);
     /* A seal-window exhaustion mid-race is a transport breakdown, NOT "opponent
      * left" and NOT "could not establish". */
     CHECK(mapLost(MdkrMatchPeerLostReason::SealWindowExhausted, true) ==
@@ -68,6 +73,8 @@ static void test_map_lost_reason_in_race_branches() {
     CHECK(mapLost(MdkrMatchPeerLostReason::PingTimeout, false) ==
           MDKR_ONLINE_VIEW_FAILURE_CONNECTION_CHECK);
     CHECK(mapLost(MdkrMatchPeerLostReason::PeerEnded, false) ==
+          MDKR_ONLINE_VIEW_FAILURE_CONNECTION_CHECK);
+    CHECK(mapLost(MdkrMatchPeerLostReason::PeerVanished, false) ==
           MDKR_ONLINE_VIEW_FAILURE_CONNECTION_CHECK);
     CHECK(mapLost(MdkrMatchPeerLostReason::SealWindowExhausted, false) ==
           MDKR_ONLINE_VIEW_FAILURE_CONNECTION_CHECK);
