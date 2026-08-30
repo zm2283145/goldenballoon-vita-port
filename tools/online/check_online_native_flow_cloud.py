@@ -99,8 +99,11 @@ from harness_utils import DEFAULT_BUILD_DIR, resolve_binary  # noqa: E402
 # The Online Room launcher panel index (kLauncherPanelOnlineRoom, ui_launcher.h).
 ONLINE_ROOM_PANEL = "1"
 
-# Host picks Pipsy (row-0 col 2); joiner picks Diddy (row-0 col 0). Different
-# racers -> no SELECTION_CONFLICT wedge.
+# Scripted pick SCREEN COLUMNS (row 0) for the charselect pad seam -- NOT char
+# ids; the grid's retail visual order owns which racer sits in each cell.
+# Different columns -> different racers -> no SELECTION_CONFLICT wedge. The
+# assertion below derives the actual claimed char ids from each endpoint's
+# confirmed-seat witness at runtime.
 HOST_PICK = "2"
 JOIN_PICK = "0"
 
@@ -144,9 +147,16 @@ DESCRIPTOR_FIRST_RE = re.compile(
 
 # ---- Assertion (c): reducer-synced selections -------------------------------
 # The joiner's picked racer (char id) shows up as the REMOTE seat on the
-# creator's native CHARSELECT render.
+# creator's native CHARSELECT render. The EXPECTED char id is derived from the
+# picking endpoint's own confirmed-seat witness (local{conf=1 ... seatChar=N}),
+# never hardcoded: the scripted pick env is a screen COLUMN, and the grid
+# layout owns the cell->id mapping (retail visual order), so a fixed id here
+# would silently rot whenever the layout changes.
 CHARSELECT_REMOTE_RE = re.compile(
     r"^\[online-charselect\] render .*remote\{seat=\d+ char=(\d+) ", re.MULTILINE)
+CHARSELECT_LOCAL_CONFIRMED_RE = re.compile(
+    r"^\[online-charselect\] render .*local\{conf=1 ready=\d seatChar=(\d+)",
+    re.MULTILINE)
 # CHARSELECT completes (seat.ready latched + persisted through the reducer over
 # the real network) exactly when the session hands off to the native TRACKSELECT
 # (retail order: the track browse follows PLAYER SELECT; the vehicle pick is a
@@ -561,13 +571,26 @@ def run(args: argparse.Namespace) -> dict:
             # creator-sees-joiner direction raced the very convergence it
             # asserts; the joiner-sees-creator witness is the same reducer
             # round-trip over the same cloud room.
+            def confirmed_pick(output: str):
+                # The endpoint's OWN reducer-confirmed pick (255 = none yet).
+                for m in CHARSELECT_LOCAL_CONFIRMED_RE.finditer(output):
+                    if m.group(1) != "255":
+                        return m.group(1)
+                return None
+
             def selections_synced(_line: str):
-                for m in CHARSELECT_REMOTE_RE.finditer(creator.full_output()):
-                    if m.group(1) == JOIN_PICK:
-                        return "creator rendered the joiner's racer"
-                for m in CHARSELECT_REMOTE_RE.finditer(joiner.full_output()):
-                    if m.group(1) == HOST_PICK:
-                        return "joiner rendered the creator's racer"
+                join_id = confirmed_pick(joiner.full_output())
+                host_id = confirmed_pick(creator.full_output())
+                if join_id is not None:
+                    for m in CHARSELECT_REMOTE_RE.finditer(creator.full_output()):
+                        if m.group(1) == join_id:
+                            return ("creator rendered the joiner's racer "
+                                    f"(char {join_id})")
+                if host_id is not None:
+                    for m in CHARSELECT_REMOTE_RE.finditer(joiner.full_output()):
+                        if m.group(1) == host_id:
+                            return ("joiner rendered the creator's racer "
+                                    f"(char {host_id})")
                 return None
             sync_how = creator.wait_line(
                 selections_synced,
