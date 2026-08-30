@@ -235,6 +235,7 @@ static void results_test_resolve(void);
 static void results_test_capture(void);
 static void results_test_pump(void);
 static void results_test_reduce(void);
+static void results_chooser_maybe_vacate_joiner(void); /* B2 scenario 4 seam */
 static u8 results_host_press_active(void);
 static u8 results_joiner_finish_seam(void);          /* test seam */
 static u8 results_joiner_finish_departed(u32 stageTicks);
@@ -990,6 +991,10 @@ static MdkrOnlineResultsResult results_chooser_tick(const MdkrPartyLinkSnapshot 
         sRes.chooserCount = RES_CHOOSER_MAX;
     }
 
+    /* B2 scenario 4: if armed, the joiner drops while the host deliberates here
+     * (the host must not be interrupted -- no host-side vacate detector). */
+    results_chooser_maybe_vacate_joiner();
+
     results_gather_input(&in); /* zeroed on the CHOOSER stage under the seams */
 
     /* HOST navigation (live pad) + the dedicated-lane scripted select. */
@@ -1625,6 +1630,45 @@ static void results_test_pump(void) {
  * every-tick republish idempotent (race_index advances exactly once), and the
  * phase-leaves-RESULTS is the screen's convergence signal to finally ADVANCE.
  * Inert in a normal run. */
+/* HOST-side chooser joiner-vanish seam (env MDKR_TEST_ONLINE_RESULTS_JOINER_GONE):
+ * once the HOST is on the "MORE RACES?" chooser, vacate the sole remote (joiner)
+ * seat in the stand-in room -- the joiner drops while the host deliberates. The
+ * host chooser has NO vacate detector by design (a host may deliberate freely),
+ * so the ruled behavior is that the host is NOT interrupted and can still commit
+ * FINISH -> the leader-only wrap converges with one seat -> CEREMONY (from the
+ * ranking latched while both were present) -> FINISHED. Inert in every normal
+ * run; the vacate happens after the final-standings ranking is already latched. */
+static s8 sJoinerGoneActive = -1;
+static u8 results_chooser_joiner_gone_seam(void) {
+    if (sJoinerGoneActive < 0) {
+        const char *e = getenv("MDKR_TEST_ONLINE_RESULTS_JOINER_GONE");
+        sJoinerGoneActive = (e != NULL && e[0] != '\0') ? 1 : 0;
+    }
+    return (u8) (sJoinerGoneActive > 0 ? 1 : 0);
+}
+
+/* HOST-side chooser joiner-vanish (see results_chooser_joiner_gone_seam): drop
+ * the remote seat in the stand-in room while the host is DELIBERATING on the
+ * chooser -- called every chooser tick (before the FINISH commit), so the host's
+ * next snapshot read sees the joiner gone. Fires once. Requires the stand-in room
+ * (resident soak). The host chooser has no vacate detector, so the host must NOT
+ * be interrupted: it still commits FINISH -> ceremony -> FINISHED, alone. */
+static void results_chooser_maybe_vacate_joiner(void) {
+    results_test_resolve();
+    if (!sTestActive || !results_chooser_joiner_gone_seam()) {
+        return;
+    }
+    if (sRes.host && !sRes.chooserJoiner && !sRes.chooserCommitted &&
+        sTestRoom.seats[1].occupied) {
+        sTestRoom.seats[1].occupied = 0u;
+        sTestRoom.seats[1].connected = 0u;
+        mdkr_party_link_publish(&sTestRoom);
+        fprintf(stderr,
+                "[online-results] test-reducer: HOST-chooser joiner seat vacated "
+                "(joiner dropped mid-deliberation)\n");
+    }
+}
+
 static void results_test_reduce(void) {
     MdkrPartyLinkLocalIntent intent;
     results_test_resolve();

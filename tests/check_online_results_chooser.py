@@ -113,6 +113,9 @@ SESSION_ROUTE_RE = re.compile(
     r"^\[online-session\] results -> (.+?) \(chooser: (.+?)\)", re.MULTILINE)
 PHASE_CEREMONY_RE = re.compile(
     r"^\[online-session\] phase=CEREMONY: final standings", re.MULTILINE)
+JOINER_GONE_RE = re.compile(
+    r"^\[online-results\] test-reducer: HOST-chooser joiner seat vacated",
+    re.MULTILINE)
 POSTRACE_EXIT = "[online-postrace] session end requested"
 
 
@@ -245,6 +248,47 @@ def check_race_again(binary, rom, verbose) -> int | None:
         return fail(f"[{tag}] RACE AGAIN did not re-race the same config in "
                     f"process (expected >= 2 direct boots, saw {len(boots)}: "
                     f"{boots})", output)
+    return None
+
+
+def check_finish_joiner_gone(binary, rom, verbose) -> int | None:
+    """FINISH with the JOINER VANISHED mid-chooser (B2 scenario 4, HOST side): the
+    ruled design is that the host's chooser has NO vacate detector -- a host may
+    deliberate freely -- so a joiner dropping while the host is on the chooser must
+    NOT interrupt the host: it still commits FINISH, the leader-only wrap converges
+    with one seat, and the champion CEREMONY (from the ranking latched while both
+    were present) reaches the single FINISHED. This asserts that designed behavior
+    (the host FINISHes ALONE, not stranded/crashed)."""
+    tag = "finish-joiner-gone"
+    try:
+        rc, output = run_engine(
+            binary, rom, ticks=10000, timeout=500, verbose=verbose,
+            extra_env={"MDKR_TEST_ONLINE_RESIDENT": "1",
+                       "MDKR_TEST_ONLINE_RESULTS_CHOOSER": "5",
+                       "MDKR_TEST_ONLINE_RESULTS_JOINER_GONE": "1"},
+            prefix="mdkr64-online-chooser-")
+    except subprocess.TimeoutExpired as error:
+        return fail(f"[{tag}] engine run timed out (the host parked when the joiner "
+                    f"vanished mid-chooser?): {error}")
+    if rc != 0:
+        return fail(f"[{tag}] process exited {rc}", output)
+    guard = _isolation_ok(tag, output)
+    if guard is not None:
+        return guard
+    # Non-vacuous: the joiner really did vanish while the host was on the chooser.
+    if not JOINER_GONE_RE.search(output):
+        return fail(f"[{tag}] the joiner never vacated mid-chooser (the seam did "
+                    f"not fire) -- the arm would be vacuous", output)
+    # Ruled behavior: the host FINISHes ALONE -> CEREMONY -> exactly one FINISHED.
+    if not CHOOSER_FINISH_RE.search(output):
+        return fail(f"[{tag}] with the joiner gone, the host FINISH did not take "
+                    f"the LEAVE path (it was interrupted/stranded)", output)
+    if not PHASE_CEREMONY_RE.search(output):
+        return fail(f"[{tag}] the host did not reach the champion CEREMONY alone",
+                    output)
+    if len(FINISHED_ENGINE_RE.findall(output)) != 1:
+        return fail(f"[{tag}] FINISHED did not fire exactly once (host alone)",
+                    output)
     return None
 
 
@@ -438,8 +482,8 @@ def main() -> int:
         if err is not None:
             return err
 
-    for scenario in (check_race_again, check_finish, check_joiner,
-                     check_joiner_hold, check_joiner_vacate):
+    for scenario in (check_race_again, check_finish, check_finish_joiner_gone,
+                     check_joiner, check_joiner_hold, check_joiner_vacate):
         err = scenario(binary, rom, args.verbose)
         if err is not None:
             return err
