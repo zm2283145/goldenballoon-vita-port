@@ -1433,8 +1433,10 @@ void mdkr_online_session_tick(s32 updateRate) {
         {
             /* track the host-intended pick as the room converges. Stashing
              * PRE-tick is correct (like CHARSELECT, unlike TRACKSELECT): the
-             * VEHICLE screen reduces NO host session config, so its tick cannot
-             * change the intended track -- the pre-tick snapshot is the freshest. */
+             * VEHICLE stage republishes the browse's LOCKED config and owns
+             * start_requested, but it cannot CHANGE the config -- its tick
+             * never moves the intended track, so the pre-tick snapshot is
+             * already the freshest. */
             MdkrPartyLinkSnapshot vsSnap;
             if (mdkr_party_link_read(&vsSnap)) {
                 online_session_stash_intended(&vsSnap);

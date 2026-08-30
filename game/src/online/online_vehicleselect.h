@@ -58,12 +58,6 @@ MdkrOnlineVehicleselectResult mdkr_online_vehicleselect_tick(s32 updateRate);
  * MDKR_TEST_ONLINE_VEHICLESELECT). Ordinary runs always return false. */
 u8 mdkr_online_vehicleselect_test_active(void);
 
-/* True once the LOCAL player has confirmed a (legal) vehicle on THIS stage (the
- * screen's own latch, not the lagging lobby snapshot). The stage is the LAST
- * selection stop in the retail order, so this is informational (the race start
- * is the reducer's BEGIN_LOADING). Resets to false on _enter(). */
-u8 mdkr_online_vehicleselect_local_confirmed(void);
-
 /* True once the LOCAL seat has A-confirmed a (legal) vehicle on THIS round's
  * stage and has not B-un-confirmed since -- the PER-ROUND stage-confirm latch.
  * Ready may latch ONLY through the stage's confirm, per round: the track

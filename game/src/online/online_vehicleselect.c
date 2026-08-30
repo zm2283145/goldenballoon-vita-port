@@ -1319,13 +1319,6 @@ u8 mdkr_online_vehicleselect_test_active(void) {
     return (u8) (sVsTestActive > 0 ? 1 : 0);
 }
 
-/* the screen's OWN confirm latch (reset by _enter's memset). Kept as a public
- * probe (the session used to gate a forward hand-off on it; the stage is the
- * LAST selection stop now, so it is informational/back-compat only). */
-u8 mdkr_online_vehicleselect_local_confirmed(void) {
-    return (u8) (sVs.confirmed ? 1 : 0);
-}
-
 /* the PER-ROUND stage-confirm latch, for the track BROWSE's ready publication
  * (see the sVsStageConfirmedRound comment): true once the LOCAL seat has
  * A-confirmed a legal vehicle on THIS round's stage and has not un-confirmed
