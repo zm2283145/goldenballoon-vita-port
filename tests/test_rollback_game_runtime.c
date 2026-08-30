@@ -413,7 +413,7 @@ int main(void) {
     assert(!mdkr_rollback_game_runtime_level_ready());
     assert(sInitCalls == 0 && sAuthorityCalls == 0);
 
-    /* EU regression (bug #11): the byte-identical PAL v80 payload authors the
+    /* EU regression: the byte-identical PAL v80 payload authors the
      * sim at 25 Hz on THIS US-compiled binary (source field clock 50 -> tick
      * 25), so a 25 Hz manifest MUST admit. Before the fix the authored cadence
      * came from the compile-time REGION macro (fixed 30 on a US build), so this

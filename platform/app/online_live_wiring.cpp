@@ -1055,7 +1055,7 @@ MdkrOnlineCompatibilityV1 loopbackCompatibility() {
      * the SAME manifest a real endpoint would: a PAL v80 payload authors the sim
      * at 25 Hz, so its manifest carries revision 2 / cadence 25 and the engine's
      * cadence admission is exercised for the region actually loaded -- not a
-     * hardcoded US identity that would mask the EU path (bug #11). The production
+     * hardcoded US identity that would mask the EU path. The production
      * factory derives this from provenance; a US ROM still resolves to 1 / 30,
      * so the historical NTSC loopback is byte-identical.
      *

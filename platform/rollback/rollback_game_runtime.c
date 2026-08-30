@@ -712,7 +712,7 @@ bool mdkr_rollback_game_runtime_level_ready(void) {
          * field clock 50 -> sim tick 50/2), and the lobby manifest already
          * derives 25 from that same ROM identity; deriving the authored cadence
          * from REGION instead compared 25 (manifest) against 30 (macro) and
-         * rejected every EU race -- even EU+EU -- on the US binary (bug #11).
+         * rejected every EU race -- even EU+EU -- on the US binary.
          * platform_source_field_hz() is the ROM-selected source truth (rom_io.c),
          * so US ROMs still resolve to 30 and admit exactly as before. */
         const uint8_t authored_cadence_hz =

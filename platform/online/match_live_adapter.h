@@ -854,7 +854,7 @@ struct MdkrOnlineTestLoopbackRace; /* opaque owner of doubles + adapters */
  * ROM path BEFORE the loopback fixture compat is frozen (the engine loads the
  * ROM only later, so platform_source_is_european() is not yet set at freeze
  * time). 0 = unset (US); 1 = US v1.1; 2 = EU v1.1. Lets a PAL loopback stage a
- * 25 Hz manifest that the engine's cadence admission then accepts (bug #11).
+ * 25 Hz manifest that the engine's cadence admission then accepts.
  * Inert in production (never called); defined in online_live_wiring.cpp. */
 void OnlineRoom_setTestLoopbackRomRevision(uint8_t revision);
 MdkrOnlineTestLoopbackRace *OnlineRoom_makeTestLoopbackRace(std::string *error);

@@ -4672,8 +4672,8 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
     /* Resolve the ROM's validated region up front so the in-process loopback
      * lanes below stage the manifest a real endpoint of THAT region would: a PAL
      * v80 payload authors the sim at 25 Hz, so its fixture compat must carry
-     * revision 2 / cadence 25 for the engine's cadence admission to accept it
-     * (bug #11). The engine loads the ROM only when a loopback session boots --
+     * revision 2 / cadence 25 for the engine's cadence admission to accept it.
+     * The engine loads the ROM only when a loopback session boots --
      * after the fixture compat is frozen -- so this is the one point where the
      * region is known first. mdkr_validate_rom is the same pure contract the
      * launcher's ROM picker uses; a US ROM (or none) resolves to the historical
