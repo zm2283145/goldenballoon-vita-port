@@ -47,9 +47,15 @@ static int sLoadedTrack = 5;
 static int sLoadedRaceType = MDKR_MATCH_RACE_TYPE_STANDARD;
 static int sLoadedVehicleMask = 1;
 static MdkrMatchManifestV1 sManifest;
+/* The LOADED ROM's source field clock (60 Hz NTSC / 50 Hz PAL). The admission
+ * check derives the authored sim cadence from this (field_hz/2 -> 30/25), so a
+ * US-compiled binary running the PAL v80 payload authors -- and must admit -- a
+ * 25 Hz race. 60 by default; PAL cases set 50. */
+static int sSourceFieldHz = 60;
 
 s32 transition_workspace_preload(void) { return TRUE; }
 uint64_t platform_perf_monotonic_ns(void) { return 1u; }
+int platform_source_field_hz(void) { return sSourceFieldHz; }
 
 bool mdkr_match_input_runtime_active(void) { return sNetworkInput != 0; }
 uint32_t mdkr_match_input_runtime_epoch(void) { return 0u; }
@@ -356,6 +362,7 @@ static void reset_controls(void) {
     sRumbleCancelCalls = 0u;
     sRumbleCancelController = UINT32_MAX;
     sNetworkInput = 0;
+    sSourceFieldHz = 60;
     sLoadedTrack = 5;
     sLoadedRaceType = MDKR_MATCH_RACE_TYPE_STANDARD;
     sLoadedVehicleMask = 1;
@@ -403,6 +410,28 @@ int main(void) {
     reset_controls();
     sNetworkInput = 1;
     sManifest.cadence_hz = 25u;
+    assert(!mdkr_rollback_game_runtime_level_ready());
+    assert(sInitCalls == 0 && sAuthorityCalls == 0);
+
+    /* EU regression: the byte-identical PAL v80 payload authors the
+     * sim at 25 Hz on THIS US-compiled binary (source field clock 50 -> tick
+     * 25), so a 25 Hz manifest MUST admit. Before the fix the authored cadence
+     * came from the compile-time REGION macro (fixed 30 on a US build), so this
+     * PAL+PAL race was rejected and EU players could never start an online race. */
+    reset_controls();
+    sNetworkInput = 1;
+    sSourceFieldHz = 50;
+    sManifest.cadence_hz = 25u;
+    assert(mdkr_rollback_game_runtime_level_ready());
+    assert(sInitCalls == 1 && sAuthorityCalls == 1);
+    mdkr_rollback_game_runtime_level_end();
+
+    /* Symmetry: a 30 Hz (US) manifest must be REJECTED when the loaded ROM is
+     * PAL (source clock 50 -> authored 25) -- the derivation gates both ways and
+     * never blanket-accepts. */
+    reset_controls();
+    sNetworkInput = 1;
+    sSourceFieldHz = 50;
     assert(!mdkr_rollback_game_runtime_level_ready());
     assert(sInitCalls == 0 && sAuthorityCalls == 0);
 
