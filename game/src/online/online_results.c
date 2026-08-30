@@ -714,10 +714,13 @@ static void results_render_standings(const MdkrPartyLinkSnapshot *snap,
         }
     }
 
-    /* Grounds: title strip + the points-table board (sized to the seats). */
+    /* Grounds: title strip + the points-table board. The between-rounds trophy
+     * rankings adopt the retail menu-21 look (spec 4.4.4): the translucent BLUE
+     * dialogue box instead of the navy panel, FUNFONT names/points, and the
+     * gold->red per-rank tint ramp. */
     mdkr_online_screen_strip(6, 46);
     if (nseats > 0u) {
-        mdkr_online_screen_panel(24, 52, 308, 66 + (s32) nseats * 40);
+        results_blue_box(24, 52, 308, 66 + (s32) nseats * 40);
     }
     mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 20, ASSET_FONTS_BIGFONT,
                  sRes.isFinal ? "FINAL STANDINGS" : "STANDINGS",
@@ -744,26 +747,33 @@ static void results_render_standings(const MdkrPartyLinkSnapshot *snap,
             character = snap->seats[slot].character_id;
         }
         mdkr_online_screen_seat_name(snap, haveSnap, slot, name, sizeof(name));
+        /* Row tint: the retail trophy-rankings gold->red per-rank ramp (menu.c
+         * G=255-64*row-ish, clamped) so the standing reads at a glance. The LOCAL
+         * seat overrides to bright white so "you" is unmistakable at any rank --
+         * collision-free where a FUNFONT-width " [YOU]" tag would have crowded the
+         * points column (and needs no bracket glyphs FUNFONT may lack). */
         if (isLocal) {
-            nr = 255; ng = 224; nb = 96;
+            nr = 255; ng = 255; nb = 255;
         } else {
-            nr = 220; ng = 220; nb = 220;
+            nr = 255;
+            ng = 224 - 48 * (s32) i;
+            nb = 96 - 22 * (s32) i;
+            if (ng < 64) { ng = 64; }
+            if (nb < 16) { nb = 16; }
         }
 
         /* Row: rank | portrait | name (left) | points (FUNFONT, right) | delta.
-         * The rank is FUNFONT: BIGFONT has no digit glyphs, so "%u." would render
-         * a bare ".". Row text at the portrait's optical centre (rowY+12). */
+         * Rank + name are FUNFONT now (the trophy-rankings body face), drawn with a
+         * REAL tint (results_label_tinted) so the ramp/white shows -- the shared text
+         * helper forces FUNFONT to authored-untinted, which would ignore the ramp.
+         * Row text at the portrait's optical centre (rowY+12). */
         (void) snprintf(line, sizeof(line), "%u.", i + 1u);
-        mdkr_online_screen_text(44, rowY + 12, ASSET_FONTS_FUNFONT, line,
-                     ALIGN_MIDDLE_RIGHT, nr, ng, nb);
-        mdkr_online_screen_draw_portrait(character, 52, rowY - 8, (u8) nr, (u8) ng,
-                              (u8) nb);
-        (void) snprintf(line, sizeof(line), "%.10s%s", name,
-                        isLocal ? " [YOU]" : "");
-        mdkr_online_screen_text(104, rowY + 12, ASSET_FONTS_SMALLFONT, line,
-                     ALIGN_MIDDLE_LEFT, nr, ng, nb);
-        /* Points in FUNFONT (the trophy-rankings vocabulary), with this race's
-         * delta so a newcomer sees WHY the total moved. */
+        results_label_tinted(44, rowY + 12, line, ALIGN_MIDDLE_RIGHT, nr, ng, nb);
+        mdkr_online_screen_draw_portrait(character, 52, rowY - 8, 255u, 255u, 255u);
+        (void) snprintf(line, sizeof(line), "%.10s", name);
+        results_label_tinted(104, rowY + 12, line, ALIGN_MIDDLE_LEFT, nr, ng, nb);
+        /* Points in FUNFONT (the trophy-rankings vocabulary; authored colourful
+         * digits), with this race's delta so a newcomer sees WHY the total moved. */
         (void) snprintf(line, sizeof(line), "%u", (unsigned) points[i]);
         mdkr_online_screen_text(252, rowY + 12, ASSET_FONTS_FUNFONT, line,
                      ALIGN_MIDDLE_RIGHT, nr, ng, nb);
