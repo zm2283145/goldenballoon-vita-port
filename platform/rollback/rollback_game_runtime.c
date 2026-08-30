@@ -706,8 +706,17 @@ bool mdkr_rollback_game_runtime_level_ready(void) {
     if (network_input) {
         const MdkrMatchManifestV1 *manifest =
             mdkr_net_roster_runtime_manifest();
+        /* Authored sim cadence follows the LOADED ROM's source clock, NOT the
+         * compile-time REGION macro (fixed REGION_NA in the shipped US build).
+         * The port runs the byte-identical PAL v80 payload at 25 Hz (source
+         * field clock 50 -> sim tick 50/2), and the lobby manifest already
+         * derives 25 from that same ROM identity; deriving the authored cadence
+         * from REGION instead compared 25 (manifest) against 30 (macro) and
+         * rejected every EU race -- even EU+EU -- on the US binary (bug #11).
+         * platform_source_field_hz() is the ROM-selected source truth (rom_io.c),
+         * so US ROMs still resolve to 30 and admit exactly as before. */
         const uint8_t authored_cadence_hz =
-            REGION == REGION_PAL ? 25u : 30u;
+            (uint8_t)(platform_source_field_hz() / 2);
         if (manifest == NULL || level_id() < 0 || level_id() > UINT16_MAX ||
             !mdkr_match_manifest_accepts_loaded_race(
                 manifest, (uint16_t)level_id(),
@@ -822,7 +831,7 @@ bool mdkr_rollback_game_runtime_level_ready(void) {
             "[ROLLBACK] %s race: loadedTrack=%d raceType=%d authoredHz=%u\n",
             network_input ? "online" : "lab", (int)level_id(),
             (int)leveltable_type(level_id()),
-            (unsigned)(REGION == REGION_PAL ? 25u : 30u));
+            (unsigned)(platform_source_field_hz() / 2));
     fprintf(stderr,
             "[ROLLBACK] %s ready: ranges=%u snapshot=%zu bytes ring=%zu bytes "
             "target=%u epoch=%u\n",
