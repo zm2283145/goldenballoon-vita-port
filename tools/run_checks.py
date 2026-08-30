@@ -190,6 +190,9 @@ GPU_SERIAL_NAMES = frozenset({
     "race_2p_split",
     "race_2p_split_enhanced",
     "race_multiplayer",
+    # Reads per-viewport pixels for the split-screen liveness assertions, so it
+    # must not share a GPU surface with pooled checks.
+    "adventure_party_hub",
     "challenge_modes",
     "taj_challenges",
     "bonus_character_select",
