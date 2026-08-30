@@ -57,6 +57,7 @@
 
 /* Game/PR headers FIRST (same sprintf-ordering rationale as online_charselect.c). */
 #include "types.h"
+#include "macros.h"    /* COLOUR_RGBA32 (the packed-colour texrect_draw_scaled takes) */
 #include "thread3_main.h"
 #include "enums.h"      /* VEHICLE_CAR / HOVERCRAFT / PLANE, AlignmentFlags */
 #include "game.h"       /* level_name, leveltable_vehicle_usable */
@@ -93,43 +94,46 @@
 #define TS_COLS 5
 #define TS_ROWS 4
 #define TS_TRACK_COUNT (TS_COLS * TS_ROWS)
-#define TS_COL_W 64
 #define TS_NONE 0xFFu
 
-/* Two-stage layout geometry. */
-/* Layout (retail menu-board discipline): a title strip up top, the 5 world
- * banners with a dark label rail, the hovered world's tracks on a centred
- * board, and one bottom board holding seats / status / controls. Body text
- * never floats naked over the scrolling sky. */
-#define TS_STRIP_Y0 6      /* title strip band */
-#define TS_STRIP_Y1 41
-#define TS_TITLE_Y 20
-#define TS_MODE_Y 34
-#define TS_BANNER_Y 44     /* top of the 64x32 sky-tile strip */
-#define TS_RAIL_Y0 59      /* dark label rail across the banner row */
-#define TS_RAIL_Y1 73
-#define TS_BANNER_LABEL_Y 66
-#define TS_PANEL_X0 70     /* the hovered world's track board */
-#define TS_PANEL_X1 250
-#define TS_PANEL_Y0 84
-#define TS_PANEL_Y1 150
-#define TS_TRACK_Y0 95     /* first track row of the hovered world */
-#define TS_TRACK_DY 15
-#define TS_FOOT_X0 10      /* bottom board: seats / status / controls */
+/* Framed-cell layout (retail wooden picture-frame browser, retail-trackselect-
+ * browse.png). ONE big cell at a time: the hovered world name in BIGFONT up top,
+ * a wooden picture frame around a per-world sky "postcard" in the middle, the
+ * hovered track name in BIGFONT along the bottom, and one footer board holding
+ * seats / status / controls. The old world-banner strip + 4-row text list are
+ * gone -- the moving cursor now updates this single framed cell (the retail
+ * one-big-cell read), keeping the world->track two-stage shape underneath. */
+#define TS_WORLD_Y 24        /* world / cup name BIGFONT, top-centre */
+#define TS_MODE_Y 42         /* small SINGLE RACE / TOURNAMENT line under it */
+#define TS_FRAME_X0 86       /* wooden picture frame, outer rect */
+#define TS_FRAME_Y0 52
+#define TS_FRAME_X1 234
+#define TS_FRAME_Y1 166
+#define TS_FRAME_BORDER 12   /* wood border thickness (postcard inset) */
+#define TS_TRACK_Y 182       /* hovered track name BIGFONT, bottom-centre */
+#define TS_FOOT_X0 10        /* bottom board: seats / status / controls */
 #define TS_FOOT_X1 310
-#define TS_FOOT_Y0 182
+#define TS_FOOT_Y0 190
 #define TS_FOOT_Y1 236
-#define TS_SEAT_Y 193      /* YOU / rival pair (charselect parity) */
-#define TS_STATUS_Y 209
-#define TS_HELP_Y 226
+#define TS_SEAT_Y 199        /* YOU / rival pair (charselect parity) */
+#define TS_STATUS_Y 214
+#define TS_HELP_Y 228
 
 /* Menu SFX (the real DKR enums, same reuse as CHARSELECT). */
 #define TS_SFX_MOVE SOUND_MENU_PICK2
 #define TS_SFX_LOCK SOUND_SELECT2
 #define TS_SFX_START SOUND_SELECT3
 #define TS_SFX_BACK SOUND_MENU_BACK3
-#define TS_SFX_REJECT SOUND_ELECTRIC_BUZZ
+/* Retail's rejected/unavailable-cell blip (menu.c menu_track_select uses
+ * SOUND_UNK_6A for picking an unavailable track), replacing the non-retail
+ * electric buzz for a blocked move / start-with-nothing-locked. */
+#define TS_SFX_REJECT SOUND_UNK_6A
 #define TS_SFX_MODE SOUND_MENU_PICK2 /* distinct from the lock sound */
+
+/* Retail T.T. track-name announcer debounce: mirrors menu.c's gTrackNameVoiceDelay
+ * (counts UP once armed on a hover change; the voice fires at >= 7 then resets to
+ * 0), so rapid browsing never stacks voice lines. */
+#define TS_TT_VOICE_DELAY 7
 
 #define TS_LOCK_FLASH_TICKS 15u /* short flash; START works during it */
 #define TS_VEH_FLASH_TICKS 20u  /* auto-narrow "vehicle changed" highlight */
@@ -163,16 +167,44 @@ static const s16 sCupBgTop[TS_COLS] = {
     TEXTURE_BACKGROUND_FUTURE_FUN_LAND_TOP,   /* cup4 FFL */
 };
 
-/* Short, plain world labels (display chrome only -- NOT the drift-sensitive track
- * set, so a static label is fine; track names themselves come from
- * level_name()). The full cup name goes to the status line. */
-static const char *const sWorldLabels[TS_COLS] = {
-    "DINO", "SNOW", "SHERBET", "DRAGON", "FUTURE",
+/* The hovered world / hub name drawn in BIGFONT along the top of the framed cell
+ * (retail draws the hub name here, e.g. "DINO DOMAIN"). Display chrome only -- NOT
+ * the drift-sensitive track set (track names come from level_name()); kept short so
+ * the authored-art BIGFONT never overruns the 320px-wide logical frame. */
+static const char *const sWorldBigNames[TS_COLS] = {
+    "DINO DOMAIN", "SNOWFLAKE", "SHERBET ISLE", "DRAGON FOREST", "FUTURE FUN",
 };
 static const char *const sCupNames[TS_COLS] = {
     "DINO DOMAIN CUP", "SNOWFLAKE CUP", "SHERBET CUP", "DRAGON FOREST CUP",
     "FUTURE FUN CUP",
 };
+
+/* T.T. announcer voice table (menu.c gTTVoiceLines, indexed by track id; -1 == no
+ * line). Non-static engine data, read-only borrow -- not declared in menu.h, so
+ * mirror the extern here (same discipline as the gMenuAssets/gRacerPortraits
+ * externs in online_screen_util.h). */
+extern s16 gTTVoiceLines[53];
+
+/* The wooden picture frame + directional arrows are the offline track select's own
+ * menu textures, borrowed READ-ONLY from gMenuAssets exactly as the sky tiles and
+ * vehicle icons are (menu_assetgroup_load routes each id through load_texture; every
+ * id verified in menu.h: TEXTURE_SURFACE_BUTTON_WOOD 0x43, the four arrow icons
+ * 0x3C..0x3F). A screen-owned group, freed on _exit -- kept SEPARATE from the shared
+ * sOnlineSkyAssetIds so the other native screens never load the frame art. The real
+ * offline frame (gMenuImages[7] via menu_element_render / func_80080580) is NOT
+ * borrowable here: both need gMenuImages / gMenuGeometry, which only the offline menu
+ * init allocates (they are NULL in the separated-boot path), so we texrect the same
+ * wood + arrow textures directly -- the fallback the spec calls out. */
+static s16 sTrackselectFrameAssetIds[] = {
+    TEXTURE_SURFACE_BUTTON_WOOD,
+    TEXTURE_ICON_ARROW_UP,
+    TEXTURE_ICON_ARROW_DOWN,
+    TEXTURE_ICON_ARROW_LEFT,
+    TEXTURE_ICON_ARROW_RIGHT,
+    -1,
+};
+static TextureHeader *sWoodTex;      /* frame wood-grain tile */
+static TextureHeader *sArrowTex[4];  /* 0 up, 1 down, 2 left, 3 right */
 
 /* Vehicle names for the always-on VEHICLE line. Defined here and shared with
  * VEHICLESELECT via online_trackselect.h (one table -- both screens label
@@ -202,6 +234,8 @@ typedef struct MdkrOnlineTrackselectState {
     u32 ticks;       /* TRACKSELECT ticks elapsed (also drives the test input) */
     u32 lockFlashEnd;/* "LOCKED" flash + remote-ready hold deadline, in ticks */
     u32 vehFlashEnd; /* auto-narrow "vehicle changed" highlight deadline */
+    s32 ttVoiceDelay;/* retail T.T. announcer debounce (gTrackNameVoiceDelay): 0
+                      * idle, else counts up until the hovered track's voice fires */
     s8 stickLatchX;
     s8 stickLatchY;
 } MdkrOnlineTrackselectState;
@@ -691,6 +725,7 @@ static void trackselect_apply_input(const TsInput *in) {
         col = (col + TS_COLS) % TS_COLS; /* columns wrap (native DKR 2D menus) */
         if ((u8) col != sTs.cursorCol) {
             sTs.cursorCol = (u8) col;
+            sTs.ttVoiceDelay = 1; /* re-arm the T.T. announcer on the hover change */
             sound_play(TS_SFX_MOVE, NULL);
         }
     }
@@ -704,7 +739,12 @@ static void trackselect_apply_input(const TsInput *in) {
         }
         if ((u8) row != sTs.cursorRow) {
             sTs.cursorRow = (u8) row;
+            sTs.ttVoiceDelay = 1; /* re-arm the T.T. announcer on the hover change */
             sound_play(TS_SFX_MOVE, NULL);
+        } else {
+            /* A row move blocked at the grid edge (no up/down arrow was shown for
+             * it): the retail rejected-cell blip, paired with the missing arrow. */
+            sound_play(TS_SFX_REJECT, NULL);
         }
     }
 
@@ -762,22 +802,122 @@ static void trackselect_publish_intent(u8 localSeatChar) {
 }
 
 /* ======================================================================== *
- * Render (native two-stage: sky-tile banner strip + hovered world's tracks)
+ * Render (retail wooden picture-frame browser: one big framed cell)
  * ======================================================================== */
-/* Blit one 64x32 world-sky tile (dimmed) as a strip banner. */
-static void trackselect_draw_banner(u8 col, u8 dim) {
-    DrawTexture tile[2];
-    s32 x = (s32) col * TS_COL_W;
-    if (sCupBgTopTex[col] == NULL) {
+
+/* The hovered track id (engine track id, not the 0..19 index): the cursor's
+ * cell in single race, the cup's round-0 track in tournament. Used by both the
+ * bottom BIGFONT name and the T.T. announcer. */
+static u16 trackselect_hovered_track_id(void) {
+    unsigned round = (sTs.mode == MDKR_ONLINE_SCREEN_MODE_SINGLE) ? sTs.cursorRow : 0u;
+    return (u16) sTrackIds[(sTs.cursorCol * TS_ROWS) + round];
+}
+
+/* Copy `src` into `dst` upper-cased (A..Z), bounded. The authored-art BIGFONT is
+ * an all-caps face; level_name() returns mixed case ("Ancient Lake"), so the
+ * bottom track name is upper-cased to render (and to read as retail's all-caps
+ * name art). */
+static void trackselect_upper(const char *src, char *dst, u32 cap) {
+    u32 i;
+    if (src == NULL) {
+        src = "?";
+    }
+    for (i = 0u; src[i] != '\0' && i + 1u < cap; i++) {
+        char c = src[i];
+        if (c >= 'a' && c <= 'z') {
+            c = (char) (c - 'a' + 'A');
+        }
+        dst[i] = c;
+    }
+    dst[i] = '\0';
+}
+
+/* Draw one directional arrow icon centred on (cx, cy) (retail blue triangles on
+ * the frame edges). Modulated white so the authored blue shows; a no-op if the
+ * icon is not resident (same fail-safe as the portrait / vehicle blits). */
+static void trackselect_draw_arrow(u8 dir, s32 cx, s32 cy) {
+    DrawTexture dt[2];
+    TextureHeader *tex;
+    if (dir >= 4u) {
         return;
     }
-    tile[0].texture = sCupBgTopTex[col];
-    tile[0].xOffset = 0;
-    tile[0].yOffset = 0;
-    tile[1].texture = NULL;
-    tile[1].xOffset = 0;
-    tile[1].yOffset = 0;
-    texrect_draw(&gCurrDisplayList, tile, x, TS_BANNER_Y, dim, dim, dim, 255);
+    tex = sArrowTex[dir];
+    if (tex == NULL) {
+        return;
+    }
+    dt[0].texture = tex;
+    dt[0].xOffset = 0;
+    dt[0].yOffset = 0;
+    dt[1].texture = NULL;
+    dt[1].xOffset = 0;
+    dt[1].yOffset = 0;
+    texrect_draw(&gCurrDisplayList, dt, cx - (s32) tex->width / 2,
+                 cy - (s32) tex->height / 2, 255, 255, 255, 255);
+}
+
+/* Draw the wooden picture frame around a per-world sky "postcard". The wood tile
+ * is stretched over the whole outer rect, then the focused world's sky tile is
+ * stretched over the inset preview area on top, leaving a wood border -- so the
+ * cell reads as a framed window into that world (the honest static-postcard
+ * mimicry of retail's live fly-through, which is the forbidden level-load class).
+ * Fails safe: no wood -> just the postcard; no sky -> a dark inner fill. */
+static void trackselect_draw_frame(u8 world) {
+    DrawTexture dt[2];
+    TextureHeader *sky = (world < TS_COLS) ? sCupBgTopTex[world] : NULL;
+    s32 ix0 = TS_FRAME_X0 + TS_FRAME_BORDER;
+    s32 iy0 = TS_FRAME_Y0 + TS_FRAME_BORDER;
+    s32 ix1 = TS_FRAME_X1 - TS_FRAME_BORDER;
+    s32 iy1 = TS_FRAME_Y1 - TS_FRAME_BORDER;
+
+    dt[1].texture = NULL;
+    dt[1].xOffset = 0;
+    dt[1].yOffset = 0;
+
+    if (sWoodTex != NULL && sWoodTex->width != 0 && sWoodTex->height != 0) {
+        dt[0].texture = sWoodTex;
+        dt[0].xOffset = 0;
+        dt[0].yOffset = 0;
+        texrect_draw_scaled(
+            &gCurrDisplayList, dt, (f32) TS_FRAME_X0, (f32) TS_FRAME_Y0,
+            (f32) (TS_FRAME_X1 - TS_FRAME_X0) / (f32) sWoodTex->width,
+            (f32) (TS_FRAME_Y1 - TS_FRAME_Y0) / (f32) sWoodTex->height,
+            COLOUR_RGBA32(255, 255, 255, 255), 0);
+    }
+
+    if (sky != NULL && sky->width != 0 && sky->height != 0) {
+        dt[0].texture = sky;
+        dt[0].xOffset = 0;
+        dt[0].yOffset = 0;
+        texrect_draw_scaled(&gCurrDisplayList, dt, (f32) ix0, (f32) iy0,
+                            (f32) (ix1 - ix0) / (f32) sky->width,
+                            (f32) (iy1 - iy0) / (f32) sky->height,
+                            COLOUR_RGBA32(255, 255, 255, 255), 0);
+    } else {
+        mdkr_online_screen_card(ix0, iy0, ix1, iy1, 8, 12, 32, 255);
+    }
+}
+
+/* Retail T.T. track-name announcer (menu.c gTrackNameVoiceDelay, host only -- the
+ * joiner has no cursor). Armed to 1 on every hover change; here it counts up by
+ * the update rate and, once it reaches TS_TT_VOICE_DELAY, plays the hovered
+ * track's voice line (guarding the -1 no-line entries) and resets to 0 so a
+ * settled cell announces exactly once and rapid browsing never stacks lines. */
+static void trackselect_tt_announce(s32 rate) {
+    u16 tid;
+    s16 voice;
+    if (!sTs.host || sTs.ttVoiceDelay == 0) {
+        return;
+    }
+    sTs.ttVoiceDelay += (rate > 0) ? rate : 1;
+    if (sTs.ttVoiceDelay < TS_TT_VOICE_DELAY) {
+        return;
+    }
+    tid = trackselect_hovered_track_id();
+    voice = (tid < 53u) ? gTTVoiceLines[tid] : (s16) -1;
+    if (voice != (s16) -1) {
+        sound_play((u16) voice, NULL);
+    }
+    sTs.ttVoiceDelay = 0;
 }
 
 static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
@@ -795,9 +935,10 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
     u8 lockedCup = TS_NONE;
     u8 localReady = 0u;
     bool bothReady;
-    u8 c;
-    u8 r;
-    s32 bannerLabel[TS_COLS][3]; /* per-banner label colour, drawn after the rail */
+    u8 cellTrackIdx;            /* the framed cell's track INDEX (0..19) */
+    char nameBuf[32];          /* upper-cased track name for the bottom BIGFONT */
+    const char *worldName;
+    const char *bottomName;
     char line[64];
     const char *rname = (rv->name[0] != '\0') ? rv->name : "RIVAL";
 
@@ -832,108 +973,70 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
     }
     bothReady = haveSnap && localReady && rv->present && rv->ready;
 
-    /* Grounds first (retail figure-ground): the title strip, the hovered
-     * world's track board and the bottom seats/status/controls board -- all the
-     * text below sits on one of these, never naked over the scrolling sky. */
-    mdkr_online_screen_strip(TS_STRIP_Y0, TS_STRIP_Y1);
-    mdkr_online_screen_panel(TS_PANEL_X0, TS_PANEL_Y0, TS_PANEL_X1, TS_PANEL_Y1);
+    /* Resolve the framed cell's track INDEX + the two BIGFONT names. Host: the
+     * cursor's cell (single) / the focused cup (tournament). Joiner (no cursor):
+     * the host's locked cell, else the focused world's round 0 as a preview. */
+    if (host) {
+        cellTrackIdx = (u8) (focusWorld * TS_ROWS +
+                             (effMode == MDKR_ONLINE_SCREEN_MODE_SINGLE ? sTs.cursorRow : 0u));
+    } else {
+        cellTrackIdx = (lockedTrackIdx != TS_NONE) ? lockedTrackIdx
+                                                   : (u8) (focusWorld * TS_ROWS);
+    }
+    worldName = sWorldBigNames[focusWorld];
+    if (effMode == MDKR_ONLINE_SCREEN_MODE_SINGLE) {
+        trackselect_upper(level_name((s32) sTrackIds[cellTrackIdx]), nameBuf,
+                          sizeof(nameBuf));
+        bottomName = nameBuf;
+    } else {
+        bottomName = "CHAMPIONSHIP"; /* the whole cup, not a single track */
+    }
+
+    /* Ground: ONLY the bottom seats/status/controls board now. The framed cell +
+     * its two BIGFONT names carry the retail figure-ground themselves (BIGFONT is
+     * authored outlined art, legible straight over the scrolling sky, exactly like
+     * retail's "DINO DOMAIN" / "ANCIENT LAKE" names float on the paper). */
     mdkr_online_screen_panel(TS_FOOT_X0, TS_FOOT_Y0, TS_FOOT_X1, TS_FOOT_Y1);
 
-    /* Title + mode line on the strip. The host's Z: MODE affordance lives with
-     * the other controls in the footer, not up here. */
-    mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, TS_TITLE_Y, ASSET_FONTS_BIGFONT,
-                     effMode == MDKR_ONLINE_SCREEN_MODE_SINGLE ? "SELECT TRACK" : "SELECT CUP",
-                     ALIGN_MIDDLE_CENTER, 255, 224, 96);
+    /* World / hub name BIGFONT top + a small mode line under it (Z: MODE feedback --
+     * retail has no mode here, but the online single/tournament toggle needs a
+     * readable state). BIGFONT is authored gold/blue art (the colour args are
+     * untinted -- see mdkr_online_screen_text), so lock/hover accent lives on the
+     * status line below, not on these names. */
+    mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, TS_WORLD_Y, ASSET_FONTS_BIGFONT,
+                     (char *) worldName, ALIGN_MIDDLE_CENTER, 255, 224, 96);
     mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, TS_MODE_Y, ASSET_FONTS_SMALLFONT,
                      effMode == MDKR_ONLINE_SCREEN_MODE_SINGLE ? "SINGLE RACE" : "TOURNAMENT",
                      ALIGN_MIDDLE_CENTER, 210, 210, 210);
 
-    /* STAGE 1: the 5 world/cup sky banners. Hovered bright, others dim. The
-     * joiner has no cursor, so it brightens the FOCUSED (locked) world instead. */
-    for (c = 0u; c < TS_COLS; c++) {
-        bool onFocus = (c == focusWorld);
-        bool cupLocked = (effMode == MDKR_ONLINE_SCREEN_MODE_TOURNAMENT && lockedCup == c);
-        /* Trackselect "LOCKED while browsing": the SINGLE-race host can
-         * lock a track then move the cursor to PREVIEW another world without locking
-         * a new one (the lock is sticky -- START still uses it, which is truthful).
-         * A capture caught exactly that scripted state ("WHALE BAY LOCKED" while
-         * the cursor browsed FFL) and it read as a bug because nothing on-screen tied
-         * the status to a world. It is NOT a 2-endpoint bug (the joiner's focus ALWAYS
-         * follows the lock, so its view is always coherent), but to make the host view
-         * coherent too, mark the WORLD banner that holds the current single-race lock
-         * gold -- the same accent cue tournament already gives a locked cup. Now the
-         * status "<track> LOCKED - PRESS START" always has a matching gold banner,
-         * even mid-browse. Gold (not green): green is reserved for go/READY semantics,
-         * so a committed-but-not-yet-started LOCK reads as the selection accent, not a
-         * false "go". The status notice and this banner cue are a PAIR -- keep them
-         * the same colour. */
-        bool worldHoldsLock =
-            (effMode == MDKR_ONLINE_SCREEN_MODE_SINGLE && lockedTrackIdx != TS_NONE &&
-             (u8) (lockedTrackIdx / TS_ROWS) == c);
-        u8 dim = (onFocus || cupLocked || worldHoldsLock) ? 210u : 96u;
-        s32 lr, lg, lb;
+    /* The framed cell: retail wooden picture frame around the focused world's sky
+     * postcard -- the one-big-cell read that replaces the banner strip + text list.
+     * The moving cursor updates THIS cell (its names + postcard), keeping the
+     * world->track two-stage shape + 4-track paging underneath. */
+    trackselect_draw_frame(focusWorld);
 
-        trackselect_draw_banner(c, dim);
-        if (cupLocked || worldHoldsLock) {
-            lr = 255; lg = 224; lb = 96; /* lock accent (gold), paired with the
-                                          * "<track> LOCKED - PRESS START" notice */
-        } else if (onFocus) {
-            lr = 255; lg = 224; lb = 96;
-        } else {
-            lr = 190; lg = 190; lb = 190;
-        }
-        bannerLabel[c][0] = lr;
-        bannerLabel[c][1] = lg;
-        bannerLabel[c][2] = lb;
-    }
-    /* One dark label rail across the banner row (drawn over the tiles, under
-     * the labels) so the five world names share a solid ground. */
-    mdkr_online_screen_strip(TS_RAIL_Y0, TS_RAIL_Y1);
-    for (c = 0u; c < TS_COLS; c++) {
-        s32 cx = (s32) c * TS_COL_W + (TS_COL_W / 2);
-        mdkr_online_screen_text(cx, TS_BANNER_LABEL_Y, ASSET_FONTS_SMALLFONT,
-                         (char *) sWorldLabels[c], ALIGN_MIDDLE_CENTER,
-                         bannerLabel[c][0], bannerLabel[c][1],
-                         bannerLabel[c][2]);
-    }
-
-    /* STAGE 2: the focused world's 4 tracks, full-width + untruncated. In single
-     * race they are selectable (host cursor); in tournament they are a read-only
-     * round preview and A locks the whole cup. */
-    for (r = 0u; r < TS_ROWS; r++) {
-        u8 idx = (u8) (focusWorld * TS_ROWS + r);
-        char *name = level_name((s32) sTrackIds[idx]);
-        s32 y = TS_TRACK_Y0 + (s32) r * TS_TRACK_DY;
-        bool onCursor = host && effMode == MDKR_ONLINE_SCREEN_MODE_SINGLE &&
-                        r == sTs.cursorRow;
-        bool locked = (effMode == MDKR_ONLINE_SCREEN_MODE_SINGLE && lockedTrackIdx == idx) ||
-                      (effMode == MDKR_ONLINE_SCREEN_MODE_TOURNAMENT && lockedCup == focusWorld);
-        s32 nr = 190, ng = 190, nb = 190;
-        char label[32];
-
-        if (name == NULL) {
-            name = (char *) "?";
-        }
-        if (locked) {
-            /* Gold, not green: the locked track is the committed selection accent,
-             * matching the gold lock banner + "<track> LOCKED - PRESS START"
-             * notice (green stays reserved for READY/go). The *name* brackets keep
-             * the lock distinct from the >name< cursor row -- text redundancy, not
-             * colour alone. */
-            nr = 255; ng = 224; nb = 96;
-            (void) snprintf(label, sizeof(label), "*%s*", name);
-        } else if (onCursor) {
-            nr = 255; ng = 190 + tri * 4; nb = 60 + tri * 3;
-            (void) snprintf(label, sizeof(label), ">%s<", name);
-        } else {
-            if (effMode == MDKR_ONLINE_SCREEN_MODE_TOURNAMENT) {
-                nr = ng = nb = 150; /* dim read-only preview */
+    /* Directional arrows on the frame edges for the LEGAL moves only (host only --
+     * the joiner has no cursor). Columns wrap so L/R are always available; single-
+     * race rows clamp 0..3 so up/down show only when that move exists; tournament
+     * has no per-round move. */
+    if (host) {
+        s32 midX = (TS_FRAME_X0 + TS_FRAME_X1) / 2;
+        s32 midY = (TS_FRAME_Y0 + TS_FRAME_Y1) / 2;
+        trackselect_draw_arrow(2u, TS_FRAME_X0 + TS_FRAME_BORDER / 2, midY); /* left */
+        trackselect_draw_arrow(3u, TS_FRAME_X1 - TS_FRAME_BORDER / 2, midY); /* right */
+        if (effMode == MDKR_ONLINE_SCREEN_MODE_SINGLE) {
+            if (sTs.cursorRow > 0u) {
+                trackselect_draw_arrow(0u, midX, TS_FRAME_Y0 + TS_FRAME_BORDER / 2); /* up */
             }
-            (void) snprintf(label, sizeof(label), "%s", name);
+            if (sTs.cursorRow < TS_ROWS - 1u) {
+                trackselect_draw_arrow(1u, midX, TS_FRAME_Y1 - TS_FRAME_BORDER / 2); /* down */
+            }
         }
-        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, y, ASSET_FONTS_SMALLFONT, label,
-                         ALIGN_MIDDLE_CENTER, nr, ng, nb);
     }
+
+    /* Hovered track / cup name BIGFONT along the bottom (retail's big name art). */
+    mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, TS_TRACK_Y, ASSET_FONTS_BIGFONT,
+                     (char *) bottomName, ALIGN_MIDDLE_CENTER, 255, 224, 96);
 
     /* Status line: names the pick + reflects the START / host-choosing state so a
      * deferred/refused start is never a dead screen. The old always-on
@@ -1184,6 +1287,8 @@ void mdkr_online_trackselect_enter(void) {
         defaultVehicle = (s8) VEHICLE_CAR;
     }
     sTs.vehicle = (u8) defaultVehicle;
+    sTs.ttVoiceDelay = 1; /* arm the T.T. announcer so the entry cell announces once
+                           * it settles (retail arms gTrackNameVoiceDelay on enter) */
 
     sWitnessKey = 0xFFFFFFFFu;
     trackselect_test_reset();
@@ -1196,6 +1301,17 @@ void mdkr_online_trackselect_enter(void) {
     for (c = 0u; c < TS_COLS; c++) {
         sCupBgTopTex[c] = (TextureHeader *) gMenuAssets[sCupBgTop[c]];
     }
+
+    /* Frame wood + directional arrow art: a screen-owned group (deliberately kept
+     * out of the shared sky group so the other native screens never load it). Bind
+     * the resolved TextureHeader*s from gMenuAssets after the load; each blit fails
+     * safe if a tile is not resident. */
+    menu_assetgroup_load(sTrackselectFrameAssetIds);
+    sWoodTex = (TextureHeader *) gMenuAssets[TEXTURE_SURFACE_BUTTON_WOOD];
+    sArrowTex[0] = (TextureHeader *) gMenuAssets[TEXTURE_ICON_ARROW_UP];
+    sArrowTex[1] = (TextureHeader *) gMenuAssets[TEXTURE_ICON_ARROW_DOWN];
+    sArrowTex[2] = (TextureHeader *) gMenuAssets[TEXTURE_ICON_ARROW_LEFT];
+    sArrowTex[3] = (TextureHeader *) gMenuAssets[TEXTURE_ICON_ARROW_RIGHT];
 
     load_font(ASSET_FONTS_BIGFONT);
     load_font(ASSET_FONTS_SMALLFONT);
@@ -1235,6 +1351,14 @@ void mdkr_online_trackselect_exit(void) {
         for (c = 0u; c < TS_COLS; c++) {
             sCupBgTopTex[c] = NULL;
         }
+        /* Free the screen-owned frame + arrow group and drop the resolved pointers
+         * (the sky backdrop never referenced them, so no disarm ordering needed). */
+        menu_assetgroup_free(sTrackselectFrameAssetIds);
+        sWoodTex = NULL;
+        sArrowTex[0] = NULL;
+        sArrowTex[1] = NULL;
+        sArrowTex[2] = NULL;
+        sArrowTex[3] = NULL;
         sTs.assets = 0u;
         fprintf(stderr, "[online-trackselect] exit: freed world bg assets\n");
     }
@@ -1251,8 +1375,6 @@ MdkrOnlineTrackselectResult mdkr_online_trackselect_tick(s32 updateRate) {
     u8 mask;
     TsRemoteView rv;
     TsInput in;
-
-    (void) updateRate;
 
     haveSnap = mdkr_party_link_read(&snap);
     localSeat = haveSnap ? mdkr_online_screen_local_seat(&snap) : -1;
@@ -1298,6 +1420,7 @@ MdkrOnlineTrackselectResult mdkr_online_trackselect_tick(s32 updateRate) {
 
     trackselect_resolve_remote(&snap, haveSnap, localSeat, &rv);
     trackselect_render(&snap, haveSnap, localSeat, &rv);
+    trackselect_tt_announce(updateRate); /* retail T.T. hover announcer (host only) */
     trackselect_witness(&snap, haveSnap, witnessTrack, mask);
 
     trackselect_test_reduce_and_script();
