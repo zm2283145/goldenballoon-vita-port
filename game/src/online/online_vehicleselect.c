@@ -1005,6 +1005,7 @@ void mdkr_online_vehicleselect_enter(void) {
     load_font(ASSET_FONTS_BIGFONT);
     load_font(ASSET_FONTS_FUNFONT);
     load_font(ASSET_FONTS_SMALLFONT);
+    mdkr_online_screen_hd_text_ref();
 
     sVs.assets = 1u;
     /* The LOCKED world's scrolling sky -- the SAME ground the browse stage
@@ -1035,6 +1036,7 @@ void mdkr_online_vehicleselect_exit(void) {
         /* Disarm the borrowed sky BEFORE freeing its tiles (bgdraw_render
          * lifetime), then balance the loads _enter() took. */
         mdkr_online_screen_backdrop_clear();
+        mdkr_online_screen_hd_text_unref();
         unload_font(ASSET_FONTS_SMALLFONT);
         unload_font(ASSET_FONTS_FUNFONT);
         unload_font(ASSET_FONTS_BIGFONT);

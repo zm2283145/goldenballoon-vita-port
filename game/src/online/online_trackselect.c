@@ -1386,6 +1386,7 @@ void mdkr_online_trackselect_enter(void) {
 
     load_font(ASSET_FONTS_BIGFONT);
     load_font(ASSET_FONTS_SMALLFONT);
+    mdkr_online_screen_hd_text_ref();
 
     sTs.assets = 1u;
     /* Retail scrolling sky of the initially-focused world (cursorCol is in cup
@@ -1420,6 +1421,7 @@ void mdkr_online_trackselect_exit(void) {
         mdkr_online_screen_dl_retire();
         /* Disarm the borrowed sky before freeing its tiles (bgdraw_render lifetime). */
         mdkr_online_screen_backdrop_clear();
+        mdkr_online_screen_hd_text_unref();
         unload_font(ASSET_FONTS_SMALLFONT);
         unload_font(ASSET_FONTS_BIGFONT);
         menu_assetgroup_free(sOnlineSkyAssetIds);
