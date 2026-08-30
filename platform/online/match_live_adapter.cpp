@@ -1128,6 +1128,7 @@ private:
                     return false;
                 }
                 failure_ = MDKR_ONLINE_VIEW_FAILURE_NONE;
+                signalLostCardLatched_ = false;
                 return true;
             case MDKR_ONLINE_VIEW_ACTION_LEAVE_ROOM:
             case MDKR_ONLINE_VIEW_ACTION_PLAY_HERE:
@@ -1311,7 +1312,10 @@ private:
                 }
                 case MdkrOnlineRoomEvent::Type::Failure:
                     /* Pre-mapped stable failure; lobby state is retained so a
-                     * Retry recovers without dismissing the room. */
+                     * Retry recovers without dismissing the room. A ROOM
+                     * failure supersedes any latched preflight signal-loss
+                     * wording (this one came from the room transport). */
+                    signalLostCardLatched_ = false;
                     failure_ = ev.failure != MDKR_ONLINE_VIEW_FAILURE_NONE
                                    ? ev.failure
                                    : MDKR_ONLINE_VIEW_FAILURE_SERVICE_UNAVAILABLE;
@@ -1806,6 +1810,29 @@ private:
         bump();
     }
 
+    /* Worker (signal-service) loss during the preflight bring-up -- the
+     * checking / phrase surfaces. Everywhere else SignalLost is honestly a
+     * status: an established race rides the direct DataChannels and only
+     * needs the Worker for restart offers. But during preflight the Worker IS
+     * the path (hellos and the eventual BEGIN_LOADING ride signaling), so
+     * nothing can ever complete and the only surface was the generic 30 s
+     * timeout card. Front the tailored service card promptly through the
+     * EXISTING failure plumbing (SERVICE_UNAVAILABLE -> the recovery view
+     * with a genuine Try Again). Never clobbers a more specific card, never
+     * fires mid-race, and stays out of the deliberate SAS-mismatch rekey
+     * window (whose teardown transits the same signal machinery). */
+    void frontPreflightSignalLostCard() {
+        if (failure_ != MDKR_ONLINE_VIEW_FAILURE_NONE) return;
+        if (raceReady_) return;
+        if (session_.state.room != MDKR_ROOM_PREFLIGHT) return;
+        if (phraseMismatchActive_ || phraseRekeyCountdown_ > 0u) return;
+        failure_ = MDKR_ONLINE_VIEW_FAILURE_SERVICE_UNAVAILABLE;
+        signalLostCardLatched_ = true;
+        MDKR_ONLINE_LOG(
+            "[MESH] signal lost during preflight -> party-service card\n");
+        bump();
+    }
+
     void pumpMesh() {
         if (!meshUp_ || !mesh_) return;
         mesh_->pump();
@@ -1898,7 +1925,9 @@ private:
                     break;
                 case MdkrMatchPeerMeshEventType::Failure:
                     /* SignalLost with healthy channels is a status, not a
-                     * failure (docs: "Room updates reconnecting"). */
+                     * failure (docs: "Room updates reconnecting") -- EXCEPT
+                     * during the preflight bring-up, where signaling IS the
+                     * path (see frontPreflightSignalLostCard). */
                     if (ev.failure != MdkrMatchPeerMeshFailure::SignalLost) {
                         MDKR_ONLINE_LOG(
                             "[MESH] mesh failure=%d -> VERIFICATION_MISMATCH\n",
@@ -1908,6 +1937,7 @@ private:
                     } else {
                         MDKR_ONLINE_LOG(
                             "[MESH] signal lost (channels healthy; reconnecting)\n");
+                        frontPreflightSignalLostCard();
                     }
                     break;
                 case MdkrMatchPeerMeshEventType::InputEnvelope:
@@ -2587,6 +2617,28 @@ public:
         return note;
     }
 
+    /* Whether the CURRENT recovery card is the preflight worker-loss one
+     * (see frontPreflightSignalLostCard): the panel words it "lost contact
+     * with the party service" rather than the never-reached-it copy. */
+    bool preflightSignalLostCard() const {
+        return signalLostCardLatched_ &&
+               failure_ == MDKR_ONLINE_VIEW_FAILURE_SERVICE_UNAVAILABLE;
+    }
+
+    /* Test-only (beta): pin frontPreflightSignalLostCard's gates on a
+     * mesh-free adapter -- a preflight signal loss fronts the card; any other
+     * surface (or an established race) keeps SignalLost a pure status. */
+    static bool testSignalLostCard(bool preflight, bool raceUp) {
+        MdkrOnlineLiveAdapterOptions o;
+        o.sessionId = 1u;
+        LiveAdapter a(o);
+        a.session_.state.room =
+            preflight ? MDKR_ROOM_PREFLIGHT : MDKR_ROOM_RACING;
+        a.raceReady_ = raceUp;
+        a.frontPreflightSignalLostCard();
+        return a.preflightSignalLostCard();
+    }
+
     /* Test-only (beta): force an ICE-down on every REMOTE peer connection of
      * this LIVE mesh via the transport's existing kill-channels seam, while
      * leaving signal presence untouched -- the lingering-presence mid-race
@@ -3114,6 +3166,12 @@ private:
     bool raceLossFailureLatched_ = false; /* failure_ came from mapLostReason */
     bool raceEndFailureLatched_ = false;  /* suppress stale lobby under a
                                            * race-end recovery card */
+    /* The latched SERVICE_UNAVAILABLE came from a preflight signal loss (see
+     * frontPreflightSignalLostCard), so the panel can word the card as "lost
+     * contact with the party service" instead of never-reached-it copy.
+     * Cleared with the RETRY that clears the failure and by any later room
+     * failure event; the read accessor also gates on the CURRENT failure. */
+    bool signalLostCardLatched_ = false;
     unsigned raceSweepServiceCalls_ = 0u;
     uint32_t raceResendSweeps_ = 0u;
     uint32_t raceResendBundles_ = 0u;
@@ -3274,6 +3332,18 @@ bool mdkr_online_live_adapter_test_kill_peer_channels(
 uint32_t mdkr_online_live_adapter_test_retry_step(unsigned tier,
                                                   bool *accepted) {
     return LiveAdapter::testRetryStep(tier, accepted);
+}
+
+bool mdkr_online_live_adapter_signal_lost_card(
+    const IMdkrOnlineAdapter *adapter) {
+    if (adapter == nullptr) return false;
+    const LiveAdapter *live = adapter->mdkrResolveLive();
+    return live != nullptr && live->preflightSignalLostCard();
+}
+
+bool mdkr_online_live_adapter_test_signal_lost_card(bool preflight,
+                                                    bool race_up) {
+    return LiveAdapter::testSignalLostCard(preflight, race_up);
 }
 #endif
 

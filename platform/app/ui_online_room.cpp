@@ -699,6 +699,21 @@ bool betaJoinCodeLookedMistyped() {
            OnlineRoom_liveJoinCodeInvalid(g_online.adapter.get());
 }
 
+// TEST-ONLY: force the preflight worker-loss presentation of the
+// SERVICE_UNAVAILABLE recovery card (drawBetaRoomFake's recovery-worker-lost
+// stage). Reset per stage build; the live path never sets it.
+bool g_betaFakeSignalLost = false;
+
+// Whether the latched SERVICE_UNAVAILABLE card came from a WORKER loss during
+// the preflight checking/phrase surfaces (the adapter's tailored latch) --
+// the copy is then "lost contact with the party service", not the
+// never-reached-it wording of a failed create/join.
+bool betaPartySignalLostCard() {
+    if (g_betaFakeSignalLost) return true;
+    return g_online.adapter != nullptr &&
+           mdkr_online_live_adapter_signal_lost_card(g_online.adapter.get());
+}
+
 // Records which post-pairing SELECTING surface last rendered: the forward native
 // hand-off card (Handoff), the "Return to Game" re-entry control shown after a
 // LEFT/ERROR native return (Reentry), or the truthful STRANDED card for a
@@ -1290,6 +1305,11 @@ const char *betaStatusLine(const MdkrOnlineViewModel &model) {
         case MDKR_ONLINE_VIEW_FAILURE_ROOM_FULL:
             return "That room is full";
         case MDKR_ONLINE_VIEW_FAILURE_SERVICE_UNAVAILABLE:
+            /* Mid-setup Worker loss reads as LOST contact, not
+             * never-reached-it. */
+            return betaPartySignalLostCard()
+                       ? "Lost contact with the party service — try again"
+                       : "Service unavailable — try again shortly";
         case MDKR_ONLINE_VIEW_FAILURE_SERVICE_BUDGET_SAFE:
             return "Service unavailable — try again shortly";
         case MDKR_ONLINE_VIEW_FAILURE_DIFFERENT_BUILD:
@@ -1346,6 +1366,14 @@ const char *betaFailureCopy(MdkrOnlineViewFailure failure) {
     case MDKR_ONLINE_VIEW_FAILURE_ROOM_FULL:
         return "That room is already full — the online beta is 2 players.";
     case MDKR_ONLINE_VIEW_FAILURE_SERVICE_UNAVAILABLE:
+        /* A Worker lost mid-setup (checking/phrase) is a different story
+         * than a service that was never reached: name the loss and the
+         * honest remedy. */
+        return betaPartySignalLostCard()
+                   ? "Lost contact with the party service — check your "
+                     "connection and try again."
+                   : "The matchmaking service is unavailable right now. Try "
+                     "again shortly.";
     case MDKR_ONLINE_VIEW_FAILURE_SERVICE_BUDGET_SAFE:
         return "The matchmaking service is unavailable right now. Try again shortly.";
     // The four compatibility families each name their own fix, aligned with the
@@ -2234,6 +2262,16 @@ void betaApplyDrawOverrides(MdkrOnlineViewModel &model) {
         } else if (model.failure == MDKR_ONLINE_VIEW_FAILURE_ROOM_FULL) {
             model.explanation =
                 "This room already has 2 players — the online beta is 2 players.";
+        } else if (model.failure ==
+                       MDKR_ONLINE_VIEW_FAILURE_SERVICE_UNAVAILABLE &&
+                   betaPartySignalLostCard()) {
+            /* The preflight worker-loss card (matrix top-cell #2): the
+             * setup was under way when the party service dropped, so the
+             * card names the loss instead of "could not reach the room". */
+            model.title = "Lost Contact With the Party Service";
+            model.explanation =
+                "Lost contact with the party service — check your connection "
+                "and try again.";
         }
         break;
     default:
@@ -2630,6 +2668,7 @@ bool betaFakeBuildStage(const char *stage, MdkrOnlineViewModel *model,
     g_betaFakeInvite.active = false;
     g_betaFakeInvite.expired = false;
     g_betaFakeJoinCodeInvalid = false;
+    g_betaFakeSignalLost = false;
     // Clear any re-entry offer so a non-fallback stage renders the forward hand-off,
     // not the "Return to Game" re-entry card; the fallback stages re-arm it below.
     OnlineRoom_noteSessionReturn(MDKR_PARTY_LINK_SESSION_END_NONE);
@@ -2780,6 +2819,27 @@ bool betaFakeBuildStage(const char *stage, MdkrOnlineViewModel *model,
         g_betaFakeJoinCodeInvalid = true;
         return true;
     }
+    // The preflight WORKER-LOSS recovery (matrix top-cell #2): SignalLost hit
+    // while checking/phrase depended on the Worker, so the SERVICE_UNAVAILABLE
+    // card must read "lost contact with the party service" (title/copy via
+    // betaApplyDrawOverrides). Built with the RAW view-model shape ("Could Not
+    // Reach the Room") so the capture proves the overrides re-word it.
+    if (std::strcmp(stage, "recovery-worker-lost") == 0) {
+        model->kind = MDKR_ONLINE_VIEW_RECOVERY;
+        model->failure = MDKR_ONLINE_VIEW_FAILURE_SERVICE_UNAVAILABLE;
+        model->title = "Could Not Reach the Room";
+        model->explanation =
+            "Check your connection, then try this private room again.";
+        model->primary =
+            betaFakeControl(MDKR_ONLINE_VIEW_ACTION_RETRY, "Try Again");
+        model->secondary =
+            betaFakeControl(MDKR_ONLINE_VIEW_ACTION_PLAY_HERE, "Play Here");
+        model->cancel =
+            betaFakeControl(MDKR_ONLINE_VIEW_ACTION_RETURN_HOME, "Return Home");
+        model->announcement = MDKR_ONLINE_ANNOUNCE_ASSERTIVE;
+        g_betaFakeSignalLost = true;
+        return true;
+    }
     // The failure card real players hit most: an opponent dropping mid-race. Built
     // with the RAW view-model shape (primary PLAY_HERE labelled "Play Here") so the
     // capture proves betaApplyDrawOverrides relabels the primary too.
@@ -2832,7 +2892,8 @@ void drawBetaRoomFake(LauncherState &state) {
             "invite, invite-expired, phrase, room-single, room-tournament, "
             "handoff, room-single-fallback, room-tournament-fallback, "
             "room-stranded, results, finished, recovery, "
-            "recovery-opponent-left, recovery-code-mistyped.");
+            "recovery-opponent-left, recovery-code-mistyped, "
+            "recovery-worker-lost.");
         return;
     }
 

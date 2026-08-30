@@ -175,6 +175,17 @@ static void test_retry_genuinely_retries() {
     CHECK(accepted);
 }
 
+/* Worker loss during preflight (audit matrix top-cell #2): a SignalLost while
+ * the checking/phrase surfaces depend on the Worker must front the tailored
+ * service card PROMPTLY through the existing failure plumbing -- never only
+ * the generic 30 s timeout. Everywhere else SignalLost stays a pure status
+ * (an established race rides the direct DataChannels; audit finding (f)). */
+static void test_signal_lost_during_preflight_fronts_service_card() {
+    CHECK(mdkr_online_live_adapter_test_signal_lost_card(true, false));
+    CHECK(!mdkr_online_live_adapter_test_signal_lost_card(false, false));
+    CHECK(!mdkr_online_live_adapter_test_signal_lost_card(true, true));
+}
+
 /* ---- Owning-wrapper accessor regression --------------------------------- *
  *
  * Production holds the live adapter as an OwningLiveAdapter wrapper
@@ -484,6 +495,7 @@ int main() {
     test_race_end_no_demotion_rule();
     test_reverify_paths_clear_stale_peer_loss();
     test_retry_genuinely_retries();
+    test_signal_lost_during_preflight_fronts_service_card();
     test_owning_wrapper_accessors_resolve_through_wrapper();
     std::fprintf(stderr, "online_live_adapter_beta: %d checks, %d failures\n",
                  g_checks, g_failures);

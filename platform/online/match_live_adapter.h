@@ -526,6 +526,15 @@ bool mdkr_online_live_adapter_test_kill_peer_channels(IMdkrOnlineAdapter *adapte
  * *accepted. Never called by the launcher. */
 uint32_t mdkr_online_live_adapter_test_retry_step(unsigned tier,
                                                   bool *accepted);
+/* Whether the CURRENT recovery card is the preflight worker-loss one (a
+ * SignalLost observed while the checking/phrase surfaces depend on the
+ * Worker), so the panel words it "lost contact with the party service".
+ * False for every other SERVICE_UNAVAILABLE. Read by the beta panel. */
+bool mdkr_online_live_adapter_signal_lost_card(const IMdkrOnlineAdapter *adapter);
+/* Pin frontPreflightSignalLostCard's gates on a mesh-free adapter. Never
+ * called by the launcher. */
+bool mdkr_online_live_adapter_test_signal_lost_card(bool preflight,
+                                                    bool race_up);
 #endif
 
 /* Seal + fan out the race's OPENING input window (firstTick..firstTick+
