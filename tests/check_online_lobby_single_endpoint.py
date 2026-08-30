@@ -75,6 +75,13 @@ NEXT_ARMED_RE = re.compile(
 WATCHDOG_WALLCLOCK_RE = re.compile(
     r"^\[online-session\] descless wait TIMEOUT: exceeded (\d+)ms wall-clock "
     r"deadline at (.+?) \(raceCount=(\d+)\) -- ERROR:", re.MULTILINE)
+# The RESULTS screen frees its borrowed assets + drops the HD-text (SDF) latch
+# ONLY through mdkr_online_results_exit(), which logs this witness. A watchdog
+# return out of the RESULTS rematch-hold must run that _exit BEFORE it breaks, or
+# the screen's asset groups leak and the HD-text refcount strands the SDF display-
+# face latch ON for every subsequent same-process render.
+RESULTS_EXIT_RE = re.compile(
+    r"^\[online-results\] exit: freed portrait assets", re.MULTILINE)
 MID_UNWIND_RE = re.compile(
     r"^\[online-session\] mid-tournament UNWIND: room regressed to LOBBY",
     re.MULTILINE)
@@ -203,6 +210,23 @@ def check_wallclock_wait(binary: Path, rom: Path, verbose: bool, wedge: str,
     if not any(w == where for _ms, w, _rc in trips):
         return fail(f"[wall-clock {wedge}] the wall-clock watchdog never tripped at "
                     f"{where!r} (trips={trips})", output)
+    if where == "results rematch-hold":
+        # The RESULTS screen was UP when the watchdog tripped, so the return must
+        # free it -- run mdkr_online_results_exit() (drops the HD-text/SDF latch +
+        # frees the asset groups) BEFORE the break, not strand it. The _exit witness
+        # must therefore appear AFTER the timeout line (never before, and never
+        # absent). Without the fix the RESULTS screen is only entered here and never
+        # advances/leaves, so this witness is absent entirely -> RED.
+        trip = next((m for m in WATCHDOG_WALLCLOCK_RE.finditer(output)
+                     if m.group(2) == where), None)
+        exit_after = trip is not None and any(
+            m.start() > trip.end() for m in RESULTS_EXIT_RE.finditer(output))
+        if not exit_after:
+            return fail(f"[wall-clock {wedge}] the RESULTS rematch-hold watchdog "
+                        "returned WITHOUT freeing the screen -- no "
+                        "'[online-results] exit: freed portrait assets' after the "
+                        "timeout, so the asset groups leak and the HD-text SDF latch "
+                        "strands ON for subsequent same-process renders", output)
     if rc == 0:
         return fail(f"[wall-clock {wedge}] exited 0 -- a stuck wait must carry an "
                     f"ERROR signal (nonzero), not look like a normal finish", output)

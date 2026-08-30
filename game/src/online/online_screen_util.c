@@ -63,6 +63,19 @@ void mdkr_online_screen_hd_text_unref(void) {
     gfx_dkr_font_display_hd_set(sHdTextRefs != 0u);
 }
 
+/* BELT: force the latch OFF and zero the refcount for a FRESH session. A
+ * watchdog exit (platform_request_exit -- the resident return-to-room fired by
+ * the RESULTS rematch-hold / FINISH wrap-hold watchdogs in online_session.c) can
+ * bypass a screen's _exit; the per-break _exit calls are the buckle for that, but
+ * if any future exit path ever slips one, the refcount would strand at >0 and the
+ * SDF display-face latch would stay ON for every subsequent same-process render.
+ * mdkr_online_session_begin calls this at session start so a new session can NEVER
+ * inherit a stale latch, whatever happened to the previous one. */
+void mdkr_online_screen_hd_text_reset(void) {
+    sHdTextRefs = 0u;
+    gfx_dkr_font_display_hd_set(false);
+}
+
 /* Draw text into the engine frame's display list with the given font + colour.
  *
  * Presentation contract (the retail-menu discipline): body text NEVER floats

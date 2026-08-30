@@ -17,6 +17,12 @@
 
 #if MDKR_ENABLE_ONLINE_BETA
 
+/* online_screen_util.h (HD-text latch reset belt) pulls rcp_dkr.h -> ultra64.h ->
+ * PR/os_libc.h, which declares sprintf/memmove as PLAIN functions; it MUST precede
+ * the system <stdio.h>/<string.h> below so those declarations are seen before the
+ * fortify macros -- the exact include ordering online_screen_util.c documents. */
+#include "online/online_screen_util.h"
+
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -695,6 +701,12 @@ void mdkr_online_session_begin(const MdkrMatchLaunchDescriptorV1 *launch) {
     /* Enter the SEPARATED mode. Offline code never produces this value, so the
      * offline menu state machine is never entered on this route. */
     gGameMode = GAMEMODE_ONLINE_SESSION;
+    /* BELT: a watchdog exit (platform_request_exit -- the resident return-to-room)
+     * can bypass a screen's _exit and strand the native-screen HD-text refcount,
+     * leaving the SDF display-face latch ON for the NEXT session in this same
+     * process. Reset it here so a fresh session can never inherit a stale latch,
+     * whatever unwound the previous one. */
+    mdkr_online_screen_hd_text_reset();
     if (launch == NULL) {
         /* DESCRIPTOR-LESS begin (the party_link lobby-start path): no
          * launch descriptor exists yet -- the native online screens front
@@ -1716,6 +1728,16 @@ void mdkr_online_session_tick(s32 updateRate) {
                            MDKR_ONLINE_RESULTS_CHOICE_FINISH &&
                        online_session_descless_watchdog_tick(
                            "results rematch-hold")) {
+                /* The RESULTS screen is still UP here; the watchdog fired the
+                 * resident return-to-room and would otherwise break WITHOUT
+                 * freeing it -- stranding the screen's asset groups AND the
+                 * HD-text refcount (leaving the SDF display-face latch ON for
+                 * every subsequent same-process render). Run its _exit first
+                 * (idempotent: whole body gated on sRes.assets, which it clears;
+                 * the hd_text unref self-guards sHdTextRefs>0 -- so the normal
+                 * ADVANCE/LEAVE _exit later on any path is a no-op, never a
+                 * double-unref). */
+                mdkr_online_results_exit();
                 break;
             }
         }
@@ -1739,6 +1761,11 @@ void mdkr_online_session_tick(s32 updateRate) {
                 online_session_descless_wallclock_arm();
             } else if (online_session_descless_watchdog_tick(
                            "FINISH wrap-hold")) {
+                /* Same as the rematch-hold above: the RESULTS screen is UP, so
+                 * free it before the return-to-room break rather than strand its
+                 * assets + the HD-text/SDF latch. _exit is idempotent (sRes.assets
+                 * latch + hd_text underflow guard). */
+                mdkr_online_results_exit();
                 break;
             }
         }

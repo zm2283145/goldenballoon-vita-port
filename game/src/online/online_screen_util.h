@@ -81,6 +81,10 @@ s32 mdkr_online_screen_local_seat(const MdkrPartyLinkSnapshot *snap);
  * never strand the renderer latch. */
 void mdkr_online_screen_hd_text_ref(void);
 void mdkr_online_screen_hd_text_unref(void);
+/* Force the HD-text latch OFF and zero the refcount (a fresh session must never
+ * inherit a stale latch left by a watchdog exit that bypassed a screen _exit).
+ * Called from mdkr_online_session_begin. */
+void mdkr_online_screen_hd_text_reset(void);
 
 void mdkr_online_screen_text(s32 x, s32 y, s32 fontId, char *text,
                              AlignmentFlags align, s32 r, s32 g, s32 b);
