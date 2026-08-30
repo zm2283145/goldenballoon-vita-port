@@ -47,6 +47,9 @@
 #include "online/online_results.h"     /* native RESULTS/STANDINGS phase */
 #include "online/online_ceremony.h"    /* native champion CEREMONY phase */
 #include "online/online_standings.h"   /* capture the final ranking (shared sort) */
+#include "joypad.h"                    /* input_pressed: the local pad B-LEAVE
+                                          during a descriptor-less re-wait */
+#include "PR/os_cont.h"                /* B_BUTTON */
 
 /* fade-skip primitive (online_screen_util.c). Declared directly rather than
  * pulling online_screen_util.h in: that header drags rcp_dkr.h -> ultra64.h,
@@ -172,6 +175,19 @@ typedef struct MdkrOnlineSessionState {
      * per-round re-wait begins, so each of the THREE descriptor-less waits gets its
      * own fresh budget. Used only when singleEndpoint. */
     u64 desclessWaitDeadlineNs;
+    /* PER-ROUND RE-WAIT ABSOLUTE CAP (ns, platform_perf_monotonic_ns; 0 == not
+     * armed). The wall-clock deadline above RE-ARMS on every visible room
+     * progress -- right for a slow-but-live joiner, but a peer that keeps
+     * mutating fingerprint fields WITHOUT ever converging (ready/pick flap,
+     * connected flap) would re-arm it forever and pin the local player at the
+     * SYNCING strip with no exit. This is a hard ceiling on the TOTAL wait --
+     * 10x the resolved deadline, anchored when the per-round re-wait BEGINS and
+     * NEVER re-armed -- so once it trips the room genuinely is not converging
+     * and the watchdog takes the SAME truthful ERROR return the dead-room
+     * (static) trip does. Anchored ONLY for the per-round re-wait (the only wait
+     * a progress re-arm can hold); 0 for every other wait, so its watchdog call
+     * ignores the cap. Single-endpoint only. */
+    u64 desclessWaitCapNs;
     /* in the per-round re-wait, set once the room has LEFT LOBBY
      * this round (the launcher advance drove it to LOADING). Only AFTER that does a
      * return to LOBBY unambiguously mean a mid-tournament CANCEL_LOADING (vs. the
@@ -476,6 +492,19 @@ static void online_session_descless_wallclock_arm(void) {
         platform_perf_monotonic_ns() + online_session_descless_deadline_ns();
 }
 
+/* Anchor the per-round re-wait ABSOLUTE CAP: the hard ceiling on the TOTAL
+ * wait, 10x the resolved deadline, fixed when the wait begins and NEVER
+ * re-armed (unlike the wall-clock deadline, which the progress fingerprint
+ * re-arms). Called ONLY at the two per-round re-wait begins; every other wait
+ * leaves capNs at 0, so its watchdog call ignores the cap and only the
+ * re-armable deadline bounds it. Single-endpoint only. */
+static void online_session_descless_cap_arm(void) {
+    if (!sOnlineSession.singleEndpoint) return;
+    sOnlineSession.desclessWaitCapNs =
+        platform_perf_monotonic_ns() +
+        (u64) 10u * online_session_descless_deadline_ns();
+}
+
 /* PROGRESS fingerprint of a forward-feed snapshot: the reducer-visible fields
  * that MOVE while a live room converges (phase / session config / per-seat
  * occupancy, picks, readies / points / placements), folded FNV-1a. Deliberately
@@ -582,8 +611,77 @@ static void online_session_rewait_overlay_draw(void) {
     c = 170 + tri * 5; /* 170..250 pulse -- the results/ceremony hold cadence */
     mdkr_online_screen_strip(110, 132);
     mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 121,
-                            ASSET_FONTS_SMALLFONT, "SYNCING WITH RIVAL...",
+                            ASSET_FONTS_SMALLFONT,
+                            "SYNCING WITH RIVAL...   B: LEAVE",
                             ALIGN_MIDDLE_CENTER, c, c, c);
+}
+
+/* Entry-input grace for the re-wait B-LEAVE (mirrors the RESULTS/CEREMONY
+ * _INPUT_GRACE idiom): ignore B for the first ticks of a fresh wait so a B still
+ * held from the screen that handed off into the wait cannot read as a leave.
+ * desclessWaitTicks is the frames-in-this-wait counter, reset at every re-wait
+ * begin. */
+#define MDKR_ONLINE_SESSION_REWAIT_INPUT_GRACE 30u
+
+/* Test-only synthetic B edge: the headless lanes have no physical pad, so this
+ * seam fires ONE local-B edge once this wait's frame count (desclessWaitTicks,
+ * the SAME per-wait counter the grace above reads) reaches the env tick, letting
+ * a lane exercise the deliberate LEAVE from inside a specific re-wait. Unset
+ * (production + every other lane) -> always false. */
+static bool online_session_rewait_test_leave_edge(void) {
+    static s32 sTick = -2; /* -2 unresolved, -1 off, >=0 fire tick */
+    static u8 sFired = 0u;
+    if (sTick == -2) {
+        const char *e = getenv("MDKR_TEST_ONLINE_REWAIT_LEAVE_TICK");
+        sTick = (e != NULL) ? (s32) strtol(e, NULL, 10) : -1;
+    }
+    if (sTick < 0 || sFired) {
+        return false;
+    }
+    if ((s32) sOnlineSession.desclessWaitTicks >= sTick) {
+        sFired = 1u;
+        fprintf(stderr,
+                "[online-session] TEST: synthetic re-wait B edge at "
+                "desclessWaitTicks=%u\n",
+                sOnlineSession.desclessWaitTicks);
+        return true;
+    }
+    return false;
+}
+
+/* A DELIBERATE local B (pressed edge, LOCAL pad) while parked at the SYNCING
+ * strip -- the player's manual LEAVE. Edge-detected (input_pressed is a rising
+ * edge, so a B still HELD from the previous screen never fires) and gated behind
+ * the entry grace above. Descriptor-less single-endpoint re-waits only (the only
+ * holds that front no screen + read no input); the loopback lanes leave
+ * singleEndpoint 0 -> inert. */
+static bool online_session_rewait_leave_pressed(void) {
+    if (!sOnlineSession.beganWithoutDescriptor ||
+        !sOnlineSession.singleEndpoint) {
+        return false;
+    }
+    if (sOnlineSession.desclessWaitTicks <=
+        MDKR_ONLINE_SESSION_REWAIT_INPUT_GRACE) {
+        return false; /* entry debounce: no held-B carry-over leave */
+    }
+    if ((input_pressed(MDKR_ONLINE_SCREEN_LOCAL_PAD) & B_BUTTON) != 0u) {
+        return true;
+    }
+    return online_session_rewait_test_leave_edge();
+}
+
+/* Take the deliberate LEAVE out of a descriptor-less re-wait: release the strip
+ * overlay (font + this frame's list, the discipline every re-wait exit follows),
+ * then the SAME clean note-LEFT return-to-room the pause overlay's LEAVE uses
+ * (mdkr_online_session_leave_race -- goodbye to the peer + exit 0), so the
+ * launcher reads reason=LEFT and resumes the Online Room. No new teardown. */
+static void online_session_rewait_leave(const char *where) {
+    online_session_rewait_overlay_clear();
+    fprintf(stderr,
+            "[online-session] B: LEAVE at %s (raceCount=%u tick=%u) -> "
+            "deliberate return to room\n",
+            where, sOnlineSession.raceCount, sOnlineSession.lobbyWaitTicks);
+    mdkr_online_session_leave_race();
 }
 
 /* Advance the descriptor-less wait watchdog; return true (after logging + routing to
@@ -598,19 +696,49 @@ static void online_session_rewait_overlay_draw(void) {
 static bool online_session_descless_watchdog_tick(const char *where) {
     if (sOnlineSession.singleEndpoint) {
         const u64 now = platform_perf_monotonic_ns();
+        bool capTrip;
         if (sOnlineSession.desclessWaitDeadlineNs == 0u) {
             /* Not armed yet (first tick of this wait): arm and let it run. */
             online_session_descless_wallclock_arm();
             return false;
         }
-        if (now <= sOnlineSession.desclessWaitDeadlineNs) return false;
-        fprintf(stderr,
-                "[online-session] descless wait TIMEOUT: exceeded %ums wall-clock "
-                "deadline at %s (raceCount=%u) -- ERROR: routing to return-to-room "
-                "(no hang, no silent finish)\n",
-                (unsigned) (online_session_descless_deadline_ns() /
-                            UINT64_C(1000000)),
-                where, sOnlineSession.raceCount);
+        /* ABSOLUTE CAP first (per-round re-wait only; capNs==0 elsewhere). The
+         * progress fingerprint re-arms the deadline every tick a flapping peer
+         * mutates the room, so the deadline alone would never trip -- the cap is
+         * the ceiling that still bounds a room that MOVES but never converges. */
+        capTrip = (sOnlineSession.desclessWaitCapNs != 0u &&
+                   now > sOnlineSession.desclessWaitCapNs);
+        if (!capTrip && now <= sOnlineSession.desclessWaitDeadlineNs) {
+            return false;
+        }
+        if (capTrip) {
+            /* The witness NAMES the cap trip (trip=cap) so lanes/logs tell a
+             * room that MOVED but never converged apart from a dead (static)
+             * one. Head still starts "descless wait TIMEOUT:" like the static
+             * line, so the loose lane matchers see it as a genuine timeout. */
+            fprintf(stderr,
+                    "[online-session] descless wait TIMEOUT: exceeded %ums "
+                    "absolute cap (10x the %ums deadline) at %s (raceCount=%u) "
+                    "-- ERROR: routing to return-to-room (trip=cap: progress "
+                    "re-arms never converged; no hang, no silent finish)\n",
+                    (unsigned) ((u64) 10u * online_session_descless_deadline_ns() /
+                                UINT64_C(1000000)),
+                    (unsigned) (online_session_descless_deadline_ns() /
+                                UINT64_C(1000000)),
+                    where, sOnlineSession.raceCount);
+        } else {
+            /* Head kept byte-identical to the long-pinned static trip line (the
+             * dead-room wedge lanes anchor "TIMEOUT: exceeded Nms wall-clock
+             * deadline at <where>"); trip=static named in the tail. */
+            fprintf(stderr,
+                    "[online-session] descless wait TIMEOUT: exceeded %ums "
+                    "wall-clock deadline at %s (raceCount=%u) -- ERROR: routing "
+                    "to return-to-room (trip=static: no room progress; no hang, "
+                    "no silent finish)\n",
+                    (unsigned) (online_session_descless_deadline_ns() /
+                                UINT64_C(1000000)),
+                    where, sOnlineSession.raceCount);
+        }
         /* Nonzero code: strengthens the clean exit into a FAILURE the launcher's
          * online engine-session caller sees (liveResult != 0 -> stay in the Online
          * Room, panel surfaces recovery) rather than a normal finish. The thread3
@@ -785,6 +913,10 @@ static void online_session_boot_race(void) {
      * the per-round "left LOBBY" latch so the NEXT round's cancel detection starts
      * fresh. */
     sOnlineSession.desclessWaitDeadlineNs = 0u;
+    /* the absolute cap belongs to the wait that just ended; drop it so the next
+     * per-round re-wait anchors a fresh ceiling (and every non-per-round wait
+     * in between leaves it at 0 -> cap-inert). */
+    sOnlineSession.desclessWaitCapNs = 0u;
     sOnlineSession.desclessRoundLeftLobby = 0u;
     online_session_descless_progress_reset(); /* fresh liveness baseline */
     sOnlineSession.remoteAbsentTicks = 0u; /* fresh vacate debounce */
@@ -1366,8 +1498,17 @@ void mdkr_online_session_tick(s32 updateRate) {
                 sOnlineSession.desclessReWaitLastReady = (u8) ready;
             }
             sOnlineSession.lobbyWaitTicks++;
+            /* frames-in-this-wait, single-endpoint only (the loopback watchdog
+             * owns the count on its frame-budget path); drives the B-leave grace. */
+            if (sOnlineSession.singleEndpoint) {
+                sOnlineSession.desclessWaitTicks++;
+            }
             if (ready) {
                 online_session_boot_race();
+            } else if (online_session_rewait_leave_pressed()) {
+                /* deliberate local LEAVE while parked at the SYNCING strip */
+                online_session_rewait_leave("race-1 re-wait");
+                break;
             } else if (online_session_descless_watchdog_tick("race-1 re-wait")) {
                 /* Watchdog tripped (descriptor never built): exit requested. */
                 break;
@@ -1482,12 +1623,23 @@ void mdkr_online_session_tick(s32 updateRate) {
                 sOnlineSession.liveReWaitLastReady = (u8) ready;
             }
             sOnlineSession.lobbyWaitTicks++;
+            /* frames-in-this-wait, single-endpoint only; drives the B-leave grace. */
+            if (sOnlineSession.singleEndpoint) {
+                sOnlineSession.desclessWaitTicks++;
+            }
             if (ready) {
                 online_session_boot_race();
+            } else if (online_session_rewait_leave_pressed()) {
+                /* deliberate local LEAVE while parked at the SYNCING strip (the
+                 * player's escape from a room that keeps moving but never
+                 * converges -- the pause overlay is race-scoped, unavailable here). */
+                online_session_rewait_leave("per-round re-wait");
+                break;
             } else if (sOnlineSession.beganWithoutDescriptor &&
                        online_session_descless_watchdog_tick("per-round re-wait")) {
                 /* a DESCRIPTOR-LESS session's per-round re-cycle never
-                 * re-armed the next race (the launcher's REMATCH re-cycle wedged) --
+                 * re-armed the next race (the launcher's REMATCH re-cycle wedged),
+                 * or a live-but-never-converging room hit the absolute cap --
                  * bound it + exit cleanly. Gated on beganWithoutDescriptor, so the
                  * resident lane (descriptor-first) is byte-behaviour-unchanged. */
                 break;
@@ -2004,9 +2156,13 @@ void mdkr_online_session_tick(s32 updateRate) {
                         if (sOnlineSession.liveResident) {
                             sOnlineSession.phase = MDKR_ONLINE_SESSION_LOBBY_WAIT;
                             sOnlineSession.replayAutoStart = 1u;
+                            sOnlineSession.desclessWaitTicks = 0u; /* fresh
+                                             re-wait: reset the B-leave grace */
                             sOnlineSession.desclessWaitDeadlineNs = 0u;
                             online_session_descless_progress_reset();
                             online_session_descless_wallclock_arm();
+                            online_session_descless_cap_arm(); /* hard ceiling on
+                                             an endlessly re-arming flap peer */
                             fprintf(stderr,
                                     "[online-session] results -> re-race same config "
                                     "(chooser: race again; LIVE single-race re-cycle: "
@@ -2060,9 +2216,13 @@ void mdkr_online_session_tick(s32 updateRate) {
                     /* the per-round re-wait begins now -- arm its own fresh
                      * wall-clock budget (single-endpoint only), separate from the
                      * RESULTS hold's budget just consumed. */
+                    sOnlineSession.desclessWaitTicks = 0u; /* fresh re-wait:
+                                             reset the B-leave grace */
                     sOnlineSession.desclessWaitDeadlineNs = 0u;
                     online_session_descless_progress_reset();
                     online_session_descless_wallclock_arm();
+                    online_session_descless_cap_arm(); /* hard ceiling on an
+                                             endlessly re-arming flap peer */
                     fprintf(stderr,
                             "[online-session] results -> awaiting next race (LIVE "
                             "residency; launcher re-cycling roster/epoch)\n");

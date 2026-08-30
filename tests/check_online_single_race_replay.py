@@ -95,6 +95,20 @@ PROGRESS_REARM_RE = re.compile(
     r"observed -> watchdog re-armed \(tick=(\d+)\)$", re.MULTILINE)
 WATCHDOG_TRIP_RE = re.compile(
     r"^\[online-session\] descless wait TIMEOUT:", re.MULTILINE)
+# The ABSOLUTE CAP trip: a per-round re-wait whose peer keeps mutating the
+# progress fingerprint (ready/pick flap) without ever converging re-arms the
+# deadline forever, so the total-wait ceiling (10x the resolved deadline, never
+# re-armed) is what finally bounds it. Distinguished from a `static` dead-room
+# trip by the "absolute cap ... trip=cap" wording (both share the TIMEOUT head).
+CAP_TRIP_RE = re.compile(
+    r"^\[online-session\] descless wait TIMEOUT: exceeded (\d+)ms absolute cap "
+    r"\(10x the (\d+)ms deadline\) at per-round re-wait \(raceCount=\d+\) "
+    r"-- ERROR:.*trip=cap", re.MULTILINE)
+# The deliberate B-LEAVE out of a descriptor-less re-wait (the player's manual
+# escape while parked at the SYNCING strip).
+REWAIT_LEAVE_RE = re.compile(
+    r"^\[online-session\] B: LEAVE at per-round re-wait \(raceCount=\d+ "
+    r"tick=\d+\) -> deliberate return to room", re.MULTILINE)
 WEDGE_CANCEL_RE = re.compile(
     r"^\[online-resident-live\] WEDGE single-race re-cycle cancel:", re.MULTILINE)
 # The single-race FINISH wrap (the reducer-observable finish): the commit carries
@@ -289,6 +303,113 @@ def check_slow_joiner_liveness(binary: Path, rom: Path,
     return None
 
 
+def check_flap_cap(binary: Path, rom: Path, verbose: bool) -> int | None:
+    """RACE AGAIN with a PERPETUAL-FLAP joiner: the peer re-picks its character
+    every pump, so the per-round re-wait's progress fingerprint MOVES forever but
+    the room NEVER converges (a re-pick clears the ready bit, so BEGIN_LOADING
+    never fires). The liveness re-arm (check_slow_joiner_liveness) alone would
+    then hold the local player at the SYNCING strip forever -- so the ABSOLUTE
+    CAP (10x the resolved deadline, anchored at wait begin, never re-armed) must
+    bound the total wait and exit via the SAME truthful ERROR path the dead-room
+    trip uses, with a `cap` witness that names it apart from a `static` trip.
+
+    Deadline pinned small (300 ms -> cap 3000 ms) so 10x is fast. RED at the
+    pre-fix build (no cap): the flap re-arms the deadline every pump and the
+    session out-waits the whole tick budget parked at the strip
+    (bp-native-shots/rewait-fix2-cap-red.log: 26k re-arms, no cap trip, no exit)."""
+    tag = "flap-cap"
+    env = _base_env("single:0")  # RACE AGAIN: the LOBBY_WAIT re-wait fronts
+    env["MDKR_APP_TEST_ONLINE_JOINER_FLAP"] = "1"
+    env["MDKR_ONLINE_SESSION_DESCLESS_WAIT_DEADLINE_MS"] = "300"
+    try:
+        rc, out = run_engine(binary, rom, ticks=30000, timeout=120,
+                             verbose=verbose, extra_env=env,
+                             prefix="mdkr64-t5-flap-cap-")
+    except subprocess.TimeoutExpired as error:
+        return fail(f"[{tag}] run HUNG (an endlessly re-arming flap peer held the "
+                    f"per-round re-wait with no cap): {error}")
+    guard = _isolation_ok(tag, out)
+    if guard is not None:
+        return guard
+    # Race 1 booted normally (the flap engages ONLY for the re-cycle); the
+    # never-converging re-wait then never boots race 2.
+    boots = [int(t) for t, _p in DIRECT_BOOT_RE.findall(out)]
+    if boots != [TRACK_RACE1]:
+        return fail(f"[{tag}] expected EXACTLY one boot [{TRACK_RACE1}] (race 1; the "
+                    f"flapping re-cycle can never converge into race 2), got {boots}",
+                    out)
+    # The fingerprint really moved -- repeated progress re-arms (rig sane).
+    if len(PROGRESS_REARM_RE.findall(out)) < 5:
+        return fail(f"[{tag}] the flap peer drove no repeated progress re-arms -- the "
+                    f"fingerprint never moved (the cap would then be vacuous)", out)
+    cap = CAP_TRIP_RE.search(out)
+    if not cap:
+        return fail(f"[{tag}] the ABSOLUTE CAP never tripped -- an endlessly "
+                    f"re-arming flap peer held the per-round re-wait forever (no "
+                    f"'absolute cap ... trip=cap' witness)", out)
+    if int(cap.group(2)) != 300 or int(cap.group(1)) != 3000:
+        return fail(f"[{tag}] the cap witness is not 10x the resolved deadline "
+                    f"(cap={cap.group(1)}ms, deadline={cap.group(2)}ms)", out)
+    if rc == 0:
+        return fail(f"[{tag}] exited 0 -- a capped never-converging wait must carry "
+                    f"an ERROR signal (nonzero), not look like a normal finish", out)
+    ends = SESSION_END_RE.findall(out)
+    if not any(reason == "ERROR" for reason, _code in ends):
+        return fail(f"[{tag}] the launcher never read the ERROR session end "
+                    f"(reason=ERROR); saw {ends}", out)
+    return None
+
+
+def check_flap_b_leave(binary: Path, rom: Path, verbose: bool) -> int | None:
+    """RACE AGAIN with a perpetual-flap joiner + a scripted local B mid-wait: a
+    deliberate LEAVE must end the per-round re-wait PROMPTLY with a clean LEFT
+    (the same note-LEFT return-to-room the pause overlay's LEAVE uses -- goodbye
+    to the peer, exit 0), well before the (far-off) cap. The re-wait reads the
+    local pad now, so the player is not trapped with no exit short of quitting.
+
+    The deadline is huge (cap far away) so only the B can end the wait; the B
+    edge is scripted via MDKR_TEST_ONLINE_REWAIT_LEAVE_TICK (headless has no
+    physical pad) and lands AFTER the entry grace. RED at the pre-fix build (the
+    re-wait read no input): B does nothing and the session stays parked until the
+    tick budget (bp-native-shots/rewait-fix2-bleave-red.log: no B: LEAVE, no
+    exit)."""
+    tag = "flap-b-leave"
+    env = _base_env("single:0")
+    env["MDKR_APP_TEST_ONLINE_JOINER_FLAP"] = "1"
+    env["MDKR_ONLINE_SESSION_DESCLESS_WAIT_DEADLINE_MS"] = "600000"  # cap far off
+    env["MDKR_TEST_ONLINE_REWAIT_LEAVE_TICK"] = "40"  # post-grace (grace 30)
+    try:
+        rc, out = run_engine(binary, rom, ticks=30000, timeout=120,
+                             verbose=verbose, extra_env=env,
+                             prefix="mdkr64-t5-flap-b-leave-")
+    except subprocess.TimeoutExpired as error:
+        return fail(f"[{tag}] run HUNG (B did not exit the re-wait; the player is "
+                    f"trapped with no local exit): {error}")
+    guard = _isolation_ok(tag, out)
+    if guard is not None:
+        return guard
+    if not REWAIT_LEAVE_RE.search(out):
+        return fail(f"[{tag}] a mid-wait B did NOT take the deliberate LEAVE -- the "
+                    f"re-wait reads no local input (no 'B: LEAVE at per-round "
+                    f"re-wait' witness)", out)
+    if CAP_TRIP_RE.search(out) or WATCHDOG_TRIP_RE.search(out):
+        return fail(f"[{tag}] the wait tripped a watchdog/cap instead of exiting "
+                    f"PROMPTLY on the B press", out)
+    if rc != 0:
+        return fail(f"[{tag}] exited {rc} (a deliberate B LEAVE is a CLEAN return, "
+                    f"exit 0)", out)
+    ends = SESSION_END_RE.findall(out)
+    if not any(reason == "LEFT" and code == "0" for reason, code in ends):
+        return fail(f"[{tag}] the launcher never read the LEFT session end "
+                    f"(reason=LEFT result=0); saw {ends}", out)
+    # No race 2: a deliberate leave ends the session (only race 1 ran).
+    boots = [int(t) for t, _p in DIRECT_BOOT_RE.findall(out)]
+    if boots != [TRACK_RACE1]:
+        return fail(f"[{tag}] a B-leave must not boot a second race, got {boots}",
+                    out)
+    return None
+
+
 def check_finish(binary: Path, rom: Path, verbose: bool) -> int | None:
     """race 1 -> MORE RACES -> FINISH: the host's single-race FINISH is
     REDUCER-OBSERVABLE (the two-real-peer strand fix). The chooser commits the
@@ -419,7 +540,8 @@ def main() -> int:
             parser.error(f"missing {label}: {path}")
 
     for scenario in (check_change_track, check_race_again,
-                     check_slow_joiner_liveness, check_finish,
+                     check_slow_joiner_liveness, check_flap_cap,
+                     check_flap_b_leave, check_finish,
                      check_peer_drop):
         err = scenario(binary, rom, args.verbose)
         if err is not None:
@@ -434,7 +556,10 @@ def main() -> int:
         "re-arms the match-input EXACTLY once per chooser commit (exactly two boots, "
         "no re-boot loop); a SLOW joiner's re-confirm through the latency-carrying "
         "room reads as PROGRESS (the per-round re-wait watchdog RE-ARMS on visible "
-        "room movement instead of ERROR-exiting a live room); FINISH is "
+        "room movement instead of ERROR-exiting a live room); a PERPETUAL-FLAP peer "
+        "that moves the fingerprint but never converges is bounded by the ABSOLUTE "
+        "CAP (10x the deadline, never re-armed) into a truthful ERROR exit (trip=cap), "
+        "and a deliberate mid-wait B takes the clean LEFT return; FINISH is "
         "REDUCER-OBSERVABLE (the REMATCH wrap returns "
         "the room out of RESULTS on the real loopback reducer before the leave) and "
         "ends via the race-winner CEREMONY (crowned from the latched single-race "
