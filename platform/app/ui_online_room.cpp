@@ -684,12 +684,15 @@ bool betaInviteClockExpired() {
 }
 
 // Records which post-pairing SELECTING surface last rendered: the forward native
-// hand-off card (Handoff) or the "Return to Game" re-entry control shown after a
-// LEFT/ERROR native return (Reentry). The per-race ImGui grid is retired, so there
-// is no third state. The render seam (drawBetaRoomFake) emits it as a semantic
-// witness a headless test asserts on; written by a single enum assignment on the
-// live path too (negligible), consulted only by the seam.
-enum class BetaSelectingRender { None, Handoff, Reentry };
+// hand-off card (Handoff), the "Return to Game" re-entry control shown after a
+// LEFT/ERROR native return (Reentry), or the truthful STRANDED card for a
+// 1-member room whose peer left entirely (Stranded -- room-ready needs 2
+// members, so a "Return to Game" there would be a dead gold button). The
+// per-race ImGui grid is retired, so there is no other state. The render seam
+// (drawBetaRoomFake) emits it as a semantic witness a headless test asserts on;
+// written by a single enum assignment on the live path too (negligible),
+// consulted only by the seam.
+enum class BetaSelectingRender { None, Handoff, Reentry, Stranded };
 BetaSelectingRender g_betaSelectingRender = BetaSelectingRender::None;
 
 // Records the post-pairing RESULTS surface last rendered: the concise native "the
@@ -1400,6 +1403,12 @@ void betaComposeStatusLine(const MdkrOnlineViewModel &model,
         const char *next = isReentry
             ? "Race ended early — you're back in the room"
             : "Room ready";
+        /* A 1-member SELECTING room: the peer left the room entirely (their
+         * LEAVE reached the reducer), so "Room ready" would be false -- this
+         * room can never race again. Agrees with the stranded card below. */
+        if (model.member_count < 2u) {
+            next = "Your friend left — this room is done";
+        }
         if (series[0] != '\0') {
             std::snprintf(out, size, "%s. %s", series, next);
         } else {
@@ -1987,13 +1996,48 @@ void drawBetaNativeResultsHandoffCard() {
     ui::CardEnd();
 }
 
+// ---- Stranded 1-member room card --------------------------------------------
+// The peer left the ROOM entirely (a LEAVE reached the reducer, so its seat is
+// genuinely gone -- member_count 1 is never a transient here). Room-ready needs
+// 2 members, so the re-entry card's gold "Return to Game" could NEVER fire: it
+// re-armed a latch whose condition cannot hold -- a silent no-op under "you're
+// both still in the room" copy that was false. Tell the truth and lead with a
+// working exit; the shared stack below still draws Leave Room (the model's
+// cancel), and the persistent takeover header keeps its own Leave Room. Who
+// left is named from the construction-fixed journey (betaHostJourney), not the
+// lobby's leader bit -- the reducer promotes the survivor to leader of the
+// 1-member room, so the leader bit would misname the departed side.
+void drawBetaStrandedRoomCard() {
+    if (ui::CardBegin("##beta-native-handoff", AppTheme::accent(), 0.0f)) {
+        const bool hosted = g_online.betaHostJourney;
+        ImGui::TextUnformatted(hosted ? "Your friend left" : "The host left");
+        ui::TextSubtleWrapped(
+            hosted ? "This room is done. Host a new race for a fresh code, "
+                     "or play offline."
+                   : "This room is done. Host or join a new room to keep "
+                     "racing online, or play offline.");
+        ui::Gap(ui::kGapS);
+        if (ui::BrandPrimaryButton("Play Offline Instead",
+                                   ui::kBtnFullWidth())) {
+            OnlineRoom_requestLeave();
+        }
+        ui::SpeakFocusedItem(
+            "Play Offline Instead", "Leaves this finished room",
+            "Closes the empty online room and returns to local play.");
+    }
+    ui::CardEnd();
+}
+
 // ---- Post-pairing SELECTING surface (roster + native hand-off card) --------
 // After pairing the native game owns character / vehicle / track / cup / mode
 // select, so the launcher's SELECTING surface is only the roster strip plus the
 // native hand-off card: the FORWARD "handing to the game" card normally, or the
 // "Return to Game" RE-ENTRY card after a LEFT/ERROR native return (the takeover
 // latch stays set with nothing pending in that state, so the room-ready poll will
-// not re-fire on its own -- the re-entry press re-arms it). Consumes the view
+// not re-fire on its own -- the re-entry press re-arms it). A room down to ONE
+// member is neither: the peer is gone for good, so the truthful stranded card
+// replaces both variants (a forward hand-off would boot toward a race that can
+// never start; the re-entry gold button could never fire). Consumes the view
 // model's PRIMARY slot (no Ready/Start button); the shared code below still draws
 // secondary (Connection Details) and cancel (Leave Room).
 void drawBetaSelectingHandoff(const MdkrOnlineViewModel &model,
@@ -2001,6 +2045,11 @@ void drawBetaSelectingHandoff(const MdkrOnlineViewModel &model,
     drawBetaRosterStrip(lobby,
                         betaLocalEndpoint(lobby, model.local_member_is_leader));
     ui::Gap(ui::kGapM);
+    if (lobby.member_count < 2u) {
+        g_betaSelectingRender = BetaSelectingRender::Stranded;
+        drawBetaStrandedRoomCard();
+        return;
+    }
     const bool tournament = lobby.mode == MDKR_ONLINE_MODE_TOURNAMENT;
     const MdkrPartyLinkSessionEndReason reentryReason =
         OnlineRoom_roomReadyReentryReason();
@@ -2161,10 +2210,15 @@ void betaApplyDrawOverrides(MdkrOnlineViewModel &model) {
 // strip above, which animates its own ellipsis) -- plus its explanation.
 void drawBetaSectionHeader(const MdkrOnlineViewModel &model) {
     if (model.kind == MDKR_ONLINE_VIEW_SELECTING) {
+        /* A 1-member SELECTING room is STRANDED (the peer left the room), so
+         * "You're connected" would be false -- the header must agree with the
+         * stranded card below it. */
         ui::SectionHeader(
             "Private Room",
-            "You're connected. Picking racers, tracks, and racing all happen "
-            "in the game.");
+            model.member_count < 2u
+                ? "Only you are here now — this room can't race again."
+                : "You're connected. Picking racers, tracks, and racing all "
+                  "happen in the game.");
         return;
     }
     char sectionTitle[128];
@@ -2249,13 +2303,15 @@ void drawBetaRoom(LauncherState &state) {
     // Suppress the SELECTING "Selection Took Too Long" caution while a LEFT/ERROR
     // re-entry card is offered: the room is waiting on this player's "Return to
     // Game" press, not on anyone's choices, so the caution would only stack a
-    // duplicate Leave Room above the re-entry card.
+    // duplicate Leave Room above the re-entry card. Same for the 1-member
+    // STRANDED card: nobody's selection is late, the room is simply done.
     if (timeoutAction != MDKR_ONLINE_VIEW_ACTION_NONE &&
         model.kind == MDKR_ONLINE_VIEW_SELECTING) {
         const MdkrPartyLinkSessionEndReason reentry =
             OnlineRoom_roomReadyReentryReason();
         if (reentry == MDKR_PARTY_LINK_SESSION_END_LEFT ||
-            reentry == MDKR_PARTY_LINK_SESSION_END_ERROR) {
+            reentry == MDKR_PARTY_LINK_SESSION_END_ERROR ||
+            (haveLobby && lobby.member_count < 2u)) {
             timeoutAction = MDKR_ONLINE_VIEW_ACTION_NONE;
         }
     }
@@ -2610,6 +2666,26 @@ bool betaFakeBuildStage(const char *stage, MdkrOnlineViewModel *model,
         betaFakeBuildSelectingStage(model, lobby, haveLobby, true, true);
         return true;
     }
+    // SELECTING surface of a 1-member room (the peer LEFT the room entirely):
+    // the truthful stranded card ("this room is done" + working exits), never
+    // the re-entry card's dead gold "Return to Game". Rendered from the
+    // JOINER's chair (betaHostJourney false) -- the audited stranding: the
+    // host left, the reducer promoted the survivor to leader of a room that
+    // can never race again.
+    if (std::strcmp(stage, "room-stranded") == 0) {
+        betaFakeBuildSelectingStage(model, lobby, haveLobby, false, true);
+        g_online.betaHostJourney = false;  // the local player JOINED
+        lobby->members[1].occupied = false;
+        lobby->members[1].connected = false;
+        lobby->seats[1].occupied = false;
+        lobby->member_count = 1u;
+        lobby->seat_count = 1u;
+        lobby->leader_endpoint_id = lobby->seats[0].endpoint_id;
+        model->member_count = 1u;
+        model->seat_count = 1u;
+        model->local_member_is_leader = true;  // survivor inherits leadership
+        return true;
+    }
     // RESULTS surface, the shipping post-race state for BOTH modes: roster + the
     // concise "showing results" hand-off card -- the native RESULTS + MORE-RACES
     // chooser + ceremony own placements, standings and every replay choice. There is
@@ -2690,7 +2766,8 @@ void drawBetaRoomFake(LauncherState &state) {
             "Set MDKR_APP_ONLINE_BETA_STAGE to one of: chooser, joincode, "
             "invite, invite-expired, phrase, room-single, room-tournament, "
             "handoff, room-single-fallback, room-tournament-fallback, "
-            "results, finished, recovery, recovery-opponent-left.");
+            "room-stranded, results, finished, recovery, "
+            "recovery-opponent-left.");
         return;
     }
 
@@ -2751,7 +2828,9 @@ void drawBetaRoomFake(LauncherState &state) {
                 ? "handoff"
                 : g_betaSelectingRender == BetaSelectingRender::Reentry
                       ? "reentry"
-                      : "none");
+                      : g_betaSelectingRender == BetaSelectingRender::Stranded
+                            ? "stranded"
+                            : "none");
     } else if (haveLobby && model.kind == MDKR_ONLINE_VIEW_RESULTS &&
                lobby.phase == MDKR_ONLINE_RESULTS) {
         drawBetaResultsHandoff(model, lobby);

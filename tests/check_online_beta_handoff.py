@@ -63,7 +63,7 @@ WITNESS_RE = {
     "selecting": re.compile(
         r"\[online-beta-selecting\] stage=(?P<stage>[a-z0-9-]+) "
         r"mode=(?P<mode>single|tournament) "
-        r"render=(?P<render>handoff|reentry|none)"
+        r"render=(?P<render>handoff|reentry|stranded|none)"
     ),
     "results": re.compile(
         r"\[online-beta-results\] stage=(?P<stage>[a-z0-9-]+) "
@@ -79,6 +79,11 @@ CASES = {
     "room-tournament": ("tournament", "handoff", "selecting"),
     "room-single-fallback": ("single", "reentry", "selecting"),
     "room-tournament-fallback": ("tournament", "reentry", "selecting"),
+    # A 1-member SELECTING room (the peer left the ROOM entirely): the body
+    # must be the truthful stranded card ("this room is done" + working
+    # exits), never the re-entry card's dead gold "Return to Game" (room-ready
+    # needs 2 members, so that press could never fire).
+    "room-stranded": ("single", "stranded", "selecting"),
     # RESULTS body: the concise hand-off card, both modes. No fallback stage --
     # the full ImGui results/standings/replay body is retired, so RESULTS hands off
     # unconditionally.
