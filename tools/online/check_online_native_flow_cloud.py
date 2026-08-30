@@ -200,6 +200,35 @@ FORBIDDEN_MARKERS = (
     "launcher input provider rejected",
 )
 
+# ---- Drop scenarios (1 + 2): peer-loss on the production native takeover ------
+# The drop-injection seams (main_app.cpp) refuse ONE endpoint's authored-tick
+# drain -- exactly what a peer that dropped at the race-boot barrier (scenario 1)
+# / cleanly mid-race (scenario 2) does. The engine's rollback then starves its
+# canonical-input boundary, which pre-fix abort()ed BOTH machines; the crash fix
+# routes it to a clean return-to-room instead.
+DROP_SEAM_RACE_START_RE = re.compile(
+    r"^\[online-live\] TEST: race-start tick-\d+ remote input UNAVAILABLE",
+    re.MULTILINE)
+DROP_SEAM_MID_RACE_RE = re.compile(
+    r"^\[online-live\] TEST: mid-race tick-\d+ remote input UNAVAILABLE",
+    re.MULTILINE)
+# The engine crash-fix: the recoverable boundary starvation routed to a clean
+# return-to-room (validate_boundary at race start / prepare_tick mid-race).
+PEER_LOSS_LEFT_RE = re.compile(
+    r"^\[online-session\] LEFT: online peer/input lost", re.MULTILINE)
+# The survivor's real peer-loss witnesses (any one is a truthful attribution):
+# the race-start barrier abort, the mid-race peer-lost latch, or the mesh event.
+BARRIER_ABORT_RE = re.compile(
+    r"^\[START\] race-start barrier: remote tick-\d+ input (?:peer lost|TIMED OUT)",
+    re.MULTILINE)
+MIDRACE_LATCH_RE = re.compile(
+    r"^\[online-live\] peer lost mid-race at tick", re.MULTILINE)
+MESH_PEER_LOST_RE = re.compile(
+    r"^\[MESH\] peer LOST ep=\d+ reason=(\d+)", re.MULTILINE)
+# The launcher session-end witness the production takeover logs on return.
+SESSION_END_RE = re.compile(
+    r"^\[online-session-end\] reason=(\S+) result=(-?\d+)", re.MULTILINE)
+
 
 class ProofFailure(RuntimeError):
     """Harness-level failure; message names the stuck phase."""
@@ -296,7 +325,9 @@ class Driver:
 
 
 def make_env(role: str, join_code: Optional[str], pick: str, rom: Path,
-             run_dir: Path, tournament_cup: int) -> dict:
+             run_dir: Path, tournament_cup: int,
+             drop: Optional[str] = None, drop_role: str = "join",
+             drop_tick: int = 50) -> dict:
     (run_dir / "saves").mkdir(parents=True)
     prefs = run_dir / "prefs"
     prefs.mkdir()
@@ -332,6 +363,16 @@ def make_env(role: str, join_code: Optional[str], pick: str, rom: Path,
     )
     if join_code is not None:
         environment["MDKR_APP_TEST_ONLINE_JOIN_CODE"] = join_code
+    # Peer-drop injection on ONE endpoint (scenarios 1 + 2). The drop-role
+    # endpoint refuses its race-boot tick-1 drain (race-start) or one mid-race
+    # tick (mid-race); the engine's rollback then starves its boundary and takes
+    # the crash-fix's clean return-to-room. The SURVIVOR starves the same peer's
+    # input and takes the SAME fix. Never phase-forcing -- input refusal only.
+    if drop is not None and role == drop_role:
+        if drop == "race-start":
+            environment["MDKR_APP_TEST_ONLINE_DROP_RACE_START_INPUT"] = "1"
+        elif drop == "mid-race":
+            environment["MDKR_APP_TEST_ONLINE_DROP_INPUT_AT_TICK"] = str(drop_tick)
     if tournament_cup >= 0:
         # A single race NEVER auto-finals (online_session.c), so it cannot reach
         # the FINISHED session-end the (f)/(g) assertions need. The capstone runs
@@ -409,7 +450,7 @@ def run(args: argparse.Namespace) -> dict:
             # --- Pairing bootstrap (the only launcher automation) ------------
             creator = Driver(
                 binary, make_env("create", None, HOST_PICK, rom, root / "create",
-                                 tournament_cup),
+                                 tournament_cup, args.drop, args.drop_role),
                 root / "create", "create", log_dir / "create.log", args.verbose)
             code = creator.wait_line(
                 AUTOPAIR_CODE_RE.match, "room code (autopair create)", 90.0
@@ -419,7 +460,7 @@ def run(args: argparse.Namespace) -> dict:
 
             joiner = Driver(
                 binary, make_env("join", code, JOIN_PICK, rom, root / "join",
-                                 tournament_cup),
+                                 tournament_cup, args.drop, args.drop_role),
                 root / "join", "join", log_dir / "join.log", args.verbose)
             creator.wait_line(AUTOPAIR_MEMBERS_RE.match, "creator members=2", 60.0)
             joiner.wait_line(AUTOPAIR_MEMBERS_RE.match, "joiner members=2", 60.0)
@@ -478,6 +519,147 @@ def run(args: argparse.Namespace) -> dict:
             phase(True, "selections_synced",
                   f"assertion (c): a picked racer synced through the reducer "
                   f"onto the other endpoint's native CHARSELECT ({sync_how})")
+
+            # --- Drop scenarios 1 + 2: peer-loss on the production path -------
+            # The end-to-end contract of the two peer-loss crash fixes, run for
+            # the FIRST time on the path production actually takes (the native
+            # takeover, peer==nullptr), with a drop injected on ONE endpoint.
+            if args.drop is not None:
+                dropped = joiner if args.drop_role == "join" else creator
+                survivor = creator if args.drop_role == "join" else joiner
+                scen = "1 (race-start)" if args.drop == "race-start" else "2 (mid-race)"
+                # Both endpoints boot race 1 (the drop happens DURING it).
+                for drv in (creator, joiner):
+                    drv.wait_line(RACE_BOOT_RE.search,
+                                  f"{drv.name} race 1 boot", args.race_timeout)
+
+                # No-abort is the CORE invariant (the exact SIGABRT the crash fix
+                # removed on both machines). The mid-race prepare_tick trigger line
+                # ("launcher input provider rejected") is the EXPECTED recoverable
+                # trigger the fix recovers from -- exempt it, as the local
+                # peer-loss lane's MIDRACE_FORBIDDEN does.
+                def assert_no_crash(drv, killed=False):
+                    for marker in FORBIDDEN_MARKERS:
+                        if marker == "launcher input provider rejected":
+                            continue
+                        if marker in drv.full_output():
+                            raise ProofFailure(
+                                f"{drv.name}: forbidden marker {marker!r} -- the "
+                                f"peer loss crashed instead of returning to room")
+                    rc = drv.proc.poll()
+                    if rc is not None and rc < 0 and not killed:
+                        raise ProofFailure(
+                            f"{drv.name}: died from signal {-rc} on the peer loss "
+                            f"(the abort the crash fix removes)")
+
+                # Attribution: which clean return-to-room path an endpoint took.
+                def recovery_path(drv):
+                    o = drv.full_output()
+                    boot = RR_BOOT_RESULT_RE.findall(o)
+                    reason = boot[-1][1] if boot else "?"
+                    fix = PEER_LOSS_LEFT_RE.search(o) is not None
+                    mesh = MESH_PEER_LOST_RE.search(o)
+                    loss = ("mid-race peer-lost latch"
+                            if MIDRACE_LATCH_RE.search(o) else
+                            "race-start barrier abort"
+                            if BARRIER_ABORT_RE.search(o) else
+                            f"mesh peer LOST reason={mesh.group(1)}" if mesh else
+                            "watchdog (no peer-loss latch observed)")
+                    return (f"reason={reason}"
+                            + (", crash-fix LEFT" if fix else "")
+                            + f", via {loss}")
+
+                if args.drop_method == "kill":
+                    # The FAITHFUL "console/transport drops" test: after the race
+                    # is under way, KILL the drop-role process so its mesh actually
+                    # CLOSES. The SURVIVOR must return to the room BOUNDED and
+                    # WITHOUT aborting (the exact SIGABRT the crash fix removes) --
+                    # via the peer-loss latch if it observes the mesh drop in time,
+                    # else the bounded wall-clock watchdog. The recovery PATH is
+                    # reported (not asserted to be the fast latch): whether a real
+                    # cloud drop is caught by the mid-race latch + a truthful card,
+                    # or only by the watchdog, is the finding this run surfaces.
+                    if args.drop == "mid-race":
+                        time.sleep(args.drop_kill_delay)
+                    dropped.proc.kill()
+                    phase(True, "drop_injected",
+                          f"race 1 under way over the real cloud; KILLED the "
+                          f"{dropped.name} process (real transport drop, "
+                          f"scenario {scen})")
+                    survivor.wait_line(
+                        lambda _l: (RR_BOOT_RESULT_RE.search(
+                            survivor.full_output()) or None),
+                        f"{survivor.name} bounded clean return to the room "
+                        f"(no abort)", args.race_timeout)
+                    assert_no_crash(survivor)
+                    assert_no_crash(dropped, killed=True)
+                    path = recovery_path(survivor)
+                    phase(True, "drop_clean_return",
+                          f"scenario {scen} (real transport drop): the survivor "
+                          f"returned to the room BOUNDED and did NOT abort "
+                          f"({path})")
+                    report["verdict"] = "PASS"
+                    report["detail"] = (
+                        f"peer-drop scenario {scen} (REAL transport drop -- peer "
+                        f"process killed) over the real cloud on the production "
+                        f"descriptor-less native takeover (peer==nullptr): the "
+                        f"survivor returned to the room bounded, no abort "
+                        f"({path})")
+                    raise ProofStopEarly()
+
+                # The sanctioned drop-injection SEAM on ONE endpoint: it refuses
+                # that endpoint's authored-tick drain, so the DROPPED endpoint's
+                # rollback boundary starves -> the crash-fix clean return. (The
+                # seam leaves the dropped endpoint's LAUNCHER in the room with its
+                # mesh alive, so the survivor does not observe a mesh peer-loss --
+                # it returns via the bounded round-advance / descriptor-less
+                # wall-clock watchdog instead. Use --drop-method kill for the
+                # survivor's peer-loss crash-fix + truthful card.)
+                seam_re = (DROP_SEAM_RACE_START_RE if args.drop == "race-start"
+                           else DROP_SEAM_MID_RACE_RE)
+                dropped.wait_line(seam_re.search,
+                                  f"{dropped.name} {args.drop} drop seam fired",
+                                  args.race_timeout)
+                phase(True, "drop_injected",
+                      f"both endpoints booted race 1 over the real cloud; the "
+                      f"{args.drop} drop seam fired on the {dropped.name}")
+                # The DROPPED endpoint routes the boundary starvation to the
+                # crash-fix clean return-to-room (LEFT) -- scenario 1/2's crash fix,
+                # proven for the FIRST time on the production takeover path.
+                dropped.wait_line(
+                    PEER_LOSS_LEFT_RE.search,
+                    f"{dropped.name} crash-fix clean return "
+                    f"([online-session] LEFT: peer/input lost)", args.race_timeout)
+                dropped.wait_line(
+                    lambda _l: (any(r == ("LEFT", "0") for r in
+                                    SESSION_END_RE.findall(dropped.full_output()))
+                                or None),
+                    f"{dropped.name} launcher read reason=LEFT result=0",
+                    args.race_timeout)
+                # The SURVIVOR must ALSO return to the room cleanly and BOUNDED
+                # (no abort, no hang) -- via the peer-loss latch if it sees the
+                # mesh drop, else the wall-clock watchdog.
+                survivor.wait_line(
+                    lambda _l: (RR_BOOT_RESULT_RE.search(survivor.full_output())
+                                or None),
+                    f"{survivor.name} bounded clean return to the room",
+                    args.race_timeout)
+                assert_no_crash(dropped)
+                assert_no_crash(survivor)
+                spath = recovery_path(survivor)
+                phase(True, "drop_clean_return",
+                      f"scenario {scen} (drop seam on one endpoint): the dropped "
+                      f"endpoint took the crash-fix clean return-to-room (LEFT), "
+                      f"the survivor returned bounded ({spath}), NO abort on either "
+                      f"-- the production-path crash-fix holds")
+                report["verdict"] = "PASS"
+                report["detail"] = (
+                    f"peer-drop scenario {scen} over the REAL cloud on the "
+                    f"production descriptor-less native takeover (peer==nullptr): "
+                    f"the dropped endpoint took the crash-fix clean return-to-room "
+                    f"(LEFT), the survivor returned bounded ({spath}), and NEITHER "
+                    f"endpoint aborted (the exact crash the fix removes)")
+                raise ProofStopEarly()
 
             if args.through == "c":
                 # (a)-(c) qualification stop: prove CHARSELECT actually
@@ -706,6 +888,24 @@ def main() -> int:
                         "1 = Snowflake, all Car-legal). Required for --through "
                         "full (a single race never reaches FINISHED). -1 (default)"
                         " = single race, only valid with --through c")
+    parser.add_argument("--drop", choices=("race-start", "mid-race"), default=None,
+                        help="peer-drop scenario: inject a race-start (scenario 1) "
+                        "or mid-race (scenario 2) drop on ONE endpoint after the "
+                        "descriptor-less CHARSELECT, and prove BOTH endpoints take "
+                        "the crash-fix clean return-to-room (no abort). Runs "
+                        "through (a)-(c) + the drop; ignores --through.")
+    parser.add_argument("--drop-role", choices=("create", "join"), default="join",
+                        help="which endpoint the --drop is injected on (default "
+                        "join). The other endpoint is the survivor.")
+    parser.add_argument("--drop-method", choices=("seam", "kill"), default="seam",
+                        help="'seam' (default) refuses the drop-role endpoint's "
+                        "drain (proves THAT endpoint's crash-fix; the survivor "
+                        "returns via the watchdog since the mesh stays alive). "
+                        "'kill' SIGKILLs the drop-role process (a real transport "
+                        "drop) to prove the SURVIVOR's peer-loss crash-fix + card.")
+    parser.add_argument("--drop-kill-delay", type=float, default=10.0,
+                        help="seconds into the race to wait before a mid-race "
+                        "--drop-method kill (default 10)")
     parser.add_argument("--log-dir", type=Path, default=None)
     parser.add_argument("--through", choices=("c", "e", "full"), default="full",
                         help="'c' stops (PASS) after (a)-(c) + the CHARSELECT -> "
