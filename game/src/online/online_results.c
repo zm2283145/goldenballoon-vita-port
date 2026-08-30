@@ -341,18 +341,11 @@ static u8 results_chooser_remote_present(const MdkrPartyLinkSnapshot *snap) {
  * Render (native: real portraits + real font, into the engine frame list)
  * ======================================================================== */
 
-/* Retail selected-option blink (menu.c: spA0 = gOptionBlinkTimer*8; if(spA0>255)
- * spA0 = 511-spA0) -- a 0..255 triangle over the 0x3F (64-tick) period, the slow
- * retail cadence. TU-LOCAL on purpose: the shared mdkr_online_screen_pulse is a
- * faster/dimmer 0..16 wave the OTHER screens depend on and this wave must not
- * change it; a later wave unifies (online_screen_util). */
-static s32 results_retail_blink(u32 ticks) {
-    s32 v = (s32) ((ticks & 0x3Fu) * 8u); /* 0..504 over the 64-tick period */
-    if (v > 255) {
-        v = 511 - v; /* fold to a 0..255 triangle */
-    }
-    return v;
-}
+/* The retail selected-option blink (menu.c gOptionBlinkTimer*8, 0x3F wrap, 0..255
+ * triangle) is now the SHARED mdkr_online_screen_blink (online_screen_util.c): the
+ * TU-local near-duplicate that lived here was collapsed into it (the fences that
+ * kept it TU-local are lifted). The winner-portrait pulse below stays results-local
+ * (a distinct 128..255 breathing curve, not a selected-item blink). */
 
 /* Retail RANKINGS winner-portrait pulse (menu.c: if(blink<32) spA0=blink*4+128;
  * else spA0=0x17F-blink*4) -- brightness 128..255 over the same 64-tick period,
@@ -1181,13 +1174,13 @@ static void results_chooser_witness(void) {
  * race: the same board this race entered on (title + portrait columns + session
  * tallies) with the option list in the translucent blue dialogue box beneath.
  * Tournament final: the MORE RACES? banner + the same blue-box option list. The
- * host's selected option blinks at the retail cadence (results_retail_blink); a
+ * host's selected option blinks at the retail cadence (mdkr_online_screen_blink); a
  * joiner shows the list dimmer (no cursor) + a "WAITING FOR <host>..." footer --
  * the display-only mirror. Option labels are the retail wording
  * (results_chooser_display_label); the stderr witness keeps the canonical labels. */
 static void results_chooser_render(const MdkrPartyLinkSnapshot *snap,
                                    bool haveSnap, s32 localSeat) {
-    s32 blink = results_retail_blink(sRes.pulseTicks);
+    s32 blink = mdkr_online_screen_blink(sRes.pulseTicks);
     bool single = (sRes.chooserMode == (u8) MDKR_ONLINE_SCREEN_MODE_SINGLE);
     s32 boxTop, boxBot, rowDy, rowY, fy;
     unsigned i;

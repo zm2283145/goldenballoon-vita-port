@@ -988,7 +988,13 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
      * selection. */
     u8 host = sTs.host;
     u8 effMode = (host || !haveSnap) ? sTs.mode : (u8) snap->mode;
-    s32 tri = mdkr_online_screen_pulse(sTs.ticks);
+    /* Retail selected-item cadence (menu.c gOptionBlinkTimer: 0x3F wrap, *8
+     * triangle, 0..255) via the shared helper -- the SAME blink charselect /
+     * vehicleselect / results use, so the "<host> IS CHOOSING..." status pulses at
+     * the authentic DKR rate (was the faster/dimmer 0..16 mdkr_online_screen_pulse).
+     * Folded /16 back into the same 0..15 amplitude the old pulse fed the status
+     * colour (150 + tri*4), so only the CADENCE changes, not the status line. */
+    s32 tri = mdkr_online_screen_blink(sTs.ticks) / 16;
     u8 focusWorld;
     u8 lockedTrackIdx = TS_NONE; /* which of the 20 is the effective lock */
     u8 lockedCup = TS_NONE;
