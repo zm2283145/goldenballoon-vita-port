@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Prove the native online "MORE RACES" chooser on the RESULTS screen (T4).
+"""Prove the native online "MORE RACES" chooser on the RESULTS screen.
 
 Where check_online_session_results.py proves the RESIDENT RESULTS/STANDINGS soak
-with the OLD binary continue/leave terminal, THIS lane proves the T4 replacement:
+with the OLD binary continue/leave terminal, THIS lane proves the replacement:
 after a race the HOST gets the full retail replay set, each option maps to the
 EXISTING party_link reverse-feed intents (REMATCH + SET_MODE -- no new reducer
 command), and the session routes back to the right native screen. The joiner is

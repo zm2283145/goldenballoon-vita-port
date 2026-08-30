@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prove the native online HOST TRACK / CUP SELECT screen (PD-T3, Strategy D2).
+"""Prove the native online HOST TRACK / CUP SELECT screen.
 
 Where check_online_charselect.py proves the FIRST player-facing screen of the
 separated online path, THIS lane proves the SECOND (game/src/online/
@@ -18,18 +18,18 @@ screen (always in the flow) is scripted to confirm and pass through):
 
   * "1"      SINGLE-RACE HOST: first proves B -> back one level (to the native
              VEHICLE screen, no wedge; it re-confirms and re-advances), then
-             on re-entry locks Whale Bay (track 8, hovercraft-only 0x2) -- the R-A
+             on re-entry locks Whale Bay (track 8, hovercraft-only 0x2) -- the
              auto-narrow moves the seat off Car -- then browses AWAY to Spaceport
-             Alpha (whose 2P mask drops hovercraft) to prove F-D5 (the publishable
-             vehicle stays legal for the LOCKED track, not the hovered one), then
+             Alpha (whose 2P mask drops hovercraft) to prove the publishable
+             vehicle stays legal for the LOCKED track, not the hovered one, then
              starts. The reducer's ready-clear on the lock is followed by both
-             seats reconverging to ready (R-B), the host starts, the race boots +
+             seats reconverging to ready, the host starts, the race boots +
              converges byte-for-byte, all without the offline menu.
   * "joiner" TOURNAMENT JOINER: the local seat is a JOINER; the seam scripts a
              remote HOST locking cup 2 (Sherbet; round 0 == Whale Bay). Proves the
-             joiner renders the ROOM snapshot (F-D3: host=0, snap.mode=TOURNAMENT,
+             joiner renders the ROOM snapshot (host=0, snap.mode=TOURNAMENT,
              snap.cup=2) and auto-narrows its OWN vehicle to the cup's round-0
-             track (F-I2) so BEGIN_LOADING is never refused, and the race boots.
+             track so BEGIN_LOADING is never refused, and the race boots.
 """
 
 from __future__ import annotations
@@ -151,7 +151,7 @@ def run_engine(binary: Path, rom: Path, ts_value: str, ticks: int,
 
 def assert_locked_equals_booted(scn: str, output: str,
                                 expected_track: int) -> int | None:
-    """PD-T4: the host's LOCKED track is exactly what BOOTS. The session logs the
+    """The host's LOCKED track is exactly what BOOTS. The session logs the
     manifest track as HONORED (never a divergence), the direct-boot witness fires
     on it, and the engine's rollback runtime loaded that same track -- so the
     manifest (peer-admission authority) carried the locked pick end to end."""

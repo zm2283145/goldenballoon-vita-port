@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Prove the VISIBLE 3D engine runs a networked race driven by the LIVE transport.
 
-This is the make-or-break gate for O-T6b. Before it, the Online Room's race was
+This is the make-or-break gate for the VISIBLE-engine live race. Before it, the Online Room's race was
 HEADLESS: the live adapter drained real WebRTC input into a headless session
 bridge and never called mdkr64_engine_boot, so reaching "RACING" produced a
 converging data-plane with no picture.
 
 Here a single app process (MDKR_APP_TEST_ONLINE_LIVE=1) stands up two REAL live
-adapters over the in-process O-T2 loopback signal hub feeding real libdatachannel
+adapters over the in-process loopback signal hub feeding real libdatachannel
 DTLS on 127.0.0.1, drives them through create/join/preflight/loading to a ready
 race transport, then boots the VISIBLE engine (mdkr64_engine_boot) on endpoint
 A's live transport while endpoint B seals real input over the mesh. The engine

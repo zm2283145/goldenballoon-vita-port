@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prove the native online VEHICLE SELECT screen (T1, Strategy D2).
+"""Prove the native online VEHICLE SELECT screen.
 
 Where check_online_charselect.py proves the FIRST player-facing screen of the
 separated online path and check_online_trackselect.py the track/cup screen, THIS

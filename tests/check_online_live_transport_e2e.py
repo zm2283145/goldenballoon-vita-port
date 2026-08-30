@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """End-to-end online multiplayer: two native processes race over the live stack.
 
-This is the O-T6 capstone: the first time real match bytes cross a wire. A live
+This is the live-transport capstone: the first time real match bytes cross a
+wire. A live
 local MatchRoom Worker (``wrangler dev --local`` with real Durable Objects) plus
 TWO ``mdkr_online_live_transport_e2e_driver`` processes -- one creator, one
 joiner-by-code -- run the entire production online path against each other:
 
 * real HTTP create/join/code/command over the MatchRoom lobby routes and the
   authenticated ``/connect`` state WebSocket (credential in the subprotocol);
-* the O-T1 match-signal client over ``/api/match/{roomId}/signal``;
-* the O-T2 peer mesh negotiating real WebRTC DataChannels (libdatachannel DTLS);
-* the O-T3 live adapter: selections, the transcript verification phrase
+* the match-signal client over ``/api/match/{roomId}/signal``;
+* the peer mesh negotiating real WebRTC DataChannels (libdatachannel DTLS);
+* the live adapter: selections, the transcript verification phrase
   (auto-confirmed under the test token), preflight consensus, and the descriptor
-  install through the O-T5 retail-identity clamp;
-* the O-T6 per-tick feed: each side seals its local input into 3-frame bundles,
+  install through the retail-identity clamp;
+* the per-tick feed: each side seals its local input into 3-frame bundles,
   fans them out on the mesh, feeds the opened remote bundles to
   ``mdkr_match_transport_receive`` and drains authored ticks.
 

@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Prove the native online RESULTS/STANDINGS screen + the post-race RETURN into
-the separated session + a scripted multi-race SOAK (PD-T5, Strategy D2).
+the separated session + a scripted multi-race SOAK.
 
 Where check_online_session_boot.py proves ONE race is reached through the
 separated GAMEMODE_ONLINE_SESSION, THIS lane proves the session is RESIDENT: it
 drives >= 2 engine races + the native RESULTS/STANDINGS screen in ONE engine
 process via the session loop, WITHOUT the live-loopback harness (whose boot-once
-wall makes multi-race impossible -- making LIVE play resident is PD-T6).
+wall makes multi-race impossible -- making LIVE play resident is
+check_online_resident_live.py's job).
 
 It installs a validated 2-slot roster + launch descriptor DIRECTLY (no DTLS mesh,
 no match-input source), so mode_intro forks into the session and the race runs as
@@ -28,7 +29,7 @@ Assertions:
   * the RESULTS witness shows the CORRECT captured placements, and the STANDINGS
     points equal the trophy-weight accrual of those placements (single + running)
   * the countdown decrements and BOTH advance paths fire (host + auto)
-  * PD-T6b: the host advancing off a non-final tournament STANDINGS publishes the
+  * the host advancing off a non-final tournament STANDINGS publishes the
     REMATCH reverse-feed intent (never on the final race), and the scripted
     stand-in reducer observes it and advances its own cup race_index -- so the
     next race is reached via MDKR_ONLINE_REMATCH, not the old start signal
@@ -107,13 +108,14 @@ def run_engine(binary: Path, rom: Path, ticks: int, timeout: int, verbose: bool,
 
 
 def check_m3_interlude(binary: Path, rom: Path, verbose: bool) -> int | None:
-    """M-3: a real tournament->single interlude that FAILS if the M1 stash-clear
+    """A real tournament->single interlude that FAILS if the mode-change stash-clear
     is reverted. The LOBBY_WAIT seam publishes mode=TOURNAMENT + cup 1 (whose
     round-0 track is 13) for the first half of the hold -- so the session stashes
-    intended track 13 -- then flips to mode=SINGLE. M1 must clear that stale stash
-    on the mode change, so the boot logs 'track honored: 5' (the SINGLE manifest);
-    without the clear it logs 'track divergence: snapshot=13 manifest=5'. Verified
-    out-of-band: reverting the M1 clear makes exactly this scenario diverge."""
+    intended track 13 -- then flips to mode=SINGLE. The stash-clear must clear that
+    stale stash on the mode change, so the boot logs 'track honored: 5' (the SINGLE
+    manifest); without the clear it logs 'track divergence: snapshot=13 manifest=5'.
+    Verified out-of-band: reverting the stash-clear makes exactly this scenario
+    diverge."""
     scn = "m3-interlude"
     try:
         rc, output = run_engine(

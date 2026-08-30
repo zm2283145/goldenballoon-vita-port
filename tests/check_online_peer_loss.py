@@ -6,7 +6,7 @@ transport is SEVERED mid-session, or whose opponent NEVER fully joins, tears
 down cleanly WITHOUT fabricating a finished/published race -- the process-level
 shadow of the engine's OPPONENT_LEFT / OPPONENT_NEVER_STARTED recovery routing.
 
-It reuses the exact harness the O-T6 capstone (check_online_live_transport_e2e.py)
+It reuses the exact harness the live-transport capstone (check_online_live_transport_e2e.py)
 uses -- the native `mdkr_online_live_transport_e2e_driver` -- but drives it
 against small in-process FAKE servers (no wrangler, no Durable Object, no ROM),
 so it is deterministic and fast. The driver narrates every transition as an
@@ -18,7 +18,7 @@ so it is deterministic and fast. The driver narrates every transition as an
     hash-agreed race and so never publishes results),
 
 while the process exits within its own budget (its transport does NOT wedge --
-the mid-frame-stall teardown contract the O-T6 driver already owns).
+the mid-frame-stall teardown contract the live-transport driver already owns).
 
 Two arms:
 
@@ -46,7 +46,7 @@ this tree. The pure engine decisions those witnesses gate ARE pinned elsewhere,
 at the unit level:
 
   * the peer-loss -> failure mapping (PingTimeout/PeerEnded in-race ->
-    OPPONENT_LEFT, SealWindowExhausted -> CONNECTION_UNPLAYABLE) and the F1
+    OPPONENT_LEFT, SealWindowExhausted -> CONNECTION_UNPLAYABLE) and the
     no-demotion rule: tests/test_online_live_adapter_beta.cpp
     (ctest `online_live_adapter_beta`);
   * the OPPONENT_LEFT / OPPONENT_NEVER_STARTED / CONNECTION_UNPLAYABLE recovery

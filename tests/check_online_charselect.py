@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prove the native online CHARACTER SELECT screen (PD-T2, Strategy D2).
+"""Prove the native online CHARACTER SELECT screen.
 
 Where check_online_session_boot.py proves the separated boot path idles in
 LOBBY_WAIT and hands off to the race, THIS lane proves the first player-facing

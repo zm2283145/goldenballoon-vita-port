@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""PD-T6h2b KEYSTONE proof: a FULL descriptor-less TOURNAMENT in ONE engine process.
+"""KEYSTONE proof: a FULL descriptor-less TOURNAMENT in ONE engine process.
 
-Composes the T6h2a lobby-start boot (the engine BEGINS descriptor-less and its
-native CHARSELECT -> TRACKSELECT own race 1) with the T6ac/T6h1 resident multi-race
+Composes the lobby-start boot (the engine BEGINS descriptor-less and its
+native CHARSELECT -> TRACKSELECT own race 1) with the resident multi-race
 coordinator, so a descriptor-less session runs the demo's real flow end to end
 IN-PROCESS:
 
   lobby-start begin (no descriptor) -> native CHARSELECT -> TRACKSELECT -> START
-    -> race 1 boots (T6h2a gate) -> RESULTS (real reducer snapshot) -> REMATCH
+    -> race 1 boots (the lobby-start gate) -> RESULTS (real reducer snapshot) -> REMATCH
     -> race 2 -> race 3 -> race 4 -> FINAL standings -> chooser FINISH commits the
     REMATCH wrap (RESULTS -> LOBBY, fresh series; reducer-observable by a second
     real peer) -> champion CEREMONY -> the single FINISHED handshake (no 5th boot)
@@ -43,7 +43,7 @@ Wedge sub-tests (the deferred safety findings, proven to FIRE cleanly, never han
        the session UNWINDS + re-fronts CHARSELECT (never parks), and RECOVERS (race
        1 still boots)
 
-Minor-3 pin: MDKR_ONLINE_SESSION_CUP_ROUNDS (online_session.c) is asserted equal to
+Source pin: MDKR_ONLINE_SESSION_CUP_ROUNDS (online_session.c) is asserted equal to
 MDKR_ONLINE_CUP_ROUNDS (the reducer / track-table source of truth) by source scan.
 """
 
@@ -154,7 +154,7 @@ def _scan_define(path: Path, macro: str) -> int | None:
 
 
 def check_cup_rounds_pin() -> int | None:
-    """Minor-3: the session's mirrored MDKR_ONLINE_SESSION_CUP_ROUNDS must equal the
+    """The session's mirrored MDKR_ONLINE_SESSION_CUP_ROUNDS must equal the
     reducer / track-table MDKR_ONLINE_CUP_ROUNDS -- pinned by source scan so the
     mirrored constant (which drives feed-derived finality) cannot silently drift."""
     session = _scan_define(
