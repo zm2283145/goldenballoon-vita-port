@@ -1456,9 +1456,14 @@ void betaComposeStatusLine(const MdkrOnlineViewModel &model,
         const bool isReentry =
             reentry == MDKR_PARTY_LINK_SESSION_END_LEFT ||
             reentry == MDKR_PARTY_LINK_SESSION_END_ERROR;
-        const char *next = isReentry
-            ? "Race ended early — you're back in the room"
-            : "Room ready";
+        /* Strip line per re-entry reason: ERROR really did end a race early;
+         * LEFT is the deliberate backout, where "Race ended early" was false
+         * (often no race was running) and argued with the player's gesture. */
+        const char *next =
+            isReentry ? (reentry == MDKR_PARTY_LINK_SESSION_END_LEFT
+                             ? "You're back in the room"
+                             : "Race ended early — you're back in the room")
+                      : "Room ready";
         /* A 1-member SELECTING room: the peer left the room entirely (their
          * LEAVE reached the reducer), so "Room ready" would be false -- this
          * room can never race again. Agrees with the stranded card below. */
@@ -1970,10 +1975,14 @@ void drawBetaRosterStrip(const MdkrOnlineLobby &lobby,
 }
 
 // Truthful re-entry reason line, mirroring the betaFailureCopy conventions (plain
-// sentences, no wire codes): LEFT is a player backing out / a seat vacating / a
-// cancel; ERROR is the wall-clock watchdog or an unplayable connection. Both now end
-// with re-entry available -- the room is NOT done -- so neither says "create a new
-// one".
+// sentences, no wire codes). ERROR is the wall-clock watchdog or an unplayable
+// connection -- a race genuinely broke. LEFT here is a DELIBERATE gesture: a
+// B-out of the selection screens or a mid-tournament cancel (a peer-loss LEFT
+// fronts the OPPONENT_LEFT recovery card instead, and a peer who left the ROOM
+// lands on the stranded card) -- so the old "That race ended early" was false
+// after a plain backout (no race was running) and argued with the player who
+// had just chosen to leave. Both end with re-entry available -- the room is
+// NOT done -- so neither says "create a new one".
 const char *betaReentryReasonCopy(MdkrPartyLinkSessionEndReason reason) {
     switch (reason) {
     case MDKR_PARTY_LINK_SESSION_END_ERROR:
@@ -1981,8 +1990,9 @@ const char *betaReentryReasonCopy(MdkrPartyLinkSessionEndReason reason) {
                "You're both still in the room — return to the game to try again.";
     case MDKR_PARTY_LINK_SESSION_END_LEFT:
     default:
-        return "That race ended early. You're both still in the room — return to "
-               "the game to pick and race again.";
+        return "The game screens were closed before the races were done. "
+               "You're both still in the room — return to the game whenever "
+               "you're ready, or leave below.";
     }
 }
 
@@ -2016,8 +2026,19 @@ bool drawBetaNativeHandoffCard(bool tournament,
             ImGui::TextUnformatted("Back in the room");
             ui::TextSubtleWrapped(betaReentryReasonCopy(reentryReason));
             ui::Gap(ui::kGapS);
-            pressed = ui::BrandPrimaryButton("Return to Game",
-                                             ui::kBtnFullWidth());
+            if (reentryReason == MDKR_PARTY_LINK_SESSION_END_LEFT) {
+                /* A DELIBERATE backout: the gold CTA pointing back INTO the
+                 * game argued with the player who had just chosen to leave
+                 * (story 1 beat 21). The control still works identically --
+                 * it is simply no longer the shouting default; the quit
+                 * journey's Leave Room keeps its ordinary weight below. */
+                pressed = ImGui::Button("Return to Game", ui::kBtnFullWidth());
+            } else {
+                /* ERROR: the race broke through no choice of the player's --
+                 * returning to the game IS the recommended next action. */
+                pressed = ui::BrandPrimaryButton("Return to Game",
+                                                 ui::kBtnFullWidth());
+            }
         } else {
             ImGui::TextUnformatted("Starting — handing to the game…");
             ui::TextSubtleWrapped(
