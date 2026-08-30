@@ -462,6 +462,20 @@ void partyLinkFakeSnapshot(unsigned step, MdkrPartyLinkSnapshot *out) {
     /* generation left 0: mdkr_party_link_publish assigns a monotonic value. */
 }
 
+/* Session-scoped record that the race mesh declared a roster peer LOST.
+ * Reset at the party-link install/clear bracket (one engine session). Two
+ * duties, both for the loss that lands in the POST-RACE window (a peer
+ * killed within the detection bound of the survivor's finish):
+ *   - while set, the forward feed presents every remote seat VACATED, so the
+ *     engine's existing debounced remote-vacate detector ends the RESULTS /
+ *     re-wait holds with the typed clean LEFT -- instead of those holds
+ *     grinding to the frame-budget / wall-clock watchdogs' ERROR;
+ *   - it outlives the adapter's race-scoped latches (a host-side REMATCH
+ *     wrap clears those and demotes the loss mapping), so the launcher can
+ *     still latch the truthful opponent-left card on the session's return
+ *     (OnlineRoom_partyLinkPeerLossObserved). */
+static bool sPartyLinkPeerLossObserved = false;
+
 }  // namespace
 
 void OnlineRoom_installPartyLink(void) {
@@ -471,11 +485,17 @@ void OnlineRoom_installPartyLink(void) {
     mdkr_party_link_clear();
     (void)mdkr_party_link_install();
     mdkr_party_link_dispatch_state_reset(&sPartyLinkDispatch);
+    sPartyLinkPeerLossObserved = false;
 }
 
 void OnlineRoom_clearPartyLink(void) {
     mdkr_party_link_clear();
     mdkr_party_link_dispatch_state_reset(&sPartyLinkDispatch);
+    sPartyLinkPeerLossObserved = false;
+}
+
+bool OnlineRoom_partyLinkPeerLossObserved(void) {
+    return sPartyLinkPeerLossObserved;
 }
 
 void OnlineRoom_pumpPartyLink(IMdkrOnlineAdapter *adapter) {
@@ -491,6 +511,27 @@ void OnlineRoom_pumpPartyLink(IMdkrOnlineAdapter *adapter) {
      * for the fenced 2-endpoint beta (no adapter accessor exposes the raw id). */
     mdkr_party_link_snapshot_from_lobby(&snap, haveView ? &vm : nullptr, &lobby,
                                         0u);
+    /* A mesh peer loss is a definitive transport fact the REDUCER never
+     * learns on its own (a dead peer sends no LEAVE, so its seat stays
+     * occupied in the lobby forever). Present the truth on the ENGINE feed:
+     * once the loss is observed, remote seats publish vacated, and the
+     * engine's existing debounced remote-vacate ends any RESULTS / re-wait
+     * hold with the typed clean LEFT. The reducer itself is never mutated. */
+    if (!sPartyLinkPeerLossObserved &&
+        mdkr_online_live_adapter_race_peer_lost(adapter)) {
+        sPartyLinkPeerLossObserved = true;
+        std::fprintf(stderr,
+                     "[online-room] mesh peer loss observed -> remote seats "
+                     "publish vacated on the engine feed\n");
+    }
+    if (sPartyLinkPeerLossObserved) {
+        for (unsigned i = 0u; i < MDKR_PARTY_LINK_SEATS; ++i) {
+            if (snap.seats[i].occupied && !snap.seats[i].is_local) {
+                snap.seats[i].occupied = 0u;
+                snap.seats[i].connected = 0u;
+            }
+        }
+    }
     mdkr_party_link_publish(&snap);
 }
 

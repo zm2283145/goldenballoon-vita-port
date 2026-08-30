@@ -1325,8 +1325,11 @@ void rekeyGenerationBumpKeepsHonestPeers() {
     std::string phraseBefore;
     assert(meshA->phrase(phraseBefore));
 
-    /* B's signaling socket reconnects: gone at generation 2, back at 5. */
+    /* B's signaling socket reconnects: gone at generation 2, back at 5. The
+     * DEFAULT close is the internal/rebuild teardown and must stay silent --
+     * a goodbye here would present the reconnect as a departure. */
     meshB->close();
+    assert(harness.hub.countSent(200u, "peer_end", "close") == 0u);
     harness.hub.setGeneration(200u, 5u);
     MdkrMatchSignalEvent bump;
     bump.type = MdkrMatchSignalEventType::PeerPresence;
@@ -2119,6 +2122,104 @@ void flappingPresenceWithSlowPongsIsNotPeerLoss() {
     std::printf("flappingPresenceWithSlowPongsIsNotPeerLoss: ok\n");
 }
 
+/* THE DOUBLE BLIP: both endpoints' signal sockets bounce near-simultaneously.
+ * The peer reconnects (the service assigns it a strictly higher generation),
+ * but its presence-bump broadcast went out while OUR socket was down, and our
+ * own re-welcome listed the still-reconnecting peer absent -- so the only
+ * evidence of the RETURNING peer is its re-driven signaling under the new
+ * generation, service-stamped. That traffic must cancel the pending vanish
+ * declaration; pre-fix it was dropped as a stale generation and the dwell
+ * expired on a peer that was demonstrably back. The loss floors themselves
+ * are untouched: nothing here shortens a ladder, it only kills the false
+ * positive (a truly silent vanished peer still resolves at the dwell). */
+void reconnectTrafficDuringDwellCancelsVanish() {
+    PairHarness pair;
+    assert(pair.connect());
+    /* The blip: peer 200 drops off signaling AND its transport comes down --
+     * the exact absent+down state that arms the vanish dwell. */
+    pair.harness.hub.inject(100u, presenceEvent(200u, 2u, false));
+    assert(pumpSurvivorUntil(pair, []() { return true; }, 1u, 0u));
+    assert(mdkr_match_peer_mesh_kill_channels_for_test(*pair.low, 200u));
+    /* Absorb the teardown and run 4 s into the 10 s dwell. */
+    (void)pumpSurvivorUntil(pair, []() { return false; }, 8u, 500u);
+    assert(pair.harness.countEvents(
+               100u, MdkrMatchPeerMeshEventType::PeerLost, 200u) == 0u);
+    /* The peer is back at generation 5; the bump was missed. All that
+     * arrives is its re-driven hello-1, relayed with the service-stamped
+     * sender generation. */
+    const unsigned hellosBefore = pair.harness.hub.countSent(100u,
+                                                             "peer_hello");
+    MdkrMatchSignalEvent hello;
+    hello.type = MdkrMatchSignalEventType::PeerHello;
+    hello.fromEndpointId = "200";
+    hello.fromConnectionGeneration = 5u;
+    {
+        uint8_t raw[MDKR_MATCH_PEER_PUBLIC_KEY_BYTES] = {};
+        raw[0] = 0x04u;
+        for (unsigned index = 1u; index <= 32u; index++) {
+            raw[index] = static_cast<uint8_t>(index);
+        }
+        hello.publicKey = mdkr_party::base64Url(raw, sizeof(raw));
+    }
+    pair.harness.hub.inject(100u, hello);
+    /* Drive the clock 12 s further -- well past the original dwell expiry
+     * (t0+10.5 s), inside the setup ladders' own ~21 s bound (deliberately
+     * untouched: a re-admitted peer that never completes setup still
+     * resolves there, typed). The returning peer must NOT be declared gone
+     * at the dwell. */
+    (void)pumpSurvivorUntil(pair, []() { return false; }, 24u, 500u);
+    assert(pair.harness.countEvents(
+               100u, MdkrMatchPeerMeshEventType::PeerLost, 200u) == 0u);
+    /* And the lane actually RE-DRIVES: the adopted generation restarted the
+     * pairwise exchange (fresh hellos toward the peer's new socket). */
+    assert(pair.harness.hub.countSent(100u, "peer_hello") > hellosBefore);
+    std::printf("reconnectTrafficDuringDwellCancelsVanish: ok\n");
+}
+
+/* A DELIBERATE local end (the announcing close: the player left / the adapter
+ * was torn down) must resolve on the survivor IMMEDIATELY and typed: teardown
+ * announces the wire contract's peer_end "close" goodbye to every viable peer,
+ * and the receiving mesh maps it to PeerLost(PeerEnded) on its next pump --
+ * never the restart episodes (~21 s) or the vanish dwell (10 s) that a CRASH
+ * rightly takes. The clock is held to a 3 s fake window, far inside every
+ * ladder bound, so a ladder-timed resolution cannot masquerade as the goodbye.
+ * (The default close(false) stays silent -- the reconnect model in
+ * rekeyGenerationBumpKeepsHonestPeers pins that no goodbye fires there.) */
+void deliberateCloseIsImmediateTypedPeerEnd() {
+    PairHarness pair;
+    assert(pair.connect());
+    const uint64_t closedAtMs = pair.harness.clock.nowMs;
+    pair.low->close(/*announcePeerEnd=*/true);
+    bool lost = false;
+    for (unsigned index = 0u; index < 30u && !lost; index++) {
+        pair.harness.pumpOnce();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        pair.harness.clock.nowMs += 100u;
+        lost = pair.harness.countEvents(
+                   200u, MdkrMatchPeerMeshEventType::PeerLost, 100u) >= 1u;
+    }
+    const uint64_t detectMs = pair.harness.clock.nowMs - closedAtMs;
+    if (!lost) {
+        std::fprintf(stderr,
+                     "FAIL deliberateCloseIsImmediateTypedPeerEnd: no PeerLost "
+                     "within %llu fake ms of the peer's deliberate close -- the "
+                     "survivor is grinding the restart/vanish ladders against "
+                     "an endpoint that said nothing on its way out\n",
+                     (unsigned long long)detectMs);
+        assert(lost);
+    }
+    /* The goodbye must be ON THE WIRE (not a ladder coincidence), and the
+     * verdict must carry the deliberate-end reason. */
+    assert(pair.harness.hub.countSent(100u, "peer_end", "close") >= 1u);
+    const MdkrMatchPeerMeshEvent *event = pair.harness.lastEvent(
+        200u, MdkrMatchPeerMeshEventType::PeerLost, 100u);
+    assert(event != nullptr &&
+           event->lostReason == MdkrMatchPeerLostReason::PeerEnded);
+    assert(detectMs <= 3000u);
+    std::printf("deliberateCloseIsImmediateTypedPeerEnd: ok (%llu fake ms)\n",
+                (unsigned long long)detectMs);
+}
+
 }  // namespace
 
 int main() {
@@ -2152,6 +2253,10 @@ int main() {
     presenceBlipWithHealthyChannelsIsNotPeerLoss();
     presenceReassertBeforeDwellExpiryDisarms();
     flappingPresenceWithSlowPongsIsNotPeerLoss();
+    /* The double blip: service-stamped reconnect traffic cancels the dwell. */
+    reconnectTrafficDuringDwellCancelsVanish();
+    /* Deliberate end: the teardown goodbye reaches the survivor typed. */
+    deliberateCloseIsImmediateTypedPeerEnd();
     std::printf("all match_peer_transport cases passed\n");
     return 0;
 }

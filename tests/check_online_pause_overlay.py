@@ -50,9 +50,19 @@ Arms (each a full engine boot):
   C. local START under the storm: overlay OPEN -> CLOSED (resume; race still
      running -- corrections keep reconciling while it is open) -> reOPEN ->
      D-pad DOWN -> A == LEAVE RACE -> the clean LEFT return, rc 0, zero leaks.
+     The deliberate leave notifies the peer NOW (reliable-control race-abort;
+     the survivor drains it typed) -- never the 20-30 s loss ladders.
   D. THE BELT (legacy engage allowed): the exact pre-fix abort branch fires --
      `game-tick completion rejected ... paused=1` -- and is routed to
      `replay refused (sim-state; recoverable)` -> clean LEFT, rc 0, no abort.
+  E. THE APP (Escape/F1) OVERLAY under the storm: the app-boundary wants-pause
+     seam asserts the overlay open over ticks 700-800 mid-corrections. The
+     online sim must NOT stop (no zero-rate authored ticks, so no correction
+     ever refuses, no LEFT): the window closes on schedule, corrections keep
+     reconciling inside it, and the race runs to the budget converged.
+     Pre-fix this arm FAILS: the first correction spanning a rate-0 tick hit
+     the belt's update_rate==0 arm and the player was dumped to a clean LEFT
+     just for opening the overlay.
 """
 
 from __future__ import annotations
@@ -68,11 +78,13 @@ from online_lane_util import (
     ENGINE_LIVE_RE, FORBIDDEN_ONLINE, forbidden_marker, make_fail, run_engine,
 )
 
-TICKS_BUDGET = 1200          # arms A/B: race runs to the autoplay budget
+TICKS_BUDGET = 1200          # arms A/B/E: race runs to the autoplay budget
 TICKS_LEAVE = 1500           # arm C leaves at ~tick 887; headroom only
 START_TICK = 600             # scripted press: well past the race countdown
 MIN_RACED_TICKS = 1100       # non-vacuous: the race ran far past the press
 MIN_STORM_CORRECTIONS = 500  # non-vacuous: the prediction storm was real
+APP_OVERLAY_OPEN = 700       # arm E: app overlay asserted over [OPEN, CLOSE)
+APP_OVERLAY_CLOSE = 800
 
 SCRIPT_ARMED_RE = re.compile(
     r"^\[online-live\] TEST: synthetic pad script armed slot=(\d+) "
@@ -91,6 +103,15 @@ LEAVE_SELECTED_RE = re.compile(
 LEAVE_LEFT_RE = re.compile(
     r"^\[online-session\] LEFT: local player left the race \(pause overlay\)",
     re.MULTILINE)
+# Deliberate-leave peer notification: the leaver tells the survivor NOW over
+# the reliable control channel; the survivor's adapter reacts typed the moment
+# it drains it -- never the 20-30 s loss ladders.
+LEAVE_NOTIFY_RE = re.compile(
+    r"^\[online-live\] deliberate leave: race-abort sent to the peer",
+    re.MULTILINE)
+SURVIVOR_ABORT_RE = re.compile(
+    r"^\[MESH\] race-abort received from peer -> ending local race",
+    re.MULTILINE)
 BELT_ALLOWED_RE = re.compile(
     r"^\[online-pause\] TEST: retail pause engage ALLOWED \(belt lane\)",
     re.MULTILINE)
@@ -101,11 +122,18 @@ BELT_PAUSED_REJECT_RE = re.compile(
     r"^\[ROLLBACK\] game-tick (?:admission|completion) rejected .*paused=1",
     re.MULTILINE)
 BELT_LEFT_RE = re.compile(
-    r"^\[online-session\] LEFT: online peer/input lost \(recoverable boundary "
-    r"starvation\)", re.MULTILINE)
+    r"^\[online-session\] LEFT: online correction replay refused by sim state "
+    r"\(recoverable; transport healthy\)", re.MULTILINE)
 RECONCILED_RE = re.compile(
     r"^\[ROLLBACK\] online correction reconciled ticks=(\d+)\.\.(\d+)",
     re.MULTILINE)
+APP_OVERLAY_OPEN_RE = re.compile(
+    r"^\[overlay-test\] app overlay pause window OPEN tick=(\d+) ",
+    re.MULTILINE)
+APP_OVERLAY_CLOSED_RE = re.compile(
+    r"^\[overlay-test\] app overlay pause window CLOSED tick=(\d+)",
+    re.MULTILINE)
+ANY_LEFT_RE = re.compile(r"^\[online-session\] LEFT:", re.MULTILINE)
 HOST_SHUTDOWN_RE = re.compile(
     r"^\[HOST-SHUTDOWN\] rom=(\d+) arena=(\d+) delayedFree=(\d+)", re.MULTILINE)
 # The pre-fix fatal chain, FORBIDDEN in every arm.
@@ -270,13 +298,25 @@ def main() -> int:
     if not LEAVE_LEFT_RE.search(output):
         return fail("[leave] LEAVE RACE did not take the clean LEFT return",
                     output)
+    # THE SURVIVOR IS TOLD IMMEDIATELY: the deliberate leave sends the
+    # reliable-control race-abort, and the (in-process) surviving endpoint
+    # reacts typed on its very next drain -- the peer must never be left to
+    # resolve a deliberate leave through the 20-30 s loss ladders.
+    if not LEAVE_NOTIFY_RE.search(output):
+        return fail("[leave] the deliberate leave never notified the peer "
+                    "(race-abort not sent) -- the survivor is left to the "
+                    "loss ladders", output)
+    if not SURVIVOR_ABORT_RE.search(output):
+        return fail("[leave] the surviving endpoint never drained the typed "
+                    "race-abort after the deliberate leave", output)
     shutdown = HOST_SHUTDOWN_RE.findall(output)
     if not shutdown or tuple(map(int, shutdown[-1])) != (0, 0, 0):
         return fail(f"[leave] host teardown leaked: "
                     f"{shutdown[-1] if shutdown else 'no witness'}", output)
     leave_summary = (f"open={opens[0]} resume={closes[0]} reopen={opens[1]} "
                      f"leave={leave_tick} "
-                     f"({len(open_window)} corrections while open)")
+                     f"({len(open_window)} corrections while open; "
+                     f"peer notified + typed abort drained)")
 
     # --- Arm D: THE BELT (legacy engage allowed) -- refuse, never abort ------
     result = run_arm(
@@ -314,12 +354,68 @@ def main() -> int:
         return fail(f"[belt] host teardown leaked: "
                     f"{shutdown[-1] if shutdown else 'no witness'}", output)
 
+    # --- Arm E: the APP (Escape/F1) overlay online -- the sim must not stop --
+    result = run_arm(
+        binary, rom, name="escape", ticks=TICKS_BUDGET, timeout=args.timeout,
+        verbose=args.verbose,
+        extra={**base_env(slot=1, script=press),
+               "MDKR_APP_TEST_ONLINE_LIVE_PREDICT": "100000",
+               "MDKR_APP_TEST_ONLINE_APP_OVERLAY_PAUSE":
+                   f"{APP_OVERLAY_OPEN}-{APP_OVERLAY_CLOSE}"})
+    if isinstance(result, int):
+        return result
+    returncode, output = result
+    bad = check_common("escape", returncode, output, forbid_belt_refusal=True)
+    if bad is not None:
+        return bad
+    if not APP_OVERLAY_OPEN_RE.search(output):
+        return fail("[escape] the app-overlay wants-pause seam never asserted "
+                    "(vacuous run)", output)
+    left = ANY_LEFT_RE.search(output)
+    if left:
+        return fail("[escape] the session took a LEFT return -- opening the "
+                    "app overlay must never eject the player from an online "
+                    "race", output)
+    if not APP_OVERLAY_CLOSED_RE.search(output):
+        return fail("[escape] the overlay window never closed -- the sim "
+                    "clock stopped underneath the app overlay", output)
+    live = ENGINE_LIVE_RE.search(output)
+    if not live:
+        return fail("[escape] no ENGINE-ONLINE-LIVE summary", output)
+    raced, corrected, converged = (
+        int(live.group(2)), int(live.group(7)), int(live.group(13)))
+    if raced < MIN_RACED_TICKS:
+        return fail(f"[escape] race ended at tick {raced} "
+                    f"(< {MIN_RACED_TICKS}) -- it did not survive the open "
+                    f"overlay", output)
+    if corrected < MIN_STORM_CORRECTIONS:
+        return fail(f"[escape] only {corrected} corrections -- the prediction "
+                    f"storm never happened (vacuous)", output)
+    if converged != 1:
+        return fail("[escape] endpoints did not converge across the overlay "
+                    "window", output)
+    # THE SIM NEVER STOPS under the APP overlay either: corrections kept
+    # reconciling INSIDE the asserted wants-pause window (pre-fix the first
+    # one refused at the zero-rate authored tick -> belt -> LEFT).
+    overlay_window = [
+        m for m in RECONCILED_RE.finditer(output)
+        if int(m.group(2)) >= APP_OVERLAY_OPEN + 5 and
+        int(m.group(1)) <= APP_OVERLAY_CLOSE - 5]
+    if not overlay_window:
+        return fail("[escape] no correction reconciled inside the app-overlay "
+                    "window -- cannot prove the sim kept running under it",
+                    output)
+    escape_summary = (f"window={APP_OVERLAY_OPEN}-{APP_OVERLAY_CLOSE} "
+                      f"raced={raced} corrections={corrected} "
+                      f"({len(overlay_window)} reconciled inside) converged")
+
     print(f"PASS online pause overlay: [storm] remote START at tick "
           f"{START_TICK} survived the correction storm ({storm_summary}); "
           f"[live] on-time remote START suppressed, no local overlay; "
           f"[leave] {leave_summary} -> clean LEFT, zero leaks; "
           f"[belt] legacy paused-replay refusal at tick "
-          f"{refused.group(1)} routed recoverable -> clean LEFT, no abort")
+          f"{refused.group(1)} routed recoverable -> clean LEFT, no abort; "
+          f"[escape] app overlay {escape_summary}")
     return 0
 
 

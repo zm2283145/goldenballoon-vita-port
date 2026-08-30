@@ -105,6 +105,13 @@ typedef struct MdkrRollbackGameRuntime {
      * loop can route a peer loss to a clean return-to-room instead of abort()ing.
      * Only ever set on the network_input path, so it is always false offline. */
     bool recoverable_online_input_failure;
+    /* Which CLASS the recoverable verdict above belongs to, so the session's
+     * end witness stays truthful: true = the correction-replay belt's
+     * SIM-STATE refusal (a paused / zero-rate / level-ending tick the replay
+     * cannot lawfully re-run -- the transport was healthy); false = genuine
+     * peer/input starvation at a boundary. Meaningful only while
+     * recoverable_online_input_failure is set; cleared with it. */
+    bool recoverable_refusal_sim_state;
     bool side_effect_error;
     bool pending_sound;
     bool authored_frame_timing_active;
@@ -960,6 +967,9 @@ static bool reconcile_network_inputs(
                     "(sim-state; recoverable)\n",
                     tick);
             runtime->recoverable_online_input_failure = true;
+            /* This is the ONE recoverable class that is NOT starvation: the
+             * transport delivered everything, the SIM refused the replay. */
+            runtime->recoverable_refusal_sim_state = true;
             return false;
         }
         if (!mdkr_rollback_validate_live_allocations(&runtime->registry) ||
@@ -999,6 +1009,7 @@ bool mdkr_rollback_game_runtime_prepare_tick(unsigned update_rate) {
      * (peer gone / input unavailable) explicitly sets this. So the tick-exhausted
      * and prepared-twice invariants leave it clear and stay fatal. */
     runtime->recoverable_online_input_failure = false;
+    runtime->recoverable_refusal_sim_state = false;
     if (runtime->validated_boundaries >= UINT32_MAX) {
         return false;
     }
@@ -1872,6 +1883,7 @@ bool mdkr_rollback_game_runtime_validate_boundary(unsigned update_rate) {
      * violation (fatal) until a RECOVERABLE online-input path explicitly sets
      * this. So the genuine-invariant checks that follow leave it clear. */
     sRollbackGameRuntime.recoverable_online_input_failure = false;
+    sRollbackGameRuntime.recoverable_refusal_sim_state = false;
     if (sRollbackGameRuntime.authored_frame_timing_active) {
         const uint64_t finished = rollback_clock_now(NULL);
         mdkr_rollback_timing_record(
@@ -2080,4 +2092,15 @@ bool mdkr_rollback_game_runtime_online_input_recoverable(void) {
      * on real corruption. Always false offline (network_input is never set). */
     return sRollbackGameRuntime.network_input &&
            sRollbackGameRuntime.recoverable_online_input_failure;
+}
+
+bool mdkr_rollback_game_runtime_online_refusal_was_sim_state(void) {
+    /* Valid only while ..._online_input_recoverable() reports true (the
+     * paired flags are set together and cleared together): true = the
+     * correction-replay belt's sim-state refusal (transport healthy), false =
+     * peer/input starvation at a boundary. Lets the session's end witness
+     * name the class it actually took. */
+    return sRollbackGameRuntime.network_input &&
+           sRollbackGameRuntime.recoverable_online_input_failure &&
+           sRollbackGameRuntime.recoverable_refusal_sim_state;
 }

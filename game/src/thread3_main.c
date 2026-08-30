@@ -429,7 +429,13 @@ void main_game_loop(void) {
          * input boundary one tick after that pulse was cleared. Restore the
          * preceding frame's bank without advancing its camera object; the
          * existing paused clear gate below then holds the authored pose. */
-        if (overlayPaused) {
+        if (overlayPaused
+#if MDKR_ENABLE_ONLINE_BETA
+            /* Online the overlay is non-pausing chrome (below), so the paused
+             * camera-bank restore must not fire over a still-running sim. */
+            && !mdkr_online_race_pause_suppressed()
+#endif
+        ) {
             cutscene_camera_pause_restore();
         }
         /* The scripted overlay gate needs the exact simulation boundary, not
@@ -446,7 +452,26 @@ void main_game_loop(void) {
             }
             previousOverlayPaused = overlayPaused;
         }
-        if (overlayPaused) {
+        if (overlayPaused
+#if MDKR_ENABLE_ONLINE_BETA
+            /* In a LIVE online rollback race the app overlay must NOT become a
+             * sim pause boundary: a zero-rate authored tick is exactly what a
+             * later correction replay refuses (rollback_game_runtime.c's
+             * sim-refusal arm), so zeroing the clock here turned "player opened
+             * the overlay" into the recoverable clean-LEFT unwind -- ejected
+             * from the race by a menu. Online the overlay is presentation-only
+             * chrome over the running sim, the same non-blocking contract as
+             * the START overlay (online_race_pause.h). While it owns the
+             * keyboard the platform input pump publishes one NEUTRAL pad
+             * sample (overlay_capture_sync), so the local seat coasts neutral
+             * and that neutral input seals canonically like any other frame --
+             * deterministic on both endpoints, live and in resim. Keyed on the
+             * same constant-per-race gate as the retail-pause suppression.
+             * Beta-gated: the OFF build sees the original condition and its
+             * thread3_main.c.o anchor stays byte-identical. */
+            && !mdkr_online_race_pause_suppressed()
+#endif
+        ) {
             logicUpdateRate = 0;
         }
     }
@@ -1865,7 +1890,19 @@ Settings *get_settings(void) {
  */
 s8 is_game_paused(void) {
 #ifdef NATIVE_PORT
-    if (platformOverlayWantsPause()) {
+    if (platformOverlayWantsPause()
+#if MDKR_ENABLE_ONLINE_BETA
+        /* Online the app overlay never pauses the sim (main_game_loop keeps
+         * the clock running under it), so it must be invisible to the sim's
+         * pause query too: this reads LIVE overlay state, and a TRUE here
+         * while the online sim runs would gate obj_update differently in the
+         * authored pass vs. a correction replay (resim cannot see the live
+         * overlay) -- a divergence, and the resimulate admission gate rejects
+         * a paused game outright. gIsPaused stays authoritative (it is
+         * registered rollback authority and never engages online). */
+        && !mdkr_online_race_pause_suppressed()
+#endif
+    ) {
         return TRUE;
     }
 #endif

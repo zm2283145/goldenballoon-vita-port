@@ -1248,7 +1248,55 @@ static void liveOverlayService(void) {
 }
 static int liveOverlayProcessEvent(const void * /*sdl_event*/) { return 0; }
 static int liveOverlayWantsInput(void) { return 0; }
-static int liveOverlayWantsPause(void) { return 0; }
+static int liveOverlayWantsPause(void) {
+    /* TEST-ONLY (beta rigs): MDKR_APP_TEST_ONLINE_APP_OVERLAY_PAUSE="A-B"
+     * answers the engine's wants-pause query with 1 over the authored-tick
+     * window [A,B) -- byte-for-byte the FACT the real app overlay reports
+     * while open with pause allowed (ui_overlay.cpp onWantsPause). The live
+     * sessions bind these minimal hooks, so the real F1/Escape overlay is not
+     * constructible here; this injects only that app-boundary input, and
+     * everything the engine does with it is production code. Inert (constant
+     * 0, the shipped behavior) without the env. */
+    static long openTick = -1;
+    static long closeTick = -1;
+    static int resolved = 0;
+    static int announced = 0;
+    if (!resolved) {
+        resolved = 1;
+        if (const char *env =
+                std::getenv("MDKR_APP_TEST_ONLINE_APP_OVERLAY_PAUSE")) {
+            char *end = nullptr;
+            const long open = std::strtol(env, &end, 10);
+            if (end != env && *end == '-' && open > 0) {
+                const char *rest = end + 1;
+                const long close = std::strtol(rest, &end, 10);
+                if (end != rest && *end == '\0' && close > open) {
+                    openTick = open;
+                    closeTick = close;
+                }
+            }
+        }
+    }
+    if (openTick < 0) return 0;
+    const long tick = static_cast<long>(g_simTickCounter);
+    if (tick < openTick || tick >= closeTick) {
+        if (announced == 1 && tick >= closeTick) {
+            announced = 2;
+            std::fprintf(stderr,
+                         "[overlay-test] app overlay pause window CLOSED "
+                         "tick=%ld\n", tick);
+        }
+        return 0;
+    }
+    if (announced == 0) {
+        announced = 1;
+        std::fprintf(stderr,
+                     "[overlay-test] app overlay pause window OPEN tick=%ld "
+                     "(wants-pause asserted; window %ld-%ld)\n",
+                     tick, openTick, closeTick);
+    }
+    return 1;
+}
 static int liveOverlayWantsRender(void) { return 0; }
 static int liveOverlayRender(void) { return 1; }
 }  // extern "C"
@@ -1336,6 +1384,23 @@ static std::uint32_t liveTestSeverPeerAtTick(void) {
         cached = (parsed > 0) ? parsed : 0;
     }
     return static_cast<std::uint32_t>(cached);
+}
+
+/* TEST-ONLY sibling of the tick sever (MDKR_APP_TEST_ONLINE_SEVER_PEER_AT_
+ * RESULTS): HARD-sever the in-process peer the moment the resident
+ * coordinator enters its RESULTS hold -- the near-finish kill shape, where
+ * the loss lands DURING the post-race waits after a genuine captured finish.
+ * The identical fault as the tick seam (pump frozen + loopback presence
+ * dropped), refusing nothing: detection must come from the transport's own
+ * ladders. Unset == off. */
+static bool liveTestSeverPeerAtResults(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *env =
+            std::getenv("MDKR_APP_TEST_ONLINE_SEVER_PEER_AT_RESULTS");
+        cached = (env != nullptr && env[0] != '\0' && env[0] != '0') ? 1 : 0;
+    }
+    return cached == 1;
 }
 
 /* Advance the visible endpoint's race transport up to `tick` (idempotent), then
@@ -1930,6 +1995,63 @@ void reportOnlineRaceResults(
                  static_cast<int>(endReason));
 }
 
+/* Deliberate local leave (session end LEFT) with the race transport still up:
+ * tell the peer NOW over the reliable control channel -- the existing
+ * race_abort, the same message the race-start barrier sends -- so the survivor
+ * ends its race on the immediate typed opponent-left path instead of
+ * ghost-racing into the 20-30 s loss ladders. Nothing transport-level says
+ * anything otherwise: the leaver returns to the ROOM, so its mesh stays up and
+ * keeps answering pings. Skipped when no race transport ever armed (pre-race
+ * backouts have their own vacate handling) and when the LEFT was itself caused
+ * by the PEER's loss (nobody is left to notify). */
+void notifyPeerOfDeliberateLeave(IMdkrOnlineAdapter *adapter,
+                                 MdkrPartyLinkSessionEndReason reason) {
+    if (adapter == nullptr || reason != MDKR_PARTY_LINK_SESSION_END_LEFT) {
+        return;
+    }
+    MdkrOnlineLiveRaceInfo info{};
+    if (!mdkr_online_live_adapter_race_info(adapter, &info) || !info.ready) {
+        return;
+    }
+    if (mdkr_online_live_adapter_race_peer_lost(adapter)) return;
+    if (mdkr_online_live_adapter_race_send_abort(adapter)) {
+        std::fprintf(stderr,
+                     "[online-live] deliberate leave: race-abort sent to the "
+                     "peer\n");
+    }
+}
+
+/* Session return after a mesh peer loss: latch the truthful opponent-left
+ * recovery card. Covers the loss that lands in the POST-RACE window (peer
+ * killed within the detection bound of the survivor's finish): the race
+ * completed genuinely, the in-race mapping was demoted or cleared by the
+ * lobby wrap (resetRaceLatches), and the session then unwound LEFT (the
+ * vacated-seat presentation) or ERROR (a watchdog) -- either way the player
+ * deserves the card that says what happened, not generic recovery copy. The
+ * adapter's own no-demote rule still protects a more specific mid-race
+ * breakdown (CONNECTION_UNPLAYABLE). FINISHED returns are left alone: a
+ * completed tournament's wrap outranks a post-completion room departure. */
+void latchOpponentLeftCardOnPeerLoss(IMdkrOnlineAdapter *adapter,
+                                     MdkrPartyLinkSessionEndReason reason) {
+#if MDKR_ENABLE_ONLINE_BETA
+    if (adapter == nullptr ||
+        (reason != MDKR_PARTY_LINK_SESSION_END_LEFT &&
+         reason != MDKR_PARTY_LINK_SESSION_END_ERROR)) {
+        return;
+    }
+    if (!OnlineRoom_partyLinkPeerLossObserved()) return;
+    if (mdkr_online_live_adapter_set_race_end_failure(
+            adapter, MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT)) {
+        std::fprintf(stderr,
+                     "[online-live] session ended after a mesh peer loss -> "
+                     "opponent-left recovery card\n");
+    }
+#else
+    (void)adapter;
+    (void)reason;
+#endif
+}
+
 /* Non-blocking frame budget for the SINGLE-RACE observe-only re-cycle: the max
  * serviced frames the launcher waits for the ENGINE-driven re-cycle to reach a
  * fresh race-ready transport before it gives up (logs + ends residency, never
@@ -2073,6 +2195,20 @@ static void liveResidentServiceStep(void) {
     }
 
     if (rs->phase == LiveResidentState::Phase::Results) {
+        /* TEST-ONLY: the near-finish sever (see liveTestSeverPeerAtResults)
+         * fires once, on the first RESULTS-hold frame -- after the genuine
+         * finish was captured and reported, before any REMATCH/advance. */
+        if (liveTestSeverPeerAtResults() && rs->ctx != nullptr &&
+            !rs->ctx->peerSevered) {
+            rs->ctx->peerSevered = true;
+            if (rs->ctx->severRig != nullptr) {
+                OnlineRoom_testLoopbackSeverPeerPresence(rs->ctx->severRig);
+            }
+            std::fprintf(stderr,
+                         "[online-live] TEST: peer transport SEVERED at "
+                         "results (pump frozen + presence dropped; detection "
+                         "must come from the transport)\n");
+        }
         /* The native RESULTS screen fronts; the host's advance publishes rematch on
          * the reverse feed, which the intent pump above dispatches as the reducer's
          * leader-only REMATCH. Wait for it to actually land (LOBBY + race_index
@@ -2594,7 +2730,13 @@ int runOnlineLobbyStartEngineSession(AppHost &host, const MdkrBootConfig &config
      * room-ready re-arm -- the probe + lanes own the latch state and assert exact fire
      * counts, so arming here would pollute them. The production native path
      * (runOnlineLobbyStartLiveSession) is the sole arm site. */
-    (void)onlineTakeSessionEndWitness(result);
+    const MdkrPartyLinkSessionEndReason lobbyStartEndReason =
+        onlineTakeSessionEndWitness(result);
+    /* Same immediate peer notify as the production path: a deliberate mid-race
+     * leave must not strand the survivor on the loss ladders. */
+    notifyPeerOfDeliberateLeave(visible, lobbyStartEndReason);
+    /* Same truthful-card routing as the production path. */
+    latchOpponentLeftCardOnPeerLoss(visible, lobbyStartEndReason);
 
     liveEngineHostUnbind();
     g_liveMatchInput = nullptr;
@@ -2727,6 +2869,12 @@ int runOnlineLobbyStartLiveSession(AppHost &host, const MdkrBootConfig &config,
     const MdkrPartyLinkSessionEndReason endReason =
         onlineTakeSessionEndWitness(result);
     if (endReasonOut != nullptr) *endReasonOut = endReason;
+    /* A deliberate mid-race leave must notify the surviving peer immediately
+     * (its race is still running against our now-frozen seat). */
+    notifyPeerOfDeliberateLeave(visible, endReason);
+    /* A session that unwound after the mesh lost the peer fronts the
+     * truthful card, wherever in the session the loss landed. */
+    latchOpponentLeftCardOnPeerLoss(visible, endReason);
     /* A FINISHED native session returns with the tournament-final REMATCH
      * wrap already landed (the host's FINISH dispatched it before leaving; a joiner's
      * FINISHED followed that same observed wrap), so the room is normally already
@@ -4742,6 +4890,25 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
             host, config, OnlineRoom_testLoopbackVisible(race),
             OnlineRoom_testLoopbackPeer(race), 0u, /*syntheticInput=*/true,
             &liveEndReason);
+        /* Same post-session seam as the interactive handoff: read WHY the
+         * session ended and notify the peer of a deliberate mid-race leave
+         * immediately (the survivor must not wait out the loss ladders). */
+        notifyPeerOfDeliberateLeave(
+            OnlineRoom_testLoopbackVisible(race),
+            mdkr_party_link_take_session_end());
+        /* In-process, the surviving endpoint's pump stopped with the engine;
+         * service it so it drains what a real remote process would drain in
+         * its own loop -- the lanes witness the typed reaction. The abort
+         * crosses a real in-process SCTP channel asynchronously, so poll the
+         * survivor's own latch (bounded) instead of assuming delivery is
+         * synchronous with the send. */
+        if (IMdkrOnlineAdapter *survivor = OnlineRoom_testLoopbackPeer(race)) {
+            for (int drainPass = 0; drainPass < 400; ++drainPass) {
+                survivor->service();
+                if (mdkr_online_live_adapter_race_peer_lost(survivor)) break;
+                SDL_Delay(1u);
+            }
+        }
         /* Same race-end seam as the interactive handoff: the results poll +
          * report must fire whenever the online engine session returns, and
          * this loopback proof is the fixture that witnesses it. */
