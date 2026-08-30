@@ -79,12 +79,20 @@ static void test_map_lost_reason_in_race_branches() {
     CHECK(mapLost(MdkrMatchPeerLostReason::SealWindowExhausted, false) ==
           MDKR_ONLINE_VIEW_FAILURE_CONNECTION_CHECK);
 
-    /* Reason classes independent of raceBegun stay put. */
+    /* LINGERING-PRESENCE mid-race loss (the audit's defect #1): ICE tears
+     * down while the peer's signal presence is still asserted (Worker slow to
+     * drop it, or the Worker itself down), so the survivor runs the restart
+     * ladder to ConnectTimeout -- or TransportFailed when signaling is also
+     * gone. A playable race EXISTED, so the truthful card is OPPONENT_LEFT,
+     * exactly like the ping/vanish reasons; only a pre-race loss keeps the
+     * establishment copy. */
     CHECK(mapLost(MdkrMatchPeerLostReason::ConnectTimeout, true) ==
-          MDKR_ONLINE_VIEW_FAILURE_NETWORKS_CANNOT_CONNECT);
+          MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT);
     CHECK(mapLost(MdkrMatchPeerLostReason::ConnectTimeout, false) ==
           MDKR_ONLINE_VIEW_FAILURE_NETWORKS_CANNOT_CONNECT);
     CHECK(mapLost(MdkrMatchPeerLostReason::TransportFailed, true) ==
+          MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT);
+    CHECK(mapLost(MdkrMatchPeerLostReason::TransportFailed, false) ==
           MDKR_ONLINE_VIEW_FAILURE_NETWORKS_CANNOT_CONNECT);
     CHECK(mapLost(MdkrMatchPeerLostReason::CommitmentMismatch, true) ==
           MDKR_ONLINE_VIEW_FAILURE_VERIFICATION_MISMATCH);

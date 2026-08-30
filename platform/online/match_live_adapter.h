@@ -512,6 +512,13 @@ bool mdkr_online_live_adapter_test_race_end_demotes(
  * signal). Never called by the launcher. */
 bool mdkr_online_live_adapter_test_rekey_clears_peer_loss(bool via_abort);
 bool mdkr_online_live_adapter_test_reverify_clears_peer_loss(bool via_abort);
+/* Force an ICE-down on every REMOTE peer connection of a LIVE mesh (via the
+ * transport's existing kill-channels seam) WITHOUT touching signal presence --
+ * the lingering-presence mid-race loss signature (ICE dead, presence still
+ * asserted), which resolves through the restart ladder to ConnectTimeout
+ * instead of the presence-drop vanish path. Used by the mid-race transport-
+ * loss lane's lingering-presence arm; never called by the launcher. */
+bool mdkr_online_live_adapter_test_kill_peer_channels(IMdkrOnlineAdapter *adapter);
 #endif
 
 /* Seal + fan out the race's OPENING input window (firstTick..firstTick+

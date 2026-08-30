@@ -46,6 +46,18 @@ pinned at the mesh layer by test_match_peer_transport.cpp's
 presenceBlipWithHealthyChannelsIsNotPeerLoss (healthy channels keep ponging
 through a signal-presence blip; no ladder fires).
 
+THIRD ARM -- the LINGERING-PRESENCE kill
+(MDKR_APP_TEST_ONLINE_SEVER_LINGER_PRESENCE=1 on top of the tick sever): the
+peer's pump freezes but its signal presence stays ASSERTED (a Worker slow to
+drop it, or the Worker itself down -- the audit's rows-10/11 defect signature),
+and the seam forces the ICE-down through the mesh's existing kill-channels
+test seam. Detection must resolve through the presence-asserted restart
+ladder -- `[MESH] peer LOST reason=<ConnectTimeout>` within the offer-ladder
+bound (kMdkrMatchOfferRetryDeadlineMs x kMdkrMatchMaxRestartEpisodes) -- and
+the adapter must STILL map it to OPPONENT_LEFT: a playable race existed, so a
+mid-race departure is never demoted to the connection-establishment card
+(pre-fix this arm mapped to NETWORKS_CANNOT_CONNECT).
+
 SECOND ARM -- the NEAR-FINISH kill (each arm a full engine boot): the sever
 lands the moment the race's genuine results are captured
 (MDKR_APP_TEST_ONLINE_SEVER_PEER_AT_RESULTS), so the loss is detected DURING
@@ -199,13 +211,27 @@ def main() -> int:
 
     ping_timeout_reason = parse_enum_index(
         mesh_text, "MdkrMatchPeerLostReason", "PingTimeout", beta=True)
+    connect_timeout_reason = parse_enum_index(
+        mesh_text, "MdkrMatchPeerLostReason", "ConnectTimeout", beta=True)
     view_text = VIEW_HEADER.read_text(encoding="utf-8")
     opponent_left = parse_enum_index(
         view_text, "MdkrOnlineViewFailure",
         "MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT", beta=True)
-    if ping_timeout_reason is None or opponent_left is None:
+    if (ping_timeout_reason is None or connect_timeout_reason is None or
+            opponent_left is None):
         return fail("could not parse the reason/failure enumerators from the "
                     "headers")
+    # The lingering arm's named bound: the presence-asserted restart/offer
+    # ladder (never the vanish/ping path).
+    offer_deadline = parse_constant_ms("kMdkrMatchOfferRetryDeadlineMs",
+                                       mesh_text)
+    max_episodes = parse_constant_ms("kMdkrMatchMaxRestartEpisodes", mesh_text)
+    if offer_deadline is None or max_episodes is None:
+        return fail("could not parse the offer-ladder constants from "
+                    f"{MESH_HEADER}")
+    linger_bound_ms = offer_deadline * max_episodes
+    linger_bound_ticks = ((linger_bound_ms // 1000) +
+                          DETECT_SLACK_SECONDS) * AUTHORED_HZ
 
     extra_env = {
         # The production takeover shape: descriptor-less lobby-start,
@@ -382,6 +408,71 @@ def main() -> int:
                     f"{shutdown[-1] if shutdown else 'no witness'}", output)
     nf_exit = VACATE_LEFT_RE.search(output)
 
+    # ===== Arm 3: LINGERING PRESENCE (ICE dead, presence still asserted) =====
+    lg_env = dict(extra_env)
+    lg_env["MDKR_APP_TEST_ONLINE_SEVER_LINGER_PRESENCE"] = "1"
+    try:
+        returncode, output = run_engine(
+            binary, rom, ticks=args.ticks, timeout=args.timeout,
+            verbose=args.verbose, extra_env=lg_env,
+            prefix="mdkr64-online-linger-sever-")
+    except subprocess.TimeoutExpired as error:
+        return fail(f"[linger] engine run timed out (a hang instead of a "
+                    f"bounded return): {error}")
+    marker = forbidden_marker(output, *FORBIDDEN, *ABORT_MARKERS)
+    if marker:
+        return fail(f"[linger] observed fatal/abort marker {marker!r}", output)
+    if returncode != 0:
+        return fail(f"[linger] process exited {returncode}, expected 0 "
+                    f"(clean LEFT return)", output)
+    lg_sever = SEVER_RE.search(output)
+    if not lg_sever:
+        return fail("[linger] the transport-sever seam never fired", output)
+    if "presence LINGERS" not in output:
+        return fail("[linger] the sever did not take the lingering-presence "
+                    "variant (presence was dropped)", output)
+    lg_sever_tick = int(lg_sever.group(1))
+    lost = MESH_LOST_RE.search(output)
+    if not lost:
+        return fail("[linger] NO `[MESH] peer LOST` after the sever -- the "
+                    "presence-asserted restart ladder never resolved the dead "
+                    "peer", output)
+    if int(lost.group(1)) != connect_timeout_reason:
+        return fail(f"[linger] peer LOST reason={lost.group(1)}, expected the "
+                    f"restart ladder's ConnectTimeout "
+                    f"({connect_timeout_reason}) -- with presence asserted the "
+                    f"loss must resolve through the restart/offer ladder",
+                    output)
+    mapped = MESH_LOST_FAILURE_RE.search(output)
+    if not mapped:
+        return fail("[linger] the adapter never mapped the loss onto the "
+                    "recovery card", output)
+    if int(mapped.group(2)) != opponent_left:
+        return fail(f"[linger] loss mapped to failure={mapped.group(2)}, "
+                    f"expected OPPONENT_LEFT ({opponent_left}) -- the "
+                    f"lingering-presence mid-race departure must never demote "
+                    f"to the connection-establishment card (the pre-fix "
+                    f"NETWORKS_CANNOT_CONNECT mis-attribution)", output)
+    latch = MIDRACE_LATCH_RE.search(output)
+    if not latch:
+        return fail("[linger] `[MESH] peer LOST` fired but the mid-race latch "
+                    "never ended the race", output)
+    lg_latch_tick = int(latch.group(1))
+    if lg_latch_tick - lg_sever_tick > linger_bound_ticks:
+        return fail(f"[linger] latch fired at tick {lg_latch_tick}, "
+                    f"{lg_latch_tick - lg_sever_tick} ticks after the sever at "
+                    f"{lg_sever_tick} -- beyond the offer-ladder bound "
+                    f"({linger_bound_ms} ms + {DETECT_SLACK_SECONDS}s slack = "
+                    f"{linger_bound_ticks} ticks @ {AUTHORED_HZ} Hz)", output)
+    end = SESSION_END_RE.findall(output)
+    if not end or end[-1][0] != "LEFT" or int(end[-1][1]) != 0:
+        return fail(f"[linger] session end {end[-1] if end else 'missing'}, "
+                    f"expected (LEFT, 0)", output)
+    for watchdog in WATCHDOG_MARKERS:
+        if watchdog in output:
+            return fail(f"[linger] the watchdog path fired ({watchdog!r})",
+                        output)
+
     print(f"PASS online mid-race transport loss: severed at tick "
           f"{sever_tick}, PingTimeout peer LOST -> OPPONENT_LEFT "
           f"({opponent_left}) -> mid-race latch at tick {latch_tick} "
@@ -389,7 +480,10 @@ def main() -> int:
           f"{bound_ms} ms) -> clean LEFT rc 0, zero leaks, no watchdog, "
           f"no abort; [near-finish] genuine finish, post-race sever, typed "
           f"vacate exit at {nf_exit.group(1)}, opponent-left card latched, "
-          f"(LEFT, 0)")
+          f"(LEFT, 0); [linger] presence-asserted sever at tick "
+          f"{lg_sever_tick}, ConnectTimeout peer LOST -> OPPONENT_LEFT at "
+          f"tick {lg_latch_tick} (+{lg_latch_tick - lg_sever_tick} ticks <= "
+          f"{linger_bound_ticks}), clean LEFT rc 0")
     return 0
 
 

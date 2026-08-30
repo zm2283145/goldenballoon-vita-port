@@ -1403,6 +1403,24 @@ static bool liveTestSeverPeerAtResults(void) {
     return cached == 1;
 }
 
+/* TEST-ONLY variant selector for the tick sever
+ * (MDKR_APP_TEST_ONLINE_SEVER_LINGER_PRESENCE=1): keep the frozen peer's
+ * loopback signal PRESENCE asserted (the Worker was slow to drop it, or is
+ * itself down -- the real-cloud lingering-presence kill signature) and force
+ * the ICE-down promptly through the mesh's existing kill-channels seam, so
+ * the survivor's loss resolves through the presence-asserted restart ladder
+ * (ConnectTimeout), never the presence-drop vanish/ping path. Unset == the
+ * original presence-dropping sever. */
+static bool liveTestSeverLingerPresence(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *env =
+            std::getenv("MDKR_APP_TEST_ONLINE_SEVER_LINGER_PRESENCE");
+        cached = (env != nullptr && env[0] != '\0' && env[0] != '0') ? 1 : 0;
+    }
+    return cached == 1;
+}
+
 /* Advance the visible endpoint's race transport up to `tick` (idempotent), then
  * copy the canonical frame for `tick`. Authored ticks are 1-based and align with
  * the adapter's raceFirstTick (1), so one drain == one race_advance. */
@@ -1481,14 +1499,24 @@ bool liveDrainMatchInput(void *opaque, std::uint32_t /*epoch*/,
             if (severAt != 0u && !ctx->peerSevered && drainTick >= severAt &&
                 drainTick > info.firstTick) {
                 ctx->peerSevered = true;
-                if (ctx->severRig != nullptr) {
+                const bool linger = liveTestSeverLingerPresence();
+                if (!linger && ctx->severRig != nullptr) {
                     OnlineRoom_testLoopbackSeverPeerPresence(ctx->severRig);
+                }
+                if (linger) {
+                    /* Lingering-presence variant: presence stays asserted;
+                     * force the ICE-down instead so the survivor's restart
+                     * ladder (not the vanish/ping path) resolves the loss. */
+                    (void)mdkr_online_live_adapter_test_kill_peer_channels(
+                        ctx->visible);
                 }
                 std::fprintf(stderr,
                              "[online-live] TEST: peer transport SEVERED at "
-                             "tick %u (pump frozen + presence dropped; "
+                             "tick %u (pump frozen + %s; "
                              "detection must come from the transport)\n",
-                             drainTick);
+                             drainTick,
+                             linger ? "presence LINGERS + channels killed"
+                                    : "presence dropped");
             }
         }
         if (ctx->peer != nullptr && !ctx->peerSevered) {

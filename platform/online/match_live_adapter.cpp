@@ -1908,7 +1908,18 @@ public:
                 return MDKR_ONLINE_VIEW_FAILURE_VERIFICATION_MISMATCH;
             case MdkrMatchPeerLostReason::ConnectTimeout:
             case MdkrMatchPeerLostReason::TransportFailed:
-                /* Always a handshake-time failure by nature. */
+                /* Pre-race these ARE handshake-time failures. Mid-race they
+                 * are the LINGERING-PRESENCE departure signature: ICE tore
+                 * down while the signal service still asserted the peer's
+                 * presence (a slow presence drop, or the Worker itself down
+                 * -> TransportFailed), so the restart ladder ran out. A
+                 * playable race existed, so the truthful card is the same
+                 * OPPONENT_LEFT the ping/vanish reasons map to -- never a
+                 * demotion to the connection-ESTABLISHMENT copy. */
+#if MDKR_ENABLE_ONLINE_BETA
+                if (raceBegun)
+                    return MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT;
+#endif
                 return MDKR_ONLINE_VIEW_FAILURE_NETWORKS_CANNOT_CONNECT;
             case MdkrMatchPeerLostReason::SealWindowExhausted:
 #if MDKR_ENABLE_ONLINE_BETA
@@ -2473,6 +2484,23 @@ public:
         if (viaAbort) a.raceAbortReceived_ = true; else a.racePeerLost_ = true;
         a.beginReVerify();
         return a.racePeerLost();
+    }
+
+    /* Test-only (beta): force an ICE-down on every REMOTE peer connection of
+     * this LIVE mesh via the transport's existing kill-channels seam, while
+     * leaving signal presence untouched -- the lingering-presence mid-race
+     * loss signature the sever lane's linger arm injects. */
+    bool killPeerChannelsForTest() {
+        if (!mesh_) return false;
+        bool any = false;
+        for (const MdkrMatchPeerSlotOwner &o : meshRoster_) {
+            if (o.endpointId == localEndpointId_) continue;
+            if (mdkr_match_peer_mesh_kill_channels_for_test(*mesh_,
+                                                            o.endpointId)) {
+                any = true;
+            }
+        }
+        return any;
     }
 #endif
 
@@ -3133,6 +3161,13 @@ bool mdkr_online_live_adapter_test_rekey_clears_peer_loss(bool via_abort) {
 
 bool mdkr_online_live_adapter_test_reverify_clears_peer_loss(bool via_abort) {
     return LiveAdapter::testReVerifyClearsPeerLoss(via_abort);
+}
+
+bool mdkr_online_live_adapter_test_kill_peer_channels(
+    IMdkrOnlineAdapter *adapter) {
+    if (adapter == nullptr) return false;
+    LiveAdapter *live = adapter->mdkrResolveLive();
+    return live != nullptr && live->killPeerChannelsForTest();
 }
 #endif
 
