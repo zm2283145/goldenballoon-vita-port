@@ -30,6 +30,8 @@
 
 #include "types.h"
 #include "thread3_main.h"
+#include "online/online_screen_constants.h" /* MDKR_ONLINE_SCREEN_W_HALF (the
+                                               descriptor-less re-wait pulse) */
 #include "platform_os.h"               /* watchdog: platform_request_exit
                                           (the SAME clean engine-exit menu.c uses on
                                           the online post-race path) */
@@ -545,6 +547,45 @@ static void online_session_descless_progress_tick(
             sOnlineSession.lobbyWaitTicks);
 }
 
+/* ---- descriptor-less re-wait PULSE LINE ---------------------------------- *
+ * The two descriptor-less LOBBY_WAIT holds (the race-1 re-wait and the
+ * per-round re-wait) front NO native screen: the previous screen exited and
+ * freed its assets, so over a real cross-process room the player stared at an
+ * idle black hold for a potentially long bounded wait with no narration
+ * (consistency audit dim-5). Draw one small truthful pulse line -- the same
+ * "...ING..." family every screen's footer uses -- for every tick the session
+ * stays parked in a descriptor-less wait. The overlay owns a SMALLFONT load
+ * for its lifetime (latched on first draw, released when the wait ends), and
+ * the release retires the frame's authored display list first, the same
+ * freed-texture discipline every screen _exit follows. */
+static u8 sReWaitOverlayFont; /* SMALLFONT load latched for the overlay */
+
+static void online_session_rewait_overlay_clear(void) {
+    if (sReWaitOverlayFont) {
+        mdkr_online_screen_dl_retire();
+        unload_font(ASSET_FONTS_SMALLFONT);
+        sReWaitOverlayFont = 0u;
+    }
+}
+
+static void online_session_rewait_overlay_draw(void) {
+    s32 tri;
+    s32 c;
+    if (!sOnlineSession.beganWithoutDescriptor) {
+        return; /* descriptor-first waits are launcher-narrated already */
+    }
+    if (!sReWaitOverlayFont) {
+        load_font(ASSET_FONTS_SMALLFONT);
+        sReWaitOverlayFont = 1u;
+    }
+    tri = mdkr_online_screen_pulse(sOnlineSession.lobbyWaitTicks);
+    c = 170 + tri * 5; /* 170..250 pulse -- the results/ceremony hold cadence */
+    mdkr_online_screen_strip(110, 132);
+    mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 121,
+                            ASSET_FONTS_SMALLFONT, "SYNCING WITH RIVAL...",
+                            ALIGN_MIDDLE_CENTER, c, c, c);
+}
+
 /* Advance the descriptor-less wait watchdog; return true (after logging + routing to
  * the platform exit) if the current wait has exceeded its budget. Called only from
  * the descriptor-less waits, only under beganWithoutDescriptor.
@@ -576,6 +617,7 @@ static bool online_session_descless_watchdog_tick(const char *where) {
          * loop honors the flag, the engine returns, teardown runs. Note the
          * ERROR reason so the launcher's session-end read surfaces it as ERROR (one
          * uniform channel + witness alongside the nonzero rc). */
+        online_session_rewait_overlay_clear();
         mdkr_party_link_note_session_end(MDKR_PARTY_LINK_SESSION_END_ERROR);
         platform_request_exit(2);
         return true;
@@ -591,6 +633,7 @@ static bool online_session_descless_watchdog_tick(const char *where) {
          * tick budget use: the thread3 loop honors it, the engine returns, and
          * control comes back to the launcher's engine-session call (clean teardown /
          * residency exit). */
+        online_session_rewait_overlay_clear();
         platform_request_exit(0);
         return true;
     }
@@ -724,6 +767,10 @@ static void online_session_boot_race(void) {
         return;
     }
 
+    /* a descriptor-less re-wait may have been narrating this hold --
+     * release its overlay (font + this frame's list) before the boot. */
+    online_session_rewait_overlay_clear();
+
     intended = sOnlineSession.intendedTrack;
     manifestTrack = (s32) sOnlineSession.launch->manifest.track_id;
     sOnlineSession.bootedEpoch = sOnlineSession.launch->manifest.match_epoch;
@@ -787,6 +834,10 @@ static void online_session_boot_race(void) {
 }
 
 void mdkr_online_session_begin(const MdkrMatchLaunchDescriptorV1 *launch) {
+    /* BELT: a platform exit that bypassed a wait's normal end can strand the
+     * re-wait overlay's font latch; release it so a fresh session in this
+     * process never inherits it (mirrors the HD-text reset below). */
+    online_session_rewait_overlay_clear();
     memset(&sOnlineSession, 0, sizeof(sOnlineSession));
     sOnlineSession.phase = MDKR_ONLINE_SESSION_LOBBY_WAIT;
     sOnlineSession.launch = launch;
@@ -1295,6 +1346,7 @@ void mdkr_online_session_tick(s32 updateRate) {
                 sOnlineSession.desclessWaitDeadlineNs = 0u;
                 sOnlineSession.phase = MDKR_ONLINE_SESSION_CHARSELECT;
                 sCharselectLeaveWarned = 0u;
+                online_session_rewait_overlay_clear();
                 mdkr_online_charselect_enter();
                 fprintf(stderr,
                         "[online-session] lobby-start UNWIND: room returned to LOBBY "
@@ -1319,6 +1371,9 @@ void mdkr_online_session_tick(s32 updateRate) {
             } else if (online_session_descless_watchdog_tick("race-1 re-wait")) {
                 /* Watchdog tripped (descriptor never built): exit requested. */
                 break;
+            } else {
+                /* still parked with no screen up: narrate the hold. */
+                online_session_rewait_overlay_draw();
             }
             break;
         }
@@ -1377,6 +1432,7 @@ void mdkr_online_session_tick(s32 updateRate) {
                                     "(exit 0) (race=%u tick=%u)\n",
                                     sOnlineSession.raceCount,
                                     sOnlineSession.lobbyWaitTicks);
+                            online_session_rewait_overlay_clear();
                             platform_request_exit(0);
                             break;
                         }
@@ -1409,6 +1465,7 @@ void mdkr_online_session_tick(s32 updateRate) {
              * (inside the detector), exactly like the per-round watchdog, so
              * descriptor-first lanes are byte-behaviour-unchanged. */
             if (online_session_detect_remote_vacated("per-round re-wait")) {
+                online_session_rewait_overlay_clear();
                 break;
             }
             /* throttle to the first re-wait tick + every ready-state change,
@@ -1434,6 +1491,9 @@ void mdkr_online_session_tick(s32 updateRate) {
                  * bound it + exit cleanly. Gated on beganWithoutDescriptor, so the
                  * resident lane (descriptor-first) is byte-behaviour-unchanged. */
                 break;
+            } else {
+                /* still parked with no screen up: narrate the hold. */
+                online_session_rewait_overlay_draw();
             }
             break;
         }
