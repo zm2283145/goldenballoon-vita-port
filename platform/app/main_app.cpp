@@ -31,7 +31,7 @@
 #include "net/net_roster_runtime.h"
 #include "online/lobby_view_model.h"
 #if MDKR_ENABLE_ONLINE_BETA
-#include "online/match_live_adapter.h"  // O-T6b visible-engine race-boot handoff
+#include "online/match_live_adapter.h"  // visible-engine race-boot handoff
 #include "net/online_race_results.h"    // finished-race placements poll (one-shot)
 #include "net/party_link.h"             // single-endpoint note (launcher)
 #endif
@@ -62,8 +62,8 @@
 #endif
 
 #if MDKR_ENABLE_ONLINE_BETA
-/* T2 re-arm probe condition toggle: defined in online_live_wiring.cpp. Declared
- * locally (not in match_live_adapter.h) to keep the T2 change scoped to the
+/* Re-arm probe condition toggle: defined in online_live_wiring.cpp. Declared
+ * locally (not in match_live_adapter.h) to keep this seam scoped to the
  * launcher/wiring TUs + tests. Beta-only, exactly like the match_live_adapter.h
  * include above (IMdkrOnlineAdapter is beta-gated, so this block must be too or the
  * OFF build cannot name the type). Drive the loopback room OUT of the room-ready
@@ -1052,7 +1052,7 @@ int runEngineSession(AppHost &host, SessionRuntime &session,
 
 #if MDKR_ENABLE_ONLINE_BETA
 /* ======================================================================== *
- * O-T6b: boot the VISIBLE 3D engine for an ONLINE race driven by the LIVE
+ * Boot the VISIBLE 3D engine for an ONLINE race driven by the LIVE
  * adapter transport (make-or-break).
  *
  * The engine's per-tick canonical input runs through the process-global
@@ -1164,7 +1164,7 @@ struct LiveResidentState {
      * re-wait wall-clock watchdog trips at "per-round re-wait" (the deterministic
      * per-round proof). None in normal runs. */
     bool wedgeSkipRearm = false;
-    /* OBSERVE-ONLY re-cycle (T5 single-race replay + the tournament FINAL wrap).
+    /* OBSERVE-ONLY re-cycle (single-race replay + the tournament FINAL wrap).
      * A single race's REMATCH keeps race_index (only a tournament advances it),
      * so the tournament "race_index advanced" re-cycle trigger never fires for a
      * single race; and the tournament FINAL's REMATCH wrap RESETS race_index to
@@ -2031,7 +2031,7 @@ static void liveResidentServiceStep(void) {
         MdkrOnlineLobby lobby{};
         if (!mdkr_online_live_adapter_lobby(rs->visible, &lobby)) return;
         if (lobby.mode == MDKR_ONLINE_MODE_SINGLE_RACE) {
-            /* SINGLE-RACE replay re-cycle (T5). A single race's REMATCH keeps
+            /* SINGLE-RACE replay re-cycle. A single race's REMATCH keeps
              * race_index, so detect the re-cycle by the room LEAVING RESULTS back to
              * LOBBY -- unambiguous here because we only reach Results AFTER
              * PUBLISH_RESULTS parked the reducer in RESULTS, so an observed LOBBY is
@@ -2121,7 +2121,7 @@ static void liveResidentServiceStep(void) {
     }
 
     if (rs->phase == LiveResidentState::Phase::Advancing && rs->singleObserve) {
-        /* SINGLE-RACE observe-only re-cycle (T5). Wait for the ENGINE-driven
+        /* SINGLE-RACE observe-only re-cycle. Wait for the ENGINE-driven
          * re-cycle to reach a FRESH race-ready transport (BEGIN_LOADING re-installed
          * the roster + a race transport is ready on a NEW epoch), then re-install the
          * match-input so the session's live re-wait boots race N+1. We submit NO
@@ -2468,7 +2468,7 @@ int runOnlineLobbyStartEngineSession(AppHost &host, const MdkrBootConfig &config
      * races 2..N re-cycle in-process (the demo's real flow). Detect it from the SAME
      * env the room builder used to pre-configure the cup. A single-race lobby-start
      * (no tournament env) keeps the resident pointer null -> arm-and-race, unchanged
-     * -- UNLESS MDKR_APP_TEST_ONLINE_SINGLE_REPLAY is set (the T5 lane), which composes
+     * -- UNLESS MDKR_APP_TEST_ONLINE_SINGLE_REPLAY is set (the single-replay lane), which composes
      * the resident for a SINGLE race too so its "Race Again" / "change picks" replays
      * re-cycle in-process (production runOnlineLobbyStartLiveSession always composes
      * it; this mirrors that for the loopback rig without disturbing the plain
@@ -2554,13 +2554,14 @@ int runOnlineLobbyStartEngineSession(AppHost &host, const MdkrBootConfig &config
  * human from race 1, for ANY online mode. Unlike the loopback
  * runOnlineLobbyStartEngineSession this drives a SINGLE live endpoint (peer ==
  * nullptr) -- the real remote process readies itself and supplies its input over the
- * mesh (the proven cloud/liveDrainMatchInput peer==nullptr path). T2 dropped the
- * room-ready trigger's TOURNAMENT-only gate (OnlineRoom_roomReadyConditionHolds), so
- * this is now the descriptor-less native boot path for BOTH single race and
+ * mesh (the proven cloud/liveDrainMatchInput peer==nullptr path). The room-ready
+ * trigger's former TOURNAMENT-only gate (OnlineRoom_roomReadyConditionHolds) is
+ * gone, so this is now the descriptor-less native boot path for BOTH single race and
  * tournament. The resident coordinator it composes with re-cycles rounds 2..N for a
  * TOURNAMENT via the SINGLE-ENDPOINT advance; a SINGLE race boots race 1 native and
- * ends (native single-race REPLAY re-cycle is the T5 follow-up -- until then a single
- * race is one race per boot, exactly like the descriptor-first path it replaces).
+ * ends (a native single-race REPLAY re-cycle is a later follow-up -- until then a
+ * single race is one race per boot, exactly like the descriptor-first path it
+ * replaces).
  * Booted from runInteractiveLauncher's room-ready poll with the panel's live adapter;
  * returns the engine result (a watchdog error trip is a nonzero code the launcher
  * routes back to the room). */
@@ -2630,7 +2631,7 @@ int runOnlineLobbyStartLiveSession(AppHost &host, const MdkrBootConfig &config,
     OnlineRoom_pumpPartyLink(visible);
     OnlineRoom_lobbyStartResetJoiner();
 
-    LiveResidentState residentState; /* re-cycles races 2..N for a tournament; T5:
+    LiveResidentState residentState; /* re-cycles races 2..N for a tournament, and
                                       * also re-cycles a SINGLE race's "Race Again" /
                                       * "change picks" replays in-process via the
                                       * observe-only single-race re-cycle */
@@ -2670,7 +2671,7 @@ int runOnlineLobbyStartLiveSession(AppHost &host, const MdkrBootConfig &config,
      * WAS the rising edge, it just happened while the engine owned the frames), and
      * the next poll re-takes native for session #2 on THIS endpoint; the second real
      * peer does the same on its own FINISHED return -- the automatic both-endpoint
-     * re-take into the freshly wrapped room. T5: single-race "Race Again" / "change
+     * re-take into the freshly wrapped room. Single-race "Race Again" / "change
      * picks" never reach here -- they re-cycle IN-PROCESS (the session stays booted;
      * see the resident coordinator's single-race observe-only re-cycle), so this arm
      * is purely the whole-new-session path, still one arm per FINISHED return.
@@ -3959,9 +3960,9 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
                      warmupAttempts);
     }
 #if MDKR_ENABLE_ONLINE_BETA
-    /* P2-T1 live selection bridge proof: install the launcher->engine forward
+    /* Live selection bridge proof: install the launcher->engine forward
      * feed and publish a deterministic scripted snapshot sequence with NO
-     * adapter, then return. The P2 native character/track screens (later tasks)
+     * adapter, then return. The native character/track screens
      * read this feed during menus; here it proves the publish path end to end
      * and emits [party-link-fake] witnesses for a driving harness. Ordinary
      * autoplay never sets this variable, so the seam stays inert. */
@@ -4107,9 +4108,9 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
      * drives the SAME loopback room to SELECTING and exercises the production
      * detection + consume-once publish DIRECTLY: OnlineRoom_pollRoomReadyTransition
      * must fire EXACTLY ONCE on first-SELECTING+2members+LOBBY for ANY mode
-     * (route=lobby-start). T2 dropped the former TOURNAMENT-only gate, so a
+     * (route=lobby-start). The former TOURNAMENT-only gate is gone, so a
      * single-race room now takes the SAME native takeover as a tournament room
-     * (both fire once + route to lobby-start); the pre-T2 "single race defers to the
+     * (both fire once + route to lobby-start); the earlier "single race defers to the
      * race-ready ImGui fallback" behaviour is gone. Ordinary autoplay never sets
      * this. */
     if (std::getenv("MDKR_APP_TEST_ONLINE_ROOM_READY_PROBE") != nullptr) {
@@ -4174,7 +4175,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
         OnlineRoom_unwrapVisibleOwningAdapter(race, std::move(visibleWrapper));
         OnlineRoom_destroyTestLoopbackRace(race);
         host.shutdown();
-        /* T2: EITHER mode fires exactly once + routes to lobby-start. Before T2 a
+        /* EITHER mode fires exactly once + routes to lobby-start. Formerly a
          * single-race room (no tournament env) fired zero times and fell through to
          * the race-ready ImGui path; the tournament-only gate is now dropped, so the
          * single-race branch below asserts the SAME native takeover the tournament
@@ -5001,12 +5002,15 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
         /* PRODUCTION ROOM-READY takeover (polled BEFORE the race-boot
          * handoff below). The panel (inside launcher.draw above) published its live
          * adapter the first frame an online room (ANY mode -- the takeover is
-         * mode-agnostic since T2) reached SELECTING with 2 members in LOBBY. Boot the
+         * mode-agnostic) reached SELECTING with 2 members in LOBBY. Boot the
          * visible engine DESCRIPTOR-LESS (peer == nullptr) so the
          * NATIVE CHARSELECT -> TRACKSELECT own race 1 for the human, and the resident
          * coordinator re-cycles races 2..N single-endpoint in this one process. The
          * race-boot handoff below stays the UNCHANGED fallback for every non-takeover
-         * path (single-race, or a room that never armed room-ready). On a watchdog
+         * path -- a descriptor-first race-boot, or a room that never armed room-ready
+         * (including a post-LEFT/ERROR return whose latch stays set). Single race is
+         * NOT a fallback trigger on its own: the takeover is mode-agnostic and claims
+         * single-race lobby-start rooms too. On a watchdog
          * ERROR trip (nonzero result) we stay in the launcher loop -- the panel keeps
          * servicing the adapter and surfaces recovery, exactly like the race-boot
          * failure path. */
@@ -5059,8 +5063,11 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
          * the trigger is adapter state, not a panel callback. */
         if (IMdkrOnlineAdapter *raceBoot = OnlineRoom_pollEngineRaceBoot()) {
             /* BACKOUT BELT: the native room-ready takeover did NOT claim this boot
-             * (single-race, a room that never armed room-ready, or a post-LEFT/ERROR
-             * return). This per-race fallback is the intended safety net, but the
+             * (a descriptor-first race-boot, a room that never armed room-ready, or a
+             * post-LEFT/ERROR return whose latch stays set). Single race is not a
+             * trigger on its own -- the mode-agnostic takeover claims single-race
+             * lobby-start rooms too. This per-race fallback is the intended safety
+             * net, but the
              * native takeover is the production path -- WARN so any PRODUCTION use of
              * the fallback is visible in the logs. */
             std::fprintf(stderr,

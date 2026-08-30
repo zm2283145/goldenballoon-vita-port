@@ -705,7 +705,7 @@ std::uint8_t betaValidatedRomRevision(const RomInfo &info) {
 // desyncing mid-race.
 bool buildBetaLiveAdapter(const LauncherState &state, MdkrOnlineJourney journey,
                           const std::string &code) {
-    // m2: the gameplay-determinism developer seams change gameplay math on
+    // The gameplay-determinism developer seams change gameplay math on
     // this machine only; a one-sided setting guarantees an online desync that
     // no compatibility byte-compare can see. Refuse up front with the specific
     // variable named (OnlineRoom_makeGatedLiveAdapter enforces this too).
@@ -1134,7 +1134,7 @@ const char *betaStatusLine(const MdkrOnlineViewModel &model) {
     case MDKR_ONLINE_VIEW_RACING: return "Racing";
     case MDKR_ONLINE_VIEW_RESULTS: return "Race complete";
     case MDKR_ONLINE_VIEW_RECOVERY:
-        /* N1: the top status line must AGREE with the specific failure body it
+        /* The top status line must AGREE with the specific failure body it
          * sits above -- the section-header title (model.title, e.g. "Words Did
          * Not Match") and the failure sentence (betaFailureCopy) -- never
          * contradict them with a generic "Lost connection". Each recovery
@@ -1564,7 +1564,7 @@ void drawBetaPhraseDecision(const MdkrOnlineViewModel &model,
     ui::Gap(ui::kGapM);
     if (ui::CardBegin("##beta-phrase", AppTheme::accent(), 0.0f)) {
         // The "Compare These Words" title is the SectionHeader above this card;
-        // it is not repeated here (N3) -- the card opens straight into the how-to.
+        // it is not repeated here -- the card opens straight into the how-to.
         ui::TextSubtleWrapped(
             "Read the words aloud with your friend. They must match exactly on "
             "both screens — this is what keeps your connection private.");
@@ -1600,7 +1600,7 @@ void drawBetaPhraseDecision(const MdkrOnlineViewModel &model,
     }
     ui::CardEnd();
 
-    // Direct exit during the compare (N2): the view model's cancel ("Leave
+    // Direct exit during the compare: the view model's cancel ("Leave
     // Room") was previously undrawn on this screen, so leaving mid-compare meant
     // routing through Words Differ -> recovery -> Leave. Render it as a small,
     // tertiary control below the card so it never competes with the prominent
@@ -1807,8 +1807,8 @@ const char *betaReentryReasonCopy(MdkrPartyLinkSessionEndReason reason) {
 // After pairing, the descriptor-less native online screens (CHARSELECT ->
 // VEHICLE SELECT -> TRACKSELECT) boot within a frame or two and OWN character,
 // vehicle, and track/cup/mode for EVERY online mode -- single race and tournament
-// alike (T2 routed single race through the same descriptor-less native path, so
-// the room-ready takeover now fires for both). This concise card replaces the
+// alike (single race routes through the same descriptor-less native path, so the
+// room-ready takeover fires for both modes). This concise card replaces the
 // WHOLE ImGui per-race selection surface (racer grid, vehicle chips, Race
 // Settings mode/cup/track picker, Ready/Start) so the human never lands on a
 // stale editable grid the game is about to own.
@@ -1851,16 +1851,14 @@ bool drawBetaNativeHandoffCard(bool tournament,
 
 // ---- Native RESULTS hand-off card -------------------------------------------
 // After a race the native RESULTS screen + the MORE-RACES chooser + the champion
-// ceremony (T4) OWN per-race placements, cumulative standings, the champion banner
-// AND every replay choice (Race Again / Change Track / Change Cup / New Tournament /
+// ceremony OWN per-race placements, cumulative standings, the champion banner AND
+// every replay choice (Race Again / Change Track / Change Cup / New Tournament /
 // Change Character+Vehicle / Finish) for EVERY online mode -- single race and
-// tournament alike. This concise card replaces the WHOLE ImGui results/standings/
-// replay surface so the human never lands on a stale standings body -- or worse, an
-// editable Next-Race / New-Tournament prompt -- the game already owns. It is the
-// exact RESULTS mirror of the SELECTING hand-off (T3) and is shown ONLY while the
-// takeover is engaged (OnlineRoom_roomReadyTakeoverEngaged); after a LEFT/ERROR
-// return that predicate is false and the full ImGui results fallback shows instead,
-// so this card never lies.
+// tournament alike. This concise card is the WHOLE launcher RESULTS body now that
+// the ImGui results/standings/replay surface is retired: RESULTS always renders it
+// unconditionally (drawBetaResultsHandoff), so the human never lands on a stale
+// standings body -- or an editable Next-Race / New-Tournament prompt -- the game
+// already owns. It is the RESULTS mirror of the SELECTING hand-off card.
 void drawBetaNativeResultsHandoffCard() {
     if (ui::CardBegin("##beta-native-results-handoff", AppTheme::accent(), 0.0f)) {
         ImGui::TextUnformatted("The game is showing results…");
@@ -2008,7 +2006,7 @@ void drawBetaRoom(LauncherState &state) {
     const MdkrOnlineViewAction timeoutAction =
         model.timeout.present && g_online.adapter->timeoutExpired()
             ? model.timeout.primary.action : MDKR_ONLINE_VIEW_ACTION_NONE;
-    // N4: only lead with a gap when something separable follows -- the roster +
+    // Only lead with a gap when something separable follows -- the roster +
     // hand-off body or an expired-timeout box. A generic invite/recovery body
     // no longer floats the section rule above a dead band.
     const bool richBody =
@@ -2419,7 +2417,7 @@ void drawBetaRoomFake(LauncherState &state) {
         return;
     }
 
-    // N4: only lead with a gap when the roster + hand-off body follows; a generic
+    // Only lead with a gap when the roster + hand-off body follows; a generic
     // invite/recovery body does not, so the section rule no longer floats above a
     // dead band.
     const bool richBody =

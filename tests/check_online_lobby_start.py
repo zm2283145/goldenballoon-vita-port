@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PD-T6h2a KEYSTONE PROOF: the NATIVE online screens own RACE 1.
+"""KEYSTONE PROOF: the NATIVE online screens own RACE 1.
 
 A headless TWO-ENDPOINT loopback lane that boots BOTH endpoints at the LOBBY with
 NO race descriptor and the party_link bridge installed, then drives the visible
@@ -12,7 +12,7 @@ match-input are truly ready.
 Unlike check_online_engine_boot_direct / check_online_charselect (which boot the
 engine race-ready, descriptor ALREADY built), here the engine begins
 DESCRIPTOR-LESS and the descriptor is built DURING the native selection. This is
-the proof of the highest-crash-risk PD-T6h2a change: the race-1 readiness gate
+the proof of the highest-crash-risk change: the race-1 readiness gate
 holds the boot (never dereferencing a NULL/stale descriptor) until the launcher's
 real descriptor lands.
 
@@ -35,7 +35,7 @@ Assertions:
   * the engine entered the ONLINE rollback race on the native track (loadedTrack=3)
 
 This lane runs SINGLE-RACE (no MDKR_APP_TEST_ONLINE_MODE env), so it is the single-
-race native lobby-start proof. It also asserts (T2) that the PRODUCTION room-ready
+race native lobby-start proof. It also asserts that the PRODUCTION room-ready
 GATE now ROUTES a single-race room to this native takeover:
   * OnlineRoom_roomReadyConditionHolds fires EXACTLY ONCE for a SINGLE-RACE room and
     routes to lobby-start (route=lobby-start) -- the tournament-only clause is dropped,
@@ -115,13 +115,13 @@ fail = make_fail("lobby-start")
 
 
 def check_room_ready_gate_single_race(binary, rom, verbose):
-    """T2: the PRODUCTION room-ready GATE routes a SINGLE-RACE room to the native
+    """The PRODUCTION room-ready GATE routes a SINGLE-RACE room to the native
     takeover. The boot proof (this lane's main run) rides the descriptor-less engine
     seam directly; this proves the routing gate OnlineRoom_roomReadyConditionHolds now
     FIRES for a single-race room (no tournament env) -- exactly once + route=lobby-
-    start, the SAME native takeover a tournament room gets. Before T2 a single-race
+    start, the SAME native takeover a tournament room gets. Formerly a single-race
     room deferred to the race-ready ImGui fallback (fires=0), so single race never
-    reached the native path in production; T2 dropped that tournament-only clause.
+    reached the native path in production; that tournament-only clause is now dropped.
 
     The probe holds the visible endpoint as the PRODUCTION OwningLiveAdapter wrapper
     (the same wrapper class the Online Room panel builds), not a raw LiveAdapter, so
@@ -144,7 +144,7 @@ def check_room_ready_gate_single_race(binary, rom, verbose):
     fires, held, published, route = m.groups()
     if fires != "1" or held != "1" or published != "1" or route != "lobby-start":
         return fail(f"the room-ready gate did NOT route the single-race room to the "
-                    f"native takeover (T2 expects fires=1 held=1 published=1 "
+                    f"native takeover (expected fires=1 held=1 published=1 "
                     f"route=lobby-start): fires={fires} held={held} "
                     f"published={published} route={route}", output)
     # The probe holds the visible endpoint as the PRODUCTION OwningLiveAdapter wrapper
@@ -332,10 +332,10 @@ def main() -> int:
         return fail(f"the engine never entered the ONLINE rollback race on the "
                     f"native track {HOST_TRACK} (saw {online_race!r})", output)
 
-    # --- T2: the production ROOM-READY GATE routes single race to lobby-start ------
+    # --- The production ROOM-READY GATE routes single race to lobby-start ----------
     # The boot above proves the descriptor-less NATIVE path converges for a single
     # race; this proves the PRODUCTION routing gate now sends a single-race room THERE
-    # (pre-T2 it deferred to the race-ready ImGui fallback).
+    # (formerly it deferred to the race-ready ImGui fallback).
     gate = check_room_ready_gate_single_race(binary, rom, args.verbose)
     if gate is not None:
         return gate
@@ -355,7 +355,7 @@ def main() -> int:
         f"admission reject, gGameMode={boot_gamemode} gCurrentMenuId={boot_menu_id} "
         f"throughout -- engine entered the online rollback race "
         f"loadedTrack={online_race[0][0]} after {lobby_ticks} LOBBY_WAIT tick(s). "
-        f"T2 GATE: the production room-ready gate routed the SINGLE-RACE room to the "
+        f"ROOM-READY GATE: the production room-ready gate routed the SINGLE-RACE room to the "
         f"native takeover (fires=1, route=lobby-start) -- single race now takes the "
         f"same descriptor-less native path as a tournament."
     )

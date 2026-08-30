@@ -5,8 +5,9 @@
  * shipping build -- the option defaults OFF and release.yml/build_app_bundle.sh
  * never set it). Provides the real OnlineRoom_makeGatedLiveAdapter the Online
  * Room panel calls: it composes the production MatchRoom HTTP transport, the
- * real signal-client mesh backend and the O-T3 live adapter EXACTLY as the O-T6
- * e2e driver does (tests/test_online_live_transport_e2e_driver.cpp), and returns
+ * real signal-client mesh backend and the live match adapter EXACTLY as the
+ * end-to-end transport driver does
+ * (tests/test_online_live_transport_e2e_driver.cpp), and returns
  * an owning wrapper that keeps the two borrowed transports alive for the
  * adapter's lifetime.
  *
@@ -14,7 +15,7 @@
  *   - 2 endpoints: localSeatCount = 1 (solo endpoint; couch-pair = 2 comes later
  *     and >=3 needs the full-mesh-rekey protocol that is NOT closed).
  *   - retail identities: every local roster slot is clamped to
- *     MDKR_MATCH_IDENTITY_RETAIL, feeding the O-T5 clamp inside the adapter.
+ *     MDKR_MATCH_IDENTITY_RETAIL, feeding the identity clamp inside the adapter.
  *   - STUN-only: a client-side belt drops any turn:/turns: ICE server the service
  *     delivers, so a mis-provisioned zone can never silently start using relay.
  *
@@ -268,7 +269,7 @@ std::unique_ptr<IMdkrOnlineAdapter> OnlineRoom_makeGatedLiveAdapter(
     const std::string &joinCode) {
     std::string error;
 
-    /* m2 fence: never let a machine with one-sided gameplay-determinism env
+    /* Determinism fence: never let a machine with one-sided gameplay-determinism env
      * seams into a real session (see OnlineRoom_liveBlockedByDeterminismEnv).
      * Enforced here so EVERY live-adapter construction -- panel and the cloud
      * test driver alike -- fails closed, not just the interactive chooser. */
@@ -368,7 +369,7 @@ bool OnlineRoom_liveInvite(IMdkrOnlineAdapter *adapter, std::string *code,
 }
 
 /* ======================================================================== *
- * P2-T1: live selection bridge wiring (platform/net/party_link)
+ * Live selection bridge wiring (platform/net/party_link)
  *
  * FORWARD FEED: OnlineRoom_pumpPartyLink projects the adapter's live lobby +
  * view model into a pinned snapshot and publishes it for the native screens.
@@ -672,7 +673,7 @@ void OnlineRoom_runTestPartyLinkFake(void) {
 }
 
 /* ======================================================================== *
- * O-T6b: visible-engine race-boot handoff registry
+ * Visible-engine race-boot handoff registry
  *
  * The live adapter publishes itself here the instant its race transport becomes
  * ready (LiveAdapter::setUpRace); a teardown / SAS re-verify retracts it. The
@@ -725,10 +726,11 @@ IMdkrOnlineAdapter *OnlineRoom_pollEngineRaceBoot(void) {
  * Engine ROOM-READY handoff registry (production native takeover)
  *
  * The SECOND consume-once registry (mirrors the race-boot one above), for the
- * PRE-descriptor room-ready moment. The panel/test detects a TOURNAMENT room at
- * SELECTING (2 members, LOBBY phase) and publishes the visible adapter here; the
- * interactive launcher polls it BEFORE the race-boot poll and boots the visible
- * engine DESCRIPTOR-LESS (peer == nullptr) so native owns race 1.
+ * PRE-descriptor room-ready moment. The panel/test detects a room at SELECTING
+ * (2 members, LOBBY phase -- ANY mode, single race and tournament alike) and
+ * publishes the visible adapter here; the interactive launcher polls it BEFORE
+ * the race-boot poll and boots the visible engine DESCRIPTOR-LESS (peer ==
+ * nullptr) so native owns race 1.
  * ======================================================================== */
 namespace {
 ConsumeOnceHandoff sRoomReady;
@@ -809,7 +811,7 @@ bool OnlineRoom_roomReadyConditionHolds(IMdkrOnlineAdapter *adapter) {
     /* Mirror drawBetaRoom's SELECTING-body condition (ui_online_room.cpp:2457-2458):
      * fire the native takeover for ANY online mode at SELECTING + 2 members + LOBBY.
      *
-     * T2: the former TOURNAMENT-only clause here (dropped) deferred single race to the
+     * The former TOURNAMENT-only clause here (dropped) deferred single race to the
      * race-ready ImGui fallback on the theory that a single race's READY is track-VOTE-
      * gated, which the native screens never cast. That justification is STALE for the
      * native path:
@@ -827,7 +829,7 @@ bool OnlineRoom_roomReadyConditionHolds(IMdkrOnlineAdapter *adapter) {
      * So a native single-race host locks a track -> configured_track set -> both seats
      * ready on char+vehicle -> START -> BEGIN_LOADING succeeds with no vote, exactly
      * like a tournament. Routing single race through this descriptor-less native path
-     * is the whole point of T2. */
+     * is the whole point of the mode-agnostic takeover. */
     if (vm.kind != MDKR_ONLINE_VIEW_SELECTING) return false;
     if (vm.member_count != 2u) return false;
     MdkrOnlineLobby lobby{};
@@ -887,8 +889,8 @@ void OnlineRoom_armRoomReadyRearm(void) {
      * LEFT/ERROR/NONE). Requests one re-arm of the room-ready latch so a 2nd native
      * SESSION in the same room re-takes the native path -- mode-agnostic: a 2nd
      * tournament OR, symmetrically, a fresh single-race session after a prior one
-     * FINISHED. (T5 note: single-race "Race Again" / "change picks" do NOT come
-     * through here -- they re-cycle IN-PROCESS via the resident coordinator's
+     * FINISHED. (Single-race "Race Again" / "change picks" do NOT come through
+     * here -- they re-cycle IN-PROCESS via the resident coordinator's
      * single-race observe-only re-cycle, so no engine re-boot and no re-arm is
      * involved for a same-session replay. This re-arm is only the
      * whole-new-session path.) Completion happens on the panel's next per-frame
@@ -938,15 +940,18 @@ void OnlineRoom_observeRoomReadyRearm(IMdkrOnlineAdapter *adapter) {
 }
 
 bool OnlineRoom_roomReadyTakeoverEngaged(void) {
-    /* True only when the native takeover can still fire
-     * this frame OR just fired and a boot is pending; false once a LEFT/ERROR return
-     * has left the latch SET with nothing pending -- the intended no-re-boot-loop
-     * state, in which the takeover will NEVER re-fire in this room and the ImGui
-     * per-race fallback (its Ready/Start UI) is the live continuation, NOT the
-     * hand-off card. The panel ANDs this into `tournamentHandoff` so the card never
-     * lies: `!sRoomReadyLatched` means the SELECTING-branch poll (run BEFORE the body
-     * each frame) will fire this frame; `sRoomReady.pending != nullptr` means it
-     * just fired and the launcher has not yet consumed + booted. */
+    /* True only when the native takeover can still fire this frame OR just fired
+     * and a boot is pending; false once a LEFT/ERROR return has left the latch
+     * SET with nothing pending -- the intended no-re-boot-loop state, in which
+     * the takeover will NEVER re-fire in this room on its own (the launcher's
+     * re-entry gesture re-arms it). The interactive re-entry/re-arm bookkeeping
+     * (main_app.cpp) reads this to tell "still engaged" from "waiting on a
+     * re-entry press"; the SELECTING body itself no longer gates on it -- it
+     * always draws the hand-off card (forward) or the re-entry card, so there is
+     * no editable fallback left for it to keep honest. `!sRoomReadyLatched` means
+     * the SELECTING-branch poll (run BEFORE the body each frame) will fire this
+     * frame; `sRoomReady.pending != nullptr` means it just fired and the launcher
+     * has not yet consumed + booted. */
     return !sRoomReadyLatched || sRoomReady.pending != nullptr;
 }
 
@@ -1009,7 +1014,7 @@ bool OnlineRoom_guardRosterOwner(uint64_t token) {
 /* ======================================================================== *
  * Test-only in-process loopback race pair (MDKR_APP_TEST_ONLINE_LIVE)
  *
- * Builds two REAL live adapters over the O-T2 loopback signal hub feeding a real
+ * Builds two REAL live adapters over the loopback signal hub feeding a real
  * MdkrMatchPeerMesh (real libdatachannel DTLS on 127.0.0.1) plus an in-process
  * MatchRoom double running the REAL lobby reducer -- the same shape
  * tests/test_online_live_adapter.cpp uses -- and drives them through
@@ -1020,7 +1025,7 @@ bool OnlineRoom_guardRosterOwner(uint64_t token) {
  * gated by MDKR_APP_TEST_ONLINE_LIVE and only proves the make-or-break engine
  * wiring headlessly. Deliberately NOT the production OnlineRoom_makeGatedLive
  * Adapter path (that needs a live MatchRoom Worker + second process); this is the
- * loopback equivalent of the O-T6 e2e driver, in one process.
+ * loopback equivalent of the end-to-end transport driver, in one process.
  * ======================================================================== */
 namespace {
 
@@ -1751,13 +1756,13 @@ MdkrOnlineTestLoopbackRace *OnlineRoom_makeTestLoopbackRace(std::string *error) 
         set_err("both endpoints did not become ready");
         return nullptr;
     }
-    /* Leader starts the race; both follow LOADING -> the O-T5 clamp build ->
+    /* Leader starts the race; both follow LOADING -> the identity clamp build ->
      * preflight consensus -> engine roster install -> race transport ready. A is
      * serviced before B in `both`, so A wins the once-only process-global roster
      * install and the visible engine renders A's viewport.
      *
      * START_RACE's value becomes the lobby's selected_vehicle_mask (BEGIN_LOADING
-     * carries it), which the O-T5 builder freezes into the manifest. It MUST equal
+     * carries it), which the identity-clamp builder freezes into the manifest. It MUST equal
      * the ROM's usable-vehicle mask for the race track or the engine's online
      * race admission (mdkr_match_manifest_accepts_loaded_race) rejects the boot.
      * Default (no seam env): Ancient Lake (track 5), car/hovercraft/plane ==
@@ -2038,14 +2043,14 @@ bool OnlineRoom_lobbyStartCancelLoading(IMdkrOnlineAdapter *leader) {
 }
 
 /* ======================================================================== *
- * Re-arm probe condition toggle (T2)
+ * Re-arm probe condition toggle
  *
  * The room-ready re-arm probes (main_app.cpp) exercise the wrap -> FINISHED-arm
  * -> immediate-completion re-take state machine, which needs to drive the
  * loopback room OUT of the takeover window (OnlineRoom_roomReadyConditionHolds
  * == false) and back (== true). They historically toggled lobby.mode
  * tournament<->single race, which flipped the condition ONLY because the
- * condition was tournament-scoped. T2 drops that scope (single race now ALSO
+ * condition was tournament-scoped. That scope is gone (single race now ALSO
  * takes the native path), so a mode flip no longer changes the condition. These
  * two helpers give the probes a mode-independent, production-FAITHFUL toggle:
  * park the room in RESULTS (a finished race -- phase != LOBBY and kind !=
@@ -3053,7 +3058,7 @@ MdkrOnlineTestCloudLiveSession *OnlineRoom_makeTestCloudLiveSession(
     std::fprintf(stderr, "[online-live-cloud] ready=2\n");
 
     /* 5. The leader starts the race; both follow the LOADING phase. START_RACE's
-     * value becomes the lobby's selected_vehicle_mask, which the O-T5 clamp
+     * value becomes the lobby's selected_vehicle_mask, which the identity clamp
      * freezes into the manifest -- it MUST equal the ROM's usable-vehicle mask
      * for the voted track or the engine's online race admission rejects the
      * boot (see OnlineRoom_makeTestLoopbackRace's identical comment). */
@@ -3078,7 +3083,7 @@ MdkrOnlineTestCloudLiveSession *OnlineRoom_makeTestCloudLiveSession(
      * returns null). The real Online Room panel never hits this: the moment
      * the race transport becomes ready, LiveAdapter::setUpRace() publishes
      * ITSELF -- the raw LiveAdapter*, not the wrapper -- via
-     * OnlineRoom_publishEngineRaceBoot(this), the exact O-T6b handoff
+     * OnlineRoom_publishEngineRaceBoot(this), the exact race-boot handoff
      * main_app.cpp's interactive loop polls (OnlineRoom_pollEngineRaceBoot())
      * before booting the visible engine. Poll the SAME handoff here instead
      * of race_info() on `a`, and use the polled raw pointer for every
