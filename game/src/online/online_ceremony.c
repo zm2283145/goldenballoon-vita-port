@@ -197,7 +197,11 @@ static void ceremony_champ_name(char *out, size_t cap) {
     } else if (sCer.champChar < MDKR_ONLINE_PORTRAIT_COUNT) {
         (void) snprintf(out, cap, "%s", sOnlineNames[sCer.champChar]);
     } else {
-        (void) snprintf(out, cap, "P%u", (unsigned) sCer.champSeat + 1u);
+        /* Nameless/invalid-character champion: the generic remote-player fallback the
+         * native screens use everywhere (RIVAL), not a "Pn" slot label. Only reached
+         * by an absent remote winner (a captured local champion always has a valid
+         * character); the local-winner " - YOU!" tag disambiguates regardless. */
+        (void) snprintf(out, cap, "RIVAL");
     }
 }
 
@@ -205,8 +209,12 @@ static void ceremony_champ_name(char *out, size_t cap) {
  * Render (native: real portraits + real font, into the engine frame list)
  * ======================================================================== */
 static void ceremony_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap) {
-    s32 tri = mdkr_online_screen_pulse(sCer.pulseTicks);
-    u8 pg = (u8) (170 + tri * 5); /* 170..255 pulse */
+    /* Retail selected-item cadence (menu.c gOptionBlinkTimer: 0x3F wrap, *8
+     * triangle, 0..255) via the shared helper -- the SAME blink the other native
+     * screens use, so the "RETURNING TO ROOM..." heartbeat breathes at the
+     * authentic DKR rate (was the faster/dimmer 0..16 mdkr_online_screen_pulse). */
+    s32 blink = mdkr_online_screen_blink(sCer.pulseTicks);
+    u8 pg = (u8) (170 + blink / 3); /* 170..255 pulse */
     char line[64];
     char name[32];
     s32 rowY;

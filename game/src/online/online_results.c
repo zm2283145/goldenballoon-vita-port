@@ -48,7 +48,8 @@
                            menu_racer_portraits, gRacePlacementsArray,
                            TEXTURE_ICON_PORTRAIT_*, font.h (draw_text, ...) */
 #include "rcp_dkr.h"    /* texrect_draw, bgdraw_fillcolour */
-#include "textures_sprites.h" /* rendermode_reset (TU-local blue-box fill restore) */
+#include "textures_sprites.h" /* rendermode_reset (pulled transitively; the blue-box
+                                 fill-restore now lives behind mdkr_online_screen_box) */
 #include "audio.h"      /* sound_play */
 #include "sound_ids.h"  /* SOUND_SELECT2 / SOUND_MENU_PICK2 / ... */
 #include "joypad.h"     /* input_pressed */
@@ -77,15 +78,6 @@
  * rather than by editing menu.c. The screen size + shared launcher lobby id-space
  * mirrors live in online_screen_constants.h. */
 extern char *gRacePlacementsArray[8];
-
-/* Engine flat-fill vocabulary for the TU-LOCAL translucent BLUE dialogue box (the
- * retail RANKINGS options ground -- set_current_dialogue_background_colour(7,
- * 64,64,255,...)). The SAME read-only borrow of the font module's draw-mode lists
- * that online_screen_util.c makes for its navy panel, declared HERE too so the blue
- * box is a TU-local helper: the shared panel is a navy board other screens depend
- * on and this wave must not change it (results_blue_box below). */
-extern Gfx dDialogueBoxBegin[];
-extern Gfx dDialogueBoxDrawModes[][2];
 
 /* ---- Local mirrors of the launcher lobby's id space (no launcher headers) --- */
 #define RES_SLOTS 4u              /* MDKR_ONLINE_RACE_RESULT_SLOTS / seats */
@@ -346,18 +338,11 @@ static u8 results_chooser_remote_present(const MdkrPartyLinkSnapshot *snap) {
  * Render (native: real portraits + real font, into the engine frame list)
  * ======================================================================== */
 
-/* Retail selected-option blink (menu.c: spA0 = gOptionBlinkTimer*8; if(spA0>255)
- * spA0 = 511-spA0) -- a 0..255 triangle over the 0x3F (64-tick) period, the slow
- * retail cadence. TU-LOCAL on purpose: the shared mdkr_online_screen_pulse is a
- * faster/dimmer 0..16 wave the OTHER screens depend on and this wave must not
- * change it; a later wave unifies (online_screen_util). */
-static s32 results_retail_blink(u32 ticks) {
-    s32 v = (s32) ((ticks & 0x3Fu) * 8u); /* 0..504 over the 64-tick period */
-    if (v > 255) {
-        v = 511 - v; /* fold to a 0..255 triangle */
-    }
-    return v;
-}
+/* The retail selected-option blink (menu.c gOptionBlinkTimer*8, 0x3F wrap, 0..255
+ * triangle) is now the SHARED mdkr_online_screen_blink (online_screen_util.c): the
+ * TU-local near-duplicate that lived here was collapsed into it (the fences that
+ * kept it TU-local are lifted). The winner-portrait pulse below stays results-local
+ * (a distinct 128..255 breathing curve, not a selected-item blink). */
 
 /* Retail RANKINGS winner-portrait pulse (menu.c: if(blink<32) spA0=blink*4+128;
  * else spA0=0x17F-blink*4) -- brightness 128..255 over the same 64-tick period,
@@ -367,12 +352,12 @@ static s32 results_winner_pulse(u32 ticks) {
     return (b < 32) ? (b * 4 + 128) : (0x17F - b * 4);
 }
 
-/* One translucent BLUE dialogue box (the retail RANKINGS option ground). Byte-for-
- * byte the flat-fill command sequence online_screen_util.c's navy panel emits
- * (dDialogueBoxBegin + dDialogueBoxDrawModes[1] env-colour XLU fill + rim), only
- * the colour differs -- retail's dialogue blue instead of the near-black navy. It
- * is a TU-LOCAL copy (not a call into the shared panel) so this wave changes no
- * shared helper. (x1,y1)-(x2,y2) logical 320x240 coords. */
+/* One translucent BLUE dialogue box (the retail RANKINGS option ground) -- retail's
+ * dialogue blue (set_current_dialogue_background_colour(7, 64,64,255,...)) instead
+ * of the near-black navy. Now a thin wrapper over the shared mdkr_online_screen_box
+ * (parameterised fill + edge colour): the byte-for-byte fill sequence that used to
+ * live here -- plus the second dDialogueBox* re-extern it needed -- is gone, folded
+ * into the one shared box vocabulary. (x1,y1)-(x2,y2) logical 320x240 coords. */
 #define RES_BOX_FILL_R 40
 #define RES_BOX_FILL_G 52
 #define RES_BOX_FILL_B 200
@@ -382,24 +367,9 @@ static s32 results_winner_pulse(u32 ticks) {
 #define RES_BOX_EDGE_B 255
 #define RES_BOX_EDGE_A 208
 static void results_blue_box(s32 x1, s32 y1, s32 x2, s32 y2) {
-    gSPDisplayList(gCurrDisplayList++, dDialogueBoxBegin);
-    gDkrDmaDisplayList(gCurrDisplayList++,
-                       OS_K0_TO_PHYSICAL(dDialogueBoxDrawModes[1]), 2);
-    gDPSetEnvColor(gCurrDisplayList++, RES_BOX_FILL_R, RES_BOX_FILL_G,
-                   RES_BOX_FILL_B, RES_BOX_FILL_A);
-    render_fill_rectangle(&gCurrDisplayList, x1 + 2, y1, x2 - 2, y1 + 2);
-    render_fill_rectangle(&gCurrDisplayList, x1, y1 + 2, x2, y2 - 2);
-    render_fill_rectangle(&gCurrDisplayList, x1 + 2, y2 - 2, x2 - 2, y2);
-    gDPPipeSync(gCurrDisplayList++);
-    gDPSetEnvColor(gCurrDisplayList++, RES_BOX_EDGE_R, RES_BOX_EDGE_G,
-                   RES_BOX_EDGE_B, RES_BOX_EDGE_A);
-    render_fill_rectangle(&gCurrDisplayList, x1 + 2, y1, x2 - 2, y1 + 1);
-    render_fill_rectangle(&gCurrDisplayList, x1 + 2, y2 - 1, x2 - 2, y2);
-    render_fill_rectangle(&gCurrDisplayList, x1, y1 + 2, x1 + 1, y2 - 2);
-    render_fill_rectangle(&gCurrDisplayList, x2 - 1, y1 + 2, x2, y2 - 2);
-    gDPPipeSync(gCurrDisplayList++);
-    rendermode_reset(&gCurrDisplayList);
-    gDPPipeSync(gCurrDisplayList++);
+    mdkr_online_screen_box(x1, y1, x2, y2, RES_BOX_FILL_R, RES_BOX_FILL_G,
+                           RES_BOX_FILL_B, RES_BOX_FILL_A, RES_BOX_EDGE_R,
+                           RES_BOX_EDGE_G, RES_BOX_EDGE_B, RES_BOX_EDGE_A);
 }
 
 /* FUNFONT drawn with a REAL tint (envA 255) -- the shared text helper forces
@@ -419,9 +389,14 @@ static void results_label_tinted(s32 x, s32 y, char *text, AlignmentFlags align,
 /* On-screen (retail-worded) label for a chooser option. The sChooser table keeps
  * its ORIGINAL labels (the witness + routing + every headless lane index/regex are
  * keyed on them, and the option->intent mapping must not move); this maps them to
- * the retail RANKINGS vocabulary for DISPLAY only. SELECT TRACK/CUP (change track/
- * cup), TRY AGAIN (race again), QUIT (finish); the online-only options are shown
- * verbatim. Rendering-only -- the stderr witness still prints the canonical label. */
+ * the retail RANKINGS vocabulary for DISPLAY only. The family is unified on the
+ * SELECT verb for every "pick a new X" option -- SELECT TRACK / SELECT CUP / SELECT
+ * MODE / SELECT RACER -- plus TRY AGAIN (race again), NEW TOURNAMENT, and QUIT
+ * (finish), so the chooser no longer mixes SELECT with a stray CHANGE (the
+ * consistency-audit verb-mix finding). SELECT RACER (not "SELECT CHARACTER") reads
+ * cleanly beside the charselect screen's own PLAYER SELECT title -- different noun,
+ * no vocabulary collision. Rendering-only -- the stderr witness still prints the
+ * canonical label. */
 static const char *results_chooser_display_label(const char *canonical) {
     if (strcmp(canonical, "RACE AGAIN") == 0) {
         return "TRY AGAIN";
@@ -432,10 +407,16 @@ static const char *results_chooser_display_label(const char *canonical) {
     if (strcmp(canonical, "CHANGE CUP") == 0) {
         return "SELECT CUP";
     }
+    if (strcmp(canonical, "CHANGE MODE") == 0) {
+        return "SELECT MODE";
+    }
+    if (strcmp(canonical, "CHANGE CHARACTER") == 0) {
+        return "SELECT RACER";
+    }
     if (strcmp(canonical, "FINISH") == 0) {
         return "QUIT";
     }
-    return canonical; /* CHANGE MODE / NEW TOURNAMENT / CHANGE CHARACTER */
+    return canonical; /* NEW TOURNAMENT */
 }
 
 /* The retail RANKINGS board: "RANKINGS" title, one portrait column per seat (the
@@ -749,10 +730,13 @@ static void results_render_standings(const MdkrPartyLinkSnapshot *snap,
         }
     }
 
-    /* Grounds: title strip + the points-table board (sized to the seats). */
+    /* Grounds: title strip + the points-table board. The between-rounds trophy
+     * rankings adopt the retail menu-21 look (spec 4.4.4): the translucent BLUE
+     * dialogue box instead of the navy panel, FUNFONT names/points, and the
+     * gold->red per-rank tint ramp. */
     mdkr_online_screen_strip(6, 46);
     if (nseats > 0u) {
-        mdkr_online_screen_panel(24, 52, 308, 66 + (s32) nseats * 40);
+        results_blue_box(24, 52, 308, 66 + (s32) nseats * 40);
     }
     mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 20, ASSET_FONTS_BIGFONT,
                  sRes.isFinal ? "FINAL STANDINGS" : "STANDINGS",
@@ -779,26 +763,33 @@ static void results_render_standings(const MdkrPartyLinkSnapshot *snap,
             character = snap->seats[slot].character_id;
         }
         mdkr_online_screen_seat_name(snap, haveSnap, slot, name, sizeof(name));
+        /* Row tint: the retail trophy-rankings gold->red per-rank ramp (menu.c
+         * G=255-64*row-ish, clamped) so the standing reads at a glance. The LOCAL
+         * seat overrides to bright white so "you" is unmistakable at any rank --
+         * collision-free where a FUNFONT-width " [YOU]" tag would have crowded the
+         * points column (and needs no bracket glyphs FUNFONT may lack). */
         if (isLocal) {
-            nr = 255; ng = 224; nb = 96;
+            nr = 255; ng = 255; nb = 255;
         } else {
-            nr = 220; ng = 220; nb = 220;
+            nr = 255;
+            ng = 224 - 48 * (s32) i;
+            nb = 96 - 22 * (s32) i;
+            if (ng < 64) { ng = 64; }
+            if (nb < 16) { nb = 16; }
         }
 
         /* Row: rank | portrait | name (left) | points (FUNFONT, right) | delta.
-         * The rank is FUNFONT: BIGFONT has no digit glyphs, so "%u." would render
-         * a bare ".". Row text at the portrait's optical centre (rowY+12). */
+         * Rank + name are FUNFONT now (the trophy-rankings body face), drawn with a
+         * REAL tint (results_label_tinted) so the ramp/white shows -- the shared text
+         * helper forces FUNFONT to authored-untinted, which would ignore the ramp.
+         * Row text at the portrait's optical centre (rowY+12). */
         (void) snprintf(line, sizeof(line), "%u.", i + 1u);
-        mdkr_online_screen_text(44, rowY + 12, ASSET_FONTS_FUNFONT, line,
-                     ALIGN_MIDDLE_RIGHT, nr, ng, nb);
-        mdkr_online_screen_draw_portrait(character, 52, rowY - 8, (u8) nr, (u8) ng,
-                              (u8) nb);
-        (void) snprintf(line, sizeof(line), "%.10s%s", name,
-                        isLocal ? " [YOU]" : "");
-        mdkr_online_screen_text(104, rowY + 12, ASSET_FONTS_SMALLFONT, line,
-                     ALIGN_MIDDLE_LEFT, nr, ng, nb);
-        /* Points in FUNFONT (the trophy-rankings vocabulary), with this race's
-         * delta so a newcomer sees WHY the total moved. */
+        results_label_tinted(44, rowY + 12, line, ALIGN_MIDDLE_RIGHT, nr, ng, nb);
+        mdkr_online_screen_draw_portrait(character, 52, rowY - 8, 255u, 255u, 255u);
+        (void) snprintf(line, sizeof(line), "%.10s", name);
+        results_label_tinted(104, rowY + 12, line, ALIGN_MIDDLE_LEFT, nr, ng, nb);
+        /* Points in FUNFONT (the trophy-rankings vocabulary; authored colourful
+         * digits), with this race's delta so a newcomer sees WHY the total moved. */
         (void) snprintf(line, sizeof(line), "%u", (unsigned) points[i]);
         mdkr_online_screen_text(252, rowY + 12, ASSET_FONTS_FUNFONT, line,
                      ALIGN_MIDDLE_RIGHT, nr, ng, nb);
@@ -1186,13 +1177,13 @@ static void results_chooser_witness(void) {
  * race: the same board this race entered on (title + portrait columns + session
  * tallies) with the option list in the translucent blue dialogue box beneath.
  * Tournament final: the MORE RACES? banner + the same blue-box option list. The
- * host's selected option blinks at the retail cadence (results_retail_blink); a
+ * host's selected option blinks at the retail cadence (mdkr_online_screen_blink); a
  * joiner shows the list dimmer (no cursor) + a "WAITING FOR <host>..." footer --
  * the display-only mirror. Option labels are the retail wording
  * (results_chooser_display_label); the stderr witness keeps the canonical labels. */
 static void results_chooser_render(const MdkrPartyLinkSnapshot *snap,
                                    bool haveSnap, s32 localSeat) {
-    s32 blink = results_retail_blink(sRes.pulseTicks);
+    s32 blink = mdkr_online_screen_blink(sRes.pulseTicks);
     bool single = (sRes.chooserMode == (u8) MDKR_ONLINE_SCREEN_MODE_SINGLE);
     s32 boxTop, boxBot, rowDy, rowY, fy;
     unsigned i;

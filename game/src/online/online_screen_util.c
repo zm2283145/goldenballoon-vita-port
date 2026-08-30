@@ -183,27 +183,39 @@ static void online_screen_fill_end(void) {
     gDPPipeSync(gCurrDisplayList++);
 }
 
-/* One dark menu-board card: rounded (2px-notched) dark quad + subtle 1px
- * border. (x1,y1)-(x2,y2) inclusive-ish logical 320x240 coords. ~14 Gfx
- * commands total -- vs ~700 for one halo-stacked string block it replaces. */
-void mdkr_online_screen_panel(s32 x1, s32 y1, s32 x2, s32 y2) {
+/* One rounded (2px-notched) dialogue-box quad + subtle 1px border, fill AND edge
+ * colours parameterised. (x1,y1)-(x2,y2) inclusive-ish logical 320x240 coords.
+ * ~14 Gfx commands total. This is the ONE box vocabulary the screens share: the
+ * navy menu-board (mdkr_online_screen_panel below) and the retail RANKINGS blue
+ * dialogue box (online_results.c results_blue_box) are the SAME command sequence,
+ * differing only in colour -- previously copy-pasted per TU (the byte-for-byte
+ * results_blue_box duplicate + a second dDialogueBox* re-extern), now one source. */
+void mdkr_online_screen_box(s32 x1, s32 y1, s32 x2, s32 y2, s32 fr, s32 fg, s32 fb,
+                           s32 fa, s32 er, s32 eg, s32 eb, s32 ea) {
     /* Fill: three non-overlapping strips (top cap / middle / bottom cap) so the
      * translucent fill never double-blends. */
-    online_screen_fill_begin(MDKR_ONLINE_PANEL_FILL_R, MDKR_ONLINE_PANEL_FILL_G,
-                             MDKR_ONLINE_PANEL_FILL_B, MDKR_ONLINE_PANEL_FILL_A);
+    online_screen_fill_begin(fr, fg, fb, fa);
     render_fill_rectangle(&gCurrDisplayList, x1 + 2, y1, x2 - 2, y1 + 2);
     render_fill_rectangle(&gCurrDisplayList, x1, y1 + 2, x2, y2 - 2);
     render_fill_rectangle(&gCurrDisplayList, x1 + 2, y2 - 2, x2 - 2, y2);
     /* Border: four 1px edge lines over the fill's rim. */
     gDPPipeSync(gCurrDisplayList++);
-    gDPSetEnvColor(gCurrDisplayList++, MDKR_ONLINE_PANEL_EDGE_R,
-                   MDKR_ONLINE_PANEL_EDGE_G, MDKR_ONLINE_PANEL_EDGE_B,
-                   MDKR_ONLINE_PANEL_EDGE_A);
+    gDPSetEnvColor(gCurrDisplayList++, er, eg, eb, ea);
     render_fill_rectangle(&gCurrDisplayList, x1 + 2, y1, x2 - 2, y1 + 1);
     render_fill_rectangle(&gCurrDisplayList, x1 + 2, y2 - 1, x2 - 2, y2);
     render_fill_rectangle(&gCurrDisplayList, x1, y1 + 2, x1 + 1, y2 - 2);
     render_fill_rectangle(&gCurrDisplayList, x2 - 1, y1 + 2, x2, y2 - 2);
     online_screen_fill_end();
+}
+
+/* The near-black navy menu-board card (byte-identical to the former inline body --
+ * now the shared box with the navy palette). */
+void mdkr_online_screen_panel(s32 x1, s32 y1, s32 x2, s32 y2) {
+    mdkr_online_screen_box(x1, y1, x2, y2, MDKR_ONLINE_PANEL_FILL_R,
+                           MDKR_ONLINE_PANEL_FILL_G, MDKR_ONLINE_PANEL_FILL_B,
+                           MDKR_ONLINE_PANEL_FILL_A, MDKR_ONLINE_PANEL_EDGE_R,
+                           MDKR_ONLINE_PANEL_EDGE_G, MDKR_ONLINE_PANEL_EDGE_B,
+                           MDKR_ONLINE_PANEL_EDGE_A);
 }
 
 /* Full-width borderless band (title strip / footer ground): the ONE place text
@@ -260,7 +272,13 @@ s32 mdkr_online_screen_blink(u32 timer) {
 }
 
 /* Resolve one seat's short name: the untrusted snapshot name if present, else the
- * character's canonical name, else a "Pn" slot fallback. */
+ * character's canonical name, else the generic remote-player fallback. The native
+ * screens use RIVAL consistently for the remote player wherever a generic term is
+ * needed (charselect/trackselect/vehicleselect already do), so the last-resort
+ * fallback is RIVAL rather than a "Pn" slot label -- one vocabulary across the
+ * screens. An occupied LOCAL seat always carries a valid character (so it resolves
+ * to its canonical name above); the RIVAL fallback is only ever reached by a
+ * nameless/absent REMOTE seat, so it never mislabels the local player. */
 void mdkr_online_screen_seat_name(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
                                   unsigned slot, char *out, size_t cap) {
     if (haveSnap && slot < MDKR_PARTY_LINK_SEATS &&
@@ -275,7 +293,7 @@ void mdkr_online_screen_seat_name(const MdkrPartyLinkSnapshot *snap, bool haveSn
                         sOnlineNames[snap->seats[slot].character_id]);
         return;
     }
-    (void) snprintf(out, cap, "P%u", slot + 1u);
+    (void) snprintf(out, cap, "RIVAL");
 }
 
 /* Countdown seconds still on the clock (ceil), 0 when elapsed. `done`/`limit` are
@@ -285,6 +303,54 @@ u32 mdkr_online_screen_seconds_left(u32 done, u32 limit) {
         return 0u;
     }
     return (limit - done + 59u) / 60u;
+}
+
+/* ======================================================================== *
+ * Borrowed-tile texrect blits (DRY across the screens' hand-rolled art draws)
+ * ------------------------------------------------------------------------
+ * trackselect (arrows / wood frame / sky postcard) and vehicleselect (PLAYER-n
+ * label / word art / wood frame) each hand-rolled a DrawTexture dt[2] +
+ * texrect_draw(_scaled) blit of a borrowed gMenuAssets tile. These two helpers
+ * build the dt[2] (tile + NULL terminator) once, keeping the SAME null/dims
+ * fail-safe guards those call sites carried, so a not-resident borrow is a no-op
+ * (never a NULL-tile DMA) exactly as before. draw_portrait / draw_vehicle above
+ * already wrap the two portrait/vehicle cases; these wrap the generic tile case.
+ * ======================================================================== */
+
+/* Plain 1:1 texrect blit of one borrowed tile with its top-left at (x,y),
+ * rgba-modulated. No-op if the tile is not resident. */
+void mdkr_online_screen_blit(TextureHeader *tex, s32 x, s32 y, u8 r, u8 g, u8 b,
+                             u8 a) {
+    DrawTexture dt[2];
+    if (tex == NULL) {
+        return;
+    }
+    dt[0].texture = tex;
+    dt[0].xOffset = 0;
+    dt[0].yOffset = 0;
+    dt[1].texture = NULL;
+    dt[1].xOffset = 0;
+    dt[1].yOffset = 0;
+    texrect_draw(&gCurrDisplayList, dt, x, y, r, g, b, a);
+}
+
+/* Scaled texrect blit of one borrowed tile at (x,y) with per-axis scale + a packed
+ * colour (COLOUR_RGBA32, computed by the caller). No-op if the tile is not resident
+ * OR reports zero dims (the callers divide by width/height to derive the scale, so
+ * a zero-dim tile would divide-by-zero -- the exact guard they carried inline). */
+void mdkr_online_screen_blit_scaled(TextureHeader *tex, f32 x, f32 y, f32 sx,
+                                    f32 sy, u32 rgba) {
+    DrawTexture dt[2];
+    if (tex == NULL || tex->width == 0 || tex->height == 0) {
+        return;
+    }
+    dt[0].texture = tex;
+    dt[0].xOffset = 0;
+    dt[0].yOffset = 0;
+    dt[1].texture = NULL;
+    dt[1].xOffset = 0;
+    dt[1].yOffset = 0;
+    texrect_draw_scaled(&gCurrDisplayList, dt, x, y, sx, sy, rgba, 0);
 }
 
 /* Blit a racer portrait (guarded: out-of-range id and unloaded texture are no-ops,
@@ -394,6 +460,31 @@ void mdkr_online_screen_fade_in_from_black(void) {
         sOnlineFadeSkipOnce = 0u;
         return;
     }
+    transition_begin(&sOnlineRevealTransition);
+}
+
+/* The EXIT fade (retail sMenuTransitionFadeIn): FADE_FLAG_NONE drives the black veil
+ * opacity 0 -> 255 (it GROWS to cover the outgoing screen) and FADE_STAY holds it
+ * black until the incoming screen's reveal (fade_in_from_black, which transition_end
+ * s this one first) takes over -- so a phase hand-off is fade-to-black-then-from-
+ * black, exactly like a retail menu switch, instead of a hard cut. The session fires
+ * this, then holds the phase switch MDKR_ONLINE_SCREEN_EXIT_FADE_TICKS ticks (the
+ * duration) so the outgoing screen keeps rendering under the growing veil, THEN runs
+ * _exit + switch + the incoming _enter's reveal. Same isolation-safe primitive borrow
+ * as the reveal (the OFF build never compiles this TU). */
+static FadeTransition sOnlineExitTransition =
+    FADE_TRANSITION(FADE_FULLSCREEN, FADE_FLAG_NONE, FADE_COLOR_BLACK,
+                    MDKR_ONLINE_SCREEN_EXIT_FADE_TICKS, FADE_STAY);
+
+void mdkr_online_screen_fade_out_to_black(void) {
+    transition_begin(&sOnlineExitTransition);
+}
+
+/* Cancel a still-black exit fade and reveal the current screen again -- the session
+ * calls this if a hand-off it started fading toward is abandoned mid-fade (e.g. the
+ * local seat un-readies), so the black veil is never stranded. Bypasses the
+ * skip-once latch (an abort must always clear the veil). */
+void mdkr_online_screen_fade_cancel_to_reveal(void) {
     transition_begin(&sOnlineRevealTransition);
 }
 

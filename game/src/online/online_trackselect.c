@@ -533,6 +533,13 @@ typedef struct TsInput {
 #define TS_SCN_JOINER 1
 #define TS_SCN_HOLD 2
 #define TS_SCN_REMATCH 3
+/* LOCK-IN-FADE (regression arm for the exit-fade-hold strand): host, single mode,
+ * IDENTICAL reducer/vehicle-stage machinery to SINGLE_HOST -- only the entry-1
+ * input differs. Entry 1 arms the retail exit fade with a browse-B, then presses A
+ * to LOCK the track while the 18-tick veil is still held. The session's STAY+lock
+ * branch must cancel the armed veil (else it strands black over the vehicle stage
+ * and poisons the next vehicle->trackselect B-back). */
+#define TS_SCN_LOCKFADE 4
 static s8 sTsScenario = -1;
 
 /* Scripted headless input (env MDKR_TEST_ONLINE_TRACKSELECT). Keyed on the
@@ -568,6 +575,39 @@ static void trackselect_input_scripted(TsInput *in) {
             break;
         default:
             break;
+        }
+        return;
+    }
+    if (sTsScenario == TS_SCN_LOCKFADE) {
+        /* LOCK-IN-FADE regression arm. Entry 1: walk to Whale Bay (col2/row0),
+         * ARM the retail exit fade with a browse-B (tick 5 -> the session holds
+         * the 18-tick veil), then LOCK the track with A (tick 10) WHILE the veil
+         * is still held -- the session's STAY+lock branch must cancel the armed
+         * veil rather than strand it. The A lands ~5 ticks into the 18-tick hold,
+         * comfortably inside it. Entry 2+ (back from the vehicle stage's B):
+         * re-lock the restored Whale Bay cell so the flow confirms + boots (proving
+         * the veil never poisoned the vehicle->trackselect B-back either). */
+        if (sTsEntryCount <= 1u) {
+            switch (sTs.ticks) {
+            case 2u:
+                in->dx = 1; /* col 0 -> 1 */
+                break;
+            case 3u:
+                in->dx = 1; /* col 1 -> 2 (Sherbet); row 0 == Whale Bay (track 8) */
+                break;
+            case 5u:
+                in->bEdge = 1u; /* arm the exit fade (browse-B -> 18-tick veil hold) */
+                break;
+            case 10u:
+                in->aEdge = 1u; /* LOCK inside the hold -> STAY+lock w/ veil armed */
+                break;
+            default:
+                break;
+            }
+            return;
+        }
+        if (sTs.ticks == 2u) {
+            in->aEdge = 1u; /* re-lock the restored cell -> vehicle stage -> boot */
         }
         return;
     }
@@ -891,7 +931,6 @@ static void trackselect_upper(const char *src, char *dst, u32 cap) {
  * the frame edges). Modulated white so the authored blue shows; a no-op if the
  * icon is not resident (same fail-safe as the portrait / vehicle blits). */
 static void trackselect_draw_arrow(u8 dir, s32 cx, s32 cy) {
-    DrawTexture dt[2];
     TextureHeader *tex;
     if (dir >= 4u) {
         return;
@@ -900,14 +939,8 @@ static void trackselect_draw_arrow(u8 dir, s32 cx, s32 cy) {
     if (tex == NULL) {
         return;
     }
-    dt[0].texture = tex;
-    dt[0].xOffset = 0;
-    dt[0].yOffset = 0;
-    dt[1].texture = NULL;
-    dt[1].xOffset = 0;
-    dt[1].yOffset = 0;
-    texrect_draw(&gCurrDisplayList, dt, cx - (s32) tex->width / 2,
-                 cy - (s32) tex->height / 2, 255, 255, 255, 255);
+    mdkr_online_screen_blit(tex, cx - (s32) tex->width / 2,
+                            cy - (s32) tex->height / 2, 255, 255, 255, 255);
 }
 
 /* Draw the wooden picture frame around a per-world sky "postcard". The wood tile
@@ -917,36 +950,25 @@ static void trackselect_draw_arrow(u8 dir, s32 cx, s32 cy) {
  * mimicry of retail's live fly-through, which is the forbidden level-load class).
  * Fails safe: no wood -> just the postcard; no sky -> a dark inner fill. */
 static void trackselect_draw_frame(u8 world) {
-    DrawTexture dt[2];
     TextureHeader *sky = (world < TS_COLS) ? sCupBgTopTex[world] : NULL;
     s32 ix0 = TS_FRAME_X0 + TS_FRAME_BORDER;
     s32 iy0 = TS_FRAME_Y0 + TS_FRAME_BORDER;
     s32 ix1 = TS_FRAME_X1 - TS_FRAME_BORDER;
     s32 iy1 = TS_FRAME_Y1 - TS_FRAME_BORDER;
 
-    dt[1].texture = NULL;
-    dt[1].xOffset = 0;
-    dt[1].yOffset = 0;
-
     if (sWoodTex != NULL && sWoodTex->width != 0 && sWoodTex->height != 0) {
-        dt[0].texture = sWoodTex;
-        dt[0].xOffset = 0;
-        dt[0].yOffset = 0;
-        texrect_draw_scaled(
-            &gCurrDisplayList, dt, (f32) TS_FRAME_X0, (f32) TS_FRAME_Y0,
+        mdkr_online_screen_blit_scaled(
+            sWoodTex, (f32) TS_FRAME_X0, (f32) TS_FRAME_Y0,
             (f32) (TS_FRAME_X1 - TS_FRAME_X0) / (f32) sWoodTex->width,
             (f32) (TS_FRAME_Y1 - TS_FRAME_Y0) / (f32) sWoodTex->height,
-            COLOUR_RGBA32(255, 255, 255, 255), 0);
+            COLOUR_RGBA32(255, 255, 255, 255));
     }
 
     if (sky != NULL && sky->width != 0 && sky->height != 0) {
-        dt[0].texture = sky;
-        dt[0].xOffset = 0;
-        dt[0].yOffset = 0;
-        texrect_draw_scaled(&gCurrDisplayList, dt, (f32) ix0, (f32) iy0,
-                            (f32) (ix1 - ix0) / (f32) sky->width,
-                            (f32) (iy1 - iy0) / (f32) sky->height,
-                            COLOUR_RGBA32(255, 255, 255, 255), 0);
+        mdkr_online_screen_blit_scaled(sky, (f32) ix0, (f32) iy0,
+                                       (f32) (ix1 - ix0) / (f32) sky->width,
+                                       (f32) (iy1 - iy0) / (f32) sky->height,
+                                       COLOUR_RGBA32(255, 255, 255, 255));
     } else {
         mdkr_online_screen_card(ix0, iy0, ix1, iy1, 8, 12, 32, 255);
     }
@@ -988,7 +1010,13 @@ static void trackselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
      * selection. */
     u8 host = sTs.host;
     u8 effMode = (host || !haveSnap) ? sTs.mode : (u8) snap->mode;
-    s32 tri = mdkr_online_screen_pulse(sTs.ticks);
+    /* Retail selected-item cadence (menu.c gOptionBlinkTimer: 0x3F wrap, *8
+     * triangle, 0..255) via the shared helper -- the SAME blink charselect /
+     * vehicleselect / results use, so the "<host> IS CHOOSING..." status pulses at
+     * the authentic DKR rate (was the faster/dimmer 0..16 mdkr_online_screen_pulse).
+     * Folded /16 back into the same 0..15 amplitude the old pulse fed the status
+     * colour (150 + tri*4), so only the CADENCE changes, not the status line. */
+    s32 tri = mdkr_online_screen_blink(sTs.ticks) / 16;
     u8 focusWorld;
     u8 lockedTrackIdx = TS_NONE; /* which of the 20 is the effective lock */
     u8 lockedCup = TS_NONE;
@@ -1601,6 +1629,8 @@ static void trackselect_test_resolve(void) {
             sTsScenario = (s8) TS_SCN_REMATCH;
         } else if (e != NULL && strstr(e, "joiner") != NULL) {
             sTsScenario = (s8) TS_SCN_JOINER;
+        } else if (e != NULL && strstr(e, "lockfade") != NULL) {
+            sTsScenario = (s8) TS_SCN_LOCKFADE;
         } else if (e != NULL && strstr(e, "hold") != NULL) {
             sTsScenario = (s8) TS_SCN_HOLD;
         } else {

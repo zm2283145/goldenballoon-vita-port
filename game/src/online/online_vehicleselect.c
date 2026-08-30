@@ -712,14 +712,7 @@ static void vehicleselect_draw_word(u8 vehicle, u8 seatCol, bool picked, s32 y) 
         (vehicle < 3u) ? sVsWordTex[vehicle][picked ? 0 : 1] : NULL;
     s32 x = (s32) sVsWordX[seatCol];
     if (tex != NULL) {
-        DrawTexture dt[2];
-        dt[0].texture = tex;
-        dt[0].xOffset = 0;
-        dt[0].yOffset = 0;
-        dt[1].texture = NULL;
-        dt[1].xOffset = 0;
-        dt[1].yOffset = 0;
-        texrect_draw(&gCurrDisplayList, dt, x, y, 255, 255, 255, 255);
+        mdkr_online_screen_blit(tex, x, y, 255, 255, 255, 255);
         return;
     }
     /* fallback (art not resident): text styled to the retail read. */
@@ -751,16 +744,9 @@ static void vehicleselect_draw_column(u8 seatCol, u8 pick, u8 confirmed,
     /* PLAYER n label art (fallback: text). Dim the label when the seat is
      * absent (online-only state; retail always has both). */
     if (sVsPlayerTex[seatCol] != NULL) {
-        DrawTexture dt[2];
-        dt[0].texture = sVsPlayerTex[seatCol];
-        dt[0].xOffset = 0;
-        dt[0].yOffset = 0;
-        dt[1].texture = NULL;
-        dt[1].xOffset = 0;
-        dt[1].yOffset = 0;
-        texrect_draw(&gCurrDisplayList, dt, labelX, VS_LABEL_Y,
-                     present ? 255 : 120, present ? 255 : 120,
-                     present ? 255 : 120, 255);
+        mdkr_online_screen_blit(sVsPlayerTex[seatCol], labelX, VS_LABEL_Y,
+                                present ? 255 : 120, present ? 255 : 120,
+                                present ? 255 : 120, 255);
     } else {
         mdkr_online_screen_text(labelX + 25, VS_LABEL_Y + 10, ASSET_FONTS_FUNFONT,
                                 seatCol == 0u ? "PLAYER 1" : "PLAYER 2",
@@ -791,19 +777,12 @@ static void vehicleselect_draw_column(u8 seatCol, u8 pick, u8 confirmed,
         s32 iconY = VS_ICON_Y + ((pick == (u8) VEHICLE_PLANE) ? 2 : 0);
         if (sVsWoodTex != NULL && sVsWoodTex->width != 0 &&
             sVsWoodTex->height != 0) {
-            DrawTexture dt[2];
-            dt[0].texture = sVsWoodTex;
-            dt[0].xOffset = 0;
-            dt[0].yOffset = 0;
-            dt[1].texture = NULL;
-            dt[1].xOffset = 0;
-            dt[1].yOffset = 0;
-            texrect_draw_scaled(
-                &gCurrDisplayList, dt, (f32) (iconX - VS_FRAME_BORDER),
+            mdkr_online_screen_blit_scaled(
+                sVsWoodTex, (f32) (iconX - VS_FRAME_BORDER),
                 (f32) (iconY - VS_FRAME_BORDER),
                 (f32) (VS_ICON_W + 2 * VS_FRAME_BORDER) / (f32) sVsWoodTex->width,
                 (f32) (VS_ICON_W + 2 * VS_FRAME_BORDER) / (f32) sVsWoodTex->height,
-                COLOUR_RGBA32(255, 255, 255, 255), 0);
+                COLOUR_RGBA32(255, 255, 255, 255));
         }
         (void) mdkr_online_screen_draw_vehicle(pick, iconX + VS_ICON_W / 2,
                                                iconY, 255u, 255u, 255u, 255u);
