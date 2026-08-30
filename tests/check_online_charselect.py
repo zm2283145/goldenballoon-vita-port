@@ -26,6 +26,10 @@ The scripted cursor walks to Pipsy (online char id 2), confirms, then readies.
 
 Assertions:
   * the CHARSELECT screen was entered + assets loaded ([online-charselect] enter)
+  * the grid is laid out in the retail PLAYER SELECT roster order (row0 Krunch,
+    Diddy, Drumstick, Bumper, Banjo / row1 Conker, Tiptup, T.T., Pipsy, Timber),
+    a pure cell<->online-id relabel, and EVERY cell draws the name + portrait slot
+    that belong to the online id it holds (the _enter grid-layout witness)
   * the scripted forward feed installed ([online-charselect] test-script install)
   * the REMOTE seat rendered from the snapshot (a render row with the remote's
     char + ready + name RIVAL) -- display-only witness
@@ -86,6 +90,9 @@ RENDER_RE = re.compile(
 #  7 remoteSeat  8 remoteChar  9 remoteReady  10 remoteName
 #  11 takenTile 12 takenDim
 #  13 hover  14 vehicle  15 confirmed  16 ready(intent)
+GRID_RE = re.compile(
+    r"^\[online-charselect\] grid cell=(\d+) id=(\d+) name=(\S+) portrait=(\d+)$",
+    re.MULTILINE)
 LEAVE_STUB = "[online-charselect] leave requested"
 ADVANCE_RE = re.compile(
     r"^\[online-charselect\] advance: lobby left LOBBY \(phase=(\d+)\)",
@@ -109,6 +116,19 @@ NAME_TO_PORTRAIT = {
     "DIDDY": 9, "TIMBER": 4, "PIPSY": 7, "TIPTUP": 2, "CONKER": 3,
     "BUMPER": 1, "BANJO": 5, "KRUNCH": 0, "DRUMSTICK": 6, "T.T.": 8,
 }
+
+# The retail PLAYER SELECT visual grid order (menu.c adjacency table 1046-1067),
+# as a cell index -> ONLINE id map. The grid is a PURE relabel: the published
+# hover_character / reducer ids stay the online id; only the on-screen POSITION of
+# each racer moves to match the retail roster:
+#   row0 (cells 0-4): Krunch, Diddy, Drumstick, Bumper, Banjo
+#   row1 (cells 5-9): Conker, Tiptup, T.T.,   Pipsy,  Timber
+# The _enter grid-layout witness dumps cell->id + the drawn name/portrait, so this
+# proves BOTH the retail order and every visible name->face pair (not just the cells
+# the scripted cursor happens to visit).
+CELL_TO_ONLINE = [7, 0, 8, 5, 6, 4, 3, 9, 2, 1]
+ONLINE_NAMES = ["DIDDY", "TIMBER", "PIPSY", "TIPTUP", "CONKER",
+                "BUMPER", "BANJO", "KRUNCH", "DRUMSTICK", "T.T."]
 
 
 fail = make_fail("charselect")
@@ -235,6 +255,35 @@ def main() -> int:
                         f"(gRacerPortraits is Character-enum ordered; "
                         f"sOnlineToPortrait[] must map online id -> CHARACTER_*)",
                         output)
+
+    # --- Retail grid ORDER + every visible name->face pair --------------------
+    #     The _enter grid-layout witness dumps every CELL's online id + drawn
+    #     name/portrait. Assert the retail cell order AND that each cell's name and
+    #     portrait slot belong to the online id it holds -- so a wrong cell<->id
+    #     relabel (or a name/face desync) is caught for ALL ten cells, independent
+    #     of the scripted cursor's path.
+    grid = GRID_RE.findall(output)
+    if len(grid) != len(CELL_TO_ONLINE):
+        return fail(f"the grid-layout witness dumped {len(grid)} cells, expected "
+                    f"{len(CELL_TO_ONLINE)} (one per cell)", output)
+    seen_cells = {}
+    for cell_s, id_s, name, portrait_s in grid:
+        seen_cells[int(cell_s)] = (int(id_s), name, int(portrait_s))
+    for cell, want_id in enumerate(CELL_TO_ONLINE):
+        if cell not in seen_cells:
+            return fail(f"grid cell {cell} was never witnessed", output)
+        got_id, got_name, got_portrait = seen_cells[cell]
+        if got_id != want_id:
+            return fail(f"grid cell {cell} holds online id {got_id}, expected "
+                        f"{want_id} (retail order Krunch,Diddy,Drumstick,Bumper,"
+                        f"Banjo / Conker,Tiptup,T.T.,Pipsy,Timber)", output)
+        if got_name != ONLINE_NAMES[want_id]:
+            return fail(f"grid cell {cell} (id {want_id}) drew name {got_name}, "
+                        f"expected {ONLINE_NAMES[want_id]}", output)
+        if got_portrait != NAME_TO_PORTRAIT[ONLINE_NAMES[want_id]]:
+            return fail(f"grid cell {cell} (name {got_name}) drew portrait slot "
+                        f"{got_portrait}, expected "
+                        f"{NAME_TO_PORTRAIT[ONLINE_NAMES[want_id]]}", output)
 
     # --- The published intent (character + default vehicle + ready) ---------
     intent_rows = [

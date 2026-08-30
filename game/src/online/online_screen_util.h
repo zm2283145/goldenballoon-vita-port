@@ -70,7 +70,15 @@ void mdkr_online_screen_text(s32 x, s32 y, s32 fontId, char *text,
                              AlignmentFlags align, s32 r, s32 g, s32 b);
 void mdkr_online_screen_panel(s32 x1, s32 y1, s32 x2, s32 y2);
 void mdkr_online_screen_strip(s32 y1, s32 y2);
+/* A small solid card (e.g. the retail P1/P2 seat-number block): flat fill +
+ * 1px darker border, the same font-module fill vocabulary the panels use. */
+void mdkr_online_screen_card(s32 x1, s32 y1, s32 x2, s32 y2, s32 r, s32 g, s32 b,
+                             s32 a);
 s32 mdkr_online_screen_pulse(u32 ticks);
+/* Retail selected-item blink level 0..255 (menu.c gOptionBlinkTimer: the caller's
+ * (t + updateRate) & 0x3F timer, *8 then triangle-folded). Slower + deeper than
+ * mdkr_online_screen_pulse -- the authentic DKR selection cadence. */
+s32 mdkr_online_screen_blink(u32 timer);
 void mdkr_online_screen_seat_name(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
                                   unsigned slot, char *out, size_t cap);
 u32 mdkr_online_screen_seconds_left(u32 done, u32 limit);
@@ -79,6 +87,10 @@ bool mdkr_online_screen_draw_vehicle(u8 vehicle, s32 cx, s32 topY, u8 r, u8 g, u
                                      u8 a);
 void mdkr_online_screen_fade_in_from_black(void);
 void mdkr_online_screen_menu_music(void);
+/* Start / keep a specific menu-family sequence via the self-contained music_play()
+ * primitive (idempotent). menu_music() is this with SEQUENCE_MAIN_MENU; charselect
+ * borrows it for SEQUENCE_CHOOSE_YOUR_RACER (the retail PLAYER SELECT track). */
+void mdkr_online_screen_music(u8 sequence);
 void mdkr_online_screen_backdrop(u8 skyWorld);
 void mdkr_online_screen_backdrop_clear(void);
 u8 mdkr_online_screen_sky_world_for_cup(u8 cupId);

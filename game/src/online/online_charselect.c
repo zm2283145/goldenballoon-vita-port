@@ -69,7 +69,8 @@
                            TEXTURE_ICON_PORTRAIT_*, font.h (draw_text, ...) */
 #include "rcp_dkr.h"    /* texrect_draw, bgdraw_fillcolour */
 #include "audio.h"      /* sound_play */
-#include "sound_ids.h"  /* SOUND_MENU_PICK2 / SOUND_SELECT2 / ... */
+#include "sound_ids.h"  /* SOUND_MENU_PICK3 / SOUND_HORN_DRUMSTICK / voices ... */
+#include "sequence_ids.h" /* SEQUENCE_CHOOSE_YOUR_RACER (retail PLAYER SELECT track) */
 #include "joypad.h"     /* input_pressed, input_clamp_stick_x/y */
 #include "PR/os_cont.h" /* A_BUTTON / B_BUTTON / *_JPAD / START_BUTTON */
 #include "net/party_link.h"
@@ -99,26 +100,52 @@
 #define CS_CELL_W 60
 #define CS_CELL_H 70
 #define CS_GRID_X 22 /* top-left x of column 0's portrait */
-#define CS_GRID_Y 44 /* top-left y of row 0's portrait */
+#define CS_GRID_Y 46 /* top-left y of row 0's portrait */
 #define CS_PORTRAIT_HALF 22 /* ~half a portrait, for centering labels */
-#define CS_TAKEN_FLASH_TICKS 45u /* "TAKEN BY x" flash duration (~1.5s @ 30Hz) */
+/* All seats ready + no host-start yet: after this many ticks the online-only
+ * "waiting for host" footer appears under the retail "OK?" (host-start latency). */
+#define CS_OK_WAIT_TICKS 150u
 /* Portrait luminance for a racer the rival has LOCKED (confirmed). ~0.28 of full:
- * an unmistakable greyed/"unavailable" drop (72 rather than the old 80, which read
- * as merely "a bit darker"). Prim-colour modulation cannot desaturate a decoded
- * portrait, so a hard luminance drop + the band-backed TAKEN/RIVAL labels are the
- * three redundant cues. The render applies this drop; the witness reports the
- * luminance it ACTUALLY handed the blit (see sTakenTileDrawLum), NOT this constant,
- * so the headless taken-tile coverage observes the drawn cue instead of re-deriving
- * it from the same condition. */
+ * an unmistakable greyed/"unavailable" drop. Prim-colour modulation cannot
+ * desaturate a decoded portrait, so the hard luminance drop + the remote's seat
+ * block on that tile are the retail "claimed" cues (retail shows no TAKEN/RIVAL
+ * word pair -- the block + the blocked cursor communicate it). The render applies
+ * this drop; the witness reports the luminance it ACTUALLY handed the blit (see
+ * sTakenTileDrawLum), NOT this constant, so the headless taken-tile coverage
+ * observes the drawn cue instead of re-deriving it from the same condition. */
 #define CS_TAKEN_DIM 72u
 
-/* Menu SFX (the real DKR enums -- same reuse as the portraits; verified against
- * menu.c:4564/4577/4778). */
-#define CS_SFX_MOVE SOUND_MENU_PICK2
-#define CS_SFX_CONFIRM SOUND_SELECT2
-#define CS_SFX_READY SOUND_SELECT3
-#define CS_SFX_BACK SOUND_MENU_BACK3
-#define CS_SFX_REJECT SOUND_ELECTRIC_BUZZ
+/* Retail PLAYER SELECT SFX set (the real DKR enums; verified against menu.c's own
+ * charselect loop: move menu.c:9253, blocked menu.c:9230, confirm/deselect voice
+ * menu.c:9241/9145). Confirm/B-unconfirm play the racer's per-character VOICE line
+ * (SOUND_VOICE_CHARACTER_SELECT / _DESELECTED + the Character-enum id), so the
+ * confirm cue is "My name's Krunch" etc., exactly like retail. */
+#define CS_SFX_MOVE SOUND_MENU_PICK3     /* legal cursor move */
+#define CS_SFX_BLOCKED SOUND_HORN_DRUMSTICK /* confirm on a claimed racer */
+#define CS_SFX_READY SOUND_SELECT2       /* the join/ready beat */
+#define CS_SFX_BACK SOUND_MENU_BACK3     /* step back a level (unready) */
+/* The per-character voice-line base ids. The offset added is the racer's
+ * Character-enum id (== sOnlineToPortrait[onlineId] -- one mapping serves both the
+ * portrait blit and the voice), matching CHARSELECT_DATA(idx).voiceID in menu.c. */
+#define CS_SFX_VOICE_SELECT SOUND_VOICE_CHARACTER_SELECT   /* confirm ("I'm X") */
+#define CS_SFX_VOICE_DESELECT SOUND_VOICE_CHARACTER_DESELECTED /* B-unconfirm */
+
+/* ---- Retail grid ORDER (menu.c adjacency table 1046-1067) ------------------
+ * The PLAYER SELECT roster reads in a fixed VISUAL order that differs from the
+ * online id space. This is a pure cell<->online-id relabel: sCs.cursor stays the
+ * ONLINE id (the published hover_character the reducer validates); only the grid
+ * POSITION each id occupies moves, so navigation and drawing convert between the
+ * two spaces via these inverse tables. Published / reducer ids are unchanged.
+ *   row0: Krunch, Diddy, Drumstick, Bumper, Banjo
+ *   row1: Conker, Tiptup, T.T.,   Pipsy,  Timber                             */
+static const u8 kCsCellToOnline[MDKR_ONLINE_SCREEN_CHAR_COUNT] = {
+    7u, 0u, 8u, 5u, 6u, /* row0: Krunch Diddy Drumstick Bumper Banjo */
+    4u, 3u, 9u, 2u, 1u, /* row1: Conker Tiptup T.T. Pipsy Timber */
+};
+static const u8 kCsOnlineToCell[MDKR_ONLINE_SCREEN_CHAR_COUNT] = {
+    1u, 9u, 8u, 6u, 5u, /* Diddy Timber Pipsy Tiptup Conker */
+    3u, 4u, 0u, 2u, 7u, /* Bumper Banjo Krunch Drumstick T.T. */
+};
 
 /* ---- Online character id -> gRacerPortraits index -------------------------
  * TWO different orderings exist for the ten racers and mixing them silently
@@ -152,7 +179,8 @@ typedef struct MdkrOnlineCharselectState {
     u8 leave;          /* B-in-browse: leave request (edge; see tick) */
     u8 seeded;         /* first-snapshot cursor seed applied */
     u32 ticks;         /* CHARSELECT ticks elapsed (also drives the test input) */
-    u32 takenFlashEnd; /* "TAKEN BY x" flash deadline, in ticks */
+    u32 blink;         /* retail (t + updateRate) & 0x3F selected-pulse timer */
+    u32 bothReadyTicks; /* consecutive ticks all seats have been ready (OK? state) */
     s8 stickLatchX;
     s8 stickLatchY;
 } MdkrOnlineCharselectState;
@@ -247,33 +275,51 @@ static void charselect_input_scripted(CsInput *in) {
     {
         const s16 pick = charselect_scripted_pick();
         if (pick >= 0) {
-            /* Navigate to column `pick` in row 0 (one dx per tick from tick 2),
-             * then confirm and ready with a couple ticks of settle each. */
-            const u32 lastMove = (pick > 0) ? (1u + (u32) pick) : 1u;
-            if (pick > 0 && sCs.ticks >= 2u && sCs.ticks <= (1u + (u32) pick)) {
-                in->dx = 1;
-            } else if (sCs.ticks == lastMove + 2u) {
-                in->aEdge = 1u; /* confirm */
-            } else if (sCs.ticks == lastMove + 8u) {
-                in->aEdge = 1u; /* ready */
+            /* Navigate to row-0 CELL `pick` (a screen column, layout-independent):
+             * step toward it in cell space one edge per tick, then confirm + ready.
+             * Two paired endpoints pass different `pick` columns so they claim
+             * different racers (host=2, joiner=0) -- no SELECTION_CONFLICT. */
+            if (sCs.ticks >= 2u) {
+                s32 cell = (s32) kCsOnlineToCell[sCs.cursor];
+                s32 col = cell % CS_COLS;
+                s32 row = cell / CS_COLS;
+                if (!sCs.confirmed) {
+                    if (row != 0) {
+                        in->dy = -1;
+                    } else if (col != (s32) pick) {
+                        in->dx = ((s32) pick > col) ? 1 : -1;
+                    } else {
+                        in->aEdge = 1u; /* arrived -> confirm */
+                    }
+                } else if (!sCs.ready) {
+                    in->aEdge = 1u; /* ready */
+                }
             }
             return;
         }
     }
+    /* Default script: walk to Pipsy (online id 2 -- cell 8 in the retail layout),
+     * pressing a browse-B at tick 3 (the I1 no-wedge coverage), then confirm +
+     * ready. Cell path from Diddy (cell 1): dx,dx to Bumper (cell 3, hover only),
+     * dy to Pipsy (cell 8). The grid-layout witness proves EVERY cell's name/face
+     * pair, so this walk need only exercise the round-trip. */
     switch (sCs.ticks) {
     case 2u:
-        in->dx = 1; /* 0 -> 1 */
+        in->dx = 1; /* Diddy(cell1) -> Drumstick(cell2) */
         break;
     case 3u:
         in->bEdge = 1u; /* B while browsing: must NOT wedge the session */
         break;
     case 4u:
-        in->dx = 1; /* 1 -> 2 (Pipsy) */
+        in->dx = 1; /* -> Bumper(cell3), hover only (claimed by the remote) */
         break;
-    case 6u:
-        in->aEdge = 1u; /* confirm */
+    case 5u:
+        in->dy = 1; /* -> Pipsy(cell8) */
         break;
-    case 12u:
+    case 7u:
+        in->aEdge = 1u; /* confirm Pipsy */
+        break;
+    case 13u:
         in->aEdge = 1u; /* ready */
         break;
     default:
@@ -359,10 +405,12 @@ static void charselect_gather_input(CsInput *in) {
  * the SELECTION_CONFLICT divergence). */
 static void charselect_apply_input(const CsInput *in, u8 remoteChar) {
     if (!sCs.confirmed) {
-        /* Browsing: move the cursor over the grid. Columns wrap (native DKR 2D
-         * menus wrap); rows clamp. */
-        s32 col = (s32) (sCs.cursor % CS_COLS);
-        s32 row = (s32) (sCs.cursor / CS_COLS);
+        /* Browsing: move the cursor over the grid in CELL space (visual
+         * adjacency), then map the landed cell back to the online id sCs.cursor
+         * carries. Columns wrap (native DKR 2D menus wrap); rows clamp. */
+        s32 cell = (s32) kCsOnlineToCell[sCs.cursor];
+        s32 col = cell % CS_COLS;
+        s32 row = cell / CS_COLS;
         u8 previous = sCs.cursor;
         col = (col + in->dx + CS_COLS) % CS_COLS;
         row += in->dy;
@@ -372,23 +420,23 @@ static void charselect_apply_input(const CsInput *in, u8 remoteChar) {
         if (row >= CS_ROWS) {
             row = CS_ROWS - 1;
         }
-        sCs.cursor = (u8) (row * CS_COLS + col);
+        sCs.cursor = kCsCellToOnline[row * CS_COLS + col];
         if (sCs.cursor != previous) {
             sound_play(CS_SFX_MOVE, NULL);
-            /* nit: end the "TAKEN BY x" flash as soon as the cursor leaves
-             * the taken cell, so it cannot linger ~1.5s while hovering elsewhere. */
-            sCs.takenFlashEnd = 0u;
         }
         if (in->aEdge) {
             if (remoteChar != MDKR_ONLINE_SCREEN_NO_CHARACTER && sCs.cursor == remoteChar) {
-                /* DISALLOW: do not publish a confirm for a taken racer; flash a
-                 * TAKEN notice and play a negative cue. */
-                sCs.takenFlashEnd = sCs.ticks + CS_TAKEN_FLASH_TICKS;
-                sound_play(CS_SFX_REJECT, NULL);
+                /* DISALLOW: do not publish a confirm for a claimed racer -- retail
+                 * blocks it with the drumstick horn (menu.c:9230). */
+                sound_play(CS_SFX_BLOCKED, NULL);
             } else {
                 sCs.confirmed = 1u;
                 sLastConfirmedChar = sCs.cursor; /* persistence */
-                sound_play(CS_SFX_CONFIRM, NULL);
+                /* confirm cue = the racer's own voice line ("I'm X"), voiceID ==
+                 * the Character-enum id (sOnlineToPortrait), same as menu.c:9241. */
+                sound_play(
+                    (s32) CS_SFX_VOICE_SELECT + (s32) sOnlineToPortrait[sCs.cursor],
+                    NULL);
             }
         } else if (in->bEdge) {
             /* Browse-B = leave-to-room. WIRED: on the descriptor-less
@@ -405,14 +453,18 @@ static void charselect_apply_input(const CsInput *in, u8 remoteChar) {
     /* Confirmed: A readies, B steps back one level (unready, then unconfirm). */
     if (in->aEdge) {
         sCs.ready = 1u;
-        sound_play(CS_SFX_READY, NULL);
+        sound_play(CS_SFX_READY, NULL); /* the ready beat (retail SELECT2) */
     } else if (in->bEdge) {
         if (sCs.ready) {
             sCs.ready = 0u;
+            sound_play(CS_SFX_BACK, NULL);
         } else {
             sCs.confirmed = 0u;
+            /* B-unconfirm cue = the racer's DESELECT voice (menu.c:9145). */
+            sound_play(
+                (s32) CS_SFX_VOICE_DESELECT + (s32) sOnlineToPortrait[sCs.cursor],
+                NULL);
         }
-        sound_play(CS_SFX_BACK, NULL);
     }
 }
 
@@ -444,26 +496,73 @@ static void charselect_publish_intent(void) {
 /* ======================================================================== *
  * Render (native: real portraits + real font, into the engine frame list)
  * ======================================================================== */
+/* Grid CELL top-left for an online id (the retail-order relabel lives here). */
+static void charselect_cell_xy(u8 onlineId, s32 *x, s32 *y) {
+    s32 cell = (s32) kCsOnlineToCell[onlineId];
+    *x = CS_GRID_X + (cell % CS_COLS) * CS_CELL_W;
+    *y = CS_GRID_Y + (cell / CS_COLS) * CS_CELL_H;
+}
+
 static void charselect_draw_portrait(u8 onlineId, u8 r, u8 g, u8 b) {
     /* Grid-relative wrapper: derive the cell coords, then the shared guarded blit. */
-    s32 col = (s32) (onlineId % CS_COLS);
-    s32 row = (s32) (onlineId / CS_COLS);
-    s32 x = CS_GRID_X + col * CS_CELL_W;
-    s32 y = CS_GRID_Y + row * CS_CELL_H;
+    s32 x, y;
+    charselect_cell_xy(onlineId, &x, &y);
     mdkr_online_screen_draw_portrait(onlineId, x, y, r, g, b);
 }
 
-static void charselect_draw_label(u8 onlineId, s32 dy, s32 fontId, char *text,
-                                   s32 r, s32 g, s32 b) {
-    s32 col = (s32) (onlineId % CS_COLS);
-    s32 row = (s32) (onlineId / CS_COLS);
-    s32 cx = CS_GRID_X + col * CS_CELL_W + CS_PORTRAIT_HALF;
-    s32 y = CS_GRID_Y + row * CS_CELL_H + dy;
-    /* Route through the shared scrim helper so the grid labels get the SAME
-     * legibility halo as every other native online screen -- they sit over
-     * the bright hub sky and were the one text block still bypassing it (a raw
-     * draw_text). */
-    mdkr_online_screen_text(cx, y, fontId, text, ALIGN_MIDDLE_CENTER, r, g, b);
+/* PLAYER SELECT / OK? title face: BIGFONT with the retail 1px translucent-black
+ * drop shadow. The shared text helper deliberately skips shadows for the authored
+ * BIGFONT art, so the retail shadow recipe (menu.c draws titles black at +offset,
+ * opacity 180, then the gold art) is drawn here. */
+static void charselect_bigfont_shadowed(s32 x, s32 y, char *text) {
+    set_text_font(ASSET_FONTS_BIGFONT);
+    set_text_background_colour(0, 0, 0, 0);
+    set_text_colour(0, 0, 0, 255, 180);
+    draw_text(&gCurrDisplayList, x + 1, y + 3, text, ALIGN_MIDDLE_CENTER);
+    set_text_colour(255, 255, 255, 0, 255); /* authored gold art, untinted */
+    draw_text(&gCurrDisplayList, x, y, text, ALIGN_MIDDLE_CENTER);
+}
+
+/* Retail P1/P2 seat-number block, mimicked in 2D: a small gold card above the
+ * tile with the seat digit (FUNFONT -- BIGFONT has no digit glyphs). `xoff` shifts
+ * the card horizontally off the tile centre so two markers on the SAME tile (local
+ * cursor hovering the remote's claimed racer) can sit side-by-side instead of
+ * stacking; 0 keeps the single-marker case centred as before. */
+static void charselect_draw_seat_marker(u8 onlineId, s32 number, s32 xoff) {
+    s32 x, y;
+    char digit[2];
+    s32 cx;
+    charselect_cell_xy(onlineId, &x, &y);
+    cx = x + CS_PORTRAIT_HALF + xoff;
+    mdkr_online_screen_card(cx - 9, y - 15, cx + 9, y - 1, 255, 200, 40, 235);
+    digit[0] = (char) ('0' + ((number > 0 && number < 10) ? number : 0));
+    digit[1] = '\0';
+    mdkr_online_screen_text(cx, y - 8, ASSET_FONTS_FUNFONT, digit,
+                            ALIGN_MIDDLE_CENTER, 255, 255, 255);
+}
+
+/* One portrait name label. EVERY name draws in the retail body face (FUNFONT) with
+ * the shared helper's pink authored art + 1px drop shadow -- no name ever drops to
+ * the plain white SMALLFONT. The widest name (DRUMSTICK) overruns its 60px cell in
+ * the authored FUNFONT advance and crowds its neighbour, and the retail text path
+ * has no per-glyph horizontal scale (draw_text is fixed 1.0). So EVERY name is drawn
+ * with the letter-spacing squeeze uniformly (set_kerning(TRUE) -- one pixel tighter
+ * per glyph, the exact kern menu.c uses for the hub names and the one that fixed the
+ * "DRA GON"/"BE GIN" airiness on the other online screens): consistency over size.
+ * The squeeze keeps every label in the identical pink FUNFONT treatment AND opens
+ * the inter-name gaps enough that DRUMSTICK clears BUMPER. Both get_text_width and
+ * draw_text honour gCompactKerning, so the centred alignment and the shadow/face
+ * passes stay registered under the squeeze. FUNFONT is an authored-art face, so
+ * mdkr_online_screen_text never touches gCompactKerning itself; we set it for the
+ * label draw and restore the module default (FALSE) afterwards. */
+static void charselect_draw_name(u8 onlineId) {
+    s32 x, y;
+    char *name = (char *) sOnlineNames[onlineId];
+    charselect_cell_xy(onlineId, &x, &y);
+    set_kerning(TRUE);
+    mdkr_online_screen_text(x + CS_PORTRAIT_HALF, y + 46, (s32) ASSET_FONTS_FUNFONT,
+                            name, ALIGN_MIDDLE_CENTER, 255, 255, 255);
+    set_kerning(FALSE);
 }
 
 /* Resolve the (first occupied, non-local) remote seat into a bounded view.
@@ -497,170 +596,153 @@ static void charselect_resolve_remote(const MdkrPartyLinkSnapshot *snap,
     }
 }
 
-static void charselect_render(const CsRemoteView *rv) {
+static void charselect_render(const CsRemoteView *rv, s32 localSeat) {
     const char *rname = rv->name[0] != '\0' ? rv->name : "RIVAL";
-    /* Triangle-wave pulse (0..16) off the tick counter for a native cursor
-     * highlight feel with zero assets. */
-    s32 tri = mdkr_online_screen_pulse(sCs.ticks);
-    u8 id;
+    /* Retail selected-item pulse: (t + updateRate) & 0x3F accumulated in sCs.blink,
+     * *8 triangle-folded to 0..255 (menu.c gOptionBlinkTimer cadence -- slower and
+     * deeper than the old 0..16 pulse). */
+    s32 blink = mdkr_online_screen_blink(sCs.blink);
+    /* Retail seat blocks are numbered by SEAT INDEX: host (seat 0) = "1", joiner
+     * (seat 1) = "2", whichever is local. */
+    s32 localNum = (localSeat >= 0) ? localSeat + 1 : 1;
+    s32 remoteNum = (rv->seat >= 0) ? (s32) rv->seat + 1 : 2;
+    bool allReady = (sCs.confirmed && sCs.ready && rv->present && rv->ready);
     /* Capture the taken tile's ACTUAL drawn luminance for the witness only when the
-     * headless test seam is armed -- reset every frame so no stale value can leak,
-     * and gated so a normal (unarmed) run pays nothing. */
+     * headless test seam is armed -- reset every frame so no stale value can leak. */
     bool witnessArmed = mdkr_online_charselect_test_active() ? true : false;
+    u8 id;
+
     sTakenTileDrawLum = -1;
 
-    /* Grounds first (retail figure-ground): title strip, the racer-grid board
-     * and the seats/controls footer board -- the portraits and every label sit
-     * on a solid dark card, never naked over the bright hub sky. */
-    mdkr_online_screen_strip(6, 30);
-    mdkr_online_screen_panel(12, 36, 308, 190);
-    mdkr_online_screen_panel(10, 194, 310, 236);
+    /* Retail grounds (§4.6 "plain scene for charselect"): PLAYER SELECT has no
+     * menu-board chrome. The title and the real portraits float over the hub sky
+     * (portraits are opaque; the title + names carry the retail drop shadow). Only
+     * the online-only status/help footer keeps a subtle band for legibility -- there
+     * is no such text on the retail screen. */
+    mdkr_online_screen_strip(190, 216);
 
-    /* Title. */
-    mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 18, ASSET_FONTS_BIGFONT,
-                            "CHOOSE YOUR RACER", ALIGN_MIDDLE_CENTER, 255, 224,
-                            96);
+    /* Title: PLAYER SELECT (a literal -- gMenuText is offline-loaded), BIGFONT with
+     * the retail 1px translucent-black drop shadow. */
+    charselect_bigfont_shadowed(MDKR_ONLINE_SCREEN_W_HALF, 16, "PLAYER SELECT");
 
-    /* The grid: every racer's portrait + name. Colour + shape carry the state so
-     * a colorblind player still reads it: cursor = pulsing gold + >NAME< brackets
-     *, local confirmed pick = green + YOU tag, remote's taken pick = big
-     * luminance drop + name tag. */
+    /* The grid: every racer's real portrait + FUNFONT name, in the retail visual
+     * order. The hover cursor is the retail-cadence gold pulse + the local seat
+     * block; the local confirmed pick reads green; the remote's claimed pick is the
+     * retail luminance-dropped tile (the block + the drop are the "claimed" cue --
+     * no TAKEN/RIVAL word pair). */
     for (id = 0u; id < MDKR_ONLINE_SCREEN_CHAR_COUNT; id++) {
         u8 pr = 210u, pg = 210u, pb = 210u;
-        s32 nr = 200, ng = 200, nb = 200;
         bool taken = (rv->character != MDKR_ONLINE_SCREEN_NO_CHARACTER && id == rv->character);
         bool onCursor = (id == sCs.cursor);
         bool localPick = (sCs.confirmed && id == sCs.cursor);
-        char label[24];
 
         if (taken) {
             pr = pg = pb = CS_TAKEN_DIM;
-            nr = ng = nb = 90;
         }
         if (onCursor && !localPick) {
             if (taken) {
-                /* Dimmed gold: keep BOTH "this is my cursor" and "this is taken"
-                 * legible (also aids colorblind players). */
+                /* Dimmed gold: keep BOTH "this is my cursor" and "claimed" legible. */
                 pr = 200u;
                 pg = 170u;
                 pb = 80u;
-                nr = 200;
-                ng = 170;
-                nb = 80;
             } else {
                 pr = 255u;
-                pg = (u8) (190 + tri * 4);
-                pb = (u8) (60 + tri * 3);
-                nr = 255;
-                ng = 190 + tri * 4;
-                nb = 60 + tri * 3;
+                pg = (u8) (150 + (105 * blink) / 255);
+                pb = (u8) (40 + (80 * blink) / 255);
             }
         }
         if (localPick) {
             pr = 120u;
             pg = 255u;
             pb = 120u;
-            nr = 120;
-            ng = 255;
-            nb = 120;
         }
-
         if (taken && witnessArmed) {
             /* The luminance actually handed to THIS frame's taken-tile blit
-             * (r==g==b for the greyed state). Plumbed into the witness so the
-             * coverage reports the drawn value, not a re-derived constant. */
+             * (r==g==b for the greyed state) -- reported as the witness 'dim'. */
             sTakenTileDrawLum = (s32) pr;
         }
         charselect_draw_portrait(id, pr, pg, pb);
-        /* Shape redundancy for the hover cursor. */
-        if (onCursor) {
-            (void) snprintf(label, sizeof(label), ">%s<", sOnlineNames[id]);
-        } else {
-            (void) snprintf(label, sizeof(label), "%s", sOnlineNames[id]);
-        }
-        charselect_draw_label(id, 46, ASSET_FONTS_SMALLFONT, label, nr, ng, nb);
+        charselect_draw_name(id);
+    }
 
-        /* Seat markers on separate rows so they never overprint during the brief
-         * same-character latency window. */
-        if (localPick) {
-            charselect_draw_label(id, 56, ASSET_FONTS_SMALLFONT, "YOU", 120, 255,
-                                  120);
-        }
-        if (taken) {
-            char tag[16];
-            /* Persistent tile-level TAKEN cue on the rival's locked racer,
-             * mirroring the local pick's "YOU" marker slot (dy=56). Same-
-             * character online is DISALLOWED (charselect_apply_input rejects a
-             * confirm on the rival's cell), so the local player must read
-             * "unavailable" AT THE TILE -- the dimmed portrait + a lone name
-             * label were not being read as a taken/greyed state, and the
-             * "TAKEN BY x" flash only appears AFTER a rejected confirm attempt.
-             * Colour + this word + the luminance drop are three redundant cues
-             * (also aids colourblind players). */
-            charselect_draw_label(id, 56, ASSET_FONTS_SMALLFONT, "TAKEN", 255,
-                                  120, 120);
-            (void) snprintf(tag, sizeof(tag), "%.7s", rname);
-            charselect_draw_label(id, 66, ASSET_FONTS_SMALLFONT, tag, 255, 160,
-                                  160);
+    /* Retail P1/P2 seat blocks: the local seat's number on the hovered tile (the
+     * cursor IS the block, retail-style), the remote seat's number on its claimed
+     * tile. Drawn AFTER the grid so they sit on top. When the local cursor is parked
+     * on the SAME tile the remote has claimed (moving onto a claimed tile is legal --
+     * only confirm is blocked), both cards would otherwise draw at identical coords:
+     * the remote card (drawn last) would occlude the local one and the two
+     * translucent cards would double-blend. So on coincidence, split the pair
+     * side-by-side above the tile (local "1" shifted left, remote "2" shifted right)
+     * so BOTH read; the single-marker cases stay centred (xoff 0). */
+    {
+        bool coincide = (rv->character != MDKR_ONLINE_SCREEN_NO_CHARACTER &&
+                         sCs.cursor == rv->character);
+        charselect_draw_seat_marker(sCs.cursor, localNum, coincide ? -11 : 0);
+        if (rv->character != MDKR_ONLINE_SCREEN_NO_CHARACTER) {
+            charselect_draw_seat_marker(rv->character, remoteNum, coincide ? 11 : 0);
         }
     }
 
-    /* Status lines: drawn edge-anchored (render_text_string subtracts half
-     * the width from x, so a CENTER-aligned edge string clips off-screen). Local
-     * status is driven by the ready LATCH (single ready-truth, P3). */
+    /* Online-only status footer (no retail counterpart): each seat's ready state,
+     * driven by the ready LATCH (single ready-truth). */
     {
         char line[64];
         const char *you = sCs.ready ? "READY" : (sCs.confirmed ? "PICKED"
                                                               : "CHOOSING");
         (void) snprintf(line, sizeof(line), "YOU: %s", you);
-        mdkr_online_screen_text(24, 204, ASSET_FONTS_SMALLFONT, line,
+        mdkr_online_screen_text(24, 198, ASSET_FONTS_SMALLFONT, line,
                                 ALIGN_MIDDLE_LEFT, sCs.ready ? 120 : 220,
                                 sCs.ready ? 255 : 220, sCs.ready ? 120 : 220);
-
-        /* Right status is ALWAYS drawn: a first-time host must see the
-         * remote's presence/waiting state, not an empty half. */
         if (!rv->present) {
-            mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W - 24, 204, ASSET_FONTS_SMALLFONT,
+            mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W - 24, 198, ASSET_FONTS_SMALLFONT,
                                     "WAITING FOR PLAYER...", ALIGN_MIDDLE_RIGHT,
                                     150, 150, 150);
         } else {
             (void) snprintf(line, sizeof(line), "%.12s: %s", rname,
                             rv->ready ? "READY" : "CHOOSING");
-            mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W - 24, 204, ASSET_FONTS_SMALLFONT,
+            mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W - 24, 198, ASSET_FONTS_SMALLFONT,
                                     line, ALIGN_MIDDLE_RIGHT,
                                     rv->ready ? 120 : 220, rv->ready ? 255 : 220,
                                     rv->ready ? 120 : 220);
         }
     }
 
-    /* Context help / transient TAKEN flash (object-complete copy). Browse
-     * advertises "B: LEAVE": browse-B is a WIRED leave-to-room on
-     * the descriptor-less human path, so the destructive input is made visible on
-     * the first screen of the flow rather than a silent ejection. */
-    if (sCs.ticks < sCs.takenFlashEnd) {
-        char msg[32];
-        (void) snprintf(msg, sizeof(msg), "TAKEN BY %.7s", rname);
-        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT, msg,
-                                ALIGN_MIDDLE_CENTER, 255, 80, 80);
-    } else if (!sCs.confirmed) {
-        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT,
-                                "A: SELECT   B: LEAVE", ALIGN_MIDDLE_CENTER,
-                                255, 255, 255);
-    } else if (!sCs.ready) {
-        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT,
-                                "A: READY   B: CHANGE PICK", ALIGN_MIDDLE_CENTER,
-                                255, 255, 255);
+    /* Centre cue: the retail "OK?" (BIGFONT, low) when ALL seats are ready, else the
+     * context help. When all are ready the host-start is imminent; only after a
+     * stretch of host-start latency is the online-only "waiting for host" footer
+     * added under it (an online necessity retail has no analogue for). */
+    if (allReady) {
+        sCs.bothReadyTicks++;
+        charselect_bigfont_shadowed(MDKR_ONLINE_SCREEN_W_HALF, 208, "OK?");
+        if (sCs.bothReadyTicks > CS_OK_WAIT_TICKS) {
+            /* This online-only line sits BELOW the footer band (which ends at
+             * y=216), so extend the dark band down to cover it -- every footer
+             * line must read on a band, never float over the sky. The extension
+             * abuts the main strip (drawn contiguously from y=216) and reaches
+             * y=238, as the pre-W1 panel did. */
+            mdkr_online_screen_strip(216, 238);
+            mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 228,
+                                    ASSET_FONTS_SMALLFONT,
+                                    "WAITING FOR HOST TO START...   B: UNREADY",
+                                    ALIGN_MIDDLE_CENTER, 200, 200, 200);
+        }
     } else {
-        char msg[64];
-        if (rv->ready) {
-            (void) snprintf(msg, sizeof(msg),
-                            "WAITING FOR HOST TO START...   B: UNREADY");
+        sCs.bothReadyTicks = 0u;
+        if (!sCs.confirmed) {
+            mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 208, ASSET_FONTS_SMALLFONT,
+                                    "A: SELECT   B: LEAVE", ALIGN_MIDDLE_CENTER,
+                                    255, 255, 255);
+        } else if (!sCs.ready) {
+            mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 208, ASSET_FONTS_SMALLFONT,
+                                    "A: READY   B: CHANGE PICK", ALIGN_MIDDLE_CENTER,
+                                    255, 255, 255);
         } else {
+            char msg[64];
             (void) snprintf(msg, sizeof(msg),
                             "READY! WAITING FOR %.12s...   B: UNREADY", rname);
+            mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 208, ASSET_FONTS_SMALLFONT,
+                                    msg, ALIGN_MIDDLE_CENTER, 120, 255, 120);
         }
-        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, 224, ASSET_FONTS_SMALLFONT, msg,
-                                ALIGN_MIDDLE_CENTER, 120, 255, 120);
     }
 }
 
@@ -763,21 +845,39 @@ void mdkr_online_charselect_enter(void) {
 
     /* load_fonts() at boot only builds the font TABLE; each screen must load the
      * glyph textures for the fonts it draws with (refcounted; unload_font() on
-     * exit). The offline charselect does exactly this for BIGFONT. */
+     * exit). BIGFONT = title / OK?; FUNFONT = the retail body face (ALL portrait
+     * names + seat digits); SMALLFONT = online-only footers only. */
     load_font(ASSET_FONTS_BIGFONT);
+    load_font(ASSET_FONTS_FUNFONT);
     load_font(ASSET_FONTS_SMALLFONT);
 
     sCs.assets = 1u;
     /* Neutral hub sky (Dino Domain) -- charselect is world-agnostic. */
     mdkr_online_screen_backdrop((u8) MDKR_ONLINE_SKY_WORLD_NEUTRAL);
 
-    /* reveal this screen from black (retail fade cadence) and start the
-     * retail menu music. Charselect is the FIRST native screen after the launcher
-     * hand-off, so its reveal is also what makes that hand-off read as one
-     * continuous motion instead of a black-frame jump. Isolation-safe primitive
-     * borrows (transition_begin / music_play) -- see online_screen_util.h. */
+    /* reveal this screen from black (retail fade cadence) and start the retail
+     * PLAYER SELECT music (SEQUENCE_CHOOSE_YOUR_RACER -- the offline charselect's
+     * own track, not the front-end SEQUENCE_MAIN_MENU). Charselect is the FIRST
+     * native screen after the launcher hand-off, so its reveal is also what makes
+     * that hand-off read as one continuous motion. Isolation-safe primitive borrows
+     * (transition_begin / music_play) -- see online_screen_util.h. */
     mdkr_online_screen_fade_in_from_black();
-    mdkr_online_screen_menu_music();
+    mdkr_online_screen_music((u8) SEQUENCE_CHOOSE_YOUR_RACER);
+
+    /* Grid-layout witness (headless lanes only): dump each CELL's online id + the
+     * name/portrait slot it draws, so the retail cell order + every visible
+     * name->face pair is asserted in one place (check_online_charselect.py) rather
+     * than only for the cells the scripted cursor happens to visit. */
+    if (mdkr_online_charselect_test_active()) {
+        unsigned c;
+        for (c = 0u; c < MDKR_ONLINE_SCREEN_CHAR_COUNT; c++) {
+            u8 oid = kCsCellToOnline[c];
+            fprintf(stderr,
+                    "[online-charselect] grid cell=%u id=%u name=%s portrait=%u\n",
+                    c, (unsigned) oid, sOnlineNames[oid],
+                    (unsigned) sOnlineToPortrait[oid]);
+        }
+    }
 
     fprintf(stderr,
             "[online-charselect] enter: native screen up defaultVehicle=%u "
@@ -793,8 +893,9 @@ void mdkr_online_charselect_exit(void) {
         /* Symmetric free: the same group loader's free path releases the ten
          * portrait textures (and, once the menu asset count returns to zero, the
          * shared portrait bookkeeping) before the race loader reuses the pool.
-         * Balance the two load_font() refs taken in _enter(). */
+         * Balance the three load_font() refs taken in _enter(). */
         unload_font(ASSET_FONTS_SMALLFONT);
+        unload_font(ASSET_FONTS_FUNFONT);
         unload_font(ASSET_FONTS_BIGFONT);
         menu_assetgroup_free(sPortraitAssetIds);
         menu_assetgroup_free(sOnlineSkyAssetIds);
@@ -810,7 +911,10 @@ MdkrOnlineCharselectResult mdkr_online_charselect_tick(s32 updateRate) {
     CsRemoteView rv;
     CsInput in;
 
-    (void) updateRate;
+    /* Retail blink timer: accumulate the logic update rate into a 0x3F-wrapping
+     * counter, exactly like menu.c's gOptionBlinkTimer, so the selected-item pulse
+     * runs at the authentic DKR cadence regardless of the host frame rate. */
+    sCs.blink = (sCs.blink + (u32) (updateRate > 0 ? updateRate : 0)) & 0x3Fu;
 
     /* Read the authoritative forward feed the launcher publishes (both seats'
      * picks/ready + the remote name). Display-only for the remote seat. */
@@ -836,7 +940,7 @@ MdkrOnlineCharselectResult mdkr_online_charselect_tick(s32 updateRate) {
     charselect_publish_intent();
 
     /* Native render into the engine frame's display list. */
-    charselect_render(&rv);
+    charselect_render(&rv, localSeat);
     charselect_witness(&snap, haveSnap, localSeat, &rv);
 
     /* Headless test seam: reflect the intent into the scripted room + script the
