@@ -60,6 +60,10 @@ CHARSELECT_LEFT_RE = re.compile(
     r"^\[online-session\] LEFT: charselect backout", re.MULTILINE)
 VACATE_LEFT_RE = re.compile(
     r"^\[online-session\] LEFT: remote seat vacated at ", re.MULTILINE)
+VACATE_TRACKSELECT_LEFT_RE = re.compile(
+    r"^\[online-session\] LEFT: remote seat vacated at trackselect ", re.MULTILINE)
+TO_TRACKSELECT_RE = re.compile(
+    r"^\[online-session\] vehicleselect -> trackselect", re.MULTILINE)
 MID_UNWIND_LEFT_RE = re.compile(
     r"^\[online-session\] mid-tournament UNWIND: .* -> LEFT: return to room",
     re.MULTILINE)
@@ -249,6 +253,57 @@ def check_left_remote_vacate(binary: Path, rom: Path, verbose: bool) -> int | No
     return None
 
 
+def check_left_trackselect_vacate(binary: Path, rom: Path,
+                                  verbose: bool) -> int | None:
+    """LEFT (B2 scenario 3): the remote seat vacates at TRACKSELECT -> clean
+    return-to-room. The screen-scoped seam (MDKR_TEST_ONLINE_REMOTE_VACATE_AT=
+    trackselect) keeps the remote present through CHARSELECT + VEHICLESELECT, so
+    the session REACHES trackselect, and only there reads the remote as gone --
+    the trackselect arm of the (role-agnostic) remote-vacate detector, i.e. a
+    joiner watching the host leave at track select. It must end the session
+    cleanly (LEFT, exit 0), never wedge, and never boot a race (the vacate is
+    pre-START)."""
+    try:
+        rc, output = run_engine(
+            binary, rom, ticks=8000, timeout=250, verbose=verbose,
+            extra_env={
+                "MDKR_APP_TEST_ONLINE_LIVE_LOBBY_START": "1",
+                "MDKR_TEST_ONLINE_LOBBY_START": "1",
+                # Visible endpoint is the JOINER: it DWELLS at trackselect waiting
+                # for the host to lock+START (a host would START in a few ticks,
+                # too short for the 45-tick vacate debounce), so the host-vacate
+                # detector arm at trackselect genuinely fires.
+                "MDKR_APP_TEST_ONLINE_LIVE_JOINER": "1",
+                "MDKR_TEST_ONLINE_REMOTE_VACATE_AT": "trackselect",
+            })
+    except subprocess.TimeoutExpired as error:
+        return fail(f"[LEFT-track-vacate] run HUNG (parked at trackselect on the "
+                    f"vacated remote): {error}")
+    guard = _no_forbidden("LEFT-track-vacate", output)
+    if guard is not None:
+        return guard
+    if rc != 0:
+        return fail(f"[LEFT-track-vacate] exited {rc} (expected clean 0)", output)
+    # Non-vacuous: the session must have REACHED trackselect (the scoped seam let
+    # it past charselect/vehicleselect), else the arm is not testing trackselect.
+    if not TO_TRACKSELECT_RE.search(output):
+        return fail("[LEFT-track-vacate] the session never reached TRACKSELECT -- "
+                    "the scoped vacate seam is not screen-scoped (it would have "
+                    "tripped at charselect)", output)
+    if not VACATE_TRACKSELECT_LEFT_RE.search(output):
+        return fail("[LEFT-track-vacate] engine never noted the remote-vacated LEFT "
+                    "AT TRACKSELECT (the trackselect detector arm did not fire)",
+                    output)
+    if DIRECT_BOOT_RE.findall(output):
+        return fail("[LEFT-track-vacate] a race booted -- a remote vacated at "
+                    "trackselect must never reach a race start", output)
+    reads = _reads(output)
+    if not any(r == "LEFT" and c == "0" for r, c in reads):
+        return fail(f"[LEFT-track-vacate] launcher never read reason=LEFT result=0; "
+                    f"saw {reads}", output)
+    return None
+
+
 def check_left_mid_cancel(binary: Path, rom: Path, verbose: bool) -> int | None:
     """LEFT (mid-tournament cancel): a leader mid-tournament CANCEL -> clean return-to-room."""
     try:
@@ -329,6 +384,7 @@ def main() -> int:
             parser.error(f"missing {label}: {path}")
 
     for scenario in (check_left_charselect, check_left_remote_vacate,
+                     check_left_trackselect_vacate,
                      check_error, check_left_mid_cancel, check_finished,
                      check_finished_joiner):
         result = scenario(binary, rom, args.verbose)
@@ -342,7 +398,9 @@ def main() -> int:
         "exit 0), FINISHED as JOINER (IMPORTANT-1: the non-host FOLLOWS the host out "
         "of the final standings instead of parking, exit 0), LEFT via CHARSELECT "
         "backout (exit 0, no race booted), LEFT via remote-vacated pre-START "
-        "(Minor-3; debounced, exit 0, no race booted), LEFT via mid-tournament "
+        "(Minor-3; debounced, exit 0, no race booted), LEFT via remote-vacated at "
+        "TRACKSELECT (B2 scenario 3; reached trackselect then the detector arm "
+        "fired, exit 0, no race booted), LEFT via mid-tournament "
         "cancel (Minor-4/T6h2c; clean return replacing the re-front, exit 0), and "
         "ERROR via the wall-clock watchdog (nonzero exit, reason=ERROR).")
     return 0

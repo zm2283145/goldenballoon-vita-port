@@ -495,16 +495,36 @@ static bool online_session_descless_watchdog_tick(const char *where) {
     return false;
 }
 
-static u8 online_session_feed_isfinal(void) {
+/* Read ONE feed snapshot at RESULTS ENTER and derive BOTH the final-round flag
+ * and the current 0-based cup round from it. Two separate mdkr_party_link_read()
+ * calls would be TORN: a tournament wrap publishing BETWEEN them at a genuine
+ * final makes isFinal read the pre-wrap race_index (final) while the round reads
+ * the post-wrap 0 -- exactly the torn state that re-opens the strand item B
+ * closes (finalWrap needs isFinal AND raceIndex+1>=CUP_ROUNDS) -- so both come
+ * from the SAME snapshot. At RESULTS enter race_index still names the
+ * just-finished race (before the host's REMATCH advances it).
+ *
+ *   isFinal  = race_index >= CUP_ROUNDS-1.
+ *   raceIndex = race_index itself -- the TRUE cup round, NOT sRes.raceCount (the
+ *     session's own boot count, which under-counts for a leader whose session
+ *     joined a cup mid-way -- leader migration -- so raceCount-1 would read a
+ *     genuine final as a non-final and take the purely-local FINISH leave that
+ *     strands a second peer).
+ *
+ * Outside a configured tournament both are 0 (the chooser's TOURNAMENT gate
+ * excludes the wrap anyway). */
+static void online_session_feed_final_and_round(u8 *isFinal, u8 *raceIndex) {
     MdkrPartyLinkSnapshot snap;
+    *isFinal = 0u;
+    *raceIndex = 0u;
     if (mdkr_party_link_read(&snap) &&
         snap.mode == (uint8_t) MDKR_PARTY_LINK_MODE_TOURNAMENT &&
         snap.cup_id != MDKR_PARTY_LINK_CUP_UNSET) {
-        return (snap.race_index >= (u8) (MDKR_ONLINE_SESSION_CUP_ROUNDS - 1u))
-                   ? 1u
-                   : 0u;
+        *raceIndex = snap.race_index;
+        *isFinal = (snap.race_index >= (u8) (MDKR_ONLINE_SESSION_CUP_ROUNDS - 1u))
+                       ? 1u
+                       : 0u;
     }
-    return 0u;
 }
 
 /* SINGLE-RACE "Race Again" auto-start publish. Publish a reverse-feed
@@ -814,6 +834,30 @@ static bool online_session_remote_vacate_final_forced(void) {
     return sRemoteVacateFinalResolved > 0 && sOnlineSession.resultsIsFinal;
 }
 
+/* SCREEN-SCOPED remote-vacate probe (env MDKR_TEST_ONLINE_REMOTE_VACATE_AT=<screen>,
+ * e.g. "trackselect"): force the remote-seat-vacated predicate ONLY on the named
+ * native screen, so the session can REACH that screen (e.g. a joiner past
+ * CHARSELECT/VEHICLESELECT to TRACKSELECT) before the host is read as gone. The
+ * unscoped MDKR_TEST_ONLINE_REMOTE_VACATE trips at the FIRST detector call
+ * (charselect); this scopes it to the target screen for the per-screen vacate
+ * proofs. Off in every normal run (the env compares against the caller's `where`).
+ * A real transport departure cannot be cheaply staged on the loopback rig; the
+ * debounce + note LEFT + exit(0) action all run genuinely. */
+static const char *online_session_remote_vacate_at_screen(void) {
+    static s8 resolved = -1;
+    static const char *screen = NULL;
+    if (resolved < 0) {
+        screen = getenv("MDKR_TEST_ONLINE_REMOTE_VACATE_AT");
+        resolved = 1;
+    }
+    return screen;
+}
+static bool online_session_remote_vacate_forced_at(const char *where) {
+    const char *screen = online_session_remote_vacate_at_screen();
+    return screen != NULL && screen[0] != '\0' && where != NULL &&
+           strcmp(screen, where) == 0;
+}
+
 /* UNCAPTURED-latch seam (env MDKR_TEST_ONLINE_CEREMONY_UNCAPTURED): hand the
  * ceremony NULL even though a final ranking WAS captured -- standing in for the
  * real WAN ordering window where the host's wrap State lands before this
@@ -877,7 +921,8 @@ static bool online_session_detect_remote_vacated(const char *where) {
     }
     if (online_session_snapshot_has_remote_seat(&snap) &&
         !online_session_remote_vacate_forced() &&
-        !online_session_remote_vacate_final_forced()) {
+        !online_session_remote_vacate_final_forced() &&
+        !online_session_remote_vacate_forced_at(where)) {
         sOnlineSession.remoteAbsentTicks = 0u; /* remote back / present: reset */
         return false;
     }
@@ -1507,18 +1552,24 @@ void mdkr_online_session_tick(s32 updateRate) {
             {
                 /* isFinal: no further race will boot (the ADVANCE off this
                  * screen would be the (N+1)th boot). The final STANDINGS holds
-                 * on screen and the autoplay tick budget ends the process.
-                 * a descriptor-less (interactive) session has no
-                 * resident env, so size finality from the FEED; the ENV path
-                 * stays FIRST so the two resident lanes are byte-unchanged. */
-                u8 isFinal = sOnlineSession.beganWithoutDescriptor
-                                 ? online_session_feed_isfinal()
-                                 : ((sOnlineSession.raceCount >= sResidentRaces)
-                                        ? 1u
-                                        : 0u);
-                u8 raceIndex = (sOnlineSession.raceCount > 0u)
-                                   ? (u8) (sOnlineSession.raceCount - 1u)
-                                   : 0u;
+                 * on screen and the autoplay tick budget ends the process. A
+                 * descriptor-less (interactive) session has no resident env, so
+                 * size finality + the round from the FEED (ONE snapshot -> both,
+                 * torn-read safe); the ENV path stays FIRST so the two resident
+                 * lanes are byte-unchanged. The round must be the FEED's true cup
+                 * round, not raceCount-1 (the session's own boot count, which
+                 * under-counts for a mid-cup-joined leader -- see the helper). */
+                u8 isFinal;
+                u8 raceIndex;
+                if (sOnlineSession.beganWithoutDescriptor) {
+                    online_session_feed_final_and_round(&isFinal, &raceIndex);
+                } else {
+                    isFinal = (sOnlineSession.raceCount >= sResidentRaces) ? 1u
+                                                                          : 0u;
+                    raceIndex = (sOnlineSession.raceCount > 0u)
+                                    ? (u8) (sOnlineSession.raceCount - 1u)
+                                    : 0u;
+                }
                 /* latch finality NOW (race_index still names this race) so
                  * the ADVANCE decision below is not fooled by the REMATCH advancing
                  * race_index before the screen returns ADVANCE. */

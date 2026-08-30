@@ -242,6 +242,24 @@ static u8 vehicleselect_track_mask(u16 trackId, unsigned occupied) {
                  VS_ALL_VEHICLES);
 }
 
+/* The legality mask for the local seat's pick this frame. For a TOURNAMENT with a
+ * known cup this is the whole cup's INTERSECTION (the pick persists across every
+ * round, so it must be legal for all of them -- resolving against only the cup's
+ * round-0 track let a car chosen for cup-0 survive to round-3 Hot Top Volcano and
+ * be rejected there). Single race (or a tournament whose cup is not yet locked)
+ * keeps the resolved-track mask. */
+static u8 vehicleselect_resolve_mask(const MdkrPartyLinkSnapshot *snap,
+                                     bool haveSnap, unsigned occupied) {
+    if (haveSnap && snap->mode == MDKR_ONLINE_SCREEN_MODE_TOURNAMENT &&
+        snap->cup_id < VS_CUP_COUNT) {
+        return (u8) (mdkr_online_trackselect_cup_vehicle_mask(snap->cup_id,
+                                                              occupied) &
+                     VS_ALL_VEHICLES);
+    }
+    return vehicleselect_track_mask(vehicleselect_resolve_track(snap, haveSnap),
+                                    occupied);
+}
+
 static bool vehicleselect_vehicle_legal(u8 vehicle, u8 mask) {
     return vehicle < MDKR_ONLINE_SCREEN_VEHICLE_COUNT &&
            (mask & (u8) (1u << vehicle)) != 0u;
@@ -727,7 +745,7 @@ void mdkr_online_vehicleselect_enter(void) {
         }
     }
     sVs.track = vehicleselect_resolve_track(&snap, haveSnap);
-    sVs.mask = vehicleselect_track_mask(sVs.track, occupied);
+    sVs.mask = vehicleselect_resolve_mask(&snap, haveSnap, occupied);
     vehicleselect_autonarrow(sVs.mask);
     sVs.cursor = sVs.vehicle; /* start the cursor on the committed legal vehicle */
     sVs.seeded = 1u;
@@ -799,7 +817,7 @@ MdkrOnlineVehicleselectResult mdkr_online_vehicleselect_tick(s32 updateRate) {
         sVs.character = snap.seats[localSeat].character_id;
     }
     sVs.track = vehicleselect_resolve_track(&snap, haveSnap);
-    sVs.mask = vehicleselect_track_mask(sVs.track, occupied);
+    sVs.mask = vehicleselect_resolve_mask(&snap, haveSnap, occupied);
     vehicleselect_autonarrow(sVs.mask);
 
     vehicleselect_gather_input(&in);
