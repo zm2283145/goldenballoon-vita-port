@@ -246,6 +246,10 @@ void drawPrimaryLauncherAction(LauncherState &state, const ImVec2 &size,
           (!ready && state.romValidationPending)));
     const float actionWidth = size.x > 0.0f
         ? size.x : ImGui::GetContentRegionAvail().x;
+    SettingsCharacterWorkshopPrimaryAction workshopAction;
+    if (workshopActive && !state.quitRequested && !characterBusy) {
+        workshopAction = Settings_characterWorkshopPrimaryAction();
+    }
     if (characterBusy && std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
         static bool tracedCharacterPrimaryGate = false;
         if (!tracedCharacterPrimaryGate) {
@@ -261,11 +265,25 @@ void drawPrimaryLauncherAction(LauncherState &state, const ImVec2 &size,
     } else if (characterBusy) {
         label = "Character job running…";
     } else if (workshopActive) {
-        const char *fullLabel = "Browse character source…";
-        const float fullLabelWidth = ImGui::CalcTextSize(fullLabel).x +
+        const float fullLabelWidth = ImGui::CalcTextSize(
+            workshopAction.label).x +
             ImGui::GetStyle().FramePadding.x * 2.0f;
         label = actionWidth >= fullLabelWidth
-            ? fullLabel : "Import character…";
+            ? workshopAction.label : workshopAction.compactLabel;
+        if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+            static std::string tracedWorkshopPrimary;
+            const std::string traceKey =
+                std::string(workshopAction.id) +
+                "\n" + label;
+            if (tracedWorkshopPrimary != traceKey) {
+                tracedWorkshopPrimary = traceKey;
+                std::fprintf(
+                    stderr,
+                    "[app-ui] character-workshop-primary kind=%s label=%s tab=%s\n",
+                    workshopAction.id, label,
+                    workshopAction.destination);
+            }
+        }
     } else if (busy) {
         label = "Checking ROM…";
     } else if (!ready) {
@@ -290,13 +308,13 @@ void drawPrimaryLauncherAction(LauncherState &state, const ImVec2 &size,
     ui::SpeakFocusedItem(
         label, nullptr,
         workshopActive
-              ? "Choose a local character package, model, adapter result, or authoring source. This does not require a ROM and nothing installs before validation and review."
+              ? workshopAction.description
               : ready ? "Starts the game with your current ROM and settings."
               : "Opens a file picker to choose the game ROM before you can play.");
     if (!pressed) return;
 
     if (workshopActive) {
-        (void)Settings_chooseCharacterSource();
+        (void)Settings_activateCharacterWorkshopPrimaryAction();
     } else if (ready) {
         preparePlay(state);
     } else {
@@ -1177,7 +1195,7 @@ void drawCharacterWorkshopPanel(LauncherState &s, LauncherAction &out) {
             if (!tracedWorkshopEntryHierarchy) {
                 std::fprintf(
                     stderr,
-                    "[app-ui] active-panel=Character Workshop workshop-primary=source-import rom=optional\n");
+                    "[app-ui] active-panel=Character Workshop workshop-primary=contextual rom=optional\n");
                 tracedWorkshopEntryHierarchy = true;
             }
         }

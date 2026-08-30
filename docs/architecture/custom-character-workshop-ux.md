@@ -70,7 +70,7 @@ The workshop uses a persistent library rail and one editor surface:
 ```text
 Character library              Selected character
 ---------------------------    -------------------------------------------
-+ Import character             Name, portrait, readiness and unsaved state
++ Contextual next action       Name, portrait, readiness and unsaved state
 Dixie                    4/6    [Overview] [Identity] [Rig & Motion]
 Tiny                     6/6    [Gameplay] [Offset Studio] [Performance]
 Broken Robot           Review   Exact-context preview + contextual controls
@@ -86,13 +86,29 @@ inspectable when it cannot be activated. Disabled actions always say why.
 
 The import flow is a resumable sequence, not one blocking dialog:
 
-On the Workshop destination, the launcher's persistent gold action is the
-source picker even when a ROM is linked or still validating. The optional ROM
-action is a quieter, explicitly test-only control inside the Workshop. At
-narrow/200% layouts the primary label contracts to “Import character…” only
-when the full label would clip; a rendered geometry trace proves the chosen
-label remains inside its button. This keeps “no second ROM required” true in
-the interaction hierarchy, not merely in explanatory prose.
+On first use, the launcher's persistent gold action is the source picker even
+when a ROM is linked or still validating. The optional ROM action is a quieter,
+explicitly test-only control inside the Workshop. Once work exists, that same
+action becomes the journey's one highest-priority continuation: review a
+validated data-only adapter result or package candidate, continue/resume a
+draft, or open the selected installed character's readiness task. Candidate
+review suppresses competing source intake until the candidate is explicitly
+installed or discarded. An early discard action avoids trapping someone at the
+end of a long comparison; its bounded confirmation defaults to keeping the
+review and states exactly which generated or external bytes remain. At
+narrow/200% layouts every action has a verb-first compact label rather than a
+clipped or ambiguous
+truncation; rendered geometry traces prove the chosen label remains inside its
+button. Where a native picker is unavailable the action focuses the typed path
+field and describes drag-and-drop. This keeps both “no second ROM required” and
+“one obvious next action” true in the interaction hierarchy, not merely in
+explanatory prose.
+
+Choosing a source on first use advances the persistent action to the selected
+source's validation/conversion/export-guidance step. Once an installed
+character or draft owns that action, the intake area keeps a clearly secondary
+“Browse for another source…” control; adding a second character never requires
+knowing that typed paths or drag-and-drop exist.
 
 1. **Choose source** — `.mdkrchar` preferred; GLB convenience import creates a
    draft and asks for provenance before it can build.
@@ -188,6 +204,9 @@ Every story must satisfy the following cross-cutting criteria:
 - Destructive and publishing actions name their scope before confirmation.
   Success is never reported until durable state is published; partial cleanup is
   retained as a retryable, user-visible condition.
+- Every destructive or active-state confirmation is work-area bounded at high
+  scale, defaults keyboard/controller focus to the safe choice, and gives the
+  consequential action a distinct warning treatment.
 - Closing, changing pages, losing renderer support, or failing validation never
   destroys the external source, a named draft, or the playable last-known-good
   revision.

@@ -98,12 +98,16 @@ void testReadinessOrdering() {
     assert(readiness.readyToPreview);
     assert(!readiness.readyToPlay);
     assert(readiness.nextActionTab == CharacterWorkshopTab::Identity);
+    assert(std::strcmp(readiness.nextActionCompactLabel,
+                       "Edit identity") == 0);
 
     facts.identityReady = true;
     readiness           = CharacterWorkshop_evaluate(facts);
     assert(readiness.nextActionTab == CharacterWorkshopTab::Vehicles);
     assert(std::strcmp(readiness.nextActionLabel,
                        "Calibrate model and anchors") == 0);
+    assert(std::strcmp(readiness.nextActionCompactLabel,
+                       "Open Offset Studio") == 0);
 
     facts.normalized = true;
     readiness        = CharacterWorkshop_evaluate(facts);
@@ -143,6 +147,73 @@ void testReadinessOrdering() {
     assert(readiness.readyToEnable);
     assert(readiness.readyToPlay);
     assert(readiness.nextActionTab == CharacterWorkshopTab::Test);
+    assert(std::strcmp(readiness.nextActionCompactLabel,
+                       "Run exact test") == 0);
+}
+
+void testContextualPrimaryAction() {
+    const auto source = CharacterWorkshop_primaryAction(
+        CharacterWorkshopJourney::SourceIntake);
+    assert(source.kind ==
+           CharacterWorkshopPrimaryActionKind::ImportSource);
+    assert(std::strcmp(source.label, "Browse character source…") == 0);
+    assert(std::strcmp(source.compactLabel,
+                       "Import character…") == 0);
+
+    const auto manual = CharacterWorkshop_primaryAction(
+        CharacterWorkshopJourney::ManualSourceIntake);
+    assert(manual.kind ==
+           CharacterWorkshopPrimaryActionKind::FocusSourcePath);
+    assert(std::strcmp(manual.compactLabel, "Enter source path") == 0);
+
+    const auto selectedSource = CharacterWorkshop_primaryAction(
+        CharacterWorkshopJourney::SelectedSource);
+    assert(selectedSource.kind ==
+           CharacterWorkshopPrimaryActionKind::ReviewSelectedSource);
+    assert(std::strcmp(selectedSource.compactLabel,
+                       "Review selected source") == 0);
+
+    const auto adapter = CharacterWorkshop_primaryAction(
+        CharacterWorkshopJourney::AdapterReview);
+    assert(adapter.kind ==
+           CharacterWorkshopPrimaryActionKind::ReviewAdapter);
+    assert(std::strcmp(adapter.compactLabel,
+                       "Review adapter result") == 0);
+
+    const auto candidate = CharacterWorkshop_primaryAction(
+        CharacterWorkshopJourney::CandidateReview);
+    assert(candidate.kind ==
+           CharacterWorkshopPrimaryActionKind::ReviewCandidate);
+    assert(std::strcmp(candidate.compactLabel, "Review candidate") == 0);
+
+    const auto draft = CharacterWorkshop_primaryAction(
+        CharacterWorkshopJourney::RawAuthoring);
+    assert(draft.kind ==
+           CharacterWorkshopPrimaryActionKind::ContinueRawDraft);
+    assert(std::strcmp(draft.compactLabel, "Continue draft") == 0);
+
+    const auto savedDraft = CharacterWorkshop_primaryAction(
+        CharacterWorkshopJourney::SavedRawDraft);
+    assert(savedDraft.kind ==
+           CharacterWorkshopPrimaryActionKind::ResumeRawDraft);
+    assert(std::strcmp(savedDraft.compactLabel, "Resume draft") == 0);
+
+    CharacterWorkshopFacts facts = completeFacts();
+    facts.identityReady = false;
+    const CharacterWorkshopReadiness readiness =
+        CharacterWorkshop_evaluate(facts);
+    const auto installed = CharacterWorkshop_primaryAction(
+        CharacterWorkshopJourney::InstalledCharacter, readiness);
+    assert(installed.kind ==
+           CharacterWorkshopPrimaryActionKind::OpenReadinessTask);
+    assert(installed.targetTab == CharacterWorkshopTab::Identity);
+    assert(std::strcmp(installed.label, "Create roster identity") == 0);
+    assert(std::strcmp(installed.compactLabel, "Edit identity") == 0);
+    assert(std::strcmp(CharacterWorkshop_primaryActionId(installed.kind),
+                       "open-readiness-task") == 0);
+    assert(std::strcmp(CharacterWorkshop_primaryActionId(
+                           CharacterWorkshopPrimaryActionKind::ReviewAdapter),
+                       "review-adapter") == 0);
 }
 
 void testVehicleReviewMaskAndRequiredPerformance() {
@@ -704,6 +775,7 @@ int main() {
     testEmptyCharacter();
     testTransparentPrimitiveOrdering();
     testReadinessOrdering();
+    testContextualPrimaryAction();
     testVehicleReviewMaskAndRequiredPerformance();
     testAuthoredMotionDoesNotRequireOptionalRig();
     testTabStorageRoundTrip();

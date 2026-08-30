@@ -137,6 +137,20 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
                 f"{tab} did not render {tool} history controls\n"
                 f"{process.stdout[-8000:]}"
             )
+    if "character-workshop-primary kind=open-readiness-task " not in process.stdout:
+        raise RuntimeError(
+            f"{tab} bypassed the selected installed character's readiness "
+            "task in the persistent primary action\n" + process.stdout[-8000:]
+        )
+    if (
+        "character-source-secondary-picker rendered=1 keyboard=1 "
+        "mutation=deferred-review" not in process.stdout
+    ):
+        raise RuntimeError(
+            f"{tab} omitted the secondary source picker while the "
+            "persistent primary action owned installed-character readiness\n" +
+            process.stdout[-8000:]
+        )
     if tab == "profile":
         profile_marker = (
             "character-donor-profile-gallery package=" + PACKAGE_ID

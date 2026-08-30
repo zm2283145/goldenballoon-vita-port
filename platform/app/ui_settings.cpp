@@ -1887,6 +1887,18 @@ bool g_characterWorkshopTabLoaded = false;
 bool g_characterWorkshopTabForceSelection = false;
 bool g_characterWorkshopOpenRequested = false;
 
+enum class CharacterWorkshopFocusRequest : uint8_t {
+    None = 0,
+    SourcePath,
+    SourceWorkflow,
+    AdapterReview,
+    CandidateTop,
+    RawDraftTop,
+};
+
+CharacterWorkshopFocusRequest g_characterWorkshopFocusRequest =
+    CharacterWorkshopFocusRequest::None;
+
 void persistCharacterWorkshopTab(CharacterWorkshopTab tab,
                                  bool forceSelection);
 
@@ -2075,6 +2087,8 @@ bool g_characterRawTransformTracePrinted = false;
 // review is submitted and rendered before the test confirms local rights.
 bool g_characterRawDraftSmokeActionApplied = false;
 int g_characterRawDraftSmokeInstallFrames = 0;
+bool g_characterCandidateSmokeActionApplied = false;
+int g_characterCandidateSmokeActionFrames = 0;
 CharacterRawDraftStore::Inventory g_characterRawDrafts;
 bool g_characterRawDraftsLoaded = false;
 bool g_characterRawDraftsWritable = false;
@@ -17408,13 +17422,23 @@ void drawCharacterTestEvidenceMatrix(
     ui::SpeakFocusedItem(
         "Clear all evidence for this character", nullptr,
         "Opens a confirmation to delete only locally saved exact-test results and baselines for this package.");
+    ui::ConfirmModalSize();
     if (ImGui::BeginPopupModal(
-            "Clear character test evidence?", nullptr,
-            ImGuiWindowFlags_AlwaysAutoResize)) {
+            "Clear character test evidence?", nullptr)) {
+        const bool popupAppearing = ImGui::IsWindowAppearing();
         ImGui::TextWrapped(
             "Delete every latest result, pinned baseline, and exact-matrix performance exception for %s? The package, source, fit, per-context author review, and external files are unchanged.",
             entry->display_name);
-        if (ImGui::Button("Clear test evidence")) {
+        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+        if (popupAppearing) ImGui::SetItemDefaultFocus();
+        ui::SpeakFocusedItem(
+            "Cancel", nullptr,
+            "Keeps every exact-test result and comparison baseline.");
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Button, AppTheme::bad());
+        const bool clearPressed = ImGui::Button("Clear test evidence");
+        ImGui::PopStyleColor();
+        if (clearPressed) {
             if (clearCharacterTestEvidenceForPackage(entry)) {
                 g_characterPreviewResults.erase(entry->id);
                 g_characterTestEvidenceSelectedCell.erase(entry->id);
@@ -17432,11 +17456,6 @@ void drawCharacterTestEvidenceMatrix(
         ui::SpeakFocusedItem(
             "Clear test evidence", nullptr,
             "Permanently deletes only this package's local test-result matrix, pinned baselines, and exact-matrix performance exception.");
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-        ui::SpeakFocusedItem(
-            "Cancel", nullptr,
-            "Keeps every exact-test result and comparison baseline.");
         ImGui::EndPopup();
     }
 }
@@ -22970,16 +22989,31 @@ bool drawCharacterDraftLifecycle(const MdkrModernCharacterEntry *entry) {
         ui::SpeakFocusedItem(
             "Delete draft", nullptr,
             "Deletes only this named editor snapshot. Source revisions, installed assembly, settings, and player assignments remain.");
+        if (g_characterPendingDraftRemoval == draft->id) {
+            ui::ConfirmModalSize();
+        }
         if (g_characterPendingDraftRemoval == draft->id &&
             ImGui::BeginPopupModal(
-                "Delete named draft?", nullptr,
-                ImGuiWindowFlags_AlwaysAutoResize)) {
+                "Delete named draft?", nullptr)) {
+            const bool popupAppearing = ImGui::IsWindowAppearing();
             ImGui::TextWrapped(
                 "Delete the named draft “%s”? This removes only its editor snapshot based on %.12s….",
                 draft->name.c_str(), draft->baseSourceDigest.c_str());
             ui::TextSubtleWrapped(
                 "The playable cache, retained source revisions, package settings, exact-context evidence, and player assignments are not changed.");
-            if (ImGui::Button("Delete this draft")) {
+            if (ImGui::Button("Cancel")) {
+                g_characterPendingDraftRemoval.clear();
+                ImGui::CloseCurrentPopup();
+            }
+            if (popupAppearing) ImGui::SetItemDefaultFocus();
+            ui::SpeakFocusedItem(
+                "Cancel", nullptr,
+                "Keeps this named editor snapshot unchanged.");
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Button, AppTheme::bad());
+            const bool deletePressed = ImGui::Button("Delete this draft");
+            ImGui::PopStyleColor();
+            if (deletePressed) {
                 CharacterDraftStore::Inventory replacement =
                     g_characterDrafts;
                 if (CharacterDraftStore::erase(replacement, draft->id) &&
@@ -23001,11 +23035,9 @@ bool drawCharacterDraftLifecycle(const MdkrModernCharacterEntry *entry) {
                     AppTheme::bad());
                 ImGui::CloseCurrentPopup();
             }
-            ImGui::SameLine();
-            if (ImGui::Button("Cancel")) {
-                g_characterPendingDraftRemoval.clear();
-                ImGui::CloseCurrentPopup();
-            }
+            ui::SpeakFocusedItem(
+                "Delete this draft", nullptr,
+                "Deletes only this named editor snapshot; source revisions, the playable assembly, settings, evidence, and assignments remain.");
             ImGui::EndPopup();
         }
         if (!currentBase) {
@@ -23134,13 +23166,19 @@ bool drawCharacterRevisionRecovery(const MdkrModernCharacterEntry *entry) {
     ui::SpeakFocusedItem(
         "Rebuild current assembly", nullptr,
         "Re-authenticates the active source and rebuilds its disposable runtime cache with the current compiler. The source revision and enabled state do not change.");
+    ui::ConfirmModalSize();
     if (ImGui::BeginPopupModal(
-            "Rebuild current character assembly?", nullptr,
-            ImGuiWindowFlags_AlwaysAutoResize)) {
+            "Rebuild current character assembly?", nullptr)) {
+        const bool popupAppearing = ImGui::IsWindowAppearing();
         ImGui::TextWrapped(
             "Rebuild %s from its authenticated current source? The replacement cache is validated before publication. The package remains %s and the last known-good cache stays active if rebuilding fails.",
             entry->display_name,
             entry->enabled != 0u ? "enabled" : "disabled");
+        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+        if (popupAppearing) ImGui::SetItemDefaultFocus();
+        ui::SpeakFocusedItem("Cancel", nullptr,
+                             "Closes without changing the character.");
+        ImGui::SameLine();
         if (ImGui::Button("Rebuild assembly")) {
             const std::string id = entry->id;
             const bool queued = rebuildCharacterAssembly(
@@ -23161,10 +23199,6 @@ bool drawCharacterRevisionRecovery(const MdkrModernCharacterEntry *entry) {
         ui::SpeakFocusedItem(
             "Rebuild assembly", nullptr,
             "Compiles and validates the authenticated current source before atomically replacing its disposable runtime cache.");
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-        ui::SpeakFocusedItem("Cancel", nullptr,
-                             "Closes without changing the character.");
         ImGui::EndPopup();
     }
 
@@ -23194,12 +23228,19 @@ bool drawCharacterRevisionRecovery(const MdkrModernCharacterEntry *entry) {
     ui::SpeakFocusedItem(
         "Reload history", nullptr,
         "Re-authenticates every retained source and refreshes this list.");
-    if (ImGui::BeginPopupModal("Restore retained revision?", nullptr,
-                               ImGuiWindowFlags_AlwaysAutoResize)) {
+    ui::ConfirmModalSize();
+    if (ImGui::BeginPopupModal(
+            "Restore retained revision?", nullptr)) {
+        const bool popupAppearing = ImGui::IsWindowAppearing();
         ImGui::TextWrapped(
             "Restore source revision %s…? It will be fully revalidated and compiled before becoming current. The present source stays retained, and the package remains %s.",
             selected.sourceSha256.substr(0u, 12u).c_str(),
             entry->enabled != 0u ? "enabled" : "disabled");
+        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+        if (popupAppearing) ImGui::SetItemDefaultFocus();
+        ui::SpeakFocusedItem("Cancel", nullptr,
+                             "Closes without changing the character.");
+        ImGui::SameLine();
         if (ImGui::Button("Restore revision")) {
             const std::string id = entry->id;
             const std::string digest = selected.sourceSha256;
@@ -23221,10 +23262,6 @@ bool drawCharacterRevisionRecovery(const MdkrModernCharacterEntry *entry) {
         ui::SpeakFocusedItem(
             "Restore revision", nullptr,
             "Revalidates and atomically activates this exact retained source without deleting the current source.");
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-        ui::SpeakFocusedItem("Cancel", nullptr,
-                             "Closes without changing the character.");
         ImGui::EndPopup();
     }
 
@@ -24213,7 +24250,9 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
             ui::TextSubtleWrapped(
                 "Permanent deletion is locked because the named-draft or exact-test evidence inventory cannot be read and atomically replaced. Repair that local state first so package-owned work is never orphaned or silently omitted from the confirmation scope.");
         }
-        if (ImGui::BeginPopupModal("Permanently delete custom character?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ui::ConfirmModalSize();
+        if (ImGui::BeginPopupModal(
+                "Permanently delete custom character?", nullptr)) {
             ImGui::TextWrapped(
                 "Permanently delete %s from this computer? This removes its %s cache, %zu named draft(s), %zu exact-test result/baseline record(s), %u retained Workshop source revision(s), %u provenance report(s), fit settings, review evidence, and player assignments.",
                 entry->display_name,
@@ -24475,8 +24514,73 @@ void addCandidateNumberRow(std::vector<CandidateComparisonRow> &rows,
     rows.push_back({label, installed ? std::to_string(current) : "Not installed", std::to_string(next), installed ? candidateDelta(current, next) : "New"});
 }
 
+bool discardCharacterImportCandidate() {
+    if (!g_characterImportCandidate.ready) return false;
+    const bool disposable =
+        g_characterImportCandidate.disposableRawCandidate;
+    if (disposable &&
+        !g_characterImportCandidate.packagePath.empty()) {
+        errno = 0;
+        if (mdkr_remove_utf8(
+                g_characterImportCandidate.packagePath.c_str()) != 0 &&
+            errno != ENOENT) {
+            setStatus(
+                "The generated candidate could not be removed, so its review remains open. The raw draft, external source, and installed library are unchanged.",
+                AppTheme::bad());
+            return false;
+        }
+    }
+    g_characterImportCandidate = CharacterImportCandidate{};
+    setStatus(
+        disposable
+            ? "Generated candidate removed; the raw draft and external source files remain unchanged."
+            : "Candidate review discarded; no installed files changed.",
+        AppTheme::subtle());
+    return true;
+}
+
 bool drawCharacterCandidateReview(bool compact) {
     if (!g_characterImportCandidate.ready) return false;
+    if (g_characterWorkshopFocusRequest ==
+        CharacterWorkshopFocusRequest::CandidateTop) {
+        ImGui::SetScrollY(0.0f);
+        g_characterWorkshopFocusRequest =
+            CharacterWorkshopFocusRequest::None;
+    }
+    const char *candidateSmokeAction = std::getenv(
+        "MDKR_APP_SMOKE_CHARACTER_CANDIDATE_ACTION");
+    const char *candidateSmokeToken = std::getenv(
+        "MDKR_APP_SMOKE_CHARACTER_CANDIDATE_TOKEN");
+    const bool candidateSmokeDiscard = candidateSmokeAction != nullptr &&
+        std::strcmp(candidateSmokeAction, "discard-confirmed") == 0;
+    const bool candidateSmokeShowDiscard = candidateSmokeAction != nullptr &&
+        std::strcmp(candidateSmokeAction,
+                    "show-discard-confirmation") == 0;
+    if (!g_characterCandidateSmokeActionApplied &&
+        candidateSmokeAction != nullptr && candidateSmokeToken != nullptr &&
+        (candidateSmokeDiscard || candidateSmokeShowDiscard) &&
+        std::strcmp(candidateSmokeToken,
+                    "mdkr64-character-candidate-v1") == 0) {
+        if (g_characterCandidateSmokeActionFrames == 0) {
+            // Publish the ordinary review for two complete frames before the
+            // token-gated path either opens the modal or confirms its shared
+            // operation. The test never bypasses package validation.
+            g_characterCandidateSmokeActionFrames = 2;
+        } else if (--g_characterCandidateSmokeActionFrames == 0) {
+            g_characterCandidateSmokeActionApplied = true;
+            if (candidateSmokeShowDiscard) {
+                ImGui::OpenPopup("Discard reviewed candidate?");
+            }
+            const bool discarded = candidateSmokeDiscard &&
+                discardCharacterImportCandidate();
+            std::fprintf(
+                stderr,
+                "[app-ui] character-candidate-action action=%s applied=%d\n",
+                candidateSmokeAction,
+                (discarded || candidateSmokeShowDiscard) ? 1 : 0);
+            if (discarded) return false;
+        }
+    }
     if (g_characterRawDraftSmokeInstallFrames > 0 &&
         g_characterImportCandidate.disposableRawCandidate) {
         --g_characterRawDraftSmokeInstallFrames;
@@ -24520,6 +24624,7 @@ bool drawCharacterCandidateReview(bool compact) {
     const CharacterImportCandidate           &review     = g_characterImportCandidate;
     const CharacterCandidateIndex::Candidate &next       = review.next;
     const CharacterCandidateIndex::Candidate &current    = review.current;
+    const bool disposableCandidate = review.disposableRawCandidate;
     const bool                                sameSource = review.installed &&
                                                            current.sourceDigest == next.sourceDigest;
     std::vector<CandidateComparisonRow>       rows;
@@ -24612,6 +24717,14 @@ bool drawCharacterCandidateReview(bool compact) {
     ImGui::PopFont();
     ui::TextSubtleWrapped(
         "This package controls local appearance, portrait, animation, fit, and presentation. The selected built-in donor continues to own handling, weight, acceleration, voice, and game authority.");
+    if (ImGui::SmallButton("Discard candidate…")) {
+        ImGui::OpenPopup("Discard reviewed candidate?");
+    }
+    ui::SpeakFocusedItem(
+        "Discard reviewed candidate", nullptr,
+        disposableCandidate
+            ? "Opens a confirmation to remove only the generated candidate package. The resumable raw draft, external model, license, and installed library remain unchanged."
+            : "Opens a confirmation to close this review. The selected source package and installed library remain unchanged.");
     const bool rigReady = next.rigMode != 2u || next.rigReviewed;
     const char *performanceTier = candidatePerformanceTier(next);
     const char *tangentReadiness =
@@ -24900,21 +25013,8 @@ bool drawCharacterCandidateReview(bool compact) {
         nullptr,
         installHelp.c_str());
     ImGui::SameLine();
-    const bool disposableCandidate =
-        g_characterImportCandidate.disposableRawCandidate;
     if (ImGui::Button("Discard candidate")) {
-        if (disposableCandidate &&
-            !g_characterImportCandidate.packagePath.empty()) {
-            (void)mdkr_remove_utf8(
-                g_characterImportCandidate.packagePath.c_str());
-        }
-        g_characterImportCandidate = CharacterImportCandidate{};
-        setStatus(
-            disposableCandidate
-                ? "Generated candidate removed; the raw draft and external source files remain unchanged."
-                : "Candidate review discarded; no installed files changed.",
-            AppTheme::subtle());
-        return false;
+        ImGui::OpenPopup("Discard reviewed candidate?");
     }
     ui::SpeakFocusedItem(
         "Discard candidate",
@@ -24922,6 +25022,72 @@ bool drawCharacterCandidateReview(bool compact) {
         disposableCandidate
             ? "Closes this review and removes only the disposable generated package. The raw draft and external model and license remain unchanged."
             : "Closes this review without installing or deleting any files.");
+    bool discarded = false;
+    ui::ConfirmModalSize();
+    if (ImGui::BeginPopupModal(
+            "Discard reviewed candidate?", nullptr)) {
+        const bool popupAppearing = ImGui::IsWindowAppearing();
+        if (!popupAppearing &&
+            std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+            static bool tracedDiscardModal = false;
+            if (!tracedDiscardModal) {
+                const ImGuiViewport *viewport = ImGui::GetMainViewport();
+                const ImVec2 position = ImGui::GetWindowPos();
+                const ImVec2 size = ImGui::GetWindowSize();
+                const bool contained = viewport != nullptr &&
+                    position.x >= viewport->WorkPos.x - 0.5f &&
+                    position.y >= viewport->WorkPos.y - 0.5f &&
+                    position.x + size.x <=
+                        viewport->WorkPos.x + viewport->WorkSize.x + 0.5f &&
+                    position.y + size.y <=
+                        viewport->WorkPos.y + viewport->WorkSize.y + 0.5f;
+                std::fprintf(
+                    stderr,
+                    "[app-ui] character-candidate-discard-modal contained=%d width=%.1f height=%.1f scale=%.2f safe-default=1\n",
+                    contained ? 1 : 0,
+                    static_cast<double>(size.x),
+                    static_cast<double>(size.y),
+                    static_cast<double>(AppTheme::uiScale()));
+                tracedDiscardModal = true;
+            }
+        }
+        ImGui::TextWrapped(
+            "%s",
+            disposableCandidate
+                ? "Remove only this generated candidate package? The resumable raw draft, external model, license, and installed library remain unchanged."
+                : "Close this candidate review? The selected source package and installed library remain unchanged.");
+        if (ImGui::Button("Keep reviewing")) {
+            ImGui::CloseCurrentPopup();
+        }
+        if (popupAppearing) ImGui::SetItemDefaultFocus();
+        ui::SpeakFocusedItem(
+            "Keep reviewing", nullptr,
+            "Closes this confirmation without changing the candidate or any file.");
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Button, AppTheme::bad());
+        const bool discardPressed = ImGui::Button(
+            disposableCandidate ? "Remove generated candidate"
+                                : "Close review");
+        ImGui::PopStyleColor();
+        if (discardPressed) {
+            if (discardCharacterImportCandidate()) {
+                discarded = true;
+            }
+            // Success returns to intake/draft; failure returns to the review
+            // with its visible status card. Never leave a modal apparently
+            // unresponsive while the actionable error sits behind it.
+            ImGui::CloseCurrentPopup();
+        }
+        ui::SpeakFocusedItem(
+            disposableCandidate ? "Remove generated candidate"
+                                : "Close candidate review",
+            nullptr,
+            disposableCandidate
+                ? "Removes only the generated candidate package and returns to the saved raw draft."
+                : "Closes only the mutation-free review and returns to source intake.");
+        ImGui::EndPopup();
+    }
+    if (discarded) return false;
     return false;
 }
 
@@ -25030,6 +25196,13 @@ void drawCharacterRawIntakeEditor(bool rail) {
     const std::string activeLabel = intake.displayName[0] != '\0'
         ? intake.displayName : intake.modelPath;
     ImGui::SetNextItemWidth(-1.0f);
+    if (g_characterWorkshopFocusRequest ==
+        CharacterWorkshopFocusRequest::RawDraftTop) {
+        ImGui::SetScrollY(0.0f);
+        ImGui::SetKeyboardFocusHere();
+        g_characterWorkshopFocusRequest =
+            CharacterWorkshopFocusRequest::None;
+    }
     const bool draftListOpen = ImGui::BeginCombo(
         "Raw authoring draft", activeLabel.c_str());
     ui::SpeakFocusedItem(
@@ -25659,12 +25832,21 @@ void drawCharacterRawIntakeEditor(bool rail) {
     ui::SpeakFocusedItem(
         "Delete raw authoring draft", nullptr,
         "Opens a confirmation to delete only this local authoring record and its disposable generated candidate. Other drafts and external model and license files are never deleted.");
+    ui::ConfirmModalSize();
     if (ImGui::BeginPopupModal(
-            "Delete raw character authoring draft?", nullptr,
-            ImGuiWindowFlags_AlwaysAutoResize)) {
+            "Delete raw character authoring draft?", nullptr)) {
+        const bool popupAppearing = ImGui::IsWindowAppearing();
         ImGui::TextWrapped(
             "Delete only this saved authoring draft and its disposable generated candidate? The other raw drafts, installed characters, external GLB, and license file are not changed or deleted.");
-        if (ImGui::Button("Delete this draft")) {
+        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+        if (popupAppearing) ImGui::SetItemDefaultFocus();
+        ui::SpeakFocusedItem("Cancel", nullptr,
+                             "Keeps the raw import draft unchanged.");
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Button, AppTheme::bad());
+        const bool deletePressed = ImGui::Button("Delete this draft");
+        ImGui::PopStyleColor();
+        if (deletePressed) {
             if (clearCharacterRawIntake()) {
                 setStatus(
                     "Raw authoring draft deleted; source files and other drafts remain unchanged.",
@@ -25679,10 +25861,6 @@ void drawCharacterRawIntakeEditor(bool rail) {
         ui::SpeakFocusedItem(
             "Delete this draft", nullptr,
             "Deletes this exact local authoring record and generated candidate without touching other drafts, source files, or installed characters.");
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-        ui::SpeakFocusedItem("Cancel", nullptr,
-                             "Keeps the raw import draft unchanged.");
         ImGui::EndPopup();
     }
 }
@@ -25915,13 +26093,23 @@ void drawCharacterFailureRecovery(bool rail) {
     ui::SpeakFocusedItem(
         "Forget failed-import diagnostic", nullptr,
         "Opens a confirmation to remove only private recovery metadata and its validator report. The source file is never deleted.");
+    ui::ConfirmModalSize();
     if (ImGui::BeginPopupModal(
-            "Forget failed-import diagnostic?", nullptr,
-            ImGuiWindowFlags_AlwaysAutoResize)) {
+            "Forget failed-import diagnostic?", nullptr)) {
+        const bool popupAppearing = ImGui::IsWindowAppearing();
         ImGui::TextWrapped(
             "Remove this local recovery record and validator report? The source at %s is not changed or deleted.",
             row.sourcePath.c_str());
-        if (ImGui::Button("Forget diagnostic")) {
+        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+        if (popupAppearing) ImGui::SetItemDefaultFocus();
+        ui::SpeakFocusedItem(
+            "Cancel", nullptr,
+            "Keeps the recovery metadata and validator report.");
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Button, AppTheme::bad());
+        const bool forgetPressed = ImGui::Button("Forget diagnostic");
+        ImGui::PopStyleColor();
+        if (forgetPressed) {
             const bool queued = forgetCharacterFailure(
                 row.recordId, [](bool removed) {
                     setStatus(
@@ -25940,8 +26128,6 @@ void drawCharacterFailureRecovery(bool rail) {
         ui::SpeakFocusedItem(
             "Forget this diagnostic", nullptr,
             "Deletes only this metadata and report after confirmation.");
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
 }
@@ -26062,22 +26248,50 @@ void drawCharacterImportControls(bool rail) {
             "Opens the selected local raw draft and closes any uninstalled candidate review. External model and license files remain unchanged; source reinspection is required.");
     }
     ImGui::SetNextItemWidth(-1.0f);
+    const CharacterSourceKind focusSourceKind = characterSourceKind(
+        g_characterImportPath);
+    const bool focusSourcePath =
+        g_characterWorkshopFocusRequest ==
+            CharacterWorkshopFocusRequest::SourcePath ||
+        (g_characterWorkshopFocusRequest ==
+             CharacterWorkshopFocusRequest::SourceWorkflow &&
+         characterSourceNeedsDccExport(focusSourceKind));
+    if (focusSourcePath) {
+        ImGui::SetKeyboardFocusHere();
+    }
     ImGui::InputTextWithHint("##character-package-path",
                              "/path/to/package, model, or DCC source",
                              g_characterImportPath,
                              sizeof(g_characterImportPath));
-    const bool inlineActions = !rail &&
-                               ImGui::GetContentRegionAvail().x >=
-                                   760.0f * AppTheme::uiScale();
-    if (filedialog::isAvailable()) {
-        if (ImGui::Button("Browse for source...")) {
+    if (focusSourcePath) {
+        ImGui::SetScrollHereY(0.0f);
+        g_characterWorkshopFocusRequest =
+            CharacterWorkshopFocusRequest::None;
+    }
+    const bool sourcePickerIsSecondary = filedialog::isAvailable() &&
+        (g_characterImportPath[0] != '\0' ||
+         mdkr_modern_character_registry_count(&g_characterRegistry) > 0 ||
+         !g_characterRawDrafts.selectedId.empty());
+    if (sourcePickerIsSecondary) {
+        if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+            static bool tracedSecondarySourcePicker = false;
+            if (!tracedSecondarySourcePicker) {
+                std::fprintf(
+                    stderr,
+                    "[app-ui] character-source-secondary-picker rendered=1 keyboard=1 mutation=deferred-review\n");
+                tracedSecondarySourcePicker = true;
+            }
+        }
+        if (ImGui::Button("Browse for another source…")) {
             (void)Settings_chooseCharacterSource();
         }
         ui::SpeakFocusedItem(
-            "Browse for character source",
-            nullptr,
-            "Chooses a local mdkrchar package, canonical mdkrsource adapter result, self-contained GLB, COLLADA model, authoring ZIP, or common DCC source. External adapter code is never executed; nothing is installed until validation, review, and explicit confirmation succeed.");
+            "Browse for another character source", nullptr,
+            "Chooses a different local source for validation. It does not change the active draft, candidate, or installed library until the new source completes its own explicit review.");
     }
+    const bool inlineActions = !rail &&
+                               ImGui::GetContentRegionAvail().x >=
+                                   760.0f * AppTheme::uiScale();
     const CharacterSourceKind sourceKind = characterSourceKind(
         g_characterImportPath);
     const bool rawGlb = sourceKind == CharacterSourceKind::Glb;
@@ -26145,6 +26359,9 @@ void drawCharacterImportControls(bool rail) {
     if (adapterOutput && adapterReviewed) {
         const CharacterAdapterOutputIndex::Review &review =
             g_characterAdapterOutputReview.facts;
+        const bool focusAdapterReview =
+            g_characterWorkshopFocusRequest ==
+            CharacterWorkshopFocusRequest::AdapterReview;
         if (ui::CardBegin("##character-adapter-output-review",
                           AppTheme::accent(), 0.0f)) {
             ImGui::TextColored(AppTheme::accent(),
@@ -26180,6 +26397,7 @@ void drawCharacterImportControls(bool rail) {
                     AppTheme::accent(),
                     "No license included — choose the exact notice in the draft");
             }
+            if (focusAdapterReview) ImGui::SetKeyboardFocusHere();
             ImGui::Checkbox(
                 "Accept this adapter result",
                 &g_characterAdapterOutputReview.externalToolAccepted);
@@ -26190,6 +26408,14 @@ void drawCharacterImportControls(bool rail) {
                 "Confirms only that you chose this data-only result. It does not trust or run adapter code, grant rights, build a package, install a character, or treat the converter identity as signed.");
         }
         ui::CardEnd();
+        if (focusAdapterReview) {
+            // CardEnd restores the parent Workshop scroller. Keep the complete
+            // evidence card visible while keyboard focus lands on its explicit
+            // acceptance control.
+            ImGui::SetScrollHereY(0.0f);
+            g_characterWorkshopFocusRequest =
+                CharacterWorkshopFocusRequest::None;
+        }
         if (!g_characterAdapterSmokeReviewFocused) {
             const char *focusReview = std::getenv(
                 "MDKR_APP_SMOKE_CHARACTER_ADAPTER_FOCUS_REVIEW");
@@ -26221,6 +26447,12 @@ void drawCharacterImportControls(bool rail) {
                 ? std::max(120.0f, ImGui::GetContentRegionAvail().x -
                                       ui::kBtnSecondary().x - ui::kGapS)
                 : -1.0f);
+        const bool focusConversionOutput =
+            g_characterWorkshopFocusRequest ==
+                CharacterWorkshopFocusRequest::SourceWorkflow &&
+            convertibleSource && !adapterReviewed &&
+            g_characterConversionOutputPath[0] == '\0';
+        if (focusConversionOutput) ImGui::SetKeyboardFocusHere();
         ImGui::InputTextWithHint(
             adapterReviewed
                 ? "Extracted GLB destination##character-conversion-output"
@@ -26228,6 +26460,11 @@ void drawCharacterImportControls(bool rail) {
             "/path/to/new-character.glb",
             g_characterConversionOutputPath,
             sizeof(g_characterConversionOutputPath));
+        if (focusConversionOutput) {
+            ImGui::SetScrollHereY(0.0f);
+            g_characterWorkshopFocusRequest =
+                CharacterWorkshopFocusRequest::None;
+        }
         ui::SpeakFocusedItem(
             adapterReviewed ? "Extracted GLB destination"
                             : "Converted GLB destination",
@@ -26271,10 +26508,10 @@ void drawCharacterImportControls(bool rail) {
             ? "Choose a new converted GLB destination first."
             : "Choose or enter a character source path first.";
     }
-    if (filedialog::isAvailable() && inlineActions &&
-        !convertibleSource && !adapterReviewed && !dccExportRequired) {
-        ImGui::SameLine();
-    }
+    const bool focusSourceAction =
+        g_characterWorkshopFocusRequest ==
+        CharacterWorkshopFocusRequest::SourceWorkflow;
+    if (focusSourceAction && canImport) ImGui::SetKeyboardFocusHere();
     if (!canImport) ImGui::BeginDisabled();
     if (ImGui::Button(
             dccExportRequired ? "Export a self-contained GLB to continue" :
@@ -26286,6 +26523,11 @@ void drawCharacterImportControls(bool rail) {
         (void)Settings_importCharacterPackage(g_characterImportPath);
     }
     if (!canImport) ImGui::EndDisabled();
+    if (focusSourceAction) {
+        ImGui::SetScrollHereY(0.0f);
+        g_characterWorkshopFocusRequest =
+            CharacterWorkshopFocusRequest::None;
+    }
     ui::SpeakFocusedItem(
         dccExportRequired ? "Export a self-contained GLB to continue" :
         adapterOutput && !adapterReviewed ? "Inspect adapter result" :
@@ -26401,7 +26643,9 @@ const MdkrModernCharacterEntry *drawCharacterLibrary(bool rail) {
     }
     if (characterCount <= 0) {
         ui::TextSubtleWrapped(
-            "No characters are installed yet. Choose a package or artist source above; every route ends in the same explicit review before install.");
+            g_characterImportCandidate.ready
+                ? "No characters are installed yet. The candidate in the editor joins this library only after you confirm local-use rights and explicitly install it."
+                : "No characters are installed yet. Choose a package or artist source above; every route ends in the same explicit review before install.");
         return nullptr;
     }
     if (!rail) {
@@ -26683,8 +26927,6 @@ bool drawCustomCharactersSection(bool compact) {
         bool importControlsRendered = false;
         if (g_characterImportCandidate.ready) {
             editorRouteRendered = true;
-            drawCharacterImportControls(false);
-            importControlsRendered = true;
             changed |= drawCharacterCandidateReview(compact);
         } else if (g_characterRawEditorOpen &&
                    g_characterRawIntake.modelPath[0] != '\0') {
@@ -26757,9 +26999,14 @@ bool drawCustomCharactersSection(bool compact) {
         ImGui::PushFont(AppTheme::fonts().section);
         ImGui::TextUnformatted("Library");
         ImGui::PopFont();
-        ui::TextSubtleWrapped(
-            "Import or choose a character. Drafts and installed revisions remain independent.");
-        drawCharacterImportControls(true);
+        if (g_characterImportCandidate.ready) {
+            ui::TextSubtleWrapped(
+                "Candidate review is in progress. Finish or discard it in the editor before choosing another source; installed characters remain unchanged.");
+        } else {
+            ui::TextSubtleWrapped(
+                "Import or choose a character. Drafts and installed revisions remain independent.");
+            drawCharacterImportControls(true);
+        }
         const MdkrModernCharacterEntry *entry = drawCharacterLibrary(true);
         changed |= drawCharacterAssignments();
         drawSkippedCharacterInventory();
@@ -27253,6 +27500,131 @@ bool Settings_chooseCharacterSource() {
         "Character source selected. Review the path, then validate it; nothing has been imported or installed.",
         AppTheme::good());
     return true;
+}
+
+namespace {
+
+CharacterWorkshopPrimaryAction resolveCharacterWorkshopPrimaryAction() {
+    loadCharacterRawIntake();
+    if (g_characterImportCandidate.ready) {
+        return CharacterWorkshop_primaryAction(
+            CharacterWorkshopJourney::CandidateReview);
+    }
+    if (g_characterAdapterOutputReview.ready &&
+        g_characterAdapterOutputReview.sourcePath ==
+            g_characterImportPath) {
+        return CharacterWorkshop_primaryAction(
+            CharacterWorkshopJourney::AdapterReview);
+    }
+    const bool rawEditorActive = g_characterRawEditorOpen &&
+        g_characterRawIntake.modelPath[0] != '\0';
+    const bool sourceMatchesActiveRawDraft = rawEditorActive &&
+        (g_characterImportPath[0] == '\0' ||
+         std::strcmp(g_characterImportPath,
+                     g_characterRawIntake.modelPath) == 0);
+    if (sourceMatchesActiveRawDraft) {
+        return CharacterWorkshop_primaryAction(
+            CharacterWorkshopJourney::RawAuthoring);
+    }
+    const CharacterRawDraftStore::Draft *savedRawDraft =
+        CharacterRawDraftStore::find(
+            g_characterRawDrafts, g_characterRawDrafts.selectedId);
+    const bool sourceMatchesSavedRawDraft = savedRawDraft != nullptr &&
+        (g_characterImportPath[0] == '\0' ||
+         savedRawDraft->modelPath == g_characterImportPath);
+    const bool dormantDraftOwnsSource = !g_characterRawEditorOpen &&
+        sourceMatchesSavedRawDraft;
+    if (!g_characterRegistryLoaded) refreshCharacterRegistry();
+    const MdkrModernCharacterEntry *entry =
+        resolveCharacterWorkshopSelection();
+    if (dormantDraftOwnsSource && entry == nullptr) {
+        return CharacterWorkshop_primaryAction(
+            CharacterWorkshopJourney::SavedRawDraft);
+    }
+    if (g_characterImportPath[0] != '\0' &&
+        !dormantDraftOwnsSource) {
+        return CharacterWorkshop_primaryAction(
+            CharacterWorkshopJourney::SelectedSource);
+    }
+    if (rawEditorActive) {
+        return CharacterWorkshop_primaryAction(
+            CharacterWorkshopJourney::RawAuthoring);
+    }
+    if (entry != nullptr) {
+        return CharacterWorkshop_primaryAction(
+            CharacterWorkshopJourney::InstalledCharacter,
+            characterWorkshopReadinessForEntry(entry));
+    }
+    if (savedRawDraft != nullptr) {
+        return CharacterWorkshop_primaryAction(
+            CharacterWorkshopJourney::SavedRawDraft);
+    }
+    return CharacterWorkshop_primaryAction(
+        filedialog::isAvailable()
+            ? CharacterWorkshopJourney::SourceIntake
+            : CharacterWorkshopJourney::ManualSourceIntake);
+}
+
+} // namespace
+
+SettingsCharacterWorkshopPrimaryAction
+Settings_characterWorkshopPrimaryAction() {
+    const CharacterWorkshopPrimaryAction action =
+        resolveCharacterWorkshopPrimaryAction();
+    return {
+        CharacterWorkshop_primaryActionId(action.kind),
+        action.label,
+        action.compactLabel,
+        action.description,
+        CharacterWorkshop_tabStorageId(action.targetTab),
+    };
+}
+
+bool Settings_activateCharacterWorkshopPrimaryAction() {
+    const CharacterWorkshopPrimaryAction action =
+        resolveCharacterWorkshopPrimaryAction();
+    switch (action.kind) {
+        case CharacterWorkshopPrimaryActionKind::ImportSource:
+            return Settings_chooseCharacterSource();
+        case CharacterWorkshopPrimaryActionKind::FocusSourcePath:
+            g_characterWorkshopFocusRequest =
+                CharacterWorkshopFocusRequest::SourcePath;
+            return true;
+        case CharacterWorkshopPrimaryActionKind::ReviewSelectedSource:
+            g_characterWorkshopFocusRequest =
+                CharacterWorkshopFocusRequest::SourceWorkflow;
+            return true;
+        case CharacterWorkshopPrimaryActionKind::ReviewAdapter:
+            g_characterWorkshopFocusRequest =
+                CharacterWorkshopFocusRequest::AdapterReview;
+            return true;
+        case CharacterWorkshopPrimaryActionKind::ReviewCandidate:
+            g_characterWorkshopFocusRequest =
+                CharacterWorkshopFocusRequest::CandidateTop;
+            return true;
+        case CharacterWorkshopPrimaryActionKind::ContinueRawDraft:
+            g_characterWorkshopFocusRequest =
+                CharacterWorkshopFocusRequest::RawDraftTop;
+            return true;
+        case CharacterWorkshopPrimaryActionKind::ResumeRawDraft:
+            if (!activateCharacterRawDraft(
+                    g_characterRawDrafts.selectedId)) {
+                setStatus(
+                    "The saved raw authoring draft could not be opened; no draft changed.",
+                    AppTheme::bad());
+                return false;
+            }
+            g_characterWorkshopFocusRequest =
+                CharacterWorkshopFocusRequest::RawDraftTop;
+            setStatus(
+                "Raw authoring resumed; inspect the exact GLB before building.",
+                AppTheme::good());
+            return true;
+        case CharacterWorkshopPrimaryActionKind::OpenReadinessTask:
+            persistCharacterWorkshopTab(action.targetTab, true);
+            return true;
+    }
+    return false;
 }
 
 bool Settings_drawCharacterWorkshop(SDL_Window *window, bool compact) {

@@ -94,6 +94,44 @@ struct CharacterWorkshopReadiness {
     bool                 readyToPlay     = false;
     CharacterWorkshopTab nextActionTab   = CharacterWorkshopTab::Overview;
     const char          *nextActionLabel = "Inspect character";
+    // A verb-first equivalent sized for the persistent launcher action. It is
+    // not a truncation: every label still names the destination or outcome.
+    const char          *nextActionCompactLabel = "Inspect character";
+};
+
+// Top-level Workshop journey state. The launcher must not infer this from UI
+// globals: candidate review, raw authoring, and installed-package readiness
+// are owned by the Workshop and have deliberately different next actions.
+enum class CharacterWorkshopJourney : uint8_t {
+    SourceIntake = 0,
+    ManualSourceIntake,
+    SelectedSource,
+    AdapterReview,
+    CandidateReview,
+    RawAuthoring,
+    SavedRawDraft,
+    InstalledCharacter,
+};
+
+enum class CharacterWorkshopPrimaryActionKind : uint8_t {
+    ImportSource = 0,
+    FocusSourcePath,
+    ReviewSelectedSource,
+    ReviewAdapter,
+    ReviewCandidate,
+    ContinueRawDraft,
+    ResumeRawDraft,
+    OpenReadinessTask,
+};
+
+struct CharacterWorkshopPrimaryAction {
+    CharacterWorkshopPrimaryActionKind kind =
+        CharacterWorkshopPrimaryActionKind::ImportSource;
+    CharacterWorkshopTab targetTab = CharacterWorkshopTab::Overview;
+    const char *label = "Browse character source…";
+    const char *compactLabel = "Import character…";
+    const char *description =
+        "Choose a local character package, model, adapter result, or authoring source. This does not require a ROM and nothing installs before validation and review.";
 };
 
 enum class CharacterWorkshopPerformanceTarget : uint8_t {
@@ -290,6 +328,11 @@ struct CharacterWorkshopRigSuggestion {
 
 CharacterWorkshopReadiness CharacterWorkshop_evaluate(
     const CharacterWorkshopFacts &facts);
+CharacterWorkshopPrimaryAction CharacterWorkshop_primaryAction(
+    CharacterWorkshopJourney journey,
+    const CharacterWorkshopReadiness &readiness = {});
+const char *CharacterWorkshop_primaryActionId(
+    CharacterWorkshopPrimaryActionKind kind);
 
 const char          *CharacterWorkshop_tabLabel(CharacterWorkshopTab tab);
 const char          *CharacterWorkshop_tabStorageId(CharacterWorkshopTab tab);

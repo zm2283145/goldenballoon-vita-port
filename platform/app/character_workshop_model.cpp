@@ -541,39 +541,138 @@ CharacterWorkshopReadiness CharacterWorkshop_evaluate(
     if (!facts.identityReady) {
         result.nextActionTab   = CharacterWorkshopTab::Identity;
         result.nextActionLabel = "Create roster identity";
+        result.nextActionCompactLabel = "Edit identity";
     } else if (!facts.geometryAvailable || !facts.normalized ||
                !facts.anchorsReady || !facts.attachmentSocketsReady) {
         result.nextActionTab   = CharacterWorkshopTab::Vehicles;
         result.nextActionLabel = "Calibrate model and anchors";
+        result.nextActionCompactLabel = "Open Offset Studio";
     } else if (!facts.motionReady ||
                (facts.rigPresent && !facts.rigReviewed)) {
         result.nextActionTab   = CharacterWorkshopTab::RigMotion;
         result.nextActionLabel = "Review rig and motion";
+        result.nextActionCompactLabel = "Review motion";
     } else if (!facts.donorQualified) {
         result.nextActionTab   = CharacterWorkshopTab::Profile;
         result.nextActionLabel = "Choose a qualified gameplay profile";
+        result.nextActionCompactLabel = "Choose gameplay";
     } else if (vehicleFit != CharacterWorkshopReadinessStatus::Ready) {
         result.nextActionTab   = CharacterWorkshopTab::Vehicles;
         result.nextActionLabel = "Review every supported context";
+        result.nextActionCompactLabel = "Review vehicle fit";
     } else if (!facts.performanceAssemblyReady) {
         result.nextActionTab   = CharacterWorkshopTab::Performance;
         result.nextActionLabel = "Complete performance assembly";
+        result.nextActionCompactLabel = "Build performance LODs";
     } else if (facts.performance ==
                CharacterWorkshopPerformanceState::NotMeasured) {
         result.nextActionTab   = CharacterWorkshopTab::Test;
         result.nextActionLabel = "Run the performance matrix";
+        result.nextActionCompactLabel = "Run performance tests";
     } else if (facts.performance ==
                CharacterWorkshopPerformanceState::OverTarget) {
         result.nextActionTab   = CharacterWorkshopTab::Performance;
         result.nextActionLabel = "Tune performance to target";
+        result.nextActionCompactLabel = "Tune performance";
     } else if (!facts.enabled) {
         result.nextActionTab   = CharacterWorkshopTab::Package;
         result.nextActionLabel = "Enable validated character";
+        result.nextActionCompactLabel = "Enable character";
     } else {
         result.nextActionTab   = CharacterWorkshopTab::Test;
         result.nextActionLabel = "Run an exact-context test";
+        result.nextActionCompactLabel = "Run exact test";
     }
     return result;
+}
+
+CharacterWorkshopPrimaryAction CharacterWorkshop_primaryAction(
+    CharacterWorkshopJourney journey,
+    const CharacterWorkshopReadiness &readiness) {
+    switch (journey) {
+        case CharacterWorkshopJourney::ManualSourceIntake:
+            return {
+                CharacterWorkshopPrimaryActionKind::FocusSourcePath,
+                CharacterWorkshopTab::Overview,
+                "Enter character source path",
+                "Enter source path",
+                "Focuses the local source path field. You can also drop a source anywhere on the launcher; nothing installs before validation and review.",
+            };
+        case CharacterWorkshopJourney::SelectedSource:
+            return {
+                CharacterWorkshopPrimaryActionKind::ReviewSelectedSource,
+                CharacterWorkshopTab::Overview,
+                "Review selected character source",
+                "Review selected source",
+                "Returns to the selected source and its exact validation, conversion, or export-guidance action. Nothing installs before the resulting candidate review.",
+            };
+        case CharacterWorkshopJourney::AdapterReview:
+            return {
+                CharacterWorkshopPrimaryActionKind::ReviewAdapter,
+                CharacterWorkshopTab::Overview,
+                "Continue adapter result review",
+                "Review adapter result",
+                "Returns to the validated data-only adapter handoff. No adapter code is executed and no files are extracted until acceptance and an unused destination are provided.",
+            };
+        case CharacterWorkshopJourney::CandidateReview:
+            return {
+                CharacterWorkshopPrimaryActionKind::ReviewCandidate,
+                CharacterWorkshopTab::Overview,
+                "Continue candidate review",
+                "Review candidate",
+                "Returns to the beginning of the mutation-free package comparison. Nothing installs until the review and local-use confirmation are complete.",
+            };
+        case CharacterWorkshopJourney::RawAuthoring:
+            return {
+                CharacterWorkshopPrimaryActionKind::ContinueRawDraft,
+                CharacterWorkshopTab::Overview,
+                "Continue character draft",
+                "Continue draft",
+                "Returns to the active resumable authoring draft without changing the source file or installed library.",
+            };
+        case CharacterWorkshopJourney::SavedRawDraft:
+            return {
+                CharacterWorkshopPrimaryActionKind::ResumeRawDraft,
+                CharacterWorkshopTab::Overview,
+                "Resume saved character draft",
+                "Resume draft",
+                "Reopens the selected resumable authoring draft without changing its external source file or the installed library.",
+            };
+        case CharacterWorkshopJourney::InstalledCharacter:
+            return {
+                CharacterWorkshopPrimaryActionKind::OpenReadinessTask,
+                readiness.nextActionTab,
+                readiness.nextActionLabel,
+                readiness.nextActionCompactLabel,
+                "Opens the highest-priority unfinished area for the selected installed character. It does not save, build, enable, assign, or launch the game.",
+            };
+        case CharacterWorkshopJourney::SourceIntake:
+            return {};
+    }
+    return {};
+}
+
+const char *CharacterWorkshop_primaryActionId(
+    CharacterWorkshopPrimaryActionKind kind) {
+    switch (kind) {
+        case CharacterWorkshopPrimaryActionKind::ImportSource:
+            return "import-source";
+        case CharacterWorkshopPrimaryActionKind::FocusSourcePath:
+            return "focus-source-path";
+        case CharacterWorkshopPrimaryActionKind::ReviewSelectedSource:
+            return "review-selected-source";
+        case CharacterWorkshopPrimaryActionKind::ReviewAdapter:
+            return "review-adapter";
+        case CharacterWorkshopPrimaryActionKind::ReviewCandidate:
+            return "review-candidate";
+        case CharacterWorkshopPrimaryActionKind::ContinueRawDraft:
+            return "continue-raw-draft";
+        case CharacterWorkshopPrimaryActionKind::ResumeRawDraft:
+            return "resume-raw-draft";
+        case CharacterWorkshopPrimaryActionKind::OpenReadinessTask:
+            return "open-readiness-task";
+    }
+    return "invalid";
 }
 
 const char *CharacterWorkshop_tabLabel(CharacterWorkshopTab tab) {

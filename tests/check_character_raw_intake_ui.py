@@ -427,9 +427,51 @@ def main() -> int:
             run(
                 binary, conversion_accessible,
                 conversion_a11y_environment,
-                ("text=Converted GLB destination",
+                ("character-workshop-primary kind=review-selected-source ",
+                 "text=Converted GLB destination",
                  "text=Convert, inspect, and continue"),
             )
+
+            selected_source = root / "selected-source-compact"
+            selected_source.mkdir()
+            selected_source_shot = (
+                selected_source / "selected-source-compact.bmp"
+            )
+            selected_source_environment = isolated_environment(
+                selected_source, archive, selected_source_shot,
+                compact=True, drop=False,
+            )
+            (selected_source / "prefs" / "mdkr64_app.ini").write_text(
+                "ui_scale=2.00\n", encoding="utf-8"
+            )
+            selected_source_environment.update({
+                "MDKR_APP_SMOKE_FRAMES": "16",
+                "MDKR_APP_SMOKE_CHARACTER_CONVERSION_SOURCE": str(archive),
+                "MDKR_APP_SMOKE_CHARACTER_CONVERSION_OUTPUT": str(
+                    selected_source / "converted.glb"
+                ),
+                "MDKR_APP_SMOKE_CHARACTER_CONVERSION_TOKEN":
+                    "mdkr64-character-conversion-v1",
+            })
+            run(
+                binary, selected_source, selected_source_environment,
+                (
+                    "character-workshop-primary "
+                    "kind=review-selected-source "
+                    "label=Review selected source",
+                    "compact-layout dense=1 contained=1 overlap=0 ",
+                ),
+            )
+            check_bmp(selected_source_shot, 640, 480)
+            preserve_capture(
+                selected_source_shot, evidence_dir,
+                "selected-source-review-compact.bmp",
+            )
+            if (any((selected_source / "characters").iterdir())):
+                raise RuntimeError(
+                    "reviewing a selected source in the compact journey "
+                    "published character state before validation"
+                )
 
             adapter_root = root / "adapter-output"
             adapter_root.mkdir()
@@ -482,7 +524,8 @@ def main() -> int:
                  "executed=0 authenticated=0",
                  "character-adapter-handoff reviewed=1 extracted=1 "
                  "inspected=1 executed=0 authenticated=0 license=1",
-                 "raw-intake resumed=1 inspected=1 mappings=1 drafts=1"),
+                 "raw-intake resumed=1 inspected=1 mappings=1 drafts=1",
+                 "character-workshop-primary kind=continue-raw-draft "),
             )
             _, adapter_rows = raw_inventory(adapter_root)
             adapter_provenance = adapter_root / "reviewed.mdkrsource.json"
@@ -534,6 +577,8 @@ def main() -> int:
                 binary, adapter_review, adapter_review_environment,
                 ("character-adapter-review inspected=1 extracted=0 "
                  "executed=0 authenticated=0",
+                 "character-workshop-primary kind=review-adapter "
+                 "label=Review adapter result",
                  "text=Accept external adapter result",
                  "text=Extracted GLB destination",
                  "text=Extract verified data and continue"),
@@ -590,6 +635,8 @@ def main() -> int:
                 ),
                 ("active-panel=Character Workshop",
                  "raw-intake resumed=1 inspected=1 mappings=1 drafts=1",
+                 "character-workshop-primary kind=continue-raw-draft "
+                 "label=Continue character draft",
                  "raw-transform bounds=1 valid=1 severity=0 candidates=4 "),
             )
             check_bmp(wide_shot, 1280, 720)
@@ -652,7 +699,8 @@ def main() -> int:
                 isolated_environment(
                     wide, model, closed_shot, compact=False, drop=False
                 ),
-                ("raw-draft-library open=0 drafts=1",),
+                ("raw-draft-library open=0 drafts=1",
+                 "character-workshop-primary kind=resume-raw-draft "),
             )
             if "raw-intake resumed=1" in closed_output:
                 raise RuntimeError(
@@ -1009,6 +1057,8 @@ def main() -> int:
                     "lods=1 webgpu_required=1 rights_confirmed=0 "
                     "tangent_diag=1 tangent_fallback=0 "
                     "normal_map_fallback=0",
+                    "character-workshop-primary kind=review-candidate "
+                    "label=Continue candidate review",
                 ),
             )
             check_bmp(recipient_shot, 1280, 720)
@@ -1070,6 +1120,8 @@ def main() -> int:
                     "performance=Excellent lods=1 webgpu_required=1 "
                     "rights_confirmed=0 tangent_diag=0 "
                     "tangent_fallback=0 normal_map_fallback=0",
+                    "character-workshop-primary kind=review-candidate "
+                    "label=Continue candidate review",
                     "text=Local-use rights confirmation. Package "
                     "compatibility passed. This is a received portable package",
                 ),
@@ -1101,7 +1153,13 @@ def main() -> int:
             (compact_recipient / "prefs" / "mdkr64_app.ini").write_text(
                 "ui_scale=2.00\n", encoding="utf-8"
             )
-            compact_environment["MDKR_APP_SMOKE_FRAMES"] = "120"
+            compact_environment.update({
+                "MDKR_APP_SMOKE_FRAMES": "120",
+                "MDKR_APP_SMOKE_CHARACTER_CANDIDATE_ACTION":
+                    "show-discard-confirmation",
+                "MDKR_APP_SMOKE_CHARACTER_CANDIDATE_TOKEN":
+                    "mdkr64-character-candidate-v1",
+            })
             run(
                 binary, compact_recipient, compact_environment,
                 (
@@ -1110,6 +1168,9 @@ def main() -> int:
                     "performance=Excellent lods=1 webgpu_required=1 "
                     "rights_confirmed=0 tangent_diag=0 "
                     "tangent_fallback=0 normal_map_fallback=0",
+                    "character-workshop-primary kind=review-candidate "
+                    "label=Review candidate",
+                    "character-candidate-discard-modal contained=1 ",
                     "compact-layout dense=1 contained=1 overlap=0 ",
                 ),
             )
@@ -1125,6 +1186,41 @@ def main() -> int:
             ):
                 raise RuntimeError(
                     "compact recipient review mutated package or install state"
+                )
+
+            discard_recipient = root / "portable-recipient-discard"
+            discard_recipient.mkdir()
+            discard_environment = isolated_environment(
+                discard_recipient, portable_package,
+                discard_recipient / "portable-discard.bmp",
+                compact=False, drop=True,
+            )
+            discard_environment.update({
+                "MDKR_APP_SMOKE_FRAMES": "180",
+                "MDKR_APP_SMOKE_CHARACTER_CANDIDATE_ACTION":
+                    "discard-confirmed",
+                "MDKR_APP_SMOKE_CHARACTER_CANDIDATE_TOKEN":
+                    "mdkr64-character-candidate-v1",
+            })
+            run(
+                binary, discard_recipient, discard_environment,
+                (
+                    "character-recipient-review compatibility=1 "
+                    "mode=portable relationship=new",
+                    "character-candidate-action "
+                    "action=discard-confirmed applied=1",
+                ),
+            )
+            if (
+                hashlib.sha256(portable_package.read_bytes()).hexdigest()
+                    != portable_before
+                or any((discard_recipient / "characters").iterdir())
+                or (discard_recipient / "saves" /
+                    "character_raw_drafts-v1.tsv").exists()
+            ):
+                raise RuntimeError(
+                    "confirmed candidate discard changed its external package "
+                    "or published authoring/install state"
                 )
 
             install = root / "install"
@@ -1389,14 +1485,16 @@ def main() -> int:
           "data-only adapter handoff, bounded DAE/ZIP conversion, "
           "ZIP-bomb, invalid-SPDX, and hostile-GLB refusal, "
           "actionable missing-importer recovery, "
-          "recipient compatibility/readiness review, "
+          "contextual journey actions, recipient compatibility/readiness "
+          "review and confirmed no-mutation discard, "
           "mutation-free FBX/OBJ/BLEND/glTF/USD/DCC export guidance, "
           "multi-draft GLB intake, "
           "accessible no-overwrite LOD-copy authoring, "
           "same-source branching, source-bound mapping restore, exact "
           "switch/delete/install cleanup, "
           "legacy migration, corruption fail-closed behavior, source-byte "
-          "purity, keyboard speech, and 200% compact rendering")
+          "purity, keyboard speech, and a contained safe-default 200% "
+          "confirmation modal")
     return 0
 
 

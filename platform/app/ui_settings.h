@@ -104,6 +104,22 @@ bool Settings_importCharacterPackage(const char *path);
 // any import gate. False means unavailable or cancelled.
 bool Settings_chooseCharacterSource();
 
+// Resolve and activate the Workshop-owned persistent primary action. The
+// launcher renders this result but deliberately knows nothing about candidate,
+// raw-draft, installed-package, or readiness state.
+struct SettingsCharacterWorkshopPrimaryAction {
+    const char *id = "import-source";
+    const char *label = "Browse character source…";
+    const char *compactLabel = "Import character…";
+    const char *description =
+        "Choose a local character package, model, adapter result, or authoring source. This does not require a ROM and nothing installs before validation and review.";
+    const char *destination = "overview";
+};
+
+SettingsCharacterWorkshopPrimaryAction
+Settings_characterWorkshopPrimaryAction();
+bool Settings_activateCharacterWorkshopPrimaryAction();
+
 // Consume the one-shot exact-game preview requested by the launcher Workshop.
 // The in-game compact Settings view never produces one: starting another engine
 // inside a running engine would violate the host/session lifetime contract.

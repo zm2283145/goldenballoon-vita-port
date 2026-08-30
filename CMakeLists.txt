@@ -1913,7 +1913,7 @@ if(NOT EMSCRIPTEN)
                     WORKING_DIRECTORY "${MDKR_APP_TEST_ROOT}/workshop"
                     ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=6;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_character_workshop.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=1280x720;MDKR_APP_PANEL=Character Workshop;MDKR_APP_UI_TRACE=1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/workshop/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/workshop/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/workshop/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
                     LABELS gpu
-                    PASS_REGULAR_EXPRESSION "active-panel=Character Workshop workshop-primary=source-import rom=optional"
+                    PASS_REGULAR_EXPRESSION "active-panel=Character Workshop workshop-primary=contextual rom=optional"
                     TIMEOUT 180)
                 add_test(NAME app_character_workshop_content
                     COMMAND ${Python3_EXECUTABLE}
