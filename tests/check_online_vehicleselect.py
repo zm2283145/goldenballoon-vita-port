@@ -85,6 +85,12 @@ VS_REV_RE = re.compile(
     re.MULTILINE)
 VS_BACK_RE = re.compile(
     r"^\[online-vehicleselect\] back to track browse$", re.MULTILINE)
+# The DEFERRED-START truthfulness witness: the host's OK is latched but the
+# rival is NOT (or no longer) ready, so the reducer would refuse BEGIN_LOADING
+# -- the footer must stop claiming "STARTING..." and keep the B escape visible.
+VS_DEFER_RE = re.compile(
+    r"^\[online-vehicleselect\] start deferred: start requested but the rival "
+    r"is not ready \(footer: waiting \+ B backs out\)$", re.MULTILINE)
 SESS_CS_TO_TS_RE = re.compile(
     r"^\[online-session\] charselect -> trackselect", re.MULTILINE)
 SESS_TS_TO_VS_RE = re.compile(
@@ -312,6 +318,54 @@ def check_unknown(output: str) -> int | None:
     return assert_r3_published_legal(scn, unknown_rows, output)
 
 
+def check_defer(output: str) -> int | None:
+    """DEFERRED-START truthfulness (consistency audit #1): the host OKs while
+    both seats read ready, then the rival UN-readies before BEGIN_LOADING can
+    land -- the reducer refuses (NOT_READY) and the room stays in LOBBY. The
+    stage must (a) witness the deferred window (the footer flips from
+    "STARTING..." to the truthful WAITING-FOR-RIVAL line with the B escape
+    advertised), (b) honor B during the deferral (backs the start request +
+    confirm out -- intent ready drops to 0), and (c) never fake an advance
+    (the room never left LOBBY). RED pre-fix: the defer witness does not exist
+    ("STARTING..." sat unchanged with the B hint hidden)."""
+    scn = "defer"
+    marker = forbidden_marker(output, *FORBIDDEN_ONLINE)
+    if marker:
+        return fail(f"[{scn}] observed forbidden marker {marker!r}", output)
+    if not VS_OK_RE.search(output):
+        return fail(f"[{scn}] the host OK (start request) never fired -- the "
+                    f"deferred window was never staged", output)
+    defer = VS_DEFER_RE.search(output)
+    if not defer:
+        return fail(f"[{scn}] the stage never witnessed the DEFERRED start "
+                    f"(startReq latched with the rival un-ready): the footer "
+                    f"still claims 'STARTING...' through the refused window",
+                    output)
+    # (b) B backs out DURING the deferral: after the defer witness, a render
+    # row shows the local seat un-confirmed with intent ready=0.
+    backed = [m for m in VS_RENDER_RE.finditer(output)
+              if m.start() > defer.end() and int(m.group(7)) == 0
+              and int(m.group(13)) == 0]
+    if not backed:
+        return fail(f"[{scn}] B did not back the deferred start out (no "
+                    f"un-confirmed render row after the defer witness)", output)
+    # (c) the refused start never advanced the stage.
+    if VS_ADVANCE_RE.search(output):
+        return fail(f"[{scn}] the stage advanced although the start stayed "
+                    f"refused (the room must not leave LOBBY)", output)
+    # (d) the re-confirm against the still-un-ready rival parks the seat
+    # CONFIRMED-AND-WAITING (conf=1, intent ready=1, remote ready=0) -- the
+    # state whose footer must read "READY! WAITING FOR ..." (never an inert
+    # "A: SELECT").
+    waiting = [m for m in VS_RENDER_RE.finditer(output)
+               if m.start() > defer.end() and int(m.group(7)) == 1
+               and int(m.group(13)) == 1 and int(m.group(10)) == 0]
+    if not waiting:
+        return fail(f"[{scn}] the re-confirm never parked the seat "
+                    f"confirmed-and-waiting against the un-ready rival", output)
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", default="build-beta")
@@ -334,6 +388,7 @@ def main() -> int:
          args.timeout),
         ("diverge", check_diverge, {}, 2000, args.timeout),
         ("unknown", check_unknown, {}, 2000, args.timeout),
+        ("defer", check_defer, {}, 2000, args.timeout),
     )
     for vs_value, checker, extra, ticks, timeout in scenarios:
         try:
@@ -355,7 +410,10 @@ def main() -> int:
         "Bay's mask, both seats confirmed -> CAR_REV2 -> host OK -> race booted "
         "track 8, endpoints converged); DIVERGE (local PLANE vs remote "
         "CAR both converged, ready published on the divergent pick); UNKNOWN "
-        "(out-of-range track fails CLOSED to the engine-truth CAR-only mask). "
+        "(out-of-range track fails CLOSED to the engine-truth CAR-only mask); "
+        "DEFER (a start latched against an un-readied rival is WITNESSED as "
+        "deferred -- truthful waiting footer with the B escape -- B backs it "
+        "out, and the refused start never advances). "
         "R3 held on every frame; gGameMode=2 gCurrentMenuId=0 at hand-off.")
     return 0
 

@@ -823,9 +823,10 @@ void mdkr_online_charselect_enter(void) {
      * it is always inside the 0x07 player mask and the seat can legally READY
      * here (the reducer refuses READY without a vehicle). This is only the SEED /
      * legality-safe default now: the player makes the REAL vehicle choice on the
-     * dedicated native VEHICLE select screen (online_vehicleselect.c), which the
-     * session fronts right after this one (CHARSELECT -> VEHICLESELECT ->
-     * TRACKSELECT); TRACKSELECT's auto-narrow remains the final legality clamp. */
+     * native VEHICLE stage of the track screen (online_vehicleselect.c), which
+     * the session fronts AFTER the host's track lock -- the retail order,
+     * CHARSELECT -> TRACKSELECT -> VEHICLESELECT; that stage's auto-narrow
+     * remains the final legality clamp. */
     defaultVehicle = get_player_selected_vehicle(MDKR_ONLINE_SCREEN_LOCAL_PAD);
     if (defaultVehicle < 0 || (u8) defaultVehicle >= MDKR_ONLINE_SCREEN_VEHICLE_COUNT) {
         defaultVehicle = (s8) VEHICLE_CAR;
@@ -1104,8 +1105,8 @@ static void charselect_test_reduce_and_script(void) {
      * LOADING -- the authoritative signal the screen reacts to (the next tick reads
      * the LEFT-LOBBY snapshot, renders the converged both-ready state, and returns
      * ADVANCE). The advance is IMMEDIATE (same reduce tick both seats first read
-     * ready): the native VEHICLESELECT screen is now always in the flow, so the
-     * session would otherwise hand CHARSELECT -> VEHICLESELECT on the local-ready
+     * ready): the native TRACKSELECT screen is now always in the flow, so the
+     * session would otherwise hand CHARSELECT -> TRACKSELECT on the local-ready
      * signal before a held self-start could fire. Advancing at once leaves the
      * session no LOBBY-phase local-ready tick to divert on, so the standalone
      * CHARSELECT lane keeps its historical CHARSELECT -> race ADVANCE hand-off.

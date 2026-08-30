@@ -44,10 +44,12 @@ typedef enum MdkrOnlineSessionPhase {
     MDKR_ONLINE_SESSION_RESULTS,        /* results */
     MDKR_ONLINE_SESSION_CEREMONY,       /* tournament ceremony */
     /* Appended (NOT inserted) so no live enumerator value shifts: the native
-     * VEHICLE select screen (game/src/online/online_vehicleselect.c). The flow
-     * order is CHARSELECT -> VEHICLESELECT -> TRACKSELECT (driven by the switch +
-     * transitions in online_session.c, NOT by this enum's numeric order). Beta-only
-     * by construction (the whole header is #if MDKR_ENABLE_ONLINE_BETA). */
+     * VEHICLE stage of the track screen (game/src/online/online_vehicleselect.c).
+     * The flow order is the RETAIL one -- CHARSELECT -> TRACKSELECT (browse +
+     * lock) -> VEHICLESELECT (the track screen's setup stage) -> race -- driven
+     * by the switch + transitions in online_session.c, NOT by this enum's
+     * numeric order. Beta-only by construction (the whole header is
+     * #if MDKR_ENABLE_ONLINE_BETA). */
     MDKR_ONLINE_SESSION_VEHICLESELECT   /* native vehicle select (car/hover/plane) */
 } MdkrOnlineSessionPhase;
 

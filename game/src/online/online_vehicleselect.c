@@ -178,6 +178,7 @@ typedef struct MdkrOnlineVehicleselectState {
     u8 leave;          /* B: back to the track browse stage (edge; see tick) */
     u8 seeded;         /* first-snapshot seed applied */
     u8 bothReadyPrev;  /* CAR_REV2 rising-edge latch */
+    u8 deferNoted;     /* deferred-START witness edge (startReq && !bothReady) */
     u32 ticks;         /* stage ticks elapsed (also drives test input) */
     u32 blinkTimer;    /* retail gOptionBlinkTimer mirror ((t + rate) & 0x3F) */
     s8 stickLatchY;
@@ -372,11 +373,22 @@ typedef struct VsInput {
 #define VS_SCN_DIVERGE 1
 #define VS_SCN_HOLD 2
 #define VS_SCN_UNKNOWN 3
+/* DEFER -- the deferred/refused START window: confirm + host OK while both
+ * seats read ready, then the seam's scripted remote UN-readies (standing in
+ * for a real rival's B / a reducer ready-clear landing after the OK), so the
+ * latched startReq sits refused (NOT_READY) and the room never leaves LOBBY.
+ * Proves the footer flips to the truthful WAITING line (never a frozen
+ * "STARTING...") and that B backs the request out. */
+#define VS_SCN_DEFER 4
+/* JOINER_HOLD -- frame-dump only: the HOLD park with the seats' roles flipped
+ * (the REMOTE seat is the host), so a still shot can show the JOINER's
+ * un-confirmed footer (the "HOST CAN UNLOCK TRACK WITH B" locked-door line). */
+#define VS_SCN_JOINER_HOLD 5
 static s8 sVsScenario = -1;
 
 static void vehicleselect_input_scripted(VsInput *in) {
     memset(in, 0, sizeof(*in));
-    if (sVsScenario == VS_SCN_HOLD) {
+    if (sVsScenario == VS_SCN_HOLD || sVsScenario == VS_SCN_JOINER_HOLD) {
         /* Dump seam: nudge the pick once (a legal move when the mask allows it;
          * a skip-clamp no-op otherwise) and park un-confirmed, so a single frame
          * dump shows the un-confirmed pulsing highlight + the word states. */
@@ -404,6 +416,29 @@ static void vehicleselect_input_scripted(VsInput *in) {
     if (sVsScenario == VS_SCN_UNKNOWN) {
         if (sVs.ticks == 3u) {
             in->aEdge = 1u; /* confirm the fail-closed CAR-only pick; park */
+        }
+        return;
+    }
+    if (sVsScenario == VS_SCN_DEFER) {
+        switch (sVs.ticks) {
+        case 2u:
+            in->aEdge = 1u; /* confirm the seeded (mask-legal) vehicle */
+            break;
+        case 8u:
+            in->aEdge = 1u; /* host OK at bothReady -> startReq latches; the
+                             * seam then un-readies the remote (deferred) */
+            break;
+        case 40u:
+            in->bEdge = 1u; /* back the deferred start out (B: CHANGE) */
+            break;
+        case 50u:
+            in->aEdge = 1u; /* re-confirm against the still-un-ready rival:
+                             * parks the CONFIRMED-AND-WAITING footer state
+                             * ("READY! WAITING FOR ...") for the lane pin +
+                             * the capture */
+            break;
+        default:
+            break;
         }
         return;
     }
@@ -855,20 +890,64 @@ static void vehicleselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSna
                                 rv->ready ? 120 : 220, rv->ready ? 255 : 220,
                                 rv->ready ? 120 : 220);
     }
-    if (sVs.startReq) {
+    if (sVs.startReq && bothReady) {
+        /* the start request is latched AND both seats still read ready --
+         * BEGIN_LOADING is genuinely in flight (acceptance flips the phase and
+         * the stage advances off this screen within a pump). */
         mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, VS_HELP_Y,
                                 ASSET_FONTS_SMALLFONT, "STARTING...",
                                 ALIGN_MIDDLE_CENTER, 120, 255, 120);
-    } else if (sVs.host && bothReady) {
+    } else if (sVs.startReq) {
+        /* the DEFERRED/REFUSED window: the OK is latched but the rival is not
+         * (or no longer) ready, so the reducer refuses BEGIN_LOADING
+         * (NOT_READY) and the room stays in LOBBY. Truthful status instead of
+         * a frozen "STARTING...", and the B escape stays advertised -- B here
+         * un-confirms AND drops the latched start request
+         * (vehicleselect_apply_input), so the hint matches reality. */
+        (void) snprintf(line, sizeof(line),
+                        "WAITING FOR %.12s TO CHOOSE...   B: CHANGE", rname);
         mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, VS_HELP_Y,
-                                ASSET_FONTS_SMALLFONT, "A: GO   B: CHANGE",
-                                ALIGN_MIDDLE_CENTER, 255, 255, 255);
+                                ASSET_FONTS_SMALLFONT, line,
+                                ALIGN_MIDDLE_CENTER, 200, 200, 200);
+    } else if (bothReady) {
+        if (sVs.host) {
+            mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, VS_HELP_Y,
+                                    ASSET_FONTS_SMALLFONT, "A: GO   B: CHANGE",
+                                    ALIGN_MIDDLE_CENTER, 255, 255, 255);
+        } else {
+            /* both seats confirmed but the GO is the HOST's -- the joiner's A
+             * is inert here, so never advertise it; name the actual wait
+             * (charselect's "WAITING FOR HOST TO START..." family) and keep
+             * the truthful B (un-confirm). */
+            (void) snprintf(line, sizeof(line),
+                            "WAITING FOR %.12s TO START...   B: CHANGE", rname);
+            mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, VS_HELP_Y,
+                                    ASSET_FONTS_SMALLFONT, line,
+                                    ALIGN_MIDDLE_CENTER, 200, 200, 200);
+        }
+    } else if (sVs.confirmed) {
+        /* confirmed-and-waiting: A is inert until the rival confirms too, so
+         * "A: SELECT" would be a lie -- mirror charselect's confirmed-seat
+         * read ("READY! WAITING FOR <name>...") with the truthful B verb
+         * (un-confirm to change the pick). */
+        (void) snprintf(line, sizeof(line),
+                        "READY! WAITING FOR %.12s...   B: CHANGE", rname);
+        mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, VS_HELP_Y,
+                                ASSET_FONTS_SMALLFONT, line,
+                                ALIGN_MIDDLE_CENTER, 120, 255, 120);
     } else {
         /* (no "VEHICLE" literal here: the kerned SMALLFONT swallows the narrow
-         * I between H and C -- it rendered as "VEHCLE" on capture.) */
+         * I between H and C -- it rendered as "VEHCLE" on capture.)
+         * The JOINER's line also names the locked door: after the host's lock
+         * the joiner has NO back path of its own (its un-confirmed B is a
+         * no-op), so a joiner wanting a different track/racer must ask the
+         * HOST to B out of the stage -- without this sentence the limitation
+         * reads as a broken button (stories audit gap #7). */
         mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, VS_HELP_Y,
                                 ASSET_FONTS_SMALLFONT,
-                                sVs.host ? "A: SELECT   B: BACK" : "A: SELECT",
+                                sVs.host ? "A: SELECT   B: BACK"
+                                         : "A: SELECT   HOST CAN UNLOCK "
+                                           "TRACK WITH B",
                                 ALIGN_MIDDLE_CENTER, 255, 255, 255);
     }
 
@@ -1097,6 +1176,22 @@ MdkrOnlineVehicleselectResult mdkr_online_vehicleselect_tick(s32 updateRate) {
     vehicleselect_gather_input(&in);
     vehicleselect_apply_input(&in, bothReady);
 
+    /* DEFERRED-START truthfulness witness (edge; bounded). The host's OK is
+     * latched but the rival is not (or no longer) ready -- the reducer refuses
+     * BEGIN_LOADING (NOT_READY) and the room stays in LOBBY, so the footer
+     * flips to the truthful WAITING line with the B escape advertised (see
+     * vehicleselect_render). One line per entry into the window. */
+    if (sVs.startReq && !bothReady) {
+        if (!sVs.deferNoted) {
+            sVs.deferNoted = 1u;
+            fprintf(stderr,
+                    "[online-vehicleselect] start deferred: start requested but "
+                    "the rival is not ready (footer: waiting + B backs out)\n");
+        }
+    } else {
+        sVs.deferNoted = 0u;
+    }
+
     /* Re-narrow after input (a cycle may have been applied against a mask that
      * a same-tick config change replaced). */
     vehicleselect_autonarrow(sVs.mask);
@@ -1160,6 +1255,8 @@ MdkrOnlineVehicleselectResult mdkr_online_vehicleselect_tick(s32 updateRate) {
 static s8 sVsTestActive = -1; /* -1 unresolved, 0 off, 1 on */
 static u8 sVsAdopted;
 static u8 sVsStartArmed;
+static u8 sVsDeferTripped; /* DEFER: the OK landed -- the scripted remote now
+                            * un-readies each tick (deferred/refused START) */
 static MdkrPartyLinkSnapshot sVsRoom;
 
 /* Whale Bay (cup 2 round 0): hovercraft-only 0x2 -- the SAME track the combined
@@ -1182,6 +1279,10 @@ static void vehicleselect_test_resolve(void) {
             sVsScenario = (s8) VS_SCN_HOLD;
         } else if (e != NULL && strstr(e, "unknown") != NULL) {
             sVsScenario = (s8) VS_SCN_UNKNOWN;
+        } else if (e != NULL && strstr(e, "defer") != NULL) {
+            sVsScenario = (s8) VS_SCN_DEFER;
+        } else if (e != NULL && strstr(e, "joiner") != NULL) {
+            sVsScenario = (s8) VS_SCN_JOINER_HOLD;
         } else {
             sVsScenario = (s8) VS_SCN_SKIP;
         }
@@ -1195,6 +1296,7 @@ static void vehicleselect_test_reset(void) {
     }
     sVsAdopted = 0u;
     sVsStartArmed = 0u;
+    sVsDeferTripped = 0u;
 }
 
 /* Optional dump-seam track override (frame captures of specific mask states,
@@ -1280,6 +1382,11 @@ static void vehicleselect_test_reduce_and_script(void) {
             sVsRoom.seats[1].vehicle_id = (uint8_t) VS_TEST_REMOTE_VEHICLE;
         }
         sVsRoom.seats[1].ready = 1u;
+        if (sVsScenario == VS_SCN_JOINER_HOLD) {
+            /* dump seam: the REMOTE seat is the host (the joiner's view). */
+            sVsRoom.seats[0].is_host = 0u;
+            sVsRoom.seats[1].is_host = 1u;
+        }
         sVsAdopted = 1u;
     }
 
@@ -1296,7 +1403,18 @@ static void vehicleselect_test_reduce_and_script(void) {
         if (intent.vehicle_id < MDKR_ONLINE_SCREEN_VEHICLE_COUNT) {
             sVsRoom.seats[0].vehicle_id = intent.vehicle_id;
         }
-        sVsRoom.seats[1].ready = 1u; /* scripted remote republishes ready */
+        if (sVsScenario == VS_SCN_DEFER) {
+            /* DEFER: once the host's OK lands, the scripted remote UN-readies
+             * (a rival's B / a ready-clear landing after the OK) and STAYS
+             * un-ready, so the latched start sits refused and the room never
+             * leaves LOBBY -- the deferred-START truthfulness stage. */
+            if (intent.start_requested) {
+                sVsDeferTripped = 1u;
+            }
+            sVsRoom.seats[1].ready = sVsDeferTripped ? 0u : 1u;
+        } else {
+            sVsRoom.seats[1].ready = 1u; /* scripted remote republishes ready */
+        }
         if (intent.ready &&
             sVsRoom.seats[0].character_id != MDKR_ONLINE_SCREEN_NO_CHARACTER &&
             sVsRoom.seats[0].vehicle_id != MDKR_ONLINE_SCREEN_NO_VEHICLE) {
@@ -1304,7 +1422,8 @@ static void vehicleselect_test_reduce_and_script(void) {
         } else if (!intent.ready || intent.backout) {
             sVsRoom.seats[0].ready = 0u;
         }
-        if (intent.start_requested && sVsRoom.seats[0].ready &&
+        if (sVsScenario != VS_SCN_DEFER && intent.start_requested &&
+            sVsRoom.seats[0].ready &&
             sVsRoom.seats[1].ready) {
             sVsStartArmed++;
             if (sVsStartArmed >= 4u) {

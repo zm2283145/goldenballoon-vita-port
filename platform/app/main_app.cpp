@@ -2259,6 +2259,10 @@ static void liveResidentServiceStep(void) {
              * native screen own the new config without the launcher racing it. */
             if (lobby.phase == MDKR_ONLINE_LOBBY) {
                 if (rs->remoteSim) OnlineRoom_lobbyStartResetJoiner();
+                /* TEST-ONLY: arm the perpetual-flap peer now (no-op unless the
+                 * flap env is set), so race 1 readied normally and the flap
+                 * engages only for this re-wait -- the cap scenario. */
+                if (rs->remoteSim) OnlineRoom_lobbyStartArmJoinerFlap();
                 mdkr_net_roster_runtime_clear();
                 if (mdkr_match_input_runtime_active()) {
                     mdkr_match_input_runtime_clear();

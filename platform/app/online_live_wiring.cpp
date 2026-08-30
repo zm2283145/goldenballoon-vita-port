@@ -2068,9 +2068,34 @@ namespace {
  * submitted, so each distinct step is sent once (and re-sent when a host config
  * change reverts the joiner to un-ready). One lobby-start session per process. */
 int sLobbyStartJoinerLastAction = -1;
+
+/* TEST-ONLY perpetual-flap peer (MDKR_APP_TEST_ONLINE_JOINER_FLAP): once the peer
+ * can ready, keep RE-PICKING its character every pump instead of latching ready.
+ * Each pick moves the forward-feed fingerprint (character_id) AND clears the seat
+ * ready bit the reducer drops on any selection change, so the room's fingerprint
+ * MOVES every pump but the room NEVER reaches all-ready -> BEGIN_LOADING never
+ * fires. Stands in for a live peer that ready/pick-flaps without ever converging;
+ * the host's per-round re-wait must bound it by the ABSOLUTE CAP (progress
+ * re-arms alone would hold it forever). Resolved once; off (unset) everywhere
+ * else, so production + every other lane are byte-behaviour-unchanged. */
+int sLobbyStartJoinerFlap = -1;  // -1 unresolved, 0 off, 1 on
+bool sLobbyStartJoinerFlapArmed = false;  // engages only after race 1 (armed by
+                                          // the resident on the re-cycle)
+unsigned sLobbyStartJoinerFlapToggle = 0u;
+bool lobbyStartJoinerFlapEnvOn() {
+    if (sLobbyStartJoinerFlap < 0) {
+        sLobbyStartJoinerFlap =
+            std::getenv("MDKR_APP_TEST_ONLINE_JOINER_FLAP") != nullptr ? 1 : 0;
+    }
+    return sLobbyStartJoinerFlap > 0;
+}
 }  // namespace
 
 void OnlineRoom_lobbyStartResetJoiner(void) { sLobbyStartJoinerLastAction = -1; }
+
+void OnlineRoom_lobbyStartArmJoinerFlap(void) {
+    if (lobbyStartJoinerFlapEnvOn()) sLobbyStartJoinerFlapArmed = true;
+}
 
 /* Drive the JOINER (peer) endpoint toward ready every frame so the host's native
  * START can leave LOBBY (BEGIN_LOADING requires all-ready). Reuses the primary-
@@ -2084,6 +2109,21 @@ void OnlineRoom_lobbyStartServiceJoiner(IMdkrOnlineAdapter *joiner,
                                         unsigned character) {
     if (joiner == nullptr) return;
     const MdkrOnlineViewModel vm = loopbackView(joiner);
+    /* PERPETUAL-FLAP peer (test-only): once the initial character/vehicle
+     * selection is done (the view no longer asks to choose one), re-pick the
+     * character every pump between two host-legal ids (both != host's Pipsy(2)).
+     * The reducer clears ready on the selection change, so the seat oscillates
+     * un-ready and the fingerprint's character_id flaps -- a room that MOVES but
+     * never converges. Bypasses the dedupe (submit every pump). */
+    if (sLobbyStartJoinerFlapArmed &&
+        vm.primary.action != MDKR_ONLINE_VIEW_ACTION_CHOOSE_CHARACTER &&
+        vm.primary.action != MDKR_ONLINE_VIEW_ACTION_CHOOSE_VEHICLE &&
+        vm.primary.action != MDKR_ONLINE_VIEW_ACTION_VOTE_TRACK) {
+        const unsigned pick = (sLobbyStartJoinerFlapToggle++ & 1u) ? 0u : 1u;
+        (void)joiner->submit(loopbackCmd(
+            joiner, MDKR_ONLINE_VIEW_ACTION_CHOOSE_CHARACTER, 0u, pick));
+        return;
+    }
     const int action = static_cast<int>(vm.primary.action);
     if (action == sLobbyStartJoinerLastAction) return; /* already sent for this state */
     bool sent = false;

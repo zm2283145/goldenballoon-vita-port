@@ -960,6 +960,13 @@ void OnlineRoom_lobbyStartResetJoiner(void);
  * START can leave LOBBY. `character` must differ from the host's native pick. */
 void OnlineRoom_lobbyStartServiceJoiner(IMdkrOnlineAdapter *joiner,
                                         unsigned character);
+/* TEST-ONLY: arm the perpetual-flap peer (MDKR_APP_TEST_ONLINE_JOINER_FLAP). No-op
+ * unless that env is set. Called by the resident coordinator when it enters a
+ * per-round re-cycle, so race 1 readies normally and the flap engages only for
+ * the re-wait -- the joiner then re-picks its character every pump (fingerprint
+ * MOVES, ready never latches, room never converges), exercising the host per-round
+ * re-wait ABSOLUTE CAP. Inert (never armed) in production + every other lane. */
+void OnlineRoom_lobbyStartArmJoinerFlap(void);
 /* UNWIND WEDGE: the LEADER cancels loading. If `leader`'s lobby is in the
  * LOADING phase, submit RETURN_TO_LOBBY (-> reducer CANCEL_LOADING) so the room
  * returns to SELECTING; returns true when a cancel was applicable+submitted. Used
