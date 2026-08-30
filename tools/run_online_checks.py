@@ -58,6 +58,10 @@ LANES = (
     "check_online_session_end.py",          # incl. joiner-follow seam scenario
     "check_online_race_start_peer_loss.py", # P0: peer-loss at race start -> clean
                                             #  return-to-room, never abort()
+    "check_online_midrace_transport_loss.py", # mid-race TRANSPORT sever (frozen
+                                            #  pump + presence drop, the real
+                                            #  kill signature) -> bounded typed
+                                            #  peer LOST -> latch -> OPPONENT_LEFT
     "check_online_joiner_terminal.py",      # exit-gate C1 no-seam joiner proof
     "check_online_ceremony.py",
     "check_online_lobby_start.py",

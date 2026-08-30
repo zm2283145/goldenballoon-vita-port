@@ -1850,6 +1850,29 @@ peer-loss teardown at the transport layer; it does NOT boot the visible engine,
 and it is NOT the shipping cloud route (that is
 `check_online_native_flow_cloud.py`).
 
+`check_online_midrace_transport_loss.py` (registered) pins prompt, truthful
+mid-race peer loss ON THE TRANSPORT ITSELF -- the real-cloud kill signature: a
+SIGKILLed opponent's signal socket dies (the service broadcasts
+presence=false) while its mesh goes silent with channels nominally up. The
+lane's sever seam (`MDKR_APP_TEST_ONLINE_SEVER_PEER_AT_TICK`) reproduces that
+in-process on the descriptor-less lobby-start tournament session: it freezes
+the in-process peer's pump and drops its loopback signal presence, refusing
+NOTHING -- detection must come from the transport's own liveness ladders. The
+severed race runs at the authored 30 Hz (the seam arms `paceAdvanceHz`),
+because detection is wall-clock (ping interval + stale bound =
+`kMdkrMatchMidRaceLossDetectBoundMs`, parsed from the header, never a magic
+number) while the unthrottled headless drain finishes a race in ~2 real
+seconds. Asserts: typed `[MESH] peer LOST` reason=PingTimeout within the named
+bound of the sever (tick-denominated), the truthful OPPONENT_LEFT mapping (the
+no-demotion rule), the EXISTING mid-race latch ending the race (no ghost
+race), the crash-fix clean LEFT return (exit 0, zero leaks, no abort), and
+that the watchdog path (`round advance TIMEOUT` / `descless wait TIMEOUT`)
+never fires. The laggy-but-alive false-positive guard is pinned at the mesh
+layer by `test_match_peer_transport.cpp`'s
+`presenceBlipWithHealthyChannelsIsNotPeerLoss`. **Scope class:** engine flow
+(loopback transport) -- the real-transport confirmation is
+`check_online_native_flow_cloud.py --drop mid-race --drop-method kill`.
+
 `tests/check_lan_controller_assets.py` keeps the local-play controller asset set
 identical across the three places that must never disagree: the C++
 `kControllerAssets` manifest in `lan_party_launch.cpp` that the embedded server

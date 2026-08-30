@@ -1102,6 +1102,16 @@ struct LiveMatchInputContext {
      * nullptr` branch exactly as before. */
     unsigned paceAdvanceHz = 0u;
     std::uint64_t lastAdvanceMs = 0u;
+    /* TEST-ONLY transport-sever seam state (see liveTestSeverPeerAtTick).
+     * Once severed, the in-process peer is a CORPSE: never serviced again
+     * (its mesh stops ponging/draining -- exactly a SIGKILLed remote as the
+     * transport sees it), its loopback signal presence is dropped (what the
+     * real signal service broadcasts when the killed process's socket dies),
+     * and the drain takes the production predict path. severRig is the
+     * loopback rig whose hub delivers the presence drop; null in production
+     * and in every lane that leaves the seam env unset. */
+    bool peerSevered = false;
+    MdkrOnlineTestLoopbackRace *severRig = nullptr;
     /* Test-only (MDKR_APP_TEST_ONLINE_LIVE_PREDICT): on the in-process loopback
      * proof the visible endpoint normally spins until the peer's input for the
      * tick it is about to commit has arrived, so it never rolls back. Set this
@@ -1232,7 +1242,7 @@ static void liveOverlayService(void) {
     LiveMatchInputContext *ctx = g_liveMatchInput;
     if (ctx == nullptr) return;
     if (ctx->visible != nullptr) ctx->visible->service();
-    if (ctx->peer != nullptr) ctx->peer->service();
+    if (ctx->peer != nullptr && !ctx->peerSevered) ctx->peer->service();
     if (g_liveResident != nullptr) liveResidentServiceStep();
     if (g_liveLobbyStart != nullptr) liveLobbyStartServiceStep();
 }
@@ -1301,6 +1311,27 @@ static std::uint32_t liveTestDropInputAtTick(void) {
     static long cached = -1;
     if (cached < 0) {
         const char *env = std::getenv("MDKR_APP_TEST_ONLINE_DROP_INPUT_AT_TICK");
+        const long parsed = (env != nullptr) ? std::strtol(env, nullptr, 10) : 0;
+        cached = (parsed > 0) ? parsed : 0;
+    }
+    return static_cast<std::uint32_t>(cached);
+}
+
+/* TEST-ONLY (beta) mid-race TRANSPORT-SEVER seam. When
+ * MDKR_APP_TEST_ONLINE_SEVER_PEER_AT_TICK=<N> (N > firstTick) is set on a
+ * loopback rig, the drain HARD-severs the in-process peer at authored tick N:
+ * the peer adapter is never serviced again (a frozen corpse -- its mesh stops
+ * ponging and draining, exactly what a SIGKILLed remote process looks like to
+ * the transport) and the loopback signal hub broadcasts its presence=false
+ * (what the real signal service does when the killed process's socket dies).
+ * Unlike the DROP_* input seams this REFUSES NOTHING: the race keeps
+ * predicting on the production path and every detection must come from the
+ * transport's own liveness ladders (control-ping stale -> [MESH] peer LOST ->
+ * the mid-race latch). 0 / unset == off. */
+static std::uint32_t liveTestSeverPeerAtTick(void) {
+    static long cached = -1;
+    if (cached < 0) {
+        const char *env = std::getenv("MDKR_APP_TEST_ONLINE_SEVER_PEER_AT_TICK");
         const long parsed = (env != nullptr) ? std::strtol(env, nullptr, 10) : 0;
         cached = (parsed > 0) ? parsed : 0;
     }
@@ -1376,7 +1407,26 @@ bool liveDrainMatchInput(void *opaque, std::uint32_t /*epoch*/,
                 return false;
             }
         }
-        if (ctx->peer != nullptr) {
+        /* TEST-ONLY (beta): HARD-SEVER the in-process peer's transport at
+         * this authored tick (see liveTestSeverPeerAtTick). Refuses nothing;
+         * the drain falls through to the production predict branch and the
+         * transport's own liveness ladders must surface the loss. */
+        {
+            const std::uint32_t severAt = liveTestSeverPeerAtTick();
+            if (severAt != 0u && !ctx->peerSevered && drainTick >= severAt &&
+                drainTick > info.firstTick) {
+                ctx->peerSevered = true;
+                if (ctx->severRig != nullptr) {
+                    OnlineRoom_testLoopbackSeverPeerPresence(ctx->severRig);
+                }
+                std::fprintf(stderr,
+                             "[online-live] TEST: peer transport SEVERED at "
+                             "tick %u (pump frozen + presence dropped; "
+                             "detection must come from the transport)\n",
+                             drainTick);
+            }
+        }
+        if (ctx->peer != nullptr && !ctx->peerSevered) {
             /* Advance the peer ahead: each advance seals its deterministic input
              * for (nextTick + inputDelay) and fans it out, so ticks up to
              * drainTick+lead are already in flight. The peer's own drain uses
@@ -1931,7 +1981,8 @@ static void liveResidentServiceStep(void) {
      * SEPARATELY from the single-endpoint advance step below, so the lane proves the
      * advance step drives ONLY the visible endpoint. Never runs in production
      * (remoteSim is false and peer == nullptr there). */
-    if (rs->remoteSim && rs->peer != nullptr) {
+    if (rs->remoteSim && rs->peer != nullptr &&
+        !(rs->ctx != nullptr && rs->ctx->peerSevered)) {
         OnlineRoom_lobbyStartServiceJoiner(rs->peer, rs->joinerCharacter);
     }
 
@@ -2285,10 +2336,13 @@ static void liveLobbyStartServiceStep(void) {
     OnlineRoom_pumpPartyLink(ls->visible);
     OnlineRoom_pumpPartyLinkIntent(ls->visible);
 
-    /* Drive the joiner (peer) toward ready so the host's START can leave LOBBY
-     * (BEGIN_LOADING needs all-ready). The host's native pick is Pipsy(2), so the
-     * joiner takes a different racer. */
-    OnlineRoom_lobbyStartServiceJoiner(ls->peer, ls->joinerCharacter);
+    /* Drive the joiner (peer) toward ready so the host's native START can leave
+     * LOBBY (BEGIN_LOADING needs all-ready). The host's native pick is Pipsy(2),
+     * so the joiner takes a different racer. A severed peer (transport-sever
+     * seam) is a corpse: never serviced. */
+    if (!(ls->ctx != nullptr && ls->ctx->peerSevered)) {
+        OnlineRoom_lobbyStartServiceJoiner(ls->peer, ls->joinerCharacter);
+    }
 
     if (ls->phase != LiveLobbyStartState::Phase::Lobby) return;
 
@@ -2447,6 +2501,16 @@ int runOnlineLobbyStartEngineSession(AppHost &host, const MdkrBootConfig &config
     context.peer = peer;
     context.epoch = 0u;
     context.activeMask = 0u;
+    /* Transport-sever seam plumbing: the drain needs the rig to drop the
+     * peer's loopback signal presence at sever time, and the severed race
+     * must run at the AUTHORED cadence -- detection is the transport's
+     * REAL-TIME liveness ladder (ping interval + stale bound), while the
+     * unthrottled headless drain finishes a whole race in ~2 real seconds,
+     * which no wall-clock detector could ever land inside (the real cloud
+     * session is 30 Hz wall-clock). Inert unless
+     * MDKR_APP_TEST_ONLINE_SEVER_PEER_AT_TICK is set. */
+    context.severRig = race;
+    if (liveTestSeverPeerAtTick() != 0u) context.paceAdvanceHz = 30u;
     g_liveMatchInput = &context;
 
     /* Install party_link + PRIME the forward feed BEFORE the engine boots, so

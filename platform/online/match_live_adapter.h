@@ -856,6 +856,12 @@ IMdkrOnlineAdapter *OnlineRoom_testLoopbackVisible(
 IMdkrOnlineAdapter *OnlineRoom_testLoopbackPeer(
     MdkrOnlineTestLoopbackRace *race);
 void OnlineRoom_destroyTestLoopbackRace(MdkrOnlineTestLoopbackRace *race);
+/* Transport-sever seam: drop the NON-visible endpoint's loopback signal
+ * presence (the real service's webSocketClose broadcast for a killed
+ * process). Called by the drain when MDKR_APP_TEST_ONLINE_SEVER_PEER_AT_TICK
+ * fires; the launcher freezes that endpoint's pump at the same moment.
+ * Defined in online_live_wiring.cpp; inert in production (null rig). */
+void OnlineRoom_testLoopbackSeverPeerPresence(MdkrOnlineTestLoopbackRace *race);
 
 /* Room-ready gate-probe seam: wrap the loopback VISIBLE adapter in the REAL
  * production OwningLiveAdapter wrapper -- the exact wrapper shape the Online Room

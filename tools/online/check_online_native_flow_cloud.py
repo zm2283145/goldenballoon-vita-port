@@ -225,9 +225,57 @@ MIDRACE_LATCH_RE = re.compile(
     r"^\[online-live\] peer lost mid-race at tick", re.MULTILINE)
 MESH_PEER_LOST_RE = re.compile(
     r"^\[MESH\] peer LOST ep=\d+ reason=(\d+)", re.MULTILINE)
+# The adapter's truthful card mapping of a mesh loss (failure= is the
+# MdkrOnlineViewFailure the recovery card fronts; OPPONENT_LEFT for a
+# mid-race departure -- the no-demotion rule).
+MESH_PEER_LOST_FAILURE_RE = re.compile(
+    r"^\[MESH\] peer LOST ep=\d+ reason=(\d+) -> failure=(\d+)", re.MULTILINE)
 # The launcher session-end witness the production takeover logs on return.
 SESSION_END_RE = re.compile(
     r"^\[online-session-end\] reason=(\S+) result=(-?\d+)", re.MULTILINE)
+# The bounded-watchdog recovery paths a PROMPT mid-race peer-loss detection
+# makes unnecessary -- FORBIDDEN on the mid-race-kill survivor.
+SURVIVOR_WATCHDOG_MARKERS = ("round advance TIMEOUT", "descless wait TIMEOUT")
+# Slack on top of the named detection bound for real-cloud scheduling /
+# line-flush jitter (the bound itself is ping interval + stale, parsed below).
+KILL_DETECT_SLACK_S = 15.0
+
+
+def mesh_detect_bound_ms() -> int:
+    """kMdkrMatchMidRaceLossDetectBoundMs from the source of truth (the mesh
+    header), never a magic instrument number."""
+    text = (ROOT / "platform/online/match_peer_transport.h").read_text(
+        encoding="utf-8")
+    values = []
+    for name in ("kMdkrMatchControlPingIntervalMs",
+                 "kMdkrMatchControlPingTimeoutMs"):
+        m = re.search(rf"unsigned {name} = (\d+)u", text)
+        if m is None:
+            raise ProofFailure(f"could not parse {name} from the mesh header")
+        values.append(int(m.group(1)))
+    return sum(values)
+
+
+def opponent_left_failure_value() -> int:
+    """MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT's enumerator value (sequential
+    value-less enum; the beta arm is compiled in for every cloud build)."""
+    text = (ROOT / "platform/online/lobby_view_model.h").read_text(
+        encoding="utf-8")
+    m = re.search(r"typedef enum MdkrOnlineViewFailure \{(.*?)\}", text,
+                  re.DOTALL)
+    if m is None:
+        raise ProofFailure("could not parse MdkrOnlineViewFailure")
+    body = re.sub(r"/\*.*?\*/", "", m.group(1), flags=re.DOTALL)
+    body = body.replace("#if MDKR_ENABLE_ONLINE_BETA", "").replace(
+        "#endif", "")
+    names = []
+    for token in body.split(","):
+        name = token.strip().split("=")[0].strip()
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name or ""):
+            names.append(name)
+    if "MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT" not in names:
+        raise ProofFailure("OPPONENT_LEFT missing from MdkrOnlineViewFailure")
+    return names.index("MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT")
 
 
 class ProofFailure(RuntimeError):
@@ -572,20 +620,88 @@ def run(args: argparse.Namespace) -> dict:
                 if args.drop_method == "kill":
                     # The FAITHFUL "console/transport drops" test: after the race
                     # is under way, KILL the drop-role process so its mesh actually
-                    # CLOSES. The SURVIVOR must return to the room BOUNDED and
-                    # WITHOUT aborting (the exact SIGABRT the crash fix removes) --
-                    # via the peer-loss latch if it observes the mesh drop in time,
-                    # else the bounded wall-clock watchdog. The recovery PATH is
-                    # reported (not asserted to be the fast latch): whether a real
-                    # cloud drop is caught by the mid-race latch + a truthful card,
-                    # or only by the watchdog, is the finding this run surfaces.
+                    # CLOSES (its signal socket dies too -- the service broadcasts
+                    # presence=false, the exact real-loss signature).
                     if args.drop == "mid-race":
                         time.sleep(args.drop_kill_delay)
+                    kill_at = time.monotonic()
                     dropped.proc.kill()
                     phase(True, "drop_injected",
                           f"race 1 under way over the real cloud; KILLED the "
                           f"{dropped.name} process (real transport drop, "
                           f"scenario {scen})")
+                    if args.drop == "mid-race":
+                        # STRICT contract: a real mid-race kill must be
+                        # detected PROMPTLY by the transport's own liveness
+                        # ladder (within the named bound
+                        # kMdkrMatchMidRaceLossDetectBoundMs + slack), latch
+                        # the truthful OPPONENT_LEFT, and end the survivor's
+                        # race via the EXISTING mid-race latch -> crash-fix
+                        # LEFT. The watchdog is FORBIDDEN as the recovery.
+                        bound_s = mesh_detect_bound_ms() / 1000.0
+                        opponent_left = opponent_left_failure_value()
+                        survivor.wait_line(
+                            lambda _l: (MESH_PEER_LOST_FAILURE_RE.search(
+                                survivor.full_output()) or None),
+                            f"{survivor.name} typed [MESH] peer LOST within "
+                            f"the named bound ({bound_s:.0f}s + "
+                            f"{KILL_DETECT_SLACK_S:.0f}s slack) of the kill",
+                            bound_s + KILL_DETECT_SLACK_S)
+                        detect_s = time.monotonic() - kill_at
+                        mapped = MESH_PEER_LOST_FAILURE_RE.search(
+                            survivor.full_output())
+                        if int(mapped.group(2)) != opponent_left:
+                            raise ProofFailure(
+                                f"{survivor.name}: mesh loss mapped to "
+                                f"failure={mapped.group(2)}, expected the "
+                                f"truthful OPPONENT_LEFT ({opponent_left}) -- "
+                                f"peer departure must never demote to a "
+                                f"connection failure")
+                        survivor.wait_line(
+                            MIDRACE_LATCH_RE.search,
+                            f"{survivor.name} mid-race peer-loss latch "
+                            f"(no ghost race)", 30.0)
+                        survivor.wait_line(
+                            PEER_LOSS_LEFT_RE.search,
+                            f"{survivor.name} crash-fix clean return (LEFT)",
+                            30.0)
+                        survivor.wait_line(
+                            lambda _l: (any(
+                                r == ("LEFT", "0") for r in
+                                SESSION_END_RE.findall(
+                                    survivor.full_output())) or None),
+                            f"{survivor.name} session end reason=LEFT "
+                            f"result=0 (never the watchdog ERROR)", 30.0)
+                        end_s = time.monotonic() - kill_at
+                        sout = survivor.full_output()
+                        for marker in SURVIVOR_WATCHDOG_MARKERS:
+                            if marker in sout:
+                                raise ProofFailure(
+                                    f"{survivor.name}: watchdog path fired "
+                                    f"({marker!r}) -- recovery must be the "
+                                    f"peer-loss latch, the watchdog is only "
+                                    f"the safety net")
+                        assert_no_crash(survivor)
+                        assert_no_crash(dropped, killed=True)
+                        reason = mapped.group(1)
+                        phase(True, "drop_truthful_prompt",
+                              f"scenario {scen} REAL KILL: kill -> [MESH] "
+                              f"peer LOST reason={reason} in {detect_s:.1f}s "
+                              f"(bound {bound_s:.0f}s), truthful "
+                              f"OPPONENT_LEFT latched, mid-race latch -> "
+                              f"clean LEFT in {end_s:.1f}s -- no watchdog, "
+                              f"no abort")
+                        report["verdict"] = "PASS"
+                        report["detail"] = (
+                            f"REAL mid-race transport kill over the real "
+                            f"cloud (production descriptor-less takeover): "
+                            f"survivor detected the loss in {detect_s:.1f}s "
+                            f"(typed reason={reason}, named bound "
+                            f"{bound_s:.0f}s), latched the truthful "
+                            f"OPPONENT_LEFT card, and ended via the mid-race "
+                            f"latch -> crash-fix LEFT in {end_s:.1f}s; no "
+                            f"watchdog, no abort on either endpoint")
+                        raise ProofStopEarly()
                     survivor.wait_line(
                         lambda _l: (RR_BOOT_RESULT_RE.search(
                             survivor.full_output()) or None),

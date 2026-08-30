@@ -1322,6 +1322,25 @@ public:
         endpoint.feed->inbox.push_back(std::move(event));
     }
 
+    /* Transport-sever seam: deliver presence=false for `about` to every
+     * OTHER endpoint's feed -- byte-for-byte what the real signal service
+     * broadcasts when an endpoint's socket dies (match-room.ts
+     * webSocketClose -> sendSignalPresence(present=false)). */
+    void dropPresence(uint64_t about) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto found = endpoints_.find(about);
+        if (found == endpoints_.end()) return;
+        for (auto &entry : endpoints_) {
+            if (entry.first == about) continue;
+            MdkrMatchSignalEvent event;
+            event.type = MdkrMatchSignalEventType::PeerPresence;
+            event.endpointId = std::to_string(about);
+            event.connectionGeneration = found->second.generation;
+            event.present = false;
+            entry.second.feed->inbox.push_back(std::move(event));
+        }
+    }
+
     MdkrMatchSignalSendResult route(uint64_t from,
                                     const MdkrMatchSignalOutbound &m) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -2827,6 +2846,19 @@ MdkrResidentAdvanceStatus OnlineRoom_residentAdvanceStep(
     default:
         return failStep("bad-stage");
     }
+}
+
+/* Transport-sever seam (MDKR_APP_TEST_ONLINE_SEVER_PEER_AT_TICK): drop
+ * the NON-visible endpoint's signal presence on the loopback hub, exactly as
+ * the real signal service broadcasts when a killed process's socket dies.
+ * The launcher freezes that endpoint's pump at the same moment; together
+ * they reproduce the real-cloud mid-race SIGKILL signature in-process. */
+void OnlineRoom_testLoopbackSeverPeerPresence(MdkrOnlineTestLoopbackRace *race) {
+    if (race == nullptr) return;
+    LoopbackMeshBackend *peerBackend =
+        race->joinerVisible ? &race->backendA : &race->backendB;
+    if (peerBackend->began == 0u) return; /* the peer's mesh never signed on */
+    race->hub.dropPresence(peerBackend->began);
 }
 
 void OnlineRoom_destroyTestLoopbackRace(MdkrOnlineTestLoopbackRace *race) {
