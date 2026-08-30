@@ -698,6 +698,17 @@ void OnlineRoom_installPartyLink(void);
 void OnlineRoom_clearPartyLink(void);
 void OnlineRoom_pumpPartyLink(IMdkrOnlineAdapter *adapter);
 void OnlineRoom_pumpPartyLinkIntent(IMdkrOnlineAdapter *adapter);
+/* True once the forward-feed pump observed the race mesh declare a roster
+ * peer LOST during the current party-link session (install/clear bracket).
+ * Session-scoped on purpose: it outlives the adapter's race-scoped latches
+ * (a REMATCH wrap clears those), so the launcher's post-session routing can
+ * still tell a peer-loss end from an ordinary one -- e.g. the loss that
+ * lands in the post-race window after a genuine finish. While observed, the
+ * pump also publishes every remote seat vacated on the engine feed (the
+ * reducer never learns of a dead peer by itself), which lets the engine's
+ * debounced remote-vacate end the post-race holds with the typed clean LEFT
+ * instead of a watchdog ERROR. */
+bool OnlineRoom_partyLinkPeerLossObserved(void);
 /* Test seam (MDKR_APP_TEST_PARTY_LINK_FAKE): install the link and publish a
  * deterministic scripted snapshot sequence with NO adapter, for the P2 native
  * menu tests to read through the forward feed. */

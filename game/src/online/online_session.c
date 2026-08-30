@@ -1276,6 +1276,18 @@ void mdkr_online_session_tick(s32 updateRate) {
                     }
                 }
             }
+            /* A peer the transport declared LOST parks this re-wait forever
+             * otherwise (a dead peer never re-Readies, and the reducer never
+             * vacates its seat by itself): the launcher presents that
+             * transport verdict as vacated remote seats on the forward feed,
+             * and the SAME debounced detector every native screen runs ends
+             * this hold with the typed clean LEFT. Gated inside the
+             * liveResident + raceCount>0 branch and on beganWithoutDescriptor
+             * (inside the detector), exactly like the per-round watchdog, so
+             * descriptor-first lanes are byte-behaviour-unchanged. */
+            if (online_session_detect_remote_vacated("per-round re-wait")) {
+                break;
+            }
             /* throttle to the first re-wait tick + every ready-state change,
              * not every tick -- the frame-driven advance makes this wait span many
              * ticks and an unthrottled line would flood stderr. */

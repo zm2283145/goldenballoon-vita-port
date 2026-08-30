@@ -1386,6 +1386,23 @@ static std::uint32_t liveTestSeverPeerAtTick(void) {
     return static_cast<std::uint32_t>(cached);
 }
 
+/* TEST-ONLY sibling of the tick sever (MDKR_APP_TEST_ONLINE_SEVER_PEER_AT_
+ * RESULTS): HARD-sever the in-process peer the moment the resident
+ * coordinator enters its RESULTS hold -- the near-finish kill shape, where
+ * the loss lands DURING the post-race waits after a genuine captured finish.
+ * The identical fault as the tick seam (pump frozen + loopback presence
+ * dropped), refusing nothing: detection must come from the transport's own
+ * ladders. Unset == off. */
+static bool liveTestSeverPeerAtResults(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *env =
+            std::getenv("MDKR_APP_TEST_ONLINE_SEVER_PEER_AT_RESULTS");
+        cached = (env != nullptr && env[0] != '\0' && env[0] != '0') ? 1 : 0;
+    }
+    return cached == 1;
+}
+
 /* Advance the visible endpoint's race transport up to `tick` (idempotent), then
  * copy the canonical frame for `tick`. Authored ticks are 1-based and align with
  * the adapter's raceFirstTick (1), so one drain == one race_advance. */
@@ -2004,6 +2021,37 @@ void notifyPeerOfDeliberateLeave(IMdkrOnlineAdapter *adapter,
     }
 }
 
+/* Session return after a mesh peer loss: latch the truthful opponent-left
+ * recovery card. Covers the loss that lands in the POST-RACE window (peer
+ * killed within the detection bound of the survivor's finish): the race
+ * completed genuinely, the in-race mapping was demoted or cleared by the
+ * lobby wrap (resetRaceLatches), and the session then unwound LEFT (the
+ * vacated-seat presentation) or ERROR (a watchdog) -- either way the player
+ * deserves the card that says what happened, not generic recovery copy. The
+ * adapter's own no-demote rule still protects a more specific mid-race
+ * breakdown (CONNECTION_UNPLAYABLE). FINISHED returns are left alone: a
+ * completed tournament's wrap outranks a post-completion room departure. */
+void latchOpponentLeftCardOnPeerLoss(IMdkrOnlineAdapter *adapter,
+                                     MdkrPartyLinkSessionEndReason reason) {
+#if MDKR_ENABLE_ONLINE_BETA
+    if (adapter == nullptr ||
+        (reason != MDKR_PARTY_LINK_SESSION_END_LEFT &&
+         reason != MDKR_PARTY_LINK_SESSION_END_ERROR)) {
+        return;
+    }
+    if (!OnlineRoom_partyLinkPeerLossObserved()) return;
+    if (mdkr_online_live_adapter_set_race_end_failure(
+            adapter, MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT)) {
+        std::fprintf(stderr,
+                     "[online-live] session ended after a mesh peer loss -> "
+                     "opponent-left recovery card\n");
+    }
+#else
+    (void)adapter;
+    (void)reason;
+#endif
+}
+
 /* Non-blocking frame budget for the SINGLE-RACE observe-only re-cycle: the max
  * serviced frames the launcher waits for the ENGINE-driven re-cycle to reach a
  * fresh race-ready transport before it gives up (logs + ends residency, never
@@ -2147,6 +2195,20 @@ static void liveResidentServiceStep(void) {
     }
 
     if (rs->phase == LiveResidentState::Phase::Results) {
+        /* TEST-ONLY: the near-finish sever (see liveTestSeverPeerAtResults)
+         * fires once, on the first RESULTS-hold frame -- after the genuine
+         * finish was captured and reported, before any REMATCH/advance. */
+        if (liveTestSeverPeerAtResults() && rs->ctx != nullptr &&
+            !rs->ctx->peerSevered) {
+            rs->ctx->peerSevered = true;
+            if (rs->ctx->severRig != nullptr) {
+                OnlineRoom_testLoopbackSeverPeerPresence(rs->ctx->severRig);
+            }
+            std::fprintf(stderr,
+                         "[online-live] TEST: peer transport SEVERED at "
+                         "results (pump frozen + presence dropped; detection "
+                         "must come from the transport)\n");
+        }
         /* The native RESULTS screen fronts; the host's advance publishes rematch on
          * the reverse feed, which the intent pump above dispatches as the reducer's
          * leader-only REMATCH. Wait for it to actually land (LOBBY + race_index
@@ -2673,6 +2735,8 @@ int runOnlineLobbyStartEngineSession(AppHost &host, const MdkrBootConfig &config
     /* Same immediate peer notify as the production path: a deliberate mid-race
      * leave must not strand the survivor on the loss ladders. */
     notifyPeerOfDeliberateLeave(visible, lobbyStartEndReason);
+    /* Same truthful-card routing as the production path. */
+    latchOpponentLeftCardOnPeerLoss(visible, lobbyStartEndReason);
 
     liveEngineHostUnbind();
     g_liveMatchInput = nullptr;
@@ -2808,6 +2872,9 @@ int runOnlineLobbyStartLiveSession(AppHost &host, const MdkrBootConfig &config,
     /* A deliberate mid-race leave must notify the surviving peer immediately
      * (its race is still running against our now-frozen seat). */
     notifyPeerOfDeliberateLeave(visible, endReason);
+    /* A session that unwound after the mesh lost the peer fronts the
+     * truthful card, wherever in the session the loss landed. */
+    latchOpponentLeftCardOnPeerLoss(visible, endReason);
     /* A FINISHED native session returns with the tournament-final REMATCH
      * wrap already landed (the host's FINISH dispatched it before leaving; a joiner's
      * FINISHED followed that same observed wrap), so the room is normally already

@@ -45,6 +45,17 @@ False-positive guard: a laggy-but-alive peer never trips this detection --
 pinned at the mesh layer by test_match_peer_transport.cpp's
 presenceBlipWithHealthyChannelsIsNotPeerLoss (healthy channels keep ponging
 through a signal-presence blip; no ladder fires).
+
+SECOND ARM -- the NEAR-FINISH kill (each arm a full engine boot): the sever
+lands the moment the race's genuine results are captured
+(MDKR_APP_TEST_ONLINE_SEVER_PEER_AT_RESULTS), so the loss is detected DURING
+the post-race RESULTS/advance holds. Pre-fix those holds ground to the
+frame-budget / wall-clock watchdogs' generic ERROR with no card (the lobby
+wrap had cleared the race-scoped loss latches). Post-fix: once the mesh
+declares the peer lost, the forward feed publishes the remote seats VACATED,
+the engine's existing debounced remote-vacate ends the hold with the typed
+clean LEFT, and the launcher latches the truthful opponent-left recovery
+card on the session's return. reason=LEFT result=0, never ERROR.
 """
 
 from __future__ import annotations
@@ -91,6 +102,27 @@ BEGIN_LOBBY_RE = re.compile(
     r"^\[online-session\] begin: lobby-start \(no descriptor\)", re.MULTILINE)
 # The watchdog path the fix makes unnecessary -- FORBIDDEN in the fixed build.
 WATCHDOG_MARKERS = ("round advance TIMEOUT", "descless wait TIMEOUT")
+
+# --- Near-finish arm witnesses -------------------------------------------
+RESULTS_REPORTED_RE = re.compile(
+    r"^\[online-resident-live\] race results reported "
+    r"placements=\d+,\d+,\d+,\d+ accepted=1", re.MULTILINE)
+SEVER_AT_RESULTS_RE = re.compile(
+    r"^\[online-live\] TEST: peer transport SEVERED at results", re.MULTILINE)
+# The forward feed presenting the transport truth to the engine.
+SEATS_VACATED_RE = re.compile(
+    r"^\[online-room\] mesh peer loss observed -> remote seats publish "
+    r"vacated on the engine feed", re.MULTILINE)
+# The engine's EXISTING debounced vacate exit -- wherever the hold was
+# (RESULTS, or a re-front screen if the auto-REMATCH wrapped first).
+VACATE_LEFT_RE = re.compile(
+    r"^\[online-session\] LEFT: remote seat vacated at "
+    r"(results|charselect|vehicleselect|trackselect|per-round re-wait)",
+    re.MULTILINE)
+# The truthful card, latched by the launcher on the session's return.
+CARD_LATCHED_RE = re.compile(
+    r"^\[online-live\] session ended after a mesh peer loss -> opponent-left "
+    r"recovery card", re.MULTILINE)
 
 # PingTimeout's enumerator index in MdkrMatchPeerLostReason (appended-only
 # enum; parsed below rather than trusted).
@@ -277,12 +309,87 @@ def main() -> int:
         return fail(f"host teardown leaked: {shutdown[-1] if shutdown else 'no witness'}",
                     output)
 
+    # ===== Arm 2: the NEAR-FINISH kill (loss lands in the post-race hold) ====
+    nf_env = dict(extra_env)
+    del nf_env["MDKR_APP_TEST_ONLINE_SEVER_PEER_AT_TICK"]
+    nf_env["MDKR_APP_TEST_ONLINE_SEVER_PEER_AT_RESULTS"] = "1"
+    try:
+        returncode, output = run_engine(
+            binary, rom, ticks=args.ticks, timeout=args.timeout,
+            verbose=args.verbose, extra_env=nf_env,
+            prefix="mdkr64-online-nearfinish-sever-")
+    except subprocess.TimeoutExpired as error:
+        return fail(f"[near-finish] engine run timed out (a hang instead of "
+                    f"a bounded return): {error}")
+    marker = forbidden_marker(output, *FORBIDDEN, *ABORT_MARKERS)
+    if marker:
+        return fail(f"[near-finish] observed fatal/abort marker {marker!r}",
+                    output)
+    if returncode != 0:
+        return fail(f"[near-finish] process exited {returncode}, expected 0 "
+                    f"(clean LEFT return)", output)
+    if len(BEGIN_LOBBY_RE.findall(output)) != 1:
+        return fail("[near-finish] the session did not begin descriptor-less "
+                    "(lobby-start) exactly once", output)
+    if not DIRECT_BOOT_RE.search(output) or not ONLINE_RACE_RE.search(output):
+        return fail("[near-finish] round 1 never booted into the online "
+                    "rollback race", output)
+    # GENUINE finish first, THEN the sever: the whole point of this arm.
+    reported = RESULTS_REPORTED_RE.search(output)
+    nf_sever = SEVER_AT_RESULTS_RE.search(output)
+    if not reported:
+        return fail("[near-finish] the race's results were never captured/"
+                    "reported -- the arm must sever AFTER a genuine finish",
+                    output)
+    if not nf_sever:
+        return fail("[near-finish] the results-hold sever seam never fired",
+                    output)
+    if nf_sever.start() < reported.start():
+        return fail("[near-finish] the sever fired before the results were "
+                    "reported -- this arm's loss must land in the post-race "
+                    "window", output)
+    # Typed transport detection while the session holds post-race.
+    if not MESH_LOST_RE.search(output):
+        return fail("[near-finish] NO `[MESH] peer LOST` after the post-race "
+                    "sever -- the transport never detected the dead peer",
+                    output)
+    # The transport truth reaches the engine feed, the engine's EXISTING
+    # debounced vacate ends the hold typed, and the launcher latches the
+    # truthful card -- never the watchdogs' generic ERROR.
+    if not SEATS_VACATED_RE.search(output):
+        return fail("[near-finish] the forward feed never published the lost "
+                    "peer's seat vacated -- the engine hold has no way to end "
+                    "typed", output)
+    if not VACATE_LEFT_RE.search(output):
+        return fail("[near-finish] the engine hold never took the typed "
+                    "remote-vacate LEFT exit", output)
+    if not CARD_LATCHED_RE.search(output):
+        return fail("[near-finish] the opponent-left recovery card was never "
+                    "latched on the session's return (the generic-recovery "
+                    "swallow)", output)
+    end = SESSION_END_RE.findall(output)
+    if not end or end[-1][0] != "LEFT" or int(end[-1][1]) != 0:
+        return fail(f"[near-finish] session end "
+                    f"{end[-1] if end else 'missing'}, expected (LEFT, 0) -- "
+                    f"a watchdog ERROR is the pre-fix generic path", output)
+    if "descless wait TIMEOUT" in output:
+        return fail("[near-finish] the descriptor-less wall-clock watchdog "
+                    "fired -- recovery must come from the typed vacate exit",
+                    output)
+    shutdown = HOST_SHUTDOWN_RE.findall(output)
+    if not shutdown or tuple(map(int, shutdown[-1])) != (0, 0, 0):
+        return fail(f"[near-finish] host teardown leaked: "
+                    f"{shutdown[-1] if shutdown else 'no witness'}", output)
+    nf_exit = VACATE_LEFT_RE.search(output)
+
     print(f"PASS online mid-race transport loss: severed at tick "
           f"{sever_tick}, PingTimeout peer LOST -> OPPONENT_LEFT "
           f"({opponent_left}) -> mid-race latch at tick {latch_tick} "
           f"(+{latch_tick - sever_tick} ticks <= {bound_ticks}; named bound "
           f"{bound_ms} ms) -> clean LEFT rc 0, zero leaks, no watchdog, "
-          f"no abort")
+          f"no abort; [near-finish] genuine finish, post-race sever, typed "
+          f"vacate exit at {nf_exit.group(1)}, opponent-left card latched, "
+          f"(LEFT, 0)")
     return 0
 
 
