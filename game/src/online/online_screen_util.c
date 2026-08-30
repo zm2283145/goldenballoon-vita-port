@@ -272,7 +272,13 @@ s32 mdkr_online_screen_blink(u32 timer) {
 }
 
 /* Resolve one seat's short name: the untrusted snapshot name if present, else the
- * character's canonical name, else a "Pn" slot fallback. */
+ * character's canonical name, else the generic remote-player fallback. The native
+ * screens use RIVAL consistently for the remote player wherever a generic term is
+ * needed (charselect/trackselect/vehicleselect already do), so the last-resort
+ * fallback is RIVAL rather than a "Pn" slot label -- one vocabulary across the
+ * screens. An occupied LOCAL seat always carries a valid character (so it resolves
+ * to its canonical name above); the RIVAL fallback is only ever reached by a
+ * nameless/absent REMOTE seat, so it never mislabels the local player. */
 void mdkr_online_screen_seat_name(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
                                   unsigned slot, char *out, size_t cap) {
     if (haveSnap && slot < MDKR_PARTY_LINK_SEATS &&
@@ -287,7 +293,7 @@ void mdkr_online_screen_seat_name(const MdkrPartyLinkSnapshot *snap, bool haveSn
                         sOnlineNames[snap->seats[slot].character_id]);
         return;
     }
-    (void) snprintf(out, cap, "P%u", slot + 1u);
+    (void) snprintf(out, cap, "RIVAL");
 }
 
 /* Countdown seconds still on the clock (ceil), 0 when elapsed. `done`/`limit` are

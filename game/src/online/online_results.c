@@ -384,9 +384,14 @@ static void results_label_tinted(s32 x, s32 y, char *text, AlignmentFlags align,
 /* On-screen (retail-worded) label for a chooser option. The sChooser table keeps
  * its ORIGINAL labels (the witness + routing + every headless lane index/regex are
  * keyed on them, and the option->intent mapping must not move); this maps them to
- * the retail RANKINGS vocabulary for DISPLAY only. SELECT TRACK/CUP (change track/
- * cup), TRY AGAIN (race again), QUIT (finish); the online-only options are shown
- * verbatim. Rendering-only -- the stderr witness still prints the canonical label. */
+ * the retail RANKINGS vocabulary for DISPLAY only. The family is unified on the
+ * SELECT verb for every "pick a new X" option -- SELECT TRACK / SELECT CUP / SELECT
+ * MODE / SELECT RACER -- plus TRY AGAIN (race again), NEW TOURNAMENT, and QUIT
+ * (finish), so the chooser no longer mixes SELECT with a stray CHANGE (the
+ * consistency-audit verb-mix finding). SELECT RACER (not "SELECT CHARACTER") reads
+ * cleanly beside the charselect screen's own PLAYER SELECT title -- different noun,
+ * no vocabulary collision. Rendering-only -- the stderr witness still prints the
+ * canonical label. */
 static const char *results_chooser_display_label(const char *canonical) {
     if (strcmp(canonical, "RACE AGAIN") == 0) {
         return "TRY AGAIN";
@@ -397,10 +402,16 @@ static const char *results_chooser_display_label(const char *canonical) {
     if (strcmp(canonical, "CHANGE CUP") == 0) {
         return "SELECT CUP";
     }
+    if (strcmp(canonical, "CHANGE MODE") == 0) {
+        return "SELECT MODE";
+    }
+    if (strcmp(canonical, "CHANGE CHARACTER") == 0) {
+        return "SELECT RACER";
+    }
     if (strcmp(canonical, "FINISH") == 0) {
         return "QUIT";
     }
-    return canonical; /* CHANGE MODE / NEW TOURNAMENT / CHANGE CHARACTER */
+    return canonical; /* NEW TOURNAMENT */
 }
 
 /* The retail RANKINGS board: "RANKINGS" title, one portrait column per seat (the

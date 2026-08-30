@@ -197,7 +197,11 @@ static void ceremony_champ_name(char *out, size_t cap) {
     } else if (sCer.champChar < MDKR_ONLINE_PORTRAIT_COUNT) {
         (void) snprintf(out, cap, "%s", sOnlineNames[sCer.champChar]);
     } else {
-        (void) snprintf(out, cap, "P%u", (unsigned) sCer.champSeat + 1u);
+        /* Nameless/invalid-character champion: the generic remote-player fallback the
+         * native screens use everywhere (RIVAL), not a "Pn" slot label. Only reached
+         * by an absent remote winner (a captured local champion always has a valid
+         * character); the local-winner " - YOU!" tag disambiguates regardless. */
+        (void) snprintf(out, cap, "RIVAL");
     }
 }
 
