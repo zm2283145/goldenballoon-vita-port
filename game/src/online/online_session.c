@@ -999,9 +999,25 @@ static bool online_session_detect_remote_vacated(const char *where) {
  * lost/crashed) both starve an authored boundary. */
 void mdkr_online_session_return_to_room_on_peer_loss(void) {
     mdkr_party_link_note_session_end(MDKR_PARTY_LINK_SESSION_END_LEFT);
-    fprintf(stderr,
-            "[online-session] LEFT: online peer/input lost (recoverable boundary "
-            "starvation) -> return to room (exit 0)\n");
+    /* Two recoverable classes reach this return and the witness must name the
+     * one actually taken: the belt's SIM-STATE refusal (a correction replay
+     * the sim could not lawfully re-run -- the transport was healthy, nothing
+     * starved) vs genuine peer/input starvation at an authored boundary. The
+     * starvation line keeps its long-pinned "online peer/input lost" prefix
+     * (the race-start / mid-race loss lanes and the cloud instrument key on
+     * it); the sim-refusal line is distinct so no lane can mistake a sim
+     * verdict for a transport loss. */
+    if (mdkr_rollback_game_runtime_online_refusal_was_sim_state()) {
+        fprintf(stderr,
+                "[online-session] LEFT: online correction replay refused by "
+                "sim state (recoverable; transport healthy) -> return to room "
+                "(exit 0)\n");
+    } else {
+        fprintf(stderr,
+                "[online-session] LEFT: online peer/input lost (transport "
+                "starvation at an authored boundary) -> return to room "
+                "(exit 0)\n");
+    }
     /* Release the pinned rollback assets/authority + snapshot ring now, so the
      * recoverable unwind leaks nothing (idempotent with engine-shutdown teardown). */
     mdkr_rollback_game_runtime_level_end();

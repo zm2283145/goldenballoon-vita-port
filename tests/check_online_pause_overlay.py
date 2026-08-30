@@ -122,8 +122,8 @@ BELT_PAUSED_REJECT_RE = re.compile(
     r"^\[ROLLBACK\] game-tick (?:admission|completion) rejected .*paused=1",
     re.MULTILINE)
 BELT_LEFT_RE = re.compile(
-    r"^\[online-session\] LEFT: online peer/input lost \(recoverable boundary "
-    r"starvation\)", re.MULTILINE)
+    r"^\[online-session\] LEFT: online correction replay refused by sim state "
+    r"\(recoverable; transport healthy\)", re.MULTILINE)
 RECONCILED_RE = re.compile(
     r"^\[ROLLBACK\] online correction reconciled ticks=(\d+)\.\.(\d+)",
     re.MULTILINE)
