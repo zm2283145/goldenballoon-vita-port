@@ -211,12 +211,17 @@ _Static_assert(RES_CHOOSER_MAX == 6u,
 #define RES_RANK_OPTIONS_DWELL 60u
 
 /* RANKINGS board layout (320x240, the retail results_render coordinates lifted up
- * ~4px so our SIX online options -- vs retail's three -- fit the blue box beneath).
- * Title top, one portrait column per seat, then the 1ST..4TH session-tally rows. */
+ * so our SIX online options -- vs retail's three -- fit the blue box beneath).
+ * Title top, one portrait column per seat, then the 1ST..4TH session-tally rows.
+ * The tally pitch is retail's own 17 (menu.c results_render: y2 += 17): the
+ * FUNFONT place labels/digits are ~15px of ink, so the previous compressed 13
+ * stacked them into an illegible jumble at HD (hd-rankings-after.png). The
+ * room for the retail pitch comes from the portraits (up 6) and a tighter
+ * option list in the blue box (results_chooser_render). */
 #define RES_RANK_TITLE_Y 30
-#define RES_RANK_PORTRAIT_Y 46
+#define RES_RANK_PORTRAIT_Y 40
 #define RES_RANK_TALLY_Y0 92
-#define RES_RANK_TALLY_DY 13
+#define RES_RANK_TALLY_DY 17
 #define RES_RANK_TALLY_ROWS 4
 #define RES_RANK_ANIM_UNITS 40 /* retail slide: ~40 units, portraits drop + board in */
 
@@ -1199,8 +1204,11 @@ static void results_chooser_render(const MdkrPartyLinkSnapshot *snap,
          * option list in the translucent blue dialogue box beneath it -- one
          * unified RANKINGS read (retail-rankings-options.png). */
         results_render_rankings_board(snap, haveSnap, localSeat, 0, 0);
-        boxTop = 142;
-        rowDy = 13;
+        /* below the retail-pitch tally (last row centre 92 + 3*17 = 143,
+         * FUNFONT ink to ~151); the tighter 11px option pitch keeps the
+         * six-row box bottom at 226 with the footer at its usual 236. */
+        boxTop = 152;
+        rowDy = 11;
     } else {
         /* Tournament FINAL: keep the MORE RACES? banner (the cup STANDINGS precede
          * this, so no per-race rankings board), options in the same blue box. */
