@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""PD-T6e MINOR-4: safe 2nd-tournament room-ready RE-ARM state machine.
+"""Safe 2nd-tournament room-ready RE-ARM state machine.
 
 The native online screens take over a TOURNAMENT room via the one-shot room-ready
 latch (OnlineRoom_pollRoomReadyTransition). That latch is set for the whole lifetime
 of one adapter, so before this fix a SECOND tournament in the SAME session silently
-fell back to the per-race ImGui path instead of the native takeover. Minor-4 re-arms
+fell back to the per-race ImGui path instead of the native takeover. This fix re-arms
 the latch, reason-aware; with the tournament-final FINISH now dispatching the
 REMATCH wrap (RESULTS -> LOBBY + fresh series) BEFORE the session returns, the
 re-arm completes IMMEDIATELY on the panel's next observation and the re-take is

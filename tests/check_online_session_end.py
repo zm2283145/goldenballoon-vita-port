@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PD-T6d: the engine->launcher FINISH/RETURN handshake (session end-reason).
+"""The engine->launcher FINISH/RETURN handshake (session end-reason).
 
 After a native online session ends, the engine notes WHY on the party_link
 session-end channel (mdkr_party_link_note_session_end) and requests the platform
@@ -14,14 +14,14 @@ descriptor-less loopback lobby-start rig:
             engine notes FINISHED + exit 0 -> launcher reads reason=FINISHED.
   LEFT (charselect backout): a genuine browse-B backout on CHARSELECT ->
             engine notes LEFT + exit 0 -> launcher reads reason=LEFT. (The scripted
-            lobby-start lanes' tick-3 I1 browse-B still STAYs via the warn-once
+            lobby-start lanes' tick-3 browse-B still STAYs via the warn-once
             stub; only the dedicated backout seam / a live pad leaves.)
-  LEFT (remote vacated pre-START, Minor-3): the forward-feed remote seat vacates
+  LEFT (remote vacated pre-START): the forward-feed remote seat vacates
             while waiting on CHARSELECT -> the debounced detector notes LEFT + exit
             0 -> launcher reads reason=LEFT (never an indefinite park).
-  LEFT (mid-tournament cancel, Minor-4): a leader CANCEL_LOADING mid round-2 ->
+  LEFT (mid-tournament cancel): a leader CANCEL_LOADING mid round-2 ->
             the engine UNWINDS to a CLEAN LEFT return (exit 0), replacing the
-            PD-T6h2c re-front-into-error -> launcher reads reason=LEFT.
+            earlier re-front-into-error -> launcher reads reason=LEFT.
   ERROR     a stuck descriptor-less wait trips the WALL-CLOCK watchdog -> engine
             notes ERROR + exit 2 -> launcher reads reason=ERROR (nonzero rc).
 
@@ -139,7 +139,7 @@ def check_finished(binary: Path, rom: Path, verbose: bool) -> int | None:
 
 
 def check_finished_joiner(binary: Path, rom: Path, verbose: bool) -> int | None:
-    """FINISHED (IMPORTANT-1): a NON-HOST (joiner) FOLLOWS the host out of the final
+    """FINISHED (joiner-follow): a NON-HOST (joiner) FOLLOWS the host out of the final
     standings -> clean return-to-room, instead of parking until window-close. The
     joiner-finish seam suppresses the host "A: FINISH" at the terminal and, after a
     render grace, forces the joiner + host-departed inputs so the non-host follow
@@ -220,7 +220,7 @@ def check_left_charselect(binary: Path, rom: Path, verbose: bool) -> int | None:
 
 
 def check_left_remote_vacate(binary: Path, rom: Path, verbose: bool) -> int | None:
-    """LEFT (Minor-3): the remote seat vacates pre-START -> clean return-to-room."""
+    """LEFT (remote vacate): the remote seat vacates pre-START -> clean return-to-room."""
     try:
         rc, output = run_engine(
             binary, rom, ticks=4000, timeout=200, verbose=verbose,
@@ -250,7 +250,7 @@ def check_left_remote_vacate(binary: Path, rom: Path, verbose: bool) -> int | No
 
 
 def check_left_mid_cancel(binary: Path, rom: Path, verbose: bool) -> int | None:
-    """LEFT (Minor-4): a leader mid-tournament CANCEL -> clean return-to-room."""
+    """LEFT (mid-tournament cancel): a leader mid-tournament CANCEL -> clean return-to-room."""
     try:
         rc, output = run_engine(
             binary, rom, ticks=40000, timeout=400, verbose=verbose,

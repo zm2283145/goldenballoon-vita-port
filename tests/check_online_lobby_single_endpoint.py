@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PD-T6h2c: SINGLE-ENDPOINT (real 2-process) descriptor-less takeover + safety.
+"""SINGLE-ENDPOINT (real 2-process) descriptor-less takeover + safety.
 
 The lobby-tournament lane (check_online_lobby_tournament.py) proves the FULL
 descriptor-less tournament with the TWO-endpoint loopback advance (peer != nullptr,

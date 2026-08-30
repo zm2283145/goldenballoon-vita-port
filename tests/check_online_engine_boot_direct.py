@@ -8,7 +8,7 @@ Character Select -> Track Select menus. A real online player must NEVER touch or
 even see those single-player screens.
 
 Here the same in-process two-adapter live session is stood up (real libdatachannel
-DTLS over the O-T2 loopback hub), the roster + launch descriptor are installed
+DTLS over the loopback hub), the roster + launch descriptor are installed
 from the lobby vote, and then the engine is booted with NO input script at all.
 The direct-boot seam (mode_intro -> mdkr_online_boot_direct_race, beta only)
 must take the game straight from cold boot into the manifest race -- proving the

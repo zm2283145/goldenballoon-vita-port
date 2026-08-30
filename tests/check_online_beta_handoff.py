@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-"""Prove the beta Online Room retires its per-race SELECTING + RESULTS widgets
-(T3 + T6).
+"""Prove the beta Online Room retires its per-race SELECTING + RESULTS widgets.
 
 After pairing, the native game owns character + vehicle + track/cup/mode select
-(T1 vehicle-select + T2 single-race-native) AND, after a race, results + standings +
-the champion ceremony + the MORE-RACES replay chooser (T4) for EVERY online mode. So
+AND, after a race, results + standings +
+the champion ceremony + the MORE-RACES replay chooser for EVERY online mode. So
 the launcher must be pairing-only + a clean hand-off card on BOTH surfaces -- never a
 character grid / vehicle chips / track picker / Ready-Start (SELECTING), and never a
 placements/standings body or a Next-Race / Race-Again / New-Tournament / Change-Track
 replay prompt (RESULTS). The tournament hand-off card was once the only mode taken
-over natively; T2 routed single race through the identical descriptor-less path, so
+over natively; single race now routes through the identical descriptor-less path, so
 both hand-offs are now UNIVERSAL.
 
 This gate drives the beta render seam (MDKR_APP_ONLINE_BETA_FAKE +
@@ -58,13 +57,13 @@ from pathlib import Path
 from harness_utils import resolve_binary
 
 
-# One witness per retired surface. SELECTING (T3) and RESULTS (T6) each emit their
+# One witness per retired surface. SELECTING and RESULTS each emit their
 # own [online-beta-*] line from the render seam; the stage's `kind` selects which.
 WITNESS_RE = {
     "selecting": re.compile(
         r"\[online-beta-selecting\] stage=(?P<stage>[a-z0-9-]+) "
         r"mode=(?P<mode>single|tournament) "
-        r"render=(?P<render>handoff|reentry|full-select|none)"
+        r"render=(?P<render>handoff|reentry|none)"
     ),
     "results": re.compile(
         r"\[online-beta-results\] stage=(?P<stage>[a-z0-9-]+) "
@@ -75,12 +74,12 @@ WITNESS_RE = {
 
 # stage -> (expected mode, expected render, witness kind).
 CASES = {
-    # SELECTING body (T3).
+    # SELECTING body.
     "room-single": ("single", "handoff", "selecting"),
     "room-tournament": ("tournament", "handoff", "selecting"),
     "room-single-fallback": ("single", "reentry", "selecting"),
     "room-tournament-fallback": ("tournament", "reentry", "selecting"),
-    # RESULTS body (T6): the concise hand-off card, both modes. No fallback stage --
+    # RESULTS body: the concise hand-off card, both modes. No fallback stage --
     # the full ImGui results/standings/replay body is retired, so RESULTS hands off
     # unconditionally.
     "results": ("single", "handoff", "results"),

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""T5: SINGLE-RACE replay re-cycle -- two single races back-to-back, IN-SESSION.
+"""SINGLE-RACE replay re-cycle -- two single races back-to-back, IN-SESSION.
 
 Where the tournament round-cycle (check_online_lobby_single_endpoint.py) proves
 races 2..N re-cycle in ONE engine process for a TOURNAMENT, this lane proves the
@@ -9,7 +9,7 @@ driven, with NO re-boot loop.
 
 A single race's REMATCH keeps race_index (only a tournament advances it), so the
 tournament "race_index advanced" re-cycle trigger never fires for a single race.
-T5 adds a mode-aware OBSERVE-ONLY re-cycle to the resident coordinator
+The single-race path adds a mode-aware OBSERVE-ONLY re-cycle to the resident coordinator
 (main_app.cpp) plus a LOBBY_WAIT auto-start in the engine session (online_session.c)
 for "Race Again":
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PD-T6ac KEYSTONE proof: a LIVE-loopback RESIDENT online session.
+"""KEYSTONE proof: a LIVE-loopback RESIDENT online session.
 
 Where check_online_session_results.py proves residency via the SCRIPTED engine-
 side seam (no transport, a stand-in reducer), THIS lane proves it on the REAL

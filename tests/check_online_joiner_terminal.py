@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exit-gate C1: the JOINER's FINAL-standings terminal has a bound INDEPENDENT of
+"""Exit-gate: the JOINER's FINAL-standings terminal has a bound INDEPENDENT of
 the host -- it can no longer hang forever on the last screen of a tournament --
 proven through the now-unconditional native "MORE RACES" chooser.
 

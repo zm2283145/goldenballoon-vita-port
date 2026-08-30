@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""PD-T6f: the native champion CEREMONY sits between the final STANDINGS and the
+"""The native champion CEREMONY sits between the final STANDINGS and the
 still-single, still-unchanged FINISHED handshake -- and can NEVER hang the session.
 
 After a full descriptor-less TOURNAMENT (composed on the SAME loopback rig
 check_online_lobby_tournament.py drives), the host "A: FINISH" on the FINAL
 standings no longer notes FINISHED inline: it DETOURS into the native champion
 ceremony (a bounded, auto-advancing 2D celebration of the cup winner), and the
-EXACT PD-T6d FINISHED note + launcher reason=FINISHED read fires EXACTLY ONCE once
+EXACT FINISHED note + launcher reason=FINISHED read fires EXACTLY ONCE once
 the ceremony ends. This lane proves:
 
   (skip)   a ceremony ENTER + RENDER witness appears strictly BETWEEN the final
@@ -371,7 +371,7 @@ def check_uncaptured_wrap_fallback(binary: Path, rom: Path, verbose: bool) -> in
 
 
 def check_champion_on_disconnect(binary: Path, rom: Path, verbose: bool) -> int | None:
-    """(host-gone-champion, I-1) The champion CEREMONY must crown the TRUE cup
+    """(host-gone-champion) The champion CEREMONY must crown the TRUE cup
     winner even when the winning seat has disconnected by ceremony enter -- it must
     NOT recompute from a live snapshot that has lost that seat and mis-crown the
     surviving loser.
@@ -390,7 +390,7 @@ def check_champion_on_disconnect(binary: Path, rom: Path, verbose: bool) -> int 
     ASSERTS the ceremony crowns the CAPTURED winner: champion == the remote seat
     (seat 1) with the winner's higher points, seats == 2 (the captured ranking, NOT
     a degraded 1-seat live recompute), and champLocal == 0 (the local loser is NOT
-    told it won). It ALSO asserts (M4) the departed winner still shows their REAL
+    told it won). It ALSO asserts the departed winner still shows their REAL
     identity -- the ceremony resolves the champion name (and portrait) from the
     CAPTURED char_id, so it prints the canonical "BUMPER" (slot 1 == online char 5)
     rather than the "Pn" slot fallback a live-seat lookup gives once the winning seat
@@ -401,8 +401,8 @@ def check_champion_on_disconnect(binary: Path, rom: Path, verbose: bool) -> int 
     PRE-FIX this FAILS: recomputing over the seat-absent live snapshot yields
     count=1, order[0]=the surviving local seat, so the witness would read
     champion=0 points=<loser total> seats=1 local=1 -- the wrong-winner defect; and
-    even with the correct crown, PRE-M4 the champion name degrades to "P2" with no
-    portrait because the winner's live seat is gone."""
+    even with the correct crown, before the fix the champion name degrades to "P2"
+    with no portrait because the winner's live seat is gone."""
     tag = "host-gone-champion"
     try:
         rc, output = run_engine(

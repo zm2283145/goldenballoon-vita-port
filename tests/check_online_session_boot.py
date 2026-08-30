@@ -3,7 +3,7 @@
 mode, idles in LOBBY_WAIT reading a scripted party_link snapshot, then hands off
 to the race -- without ever entering the offline menu state machine.
 
-This is the PD-T1 isolation gate for Strategy D (SEPARATED-BOOT-PATH). The
+This is the isolation gate for the SEPARATED-BOOT-PATH. The
 sibling check_online_engine_boot_direct.py proves the race is reached with no
 menu-nav script; this gate additionally proves the race is now reached THROUGH a
 separate GAMEMODE_ONLINE_SESSION that holds its own state and never runs the

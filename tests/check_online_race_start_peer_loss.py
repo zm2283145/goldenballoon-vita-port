@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""P0 CRASH REGRESSION: a peer that vanishes returns to the room, never abort().
+"""CRASH REGRESSION: a peer that vanishes returns to the room, never abort().
 
 A real two-machine host+joiner run had BOTH endpoints abort() (hard crash) when
 the WebRTC peer dropped. This lane covers the WHOLE peer-loss crash class -- two
