@@ -380,11 +380,15 @@ typedef struct VsInput {
  * Proves the footer flips to the truthful WAITING line (never a frozen
  * "STARTING...") and that B backs the request out. */
 #define VS_SCN_DEFER 4
+/* JOINER_HOLD -- frame-dump only: the HOLD park with the seats' roles flipped
+ * (the REMOTE seat is the host), so a still shot can show the JOINER's
+ * un-confirmed footer (the "HOST CAN UNLOCK TRACK WITH B" locked-door line). */
+#define VS_SCN_JOINER_HOLD 5
 static s8 sVsScenario = -1;
 
 static void vehicleselect_input_scripted(VsInput *in) {
     memset(in, 0, sizeof(*in));
-    if (sVsScenario == VS_SCN_HOLD) {
+    if (sVsScenario == VS_SCN_HOLD || sVsScenario == VS_SCN_JOINER_HOLD) {
         /* Dump seam: nudge the pick once (a legal move when the mask allows it;
          * a skip-clamp no-op otherwise) and park un-confirmed, so a single frame
          * dump shows the un-confirmed pulsing highlight + the word states. */
@@ -933,10 +937,17 @@ static void vehicleselect_render(const MdkrPartyLinkSnapshot *snap, bool haveSna
                                 ALIGN_MIDDLE_CENTER, 120, 255, 120);
     } else {
         /* (no "VEHICLE" literal here: the kerned SMALLFONT swallows the narrow
-         * I between H and C -- it rendered as "VEHCLE" on capture.) */
+         * I between H and C -- it rendered as "VEHCLE" on capture.)
+         * The JOINER's line also names the locked door: after the host's lock
+         * the joiner has NO back path of its own (its un-confirmed B is a
+         * no-op), so a joiner wanting a different track/racer must ask the
+         * HOST to B out of the stage -- without this sentence the limitation
+         * reads as a broken button (stories audit gap #7). */
         mdkr_online_screen_text(MDKR_ONLINE_SCREEN_W_HALF, VS_HELP_Y,
                                 ASSET_FONTS_SMALLFONT,
-                                sVs.host ? "A: SELECT   B: BACK" : "A: SELECT",
+                                sVs.host ? "A: SELECT   B: BACK"
+                                         : "A: SELECT   HOST CAN UNLOCK "
+                                           "TRACK WITH B",
                                 ALIGN_MIDDLE_CENTER, 255, 255, 255);
     }
 
@@ -1270,6 +1281,8 @@ static void vehicleselect_test_resolve(void) {
             sVsScenario = (s8) VS_SCN_UNKNOWN;
         } else if (e != NULL && strstr(e, "defer") != NULL) {
             sVsScenario = (s8) VS_SCN_DEFER;
+        } else if (e != NULL && strstr(e, "joiner") != NULL) {
+            sVsScenario = (s8) VS_SCN_JOINER_HOLD;
         } else {
             sVsScenario = (s8) VS_SCN_SKIP;
         }
@@ -1369,6 +1382,11 @@ static void vehicleselect_test_reduce_and_script(void) {
             sVsRoom.seats[1].vehicle_id = (uint8_t) VS_TEST_REMOTE_VEHICLE;
         }
         sVsRoom.seats[1].ready = 1u;
+        if (sVsScenario == VS_SCN_JOINER_HOLD) {
+            /* dump seam: the REMOTE seat is the host (the joiner's view). */
+            sVsRoom.seats[0].is_host = 0u;
+            sVsRoom.seats[1].is_host = 1u;
+        }
         sVsAdopted = 1u;
     }
 
