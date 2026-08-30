@@ -4831,10 +4831,15 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
             mdkr_party_link_take_session_end());
         /* In-process, the surviving endpoint's pump stopped with the engine;
          * service it so it drains what a real remote process would drain in
-         * its own loop -- the lanes witness the typed reaction. */
+         * its own loop -- the lanes witness the typed reaction. The abort
+         * crosses a real in-process SCTP channel asynchronously, so poll the
+         * survivor's own latch (bounded) instead of assuming delivery is
+         * synchronous with the send. */
         if (IMdkrOnlineAdapter *survivor = OnlineRoom_testLoopbackPeer(race)) {
-            for (int drainPass = 0; drainPass < 8; ++drainPass) {
+            for (int drainPass = 0; drainPass < 400; ++drainPass) {
                 survivor->service();
+                if (mdkr_online_live_adapter_race_peer_lost(survivor)) break;
+                SDL_Delay(1u);
             }
         }
         /* Same race-end seam as the interactive handoff: the results poll +
