@@ -118,6 +118,18 @@ void mdkr_online_screen_draw_portrait(u8 character, s32 x, s32 y, u8 r, u8 g, u8
 bool mdkr_online_screen_draw_vehicle(u8 vehicle, s32 cx, s32 topY, u8 r, u8 g, u8 b,
                                      u8 a);
 void mdkr_online_screen_fade_in_from_black(void);
+/* Duration (in ticks) of both the reveal and the exit fade -- the retail menu
+ * cadence (menu.c's transitions are 18). The session holds a phase hand-off this
+ * many ticks after firing the exit fade so the veil fully covers the outgoing screen
+ * before the switch. */
+#define MDKR_ONLINE_SCREEN_EXIT_FADE_TICKS 18
+/* Fade the OUTGOING screen to black (retail sMenuTransitionFadeIn: veil 0 -> 255,
+ * held) before a phase hand-off; the incoming screen's fade_in_from_black reveal
+ * then takes over. Paired deferral lives in online_session.c. */
+void mdkr_online_screen_fade_out_to_black(void);
+/* Abort a still-black exit fade: reveal the current screen again (used when the
+ * session abandons a hand-off it had started fading toward). */
+void mdkr_online_screen_fade_cancel_to_reveal(void);
 /* One-shot: the NEXT fade_in_from_black() call is skipped (no black veil). The
  * session arms this for the INTRA-track-screen stage flips (browse <-> vehicle
  * stage), which retail presents as ONE screen -- a fade there would read as a

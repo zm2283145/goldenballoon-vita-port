@@ -457,6 +457,31 @@ void mdkr_online_screen_fade_in_from_black(void) {
     transition_begin(&sOnlineRevealTransition);
 }
 
+/* The EXIT fade (retail sMenuTransitionFadeIn): FADE_FLAG_NONE drives the black veil
+ * opacity 0 -> 255 (it GROWS to cover the outgoing screen) and FADE_STAY holds it
+ * black until the incoming screen's reveal (fade_in_from_black, which transition_end
+ * s this one first) takes over -- so a phase hand-off is fade-to-black-then-from-
+ * black, exactly like a retail menu switch, instead of a hard cut. The session fires
+ * this, then holds the phase switch MDKR_ONLINE_SCREEN_EXIT_FADE_TICKS ticks (the
+ * duration) so the outgoing screen keeps rendering under the growing veil, THEN runs
+ * _exit + switch + the incoming _enter's reveal. Same isolation-safe primitive borrow
+ * as the reveal (the OFF build never compiles this TU). */
+static FadeTransition sOnlineExitTransition =
+    FADE_TRANSITION(FADE_FULLSCREEN, FADE_FLAG_NONE, FADE_COLOR_BLACK,
+                    MDKR_ONLINE_SCREEN_EXIT_FADE_TICKS, FADE_STAY);
+
+void mdkr_online_screen_fade_out_to_black(void) {
+    transition_begin(&sOnlineExitTransition);
+}
+
+/* Cancel a still-black exit fade and reveal the current screen again -- the session
+ * calls this if a hand-off it started fading toward is abandoned mid-fade (e.g. the
+ * local seat un-readies), so the black veil is never stranded. Bypasses the
+ * skip-once latch (an abort must always clear the veil). */
+void mdkr_online_screen_fade_cancel_to_reveal(void) {
+    transition_begin(&sOnlineRevealTransition);
+}
+
 /* ======================================================================== *
  * Display-list retire (the freed-texture-still-referenced crash fix)
  * ------------------------------------------------------------------------

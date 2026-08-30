@@ -46,11 +46,20 @@
 #include "online/online_ceremony.h"    /* native champion CEREMONY phase */
 #include "online/online_standings.h"   /* capture the final ranking (shared sort) */
 
-/* fade-skip primitive (online_screen_util.c). Declared directly rather than
+/* fade primitives (online_screen_util.c). Declared directly rather than
  * pulling online_screen_util.h in: that header drags rcp_dkr.h -> ultra64.h,
  * whose os_libc sprintf declarations must PRECEDE the system <stdio.h> this TU
  * includes first (the screen TUs' include-ordering rationale, inverted). */
 void mdkr_online_screen_fade_skip_once(void);
+/* Retail exit fade: fade the outgoing screen to black before a MENU->MENU
+ * hand-off, held MDKR_ONLINE_SESSION_EXIT_FADE_TICKS ticks so the veil covers it
+ * before the switch; the incoming _enter's reveal then takes over. Cancel reveals
+ * the current screen again if a hand-off is abandoned mid-fade. (Duration mirrors
+ * online_screen_util.h's MDKR_ONLINE_SCREEN_EXIT_FADE_TICKS; kept here because that
+ * header is deliberately not included -- see above.) */
+void mdkr_online_screen_fade_out_to_black(void);
+void mdkr_online_screen_fade_cancel_to_reveal(void);
+#define MDKR_ONLINE_SESSION_EXIT_FADE_TICKS 18u
 #include "rollback/rollback_game_runtime.h" /* clean rollback teardown on the
                                               recoverable peer-loss unwind */
 
@@ -220,6 +229,16 @@ typedef struct MdkrOnlineSessionState {
      * of "final standings" (which a single race never shows). Latched at the
      * LEAVE routing, read by the CEREMONY case's FINISHED note. */
     u8 ceremonySingle;
+    /* Retail exit-fade deferral (charselect -> trackselect MENU hand-off). When a
+     * fade-to-black has been fired for a pending hand-off, this counts the remaining
+     * hold ticks; the outgoing screen keeps rendering under the growing veil until it
+     * reaches 0, then the switch + the incoming reveal run. 0 == no fade in flight.
+     * exitFadeArmed distinguishes "armed this hand-off" from "idle" so an abandoned
+     * hand-off (the local seat un-readies mid-fade) is cancelled, never stranding the
+     * black veil. The stage flips (fade-skipped) and the ->race boot (the engine's own
+     * dip) deliberately do NOT use this. */
+    u16 exitFadeTicks;
+    u8 exitFadeArmed;
 } MdkrOnlineSessionState;
 
 /* Session-owned state -- deliberately NOT any offline global. */
@@ -229,6 +248,38 @@ static MdkrOnlineSessionState sOnlineSession;
  * return handshake is not wired yet, so a browse-B is logged exactly once, not
  * per-frame. Reset when CHARSELECT is entered. */
 static u8 sCharselectLeaveWarned;
+
+/* Retail exit fade for a MENU->MENU hand-off. Call from a transition branch that is
+ * IDEMPOTENT while its trigger holds (charselect's STAY+ready): returns 1 while the
+ * outgoing screen should keep rendering under the growing black veil, 0 once the veil
+ * is down and the caller should run _exit + the phase switch + the incoming _enter
+ * (whose reveal takes over from the black). The first call fires the fade; subsequent
+ * calls count the hold down. */
+static u8 online_session_exit_fade_hold(void) {
+    if (!sOnlineSession.exitFadeArmed) {
+        mdkr_online_screen_fade_out_to_black();
+        sOnlineSession.exitFadeArmed = 1u;
+        sOnlineSession.exitFadeTicks = MDKR_ONLINE_SESSION_EXIT_FADE_TICKS;
+        return 1u;
+    }
+    if (sOnlineSession.exitFadeTicks > 0u) {
+        sOnlineSession.exitFadeTicks--;
+        return 1u;
+    }
+    sOnlineSession.exitFadeArmed = 0u; /* consumed -- ready to re-arm the next fade */
+    return 0u;
+}
+
+/* Cancel an exit fade whose hand-off was abandoned (its trigger no longer holds --
+ * e.g. the local seat un-readies inside the ~0.3s fade window): reveal the current
+ * screen again so the black veil is never stranded. No-op if none is armed. */
+static void online_session_exit_fade_cancel(void) {
+    if (sOnlineSession.exitFadeArmed) {
+        sOnlineSession.exitFadeArmed = 0u;
+        sOnlineSession.exitFadeTicks = 0u;
+        mdkr_online_screen_fade_cancel_to_reveal();
+    }
+}
 
 /* ---- Headless test seam (beta + env gated; inert in normal runs) ----------
  *
@@ -581,6 +632,12 @@ static void online_session_publish_replay_autostart(void) {
 static void online_session_boot_race(void) {
     u16 intended;
     s32 manifestTrack;
+
+    /* A boot ends any in-flight MENU->MENU exit fade (the ->race hand-off keeps the
+     * engine's own load dip, no double-fade), so clear the deferral latch -- a stray
+     * armed latch must never no-op the next menu fade. */
+    sOnlineSession.exitFadeArmed = 0u;
+    sOnlineSession.exitFadeTicks = 0u;
 
     /* A boot request means THIS round's selection is over (the room left
      * LOBBY): clear the vehicle stage's per-round confirm latch, so the next
@@ -1405,6 +1462,7 @@ void mdkr_online_session_tick(s32 updateRate) {
          * (debounced). Inert for a descriptor-first begin. Free the screen assets on
          * the trip (symmetry with the backout / FINISH exit-free paths). */
         if (online_session_detect_remote_vacated("charselect")) {
+            online_session_exit_fade_cancel(); /* never strand a mid-fade veil */
             mdkr_online_charselect_exit();
             break;
         }
@@ -1421,6 +1479,15 @@ void mdkr_online_session_tick(s32 updateRate) {
             }
         }
         r = mdkr_online_charselect_tick(updateRate);
+        /* Abort a stale exit fade the instant its trigger drops (the local seat
+         * un-readies inside the fade window, or the room leaves LOBBY): the veil is
+         * revealed away rather than stranded. The arm/hold path below re-fires it
+         * cleanly once the ready trigger holds again. Idempotent when none armed. */
+        if (sOnlineSession.exitFadeArmed &&
+            !(r == MDKR_ONLINE_CHARSELECT_STAY &&
+              mdkr_online_charselect_local_ready())) {
+            online_session_exit_fade_cancel();
+        }
         if (r == MDKR_ONLINE_CHARSELECT_ADVANCE) {
             /* The authoritative lobby left LOBBY (host started / loading). This
              * is the safety path and the historical CHARSELECT-lane
@@ -1442,14 +1509,31 @@ void mdkr_online_session_tick(s32 updateRate) {
             MdkrPartyLinkSnapshot snap;
             if (mdkr_party_link_read(&snap) &&
                 online_session_local_seat_ready_in_lobby(&snap)) {
+                /* Retail exit fade: fade charselect to black and hold the switch
+                 * until the veil is fully down (the outgoing screen keeps rendering
+                 * under it), THEN hand off -- trackselect_enter's reveal takes over
+                 * from the black. This is the front-end MENU->MENU hand-off; the
+                 * intra-track stage flips stay fade-skipped and the ->race boot keeps
+                 * the engine's own dip (no double-fade). The branch is idempotent
+                 * (STAY + persistent ready latch), so re-ticking charselect across
+                 * the hold is safe. */
+                if (online_session_exit_fade_hold()) {
+                    break; /* still fading -- keep rendering charselect */
+                }
                 mdkr_online_charselect_exit();
                 sOnlineSession.phase = MDKR_ONLINE_SESSION_TRACKSELECT;
                 mdkr_online_trackselect_enter();
                 fprintf(stderr,
                         "[online-session] charselect -> trackselect (local "
                         "seat ready in LOBBY)\n");
+            } else {
+                /* readied on-screen but the snapshot's ready hasn't converged yet
+                 * (or dropped mid-fade): abandon any armed exit fade so the veil is
+                 * never stranded black. */
+                online_session_exit_fade_cancel();
             }
         } else if (r == MDKR_ONLINE_CHARSELECT_LEAVE) {
+            online_session_exit_fade_cancel();
             if (sOnlineSession.beganWithoutDescriptor &&
                 online_session_charselect_backout_honored()) {
                 /* LEFT handshake: a genuine browse-B backout on the
@@ -1529,6 +1613,7 @@ void mdkr_online_session_tick(s32 updateRate) {
          * TRACKSELECT wait). Inert for a descriptor-first begin. Free the screen
          * assets on the trip (symmetry with the other exit-free paths). */
         if (online_session_detect_remote_vacated("trackselect")) {
+            online_session_exit_fade_cancel(); /* never strand a mid-fade veil */
             mdkr_online_trackselect_exit();
             break;
         }
@@ -1563,12 +1648,23 @@ void mdkr_online_session_tick(s32 updateRate) {
             fprintf(stderr,
                     "[online-session] trackselect -> vehicleselect (track "
                     "locked: retail vehicle stage)\n");
-        } else if (r == MDKR_ONLINE_TRACKSELECT_LEAVE) {
+        } else if (r == MDKR_ONLINE_TRACKSELECT_LEAVE ||
+                   sOnlineSession.exitFadeArmed) {
             /* B on the track BROWSE is a clean "back one level" to CHARSELECT
              * (the retail back-stack: track screen -> PLAYER SELECT).
              * Deliberately do NOT reset sCharselectLeaveWarned: this is a
              * continuation of the same session, so the leave-to-launcher
-             * warn-once latch is preserved. */
+             * warn-once latch is preserved.
+             *
+             * Retail exit fade (MENU->MENU): fade the browse to black, hold the
+             * switch until the veil is down, THEN hand off to charselect (its
+             * reveal takes over). B is an edge, so once armed the fade is carried
+             * by the exitFadeArmed latch (trackselect keeps rendering the browse
+             * under the veil across the hold -- the lock reset by the B-back keeps
+             * the setup-ready branch above from stealing it). */
+            if (online_session_exit_fade_hold()) {
+                break; /* still fading -- keep rendering the browse */
+            }
             mdkr_online_trackselect_exit();
             sOnlineSession.phase = MDKR_ONLINE_SESSION_CHARSELECT;
             mdkr_online_charselect_enter();
