@@ -179,6 +179,23 @@ void mdkr_online_screen_strip(s32 y1, s32 y2) {
     online_screen_fill_end();
 }
 
+/* One small solid card (retail P1/P2 seat-number block): flat fill + a 1px darker
+ * border for definition, drawn with the SAME font-module fill vocabulary the panels
+ * use so it co-registers with the glyph texrects on the aspect-scaled host. */
+void mdkr_online_screen_card(s32 x1, s32 y1, s32 x2, s32 y2, s32 r, s32 g, s32 b,
+                             s32 a) {
+    online_screen_fill_begin(r, g, b, a);
+    render_fill_rectangle(&gCurrDisplayList, x1, y1, x2, y2);
+    /* border: a darker rim over the fill's edge (half the fill's channels). */
+    gDPPipeSync(gCurrDisplayList++);
+    gDPSetEnvColor(gCurrDisplayList++, r / 3, g / 3, b / 3, a);
+    render_fill_rectangle(&gCurrDisplayList, x1, y1, x2, y1 + 1);
+    render_fill_rectangle(&gCurrDisplayList, x1, y2 - 1, x2, y2);
+    render_fill_rectangle(&gCurrDisplayList, x1, y1, x1 + 1, y2);
+    render_fill_rectangle(&gCurrDisplayList, x2 - 1, y1, x2, y2);
+    online_screen_fill_end();
+}
+
 /* Triangle-wave pulse 0..16 off a tick counter -- the shared native highlight /
  * heartbeat feel with zero assets. */
 s32 mdkr_online_screen_pulse(u32 ticks) {
@@ -187,6 +204,22 @@ s32 mdkr_online_screen_pulse(u32 ticks) {
         tri = 32 - tri;
     }
     return tri;
+}
+
+/* Retail selected-item blink level 0..255. menu.c drives its selected-option text
+ * blend and the racer-count red pulse from gOptionBlinkTimer = (t + updateRate) &
+ * 0x3F, value*8 triangle-waved. `timer` is the caller's already-accumulated
+ * (t + updateRate) & 0x3F value (0..63); fold it to a 0..32 triangle, *8, clamp. */
+s32 mdkr_online_screen_blink(u32 timer) {
+    s32 v = (s32) (timer & 0x3Fu);
+    if (v > 32) {
+        v = 64 - v;
+    }
+    v *= 8;
+    if (v > 255) {
+        v = 255;
+    }
+    return v;
 }
 
 /* Resolve one seat's short name: the untrusted snapshot name if present, else the
@@ -321,8 +354,15 @@ void mdkr_online_screen_fade_in_from_black(void) {
  * against restarting it every entry). The race level loader replaces the sequence on
  * the RACE hand-off. */
 void mdkr_online_screen_menu_music(void) {
-    if (music_current_sequence() != (u8) SEQUENCE_MAIN_MENU) {
-        music_play((u8) SEQUENCE_MAIN_MENU);
+    mdkr_online_screen_music((u8) SEQUENCE_MAIN_MENU);
+}
+
+/* Start / keep a specific menu-family sequence (idempotent -- music_current_sequence
+ * guards against restarting it every entry). The race level loader replaces the
+ * sequence on the RACE hand-off. */
+void mdkr_online_screen_music(u8 sequence) {
+    if (music_current_sequence() != sequence) {
+        music_play(sequence);
     }
 }
 
