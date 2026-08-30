@@ -646,6 +646,23 @@ def run(args: argparse.Namespace) -> dict:
                     args.race_timeout)
                 assert_no_crash(dropped)
                 assert_no_crash(survivor)
+                # R2: for a RACE-START seam drop the survivor's recovery must be
+                # the PROMPT + TRUTHFUL path -- its race-start barrier catches the
+                # never-delivered tick-1 and routes to the crash-fix clean return
+                # (not the wall-clock watchdog). Assert it rather than merely
+                # observing it (mid-race has no such prompt survivor signal).
+                if args.drop == "race-start":
+                    sout = survivor.full_output()
+                    if not BARRIER_ABORT_RE.search(sout):
+                        raise ProofFailure(
+                            f"{survivor.name}: race-start drop but NO race-start "
+                            f"barrier abort -- the prompt survivor path did not "
+                            f"fire (it would fall back to the watchdog)")
+                    if not PEER_LOSS_LEFT_RE.search(sout):
+                        raise ProofFailure(
+                            f"{survivor.name}: race-start barrier fired but the "
+                            f"survivor did not reach the crash-fix clean return "
+                            f"(LEFT)")
                 spath = recovery_path(survivor)
                 phase(True, "drop_clean_return",
                       f"scenario {scen} (drop seam on one endpoint): the dropped "

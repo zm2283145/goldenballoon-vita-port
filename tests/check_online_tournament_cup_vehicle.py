@@ -55,6 +55,54 @@ DESCLESS_TIMEOUT_RE = re.compile(
 
 fail = make_fail("tournament cup vehicle")
 
+# R1: the whole-cup INTERSECTION vehicle mask, recomputed here INDEPENDENTLY from
+# the authoritative track table (platform/online/online_track_table.c) + the
+# retail 2-player narrowing, and pinned per cup. This guards both a track-table
+# mask edit and the C helper's contract (mdkr_online_trackselect_cup_vehicle_mask
+# is the AND of the four rounds' 2-player-narrowed masks). Every value is
+# non-empty, so a legal cup-wide pick always exists.
+TABLE = ROOT / "platform/online/online_track_table.c"
+EXPECTED_CUP_INTERSECTIONS = [0x6, 0x3, 0x2, 0x2, 0x1]  # cups 0..4
+VEHICLE_BIT_HOVERCRAFT = 0x2
+VEHICLE_BIT_PLANE = 0x4
+TRACK_SPACEPORT_ALPHA = 15   # 2p: drops hovercraft
+TRACK_FROSTY_VILLAGE = 28    # 2p: drops plane
+TRACK_ROW_RE = re.compile(
+    r"\{(\d+)u,\s*\"[^\"]*\",\s*\w+,\s*0x([0-9a-fA-F]+)u,\s*\d+u\}")
+
+
+def check_cup_intersections() -> int | None:
+    """R1: parse the track table, apply the 2-player narrowing, and assert each
+    cup's four-round INTERSECTION equals the pinned value (car-excluding where the
+    schedule demands it -- cup 0 = 0x6 no-car, cup 4 = 0x1 car-only, etc.)."""
+    if not TABLE.is_file():
+        return fail(f"missing track table: {TABLE}")
+    rows = TRACK_ROW_RE.findall(TABLE.read_text(encoding="utf-8"))
+    if len(rows) < 20:
+        return fail(f"parsed only {len(rows)} track rows (expected >= 20) from "
+                    f"{TABLE.name} -- the table format changed", "")
+    for cup in range(5):
+        mask = 0x7
+        for r in range(4):
+            track_id, hexmask = rows[cup * 4 + r]
+            m = int(hexmask, 16)
+            tid = int(track_id)
+            if tid == TRACK_SPACEPORT_ALPHA:
+                m &= ~VEHICLE_BIT_HOVERCRAFT & 0x7
+            if tid == TRACK_FROSTY_VILLAGE:
+                m &= ~VEHICLE_BIT_PLANE & 0x7
+            mask &= m
+        if mask != EXPECTED_CUP_INTERSECTIONS[cup]:
+            return fail(f"cup {cup} 2p intersection = 0x{mask:x}, expected "
+                        f"0x{EXPECTED_CUP_INTERSECTIONS[cup]:x} -- a track-table "
+                        f"mask or the narrowing drifted", "")
+        if mask == 0:
+            return fail(f"cup {cup} intersection is EMPTY -- no legal cup-wide "
+                        f"vehicle exists", "")
+    print(f"  [cup-intersections] R1 PASS: per-cup 2p intersections "
+          f"{['0x%x' % v for v in EXPECTED_CUP_INTERSECTIONS]} (all non-empty)")
+    return None
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -70,6 +118,11 @@ def main() -> int:
     for path, label in ((binary, "binary"), (rom, "ROM")):
         if not path.is_file():
             parser.error(f"missing {label}: {path}")
+
+    # R1: pin every cup's whole-cup intersection (source-scan, before the run).
+    problem = check_cup_intersections()
+    if problem is not None:
+        return problem
 
     try:
         rc, output = run_engine(
