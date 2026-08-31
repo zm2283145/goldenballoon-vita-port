@@ -195,7 +195,7 @@ const std::vector<SynthPadScriptEntry> &synthPadScript(int *slotOut) {
             char *end = nullptr;
             const long parsedSlot = std::strtol(slotEnv, &end, 10);
             if (end != slotEnv && parsedSlot >= 0 &&
-                parsedSlot < MDKR_SESSION_MAX_PLAYERS) {
+                parsedSlot < static_cast<long>(MDKR_SESSION_MAX_PLAYERS)) {
                 slot = static_cast<int>(parsedSlot);
                 const char *cursor = script;
                 while (*cursor != '\0') {

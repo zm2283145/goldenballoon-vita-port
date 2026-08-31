@@ -699,8 +699,22 @@ target_compile_options(${MDKR_TARGET} PRIVATE
     # Address-domain crossings must be explicit (uintptr_t, DKR_TOK/DKR_PTR, or
     # OS_K0_TOKEN_TO_PHYSICAL). A raw narrowing conversion is a correctness
     # defect on LP64 and must never silently return to the tree.
-    -Werror=int-to-pointer-cast
-    -Werror=pointer-to-int-cast
+    #
+    # Of these two, only -Werror=pointer-to-int-cast is C-family-only: GCC's
+    # cc1plus rejects it for C++ ("'-Werror=' argument
+    # '-Werror=pointer-to-int-cast' is not valid for C++"), which surfaces on
+    # Windows where a C++ TU (platform/a11y_speech_win.cpp, SAPI ISpVoice) is
+    # compiled into this otherwise-C engine target (and on the macOS ObjC++
+    # analogue). -Werror=int-to-pointer-cast, by contrast, IS accepted for C++
+    # (verified: g++ 16.2) -- it was silently active on that C++/ObjC++ TU before
+    # this scoping. Both are scoped to C sources anyway, deliberately: it drops
+    # the cc1plus rejection and keeps the int<->pointer cast policy symmetric and
+    # easy to reason about, at the cost of no longer applying int-to-pointer-cast
+    # to the one C++ TU (which never tripped it). C-file command lines are
+    # unchanged (the generator expression expands to the same flag for
+    # COMPILE_LANGUAGE C).
+    $<$<COMPILE_LANGUAGE:C>:-Werror=int-to-pointer-cast>
+    $<$<COMPILE_LANGUAGE:C>:-Werror=pointer-to-int-cast>
     # Matching-era source contains many harmless legacy warnings, but these
     # classes directly predict native correctness defects and must stay live.
     -Werror=return-type
@@ -909,6 +923,15 @@ if(NOT EMSCRIPTEN)
                 ${CMAKE_SOURCE_DIR}/platform/app/online_live_wiring.cpp)
 
             if(BUILD_TESTING)
+                # KEEP IN SYNC: these online/transport CTest exes (this one plus
+                # the party/match set in the MDKR_NATIVE_PHONE_PARTY block just
+                # below) are the same eleven names mirrored in two other places --
+                # the MinGW test-link dead-strip foreach (search
+                # "_mdkr_online_test", later in this file) and ONLINE_TEST_EXES in
+                # tools/mingw_cross_check.sh. Renaming/removing one means updating
+                # all three; the dead-strip foreach hard-errors the online
+                # configure on drift so this cannot rot silently.
+                #
                 # The launcher-side track/cup table (display order, picker
                 # narrowing, trophy cups) pinned against the independent v80
                 # ROM decode. Pure static data: ROM-, GPU- and network-free.
@@ -1505,6 +1528,18 @@ if(NOT EMSCRIPTEN)
                 ${mdkr_libdatachannel_SOURCE_DIR}/include)
             target_link_libraries(mdkr64_app PRIVATE
                 LibDataChannel::LibDataChannel MbedTLS::MbedTLS)
+            if(WIN32)
+                # The app's own online/party TUs call Winsock directly
+                # (WSAStartup/closesocket in match_signal_client.cpp,
+                # match_live_transport.cpp and lan_party_server.cpp), so link
+                # ws2_32 explicitly instead of relying on LibDataChannel/webgpu
+                # to propagate it through their link interfaces. As a static lib
+                # this rides through to mdkr64. IPHLPAPI is not linked here: no
+                # app-owned TU calls it directly; it arrives with libjuice's
+                # interface enumeration. Matches the if(WIN32) ws2_32 link every
+                # online test target already carries.
+                target_link_libraries(mdkr64_app PRIVATE ws2_32)
+            endif()
         endif()
         # Keep warnings strict on the launcher code we own without inheriting
         # that policy into vendored Dear ImGui.  The engine's maintained C
@@ -2279,6 +2314,109 @@ if(WIN32)
             endif()
         endif()
     endforeach()
+
+    # --- Test link dead-strip ----------------------------------------------
+    # Several online test targets deliberately omit a defining TU, relying on
+    # the omitted definition never being demanded because nothing reachable
+    # references it (e.g. the MdkrMatchSignalClientFeed / MdkrOnlineFakeAdapterSeam
+    # wrappers that would otherwise pull in match_signal_client.cpp /
+    # lobby_fake_adapter.c). The macOS/Linux test links prove that omission is
+    # sound WITHOUT any of the flags below: they pass none of them and still
+    # link, because Clang leaves the relevant virtual call indirect (see the
+    # next paragraph) so no reachable code names the omitted symbol. This is NOT
+    # because those linkers strip by default -- neither macOS ld64 nor ELF ld
+    # garbage-collects unreferenced sections without an explicit flag
+    # (-dead_strip / --gc-sections); here neither needs to, because the compiler
+    # never plants the reference in the first place. Under MinGW the difference
+    # is GCC's -O2 codegen, which DOES emit a reachable reference (next
+    # paragraph); that reference is what -fno-devirtualize-speculatively removes.
+    # Give the online/transport test links that flag, plus per-function/data
+    # sections + --gc-sections kept as dead-strip parity (bfd ld, like ld64/ELF,
+    # does not GC unreferenced sections without it), so those omissions stay
+    # harmless under MinGW too, matching how the same targets already link on
+    # macOS/Linux.
+    #
+    # -fno-devirtualize-speculatively is the load-bearing flag here: at -O2 GCC
+    # speculatively binds a virtual call whose only header-visible override is
+    # `final` (MdkrMatchSignalClientFeed, MdkrOnlineFakeAdapterSeam) to that
+    # override, embedding a DIRECT reference to the omitted definition inside a
+    # REACHABLE function (MdkrMatchPeerMesh::State::sendSignal/pump) that no
+    # linker can dead-strip. Clang does not do this -- it leaves the call
+    # indirect -- and, because nothing in these tests instantiates
+    # MdkrMatchSignalClientFeed (sole definition match_peer_transport.h), no
+    # vtable naming the omitted symbol is emitted at all: the ld64/ELF links
+    # simply have no reference to resolve, so they need no flag (there is no dead
+    # vtable being stripped -- that earlier claim was wrong). Disabling GCC's
+    # speculation removes the planted reference the same way, and is what makes
+    # the MinGW link succeed. -ffunction-sections/-fdata-sections + --gc-sections
+    # are kept as dead-strip parity (belt-and-braces, mirroring the section GC
+    # other platforms could apply); their effect in isolation -- i.e. whether any
+    # residual reference remains for them to drop once speculation is off -- was
+    # never confirmed.
+    #
+    # Test targets only; the shipping engine/app archives are never touched (and
+    # never carry omitted TUs), and this whole block is Windows-gated so non-
+    # MinGW lanes are unaffected. Disclosed cost: under MinGW these test objects
+    # are compiled with speculative devirtualization DISABLED, so their codegen
+    # differs from the shipping build (which keeps -O2 speculative devirt on);
+    # the tests exercise the same sources, only with the one speculated virtual
+    # call left as an ordinary indirect dispatch.
+    #
+    # KEEP IN SYNC (three copies of the online/transport test-target names):
+    #   1. the test definitions -- add_executable(mdkr_online_* / mdkr_native_* /
+    #      mdkr_match_* / mdkr_lan_* ...) under MDKR_ENABLE_ONLINE_BETA /
+    #      MDKR_NATIVE_PHONE_PARTY + BUILD_TESTING, earlier in this file (search
+    #      "add_executable(mdkr_online_track_table_test").
+    #   2. this dead-strip list.
+    #   3. ONLINE_TEST_EXES in tools/mingw_cross_check.sh (the --online lane's
+    #      build + acceptance list).
+    # The BUILD_TESTING gate keeps tests-off Windows configures (the default
+    # cross lane, -DBUILD_TESTING=OFF) untouched. Inside it, if(TARGET) applies
+    # the flags to whichever of these are defined, and the online app configure
+    # -- MDKR_ENABLE_ONLINE_BETA + MDKR_APP (beta requires MDKR_NATIVE_PHONE_PARTY,
+    # configure FATALs otherwise, :894; and all eleven live inside if(MDKR_APP),
+    # so MDKR_APP is what actually creates them) -- hard-errors on a missing
+    # target, so a renamed/removed test fails that configure immediately instead
+    # of silently losing dead-strip coverage.
+    #
+    # This does NOT skip the beta-OFF-but-tests-on Windows lane (the
+    # windows-validate CI configure: MDKR_APP and MDKR_NATIVE_PHONE_PARTY both
+    # default ON, beta OFF). That lane defines TEN of the eleven -- all but the
+    # beta-gated mdkr_online_track_table_test -- and they DO receive the
+    # dead-strip/no-devirt flags here (intended: these are test targets only).
+    # At base that lane would plausibly have hit the same GCC -O2
+    # speculative-devirt undefined-ref once those ten test exes were linked; the
+    # elseif stays quiet there only because beta is off, not because the flags
+    # are inapplicable.
+    if(BUILD_TESTING)
+        foreach(_mdkr_online_test
+                mdkr_online_track_table_test
+                mdkr_native_party_sas_test
+                mdkr_lan_party_transport_test
+                mdkr_match_peer_crypto_test
+                mdkr_match_signal_client_test
+                mdkr_match_peer_transport_test
+                mdkr_native_party_e2e_driver
+                mdkr_online_live_adapter_test
+                mdkr_online_live_adapter_beta_test
+                mdkr_match_live_transport_test
+                mdkr_online_live_transport_e2e_driver)
+            if(TARGET ${_mdkr_online_test})
+                target_compile_options(${_mdkr_online_test} PRIVATE
+                    -ffunction-sections -fdata-sections
+                    -fno-devirtualize-speculatively)
+                target_link_options(${_mdkr_online_test} PRIVATE
+                    -Wl,--gc-sections)
+            elseif(MDKR_ENABLE_ONLINE_BETA AND MDKR_APP)
+                message(FATAL_ERROR
+                    "MinGW dead-strip list names '${_mdkr_online_test}', but no "
+                    "such target exists in this online configure. The list has "
+                    "drifted from the test definitions -- update this foreach, "
+                    "the add_executable() site above, and ONLINE_TEST_EXES in "
+                    "tools/mingw_cross_check.sh together.")
+            endif()
+        endforeach()
+    endif()
 
     # --- Subsystem ---------------------------------------------------------
     # Explorer double-click and game launchers start the exe with no inherited
