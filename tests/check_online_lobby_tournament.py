@@ -409,9 +409,30 @@ def main() -> int:
         if cur <= prev:
             return fail(f"cumulative points did not accrue race-over-race: {sums}",
                         output)
-    if race_totals[-1] not in ((34, 30), (30, 34)):
+    # Cross-validate the reducer's FINAL cup total against the AUTHORED trophy-weight
+    # rule ({9,7,5,3,1,0,0,0} == gTrophyRacePointsArray / kTrophyPoints, lobby_core.c)
+    # applied to the finish order the reducer itself recorded each race (the RESULTS
+    # `enter` placements, i.e. snapshot.last_placements). This is the real
+    # points-vs-trophy-weight check: it fires if the reducer's points[] ever disagree
+    # with the trophy weight of the placements it published (a genuine scoring bug),
+    # while staying robust to WHICH seat leads any given round. The finish order is a
+    # physics artifact of the deterministic sim -- NOT an authored scoring rule -- so
+    # a legitimate FP re-timing of a photo finish (the contraction pin re-times the
+    # race-4 finish so the host edges it instead of losing it) must NOT be read as a
+    # scoring defect. Hard-coding one seat's win/loss pattern here did exactly that.
+    TROPHY_WEIGHTS = (9, 7, 5, 3, 1, 0, 0, 0)  # gTrophyRacePointsArray / kTrophyPoints
+    expected = [0, 0, 0, 0]
+    for _race_i, _final, _have, *places in enters:
+        for seat, place in enumerate(int(p) for p in places):
+            if place != PLACE_NONE and place < len(TROPHY_WEIGHTS):
+                expected[seat] += TROPHY_WEIGHTS[place]
+    want_final = (expected[0], expected[1])
+    if race_totals[-1] != want_final:
         return fail(f"final cup points {race_totals[-1]} != the trophy-weight total "
-                    f"34,30 (host wins 3, loses the last)", output)
+                    f"{want_final} derived from the reducer's OWN per-race finish "
+                    f"orders -- points[] disagrees with the authored trophy-weight "
+                    f"rule applied to the placements it recorded (a scoring bug)",
+                    output)
 
     # (h) no watchdog trip in the happy path.
     if WATCHDOG_RE.search(output):
