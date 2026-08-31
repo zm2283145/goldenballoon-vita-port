@@ -132,6 +132,20 @@ TS_RENDER_RE = re.compile(
 #  0 mode 1 col 2 row 3 host 4 track 5 mask 6 vehicle 7 lockedTrack 8 lockedCup
 #  9 r0 10 r1 11 snapMode 12 snapCfgTrack 13 snapCup 14 snapPhase 15 setup
 
+# The grouped track LIST's a11y annotations (semantic witnesses, change-detected
+# and therefore bounded): the HOST's hovered group + track (+ its legal vehicles
+# by name), and every effective LOCK -- host and joiner alike (the joiner's line
+# is the feed-followed lock, its "what is being browsed" announcement). The
+# native screens' self-voicing is the retail T.T. track announcer (audio); these
+# lines are the assertable text half of the same contract, in the lobby's
+# established content-witness pattern.
+TS_A11Y_HOVER_RE = re.compile(
+    r"^\[online-trackselect\] a11y hover: (.+) vehicles=([A-Z+]+)$",
+    re.MULTILINE)
+TS_A11Y_LOCK_RE = re.compile(
+    r"^\[online-trackselect\] a11y locked: (.+) vehicles=([A-Z+]+)$",
+    re.MULTILINE)
+
 # PD-T4: the observable agreement check the session logs at the RACE hand-off.
 # "honored" == the last-seen host-intended track (from the forward feed) equals
 # the booted manifest track; "divergence" == they differ (the manifest still
@@ -347,6 +361,21 @@ def check_single_host(output: str) -> int | None:
         return fail(scn, "no browse render row witnessed setup=1 (the lock -> "
                     "stage latch)", output)
 
+    # A11Y annotations (the grouped-list contract): the entry cell announces
+    # its group + track + legal vehicles, the walk announces Whale Bay as
+    # HOVERCRAFT-only at 2 players (the mask truth, spoken), and the lock
+    # announces itself.
+    hovers = TS_A11Y_HOVER_RE.findall(output)
+    if not any("ANCIENT LAKE" in h[0] for h in hovers):
+        return fail(scn, "no a11y hover announcement for the entry cell "
+                    "(DINO DOMAIN / ANCIENT LAKE)", output)
+    if not any("WHALE BAY" in h[0] and h[1] == "HOVERCRAFT" for h in hovers):
+        return fail(scn, "no a11y hover announcement naming WHALE BAY as "
+                    "HOVERCRAFT-only", output)
+    if not any("WHALE BAY" in l[0] for l in TS_A11Y_LOCK_RE.findall(output)):
+        return fail(scn, "no a11y lock announcement for the Whale Bay lock",
+                    output)
+
     # Host lock reached the reducer: the VEHICLE stage resolved the locked track
     # (the browse exits on the lock tick, so convergence is read on the stage).
     narrow_rows = [r for r in vs_renders
@@ -416,6 +445,14 @@ def check_joiner(output: str) -> int | None:
                     f"F-D3 render-from-snapshot; the joiner must witness the "
                     f"host's lock on the browse before following it into the "
                     f"vehicle stage", output)
+
+    # A11Y annotation on the JOINER: the feed-followed lock is announced (the
+    # non-interactive list's "what is being browsed" line -- the joiner has no
+    # cursor, so hover lines are host-only, but the host's cup lock must speak).
+    if not any("SHERBET" in l[0]
+               for l in TS_A11Y_LOCK_RE.findall(output)):
+        return fail(scn, "the joiner never announced the host's cup lock "
+                    "(a11y locked: SHERBET CUP ...)", output)
 
     # F-I2: the joiner narrowed its OWN vehicle to the cup (hovercraft-only
     # intersection) so BEGIN_LOADING is never refused. The joiner FOLLOWS the
