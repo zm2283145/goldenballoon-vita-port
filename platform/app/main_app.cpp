@@ -87,6 +87,27 @@ public:
     DiagLogScope &operator=(const DiagLogScope &) = delete;
 };
 
+/* RAII latch for the epoch-scoped NTSC source identity (rom_io.c).  Every
+ * online engine boot wraps its blocking mdkr64_engine_boot() in one of these:
+ * the constructor arms the override iff the epoch is online, and the destructor
+ * clears it on EVERY exit from the scope.  Using the guard instead of a bare
+ * arm/clear pair means a future early return inserted between the boot and the
+ * clear can never leak an NTSC latch into the process's next offline epoch. */
+class OnlineNtscIdentityScope {
+public:
+    explicit OnlineNtscIdentityScope(bool online) : armed_(online) {
+        if (armed_) platform_source_set_ntsc_identity_override(1);
+    }
+    ~OnlineNtscIdentityScope() {
+        if (armed_) platform_source_set_ntsc_identity_override(0);
+    }
+    OnlineNtscIdentityScope(const OnlineNtscIdentityScope &) = delete;
+    OnlineNtscIdentityScope &operator=(const OnlineNtscIdentityScope &) = delete;
+
+private:
+    bool armed_;
+};
+
 bool createSmokeDirectory(const char *path) {
     if (!path || !path[0]) return false;
     const int result = mdkr_mkdir_utf8(path);
@@ -960,9 +981,11 @@ int runEngineSession(AppHost &host, SessionRuntime &session,
      * US endpoint -- the cross-region convergence requirement.  Epoch-scoped:
      * armed only across this bounded blocking boot and cleared the moment it
      * returns, so a later offline epoch re-latches the ROM's true clock. */
-    if (online) platform_source_set_ntsc_identity_override(1);
-    const int result = mdkr64_engine_boot(&config);
-    if (online) platform_source_set_ntsc_identity_override(0);
+    int result;
+    {
+        OnlineNtscIdentityScope ntscIdentityScope(online);
+        result = mdkr64_engine_boot(&config);
+    }
 
     if (matchInputContext.profile != MDKR_NET_PROFILE_COUNT) {
         std::fprintf(stderr,
@@ -1842,9 +1865,11 @@ int runOnlineLiveEngineSession(AppHost &host, const MdkrBootConfig &config,
     /* Online epoch: the engine sees the NTSC source identity (rom_io.c) so a
      * PAL ROM races the 30 Hz manifest bit-identically to US; cleared as soon
      * as the bounded boot returns. */
-    platform_source_set_ntsc_identity_override(1);
-    const int result = mdkr64_engine_boot(&config);
-    platform_source_set_ntsc_identity_override(0);
+    int result;
+    {
+        OnlineNtscIdentityScope ntscIdentityScope(true);
+        result = mdkr64_engine_boot(&config);
+    }
 
     /* Flush any in-flight input so both endpoints have folded the same recent
      * window before we compare (the peer may still owe the visible endpoint's
@@ -2769,9 +2794,11 @@ int runOnlineLobbyStartEngineSession(AppHost &host, const MdkrBootConfig &config
     /* Online epoch: the engine sees the NTSC source identity (rom_io.c) so a
      * PAL ROM races the 30 Hz manifest bit-identically to US; cleared as soon
      * as the bounded boot returns. */
-    platform_source_set_ntsc_identity_override(1);
-    const int result = mdkr64_engine_boot(&config);
-    platform_source_set_ntsc_identity_override(0);
+    int result;
+    {
+        OnlineNtscIdentityScope ntscIdentityScope(true);
+        result = mdkr64_engine_boot(&config);
+    }
 
     /* Read the engine's session end reason BEFORE OnlineRoom_clearPartyLink
      * drops the party_link note (the launcher then resumes the room). This is the
@@ -2912,9 +2939,11 @@ int runOnlineLobbyStartLiveSession(AppHost &host, const MdkrBootConfig &config,
     /* Online epoch: the engine sees the NTSC source identity (rom_io.c) so a
      * PAL ROM races the 30 Hz manifest bit-identically to US; cleared as soon
      * as the bounded boot returns. */
-    platform_source_set_ntsc_identity_override(1);
-    const int result = mdkr64_engine_boot(&config);
-    platform_source_set_ntsc_identity_override(0);
+    int result;
+    {
+        OnlineNtscIdentityScope ntscIdentityScope(true);
+        result = mdkr64_engine_boot(&config);
+    }
 
     /* Engine->launcher FINISH/RETURN handshake: read WHY the native session
      * ended (FINISHED / LEFT / ERROR) BEFORE OnlineRoom_clearPartyLink() drops the
@@ -4349,9 +4378,11 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
         /* Online epoch: the engine sees the NTSC source identity (rom_io.c)
          * so a PAL ROM races the 30 Hz manifest bit-identically to US;
          * cleared as soon as the bounded boot returns. */
-        platform_source_set_ntsc_identity_override(1);
-        const int residentResult = mdkr64_engine_boot(&config);
-        platform_source_set_ntsc_identity_override(0);
+        int residentResult;
+        {
+            OnlineNtscIdentityScope ntscIdentityScope(true);
+            residentResult = mdkr64_engine_boot(&config);
+        }
         platformSetHostWebGpuRecovery(nullptr, nullptr);
         platformSetHostWebGpu(nullptr, nullptr, nullptr, nullptr, nullptr, 0);
         platformSetHostWindow(nullptr, nullptr);

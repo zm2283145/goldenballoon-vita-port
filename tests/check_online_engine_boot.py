@@ -35,6 +35,10 @@ import tempfile
 from pathlib import Path
 
 from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
+# Import the ONE golden race-hash literal rather than duplicating it: the
+# direct-boot gate pins it, and this lane asserts equality with the SAME value
+# so the PAL==US bit-identity is a machine gate, not an observation.
+from check_online_engine_boot_direct import GOLDEN_RACE_HASH
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tests/input_scripts/race_2p_split.txt"
@@ -83,6 +87,13 @@ def main() -> int:
         "--authored-hz", type=int,
         help="pin the authored online cadence the admitted race must run at "
              "(cross-region contract: every online race races at 30)",
+    )
+    parser.add_argument(
+        "--expect-hash", default=GOLDEN_RACE_HASH,
+        help="assert the converged race hash EQUALS this golden literal (default "
+             f"{GOLDEN_RACE_HASH}, imported from check_online_engine_boot_direct);"
+             " pass '' to skip. A forced-NTSC PAL epoch must reach the SAME "
+             "canonical hash a US epoch does -- PAL==US bit-identity as a gate.",
     )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
@@ -194,14 +205,28 @@ def main() -> int:
             f"foldPeer={fold_peer} hashVisible={hash_visible} "
             f"hashPeer={hash_peer})", output)
 
+    # Machine-gate the headline cross-region result. Peer==peer above proves the
+    # two endpoints agree with each other; this proves they agree on the SAME
+    # canonical value a US epoch reaches, so a forced-NTSC PAL epoch is
+    # bit-identical to a US one. The literal lives once, in
+    # check_online_engine_boot_direct.GOLDEN_RACE_HASH; pass --expect-hash '' to
+    # skip only for a run that deliberately changes the sim.
+    if args.expect_hash and hash_visible != args.expect_hash:
+        return fail(
+            f"the converged race hash {hash_visible} != the GOLDEN "
+            f"{args.expect_hash} -- this online boot no longer reaches the "
+            f"canonical deterministic race sim (a determinism drift, or a legit "
+            f"ROM/toolchain change that needs GOLDEN_RACE_HASH bumped)", output)
+
     print(
         "PASS online engine boot: the VISIBLE engine ran a networked race on "
         f"track {loaded_track} at {authored_hz}Hz driven by the LIVE adapter "
         f"transport -- racedTicks={raced} drainCalls={drains} "
         f"inputEnvelopes={envelopes} transportAccepted={accepted} "
         f"transportDrained={drained} corrected={corrected} "
-        f"convergedTicks={fold_visible} hash={hash_visible} "
-        "engineExit=clean noStall=1"
+        f"convergedTicks={fold_visible} hash={hash_visible}"
+        + ("==GOLDEN" if args.expect_hash else "")
+        + " engineExit=clean noStall=1"
     )
     return 0
 

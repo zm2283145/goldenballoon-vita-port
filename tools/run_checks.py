@@ -1058,6 +1058,7 @@ ONLINE_TAKEOVER_SCRIPTS = {
     "check_online_peer_loss.py",
     "check_online_race_start_peer_loss.py",
     "check_online_rearm_third.py",
+    "check_online_region_reentry.py",
     "check_online_resident_live.py",
     "check_online_results_chooser.py",
     "check_online_room_ready_rearm.py",

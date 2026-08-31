@@ -988,6 +988,23 @@ occurred. `rollback_ring` also requires fail-atomic rejection when the selected
 slot count would exceed the explicit 16 MiB authority-memory cap; the current
 32-slot 4P real-game ring is 16,007,200 bytes.
 
+The same four-process gate takes a `--regions pal|cross` arm (with `--pal-rom`
+naming the European ROM): the two accepted ROM payloads are byte-identical, so a
+PAL endpoint racing the online 30 Hz manifest under the launcher-armed NTSC
+source identity must produce authority, input and canonical-event streams
+byte-identical to a US endpoint. `--regions pal` runs four PAL endpoints;
+`--regions cross` mixes US and PAL across both single-seat mask shapes and the
+couch endpoint. Every online epoch witnesses the armed NTSC identity while its
+true region stays observable, and no offline clock is latched inside it.
+`check_online_region_reentry.py` proves the identity is epoch-scoped: one
+process runs an online PAL epoch (NTSC identity armed) then an offline PAL epoch
+that re-latches the authentic 50 Hz source clock with the override cleared.
+`check_online_engine_boot.py --rom pal --authored-hz 30` asserts the converged
+PAL race hash EQUALS the pinned US golden (`--expect-hash`, imported from the
+direct-boot gate), i.e. bit-identity with a US epoch. `tools/run_online_checks.py
+--pal-rom <pal.v80>` joins all four of these cross-region lanes to the serial
+schedule after the default sweep; without `--pal-rom` the sweep is unchanged.
+
 `--ai-takeover-slot N --ai-takeover-tick T` overlays one immutable
 room-authorized disconnect decision on that same four-process proof. All
 endpoints must converge while the chosen slot may be locally owned on one and

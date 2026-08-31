@@ -108,6 +108,11 @@ int platform_source_is_european(void);
  * platform_source_is_european() is never overridden. */
 void platform_source_set_ntsc_identity_override(int armed);
 int  platform_source_ntsc_identity_override(void);
+/* Predicate form of the same fact for consumers that care about "am I inside an
+ * online engine epoch?" rather than the identity override specifically: the two
+ * are coupled (every online boot lane arms the override), so the pacer reads
+ * this to pin the online authored cadence.  See rom_io.c for the contract. */
+int  platform_online_epoch(void);
 
 /* ===== VI retrace / logic-update-rate pacing (the frame-pacing fix) ======= *
  * DKR normalises game speed against framerate via fb_update() (game/src/video.c),

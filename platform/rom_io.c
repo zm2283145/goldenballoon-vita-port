@@ -44,7 +44,10 @@ static int s_sourceIsEuropean = 0;
  * separate flag rather than a write to s_sourceTvType because platformInitRom
  * re-derives that from the ROM on every load (below) and would clobber a
  * direct write.  platform_source_is_european() is intentionally never
- * overridden: language/provenance follow the real cartridge. */
+ * overridden: language/provenance follow the real cartridge.
+ * Ordering contract: this plain int is armed before the engine thread spawns
+ * and cleared after the blocking boot returns, so no reader ever races the
+ * writer -- there is no concurrent access to it by construction. */
 static int s_ntscIdentityOverride = 0;
 
 int platform_source_tv_type(void) {
@@ -64,6 +67,20 @@ void platform_source_set_ntsc_identity_override(int armed) {
 }
 
 int platform_source_ntsc_identity_override(void) {
+    return s_ntscIdentityOverride;
+}
+
+/* Online-epoch predicate.  The NTSC identity override above is armed by exactly
+ * the launcher's online engine-boot lanes, so "the override is armed" and "this
+ * is an online engine epoch" are the SAME fact; the pacer reads that fact under
+ * this name to pin the online authored cadence (platform_sdl_min.c).  Coupling
+ * contract: every online engine-boot lane MUST arm the override.  A lane that
+ * forgets loses BOTH the NTSC source identity AND the cadence guard at once -- a
+ * PAL endpoint then fails LOUD (its 25 Hz race is rejected at admission against
+ * the 30 Hz manifest), while a US endpoint fails SILENT (identity is already
+ * NTSC, but a config-file Simulation.Cadence=enhanced would no longer be pinned
+ * back to original). */
+int platform_online_epoch(void) {
     return s_ntscIdentityOverride;
 }
 
