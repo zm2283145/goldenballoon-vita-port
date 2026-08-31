@@ -2267,6 +2267,51 @@ if(WIN32)
         endif()
     endforeach()
 
+    # --- Test link dead-strip ----------------------------------------------
+    # macOS ld64 and ELF ld --gc-sections both drop unreferenced sections by
+    # default; MinGW's bfd ld does NOT. Several online test targets deliberately
+    # omit a defining TU and rely on the linker discarding the unreferenced
+    # COMDAT/inline wrapper that would otherwise demand it (e.g. the
+    # MdkrMatchSignalClientFeed / MdkrOnlineFakeAdapterSeam wrappers pulling in
+    # match_signal_client.cpp / lobby_fake_adapter.c). Give the online/transport
+    # test links per-function/data sections + --gc-sections so those omissions
+    # stay harmless under MinGW, matching how the same targets already link on
+    # macOS/Linux.
+    #
+    # -fno-devirtualize-speculatively is required alongside gc-sections here: at
+    # -O2 GCC speculatively binds a virtual call whose only header-visible
+    # override is `final` (MdkrMatchSignalClientFeed, MdkrOnlineFakeAdapterSeam)
+    # to that override, embedding a DIRECT reference to the omitted definition
+    # inside a REACHABLE function (MdkrMatchPeerMesh::State::sendSignal/pump),
+    # which no linker can dead-strip. Clang/ld64 leave the call indirect, so the
+    # reference stays in the dead vtable that -dead_strip removes -- disabling
+    # GCC's speculation restores that same behaviour and lets --gc-sections drop
+    # the reference with the rest of the dead override.
+    #
+    # Test targets only; the shipping engine/app archives are never touched (and
+    # never carry omitted TUs), and this whole block is Windows-gated so non-
+    # MinGW lanes are unaffected.
+    foreach(_mdkr_online_test
+            mdkr_online_track_table_test
+            mdkr_native_party_sas_test
+            mdkr_lan_party_transport_test
+            mdkr_match_peer_crypto_test
+            mdkr_match_signal_client_test
+            mdkr_match_peer_transport_test
+            mdkr_native_party_e2e_driver
+            mdkr_online_live_adapter_test
+            mdkr_online_live_adapter_beta_test
+            mdkr_match_live_transport_test
+            mdkr_online_live_transport_e2e_driver)
+        if(TARGET ${_mdkr_online_test})
+            target_compile_options(${_mdkr_online_test} PRIVATE
+                -ffunction-sections -fdata-sections
+                -fno-devirtualize-speculatively)
+            target_link_options(${_mdkr_online_test} PRIVATE
+                -Wl,--gc-sections)
+        endif()
+    endforeach()
+
     # --- Subsystem ---------------------------------------------------------
     # Explorer double-click and game launchers start the exe with no inherited
     # console, so a console-subsystem build pops an empty console window on
