@@ -683,6 +683,19 @@ else()
 endif()
 target_compile_options(${MDKR_TARGET} PRIVATE
     -fno-strict-aliasing
+    # FP contraction is pinned OFF for every engine lane. Unpinned, each
+    # compiler decides for itself whether a*b+c fuses into a single-rounding
+    # FMA (AppleClang on arm64 fuses at -O2 by default; GCC and emcc make
+    # their own calls per target), so identical source could compute
+    # differently-rounded floats per toolchain. Gameplay float state must be
+    # bit-reproducible across the native, wasm, and mingw builds — lockstep
+    # peers and every golden float hash depend on it — so force the strict
+    # IEEE two-rounding evaluation everywhere. This block is the shared flag
+    # seam all three lanes inherit (MDKR_TARGET is mdkr64 or mdkr64_web; the
+    # mingw cross build configures this same file through its toolchain
+    # file), and `-ffp-contract=off` is accepted by Clang, AppleClang, emcc,
+    # and GCC alike, so it needs no per-compiler gating.
+    -ffp-contract=off
     # Address-domain crossings must be explicit (uintptr_t, DKR_TOK/DKR_PTR, or
     # OS_K0_TOKEN_TO_PHYSICAL). A raw narrowing conversion is a correctness
     # defect on LP64 and must never silently return to the tree.
