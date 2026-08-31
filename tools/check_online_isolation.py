@@ -15,7 +15,7 @@ offline regression. This guard closes that hole:
      network and stays fast (~25-30s).
   2. Asserts the 3 pinned anchor object sha256 prefixes are byte-identical:
         game/src/thread3_main.c.o          20ed811d
-        game/src/menu.c.o                  cfeb2121
+        game/src/menu.c.o                  0552cf73
         platform/net/online_race_results.c.o  12487bac
   3. Asserts the OFF `mdkr64` binary links ZERO online symbols (mdkr_online_* /
      party_link / ceremony) -- a second, name-based gate that also catches a leak
@@ -50,7 +50,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # The pinned anchors: object path (relative to the build dir) -> sha256 prefix.
 ANCHORS = {
     "CMakeFiles/mdkr64.dir/game/src/thread3_main.c.o": "20ed811d",
-    "CMakeFiles/mdkr64.dir/game/src/menu.c.o": "cfeb2121",
+    "CMakeFiles/mdkr64.dir/game/src/menu.c.o": "0552cf73",
     "CMakeFiles/mdkr64.dir/platform/net/online_race_results.c.o": "12487bac",
 }
 
@@ -335,7 +335,7 @@ def main() -> int:
             "PASS online isolation: a FRESH clean OFF build links ZERO online "
             "symbols (mdkr_online_*/party_link/ceremony) into the release engine"
             + (", and all 3 anchor objects are byte-identical (thread3_main "
-               "20ed811d, menu cfeb2121, online_race_results 12487bac)"
+               "20ed811d, menu 0552cf73, online_race_results 12487bac)"
                if hash_ok else " (anchor hashes DRIFTED -- see WARNING above; "
                "--allow-hash-drift)")
             + ".")
