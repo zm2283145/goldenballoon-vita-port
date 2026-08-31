@@ -2288,15 +2288,24 @@ if(WIN32)
     endforeach()
 
     # --- Test link dead-strip ----------------------------------------------
-    # macOS ld64 and ELF ld --gc-sections both drop unreferenced sections by
-    # default; MinGW's bfd ld does NOT. Several online test targets deliberately
-    # omit a defining TU and rely on the linker discarding the unreferenced
-    # COMDAT/inline wrapper that would otherwise demand it (e.g. the
-    # MdkrMatchSignalClientFeed / MdkrOnlineFakeAdapterSeam wrappers pulling in
-    # match_signal_client.cpp / lobby_fake_adapter.c). Give the online/transport
-    # test links per-function/data sections + --gc-sections so those omissions
-    # stay harmless under MinGW, matching how the same targets already link on
-    # macOS/Linux.
+    # Several online test targets deliberately omit a defining TU, relying on
+    # the omitted definition never being demanded because nothing reachable
+    # references it (e.g. the MdkrMatchSignalClientFeed / MdkrOnlineFakeAdapterSeam
+    # wrappers that would otherwise pull in match_signal_client.cpp /
+    # lobby_fake_adapter.c). The macOS/Linux test links prove that omission is
+    # sound WITHOUT any of the flags below: they pass none of them and still
+    # link, because Clang leaves the relevant virtual call indirect (see the
+    # next paragraph) so no reachable code names the omitted symbol. This is NOT
+    # because those linkers strip by default -- neither macOS ld64 nor ELF ld
+    # garbage-collects unreferenced sections without an explicit flag
+    # (-dead_strip / --gc-sections); here neither needs to, because the compiler
+    # never plants the reference in the first place. Under MinGW two things
+    # differ: GCC's -O2 codegen DOES emit a reachable reference (next paragraph),
+    # and bfd ld likewise will not drop unreferenced sections without an explicit
+    # --gc-sections. Give the online/transport test links per-function/data
+    # sections + --gc-sections (paired with -fno-devirtualize-speculatively
+    # below) so those omissions stay harmless under MinGW too, matching how the
+    # same targets already link on macOS/Linux.
     #
     # -fno-devirtualize-speculatively is required alongside gc-sections here: at
     # -O2 GCC speculatively binds a virtual call whose only header-visible
@@ -2310,7 +2319,11 @@ if(WIN32)
     #
     # Test targets only; the shipping engine/app archives are never touched (and
     # never carry omitted TUs), and this whole block is Windows-gated so non-
-    # MinGW lanes are unaffected.
+    # MinGW lanes are unaffected. Disclosed cost: under MinGW these test objects
+    # are compiled with speculative devirtualization DISABLED, so their codegen
+    # differs from the shipping build (which keeps -O2 speculative devirt on);
+    # the tests exercise the same sources, only with the one speculated virtual
+    # call left as an ordinary indirect dispatch.
     foreach(_mdkr_online_test
             mdkr_online_track_table_test
             mdkr_native_party_sas_test
