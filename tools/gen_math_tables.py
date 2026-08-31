@@ -29,6 +29,7 @@ stays reachable for A/B via MDKR_DEV_RUNTIME_TRIG=1 (see
 platform/math_util_native.c).
 """
 import os
+import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -77,10 +78,16 @@ def parse_asm_half_table(text, name):
     Same tolerant shape as the parser in tests/check_math_tables.py: values
     accumulate from consecutive .half lines and stop at the first line that is
     neither a .half directive, blank, nor a comment.
+
+    The symbol is matched as an exact EXPORT(<name>) token, so a longer symbol
+    (e.g. EXPORT(gSineTable2)) can never bind here; a missing symbol fails
+    closed via LookupError instead of a bare .index() traceback.
     """
-    i = text.index("EXPORT(%s)" % name)
+    m = re.search(r"EXPORT\(" + re.escape(name) + r"\)", text)
+    if m is None:
+        raise LookupError("EXPORT(%s) not found in %s" % (name, ASM))
     out = []
-    for line in text[i:].split("\n")[1:]:
+    for line in text[m.start():].split("\n")[1:]:
         s = line.strip()
         if s.startswith(".half"):
             out += [int(v.strip(), 16) for v in s[5:].split(",") if v.strip()]
@@ -112,8 +119,13 @@ def main():
         return 2
 
     text = open(ASM).read()
-    sine = parse_asm_half_table(text, "gSineTable")
-    arctan = parse_asm_half_table(text, "gArcTanTable")
+    try:
+        sine = parse_asm_half_table(text, "gSineTable")
+        arctan = parse_asm_half_table(text, "gArcTanTable")
+    except LookupError as exc:
+        print("FAIL: %s -- refusing to emit a suspect bake" % exc,
+              file=sys.stderr)
+        return 1
 
     # Fail loudly if the .s parse drifts: a wrong bake here would be committed
     # and trusted, so the shape invariants are hard errors, not warnings.

@@ -168,10 +168,17 @@ def check_required_strong_symbols(binary, failures):
 
 
 def parse_asm_half_table(text, name):
-    """Pull an EXPORT(<name>) .half table out of the hand-written .s."""
-    i = text.index("EXPORT(%s)" % name)
+    """Pull an EXPORT(<name>) .half table out of the hand-written .s.
+
+    The symbol is matched as an exact EXPORT(<name>) token, so a longer symbol
+    (e.g. EXPORT(gSineTable2)) can never bind here; a missing symbol raises
+    LookupError (caught in main) instead of a bare .index() traceback.
+    """
+    m = re.search(r"EXPORT\(" + re.escape(name) + r"\)", text)
+    if m is None:
+        raise LookupError("EXPORT(%s) not found in %s" % (name, ASM))
     out = []
-    for line in text[i:].split("\n")[1:]:
+    for line in text[m.start():].split("\n")[1:]:
         s = line.strip()
         if s.startswith(".half"):
             out += [int(v.strip(), 16) for v in s[5:].split(",") if v.strip()]
@@ -320,8 +327,12 @@ def main() -> int:
 
     # ---- ground truth, straight out of the vendored assembly ---------------
     text = open(ASM).read()
-    rom_arctan = parse_asm_half_table(text, "gArcTanTable")
-    rom_sine = parse_asm_half_table(text, "gSineTable")
+    try:
+        rom_arctan = parse_asm_half_table(text, "gArcTanTable")
+        rom_sine = parse_asm_half_table(text, "gSineTable")
+    except LookupError as exc:
+        print("FAIL: %s" % exc, file=sys.stderr)
+        return 1
     rom_seed = parse_asm_word(text, "gCurrentRNGSeed")
     rom_prev = parse_asm_word(text, "gPrevRNGSeed")
 
