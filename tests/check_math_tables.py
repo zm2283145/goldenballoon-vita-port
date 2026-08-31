@@ -190,8 +190,16 @@ def parse_asm_half_table(text, name):
 
 
 def parse_asm_word(text, name):
-    i = text.index("EXPORT(%s)" % name)
-    m = re.search(r"\.word\s+(0x[0-9A-Fa-f]+)", text[i:i + 400])
+    """Pull the EXPORT(<name>) .word value out of the .s.
+
+    Matches EXPORT(<name>) as an exact token (same anchoring as
+    parse_asm_half_table), so a longer symbol cannot bind, and raises
+    LookupError on a missing symbol instead of a bare .index() traceback.
+    """
+    e = re.search(r"EXPORT\(" + re.escape(name) + r"\)", text)
+    if e is None:
+        raise LookupError("EXPORT(%s) not found in %s" % (name, ASM))
+    m = re.search(r"\.word\s+(0x[0-9A-Fa-f]+)", text[e.start():e.start() + 400])
     return int(m.group(1), 16)
 
 
@@ -330,11 +338,11 @@ def main() -> int:
     try:
         rom_arctan = parse_asm_half_table(text, "gArcTanTable")
         rom_sine = parse_asm_half_table(text, "gSineTable")
+        rom_seed = parse_asm_word(text, "gCurrentRNGSeed")
+        rom_prev = parse_asm_word(text, "gPrevRNGSeed")
     except LookupError as exc:
         print("FAIL: %s" % exc, file=sys.stderr)
         return 1
-    rom_seed = parse_asm_word(text, "gCurrentRNGSeed")
-    rom_prev = parse_asm_word(text, "gPrevRNGSeed")
 
     if len(rom_arctan) < ARCTAN_LIVE:
         print("FAIL: %s's gArcTanTable parsed as %d entries, need >= %d -- the "

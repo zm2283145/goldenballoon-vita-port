@@ -165,7 +165,7 @@ def main():
     lines.append("#endif /* MDKR_MATH_TABLES_BAKED_H */")
     lines.append("")
 
-    with open(out_path, "w") as f:
+    with open(out_path, "w", newline="\n") as f:
         f.write("\n".join(lines))
     print("wrote %s (gSineTable %d entries, gArcTanTable %d entries)"
           % (out_path, len(sine), len(arctan)))
