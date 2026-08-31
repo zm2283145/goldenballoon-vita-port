@@ -43,7 +43,10 @@ TESTS = ROOT / "tests"
 # mid-session drop is not a dead end -- "Return to game" re-takes native, press-gated,
 # with no auto re-arm loop), and the T3 beta hand-off render-seam lane (proves the
 # launcher retired its per-race SELECTING widgets for BOTH modes and shows the
-# re-entry card after a LEFT/ERROR return -- no engine boot).
+# re-entry card after a LEFT/ERROR return -- no engine boot), and the four-process
+# US convergence arm (four isolated endpoint processes, including the no-render
+# verifier, must produce byte-identical authority/input/canonical-event streams;
+# the pal/cross arms of the same gate join via --pal-rom).
 # Order is deliberate: the fast structural/meta checks first, the long multi-race
 # loopback soaks last, so a quick break surfaces early.
 LANES = (
@@ -88,6 +91,13 @@ LANES = (
     "check_online_rearm_third.py",          # 3 consecutive tournaments: re-arm repeatable
     "check_online_left_reentry.py",         # LEFT/ERROR return: "Return to game" re-takes
                                             #  native (no auto re-arm; press-gated re-take)
+    "check_online_process_convergence.py",  # four real endpoint processes, US
+                                            #  arm (default --regions us):
+                                            #  slot0/slot1/2-local/no-render
+                                            #  must converge byte-identically;
+                                            #  guards the no-render/US defect
+                                            #  class the pal/cross arms (joined
+                                            #  by --pal-rom) share
     "check_online_lobby_tournament.py",
     "check_online_tournament_cup_vehicle.py",  # mixed-vehicle cup (0) boots all 4
                                             #  rounds: the pick auto-narrows to the
@@ -152,7 +162,7 @@ def run_lane(lane: str, build: str, rom: str, verbose: bool) -> tuple[bool, floa
 
 
 # NON-DEFAULT: the cross-region lanes joined ONLY by --pal-rom. Strictly
-# additive -- without --pal-rom the 28-lane sweep above is byte-identical.
+# additive -- without --pal-rom the 29-lane sweep above is byte-identical.
 # Each entry is (summary label, the argv after the interpreter). The two
 # accepted ROM payloads are byte-identical, so a PAL endpoint racing the online
 # 30 Hz manifest under the launcher-armed NTSC identity must reproduce a US

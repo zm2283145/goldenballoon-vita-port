@@ -1016,9 +1016,13 @@ process runs an online PAL epoch (NTSC identity armed) then an offline PAL epoch
 that re-latches the authentic 50 Hz source clock with the override cleared.
 `check_online_engine_boot.py --rom pal --authored-hz 30` asserts the converged
 PAL race hash EQUALS the pinned US golden (`--expect-hash`, imported from the
-direct-boot gate), i.e. bit-identity with a US epoch. `tools/run_online_checks.py
---pal-rom <pal.v80>` joins all four of these cross-region lanes to the serial
-schedule after the default sweep; without `--pal-rom` the sweep is unchanged.
+direct-boot gate), i.e. bit-identity with a US epoch. The default
+`tools/run_online_checks.py` sweep schedules the US arm of
+`check_online_process_convergence.py` (no PAL ROM needed — it guards the
+US-only defect class, e.g. a no-render endpoint diverging from its rendering
+peers); `tools/run_online_checks.py --pal-rom <pal.v80>` joins all four of
+these cross-region lanes to the serial schedule after the default sweep;
+without `--pal-rom` the sweep is otherwise unchanged.
 
 `--ai-takeover-slot N --ai-takeover-tick T` overlays one immutable
 room-authorized disconnect decision on that same four-process proof. All
