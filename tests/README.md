@@ -522,6 +522,17 @@ production coverage:
   gutter during the race-start pre-slide hold -- plus a 4:3 rail where the
   widescreen-ON frame must stay byte-identical to OFF. Detector self-tests
   run against synthetic rasters on every invocation.
+- `check_widescreen_minimap_alignment.py` pins the second half of issue #57:
+  under the widescreen HUD, billboard-mode ortho sprites bypassed the WIDE_HUD
+  matrix's horizontal compression and rendered 4/3 wider than authored, so the
+  minimap image's texels slid sideways around its (correct) anchor and the
+  driver marker sat ~100 px off the hub island. Its hub arm measures Taj's map
+  dot against the island's gate icon, its race arm measures the player arrow
+  against the checkered finish tile and the track-loop width (the draw path is
+  shared), each ON arm must prove the wide layout engaged and match the OFF
+  arm's [PACE] row at the capture frame, and a 4:3 rail requires the ON frame
+  byte-identical to OFF. Detector self-tests run against synthetic rasters on
+  every invocation.
 - `check_save_options_scroll_band.py` drives a seeded save to the Save
   Options screen, scrolls between Game Paks, and asserts no screen-wide
   band appears (issue #52): a glyph landing exactly at the left screen edge
