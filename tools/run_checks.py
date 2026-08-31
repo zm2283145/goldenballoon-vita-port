@@ -1061,6 +1061,7 @@ ONLINE_TAKEOVER_SCRIPTS = {
     "check_online_camera_capture_continuity.py",
     "check_online_camera_lens.py",
     "check_online_ceremony.py",
+    "check_online_character_map.py",
     "check_online_charselect.py",
     "check_online_engine_boot.py",
     "check_online_engine_boot_direct.py",
