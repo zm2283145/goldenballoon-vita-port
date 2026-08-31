@@ -1914,26 +1914,32 @@ static uint64_t sim_hash_compute_perturbed(HashPerturbClass class_id,
  * simulation as one without it. Unset or empty means no file is opened and
  * nothing is written.
  *
- * A path that cannot be opened is reported once to stderr and the sink is
- * dropped -- a hashing run must not crash or diverge because an artifact path
- * was bad. Resolved once and cached, like the version selector above.
+ * Lifetime contract: the sink is opened once and kept for the whole process --
+ * it is never fclose()d on the normal path. Together with the per-tick fflush
+ * in mdkr_sim_hash_frame, that guarantees a killed process leaves a usable,
+ * line-aligned prefix on disk. The only close is the failure path: a path that
+ * cannot be opened, or a sink that later fails a write, is reported once to
+ * stderr and dropped (fclose + NULL) so a hashing run never crashes, diverges,
+ * or spams because an artifact path went bad. Resolved once and cached, like
+ * the version selector above.
  */
+static FILE *s_sim_hash_sink = NULL; /* process-lifetime sink, NULL once dropped */
+
 static FILE *sim_hash_file_sink(void) {
-    static FILE *sink = NULL;
     static int resolved = 0;
     if (!resolved) {
         const char *path = getenv("MDKR_STATE_HASH_FILE");
         resolved = 1;
         if (path != NULL && path[0] != '\0') {
-            sink = fopen(path, "w");
-            if (sink == NULL) {
+            s_sim_hash_sink = fopen(path, "w");
+            if (s_sim_hash_sink == NULL) {
                 fprintf(stderr,
                         "[SIMHASH] cannot open MDKR_STATE_HASH_FILE '%s'; "
                         "file sink disabled\n", path);
             }
         }
     }
-    return sink;
+    return s_sim_hash_sink;
 }
 
 void mdkr_sim_hash_frame(void) {
@@ -1961,11 +1967,21 @@ void mdkr_sim_hash_frame(void) {
     printf(SIM_HASH_LINE_FMT, tick, (int)count, (unsigned long long)hash);
     sink = sim_hash_file_sink();
     if (sink != NULL) {
-        fprintf(sink, SIM_HASH_LINE_FMT, tick, (int)count,
-                (unsigned long long)hash);
-        /* Flush per tick so a killed run still leaves a usable prefix. One
-         * flush per authoritative tick is negligible against a rendered frame. */
-        fflush(sink);
+        /* Flush per tick so a killed run still leaves a usable prefix; one
+         * flush per authoritative tick is negligible against a rendered frame.
+         * Both the write and the flush are checked: a mid-run failure (e.g. the
+         * disk filling after a good fopen) is reported once and drops the sink,
+         * so later ticks neither spam stderr nor append a torn line. stdout and
+         * the simulation are untouched on every path. */
+        if (fprintf(sink, SIM_HASH_LINE_FMT, tick, (int)count,
+                    (unsigned long long)hash) < 0 ||
+            fflush(sink) != 0) {
+            fprintf(stderr,
+                    "[SIMHASH] cannot write MDKR_STATE_HASH_FILE; "
+                    "file sink disabled\n");
+            fclose(sink);
+            s_sim_hash_sink = NULL;
+        }
     }
     tick++;
 }
