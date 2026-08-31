@@ -329,6 +329,11 @@ bool drawChoiceCombo(MdkrOnlineViewAction action,
     return changed;
 }
 
+void drawLocalAppearanceDisclosure() {
+    ui::TextSubtleWrapped(
+        "Workshop appearances are local-only. Online sends the built-in racer identity; other players may see that built-in racer unless they independently use a matching local appearance.");
+}
+
 bool drawSelectionControl(const MdkrOnlineViewModel &model) {
     static unsigned character = 0u;
     static unsigned vehicle = 0u;
@@ -341,6 +346,7 @@ bool drawSelectionControl(const MdkrOnlineViewModel &model) {
                             &character)) {
             dispatch(model.primary.action, 0u, character);
         }
+        drawLocalAppearanceDisclosure();
         return true;
     }
     if (model.primary.action == MDKR_ONLINE_VIEW_ACTION_CHOOSE_VEHICLE) {

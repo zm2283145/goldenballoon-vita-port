@@ -4,6 +4,10 @@
 
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef int (*MdkrTextStateRead)(void *context, char *text, size_t capacity,
                                  size_t *length);
 typedef int (*MdkrTextStateWrite)(void *context, const char *text,
@@ -26,5 +30,9 @@ typedef struct MdkrTextStateFileSpec {
 int mdkr_text_state_file_read(void *context, char *text, size_t capacity,
                               size_t *length);
 int mdkr_text_state_file_write(void *context, const char *text, size_t length);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

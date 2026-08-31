@@ -65,6 +65,7 @@ public:
     // physical keyboard input. The key is held for one rendered frame so
     // ImGui's input-trickling behavior is exercised faithfully.
     void queueKeyPressForSmoke(SDL_Keycode key);
+    void queueKeyChordForSmoke(SDL_Keycode key, SDL_Keymod modifiers);
     bool queueGamepadPressForSmoke(SDL_GameControllerButton button);
     void queueMouseClickForSmoke(int x, int y);
     // Queue one step of a held left-button drag. `held=true` begins/continues
@@ -143,8 +144,12 @@ private:
     bool sdlOwned_        = false;
     std::string droppedFile_;
     std::string pendingSmokeDrop_;
-    std::vector<SDL_Keycode> pendingSmokeKeys_;
-    SDL_Keycode smokeHeldKey_ = SDLK_UNKNOWN;
+    struct SmokeKey {
+        SDL_Keycode key;
+        SDL_Keymod modifiers;
+    };
+    std::vector<SmokeKey> pendingSmokeKeys_;
+    SmokeKey smokeHeldKey_ = {SDLK_UNKNOWN, KMOD_NONE};
     struct SmokeClick { int x; int y; };
     std::vector<SmokeClick> pendingSmokeClicks_;
     SmokeClick smokeHeldClick_ = {0, 0};

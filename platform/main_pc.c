@@ -50,6 +50,12 @@
 #include "audi_port_dkr.h"
 #include "camera_dynamic_occlusion.h"
 #include "camera_obstruction_runtime.h"
+#include "modern_character_runtime.h"
+#include "user_paths.h"
+#include "app/engine_entry.h"
+
+MdkrCharacterPreviewResult *g_mdkrCharacterPreviewResult = NULL;
+MdkrCharacterMotionReviewResult *g_mdkrCharacterMotionReviewResult = NULL;
 
 /* Game audio owns this teardown; keep the platform TU out of PR/os_libc.h,
  * whose N64 libc declarations intentionally conflict with host fortified libc. */
@@ -514,6 +520,15 @@ int main(int argc, char **argv) {
     }
     MDKR_TRACE("gfx_init(%s) done; dimensions %dx%d",
                mdkr_render_backend_name(), renderer_width, renderer_height);
+    {
+        char characterDirectory[4096];
+        if (mdkr_user_characters_directory(
+                characterDirectory, sizeof(characterDirectory))) {
+            (void)mdkr_modern_characters_init(characterDirectory);
+        } else {
+            (void)mdkr_modern_characters_init(NULL);
+        }
+    }
 
     if (g_headlessTicks >= 0) {
         printf("[mdkr64] headless: will run %d simulation tick(s) then exit.\n",
@@ -587,6 +602,9 @@ shutdown:
      * host-memory census below, so a retained side table shows up as a leak
      * rather than as noise. */
     mdkr_camera_dynamic_occlusion_shutdown();
+    /* Custom characters own backend uploads borrowed from immutable CPU
+     * assets. Release those uploads while the renderer is still alive. */
+    mdkr_modern_characters_shutdown();
     gfx_shutdown();
     /* After the renderer, because the renderer is the only thing that ever asks
      * the store for pixels. Safe on the early-failure paths above, where the

@@ -196,6 +196,16 @@ GPU_SERIAL_NAMES = frozenset({
     "challenge_modes",
     "taj_challenges",
     "bonus_character_select",
+    "custom_character_roster",
+    "custom_character_identity_surfaces",
+    "custom_character_flag_portrait",
+    "character_raw_intake_ui",
+    "character_quit_lifecycle_ui",
+    "character_workshop_history_ui",
+    "character_draft_transfer_ui",
+    "character_portrait_studio_ui",
+    "character_test_evidence_ui",
+    "custom_character_workshop_preview",
     "bonus_results_portraits",
     "taj_character_select",
     "taj_character_select_webgpu",
@@ -730,6 +740,53 @@ CHECKS = (
     Check("bonus_character_select", "check_bonus_character_select.py", "native",
           "contiguous 13-racer picker with independent Taj, Wizpig, and Terry "
           "actor/placard composition, pose states, and controller navigation"),
+    Check("custom_character_roster", "check_custom_character_roster.py", "native",
+          "isolated generated custom package, independent paginated browser, "
+          "portrait composition, and real controller entry route"),
+    Check("custom_character_identity_surfaces",
+          "check_custom_character_identity_surfaces.py", "native",
+          "generated package donor authority plus authored minimap colour and "
+          "portrait pixels across a real race and post-race flow"),
+    Check("custom_character_flag_portrait",
+          "check_custom_character_flag_portrait.py", "native",
+          "generated package portrait ownership and isolated WebGPU pixels on "
+          "the real Fire Mountain collection-arena flag"),
+    Check("character_raw_intake_ui", "check_character_raw_intake_ui.py", "native",
+          "ROM-free review-first data-only adapter handoff, multi-draft GLB "
+          "intake, same-source branching, source-bound "
+          "mapping restore, accessible no-overwrite LOD-copy authoring, "
+          "close/resume navigation, exact switch/delete/install "
+          "cleanup, legacy migration, source-byte "
+          "purity, corruption refusal, keyboard speech, and 200% compact "
+          "Workshop rendering"),
+    Check("character_quit_lifecycle_ui",
+          "check_character_quit_lifecycle_ui.py", "native",
+          "ROM-free visible/cancellable shutdown settlement, global result "
+          "publication, Play/import exclusion, source purity, and private "
+          "result-file cleanup"),
+    Check("character_workshop_history_ui",
+          "check_character_workshop_history_ui.py", "native",
+          "ROM-free exact-source Identity/Profile/Rig/Fit/Performance/Test "
+          "history routing without installed-byte mutation"),
+    Check("character_draft_transfer_ui",
+          "check_character_draft_transfer_ui.py", "native",
+          "ROM-free exclusive path-private exact-source export, mutation-free "
+          "accessible review, additive atomic import, duplicate idempotence, "
+          "and wrong-source refusal"),
+    Check("character_portrait_studio_ui",
+          "check_character_portrait_studio_ui.py", "native",
+          "ROM-free deterministic portrait style/pixel tools at 200% compact "
+          "layout with keyboard speech and installed-byte purity"),
+    Check("character_test_evidence_ui",
+          "check_character_test_evidence_ui.py", "native",
+          "ROM-free durable 4x4 exact-test matrix, qualified baseline lifecycle, "
+          "device/source/fit/LOD binding, corruption refusal, 200% layout, and "
+          "keyboard plus virtual-controller speech traversal"),
+    Check("custom_character_workshop_preview",
+          "check_custom_character_workshop_preview.py", "native",
+          "script-free exact select/car/hovercraft/plane launches, semantic "
+          "camera/light inspection, exclusive stabilized PNG capture, and real "
+          "one-to-four-player WebGPU character stress with fail-closed inputs"),
     Check("bonus_results_portraits", "check_bonus_results_portraits.py", "native",
           "real post-race Wizpig/Terry portrait ownership, retail dimensions, "
           "and distinct card pixels"),
@@ -1105,6 +1162,9 @@ CHECKS = (
 # artifacts produced inside that CTest fixture rather than the runner's normal
 # role arguments. ``rom_free_units`` owns their execution.
 CTEST_COMPANION_SCRIPTS = {
+    # Cross-layer source contract registered as character_offset_studio_contract
+    # in cmake/tests.cmake; the broad ctest task owns its artifact-free run.
+    "check_character_offset_studio.py",
     "check_multiplayer_boundaries.py",
     "check_controller_settings_persistence.py",
     "check_host_input_focus.py",
@@ -1121,6 +1181,11 @@ CTEST_COMPANION_SCRIPTS = {
 # manufacture that release-only stage, so workflow ownership is explicit here.
 WORKFLOW_COMPANION_SCRIPTS = {
     "check_browser_local_only_release.py",
+    # Release workflows build a platform-specific frozen importer, smoke it
+    # before packaging, then smoke the staged copy again. The ordinary runner
+    # has no frozen-importer artifact role and cannot substitute the game
+    # binary for this executable-shaped contract.
+    "check_frozen_character_importer.py",
 }
 
 

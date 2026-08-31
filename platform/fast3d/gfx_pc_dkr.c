@@ -79,6 +79,7 @@
 #include "gfx_texture_edge.h"
 #include "gfx_font_sdf.h"
 #include "gfx_font_outline.h"
+#include "gfx_character_text.h"
 #include "gfx_level_lighting.h"
 #include "gfx_rl1_experiment.h"
 #include "gfx_render_scale.h"
@@ -92,6 +93,9 @@
 #include "mod_texture_store.h"   /* the override layer in front of the ROM path */
 #include "gfx_uniforms.h"
 #include "gfx_pc_dkr.h"
+#include "modern_character_render.h"
+#include "modern_character_draw_store.h"
+#include "modern_character_limits.h"
 #ifdef MDKR_WEBGPU_BACKEND
 #include "gfx_webgpu.h"
 #endif
@@ -116,6 +120,71 @@ enum { DKR_PRESENTATION_PARTICLE_KIND_POINT = 4 };
 #define SCALE_3_8(v_) ((v_) * 0x24)
 
 static GfxFontRegistry dkr_font_registry;
+static struct GfxRenderingAPI *gfx_rapi;
+static void gfx_flush(void);
+
+/*
+ * A bounded immutable command payload ring. Display-list construction may run
+ * ahead of a presentation replay, so the command stores a generation-bearing
+ * token rather than an address. Bone palettes are retained at their exact
+ * validated size in lazy store-owned allocations, avoiding a permanent 64 MB
+ * zero-fill reservation for characters that use far fewer than 256 joints.
+ * An exceptionally delayed/overfull replay fails visible by dropping the
+ * custom draw, never by reading a newer pose.
+ */
+static uint64_t dkr_modern_camera_missing_matrix;
+static uint64_t dkr_modern_camera_missing_eye;
+static uint64_t dkr_modern_camera_singular_world;
+static uint64_t dkr_modern_camera_resolved;
+
+bool gfx_modern_character_supported(void) {
+    return gfx_rapi != NULL && gfx_rapi->draw_modern_skinned != NULL;
+}
+
+uint32_t gfx_modern_character_register_draw(
+    const struct GfxModernSkinnedDraw *draw) {
+    uint32_t component;
+    if (!gfx_modern_character_supported() || draw == NULL || draw->asset == NULL ||
+        draw->primitive >= draw->asset->primitive_count ||
+        draw->player >= MDKR_MODERN_CHARACTER_PLAYERS ||
+        draw->view >= MDKR_MODERN_CHARACTER_VIEWS ||
+        draw->reference_only > 1u ||
+        draw->bone_count > MDKR_MODERN_DRAW_STORE_MAX_BONES ||
+        (draw->bone_count != 0u &&
+         (draw->bone_matrices == NULL ||
+          draw->previous_bone_matrices == NULL))) {
+        return 0u;
+    }
+    for (component = 0u; component < 16u; ++component) {
+        if (!isfinite(draw->target_frame_matrix[component])) return 0u;
+    }
+    if (draw->capture_bounds_valid > 1u) return 0u;
+    if (draw->capture_bounds_valid != 0u) {
+        for (component = 0u; component < 3u; ++component) {
+            if (!isfinite(draw->capture_bounds_min[component]) ||
+                !isfinite(draw->capture_bounds_max[component]) ||
+                draw->capture_bounds_min[component] >
+                    draw->capture_bounds_max[component]) return 0u;
+        }
+    }
+    /* Caster ownership is assigned only by the HLE walk after resolving the
+     * exact matrix/view binding; callers cannot smuggle one through the ring. */
+    if (draw->shadow_binding_valid != 0u ||
+        draw->shadow_cast_valid != 0u ||
+        draw->shadow_cast_view != 0u) return 0u;
+    for (component = 0u; component < 16u; ++component) {
+        if (draw->shadow_world_matrix[component] != 0.0f) return 0u;
+    }
+    return mdkr_modern_draw_store_register(draw);
+}
+
+void gfx_modern_character_release_asset(uint64_t asset_id) {
+    mdkr_modern_draw_store_release_asset(asset_id);
+    if (gfx_rapi != NULL && gfx_rapi->release_modern_asset != NULL) {
+        gfx_flush();
+        gfx_rapi->release_modern_asset(asset_id);
+    }
+}
 
 uint32_t gfx_dkr_font_sdf_uploads;
 uint32_t gfx_dkr_font_outline_uploads;
@@ -1087,7 +1156,6 @@ struct GfxDimensions gfx_output_dimensions = { DESIRED_SCREEN_WIDTH, DESIRED_SCR
 struct GfxDimensions gfx_current_dimensions = { DESIRED_SCREEN_WIDTH, DESIRED_SCREEN_HEIGHT,
                                                 (float)DESIRED_SCREEN_WIDTH / DESIRED_SCREEN_HEIGHT };
 
-static struct GfxRenderingAPI *gfx_rapi;
 static bool dkr_output_overlay_active;
 static bool dkr_output_overlay_suppressed;
 static uint32_t dkr_output_overlay_frame_draws;
@@ -3362,6 +3430,138 @@ static bool dkr_setup_draw_state(bool poly_tex_enabled) {
     return bind_ok[0] && bind_ok[1];
 }
 
+static void dkr_draw_modern_character(uint32_t token) {
+    const struct GfxModernSkinnedDraw *retained;
+    struct GfxModernSkinnedDraw resolved;
+    float interpolated_bones[MDKR_MODERN_DRAW_STORE_MAX_BONES * 16u];
+    float fog_color[3];
+    bool fog_enabled;
+    if (token == 0u || !gfx_modern_character_supported() ||
+        rsp.active_slot < 0 || rsp.active_slot >= 3) {
+        return;
+    }
+    retained = mdkr_modern_draw_store_resolve(token);
+    if (retained == NULL || retained->asset == NULL) {
+        /* The bounded ring was overtaken. Dropping the custom command leaves
+         * memory and replay ownership safe; callers keep the donor visible
+         * unless every command registration succeeded. */
+        return;
+    }
+    resolved = *retained;
+    if (dkr_replay_pass && dkr_replay_object_alpha_valid &&
+        !mdkr_modern_render_resolve_draw(
+            retained, dkr_replay_object_alpha_numerator,
+            dkr_replay_object_alpha_denominator, &resolved,
+            interpolated_bones, MDKR_MODERN_DRAW_STORE_MAX_BONES)) {
+        /* A pathological midpoint (for example an exact half-turn matrix
+         * lerp) is not a safe normal transform. Hold the authored endpoint
+         * rather than publish NaNs to the GPU. */
+        resolved = *retained;
+    }
+    resolved.shadow_binding_valid = 0u;
+    resolved.shadow_cast_valid = 0u;
+    resolved.shadow_cast_view = 0u;
+    resolved.camera_position_valid = 0u;
+    memset(resolved.camera_position, 0, sizeof(resolved.camera_position));
+    memset(resolved.shadow_world_matrix, 0,
+           sizeof(resolved.shadow_world_matrix));
+
+    /* Resolve specular view response from the exact camera eye that owns the
+     * retained task. This is deliberately independent of the optional shadow
+     * feature: a character still needs a truthful eye vector when shadows are
+     * disabled. The world binding is the same proven donor-object transform
+     * used by the shadow path, while the eye is captured with its authored VP
+     * and replaced atomically during presentation replay. Any unavailable or
+     * singular input leaves the shader's explicit bounded fallback active. */
+    if (rsp.shadow_matrix_valid[rsp.active_slot]) {
+        float donor_world[16];
+        memcpy(donor_world, rsp.shadow_matrix[rsp.active_slot].world,
+               sizeof(donor_world));
+        if (!rsp.shadow_matrix[rsp.active_slot].view_eye_valid) {
+            dkr_modern_camera_missing_eye++;
+        } else if (!mdkr_modern_render_camera_object_position(
+                       donor_world,
+                       rsp.shadow_matrix[rsp.active_slot].view_eye_position,
+                       resolved.camera_position)) {
+            dkr_modern_camera_singular_world++;
+        } else {
+            resolved.camera_position_valid = 1u;
+            dkr_modern_camera_resolved++;
+        }
+    } else {
+        dkr_modern_camera_missing_matrix++;
+    }
+
+    /* Modern geometry stays GPU-owned. The HLE walk contributes its exact
+     * donor-object -> world binding for receivers and, for opaque/masked
+     * materials, transforms eight calibrated corners into the shared cascade
+     * fit. Presentation replay resolves the already-published view instead of
+     * capturing it twice. */
+    if (!resolved.reference_only &&
+        (gfx_world_fx_trace_enabled() ||
+         (g_pcRemasterFX && g_pcSunShadow)) &&
+        rsp.draw_space == G_MTX_DKR_SPACE_WORLD && !rsp.billboard &&
+        rsp.shadow_matrix_valid[rsp.active_slot] &&
+        resolved.asset != NULL &&
+        resolved.primitive < resolved.asset->primitive_count) {
+        const struct GfxModernPrimitive *primitive =
+            &resolved.asset->primitives[resolved.primitive];
+        float shadow_world_matrix[16];
+        float viewport[4] = {
+            rdp.view.logical_viewport.x,
+            rdp.view.logical_viewport.y,
+            rdp.view.logical_viewport.width,
+            rdp.view.logical_viewport.height,
+        };
+        /* Snapshot the typed 4x4 source into the flat matrix contract. Besides
+         * making replay ownership explicit, this avoids GCC treating `world[0]`
+         * as only one four-float row at the helper boundary. */
+        memcpy(shadow_world_matrix,
+               rsp.shadow_matrix[rsp.active_slot].world,
+               sizeof(shadow_world_matrix));
+        int view_index = gfx_shadow_capture_view(
+            viewport,
+            rsp.shadow_matrix[rsp.active_slot].view_projection);
+        if (view_index < 0 && dkr_replay_pass) {
+            view_index = gfx_shadow_previous_view_index(viewport);
+        }
+        if (view_index >= 0 && view_index < GFX_SHADOW_MAX_VIEWS) {
+            resolved.shadow_binding_valid = 1u;
+            resolved.shadow_cast_view = (uint32_t)view_index;
+            memcpy(resolved.shadow_world_matrix,
+                   shadow_world_matrix,
+                   sizeof(resolved.shadow_world_matrix));
+        }
+        if (resolved.shadow_binding_valid == 1u &&
+            resolved.capture_bounds_valid == 1u &&
+            primitive->material < resolved.asset->material_count &&
+            (resolved.asset->materials[primitive->material].flags & 3u) <= 1u) {
+            float world_bounds[8u * 3u];
+            if (mdkr_modern_render_shadow_bounds(
+                    shadow_world_matrix,
+                    resolved.target_frame_matrix,
+                    resolved.capture_bounds_min,
+                    resolved.capture_bounds_max,
+                    world_bounds) &&
+                gfx_shadow_capture_caster_bounds(
+                    view_index, world_bounds, 8u)) {
+                resolved.shadow_cast_valid = 1u;
+            }
+        }
+    }
+    (void)dkr_setup_draw_state(false);
+    gfx_flush();
+    fog_color[0] = (float)rdp.fog_color.r / 255.0f;
+    fog_color[1] = (float)rdp.fog_color.g / 255.0f;
+    fog_color[2] = (float)rdp.fog_color.b / 255.0f;
+    fog_enabled = (rdp.other_mode_l >> 30) == G_BL_CLR_FOG;
+    dkr_begin_primitive(rsp.draw_space != G_MTX_DKR_SPACE_WORLD);
+    gfx_rapi->draw_modern_skinned(
+        &resolved, rsp.mtx[rsp.active_slot], fog_color,
+        (float)rsp.fog_mul, (float)rsp.fog_offset,
+        fog_enabled ? 1 : 0);
+}
+
 /* ------------------------------------------------------------------------- */
 /* Triangle emission                                                         */
 /* ------------------------------------------------------------------------- */
@@ -4241,6 +4441,22 @@ static void dkr_sp_moveword(uint8_t index, uint16_t offset, uint32_t data) {
             }
             break;
         }
+        case G_MW_DKR_MODERN_CHARACTER:
+            dkr_draw_modern_character(data);
+            break;
+        case G_MW_DKR_CHARACTER_OCCLUDER:
+            /* The buffered ordinary triangle stream belongs wholly to the old
+             * scope. Preserve that boundary before publishing the next one to
+             * an optional diagnostic backend. Invalid native commands fail
+             * closed to NONE instead of misattributing following objects. */
+            gfx_flush();
+            if (gfx_rapi != NULL &&
+                gfx_rapi->set_modern_character_occluder != NULL) {
+                gfx_rapi->set_modern_character_occluder(
+                    data < GFX_MODERN_CHARACTER_OCCLUDER_COUNT
+                        ? data : GFX_MODERN_CHARACTER_OCCLUDER_NONE);
+            }
+            break;
         case G_MW_FOG:          /* 0x08 — fog_mul (hi 16) / fog_offset (lo 16) */
             rsp.fog_mul = (int16_t)(data >> 16);
             rsp.fog_offset = (int16_t)(data & 0xffff);
@@ -7744,6 +7960,7 @@ void gfx_shutdown(void) {
     struct GfxRenderingAPI *rapi = gfx_rapi;
 
     if (rapi == NULL) {
+        mdkr_modern_draw_store_shutdown();
         return;
     }
 
@@ -7787,12 +8004,14 @@ void gfx_shutdown(void) {
     font_sdf_buf = NULL;
     font_sdf_cap = 0;
     gfx_font_outline_shutdown();
+    gfx_character_text_shutdown();
     free(tex_row_buf);
     tex_row_buf = NULL;
     tex_row_cap = 0;
     free(tex_mip_buf);
     tex_mip_buf = NULL;
     tex_mip_cap = 0;
+    mdkr_modern_draw_store_shutdown();
     gfx_presentation_packet_shutdown();
     gfx_retained_task_shutdown();
     gfx_shadow_frame_shutdown();
@@ -7850,6 +8069,24 @@ static void dkr_rect_skip_report(void) {
     if (trace != NULL && trace[0] != '\0' && trace[0] != '0') {
         fprintf(stderr, "[RECT-SKIP] skipped=%llu\n",
                 (unsigned long long)dkr_inverted_rects_skipped);
+    }
+}
+
+__attribute__((destructor))
+static void dkr_modern_camera_report(void) {
+    const char *trace = getenv("MDKR_TRACE");
+    if (trace != NULL && trace[0] != '\0' && trace[0] != '0' &&
+        (dkr_modern_camera_missing_matrix != 0u ||
+         dkr_modern_camera_missing_eye != 0u ||
+         dkr_modern_camera_singular_world != 0u ||
+         dkr_modern_camera_resolved != 0u)) {
+        fprintf(stderr,
+                "[MODERN-CAMERA] resolved=%llu missingMatrix=%llu "
+                "missingEye=%llu singularWorld=%llu\n",
+                (unsigned long long)dkr_modern_camera_resolved,
+                (unsigned long long)dkr_modern_camera_missing_matrix,
+                (unsigned long long)dkr_modern_camera_missing_eye,
+                (unsigned long long)dkr_modern_camera_singular_world);
     }
 }
 
@@ -8025,6 +8262,51 @@ bool gfx_get_capture_dimensions(uint32_t *width, uint32_t *height) {
     *width = gfx_output_dimensions.width;
     *height = gfx_output_dimensions.height;
     return true;
+}
+
+bool gfx_get_modern_character_capture_dimensions(uint32_t *width,
+                                                  uint32_t *height) {
+    if (width == NULL || height == NULL || gfx_rapi == NULL ||
+        gfx_rapi->get_modern_character_capture_dimensions == NULL) {
+        return false;
+    }
+    return gfx_rapi->get_modern_character_capture_dimensions(width, height);
+}
+
+bool gfx_get_modern_character_capture_projection(
+    MdkrModernCharacterCaptureProjection *projection) {
+    if (projection == NULL || gfx_rapi == NULL ||
+        gfx_rapi->get_modern_character_capture_projection == NULL) {
+        return false;
+    }
+    return gfx_rapi->get_modern_character_capture_projection(projection);
+}
+
+bool gfx_get_modern_character_scene_projection(
+    MdkrModernCharacterCaptureProjection *projection) {
+    if (projection == NULL || gfx_rapi == NULL ||
+        gfx_rapi->get_modern_character_scene_projection == NULL) {
+        return false;
+    }
+    return gfx_rapi->get_modern_character_scene_projection(projection);
+}
+
+void gfx_begin_modern_character_gpu_timing(void) {
+    if (gfx_rapi != NULL &&
+        gfx_rapi->begin_modern_character_gpu_timing != NULL) {
+        gfx_rapi->begin_modern_character_gpu_timing();
+    }
+}
+
+void gfx_finish_modern_character_gpu_timing(
+    MdkrModernCharacterGpuTimingMetrics *out) {
+    if (out == NULL) return;
+    mdkr_modern_character_gpu_timing_snapshot(
+        NULL, MDKR_MODERN_CHARACTER_GPU_TIMING_UNSUPPORTED, 0u, out);
+    if (gfx_rapi != NULL &&
+        gfx_rapi->finish_modern_character_gpu_timing != NULL) {
+        gfx_rapi->finish_modern_character_gpu_timing(out);
+    }
 }
 
 bool gfx_start_frame(uint64_t authored_tick) {
@@ -8556,6 +8838,16 @@ void gfx_dkr_replay_get_reject_stats(
 int gfx_read_framebuffer_rgb(int x, int y, int width, int height, uint8_t *rgb_out) {
     if (gfx_rapi && gfx_rapi->read_framebuffer_rgb) {
         return gfx_rapi->read_framebuffer_rgb(x, y, width, height, rgb_out) ? 1 : 0;
+    }
+    return 0;
+}
+
+int gfx_read_modern_character_capture_rgba(int width, int height,
+                                            uint8_t *rgba_out) {
+    if (gfx_rapi != NULL &&
+        gfx_rapi->read_modern_character_capture_rgba != NULL) {
+        return gfx_rapi->read_modern_character_capture_rgba(
+            width, height, rgba_out) ? 1 : 0;
     }
     return 0;
 }

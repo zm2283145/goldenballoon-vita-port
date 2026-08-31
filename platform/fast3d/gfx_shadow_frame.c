@@ -206,6 +206,8 @@ static bool s_register_key_is_mtx;
 /* See GfxShadowMatrixBinding.camera_locked. Consumed and cleared by every
  * registration the same way s_register_site is. */
 static bool s_register_camera_locked;
+static bool s_register_view_eye_valid;
+static float s_register_view_eye_position[3];
 static GfxPresentationMatrixOwner s_register_presentation_owner;
 static bool s_register_presentation_owner_valid;
 static GfxPresentationOwnerStats s_presentation_owner_stats;
@@ -691,11 +693,18 @@ bool gfx_shadow_matrix_register(
     const int site = s_register_site;
     const bool key_is_mtx = s_register_key_is_mtx;
     const bool camera_locked = s_register_camera_locked;
+    const bool view_eye_valid = s_register_view_eye_valid;
+    float view_eye_position[3];
     const bool owner_valid = s_register_presentation_owner_valid;
     const GfxPresentationMatrixOwner owner = s_register_presentation_owner;
     s_register_site = GFX_SHADOW_SITE_UNKNOWN;
     s_register_key_is_mtx = false;
     s_register_camera_locked = false;
+    memcpy(view_eye_position, s_register_view_eye_position,
+           sizeof(view_eye_position));
+    s_register_view_eye_valid = false;
+    memset(s_register_view_eye_position, 0,
+           sizeof(s_register_view_eye_position));
     s_register_presentation_owner_valid = false;
     memset(&s_register_presentation_owner, 0,
            sizeof(s_register_presentation_owner));
@@ -731,6 +740,15 @@ bool gfx_shadow_matrix_register(
             s_matrix_entries[index].binding.gameplay_vp = s_register_gameplay_vp;
             s_matrix_entries[index].binding.site = site;
             s_matrix_entries[index].binding.camera_locked = camera_locked;
+            s_matrix_entries[index].binding.view_eye_valid = view_eye_valid;
+            if (view_eye_valid) {
+                memcpy(s_matrix_entries[index].binding.view_eye_position,
+                       view_eye_position, sizeof(view_eye_position));
+            } else {
+                memset(s_matrix_entries[index].binding.view_eye_position, 0,
+                       sizeof(s_matrix_entries[index].binding
+                                  .view_eye_position));
+            }
             s_matrix_entries[index].binding.key_bytes_valid = key_is_mtx;
             s_matrix_entries[index].binding.walked_key_bytes_valid = false;
             if (owner_valid) {
@@ -800,6 +818,11 @@ bool gfx_shadow_matrix_register(
         s_register_gameplay_vp;
     s_matrix_entries[s_matrix_count].binding.site = site;
     s_matrix_entries[s_matrix_count].binding.camera_locked = camera_locked;
+    s_matrix_entries[s_matrix_count].binding.view_eye_valid = view_eye_valid;
+    if (view_eye_valid) {
+        memcpy(s_matrix_entries[s_matrix_count].binding.view_eye_position,
+               view_eye_position, sizeof(view_eye_position));
+    }
     s_matrix_entries[s_matrix_count].binding.key_bytes_valid = key_is_mtx;
     if (owner_valid) {
         s_matrix_entries[s_matrix_count].binding.presentation_owner = owner;
@@ -889,6 +912,18 @@ void gfx_shadow_matrix_set_site(int site) {
 
 void gfx_shadow_matrix_set_camera_locked(bool camera_locked) {
     s_register_camera_locked = camera_locked;
+}
+
+void gfx_shadow_matrix_set_view_eye(const float position[3]) {
+    if (!finite_values(position, 3u)) {
+        s_register_view_eye_valid = false;
+        memset(s_register_view_eye_position, 0,
+               sizeof(s_register_view_eye_position));
+        return;
+    }
+    memcpy(s_register_view_eye_position, position,
+           sizeof(s_register_view_eye_position));
+    s_register_view_eye_valid = true;
 }
 
 void gfx_shadow_matrix_set_presentation_owner(
@@ -1139,6 +1174,17 @@ bool gfx_shadow_replay_restore(
         memcpy(entry->binding.camera_position,
                overrides[entry->viewport].camera_position,
                sizeof(entry->binding.camera_position));
+        entry->binding.view_eye_valid =
+            overrides[entry->viewport].view_eye_valid && finite_values(
+                overrides[entry->viewport].view_eye_position, 3u);
+        if (entry->binding.view_eye_valid) {
+            memcpy(entry->binding.view_eye_position,
+                   overrides[entry->viewport].view_eye_position,
+                   sizeof(entry->binding.view_eye_position));
+        } else {
+            memset(entry->binding.view_eye_position, 0,
+                   sizeof(entry->binding.view_eye_position));
+        }
     }
     s_restore_count++;
     return true;
@@ -1511,6 +1557,47 @@ static void observe_triangle_bounds(
     }
 }
 
+bool gfx_shadow_capture_caster_bounds(
+    int view_index, const float *positions, size_t point_count) {
+    GfxShadowFrame *write = &s_frames[s_write_index];
+    GfxShadowView *view;
+    size_t value_count;
+
+    if (s_capture_suppressed || !s_capture_active || write->failed ||
+        positions == NULL || point_count == 0 || point_count > 8u ||
+        view_index < 0 || view_index >= (int)write->view_count ||
+        !write->views[view_index].valid) {
+        return false;
+    }
+    value_count = point_count * 3u; /* point_count is bounded to eight above */
+    if (!finite_values(positions, value_count)) {
+        s_stats.external_caster_rejections++;
+        return false;
+    }
+    for (size_t index = 0; index < value_count; ++index) {
+        if (positions[index] > GFX_SHADOW_WORLD_LIMIT ||
+            positions[index] < -GFX_SHADOW_WORLD_LIMIT) {
+            s_stats.external_caster_rejections++;
+            return false;
+        }
+    }
+    view = &write->views[view_index];
+    for (size_t point = 0; point < point_count; ++point) {
+        for (size_t axis = 0; axis < 3u; ++axis) {
+            const float value = positions[point * 3u + axis];
+            if (value < view->bounds_min[axis]) {
+                view->bounds_min[axis] = value;
+            }
+            if (value > view->bounds_max[axis]) {
+                view->bounds_max[axis] = value;
+            }
+        }
+    }
+    s_stats.external_caster_bounds++;
+    write->external_caster_count++;
+    return true;
+}
+
 bool gfx_shadow_capture_triangle(
     int view_index,
     const void *source_key,
@@ -1713,7 +1800,8 @@ void gfx_shadow_capture_commit(void) {
         ((write->static_vertex_count >= 3 &&
           write->static_range_count > 0) ||
          (write->vertex_count >= 3 &&
-          write->range_count > 0));
+          write->range_count > 0) ||
+         write->external_caster_count > 0);
     if (write->failed) {
         s_stats.frames_failed++;
         /*

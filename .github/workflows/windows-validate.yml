@@ -77,6 +77,27 @@ jobs:
             mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-SDL2 mingw-w64-ucrt-x86_64-pkg-config
             mingw-w64-ucrt-x86_64-ninja zip unzip python git
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13.13"
+          cache: pip
+          cache-dependency-path: tools/character_importer_build_requirements.txt
+
+      - name: Build and attest the self-contained Character Workshop toolchain
+        run: |
+          python -m pip install --disable-pip-version-check \
+            --require-hashes --only-binary=:all: \
+            -r tools/character_importer_build_requirements.txt
+          mkdir -p build-tools/validators
+          curl -fsSL -o "$RUNNER_TEMP/gltf-validator-windows.zip" \
+            https://github.com/KhronosGroup/glTF-Validator/releases/download/2.0.0-dev.3.10/gltf_validator-2.0.0-dev.3.10-win64.zip
+          python tools/build_gltf_validator.py \
+            --release-archive "$RUNNER_TEMP/gltf-validator-windows.zip" \
+            --output build-tools/validators/gltf_validator.exe
+          python tools/build_character_importer.py \
+            --output build-tools/character_importer.exe
+          python tests/check_frozen_character_importer.py \
+            build-tools/character_importer.exe
 
       # Same CMake config as the release.yml Windows job, plus BUILD_TESTING
       # (ON by default via include(CTest) in CMakeLists.txt) so the ROM-free
@@ -219,20 +240,35 @@ jobs:
           PARTY_ORIGIN: ${{ vars.MDKR_PARTY_ORIGIN }}
         run: |
           set -euo pipefail
-          ./tools/package_windows_zip.sh --binary build/mdkr64.exe --version dev
+          ./tools/package_windows_zip.sh \
+            --binary build/mdkr64.exe \
+            --character-importer build-tools/character_importer.exe \
+            --character-importer-manifest build-tools/character_importer.exe.manifest.json \
+            --gltf-validator build-tools/validators/gltf_validator.exe \
+            --gltf-validator-manifest build-tools/validators/gltf_validator.exe.manifest.json \
+            --character-lod-tool build/tools/mdkr-character-lod.exe \
+            --version dev
           expected_version="$(./build/mdkr64.exe --version | tr -d '\r')"
           package_root="$RUNNER_TEMP/windows package with spaces"
           unrelated="$RUNNER_TEMP/unrelated-launch-cwd"
           mkdir -p "$package_root" "$unrelated"
           unzip -q dist/Golden-Balloon-dev-windows-x64.zip -d "$package_root"
           executable="$package_root/GoldenBalloon/GoldenBalloon.exe"
+          importer="$package_root/GoldenBalloon/tools/character_importer.exe"
+          validator="$package_root/GoldenBalloon/tools/validators/gltf_validator.exe"
+          chmod +x "$validator"
           (
             cd "$unrelated"
+            "$importer" tool-info | grep -Fq '"frozen": true'
             version_output="$("$executable" --version | tr -d '\r')"
             test "$version_output" = "$expected_version"
             "$executable" --help > help.txt
             grep -q '^Usage: ' help.txt
           )
+          python tests/check_frozen_character_importer.py "$importer"
+          python tools/verify_gltf_validator.py \
+            --executable "$validator" --manifest "$validator.manifest.json" \
+            --target windows-x86_64
           # Partyful builds prove that the packaged .exe carries the configured
           # cloud surface. An empty origin is a deliberate partyless mirror.
           if [[ -n "${PARTY_ORIGIN:-}" ]]; then

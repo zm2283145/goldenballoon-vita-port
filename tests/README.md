@@ -10,6 +10,27 @@ MDKR_TRACE=1 ./build/mdkr64 --headless-frames 1700 \
 Expected: `menuId=3` (character select). The options script yields `menuId=12`.
 Both prove real input reaches the game and menus advance/diverge on navigation.
 
+## Character release acceptance receipt
+
+`character_release_evidence` runs
+`tests/test_character_release_evidence.py`. It keeps the public
+`mdkr-character-release-acceptance/1` schema and verifier in lockstep, proves
+that incomplete human/device observations fail closed, and exercises exact
+artifact plus provenance hashing. The release operator creates the deliberately
+red template with `tools/check_character_release_evidence.py --write-template`
+and validates it against the packaged artifact directory only after all three
+platforms and low/mid/high physical-device tiers have been observed. The
+receipt stores normalized descriptions and digests only; ROMs, character
+assets, captures, paths, and operator identity remain private.
+
+`modern_character_draw_store` protects the renderer's retained custom-character
+commands. It proves current and previous skin palettes are copied immutably into
+demand-driven exact-size storage, rigid and invalid draws behave safely, released
+assets and overtaken generations fail closed, shutdown frees every palette, and
+renderer restart cannot revive a stale token. This preserves the 256-joint and
+2,048-command ceilings without permanently reserving the worst-case 68 MB bone
+palette in every build.
+
 **Always run muted and headless** — `MDKR_AUDIO=0` plus `--headless-frames N`.
 Omitting `--headless-frames` opens a window *and* the SDL audio device.
 
@@ -494,6 +515,14 @@ production coverage:
   expanded WIDE_HUD ortho -- so the intro/menu/lockup dialogue path is left
   untouched. A self-test replays all three assertions against the pre-fix source
   to prove they fail red.
+- `check_widescreen_hud_layers.py` renders the real 1P/2P HUD at 4:3 and
+  ultrawide aspect ratios, checks that world expansion remains visible while
+  HUD groups preserve their authored safe-area relationships, and carries
+  detector controls so an empty or unchanged capture cannot pass.
+- `check_save_options_scroll_band.py` drives the real Save Options pak-switch
+  scroll and proves inverted off-screen glyph rectangles are skipped without
+  erasing valid text, sky, or wood-panel pixels. Its calibrated band detector
+  and nonzero `[RECT-SKIP]` witness close both the original defect and vacuity.
 - `check_live_toggle_settings.py` gates the same settings being CHANGED
   mid-run. `Video.FrameLimit`, `Video.MotionSmoothing` and
   `Video.AllowTearing` apply at the host-frame boundary and
@@ -1393,6 +1422,11 @@ SIGSTOPs the driver for three seconds mid-stream and requires a Connected
 controller with fresh input within five seconds of resuming, which drives the
 bounded transport queue and the host's custody self-heal through the true
 stack.
+
+`tests/check_online_live_transport_e2e.py` joins two production live-transport
+drivers through the real service protocol and proves creator/joiner convergence,
+bounded recovery, and fail-neutral teardown without relying on launcher UI or
+an in-process transport stub.
 
 `tests/check_party_lan_e2e.py` is the no-internet crown gate: it runs the same
 `mdkr_native_party_e2e_driver` under `--lan`, where the embedded
@@ -4791,6 +4825,498 @@ The check complements, rather than replaces, the deeper Taj picker and
 playability journeys. It specifically protects the shared expandable-roster
 layout and the two new ROM-authored presentation assets. It is registered as
 `bonus_character_select` in `tools/run_checks.py`.
+
+## Independent custom-character browser — `tests/check_custom_character_roster.py`
+
+This real WebGPU gate generates a tiny license-clean GLB and portrait, packages
+and transactionally installs them into a temporary isolated character catalog,
+then enters the actual custom-racer browser through its controller route. It
+requires the runtime catalog trace, opaque modal coverage, centered portrait
+pixels, a clean exit, and no fatal/sanitizer marker. It never reads or changes
+the player's normal character library.
+
+```bash
+python3 tests/check_custom_character_roster.py \
+  --build build-character-tests --rom baserom.us.v80.z64
+```
+
+The gate is registered as `custom_character_roster` in `tools/run_checks.py`
+and is serialized with the other native GPU/pixel checks. Its generated package
+uses a Greek display name and Cyrillic short name, and the runtime trace must
+prove both entered the ROM-independent native path. The dedicated pure C glyph
+test covers deterministic RGBA output, kerning/fitting, transparent-edge
+hygiene, supported LTR scripts, explicit shaping/missing/invalid fallbacks, and
+shutdown/reinitialization. The roster companion also proves the shared retail-
+font projection: printable ASCII survives exactly;
+common Latin diacritics, ligatures, attached combining marks, typographic
+punctuation, and full-width ASCII fold predictably; each remaining valid
+unsupported codepoint becomes one fallback cell; malformed UTF-8 and
+unterminated input fail boundedly; controls become spaces; and output truncation
+is explicit. The rendered Portrait Studio gate requires the same shared engine
+path to report display/short mode, reason, folded, and fallback counts before
+Build, including an emoji case that must not masquerade as native text.
+
+## Custom-character identity surfaces — `tests/check_custom_character_identity_surfaces.py`
+
+This real WebGPU gate generates a CC0 package with a Bumper gameplay donor,
+four unmistakable portrait quadrants, authored display/short/narration/sort
+names, and a distinctive minimap colour. It carries the launcher's engine
+handoff contract through the production character-select transaction and a
+complete Ancient Lake Time Trial. Runtime witnesses must retain Bumper as
+gameplay authority while resolving the package's minimap colour and 40x40 card
+for the exact player. Pixel checks then require the authored marker colour in
+the real race minimap region and all four portrait quadrants on the real
+race-times page.
+
+```bash
+python3 tests/check_custom_character_identity_surfaces.py \
+  --build build-character-tests --rom baserom.us.v80.z64
+```
+
+The gate is registered as `custom_character_identity_surfaces` and serialized
+with every native GPU/pixel check. Its temporary package, catalog, save, input
+script, and captures never touch the player's normal library.
+
+## Collection-arena custom portrait — `tests/check_custom_character_flag_portrait.py`
+
+This real-ROM WebGPU gate generates and installs a CC0 package with a Bumper
+donor and an unmistakable package-owned 40x40 card, then enters Fire Mountain's
+actual egg challenge. The lazy `BHV_CHARACTER_FLAG` binding for player one must
+name the exact package card rather than Bumper's retail portrait. Two otherwise
+identical runs differ only by the production portrait-draw suppression control;
+matched framebuffer samples must differ by a full portrait-shaped region. This
+isolates real painted flag pixels from the custom model, HUD, course, and race
+simulation. The installed package inventory is hashed before and after both
+arms.
+
+```bash
+python3 tests/check_custom_character_flag_portrait.py \
+  --build build-character-tests --rom baserom.us.v80.z64
+```
+
+The gate is registered as `custom_character_flag_portrait` and GPU-serialized
+in `tools/run_checks.py`. Its source, catalog, save, logs, and captures are
+temporary unless `--evidence-dir` is supplied.
+
+## Raw source Workshop intake — `tests/check_character_raw_intake_ui.py`
+
+This ROM-free WebGPU gate first creates and drops a canonical `.mdkrsource`
+artifact with a self-contained GLB, exact original-source and conversion-
+settings bindings, external adapter identity claim, and exact license bytes.
+It requires mutation-free review, explicit unsigned-adapter disclosure,
+separate acceptance, exact reviewed-digest revalidation, collision-free
+exclusive GLB/license/provenance extraction, rights prefill without approval,
+and the ordinary resumable draft/inspection handoff. A second process
+keyboard/speech-walks that review at 200% in a 640x480 window and proves review
+alone extracts nothing. Hostile unit fixtures reject unknown/duplicate/symlink
+members, duplicate JSON keys, digest changes, review races, and every sibling
+destination collision without partial output. The reference adapter packer is
+also proved deterministic and explicitly does not report an authenticated
+converter.
+
+The same ROM-free WebGPU gate then drops a nested authoring ZIP containing one
+generated license-clean DAE, requires bounded conversion to an exclusively
+created self-contained GLB, confirms the missing embedded-license disclosure,
+and verifies the ZIP stays byte-identical and no package/cache is published. It
+also keyboard-walks the explicit converted-destination workflow. Before
+conversion, it drops uppercase FBX, OBJ, Blender, JSON glTF, USDZ and native
+DCC fixtures and requires each to route to its format-specific GLB export lane
+instead of ROM/package validation. One lane is keyboard/speech walked through
+the copyable checklist; every lane must leave the source byte-identical and
+create no draft, candidate, output, or installed state. The gate then
+drops two distinct generated, license-clean, self-contained GLBs onto one real
+launcher profile. It requires Workshop routing,
+bounded model inspection, two independently authenticated source drafts, durable
+selection, an independently identified same-source branch, source-fingerprint-
+bound fallback/seat/head mapping restoration, explicit switching and exact
+deletion, durable close/resume navigation that does not monopolize installed
+editing, legacy singleton migration, and rendered captures without publishing a
+package candidate or runtime cache. A fresh
+process and every switch require reinspection, so stale model bytes never inherit
+an in-memory fingerprint. A checksum-corrupt inventory is rendered read-only and
+must remain byte-for-byte untouched. Hostile unit fixtures prove per-member and
+aggregate ZIP expansion-ratio rejection before reads and unsupported-compression
+rejection. The rendered lifecycle supplies an otherwise complete draft with a
+malformed SPDX expression, requires the exact inline parser refusal, and proves
+that neither a review candidate nor an installed cache appears. The ROM-free
+probe corpus also mutates buffer lengths, view bounds/stride/targets, accessor
+types/counts/offsets/sparse flags, POSITION metadata and floats, indices,
+animation inputs/outputs, inverse binds, and shared/image views. Every case must
+return an actionable policy error without an exception. Scene cycles, affine
+shear, hostile material/name/texture fields, misleading required extensions,
+bad PNG checksums, and compressed pixels inconsistent with IHDR dimensions are
+also covered, alongside zero normals, invalid tangent handedness, unusable
+weights, non-finite exponent syntax, and oversized JSON integers; direct
+compiler controls independently recheck storage and input types. A many-error
+fixture proves diagnostics stop at 256 exact items plus a
+suppression count. The rendered intake drops a zero-count accessor, requires its exact
+manager diagnostic, and proves that no candidate or cache appears. The gate
+also drives reviewed installation,
+requires exact completed-draft/candidate cleanup while preserving a sibling
+same-ID source draft, then proves the installed one-LOD Performance workspace
+opens the sole candidate without changing source or installed bytes and refuses
+to guess after a second same-ID draft is added. It hashes both external GLBs
+and the license before and after the lifecycle, keyboard-walks the spoken draft
+controls, and renders at 640x480 with 200% UI scale and touch scrolling.
+
+```bash
+python3 tests/check_character_raw_intake_ui.py \
+  --build build-character-tests
+```
+
+The rendered pass also keyboard-walks and speaks the optional LOD profile,
+exclusive-create destination, and “Create LOD copy and continue” action; native
+geometry generation and four-level compilation are independently exercised by
+`character_lod_builder`.
+
+The gate is registered as the `app_character_raw_intake` CTest and the
+`character_raw_intake_ui` run-check; it needs neither a ROM nor a community
+model.
+
+The underlying data-only format and extraction lifecycle are independently
+registered as the `character_source_adapter` Python CTest and the native
+`character_adapter_output_index` CTest. The public frozen contract and
+reference pack/inspect commands are documented in
+`docs/architecture/character-source-adapter-contract.md`.
+
+## Character-work shutdown lifecycle — `tests/check_character_quit_lifecycle_ui.py`
+
+This ROM-free rendered gate drops a generated, license-clean GLB into the real
+launcher and deliberately holds the real background manager long enough to
+request window shutdown while work is active. It requires a visible,
+cancellable finishing card, disables Play/import, services the result after
+navigation, and permits Quit only after no worker result remains unpublished.
+It also proves that the external GLB stays byte-identical and no private
+launcher result file is stranded in the isolated catalog. The native
+`character_async_job` test independently proves single-operation exclusion,
+result publication, exception transfer without `std::terminate`, and the final
+destructor join.
+
+```bash
+python3 tests/check_character_quit_lifecycle_ui.py \
+  --build build-character-tests
+```
+
+The rendered gate is registered as `app_character_quit_lifecycle`; it needs no
+ROM, network, or community model.
+
+## Workshop tool history — `tests/check_character_workshop_history_ui.py`
+
+This WebGPU gate generates and installs an isolated CC0 fixture, then opens the
+exact saved Identity, Rig & Motion, Gameplay, Offset Studio, Performance, and
+Test tabs. It requires source-digest-bound history controls for Identity, Profile,
+Rig, Fit/review, Performance assembly, and Test setup, and verifies that merely
+rendering every route leaves the installed source and cache byte-for-byte
+unchanged. The 200% keyboard/speech Gameplay route additionally requires all
+ten project-owned, colour-independent donor-profile metric badges with no
+retail portrait art. The distinct 200% Offset Studio route requires the linked-
+ROM exact-preview, disabled-package preview, measured vertical/facing/contact
+starting points and honest package-anchor reset contracts plus the
+front/side/top placement and contact planes, context yaw, vehicle-only copy
+boundary, and Fit undo contract to render. The contact proposal must expose its
+exact-state sample counts and XYZ deltas, remain inside the existing safety
+envelope, require explicit acceptance, and invalidate stale evidence for a new
+exact test. The 200% keyboard/speech Performance route requires
+all four named targets, the exact authored-LOD control, runtime-equivalent
+source/local-bias selection, merged distance intervals, session-only distance
+scrubbing, selected-LOD structural accounting, transition quality warnings,
+keyboard/speech access to the plot, and independent Performance history to
+render. The Test route also requires all 13 semantic inspection choices,
+the safe midpoint phase default, neutral camera/light defaults, exclusive-
+capture disclosure, and the explicit session-only/no-performance-evidence
+contract to render. `character_edit_history` separately proves discrete edits,
+continuous-gesture coalescing, deferred commit, divergent redo invalidation,
+and bounded eviction.
+
+```bash
+python3 tests/check_character_workshop_history_ui.py \
+  --build build-character-tests
+```
+
+The rendered gate is registered as the `app_character_workshop_history` CTest
+and `character_workshop_history_ui` run-check. It needs neither a ROM nor a
+community model. Passing `--rom` additionally requires the rendered donor cards
+to transition from their honest no-ROM treatment to exact ROM-derived metric
+bars and acceleration signatures; this uses only the game's ordinary verified
+base ROM.
+
+## Named-draft transfer — `tests/check_character_draft_transfer_ui.py`
+
+This ROM-free two-catalog gate drives the real Package workspace to save and
+exclusively export an exact-source `.mdkrdrafts` bundle, then reviews and imports
+it in an independently installed copy of the same generated CC0 character. It
+requires the transfer to strip local portrait paths, omit model/package/ROM
+bytes, retain exact portrait/editor state, refuse overwrite, expose source and
+add/duplicate/collision outcomes before consent, and remain mutation-free at
+review. The recipient review is rendered at 200% in the compact 640x480 layout;
+a keyboard/speech traversal must reach the compatibility summary before the
+rights-gated action. Confirmed import must re-read the reviewed file and add all
+new snapshots atomically without resuming, building, activating, assigning, or
+changing installed character bytes. A second review must be idempotent, and a
+same-id package with a different source digest must fail compatibility without
+publishing a hidden draft.
+
+The pure `character_draft_transfer` test independently proves complete-payload
+integrity detection, bounded parsing, privacy normalization, exact-base
+selection, fail-atomic capacity refusal, deterministic non-overwriting id
+renaming, and semantic duplicate suppression.
+
+```bash
+python3 tests/check_character_draft_transfer_ui.py \
+  --build build-character-tests
+```
+
+The rendered gate is registered as `app_character_draft_transfer`; neither arm
+requires a ROM, a network, or a community asset.
+
+## Portrait Studio authoring — `tests/check_character_portrait_studio_ui.py`
+
+This ROM-free gate installs a generated CC0 package into an isolated catalog,
+generates a non-square local RGBA PNG, and opens the real Identity workspace. It
+requires strict source loading, digest/dimension disclosure, square crop,
+premultiplied-area or crisp reduction, edge-connected matte removal, background
+frames, a non-destructive target-space subject mask with pointer and numeric
+coordinate routes, bounded framing/mask undo/redo, deterministic styling,
+quality reporting, and an exact-byte-derived native/light/dark/grayscale/
+protanopia/deuteranopia/tritanopia readability proof, plus six exact-output
+clean/classic/bold/crisp/dithered/soft comparison variants and
+selection and palette-replacement surfaces to render at 200% UI scale in the
+compact launcher. Each variant preserves framing and cleanup, changes only the
+draft style recipe, and remains installed-byte-pure. A keyboard-only
+speech walk must announce the consequential controls, and both arms must leave
+installed source/cache bytes unchanged. Pure `character_portrait_studio` and
+`character_draft_snapshot` tests prove CRC and APNG refusal, mutation-free decode
+failure, image operations, bounded provenance recipes, deterministic output,
+analysis, opaque background compositing and deterministic screening transforms,
+preset invariants, selection semantics, v1-v7 migration, and v8
+source-record/mask/top-camera round trips independently of rendering. The shared
+`character_edit_history` and rendered history gates retain the existing
+source-bound, byte-capped undo/redo contract around those draft fields.
+
+```bash
+python3 tests/check_character_portrait_studio_ui.py \
+  --build build-character-tests
+```
+
+The gate is registered as `app_character_portrait_studio` and
+`character_portrait_studio_ui`; it needs neither a ROM nor a community model.
+
+## Exact Character Workshop contexts — `tests/check_custom_character_workshop_preview.py`
+
+This gate generates and transactionally installs a license-clean package with
+a Bumper donor into a temporary isolated catalog. It directly starts the real
+character-select scene plus baseline Ancient Lake car, Whale Bay hovercraft,
+and Windmill Plains plane races without an input script. It also directly
+qualifies the dense and alternate routes for every vehicle: Greenwood Village
+and Snowball Valley for car, Crescent Island and Hot Top Volcano for
+hovercraft, and Spaceport Alpha and Everfrost Peak for plane. The matrix
+includes one-, three-, and four-player layouts and
+requires the package's non-Diddy donor, one shared WebGPU asset upload, nonzero
+modern draws and triangles, zero refused draws, nonempty captures, and real
+four-player viewport dividers. Four-player rendering must materially multiply
+the one-player character work. Negative arms require invalid context/player
+values, a missing package assignment, and an unsupported vehicle to fail closed
+with the precise refusal. One positive arm holds `select.idle` at phase
+`250/1000` in the exact car scene and requires nonzero runtime held-pose ticks
+with zero fallback ticks. A paired authored-only
+`race.finish_win` arm requires every inspected tick to report source fallback,
+proving the result distinguishes an unavailable semantic from exact phase
+control.
+Additional negative arms reject an unknown semantic, an out-of-range phase,
+and a semantic/phase pair with one member missing. A further positive arm holds
+`select.idle` at phase `500/1000`, applies a 180-degree yaw/15-degree pitch
+absolute racer-relative fitted-bounds orbit and bright character-only light,
+suppresses the scripted camera bank, requires nonzero warmed camera/light
+application counts plus 12 consecutive eligible rendered frames, and proves
+both exclusive output-sized PNG products. The gameplay product is canonical RGB
+and contains the composed world, vehicle, character, and HUD. The model-only
+product is canonical RGBA from the isolated WebGPU replay; it contains a
+nonempty centered character over real transparency, excludes scene matte
+colors, and has zero RGB in every zero-alpha pixel. The gate decodes every PNG
+filter and requires the generated character's contiguous material component to
+be large, unclipped, and inside a central safe frame. Negative visual arms reject unpaired fields, out-of-range
+yaw, unknown lighting, a select-camera orbit, visual fields or capture in live
+mode, uppercase capture suffixes, and an existing destination; the last must
+remain byte-identical.
+
+Paired model-only arms also drive exact +90-degree top and -90-degree underside
+pole cameras against a closed, skinned tetrahedral fixture. Both must retain a
+stable yaw-defined screen orientation and a nonempty centered 3D subject; this
+prevents an edge-on planar fixture from being mistaken for a camera failure or
+an oblique 89-degree approximation from passing as a true top view.
+
+Every valid arm also enables the production presentation census. It must begin
+only after the 120-authored-tick warm-up and emit a bounded structured result
+with at least 40 post-warm-up intervals and nonzero modern-character
+replacements. The headless arm must identify its synthetic pacing so those fast
+harness intervals can never be presented as a player/device performance result.
+It must also report a stable WebGPU backend, adapter, driver, vendor/device ID,
+physical output size and actual scene-render size. With RenderScale 1, output
+and render dimensions must agree across every arm and with the captured PPM;
+the gate intentionally accepts the host's real HiDPI drawable rather than
+mistaking logical window pixels for the comparison environment. Every valid
+arm must also publish a normalized target-frame forward direction, an ordered
+calibrated vertical volume, and a ground/seat anchor at automatic zero from the
+actual replacement transform. The select volume may not penetrate the roster
+floor beyond the five-millimetre numerical tolerance.
+The one-player and four-player model captures must replay the same complete
+player-0/view-0 primitive set. Each retains one exact target-to-clip witness,
+aspect-fits that selected viewport into the full output without distortion, and
+publishes bounded fixed-point projections for eight calibrated bounds corners,
+the fitted anchor, and the forward endpoint. The gate installs a second
+reviewed-humanoid package and drives a real car arm through automatic contact
+solving. The current result-v23 contract must publish all four bounded
+contact witnesses; the gate independently recomputes the left-hand
+target-to-endpoint distance from quantized coordinates and rejects partial,
+detached, or fabricated select-context evidence. Authored-clips-only arms must
+publish an explicit zero mask when no automatic solve owns the pose.
+
+The bounded semantic-review arms require the exact three-state selection-room
+battery and all eleven race semantics on each of the car's open, dense, and
+alternate-environment courses. Every sample waits for the engine-owned settled
+pose witness plus 60 complete replacement draws, publishes framing, contact,
+retained-vehicle, and visibility evidence, and then returns automatically.
+Unknown scenes and vehicle-only scenes requested for character select fail
+closed. ROM-free rendered and pure-policy tests independently pin the launcher's
+one-action progression, resume, full-refresh, retry, stop, and approval rules.
+
+Every valid arm must additionally publish a completed asynchronous opaque-depth
+witness. The renderer replays player 0's exact current primitive set into an
+isolated depth target and against the final scene depth over the same 8 x 8
+screen grid. The gate verifies exact boolean masks, popcounts, scene-subset
+semantics, and material draw classification without claiming pixel precision.
+A successful all-zero query remains valid failing visual evidence: it
+distinguishes a fully clipped, back-facing, or alpha-rejected subject from an
+unavailable GPU readback. Alpha-blended materials are structurally valid but
+unqualified because they do not have one portable opaque-depth meaning.
+Two fault-injection arms own the optional-allocation boundary. A one-shot
+isolated-depth failure must be released, retried, and end with qualified exact
+visibility. A persistent diagnostic-pipeline failure must make exactly the
+Workshop's three bounded attempts, publish explicit unavailable visibility, and
+still complete the playable session without a device or renderer fatal error.
+The renderer creates those query, buffer, texture/view, and diagnostic-pipeline
+resources inside asynchronous validation and out-of-memory scopes and encodes
+the replay only after both callbacks succeed.
+
+Every arm must also publish the versioned GPU timing contract. One arm
+force-disables it and must remain explicitly unsupported with no values. A
+device without timestamp queries must do the same naturally. A supporting
+device must return exact scene-pass timestamps with monotonic nonzero
+percentiles and at least two-thirds usable post-warm-up frames. At most the six
+readback slots may remain pending; usable, pending, and ring-full counts may
+never exceed the wall sample, and every remaining scene frame must be covered
+by the reported invalid-readback count. A device without in-pass timing must
+balance that partition exactly. Character-draw values are required only when the device exposes
+native in-pass timestamps and are forbidden otherwise; wall cadence is never
+accepted as a substitute.
+
+The pose arm is intentionally not performance qualification. The Workshop
+keeps it as session fit evidence and displays replacement/contact observations,
+but the production publish boundary refuses to write it into the durable 4x4
+latest/baseline matrix. Live game-driven animation remains the only evidence
+eligible for timing comparison.
+
+```bash
+python3 tests/check_custom_character_workshop_preview.py \
+  --build build-character-tests --rom baserom.us.v80.z64
+```
+
+The gate is registered as `custom_character_workshop_preview` and GPU-serialized
+in `tools/run_checks.py`. The ROM-free `app_lifecycle` CTest separately proves
+that its scoped launcher environment handoff restores both absent variables and
+exact caller-supplied values after repeated writes.
+
+## Durable Character Workshop test evidence — `tests/check_character_test_evidence_ui.py`
+
+This ROM-free rendered gate installs a generated CC0 animated package and
+exercises the Test workspace's durable 4-context by 4-player-layout matrix. It
+publishes a qualified Car 4P result through the production result boundary,
+checks exact source/fit/LOD/presentation fingerprints plus timing, device and
+physical-dimension fields on disk, and checks the v3 signed target-frame bounds,
+ground/seat anchor, normalized facing, and four hand/foot chain witnesses from
+that replacement draw. It
+restarts the launcher, requires the same fit diagnosis to remain available, and
+pins the result as an explicit comparison baseline. A 200% compact keyboard
+speech walk must announce the qualified cell and both baseline controls. A
+separate 200% virtual-controller D-pad walk renders transition mode and must
+reach all four responsive player-layout choices, both review-mode choices, both
+named semantic endpoints and numeric phases, camera values, character light,
+and every enabled inspection action through SDL and the production ImGui input
+backend. Capture controls must stay outside that focus graph while transition
+review disables deterministic stills.
+
+The second half clears only that baseline while preserving latest evidence,
+then clears the package's complete local evidence inventory. Finally it corrupts
+the authenticated store and requires the Workshop to become read-only without
+rewriting one byte. Every arm hashes the installed package before and after so
+test bookkeeping cannot mutate character source or compiled cache bytes. The
+generated package has multiple authored LODs; one rendered arm publishes a
+valid result, changes only the persisted local LOD policy, and requires the
+result to become visibly stale. The older fake-fit-digest arm remains as an
+independent rejection case. The
+empty-inventory arm also publishes a fully rendered held-pose inspection
+through the production result boundary and requires its session result to stay
+available for fit review while the durable evidence file remains byte-exact.
+Its paired fallback arm proves that unavailable semantic motion is reported but
+cannot unlock fit approval, while still leaving durable evidence byte-exact.
+The rendered keyboard/speech arm publishes a successful transparent model-only
+camera/light/capture inspection into the session report tray, decodes and draws
+its bounded digest-bound thumbnail, announces descriptive preview text, and
+requires both render-product choices, portrait handoff, removal, report path,
+exclusive export, and list-clear controls to remain reachable at 200% scale.
+Another rendered arm publishes two distinct bounded RGB scene fixtures as a
+digest-bound registered donor/custom pair, opens the actual report-tray blend
+control, and requires its exact-grid accessibility trace. The pure report unit
+and linked-ROM gate separately prove refusal on witness drift and production
+renderer agreement, so this UI smoke does not manufacture renderer authority.
+The complete over-budget arm also accepts the explicit test-only sharing token,
+exports a real schema-v1 device profile through the production UI, parses all
+16 honest warning rows, and proves the output retains host/GPU/driver/build,
+resolution, cost, wall, and optional GPU timing while excluding package ID,
+display name, character directory, and every raw source/fit/presentation
+digest. Production users must separately check the visible identity disclosure;
+the exporter never uploads or overwrites a file.
+The pure `character_visual_report` test independently proves embedded PNG/JSON
+output, capture-time digest binding, same-size/same-product file-replacement
+refusal, rebinding refusal, HTML/script escaping, source-path privacy, PNG
+completeness/dimension/product checks, schema-v5 scene/model-alpha plus
+custom/retail-donor subject identity and fixed
+projection metadata, integer-space registered SVG overlay, checkerboard
+transparency presentation, and overwrite refusal;
+`character_preview_cache` proves the Offset Studio no-filename path derives
+distinct bounded two-slot custom-scene, model-alpha, and retail-donor products
+per package/context, preserves the last published product until its replacement
+binds, preserves unrelated files, cleans only
+regular non-link owned files, rejects cross-package ownership and hostile links,
+and leaves the renderer destination absent for exclusive PNG creation;
+`workshop_preview_runtime` proves visual bounds, donor-reference enable/reset
+and qualified-batch counting, failure-without-mutation, and measurement epochs.
+The linked-ROM gate separately requires the donor route to preserve the
+package's selected donor, produce zero modern replacements and nonzero qualified
+donor-character batches, capture a nonempty composed RGB frame, and auto-return
+after 12 stable frames. It then captures the custom half at the same held pose
+and camera, requiring identical fitted anchor/bounds/forward/head and camera
+bounds/viewport/head witnesses plus the same RGB pixel grid; this exercises
+both renderer halves of the launcher's registered overlay contract.
+The pure `character_test_evidence_store` unit separately covers canonical parsing,
+whole-inventory and row authentication, strict unsigned/signed numeric and UTF-8
+bounds, renderer-fit/contact-witness invariants, exact key replacement,
+authenticated v1 through v8 loading and next-write v9 migration, the
+64-package/2048-record limits, transaction
+failures, honest baseline comparability, and complete-matrix device-profile
+summary/export refusal for partial, stale, mixed-device, invalid-cost,
+wrong-suffix, and existing-destination inputs. The durable filename intentionally
+remains `character_test_evidence-v1.tsv`: its authenticated header selects the
+schema, allowing existing v1 stores to be discovered and migrated rather than
+silently orphaned.
+
+```bash
+python3 tests/check_character_test_evidence_ui.py \
+  --build build-character-tests
+```
+
+The rendered gate is registered as `app_character_test_evidence` in CTest and
+`character_test_evidence_ui` in `tools/run_checks.py`; it requires no ROM.
 
 ## Bonus results portraits — `tests/check_bonus_results_portraits.py`
 

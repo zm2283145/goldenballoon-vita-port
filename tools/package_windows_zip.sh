@@ -53,14 +53,24 @@ stage_lan_web_assets() {
 }
 
 binary="build/mdkr64.exe"
+character_importer=""
+character_importer_manifest=""
+gltf_validator=""
+gltf_validator_manifest=""
+character_lod_tool=""
 version="dev"
 self_test=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --binary) binary="$2"; shift 2 ;;
+    --character-importer) character_importer="$2"; shift 2 ;;
+    --character-importer-manifest) character_importer_manifest="$2"; shift 2 ;;
+    --gltf-validator) gltf_validator="$2"; shift 2 ;;
+    --gltf-validator-manifest) gltf_validator_manifest="$2"; shift 2 ;;
+    --character-lod-tool) character_lod_tool="$2"; shift 2 ;;
     --version) version="$2"; shift 2 ;;
     --self-test) self_test=true; shift ;;
-    -h|--help) echo "Usage: $0 [--binary PATH] [--version VER] [--self-test]"; exit 0 ;;
+    -h|--help) echo "Usage: $0 [--binary PATH] --character-importer PATH --character-importer-manifest PATH --gltf-validator PATH --gltf-validator-manifest PATH --character-lod-tool PATH [--version VER] [--self-test]"; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; exit 1 ;;
   esac
 done
@@ -81,7 +91,25 @@ verify_windows_archive() {
   expected="$(printf '%s\n' \
     GoldenBalloon/ \
     GoldenBalloon/GoldenBalloon.exe \
+    GoldenBalloon/tools/ \
+    GoldenBalloon/tools/character_importer.exe \
+    GoldenBalloon/tools/character_importer.exe.manifest.json \
+    GoldenBalloon/tools/mdkr-character-lod.exe \
+    GoldenBalloon/tools/CPython-LICENSE.txt \
+    GoldenBalloon/tools/PyInstaller-COPYING.txt \
+    GoldenBalloon/tools/validators/ \
+    GoldenBalloon/tools/validators/gltf_validator.exe \
+    GoldenBalloon/tools/validators/gltf_validator.exe.manifest.json \
+    GoldenBalloon/tools/validators/LICENSE.txt \
+    GoldenBalloon/tools/validators/NOTICES.txt \
     GoldenBalloon/LICENSE \
+    GoldenBalloon/BasisU-LICENSE.txt \
+    GoldenBalloon/BasisU-Zstd-LICENSE.txt \
+    GoldenBalloon/BasisU-README.md \
+    GoldenBalloon/CharacterText-HarfBuzz-COPYING.txt \
+    GoldenBalloon/CharacterText-SheenBidi-LICENSE.txt \
+    GoldenBalloon/Meshoptimizer-LICENSE.md \
+    GoldenBalloon/Meshoptimizer-README.md \
     GoldenBalloon/NativePhoneParty-NOTICES.txt \
     GoldenBalloon/README.md \
     GoldenBalloon/RUN_ME.txt \
@@ -107,11 +135,62 @@ verify_windows_archive() {
   }
   notice_hash="$(python3 - "$archive" <<'PY'
 import hashlib
+import json
 import sys
 import zipfile
 
 with zipfile.ZipFile(sys.argv[1], "r") as archive:
     payload = archive.read("GoldenBalloon/NativePhoneParty-NOTICES.txt")
+    importer = archive.read("GoldenBalloon/tools/character_importer.exe")
+    manifest = json.loads(archive.read(
+        "GoldenBalloon/tools/character_importer.exe.manifest.json"))
+    if manifest.get("executable") != "character_importer.exe":
+        raise SystemExit("packaged importer manifest names another executable")
+    if manifest.get("executable_bytes") != len(importer):
+        raise SystemExit("packaged importer size differs from its manifest")
+    if manifest.get("executable_sha256") != hashlib.sha256(importer).hexdigest():
+        raise SystemExit("packaged importer hash differs from its manifest")
+    notices = {
+        "GoldenBalloon/tools/CPython-LICENSE.txt":
+            "78b12c3a81360b357002334f0e70ea0e92eebf7a9b358805c03c48484945f3bb",
+        "GoldenBalloon/tools/PyInstaller-COPYING.txt":
+            "dcf75fdb959db1e3b41c0f8505069d2ece781b5ec6b3d0a4d30975cfc6580245",
+        "GoldenBalloon/BasisU-LICENSE.txt":
+            "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+        "GoldenBalloon/BasisU-Zstd-LICENSE.txt":
+            "2c1a7fa704df8f3a606f6fc010b8b5aaebf403f3aeec339a12048f1ba7331a0b",
+        "GoldenBalloon/BasisU-README.md":
+            "d15b94b7cb320ed39156c8ddf7d8e814185c6d0de51005113f1d18784785975c",
+        "GoldenBalloon/CharacterText-HarfBuzz-COPYING.txt":
+            "ba8f810f2455c2f08e2d56bb49b72f37fcf68f1f4fade38977cfd7372050ad64",
+        "GoldenBalloon/CharacterText-SheenBidi-LICENSE.txt":
+            "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "GoldenBalloon/Meshoptimizer-LICENSE.md":
+            "f03037ca7bad1e3eb7f4a63fa6084a8baabd5ba30d3c239a9a7f35705d873e26",
+    }
+    for name, expected in notices.items():
+        if hashlib.sha256(archive.read(name)).hexdigest() != expected:
+            raise SystemExit(f"packaged importer notice changed: {name}")
+    validator = archive.read(
+        "GoldenBalloon/tools/validators/gltf_validator.exe")
+    validator_manifest = json.loads(archive.read(
+        "GoldenBalloon/tools/validators/gltf_validator.exe.manifest.json"))
+    if validator_manifest.get("executable") != "gltf_validator.exe":
+        raise SystemExit("packaged validator manifest names another executable")
+    if validator_manifest.get("executable_bytes") != len(validator):
+        raise SystemExit("packaged validator size differs from its manifest")
+    if validator_manifest.get("executable_sha256") != hashlib.sha256(
+            validator).hexdigest():
+        raise SystemExit("packaged validator hash differs from its manifest")
+    validator_notices = {
+        "GoldenBalloon/tools/validators/LICENSE.txt":
+            "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "GoldenBalloon/tools/validators/NOTICES.txt":
+            "d7a1cefe85110c1308632d0384b7a67a18c125193e54175c50d1982d8c81a2f4",
+    }
+    for name, expected in validator_notices.items():
+        if hashlib.sha256(archive.read(name)).hexdigest() != expected:
+            raise SystemExit(f"packaged validator notice changed: {name}")
 print(hashlib.sha256(payload).hexdigest())
 PY
 )"
@@ -124,14 +203,63 @@ PY
 if [[ "$self_test" == true ]]; then
   test_root="$(mktemp -d "${TMPDIR:-/tmp}/mdkr-windows-package-test.XXXXXX")"
   trap 'rm -rf "$test_root"' EXIT
-  mkdir -p "$test_root/GoldenBalloon"
+  mkdir -p "$test_root/GoldenBalloon/tools/validators"
   : >"$test_root/GoldenBalloon/GoldenBalloon.exe"
   : >"$test_root/GoldenBalloon/LICENSE"
+  cp third_party/basisu/LICENSE.txt \
+    "$test_root/GoldenBalloon/BasisU-LICENSE.txt"
+  cp third_party/basisu/Zstd-LICENSE.txt \
+    "$test_root/GoldenBalloon/BasisU-Zstd-LICENSE.txt"
+  cp third_party/basisu/README.md \
+    "$test_root/GoldenBalloon/BasisU-README.md"
+  cp third_party/character_text/HarfBuzz-COPYING.txt \
+    "$test_root/GoldenBalloon/CharacterText-HarfBuzz-COPYING.txt"
+  cp third_party/gltf_validator/LICENSE.txt \
+    "$test_root/GoldenBalloon/CharacterText-SheenBidi-LICENSE.txt"
+  cp third_party/meshoptimizer/LICENSE.md \
+    "$test_root/GoldenBalloon/Meshoptimizer-LICENSE.md"
+  cp third_party/meshoptimizer/README.md \
+    "$test_root/GoldenBalloon/Meshoptimizer-README.md"
   tr -d '\r' < third_party/native_phone_party/NOTICE.txt \
     > "$test_root/GoldenBalloon/NativePhoneParty-NOTICES.txt"
   : >"$test_root/GoldenBalloon/README.md"
   : >"$test_root/GoldenBalloon/RUN_ME.txt"
   : >"$test_root/GoldenBalloon/gamecontrollerdb.txt"
+  : >"$test_root/GoldenBalloon/tools/character_importer.exe"
+  : >"$test_root/GoldenBalloon/tools/mdkr-character-lod.exe"
+  cp third_party/character_importer/CPython-LICENSE.txt \
+    "$test_root/GoldenBalloon/tools/CPython-LICENSE.txt"
+  cp third_party/character_importer/PyInstaller-COPYING.txt \
+    "$test_root/GoldenBalloon/tools/PyInstaller-COPYING.txt"
+  : >"$test_root/GoldenBalloon/tools/validators/gltf_validator.exe"
+  cp third_party/gltf_validator/LICENSE.txt \
+    "$test_root/GoldenBalloon/tools/validators/LICENSE.txt"
+  cp third_party/gltf_validator/NOTICES.txt \
+    "$test_root/GoldenBalloon/tools/validators/NOTICES.txt"
+  python3 - "$test_root/GoldenBalloon/tools/character_importer.exe.manifest.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "w", encoding="utf-8") as stream:
+    json.dump({
+        "executable": "character_importer.exe",
+        "executable_bytes": 0,
+        "executable_sha256":
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    }, stream)
+PY
+  python3 - "$test_root/GoldenBalloon/tools/validators/gltf_validator.exe.manifest.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "w", encoding="utf-8") as stream:
+    json.dump({
+        "executable": "gltf_validator.exe",
+        "executable_bytes": 0,
+        "executable_sha256":
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    }, stream)
+PY
   while IFS= read -r asset; do
     case "$asset" in ''|\#*) continue ;; esac
     mkdir -p "$test_root/GoldenBalloon/dist/web/$(dirname "$asset")"
@@ -150,12 +278,44 @@ if [[ "$self_test" == true ]]; then
 fi
 
 [[ -f "$binary" ]] || { echo "ERROR: binary not found: $binary" >&2; exit 1; }
+[[ -n "$character_importer" && -f "$character_importer" ]] || {
+  echo "ERROR: --character-importer must name the frozen Windows helper." >&2
+  exit 1
+}
+[[ -n "$character_importer_manifest" && -f "$character_importer_manifest" ]] || {
+  echo "ERROR: --character-importer-manifest must name its attestation." >&2
+  exit 1
+}
+[[ -n "$gltf_validator" && -f "$gltf_validator" ]] || {
+  echo "ERROR: --gltf-validator must name the native Windows validator." >&2
+  exit 1
+}
+[[ -n "$gltf_validator_manifest" && -f "$gltf_validator_manifest" ]] || {
+  echo "ERROR: --gltf-validator-manifest must name its attestation." >&2
+  exit 1
+}
+[[ -n "$character_lod_tool" && -f "$character_lod_tool" ]] || {
+  echo "ERROR: --character-lod-tool must name the native Windows LOD helper." >&2
+  exit 1
+}
+
+python3 tools/verify_character_importer.py \
+  --executable "$character_importer" \
+  --manifest "$character_importer_manifest" \
+  --target windows-x86_64
+python3 tools/verify_gltf_validator.py \
+  --executable "$gltf_validator" \
+  --manifest "$gltf_validator_manifest" \
+  --target windows-x86_64
 
 # CMake links SDL2, libgcc, libstdc++, and winpthread statically for this target.
 # Verify that contract before packaging; copying a build-machine DLL would hide
 # a link regression and recreate the Explorer zip-preview failure this layout
 # is designed to prevent.
 ./tools/check_windows_imports.sh "$binary"
+./tools/check_windows_imports.sh "$character_importer"
+./tools/check_windows_imports.sh "$gltf_validator"
+./tools/check_windows_imports.sh "$character_lod_tool"
 
 dist="$(pwd)/dist"; mkdir -p "$dist"
 package_root="$(mktemp -d "${TMPDIR:-/tmp}/mdkr-windows-package.XXXXXX")"
@@ -164,8 +324,30 @@ trap cleanup EXIT
 stage="$package_root/GoldenBalloon"
 mkdir -p "$stage"
 cp "$binary" "$stage/GoldenBalloon.exe"
+mkdir -p "$stage/tools"
+cp "$character_importer" "$stage/tools/character_importer.exe"
+cp "$character_lod_tool" "$stage/tools/mdkr-character-lod.exe"
+cp "$character_importer_manifest" \
+  "$stage/tools/character_importer.exe.manifest.json"
+cp third_party/character_importer/CPython-LICENSE.txt \
+  third_party/character_importer/PyInstaller-COPYING.txt "$stage/tools/"
+mkdir -p "$stage/tools/validators"
+cp "$gltf_validator" "$stage/tools/validators/gltf_validator.exe"
+cp "$gltf_validator_manifest" \
+  "$stage/tools/validators/gltf_validator.exe.manifest.json"
+cp third_party/gltf_validator/LICENSE.txt \
+  third_party/gltf_validator/NOTICES.txt "$stage/tools/validators/"
 
 cp LICENSE README.md "$stage/"
+cp third_party/basisu/LICENSE.txt "$stage/BasisU-LICENSE.txt"
+cp third_party/basisu/Zstd-LICENSE.txt "$stage/BasisU-Zstd-LICENSE.txt"
+cp third_party/basisu/README.md "$stage/BasisU-README.md"
+cp third_party/character_text/HarfBuzz-COPYING.txt \
+  "$stage/CharacterText-HarfBuzz-COPYING.txt"
+cp third_party/gltf_validator/LICENSE.txt \
+  "$stage/CharacterText-SheenBidi-LICENSE.txt"
+cp third_party/meshoptimizer/LICENSE.md "$stage/Meshoptimizer-LICENSE.md"
+cp third_party/meshoptimizer/README.md "$stage/Meshoptimizer-README.md"
 # A Windows Git checkout may materialize tracked text with CRLF. Canonicalize
 # the distributed notice to the reviewed LF byte sequence pinned above.
 tr -d '\r' < third_party/native_phone_party/NOTICE.txt \
@@ -200,6 +382,9 @@ before closing it. `set MDKR_RENDERER=gl` selects the diagnostic OpenGL backend
 for that Command Prompt session. Press F1 in-game for the pause overlay.
 
 This app ships no game data. See README.md for controls and support details.
+The complete Character Workshop importer and its pinned Khronos glTF Validator
+are bundled; no Python installation is required. Their terms are in the tools
+and tools\validators folders.
 EOF
 
 ./tools/check_no_rom.sh "$stage"

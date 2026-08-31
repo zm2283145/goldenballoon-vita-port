@@ -31,6 +31,9 @@
 #include "adventure_party/adventure_party_state.h"
 #include "adventure_party/adventure_party_trace.h"
 #endif
+#include "modern_character_donor.h"
+#include "modern_character_runtime.h"
+#include "workshop_preview_runtime.h"
 #endif
 /* The level-object-map header is 16 bytes; gObjectMap[] is s32*, so the entries
  * begin 4 s32-elements in. The original code wrote this as sizeof(uintptr_t),
@@ -76,6 +79,12 @@
 #include "thread3_main.h"
 #include "tracks.h"
 #include "types.h"
+#ifdef NATIVE_PORT
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#endif
 #include "vehicle_misc.h"
 #include "video.h"
 #include "waves.h"
@@ -95,6 +104,376 @@ static s32 bonus_visual_is_presentation_actor(const Object *obj) {
 }
 
 #ifdef NATIVE_PORT
+/* Synchronous draw-local transaction. This is armed only after the exact
+ * donor model passes its schema and every modern primitive has registered a
+ * retained command. render_mesh() can then carve this object and no other. */
+static const Object *sModernCharacterReplacementObject;
+static const ObjectModel *sModernCharacterReplacementModel;
+static s32 sModernCharacterReplacementDonor;
+static s32 sModernCharacterReplacementVehicle;
+static s32 sModernCharacterReplacementLod;
+static s32 sModernCharacterReplacementSelect;
+static u32 sModernCharacterWarningBits;
+static const Object *sModernCharacterSelectObjects[MDKR_MODERN_CHARACTER_PLAYERS];
+static u8 sModernCharacterWasAirborne[MDKR_MODERN_CHARACTER_PLAYERS];
+static s16 sModernCharacterLandTicks[MDKR_MODERN_CHARACTER_PLAYERS];
+/* Workshop surface evidence is requested for one draw at a time on the game
+ * thread. The qualified retail corpus contains at most 273 triangles per
+ * racer model; the shared 512-triangle contract leaves room without allocating
+ * in ordinary rendering. */
+static MdkrModernSurfaceTriangle
+    sModernCharacterVehicleShell[MDKR_MODERN_CHARACTER_SHELL_TRIANGLE_MAX];
+
+static s32 modern_character_select_player_for_object(const Object *obj) {
+    s32 player;
+    if (obj == NULL) return -1;
+    for (player = 0; player < MDKR_MODERN_CHARACTER_PLAYERS; player++) {
+        if (sModernCharacterSelectObjects[player] == obj) return player;
+    }
+    return -1;
+}
+
+static void modern_character_warn_once(s32 player, u32 reason,
+                                       const char *message) {
+    u32 bit;
+    if (player < 0 || player >= MDKR_MODERN_CHARACTER_PLAYERS ||
+        reason >= 8) {
+        return;
+    }
+    bit = 1u << (player * 8 + reason);
+    if ((sModernCharacterWarningBits & bit) != 0) {
+        return;
+    }
+    sModernCharacterWarningBits |= bit;
+    fprintf(stderr, "[modern-character] P%d %s\n", player + 1, message);
+}
+
+static s32 modern_character_select_model_ready(
+    s32 donor, s32 modelId, const ObjectModel *model) {
+    const TriangleBatchInfo *batches;
+    s32 index;
+    if (model == NULL || model->batches == 0 ||
+        !mdkr_modern_donor_select_model_ready(
+            donor, modelId, model->numberOfVertices,
+            model->numberOfTriangles, model->numberOfBatches)) return FALSE;
+    batches = DKR_PTR(const TriangleBatchInfo, model->batches);
+    /* Every qualified shared US/PAL actor has exactly one four-vertex,
+     * two-triangle numbered placard at batch zero. All subsequent batches are
+     * the retail body. Validate that topology before a profile mask is used. */
+    if (batches[0].textureIndex >= 4 ||
+        batches[0].verticesOffset != 0 || batches[0].facesOffset != 0 ||
+        batches[1].verticesOffset != 4 || batches[1].facesOffset != 2) {
+        return FALSE;
+    }
+    for (index = 1; index < model->numberOfBatches; index++) {
+        if (batches[index].textureIndex < 4) return FALSE;
+    }
+    return TRUE;
+}
+
+static s32 modern_character_donor_target_frame(
+    const ObjectModel *model, const Object *object, s32 player, s32 donor,
+    s32 vehicle, s32 lod, MdkrModernCharacterContext context, f32 output[16]) {
+    const TriangleBatchInfo *batches;
+    const Vertex *vertices;
+    f32 minimum[3] = {32767.0f, 32767.0f, 32767.0f};
+    f32 maximum[3] = {-32768.0f, -32768.0f, -32768.0f};
+    s32 batch;
+    s32 found = FALSE;
+    MdkrModernCalibration calibration;
+    static u32 tracedContexts;
+    if (model == NULL || object == NULL || object->curVertData == NULL ||
+        output == NULL || model->numberOfBatches <= 0) return FALSE;
+    batches = DKR_PTR(const TriangleBatchInfo, model->batches);
+    vertices = object->curVertData;
+    for (batch = 0; batch < model->numberOfBatches; batch++) {
+        const s32 driver = context == MDKR_CHARACTER_CONTEXT_SELECT
+            ? !mdkr_modern_donor_select_batch_visible(donor, batch)
+            : !mdkr_modern_donor_batch_visible(donor, vehicle, lod, batch);
+        s32 vertex;
+        if (!driver) continue;
+        for (vertex = batches[batch].verticesOffset;
+             vertex < batches[batch + 1].verticesOffset; vertex++) {
+            if (vertices[vertex].x < minimum[0]) minimum[0] = vertices[vertex].x;
+            if (vertices[vertex].y < minimum[1]) minimum[1] = vertices[vertex].y;
+            if (vertices[vertex].z < minimum[2]) minimum[2] = vertices[vertex].z;
+            if (vertices[vertex].x > maximum[0]) maximum[0] = vertices[vertex].x;
+            if (vertices[vertex].y > maximum[1]) maximum[1] = vertices[vertex].y;
+            if (vertices[vertex].z > maximum[2]) maximum[2] = vertices[vertex].z;
+            found = TRUE;
+        }
+    }
+    if (!found ||
+        !mdkr_modern_character_player_calibration(player, &calibration, NULL) ||
+        !mdkr_modern_donor_fit_frame(
+            donor, context, minimum, maximum,
+            calibration.normalized_height, calibration.target_height,
+            output)) return FALSE;
+    if (getenv("MDKR_CUSTOM_CHARACTER_TRACE_ANCHORS") != NULL &&
+        (tracedContexts & (1u << context)) == 0u) {
+        tracedContexts |= 1u << context;
+        fprintf(stderr,
+                "[modern-character-anchor] context=%d min=%.3f,%.3f,%.3f "
+                "max=%.3f,%.3f,%.3f target=%.3f,%.3f,%.3f scale=%.3f\n",
+                context, minimum[0], minimum[1], minimum[2],
+                maximum[0], maximum[1], maximum[2],
+                output[12], output[13], output[14], output[0]);
+    }
+    return TRUE;
+}
+
+static s32 modern_character_lod_view(
+    s32 viewport, MdkrModernCharacterLodView *output) {
+    MdkrCameraProjection projection;
+    MtxF *objectMvp;
+    if (output == NULL ||
+        !cam_get_latched_effective_projection_for_viewport(
+            viewport, &projection) ||
+        !isfinite(projection.logical_viewport_height) ||
+        projection.logical_viewport_height <= 0.0f ||
+        projection.generation == 0u ||
+        (objectMvp = mtx_get_modelmtx_s16()) == NULL) return FALSE;
+    memset(output, 0, sizeof(*output));
+    memcpy(output->object_mvp, objectMvp, sizeof(output->object_mvp));
+    output->logical_viewport_height = projection.logical_viewport_height;
+    output->projection_generation = projection.generation;
+    return TRUE;
+}
+
+static s32 modern_character_affine_inverse(
+    const f32 input[16], f32 output[16]) {
+    const f32 a00 = input[0], a01 = input[4], a02 = input[8];
+    const f32 a10 = input[1], a11 = input[5], a12 = input[9];
+    const f32 a20 = input[2], a21 = input[6], a22 = input[10];
+    const f32 tx = input[12], ty = input[13], tz = input[14];
+    const f32 determinant = a00 * (a11 * a22 - a12 * a21) -
+        a01 * (a10 * a22 - a12 * a20) +
+        a02 * (a10 * a21 - a11 * a20);
+    f32 inverse;
+    if (!isfinite(determinant) || fabsf(determinant) < 1.0e-12f ||
+        output == NULL) return FALSE;
+    inverse = 1.0f / determinant;
+    memset(output, 0, sizeof(f32) * 16u);
+    output[0] = (a11 * a22 - a12 * a21) * inverse;
+    output[4] = (a02 * a21 - a01 * a22) * inverse;
+    output[8] = (a01 * a12 - a02 * a11) * inverse;
+    output[1] = (a12 * a20 - a10 * a22) * inverse;
+    output[5] = (a00 * a22 - a02 * a20) * inverse;
+    output[9] = (a02 * a10 - a00 * a12) * inverse;
+    output[2] = (a10 * a21 - a11 * a20) * inverse;
+    output[6] = (a01 * a20 - a00 * a21) * inverse;
+    output[10] = (a00 * a11 - a01 * a10) * inverse;
+    output[12] = -(output[0] * tx + output[4] * ty + output[8] * tz);
+    output[13] = -(output[1] * tx + output[5] * ty + output[9] * tz);
+    output[14] = -(output[2] * tx + output[6] * ty + output[10] * tz);
+    output[15] = 1.0f;
+    return TRUE;
+}
+
+static s32 modern_character_head_local_matrix(
+    const ModelInstance *model_instance, s16 head_angle, f32 output[16]) {
+    f32 cosine_head;
+    f32 sine_head;
+    f32 cosine_tilt;
+    f32 sine_tilt;
+    f32 offset_x;
+    f32 offset_y;
+    f32 offset_z;
+    if (model_instance == NULL || output == NULL) return FALSE;
+    offset_x = model_instance->offsetX;
+    offset_y = model_instance->offsetY;
+    offset_z = model_instance->offsetZ;
+    cosine_tilt = coss_f(model_instance->headTilt);
+    sine_tilt = sins_f(model_instance->headTilt);
+    cosine_head = coss_f(head_angle);
+    sine_head = sins_f(head_angle);
+    output[0] = cosine_head * cosine_tilt;
+    output[1] = cosine_head * sine_tilt;
+    output[2] = -sine_head;
+    output[3] = 0.0f;
+    output[4] = -sine_tilt;
+    output[5] = cosine_tilt;
+    output[6] = 0.0f;
+    output[7] = 0.0f;
+    output[8] = sine_head * cosine_tilt;
+    output[9] = sine_head * sine_tilt;
+    output[10] = cosine_head;
+    output[11] = 0.0f;
+    output[12] =
+        (-offset_x * (cosine_head * cosine_tilt)) +
+        (-offset_y * -sine_tilt) +
+        (-offset_z * (sine_head * cosine_tilt)) + offset_x;
+    output[13] =
+        (-offset_x * (cosine_head * sine_tilt)) +
+        (-offset_y * cosine_tilt) +
+        (-offset_z * (sine_head * sine_tilt)) + offset_y;
+    output[14] =
+        (-offset_x * -sine_head) +
+        (-offset_z * cosine_head) + offset_z;
+    output[15] = 1.0f;
+    return TRUE;
+}
+
+static s32 modern_character_vehicle_shell(
+    const ObjectModel *model, const Object *object, s32 donor, s32 vehicle,
+    s32 lod, const f32 target_frame[16],
+    const ModelInstance *model_instance, s16 head_angle,
+    MdkrModernCharacterVehicleShell *out) {
+    const TriangleBatchInfo *batches;
+    const Triangle *triangles;
+    const Vertex *vertices;
+    f32 inverse_target[16];
+    f32 secondary_matrix[16];
+    const s32 secondary_matrix_active = model_instance != NULL;
+    u32 output_count = 0u;
+    s32 batch;
+    if (out == NULL) return FALSE;
+    out->triangles = NULL;
+    out->triangle_count = 0u;
+    if (model == NULL || object == NULL || object->curVertData == NULL ||
+        target_frame == NULL || model->numberOfBatches <= 0 ||
+        model->numberOfVertices <= 0 || model->numberOfTriangles <= 0 ||
+        !modern_character_affine_inverse(target_frame, inverse_target)) {
+        return FALSE;
+    }
+    if (secondary_matrix_active &&
+        !modern_character_head_local_matrix(
+            model_instance, head_angle, secondary_matrix)) return FALSE;
+    batches = DKR_PTR(const TriangleBatchInfo, model->batches);
+    triangles = DKR_PTR(const Triangle, model->triangles);
+    vertices = object->curVertData;
+    for (batch = 0; batch < model->numberOfBatches; ++batch) {
+        const TriangleBatchInfo *current = &batches[batch];
+        const TriangleBatchInfo *next = &batches[batch + 1];
+        const s32 vertex_count = next->verticesOffset -
+            current->verticesOffset;
+        const s32 triangle_count = next->facesOffset - current->facesOffset;
+        s32 triangle_index;
+        if (!mdkr_modern_donor_batch_visible(
+                donor, vehicle, lod, batch) ||
+            (current->flags & RENDER_HIDDEN) != 0u) continue;
+        if (current->verticesOffset < 0 || current->facesOffset < 0 ||
+            vertex_count <= 0 || triangle_count < 0 ||
+            next->verticesOffset > model->numberOfVertices ||
+            next->facesOffset > model->numberOfTriangles ||
+            (secondary_matrix_active &&
+             current->vertOverride > vertex_count)) {
+            return FALSE;
+        }
+        if ((u32)triangle_count >
+            MDKR_MODERN_CHARACTER_SHELL_TRIANGLE_MAX - output_count) {
+            return FALSE;
+        }
+        for (triangle_index = current->facesOffset;
+             triangle_index < next->facesOffset; ++triangle_index) {
+            const Triangle *source = &triangles[triangle_index];
+            const u8 indices[3] = {source->vi0, source->vi1, source->vi2};
+            MdkrModernSurfaceTriangle *destination =
+                &sModernCharacterVehicleShell[output_count];
+            u32 point;
+            for (point = 0u; point < 3u; ++point) {
+                const Vertex *vertex;
+                f32 local[3];
+                u32 axis;
+                if (indices[point] >= vertex_count) return FALSE;
+                vertex = &vertices[
+                    current->verticesOffset + indices[point]];
+                local[0] = vertex->x;
+                local[1] = vertex->y;
+                local[2] = vertex->z;
+                if (secondary_matrix_active &&
+                    indices[point] >= current->vertOverride) {
+                    f32 transformed_local[3];
+                    for (axis = 0u; axis < 3u; ++axis) {
+                        transformed_local[axis] =
+                            secondary_matrix[axis] * local[0] +
+                            secondary_matrix[4u + axis] * local[1] +
+                            secondary_matrix[8u + axis] * local[2] +
+                            secondary_matrix[12u + axis];
+                    }
+                    memcpy(local, transformed_local, sizeof(local));
+                }
+                for (axis = 0u; axis < 3u; ++axis) {
+                    const double transformed =
+                        (double)inverse_target[axis] * local[0] +
+                        (double)inverse_target[4u + axis] * local[1] +
+                        (double)inverse_target[8u + axis] * local[2] +
+                        inverse_target[12u + axis];
+                    if (!isfinite(transformed) || transformed < -1000.0 ||
+                        transformed > 1000.0) return FALSE;
+                    destination->point[point][axis] = (f32)transformed;
+                }
+            }
+            ++output_count;
+        }
+    }
+    if (output_count == 0u) return FALSE;
+    out->triangles = sModernCharacterVehicleShell;
+    out->triangle_count = output_count;
+    return TRUE;
+}
+
+void obj_modern_character_select_update(Object *obj, s32 donor,
+                                        u32 hoverMask, u32 confirmedMask,
+                                        f32 seconds) {
+    s32 player;
+    s32 selected = -1;
+    const char *semantic;
+    char error[192];
+    if (obj == NULL || !mdkr_modern_donor_qualified(donor) ||
+        !isfinite(seconds) || seconds < 0.0f) return;
+    /* Prefer the matching package whose player is actually pointing at this
+     * donor actor. With no cursor on it, show the first configured package for
+     * that donor so every installed roster family still has an idle preview. */
+    for (player = 0; player < MDKR_MODERN_CHARACTER_PLAYERS; player++) {
+        if (mdkr_modern_character_player_package(player) == NULL ||
+            mdkr_modern_character_player_donor(player) != donor) {
+            continue;
+        }
+        if (selected < 0) selected = player;
+        if ((hoverMask & (1u << player)) != 0u) {
+            selected = player;
+            break;
+        }
+    }
+    if (selected < 0) {
+        for (player = 0; player < MDKR_MODERN_CHARACTER_PLAYERS; player++) {
+            if (sModernCharacterSelectObjects[player] == obj) {
+                sModernCharacterSelectObjects[player] = NULL;
+            }
+        }
+        return;
+    }
+    /* One authored actor can present one package. Disarm its previous owner
+     * before ticking so any animation error fails visible this frame. Other
+     * donor actors remain mapped to their own players. */
+    for (player = 0; player < MDKR_MODERN_CHARACTER_PLAYERS; player++) {
+        if (sModernCharacterSelectObjects[player] == obj) {
+            sModernCharacterSelectObjects[player] = NULL;
+        }
+    }
+    semantic = (confirmedMask & (1u << selected)) != 0u
+        ? "select.confirm"
+        : (hoverMask & (1u << selected)) != 0u
+            ? "select.hover" : "select.idle";
+    if (!mdkr_modern_character_tick(selected, semantic, seconds,
+                                    error, sizeof(error))) {
+        modern_character_warn_once(selected, 4, error);
+        return;
+    }
+    sModernCharacterSelectObjects[selected] = obj;
+}
+
+void obj_modern_character_select_forget(const Object *obj) {
+    s32 player;
+    if (obj == NULL) return;
+    for (player = 0; player < MDKR_MODERN_CHARACTER_PLAYERS; player++) {
+        if (sModernCharacterSelectObjects[player] == obj) {
+            sModernCharacterSelectObjects[player] = NULL;
+        }
+    }
+}
+
 static void bonus_visual_trace_transform_bypass(const Object *obj) {
     static u32 sTracedIdentities;
     const char *identity = NULL;
@@ -1708,6 +2087,14 @@ void clear_object_pointers(void) {
     D_8011AE01 = TRUE;
     D_8011AD53 = 0;
     gOverrideDoors = FALSE;
+#ifdef NATIVE_PORT
+    memset(sModernCharacterSelectObjects, 0,
+           sizeof(sModernCharacterSelectObjects));
+    memset(sModernCharacterWasAirborne, 0,
+           sizeof(sModernCharacterWasAirborne));
+    memset(sModernCharacterLandTicks, 0,
+           sizeof(sModernCharacterLandTicks));
+#endif
 }
 
 /**
@@ -5678,6 +6065,7 @@ Object *obj_spawn_attachment(s32 objID) {
  */
 void free_object(Object *object) {
 #ifdef NATIVE_PORT
+    obj_modern_character_select_forget(object);
     taj_visual_on_object_free(object);
     wizpig_visual_on_object_free(object);
     terry_visual_on_object_free(object);
@@ -5782,6 +6170,7 @@ void obj_destroy(Object *obj, s32 arg1) {
     s32 modelType;
 
 #ifdef NATIVE_PORT
+    obj_modern_character_select_forget(obj);
     taj_visual_on_object_destroy(obj);
     wizpig_visual_on_object_destroy(obj);
     terry_visual_on_object_destroy(obj);
@@ -6108,6 +6497,76 @@ void obj_update(s32 updateRate) {
     taj_visual_tick(updateRate);
     wizpig_visual_tick(updateRate);
     terry_visual_tick(updateRate);
+    /* Presentation-only semantic animation. The built-in donor remains the
+     * sole physics/audio/save identity; this sidecar consumes its finished
+     * state once per authoritative tick and never writes Object_Racer. */
+    for (i = 0; i < gNumRacers; i++) {
+        Object *modernOwner = (*gRacers)[i];
+        Object_Racer *modernRacer = modernOwner != NULL ? modernOwner->racer : NULL;
+        const char *semantic = "race.steer";
+        s32 modernPlayer;
+        s32 airborne;
+        s32 landing;
+        f32 steerPhase;
+        char modernError[192];
+        if (modernRacer == NULL || modernRacer->playerIndex < 0 ||
+            modernRacer->playerIndex >= MDKR_MODERN_CHARACTER_PLAYERS) {
+            continue;
+        }
+        modernPlayer = modernRacer->playerIndex;
+        if (!mdkr_modern_character_matches(
+                modernPlayer, modernRacer->characterId,
+                modernRacer->vehicleIDPrev)) {
+            sModernCharacterWasAirborne[modernPlayer] = FALSE;
+            sModernCharacterLandTicks[modernPlayer] = 0;
+            continue;
+        }
+        airborne = modernRacer->vehicleIDPrev == VEHICLE_CAR &&
+                   modernRacer->groundedWheels == 0 &&
+                   modernRacer->buoyancy == 0.0f;
+        if (sModernCharacterWasAirborne[modernPlayer] && !airborne) {
+            /* A bounded 0.2-second reaction window. An exact race.land clip
+             * plays once; a package without it safely uses fallback. */
+            sModernCharacterLandTicks[modernPlayer] = 12;
+        }
+        sModernCharacterWasAirborne[modernPlayer] = airborne;
+        landing = sModernCharacterLandTicks[modernPlayer] > 0;
+        if (landing) {
+            sModernCharacterLandTicks[modernPlayer] -= updateRate;
+            if (sModernCharacterLandTicks[modernPlayer] < 0) {
+                sModernCharacterLandTicks[modernPlayer] = 0;
+            }
+        }
+        if (modernRacer->raceFinished) {
+            semantic = modernRacer->finishPosition == 1
+                ? "race.finish_win" : "race.finish_lose";
+        } else if (modernRacer->spinout_timer ||
+                   modernRacer->attackType == ATTACK_SPIN) {
+            semantic = "race.spin";
+        } else if (modernRacer->squish_timer ||
+                   modernRacer->attackType != ATTACK_NONE) {
+            semantic = "race.damage";
+        } else if (modernRacer->boostTimer) semantic = "race.boost";
+        else if (modernRacer->held_obj != NULL) semantic = "race.item";
+        else if (landing) semantic = "race.land";
+        else if (airborne) semantic = "race.airborne";
+        else if (modernRacer->velocity > 2.0f) semantic = "race.reverse";
+        steerPhase = ((f32)modernRacer->steerAngle + 127.0f) / 254.0f;
+        if (steerPhase < 0.0f) steerPhase = 0.0f;
+        if (steerPhase > 1.0f) steerPhase = 1.0f;
+        if (strcmp(semantic, "race.steer") == 0) {
+            if (!mdkr_modern_character_tick_phase(
+                    modernPlayer, semantic, (f32)updateRate / 60.0f,
+                    steerPhase, modernError, sizeof(modernError))) {
+                modern_character_warn_once(modernPlayer, 7, modernError);
+            }
+        } else if (!mdkr_modern_character_tick(
+                       modernPlayer, semantic,
+                       (f32)updateRate / 60.0f,
+                       modernError, sizeof(modernError))) {
+            modern_character_warn_once(modernPlayer, 7, modernError);
+        }
+    }
 #endif
     if (level_type() == RACETYPE_DEFAULT) {
         for (i = 0; i < gNumRacers; i++) {
@@ -6946,9 +7405,18 @@ void render_3d_model(Object *obj) {
     Object_Racer *racerObj;
     ObjectModel *objModel;
     Sprite *something;
+#ifdef NATIVE_PORT
+    s32 modernModelIndex;
+    s32 workshopOccluderTarget;
+#endif
 
 #ifdef NATIVE_PORT
-    modInst = obj->modelInstances[object_render_model_index(obj)];
+    sModernCharacterReplacementObject = NULL;
+    sModernCharacterReplacementModel = NULL;
+    sModernCharacterReplacementSelect = FALSE;
+    workshopOccluderTarget = FALSE;
+    modernModelIndex = object_render_model_index(obj);
+    modInst = obj->modelInstances[modernModelIndex];
 #else
     modInst = obj->modelInstances[obj->modelIndex];
 #endif
@@ -7044,6 +7512,150 @@ void render_3d_model(Object *obj) {
         }
 #endif
         mtx_cam_push(&gObjectCurrDisplayList, &gObjectCurrMatrix, &obj->trans, gObjectModelScaleY, 0.0f);
+#ifdef NATIVE_PORT
+        {
+            const s32 player = modern_character_select_player_for_object(obj);
+            if (player >= 0) {
+                const s32 donor = mdkr_modern_character_player_donor(player);
+                const s32 modelId =
+                    DKR_PTR(s32, obj->header->modelIds)[modernModelIndex];
+                if (!modern_character_select_model_ready(
+                        donor, modelId, objModel)) {
+                    modern_character_warn_once(
+                        player, 5,
+                        "select fallback: retail actor fingerprint is unqualified");
+                } else {
+                    char modernError[192];
+                    f32 targetFrame[16];
+                    MdkrModernCharacterLodView lodView;
+                    const MdkrModernCharacterLodView *lodViewPtr =
+                        modern_character_lod_view(
+                            get_current_viewport(), &lodView)
+                            ? &lodView : NULL;
+                    if (!modern_character_donor_target_frame(
+                            objModel, obj, player, donor, -1, 0,
+                            MDKR_CHARACTER_CONTEXT_SELECT, targetFrame)) {
+                        modern_character_warn_once(
+                            player, 6,
+                            "select fallback: donor ground frame is unavailable");
+                        goto modern_select_done;
+                    }
+                    if (mdkr_modern_character_emit(
+                            player, get_current_viewport(),
+                            MDKR_CHARACTER_CONTEXT_SELECT,
+                            targetFrame, NULL,
+                            lodViewPtr,
+                            obj->distanceToCamera,
+                            &gObjectCurrDisplayList,
+                            modernError, sizeof(modernError))) {
+                        sModernCharacterReplacementObject = obj;
+                        sModernCharacterReplacementModel = objModel;
+                        sModernCharacterReplacementDonor = donor;
+                        sModernCharacterReplacementVehicle = -1;
+                        sModernCharacterReplacementLod = 0;
+                        sModernCharacterReplacementSelect = TRUE;
+                    } else {
+                        modern_character_warn_once(player, 6, modernError);
+                    }
+modern_select_done:;
+                }
+            }
+        }
+        if (racerObj != NULL && racerObj->playerIndex >= 0 &&
+            racerObj->playerIndex < MDKR_MODERN_CHARACTER_PLAYERS &&
+            mdkr_modern_character_player_package(racerObj->playerIndex) != NULL) {
+            s32 player = racerObj->playerIndex;
+            if (!mdkr_modern_character_matches(
+                    player, racerObj->characterId,
+                    racerObj->vehicleIDPrev)) {
+                char message[160];
+                snprintf(message, sizeof(message),
+                         "fallback: selected donor=%d but racer identity=%d vehicle=%d",
+                         mdkr_modern_character_player_donor(player),
+                         racerObj->characterId, racerObj->vehicleIDPrev);
+                modern_character_warn_once(player, 0, message);
+            } else if (modernModelIndex < 0 ||
+                       modernModelIndex >= obj->header->numberOfModelIds) {
+                modern_character_warn_once(
+                    player, 1, "fallback: retail donor model index is invalid");
+            } else if (!mdkr_modern_donor_model_ready(
+                           racerObj->characterId, racerObj->vehicleIDPrev,
+                           DKR_PTR(s32, obj->header->modelIds)[modernModelIndex],
+                           modernModelIndex, objModel->numberOfVertices,
+                           objModel->numberOfTriangles,
+                           objModel->numberOfBatches)) {
+                char message[192];
+                snprintf(message, sizeof(message),
+                         "fallback: unqualified donor model id=%d lod=%d "
+                         "vertices=%d triangles=%d batches=%d",
+                         DKR_PTR(s32, obj->header->modelIds)[modernModelIndex],
+                         modernModelIndex, objModel->numberOfVertices,
+                         objModel->numberOfTriangles,
+                         objModel->numberOfBatches);
+                modern_character_warn_once(player, 2, message);
+            } else {
+                char modernError[192];
+                f32 targetFrame[16];
+                MdkrModernCharacterLodView lodView;
+                const MdkrModernCharacterLodView *lodViewPtr =
+                    modern_character_lod_view(
+                        get_current_viewport(), &lodView)
+                        ? &lodView : NULL;
+                MdkrModernCharacterVehicleShell vehicleShell;
+                const MdkrModernCharacterVehicleShell *vehicleShellPtr = NULL;
+                const MdkrModernCharacterContext context =
+                    (MdkrModernCharacterContext)(
+                        MDKR_CHARACTER_CONTEXT_CAR +
+                        racerObj->vehicleIDPrev);
+                if (!modern_character_donor_target_frame(
+                        objModel, obj, player, racerObj->characterId,
+                        racerObj->vehicleIDPrev, modernModelIndex,
+                        context, targetFrame)) {
+                    modern_character_warn_once(
+                        player, 3,
+                        "fallback: donor seat frame is unavailable");
+                    goto modern_racer_done;
+                }
+                if (!mdkr_workshop_preview_reference_enabled() &&
+                    mdkr_modern_character_surface_diagnostics_requested(
+                        player, context)) {
+                    /* A failed shell build deliberately passes an empty shell:
+                     * emit consumes the one-shot request and leaves evidence
+                     * unavailable instead of retaining stale geometry. */
+                    memset(&vehicleShell, 0, sizeof(vehicleShell));
+                    (void)modern_character_vehicle_shell(
+                        objModel, obj, racerObj->characterId,
+                        racerObj->vehicleIDPrev, modernModelIndex,
+                        targetFrame,
+                        obj->animationID == 0 ? modInst : NULL,
+                        racerObj->headAngle, &vehicleShell);
+                    vehicleShellPtr = &vehicleShell;
+                }
+                if (mdkr_modern_character_emit(
+                        player, get_current_viewport(),
+                        context, targetFrame, vehicleShellPtr,
+                        lodViewPtr,
+                        gSceneDrawDistanceValid ? gSceneDrawDistance
+                                                : obj->distanceToCamera,
+                        &gObjectCurrDisplayList,
+                        modernError, sizeof(modernError))) {
+                    sModernCharacterReplacementObject = obj;
+                    sModernCharacterReplacementModel = objModel;
+                    sModernCharacterReplacementDonor = racerObj->characterId;
+                    sModernCharacterReplacementVehicle = racerObj->vehicleIDPrev;
+                    sModernCharacterReplacementLod = modernModelIndex;
+                    sModernCharacterReplacementSelect = FALSE;
+                } else {
+                    modern_character_warn_once(player, 3, modernError);
+                }
+modern_racer_done:;
+            }
+        }
+        workshopOccluderTarget =
+            obj == sModernCharacterReplacementObject &&
+            !sModernCharacterReplacementSelect && racerObj != NULL &&
+            racerObj->playerIndex == PLAYER_ONE;
+#endif
         vertOffset = FALSE;
         if (racerObj != NULL) {
             object_undo_player_tumble(obj);
@@ -7091,11 +7703,24 @@ void render_3d_model(Object *obj) {
         } else {
             gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, 255, 255, 255, 255);
         }
+#ifdef NATIVE_PORT
+        if (workshopOccluderTarget) {
+            gDkrSetCharacterOccluder(
+                gObjectCurrDisplayList++,
+                G_DKR_CHARACTER_OCCLUDER_VEHICLE_BODY);
+        }
+#endif
         if (opacity < 255) {
             meshBatch = render_mesh(objModel, obj, 0, RENDER_SEMI_TRANSPARENT, vertOffset);
         } else {
             meshBatch = render_mesh(objModel, obj, 0, RENDER_NONE, vertOffset);
         }
+#ifdef NATIVE_PORT
+        if (workshopOccluderTarget) {
+            gDkrSetCharacterOccluder(
+                gObjectCurrDisplayList++, G_DKR_CHARACTER_OCCLUDER_NONE);
+        }
+#endif
         if (obj->header->directionalPointLighting) {
             if (hasOpacity) {
                 gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, intensity, intensity, intensity, opacity);
@@ -7131,6 +7756,13 @@ void render_3d_model(Object *obj) {
                         if (opacity < 255) {
                             flags |= RENDER_SEMI_TRANSPARENT;
                         }
+#ifdef NATIVE_PORT
+                        if (workshopOccluderTarget) {
+                            gDkrSetCharacterOccluder(
+                                gObjectCurrDisplayList++,
+                                G_DKR_CHARACTER_OCCLUDER_VEHICLE_PARTS);
+                        }
+#endif
 #ifdef ANTI_TAMPER
                         cicFailed = FALSE;
                         // Anti-Piracy check
@@ -7192,6 +7824,13 @@ void render_3d_model(Object *obj) {
                     }
                 }
             }
+#ifdef NATIVE_PORT
+            if (workshopOccluderTarget) {
+                gDkrSetCharacterOccluder(
+                    gObjectCurrDisplayList++,
+                    G_DKR_CHARACTER_OCCLUDER_NONE);
+            }
+#endif
         }
         // This section draws the egg sprite being held by a racer.
         if (racerObj != NULL) {
@@ -7201,6 +7840,13 @@ void render_3d_model(Object *obj) {
                 if (index >= 0 && index < objModel->numberOfAttachPoints) {
                     flags = (RENDER_Z_COMPARE | RENDER_FOG_ACTIVE | RENDER_Z_UPDATE);
                     something = loopObj->sprites[loopObj->modelIndex];
+#ifdef NATIVE_PORT
+                    if (workshopOccluderTarget) {
+                        gDkrSetCharacterOccluder(
+                            gObjectCurrDisplayList++,
+                            G_DKR_CHARACTER_OCCLUDER_HELD_OBJECT);
+                    }
+#endif
 #ifndef NATIVE_PORT
                     /* NATIVE_PORT: the convergence lerp moved to
                      * racer_held_object_lerp(), called once per tick from
@@ -7218,6 +7864,13 @@ void render_3d_model(Object *obj) {
                         render_sprite_billboard(&gObjectCurrDisplayList, &gObjectCurrMatrix, &gObjectCurrVertexList,
                                                 loopObj, something, flags);
                     }
+#ifdef NATIVE_PORT
+                    if (workshopOccluderTarget) {
+                        gDkrSetCharacterOccluder(
+                            gObjectCurrDisplayList++,
+                            G_DKR_CHARACTER_OCCLUDER_NONE);
+                    }
+#endif
                 }
             }
         }
@@ -7227,11 +7880,39 @@ void render_3d_model(Object *obj) {
                                 obj->shading->shadowB, opacity);
                 directional_lighting_on();
             }
+#ifdef NATIVE_PORT
+            if (workshopOccluderTarget) {
+                gDkrSetCharacterOccluder(
+                    gObjectCurrDisplayList++,
+                    G_DKR_CHARACTER_OCCLUDER_VEHICLE_BODY);
+            }
+#endif
             render_mesh(objModel, obj, meshBatch, RENDER_SEMI_TRANSPARENT, vertOffset);
+#ifdef NATIVE_PORT
+            if (workshopOccluderTarget) {
+                gDkrSetCharacterOccluder(
+                    gObjectCurrDisplayList++,
+                    G_DKR_CHARACTER_OCCLUDER_NONE);
+            }
+#endif
             if (obj->header->directionalPointLighting) {
                 directional_lighting_off();
             }
         }
+#ifdef NATIVE_PORT
+        if (workshopOccluderTarget) {
+            /* Scope is redundantly reset at the inspected racer boundary so a
+             * malformed or unexpectedly empty attachment display list can
+             * never name a later object. Do not emit this diagnostic boundary
+             * for ordinary objects: the interpreter flushes at every scope
+             * command. */
+            gDkrSetCharacterOccluder(
+                gObjectCurrDisplayList++, G_DKR_CHARACTER_OCCLUDER_NONE);
+        }
+        sModernCharacterReplacementObject = NULL;
+        sModernCharacterReplacementModel = NULL;
+        sModernCharacterReplacementSelect = FALSE;
+#endif
         if (hasOpacity || obj->header->directionalPointLighting) {
             gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, 255, 255, 255, 255);
         }
@@ -7518,6 +8199,14 @@ static s32 racer_model_index_for_view(Object *obj, Object_Racer *racer,
     if (allowLodBias) {
         modelIndex = wizpig_visual_cap_donor_lod(obj, modelIndex);
         modelIndex = terry_visual_cap_donor_lod(obj, modelIndex);
+        if (racer->playerIndex >= 0 &&
+            racer->playerIndex < MDKR_MODERN_CHARACTER_PLAYERS &&
+            mdkr_modern_character_matches(
+                racer->playerIndex, racer->characterId,
+                racer->vehicleIDPrev)) {
+            modelIndex = mdkr_modern_donor_cap_lod(
+                racer->characterId, racer->vehicleIDPrev, modelIndex);
+        }
     }
     if (modelIndex < firstModel) {
         modelIndex = firstModel;
@@ -8300,6 +8989,26 @@ s32 render_mesh(ObjectModel *objModel, Object *obj, s32 startIndex, s32 flags, s
         if (!terry_visual_batch_visible(objModel, obj, i)) {
             i++;
             continue;
+        }
+        if (obj == sModernCharacterReplacementObject &&
+            objModel == sModernCharacterReplacementModel) {
+            const s32 retainedVehicleBatch =
+                sModernCharacterReplacementSelect
+                    ? mdkr_modern_donor_select_batch_visible(
+                          sModernCharacterReplacementDonor, i)
+                    : mdkr_modern_donor_batch_visible(
+                          sModernCharacterReplacementDonor,
+                          sModernCharacterReplacementVehicle,
+                          sModernCharacterReplacementLod, i);
+            if (!retainedVehicleBatch) {
+                if (mdkr_workshop_preview_reference_enabled()) {
+                    mdkr_workshop_preview_note_donor_reference_batch();
+                } else {
+                    mdkr_modern_character_note_hidden_donor_batch();
+                    i++;
+                    continue;
+                }
+            }
         }
 #endif
         if (!(DKR_PTR(TriangleBatchInfo, objModel->batches)[i].flags & RENDER_SEMI_TRANSPARENT) || flags & RENDER_SEMI_TRANSPARENT) {

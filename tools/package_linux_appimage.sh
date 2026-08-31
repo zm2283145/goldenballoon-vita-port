@@ -44,6 +44,11 @@ stage_lan_web_assets() {
 }
 
 binary="build/mdkr64"
+character_importer=""
+character_importer_manifest=""
+gltf_validator=""
+gltf_validator_manifest=""
+character_lod_tool=""
 version="dev"
 # Release packaging is STRICT by default -- a missing bundled SDL2 runtime or
 # a missing AppImage is a hard failure, so a release can't ship a broken/
@@ -54,10 +59,15 @@ self_test=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --binary) binary="$2"; shift 2 ;;
+    --character-importer) character_importer="$2"; shift 2 ;;
+    --character-importer-manifest) character_importer_manifest="$2"; shift 2 ;;
+    --gltf-validator) gltf_validator="$2"; shift 2 ;;
+    --gltf-validator-manifest) gltf_validator_manifest="$2"; shift 2 ;;
+    --character-lod-tool) character_lod_tool="$2"; shift 2 ;;
     --version) version="$2"; shift 2 ;;
     --dev) dev=true; shift ;;
     --self-test) self_test=true; shift ;;
-    -h|--help) echo "Usage: $0 [--binary PATH] [--version VER] [--dev] [--self-test]"; exit 0 ;;
+    -h|--help) echo "Usage: $0 [--binary PATH] --character-importer PATH --character-importer-manifest PATH --gltf-validator PATH --gltf-validator-manifest PATH --character-lod-tool PATH [--version VER] [--dev] [--self-test]"; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; exit 1 ;;
   esac
 done
@@ -93,6 +103,13 @@ verify_linux_tarball() {
     printf '%s\n' \
       Golden-Balloon.AppDir/AppRun \
       Golden-Balloon.AppDir/LICENSE \
+      Golden-Balloon.AppDir/BasisU-LICENSE.txt \
+      Golden-Balloon.AppDir/BasisU-Zstd-LICENSE.txt \
+      Golden-Balloon.AppDir/BasisU-README.md \
+      Golden-Balloon.AppDir/CharacterText-HarfBuzz-COPYING.txt \
+      Golden-Balloon.AppDir/CharacterText-SheenBidi-LICENSE.txt \
+      Golden-Balloon.AppDir/Meshoptimizer-LICENSE.md \
+      Golden-Balloon.AppDir/Meshoptimizer-README.md \
       Golden-Balloon.AppDir/NativePhoneParty-NOTICES.txt \
       Golden-Balloon.AppDir/README.md \
       Golden-Balloon.AppDir/RUN_ME.txt \
@@ -100,6 +117,15 @@ verify_linux_tarball() {
       Golden-Balloon.AppDir/mdkr64.png \
       Golden-Balloon.AppDir/usr/bin/gamecontrollerdb.txt \
       Golden-Balloon.AppDir/usr/bin/mdkr64 \
+      Golden-Balloon.AppDir/usr/bin/tools/character_importer \
+      Golden-Balloon.AppDir/usr/bin/tools/character_importer.manifest.json \
+      Golden-Balloon.AppDir/usr/bin/tools/mdkr-character-lod \
+      Golden-Balloon.AppDir/usr/bin/tools/CPython-LICENSE.txt \
+      Golden-Balloon.AppDir/usr/bin/tools/PyInstaller-COPYING.txt \
+      Golden-Balloon.AppDir/usr/bin/tools/validators/gltf_validator \
+      Golden-Balloon.AppDir/usr/bin/tools/validators/gltf_validator.manifest.json \
+      Golden-Balloon.AppDir/usr/bin/tools/validators/LICENSE.txt \
+      Golden-Balloon.AppDir/usr/bin/tools/validators/NOTICES.txt \
       ${web_files}
     [[ -z "$sdl_entries" ]] || printf '%s\n' "$sdl_entries"
   )"
@@ -125,6 +151,80 @@ verify_linux_tarball() {
     echo "ERROR: Linux package carries an unreviewed native Phone Party notice." >&2
     return 1
   fi
+  python3 - "$archive" <<'PY'
+import hashlib
+import json
+import sys
+import tarfile
+
+prefix = "Golden-Balloon.AppDir/usr/bin/tools/"
+with tarfile.open(sys.argv[1], "r:gz") as archive:
+    def payload(name: str) -> bytes:
+        member = archive.getmember(prefix + name)
+        stream = archive.extractfile(member)
+        if stream is None:
+            raise SystemExit(f"packaged importer member is not a file: {name}")
+        return stream.read()
+    def root_payload(name: str) -> bytes:
+        member = archive.getmember("Golden-Balloon.AppDir/" + name)
+        stream = archive.extractfile(member)
+        if stream is None:
+            raise SystemExit(f"packaged notice member is not a file: {name}")
+        return stream.read()
+    importer = payload("character_importer")
+    manifest = json.loads(payload("character_importer.manifest.json"))
+    if manifest.get("executable") != "character_importer":
+        raise SystemExit("packaged importer manifest names another executable")
+    if manifest.get("executable_bytes") != len(importer):
+        raise SystemExit("packaged importer size differs from its manifest")
+    if manifest.get("executable_sha256") != hashlib.sha256(importer).hexdigest():
+        raise SystemExit("packaged importer hash differs from its manifest")
+    notices = {
+        "CPython-LICENSE.txt":
+            "78b12c3a81360b357002334f0e70ea0e92eebf7a9b358805c03c48484945f3bb",
+        "PyInstaller-COPYING.txt":
+            "dcf75fdb959db1e3b41c0f8505069d2ece781b5ec6b3d0a4d30975cfc6580245",
+    }
+    for name, expected in notices.items():
+        if hashlib.sha256(payload(name)).hexdigest() != expected:
+            raise SystemExit(f"packaged importer notice changed: {name}")
+    basis_notices = {
+        "BasisU-LICENSE.txt":
+            "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+        "BasisU-Zstd-LICENSE.txt":
+            "2c1a7fa704df8f3a606f6fc010b8b5aaebf403f3aeec339a12048f1ba7331a0b",
+        "BasisU-README.md":
+            "d15b94b7cb320ed39156c8ddf7d8e814185c6d0de51005113f1d18784785975c",
+        "CharacterText-HarfBuzz-COPYING.txt":
+            "ba8f810f2455c2f08e2d56bb49b72f37fcf68f1f4fade38977cfd7372050ad64",
+        "CharacterText-SheenBidi-LICENSE.txt":
+            "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "Meshoptimizer-LICENSE.md":
+            "f03037ca7bad1e3eb7f4a63fa6084a8baabd5ba30d3c239a9a7f35705d873e26",
+    }
+    for name, expected in basis_notices.items():
+        if hashlib.sha256(root_payload(name)).hexdigest() != expected:
+            raise SystemExit(f"packaged BasisU notice changed: {name}")
+    validator = payload("validators/gltf_validator")
+    validator_manifest = json.loads(payload(
+        "validators/gltf_validator.manifest.json"))
+    if validator_manifest.get("executable") != "gltf_validator":
+        raise SystemExit("packaged validator manifest names another executable")
+    if validator_manifest.get("executable_bytes") != len(validator):
+        raise SystemExit("packaged validator size differs from its manifest")
+    if validator_manifest.get("executable_sha256") != hashlib.sha256(
+            validator).hexdigest():
+        raise SystemExit("packaged validator hash differs from its manifest")
+    validator_notices = {
+        "validators/LICENSE.txt":
+            "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "validators/NOTICES.txt":
+            "d7a1cefe85110c1308632d0384b7a67a18c125193e54175c50d1982d8c81a2f4",
+    }
+    for name, expected in validator_notices.items():
+        if hashlib.sha256(payload(name)).hexdigest() != expected:
+            raise SystemExit(f"packaged validator notice changed: {name}")
+PY
 }
 
 if [[ "$self_test" == true ]]; then
@@ -132,14 +232,58 @@ if [[ "$self_test" == true ]]; then
   test_root="$(mktemp -d "${TMPDIR:-/tmp}/mdkr-linux-package-test.XXXXXX")"
   trap 'rm -rf "$test_root"' EXIT
   test_appdir="$test_root/Golden-Balloon.AppDir"
-  mkdir -p "$test_appdir/usr/bin" "$test_appdir/usr/lib"
+  mkdir -p "$test_appdir/usr/bin/tools/validators" "$test_appdir/usr/lib"
   for path in AppRun LICENSE README.md RUN_ME.txt mdkr64.desktop mdkr64.png; do
     : >"$test_appdir/$path"
   done
+  cp third_party/basisu/LICENSE.txt "$test_appdir/BasisU-LICENSE.txt"
+  cp third_party/basisu/Zstd-LICENSE.txt "$test_appdir/BasisU-Zstd-LICENSE.txt"
+  cp third_party/basisu/README.md "$test_appdir/BasisU-README.md"
+  cp third_party/character_text/HarfBuzz-COPYING.txt \
+    "$test_appdir/CharacterText-HarfBuzz-COPYING.txt"
+  cp third_party/gltf_validator/LICENSE.txt \
+    "$test_appdir/CharacterText-SheenBidi-LICENSE.txt"
+  cp third_party/meshoptimizer/LICENSE.md "$test_appdir/Meshoptimizer-LICENSE.md"
+  cp third_party/meshoptimizer/README.md "$test_appdir/Meshoptimizer-README.md"
   cp third_party/native_phone_party/NOTICE.txt \
     "$test_appdir/NativePhoneParty-NOTICES.txt"
   : >"$test_appdir/usr/bin/gamecontrollerdb.txt"
   : >"$test_appdir/usr/bin/mdkr64"
+  : >"$test_appdir/usr/bin/tools/character_importer"
+  : >"$test_appdir/usr/bin/tools/mdkr-character-lod"
+  cp third_party/character_importer/CPython-LICENSE.txt \
+    "$test_appdir/usr/bin/tools/CPython-LICENSE.txt"
+  cp third_party/character_importer/PyInstaller-COPYING.txt \
+    "$test_appdir/usr/bin/tools/PyInstaller-COPYING.txt"
+  : >"$test_appdir/usr/bin/tools/validators/gltf_validator"
+  cp third_party/gltf_validator/LICENSE.txt \
+    "$test_appdir/usr/bin/tools/validators/LICENSE.txt"
+  cp third_party/gltf_validator/NOTICES.txt \
+    "$test_appdir/usr/bin/tools/validators/NOTICES.txt"
+  python3 - "$test_appdir/usr/bin/tools/character_importer.manifest.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "w", encoding="utf-8") as stream:
+    json.dump({
+        "executable": "character_importer",
+        "executable_bytes": 0,
+        "executable_sha256":
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    }, stream)
+PY
+  python3 - "$test_appdir/usr/bin/tools/validators/gltf_validator.manifest.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "w", encoding="utf-8") as stream:
+    json.dump({
+        "executable": "gltf_validator",
+        "executable_bytes": 0,
+        "executable_sha256":
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    }, stream)
+PY
   while IFS= read -r asset; do
     case "$asset" in ''|\#*) continue ;; esac
     mkdir -p "$test_appdir/usr/bin/dist/web/$(dirname "$asset")"
@@ -159,6 +303,35 @@ if [[ "$self_test" == true ]]; then
 fi
 
 [[ -x "$binary" ]] || { echo "ERROR: binary not found/executable: $binary" >&2; exit 1; }
+[[ -n "$character_importer" && -x "$character_importer" ]] || {
+  echo "ERROR: --character-importer must name the frozen Linux helper." >&2
+  exit 1
+}
+[[ -n "$character_importer_manifest" && -f "$character_importer_manifest" ]] || {
+  echo "ERROR: --character-importer-manifest must name its attestation." >&2
+  exit 1
+}
+[[ -n "$gltf_validator" && -x "$gltf_validator" ]] || {
+  echo "ERROR: --gltf-validator must name the native Linux validator." >&2
+  exit 1
+}
+[[ -n "$gltf_validator_manifest" && -f "$gltf_validator_manifest" ]] || {
+  echo "ERROR: --gltf-validator-manifest must name its attestation." >&2
+  exit 1
+}
+[[ -n "$character_lod_tool" && -x "$character_lod_tool" ]] || {
+  echo "ERROR: --character-lod-tool must name the native Linux LOD helper." >&2
+  exit 1
+}
+
+python3 tools/verify_character_importer.py \
+  --executable "$character_importer" \
+  --manifest "$character_importer_manifest" \
+  --target linux-x86_64
+python3 tools/verify_gltf_validator.py \
+  --executable "$gltf_validator" \
+  --manifest "$gltf_validator_manifest" \
+  --target linux-x86_64
 
 # appimagetool is a build-time EXECUTABLE dependency, so it is pinned to an
 # immutable release and verified by SHA-256 (fail closed on mismatch) rather than
@@ -186,8 +359,35 @@ cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
 appdir="$work/Golden-Balloon.AppDir"
 mkdir -p "$appdir/usr/bin" "$appdir/usr/lib"
+cp third_party/basisu/LICENSE.txt "$appdir/BasisU-LICENSE.txt"
+cp third_party/basisu/Zstd-LICENSE.txt "$appdir/BasisU-Zstd-LICENSE.txt"
+cp third_party/basisu/README.md "$appdir/BasisU-README.md"
+cp third_party/character_text/HarfBuzz-COPYING.txt \
+  "$appdir/CharacterText-HarfBuzz-COPYING.txt"
+cp third_party/gltf_validator/LICENSE.txt \
+  "$appdir/CharacterText-SheenBidi-LICENSE.txt"
+cp third_party/meshoptimizer/LICENSE.md "$appdir/Meshoptimizer-LICENSE.md"
+cp third_party/meshoptimizer/README.md "$appdir/Meshoptimizer-README.md"
 
 cp "$binary" "$appdir/usr/bin/mdkr64"
+mkdir -p "$appdir/usr/bin/tools"
+cp "$character_importer" "$appdir/usr/bin/tools/character_importer"
+chmod +x "$appdir/usr/bin/tools/character_importer"
+cp "$character_lod_tool" "$appdir/usr/bin/tools/mdkr-character-lod"
+chmod +x "$appdir/usr/bin/tools/mdkr-character-lod"
+cp "$character_importer_manifest" \
+  "$appdir/usr/bin/tools/character_importer.manifest.json"
+cp third_party/character_importer/CPython-LICENSE.txt \
+  third_party/character_importer/PyInstaller-COPYING.txt \
+  "$appdir/usr/bin/tools/"
+mkdir -p "$appdir/usr/bin/tools/validators"
+cp "$gltf_validator" "$appdir/usr/bin/tools/validators/gltf_validator"
+chmod +x "$appdir/usr/bin/tools/validators/gltf_validator"
+cp "$gltf_validator_manifest" \
+  "$appdir/usr/bin/tools/validators/gltf_validator.manifest.json"
+cp third_party/gltf_validator/LICENSE.txt \
+  third_party/gltf_validator/NOTICES.txt \
+  "$appdir/usr/bin/tools/validators/"
 
 # Community controller-mapping DB (MC.2), next to the binary where
 # SDL_GetBasePath() resolves it at controller init.
@@ -293,6 +493,9 @@ diagnostic OpenGL backend; it is useful for narrowing down a driver problem,
 not the recommended presentation path. Press F1 in-game for the pause overlay.
 
 This app ships no game data. See README.md for controls and support details.
+The complete Character Workshop importer and its pinned Khronos glTF Validator
+are bundled; no Python installation is required. Their terms are in
+usr/bin/tools and usr/bin/tools/validators.
 EOF
 
 # Scan the exact tree consumed by both tar and appimagetool, including every

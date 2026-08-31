@@ -1272,8 +1272,12 @@ void AppHost::queueDropFileForSmoke(const char *path) {
 }
 
 void AppHost::queueKeyPressForSmoke(SDL_Keycode key) {
+    queueKeyChordForSmoke(key, KMOD_NONE);
+}
+
+void AppHost::queueKeyChordForSmoke(SDL_Keycode key, SDL_Keymod modifiers) {
     if (AppUi_smokeInputMode() != AppUiSmokeInputMode::Keyboard) return;
-    pendingSmokeKeys_.push_back(key);
+    pendingSmokeKeys_.push_back({key, modifiers});
 }
 
 bool AppHost::queueGamepadPressForSmoke(SDL_GameControllerButton button) {
@@ -1350,26 +1354,30 @@ bool AppHost::pumpAndShouldQuit() {
         }
     }
 
-    if (smokeHeldKey_ != SDLK_UNKNOWN || !pendingSmokeKeys_.empty()) {
+    if (smokeHeldKey_.key != SDLK_UNKNOWN || !pendingSmokeKeys_.empty()) {
         SDL_Event event     = {};
         event.key.timestamp = SDL_GetTicks();
         event.key.windowID  = SDL_GetWindowID(window_);
         event.key.repeat    = 0;
-        if (smokeHeldKey_ != SDLK_UNKNOWN) {
+        if (smokeHeldKey_.key != SDLK_UNKNOWN) {
             event.type                = SDL_KEYUP;
             event.key.state           = SDL_RELEASED;
-            event.key.keysym.sym      = smokeHeldKey_;
-            event.key.keysym.scancode = SDL_GetScancodeFromKey(smokeHeldKey_);
+            event.key.keysym.sym      = smokeHeldKey_.key;
+            event.key.keysym.scancode =
+                SDL_GetScancodeFromKey(smokeHeldKey_.key);
+            event.key.keysym.mod      = KMOD_NONE;
             quit                      = injectSmokeEvent(event) || quit;
-            smokeHeldKey_             = SDLK_UNKNOWN;
+            smokeHeldKey_             = {SDLK_UNKNOWN, KMOD_NONE};
         }
         if (!pendingSmokeKeys_.empty()) {
             smokeHeldKey_ = pendingSmokeKeys_.front();
             pendingSmokeKeys_.erase(pendingSmokeKeys_.begin());
             event.type                = SDL_KEYDOWN;
             event.key.state           = SDL_PRESSED;
-            event.key.keysym.sym      = smokeHeldKey_;
-            event.key.keysym.scancode = SDL_GetScancodeFromKey(smokeHeldKey_);
+            event.key.keysym.sym      = smokeHeldKey_.key;
+            event.key.keysym.scancode =
+                SDL_GetScancodeFromKey(smokeHeldKey_.key);
+            event.key.keysym.mod      = smokeHeldKey_.modifiers;
             quit                      = injectSmokeEvent(event) || quit;
         }
     }

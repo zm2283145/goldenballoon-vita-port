@@ -2712,6 +2712,12 @@ size_t mdkr_camera_interpolated_view_projections(
         out[viewport].camera_position[0] = pose.position[0];
         out[viewport].camera_position[1] = pose.position[1];
         out[viewport].camera_position[2] = pose.position[2];
+        out[viewport].view_eye_position[0] = pose.position[0];
+        out[viewport].view_eye_position[1] =
+            pose.position[1] +
+            (pose.apply_shake ? pose.shake_magnitude : 0.0f);
+        out[viewport].view_eye_position[2] = pose.position[2];
+        out[viewport].view_eye_valid = TRUE;
         if (presentation_snapshot_resolve_camera(
                 (int)viewport, denominator, denominator, &next) &&
             next.interpolated && next.camera_id == pose.camera_id) {
@@ -3435,6 +3441,7 @@ s32 mtx_cam_push(Gfx **dList, Mtx **mtx, ObjectTransform *trans, f32 scaleY, f32
     f32 camRelX, camRelY, camRelZ;
     s32 index;
     f32 scaleFactor;
+    const Camera *activeCamera;
 #ifdef NATIVE_PORT
     GfxPresentationMatrixOwner rootOwner;
     const GfxPresentationMatrixOwner *owner = NULL;
@@ -3461,6 +3468,11 @@ s32 mtx_cam_push(Gfx **dList, Mtx **mtx, ObjectTransform *trans, f32 scaleY, f32
 
     // Convert the MVP matrix to fixed-point format and upload to RSP
     mtxf_to_mtx(&gCurrentMVPMatrixF, *mtx);
+    index = gActiveCameraID;
+    if (gCutsceneCameraActive) {
+        index += 4;
+    }
+    activeCamera = camera_obstruction_camera_for_slot(index);
 #ifdef NATIVE_PORT
     if (mdkr_presentation_owner_root(
             &rootOwner, trans, scaleY, offsetY,
@@ -3476,6 +3488,15 @@ s32 mtx_cam_push(Gfx **dList, Mtx **mtx, ObjectTransform *trans, f32 scaleY, f32
      * later, unrelated push. */
     gfx_shadow_matrix_set_camera_locked(sPendingCameraLocked);
     sPendingCameraLocked = FALSE;
+    {
+        f32 viewEye[3] = {
+            activeCamera->trans.x_position,
+            activeCamera->trans.y_position +
+                (gNoCamShake ? activeCamera->shakeMagnitude : 0.0f),
+            activeCamera->trans.z_position,
+        };
+        gfx_shadow_matrix_set_view_eye(viewEye);
+    }
     mdkr_shadow_register_matrix(
         *mtx, gModelMatrixF[gModelMatrixStackPos + 1],
         GFX_SHADOW_MOBILITY_DYNAMIC, GFX_SHADOW_SITE_CAM_PUSH, owner);
@@ -3500,15 +3521,9 @@ s32 mtx_cam_push(Gfx **dList, Mtx **mtx, ObjectTransform *trans, f32 scaleY, f32
     // Compute world-space position of the model's origin (0, 0, 0)
     mtxf_transform_point(*gModelMatrixF[gModelMatrixStackPos], 0.0f, 0.0f, 0.0f, &camRelX, &camRelY, &camRelZ);
 
-    index = gActiveCameraID;
-    if (gCutsceneCameraActive) {
-        // Use cutscene camera if active
-        index += 4;
-    }
-
     // Compute camera position relative to the model's origin in world space
     {
-        Camera *camera = camera_obstruction_camera_for_slot(index);
+        const Camera *camera = activeCamera;
         camRelX = camera->trans.x_position - camRelX;
         camRelY = camera->trans.y_position - camRelY;
         camRelZ = camera->trans.z_position - camRelZ;

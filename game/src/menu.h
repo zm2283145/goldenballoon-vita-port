@@ -593,6 +593,8 @@ void menu_racer_portraits(void);
 /* Project-owned bonus portraits shared by Rankings and portrait-bearing HUDs. */
 DrawTexture *menu_taj_portrait(void);
 DrawTexture *menu_mod_portrait(ModRacerIdentity identity);
+/* Assigned source-v3 identity, or NULL so callers retain donor/bonus fallback. */
+DrawTexture *menu_custom_character_portrait(s32 playerIndex);
 #endif
 void postrace_music_fade(s32 updateRate);
 void postrace_free(void);
@@ -617,6 +619,11 @@ void credits_free(void);
 void menu_camera_centre(void);
 void reset_controller_sticks(void);
 void reset_character_id_slots(void);
+#ifdef NATIVE_PORT
+/* Prepare a temporary exact-context Character Workshop session. `vehicle` is
+ * -1 for character select or the ordinary 0..2 Vehicle value for a race. */
+s32 mdkr_workshop_preview_prepare(s32 players, s32 vehicle);
+#endif
 s32 get_save_file_index(void);
 s32 get_track_id_to_load(void);
 s8 get_character_id_from_slot(s32 slot);
@@ -625,6 +632,7 @@ s8 get_player_selected_vehicle(s32 playerNum);
 void set_player_selected_vehicle(s32 playerNum, s32 index);
 s8 *charselect_status(void);
 s8 get_player_character(s32 controllerIndex);
+s16 menu_character_select_donor(s32 rosterIndex);
 void enable_tracks_mode(s32 boolean);
 s32 is_in_tracks_mode(void);
 void set_magic_code_flags(s32 flags);

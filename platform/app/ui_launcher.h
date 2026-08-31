@@ -38,7 +38,9 @@ constexpr int kLauncherPanelOnlineRoom = 1;
 constexpr int kLauncherPanelSettings = 2;
 constexpr int kLauncherPanelDiagnostics = 3;
 constexpr int kLauncherPanelAbout = 4;
-constexpr int kLauncherPanelCount = 5;
+// Appended so every existing numeric panel contract remains stable.
+constexpr int kLauncherPanelCharacterWorkshop = 5;
+constexpr int kLauncherPanelCount = 6;
 
 struct SDL_Window;
 class AppHost;
@@ -89,6 +91,40 @@ struct LauncherState {
     bool romValidationPending = false;
     bool romPlayValidationPending = false;
     bool romPlayValidationPassed = false;
+    // A Workshop preview uses the same mandatory final ROM check as Play. It
+    // remains pending only for that asynchronous check, then is copied into the
+    // one-shot boot config or cleared on cancellation/failure.
+    std::string characterPreviewPackage;
+    std::string characterPreviewSourceSha256;
+    std::string characterPreviewFitSha256;
+    std::string characterPreviewPresentationSha256;
+    MdkrCharacterPreviewContext characterPreviewContext =
+        MDKR_CHARACTER_PREVIEW_NONE;
+    MdkrCharacterPreviewScene characterPreviewScene =
+        MDKR_CHARACTER_PREVIEW_SCENE_BASELINE;
+    int characterPreviewPlayers = 0;
+    MdkrCharacterPreviewPose characterPreviewPose =
+        MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+    unsigned characterPreviewPosePhaseMilli = 0u;
+    MdkrCharacterPreviewPose characterPreviewTransitionFromPose =
+        MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+    unsigned characterPreviewTransitionFromPhaseMilli = 0u;
+    int characterPreviewViewYawDegrees = 0;
+    int characterPreviewViewPitchDegrees = 0;
+    MdkrWorkshopPreviewLighting characterPreviewLighting =
+        MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
+    std::string characterPreviewCapturePng;
+    MdkrCharacterPreviewCaptureKind characterPreviewCaptureKind =
+        MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
+    bool characterPreviewAutoReturn = false;
+    bool characterPreviewCaptureLauncherOwned = false;
+    bool characterPreviewPortraitSourceHandoff = false;
+    bool characterPreviewInteractiveStudio = false;
+    bool characterPreviewRepresentativeMotionReview = false;
+    bool characterPreviewDonorReference = false;
+    bool characterPreviewDispatched = false;
+    MdkrCharacterPreviewResult characterPreviewResult{};
+    MdkrCharacterMotionReviewResult characterMotionReviewResult{};
     // No discovery state: the launcher never searches the disk. The ROM arrives
     // by drag-and-drop, a native open-panel, a typed path, or the remembered
     // choice in the app's own prefs. See ui_rom.cpp's header for why.
@@ -114,6 +150,10 @@ struct LauncherState {
      * re-truncates what the verdict buffers were widened to carry. */
     char    bootError[1280] = {0};
     bool    bootErrorVisible = false;
+    // A normal Quit/window-close request waits for the current transactional
+    // character operation to publish while the launcher remains visible and
+    // responsive. The player can cancel this request from the progress card.
+    bool    quitRequested = false;
 };
 
 // Deferred navigation. `priority` orders the frame's competing writers; use
@@ -142,6 +182,8 @@ public:
     ~Launcher();
     LauncherAction draw(AppHost &host);
     void setBootError(const char *message);
+    void requestQuit();
+    bool quitReady() const;
 
     // Test-only entry point for the shell smoke.  It uses the exact same
     // asynchronous final recheck as the Play widget, while leaving the smoke

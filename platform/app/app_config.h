@@ -6,6 +6,7 @@
 #ifndef MDKR_APP_CONFIG_H
 #define MDKR_APP_CONFIG_H
 
+#include <cstddef>
 #include <string>
 
 namespace AppConfig {
@@ -41,6 +42,9 @@ void forceDirectorySyncFailureForTest(bool enabled);
 PersistResult save();
 std::string get(const std::string &key, const std::string &fallback = "");
 void set(const std::string &key, const std::string &value);
+// Remove every exact key beginning with a non-empty package-owned prefix.
+// Erasures participate in the next save transaction just like set().
+std::size_t erasePrefix(const std::string &prefix);
 
 // Change one preference and persist it as a single transaction. See save().
 PersistResult setAndSave(const std::string &key, const std::string &value);

@@ -26,11 +26,31 @@ def main() -> int:
     require("persistResultApplied" in HEADER,
             "visible-but-unconfirmed writes need one shared applied predicate")
 
-    # Both the initial UI-scale commit and its Retry action must retire their
-    # dirty/error state after a visible replacement, while presenting a warning
-    # instead of claiming a durable save.
+    # Both ordinary shell-preference save paths in this settings unit must
+    # accept a visible-but-unconfirmed write through the shared applied
+    # predicate: the initial UI-scale commit and its Retry action. Permanent
+    # character cleanup now lives in the idempotent cleanup-journal reconciler.
+    # Unlike an ordinary preference, its pre-mutation marker and final removal
+    # must be confirmed durable before the file transaction can advance.
     require(SETTINGS.count("AppConfig::persistResultApplied(persist)") == 2,
-            "both UI-scale save paths must accept visible unconfirmed writes")
+            "both ordinary settings-panel save paths must accept visible "
+            "unconfirmed writes")
+    require("forgetCharacterPackagePreferences(id)" in SETTINGS and
+            "preferences == AppConfig::PersistResult::Durable" in SETTINGS and
+            "character_workshop_cleanup_pending" in SETTINGS and
+            "mdkr_modern_character_reconcile_removal_coordinated" in SETTINGS and
+            "mdkr_modern_character_remove_installed_coordinated" in SETTINGS and
+            "commitCharacterPackageCleanup" in SETTINGS and
+            "differentGeneration" in SETTINGS and
+            "sourceDigest" in SETTINGS,
+            "permanent character deletion must durably reconcile its "
+            "native quarantine and package-owned preference cleanup under "
+            "one generation-bound cross-process lifecycle boundary")
+    require("g_characterRegistryInventoryAvailable" in SETTINGS and
+            "destructive recovery and deletion remain disabled" in SETTINGS and
+            "record.present" in SETTINGS,
+            "cleanup recovery must distinguish an unreadable inventory and "
+            "surface malformed durable markers without touching packages")
     require(SETTINGS.count("PersistResult::DurabilityUnconfirmed") >= 2,
             "both UI-scale save paths must distinguish durability uncertainty")
     # Pin the CLAIM, not the sentence. This assertion used to pin exact prose,

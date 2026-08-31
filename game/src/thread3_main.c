@@ -57,13 +57,19 @@
 #include <PR/os_cont.h>
 #include <PR/os_time.h>
 #ifdef NATIVE_PORT
+#include <limits.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "net/net_roster_runtime.h"
 #include "platform_os.h"
 #include "app_overlay_hooks.h"
+#include "app/engine_entry.h"
+#include "modern_character_runtime.h"
 #include "waves.h"
 #include "fast3d/gfx_pc_dkr.h"
+#include "gpu_diagnostics.h"
 #include "present_sched.h"
 #include "gameplay_event_trace.h"
 #include "presentation_snapshot.h"
@@ -79,6 +85,9 @@
 #include "adventure_party/adventure_party_trace.h"
 #include "mdkr_adventure.h" /* mdkr_test_pad_absent test injector */
 #endif
+
+extern int platform_pace_is_synthetic(void);
+extern s32 gRaceStartTimer;
 #endif
 
 /************ .rodata ************/
@@ -186,6 +195,1521 @@ OSMesgQueue gNMIMesgQueue;
 s32 gNMIMesgBuf;          // Official Name: resetPressed
 UNUSED s32 D_80123568[3]; // BSS Padding
 
+#ifdef NATIVE_PORT
+#define WORKSHOP_PREVIEW_WARMUP_TICKS 120u
+#define WORKSHOP_MOTION_REVIEW_SETTLE_DRAWS 60u
+#define WORKSHOP_MOTION_REVIEW_SAMPLE_TIMEOUT_TICKS 600u
+_Static_assert(
+    MDKR_CHARACTER_PREVIEW_CONTACTS == MDKR_MODERN_CHARACTER_CONTACTS,
+    "preview and runtime contact order must remain identical");
+_Static_assert(
+    MDKR_CHARACTER_PREVIEW_JOINTS == MDKR_MODERN_HUMANOID_ROLE_COUNT,
+    "preview and runtime humanoid role order must remain identical");
+_Static_assert(
+    MDKR_CHARACTER_PREVIEW_LANDMARKS ==
+            MDKR_MODERN_CHARACTER_FIT_LANDMARKS &&
+        MDKR_CHARACTER_PREVIEW_LANDMARK_HIPS ==
+            MDKR_MODERN_CHARACTER_FIT_LANDMARK_HIPS &&
+        MDKR_CHARACTER_PREVIEW_LANDMARK_CHEST ==
+            MDKR_MODERN_CHARACTER_FIT_LANDMARK_CHEST &&
+        MDKR_CHARACTER_PREVIEW_LANDMARK_HEAD ==
+            MDKR_MODERN_CHARACTER_FIT_LANDMARK_HEAD,
+    "preview and runtime anatomy landmark order must remain identical");
+static u64 sWorkshopPreviewWarmupTicks;
+static s32 sWorkshopPreviewMeasurementStarted;
+static s32 sWorkshopPreviewMeasurementFinished;
+static u32 sWorkshopPreviewVisibilityAttempts;
+static MdkrCharacterPreviewResult sWorkshopPreviewDiagnosticResult;
+static MdkrCharacterMotionReviewResult sWorkshopMotionReviewDiagnosticResult;
+static MdkrModernCharacterRuntimeMetrics sWorkshopPreviewCharacterBaseline;
+static MdkrWorkshopPreviewVisualMetrics sWorkshopPreviewVisualBaseline;
+static char sWorkshopPreviewCapturePath[1024];
+static u64 sWorkshopPreviewCaptureStableFrames;
+static u64 sWorkshopPreviewCaptureLastReplacementDraws;
+static u64 sWorkshopPreviewCaptureLastReferenceDraws;
+static u64 sWorkshopPreviewCaptureLastDonorReferenceBatches;
+static s32 sWorkshopPreviewCaptureArmed;
+static MdkrCharacterPreviewCaptureKind sWorkshopPreviewCaptureKind;
+static u32 sWorkshopMotionReviewSample;
+static u32 sWorkshopMotionReviewStageTicks;
+static u32 sWorkshopMotionReviewVisibilityAttempts;
+static u64 sWorkshopMotionReviewReplacementBaseline;
+static s32 sWorkshopMotionReviewPoseSettled;
+static s32 sWorkshopMotionReviewDiagnosticsRequested;
+static s32 sWorkshopMotionReviewUiReported;
+static MdkrModernCharacterRuntimeMetrics sWorkshopMotionReviewPoseBaseline;
+
+typedef struct WorkshopMotionReviewDefinition {
+    MdkrCharacterPreviewPose pose;
+    const char *semantic;
+    const char *label;
+    u32 phase_milli;
+} WorkshopMotionReviewDefinition;
+
+static const WorkshopMotionReviewDefinition sWorkshopVehicleMotionReviewDefinitions
+    [MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT] = {
+        {MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER,
+         "race.steer", "Steer left", 0u},
+        {MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER,
+         "race.steer", "Steer right", 1000u},
+        {MDKR_CHARACTER_PREVIEW_POSE_RACE_REVERSE,
+         "race.reverse", "Reverse", 500u},
+        {MDKR_CHARACTER_PREVIEW_POSE_RACE_BOOST,
+         "race.boost", "Boost", 500u},
+        {MDKR_CHARACTER_PREVIEW_POSE_RACE_ITEM,
+         "race.item", "Use item", 500u},
+        {MDKR_CHARACTER_PREVIEW_POSE_RACE_DAMAGE,
+         "race.damage", "Take damage", 500u},
+        {MDKR_CHARACTER_PREVIEW_POSE_RACE_SPIN,
+         "race.spin", "Spin", 500u},
+        {MDKR_CHARACTER_PREVIEW_POSE_RACE_AIRBORNE,
+         "race.airborne", "Airborne", 500u},
+        {MDKR_CHARACTER_PREVIEW_POSE_RACE_LAND,
+         "race.land", "Land", 500u},
+        {MDKR_CHARACTER_PREVIEW_POSE_RACE_FINISH_WIN,
+         "race.finish_win", "Win finish", 500u},
+        {MDKR_CHARACTER_PREVIEW_POSE_RACE_FINISH_LOSE,
+         "race.finish_lose", "Lose finish", 500u},
+};
+
+static const WorkshopMotionReviewDefinition sWorkshopSelectMotionReviewDefinitions
+    [MDKR_CHARACTER_MOTION_REVIEW_SELECT_SAMPLE_COUNT] = {
+        {MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE,
+         "select.idle", "Idle", 500u},
+        {MDKR_CHARACTER_PREVIEW_POSE_SELECT_HOVER,
+         "select.hover", "Hover", 500u},
+        {MDKR_CHARACTER_PREVIEW_POSE_SELECT_CONFIRM,
+         "select.confirm", "Confirm", 500u},
+};
+
+_Static_assert(
+    sizeof(sWorkshopVehicleMotionReviewDefinitions) /
+            sizeof(sWorkshopVehicleMotionReviewDefinitions[0]) ==
+        MDKR_CHARACTER_MOTION_REVIEW_SAMPLE_COUNT,
+    "semantic motion review definitions must cover every result slot");
+
+static u32 workshop_motion_review_sample_count(
+    MdkrCharacterPreviewContext context) {
+    return context == MDKR_CHARACTER_PREVIEW_SELECT
+        ? MDKR_CHARACTER_MOTION_REVIEW_SELECT_SAMPLE_COUNT
+        : MDKR_CHARACTER_MOTION_REVIEW_VEHICLE_SAMPLE_COUNT;
+}
+
+static const WorkshopMotionReviewDefinition *workshop_motion_review_definition(
+    MdkrCharacterPreviewContext context, u32 sample) {
+    const u32 count = workshop_motion_review_sample_count(context);
+    if (sample >= count) return NULL;
+    return context == MDKR_CHARACTER_PREVIEW_SELECT
+        ? &sWorkshopSelectMotionReviewDefinitions[sample]
+        : &sWorkshopVehicleMotionReviewDefinitions[sample];
+}
+
+static const char *workshop_motion_review_context_label(
+    MdkrCharacterPreviewContext context) {
+    switch (context) {
+        case MDKR_CHARACTER_PREVIEW_SELECT: return "SELECT";
+        case MDKR_CHARACTER_PREVIEW_CAR: return "CAR";
+        case MDKR_CHARACTER_PREVIEW_HOVERCRAFT: return "HOVERCRAFT";
+        case MDKR_CHARACTER_PREVIEW_PLANE: return "PLANE";
+        default: return "CHARACTER";
+    }
+}
+
+static const char *workshop_motion_review_scene_label(
+    MdkrCharacterPreviewScene scene) {
+    switch (scene) {
+        case MDKR_CHARACTER_PREVIEW_SCENE_BASELINE: return "OPEN";
+        case MDKR_CHARACTER_PREVIEW_SCENE_DENSE: return "DENSE";
+        case MDKR_CHARACTER_PREVIEW_SCENE_ALTERNATE: return "ALTERNATE";
+        case MDKR_CHARACTER_PREVIEW_SCENE_LOW_VISIBILITY: return "DARK";
+        case MDKR_CHARACTER_PREVIEW_SCENE_EFFECTS: return "EFFECTS";
+        default: return "UNKNOWN";
+    }
+}
+
+static void workshop_motion_review_render_status(void) {
+    MdkrCharacterMotionReviewResult *review =
+        g_mdkrCharacterMotionReviewResult;
+    const WorkshopMotionReviewDefinition *definition;
+    MdkrModernCharacterRuntimeMetrics metrics;
+    u64 stableDraws = 0u;
+    u32 heldDraws;
+    u32 filled;
+    u32 index;
+    u32 courseCount;
+    char progress[11];
+    const char *stage;
+    if (review == NULL || review->completed || review->failed_sample != 0u ||
+        review->context < MDKR_CHARACTER_PREVIEW_SELECT ||
+        review->context > MDKR_CHARACTER_PREVIEW_PLANE ||
+        review->scene < MDKR_CHARACTER_PREVIEW_SCENE_BASELINE ||
+        review->scene >= MDKR_CHARACTER_PREVIEW_SCENE_COUNT) return;
+    definition = workshop_motion_review_definition(
+        review->context, sWorkshopMotionReviewSample);
+    if (definition == NULL) return;
+
+    mdkr_modern_character_runtime_metrics(&metrics);
+    if (sWorkshopMotionReviewPoseSettled &&
+        metrics.replacement_draws >= sWorkshopMotionReviewReplacementBaseline) {
+        stableDraws = metrics.replacement_draws -
+            sWorkshopMotionReviewReplacementBaseline;
+    }
+    heldDraws = stableDraws < WORKSHOP_MOTION_REVIEW_SETTLE_DRAWS
+        ? (u32)stableDraws : WORKSHOP_MOTION_REVIEW_SETTLE_DRAWS;
+    filled = heldDraws * 10u / WORKSHOP_MOTION_REVIEW_SETTLE_DRAWS;
+    for (index = 0u; index < 10u; ++index) {
+        progress[index] = index < filled ? '#' : '-';
+    }
+    progress[10] = '\0';
+    courseCount = review->context == MDKR_CHARACTER_PREVIEW_SELECT
+        ? 1u : MDKR_CHARACTER_PREVIEW_SCENE_COUNT;
+    stage = !sWorkshopPreviewMeasurementStarted
+        ? "PREPARING"
+        : !sWorkshopMotionReviewPoseSettled
+            ? "SETTLING"
+            : sWorkshopMotionReviewDiagnosticsRequested
+                ? "MEASURING"
+                : "INSPECT";
+
+    set_render_printf_position(8, 8);
+    set_render_printf_background_colour(0, 0, 0, 184);
+    set_render_printf_colour(255, 214, 76, 255);
+    render_printf(
+        "REVIEW %s - %s %u/%u\n",
+        workshop_motion_review_context_label(review->context),
+        review->context == MDKR_CHARACTER_PREVIEW_SELECT
+            ? "ROOM" : workshop_motion_review_scene_label(review->scene),
+        (u32)review->scene + 1u, courseCount);
+    set_render_printf_colour(255, 255, 255, 255);
+    render_printf(
+        "%u/%u %s - %s [%s] %u/%u\n",
+        sWorkshopMotionReviewSample + 1u, review->sample_count,
+        definition->label, stage, progress, heldDraws,
+        WORKSHOP_MOTION_REVIEW_SETTLE_DRAWS);
+    set_render_printf_colour(190, 220, 255, 255);
+    /* The trailing newline commits this line's background rectangle before the
+     * colour reset below. Without it, debug_text_print() reaches the reset
+     * command before flushing the final line and the help text loses contrast. */
+    render_printf("Esc/F1 or pad Back: pause / stop safely\n");
+    set_render_printf_background_colour(0, 0, 0, 0);
+    set_render_printf_colour(255, 255, 255, 255);
+    if (!sWorkshopMotionReviewUiReported) {
+        sWorkshopMotionReviewUiReported = TRUE;
+        MDKR_TRACE(
+            "character_motion_review_ui: visible=1 context=%u scene=%u "
+            "course=%u/%u samples=%u stop=overlay",
+            (u32)review->context, (u32)review->scene,
+            (u32)review->scene + 1u, courseCount, review->sample_count);
+    }
+}
+
+static s32 workshop_preview_quantize_micrometres(
+    f32 value, long long *out) {
+    const double scaled = (double)value * 1000000.0;
+    if (out == NULL || !isfinite(scaled) || scaled < -1000000000.0 ||
+        scaled > 1000000000.0) return FALSE;
+    *out = (long long)(scaled + (scaled < 0.0 ? -0.5 : 0.5));
+    return TRUE;
+}
+
+static s32 workshop_preview_publish_fit_diagnostics(
+    MdkrCharacterPreviewResult *result) {
+    MdkrModernCharacterFitDiagnostics fit;
+    long long boundsMin[3];
+    long long boundsMax[3];
+    long long anchor[3];
+    int forward[3];
+    s32 context;
+    s32 axis;
+    if (result == NULL ||
+        result->context < MDKR_CHARACTER_PREVIEW_SELECT ||
+        result->context > MDKR_CHARACTER_PREVIEW_PLANE) return FALSE;
+    context = (s32)result->context -
+        (s32)MDKR_CHARACTER_PREVIEW_SELECT;
+    if (!mdkr_modern_character_player_fit_diagnostics(
+            0, (MdkrModernCharacterContext)context, &fit)) return FALSE;
+    for (axis = 0; axis < 3; ++axis) {
+        const double direction = (double)fit.forward[axis] * 1000.0;
+        if (fit.bounds_min[axis] > fit.bounds_max[axis] ||
+            !workshop_preview_quantize_micrometres(
+                fit.bounds_min[axis], &boundsMin[axis]) ||
+            !workshop_preview_quantize_micrometres(
+                fit.bounds_max[axis], &boundsMax[axis]) ||
+            !workshop_preview_quantize_micrometres(
+                fit.anchor[axis], &anchor[axis]) ||
+            !isfinite(direction) || direction < -1001.0 ||
+            direction > 1001.0) return FALSE;
+        forward[axis] = (int)(direction +
+            (direction < 0.0 ? -0.5 : 0.5));
+    }
+    memcpy(result->fit_bounds_min_micrometres, boundsMin,
+           sizeof(boundsMin));
+    memcpy(result->fit_bounds_max_micrometres, boundsMax,
+           sizeof(boundsMax));
+    memcpy(result->fit_anchor_micrometres, anchor, sizeof(anchor));
+    memcpy(result->fit_forward_milli, forward, sizeof(forward));
+    if ((fit.landmark_valid_mask &
+         ~((1u << MDKR_CHARACTER_PREVIEW_LANDMARKS) - 1u)) != 0u) {
+        return FALSE;
+    }
+    for (axis = 0; axis < MDKR_CHARACTER_PREVIEW_LANDMARKS; ++axis) {
+        s32 component;
+        if ((fit.landmark_valid_mask & (1u << axis)) == 0u) continue;
+        for (component = 0; component < 3; ++component) {
+            if (!workshop_preview_quantize_micrometres(
+                    fit.landmarks[axis][component],
+                    &result->fit_landmark_micrometres[axis][component])) {
+                return FALSE;
+            }
+        }
+        result->fit_landmark_mask |= 1u << axis;
+    }
+    result->fit_diagnostics_valid = TRUE;
+    return TRUE;
+}
+
+static s32 workshop_preview_publish_camera_projection(
+    MdkrCharacterPreviewResult *result) {
+    MdkrModernCharacterCaptureProjection projection;
+    int bounds[4] = {INT32_MAX, INT32_MAX, INT32_MIN, INT32_MIN};
+    u32 boundsClipFlags = 0u;
+    u32 corner;
+    u32 landmark;
+    if (result == NULL || !result->fit_diagnostics_valid ||
+        !gfx_get_modern_character_scene_projection(&projection) ||
+        projection.subject_player != 0u ||
+        projection.output_width != result->render_width ||
+        projection.output_height != result->render_height) return FALSE;
+    for (corner = 0u;
+         corner < MDKR_CHARACTER_PREVIEW_PROJECTION_BOUNDS_POINTS; ++corner) {
+        f32 point[3];
+        int32_t pixel[2];
+        int32_t depth;
+        u32 clipFlags;
+        u32 axis;
+        for (axis = 0u; axis < 3u; ++axis) {
+            const long long value = (corner & (1u << axis)) != 0u
+                ? result->fit_bounds_max_micrometres[axis]
+                : result->fit_bounds_min_micrometres[axis];
+            point[axis] = (f32)((double)value / 1000000.0);
+        }
+        if (!mdkr_modern_character_capture_project_point(
+                &projection, point, pixel, &depth, &clipFlags)) return FALSE;
+        if (pixel[0] < bounds[0]) bounds[0] = pixel[0];
+        if (pixel[1] < bounds[1]) bounds[1] = pixel[1];
+        if (pixel[0] > bounds[2]) bounds[2] = pixel[0];
+        if (pixel[1] > bounds[3]) bounds[3] = pixel[1];
+        boundsClipFlags |= clipFlags;
+    }
+    if (bounds[0] >= bounds[2] || bounds[1] >= bounds[3]) return FALSE;
+    for (landmark = 0u;
+         landmark < MDKR_CHARACTER_PREVIEW_LANDMARKS; ++landmark) {
+        f32 point[3];
+        int32_t pixel[2];
+        int32_t depth;
+        u32 clipFlags;
+        u32 axis;
+        if ((result->fit_landmark_mask & (1u << landmark)) == 0u) continue;
+        for (axis = 0u; axis < 3u; ++axis) {
+            point[axis] = (f32)((double)
+                result->fit_landmark_micrometres[landmark][axis] /
+                1000000.0);
+        }
+        if (!mdkr_modern_character_capture_project_point(
+                &projection, point, pixel, &depth, &clipFlags)) return FALSE;
+        result->camera_landmark_pixel_milli[landmark][0] = pixel[0];
+        result->camera_landmark_pixel_milli[landmark][1] = pixel[1];
+        result->camera_landmark_depth_millionths[landmark] = depth;
+        result->camera_landmark_clip_flags[landmark] = clipFlags;
+    }
+    result->camera_projection_width = projection.output_width;
+    result->camera_projection_height = projection.output_height;
+    result->camera_projection_primitive_draws = projection.primitive_draws;
+    memcpy(result->camera_projection_viewport, projection.viewport,
+           sizeof(result->camera_projection_viewport));
+    memcpy(result->camera_projection_scissor, projection.scissor,
+           sizeof(result->camera_projection_scissor));
+    memcpy(result->camera_bounds_pixel_milli, bounds, sizeof(bounds));
+    result->camera_bounds_clip_flags = boundsClipFlags;
+    result->camera_projection_valid = TRUE;
+    return TRUE;
+}
+
+static s32 workshop_preview_publish_contact_diagnostics(
+    MdkrCharacterPreviewResult *result) {
+    MdkrModernCharacterContactDiagnostics contacts;
+    s32 context;
+    u32 contact;
+    u32 axis;
+    if (result == NULL ||
+        result->context < MDKR_CHARACTER_PREVIEW_CAR ||
+        result->context > MDKR_CHARACTER_PREVIEW_PLANE) return FALSE;
+    context = (s32)result->context -
+        (s32)MDKR_CHARACTER_PREVIEW_SELECT;
+    if (!mdkr_modern_character_player_contact_diagnostics(
+            0, (MdkrModernCharacterContext)context, &contacts) ||
+        contacts.valid_mask !=
+            ((1u << MDKR_MODERN_CHARACTER_CONTACTS) - 1u)) return FALSE;
+    for (contact = 0u; contact < MDKR_MODERN_CHARACTER_CONTACTS; contact++) {
+        const double errorMicrometres =
+            (double)contacts.error[contact] * 1000000.0;
+        if (!isfinite(errorMicrometres) || errorMicrometres < 0.0 ||
+            errorMicrometres > 1000000000.0) return FALSE;
+        for (axis = 0u; axis < 3u; axis++) {
+            if (!workshop_preview_quantize_micrometres(
+                    contacts.chain_root[contact][axis],
+                    &result->contact_chain_root_micrometres[contact][axis]) ||
+                !workshop_preview_quantize_micrometres(
+                    contacts.bend[contact][axis],
+                    &result->contact_bend_micrometres[contact][axis]) ||
+                !workshop_preview_quantize_micrometres(
+                    contacts.target[contact][axis],
+                    &result->contact_target_micrometres[contact][axis]) ||
+                !workshop_preview_quantize_micrometres(
+                    contacts.end[contact][axis],
+                    &result->contact_end_micrometres[contact][axis])) {
+                return FALSE;
+            }
+        }
+        result->contact_witness_error_micrometres[contact] =
+            (u64)(errorMicrometres + 0.5);
+        result->contact_witness_mask |= 1u << contact;
+    }
+    return TRUE;
+}
+
+static s32 workshop_preview_publish_joint_diagnostics(
+    MdkrCharacterPreviewResult *result) {
+    MdkrModernCharacterJointDiagnostics joints;
+    unsigned measured[MDKR_CHARACTER_PREVIEW_JOINTS];
+    s32 context;
+    u32 role;
+    if (result == NULL ||
+        result->context < MDKR_CHARACTER_PREVIEW_SELECT ||
+        result->context > MDKR_CHARACTER_PREVIEW_PLANE) return FALSE;
+    context = (s32)result->context -
+        (s32)MDKR_CHARACTER_PREVIEW_SELECT;
+    if (!mdkr_modern_character_player_joint_diagnostics(
+            0, (MdkrModernCharacterContext)context, &joints) ||
+        (joints.valid_mask != 0u &&
+         joints.valid_mask !=
+            ((1u << MDKR_CHARACTER_PREVIEW_JOINTS) - 1u)) ||
+        (joints.constraint_clamped_mask &
+         ~((1u << MDKR_CHARACTER_PREVIEW_JOINTS) - 1u)) != 0u ||
+        (joints.constraint_clamped_mask & ~joints.valid_mask) != 0u ||
+        joints.secondary_chain_count > 8u ||
+        joints.secondary_joint_count > 64u ||
+        joints.secondary_chain_count > joints.secondary_joint_count ||
+        ((joints.secondary_chain_count == 0u) !=
+         (joints.secondary_joint_count == 0u)) ||
+        joints.secondary_active_joint_count > joints.secondary_joint_count ||
+        !isfinite(joints.secondary_max_deflection_degrees) ||
+        joints.secondary_max_deflection_degrees < 0.0f ||
+        joints.secondary_max_deflection_degrees > 90.0005f ||
+        (joints.secondary_joint_count == 0u &&
+         (joints.secondary_active_joint_count != 0u ||
+          joints.secondary_max_deflection_degrees != 0.0f ||
+          joints.secondary_discontinuity_resets != 0u))) return FALSE;
+    memset(measured, 0, sizeof(measured));
+    if (joints.valid_mask != 0u) {
+        for (role = 0u; role < MDKR_CHARACTER_PREVIEW_JOINTS; ++role) {
+            const double millidegrees =
+                (double)joints.excursion_degrees[role] * 1000.0;
+            if (!isfinite(millidegrees) || millidegrees < 0.0 ||
+                millidegrees > 180000.5) return FALSE;
+            measured[role] = (u32)(millidegrees + 0.5);
+            if (measured[role] > 180000u) measured[role] = 180000u;
+        }
+    }
+    memcpy(result->joint_excursion_millidegrees, measured,
+           sizeof(measured));
+    result->joint_excursion_mask = joints.valid_mask;
+    result->constraint_clamped_mask = joints.constraint_clamped_mask;
+    result->secondary_chain_count = joints.secondary_chain_count;
+    result->secondary_joint_count = joints.secondary_joint_count;
+    result->secondary_active_joint_count =
+        joints.secondary_active_joint_count;
+    result->secondary_max_deflection_millidegrees = (u32)(
+        (double)joints.secondary_max_deflection_degrees * 1000.0 + 0.5);
+    if (result->secondary_max_deflection_millidegrees > 90000u) {
+        result->secondary_max_deflection_millidegrees = 90000u;
+    }
+    result->secondary_discontinuity_resets =
+        joints.secondary_discontinuity_resets;
+    return TRUE;
+}
+
+static s32 workshop_preview_publish_vehicle_surface_diagnostics(
+    MdkrCharacterPreviewResult *result) {
+    MdkrModernSurfaceIntersectionDiagnostics diagnostics;
+    s32 context;
+    u32 axis;
+    if (result == NULL ||
+        result->context < MDKR_CHARACTER_PREVIEW_CAR ||
+        result->context > MDKR_CHARACTER_PREVIEW_PLANE) return FALSE;
+    context = (s32)result->context -
+        (s32)MDKR_CHARACTER_PREVIEW_SELECT;
+    if (!mdkr_modern_character_player_surface_diagnostics(
+            0, (MdkrModernCharacterContext)context, &diagnostics) ||
+        diagnostics.shell_triangles_tested == 0u ||
+        diagnostics.subject_triangles_tested == 0u ||
+        diagnostics.shell_triangles_tested >
+            diagnostics.shell_triangles_submitted ||
+        diagnostics.subject_triangles_tested >
+            diagnostics.subject_triangles_submitted ||
+        diagnostics.crossing_subject_triangles >
+            diagnostics.subject_triangles_tested ||
+        diagnostics.crossing_pairs <
+            diagnostics.crossing_subject_triangles) return FALSE;
+    if (diagnostics.crossing_pairs == 0u) {
+        for (axis = 0u; axis < 3u; ++axis) {
+            if (diagnostics.first_crossing_subject_center[axis] != 0.0f) {
+                return FALSE;
+            }
+        }
+    } else {
+        for (axis = 0u; axis < 3u; ++axis) {
+            if (!workshop_preview_quantize_micrometres(
+                    diagnostics.first_crossing_subject_center[axis],
+                    &result->vehicle_surface_first_crossing_micrometres[axis])) {
+                return FALSE;
+            }
+        }
+    }
+    if (diagnostics.containment_samples_tested >
+            MDKR_MODERN_CHARACTER_CONTAINMENT_SAMPLE_MAX ||
+        diagnostics.containment_inside_samples +
+                diagnostics.containment_boundary_samples +
+                diagnostics.containment_outside_samples !=
+            diagnostics.containment_samples_tested) return FALSE;
+    if (diagnostics.containment_qualified) {
+        double maximumDepthMicrometres;
+        if (diagnostics.shell_boundary_edges != 0u ||
+            diagnostics.shell_nonmanifold_edges != 0u ||
+            diagnostics.shell_orientation_mismatch_edges != 0u ||
+            diagnostics.shell_self_intersection_pairs != 0u ||
+            diagnostics.shell_triangles_submitted !=
+                diagnostics.shell_triangles_tested ||
+            diagnostics.containment_samples_tested == 0u) return FALSE;
+        maximumDepthMicrometres =
+            (double)diagnostics.containment_maximum_inside_depth * 1000000.0;
+        if (!isfinite(maximumDepthMicrometres) ||
+            maximumDepthMicrometres < 0.0 ||
+            maximumDepthMicrometres > 1000000000.0) return FALSE;
+        if (diagnostics.containment_inside_samples == 0u) {
+            u32 pointAxis;
+            if (diagnostics.containment_maximum_inside_depth != 0.0f) {
+                return FALSE;
+            }
+            for (pointAxis = 0u; pointAxis < 3u; ++pointAxis) {
+                if (diagnostics.containment_deepest_subject_point[pointAxis] !=
+                    0.0f) return FALSE;
+            }
+        } else {
+            u32 pointAxis;
+            if (diagnostics.containment_maximum_inside_depth <= 0.0f) {
+                return FALSE;
+            }
+            for (pointAxis = 0u; pointAxis < 3u; ++pointAxis) {
+                if (!workshop_preview_quantize_micrometres(
+                        diagnostics.containment_deepest_subject_point[pointAxis],
+                        &result->vehicle_containment_deepest_micrometres
+                            [pointAxis])) return FALSE;
+            }
+        }
+        result->vehicle_containment_maximum_depth_micrometres =
+            (u64)(maximumDepthMicrometres + 0.5);
+        result->vehicle_volume_qualified = TRUE;
+    } else if (diagnostics.containment_samples_tested != 0u ||
+               diagnostics.containment_inside_samples != 0u ||
+               diagnostics.containment_boundary_samples != 0u ||
+               diagnostics.containment_outside_samples != 0u ||
+               diagnostics.containment_maximum_inside_depth != 0.0f) {
+        return FALSE;
+    }
+    result->vehicle_shell_triangles_submitted =
+        diagnostics.shell_triangles_submitted;
+    result->vehicle_shell_triangles_tested =
+        diagnostics.shell_triangles_tested;
+    result->character_surface_triangles_submitted =
+        diagnostics.subject_triangles_submitted;
+    result->character_surface_triangles_tested =
+        diagnostics.subject_triangles_tested;
+    result->vehicle_surface_crossing_triangles =
+        diagnostics.crossing_subject_triangles;
+    result->vehicle_surface_crossing_pairs = diagnostics.crossing_pairs;
+    result->vehicle_shell_boundary_edges = diagnostics.shell_boundary_edges;
+    result->vehicle_shell_nonmanifold_edges =
+        diagnostics.shell_nonmanifold_edges;
+    result->vehicle_shell_orientation_mismatch_edges =
+        diagnostics.shell_orientation_mismatch_edges;
+    result->vehicle_shell_self_intersection_pairs =
+        diagnostics.shell_self_intersection_pairs;
+    result->vehicle_containment_samples_tested =
+        diagnostics.containment_samples_tested;
+    result->vehicle_containment_inside_samples =
+        diagnostics.containment_inside_samples;
+    result->vehicle_containment_boundary_samples =
+        diagnostics.containment_boundary_samples;
+    result->vehicle_containment_outside_samples =
+        diagnostics.containment_outside_samples;
+    result->vehicle_surface_valid = TRUE;
+    return TRUE;
+}
+
+static s32 workshop_preview_publish_opaque_visibility(
+    MdkrCharacterPreviewResult *result) {
+    MdkrModernCharacterVisibilityDiagnostics diagnostics;
+    u32 component;
+    u32 isolatedTileCount = 0u;
+    u32 sceneTileCount = 0u;
+    u32 occluder;
+    u64 classifiedDraws;
+    u64 mask;
+    if (result == NULL ||
+        !platform_modern_character_visibility_diagnostics(&diagnostics) ||
+        diagnostics.version != MDKR_MODERN_CHARACTER_VISIBILITY_VERSION ||
+        diagnostics.valid != 1u || diagnostics.qualified > 1u ||
+        diagnostics.output_width == 0u ||
+        diagnostics.output_height == 0u ||
+        diagnostics.output_width > 16384u ||
+        diagnostics.output_height > 16384u ||
+        diagnostics.primitive_draws == 0u) return FALSE;
+    classifiedDraws = (u64)diagnostics.opaque_draws +
+        diagnostics.masked_draws + diagnostics.transparent_draws;
+    mask = diagnostics.isolated_tile_mask;
+    while (mask != 0u) {
+        isolatedTileCount += (u32)(mask & 1u);
+        mask >>= 1u;
+    }
+    mask = diagnostics.scene_tile_mask;
+    while (mask != 0u) {
+        sceneTileCount += (u32)(mask & 1u);
+        mask >>= 1u;
+    }
+    if ((diagnostics.occluder_present_mask & ~0x7u) != 0u ||
+        (diagnostics.occluder_qualified_mask &
+         ~diagnostics.occluder_present_mask) != 0u) return FALSE;
+    for (occluder = 0u;
+         occluder < MDKR_MODERN_CHARACTER_OCCLUDER_CLASSES;
+         ++occluder) {
+        u32 overlapTileCount = 0u;
+        const u32 bit = 1u << occluder;
+        mask = diagnostics.occluder_overlap_tile_mask[occluder];
+        while (mask != 0u) {
+            overlapTileCount += (u32)(mask & 1u);
+            mask >>= 1u;
+        }
+        if (diagnostics.occluder_unqualified_draws[occluder] >
+                diagnostics.occluder_draws[occluder] ||
+            ((diagnostics.occluder_present_mask & bit) != 0u) !=
+                (diagnostics.occluder_draws[occluder] != 0u) ||
+            overlapTileCount !=
+                diagnostics.occluder_overlap_tiles[occluder] ||
+            diagnostics.occluder_overlap_tiles[occluder] > 64u ||
+            (diagnostics.occluder_overlap_tile_mask[occluder] &
+             ~diagnostics.isolated_tile_mask) != 0u ||
+            ((diagnostics.occluder_qualified_mask & bit) != 0u
+                 ? diagnostics.occluder_draws[occluder] == 0u ||
+                       diagnostics.occluder_unqualified_draws[occluder] != 0u
+                 : diagnostics.occluder_overlap_tile_mask[occluder] != 0u)) {
+            return FALSE;
+        }
+    }
+    if (classifiedDraws != diagnostics.primitive_draws ||
+        diagnostics.grid_columns != 8u || diagnostics.grid_rows != 8u ||
+        diagnostics.isolated_visible_tiles > 64u ||
+        diagnostics.scene_visible_tiles >
+            diagnostics.isolated_visible_tiles ||
+        isolatedTileCount != diagnostics.isolated_visible_tiles ||
+        sceneTileCount != diagnostics.scene_visible_tiles ||
+        (diagnostics.scene_tile_mask &
+         ~diagnostics.isolated_tile_mask) != 0u ||
+        (diagnostics.qualified
+             ? diagnostics.transparent_draws != 0u
+             : diagnostics.transparent_draws == 0u ||
+                   diagnostics.occluder_qualified_mask != 0u ||
+                   diagnostics.isolated_visible_tiles != 0u ||
+                   diagnostics.scene_visible_tiles != 0u ||
+                   diagnostics.isolated_tile_mask != 0u ||
+                   diagnostics.scene_tile_mask != 0u)) {
+        return FALSE;
+    }
+    for (component = 0u; component < 4u; ++component) {
+        const s32 limit = (component & 1u)
+            ? (s32)diagnostics.output_height
+            : (s32)diagnostics.output_width;
+        if (diagnostics.viewport[component] < 0 ||
+            diagnostics.scissor[component] < 0 ||
+            diagnostics.viewport[component] > limit ||
+            diagnostics.scissor[component] > limit) return FALSE;
+        result->opaque_visibility_viewport[component] =
+            diagnostics.viewport[component];
+        result->opaque_visibility_scissor[component] =
+            diagnostics.scissor[component];
+    }
+    if (diagnostics.viewport[2] == 0 || diagnostics.viewport[3] == 0 ||
+        diagnostics.scissor[2] == 0 || diagnostics.scissor[3] == 0 ||
+        diagnostics.viewport[0] + diagnostics.viewport[2] >
+            (s32)diagnostics.output_width ||
+        diagnostics.viewport[1] + diagnostics.viewport[3] >
+            (s32)diagnostics.output_height ||
+        diagnostics.scissor[0] + diagnostics.scissor[2] >
+            (s32)diagnostics.output_width ||
+        diagnostics.scissor[1] + diagnostics.scissor[3] >
+            (s32)diagnostics.output_height) return FALSE;
+    result->opaque_visibility_valid = TRUE;
+    result->opaque_visibility_qualified = diagnostics.qualified != 0u;
+    result->opaque_visibility_width = diagnostics.output_width;
+    result->opaque_visibility_height = diagnostics.output_height;
+    result->opaque_visibility_primitive_draws =
+        diagnostics.primitive_draws;
+    result->opaque_visibility_opaque_draws = diagnostics.opaque_draws;
+    result->opaque_visibility_masked_draws = diagnostics.masked_draws;
+    result->opaque_visibility_transparent_draws =
+        diagnostics.transparent_draws;
+    result->opaque_visibility_grid_columns = diagnostics.grid_columns;
+    result->opaque_visibility_grid_rows = diagnostics.grid_rows;
+    result->opaque_visibility_isolated_tiles =
+        diagnostics.isolated_visible_tiles;
+    result->opaque_visibility_scene_tiles = diagnostics.scene_visible_tiles;
+    result->opaque_visibility_isolated_tile_mask =
+        diagnostics.isolated_tile_mask;
+    result->opaque_visibility_scene_tile_mask = diagnostics.scene_tile_mask;
+    result->opaque_visibility_occluder_present_mask =
+        diagnostics.occluder_present_mask;
+    result->opaque_visibility_occluder_qualified_mask =
+        diagnostics.occluder_qualified_mask;
+    for (occluder = 0u;
+         occluder < MDKR_MODERN_CHARACTER_OCCLUDER_CLASSES;
+         ++occluder) {
+        result->opaque_visibility_occluder_draws[occluder] =
+            diagnostics.occluder_draws[occluder];
+        result->opaque_visibility_occluder_unqualified_draws[occluder] =
+            diagnostics.occluder_unqualified_draws[occluder];
+        result->opaque_visibility_occluder_overlap_tiles[occluder] =
+            diagnostics.occluder_overlap_tiles[occluder];
+        result->opaque_visibility_occluder_overlap_tile_mask[occluder] =
+            diagnostics.occluder_overlap_tile_mask[occluder];
+    }
+    return TRUE;
+}
+
+static void workshop_motion_review_begin_sample(void) {
+    MdkrCharacterMotionReviewResult *review =
+        g_mdkrCharacterMotionReviewResult;
+    const WorkshopMotionReviewDefinition *definition;
+    MdkrCharacterPreviewResult *sample;
+    char error[192] = {0};
+    if (review == NULL ||
+        sWorkshopMotionReviewSample >= review->sample_count) return;
+    definition = workshop_motion_review_definition(
+        review->context, sWorkshopMotionReviewSample);
+    if (definition == NULL) return;
+    sample = &review->samples[sWorkshopMotionReviewSample];
+    bzero(sample, sizeof(*sample));
+    sample->version = MDKR_CHARACTER_PREVIEW_RESULT_VERSION;
+    sample->started = TRUE;
+    sample->warmup_complete = TRUE;
+    sample->context = review->context;
+    sample->players = 1;
+    sample->pose = definition->pose;
+    sample->pose_phase_milli = definition->phase_milli;
+    sample->lighting = MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
+    sample->capture_kind = MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
+    sample->gpu_timing.version = MDKR_MODERN_CHARACTER_GPU_TIMING_VERSION;
+    sample->gpu_timing.status =
+        MDKR_MODERN_CHARACTER_GPU_TIMING_UNSUPPORTED;
+    if (!mdkr_modern_character_set_inspection_pose(
+            definition->semantic,
+            (f32)definition->phase_milli / 1000.0f,
+            error, sizeof(error))) {
+        review->failed_sample = sWorkshopMotionReviewSample + 1u;
+        MDKR_TRACE(
+            "character_motion_review: rejected sample=%u semantic=%s error=%s",
+            sWorkshopMotionReviewSample, definition->semantic,
+            error[0] != '\0' ? error : "invalid pose");
+        platform_request_exit(0);
+        return;
+    }
+    mdkr_modern_character_runtime_metrics(
+        &sWorkshopMotionReviewPoseBaseline);
+    sWorkshopMotionReviewReplacementBaseline =
+        sWorkshopMotionReviewPoseBaseline.replacement_draws;
+    sWorkshopMotionReviewPoseSettled = FALSE;
+    sWorkshopMotionReviewStageTicks = 0u;
+    sWorkshopMotionReviewVisibilityAttempts = 0u;
+    sWorkshopMotionReviewDiagnosticsRequested = FALSE;
+    MDKR_TRACE(
+        "character_motion_review: settling sample=%u semantic=%s phase=%u",
+        sWorkshopMotionReviewSample, definition->semantic,
+        definition->phase_milli);
+}
+
+static s32 workshop_motion_review_publish_sample(void) {
+    MdkrCharacterMotionReviewResult *review =
+        g_mdkrCharacterMotionReviewResult;
+    MdkrCharacterPreviewResult *sample;
+    MdkrModernCharacterRuntimeMetrics metrics;
+    u32 contact;
+    u32 joint;
+    u32 joint_max_millidegrees = 0u;
+    if (review == NULL ||
+        sWorkshopMotionReviewSample >= review->sample_count) return FALSE;
+    sample = &review->samples[sWorkshopMotionReviewSample];
+    mdkr_modern_character_runtime_metrics(&metrics);
+    sample->output_width = gfx_output_dimensions.width;
+    sample->output_height = gfx_output_dimensions.height;
+    sample->render_width = gfx_current_dimensions.width;
+    sample->render_height = gfx_current_dimensions.height;
+    sample->replacement_draws = metrics.replacement_draws >=
+            sWorkshopMotionReviewPoseBaseline.replacement_draws
+        ? metrics.replacement_draws -
+              sWorkshopMotionReviewPoseBaseline.replacement_draws
+        : 0u;
+    sample->replacement_primitives = metrics.replacement_primitives >=
+            sWorkshopMotionReviewPoseBaseline.replacement_primitives
+        ? metrics.replacement_primitives -
+              sWorkshopMotionReviewPoseBaseline.replacement_primitives
+        : 0u;
+    sample->hidden_donor_batches = metrics.hidden_donor_batches >=
+            sWorkshopMotionReviewPoseBaseline.hidden_donor_batches
+        ? metrics.hidden_donor_batches -
+              sWorkshopMotionReviewPoseBaseline.hidden_donor_batches
+        : 0u;
+    sample->contact_solves = metrics.contact_solves >=
+            sWorkshopMotionReviewPoseBaseline.contact_solves
+        ? metrics.contact_solves -
+              sWorkshopMotionReviewPoseBaseline.contact_solves
+        : 0u;
+    for (contact = 0u; contact < MDKR_CHARACTER_PREVIEW_CONTACTS; ++contact) {
+        review->contact_stability_observations
+            [sWorkshopMotionReviewSample][contact] =
+                metrics.contact_residual_step_observations[contact];
+        review->contact_stability_max_step_micrometres
+            [sWorkshopMotionReviewSample][contact] =
+                metrics.contact_residual_step_max_micrometres[contact];
+        if (metrics.contact_residual_step_observations[contact] >=
+            MDKR_CHARACTER_CONTACT_STABILITY_MINIMUM_OBSERVATIONS) {
+            review->contact_stability_mask[sWorkshopMotionReviewSample] |=
+                1u << contact;
+        }
+    }
+    sample->inspection_pose_ticks = metrics.inspection_pose_ticks >=
+            sWorkshopMotionReviewPoseBaseline.inspection_pose_ticks
+        ? metrics.inspection_pose_ticks -
+              sWorkshopMotionReviewPoseBaseline.inspection_pose_ticks
+        : 0u;
+    sample->inspection_pose_fallback_ticks =
+        metrics.inspection_pose_fallback_ticks >=
+                sWorkshopMotionReviewPoseBaseline
+                    .inspection_pose_fallback_ticks
+            ? metrics.inspection_pose_fallback_ticks -
+                  sWorkshopMotionReviewPoseBaseline
+                      .inspection_pose_fallback_ticks
+            : 0u;
+    sample->transition_from_motion_source =
+        (MdkrCharacterPreviewMotionSource)
+            metrics.inspection_from_motion_source;
+    if (!workshop_preview_publish_fit_diagnostics(sample) ||
+        !workshop_preview_publish_camera_projection(sample) ||
+        (review->context != MDKR_CHARACTER_PREVIEW_SELECT &&
+         !workshop_preview_publish_vehicle_surface_diagnostics(sample)) ||
+        !workshop_preview_publish_opaque_visibility(sample)) {
+        return FALSE;
+    }
+    (void)workshop_preview_publish_joint_diagnostics(sample);
+    for (joint = 0u; joint < MDKR_CHARACTER_PREVIEW_JOINTS; ++joint) {
+        if (sample->joint_excursion_millidegrees[joint] >
+            joint_max_millidegrees) {
+            joint_max_millidegrees =
+                sample->joint_excursion_millidegrees[joint];
+        }
+    }
+    if (review->context != MDKR_CHARACTER_PREVIEW_SELECT &&
+        !workshop_preview_publish_contact_diagnostics(sample) &&
+        sample->contact_solves != 0u) return FALSE;
+    if (review->context != MDKR_CHARACTER_PREVIEW_SELECT &&
+        sample->contact_solves != 0u &&
+        review->contact_stability_mask[sWorkshopMotionReviewSample] !=
+            ((1u << MDKR_CHARACTER_PREVIEW_CONTACTS) - 1u)) return FALSE;
+    for (contact = 0u; contact < MDKR_CHARACTER_PREVIEW_CONTACTS; ++contact) {
+        if (sample->contact_witness_error_micrometres[contact] >
+            sample->contact_error_max_micrometres) {
+            sample->contact_error_max_micrometres =
+                sample->contact_witness_error_micrometres[contact];
+        }
+    }
+    review->completed_mask |= 1u << sWorkshopMotionReviewSample;
+    MDKR_TRACE(
+        "character_motion_review: sample=%u pose=%d phase=%u draws=%llu source=%d fallback=%llu cameraFlags=%x crossings=%u inside=%u visibility=%u/%u contactSolves=%llu contactMask=%x contactMaxUm=%llu contactStabilityMask=%x contactSteps=%llu,%llu,%llu,%llu contactStepMaxUm=%llu,%llu,%llu,%llu joints=%x jointMaxMd=%u",
+        sWorkshopMotionReviewSample, (int)sample->pose,
+        sample->pose_phase_milli, sample->replacement_draws,
+        (int)sample->transition_from_motion_source,
+        sample->inspection_pose_fallback_ticks,
+        sample->camera_bounds_clip_flags,
+        sample->vehicle_surface_crossing_pairs,
+        sample->vehicle_containment_inside_samples,
+        sample->opaque_visibility_scene_tiles,
+        sample->opaque_visibility_isolated_tiles,
+        sample->contact_solves,
+        sample->contact_witness_mask,
+        sample->contact_error_max_micrometres,
+        review->contact_stability_mask[sWorkshopMotionReviewSample],
+        review->contact_stability_observations
+            [sWorkshopMotionReviewSample][0],
+        review->contact_stability_observations
+            [sWorkshopMotionReviewSample][1],
+        review->contact_stability_observations
+            [sWorkshopMotionReviewSample][2],
+        review->contact_stability_observations
+            [sWorkshopMotionReviewSample][3],
+        review->contact_stability_max_step_micrometres
+            [sWorkshopMotionReviewSample][0],
+        review->contact_stability_max_step_micrometres
+            [sWorkshopMotionReviewSample][1],
+        review->contact_stability_max_step_micrometres
+            [sWorkshopMotionReviewSample][2],
+        review->contact_stability_max_step_micrometres
+            [sWorkshopMotionReviewSample][3],
+        sample->joint_excursion_mask,
+        joint_max_millidegrees);
+    sWorkshopMotionReviewSample++;
+    if (sWorkshopMotionReviewSample == review->sample_count) {
+        review->completed = TRUE;
+        MDKR_TRACE(
+            "character_motion_review: complete samples=%u mask=%x",
+            review->sample_count,
+            review->completed_mask);
+        platform_request_exit(0);
+    } else {
+        workshop_motion_review_begin_sample();
+    }
+    return TRUE;
+}
+
+static void workshop_motion_review_service(void) {
+    MdkrCharacterMotionReviewResult *review =
+        g_mdkrCharacterMotionReviewResult;
+    MdkrModernCharacterRuntimeMetrics metrics;
+    MdkrModernSurfaceIntersectionDiagnostics surface;
+    MdkrModernCharacterVisibilityDiagnostics visibility;
+    MdkrModernCharacterContext context;
+    s32 surfaceReady;
+    s32 visibilityReady;
+    if (review == NULL || review->completed || review->failed_sample != 0u ||
+        sWorkshopMotionReviewSample >= review->sample_count) return;
+    context = (MdkrModernCharacterContext)((s32)review->context -
+        (s32)MDKR_CHARACTER_PREVIEW_SELECT);
+    sWorkshopMotionReviewStageTicks++;
+    if (sWorkshopMotionReviewStageTicks >
+        WORKSHOP_MOTION_REVIEW_SAMPLE_TIMEOUT_TICKS) {
+        review->failed_sample = sWorkshopMotionReviewSample + 1u;
+        MDKR_TRACE(
+            "character_motion_review: timeout sample=%u requested=%d visibilityPending=%d",
+            sWorkshopMotionReviewSample,
+            sWorkshopMotionReviewDiagnosticsRequested,
+            platform_modern_character_visibility_pending());
+        platform_request_exit(0);
+        return;
+    }
+    mdkr_modern_character_runtime_metrics(&metrics);
+    if (!sWorkshopMotionReviewDiagnosticsRequested) {
+        if (!sWorkshopMotionReviewPoseSettled) {
+            if (!mdkr_modern_character_inspection_pose_settled(0)) return;
+            /* Exclude every transition draw from both the stable-frame gate and
+             * the published per-state counters. */
+            mdkr_modern_character_contact_metrics_reset();
+            mdkr_modern_character_runtime_metrics(
+                &sWorkshopMotionReviewPoseBaseline);
+            sWorkshopMotionReviewReplacementBaseline =
+                sWorkshopMotionReviewPoseBaseline.replacement_draws;
+            sWorkshopMotionReviewPoseSettled = TRUE;
+            MDKR_TRACE(
+                "character_motion_review: settled sample=%u",
+                sWorkshopMotionReviewSample);
+            return;
+        }
+        if (metrics.replacement_draws <
+            sWorkshopMotionReviewReplacementBaseline +
+                WORKSHOP_MOTION_REVIEW_SETTLE_DRAWS) return;
+        if (review->context != MDKR_CHARACTER_PREVIEW_SELECT &&
+            !mdkr_modern_character_request_surface_diagnostics(0, context)) {
+            return;
+        }
+        if (!platform_modern_character_visibility_request_once()) return;
+        sWorkshopMotionReviewVisibilityAttempts++;
+        sWorkshopMotionReviewDiagnosticsRequested = TRUE;
+        return;
+    }
+    surfaceReady = review->context == MDKR_CHARACTER_PREVIEW_SELECT ||
+        mdkr_modern_character_player_surface_diagnostics(
+            0, context, &surface);
+    visibilityReady = platform_modern_character_visibility_diagnostics(
+        &visibility);
+    if (review->context != MDKR_CHARACTER_PREVIEW_SELECT && !surfaceReady &&
+        !mdkr_modern_character_surface_diagnostics_requested(0, context) &&
+        (sWorkshopMotionReviewStageTicks % 30u) == 0u) {
+        (void)mdkr_modern_character_request_surface_diagnostics(0, context);
+    }
+    if (!visibilityReady &&
+        !platform_modern_character_visibility_pending() &&
+        sWorkshopMotionReviewVisibilityAttempts < 3u &&
+        platform_modern_character_visibility_request_once()) {
+        sWorkshopMotionReviewVisibilityAttempts++;
+    }
+    if (!surfaceReady || !visibilityReady) return;
+    (void)workshop_motion_review_publish_sample();
+}
+
+static void workshop_preview_measurement_finish(void) {
+    MdkrPresentPerfSnapshot present;
+    MdkrModernCharacterRuntimeMetrics character;
+    MdkrWorkshopPreviewVisualMetrics visual;
+    MdkrCharacterPreviewResult *result = g_mdkrCharacterPreviewResult;
+    const MdkrGpuInfo *gpu;
+    if (result == NULL || sWorkshopPreviewMeasurementFinished) return;
+    /* Stop admission and publish only readbacks already completed. This call
+     * is nonblocking; pending frames remain explicit in the result instead of
+     * stalling audio/input or being guessed from wall cadence. */
+    gfx_finish_modern_character_gpu_timing(&result->gpu_timing);
+    result->warmup_ticks = sWorkshopPreviewWarmupTicks;
+    result->realtime = platform_pace_is_synthetic() ? FALSE : TRUE;
+    gpu = mdkr_gpu_info_get();
+    (void)snprintf(result->renderer_backend,
+                   sizeof(result->renderer_backend), "%s",
+                   mdkr_render_backend_name());
+    if (gpu != NULL && gpu->selected >= 0 && gpu->selected < gpu->count) {
+        const MdkrGpuCandidate *selected = &gpu->candidates[gpu->selected];
+        (void)snprintf(result->renderer_backend,
+                       sizeof(result->renderer_backend), "%s",
+                       selected->backend);
+        (void)snprintf(result->adapter, sizeof(result->adapter), "%s",
+                       selected->adapter);
+        (void)snprintf(result->driver, sizeof(result->driver), "%s",
+                       selected->driver);
+        result->vendor_id = selected->vendor_id;
+        result->device_id = selected->device_id;
+    }
+    result->output_width = gfx_output_dimensions.width;
+    result->output_height = gfx_output_dimensions.height;
+    result->render_width = gfx_current_dimensions.width;
+    result->render_height = gfx_current_dimensions.height;
+    if (sWorkshopPreviewMeasurementStarted) {
+        present_perf_snapshot(&present);
+        mdkr_modern_character_runtime_metrics(&character);
+        result->interval_samples = present.interval_samples;
+        result->displayed_frames = present.displayed_frames;
+        result->interval_p50_us = present.interval_p50_us;
+        result->interval_p95_us = present.interval_p95_us;
+        result->interval_p99_us = present.interval_p99_us;
+        result->interval_mean_us = present.interval_mean_us;
+        result->interval_max_us = present.interval_max_us;
+        result->tickwall_samples = present.tickwall_samples;
+        result->tickwall_mean_ns = present.tickwall_mean_ns;
+        result->replacement_draws = character.replacement_draws >=
+                sWorkshopPreviewCharacterBaseline.replacement_draws
+            ? character.replacement_draws -
+                  sWorkshopPreviewCharacterBaseline.replacement_draws
+            : 0u;
+        result->replacement_primitives = character.replacement_primitives >=
+                sWorkshopPreviewCharacterBaseline.replacement_primitives
+            ? character.replacement_primitives -
+                  sWorkshopPreviewCharacterBaseline.replacement_primitives
+            : 0u;
+        result->reference_draws = character.reference_draws >=
+                sWorkshopPreviewCharacterBaseline.reference_draws
+            ? character.reference_draws -
+                  sWorkshopPreviewCharacterBaseline.reference_draws
+            : 0u;
+        result->reference_primitives = character.reference_primitives >=
+                sWorkshopPreviewCharacterBaseline.reference_primitives
+            ? character.reference_primitives -
+                  sWorkshopPreviewCharacterBaseline.reference_primitives
+            : 0u;
+        result->hidden_donor_batches = character.hidden_donor_batches >=
+                sWorkshopPreviewCharacterBaseline.hidden_donor_batches
+            ? character.hidden_donor_batches -
+                  sWorkshopPreviewCharacterBaseline.hidden_donor_batches
+            : 0u;
+        result->contact_solves = character.contact_solves >=
+                sWorkshopPreviewCharacterBaseline.contact_solves
+            ? character.contact_solves -
+                  sWorkshopPreviewCharacterBaseline.contact_solves
+            : 0u;
+        if (result->contact_solves != 0u &&
+            character.contact_error_micrometres_sum >=
+                sWorkshopPreviewCharacterBaseline
+                    .contact_error_micrometres_sum) {
+            result->contact_error_mean_micrometres =
+                (character.contact_error_micrometres_sum -
+                 sWorkshopPreviewCharacterBaseline
+                     .contact_error_micrometres_sum) /
+                result->contact_solves;
+        }
+        result->contact_error_max_micrometres =
+            character.contact_error_micrometres_max;
+        result->inspection_pose_ticks = character.inspection_pose_ticks >=
+                sWorkshopPreviewCharacterBaseline.inspection_pose_ticks
+            ? character.inspection_pose_ticks -
+                  sWorkshopPreviewCharacterBaseline.inspection_pose_ticks
+            : 0u;
+        result->inspection_pose_fallback_ticks =
+            character.inspection_pose_fallback_ticks >=
+                    sWorkshopPreviewCharacterBaseline
+                        .inspection_pose_fallback_ticks
+                ? character.inspection_pose_fallback_ticks -
+                      sWorkshopPreviewCharacterBaseline
+                          .inspection_pose_fallback_ticks
+                : 0u;
+        result->inspection_transition_switches =
+            character.inspection_transition_switches >=
+                    sWorkshopPreviewCharacterBaseline
+                        .inspection_transition_switches
+                ? character.inspection_transition_switches -
+                      sWorkshopPreviewCharacterBaseline
+                          .inspection_transition_switches
+                : 0u;
+        result->inspection_transition_blending_ticks =
+            character.inspection_transition_blending_ticks >=
+                    sWorkshopPreviewCharacterBaseline
+                        .inspection_transition_blending_ticks
+                ? character.inspection_transition_blending_ticks -
+                      sWorkshopPreviewCharacterBaseline
+                          .inspection_transition_blending_ticks
+                : 0u;
+        result->inspection_transition_completions =
+            character.inspection_transition_completions >=
+                    sWorkshopPreviewCharacterBaseline
+                        .inspection_transition_completions
+                ? character.inspection_transition_completions -
+                      sWorkshopPreviewCharacterBaseline
+                          .inspection_transition_completions
+                : 0u;
+        result->transition_from_blend_milli =
+            character.inspection_from_blend_milliseconds;
+        result->transition_to_blend_milli =
+            character.inspection_to_blend_milliseconds;
+        result->transition_from_motion_source =
+            (MdkrCharacterPreviewMotionSource)
+                character.inspection_from_motion_source;
+        result->transition_to_motion_source =
+            (MdkrCharacterPreviewMotionSource)
+                character.inspection_to_motion_source;
+        if (result->replacement_draws != 0u) {
+            if (workshop_preview_publish_fit_diagnostics(result)) {
+                (void)workshop_preview_publish_camera_projection(result);
+            }
+            (void)workshop_preview_publish_joint_diagnostics(result);
+            (void)workshop_preview_publish_contact_diagnostics(result);
+            (void)workshop_preview_publish_vehicle_surface_diagnostics(
+                result);
+            (void)workshop_preview_publish_opaque_visibility(result);
+        } else if (result->donor_reference &&
+                   result->reference_draws != 0u) {
+            /* Reference-only commands reached the backend without drawing.
+             * Publish their exact fitted volume and camera projection so the
+             * launcher can register a donor image against a custom still. */
+            if (workshop_preview_publish_fit_diagnostics(result)) {
+                (void)workshop_preview_publish_camera_projection(result);
+            }
+        }
+        mdkr_workshop_preview_visual_metrics(&visual);
+        result->donor_reference_batches =
+            visual.donor_reference_batches >=
+                    sWorkshopPreviewVisualBaseline.donor_reference_batches
+                ? visual.donor_reference_batches -
+                      sWorkshopPreviewVisualBaseline.donor_reference_batches
+                : 0u;
+        result->camera_override_ticks = visual.camera_override_ticks >=
+                sWorkshopPreviewVisualBaseline.camera_override_ticks
+            ? visual.camera_override_ticks -
+                  sWorkshopPreviewVisualBaseline.camera_override_ticks
+            : 0u;
+        result->lighting_override_draws = visual.lighting_override_draws >=
+                sWorkshopPreviewVisualBaseline.lighting_override_draws
+            ? visual.lighting_override_draws -
+                  sWorkshopPreviewVisualBaseline.lighting_override_draws
+            : 0u;
+    }
+    sWorkshopPreviewMeasurementFinished = TRUE;
+    MDKR_TRACE(
+        "character_workshop_result: warmup=%d realtime=%d samples=%llu "
+        "p50us=%llu p95us=%llu p99us=%llu maxus=%llu replacements=%llu "
+        "reference=%llu/%llu donorReference=%d/%llu "
+        "contacts=%llu contactMaxUm=%llu contactWitness=%x "
+        "contactWitnessErrorUm=%llu,%llu,%llu,%llu "
+        "contactLHUm=root:%lld,%lld,%lld bend:%lld,%lld,%lld "
+        "target:%lld,%lld,%lld end:%lld,%lld,%lld fit=%d "
+        "fitAnchorUm=%lld,%lld,%lld fitBoundsYUm=%lld,%lld "
+        "fitForwardMilli=%d,%d,%d fitLandmarks=%x "
+        "headUm=%lld,%lld,%lld cameraFit=%d "
+        "cameraBoundsMilli=%d,%d,%d,%d/%x "
+        "cameraViewport=%d,%d,%d,%d cameraHeadMilli=%d,%d,%d/%x "
+        "surface=%d shell=%u/%u subject=%u/%u crossings=%u/%u "
+        "crossingUm=%lld,%lld,%lld "
+        "volume=%d topology=%u,%u,%u,%u containment=%u,%u,%u,%u "
+        "containmentDepthUm=%llu containmentPointUm=%lld,%lld,%lld "
+        "visibility=%d/%d visibilitySize=%ux%u "
+        "visibilityDraws=%u,%u,%u,%u visibilityGrid=%ux%u "
+        "visibilityTiles=%u/%u visibilityMask=%016llx/%016llx "
+        "occluders=%x/%x occluderDraws=%u,%u,%u "
+        "occluderUnqualified=%u,%u,%u occluderOverlap=%u,%u,%u "
+        "occluderMask=%016llx,%016llx,%016llx "
+        "pose=%d phase=%u "
+        "transitionFrom=%d transitionPhase=%u transition=%llu/%llu/%llu "
+        "transitionBlend=%u,%u transitionSource=%d,%d "
+        "poseTicks=%llu poseFallback=%llu view=%d,%d lighting=%d "
+        "cameraTicks=%llu lightingDraws=%llu capture=%d/%d/%d kind=%d "
+        "captureStableFrames=%llu bytes=%llu "
+        "gpu=%u/%x sceneGpuNs=%llu,%llu,%llu "
+        "characterGpuNs=%llu,%llu,%llu gpuExcluded=%llu,%llu,%llu "
+        "backend=%s adapter=%s driver=%s "
+        "vendor=%08x device=%08x output=%ux%u render=%ux%u",
+        result->warmup_complete, result->realtime,
+        result->interval_samples, result->interval_p50_us,
+        result->interval_p95_us, result->interval_p99_us,
+        result->interval_max_us, result->replacement_draws,
+        result->reference_draws, result->reference_primitives,
+        result->donor_reference,
+        result->donor_reference_batches,
+        result->contact_solves, result->contact_error_max_micrometres,
+        result->contact_witness_mask,
+        result->contact_witness_error_micrometres[0],
+        result->contact_witness_error_micrometres[1],
+        result->contact_witness_error_micrometres[2],
+        result->contact_witness_error_micrometres[3],
+        result->contact_chain_root_micrometres[0][0],
+        result->contact_chain_root_micrometres[0][1],
+        result->contact_chain_root_micrometres[0][2],
+        result->contact_bend_micrometres[0][0],
+        result->contact_bend_micrometres[0][1],
+        result->contact_bend_micrometres[0][2],
+        result->contact_target_micrometres[0][0],
+        result->contact_target_micrometres[0][1],
+        result->contact_target_micrometres[0][2],
+        result->contact_end_micrometres[0][0],
+        result->contact_end_micrometres[0][1],
+        result->contact_end_micrometres[0][2],
+        result->fit_diagnostics_valid,
+        result->fit_anchor_micrometres[0],
+        result->fit_anchor_micrometres[1],
+        result->fit_anchor_micrometres[2],
+        result->fit_bounds_min_micrometres[1],
+        result->fit_bounds_max_micrometres[1],
+        result->fit_forward_milli[0],
+        result->fit_forward_milli[1],
+        result->fit_forward_milli[2],
+        result->fit_landmark_mask,
+        result->fit_landmark_micrometres
+            [MDKR_CHARACTER_PREVIEW_LANDMARK_HEAD][0],
+        result->fit_landmark_micrometres
+            [MDKR_CHARACTER_PREVIEW_LANDMARK_HEAD][1],
+        result->fit_landmark_micrometres
+            [MDKR_CHARACTER_PREVIEW_LANDMARK_HEAD][2],
+        result->camera_projection_valid,
+        result->camera_bounds_pixel_milli[0],
+        result->camera_bounds_pixel_milli[1],
+        result->camera_bounds_pixel_milli[2],
+        result->camera_bounds_pixel_milli[3],
+        result->camera_bounds_clip_flags,
+        result->camera_projection_viewport[0],
+        result->camera_projection_viewport[1],
+        result->camera_projection_viewport[2],
+        result->camera_projection_viewport[3],
+        result->camera_landmark_pixel_milli
+            [MDKR_CHARACTER_PREVIEW_LANDMARK_HEAD][0],
+        result->camera_landmark_pixel_milli
+            [MDKR_CHARACTER_PREVIEW_LANDMARK_HEAD][1],
+        result->camera_landmark_depth_millionths
+            [MDKR_CHARACTER_PREVIEW_LANDMARK_HEAD],
+        result->camera_landmark_clip_flags
+            [MDKR_CHARACTER_PREVIEW_LANDMARK_HEAD],
+        result->vehicle_surface_valid,
+        result->vehicle_shell_triangles_tested,
+        result->vehicle_shell_triangles_submitted,
+        result->character_surface_triangles_tested,
+        result->character_surface_triangles_submitted,
+        result->vehicle_surface_crossing_triangles,
+        result->vehicle_surface_crossing_pairs,
+        result->vehicle_surface_first_crossing_micrometres[0],
+        result->vehicle_surface_first_crossing_micrometres[1],
+        result->vehicle_surface_first_crossing_micrometres[2],
+        result->vehicle_volume_qualified,
+        result->vehicle_shell_boundary_edges,
+        result->vehicle_shell_nonmanifold_edges,
+        result->vehicle_shell_orientation_mismatch_edges,
+        result->vehicle_shell_self_intersection_pairs,
+        result->vehicle_containment_samples_tested,
+        result->vehicle_containment_inside_samples,
+        result->vehicle_containment_boundary_samples,
+        result->vehicle_containment_outside_samples,
+        result->vehicle_containment_maximum_depth_micrometres,
+        result->vehicle_containment_deepest_micrometres[0],
+        result->vehicle_containment_deepest_micrometres[1],
+        result->vehicle_containment_deepest_micrometres[2],
+        result->opaque_visibility_valid,
+        result->opaque_visibility_qualified,
+        result->opaque_visibility_width,
+        result->opaque_visibility_height,
+        result->opaque_visibility_primitive_draws,
+        result->opaque_visibility_opaque_draws,
+        result->opaque_visibility_masked_draws,
+        result->opaque_visibility_transparent_draws,
+        result->opaque_visibility_grid_columns,
+        result->opaque_visibility_grid_rows,
+        result->opaque_visibility_scene_tiles,
+        result->opaque_visibility_isolated_tiles,
+        result->opaque_visibility_scene_tile_mask,
+        result->opaque_visibility_isolated_tile_mask,
+        result->opaque_visibility_occluder_present_mask,
+        result->opaque_visibility_occluder_qualified_mask,
+        result->opaque_visibility_occluder_draws[0],
+        result->opaque_visibility_occluder_draws[1],
+        result->opaque_visibility_occluder_draws[2],
+        result->opaque_visibility_occluder_unqualified_draws[0],
+        result->opaque_visibility_occluder_unqualified_draws[1],
+        result->opaque_visibility_occluder_unqualified_draws[2],
+        result->opaque_visibility_occluder_overlap_tiles[0],
+        result->opaque_visibility_occluder_overlap_tiles[1],
+        result->opaque_visibility_occluder_overlap_tiles[2],
+        result->opaque_visibility_occluder_overlap_tile_mask[0],
+        result->opaque_visibility_occluder_overlap_tile_mask[1],
+        result->opaque_visibility_occluder_overlap_tile_mask[2],
+        (int)result->pose, result->pose_phase_milli,
+        (int)result->transition_from_pose,
+        result->transition_from_phase_milli,
+        result->inspection_transition_switches,
+        result->inspection_transition_blending_ticks,
+        result->inspection_transition_completions,
+        result->transition_from_blend_milli,
+        result->transition_to_blend_milli,
+        (int)result->transition_from_motion_source,
+        (int)result->transition_to_motion_source,
+        result->inspection_pose_ticks,
+        result->inspection_pose_fallback_ticks,
+        result->view_yaw_degrees, result->view_pitch_degrees,
+        (int)result->lighting, result->camera_override_ticks,
+        result->lighting_override_draws, result->capture_requested,
+        result->capture_armed, result->capture_written,
+        (int)result->capture_kind,
+        result->capture_stable_frames, result->capture_png_bytes,
+        (unsigned)result->gpu_timing.status,
+        result->gpu_timing.supported_scopes,
+        (unsigned long long)result->gpu_timing.scene_pass.samples,
+        (unsigned long long)result->gpu_timing.scene_pass.p50_ns,
+        (unsigned long long)result->gpu_timing.scene_pass.p95_ns,
+        (unsigned long long)result->gpu_timing.character_draws.samples,
+        (unsigned long long)result->gpu_timing.character_draws.p50_ns,
+        (unsigned long long)result->gpu_timing.character_draws.p95_ns,
+        (unsigned long long)result->gpu_timing.pending_frames,
+        (unsigned long long)result->gpu_timing.ring_full_frames,
+        (unsigned long long)result->gpu_timing.invalid_samples,
+        result->renderer_backend,
+        result->adapter[0] != '\0' ? result->adapter : "unknown",
+        result->driver[0] != '\0' ? result->driver : "unknown",
+        result->vendor_id, result->device_id,
+        result->output_width, result->output_height,
+        result->render_width, result->render_height);
+}
+
+static void workshop_preview_capture_service(void) {
+    MdkrCharacterPreviewResult *result = g_mdkrCharacterPreviewResult;
+    MdkrModernCharacterRuntimeMetrics character;
+    MdkrWorkshopPreviewVisualMetrics visual;
+    s32 ready;
+    if (result == NULL || sWorkshopPreviewCapturePath[0] == '\0' ||
+        sWorkshopPreviewCaptureArmed) return;
+    mdkr_modern_character_runtime_metrics(&character);
+    mdkr_workshop_preview_visual_metrics(&visual);
+    /* The inspection camera is an exact look-at around the renderer's fitted
+     * character volume, so it remains correctly composed even while an
+     * authored start camera is moving. Do not wait on the HUD-owned race
+     * countdown: headless and paused inspection sessions may intentionally
+     * leave that state machine held forever. Instead require consecutive
+     * frames in which every requested presentation layer actually rendered. */
+    ready =
+        (result->donor_reference
+             ? visual.donor_reference_batches >
+                       sWorkshopPreviewCaptureLastDonorReferenceBatches &&
+                   character.reference_draws >
+                       sWorkshopPreviewCaptureLastReferenceDraws &&
+                   (result->pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+                    character.inspection_pose_ticks >
+                        sWorkshopPreviewCharacterBaseline
+                            .inspection_pose_ticks)
+             : character.replacement_draws >
+                       sWorkshopPreviewCaptureLastReplacementDraws &&
+                   character.inspection_pose_ticks >
+                       sWorkshopPreviewCharacterBaseline
+                           .inspection_pose_ticks) &&
+        ((result->view_yaw_degrees == 0 &&
+          result->view_pitch_degrees == 0) ||
+         visual.camera_override_ticks >
+            sWorkshopPreviewVisualBaseline.camera_override_ticks) &&
+        (result->lighting == MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||
+         visual.lighting_override_draws >
+            sWorkshopPreviewVisualBaseline.lighting_override_draws);
+    sWorkshopPreviewCaptureLastReplacementDraws =
+        character.replacement_draws;
+    sWorkshopPreviewCaptureLastReferenceDraws = character.reference_draws;
+    sWorkshopPreviewCaptureLastDonorReferenceBatches =
+        visual.donor_reference_batches;
+    if (ready) {
+        sWorkshopPreviewCaptureStableFrames++;
+    } else {
+        sWorkshopPreviewCaptureStableFrames = 0u;
+    }
+    result->capture_stable_frames = sWorkshopPreviewCaptureStableFrames;
+    if (sWorkshopPreviewCaptureStableFrames >=
+            MDKR_CHARACTER_PREVIEW_CAPTURE_STABLE_FRAMES) {
+        char captureError[192] = { 0 };
+        const s32 captureRequested =
+            sWorkshopPreviewCaptureKind ==
+                    MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA
+                ? platform_modern_character_capture_request_once(
+                      sWorkshopPreviewCapturePath,
+                      captureError, sizeof(captureError))
+                : platform_frame_capture_request_once(
+                      sWorkshopPreviewCapturePath,
+                      captureError, sizeof(captureError));
+        if (!captureRequested) {
+            fprintf(stderr,
+                    "[FATAL] Character Workshop capture could not be armed: %s\n",
+                    captureError[0] != '\0'
+                        ? captureError : "unknown capture error");
+            platform_request_exit(EXIT_FAILURE);
+            return;
+        }
+        sWorkshopPreviewCaptureArmed = TRUE;
+        result->capture_armed = TRUE;
+        MDKR_TRACE(
+            "character_workshop_capture: armed kind=%s stableFrames=%llu countdown=%d replacements=%llu cameraTicks=%llu lightingDraws=%llu",
+            sWorkshopPreviewCaptureKind ==
+                    MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA
+                ? "model-alpha" : "scene",
+            (unsigned long long)sWorkshopPreviewCaptureStableFrames,
+            result->context == MDKR_CHARACTER_PREVIEW_SELECT
+                ? 0 : gRaceStartTimer,
+            (unsigned long long)character.replacement_draws,
+            (unsigned long long)visual.camera_override_ticks,
+            (unsigned long long)visual.lighting_override_draws);
+    }
+}
+
+/* Vehicle inspection is a deliberate gameplay-camera presentation. Course
+ * scripts are still allowed to author their cutscene bank, but displaying that
+ * bank would make a deterministic character view point at a different subject.
+ * Clear only the one-frame selection latch after authored HUD/camera work; the
+ * game restores its ordinary lifecycle on the next tick and after this isolated
+ * engine session ends. */
+static void workshop_preview_camera_bank_service(void) {
+    const MdkrCharacterPreviewResult *result =
+        g_mdkrCharacterPreviewResult;
+    if (result != NULL && result->started &&
+        result->context != MDKR_CHARACTER_PREVIEW_SELECT &&
+        result->pose > MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
+        result->pose < MDKR_CHARACTER_PREVIEW_POSE_COUNT) {
+        disable_cutscene_camera();
+    }
+}
+
+static void workshop_preview_measurement_service(s32 overlayPaused) {
+    MdkrCharacterPreviewResult *result = g_mdkrCharacterPreviewResult;
+    if (result == NULL || !result->started) {
+        return;
+    }
+    if (g_mdkrCharacterMotionReviewResult != NULL &&
+        sWorkshopPreviewMeasurementStarted) {
+        workshop_motion_review_service();
+        return;
+    }
+    /* Evidence capture is allowed to wait longer than the bounded performance
+     * sample. Race-start cameras and transitions can legitimately outlive that
+     * sample, and arming early would preserve a transient rather than the
+     * authored inspection view. */
+    if (sWorkshopPreviewMeasurementFinished) {
+        if (!overlayPaused) workshop_preview_capture_service();
+        return;
+    }
+    if (!sWorkshopPreviewMeasurementStarted) {
+        sWorkshopPreviewWarmupTicks++;
+        result->warmup_ticks = sWorkshopPreviewWarmupTicks;
+        /* Collect the expensive exact surface witness during warm-up only.
+         * Retry a consumed/failed request while there is still a 20-tick
+         * settling margin, but never let this authoring diagnostic pollute the
+         * measured performance interval. */
+        if (!result->donor_reference &&
+            result->context >= MDKR_CHARACTER_PREVIEW_CAR &&
+            result->context <= MDKR_CHARACTER_PREVIEW_PLANE &&
+            sWorkshopPreviewWarmupTicks <=
+                WORKSHOP_PREVIEW_WARMUP_TICKS - 20u) {
+            const MdkrModernCharacterContext context =
+                (MdkrModernCharacterContext)(
+                    (s32)result->context -
+                    (s32)MDKR_CHARACTER_PREVIEW_SELECT);
+            MdkrModernSurfaceIntersectionDiagnostics diagnostics;
+            if (!mdkr_modern_character_player_surface_diagnostics(
+                    0, context, &diagnostics) &&
+                !mdkr_modern_character_surface_diagnostics_requested(
+                    0, context)) {
+                (void)mdkr_modern_character_request_surface_diagnostics(
+                    0, context);
+            }
+        }
+        if (sWorkshopPreviewWarmupTicks <=
+                WORKSHOP_PREVIEW_WARMUP_TICKS - 20u) {
+            MdkrModernCharacterVisibilityDiagnostics diagnostics;
+            MdkrModernCharacterRuntimeMetrics character;
+            mdkr_modern_character_runtime_metrics(&character);
+            if (character.replacement_draws != 0u &&
+                !platform_modern_character_visibility_diagnostics(
+                    &diagnostics) &&
+                !platform_modern_character_visibility_pending() &&
+                sWorkshopPreviewVisibilityAttempts < 3u &&
+                platform_modern_character_visibility_request_once()) {
+                sWorkshopPreviewVisibilityAttempts++;
+            }
+        }
+        /* Map completion is queue-ordered after the diagnostic replay. Do not
+         * begin the clean timing interval while that work is still in flight:
+         * on a slow/high-poly device the nominal 20-tick request margin is a
+         * convenience, not a proof that the GPU has drained. The launcher's
+         * bounded stalled-session recovery remains the escape hatch for a
+         * lost callback or device hang. */
+        if (sWorkshopPreviewWarmupTicks >= WORKSHOP_PREVIEW_WARMUP_TICKS &&
+            !platform_modern_character_visibility_pending()) {
+            present_perf_measurement_reset();
+            mdkr_modern_character_contact_metrics_reset();
+            gfx_begin_modern_character_gpu_timing();
+            mdkr_modern_character_runtime_metrics(
+                &sWorkshopPreviewCharacterBaseline);
+            mdkr_workshop_preview_visual_metrics(
+                &sWorkshopPreviewVisualBaseline);
+            sWorkshopPreviewCaptureLastReplacementDraws =
+                sWorkshopPreviewCharacterBaseline.replacement_draws;
+            sWorkshopPreviewCaptureLastReferenceDraws =
+                sWorkshopPreviewCharacterBaseline.reference_draws;
+            sWorkshopPreviewCaptureLastDonorReferenceBatches =
+                sWorkshopPreviewVisualBaseline.donor_reference_batches;
+            sWorkshopPreviewMeasurementStarted = TRUE;
+            result->warmup_complete = TRUE;
+            if (g_mdkrCharacterMotionReviewResult != NULL) {
+                g_mdkrCharacterMotionReviewResult->started = TRUE;
+                workshop_motion_review_begin_sample();
+            }
+            MDKR_TRACE(
+                "character_workshop_measurement: started warmupTicks=%llu",
+                (unsigned long long)sWorkshopPreviewWarmupTicks);
+        }
+        if (overlayPaused) workshop_preview_measurement_finish();
+        return;
+    }
+    if (!overlayPaused) workshop_preview_capture_service();
+    if (overlayPaused) workshop_preview_measurement_finish();
+}
+#endif
+
 /******************************/
 
 /**
@@ -234,6 +1758,35 @@ void thread3_main(UNUSED void *unused) {
     bzero(&gNMIMesgQueue, sizeof(gNMIMesgQueue));
     gNMIOSMesg = NULL;
     gNMIMesgBuf = 0;
+#ifdef NATIVE_PORT
+    sWorkshopPreviewWarmupTicks = 0u;
+    sWorkshopPreviewMeasurementStarted = FALSE;
+    sWorkshopPreviewMeasurementFinished = FALSE;
+    sWorkshopPreviewVisibilityAttempts = 0u;
+    bzero(&sWorkshopPreviewCharacterBaseline,
+          sizeof(sWorkshopPreviewCharacterBaseline));
+    bzero(&sWorkshopPreviewVisualBaseline,
+          sizeof(sWorkshopPreviewVisualBaseline));
+    sWorkshopPreviewCapturePath[0] = '\0';
+    sWorkshopPreviewCaptureStableFrames = 0u;
+    sWorkshopPreviewCaptureLastReplacementDraws = 0u;
+    sWorkshopPreviewCaptureLastReferenceDraws = 0u;
+    sWorkshopPreviewCaptureLastDonorReferenceBatches = 0u;
+    sWorkshopPreviewCaptureArmed = FALSE;
+    sWorkshopPreviewCaptureKind =
+        MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
+    sWorkshopMotionReviewSample = 0u;
+    sWorkshopMotionReviewStageTicks = 0u;
+    sWorkshopMotionReviewVisibilityAttempts = 0u;
+    sWorkshopMotionReviewReplacementBaseline = 0u;
+    sWorkshopMotionReviewPoseSettled = FALSE;
+    sWorkshopMotionReviewDiagnosticsRequested = FALSE;
+    sWorkshopMotionReviewUiReported = FALSE;
+    bzero(&sWorkshopMotionReviewPoseBaseline,
+          sizeof(sWorkshopMotionReviewPoseBaseline));
+    mdkr_workshop_preview_visual_clear();
+    mdkr_workshop_preview_visual_metrics_reset();
+#endif
     init_game();
     gSaveDataFlags = input_update(gSaveDataFlags, 0);
     sBootDelayTimer = 0;
@@ -265,6 +1818,10 @@ void thread3_main(UNUSED void *unused) {
 #endif
         thread3_verify_stack();
     }
+#ifdef NATIVE_PORT
+    workshop_preview_measurement_finish();
+    mdkr_workshop_preview_visual_clear();
+#endif
 }
 
 /**
@@ -420,6 +1977,7 @@ void main_game_loop(void) {
      * Without registered hooks both queries are constant-zero. */
     {
         const s32 overlayPaused = platformOverlayWantsPause();
+        workshop_preview_measurement_service(overlayPaused);
         /* A cutscene camera is a one-frame pulse. The app overlay opens from
          * presentation, so unlike the authored START pause it reaches this
          * input boundary one tick after that pulse was cleared. Restore the
@@ -488,6 +2046,9 @@ void main_game_loop(void) {
     // menus & gameplay.
 
     sound_update_queue(logicUpdateRate);
+#ifdef NATIVE_PORT
+    workshop_motion_review_render_status();
+#endif
     debug_text_print(&gCurrDisplayList);
 #ifdef NATIVE_PORT
     /* Confine the widescreen HUD's expanded draw space to the HUD: the dialogue
@@ -888,6 +2449,9 @@ void mode_game(s32 updateRate) {
      * RAW rate, not pause-gated: this group runs while paused today.
      */
     hud_tick(updateRate);
+#ifdef NATIVE_PORT
+    workshop_preview_camera_bank_service();
+#endif
     /* The three-player TT spectator camera used to advance from render_scene.
      * It feeds this tick's final sort/LOD/visibility basis, so advance it once
      * from fixed-tick authority before any of those consumers. */
@@ -1510,6 +3074,9 @@ void update_menu_scene(s32 updateRate) {
     /* The HUD's authoritative half. Runs FIRST -- see the tick ordering contract
      * on the twin call in mode_game. */
     hud_tick(updateRate);
+#ifdef NATIVE_PORT
+    workshop_preview_camera_bank_service();
+#endif
     /* Fixed-tick ownership of the three-player TT spectator camera; see the
      * twin call and tracks.c's scene_tt_camera_tick contract. */
     scene_tt_camera_tick(updateRate);
@@ -2323,6 +3890,489 @@ void set_frame_blackout_timer(void) {
     gDrawFrameTimer = 2;
 }
 
+#ifdef NATIVE_PORT
+static MdkrCharacterPreviewPose workshop_preview_pose_from_semantic(
+    const char *semantic) {
+    static const struct {
+        const char *semantic;
+        MdkrCharacterPreviewPose pose;
+    } poses[] = {
+#define MDKR_WORKSHOP_PREVIEW_POSE_ROW(suffix, value, label) \
+        { value, MDKR_CHARACTER_PREVIEW_POSE_##suffix },
+        MDKR_MODERN_CHARACTER_INSPECTION_SEMANTICS(
+            MDKR_WORKSHOP_PREVIEW_POSE_ROW)
+#undef MDKR_WORKSHOP_PREVIEW_POSE_ROW
+    };
+    size_t index;
+    if (semantic == NULL) return MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+    for (index = 0u; index < sizeof(poses) / sizeof(poses[0]); index++) {
+        if (strcmp(semantic, poses[index].semantic) == 0) {
+            return poses[index].pose;
+        }
+    }
+    return MDKR_CHARACTER_PREVIEW_POSE_COUNT;
+}
+
+static MdkrWorkshopPreviewLighting workshop_preview_lighting_from_name(
+    const char *name) {
+    if (name == NULL) return MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT;
+    if (strcmp(name, "neutral") == 0) {
+        return MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
+    }
+    if (strcmp(name, "bright") == 0) {
+        return MDKR_WORKSHOP_PREVIEW_LIGHTING_BRIGHT;
+    }
+    if (strcmp(name, "low-key") == 0) {
+        return MDKR_WORKSHOP_PREVIEW_LIGHTING_LOW_KEY;
+    }
+    if (strcmp(name, "backlit") == 0) {
+        return MDKR_WORKSHOP_PREVIEW_LIGHTING_BACKLIT;
+    }
+    return MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT;
+}
+
+/* Exercise each vehicle in a course that exposes its ordinary presentation
+ * pressures. Ancient Lake is a clean car baseline, Whale Bay contains the
+ * water/shore transitions a hovercraft appearance must survive, and Windmill
+ * Plains provides the open elevation and camera angles needed to judge a
+ * plane rider. These routes are part of the evidence contract: changing one
+ * must also invalidate the launcher's presentation signature. */
+static s32 workshop_preview_level_for_vehicle(
+    s32 vehicle, MdkrCharacterPreviewScene scene) {
+    static const s32 levels[3][MDKR_CHARACTER_PREVIEW_SCENE_COUNT] = {
+        {ASSET_LEVEL_ANCIENTLAKE, ASSET_LEVEL_GREENWOODVILLAGE,
+         ASSET_LEVEL_SNOWBALLVALLEY, ASSET_LEVEL_HAUNTEDWOODS,
+         ASSET_LEVEL_JUNGLEFALLS},
+        {ASSET_LEVEL_WHALEBAY, ASSET_LEVEL_CRESCENTISLAND,
+         ASSET_LEVEL_HOTTOPVOLCANO, ASSET_LEVEL_TREASURECAVES,
+         ASSET_LEVEL_PIRATELAGOON},
+        {ASSET_LEVEL_WINDMILLPLAINS, ASSET_LEVEL_SPACEPORTALPHA,
+         ASSET_LEVEL_EVERFROSTPEAK, ASSET_LEVEL_DARKMOONCAVERNS,
+         ASSET_LEVEL_SPACEDUSTALLEY},
+    };
+    if (vehicle < VEHICLE_CAR || vehicle > VEHICLE_PLANE ||
+        scene < MDKR_CHARACTER_PREVIEW_SCENE_BASELINE ||
+        scene >= MDKR_CHARACTER_PREVIEW_SCENE_COUNT) return -1;
+    return levels[vehicle][scene];
+}
+
+static MdkrCharacterPreviewScene workshop_preview_scene_from_name(
+    const char *name) {
+    if (name == NULL || strcmp(name, "baseline") == 0) {
+        return MDKR_CHARACTER_PREVIEW_SCENE_BASELINE;
+    }
+    if (strcmp(name, "dense") == 0) {
+        return MDKR_CHARACTER_PREVIEW_SCENE_DENSE;
+    }
+    if (strcmp(name, "alternate") == 0) {
+        return MDKR_CHARACTER_PREVIEW_SCENE_ALTERNATE;
+    }
+    if (strcmp(name, "low-visibility") == 0) {
+        return MDKR_CHARACTER_PREVIEW_SCENE_LOW_VISIBILITY;
+    }
+    if (strcmp(name, "effects") == 0) {
+        return MDKR_CHARACTER_PREVIEW_SCENE_EFFECTS;
+    }
+    return MDKR_CHARACTER_PREVIEW_SCENE_COUNT;
+}
+
+static s32 workshop_preview_start(void) {
+    const char *context = getenv("MDKR_CHARACTER_WORKSHOP_PREVIEW");
+    const char *playersText;
+    const char *poseText;
+    const char *phaseText;
+    const char *transitionFromPoseText;
+    const char *transitionFromPhaseText;
+    const char *yawText;
+    const char *pitchText;
+    const char *lightingText;
+    const char *captureText;
+    const char *captureKindText;
+    const char *motionReviewText;
+    const char *sceneText;
+    const char *donorReferenceText;
+    MdkrCharacterPreviewPose pose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+    unsigned posePhaseMilli = 0u;
+    MdkrCharacterPreviewPose transitionFromPose =
+        MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+    unsigned transitionFromPhaseMilli = 0u;
+    int viewYawDegrees = 0;
+    int viewPitchDegrees = 0;
+    MdkrWorkshopPreviewLighting lighting =
+        MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
+    MdkrCharacterPreviewScene scene =
+        MDKR_CHARACTER_PREVIEW_SCENE_BASELINE;
+    s32 players = 1;
+    s32 vehicle = -1;
+    s32 motionReview = FALSE;
+    s32 donorReference = FALSE;
+    if (context == NULL || context[0] == '\0') return FALSE;
+    playersText = getenv("MDKR_CHARACTER_WORKSHOP_PREVIEW_PLAYERS");
+    if (playersText != NULL && playersText[0] != '\0') {
+        char *end = NULL;
+        long parsed = strtol(playersText, &end, 10);
+        if (end == playersText || *end != '\0' || parsed < 1 || parsed > 4) {
+            fprintf(stderr,
+                    "[FATAL] invalid Character Workshop player count: %s\n",
+                    playersText);
+            platform_request_exit(EXIT_FAILURE);
+            return TRUE;
+        }
+        players = (s32)parsed;
+    }
+    poseText = getenv("MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE");
+    phaseText = getenv("MDKR_CHARACTER_WORKSHOP_PREVIEW_POSE_PHASE");
+    if ((poseText != NULL && poseText[0] != '\0') ||
+        (phaseText != NULL && phaseText[0] != '\0')) {
+        char *end = NULL;
+        long parsed;
+        char poseError[192] = { 0 };
+        if (poseText == NULL || poseText[0] == '\0' ||
+            phaseText == NULL || phaseText[0] == '\0') {
+            fprintf(stderr,
+                    "[FATAL] Character Workshop pose and phase must be "
+                    "provided together\n");
+            platform_request_exit(EXIT_FAILURE);
+            return TRUE;
+        }
+        pose = workshop_preview_pose_from_semantic(poseText);
+        parsed = strtol(phaseText, &end, 10);
+        if (pose == MDKR_CHARACTER_PREVIEW_POSE_COUNT ||
+            end == phaseText || *end != '\0' || parsed < 0 ||
+            parsed > 1000 ||
+            !mdkr_modern_character_set_inspection_pose(
+                poseText, (float)parsed / 1000.0f,
+                poseError, sizeof(poseError))) {
+            fprintf(stderr,
+                    "[FATAL] invalid Character Workshop pose request: "
+                    "%s at %s (%s)\n",
+                    poseText, phaseText,
+                    poseError[0] != '\0' ? poseError : "invalid contract");
+            platform_request_exit(EXIT_FAILURE);
+            return TRUE;
+        }
+        posePhaseMilli = (unsigned)parsed;
+    } else {
+        mdkr_modern_character_clear_inspection_pose();
+    }
+    transitionFromPoseText = getenv(
+        "MDKR_CHARACTER_WORKSHOP_PREVIEW_TRANSITION_FROM_POSE");
+    transitionFromPhaseText = getenv(
+        "MDKR_CHARACTER_WORKSHOP_PREVIEW_TRANSITION_FROM_PHASE");
+    if ((transitionFromPoseText != NULL &&
+         transitionFromPoseText[0] != '\0') ||
+        (transitionFromPhaseText != NULL &&
+         transitionFromPhaseText[0] != '\0')) {
+        char *end = NULL;
+        long parsed;
+        char transitionError[192] = { 0 };
+        if (pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+            transitionFromPoseText == NULL ||
+            transitionFromPoseText[0] == '\0' ||
+            transitionFromPhaseText == NULL ||
+            transitionFromPhaseText[0] == '\0') {
+            fprintf(stderr,
+                    "[FATAL] Character Workshop transition source and phase must be provided together with a destination pose\n");
+            platform_request_exit(EXIT_FAILURE);
+            return TRUE;
+        }
+        transitionFromPose = workshop_preview_pose_from_semantic(
+            transitionFromPoseText);
+        parsed = strtol(transitionFromPhaseText, &end, 10);
+        if (transitionFromPose == MDKR_CHARACTER_PREVIEW_POSE_COUNT ||
+            transitionFromPose == pose || end == transitionFromPhaseText ||
+            *end != '\0' || parsed < 0 || parsed > 1000 ||
+            !mdkr_modern_character_set_inspection_transition(
+                transitionFromPoseText, (float)parsed / 1000.0f,
+                poseText, (float)posePhaseMilli / 1000.0f,
+                transitionError, sizeof(transitionError))) {
+            fprintf(stderr,
+                    "[FATAL] invalid Character Workshop transition request: %s at %s to %s at %u (%s)\n",
+                    transitionFromPoseText, transitionFromPhaseText,
+                    poseText != NULL ? poseText : "none", posePhaseMilli,
+                    transitionError[0] != '\0'
+                        ? transitionError : "invalid contract");
+            platform_request_exit(EXIT_FAILURE);
+            return TRUE;
+        }
+        transitionFromPhaseMilli = (unsigned)parsed;
+    }
+    yawText = getenv("MDKR_CHARACTER_WORKSHOP_VIEW_YAW_DEGREES");
+    pitchText = getenv("MDKR_CHARACTER_WORKSHOP_VIEW_PITCH_DEGREES");
+    lightingText = getenv("MDKR_CHARACTER_WORKSHOP_LIGHTING");
+    captureText = getenv("MDKR_CHARACTER_WORKSHOP_CAPTURE_PNG");
+    captureKindText = getenv("MDKR_CHARACTER_WORKSHOP_CAPTURE_KIND");
+    donorReferenceText = getenv(
+        "MDKR_CHARACTER_WORKSHOP_DONOR_REFERENCE");
+    if (donorReferenceText != NULL && donorReferenceText[0] != '\0') {
+        if (strcmp(donorReferenceText, "1") != 0) {
+            fprintf(stderr,
+                    "[FATAL] invalid Character Workshop donor-reference request\n");
+            platform_request_exit(EXIT_FAILURE);
+            return TRUE;
+        }
+        donorReference = TRUE;
+    }
+    if ((yawText != NULL && yawText[0] != '\0') ||
+        (pitchText != NULL && pitchText[0] != '\0') ||
+        (lightingText != NULL && lightingText[0] != '\0')) {
+        char *yawEnd = NULL;
+        char *pitchEnd = NULL;
+        long parsedYaw;
+        long parsedPitch;
+        char visualError[192] = { 0 };
+        if (pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+            yawText == NULL || yawText[0] == '\0' ||
+            pitchText == NULL || pitchText[0] == '\0' ||
+            lightingText == NULL || lightingText[0] == '\0') {
+            fprintf(stderr,
+                    "[FATAL] Character Workshop view and lighting fields must be provided together for pose inspection\n");
+            platform_request_exit(EXIT_FAILURE);
+            return TRUE;
+        }
+        parsedYaw = strtol(yawText, &yawEnd, 10);
+        parsedPitch = strtol(pitchText, &pitchEnd, 10);
+        lighting = workshop_preview_lighting_from_name(lightingText);
+        if (yawEnd == yawText || *yawEnd != '\0' ||
+            pitchEnd == pitchText || *pitchEnd != '\0' ||
+            parsedYaw < -180 || parsedYaw > 180 ||
+            parsedPitch < MDKR_WORKSHOP_PREVIEW_PITCH_MIN_DEGREES ||
+            parsedPitch > MDKR_WORKSHOP_PREVIEW_PITCH_MAX_DEGREES ||
+            (strcmp(context, "select") == 0 &&
+             (parsedYaw != 0 || parsedPitch != 0)) ||
+            lighting == MDKR_WORKSHOP_PREVIEW_LIGHTING_COUNT ||
+            !mdkr_workshop_preview_visual_set(
+                (int)parsedYaw, (int)parsedPitch, lighting,
+                visualError, sizeof(visualError))) {
+            fprintf(stderr,
+                    "[FATAL] invalid Character Workshop view request: %s,%s %s (%s)\n",
+                    yawText, pitchText, lightingText,
+                    visualError[0] != '\0'
+                        ? visualError : "invalid contract");
+            platform_request_exit(EXIT_FAILURE);
+            return TRUE;
+        }
+        viewYawDegrees = (int)parsedYaw;
+        viewPitchDegrees = (int)parsedPitch;
+    } else {
+        mdkr_workshop_preview_visual_clear();
+    }
+    if ((captureText != NULL && captureText[0] != '\0') !=
+        (captureKindText != NULL && captureKindText[0] != '\0')) {
+        fprintf(stderr,
+                "[FATAL] Character Workshop capture path and kind must be provided together\n");
+        platform_request_exit(EXIT_FAILURE);
+        return TRUE;
+    }
+    if (captureText != NULL && captureText[0] != '\0') {
+        const size_t captureLength = strlen(captureText);
+        if ((!donorReference &&
+             pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE) ||
+            transitionFromPose != MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+            captureLength >= sizeof(sWorkshopPreviewCapturePath) ||
+            captureLength < 4u ||
+            strcmp(captureText + captureLength - 4u, ".png") != 0) {
+            fprintf(stderr,
+                    "[FATAL] invalid Character Workshop capture request\n");
+            platform_request_exit(EXIT_FAILURE);
+            return TRUE;
+        }
+        if (strcmp(captureKindText, "scene") == 0) {
+            sWorkshopPreviewCaptureKind =
+                MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
+        } else if (strcmp(captureKindText, "model-alpha") == 0) {
+            sWorkshopPreviewCaptureKind =
+                MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA;
+        } else {
+            fprintf(stderr,
+                    "[FATAL] invalid Character Workshop capture kind: %s\n",
+                    captureKindText);
+            platform_request_exit(EXIT_FAILURE);
+            return TRUE;
+        }
+        (void)snprintf(sWorkshopPreviewCapturePath,
+                       sizeof(sWorkshopPreviewCapturePath), "%s", captureText);
+    } else {
+        sWorkshopPreviewCapturePath[0] = '\0';
+        sWorkshopPreviewCaptureKind =
+            MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
+    }
+    if (donorReference &&
+        (players != 1 ||
+         !((pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE &&
+            posePhaseMilli == 0u) ||
+           (posePhaseMilli == 500u &&
+            ((strcmp(context, "select") == 0 &&
+              pose == MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE) ||
+             (strcmp(context, "select") != 0 &&
+              pose == MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER)))) ||
+         transitionFromPose != MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+         ((pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+           strcmp(context, "select") == 0) &&
+          (viewYawDegrees != 0 || viewPitchDegrees != 0)) ||
+         lighting != MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||
+         sWorkshopPreviewCapturePath[0] == '\0' ||
+         sWorkshopPreviewCaptureKind !=
+             MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE)) {
+        fprintf(stderr,
+                "[FATAL] donor reference requires one player, a live or neutral held context pose, neutral presentation, and a composed capture\n");
+        platform_request_exit(EXIT_FAILURE);
+        return TRUE;
+    }
+    mdkr_workshop_preview_reference_set(donorReference);
+    motionReviewText = getenv("MDKR_CHARACTER_WORKSHOP_MOTION_REVIEW");
+    if (motionReviewText != NULL && motionReviewText[0] != '\0') {
+        if (strcmp(motionReviewText, "1") != 0) {
+            fprintf(stderr,
+                    "[FATAL] invalid Character Workshop motion review request\n");
+            platform_request_exit(EXIT_FAILURE);
+            return TRUE;
+        }
+        motionReview = TRUE;
+    }
+    sceneText = getenv("MDKR_CHARACTER_WORKSHOP_PREVIEW_SCENE");
+    scene = workshop_preview_scene_from_name(sceneText);
+    if (scene == MDKR_CHARACTER_PREVIEW_SCENE_COUNT) {
+        fprintf(stderr,
+                "[FATAL] invalid Character Workshop scene: %s\n",
+                sceneText != NULL ? sceneText : "(null)");
+        platform_request_exit(EXIT_FAILURE);
+        return TRUE;
+    }
+    if (strcmp(context, "car") == 0) {
+        vehicle = VEHICLE_CAR;
+    } else if (strcmp(context, "hovercraft") == 0) {
+        vehicle = VEHICLE_HOVERCRAFT;
+    } else if (strcmp(context, "plane") == 0) {
+        vehicle = VEHICLE_PLANE;
+    } else if (strcmp(context, "select") != 0) {
+        fprintf(stderr,
+                "[FATAL] invalid Character Workshop context: %s\n",
+                context);
+        platform_request_exit(EXIT_FAILURE);
+        return TRUE;
+    }
+    if (vehicle < 0 && scene != MDKR_CHARACTER_PREVIEW_SCENE_BASELINE) {
+        fprintf(stderr,
+                "[FATAL] Character select admits only the baseline scene\n");
+        platform_request_exit(EXIT_FAILURE);
+        return TRUE;
+    }
+    if (motionReview &&
+        (players != 1 ||
+         (vehicle < 0
+              ? pose != MDKR_CHARACTER_PREVIEW_POSE_SELECT_IDLE ||
+                    posePhaseMilli != 500u
+              : vehicle > VEHICLE_PLANE ||
+                    pose != MDKR_CHARACTER_PREVIEW_POSE_RACE_STEER ||
+                    posePhaseMilli != 0u) ||
+         transitionFromPose != MDKR_CHARACTER_PREVIEW_POSE_LIVE ||
+         viewYawDegrees != 0 || viewPitchDegrees != 0 ||
+         lighting != MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL ||
+         sWorkshopPreviewCapturePath[0] != '\0')) {
+        fprintf(stderr,
+                "[FATAL] semantic motion review requires one player, the context's neutral start pose, and no capture\n");
+        platform_request_exit(EXIT_FAILURE);
+        return TRUE;
+    }
+    if (!mdkr_workshop_preview_prepare(players, vehicle)) {
+        fprintf(stderr,
+                "[FATAL] Character Workshop package assignment is unavailable\n");
+        platform_request_exit(EXIT_FAILURE);
+        return TRUE;
+    }
+    if (g_mdkrCharacterPreviewResult == NULL) {
+        bzero(&sWorkshopPreviewDiagnosticResult,
+              sizeof(sWorkshopPreviewDiagnosticResult));
+        sWorkshopPreviewDiagnosticResult.version =
+            MDKR_CHARACTER_PREVIEW_RESULT_VERSION;
+        sWorkshopPreviewDiagnosticResult.gpu_timing.version =
+            MDKR_MODERN_CHARACTER_GPU_TIMING_VERSION;
+        sWorkshopPreviewDiagnosticResult.gpu_timing.status =
+            MDKR_MODERN_CHARACTER_GPU_TIMING_UNSUPPORTED;
+        sWorkshopPreviewDiagnosticResult.context = vehicle < 0
+            ? MDKR_CHARACTER_PREVIEW_SELECT
+            : (MdkrCharacterPreviewContext)(vehicle +
+                  MDKR_CHARACTER_PREVIEW_CAR);
+        sWorkshopPreviewDiagnosticResult.players = players;
+        g_mdkrCharacterPreviewResult = &sWorkshopPreviewDiagnosticResult;
+    }
+    if (g_mdkrCharacterPreviewResult != NULL) {
+        g_mdkrCharacterPreviewResult->started = TRUE;
+        g_mdkrCharacterPreviewResult->pose = pose;
+        g_mdkrCharacterPreviewResult->pose_phase_milli = posePhaseMilli;
+        g_mdkrCharacterPreviewResult->transition_from_pose =
+            transitionFromPose;
+        g_mdkrCharacterPreviewResult->transition_from_phase_milli =
+            transitionFromPhaseMilli;
+        g_mdkrCharacterPreviewResult->view_yaw_degrees = viewYawDegrees;
+        g_mdkrCharacterPreviewResult->view_pitch_degrees = viewPitchDegrees;
+        g_mdkrCharacterPreviewResult->lighting = lighting;
+        g_mdkrCharacterPreviewResult->capture_requested =
+            sWorkshopPreviewCapturePath[0] != '\0';
+        g_mdkrCharacterPreviewResult->capture_kind =
+            sWorkshopPreviewCaptureKind;
+        g_mdkrCharacterPreviewResult->donor_reference = donorReference;
+    }
+    if (motionReview) {
+        if (g_mdkrCharacterMotionReviewResult == NULL) {
+            bzero(&sWorkshopMotionReviewDiagnosticResult,
+                  sizeof(sWorkshopMotionReviewDiagnosticResult));
+            g_mdkrCharacterMotionReviewResult =
+                &sWorkshopMotionReviewDiagnosticResult;
+        }
+        g_mdkrCharacterMotionReviewResult->version =
+            MDKR_CHARACTER_MOTION_REVIEW_RESULT_VERSION;
+        g_mdkrCharacterMotionReviewResult->context =
+            vehicle < 0 ? MDKR_CHARACTER_PREVIEW_SELECT
+                        : (MdkrCharacterPreviewContext)(vehicle +
+                              MDKR_CHARACTER_PREVIEW_CAR);
+        g_mdkrCharacterMotionReviewResult->scene = scene;
+        g_mdkrCharacterMotionReviewResult->sample_count =
+            workshop_motion_review_sample_count(
+                g_mdkrCharacterMotionReviewResult->context);
+        g_mdkrCharacterMotionReviewResult->started = TRUE;
+    }
+    if (vehicle < 0) {
+        charselect_prev(1, NULL);
+        load_menu_with_level_background(
+            MENU_CHARACTER_SELECT, ASSET_LEVEL_CHARACTERSELECT, 0);
+    } else {
+        set_time_trial_enabled(FALSE);
+        init_racer_headers();
+        gPlayableMapId = workshop_preview_level_for_vehicle(vehicle, scene);
+        if (gPlayableMapId < 0) {
+            fprintf(stderr,
+                    "[FATAL] Character Workshop scene has no qualified course\n");
+            platform_request_exit(EXIT_FAILURE);
+            return TRUE;
+        }
+        gGameNumPlayers = players - 1;
+        gGameCurrentEntrance = 0;
+        gGameCurrentCutscene = CUTSCENE_NONE;
+        gLevelDefaultVehicleID = (Vehicle)vehicle;
+        gGameMode = GAMEMODE_INGAME;
+        gIsPaused = FALSE;
+        gPostRaceViewPort = FALSE;
+        load_level_game(gPlayableMapId, gGameNumPlayers,
+                        gGameCurrentEntrance, gLevelDefaultVehicleID);
+    }
+    MDKR_TRACE(
+        "character_workshop_preview: started context=%s scene=%d players=%d "
+        "vehicle=%d level=%d pose=%s phase=%u view=%d,%d lighting=%d capture=%d kind=%s donorReference=%d",
+        context, (int)scene, players, vehicle,
+        vehicle < 0 ? ASSET_LEVEL_CHARACTERSELECT : gPlayableMapId,
+        pose == MDKR_CHARACTER_PREVIEW_POSE_LIVE ? "live" : poseText,
+        posePhaseMilli, viewYawDegrees, viewPitchDegrees, (int)lighting,
+        sWorkshopPreviewCapturePath[0] != '\0',
+        sWorkshopPreviewCaptureKind ==
+                MDKR_CHARACTER_PREVIEW_CAPTURE_MODEL_ALPHA
+            ? "model-alpha" : "scene",
+        donorReference);
+    return TRUE;
+}
+#endif
+
 /**
  * Give the player 8 frames to enter the CPak menu with start, then load the intro sequence.
  */
@@ -2330,6 +4380,9 @@ void mode_intro(void) {
     s32 i;
     s32 buttonInputs = 0;
 
+#ifdef NATIVE_PORT
+    if (workshop_preview_start()) return;
+#endif
     for (i = 0; i < MAXCONTROLLERS; i++) {
         buttonInputs |= input_held(i);
     }

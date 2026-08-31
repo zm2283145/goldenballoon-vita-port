@@ -979,6 +979,26 @@ int mdkr_user_mods_directory(char *output, size_t output_size) {
 #endif
 }
 
+int mdkr_user_characters_directory(char *output, size_t output_size) {
+#ifdef __EMSCRIPTEN__
+    return path_copy(output, output_size, "/characters");
+#else
+    char relocation[MDKR_USER_PATH_MAX];
+    const char *override = getenv("MDKR_CUSTOM_CHARACTER_DIRECTORY");
+    if (override != NULL && override[0] != '\0') {
+        return path_copy(output, output_size, override);
+    }
+    if (active_relocation_dir(relocation, sizeof(relocation))) {
+        return path_join(output, output_size, relocation, "characters");
+    }
+    if (s_packaged) {
+        return s_pref_ready && path_join(output, output_size, s_pref_dir,
+                                         "characters");
+    }
+    return path_copy(output, output_size, "characters");
+#endif
+}
+
 int mdkr_user_resource_path(const char *relative_path,
                             char *output, size_t output_size) {
     if (relative_path == NULL || relative_path[0] == '\0') {

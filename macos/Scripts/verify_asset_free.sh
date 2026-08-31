@@ -454,6 +454,95 @@ if [[ "${APP_BUNDLE_INPUT}" == true ]]; then
 
     RESOURCE_FAIL=0
     RESOURCE_DIR="${APP_BUNDLE}/Contents/Resources"
+    CHARACTER_IMPORTER="${APP_BUNDLE}/Contents/MacOS/tools/character_importer"
+    GLTF_VALIDATOR="${APP_BUNDLE}/Contents/MacOS/tools/validators/gltf_validator"
+    CHARACTER_LOD_TOOL="${APP_BUNDLE}/Contents/MacOS/tools/mdkr-character-lod"
+
+    # The Workshop importer is code, not a resource, but it is a second opaque
+    # executable in the bundle and therefore needs its own exact-layout and ROM
+    # signature boundary. Do not let adding a helper create an uninspected
+    # payload directory beside the main executable.
+    if [[ ! -f "${CHARACTER_IMPORTER}" || -L "${CHARACTER_IMPORTER}" ]]; then
+        fail "App bundle is missing its regular Character Workshop importer."
+        RESOURCE_FAIL=1
+    elif [[ "$(file -b "${CHARACTER_IMPORTER}" 2>/dev/null)" != *Mach-O* ]]; then
+        fail "Character Workshop importer is not an inspectable Mach-O executable."
+        RESOURCE_FAIL=1
+    else
+        CHARACTER_MAGIC_MATCH="$(scan_bootstrap_magic_file \
+            "${CHARACTER_IMPORTER}" 2>&1)" && CHARACTER_MAGIC_STATUS=0 ||
+            CHARACTER_MAGIC_STATUS=$?
+        case "${CHARACTER_MAGIC_STATUS}" in
+            0)
+                fail "Embedded N64 ROM bootstrap magic found in Character Workshop importer (${CHARACTER_MAGIC_MATCH})."
+                RESOURCE_FAIL=1
+                ;;
+            1) ;;
+            *)
+                printf '%s\n' "${CHARACTER_MAGIC_MATCH}" >&2
+                fail "Could not inspect the Character Workshop importer."
+                RESOURCE_FAIL=1
+                ;;
+        esac
+    fi
+    if [[ ! -f "${CHARACTER_LOD_TOOL}" || -L "${CHARACTER_LOD_TOOL}" ]]; then
+        fail "App bundle is missing its regular Character Workshop LOD helper."
+        RESOURCE_FAIL=1
+    elif [[ "$(file -b "${CHARACTER_LOD_TOOL}" 2>/dev/null)" != *Mach-O* ]]; then
+        fail "Character Workshop LOD helper is not an inspectable Mach-O executable."
+        RESOURCE_FAIL=1
+    else
+        LOD_MAGIC_MATCH="$(scan_bootstrap_magic_file \
+            "${CHARACTER_LOD_TOOL}" 2>&1)" && LOD_MAGIC_STATUS=0 ||
+            LOD_MAGIC_STATUS=$?
+        case "${LOD_MAGIC_STATUS}" in
+            0)
+                fail "Embedded N64 ROM bootstrap magic found in Character Workshop LOD helper (${LOD_MAGIC_MATCH})."
+                RESOURCE_FAIL=1
+                ;;
+            1) ;;
+            *)
+                printf '%s\n' "${LOD_MAGIC_MATCH}" >&2
+                fail "Could not inspect the Character Workshop LOD helper."
+                RESOURCE_FAIL=1
+                ;;
+        esac
+    fi
+    if [[ ! -f "${GLTF_VALIDATOR}" || -L "${GLTF_VALIDATOR}" ]]; then
+        fail "App bundle is missing its regular Khronos glTF Validator."
+        RESOURCE_FAIL=1
+    elif [[ "$(file -b "${GLTF_VALIDATOR}" 2>/dev/null)" != *Mach-O* ]]; then
+        fail "Khronos glTF Validator is not an inspectable Mach-O executable."
+        RESOURCE_FAIL=1
+    else
+        VALIDATOR_MAGIC_MATCH="$(scan_bootstrap_magic_file \
+            "${GLTF_VALIDATOR}" 2>&1)" && VALIDATOR_MAGIC_STATUS=0 ||
+            VALIDATOR_MAGIC_STATUS=$?
+        case "${VALIDATOR_MAGIC_STATUS}" in
+            0)
+                fail "Embedded N64 ROM bootstrap magic found in Khronos glTF Validator (${VALIDATOR_MAGIC_MATCH})."
+                RESOURCE_FAIL=1
+                ;;
+            1) ;;
+            *)
+                printf '%s\n' "${VALIDATOR_MAGIC_MATCH}" >&2
+                fail "Could not inspect the Khronos glTF Validator."
+                RESOURCE_FAIL=1
+                ;;
+        esac
+    fi
+    while IFS= read -r MACOS_FILE; do
+        case "${MACOS_FILE#"${APP_BUNDLE}"/}" in
+            "Contents/MacOS/${EXECUTABLE_NAME}"|\
+            Contents/MacOS/tools/character_importer|\
+            Contents/MacOS/tools/mdkr-character-lod|\
+            Contents/MacOS/tools/validators/gltf_validator) ;;
+            *)
+                fail "Unexpected executable-area payload: ${MACOS_FILE#"${APP_BUNDLE}"/}"
+                RESOURCE_FAIL=1
+                ;;
+        esac
+    done < <(find "${APP_BUNDLE}/Contents/MacOS" -type f -print)
 
     ICON_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "${INFO_PLIST}" 2>/dev/null || true)"
     if [[ -z "${ICON_NAME}" ]]; then
@@ -505,6 +594,36 @@ if [[ "${APP_BUNDLE_INPUT}" == true ]]; then
                 Contents/Resources/ThirdParty/NativePhoneParty-NOTICES.txt)
                     # Exact, hash-pinned license/source-form manifest for the
                     # static native Phone Party transport and QR generator.
+                    ;;
+                Contents/Resources/ThirdParty/BasisU-LICENSE.txt|\
+                Contents/Resources/ThirdParty/BasisU-Zstd-LICENSE.txt|\
+                Contents/Resources/ThirdParty/BasisU-README.md)
+                    # Exact runtime transcoder terms and immutable source
+                    # provenance; verify_unsigned_release.sh pins every file.
+                    ;;
+                Contents/Resources/ThirdParty/CharacterText-HarfBuzz-COPYING.txt|\
+                Contents/Resources/ThirdParty/CharacterText-SheenBidi-LICENSE.txt)
+                    # Exact licenses for the statically linked, ROM-independent
+                    # custom-name shaping stack; the release verifier pins both.
+                    ;;
+                Contents/Resources/ThirdParty/Meshoptimizer-LICENSE.md|\
+                Contents/Resources/ThirdParty/Meshoptimizer-README.md)
+                    # Exact offline simplifier terms and immutable source
+                    # provenance; verify_unsigned_release.sh pins the license.
+                    ;;
+                Contents/Resources/ThirdParty/CharacterImporter-MANIFEST.json|\
+                Contents/Resources/ThirdParty/CharacterImporter-CPython-LICENSE.txt|\
+                Contents/Resources/ThirdParty/CharacterImporter-PyInstaller-COPYING.txt)
+                    # Exact importer attestation and complete embedded-runtime
+                    # terms. verify_unsigned_release.sh binds manifest to code;
+                    # check_third_party_notices.py pins both license byte sets.
+                    ;;
+                Contents/Resources/ThirdParty/GltfValidator-MANIFEST.json|\
+                Contents/Resources/ThirdParty/GltfValidator-LICENSE.txt|\
+                Contents/Resources/ThirdParty/GltfValidator-NOTICES.txt)
+                    # Exact Khronos Validator attestation plus Dart/dependency
+                    # terms. The unsigned-release verifier binds the manifest
+                    # to signed code and pins both notice byte sets.
                     ;;
                 Contents/Resources/dist/web/controller/*.html|\
                 Contents/Resources/dist/web/controller/*.css|\

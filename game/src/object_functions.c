@@ -53,6 +53,7 @@
 #include <stdio.h>  /* fprintf — malformed dynamic-entry diagnostics */
 #include <stdlib.h> /* abort */
 #include <string.h> /* memset — AP-11 Taj session-event init */
+#include "modern_character_runtime.h"
 #include "mdkr_adventure.h"
 #include "mdkr_challenge.h"
 #include "mdkr_trace.h"
@@ -1295,24 +1296,38 @@ void obj_loop_characterflag(Object *obj, UNUSED s32 updateRate) {
             flagModel->texture = obj->textures[obj->properties.characterFlag.characterID];
 #ifdef NATIVE_PORT
             /* Virtual racers use in-range donors, so the bounds guard above
-             * cannot catch a false donor portrait. Bind the same native card
-             * the HUD and Rankings draw for every bonus identity. */
+             * cannot catch a false donor portrait. Bind the same package or
+             * native card the HUD and Rankings draw. */
             {
                 ModRacerIdentity identity =
                     (ModRacerIdentity)mod_racer_physics_identity(racer);
-                DrawTexture *bonusPortrait = menu_mod_portrait(identity);
-                if (bonusPortrait != NULL &&
-                    bonusPortrait[0].texture != NULL) {
-                    flagModel->texture = bonusPortrait[0].texture;
+                DrawTexture *identityPortrait =
+                    menu_custom_character_portrait(racer->playerIndex);
+                const char *source = "retail-card";
+                const char *packageId = NULL;
+                if (identityPortrait != NULL &&
+                    identityPortrait[0].texture != NULL) {
+                    flagModel->texture = identityPortrait[0].texture;
+                    source = "package-card";
+                    packageId = mdkr_modern_character_player_package(
+                        racer->playerIndex);
+                } else {
+                    identityPortrait = menu_mod_portrait(identity);
+                    if (identityPortrait != NULL &&
+                        identityPortrait[0].texture != NULL) {
+                        flagModel->texture = identityPortrait[0].texture;
+                        source = "native-card";
+                    }
                 }
                 /* One bounded row per portrait, at the single moment the lazy
                  * geometry build binds a racer. characterID is latched >= 0
                  * here and the branch never re-enters, so this cannot spam. */
-                MDKR_TRACE("charflag_bound: playerID=%d characterID=%d texture=%s identity=%d",
+                MDKR_TRACE("charflag_bound: playerID=%d characterID=%d texture=%s identity=%d source=%s package=%s",
                            (s32) obj->properties.characterFlag.playerID,
                            (s32) obj->properties.characterFlag.characterID,
                            flagModel->texture != NULL ? "ok" : "missing",
-                           identity);
+                           identity, source,
+                           packageId != NULL ? packageId : "-");
             }
 #endif
             /* S10.5 texture coordinates. Stock packs them as N64 words --
@@ -2476,6 +2491,31 @@ void obj_loop_char_select(Object *charSelectObj, s32 updateRate) {
                 taj_visual_select_apply_authored_actor(charSelectObj, i);
                 wizpig_visual_select_apply_authored_actor(charSelectObj, i);
                 terry_visual_select_apply_authored_actor(charSelectObj, i);
+                {
+                    u32 hoverMask = 0u;
+                    u32 confirmedMask = 0u;
+                    const s32 donor = menu_character_select_donor(i);
+                    s32 controller;
+                    s32 logicalPlayer = 0;
+                    s8 *selectStatus = charselect_status();
+                    for (controller = 0; controller < MAXCONTROLLERS;
+                         controller++) {
+                        const s32 selectedIndex =
+                            get_player_character(controller);
+                        if (selectedIndex < 0) continue;
+                        if (selectedIndex == i) {
+                            hoverMask |= 1u << logicalPlayer;
+                            if (selectStatus[controller] !=
+                                CHARSELECT_STATUS_UNCONFIRMED) {
+                                confirmedMask |= 1u << logicalPlayer;
+                            }
+                        }
+                        logicalPlayer++;
+                    }
+                    obj_modern_character_select_update(
+                        charSelectObj, donor, hoverMask, confirmedMask,
+                        (f32)updateRate / 60.0f);
+                }
 #endif
                 charSelectObj->animationID = 1;
                 for (playerIndex = 0, numCursors = 0; playerIndex < MAXCONTROLLERS; playerIndex++) {

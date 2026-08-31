@@ -180,6 +180,37 @@ compiled into or shipped alongside the app: Dear ImGui for the native app shell,
 content packs, `dr_wav` for decoding the music inside them, and the SDL
 game-controller database. Each retains its upstream license.
 
+Native packages also carry a separate, self-contained Character Workshop
+importer built from this project's first-party Python modules. Its embedded
+CPython 3.13.13 runtime and PyInstaller 6.22.2 bootloader are not part of the
+game executable. Their complete, hash-pinned upstream terms live in
+`third_party/character_importer/` and travel beside the helper in every native
+package; exact build-wheel and source-module identities are recorded by the
+generated importer manifest. No Python runtime is taken from the player's
+machine for packaged Workshop operations.
+
+The importer is accompanied by Khronos glTF Validator 2.0.0-dev.3.10, used as
+the mandatory standards boundary for user-authored GLB models. Linux and
+Windows ship the hash-pinned official native release; macOS arm64 ships a
+reproducible build of the same exact commit using Dart SDK 2.19.6 and a locked
+dependency graph. Its Apache-2.0 license and complete Dart/dependency notices
+are retained in `third_party/gltf_validator/` and travel in every native
+package. Exact source, archive, toolchain, lockfile, and executable hashes are
+recorded in [THIRD_PARTY.md](THIRD_PARTY.md) and the generated adjacent build
+manifest.
+
+The optional high-fidelity custom-character texture path statically compiles a
+bounded Basis Universal KTX2 transcoder and its Zstandard decoder from exact,
+SHA-256-pinned source files. Their complete Apache-2.0 and BSD license texts,
+plus immutable source provenance, are retained in `third_party/basisu/` and
+travel with every native package. No encoder or example texture is included.
+
+The optional offline custom-character LOD authoring helper statically compiles
+the meshoptimizer v1.2 simplifier from exact SHA-256-pinned source files. Its
+complete MIT license and immutable source provenance are retained in
+`third_party/meshoptimizer/`. The bounded helper communicates only over pipes,
+does not receive paths or ROM data, and is never loaded into the game process.
+
 `third_party/qrcodegen/qrcodegen.ts`, its C++ port and the generated browser
 artifact `dist/web/party/qrcodegen.js` are Project Nayuki's QR Code generator library at
 commit `2c9044de6b049ca25cb3cd1649ed7e27aa055138`, under the MIT License. Both

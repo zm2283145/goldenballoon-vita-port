@@ -2,7 +2,7 @@
 #define AL_SYN_START_VOICE_PARAMS
 
 #include "types.h"
-#include <libaudio.h>
+#include <PR/libaudio.h>
 
 // Can be changed in the "Audio Options" menu.
 typedef enum StereoPanMode {

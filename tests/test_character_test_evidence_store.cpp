@@ -1,0 +1,1215 @@
+#include "character_test_evidence_store.h"
+#include "sha256.h"
+
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
+
+namespace {
+
+int  failures;
+
+void expect(bool condition, const char *message) {
+    if (!condition) {
+        std::fprintf(stderr, "FAIL: %s\n", message);
+        ++failures;
+    }
+}
+
+struct MemoryStorage {
+    bool        present   = false;
+    bool        failRead  = false;
+    bool        failWrite = false;
+    unsigned    writes    = 0u;
+    std::string bytes;
+};
+
+int readMemory(void *context, char *text, size_t capacity, size_t *length) {
+    MemoryStorage &storage = *static_cast<MemoryStorage *>(context);
+    if (storage.failRead) return -1;
+    if (!storage.present) return 0;
+    if (storage.bytes.size() >= capacity) return -1;
+    storage.bytes.copy(text, storage.bytes.size());
+    *length = storage.bytes.size();
+    return 1;
+}
+
+int writeMemory(void *context, const char *text, size_t length) {
+    MemoryStorage &storage = *static_cast<MemoryStorage *>(context);
+    if (storage.failWrite) return -1;
+    storage.bytes.assign(text, length);
+    storage.present = true;
+    ++storage.writes;
+    return 1;
+}
+
+std::string finishDigest(MdkrSha256 &digest) {
+    uint8_t bytes[MDKR_SHA256_DIGEST_SIZE];
+    static const char digits[] = "0123456789abcdef";
+    std::string hex(MDKR_SHA256_DIGEST_SIZE * 2u, '0');
+    mdkr_sha256_final(&digest, bytes);
+    for (size_t index = 0u; index < sizeof(bytes); ++index) {
+        hex[index * 2u] = digits[bytes[index] >> 4u];
+        hex[index * 2u + 1u] = digits[bytes[index] & 0xFu];
+    }
+    return hex;
+}
+
+std::string readTextFile(const std::string &path) {
+    std::FILE *file = std::fopen(path.c_str(), "rb");
+    if (file == nullptr) return {};
+    std::string bytes;
+    char block[4096];
+    for (;;) {
+        const size_t count = std::fread(block, 1u, sizeof(block), file);
+        bytes.append(block, count);
+        if (count != sizeof(block)) break;
+    }
+    const bool valid = std::ferror(file) == 0 && std::fclose(file) == 0;
+    return valid ? bytes : std::string{};
+}
+
+std::string digestFields(const std::vector<std::string> &fields) {
+    MdkrSha256 digest;
+    mdkr_sha256_init(&digest);
+    for (const std::string &field : fields) {
+        mdkr_sha256_update(&digest, field.data(), field.size());
+        const uint8_t separator = 0u;
+        mdkr_sha256_update(&digest, &separator, 1u);
+    }
+    return finishDigest(digest);
+}
+
+std::string digestInventory(const std::string &header,
+                            const std::string &count,
+                            const std::string &body) {
+    MdkrSha256 digest;
+    mdkr_sha256_init(&digest);
+    const auto add = [&digest](const std::string &value) {
+        mdkr_sha256_update(&digest, value.data(), value.size());
+        const uint8_t separator = 0u;
+        mdkr_sha256_update(&digest, &separator, 1u);
+    };
+    add(header);
+    add(count);
+    mdkr_sha256_update(&digest, body.data(), body.size());
+    return finishDigest(digest);
+}
+
+std::vector<std::string> splitFields(const std::string &line) {
+    std::vector<std::string> fields;
+    size_t begin = 0u;
+    while (true) {
+        const size_t tab = line.find('\t', begin);
+        fields.push_back(line.substr(
+            begin, tab == std::string::npos ? std::string::npos
+                                             : tab - begin));
+        if (tab == std::string::npos) return fields;
+        begin = tab + 1u;
+    }
+}
+
+std::string legacyFromCurrent(const std::string &encoded,
+                         const char *legacyHeader, size_t retainedFields) {
+    const size_t headerEnd = encoded.find('\n');
+    if (headerEnd == std::string::npos) return {};
+    const std::vector<std::string> header = splitFields(
+        encoded.substr(0u, headerEnd));
+    if (header.size() != 3u ||
+        header[0] != "mdkr-character-test-evidence-v9") return {};
+    std::string body;
+    size_t begin = headerEnd + 1u;
+    while (begin < encoded.size()) {
+        const size_t end = encoded.find('\n', begin);
+        if (end == std::string::npos) return {};
+        std::vector<std::string> fields = splitFields(
+            encoded.substr(begin, end - begin));
+        if (fields.size() != 223u) return {};
+        fields.resize(retainedFields);
+        /* V1/V2 predate result contract 10 and therefore cannot claim its
+         * required contact witnesses. */
+        fields[9] = "9";
+        for (const std::string &field : fields) {
+            body += field;
+            body.push_back('\t');
+        }
+        body += digestFields(fields);
+        body.push_back('\n');
+        begin = end + 1u;
+    }
+    return std::string(legacyHeader) + "\t" + header[1] + "\t" +
+        digestInventory(legacyHeader, header[1], body) + "\n" + body;
+}
+
+std::string legacyV1FromV9(const std::string &encoded) {
+    return legacyFromCurrent(
+        encoded, "mdkr-character-test-evidence-v1", 38u);
+}
+
+std::string legacyV2FromV9(const std::string &encoded) {
+    return legacyFromCurrent(
+        encoded, "mdkr-character-test-evidence-v2", 51u);
+}
+
+std::string legacyV3FromV9(const std::string &encoded) {
+    std::string legacy = legacyFromCurrent(
+        encoded, "mdkr-character-test-evidence-v3", 104u);
+    if (legacy.empty()) return {};
+    /* V3 is the result-v10 contact-witness contract; unlike V1/V2 it must not
+     * be downgraded to result 9. Rebuild from the current rows explicitly. */
+    const size_t headerEnd = encoded.find('\n');
+    const std::vector<std::string> header = splitFields(
+        encoded.substr(0u, headerEnd));
+    std::string body;
+    size_t begin = headerEnd + 1u;
+    while (begin < encoded.size()) {
+        const size_t end = encoded.find('\n', begin);
+        if (end == std::string::npos) return {};
+        std::vector<std::string> fields = splitFields(
+            encoded.substr(begin, end - begin));
+        if (fields.size() != 223u) return {};
+        fields.resize(104u);
+        fields[9] = "10";
+        for (const std::string &field : fields) {
+            body += field;
+            body.push_back('\t');
+        }
+        body += digestFields(fields);
+        body.push_back('\n');
+        begin = end + 1u;
+    }
+    const std::string legacyHeader = "mdkr-character-test-evidence-v3";
+    return legacyHeader + "\t" + header[1] + "\t" +
+        digestInventory(legacyHeader, header[1], body) + "\n" + body;
+}
+
+std::string legacyV4FromV9(const std::string &encoded) {
+    const size_t headerEnd = encoded.find('\n');
+    if (headerEnd == std::string::npos) return {};
+    const std::vector<std::string> header = splitFields(
+        encoded.substr(0u, headerEnd));
+    if (header.size() != 3u ||
+        header[0] != "mdkr-character-test-evidence-v9") return {};
+    std::string body;
+    size_t begin = headerEnd + 1u;
+    while (begin < encoded.size()) {
+        const size_t end = encoded.find('\n', begin);
+        if (end == std::string::npos) return {};
+        std::vector<std::string> fields = splitFields(
+            encoded.substr(begin, end - begin));
+        if (fields.size() != 223u) return {};
+        fields.resize(124u);
+        fields[9] = "14";
+        for (const std::string &field : fields) {
+            body += field;
+            body.push_back('\t');
+        }
+        body += digestFields(fields);
+        body.push_back('\n');
+        begin = end + 1u;
+    }
+    constexpr const char *kLegacyHeader =
+        "mdkr-character-test-evidence-v4";
+    return std::string(kLegacyHeader) + "\t" + header[1] + "\t" +
+        digestInventory(kLegacyHeader, header[1], body) + "\n" + body;
+}
+
+std::string legacyV5FromV9(const std::string &encoded) {
+    const size_t headerEnd = encoded.find('\n');
+    if (headerEnd == std::string::npos) return {};
+    const std::vector<std::string> header = splitFields(
+        encoded.substr(0u, headerEnd));
+    if (header.size() != 3u ||
+        header[0] != "mdkr-character-test-evidence-v9") return {};
+    std::string body;
+    size_t begin = headerEnd + 1u;
+    while (begin < encoded.size()) {
+        const size_t end = encoded.find('\n', begin);
+        if (end == std::string::npos) return {};
+        std::vector<std::string> fields = splitFields(
+            encoded.substr(begin, end - begin));
+        if (fields.size() != 223u) return {};
+        fields.resize(163u);
+        fields[9] = "15";
+        for (const std::string &field : fields) {
+            body += field;
+            body.push_back('\t');
+        }
+        body += digestFields(fields);
+        body.push_back('\n');
+        begin = end + 1u;
+    }
+    constexpr const char *kLegacyHeader =
+        "mdkr-character-test-evidence-v5";
+    return std::string(kLegacyHeader) + "\t" + header[1] + "\t" +
+        digestInventory(kLegacyHeader, header[1], body) + "\n" + body;
+}
+
+std::string legacyV7FromV9(const std::string &encoded) {
+    const size_t headerEnd = encoded.find('\n');
+    if (headerEnd == std::string::npos) return {};
+    const std::vector<std::string> header = splitFields(
+        encoded.substr(0u, headerEnd));
+    if (header.size() != 3u ||
+        header[0] != "mdkr-character-test-evidence-v9") return {};
+    std::string body;
+    size_t begin = headerEnd + 1u;
+    while (begin < encoded.size()) {
+        const size_t end = encoded.find('\n', begin);
+        if (end == std::string::npos) return {};
+        std::vector<std::string> fields = splitFields(
+            encoded.substr(begin, end - begin));
+        if (fields.size() != 223u) return {};
+        fields.resize(186u);
+        fields[9] = "17";
+        for (const std::string &field : fields) {
+            body += field;
+            body.push_back('\t');
+        }
+        body += digestFields(fields);
+        body.push_back('\n');
+        begin = end + 1u;
+    }
+    constexpr const char *kLegacyHeader =
+        "mdkr-character-test-evidence-v7";
+    return std::string(kLegacyHeader) + "\t" + header[1] + "\t" +
+        digestInventory(kLegacyHeader, header[1], body) + "\n" + body;
+}
+
+std::string legacyV8FromV9(const std::string &encoded) {
+    const size_t headerEnd = encoded.find('\n');
+    if (headerEnd == std::string::npos) return {};
+    const std::vector<std::string> header = splitFields(
+        encoded.substr(0u, headerEnd));
+    if (header.size() != 3u ||
+        header[0] != "mdkr-character-test-evidence-v9") return {};
+    std::string body;
+    size_t begin = headerEnd + 1u;
+    while (begin < encoded.size()) {
+        const size_t end = encoded.find('\n', begin);
+        if (end == std::string::npos) return {};
+        std::vector<std::string> fields = splitFields(
+            encoded.substr(begin, end - begin));
+        if (fields.size() != 223u) return {};
+        fields.resize(208u);
+        fields[9] = "20";
+        for (const std::string &field : fields) {
+            body += field;
+            body.push_back('\t');
+        }
+        body += digestFields(fields);
+        body.push_back('\n');
+        begin = end + 1u;
+    }
+    constexpr const char *kLegacyHeader =
+        "mdkr-character-test-evidence-v8";
+    return std::string(kLegacyHeader) + "\t" + header[1] + "\t" +
+        digestInventory(kLegacyHeader, header[1], body) + "\n" + body;
+}
+
+std::string authenticatedCurrentWithFirstRowField(
+    const std::string &encoded, size_t fieldIndex,
+    const std::string &replacement) {
+    const size_t headerEnd = encoded.find('\n');
+    const size_t rowEnd = headerEnd == std::string::npos
+        ? std::string::npos : encoded.find('\n', headerEnd + 1u);
+    if (headerEnd == std::string::npos || rowEnd == std::string::npos) {
+        return {};
+    }
+    const std::vector<std::string> header = splitFields(
+        encoded.substr(0u, headerEnd));
+    std::vector<std::string> fields = splitFields(
+        encoded.substr(headerEnd + 1u, rowEnd - headerEnd - 1u));
+    if (header.size() != 3u ||
+        header[0] != "mdkr-character-test-evidence-v9" ||
+        fields.size() != 223u || fieldIndex >= 222u) return {};
+    fields[fieldIndex] = replacement;
+    fields.resize(222u);
+    std::string firstRow;
+    for (const std::string &field : fields) {
+        firstRow += field;
+        firstRow.push_back('\t');
+    }
+    firstRow += digestFields(fields);
+    firstRow.push_back('\n');
+    const std::string body = firstRow + encoded.substr(rowEnd + 1u);
+    return header[0] + "\t" + header[1] + "\t" +
+        digestInventory(header[0], header[1], body) + "\n" + body;
+}
+
+CharacterTestEvidenceStore::Evidence makeEvidence(
+    const std::string               &packageId,
+    uint32_t                         context,
+    uint32_t                         players,
+    CharacterTestEvidenceStore::Kind kind =
+        CharacterTestEvidenceStore::Kind::Latest) {
+    CharacterTestEvidenceStore::Evidence evidence;
+    evidence.kind         = kind;
+    evidence.packageId    = packageId;
+    evidence.capturedUnix = 1777777777u;
+    evidence.sourceSha256.assign(64u, 'a');
+    evidence.fitSha256.assign(64u, 'b');
+    evidence.presentationSha256.assign(64u, 'c');
+    evidence.buildVersion                = "1.5.2-test";
+    evidence.context                     = context;
+    evidence.players                     = players;
+    evidence.resultVersion               = 21u;
+    evidence.started                     = true;
+    evidence.warmupComplete              = true;
+    evidence.realtime                    = true;
+    evidence.warmupTicks                 = 120u;
+    evidence.intervalSamples             = 180u;
+    evidence.displayedFrames             = 181u;
+    evidence.intervalP50Us               = 16650u;
+    evidence.intervalP95Us               = 17100u;
+    evidence.intervalP99Us               = 18250u;
+    evidence.intervalMeanUs              = 16800u;
+    evidence.intervalMaxUs               = 20000u;
+    evidence.tickwallSamples             = 180u;
+    evidence.tickwallMeanNs              = 1200000u;
+    evidence.gpuTiming.version =
+        MDKR_MODERN_CHARACTER_GPU_TIMING_VERSION;
+    evidence.gpuTiming.status =
+        MDKR_MODERN_CHARACTER_GPU_TIMING_AVAILABLE;
+    evidence.gpuTiming.supported_scopes =
+        MDKR_MODERN_CHARACTER_GPU_SCOPE_SCENE_PASS |
+        MDKR_MODERN_CHARACTER_GPU_SCOPE_CHARACTER_DRAWS;
+    evidence.gpuTiming.scene_pass = {
+        176u, 176u, 3000000u, 4000000u, 5000000u, 3500000u, 6000000u};
+    evidence.gpuTiming.character_draws = {
+        176u, 176u, 200000u, 300000u, 400000u, 250000u, 500000u};
+    evidence.replacementDraws            = 360u;
+    evidence.replacementPrimitives       = 720u;
+    evidence.hiddenDonorBatches          = 360u;
+    evidence.contactSolves               = context == 1u ? 0u : 720u;
+    evidence.contactErrorMeanMicrometres = context == 1u ? 0u : 1200u;
+    evidence.contactErrorMaxMicrometres  = context == 1u ? 0u : 3400u;
+    if (context != 1u) {
+        evidence.contactWitnessMask = 0xFu;
+        for (size_t contact = 0u; contact < 4u; ++contact) {
+            const int64_t side = (contact & 1u) != 0u ? -1 : 1;
+            const int64_t height = contact < 2u ? 250000 : -250000;
+            const uint64_t contactError = 1000u + contact * 500u;
+            evidence.contactChainRootMicrometres[contact][0] = side * 120000;
+            evidence.contactChainRootMicrometres[contact][1] = height + 180000;
+            evidence.contactBendMicrometres[contact][0] = side * 200000;
+            evidence.contactBendMicrometres[contact][1] = height + 90000;
+            evidence.contactTargetMicrometres[contact][0] = side * 270000;
+            evidence.contactTargetMicrometres[contact][1] = height;
+            evidence.contactTargetMicrometres[contact][2] = 320000;
+            for (size_t axis = 0u; axis < 3u; ++axis) {
+                evidence.contactEndMicrometres[contact][axis] =
+                    evidence.contactTargetMicrometres[contact][axis];
+            }
+            evidence.contactEndMicrometres[contact][0] +=
+                static_cast<int64_t>(contactError);
+            evidence.contactWitnessErrorMicrometres[contact] = contactError;
+        }
+    }
+    evidence.fitDiagnosticsValid = true;
+    evidence.fitBoundsMinMicrometres[0] = -400000;
+    evidence.fitBoundsMinMicrometres[1] = context == 1u ? 0 : -600000;
+    evidence.fitBoundsMinMicrometres[2] = -300000;
+    evidence.fitBoundsMaxMicrometres[0] = 400000;
+    evidence.fitBoundsMaxMicrometres[1] = context == 1u ? 1500000 : 900000;
+    evidence.fitBoundsMaxMicrometres[2] = 300000;
+    evidence.fitAnchorMicrometres[0] = 10000;
+    evidence.fitAnchorMicrometres[1] = context == 1u ? 0 : 20000;
+    evidence.fitAnchorMicrometres[2] = -30000;
+    evidence.fitForwardMilli[2] = 1000;
+    evidence.fitLandmarkMask = 0x7u;
+    evidence.fitLandmarkMicrometres[0][1] = 100000;
+    evidence.fitLandmarkMicrometres[1][1] = 600000;
+    evidence.fitLandmarkMicrometres[2][1] = 1200000;
+    evidence.cameraProjectionValid = true;
+    evidence.cameraProjectionWidth = 2560u;
+    evidence.cameraProjectionHeight = 1920u;
+    evidence.cameraProjectionViewport[2] = 2560;
+    evidence.cameraProjectionViewport[3] = 1920;
+    evidence.cameraProjectionScissor[2] = 2560;
+    evidence.cameraProjectionScissor[3] = 1920;
+    evidence.cameraProjectionPrimitiveDraws = 2u;
+    evidence.cameraBoundsPixelMilli[0] = 800000;
+    evidence.cameraBoundsPixelMilli[1] = 300000;
+    evidence.cameraBoundsPixelMilli[2] = 1760000;
+    evidence.cameraBoundsPixelMilli[3] = 1500000;
+    evidence.cameraLandmarkPixelMilli[0][0] = 1280000;
+    evidence.cameraLandmarkPixelMilli[0][1] = 1300000;
+    evidence.cameraLandmarkPixelMilli[1][0] = 1280000;
+    evidence.cameraLandmarkPixelMilli[1][1] = 900000;
+    evidence.cameraLandmarkPixelMilli[2][0] = 1280000;
+    evidence.cameraLandmarkPixelMilli[2][1] = 500000;
+    for (size_t landmark = 0u; landmark < 3u; ++landmark) {
+        evidence.cameraLandmarkDepthMillionths[landmark] = 500000;
+    }
+    if (context != 1u) {
+        evidence.vehicleSurfaceValid = true;
+        evidence.vehicleShellTrianglesSubmitted = 200u;
+        evidence.vehicleShellTrianglesTested = 200u;
+        evidence.characterSurfaceTrianglesSubmitted = 500u;
+        evidence.characterSurfaceTrianglesTested = 500u;
+        evidence.vehicleVolumeQualified = true;
+        evidence.vehicleContainmentSamplesTested = 3u;
+        evidence.vehicleContainmentOutsideSamples = 3u;
+    }
+    evidence.backend                     = "webgpu-metal";
+    evidence.adapter                     = "Test GPU \xC2\xA9";
+    evidence.driver                      = "test-driver";
+    evidence.vendorId                    = 0x106Bu;
+    evidence.deviceId                    = 0x1234u;
+    evidence.outputWidth                 = 1280u;
+    evidence.outputHeight                = 960u;
+    evidence.renderWidth                 = 2560u;
+    evidence.renderHeight                = 1920u;
+    evidence.opaqueVisibilityValid = true;
+    evidence.opaqueVisibilityQualified = true;
+    evidence.opaqueVisibilityWidth = 2560u;
+    evidence.opaqueVisibilityHeight = 1920u;
+    evidence.opaqueVisibilityViewport[2] = 2560;
+    evidence.opaqueVisibilityViewport[3] = 1920;
+    evidence.opaqueVisibilityScissor[2] = 2560;
+    evidence.opaqueVisibilityScissor[3] = 1920;
+    evidence.opaqueVisibilityPrimitiveDraws = 2u;
+    evidence.opaqueVisibilityOpaqueDraws = 2u;
+    evidence.opaqueVisibilityGridColumns = 8u;
+    evidence.opaqueVisibilityGridRows = 8u;
+    evidence.opaqueVisibilityIsolatedTiles = 10u;
+    evidence.opaqueVisibilitySceneTiles = 7u;
+    evidence.opaqueVisibilityIsolatedTileMask = 0x3ffu;
+    evidence.opaqueVisibilitySceneTileMask = 0x7fu;
+    if (context != 1u) {
+        evidence.opaqueVisibilityOccluderPresentMask = 0x3u;
+        evidence.opaqueVisibilityOccluderQualifiedMask = 0x1u;
+        evidence.opaqueVisibilityOccluderDraws[0] = 3u;
+        evidence.opaqueVisibilityOccluderDraws[1] = 2u;
+        evidence.opaqueVisibilityOccluderUnqualifiedDraws[1] = 1u;
+        evidence.opaqueVisibilityOccluderOverlapTiles[0] = 2u;
+        evidence.opaqueVisibilityOccluderOverlapTileMask[0] = 0x3u;
+    }
+    return evidence;
+}
+
+} // namespace
+
+int main() {
+    using namespace CharacterTestEvidenceStore;
+    std::string error;
+    Inventory   inventory;
+    Evidence    select   = makeEvidence("org.example.alpha", 1u, 1u);
+    Evidence    car      = makeEvidence("org.example.alpha", 2u, 4u);
+    Evidence    baseline = car;
+    baseline.kind        = Kind::Baseline;
+    baseline.capturedUnix--;
+    baseline.sourceSha256.assign(64u, 'd');
+    baseline.fitSha256.assign(64u, 'e');
+    expect(performanceTarget(1u).p95IntervalUs == 18334u &&
+               performanceTarget(4u).p99IntervalUs == 25000u &&
+               performanceTargetMet(car),
+           "qualified real-device evidence passes only inside the explicit frame target");
+    Evidence slow = car;
+    slow.intervalP95Us = 19000u;
+    expect(qualified(slow) &&
+               performanceResult(slow) == PerformanceResult::OverBudget &&
+               !performanceTargetMet(slow),
+           "trustworthy evidence remains distinct from an over-budget result");
+    Evidence shortSample = car;
+    shortSample.intervalSamples = 59u;
+    expect(performanceResult(shortSample) == PerformanceResult::Unqualified,
+           "an incomplete sample cannot claim either pass or failure");
+    expect(upsert(inventory, car, error) &&
+               upsert(inventory, select, error) &&
+               upsert(inventory, baseline, error) &&
+               inventory.records.size() == 3u,
+           "latest results and a pinned baseline coexist by exact cell");
+
+    std::string encoded;
+    expect(serialize(inventory, encoded, error) &&
+               encoded.rfind("mdkr-character-test-evidence-v9\t3\t", 0u) ==
+                   0u,
+           "v9 test evidence serializes with a whole-inventory checksum");
+    const size_t body = encoded.find('\n') + 1u;
+    expect(encoded.find("org.example.alpha\t", body) != std::string::npos,
+           "canonical rows retain their package key");
+
+    Inventory parsed;
+    const bool parsedCurrent = parse(encoded, parsed, error);
+    expect(parsedCurrent && parsed.records.size() == 3u &&
+               find(parsed, "org.example.alpha", 2u, 4u, Kind::Latest)
+                       ->adapter == car.adapter &&
+               find(parsed, "org.example.alpha", 2u, 4u, Kind::Latest)
+                       ->intervalP99Us == car.intervalP99Us &&
+               find(parsed, "org.example.alpha", 2u, 4u, Kind::Latest)
+                       ->fitBoundsMinMicrometres[1] == -600000 &&
+               find(parsed, "org.example.alpha", 2u, 4u, Kind::Latest)
+                       ->fitAnchorMicrometres[2] == -30000 &&
+               find(parsed, "org.example.alpha", 2u, 4u, Kind::Latest)
+                       ->fitForwardMilli[2] == 1000 &&
+               find(parsed, "org.example.alpha", 2u, 4u, Kind::Latest)
+                       ->contactWitnessMask == 0xFu &&
+               find(parsed, "org.example.alpha", 2u, 4u, Kind::Latest)
+                       ->contactWitnessErrorMicrometres[3] == 2500u &&
+               find(parsed, "org.example.alpha", 2u, 4u, Kind::Latest)
+                       ->gpuTiming.character_draws.p95_ns == 300000u &&
+               find(parsed, "org.example.alpha", 2u, 4u, Kind::Latest)
+                       ->vehicleSurfaceValid &&
+               find(parsed, "org.example.alpha", 2u, 4u, Kind::Latest)
+                       ->characterSurfaceTrianglesTested == 500u &&
+               find(parsed, "org.example.alpha", 2u, 4u, Kind::Latest)
+                       ->vehicleVolumeQualified &&
+               find(parsed, "org.example.alpha", 2u, 4u, Kind::Latest)
+                       ->vehicleContainmentOutsideSamples == 3u &&
+               find(parsed, "org.example.alpha", 2u, 4u, Kind::Latest)
+                       ->opaqueVisibilityQualified &&
+               find(parsed, "org.example.alpha", 2u, 4u, Kind::Latest)
+                       ->opaqueVisibilitySceneTiles == 7u &&
+               find(parsed, "org.example.alpha", 2u, 4u, Kind::Latest)
+                       ->opaqueVisibilityOccluderPresentMask == 0x3u &&
+               find(parsed, "org.example.alpha", 2u, 4u, Kind::Latest)
+                       ->opaqueVisibilityOccluderOverlapTiles[0] == 2u &&
+               find(parsed, "org.example.alpha", 2u, 4u, Kind::Baseline)
+                       ->sourceSha256 == baseline.sourceSha256,
+           "round trip preserves timing, device, source, renderer fit, contact and vehicle-surface witnesses, and kind");
+    const std::string legacyV1 = legacyV1FromV9(encoded);
+    Inventory legacyParsed;
+    const Evidence *legacyCar = nullptr;
+    expect(!legacyV1.empty() && parse(legacyV1, legacyParsed, error) &&
+               legacyParsed.records.size() == 3u &&
+               (legacyCar = find(
+                    legacyParsed, "org.example.alpha", 2u, 4u,
+                    Kind::Latest)) != nullptr &&
+               !legacyCar->fitDiagnosticsValid &&
+               legacyCar->fitBoundsMinMicrometres[1] == 0 &&
+               legacyCar->fitForwardMilli[2] == 0,
+           "authenticated v1 rows load with an explicit unavailable fit state");
+    std::string migrated;
+    expect(serialize(legacyParsed, migrated, error) &&
+               migrated.rfind(
+                   "mdkr-character-test-evidence-v9\t3\t", 0u) == 0u,
+           "the next successful write migrates a v1 inventory to v9 in place");
+    const std::string legacyV2 = legacyV2FromV9(encoded);
+    Inventory legacyV2Parsed;
+    expect(!legacyV2.empty() && parse(legacyV2, legacyV2Parsed, error) &&
+               find(legacyV2Parsed, "org.example.alpha", 2u, 4u,
+                    Kind::Latest)->contactWitnessMask == 0u,
+           "authenticated v2 rows migrate with explicitly unavailable contact witnesses");
+    const std::string legacyV3 = legacyV3FromV9(encoded);
+    Inventory legacyV3Parsed;
+    expect(!legacyV3.empty() && parse(legacyV3, legacyV3Parsed, error) &&
+               find(legacyV3Parsed, "org.example.alpha", 2u, 4u,
+                    Kind::Latest)->gpuTiming.version == 0u,
+           "authenticated v3 rows migrate with explicitly unavailable GPU timing");
+    const std::string legacyV4 = legacyV4FromV9(encoded);
+    Inventory legacyV4Parsed;
+    const Evidence *legacyV4Car = nullptr;
+    expect(!legacyV4.empty() && parse(legacyV4, legacyV4Parsed, error) &&
+               (legacyV4Car = find(
+                    legacyV4Parsed, "org.example.alpha", 2u, 4u,
+                    Kind::Latest)) != nullptr &&
+               legacyV4Car->resultVersion == 14u &&
+               legacyV4Car->fitDiagnosticsValid &&
+               legacyV4Car->gpuTiming.version ==
+                   MDKR_MODERN_CHARACTER_GPU_TIMING_VERSION &&
+               !legacyV4Car->cameraProjectionValid &&
+               legacyV4Car->fitLandmarkMask == 0u,
+           "authenticated v4/result-v14 rows migrate with explicitly unavailable camera and anatomy evidence");
+    expect(serialize(legacyV4Parsed, migrated, error) &&
+               migrated.rfind(
+                   "mdkr-character-test-evidence-v9\t3\t", 0u) == 0u,
+           "the next successful write migrates a v4 inventory to v9 in place");
+    const std::string legacyV5 = legacyV5FromV9(encoded);
+    Inventory legacyV5Parsed;
+    const Evidence *legacyV5Car = nullptr;
+    expect(!legacyV5.empty() && parse(legacyV5, legacyV5Parsed, error) &&
+               (legacyV5Car = find(
+                    legacyV5Parsed, "org.example.alpha", 2u, 4u,
+                    Kind::Latest)) != nullptr &&
+               legacyV5Car->resultVersion == 15u &&
+               legacyV5Car->cameraProjectionValid &&
+               !legacyV5Car->vehicleSurfaceValid &&
+               legacyV5Car->vehicleShellTrianglesSubmitted == 0u,
+           "authenticated v5/result-v15 rows migrate with explicitly unavailable vehicle-surface evidence");
+    expect(serialize(legacyV5Parsed, migrated, error) &&
+               migrated.rfind(
+                   "mdkr-character-test-evidence-v9\t3\t", 0u) == 0u,
+           "the next successful write migrates a v5 inventory to v9 in place");
+    const std::string legacyV7 = legacyV7FromV9(encoded);
+    Inventory legacyV7Parsed;
+    const Evidence *legacyV7Car = nullptr;
+    expect(!legacyV7.empty() && parse(legacyV7, legacyV7Parsed, error) &&
+               (legacyV7Car = find(
+                    legacyV7Parsed, "org.example.alpha", 2u, 4u,
+                    Kind::Latest)) != nullptr &&
+               legacyV7Car->resultVersion == 17u &&
+               legacyV7Car->vehicleVolumeQualified &&
+               !legacyV7Car->opaqueVisibilityValid &&
+               legacyV7Car->opaqueVisibilityIsolatedTileMask == 0u,
+           "authenticated v7/result-v17 rows migrate with explicitly unavailable opaque visibility evidence");
+    expect(serialize(legacyV7Parsed, migrated, error) &&
+               migrated.rfind(
+                   "mdkr-character-test-evidence-v9\t3\t", 0u) == 0u,
+           "the next successful write migrates a v7 inventory to v9 in place");
+    const std::string legacyV8 = legacyV8FromV9(encoded);
+    Inventory legacyV8Parsed;
+    const Evidence *legacyV8Car = nullptr;
+    expect(!legacyV8.empty() && parse(legacyV8, legacyV8Parsed, error) &&
+               (legacyV8Car = find(
+                    legacyV8Parsed, "org.example.alpha", 2u, 4u,
+                    Kind::Latest)) != nullptr &&
+               legacyV8Car->resultVersion == 20u &&
+               legacyV8Car->opaqueVisibilityValid &&
+               legacyV8Car->opaqueVisibilityOccluderPresentMask == 0u,
+           "authenticated v8/result-v20 rows migrate with explicitly unavailable named attribution");
+    expect(qualified(car) && comparable(car, baseline),
+           "a source or fit change remains comparable under one exact environment");
+    Evidence anotherDevice = baseline;
+    anotherDevice.adapter  = "Other GPU";
+    expect(!comparable(car, anotherDevice),
+           "a different adapter is never presented as an honest baseline");
+    Evidence anotherPresentation = baseline;
+    anotherPresentation.presentationSha256.assign(64u, 'f');
+    expect(!comparable(car, anotherPresentation),
+           "different presentation settings refuse baseline comparison");
+    Evidence anotherContract = baseline;
+    anotherContract.resultVersion++;
+    expect(!comparable(car, anotherContract),
+           "different result contracts refuse baseline comparison");
+    Evidence anotherPackage  = baseline;
+    anotherPackage.packageId = "org.example.beta";
+    expect(!comparable(car, anotherPackage),
+           "results from different packages cannot be compared accidentally");
+    Evidence wrongKind = baseline;
+    wrongKind.kind     = Kind::Latest;
+    expect(!comparable(car, wrongKind),
+           "comparison requires an explicitly pinned baseline");
+
+    Evidence shortBaseline        = baseline;
+    shortBaseline.intervalSamples = 20u;
+    shortBaseline.kind            = Kind::Baseline;
+    expect(!upsert(inventory, shortBaseline, error),
+           "short diagnostic samples cannot become baselines");
+    Evidence unknownDeviceBaseline = baseline;
+    unknownDeviceBaseline.adapter.clear();
+    expect(!qualified(unknownDeviceBaseline) &&
+               !upsert(inventory, unknownDeviceBaseline, error),
+           "evidence without exact adapter identity cannot become a baseline");
+    Evidence invalid = select;
+    invalid.context  = 0u;
+    expect(!upsert(inventory, invalid, error),
+           "invalid exact contexts are rejected");
+    invalid         = select;
+    invalid.players = 5u;
+    expect(!upsert(inventory, invalid, error),
+           "invalid player layouts are rejected");
+    invalid                 = select;
+    invalid.sourceSha256[0] = 'A';
+    expect(!upsert(inventory, invalid, error),
+           "fingerprints require canonical lowercase hex");
+    invalid         = select;
+    invalid.adapter = std::string("hostile\nGPU");
+    expect(!upsert(inventory, invalid, error),
+           "device text cannot inject control rows");
+    invalid = select;
+    invalid.adapter = std::string("\xc0\xaf", 2u);
+    expect(!upsert(inventory, invalid, error),
+           "device text must be canonical printable UTF-8");
+    invalid = select;
+    invalid.backend.clear();
+    expect(!upsert(inventory, invalid, error),
+           "a started result requires a named renderer backend");
+    invalid               = select;
+    invalid.intervalP95Us = invalid.intervalP50Us - 1u;
+    expect(!upsert(inventory, invalid, error),
+           "non-monotonic percentile evidence is rejected");
+    invalid               = select;
+    invalid.intervalP50Us = 0u;
+    expect(!upsert(inventory, invalid, error),
+           "sampled evidence requires a nonzero cadence distribution");
+    invalid                 = select;
+    invalid.displayedFrames = invalid.intervalSamples - 1u;
+    expect(!upsert(inventory, invalid, error),
+           "sampled evidence cannot exceed its displayed-frame census");
+    invalid                 = select;
+    invalid.tickwallSamples = 0u;
+    expect(!upsert(inventory, invalid, error),
+           "a tick-wall mean requires a tick-wall sample count");
+    invalid = select;
+    invalid.gpuTiming.version = 0u;
+    expect(!upsert(inventory, invalid, error),
+           "current evidence requires a versioned GPU availability contract");
+    invalid = select;
+    invalid.gpuTiming.scene_pass.p95_ns =
+        invalid.gpuTiming.scene_pass.p50_ns - 1u;
+    expect(!upsert(inventory, invalid, error),
+           "non-monotonic GPU timestamp percentiles are rejected");
+    invalid = select;
+    invalid.gpuTiming.supported_scopes =
+        MDKR_MODERN_CHARACTER_GPU_SCOPE_CHARACTER_DRAWS;
+    expect(!upsert(inventory, invalid, error),
+           "character-only timing cannot claim support without scene timestamps");
+    invalid                  = select;
+    invalid.replacementDraws = 0u;
+    expect(!upsert(inventory, invalid, error),
+           "submitted parts require a replacement draw");
+    invalid              = select;
+    invalid.outputHeight = 0u;
+    expect(!upsert(inventory, invalid, error),
+           "partial output dimensions are rejected");
+    invalid               = car;
+    invalid.contactSolves = 0u;
+    expect(!upsert(inventory, invalid, error),
+           "contact measurements cannot detach from a solve count");
+    invalid                             = select;
+    invalid.contactSolves               = 1u;
+    invalid.contactErrorMeanMicrometres = 1u;
+    invalid.contactErrorMaxMicrometres  = 1u;
+    expect(!upsert(inventory, invalid, error),
+           "character-select evidence cannot claim vehicle contact solves");
+    invalid = car;
+    invalid.contactWitnessMask = 0u;
+    for (size_t contact = 0u; contact < 4u; ++contact) {
+        for (size_t axis = 0u; axis < 3u; ++axis) {
+            invalid.contactChainRootMicrometres[contact][axis] = 0;
+            invalid.contactBendMicrometres[contact][axis] = 0;
+            invalid.contactTargetMicrometres[contact][axis] = 0;
+            invalid.contactEndMicrometres[contact][axis] = 0;
+        }
+        invalid.contactWitnessErrorMicrometres[contact] = 0u;
+    }
+    expect(!upsert(inventory, invalid, error),
+           "current solved vehicle evidence requires all four exact witnesses");
+    invalid = car;
+    invalid.contactWitnessMask = 0x3u;
+    expect(!upsert(inventory, invalid, error),
+           "partial hand/foot witness publication is rejected");
+    invalid = car;
+    invalid.contactWitnessErrorMicrometres[0] += 100u;
+    expect(!upsert(inventory, invalid, error),
+           "reported contact error must match target-to-endpoint distance");
+    invalid = select;
+    invalid.contactWitnessMask = 0xFu;
+    expect(!upsert(inventory, invalid, error),
+           "character-select evidence cannot fabricate vehicle witnesses");
+    invalid = select;
+    invalid.fitDiagnosticsValid = false;
+    expect(!upsert(inventory, invalid, error),
+           "unavailable fit evidence cannot retain stale measurements");
+    invalid = select;
+    invalid.fitBoundsMinMicrometres[1] = 2000000;
+    expect(!upsert(inventory, invalid, error),
+           "renderer fit bounds must remain ordered on every axis");
+    invalid = select;
+    invalid.fitForwardMilli[2] = 900;
+    expect(!upsert(inventory, invalid, error),
+           "renderer forward evidence must remain a normalized direction");
+    invalid = select;
+    invalid.fitForwardMilli[0] = INT32_MAX;
+    invalid.fitForwardMilli[1] = INT32_MAX;
+    invalid.fitForwardMilli[2] = INT32_MAX;
+    expect(!upsert(inventory, invalid, error),
+           "extreme in-memory facing vectors fail without overflowing validation");
+    invalid = select;
+    invalid.cameraBoundsClipFlags = 0x80u;
+    expect(!upsert(inventory, invalid, error),
+           "camera bounds reject clip flags outside the renderer contract");
+    invalid = select;
+    invalid.cameraBoundsPixelMilli[0] = -2;
+    expect(!upsert(inventory, invalid, error),
+           "camera bounds cannot hide an off-viewport edge with stale clip flags");
+    invalid = select;
+    invalid.cameraProjectionViewport[0] = INT32_MAX;
+    expect(!upsert(inventory, invalid, error),
+           "extreme camera rectangles fail without overflowing validation");
+    invalid = select;
+    invalid.cameraProjectionValid = false;
+    expect(!upsert(inventory, invalid, error),
+           "current warmed evidence cannot erase its exact camera witness");
+    invalid = car;
+    invalid.vehicleSurfaceValid = false;
+    invalid.vehicleShellTrianglesSubmitted = 0u;
+    invalid.vehicleShellTrianglesTested = 0u;
+    invalid.characterSurfaceTrianglesSubmitted = 0u;
+    invalid.characterSurfaceTrianglesTested = 0u;
+    expect(!upsert(inventory, invalid, error),
+           "current warmed vehicle evidence cannot erase its exact surface witness");
+    invalid = car;
+    invalid.vehicleShellTrianglesTested =
+        invalid.vehicleShellTrianglesSubmitted + 1u;
+    expect(!upsert(inventory, invalid, error),
+           "vehicle surface tested counts cannot exceed submitted geometry");
+    invalid = car;
+    invalid.vehicleSurfaceCrossingTriangles = 1u;
+    invalid.vehicleSurfaceCrossingPairs = 0u;
+    expect(!upsert(inventory, invalid, error),
+           "an intersecting character triangle requires an intersecting pair");
+    invalid = car;
+    invalid.vehicleSurfaceFirstCrossingMicrometres[0] = 1;
+    expect(!upsert(inventory, invalid, error),
+           "a clear vehicle surface sample cannot retain a stale locator");
+    invalid = car;
+    invalid.vehicleShellBoundaryEdges = 1u;
+    expect(!upsert(inventory, invalid, error),
+           "a topology defect cannot coexist with a qualified volume");
+    invalid = car;
+    invalid.vehicleContainmentInsideSamples = 1u;
+    expect(!upsert(inventory, invalid, error),
+           "containment classifications must sum to the bounded sample census");
+    invalid = car;
+    invalid.vehicleVolumeQualified = false;
+    invalid.vehicleContainmentSamplesTested = 0u;
+    invalid.vehicleContainmentOutsideSamples = 0u;
+    expect(!upsert(inventory, invalid, error),
+           "an unqualified volume must retain an exact topology reason");
+    invalid = car;
+    invalid.vehicleContainmentMaximumDepthMicrometres = 1u;
+    expect(!upsert(inventory, invalid, error),
+           "a clear qualified volume cannot retain stale inside depth");
+    invalid = car;
+    invalid.opaqueVisibilitySceneTiles =
+        invalid.opaqueVisibilityIsolatedTiles + 1u;
+    expect(!upsert(inventory, invalid, error),
+           "scene-visible depth tiles cannot exceed the isolated subject");
+    invalid = car;
+    invalid.opaqueVisibilitySceneTileMask = 0x3fu;
+    expect(!upsert(inventory, invalid, error),
+           "visibility tile counts must match their exact masks");
+    invalid = car;
+    invalid.opaqueVisibilitySceneTileMask = UINT64_C(1) << 63u;
+    invalid.opaqueVisibilitySceneTiles = 1u;
+    expect(!upsert(inventory, invalid, error),
+           "scene-visible tiles must be a subset of isolated subject tiles");
+    invalid = car;
+    invalid.resultVersion = 20u;
+    expect(!upsert(inventory, invalid, error),
+           "pre-v21 results cannot claim named occluder evidence");
+    invalid = select;
+    invalid.opaqueVisibilityOccluderPresentMask = 0x1u;
+    invalid.opaqueVisibilityOccluderQualifiedMask = 0x1u;
+    invalid.opaqueVisibilityOccluderDraws[0] = 1u;
+    expect(!upsert(inventory, invalid, error),
+           "character-select evidence cannot fabricate a vehicle occluder");
+    invalid = car;
+    invalid.opaqueVisibilityOccluderOverlapTiles[0] = 1u;
+    invalid.opaqueVisibilityOccluderOverlapTileMask[0] =
+        UINT64_C(1) << 63u;
+    expect(!upsert(inventory, invalid, error),
+           "named overlap must remain inside the isolated character mask");
+    Evidence fullyHidden = car;
+    fullyHidden.opaqueVisibilityIsolatedTiles = 0u;
+    fullyHidden.opaqueVisibilitySceneTiles = 0u;
+    fullyHidden.opaqueVisibilityIsolatedTileMask = 0u;
+    fullyHidden.opaqueVisibilitySceneTileMask = 0u;
+    fullyHidden.opaqueVisibilityOccluderOverlapTiles[0] = 0u;
+    fullyHidden.opaqueVisibilityOccluderOverlapTileMask[0] = 0u;
+    Inventory hiddenInventory;
+    expect(upsert(hiddenInventory, fullyHidden, error),
+           "a completed zero-fragment query remains actionable failing visual evidence");
+    invalid = car;
+    invalid.opaqueVisibilityTransparentDraws = 1u;
+    expect(!upsert(inventory, invalid, error),
+           "transparent draws cannot masquerade as qualified opaque depth");
+    invalid = car;
+    invalid.opaqueVisibilityValid = false;
+    invalid.opaqueVisibilityQualified = false;
+    invalid.opaqueVisibilityWidth = 0u;
+    invalid.opaqueVisibilityHeight = 0u;
+    std::memset(invalid.opaqueVisibilityViewport, 0,
+                sizeof(invalid.opaqueVisibilityViewport));
+    std::memset(invalid.opaqueVisibilityScissor, 0,
+                sizeof(invalid.opaqueVisibilityScissor));
+    invalid.opaqueVisibilityPrimitiveDraws = 0u;
+    invalid.opaqueVisibilityOpaqueDraws = 0u;
+    invalid.opaqueVisibilityMaskedDraws = 0u;
+    invalid.opaqueVisibilityTransparentDraws = 0u;
+    invalid.opaqueVisibilityGridColumns = 0u;
+    invalid.opaqueVisibilityGridRows = 0u;
+    invalid.opaqueVisibilityIsolatedTiles = 0u;
+    invalid.opaqueVisibilitySceneTiles = 0u;
+    invalid.opaqueVisibilityIsolatedTileMask = 0u;
+    invalid.opaqueVisibilitySceneTileMask = 0u;
+    expect(!upsert(inventory, invalid, error),
+           "current warmed evidence cannot erase its opaque-depth witness");
+    invalid = select;
+    invalid.vehicleSurfaceValid = true;
+    invalid.vehicleShellTrianglesSubmitted = 1u;
+    invalid.vehicleShellTrianglesTested = 1u;
+    invalid.characterSurfaceTrianglesSubmitted = 1u;
+    invalid.characterSurfaceTrianglesTested = 1u;
+    expect(!upsert(inventory, invalid, error),
+           "character-select evidence cannot fabricate a vehicle surface");
+    invalid = select;
+    invalid.replacementDraws = 0u;
+    invalid.replacementPrimitives = 0u;
+    invalid.hiddenDonorBatches = 0u;
+    expect(!upsert(inventory, invalid, error),
+           "renderer fit evidence requires a successful replacement draw");
+
+    const Inventory before      = parsed;
+    std::string     tampered    = encoded;
+    const size_t    adapterText = tampered.find("546573742047505520c2a9");
+    expect(adapterText != std::string::npos,
+           "encoded adapter fixture is present");
+    tampered[adapterText] = tampered[adapterText] == '5' ? '4' : '5';
+    expect(!parse(tampered, parsed, error) &&
+               parsed.records.size() == before.records.size() &&
+               error == "test evidence checksum, key, or order is invalid",
+           "row tampering cannot replace the prior inventory or reuse a stale diagnostic");
+    expect(!parse(encoded + "trailing", parsed, error),
+           "trailing bytes are rejected");
+    const std::string negativeZero = authenticatedCurrentWithFirstRowField(
+        encoded, 45u, "-0");
+    expect(!negativeZero.empty() && !parse(negativeZero, parsed, error) &&
+               error == "test evidence fit fields are invalid",
+           "authenticated signed fields reject negative zero");
+    const std::string outOfRange = authenticatedCurrentWithFirstRowField(
+        encoded, 39u, "-1000000001");
+    expect(!outOfRange.empty() && !parse(outOfRange, parsed, error) &&
+               error == "test evidence fit fields are invalid",
+           "authenticated signed fields reject values outside the fit bound");
+    const std::string reversedBounds = authenticatedCurrentWithFirstRowField(
+        encoded, 39u, "500000");
+    expect(!reversedBounds.empty() && !parse(reversedBounds, parsed, error) &&
+               error == "test evidence fit diagnostics are inconsistent",
+           "authenticated but reversed renderer bounds fail semantic validation");
+    const std::string invalidGpuStatus = authenticatedCurrentWithFirstRowField(
+        encoded, 105u, "99");
+    expect(!invalidGpuStatus.empty() &&
+               !parse(invalidGpuStatus, parsed, error) &&
+               error == "test evidence GPU timing fields are invalid",
+           "authenticated rows reject unknown GPU timing states");
+    const std::string staleGpuVersion = authenticatedCurrentWithFirstRowField(
+        encoded, 104u, "0");
+    expect(!staleGpuVersion.empty() &&
+               !parse(staleGpuVersion, parsed, error) &&
+               error ==
+                   "test evidence timing state or distribution is inconsistent",
+           "result-v11 rows cannot erase the GPU timing contract");
+
+    const size_t      headerEnd = encoded.find('\n') + 1u;
+    const size_t      rowOneEnd = encoded.find('\n', headerEnd) + 1u;
+    const size_t      rowTwoEnd = encoded.find('\n', rowOneEnd) + 1u;
+    const std::string header    = encoded.substr(0u, headerEnd);
+    const std::string rowOne    = encoded.substr(headerEnd, rowOneEnd - headerEnd);
+    const std::string rowTwo    = encoded.substr(rowOneEnd, rowTwoEnd - rowOneEnd);
+    const std::string rowThree  = encoded.substr(rowTwoEnd);
+    expect(!parse(header + rowTwo + rowOne + rowThree, parsed, error),
+           "non-canonical row ordering is rejected");
+    std::string omitted = header + rowOne + rowTwo;
+    omitted.replace(omitted.find("\t3\t"), 3u, "\t2\t");
+    expect(!parse(omitted, parsed, error),
+           "removing a complete row breaks inventory authentication");
+
+    Inventory duplicate = inventory;
+    duplicate.records.push_back(select);
+    expect(!serialize(duplicate, encoded, error),
+           "duplicate cell/kind keys cannot be serialized");
+
+    Inventory full;
+    for (size_t package = 0u; package < kMaximumPackages; ++package) {
+        for (uint32_t context = 1u; context <= 4u; ++context) {
+            for (uint32_t players = 1u; players <= 4u; ++players) {
+                for (Kind kind : {Kind::Latest, Kind::Baseline}) {
+                    Evidence evidence = makeEvidence(
+                        "pkg-" + std::to_string(package),
+                        context,
+                        players,
+                        kind);
+                    expect(upsert(full, std::move(evidence), error),
+                           "every documented evidence slot is admitted");
+                }
+            }
+        }
+    }
+    Evidence overflow = makeEvidence("pkg-overflow", 1u, 1u);
+    expect(full.records.size() == kMaximumRecords &&
+               !upsert(full, overflow, error),
+           "the first record beyond the complete 64-package matrix is refused");
+
+    Inventory sparsePackages;
+    for (size_t package = 0u; package < kMaximumPackages; ++package) {
+        expect(upsert(
+                   sparsePackages,
+                   makeEvidence("sparse-" + std::to_string(package),
+                                1u,
+                                1u),
+                   error),
+               "one exact result is admitted for every bounded package");
+    }
+    expect(sparsePackages.records.size() == kMaximumPackages &&
+               !upsert(sparsePackages,
+                       makeEvidence("sparse-overflow", 1u, 1u),
+                       error),
+           "a sparse sixty-fifth package is refused before the record bound");
+
+    Inventory erased = inventory;
+    expect(erase(erased, car.packageId, car.context, car.players, Kind::Baseline) &&
+               find(erased, car.packageId, car.context, car.players, Kind::Latest) != nullptr &&
+               find(erased, car.packageId, car.context, car.players, Kind::Baseline) == nullptr,
+           "clearing a baseline preserves the latest result in that cell");
+    expect(erasePackage(erased, select.packageId) == 2u &&
+               erased.records.empty() &&
+               erasePackage(erased, select.packageId) == 0u,
+           "package cleanup removes only all evidence owned by that package");
+
+    MemoryStorage        memory;
+    MdkrTextStateStorage storage{&memory, readMemory, writeMemory};
+    Inventory            loaded;
+    expect(load(storage, loaded, error) == LoadResult::Missing &&
+               loaded.records.empty(),
+           "missing storage is an ordinary empty first run");
+    expect(save(storage, inventory, error) && memory.writes == 1u &&
+               load(storage, loaded, error) == LoadResult::Loaded &&
+               loaded.records.size() == inventory.records.size(),
+           "atomic storage round trips the complete evidence inventory");
+    const std::string durable = memory.bytes;
+    memory.failWrite          = true;
+    expect(!save(storage, Inventory{}, error) && memory.bytes == durable,
+           "a failed write preserves durable evidence");
+    memory.failWrite = false;
+    memory.bytes[memory.bytes.size() / 2u] ^= 1;
+    expect(load(storage, loaded, error) == LoadResult::Invalid &&
+               loaded.records.size() == inventory.records.size(),
+           "corruption cannot replace the last loaded evidence inventory");
+    memory.failRead = true;
+    expect(load(storage, loaded, error) == LoadResult::IoError &&
+               loaded.records.size() == inventory.records.size(),
+           "read failure cannot replace the last loaded evidence inventory");
+
+    DeviceProfileWorkload workload;
+    workload.hostPlatform = "testOS";
+    workload.sourceSha256.assign(64u, 'a');
+    workload.fitSha256.fill(std::string(64u, 'b'));
+    workload.presentationSha256.assign(64u, 'c');
+    workload.vehicleMask = 0x7u;
+    workload.vertices = 2517u;
+    workload.triangles = 3489u;
+    workload.primitives = 2u;
+    workload.joints = 35u;
+    workload.textures = 4u;
+    workload.decodedTextureBytes = 1922384u;
+    workload.lodCount = 2u;
+    workload.lodVertices = {2517u, 1200u, 0u, 0u};
+    workload.lodTriangles = {3489u, 1600u, 0u, 0u};
+    workload.lodPrimitives = {2u, 2u, 0u, 0u};
+    std::vector<Evidence> profileRows;
+    for (uint32_t context = 1u; context <= 4u; ++context) {
+        for (uint32_t players = 1u; players <= 4u; ++players) {
+            Evidence row = makeEvidence(
+                "org.example.private-name", context, players);
+            row.capturedUnix += context * 10u + players;
+            profileRows.push_back(std::move(row));
+        }
+    }
+    profileRows.back().intervalP95Us = 19000u;
+    profileRows.back().intervalP99Us = 26000u;
+    profileRows.back().intervalMaxUs = 28000u;
+    DeviceProfileSummary profileSummary;
+    expect(summarizeDeviceProfile(
+               workload, profileRows, profileSummary, error) &&
+               profileSummary.expectedRows == 16u &&
+               profileSummary.targetRows == 15u &&
+               profileSummary.workloadId.size() == 64u &&
+               profileSummary.capturedFromUnix <
+                   profileSummary.capturedToUnix,
+           "one complete exact-build/device matrix becomes a pseudonymous profile summary");
+    const std::string firstWorkloadId = profileSummary.workloadId;
+    DeviceProfileWorkload changedWorkload = workload;
+    changedWorkload.lodTriangles[1]++;
+    expect(summarizeDeviceProfile(
+               changedWorkload, profileRows, profileSummary, error) &&
+               profileSummary.workloadId != firstWorkloadId,
+           "authored workload cost changes cannot collide with a prior profile identity");
+
+    const std::string profilePath = "character-device-profile-test.json";
+    (void)std::remove(profilePath.c_str());
+    const bool exported = exportDeviceProfileJson(
+        profilePath, workload, profileRows, profileSummary, error);
+    if (!exported) {
+        std::fprintf(stderr, "device profile export error: %s\n", error.c_str());
+    }
+    const std::string profileJson = readTextFile(profilePath);
+    expect(exported &&
+               profileJson.find(
+                   "\"schema\":\"mdkr-character-device-profile-v1\"") !=
+                   std::string::npos &&
+               profileJson.find(
+                   "\"comparisonRule\":\"same-workload-id-and-build-only\"") !=
+                   std::string::npos &&
+               profileJson.find("\"expectedRows\":16") !=
+                   std::string::npos &&
+               profileJson.find("\"targetRows\":15") !=
+                   std::string::npos &&
+               profileJson.find("\"hostPlatform\":\"testOS\"") !=
+                   std::string::npos &&
+               profileJson.find(
+                   "\"derivedWorkloadIdIsPseudonymous\":true") !=
+                   std::string::npos &&
+               profileJson.find("\"context\":\"plane\"") !=
+                   std::string::npos &&
+               profileJson.find("Test GPU ") != std::string::npos &&
+               profileJson.find("org.example.private-name") ==
+                   std::string::npos &&
+               profileJson.find(workload.sourceSha256) == std::string::npos &&
+               profileJson.find(workload.fitSha256[0]) == std::string::npos &&
+               profileJson.find(workload.presentationSha256) ==
+                   std::string::npos,
+           "the shareable report retains exact cost/device rows without package identity or raw workload digests");
+    const std::string firstProfileJson = profileJson;
+    expect(!exportDeviceProfileJson(
+               profilePath, workload, profileRows, profileSummary, error) &&
+               readTextFile(profilePath) == firstProfileJson,
+           "device profile export never replaces an existing destination");
+    std::vector<Evidence> partialRows = profileRows;
+    partialRows.pop_back();
+    expect(!summarizeDeviceProfile(
+               workload, partialRows, profileSummary, error),
+           "a partial matrix cannot masquerade as a corpus-ready profile");
+    std::vector<Evidence> mixedDeviceRows = profileRows;
+    mixedDeviceRows.back().driver = "different-driver";
+    expect(!summarizeDeviceProfile(
+               workload, mixedDeviceRows, profileSummary, error),
+           "a matrix assembled from different devices or drivers fails closed");
+    std::vector<Evidence> staleRows = profileRows;
+    staleRows.back().fitSha256.assign(64u, 'd');
+    expect(!summarizeDeviceProfile(
+               workload, staleRows, profileSummary, error),
+           "stale fit evidence cannot enter a device profile");
+    DeviceProfileWorkload invalidWorkload = workload;
+    invalidWorkload.decodedTextureBytes = 512u * 1024u * 1024u + 1u;
+    expect(!summarizeDeviceProfile(
+               invalidWorkload, profileRows, profileSummary, error),
+           "device profiles cannot publish costs outside the import safety contract");
+    invalidWorkload = workload;
+    invalidWorkload.lodVertices[2] = 1u;
+    expect(!summarizeDeviceProfile(
+               invalidWorkload, profileRows, profileSummary, error),
+           "absent authored LODs cannot retain partial stale cost fields");
+    invalidWorkload = workload;
+    invalidWorkload.hostPlatform = "hostile\nplatform";
+    expect(!summarizeDeviceProfile(
+               invalidWorkload, profileRows, profileSummary, error),
+           "host platform metadata cannot inject JSON structure or control text");
+    DeviceProfileWorkload selectWorkload = workload;
+    selectWorkload.vehicleMask = 0u;
+    std::vector<Evidence> selectRows(
+        profileRows.begin(), profileRows.begin() + 4);
+    expect(summarizeDeviceProfile(
+               selectWorkload, selectRows, profileSummary, error),
+           "a select-only workload requires exactly its four applicable layouts");
+    const std::string selectWorkloadId = profileSummary.workloadId;
+    selectWorkload.fitSha256[1].clear();
+    selectWorkload.fitSha256[2] = "ignored inactive fit";
+    expect(summarizeDeviceProfile(
+               selectWorkload, selectRows, profileSummary, error) &&
+               profileSummary.workloadId == selectWorkloadId,
+           "inactive vehicle fits do not change or invalidate a workload identity");
+    expect(!exportDeviceProfileJson(
+               "character-device-profile-test.txt", workload, profileRows,
+               profileSummary, error),
+           "a device profile requires an explicit JSON destination");
+    (void)std::remove(profilePath.c_str());
+
+    if (failures != 0) return 1;
+    std::puts("character test evidence store passed");
+    return 0;
+}

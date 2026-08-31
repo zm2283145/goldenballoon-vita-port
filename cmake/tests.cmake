@@ -416,6 +416,159 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     add_test(NAME mod_registry COMMAND mdkr_mod_registry_test
              ${CMAKE_CURRENT_BINARY_DIR}/mod_registry_scratch)
 
+    # Generic modern-character caches are generated from a tiny license-clean
+    # animated GLB at test time. The native half proves that the engine-facing
+    # loader consumes the exact compiler output and rejects corrupt headers and
+    # payloads before publishing any section pointer.
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(NAME character_asset_probe
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_character_asset_probe.py)
+    add_executable(mdkr_modern_character_asset_test
+        ${CMAKE_SOURCE_DIR}/tests/test_modern_character_asset.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_asset.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_install.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_registry.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_pose.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_render.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_identity.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_runtime.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_surface_intersection.c
+        ${CMAKE_SOURCE_DIR}/platform/workshop_preview_runtime.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_donor.c
+        ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_mipgen.c
+        ${CMAKE_SOURCE_DIR}/lib/stb/stb_image_impl.c
+        ${CMAKE_SOURCE_DIR}/lib/miniz/miniz.c
+        ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
+        ${CMAKE_SOURCE_DIR}/platform/sha256.c)
+    target_include_directories(mdkr_modern_character_asset_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/game/include
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/platform/fast3d
+        ${CMAKE_SOURCE_DIR}/lib/stb
+        ${CMAKE_SOURCE_DIR}/lib/miniz)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_modern_character_asset_test PRIVATE m)
+    endif()
+    add_test(NAME modern_character_asset
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/run_modern_character_asset_test.py
+                --loader $<TARGET_FILE:mdkr_modern_character_asset_test>)
+    add_test(NAME character_package_manager
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_character_package_manager.py)
+    add_test(NAME character_source_adapter
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_character_source_adapter.py)
+    add_test(NAME character_importer_build
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_character_importer_build.py)
+    add_test(NAME character_text_font_generator
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_character_text_font_generator.py)
+    add_test(NAME gltf_validator_adapter
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_gltf_validator_adapter.py)
+    add_test(NAME character_manifest_wizard
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_character_manifest_wizard.py)
+    add_test(NAME character_spike_fixture
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_character_spike_fixture.py)
+    add_test(NAME character_spike_evidence
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_character_spike_evidence.py)
+    add_test(NAME character_release_evidence
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_character_release_evidence.py)
+    add_executable(mdkr_character_workshop_model_test
+        ${CMAKE_SOURCE_DIR}/tests/test_character_workshop_model.cpp
+        ${CMAKE_SOURCE_DIR}/platform/app/character_workshop_model.cpp)
+    target_include_directories(mdkr_character_workshop_model_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/platform/app)
+    target_compile_features(mdkr_character_workshop_model_test PRIVATE cxx_std_17)
+    add_test(NAME character_workshop_model
+        COMMAND mdkr_character_workshop_model_test)
+    add_executable(mdkr_character_async_job_test
+        ${CMAKE_SOURCE_DIR}/tests/test_character_async_job.cpp)
+    target_include_directories(mdkr_character_async_job_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform/app)
+    target_compile_features(mdkr_character_async_job_test PRIVATE cxx_std_17)
+    target_link_libraries(mdkr_character_async_job_test PRIVATE Threads::Threads)
+    add_test(NAME character_async_job
+        COMMAND mdkr_character_async_job_test)
+    add_executable(mdkr_modern_character_gpu_timing_test
+        ${CMAKE_SOURCE_DIR}/tests/test_modern_character_gpu_timing.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_gpu_timing.c)
+    target_include_directories(mdkr_modern_character_gpu_timing_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME modern_character_gpu_timing
+        COMMAND mdkr_modern_character_gpu_timing_test)
+    add_executable(mdkr_modern_character_draw_store_test
+        ${CMAKE_SOURCE_DIR}/tests/test_modern_character_draw_store.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_draw_store.c)
+    target_include_directories(mdkr_modern_character_draw_store_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/platform/fast3d)
+    add_test(NAME modern_character_draw_store
+        COMMAND mdkr_modern_character_draw_store_test)
+    add_executable(mdkr_modern_character_capture_projection_test
+        ${CMAKE_SOURCE_DIR}/tests/test_modern_character_capture_projection.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_capture_projection.c)
+    target_include_directories(
+        mdkr_modern_character_capture_projection_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(
+            mdkr_modern_character_capture_projection_test PRIVATE m)
+    endif()
+    add_test(NAME modern_character_capture_projection
+        COMMAND mdkr_modern_character_capture_projection_test)
+
+    add_executable(mdkr_modern_character_surface_intersection_test
+        ${CMAKE_SOURCE_DIR}/tests/test_modern_character_surface_intersection.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_surface_intersection.c)
+    target_include_directories(
+        mdkr_modern_character_surface_intersection_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_options(
+        mdkr_modern_character_surface_intersection_test PRIVATE
+        -Wall -Wextra -Wpedantic -Werror)
+    if(NOT MSVC)
+        target_link_libraries(
+            mdkr_modern_character_surface_intersection_test PRIVATE m)
+    endif()
+    add_test(NAME modern_character_surface_intersection
+        COMMAND mdkr_modern_character_surface_intersection_test)
+    add_executable(mdkr_character_portrait_studio_test
+        ${CMAKE_SOURCE_DIR}/tests/test_character_portrait_studio.cpp
+        ${CMAKE_SOURCE_DIR}/platform/app/character_png_validation.cpp
+        ${CMAKE_SOURCE_DIR}/platform/app/character_portrait_import.cpp
+        ${CMAKE_SOURCE_DIR}/platform/app/character_portrait_studio.cpp
+        ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
+        ${CMAKE_SOURCE_DIR}/platform/sha256.c
+        ${CMAKE_SOURCE_DIR}/lib/stb/stb_image_impl.c)
+    target_include_directories(mdkr_character_portrait_studio_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/platform/app
+        ${CMAKE_SOURCE_DIR}/lib/stb)
+    target_compile_features(mdkr_character_portrait_studio_test PRIVATE cxx_std_17)
+    add_test(NAME character_portrait_studio
+        COMMAND mdkr_character_portrait_studio_test)
+    add_test(NAME collada_to_glb
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_collada_to_glb.py)
+    add_test(NAME high_fidelity_character
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_high_fidelity_character.py)
+    if(MDKR_CHARACTER_LOD_TOOLS)
+        add_test(NAME character_lod_builder
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tests/test_character_lod_builder.py
+                    --helper $<TARGET_FILE:mdkr-character-lod>)
+    endif()
+
     # When a pack PNG is refused, relative to when it is decoded. A pack is a
     # file a player downloaded from a stranger, so the cache cap is only a
     # defence if it is consulted before the decoder is handed the bytes --
@@ -654,6 +807,32 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     target_compile_definitions(mdkr_taj_select_layout_test PRIVATE
         NATIVE_PORT=1 VERSION_us_v80 _LANGUAGE_C MODERN_CC)
     add_test(NAME taj_select_layout COMMAND mdkr_taj_select_layout_test)
+
+    add_executable(mdkr_custom_character_roster_test
+        ${CMAKE_SOURCE_DIR}/tests/test_custom_character_roster.c
+        ${CMAKE_SOURCE_DIR}/game/src/custom_character_roster.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_text.c)
+    target_include_directories(mdkr_custom_character_roster_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/game/src
+        ${CMAKE_SOURCE_DIR}/game/include
+        ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_definitions(mdkr_custom_character_roster_test PRIVATE
+        NATIVE_PORT=1 VERSION_us_v80 _LANGUAGE_C MODERN_CC)
+    add_test(NAME custom_character_roster COMMAND mdkr_custom_character_roster_test)
+
+    add_executable(mdkr_character_text_test
+        ${CMAKE_SOURCE_DIR}/tests/test_character_text.c
+        ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_character_text.c)
+    target_include_directories(mdkr_character_text_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/platform/fast3d
+        ${CMAKE_SOURCE_DIR}/lib/stb)
+    target_link_libraries(mdkr_character_text_test PRIVATE
+        mdkr_character_text_shaping)
+    if(NOT WIN32)
+        target_link_libraries(mdkr_character_text_test PRIVATE m)
+    endif()
+    add_test(NAME character_text COMMAND mdkr_character_text_test)
 
     add_executable(mdkr_taj_mod_state_file_test
         ${CMAKE_SOURCE_DIR}/tests/test_taj_mod_state_file.c
@@ -1863,10 +2042,9 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/game
         ${CMAKE_SOURCE_DIR}/game/src
         ${CMAKE_SOURCE_DIR}/game/include
-        ${CMAKE_SOURCE_DIR}/game/include/PR
-        ${CMAKE_SOURCE_DIR}/game/include/sys
         ${CMAKE_SOURCE_DIR}/game/libultra
         ${CMAKE_SOURCE_DIR}/game/libultra/src/audio)
+    mdkr_add_legacy_game_quote_includes(mdkr_ghost_bank_test)
     target_compile_definitions(mdkr_ghost_bank_test PRIVATE
         VERSION_us_v80
         _LANGUAGE_C
@@ -2008,6 +2186,16 @@ endif()
 # Repository-publication policy is backend-independent and must run in every
 # native CTest configuration, including OpenGL-only and sanitizer lanes.
 if(BUILD_TESTING)
+    if(MDKR_CHARACTER_KTX2)
+        add_executable(mdkr_modern_character_ktx2_test
+            ${CMAKE_SOURCE_DIR}/tests/test_modern_character_ktx2.cpp)
+        target_link_libraries(mdkr_modern_character_ktx2_test PRIVATE
+            mdkr_character_ktx2_bridge)
+        target_compile_options(mdkr_modern_character_ktx2_test PRIVATE
+            $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall;-Wextra;-Wpedantic;-Werror>)
+        add_test(NAME modern_character_ktx2
+            COMMAND mdkr_modern_character_ktx2_test)
+    endif()
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
     find_program(MDKR_NODE_EXECUTABLE NAMES node nodejs)
     add_test(
@@ -2187,6 +2375,10 @@ if(BUILD_TESTING)
         NAME overlay_input_handoff_contract
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/check_overlay_input_handoff.py)
+    add_test(
+        NAME character_offset_studio_contract
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/check_character_offset_studio.py)
     add_test(
         NAME web_document_structure
         COMMAND ${Python3_EXECUTABLE}

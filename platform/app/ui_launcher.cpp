@@ -17,10 +17,12 @@
 #include "SDL.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cassert>
 #include <cstdlib>
 #include <cstring>
+#include <utility>
 
 namespace {
 
@@ -30,6 +32,7 @@ struct Panel {
 };
 
 void drawSettingsPanel(LauncherState &s, LauncherAction &out);
+void drawCharacterWorkshopPanel(LauncherState &s, LauncherAction &out);
 void drawAboutPanel(LauncherState &s, LauncherAction &out);
 
 const Panel kPanels[] = {
@@ -44,6 +47,7 @@ const Panel kPanels[] = {
     {"Settings",    drawSettingsPanel},
     {"Diagnostics", DiagPanel_draw},
     {"About",       drawAboutPanel},
+    {"Character Workshop", drawCharacterWorkshopPanel},
 };
 constexpr int kPanelCount = (int)(sizeof(kPanels) / sizeof(kPanels[0]));
 static_assert(kPanelCount == kLauncherPanelCount,
@@ -75,6 +79,11 @@ static bool panelVisible(int index) {
 #endif
 }
 
+const char *compactPanelLabel(int index) {
+    return index == kLauncherPanelCharacterWorkshop
+        ? "Workshop" : kPanels[index].label;
+}
+
 ImVec2 g_smokeTopTabMin[kPanelCount];
 ImVec2 g_smokeTopTabMax[kPanelCount];
 bool g_smokeTopTabValid[kPanelCount] = {};
@@ -86,8 +95,10 @@ ImVec2 g_smokePanelScrollMin;
 ImVec2 g_smokePanelScrollMax;
 float g_smokePanelScrollY = 0.0f;
 bool g_smokePanelScrollValid = false;
+bool g_smokePrimaryActionLabelContained = true;
+bool g_characterWorkshopReturnFocusRequested = false;
 
-void fillBootConfig(const LauncherState &state, MdkrBootConfig &boot) {
+void fillBootConfig(LauncherState &state, MdkrBootConfig &boot) {
     boot = MdkrBootConfig{};
     boot.rom_path = state.romPath.empty() ? nullptr : state.romPath.c_str();
     // -1: let the engine resolve the mode from the ini the settings panel wrote,
@@ -96,6 +107,46 @@ void fillBootConfig(const LauncherState &state, MdkrBootConfig &boot) {
     boot.video_mode = -1;
     boot.override_count =
         Settings_collectStagedOverrides(boot.overrides, MDKR_BOOT_MAX_OVERRIDES);
+    if (!state.characterPreviewPackage.empty() &&
+        state.characterPreviewContext != MDKR_CHARACTER_PREVIEW_NONE) {
+        boot.character_preview_package =
+            state.characterPreviewPackage.c_str();
+        boot.character_preview_context = state.characterPreviewContext;
+        boot.character_preview_scene = state.characterPreviewScene;
+        boot.character_preview_players = state.characterPreviewPlayers;
+        boot.character_preview_pose = state.characterPreviewPose;
+        boot.character_preview_pose_phase_milli =
+            state.characterPreviewPosePhaseMilli;
+        boot.character_preview_transition_from_pose =
+            state.characterPreviewTransitionFromPose;
+        boot.character_preview_transition_from_phase_milli =
+            state.characterPreviewTransitionFromPhaseMilli;
+        boot.character_preview_view_yaw_degrees =
+            state.characterPreviewViewYawDegrees;
+        boot.character_preview_view_pitch_degrees =
+            state.characterPreviewViewPitchDegrees;
+        boot.character_preview_lighting = state.characterPreviewLighting;
+        boot.character_preview_capture_png =
+            state.characterPreviewCapturePng.empty()
+                ? nullptr : state.characterPreviewCapturePng.c_str();
+        boot.character_preview_capture_kind =
+            state.characterPreviewCaptureKind;
+        boot.character_preview_donor_reference =
+            state.characterPreviewDonorReference ? 1 : 0;
+        boot.character_preview_auto_return =
+            state.characterPreviewAutoReturn ? 1 : 0;
+        boot.character_preview_studio =
+            state.characterPreviewInteractiveStudio ? 1 : 0;
+        boot.character_motion_review =
+            state.characterPreviewRepresentativeMotionReview ? 1 : 0;
+        state.characterPreviewResult = MdkrCharacterPreviewResult{};
+        boot.character_preview_result = &state.characterPreviewResult;
+        state.characterMotionReviewResult =
+            MdkrCharacterMotionReviewResult{};
+        boot.character_motion_review_result =
+            state.characterPreviewRepresentativeMotionReview
+                ? &state.characterMotionReviewResult : nullptr;
+    }
 }
 
 void selectPanelFromEnvironment(int &activePanel) {
@@ -119,9 +170,36 @@ void selectPanelFromEnvironment(int &activePanel) {
     }
 }
 
-void acceptDroppedRom(AppHost &host, LauncherState &state, int &activePanel) {
+bool hasCharacterSourceExtension(const std::string &path) {
+    const auto matches = [&path](const char *extension) {
+        const size_t extensionLength = std::strlen(extension);
+        if (path.size() < extensionLength) return false;
+        const size_t offset = path.size() - extensionLength;
+        for (size_t index = 0u; index < extensionLength; ++index) {
+            const unsigned char actual =
+                static_cast<unsigned char>(path[offset + index]);
+            if (std::tolower(actual) != extension[index]) return false;
+        }
+        return true;
+    };
+    return matches(".mdkrchar") || matches(".mdkrsource") ||
+        matches(".glb") || matches(".dae") ||
+        matches(".zip") || matches(".gltf") || matches(".fbx") ||
+        matches(".obj") || matches(".blend") || matches(".usd") ||
+        matches(".usda") || matches(".usdc") || matches(".usdz") ||
+        matches(".ma") || matches(".mb") || matches(".max") ||
+        matches(".c4d") || matches(".3ds");
+}
+
+void acceptDroppedFile(AppHost &host, LauncherState &state, int &activePanel) {
     const std::string dropped = host.takeDroppedFile();
     if (dropped.empty()) return;
+
+    if (hasCharacterSourceExtension(dropped)) {
+        (void)Settings_importCharacterPackage(dropped.c_str());
+        activePanel = kLauncherPanelCharacterWorkshop;
+        return;
+    }
 
     RomPanel_ensureInit(state);
     RomPanel_setRom(state, dropped.c_str());
@@ -132,12 +210,82 @@ void preparePlay(LauncherState &state) {
     RomPanel_requestPlayValidation(state);
 }
 
-void drawPrimaryLauncherAction(LauncherState &state, const ImVec2 &size) {
+void requestLauncherQuit(LauncherState &state) {
+    if (state.quitRequested) return;
+    state.quitRequested = true;
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+        std::fprintf(
+            stderr,
+            "[app-ui] character-workshop-quit request=%s\n",
+            Settings_characterWorkPending() ? "deferred" : "ready");
+    }
+}
+
+bool drawLauncherQuitButton(LauncherState &state, const ImVec2 &size) {
+    const bool waiting = state.quitRequested &&
+                         Settings_characterWorkPending();
+    if (waiting) ImGui::BeginDisabled();
+    const bool pressed = ImGui::Button(waiting ? "Closing…" : "Quit", size);
+    if (waiting) ImGui::EndDisabled();
+    ui::SpeakFocusedItem(
+        waiting ? "Closing after character work" : "Quit",
+        waiting ? "waiting for the current character job" : nullptr,
+        waiting
+            ? "The launcher remains open until the current transactional character operation publishes safely. Use Keep launcher open in the progress card to cancel the quit request."
+            : "Closes the launcher without starting the game. A current character operation finishes visibly before the process exits.");
+    if (pressed) requestLauncherQuit(state);
+    return pressed;
+}
+
+void drawPrimaryLauncherAction(LauncherState &state, const ImVec2 &size,
+                               bool workshopActive) {
     const bool ready = !state.romPath.empty() && state.romInfo.valid;
-    const bool busy = state.romPlayValidationPending ||
-                      (!ready && state.romValidationPending);
+    const bool characterBusy = Settings_characterWorkPending();
+    const bool busy = state.quitRequested || characterBusy ||
+        (!workshopActive &&
+         (state.romPlayValidationPending ||
+          (!ready && state.romValidationPending)));
+    const float actionWidth = size.x > 0.0f
+        ? size.x : ImGui::GetContentRegionAvail().x;
+    SettingsCharacterWorkshopPrimaryAction workshopAction;
+    if (workshopActive && !state.quitRequested && !characterBusy) {
+        workshopAction = Settings_characterWorkshopPrimaryAction();
+    }
+    if (characterBusy && std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+        static bool tracedCharacterPrimaryGate = false;
+        if (!tracedCharacterPrimaryGate) {
+            tracedCharacterPrimaryGate = true;
+            std::fprintf(
+                stderr,
+                "[app-ui] character-workshop-lifecycle primary-gated=1 play-gated=1 import-gated=1\n");
+        }
+    }
     const char *label = "Play";
-    if (busy) {
+    if (state.quitRequested) {
+        label = "Closing…";
+    } else if (characterBusy) {
+        label = "Character job running…";
+    } else if (workshopActive) {
+        const float fullLabelWidth = ImGui::CalcTextSize(
+            workshopAction.label).x +
+            ImGui::GetStyle().FramePadding.x * 2.0f;
+        label = actionWidth >= fullLabelWidth
+            ? workshopAction.label : workshopAction.compactLabel;
+        if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+            static std::string tracedWorkshopPrimary;
+            const std::string traceKey =
+                std::string(workshopAction.id) +
+                "\n" + label;
+            if (tracedWorkshopPrimary != traceKey) {
+                tracedWorkshopPrimary = traceKey;
+                std::fprintf(
+                    stderr,
+                    "[app-ui] character-workshop-primary kind=%s label=%s tab=%s\n",
+                    workshopAction.id, label,
+                    workshopAction.destination);
+            }
+        }
+    } else if (busy) {
         label = "Checking ROM…";
     } else if (!ready) {
         label = "Choose ROM";
@@ -145,9 +293,24 @@ void drawPrimaryLauncherAction(LauncherState &state, const ImVec2 &size) {
         label = "Play with Changes";
     }
 
+    g_smokePrimaryActionLabelContained =
+        ImGui::CalcTextSize(label).x +
+            ImGui::GetStyle().FramePadding.x * 2.0f <= actionWidth + 0.5f;
+
+    if (g_characterWorkshopReturnFocusRequested && workshopActive && !busy) {
+        ImGui::SetKeyboardFocusHere();
+    }
     if (busy) ImGui::BeginDisabled();
     const bool pressed = ui::BrandPrimaryButton(label, size);
     if (busy) ImGui::EndDisabled();
+    if (g_characterWorkshopReturnFocusRequested && workshopActive && !busy) {
+        g_characterWorkshopReturnFocusRequested = false;
+        if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+            std::fprintf(
+                stderr,
+                "[app-ui] character-workshop-return focus=primary\n");
+        }
+    }
     // The launcher's single most important control was the one control it never
     // said out loud: the settings rows, the ROM controls and the phone-party
     // buttons all voice on focus, but the persistent Play action did not, so a
@@ -156,11 +319,15 @@ void drawPrimaryLauncherAction(LauncherState &state, const ImVec2 &size) {
     // during a check without a special case.
     ui::SpeakFocusedItem(
         label, nullptr,
-        ready ? "Starts the game with your current ROM and settings."
+        workshopActive
+              ? workshopAction.description
+              : ready ? "Starts the game with your current ROM and settings."
               : "Opens a file picker to choose the game ROM before you can play.");
     if (!pressed) return;
 
-    if (ready) {
+    if (workshopActive) {
+        (void)Settings_activateCharacterWorkshopPrimaryAction();
+    } else if (ready) {
         preparePlay(state);
     } else {
         // A disabled-looking dead Play button gave first-run players no useful
@@ -324,8 +491,7 @@ float measuredRegionHeight(float regionTop, float contentTop) {
     return ImGui::GetItemRectMax().y - regionTop + padding;
 }
 
-void drawNavigation(int &activePanel, LauncherState &state,
-                    LauncherAction &action) {
+void drawNavigation(int &activePanel, LauncherState &state) {
     /*
      * The footer reservation splits the rail, so overstating it steals rows
      * from the destination list rather than from anything the footer owns. It
@@ -387,7 +553,10 @@ void drawNavigation(int &activePanel, LauncherState &state,
 
     const bool ready = !state.romPath.empty() && state.romInfo.valid;
     const bool checking = !ready && state.romValidationPending;
-    const char *status = "ROM required";
+    const bool workshopWithoutRom = !ready && !checking &&
+        activePanel == kLauncherPanelCharacterWorkshop;
+    const char *status = workshopWithoutRom ? "Workshop ready"
+                                            : "ROM required";
     if (checking) {
         status = "Checking ROM…";
     } else if (ready && state.romInfo.integrity_verified) {
@@ -398,7 +567,8 @@ void drawNavigation(int &activePanel, LauncherState &state,
     ImGui::PushFont(AppTheme::fonts().small);
     ImGui::PushStyleColor(ImGuiCol_Text,
                           ready ? AppTheme::good()
-                                : checking ? AppTheme::accent()
+                                : (checking || workshopWithoutRom)
+                                      ? AppTheme::accent()
                                            : AppTheme::subtle());
     ImGui::TextUnformatted(status);
     ImGui::PopStyleColor();
@@ -412,6 +582,9 @@ void drawNavigation(int &activePanel, LauncherState &state,
                 : "modified-ROM developer override active");
     } else if (checking) {
         ui::TextSubtleWrapped("Verifying the complete 12 MB image.");
+    } else if (workshopWithoutRom) {
+        ui::TextSubtleWrapped(
+            "Import and author now; choose a ROM only to test or play.");
     } else {
         ui::TextSubtleWrapped("Choose your own US 1.1 or EU 1.1 ROM.");
     }
@@ -419,20 +592,16 @@ void drawNavigation(int &activePanel, LauncherState &state,
     ui::Gap(ui::kGapS);
 
     drawPrimaryLauncherAction(
-        state, ImVec2(-1, ui::kBtnPrimary().y));
+        state, ImVec2(-1, ui::kBtnPrimary().y),
+        activePanel == kLauncherPanelCharacterWorkshop);
 
-    if (ImGui::Button("Quit", ui::kBtnFullWidth())) {
-        action.type = LauncherActionType::Quit;
-    }
-    ui::SpeakFocusedItem("Quit", nullptr,
-                         "Closes the launcher without starting the game.");
+    drawLauncherQuitButton(state, ui::kBtnFullWidth());
     measuredFooterHeight = measuredRegionHeight(footerTop, footerContentTop);
     ImGui::EndChild();
     ImGui::EndChild();
 }
 
-void drawTopNavigation(int &activePanel, LauncherState &state,
-                       LauncherAction &action) {
+void drawTopNavigation(int &activePanel, LauncherState &state) {
     const float scale = AppTheme::uiScale();
     const float availableWidth = ImGui::GetContentRegionAvail().x;
     const bool dense = availableWidth < 720.0f * scale;
@@ -491,13 +660,13 @@ void drawTopNavigation(int &activePanel, LauncherState &state,
         // carries the identical guard rather than trusting the caller.
         const char *activeLabel =
             (activePanel >= 0 && activePanel < kPanelCount)
-                ? kPanels[activePanel].label : "";
+                ? compactPanelLabel(activePanel) : "";
         if (ImGui::BeginCombo("##compact-section", activeLabel)) {
             for (int i = 0; i < kPanelCount; ++i) {
                 if (!panelVisible(i)) continue;
                 const bool selected = activePanel == i;
                 if (ImGui::Selectable(
-                        kPanels[i].label, selected, 0,
+                        compactPanelLabel(i), selected, 0,
                         ImVec2(0.0f, ui::kTouchRowHeight()))) {
                     Launcher_requestTab(state, i, kLauncherTabPlayer);
                 }
@@ -507,17 +676,16 @@ void drawTopNavigation(int &activePanel, LauncherState &state,
         }
         sectionMin = ImGui::GetItemRectMin();
         sectionMax = ImGui::GetItemRectMax();
-        ui::SpeakFocusedItem("Section", activeLabel,
+        const char *spokenLabel =
+            (activePanel >= 0 && activePanel < kPanelCount)
+                ? kPanels[activePanel].label : "";
+        ui::SpeakFocusedItem("Section", spokenLabel,
                              "Choose which launcher section to view.");
         ImGui::SameLine();
-        if (ImGui::Button(
-                "Quit", ImVec2(quitWidth, ui::kBtnSecondary().y))) {
-            action.type = LauncherActionType::Quit;
-        }
+        drawLauncherQuitButton(
+            state, ImVec2(quitWidth, ui::kBtnSecondary().y));
         quitMin = ImGui::GetItemRectMin();
         quitMax = ImGui::GetItemRectMax();
-        ui::SpeakFocusedItem("Quit", nullptr,
-                             "Closes the launcher without starting the game.");
     } else {
         ui::BrandWordmark();
         ImGui::SameLine();
@@ -526,12 +694,8 @@ void drawTopNavigation(int &activePanel, LauncherState &state,
         ImGui::PopFont();
 
         ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - quitWidth);
-        if (ImGui::Button(
-                "Quit", ImVec2(quitWidth, ui::kBtnSecondary().y))) {
-            action.type = LauncherActionType::Quit;
-        }
-        ui::SpeakFocusedItem("Quit", nullptr,
-                             "Closes the launcher without starting the game.");
+        drawLauncherQuitButton(
+            state, ImVec2(quitWidth, ui::kBtnSecondary().y));
 
         ui::BrandRule();
         drawTopPanelTabs(activePanel, state);
@@ -541,7 +705,10 @@ void drawTopNavigation(int &activePanel, LauncherState &state,
     // action remain available on every section.
     const bool ready = !state.romPath.empty() && state.romInfo.valid;
     const bool checking = !ready && state.romValidationPending;
-    const char *status = "ROM required";
+    const bool workshopWithoutRom = !ready && !checking &&
+        activePanel == kLauncherPanelCharacterWorkshop;
+    const char *status = workshopWithoutRom ? "Workshop ready"
+                                            : "ROM required";
     if (checking) {
         status = "Checking ROM…";
     } else if (ready && dense) {
@@ -556,7 +723,8 @@ void drawTopNavigation(int &activePanel, LauncherState &state,
     ImGui::PushFont(AppTheme::fonts().small);
     ImGui::PushStyleColor(ImGuiCol_Text,
                           ready ? AppTheme::good()
-                                : checking ? AppTheme::accent()
+                                : (checking || workshopWithoutRom)
+                                      ? AppTheme::accent()
                                            : AppTheme::subtle());
     ImGui::TextUnformatted(status);
     statusMin = ImGui::GetItemRectMin();
@@ -569,7 +737,8 @@ void drawTopNavigation(int &activePanel, LauncherState &state,
         : 190.0f * scale;
     ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - playWidth);
     drawPrimaryLauncherAction(
-        state, ImVec2(playWidth, ui::kBtnPrimary().y));
+        state, ImVec2(playWidth, ui::kBtnPrimary().y),
+        activePanel == kLauncherPanelCharacterWorkshop);
     playMin = ImGui::GetItemRectMin();
     playMax = ImGui::GetItemRectMax();
     // The primary action is the header's last and lowest item in both branches,
@@ -629,10 +798,12 @@ void drawTopNavigation(int &activePanel, LauncherState &state,
             const bool contentSeparated = contentStartY >= navBottomY;
             std::fprintf(stderr,
                          "[app-ui] compact-layout dense=1 contained=%d "
-                         "overlap=%d contentSeparated=%d\n",
+                         "overlap=%d contentSeparated=%d "
+                         "primaryLabelContained=%d\n",
                          denseControlsContained ? 1 : 0,
                          denseOverlap ? 1 : 0,
-                         contentSeparated ? 1 : 0);
+                         contentSeparated ? 1 : 0,
+                         g_smokePrimaryActionLabelContained ? 1 : 0);
             tracedDenseLayout = true;
         }
     }
@@ -667,7 +838,59 @@ void drawActivePanel(int activePanel, LauncherState &state, LauncherAction &acti
         g_spokenPanel = activePanel;
         ui::SpeakSection(kPanels[activePanel].label);
     }
+    const bool workshopActive =
+        activePanel == kLauncherPanelCharacterWorkshop;
+    if (!workshopActive || Settings_characterWorkPending()) {
+        g_characterWorkshopReturnFocusRequested = false;
+    }
+    const ImGuiInputFlags returnShortcutFlags =
+        ImGuiInputFlags_RouteGlobal |
+        ImGuiInputFlags_RouteOverFocused |
+        ImGuiInputFlags_RouteUnlessBgFocused;
+    if (workshopActive && !Settings_characterWorkPending() &&
+        !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId) &&
+        (ImGui::Shortcut(ImGuiKey_Escape, returnShortcutFlags) ||
+         ImGui::Shortcut(ImGuiKey_GamepadFaceRight,
+                         returnShortcutFlags))) {
+        g_characterWorkshopReturnFocusRequested = true;
+        if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+            std::fprintf(
+                stderr,
+                "[app-ui] character-workshop-return shortcut=1 mutation=0\n");
+        }
+    }
     ImGui::BeginChild("##content", ImVec2(0, 0), panelChildFlags(0));
+    if (state.quitRequested && Settings_characterWorkPending()) {
+        if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+            static bool tracedCharacterQuitProgress = false;
+            if (!tracedCharacterQuitProgress) {
+                tracedCharacterQuitProgress = true;
+                std::fprintf(
+                    stderr,
+                    "[app-ui] character-workshop-quit progress-visible=1 cancel-visible=1\n");
+            }
+        }
+        if (ui::CardBegin("##character-work-quit", AppTheme::accent(), 0.0f)) {
+            ImGui::PushFont(AppTheme::fonts().section);
+            ImGui::TextUnformatted("Finishing character work before closing");
+            ImGui::PopFont();
+            ui::TextSubtleWrapped(
+                "The launcher is still responsive. The current bounded, transactional operation will publish its complete result, then Golden Balloon will close automatically; the installed last-known-good character remains usable throughout.");
+            if (ImGui::Button("Keep launcher open")) {
+                state.quitRequested = false;
+                if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+                    std::fprintf(
+                        stderr,
+                        "[app-ui] character-workshop-quit cancelled=1\n");
+                }
+            }
+            ui::SpeakFocusedItem(
+                "Keep launcher open", nullptr,
+                "Cancels only the pending quit request. The current character operation continues and no source, draft, or installed character is changed by this button.");
+        }
+        ui::CardEnd();
+        ui::Gap(ui::kGapM);
+    }
     if (state.bootErrorVisible) {
         if (ui::CardBegin("##boot-recovery", AppTheme::bad(), 0.0f)) {
             ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
@@ -801,6 +1024,14 @@ void Launcher::applyLanStop() {
 
 Launcher::~Launcher() = default;
 
+void Launcher::requestQuit() {
+    requestLauncherQuit(state_);
+}
+
+bool Launcher::quitReady() const {
+    return state_.quitRequested && !Settings_characterWorkPending();
+}
+
 void Launcher_requestTab(LauncherState &s, int panel, int priority) {
     if (panel < 0 || panel >= kPanelCount) return;
     // Equal priority keeps last-writer-wins, which is what makes a second click
@@ -865,6 +1096,37 @@ float Launcher_smokePanelScrollY() {
 
 namespace {
 
+void acceptCharacterPreviewRequest(
+    LauncherState &state, SettingsCharacterPreviewRequest preview) {
+    state.characterPreviewPackage = std::move(preview.packageId);
+    state.characterPreviewSourceSha256 = std::move(preview.sourceSha256);
+    state.characterPreviewFitSha256 = std::move(preview.fitSha256);
+    state.characterPreviewPresentationSha256 =
+        std::move(preview.presentationSha256);
+    state.characterPreviewContext = preview.context;
+    state.characterPreviewScene = preview.scene;
+    state.characterPreviewPlayers = preview.players;
+    state.characterPreviewPose = preview.pose;
+    state.characterPreviewPosePhaseMilli = preview.posePhaseMilli;
+    state.characterPreviewTransitionFromPose = preview.transitionFromPose;
+    state.characterPreviewTransitionFromPhaseMilli =
+        preview.transitionFromPhaseMilli;
+    state.characterPreviewViewYawDegrees = preview.viewYawDegrees;
+    state.characterPreviewViewPitchDegrees = preview.viewPitchDegrees;
+    state.characterPreviewLighting = preview.lighting;
+    state.characterPreviewCapturePng = std::move(preview.capturePng);
+    state.characterPreviewCaptureKind = preview.captureKind;
+    state.characterPreviewAutoReturn = preview.autoReturnAfterCapture;
+    state.characterPreviewCaptureLauncherOwned = preview.launcherOwnedCapture;
+    state.characterPreviewPortraitSourceHandoff =
+        preview.portraitSourceHandoff;
+    state.characterPreviewInteractiveStudio = preview.interactiveStudio;
+    state.characterPreviewRepresentativeMotionReview =
+        preview.representativeMotionReview;
+    state.characterPreviewDonorReference = preview.donorReference;
+    Launcher_requestTab(state, kLauncherPanelPlay, kLauncherTabPlayer);
+}
+
 void drawSettingsPanel(LauncherState &s, LauncherAction &out) {
     (void)out;
     // One page, one scroll owner. Keeping the introduction outside this child
@@ -902,7 +1164,17 @@ void drawSettingsPanel(LauncherState &s, LauncherAction &out) {
             tracedSettingsAction = true;
         }
     }
+    Settings_setDonorGameplayProfiles(
+        &s.romInfo.donor_profiles, s.romInfo.donor_profiles_message);
     Settings_draw(s.hostWindow, /*compact=*/false);
+    if (Settings_takeCharacterWorkshopOpenRequest()) {
+        Launcher_requestTab(
+            s, kLauncherPanelCharacterWorkshop, kLauncherTabPlayer);
+    }
+    SettingsCharacterPreviewRequest preview;
+    if (Settings_takeCharacterPreviewRequest(preview)) {
+        acceptCharacterPreviewRequest(s, std::move(preview));
+    }
     ui::TouchScrollCurrentWindow();
     g_smokeSettingsScrollMin = ImGui::GetWindowPos();
     const ImVec2 scrollSize = ImGui::GetWindowSize();
@@ -912,6 +1184,73 @@ void drawSettingsPanel(LauncherState &s, LauncherAction &out) {
     g_smokeSettingsScrollY = ImGui::GetScrollY();
     g_smokeSettingsScrollValid = ImGui::GetScrollMaxY() > 0.0f;
     ImGui::EndChild();
+}
+
+void drawCharacterWorkshopPanel(LauncherState &s, LauncherAction &out) {
+    (void)out;
+    const ImVec2 available = ImGui::GetContentRegionAvail();
+    const float scale = AppTheme::uiScale();
+    // The shell's top-navigation decision is viewport-wide, but the Workshop
+    // must respond to the space it actually receives after that navigation is
+    // laid out. Passing `false` unconditionally made the 640x480/200% smoke
+    // exercise only the compact shell while every editor still chose its wide
+    // tables, copy density, and multi-column controls.
+    const bool compact = available.x < 720.0f * scale ||
+                         available.y < 540.0f * scale;
+    if (compact) {
+        // The compact shell already labels this page "Workshop". A full
+        // section hero at 200% UI scale consumed the entire 640x480 content
+        // viewport, leaving the editor present in the document but neither
+        // visible nor reachable through ImGui navigation.
+        ImGui::TextDisabled(
+            "Character Workshop · local appearance authoring");
+    } else {
+        ui::SectionHeader(
+            "Character Workshop",
+            "Import, author, test, and package local character presentation. "
+            "Built-in donor profiles remain authoritative for gameplay.");
+    }
+    const bool romReady = !s.romPath.empty() && s.romInfo.valid;
+    if (!romReady && !s.romValidationPending && !compact) {
+        ui::TextSubtleWrapped(
+            "A ROM is optional while you import and author. Add your own base-game ROM only when you want exact vehicle/scene previews, final tests, or play.");
+        if (ImGui::SmallButton("Add ROM for exact tests…")) {
+            if (RomPanel_chooseRom(s)) {
+                Launcher_requestTab(
+                    s, kLauncherPanelPlay, kLauncherTabPlayer);
+            }
+        }
+        ui::SpeakFocusedItem(
+            "Add ROM for exact character tests", nullptr,
+            "Optionally chooses your base-game ROM and opens its validation page. Your character sources and drafts remain unchanged.");
+        if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+            static bool tracedWorkshopEntryHierarchy = false;
+            if (!tracedWorkshopEntryHierarchy) {
+                std::fprintf(
+                    stderr,
+                    "[app-ui] active-panel=Character Workshop workshop-primary=contextual rom=optional\n");
+                tracedWorkshopEntryHierarchy = true;
+            }
+        }
+    }
+    Settings_setDonorGameplayProfiles(
+        &s.romInfo.donor_profiles, s.romInfo.donor_profiles_message);
+    Settings_drawCharacterWorkshop(s.hostWindow, compact);
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+        static int tracedCompact = -1;
+        if (tracedCompact != (compact ? 1 : 0)) {
+            tracedCompact = compact ? 1 : 0;
+            std::fprintf(
+                stderr,
+                "[app-ui] character-workshop-layout compact=%d width=%.1f height=%.1f scale=%.2f\n",
+                tracedCompact, static_cast<double>(available.x),
+                static_cast<double>(available.y), static_cast<double>(scale));
+        }
+    }
+    SettingsCharacterPreviewRequest preview;
+    if (Settings_takeCharacterPreviewRequest(preview)) {
+        acceptCharacterPreviewRequest(s, std::move(preview));
+    }
 }
 
 void drawAboutPanel(LauncherState &s, LauncherAction &out) {
@@ -943,6 +1282,68 @@ void drawAboutPanel(LauncherState &s, LauncherAction &out) {
 }  // namespace
 
 LauncherAction Launcher::draw(AppHost &host) {
+    // Character subprocesses publish through launcher-owned UI state. Service
+    // them on every destination so leaving the Workshop cannot strand a ready
+    // result, race Play against a directory transaction, or turn application
+    // shutdown into an invisible global-destructor join.
+    Settings_serviceCharacterWork();
+    if (state_.characterPreviewDispatched) {
+        SettingsCharacterPreviewDisposition disposition;
+        disposition.launcherOwnedCapture =
+            state_.characterPreviewCaptureLauncherOwned;
+        disposition.portraitSourceHandoff =
+            state_.characterPreviewPortraitSourceHandoff;
+        disposition.interactiveStudio =
+            state_.characterPreviewInteractiveStudio;
+        disposition.representativeMotionReview =
+            state_.characterPreviewRepresentativeMotionReview;
+        disposition.donorReference =
+            state_.characterPreviewDonorReference;
+        disposition.scene = state_.characterPreviewScene;
+        Settings_publishCharacterPreviewResult(
+            state_.characterPreviewPackage,
+            state_.characterPreviewSourceSha256,
+            state_.characterPreviewInteractiveStudio
+                ? Settings_characterPreviewCurrentFitSignature(
+                      state_.characterPreviewPackage,
+                      state_.characterPreviewContext)
+                : state_.characterPreviewFitSha256,
+            state_.characterPreviewPresentationSha256,
+            state_.characterPreviewCapturePng,
+            disposition,
+            state_.characterPreviewResult,
+            state_.characterPreviewRepresentativeMotionReview
+                ? &state_.characterMotionReviewResult : nullptr);
+        Launcher_requestTab(
+            state_, kLauncherPanelCharacterWorkshop, kLauncherTabPlayer);
+        state_.characterPreviewPackage.clear();
+        state_.characterPreviewSourceSha256.clear();
+        state_.characterPreviewFitSha256.clear();
+        state_.characterPreviewPresentationSha256.clear();
+        state_.characterPreviewContext = MDKR_CHARACTER_PREVIEW_NONE;
+        state_.characterPreviewScene =
+            MDKR_CHARACTER_PREVIEW_SCENE_BASELINE;
+        state_.characterPreviewPlayers = 0;
+        state_.characterPreviewPose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+        state_.characterPreviewPosePhaseMilli = 0u;
+        state_.characterPreviewTransitionFromPose =
+            MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+        state_.characterPreviewTransitionFromPhaseMilli = 0u;
+        state_.characterPreviewViewYawDegrees = 0;
+        state_.characterPreviewViewPitchDegrees = 0;
+        state_.characterPreviewLighting =
+            MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
+        state_.characterPreviewCapturePng.clear();
+        state_.characterPreviewCaptureKind =
+            MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
+        state_.characterPreviewAutoReturn = false;
+        state_.characterPreviewCaptureLauncherOwned = false;
+        state_.characterPreviewPortraitSourceHandoff = false;
+        state_.characterPreviewInteractiveStudio = false;
+        state_.characterPreviewRepresentativeMotionReview = false;
+        state_.characterPreviewDonorReference = false;
+        state_.characterPreviewDispatched = false;
+    }
     state_.hostWindow = host.window();
     phoneParty_->service(static_cast<uint64_t>(SDL_GetTicks64()));
     refreshLanControls();
@@ -967,17 +1368,67 @@ LauncherAction Launcher::draw(AppHost &host) {
         }
     }
 
-    // A file dropped on the window always means "use this ROM", whichever panel
-    // is showing; switch to the ROM panel so the verdict is visible.
-    acceptDroppedRom(host, state_, active_);
+    // A dropped character source opens its workshop/importer report. Every
+    // other file keeps the established ROM flow and its full-image validation.
+    acceptDroppedFile(host, state_, active_);
     // Navigation carries the global readiness/action state, so initialize the
     // remembered ROM even when a design-review hook opens another panel first.
     RomPanel_ensureInit(state_);
     RomPanel_serviceValidation(state_);
-    if (state_.romPlayValidationPassed) {
+    if (!state_.characterPreviewPackage.empty() &&
+        state_.characterPreviewContext != MDKR_CHARACTER_PREVIEW_NONE &&
+        !state_.romValidationPending &&
+        !state_.romPlayValidationPending &&
+        !state_.romPlayValidationPassed &&
+        !state_.romPath.empty() && state_.romInfo.valid) {
+        RomPanel_requestPlayValidation(state_);
+    }
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr &&
+        !state_.characterPreviewPackage.empty() &&
+        state_.characterPreviewContext != MDKR_CHARACTER_PREVIEW_NONE) {
+        static unsigned previewTraceState = ~0u;
+        const unsigned current =
+            (state_.romValidationPending ? 1u : 0u) |
+            (state_.romPlayValidationPending ? 2u : 0u) |
+            (state_.romPlayValidationPassed ? 4u : 0u) |
+            (!state_.romPath.empty() ? 8u : 0u) |
+            (state_.romInfo.valid ? 16u : 0u) |
+            ((state_.romValidationTotal != 0u
+                  ? std::min(10u,
+                        (state_.romValidationBytes * 10u) /
+                            state_.romValidationTotal)
+                  : 0u) << 8u);
+        if (current != previewTraceState) {
+            previewTraceState = current;
+            std::fprintf(
+                stderr,
+                "[app-ui] character-preview handoff validation=%d play-pending=%d play-passed=%d rom-path=%d rom-valid=%d studio=%d progress=%u/%u\n",
+                state_.romValidationPending ? 1 : 0,
+                state_.romPlayValidationPending ? 1 : 0,
+                state_.romPlayValidationPassed ? 1 : 0,
+                state_.romPath.empty() ? 0 : 1,
+                state_.romInfo.valid ? 1 : 0,
+                state_.characterPreviewInteractiveStudio ? 1 : 0,
+                state_.romValidationBytes, state_.romValidationTotal);
+        }
+    }
+    if (state_.romPlayValidationPassed &&
+        !Settings_characterWorkPending() && !state_.quitRequested) {
         state_.romPlayValidationPassed = false;
         action.type = LauncherActionType::Play;
         fillBootConfig(state_, action.boot);
+    }
+    if (state_.quitRequested && !Settings_characterWorkPending()) {
+        action.type = LauncherActionType::Quit;
+        if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+            static bool tracedSafeQuit = false;
+            if (!tracedSafeQuit) {
+                tracedSafeQuit = true;
+                std::fprintf(
+                    stderr,
+                    "[app-ui] character-workshop-quit completed=1 pending=0\n");
+            }
+        }
     }
 
     const ImGuiViewport *vp = ImGui::GetMainViewport();
@@ -998,9 +1449,9 @@ LauncherAction Launcher::draw(AppHost &host) {
         vp->Size.x < 860.0f * AppTheme::uiScale() ||
         vp->Size.y < 620.0f * AppTheme::uiScale();
     if (compactNavigation) {
-        drawTopNavigation(active_, state_, action);
+        drawTopNavigation(active_, state_);
     } else {
-        drawNavigation(active_, state_, action);
+        drawNavigation(active_, state_);
         ImGui::SameLine();
     }
     drawActivePanel(active_, state_, action);
@@ -1028,6 +1479,22 @@ LauncherAction Launcher::draw(AppHost &host) {
     if (panelAtFrameStart == kLauncherPanelSettings &&
         active_ != kLauncherPanelSettings) {
         Settings_cancelAudioPreview();
+    }
+
+    // A drop or Workshop action can start a character transaction after ROM
+    // validation was consumed near the top of this frame. Preserve the passed
+    // verdict and defer Play rather than entering the engine while that new
+    // transaction owns the character directory. This closes the same-frame
+    // edge, while the primary action's disabled state covers ordinary input.
+    if (action.type == LauncherActionType::Play &&
+        (Settings_characterWorkPending() || state_.quitRequested)) {
+        state_.romPlayValidationPassed = true;
+        action = LauncherAction{};
+    }
+    if (action.type == LauncherActionType::Play) {
+        state_.characterPreviewDispatched =
+            action.boot.character_preview_context !=
+                MDKR_CHARACTER_PREVIEW_NONE;
     }
 
     return action;

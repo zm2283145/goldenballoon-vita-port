@@ -29,6 +29,14 @@ static const HarnessSocket kBadHarnessSocket = -1;
 
 namespace {
 
+int harnessSendFlags() {
+#ifdef MSG_NOSIGNAL
+    return MSG_NOSIGNAL;
+#else
+    return 0;
+#endif
+}
+
 void closeHarnessSocket(HarnessSocket fd) {
     if (fd == kBadHarnessSocket) return;
 #ifdef _WIN32
@@ -350,7 +358,7 @@ bool MdkrMatchSignalTestServer::start() {
 #else
                              response.size(),
 #endif
-                             0);
+                             harnessSendFlags());
             }
             {
                 std::lock_guard<std::mutex> lock(state->mutex);
@@ -472,7 +480,7 @@ bool MdkrMatchSignalTestServer::start() {
 #else
                                      echo.size(),
 #endif
-                                     0);
+                                     harnessSendFlags());
                     }
                     open = false;
                 } else if (opcode == 0xau) {
@@ -495,7 +503,7 @@ bool MdkrMatchSignalTestServer::start() {
 #else
                                      pong.size(),
 #endif
-                                     0);
+                                     harnessSendFlags());
                     }
                 }
             }
@@ -609,7 +617,7 @@ bool MdkrMatchSignalTestServer::sendRawFrame(uint8_t firstByte, bool maskBit,
 #else
             frame.size() - sent,
 #endif
-            0));
+            harnessSendFlags()));
         if (wrote <= 0) return false;
         sent += static_cast<size_t>(wrote);
     }
