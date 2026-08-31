@@ -904,6 +904,15 @@ if(NOT EMSCRIPTEN)
                 ${CMAKE_SOURCE_DIR}/platform/app/online_live_wiring.cpp)
 
             if(BUILD_TESTING)
+                # KEEP IN SYNC: these online/transport CTest exes (this one plus
+                # the party/match set in the MDKR_NATIVE_PHONE_PARTY block just
+                # below) are the same eleven names mirrored in two other places --
+                # the MinGW test-link dead-strip foreach (search
+                # "_mdkr_online_test", later in this file) and ONLINE_TEST_EXES in
+                # tools/mingw_cross_check.sh. Renaming/removing one means updating
+                # all three; the dead-strip foreach hard-errors the online
+                # configure on drift so this cannot rot silently.
+                #
                 # The launcher-side track/cup table (display order, picker
                 # narrowing, trophy cups) pinned against the independent v80
                 # ROM decode. Pure static data: ROM-, GPU- and network-free.
@@ -2324,26 +2333,51 @@ if(WIN32)
     # differs from the shipping build (which keeps -O2 speculative devirt on);
     # the tests exercise the same sources, only with the one speculated virtual
     # call left as an ordinary indirect dispatch.
-    foreach(_mdkr_online_test
-            mdkr_online_track_table_test
-            mdkr_native_party_sas_test
-            mdkr_lan_party_transport_test
-            mdkr_match_peer_crypto_test
-            mdkr_match_signal_client_test
-            mdkr_match_peer_transport_test
-            mdkr_native_party_e2e_driver
-            mdkr_online_live_adapter_test
-            mdkr_online_live_adapter_beta_test
-            mdkr_match_live_transport_test
-            mdkr_online_live_transport_e2e_driver)
-        if(TARGET ${_mdkr_online_test})
-            target_compile_options(${_mdkr_online_test} PRIVATE
-                -ffunction-sections -fdata-sections
-                -fno-devirtualize-speculatively)
-            target_link_options(${_mdkr_online_test} PRIVATE
-                -Wl,--gc-sections)
-        endif()
-    endforeach()
+    #
+    # KEEP IN SYNC (three copies of the online/transport test-target names):
+    #   1. the test definitions -- add_executable(mdkr_online_* / mdkr_native_* /
+    #      mdkr_match_* / mdkr_lan_* ...) under MDKR_ENABLE_ONLINE_BETA /
+    #      MDKR_NATIVE_PHONE_PARTY + BUILD_TESTING, earlier in this file (search
+    #      "add_executable(mdkr_online_track_table_test").
+    #   2. this dead-strip list.
+    #   3. ONLINE_TEST_EXES in tools/mingw_cross_check.sh (the --online lane's
+    #      build + acceptance list).
+    # The BUILD_TESTING gate keeps tests-off Windows configures (the default
+    # cross lane, -DBUILD_TESTING=OFF) untouched. Inside it, the online configure
+    # (MDKR_ENABLE_ONLINE_BETA, which forces MDKR_NATIVE_PHONE_PARTY -> all eleven
+    # are defined) hard-errors on a missing target, so a renamed/removed test
+    # fails the online configure immediately instead of silently losing
+    # dead-strip coverage. A beta-OFF Windows build with tests on (e.g. the
+    # release/CI configure) legitimately defines none of these and is left alone.
+    if(BUILD_TESTING)
+        foreach(_mdkr_online_test
+                mdkr_online_track_table_test
+                mdkr_native_party_sas_test
+                mdkr_lan_party_transport_test
+                mdkr_match_peer_crypto_test
+                mdkr_match_signal_client_test
+                mdkr_match_peer_transport_test
+                mdkr_native_party_e2e_driver
+                mdkr_online_live_adapter_test
+                mdkr_online_live_adapter_beta_test
+                mdkr_match_live_transport_test
+                mdkr_online_live_transport_e2e_driver)
+            if(TARGET ${_mdkr_online_test})
+                target_compile_options(${_mdkr_online_test} PRIVATE
+                    -ffunction-sections -fdata-sections
+                    -fno-devirtualize-speculatively)
+                target_link_options(${_mdkr_online_test} PRIVATE
+                    -Wl,--gc-sections)
+            elseif(MDKR_ENABLE_ONLINE_BETA)
+                message(FATAL_ERROR
+                    "MinGW dead-strip list names '${_mdkr_online_test}', but no "
+                    "such target exists in this online configure. The list has "
+                    "drifted from the test definitions -- update this foreach, "
+                    "the add_executable() site above, and ONLINE_TEST_EXES in "
+                    "tools/mingw_cross_check.sh together.")
+            endif()
+        endforeach()
+    endif()
 
     # --- Subsystem ---------------------------------------------------------
     # Explorer double-click and game launchers start the exe with no inherited

@@ -114,6 +114,12 @@ fi
 ARTIFACT="$BUILD_DIR/mdkr64.exe"
 
 # The online/transport test executables the --online lane must produce.
+# KEEP IN SYNC with the two CMake copies of these eleven names: the
+# add_executable(mdkr_online_* / mdkr_native_* / mdkr_match_* / mdkr_lan_* ...)
+# test definitions and the MinGW test-link dead-strip foreach (search
+# "_mdkr_online_test") in CMakeLists.txt. That foreach hard-errors the online
+# configure if a name here is renamed/removed on the CMake side without updating
+# both; keep this list matched so the lane's build + PE32+ checks stay honest.
 ONLINE_TEST_EXES="\
 mdkr_online_track_table_test \
 mdkr_native_party_sas_test \
