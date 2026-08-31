@@ -234,15 +234,16 @@ bool sameCompatibility(const MdkrOnlineCompatibilityV1 &left,
 
 /* Gameplay-determinism developer seams (platform/math_util_native.c): each of
  * these environment variables changes gameplay math ON THIS MACHINE ONLY (RNG
- * boot seeds, arctan table rounding, sine evaluation). None of them is part of
- * the compatibility identity -- provenance hashes version+commit, not runtime
- * env -- so a one-sided setting passes the JOIN byte-compare and then GUARANTEES
- * a silent mid-race desync. Live online therefore refuses to construct while
- * any is set; offline/dev use of the seams stays untouched. Returns the first
- * offending variable name, or nullptr when none is set. */
+ * boot seeds, arctan table rounding, sine evaluation, or regenerating the trig
+ * tables through the host's libm instead of the baked .s copy). None of them is
+ * part of the compatibility identity -- provenance hashes version+commit, not
+ * runtime env -- so a one-sided setting passes the JOIN byte-compare and then
+ * GUARANTEES a silent mid-race desync. Live online therefore refuses to
+ * construct while any is set; offline/dev use of the seams stays untouched.
+ * Returns the first offending variable name, or nullptr when none is set. */
 const char *OnlineRoom_liveBlockedByDeterminismEnv(void) {
     static const char *const kSeams[] = {"MDKR_RNGSEED", "MDKR_ARCTAN",
-                                         "MDKR_TRIG"};
+                                         "MDKR_TRIG", "MDKR_DEV_RUNTIME_TRIG"};
     for (const char *seam : kSeams) {
         if (std::getenv(seam) != nullptr) return seam;
     }

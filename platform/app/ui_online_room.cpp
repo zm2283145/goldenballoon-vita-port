@@ -39,8 +39,9 @@ static void teardownAdapterAsync(std::unique_ptr<IMdkrOnlineAdapter> adapter);
 // Beta live-adapter provenance seams, defined in online_live_wiring.cpp (the
 // beta-only wiring TU; match_live_adapter.h stays the audited public seam).
 // The first returns the name of a set gameplay-determinism developer env seam
-// (MDKR_RNGSEED / MDKR_ARCTAN / MDKR_TRIG) that would guarantee an online
-// desync, or nullptr; the second derives THIS binary's real compatibility
+// (MDKR_RNGSEED / MDKR_ARCTAN / MDKR_TRIG / MDKR_DEV_RUNTIME_TRIG) that would
+// guarantee an online desync, or nullptr; the second derives THIS binary's
+// real compatibility
 // identity (version + release commit stamp + the given validated ROM revision)
 // via mdkr_online_compatibility_from_provenance, returning false for a build
 // without release provenance.
