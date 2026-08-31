@@ -530,6 +530,13 @@ production coverage:
   (`[RECT-SKIP]`). The check also requires the skip counter to be non-zero
   (the guard is exercised, not vacuous) and known-good UI pixels to remain
   (an over-skipping regression fails).
+- `check_track_preview_time_steady.py` drives Tracks mode to the Ancient Lake
+  setup screen and holds there while the preview flyby banks, asserting the
+  BEST TIME digit sprites never rock with the camera (issue #59): each
+  course-record glyph's trimmed shear spread must stay under 0.8 native
+  pixels across the whole flyby. Non-vacuity witnesses require the digits to
+  be found in the dumps and the flyby background to keep moving, so a route
+  drift or a frozen preview fails instead of passing an empty assertion.
 - `check_track_exit_storage.py` drives the Hot Top Volcano destination-(-1)
   out-of-bounds exit through the `MDKR_FORCE_EXIT_LATCH` seam and asserts the
   game reaches the hub instead of the pre-1.5.2 dead-end menu stall

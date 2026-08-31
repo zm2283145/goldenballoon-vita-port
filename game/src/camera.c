@@ -3246,8 +3246,18 @@ void render_ortho_triangle_image(Gfx **dList, Mtx **mtx, Vertex **vtx, ObjectSeg
     gModelMatrixStackPos++;
     gCameraTransform.rotation.y_rotation = -MDKR_ORTHO_TRANSFORM->rotation.y_rotation;
     gCameraTransform.rotation.x_rotation = -MDKR_ORTHO_TRANSFORM->rotation.x_rotation;
+    /* The roll folded into an ortho sprite comes from the BASE viewport
+     * camera, never the cutscene bank. The original read here was
+     * gCameras[gActiveCameraID] with no +4 cutscene offset -- unlike the
+     * world billboard builder above, which always branched to the cutscene
+     * slot. Course previews and flybys run on the cutscene bank
+     * (write_to_object_render_stack), so taking cam_get_active_camera()
+     * here made every HUD digit sprite inherit the flyby camera's banking
+     * roll and rock back and forth with the camera while the base slot --
+     * the one the screen-space GUI is authored against -- sat still
+     * (issue #59). */
     gCameraTransform.rotation.z_rotation =
-        cam_get_active_camera()->trans.rotation.z_rotation +
+        cam_get_active_camera_no_cutscenes()->trans.rotation.z_rotation +
         MDKR_ORTHO_TRANSFORM->rotation.z_rotation;
     gCameraTransform.x_position = 0.0f;
     gCameraTransform.y_position = 0.0f;
