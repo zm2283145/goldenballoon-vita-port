@@ -28,10 +28,13 @@
 #include "types.h"
 #include "enums.h" /* Character enum (CHARACTER_*) -- the REAL gRacerPortraits index */
 #include "menu.h"  /* gRacerPortraits, TEXTURE_ICON_PORTRAIT_* */
+#include "online/online_character_map.h" /* MDKR_ONLINE_CHARACTER_ENGINE_ORDER (single source) */
 
 /* Ten racers (== MDKR_ONLINE_CHARACTER_COUNT). Each screen keeps its own
  * *_CHAR_COUNT bound for its own indexing; this is the table dimension. */
 #define MDKR_ONLINE_PORTRAIT_COUNT 10u
+_Static_assert(MDKR_ONLINE_PORTRAIT_COUNT == MDKR_ONLINE_CHARACTER_MAP_COUNT,
+               "portrait remap and online character map must agree in size");
 
 /* Online character id -> gRacerPortraits[] index.
  *
@@ -51,16 +54,7 @@
  * online char id == the published hover_character the reducer validates), so map
  * each online id straight to that racer's Character-enum slot. */
 static const u8 sOnlineToPortrait[MDKR_ONLINE_PORTRAIT_COUNT] = {
-    (u8) CHARACTER_DIDDY,     /* 0 Diddy */
-    (u8) CHARACTER_TIMBER,    /* 1 Timber */
-    (u8) CHARACTER_PIPSY,     /* 2 Pipsy */
-    (u8) CHARACTER_TIPTUP,    /* 3 Tiptup */
-    (u8) CHARACTER_CONKER,    /* 4 Conker */
-    (u8) CHARACTER_BUMPER,    /* 5 Bumper */
-    (u8) CHARACTER_BANJO,     /* 6 Banjo */
-    (u8) CHARACTER_KRUNCH,    /* 7 Krunch */
-    (u8) CHARACTER_DRUMSTICK, /* 8 Drumstick */
-    (u8) CHARACTER_TT,        /* 9 T.T. */
+    MDKR_ONLINE_CHARACTER_ENGINE_ORDER, /* single source: online_character_map.h */
 };
 
 /* Short display names, in online id order (matches the launcher's kCharacters). */

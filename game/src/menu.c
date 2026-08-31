@@ -20,6 +20,7 @@
  * byte-identical -- proven by rebuilding the OFF object. */
 #include "online/online_session.h"   /* mdkr_online_session_resume_results */
 #include "net/online_race_results.h" /* (availability query, via the session) */
+#include "online/online_character_map.h" /* mdkr_online_character_to_engine */
 #endif
 extern int g_frameCounter;
 #endif
@@ -16562,7 +16563,20 @@ s8 get_character_id_from_slot(s32 slot) {
 #ifdef NATIVE_PORT
     const MdkrMatchSeatSelectionV1 *selection =
         slot >= 0 ? mdkr_net_roster_runtime_selection((unsigned)slot) : NULL;
-    if (selection != NULL) return (s8)selection->character_id;
+    if (selection != NULL) {
+#if MDKR_ENABLE_ONLINE_BETA
+        /* The launch descriptor carries an ONLINE-CATALOG id (the published
+         * hover_character, kCharacters order -- not the visual grid cell index),
+         * NOT an engine Character-enum value -- the two orderings differ. Map it
+         * through the single-source table so the racer that spawns is the one the
+         * lobby chose. Without this the raw id was used as the engine character,
+         * so Tiptup(online 3) raced CONKER(engine 3) and T.T.(online 9) raced
+         * DIDDY(engine 9). */
+        return (s8)mdkr_online_character_to_engine((int)selection->character_id);
+#else
+        return (s8)selection->character_id;
+#endif
+    }
 #endif
     return gCharacterIdSlots[slot];
 }
