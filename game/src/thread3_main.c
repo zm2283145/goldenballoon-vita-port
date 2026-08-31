@@ -1074,6 +1074,23 @@ void mode_game(s32 updateRate) {
             updateRate);
         divider_clear_coverage(&gCurrDisplayList);
     }
+#if MDKR_ENABLE_ONLINE_BETA
+    else if (!sRollbackResimulating) {
+        /* Zero-viewport endpoint: skip the HUD draw, not the HUD audio
+         * authority. hud_audio_update() advances the crowd/delayed-voice
+         * lifecycle and restores the post-fade active-sound limit
+         * (sndp_set_active_sound_limit), and the sound-state pool it shapes
+         * decides when Object_Racer::soundMask releases -- a gate
+         * play_random_character_voice() consults before drawing gameplay RNG.
+         * Rendering endpoints reach this same call through
+         * hud_render_general() at this exact point in the tick, so a
+         * verifier endpoint must run it too or its RNG stream forks from the
+         * rendering peers'. Wrapped in MDKR_ENABLE_ONLINE_BETA so the OFF
+         * build's thread3_main object stays byte-for-byte (a roster can only
+         * be active in an online epoch). */
+        hud_audio_update(updateRate);
+    }
+#endif
     if (gFutureFunLandLevelTarget) {
         if (func_800214C4() != 0) {
             gPlayableMapId = ASSET_LEVEL_FUTUREFUNLANDHUB;
