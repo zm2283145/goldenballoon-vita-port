@@ -976,6 +976,23 @@ f32 gEffectiveCamAspect = CAMERA_ASPECT;
 static MdkrCameraProjection sNativeProjectionByViewport[4];
 static bool sNativeProjectionValid[4];
 static s32 sNativeOrthoDrawSpace = G_MTX_DKR_SPACE_SAFE_2D;
+/*
+ * Horizontal clip-space compression of the 2D ortho matrix currently in slot
+ * 0.  mtx_ortho_wide_tagged() compresses real vertex x by safe/presentation
+ * so the wide draw spaces keep the safe area's uniform pixel scale, but
+ * billboard-mode sprite geometry (render_ortho_triangle_image*) never passes
+ * through slot 0: the local quad is transformed by the slot-2 matrix alone
+ * and added to the anchor's clip position (gfx_pc_dkr.c billboard notes),
+ * then mapped across the full presentation width.  Without the same
+ * compression every ortho sprite under a wide space rendered
+ * presentation/safe wider than authored -- anchors stayed correct while the
+ * sprite's texels slid sideways around them -- which mis-registered the
+ * minimap island against its (correctly anchored) markers under the
+ * widescreen HUD (issue #57).  1.0 whenever the standard centered ortho is
+ * in force, so SAFE_2D menus, 4:3 and widescreen-HUD-off draws are exactly
+ * as before.
+ */
+static f32 sNativeOrthoBillboardXScale = 1.0f;
 typedef struct MdkrOutputViewState {
     s32 viewport;
     s32 layout;
@@ -2531,6 +2548,7 @@ void mtx_ortho(Gfx **dList, Mtx **mtx) {
     gSPMatrixDKRTagged((*dList)++, OS_K0_TO_PHYSICAL((*mtx)++), G_MTX_DKR_INDEX_0,
                        sNativeOrthoDrawSpace);
     sNativeOrthoDrawSpace = G_MTX_DKR_SPACE_SAFE_2D;
+    sNativeOrthoBillboardXScale = 1.0f;
 #else
     gSPMatrixDKR((*dList)++, OS_K0_TO_PHYSICAL((*mtx)++), G_MTX_DKR_INDEX_0);
 #endif
@@ -2590,6 +2608,10 @@ static void mtx_ortho_wide_tagged(Gfx **dList, Mtx **mtx,
     }
     wideOrtho[0][0] *= horizontalScale;
     wideOrtho[3][0] += authoredOffset * horizontalScale;
+    /* Billboard sprite quads bypass this matrix; record its horizontal
+     * compression so render_ortho_triangle_image* can apply the identical
+     * factor to their clip-space x (see sNativeOrthoBillboardXScale). */
+    sNativeOrthoBillboardXScale = horizontalScale;
 
     widthAndHeight = fb_size();
     height = GET_VIDEO_HEIGHT(widthAndHeight);
@@ -3273,6 +3295,21 @@ void render_ortho_triangle_image(Gfx **dList, Mtx **mtx, Vertex **vtx, ObjectSeg
     }
     mtxf_from_inverse_transform(&aspectMtxF, &gCameraTransform);
     mtxf_mul(&gCurrentModelMatrixF, &aspectMtxF, gModelMatrixF[gModelMatrixStackPos]);
+#ifdef NATIVE_PORT
+    if (sNativeOrthoBillboardXScale != 1.0f) {
+        /* Wide 2D draw space (mtx_ortho_wide_tagged): the slot-0 ortho has
+         * its x output compressed by safe/presentation, but this billboard
+         * quad is added to the anchor in clip space through the slot-2
+         * matrix alone.  Compress the slot-2 clip-x OUTPUT column by the
+         * same factor so the sprite's texels keep the safe area's pixel
+         * scale around the (already correct) anchor; a rotated sprite
+         * compresses in screen space exactly like slot-0 geometry would. */
+        (*gModelMatrixF[gModelMatrixStackPos])[0][0] *= sNativeOrthoBillboardXScale;
+        (*gModelMatrixF[gModelMatrixStackPos])[1][0] *= sNativeOrthoBillboardXScale;
+        (*gModelMatrixF[gModelMatrixStackPos])[2][0] *= sNativeOrthoBillboardXScale;
+        (*gModelMatrixF[gModelMatrixStackPos])[3][0] *= sNativeOrthoBillboardXScale;
+    }
+#endif
     mtxf_to_mtx(gModelMatrixF[gModelMatrixStackPos], *mtx);
     gModelMatrix[gModelMatrixStackPos] = *mtx;
     gSPMatrixDKR((*dList)++, OS_K0_TO_PHYSICAL((*mtx)++), G_MTX_DKR_INDEX_2);

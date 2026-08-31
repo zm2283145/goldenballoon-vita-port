@@ -138,6 +138,7 @@ SERIAL_ROLES = frozenset({
 # SERIAL_NAMES instead — the union is what the scheduler serializes.
 GPU_SERIAL_NAMES = frozenset({
     "overlay_pause_cutscene",
+    "widescreen_minimap_alignment",
     "enh_speedometer",
     "enh_draw_distance",
     "mod_texture_override",
@@ -669,6 +670,12 @@ CHECKS = (
           "opt-in widescreen HUD pixel layout (#51): TT rows share one right "
           "anchor, the race-start hold stays offscreen, identity label and "
           "battle strip stay centered, 4:3 byte-identical with the option on"),
+    Check("widescreen_minimap_alignment",
+          "check_widescreen_minimap_alignment.py", "native",
+          "minimap marker-on-map alignment under the widescreen HUD (#57): "
+          "ortho sprite texels keep the safe pixel scale so the map image "
+          "and its markers shift as one (hub island and race track map), "
+          "4:3 byte-identical with the option on"),
     Check("framed_world_views", "check_framed_world_views.py", "native",
           "fixed-aspect live menu views remain inside their 4:3 regions"),
     Check("shadow_visual_ab", "check_shadow_visual_ab.py", "native",
