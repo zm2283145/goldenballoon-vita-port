@@ -54,6 +54,14 @@ LANES = (
     "check_online_beta_handoff.py",         # T3: launcher SELECTING widgets retired ->
                                             #  universal native hand-off card (no engine)
     "check_online_engine_boot_direct.py",   # golden race hash 7da2ea67 pinned
+    "check_online_racer_lod_animation.py",  # an ONLINE race must never draw a
+                                            #  never-posed (bind-pose/T-pose) racer:
+                                            #  Enhancements.LodBias must not select an
+                                            #  unposed ModelInstance (the LodBias clamp).
+                                            #  Same direct-boot rig + GOLDEN hash as
+                                            #  engine_boot_direct, plus an offline 2P
+                                            #  sentinel proving the -1 witness still fires
+                                            #  (default arms need no PAL ROM)
     "check_online_session_boot.py",
     "check_online_charselect.py",
     "check_online_vehicleselect.py",
@@ -162,7 +170,7 @@ def run_lane(lane: str, build: str, rom: str, verbose: bool) -> tuple[bool, floa
 
 
 # NON-DEFAULT: the cross-region lanes joined ONLY by --pal-rom. Strictly
-# additive -- without --pal-rom the 29-lane sweep above is byte-identical.
+# additive -- without --pal-rom the 30-lane sweep above is byte-identical.
 # Each entry is (summary label, the argv after the interpreter). The two
 # accepted ROM payloads are byte-identical, so a PAL endpoint racing the online
 # 30 Hz manifest under the launcher-armed NTSC identity must reproduce a US
