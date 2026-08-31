@@ -47,7 +47,12 @@ static int s_sourceIsEuropean = 0;
  * overridden: language/provenance follow the real cartridge.
  * Ordering contract: this plain int is armed before the engine thread spawns
  * and cleared after the blocking boot returns, so no reader ever races the
- * writer -- there is no concurrent access to it by construction. */
+ * writer -- there is no concurrent access to it by construction.
+ * Known osTvType-follower to revisit: Controller Pak gameCode selection
+ * (game/src/save_data.c:2217/2445/2525) would file under the NTSC code during
+ * an online epoch; unreachable today (the online flow never opens the pak and
+ * the TT-ghost path is region-agnostic), but revisit if any online mode adds
+ * pak I/O. */
 static int s_ntscIdentityOverride = 0;
 
 int platform_source_tv_type(void) {

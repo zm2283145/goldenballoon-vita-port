@@ -68,6 +68,13 @@ def fail(message: str, output: str = "") -> int:
     return 1
 
 
+def golden_matches(observed: str, expected: str) -> bool:
+    """The single golden race-hash comparison, factored so the lane can run a
+    coded non-vacuity control against it (a deliberately wrong hash must NOT
+    match, or the golden gate is vacuous)."""
+    return observed == expected
+
+
 def clean_environment(**updates: str) -> dict[str, str]:
     environment = {
         key: value for key, value in os.environ.items()
@@ -209,14 +216,35 @@ def main() -> int:
     # two endpoints agree with each other; this proves they agree on the SAME
     # canonical value a US epoch reaches, so a forced-NTSC PAL epoch is
     # bit-identical to a US one. The literal lives once, in
-    # check_online_engine_boot_direct.GOLDEN_RACE_HASH; pass --expect-hash '' to
-    # skip only for a run that deliberately changes the sim.
-    if args.expect_hash and hash_visible != args.expect_hash:
-        return fail(
-            f"the converged race hash {hash_visible} != the GOLDEN "
-            f"{args.expect_hash} -- this online boot no longer reaches the "
-            f"canonical deterministic race sim (a determinism drift, or a legit "
-            f"ROM/toolchain change that needs GOLDEN_RACE_HASH bumped)", output)
+    # check_online_engine_boot_direct.GOLDEN_RACE_HASH.
+    #
+    # The golden pins the CANONICAL scenario ONLY: --ticks reshapes the run (and
+    # thus the fold window and the converged hash), so on a non-canonical
+    # scenario auto-skip the assert with a printed notice rather than firing a
+    # misleading "determinism drift" -- mirroring
+    # check_online_engine_boot_direct.py's --track/--mask skip.
+    canonical_scenario = args.ticks == TICKS
+    if args.expect_hash and canonical_scenario:
+        if not golden_matches(hash_visible, args.expect_hash):
+            return fail(
+                f"the converged race hash {hash_visible} != the GOLDEN "
+                f"{args.expect_hash} -- this online boot no longer reaches the "
+                f"canonical deterministic race sim (a determinism drift, or a "
+                f"legit ROM/toolchain change that needs GOLDEN_RACE_HASH "
+                f"bumped)", output)
+        # Coded non-vacuity control (reuses THIS run's hash; no second boot): the
+        # golden comparison MUST reject a hash that differs by even one nibble. A
+        # comparison that accepted anything would leave the gate above vacuous.
+        wrong_hash = ("0" if hash_visible[:1] != "0" else "1") + hash_visible[1:]
+        if golden_matches(hash_visible, wrong_hash):
+            return fail(
+                f"the golden comparison is vacuous: it accepted a deliberately "
+                f"wrong expected hash {wrong_hash}", output)
+    elif args.expect_hash:
+        print(
+            f"NOTE online engine boot: golden hash assert skipped for a "
+            f"non-canonical scenario (--ticks {args.ticks} != {TICKS}); "
+            f"observed hash={hash_visible}")
 
     print(
         "PASS online engine boot: the VISIBLE engine ran a networked race on "
@@ -225,7 +253,7 @@ def main() -> int:
         f"inputEnvelopes={envelopes} transportAccepted={accepted} "
         f"transportDrained={drained} corrected={corrected} "
         f"convergedTicks={fold_visible} hash={hash_visible}"
-        + ("==GOLDEN" if args.expect_hash else "")
+        + ("==GOLDEN" if (args.expect_hash and canonical_scenario) else "")
         + " engineExit=clean noStall=1"
     )
     return 0
