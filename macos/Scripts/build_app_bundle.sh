@@ -208,7 +208,7 @@ BUILD_TYPE="Release"
 BUILD_DIR=""
 OUTPUT_APP=""
 ARCH="native"
-APP_VERSION="1.5.2"
+APP_VERSION="1.6.0"
 BUILD_STAMP=""
 # Empty by default: a local developer build has no deployed Phone Party
 # service to point at, and an empty origin is a legal (party-free) build.

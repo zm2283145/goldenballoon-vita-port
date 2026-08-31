@@ -22,9 +22,9 @@
 	     variable's own default (1.5.2). Keep this literal in sync as the
 	     human-readable fallback for anyone inspecting the template directly. -->
 	<key>CFBundleVersion</key>
-	<string>1.5.2</string>
+	<string>1.6.0</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.5.2</string>
+	<string>1.6.0</string>
 
 	<!-- Set by build_app_bundle.sh (PlistBuddy) to the one real executable:
 	     the app shell and the engine are the same binary. -->

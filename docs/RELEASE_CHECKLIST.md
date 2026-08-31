@@ -399,7 +399,7 @@ git.
 ## 5. Desktop packaging and publication
 
 Desktop workflow version inputs are filename components, so public releases use
-bare semantic versions such as `1.5.2`, never `v1.5.2`. The `v` prefix belongs
+bare semantic versions such as `1.5.2`, never `v1.6.0`. The `v` prefix belongs
 only to the Git tag. For version 1.5.2, the portable workflow must produce:
 
 - `Golden-Balloon-1.5.2-linux-x86_64.AppImage`
@@ -431,9 +431,9 @@ automated GPU-qualification claim.
 Dispatch it with:
 
 ```bash
-gh workflow run release.yml --ref v1.5.2 \
+gh workflow run release.yml --ref v1.6.0 \
   -f version=1.5.2 \
-  -f release_tag=v1.5.2
+  -f release_tag=v1.6.0
 ```
 
 Use `version=dev` only for disposable test artifacts, never for a public
@@ -482,9 +482,9 @@ Before producing the candidate:
 - [ ] The source tree and index are clean.
 - [ ] `CMakeLists.txt`, `macos/Resources/Info.plist`, the app's `--version`
       output, and the release notes all agree on `1.5.2`.
-- [ ] The release commit is the intended `v1.5.2` tag commit. A test artifact
+- [ ] The release commit is the intended `v1.6.0` tag commit. A test artifact
       may omit `release_tag`; an artifact may be published only with
-      `release_tag=v1.5.2` resolving to the workflow's exact source commit.
+      `release_tag=v1.6.0` resolving to the workflow's exact source commit.
 - [ ] The pinned standalone SDL2 build is used for arm64/macOS 13. Homebrew
       `sdl2-compat`, SDL3, Homebrew load paths, mixed architectures, and a
       deployment target newer than 13.0 are release blockers.
@@ -522,19 +522,19 @@ For a local reconstruction of those same build and verification steps, use the
 commands in [`../macos/README.md`](../macos/README.md). Do not replace its
 pinned SDL2 prefix with a machine-local Homebrew package.
 
-After the test artifact passes and `v1.5.2` exists on the exact candidate
+After the test artifact passes and `v1.6.0` exists on the exact candidate
 commit, publish by dispatching the same source commit with the binding enabled:
 
 ```bash
-gh workflow run macos-release.yml --ref v1.5.2 \
+gh workflow run macos-release.yml --ref v1.6.0 \
   -f version=1.5.2 \
   -f trusted_signing=false \
-  -f release_tag=v1.5.2
+  -f release_tag=v1.6.0
 ```
 
 The publish job must independently re-check the tag/commit binding, checksum,
 exact artifact name, provenance fields, and provenance digest before uploading
-to the existing `v1.5.2` GitHub Release.
+to the existing `v1.6.0` GitHub Release.
 
 ### Optional trusted macOS artifact
 
@@ -545,7 +545,7 @@ later, its exact artifact name is
 `macos_signing: developer-id-notarized`. Dispatch with
 `trusted_signing=true`; the workflow must Developer ID-sign with Hardened
 Runtime, notarize and staple the app, sign and notarize the DMG, require
-Gatekeeper acceptance, and still enforce `release_tag=v1.5.2` against the exact
+Gatekeeper acceptance, and still enforce `release_tag=v1.6.0` against the exact
 workflow commit before publication. There is no release-approved skip-notary
 path.
 
