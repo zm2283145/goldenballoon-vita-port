@@ -969,8 +969,9 @@ def main() -> int:
             "mappedLenses=compatible endpointMinimap=local endpointHud=reflowed "
             "endpointAudio=local-listeners noRenderWorldPasses=0 "
             "localFeedbackSuppressed=1 invalidRemoteView=rejected "
-            "manifestRaceMismatch=rejected "
-            "correction=5ticks" + takeover_text
+            + ("manifestRaceMismatch=rejected "
+               if args.regions == "us" else "")
+            + "correction=5ticks" + takeover_text
         )
     return 0
 

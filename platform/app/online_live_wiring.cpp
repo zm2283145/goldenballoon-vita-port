@@ -232,9 +232,13 @@ bool sameCompatibility(const MdkrOnlineCompatibilityV1 &left,
 
 }  // namespace
 
-/* Gameplay-determinism developer seams (platform/math_util_native.c): each of
- * these environment variables changes gameplay math ON THIS MACHINE ONLY (RNG
- * boot seeds, arctan table rounding, sine evaluation). None of them is part of
+/* Gameplay-determinism developer seams: each of these environment variables
+ * changes gameplay ON THIS MACHINE ONLY.  The math seams
+ * (platform/math_util_native.c) move RNG boot seeds, arctan table rounding
+ * and sine evaluation; the pacing seams move the clock itself --
+ * MDKR_FIELD_HZ re-paces the field clock (platform/pacing_policy.c) and
+ * MDKR_SIMULATION_CADENCE moves fields-per-authored-tick plus the
+ * platform_sim_cadence_is_enhanced() gameplay gates.  None of them is part of
  * the compatibility identity -- provenance hashes version+commit, not runtime
  * env -- so a one-sided setting passes the JOIN byte-compare and then GUARANTEES
  * a silent mid-race desync. Live online therefore refuses to construct while
@@ -242,7 +246,8 @@ bool sameCompatibility(const MdkrOnlineCompatibilityV1 &left,
  * offending variable name, or nullptr when none is set. */
 const char *OnlineRoom_liveBlockedByDeterminismEnv(void) {
     static const char *const kSeams[] = {"MDKR_RNGSEED", "MDKR_ARCTAN",
-                                         "MDKR_TRIG"};
+                                         "MDKR_TRIG", "MDKR_FIELD_HZ",
+                                         "MDKR_SIMULATION_CADENCE"};
     for (const char *seam : kSeams) {
         if (std::getenv(seam) != nullptr) return seam;
     }

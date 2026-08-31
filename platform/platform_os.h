@@ -98,6 +98,16 @@ int platform_source_field_hz(void);  /* 50 PAL, 60 NTSC/MPAL */
  * narrower than PAL timing: menu language capability belongs to the validated
  * cartridge identity, not to a mutable header field or display standard. */
 int platform_source_is_european(void);
+/* Epoch-scoped NTSC identity for ONLINE sessions.  The accepted ROM payloads
+ * are byte-identical, so an online epoch presents tv_type NTSC / 60 Hz fields
+ * to every per-epoch latch regardless of the loaded region -- a PAL endpoint
+ * then authors, paces and hashes the 30 Hz online race bit-identically to a
+ * US endpoint.  Armed by the launcher's online engine-boot lanes immediately
+ * before mdkr64_engine_boot() and cleared when that boot returns; offline
+ * epochs in the same process always see the ROM's authentic values, and
+ * platform_source_is_european() is never overridden. */
+void platform_source_set_ntsc_identity_override(int armed);
+int  platform_source_ntsc_identity_override(void);
 
 /* ===== VI retrace / logic-update-rate pacing (the frame-pacing fix) ======= *
  * DKR normalises game speed against framerate via fb_update() (game/src/video.c),
