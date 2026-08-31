@@ -1900,9 +1900,46 @@ static uint64_t sim_hash_compute_perturbed(HashPerturbClass class_id,
     return hash;
 }
 
+/* One format string for both sinks below, so the file can never drift from
+ * stdout: they format the same values with the same specifiers. */
+#define SIM_HASH_LINE_FMT "[SIMHASH] tick=%llu objs=%d h=%016llx\n"
+
+/*
+ * Optional second sink for the per-tick hash stream.
+ *
+ * MDKR_STATE_HASH_FILE=<path> mirrors every [SIMHASH] line that goes to stdout
+ * into <path>, byte-for-byte and in the same order. It is a pure duplicate of a
+ * value already computed for stdout: it never changes WHAT is hashed or WHEN,
+ * so a run with the file set produces the identical stdout stream and identical
+ * simulation as one without it. Unset or empty means no file is opened and
+ * nothing is written.
+ *
+ * A path that cannot be opened is reported once to stderr and the sink is
+ * dropped -- a hashing run must not crash or diverge because an artifact path
+ * was bad. Resolved once and cached, like the version selector above.
+ */
+static FILE *sim_hash_file_sink(void) {
+    static FILE *sink = NULL;
+    static int resolved = 0;
+    if (!resolved) {
+        const char *path = getenv("MDKR_STATE_HASH_FILE");
+        resolved = 1;
+        if (path != NULL && path[0] != '\0') {
+            sink = fopen(path, "w");
+            if (sink == NULL) {
+                fprintf(stderr,
+                        "[SIMHASH] cannot open MDKR_STATE_HASH_FILE '%s'; "
+                        "file sink disabled\n", path);
+            }
+        }
+    }
+    return sink;
+}
+
 void mdkr_sim_hash_frame(void) {
     static unsigned long long tick;
     HashPerturbSpec perturb;
+    FILE *sink;
     s32 count = 0;
     uint64_t hash;
 
@@ -1921,10 +1958,19 @@ void mdkr_sim_hash_frame(void) {
     } else {
         hash = sim_hash_compute(&count);
     }
-    printf("[SIMHASH] tick=%llu objs=%d h=%016llx\n",
-           tick, (int)count, (unsigned long long)hash);
+    printf(SIM_HASH_LINE_FMT, tick, (int)count, (unsigned long long)hash);
+    sink = sim_hash_file_sink();
+    if (sink != NULL) {
+        fprintf(sink, SIM_HASH_LINE_FMT, tick, (int)count,
+                (unsigned long long)hash);
+        /* Flush per tick so a killed run still leaves a usable prefix. One
+         * flush per authoritative tick is negligible against a rendered frame. */
+        fflush(sink);
+    }
     tick++;
 }
+
+#undef SIM_HASH_LINE_FMT
 
 /*
  * Render-mutation probe: hash the authoritative state immediately before and
