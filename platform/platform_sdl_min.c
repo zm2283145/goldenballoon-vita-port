@@ -3912,6 +3912,23 @@ static void pace_lazy_init(void) {
         cadence =
             videoConfig->values[MDKR_VIDEO_SIMULATION_CADENCE].text;
     }
+    /* Online epochs race the manifest's fixed cadence: two fields per
+     * authored tick.  Race admission byte-compares only the field clock
+     * (source_field_hz/2), never the fields-per-tick modifier, so a
+     * one-sided "enhanced" (one field per tick = 60 authored ticks/s, plus
+     * its gameplay gates via platform_sim_cadence_is_enhanced()) would pass
+     * admission and desync at tick one.  Read the online-epoch predicate
+     * (platform_online_epoch(), which reports the armed NTSC identity override
+     * -- the two are one coupled fact: every online boot lane arms it) and pin
+     * the authored cadence whenever an online epoch governs. */
+    if (platform_online_epoch() != 0 &&
+        strcmp(cadence, "original") != 0) {
+        fprintf(stderr,
+                "[pace] online session pins Simulation.Cadence=original "
+                "(configured \"%s\" is not raced online)\n",
+                cadence);
+        cadence = "original";
+    }
     s_minFields = mdkr_pacing_min_fields(cadence);
     fieldHzOverride = getenv("MDKR_FIELD_HZ");
     s_fieldHz = mdkr_pacing_field_hz(

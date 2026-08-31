@@ -34,17 +34,59 @@ uint8_t *g_romData = NULL;
 uint32_t g_romSize = 0;
 static int s_sourceTvType = 1;
 static int s_sourceIsEuropean = 0;
+/* Epoch-scoped NTSC identity for online sessions.  The two supported ROM
+ * revisions carry byte-identical race payloads, so an online epoch can (and,
+ * for cross-region convergence, must) present the NTSC identity -- tv_type 1,
+ * 60 Hz fields -- to every per-epoch latch regardless of the loaded region.
+ * The launcher's online engine-boot lanes arm this immediately before
+ * mdkr64_engine_boot() and clear it when that boot returns, so offline epochs
+ * in the same process always re-latch the ROM's authentic values.  It is a
+ * separate flag rather than a write to s_sourceTvType because platformInitRom
+ * re-derives that from the ROM on every load (below) and would clobber a
+ * direct write.  platform_source_is_european() is intentionally never
+ * overridden: language/provenance follow the real cartridge.
+ * Ordering contract: this plain int is armed before the engine thread spawns
+ * and cleared after the blocking boot returns, so no reader ever races the
+ * writer -- there is no concurrent access to it by construction.
+ * Known osTvType-follower to revisit: Controller Pak gameCode selection
+ * (game/src/save_data.c:2217/2445/2525) would file under the NTSC code during
+ * an online epoch; unreachable today (the online flow never opens the pak and
+ * the TT-ghost path is region-agnostic), but revisit if any online mode adds
+ * pak I/O. */
+static int s_ntscIdentityOverride = 0;
 
 int platform_source_tv_type(void) {
-    return s_sourceTvType;
+    return s_ntscIdentityOverride ? 1 : s_sourceTvType;
 }
 
 int platform_source_field_hz(void) {
-    return s_sourceTvType == 0 ? 50 : 60;
+    return platform_source_tv_type() == 0 ? 50 : 60;
 }
 
 int platform_source_is_european(void) {
     return s_sourceIsEuropean;
+}
+
+void platform_source_set_ntsc_identity_override(int armed) {
+    s_ntscIdentityOverride = armed ? 1 : 0;
+}
+
+int platform_source_ntsc_identity_override(void) {
+    return s_ntscIdentityOverride;
+}
+
+/* Online-epoch predicate.  The NTSC identity override above is armed by exactly
+ * the launcher's online engine-boot lanes, so "the override is armed" and "this
+ * is an online engine epoch" are the SAME fact; the pacer reads that fact under
+ * this name to pin the online authored cadence (platform_sdl_min.c).  Coupling
+ * contract: every online engine-boot lane MUST arm the override.  A lane that
+ * forgets loses BOTH the NTSC source identity AND the cadence guard at once -- a
+ * PAL endpoint then fails LOUD (its 25 Hz race is rejected at admission against
+ * the 30 Hz manifest), while a US endpoint fails SILENT (identity is already
+ * NTSC, but a config-file Simulation.Cadence=enhanced would no longer be pinned
+ * back to original). */
+int platform_online_epoch(void) {
+    return s_ntscIdentityOverride;
 }
 
 int platformInitRom(const char *path) {
@@ -179,9 +221,17 @@ int platformInitRom(const char *path) {
         s_sourceIsEuropean = id->verdict == DKR_ROM_SUPPORTED &&
                              id->decompBuild != NULL &&
                              strcmp(id->decompBuild, "pal.v80") == 0;
+        /* The getters below honour the online NTSC identity, so an armed
+         * epoch prints the clock every per-epoch latch will actually consume;
+         * the second line keeps the loaded ROM's true region observable. */
         printf("[ROM] source video: %s (%d Hz fields)\n",
-               s_sourceTvType == 0 ? "PAL" : "NTSC",
+               platform_source_tv_type() == 0 ? "PAL" : "NTSC",
                platform_source_field_hz());
+        if (s_ntscIdentityOverride) {
+            printf("[ROM] source identity: NTSC override armed for this "
+                   "session (ROM region %s)\n",
+                   s_sourceTvType == 0 ? "PAL" : "NTSC");
+        }
         printf("[ROM] CRC1 %08X CRC2 %08X\n", id->crc1, id->crc2);
     }
 

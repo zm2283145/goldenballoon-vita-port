@@ -87,6 +87,27 @@ public:
     DiagLogScope &operator=(const DiagLogScope &) = delete;
 };
 
+/* RAII latch for the epoch-scoped NTSC source identity (rom_io.c).  Every
+ * online engine boot wraps its blocking mdkr64_engine_boot() in one of these:
+ * the constructor arms the override iff the epoch is online, and the destructor
+ * clears it on EVERY exit from the scope.  Using the guard instead of a bare
+ * arm/clear pair means a future early return inserted between the boot and the
+ * clear can never leak an NTSC latch into the process's next offline epoch. */
+class OnlineNtscIdentityScope {
+public:
+    explicit OnlineNtscIdentityScope(bool online) : armed_(online) {
+        if (armed_) platform_source_set_ntsc_identity_override(1);
+    }
+    ~OnlineNtscIdentityScope() {
+        if (armed_) platform_source_set_ntsc_identity_override(0);
+    }
+    OnlineNtscIdentityScope(const OnlineNtscIdentityScope &) = delete;
+    OnlineNtscIdentityScope &operator=(const OnlineNtscIdentityScope &) = delete;
+
+private:
+    bool armed_;
+};
+
 bool createSmokeDirectory(const char *path) {
     if (!path || !path[0]) return false;
     const int result = mdkr_mkdir_utf8(path);
@@ -954,7 +975,17 @@ int runEngineSession(AppHost &host, SessionRuntime &session,
     }
     Overlay_setPauseAllowed(session.overlayMayPause());
     Overlay_install(host.window());
-    const int result = mdkr64_engine_boot(&config);
+    /* Online epochs present the NTSC source identity to the engine
+     * (rom_io.c): the accepted ROM payloads are byte-identical, so a PAL
+     * endpoint authoring the manifest's 30 Hz cadence is bit-identical to a
+     * US endpoint -- the cross-region convergence requirement.  Epoch-scoped:
+     * armed only across this bounded blocking boot and cleared the moment it
+     * returns, so a later offline epoch re-latches the ROM's true clock. */
+    int result;
+    {
+        OnlineNtscIdentityScope ntscIdentityScope(online);
+        result = mdkr64_engine_boot(&config);
+    }
 
     if (matchInputContext.profile != MDKR_NET_PROFILE_COUNT) {
         std::fprintf(stderr,
@@ -1831,7 +1862,14 @@ int runOnlineLiveEngineSession(AppHost &host, const MdkrBootConfig &config,
                  static_cast<unsigned>(info.remoteSlotMask),
                  static_cast<unsigned>(info.inputDelay), peer != nullptr ? 1 : 0);
 
-    const int result = mdkr64_engine_boot(&config);
+    /* Online epoch: the engine sees the NTSC source identity (rom_io.c) so a
+     * PAL ROM races the 30 Hz manifest bit-identically to US; cleared as soon
+     * as the bounded boot returns. */
+    int result;
+    {
+        OnlineNtscIdentityScope ntscIdentityScope(true);
+        result = mdkr64_engine_boot(&config);
+    }
 
     /* Flush any in-flight input so both endpoints have folded the same recent
      * window before we compare (the peer may still owe the visible endpoint's
@@ -2753,7 +2791,14 @@ int runOnlineLobbyStartEngineSession(AppHost &host, const MdkrBootConfig &config
 
     liveEngineHostBind(host);
 
-    const int result = mdkr64_engine_boot(&config);
+    /* Online epoch: the engine sees the NTSC source identity (rom_io.c) so a
+     * PAL ROM races the 30 Hz manifest bit-identically to US; cleared as soon
+     * as the bounded boot returns. */
+    int result;
+    {
+        OnlineNtscIdentityScope ntscIdentityScope(true);
+        result = mdkr64_engine_boot(&config);
+    }
 
     /* Read the engine's session end reason BEFORE OnlineRoom_clearPartyLink
      * drops the party_link note (the launcher then resumes the room). This is the
@@ -2891,7 +2936,14 @@ int runOnlineLobbyStartLiveSession(AppHost &host, const MdkrBootConfig &config,
 
     liveEngineHostBind(host);
 
-    const int result = mdkr64_engine_boot(&config);
+    /* Online epoch: the engine sees the NTSC source identity (rom_io.c) so a
+     * PAL ROM races the 30 Hz manifest bit-identically to US; cleared as soon
+     * as the bounded boot returns. */
+    int result;
+    {
+        OnlineNtscIdentityScope ntscIdentityScope(true);
+        result = mdkr64_engine_boot(&config);
+    }
 
     /* Engine->launcher FINISH/RETURN handshake: read WHY the native session
      * ended (FINISHED / LEFT / ERROR) BEFORE OnlineRoom_clearPartyLink() drops the
@@ -4323,11 +4375,58 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
                                   host.wgpuSurface(), host.wgpuFormat());
             platformSetHostWebGpuRecovery(recoverAppHostWebGpu, &host);
         }
-        const int residentResult = mdkr64_engine_boot(&config);
+        /* Online epoch: the engine sees the NTSC source identity (rom_io.c)
+         * so a PAL ROM races the 30 Hz manifest bit-identically to US;
+         * cleared as soon as the bounded boot returns. */
+        int residentResult;
+        {
+            OnlineNtscIdentityScope ntscIdentityScope(true);
+            residentResult = mdkr64_engine_boot(&config);
+        }
         platformSetHostWebGpuRecovery(nullptr, nullptr);
         platformSetHostWebGpu(nullptr, nullptr, nullptr, nullptr, nullptr, 0);
         platformSetHostWindow(nullptr, nullptr);
         mdkr_net_roster_runtime_clear();
+        /* TEST: region re-entry proof -- the NTSC identity is EPOCH-scoped.
+         * With this second variable set, boot ONE plain OFFLINE epoch in this
+         * same process after the online session above: it must re-latch the
+         * loaded ROM's authentic region (a European ROM prints its PAL 50 Hz
+         * source clock again, with no override witness).  Ordinary soaks
+         * never set the variable, so the seam stays inert. */
+        if (residentResult == 0 &&
+            std::getenv("MDKR_TEST_ONLINE_REGION_REENTRY") != nullptr) {
+            std::fprintf(stderr,
+                         "[online-resident] region re-entry: online epoch "
+                         "done (override now %d); booting one OFFLINE epoch\n",
+                         platform_source_ntsc_identity_override());
+            /* The handoff is one-shot per engine session; re-arm it for the
+             * second boot exactly like runEngineSession's teardown does. */
+            if (!mdkr_video_config_engine_session_complete()) {
+                std::fprintf(stderr,
+                             "[online-resident] region re-entry: video-config "
+                             "epoch did not close cleanly\n");
+            }
+            platformSetHostWindow(host.window(), host.glContext());
+            if (host.usingWebGpu()) {
+                platformSetHostWebGpu(host.wgpuInstance(), host.wgpuAdapter(),
+                                      host.wgpuDevice(), host.wgpuQueue(),
+                                      host.wgpuSurface(), host.wgpuFormat());
+                platformSetHostWebGpuRecovery(recoverAppHostWebGpu, &host);
+            }
+            const int offlineResult = mdkr64_engine_boot(&config);
+            platformSetHostWebGpuRecovery(nullptr, nullptr);
+            platformSetHostWebGpu(nullptr, nullptr, nullptr, nullptr, nullptr,
+                                  0);
+            platformSetHostWindow(nullptr, nullptr);
+            std::fprintf(stderr,
+                         "[online-resident] region re-entry: offline epoch "
+                         "result=%d\n",
+                         offlineResult);
+            if (offlineResult != 0) {
+                host.shutdown();
+                return offlineResult;
+            }
+        }
         host.shutdown();
         return residentResult;
     }

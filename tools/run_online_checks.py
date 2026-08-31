@@ -18,6 +18,11 @@ Usage:
   python3 tools/run_online_checks.py                 # all lanes + isolation guard
   python3 tools/run_online_checks.py --no-isolation  # lanes only (faster)
   python3 tools/run_online_checks.py --build build-beta --rom baserom.us.v80.z64
+  python3 tools/run_online_checks.py --pal-rom pal.v80.z64  # + cross-region lanes
+
+--pal-rom is strictly additive: without it the sweep below is byte-identical to
+its historical shape; with it the cross-region PAL lanes join the serial
+schedule after the default lanes (see pal_lanes()).
 """
 
 from __future__ import annotations
@@ -123,10 +128,9 @@ MANUAL_NETWORK_LANES = (
 )
 
 
-def run_lane(lane: str, build: str, rom: str, verbose: bool) -> tuple[bool, float]:
-    cmd = [sys.executable, str(TESTS / lane), "--build", build, "--rom", rom]
+def run_command(label: str, cmd: list[str], verbose: bool) -> tuple[bool, float]:
     if verbose:
-        cmd.append("-v")
+        cmd = [*cmd, "-v"]
     start = time.monotonic()
     proc = subprocess.run(cmd, cwd=ROOT, text=True,
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -134,9 +138,50 @@ def run_lane(lane: str, build: str, rom: str, verbose: bool) -> tuple[bool, floa
     ok = proc.returncode == 0
     # Echo the lane's own PASS/FAIL tail so the aggregate log is self-describing.
     tail = "\n".join((proc.stdout or "").strip().splitlines()[-4:])
-    print(f"\n===== {lane} ({elapsed:.1f}s) {'PASS' if ok else 'FAIL'} =====")
+    print(f"\n===== {label} ({elapsed:.1f}s) {'PASS' if ok else 'FAIL'} =====")
     print(tail)
     return ok, elapsed
+
+
+def run_lane(lane: str, build: str, rom: str, verbose: bool) -> tuple[bool, float]:
+    return run_command(
+        lane,
+        [sys.executable, str(TESTS / lane), "--build", build, "--rom", rom],
+        verbose,
+    )
+
+
+# NON-DEFAULT: the cross-region lanes joined ONLY by --pal-rom. Strictly
+# additive -- without --pal-rom the 28-lane sweep above is byte-identical.
+# Each entry is (summary label, the argv after the interpreter). The two
+# accepted ROM payloads are byte-identical, so a PAL endpoint racing the online
+# 30 Hz manifest under the launcher-armed NTSC identity must reproduce a US
+# endpoint's authority/input/event streams -- these lanes prove exactly that.
+def pal_lanes(build: str, rom: str, pal_rom: str
+              ) -> tuple[tuple[str, list[str]], ...]:
+    convergence = str(TESTS / "check_online_process_convergence.py")
+    return (
+        # Same-process epoch scope: an ONLINE PAL epoch (NTSC identity armed)
+        # then an OFFLINE PAL epoch that re-latches the authentic 50 Hz clock.
+        ("check_online_region_reentry.py --rom pal",
+         [str(TESTS / "check_online_region_reentry.py"),
+          "--build", build, "--rom", pal_rom]),
+        # Four all-PAL endpoints converge on the 30 Hz manifest.
+        ("check_online_process_convergence.py --regions pal",
+         [convergence, "--build", build, "--rom", rom, "--pal-rom", pal_rom,
+          "--regions", "pal"]),
+        # Mixed US<->PAL endpoints: byte-identical authority streams = the
+        # cross-region capability itself.
+        ("check_online_process_convergence.py --regions cross",
+         [convergence, "--build", build, "--rom", rom, "--pal-rom", pal_rom,
+          "--regions", "cross"]),
+        # PAL live-loopback at 30 Hz whose converged hash must EQUAL the pinned
+        # US golden (bit-identity), asserted via check_online_engine_boot's
+        # imported --expect-hash default.
+        ("check_online_engine_boot.py --rom pal --authored-hz 30",
+         [str(TESTS / "check_online_engine_boot.py"),
+          "--build", build, "--rom", pal_rom, "--authored-hz", "30"]),
+    )
 
 
 def run_isolation(verbose: bool) -> tuple[bool, list[str]]:
@@ -163,6 +208,12 @@ def main() -> int:
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--no-isolation", action="store_true",
                         help="skip the fresh-OFF isolation guard (lanes only)")
+    parser.add_argument(
+        "--pal-rom", default=None,
+        help="also run the cross-region PAL lanes (region re-entry, "
+             "--regions pal|cross convergence, PAL golden-equality boot) against "
+             "this European pal.v80 ROM; strictly additive -- omitted, the "
+             "default sweep is unchanged")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -171,6 +222,14 @@ def main() -> int:
         ok, elapsed = run_lane(lane, args.build, args.rom, args.verbose)
         results.append((lane, ok, elapsed))
         # Keep going after a failure so the operator sees the full picture.
+
+    # Additive cross-region arm: the PAL lanes join the serial schedule after
+    # the default sweep. Nothing here runs without --pal-rom.
+    if args.pal_rom:
+        for label, argv in pal_lanes(args.build, args.rom, args.pal_rom):
+            ok, elapsed = run_command(label, [sys.executable, *argv],
+                                      args.verbose)
+            results.append((label, ok, elapsed))
 
     isolation_ok = True
     isolation_warnings: list[str] = []

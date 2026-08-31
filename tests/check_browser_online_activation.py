@@ -300,7 +300,11 @@ def run(args: argparse.Namespace) -> None:
                     ntsc["gameplayDigest"] == list(bytes.fromhex(
                         "fb34ef8ddfcf782a852375b8ce71d1bcd552a185cf2c18fe1e7727996b749522")),
                     f"NTSC compatibility manifest is malformed: {ntsc}")
-            require(pal["romRevision"] == 2 and pal["cadenceHz"] == 25 and
+            # The two accepted payloads are byte-identical, so a PAL ROM
+            # publishes the SAME identity a US ROM does (revision 1, the
+            # online 30 Hz cadence) -- the cross-region admission contract
+            # mirrored from platform/online/compatibility_identity.c.
+            require(pal["romRevision"] == 1 and pal["cadenceHz"] == 30 and
                     pal["buildId"] == ntsc["buildId"] and
                     pal["gameplayDigest"] == ntsc["gameplayDigest"],
                     f"PAL compatibility handoff drifted: {pal}")
