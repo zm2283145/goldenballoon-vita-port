@@ -89,8 +89,15 @@ bool mdkr_online_compatibility_from_provenance(
     mdkr_sha256_update(&hash, gameplay_contract,
                        sizeof(gameplay_contract) - 1u);
     mdkr_sha256_final(&hash, next.gameplay_digest);
-    next.rom_revision = rom_revision;
-    next.cadence_hz = rom_revision == 1u ? 30u : 25u;
+    /* Both accepted revisions (us.v80=1, pal.v80=2) carry byte-identical race
+     * payloads -- the regions differ only in authored cadence, and an online
+     * session always races the 30 Hz online cadence (a PAL endpoint's online
+     * epoch adopts the NTSC source identity; see platform/rom_io.c).  Publish
+     * the ONE shared identity so the lobby JOIN byte-compare admits
+     * cross-region peers; the ROM's true region stays with provenance and
+     * language, never in this comparand. */
+    next.rom_revision = 1u;
+    next.cadence_hz = 30u;
     if (!mdkr_online_compatibility_valid(&next))
         return false;
     *output = next;

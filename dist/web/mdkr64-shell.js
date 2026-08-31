@@ -725,8 +725,12 @@ async function publishOnlineCompatibility(romReady = null) {
     : romReady;
   const info = onlineBuildInfo;
   const build = validatedOnlineRomBuild;
-  const revision = {"us.v80": 1, "pal.v80": 2}[build] || 0;
-  const cadenceHz = build === "us.v80" ? 30 : build === "pal.v80" ? 25 : 0;
+  // Both accepted payloads are byte-identical, so every validated build
+  // publishes the ONE shared identity -- revision 1 at the online 30 Hz
+  // cadence -- mirroring platform/online/compatibility_identity.c exactly.
+  const sourceRevision = {"us.v80": 1, "pal.v80": 2}[build] || 0;
+  const revision = sourceRevision ? 1 : 0;
+  const cadenceHz = sourceRevision ? 30 : 0;
   const clean = info && info.source_dirty === false &&
     typeof info.version === "string" && info.version.length <= 32 &&
     /^[0-9]+\.[0-9]+\.[0-9]+$/.test(info.version) &&

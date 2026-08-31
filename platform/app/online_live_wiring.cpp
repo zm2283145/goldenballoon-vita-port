@@ -1104,24 +1104,30 @@ MdkrOnlineCompatibilityV1 loopbackCompatibility() {
         c.build_id[i] = static_cast<uint8_t>(i + 1u);
     for (unsigned i = 0u; i < sizeof(c.gameplay_digest); ++i)
         c.gameplay_digest[i] = static_cast<uint8_t>(0x80u + i);
-    /* Follow the LOADED ROM's validated region so the in-process loopback stages
-     * the SAME manifest a real endpoint would: a PAL v80 payload authors the sim
-     * at 25 Hz, so its manifest carries revision 2 / cadence 25 and the engine's
-     * cadence admission is exercised for the region actually loaded -- not a
-     * hardcoded US identity that would mask the EU path. The production
-     * factory derives this from provenance; a US ROM still resolves to 1 / 30,
-     * so the historical NTSC loopback is byte-identical.
+    /* Stage the SAME identity a real endpoint would: both accepted payloads
+     * are byte-identical, so the production derivation
+     * (compatibility_identity.c) publishes revision 1 at the online 30 Hz
+     * cadence for EITHER region, and the staged manifest carries the same.
+     * A PAL ROM differs only in the NTSC source-identity override the online
+     * boot lanes arm (rom_io.c) so its epoch authors/admits at 30 Hz too.
      *
-     * The engine loads the ROM only when the visible session boots, AFTER this
-     * fixture compat is frozen, so platform_source_is_european() is not yet set
-     * here: the test dispatch resolves the region from the ROM path up front and
-     * hands it in via OnlineRoom_setTestLoopbackRomRevision(). When unset (0) we
-     * fall back to the source clock -- which yields US before any ROM load. */
+     * The engine loads the ROM only when the visible session boots, AFTER
+     * this fixture compat is frozen, so platform_source_is_european() is not
+     * yet set here: the test dispatch resolves the region from the ROM path
+     * up front via OnlineRoom_setTestLoopbackRomRevision(); when unset (0) we
+     * fall back to the source clock -- US before any ROM load.  The witness
+     * below keeps the staged region observable to the loopback lanes. */
     const bool european = sTestLoopbackRomRevision != 0u
                               ? (sTestLoopbackRomRevision == 2u)
                               : (platform_source_is_european() != 0);
-    c.rom_revision = european ? 2u : 1u; /* MDKR_ROM_EU_11 : MDKR_ROM_US_11 */
-    c.cadence_hz = european ? 25u : 30u;
+    if (european) {
+        std::fprintf(stderr,
+                     "[online-live] loopback compatibility: EU ROM staged "
+                     "with the shared cross-region identity (revision 1, "
+                     "30 Hz)\n");
+    }
+    c.rom_revision = 1u;
+    c.cadence_hz = 30u;
     return c;
 }
 
