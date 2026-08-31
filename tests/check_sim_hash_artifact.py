@@ -96,7 +96,28 @@ def check_comparator(tmp: Path) -> list[str]:
             "divergent hash must name the first divergent tick (3); got: "
             f"{result.stdout.strip()}")
 
-    # 3. A truncated file (fewer ticks) is detected as a length mismatch.
+    # 3. With MORE THAN ONE divergent tick, the FIRST one is reported -- the
+    #    comparator must stop at the earliest disagreement, so a certification
+    #    points at where the streams began to differ, not a later symptom.
+    two_diverged = list(good)
+    two_diverged[2] = "aaaaaaaaaaaaaaaa"
+    two_diverged[4] = "bbbbbbbbbbbbbbbb"
+    d = tmp / "two_diverge.txt"
+    make_artifact(d, two_diverged)
+    result = run_comparator(a, d)
+    if result.returncode == 0:
+        failures.append(
+            "two divergent ticks must fail, but comparator passed")
+    elif "tick=2" not in result.stdout and "tick 2" not in result.stdout:
+        failures.append(
+            "with two divergent ticks the FIRST (2) must be reported; got: "
+            f"{result.stdout.strip()}")
+    elif "tick=4" in result.stdout or "tick 4" in result.stdout:
+        failures.append(
+            "comparator reported a later divergent tick (4) instead of the "
+            f"first (2); got: {result.stdout.strip()}")
+
+    # 4. A truncated file (fewer ticks) is detected as a length mismatch.
     short = tmp / "truncated.txt"
     make_artifact(short, good[:4])
     result = run_comparator(a, short)
@@ -108,7 +129,7 @@ def check_comparator(tmp: Path) -> list[str]:
             f"truncated file must report a length/truncation failure; got: "
             f"{result.stdout.strip()}")
 
-    # 4. An empty file fails closed.
+    # 5. An empty file fails closed.
     empty = tmp / "empty.txt"
     empty.write_text("")
     result = run_comparator(a, empty)
@@ -119,7 +140,7 @@ def check_comparator(tmp: Path) -> list[str]:
             f"empty file must report an empty-file failure; got: "
             f"{result.stdout.strip()}")
 
-    # 5. A missing file fails closed.
+    # 6. A missing file fails closed.
     missing = tmp / "does_not_exist.txt"
     result = run_comparator(a, missing)
     if result.returncode == 0:
@@ -131,7 +152,8 @@ def check_comparator(tmp: Path) -> list[str]:
             f"missing file must report a missing-file failure; got: "
             f"{result.stdout.strip()}")
 
-    # 6. An unparseable line fails closed rather than being silently skipped.
+    # 7. A wholly malformed line fails closed rather than being silently
+    #    skipped.
     garbage = tmp / "garbage.txt"
     garbage.write_text("[SIMHASH] this is not a hash line\n")
     result = run_comparator(a, garbage)
@@ -141,6 +163,27 @@ def check_comparator(tmp: Path) -> list[str]:
             "unparseable" not in result.stdout.lower()):
         failures.append(
             f"unparseable line must report a parse failure; got: "
+            f"{result.stdout.strip()}")
+
+    # 8. The exact shape a SIGKILL leaves: several complete, valid lines
+    #    followed by a final line torn off mid-hash (the per-tick fflush
+    #    guarantees whole prefix lines, but the process can die between two
+    #    flushes while a line is half written). A torn tail must fail closed as
+    #    unparseable, never be read as a shorter-but-valid artifact -- otherwise
+    #    a truncated hash could silently pass a cross-host comparison.
+    killed = tmp / "killed_midline.txt"
+    with killed.open("w") as handle:
+        for tick, digest in enumerate(good[:3]):
+            handle.write(f"[SIMHASH] tick={tick} objs=4 h={digest}\n")
+        handle.write("[SIMHASH] tick=3 objs=4 h=00000000")  # torn mid-hash
+    result = run_comparator(a, killed)
+    if result.returncode == 0:
+        failures.append(
+            "mid-hash truncated final line must fail, but comparator passed")
+    elif "parse" not in result.stdout.lower() and (
+            "unparseable" not in result.stdout.lower()):
+        failures.append(
+            "mid-hash truncated final line must report a parse failure; got: "
             f"{result.stdout.strip()}")
 
     return failures
