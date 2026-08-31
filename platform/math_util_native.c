@@ -358,6 +358,13 @@ static void mdkr64_fill_math_tables(void) {
     const char *devRuntime = getenv("MDKR_DEV_RUNTIME_TRIG");
     const char *trace;
     int truncMode = (tableMode != NULL && tableMode[0] == 't');
+    /* Here `=0`/empty select the baked (default) tables, so as a MATH toggle the
+     * variable is a no-op unless set to a non-zero/non-empty value. That is NOT
+     * true online: OnlineRoom_liveBlockedByDeterminismEnv (online_live_wiring.cpp)
+     * triggers on the variable being SET AT ALL (getenv != nullptr), exactly like
+     * every other seam in that fence, so even MDKR_DEV_RUNTIME_TRIG=0 blocks live
+     * online. Keep the two semantics distinct on purpose: `=0` is a safe no-op for
+     * offline A/B but is NOT a safe no-op in an online context. */
     int runtimeTables = (devRuntime != NULL && devRuntime[0] != '\0' &&
                          devRuntime[0] != '0');
     int arctanRuntime;
@@ -436,7 +443,7 @@ static void mdkr64_fill_math_tables(void) {
      * .s and therefore has no baked source to copy. */
     arctanRuntime = (runtimeTables || truncMode);
     if (arctanRuntime) {
-        for (i = 0; i < 1026; i++) {
+        for (i = 0; i < ARCTAN_LIVE; i++) {
             float a = atanf((float)i / 1024.0f) * (32768.0f / 3.14159265358979323846f);
             gArcTanTable[i] = (s16)(truncMode ? a : a + 0.5f);
         }
@@ -444,11 +451,14 @@ static void mdkr64_fill_math_tables(void) {
         for (i = 0; i < ARCTAN_LIVE; i++) {
             gArcTanTable[i] = (s16) kMdkrBakedArcTanTable[i];
         }
-        /* Index 1025 is not part of the ROM's 1025-entry table and is never
-         * read (atan2_lookup's worst case is 1024); mirror the last live entry
-         * so the pad stays deterministic without inventing a libm value. */
-        gArcTanTable[ARCTAN_LIVE] = gArcTanTable[ARCTAN_LIVE - 1];
     }
+    /* Index 1025 is not part of the ROM's 1025-entry table and is never read
+     * (atan2_lookup's worst case is 1024); mirror the last live entry (0x2000,
+     * 45deg) in EVERY arm so the unreachable pad is byte-identical across baked,
+     * dev-runtime and trunc rather than a stray libm value the runtime arm would
+     * otherwise leave there. The live entries above are untouched -- the runtime
+     * arm's 1025 entries stay pure libm, which is the whole point of the A/B. */
+    gArcTanTable[ARCTAN_LIVE] = gArcTanTable[ARCTAN_LIVE - 1];
 
     /* Probe, so a headless check can assert on the tables, the seed and the trig
      * themselves rather than on downstream pixels. FNV-1a over the live entries as
