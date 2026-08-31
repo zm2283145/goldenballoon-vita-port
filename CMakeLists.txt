@@ -2368,7 +2368,7 @@ if(WIN32)
                     -fno-devirtualize-speculatively)
                 target_link_options(${_mdkr_online_test} PRIVATE
                     -Wl,--gc-sections)
-            elseif(MDKR_ENABLE_ONLINE_BETA)
+            elseif(MDKR_ENABLE_ONLINE_BETA AND MDKR_APP)
                 message(FATAL_ERROR
                     "MinGW dead-strip list names '${_mdkr_online_test}', but no "
                     "such target exists in this online configure. The list has "
