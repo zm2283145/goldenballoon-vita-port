@@ -47,12 +47,12 @@ int main(void) {
            "native bytes equal the browser provenance vector exactly");
     expect(mdkr_online_compatibility_from_provenance("1.3.0", commit, false, 2u,
                                                      &compatibility) &&
-               compatibility.rom_revision == 2u &&
-               compatibility.cadence_hz == 25u &&
+               compatibility.rom_revision == 1u &&
+               compatibility.cadence_hz == 30u &&
                bytes_equal_hex(compatibility.build_id,
                                sizeof(compatibility.build_id),
                                "336892f0abf0a2c25c91a7ebcb266364"),
-           "PAL changes only ROM identity and authored cadence");
+           "the accepted PAL payload publishes the shared online identity");
 
     compatibility = untouched;
     expect(!mdkr_online_compatibility_from_provenance("1.3.0", commit, true, 1u,
@@ -114,11 +114,35 @@ int main(void) {
                    memcmp(second.gameplay_digest, first.gameplay_digest,
                           sizeof(first.gameplay_digest)) != 0,
                "a different commit changes build identity AND gameplay digest");
+        /* Cross-region admission: us.v80 (revision 1) and pal.v80 (revision
+         * 2) carry byte-identical race payloads, so both accepted revisions
+         * must derive ONE shared identity -- revision 1 at the online 30 Hz
+         * cadence -- and the lobby JOIN byte-compare must admit a US<->EU
+         * pair exactly like a same-region pair.  This is the loopback
+         * equivalent of the reducer's admission decision. */
         expect(mdkr_online_compatibility_from_provenance(
                    "1.6.0", commit, false, 2u, &second) &&
-                   (second.rom_revision != first.rom_revision ||
-                    second.cadence_hz != first.cadence_hz),
-               "a different accepted ROM revision changes the ROM identity");
+                   memcmp(&second, &first, sizeof(first)) == 0 &&
+                   second.rom_revision == 1u && second.cadence_hz == 30u,
+               "US and EU ROM revisions derive one byte-identical identity");
+        {
+            MdkrOnlineLobby lobby;
+            MdkrOnlineCommand join_command;
+            MdkrOnlineStep step;
+            expect(mdkr_online_lobby_init(&lobby, 1u, 100u, &first, 1u),
+                   "US-derived identity hosts a lobby");
+            memset(&join_command, 0, sizeof(join_command));
+            join_command.protocol_version = MDKR_ONLINE_PROTOCOL_VERSION;
+            join_command.expected_revision = lobby.revision;
+            join_command.command_id = 1u;
+            join_command.actor_endpoint_id = 200u;
+            join_command.type = MDKR_ONLINE_JOIN;
+            join_command.value = 1u;
+            join_command.compatibility = second;
+            step = mdkr_online_lobby_dispatch(&lobby, &join_command);
+            expect(step.accepted && step.error == MDKR_ONLINE_OK,
+                   "EU-derived endpoint is admitted by a US-hosted lobby");
+        }
     }
 
     if (failures != 0)

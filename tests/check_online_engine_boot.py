@@ -79,6 +79,11 @@ def main() -> int:
     parser.add_argument("--rom", type=Path, default="baserom.us.v80.z64")
     parser.add_argument("--ticks", type=int, default=TICKS)
     parser.add_argument("--timeout", type=int, default=300)
+    parser.add_argument(
+        "--authored-hz", type=int,
+        help="pin the authored online cadence the admitted race must run at "
+             "(cross-region contract: every online race races at 30)",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -146,6 +151,10 @@ def main() -> int:
         return fail(
             f"online race loaded the wrong contest track={loaded_track} "
             f"type={race_type} (expected Ancient Lake 5, standard 0)", output)
+    if args.authored_hz is not None and authored_hz != str(args.authored_hz):
+        return fail(
+            f"online race authored at {authored_hz}Hz, expected "
+            f"{args.authored_hz}Hz for this ROM region", output)
 
     stats = ENGINE_LIVE_RE.findall(output)
     if len(stats) != 1:

@@ -122,6 +122,22 @@ ENDPOINTS = (
      (("0", "0", "1"), ("1", "2", "1"))),
     ("no-render", "0x8", "0x0", "3", "", ()),
 )
+# Cross-region topology: the two accepted ROM payloads are byte-identical, so
+# a PAL endpoint racing the online 30 Hz manifest under the launcher-armed
+# NTSC source identity must produce the SAME authority/input/event streams as
+# a US endpoint.  Mix regions across both single-seat mask shapes and the
+# couch endpoint so the byte-compare below is a genuine US<->EU proof.
+CROSS_REGIONS = {
+    "slot0": "us", "slot1": "pal", "two-local": "pal", "no-render": "us",
+}
+# The launcher's online boot lanes arm the NTSC source identity for EVERY
+# online epoch (a no-op for a US ROM); rom_io.c prints both witnesses.
+OVERRIDE_WITNESS = (
+    "[ROM] source identity: NTSC override armed for this session "
+    "(ROM region {region})"
+)
+NTSC_CLOCK_WITNESS = "[ROM] source video: NTSC (60 Hz fields)"
+PAL_CLOCK_WITNESS = "[ROM] source video: PAL (50 Hz fields)"
 
 
 def fail(message: str, output: str = "") -> int:
@@ -416,6 +432,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", type=Path, default="baserom.us.v80.z64")
+    parser.add_argument(
+        "--pal-rom", type=Path,
+        help="European pal.v80 ROM (payload byte-identical to us.v80); "
+             "required by the pal/cross region topologies",
+    )
+    parser.add_argument(
+        "--regions", choices=("us", "pal", "cross"), default="us",
+        help="per-endpoint ROM regions: all-US (default), all-PAL, or the "
+             "mixed US<->PAL cross-region pairing",
+    )
     parser.add_argument("--timeout", type=int, default=240)
     parser.add_argument(
         "--profile",
@@ -443,6 +469,18 @@ def main() -> int:
                         (SCRIPT, "input script")):
         if not path.is_file():
             parser.error(f"missing {label}: {path}")
+    pal_rom = args.pal_rom.expanduser().resolve() if args.pal_rom else None
+    if args.regions != "us":
+        if pal_rom is None:
+            parser.error(f"--regions {args.regions} requires --pal-rom")
+        if not pal_rom.is_file():
+            parser.error(f"missing PAL ROM: {pal_rom}")
+    if args.regions == "pal":
+        regions = {name: "pal" for name, *_ in ENDPOINTS}
+    elif args.regions == "cross":
+        regions = dict(CROSS_REGIONS)
+    else:
+        regions = {name: "us" for name, *_ in ENDPOINTS}
 
     outputs: dict[str, str] = {}
     captures: dict[str, bytes | None] = {}
@@ -454,15 +492,17 @@ def main() -> int:
         with tempfile.TemporaryDirectory(prefix="mdkr64-online-process-") as temp:
             temp_root = Path(temp)
             for name, local_mask, viewport_mask, _, _, _ in ENDPOINTS:
+                endpoint_rom = pal_rom if regions[name] == "pal" else rom
                 outputs[name], captures[name] = run_endpoint(
-                    binary, rom, temp_root, name, local_mask, viewport_mask,
+                    binary, endpoint_rom, temp_root, name, local_mask,
+                    viewport_mask,
                     args.timeout, args.verbose, args.profile, run_ticks,
                     args.ai_takeover_slot, args.ai_takeover_tick,
                     args.launch_v3,
                 )
             reject_remote_view(binary, rom, temp_root, args.timeout)
             if (args.profile is None and args.ai_takeover_slot is None and
-                    not args.launch_v3):
+                    not args.launch_v3 and args.regions == "us"):
                 reject_manifest_race_mismatch(
                     binary, rom, temp_root, args.timeout,
                 )
@@ -532,6 +572,21 @@ def main() -> int:
     for (name, local_mask, viewport_mask, local_map, viewport_map,
          expected_views) in ENDPOINTS:
         output = outputs[name]
+        # Every online epoch must run under the launcher-armed NTSC source
+        # identity: the loaded ROM's true region stays observable in the
+        # witness while the clock every per-epoch latch consumed is NTSC/60.
+        # This is the production arm (an internal boot-lane call), not an
+        # environment seam -- the endpoint environment above never names it.
+        witness = OVERRIDE_WITNESS.format(
+            region="PAL" if regions[name] == "pal" else "NTSC")
+        if output.count(witness) != 1:
+            return fail(
+                f"{name}: online epoch did not arm the NTSC source identity "
+                f"(missing witness {witness!r})", output)
+        if NTSC_CLOCK_WITNESS not in output or PAL_CLOCK_WITNESS in output:
+            return fail(
+                f"{name}: online epoch did not latch the NTSC source clock",
+                output)
         if args.launch_v3:
             if (output.count("[NET-LAUNCH] epoch=1 ") != 1 or
                     output.count("[NET-SELECTIONS] epoch=1 ") != 1):
@@ -875,6 +930,7 @@ def main() -> int:
         )
         print(
             "PASS online process recovery: endpoints=4 "
+            f"regions={args.regions} "
             f"profile={args.profile} profileStart={PROFILE_AUTHORITY_START_TICK} "
             f"preFaultExactTicks={PROFILE_AUTHORITY_START_TICK - 1} "
             f"manifest={next(iter(manifest_digests))} "
@@ -888,6 +944,7 @@ def main() -> int:
         )
         print(
             "PASS online process convergence: endpoints=4 "
+            f"regions={args.regions} "
             f"ticks={run_ticks} manifest={next(iter(manifest_digests))} "
             f"profile={args.profile} profileStart={PROFILE_AUTHORITY_START_TICK} "
             f"inputRows={len(inputs[baseline])} "
@@ -903,6 +960,7 @@ def main() -> int:
         )
         print(
             "PASS online process convergence: endpoints=4 "
+            f"regions={args.regions} "
             f"ticks={run_ticks} manifest={next(iter(manifest_digests))} "
             f"inputRows={len(inputs[baseline])} "
             f"canonicalEventRows={len(canonical_events[baseline])} "
