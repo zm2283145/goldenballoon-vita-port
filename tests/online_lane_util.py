@@ -35,6 +35,65 @@ PLACE_NONE = 255
 CUP_ROUNDS = 4
 
 # --------------------------------------------------------------------------- #
+#  Source-of-truth pins
+# --------------------------------------------------------------------------- #
+
+# DKR's authentic trophy-race scoring weights (gTrophyRacePointsArray). BOTH
+# tournament lanes apply these weights to derive a cup total from a recorded
+# finish order; each used to duplicate the {9,7,5,3,1,0,0,0} literal. The C
+# source of truth is kTrophyPoints in platform/online/lobby_core.c (lines 16-17),
+# byte-mirrored by the party service. Pinning the literal to that source (below)
+# makes a product-side weight change fail the checks loudly instead of letting a
+# stale test literal silently disagree with the shipped scoring.
+TROPHY_WEIGHTS_SOURCE = "platform/online/lobby_core.c"
+TROPHY_WEIGHTS_SYMBOL = "kTrophyPoints"
+
+
+def scan_trophy_weights(root: Path) -> tuple[int, ...] | None:
+    """The authored trophy weights parsed from kTrophyPoints (lobby_core.c).
+
+    Returns the initialiser tuple (e.g. (9, 7, 5, 3, 1, 0, 0, 0)) or None if the
+    array cannot be read -- the caller fails closed on None so a moved/renamed
+    source can never make the pin vacuously pass.
+    """
+    try:
+        text = (root / TROPHY_WEIGHTS_SOURCE).read_text()
+    except OSError:
+        return None
+    match = re.search(
+        re.escape(TROPHY_WEIGHTS_SYMBOL) + r"\s*\[[^\]]*\]\s*=\s*\{([^}]*)\}",
+        text)
+    if match is None:
+        return None
+    values = re.findall(r"(\d+)\s*u?", match.group(1))
+    if not values:
+        return None
+    return tuple(int(value) for value in values)
+
+
+def check_trophy_weights_pin(root: Path, expected: tuple[int, ...],
+                             fail) -> int | None:
+    """Pin a lane's TROPHY_WEIGHTS literal to the kTrophyPoints C source.
+
+    Mirrors the source-scan discipline of check_cup_rounds_pin: a product-side
+    edit to the authored weights (or a drifted test literal) fails here, before
+    any engine run, instead of a scoring assertion silently comparing against a
+    stale weight. Returns a fail() exit code on drift, else None.
+    """
+    weights = scan_trophy_weights(root)
+    if weights is None:
+        return fail(f"could not read {TROPHY_WEIGHTS_SYMBOL} from "
+                    f"{TROPHY_WEIGHTS_SOURCE} (the trophy-weight source pin "
+                    f"cannot vouch for the {expected} literal)")
+    if weights != tuple(expected):
+        return fail(f"TROPHY_WEIGHTS drift: {TROPHY_WEIGHTS_SOURCE} "
+                    f"{TROPHY_WEIGHTS_SYMBOL}={weights} != the lane's pinned "
+                    f"{tuple(expected)} -- a product-side weight change must "
+                    f"update the checks that apply it")
+    return None
+
+
+# --------------------------------------------------------------------------- #
 #  Forbidden markers
 # --------------------------------------------------------------------------- #
 

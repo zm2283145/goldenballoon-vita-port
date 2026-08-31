@@ -2374,7 +2374,7 @@ if(WIN32)
     # cross lane, -DBUILD_TESTING=OFF) untouched. Inside it, if(TARGET) applies
     # the flags to whichever of these are defined, and the online app configure
     # -- MDKR_ENABLE_ONLINE_BETA + MDKR_APP (beta requires MDKR_NATIVE_PHONE_PARTY,
-    # configure FATALs otherwise, :894; and all eleven live inside if(MDKR_APP),
+    # configure FATALs otherwise, :913-915; and all eleven live inside if(MDKR_APP),
     # so MDKR_APP is what actually creates them) -- hard-errors on a missing
     # target, so a renamed/removed test fails that configure immediately instead
     # of silently losing dead-strip coverage.
