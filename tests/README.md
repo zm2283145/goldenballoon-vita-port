@@ -415,6 +415,21 @@ production coverage:
   with MotionSmoothing=interpolate they may submit a complete immutable
   in-between image. Presentation cannot issue a simulation ticket, consume an
   input ticket, advance audio, or mutate the v3 authority stream.
+- `check_sim_hash_artifact.py` covers the on-disk artifact form of that same
+  `[SIMHASH]` stream and the tool that compares two of them. With
+  `MDKR_STATE_HASH_FILE=<path>` set beside `MDKR_STATE_HASH`, the engine mirrors
+  every stdout `[SIMHASH]` line into the file byte-for-byte and in order; the
+  parity arm proves the file equals the run's own stdout stream exactly, so the
+  artifact is a faithful second sink that changes neither what is hashed nor the
+  simulation (an unwritable path is reported to stderr and the sink dropped,
+  never fatal). The comparator, `tools/online/compare_sim_hash_artifacts.py`,
+  exits 0 only when two artifacts are non-empty, the same length and byte-equal
+  modulo line endings on every tick line (so a macOS LF and a Windows CRLF for
+  the same tick are not a divergence), and otherwise names the first divergent
+  tick or the
+  truncation point; it fails closed on a missing file, an empty file, an
+  unparseable line and a length mismatch, each with its own message. These are
+  the pieces a cross-OS / cross-region determinism comparison stands on.
 - `check_render_purity.py` is the fidelity spec's §12.2.1 gate. Skipping half
   of all scene renders (`MDKR_TEST_SKIP_RENDER=odd`) must leave the raw v3
   `[SIMHASH]` stream byte-identical. There is no test-only state subtraction:
