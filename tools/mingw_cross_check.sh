@@ -55,20 +55,49 @@ CLEAN=0
 WEBGPU=ON
 ONLINE=0
 DEPS_REUSE_DIR="${MDKR_MINGW_DEPS_REUSE_DIR:-}"
+
+usage() {
+    echo "usage: tools/mingw_cross_check.sh [--clean] [--jobs N] [--no-webgpu]" >&2
+    echo "                                  [--online] [--deps-reuse-dir DIR]" >&2
+}
+arg_error() {  # arg_error <message>: print message + usage to stderr, exit 2
+    echo "mingw_cross_check: $1" >&2
+    usage
+    exit 2
+}
+# require_value <flag> <remaining-argc>: a separate-word value must follow <flag>.
+# <remaining-argc> is $# at the point $1 is the flag, so it counts the flag itself
+# -- a value exists only when it is >= 2. Guards the split-form flags (--jobs,
+# --deps-reuse-dir) against dying with an opaque "$2: unbound variable" (set -u)
+# when the flag is passed as the final argument.
+require_value() {
+    [ "$2" -ge 2 ] || arg_error "$1 requires a value"
+}
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --clean) CLEAN=1 ;;
         --no-webgpu) WEBGPU=OFF ;;
         --online) ONLINE=1 ;;
-        --deps-reuse-dir) DEPS_REUSE_DIR="$2"; shift ;;
+        --deps-reuse-dir) require_value "$1" "$#"; DEPS_REUSE_DIR="$2"; shift ;;
         --deps-reuse-dir=*) DEPS_REUSE_DIR="${1#*=}" ;;
-        --jobs) JOBS="$2"; shift ;;
+        --jobs) require_value "$1" "$#"; JOBS="$2"; shift ;;
         --jobs=*) JOBS="${1#*=}" ;;
         -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-        *) echo "unknown arg: $1" >&2; exit 2 ;;
+        *) arg_error "unknown argument: $1" ;;
     esac
     shift
 done
+
+# --deps-reuse-dir / MDKR_MINGW_DEPS_REUSE_DIR only feed the --online configure
+# (they point FetchContent at an already-fetched deps tree). The default lane
+# fetches nothing extra, so a value supplied without --online would be silently
+# dropped -- warn instead so the caller knows it had no effect.
+if [ -n "$DEPS_REUSE_DIR" ] && [ "$ONLINE" != "1" ]; then
+    echo "mingw_cross_check: warning: --deps-reuse-dir/MDKR_MINGW_DEPS_REUSE_DIR" \
+         "has no effect without --online; ignoring it for the default lane" >&2
+    DEPS_REUSE_DIR=""
+fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
