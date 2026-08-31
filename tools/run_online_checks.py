@@ -51,6 +51,9 @@ TESTS = ROOT / "tests"
 # loopback soaks last, so a quick break surfaces early.
 LANES = (
     "check_online_isolation_selftest.py",   # meta: the isolation guard is non-vacuous
+    "check_online_character_map.py",        # all 10 grid cells spawn their own racer
+                                            #  (online-id -> engine Character map;
+                                            #  guards the wrong-characters defect)
     "check_online_beta_handoff.py",         # T3: launcher SELECTING widgets retired ->
                                             #  universal native hand-off card (no engine)
     "check_online_engine_boot_direct.py",   # golden race hash 7da2ea67 pinned
