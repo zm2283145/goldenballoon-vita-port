@@ -686,8 +686,16 @@ target_compile_options(${MDKR_TARGET} PRIVATE
     # Address-domain crossings must be explicit (uintptr_t, DKR_TOK/DKR_PTR, or
     # OS_K0_TOKEN_TO_PHYSICAL). A raw narrowing conversion is a correctness
     # defect on LP64 and must never silently return to the tree.
-    -Werror=int-to-pointer-cast
-    -Werror=pointer-to-int-cast
+    #
+    # These two are C-family-only warnings: GCC's cc1plus rejects them for C++
+    # ("-Werror=pointer-to-int-cast is not valid for C++"), which surfaces on
+    # Windows where a C++ TU (platform/a11y_speech_win.cpp, SAPI ISpVoice) is
+    # compiled into this otherwise-C engine target. Scope them to C sources so
+    # the C decomp/platform TUs keep the guard and the C++ TU is left alone.
+    # C-file command lines are unchanged (the generator expression expands to
+    # the same flag for COMPILE_LANGUAGE C).
+    $<$<COMPILE_LANGUAGE:C>:-Werror=int-to-pointer-cast>
+    $<$<COMPILE_LANGUAGE:C>:-Werror=pointer-to-int-cast>
     # Matching-era source contains many harmless legacy warnings, but these
     # classes directly predict native correctness defects and must stay live.
     -Werror=return-type
