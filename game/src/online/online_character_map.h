@@ -3,9 +3,10 @@
 
 /* The ONE online-catalog-id -> engine Character-enum mapping.
  *
- * The online lobby/grid numbers racers in its OWN "online catalog" order (grid
- * cell index == the published hover_character the reducer validates == the
- * launcher's kCharacters strip):
+ * The online lobby numbers racers in its OWN "online catalog" order -- the id
+ * the reducer validates and publishes as hover_character, matching the launcher's
+ * kCharacters strip (NOT the visual grid cell index; the retail-order cell
+ * relabel kCsOnlineToCell in online_charselect.c is a separate mapping):
  *   0 Diddy 1 Timber 2 Pipsy 3 Tiptup 4 Conker 5 Bumper 6 Banjo 7 Krunch
  *   8 Drumstick 9 T.T.
  * The engine Character enum (game/include/enums.h) is a DIFFERENT order:

@@ -9,12 +9,12 @@
 
 #include "online/online_character_map.h" /* mdkr_online_character_to_engine + Character */
 
-/* Ground truth, by RACER, not by id: for each online-catalog cell the grid
- * offers (index == the launcher's kCharacters strip == the published
- * hover_character the reducer validates), the racer that must SPAWN. Verified
- * against the engine Character enum (enums.h) by identity of the racer, never by
- * a shared symbol name -- the online catalog and the engine enum are two
- * different orderings, so trusting position is exactly the bug. */
+/* Ground truth, by RACER, not by id: for each online-catalog id (kCharacters
+ * order == the published hover_character the reducer validates; NOT the visual
+ * grid cell index, which is relabelled separately in online_charselect.c), the
+ * racer that must SPAWN. Verified against the engine Character enum (enums.h) by
+ * identity of the racer, never by a shared symbol name -- the online catalog and
+ * the engine enum are two different orderings, so trusting position is the bug. */
 struct Cell {
     int online_id;
     int expect_engine; /* the engine Character-enum value that must spawn */
