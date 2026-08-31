@@ -15,6 +15,8 @@
   <a href="https://akratch.github.io/golden-balloon/"><b>▶ Play in your browser</b></a>
   &nbsp;·&nbsp;
   <a href="https://github.com/akratch/goldenballoon/releases/latest"><b>⬇ Download the latest release</b></a>
+  &nbsp;·&nbsp;
+  <a href="https://discord.gg/xfjEEHx5X9"><b>💬 Join the Discord</b></a>
 </p>
 
 ## Quick start
