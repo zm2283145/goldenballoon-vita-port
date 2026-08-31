@@ -1,64 +1,79 @@
 #!/usr/bin/env python3
-"""An ONLINE race must never draw a never-posed (bind-pose / T-pose) racer.
+"""No racer draw may ever present a never-posed (bind-pose / T-pose) model.
 
-The defect this gate exists for
--------------------------------
-`Enhancements.LodBias` ("Model detail") biases the racer LOD ladder's choice
-toward a MORE detailed model -- but only on the draw (`allowLodBias` in
-`racer_model_index_for_view`, game/src/objects.c); the authoritative
-`obj->modelIndex` is part of the [SIMHASH] v3 stream and is never moved.
-Vertices, however, are posed exclusively by `obj_animate_tick()`, and it poses
-ONLY `modelInstances[obj->modelIndex]`. In the online two-seat canonical
-layout the racer band table's first two thresholds are ZERO, so the
-authoritative ladder can never return model index 0 or 1. A bias onto either
-therefore selects a ModelInstance that has NEVER been posed --
-`model_instance_init` leaves it as the bind-pose copy with the sentinel
-`animationID == -1` -- and every biased racer draw is a sustained T-pose,
-while the race itself stays perfectly synced (observed on a real two-machine
-online race, 2026-08-29, with `LodBias=2` in the reporting machine's ini).
+The defect class this gate exists for
+-------------------------------------
+Vertices are posed exclusively by `obj_animate_tick()`, and it poses ONLY
+`modelInstances[obj->modelIndex]` -- the authoritative index, part of the
+[SIMHASH] v3 stream, committed once per tick from the canonical LAST
+viewport's camera (`scene_build_last_viewport_basis`). The draw, however,
+selects a per-viewport index from the LOCAL lens distance (`allowLodBias` in
+`racer_model_index_for_view`, game/src/objects.c). Any drawn index whose
+instance was never the committed index still holds the `model_instance_init`
+base-mesh copy with the sentinel `animationID == -1`: the bind pose. Two
+routes reach one:
+
+  - ONLINE (no enhancement needed): on the endpoint whose seat is NOT the
+    canonical last viewport, the remote racer commits near bands forever (it
+    never leaves its own canonical camera), so its far-band instances are
+    never posed -- a sustained T-pose whenever the local player falls behind
+    and looks at it, recovering on catch-up (the 2026-08-31 two-Mac beta-4
+    playtest defect; reproduced red with 183 never-posed draws, LodBias=0).
+  - `Enhancements.LodBias` ("Model detail"): the draw-only bias holds a MORE
+    detailed model than the ladder chose and can land on a band the committed
+    ladder never visits (the 2026-08-29 two-machine race with `LodBias=2`:
+    3379/3379 divergent draws never-posed; ~3977 on the offline 2P split).
+
+The fix is the shared never-posed fence at the draw seam
+(racer_model_index_for_view): a selection whose instance carries the -1
+sentinel degrades to the unbiased ladder choice, then to the authoritative
+committed instance -- posed either way, presentation-only, both online and
+offline.
 
 What this gate runs
 -------------------
-TWO arms, both with `MDKR_ENH_LOD_BIAS=2` (the reporting machine's exact
-setting), `MDKR_TEST_ANIM_LOD_WITNESS=1` (the read-only draw witness: one line
-per racer draw whose DRAWN model index differs from the authoritative one,
-carrying the drawn instance's animationID; -1 == never posed) and
+TWO arms, both with `MDKR_ENH_LOD_BIAS=2` (the 2026-08-29 reporting machine's
+exact setting), `MDKR_TEST_ANIM_LOD_WITNESS=1` (the read-only draw witness:
+one line per racer draw whose DRAWN index differs from the authoritative one
+OR whose selection the fence moved, carrying the drawn instance's animationID
+and the pre-fence REQUESTED index + animationID; -1 == never posed) and
 `MDKR_DRAWDIST_TRACE=1` (the [DRAWDIST] census, whose `lodBias=` field proves
 the setting actually armed and whose `lodShifted` field proves the bias
 actually displaced at least one ladder choice):
 
-  1. SENTINEL SELF-PROOF (offline, roster INACTIVE): the 2P split-screen race
-     (`race_2p_split.txt`). The clamp is deliberately roster-gated, so this
-     path RETAINS the defect by design -- and must therefore still produce
-     `drawnAnimationID=-1` witness lines. This arm exists because the clamp
-     and the defect assertion below share a single point of failure: the
-     `model_instance_init` sentinel `animationID == -1`. If the init value
-     ever changed, the clamp would stop firing AND the witness would stop
-     reporting -1 at the same time -- the defect would return while arm 2
-     stayed green. This arm turns that silent drift into a loud FAIL: no -1
-     lines on the unfixed path means the sentinel or the witness plumbing
-     moved, not that the world got better.
-  2. DEFECT ASSERTION (online): the same in-process two-adapter live loopback
-     session as check_online_engine_boot_direct.py (real DTLS, direct boot,
-     autopilot), roster ACTIVE, where the clamp must hold.
+  1. OFFLINE ARM (roster INACTIVE): the 2P split-screen race
+     (`race_2p_split.txt`). The fence is NOT roster-gated -- the offline NPC
+     T-pose sighting is the same class -- so this arm asserts the fix holds
+     offline AND self-proves the instrument: the defect assertion here and
+     online share a single point of failure, the `model_instance_init`
+     sentinel `animationID == -1`. At least one `requestedAnimationID=-1`
+     witness line (the fence catching a never-posed request) proves the
+     sentinel and the witness plumbing are both alive; if the init value ever
+     drifted, those lines would vanish and this arm would FAIL loudly instead
+     of the defect returning while everything stayed green.
+  2. ONLINE ARM: the same in-process two-adapter live loopback session as
+     check_online_engine_boot_direct.py (real DTLS, direct boot, autopilot),
+     roster ACTIVE.
 
 What it asserts
 ---------------
-1. Arm 1 (offline, unfixed by design): the run completes cleanly, the census
-   reports `lodBias=2` (the env override landed), the witness fired, and at
-   least one witness line carries `drawnAnimationID=-1` -- the sentinel and
-   the witness plumbing are both alive (~3977 such lines when authored).
+1. Arm 1 (offline): the run completes cleanly, the census reports `lodBias=2`
+   (the env override landed), the witness fired, at least one witness line
+   carries `requestedAnimationID=-1` (sentinel + fence + witness plumbing all
+   alive), and ZERO witness lines carry `drawnAnimationID=-1` (the fence
+   holds offline).
 2. Arm 2 is a REAL converged online race: direct boot fired, the online
    rollback race ran, both endpoints converged, and the hash equals the GOLDEN
-   literal -- which doubles as "LodBias and the witness are presentation-only".
+   literal -- which doubles as "LodBias, the witness AND the fence are
+   presentation-only".
 3. Arm 2 positive controls, checked before the defect assertion so a broken
    seam cannot pass vacuously: the [DRAWDIST] census reports `lodBias=2`; at
-   least one census row reports `lodShifted > 0`; and the witness fired at
-   least once (drawn-vs-authoritative divergences exist at all).
+   least one census row reports `lodShifted > 0`; the witness fired at least
+   once; and at least one line carries `requestedAnimationID=-1` (the biased
+   route still requests never-posed bands online, so the fence is genuinely
+   exercised here too).
 4. Arm 2 defect assertion: ZERO witness lines carry `drawnAnimationID=-1`: no
-   online racer draw ever presented a never-posed (bind-pose) model. Pre-fix
-   this arm produced 3379 of 3379 divergent draws at -1; post-fix it must be
-   zero -- and arm 1 has just proven the instrument can still say -1.
+   online racer draw ever presented a never-posed (bind-pose) model.
 """
 
 from __future__ import annotations
@@ -92,7 +107,8 @@ SENTINEL_FRAMES = 3600
 
 WITNESS_RE = re.compile(
     r"^\[anim-lod-witness\] renderIndex=(\d+) authoritativeIndex=(\d+) "
-    r"drawnAnimationID=(-?\d+) drawnAnimationFrame=(-?\d+)$",
+    r"drawnAnimationID=(-?\d+) drawnAnimationFrame=(-?\d+) "
+    r"requestedIndex=(-?\d+) requestedAnimationID=(-?\d+)$",
     re.MULTILINE,
 )
 
@@ -113,7 +129,9 @@ def run_sentinel_arm(binary: Path, rom: Path, timeout: int,
     environment tests/check_enh_draw_distance.py uses, with the witness and
     the census armed; LodBias arrives via the MDKR_ENH_LOD_BIAS env override
     (the same seam arm 2 uses), and the census `lodBias=` field proves it
-    landed rather than assuming it.
+    landed rather than assuming it. The fence is unconditional, so this arm
+    both asserts the offline fix and self-proves the -1 sentinel via the
+    fence's requestedAnimationID=-1 witness lines.
     """
     with tempfile.TemporaryDirectory(prefix="mdkr64-lodanim-sentinel-") as temp:
         run_dir = Path(temp)
@@ -164,9 +182,10 @@ def main() -> int:
         if not path.is_file():
             parser.error(f"missing {label}: {path}")
 
-    # ---- Arm 1: sentinel self-proof (offline, roster inactive) -------------
-    # Run FIRST: if the instrument cannot say -1 on the deliberately-unfixed
-    # path, arm 2's "zero -1" verdict below would be meaningless.
+    # ---- Arm 1: offline fix + sentinel self-proof (roster inactive) --------
+    # Run FIRST: if the fence never catches a never-posed request here, the
+    # instrument cannot say -1 and arm 2's "zero -1" verdict below would be
+    # meaningless.
     try:
         sentinel_rc, sentinel_out = run_sentinel_arm(
             binary, rom, args.timeout, args.verbose)
@@ -187,14 +206,25 @@ def main() -> int:
                     "offline 2P split -- the witness plumbing is dead, so "
                     "the online zero--1 assertion below cannot prove "
                     "anything", sentinel_out)
-    sentinel_bind = [row for row in sentinel_witness if row[2] == "-1"]
-    if not sentinel_bind:
+    sentinel_requested = [row for row in sentinel_witness if row[5] == "-1"]
+    if not sentinel_requested:
         return fail(
-            f"sentinel arm: {len(sentinel_witness)} divergent racer draw(s) "
-            f"on the roster-INACTIVE (deliberately unfixed) path and NONE "
-            f"reported drawnAnimationID=-1. The model_instance_init sentinel "
-            f"or the witness plumbing has drifted -- the online assertion "
-            f"below can no longer detect the defect", sentinel_out)
+            f"sentinel arm: {len(sentinel_witness)} witnessed racer draw(s) "
+            f"offline with LodBias=2 and NONE reported "
+            f"requestedAnimationID=-1. The model_instance_init sentinel, the "
+            f"never-posed fence or the witness plumbing has drifted -- the "
+            f"zero--1 assertions here and online can no longer detect the "
+            f"defect", sentinel_out)
+    sentinel_bind = [row for row in sentinel_witness if row[2] == "-1"]
+    if sentinel_bind:
+        sample = ", ".join(
+            f"render={row[0]} auth={row[1]}" for row in sentinel_bind[:3])
+        return fail(
+            f"sentinel arm: {len(sentinel_bind)} of {len(sentinel_witness)} "
+            f"witnessed racer draw(s) OFFLINE presented a NEVER-POSED model "
+            f"instance (drawnAnimationID=-1 -- the bind pose / NPC T-pose; "
+            f"e.g. {sample}); the draw-seam fence is not holding offline",
+            sentinel_out)
 
     # ---- Arm 2: the online race, roster active, clamp must hold ------------
     extra_env = {
@@ -264,8 +294,15 @@ def main() -> int:
     witness = WITNESS_RE.findall(output)
     if not witness:
         return fail("the anim-lod witness never fired -- no drawn-vs-"
-                    "authoritative divergence was observed at all (positive "
-                    "control)", output)
+                    "authoritative divergence or fence event was observed at "
+                    "all (positive control)", output)
+    requested_bind = [row for row in witness if row[5] == "-1"]
+    if not requested_bind:
+        return fail(
+            f"{len(witness)} witnessed racer draw(s) online with LodBias=2 "
+            f"and NONE reported requestedAnimationID=-1 -- the biased route "
+            f"no longer requests a never-posed band, so the defect assertion "
+            f"below is vacuous", output)
 
     # The defect: a drawn racer instance carrying the model_instance_init
     # sentinel was presented -- the bind pose, i.e. the online T-pose.
@@ -274,19 +311,20 @@ def main() -> int:
         sample = ", ".join(
             f"render={row[0]} auth={row[1]}" for row in bind_pose[:3])
         return fail(
-            f"{len(bind_pose)} of {len(witness)} divergent racer draw(s) "
+            f"{len(bind_pose)} of {len(witness)} witnessed racer draw(s) "
             f"presented a NEVER-POSED model instance (drawnAnimationID=-1 -- "
             f"the bind pose / online T-pose; e.g. {sample})", output)
 
     print(
-        "PASS online racer LOD animation: sentinel arm (offline 2P, roster "
-        f"inactive, unfixed by design) authored {len(sentinel_bind)} "
-        f"never-posed draw(s) of {len(sentinel_witness)} divergent -- the "
-        "-1 sentinel and witness plumbing are alive; online arm: with "
-        f"Enhancements.LodBias=2 the converged race (hash={hash_visible}"
-        f"==GOLDEN, racedTicks={raced}) drew {len(witness)} divergent racer "
-        "draw(s), none never-posed (drawnAnimationID=-1 count 0); bias armed "
-        "(lodBias=2 census) and displaced choices (lodShifted>0)"
+        "PASS online racer LOD animation: offline arm (2P split, roster "
+        f"inactive) fenced {len(sentinel_requested)} never-posed request(s) "
+        f"of {len(sentinel_witness)} witnessed draw(s), none presented "
+        "(drawn -1 count 0) -- the -1 sentinel, the fence and the witness "
+        "plumbing are alive; online arm: with Enhancements.LodBias=2 the "
+        f"converged race (hash={hash_visible}==GOLDEN, racedTicks={raced}) "
+        f"witnessed {len(witness)} draw(s), fenced {len(requested_bind)} "
+        "never-posed request(s), none presented (drawn -1 count 0); bias "
+        "armed (lodBias=2 census) and displaced choices (lodShifted>0)"
     )
     return 0
 

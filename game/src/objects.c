@@ -566,6 +566,13 @@ static Object *gObjectSavedBobFor; /* pairing guard for the exact-bits restore.
     per-racer emitter loop. */
 static Object *gObjectRenderModelFor;
 static s32 gObjectRenderModelIndex;
+/* The draw seam's selection BEFORE the never-posed fence in
+ * racer_model_index_for_view() (presentation diagnostics only: the
+ * MDKR_TEST_ANIM_LOD_WITNESS reader correlates the requested and the drawn
+ * index; nothing in simulation reads either). Valid while
+ * gObjectRenderRequestedFor holds the racer being drawn. */
+static Object *gObjectRenderRequestedFor;
+static s32 gObjectRenderRequestedIndex;
 static s32 gObjectRenderRacerTexOffset;
 static Vertex *gObjectSavedCurVertData;
 static Object *gObjectSavedCurVertFor;
@@ -6070,10 +6077,14 @@ void obj_animate_tick(void) {
 /* Racer drawn-LOD animation discriminator (env MDKR_TEST_ANIM_LOD_WITNESS; NOT
  * roster-gated, so a beta build can observe it OFFLINE 2P too). At the authored
  * draw, reports every racer whose DRAWN model index differs from the
- * authoritative obj->modelIndex, together with the drawn instance's
- * animationID. The model_instance_init sentinel animationID == -1 means the
- * drawn instance has NEVER been posed by obj_animate and presents the bind
- * pose. Read-only: every access is a load. */
+ * authoritative obj->modelIndex OR whose draw-seam selection was moved by the
+ * never-posed fence in racer_model_index_for_view(), together with the drawn
+ * instance's animationID and the pre-fence REQUESTED index + its animationID.
+ * The model_instance_init sentinel animationID == -1 means the instance has
+ * NEVER been posed by obj_animate and holds the bind pose: a -1 on the DRAWN
+ * side is the presented T-pose defect; a -1 on the REQUESTED side is the fence
+ * doing its job (and proves the sentinel plumbing is alive -- the lane's arm 1
+ * asserts exactly that). Read-only: every access is a load. */
 static s32 mdkr_anim_lod_witness_enabled(void) {
     static s32 state = -1;
     if (state < 0) {
@@ -6085,24 +6096,39 @@ static s32 mdkr_anim_lod_witness_enabled(void) {
 
 static void mdkr_anim_lod_witness(const Object *obj) {
     s32 renderIndex;
+    s32 requestedIndex;
+    s32 requestedAnimationID;
     const ModelInstance *drawn;
+    const ModelInstance *requested;
     if (!mdkr_anim_lod_witness_enabled() || obj->behaviorId != BHV_RACER ||
         obj->modelInstances == NULL) {
         return;
     }
     renderIndex = object_render_model_index(obj);
-    if (renderIndex == obj->modelIndex) {
+    requestedIndex = renderIndex;
+    if (gObjectRenderRequestedFor == obj) {
+        requestedIndex = gObjectRenderRequestedIndex;
+    }
+    if (renderIndex == obj->modelIndex && requestedIndex == renderIndex) {
         return;
     }
     drawn = obj->modelInstances[renderIndex];
     if (drawn == NULL || drawn->modelType != MODELTYPE_ANIMATED) {
         return;
     }
+    requested = (requestedIndex >= 0 &&
+                 requestedIndex < obj->header->numberOfModelIds)
+                    ? obj->modelInstances[requestedIndex]
+                    : NULL;
+    requestedAnimationID =
+        requested != NULL ? (s32) requested->animationID : 0;
     fprintf(stderr,
             "[anim-lod-witness] renderIndex=%d authoritativeIndex=%d "
-            "drawnAnimationID=%d drawnAnimationFrame=%d\n",
+            "drawnAnimationID=%d drawnAnimationFrame=%d requestedIndex=%d "
+            "requestedAnimationID=%d\n",
             renderIndex, obj->modelIndex, (s32) drawn->animationID,
-            (s32) drawn->animationFrame);
+            (s32) drawn->animationFrame, requestedIndex,
+            requestedAnimationID);
 }
 #endif
 
@@ -6720,6 +6746,19 @@ static s32 racer_lod_index_for_scaled(s32 scaledDistance, const u8 *thresholds) 
     return 5;
 }
 
+/* TRUE when drawing modelInstances[modelIndex] would present vertices
+ * obj_animate() has never written: a NULL slot, or an ANIMATED instance still
+ * carrying the model_instance_init sentinel animationID == -1 over its
+ * base-mesh (bind pose) copy. Loads only. func_80061C0C also writes the -1 as
+ * a transient re-pose marker on the COMMITTED instance at an animation wrap;
+ * treating that one tick as never-posed merely redirects the draw to another
+ * posed instance, never the reverse. */
+static s32 racer_model_never_posed(const Object *obj, s32 modelIndex) {
+    const ModelInstance *held = obj->modelInstances[modelIndex];
+    return held == NULL || (held->modelType == MODELTYPE_ANIMATED &&
+                            held->animationID == -1);
+}
+
 /* Pure racer LOD selection. The caller supplies the viewport's private
  * distance and owns whether the result is committed to simulation (tick) or
  * retained as a draw-local override (render).
@@ -6736,6 +6775,7 @@ static s32 racer_model_index_for_view(Object *obj, Object_Racer *racer,
     s32 firstModel;
     s32 lastModel;
     s32 modelIndex;
+    s32 ladderChoice;
     s32 scaledDistance;
     s32 fromDistanceLadder = FALSE;
     u8 *thresholds;
@@ -6794,37 +6834,10 @@ static s32 racer_model_index_for_view(Object *obj, Object_Racer *racer,
      * this racer does not carry has to resolve to the model the authored index
      * would have picked anyway -- and because that is the only point at which
      * the setting can honestly report whether it changed anything. */
+    ladderChoice = modelIndex;
     if (allowLodBias && fromDistanceLadder) {
-#if MDKR_ENABLE_ONLINE_BETA
-        /* Enhancements.LodBias holds a MORE-detailed model than the ladder
-         * chose -- but only obj_animate_tick() poses vertices, and it poses
-         * ONLY modelInstances[obj->modelIndex]. In the online 2P canonical
-         * layout the racer band table's first two thresholds are zero, so the
-         * authoritative ladder never returns index 0 or 1: a bias onto either
-         * selects an instance obj_animate has NEVER posed, and
-         * model_instance_init left it as the bind pose. That drew every
-         * biased remote racer as a sustained T-pose in a real online race.
-         * When the biased instance still carries the init sentinel
-         * (animationID == -1), keep the ladder's own choice -- exactly what
-         * LodBias=0 draws, whose divergences are all posed (witness-proven).
-         * Presentation-only either way: obj->modelIndex is not written. */
-        if (mdkr_net_roster_runtime_active()) {
-            s32 biasedIndex =
-                mdkr_enh_lod_bias_apply(modelIndex, firstModel, lastModel);
-            if (biasedIndex != modelIndex) {
-                const ModelInstance *held = obj->modelInstances[biasedIndex];
-                if (held != NULL && held->modelType == MODELTYPE_ANIMATED &&
-                    held->animationID == -1) {
-                    biasedIndex = modelIndex;
-                }
-            }
-            modelIndex = biasedIndex;
-        } else
-#endif
-        {
-            modelIndex =
-                mdkr_enh_lod_bias_apply(modelIndex, firstModel, lastModel);
-        }
+        modelIndex =
+            mdkr_enh_lod_bias_apply(modelIndex, firstModel, lastModel);
     }
     /* Bonus-racer donor LOD cap. Gated on allowLodBias for exactly the reason the bias above is:
      * this is presentation-only, and `allowLodBias` is TRUE only on the draw seam in
@@ -6842,6 +6855,64 @@ static s32 racer_model_index_for_view(Object *obj, Object_Racer *racer,
     }
     if (modelIndex > lastModel) {
         modelIndex = lastModel;
+    }
+    /* Never-posed fence, draw seam only (allowLodBias is TRUE only in
+     * set_temp_model_transforms; the FALSE callers commit simulation state and
+     * must never take it). obj_animate_tick() poses ONLY
+     * modelInstances[obj->modelIndex], so any OTHER instance this draw selects
+     * holds whatever it held when it was last the committed index -- and an
+     * instance that was NEVER committed still holds the model_instance_init
+     * base-mesh copy with the sentinel animationID == -1: the bind pose, the
+     * remote racer "T-pose" of the 2026-08-31 two-Mac playtest.
+     *
+     * Two routes produce such a selection, one shared fence closes both:
+     *   - ONLINE: obj->modelIndex is [SIMHASH] v3 authority, committed from the
+     *     canonical LAST viewport's camera (scene_build_last_viewport_basis) on
+     *     every endpoint, while this draw ranks by the LOCAL lens distance. On
+     *     the endpoint whose seat is not that last viewport, the remote racer
+     *     commits near bands forever (it never leaves its own camera), so its
+     *     far-band instances are never posed -- drawn bind whenever the local
+     *     player falls behind and looks at it, recovering on catch-up.
+     *   - OFFLINE: Enhancements.LodBias holds a MORE-detailed model than the
+     *     ladder chose and can land on a band the committed ladder never
+     *     visits (measured red on the 2P split: ~3977 never-posed draws with
+     *     LodBias=2, and the 2026-08-29 real online race before the first,
+     *     roster-gated version of this clamp).
+     *
+     * Degrade in authored order: the unbiased ladder choice for THIS viewport
+     * distance first (exactly what LodBias=0 would draw -- restores the old
+     * clamp's target), then the authoritative committed instance (the one
+     * obj_animate_tick keeps live), else keep the selection (nothing better
+     * exists; matches the pre-fence draw). Candidates pass the same donor caps
+     * and range clamp the selection did. Presentation-only: obj->modelIndex is
+     * never written, no instance state is touched (loads only), and the FALSE
+     * callers are unreachable, so the v3 hash cannot move. */
+    if (allowLodBias) {
+        gObjectRenderRequestedFor = obj;
+        gObjectRenderRequestedIndex = modelIndex;
+        if (racer_model_never_posed(obj, modelIndex)) {
+            s32 candidate = wizpig_visual_cap_donor_lod(obj, ladderChoice);
+            candidate = terry_visual_cap_donor_lod(obj, candidate);
+            if (candidate < firstModel) {
+                candidate = firstModel;
+            }
+            if (candidate > lastModel) {
+                candidate = lastModel;
+            }
+            if (racer_model_never_posed(obj, candidate)) {
+                candidate = wizpig_visual_cap_donor_lod(obj, obj->modelIndex);
+                candidate = terry_visual_cap_donor_lod(obj, candidate);
+                if (candidate < firstModel) {
+                    candidate = firstModel;
+                }
+                if (candidate > lastModel) {
+                    candidate = lastModel;
+                }
+            }
+            if (!racer_model_never_posed(obj, candidate)) {
+                modelIndex = candidate;
+            }
+        }
     }
     return modelIndex;
 }
@@ -7148,6 +7219,9 @@ void unset_temp_model_transforms(Object *obj) {
     }
     if (gObjectRenderModelFor == obj) {
         gObjectRenderModelFor = NULL;
+    }
+    if (gObjectRenderRequestedFor == obj) {
+        gObjectRenderRequestedFor = NULL;
     }
 #endif
     if (!(obj->trans.flags & OBJ_FLAGS_PARTICLE) && obj->header->behaviorId == BHV_RACER &&

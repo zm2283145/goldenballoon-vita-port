@@ -76,13 +76,23 @@ What it asserts
    difference in (1) is more objects being drawn, not a stray blend or a
    one-pixel scissor shift somewhere else.
 
-5. `lod2`'s frame differs from `lod0`'s, with the same `[SIMHASH]` stream and
-   the same live object count per tick — and the `[DRAWDIST]` census reports
-   that the bias actually landed on a different model (`lodShifted`) on the
-   captured frame, while `lod0` reports zero shifts on every frame of the
-   route. `lodShifted` counts choices the bias CHANGED after the model range is
-   clamped, not choices it was consulted about, so a bias that is read and then
-   erased by the clamp reads as the zero it is.
+5. `lod2` keeps the same `[SIMHASH]` stream and the same live object count per
+   tick as `lod0`, the `[DRAWDIST]` census reports the bias actually landed on
+   a different model (`lodShifted`) on the captured frame while `lod0` reports
+   zero shifts on every frame of the route, and NEITHER arm ever presented a
+   never-posed (bind-pose) instance (`drawnAnimationID=-1` in the
+   MDKR_TEST_ANIM_LOD_WITNESS stream). On THIS 4P route the band table never
+   commits models 0/1, so every model the bias holds is one
+   `obj_animate_tick()` has never posed: the pixel difference the pre-fence
+   build showed here was literally the T-pose defect. Post-fence the two
+   captures are expected byte-identical — accepted only when the fence
+   demonstrably redirected biased never-posed requests
+   (`requestedAnimationID=-1` count > 0); an identical frame with an idle
+   fence still fails as "the setting reached nothing". A differing frame (a
+   posed instance the bias legitimately sharpened) also passes.
+   `lodShifted` counts choices the bias CHANGED after the model range is
+   clamped, not choices it was consulted about, so a bias that is read and
+   then erased by the clamp reads as the zero it is.
 
 6. `split400` admits extra objects (`extended > 0`) at the captured frame of the
    two-player race, the AUTHORED count is identical to `split100`'s there and
@@ -158,6 +168,15 @@ DRAWDIST_RE = re.compile(
     r"\[DRAWDIST\] frame=(\d+) scale=([\d.]+) lodBias=(\d+) "
     r"authored=(\d+) extended=(\d+) drawn=(\d+) lodShifted=(\d+)"
 )
+# The racer drawn-LOD witness (MDKR_TEST_ANIM_LOD_WITNESS): drawn -1 == a
+# presented bind pose (must never happen); requested -1 == the draw-seam
+# never-posed fence in racer_model_index_for_view caught a selection whose
+# instance obj_animate_tick has never posed and redirected it to a posed one.
+WITNESS_RE = re.compile(
+    r"\[anim-lod-witness\] renderIndex=(\d+) authoritativeIndex=(\d+) "
+    r"drawnAnimationID=(-?\d+) drawnAnimationFrame=(-?\d+) "
+    r"requestedIndex=(-?\d+) requestedAnimationID=(-?\d+)"
+)
 
 
 @dataclass(frozen=True)
@@ -178,6 +197,8 @@ class Arm:
     state_hash: tuple[str, ...]
     live_objects: tuple[tuple[int, int], ...]
     census: tuple[Census, ...]
+    never_posed_drawn: int
+    never_posed_requested: int
 
 
 def environment(save_dir: Path, capture: int) -> dict[str, str]:
@@ -189,6 +210,7 @@ def environment(save_dir: Path, capture: int) -> dict[str, str]:
         MDKR_RENDERER="gl",
         MDKR_STATE_HASH="3",
         MDKR_DRAWDIST_TRACE="1",
+        MDKR_TEST_ANIM_LOD_WITNESS="1",
         MDKR_DUMP_FROM=str(capture),
         MDKR_DUMP_EVERY="999",
         MDKR_NO_CRASH_HANDLER="1",
@@ -257,6 +279,7 @@ def run_arm(binary: Path, rom: Path, work: Path, label: str, script: Path,
             f"{label}: no [DRAWDIST] rows. MDKR_DRAWDIST_TRACE did not arm, so "
             f"the draw census that separates 'more objects were drawn' from "
             f"'some pixel moved' is missing.")
+    witness = WITNESS_RE.findall(output)
     return Arm(
         label=label,
         image=read_ppm(dumps[0]),
@@ -264,6 +287,8 @@ def run_arm(binary: Path, rom: Path, work: Path, label: str, script: Path,
         live_objects=tuple((int(m.group(1)), int(m.group(2)))
                            for m in matches if m is not None),
         census=census,
+        never_posed_drawn=sum(1 for row in witness if row[2] == "-1"),
+        never_posed_requested=sum(1 for row in witness if row[5] == "-1"),
     )
 
 
@@ -579,16 +604,43 @@ def main() -> int:
                     f"{len(stray)} frame(s), first at {stray[0]}; at bias 0 the "
                     f"setting must be inert")
 
-            # 5.
+            # 5. On this 4P route the band table never commits models 0/1, so
+            # a bias onto them selects an instance obj_animate_tick() has never
+            # posed -- the bind pose. Historically that WAS this arm's pixel
+            # difference: the "detail" the pre-fence build showed further out
+            # was the T-pose defect (issue #48's parked offline LodBias class).
+            # The draw-seam never-posed fence now redirects such selections to
+            # a posed model, so a byte-identical capture is the CORRECT result
+            # here -- but only when the fence demonstrably did that redirect
+            # (never_posed_requested > 0) and nothing bind-posed was presented
+            # (never_posed_drawn == 0 in BOTH arms; lod0 exercises the fence
+            # too, through the 4P cross-viewport drawn-vs-committed
+            # divergence). An identical frame WITHOUT fence activity is still
+            # the old failure: the setting reached nothing.
+            for arm in (detail_off, detail_max):
+                if arm.never_posed_drawn:
+                    failures.append(
+                        f"{arm.label}: {arm.never_posed_drawn} racer draw(s) "
+                        f"presented a NEVER-POSED model instance (bind pose / "
+                        f"T-pose); the draw-seam fence is not holding")
             if detail_max.image.pixels == detail_off.image.pixels:
-                failures.append(
-                    "lod2: the captured frame is byte-identical to lod0's. "
-                    "Holding the detailed model further out changed nothing "
-                    "on screen.")
+                if detail_max.never_posed_requested <= 0:
+                    failures.append(
+                        "lod2: the captured frame is byte-identical to lod0's "
+                        "and the never-posed fence caught nothing. Holding "
+                        "the detailed model further out changed nothing on "
+                        "screen.")
+                else:
+                    summaries.append(
+                        f"lodPixels=0 (all {detail_max.never_posed_requested} "
+                        f"biased never-posed request(s) fenced to posed "
+                        f"models)")
             else:
                 summaries.append(
                     f"lodPixels="
-                    f"{len(changed_pixels(detail_off.image, detail_max.image))}")
+                    f"{len(changed_pixels(detail_off.image, detail_max.image))}"
+                    f" (fenced {detail_max.never_posed_requested} never-posed "
+                    f"request(s))")
             compare_state(detail_off, detail_max, failures)
 
             summaries.append(f"ddTicks={len(near.live_objects)}")
