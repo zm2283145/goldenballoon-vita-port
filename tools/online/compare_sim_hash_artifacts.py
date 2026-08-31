@@ -7,19 +7,21 @@ that two builds simulate identically -- across OS (macOS vs Windows) or ROM
 region (US vs EU) -- reduces to: run each, then compare the two artifacts.
 
 This tool is that comparison. It exits 0 iff BOTH files are non-empty, the same
-length, and byte-equal on every tick line. Otherwise it exits non-zero and
-names the first divergent tick (its number and both hash values) or the
-truncation point.
+length, and byte-equal modulo line endings on every tick line (the artifact is
+read line-oriented, so a macOS LF and a Windows CRLF carrying the same tick are
+NOT a divergence). Otherwise it exits non-zero and names the first divergent
+tick (its number and both hash values) or the truncation point.
 
 It FAILS CLOSED. A comparison that cannot be trusted is a failure, never a
 pass, so each of these is a distinct non-zero exit with its own message:
 
+    exit 1  wrong usage (bad command-line arguments)
     exit 2  a file is missing / unreadable
     exit 3  a file is empty (no tick lines)
-    exit 4  a file has a line that is not a well-formed `[SIMHASH]` row
+    exit 4  a file has a non-ASCII byte, or a line that is not a well-formed
+            `[SIMHASH]` row
     exit 5  the files have different lengths (one truncates the other)
     exit 6  the files diverge on a tick line
-    exit 1  wrong usage
 
 Each artifact line is the exact stdout form:
 
@@ -35,6 +37,7 @@ import argparse
 import re
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 # Distinct exit codes so a caller (or a test) can tell the failure modes apart
 # without scraping the message text.
@@ -69,9 +72,19 @@ def load(path_text: str) -> list[str]:
     """
     path = Path(path_text)
     try:
-        raw = path.read_text()
+        # The artifact format is pure ASCII (see LINE_RE). Decode strictly so an
+        # undecodable byte is a fail-closed parse error rather than a raw
+        # traceback -- and, critically, so the verdict is NOT locale-dependent:
+        # a default decode would silently accept cp1252 bytes on Windows while
+        # tracebacking on UTF-8 macOS, so two hosts could disagree.
+        raw = path.read_text(encoding="ascii")
     except FileNotFoundError as error:
         raise ArtifactError(EXIT_MISSING, f"missing file: {path}") from error
+    except (UnicodeDecodeError, ValueError) as error:
+        raise ArtifactError(
+            EXIT_UNPARSEABLE,
+            f"unparseable file {path}: non-ASCII/undecodable byte: "
+            f"{error}") from error
     except OSError as error:
         raise ArtifactError(
             EXIT_MISSING, f"unreadable file: {path}: {error}") from error
@@ -124,8 +137,22 @@ def compare(a_path: str, b_path: str) -> tuple[int, str]:
         f"{a_path} and {b_path}")
 
 
+class _UsageParser(argparse.ArgumentParser):
+    """ArgumentParser that exits usage errors with EXIT_USAGE.
+
+    argparse's default is exit status 2, which would collide with EXIT_MISSING
+    and make the code ambiguous. Routing usage errors to EXIT_USAGE keeps every
+    non-zero code mapped to exactly one failure mode, as the docstring table
+    promises.
+    """
+
+    def error(self, message: str) -> NoReturn:
+        self.print_usage(sys.stderr)
+        self.exit(EXIT_USAGE, f"{self.prog}: error: {message}\n")
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
+    parser = _UsageParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("artifact_a", help="first per-tick hash artifact")
