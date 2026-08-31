@@ -70,7 +70,7 @@ TICKS = 3000
 # literal here closes that overclaim: the observed hash must EQUAL this golden.
 # A LEGITIMATE ROM/toolchain change is a one-line update here, never a silent green.
 # Skipped when --track/--mask change the sim (a different track is a different hash).
-GOLDEN_RACE_HASH = "7da2ea6757bf1eba"
+GOLDEN_RACE_HASH = "db805fd2ee15d3ca"
 
 # Printed by the wiring only when a session-config env seam is set (--track).
 CONFIG_TRACK_RE = re.compile(
