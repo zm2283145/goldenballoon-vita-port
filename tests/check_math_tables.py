@@ -43,6 +43,20 @@ to be able to bisect it.  See docs/OPEN_ITEMS.md.
    bit, so the table alone is not what is being trusted.  `MDKR_TRIG=libm`
    restores the approximation.
 
+The baked default, and the equality gate over it
+------------------------------------------------
+The DEFAULT build no longer generates either table through the host's libm at
+load time: it copies the BAKED arrays in `platform/math_tables_baked.h`
+(generated from the same `.s` by `tools/gen_math_tables.py` and committed), so
+the table bytes are a constant of the source tree rather than a property of
+whichever libm the host ships.  This check is the equality gate over that
+committed header: every entry of both baked arrays must EQUAL the
+corresponding `.half` directive in the `.s`, entry for entry, in addition to
+the binary-side FNV assertions below.  `MDKR_DEV_RUNTIME_TRIG=1` restores the
+superseded load-time libm generation (a third A/B arm here, and a live-online
+refusal seam like the other three) -- on this host it must still reproduce the
+`.s` exactly, which is precisely the premise the bake stops relying on.
+
 Why the FIXTURES had to change first, and why that matters here
 --------------------------------------------------------------
 All three are reached and material -- measured 80 of 359 [PACE] rows changed for
@@ -71,13 +85,14 @@ import sys
 from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
 
 ASM = os.path.join("game", "src", "hasm", "ido", "math_util.s")
+BAKED = os.path.join("platform", "math_tables_baked.h")
 ARCTAN_LIVE = 1025          # atan2_lookup's worst-case index is 1024
 SINE_PEAK = 0x8000          # gSineTable peaks at 0x8000; sins_s16 doubles it
 
 MATH_RE = re.compile(r"\[MATH\] rngSeed=0x([0-9a-f]+) prevSeed=0x([0-9a-f]+) "
                      r"arctan=(\w+) arctanN=(\d+) arctanFnv=0x([0-9a-f]+) "
                      r"trig=(\w+) sineN=(\d+) sineFnv=0x([0-9a-f]+) "
-                     r"sinFnv=0x([0-9a-f]+)")
+                     r"sinFnv=0x([0-9a-f]+) sineSrc=(\w+) arctanSrc=(\w+)")
 BAD_RE = re.compile(r"\[FATAL\]|\[CRASH\]|AddressSanitizer|Assertion")
 LEGACY_SEED = 0x00051234    # the invented boot seed, kept reachable for A/B
 REQUIRED_STRONG = {
@@ -153,10 +168,17 @@ def check_required_strong_symbols(binary, failures):
 
 
 def parse_asm_half_table(text, name):
-    """Pull an EXPORT(<name>) .half table out of the hand-written .s."""
-    i = text.index("EXPORT(%s)" % name)
+    """Pull an EXPORT(<name>) .half table out of the hand-written .s.
+
+    The symbol is matched as an exact EXPORT(<name>) token, so a longer symbol
+    (e.g. EXPORT(gSineTable2)) can never bind here; a missing symbol raises
+    LookupError (caught in main) instead of a bare .index() traceback.
+    """
+    m = re.search(r"EXPORT\(" + re.escape(name) + r"\)", text)
+    if m is None:
+        raise LookupError("EXPORT(%s) not found in %s" % (name, ASM))
     out = []
-    for line in text[i:].split("\n")[1:]:
+    for line in text[m.start():].split("\n")[1:]:
         s = line.strip()
         if s.startswith(".half"):
             out += [int(v.strip(), 16) for v in s[5:].split(",") if v.strip()]
@@ -168,9 +190,51 @@ def parse_asm_half_table(text, name):
 
 
 def parse_asm_word(text, name):
-    i = text.index("EXPORT(%s)" % name)
-    m = re.search(r"\.word\s+(0x[0-9A-Fa-f]+)", text[i:i + 400])
+    """Pull the EXPORT(<name>) .word value out of the .s.
+
+    Matches EXPORT(<name>) as an exact token (same anchoring as
+    parse_asm_half_table), so a longer symbol cannot bind, and raises
+    LookupError on a missing symbol instead of a bare .index() traceback.
+    """
+    e = re.search(r"EXPORT\(" + re.escape(name) + r"\)", text)
+    if e is None:
+        raise LookupError("EXPORT(%s) not found in %s" % (name, ASM))
+    m = re.search(r"\.word\s+(0x[0-9A-Fa-f]+)", text[e.start():e.start() + 400])
     return int(m.group(1), 16)
+
+
+def parse_baked_array(text, name):
+    """Pull a `static const uint16_t <name>[...] = { ... };` array out of the
+    committed baked-table header, or None if the array is not there."""
+    m = re.search(re.escape(name) + r"\s*\[[^\]]*\]\s*=\s*\{([^}]*)\}", text)
+    if m is None:
+        return None
+    return [int(v.strip(), 16) for v in m.group(1).split(",") if v.strip()]
+
+
+def baked_equality_failures(baked, rom, header_name, asm_name):
+    """The committed baked array must EQUAL the .s table entry for entry."""
+    out = []
+    if baked is None:
+        out.append("%s has no parseable %s array -- the baked header the "
+                   "default build copies is gone or malformed"
+                   % (BAKED, header_name))
+        return out
+    if len(baked) != len(rom):
+        out.append("%s's %s has %d entries, EXPORT(%s) in %s has %d -- "
+                   "regenerate with tools/gen_math_tables.py"
+                   % (BAKED, header_name, len(baked), asm_name, ASM, len(rom)))
+        return out
+    bad = [i for i in range(len(rom)) if baked[i] != rom[i]]
+    if bad:
+        i = bad[0]
+        out.append("%s's %s differs from EXPORT(%s) in %s on %d of %d entries "
+                   "(first at [%d]: 0x%04X != 0x%04X) -- the committed bake no "
+                   "longer equals the assembly it was baked from; regenerate "
+                   "with tools/gen_math_tables.py"
+                   % (BAKED, header_name, asm_name, ASM, len(bad), len(rom),
+                      i, baked[i], rom[i]))
+    return out
 
 
 def fnv1a32_u16(vals):
@@ -225,7 +289,7 @@ def run(binary, rom, env_extra, verbose):
     env = dict(os.environ)
     env["MDKR_AUDIO"] = "0"      # belt-and-braces; --headless-frames is the guarantee
     env["MDKR_TRACE"] = "1"      # arms the [MATH] probe
-    for k in ("MDKR_ARCTAN", "MDKR_RNGSEED", "MDKR_TRIG"):
+    for k in ("MDKR_ARCTAN", "MDKR_RNGSEED", "MDKR_TRIG", "MDKR_DEV_RUNTIME_TRIG"):
         env.pop(k, None)
     env.update(env_extra)
     cmd = [binary, "--headless-frames", "3", "--rom", rom]
@@ -247,6 +311,8 @@ def run(binary, rom, env_extra, verbose):
         "sineN": int(m.group(7)) if m else None,
         "sineFnv": int(m.group(8), 16) if m else None,
         "sinFnv": int(m.group(9), 16) if m else None,
+        "sineSrc": m.group(10) if m else None,
+        "arctanSrc": m.group(11) if m else None,
         "bad": BAD_RE.findall(out),
     }
 
@@ -259,7 +325,7 @@ def main() -> int:
     args = ap.parse_args()
 
     binary = resolve_binary(args.build)
-    for path in (binary, args.rom, ASM):
+    for path in (binary, args.rom, ASM, BAKED):
         if not os.path.exists(path):
             print("FAIL: missing %s" % path, file=sys.stderr)
             return 1
@@ -269,10 +335,14 @@ def main() -> int:
 
     # ---- ground truth, straight out of the vendored assembly ---------------
     text = open(ASM).read()
-    rom_arctan = parse_asm_half_table(text, "gArcTanTable")
-    rom_sine = parse_asm_half_table(text, "gSineTable")
-    rom_seed = parse_asm_word(text, "gCurrentRNGSeed")
-    rom_prev = parse_asm_word(text, "gPrevRNGSeed")
+    try:
+        rom_arctan = parse_asm_half_table(text, "gArcTanTable")
+        rom_sine = parse_asm_half_table(text, "gSineTable")
+        rom_seed = parse_asm_word(text, "gCurrentRNGSeed")
+        rom_prev = parse_asm_word(text, "gPrevRNGSeed")
+    except LookupError as exc:
+        print("FAIL: %s" % exc, file=sys.stderr)
+        return 1
 
     if len(rom_arctan) < ARCTAN_LIVE:
         print("FAIL: %s's gArcTanTable parsed as %d entries, need >= %d -- the "
@@ -280,6 +350,20 @@ def main() -> int:
               file=sys.stderr)
         return 1
     rom_fnv = fnv1a32_u16(rom_arctan[:ARCTAN_LIVE])
+
+    # ---- the EQUALITY gate over the committed baked arrays ------------------
+    # The default build copies platform/math_tables_baked.h instead of
+    # generating through libm, so the committed header IS the default table
+    # bytes. Entry-for-entry equality against the .s (not just a hash) keeps a
+    # perturbed or stale bake diagnosable down to the index.
+    baked_text = open(BAKED).read()
+    baked_sine = parse_baked_array(baked_text, "kMdkrBakedSineTable")
+    baked_arctan = parse_baked_array(baked_text, "kMdkrBakedArcTanTable")
+    failures += baked_equality_failures(baked_sine, rom_sine,
+                                        "kMdkrBakedSineTable", "gSineTable")
+    failures += baked_equality_failures(baked_arctan,
+                                        rom_arctan[:ARCTAN_LIVE],
+                                        "kMdkrBakedArcTanTable", "gArcTanTable")
 
     # The generators, so the divergence is stated in entry counts and not only as
     # a hash. Rounding must reproduce the ROM table exactly; truncation must not.
@@ -325,12 +409,14 @@ def main() -> int:
                         "angles, so MDKR_TRIG=libm is no longer a divergence and "
                         "this check is describing a bug that does not exist")
 
-    # ---- the two arms ------------------------------------------------------
+    # ---- the three arms ----------------------------------------------------
     romarm = run(binary, args.rom, {}, args.verbose)
     legacy = run(binary, args.rom, {"MDKR_ARCTAN": "trunc", "MDKR_RNGSEED": "legacy",
                                     "MDKR_TRIG": "libm"}, args.verbose)
+    runtime = run(binary, args.rom, {"MDKR_DEV_RUNTIME_TRIG": "1"}, args.verbose)
 
-    for name, r in (("default/rom", romarm), ("legacy", legacy)):
+    for name, r in (("default/rom", romarm), ("legacy", legacy),
+                    ("dev-runtime", runtime)):
         if r["rc"] != 0:
             failures.append("%s arm: exit code %d" % (name, r["rc"]))
         if r["bad"]:
@@ -355,6 +441,11 @@ def main() -> int:
                         % (romarm["sineN"], ASM, len(rom_sine)))
 
     # ---- the DEFAULT build must be EXACTLY right ---------------------------
+    if romarm["sineSrc"] != "baked" or romarm["arctanSrc"] != "baked":
+        failures.append("the default build reports sineSrc=%s arctanSrc=%s, want "
+                        "baked/baked -- the default tables are supposed to be the "
+                        "committed %s copy of the .s, not a load-time generation"
+                        % (romarm["sineSrc"], romarm["arctanSrc"], BAKED))
     if romarm["mode"] != "round":
         failures.append("the default build reports arctan=%s, want round -- the "
                         "ROM-faithful arctan table is no longer the default"
@@ -408,12 +499,48 @@ def main() -> int:
                         "table walk, so the libm approximation is no longer a "
                         "divergence and this check is describing a bug that does not "
                         "exist")
-    # gSineTable itself is generated identically in both arms -- only its use
-    # changes -- so a mismatch here means the generator, not the toggle.
+    # gSineTable itself is filled identically in both arms -- only its use
+    # changes -- so a mismatch here means the fill, not the toggle.
     if legacy["sineFnv"] != rom_sine_fnv:
         failures.append("MDKR_TRIG=libm changed gSineTable's contents (0x%08x vs "
                         "0x%08x) -- the toggle must change how the table is USED, not "
                         "what is in it" % (legacy["sineFnv"], rom_sine_fnv))
+    # The trunc curve is a deliberate divergence from the .s, so it has no baked
+    # source: the trunc arm MUST report a load-time arctan (and an untouched
+    # baked sine). arctanSrc=baked here would mean the toggle silently stopped
+    # producing the superseded table at all.
+    if legacy["arctanSrc"] != "runtime" or legacy["sineSrc"] != "baked":
+        failures.append("the legacy arm reports sineSrc=%s arctanSrc=%s, want "
+                        "baked/runtime -- MDKR_ARCTAN=trunc must regenerate the "
+                        "truncated arctan curve at load time and leave the sine "
+                        "table on the baked copy"
+                        % (legacy["sineSrc"], legacy["arctanSrc"]))
+
+    # ---- the dev-runtime arm: the superseded libm generation, still exact ----
+    # MDKR_DEV_RUNTIME_TRIG=1 regenerates BOTH tables through the host's libm
+    # (the pre-bake behaviour). On this host that generation must still equal
+    # the .s bit for bit -- if this arm ever fails while the default stays
+    # green, that IS the cross-host libm divergence the baked default exists to
+    # make irrelevant, caught by the A/B toggle doing its job.
+    if runtime["sineSrc"] != "runtime" or runtime["arctanSrc"] != "runtime":
+        failures.append("MDKR_DEV_RUNTIME_TRIG=1 reports sineSrc=%s arctanSrc=%s, "
+                        "want runtime/runtime -- the A/B toggle is not taking "
+                        "effect, so the superseded libm generation is unreachable"
+                        % (runtime["sineSrc"], runtime["arctanSrc"]))
+    if runtime["mode"] != "round" or runtime["trig"] != "table":
+        failures.append("the dev-runtime arm reports arctan=%s trig=%s, want "
+                        "round/table -- MDKR_DEV_RUNTIME_TRIG must only move the "
+                        "table SOURCE, not the curve rounding or the sine walk"
+                        % (runtime["mode"], runtime["trig"]))
+    if runtime["fnv"] != rom_fnv or runtime["sineFnv"] != rom_sine_fnv \
+            or runtime["sinFnv"] != rom_sin_fnv:
+        failures.append("the dev-runtime arm's tables no longer reproduce the .s "
+                        "(arctanFnv 0x%08x want 0x%08x, sineFnv 0x%08x want "
+                        "0x%08x, sinFnv 0x%08x want 0x%08x) -- this host's libm "
+                        "has diverged from the vendored assembly, exactly the "
+                        "hazard the baked default removes from shipping builds"
+                        % (runtime["fnv"], rom_fnv, runtime["sineFnv"],
+                           rom_sine_fnv, runtime["sinFnv"], rom_sin_fnv))
 
     if args.verbose:
         print("  ground truth %s: gArcTanTable %d entries fnv=0x%08x, "
@@ -425,23 +552,34 @@ def main() -> int:
         print("  sins_s16 over 65536 angles: asm-from-.s fnv=0x%08x; libm differs on "
               "%d angles (%.1f%%)"
               % (rom_sin_fnv, n_libm_bad, 100.0 * n_libm_bad / 65536.0))
-        print("  default arm: seed=0x%08x arctan=%s fnv=0x%08x trig=%s sinFnv=0x%08x"
+        print("  baked header %s: sine %d entries, arctan %d entries, both equal "
+              "the .s entry for entry"
+              % (BAKED, len(baked_sine or []), len(baked_arctan or [])))
+        print("  default arm: seed=0x%08x arctan=%s fnv=0x%08x trig=%s "
+              "sinFnv=0x%08x srcs=%s/%s"
               % (romarm["seed"], romarm["mode"], romarm["fnv"], romarm["trig"],
-                 romarm["sinFnv"]))
-        print("  legacy  arm: seed=0x%08x arctan=%s fnv=0x%08x trig=%s sinFnv=0x%08x"
+                 romarm["sinFnv"], romarm["sineSrc"], romarm["arctanSrc"]))
+        print("  legacy  arm: seed=0x%08x arctan=%s fnv=0x%08x trig=%s "
+              "sinFnv=0x%08x srcs=%s/%s"
               % (legacy["seed"], legacy["mode"], legacy["fnv"], legacy["trig"],
-                 legacy["sinFnv"]))
+                 legacy["sinFnv"], legacy["sineSrc"], legacy["arctanSrc"]))
+        print("  runtime arm: seed=0x%08x arctan=%s fnv=0x%08x trig=%s "
+              "sinFnv=0x%08x srcs=%s/%s"
+              % (runtime["seed"], runtime["mode"], runtime["fnv"],
+                 runtime["trig"], runtime["sinFnv"], runtime["sineSrc"],
+                 runtime["arctanSrc"]))
 
     if failures:
         for msg in failures:
             print("  - %s" % msg, file=sys.stderr)
         print("check_math_tables: FAIL")
         return 1
-    print("check_math_tables: PASS  (default arm is exact: gArcTanTable 0/%d differ "
-          "(fnv 0x%08x), gSineTable 0/%d differ, sins_s16 matches XLEAF(sins_s16) on "
-          "all 65536 angles, seed 0x%08x. Legacy arm still reachable and still the "
-          "divergence: %d/%d arctan entries low, libm wrong on %d/65536 angles, "
-          "seed 0x%08x)"
+    print("check_math_tables: PASS  (baked header equals the .s entry for entry; "
+          "default arm is exact and baked: gArcTanTable 0/%d differ (fnv 0x%08x), "
+          "gSineTable 0/%d differ, sins_s16 matches XLEAF(sins_s16) on all 65536 "
+          "angles, seed 0x%08x. Dev-runtime arm still reproduces the .s through "
+          "this host's libm. Legacy arm still reachable and still the divergence: "
+          "%d/%d arctan entries low, libm wrong on %d/65536 angles, seed 0x%08x)"
           % (ARCTAN_LIVE, rom_fnv, len(rom_sine), rom_seed,
              n_trunc_bad, ARCTAN_LIVE, n_libm_bad, LEGACY_SEED))
     return 0

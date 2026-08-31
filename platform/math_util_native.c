@@ -13,6 +13,7 @@
 #include "structs.h"
 #include "math_util.h"
 #include "platform_os.h"
+#include "math_tables_baked.h"
 
 #define DKR_ANG_TO_RAD (3.14159265358979323846f / 32768.0f)
 
@@ -32,11 +33,16 @@
  * transcription below. `MDKR_TRIG=libm` restores the old libm approximation for
  * A/B measurement; it is a divergence, not a fallback. */
 
-/* gSineTable — quarter turn, 1025 live entries, peak 0x8000, generated at load
- * time (see the constructor). `game/src/hasm/math_util.c` declares it extern and
- * the hand-asm reads it; nothing else in the tree defines it, because in the ROM
- * it lives in the .data section of game/src/hasm/ido/math_util.s, which this
- * build does not assemble.
+/* gSineTable — quarter turn, 1025 live entries, peak 0x8000, filled at load
+ * time (see the constructor) from the BAKED copy of the .s table
+ * (platform/math_tables_baked.h, regenerate with tools/gen_math_tables.py).
+ * `game/src/hasm/math_util.c` declares it extern and the hand-asm reads it;
+ * nothing else in the tree defines it, because in the ROM it lives in the
+ * .data section of game/src/hasm/ido/math_util.s, which this build does not
+ * assemble. `MDKR_DEV_RUNTIME_TRIG=1` restores the superseded load-time libm
+ * generation of BOTH trig tables for A/B — that generation is exact on every
+ * host measured so far, but exactness through libm is a property of the host,
+ * not of the tree, which is why baked is the default.
  *
  * sins_s16 indexes [0, 1023] and also reads index+1, so 1025 entries are live —
  * exactly the count in the .s. Entry 1024 is 0x8000, i.e. -32768 as s16; the
@@ -329,16 +335,39 @@ static void mdkr64_fill_math_tables(void) {
      *   MDKR_ARCTAN=trunc     truncate the arctan curve instead of rounding it
      *   MDKR_TRIG=libm        evaluate sines with libm instead of the ROM's
      *                         table + lerp
+     *   MDKR_DEV_RUNTIME_TRIG=1  regenerate BOTH trig tables through the
+     *                         host's libm at load time (the superseded
+     *                         behaviour) instead of copying the baked .s
+     *                         values from platform/math_tables_baked.h. On a
+     *                         host whose libm reproduces the .s — every one
+     *                         measured so far — this is byte-identical to the
+     *                         default over the live entries; the toggle
+     *                         exists so a host where it is NOT identical can
+     *                         be diagnosed with one env var instead of a
+     *                         rebuild. Dev-only, and a live-online refusal
+     *                         seam like the other three
+     *                         (OnlineRoom_liveBlockedByDeterminismEnv).
      *
      * `=rom` / `=round` / `=rom` are accepted and select the default, so an older
      * invocation that asked for the fix still gets it. Anything else is ignored,
      * which means a typo gets the ROM-faithful default rather than silently
-     * selecting a divergence. tests/check_math_tables.py asserts both arms.  */
+     * selecting a divergence. tests/check_math_tables.py asserts all arms.  */
     const char *seedMode = getenv("MDKR_RNGSEED");
     const char *tableMode = getenv("MDKR_ARCTAN");
     const char *trigMode = getenv("MDKR_TRIG");
+    const char *devRuntime = getenv("MDKR_DEV_RUNTIME_TRIG");
     const char *trace;
     int truncMode = (tableMode != NULL && tableMode[0] == 't');
+    /* Here `=0`/empty select the baked (default) tables, so as a MATH toggle the
+     * variable is a no-op unless set to a non-zero/non-empty value. That is NOT
+     * true online: OnlineRoom_liveBlockedByDeterminismEnv (online_live_wiring.cpp)
+     * triggers on the variable being SET AT ALL (getenv != nullptr), exactly like
+     * every other seam in that fence, so even MDKR_DEV_RUNTIME_TRIG=0 blocks live
+     * online. Keep the two semantics distinct on purpose: `=0` is a safe no-op for
+     * offline A/B but is NOT a safe no-op in an online context. */
+    int runtimeTables = (devRuntime != NULL && devRuntime[0] != '\0' &&
+                         devRuntime[0] != '0');
+    int arctanRuntime;
     int i;
 
     if (seedMode != NULL && seedMode[0] == 'l') {
@@ -371,16 +400,27 @@ static void mdkr64_fill_math_tables(void) {
     }
     s_trigLibm = (trigMode != NULL && trigMode[0] == 'l');
 
-    /* gSineTable — the ROM's quarter-turn sine table, reproduced with NO ROM
-     * data: round(sin(i * pi/2 / 1024) * 0x8000) matches EXPORT(gSineTable) in
-     * game/src/hasm/ido/math_util.s on all 1025 entries (0 differ, asserted by
-     * tests/check_math_tables.py against the .half directives).
+    /* gSineTable — the ROM's quarter-turn sine table. DEFAULT: copy the baked
+     * .s values (platform/math_tables_baked.h), so the table bytes are a
+     * constant of the source tree and cannot depend on the host's libm.
+     * MDKR_DEV_RUNTIME_TRIG=1 restores the superseded load-time generation:
+     * round(sin(i * pi/2 / 1024) * 0x8000), which matches EXPORT(gSineTable)
+     * in game/src/hasm/ido/math_util.s on all 1025 entries on every host
+     * measured so far (asserted by tests/check_math_tables.py against the
+     * .half directives) — the bake removes the "so far", it does not change
+     * the values.
      *
      * Entry 1024 is 0x8000, which is -32768 as s16; the assembly reads the table
      * with `lhu`, and so does dkr_sins_interp, so the wrap is the ROM's own. */
-    for (i = 0; i < SINE_LIVE; i++) {
-        double s = sin((double) i * (3.14159265358979323846 / 2.0) / 1024.0);
-        gSineTable[i] = (s16) (int) (s * 32768.0 + 0.5);
+    if (runtimeTables) {
+        for (i = 0; i < SINE_LIVE; i++) {
+            double s = sin((double) i * (3.14159265358979323846 / 2.0) / 1024.0);
+            gSineTable[i] = (s16) (int) (s * 32768.0 + 0.5);
+        }
+    } else {
+        for (i = 0; i < SINE_LIVE; i++) {
+            gSineTable[i] = (s16) kMdkrBakedSineTable[i];
+        }
     }
 
     /* value = atan(i/1024) mapped so 90deg == 0x4000 (i.e. * 0x8000/pi).
@@ -395,11 +435,30 @@ static void mdkr64_fill_math_tables(void) {
      * every atan2s()/arctan2_f() result disagree with the ROM by up to an LSB, at
      * 72 call sites including the AI's steering and the camera. Material -- 110 of
      * 359 [PACE] rows changed, from row 233 -- which is why it waited for the
-     * fixtures to become closed-loop. `MDKR_ARCTAN=trunc` restores it. */
-    for (i = 0; i < 1026; i++) {
-        float a = atanf((float)i / 1024.0f) * (32768.0f / 3.14159265358979323846f);
-        gArcTanTable[i] = (s16)(truncMode ? a : a + 0.5f);
+     * fixtures to become closed-loop. `MDKR_ARCTAN=trunc` restores it.
+     *
+     * DEFAULT: copy the baked ROUNDED .s values. The load-time generation runs
+     * only for MDKR_DEV_RUNTIME_TRIG=1 (A/B against the host's libm) or for
+     * the trunc arm, whose truncated curve is a deliberate divergence from the
+     * .s and therefore has no baked source to copy. */
+    arctanRuntime = (runtimeTables || truncMode);
+    if (arctanRuntime) {
+        for (i = 0; i < ARCTAN_LIVE; i++) {
+            float a = atanf((float)i / 1024.0f) * (32768.0f / 3.14159265358979323846f);
+            gArcTanTable[i] = (s16)(truncMode ? a : a + 0.5f);
+        }
+    } else {
+        for (i = 0; i < ARCTAN_LIVE; i++) {
+            gArcTanTable[i] = (s16) kMdkrBakedArcTanTable[i];
+        }
     }
+    /* Index 1025 is not part of the ROM's 1025-entry table and is never read
+     * (atan2_lookup's worst case is 1024); mirror the last live entry (0x2000,
+     * 45deg) in EVERY arm so the unreachable pad is byte-identical across baked,
+     * dev-runtime and trunc rather than a stray libm value the runtime arm would
+     * otherwise leave there. The live entries above are untouched -- the runtime
+     * arm's 1025 entries stay pure libm, which is the whole point of the A/B. */
+    gArcTanTable[ARCTAN_LIVE] = gArcTanTable[ARCTAN_LIVE - 1];
 
     /* Probe, so a headless check can assert on the tables, the seed and the trig
      * themselves rather than on downstream pixels. FNV-1a over the live entries as
@@ -427,10 +486,12 @@ static void mdkr64_fill_math_tables(void) {
         fprintf(stderr,
                 "[TRACE] [MATH] rngSeed=0x%08x prevSeed=0x%08x arctan=%s "
                 "arctanN=%d arctanFnv=0x%08x trig=%s sineN=%d sineFnv=0x%08x "
-                "sinFnv=0x%08x\n",
+                "sinFnv=0x%08x sineSrc=%s arctanSrc=%s\n",
                 (unsigned int)gCurrentRNGSeed, (unsigned int)gPrevRNGSeed,
                 truncMode ? "trunc" : "round", ARCTAN_LIVE, h,
-                s_trigLibm ? "libm" : "table", SINE_LIVE, hs, hsin);
+                s_trigLibm ? "libm" : "table", SINE_LIVE, hs, hsin,
+                runtimeTables ? "runtime" : "baked",
+                arctanRuntime ? "runtime" : "baked");
 
         /* vec3f_rotate_py self-test. Route-independent: it asserts the FORMULA
          * rather than any downstream pixel, which matters because the fix is
