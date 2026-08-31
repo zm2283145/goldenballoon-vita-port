@@ -528,6 +528,10 @@ CHECKS = (
           ("--soak-only",)),
     Check("state_hash", "check_state_hash.py", "release",
           "authoritative-hash determinism, window/backend invariance, legacy-RNG control"),
+    Check("sim_hash_artifact", "check_sim_hash_artifact.py", "release",
+          "on-disk per-tick [SIMHASH] artifact mode mirrors the stdout stream "
+          "byte-for-byte; the first-divergence comparator fails closed on "
+          "divergence, truncation, empty, missing and unparseable inputs"),
     Check("weather_rng_order", "check_weather_rng_order.py", "release",
           "weather-enabled authored object/weather/HUD RNG order and presentation invariance"),
     Check("weather_presentation_identity",
