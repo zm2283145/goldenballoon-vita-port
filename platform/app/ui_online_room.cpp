@@ -450,6 +450,22 @@ void handleAction(MdkrOnlineViewAction action, LauncherState &state) {
         const MdkrOnlineAdapterStep step =
             dispatch(MDKR_ONLINE_VIEW_ACTION_RACE_AGAIN);
         recordAction(action, step.accepted);
+#if MDKR_ENABLE_ONLINE_ROOM_PREVIEW || MDKR_ENABLE_ONLINE_BETA
+    } else if (action == MDKR_ONLINE_VIEW_ACTION_START_RACE) {
+        // START_RACE carries the race's legal (usable) vehicle mask as its value:
+        // the lobby reducer's all_vehicles_legal() gate (BEGIN_LOADING) rejects a
+        // 0 mask, so a maskless dispatch silently fails the start. Only the
+        // deterministic FAKE preview surface (drawRoomPanel -- the storybook /
+        // gallery / actions oracle) still routes START_RACE through this handler;
+        // the live beta lobby hands the SELECTING phase to the native takeover
+        // (drawBetaSelectingHandoff) and produces START_RACE via the party-link
+        // TRACKSELECT intent instead, never this path. Every curated preview
+        // track permits all base vehicles, so the full base mask is exact for the
+        // oracle. Gated (PREVIEW || BETA) so the OFF/release build -- which has no
+        // START_RACE branch and falls through to the generic dispatch below --
+        // stays byte-identical.
+        dispatch(action, 0u, MDKR_ONLINE_PLAYER_VEHICLE_MASK);
+#endif
     } else if (action == MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS) {
         g_online.detailsOpen = !g_online.detailsOpen;
         recordAction(action, true);
