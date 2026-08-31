@@ -195,33 +195,32 @@ static const char *const sCupNames[TS_COLS] = {
  * externs in online_screen_util.h). */
 extern s16 gTTVoiceLines[53];
 
-/* The list rows' vehicle-legality icons: the offline race-select's own 64x64
- * TOP+BOTTOM vehicle icon pairs (TEXTURE_ICON_VEHICLE_*_TOP/_BOTTOM), the SAME
- * retail tiles the VEHICLE stage blits full-size -- borrowed READ-ONLY from
- * gMenuAssets (menu_assetgroup_load routes each id through load_texture). A
- * screen-owned group, freed on _exit. The ids OVERLAP the vehicle stage's
- * sOnlineVehicleAssetIds, which is safe because the session flips the two
- * screens SERIALLY (trackselect_exit runs before vehicleselect_enter and vice
- * versa, online_session.c:1903-1962), so the boolean menu_assetgroup_load/free
- * pairings never overlap in time. */
+/* The list rows' vehicle-legality icons: the TOP tile of the offline
+ * race-select's 64x128 TOP+BOTTOM vehicle icon pairs (TEXTURE_ICON_VEHICLE_*_TOP),
+ * the SAME retail art the VEHICLE stage blits full-size -- borrowed READ-ONLY
+ * from gMenuAssets (menu_assetgroup_load routes each id through load_texture). A
+ * row chip is the TOP tile alone (see trackselect_draw_row_icons: the full pair
+ * cannot miniaturise to a 9px row), so ONLY the TOP ids are loaded here; the
+ * BOTTOM halves are the vehicle stage's, loaded there. A screen-owned group,
+ * freed on _exit. The TOP ids OVERLAP the vehicle stage's sOnlineVehicleAssetIds,
+ * which is safe because the session flips the two screens SERIALLY
+ * (trackselect_exit runs before vehicleselect_enter and vice versa,
+ * online_session.c:1903-1962), so the boolean menu_assetgroup_load/free pairings
+ * never overlap in time. */
 static const s16 sVehIconTopIds[MDKR_ONLINE_SCREEN_VEHICLE_COUNT] = {
     TEXTURE_ICON_VEHICLE_CAR_TOP,
     TEXTURE_ICON_VEHICLE_HOVERCRAFT_TOP,
     TEXTURE_ICON_VEHICLE_PLANE_TOP,
 };
-static const s16 sVehIconBotIds[MDKR_ONLINE_SCREEN_VEHICLE_COUNT] = {
-    TEXTURE_ICON_VEHICLE_CAR_BOTTOM,
-    TEXTURE_ICON_VEHICLE_HOVERCRAFT_BOTTOM,
-    TEXTURE_ICON_VEHICLE_PLANE_BOTTOM,
-};
 static s16 sTrackselectVehicleIconIds[] = {
-    TEXTURE_ICON_VEHICLE_CAR_TOP,        TEXTURE_ICON_VEHICLE_CAR_BOTTOM,
-    TEXTURE_ICON_VEHICLE_HOVERCRAFT_TOP, TEXTURE_ICON_VEHICLE_HOVERCRAFT_BOTTOM,
-    TEXTURE_ICON_VEHICLE_PLANE_TOP,      TEXTURE_ICON_VEHICLE_PLANE_BOTTOM,
+    TEXTURE_ICON_VEHICLE_CAR_TOP,
+    TEXTURE_ICON_VEHICLE_HOVERCRAFT_TOP,
+    TEXTURE_ICON_VEHICLE_PLANE_TOP,
     -1,
 };
-/* [vehicle][0]=TOP, [1]=BOTTOM, bound from gMenuAssets after the group load. */
-static TextureHeader *sVehIconTex[MDKR_ONLINE_SCREEN_VEHICLE_COUNT][2];
+/* The row chip's TOP tile per vehicle, bound from gMenuAssets after the group
+ * load (the BOTTOM half is unused at row scale -- see the group comment). */
+static TextureHeader *sVehIconTex[MDKR_ONLINE_SCREEN_VEHICLE_COUNT];
 
 /* Vehicle names for the always-on VEHICLE line. Defined here and shared with
  * VEHICLESELECT via online_trackselect.h (one table -- both screens label
@@ -230,11 +229,11 @@ const char *const mdkr_online_vehicle_names[MDKR_ONLINE_SCREEN_VEHICLE_COUNT] = 
     "CAR", "HOVERCRAFT", "PLANE",
 };
 
-/* The world sky tiles the banner strip + full-screen backdrop draw are loaded
+/* The world sky tiles the full-screen scrolling backdrop draws are loaded
  * READ-ONLY as the shared ten-tile group sOnlineSkyAssetIds (five worlds x
- * TOP+BOTTOM, online_screen_util.h). The banner strip binds each world's TOP from
- * sCupBgTop[] below; the full-screen scrolling backdrop pairs TOP+BOTTOM via the
- * shared mdkr_online_screen_backdrop() helper. */
+ * TOP+BOTTOM, online_screen_util.h). The backdrop pairs each focused world's
+ * TOP+BOTTOM via the shared mdkr_online_screen_backdrop() helper (re-armed to
+ * the hovered/locked world every frame in trackselect_render). */
 
 /* ---- Session-owned screen state (never an offline global) ------------------ */
 typedef struct MdkrOnlineTrackselectState {
@@ -549,6 +548,15 @@ typedef struct TsInput {
  * branch must cancel the armed veil (else it strands black over the vehicle stage
  * and poisons the next vehicle->trackselect B-back). */
 #define TS_SCN_LOCKFADE 4
+/* A11Y-FRESHNESS (change-detect re-announce arm): host, single mode. The cursor
+ * walks to Spaceport Alpha (display index 19 -- its 2-player mask DROPS hovercraft)
+ * and PARKS. A rival then JOINS (occupied 1 -> 2) and LEAVES (2 -> 1) with the
+ * cursor untouched. The a11y hover witness must re-announce the vehicles= list on
+ * the occupied change ALONE -- pre-fix the TS_NONE lock sentinels saturated the
+ * occupied/host/focus bits of the change-detect key, so a parked rival join/leave
+ * narrowed the chips visually but never re-spoke. Never locks / never boots (the
+ * screen stays up the whole run). */
+#define TS_SCN_FRESHNESS 5
 static s8 sTsScenario = -1;
 
 /* Scripted headless input (env MDKR_TEST_ONLINE_TRACKSELECT). Keyed on the
@@ -612,6 +620,17 @@ static void trackselect_input_scripted(TsInput *in) {
         }
         if (sTs.ticks == 2u) {
             in->aEdge = 1u; /* re-lock the restored cell -> vehicle stage -> boot */
+        }
+        return;
+    }
+    if (sTsScenario == TS_SCN_FRESHNESS) {
+        /* Flat-walk DOWN nineteen rows to Spaceport Alpha (display index 19:
+         * col 4 round 3, track 15 -- its 2-player mask drops hovercraft), then
+         * PARK. Never lock, never B: the rival join/leave the seam scripts must
+         * be the ONLY state change while the cursor sits, so the re-announcement
+         * is provably driven by the occupied change and nothing else. */
+        if (sTs.ticks >= 2u && sTs.ticks <= 20u) {
+            in->dy = 1;
         }
         return;
     }
@@ -920,7 +939,7 @@ static void trackselect_publish_intent(u8 localSeatChar) {
 }
 
 /* ======================================================================== *
- * Render (retail wooden picture-frame browser: one big framed cell)
+ * Render (dense world-grouped track list: two columns on one navy board)
  * ======================================================================== */
 
 /* The hovered track id (engine track id, not the 0..19 index): the cursor's
@@ -984,7 +1003,7 @@ static void trackselect_draw_row_icons(s32 xRight, s32 rowY, u8 mask, u8 bright)
     u8 n = 0u;
 
     for (v = 0u; v < MDKR_ONLINE_SCREEN_VEHICLE_COUNT; v++) {
-        TextureHeader *top = sVehIconTex[v][0];
+        TextureHeader *top = sVehIconTex[v];
         if (!(mask & (u8) (1u << v)) || top == NULL || top->width == 0) {
             continue;
         }
@@ -996,7 +1015,7 @@ static void trackselect_draw_row_icons(s32 xRight, s32 rowY, u8 mask, u8 bright)
     }
     x = xRight - totalW;
     for (v = 0u; v < MDKR_ONLINE_SCREEN_VEHICLE_COUNT; v++) {
-        TextureHeader *top = sVehIconTex[v][0];
+        TextureHeader *top = sVehIconTex[v];
         if (!(mask & (u8) (1u << v)) || top == NULL || top->width == 0) {
             continue;
         }
@@ -1126,11 +1145,26 @@ static void trackselect_a11y_witness(u8 effMode, u8 focusWorld, u8 cellTrackIdx,
                                      unsigned occupied) {
     char veh[48];
     char nm[24];
-    u32 key = ((u32) effMode) | ((u32) cellTrackIdx << 1) |
-              ((u32) lockedTrackIdx << 6) | ((u32) lockedCup << 11) |
-              ((u32) (host ? 1u : 0u) << 14) |
-              ((u32) (occupied > 1u ? 1u : 0u) << 15) |
-              ((u32) focusWorld << 16);
+    /* CLAMP the TS_NONE (0xFF) lock sentinels into their field widths BEFORE
+     * packing. Unclamped, 0xFF<<6 (lockedTrackIdx) and 0xFF<<11 (lockedCup)
+     * saturate up through the host(14), occupied(15) and focusWorld(16-18) bits
+     * in the common NO-LOCK state, so a parked rival join/leave -- which flips
+     * occupied and re-narrows the vehicles= list -- never changes the key and the
+     * hover never re-announces. Same clamp idiom trackselect_witness uses for its
+     * snapshot sentinels (:cfgTrack/cup). Field widths: cellTrack / lockedTrack
+     * 0..19 else 0x1F (5 bits); lockedCup 0..4 else 0x7 (3 bits); focusWorld
+     * 0..4 (3 bits). Max real key == bit 18, so the 0xFFFFFFFF _enter reset stays
+     * a value no real key can collide with. */
+    u32 key =
+        ((u32) effMode) |
+        ((u32) ((cellTrackIdx >= TS_TRACK_COUNT) ? 0x1Fu
+                                                 : (cellTrackIdx & 0x1Fu)) << 1) |
+        ((u32) ((lockedTrackIdx >= TS_TRACK_COUNT) ? 0x1Fu
+                                                   : (lockedTrackIdx & 0x1Fu)) << 6) |
+        ((u32) ((lockedCup >= TS_COLS) ? 0x7u : (lockedCup & 0x7u)) << 11) |
+        ((u32) (host ? 1u : 0u) << 14) |
+        ((u32) (occupied > 1u ? 1u : 0u) << 15) |
+        ((u32) (focusWorld & 0x7u) << 16);
     if (key == sA11yKey) {
         return;
     }
@@ -1573,8 +1607,7 @@ void mdkr_online_trackselect_enter(void) {
      * against the vehicle stage's overlapping ids -- see the group's comment). */
     menu_assetgroup_load(sTrackselectVehicleIconIds);
     for (c = 0u; c < MDKR_ONLINE_SCREEN_VEHICLE_COUNT; c++) {
-        sVehIconTex[c][0] = (TextureHeader *) gMenuAssets[sVehIconTopIds[c]];
-        sVehIconTex[c][1] = (TextureHeader *) gMenuAssets[sVehIconBotIds[c]];
+        sVehIconTex[c] = (TextureHeader *) gMenuAssets[sVehIconTopIds[c]];
     }
 
     load_font(ASSET_FONTS_BIGFONT);
@@ -1582,10 +1615,15 @@ void mdkr_online_trackselect_enter(void) {
     mdkr_online_screen_hd_text_ref();
 
     sTs.assets = 1u;
-    /* NEUTRAL hub-sky backdrop (charselect continuity), NOT the focused world:
-     * the world sky lives only inside the picture frame so the postcard can
-     * never read as a magnified copy of its own backdrop (the beta-4
-     * empty-frame defect; rationale at the render-site re-arm). */
+    /* Entry seed for the scrolling backdrop: the NEUTRAL hub sky (charselect
+     * continuity). trackselect_render re-arms the backdrop to the FOCUSED
+     * world every frame (:1414-1419) -- the frame is retired, so the old
+     * postcard-mirrors-its-own-backdrop defect is structurally gone and the
+     * world sky is free liveness. This seed is kept (not dropped) because
+     * bgdraw_render() runs BEFORE the online tick (online_screen_util.c:563),
+     * so it is what the FIRST pre-tick background draw uses -- under the
+     * fade-in-from-black veil below -- until the first render re-arms the
+     * focused world on the very next tick. */
     mdkr_online_screen_backdrop(MDKR_ONLINE_SKY_WORLD_NEUTRAL);
 
     if (mdkr_online_trackselect_test_active()) {
@@ -1609,9 +1647,9 @@ void mdkr_online_trackselect_enter(void) {
 void mdkr_online_trackselect_exit(void) {
     u8 c;
     if (sTs.assets) {
-        /* Retire the frame's authored display list FIRST (this frame's frame/
-         * arrow/postcard texrects reference the tiles freed below -- the
-         * freed-texture DL corruption fix, see mdkr_online_screen_dl_retire). */
+        /* Retire this frame's authored display list FIRST (its row-icon + sky
+         * backdrop texrects reference the tiles freed below -- the freed-texture
+         * DL corruption fix, see mdkr_online_screen_dl_retire). */
         mdkr_online_screen_dl_retire();
         /* Disarm the borrowed sky before freeing its tiles (bgdraw_render lifetime). */
         mdkr_online_screen_backdrop_clear();
@@ -1623,8 +1661,7 @@ void mdkr_online_trackselect_exit(void) {
          * (dl_retire above already covered this frame's icon texrects). */
         menu_assetgroup_free(sTrackselectVehicleIconIds);
         for (c = 0u; c < MDKR_ONLINE_SCREEN_VEHICLE_COUNT; c++) {
-            sVehIconTex[c][0] = NULL;
-            sVehIconTex[c][1] = NULL;
+            sVehIconTex[c] = NULL;
         }
         sTs.assets = 0u;
         fprintf(stderr, "[online-trackselect] exit: freed world bg assets\n");
@@ -1793,6 +1830,8 @@ static void trackselect_test_resolve(void) {
             sTsScenario = (s8) TS_SCN_JOINER;
         } else if (e != NULL && strstr(e, "lockfade") != NULL) {
             sTsScenario = (s8) TS_SCN_LOCKFADE;
+        } else if (e != NULL && strstr(e, "freshness") != NULL) {
+            sTsScenario = (s8) TS_SCN_FRESHNESS;
         } else if (e != NULL && strstr(e, "hold") != NULL) {
             sTsScenario = (s8) TS_SCN_HOLD;
         } else {
@@ -1983,6 +2022,36 @@ static void trackselect_test_reduce_and_script(void) {
                             "armed)\n");
                 }
             }
+        }
+        mdkr_party_link_publish(&sTsRoom);
+        return;
+    }
+
+    /* A11Y-FRESHNESS: the local seat is the HOST (roles unflipped in adopt); the
+     * rival seat JOINS then LEAVES while the host's cursor is parked on Spaceport
+     * Alpha, so occupied crosses the 1<->2 boundary (its 2-player mask drops
+     * hovercraft) with no cursor move. Converge the host seat's char/vehicle from
+     * intent so the hover line renders, but never touch mode/config (no lock) and
+     * never flip phase (no boot). */
+    if (sTsScenario == TS_SCN_FRESHNESS) {
+        if (mdkr_party_link_intent_poll(&intent)) {
+            if (intent.confirmed &&
+                intent.hover_character < MDKR_ONLINE_SCREEN_CHAR_COUNT) {
+                sTsRoom.seats[0].character_id = intent.hover_character;
+            }
+            if (intent.vehicle_id < MDKR_ONLINE_SCREEN_VEHICLE_COUNT) {
+                sTsRoom.seats[0].vehicle_id = intent.vehicle_id;
+            }
+        }
+        if (sTs.ticks < 40u) {
+            sTsRoom.seats[1].occupied = 0u; /* rival ABSENT (occupied == 1) */
+            sTsRoom.seats[1].connected = 0u;
+        } else if (sTs.ticks < 80u) {
+            sTsRoom.seats[1].occupied = 1u; /* rival JOINS (occupied 1 -> 2) */
+            sTsRoom.seats[1].connected = 1u;
+        } else {
+            sTsRoom.seats[1].occupied = 0u; /* rival LEAVES (occupied 2 -> 1) */
+            sTsRoom.seats[1].connected = 0u;
         }
         mdkr_party_link_publish(&sTsRoom);
         return;

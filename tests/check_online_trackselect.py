@@ -616,6 +616,58 @@ def check_lockfade(output: str) -> int | None:
     return assert_locked_equals_booted(scn, output, LOCKED_TRACK)
 
 
+def check_freshness(output: str) -> int | None:
+    """A11Y RE-ANNOUNCE FRESHNESS (change-detect key fix): the host parks on
+    Spaceport Alpha -- whose 2-player vehicle mask DROPS hovercraft -- and a rival
+    JOINS then LEAVES while the cursor is untouched. The a11y hover witness must
+    re-announce the vehicles= list on the occupied change ALONE. Pre-fix the
+    TS_NONE lock sentinels (lockedTrack<<6 / lockedCup<<11) saturated the
+    occupied/host/focus bits of the change-detect key in the common no-lock state,
+    so a parked rival join/leave narrowed the chips visually but never re-spoke:
+    exactly ONE Spaceport announcement, one vehicles= value."""
+    scn = "freshness"
+    marker = forbidden_marker(output, *FORBIDDEN_ONLINE, *FORBIDDEN_EXTRA)
+    if marker:
+        return fail(scn, f"observed forbidden marker {marker!r}", output)
+    if not TS_ENTER_RE.search(output):
+        return fail(scn, "TRACKSELECT was never entered", output)
+
+    hovers = TS_A11Y_HOVER_RE.findall(output)
+    # Ordered vehicles= values announced for the PARKED Spaceport Alpha cell (its
+    # FUTURE FUN group prefix disambiguates it from Spacedust Alley).
+    spaceport = [h[1] for h in hovers if "SPACEPORT" in h[0]]
+    if not spaceport:
+        return fail(scn, "no a11y hover announcement for the parked SPACEPORT "
+                    "ALPHA cell -- the walk never reached it", output)
+
+    # THE FINDING: a parked rival join AND leave must EACH re-fire the hover line
+    # (>= 3 announcements: rival absent -> joined -> left) with the vehicles= list
+    # reflecting the live occupied count. Pre-fix the saturated key froze it at the
+    # entry value -> exactly one line, one distinct value.
+    if len(spaceport) < 3:
+        return fail(scn, f"the parked SPACEPORT ALPHA cell announced "
+                    f"{len(spaceport)} time(s) ({spaceport!r}); a rival join AND "
+                    f"leave with the cursor parked must EACH re-announce (>= 3) -- "
+                    f"the change-detect key aliased the occupied bit into the lock "
+                    f"sentinels", output)
+    if len(set(spaceport)) < 2:
+        return fail(scn, f"the parked SPACEPORT ALPHA vehicles= list never "
+                    f"changed across the rival join/leave ({spaceport!r}); the "
+                    f"2-player mask (hovercraft dropped) was never re-spoken",
+                    output)
+    # The narrowing is real mask truth: the 1-player announcement lists HOVERCRAFT,
+    # the 2-player one drops it -- both must appear.
+    if not any("HOVERCRAFT" in v for v in spaceport):
+        return fail(scn, f"no Spaceport announcement listed HOVERCRAFT (the "
+                    f"1-player mask) -- the arm never exercised the drop "
+                    f"({spaceport!r})", output)
+    if not any("HOVERCRAFT" not in v for v in spaceport):
+        return fail(scn, f"every Spaceport announcement listed HOVERCRAFT -- the "
+                    f"2-player narrow (drop hovercraft) never re-announced "
+                    f"({spaceport!r})", output)
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", default="build-beta")
@@ -652,6 +704,10 @@ def main() -> int:
         # the 18-tick veil hold. Manifest pinned to the same Whale Bay (8).
         ("lockfade", check_lockfade,
          {"MDKR_APP_TEST_ONLINE_TRACK": str(LOCKED_TRACK)}, args.timeout),
+        # A11Y-FRESHNESS: host parks on Spaceport Alpha, a rival joins then leaves
+        # with the cursor untouched; the a11y hover must re-announce the vehicles=
+        # list on the occupied change alone (no lock, no boot -- pure browse arm).
+        ("freshness", check_freshness, {}, args.timeout),
     )
     for ts_value, checker, extra_env, scn_timeout in scenarios:
         try:
@@ -679,7 +735,11 @@ def main() -> int:
         "per-player CONFIRM cannot be bypassed) and LOCK-IN-FADE (a browse-B arms "
         "the exit fade, then A locks the track inside the 18-tick veil hold: the "
         "STAY+lock branch cancelled the armed veil -- veilOnLock=1 veil=clear, "
-        "never STRANDED -- and the flow still booted + converged) -- all "
+        "never STRANDED -- and the flow still booted + converged) and "
+        "A11Y-FRESHNESS (host parked on Spaceport Alpha; a rival join AND leave "
+        "each re-announced the vehicles= list on the occupied change alone, with "
+        "the 2-player hovercraft drop spoken -- the change-detect key no longer "
+        "aliases the occupied bit into the lock sentinels) -- all "
         "handed off gGameMode=2 gCurrentMenuId=0, offered ids == reducer set, "
         "no track divergence"
     )
