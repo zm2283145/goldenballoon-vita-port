@@ -207,6 +207,7 @@ GPU_SERIAL_NAMES = frozenset({
     "adventure_hub",
     "adventure_race_loop",
     "save_options_scroll_band",
+    "track_preview_time_steady",
     "determinism",
     "rom_revision",
     "online_process_convergence",
@@ -785,6 +786,10 @@ CHECKS = (
     Check("save_options_scroll_band", "check_save_options_scroll_band.py", "native",
           "inverted rectangles on the Save Options pak-switch scroll draw "
           "nothing, as on hardware (issue #52)"),
+    Check("track_preview_time_steady", "check_track_preview_time_steady.py", "native",
+          "best time/lap digit sprites hold still while the track-preview "
+          "flyby banks; the ortho sprite roll comes from the base viewport "
+          "camera, not the cutscene bank (issue #59)"),
     Check("postrace_door_fling", "check_postrace_door_fling.py", "native",
           "post-race lobby returns stay grounded on the quit paths, with the "
           "rising-door carry-frame legacy control"),
