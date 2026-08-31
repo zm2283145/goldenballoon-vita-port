@@ -18,6 +18,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cstdint>
