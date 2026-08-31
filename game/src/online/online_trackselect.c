@@ -1617,7 +1617,7 @@ void mdkr_online_trackselect_enter(void) {
     sTs.assets = 1u;
     /* Entry seed for the scrolling backdrop: the NEUTRAL hub sky (charselect
      * continuity). trackselect_render re-arms the backdrop to the FOCUSED
-     * world every frame (:1414-1419) -- the frame is retired, so the old
+     * world every frame (:1454) -- the frame is retired, so the old
      * postcard-mirrors-its-own-backdrop defect is structurally gone and the
      * world sky is free liveness. This seed is kept (not dropped) because
      * bgdraw_render() runs BEFORE the online tick (online_screen_util.c:563),
