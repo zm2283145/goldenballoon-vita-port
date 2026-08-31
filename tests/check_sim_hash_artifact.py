@@ -16,11 +16,27 @@ the stream a durable, byte-comparable artifact:
 
 2. **Comparator.** `tools/online/compare_sim_hash_artifacts.py` takes two
    artifact files and exits 0 iff both are non-empty, the same length, and
-   byte-equal on every tick line; otherwise it exits non-zero and names the
-   first divergent tick (or the truncation point). It fails closed: a missing
-   file, an empty file, an unparseable line, and a length mismatch are all
-   distinct failures. This arm proves each of those paths, using synthetic
-   artifact files so it needs no engine run.
+   byte-equal modulo line endings on every tick line; otherwise it exits
+   non-zero and names the first divergent tick (or the truncation point). It
+   fails closed with a distinct exit per failure mode: a usage error, a missing
+   file, an empty file, an unparseable or non-ASCII line, and a length mismatch.
+   This arm proves each of those paths, using synthetic artifact files so it
+   needs no engine run.
+
+The sink's write-FAILURE path (drop on a mid-run write error, not just a bad
+open) is not exercised by an automated arm here -- a portable in-process ENOSPC
+is awkward to force -- but it is verified manually and reproducibly by ignoring
+SIGXFSZ so a tiny file-size cap makes write(2) return EFBIG to stdio instead of
+killing the process:
+
+    trap '' XFSZ; ulimit -f 4       # ignore the signal (survives exec)
+    MDKR_STATE_HASH=3 MDKR_STATE_HASH_FILE=art.txt \\
+        <mdkr64> --headless-frames N --input-script ... --rom ...
+
+The engine then emits exactly one "cannot write MDKR_STATE_HASH_FILE" stderr
+line, drops the sink and never reopens it, leaves the stdout [SIMHASH] stream
+intact, and art.txt holds the byte-exact prefix plus the single torn fragment
+of the failing tick -- which this comparator rejects fail-closed (exit 4).
 
 Always muted + headless per tests/README.md. Exit 0 = pass.
 """
@@ -43,6 +59,13 @@ COMPARATOR = ROOT / "tools" / "online" / "compare_sim_hash_artifacts.py"
 # single engine pass cheap while still proving the two sinks agree over
 # thousands of hashed fields per tick.
 FRAMES = 900
+
+# The comparator's promised exit codes (source of truth:
+# tools/online/compare_sim_hash_artifacts.py). Mirrored here so the unit arm can
+# assert an EXACT code -- proving each failure mode is distinct, e.g. that a
+# usage error does not collide with the missing-file code.
+COMPARATOR_EXIT_USAGE = 1
+COMPARATOR_EXIT_UNPARSEABLE = 4
 
 
 def make_artifact(path: Path, hashes: list[str], objs: int = 4) -> None:
@@ -186,6 +209,36 @@ def check_comparator(tmp: Path) -> list[str]:
             "mid-hash truncated final line must report a parse failure; got: "
             f"{result.stdout.strip()}")
 
+    # 9. A non-ASCII byte fails closed as unparseable (exit 4), never a raw
+    #    UnicodeDecodeError traceback and never locale-dependent: the format is
+    #    pure ASCII, so strict decoding gives the same verdict on macOS and
+    #    Windows. Live-probe the exact exit code.
+    nonascii = tmp / "nonascii.txt"
+    nonascii.write_bytes(b"[SIMHASH] tick=0 objs=4 h=00000000\xff0000000\n")
+    result = run_comparator(a, nonascii)
+    if result.returncode != COMPARATOR_EXIT_UNPARSEABLE:
+        failures.append(
+            "non-ASCII byte must fail closed as unparseable (exit "
+            f"{COMPARATOR_EXIT_UNPARSEABLE}); got rc={result.returncode}: "
+            f"{result.stdout.strip()}")
+    elif "Traceback" in result.stdout:
+        failures.append(
+            "non-ASCII byte must not produce a raw traceback; got: "
+            f"{result.stdout.strip()}")
+
+    # 10. A usage error (too few arguments) exits with the dedicated usage code
+    #     (1), NOT argparse's default 2 which would collide with the missing-
+    #     file code. Live-probe the exact exit code via a one-argument call.
+    result = subprocess.run(
+        [sys.executable, str(COMPARATOR), str(a)],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        check=False)
+    if result.returncode != COMPARATOR_EXIT_USAGE:
+        failures.append(
+            "a usage error must exit with the usage code "
+            f"({COMPARATOR_EXIT_USAGE}), not argparse's default 2; got "
+            f"rc={result.returncode}: {result.stdout.strip()}")
+
     return failures
 
 
@@ -238,7 +291,7 @@ def check_parity(binary: Path, rom: Path, tmp: Path, timeout: int,
     if not artifact.exists():
         return [f"artifact file was not written: {artifact} "
                 "(MDKR_STATE_HASH_FILE had no effect)"]
-    file_rows = artifact.read_text().splitlines()
+    file_rows = artifact.read_text(encoding="ascii").splitlines()
 
     failures: list[str] = []
     if not file_rows:

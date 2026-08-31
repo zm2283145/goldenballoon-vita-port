@@ -424,7 +424,9 @@ production coverage:
   simulation (an unwritable path is reported to stderr and the sink dropped,
   never fatal). The comparator, `tools/online/compare_sim_hash_artifacts.py`,
   exits 0 only when two artifacts are non-empty, the same length and byte-equal
-  on every tick line, and otherwise names the first divergent tick or the
+  modulo line endings on every tick line (so a macOS LF and a Windows CRLF for
+  the same tick are not a divergence), and otherwise names the first divergent
+  tick or the
   truncation point; it fails closed on a missing file, an empty file, an
   unparseable line and a length mismatch, each with its own message. These are
   the pieces a cross-OS / cross-region determinism comparison stands on.
