@@ -1492,6 +1492,18 @@ if(NOT EMSCRIPTEN)
                 ${mdkr_libdatachannel_SOURCE_DIR}/include)
             target_link_libraries(mdkr64_app PRIVATE
                 LibDataChannel::LibDataChannel MbedTLS::MbedTLS)
+            if(WIN32)
+                # The app's own online/party TUs call Winsock directly
+                # (WSAStartup/closesocket in match_signal_client.cpp,
+                # match_live_transport.cpp and lan_party_server.cpp), so link
+                # ws2_32 explicitly instead of relying on LibDataChannel/webgpu
+                # to propagate it through their link interfaces. As a static lib
+                # this rides through to mdkr64. IPHLPAPI is not linked here: no
+                # app-owned TU calls it directly; it arrives with libjuice's
+                # interface enumeration. Matches the if(WIN32) ws2_32 link every
+                # online test target already carries.
+                target_link_libraries(mdkr64_app PRIVATE ws2_32)
+            endif()
         endif()
         # Keep warnings strict on the launcher code we own without inheriting
         # that policy into vendored Dear ImGui.  The engine's maintained C
