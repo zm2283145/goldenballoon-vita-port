@@ -61,7 +61,7 @@ from harness_utils import resolve_binary
 from online_lane_util import (
     CHOOSER_FINISH_RE, CUP_ROUNDS, DIRECT_BOOT_RE, FINISHED_ENGINE_RE,
     FORBIDDEN_ONLINE, GAMEMODE_ONLINE_SESSION, PLACE_NONE, SESSION_END_RE,
-    SESSION_RACE_RE, forbidden_marker, make_fail,
+    SESSION_RACE_RE, check_trophy_weights_pin, forbidden_marker, make_fail,
 )
 from online_lane_util import run_engine as _run_engine
 
@@ -69,6 +69,10 @@ ROOT = Path(__file__).resolve().parent.parent
 TICKS = 30000
 CUP = 1
 CUP1_TRACKS = [13, 6, 9, 28]  # kCupTracks[1] (lobby_core.c) -- all Car-legal
+# gTrophyRacePointsArray / kTrophyPoints (lobby_core.c), pinned to that source by
+# check_trophy_weights_pin below. Applied to the reducer's OWN recorded finish
+# orders to cross-validate the cup total (see the accrual cross-check in main()).
+TROPHY_WEIGHTS = (9, 7, 5, 3, 1, 0, 0, 0)
 
 BEGIN_DESCLESS_RE = re.compile(
     r"^\[online-session\] begin: lobby-start \(no descriptor\)", re.MULTILINE)
@@ -263,6 +267,13 @@ def main() -> int:
     if result is not None:
         return result
 
+    # Trophy-weight pin (source scan; no engine run needed): the TROPHY_WEIGHTS
+    # this lane applies to cross-validate the cup total must equal the authored
+    # kTrophyPoints (lobby_core.c), so a product-side weight change fails loudly.
+    result = check_trophy_weights_pin(ROOT, TROPHY_WEIGHTS, fail)
+    if result is not None:
+        return result
+
     # Primary: the FULL descriptor-less tournament in one engine process.
     try:
         rc, output = run_engine(
@@ -420,7 +431,8 @@ def main() -> int:
     # a legitimate FP re-timing of a photo finish (the contraction pin re-times the
     # race-4 finish so the host edges it instead of losing it) must NOT be read as a
     # scoring defect. Hard-coding one seat's win/loss pattern here did exactly that.
-    TROPHY_WEIGHTS = (9, 7, 5, 3, 1, 0, 0, 0)  # gTrophyRacePointsArray / kTrophyPoints
+    # TROPHY_WEIGHTS is a module constant pinned to kTrophyPoints (lobby_core.c) by
+    # check_trophy_weights_pin above.
     expected = [0, 0, 0, 0]
     for _race_i, _final, _have, *places in enters:
         for seat, place in enumerate(int(p) for p in places):

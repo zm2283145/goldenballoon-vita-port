@@ -106,9 +106,9 @@ LANES = (
     "check_online_final_replay.py",         # RULED final-replay: host continues via
                                             #  the wrap; both endpoints re-converge
                                             #  through the reducer into tournament #2
-    "check_online_tournament.py",           # keystone: 34,30 + peer==peer race-hash
-)                                           #  convergence (the GOLDEN literal is
-#                                            pinned only by check_online_engine_boot_direct.py)
+    "check_online_tournament.py",           # keystone: trophy-weight-rule accrual
+)                                           #  + peer==peer race-hash convergence (the
+#                                            GOLDEN literal is pinned only by check_online_engine_boot_direct.py)
 
 # NON-DEFAULT / MANUAL: real-cloud network lanes. These are NOT part of the
 # default sweep -- they require live Wi-Fi + the deployed party.goldenballoon.net

@@ -62,8 +62,8 @@ from pathlib import Path
 
 from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
 from online_lane_util import (
-    ENGINE_LIVE_RE, FORBIDDEN_ONLINE, ONLINE_RACE_RE, forbidden_marker, make_fail,
-    run_engine,
+    ENGINE_LIVE_RE, FORBIDDEN_ONLINE, ONLINE_RACE_RE, PLACE_NONE,
+    check_trophy_weights_pin, forbidden_marker, make_fail, run_engine,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -75,7 +75,8 @@ TICKS = 9000  # stall bound; the engine exits itself ~2.5 s after the finish
 CUP = 0
 CUP_TRACKS = (5, 3, 29, 7)
 CUP_MASKS = (0x7, 0x7, 0x7, 0x6)
-TROPHY_POINTS = (9, 7, 5, 3, 1, 0, 0, 0)  # gTrophyRacePointsArray
+TROPHY_POINTS = (9, 7, 5, 3, 1, 0, 0, 0)  # gTrophyRacePointsArray; pinned to
+# kTrophyPoints (lobby_core.c) by check_trophy_weights_pin below.
 
 CONFIG_RE = re.compile(
     r"^\[online-live\] loopback config mode=tournament cup=(\d+) "
@@ -132,6 +133,14 @@ def main() -> int:
     for path, label in ((binary, "binary"), (rom, "ROM")):
         if not path.is_file():
             parser.error(f"missing {label}: {path}")
+
+    # Source pin (no engine run needed): the TROPHY_POINTS this lane applies to
+    # derive the cup total must equal the authored kTrophyPoints (lobby_core.c),
+    # so a product-side weight change fails here loudly instead of silently
+    # diverging from the shipped scoring.
+    pin = check_trophy_weights_pin(ROOT, TROPHY_POINTS, fail)
+    if pin is not None:
+        return pin
 
     # The direct-boot environment (no menu-nav script; the only inputs are the
     # live transport and MDKR_AUTOPILOT) plus the tournament seams.
@@ -246,28 +255,45 @@ def main() -> int:
     if len(TRANSPORT_RESULTS_RE.findall(output)) != 3:
         return fail("expected 3 accepted transport results reports", output)
 
-    # -- Authentic trophy-point accrual across all four RESULTS phases. ------
+    # -- Trophy-point accrual across all four RESULTS phases, cross-validated
+    #    against the AUTHORED trophy-weight RULE (not a pinned outcome). --------
+    # The reducer publishes two INDEPENDENT fields per RESULTS phase: the
+    # CUMULATIVE points[] it accrued, and the finish order it recorded that race
+    # (last_placements[]). Derive the expected cup total by applying the authored
+    # trophy weights (TROPHY_POINTS == gTrophyRacePointsArray / kTrophyPoints,
+    # lobby_core.c) to those recorded placements, and assert points[] agrees. This
+    # is non-circular -- placements and points come from different reducer state --
+    # so it fires on a genuine mis-accrual (points[] disagreeing with the trophy
+    # weight of the order the reducer itself published) while staying robust to
+    # WHICH seat leads any given round. A hard-coded seat win/loss pattern would,
+    # like the lobby lane's old (34,30) literal, read a benign deterministic-sim
+    # re-timing of a close finish as a spurious scoring failure.
     results = [tuple(int(v) for v in row) for row in
                RESULTS_RE.findall(output)]
     if [row[0] for row in results] != [1, 2, 3, 4]:
         return fail(f"expected RESULTS witnesses for races 1..4, got "
                     f"{results!r}", output)
-    expected = [TROPHY_POINTS[race1[0]], TROPHY_POINTS[race1[1]], 0, 0]
+    expected = [0, 0, 0, 0]
     for race_no, race_index, track, p0, p1, p2, p3, l0, l1, l2, l3 in results:
         if race_index != race_no - 1 or track != CUP_TRACKS[race_no - 1]:
             return fail(f"race {race_no} RESULTS carried race_index="
                         f"{race_index} track={track}, expected "
                         f"{race_no - 1}/{CUP_TRACKS[race_no - 1]}", output)
-        want_last = race1 if race_no == 1 else (0, 1, 255, 255)
+        # Race 1's recorded finish order must equal the placements the launcher
+        # REPORTED (REPORTED_RE, an independent third field); rounds 2-4 are the
+        # fixed transport contest (slot 0 first, slot 1 second).
+        want_last = race1 if race_no == 1 else (0, 1, PLACE_NONE, PLACE_NONE)
         if (l0, l1, l2, l3) != want_last:
             return fail(f"race {race_no} last_placements=({l0},{l1},{l2},{l3})"
                         f", expected {want_last}", output)
-        if race_no > 1:
-            expected[0] += TROPHY_POINTS[0]
-            expected[1] += TROPHY_POINTS[1]
+        for seat, place in enumerate((l0, l1, l2, l3)):
+            if place != PLACE_NONE and place < len(TROPHY_POINTS):
+                expected[seat] += TROPHY_POINTS[place]
         if [p0, p1, p2, p3] != expected:
-            return fail(f"race {race_no} points=({p0},{p1},{p2},{p3}), "
-                        f"authentic accrual expects {tuple(expected)}", output)
+            return fail(f"race {race_no} cumulative points=({p0},{p1},{p2},{p3}) "
+                        f"disagree with the authored trophy-weight rule applied "
+                        f"to the reducer's OWN recorded finish orders -> "
+                        f"{tuple(expected)} (a scoring mis-accrual)", output)
 
     final = FINAL_RE.findall(output)
     if len(final) != 1:
