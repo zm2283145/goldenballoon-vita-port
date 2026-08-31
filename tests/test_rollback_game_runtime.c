@@ -105,6 +105,7 @@ Object *get_racer_object_by_port(s32 index) {
 
 s32 mdkr_object_assets_pin_rollback(void) { return TRUE; }
 void mdkr_object_assets_unpin_rollback(void) {}
+s32 mdkr_object_assets_pinned_reference_deficit(void) { return 0; }
 
 void mdkr_rollback_rumble_cancel_preview(unsigned controller_index) {
     sRumbleCancelCalls++;

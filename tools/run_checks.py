@@ -596,6 +596,10 @@ CHECKS = (
     Check("rollback_item_matrix", "check_rollback_item_matrix.py", "native",
           "all 15 standard-race balloon levels activate inside a corrected "
           "input window with real effects and a suppressed-release control"),
+    Check("rollback_weapon_refcount", "check_rollback_weapon_refcount.py",
+          "native",
+          "a corrected weapon fire conserves the pinned item-model refcount "
+          "(snapshot-covered counts replay; uncovered counts freeze)"),
     Check("rollback_vehicle_matrix", "check_rollback_vehicle_matrix.py", "native",
           "every ROM-derived legal standard-track vehicle pairing"),
     Check("ci_contract", "check_ci_contract.py", "source",

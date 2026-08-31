@@ -1040,6 +1040,21 @@ fail, while an invalid balloon index and an armed non-correction mode must fail
 closed. Every row also enforces the 16 MiB ring, timing, journal, forbidden-I/O
 and clean-teardown contracts.
 
+`check_rollback_weapon_refcount.py` guards the refcount-erasure class the item
+matrix cannot see: it fires the probe missile inside a delayed correction on
+Ancient Lake, where the projectile OUTLIVES the four-tick window, so its
+snapshot-covered `ObjectModel.references` ++ must survive the correction and
+be decremented exactly once by the later LIVE despawn. Resimulation freezes
+sprite/texture refcounts (host state outside the snapshot), but the pinned
+item models' counters are registered rollback authority: restore reverts them
+and the replayed re-application keeps them exact. Freezing those too erased
+the ++ of any weapon spawn a correction rewound past, walking the pinned model
+to zero and a mid-race free under live draws. The lane asserts the corrected
+fire is observed, the exact second replay stays byte-identical, and the
+engine's one-sided conservation validator (references never below lease holds
+plus live holders, checked every authored boundary) and the mid-race
+free-refusal tripwire both stay silent.
+
 `online_lobby_core` is the socket-free launcher room reducer. Native C and the
 service TypeScript reducer both consume
 `tests/fixtures/online_lobby_reducer_v1.tsv`: one 117-row lifecycle fixture

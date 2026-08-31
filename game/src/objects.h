@@ -602,6 +602,16 @@ void mdkr_object_assets_unpin_rollback(void);
  * These small mutable lifetime fields are rollback authority; model geometry
  * and textures remain immutable shared assets. Returns -1 on bad arguments. */
 s32 mdkr_object_assets_rollback_references(s16 **references, s32 capacity);
+/* TRUE iff this model's `references` field is in the set the enumeration
+ * above returns (and the rollback snapshot therefore owns). Keyed on the live
+ * lease registry -- the registration's own source of truth. Always FALSE
+ * offline (no leases exist outside an active rollback race/lab). */
+s32 mdkr_object_assets_model_reference_covered(const ObjectModel *model);
+/* One-sided pinned-refcount conservation check (references must never sit
+ * BELOW lease holds + live object holders). Returns the number of covered
+ * models currently in deficit; logs each once per race. Zero-cost truthful
+ * no-op offline (no leases). */
+s32 mdkr_object_assets_pinned_reference_deficit(void);
 #endif
 #ifndef NATIVE_PORT
 void obj_door_number(ObjectModel *, Object *);

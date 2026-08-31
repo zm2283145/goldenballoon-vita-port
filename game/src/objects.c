@@ -632,6 +632,9 @@ typedef struct MdkrRollbackAssetLease {
 static MdkrRollbackAssetLease
     sRollbackAssetLeases[MDKR_ROLLBACK_ASSET_LEASE_MAX];
 static s32 sRollbackAssetLeaseCount;
+/* Once-per-race dedup for the pinned-refcount deficit witness (indexed by
+ * lease slot of each unique model's first lease); reset at pin time. */
+static u8 sPinnedDeficitLogged[MDKR_ROLLBACK_ASSET_LEASE_MAX];
 #endif
 s32 gObjectMapIndex;
 Object **gParticlePtrList;
@@ -1302,6 +1305,22 @@ s32 mdkr_object_model_pool_ready(void) {
 }
 
 void mdkr_object_assets_unpin_rollback(void) {
+    if (sRollbackAssetLeaseCount > 0) {
+        /* Witness the covered reference counters while the leases still hold
+         * them. The values are deterministic per rig (pin contribution + live
+         * holders), so refcount-conservation experiments compare this line
+         * across builds/timelines; a count eroded by a discarded replay shows
+         * up here long before the mid-race free it would eventually cause. */
+        s16 *references[MDKR_ROLLBACK_ASSET_LEASE_MAX];
+        s32 count = mdkr_object_assets_rollback_references(
+            references, MDKR_ROLLBACK_ASSET_LEASE_MAX);
+        s32 index;
+        fprintf(stderr, "[ROLLBACK] pinned model references at unpin:");
+        for (index = 0; index < count; index++) {
+            fprintf(stderr, " r%d=%d", index, (s32)*references[index]);
+        }
+        fputc('\n', stderr);
+    }
     while (sRollbackAssetLeaseCount > 0) {
         MdkrRollbackAssetLease *lease =
             &sRollbackAssetLeases[--sRollbackAssetLeaseCount];
@@ -1395,6 +1414,9 @@ s32 mdkr_object_assets_pin_rollback(void) {
     s32 index;
 
     mdkr_object_assets_unpin_rollback();
+    for (index = 0; index < MDKR_ROLLBACK_ASSET_LEASE_MAX; index++) {
+        sPinnedDeficitLogged[index] = FALSE;
+    }
     for (index = 0; index < ARRAY_COUNT(kItemSpawnTypes); index++) {
         if (!mdkr_object_assets_pin_type(kItemSpawnTypes[index])) {
             fprintf(stderr,
@@ -1435,6 +1457,121 @@ s32 mdkr_object_assets_rollback_references(
         references[count++] = &instance->objModel->references;
     }
     return count;
+}
+
+/* ONE-SIDED conservation validator over the pinned item models, run at every
+ * authored rollback boundary. For each unique covered model it computes the
+ * FLOOR its references field can lawfully sit at: the lease registry's own
+ * holds plus every live gObjPtrList holder (an object of 3D-model type whose
+ * modelInstances slot points at the model). Holders outside that walk can
+ * only RAISE the true count, so a below-floor reading is always a genuinely
+ * lost reference -- the class where a correction window rewound past a live
+ * weapon spawn and the replay never re-applied its ++ (or a mispredicted
+ * live release) -- never a walk artifact. Logged once per model per race;
+ * the free-refusal tripwire in free_3d_model independently fail-safes the
+ * eventual UAF, so this is a witness, not a behavior change. */
+s32 mdkr_object_assets_pinned_reference_deficit(void) {
+    s32 deficits = 0;
+    s32 lease;
+    for (lease = 0; lease < sRollbackAssetLeaseCount; lease++) {
+        const ObjectModel *model;
+        const ModelInstance *leaseInstance;
+        s32 floor;
+        s32 other;
+        s32 index;
+        if (sRollbackAssetLeases[lease].modelType !=
+            OBJECT_MODEL_TYPE_3D_MODEL) {
+            continue;
+        }
+        leaseInstance =
+            (const ModelInstance *)sRollbackAssetLeases[lease].asset;
+        if (leaseInstance == NULL || leaseInstance->objModel == NULL) {
+            continue;
+        }
+        model = leaseInstance->objModel;
+        /* Evaluate each unique model once (at its first lease). */
+        for (other = 0; other < lease; other++) {
+            const ModelInstance *prior =
+                (const ModelInstance *)sRollbackAssetLeases[other].asset;
+            if (sRollbackAssetLeases[other].modelType ==
+                    OBJECT_MODEL_TYPE_3D_MODEL &&
+                prior != NULL && prior->objModel == model) {
+                break;
+            }
+        }
+        if (other != lease) {
+            continue;
+        }
+        floor = 0;
+        for (other = 0; other < sRollbackAssetLeaseCount; other++) {
+            const ModelInstance *held =
+                (const ModelInstance *)sRollbackAssetLeases[other].asset;
+            if (sRollbackAssetLeases[other].modelType ==
+                    OBJECT_MODEL_TYPE_3D_MODEL &&
+                held != NULL && held->objModel == model) {
+                floor++;
+            }
+        }
+        for (index = 0; index < gObjectCount; index++) {
+            const Object *obj = gObjPtrList[index];
+            s32 slot;
+            /* Particle-flagged entries have a different trailing layout (no
+             * modelInstances pointer array); the authority registration walk
+             * skips them for the same reason. */
+            if (obj == NULL ||
+                (obj->trans.flags & OBJ_FLAGS_PARTICLE) != 0 ||
+                obj->header == NULL ||
+                obj->header->modelType != OBJECT_MODEL_TYPE_3D_MODEL ||
+                obj->modelInstances == NULL) {
+                continue;
+            }
+            for (slot = 0; slot < obj->header->numberOfModelIds; slot++) {
+                if (obj->modelInstances[slot] != NULL &&
+                    obj->modelInstances[slot]->objModel == model) {
+                    floor++;
+                }
+            }
+        }
+        if ((s32)model->references < floor) {
+            deficits++;
+            if (!sPinnedDeficitLogged[lease]) {
+                sPinnedDeficitLogged[lease] = TRUE;
+                fprintf(stderr,
+                        "[ROLLBACK] pinned model reference deficit: "
+                        "model=%p references=%d floor=%d (leases+holders)\n",
+                        (const void *)model, (s32)model->references, floor);
+            }
+        }
+    }
+    return deficits;
+}
+
+/* TRUE iff this shared model's `references` counter is one of the fields
+ * mdkr_object_assets_rollback_references() enumerates -- i.e. the rollback
+ * authority snapshot-registers it (TAG_ITEM_MODEL_REFERENCE_BASE ranges) and
+ * restore owns its bytes. Keyed on the live lease registry, the SAME source
+ * of truth the registration reads, never a duplicated object-ID list: both
+ * walk sRollbackAssetLeases with the same 3D-model filter, so covered(model)
+ * and enumerated(&model->references) cannot drift apart. Leases exist only
+ * between pin (level_ready, before registry freeze) and unpin (level end),
+ * so offline retail races always answer FALSE. */
+s32 mdkr_object_assets_model_reference_covered(const ObjectModel *model) {
+    s32 index;
+    if (model == NULL) {
+        return FALSE;
+    }
+    for (index = 0; index < sRollbackAssetLeaseCount; index++) {
+        const ModelInstance *instance;
+        if (sRollbackAssetLeases[index].modelType !=
+            OBJECT_MODEL_TYPE_3D_MODEL) {
+            continue;
+        }
+        instance = (const ModelInstance *)sRollbackAssetLeases[index].asset;
+        if (instance != NULL && instance->objModel == model) {
+            return TRUE;
+        }
+    }
+    return FALSE;
 }
 #endif
 

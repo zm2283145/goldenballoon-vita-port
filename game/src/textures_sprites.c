@@ -4,19 +4,54 @@
 #ifdef NATIVE_PORT
 /* Rollback correction replays re-execute object lifecycle events whose asset
  * loads and frees already ran (or will run) on the live authored pass. The
- * texture/sprite/model caches and their reference counts are host state
- * OUTSIDE the rollback snapshot, so a replayed spawn/despawn must not mutate
- * them: a correction storm replays one despawn tick many times, and each
- * extra replay net-decrements a shared count until it hits zero and frees an
+ * texture/sprite caches and their reference counts are host state OUTSIDE
+ * the rollback snapshot, so a replayed spawn/despawn must not mutate them: a
+ * correction storm replays one despawn tick many times, and each extra
+ * replay net-decrements a shared count until it hits zero and frees an
  * asset that other live objects still draw. The freed block is later re-used
  * (e.g. by the lap-banner HUD texture load) and the stale embedded display
  * lists turn into texel garbage -- the online camera/pause lane crash class
  * (SIGSEGV in the DL walk; SIGABRT when the wild follow-on writes land on
  * runtime state). Counting happens exactly once, on the live pass;
  * resimulation reuses the cached asset without counting -- the same replay
- * discipline sounds already follow through the side-effect journal. */
+ * discipline sounds already follow through the side-effect journal.
+ *
+ * One mechanism per field, two carve-outs:
+ *
+ *  - SNAPSHOT-COVERED counts are NOT frozen. The pinned item models'
+ *    ObjectModel.references fields are registered rollback authority
+ *    (TAG_ITEM_MODEL_REFERENCE_BASE), so restore reverts them and the
+ *    replayed re-application keeps them exact. That exemption lives at the
+ *    model sites in object_models.c, keyed on the lease registry
+ *    (mdkr_object_assets_model_reference_covered) -- the same source of
+ *    truth the registration enumerates. Sprite/texture counts are never
+ *    registered and stay frozen here.
+ *
+ *  - A FRESH-ALLOC'D PARENT'S LOAD CHAIN counts fully even during
+ *    resimulation. A resim cache-MISS of a top-level asset allocates and
+ *    counts the parent (=1, "first counted now": the parent becomes real
+ *    host state the later LIVE free chain will release exactly once), so
+ *    its nested load_texture cache-hits must take their ++ too -- the live
+ *    free chain will decrement every one of them. The same scope keeps the
+ *    failure cleanup honest: a fresh parent's error path must actually
+ *    free (counted) what it just loaded, not no-op. Threaded as a depth
+ *    counter around the fresh-load tails of tex_load_sprite (here) and
+ *    object_model_init (object_models.c). */
+static s32 sAssetRefcountFreshParentDepth = 0;
+
+void mdkr_asset_refcount_fresh_parent_begin(void) {
+    sAssetRefcountFreshParentDepth++;
+}
+
+void mdkr_asset_refcount_fresh_parent_end(void) {
+    sAssetRefcountFreshParentDepth--;
+}
+
 static bool mdkr_asset_refcount_frozen(void) {
-    return !mdkr_rollback_game_runtime_presentation_allowed();
+    if (mdkr_rollback_game_runtime_presentation_allowed()) {
+        return false;
+    }
+    return sAssetRefcountFreshParentDepth == 0;
 }
 #endif
 #include "asset_loading.h"
@@ -1257,6 +1292,13 @@ Sprite *tex_load_sprite(s32 spriteID, s32 arg1) {
 
         return NULL;
     }
+#ifdef NATIVE_PORT
+    /* Fresh sprite: its whole load chain counts fully ("first counted now"),
+     * including nested load_texture cache hits during resimulation, and the
+     * failure cleanups below must actually free what was counted. Every
+     * return below closes this scope. */
+    mdkr_asset_refcount_fresh_parent_begin();
+#endif
 
     spriteBase = (u8 *)sprite;
     gSpriteTriangles = (Triangle *)(spriteBase + layout.triangle_offset);
@@ -1293,6 +1335,9 @@ Sprite *tex_load_sprite(s32 spriteID, s32 arg1) {
             gSpriteCacheCount--;
         }
         mempool_free(sprite);
+#ifdef NATIVE_PORT
+        mdkr_asset_refcount_fresh_parent_end();
+#endif
         return NULL;
     }
 
@@ -1322,12 +1367,18 @@ Sprite *tex_load_sprite(s32 spriteID, s32 arg1) {
             gSpriteCacheCount--;
         }
         mempool_free(sprite);
+#ifdef NATIVE_PORT
+        mdkr_asset_refcount_fresh_parent_end();
+#endif
         return NULL;
     }
 
     gSpriteCache[ASSETCACHE_ID(cacheNum)] = spriteID;
     gSpriteCache[ASSETCACHE_PTR(cacheNum)] = (s32) DKR_TOK(sprite);
     sprite->numberOfInstances = 1;
+#ifdef NATIVE_PORT
+    mdkr_asset_refcount_fresh_parent_end();
+#endif
     return sprite;
 }
 

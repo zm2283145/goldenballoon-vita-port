@@ -128,7 +128,14 @@ def main() -> int:
             return fail(f"run timed out (a stall would look like this): {error}")
         output = process.stdout or ""
 
-    for marker in ("[FATAL]", "[CRASH]", "AddressSanitizer"):
+    # The two pinned-refcount witnesses guard the correction-erasure class:
+    # this rig's storm reliably rewinds past an autopilot weapon fire, so a
+    # replay that fails to re-apply the snapshot-covered references ++ shows
+    # up as a conservation deficit here (and, if the count ever walks to
+    # zero, as the mid-race free refusal).
+    for marker in ("[FATAL]", "[CRASH]", "AddressSanitizer",
+                   "pinned model reference deficit",
+                   "pinned item model refcount hit zero"):
         if marker in output:
             return fail(f"observed forbidden marker {marker!r}", output)
     if process.returncode != 0:

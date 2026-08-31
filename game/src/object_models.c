@@ -5,6 +5,7 @@
 #ifdef NATIVE_PORT
 #include "asset_swap.h"
 #include "camera_object_occlusion.h"
+#include <stdio.h>
 #endif
 #include "common.h"
 #include "gzip.h"
@@ -110,9 +111,22 @@ ModelInstance *object_model_init(s32 modelID, s32 flags) {
             instance = model_instance_init(objMdl, flags);
             if (instance != NULL
 #ifdef NATIVE_PORT
-                /* Replayed spawns must not re-count the shared model: see
-                 * mdkr_asset_refcount_frozen() in textures_sprites.c. */
-                && mdkr_rollback_game_runtime_presentation_allowed()
+                /* Replayed spawns must not re-count a shared model whose
+                 * count lives OUTSIDE the rollback snapshot (see
+                 * mdkr_asset_refcount_frozen() in textures_sprites.c) --
+                 * EXCEPT the pinned item models, whose references field IS
+                 * snapshot-registered (TAG_ITEM_MODEL_REFERENCE_BASE ranges,
+                 * enumerated from the same lease registry this predicate
+                 * reads). For those, restore owns the bytes and the replayed
+                 * re-application is what keeps them exact: restore reverts,
+                 * the replay re-applies, idempotently. Freezing them instead
+                 * ERASED the ++ of any weapon spawn a correction rewound
+                 * past, and the later live despawn walked the pinned model
+                 * to zero and free_model_data mid-race (dangling-lease UAF).
+                 * One mechanism per field: snapshot-covered counts replay,
+                 * uncovered counts freeze. */
+                && (mdkr_rollback_game_runtime_presentation_allowed() ||
+                    mdkr_object_assets_model_reference_covered(objMdl))
 #endif
             ) {
                 objMdl->references++;
@@ -154,6 +168,16 @@ ModelInstance *object_model_init(s32 modelID, s32 flags) {
 #endif
         return NULL;
     }
+#ifdef NATIVE_PORT
+    /* Fresh model: its whole load chain counts fully ("first counted now"),
+     * including the nested load_texture cache hits below during rollback
+     * resimulation -- the later LIVE free chain (free_model_data -> tex_free
+     * per texture) decrements every one of them exactly once. The same scope
+     * keeps the failure path honest: block_30's free_model_data must really
+     * free the counted textures, not no-op. Both returns below close this
+     * scope. See mdkr_asset_refcount_frozen() in textures_sprites.c. */
+    mdkr_asset_refcount_fresh_parent_begin();
+#endif
     compressedData = (u8 *)objMdl + modelSize - sp48;
     asset_load(ASSET_OBJECT_MODELS, (uintptr_t)compressedData, temp_s0, sp48);
 #ifdef NATIVE_PORT
@@ -217,6 +241,9 @@ ModelInstance *object_model_init(s32 modelID, s32 flags) {
                 }
 #endif
                 instance->animUpdateTimer = 0;
+#ifdef NATIVE_PORT
+                mdkr_asset_refcount_fresh_parent_end();
+#endif
                 return instance;
             }
         }
@@ -228,6 +255,9 @@ block_30:
     }
 #endif
     free_model_data(objMdl);
+#ifdef NATIVE_PORT
+    mdkr_asset_refcount_fresh_parent_end();
+#endif
     return NULL;
 }
 
@@ -359,8 +389,16 @@ void free_3d_model(ModelInstance *modInst) {
     /* Resimulation: the instance memory is rollback-pool state and stays
      * symmetric with the replayed spawn's allocation, but the shared model's
      * reference count is host state already counted by the live pass -- see
-     * mdkr_asset_refcount_frozen() in textures_sprites.c. */
-    if (!mdkr_rollback_game_runtime_presentation_allowed()) {
+     * mdkr_asset_refcount_frozen() in textures_sprites.c. EXCEPT the pinned
+     * item models (lease-covered): their references field is snapshot-
+     * registered, so a replayed despawn must re-apply its decrement exactly
+     * like the pre-freeze design -- restore reverts it, keeping the pair
+     * idempotent (see the matching carve-out in object_model_init). The pin
+     * lease's own hold keeps a covered model's count above zero through any
+     * lawful replay, so the frozen early-return below never hides a real
+     * free for them. */
+    if (!mdkr_rollback_game_runtime_presentation_allowed() &&
+        !mdkr_object_assets_model_reference_covered(model)) {
         mempool_free(modInst);
         return;
     }
@@ -370,6 +408,27 @@ void free_3d_model(ModelInstance *modInst) {
         mempool_free(modInst);
         return;
     }
+
+#ifdef NATIVE_PORT
+    /* HARD TRIPWIRE (refcount-erasure class): a model whose references field
+     * is lease-covered (the pinned item models, snapshot-registered by the
+     * rollback authority) cannot lawfully reach zero mid-race -- the lease
+     * itself still holds one reference that is only released at unpin.
+     * Reaching here means a counted reference was lost; running
+     * free_model_data now would be the free-while-drawn / dangling-lease UAF
+     * on live weapons. Witness loudly and REFUSE the model free (the lease
+     * keeps owning the model); the per-spawn instance still returns to its
+     * pool. Unpin empties the lease registry before level teardown, so retail
+     * teardown frees are untouched, and offline no lease ever exists. */
+    if (mdkr_object_assets_model_reference_covered(model)) {
+        fprintf(stderr,
+                "[ROLLBACK] pinned item model refcount hit zero mid-race; "
+                "free refused (model=%p references=%d)\n",
+                (void *)model, (s32)model->references);
+        mempool_free(modInst);
+        return;
+    }
+#endif
 
     modelIndex = -1;
     for (i = 0; i < gModelCacheCount; i++) {

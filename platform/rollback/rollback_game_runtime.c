@@ -2055,6 +2055,13 @@ bool mdkr_rollback_game_runtime_validate_boundary(unsigned update_rate) {
             confirm_effects_through(&sRollbackGameRuntime, confirm_tick);
         }
     }
+    /* Pinned-refcount conservation witness (one-sided, see objects.c): a
+     * covered model's references sitting BELOW its lease holds plus live
+     * object holders is a genuinely lost reference -- the correction-window
+     * erasure class -- caught at the very boundary the correction completed
+     * on. Witness only: the free-refusal tripwire in free_3d_model fail-safes
+     * the eventual UAF, so a live race keeps running. */
+    (void)mdkr_object_assets_pinned_reference_deficit();
     sRollbackGameRuntime.validated_boundaries = tick;
     if ((tick % 120u) == 0u) {
         const MdkrRollbackRingStats *stats = &sRollbackGameRuntime.ring.stats;
