@@ -56,7 +56,9 @@ LANES = (
                                             #  guards the wrong-characters defect)
     "check_online_beta_handoff.py",         # T3: launcher SELECTING widgets retired ->
                                             #  universal native hand-off card (no engine)
-    "check_online_engine_boot_direct.py",   # golden race hash 7da2ea67 pinned
+    "check_online_engine_boot_direct.py",   # pins the GOLDEN race hash (the literal
+                                            #  lives in this lane; see its
+                                            #  GOLDEN_RACE_HASH -- do not copy it here)
     "check_online_racer_lod_animation.py",  # an ONLINE race must never draw a
                                             #  never-posed (bind-pose/T-pose) racer:
                                             #  Enhancements.LodBias must not select an
