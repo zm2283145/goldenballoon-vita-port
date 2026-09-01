@@ -102,15 +102,27 @@ FRAMES = 5000
 # from it -- a "reverse until you arrive" step is unsatisfiable by construction
 # (measured: stalled at 764 units and growing).
 ROUTE = "0:-1004,946:-3336,2111:-4105,2435:H60:R240:-3336,2111:-1004,946"
-WP_RADIUS = 90
+# 130, not 90: the campaign's simulation re-timing (the FP-determinism pin) moved
+# this deterministic hub approach so the kart's ram against the closed leaf now
+# settles ~111 units from the leaf centre instead of the <=90 it reached before.
+# At 90 the door-ram step never retires, the automatic stall/reverse heuristic
+# backs the kart off the leaf before a wheel point cleanly enters a facet, and
+# BOTH arms then see zero [OBJCOLL] hits (route missed the door -- the seed only
+# fires at a real facet contact). At 130 the step retires at the ram, the kart
+# holds against the leaf, and the facet contact the whole gate depends on happens
+# again (measured at tip: fixed arm 21 hits / recovered points=1 / embedded=0;
+# norecover control 18 hits / embedded=4). The leaf is physically touched either
+# way -- this widens what counts as "reached the door", it does not fake it.
+WP_RADIUS = 130
 
 # The route's own step indices, so a route edit cannot silently un-assert this.
 ESCAPE_STEPS = (3, 4, 5, 6)   # H60, R240, and the two return waypoints
 FINAL_STEP = 6
 
-# The seed frame. The kart first contacts the leaf around tick 2908 on this
-# route; arming a few ticks early lets the seed fire on the first real contact
-# rather than requiring a frame-perfect guess, since the hook waits for one.
+# The seed frame. The kart first contacts the leaf around tick 2970 on this route
+# after the campaign re-timing (it was ~2908 before); arming well ahead of that
+# lets the seed fire on the first real facet contact rather than requiring a
+# frame-perfect guess, since the hook waits for one.
 SEED_FRAME = 2905
 
 # A bit-exact repeat this long, while a forward step is steering, is a wedge.
