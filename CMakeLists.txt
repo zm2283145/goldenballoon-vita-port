@@ -2316,108 +2316,13 @@ if(WIN32)
         endif()
     endforeach()
 
-    # --- Test link dead-strip ----------------------------------------------
-    # Several online test targets deliberately omit a defining TU, relying on
-    # the omitted definition never being demanded because nothing reachable
-    # references it (e.g. the MdkrMatchSignalClientFeed / MdkrOnlineFakeAdapterSeam
-    # wrappers that would otherwise pull in match_signal_client.cpp /
-    # lobby_fake_adapter.c). The macOS/Linux test links prove that omission is
-    # sound WITHOUT any of the flags below: they pass none of them and still
-    # link, because Clang leaves the relevant virtual call indirect (see the
-    # next paragraph) so no reachable code names the omitted symbol. This is NOT
-    # because those linkers strip by default -- neither macOS ld64 nor ELF ld
-    # garbage-collects unreferenced sections without an explicit flag
-    # (-dead_strip / --gc-sections); here neither needs to, because the compiler
-    # never plants the reference in the first place. Under MinGW the difference
-    # is GCC's -O2 codegen, which DOES emit a reachable reference (next
-    # paragraph); that reference is what -fno-devirtualize-speculatively removes.
-    # Give the online/transport test links that flag, plus per-function/data
-    # sections + --gc-sections kept as dead-strip parity (bfd ld, like ld64/ELF,
-    # does not GC unreferenced sections without it), so those omissions stay
-    # harmless under MinGW too, matching how the same targets already link on
-    # macOS/Linux.
-    #
-    # -fno-devirtualize-speculatively is the load-bearing flag here: at -O2 GCC
-    # speculatively binds a virtual call whose only header-visible override is
-    # `final` (MdkrMatchSignalClientFeed, MdkrOnlineFakeAdapterSeam) to that
-    # override, embedding a DIRECT reference to the omitted definition inside a
-    # REACHABLE function (MdkrMatchPeerMesh::State::sendSignal/pump) that no
-    # linker can dead-strip. Clang does not do this -- it leaves the call
-    # indirect -- and, because nothing in these tests instantiates
-    # MdkrMatchSignalClientFeed (sole definition match_peer_transport.h), no
-    # vtable naming the omitted symbol is emitted at all: the ld64/ELF links
-    # simply have no reference to resolve, so they need no flag (there is no dead
-    # vtable being stripped -- that earlier claim was wrong). Disabling GCC's
-    # speculation removes the planted reference the same way, and is what makes
-    # the MinGW link succeed. -ffunction-sections/-fdata-sections + --gc-sections
-    # are kept as dead-strip parity (belt-and-braces, mirroring the section GC
-    # other platforms could apply); their effect in isolation -- i.e. whether any
-    # residual reference remains for them to drop once speculation is off -- was
-    # never confirmed.
-    #
-    # Test targets only; the shipping engine/app archives are never touched (and
-    # never carry omitted TUs), and this whole block is Windows-gated so non-
-    # MinGW lanes are unaffected. Disclosed cost: under MinGW these test objects
-    # are compiled with speculative devirtualization DISABLED, so their codegen
-    # differs from the shipping build (which keeps -O2 speculative devirt on);
-    # the tests exercise the same sources, only with the one speculated virtual
-    # call left as an ordinary indirect dispatch.
-    #
-    # KEEP IN SYNC (three copies of the online/transport test-target names):
-    #   1. the test definitions -- add_executable(mdkr_online_* / mdkr_native_* /
-    #      mdkr_match_* / mdkr_lan_* ...) under MDKR_ENABLE_ONLINE_BETA /
-    #      MDKR_NATIVE_PHONE_PARTY + BUILD_TESTING, earlier in this file (search
-    #      "add_executable(mdkr_online_track_table_test").
-    #   2. this dead-strip list.
-    #   3. ONLINE_TEST_EXES in tools/mingw_cross_check.sh (the --online lane's
-    #      build + acceptance list).
-    # The BUILD_TESTING gate keeps tests-off Windows configures (the default
-    # cross lane, -DBUILD_TESTING=OFF) untouched. Inside it, if(TARGET) applies
-    # the flags to whichever of these are defined, and the online app configure
-    # -- MDKR_ENABLE_ONLINE_BETA + MDKR_APP (beta requires MDKR_NATIVE_PHONE_PARTY,
-    # configure FATALs otherwise, :913-915; and all eleven live inside if(MDKR_APP),
-    # so MDKR_APP is what actually creates them) -- hard-errors on a missing
-    # target, so a renamed/removed test fails that configure immediately instead
-    # of silently losing dead-strip coverage.
-    #
-    # This does NOT skip the beta-OFF-but-tests-on Windows lane (the
-    # windows-validate CI configure: MDKR_APP and MDKR_NATIVE_PHONE_PARTY both
-    # default ON, beta OFF). That lane defines TEN of the eleven -- all but the
-    # beta-gated mdkr_online_track_table_test -- and they DO receive the
-    # dead-strip/no-devirt flags here (intended: these are test targets only).
-    # At base that lane would plausibly have hit the same GCC -O2
-    # speculative-devirt undefined-ref once those ten test exes were linked; the
-    # elseif stays quiet there only because beta is off, not because the flags
-    # are inapplicable.
-    if(BUILD_TESTING)
-        foreach(_mdkr_online_test
-                mdkr_online_track_table_test
-                mdkr_native_party_sas_test
-                mdkr_lan_party_transport_test
-                mdkr_match_peer_crypto_test
-                mdkr_match_signal_client_test
-                mdkr_match_peer_transport_test
-                mdkr_native_party_e2e_driver
-                mdkr_online_live_adapter_test
-                mdkr_online_live_adapter_beta_test
-                mdkr_match_live_transport_test
-                mdkr_online_live_transport_e2e_driver)
-            if(TARGET ${_mdkr_online_test})
-                target_compile_options(${_mdkr_online_test} PRIVATE
-                    -ffunction-sections -fdata-sections
-                    -fno-devirtualize-speculatively)
-                target_link_options(${_mdkr_online_test} PRIVATE
-                    -Wl,--gc-sections)
-            elseif(MDKR_ENABLE_ONLINE_BETA AND MDKR_APP)
-                message(FATAL_ERROR
-                    "MinGW dead-strip list names '${_mdkr_online_test}', but no "
-                    "such target exists in this online configure. The list has "
-                    "drifted from the test definitions -- update this foreach, "
-                    "the add_executable() site above, and ONLINE_TEST_EXES in "
-                    "tools/mingw_cross_check.sh together.")
-            endif()
-        endforeach()
-    endif()
+    # --- Test link dead-strip (MOVED OUT of if(WIN32)) ---------------------
+    # The online/transport test-link dead-strip + no-speculative-devirt flags
+    # are a GCC-codegen concern -- MinGW *and* the Linux release lane, both GCC
+    # -- not a Windows one, so they now live in a compiler-gated top-level block
+    # AFTER this if(WIN32)...endif(). Search
+    # "Test-link dead-strip / speculative-devirt (GCC lanes: MinGW + Linux)".
+    # Kept test-target-only there, exactly as when it lived here.
 
     # --- Subsystem ---------------------------------------------------------
     # Explorer double-click and game launchers start the exe with no inherited
@@ -2525,4 +2430,88 @@ if(WIN32)
             COMPILE_DEFINITIONS "MDKR_VER_CSV=${MDKR_VER_CSV};MDKR_VER_STR=${MDKR_VER_STR}"
             OBJECT_DEPENDS "${MDKR_MANIFEST_PATH}")
     endif()
+endif()
+
+# ==========================================================================
+# Test-link dead-strip / speculative-devirt (GCC lanes: MinGW + Linux)
+# ==========================================================================
+# TRUE CONDITION: this is a GCC-codegen concern, not a Windows one. It fires on
+# every GCC lane -- MinGW (cross from macOS/Linux, or MSYS2) AND the Linux
+# release lane, both GCC -- and on NO Clang lane (macOS AppleClang, Linux clang,
+# wasm/emscripten Clang), which need none of these flags. That is why the gate
+# below is CMAKE_C_COMPILER_ID STREQUAL "GNU" (the file's existing GCC idiom,
+# always defined since project() is C) rather than if(WIN32): this block was
+# moved out of the trailing Windows block precisely because the Linux release
+# lane is GCC and hits the identical codegen. Widening one mechanism across both
+# GCC platforms keeps a single source of truth (was: MinGW-only inside if(WIN32)).
+#
+# Several online test targets deliberately omit a defining TU, relying on the
+# omitted definition never being demanded because nothing reachable references
+# it (e.g. the MdkrMatchSignalClientFeed / MdkrOnlineFakeAdapterSeam wrappers
+# that would otherwise pull in match_signal_client.cpp / lobby_fake_adapter.c).
+# Clang leaves the relevant virtual call INDIRECT, so no reachable code names
+# the omitted symbol and the ld64/ELF links resolve with no flags at all -- this
+# is why the historical macOS/Linux-CLANG links passed unflagged. GCC is
+# different: it speculatively binds a virtual call whose only header-visible
+# override is `final` (MdkrMatchSignalClientFeed, MdkrOnlineFakeAdapterSeam) to
+# that override, embedding a DIRECT reference to the omitted definition inside a
+# REACHABLE function (MdkrMatchPeerMesh::State::sendSignal/pump) that no linker
+# can dead-strip. -fno-devirtualize-speculatively is the load-bearing flag: it
+# removes GCC's planted reference so the deliberate omission stays sound. This
+# reproduces identically on MinGW GCC (originally proven at -O2) and on the
+# Linux release lane (GCC at -O3) -- the Linux exposure is exactly why this is
+# no longer Windows-only. -ffunction-sections/-fdata-sections + -Wl,--gc-sections
+# are kept as dead-strip parity (belt-and-braces section GC); their effect in
+# isolation was never separately confirmed, but with speculation off the links
+# are clean on both lanes.
+#
+# TEST TARGETS ONLY -- no shipping target inherits these flags under ANY
+# configure. ${MDKR_TARGET} (the shipped mdkr64 engine/app) and every engine/app
+# archive are never named here and never carry omitted TUs; the flags are
+# applied per-target-PRIVATE, only to the eleven named test exes, and only when
+# if(TARGET) confirms the test exists. Disclosed cost: these test objects are
+# compiled with speculative devirtualization DISABLED, so their codegen differs
+# from the shipping build (which keeps it on); the tests exercise the same
+# sources with the one speculated call left as an ordinary indirect dispatch.
+#
+# KEEP IN SYNC (three copies of the online/transport test-target names):
+#   1. the add_executable(mdkr_online_* / mdkr_native_* / mdkr_match_* /
+#      mdkr_lan_* ...) sites under MDKR_ENABLE_ONLINE_BETA / MDKR_NATIVE_PHONE_
+#      PARTY + BUILD_TESTING earlier in this file (search
+#      "add_executable(mdkr_online_track_table_test").
+#   2. this dead-strip list.
+#   3. ONLINE_TEST_EXES in tools/mingw_cross_check.sh (the MinGW --online lane).
+# The if(TARGET)/elseif(FATAL_ERROR) pair hard-errors when the online-beta app
+# configure (MDKR_ENABLE_ONLINE_BETA AND MDKR_APP) names a target that does not
+# exist, so drift fails the configure instead of silently losing coverage; the
+# BUILD_TESTING gate leaves tests-off configures untouched, and the beta-off
+# lanes stay quiet (the beta-only target simply is not defined).
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU" AND BUILD_TESTING)
+    foreach(_mdkr_online_test
+            mdkr_online_track_table_test
+            mdkr_native_party_sas_test
+            mdkr_lan_party_transport_test
+            mdkr_match_peer_crypto_test
+            mdkr_match_signal_client_test
+            mdkr_match_peer_transport_test
+            mdkr_native_party_e2e_driver
+            mdkr_online_live_adapter_test
+            mdkr_online_live_adapter_beta_test
+            mdkr_match_live_transport_test
+            mdkr_online_live_transport_e2e_driver)
+        if(TARGET ${_mdkr_online_test})
+            target_compile_options(${_mdkr_online_test} PRIVATE
+                -ffunction-sections -fdata-sections
+                -fno-devirtualize-speculatively)
+            target_link_options(${_mdkr_online_test} PRIVATE
+                -Wl,--gc-sections)
+        elseif(MDKR_ENABLE_ONLINE_BETA AND MDKR_APP)
+            message(FATAL_ERROR
+                "GCC test dead-strip list names '${_mdkr_online_test}', but no "
+                "such target exists in this online configure. The list has "
+                "drifted from the test definitions -- update this foreach, the "
+                "add_executable() site above, and ONLINE_TEST_EXES in "
+                "tools/mingw_cross_check.sh together.")
+        endif()
+    endforeach()
 endif()

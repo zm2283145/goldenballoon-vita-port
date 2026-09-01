@@ -4524,7 +4524,12 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
          * single-race branch below asserts the SAME native takeover the tournament
          * branch always has. (modeEnv is kept only to document that the assertion is
          * now mode-independent.) */
-        (void)std::getenv("MDKR_APP_TEST_ONLINE_MODE"); /* now mode-independent */
+        /* Bind the result to a named var so GCC/glibc's -Werror unused lane is
+         * satisfied (a bare (void) cast on the call alone does not silence it);
+         * the value is intentionally unread -- the assertion is now
+         * mode-independent. Same idiom as tests/test_lan_party_launch.cpp. */
+        const char *modeEnv = std::getenv("MDKR_APP_TEST_ONLINE_MODE");
+        (void)modeEnv;
         return (fires == 1 && routed) ? 0 : 3;
     }
     if (std::getenv("MDKR_APP_TEST_ONLINE_ROOM_READY_REARM_PROBE") != nullptr) {

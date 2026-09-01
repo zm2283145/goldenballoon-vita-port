@@ -1060,7 +1060,12 @@ void drawBetaChooser(LauncherState &state) {
             if (typed == 0u) {
                 std::snprintf(spoken, sizeof(spoken), "No digits entered yet");
             } else {
-                std::snprintf(spoken, sizeof(spoken), "%s, %u of 6",
+                // Cap the directive at the join code's own width (6 digits, the
+                // array is char[7]) so GCC's -Werror=format-truncation can bound
+                // the %s -- without the precision it assumes the string may run
+                // past the array into the struct. betaJoinCode is always NUL-
+                // terminated at <=6 chars, so %.6s renders identically.
+                std::snprintf(spoken, sizeof(spoken), "%.6s, %u of 6",
                               g_online.betaJoinCode, static_cast<unsigned>(typed));
             }
             ui::SpeakFocusedItem(
