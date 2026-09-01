@@ -228,7 +228,7 @@ static void test_snapshot_field_mapping(void) {
     CHECK(snap.points[0] == 9u && snap.points[1] == 7u);
     CHECK(snap.last_placements[0] == 0u && snap.last_placements[1] == 1u);
     CHECK(snap.last_placements[2] == MDKR_ONLINE_NO_PLACEMENT);
-    /* host_cursor stays zero/invalid (fills it). */
+    /* host_cursor stays zero/invalid until the host-cursor wire op fills it. */
     CHECK(!snap.host_cursor.valid);
 
     /* Local endpoint is the joiner (not leader): the unique non-leader endpoint
