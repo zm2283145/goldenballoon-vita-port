@@ -745,9 +745,15 @@ async function publishOnlineCompatibility(romReady = null) {
   const buildDigest = await onlineDigest("online-build", [
     info.version, info.source_commit,
   ]);
+  // The gameplay contract folds in the publisher's OS tag (the same-OS
+  // fence): cross-OS gameplay determinism is unproven, so the browser
+  // publishes its own fixed "os=browser" domain -- mirroring the compile-time
+  // MDKR_ONLINE_OS_TAG fold in platform/online/compatibility_identity.c
+  // exactly. Browser peers match each other; a browser<->native pair differs
+  // here and hits the existing clean incompatibility refusal at join.
   const gameplayDigest = await onlineDigest("gameplay-contract", [
     info.source_commit, "protocol=1", "rules=standard-race",
-    "rollback=bounded-v1",
+    "rollback=bounded-v1", "os=browser",
   ]);
   if (generation !== onlineActivationGeneration) return false;
   const compatibility = Object.freeze({
