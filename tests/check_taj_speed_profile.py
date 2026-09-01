@@ -15,9 +15,10 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
-from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, resolve_binary, save_env
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -41,7 +42,8 @@ def percentile_95(values: list[float]) -> float:
 
 
 def run_arm(binary: str, rom: str, vehicle: int, taj: bool,
-            frames: int, window_start: int, verbose: bool) -> tuple[float, str]:
+            frames: int, window_start: int, verbose: bool,
+            save_dir: str) -> tuple[float, str]:
     env = {
         key: value for key, value in os.environ.items()
         if not key.startswith(("MDKR", "GE007_"))
@@ -57,6 +59,16 @@ def run_arm(binary: str, rom: str, vehicle: int, taj: bool,
         MDKR_BOOST_TRACE="1",
         MDKR_LOAD_TRACK=f"5:{vehicle}",
     )
+    # This scenario scrubs every MDKR* variable to build a hermetic engine
+    # environment, which also discards the MDKR_SAVE_DIR/MDKR_VIDEO_CONFIG_PATH
+    # the suite exports per task. Re-isolate both here: without it the engine
+    # falls back to the shared per-user save directory, and an unrelated
+    # adventure-in-progress EEPROM left there by an earlier task re-routes the
+    # boot/menu flow so the frame-timed track-select inputs never launch the
+    # race -- the "missed its vehicle dispatch" false failure. save_env() also
+    # pins the video config so a repo-root mdkr64.ini cannot present-count the
+    # --headless-frames budget (harness_utils.save_env / check_harness_isolation).
+    env = save_env(env, save_dir)
     if taj:
         env["MDKR_TAJ_TEST_PLAYER"] = "0"
         env["MDKR_TAJ_PHYSICS_TRACE"] = "1"
@@ -133,26 +145,28 @@ def main() -> int:
 
     failures: list[str] = []
     rows: list[tuple[str, float, float, float]] = []
-    for vehicle, name in VEHICLES.items():
-        try:
-            stock, _ = run_arm(binary, rom, vehicle, False, args.frames,
-                               args.window_start, args.verbose)
-            taj, _ = run_arm(binary, rom, vehicle, True, args.frames,
-                             args.window_start, args.verbose)
-        except (RuntimeError, subprocess.TimeoutExpired) as error:
-            failures.append(str(error))
-            continue
-        ratio = taj / stock if stock > 0.0 else 0.0
-        rows.append((name, stock, taj, ratio))
-        if not (11.5 <= stock <= 15.0):
-            failures.append(
-                f"{name}: stock p95 {stock:.4f} escaped its retail control band"
-            )
-        if not (RATIO_MIN <= ratio <= RATIO_MAX):
-            failures.append(
-                f"{name}: Taj/stock p95 ratio {ratio:.4f} is outside "
-                f"[{RATIO_MIN:.2f}, {RATIO_MAX:.2f}]"
-            )
+    with tempfile.TemporaryDirectory(prefix="mdkr-taj-speed-") as save_dir:
+        for vehicle, name in VEHICLES.items():
+            try:
+                stock, _ = run_arm(binary, rom, vehicle, False, args.frames,
+                                   args.window_start, args.verbose, save_dir)
+                taj, _ = run_arm(binary, rom, vehicle, True, args.frames,
+                                 args.window_start, args.verbose, save_dir)
+            except (RuntimeError, subprocess.TimeoutExpired) as error:
+                failures.append(str(error))
+                continue
+            ratio = taj / stock if stock > 0.0 else 0.0
+            rows.append((name, stock, taj, ratio))
+            if not (11.5 <= stock <= 15.0):
+                failures.append(
+                    f"{name}: stock p95 {stock:.4f} escaped its retail "
+                    "control band"
+                )
+            if not (RATIO_MIN <= ratio <= RATIO_MAX):
+                failures.append(
+                    f"{name}: Taj/stock p95 ratio {ratio:.4f} is outside "
+                    f"[{RATIO_MIN:.2f}, {RATIO_MAX:.2f}]"
+                )
 
     for name, stock, taj, ratio in rows:
         print(f"  {name:<11} stock={stock:7.4f} Taj={taj:7.4f} "
