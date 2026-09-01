@@ -279,8 +279,53 @@ reader and writer. It prevents a declaration from silently bypassing that
 decision. Local automatic variables and heap fields remain covered by the v3
 family audit and the engine range registry.
 
-The reviewed baseline is now 1,646 declarations. Its twenty-nine-row delta is
-classified. `sRollbackModelMemoryPool` is a match-constant allocator handle
+The reviewed baseline is now 1,747 declarations. Its one-hundred-and-one-row
+delta (no removals) is classified: zero rows are simulation authority,
+sixty-six are test/seam-gated and thirty-five are presentation or host
+bookkeeping. Ninety-four rows belong to the native online-screen takeover
+(the separated session `online_session.c` and its CHARSELECT / TRACKSELECT /
+VEHICLESELECT / RESULTS / CEREMONY screens plus `online_screen_util.c`). The
+structural ruling: those screens tick only under `GAMEMODE_ONLINE_SESSION`,
+which never coexists with a live rollback ring — the ring exists only inside
+a gameplay level and resimulation re-enters `mode_game` directly, not the
+thread3 frame loop — so no screen static is readable by simulation inside a
+rollback window. Match-relevant screen products (locked track/cup/mode,
+confirmed character, committed vehicle) reach the race only through the
+party-link reducer and the session's boot configuration, i.e. pre-freeze load
+work: the same match-constant ruling as this baseline's character arrays.
+Within those ninety-four rows, the sixty-six test/seam rows are the
+`MDKR_TEST_*` env-resolution latches, scripted inputs/scenarios, stand-in
+reducer fixtures (`sTestRoom`/`sTsRoom`/`sVsRoom`, points/placement/seat
+fixtures) and witness change-detect keys — all inert without their env and
+read by no authoritative path; the presentation rows are screen state
+structs, bound texture handles and `-1`-terminated asset-id tables,
+persist-across-entry UI defaults (`sLastConfirmedChar`, `sLastMode`,
+`sLastLockedTrack`/`Cup`, `sLastVehicle`, `sVsStageConfirmedRound`), the
+shared fade transitions, the HD-text refcount latch, the a11y announcement
+change-detect and warn-once/log-once latches. `sSessionTally` is the RANKINGS
+presentation mirror of retail session standings; the reducer never reads it.
+The remaining seven rows: `menu.c`'s `sOnlinePostraceTicks` /
+`sOnlinePostraceEndRequested` are the roster-gated post-race grace clock and
+one-shot latch that drive host session end/resume and are never read to
+choose gameplay results (the `sRollbackResimulating` precedent);
+`objects.c`'s `gPartitionTraceCameraDraws` is a render-tail trace counter,
+`gObjectRenderRequestedFor`/`Index` are draw-seam diagnostics whose only
+reader is the `MDKR_TEST_ANIM_LOD_WITNESS` correlator, and
+`sPinnedDeficitLogged` is the once-per-race pinned-refcount deficit log
+dedup, reset at pin time; `textures_sprites.c`'s
+`sAssetRefcountFreshParentDepth` is the fresh-parent depth bracket for host
+texture/sprite refcount freezing during resimulation — zero at every tick
+boundary, mutating only host cache accounting deliberately outside authority,
+while snapshot-covered item-model references keep their registered exemption.
+Era attribution: the spectate-camera render-tail fix
+(`gPartitionTraceCameraDraws`), the item-model refcount replay hardening
+(`sPinnedDeficitLogged`, `sAssetRefcountFreshParentDepth`), the session-end
+wave (the `menu.c` pair), the native-screen/beta/parity waves (the
+ninety-four online rows), and the crossplay campaign's net +1 (the LOD
+draw-seam diagnostics plus the trackselect vehicle-icon/a11y swap).
+
+The prior 1,646 baseline's twenty-nine-row delta remains classified.
+`sRollbackModelMemoryPool` is a match-constant allocator handle
 written once in `allocate_object_pools` before registry freeze; its pointed-to
 model subpool descriptor and backing arena are registered authority and the
 host pointer itself must never be byte-registered. Fourteen `menu.c` rows
