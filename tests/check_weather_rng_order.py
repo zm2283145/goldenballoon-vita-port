@@ -47,8 +47,27 @@ EXPECTED_WEATHER_ROWS = 813
 # and lives entirely in v3's added authority fields, so RNG order -- the thing
 # this gate polices -- is untouched. Skip-render and 30/60 presentation
 # invariance were re-verified on the new stream before this digest was pinned.
+# Re-frozen 2026-09-01 for the crossplay campaign's -ffp-contract=off pin
+# (84b89c7d): with no flag set each toolchain fused a*b+c its own way, so
+# gameplay float state was not bit-reproducible across native/wasm/mingw. The
+# pin changes which float roundings the compiled sim performs (84b89c7d measured
+# 59 of 225 engine TUs changing bytes, particles.c/racer.c/camera.c among them),
+# so this weather route reaches a different but fully deterministic trajectory.
+# What this gate polices is UNCHANGED and was re-verified on the new stream:
+# both weather row counts hold (813 splash/lightning rows, 812 one-ticket-late),
+# skip-render and 30/60 presentation are byte-identical, enhanced 30/60 is
+# presentation-invariant, and the weather-early / one-ticket-late / one-byte
+# controls all still diverge. Only the field VALUES drift, exactly as the FP
+# rounding change predicts. This is the same trajectory move that forced the
+# authored_rng and online direct-boot golden (d6bbad62) re-mints in the same
+# campaign; this oracle simply was not re-frozen alongside them. The trig-table
+# bake (9fe5bbf5) is hash-neutral, and the sim_hash.c file sink
+# (b624b584/b1064204) is I/O-only -- it mirrors the identical [SIMHASH] line to
+# MDKR_STATE_HASH_FILE, which this lane never sets, and never alters the hash or
+# the sim, so it contributes nothing to this digest. Measured on a fresh Release
+# build at 21b0519d carrying the pin.
 EXPECTED_ORIGINAL_SHA256 = (
-    "253847b6b10ea7edcf695816159f636b74a799cbde76245774b955e91a525c3c"
+    "54e42a67706ceb114b60468c06508b4df01c1b1b11315d66cc84056c9323ccab"
 )
 # Positive control for the scheduler/fixture boundary.  Delaying every positive
 # input edge by one ticket used to be easy to do accidentally when the host
@@ -57,10 +76,12 @@ EXPECTED_ORIGINAL_SHA256 = (
 # broken direction so restoring the accepted oracle cannot be faked by updating
 # the expected digest to whichever route happened to run.
 EXPECTED_LATE_PHASE_WEATHER_ROWS = 812
-# Re-frozen alongside EXPECTED_ORIGINAL_SHA256 above: the same authored delta
-# moves this frozen broken direction too, and its row count still drops by one.
+# Re-frozen alongside EXPECTED_ORIGINAL_SHA256 above: the -ffp-contract=off pin
+# moves this frozen broken direction too. Its row count still drops by exactly
+# one (812, measured), so the one-ticket-late input phase is unchanged; only the
+# digest values follow the same trajectory shift as the Original oracle.
 EXPECTED_LATE_PHASE_SHA256 = (
-    "a9f8d537aa654275c1fe2d9c950b370c879752a04527e5762a9a1f7075c46a67"
+    "23acb8d29177fa1009d643045a6323ddb520641df2e07558207ab89e50a87a04"
 )
 
 
