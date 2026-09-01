@@ -93,15 +93,11 @@ commit and checksum it was built from.
 
 ## Known limitations
 
-- The complete start-to-credits campaign is not automated or claimed complete.
-- Linux does not yet have a native **Choose ROM File** dialog. Drag and drop
-  or paste the path instead.
 - The Remastered presentation (lighting, shadows, SDF text) is opt-in and
   still in progress.
 - The desktop app supports keyboard/gamepad navigation, UI scaling and reduced
   motion, and an Accessibility section gathers them. It does not yet expose a
-  contrast setting — earlier notes claimed one; there was never a control for
-  it. It also does not present itself to a screen reader, so it is not
+  contrast setting. It also does not present itself to a screen reader, so it is not
   advertised as screen-reader compatible.
 - Other ROM revisions (JP, US 1.0, EU 1.0) are recognized and refused by
   name; only US 1.1 and EU 1.1 are supported. The
