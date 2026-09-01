@@ -1,4 +1,4 @@
-/* SEPARATED-BOOT-PATH (Strategy D2) shared native-screen draw/state helpers --
+/* SEPARATED-BOOT-PATH shared native-screen draw/state helpers --
  * the implementation half of online_screen_util.h. See that header for the family
  * overview and the isolation rationale. Split into a real .c/.h pair (from the
  * former header-only grab-bag) so there is ONE definition of each helper and the
@@ -448,7 +448,7 @@ void mdkr_online_screen_fade_skip_once(void) {
 }
 
 /* REVEAL the screen from black. The engine's per-frame driver (transition_update()
- * + transition_render() at thread3_main.c:536, run every frame AFTER the gamemode
+ * + transition_render() in thread3_main.c, run every frame AFTER the gamemode
  * tick REGARDLESS of mode) then draws the receding black veil on top of whatever the
  * screen drew. This is the "already in the loop" primitive-borrow the backdrop leans
  * on for bgdraw_render(): we only ADD a transition_begin() call from the beta-gated
@@ -530,8 +530,9 @@ void mdkr_online_screen_dl_retire(void) {
      * the empty truncated task presents one BLACK frame -- a visible blink on
      * the fade-skipped intra-track-screen stage flips (captured on the joiner
      * flow dump). gDrawFrameTimer=2 is the engine's own loading-hold: the task
-     * submit is skipped while it counts down (thread3_main.c:378) and the
-     * previous framebuffer is copied over the current one (:598-608), so the
+     * submit is skipped while it counts down and the
+     * previous framebuffer is copied over the current one (both in thread3_main.c's
+     * gDrawFrameTimer hold), so the
      * outgoing screen's last real frame persists until the incoming screen's
      * first frame is authored. */
     gDrawFrameTimer = 2;
@@ -560,7 +561,7 @@ void mdkr_online_screen_music(u8 sequence) {
  * ------------------------------------------------------------------------
  * Instead of a flat fill, the native online screens arm the engine's global
  * background to the retail two-texture horizontally-scrolling sky. The engine's
- * per-frame bgdraw_render() (thread3_main.c:411, run BEFORE the online tick) draws
+ * per-frame bgdraw_render() (in thread3_main.c, run BEFORE the online tick) draws
  * whatever background mode is armed: once bgdraw_texture_init() has stashed a
  * TOP+BOTTOM tile pair, every subsequent frame renders the scrolling sky via
  * bgdraw_texture() -- the exact same primitive the offline front-end / post-race menu

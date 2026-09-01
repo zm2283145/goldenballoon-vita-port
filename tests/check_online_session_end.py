@@ -110,7 +110,7 @@ def check_finished(binary: Path, rom: Path, verbose: bool) -> int | None:
                 # champion CEREMONY -> the single FINISHED handshake (engine note +
                 # launcher reason=FINISHED). Inert on the non-final rounds.
                 "MDKR_TEST_ONLINE_RESULTS_CHOOSER": "5",
-                # PD-T6f: skip the native champion CEREMONY's bounded hold so the
+                # skip the native champion CEREMONY's bounded hold so the
                 # FINISHED handshake this lane asserts still fires promptly (exactly
                 # once, unchanged reason/result) with the ceremony in the path.
                 "MDKR_TEST_ONLINE_CEREMONY_SKIP": "1",
@@ -160,7 +160,7 @@ def check_finished_joiner(binary: Path, rom: Path, verbose: bool) -> int | None:
                 "MDKR_TEST_ONLINE_LOBBY_TOURNAMENT": "1",
                 "MDKR_TEST_ONLINE_RESULTS_HOST_PRESS": "1",
                 "MDKR_TEST_ONLINE_RESULTS_JOINER_FINISH": "1",
-                # PD-T6f: skip the ceremony hold; the JOINER still follows the host
+                # skip the ceremony hold; the JOINER still follows the host
                 # out of the final standings, through the (near-instant) ceremony,
                 # to the single FINISHED (IMPORTANT-1 no-park stays proven).
                 "MDKR_TEST_ONLINE_CEREMONY_SKIP": "1",

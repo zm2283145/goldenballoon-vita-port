@@ -346,7 +346,7 @@ void announceView(const MdkrOnlineViewModel &model) {
     if (phrase[0] != '\0') {
         std::snprintf(message, sizeof(message),
                       "%s. %s Verification phrase: %s. Do not continue if "
-                      "even 1 word differs.",
+                      "even one word differs.",
                       model.title, model.explanation, phrase);
     } else {
         std::snprintf(message, sizeof(message), "%s. %s", model.title,
@@ -372,7 +372,7 @@ void drawVerificationPhrase(const MdkrOnlineViewModel &model) {
         ImGui::PopFont();
         ui::Gap(ui::kGapXS);
         ui::TextSubtleWrapped(
-            "Do not continue if even 1 word differs. Leave the room and retry "
+            "Do not continue if even one word differs. Leave the room and retry "
             "the secure connection instead.");
     }
     ui::CardEnd();
@@ -969,7 +969,7 @@ void drawBetaChooser(LauncherState &state) {
                 g_online.betaBuildFailedReason[0] = '\0';
             }
             ui::SpeakFocusedItem("Join a Race", "Enter a code",
-                                 "Enter the 6-digit code your host shares with you.");
+                                 "Enter the six-digit code your host shares with you.");
         }
         ui::CardEnd();
         ui::TextSubtleWrapped(
@@ -977,7 +977,7 @@ void drawBetaChooser(LauncherState &state) {
             "the race starts you will compare a short safety phrase together.");
     } else {
         if (ui::CardBegin("##beta-join", AppTheme::accent(), 0.0f)) {
-            ImGui::TextUnformatted("Enter the 6-digit code from your host");
+            ImGui::TextUnformatted("Enter the six-digit code from your host");
             ui::Gap(ui::kGapS);
             // ONE grouped code field: the big "123 4··" grouping IS the input,
             // not a separate echo above a plain box. The editable buffer stays
@@ -1070,7 +1070,7 @@ void drawBetaChooser(LauncherState &state) {
             }
             ui::SpeakFocusedItem(
                 "Race code", spoken,
-                "Type or paste the 6 digits your host reads to you.");
+                "Type or paste the six digits your host reads to you.");
             // Fixed "N of 6" line -- rendered when complete too ("6 of 6 — ready
             // to join") rather than collapsing, so the Join button below never
             // shifts under the cursor the instant the sixth digit lands.
@@ -1317,7 +1317,7 @@ const char *betaStatusLine(const MdkrOnlineViewModel &model) {
                    : "Checking setup…";
     case MDKR_ONLINE_VIEW_SELECTING: return "Connected — the game takes it from here";
     case MDKR_ONLINE_VIEW_LOADING: return "Loading the race…";
-    case MDKR_ONLINE_VIEW_COUNTDOWN: return "Get ready!";
+    case MDKR_ONLINE_VIEW_COUNTDOWN: return "Get ready…";
     case MDKR_ONLINE_VIEW_RACING: return "Racing";
     case MDKR_ONLINE_VIEW_RESULTS: return "Race complete";
     case MDKR_ONLINE_VIEW_RECOVERY:
@@ -1520,7 +1520,7 @@ void betaComposeStatusLine(const MdkrOnlineViewModel &model,
         if (series[0] != '\0') {
             std::snprintf(out, size, "%s — %s", series,
                           model.kind == MDKR_ONLINE_VIEW_COUNTDOWN
-                              ? "get ready!" : "loading the race…");
+                              ? "get ready…" : "loading the race…");
         }
         break;
     case MDKR_ONLINE_VIEW_RESULTS:
@@ -1756,7 +1756,7 @@ void drawBetaInviteCard(LauncherState &state, bool isHost) {
             ImGui::SetClipboardText(code.c_str());
         }
         ui::SpeakFocusedItem("Copy Code", grouped.c_str(),
-                             "Copies the 6-digit race code to the clipboard.");
+                             "Copies the six-digit race code to the clipboard.");
         ui::Gap(ui::kGapS);
         ui::TextSubtleWrapped(
             "Invite-only — the code expires after about 10 minutes. Keep this "
@@ -2061,7 +2061,7 @@ bool drawBetaNativeHandoffCard(bool tournament,
     bool pressed = false;
     if (ui::CardBegin("##beta-native-handoff", AppTheme::accent(), 0.0f)) {
         if (reentry) {
-            betaDrawCardTitle("Back in the room");
+            betaDrawCardTitle("Back in the Room");
             ui::TextSubtleWrapped(betaReentryReasonCopy(reentryReason));
             ui::Gap(ui::kGapS);
             if (reentryReason == MDKR_PARTY_LINK_SESSION_END_LEFT) {
@@ -2078,7 +2078,7 @@ bool drawBetaNativeHandoffCard(bool tournament,
                                                  ui::kBtnFullWidth());
             }
         } else {
-            betaDrawCardTitle("Starting — handing to the game…");
+            betaDrawCardTitle("Starting — Handing to the Game…");
             ui::TextSubtleWrapped(
                 tournament
                     ? "The game takes over from here. Pick your cup, racer, and "
@@ -2103,7 +2103,7 @@ bool drawBetaNativeHandoffCard(bool tournament,
 // already owns. It is the RESULTS mirror of the SELECTING hand-off card.
 void drawBetaNativeResultsHandoffCard() {
     if (ui::CardBegin("##beta-native-results-handoff", AppTheme::accent(), 0.0f)) {
-        betaDrawCardTitle("The game is showing results…");
+        betaDrawCardTitle("The Game Is Showing Results…");
         ui::TextSubtleWrapped(
             "Standings, the trophy ceremony, and your options for more races "
             "are all in the game — pick what's next on screen.");
@@ -2125,7 +2125,7 @@ void drawBetaNativeResultsHandoffCard() {
 void drawBetaStrandedRoomCard(LauncherState &state) {
     if (ui::CardBegin("##beta-stranded-room", AppTheme::accent(), 0.0f)) {
         const bool hosted = g_online.betaHostJourney;
-        betaDrawCardTitle(hosted ? "Your friend left" : "The host left");
+        betaDrawCardTitle(hosted ? "Your Friend Left" : "The Host Left");
         ui::TextSubtleWrapped(
             hosted ? "This room is done. Host a new race for a fresh code, "
                      "or play offline."
@@ -2811,7 +2811,7 @@ bool betaFakeBuildStage(const char *stage, MdkrOnlineViewModel *model,
         model->kind = MDKR_ONLINE_VIEW_PREFLIGHT;
         model->title = "Compare These Words";
         model->explanation =
-            "Read all 3 groups aloud. Continue only when every display shows "
+            "Read all three groups aloud. Continue only when every display shows "
             "exactly the same words.";
         std::snprintf(model->verification_phrase,
                       sizeof(model->verification_phrase), "%s",

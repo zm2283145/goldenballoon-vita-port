@@ -537,7 +537,7 @@ bool mdkr_online_view_model_build(const MdkrOnlineViewInput *input,
                 if (input->verification_phrase != NULL) {
                     next.title = "Compare These Words";
                     next.explanation =
-                        "Read all 3 groups aloud. Continue only when every display shows exactly the same words.";
+                        "Read all three groups aloud. Continue only when every display shows exactly the same words.";
                     next.status = "Secure Phrase Ready";
                     memcpy(next.verification_phrase,
                            input->verification_phrase,

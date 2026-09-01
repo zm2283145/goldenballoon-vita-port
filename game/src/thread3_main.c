@@ -65,7 +65,7 @@
  * (beta OFF) build never sees this include and the file it names is not compiled
  * (game/src/online/ is not globbed and is CMake-gated on the beta macro). */
 #include "online/online_session.h"
-/* PD-T6h2a: mdkr_party_link_active() for the descriptor-less lobby-start fork
+/* mdkr_party_link_active() for the descriptor-less lobby-start fork
  * below. Dependency-free header; the TU (party_link.c) is beta-only, so the OFF
  * build never sees this include and thread3_main.o stays byte-identical. */
 #include "net/party_link.h"
@@ -2335,7 +2335,7 @@ void mode_intro(void) {
                 mdkr_online_session_begin(launch);
                 return;
             }
-            /* PD-T6h2a DESCRIPTOR-LESS lobby-start fork (SECOND condition; the
+            /* DESCRIPTOR-LESS lobby-start fork (SECOND condition; the
              * descriptor-first condition above stays FIRST + unchanged). When the
              * party_link bridge is installed but no descriptor/roster is present
              * yet, the launcher wants the NATIVE online screens to own race 1: the

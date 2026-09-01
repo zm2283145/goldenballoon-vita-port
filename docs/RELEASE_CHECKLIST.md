@@ -399,20 +399,20 @@ git.
 ## 5. Desktop packaging and publication
 
 Desktop workflow version inputs are filename components, so public releases use
-bare semantic versions such as `1.5.2`, never `v1.6.0`. The `v` prefix belongs
-only to the Git tag. For version 1.5.2, the portable workflow must produce:
+bare semantic versions such as `1.6.0`, never `v1.6.0`. The `v` prefix belongs
+only to the Git tag. For version 1.6.0, the portable workflow must produce:
 
-- `Golden-Balloon-1.5.2-linux-x86_64.AppImage`
-- `Golden-Balloon-1.5.2-linux-x86_64.tar.gz`
+- `Golden-Balloon-1.6.0-linux-x86_64.AppImage`
+- `Golden-Balloon-1.6.0-linux-x86_64.tar.gz`
 
-Automatic Windows publication is intentionally disabled for this patch because
+Automatic Windows publication is intentionally disabled for this release because
 `windows-latest` does not guarantee a qualifying D3D12/Vulkan adapter or GL 3.3
 context. Its headless `--help`/`--video-list` execution is not accepted as a
 rendered launcher or gameplay gate. The workflow still builds, unit-tests,
 import-checks, packages, extracts, and launches `GoldenBalloon.exe` from an
 unrelated CWD.
 
-The exact-manifest `Golden-Balloon-1.5.2-windows-x64.zip` may be attached only
+The exact-manifest `Golden-Balloon-1.6.0-windows-x64.zip` may be attached only
 after manual acceptance on Windows hardware proves the extracted package can:
 
 1. open the real launcher through default WebGPU;
@@ -432,7 +432,7 @@ Dispatch it with:
 
 ```bash
 gh workflow run release.yml --ref v1.6.0 \
-  -f version=1.5.2 \
+  -f version=1.6.0 \
   -f release_tag=v1.6.0
 ```
 
@@ -459,9 +459,9 @@ pass in the same job before the Linux artifacts are uploaded. If any part of
 that job fails or is unavailable, publish no Linux artifact and do not attach a
 locally produced replacement under the canonical release filenames.
 
-### macOS 1.5.2 — unsigned/ad-hoc patch artifact
+### macOS 1.6.0 — unsigned/ad-hoc release artifact
 
-The public 1.5.2 macOS artifact intentionally skips Developer ID signing and
+The public 1.6.0 macOS artifact intentionally skips Developer ID signing and
 notarization. “Unsigned” in its filename means there is no trusted signing
 identity: the app must still have a valid inside-out ad-hoc integrity seal. The
 only expected first-launch interruption is macOS's unidentified-developer
@@ -469,19 +469,19 @@ warning; a “damaged” warning is always a release failure.
 
 The exact public files are:
 
-- `Golden-Balloon-1.5.2-macos-arm64-unsigned.dmg`
-- `Golden-Balloon-1.5.2-macos-arm64-unsigned.dmg.sha256`
-- `Golden-Balloon-1.5.2-macos-arm64-unsigned.dmg.provenance.json`
+- `Golden-Balloon-1.6.0-macos-arm64-unsigned.dmg`
+- `Golden-Balloon-1.6.0-macos-arm64-unsigned.dmg.sha256`
+- `Golden-Balloon-1.6.0-macos-arm64-unsigned.dmg.provenance.json`
 
 The provenance sidecar must name that exact DMG, the exact 40-character source
-commit, version `1.5.2`, platform `macos`, the DMG SHA-256, and
+commit, version `1.6.0`, platform `macos`, the DMG SHA-256, and
 `macos_signing: ad-hoc-unsigned`.
 
 Before producing the candidate:
 
 - [ ] The source tree and index are clean.
 - [ ] `CMakeLists.txt`, `macos/Resources/Info.plist`, the app's `--version`
-      output, and the release notes all agree on `1.5.2`.
+      output, and the release notes all agree on `1.6.0`.
 - [ ] The release commit is the intended `v1.6.0` tag commit. A test artifact
       may omit `release_tag`; an artifact may be published only with
       `release_tag=v1.6.0` resolving to the workflow's exact source commit.
@@ -493,7 +493,7 @@ Build and validate a non-publishing candidate through the protected workflow:
 
 ```bash
 gh workflow run macos-release.yml \
-  -f version=1.5.2 \
+  -f version=1.6.0 \
   -f trusted_signing=false
 ```
 
@@ -502,7 +502,7 @@ accepted:
 
 - [ ] Build SHA-pinned standalone SDL2 2.32.10 for arm64/macOS 13.
 - [ ] Build `Golden Balloon.app` with `--strict-deployment-target`, embed version
-      `1.5.2` and the exact source commit, bundle SDL2, then seal nested code
+      `1.6.0` and the exact source commit, bundle SDL2, then seal nested code
       before the outer app.
 - [ ] Run `verify_asset_free.sh`, `verify_gatekeeper_bundle.sh`, and
       `verify_unsigned_release.sh`. The last check must prove the ad-hoc seal,
@@ -527,7 +527,7 @@ commit, publish by dispatching the same source commit with the binding enabled:
 
 ```bash
 gh workflow run macos-release.yml --ref v1.6.0 \
-  -f version=1.5.2 \
+  -f version=1.6.0 \
   -f trusted_signing=false \
   -f release_tag=v1.6.0
 ```
@@ -538,9 +538,9 @@ to the existing `v1.6.0` GitHub Release.
 
 ### Optional trusted macOS artifact
 
-The credentialed path is not part of the unsigned 1.5.2 release. If it is used
+The credentialed path is not part of the unsigned 1.6.0 release. If it is used
 later, its exact artifact name is
-`Golden-Balloon-1.5.2-macos-arm64-signed-notarized.dmg`, with matching
+`Golden-Balloon-1.6.0-macos-arm64-signed-notarized.dmg`, with matching
 `.sha256` and `.provenance.json` sidecars and
 `macos_signing: developer-id-notarized`. Dispatch with
 `trusted_signing=true`; the workflow must Developer ID-sign with Hardened

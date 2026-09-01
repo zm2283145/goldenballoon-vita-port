@@ -1,7 +1,7 @@
 #ifndef MDKR_ONLINE_CEREMONY_H
 #define MDKR_ONLINE_CEREMONY_H
 
-/* SEPARATED-BOOT-PATH (Strategy D2) native online champion CEREMONY screen.
+/* SEPARATED-BOOT-PATH native online champion CEREMONY screen.
  *
  * The LAST player-facing screen of the separated online flow: a native,
  * decomp-authentic 2D celebration of the cup champion, shown AFTER the final

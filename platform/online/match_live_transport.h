@@ -1,7 +1,7 @@
 /*
- * O-T6 production transport backends for the native LIVE lobby adapter.
+ * production transport backends for the native LIVE lobby adapter.
  *
- * Two seams the O-T3 adapter injects, here backed by the real MatchRoom service
+ * Two seams the adapter injects, here backed by the real MatchRoom service
  * instead of the in-process doubles the unit test uses:
  *
  *  - MdkrOnlineRoomTransport: a real HTTP client for the MatchRoom lobby routes
@@ -12,11 +12,11 @@
  *    iceServers, 22-char roomId, endpoint credential and endpoint id are taken
  *    from the create/join response and the first /connect frame.
  *
- *  - MdkrOnlineMeshSignalBackend: wraps the O-T1 MdkrMatchSignalClient behind
- *    the MdkrMatchSignalClientFeed adapter, so the O-T2 peer mesh runs real
+ *  - MdkrOnlineMeshSignalBackend: wraps the MdkrMatchSignalClient behind
+ *    the MdkrMatchSignalClientFeed adapter, so the peer mesh runs real
  *    offer/answer/ICE over /api/match/{roomId}/signal.
  *
- * Same-origin/TLS posture mirrors the party transport and the O-T1 signal
+ * Same-origin/TLS posture mirrors the party transport and the signal
  * client: https/wss speak TLS against the embedded Mozilla CA bundle with
  * hostname verification; http/ws plaintext is accepted ONLY behind the loopback
  * test token (mdkr_party_loopback_test_url_allowed). A production build with no
@@ -42,7 +42,7 @@
 std::unique_ptr<MdkrOnlineRoomTransport> mdkr_online_room_http_transport_create(
     const std::string &origin, std::string *error = nullptr);
 
-/* The invite + identity the transport learned at create/join, so the O-T6 race
+/* The invite + identity the transport learned at create/join, so the race
  * driver can narrate the room code the second process joins by. Thread-safe;
  * returns false until the Ready snapshot has been produced. fallbackCode and
  * inviteUrl are populated for a creator only. */

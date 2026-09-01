@@ -1,4 +1,4 @@
-/* SEPARATED-BOOT-PATH (Strategy D) online session state machine.
+/* SEPARATED-BOOT-PATH online session state machine.
  *
  * The whole translation unit is #if MDKR_ENABLE_ONLINE_BETA and the file is
  * added to the build ONLY inside the beta CMake gate (game/src/online/ is NOT
@@ -462,9 +462,9 @@ static void online_session_resident_resolve(void) {
 /* race-1 READINESS GATE. For a descriptor-less
  * (lobby-start) session the boot must NOT fire until the launcher has built +
  * installed the REAL launch descriptor and armed the match-input source on that
- * epoch -- otherwise online_session_boot_race would deref a NULL/stale launch
- * (online_session.c:277). This is the live resident re-wait predicate (:504-507
- * below) GENERALIZED to race 1: bootedEpoch is 0 for the first boot, so any real
+ * epoch -- otherwise online_session_boot_race would deref a NULL/stale launch.
+ * This is the live resident re-wait predicate below, GENERALIZED to race 1:
+ * bootedEpoch is 0 for the first boot, so any real
  * (nonzero) epoch satisfies the freshness check. It is used ONLY under the
  * beganWithoutDescriptor latch, so the !haveSnap direct-boot branch and the
  * seam-armed CHARSELECT hand-off are untouched. */
@@ -481,7 +481,7 @@ static bool online_session_descless_boot_ready(void) {
  * has no MDKR_APP_TEST_ONLINE_LIVE_RESIDENT env to size the run, so finality is
  * read from the SAME party_link forward feed the screens render: a tournament is
  * final on its last cup round (race_index >= CUP_ROUNDS-1 -- mirrors the
- * launcher's lobby_view_model.c:713 predicate and ui_online_room.cpp:2149); a
+ * launcher's final-round predicate in lobby_view_model.c and ui_online_room.cpp); a
  * single race NEVER auto-finals (the host advances via REMATCH / leaves). The
  * env path stays FIRST in the RESULTS enter below, so the two resident lanes are
  * byte-behaviour-unchanged; this applies only when beganWithoutDescriptor. */
@@ -1517,8 +1517,8 @@ void mdkr_online_session_tick(s32 updateRate) {
             }
             /* UNWIND. The boot was deferred because the host
              * STARTed (room left LOBBY) but the descriptor was not live yet. If the
-             * LEADER now CANCELs loading (RETURN_TO_LOBBY -> CANCEL_LOADING,
-             * lobby_core.c:660 / match_live_adapter.cpp:670) the room returns to
+             * LEADER now CANCELs loading (RETURN_TO_LOBBY -> CANCEL_LOADING in
+             * lobby_core.c / match_live_adapter.cpp) the room returns to
              * LOBBY -- so the descriptor will NEVER become ready on this epoch and
              * parking here forever would brick the session. Detect the room back in
              * LOBBY (with our seat still present) while not ready, CLEAR the pending

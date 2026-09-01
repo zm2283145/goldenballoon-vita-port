@@ -15,7 +15,7 @@
 #include "video_config.h"
 #include "net/net_roster_runtime.h"
 #if MDKR_ENABLE_ONLINE_BETA
-/* PD-T5 resident post-race re-entry (scoping ruling R-A). Both includes are
+/* resident post-race re-entry (scoping ruling R-A). Both includes are
  * beta-gated, so a normal (beta OFF) build sees neither and the release menu.o is
  * byte-identical -- proven by rebuilding the OFF object. */
 #include "online/online_session.h"   /* mdkr_online_session_resume_results */
@@ -12988,7 +12988,7 @@ static DrawTexture *menu_racer_portrait_for_player(UNUSED s32 playerIndex,
  * post-race behavior is untouched. */
 static s32 sOnlinePostraceTicks;
 static s8 sOnlinePostraceEndRequested;
-/* PD-T5: the postrace-viewport latch (defined in thread3_main.c, no header) --
+/* the postrace-viewport latch (defined in thread3_main.c, no header) --
  * the resident post-race fork clears it before handing control to the session so
  * the next resident race does not re-enter menu_postrace with a stale TRUE. */
 extern s8 gPostRaceViewPort;
@@ -13762,7 +13762,7 @@ s32 menu_postrace(Gfx **dList, Mtx **matrices, Vertex **vertices, s32 updateRate
                 sOnlinePostraceTicks += updateRate;
                 /* 150 time units ~= 2.5 s (see normalise_time(240) == 4 s). */
                 if (sOnlinePostraceTicks > 150 && !sOnlinePostraceEndRequested) {
-                    /* PD-T5 resident soak (scoping ruling R-A/R-B): re-enter the
+                    /* resident soak (scoping ruling R-A/R-B): re-enter the
                      * separated session's RESULTS phase in THIS engine process
                      * instead of exiting, proving >=2 races + RESULTS per process
                      * via the session loop. On resume we run the same teardown

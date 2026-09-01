@@ -900,7 +900,7 @@ PIN_GROUPS: dict[str, PinGroup] = {
         active_shell=False,
         pins=(
             Pin("checklist", "Windows automatic-publication hold",
-                must_contain="Automatic Windows publication is intentionally disabled for this patch"),
+                must_contain="Automatic Windows publication is intentionally disabled for this release"),
             Pin("checklist", "Windows manual GPU acceptance",
                 must_contain="manual acceptance on Windows hardware"),
             Pin("checklist", "Windows exact accepted archive",
@@ -2585,8 +2585,8 @@ CONTROL_GROUPS: dict[str, ControlGroup] = {
             Control(
                 "Windows automatic-publication hold",
                 "checklist",
-                "Automatic Windows publication is intentionally disabled for this patch",
-                "Automatic Windows publication is enabled for this patch",
+                "Automatic Windows publication is intentionally disabled for this release",
+                "Automatic Windows publication is enabled for this release",
                 count=1,
             ),
             Control(

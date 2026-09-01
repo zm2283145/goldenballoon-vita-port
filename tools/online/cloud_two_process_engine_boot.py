@@ -4,7 +4,7 @@
 tests/check_online_engine_boot.py proves the make-or-break engine wiring: the
 VISIBLE 3D engine runs a networked race driven by the LIVE adapter transport.
 But it proves it with BOTH endpoints living inside ONE process, over an
-in-process O-T2 loopback signal hub -- not the real deployed service.
+in-process loopback signal hub -- not the real deployed service.
 
 tools/online/cloud_two_session_smoke.py proves the real deployed service: two
 `mdkr_online_live_transport_e2e_driver` processes race over

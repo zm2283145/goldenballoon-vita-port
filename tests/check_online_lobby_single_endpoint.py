@@ -119,7 +119,7 @@ def check_single_endpoint_advance(binary: Path, rom: Path, ticks: int,
             # final rounds (the chooser fronts only at the FINAL standings; the
             # single-endpoint per-round re-cycle below is unchanged).
             "MDKR_TEST_ONLINE_RESULTS_CHOOSER": "5",
-            # PD-T6f: skip the champion CEREMONY's bounded hold so this lane's
+            # skip the champion CEREMONY's bounded hold so this lane's
             # single-endpoint frame budget + FINISHED assertion are preserved.
             "MDKR_TEST_ONLINE_CEREMONY_SKIP": "1",
         })
@@ -158,7 +158,7 @@ def check_single_endpoint_advance(binary: Path, rom: Path, ticks: int,
     if MID_UNWIND_RE.search(output):
         return fail("[single-advance] a mid-tournament UNWIND fired spuriously in "
                     "the happy path", output)
-    # PD-T6d re-audit: the final standings no longer HOLD to the tick budget -- the
+    # re-audit: the final standings no longer HOLD to the tick budget -- the
     # host's "A: FINISH" now fires the FINISHED handshake (engine note + launcher
     # read + clean return), so the run terminates ON the FINISH with rc 0.
     # Pin the CHOOSER route explicitly: the FINISHED above must be reached via the host
@@ -230,7 +230,7 @@ def check_wallclock_wait(binary: Path, rom: Path, verbose: bool, wedge: str,
     if rc == 0:
         return fail(f"[wall-clock {wedge}] exited 0 -- a stuck wait must carry an "
                     f"ERROR signal (nonzero), not look like a normal finish", output)
-    # PD-T6d: the watchdog trip also notes the ERROR reason, which the launcher's
+    # the watchdog trip also notes the ERROR reason, which the launcher's
     # session-end read surfaces (one uniform channel alongside the nonzero rc).
     ends = SESSION_END_RE.findall(output)
     if not any(reason == "ERROR" for reason, _code in ends):
@@ -267,8 +267,8 @@ def check_mid_tournament_cancel(binary: Path, rom: Path,
         return fail("[mid-cancel] the engine did NOT unwind the mid-tournament "
                     "cancel -- it would park on a stale round with no re-front",
                     output)
-    # PD-T6d (Minor-4): the mid-tournament cancel now returns CLEANLY to the room --
-    # note LEFT + platform_request_exit(0) -- replacing the PD-T6h2c re-front that
+    # The mid-tournament cancel now returns CLEANLY to the room --
+    # note LEFT + platform_request_exit(0) -- replacing the re-front that
     # dropped the human into the doomed 900-frame advance budget (a bounded ERROR).
     # So the run exits 0 with a LEFT session-end the launcher reads (NOT a re-front,
     # NOT an error exit), after at least race 1 booted.

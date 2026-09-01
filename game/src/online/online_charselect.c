@@ -1,12 +1,12 @@
-/* SEPARATED-BOOT-PATH (Strategy D2) native online CHARACTER select.
+/* SEPARATED-BOOT-PATH native online CHARACTER select.
  *
  * (Vehicle choice is now its OWN dedicated native screen, online_vehicleselect.c,
  * fronted right after this one; this screen only SEEDS a legality-safe default
  * vehicle so the seat can READY -- see mdkr_online_charselect_enter.)
  *
- * ============================ THE D2 REUSE BOUNDARY ========================
+ * ============================ THE REUSE BOUNDARY ========================
  * This screen is the first player-facing SCREEN of the separated online flow.
- * Strategy D2 means: RE-IMPLEMENT the presentation here using the GAME'S OWN
+ * RE-IMPLEMENT the presentation here using the GAME'S OWN
  * decoded assets, rather than calling the offline menu's character-select loop.
  * That is the whole point -- it lets a decomp do what a static recompilation
  * cannot: draw the real N64 racer portraits, play the real DKR menu SFX, and use
@@ -27,7 +27,7 @@
  *   - texrect_draw / bgdraw_*    (rcp_dkr.h) the game's own 2D blit, drawing
  *                                straight into the engine frame's gCurrDisplayList.
  *   - sound_play + SOUND_*       (audio.h / sound_ids.h) the real menu SFX, the
- *                                same enums/API menu.c uses (e.g. menu.c:4564).
+ *                                same enums/API menu.c uses.
  *   - input_pressed / stick      (joypad.h) the real pad, local player only.
  *   - get_player_selected_vehicle(menu.c) the SAME default vehicle value
  *                                menu_online_versus_race_setup() applies at boot,
@@ -116,8 +116,8 @@
 #define CS_TAKEN_DIM 72u
 
 /* Retail PLAYER SELECT SFX set (the real DKR enums; verified against menu.c's own
- * charselect loop: move menu.c:9253, blocked menu.c:9230, confirm/deselect voice
- * menu.c:9241/9145). Confirm/B-unconfirm play the racer's per-character VOICE line
+ * charselect loop: the move, blocked-drumstick, and confirm/deselect voice
+ * cues). Confirm/B-unconfirm play the racer's per-character VOICE line
  * (SOUND_VOICE_CHARACTER_SELECT / _DESELECTED + the Character-enum id), so the
  * confirm cue is "My name's Krunch" etc., exactly like retail. */
 #define CS_SFX_MOVE SOUND_MENU_PICK3     /* legal cursor move */
@@ -427,13 +427,14 @@ static void charselect_apply_input(const CsInput *in, u8 remoteChar) {
         if (in->aEdge) {
             if (remoteChar != MDKR_ONLINE_SCREEN_NO_CHARACTER && sCs.cursor == remoteChar) {
                 /* DISALLOW: do not publish a confirm for a claimed racer -- retail
-                 * blocks it with the drumstick horn (menu.c:9230). */
+                 * blocks it with the drumstick horn. */
                 sound_play(CS_SFX_BLOCKED, NULL);
             } else {
                 sCs.confirmed = 1u;
                 sLastConfirmedChar = sCs.cursor; /* persistence */
                 /* confirm cue = the racer's own voice line ("I'm X"), voiceID ==
-                 * the Character-enum id (sOnlineToPortrait), same as menu.c:9241. */
+                 * the Character-enum id (sOnlineToPortrait), same as menu.c's
+                 * charselect confirm cue. */
                 sound_play(
                     (s32) CS_SFX_VOICE_SELECT + (s32) sOnlineToPortrait[sCs.cursor],
                     NULL);
@@ -460,7 +461,7 @@ static void charselect_apply_input(const CsInput *in, u8 remoteChar) {
             sound_play(CS_SFX_BACK, NULL);
         } else {
             sCs.confirmed = 0u;
-            /* B-unconfirm cue = the racer's DESELECT voice (menu.c:9145). */
+            /* B-unconfirm cue = the racer's DESELECT voice (as in menu.c's charselect loop). */
             sound_play(
                 (s32) CS_SFX_VOICE_DESELECT + (s32) sOnlineToPortrait[sCs.cursor],
                 NULL);

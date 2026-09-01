@@ -1,13 +1,13 @@
 #ifndef MDKR_ONLINE_CHARSELECT_H
 #define MDKR_ONLINE_CHARSELECT_H
 
-/* SEPARATED-BOOT-PATH (Strategy D2) native online character-select screen.
+/* SEPARATED-BOOT-PATH native online character-select screen.
  *
  * This is the FIRST player-facing screen of the separated online flow. It is
  * driven by the online session (game/src/online/online_session.c) as its
  * MDKR_ONLINE_SESSION_CHARSELECT phase, NOT by the offline menu state machine:
  * it deliberately does NOT call menu.c's charselect _loop. See the file header
- * in online_charselect.c for the full D2 reuse boundary (what game assets it
+ * in online_charselect.c for the full reuse boundary (what game assets it
  * borrows vs. what it owns, and why it re-implements the presentation).
  *
  * The ENTIRE header is #if MDKR_ENABLE_ONLINE_BETA so a normal (beta OFF) build

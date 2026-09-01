@@ -228,7 +228,7 @@ static void test_snapshot_field_mapping(void) {
     CHECK(snap.points[0] == 9u && snap.points[1] == 7u);
     CHECK(snap.last_placements[0] == 0u && snap.last_placements[1] == 1u);
     CHECK(snap.last_placements[2] == MDKR_ONLINE_NO_PLACEMENT);
-    /* host_cursor stays zero/invalid (P2-T3 fills it). */
+    /* host_cursor stays zero/invalid until the host-cursor wire op fills it. */
     CHECK(!snap.host_cursor.valid);
 
     /* Local endpoint is the joiner (not leader): the unique non-leader endpoint
@@ -492,7 +492,7 @@ static void test_dispatch_plan(void) {
     }
 }
 
-/* PD-T3: the host-only session-config dispatch kinds (SET_MODE /
+/* the host-only session-config dispatch kinds (SET_MODE /
  * SET_CONFIG_TRACK / SET_CUP): want/converged/ordering/host-gating/refusal. */
 static void test_dispatch_session_config(void) {
     MdkrPartyLinkDispatchState st;
@@ -634,7 +634,7 @@ static void test_dispatch_session_config(void) {
     }
 }
 
-/* PD-T6b: the host-only post-race REMATCH dispatch kind (the RESULTS-screen
+/* the host-only post-race REMATCH dispatch kind (the RESULTS-screen
  * "advance to the next race" that drives the reducer's leader-only
  * MDKR_ONLINE_REMATCH). want/converge/host-gate/refusal, mirroring the SET_*
  * tests -- and the load-bearing convergence rule (phase left RESULTS). */
@@ -786,7 +786,7 @@ static void test_dispatch_zeroed_intent_contract(void) {
     CHECK(plan_index_of(&plan, MDKR_PARTY_LINK_DISPATCH_SET_CONFIG_TRACK) >= 0);
 }
 
-/* PD-T6d: the engine->launcher session end-reason channel. Mirrors the
+/* the engine->launcher session end-reason channel. Mirrors the
  * single-endpoint note: engine writes, launcher one-shot takes, reset by
  * install/clear so no stale verdict leaks across sessions. */
 static void test_session_end_reason(void) {

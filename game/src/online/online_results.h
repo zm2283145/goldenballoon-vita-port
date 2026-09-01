@@ -1,13 +1,13 @@
 #ifndef MDKR_ONLINE_RESULTS_H
 #define MDKR_ONLINE_RESULTS_H
 
-/* SEPARATED-BOOT-PATH (Strategy D2) native online RESULTS / STANDINGS screen.
+/* SEPARATED-BOOT-PATH native online RESULTS / STANDINGS screen.
  *
  * The screen shown AFTER an online race, driven by the online session
  * (game/src/online/online_session.c) as its MDKR_ONLINE_SESSION_RESULTS phase,
  * NOT by the offline menu state machine: it deliberately does NOT call menu.c's
  * MENU_RESULTS loop (which carries a settings->racers[].placements side-effect).
- * See the file header in online_results.c for the full D2 reuse boundary (what
+ * See the file header in online_results.c for the full reuse boundary (what
  * game assets it borrows vs. what it owns).
  *
  * It reads THIS race's finishing order from mdkr_online_race_results_poll (the

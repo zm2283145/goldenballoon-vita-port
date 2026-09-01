@@ -1,5 +1,5 @@
 /*
- * O-T3 native LIVE lobby adapter seam.
+ * native LIVE lobby adapter seam.
  *
  * This header carves the launcher-side adapter interface that BOTH the
  * deterministic fake adapter (platform/online/lobby_fake_adapter.*, the
@@ -286,7 +286,7 @@ std::unique_ptr<IMdkrOnlineAdapter> mdkr_online_live_adapter_create(
     const MdkrOnlineLiveAdapterOptions &options, std::string *error = nullptr);
 
 /* Test-only introspection of the live adapter's Loading-barrier launch build,
- * so a test can prove the descriptor was built through the O-T5 clamp and
+ * so a test can prove the descriptor was built through the clamp and
  * installed without a second engine process. Returns false for a non-live
  * adapter or before the build has run. */
 struct MdkrOnlineLiveLaunchProbe {
@@ -300,7 +300,7 @@ struct MdkrOnlineLiveLaunchProbe {
 bool mdkr_online_live_adapter_probe(const IMdkrOnlineAdapter *adapter,
                                     MdkrOnlineLiveLaunchProbe *out);
 
-/* ---- O-T6 post-install per-tick race feed ------------------------------- *
+/* ---- post-install per-tick race feed ------------------------------- *
  *
  * Once the descriptor installs, the adapter owns a launcher-side match
  * transport bound to a headless session bridge -- the live replacement for the
@@ -310,7 +310,7 @@ bool mdkr_online_live_adapter_probe(const IMdkrOnlineAdapter *adapter,
  * bundle, fans it out on the mesh and drains one authored tick through the
  * transport. The engine model that advances over the resulting canonical input
  * frames -- and the state hash the two processes compare -- is owned by the
- * O-T6 race driver, which reads confirmed frames back through
+ * race driver, which reads confirmed frames back through
  * race_inputs_for_tick(). These functions return false for a non-live adapter
  * or before install; they never run on the launcher's fake-adapter path.
  *
@@ -378,7 +378,7 @@ bool mdkr_online_live_adapter_race_set_local_input(
 bool mdkr_online_live_adapter_race_resend(IMdkrOnlineAdapter *adapter,
                                           uint32_t newestTick);
 /* Drain the current authored tick WITHOUT sealing/fanning out any local bundle
- * -- the "advance-minus-send" half of race_advance. Test-lane seam (O2.2-sim):
+ * -- the "advance-minus-send" half of race_advance. Test-lane seam:
  * lets a deterministic impairment matrix separate the launcher-side engine's
  * real-time drain (which keeps predicting through a network stall) from the
  * network send, so the driver can route every mesh transmission through a
@@ -427,7 +427,7 @@ struct MdkrOnlineLiveRaceStats {
 bool mdkr_online_live_adapter_race_stats(const IMdkrOnlineAdapter *adapter,
                                          MdkrOnlineLiveRaceStats *out);
 
-/* ---- O-T7 race lifecycle + session-config C APIs (launcher/UI seams) ----- *
+/* ---- race lifecycle + session-config C APIs (launcher/UI seams) ----- *
  *
  * These free functions resolve the gated LIVE adapter only (false for the
  * fake adapter / nullptr), exactly like the race accessors above. They are
@@ -579,7 +579,7 @@ inline constexpr uint32_t kMdkrOnlineLiveStepEnterAnotherCode = 100u;
  * keys/mesh via the SAS-rekey path) instead of refusing. */
 inline constexpr uint32_t kMdkrOnlineLiveStepRetryRebuild = 101u;
 
-/* ---- O-T6b engine match-input seam --------------------------------------- *
+/* ---- engine match-input seam --------------------------------------- *
  *
  * The visible engine (mdkr64_engine_boot) drives its per-tick canonical input
  * through the process-global MdkrMatchInputSource (platform/net/match_input_
@@ -693,8 +693,8 @@ inline bool mdkr_online_live_lobby_gate_open() {
  * In a NATIVE ONLINE BETA build (MDKR_ENABLE_ONLINE_BETA) this is a forward
  * declaration; the real owning factory lives out-of-line in
  * platform/app/online_live_wiring.cpp, composing the production MatchRoom HTTP
- * transport + real signal-client mesh backend + O-T3 live adapter EXACTLY as the
- * O-T6 e2e driver does, behind the beta gate and fenced to one local seat,
+ * transport + real signal-client mesh backend + live adapter EXACTLY as the
+ * e2e driver does, behind the beta gate and fenced to one local seat,
  * retail identities and STUN-only. journey/joinCode select CREATE vs
  * JOIN-by-code before construction (the live adapter is built with a fixed
  * journey, unlike the fake).
@@ -725,7 +725,7 @@ bool OnlineRoom_liveInvite(IMdkrOnlineAdapter *adapter, std::string *code,
  * touching the pinned view model. Defined in online_live_wiring.cpp. */
 bool OnlineRoom_liveJoinCodeInvalid(IMdkrOnlineAdapter *adapter);
 
-/* ---- P2-T1 live selection bridge wiring (beta only) ---------------------- *
+/* ---- live selection bridge wiring (beta only) ---------------------- *
  *
  * FORWARD FEED: OnlineRoom_pumpPartyLink projects the adapter's live lobby +
  * view model into a party_link snapshot and publishes it (a no-op until the
@@ -763,7 +763,7 @@ bool OnlineRoom_partyLinkPeerLossObserved(void);
  * menu tests to read through the forward feed. */
 void OnlineRoom_runTestPartyLinkFake(void);
 
-/* ---- O-T6b visible-engine race-boot handoff (beta only) ------------------ *
+/* ---- visible-engine race-boot handoff (beta only) ------------------ *
  *
  * The make-or-break seam: turning the headless online race into a VISIBLE 3D
  * race. It is deliberately driven off ADAPTER STATE, not a UI callback -- the
@@ -903,7 +903,7 @@ bool OnlineRoom_guardRosterOwner(uint64_t token);
 
 /* ---- Test-only in-process loopback race pair (MDKR_APP_TEST_ONLINE_LIVE) --- *
  *
- * Builds two real live adapters over the O-T2 loopback signal hub + an
+ * Builds two real live adapters over the loopback signal hub + an
  * in-process MatchRoom double and drives them to a READY race transport, so a
  * headless proof can boot the VISIBLE engine on endpoint A's live transport
  * while endpoint B seals real input over the mesh. Returns nullptr on failure

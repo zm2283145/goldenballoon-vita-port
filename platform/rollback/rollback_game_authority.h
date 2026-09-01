@@ -33,7 +33,7 @@ uint64_t mdkr_rollback_game_authority_restore_serial(void);
 /* rcp_dkr.c's authored-tick accessor, host-safe. Its own header (rcp_dkr.h)
  * needs the full <ultra64.h> chain, which host rollback TUs cannot include;
  * this spelling is the identical type, not merely a compatible one, because
- * ultratypes.h:32 typedefs u64 = uint64_t under NATIVE_PORT. The rebuild hook
+ * ultratypes.h typedefs u64 = uint64_t under NATIVE_PORT. The rebuild hook
  * uses it to re-arm the authored-camera latch for the in-flight tick. */
 uint64_t presentation_task_authoring_tick(void);
 #endif

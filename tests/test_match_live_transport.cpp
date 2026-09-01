@@ -1,5 +1,5 @@
 /*
- * O-T6 production MatchRoom transport (platform/online/match_live_transport):
+ * production MatchRoom transport (platform/online/match_live_transport):
  * connection-robustness cases from the W3 native connection review, driven
  * wire-level against a scriptable loopback fake of the MatchRoom service
  * (HTTP create/command + the /connect RFC 6455 state socket), the same

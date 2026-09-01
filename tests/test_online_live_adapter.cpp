@@ -1,9 +1,9 @@
 /*
- * O-T3 live lobby adapter tests.
+ * live lobby adapter tests.
  *
  * The lobby side is driven through an in-process MatchRoom double that runs the
  * REAL lobby reducer (the "small in-process double" option in the task brief).
- * The transport side is driven through the O-T2 loopback signal hub feeding a
+ * The transport side is driven through the loopback signal hub feeding a
  * real MdkrMatchPeerMesh (real libdatachannel DTLS on 127.0.0.1) -- the same
  * loopback mesh test_match_peer_transport.cpp exercises. No wrangler, no
  * network, no engine process: preflight-consensus + install are proven with
@@ -251,7 +251,7 @@ private:
     std::vector<MdkrOnlineCommand> submitted_;
 };
 
-/* ---- O-T2 loopback signal hub (adapted from test_match_peer_transport) --- */
+/* ---- loopback signal hub (adapted from test_match_peer_transport) --- */
 
 class FakeHub;
 
@@ -392,7 +392,7 @@ public:
         const std::vector<MdkrMatchPeerIceServer> &) override {
         began = localEndpointId;
         /* The live adapter now passes 0 to ADOPT the service-assigned
-         * generation (O-T6 forward-fix). Mirror the real signal service, which
+         * generation (forward-fix). Mirror the real signal service, which
          * assigns each endpoint's first signal socket generation 1. */
         return hub_->addEndpoint(localEndpointId,
                                  generation != 0u ? generation : 1u);
@@ -433,7 +433,7 @@ MdkrOnlineViewModel viewOf(IMdkrOnlineAdapter *a) {
 
 /* Pump a set of adapters (service()) with real 10 ms steps + a fake-clock step,
  * until `done` holds or the budget elapses. Real sleeps let the loopback DTLS
- * threads make progress, exactly like the O-T2 mesh harness. */
+ * threads make progress, exactly like the mesh harness. */
 bool pumpUntil(std::vector<IMdkrOnlineAdapter *> adapters, FakeClock &clock,
                const std::function<bool()> &done, unsigned maxMs = 20000u) {
     for (unsigned elapsed = 0u; elapsed <= maxMs; elapsed += 10u) {
@@ -555,7 +555,7 @@ struct FullRunResult {
     uint32_t racedTicks = 0u;
     uint64_t hashA = 0u;
     uint64_t hashB = 0u;
-    /* O2.2-sim impaired-matrix witnesses (unset on the unimpaired path). */
+    /* impaired-matrix witnesses (unset on the unimpaired path). */
     bool bothReachedTarget = false;        /* both drained + confirmed target */
     uint32_t recoveryReason = 0u;          /* max over endpoints: 1 gap, 2 late */
     uint32_t recoveryFirstTick = 0u;
@@ -770,7 +770,7 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
     mdkr_online_live_adapter_probe(A.get(), &result.probeA);
     mdkr_online_live_adapter_probe(B.get(), &result.probeB);
 
-    /* O-T6 race: with both descriptors installed, feed real sealed input
+    /* race: with both descriptors installed, feed real sealed input
      * bundles over the loopback mesh for `raceTicks` authored ticks and fold
      * every confirmed canonical frame into a per-endpoint FNV state hash. The
      * two independent endpoints must converge on the identical hash. */
@@ -933,7 +933,7 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
             return result;
         }
 
-        /* ---- O2.2-sim impaired path -------------------------------------- *
+        /* ---- impaired path -------------------------------------- *
          *
          * The engine advances in real time (one drain per loop, predicting
          * through stalls via race_drain_local). Every mesh transmission is
@@ -1152,7 +1152,7 @@ void test_two_endpoint_race_respects_real_input() {
     mdkr_net_roster_runtime_clear();
 }
 
-/* P1-T1: end the ghost race. When the opponent's transport dies mid-race, the
+/* end the ghost race. When the opponent's transport dies mid-race, the
  * survivor must LATCH peer loss on the exact accessor the launcher's engine
  * drain polls (mdkr_online_live_adapter_race_peer_lost) so the drain ends the
  * session instead of predicting against a frozen ghost to the finish -- and no
@@ -1182,7 +1182,7 @@ void test_midrace_peer_loss_ends_survivor() {
     mdkr_net_roster_runtime_clear();
 }
 
-/* P1-T1 F3: a one-sided barrier abort must not recreate the ghost race on the
+/* F3: a one-sided barrier abort must not recreate the ghost race on the
  * PEER'S side. When A aborts, it notifies B over the control channel; B latches
  * it and reports peer loss through the drain-facing accessor exactly like a lost
  * peer, so B's barrier/mid-race poll ends B's race too. A only SENT, so it keeps
@@ -1727,7 +1727,7 @@ void test_multi_race_lifecycle() {
     mdkr_net_roster_runtime_clear();
 }
 
-/* P1-T1 R2: a race-end recovery card fronts while the local session is still
+/* R2: a race-end recovery card fronts while the local session is still
  * mid-race, where the session reducer REFUSES the card's PLAY_HERE -> RETURN_HOME.
  * setRaceEndFailure must walk the session out of the race first so the card's
  * primary is a working exit, not a dead button. The beta-gated OPPONENT_* enum
@@ -1767,7 +1767,7 @@ void test_race_end_latch_frees_play_here() {
     mdkr_net_roster_runtime_clear();
 }
 
-/* P1-T1 R1: an opponent who quits AFTER the finish order is committed (the
+/* R1: an opponent who quits AFTER the finish order is committed (the
  * post-race window) trips the same PeerLost that maps a CONNECTION_CHECK-class
  * failure onto the view -- and the view builder gives any failure precedence over
  * RESULTS. When placements WERE captured, the launcher publishes them and clears
@@ -1828,7 +1828,7 @@ void test_captured_results_beat_peer_loss_card() {
     mdkr_net_roster_runtime_clear();
 }
 
-/* P1-T2: two lobby commands can be in flight at once, so a CommandResult must be
+/* two lobby commands can be in flight at once, so a CommandResult must be
  * attributed to the command the server ANSWERED (its echoed command_id), not to
  * the most recently SENT one. Deferred-result transport holds both in flight;
  * a refusal is then injected for the FIRST command's id and the surfaced refusal
@@ -1875,7 +1875,7 @@ void test_command_refusal_correlates_by_id() {
     mdkr_net_roster_runtime_clear();
 }
 
-/* P1-T2: the client SET_CONFIG_TRACK pre-check mirrors the reducers' acceptance
+/* the client SET_CONFIG_TRACK pre-check mirrors the reducers' acceptance
  * (only one of the 20 standard race ids). A non-race id <=255 (0, the Central
  * Area hub) is refused locally instead of costing an async round-trip, and a
  * huge value is refused without truncating into a false hit; a real race id
@@ -1909,7 +1909,7 @@ void test_config_track_precheck_rejects_non_race_id() {
     mdkr_net_roster_runtime_clear();
 }
 
-/* P1-T2 O2: while a race-end recovery card is latched, a LATE authoritative
+/* O2: while a race-end recovery card is latched, a LATE authoritative
  * State snapshot must not demote the tailored card to the generic "Online Room
  * Unavailable" box. The shared view model fails ATOMIC when the walked session's
  * phase/epoch disagrees with a snapshot's, BEFORE its failure-precedence path,
@@ -2119,7 +2119,7 @@ uint64_t matrixSeed(unsigned profileIndex) {
            (static_cast<uint64_t>(profileIndex) * UINT64_C(0x100000001B3));
 }
 
-/* O2.2-sim headline: the O-T6 two-endpoint mesh race run under EACH of the six
+/* headline: the two-endpoint mesh race run under EACH of the six
  * named net_impairment profiles. Convergent profiles must still reach a
  * byte-identical confirmed state hash within the 30-tick rollback window;
  * profiles that exceed the window (the 2 s outage) must fire the TYPED recovery

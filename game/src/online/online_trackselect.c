@@ -1,8 +1,8 @@
-/* SEPARATED-BOOT-PATH (Strategy D2) native online HOST TRACK / CUP select.
+/* SEPARATED-BOOT-PATH native online HOST TRACK / CUP select.
  *
- * ============================ THE D2 REUSE BOUNDARY ========================
+ * ============================ THE REUSE BOUNDARY ========================
  * The second player-facing SCREEN of the separated online flow, between the
- * native CHARSELECT (online_charselect.c) and the race. Strategy D2 means:
+ * native CHARSELECT (online_charselect.c) and the race.
  * RE-IMPLEMENT the presentation here using the GAME'S OWN decoded assets rather
  * than calling the offline menu's track-select loop. The offline track select is
  * a live 3D world preview driven by the GAMEMODE_MENU state machine -- entering
@@ -20,7 +20,7 @@
  * as the retail icon pairs at list scale. U/D walks the flat display order
  * (wrap); L/R jumps columns. The joiner renders the SAME list non-interactively
  * with the host's effective LOCK highlighted live from the feed (the feed
- * carries no hover -- MdkrPartyLinkHostCursor is still the unpopulated P2-T3
+ * carries no hover -- MdkrPartyLinkHostCursor is still the unpopulated
  * stub -- so lock granularity is the honest live mirror available).
  *
  * WHAT IT BORROWS (read-only reuse of already-compiled game code/data; NO edit to
@@ -205,7 +205,7 @@ extern s16 gTTVoiceLines[53];
  * freed on _exit. The TOP ids OVERLAP the vehicle stage's sOnlineVehicleAssetIds,
  * which is safe because the session flips the two screens SERIALLY
  * (trackselect_exit runs before vehicleselect_enter and vice versa,
- * online_session.c:1903-1962), so the boolean menu_assetgroup_load/free pairings
+ * sequenced in online_session.c), so the boolean menu_assetgroup_load/free pairings
  * never overlap in time. */
 static const s16 sVehIconTopIds[MDKR_ONLINE_SCREEN_VEHICLE_COUNT] = {
     TEXTURE_ICON_VEHICLE_CAR_TOP,
@@ -913,11 +913,11 @@ static void trackselect_publish_intent(u8 localSeatChar) {
      * ready=0 alone plans nothing, party_link.c). An unconditional ready=1
      * here let a rematch re-front re-latch a stale ready: a re-lock of the
      * IDENTICAL track is no config change, so the reducer never ready-clears
-     * (lobby_core.c:756) and the host's OK could BEGIN_LOADING while the other
+     * (lobby_core.c clears ready only on a config change) and the host's OK could BEGIN_LOADING while the other
      * seat was still browsing -- race-booted without its stage ever fronting.
      * The planner absorbs the interim: an OK before every stage confirm is
      * refused NOT_READY and re-fired off the refusal note once the confirm
-     * lands (party_link.h:229-241). */
+     * lands (see the refusal-note contract in party_link.h). */
     {
         u8 stageReady = mdkr_online_vehicleselect_stage_confirmed_round();
         intent.ready = stageReady;
@@ -1037,7 +1037,7 @@ static void trackselect_draw_row_icons(s32 xRight, s32 rowY, u8 mask, u8 bright)
  * the pick there, so its rounds brighten with it). The JOINER passes host=0
  * (no cursor): it renders the same list with only the feed's effective LOCK
  * highlighted -- its live mirror of the pick (the feed carries no hover:
- * MdkrPartyLinkHostCursor is the unpopulated P2-T3 stub). */
+ * MdkrPartyLinkHostCursor is the unpopulated stub). */
 static void trackselect_draw_list(u8 effMode, u8 focusWorld, u8 cellTrackIdx,
                                   u8 lockedTrackIdx, u8 lockedCup, u8 host,
                                   unsigned occupied, s32 blink) {
@@ -1617,10 +1617,10 @@ void mdkr_online_trackselect_enter(void) {
     sTs.assets = 1u;
     /* Entry seed for the scrolling backdrop: the NEUTRAL hub sky (charselect
      * continuity). trackselect_render re-arms the backdrop to the FOCUSED
-     * world every frame (:1454) -- the frame is retired, so the old
+     * world every frame -- the frame is retired, so the old
      * postcard-mirrors-its-own-backdrop defect is structurally gone and the
      * world sky is free liveness. This seed is kept (not dropped) because
-     * bgdraw_render() runs BEFORE the online tick (online_screen_util.c:563),
+     * bgdraw_render() runs BEFORE the online tick (in online_screen_util.c),
      * so it is what the FIRST pre-tick background draw uses -- under the
      * fade-in-from-black veil below -- until the first render re-arms the
      * focused world on the very next tick. */
@@ -1975,9 +1975,9 @@ static void trackselect_test_reduce_and_script(void) {
 
     /* SAME-TRACK REMATCH scenario: the seam plays the REMOTE HOST of a
      * post-race re-front whose room still carries LAST round's config (the
-     * reducer's REMATCH clear_round drops only ready + votes, lobby_core.c:407)
+     * reducer's REMATCH clear_round drops only ready + votes)
      * -- so re-locking the IDENTICAL track never ready-clears (no config
-     * change, lobby_core.c:756). The host is fast on its own endpoint: it
+     * change). The host is fast on its own endpoint: it
      * holds ready and, from TS_REMATCH_OK_TICK (well inside the local joiner's
      * 70-tick stale-lock browse dwell), presses OK every tick. The reduce
      * models the real machinery: seat ready latches from intent.ready only
@@ -2065,7 +2065,7 @@ static void trackselect_test_reduce_and_script(void) {
             sTsRoom.seats[0].vehicle_id = intent.vehicle_id;
         }
         /* Host session config -- change-detected exactly like the plan dedupe;
-         * each accepted change clears EVERY member's ready (lobby_core.c:756-757).
+         * each accepted change clears EVERY member's ready (matching the lobby_core.c reducer).
          * A config_track outside sTrackIds is REFUSED, never converged. */
         if (intent.mode != MDKR_PARTY_LINK_MODE_UNSET &&
             sTsRoom.mode != intent.mode) {

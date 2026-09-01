@@ -875,7 +875,7 @@ bool OnlineRoom_roomReadyConditionHolds(IMdkrOnlineAdapter *adapter) {
     if (raw == nullptr) return false;
     MdkrOnlineViewModel vm{};
     if (!raw->view(&vm)) return false;
-    /* Mirror drawBetaRoom's SELECTING-body condition (ui_online_room.cpp:2457-2458):
+    /* Mirror drawBetaRoom's SELECTING-body condition (in ui_online_room.cpp):
      * fire the native takeover for ANY online mode at SELECTING + 2 members + LOBBY.
      *
      * The former TOURNAMENT-only clause here (dropped) deferred single race to the
@@ -2717,7 +2717,7 @@ bool loopbackTournamentContinuation(MdkrOnlineTestLoopbackRace *race) {
  * endpoints once) + ONE state check and returns WORKING (call again next frame),
  * ADVANCED (race N+1 is race-ready), or FAILED. The native RESULTS screen keeps
  * presenting between calls; the launcher's per-frame service thread is never
- * blocked (single-threaded launcher/engine alternation -- party_link.h:13-20).
+ * blocked (single-threaded launcher/engine alternation -- see party_link.h's threading contract).
  * Side-effect ORDERING is fixed regardless of the frame-stepping.
  * ======================================================================== */
 namespace {

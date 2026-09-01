@@ -1,5 +1,5 @@
 /*
- * O-T3 native LIVE lobby adapter.
+ * native LIVE lobby adapter.
  *
  * Composes the now-complete online transport into a launcher-owned adapter that
  * drives a real online match, reusing (never re-implementing) every proven
@@ -8,14 +8,14 @@
  *     command), projected through the SHARED lobby_view_model reducer -- the
  *     same reducer the fake adapter uses, so the 43-case view-model oracle
  *     still describes every live view;
- *   - the O-T2 peer mesh (match_peer_transport) over an injected signal feed,
+ *   - the peer mesh (match_peer_transport) over an injected signal feed,
  *     brought up when Check Setup enters the room preflight phase so the
  *     transcript phrase can be compared before selections (the view-model
  *     shows the phrase only in that phase). The mesh is keyed with the stable
  *     nonzero lobby leader_generation because the lobby match_epoch is 0 until
  *     the leader begins loading; that keying epoch is independent of the
  *     descriptor's match_epoch, which is only carried inside the attestation;
- *   - at the Loading barrier: the O-T5 launch builder (retail-identity clamp)
+ *   - at the Loading barrier: the launch builder (retail-identity clamp)
  *     builds the descriptor from the frozen lobby snapshot -- the ONLY seam
  *     that produces a launch descriptor, and no roster mutation is possible
  *     between the authoritative LOADING snapshot and this build;
@@ -34,10 +34,10 @@
  * transcript digest (mdkr_match_peer_transcript_digest, exposed by the mesh),
  * the canonical commitment-verified fingerprint the human phrase is itself
  * derived from. Binding the raw digest rather than SHA-256(phrase) closes the
- * O-T3 note: consensus is over the full transcript, not the phrase's lossy word
+ * note: consensus is over the full transcript, not the phrase's lossy word
  * mapping. Every honest peer derives the identical digest, so consensus holds.
  *
- * Post-install (O-T6) the adapter owns a launcher-side match transport bound to
+ * Post-install, the adapter owns a launcher-side match transport bound to
  * a headless session bridge: opened INPUT envelopes from the mesh drive
  * mdkr_match_transport_receive per covered tick, and race_advance() seals the
  * local endpoint's bundle onto the mesh and drains one authored tick -- the
@@ -236,7 +236,7 @@ const std::vector<SynthPadScriptEntry> &synthPadScript(int *slotOut) {
 }
 #endif
 
-/* Deterministic per-slot input for the O-T6 race. Both endpoints compute the
+/* Deterministic per-slot input for the race. Both endpoints compute the
  * SAME sample for a given (canonical slot, authored tick), so the frame this
  * endpoint seals for a future tick equals the frame the peer later drains for
  * that slot, and the committed canonical inputs converge byte-for-byte. Sticks
@@ -1479,7 +1479,7 @@ private:
 
     /* Re-arm every once-per-race latch when the room returns to the
      * lobby phase, so the NEXT BEGIN_LOADING (new match_epoch, possibly a new
-     * track/mode) rebuilds the manifest + descriptor through the O-T5 clamp,
+     * track/mode) rebuilds the manifest + descriptor through the clamp,
      * re-runs preflight consensus (attestations bind the new epoch), re-runs
      * setUpRace from its first tick and re-publishes the engine boot handoff.
      * The mesh deliberately stays up: it is keyed on leader_generation,
@@ -2032,7 +2032,7 @@ public:
 
 private:
 
-    /* ---- Loading barrier: build descriptor through the O-T5 clamp ------ */
+    /* ---- Loading barrier: build descriptor through the clamp ------ */
 
     void runLoadingBarrier() {
         if (loadingBuildDone_ || !haveLobby_ ||
@@ -2495,7 +2495,7 @@ private:
     }
 
 public:
-    /* ---- O-T6 race API (reached through the free accessors) ------------- */
+    /* ---- race API (reached through the free accessors) ------------- */
     bool raceReady() const { return raceReady_; }
 
     void raceInfo(MdkrOnlineLiveRaceInfo *out) const {
@@ -2793,7 +2793,7 @@ public:
 
     /* Drain the current authored tick with this endpoint's local seats but do
      * NOT seal/fan out any bundle (the send half of raceAdvance is skipped).
-     * The O2.2-sim impairment matrix uses this to keep the launcher-side engine
+     * The impairment matrix uses this to keep the launcher-side engine
      * advancing in real time -- predicting through a network stall -- while it
      * routes every mesh transmission through a seeded net_impairment carrier. */
     bool raceDrainLocal() {
@@ -2887,7 +2887,7 @@ public:
                                                     tick, out);
     }
 
-    /* Engine match-input seam (O-T6b): the two transport views the engine's
+    /* Engine match-input seam: the two transport views the engine's
      * canonical input provider needs beyond drain/inputs_for_tick. */
     bool raceTakeDirty(uint32_t *tick) {
         if (!raceReady_ || tick == nullptr) return false;
@@ -3515,4 +3515,4 @@ IMdkrOnlineAdapter *OnlineRoom_resolveRawLiveAdapter(IMdkrOnlineAdapter *adapter
 
 /* OnlineRoom_makeGatedLiveAdapter is a header-inline stub (returns nullptr)
  * so the launcher panel never links this translation unit; the production
- * transport wiring is owned by the O-T6 race lane. */
+ * transport wiring is owned by the race lane. */

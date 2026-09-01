@@ -1,9 +1,9 @@
-/* SEPARATED-BOOT-PATH (Strategy D2) native online champion CEREMONY screen.
+/* SEPARATED-BOOT-PATH native online champion CEREMONY screen.
  *
- * ============================ THE D2 REUSE BOUNDARY ========================
+ * ============================ THE REUSE BOUNDARY ========================
  * The post-final-standings SCREEN of the separated online flow: a native,
  * decomp-authentic 2D celebration of the cup champion, between the final
- * STANDINGS and the session's hand-back to the launcher. Strategy D2 means:
+ * STANDINGS and the session's hand-back to the launcher.
  * RE-IMPLEMENT the presentation here using the GAME'S OWN decoded assets rather
  * than calling the offline trophy-ceremony cinematic.
  *

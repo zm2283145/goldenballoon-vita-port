@@ -73,7 +73,7 @@ ROUND_READY_RE = re.compile(
     r"frames=(\d+) \(roster re-installed\)$", re.MULTILINE)
 NEXT_ARMED_RE = re.compile(
     r"^\[online-resident-live\] next race armed: epoch=(\d+)", re.MULTILINE)
-# PD-T6d: this resident lane terminates via the FINISHED handshake at the final
+# this resident lane terminates via the FINISHED handshake at the final
 # standings (host "A: FINISH" under MDKR_TEST_ONLINE_RESULTS_HOST_PRESS), not the
 # old hold-to-tick-budget. Its path has the engine note only (no launcher read).
 POSTRACE_EXIT = "[online-postrace] session end requested"
@@ -150,7 +150,7 @@ def main() -> int:
                 # Inert on the non-final rounds (the chooser fronts only at the FINAL
                 # standings; races 1..N-1 still auto-REMATCH to the next round).
                 "MDKR_TEST_ONLINE_RESULTS_CHOOSER": "5",
-                # PD-T6f: the final standings now detours through the champion
+                # the final standings now detours through the champion
                 # CEREMONY before the FINISHED handshake this lane asserts; skip its
                 # bounded hold so the resident frame budget is preserved.
                 "MDKR_TEST_ONLINE_CEREMONY_SKIP": "1",
@@ -268,7 +268,7 @@ def main() -> int:
         return fail(f"per-round match_epoch did not advance freshly "
                     f"(expected {list(range(2, args.races + 1))}, got {epochs})",
                     output)
-    # PD-T6h1: the round transition is now driven FRAME-BY-FRAME (the T6ac blocking
+    # the round transition is now driven FRAME-BY-FRAME (the T6ac blocking
     # loopbackPumpUntil drive is gone). Each round-ready line reports how many
     # SERVICED frames the resumable coordinator spanned to re-cycle the room; a
     # blocking wait would report 0/1. Assert every advance spanned > 1 frame, i.e.
@@ -279,7 +279,7 @@ def main() -> int:
                     f"(frames per round {span_frames}); the transition must be "
                     f"frame-stepped, not a blocking wait", output)
 
-    # PD-T6d: the resident session TERMINATES via the FINISHED handshake at the
+    # the resident session TERMINATES via the FINISHED handshake at the
     # final standings (host "A: FINISH"), not the old hold-to-tick-budget. Pin that
     # witness so a regression to the indefinite hold would FAIL here. (This path has
     # the engine note only -- no launcher [online-session-end] read.)

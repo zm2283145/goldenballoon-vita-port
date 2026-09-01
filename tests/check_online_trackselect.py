@@ -146,7 +146,7 @@ TS_A11Y_LOCK_RE = re.compile(
     r"^\[online-trackselect\] a11y locked: (.+) vehicles=([A-Z+]+)$",
     re.MULTILINE)
 
-# PD-T4: the observable agreement check the session logs at the RACE hand-off.
+# the observable agreement check the session logs at the RACE hand-off.
 # "honored" == the last-seen host-intended track (from the forward feed) equals
 # the booted manifest track; "divergence" == they differ (the manifest still
 # wins -- it is the peer-admission authority -- but we must never see it here).
@@ -174,7 +174,7 @@ TS_REMATCH_CONVERGED_RE = re.compile(
     r"^\[online-trackselect\] test-script host OK converged after (\d+) refused "
     r"tick\(s\) \(joiner stage-confirmed\) -> LOADING$", re.MULTILINE)
 
-# M3 (PD-T4 carry-forward): the tournament joiner scenario drives a teardown-time
+# carry-forward: the tournament joiner scenario drives a teardown-time
 # transport continuation that logs "[online-tournament] result=error step=..." on
 # any stall; treat it as fatal so a silently-degraded continuation can never pass.
 FORBIDDEN_EXTRA = ("[online-tournament] result=error",)
@@ -327,7 +327,7 @@ def check_single_host(output: str) -> int | None:
     if len(SESS_CS_TO_TS_RE.findall(output)) < 2:
         return fail(scn, "expected CHARSELECT -> TRACKSELECT at least twice (the "
                     "browse B round-trip)", output)
-    # The PD-T6 charselect leave stub is warn-ONCE per session continuation:
+    # The charselect leave stub is warn-ONCE per session continuation:
     # the TRACKSELECT -> CHARSELECT back-out deliberately does NOT reset the
     # latch (continuation of the same session), so the second entry's scripted
     # browse-B stays silent -- EXACTLY one stub across the whole run.
@@ -410,7 +410,7 @@ def check_single_host(output: str) -> int | None:
     if not TS_EXIT_RE.search(output):
         return fail(scn, "never freed world bg assets on exit", output)
 
-    # PD-T4 LOCKED==BOOTED: the loopback froze the manifest to the SAME track the
+    # LOCKED==BOOTED: the loopback froze the manifest to the SAME track the
     # screen locked (Whale Bay, 8), so the session sees snapshot==manifest, logs
     # HONORED (no divergence), and the engine boots exactly track 8.
     config = CONFIG_SINGLE_RE.findall(output)
@@ -471,7 +471,7 @@ def check_joiner(output: str) -> int | None:
         return fail(scn, "the joiner's vehicle stage never advanced on the "
                     "scripted host-start", output)
 
-    # PD-T4 LOCKED==BOOTED: the loopback ran tournament cup 2, whose round-0 track
+    # LOCKED==BOOTED: the loopback ran tournament cup 2, whose round-0 track
     # is Whale Bay (8) -- the SAME track the joiner's screen resolves the room's
     # locked cup to. The manifest froze that track, the session logs HONORED, and
     # the engine boots exactly track 8.
@@ -683,7 +683,7 @@ def main() -> int:
         if not path.is_file():
             parser.error(f"missing {label}: {path}")
 
-    # PD-T4: each scenario aligns the frozen manifest with the on-screen LOCK so
+    # each scenario aligns the frozen manifest with the on-screen LOCK so
     # the lane proves LOCKED==BOOTED. single-host fixes the manifest track to
     # Whale Bay (8) via SET_CONFIG_TRACK; the tournament joiner runs cup 2, whose
     # round-0 track is Whale Bay (8). The tournament seam also drives a teardown-

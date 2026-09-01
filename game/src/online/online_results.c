@@ -1,8 +1,8 @@
-/* SEPARATED-BOOT-PATH (Strategy D2) native online RESULTS / STANDINGS screen.
+/* SEPARATED-BOOT-PATH native online RESULTS / STANDINGS screen.
  *
- * ============================ THE D2 REUSE BOUNDARY ========================
+ * ============================ THE REUSE BOUNDARY ========================
  * The post-race SCREEN of the separated online flow, between the race and the
- * next race (tournament) or the session end. Strategy D2 means: RE-IMPLEMENT the
+ * next race (tournament) or the session end. RE-IMPLEMENT the
  * presentation here using the GAME'S OWN decoded assets rather than calling the
  * offline menu's MENU_RESULTS loop.
  *

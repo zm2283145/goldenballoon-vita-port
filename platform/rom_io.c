@@ -49,7 +49,7 @@ static int s_sourceIsEuropean = 0;
  * and cleared after the blocking boot returns, so no reader ever races the
  * writer -- there is no concurrent access to it by construction.
  * Known osTvType-follower to revisit: Controller Pak gameCode selection
- * (game/src/save_data.c:2217/2445/2525) would file under the NTSC code during
+ * (in game/src/save_data.c) would file under the NTSC code during
  * an online epoch; unreachable today (the online flow never opens the pak and
  * the TT-ghost path is region-agnostic), but revisit if any online mode adds
  * pak I/O. */

@@ -1,7 +1,7 @@
 #ifndef MDKR_ONLINE_PORTRAITS_H
 #define MDKR_ONLINE_PORTRAITS_H
 
-/* SEPARATED-BOOT-PATH (Strategy D2) shared portrait / name / asset-id tables.
+/* SEPARATED-BOOT-PATH shared portrait / name / asset-id tables.
  *
  * The THREE byte-identical tables the native online CHARSELECT, RESULTS and
  * CEREMONY screens each need to blit the ten racer faces + their short names:

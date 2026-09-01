@@ -1,6 +1,6 @@
 /* Beta-ON unit test for the live adapter's race-end-card truthfulness decisions.
  *
- * P1-T2 F4: no other test compiles platform/online/match_live_adapter.cpp WITH
+ * No other test compiles platform/online/match_live_adapter.cpp WITH
  * MDKR_ENABLE_ONLINE_BETA (the app target does; mdkr_online_live_adapter_test
  * deliberately does NOT -- defining the macro there breaks
  * test_token_gate_required). That test hole is exactly why the F1 demotion bug
