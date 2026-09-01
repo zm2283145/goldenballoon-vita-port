@@ -30,11 +30,11 @@ Automation windows render hidden or ordered behind the desktop by design (set
 complete suite wherever it runs. All application-launching roles stay
 serialized.
 
-The manifest registers 145 of the 149 `tests/check_*.py` scripts and expands to
-158 tasks. The four it does not name directly
-(`check_controller_settings_persistence.py`, `check_host_input_focus.py`,
-`check_launcher_tabs.py`, `check_overlay_input_handoff.py`) are CTest companions that `rom_free_units` owns, so
-every check script still runs exactly once in a complete pass. That task also
+The manifest registers the `tests/check_*.py` scripts as parallel tasks, apart
+from a set of CTest companions that `rom_free_units` owns and runs through the
+ctest task (`check_controller_settings_persistence.py`, `check_host_input_focus.py`,
+`check_launcher_tabs.py`, and `check_overlay_input_handoff.py` among them), so
+every registered check script still runs exactly once in a complete pass. That task also
 runs the ROM-free display/endian/magic-code/object-layout/allocator/
 runtime-contract, sprite-layout, RDP-interpolation, font-registry/SDF, and RL-1
 CTests, while filename entry, locked-door collision, RAW16 audio, native-layout
@@ -62,9 +62,11 @@ that historical one-field timeline. Shipping-cadence gates instead select
 gate verifies that distinction. Never repair a fixture mismatch by weakening
 its gameplay or pixel threshold without first classifying its time base.
 
-The v0.3 release gate passed the **38-task optimized native/sanitizer stage in
-22m17s**, the **29-task Debug primary stage in 12m31s**, and both wasm-only
-tasks — including the linked layout check and real Chromium — in **1m05s**. The
+As a historical reference point, the v0.3 release gate passed the **38-task
+optimized native/sanitizer stage in 22m17s**, the **29-task Debug primary stage
+in 12m31s**, and both wasm-only tasks — including the linked layout check and
+real Chromium — in **1m05s** (figures predate the current suite and are kept only
+to illustrate the stage shape). The
 vehicle sweep always emits a failed child's diagnostic tail and recognizes
 UBSan text; there is no retry or tolerated-failure path in the registered gate.
 The ROM-free CI-contract task fails closed if push/PR triggers,
@@ -1055,6 +1057,15 @@ no-handback telemetry. The default cutoff is rollback tick 240/process tick
 2660, where the checked-in fixture authors an A edge for every player; the gate
 requires the selected slot to be present-neutral on that exact row, so the
 takeover proof cannot pass by replacing an already-idle sample.
+
+`check_online_character_map.py`, `check_online_racer_lod_animation.py`, and
+`check_online_trackselect.py` are further online-takeover lanes owned by
+`tools/run_online_checks.py`. The character-map lane pins the lobby-catalog-id to
+engine `Character` mapping so a joiner never mis-spawns (the Tiptup-as-Conker /
+T.T.-as-Diddy defect). The racer-LOD lane guards racer level-of-detail and
+animation across its offline, online-biased, and online idle-host fall-behind
+arms (the two-Mac beta-4 T-pose regression). The trackselect lane covers the
+online track-selection surface.
 
 `check_rollback_track_matrix.py` runs the same production delayed-correction
 and exact-second-replay proof on all 20 standard tracks using a human-driven
@@ -2695,7 +2706,7 @@ It arms the boost rather than driving over a pad, for the reason in the ⚠️ a
 committed route can be relied on to keep crossing one particular pad, so a check
 calibrated on one would be measuring the AI, not the boost.
 `MDKR_ZIPPAD_BOOST=<tick>[:<ticks>]` (`objects.c mdkr_zippad_boost_hook`, no-op unless
-set) arms **player one only, once**, in exactly the state `racer.c:5727` arms it in for
+set) arms **player one only, once**, in exactly the state the decomp arms it in for
 `SURFACE_ZIP_PAD` on a car: `boostTimer = normalise_time(ticks)` (default 45, the
 authored constant), `boostType = BOOST_LARGE`. Everything downstream is untouched
 decomp code, so what is measured is the shipping boost with a deterministic trigger.
@@ -4113,8 +4124,8 @@ whole point of the wave.
 The class detector is separate and mechanical — UBSan `-fsanitize=shift-exponent`
 over routes that cross a world hub, Timber's Island at the Taj balloon threshold, a
 water track and a Tracks race. With the fix in place it reports 0 sites; reverted it
-reports 6 (`game.c:528/532/535`, `game.c:629`, `objects.c:1822`, `waves.c:2321`).
-`waves.c:2321` is hit by every route, so it is the sentinel that proves the
+reports 6 shift-exponent sites (in `game.c`, `objects.c`, and `waves.c`).
+The `waves.c` site is hit by every route, so it is the sentinel that proves the
 instrument is alive.
 
 ## Boss win verdict — `tests/check_boss_win_verdict.py` (RUN THIS AFTER ANY CHANGE THAT WRITES `courseFlagsPtr` OR `settings->bosses`)
@@ -4124,7 +4135,7 @@ MDKR_AUDIO=0 python3 tests/check_boss_win_verdict.py -v              # ~3 min
 MDKR_AUDIO=0 python3 tests/check_boss_win_verdict.py --break-invariant   # must FAIL
 ```
 
-`racer_boss_finish()` (`game/src/vehicle_tricky.c:360`) decides between "play the
+`racer_boss_finish()` (`game/src/vehicle_tricky.c`) decides between "play the
 win cutscene, award the amulet, write the save" and "just transition back" on
 **one bit** — `courseFlagsPtr[courseId] & RACE_CLEARED`. The already-cleared arm
 pushes nothing onto the level-property stack, so *no cutscene level is ever
@@ -4363,7 +4374,7 @@ not a slow arm: measured, the lobby is entered at frame ~2947 and the rematch at
 
 Seam C's redirect is invisible in the level-load stream and needs the
 `wizpigface:` trace: `game_load_level` logs the level it was *asked* for, then
-the branch at `game/src/game.c:642` pushes the hub, swaps in the mouth sequence,
+the redirect branch pushes the hub, swaps in the mouth sequence,
 and pops the hub back — so a redirected hub load and an ordinary one print the
 same two `levelId=0` lines. Reading those as "the cutscene never fired" is the
 mistake this seam was first reported with.
@@ -4640,7 +4651,7 @@ byte-identical to the shipped `a08bbcb0…`, so the offsets above are the real o
 **Native cannot catch this defect at all** — the gap is 0 there by luck, so every
 native fixture passes either way, and ASan does not redzone the
 `__DATA,__common` symbols involved. UBSan `-fsanitize=array-bounds` *does* flag the
-out-of-bounds indices (`waves.c:535-539`, `:691-710`) without any crash; that is the
+out-of-bounds indices (in `waves_alloc` and `waves_init`) without any crash; that is the
 native tell.
 
 ## Out-of-bounds index sweep — `tests/check_array_bounds_sweep.py` (RUN THIS AFTER ANY `game/src` CHANGE)
@@ -5457,7 +5468,7 @@ corrupted checksum-valid images hit it before the fix; 0 of 40 after.
 Case 5 is the one actually hit in play. `tajFlags` holds "Taj has OFFERED this
 challenge" (0x01/0x02/0x04) and "you have BEATEN it" (0x08/0x10/0x20) as two
 triples, written minutes apart by two different functions with two different save
-flushes. The offer gate (`objects.c:1794`) reads only the OFFERED half and the
+flushes. The offer gate (in `objects.c`) reads only the OFFERED half and the
 auto-offer dialogue never asks, so "beaten but never offered" replays a finished
 challenge on every hub entry — and Taj's dialogue holds `disable_racer_input()`
 down, so the player just stops. It is measured by DRIVING, not by exit code:
@@ -6236,7 +6247,7 @@ governed or already scaled on the same path, each with its proof in the
 comment), and 0 DISCRETE (this per-tick-constant family did not happen to
 produce a pure gated-event site; `check_cadence_gating.py` covers the
 discrete-gating half of the M3 split separately). One line
-(`game/src/racer.c:7372`) mentions the marker family in prose rather than
+(in `game/src/racer.c`) mentions the marker family in prose rather than
 being a marker itself and is excluded by exact line content, so a real new
 marker landing on that exact line cannot be silently swallowed. Positive
 control: a seeded bare `//!@Delta` must be rejected; a negative control

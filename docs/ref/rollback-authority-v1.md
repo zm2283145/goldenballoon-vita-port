@@ -190,7 +190,7 @@ read as a full `Object`. The loop now follows `shadow_update` ordering by
 rejecting particles, checking the header water group, and only then reading the
 optional `WaterEffect`; a source-order contract, a complete 9,600-frame 4P
 race/results oracle, and a 2,700-frame ASan route protect the repair. Other race
-Other race modes remain outside online v1; device and cross-platform matrices
+modes remain outside online v1; device and cross-platform matrices
 remain open and keep A3 gated.
 Viewport/HUD/listener invariance and persistent native rematch lifecycle now
 have separate real-process gates.

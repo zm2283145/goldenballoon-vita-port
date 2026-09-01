@@ -1,8 +1,17 @@
 # Multiplayer operational status
 
-Last reconciled: **2026-08-13**. This is the live execution ledger; sprint files
+Last reconciled: **2026-09-01**. This is the live execution ledger; sprint files
 remain the acceptance specifications. A ticket is not `DONE` because its code
 exists—it is done only when its named negative control and release evidence pass.
+
+On 2026-08-31 a two-Mac beta-4 real-hardware playtest exercised the online path
+end-to-end between two endpoints and surfaced three online-only defects touching
+A1/A3: a racer level-of-detail T-pose on an idle-host fall-behind, a
+lobby-catalog character-map mis-spawn, and a track-select defect. All three are
+fixed and now guarded by `check_online_racer_lod_animation.py`,
+`check_online_character_map.py` and `check_online_trackselect.py`. This single
+two-endpoint session does not close the outstanding physical-device, PAL and
+desktop-OS matrices, and online race admission stays disabled.
 
 ## Decision summary
 
