@@ -2334,6 +2334,7 @@ function wireFullscreen() {
   const stage = $("stage");
   const canvas = $("canvas");
   let transition = null;
+  let queued = false;
   const stageStatus = $("stage-status");
 
   const clearStageStatus = () => {
@@ -2374,7 +2375,13 @@ function wireFullscreen() {
   const updateButton = () => {
     if (!btn) return;
     const active = document.fullscreenElement === stage;
-    btn.disabled = transition !== null;
+    // The control must stay clickable while a transition settles. Disabling it
+    // here made the DOM silently swallow a click on a disabled <button> — so a
+    // toggle that arrived during the (cosmetic) surface settle never reached
+    // go() at all, which is why the fullscreen-exit-rejection notice never
+    // appeared once the entry was still settling. Re-entrant toggles stay
+    // serialized by the transition queue in go(), not by disabling the button.
+    btn.disabled = false;
     btn.setAttribute("aria-pressed", active ? "true" : "false");
     btn.setAttribute(
       "aria-label", active ? "Exit fullscreen" : "Enter fullscreen");
@@ -2390,8 +2397,16 @@ function wireFullscreen() {
   const go = () => {
     // A second click/key-repeat while the browser's fullscreen promise is
     // pending can enqueue an immediate exit and leave resize events racing GPU
-    // target creation. Serialize the transition as one state change.
-    if (transition) return transition;
+    // target creation. Serialize the transition as one state change — but a
+    // toggle that arrives mid-transition must be REMEMBERED, not dropped:
+    // dropping it silently loses the exit (and its rejection notice) whenever
+    // the entry is still settling, which is exactly how a slow engine's rAF
+    // cadence made the fullscreen-exit-rejection notice never appear. Run the
+    // remembered toggle once the in-flight change settles.
+    if (transition) {
+      queued = true;
+      return transition;
+    }
     transition = (async () => {
       clearStageStatus();
       try {
@@ -2439,6 +2454,10 @@ function wireFullscreen() {
       } finally {
         transition = null;
         updateButton();
+        if (queued) {
+          queued = false;
+          go();
+        }
       }
     })();
     updateButton();
