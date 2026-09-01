@@ -30,6 +30,26 @@ reproduced d74efe02 exactly -- proving that single selector, and nothing else
 in the 52 commits since the old pin (the bounded/extent-carrying inflate path,
 the game-text terminator count, the texture-header handling, or the camera
 obstruction port), accounts for the difference.
+
+REBASELINE 2026-09-01 (53c8ca2c -> 191bee35). The crossplay campaign pinned
+-ffp-contract=off across every engine lane (84b89c7d): with no flag set each
+toolchain chose its own FMA fusion, so gameplay float state was not
+bit-reproducible across native/wasm/mingw. The pin changes which float
+roundings the compiled sim performs -- 84b89c7d measured 59 of 225 engine TUs
+changing bytes, racer.c/collision.c/camera.c/particles.c among them, i.e. the
+authoritative racer trajectory this oracle records -- so the raw ORACLE stream
+reaches a different (still fully deterministic) sequence. The digest is neither
+the old pin nor SUPERSEDED_SHA256, so the racing-line clamp is unaffected; the
+row count and every field schema are unchanged, only the values drift. The
+online direct-boot golden was re-minted for exactly this codegen change in the
+same campaign (d6bbad62, hashVisible=hashPeer=db805fd2), but this offline oracle
+was not re-frozen alongside it -- that omission is the whole delta. The trig
+tables baked from the vendored .s in the same campaign (9fe5bbf5) are
+hash-neutral (byte-identical to the load-time libm generation this tree
+measured), and the sim_hash.c file sink (b624b584/b1064204) is I/O-only: it
+mirrors the identical [SIMHASH] line to MDKR_STATE_HASH_FILE, which this lane
+never sets, and never touches the hash or the sim. Measured on a fresh Release
+build at 21b0519d carrying the pin (-ffp-contract=off in 225 TUs).
 """
 
 from __future__ import annotations
@@ -50,7 +70,7 @@ ROUTE_TOOL = ROOT / "tools" / "dkr_oracle_route.py"
 FRAMES = 4800
 REFERENCE_COMMIT = "670c984837ce21a9bd5ff54f0a2d4339267fb872"
 EXPECTED_ROWS = 27_840
-EXPECTED_SHA256 = "53c8ca2c1e67c03c3e59157c088e7eae5a2a537ffa79b298661245eead102d30"
+EXPECTED_SHA256 = "191bee35a973b2bde6133cc6ae2c2c41961a97ec72a9b034a08574d53aacba5b"
 # Superseded by the racing-line rebaseline documented above. Kept named so a
 # bisect that lands on the old stream reports which pin it matched.
 SUPERSEDED_SHA256 = "d74efe02aec07aa59710ce457e54180c28a22022f3d35e7087096d5130dba49b"
