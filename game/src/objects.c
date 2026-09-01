@@ -6748,20 +6748,20 @@ static s32 racer_lod_index_for_scaled(s32 scaledDistance, const u8 *thresholds) 
 
 /* TRUE when drawing modelInstances[modelIndex] would present vertices
  * obj_animate() has never written: a NULL slot, or an ANIMATED instance still
- * carrying the model_instance_init sentinel animationID == -1 (object_models.c
- * :329) over its base-mesh (bind pose) copy. Loads only.
+ * carrying the model_instance_init sentinel animationID == -1 over its
+ * base-mesh (bind pose) copy. Loads only.
  *
  * The -1 is ALSO written transiently, as a "re-pose me" marker on the COMMITTED
  * instance (obj->modelInstances[obj->modelIndex]) at an animation wrap, by:
- * func_80061C0C (object_models.c:1130); the six boss-vehicle updaters
+ * func_80061C0C (in object_models.c); the six boss-vehicle updaters
  * update_smokey / update_bluey / update_tricky / update_bubbler / update_wizpig
- * / update_rocket (vehicle_*.c, dispatched from update_player_racer at
- * racer.c:5216); and the carpet re-pose flow (racer.c:4552, which itself calls
+ * / update_rocket (vehicle_*.c, dispatched from update_player_racer in
+ * racer.c); and the carpet re-pose flow (in racer.c, which itself calls
  * func_80061C0C). Every one of those runs inside obj_update, and
  * obj_animate_tick re-poses obj->modelInstances[obj->modelIndex] -- writing a
- * real animationID >= 0 (hasm_native/obj_animate.c:165) -- BEFORE render_scene
+ * real animationID >= 0 (in hasm_native/obj_animate.c) -- BEFORE render_scene
  * ever selects a draw index: the fixed obj_update -> obj_animate_tick -> render
- * order (thread3_main.c:817 -> 926 -> 958) consumes each transient -1 on the
+ * order (in thread3_main.c) consumes each transient -1 on the
  * committed instance before this fence can observe it. And even if one somehow
  * survived to the draw, treating that single tick as never-posed merely
  * redirects the draw to another posed instance, never the reverse. */

@@ -1,7 +1,7 @@
 #ifndef MDKR_ONLINE_SCREEN_UTIL_H
 #define MDKR_ONLINE_SCREEN_UTIL_H
 
-/* SEPARATED-BOOT-PATH (Strategy D2) shared native-screen draw/state helpers.
+/* SEPARATED-BOOT-PATH shared native-screen draw/state helpers.
  *
  * The small helper families every native online SCREEN (charselect / trackselect /
  * vehicleselect / results / ceremony) needs, lifted DRY so the four screens can

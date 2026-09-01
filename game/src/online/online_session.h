@@ -1,10 +1,10 @@
 #ifndef MDKR_ONLINE_SESSION_H
 #define MDKR_ONLINE_SESSION_H
 
-/* SEPARATED-BOOT-PATH (Strategy D) online session skeleton.
+/* SEPARATED-BOOT-PATH online session skeleton.
  *
- * This is the whole reason the online campaign can promise the battle-tested
- * OFFLINE game is provably unimpacted: online is a FULLY SEPARATE boot path.
+ * This is the whole reason the battle-tested OFFLINE game is provably
+ * unimpacted: online is a FULLY SEPARATE boot path.
  * mode_intro forks straight into GAMEMODE_ONLINE_SESSION (never the offline
  * menu state machine), the top-level dispatch in main_game_loop() routes that
  * mode to mdkr_online_session_tick(), and the session -- holding ALL of its own

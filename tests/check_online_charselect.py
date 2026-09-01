@@ -313,7 +313,7 @@ def main() -> int:
     # --- B-in-browse must NOT wedge the session (I1) ------------------------
     # The scripted input presses B once while browsing. The session must still
     # ADVANCE on the host-start (asserted below via the RACE hand-off), and the
-    # PD-T6 leave stub must log at most once -- not per frame at ~60 Hz.
+    # leave stub must log at most once -- not per frame at ~60 Hz.
     leave_stub_count = output.count(LEAVE_STUB)
     if leave_stub_count != 1:
         return fail(f"the PD-T6 leave stub logged {leave_stub_count} times "

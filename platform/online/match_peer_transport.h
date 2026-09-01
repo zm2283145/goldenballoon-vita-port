@@ -1,5 +1,5 @@
 /*
- * Native match peer transport (O-T2): the launcher-owned <=4-endpoint
+ * Native match peer transport: the launcher-owned <=4-endpoint
  * full-mesh of WebRTC DataChannels behind one online race.
  *
  * Pure composition of proven layers -- this file adds NO crypto and NO game

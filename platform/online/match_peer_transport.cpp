@@ -45,7 +45,7 @@
  * (match_peer_graph.h) selects the deterministic one-hop intermediate and
  * the forwarder admission window (match_peer_forward.h) bounds relayed
  * ciphertext; both would plug into stateData()/routing below without
- * touching the crypto layers. Out of scope for O-T2 by design.
+ * touching the crypto layers. Out of scope for by design.
  */
 
 namespace {

@@ -1,13 +1,13 @@
 /*
- * O-T6 online multiplayer end-to-end race driver.
+ * online multiplayer end-to-end race driver.
  *
  * One narrated child process that runs the REAL online stack against a live
  * local MatchRoom Worker (wrangler dev --local): the production
  * MdkrOnlineRoomTransport (HTTP create/join/code/command + the /connect state
- * WebSocket), the production MdkrOnlineMeshSignalBackend (the O-T1 signal client
- * over /api/match/{roomId}/signal), the O-T2 peer mesh (real libdatachannel
- * DTLS), the O-T3 live adapter (selections, phrase, preflight consensus,
- * descriptor install through the O-T5 clamp) and the O-T6 per-tick race feed.
+ * WebSocket), the production MdkrOnlineMeshSignalBackend (the signal client
+ * over /api/match/{roomId}/signal), the peer mesh (real libdatachannel
+ * DTLS), the live adapter (selections, phrase, preflight consensus,
+ * descriptor install through the clamp) and the per-tick race feed.
  *
  * Two of these processes -- one creator, one joiner-by-code -- race >=1800
  * authored ticks feeding each other real remote input over the mesh, then each

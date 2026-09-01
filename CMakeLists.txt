@@ -537,7 +537,7 @@ endif()
 # Native online BETA live selection bridge (launcher->engine lobby snapshot +
 # engine->launcher local-intent channel). Engine-resident like
 # net_roster_runtime/online_race_results so BOTH the engine-side readers
-# (game/src, beta-gated, arrive in P2-T2) and the launcher-side writer/poller
+# (game/src, beta-gated) and the launcher-side writer/poller
 # (online_live_wiring.cpp in mdkr64_app) link ONE copy, but -- unlike those two,
 # which every build compiles -- it is gated so the release engine object never
 # carries it. In PLATFORM_SOURCES it inherits the strict warning baseline below.
@@ -901,11 +901,11 @@ if(NOT EMSCRIPTEN)
         endif()
 
         if(MDKR_ENABLE_ONLINE_BETA)
-            # Native online beta: the O-T3 live lobby adapter plus its production
-            # MatchRoom HTTP transport, signal-client mesh backend and O-T2 peer
+            # Native online beta: the live lobby adapter plus its production
+            # MatchRoom HTTP transport, signal-client mesh backend and peer
             # mesh, and the launcher-side wiring that composes them behind the
             # beta gate (platform/app/online_live_wiring.cpp). These are exactly
-            # the online TUs the O-T6 e2e driver links; every other dependency
+            # the online TUs the e2e driver links; every other dependency
             # already rides in -- the lobby_*, net_*, match_* (transport/manifest/
             # preflight/launch/roster), session_* and sha256/input_tick_queue set
             # through PLATFORM_SOURCES, and match_peer_crypto + party_webrtc_
@@ -1057,7 +1057,7 @@ if(NOT EMSCRIPTEN)
                 endif()
                 add_test(NAME match_peer_crypto COMMAND mdkr_match_peer_crypto_test)
 
-                # O-T1 online multiplayer: the native match-signaling client
+                # online multiplayer: the native match-signaling client
                 # (platform/online/match_signal_client.cpp), pinned wire-level
                 # against a scriptable loopback fake of the
                 # /api/match/{roomId}/signal endpoint
@@ -1097,7 +1097,7 @@ if(NOT EMSCRIPTEN)
                 # a genuine hang instead of stalling the suite.
                 set_tests_properties(match_signal_client PROPERTIES TIMEOUT 120)
 
-                # O-T2 online multiplayer: the launcher-owned WebRTC peer
+                # online multiplayer: the launcher-owned WebRTC peer
                 # mesh (platform/online/match_peer_transport.cpp) over REAL
                 # libdatachannel DTLS on loopback, with the signaling relay
                 # faked in-process through the MdkrMatchPeerSignalFeed seam.
@@ -1191,13 +1191,13 @@ if(NOT EMSCRIPTEN)
                         -Wall -Wextra -Wpedantic -Werror)
                 endif()
 
-                # O-T3 online multiplayer: the launcher-owned LIVE lobby adapter
+                # online multiplayer: the launcher-owned LIVE lobby adapter
                 # (platform/online/match_live_adapter.cpp) composing the MatchRoom
-                # transport, the O-T2 peer mesh, the O-T5 launch builder (retail
+                # transport, the peer mesh, the launch builder (retail
                 # clamp), the preflight consensus barrier and the engine roster
                 # runtime. The lobby side is driven by an in-process MatchRoom
                 # double running the real reducer; the transport side rides the
-                # O-T2 loopback signal hub feeding real libdatachannel DTLS on
+                # loopback signal hub feeding real libdatachannel DTLS on
                 # 127.0.0.1. ROM-, GPU- and network-free.
                 add_executable(mdkr_online_live_adapter_test
                     ${CMAKE_SOURCE_DIR}/tests/test_online_live_adapter.cpp
@@ -1258,7 +1258,7 @@ if(NOT EMSCRIPTEN)
                 # internal waits are bounded, so this timeout backstops a hang.
                 set_tests_properties(online_live_adapter PROPERTIES TIMEOUT 180)
 
-                # P1-T2 F4: the SAME adapter TU, compiled WITH
+                # F4: the SAME adapter TU, compiled WITH
                 # MDKR_ENABLE_ONLINE_BETA (the target above deliberately does not
                 # -- the define breaks its token-gate test), so the beta-only
                 # race-end-card truthfulness decisions (mapLostReason in-race
@@ -1330,7 +1330,7 @@ if(NOT EMSCRIPTEN)
                 # (platform/online/match_live_transport.cpp) driven wire-level
                 # against a scriptable loopback fake of the MatchRoom service
                 # (HTTP create/command + the /connect RFC 6455 state socket),
-                # plus the mesh signal backend against the O-T1 loopback
+                # plus the mesh signal backend against the loopback
                 # signal fake. Pins the /connect reconnect ladder + revision
                 # dedupe, terminal 4000-class closes, the per-address connect
                 # budget, the bounded resolve, and the /signal replacement
@@ -1424,7 +1424,7 @@ if(NOT EMSCRIPTEN)
                 # within the 30-tick rollback window; a profile that exceeds the
                 # window (the 2 s outage) must fire the TYPED recovery path
                 # (INPUT_GAP) rather than a silent desync. Impairment is a
-                # test-only injection gated behind the O-T6 race seam
+                # test-only injection gated behind the race seam
                 # (race_drain_local + carrier-gated race_resend); production
                 # match_peer_transport / match_transport behaviour is untouched.
                 # ROM-, GPU- and (external-)network-free -- part of the same
@@ -1434,11 +1434,11 @@ if(NOT EMSCRIPTEN)
                 # Six full bring-up + 240-tick impaired races over real DTLS.
                 set_tests_properties(online_live_matrix PROPERTIES TIMEOUT 360)
 
-                # O-T6 online multiplayer CAPSTONE end-to-end race driver: the
+                # online multiplayer CAPSTONE end-to-end race driver: the
                 # REAL online stack (production MatchRoom HTTP + /connect WS
-                # client, the O-T1 signal-client mesh backend, the O-T2 peer
-                # mesh over real libdatachannel DTLS, the O-T3 live adapter, the
-                # O-T5 clamp and the O-T6 per-tick race feed). Deliberately no
+                # client, the signal-client mesh backend, the peer
+                # mesh over real libdatachannel DTLS, the live adapter, the
+                # clamp and the per-tick race feed). Deliberately no
                 # add_test() -- it needs a live local MatchRoom Worker and a
                 # second driver process that only tests/
                 # check_online_live_transport_e2e.py provides, the same

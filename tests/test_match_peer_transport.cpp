@@ -1,5 +1,5 @@
 /*
- * MdkrMatchPeerMesh (O-T2): the launcher-owned <=4-endpoint full mesh of
+ * MdkrMatchPeerMesh: the launcher-owned <=4-endpoint full mesh of
  * WebRTC DataChannels, driven end to end over loopback with REAL
  * libdatachannel peers (real DTLS, the test_lan_party_transport discipline)
  * and an in-process fake of the match-signaling relay.

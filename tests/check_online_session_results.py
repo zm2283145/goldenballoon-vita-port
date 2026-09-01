@@ -80,7 +80,7 @@ RESULTS_RENDER_RE = re.compile(
 ADVANCE_RE = re.compile(
     r"^\[online-results\] advance: (results -> standings|screen done) \((\w+)\)$",
     re.MULTILINE)
-# PD-T6b: the host publishes the REMATCH reverse-feed intent on a non-final
+# the host publishes the REMATCH reverse-feed intent on a non-final
 # tournament STANDINGS advance, and the scripted stand-in reducer observes it and
 # advances its own cup race_index (proving the screen moves to the next race via
 # MDKR_ONLINE_REMATCH, not the old start_requested signal).
@@ -198,7 +198,7 @@ def main() -> int:
     if any(int(track) != 5 for track, _players in boots):
         return fail(f"a race booted an unexpected track: {boots!r}", output)
 
-    # M1 (PD-T4 carry-forward): re-booting across the resident loop -- while the
+    # M1 (carry-forward): re-booting across the resident loop -- while the
     # RESULTS test seam publishes a TOURNAMENT forward feed -- must never leave a
     # stale intended-track stash that logs a spurious divergence. Every boot must
     # log the honored path on the manifest track, and NO divergence line at all.
@@ -308,7 +308,7 @@ def main() -> int:
     if "auto" not in kinds:
         return fail("no auto-advance (countdown-to-zero) was witnessed", output)
 
-    # --- PD-T6b: the next race is driven by the REMATCH reverse feed ----------
+    # --- the next race is driven by the REMATCH reverse feed ----------
     # The host advancing off a NON-final tournament STANDINGS publishes the
     # rematch intent (one per non-final race; the FINAL standings holds and never
     # publishes), and the scripted stand-in reducer observes each and advances its

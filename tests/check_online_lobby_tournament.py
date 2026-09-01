@@ -108,7 +108,7 @@ UNWIND_RE = re.compile(
     r"pending", re.MULTILINE)
 CANCEL_SUBMIT_RE = re.compile(
     r"^\[online-lobby-start\] WEDGE cancel-loading:.*submitted=1$", re.MULTILINE)
-# PD-T6d engine->launcher FINISH/RETURN handshake witnesses.
+# engine->launcher FINISH/RETURN handshake witnesses.
 POSTRACE_EXIT = "[online-postrace] session end requested"
 # The tournament-final FINISH must be REDUCER-OBSERVABLE: the host's commit
 # dispatches the EXISTING leader-only REMATCH wrap (RESULTS -> LOBBY + fresh
@@ -292,7 +292,7 @@ def main() -> int:
                 # non-final rounds (the chooser fronts only at the FINAL standings;
                 # rounds 1..N-1 still auto-REMATCH to the next round below).
                 "MDKR_TEST_ONLINE_RESULTS_CHOOSER": "5",
-                # PD-T6f: the final-standings FINISH now detours through the native
+                # the final-standings FINISH now detours through the native
                 # champion CEREMONY before FINISHED. Skip its (bounded) real-time
                 # hold so this lane's frame budget/counts are preserved -- FINISHED
                 # still fires exactly once after the (near-instant) ceremony.
@@ -451,7 +451,7 @@ def main() -> int:
         return fail("the descless watchdog TRIPPED in the happy path (a re-cycle "
                     "wedged)", output)
 
-    # PD-T6d re-audit: the final standings no longer HOLD to the tick budget. The
+    # re-audit: the final standings no longer HOLD to the tick budget. The
     # scripted host "A: FINISH" (MDKR_TEST_ONLINE_RESULTS_HOST_PRESS) now fires the
     # FINISHED handshake at race 4's final standings -- the engine notes it + the
     # launcher reads reason=FINISHED and returns cleanly to the room -- so the run

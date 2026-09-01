@@ -264,7 +264,7 @@ static void test_room_selection_and_release_gate(void) {
            model.primary.action == MDKR_ONLINE_VIEW_ACTION_CHOOSE_CHARACTER,
            "selection points to the first incomplete launcher-owned choice");
 #if MDKR_ENABLE_ONLINE_BETA
-    /* P1-T2 never-silent hole: selection arms the same 30 s view-timeout card
+    /* never-silent hole: selection arms the same 30 s view-timeout card
      * the other lobby surfaces carry, so an endless wait always offers a working
      * escape rather than a dead spinner. Beta-gated (OFF/release view model is
      * byte-identical). */
@@ -575,10 +575,10 @@ static void test_host_config_and_tournament(void) {
            "New Tournament wraps the series back to race 1 with fresh points");
 }
 
-/* P1-T4 subtask 3: pin the join/preflight failure family's REACHABLE view-model
+/* subtask 3: pin the join/preflight failure family's REACHABLE view-model
  * contract -- each typed failure's stable primary recovery action plus complete,
  * distinct copy -- for the bad-code / room-full / expired / version-mismatch
- * cases the room drives. The richer per-failure SENTENCES P1-T3 added (the
+ * cases the room drives. The richer per-failure SENTENCES added (the
  * distinct build / ROM / settings / update explanations) live in
  * platform/app/ui_online_room.cpp `betaFailureCopy`, which a pure-C view-model
  * test cannot reach and which this task must not add a hook to (that file is

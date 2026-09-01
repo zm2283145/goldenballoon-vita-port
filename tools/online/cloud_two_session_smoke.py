@@ -16,12 +16,12 @@ config can be reproduced on demand.
 Both sessions run on THIS machine. That is enough to exercise:
   * the cloud HTTP lobby routes (create / join-by-code / command),
   * the authenticated `/connect` state WebSocket,
-  * the O-T1 match-signal client over `/api/match/{roomId}/signal` (real
+  * the match-signal client over `/api/match/{roomId}/signal` (real
     WSS to the real Worker),
-  * the O-T2 peer mesh's SDP/ICE exchange carried over that real signal path,
-  * the O-T3 live adapter's verification-phrase handshake and descriptor
+  * the peer mesh's SDP/ICE exchange carried over that real signal path,
+  * the live adapter's verification-phrase handshake and descriptor
     install,
-  * the O-T6 per-tick race feed and its convergence check.
+  * the per-tick race feed and its convergence check.
 
 It does NOT exercise real cross-network NAT traversal: both peers sit behind
 the same local network stack, so the DataChannel media path is effectively

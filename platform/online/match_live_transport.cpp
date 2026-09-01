@@ -1,8 +1,8 @@
 /*
- * O-T6 production transport backends (declarations in match_live_transport.h).
+ * production transport backends (declarations in match_live_transport.h).
  *
  * A bounded, libcurl-free HTTP/1.1 client + RFC 6455 /connect WebSocket client
- * for the MatchRoom lobby, and a thin MdkrOnlineMeshSignalBackend over the O-T1
+ * for the MatchRoom lobby, and a thin MdkrOnlineMeshSignalBackend over the
  * MdkrMatchSignalClient. All sockets go through mbedtls: TLS (https/wss) with
  * the embedded Mozilla CA bundle + hostname verification, or plaintext TCP for
  * the loopback test lane behind mdkr_party_loopback_test_url_allowed. The
@@ -60,7 +60,7 @@ using Json = nlohmann::json;
 
 /* Bounds so a stalled/unreachable host (the exact Wave-2 NET-01 failure mode)
  * can never wedge the worker thread past a deadline: close()/join() then always
- * returns promptly. Mirrors the O-T1 signal client's discipline. */
+ * returns promptly. Mirrors the signal client's discipline. */
 constexpr uint64_t kConnectTimeoutMs = 8000u;
 constexpr uint64_t kWriteTimeoutMs = 8000u;
 constexpr uint32_t kPollSliceMs = 100u;
@@ -267,7 +267,7 @@ bool resolveAddresses(const std::string &host, const std::string &port,
     return !out.empty();
 }
 
-/* Deadline- and abort-aware TCP connect (O-T1 connectTcp discipline): a
+/* Deadline- and abort-aware TCP connect (connectTcp discipline): a
  * non-blocking connect polled in short slices, so an unreachable host stops at
  * the deadline and a close() during connect aborts within one slice. Returns
  * kBadSocket on any failure. The returned fd is left BLOCKING so mbedtls's
@@ -803,7 +803,7 @@ public:
             if (head.size() > 65536u) return false;
         }
         if (head.find("\r\n\r\n") == std::string::npos) return false;
-        /* RFC 6455 4.1 handshake validation (O-T1 discipline): 101 status,
+        /* RFC 6455 4.1 handshake validation (discipline): 101 status,
          * Upgrade: websocket, Connection: upgrade, the exact accept key, the
          * versioned subprotocol, and NO negotiated extension (we offered none,
          * so any Sec-WebSocket-Extensions would silently misframe). */

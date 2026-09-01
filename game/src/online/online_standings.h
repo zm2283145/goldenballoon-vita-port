@@ -1,7 +1,7 @@
 #ifndef MDKR_ONLINE_STANDINGS_H
 #define MDKR_ONLINE_STANDINGS_H
 
-/* SEPARATED-BOOT-PATH (Strategy D2) shared final-standings ordering.
+/* SEPARATED-BOOT-PATH shared final-standings ordering.
  *
  * The ONE selection-sort both the native online RESULTS/STANDINGS screen
  * (online_results.c) and the native online champion CEREMONY (online_ceremony.c)

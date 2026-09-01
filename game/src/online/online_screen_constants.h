@@ -1,7 +1,7 @@
 #ifndef MDKR_ONLINE_SCREEN_CONSTANTS_H
 #define MDKR_ONLINE_SCREEN_CONSTANTS_H
 
-/* SEPARATED-BOOT-PATH (Strategy D2) shared native-screen constants.
+/* SEPARATED-BOOT-PATH shared native-screen constants.
  *
  * The native online SCREENS (charselect / trackselect / vehicleselect / results)
  * each used to re-#define the same handful of values with their own CS_/TS_/VS_/

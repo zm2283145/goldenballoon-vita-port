@@ -45,7 +45,7 @@ PROBE_RE = re.compile(
 # Active view kinds that must engage the takeover (fake gallery slugs).
 #
 # The two SELECTING-kind slugs (select-character, select-start) are intentionally
-# absent: this campaign retired the launcher's per-race SELECTING selection surface
+# absent: the launcher's per-race SELECTING selection surface was retired
 # (the ImGui character/vehicle/track combos + the ImGui-initiated Start Race), so
 # that legacy preview panel no longer exists to take over. Independently, the beta
 # build now arms a never-silent selection-stall view-timeout on every SELECTING

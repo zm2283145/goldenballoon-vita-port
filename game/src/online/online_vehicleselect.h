@@ -1,7 +1,7 @@
 #ifndef MDKR_ONLINE_VEHICLESELECT_H
 #define MDKR_ONLINE_VEHICLESELECT_H
 
-/* SEPARATED-BOOT-PATH (Strategy D2) native online VEHICLE stage of the track
+/* SEPARATED-BOOT-PATH native online VEHICLE stage of the track
  * screen.
  *
  * Retail 2P picks vehicles AFTER the track, as a stage of the track-select
@@ -9,7 +9,7 @@
  * from TRACKSELECT once the host's pick is locked (charselect -> track browse ->
  * lock -> THIS -> OK -> race) as its MDKR_ONLINE_SESSION_VEHICLESELECT phase,
  * NOT by the offline menu state machine: it deliberately does NOT call any
- * menu.c _loop. See the file header in online_vehicleselect.c for the full D2
+ * menu.c _loop. See the file header in online_vehicleselect.c for the full
  * reuse boundary (what game assets it borrows vs. what it owns).
  *
  * The crux is trivial: the party_link reverse feed already carries vehicle_id and

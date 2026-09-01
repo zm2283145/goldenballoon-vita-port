@@ -1,7 +1,7 @@
-/* SEPARATED-BOOT-PATH (Strategy D2) native online VEHICLE stage of the track
+/* SEPARATED-BOOT-PATH native online VEHICLE stage of the track
  * screen.
  *
- * ============================ THE D2 REUSE BOUNDARY ========================
+ * ============================ THE REUSE BOUNDARY ========================
  * Retail 2P picks vehicles AFTER the track, as a STAGE of the track-select
  * screen (menu.c trackmenu_setup_render / func_80092188 case 0): the live
  * scene continues behind, the track name stays up top, and each player's
@@ -195,7 +195,7 @@ static u8 sLastVehicle = (u8) VEHICLE_CAR;
  * latch ONLY through this confirm, per round: the track BROWSE publishes this
  * latch as its ready (see trackselect_publish_intent), so a rematch re-front
  * whose host re-locks the IDENTICAL track -- which the reducer does NOT
- * ready-clear (no config change, lobby_core.c:756) -- can never carry a stale
+ * ready-clear (no config change) -- can never carry a stale
  * ready into BEGIN_LOADING while a seat is still browsing. Deliberately NOT
  * reset by _enter's memset (it must outlive the screen for the browse to
  * read); cleared by the B un-confirm and by the session's round reset

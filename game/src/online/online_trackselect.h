@@ -1,14 +1,14 @@
 #ifndef MDKR_ONLINE_TRACKSELECT_H
 #define MDKR_ONLINE_TRACKSELECT_H
 
-/* SEPARATED-BOOT-PATH (Strategy D2) native online HOST TRACK / CUP select.
+/* SEPARATED-BOOT-PATH native online HOST TRACK / CUP select.
  *
  * This is the SECOND player-facing screen of the separated online flow, inserted
  * between the native CHARSELECT (online_charselect.{c,h}) and the race. It
  * is driven by the online session (game/src/online/online_session.c) as its
  * MDKR_ONLINE_SESSION_TRACKSELECT phase, NOT by the offline menu state machine:
  * it deliberately does NOT call menu.c's track-select _loop. See the file header
- * in online_trackselect.c for the full D2 reuse boundary (what game assets it
+ * in online_trackselect.c for the full reuse boundary (what game assets it
  * borrows vs. what it owns, and why it re-implements the presentation).
  *
  * The ENTIRE header is #if MDKR_ENABLE_ONLINE_BETA so a normal (beta OFF) build
