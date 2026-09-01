@@ -281,6 +281,17 @@ def run_arm(
             MDKR_CHALLENGE_OUTCOME=outcome,
             MDKR_RENDER_SCALE="1",
         )
+        # This arm SEEDS run_dir/save/eeprom.bin with the challenge-unlock state
+        # and reads the produced EEPROM back, but scrubbing MDKR_ drops the
+        # MDKR_SAVE_DIR the suite exports and a non-packaged build no longer
+        # resolves saves to $CWD/save (issue #54 unified them under the per-user
+        # pref dir). Without this pin the engine read the shared per-user save
+        # instead of the seed, so the challenge reward transition was never
+        # entered and all three positive controls collapsed to the same wrong
+        # flags/tt (0x7/4). Point MDKR_SAVE_DIR at the seeded dir; pin the video
+        # config (check_harness_isolation).
+        env["MDKR_SAVE_DIR"] = str(run_dir / "save")
+        env["MDKR_VIDEO_CONFIG_PATH"] = os.devnull
         if break_gate:
             env["MDKR_CHALLENGE_BREAK_GATE"] = break_gate
         command = [
@@ -321,6 +332,13 @@ def run_arm(
                 MDKR_CHALLENGE_OUTCOME="win",
                 MDKR_RENDER_SCALE="1",
             )
+            # The reload process must decode the EEPROM the first run persisted to
+            # run_dir/save; without pinning MDKR_SAVE_DIR it read the shared
+            # per-user save instead, so every course's reloaded flags/tt came
+            # back at the stale 0x7/4 regardless of the outcome just written
+            # (issue #54). Pin it to the same persisted save dir.
+            reload_env["MDKR_SAVE_DIR"] = str(run_dir / "save")
+            reload_env["MDKR_VIDEO_CONFIG_PATH"] = os.devnull
             reload_proc = subprocess.run(
                 [
                     str(binary),
@@ -482,6 +500,11 @@ def portrait_witness_arm(
         MDKR_DUMP_FROM=str(PORTRAIT_DUMP_FROM),
         MDKR_DUMP_EVERY=str(PORTRAIT_DUMP_EVERY),
     )
+    # Same seeded-save isolation as the main arm above: without pinning
+    # MDKR_SAVE_DIR the engine reads the shared per-user save instead of this
+    # arm's seeded challenge state (issue #54).
+    env["MDKR_SAVE_DIR"] = str(run_dir / "save")
+    env["MDKR_VIDEO_CONFIG_PATH"] = os.devnull
     if suppress:
         env["MDKR_SUPPRESS_PORTRAITS"] = "1"
     proc = subprocess.run(
