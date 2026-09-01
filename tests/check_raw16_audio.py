@@ -515,6 +515,16 @@ def run_capture(
         "MDKR_AUDIO_REVERB": "0",
         "MDKR_RAW16": mode,
     })
+    # Scrubbing every MDKR_ variable also drops the per-task MDKR_SAVE_DIR /
+    # MDKR_VIDEO_CONFIG_PATH the suite exports. Without re-isolating them the
+    # engine resolves the shared per-user save dir; an adventure-in-progress
+    # EEPROM left there by an earlier task re-routes the boot/menu flow so this
+    # arm's race route never starts and never reaches a RAW16 output block
+    # ("route never reached a RAW16 output block"). Pin both to this arm's own
+    # capture directory (mirrors harness_utils.save_env; check_harness_isolation
+    # is satisfied by the MDKR_VIDEO_CONFIG_PATH pin below).
+    env["MDKR_SAVE_DIR"] = str(directory)
+    env.setdefault("MDKR_VIDEO_CONFIG_PATH", str(directory / "video.ini"))
     command = [
         str(binary),
         "--headless-frames", str(frames),

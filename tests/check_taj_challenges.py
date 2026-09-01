@@ -203,6 +203,16 @@ def run_arm(
             MDKR_AUTOPILOT="1",
             MDKR_RENDER_SCALE="1",
         )
+        # This arm SEEDS run_dir/save/eeprom.bin with the Taj-challenge state and
+        # reads the persisted image back, but scrubbing MDKR_ drops the
+        # MDKR_SAVE_DIR the suite exports and a non-packaged build no longer
+        # resolves saves to $CWD/save (issue #54 unified them under the per-user
+        # pref dir). Without this pin the engine read the shared per-user save
+        # instead of the seed, so the challenge flow never ran (0 moving race
+        # states) and the persisted/reloaded challenge flags were wrong (0x3f
+        # want 0x1f). Point MDKR_SAVE_DIR at the seeded dir; pin the video config.
+        env["MDKR_SAVE_DIR"] = str(run_dir / "save")
+        env["MDKR_VIDEO_CONFIG_PATH"] = os.devnull
         if replay:
             env["MDKR_TAJ_REQUEST"] = name
             env["MDKR_LOAD_TRACK"] = f"0:{spec['id']}"
@@ -242,6 +252,11 @@ def run_arm(
             MDKR_AUTOPILOT="1",
             MDKR_RENDER_SCALE="1",
         )
+        # The reload process must decode the EEPROM the first run persisted to
+        # run_dir/save; without pinning MDKR_SAVE_DIR it read the shared per-user
+        # save instead and reported the stale reloaded flags (0x3f) (issue #54).
+        reload_env["MDKR_SAVE_DIR"] = str(run_dir / "save")
+        reload_env["MDKR_VIDEO_CONFIG_PATH"] = os.devnull
         reload_proc = subprocess.run(
             [
                 str(binary),

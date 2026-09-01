@@ -39,7 +39,7 @@ from pathlib import Path
 
 from harness_utils import (ABORT_MARKERS, ASSERT_MARKERS,
                            completed_tick_conservation, fatal_re, parse_rows,
-                           read_ppm as read_ppm_bytes, resolve_binary)
+                           read_ppm as read_ppm_bytes, resolve_binary, save_env)
 
 
 DEFAULT_SCRIPT = Path("tests/input_scripts/nav_to_time_trial_race.txt")
@@ -176,6 +176,14 @@ def run_engine(
         env["MDKR_DUMP_FROM"] = str(dump_from)
     if extra_env is not None:
         env.update(extra_env)
+    # clean_environment() scrubs every MDKR* variable, which also drops the
+    # per-task MDKR_SAVE_DIR/MDKR_VIDEO_CONFIG_PATH the suite exports. Without
+    # re-isolating them the engine falls back to the shared per-user save dir;
+    # an unrelated adventure-in-progress EEPROM left there re-routes the
+    # boot/menu flow so the nav_to_time_trial_race route never launches level 5
+    # and every arm reports "never entered the playable race". Pin both to this
+    # arm's own run dir (harness_utils.save_env / check_harness_isolation).
+    env = save_env(env, str(run_dir))
     cmd = [
         str(binary),
         "--headless-frames",
@@ -439,6 +447,7 @@ def check_fail_closed_window(binary: Path, rom: Path, root: Path,
         MDKR_RENDERER="webgpu",
         MDKR_TEST_WEBGPU_WINDOW_FAIL="1",
     )
+    env = save_env(env, str(run_dir))
     command = [
         str(binary), "--headless-frames", "5", "--rom", str(rom),
     ]
