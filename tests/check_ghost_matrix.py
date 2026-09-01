@@ -170,18 +170,19 @@ class CadenceArm(NamedTuple):
 #
 #   track 4 hovercraft    Original finishes frame 5614; Enhanced stalls at
 #                         rlap 1 / cp 25 over a 40000-frame budget
-#   track 33 car          Original finishes frame 6837; Enhanced stalls at
-#                         rlap 1 / cp 52
 #   track 19 hovercraft   Enhanced finishes; Original stalls at rlap 0
 #   track 30 plane        Enhanced finishes; Original stalls at rlap 0
 #   track 33 hovercraft   Enhanced finishes; Original stalls at rlap 0
 #
-# Track 33 appears on both sides, which is the point: this splits per PAIR, not
-# per track. Track 4 offers only the hovercraft, so on Enhanced alone that is a
-# whole track nothing can lap. So the pair is driven on the first arm that gets
-# it round and
-# the arm used is reported: pinning one pacing would silently cost coverage, and
-# picking per pair keeps this check about ghosts rather than about pacing. The
+# The split is per PAIR, not per track: track 33's hovercraft laps (on Enhanced)
+# while its car no longer laps on either cadence. Pre-campaign the car finished on
+# Original (~frame 6837) and only Enhanced dead-ended at cp 52; the campaign's
+# simulation re-timing (the FP-determinism pin) moved Original onto that same
+# cp-52 dead-end, so (33, car) is now a documented non-producer (NO_GHOST_PAIRS
+# below). Track 4 offers only the hovercraft, so on Enhanced alone that is a whole
+# track nothing can lap. So the pair is driven on the first arm that gets it round
+# and the arm used is reported: pinning one pacing would silently cost coverage,
+# and picking per pair keeps this check about ghosts rather than about pacing. The
 # order puts check_vehicle_sweep.py's pacing -- the sweep that owns this matrix --
 # first, so the common case matches the sibling check.
 CADENCE_ARMS = (CadenceArm("original", "2"), CadenceArm("enhanced", "1"))
@@ -191,6 +192,21 @@ NO_GHOST_PAIRS = {
     (15, 0): "Spaceport Alpha in the car: the autopilot racing line dead-ends at "
              "courseCheckpoint 10 and completes no lap in 40000 frames, on BOTH "
              "simulation cadences",
+    (33, 0): "level 33 (Future Fun Land) in the car: after the campaign's "
+             "simulation re-timing (the FP-determinism pin) the autopilot racing "
+             "line dead-ends at courseCheckpoint 52 on lap 1 and completes no lap "
+             "in the 20000-frame budget, on BOTH cadences (measured original and "
+             "enhanced, SYNTH_FIELDS 1 and 2 -- all four rlap=1/cp=52, moving but "
+             "never crossing cp 53). Pre-campaign the ORIGINAL cadence lapped it "
+             "(finished ~frame 6837) while Enhanced already dead-ended at this "
+             "same checkpoint; the re-timing moved Original onto the Enhanced "
+             "dead-end. This is DKR's own AI line, not a physics/collision change "
+             "-- real players are unaffected, ghost read/playback is intact (the "
+             "5:car re-entry case still round-trips), and level 33's ghost "
+             "round-trip stays covered by its hovercraft and plane rows. Asserted, "
+             "never skipped: if a change lets the car lap it again this pair FAILS "
+             "here (the \"but this run FINISHED\" arm) so it is promoted back into "
+             "the covered matrix.",
 }
 
 

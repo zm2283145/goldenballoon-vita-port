@@ -6073,10 +6073,16 @@ void obj_animate_tick(void) {
 }
 #endif
 
-#if defined(NATIVE_PORT) && MDKR_ENABLE_ONLINE_BETA
+#ifdef NATIVE_PORT
 /* Racer drawn-LOD animation discriminator (env MDKR_TEST_ANIM_LOD_WITNESS; NOT
- * roster-gated, so a beta build can observe it OFFLINE 2P too). At the authored
- * draw, reports every racer whose DRAWN model index differs from the
+ * roster-gated and NOT online-gated -- every native build observes it, because
+ * the offline check_enh_draw_distance LodBias lane runs against a non-beta build
+ * and needs this witness to prove the never-posed fence redirected (the fence
+ * generalised to the offline LodBias class in 8a56352f; the witness had stayed
+ * behind MDKR_ENABLE_ONLINE_BETA from its online-only origin in 5de11751). It is
+ * inert unless the env var is set, read-only (every access is a load), and writes
+ * only to stderr, so no build's authoritative state or symbol set changes. At the
+ * authored draw, reports every racer whose DRAWN model index differs from the
  * authoritative obj->modelIndex OR whose draw-seam selection was moved by the
  * never-posed fence in racer_model_index_for_view(), together with the drawn
  * instance's animationID and the pre-fence REQUESTED index + its animationID.
@@ -6162,9 +6168,7 @@ void render_3d_model(Object *obj) {
 
 #ifdef NATIVE_PORT
     modInst = obj->modelInstances[object_render_model_index(obj)];
-#if MDKR_ENABLE_ONLINE_BETA
     mdkr_anim_lod_witness(obj);
-#endif
 #else
     modInst = obj->modelInstances[obj->modelIndex];
 #endif
