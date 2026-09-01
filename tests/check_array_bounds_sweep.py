@@ -1145,6 +1145,19 @@ def controls(binary, rom, logdir, verbose):
         env["MDKR_PRESENT_RATE"] = "original"
         env["MDKR_SIMULATION_CADENCE"] = "original"
         env["MDKR_SYNTH_FIELDS"] = "2"
+        # Each control forces a boundary from a clean new game, then reads a probe
+        # that only appears once the forced race is actually running. These runs
+        # inherit MDKR_SAVE_DIR from the process env, which the phase-1 census
+        # routes above (and any prior task) write into; a race/adventure EEPROM
+        # left there re-routes the boot/menu flow so the forced race never
+        # launches and the boundary reads xzClamped=0 / maxCandidates=0 / no
+        # probe -- the guard then goes untested. A non-packaged build no longer
+        # isolates saves to $CWD/save (issue #54), so pin each control to its own
+        # fresh save dir and video config to keep the route deterministic.
+        save = os.path.join(logdir, "save-" + name)
+        os.makedirs(save, exist_ok=True)
+        env["MDKR_SAVE_DIR"] = save
+        env["MDKR_VIDEO_CONFIG_PATH"] = os.path.join(save, "video.ini")
         env.update(env_extra)
         cmd = [binary, "--headless-frames", str(frames), "--rom", rom]
         if script:
