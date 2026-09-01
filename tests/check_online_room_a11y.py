@@ -161,7 +161,7 @@ def walk(binary: str, root: Path, case: CopyCase, timeout: int) -> None:
         raise A11yError(f"{case.slug}: recovery announcement was not assertive")
     if case.verification_phrase and not any(
             case.verification_phrase in text and
-            "Do not continue if even 1 word differs." in text
+            "Do not continue if even one word differs." in text
             for _priority, text in status):
         raise A11yError(
             f"{case.slug}: verification phrase or mismatch warning was not "

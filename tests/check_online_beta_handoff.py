@@ -91,19 +91,19 @@ TITLE_RE = re.compile(
 CASES = {
     # SELECTING body.
     "room-single": {
-        "title": "Starting — handing to the game…",
+        "title": "Starting — Handing to the Game…",
         "render": ("single", "handoff", "selecting"),
     },
     "room-tournament": {
-        "title": "Starting — handing to the game…",
+        "title": "Starting — Handing to the Game…",
         "render": ("tournament", "handoff", "selecting"),
     },
     "room-single-fallback": {
-        "title": "Back in the room",
+        "title": "Back in the Room",
         "render": ("single", "reentry", "selecting"),
     },
     "room-tournament-fallback": {
-        "title": "Back in the room",
+        "title": "Back in the Room",
         "render": ("tournament", "reentry", "selecting"),
     },
     # A 1-member SELECTING room (the peer left the ROOM entirely): the body
@@ -113,22 +113,22 @@ CASES = {
     # Play Offline as its primary; the HOST chair adds the "Host a New Race"
     # regenerate affordance -- each names who left from its own vantage.
     "room-stranded": {
-        "title": "The host left",
+        "title": "The Host Left",
         "render": ("single", "stranded", "selecting"),
     },
     "room-stranded-host": {
-        "title": "Your friend left",
+        "title": "Your Friend Left",
         "render": ("single", "stranded", "selecting"),
     },
     # RESULTS body: the concise hand-off card, both modes. No fallback stage --
     # the full ImGui results/standings/replay body is retired, so RESULTS hands off
     # unconditionally.
     "results": {
-        "title": "The game is showing results…",
+        "title": "The Game Is Showing Results…",
         "render": ("single", "handoff", "results"),
     },
     "finished": {
-        "title": "The game is showing results…",
+        "title": "The Game Is Showing Results…",
         "render": ("tournament", "handoff", "results"),
     },
     # Recovery / invite surfaces carry no retire-witness (no SELECTING/RESULTS
