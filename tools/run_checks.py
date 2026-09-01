@@ -211,7 +211,6 @@ GPU_SERIAL_NAMES = frozenset({
     "track_preview_time_steady",
     "determinism",
     "rom_revision",
-    "online_process_convergence",
 })
 SERIAL_NAMES = frozenset({
     "pacing_quality",        # realtime arms assert displayed-interval tails
@@ -589,8 +588,6 @@ CHECKS = (
           ("--self-test",)),
     Check("match_launch_direct_load", "check_match_launch_direct_load.py", "native",
           "V3 descriptor direct-load track and canonical racer selections"),
-    Check("online_process_convergence", "check_online_process_convergence.py", "native",
-          "four isolated endpoint authority/input/event convergence"),
     Check("online_profile_rematch", "check_online_profile_rematch.py", "native",
           "multi-epoch impaired carrier with persistent launcher identity"),
     Check("persistent_rollback_rematch", "check_persistent_rollback_rematch.py", "asan",
@@ -1053,9 +1050,19 @@ WORKFLOW_COMPANION_SCRIPTS = {
 # aggregating exit gate that runs each lane strictly one at a time -- and several
 # are also runnable standalone. Registered here as owned/known so run_checks.py
 # --list and check_ci_contract accept the tree WITHOUT the runner ever executing
-# a flaky online lane. (online_process_convergence and online_profile_rematch
-# ship as real CHECKS entries above, and online_live_transport_e2e as the
-# browser_local capstone, so they are deliberately absent from this set.)
+# a flaky online lane. (online_profile_rematch ships as a real CHECKS entry
+# above, and online_live_transport_e2e as the browser_local capstone, so those
+# two are deliberately absent from this set.)
+#
+# check_online_process_convergence.py lives HERE, not in CHECKS, because its
+# verdict is a property of MDKR_ENABLE_ONLINE_BETA builds only: the
+# zero-viewport endpoint's determinism depends on the hud_audio_update() call
+# in game/src/thread3_main.c that is compiled only under the beta gate (kept
+# out of OFF builds so the isolation anchors stay byte-identical). Handing the
+# lane this runner's beta-OFF --build (build-rel) reproduces the pre-fix
+# row-2801 RNG fork by construction — a red about the invocation shape, not
+# the tree. The default tools/run_online_checks.py sweep runs the US arm
+# against build-beta, and --pal-rom joins the pal/cross arms.
 ONLINE_TAKEOVER_SCRIPTS = {
     "check_online_beta_handoff.py",
     "check_online_camera_capture_continuity.py",
@@ -1078,6 +1085,7 @@ ONLINE_TAKEOVER_SCRIPTS = {
     "check_online_partition_integrity.py",
     "check_online_pause_overlay.py",
     "check_online_peer_loss.py",
+    "check_online_process_convergence.py",
     "check_online_race_start_peer_loss.py",
     "check_online_racer_lod_animation.py",
     "check_online_rearm_third.py",
