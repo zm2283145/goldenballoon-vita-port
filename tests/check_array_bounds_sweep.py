@@ -291,6 +291,26 @@ SHAPE_TRIAGE = {
     ("bare-pointer", "game/src/font.c", "fontConvertString:outString"):
         "STRING CONTRACT: NUL-terminated copy with in-place code translation, "
         "output sized by the caller from the same literal.",
+    # -- the online-screen all-caps BIGFONT copy helpers. Present since the
+    #    online room-preview bring-up (both exist at the crossplay campaign base
+    #    b992e538; the sweep was never run there because array_bounds is a
+    #    rom-role/full-suite check, so these two sat untriaged until the land5
+    #    first-ever full-suite run surfaced them). Read end to end 2026-09-01;
+    #    each is self-bounded by its cap parameter, not by caller discipline.
+    ("bare-pointer", "game/src/online/online_trackselect.c",
+     "trackselect_upper:dst"):
+        "BOUNDED BY PARAMETER: the copy loop condition is "
+        "`src[i] != '\\0' && i + 1u < cap`, so body writes dst[i] stop at "
+        "i <= cap-2 and the trailing `dst[i] = '\\0'` lands at cap-1 at worst. "
+        "Self-bounded against `cap` regardless of caller; all three call sites "
+        "pass sizeof() of a local char buffer (nm[]) with a level_name() source. "
+        "NULL src is replaced with \"?\" before the loop.",
+    ("bare-pointer", "game/src/online/online_vehicleselect.c",
+     "vehicleselect_upper:dst"):
+        "BOUNDED BY PARAMETER: byte-identical idiom to trackselect_upper above -- "
+        "`src[i] != '\\0' && i + 1u < cap` caps body writes at cap-2 and the "
+        "terminator at cap-1. The sole caller passes sizeof(nameBuf) with a "
+        "level_name() source. NULL src is replaced with \"?\".",
     ("bare-pointer", "game/src/menu.c", "filename_trim:output"):
         "ALREADY HANDLED: this exact overrun was found and fixed in an earlier "
         "wave -- see the NATIVE_PORT comment at menu.c's trimmedFilename "
@@ -675,7 +695,18 @@ SHAPE_INFO_MAX = {
     # tables, and one further site rides the campaign's growth of the
     # objects.c/menu.c populations. Measured, not summed, per the 2026-08-09
     # merge-hazard note below.
-    "equality-cap": 48,
+    #
+    # 48 -> 49, RE-MEASURED 2026-09-01 on the land5 first-ever full-suite run at
+    # the crossplay tip. The ceiling was stale from before the crossplay campaign
+    # base: measured 49 at b992e538 already (base == tip, so the crossplay
+    # campaign added ZERO equality-cap findings), and check_array_bounds_sweep.py
+    # is unchanged in-range. The one finding over the old ceiling is in the
+    # non-capacity-comparand INFO class (comparand is a small literal or a count,
+    # not an array size -- e.g. `i != 2`, `stack_count != 0`, `gModelMatrixStackPos
+    # == 0`), which is why the enumerator files it INFO not TRIAGE; runtime
+    # array-bounds UBSan over the 8 routes reports no overflow. Measured with
+    # tools/sweep_bug_shapes.py, not summed.
+    "equality-cap": 49,
     # +116 from platform/. Overwhelmingly `1u << port` / `1u << slot` bit masks
     # over small fixed domains and `value >> (i * 8)` byte extractions -- the
     # var-count flavour the enumerator reports without an added constant. The
@@ -792,7 +823,21 @@ SHAPE_INFO_MAX = {
     # into a u32 -- flagged var-count only because the count is a macro, not a
     # numeric literal, and covered at runtime by -fsanitize=shift-exponent.
     # Measured 368 with tools/sweep_bug_shapes.py, not summed.
-    "shift-count": 368,
+    #
+    # 368 -> 386, RE-MEASURED 2026-09-01 on the land5 first-ever full-suite run.
+    # Like the equality-cap ceiling above, this was stale from BEFORE the
+    # crossplay campaign: measured 386 at the campaign base b992e538 already
+    # (base == tip; the crossplay campaign and its FP-contraction/trig work added
+    # ZERO shift-count findings, and this check is unchanged in-range). The +18
+    # over the old ceiling accumulated between the release-1.5.2 measure and the
+    # campaign base (native-finish-line/HUD/track work) and went unseen because
+    # array_bounds is a rom-role check that only runs in a full local suite. All
+    # 386 are the var-count flavour (bit masks `1u << slot`, byte extractions
+    # `value >> (i * 8u)`) -- none is the added-constant MIPS-mask idiom (those
+    # are the shift-count TRIAGE entries), and every one is covered at runtime by
+    # -fsanitize=shift-exponent, which reported nothing across the 8 routes.
+    # Measured with tools/sweep_bug_shapes.py, not summed.
+    "shift-count": 386,
 }
 
 # Only array-bounds is load-bearing for this class. pointer-overflow is kept
