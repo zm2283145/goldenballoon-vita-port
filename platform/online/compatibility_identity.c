@@ -4,6 +4,32 @@
 
 #include "sha256.h"
 
+/* Same-OS fence: this release ships online enabled on every platform, but
+ * cross-OS gameplay determinism (macOS<->Windows/Linux, native<->browser) is
+ * UNPROVEN -- an admitted cross-OS pair would desync mid-race. The gameplay
+ * contract below therefore folds in a compile-time OS tag, so same-OS peers
+ * of the same build still derive byte-identical identities (the lobby JOIN
+ * byte-compare admits them) while a cross-OS pair differs in gameplay_digest
+ * and hits the existing clean incompatibility refusal at join. The browser
+ * publisher (dist/web/mdkr64-shell.js publishOnlineCompatibility) mirrors
+ * this exactly with its fixed "os=browser" field; a browser build of this
+ * file must agree with it. An unmapped platform fails the compile: shipping
+ * online without deciding its determinism domain is exactly the mistake this
+ * fence exists to prevent. */
+#if defined(__EMSCRIPTEN__)
+#define MDKR_ONLINE_OS_TAG "browser"
+#elif defined(__APPLE__)
+#define MDKR_ONLINE_OS_TAG "macos"
+#elif defined(_WIN32)
+#define MDKR_ONLINE_OS_TAG "windows"
+#elif defined(__linux__)
+#define MDKR_ONLINE_OS_TAG "linux"
+#else
+#error "online OS tag unmapped for this platform: prove its gameplay \
+determinism domain and add it here (and to the pinned unit vectors) before \
+shipping online on it"
+#endif
+
 static bool decimal_component(const char **cursor) {
     const char *value = *cursor;
     if (*value < '0' || *value > '9')
@@ -66,7 +92,8 @@ bool mdkr_online_compatibility_from_provenance(
     static const char build_label[] = "online-build";
     static const char gameplay_label[] = "gameplay-contract";
     static const char gameplay_contract[] =
-        "\nprotocol=1\nrules=standard-race\nrollback=bounded-v1";
+        "\nprotocol=1\nrules=standard-race\nrollback=bounded-v1"
+        "\nos=" MDKR_ONLINE_OS_TAG;
     MdkrOnlineCompatibilityV1 next;
     MdkrSha256 hash;
     uint8_t digest[MDKR_SHA256_DIGEST_SIZE];

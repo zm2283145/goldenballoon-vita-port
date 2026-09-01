@@ -50,6 +50,14 @@ def source_contract() -> None:
     for domain in ("online-build", "gameplay-contract", "rollback=bounded-v1"):
         require(domain in shell and domain in native,
                 f"native/browser compatibility domain drifted: {domain}")
+    # The same-OS fence: the browser publisher's fixed "os=browser" gameplay
+    # field must stay in lockstep with the native compile-time OS-tag fold
+    # (compatibility_identity.c), including native's own browser mapping for
+    # an Emscripten compile of that file.
+    require('"os=browser"' in shell and
+            '"\\nos=" MDKR_ONLINE_OS_TAG' in native and
+            '#define MDKR_ONLINE_OS_TAG "browser"' in native,
+            "native/browser OS-tag gameplay fence drifted")
     require("MDKR_ONLINE_BROWSER_ABI_VERSION 4u" in browser_abi_header and
             "mdkr_online_browser_verification_phrase" in browser_abi and
             "api.version() !== 4" in browser_room,
@@ -293,12 +301,18 @@ def run(args: argparse.Namespace) -> None:
             require(result["scriptsAfterFirst"] == 1 and
                     result["scriptsAfterSecond"] == 1,
                     f"Online Room model was not loaded exactly once: {result}")
+            # The gameplay digest is the browser's own os=browser vector (the
+            # same-OS fence): the build_id stays the shared native/browser
+            # value, while the gameplay digest deliberately differs from every
+            # native OS's vector so an unproven browser<->native pair refuses
+            # cleanly at join (the exact per-OS native vectors are pinned in
+            # tests/test_online_compatibility_identity.c).
             require(ntsc["protocolVersion"] == 1 and
                     ntsc["romRevision"] == 1 and ntsc["cadenceHz"] == 30 and
                     ntsc["buildId"] == list(bytes.fromhex(
                         "336892f0abf0a2c25c91a7ebcb266364")) and
                     ntsc["gameplayDigest"] == list(bytes.fromhex(
-                        "fb34ef8ddfcf782a852375b8ce71d1bcd552a185cf2c18fe1e7727996b749522")),
+                        "4f64b166c251a445a3bba5637d87d1e180a03b1ffd8b57038afe027ffb6f1383")),
                     f"NTSC compatibility manifest is malformed: {ntsc}")
             # The two accepted payloads are byte-identical, so a PAL ROM
             # publishes the SAME identity a US ROM does (revision 1, the
