@@ -294,6 +294,17 @@ def invoke(
         MDKR_SYNTH_FIELDS="2",
     )
     env.update(values)
+    # Callers seed cwd/save/eeprom.bin with the 3-race checkpoint and read the
+    # produced EEPROM back from there, but clean_env() drops the MDKR_SAVE_DIR the
+    # suite exports and a non-packaged build no longer resolves saves to $CWD/save
+    # (issue #54 unified them under the per-user pref dir). Without this pin the
+    # engine read the shared per-user save instead of the seeded checkpoint, so
+    # the human never reached the fourth Dino race, the boss never finished
+    # (bossfinish=0), and even the broken controls could not reproduce their
+    # defects ("human never reached checkpoint 37"). Point MDKR_SAVE_DIR at the
+    # caller's seeded save dir; pin the video config (check_harness_isolation).
+    env["MDKR_SAVE_DIR"] = os.path.join(cwd, "save")
+    env["MDKR_VIDEO_CONFIG_PATH"] = os.devnull
     command = [
         binary, "--headless-frames", str(frames),
         "--input-script", str(script), "--rom", rom,
