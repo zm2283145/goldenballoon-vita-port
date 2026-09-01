@@ -2,11 +2,10 @@
 
 *Released 2026-09-01. Online multiplayer is a beta — see below.*
 
-This release adds online multiplayer as a beta and closes a batch of reports.
-You can now race a friend online, and the fixes cover both online and offline
-play: you race the character you picked, characters no longer briefly T-pose at
-the start of a race, and several HUD and menu glitches are gone. Offline play is
-unchanged.
+Golden Balloon can now play online. Race a friend head-to-head over the
+internet — private races with a six-digit code, single races or full
+tournaments, across regions. This release also fixes T-posing characters,
+wobbly best-time numbers, and several widescreen-HUD glitches.
 
 Recommended settings: **WebGPU**, **Restored**, frame limit **Original**,
 Motion smoothing **Interpolated** on 120 Hz displays or **Off** elsewhere,
@@ -19,52 +18,46 @@ authored rate.
 
 ## Online multiplayer (beta)
 
-You can now race another player online. One of you creates a private race and
-shares a six-digit code — or a QR code — and the other joins with it. Pick your
-character from the grid, choose a track, and play a single race or a full
-tournament. When you connect, both of you see a short pair of words; when they
-match on both screens ("Words Match"), you know you are linked to the right
-person.
+Create a private race and share the six-digit code — or the QR code — and
+your friend joins with it. Pick your racer, pick a track from the full track
+list, and play a single race or a tournament. When you connect, both screens
+show the same three groups of words; read them aloud to each other, and if
+they match, you know you are linked to the right person.
 
-- **Cross-region.** North American and European copies of the game can race
-  each other. Online races run at the same speed for everyone, whichever region
-  your game is from. Offline play is untouched and still runs at your region's
-  original speed.
-- **Track selection** is the full track list, grouped by world, so you can see
-  every track at a glance.
+- North American and European copies of the game race each other. Online
+  races run at the same speed for everyone; offline play still runs at your
+  region's original speed.
+- Online races are for two players in this beta.
+- **Tested so far on macOS only.** We race on macOS ourselves. Windows and
+  Linux have online too, but nobody has played it there yet — if you do, you
+  are the first, and we want to hear how it went.
+- **Both players need the same platform for now.** Mixed pairs, like Mac to
+  Windows, are declined when joining; cross-platform play comes in a later
+  update.
 - Online play runs over Golden Balloon's free hosted service.
 
-This is a beta.
+Online is early access and a work in progress. Please tell us what you hit —
+good or bad — on the GitHub issues page. Your reports decide what gets
+improved next.
 
 ## Fixes
 
-- **Online:** you now race the character you picked. In an early beta build a
-  race could start you on a different character than the one you chose on the
-  grid.
-- Characters no longer briefly appear unanimated ("T-posing") at the start of a
-  race. This includes the long-standing offline case tied to the **Model
-  Detail** setting, which is now fixed no matter how that setting is set
-  (issue #48).
-- The **best time** and **best lap** numbers in the track previews no longer
-  rock back and forth while the preview flyby plays (issue #59).
-- With the widescreen HUD turned on, the banana counter in the banana challenge
-  no longer overlaps a character portrait, and the minimap markers stay lined
-  up with the map at the right size (issue #57). With the widescreen HUD off,
-  nothing changes.
-- Added characters can now save Time Trial ghosts. They are marked so they stay
-  separate from the original characters' records, which are unchanged
-  (issue #54).
+- Characters no longer briefly appear unanimated ("T-posing") at the start of
+  a race, at any **Model Detail** setting (issue #48).
+- The **best time** and **best lap** numbers in track previews no longer rock
+  back and forth during the preview flyby (issue #59).
+- With the widescreen HUD on, the banana counter no longer overlaps a
+  portrait in the banana challenge, and minimap markers line up with the map
+  at the correct size (issue #57). With it off, nothing changes.
+- Added characters can now save Time Trial ghosts, kept separate from the
+  original racers' records (issue #54).
 
 ## Compatibility
 
 Save data, settings, unlocked Magic Codes, and Time Trial ghosts from earlier
 1.5.x releases carry over unchanged. The launcher is keyboard and gamepad
-operable, but does not claim a VoiceOver, UI Automation, or other screen-reader
-semantic tree.
-
-## Known limitations
-
-- Online races are for two players in this beta.
+operable, but does not claim a VoiceOver, UI Automation, or other
+screen-reader semantic tree.
 
 # Golden Balloon 1.5.2
 
