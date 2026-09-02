@@ -22,13 +22,14 @@ option(MDKR_ENABLE_ONLINE_ROOM_PREVIEW
 # online transport into the launcher's Online Room panel and opens the build gate
 # that lets two native instances pair + race over the live MatchRoom service,
 # fenced to 2 endpoints / STUN-only / retail identities. Modeled on the
-# MDKR_NATIVE_PHONE_PARTY option below. It defaults OFF and is NEVER set by
-# .github/workflows/release.yml or macos/Scripts/build_app_bundle.sh, so every
-# shipping build stays byte-identical -- the two release guardrails
-# (check_release_local_only_surface.py, check_release_party_origin.py) key on the
-# unchanged -DMDKR_ENABLE_ONLINE_ROOM_PREVIEW=OFF lines, which this leaves alone.
+# MDKR_NATIVE_PHONE_PARTY option below. It defaults OFF for a developer build
+# and is never set by .github/workflows/release.yml; macos/Scripts/build_app_bundle.sh
+# passes it only when a release explicitly opts in with --allow-online-beta --
+# the two release guardrails (check_release_local_only_surface.py,
+# check_release_party_origin.py) key on the unchanged
+# -DMDKR_ENABLE_ONLINE_ROOM_PREVIEW=OFF lines, which this leaves alone.
 option(MDKR_ENABLE_ONLINE_BETA
-    "Compose the live online transport into the launcher behind the native beta gate (never shipped)"
+    "Compose the live online transport into the launcher behind the native beta gate; OFF by default, release bundles pass this explicitly"
     OFF)
 if(MDKR_ENABLE_ONLINE_BETA)
     # The Online Room panel and its live-adapter seam only compile under the

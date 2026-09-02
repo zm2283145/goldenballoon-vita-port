@@ -183,7 +183,7 @@ Options:
                          version than --deployment-target.
   --bundle-sdl2          Copy the linked SDL2 dylib into Contents/Frameworks
                          and rewrite the engine binary's load path to the bundle.
-  --allow-online-beta    LOCAL DEMO BUILDS ONLY -- NEVER FOR RELEASE. Adds
+  --allow-online-beta    Opt this build into the online beta. Adds
                          -DMDKR_ENABLE_ONLINE_BETA=ON and
                          -DMDKR_NATIVE_PHONE_PARTY=ON to the CMake configure
                          and skips this script's cache assertion that the
@@ -191,8 +191,10 @@ Options:
                          gate forces it on internally via a non-cache CMake
                          set(), so the persisted cache entry is unaffected
                          and stays OFF regardless). Pass --party-origin to
-                         bake in the live party service origin. Default off;
-                         every other default behavior is unchanged.
+                         bake in the live party service origin. Default off
+                         for a developer build; a release bundle passes this
+                         flag explicitly, and the online surface stays behind
+                         the native beta gate either way.
   --validate-output-only Validate --output safety and exit without writing
   --no-cmake             Reuse an existing <build-dir>/mdkr64
   -h, --help             Show this help
@@ -221,9 +223,9 @@ VALIDATE_OUTPUT_ONLY=false
 # Default OFF, and additive only: when true this adds two -D flags to the
 # CMake configure below and skips one cache assertion that those flags make
 # inapplicable (see the two sites tagged --allow-online-beta further down).
-# Every other line in this script runs exactly as it does today. This exists
-# ONLY to produce local, ad-hoc two-machine online-beta demo builds -- no
-# release lane (macos-release.yml or otherwise) may ever pass it.
+# Every other line in this script runs exactly as it does today. macos-release.yml
+# never passes it automatically; a release opts the online beta in by invoking
+# this script with --allow-online-beta explicitly.
 ALLOW_ONLINE_BETA=false
 # Player-facing bundle basename. Only the .app wrapper carries the product
 # brand; the CFBundleExecutable inside stays "mdkr64" (see EXECUTABLE_NAME
@@ -429,7 +431,7 @@ if [[ "${BUNDLE_SDL2}" == true ]]; then
     info "Bundle SDL2       : enabled"
 fi
 if [[ "${ALLOW_ONLINE_BETA}" == true ]]; then
-    warn "Online beta       : ENABLED -- local demo build only, never for release"
+    warn "Online beta       : ENABLED -- behind the native beta gate"
 fi
 if [[ -n "${PARTY_ORIGIN}" ]]; then
     info "Phone Party origin: ${PARTY_ORIGIN}"
@@ -445,8 +447,8 @@ if [[ "${RUN_CMAKE}" == true ]]; then
     PATH_MAP_FLAGS+=" -ffile-prefix-map=${BUILD_DIR}=mdkr64-build"
     PATH_MAP_FLAGS+=" -fmacro-prefix-map=${BUILD_DIR}=mdkr64-build"
     PATH_MAP_FLAGS+=" -fdebug-prefix-map=${BUILD_DIR}=mdkr64-build"
-    # --allow-online-beta (local demo builds only, never release): the sole
-    # additive configure-time effect of the flag. Empty and inert by default.
+    # --allow-online-beta (opt-in per invocation, including a release): the
+    # sole additive configure-time effect of the flag. Empty and inert by default.
     ONLINE_BETA_CMAKE_ARGS=()
     if [[ "${ALLOW_ONLINE_BETA}" == true ]]; then
         ONLINE_BETA_CMAKE_ARGS=(-DMDKR_ENABLE_ONLINE_BETA=ON -DMDKR_NATIVE_PHONE_PARTY=ON)
@@ -482,8 +484,8 @@ CMAKE_CACHE="${BUILD_DIR}/CMakeCache.txt"
 [[ -f "${CMAKE_CACHE}" ]] || die "Missing CMake cache: ${CMAKE_CACHE}"
 grep -Eq '^MDKR_WEBGPU_BACKEND:BOOL=ON$' "${CMAKE_CACHE}" ||
     die "Build cache does not enable the required WebGPU backend."
-# --allow-online-beta (local demo builds only, never release): the sole other
-# additive effect of the flag. This assertion exists to catch an
+# --allow-online-beta (opt-in per invocation, including a release): the sole
+# other additive effect of the flag. This assertion exists to catch an
 # accidentally-enabled Online Room preview; --allow-online-beta enables the
 # online-beta gate on purpose, so skip only this one assertion for it.
 if [[ "${ALLOW_ONLINE_BETA}" != true ]]; then
