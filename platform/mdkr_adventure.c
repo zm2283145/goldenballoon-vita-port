@@ -845,6 +845,26 @@ int mdkr_test_pad_absent(int seat) {
     return sApDropTick[seat] >= 0 && g_simTickCounter >= sApDropTick[seat];
 }
 
+/* TRUE once every level leg of MDKR_DRIVE_ROUTE has retired its last step, so
+ * the shared route has no further destination to drive the kart to. FALSE when
+ * no route is configured, and FALSE before the route is parsed, so a caller
+ * cannot read "exhausted" out of an unarmed driver. Loads only: this never
+ * advances the cursor, and the driver's own retirement rules
+ * (mdkr_adventure_drive) remain the only writer. */
+int mdkr_adventure_route_exhausted(void) {
+    s32 i;
+
+    if (sAdvLevelCount <= 0) {
+        return 0;
+    }
+    for (i = 0; i < sAdvLevelCount; i++) {
+        if (sAdvStepIdx[i] < sAdvLevels[i].count) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static f32 mdkr_adv_num(const char **p) {
     char *end = NULL;
     f32 v = (f32) strtod(*p, &end);

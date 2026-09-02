@@ -4354,6 +4354,36 @@ s32 postrace_render(s32 updateRate) {
             for (i = 0; i < gNumberOfActivePlayers; i++) {
                 buttonsPressedAllPlayers |= input_pressed(i);
             }
+#ifdef NATIVE_PORT
+            /* LAST-CYCLE ONLY, and that is the whole point. These panels run a
+             * timed hold -- every caller opens them with postrace_offsets(...,
+             * 15.0f, ...), so gPostraceScaleMiddle is 900 -- which an A/START
+             * press short-circuits. A routed fixture's cycles all short-circuit
+             * it from the same sparse advances that drive the kart, which is
+             * what rounds every cycle to the same length and makes repeated
+             * generations comparable. The LAST cycle cannot: those advances are
+             * also throttle, so a fixture stops them at its last admission
+             * rather than leave a hand on the accelerator at the return
+             * entrance, and the last cycle is then the only one that sits out
+             * the full hold -- 999 frames against 146, over a still-resident
+             * race level, which moved AP-19's race texture census by 3 handles
+             * on the terminal generation alone.
+             *
+             * Once MDKR_DRIVE_ROUTE has no ordered move left there is no later
+             * cycle to protect, so hand the panels the advance the fixture can
+             * no longer send. Terminal by construction rather than by frame
+             * number: while any route step remains this is false and every
+             * earlier cycle keeps its exact present behaviour. Gated on
+             * MDKR_TEST_POSTRACE_OPTION as well, so it reaches only fixtures
+             * that already opted into a closed-loop hand on this screen. */
+            {
+                extern char *getenv(const char *);
+                if (mdkr_adventure_route_exhausted() &&
+                    getenv("MDKR_TEST_POSTRACE_OPTION") != NULL) {
+                    buttonsPressedAllPlayers |= A_BUTTON;
+                }
+            }
+#endif
         }
         gMenuElementScaleTimer += updateRate;
         do {
