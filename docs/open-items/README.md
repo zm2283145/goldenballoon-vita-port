@@ -26,7 +26,7 @@ unchanged.
 | [`multiplayer.md`](multiplayer.md) | Multiplayer — 1 entry |
 | [`gameplay.md`](gameplay.md) | Gameplay, race and Adventure — 12 entries |
 | [`portability.md`](portability.md) | 64-bit (LP64), endianness and portability — 13 entries |
-| [`misc.md`](misc.md) | Everything else — 3 entries |
+| [`misc.md`](misc.md) | Everything else — 4 entries |
 
 
 ## Contents
@@ -211,6 +211,7 @@ what was done and what proves it.
 
 - [FIXED: headless renders were NOT reproducible (wave "determinism")](renderer.md#fixed-headless-renders-were-not-reproducible-wave-determinism)
 - [NOT A DEFECT, but zero coverage until now: character-select dancers reported static — wave "charselectmotion"](misc.md#not-a-defect-but-zero-coverage-until-now-character-select-dancers-reported-static--wave-charselectmotion)
+- [CLOSED: 17 checks scrubbed `MDKR_SAVE_DIR` out of their engine environment and then launched — wave "savehermetic"](misc.md#closed-17-checks-scrubbed-mdkr_save_dir-out-of-their-engine-environment-and-then-launched--wave-savehermetic)
 
 **Deferred — none outstanding**
 

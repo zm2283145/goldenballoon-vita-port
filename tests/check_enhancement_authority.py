@@ -229,6 +229,12 @@ def dump_table(binary: Path, rom: Path, work: Path,
            if not k.startswith(("MDKR", "GE007_"))}
     env.update(LC_ALL="C", MDKR_AUDIO="0", MDKR_ENH_DUMP_TABLE="1",
                MDKR_RENDERER="gl")
+    # The scrub above also drops the MDKR_SAVE_DIR the suite exports per task;
+    # since issue #54 an unpinned save resolves to the SHARED per-user
+    # directory rather than $CWD/save. run() below already pins its own arm --
+    # this table dump was the one site that did not. save_env() pins the video
+    # config with it (check_harness_isolation.py).
+    save_env(env, str(run_dir / "save"))
     command = [str(binary), "--headless-frames", "2", "--rom", str(rom)]
     if verbose:
         print(f"$ (table) {' '.join(command)}", flush=True)

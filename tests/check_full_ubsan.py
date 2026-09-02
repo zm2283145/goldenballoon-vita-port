@@ -346,9 +346,26 @@ def run_check() -> int:
                 900,
             ),
         )
-    for label, command, timeout in routes:
-        if not checked_route(label, command, environment, timeout=timeout):
-            return 1
+    # Every route above is another check_*.py, and each of those builds its
+    # own engine environment out of os.environ. The scrub that produced
+    # `environment` dropped the MDKR_SAVE_DIR tools/run_checks.py exports per
+    # task, so without a replacement each sub-check inherits nothing and --
+    # since issue #54 -- resolves its save to the SHARED per-user directory
+    # instead of $CWD/save. An unrelated adventure-in-progress EEPROM there
+    # re-routes every one of them (the "level never loaded ... no [PVEH]"
+    # shape check_vehicle_sweep shows on all 47 combinations). Hand the whole
+    # batch one directory of its own, under both names the suite exports so a
+    # sub-check reading either agrees with the engine.
+    with tempfile.TemporaryDirectory(prefix="mdkr_full_ubsan_routes_") as saves:
+        route_environment = dict(
+            environment,
+            MDKR_SAVE_DIR=saves,
+            MDKR_TEST_SAVE_DIR=saves,
+        )
+        for label, command, timeout in routes:
+            if not checked_route(label, command, route_environment,
+                                 timeout=timeout):
+                return 1
 
     with tempfile.TemporaryDirectory(prefix="mdkr_full_ubsan_race_") as save_dir:
         race_env = dict(

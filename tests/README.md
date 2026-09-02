@@ -7417,6 +7417,42 @@ save-dir assignment without a video-config pin (or `save_env`), with two
 documented exemptions (`check_ghost_bank_capacity.py`, `check_shell_dropfile.py`)
 and a `--self-test` proving the scanner is not vacuous.
 
+### Save-directory hermeticity — `tests/test_check_save_dir_hermeticity.py`
+
+```bash
+python3 tests/test_check_save_dir_hermeticity.py        # ctest: check_save_dir_hermeticity
+python3 tests/test_check_save_dir_hermeticity.py --list  # the offender list, not a verdict
+```
+
+ROM-free source gate for the sibling defect class the 1.6.0 fixture wave
+uncovered. A check that builds a "hermetic" engine environment by dropping
+every inherited `MDKR*` variable also drops the `MDKR_SAVE_DIR` that
+`tools/run_checks.py` exports per task. Since issue #54 a non-packaged build no
+longer resolves an unpinned save to `$CWD/save`; it resolves it to the shared
+per-user directory, so an adventure-in-progress EEPROM sitting there — left by
+a developer playing, or by an earlier suite task — re-routes the boot flow of
+every such check and reds it for a reason that has nothing to do with the code
+under test ("level never loaded … no `[PVEH]`", "0 flap cues", "trophies 0x0",
+"capture-window positions=0").
+
+The gate parses every `tests/check_*.py` and follows each environment value
+from where it is built to where it is handed to a process, so a pin has to be
+on the environment that actually launches — a pin elsewhere in the same
+function does not satisfy it. It recognises the scrub in every shape the
+corpus uses: an `os.environ` comprehension that filters `MDKR` keys, a
+`pop("MDKR_SAVE_DIR")` or `del env["MDKR_SAVE_DIR"]`, an environment written
+out inline at the launch that inherits nothing, and a factory function whose
+scrubbed return value the caller launches with. Repairs it accepts:
+`harness_utils.save_env(env, run_dir)` (preferred — it pins the video config in
+the same breath, which `check_harness_isolation.py` requires), an explicit
+`env["MDKR_SAVE_DIR"] = …`, `MDKR_SAVE_DIR=…` passed into the call that builds
+the environment, or simply inheriting `os.environ` unscrubbed. Controls: nine
+synthetic fixtures ship with the gate — five offending shapes it must reject
+and four pinned shapes it must accept — and they run ahead of the corpus scan
+on every invocation, so a scanner that stopped matching fails loudly instead of
+passing an empty sweep. One documented exemption,
+`check_portable_paths.py`, whose subject *is* unpinned save resolution.
+
 ### Delta inventory — `tests/check_delta_inventory.py`
 
 ```bash

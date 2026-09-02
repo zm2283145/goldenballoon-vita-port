@@ -23,7 +23,7 @@ import subprocess
 import sys
 import tempfile
 
-from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, resolve_binary, save_env
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -362,6 +362,12 @@ def reject_remote_view(binary: Path, rom: Path, root: Path,
         MDKR_ROM=str(rom),
         MDKR64_HIDDEN="1",
     )
+    # clean_environment() drops every inherited MDKR* variable, including the
+    # MDKR_SAVE_DIR the suite exports per task; since issue #54 an unpinned
+    # save resolves to the SHARED per-user directory rather than $CWD/save, so
+    # this negative control would boot against the host's own EEPROM. Pin the
+    # case's own directory, as the sibling arms in this file already do.
+    save_env(environment, str(run_dir / "save"))
     process = subprocess.run(
         [str(binary)], cwd=run_dir, env=environment, text=True,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

@@ -27,7 +27,7 @@ from pathlib import Path
 
 from harness_utils import (ASSERT_MARKERS, DEFAULT_BUILD_DIR, fatal_re,
                            FX_MARKERS, read_ppm as read_ppm_bytes,
-                           resolve_binary)
+                           resolve_binary, save_env)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -91,7 +91,8 @@ def read_ppm(path: Path) -> Image:
     return Image(*read_ppm_bytes(path))
 
 
-def clean_environment(backend: str, legacy: bool) -> dict[str, str]:
+def clean_environment(backend: str, legacy: bool, save_dir: Path
+                      ) -> dict[str, str]:
     env = {
         key: value
         for key, value in os.environ.items()
@@ -106,6 +107,14 @@ def clean_environment(backend: str, legacy: bool) -> dict[str, str]:
         MDKR64_HIDDEN="1",
         LC_ALL="C",
     )
+    # The scrub above also drops the MDKR_SAVE_DIR tools/run_checks.py exports
+    # per task, and since issue #54 a non-packaged build resolves an unpinned
+    # save to the SHARED per-user directory rather than $CWD/save. An unrelated
+    # adventure-in-progress EEPROM sitting there re-routes the boot flow and
+    # this arm's scripted drive never reaches the frames it captures. Pin the
+    # arm's own directory; save_env() pins the video config with it
+    # (check_harness_isolation.py).
+    save_env(env, save_dir)
     if legacy:
         env["MDKR_RDP_GRADIENTS"] = "legacy"
     return env
@@ -125,6 +134,8 @@ def run_arm(
     run_dir = work / label
     frame_dir = run_dir / "frames"
     frame_dir.mkdir(parents=True)
+    save_dir = run_dir / "save"
+    save_dir.mkdir(parents=True)
     command = [
         str(binary),
         "--headless-frames",
@@ -143,7 +154,7 @@ def run_arm(
         proc = subprocess.run(
             command,
             cwd=run_dir,
-            env=clean_environment(backend, legacy),
+            env=clean_environment(backend, legacy, save_dir),
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
