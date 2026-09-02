@@ -518,3 +518,26 @@ bool mdkr_match_transport_recovery(
     *recovery = transport->recovery;
     return true;
 }
+
+uint32_t mdkr_match_drop_finalisation_tick(
+    uint32_t confirmed_through, bool have_confirmed, uint32_t current_tick,
+    uint8_t lead_ticks) {
+    uint32_t tick = current_tick + 1u;
+    if (have_confirmed &&
+        mdkr_net_tick_after(confirmed_through + 1u, tick)) {
+        tick = confirmed_through + 1u;
+    }
+    return tick + lead_ticks;
+}
+
+bool mdkr_match_drop_is_proposer(
+    uint64_t local_endpoint_id, const uint64_t *surviving, unsigned count) {
+    unsigned index;
+    bool named = false;
+    if (surviving == NULL || count == 0u) return false;
+    for (index = 0u; index < count; index++) {
+        if (surviving[index] < local_endpoint_id) return false;
+        if (surviving[index] == local_endpoint_id) named = true;
+    }
+    return named;
+}

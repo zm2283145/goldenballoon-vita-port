@@ -260,6 +260,200 @@ int main(void) {
             MDKR_MATCH_INGRESS_TAKEN_OVER);
         assert(!mdkr_match_transport_recovery(&takeover, &recovery));
     }
+
+    /* ---- Lobby-authoritative drop: the agreed finalisation tick ----------
+     *
+     * The tick a departed seat stops consuming peer input at. The floor is the
+     * confirmed frontier + 1 (nothing past it is common knowledge), the
+     * authored head raises it (an authored tick's inputs are already spent, and
+     * schedule_ai_takeover refuses it), and the agreed input-delay lead raises
+     * it again so a survivor whose head runs that far ahead can still adopt. */
+    {
+        /* No confirmed frontier yet: the head and the lead decide. */
+        assert(mdkr_match_drop_finalisation_tick(0u, false, 100u, 0u) == 101u);
+        assert(mdkr_match_drop_finalisation_tick(0u, false, 100u, 3u) == 104u);
+        /* The ordinary shape -- confirmation trails the head, so the head
+         * wins and the floor is already satisfied. */
+        assert(mdkr_match_drop_finalisation_tick(95u, true, 100u, 2u) == 103u);
+        /* A frontier at or past the head keeps the floor: finalising at 99
+         * would rewrite a frame committed with the departed peer's real input. */
+        assert(mdkr_match_drop_finalisation_tick(100u, true, 100u, 0u) == 101u);
+        assert(mdkr_match_drop_finalisation_tick(120u, true, 100u, 2u) == 123u);
+        /* Half-range ordering, not magnitude: the tick space wraps, and a
+         * numerically huge frontier just below the head is still behind it. */
+        assert(mdkr_match_drop_finalisation_tick(
+                   0xfffffffeu, true, 0xffffffffu, 2u) == 2u);
+        assert(mdkr_match_drop_finalisation_tick(
+                   0xffffffffu, true, 0xfffffffdu, 1u) == 1u);
+    }
+
+    /* Exactly one survivor proposes, so two survivors cannot commit different
+     * ticks for the same seat. Every survivor evaluates the rule identically
+     * over the same surviving roster. */
+    {
+        const uint64_t survivors[3] = {77u, 12u, 40u};
+        assert(mdkr_match_drop_is_proposer(12u, survivors, 3u));
+        assert(!mdkr_match_drop_is_proposer(40u, survivors, 3u));
+        assert(!mdkr_match_drop_is_proposer(77u, survivors, 3u));
+        /* The 2P survivor is alone, so it proposes whatever its id is and
+         * needs no round trip. */
+        assert(mdkr_match_drop_is_proposer(77u, survivors, 1u));
+        assert(mdkr_match_drop_is_proposer(40u, &survivors[2], 1u));
+        assert(!mdkr_match_drop_is_proposer(77u, &survivors[2], 1u));
+        /* An endpoint outside the surviving roster never proposes for it. */
+        assert(!mdkr_match_drop_is_proposer(5u, survivors, 3u));
+        assert(!mdkr_match_drop_is_proposer(12u, NULL, 3u));
+        assert(!mdkr_match_drop_is_proposer(12u, survivors, 0u));
+    }
+
+    /* ---- The drop's determinism proof ------------------------------------
+     *
+     * A transport whose departed seat is finalised at T must commit exactly the
+     * frames a reference run commits when that seat simply sends neutral input
+     * from T. Same launch, same local input, same tick range; the only
+     * difference is how slot 1's neutral frames arrive. Diverging here is the
+     * whole failure mode the drop exists to avoid: a survivor that finalises a
+     * seat its peers did not would author a different race. */
+    {
+        MdkrSessionLaunchV2 dropped_launch = launch();
+        MdkrSessionLaunchV2 reference_launch = launch();
+        MdkrSessionBridge dropped_bridge;
+        MdkrSessionBridge reference_bridge;
+        MdkrMatchTransport dropped;
+        MdkrMatchTransport reference;
+        MdkrPadSample seat_local[2];
+        MdkrPadSample peer1 = sample(0x0010u, 5);
+        MdkrPadSample peer3 = sample(0x0020u, -5);
+        const MdkrPadSample neutral = {0u, 0, 0, 1u};
+        const uint32_t first = 200u;
+        const uint32_t finalise = 210u;
+        uint32_t authored;
+        unsigned compared = 0u;
+
+        seat_local[0] = sample(0x0100u, 9);
+        seat_local[1] = sample(0x0200u, -9);
+        mdkr_session_bridge_init(&dropped_bridge);
+        mdkr_session_bridge_init(&reference_bridge);
+        assert(mdkr_session_bridge_apply_launch(
+            &dropped_bridge, &dropped_launch));
+        assert(mdkr_session_bridge_apply_launch(
+            &reference_bridge, &reference_launch));
+        assert(mdkr_session_bridge_set_engine_phase(
+            &dropped_bridge, MDKR_ENGINE_BOOTING));
+        assert(mdkr_session_bridge_set_engine_phase(
+            &reference_bridge, MDKR_ENGINE_BOOTING));
+        assert(mdkr_session_bridge_set_engine_phase(
+            &dropped_bridge, MDKR_ENGINE_READY));
+        assert(mdkr_session_bridge_set_engine_phase(
+            &reference_bridge, MDKR_ENGINE_READY));
+        assert(mdkr_match_transport_init(&dropped, &dropped_bridge, first));
+        assert(mdkr_match_transport_init(
+            &reference, &reference_bridge, first));
+
+        for (authored = first; authored < first + 40u; authored++) {
+            const bool before = authored < finalise;
+            /* Slot 3 races on untouched in both runs. */
+            assert(mdkr_match_transport_receive(
+                &dropped, 7u, 0x8u, 3u, authored, &peer3) ==
+                MDKR_MATCH_INGRESS_ACCEPTED);
+            assert(mdkr_match_transport_receive(
+                &reference, 7u, 0x8u, 3u, authored, &peer3) ==
+                MDKR_MATCH_INGRESS_ACCEPTED);
+            if (before) {
+                assert(mdkr_match_transport_receive(
+                    &dropped, 7u, 0x2u, 1u, authored, &peer1) ==
+                    MDKR_MATCH_INGRESS_ACCEPTED);
+                assert(mdkr_match_transport_receive(
+                    &reference, 7u, 0x2u, 1u, authored, &peer1) ==
+                    MDKR_MATCH_INGRESS_ACCEPTED);
+            } else {
+                /* The reference peer keeps sending, neutral. The dropped run
+                 * hears nothing more from it -- and refuses it if it speaks. */
+                assert(mdkr_match_transport_receive(
+                    &reference, 7u, 0x2u, 1u, authored, &neutral) ==
+                    MDKR_MATCH_INGRESS_ACCEPTED);
+                assert(mdkr_match_transport_receive(
+                    &dropped, 7u, 0x2u, 1u, authored, &peer1) ==
+                    MDKR_MATCH_INGRESS_TAKEN_OVER);
+            }
+            assert(mdkr_match_transport_drain_tick(
+                &dropped, 7u, authored, seat_local, 2u));
+            assert(mdkr_match_transport_drain_tick(
+                &reference, 7u, authored, seat_local, 2u));
+            if (authored == finalise - 3u) {
+                /* The room reports the departure three ticks early; the agreed
+                 * tick lands on the authored head plus the match's
+                 * input-delay lead. */
+                assert(mdkr_match_drop_finalisation_tick(
+                    dropped.history.confirmed_through,
+                    dropped.history.have_confirmed,
+                    dropped.history.current_tick, 2u) == finalise);
+                assert(mdkr_match_transport_schedule_ai_takeover(
+                    &dropped, 7u, 1u, finalise) ==
+                    MDKR_MATCH_TAKEOVER_ACCEPTED);
+            }
+            {
+                MdkrInputSet dropped_frame;
+                MdkrInputSet reference_frame;
+                assert(mdkr_match_transport_inputs_for_tick(
+                    &dropped, 7u, authored, &dropped_frame));
+                assert(mdkr_match_transport_inputs_for_tick(
+                    &reference, 7u, authored, &reference_frame));
+                assert(memcmp(&dropped_frame, &reference_frame,
+                              sizeof(dropped_frame)) == 0);
+                if (!before) {
+                    /* Non-vacuous: the frames being compared really are the
+                     * neutral ones the drop authored, confirmed, not predicted
+                     * from the departed peer's last real sample. */
+                    assert(dropped_frame.slots[1].buttons == 0u &&
+                           dropped_frame.slots[1].stick_x == 0 &&
+                           (dropped_frame.confirmed_mask & 0x02u) != 0u);
+                    assert(peer1.buttons != 0u);
+                    compared++;
+                }
+            }
+        }
+        assert(compared == 30u);
+        /* A run that never finalised the seat diverges from the reference at
+         * the very first tick past T -- the repeat-last predictor holds the
+         * departed peer's last real sample instead of going neutral. */
+        {
+            MdkrSessionLaunchV2 stalled_launch = launch();
+            MdkrSessionBridge stalled_bridge;
+            MdkrMatchTransport stalled;
+            MdkrInputSet stalled_frame;
+            MdkrInputSet reference_frame;
+            mdkr_session_bridge_init(&stalled_bridge);
+            assert(mdkr_session_bridge_apply_launch(
+                &stalled_bridge, &stalled_launch));
+            assert(mdkr_session_bridge_set_engine_phase(
+                &stalled_bridge, MDKR_ENGINE_BOOTING));
+            assert(mdkr_session_bridge_set_engine_phase(
+                &stalled_bridge, MDKR_ENGINE_READY));
+            assert(mdkr_match_transport_init(
+                &stalled, &stalled_bridge, first));
+            for (authored = first; authored <= finalise; authored++) {
+                assert(mdkr_match_transport_receive(
+                    &stalled, 7u, 0x8u, 3u, authored, &peer3) ==
+                    MDKR_MATCH_INGRESS_ACCEPTED);
+                if (authored < finalise) {
+                    assert(mdkr_match_transport_receive(
+                        &stalled, 7u, 0x2u, 1u, authored, &peer1) ==
+                        MDKR_MATCH_INGRESS_ACCEPTED);
+                }
+                assert(mdkr_match_transport_drain_tick(
+                    &stalled, 7u, authored, seat_local, 2u));
+            }
+            assert(mdkr_match_transport_inputs_for_tick(
+                &stalled, 7u, finalise, &stalled_frame));
+            assert(mdkr_match_transport_inputs_for_tick(
+                &reference, 7u, finalise, &reference_frame));
+            assert(memcmp(&stalled_frame, &reference_frame,
+                          sizeof(stalled_frame)) != 0);
+            assert(stalled_frame.slots[1].buttons == peer1.buttons);
+        }
+    }
+
     puts("test_match_transport: PASS");
     return 0;
 }

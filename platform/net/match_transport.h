@@ -154,6 +154,42 @@ bool mdkr_match_transport_input_gap(
 bool mdkr_match_transport_recovery(
     const MdkrMatchTransport *transport, MdkrMatchRecovery *recovery);
 
+/* ---- Lobby-authoritative peer drop --------------------------------------
+ *
+ * When the room reports that a member left, the seat it owned stops consuming
+ * that peer's input at an agreed tick and consumes neutral frames from then
+ * on. The commitment itself is the takeover schedule above -- it already
+ * authors one neutral received sample per tick for the seat, refuses later
+ * input for it, and treats a second, different tick for the same seat as a
+ * conflict. These two rules are what decides WHICH tick, and WHO gets to say
+ * so, without which two endpoints could finalise the same seat differently and
+ * author different races.
+ *
+ * The tick every endpoint must agree on. `confirmed_through` is the floor:
+ * nothing past the confirmed frontier is common knowledge, so finalising
+ * earlier would replace a frame already committed with the departed peer's
+ * real input. `current_tick` raises it, because an authored tick's inputs are
+ * already spent (schedule_ai_takeover refuses a tick that is not strictly
+ * ahead of the head). `lead_ticks` -- the match's agreed input delay -- raises
+ * it again, so a proposal is still ahead of a survivor whose own head runs that
+ * far in front of this one by the time the proposal lands. Half-range tick
+ * ordering throughout, so the result wraps with the tick space. */
+uint32_t mdkr_match_drop_finalisation_tick(
+    uint32_t confirmed_through, bool have_confirmed, uint32_t current_tick,
+    uint8_t lead_ticks);
+
+/* Whether this endpoint is the one that proposes the tick for a departure, out
+ * of the `count` endpoints still in the room. The lowest surviving endpoint id
+ * proposes and every other survivor adopts what it sends: endpoint ids are
+ * unique within a room, so the rule is total and every survivor evaluates it
+ * identically from the same surviving roster. False for an endpoint the roster
+ * does not name, and for an empty roster. A sole survivor -- 2P, the shipping
+ * case -- is trivially the proposer, which is why a 2P drop needs no round
+ * trip: there is nobody left to agree with, and the room already confirmed the
+ * leave. */
+bool mdkr_match_drop_is_proposer(
+    uint64_t local_endpoint_id, const uint64_t *surviving, unsigned count);
+
 #ifdef __cplusplus
 }
 #endif
