@@ -7701,7 +7701,8 @@ arm is the minimised libFuzzer out-of-memory reproducer, seeded as
 fifth arm declares a level uncompressed size far beyond what its mip spans,
 which the Zstandard path allocated whole before reading the file. See
 `docs/open-items/misc.md`, wave "ktx2index". With either bound removed the
-matching arms fail: two by crashing on the walk, three by accepting the file.
+matching arms fail: one by crashing on the walk, one refused for the wrong
+reason after an out-of-bounds read, and three by accepting the file.
 
 ### Online wire-parser fuzzers — `tests/fuzz_match_signal_wire.cpp`, `tests/fuzz_online_live_wire.cpp`
 

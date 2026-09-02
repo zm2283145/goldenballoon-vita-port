@@ -110,7 +110,7 @@ lands by re-running `tests/fuzz_modern_character_asset.cpp` — which drives
 `mdkr_ktx2_inspect`/`mdkr_ktx2_transcode` path on the same untrusted-input
 boundary the advisory would concern — under ASan+UBSan over the tracked
 `tests/fuzz_corpus/modern_character_asset/` corpus for at least 600 seconds
-(`-max_total_time=600`; task-A1's qualifying run covered 4,946,075 executions
-in 601 seconds with zero crash/OOM/leak artifacts) with no new finding, and
+(`-max_total_time=600`; a 2026-09-02 run covered 4,946,075 executions in 601
+seconds with zero crash/OOM/leak artifacts) with no new finding, and
 the full `tests/test_modern_character_ktx2.cpp` unit suite passing unchanged.
 Only then is the vendored file and its SHA-256 pin above updated.

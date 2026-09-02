@@ -217,15 +217,14 @@ def main() -> int:
 
         # --- positive control: the injector really did misauthor the stream ---
         injected_peak = peak_dl_length(injected)
-        clean_peak = (peak_dl_length(clean) if clean is not None
-                      else ONE_PLAYER_DL_COMMANDS + 1)
+        clean_peak = peak_dl_length(clean) if clean is not None else None
         if injected_peak <= ONE_PLAYER_DL_COMMANDS:
             failures.append(
                 f"positive control: the misauthored route's peak display list "
                 f"({injected_peak} Gfx) did not exceed the 1P budget it was "
                 f"held to ({ONE_PLAYER_DL_COMMANDS}); the injector authored "
                 "nothing to walk over and arm B proves nothing")
-        if clean_peak <= ONE_PLAYER_DL_COMMANDS:
+        if clean_peak is not None and clean_peak <= ONE_PLAYER_DL_COMMANDS:
             failures.append(
                 f"positive control: the well-authored route's peak display "
                 f"list ({clean_peak} Gfx) did not exceed {ONE_PLAYER_DL_COMMANDS}"
@@ -258,7 +257,9 @@ def main() -> int:
         print("check_fast3d_dl_hardening: PASS -- arm B only: a four-viewport "
               "party authoring past its display-list buffer is walked to a "
               "stop by both the interpreter and the overlay prepass, and the "
-              "whole hub->lobby->race route still runs")
+              "whole hub->lobby->race route still runs (the well-authored "
+              "route was not run, so the positive control that the two arms "
+              "draw the same frames was skipped, not synthesized)")
         return 0
     print("check_fast3d_dl_hardening: PASS -- a four-viewport party authoring "
           "past its display-list buffer is walked to a stop by both the "
