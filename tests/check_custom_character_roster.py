@@ -20,6 +20,12 @@ from harness_utils import DEFAULT_BUILD_DIR, read_ppm, resolve_binary
 
 
 ROOT = Path(__file__).resolve().parent.parent
+# Every engine launch below scrubs MDKR* from the inherited environment, which
+# also drops the suite's save pin; since the 1.5.2 per-user save unification an
+# unpinned engine reads the SHARED per-user save. Pin one private directory for
+# the whole run so no arm can read or write the host's real progress.
+HERMETIC_SAVE_DIR = Path(tempfile.mkdtemp(prefix="mdkr-hermetic-save-")) / "save"
+HERMETIC_SAVE_DIR.mkdir()
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT / "tests"))
 
@@ -188,6 +194,7 @@ def main() -> int:
             LC_ALL="C", MDKR_AUDIO="0", MDKR_TRACE="1",
             MDKR_RENDERER="webgpu", MDKR_RENDER_SCALE="1",
             MDKR_VIDEO_CONFIG_PATH=os.devnull,
+            MDKR_SAVE_DIR=str(HERMETIC_SAVE_DIR),
             MDKR_CUSTOM_CHARACTER_DIRECTORY=str(characters),
             MDKR_DUMP_FROM="1538", MDKR_DUMP_EVERY="120",
             MDKR64_HIDDEN="1",

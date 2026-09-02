@@ -21,6 +21,12 @@ from harness_utils import DEFAULT_BUILD_DIR, read_ppm, resolve_binary
 
 
 ROOT = Path(__file__).resolve().parent.parent
+# Every engine launch below scrubs MDKR* from the inherited environment, which
+# also drops the suite's save pin; since the 1.5.2 per-user save unification an
+# unpinned engine reads the SHARED per-user save. Pin one private directory for
+# the whole run so no arm can read or write the host's real progress.
+HERMETIC_SAVE_DIR = Path(tempfile.mkdtemp(prefix="mdkr-hermetic-save-")) / "save"
+HERMETIC_SAVE_DIR.mkdir()
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT / "tests"))
 
@@ -585,6 +591,7 @@ def main() -> int:
                 MDKR_PRESENT_PERF="1",
                 MDKR_RENDERER="webgpu", MDKR_RENDER_SCALE="1",
                 MDKR_VIDEO_CONFIG_PATH=os.devnull,
+                MDKR_SAVE_DIR=str(HERMETIC_SAVE_DIR),
                 MDKR_CUSTOM_CHARACTER_DIRECTORY=str(characters),
                 MDKR_CHARACTER_WORKSHOP_PREVIEW=context,
                 MDKR_CHARACTER_WORKSHOP_PREVIEW_PLAYERS=str(players),
@@ -1339,6 +1346,7 @@ def main() -> int:
             LC_ALL="C", MDKR_AUDIO="0", MDKR_TRACE="1",
             MDKR_PRESENT_PERF="1", MDKR_RENDERER="webgpu",
             MDKR_RENDER_SCALE="1", MDKR_VIDEO_CONFIG_PATH=os.devnull,
+ MDKR_SAVE_DIR=str(HERMETIC_SAVE_DIR),
             MDKR_REMASTER_FX="1", MDKR_WORLD_SHADOW="full",
             MDKR_CUSTOM_CHARACTER_DIRECTORY=str(characters),
             MDKR_CHARACTER_WORKSHOP_PREVIEW="car",
@@ -1434,6 +1442,7 @@ def main() -> int:
             LC_ALL="C", MDKR_AUDIO="0", MDKR_TRACE="1",
             MDKR_PRESENT_PERF="1", MDKR_RENDERER="webgpu",
             MDKR_RENDER_SCALE="1", MDKR_VIDEO_CONFIG_PATH=os.devnull,
+ MDKR_SAVE_DIR=str(HERMETIC_SAVE_DIR),
             MDKR_CUSTOM_CHARACTER_DIRECTORY=str(characters),
             MDKR_CHARACTER_WORKSHOP_PREVIEW="car",
             MDKR_CHARACTER_WORKSHOP_PREVIEW_SCENE="baseline",
@@ -1493,6 +1502,7 @@ def main() -> int:
                 LC_ALL="C", MDKR_AUDIO="0", MDKR_TRACE="1",
                 MDKR_PRESENT_PERF="1", MDKR_RENDERER="webgpu",
                 MDKR_RENDER_SCALE="1", MDKR_VIDEO_CONFIG_PATH=os.devnull,
+ MDKR_SAVE_DIR=str(HERMETIC_SAVE_DIR),
                 MDKR_CUSTOM_CHARACTER_DIRECTORY=str(characters),
                 MDKR_CHARACTER_WORKSHOP_PREVIEW="car",
                 MDKR_CHARACTER_WORKSHOP_PREVIEW_PLAYERS="1",
@@ -1571,6 +1581,7 @@ def main() -> int:
             LC_ALL="C", MDKR_AUDIO="0", MDKR_TRACE="1",
             MDKR_PRESENT_PERF="1", MDKR_RENDERER="webgpu",
             MDKR_RENDER_SCALE="1", MDKR_VIDEO_CONFIG_PATH=os.devnull,
+ MDKR_SAVE_DIR=str(HERMETIC_SAVE_DIR),
             MDKR_CUSTOM_CHARACTER_DIRECTORY=str(characters),
             MDKR_CHARACTER_WORKSHOP_PREVIEW="car",
             MDKR_CHARACTER_WORKSHOP_PREVIEW_PLAYERS="1",
@@ -1780,6 +1791,7 @@ def main() -> int:
             env.update(
                 LC_ALL="C", MDKR_AUDIO="0", MDKR_TRACE="1",
                 MDKR_RENDERER="webgpu", MDKR_VIDEO_CONFIG_PATH=os.devnull,
+ MDKR_SAVE_DIR=str(HERMETIC_SAVE_DIR),
                 MDKR_CUSTOM_CHARACTER_DIRECTORY=str(characters),
                 MDKR_CHARACTER_WORKSHOP_PREVIEW=context,
                 MDKR_CHARACTER_WORKSHOP_PREVIEW_PLAYERS=players,
@@ -1821,6 +1833,7 @@ def main() -> int:
             env.update(
                 LC_ALL="C", MDKR_AUDIO="0", MDKR_TRACE="1",
                 MDKR_RENDERER="webgpu", MDKR_VIDEO_CONFIG_PATH=os.devnull,
+ MDKR_SAVE_DIR=str(HERMETIC_SAVE_DIR),
                 MDKR_CUSTOM_CHARACTER_DIRECTORY=str(characters),
                 MDKR_CHARACTER_WORKSHOP_PREVIEW="car",
                 MDKR_CHARACTER_WORKSHOP_PREVIEW_PLAYERS="1",
@@ -1855,6 +1868,7 @@ def main() -> int:
             LC_ALL="C", MDKR_AUDIO="0", MDKR_TRACE="1",
             MDKR_PRESENT_PERF="1", MDKR_RENDERER="webgpu",
             MDKR_RENDER_SCALE="1", MDKR_VIDEO_CONFIG_PATH=os.devnull,
+ MDKR_SAVE_DIR=str(HERMETIC_SAVE_DIR),
             MDKR_CUSTOM_CHARACTER_DIRECTORY=str(characters),
             MDKR_CHARACTER_WORKSHOP_PREVIEW="car",
             MDKR_CHARACTER_WORKSHOP_PREVIEW_SCENE="baseline",
@@ -2256,6 +2270,7 @@ def main() -> int:
             env.update(
                 LC_ALL="C", MDKR_AUDIO="0", MDKR_TRACE="1",
                 MDKR_RENDERER="webgpu", MDKR_VIDEO_CONFIG_PATH=os.devnull,
+ MDKR_SAVE_DIR=str(HERMETIC_SAVE_DIR),
                 MDKR_CUSTOM_CHARACTER_DIRECTORY=str(characters),
                 MDKR_CHARACTER_WORKSHOP_PREVIEW=context,
                 MDKR_CHARACTER_WORKSHOP_PREVIEW_PLAYERS="1",
