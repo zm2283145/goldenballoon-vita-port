@@ -278,6 +278,10 @@ enum class MdkrMatchPeerLostReason {
     PeerVanished,
 };
 
+/* Stable typed name for a peer-loss reason: the forensics ring stores it as a
+ * fixed-width code so a dump reads without the enum's ordinals. */
+const char *mdkr_match_peer_lost_reason_name(MdkrMatchPeerLostReason reason);
+
 enum class MdkrMatchPeerMeshFailure {
     /* The signal feed reported its terminal failure. Healthy direct
      * channels keep carrying gameplay; only recovery paths are gone. */
@@ -317,6 +321,19 @@ struct MdkrMatchPeerMeshStats {
     uint64_t droppedInternalEvents = 0u;
     /* Public event-queue overflow drops (pump -> drainEvents). */
     uint64_t droppedEvents = 0u;
+};
+
+/* Per-peer link health, diagnosability only. RTT comes from the control ping
+ * ladder (one sample per ping interval) and jitter is its smoothed absolute
+ * change; the byte counters cover both data channels' envelope traffic. */
+struct MdkrMatchPeerLinkStats {
+    uint64_t endpointId = 0u;
+    /* Fixed roster position among the REMOTE peers, in roster order. */
+    unsigned rosterIndex = 0u;
+    uint32_t rttMs = 0u;
+    uint32_t jitterMs = 0u;
+    uint64_t bytesSent = 0u;
+    uint64_t bytesReceived = 0u;
 };
 
 struct MdkrMatchPeerMeshOptions {
@@ -424,6 +441,10 @@ public:
     bool peerChannelsReady(uint64_t peerEndpointId) const;
 
     MdkrMatchPeerMeshStats stats() const;
+
+    /* Copy up to `max` per-peer link snapshots in roster order; returns how
+     * many were written. Launcher thread only, like every accessor. */
+    unsigned linkStats(MdkrMatchPeerLinkStats *out, unsigned max) const;
 
     /* Terminal, idempotent, bounded: closes every peer connection and
      * zeroizes the keyring. Never blocks on a remote peer.

@@ -1,6 +1,7 @@
 #include "online/match_peer_transport.h"
 
 #include "net/match_peer_transcript.h"
+#include "net/net_failure_ring.h"
 #include "party/party_retry_policy.h"
 #include "party/party_webrtc_signaling.h"
 
@@ -157,6 +158,9 @@ struct InternalEvent {
 struct PeerRuntime {
     uint64_t endpointId = 0u;
     uint8_t slotMask = 0u;
+    /* Fixed position among the remote roster peers; the forensics ring indexes
+     * its per-peer stall snapshot by it. */
+    unsigned rosterIndex = 0u;
     uint32_t generation = 0u; /* 0 until welcome/presence names it */
     bool present = false;
     bool offerer = false;
@@ -194,6 +198,15 @@ struct PeerRuntime {
     uint32_t pingNonce = 0u;
     uint64_t nextPingAtMs = 0u;
     uint64_t pingOutstandingSinceMs = 0u;
+
+    /* Link health for the forensics ring. One RTT sample per answered ping;
+     * jitter is the RFC 3550 smoothing of its absolute change, so a single
+     * late pong cannot dominate the figure. Bytes cover both channels. */
+    uint32_t rttMs = 0u;
+    uint32_t jitterMs = 0u;
+    bool haveRtt = false;
+    uint64_t bytesSent = 0u;
+    uint64_t bytesReceived = 0u;
 
     /* Vanish dwell (0 = disarmed): first tick at which this peer was BOTH
      * absent from signaling AND without ready channels. Armed/disarmed by
@@ -259,6 +272,9 @@ struct MdkrMatchPeerMesh::State
     std::mutex queueMutex;
     std::deque<InternalEvent> internalQueue;
     uint64_t droppedInternal = 0u;
+    /* Edge detection for the ring: one record per crossing, not per pump. */
+    bool queuePressured = false;
+    uint64_t queueDroppedSeen = 0u;
 
     ~State() { teardown(/*announcePeerEnd=*/false); }
 
@@ -282,6 +298,12 @@ struct MdkrMatchPeerMesh::State
         event.type = MdkrMatchPeerMeshEventType::Failure;
         event.failure = failure;
         event.failureCode = std::move(failureCode);
+        /* The feed hands its failure code through verbatim and it can name a
+         * relay host, so it reaches the ring through the redaction filter. */
+        mdkr_net_failure_ring_record_host(
+            MDKR_NET_FAILURE_SESSION_FAILURE, static_cast<uint32_t>(now()),
+            MDKR_NET_FAILURE_NO_SLOT, static_cast<unsigned>(failure),
+            event.failureCode.c_str());
         emit(std::move(event));
     }
 
@@ -336,12 +358,33 @@ struct MdkrMatchPeerMesh::State
         }
     }
 
+    /* One RTT sample from an answered ping. Jitter follows RFC 3550's
+     * smoothing (a sixteenth of each deviation), so one late pong moves the
+     * figure without owning it. */
+    static void noteRoundTrip(PeerRuntime &peer, uint64_t elapsedMs) {
+        const uint32_t sample = elapsedMs > UINT32_MAX
+                                    ? UINT32_MAX
+                                    : static_cast<uint32_t>(elapsedMs);
+        if (peer.haveRtt) {
+            const uint32_t deviation = sample > peer.rttMs
+                                           ? sample - peer.rttMs
+                                           : peer.rttMs - sample;
+            peer.jitterMs += (deviation - peer.jitterMs) / 16u;
+        }
+        peer.rttMs = sample;
+        peer.haveRtt = true;
+    }
+
     void peerLost(PeerRuntime &peer, MdkrMatchPeerLostReason reason) {
         if (peer.lost) return;
         MDKR_MESH_LOG(
             "[MESH] peer LOST ep=%llu reason=%d channelsReady=%u offerer=%u\n",
             (unsigned long long)peer.endpointId, static_cast<int>(reason),
             peer.channelsReady ? 1u : 0u, peer.offerer ? 1u : 0u);
+        mdkr_net_failure_ring_record_host(
+            MDKR_NET_FAILURE_PEER_LOST, static_cast<uint32_t>(now()),
+            peer.rosterIndex, static_cast<unsigned>(reason),
+            mdkr_match_peer_lost_reason_name(reason));
         peer.lost = true;
         silentTeardown(peer);
         MdkrMatchPeerMeshEvent event;
@@ -1063,6 +1106,7 @@ struct MdkrMatchPeerMesh::State
     }
 
     void stateData(PeerRuntime &peer, const std::vector<uint8_t> &bytes) {
+        peer.bytesReceived += bytes.size();
         /* Lossy by design: any rejection here is a counted drop, never
          * terminal -- a single bad datagram cannot end a race.
          *
@@ -1092,6 +1136,7 @@ struct MdkrMatchPeerMesh::State
     }
 
     void controlBinary(PeerRuntime &peer, const std::vector<uint8_t> &bytes) {
+        peer.bytesReceived += bytes.size();
         /* The reliable ordered channel never delivers STRUCTURAL garbage:
          * a conforming peer only ever sends 132-byte envelopes here, so a
          * wrong-size frame is terminal. An envelope that fails to OPEN is
@@ -1171,6 +1216,7 @@ struct MdkrMatchPeerMesh::State
             if (type == "pong") {
                 if (peer.pingOutstandingSinceMs != 0u &&
                     nonce == peer.pingNonce) {
+                    noteRoundTrip(peer, now() - peer.pingOutstandingSinceMs);
                     peer.pingOutstandingSinceMs = 0u;
                     peer.nextPingAtMs =
                         now() + kMdkrMatchControlPingIntervalMs;
@@ -1437,14 +1483,41 @@ struct MdkrMatchPeerMesh::State
             handleFeedEvent(event);
         }
         std::deque<InternalEvent> pending;
+        uint64_t dropped;
         {
             std::lock_guard<std::mutex> lock(queueMutex);
             pending.swap(internalQueue);
+            dropped = droppedInternal;
         }
+        /* The callback threads fill the internal queue, so the drop counters
+         * are read (never recorded) off-thread and only compared here, where
+         * the ring has its single writer. */
+        noteQueueDepth(pending.size(), dropped + counters.droppedEvents);
         for (const InternalEvent &event : pending) {
             handleInternal(event);
         }
         tick();
+    }
+
+    /* Pressure crosses at three quarters of the callback queue's bound, which
+     * is the last pump before a burst starts costing events. */
+    void noteQueueDepth(size_t depth, uint64_t dropped) {
+        const size_t pressureAt = kMaxInternalEvents - kMaxInternalEvents / 4u;
+        const bool pressured = depth >= pressureAt;
+        if (pressured && !queuePressured) {
+            mdkr_net_failure_ring_record_host(
+                MDKR_NET_FAILURE_QUEUE_PRESSURE, static_cast<uint32_t>(now()),
+                MDKR_NET_FAILURE_NO_SLOT,
+                static_cast<unsigned>(depth * 100u / kMaxInternalEvents),
+                nullptr);
+        }
+        queuePressured = pressured;
+        if (dropped != queueDroppedSeen) {
+            queueDroppedSeen = dropped;
+            mdkr_net_failure_ring_record_host(
+                MDKR_NET_FAILURE_QUEUE_OVERFLOW, static_cast<uint32_t>(now()),
+                MDKR_NET_FAILURE_NO_SLOT, 0u, nullptr);
+        }
     }
 
     /* ---- Data plane ---------------------------------------------------------*/
@@ -1477,6 +1550,7 @@ struct MdkrMatchPeerMesh::State
                 if (peer.state->send(
                         reinterpret_cast<const std::byte *>(envelope),
                         sizeof(envelope))) {
+                    peer.bytesSent += sizeof(envelope);
                     reached++;
                 }
             } catch (...) {
@@ -1653,6 +1727,7 @@ std::unique_ptr<MdkrMatchPeerMesh> MdkrMatchPeerMesh::create(
         PeerRuntime peer;
         peer.endpointId = owner.endpointId;
         peer.slotMask = owner.slotMask;
+        peer.rosterIndex = static_cast<unsigned>(state->peers.size());
         /* Glare-free by construction: the lower id offers. */
         peer.offerer = options.localEndpointId < owner.endpointId;
         state->peers.emplace(owner.endpointId, std::move(peer));
@@ -1732,11 +1807,48 @@ bool MdkrMatchPeerMesh::peerChannelsReady(uint64_t peerEndpointId) const {
            found->second.channelsReady;
 }
 
+unsigned MdkrMatchPeerMesh::linkStats(
+    MdkrMatchPeerLinkStats *out, unsigned max) const {
+    unsigned written = 0u;
+    if (out == nullptr || !state_) return 0u;
+    for (const auto &entry : state_->peers) {
+        const PeerRuntime &peer = entry.second;
+        if (written >= max) break;
+        out[written].endpointId = peer.endpointId;
+        out[written].rosterIndex = peer.rosterIndex;
+        out[written].rttMs = peer.rttMs;
+        out[written].jitterMs = peer.jitterMs;
+        out[written].bytesSent = peer.bytesSent;
+        out[written].bytesReceived = peer.bytesReceived;
+        written++;
+    }
+    return written;
+}
+
 MdkrMatchPeerMeshStats MdkrMatchPeerMesh::stats() const {
     MdkrMatchPeerMeshStats stats = state_->counters;
     std::lock_guard<std::mutex> lock(state_->queueMutex);
     stats.droppedInternalEvents = state_->droppedInternal;
     return stats;
+}
+
+const char *mdkr_match_peer_lost_reason_name(MdkrMatchPeerLostReason reason) {
+    switch (reason) {
+        case MdkrMatchPeerLostReason::ConnectTimeout: return "connect_timeout";
+        case MdkrMatchPeerLostReason::PingTimeout: return "ping_timeout";
+        case MdkrMatchPeerLostReason::SealWindowExhausted:
+            return "seal_window_exhausted";
+        case MdkrMatchPeerLostReason::ControlChannelViolation:
+            return "control_channel_violation";
+        case MdkrMatchPeerLostReason::CommitmentMismatch:
+            return "commitment_mismatch";
+        case MdkrMatchPeerLostReason::HelloViolation: return "hello_violation";
+        case MdkrMatchPeerLostReason::PeerEnded: return "peer_ended";
+        case MdkrMatchPeerLostReason::TransportFailed:
+            return "transport_failed";
+        case MdkrMatchPeerLostReason::PeerVanished: return "peer_vanished";
+    }
+    return "unknown";
 }
 
 void MdkrMatchPeerMesh::close(bool announcePeerEnd) {

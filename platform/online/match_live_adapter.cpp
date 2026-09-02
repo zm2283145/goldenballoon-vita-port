@@ -52,6 +52,7 @@
 #include "net/net_roster.h"
 #include "net/net_roster_runtime.h"
 #include "session/session_bridge.h"
+#include "net/net_failure_ring.h"
 #include "session/session_core.h"
 
 #include <chrono>
@@ -378,7 +379,13 @@ public:
          * so the announcing close lets each survivor resolve this endpoint as
          * the immediate typed PeerLost(PeerEnded) instead of its loss ladders.
          * Internal mesh rebuilds (forcePhraseRekey) stay silent. */
-        if (mesh_) mesh_->close(/*announcePeerEnd=*/true);
+        if (mesh_) {
+            mesh_->close(/*announcePeerEnd=*/true);
+            mdkr_net_failure_ring_record_host(
+                MDKR_NET_FAILURE_LIFECYCLE, (uint32_t)nowMs_(),
+                MDKR_NET_FAILURE_NO_SLOT, MDKR_NET_LIFECYCLE_MESH_CLOSED,
+                nullptr);
+        }
         mesh_.reset(); /* mesh borrows the backend's feed: kill it first */
         if (opts_.meshBackend) opts_.meshBackend->reset();
     }
@@ -1692,6 +1699,11 @@ private:
         o.nowMs = nowMs_;
         std::string err;
         mesh_ = MdkrMatchPeerMesh::create(o, &err);
+        if (mesh_) {
+            mdkr_net_failure_ring_record_host(
+                MDKR_NET_FAILURE_LIFECYCLE, (uint32_t)nowMs_(),
+                MDKR_NET_FAILURE_NO_SLOT, MDKR_NET_LIFECYCLE_MESH_UP, nullptr);
+        }
         if (!mesh_) {
             MDKR_ONLINE_LOG("[MESH] mesh create FAILED err=%s -> CONNECTION_CHECK\n",
                             err.c_str());
@@ -1916,6 +1928,10 @@ private:
                      * with the walked session. Only in-race losses arm this;
                      * pre-connection losses keep the ordinary lobby input. */
                     if (raceReady_) raceEndFailureLatched_ = true;
+                    /* The mesh already recorded the typed loss; this is the
+                     * one place that knows the session is over, so the tail
+                     * lands here beside the evidence artifact. */
+                    (void)mdkr_net_failure_ring_dump_beside_evidence();
                     MDKR_ONLINE_LOG(
                         "[MESH] peer LOST ep=%llu reason=%d -> failure=%u\n",
                         (unsigned long long)ev.endpointId,
@@ -1933,6 +1949,7 @@ private:
                             "[MESH] mesh failure=%d -> VERIFICATION_MISMATCH\n",
                             static_cast<int>(ev.failure));
                         failure_ = MDKR_ONLINE_VIEW_FAILURE_VERIFICATION_MISMATCH;
+                        (void)mdkr_net_failure_ring_dump_beside_evidence();
                         bump();
                     } else {
                         MDKR_ONLINE_LOG(
@@ -2450,6 +2467,10 @@ private:
         raceReady_ = true;
         if (!raceReadyLogged_) {
             raceReadyLogged_ = true;
+            mdkr_net_failure_ring_record_host(
+                MDKR_NET_FAILURE_LIFECYCLE, (uint32_t)nowMs_(),
+                MDKR_NET_FAILURE_NO_SLOT, MDKR_NET_LIFECYCLE_RACE_ARMED,
+                nullptr);
             MDKR_ONLINE_LOG(
                 "[START] race transport READY epoch=%u firstTick=%u local=0x%02x "
                 "remote=0x%02x -> publishing engine race-boot handoff\n",
@@ -2709,6 +2730,10 @@ public:
      * peer that is already gone simply is not reached. */
     void raceSendAbort() {
         if (mesh_) (void)mesh_->sendRaceAbort();
+        mdkr_net_failure_ring_record_host(
+            MDKR_NET_FAILURE_LIFECYCLE, (uint32_t)nowMs_(),
+            MDKR_NET_FAILURE_NO_SLOT, MDKR_NET_LIFECYCLE_RACE_ENDED, nullptr);
+        (void)mdkr_net_failure_ring_dump_beside_evidence();
     }
 
     /* Seal + fan out this endpoint's local input for `newestTick` and the two
@@ -2764,6 +2789,58 @@ public:
         return true;
     }
 
+    /* The transport's own view of forward progress: the oldest tick every
+     * remote slot has confirmed. A stall is this figure standing still while
+     * the authored tick keeps moving. */
+    uint32_t raceConfirmedThrough() const {
+        uint32_t oldest = 0u;
+        bool have = false;
+        for (unsigned slot = 0u; slot < MDKR_NET_INPUT_SLOTS; ++slot) {
+            if ((raceTransport_.remote_slot_mask & (1u << slot)) == 0u) continue;
+            const uint32_t confirmed =
+                raceTransport_.remote_have_confirmed[slot]
+                    ? raceTransport_.remote_confirmed_through[slot]
+                    : 0u;
+            if (!have || confirmed < oldest) {
+                oldest = confirmed;
+                have = true;
+            }
+        }
+        return oldest;
+    }
+
+    /* Hand the forensics ring one progress observation per authored tick,
+     * stamped with the clock the mesh already samples for its ladders. */
+    void raceNoteProgress(uint32_t tick) {
+        MdkrNetFailureStall snapshot;
+        MdkrMatchPeerLinkStats links[MDKR_NET_FAILURE_PEERS];
+        std::memset(&snapshot, 0, sizeof(snapshot));
+        const unsigned count =
+            mesh_ ? mesh_->linkStats(links, MDKR_NET_FAILURE_PEERS) : 0u;
+        for (unsigned index = 0u; index < count; ++index) {
+            const unsigned peer = links[index].rosterIndex;
+            if (peer >= MDKR_NET_FAILURE_PEERS) continue;
+            snapshot.peers[peer].rtt_ms = links[index].rttMs > UINT16_MAX
+                                              ? UINT16_MAX
+                                              : (uint16_t)links[index].rttMs;
+            snapshot.peers[peer].jitter_ms =
+                links[index].jitterMs > UINT16_MAX
+                    ? UINT16_MAX
+                    : (uint16_t)links[index].jitterMs;
+            snapshot.peers[peer].bytes_sent =
+                (uint32_t)links[index].bytesSent;
+            snapshot.peers[peer].bytes_received =
+                (uint32_t)links[index].bytesReceived;
+        }
+        if (tick == raceFirstTick_) {
+            mdkr_net_failure_ring_record_tick(
+                MDKR_NET_FAILURE_LIFECYCLE, tick, MDKR_NET_FAILURE_NO_SLOT,
+                MDKR_NET_LIFECYCLE_RACE_FIRST_TICK, 0u, 0u);
+        }
+        mdkr_net_failure_ring_progress(
+            tick, (uint32_t)nowMs_(), raceConfirmedThrough(), &snapshot);
+    }
+
     bool raceAdvance() {
         if (!raceReady_ || !mesh_) return false;
         raceSendOwned_ = true; /* production loop shape: sweep may assist */
@@ -2787,6 +2864,7 @@ public:
                                              raceNextTick_, local, localCount)) {
             return false;
         }
+        raceNoteProgress(raceNextTick_);
         ++raceNextTick_;
         return true;
     }
@@ -2815,6 +2893,7 @@ public:
                                              raceNextTick_, local, localCount)) {
             return false;
         }
+        raceNoteProgress(raceNextTick_);
         ++raceNextTick_;
         return true;
     }
