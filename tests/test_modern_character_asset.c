@@ -553,8 +553,8 @@ int main(int argc, char **argv) {
     uint64_t roster_identity_revision[MDKR_MODERN_CHARACTER_PLAYERS];
     uint64_t reference_pose_signatures[12];
 
-    require(argc == 12,
-            "usage: test_modern_character_asset <generated.mdkc> <directory> <source.mdkrchar> <portable.mdkrchar> <install-directory> <corrupt-portable.mdkrchar> <mismatched-portable.mdkrchar> <legacy-portable.mdkrchar> <legacy-v5-portable.mdkrchar> <transaction-fixture-directory> <generated-ktx2.mdkc>");
+    require(argc == 13,
+            "usage: test_modern_character_asset <generated.mdkc> <directory> <source.mdkrchar> <portable.mdkrchar> <install-directory> <corrupt-portable.mdkrchar> <mismatched-portable.mdkrchar> <legacy-portable.mdkrchar> <legacy-v5-portable.mdkrchar> <transaction-fixture-directory> <generated-ktx2.mdkc> <unwritable-install-directory|skip>");
     test_retained_pose_interpolation();
     require(mdkr_modern_character_asset_load_file(argv[1], &asset,
                                                    error, sizeof(error)),
@@ -1427,6 +1427,20 @@ int main(int argc, char **argv) {
             "refused native import never removes another owner's lock");
     require(mdkr_remove_utf8(import_lock) == 0,
             "retire the import witness lock");
+    /* The package snapshot belongs in the destination directory, never in a
+     * process or global temporary folder: on Windows tmpfile() targets the
+     * drive root and fails outright for an ordinary non-admin account. A
+     * destination this process cannot write must therefore stop the import at
+     * the snapshot, with the snapshot's own message, before a single archive
+     * member is read. A snapshot opened elsewhere would sail past this point
+     * and fail later with a publication message instead. */
+    if (strcmp(argv[12], "skip") != 0) {
+        require(!mdkr_modern_character_install_portable(
+                    argv[4], argv[12], &install_result) &&
+                    strcmp(install_result.message,
+                           "character package could not be opened") == 0,
+                "package snapshot is created in the destination directory");
+    }
     require(!mdkr_modern_character_install_portable(
                 argv[6], argv[5], &install_result) &&
                 strstr(install_result.message, "checksum") != NULL,

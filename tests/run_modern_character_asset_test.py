@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
 import struct
 import subprocess
 import sys
@@ -191,6 +192,20 @@ def main() -> int:
         # Inspection is mutation-free even when a downloaded/source directory
         # is read-only. Installation snapshots separately in its writable
         # destination; neither operation relies on a global temporary folder.
+        # A destination the process cannot write proves where the package
+        # snapshot is created: the importer must stop at the snapshot rather
+        # than fall back to a global temporary folder. Only POSIX mode bits
+        # actually deny the write, and root ignores them.
+        unwritable_install = Path(directory) / "unwritable-install-安装"
+        unwritable_install.mkdir()
+        deny_writes = (
+            os.name == "posix" and getattr(os, "geteuid", lambda: 0)() != 0
+        )
+        if deny_writes:
+            unwritable_install.chmod(0o555)
+            unwritable_install_argument = str(unwritable_install)
+        else:
+            unwritable_install_argument = "skip"
         read_only_source = Path(directory) / "read-only-source"
         read_only_source.mkdir()
         read_only_portable = read_only_source / "portable.mdkrchar"
@@ -202,11 +217,14 @@ def main() -> int:
                  str(read_only_portable), str(install_directory),
                  str(corrupt_portable), str(mismatched_portable),
                  str(legacy_portable), str(legacy_v5_portable),
-                 str(fixture_directory), str(ktx_cache)],
+                 str(fixture_directory), str(ktx_cache),
+                 unwritable_install_argument],
                 check=False, text=True
             )
         finally:
             read_only_source.chmod(0o755)
+            if deny_writes:
+                unwritable_install.chmod(0o755)
         snapshot_leftovers = [
             path for path in Path(directory).rglob("*")
             if ".snapshot.tmp." in path.name
