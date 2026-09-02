@@ -93,7 +93,8 @@ static bool key_context_equal(const MdkrMatchPeerKeyContext *left,
            left->source_endpoint_id == right->source_endpoint_id &&
            left->source_generation == right->source_generation &&
            left->destination_endpoint_id == right->destination_endpoint_id &&
-           left->destination_generation == right->destination_generation;
+           left->destination_generation == right->destination_generation &&
+           left->lane == right->lane;
 }
 
 static bool fragment_context_valid(
@@ -768,6 +769,7 @@ bool mdkr_match_preflight_fragment_state_init(
         authenticated_direction->destination_endpoint_id;
     next.direction.destination_generation =
         authenticated_direction->destination_generation;
+    next.direction.lane = authenticated_direction->lane;
     *state = next;
     return true;
 }

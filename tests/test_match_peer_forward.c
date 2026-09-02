@@ -14,7 +14,7 @@ int main(void) {
     MdkrMatchPeerForwarder forwarder;
     MdkrMatchPeerForwarder before;
     MdkrMatchPeerEnvelopeContext context = {
-        {9u, 400u, 1u, 200u, 4u}, 100u, 1u,
+        {9u, 400u, 1u, 200u, 4u, MDKR_MATCH_PEER_LANE_STATE}, 100u, 1u,
         MDKR_MATCH_PEER_PAYLOAD_INPUT};
     assert(mdkr_match_peer_graph_init(&graph, 9u, endpoints, 4u));
     assert(mdkr_match_peer_graph_admissible(&graph));

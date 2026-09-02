@@ -236,7 +236,8 @@ function directionEqual(left, right) {
     left.sourceEndpointId === right.sourceEndpointId &&
     left.sourceGeneration === right.sourceGeneration &&
     left.destinationEndpointId === right.destinationEndpointId &&
-    left.destinationGeneration === right.destinationGeneration;
+    left.destinationGeneration === right.destinationGeneration &&
+    left.lane === right.lane;
 }
 
 function fragmentContextValid(value) {
@@ -254,7 +255,8 @@ export function createMatchPreflightFragmentState(authenticatedDirection) {
     sourceEndpointId: authenticatedDirection.sourceEndpointId,
     sourceGeneration: authenticatedDirection.sourceGeneration,
     destinationEndpointId: authenticatedDirection.destinationEndpointId,
-    destinationGeneration: authenticatedDirection.destinationGeneration};
+    destinationGeneration: authenticatedDirection.destinationGeneration,
+    lane: authenticatedDirection.lane};
   const state = {sequence: 0, presentMask: 0,
     encoded: new Uint8Array(MATCH_PREFLIGHT_ATTESTATION_BYTES)};
   Object.defineProperty(state, "direction", {value: Object.freeze(direction),

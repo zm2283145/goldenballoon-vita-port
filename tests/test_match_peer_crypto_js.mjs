@@ -4,7 +4,9 @@ import {createMatchPeerIdentity, createMatchPeerReplayWindow,
   deriveMatchPeerKey,
   deriveMatchPeerKeyFromIdentity, digestMatchPeerTranscript,
   forgetMatchPeerIdentity, forgetMatchPeerKey, inspectMatchPeerEnvelope,
-  matchPeerCommitment, MATCH_PEER_COMMIT_BYTES,
+  matchPeerCommitment, MATCH_PEER_COMMIT_BYTES, MATCH_PEER_LANE_AUTHORITY,
+  MATCH_PEER_PAYLOAD_TYPE_MAX,
+  MATCH_PEER_LANE_CONTROL, MATCH_PEER_LANE_STATE,
   MATCH_PEER_PAYLOAD_PREFLIGHT_FRAGMENT, MATCH_PEER_VERSION,
   matchPeerVerificationPhrase, openMatchPeerEnvelope, sealMatchPeerEnvelope,
   verifyMatchPeerCommitment}
@@ -18,11 +20,12 @@ const directionOf = value => ({matchEpoch: value.matchEpoch,
   sourceEndpointId: value.sourceEndpointId,
   sourceGeneration: value.sourceGeneration,
   destinationEndpointId: value.destinationEndpointId,
-  destinationGeneration: value.destinationGeneration});
+  destinationGeneration: value.destinationGeneration, lane: value.lane});
 async function sealForgedEnvelope(key, forged, sequence = 1n) {
   const aad = new Uint8Array(52);
   aad.set([0x4d, 0x50, 0x45, 0x31, MATCH_PEER_VERSION,
-    forged.intermediateEndpointId === 0n ? 0 : 1, forged.payloadType, 0]);
+    forged.intermediateEndpointId === 0n ? 0 : 1, forged.payloadType,
+    forged.lane]);
   const view = new DataView(aad.buffer);
   view.setUint32(8, forged.matchEpoch, false);
   view.setBigUint64(12, forged.sourceEndpointId, false);
@@ -42,17 +45,17 @@ async function sealForgedEnvelope(key, forged, sequence = 1n) {
   envelope.set(encrypted, 52);
   return envelope;
 }
-const envelopeHex = "4d50453102010000000000070000000000000064000000020000000000000190" +
-  "0000000900000000000000c80000000000000001f51c2e8a849b8a8e48aba590" +
-  "238f4b4a42ad2017043dc723841ce6955caad4ecea6dddd15df2e07494afc0d9" +
-  "3024366db9095a0a4219bda447fa73d765b1b9dbf5db7ea7551bfa70d48b88e2" +
-  "0d6b4386";
+const envelopeHex = "4d50453103010000000000070000000000000064000000020000000000000190" +
+  "0000000900000000000000c800000000000000015c683234ec69750130b498cf" +
+  "3c618694ed9af12fa3bb8ab136d34f674dc0aa748dd616515e2ecb34cf7c9e04" +
+  "fca1f1e7d12bd10aff80170df565622465aa0bfc29fed8440c1297081393c05c" +
+  "9b03956c";
 const secret = Uint8Array.from({length: 32}, (_, index) => index);
 const transcript = Uint8Array.from({length: 32}, (_, index) => 0xa0 + index);
 const payload = Uint8Array.from({length: 64}, (_, index) => 0x40 + index);
 const context = {matchEpoch: 7, sourceEndpointId: 100n, sourceGeneration: 2,
   destinationEndpointId: 400n, destinationGeneration: 9,
-  intermediateEndpointId: 200n, payloadType: 0};
+  lane: MATCH_PEER_LANE_STATE, intermediateEndpointId: 200n, payloadType: 0};
 const expectedDirection = directionOf(context);
 const compatibility = {protocolVersion: 1,
   buildId: Uint8Array.from({length: 16}, (_, index) => index + 1),
@@ -166,7 +169,8 @@ assert.equal(rederived.sealWindow, sealWindow,
   "a repeated derivation must share one seal window");
 assert.equal(key.key.handle.extractable, false);
 await assert.rejects(() => sealMatchPeerEnvelope(
-  key, {...context, payloadType: 2}, payload, webcrypto),
+  key, {...context, payloadType: MATCH_PEER_PAYLOAD_TYPE_MAX + 1},
+  payload, webcrypto),
   /invalid match peer envelope/);
 assert.equal(sealWindow.nextSequence, 1n);
 await assert.rejects(() => sealMatchPeerEnvelope(
@@ -349,5 +353,45 @@ assert.equal(inspectMatchPeerEnvelope(downgraded), null,
 assert.equal((await openMatchPeerEnvelope(key, expectedDirection,
   createMatchPeerReplayWindow(), downgraded, webcrypto)).result, "invalid",
 "a v1 envelope must fail closed before decryption, not as an auth failure");
+
+// Three lanes, one direction: the state, control and authority channels each
+// derive their own key and therefore their own nonce sequence. Sealing on one
+// lane advances only that lane's window, and an envelope is refused by every
+// other lane's key, so nothing can be spliced from one channel to another.
+{
+  const laneNames = [MATCH_PEER_LANE_STATE, MATCH_PEER_LANE_CONTROL,
+    MATCH_PEER_LANE_AUTHORITY];
+  const laneRecords = [];
+  for (const lane of laneNames) {
+    laneRecords.push(await deriveMatchPeerKey(secret, transcript,
+      {...context, lane}, webcrypto));
+  }
+  for (let index = 0; index < laneRecords.length; ++index) {
+    for (let other = index + 1; other < laneRecords.length; ++other) {
+      assert.notEqual(laneRecords[index], laneRecords[other],
+        "each lane must derive its own key record");
+    }
+  }
+  // The state lane's record is the one this file has been sealing on all
+  // along, so compare each window against its own baseline rather than 1.
+  const laneBase = laneRecords.map(record => record.sealWindow.nextSequence);
+  for (let index = 0; index < laneRecords.length; ++index) {
+    const lane = laneNames[index];
+    const laneEnvelope = await sealMatchPeerEnvelope(laneRecords[index],
+      {...context, lane}, payload, webcrypto);
+    laneRecords.forEach((record, other) => {
+      assert.equal(record.sealWindow.nextSequence - laneBase[other],
+        other <= index ? 1n : 0n,
+        "a seal must advance only its own lane's window");
+    });
+    for (let other = 0; other < laneRecords.length; ++other) {
+      const expectedLane = {...expectedDirection, lane: laneNames[other]};
+      const result = await openMatchPeerEnvelope(laneRecords[other],
+        expectedLane, createMatchPeerReplayWindow(), laneEnvelope, webcrypto);
+      assert.equal(result.result, other === index ? "ok" : "wrong_lane");
+    }
+  }
+  laneRecords.forEach(forgetMatchPeerKey);
+}
 
 console.log("test_match_peer_crypto_js: PASS");

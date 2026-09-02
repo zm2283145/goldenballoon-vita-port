@@ -14,12 +14,13 @@
 
 namespace {
 constexpr uint8_t kMagic[4] = {'M', 'P', 'E', '1'};
-/* v2 is the committed-transcript protocol. A v1 envelope is rejected by
- * readHeader before decryption, so a peer that predates the key-commitment
- * round fails closed at the first byte rather than negotiating down to the
- * grindable phrase. */
-constexpr uint8_t kVersion = 2u;
-constexpr char kKeyDomain[] = "golden-balloon-match-input-key-v2";
+/* v3 carries the channel lane in the authenticated header. v2 (committed
+ * transcript, one key shared by the state and control channels) and v1 (before
+ * the key-commitment round) are both rejected by readHeader before decryption,
+ * so a peer that predates either round fails closed at the first byte rather
+ * than negotiating down to a shared nonce space or a grindable phrase. */
+constexpr uint8_t kVersion = 3u;
+constexpr char kKeyDomain[] = "golden-balloon-match-lane-key-v3";
 
 void store32(uint8_t *out, uint32_t value) {
     out[0] = static_cast<uint8_t>(value >> 24u);
@@ -51,6 +52,7 @@ bool keyContextValid(const MdkrMatchPeerKeyContext *context) {
         context->source_endpoint_id != 0u && context->source_generation != 0u &&
         context->destination_endpoint_id != 0u &&
         context->destination_generation != 0u &&
+        context->lane <= MDKR_MATCH_PEER_LANE_MAX &&
         context->source_endpoint_id != context->destination_endpoint_id;
 }
 
@@ -60,7 +62,8 @@ bool keyContextEqual(const MdkrMatchPeerKeyContext &left,
         left.source_endpoint_id == right.source_endpoint_id &&
         left.source_generation == right.source_generation &&
         left.destination_endpoint_id == right.destination_endpoint_id &&
-        left.destination_generation == right.destination_generation;
+        left.destination_generation == right.destination_generation &&
+        left.lane == right.lane;
 }
 
 bool sendContextValid(const MdkrMatchPeerSendContext *context) {
@@ -93,6 +96,7 @@ void writeHeader(const MdkrMatchPeerEnvelopeContext &context, uint8_t *out) {
     out[4] = kVersion;
     out[5] = context.intermediate_endpoint_id == 0u ? 0u : 1u;
     out[6] = context.payload_type;
+    out[7] = context.key.lane;
     store32(out + 8u, context.key.match_epoch);
     store64(out + 12u, context.key.source_endpoint_id);
     store32(out + 20u, context.key.source_generation);
@@ -105,8 +109,9 @@ void writeHeader(const MdkrMatchPeerEnvelopeContext &context, uint8_t *out) {
 bool readHeader(const uint8_t *in, MdkrMatchPeerEnvelopeContext &context) {
     if (std::memcmp(in, kMagic, sizeof(kMagic)) != 0 || in[4] != kVersion ||
         in[5] > 1u || in[6] > MDKR_MATCH_PEER_PAYLOAD_TYPE_MAX ||
-        in[7] != 0u) return false;
+        in[7] > MDKR_MATCH_PEER_LANE_MAX) return false;
     std::memset(&context, 0, sizeof(context));
+    context.key.lane = in[7];
     context.key.match_epoch = load32(in + 8u);
     context.key.source_endpoint_id = load64(in + 12u);
     context.key.source_generation = load32(in + 20u);
@@ -287,7 +292,7 @@ extern "C" MdkrMatchPeerSealingKey *mdkr_match_peer_derive_key(
     const uint8_t shared_secret[MDKR_MATCH_PEER_SECRET_BYTES],
     const uint8_t transcript_digest[MDKR_MATCH_PEER_TRANSCRIPT_BYTES],
     const MdkrMatchPeerKeyContext *context) {
-    std::array<uint8_t, sizeof(kKeyDomain) - 1u + 28u> info{};
+    std::array<uint8_t, sizeof(kKeyDomain) - 1u + 29u> info{};
     std::array<uint8_t, MDKR_MATCH_PEER_KEY_BYTES> next{};
     std::array<uint8_t, MDKR_MATCH_PEER_FINGERPRINT_BYTES> fingerprint{};
     MdkrMatchPeerSealingKey *slot = nullptr;
@@ -299,7 +304,8 @@ extern "C" MdkrMatchPeerSealingKey *mdkr_match_peer_derive_key(
     store64(info.data() + offset, context->source_endpoint_id); offset += 8u;
     store32(info.data() + offset, context->source_generation); offset += 4u;
     store64(info.data() + offset, context->destination_endpoint_id); offset += 8u;
-    store32(info.data() + offset, context->destination_generation);
+    store32(info.data() + offset, context->destination_generation); offset += 4u;
+    info[offset] = context->lane;
     if (!keyFingerprint(shared_secret, transcript_digest, info.data(),
                         info.size(), fingerprint.data())) return nullptr;
     for (unsigned index = 0u; index < MDKR_MATCH_PEER_KEYRING_SLOTS; ++index) {
@@ -435,6 +441,12 @@ extern "C" MdkrMatchPeerCryptoResult mdkr_match_peer_open(
         parsed.key.destination_generation !=
             expected_context->destination_generation)
         return MDKR_MATCH_PEER_CRYPTO_STALE_GENERATION;
+    /* Each lane holds a different key, so a spliced datagram would already
+     * fail the tag. Checking the header first turns that into a typed verdict
+     * the transport can count as a cross-channel splice rather than as
+     * indistinguishable garbage. */
+    if (parsed.key.lane != expected_context->lane)
+        return MDKR_MATCH_PEER_CRYPTO_WRONG_LANE;
     nonce(parsed, iv);
     mbedtls_gcm_init(&cipher);
     result = mbedtls_gcm_setkey(
