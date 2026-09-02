@@ -1114,6 +1114,13 @@ int mdkr_modern_characters_init(const char *directory) {
         strlen(playable) < sizeof(s_playable_list)) {
         memcpy(s_playable_list, playable, strlen(playable) + 1u);
     }
+    /* Ruling R28: direct launch admitting every enabled installed package is
+     * intended developer behaviour, not a bypass to close. The launcher's
+     * playability filter chooses what to offer; it is not the admission
+     * boundary. Admission is the structural validation each package already
+     * passed on load, which runs the same either way. Do not "fix" this by
+     * refusing packages when no launcher supplied a filter.
+     * See docs/architecture/custom-character-pipeline.md. */
     if (!s_playable_filter_active && s_registry.count != 0) {
         fprintf(stderr,
                 "[modern-character] launcher playability filter inactive; "

@@ -834,6 +834,15 @@ invalid packages remain excluded. This is a local development convenience, not
 a second product admission policy and not a fail-open path used by packaged
 launcher play.
 
+Ruling R28 settles this for good: launching the game directly with a custom
+character package, bypassing the Workshop, is intended developer behaviour, not
+a bypass to close. Reports that direct launch "skips the Workshop gate" describe
+the design. The Workshop filter is a launcher-side convenience for choosing what
+to play, not the admission boundary; admission is the structural validation
+every package passes on load, and that runs identically in both modes. Nothing
+should be added to make direct launch refuse a package the launcher would have
+filtered.
+
 The source contract accepts embedded PNG and the exact ordinary 2D
 `KHR_texture_basisu` profile. KTX2 inputs retain their authored mip chain and
 are bounded and color-role checked offline, then independently authenticated by
