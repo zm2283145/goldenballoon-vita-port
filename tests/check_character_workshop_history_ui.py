@@ -65,52 +65,60 @@ def verify_workshop_ux_contract() -> None:
 
     The routes below speak every focusable control, so the readiness links,
     the vehicle echo and the deletion confirmation are proven by what the
-    binary said. Static paragraphs, a tab-bar flag and a keyboard route are
+    binary said. Static paragraphs, a keyboard chord and a tab-bar flag are
     not focusable and would survive their own deletion silently.
+
+    Player-facing strings are matched literally -- changing one is the change
+    this is here to notice. The two structural patterns allow any whitespace,
+    so reformatting the call cannot fail the gate.
     """
 
     source = (ROOT / "platform" / "app" / "ui_settings.cpp").read_text(
         encoding="utf-8"
     )
-    for marker, lost in (
+    text = re.escape
+    for pattern, lost in (
         # The compact layout reaches the off-screen tabs through the tab bar's
         # own popup button, and the UX trace reads the same helper.
-        ("ImGuiTabBarFlags_TabListPopupButton",
+        (text("ImGuiTabBarFlags_TabListPopupButton"),
          "the compact tab bar dropped its full-list popup button"),
-        ("characterWorkshopTabBarFlags(compact))",
+        (r"BeginTabBar\(\s*\"##character-workshop-tabs\",\s*"
+         r"characterWorkshopTabBarFlags\(compact\)\)",
          "the tab bar stopped sharing its flags with the UX trace"),
-        # A later success must not erase the failure before it.
-        ('ImGui::SeparatorText("Recent activity")',
+        # A later success must not erase the failure before it, and the depth
+        # the trace reports has to be the depth the stack keeps.
+        (text('ImGui::SeparatorText("Recent activity")'),
          "the Workshop lost its recent-status stack"),
-        ("g_workshopStatusHistory.resize(kWorkshopStatusHistoryLimit)",
-         "the status stack stopped honouring its own depth"),
+        (r"g_workshopStatusHistory\.resize\(\s*"
+         r"kWorkshopStatusHistoryLimit\s*\)",
+         "the status stack stopped honouring the depth it reports"),
         # Undo belongs to the tool on screen, and an active text field keeps
         # its native chord.
-        ("ImGuiInputFlags_RouteFocused",
+        (text("ImGuiInputFlags_RouteFocused"),
          "the history chords stopped yielding to a focused editor"),
-        ("ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Z",
+        (r"ImGui::Shortcut\(\s*ImGuiMod_Ctrl \| ImGuiKey_Z",
          "the visible tool lost its undo chord"),
-        ("ImGui::Shortcut(\n            ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z",
+        (r"ImGui::Shortcut\(\s*ImGuiMod_Ctrl \| ImGuiMod_Shift \| ImGuiKey_Z",
          "the visible tool lost its redo chord"),
         # One name for the vehicle workspace, in the header line and in the
         # Package tab's echo. The speech walk below reports the friendly name
         # of each control, not the words on it.
-        ('readiness.nextActionLabel + " \u00b7 in " +',
+        (text('readiness.nextActionLabel + " \u00b7 in " +'),
          "the header next step stopped naming the workspace it opens"),
-        ('ImGui::SmallButton("Change in Offset Studio")',
+        (text('ImGui::SmallButton("Change in Offset Studio")'),
          "the Package tab's vehicle echo stopped naming Offset Studio"),
         # Plain-language fit status and the two input-expectation lines.
-        ('"Fit check: Character Select %s \u00b7 %u of %u vehicles reviewed '
-         'since your last change"',
+        (text('"Fit check: Character Select %s \u00b7 %u of %u vehicles '
+              'reviewed since your last change"'),
          "the Offset Studio fit status left plain language"),
-        ('"A keyboard is required to enter source paths, names, and license '
-         'details. Assigning, enabling, and testing an installed character is '
-         'fully navigable with a controller."',
+        (text('"A keyboard is required to enter source paths, names, and '
+              'license details. Assigning, enabling, and testing an installed '
+              'character is fully navigable with a controller."'),
          "the Workshop stopped saying which parts need a keyboard"),
-        ('"Player N = controller port N for local multiplayer."',
+        (text('"Player N = controller port N for local multiplayer."'),
          "the assignment rows stopped mapping players to controller ports"),
     ):
-        if marker not in source:
+        if re.search(pattern, source) is None:
             raise RuntimeError(lost)
 
 
@@ -320,6 +328,15 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
         "MDKR64_HIDDEN": "1",
         "MDKR_AUDIO": "0",
     })
+    if tab == "overview":
+        # One real Workshop operation, so the recent-status stack has
+        # something to keep and acknowledge. It reads private recovery
+        # metadata only and installs nothing.
+        environment.update({
+            "MDKR_APP_SMOKE_CHARACTER_RECOVERY_ACTION": "check",
+            "MDKR_APP_SMOKE_CHARACTER_RECOVERY_TOKEN":
+                "mdkr64-character-recovery-v1",
+        })
     if accessible:
         environment.update({
             "MDKR_APP_SMOKE_A11Y_WALK": "1",
@@ -346,14 +363,16 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
     expected_layout = "compact" if accessible else "wide"
     expected_scale = "2.0" if accessible else "1.0"
     expected_popup = "1" if accessible else "0"
+    # Only the computed fields and the four un-gated P1/P4/P5 route names
+    # remain here. The readiness links, header next step, undo scoping,
+    # vehicle echo, deletion policy, controller-port line and keyboard notice
+    # are asserted below from what the binary rendered or from the source that
+    # draws them -- not from a literal this same print emits.
     ux_marker = (
         "character-workshop-ux "
         f"layout={expected_layout} scale={expected_scale} "
-        f"tab-list-popup={expected_popup} "
-        "readiness-row-links=1 header-next=1 status-history=3 "
-        "undo=visible-tool library-next=1 rig-band=1 overlay-guidance=1 "
-        "vehicle-fit-use=1 delete=name-or-id+hold controller-port=1 "
-        "keyboard-authoring=required "
+        f"tab-list-popup={expected_popup} status-history=3 "
+        "library-next=1 rig-band=1 overlay-guidance=1 "
         "pad-play-setup=complete"
     )
     if ux_marker not in process.stdout:
@@ -446,6 +465,13 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
                     "Overview lost a readiness jump-link: " + spoken + "\n"
                     + process.stdout[-8000:]
                 )
+        # The recovery check above reports through setStatus; its message has
+        # to survive in the stack with a reachable way to dismiss it.
+        if "text=Acknowledge Workshop message, " not in process.stdout:
+            raise RuntimeError(
+                "the Workshop status stack kept no acknowledgeable message "
+                "after a real operation\n" + process.stdout[-8000:]
+            )
     if tab == "package":
         # One name for the vehicle workspace, and the Package tab echoes the
         # choice it does not own.

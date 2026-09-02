@@ -5629,13 +5629,20 @@ This WebGPU gate generates and installs an isolated CC0 fixture, then opens the
 exact saved Overview, Package, Identity, Rig & Motion, Gameplay, Offset Studio,
 Performance, and Test tabs. The 200% Overview route requires each unfinished
 readiness area and the header next step to announce the workspace they open,
-and the Package route requires the vehicle echo to name Offset Studio; no tab
-may render another tab's undo/redo controls. Static Workshop copy no speech
-walk can report -- the recent-status stack and its depth, the focused-route
-undo chords, the plain-language fit status, the keyboard/controller
-expectation, and the player-to-controller-port line -- is pinned against
-ui_settings.cpp. Positive control: renaming any of them, or lowering the
-status depth, fails the gate. It requires source-digest-bound history controls for Identity, Profile,
+a real Workshop operation to leave an acknowledgeable message in the recent-
+status stack, and the Package route requires the vehicle echo to name Offset
+Studio; no tab may render another tab's undo/redo controls. The
+`character-workshop-ux` line reports only what it computes -- layout, the
+tab-bar popup flag read from the helper the tab bar uses, and the depth the
+status stack keeps -- plus four route names for the un-gated P1/P4/P5 polish
+items. Static Workshop copy no speech walk can report -- the recent-status
+separator, the focused-route undo chords, the plain-language fit status, the
+keyboard/controller expectation, and the player-to-controller-port line -- is
+pinned against ui_settings.cpp, literally for the player-facing strings and by
+whitespace-insensitive pattern for the two structural ones. Positive control:
+renaming any of them, dropping a readiness button, or lowering the status
+depth fails the gate.
+It requires source-digest-bound history controls for Identity, Profile,
 Rig, Fit/review, Performance assembly, and Test setup, and verifies that merely
 rendering every route leaves the installed source and cache byte-for-byte
 unchanged. The 200% keyboard/speech Gameplay route additionally requires all
@@ -5718,9 +5725,15 @@ speech walk must announce the consequential controls, and both arms must leave
 installed source/cache bytes unchanged. The same arm collects every non-ASCII
 codepoint written in a `platform/app` string literal and requires the live
 atlas to draw all of them: the app never consults a host font, so a codepoint
-outside the embedded subset is a tofu box on every machine. Positive control:
-putting a `\u2192` back into any launcher string reports it as missing and
-fails the gate. Pure `character_portrait_studio` and
+outside the embedded subset is a tofu box on every machine. The scan decodes
+the literal rather than reading its source characters, so a codepoint written
+as `\u2192`, `\U00002192` or as the UTF-8 byte run `\xE2\x86\x92` counts the
+same as a pasted arrow -- the byte form is already used in the tree for the
+bullet in `ui_overlay.cpp`. It is deliberately naive about context: a literal
+on a commented-out line still counts, because one extra probe is cheaper than
+a tokenizer whose bugs would be silent passes. Positive control: an arrow put
+back into any launcher string in any of those four spellings reports
+`missing=2192` and fails the gate. Pure `character_portrait_studio` and
 `character_draft_snapshot` tests prove CRC and APNG refusal, mutation-free decode
 failure, image operations, bounded provenance recipes, deterministic output,
 analysis, opaque background compositing and deterministic screening transforms,

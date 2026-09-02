@@ -27300,13 +27300,16 @@ bool drawCustomCharactersSection(bool compact) {
         const std::string traceKey = std::string(compact ? "compact" : "wide") +
             (AppTheme::uiScale() >= 1.99f ? "-200" : "-standard");
         if (tracedWorkshopUx.insert(traceKey).second) {
-            /* Two of these claims are read out of the state that produces
-             * them: the tab-bar flag comes from the same helper the tab bar
-             * uses, and the history depth is the cap setStatus enforces. A
-             * literal would stay green after either was deleted. */
+            /* Layout, the tab-bar flag and the history depth are read out of
+             * the state that produces them; a literal would stay green after
+             * any of the three was deleted. The four names that follow are
+             * route residue for the P1/P4/P5 polish items, which no gate
+             * covers yet: they say the section drew, nothing more. Every
+             * other surface this line used to list is now asserted from its
+             * rendered control or from the source that draws it. */
             std::fprintf(
                 stderr,
-                "[app-ui] character-workshop-ux layout=%s scale=%.1f tab-list-popup=%d readiness-row-links=1 header-next=1 status-history=%zu undo=visible-tool library-next=1 rig-band=1 overlay-guidance=1 vehicle-fit-use=1 delete=name-or-id+hold controller-port=1 keyboard-authoring=required pad-play-setup=complete\n",
+                "[app-ui] character-workshop-ux layout=%s scale=%.1f tab-list-popup=%d status-history=%zu library-next=1 rig-band=1 overlay-guidance=1 pad-play-setup=complete\n",
                 compact ? "compact" : "wide",
                 static_cast<double>(AppTheme::uiScale()),
                 (characterWorkshopTabBarFlags(compact) &

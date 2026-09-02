@@ -24,6 +24,71 @@ from check_character_workshop_history_ui import install_fixture  # noqa: E402
 PACKAGE_ID = "org.mdkr.history-proof"
 
 STRING_LITERAL = re.compile(r'"((?:[^"\\\n]|\\.)*)"')
+ESCAPE = re.compile(
+    r"\\(?:x([0-9a-fA-F]+)|u([0-9a-fA-F]{4})|U([0-9a-fA-F]{8})"
+    r"|([0-7]{1,3})|(.))",
+    re.DOTALL,
+)
+
+
+def literal_codepoints(literal: str) -> set[int]:
+    """Decode one C string literal to the codepoints it puts on screen.
+
+    A literal reaches the font three ways: as source text ("\u00b7"), as a
+    universal-character escape, or as a run of UTF-8 byte escapes -- the tree
+    writes U+2022 both ways (ui_overlay.cpp uses the byte form). Reading the
+    source characters alone would see only ASCII in the last two and report a
+    tofu glyph as covered.
+    """
+
+    codepoints: set[int] = set()
+    pending = bytearray()
+
+    def flush() -> None:
+        if not pending:
+            return
+        try:
+            text = pending.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise RuntimeError(
+                f"undecodable byte escape run in {literal!r}: {error}"
+            ) from error
+        codepoints.update(
+            ord(character) for character in text if ord(character) > 0x7F
+        )
+        pending.clear()
+
+    position = 0
+    for escape in ESCAPE.finditer(literal):
+        for character in literal[position:escape.start()]:
+            if ord(character) > 0x7F:
+                flush()
+                codepoints.add(ord(character))
+            else:
+                flush()
+        position = escape.end()
+        hex_bytes, short, long, octal, simple = escape.groups()
+        if hex_bytes is not None:
+            pending.append(int(hex_bytes, 16) & 0xFF)
+        elif octal is not None:
+            pending.append(int(octal, 8) & 0xFF)
+        elif short is not None or long is not None:
+            flush()
+            codepoint = int(short if short is not None else long, 16)
+            if codepoint > 0x7F:
+                codepoints.add(codepoint)
+        else:
+            flush()
+            if simple is not None and ord(simple) > 0x7F:
+                codepoints.add(ord(simple))
+    for character in literal[position:]:
+        if ord(character) > 0x7F:
+            flush()
+            codepoints.add(ord(character))
+        else:
+            flush()
+    flush()
+    return codepoints
 
 
 def app_string_codepoints() -> tuple[int, ...]:
@@ -33,6 +98,10 @@ def app_string_codepoints() -> tuple[int, ...]:
     omits is a box on every machine -- the "->" tofu class. Scanning the
     literals here and probing them in the live atlas below catches the next
     one at the commit that writes it.
+
+    The scan is deliberately naive about context: a literal inside a commented
+    -out line still counts. Probing one extra codepoint costs nothing, and the
+    alternative is a C tokenizer whose bugs would be silent passes.
     """
 
     codepoints: set[int] = set()
@@ -40,10 +109,7 @@ def app_string_codepoints() -> tuple[int, ...]:
     for path in sorted(directory.glob("*.cpp")) + sorted(directory.glob("*.h")):
         source = path.read_text(encoding="utf-8")
         for literal in STRING_LITERAL.finditer(source):
-            codepoints.update(
-                ord(character) for character in literal.group(1)
-                if ord(character) > 0x7F
-            )
+            codepoints |= literal_codepoints(literal.group(1))
     return tuple(sorted(codepoints))
 
 
