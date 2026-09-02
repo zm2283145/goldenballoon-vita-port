@@ -127,6 +127,32 @@ def main() -> int:
     if '"NO ART", ALIGN_MIDDLE_CENTER' not in menu_source:
         failures.append("missing portrait does not disclose NO ART in the roster")
 
+    # The launcher room screen no longer chooses characters, so the online
+    # appearance disclosure has to live on the select screen. An online match
+    # cannot be driven from this offline gate -- the roster runtime is armed by
+    # a validated match manifest, with no env override -- so the seam is pinned
+    # in source, the way the preview guard and NO ART arms above are.
+    seats_start = menu_source.find("s32 customSeats = 0;")
+    seats_end = menu_source.find('"R: CUSTOM RACERS"', seats_start)
+    if seats_start < 0 or seats_end < 0:
+        failures.append("custom seat name row seam is unavailable")
+    else:
+        seat_source = menu_source[seats_start:seats_end]
+        disclosure = '"LOCAL LOOK ONLY - OTHERS SEE BUILT-IN RACER"'
+        if disclosure not in seat_source:
+            failures.append(
+                "online seats do not disclose that the appearance is local"
+            )
+        elif not (0 <= seat_source.find("mdkr_net_roster_runtime_active()")
+                  < seat_source.find(disclosure)):
+            failures.append(
+                "local-appearance disclosure is not gated on an online session"
+            )
+        elif "customSeats > 0" not in seat_source:
+            failures.append(
+                "local-appearance disclosure is drawn without a custom pick"
+            )
+
     ok, output = command_ok([
         sys.executable, str(ROOT / "tools" / "character_asset_probe.py"),
         "pack", "--model", str(model), "--manifest", str(manifest_path),

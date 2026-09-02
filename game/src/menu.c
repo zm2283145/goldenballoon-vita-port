@@ -9934,6 +9934,7 @@ void charselect_render_text(UNUSED s32 updateRate) {
         } else if (sCustomCharacterRoster.count > 0 &&
                    gNumberOfReadyPlayers < gNumberOfActivePlayers) {
             s32 player;
+            s32 customSeats = 0;
             char playerLabel[4];
             char selectedName[MDKR_MODERN_CHARACTER_NAME_MAX];
             set_text_font(ASSET_FONTS_FUNFONT);
@@ -9951,6 +9952,7 @@ void charselect_render_text(UNUSED s32 updateRate) {
                     continue;
                 }
                 item = &sCustomCharacterRoster.items[selection];
+                customSeats++;
                 cellLeft = player * (SCREEN_WIDTH / MAXCONTROLLERS);
                 /* Portraits face inward at both screen edges. The 40px card
                  * and 34px name budget remain inside an exact 80px player cell
@@ -9988,6 +9990,18 @@ void charselect_render_text(UNUSED s32 updateRate) {
                     draw_text(&sMenuCurrDisplayList, labelCentre, 177,
                               selectedName, ALIGN_MIDDLE_CENTER);
                 }
+            }
+            if (customSeats > 0 && mdkr_net_roster_runtime_active()) {
+                /* Re-homed from the launcher's room screen, which no longer
+                 * chooses characters: the native select screen owns the pick
+                 * for online sessions, so the appearance disclosure belongs
+                 * here. Drawn once under the seat name rows rather than per
+                 * seat -- a seat cell is SCREEN_WIDTH / MAXCONTROLLERS wide
+                 * and cannot hold a readable sentence at any player count. */
+                set_text_colour(255, 216, 128, 0, 255);
+                draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 186,
+                          "LOCAL LOOK ONLY - OTHERS SEE BUILT-IN RACER",
+                          ALIGN_MIDDLE_CENTER);
             }
             set_text_colour(208, 224, 255, 0, 255);
             draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 196,
