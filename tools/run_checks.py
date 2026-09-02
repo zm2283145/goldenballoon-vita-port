@@ -183,6 +183,7 @@ GPU_SERIAL_NAMES = frozenset({
     "video_presets",
     "widescreen_proportions",
     "widescreen_hud_layers",
+    "split_screen_backdrop",
     "framed_world_views",
     "shadow_visual_ab",
     "intro_shrub_sprite",
@@ -667,6 +668,10 @@ CHECKS = (
           "opt-in widescreen HUD pixel layout (#51): TT rows share one right "
           "anchor, the race-start hold stays offscreen, identity label and "
           "battle strip stay centered, 4:3 byte-identical with the option on"),
+    Check("split_screen_backdrop", "check_split_screen_backdrop.py", "native",
+          "multiplayer sky backdrop coverage (#61): the >=2-viewport gradient "
+          "quad spans the widescreen frustum with no unpainted sides, and 4:3 "
+          "still derives the ROM's authored 200x150 extent"),
     Check("widescreen_minimap_alignment",
           "check_widescreen_minimap_alignment.py", "native",
           "minimap marker-on-map alignment under the widescreen HUD (#57): "

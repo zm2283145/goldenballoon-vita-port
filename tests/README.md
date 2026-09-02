@@ -524,6 +524,23 @@ production coverage:
   gutter during the race-start pre-slide hold -- plus a 4:3 rail where the
   widescreen-ON frame must stay byte-identical to OFF. Detector self-tests
   run against synthetic rasters on every invocation.
+- `check_split_screen_backdrop.py` pins issue #61's split-screen sky. Two or
+  more viewports never reach `skydome_render()`; they get
+  `trackbg_render_gradient()`, one flat quad whose authored `+/-200` by
+  `+/-150` extent is exactly a 4:3, 60-degree-vertical-FOV frustum at its
+  261-unit depth (`261 * tan(30 deg) = 150.7`, times `4/3` = `200.9`). Under
+  the port's Hor+ widescreen projection the frustum is wider than the quad, so
+  the sides of the sky kept the clear colour -- black on every level whose
+  `voidColour` is `0,0,0`, which is the reported "black lines on each side of
+  the skybox ... e.g. Fossil Canyon". The check drives the two-player fixture
+  on Fossil Canyon (bright orange-to-yellow backdrop over a black clear) and
+  asserts both the derived extent published by `[TRACE] bg_backdrop:` -- 4:3
+  must reproduce the ROM's exact `200`/`150`, 16:9 must be `267` -- and the
+  pixels: the worst-frame pure-black fraction of each viewport's sky band
+  (rows 3%..10% of its own half, clearing the split separator). Measured
+  without the widening: viewport 0 12.7%, viewport 1 10.7%; with it 0.2% and
+  4.3% (viewport 1's floor is a real shadowed canyon wall). Detector
+  self-tests run on synthetic rasters first.
 - `check_widescreen_minimap_alignment.py` pins the second half of issue #57:
   under the widescreen HUD, billboard-mode ortho sprites bypassed the WIDE_HUD
   matrix's horizontal compression and rendered 4/3 wider than authored, so the

@@ -214,3 +214,75 @@ the measured 4P P2 DNF is `cp=33/lap=1`, 5,225 rows, and 1.28 units/frame.
   `errno` per port from `platform_pad_present()`
   (`platform/platform_sdl_min.c`), so ports 1–4 report truthfully and the
   "trap for future work" no longer exists.
+
+## Issue #61 two-player sweep — one fixed, two not reproduced
+
+The reporter (1.5.2, RTX 2070 Super, so almost certainly Windows) raised three
+separate symptoms. Only the first reproduced here.
+
+**(B) Black lines at the sides of the skybox in split screen — FIXED.**
+The two-or-more-viewport path draws a flat 4:3-shaped backdrop quad into a
+widescreen frustum. Mechanism, measurement, fix and gate are in
+`docs/open-items/renderer.md`, "the split-screen sky quad is a 4:3 object in a
+widescreen frustum". Renderer-independent and not platform-specific: it is
+arithmetic on the projection, so the reporter's NVIDIA/Windows build has it too.
+
+**(A) "A big purple screen covering an entire player's screen" on Walrus Cove
+after the loop — NOT REPRODUCED as a defect.** Falsified, each with a
+measurement rather than a reading:
+
+* *Void-curtain capacity.* Instrumented `func_80026C14` / `void_generate_primitive`
+  / `func_80026E54` with drop, saturation and bail counters. Over a full
+  two-player Walrus Cove race: peak 38 primitives against the multiplayer limit
+  of 90, peak 40 entries against 351, peak 9 open planes against 88, and
+  **zero** primitive drops, entry drops or walker bails in either viewport.
+  Single-player peaks are the same (35/38/9). The five unlanded 2026-08-17
+  `staging/fix/*` branches are all about this subsystem; their capacity raises
+  are already in 1.6.0 and none of them addresses this report.
+* *Void-curtain colour.* Forcing `gVoidColour` to pure green changed nothing
+  about the tint, so the wash is not the curtain. (Walrus Cove's `voidColour` is
+  `0,83,133`, a blue — no level in the game has a purple backdrop or void
+  colour; probed all ten of Dino Domain, Snowflake Mountain and Sherbet Island.)
+* *Fog.* `[FOGPROBE]` on `gFogData[0]` vs `gFogData[1]` through the whole race:
+  identical every frame (`rgb 0,0,48 near 996 far 1002`), and `fog_tick` resolves
+  `numViewports = 2` correctly. Forcing the fog colour green tinted only the far
+  geometry of *both* viewports.
+* *Port lighting.* `MDKR_REMASTER_FX=0` leaves the picture unchanged.
+
+What the frames actually show is that Walrus Cove's cave is authored as large
+flat pools of coloured light: a four-player capture at one instant has viewport 4
+entirely dark blue, viewport 2 green and viewports 1/3 yellow-green, purely from
+where each racer is standing. A player parked in the blue-violet pool does see a
+near-uniform violet screen. That is content, not a defect, on this build.
+
+*What would settle it:* a screenshot or short clip from the reporter's own
+machine at the moment it happens, plus their aspect ratio and whether
+`Video.RemasterFX` is on. If their "purple" is the same wash we see, it is
+authored; if it is a saturated magenta (the renderer's unknown-texture-format
+fill, `gfx_pc_dkr.c`), it is a texture-decode failure specific to their build and
+the frame will show it immediately.
+
+**(C) "The pause screen for player 2 uses the original resolution and not the
+cleaner one shown for P1" — NOT REPRODUCED.** Built two-player pause fixtures
+that pause on P1's pad and on P2's pad at the same race frame and dumped both.
+The two frames are identical apart from the authored box colour
+(`gPlayerPauseBgColour`, blue for P1 and red for P2): same glyph raster, same
+crispness, same position. The pause box is drawn once per frame by
+`render_dialogue_boxes()`, and the port's hi-res text derivation
+(`gfx_font_sdf.c` / `gfx_font_outline.c`) is keyed on `g_pcHiresText` /
+`g_pcRemasterFX` and cached by glyph source pointer — all frame-global, with no
+player or viewport input, so the two menus cannot use different rasterizers.
+
+*What would settle it:* the reporter's `mdkr64.ini` (specifically
+`Video.HiresText` and `Video.RemasterFX`) and a screenshot of each player's
+pause menu. Note also that the report is against 1.5.2 and this was checked on
+1.6.0.
+
+**Recorded, not fixed.** `viewport_main()` saves and restores only its own
+entry value of `gActiveCameraID`, so after `render_scene()`'s viewport loop that
+global is left pointing at the last viewport drawn. `viewport_scissor()`
+(`camera.c`) derives the dialogue-box scissor rectangle from it, so the pause box
+is clipped against the last-drawn player's half regardless of who paused. It is
+invisible today because the box is centred and small enough to sit inside either
+half, but it is a genuine state leak and the first thing to check if a
+pause-overlay clipping report ever lands.

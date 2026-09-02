@@ -2668,3 +2668,61 @@ byte-exactness to the console picture no longer holds. Installing a pack is
 arguably itself the opt-in, and that is a defensible answer -- but it has to be
 a stated decision in `docs/MODDING.md` and the notes, not an omission nobody
 wrote down.
+
+## FIXED: the split-screen sky quad is a 4:3 object in a widescreen frustum — issue #61
+
+**Symptom (reported against 1.5.2).** "The skybox in several levels during
+multiplayer has black lines on each side, e.g. Fossil Canyon." One player never
+shows it.
+
+**Mechanism.** `render_scene()` takes `skydome_render()` only when
+`numViewports < 2`. Every split-screen viewport instead gets
+`trackbg_render_gradient()`: a single flat quad at `x = -200..+200`,
+`y = -150..+150` (PAL 180, halved for `TWO_PLAYERS`), `z = 20`, drawn under
+`mtx_perspective()` behind `D_800DD288`'s `z = -281` eye offset. Those numbers
+are the frustum, not a guess — at 261 units out,
+`261 * tanf(30 deg) = 150.7` and `* 4/3 = 200.9`. The quad is machined to fill
+a 4:3, 60-degree-vertical-FOV view, the only view an N64 had.
+
+The port's widescreen is Hor+: `mdkr_display_calculate_projection()` keeps the
+vertical FOV and derives `horizontal_fov` from the live presentation aspect
+(`display_config.c`), and the two-player projection deliberately reuses the
+full-screen aspect rather than doubling it for the half-height rectangle. So at
+any aspect wider than 4:3 the frustum outgrows the quad by exactly
+`aspect / (4/3)`, and the strips the quad no longer reaches keep the colour the
+frame was cleared to. `voidColour` is `0,0,0` on Fossil Canyon, Ancient Lake,
+Whale Bay, Pirate Lagoon and Treasure Caves — hence *black* lines, and hence
+"several levels".
+
+**Measurement.** Instrumenting the quad's own vertices magenta and dumping the
+two-player fixture on Fossil Canyon: at `1280x960` (4:3) the quad reached
+`x = 2552` of a 2560-wide dump; at `1280x720` it stopped at `x = 2232`, against
+the predicted `1280 + 0.75 * 1280 = 2240`. 12.5% of each side unpainted, matching
+`(4/3) / (16/9) = 0.75` to within the sampling step.
+
+**Fix** (`trackbg_render_gradient`, `game/src/tracks.c`, under `NATIVE_PORT`
+with a byte-identical stock `#else`): re-derive the extents from the projection
+that is actually in the matrix — `halfH = 150 * tan(vfov/2) / tan(30 deg)`,
+`halfW = halfH * aspect`, via `cam_get_effective_vertical_fov()` /
+`cam_get_effective_aspect()` — floored at the authored values so a
+narrower-than-4:3 presentation can never lose coverage. At the authored 60
+degrees and 4:3 this reproduces `200`/`150` exactly, so 4:3 output is unchanged
+and one-player output cannot change at all (it never calls this function). The
+vertical term follows the same identity, so the gameplay-FOV slider cannot open
+a gap at the top and bottom either; when the `maximum_horizontal_fov` guard
+lowers the vertical FOV on ultrawide, both terms track it (measured at aspect
+3.5556: `vfov 39.60`, `x = 333`).
+
+**Regression check.** `check_split_screen_backdrop.py` (registered), two arms:
+the derived extent published by `[TRACE] bg_backdrop:` (4:3 must be the ROM's
+`200`/`150` — the retail-parity rail; 16:9 must be `267`), and the worst-frame
+pure-black fraction of each viewport's sky band. Positive control, with only the
+widening neutered: extent arm fails (`x=200` at 16:9), viewport 0 goes
+`0.2% -> 12.7%`, viewport 1 `4.3% -> 10.7%`; the 4:3 arm still passes, proving
+the rail is inert where it should be.
+
+**Recorded, not fixed.** `trackbg_render_flashy()` (Wizpig 2) builds a cylinder
+around the camera rather than a flat quad, so it has no equivalent shortfall.
+The authored constants are themselves ~0.45% short of the exact frustum
+(`200` vs `200.9`); the widening is proportional to them, so that authored
+margin is preserved rather than "corrected" — changing it would move 4:3 output.

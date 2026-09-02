@@ -8,6 +8,15 @@ From 1.0.0 onward this project follows semantic versioning for the platform
 layer's public seams (config keys, environment variables, command-line flags and
 save formats). Everything below 1.0.0 predates that commitment.
 
+## [Unreleased]
+
+### Fixed
+
+- The sky in split-screen races no longer has black bars down each side on
+  widescreen displays. The two-player backdrop was drawn at the original 4:3
+  width, so the edges of the screen were left unpainted — most obvious on
+  Fossil Canyon and the other tracks with a black horizon.
+
 ## [1.4.0] — 2026-08-18
 
 The interpolation stack was rebuilt with closed-loop pacing, and the world-
