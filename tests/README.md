@@ -1267,7 +1267,11 @@ one replay window of state envelopes crosses the mesh while repair answers are
 in flight, and every answer sent must be received. `match_peer_transport` pins
 that second property at the transport boundary with its own control — pointing
 the authority lane's replay window at the state lane's drops the delayed repair
-outright.
+outright. The impairment matrix (`--matrix`) carries the same pairing: its
+two-second-outage profile is a loss run far past the bundle's redundancy, so it
+now converges with repair (and must show repair restoring ticks) and runs a
+second time on the identical seed with repair off, where it must still latch
+`INPUT_GAP` at the 31-tick replay boundary.
 
 `check_rollback_authority_wrapper.py` is the suite-facing entry for the frozen
 mutable-authority census and its omitted-state positive control.

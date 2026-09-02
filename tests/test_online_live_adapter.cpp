@@ -645,6 +645,11 @@ struct ImpairmentSpec {
     const char *name;
     MatrixExpect expect;
     uint64_t seed;
+    /* N7: repair rides the reliable authority lane, which the driver's
+     * carrier deliberately does not impair, so a profile whose loss outlives
+     * the bundle redundancy is now healed instead of exhausting the rollback
+     * window. Set false to replay a profile in its pre-repair shape. */
+    bool repairEnabled = true;
 };
 
 /* A tiny checksummed tick token carried through the impairment carrier. The
@@ -1108,6 +1113,10 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
          * remote input still crosses the mesh -- impairment never shortcuts it.
          * Two carriers model the two directions; each is seeded per endpoint so
          * the whole matrix is reproducible with no wall-clock dependence. */
+        if (!imp->repairEnabled) {
+            CHECK(mdkr_online_live_adapter_race_set_repair(A.get(), false));
+            CHECK(mdkr_online_live_adapter_race_set_repair(B.get(), false));
+        }
         MdkrNetImpairmentProfile prof;
         CHECK(mdkr_net_impairment_named_profile(imp->profile, 30u, &prof));
         MdkrNetImpairment simA; /* A -> B */
@@ -1179,6 +1188,17 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
                 result.recoverySlot = s.recoverySlot;
                 break;
             }
+            /* Mid-race severance warm-up, as the unimpaired path does it:
+             * race until A has genuinely confirmed some ticks AND the
+             * carrier's scheduled outage has played out, then hand off to the
+             * severance phase. Without this break a profile the repair lane
+             * heals runs to the target first, and the silence that follows is
+             * an already-finished race rather than a starvation. */
+            if (severAfterTicks > 0u &&
+                cursorA >= ia.firstTick + severAfterTicks &&
+                simTick > prof.outage_end_tick) {
+                break;
+            }
             if (cursorA > target && cursorB > target) break;
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
             clock.nowMs += 2u;
@@ -1248,6 +1268,11 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
         result.impOutageDropped = simA.outage_dropped + simB.outage_dropped;
         result.impThrottled = simA.throttled + simB.throttled;
         result.impOverflow = simA.overflow + simB.overflow;
+        result.repairRequestsA = sa.repairRequestsSent;
+        result.repairAnswersSentB = sb.repairAnswersSent;
+        result.repairAnswersReceivedA = sa.repairAnswersReceived;
+        result.repairTicksRestoredA = sa.repairTicksRestored;
+        result.meshRejectedAuthorityA = sa.meshRejectedAuthority;
     }
     return result;
 }
@@ -2497,8 +2522,14 @@ void test_impairment_matrix() {
         {MDKR_NET_PROFILE_REGIONAL_VARIABLE, "regional-variable",
          MATRIX_CONVERGE, matrixSeed(2u)},
         {MDKR_NET_PROFILE_POOR, "poor", MATRIX_CONVERGE, matrixSeed(3u)},
+        /* The outage's loss run far outlives the bundle's three ticks of
+         * redundancy, so it is exactly what the repair lane exists for: with
+         * repair the race converges, and the SAME profile and seed replayed
+         * without it is the pre-repair rollback exhaustion. */
         {MDKR_NET_PROFILE_TWO_SECOND_OUTAGE, "two-second-outage",
-         MATRIX_RECOVER, matrixSeed(4u)},
+         MATRIX_CONVERGE, matrixSeed(4u)},
+        {MDKR_NET_PROFILE_TWO_SECOND_OUTAGE, "two-second-outage-unrepaired",
+         MATRIX_RECOVER, matrixSeed(4u), /*repairEnabled=*/false},
         {MDKR_NET_PROFILE_ADVERSARIAL, "adversarial", MATRIX_EITHER,
          matrixSeed(5u)},
     };
@@ -2567,11 +2598,22 @@ void test_impairment_matrix() {
             CHECK(r.impCorruptDropped > 0u);
         }
         if (spec.profile == MDKR_NET_PROFILE_TWO_SECOND_OUTAGE) {
-            /* The outage genuinely blacked the carrier out and the transport
-             * latched INPUT_GAP once the stall outran the retained window. */
+            /* The outage genuinely blacked the carrier out. */
             CHECK(r.impOutageDropped > 0u);
-            CHECK(r.recoveryReason == 1u); /* INPUT_GAP */
-            CHECK(r.recoveryObservedTick - r.recoveryFirstTick >= 31u);
+            if (spec.repairEnabled) {
+                /* Repair closed the run the redundancy could never cover, and
+                 * every authority message it opened was applied. */
+                CHECK(r.repairRequestsA > 0u);
+                CHECK(r.repairTicksRestoredA > 0u);
+                CHECK(r.meshRejectedAuthorityA == 0u);
+                CHECK(r.recoveryReason == 0u);
+            } else {
+                /* The pre-repair shape: the transport latched INPUT_GAP once
+                 * the stall outran the retained window. */
+                CHECK(r.repairRequestsA == 0u);
+                CHECK(r.recoveryReason == 1u); /* INPUT_GAP */
+                CHECK(r.recoveryObservedTick - r.recoveryFirstTick >= 31u);
+            }
         }
 
         std::fprintf(

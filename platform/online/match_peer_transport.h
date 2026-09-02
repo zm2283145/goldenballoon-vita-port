@@ -342,7 +342,7 @@ struct MdkrMatchPeerMeshStats {
 
 /* Per-peer link health, diagnosability only. RTT comes from the control ping
  * ladder (one sample per ping interval) and jitter is its smoothed absolute
- * change; the byte counters cover both data channels' envelope traffic. */
+ * change; the byte counters cover every data channel's envelope traffic. */
 struct MdkrMatchPeerLinkStats {
     uint64_t endpointId = 0u;
     /* Fixed roster position among the REMOTE peers, in roster order. */
