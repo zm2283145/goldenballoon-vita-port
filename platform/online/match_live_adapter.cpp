@@ -2159,6 +2159,13 @@ public:
             case MdkrMatchPeerLostReason::HelloViolation:
             case MdkrMatchPeerLostReason::ControlChannelViolation:
                 return MDKR_ONLINE_VIEW_FAILURE_VERIFICATION_MISMATCH;
+            case MdkrMatchPeerLostReason::ChannelSetMismatch:
+                /* The peer's connection arrived but its channel set is short:
+                 * a protocol-version difference, not a route this endpoint
+                 * could retry into. The card is the symmetric one -- either
+                 * side may be the older build, and the local player is not
+                 * necessarily the one who has to move. */
+                return MDKR_ONLINE_VIEW_FAILURE_DIFFERENT_BUILD;
             case MdkrMatchPeerLostReason::ConnectTimeout:
             case MdkrMatchPeerLostReason::TransportFailed:
                 /* Pre-race these ARE handshake-time failures. Mid-race they
@@ -2850,9 +2857,12 @@ private:
         for (unsigned slot = 0u; slot < MDKR_NET_INPUT_SLOTS; ++slot) {
             repairRequested_[slot] = false;
             repairRequestedTick_[slot] = 0u;
+            repairRequestedAtTick_[slot] = 0u;
         }
+        repairAnswerBudget_.clear();
         repairRequestsSent_ = 0u;
         repairAnswersSent_ = 0u;
+        repairAnswersRefused_ = 0u;
         repairAnswersReceived_ = 0u;
         repairTicksRestored_ = 0u;
     }
@@ -2909,8 +2919,17 @@ private:
                 MDKR_MATCH_INPUT_BUNDLE_FRAMES) {
                 continue;
             }
-            if (repairRequested_[slot] && repairRequestedTick_[slot] == first)
+            /* One request per gap, then one more per re-ask window. The lane
+             * is reliable, so an answered request needs no retry -- but an
+             * author whose own sealed frontier was still behind the gap when
+             * it was asked has nothing to answer with, and a single-shot latch
+             * would strand that gap until it aged into INPUT_GAP. */
+            if (repairRequested_[slot] && repairRequestedTick_[slot] == first &&
+                raceTransport_.history.current_tick -
+                        repairRequestedAtTick_[slot] <
+                    repairReaskTicks_) {
                 continue;
+            }
             const uint64_t author = authorOfSlot(slot);
             if (author == 0u) continue;
             MdkrMatchInputRepair request;
@@ -2929,6 +2948,7 @@ private:
             }
             repairRequested_[slot] = true;
             repairRequestedTick_[slot] = first;
+            repairRequestedAtTick_[slot] = raceTransport_.history.current_tick;
             ++repairRequestsSent_;
             /* The gap is exactly the run the drain is predicting through, so
              * it belongs in the ring under the prediction record. A repair
@@ -2971,8 +2991,22 @@ private:
                            const MdkrMatchInputRepair &request) {
         const uint8_t localMask = raceTransport_.local_slot_mask;
         if (mesh_ == nullptr) return;
+        /* Answering is the one thing a peer can make this endpoint do
+         * repeatedly, and every answer is a retransmitting send. Charge each
+         * one against this endpoint's own authored tick, so a flood costs no
+         * more than the honest request it imitates. */
+        MdkrMatchInputRepairBudget &budget =
+            repairAnswerBudget_[peerEndpointId];
         for (unsigned slot = 0u; slot < MDKR_SESSION_MAX_PLAYERS; ++slot) {
             if ((localMask & (1u << slot)) == 0u) continue;
+            /* A request is capped at MDKR_MATCH_INPUT_REPAIR_MAX_TICKS, so one
+             * slot's run never needs more messages than the cost the budget is
+             * sized on. */
+            static_assert(
+                MDKR_MATCH_INPUT_REPAIR_MAX_ANSWERS *
+                        MDKR_MATCH_INPUT_REPAIR_ANSWER_TICKS >=
+                    MDKR_MATCH_INPUT_REPAIR_MAX_TICKS,
+                "one slot's repair run must fit the documented answer count");
             for (uint32_t sent = 0u; sent < request.count;
                  sent += MDKR_MATCH_INPUT_REPAIR_ANSWER_TICKS) {
                 MdkrMatchInputRepair answer;
@@ -2994,6 +3028,11 @@ private:
                     ++filled;
                 }
                 if (filled == 0u) break; /* nothing sealed from here on */
+                if (!mdkr_match_input_repair_budget_charge(
+                        &budget, raceTransport_.history.current_tick)) {
+                    ++repairAnswersRefused_;
+                    return;
+                }
                 answer.count = static_cast<uint8_t>(filled);
                 uint8_t bytes[MDKR_MATCH_INPUT_REPAIR_BYTES];
                 if (mdkr_match_input_repair_encode(&answer, bytes,
@@ -3487,7 +3526,10 @@ public:
      * deterministic raceLocalSample fixture (per-tick variation that forces real
      * corrections). The shipped interactive boot never enables it. */
     void raceSetSyntheticInput(bool on) { raceSyntheticInput_ = on; }
-    void raceSetRepair(bool on) { raceRepairEnabled_ = on; }
+    void raceSetRepair(bool on, uint32_t reaskTicks) {
+        raceRepairEnabled_ = on;
+        repairReaskTicks_ = reaskTicks == 0u ? kRepairReaskTicks : reaskTicks;
+    }
 
     /* Stage the real local pads for the next seal. `local` is in local-seat
      * order (seat i reads controller port i), matching the physical[] the engine
@@ -3609,6 +3651,7 @@ public:
         out->resendBundles = raceResendBundles_;
         out->repairRequestsSent = repairRequestsSent_;
         out->repairAnswersSent = repairAnswersSent_;
+        out->repairAnswersRefused = repairAnswersRefused_;
         out->repairAnswersReceived = repairAnswersReceived_;
         out->repairTicksRestored = repairTicksRestored_;
     }
@@ -3853,10 +3896,27 @@ private:
     bool raceRepairEnabled_ = true;
     bool repairRequested_[MDKR_NET_INPUT_SLOTS] = {};
     uint32_t repairRequestedTick_[MDKR_NET_INPUT_SLOTS] = {};
+    /* The drain frontier when each request went out, so a gap that still
+     * stands after the re-ask window is asked for again. */
+    uint32_t repairRequestedAtTick_[MDKR_NET_INPUT_SLOTS] = {};
+    /* One answer budget per peer, charged against this endpoint's own
+     * authored tick (see match_input_repair.h). */
+    std::map<uint64_t, MdkrMatchInputRepairBudget> repairAnswerBudget_;
     uint32_t repairRequestsSent_ = 0u;
     uint32_t repairAnswersSent_ = 0u;
+    uint32_t repairAnswersRefused_ = 0u;
     uint32_t repairAnswersReceived_ = 0u;
     uint32_t repairTicksRestored_ = 0u;
+    /* Authored ticks a requester waits before asking again for a gap that
+     * still stands. A repair round trip is the request, the author's next
+     * service and the answer's arrival -- three authored ticks at 30 Hz on a
+     * 100 ms route -- so this leaves room for roughly three attempts before
+     * the run ages past MDKR_ROLLBACK_MAX_INPUT_AGE_TICKS and the timeline is
+     * unreconcilable however it is asked. Counted in authored ticks rather
+     * than service calls, so the policy does not move with the frame rate.
+     * The test seam overrides it to replay the single-shot latch. */
+    static constexpr uint32_t kRepairReaskTicks = 8u;
+    uint32_t repairReaskTicks_ = kRepairReaskTicks;
     static constexpr unsigned kRaceSweepServicePeriod = 30u;
     static constexpr uint32_t kRaceSweepWindow = 60u;
 
@@ -4065,11 +4125,11 @@ bool mdkr_online_live_adapter_race_advance(IMdkrOnlineAdapter *adapter) {
 }
 
 bool mdkr_online_live_adapter_race_set_repair(
-    IMdkrOnlineAdapter *adapter, bool on) {
+    IMdkrOnlineAdapter *adapter, bool on, uint32_t reask_ticks) {
     if (adapter == nullptr) return false;
     LiveAdapter *live = adapter->mdkrResolveLive();
     if (live == nullptr) return false;
-    live->raceSetRepair(on);
+    live->raceSetRepair(on, reask_ticks);
     return true;
 }
 

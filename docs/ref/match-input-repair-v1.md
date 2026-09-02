@@ -69,6 +69,14 @@ twelve messages against the maximum four-seat roster. The responder answers for
 every slot it owns; the requester does not choose, and a request naming a slot
 is malformed.
 
+That worst case is also the responder's budget: a peer is sent at most twelve
+answers per authored tick, so one honest request is always answered in full and
+a flood costs no more than the request it imitates. It is a budget rather than a
+duplicate filter because a flood need not repeat itself — walking the first tick
+across the rollback window defeats a duplicate filter while costing the
+responder exactly as much. The budget refills when the responder's own drain
+frontier advances, which no peer can influence.
+
 ## Epoch scoping
 
 Both messages carry the match epoch, and a receiver drops any repair whose
@@ -88,12 +96,26 @@ input for a repaired tick, and the live lanes assert exactly that.
 
 ## Requesting policy
 
-One request per remote canonical slot per gap. A gap is worth asking about once
-its first tick is more than three authored ticks behind the drain frontier —
-the point past which the carrier's redundancy can no longer cover it. Because
-the lane is reliable, a sent request is delivered; re-asking for a first tick
-already asked for would only duplicate the answer. A gap whose first tick moves
-is a different gap and is asked for again. Requests and answers are recorded in
+One request per remote canonical slot per gap, then one more every eight
+authored ticks while that gap still stands. A gap is worth asking about once its
+first tick is more than three authored ticks behind the drain frontier — the
+point past which the carrier's redundancy can no longer cover it. A gap whose
+first tick moves is a different gap and is asked for immediately.
+
+The re-ask window exists because a delivered request is not the same as an
+answerable one: an author whose own drain stalled while the requester's ran on
+has nothing committed for the run it was asked about, and answers nothing. A
+single ask would strand that gap until it aged out with repair nominally on.
+Eight authored ticks is roughly three round trips at 30 Hz on a 100 ms route,
+so a gap gets about three attempts before it ages past the retained rollback
+depth and becomes unreconcilable however it is asked. The wait is counted in
+authored ticks rather than in elapsed time or service calls, so the policy does
+not move with the frame rate and reads no clock.
+
+An author answers with whatever it has committed of the run, which may be a
+short answer or none at all: an answer carrying nothing has no representation
+here, because a message with no input is not worth a send. The re-ask window is
+what covers that case. Requests and answers are recorded in
 the forensics ring under the input-prediction record, which is exactly the
 condition that raises them: a repair record names a canonical slot, its detail
 is the repair kind and its two values are the run, while the transport's own

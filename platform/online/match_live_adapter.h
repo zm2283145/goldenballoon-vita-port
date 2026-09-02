@@ -454,18 +454,26 @@ struct MdkrOnlineLiveRaceStats {
      * bundle already carried is not counted). */
     uint32_t repairRequestsSent = 0u;
     uint32_t repairAnswersSent = 0u;
+    /* Answers a peer's requests asked for beyond its per-tick budget and did
+     * not get (match_input_repair.h). Nonzero means a peer asked faster than
+     * an honest requester can. */
+    uint32_t repairAnswersRefused = 0u;
     uint32_t repairAnswersReceived = 0u;
     uint32_t repairTicksRestored = 0u;
 };
 bool mdkr_online_live_adapter_race_stats(const IMdkrOnlineAdapter *adapter,
                                          MdkrOnlineLiveRaceStats *out);
 
-/* Test-only: turn input-gap repair off for this endpoint, so a lane can prove
- * what the repair is worth by running the identical loss burst without it and
- * observing the rollback exhaustion or divergence it otherwise prevents.
- * Never called by the launcher; repair is on for every shipped race. */
+/* Test-only. `on` false turns input-gap repair off for this endpoint, so a
+ * lane can prove what repair is worth by running the identical loss burst
+ * without it and observing the rollback exhaustion or divergence it otherwise
+ * prevents. `reask_ticks` overrides the authored-tick wait before a gap that
+ * still stands is asked for again: 0 keeps the shipped bound, and a value
+ * larger than the race replays the single-shot latch that bound replaced.
+ * Never called by the launcher; repair is on, at its own bound, for every
+ * shipped race. */
 bool mdkr_online_live_adapter_race_set_repair(IMdkrOnlineAdapter *adapter,
-                                              bool on);
+                                              bool on, uint32_t reask_ticks);
 
 /* ---- race lifecycle + session-config C APIs (launcher/UI seams) ----- *
  *

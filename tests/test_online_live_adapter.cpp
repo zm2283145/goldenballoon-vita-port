@@ -617,6 +617,7 @@ struct FullRunResult {
     unsigned burstDropped = 0u;
     uint32_t repairRequestsA = 0u;
     uint32_t repairAnswersSentB = 0u;
+    uint32_t repairAnswersRefusedB = 0u;
     uint32_t repairAnswersReceivedA = 0u;
     uint32_t repairTicksRestoredA = 0u;
     uint64_t meshRejectedAuthorityA = 0u;
@@ -638,6 +639,16 @@ struct BurstSpec {
     /* Positive control: with repair off the identical burst must be visible
      * as rollback exhaustion or a race that never converges. */
     bool repairEnabled = true;
+    /* Split the burst in two. In the first half the AUTHOR does not drain
+     * either, so its committed frontier falls behind the requester's and the
+     * first request names ticks it cannot answer yet; in the second it drains
+     * again but its sends stay suppressed, so the ticks it now commits never
+     * reach the requester as bundles. Only a repair can close that run, and
+     * only a re-ask can obtain one. */
+    bool freezeAuthor = false;
+    /* Override the requester's authored-tick re-ask wait; 0 keeps the shipped
+     * bound and a value past the race replays the single-shot latch. */
+    uint32_t reaskTicks = 0u;
 };
 
 struct ImpairmentSpec {
@@ -944,10 +955,10 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
              * mesh. The AUTHORITY lane is deliberately untouched -- it is
              * reliable by construction, and impairing it would model a
              * channel the transport does not create. */
-            if (!burst->repairEnabled) {
-                CHECK(mdkr_online_live_adapter_race_set_repair(A.get(), false));
-                CHECK(mdkr_online_live_adapter_race_set_repair(B.get(), false));
-            }
+            CHECK(mdkr_online_live_adapter_race_set_repair(
+                A.get(), burst->repairEnabled, burst->reaskTicks));
+            CHECK(mdkr_online_live_adapter_race_set_repair(
+                B.get(), burst->repairEnabled, burst->reaskTicks));
             const uint8_t delay = ia.inputDelay;
             unsigned burstRemaining = 0u;
             bool burstArmed = false;
@@ -965,8 +976,19 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
                 }
                 if (nb.nextTick <= target) {
                     const uint32_t sealTick = nb.nextTick + delay;
-                    (void)mdkr_online_live_adapter_race_drain_local(B.get());
-                    if (burstRemaining > 0u) {
+                    const bool suppressed = burstRemaining > 0u;
+                    /* A frozen author does not drain either, so it commits
+                     * nothing new and its frontier falls behind the
+                     * requester's -- the state in which a request names ticks
+                     * the author has no answer for yet. The freeze covers only
+                     * the burst's first half; see BurstSpec::freezeAuthor. */
+                    const bool frozen = burst->freezeAuthor &&
+                                        burstRemaining > burst->sends / 2u;
+                    if (!suppressed || !frozen) {
+                        (void)mdkr_online_live_adapter_race_drain_local(
+                            B.get());
+                    }
+                    if (suppressed) {
                         --burstRemaining;
                         ++result.burstDropped;
                     } else {
@@ -1008,6 +1030,7 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
             mdkr_online_live_adapter_race_stats(B.get(), &sb);
             result.repairRequestsA = sa.repairRequestsSent;
             result.repairAnswersSentB = sb.repairAnswersSent;
+            result.repairAnswersRefusedB = sb.repairAnswersRefused;
             result.repairAnswersReceivedA = sa.repairAnswersReceived;
             result.repairTicksRestoredA = sa.repairTicksRestored;
             result.meshRejectedAuthorityA = sa.meshRejectedAuthority;
@@ -1114,8 +1137,8 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
          * Two carriers model the two directions; each is seeded per endpoint so
          * the whole matrix is reproducible with no wall-clock dependence. */
         if (!imp->repairEnabled) {
-            CHECK(mdkr_online_live_adapter_race_set_repair(A.get(), false));
-            CHECK(mdkr_online_live_adapter_race_set_repair(B.get(), false));
+            CHECK(mdkr_online_live_adapter_race_set_repair(A.get(), false, 0u));
+            CHECK(mdkr_online_live_adapter_race_set_repair(B.get(), false, 0u));
         }
         MdkrNetImpairmentProfile prof;
         CHECK(mdkr_net_impairment_named_profile(imp->profile, 30u, &prof));
@@ -1349,6 +1372,67 @@ void test_realtime_burst_without_repair_exhausts_rollback() {
  * as replays of them. (test_match_peer_transport pins the same property at the
  * transport boundary, including the shared-window control that drops the aged
  * out packet.) */
+/* The author's own sealed frontier can be BEHIND the run a requester names --
+ * a peer whose drain stalled while the requester's ran on. The author then has
+ * nothing to answer with, and a single-shot request latch would strand that gap
+ * until it aged into INPUT_GAP with repair nominally on. The bounded re-ask
+ * window is what closes it once the author catches up. */
+constexpr unsigned kFrozenAuthorBurstSends = 20u;
+
+void test_repair_heals_a_gap_asked_before_the_author_sealed_it() {
+    BurstSpec burst;
+    burst.afterTicks = kRepairBurstAfterTicks;
+    burst.sends = kFrozenAuthorBurstSends;
+    burst.freezeAuthor = true;
+    const FullRunResult r = driveTwoAdapters(
+        /*bonusIdentityOnA=*/false, kRepairRaceTicks, /*imp=*/nullptr,
+        /*realInput=*/false, /*severAfterTicks=*/0u, /*sendAbortFromA=*/false,
+        /*routeClockStepMs=*/0u, /*injectP95OnA=*/0u, &burst);
+    CHECK(r.raceRun);
+    CHECK(r.burstDropped == kFrozenAuthorBurstSends);
+    /* A asked more than once: the first ask could not be answered, and the
+     * re-ask window is what made a second one possible. */
+    CHECK(r.repairRequestsA > 1u);
+    /* The author eventually answered, and the run was closed by repair. */
+    CHECK(r.repairAnswersSentB > 0u);
+    CHECK(r.repairTicksRestoredA > 0u);
+    /* Nothing was refused: one honest requester stays inside its budget. */
+    CHECK(r.repairAnswersRefusedB == 0u);
+    CHECK(r.meshRejectedAuthorityA == 0u);
+    CHECK(r.bothReachedTarget);
+    CHECK(r.hashA == r.hashB);
+    CHECK(r.recoveryReason == 0u);
+    mdkr_net_roster_runtime_clear();
+}
+
+/* Positive control: the identical run with the re-ask window pushed past the
+ * whole race is the single-shot latch. The one request lands while the author
+ * has nothing to answer, is never repeated, and the gap ages out. */
+void test_gap_asked_before_the_author_sealed_it_strands_on_a_single_shot() {
+    BurstSpec burst;
+    burst.afterTicks = kRepairBurstAfterTicks;
+    burst.sends = kFrozenAuthorBurstSends;
+    burst.freezeAuthor = true;
+    burst.reaskTicks = 100000u; /* longer than the race: never re-ask */
+    const FullRunResult r = driveTwoAdapters(
+        /*bonusIdentityOnA=*/false, kRepairRaceTicks, /*imp=*/nullptr,
+        /*realInput=*/false, /*severAfterTicks=*/0u, /*sendAbortFromA=*/false,
+        /*routeClockStepMs=*/0u, /*injectP95OnA=*/0u, &burst);
+    CHECK(r.raceRun);
+    CHECK(r.burstDropped == kFrozenAuthorBurstSends);
+    /* A did ask -- repair is on, and the seam changed only when it may ask
+     * AGAIN. Some ticks still come back (a gap raised after the author caught
+     * up is answerable on its first ask), so the claim is not that repair did
+     * nothing; it is that the gap raised while the author was behind is never
+     * asked for a second time and therefore never closes. */
+    CHECK(r.repairRequestsA > 0u);
+    /* MDKR_MATCH_RECOVERY_INPUT_GAP: that run aged past the retained depth,
+     * where the identical scenario with the shipped re-ask bound converges. */
+    CHECK(r.recoveryReason == 1u);
+    CHECK(!r.raceConverged);
+    mdkr_net_roster_runtime_clear();
+}
+
 void test_realtime_burst_does_not_age_out_authority_packets() {
     BurstSpec burst;
     burst.afterTicks = kRepairBurstAfterTicks;
@@ -3492,6 +3576,8 @@ int main(int argc, char **argv) {
         test_repair_heals_a_realtime_burst();
         test_realtime_burst_without_repair_exhausts_rollback();
         test_realtime_burst_does_not_age_out_authority_packets();
+        test_repair_heals_a_gap_asked_before_the_author_sealed_it();
+        test_gap_asked_before_the_author_sealed_it_strands_on_a_single_shot();
         std::fprintf(stderr, "online_live_repair: %d checks, %d failures\n",
                      g_checks, g_failures);
         return g_failures == 0 ? 0 : 1;
