@@ -771,6 +771,13 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     add_test(NAME portable_paths_marker COMMAND mdkr_portable_paths_test)
     add_test(NAME portable_paths_fallback
         COMMAND mdkr_portable_paths_test --fallback)
+    # The marker arm creates portable.txt beside the shared test executable and
+    # removes it on exit; a --fallback arm scheduled into that window sees the
+    # marker and fails five assertions ("not portable without a marker" first).
+    # Both arms probe the same on-disk directory, so they must never overlap
+    # under ctest -j.
+    set_tests_properties(portable_paths_marker portable_paths_fallback
+        PROPERTIES RESOURCE_LOCK portable_paths_executable_dir)
     # Issue #54: an AppImage runs from a read-only mount, so portable.txt and the
     # write-fallback must resolve beside the real on-disk AppImage ($APPIMAGE),
     # not the mount. Its own process because portable detection caches once.

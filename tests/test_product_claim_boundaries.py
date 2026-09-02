@@ -44,13 +44,16 @@ def main() -> int:
         "README.md",
         "not advertised as screen-reader compatible",
     )
+    # The 2026-09-01 README pass reworded the platform limits. Linux still has
+    # no native file picker (platform/app/file_dialog_stub.cpp), and the README
+    # now says so where the player looks for it -- in the getting-started steps
+    # -- rather than in a limitations bullet. The former "campaign is not
+    # automated or claimed complete" disclaimer is gone on purpose: the campaign
+    # has been gated since 2026-08-07 (docs/open-items/README.md), so the
+    # disclaimer had become the false claim.
     require_contains(
         "README.md",
-        "The complete start-to-credits campaign is not automated or claimed complete.",
-    )
-    require_contains(
-        "README.md",
-        "Linux does not yet have a native **Choose ROM File** dialog.",
+        "on Linux, drag the ROM onto the launcher or paste its",
     )
     require_contains(
         "docs/APP_SHELL.md",
