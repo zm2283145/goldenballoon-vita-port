@@ -233,7 +233,7 @@ static MdkrMatchRouteMeasurement run_measurement(uint32_t one_way_ms,
             pending++;
         }
     }
-    (void)mdkr_match_route_measure_finish(&state, &measurement);
+    (void)mdkr_match_route_measure_finish(&state, 0u, &measurement);
     if (sent_out != NULL) *sent_out = sent;
     if (bundle_out != NULL) *bundle_out = bundle;
     return measurement;
@@ -279,23 +279,41 @@ static void test_measurement_phase(void) {
     untouched = empty;
     expect(mdkr_match_route_measure_begin(&state, 1000u, 1000u / 30u, 42u),
            "the measurement phase begins");
-    expect(!mdkr_match_route_measure_finish(&state, &empty) &&
+    expect(!mdkr_match_route_measure_finish(&state, 0u, &empty) &&
                memcmp(&empty, &untouched, sizeof(empty)) == 0,
            "a phase that sent no probe produces no record");
     expect(!mdkr_match_route_measure_begin(&state, 1000u, 0u, 42u) &&
                !mdkr_match_route_measure_begin(&state, 1000u, 33u, 0u),
            "a zero tick period or origin id refuses to begin");
+
+    {
+        /* The queue-drain term is the carrier's own outbound drop count, which
+         * only the caller can see; finish carries it into the record and the
+         * ladder deducts for it. */
+        MdkrMatchRouteMeasureState pressured;
+        MdkrMatchRouteMeasurement drained;
+        MdkrMatchRouteMeasurement pressed;
+        MdkrMatchRouteProbe emitted;
+        expect(mdkr_match_route_measure_begin(&pressured, 1000u, 1000u / 30u,
+                                              42u),
+               "the queue-pressure phase begins");
+        expect(mdkr_match_route_measure_due(&pressured, 1000u, &emitted),
+               "one probe is emitted");
+        mdkr_match_route_measure_echo(&pressured, emitted.sequence, 1000u);
+        expect(mdkr_match_route_measure_finish(&pressured, 0u, &drained) &&
+                   drained.undrained == 0u && drained.score == 10u,
+               "a carrier whose queues drained scores clean");
+        expect(mdkr_match_route_measure_finish(&pressured, 70000u, &pressed) &&
+                   pressed.undrained == 65535u &&
+                   pressed.score == drained.score - 3u,
+               "carrier queue drops saturate the field and deduct three");
+    }
 }
 
-/* Positive control for the degraded band: 8% injected loss on the unreliable
- * bundle lane must land in ROUGH. Neutering the band mapping (every score
- * banding steady, the shape a chip that always reassures would have) fails the
- * same assertion the real mapping passes. */
-static MdkrMatchRouteBand neutered_band(uint8_t score) {
-    (void)score;
-    return MDKR_MATCH_ROUTE_BAND_STEADY;
-}
-
+/* The degraded band's lane: 8% injected loss on the unreliable bundle lane must
+ * land in ROUGH. Its positive control is a real mutation of the production
+ * ladder -- route_steady_floor 8 -> 1, so every score bands steady -- which
+ * fails the band assertion below (see tests/README.md). */
 static void test_impairment_eight_percent_loss(void) {
     MdkrNetImpairment carrier;
     MdkrNetImpairmentProfile profile;
@@ -331,7 +349,7 @@ static void test_impairment_eight_percent_loss(void) {
                 mdkr_match_route_measure_echo(&state, echoed.sequence, now);
         }
     }
-    expect(mdkr_match_route_measure_finish(&state, &measurement),
+    expect(mdkr_match_route_measure_finish(&state, 0u, &measurement),
            "the impaired phase produces a record");
     expect(carrier.dropped > 0u, "the carrier really dropped datagrams");
     expect(measurement.loss_per_thousand >= 60u &&
@@ -340,8 +358,6 @@ static void test_impairment_eight_percent_loss(void) {
     expect((MdkrMatchRouteBand)measurement.band ==
                MDKR_MATCH_ROUTE_BAND_ROUGH,
            "8% injected loss scores in the rough band");
-    expect(neutered_band(measurement.score) != MDKR_MATCH_ROUTE_BAND_ROUGH,
-           "a neutered band mapping fails the same assertion");
 }
 
 int main(void) {

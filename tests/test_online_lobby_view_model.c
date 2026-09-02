@@ -821,18 +821,19 @@ static void test_race_scoped_recovery_cards(void) {
 #endif
 
 /* N5: the one pre-flight route-quality chip. It states a round trip a player
- * can feel and the band's name, and it stays empty until the route settles. */
+ * can feel and the band's name, and it stays empty until the route settles.
+ * The projection takes an already-scored quality, not the wire record, so the
+ * browser build of this reducer links no preflight code. */
 static void test_route_quality_chip(void) {
     MdkrSessionCore session;
     MdkrOnlineViewInput input;
     MdkrOnlineViewModel model;
-    MdkrMatchRouteMeasurement measurement;
+    MdkrOnlineViewRouteQuality quality;
 
-    memset(&measurement, 0, sizeof(measurement));
-    measurement.p95_rtt_ms = 45u;
-    measurement.jitter_ms = 4u;
-    expect(mdkr_match_route_measurement_score(&measurement),
-           "the chip fixture scores");
+    memset(&quality, 0, sizeof(quality));
+    quality.p95_rtt_ms = 45u;
+    quality.score = 9u;
+    quality.band = "steady";
 
     mdkr_session_core_init(&session, 1u);
     input = input_for(&session, NULL);
@@ -840,17 +841,31 @@ static void test_route_quality_chip(void) {
            model.route_quality[0] == '\0',
            "no chip is shown before the route measurement settles");
 
-    input.route_quality = &measurement;
+    input.route_quality = &quality;
     expect(mdkr_online_view_model_build(&input, &model) &&
            strcmp(model.route_quality, "~45 ms \xc2\xb7 steady") == 0,
            "the chip states the round trip and the band");
     expect(strstr(model.route_quality, "qualified") == NULL &&
-           strstr(model.route_quality, "gate") == NULL,
+           strstr(model.route_quality, "gate") == NULL &&
+           strstr(model.route_quality, "certified") == NULL,
            "the chip carries no process vocabulary");
 
-    measurement.band = (uint8_t)MDKR_MATCH_ROUTE_BAND_ROUGH;
+    quality.score = 0u;
     expect(!mdkr_online_view_model_build(&input, &model),
-           "a band that disagrees with its own score is refused");
+           "a score outside the ladder is refused");
+    quality.score = 11u;
+    expect(!mdkr_online_view_model_build(&input, &model),
+           "a score past the ladder is refused");
+    quality.score = 9u;
+    quality.band = "";
+    expect(!mdkr_online_view_model_build(&input, &model),
+           "an empty band name is refused");
+    quality.band = "steadfastly-uneven";
+    expect(!mdkr_online_view_model_build(&input, &model),
+           "an over-long band name is refused");
+    quality.band = NULL;
+    expect(!mdkr_online_view_model_build(&input, &model),
+           "a missing band name is refused");
 }
 
 int main(void) {

@@ -18,21 +18,29 @@ static bool title_word(const char *begin, const char *end) {
 /* The peer transcript generator emits exactly 3 Title-Case compounds. Keep
  * this projection parser narrower than generic display text: it prevents an
  * adapter bug from turning cryptographic UI into an injection/overflow seam. */
+/* A score outside the 1-10 ladder, or a missing/over-long band name, is a
+ * caller error rather than something to render. */
+static bool route_quality_valid(const MdkrOnlineViewRouteQuality *quality) {
+    size_t index;
+    if (quality == NULL || quality->score == 0u || quality->score > 10u ||
+        quality->band == NULL)
+        return false;
+    for (index = 0u; index < MDKR_ONLINE_ROUTE_BAND_BYTES; index++)
+        if (quality->band[index] == '\0') return index != 0u;
+    return false;
+}
+
 /* The one room chip for pre-flight route quality: the round trip a player can
  * feel, then the band's name. Composed here rather than in match_preflight,
  * which owns no copy. False leaves the chip empty. */
-static bool route_quality_chip(const MdkrMatchRouteMeasurement *measurement,
+static bool route_quality_chip(const MdkrOnlineViewRouteQuality *quality,
                                char out[MDKR_ONLINE_ROUTE_QUALITY_BYTES]) {
-    const char *band;
     int written;
     out[0] = '\0';
-    if (measurement == NULL) return false;
-    band = mdkr_match_route_band_name(
-        (MdkrMatchRouteBand)measurement->band);
-    if (band == NULL) return false;
+    if (!route_quality_valid(quality)) return false;
     written = snprintf(out, MDKR_ONLINE_ROUTE_QUALITY_BYTES,
                        "~%u ms \xc2\xb7 %s",
-                       (unsigned)measurement->p95_rtt_ms, band);
+                       (unsigned)quality->p95_rtt_ms, quality->band);
     if (written > 0 && written < MDKR_ONLINE_ROUTE_QUALITY_BYTES) return true;
     out[0] = '\0';
     return false;
@@ -424,8 +432,7 @@ bool mdkr_online_view_model_build(const MdkrOnlineViewInput *input,
     }
     if (input->failure < MDKR_ONLINE_VIEW_FAILURE_NONE) return false;
     if (input->route_quality != NULL &&
-        mdkr_match_route_band((uint8_t)input->route_quality->score) !=
-            (MdkrMatchRouteBand)input->route_quality->band) {
+        !route_quality_valid(input->route_quality)) {
         return false;
     }
     if (input->verification_phrase != NULL &&

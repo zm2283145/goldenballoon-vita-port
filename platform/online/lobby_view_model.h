@@ -3,7 +3,6 @@
 #define MDKR_ONLINE_LOBBY_VIEW_MODEL_H
 
 #include "lobby_core.h"
-#include "net/match_preflight.h" /* MdkrMatchRouteMeasurement */
 #include "session/session_types.h"
 
 #include <stdbool.h>
@@ -124,6 +123,18 @@ typedef enum MdkrOnlineInviteState {
 
 enum { MDKR_ONLINE_VERIFICATION_PHRASE_BYTES = 64 };
 enum { MDKR_ONLINE_ROUTE_QUALITY_BYTES = 32 };
+enum { MDKR_ONLINE_ROUTE_BAND_BYTES = 12 };
+
+/* Already-scored pre-flight route quality, reduced to what the chip states.
+ * The projection deliberately takes the band's NAME rather than the wire
+ * record, so the browser build of this reducer does not link the preflight
+ * unit; the score/band agreement is enforced where the record is decoded
+ * (platform/net/match_preflight.c). */
+typedef struct MdkrOnlineViewRouteQuality {
+    uint16_t    p95_rtt_ms;
+    uint8_t     score; /* 1-10 */
+    const char *band;  /* borrowed; "steady" / "uneven" / "rough" */
+} MdkrOnlineViewRouteQuality;
 
 typedef struct MdkrOnlineViewInput {
     const MdkrSessionState *session;
@@ -136,9 +147,10 @@ typedef struct MdkrOnlineViewInput {
      * from room/service state. NULL means the secure check is still running.
      * The projection validates and copies at most 63 display bytes. */
     const char *verification_phrase;
-    /* This endpoint's settled pre-flight route measurement, or NULL while it
-     * is still running. Locally measured; never accepted from room state. */
-    const MdkrMatchRouteMeasurement *route_quality;
+    /* This endpoint's settled pre-flight route quality, or NULL while the
+     * measurement is still running. Locally measured; never accepted from
+     * room/service state. */
+    const MdkrOnlineViewRouteQuality *route_quality;
     /* Local release configuration only. Never derive this from room/service
      * data. It remains false until the separately reviewed rollback GO. */
     bool race_admission_enabled;
@@ -165,7 +177,7 @@ typedef struct MdkrOnlineViewModel {
     const char *status;
     /* Non-empty only in the explicit human-confirmation preflight state. */
     char verification_phrase[MDKR_ONLINE_VERIFICATION_PHRASE_BYTES];
-    /* One room chip, "~45 ms . steady". Empty until the route settles. */
+    /* One room chip, "~45 ms · steady". Empty until the route settles. */
     char route_quality[MDKR_ONLINE_ROUTE_QUALITY_BYTES];
     MdkrOnlineViewControl primary;
     MdkrOnlineViewControl secondary;

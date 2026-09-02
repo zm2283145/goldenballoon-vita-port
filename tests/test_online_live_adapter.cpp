@@ -608,6 +608,7 @@ struct FullRunResult {
     /* N5 route quality (routeClockStepMs > 0): each endpoint's own settled
      * measurement and the operative entry-timing lead it raced with. */
     bool routeSettled = false;
+    bool injectedOnA = false;
     uint8_t inputDelayA = 0u;
     uint8_t inputDelayB = 0u;
 };
@@ -671,7 +672,8 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
                                bool realInput = false,
                                unsigned severAfterTicks = 0u,
                                bool sendAbortFromA = false,
-                               unsigned routeClockStepMs = 0u) {
+                               unsigned routeClockStepMs = 0u,
+                               unsigned injectP95OnA = 0u) {
     FullRunResult result;
     mdkr_net_roster_runtime_clear();
 
@@ -753,6 +755,13 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             clock.nowMs += routeClockStepMs;
         }
+    }
+
+    /* Give ONE endpoint a slower measured route, so the two resolve DIFFERENT
+     * operative leads over the same descriptor. */
+    if (injectP95OnA != 0u) {
+        result.injectedOnA = mdkr_online_live_adapter_test_set_route_measurement(
+            A.get(), injectP95OnA);
     }
 
     /* Selections + Ready for both endpoints (one seat each). */
@@ -3185,6 +3194,38 @@ void test_route_quality_widens_entry_timing() {
     mdkr_net_roster_runtime_clear();
 }
 
+/* N5 item 5: the determinism claim the widen rests on. ONE endpoint is given a
+ * measured route slow enough to widen while the other stays on the manifest
+ * floor, so the two race with DIFFERENT operative leads over the same
+ * descriptor. Sealed bundles carry their own tick numbers, so the shared
+ * canonical timeline must be unaffected: the two independent endpoints fold the
+ * identical state hash. Without the asymmetry this arm would prove nothing the
+ * symmetric one does not. */
+void test_route_quality_asymmetric_leads_still_converge() {
+    const FullRunResult r = driveTwoAdapters(
+        /*bonusIdentityOnA=*/false, /*raceTicks=*/60u, /*imp=*/nullptr,
+        /*realInput=*/false, /*severAfterTicks=*/0u, /*sendAbortFromA=*/false,
+        /*routeClockStepMs=*/10u, /*injectP95OnA=*/240u);
+    CHECK(r.routeSettled);
+    CHECK(r.injectedOnA);
+    /* A widened off the injected measurement; B measured the real LAN route
+     * and stayed on the floor. */
+    CHECK(r.inputDelayA > r.probeA.descriptor.manifest.input_delay);
+    CHECK(r.inputDelayB == r.probeB.descriptor.manifest.input_delay);
+    CHECK(r.inputDelayA != r.inputDelayB);
+    CHECK(r.raceRun);
+    CHECK(r.raceConverged);
+    CHECK(r.hashA == r.hashB);
+    std::fprintf(stderr,
+                 "[route] asymmetric delay=%u/%u floor=%u hash=%llx/%llx\n",
+                 static_cast<unsigned>(r.inputDelayA),
+                 static_cast<unsigned>(r.inputDelayB),
+                 static_cast<unsigned>(
+                     r.probeA.descriptor.manifest.input_delay),
+                 (unsigned long long)r.hashA, (unsigned long long)r.hashB);
+    mdkr_net_roster_runtime_clear();
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -3208,6 +3249,7 @@ int main(int argc, char **argv) {
     if (routeOnly) {
         test_route_quality_measured_and_agreed();
         test_route_quality_widens_entry_timing();
+        test_route_quality_asymmetric_leads_still_converge();
         std::fprintf(stderr, "online_live_route: %d checks, %d failures\n",
                      g_checks, g_failures);
         return g_failures == 0 ? 0 : 1;

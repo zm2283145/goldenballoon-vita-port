@@ -490,7 +490,16 @@ public:
                 ? phrase_
                 : nullptr;
         in.race_admission_enabled = opts_.raceAdmissionEnabled;
-        in.route_quality = routeMeasured_ ? &routeMeasurement_ : nullptr;
+        /* The projection takes an already-scored, already-named quality so the
+         * browser build of that reducer need not link the preflight unit. */
+        MdkrOnlineViewRouteQuality quality{};
+        if (routeMeasured_) {
+            quality.p95_rtt_ms = routeMeasurement_.p95_rtt_ms;
+            quality.score = routeMeasurement_.score;
+            quality.band = mdkr_match_route_band_name(
+                static_cast<MdkrMatchRouteBand>(routeMeasurement_.band));
+            if (quality.band != nullptr) in.route_quality = &quality;
+        }
         return mdkr_online_view_model_build(&in, out);
     }
 
@@ -529,6 +538,23 @@ public:
     }
 
     /* ---- Test probe --------------------------------------------------- */
+    /* Test-only: install a settled measurement carrying `p95RttMs`, so a lane
+     * can give ONE endpoint a slower route and prove that endpoints leading by
+     * different amounts still commit one canonical timeline. Refused once the
+     * race transport exists, which is where the lead is resolved. */
+    bool setRouteMeasurementForTest(unsigned p95RttMs) {
+        if (raceReady_ || p95RttMs > UINT16_MAX) return false;
+        MdkrMatchRouteMeasurement measurement{};
+        measurement.p95_rtt_ms = static_cast<uint16_t>(p95RttMs);
+        if (!mdkr_match_route_measurement_score(&measurement)) return false;
+        routeMeasurement_ = measurement;
+        routeMeasureRunning_ = false;
+        routeMeasured_ = true;
+        routeReportSent_ = false;
+        bump();
+        return true;
+    }
+
     void fillProbe(MdkrOnlineLiveLaunchProbe *p) const {
         p->descriptorBuilt = descriptorBuilt_;
         p->refusal = refusal_;
@@ -537,6 +563,7 @@ public:
         p->preflightReady = preflightReady_;
         p->descriptor = descriptor_;
         p->routeMeasured = routeMeasured_;
+        p->routeMeasuring = routeMeasureRunning_;
         p->routeMeasurement = routeMeasurement_;
         p->peerRouteMeasurements = 0u;
         if (!preflightInit_) return;
@@ -1532,7 +1559,7 @@ private:
         descriptorBuilt_ = false;
         refusal_ = MDKR_MATCH_LAUNCH_ADMITTED;
         preflightInit_ = false;
-        routeReportSent_ = false; /* the new round republishes the record */
+        resetRouteMeasurement();
         preflightInitLogged_ = false;
         ownSubmitted_ = false;
         preflightReady_ = false;
@@ -1681,7 +1708,7 @@ private:
         haveConfirmedDigest_ = false;
         channelsReady_.clear();
         preflightInit_ = false;
-        routeReportSent_ = false; /* the new round republishes the record */
+        resetRouteMeasurement();
         preflightInitLogged_ = false;
         ownSubmitted_ = false;
         preflightReady_ = false;
@@ -1820,7 +1847,7 @@ private:
         phraseConfirmed_ = false; /* never reuse Ready */
         haveConfirmedDigest_ = false; /* the confirmed transcript is retired */
         preflightInit_ = false;
-        routeReportSent_ = false; /* the new round republishes the record */
+        resetRouteMeasurement();
         ownSubmitted_ = false;
         preflightReady_ = false;
         fragStates_.clear();
@@ -2232,6 +2259,7 @@ private:
                     localEndpointId_))
                 return;
             routeMeasureRunning_ = true;
+            routeQueueDropsAtBegin_ = meshQueueDrops();
             MDKR_ONLINE_LOG("[PREFLIGHT] route measurement begun\n");
         }
         MdkrMatchRouteProbe probe;
@@ -2242,12 +2270,39 @@ private:
         }
         if (!mdkr_match_route_measure_settled(&routeMeasure_, now)) return;
         routeMeasureRunning_ = false;
-        if (!mdkr_match_route_measure_finish(&routeMeasure_,
-                                             &routeMeasurement_))
+        /* The mesh's own bounded queues are the outbound side that must have
+         * drained across the window: an overflow between callback and pump, or
+         * between pump and drainEvents, is exactly the pressure the ladder
+         * deducts for. Saturating: the record's field is 16-bit. */
+        const uint64_t drops = meshQueueDrops() - routeQueueDropsAtBegin_;
+        if (!mdkr_match_route_measure_finish(
+                &routeMeasure_,
+                drops > UINT16_MAX ? UINT16_MAX
+                                   : static_cast<uint32_t>(drops),
+                &routeMeasurement_))
             return;
         routeMeasured_ = true;
         recordRouteMeasurement(now);
         bump();
+    }
+
+    /* Both bounded queues the mesh can overflow while the launcher pumps. */
+    uint64_t meshQueueDrops() const {
+        if (mesh_ == nullptr) return 0u;
+        const MdkrMatchPeerMeshStats stats = mesh_->stats();
+        return stats.droppedInternalEvents + stats.droppedEvents;
+    }
+
+    /* A retired mesh, a rekey or a race-latch reset invalidates a window in
+     * flight: its probe sequences belong to keys that no longer exist, so it
+     * restarts rather than settling on samples from the old connection. */
+    void resetRouteMeasurement() {
+        routeMeasure_ = MdkrMatchRouteMeasureState{};
+        routeMeasurement_ = MdkrMatchRouteMeasurement{};
+        routeMeasureRunning_ = false;
+        routeMeasured_ = false;
+        routeReportSent_ = false;
+        routeQueueDropsAtBegin_ = 0u;
     }
 
     /* The bundle lane fans out to every reachable peer exactly as race input
@@ -2865,6 +2920,31 @@ public:
         a.forcePhraseRekey();
         return a.racePeerLost();
     }
+    /* Pin that a rekey or a re-verify mid-measurement restarts the window
+     * rather than settling on samples sealed under keys that no longer exist.
+     * Arms a running measurement AND a settled record on a mesh-free adapter,
+     * runs the entry point, and reports whether every route field was
+     * cleared. Never called by the launcher. */
+    static bool testRekeyRestartsRouteMeasurement(bool viaReVerify) {
+        MdkrOnlineLiveAdapterOptions o;
+        o.sessionId = 1u;
+        LiveAdapter a(o);
+        if (viaReVerify) a.phraseConfirmed_ = true;
+        a.routeMeasureRunning_ = true;
+        a.routeMeasured_ = true;
+        a.routeReportSent_ = true;
+        a.routeQueueDropsAtBegin_ = 7u;
+        a.routeMeasure_.next_sequence = 40u;
+        a.routeMeasure_.origin_endpoint_id = 11u;
+        a.routeMeasurement_.p95_rtt_ms = 240u;
+        if (viaReVerify) a.beginReVerify(); else a.forcePhraseRekey();
+        return !a.routeMeasureRunning_ && !a.routeMeasured_ &&
+               !a.routeReportSent_ && a.routeQueueDropsAtBegin_ == 0u &&
+               a.routeMeasure_.next_sequence == 0u &&
+               a.routeMeasure_.origin_endpoint_id == 0u &&
+               a.routeMeasurement_.p95_rtt_ms == 0u;
+    }
+
     static bool testReVerifyClearsPeerLoss(bool viaAbort) {
         MdkrOnlineLiveAdapterOptions o;
         o.sessionId = 1u;
@@ -3524,6 +3604,7 @@ private:
     bool routeMeasureRunning_ = false;
     bool routeMeasured_ = false;
     bool routeReportSent_ = false;
+    uint64_t routeQueueDropsAtBegin_ = 0u;
     std::map<uint64_t, uint8_t> peerSlotMask_;
     /* Once-per-epoch lobby loading handshake latches. */
     bool ackLoadedSent_ = false;
@@ -3633,6 +3714,13 @@ std::unique_ptr<IMdkrOnlineAdapter> mdkr_online_live_adapter_create(
     return std::unique_ptr<IMdkrOnlineAdapter>(new LiveAdapter(options));
 }
 
+bool mdkr_online_live_adapter_test_set_route_measurement(
+    IMdkrOnlineAdapter *adapter, unsigned p95_rtt_ms) {
+    if (adapter == nullptr) return false;
+    LiveAdapter *live = adapter->mdkrResolveLive();
+    return live != nullptr && live->setRouteMeasurementForTest(p95_rtt_ms);
+}
+
 bool mdkr_online_live_adapter_probe(const IMdkrOnlineAdapter *adapter,
                                     MdkrOnlineLiveLaunchProbe *out) {
     if (adapter == nullptr || out == nullptr) return false;
@@ -3688,6 +3776,11 @@ MdkrOnlineViewFailure mdkr_online_live_adapter_test_map_lost_reason(
 bool mdkr_online_live_adapter_test_race_end_demotes(
     MdkrOnlineViewFailure incoming, MdkrOnlineViewFailure current) {
     return LiveAdapter::raceEndFailureDemotes(incoming, current);
+}
+
+bool mdkr_online_live_adapter_test_rekey_restarts_route_measurement(
+    bool via_reverify) {
+    return LiveAdapter::testRekeyRestartsRouteMeasurement(via_reverify);
 }
 
 bool mdkr_online_live_adapter_test_rekey_clears_peer_loss(bool via_abort) {

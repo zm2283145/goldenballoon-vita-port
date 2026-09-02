@@ -107,7 +107,8 @@ typedef struct MdkrMatchRouteMeasurement {
     uint16_t jitter_ms;
     uint16_t loss_per_thousand;
     uint16_t late_per_thousand;
-    /* Probes still owed an echo when the drain window closed. */
+    /* Outbound payloads the carrier's own bounded queues dropped across the
+     * window: the queue-drain check, supplied by the caller at finish. */
     uint16_t undrained;
     uint8_t  score; /* 1..10 */
     uint8_t  band;  /* MdkrMatchRouteBand */
@@ -126,9 +127,6 @@ typedef struct MdkrMatchRouteMeasureState {
     uint32_t tick_ms;
     uint32_t next_send_ms[MDKR_MATCH_ROUTE_LANE_COUNT];
     uint32_t next_sequence;
-    /* Probes the replay wanted to emit after the sample table filled: the
-     * outbound side did not drain, which the ladder deducts for. */
-    uint32_t overflow;
     uint32_t sent_ms[MDKR_MATCH_ROUTE_MAX_PROBES];
     uint16_t rtt_ms[MDKR_MATCH_ROUTE_MAX_PROBES];
     uint8_t  lane[MDKR_MATCH_ROUTE_MAX_PROBES];
@@ -164,7 +162,9 @@ bool mdkr_match_route_measure_begin(MdkrMatchRouteMeasureState *state,
                                     uint32_t now_ms, uint32_t tick_ms,
                                     uint64_t origin_endpoint_id);
 /* Emits at most one probe per call; the caller loops until it returns false.
- * Stops emitting once MDKR_MATCH_ROUTE_MEASURE_MS has elapsed. */
+ * Slots are scheduled off each lane's cadence rather than off now_ms, so a
+ * coarse pump replays the slots it owes as one burst on its next call instead
+ * of dropping them, and no lane emits past MDKR_MATCH_ROUTE_MEASURE_MS. */
 bool mdkr_match_route_measure_due(MdkrMatchRouteMeasureState *state,
                                   uint32_t now_ms, MdkrMatchRouteProbe *output);
 /* One returned echo. Unknown, duplicate and unsent sequences are ignored. */
@@ -174,9 +174,11 @@ void mdkr_match_route_measure_echo(MdkrMatchRouteMeasureState *state,
  * settles immediately, so a caller loop always terminates. */
 bool mdkr_match_route_measure_settled(const MdkrMatchRouteMeasureState *state,
                                       uint32_t now_ms);
-/* Reduces the samples to a scored record. False, output unchanged, when no
- * probe was ever sent. */
+/* Reduces the samples to a scored record. `undrained` is the carrier's own
+ * outbound queue-drop count across the window, which only the caller can see.
+ * False, output unchanged, when no probe was ever sent. */
 bool mdkr_match_route_measure_finish(const MdkrMatchRouteMeasureState *state,
+                                     uint32_t undrained,
                                      MdkrMatchRouteMeasurement *output);
 
 typedef struct MdkrMatchPreflightAttestationV1 {
@@ -305,7 +307,7 @@ MdkrMatchPreflightDecodeReason mdkr_match_preflight_attestation_decode_reason(
 const char *mdkr_match_preflight_decode_reason_name(
     MdkrMatchPreflightDecodeReason reason);
 
-/* The 124-byte report crosses the fixed 64-byte encrypted peer carrier as
+/* The 136-byte report crosses the fixed 64-byte encrypted peer carrier as
  * three sequence-bound fragments on its reliable control path. Each returned
  * payload is sealed with payload type PREFLIGHT_FRAGMENT and a globally unique
  * AEAD sequence. Reassembly accepts reordering, exact duplicates and a newer

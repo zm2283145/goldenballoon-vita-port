@@ -302,12 +302,20 @@ struct MdkrOnlineLiveLaunchProbe {
     /* This endpoint's own settled route measurement (zero until it settles),
      * and the record every peer published in its MPF2 report. */
     bool routeMeasured = false;
+    bool routeMeasuring = false; /* a window is open and not yet settled */
     MdkrMatchRouteMeasurement routeMeasurement{};
     unsigned peerRouteMeasurements = 0u;
     MdkrMatchRouteMeasurement peerRouteMeasurement{};
 };
 bool mdkr_online_live_adapter_probe(const IMdkrOnlineAdapter *adapter,
                                     MdkrOnlineLiveLaunchProbe *out);
+
+/* Test-only: install a settled route measurement carrying `p95_rtt_ms` on ONE
+ * endpoint, so a lane can prove that endpoints leading by different amounts
+ * still commit one canonical timeline. Refused once the race transport exists.
+ * Never called by the launcher. */
+bool mdkr_online_live_adapter_test_set_route_measurement(
+    IMdkrOnlineAdapter *adapter, unsigned p95_rtt_ms);
 
 /* ---- post-install per-tick race feed ------------------------------- *
  *
@@ -524,6 +532,11 @@ bool mdkr_online_live_adapter_test_race_end_demotes(
  * received-abort latch instead of the peer-lost one (both fold into the same
  * signal). Never called by the launcher. */
 bool mdkr_online_live_adapter_test_rekey_clears_peer_loss(bool via_abort);
+/* Pin that a rekey (false) or a re-verify (true) mid-measurement restarts the
+ * route window instead of settling on samples sealed under retired keys.
+ * Never called by the launcher. */
+bool mdkr_online_live_adapter_test_rekey_restarts_route_measurement(
+    bool via_reverify);
 bool mdkr_online_live_adapter_test_reverify_clears_peer_loss(bool via_abort);
 /* Force an ICE-down on every REMOTE peer connection of a LIVE mesh (via the
  * transport's existing kill-channels seam) WITHOUT touching signal presence --

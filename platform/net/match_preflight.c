@@ -486,10 +486,9 @@ bool mdkr_match_route_measure_due(MdkrMatchRouteMeasureState *state,
             continue;
         state->next_send_ms[lane] =
             due_ms + route_lane_cadence_ms(state, lane);
-        if (state->next_sequence > MDKR_MATCH_ROUTE_MAX_PROBES) {
-            state->overflow++;
-            continue;
-        }
+        /* The table holds both lanes' whole windows with room to spare; a full
+         * one can only mean a corrupted state, so stop emitting on it. */
+        if (state->next_sequence > MDKR_MATCH_ROUTE_MAX_PROBES) continue;
         slot = state->next_sequence - 1u;
         state->sent_ms[slot] = now_ms;
         state->lane[slot] = (uint8_t)lane;
@@ -525,6 +524,7 @@ bool mdkr_match_route_measure_settled(const MdkrMatchRouteMeasureState *state,
 }
 
 bool mdkr_match_route_measure_finish(const MdkrMatchRouteMeasureState *state,
+                                     uint32_t undrained,
                                      MdkrMatchRouteMeasurement *output) {
     MdkrMatchRouteMeasurement next;
     uint16_t sorted[MDKR_MATCH_ROUTE_MAX_PROBES];
@@ -573,9 +573,8 @@ bool mdkr_match_route_measure_finish(const MdkrMatchRouteMeasureState *state,
         next.jitter_ms = (uint16_t)(deviation / gaps);
     next.loss_per_thousand = (uint16_t)((uint32_t)(sent - answered) *
                                         route_per_thousand_max / sent);
-    next.undrained = state->overflow > UINT16_MAX
-                         ? UINT16_MAX
-                         : (uint16_t)state->overflow;
+    next.undrained =
+        undrained > UINT16_MAX ? UINT16_MAX : (uint16_t)undrained;
     if (!mdkr_match_route_measurement_score(&next)) return false;
     *output = next;
     return true;

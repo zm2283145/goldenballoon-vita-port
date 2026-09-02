@@ -706,7 +706,20 @@ SHAPE_INFO_MAX = {
     # == 0`), which is why the enumerator files it INFO not TRIAGE; runtime
     # array-bounds UBSan over the 8 routes reports no overflow. Measured with
     # tools/sweep_bug_shapes.py, not summed.
-    "equality-cap": 49,
+    #
+    # 49 -> 50, RE-MEASURED 2026-09-02 for the pre-flight route measurement
+    # (task N5). The one added entry is match_preflight.c
+    # `mdkr_match_route_measure_finish:answered != 0`, and it is an empty-set
+    # early-out, not a saturation cap: `answered` counts answered probes into
+    # `uint16_t sorted[MDKR_MATCH_ROUTE_MAX_PROBES]` from a
+    # `for (index = 0; index < sent; index++)` loop with a single `answered++`
+    # per iteration, where `sent` is `next_sequence - 1` and `_due` refuses to
+    # emit past MDKR_MATCH_ROUTE_MAX_PROBES, so `answered <= sent <= capacity`.
+    # The guarded read is `sorted[rank - 1]` with
+    # `rank = ceil(0.95 * answered)`, which is in [1, answered] for every
+    # nonzero `answered`; the comparison exists so the percentile is not taken
+    # over an empty set.
+    "equality-cap": 50,
     # +116 from platform/. Overwhelmingly `1u << port` / `1u << slot` bit masks
     # over small fixed domains and `value >> (i * 8)` byte extractions -- the
     # var-count flavour the enumerator reports without an added constant. The
@@ -837,7 +850,14 @@ SHAPE_INFO_MAX = {
     # are the shift-count TRIAGE entries), and every one is covered at runtime by
     # -fsanitize=shift-exponent, which reported nothing across the 8 routes.
     # Measured with tools/sweep_bug_shapes.py, not summed.
-    "shift-count": 386,
+    #
+    # 386 -> 388, RE-MEASURED 2026-09-02 for the pre-flight route measurement
+    # (task N5). Both added entries are match_preflight.c's new big-endian
+    # 16-bit helpers, `put16` (`value >> 8u`) and `get16` (`input[0] << 8u`) --
+    # the same var-count byte-extraction flavour as the put32/get32/put64/get64
+    # siblings already counted in this population, on a uint16_t with a
+    # literal count of 8.
+    "shift-count": 388,
 }
 
 # Only array-bounds is load-bearing for this class. pointer-overflow is kept

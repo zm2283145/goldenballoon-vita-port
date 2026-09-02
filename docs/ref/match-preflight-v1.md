@@ -148,7 +148,10 @@ Each probe is one fixed 64-byte payload:
 
 The recipient returns the identical probe with kind `1`. The bundle lane's echo
 is broadcast like race input, so only the endpoint named in the origin field
-times it. Non-zero filler, an unknown lane and a zero sequence or origin all
+times it. First echo wins, so with three or four racers a probe's round trip is
+the fastest peer's rather than the worst pair's — a 2P-era limitation, matching
+the two-racer online contract this ships under; worst-pair reduction belongs
+with the 3-4P work. Non-zero filler, an unknown lane and a zero sequence or origin all
 refuse to decode, and a probe can only be decoded before the race transport
 exists.
 
@@ -171,7 +174,7 @@ the value does not exceed, or the row's worst:
 | jitter (ms) | 5 → 0, 12 → 1, 25 → 2, 45 → 3 | 4 |
 | loss (‰) | 5 → 0, 20 → 2, 50 → 4 | 6 |
 | late (‰) | 10 → 0, 50 → 1, 150 → 2 | 3 |
-| undrained | zero → 0 | 3 |
+| undrained (carrier queue drops) | zero → 0 | 3 |
 
 The result is clamped to 1-10 and named:
 
@@ -194,7 +197,7 @@ session started on beside every later stall.
 | 126 | 2 | jitter, ms |
 | 128 | 2 | loss, per thousand |
 | 130 | 2 | late samples, per thousand |
-| 132 | 2 | undrained probes |
+| 132 | 2 | undrained: carrier outbound queue drops (saturating) |
 | 134 | 1 | score, 1-10 |
 | 135 | 1 | band (`1` rough, `2` uneven, `3` steady) |
 
@@ -222,8 +225,10 @@ from its **own** measured p95 RTT — `ceil(p95 / tick_ms)`, minus the floor
 already covered, clamped to `[0, 4 − floor]` — up to a hard cap of 4 authored
 ticks. Leading further is local: bundles carry their own tick numbers, so two
 endpoints leading by different amounts still commit the identical canonical
-timeline, which the loopback lane proves by folding the same state hash on both
-endpoints with the widen armed.
+timeline. The loopback lane proves this directly: one endpoint is given a
+measured route slow enough to widen while the other stays on the floor, the two
+race with different operative leads over the same descriptor, and the two
+independent endpoints fold the identical canonical state hash.
 
 ### Version refusal
 

@@ -1223,16 +1223,29 @@ over the 1-10 score, degenerate records (a rate above 100% rejects without
 mutating the caller's record; a route that lost everything still floors at one),
 the entry-timing widen from measured p95 RTT against the manifest floor and its
 four-tick cap, the fixed 64-byte probe payload codec, and the caller-clocked
-measurement phase replaying both lanes for 6 s with a 1 s drain. Its positive
-control is an impairment lane: 8% loss injected on the unreliable bundle lane
-through `net_impairment` must score in the `rough` band, and a neutered band
-mapping fails that same assertion. `online_live_route`
-(`mdkr_online_live_adapter_test --route`) runs the whole thing over two real
-loopback DTLS meshes: both endpoints exchange the record in their `MPF2` reports
-and must agree on the band, and a second run with a round trip a single authored
-tick cannot absorb must widen BOTH endpoints' operative lead above the manifest
-floor while the two independent endpoints still fold the identical canonical
-state hash.
+measurement phase replaying both lanes for 6 s with a 1 s drain, and the
+queue-drain term (the carrier's own outbound bounded-queue drop count, which
+only the caller can see) reaching the record and its rung. Its impairment lane
+injects 8% loss on the unreliable bundle lane through `net_impairment` and
+requires the `rough` band; the positive control for that lane is a real
+mutation of the production ladder — set `route_steady_floor` in
+`platform/net/match_preflight.c` to `1`, so every score bands steady, and
+"8% injected loss scores in the rough band" fails.
+
+`online_live_route` (`mdkr_online_live_adapter_test --route`) runs the whole
+thing over two real loopback DTLS meshes, in three arms. Both endpoints exchange
+the record in their `MPF2` reports and must agree on the band, and a LAN-shaped
+route must leave the agreed lead alone. A route with a round trip a single
+authored tick cannot absorb must widen BOTH endpoints' operative lead above the
+manifest floor; returning the floor unconditionally from `setUpRace` fails
+exactly those two delay assertions while convergence still passes. The third arm
+gives ONE endpoint a slower measured route
+(`mdkr_online_live_adapter_test_set_route_measurement`), so the two race with
+DIFFERENT operative leads over the same descriptor and must still fold the
+identical canonical state hash — the determinism claim the widen rests on.
+`online_live_adapter_beta` pins that a rekey or a re-verify mid-measurement
+restarts the whole route window rather than settling on samples sealed under
+retired keys; clearing only the publication latch (the pre-fix shape) fails it.
 
 `check_rollback_authority_wrapper.py` is the suite-facing entry for the frozen
 mutable-authority census and its omitted-state positive control.

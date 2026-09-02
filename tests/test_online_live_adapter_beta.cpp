@@ -143,6 +143,17 @@ static void test_reverify_paths_clear_stale_peer_loss() {
     CHECK(!mdkr_online_live_adapter_test_reverify_clears_peer_loss(true));
 }
 
+/* N5: a rekey or a re-verify retires every peer key, so a route measurement in
+ * flight is measuring sequences sealed under keys that no longer exist and a
+ * SETTLED record describes a connection that is gone. Both entry points must
+ * clear the whole route state -- the open window, the record, the publication
+ * latch and the queue-drop baseline -- so the next connection measures itself
+ * instead of inheriting the old one's numbers. */
+static void test_reverify_paths_restart_route_measurement() {
+    CHECK(mdkr_online_live_adapter_test_rekey_restarts_route_measurement(false));
+    CHECK(mdkr_online_live_adapter_test_rekey_restarts_route_measurement(true));
+}
+
 /* RETRY must genuinely retry (audit story gap #2). Pre-Ready -- the create/
  * join round trip failed or stalled, the transport worker is gone -- a RETRY
  * must hand the panel the rebuild sentinel (kMdkrOnlineLiveStepRetryRebuild)
@@ -494,6 +505,7 @@ int main() {
     test_map_lost_reason_in_race_branches();
     test_race_end_no_demotion_rule();
     test_reverify_paths_clear_stale_peer_loss();
+    test_reverify_paths_restart_route_measurement();
     test_retry_genuinely_retries();
     test_signal_lost_during_preflight_fronts_service_card();
     test_owning_wrapper_accessors_resolve_through_wrapper();
