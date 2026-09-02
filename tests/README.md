@@ -5626,8 +5626,16 @@ ROM, network, or community model.
 ## Workshop tool history — `tests/check_character_workshop_history_ui.py`
 
 This WebGPU gate generates and installs an isolated CC0 fixture, then opens the
-exact saved Identity, Rig & Motion, Gameplay, Offset Studio, Performance, and
-Test tabs. It requires source-digest-bound history controls for Identity, Profile,
+exact saved Overview, Package, Identity, Rig & Motion, Gameplay, Offset Studio,
+Performance, and Test tabs. The 200% Overview route requires each unfinished
+readiness area and the header next step to announce the workspace they open,
+and the Package route requires the vehicle echo to name Offset Studio; no tab
+may render another tab's undo/redo controls. Static Workshop copy no speech
+walk can report -- the recent-status stack and its depth, the focused-route
+undo chords, the plain-language fit status, the keyboard/controller
+expectation, and the player-to-controller-port line -- is pinned against
+ui_settings.cpp. Positive control: renaming any of them, or lowering the
+status depth, fails the gate. It requires source-digest-bound history controls for Identity, Profile,
 Rig, Fit/review, Performance assembly, and Test setup, and verifies that merely
 rendering every route leaves the installed source and cache byte-for-byte
 unchanged. The 200% keyboard/speech Gameplay route additionally requires all

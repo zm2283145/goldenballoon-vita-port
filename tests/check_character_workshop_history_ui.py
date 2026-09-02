@@ -60,6 +60,60 @@ def verify_status_capture_scope() -> None:
         )
 
 
+def verify_workshop_ux_contract() -> None:
+    """Pin the Workshop UX surfaces a rendered walk cannot report.
+
+    The routes below speak every focusable control, so the readiness links,
+    the vehicle echo and the deletion confirmation are proven by what the
+    binary said. Static paragraphs, a tab-bar flag and a keyboard route are
+    not focusable and would survive their own deletion silently.
+    """
+
+    source = (ROOT / "platform" / "app" / "ui_settings.cpp").read_text(
+        encoding="utf-8"
+    )
+    for marker, lost in (
+        # The compact layout reaches the off-screen tabs through the tab bar's
+        # own popup button, and the UX trace reads the same helper.
+        ("ImGuiTabBarFlags_TabListPopupButton",
+         "the compact tab bar dropped its full-list popup button"),
+        ("characterWorkshopTabBarFlags(compact))",
+         "the tab bar stopped sharing its flags with the UX trace"),
+        # A later success must not erase the failure before it.
+        ('ImGui::SeparatorText("Recent activity")',
+         "the Workshop lost its recent-status stack"),
+        ("g_workshopStatusHistory.resize(kWorkshopStatusHistoryLimit)",
+         "the status stack stopped honouring its own depth"),
+        # Undo belongs to the tool on screen, and an active text field keeps
+        # its native chord.
+        ("ImGuiInputFlags_RouteFocused",
+         "the history chords stopped yielding to a focused editor"),
+        ("ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Z",
+         "the visible tool lost its undo chord"),
+        ("ImGui::Shortcut(\n            ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z",
+         "the visible tool lost its redo chord"),
+        # One name for the vehicle workspace, in the header line and in the
+        # Package tab's echo. The speech walk below reports the friendly name
+        # of each control, not the words on it.
+        ('readiness.nextActionLabel + " \u00b7 in " +',
+         "the header next step stopped naming the workspace it opens"),
+        ('ImGui::SmallButton("Change in Offset Studio")',
+         "the Package tab's vehicle echo stopped naming Offset Studio"),
+        # Plain-language fit status and the two input-expectation lines.
+        ('"Fit check: Character Select %s \u00b7 %u of %u vehicles reviewed '
+         'since your last change"',
+         "the Offset Studio fit status left plain language"),
+        ('"A keyboard is required to enter source paths, names, and license '
+         'details. Assigning, enabling, and testing an installed character is '
+         'fully navigable with a controller."',
+         "the Workshop stopped saying which parts need a keyboard"),
+        ('"Player N = controller port N for local multiplayer."',
+         "the assignment rows stopped mapping players to controller ports"),
+    ):
+        if marker not in source:
+            raise RuntimeError(lost)
+
+
 def install_fixture(root: Path, *, display_name: str = "History Proof",
                     package_id: str = PACKAGE_ID,
                     source_name: str = "source") -> Path:
@@ -229,7 +283,8 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
     saves = tab_root / "saves"
     prefs.mkdir(parents=True)
     saves.mkdir()
-    accessible = tab in ("rig-motion", "profile", "vehicles", "performance")
+    accessible = tab in ("overview", "package", "rig-motion", "profile",
+                         "vehicles", "performance")
     preferences = (
         f"character_workshop_last_selected={PACKAGE_ID}\n"
         f"character_workshop_last_tab={tab}\n" +
@@ -306,13 +361,14 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
             f"{tab} omitted the complete responsive Workshop UX contract\n"
             + process.stdout[-8000:]
         )
-    for tool in expected:
-        marker = f"character-history tool={tool} "
-        if marker not in process.stdout:
-            raise RuntimeError(
-                f"{tab} did not render {tool} history controls\n"
-                f"{process.stdout[-8000:]}"
-            )
+    observed = set(
+        re.findall(r"character-history tool=(.+?) source=", process.stdout)
+    )
+    if observed != set(expected):
+        raise RuntimeError(
+            f"{tab} rendered history controls for {sorted(observed)}, "
+            f"expected {sorted(expected)}\n{process.stdout[-8000:]}"
+        )
     if "character-workshop-primary kind=open-readiness-task " not in process.stdout:
         raise RuntimeError(
             f"{tab} bypassed the selected installed character's readiness "
@@ -372,6 +428,37 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
                     "profile keyboard/speech walk missed " + spoken
                     + "\n" + process.stdout[-8000:]
                 )
+    if tab == "overview":
+        # Readiness leads, and every unfinished area is one press from its
+        # own workspace.
+        for spoken in (
+            "text=Rig and motion, Review. Opens the Workshop workspace that "
+            "can complete this readiness area.",
+            "text=Vehicle fit, Review. Opens the Workshop workspace that "
+            "can complete this readiness area.",
+            "text=Review rig and motion, Rig & Motion. Opens the single "
+            "highest-priority unfinished Workshop area.",
+            "text=Review rig and motion, Rig & Motion. Opens the selected "
+            "character's highest-priority next step",
+        ):
+            if spoken not in process.stdout:
+                raise RuntimeError(
+                    "Overview lost a readiness jump-link: " + spoken + "\n"
+                    + process.stdout[-8000:]
+                )
+    if tab == "package":
+        # One name for the vehicle workspace, and the Package tab echoes the
+        # choice it does not own.
+        echo = (
+            "text=Change vehicles to fit and use, Car, Hovercraft, Plane. "
+            "Opens Offset Studio, where presentation eligibility and each "
+            "enabled vehicle's exact fit are reviewed."
+        )
+        if echo not in process.stdout:
+            raise RuntimeError(
+                "Package tab lost its Offset Studio vehicle echo\n"
+                + process.stdout[-8000:]
+            )
     if tab == "rig-motion":
         marker = (
             "character-animation-intent package=" + PACKAGE_ID +
@@ -549,12 +636,15 @@ def main() -> int:
     rom = args.rom.resolve() if args.rom is not None else None
     try:
         verify_status_capture_scope()
+        verify_workshop_ux_contract()
         with tempfile.TemporaryDirectory(
                 prefix="mdkr-workshop-history-") as temporary:
             root = Path(temporary)
             characters = install_fixture(root)
             before = inventory(characters)
             routes = (
+                ("overview", ()),
+                ("package", ()),
                 ("identity", ("Identity",)),
                 ("rig-motion", ("Rig & Motion",)),
                 ("profile", ("Gameplay",)),

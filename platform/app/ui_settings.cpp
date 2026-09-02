@@ -86,6 +86,7 @@ struct WorkshopStatusEntry {
 // A later success must not erase the explanation for a preceding failure.
 // Keep a small process-local history: it is enough context to recover without
 // turning the Workshop into a log viewer, and every item can be acknowledged.
+constexpr size_t kWorkshopStatusHistoryLimit = 3u;
 std::vector<WorkshopStatusEntry> g_workshopStatusHistory;
 uint32_t g_workshopStatusSerial = 0u;
 unsigned g_workshopStatusCaptureDepth = 0u;
@@ -160,8 +161,8 @@ void setStatus(const char *text, const ImVec4 &color) {
     g_workshopStatusHistory.insert(
         g_workshopStatusHistory.begin(),
         {g_status, color, ++g_workshopStatusSerial});
-    if (g_workshopStatusHistory.size() > 3u) {
-        g_workshopStatusHistory.resize(3u);
+    if (g_workshopStatusHistory.size() > kWorkshopStatusHistoryLimit) {
+        g_workshopStatusHistory.resize(kWorkshopStatusHistoryLimit);
     }
 }
 
@@ -23598,15 +23599,22 @@ void loadCharacterWorkshopTab() {
     g_characterWorkshopTabForceSelection = true;
 }
 
+// A narrow viewport cannot show seven scrolling tabs at once, so the compact
+// layout also offers the whole list from the tab bar's popup button. One
+// function answers both the tab bar and the UX trace, so the trace cannot
+// claim a flag the tab bar never received.
+ImGuiTabBarFlags characterWorkshopTabBarFlags(bool compact) {
+    return ImGuiTabBarFlags_FittingPolicyScroll |
+           (compact ? ImGuiTabBarFlags_TabListPopupButton
+                    : ImGuiTabBarFlags_None);
+}
+
 void drawCharacterWorkshopTabs(bool compact) {
     loadCharacterWorkshopTab();
     CharacterWorkshopTab visible = g_characterWorkshopTab;
-    const ImGuiTabBarFlags tabFlags = ImGuiTabBarFlags_FittingPolicyScroll |
-        (compact ? ImGuiTabBarFlags_TabListPopupButton
-                 : ImGuiTabBarFlags_None);
     if (ImGui::BeginTabBar(
             "##character-workshop-tabs",
-            tabFlags)) {
+            characterWorkshopTabBarFlags(compact))) {
         for (size_t index = 0u;
              index < static_cast<size_t>(CharacterWorkshopTab::Count);
              ++index) {
@@ -27292,11 +27300,19 @@ bool drawCustomCharactersSection(bool compact) {
         const std::string traceKey = std::string(compact ? "compact" : "wide") +
             (AppTheme::uiScale() >= 1.99f ? "-200" : "-standard");
         if (tracedWorkshopUx.insert(traceKey).second) {
+            /* Two of these claims are read out of the state that produces
+             * them: the tab-bar flag comes from the same helper the tab bar
+             * uses, and the history depth is the cap setStatus enforces. A
+             * literal would stay green after either was deleted. */
             std::fprintf(
                 stderr,
-                "[app-ui] character-workshop-ux layout=%s scale=%.1f tab-list-popup=%d readiness-row-links=1 header-next=1 status-history=3 undo=visible-tool library-next=1 rig-band=1 overlay-guidance=1 vehicle-fit-use=1 delete=name-or-id+hold controller-port=1 keyboard-authoring=required pad-play-setup=complete\n",
+                "[app-ui] character-workshop-ux layout=%s scale=%.1f tab-list-popup=%d readiness-row-links=1 header-next=1 status-history=%zu undo=visible-tool library-next=1 rig-band=1 overlay-guidance=1 vehicle-fit-use=1 delete=name-or-id+hold controller-port=1 keyboard-authoring=required pad-play-setup=complete\n",
                 compact ? "compact" : "wide",
-                static_cast<double>(AppTheme::uiScale()), compact ? 1 : 0);
+                static_cast<double>(AppTheme::uiScale()),
+                (characterWorkshopTabBarFlags(compact) &
+                 ImGuiTabBarFlags_TabListPopupButton) != 0
+                    ? 1 : 0,
+                kWorkshopStatusHistoryLimit);
         }
     }
     if (mdkr_render_backend() != MDKR_BACKEND_WEBGPU) {
