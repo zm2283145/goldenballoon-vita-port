@@ -223,7 +223,7 @@ VALIDATE_OUTPUT_ONLY=false
 # Default OFF, and additive only: when true this adds two -D flags to the
 # CMake configure below and skips one cache assertion that those flags make
 # inapplicable (see the two sites tagged --allow-online-beta further down).
-# Every other line in this script runs exactly as it does today. macos-release.yml
+# Every other line in this script is unaffected by it. macos-release.yml
 # never passes it automatically; a release opts the online beta in by invoking
 # this script with --allow-online-beta explicitly.
 ALLOW_ONLINE_BETA=false

@@ -85,7 +85,7 @@ First-launch notes:
 
 ## Online multiplayer
 
-Race a friend over the internet with a private six-digit code or QR code.
+Race a friend over the internet with a private six-digit code.
 Full release notes for each version are in [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
 What online does not do yet:
@@ -94,8 +94,8 @@ What online does not do yet:
 - A race is two players, not more.
 - You can't join a race after it starts.
 - If the host leaves, the race ends.
-- Some networks can't connect two players directly. When that happens, a
-  relay carries the connection automatically.
+- Some networks can't connect two players directly. There is no relay
+  yet, so those pairs can't race online for now.
 - The service that pairs you can see that you're both connected.
 
 ## Platforms

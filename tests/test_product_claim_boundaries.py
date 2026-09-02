@@ -148,8 +148,8 @@ def main() -> int:
         require_contains(path, "If the host leaves, the race ends.")
         require_contains(
             path,
-            "Some networks can't connect two players directly. When that "
-            "happens, a relay carries the connection automatically.",
+            "Some networks can't connect two players directly. There is no "
+            "relay yet, so those pairs can't race online for now.",
         )
         require_contains(
             path, "The service that pairs you can see that you're both connected."

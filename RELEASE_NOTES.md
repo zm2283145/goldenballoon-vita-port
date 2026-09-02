@@ -42,8 +42,8 @@ they match, you know you are linked to the right person.
 - A race is two players, not more.
 - You can't join a race after it starts.
 - If the host leaves, the race ends.
-- Some networks can't connect two players directly. When that happens, a
-  relay carries the connection automatically.
+- Some networks can't connect two players directly. There is no relay
+  yet, so those pairs can't race online for now.
 - The service that pairs you can see that you're both connected.
 
 Online is early access and a work in progress. Please tell us what you hit —
