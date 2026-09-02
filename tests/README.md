@@ -2206,6 +2206,17 @@ Its exhaustive one-byte mutation loop rejects every corrupt byte. Peer
 ownership is deliberately absent from both codecs; the launcher supplies an
 authenticated slot mask, and a decoded bundle may only narrow that mask.
 
+`match_input_repair` pins the gap-repair codec that answers a loss burst the
+bundle's three-tick redundancy has outlived: one 64-byte `MR` v1 message is
+either a request naming `{epoch, first_tick, count}` or an answer carrying one
+canonical slot's contiguous run of up to twelve pad samples. A request may not
+exceed the rollback budget (`MDKR_ROLLBACK_MAX_INPUT_AGE_TICKS`), may not name
+a slot and may not carry samples; an answer's cells past `count` must be zero
+on the wire, so two encodings of one run are byte-identical. Carried samples
+are held to the bundle carrier's own shape (present, sticks within +/-80). The
+exhaustive one-byte mutation loop rejects every corrupt byte, and an unknown
+version or kind is refused rather than parsed on its byte layout.
+
 `net_impairment` and `net_clock` own deterministic hostile-environment
 schedules. The named LAN/regional/poor/outage/adversarial packet profiles cover
 latency, jitter, loss, duplication, reorder, corruption, a cadence-derived

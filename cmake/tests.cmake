@@ -882,6 +882,14 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR})
     add_test(NAME match_input_bundle COMMAND mdkr_match_input_bundle_test)
 
+    add_executable(mdkr_match_input_repair_test
+        ${CMAKE_SOURCE_DIR}/tests/test_match_input_repair.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_input_repair.c)
+    target_include_directories(mdkr_match_input_repair_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR})
+    add_test(NAME match_input_repair COMMAND mdkr_match_input_repair_test)
+
     add_executable(mdkr_match_peer_graph_test
         ${CMAKE_SOURCE_DIR}/tests/test_match_peer_graph.c
         ${CMAKE_SOURCE_DIR}/platform/net/match_peer_graph.c)
