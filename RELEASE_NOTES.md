@@ -36,6 +36,16 @@ they match, you know you are linked to the right person.
   update.
 - Online play runs over Golden Balloon's free hosted service.
 
+**What online does not do yet:**
+
+- Both players must be on the same platform.
+- A race is two players, not more.
+- You can't join a race after it starts.
+- If the host leaves, the race ends.
+- Some networks can't connect two players directly. When that happens, a
+  relay carries the connection automatically.
+- The service that pairs you can see that you're both connected.
+
 Online is early access and a work in progress. Please tell us what you hit —
 good or bad — on the GitHub issues page. Your reports decide what gets
 improved next.

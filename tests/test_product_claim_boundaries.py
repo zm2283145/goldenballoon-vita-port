@@ -138,6 +138,22 @@ def main() -> int:
         "docs/APP_SHELL.md",
         "Drag-and-drop and the typed path are the documented\npaths on Linux",
     )
+    # Online boundaries: the same six facts pinned in both places a player
+    # reads them (RELEASE_NOTES.md's current release section, README.md's
+    # online section), so a future rewrite cannot drop one from either.
+    for path in ("RELEASE_NOTES.md", "README.md"):
+        require_contains(path, "Both players must be on the same platform.")
+        require_contains(path, "A race is two players, not more.")
+        require_contains(path, "You can't join a race after it starts.")
+        require_contains(path, "If the host leaves, the race ends.")
+        require_contains(
+            path,
+            "Some networks can't connect two players directly. When that "
+            "happens, a relay carries the connection automatically.",
+        )
+        require_contains(
+            path, "The service that pairs you can see that you're both connected."
+        )
     print("product claim boundaries passed")
     return 0
 

@@ -67,6 +67,9 @@ First-launch notes:
 - **An optional camera that stays out of walls**, with a reduced-motion
   option. Off by default — the authored camera is the default everywhere.
 - **Local multiplayer** for 2–4 players, per-controller binding, split-screen.
+- **Online multiplayer (beta)** for two players, over the internet, with a
+  private six-digit code — see [below](#online-multiplayer) for what it
+  doesn't do yet.
 - **Three extra racers.** Taj, Wizpig, and Terry are playable with their own
   identities and vehicles. Beat Wizpig a second time or enter `WIZPIGPOWER`;
   beat the Dino Domain rematch or enter `TERRYFLY`. Bonus-racer runs cannot
@@ -79,6 +82,21 @@ First-launch notes:
   language menu on every ROM revision.
 - **Saves that behave**: EEPROM progress, ghosts, and settings persist —
   including in the browser, with export/import in the launcher.
+
+## Online multiplayer
+
+Race a friend over the internet with a private six-digit code or QR code.
+Full release notes for each version are in [RELEASE_NOTES.md](RELEASE_NOTES.md).
+
+What online does not do yet:
+
+- Both players must be on the same platform.
+- A race is two players, not more.
+- You can't join a race after it starts.
+- If the host leaves, the race ends.
+- Some networks can't connect two players directly. When that happens, a
+  relay carries the connection automatically.
+- The service that pairs you can see that you're both connected.
 
 ## Platforms
 
