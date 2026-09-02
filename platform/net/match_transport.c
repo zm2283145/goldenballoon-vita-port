@@ -90,6 +90,42 @@ static void detect_unrecoverable_gaps(MdkrMatchTransport *transport) {
     }
 }
 
+bool mdkr_match_transport_input_gap(
+    const MdkrMatchTransport *transport, unsigned slot,
+    uint32_t *first_tick, uint32_t *count) {
+    uint32_t first;
+    uint32_t run;
+    uint32_t tick;
+    if (transport == NULL || !transport->ready || first_tick == NULL ||
+        count == NULL || slot >= MDKR_NET_INPUT_SLOTS ||
+        (transport->remote_slot_mask & (uint8_t)(1u << slot)) == 0u)
+        return false;
+    /* The confirmation frontier is advanced by the drain, so this reads the
+     * value the last drain left rather than moving it. */
+    first = transport->remote_have_confirmed[slot]
+        ? transport->remote_confirmed_through[slot] + 1u
+        : transport->history.first_tick;
+    if (transport->history.current_tick != first &&
+        !mdkr_net_tick_after(transport->history.current_tick, first))
+        return false;
+    run = 0u;
+    tick = first;
+    while (run < MDKR_MATCH_TRANSPORT_ROLLBACK_TICKS &&
+           (tick == transport->history.current_tick ||
+            tick_before(tick, transport->history.current_tick))) {
+        const MdkrNetInputCell *cell =
+            &transport->history.cells[tick % MDKR_NET_INPUT_CAPACITY];
+        if (cell->occupied && cell->tick == tick &&
+            cell->status[slot] == MDKR_NET_INPUT_RECEIVED) break;
+        run++;
+        tick++;
+    }
+    if (run == 0u) return false;
+    *first_tick = first;
+    *count = run;
+    return true;
+}
+
 bool mdkr_match_transport_init(
     MdkrMatchTransport *transport, MdkrSessionBridge *bridge,
     uint32_t first_tick) {

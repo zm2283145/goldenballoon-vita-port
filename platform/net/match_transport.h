@@ -138,6 +138,17 @@ bool mdkr_match_transport_inputs_for_tick(
     MdkrInputSet *out);
 const MdkrMatchTransportStats *mdkr_match_transport_stats(
     const MdkrMatchTransport *transport);
+/* The contiguous run of authored ticks a REMOTE slot is still missing at the
+ * drain frontier, capped at MDKR_MATCH_TRANSPORT_ROLLBACK_TICKS (a longer run
+ * could not be reconciled even if it arrived). False when the slot is not
+ * remote, the frontier has not reached the gap, or nothing is missing. The
+ * caller decides whether the run has outlived its carrier's redundancy and is
+ * worth repairing; this reports only what the history knows.
+ * Read-only: it never advances confirmation or latches recovery. */
+bool mdkr_match_transport_input_gap(
+    const MdkrMatchTransport *transport, unsigned slot,
+    uint32_t *first_tick, uint32_t *count);
+
 /* Sticky, exact-epoch recovery request. Once a gap can no longer be replayed,
  * the launcher must stop admission/gameplay and choose resync or disconnect. */
 bool mdkr_match_transport_recovery(

@@ -135,6 +135,22 @@ int main(void) {
            stats->out_of_window == 0u &&
            stats->drained == 2u && stats->drain_rejected == 1u);
 
+    /* The repair lane reads the same bookkeeping through its own accessor:
+     * the contiguous run a REMOTE slot is missing at the drain frontier,
+     * without advancing confirmation or latching anything. */
+    {
+        MdkrMatchTransport gap_before = transport;
+        uint32_t gap_first = 0u;
+        uint32_t gap_count = 0u;
+        assert(mdkr_match_transport_input_gap(&transport, 3u, &gap_first,
+                                              &gap_count));
+        assert(gap_first == 101u && gap_count == 1u);
+        /* A LOCAL slot is never a repair target: this endpoint authors it. */
+        assert(!mdkr_match_transport_input_gap(&transport, 0u, &gap_first,
+                                               &gap_count));
+        assert(memcmp(&transport, &gap_before, sizeof(transport)) == 0);
+    }
+
     /* An authenticated timeline gap is allowed only while its predecessor is
      * still retained. Once exact replay is impossible, the request is sticky
      * and typed so launcher UX can recover instead of crashing the engine. */
@@ -145,6 +161,16 @@ int main(void) {
          future++) {
         assert(mdkr_match_transport_drain_tick(
             &transport, 7u, future, local, 2u));
+    }
+    {
+        /* The run the frontier has left behind is far longer than the batch a
+         * repair may name, so the accessor reports exactly the cap. */
+        uint32_t gap_first = 0u;
+        uint32_t gap_count = 0u;
+        assert(mdkr_match_transport_input_gap(&transport, 3u, &gap_first,
+                                              &gap_count));
+        assert(gap_first == 101u &&
+               gap_count == MDKR_MATCH_TRANSPORT_ROLLBACK_TICKS);
     }
     assert(mdkr_match_transport_recovery(&transport, &recovery));
     assert(recovery.reason == MDKR_MATCH_RECOVERY_INPUT_GAP &&
