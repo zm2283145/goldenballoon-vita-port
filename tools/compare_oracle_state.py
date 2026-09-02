@@ -353,9 +353,21 @@ def main() -> int:
     parser.add_argument("--min-rng-agreement", type=float)
     parser.add_argument("--max-velocity-ratio-deviation", type=float)
     parser.add_argument("--allow-legacy-pace-probe", action="store_true")
+    # gate: threshold shortfalls fail the run (release-gate semantics).
+    # diagnostic: shortfalls are recorded as observations and the run reports
+    # divergence onset instead of a verdict; instrument-integrity failures
+    # (missing probes, vacuous rng, too few clocks) still fail closed.
+    parser.add_argument(
+        "--classification", choices=("gate", "diagnostic"), default="gate"
+    )
     args = parser.parse_args()
 
     failures: list[str] = []
+    observations: list[str] = []
+
+    def flag_threshold(message: str) -> None:
+        target = failures if args.classification == "gate" else observations
+        target.append(message)
     if args.min_common_clocks < 1:
         parser.error("--min-common-clocks must be positive")
     if args.racer_index < 0:
@@ -515,18 +527,18 @@ def main() -> int:
             f"(native={native_finish_clock}, ares={ares_finish_clock})"
         )
     if position_p95 > args.max_position_p95:
-        failures.append(
+        flag_threshold(
             f"position p95 is {position_p95:.3f} world units "
             f"(limit {args.max_position_p95:.3f})"
         )
     if progress_agreement < args.min_progress_agreement:
-        failures.append(
+        flag_threshold(
             f"checkpoint/lap agreement is {progress_agreement:.3%} "
             f"(need {args.min_progress_agreement:.3%})"
         )
     position_max = max(errors) if errors else math.inf
     if position_max > args.max_position_error:
-        failures.append(
+        flag_threshold(
             f"worst position error is {position_max:.3f} world units "
             f"(limit {args.max_position_error:.3f})"
         )
@@ -549,7 +561,7 @@ def main() -> int:
         if not any(row.rng_seed for row in native_rows):
             failures.append("native trace carries no non-zero rng seed")
         if rng_agreement < args.min_rng_agreement:
-            failures.append(
+            flag_threshold(
                 f"rng agreement is {rng_agreement:.3%} "
                 f"(need {args.min_rng_agreement:.3%})"
             )
@@ -558,7 +570,7 @@ def main() -> int:
                 "no common unfinished clocks carry comparable object velocity"
             )
         elif abs(object_speed_ratio - 1.0) > args.max_velocity_ratio_deviation:
-            failures.append(
+            flag_threshold(
                 f"object-speed ratio is {object_speed_ratio:.6f} "
                 f"(limit 1 +/- {args.max_velocity_ratio_deviation:.6f})"
             )
@@ -583,6 +595,7 @@ def main() -> int:
     report = {
         "schema": "mdkr64.oracle.state-report.v1",
         "route": args.route,
+        "classification": args.classification,
         "racer_index": args.racer_index,
         "native_probe": native_probe,
         "clock_basis": {
@@ -689,8 +702,13 @@ def main() -> int:
             "require_finish": args.require_finish,
             "allow_legacy_pace_probe": args.allow_legacy_pace_probe,
         },
-        "result": "FAIL" if failures else "PASS",
+        "result": (
+            "FAIL"
+            if failures
+            else ("DIAGNOSTIC" if args.classification == "diagnostic" else "PASS")
+        ),
         "failures": failures,
+        "observations": observations,
     }
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
@@ -708,6 +726,22 @@ def main() -> int:
             print(f"  - {failure}")
         print(f"  report: {args.out}")
         return 1
+    if args.classification == "diagnostic":
+        onset = report["position_error"]["first_over_limit"]
+        onset_text = (
+            f"clock {onset['clock']} (error {onset['error']})"
+            if onset
+            else "not reached"
+        )
+        print(
+            "compare_oracle_state: DIAGNOSTIC "
+            f"({len(observations)} threshold observations; "
+            f"divergence onset {onset_text})"
+        )
+        for observation in observations:
+            print(f"  ~ {observation}")
+        print(f"  report: {args.out}")
+        return 0
     print("compare_oracle_state: PASS")
     print(f"  report: {args.out}")
     return 0

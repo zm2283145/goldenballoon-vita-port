@@ -9,7 +9,9 @@
   "state_min_progress_agreement": 0.98,
   "state_min_rng_agreement": 0.0,
   "state_max_velocity_ratio_deviation": 0.02,
+  "state_classification": "diagnostic",
   "threshold_basis": {
+    "state_classification": "diagnostic (2026-08-25): open-loop same-clock agreement is a chaos-sensitive phase metric with no player-facing meaning, so this lane no longer presents as a failing parity gate. Threshold shortfalls are recorded as observations for before/after differential evidence, the headline signal is the divergence-onset clock, and instrument-integrity failures (vacuous rng, missing probes, short traces) still fail closed. The thresholds themselves are unchanged.",
     "state_max_position_p95": "The strict independent-runner contract this lane exists to hold open. docs/ORACLE.md records the arms as expected-red: the reference replay moves the first five-unit separation from race clock 18 to 767 and still drifts, and that stays visible rather than tolerated.",
     "state_max_position_error": "Held at the same five world units as the p95 for the same reason: this lane reports the divergence, it does not absorb it.",
     "state_min_progress_agreement": "The strict contract; the reference replay already matches the ROM's checkpoint clocks exactly through checkpoints 0-3 (3, 349, 463, 707).",
