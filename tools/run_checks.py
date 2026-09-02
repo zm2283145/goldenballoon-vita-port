@@ -1547,6 +1547,75 @@ def format_duration(seconds: float) -> str:
     return f"{remainder}s"
 
 
+# --- SDL flavor witness --------------------------------------------------------
+# The shipped macOS DMG bundles the pinned upstream SDL2 (macos/README.md);
+# Homebrew's `sdl2` alias resolves to sdl2-compat, a shim over SDL3 with
+# different unfocused-joystick semantics. The 1.6.0 qualification runs drifted
+# between the two flavors without anyone noticing, and a lane went green under
+# the shim while red under the shipping library. Every suite run now names the
+# flavor the binary under test actually linked, and a release qualification can
+# refuse the shim outright with --require-shipping-sdl.
+SDL_FLAVOR_SHIM = "sdl2-compat"
+SDL_FLAVOR_UPSTREAM = "sdl2"
+SDL_FLAVOR_STATIC = "static-or-unlinked"
+
+
+def classify_sdl_link(link_lines: str) -> tuple[str, str]:
+    """Classify the SDL the binary links from `otool -L` / `ldd` output.
+
+    Returns (flavor, detail). Pure so the contract test can feed it synthetic
+    loader output.
+    """
+    for raw in link_lines.splitlines():
+        line = raw.strip()
+        if "SDL2" not in line and "libSDL2" not in line:
+            continue
+        path = line.split(" (", 1)[0].split(" => ", 1)[-1].strip()
+        if "sdl2-compat" in path.lower():
+            return SDL_FLAVOR_SHIM, path
+        version = re.search(r"current version ([0-9.]+)", line)
+        detail = path if version is None else f"{path} (current version {version.group(1)})"
+        return SDL_FLAVOR_UPSTREAM, detail
+    return SDL_FLAVOR_STATIC, ""
+
+
+def sdl_flavor_for_binary(binary: Path) -> tuple[str, str]:
+    if sys.platform == "darwin":
+        command = ["otool", "-L", str(binary)]
+    elif sys.platform.startswith("linux"):
+        command = ["ldd", str(binary)]
+    else:
+        return SDL_FLAVOR_STATIC, "no loader introspection on this platform"
+    try:
+        completed = subprocess.run(
+            command, check=True, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except (OSError, subprocess.CalledProcessError) as error:
+        return SDL_FLAVOR_STATIC, f"loader introspection failed: {error}"
+    flavor, detail = classify_sdl_link(completed.stdout)
+    if flavor == SDL_FLAVOR_UPSTREAM and sys.platform == "darwin":
+        # The dylib name alone cannot tell a renamed shim from upstream; the
+        # shim stamps its own name into the binary, as build_app_bundle.sh
+        # also checks.
+        try:
+            with open(detail.split(" (", 1)[0], "rb") as handle:
+                if b"sdl2-compat:" in handle.read():
+                    return SDL_FLAVOR_SHIM, detail
+        except OSError:
+            pass
+    return flavor, detail
+
+
+def report_sdl_flavor(native: Path, require_shipping: bool) -> None:
+    flavor, detail = sdl_flavor_for_binary(native)
+    print(f"run_checks: sdl flavor: {flavor} {detail}".rstrip(), file=sys.stderr)
+    if require_shipping and flavor == SDL_FLAVOR_SHIM:
+        raise RuntimeError(
+            "the native binary links sdl2-compat, not the shipping SDL2; "
+            "configure with PKG_CONFIG_PATH pointing at the pinned SDL2 "
+            "(macos/Scripts/build_release_sdl2.sh) or drop --require-shipping-sdl")
+
+
 def preflight(
     checks: list[Check],
     native: Path,
@@ -1554,6 +1623,7 @@ def preflight(
     asan: Path,
     rom: Path,
     wasm: Path,
+    require_shipping_sdl: bool = False,
 ) -> None:
     roles = {check.role for check in checks}
     required: list[tuple[str, Path]] = []
@@ -1599,6 +1669,9 @@ def preflight(
     missing = [f"{label}: {path}" for label, path in required if not path.is_file()]
     if missing:
         raise RuntimeError("missing required artifact(s):\n  " + "\n  ".join(missing))
+
+    if roles & {"native", "release", "ctest"} and native.is_file():
+        report_sdl_flavor(native, require_shipping_sdl)
 
     if ("ctest" in roles and
             not cmake_cache_bool(native, "MDKR_ENABLE_GPU_TESTS")):
@@ -1754,6 +1827,10 @@ def main() -> int:
         )
     parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument(
+        "--require-shipping-sdl", action="store_true",
+        help="fail preflight when the native binary links sdl2-compat instead "
+             "of the pinned upstream SDL2 the releases bundle")
+    parser.add_argument(
         "--require-fresh", action="store_true",
         help="fail instead of warn when a tested artifact is older than the "
              "newest compiled source (qualification runs should set this)")
@@ -1829,7 +1906,8 @@ def main() -> int:
     roms = resolve_path(args.roms)
     wasm = resolve_path(args.wasm)
     try:
-        preflight(checks, native, release, asan, rom, wasm)
+        preflight(checks, native, release, asan, rom, wasm,
+                  require_shipping_sdl=args.require_shipping_sdl)
     except RuntimeError as exc:
         print(f"run_checks: FAIL — {exc}", file=sys.stderr)
         return 2
