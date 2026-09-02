@@ -62,7 +62,7 @@ from pathlib import Path
 
 from check_adventure_two import eeprom_image
 from harness_utils import (DEFAULT_BUILD_DIR, read_ppm as read_ppm_bytes,
-                           resolve_binary)
+                           resolve_binary, save_env)
 
 REPO = Path(__file__).resolve().parent.parent
 TT_SCRIPT = REPO / "tests" / "input_scripts" / "race_full_3lap_tt.txt"
@@ -405,7 +405,7 @@ def self_test() -> list[str]:
 # ---------------------------------------------------------------------------
 # Engine runs.
 
-def clean_environment(renderer: str | None, scratch: Path,
+def clean_environment(renderer: str | None, scratch: Path, save_dir: Path,
                       widescreen_hud: bool, dump_from: int, dump_every: int,
                       extra: dict[str, str]) -> dict[str, str]:
     env = {key: value for key, value in os.environ.items()
@@ -427,6 +427,14 @@ def clean_environment(renderer: str | None, scratch: Path,
         env["MDKR_WIDESCREEN_HUD"] = "1"
     if renderer:
         env["MDKR_RENDERER"] = renderer
+    # The scrub above drops the MDKR_SAVE_DIR the suite exports per task, and a
+    # non-packaged build no longer resolves saves to $CWD/save (issue #54
+    # unified them under the per-user pref dir), so every arm has to say where
+    # its save lives. Without the pin the engine reads the shared per-user
+    # save, where an unrelated adventure-in-progress EEPROM re-routes the boot
+    # flow. MDKR_VIDEO_CONFIG_PATH is already pinned above, so save_env() only
+    # adds the save dir here.
+    save_env(env, save_dir)
     env.update(extra)
     return env
 
@@ -444,18 +452,12 @@ def run_arm(binary: Path, rom: Path, root: Path, label: str, script: Path,
     (run_dir / "save").mkdir(parents=True)
     run_extra = dict(extra or {})
     if adventure_save:
+        # This arm additionally SEEDS run_dir/save/eeprom.bin with the
+        # Adventure-One unlock so adventure_resume_race.txt can resume into the
+        # battle arena. With the seed ignored the resume never enters the
+        # arena, and the banana-tally strip / [PACE] racer row never appear
+        # (0 clusters + no frame-2500 row on both arms).
         (run_dir / "save" / "eeprom.bin").write_bytes(eeprom_image(False))
-        # This arm SEEDS run_dir/save/eeprom.bin with the Adventure-One unlock
-        # so adventure_resume_race.txt can resume into the battle arena, but
-        # clean_environment() scrubs MDKR_ (dropping the MDKR_SAVE_DIR the suite
-        # exports) and a non-packaged build no longer resolves saves to $CWD/save
-        # (issue #54 unified them under the per-user pref dir). Without this pin
-        # the engine reads the shared per-user save instead of the seed, the
-        # resume never enters the arena, and the banana-tally strip / [PACE]
-        # racer row never appear (0 clusters + no frame-2500 row on both arms).
-        # Point MDKR_SAVE_DIR at the seeded dir, matching the Sept-1 fixture wave
-        # (check_adventure_two, check_challenge_modes).
-        run_extra["MDKR_SAVE_DIR"] = str(run_dir / "save")
     command = [
         str(binary),
         "--headless-frames", str(frames),
@@ -470,8 +472,9 @@ def run_arm(binary: Path, rom: Path, root: Path, label: str, script: Path,
         proc = subprocess.run(
             command,
             cwd=run_dir,
-            env=clean_environment(renderer, arm_root, widescreen_hud,
-                                  dump_from, dump_every, run_extra),
+            env=clean_environment(renderer, arm_root, run_dir / "save",
+                                  widescreen_hud, dump_from, dump_every,
+                                  run_extra),
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
