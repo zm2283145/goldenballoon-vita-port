@@ -2173,6 +2173,21 @@ static void pad_hotplug_lazy_init(void) {
         s_hotplugState = 1;
         cursor = end != NULL ? end + 1 : entry_end;
     }
+    if (s_hotplugState == 1) {
+        /* Same problem, same cure as the launcher's virtual-gamepad smoke arm
+         * (app_host.cpp): an automation window exists but never holds keyboard
+         * focus, and SDL2 proper then swallows every away-from-neutral
+         * joystick delta (SDL_PrivateJoystickShouldIgnoreEvent), so a held
+         * direction on a virtual pad reads as permanent neutral downstream.
+         * sdl2-compat does not enforce that focus gate, which let this arm's
+         * verdict silently track WHICH SDL2 the build linked instead of the
+         * hotplug behaviour it measures. Opt in to background events for the
+         * scheduled-hotplug run only; this path never arms outside the
+         * MDKR_TEST_PAD_HOTPLUG fixture, so player-facing background-input
+         * policy is unchanged. */
+        SDL_SetHintWithPriority(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS,
+                                "1", SDL_HINT_OVERRIDE);
+    }
 }
 
 /* Fires every entry the clock has reached, in schedule order so a fixture can
