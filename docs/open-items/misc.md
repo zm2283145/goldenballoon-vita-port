@@ -206,3 +206,78 @@ scoring only what it did. Until then, read a green overlay count as evidence
 about the rows named in that run and nothing more.
 
 Noticed while verifying the barge-in fix, not caused by it.
+
+## CLOSED: 17 checks scrubbed MDKR_SAVE_DIR out of their engine environment and then launched — wave "savehermetic"
+
+**Mechanism.** A check that wants a hermetic engine builds its environment by
+dropping every inherited `MDKR*` variable. That scrub also drops the
+`MDKR_SAVE_DIR` and `MDKR_VIDEO_CONFIG_PATH` `tools/run_checks.py` exports per
+task. Before issue #54 the loss was survivable: a non-packaged build resolved an
+unpinned save to `$CWD/save`, and a check that ran the engine in a temporary
+working directory was isolated by accident. Issue #54 unified save resolution
+under the per-user directory, and the accident stopped working — an unpinned
+save now resolves to the *shared* `~/Library/Application Support/mdkr64/mdkr64/save`
+(`$XDG_DATA_HOME/mdkr64/save` on Linux). Any adventure-in-progress EEPROM
+sitting there, left by a developer playing or by an earlier suite task,
+re-routes the boot flow of every such check: FILE SELECT resumes instead of
+starting a new game, the intro cutscene is skipped, levels load thousands of
+frames early, frame-timed track-select inputs miss, and a seeded unlock the
+check wrote is never read. The reds read like product regressions — "level
+never loaded … no `[PVEH]`", "0 flap cues", "trophies 0x0", "capture-window
+positions=0" — and are entirely an artefact of the host.
+
+The 1.6.0 fixture-remints wave repaired 22 lanes of this by hand and recorded
+that the rest of the corpus had not been swept. It also named the worst shape:
+`check_full_ubsan` and `check_native_layout` scrub **once** and then hand that
+environment to a dozen further `check_*.py` scripts. Those sub-checks
+(`check_vehicle_sweep`, `check_track_sweep`, `check_challenge_modes`, …) inherit
+`os.environ` faithfully and are individually correct, so one contaminated host
+directory reds the entire matrix at once while the same scripts stay green in
+clean CI.
+
+**Measurement.** `tests/test_check_save_dir_hermeticity.py` parses every
+`tests/check_*.py` and follows each environment value from where it is built to
+where it is handed to a process. Against the shipped v1.6.0 tree it named
+**17 files, 29 sites**: check_app_adopted_pacing (4), check_native_layout (3),
+check_shadow_visual_ab (3), check_widescreen_shadow (5),
+check_simulation_cadence (2), and one each in check_charselect_motion,
+check_enhancement_authority, check_filename_entry, check_font_outline,
+check_font_sdf, check_full_ubsan, check_online_process_convergence,
+check_rdp_interpolation, check_shell_dropfile, check_texture_edge_classification,
+check_widescreen_hud_layers, check_widescreen_proportions. Two of those were
+already writing into the shared directory rather than merely reading it:
+check_filename_entry drives a route that *creates* a new save file, and
+check_shell_dropfile's final-play arms boot the ROM for real.
+
+**Fix.** Env-only, no threshold or assertion touched. Each site pins a
+directory it already owns through `harness_utils.save_env()`, which pins the
+video config in the same breath (`check_harness_isolation.py`). The two
+aggregates pin one temporary directory for the whole task and export it as both
+`MDKR_SAVE_DIR` and `MDKR_TEST_SAVE_DIR`, the pair the suite exports, so a
+sub-check reading either agrees with the engine. `check_widescreen_hud_layers`
+had pinned only its seeded battle arm; the pin moved into its environment
+factory so every arm carries it. Nothing deletes or cleans the shared per-user
+directory: that is a developer's real save, and the fix is to stop reaching it,
+not to empty it.
+
+**Regression check.** `tests/test_check_save_dir_hermeticity.py`, ROM-free,
+registered as the `check_save_dir_hermeticity` CTest. It recognises the scrub in
+every shape the corpus uses — an `os.environ` comprehension filtering `MDKR`
+keys, `pop("MDKR_SAVE_DIR")`, `del env["MDKR_SAVE_DIR"]`, an environment written
+out inline at the launch that inherits nothing, and a factory function whose
+scrubbed return value the caller launches with — and it accepts a pin only on
+the environment that actually reaches the process, so a pin elsewhere in the
+same function does not satisfy it. Nine synthetic control fixtures (five
+offending shapes it must reject, four pinned shapes it must accept) run ahead of
+the corpus sweep on every invocation, so a scanner that stopped matching fails
+loudly instead of reporting an empty sweep. One documented exemption:
+`check_portable_paths.py`, whose subject *is* unpinned save resolution and which
+supplies its own `HOME`/`XDG` roots so the fallback lands inside its own
+temporary tree.
+
+Verified by re-running eight of the formerly-offending gates against a Release
+build: check_enhancement_authority, check_texture_edge_classification,
+check_font_sdf, check_font_outline, check_rdp_interpolation,
+check_charselect_motion, check_filename_entry and check_shell_dropfile all pass
+with the pin, and the host's real `eeprom.bin` was byte-identical before and
+after (md5 b7df10e6 both times).
