@@ -451,6 +451,10 @@ CHECKS = (
           "GL/WebGPU cascaded maps, receivers, state invariance, and truthful decal fallback"),
     Check("render_purity", "check_render_purity.py", "release",
           "skip-render authoritative invariance (spec 12.2.1) with divergence control"),
+    Check("fast3d_dl_hardening", "check_fast3d_dl_hardening.py", "release",
+          "an injected display-list overflow is walked to a stop by both the "
+          "interpreter and the overlay prepass, with the well-authored party "
+          "and retail 1P routes reporting nothing"),
     Check("camera_obstruction_runtime", "check_camera_obstruction_runtime.py", "release",
           "same-binary legacy/center-ray controls, modern resolved-lens safety "
           "witness, the unset-default arm that must reproduce observe, and the "

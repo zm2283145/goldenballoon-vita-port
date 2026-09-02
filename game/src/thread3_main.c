@@ -3820,6 +3820,15 @@ void alloc_displaylist_heap(s32 numberOfPlayers) {
     {
         int apCount = adventure_party_participant_count(
             adventure_party_runtime_session());
+        /* MDKR_TEST_UNDERSIZED_DL_HEAP=1 keeps the retail 1P index so the
+         * misauthored stream above is authored on purpose. It is the fault
+         * injector the fast3d display-list hardening gate walks
+         * (tests/check_fast3d_dl_hardening.py); nothing sets it in
+         * production. */
+        const char *undersize = getenv("MDKR_TEST_UNDERSIZED_DL_HEAP");
+        if (undersize != NULL && undersize[0] == '1') {
+            apCount = 0;
+        }
         if (apCount > 0 && numberOfPlayers < apCount - 1) {
             numberOfPlayers = apCount - 1;
         }

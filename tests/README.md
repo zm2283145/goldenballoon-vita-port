@@ -484,6 +484,26 @@ production coverage:
   versioned broken-direction controls; production uses the same retained HLE
   replay machinery only after the complete task/dependency transaction and
   adjacent-state publication succeed.
+- `check_fast3d_dl_hardening.py` covers the renderer's side of the 4P party-hub
+  crash settled under AddressSanitizer.
+  The authoring defect (a four-viewport party sized against the retail 1P
+  display-list budget) is fixed at its cause; this gate proves the two walkers
+  survive such a stream instead of parsing the bytes after the buffer as
+  commands. `MDKR_TEST_UNDERSIZED_DL_HEAP=1` restores the 1P sizing so the
+  overflowing stream is authored on purpose: the run must still reach hub,
+  lobby and race, and both the overlay prepass and the interpreter must report
+  that they stopped at an opcode the interpreter does not implement. The same
+  party route without the injector, and a retail 1P time-trial route under
+  `MDKR_DL_CENSUS=1`, must report zero `[DL]` lines and zero censused faults —
+  the refusals never fire on properly authored content, which is also the
+  control on the opcode set itself. Two positive controls bound the injection:
+  the misauthored run's peak submitted display list must exceed the 4500-Gfx
+  1P budget it was held to, and the well-authored run's must exceed it too, so
+  the arms differ only in the heap the game wrote into. The pure rules both
+  walkers share (`platform/fast3d/gfx_dkr_dl_guards.h`) are unit-tested by
+  ctest `fast3d_dl_guards`, which carries its own control: the rule it replaced
+  — `room >= need` against `dkr_arena_room`'s SIZE_MAX "extent unknown" answer
+  — admitted every non-arena pointer at every read length.
 - `check_camera_snapshot_coverage.py` closes the non-sequential camera-ID
   boundary with real content. A two-player race must capture/interpolate camera
   1 in the lower half, and the production 3P HUD toggle must replace the minimap
