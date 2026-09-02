@@ -5314,6 +5314,19 @@ static void dkr_scan_overlay_order(Gfx *cmd, int depth, int limit,
         }
 
         uint8_t op = (uint8_t)C0(cmd, 24, 8);
+        /* Stop where the interpreter stops. This switch reads only the commands
+         * that decide draw-space ordering and ignores every other opcode, so
+         * without this test it cannot tell a command it does not care about from
+         * a byte that is not a command at all: it steps one Gfx and keeps
+         * walking where dkr_run_dl reports the same word and abandons the list.
+         * That is how the prepass walked kilobytes deeper into a misauthored
+         * stream than the interpreter ever reached and faulted first, on a
+         * resolved global one command past its end. */
+        if (!dkr_dl_opcode_implemented(op)) {
+            dkr_dl_fault("overlay prepass reached an unknown display-list "
+                         "opcode", cmd, depth);
+            return;
+        }
         switch (op) {
             case G_DL: {
                 uint8_t nopush = (uint8_t)C0(cmd, 16, 8);
@@ -6638,6 +6651,13 @@ static void dkr_capture_nonarena_list(const Gfx *sub, int count) {
                 commands = scan + 1;   /* branch is the span's last command */
                 break;
             }
+            /* An opcode the interpreter does not implement is the same
+             * evidence: these bytes are not this list, so the storage after
+             * them is not either. Without it the scan runs to the command cap
+             * over whatever follows a list the walk reached by a mis-decode. */
+            if (!dkr_dl_opcode_implemented(opcode)) {
+                break;   /* commands stays 0: capture nothing */
+            }
         }
         if (commands == 0) {
             return;   /* unterminated: capture nothing, let the replay refuse */
@@ -7925,8 +7945,17 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             break;
 
         default:
+            /* Abandon the list rather than step over the word. An opcode this
+             * switch does not implement is proof that these bytes are not
+             * commands, and the walk has no other bound to fall back on: a
+             * non-arena list answers SIZE_MAX room, which is not "room
+             * available" but "no extent recorded here, trusted to
+             * self-terminate" — trust this word has just disproved. Stepping on
+             * is how the walk read past the end of an 80-byte global it had
+             * reached by a mis-decode. The fault line
+             * has always said the list was stopped; now it is. */
             dkr_dl_fault("unknown display-list opcode", cmd, depth);
-            break;
+            return;
         }
         cmd++;
     }
