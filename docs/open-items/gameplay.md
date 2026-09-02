@@ -689,6 +689,20 @@ or would silently mask a real regression. It is a developer instrument, not a
 player-facing property; nothing a player does is affected by where an
 open-loop replay diverges at clock 767.
 
+**Update 2026-08-25 — reclassified, not weakened.** The lane now carries
+`"state_classification": "diagnostic"` in its route JSON:
+`compare_oracle_state.py` records threshold shortfalls as observations,
+headlines the divergence-onset clock, and exits 0, while instrument-integrity
+failures (vacuous rng seeds, missing probes, short traces) still fail closed
+(`tests/test_oracle_route_classification.py` holds both properties, plus
+gate-mode equivalence for real gates like Bluey 2). The thresholds are
+unchanged and before/after report pairs remain the differential evidence for
+gameplay-math changes. The open-loop agreement percentage is deprecated as a
+figure of merit: a same-clock phase comparison under compounding drift
+measures divergence onset and route length, not mechanic correctness, and it
+was being read as a failing parity score. The divergence-onset clock is the
+signal.
+
 ### None of the three is `#ifdef NATIVE_PORT`-gated, and none needs to be
 
 All three live in `platform/math_util_native.c`, which is port-only by

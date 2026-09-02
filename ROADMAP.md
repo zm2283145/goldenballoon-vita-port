@@ -1,6 +1,7 @@
 # Roadmap
 
-What is **not** done as of v1.0.5, why it was deferred, and what would have to be
+What is **not** done as of v1.6.0 (last full reconciliation 2026-08-25), why it
+was deferred, and what would have to be
 true to take it up. Nothing here is promised and nothing here has a date; this
 is a statement of scope, so that "not implemented" is never mistaken for
 "overlooked".
@@ -35,9 +36,11 @@ the gate a release has to pass.
 independent reference: a full Ancient Lake lap, and an all-racer Bluey 2 lane
 that isolates the reported boss-speed divergence. The Bluey lane settled the
 simulation-cadence question — retail and Original finish at ticks 3,459/3,458
-with a 1.00065× speed ratio, against 3,022 and 1.13982× for the Enhanced
-one-field arm — and `Gameplay.SimulationCadence=original` is the default because
-of it. Ancient Lake now also has a fail-closed diagnostic that replays the
+with a 1.00065× speed ratio, against 3,022 and 1.13982× for the then-ungoverned
+Enhanced one-field arm — and `Gameplay.SimulationCadence=original` is the
+default because of it. (Since the boss-cadence governor of 2026-08-09, issue
+#26, Enhanced bosses hold the authored pace and finish in the Original band;
+the runaway reproduces only under `MDKR_BOSS_CADENCE_COMPAT=0`.) Ancient Lake now also has a fail-closed diagnostic that replays the
 real ROM's observed update widths and input states. It makes checkpoint clocks
 0–3 exact and moves the first five-unit position separation from clock 18 to
 767, classifying the early mismatch as timestep partitioning rather than a
@@ -47,9 +50,17 @@ different game-speed policy.
 multiplayer, progression and save, audio, renderer state, and the
 higher-rate rendering experiments. Ancient Lake still develops
 sub-unit floating-point drift into a different long-horizon open-loop line
-(39.241% authored and 67.747% reference-replay checkpoint agreement), so it is
-retained as a strict red instrument rather than declared equivalent through a
-permissive tolerance.
+(39.241% authored and 67.747% reference-replay checkpoint agreement, measured
+2026-08-01; the authored oracle trace was rebaselined twice after that —
+the 2026-08-04/05 RNG-stream fixes — so re-run
+`tools/run_oracle.sh race_state_oracle` before citing either figure). As of
+2026-08-25 the lane is classified `diagnostic`: its thresholds are unchanged,
+shortfalls are recorded as observations with the divergence-onset clock as
+the headline signal, and the open-loop agreement percentage is deprecated as
+a figure of merit — a same-clock phase comparison under compounding
+floating-point drift measures divergence onset, not mechanic correctness.
+Player-facing accuracy is carried by the passing closed-loop Bluey 2 gate and
+the mechanic-level invariants, not by this instrument.
 
 **Condition to take it up.** A reported divergence that one of the uncovered
 areas would explain. See
@@ -66,6 +77,9 @@ areas would explain. See
   0.855–0.998, and nobody has investigated why. It is the only in-race route, so
   the number is either a real in-race fidelity gap or an artefact of the route.
   Worth time-boxing rather than leaving as a permanently unexplained figure.
+  (Both figures date to 2026-07-31 and the renderer has been rebuilt since —
+  the 1.4.0 interpolation stack — so re-scoring the route is the first step of
+  any time-box.)
 
 Both are recorded with their measurements in
 [`docs/open-items/gameplay.md`](docs/open-items/gameplay.md) and
@@ -188,14 +202,17 @@ It stays on the list because MSAA is cheaper than SSAA at equal edge quality, so
 there is a real reason to want it on lower-end GPUs — not because the image is
 currently unacceptable.
 
-### IQ-11 — texture-pack loader
+### IQ-11 — texture-pack loader — shipped as Content Packs in 1.2.0
 
-A **loader only**. If this lands it must extend the ROM-absence guard rather
-than sit beside it, and it must ship no content whatsoever: the guard that fails
-the build closed if any shipped file contains ROM data is the reason this project
-can exist, and a texture-pack path is exactly the kind of feature that erodes it
-by accident. No pack format is designed, and none will be until the guard
-question is answered first.
+The guard question this entry insisted on was answered first, and the loader
+shipped in 1.2.0 (2026-08-10) as the Content Packs system: a folder or `.zip`
+with a `pack.ini` under `mods/`, digest-named texture replacement and
+presentation-only music replacement, documented in
+[`docs/MODDING.md`](docs/MODDING.md). It extends the ROM-absence guard rather
+than sitting beside it and ships no content whatsoever. What remains of IQ-11:
+the legacy `Video.TexturePack` key is a documented inert stub superseded by
+`Content.PacksEnabled`, and model/character replacement stays deliberately out
+of scope.
 
 ### Presentation rate above the authored tick
 
@@ -332,8 +349,10 @@ cheapest first:
    them.
 
 PAL timing is modelled as a 50 Hz source clock with the same authored two-field
-ticket, so its visual cadence remains 25 Hz. Experimental host-pacing policies
-are independent of that grid but do not add visual frames in 1.0.1+. Region-
+ticket, so its simulation cadence remains 25 Hz. Host-pacing policies are
+independent of that grid; since 1.4.0, optional Motion smoothing adds
+presentation-only interpolated frames (PAL can present smoothly on 60 Hz
+displays) without touching the authored simulation. Region-
 specific calibrated gameplay oracles remain a separate expansion question for
 unsupported revisions.
 
@@ -349,7 +368,8 @@ unsupported revisions.
   local runs alone.
 
   What is still owed is the consequence: `main` does not yet *require* those
-  jobs, so nothing stops a direct push that has not passed them.
+  jobs, so nothing stops a direct push that has not passed them (re-verified
+  2026-08-25: the GitHub API reports `main` "Branch not protected").
   `tools/check_github_branch_protection.py` exists to assert the configuration
   and has not been run green against the live repository. Enabling protection is
   a repository-settings change rather than a source change, which is why it sits

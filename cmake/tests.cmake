@@ -2105,6 +2105,10 @@ if(BUILD_TESTING)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_oracle_reference_replay.py)
     add_test(
+        NAME oracle_route_classification
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_oracle_route_classification.py)
+    add_test(
         NAME object_material_ownership
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_object_material_ownership.py)

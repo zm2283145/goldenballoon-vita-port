@@ -344,16 +344,25 @@ native_saves/   # isolated from the player's normal save directory
 ares_saves/
 ```
 
-The Ancient Lake state arms are currently expected to return nonzero. The
-Original and Enhanced arms complete a lap, but the strict contract exposes a
+The Ancient Lake state arms are classified `"state_classification":
+"diagnostic"` (2026-08-25): `compare_oracle_state.py` records threshold
+shortfalls as observations, headlines the divergence-onset clock, and exits 0,
+while instrument-integrity failures (vacuous rng, missing probes, short
+traces) still fail closed. The thresholds themselves are unchanged — they
+define what an observation is, so a before/after pair of reports remains the
+differential evidence for any gameplay-math change. The Original and Enhanced
+arms complete a lap, but the strict contract exposes a
 cadence-sensitive open-loop racing line. `reference_replay` is a diagnostic,
 not a product mode: `MDKR_ORACLE_UPDATE_FIELDS` exists only as an environment-
 gated test seam and its schedule must be consumed completely. The replay moves
 the first five-unit position separation from race clock 18 to 767, and matches
 the ROM's checkpoint clocks exactly through checkpoints 0–3 (3, 349, 463,
 707), classifying the early difference as timestep partitioning. Sub-unit
-floating-point drift still grows into a different open-loop line; that strict
-arm remains red rather than hiding it behind a tolerance. Bluey 2 remains the
+floating-point drift still grows into a different open-loop line — the
+expected behavior of any non-bit-exact re-implementation replayed with no
+corrective input, which is why the open-loop agreement percentage is
+deprecated as a figure of merit: it is a chaos-sensitive phase metric, and
+the divergence-onset clock is the signal. Bluey 2 remains the
 passing gameplay-cadence oracle; see [`BLUEY2_PARITY.md`](BLUEY2_PARITY.md).
 
 ares samples RDRAM on VI observations while the CPU can begin the next update
