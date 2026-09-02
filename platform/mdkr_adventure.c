@@ -463,10 +463,13 @@ void mdkr_adventure_force_verdict(Object *humanObj, Object **racers, s32 numRace
  *   "0".."3"  the human on that controller port (host is 0)
  *   "cpu"     the first computer racer that has finished
  * Like mdkr_adventure_force_verdict it acts only AFTER the port-1 human has
- * genuinely finished all laps (the same "never manufacture a finish" guard) and
- * only among racers that have already finished, so it permutes finish positions
- * — which decides the winner and the return path — without moving a kart or
- * setting a lap. It fires once. No-op with the variable unset.
+ * genuinely finished all laps, so the race is already legitimately decided.
+ * From there it either reorders the target to first among racers that have
+ * already finished, or, if the target has not yet crossed, marks it finished
+ * and gives it first place directly — the manufactured-finish path this hook
+ * exists for. Either way it edits finish bookkeeping only: no kart position,
+ * velocity, or lap count is touched. It fires once. No-op with the variable
+ * unset.
  */
 void mdkr_ap_force_race_winner(Object **racers, s32 numRacers, s32 humanCount) {
     static s32 initialized;
