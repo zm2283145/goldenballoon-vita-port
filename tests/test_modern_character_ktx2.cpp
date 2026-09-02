@@ -132,6 +132,14 @@ int main() {
     patch_le(hostile, 80u, 8u, 0xFFFFFFFFFFFFFFF0ull); /* level 0 byteOffset */
     expect_refused(hostile, outside);
 
+    /* A level's declared uncompressed size is the size of the buffer the
+     * Zstandard path decompresses into. The 8x8 level 0 spans four blocks of
+     * 16 bytes; the transcoder would have allocated the 688 MiB below. */
+    hostile = uastc;
+    patch_le(hostile, 96u, 8u, 721420304ull); /* level 0 uncompressed length */
+    expect_refused(hostile,
+                   "declares more supercompressed output than its mip spans");
+
     std::vector<uint8_t> truncated(etc1s.begin(), etc1s.end() - 1);
     assert(mdkr_ktx2_inspect(
         truncated.data(), truncated.size(), &info, error, sizeof(error)) == 0);

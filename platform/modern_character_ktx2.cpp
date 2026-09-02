@@ -130,10 +130,27 @@ bool inspect_transcoder(const uint8_t *data, size_t size,
         set_error(error, error_size, "character KTX2 dimensions or mip count exceed the bounded renderer profile");
         return false;
     }
+    const bool supercompressed =
+        transcoder->get_header().m_supercompression_scheme ==
+        basist::KTX2_SS_ZSTANDARD;
     uint64_t rgba_bytes = 0u;
     uint32_t level_width = width;
     uint32_t level_height = height;
     for (uint32_t level = 0u; level < levels; ++level) {
+        /* A Zstandard-supercompressed level is decompressed whole into a
+         * buffer sized from the level index's uncompressedByteLength before a
+         * single block is transcoded, and the transcoder accepts any
+         * declaration under 2 GiB. One face of a 4x4-block level spans exactly
+         * the block bytes its own mip geometry covers, so a larger declaration
+         * only buys a larger allocation out of a file that cannot fill it. */
+        if (supercompressed &&
+            transcoder->get_level_index()[level].m_uncompressed_byte_length >
+                static_cast<uint64_t>((level_width + 3u) / 4u) *
+                    ((level_height + 3u) / 4u) *
+                    basist::KTX2_UASTC_BLOCK_SIZE) {
+            set_error(error, error_size, "KTX2 level declares more supercompressed output than its mip spans");
+            return false;
+        }
         const uint64_t level_bytes =
             static_cast<uint64_t>(level_width) * level_height * 4u;
         if (level_bytes > MDKR_KTX2_DECODED_BYTES_MAX - rgba_bytes) {

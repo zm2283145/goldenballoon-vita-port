@@ -7597,16 +7597,18 @@ pinning the reported dimensions, mip count, colour space and the exact
 allocation size for every target format, and requiring a truncated file to be
 refused.
 
-Four hostile arms patch one header field into the valid UASTC texture and
-require both entry points to refuse it, naming the bound that refused it. They
+Five hostile arms patch one header field into the valid UASTC texture and
+require both entry points to refuse it, naming the bound that refused it. Four
 cover the KTX2 index's offset/length pairs — key/value, data-format,
 supercompression global data, and a level's own byte range — each with a pair
 whose sum wraps its width, which the pinned transcoder reads as a small region
 and then walks or sizes from the length the pair actually holds. The key/value
 arm is the minimised libFuzzer out-of-memory reproducer, seeded as
-`tests/fuzz_corpus/modern_character_asset/wrapping-key-value-length.ktx2`. See
-`docs/open-items/misc.md`, wave "ktx2index". With the bound removed the arms
-fail: two by crashing on the walk, two by accepting the file.
+`tests/fuzz_corpus/modern_character_asset/wrapping-key-value-length.ktx2`. The
+fifth arm declares a level uncompressed size far beyond what its mip spans,
+which the Zstandard path allocated whole before reading the file. See
+`docs/open-items/misc.md`, wave "ktx2index". With either bound removed the
+matching arms fail: two by crashing on the walk, three by accepting the file.
 
 ### Online wire-parser fuzzers — `tests/fuzz_match_signal_wire.cpp`, `tests/fuzz_online_live_wire.cpp`
 
