@@ -3,10 +3,14 @@
 #include "fs_utf8.h"
 #include "modern_character_ktx2.h"
 
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+_Static_assert(MDKR_MODERN_TEXTURE_DATA_BYTES_MAX <= (unsigned)INT_MAX,
+               "the encoded texture-data ceiling must fit stb_image's int length");
 
 #define MDKC_SECTION_ENTRY_BYTES 32u
 #define MDKC_SECTION_TABLE_OFFSET 64u
@@ -750,7 +754,8 @@ static int validate_references(const MdkrModernCharacterAsset *asset,
      * than retail N64 geometry. */
     if (vertices->count > 1000000u || indices->count > 6000000u ||
         primitives->count > 512u || materials->count > 256u ||
-        textures->count > 1024u || texture_data->count > 512u * 1024u * 1024u ||
+        textures->count > 1024u ||
+        texture_data->count > MDKR_MODERN_TEXTURE_DATA_BYTES_MAX ||
         nodes->count > 16384u || skins->count > 256u || joints->count > 65536u ||
         animations->count > 256u || channels->count > 16384u ||
         keys->count > 4000000u ||

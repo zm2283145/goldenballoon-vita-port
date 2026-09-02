@@ -12,6 +12,9 @@
 #define MODERN_PORTRAIT_SOURCE_MAX 1024
 #define MODERN_PORTRAIT_ENCODED_MAX (8u * 1024u * 1024u)
 
+_Static_assert(MODERN_PORTRAIT_ENCODED_MAX <= (unsigned)INT_MAX,
+               "the bounded portrait must fit stb_image's int length");
+
 static void set_error(char *error, size_t size, const char *message) {
     if (error != NULL && size != 0u) {
         (void)snprintf(error, size, "%s",

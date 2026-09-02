@@ -18,6 +18,9 @@
 
 _Static_assert(MODERN_DECODED_TEXTURE_BYTES_MAX <= (unsigned)INT_MAX,
                "the bounded texture section must fit stb_image's int length");
+_Static_assert(MODERN_DECODED_TEXTURE_BYTES_MAX ==
+                   MDKR_MODERN_TEXTURE_DATA_BYTES_MAX,
+               "this decode ceiling must equal the loader's admission ceiling");
 
 static void set_error(char *error, size_t size, const char *message) {
     if (error != NULL && size != 0u) {

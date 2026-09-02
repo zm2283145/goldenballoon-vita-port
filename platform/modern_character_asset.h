@@ -19,6 +19,17 @@ extern "C" {
 #define MDKR_MDKC_HEADER_BYTES 928u
 #define MDKR_MDKC_SECTION_SLOTS 27u
 #define MDKR_MDKC_FILE_MAX (1024u * 1024u * 1024u)
+
+/* Admission ceiling for the encoded texture-data section.
+ *
+ * The renderer hands a slice of this section straight to stb_image, whose
+ * length argument is an `int`. That is a contract between two constants, not
+ * a comment: this ceiling must fit an int, and the renderer's own decode
+ * ceiling must be the same number. Both relationships are enforced by
+ * _Static_assert at the sites that depend on them (modern_character_asset.c
+ * and modern_character_render.c), so raising one without the other fails to
+ * compile rather than truncating a length at run time. */
+#define MDKR_MODERN_TEXTURE_DATA_BYTES_MAX (512u * 1024u * 1024u)
 #define MDKR_MODERN_HUMANOID_ROLE_COUNT 16u
 
 typedef enum MdkrModernSectionType {
