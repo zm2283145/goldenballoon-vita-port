@@ -84,7 +84,8 @@
  * consult the graph and the forwarder admission window.
  *
  * Threading: create()/pump()/drainEvents()/sendInput()/
- * sendPreflightFragment()/phrase()/stats()/close() are launcher-thread
+ * sendPreflightFragment()/sendInputRepair()/sendRaceDrop()/
+ * retireDepartedPeer()/phrase()/stats()/close() are launcher-thread
  * calls. libdatachannel callbacks only copy into the bounded internal
  * queue; every signal-feed send happens inside pump() on the launcher
  * thread (the real client's send() is launcher-thread-only). No lock is

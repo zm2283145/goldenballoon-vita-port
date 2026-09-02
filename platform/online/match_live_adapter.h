@@ -607,6 +607,18 @@ bool mdkr_online_live_adapter_test_drop_proposal_accepted(
  * agreed tick meet: `order` 0 the verdict first, 1 the proposal first, 2 the
  * proposal with no room verdict at all. Never called by the launcher. */
 bool mdkr_online_live_adapter_test_drop_proposal_applied(unsigned order);
+/* Pin the per-peer route-echo budget: `peers` senders each deliver
+ * `probes_per_pump` probes in every one of `pumps` mesh pumps, and the result
+ * is how many echoes go out. A flood inside one pump is bounded per sender; a
+ * legitimate rate spread across pumps echoes in full. Never called by the
+ * launcher. */
+unsigned mdkr_online_live_adapter_test_route_echoes_allowed(
+    unsigned peers, unsigned probes_per_pump, unsigned pumps);
+/* Pin that a race_drop refusal flood leaves a bounded mark on the forensics
+ * ring: `rounds` refusals of each of the three reasons, and the count of
+ * DEPARTURE_REFUSED records the ring holds afterwards. Resets the ring.
+ * Never called by the launcher. */
+unsigned mdkr_online_live_adapter_test_drop_refusal_records(unsigned rounds);
 #endif
 
 /* Seal + fan out the race's OPENING input window (firstTick..firstTick+

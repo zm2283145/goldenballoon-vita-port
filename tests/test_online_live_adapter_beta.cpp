@@ -575,6 +575,52 @@ static void test_drop_proposal_is_checked_before_it_counts() {
     CHECK(mdkr_online_live_adapter_test_drop_proposal_applied(1u));
 }
 
+/* N7-shaped bound on the route-probe echo. Every decoded probe used to be
+ * echoed unconditionally, and in a 3-4P room one broadcast probe yields N-1
+ * sealed echoes -- so a peer replaying probes at pump rate could make every
+ * survivor seal for it. The budget is per SENDER and per PUMP: it must bound a
+ * flood without touching the honest rate the measurement actually emits. */
+static void test_route_echo_budget_bounds_a_flood() {
+    /* Honest: one probe per pump from one peer, over a whole measurement's
+     * worth of pumps, is echoed in full. */
+    CHECK(mdkr_online_live_adapter_test_route_echoes_allowed(1u, 1u, 200u) ==
+          200u);
+    /* Still honest: a burst inside the budget echoes in full. */
+    CHECK(mdkr_online_live_adapter_test_route_echoes_allowed(1u, 8u, 3u) ==
+          24u);
+    /* THE FLOOD: 1,000 probes inside one pump cost 8 echoes, not 1,000. */
+    CHECK(mdkr_online_live_adapter_test_route_echoes_allowed(1u, 1000u, 1u) ==
+          8u);
+    /* And it does not refill inside the pump: the same flood over ten pumps
+     * costs ten budgets, not ten thousand echoes. */
+    CHECK(mdkr_online_live_adapter_test_route_echoes_allowed(1u, 1000u, 10u) ==
+          80u);
+    /* Per sender, so one flooding peer cannot starve an honest one: three
+     * peers flooding cost three budgets per pump, and an honest peer among
+     * them still gets its own. */
+    CHECK(mdkr_online_live_adapter_test_route_echoes_allowed(3u, 1000u, 1u) ==
+          24u);
+}
+
+/* The forensics ring is 2048 fixed-width slots and it is the only record of
+ * what a lost race did. A peer sending a wrong-epoch race_drop every pump used
+ * to write one record per message, evicting the whole ring in about ten
+ * seconds. The refusal is a property of the sender's view, so it is recorded
+ * once per (sender, reason) per race however long the flood runs. */
+static void test_drop_refusal_flood_leaves_a_bounded_mark() {
+    /* Three distinct (sender, reason) pairs: 100/epoch, 100/unknown,
+     * 300/not-proposer. One round writes all three. */
+    CHECK(mdkr_online_live_adapter_test_drop_refusal_records(1u) == 3u);
+    /* 700 rounds is 2,100 refusals -- past the ring's 2048 slots, so if every
+     * refusal were recorded the ring would now hold nothing else. It holds
+     * exactly the same three. */
+    CHECK(mdkr_online_live_adapter_test_drop_refusal_records(700u) == 3u);
+    /* Not vacuous: the refusals themselves are still happening. Zero rounds
+     * leave nothing, so the three above came from the flood, not from the
+     * staging. */
+    CHECK(mdkr_online_live_adapter_test_drop_refusal_records(0u) == 0u);
+}
+
 int main() {
     test_map_lost_reason_in_race_branches();
     test_race_end_no_demotion_rule();
@@ -585,6 +631,8 @@ int main() {
     test_owning_wrapper_accessors_resolve_through_wrapper();
     test_room_departure_gates_and_proposer();
     test_drop_proposal_is_checked_before_it_counts();
+    test_route_echo_budget_bounds_a_flood();
+    test_drop_refusal_flood_leaves_a_bounded_mark();
     std::fprintf(stderr, "online_live_adapter_beta: %d checks, %d failures\n",
                  g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

@@ -1,5 +1,7 @@
 #include "net_failure_ring.h"
 
+#include "../fs_utf8.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -282,7 +284,12 @@ bool mdkr_net_failure_ring_dump(const char *path) {
     unsigned index;
     FILE *file;
     if (path == NULL || path[0] == '\0') return false;
-    file = fopen(path, "wb");
+    /* Through the UTF-8 boundary, like every other writer that lands under the
+     * per-user prefs root: on Windows the fallback directory carries the
+     * profile name, and a narrow fopen would silently lose the dump for a
+     * player whose profile is not ASCII. Binary, so the record lines a reader
+     * compares against the in-app ring are byte-identical on every platform. */
+    file = mdkr_fopen_utf8(path, "wb");
     if (file == NULL) return false;
     fprintf(file, "[NETFAIL] begin capacity=%u recorded=%llu retained=%u\n",
             (unsigned)MDKR_NET_FAILURE_CAPACITY,

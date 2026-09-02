@@ -45,7 +45,9 @@ static void set_env(const char *name, const char *value) {
 static unsigned long line_count(const char *path, const char *needle) {
     char line[512];
     unsigned long hits = 0u;
-    FILE *file = fopen(path, "rb");
+    /* Through the same UTF-8 boundary the dump writes on, so the non-ASCII
+     * directory arm reads back the file the ring actually created. */
+    FILE *file = mdkr_fopen_utf8(path, "rb");
     assert(file != NULL);
     while (fgets(line, (int)sizeof(line), file) != NULL) {
         if (strstr(line, needle) != NULL) hits++;
@@ -308,6 +310,39 @@ static void test_dump_fallback_to_log_directory(void) {
     mdkr_net_failure_ring_set_log_directory(NULL);
 }
 
+/* The Windows fallback directory is the per-user prefs root, which carries the
+ * player's profile name. A narrow fopen there consumes the active code page, so
+ * a profile the code page cannot spell used to lose the dump entirely -- the
+ * class fixed for settings on main. Prove the whole path, directory creation
+ * included, over a name no code page but UTF-8 spells. */
+static void test_dump_into_non_ascii_directory(void) {
+    /* "net_failure_ring_Profil" with Cyrillic letters, written as escapes so
+     * the test source itself stays plain ASCII on every compiler. */
+    static const char kDirectory[] =
+        "net_failure_ring_\xd0\x9f\xd1\x80\xd0\xbe\xd1\x84\xd0\xb8"
+        "\xd0\xbb\xd1\x8c";
+    char expected[640];
+
+    mdkr_net_failure_ring_reset();
+    mdkr_net_failure_ring_record_tick(
+        MDKR_NET_FAILURE_LIFECYCLE, 3u, MDKR_NET_FAILURE_NO_SLOT, 0u, 0u, 0u);
+    set_env("MDKR_STATE_HASH_FILE", NULL);
+    (void)mdkr_mkdir_utf8(kDirectory);
+    mdkr_net_failure_ring_set_log_directory(kDirectory);
+    assert(mdkr_net_failure_ring_dump_beside_evidence());
+    snprintf(expected, sizeof(expected), "%s/%s", kDirectory,
+             MDKR_NET_FAILURE_DUMP_LEAF);
+    assert(line_count(expected, "lifecycle") == 1u);
+
+    /* A named dump under the same directory takes the same boundary. */
+    assert(mdkr_net_failure_ring_dump(expected));
+    assert(line_count(expected, "lifecycle") == 1u);
+
+    assert(mdkr_remove_utf8(expected) == 0);
+    assert(mdkr_rmdir_utf8(kDirectory) == 0);
+    mdkr_net_failure_ring_set_log_directory(NULL);
+}
+
 int main(void) {
     assert(mdkr_net_failure_ring_recording());
     test_typed_fields();
@@ -317,6 +352,7 @@ int main(void) {
     test_dump_order();
     test_dump_beside_evidence();
     test_dump_fallback_to_log_directory();
+    test_dump_into_non_ascii_directory();
     remove(kDumpPath);
     puts("test_net_failure_ring: PASS");
     return 0;

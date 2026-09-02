@@ -1592,6 +1592,8 @@ private:
         roomDeparted_.clear();
         pendingDropTicks_.clear();
         departureFinalised_.clear();
+        dropRefusalsRecorded_.clear();
+        dropRefusalsSeen_ = 0u;
         /* A proposal names one race. Drop any still queued in the mesh, so a
          * late race-N proposal cannot be consumed against race N+1 -- the
          * epoch check refuses it too, and these are the belt and braces. */
@@ -1941,6 +1943,7 @@ private:
 
     void pumpMesh() {
         if (!meshUp_ || !mesh_) return;
+        meshPumpSequence_++;
         mesh_->pump();
         mesh_->drainEvents(meshEvents_);
         for (const MdkrMatchPeerMeshEvent &ev : meshEvents_) {
@@ -2317,6 +2320,7 @@ private:
         routeMeasured_ = false;
         routeReportSent_ = false;
         routeQueueDropsAtBegin_ = 0u;
+        routeEchoBudget_.clear();
     }
 
     /* The bundle lane fans out to every reachable peer exactly as race input
@@ -2336,6 +2340,38 @@ private:
         }
     }
 
+    /* Echoing is the one thing a peer can make this endpoint do repeatedly
+     * before the race latch closes the window, and in a 3-4P room one
+     * broadcast probe already yields N-1 sealed echoes. Charge each echo
+     * against the pump it is answered in, exactly as the input-repair answer
+     * budget charges against the authored tick (match_input_repair.h): a peer
+     * cannot choose this endpoint's pump cadence, so no flood can refill the
+     * budget early. Sized above the honest rate it imitates -- the measurement
+     * emits at most MDKR_MATCH_ROUTE_MAX_PROBES over
+     * MDKR_MATCH_ROUTE_MEASURE_MS across both lanes, one probe per ~23 ms, so
+     * this budget still answers every honest probe across a pump gap of nearly
+     * 200 ms. Beyond it the probe is dropped, not the sender: an honest peer on
+     * a stalled launcher loses a sample and widens its own measured jitter,
+     * which is the truth about this route. */
+    static constexpr uint32_t kRouteEchoBudgetPerPump = 8u;
+    struct RouteEchoBudget {
+        uint64_t pump;
+        uint32_t spent;
+    };
+
+    /* Charge one echo to `senderEndpointId` for the pump now draining.
+     * Refills whenever the pump differs from the charged one. */
+    bool chargeRouteEcho(uint64_t senderEndpointId) {
+        RouteEchoBudget &budget = routeEchoBudget_[senderEndpointId];
+        if (budget.pump != meshPumpSequence_) {
+            budget.pump = meshPumpSequence_;
+            budget.spent = 0u;
+        }
+        if (budget.spent >= kRouteEchoBudgetPerPump) return false;
+        budget.spent++;
+        return true;
+    }
+
     /* True when the payload was a route probe and this pump consumed it. */
     bool consumeRouteProbe(const MdkrMatchPeerMeshEvent &ev) {
         MdkrMatchRouteProbe probe;
@@ -2353,6 +2389,9 @@ private:
             }
             return true;
         }
+        /* Consumed either way: an over-budget probe is still a probe, and
+         * must not fall through to the race ingress below. */
+        if (!chargeRouteEcho(ev.context.key.source_endpoint_id)) return true;
         uint8_t payload[MDKR_MATCH_PEER_PAYLOAD_BYTES];
         MdkrMatchRouteProbe echo = probe;
         echo.kind = static_cast<uint8_t>(MDKR_MATCH_ROUTE_ECHO);
@@ -3155,19 +3194,46 @@ private:
         }
     }
 
+    /* Why a peer's race_drop proposal was refused. Bounded and enumerated so
+     * the ring can hold one record per (sender, reason) per race. */
+    enum class DropRefusal : uint8_t { Epoch = 0, Unknown, NotProposer };
+    static const char *dropRefusalName(DropRefusal reason) {
+        switch (reason) {
+            case DropRefusal::Epoch: return "epoch";
+            case DropRefusal::Unknown: return "unknown";
+            case DropRefusal::NotProposer: return "not-proposer";
+        }
+        return "?";
+    }
+
     /* One refused proposal, in the ring as well as the log: a peer trying to
      * finalise a seat it has no standing to finalise is the shape an attack
-     * would take, and it must not be invisible. */
-    void recordRefusedProposal(uint64_t senderEndpointId, const char *why) {
+     * would take, and it must not be invisible.
+     *
+     * Once per (sender, reason) per race, though. The refusal is a property of
+     * the sender's view, not of the individual message, so the second identical
+     * refusal carries no information the first did not -- while a peer sending
+     * a wrong-epoch race_drop every pump would evict the whole 2048-slot ring
+     * in about ten seconds and take every other record of the race with it.
+     * The log still carries every one, with the running total beside it, so a
+     * capture shows the flood the ring only has to name once. */
+    void recordRefusedProposal(uint64_t senderEndpointId, DropRefusal reason) {
+        const char *why = dropRefusalName(reason);
+        dropRefusalsSeen_++;
+        MDKR_ONLINE_LOG(
+            "[MESH] race_drop REFUSED from ep=%llu (%s) refusals=%u\n",
+            (unsigned long long)senderEndpointId, why, dropRefusalsSeen_);
+        const uint8_t bit =
+            static_cast<uint8_t>(1u << static_cast<unsigned>(reason));
+        uint8_t &recorded = dropRefusalsRecorded_[senderEndpointId];
+        if ((recorded & bit) != 0u) return;
+        recorded = static_cast<uint8_t>(recorded | bit);
         char code[MDKR_NET_FAILURE_CODE_BYTES];
         std::snprintf(code, sizeof(code), "drop-%s", why);
         mdkr_net_failure_ring_record_host(
             MDKR_NET_FAILURE_LIFECYCLE, static_cast<uint32_t>(nowMs_()),
             MDKR_NET_FAILURE_NO_SLOT, MDKR_NET_LIFECYCLE_DEPARTURE_REFUSED,
             code);
-        MDKR_ONLINE_LOG(
-            "[MESH] race_drop REFUSED from ep=%llu (%s)\n",
-            (unsigned long long)senderEndpointId, why);
     }
 
     /* The tick this endpoint proposes for a departing peer's seats: the latest
@@ -3254,18 +3320,18 @@ private:
                             uint32_t matchEpoch, uint32_t tick) {
         if (!raceReady_ || !lobbyDropEnabled_) return;
         if (matchEpoch != raceEpoch_) {
-            recordRefusedProposal(senderEndpointId, "epoch");
+            recordRefusedProposal(senderEndpointId, DropRefusal::Epoch);
             return;
         }
         if (peerSlotMask_.count(endpointId) == 0u) {
-            recordRefusedProposal(senderEndpointId, "unknown");
+            recordRefusedProposal(senderEndpointId, DropRefusal::Unknown);
             return;
         }
         const std::vector<uint64_t> alive = survivingEndpoints(endpointId);
         if (!mdkr_match_drop_is_proposer(
                 senderEndpointId, alive.data(),
                 static_cast<unsigned>(alive.size()))) {
-            recordRefusedProposal(senderEndpointId, "not-proposer");
+            recordRefusedProposal(senderEndpointId, DropRefusal::NotProposer);
             return;
         }
         /* First agreed tick for a seat wins, exactly like the schedule it
@@ -3430,6 +3496,70 @@ public:
                a.routeMeasure_.next_sequence == 0u &&
                a.routeMeasure_.origin_endpoint_id == 0u &&
                a.routeMeasurement_.p95_rtt_ms == 0u;
+    }
+
+    /* Test-only (beta): the per-peer echo budget consumeRouteProbe charges
+     * before it answers a probe (N7 shape). Drives `probesPerPump` arrivals
+     * from each of `peers` senders across `pumps` mesh pumps on a mesh-free
+     * adapter and reports how many echoes would have gone out. A flood inside
+     * one pump is bounded at kRouteEchoBudgetPerPump PER SENDER; the honest
+     * rate spread across pumps is never touched. Never called by the
+     * launcher. */
+    static unsigned testRouteEchoesAllowed(unsigned peers,
+                                           unsigned probesPerPump,
+                                           unsigned pumps) {
+        MdkrOnlineLiveAdapterOptions o;
+        o.sessionId = 1u;
+        LiveAdapter a(o);
+        unsigned echoed = 0u;
+        for (unsigned pump = 0u; pump < pumps; ++pump) {
+            a.meshPumpSequence_++;
+            for (unsigned probe = 0u; probe < probesPerPump; ++probe) {
+                for (unsigned peer = 0u; peer < peers; ++peer) {
+                    if (a.chargeRouteEcho(700u + peer)) echoed++;
+                }
+            }
+        }
+        return echoed;
+    }
+
+    /* Test-only (beta): forensics records left behind by a race_drop refusal
+     * flood. Stages the same mesh-free 100/200/300/400 roster the proposal
+     * guard uses (local 200, departing 400, race epoch 5), resets the ring and
+     * replays `rounds` of one refusal of each reason, then counts the
+     * DEPARTURE_REFUSED records in the ring. Bounded at one per
+     * (sender, reason) however long the flood runs. Never called by the
+     * launcher. */
+    static unsigned testDropRefusalRecords(unsigned rounds) {
+        MdkrOnlineLiveAdapterOptions o;
+        o.sessionId = 1u;
+        LiveAdapter a(o);
+        a.localEndpointId_ = 200u;
+        a.raceReady_ = true;
+        a.raceEpoch_ = 5u;
+        a.peerSlotMask_[400u] = 0x8u;
+        for (uint64_t id : {100u, 200u, 300u, 400u}) {
+            a.meshRoster_.push_back(MdkrMatchPeerSlotOwner{id, 0x1u});
+        }
+        mdkr_net_failure_ring_reset();
+        for (unsigned round = 0u; round < rounds; ++round) {
+            a.onRaceDropProposal(100u, 400u, 6u, 4242u);  /* wrong epoch */
+            a.onRaceDropProposal(100u, 999u, 5u, 4242u);  /* unknown seat */
+            a.onRaceDropProposal(300u, 400u, 5u, 4242u);  /* not proposer */
+        }
+        unsigned records = 0u;
+        const unsigned retained = mdkr_net_failure_ring_retained();
+        for (unsigned index = 0u; index < retained; ++index) {
+            MdkrNetFailureRecord record;
+            if (!mdkr_net_failure_ring_at(index, &record)) break;
+            if (record.kind ==
+                    static_cast<uint16_t>(MDKR_NET_FAILURE_LIFECYCLE) &&
+                record.detail == static_cast<uint8_t>(
+                                     MDKR_NET_LIFECYCLE_DEPARTURE_REFUSED)) {
+                records++;
+            }
+        }
+        return records;
     }
 
     static bool testReVerifyClearsPeerLoss(bool viaAbort) {
@@ -4184,6 +4314,11 @@ private:
     bool routeMeasured_ = false;
     bool routeReportSent_ = false;
     uint64_t routeQueueDropsAtBegin_ = 0u;
+    /* One echo budget per peer, charged against the mesh pump now draining
+     * (see chargeRouteEcho). meshPumpSequence_ is the launcher's own pump
+     * count, so it is the one clock a peer cannot influence. */
+    std::map<uint64_t, RouteEchoBudget> routeEchoBudget_;
+    uint64_t meshPumpSequence_ = 0u;
     std::map<uint64_t, uint8_t> peerSlotMask_;
     /* Once-per-epoch lobby loading handshake latches. */
     bool ackLoadedSent_ = false;
@@ -4210,6 +4345,11 @@ private:
     std::set<uint64_t> roomDeparted_;
     std::map<uint64_t, uint32_t> pendingDropTicks_;
     std::set<uint64_t> departureFinalised_;
+    /* Which (sender, DropRefusal) pairs already reached the forensics ring
+     * this race, one bit per reason, and the total refusals behind them.
+     * Race-scoped like the three above. */
+    std::map<uint64_t, uint8_t> dropRefusalsRecorded_;
+    uint32_t dropRefusalsSeen_ = 0u;
     bool lobbyDropEnabled_ = true;
     bool raceAbortReceived_ = false; /* peer told us it aborted the race */
     bool raceLossFailureLatched_ = false; /* failure_ came from mapLostReason */
@@ -4418,6 +4558,15 @@ bool mdkr_online_live_adapter_test_drop_proposal_accepted(
 
 bool mdkr_online_live_adapter_test_drop_proposal_applied(unsigned order) {
     return LiveAdapter::testDropProposalApplied(order);
+}
+
+unsigned mdkr_online_live_adapter_test_route_echoes_allowed(
+    unsigned peers, unsigned probes_per_pump, unsigned pumps) {
+    return LiveAdapter::testRouteEchoesAllowed(peers, probes_per_pump, pumps);
+}
+
+unsigned mdkr_online_live_adapter_test_drop_refusal_records(unsigned rounds) {
+    return LiveAdapter::testDropRefusalRecords(rounds);
 }
 
 bool mdkr_online_live_adapter_test_reverify_clears_peer_loss(bool via_abort) {
