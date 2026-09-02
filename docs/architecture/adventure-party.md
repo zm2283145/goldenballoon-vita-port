@@ -194,13 +194,19 @@ These are release blockers, not aspirations.
   local Adventure participant count is not passed into it as party state and its
   output is not used to infer an Adventure party.
 - Adventure Party never sets `gIsInTwoPlayerAdventure`, `gTwoPlayerAdvRace`, or
-  the `CHEAT_TWO_PLAYER_ADVENTURE` flag. Every retail two-player-adventure
-  branch — lead swaps (including the boss-vehicle sites in
+  the `CHEAT_TWO_PLAYER_ADVENTURE` flag to a live value. Every retail
+  two-player-adventure branch — lead swaps (including the boss-vehicle sites in
   `vehicle_tricky.c:220,379`), the six-racer rule, player-one vehicle forcing,
   coin ownership bits, and the sitting-out portrait — is therefore mechanically
   unreachable in a party session and needs no edit to stay safe. This is the
   invariant that keeps most retail call sites untouched; the AP-01 scanner
-  enforces it.
+  enforces it. The party session-creation adapter is the one exception, and it
+  runs only in the disengage direction: it forces `gIsInTwoPlayerAdventure =
+  FALSE` on entry so a value left behind by a prior retail two-player session
+  cannot leak into a party started on top of it, and a 2P party would otherwise
+  compute the retail expression to `TRUE` by coincidence of headcount. The
+  scanner's literal-write rule carries a narrow, tested exception for exactly
+  this assignment; a computed or `TRUE` write to the flag still fails it.
 
 ### Data and lifecycle boundaries
 
@@ -395,8 +401,14 @@ before returning that count to the first hub load. The existing lobby adapter
 then publishes the full roster, split layout, and seat-to-controller bindings.
 A reducer refusal at formation, scene entry, or scene completion tears down the
 attempt and returns to title; it may never degrade into a one-player campaign
-under a live session. Quit-to-title is legal from `SHARED_SCENE` and follows the
-same `QUIT -> DESTROY` teardown used by every other live party state.
+under a live session.
+
+Quit-to-title is legal from every active state, not only `ACTIVE_LOBBY` and
+`ACTIVE_RACE`: `FORMING`, `SHARED_SCENE`, `SHARED_DIALOGUE`, `SOLO_ACTIVITY`,
+and `RESTORING_PARTY` all accept it and follow the same `QUIT -> DESTROY`
+teardown. Title is the session's universal escape hatch; refusing quit from any
+live state, even a mid-transition one, is exactly the shape of the strand bugs
+this design exists to avoid.
 
 ### Activity capability table
 
@@ -427,6 +439,16 @@ The trophy row deliberately does not assert a field size. AP-04 must first
 measure whether the retail trophy field is viable with four viewports; AP-16
 owns the resulting decision before any trophy fixture is authored, and until
 then trophy rows fail closed like any unproven activity.
+
+Trophy standings entered from Adventure stay host-keyed against the existing
+series state: the party shares one result, the same way it shares one level
+generation and one transition. This follows the retail trophy series directly
+rather than inventing a per-seat standings model, and it reuses the same
+token-witness pattern already proven for boss progression rather than a second
+write path into the retail slot. A non-host win advancing the shared series
+without moving that racer's own individual standing may read oddly to a
+native-feel session down the line; that is a real product question for
+whenever Adventure Party grows session-native progression, not a defect in v1.
 
 ### Deterministic transition arbitration
 
@@ -468,6 +490,14 @@ If validation fails, never publish a partial roster. In development, stop before
 the first playable tick with a precise diagnostic. The public fail-closed policy
 is host-only for that unsupported activity, with an authored fade and a one-time
 message; it may not silently drop a player in an activity declared party-safe.
+
+"Roster generation" and the level generation named above are the same counter,
+not two: there is no separate roster-versioning field. An in-lobby Taj vehicle
+transform deliberately does not advance it, because bumping it would clear the
+latch and token state scoped to the current lobby visit while that visit is
+still live — the wrong effect for a transform that never leaves the lobby. A
+future feature that genuinely needs to version a rebuild independently of level
+entry should add its own counter rather than repurpose this one.
 
 ### Exact-once progression
 
