@@ -2931,7 +2931,11 @@ private:
             repairRequestedTick_[slot] = first;
             ++repairRequestsSent_;
             /* The gap is exactly the run the drain is predicting through, so
-             * it belongs in the ring under the prediction record. */
+             * it belongs in the ring under the prediction record. A repair
+             * record names a canonical SLOT, detail is the repair kind and
+             * value_a/value_b are the run; the transport's own prediction
+             * record carries NO_SLOT and the committed masks, so a dump reads
+             * the two apart without a kind of its own. */
             mdkr_net_failure_ring_record_tick(
                 MDKR_NET_FAILURE_INPUT_PREDICTED,
                 raceTransport_.history.current_tick, slot,
@@ -3027,6 +3031,7 @@ private:
                 ++repairTicksRestored_;
             }
         }
+        /* Same slot/detail/run shape as the request record above. */
         mdkr_net_failure_ring_record_tick(
             MDKR_NET_FAILURE_INPUT_PREDICTED,
             raceTransport_.history.current_tick, answer.slot,

@@ -95,4 +95,6 @@ the lane is reliable, a sent request is delivered; re-asking for a first tick
 already asked for would only duplicate the answer. A gap whose first tick moves
 is a different gap and is asked for again. Requests and answers are recorded in
 the forensics ring under the input-prediction record, which is exactly the
-condition that raises them.
+condition that raises them: a repair record names a canonical slot, its detail
+is the repair kind and its two values are the run, while the transport's own
+prediction record carries no slot and the committed masks.
