@@ -278,11 +278,41 @@ player or viewport input, so the two menus cannot use different rasterizers.
 pause menu. Note also that the report is against 1.5.2 and this was checked on
 1.6.0.
 
-**Recorded, not fixed.** `viewport_main()` saves and restores only its own
-entry value of `gActiveCameraID`, so after `render_scene()`'s viewport loop that
-global is left pointing at the last viewport drawn. `viewport_scissor()`
-(`camera.c`) derives the dialogue-box scissor rectangle from it, so the pause box
-is clipped against the last-drawn player's half regardless of who paused. It is
-invisible today because the box is centred and small enough to sit inside either
-half, but it is a genuine state leak and the first thing to check if a
-pause-overlay clipping report ever lands.
+**Not a defect.** The earlier reading of this entry -- "the pause box is
+clipped against the last-drawn player's half regardless of who paused" -- is
+wrong, and nothing should be changed for it. A writer/reader census of
+`gActiveCameraID` between the viewport loop and the pause box settles it.
+
+The premise is true as far as it goes: `viewport_main()` (`camera.c:1950`) saves
+and restores only its own entry value, and `render_scene()`'s viewport loop
+selects each viewport with `set_active_camera()` outside it, so the loop does
+fall out with the global on the last viewport drawn.
+
+It never reaches the pause box, for two independent reasons.
+
+* `render_scene()` ends by calling `viewport_reset()` (`tracks.c:1534`), and
+  `viewport_reset()` unconditionally writes `gActiveCameraID = 4` and then
+  `gActiveCameraID = 0` (`camera.c:2862`, `camera.c:2873`) -- stock code, on
+  every frame, before the function returns. The pause box is drawn later in the
+  frame, by `render_dialogue_boxes()` from the main loop
+  (`thread3_main.c:572`), so every `viewport_scissor()` reached from there
+  (`font.c:605`, `font.c:799`) reads 0. The clip is viewport 0's, always,
+  whoever paused and whichever viewport was drawn last.
+* The pause box does not take its clip rectangle from `viewport_scissor()` in
+  the first place. `render_text_string()` scissors to the box's own rectangle
+  (`font.c:497`) before drawing it; the `viewport_scissor()` call at the end of
+  that function (`font.c:605`) restores the scissor for whatever draws next.
+
+Measured. A temporary trace at the end of the viewport loop, on two-player
+Ancient Lake fixtures that pause on P1's pad and on P2's pad, published
+`activeCamera=1 entry=0` at the first split-screen frame: the leak is real,
+and it is confined to the handful of lines between the loop and
+`viewport_reset()`. The instrumentation was removed; no behaviour change
+landed. (Paragraph (C) above separately compared the two pause frames pixel for
+pixel and found them identical apart from the authored box colour.)
+
+The fix that was sketched here would have been dead code: any restore placed at
+the end of the loop is overwritten by `viewport_reset()` a few lines later. If
+a pause-overlay clipping report ever does land, the rectangles to check are the
+box's own (`font.c:497`) and `viewport_reset()`'s full-screen scissor, not the
+active camera id.
