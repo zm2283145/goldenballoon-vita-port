@@ -1042,6 +1042,67 @@ void controlPingTimeoutIsTypedPeerLoss() {
     std::printf("controlPingTimeoutIsTypedPeerLoss: ok\n");
 }
 
+/* A7: linkStats()'s consecutivePingMisses counts full ping intervals
+ * elapsed with an outstanding, unanswered ping -- 1 after exactly one
+ * interval, still short of the mesh's own hard PingTimeout verdict -- and
+ * the peer is still very much alive from the mesh's own point of view at
+ * that point (channelsReady, not lost). Once the full timeout elapses the
+ * mesh's normal PingTimeout path fires, unaffected by this diagnostics
+ * field having been read along the way. */
+void controlPingMissCountsBeforeTimeout() {
+    RawHarness rig;
+    const std::vector<MdkrMatchPeerSlotOwner> roster = rosterOf({100u, 200u});
+    rig.mesh = rig.harness.add(100u, 1u, roster);
+    rig.rawFeed = rig.harness.hub.addEndpoint(200u, 2u);
+    rig.raw = std::make_unique<RawPeer>(200u, 2u, 100u, 1u, &rig.harness.hub);
+    rig.raw->sendHellos = false;
+    rig.raw->answerPings = false;
+    rig.harness.hub.welcome(100u);
+    assert(rig.harness.pumpUntil([&]() {
+        rig.drainRawInbox();
+        return rig.harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::PeerChannelsReady, 200u) >= 1u &&
+               rig.raw->channelsOpen();
+    }));
+
+    MdkrMatchPeerLinkStats links[MDKR_ONLINE_MAX_ENDPOINTS];
+    unsigned count = rig.mesh->linkStats(links, MDKR_ONLINE_MAX_ENDPOINTS);
+    assert(count == 1u);
+    assert(links[0].consecutivePingMisses == 0u);
+
+    /* First ping goes out (nextPingAtMs was armed on channels-ready): still
+     * within its first interval, 0 misses. */
+    rig.harness.clock.nowMs += kMdkrMatchControlPingIntervalMs + 1u;
+    rig.harness.pumpOnce();
+    count = rig.mesh->linkStats(links, MDKR_ONLINE_MAX_ENDPOINTS);
+    assert(count == 1u);
+    assert(links[0].consecutivePingMisses == 0u);
+
+    /* One full interval past THAT ping with no pong: exactly one miss,
+     * peer still up (well short of the timeout=3-interval budget). */
+    rig.harness.clock.nowMs += kMdkrMatchControlPingIntervalMs + 1u;
+    rig.harness.pumpOnce();
+    count = rig.mesh->linkStats(links, MDKR_ONLINE_MAX_ENDPOINTS);
+    assert(count == 1u);
+    assert(links[0].consecutivePingMisses == 1u);
+    assert(rig.mesh->peerChannelsReady(200u));
+    assert(rig.harness.countEvents(
+               100u, MdkrMatchPeerMeshEventType::PeerLost, 200u) == 0u);
+
+    /* Past the full stale deadline: the mesh's own hard verdict fires,
+     * unaffected by having read the diagnostics field above. */
+    rig.harness.clock.nowMs += kMdkrMatchControlPingTimeoutMs + 1u;
+    assert(rig.harness.pumpUntil([&]() {
+        return rig.harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::PeerLost, 200u) >= 1u;
+    }, 5000u));
+    const MdkrMatchPeerMeshEvent *lost = rig.harness.lastEvent(
+        100u, MdkrMatchPeerMeshEventType::PeerLost, 200u);
+    assert(lost != nullptr &&
+           lost->lostReason == MdkrMatchPeerLostReason::PingTimeout);
+    std::printf("controlPingMissCountsBeforeTimeout: ok\n");
+}
+
 void iceRestartRecoversAfterChannelDeath() {
     PairHarness pair;
     assert(pair.connect());
@@ -2231,6 +2292,7 @@ int main() {
     sealWindowExhaustionIsTypedPeerLoss();
     badStateEnvelopeDroppedAndCounted();
     controlPingTimeoutIsTypedPeerLoss();
+    controlPingMissCountsBeforeTimeout();
     iceRestartRecoversAfterChannelDeath();
     offerLadderGivesUpBounded();
     closeTearsDownBounded();

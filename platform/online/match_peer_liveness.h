@@ -14,18 +14,22 @@
  *
  * This is the pure decision half: given a stream of "probe answered" /
  * "probe interval elapsed unanswered" observations for one peer, decide what
- * the live status line should say right now. It touches no clock, no
- * transport state and no UI; the transport-side observation and the copy
- * lookup are separate, so both halves are exercised directly by a unit test.
+ * state the live status line should be in right now. It touches no clock, no
+ * transport state and no UI, and it has no opinion on player copy either --
+ * lobby_view_model.c owns that single source of truth (its RACING status
+ * switch), keyed off the session connectivity code the caller maps this
+ * state onto. The last real measurement a hit produced needs no bookkeeping
+ * here: the transport's own peer.rttMs is untouched by a miss (it only
+ * updates on an answered pong), so it is already "the last known
+ * measurement" for free.
  *
  * Policy (values are contractual -- update this comment and its test
  * together with any change):
  *  - A peer that has never yet answered a probe is not this policy's
  *    business (its setup ladder owns that case): a miss observed before the
  *    first hit leaves the tracker untouched at Good.
- *  - A previously-good peer's FIRST missed probe interval does not clear the
- *    last known measurement or announce a loss: it moves to Transient,
- *    which keeps showing lastRttMs and labels it a retrying hiccup.
+ *  - A previously-good peer's FIRST missed probe interval does not announce
+ *    a loss: it moves to Transient (soft-fail).
  *  - Only missesToUnreachable CONSECUTIVE missed intervals from a
  *    previously-good peer escalate to Unreachable (hard-fail). The caller
  *    derives missesToUnreachable from the same ladder the mesh's own
@@ -35,21 +39,18 @@
  *    lost" lands at the same wall-clock boundary peerLost(PingTimeout) does,
  *    never earlier.
  *  - Any answered probe -- from Transient or Unreachable alike -- clears the
- *    streak and returns to Good with the fresh measurement. In practice the
- *    mesh has usually already declared the peer lost for real by the time
- *    Unreachable would be reached, so this is exercised directly by the unit
- *    test rather than routinely observed live.
+ *    streak and returns to Good. In practice the mesh has usually already
+ *    declared the peer lost for real by the time Unreachable would be
+ *    reached, so that transition is exercised directly by the unit test
+ *    rather than routinely observed live.
  */
 #ifndef MDKR_MATCH_PEER_LIVENESS_H
 #define MDKR_MATCH_PEER_LIVENESS_H
 
-#include <cstdint>
-
 enum class MdkrPeerLivenessState {
     /* No streak: the most recent probe (if any) was answered. */
     Good = 0,
-    /* 1..missesToUnreachable-1 consecutive misses: soft-fail. lastRttMs is
-     * still the peer's last real measurement, not a stale/zeroed value. */
+    /* 1..missesToUnreachable-1 consecutive misses: soft-fail. */
     Transient,
     /* missesToUnreachable consecutive misses: hard-fail. */
     Unreachable,
@@ -58,9 +59,6 @@ enum class MdkrPeerLivenessState {
 struct MdkrPeerLivenessTracker {
     MdkrPeerLivenessState state = MdkrPeerLivenessState::Good;
     unsigned consecutiveMisses = 0u;
-    /* The last measurement a hit produced. Retained through Transient
-     * (and even Unreachable) instead of being cleared by a miss. */
-    uint32_t lastRttMs = 0u;
     bool haveMeasurement = false;
 };
 
@@ -68,17 +66,14 @@ struct MdkrPeerLivenessTracker {
  * state rather than mutating in place, matching this module's neighbours
  * (party_retry_policy.h's decision functions, session_core's next=*core). */
 MdkrPeerLivenessTracker mdkr_peer_liveness_on_hit(
-    MdkrPeerLivenessTracker tracker, uint32_t rttMs);
+    MdkrPeerLivenessTracker tracker);
 
 /* One probe interval elapsed with no answer. missesToUnreachable must be >=
  * 1; the caller derives it from the mesh's own ping/timeout ladder (see the
- * header comment above). */
+ * header comment above). Idempotent once saturated: calling this more than
+ * missesToUnreachable times in a row is safe and leaves the tracker at
+ * Unreachable with consecutiveMisses == missesToUnreachable. */
 MdkrPeerLivenessTracker mdkr_peer_liveness_on_miss(
     MdkrPeerLivenessTracker tracker, unsigned missesToUnreachable);
-
-/* Player-facing status copy for the two failing states. Returns nullptr for
- * Good: a healthy peer keeps whatever status text the caller already shows
- * (e.g. "Direct Connection"), which this module has no opinion on. */
-const char *mdkr_peer_liveness_status_text(MdkrPeerLivenessState state);
 
 #endif /* MDKR_MATCH_PEER_LIVENESS_H */

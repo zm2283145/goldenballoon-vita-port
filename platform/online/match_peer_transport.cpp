@@ -1824,9 +1824,8 @@ unsigned MdkrMatchPeerMesh::linkStats(
         if (peer.channelsReady && !peer.lost &&
             peer.pingOutstandingSinceMs != 0u) {
             const uint64_t elapsed = state_->now() - peer.pingOutstandingSinceMs;
-            const uint64_t misses = elapsed / kMdkrMatchControlPingIntervalMs;
             out[written].consecutivePingMisses =
-                misses > UINT32_MAX ? UINT32_MAX : (uint32_t)misses;
+                (uint32_t)(elapsed / kMdkrMatchControlPingIntervalMs);
         }
         written++;
     }

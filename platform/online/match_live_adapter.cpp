@@ -1544,6 +1544,14 @@ private:
         raceEndFailureLatched_ = false;
         raceDegraded_ = false;
         peerLiveness_.fill(MdkrPeerLivenessTracker{});
+        /* Undo only OUR OWN prior liveness dispatch -- never a
+         * legitimately different connectivity code (e.g. still
+         * CONNECTING) some other path set. */
+        if (session_.state.connectivity == MDKR_CONNECTIVITY_DEGRADED ||
+            session_.state.connectivity == MDKR_CONNECTIVITY_LOST) {
+            (void)sessionDispatch(MDKR_SESSION_COMMAND_SET_CONNECTIVITY,
+                                  MDKR_CONNECTIVITY_DIRECT);
+        }
         lastPreflightGate_ = -1;
         if (failure_ == MDKR_ONLINE_VIEW_FAILURE_ENGINE_FAILED
 #if MDKR_ENABLE_ONLINE_BETA
@@ -2021,25 +2029,45 @@ private:
      * soft-fail/hard-fail liveness tracker and reflect the worst one onto
      * the RACING status line via the session's connectivity code -- the
      * same field ON-03A's view builder already reads at MDKR_SCENE_RACE_CHROME
-     * (lobby_view_model.c). Only meaningful once a race is actually up: a
-     * peer still in its setup ladder is not "previously good" yet, and this
-     * function's own trackers stay untouched (see mdkr_peer_liveness_on_miss)
-     * until their first hit regardless, so the guard below is a cheap early
-     * exit rather than a correctness requirement. */
+     * (lobby_view_model.c). Gated to engine == RACING (not just raceReady_,
+     * which flips true while the transport is merely armed for the start
+     * barrier): a LOST dispatch outside racing would hit session_core.c's
+     * SET_CONNECTIVITY handler's OTHER branch, which forces MDKR_SCENE_RECOVERY
+     * and CONNECTION_LOST -- pre-empting the truthful mapLostReason() card a
+     * real mid-race peerLost produces. A peer still in its setup ladder is
+     * not "previously good" yet regardless; this function's own trackers
+     * stay untouched (see mdkr_peer_liveness_on_miss) until their first hit. */
     void updateLiveness() {
-        if (!mesh_ || !raceReady_) return;
+        if (!mesh_ || session_.state.engine != MDKR_ENGINE_RACING) return;
         MdkrMatchPeerLinkStats links[MDKR_NET_FAILURE_PEERS];
         const unsigned count = mesh_->linkStats(links, MDKR_NET_FAILURE_PEERS);
         MdkrPeerLivenessState worst = MdkrPeerLivenessState::Good;
         for (unsigned index = 0u; index < count; ++index) {
             const unsigned peer = links[index].rosterIndex;
             if (peer >= MDKR_NET_FAILURE_PEERS) continue;
+            /* A lost (or not-yet-ready) peer must never count as a hit: its
+             * frozen rttMs/consecutivePingMisses=0 snapshot would otherwise
+             * read as "answered", resetting the tracker to Good and
+             * re-dispatching DIRECT over a peer that is actually gone. */
+            if (!mesh_->peerChannelsReady(links[index].endpointId)) continue;
             MdkrPeerLivenessTracker &tracker = peerLiveness_[peer];
             if (links[index].consecutivePingMisses == 0u) {
-                tracker = mdkr_peer_liveness_on_hit(tracker, links[index].rttMs);
+                tracker = mdkr_peer_liveness_on_hit(tracker);
             } else {
-                while (tracker.consecutiveMisses <
-                       links[index].consecutivePingMisses) {
+                /* Bounded by kMdkrPeerLivenessMissesToUnreachable regardless
+                 * of how large consecutivePingMisses reads: linkStats()
+                 * derives it from wall-clock elapsed time, which can exceed
+                 * the mesh's own ping-timeout budget for a tick or two (the
+                 * hard peerLost(PingTimeout) verdict that would retire it
+                 * runs on tick()'s cadence, not this pump's), and the
+                 * tracker itself saturates at that same bound -- so looping
+                 * to the raw (unbounded) reading would spin forever. */
+                const unsigned target =
+                    links[index].consecutivePingMisses <
+                            kMdkrPeerLivenessMissesToUnreachable
+                        ? links[index].consecutivePingMisses
+                        : kMdkrPeerLivenessMissesToUnreachable;
+                while (tracker.consecutiveMisses < target) {
                     tracker = mdkr_peer_liveness_on_miss(
                         tracker, kMdkrPeerLivenessMissesToUnreachable);
                 }
@@ -2530,6 +2558,14 @@ private:
         raceSendOwned_ = false;
         raceDegraded_ = false;
         peerLiveness_.fill(MdkrPeerLivenessTracker{});
+        /* Undo only OUR OWN prior liveness dispatch -- never a
+         * legitimately different connectivity code (e.g. still
+         * CONNECTING) some other path set. */
+        if (session_.state.connectivity == MDKR_CONNECTIVITY_DEGRADED ||
+            session_.state.connectivity == MDKR_CONNECTIVITY_LOST) {
+            (void)sessionDispatch(MDKR_SESSION_COMMAND_SET_CONNECTIVITY,
+                                  MDKR_CONNECTIVITY_DIRECT);
+        }
         raceSweepServiceCalls_ = 0u;
         raceReady_ = true;
         if (!raceReadyLogged_) {

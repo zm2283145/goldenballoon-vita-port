@@ -1868,6 +1868,74 @@ void test_captured_results_beat_peer_loss_card() {
     mdkr_net_roster_runtime_clear();
 }
 
+/* A7: a mid-race peer that goes quiet must soften the live status line to a
+ * retrying hiccup on its FIRST missed control-ping interval -- well before
+ * the mesh's own hard PingTimeout verdict -- and must never announce
+ * "Connection lost" ahead of that real verdict. This is the wiring gate:
+ * mdkr_peer_liveness_on_hit/on_miss are pinned in isolation by
+ * test_match_peer_liveness.cpp, but nothing there proves LiveAdapter
+ * actually calls them. Positive control: commenting out updateLiveness()'s
+ * call site in match_live_adapter.cpp's pumpMesh() leaves every existing
+ * CTest green (verified by hand) and only this arm catches it, since it is
+ * the only one that ever reads the status string mid-race before a loss. */
+void test_soft_fail_liveness_precedes_hard_fail_status() {
+    LifecycleRig rig;
+    CHECK(rig.init());
+    if (!rig.A || !rig.B) return;
+    IMdkrOnlineAdapter *A = rig.A.get();
+    IMdkrOnlineAdapter *B = rig.B.get();
+    CHECK(rig.toSelecting());
+    rig.selectReady(A, 1u);
+    rig.selectReady(B, 2u);
+    CHECK(rig.pumpBoth([&]() {
+        return viewOf(A).ready_count == 2u && viewOf(B).ready_count == 2u;
+    }, 3000u));
+    CHECK(rig.startRace());
+    CHECK(rig.pumpBoth([&]() {
+        return viewOf(A).kind == MDKR_ONLINE_VIEW_RACING &&
+               viewOf(B).kind == MDKR_ONLINE_VIEW_RACING;
+    }, 10000u));
+    CHECK(std::strcmp(viewOf(A).status, "Direct Connection") == 0);
+
+    /* B goes silent (its service() is simply never called again): A's
+     * control ping to B goes unanswered. The next scheduled ping was armed
+     * against a fake-clock timestamp set during the busy racing traffic
+     * above, so the first jump only advances far enough to make A actually
+     * SEND that ping (pingOutstandingSinceMs starts fresh, not already
+     * late); a second full interval past THAT is what makes it count as one
+     * missed probe. Still far short of the hard timeout -- this must soften
+     * the status without ending the race or reporting a loss yet. */
+    rig.clock.nowMs += kMdkrMatchControlPingIntervalMs + 1u;
+    A->service();
+    bool sawHiccup = false;
+    for (unsigned step = 0u; step < 3000u; ++step) {
+        A->service();
+        if (std::strcmp(viewOf(A).status, "Connection hiccup — retrying") == 0) {
+            sawHiccup = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        rig.clock.nowMs += 2u;
+    }
+    CHECK(sawHiccup);
+    CHECK(viewOf(A).kind == MDKR_ONLINE_VIEW_RACING);
+    CHECK(!mdkr_online_live_adapter_race_peer_lost(A));
+    /* Never the hard-fail copy ahead of the mesh's own verdict. */
+    CHECK(std::strcmp(viewOf(A).status, "Connection lost") != 0);
+
+    /* Past the full stale deadline: the mesh's real PingTimeout fires and
+     * the usual mid-race recovery flow takes over. */
+    rig.clock.nowMs += kMdkrMatchControlPingTimeoutMs + 1u;
+    for (unsigned step = 0u; step < 5000u; ++step) {
+        A->service();
+        if (mdkr_online_live_adapter_race_peer_lost(A)) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        rig.clock.nowMs += 2u;
+    }
+    CHECK(mdkr_online_live_adapter_race_peer_lost(A));
+    mdkr_net_roster_runtime_clear();
+}
+
 /* two lobby commands can be in flight at once, so a CommandResult must be
  * attributed to the command the server ANSWERED (its echoed command_id), not to
  * the most recently SENT one. Deferred-result transport holds both in flight;
@@ -3051,6 +3119,7 @@ int main(int argc, char **argv) {
     test_multi_race_lifecycle();
     test_race_end_latch_frees_play_here();
     test_captured_results_beat_peer_loss_card();
+    test_soft_fail_liveness_precedes_hard_fail_status();
     test_command_refusal_correlates_by_id();
     test_config_track_precheck_rejects_non_race_id();
     test_race_end_card_survives_late_state();

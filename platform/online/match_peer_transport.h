@@ -339,11 +339,16 @@ struct MdkrMatchPeerLinkStats {
      * yet lost: 0 while a ping is in flight within its first interval
      * (ordinary latency) or none is outstanding, rising by one per interval
      * the peer stays silent. The hard ladder in tick() fires
-     * peerLost(PingTimeout) at kMdkrMatchControlPingTimeoutMs regardless of
-     * this figure, so it saturates at most one interval short of that --
-     * diagnosability only, like every other field here, and feeds A7's
-     * soft-fail/hard-fail liveness policy (match_peer_liveness.h) rather
-     * than any connection decision of the mesh's own. */
+     * peerLost(PingTimeout) at kMdkrMatchControlPingTimeoutMs, so this
+     * figure ordinarily reaches exactly kMdkrMatchControlPingTimeoutMs /
+     * kMdkrMatchControlPingIntervalMs before that verdict retires the peer
+     * -- but tick() can be a call or two late to do so (it returns before
+     * the ping ladder for a peer that is not yet welcomed, generationless,
+     * or already failed), so a caller MUST NOT assume this is bounded by
+     * that ratio and should clamp its own use of it. Diagnosability only,
+     * like every other field here; feeds A7's soft-fail/hard-fail liveness
+     * policy (match_peer_liveness.h) rather than any connection decision of
+     * the mesh's own. */
     uint32_t consecutivePingMisses = 0u;
 };
 

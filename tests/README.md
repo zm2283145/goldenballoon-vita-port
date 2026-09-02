@@ -1986,23 +1986,45 @@ status line only ever said "Direct Connection" until the mesh's own
 control-ping ladder declared the peer lost outright, so a network wobble that
 recovered on its own carried no warning at all, and one that did not read as
 a sudden, unexplained loss. The gate drives a previously-good peer through a
-first missed probe (stays Transient, the last real RTT still shown, labelled
-a retrying hiccup -- never zeroed or hidden), a second miss (still Transient),
-recovery mid-streak, and the Nth consecutive miss (Unreachable). N is derived
-from the mesh's own ladder (`kMdkrMatchControlPingTimeoutMs /
-kMdkrMatchControlPingIntervalMs` = 3, pinned by a `static_assert` in
-`match_live_adapter.cpp`), so the presenter's escalation lands at the same
-wall-clock boundary `peerLost(PingTimeout)` does and never earlier -- that
-loss detection itself is unchanged. Positive control: a small reference
-implementation of the pre-A7 immediate-escalation shape (any miss ->
-Unreachable at once) is applied to the exact same first-miss observation and
-fails the "stays Transient" assertion the fixed policy passes, so the test
-provably discriminates the two shapes rather than passing regardless.
-`online_lobby_view_model` pins the player-facing copy the RACING status line
-shows once `match_live_adapter.cpp`'s tracker reflects that state onto the
-session's connectivity code -- "Connection hiccup — retrying" (Transient) and
-"Connection lost" (Unreachable), alongside the pre-existing "Direct
-Connection" for a healthy peer.
+first missed probe (stays Transient, a soft-fail rather than an announced
+loss), a second miss (still Transient), recovery mid-streak, and the Nth
+consecutive miss (Unreachable, saturating rather than overflowing on further
+misses). N is derived from the mesh's own ladder
+(`kMdkrMatchControlPingTimeoutMs / kMdkrMatchControlPingIntervalMs` = 3,
+pinned by a `static_assert` in `match_live_adapter.cpp`), so the presenter's
+escalation lands at the same wall-clock boundary `peerLost(PingTimeout)` does
+and never earlier -- that loss detection itself is unchanged. Positive
+control: a small reference implementation of the pre-A7 immediate-escalation
+shape (any miss -> Unreachable at once) is applied to the exact same
+first-miss observation and lands Unreachable where the fixed policy's
+assertion requires Transient, so the test provably discriminates the two
+shapes rather than passing regardless. The retained "last known measurement"
+the brief calls for needs no bookkeeping of its own here: the transport's
+peer.rttMs is untouched by a miss (only an answered pong updates it), so it
+is already the last measurement for free -- the tracker only needs to know
+THAT a peer was previously good, not what its RTT was.
+
+The pure policy alone does not prove `LiveAdapter` actually calls it, so two
+more gates cover the wiring. `match_peer_transport`'s
+`controlPingMissCountsBeforeTimeout` drives a silent peer through a real fake-
+clock ping ladder and asserts `linkStats()`'s `consecutivePingMisses` reads 1
+after exactly one missed interval, with the peer still `channelsReady` and
+no `PeerLost` yet, then that the mesh's own hard verdict still fires
+correctly past the full timeout. `online_live_adapter`'s
+`test_soft_fail_liveness_precedes_hard_fail_status` runs a real two-endpoint
+race over the loopback mesh, silences one peer, and requires the RACING
+status line to soften to "Connection hiccup — retrying" on the first missed
+interval (never "Connection lost" ahead of it, never ending the race), before
+the mesh's real `PingTimeout` eventually ends it for real. Positive control:
+commenting out `updateLiveness()`'s call site in `pumpMesh()` (verified by
+hand) leaves every other CTest green and only this arm goes red, since it is
+the only one that ever reads the status string mid-race before a loss.
+`online_lobby_view_model` pins the player-facing copy at its single source of
+truth, `lobby_view_model.c`'s RACING status switch -- "Connection hiccup —
+retrying" (`MDKR_CONNECTIVITY_DEGRADED`) and "Connection lost"
+(`MDKR_CONNECTIVITY_LOST`), alongside the pre-existing "Direct Connection"
+for a healthy peer -- so the pure module itself carries no player-copy
+lookup of its own to drift out of sync with it.
 
 `check_online_midrace_transport_loss.py` (registered) pins prompt, truthful
 mid-race peer loss ON THE TRANSPORT ITSELF -- the real-cloud kill signature: a
