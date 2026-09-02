@@ -33,8 +33,8 @@ import check_adventure_party_boss_restore as boss
 from check_adventure_party_admission import eeprom_image
 from check_adventure_party_performance import (
     BAD_RE, BIND_RE, DL_RE, LAYOUT_RE, REGISTRY_RE, RENDERER_RE, RESOURCE_RE,
-    binding_failure, display_list_failure, load_budgets, parse_spans,
-    plateau_exact, plateau_no_new_high,
+    binding_failure, display_list_failure, high_water_failures, load_budgets,
+    parse_spans, plateau_exact, plateau_no_new_high,
 )
 from harness_utils import DEFAULT_BUILD_DIR, resolve_binary, save_env
 
@@ -197,13 +197,27 @@ def registry_budget_failures(rows: list[tuple[int, ...]], budgets: dict[str, Any
 
 
 def checked_dl_failure(output: str, budgets: dict[str, Any],
-                       levels: set[int], label: str) -> tuple[list[str], int]:
+                       levels: set[int],
+                       label: str) -> tuple[list[str], int, int]:
+    """Both display-list verdicts: the host census, and what the game measured.
+
+    The census counts the commands the dispatcher was handed on the checked
+    spans. The witness is the arm's whole-process high-water in bytes against
+    the row the buffer was allocated to -- the same quantity the fail-closed
+    assertion in gfxtask_run_xbus acts on, so a soak that never emitted it
+    proves nothing about the margin.
+    """
+    witness_failures, high_bytes = high_water_failures(
+        output, budgets["display_list"])
+    failures = [f"{label}: {error}" for error in witness_failures]
     spans = [span for span in parse_spans(output) if span.level in levels]
     if not spans or any(not span.dl_lengths for span in spans):
-        return [f"{label}: a checked span emitted no display lists"], 0
+        failures.append(f"{label}: a checked span emitted no display lists")
+        return failures, 0, high_bytes
     high = max(max(span.dl_lengths) for span in spans)
-    error = display_list_failure(high, budgets["display_list"])
-    return ([f"{label}: {error}"] if error else []), high
+    if error := display_list_failure(high, budgets["display_list"]):
+        failures.append(f"{label}: {error}")
+    return failures, high, high_bytes
 
 
 def taj_failures(output: str, expected: int, budgets: dict[str, Any],
@@ -272,9 +286,11 @@ def taj_failures(output: str, expected: int, budgets: dict[str, Any],
         summary["resource"] = post_resources[-1][3:10]
         summary["renderer_live"] = closed_hub[-1][6]
         summary["registry_live"] = post_registry[-1][3]
-    dl_failures, dl_max = checked_dl_failure(output, budgets, {HUB, LOBBY}, label)
+    dl_failures, dl_max, dl_bytes = checked_dl_failure(
+        output, budgets, {HUB, LOBBY}, label)
     failures += dl_failures
     summary["dl_max"] = dl_max
+    summary["dl_high_water_bytes"] = dl_bytes
     return failures, summary
 
 
@@ -390,10 +406,11 @@ def boss_failures(output: str, expected: int, budgets: dict[str, Any],
         summary["renderer_live"] = lobby_renderers[-1][6]
     if lobby_registries:
         summary["registry_live"] = lobby_registries[-1][3]
-    dl_failures, dl_max = checked_dl_failure(
+    dl_failures, dl_max, dl_bytes = checked_dl_failure(
         output, budgets, {TRICKY, boss.TRICKY_CUTSCENE}, label)
     failures += dl_failures
     summary["dl_max"] = dl_max
+    summary["dl_high_water_bytes"] = dl_bytes
     return failures, summary
 
 
@@ -535,7 +552,10 @@ def main() -> int:
     print(
         "check_adventure_party_performance_soaks: PASS -- five in-scene 4P Taj "
         f"rebuilds retained baseline ownership (DL {five_summary.get('dl_max', 0)}/"
-        f"{budgets['display_list']['qualification_max_commands']}); five real "
+        f"{budgets['display_list']['qualification_max_commands']} commands, "
+        f"{five_summary.get('dl_high_water_bytes', 0)}/"
+        f"{budgets['display_list']['maximum_high_water_bytes']} bytes measured "
+        "in-engine); five real "
         "host-solo boss suspensions/restores plateaued main/audio/renderer/registry "
         f"ownership (DL {boss_five_summary.get('dl_max', 0)}/"
         f"{budgets['display_list']['qualification_max_commands']}); exact four-seat "

@@ -13,7 +13,8 @@
   "display_list": {
     "capacity_commands": 11000,
     "qualification_max_commands": 10750,
-    "minimum_headroom_commands": 250
+    "minimum_headroom_commands": 250,
+    "maximum_high_water_bytes": 86000
   },
   "memory": {
     "minimum_main_free_bytes": 1048576,

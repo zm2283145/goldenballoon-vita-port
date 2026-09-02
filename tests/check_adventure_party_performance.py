@@ -57,6 +57,10 @@ BIND_RE = re.compile(r"aparty_binding: seat=(\d+) port=(\d+)")
 LAYOUT_RE = re.compile(r"aparty_layout: viewports=(\d+) layout=(\d+)")
 HUD_RE = re.compile(r"hud_init: hudPlayers=(\d+) numViewports=(\d+)")
 DL_RE = re.compile(r"gfxtask: type=\d+ dl=\S+ len=(\d+)")
+# The engine's own measurement of the same lists, in bytes against the row the
+# display-list buffer was allocated to (game/src/rcp_dkr.c). It is emitted only
+# when the high-water rises, so the last line of a run is that run's peak.
+HIGH_WATER_RE = re.compile(r"dl_high_water: bytes=(\d+) limit=(\d+)")
 RESOURCE_RE = re.compile(
     r"resource_state: level=(-?\d+) players=(-?\d+) cutscene=(-?\d+) "
     r"mainLive=(\d+) mainUsed=(\d+) mainFree=(\d+) mainLargest=(\d+) "
@@ -107,6 +111,12 @@ def load_budgets() -> dict[str, Any]:
             dl.get("minimum_headroom_commands", 0) !=
             dl.get("capacity_commands", -1)):
         raise ValueError("display-list qualification budget/headroom is incoherent")
+    # The engine reports bytes, the census counts commands. One Gfx is eight
+    # bytes, so the byte budget is the command budget restated -- pinned here
+    # rather than left as a second, driftable number.
+    if dl.get("maximum_high_water_bytes") != dl["qualification_max_commands"] * 8:
+        raise ValueError(
+            "display-list byte budget is not the command budget in bytes")
     return value
 
 
@@ -213,6 +223,28 @@ def display_list_failure(high_water: int,
     return None
 
 
+def high_water_failures(output: str,
+                        budget: dict[str, int]) -> tuple[list[str], int]:
+    """Verdict on the engine's own display-list high-water witness.
+
+    The census above counts what the host dispatcher was handed. This reads
+    what the game measured against the row it authored into, which is the
+    quantity the fail-closed assertion in gfxtask_run_xbus acts on. A run that
+    reports nothing fails: an assertion nobody can see fire is not evidence.
+    """
+    rows = [(int(bytes_), int(limit))
+            for bytes_, limit in HIGH_WATER_RE.findall(output)]
+    if not rows:
+        return (["no [TRACE] dl_high_water witness was emitted, so the "
+                 "display-list margin was never measured"], 0)
+    peak = max(bytes_ for bytes_, _limit in rows)
+    if peak > budget["maximum_high_water_bytes"]:
+        return ([f"display-list high-water {peak} bytes exceeds budget "
+                 f"{budget['maximum_high_water_bytes']} (rows carried limits "
+                 f"{sorted({limit for _bytes, limit in rows})})"], peak)
+    return ([], peak)
+
+
 def resource_failures(output: str, budgets: dict[str, Any],
                       required_cycles: int) -> tuple[list[str], dict[str, int]]:
     failures: list[str] = []
@@ -289,6 +321,9 @@ def resource_failures(output: str, budgets: dict[str, Any],
     summary["dl_max"] = dl_max
     if error := display_list_failure(dl_max, dl_budget):
         failures.append(error)
+    high_water_errors, summary["dl_high_water_bytes"] = high_water_failures(
+        output, dl_budget)
+    failures += high_water_errors
 
     resources = [tuple(map(int, match.groups()))
                  for match in RESOURCE_RE.finditer(output)]
@@ -552,6 +587,16 @@ def self_test(budgets: dict[str, Any]) -> list[str]:
     if display_list_failure(dl["qualification_max_commands"] + 1, dl) is None:
         failures.append("self-test: over-capacity display-list control passed")
 
+    over_budget = dl["maximum_high_water_bytes"] + 1
+    witness = (f"[TRACE] dl_high_water: bytes=32 limit={over_budget}\n"
+               f"[TRACE] dl_high_water: bytes={over_budget} limit={over_budget}")
+    if not high_water_failures(witness, dl)[0]:
+        failures.append("self-test: over-budget high-water control passed")
+    if high_water_failures(witness.splitlines()[0], dl)[0]:
+        failures.append("self-test: an in-budget high-water witness was rejected")
+    if not high_water_failures("", dl)[0]:
+        failures.append("self-test: a run with no high-water witness passed")
+
     synthetic = [(5, 0, 100, 20, 2000), (5, 0, 100, 20, 2000),
                  (5, 0, 100, 20, 2000), (5, 0, 100, 21, 2016),
                  (5, 0, 100, 22, 2032)]
@@ -659,7 +704,10 @@ def main() -> int:
         f"check_adventure_party_performance: PASS ({qualifier}) -- "
         f"{summary.get('cycles', 0)} four-player lobby->race->lobby cycles; "
         f"DL high-water {summary.get('dl_max', 0)}/"
-        f"{budgets['display_list']['qualification_max_commands']} commands; "
+        f"{budgets['display_list']['qualification_max_commands']} commands "
+        f"({summary.get('dl_high_water_bytes', 0)}/"
+        f"{budgets['display_list']['maximum_high_water_bytes']} bytes measured "
+        "in-engine); "
         f"warmed pool/audio/renderer/registry ownership plateaued; exact "
         f"four-controller/session counters held; {q['churn_cycles']} "
         "formation/dissolution lifetimes retained no state; mutation controls fired"

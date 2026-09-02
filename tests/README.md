@@ -484,6 +484,27 @@ production coverage:
   versioned broken-direction controls; production uses the same retained HLE
   replay machinery only after the complete task/dependency transaction and
   adjacent-state publication succeed.
+- `check_dl_high_water.py` covers the authoring side of the same overflow.
+  `gDisplayLists[]` is one allocation whose Gfx region is immediately followed
+  by `gMatrixHeap[]`, so writing past `gCurrNumF3dCmdsPerPlayer` commands does
+  not fault — it overwrites matrices, and the walkers above then parse matrix
+  words as commands. Nothing measured that margin before. `gfxtask_run_xbus`
+  now compares the authored length against the row the buffer was allocated to
+  at the one point both are known, reports every new high as
+  `[TRACE] dl_high_water: bytes=.. limit=..`, and aborts with
+  `[FATAL] display list overflowed its heap row (bytes=.. limit=.. commands=..)`
+  past it. Submission is also the only consistent sample: the row and the write
+  cursor change together, in `alloc_displaylist_heap`. The gate runs a retail 1P
+  time trial twice. Unmodified it must emit the witness, report a limit that is
+  a real `gNumF3dCmdsPerPlayer[]` row, and stay under it — measured 12,496 of
+  36,000 bytes. With `MDKR_TEST_DL_HIGH_WATER_LIMIT=64` the same route must exit
+  nonzero having printed the `[FATAL]` line and a witness for the length that
+  tripped it, which is the control that the assertion is fail-closed rather than
+  a print. `MDKR_TEST_UNDERSIZED_DL_HEAP` authors its overflow on purpose, so
+  that route reports through the witness and runs on into the walkers instead of
+  aborting; `check_fast3d_dl_hardening.py` stays green and its injected arm now
+  measures 74,088 bytes against a 36,000-byte row. The four-player soak evidence
+  lives with the rest of AP-19 below.
 - `check_fast3d_dl_hardening.py` covers the renderer's side of the 4P party-hub
   crash settled under AddressSanitizer.
   The authoring defect (a four-viewport party sized against the retail 1P
@@ -7097,7 +7118,15 @@ The measured worst case is 10,507 on a legitimate 4P Dino-E0 return to the
 central hub: 493 commands below hard capacity and 243 below the qualification
 ceiling. The gate reads every
 `gfxtask` submitted in the four-camera central hub, world lobby, and race spans;
-the ordinary initial-entry 4P hub measurement is 9,670. It also requires at least 1 MiB main-
+the ordinary initial-entry 4P hub measurement is 9,670. `maximum_high_water_bytes`
+restates the same ceiling in the units the engine reports, and `load_budgets`
+pins it to `qualification_max_commands * 8` so the two cannot drift apart. That
+row is checked against the engine's own `[TRACE] dl_high_water` witness rather
+than the host census, which covers the whole process instead of the selected
+four-camera spans and reads the length against the row actually installed: the
+twenty-cycle arm measures 77,128 of 86,000 bytes against an 88,000-byte
+four-player row, and the five-rebuild Taj arm 73,752. A run that emits no
+witness at all fails, so the counter cannot quietly stop. It also requires at least 1 MiB main-
 pool free and a 512 KiB largest free block, bounded texture/registry occupancy,
 zero ambiguous/full registry inserts, and coherent fixed audio/controller pools.
 The last five equivalent race and lobby generations must have identical main-pool
@@ -7114,7 +7143,8 @@ host-solo suspension/restore → QUIT → DESTROY lifetimes. Session and level
 generations must land exactly at 20,000 and 70,000, while every dissolved session
 has zero roster, suspended roster, latch, and token state. Parser controls inject
 generation growth, a swapped controller binding, a retained churn failure, and a
-display-list over-budget relationship; each must be rejected. `--self-test` runs
+display-list over-budget relationship, an over-budget and a missing
+display-list high-water witness; each must be rejected. `--self-test` runs
 only those controls. `--development-cycles 1..19` is explicitly non-qualifying
 and is never used by the manifest.
 
