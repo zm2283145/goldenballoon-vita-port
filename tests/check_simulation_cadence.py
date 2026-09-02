@@ -11,7 +11,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, resolve_binary, save_env
 
 
 PACE_INIT_RE = re.compile(
@@ -24,12 +24,20 @@ AUDIO_RE = re.compile(r"\[AUDIO-SERVICE\] (.*)")
 PRESENT_SUMMARY_RE = re.compile(r"\[PRESENTSCHED-SUMMARY\] (.*)")
 
 
-def clean_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+def clean_env(save_dir: str,
+              extra: dict[str, str] | None = None) -> dict[str, str]:
     env = {key: value for key, value in os.environ.items()
            if not key.startswith("MDKR_")}
     env.update(
         MDKR_AUDIO="0", MDKR_AUDIO_SERVICE_TRACE="1", MDKR_TRACE="1",
         MDKR_PRESENT_SCHED_TRACE="1")
+    # The scrub above also drops the MDKR_SAVE_DIR the suite exports per task,
+    # and since issue #54 a non-packaged build resolves an unpinned save to the
+    # SHARED per-user directory rather than $CWD/save -- so these probes would
+    # read the host's own EEPROM. save_env() pins the video config with it
+    # (check_harness_isolation.py), which matters here: this file's subject is
+    # the cadence/presentation accounting a repo-root mdkr64.ini can change.
+    save_env(env, save_dir)
     if extra:
         env.update(extra)
     return env
@@ -49,7 +57,7 @@ def run_probe(
                 "--rom", str(rom),
             ],
             cwd=raw,
-            env=clean_env(extra),
+            env=clean_env(os.path.join(raw, "save"), extra),
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -170,26 +178,29 @@ def require_audio_clock(
 
 def check_video_preset_independence(binary: Path) -> None:
     for mode in ("--pure", "--restored", "--remastered"):
-        proc = subprocess.run(
-            [str(binary), "--video-list", mode],
-            env=clean_env({"MDKR_SIMULATION_CADENCE": "enhanced"}),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=30,
-            check=False,
-        )
-        cadence_line = next(
-            (
-                line for line in proc.stdout.splitlines()
-                if "Gameplay.SimulationCadence" in line
-            ),
-            "",
-        )
-        if proc.returncode != 0 or "enhanced" not in cadence_line or "[env]" not in cadence_line:
-            raise AssertionError(
-                f"{mode} rewrote gameplay cadence: {cadence_line!r}\n{proc.stdout}"
+        with tempfile.TemporaryDirectory(
+                prefix="mdkr-cadence-presets-") as raw:
+            proc = subprocess.run(
+                [str(binary), "--video-list", mode],
+                env=clean_env(os.path.join(raw, "save"),
+                              {"MDKR_SIMULATION_CADENCE": "enhanced"}),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=30,
+                check=False,
             )
+            cadence_line = next(
+                (
+                    line for line in proc.stdout.splitlines()
+                    if "Gameplay.SimulationCadence" in line
+                ),
+                "",
+            )
+            if proc.returncode != 0 or "enhanced" not in cadence_line or "[env]" not in cadence_line:
+                raise AssertionError(
+                    f"{mode} rewrote gameplay cadence: {cadence_line!r}\n{proc.stdout}"
+                )
 
 
 def check_oracle_manifest(root: Path) -> None:

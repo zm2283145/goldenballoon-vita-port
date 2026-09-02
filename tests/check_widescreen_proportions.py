@@ -53,7 +53,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from harness_utils import (DEFAULT_BUILD_DIR, read_ppm as read_ppm_bytes,
-                           resolve_binary)
+                           resolve_binary, save_env)
 
 
 REPO = Path(__file__).resolve().parent.parent
@@ -248,7 +248,8 @@ def billboard_source_contract() -> list[str]:
     return failures
 
 
-def clean_environment(renderer: str | None) -> dict[str, str]:
+def clean_environment(renderer: str | None, save_dir: Path
+                      ) -> dict[str, str]:
     env = {
         key: value
         for key, value in os.environ.items()
@@ -267,6 +268,15 @@ def clean_environment(renderer: str | None) -> dict[str, str]:
         MDKR_DRIVE_ROUTE=DRIVE_ROUTE,
         LC_ALL="C",
     )
+    # The scrub above also drops the MDKR_SAVE_DIR tools/run_checks.py exports
+    # per task, and since issue #54 a non-packaged build resolves an unpinned
+    # save to the SHARED per-user directory rather than $CWD/save -- so the
+    # per-case run_dir below no longer isolates anything by itself. An
+    # unrelated adventure-in-progress EEPROM there re-routes the boot flow and
+    # the scripted drive never reaches the HUD/world capture frames. Pin the
+    # case's own directory; save_env() pins the video config with it
+    # (check_harness_isolation.py).
+    save_env(env, save_dir)
     if renderer:
         env["MDKR_RENDERER"] = renderer
     return env
@@ -291,6 +301,8 @@ def run_case(
     run_dir = case_root / "run"
     frame_dir.mkdir(parents=True)
     run_dir.mkdir()
+    save_dir = run_dir / "save"
+    save_dir.mkdir()
     command = [
         str(binary),
         "--headless-frames",
@@ -311,7 +323,7 @@ def run_case(
         proc = subprocess.run(
             command,
             cwd=run_dir,
-            env=clean_environment(renderer),
+            env=clean_environment(renderer, save_dir),
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

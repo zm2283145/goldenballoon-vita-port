@@ -24,7 +24,7 @@ from pathlib import Path
 
 from harness_utils import (ABORT_MARKERS, fatal_re, GPU_MARKERS,
                            present_mode_rows, resolve_binary, row_fields,
-                           text_rows)
+                           save_env, text_rows)
 
 
 TICKS = 12
@@ -860,6 +860,14 @@ def run_host_fault(binary: Path, point: str, required: tuple[str, ...],
             MDKR_APP_PREFS_DIR=str(root / "prefs"),
             MDKR_WEBGPU_FAULT=point,
         )
+        # clean_environment() drops every inherited MDKR* variable, including
+        # the MDKR_SAVE_DIR the suite exports per task. Since issue #54 a
+        # non-packaged build then resolves the save to the SHARED per-user
+        # directory rather than $CWD/save, so this fault arm boots against
+        # whatever EEPROM the host happens to hold. Pin the arm's own tree;
+        # save_env() pins the video config with it
+        # (check_harness_isolation.py).
+        save_env(env, str(root / "save"))
         if point == "host.surface-view":
             env["MDKR_TEST_OCCLUDED_SURFACE_FAULTS"] = "1"
         process = subprocess.run(
@@ -918,6 +926,8 @@ def run_host_imgui_init_fault(binary: Path, timeout: int, verbose: bool) -> None
             MDKR_APP_PREFS_DIR=str(root / "prefs"),
             MDKR_WEBGPU_FAULT=point,
         )
+        # Same save isolation as run_host_fault above (issue #54).
+        save_env(env, str(root / "save"))
         process = subprocess.run(
             [str(binary)], cwd=root, env=env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -954,6 +964,8 @@ def run_host_capture_fault(binary: Path, point: str, timeout: int,
             MDKR_APP_PREFS_DIR=str(root / "prefs"),
             MDKR_WEBGPU_FAULT=f"{point}@all",
         )
+        # Same save isolation as run_host_fault above (issue #54).
+        save_env(env, str(root / "save"))
         process = subprocess.run(
             [str(binary)], cwd=root, env=env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -1070,7 +1082,11 @@ def launch_macos_app(binary: Path, rom: Path, root: Path, timeout: int,
     process = subprocess.run(
         command,
         cwd=root,
-        env=clean_environment(LC_ALL="C"),
+        # The app's environment is the explicit --env list above, which
+        # already pins MDKR_SAVE_DIR into this run's tree. The probe process
+        # gets the same pin so nothing it starts can reach the shared per-user
+        # save directory either (issue #54).
+        env=save_env(clean_environment(LC_ALL="C"), str(root / "save")),
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,

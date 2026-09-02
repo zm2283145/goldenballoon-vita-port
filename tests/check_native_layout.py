@@ -27,15 +27,17 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import atexit
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import resolve_binary
+from harness_utils import resolve_binary, save_env
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -242,6 +244,31 @@ def verify_instrumentation(
     return failures
 
 
+_SAVE_ROOT: str | None = None
+
+
+def sanitizer_save_dir() -> str:
+    """One temporary save directory for every process this check starts.
+
+    The scrub in sanitizer_environment() drops the MDKR_SAVE_DIR
+    tools/run_checks.py exports per task, and since issue #54 a non-packaged
+    build resolves an unpinned save to the SHARED per-user directory rather
+    than $CWD/save. That reaches further here than in an ordinary check: the
+    runtime matrix below hands this environment to a dozen other check_*.py
+    scripts, each of which faithfully inherits os.environ, so one contaminated
+    host directory re-routes all of them at once (check_vehicle_sweep reporting
+    "level never loaded ... no [PVEH]" on all 47 combinations). One directory
+    for the whole task matches what the suite itself does, and the arms run
+    sequentially.
+    """
+
+    global _SAVE_ROOT
+    if _SAVE_ROOT is None:
+        _SAVE_ROOT = tempfile.mkdtemp(prefix="mdkr_native_layout_save_")
+        atexit.register(shutil.rmtree, _SAVE_ROOT, ignore_errors=True)
+    return _SAVE_ROOT
+
+
 def sanitizer_environment(kind: str, recover: bool = False) -> dict[str, str]:
     environment = {
         key: value
@@ -261,6 +288,10 @@ def sanitizer_environment(kind: str, recover: bool = False) -> dict[str, str]:
     )
     if kind == "asan":
         environment.pop("UBSAN_OPTIONS", None)
+    # Both names, so a sub-check reading MDKR_TEST_SAVE_DIR agrees with the
+    # engine reading MDKR_SAVE_DIR -- exactly the pair the suite exports.
+    save_env(environment, sanitizer_save_dir())
+    environment["MDKR_TEST_SAVE_DIR"] = sanitizer_save_dir()
     return environment
 
 

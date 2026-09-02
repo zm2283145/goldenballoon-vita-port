@@ -26,7 +26,7 @@ unchanged.
 | [`multiplayer.md`](multiplayer.md) | Multiplayer — 2 entries |
 | [`gameplay.md`](gameplay.md) | Gameplay, race and Adventure — 12 entries |
 | [`portability.md`](portability.md) | 64-bit (LP64), endianness and portability — 13 entries |
-| [`misc.md`](misc.md) | Everything else — 5 entries |
+| [`misc.md`](misc.md) | Everything else — 6 entries |
 
 
 ## Contents
@@ -215,6 +215,7 @@ what was done and what proves it.
 - [NOT A DEFECT, but zero coverage until now: character-select dancers reported static — wave "charselectmotion"](misc.md#not-a-defect-but-zero-coverage-until-now-character-select-dancers-reported-static--wave-charselectmotion)
 - [FIXED: the settings panel's scripted gates depended on a hand-written list of section names — wave "gaterects"](misc.md#fixed-the-settings-panels-scripted-gates-depended-on-a-hand-written-list-of-section-names--wave-gaterects)
 - [OPEN: check_a11y_shell's in-game overlay arm covers a different number of rows every run — wave "shellwalk"](misc.md#open-check_a11y_shells-in-game-overlay-arm-covers-a-different-number-of-rows-every-run--wave-shellwalk)
+- [CLOSED: 17 checks scrubbed `MDKR_SAVE_DIR` out of their engine environment and then launched — wave "savehermetic"](misc.md#closed-17-checks-scrubbed-mdkr_save_dir-out-of-their-engine-environment-and-then-launched--wave-savehermetic)
 
 **Deferred — none outstanding**
 

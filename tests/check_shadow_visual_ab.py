@@ -53,7 +53,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import DEFAULT_BUILD_DIR, read_ppm, resolve_binary
+from harness_utils import (DEFAULT_BUILD_DIR, read_ppm, resolve_binary,
+                           save_env)
 
 
 REPO = Path(__file__).resolve().parent.parent
@@ -173,6 +174,15 @@ def run_arm(
         print(f"$ ({label}) " + shlex.join(command), flush=True)
     frame_dir.mkdir()
     save_dir.mkdir()
+    # save_dir is the arm's cwd, which used to be enough on its own. It is not
+    # any more: clean_environment() drops the MDKR_SAVE_DIR the suite exports
+    # per task, and since issue #54 an unpinned save resolves to the SHARED
+    # per-user directory instead of $CWD/save. An unrelated
+    # adventure-in-progress EEPROM there re-routes the boot flow, so the two
+    # arms stop being a controlled A/B and the darker-pixel invariant is
+    # measured on different routes. save_env() pins the video config with it
+    # (check_harness_isolation.py).
+    save_env(env, save_dir)
     try:
         proc = subprocess.run(
             command,

@@ -39,7 +39,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, resolve_binary, save_env
 
 
 REPO = Path(__file__).resolve().parent.parent
@@ -178,14 +178,21 @@ def run_case(
     if verbose:
         print(f"$ ({label}) " + shlex.join(command), flush=True)
     try:
-        # A fresh cwd gives each arm an independent save/ directory. This keeps
-        # the trajectory reproducible and lets GL/WebGPU/ASan harnesses run in
-        # parallel without racing one EEPROM file.
+        # A fresh directory gives each arm an independent save. This keeps the
+        # trajectory reproducible and lets GL/WebGPU/ASan harnesses run in
+        # parallel without racing one EEPROM file. It has to be pinned, not
+        # merely used as the cwd: clean_environment() drops the MDKR_SAVE_DIR
+        # the suite exports per task, and since issue #54 an unpinned save
+        # resolves to the SHARED per-user directory instead of $CWD/save, where
+        # an unrelated adventure-in-progress EEPROM re-routes the boot flow and
+        # the [PACE]/[SHADOW]/[DEPTH] rows this gate compares come from a
+        # different route on each arm. save_env() pins the video config with it
+        # (check_harness_isolation.py).
         with tempfile.TemporaryDirectory(prefix=f"mdkr_{label.replace(':', '_')}_") as run_dir:
             proc = subprocess.run(
                 command,
                 cwd=run_dir,
-                env=env,
+                env=save_env(dict(env), run_dir),
                 text=True,
                 capture_output=True,
                 timeout=timeout,
