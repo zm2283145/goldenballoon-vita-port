@@ -3,16 +3,23 @@ import {webcrypto} from "node:crypto";
 import {createMatchPreflightFragmentState, decodeMatchPreflightAttestation,
   digestMatchPreflightGraph, encodeMatchPreflightAttestation,
   encodeMatchPreflightFragments, submitMatchPreflightFragment,
+  decodeMatchPreflightAttestationReason, matchRouteBand, scoreMatchRoute,
   MATCH_PREFLIGHT_ALL_FLAGS, MATCH_PREFLIGHT_ATTESTATION_BYTES,
-  MATCH_PREFLIGHT_FRAGMENT_COUNT, MATCH_PREFLIGHT_FRAGMENT_PAYLOAD_BYTES}
+  MATCH_PREFLIGHT_FRAGMENT_COUNT, MATCH_PREFLIGHT_FRAGMENT_PAYLOAD_BYTES,
+  MATCH_PREFLIGHT_MEASUREMENT_OFFSET, MATCH_PREFLIGHT_ROUTE_MEASURED,
+  MATCH_ROUTE_BAND_ROUGH,
+  MATCH_ROUTE_BAND_STEADY, MATCH_ROUTE_BAND_UNEVEN}
   from "../dist/web/online/match-preflight.js";
 
 const toHex = value => [...value]
   .map(byte => byte.toString(16).padStart(2, "0")).join("");
-const expected = "4d504631010700000000000700000002000000090000000000000014" +
+const expected = "4d504632020700000000000700000002000000090000000000000014" +
   "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f" +
   "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf" +
-  "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf";
+  "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf" +
+  "000000000000000000000000";
+const unmeasured = {p95RttMs: 0, jitterMs: 0, lossPerThousand: 0,
+  latePerThousand: 0, undrained: 0, score: 0, band: 0};
 const report = {
   matchEpoch: 7,
   connectionGeneration: 2,
@@ -22,6 +29,7 @@ const report = {
   transcriptDigest: Uint8Array.from({length: 32}, (_, index) => 0xa0 + index),
   graphDigest: Uint8Array.from({length: 32}, (_, index) => 0xc0 + index),
   flags: MATCH_PREFLIGHT_ALL_FLAGS,
+  measurement: unmeasured,
 };
 const fragmentDirection = {matchEpoch: 7, sourceEndpointId: 20n,
   sourceGeneration: 2, destinationEndpointId: 10n,
@@ -118,7 +126,7 @@ for (const [offset, count] of [[8, 4], [12, 4], [16, 4], [20, 8]]) {
   assert.equal(decodeMatchPreflightAttestation(mutated), null,
     `zero required field ${offset}`);
 }
-for (let index = 28; index < encoded.length; index++) {
+for (let index = 28; index < MATCH_PREFLIGHT_MEASUREMENT_OFFSET; index++) {
   const mutated = encoded.slice();
   mutated[index] ^= 1;
   const decoded = decodeMatchPreflightAttestation(mutated);
@@ -173,3 +181,45 @@ for (const invalid of [
 }
 
 console.log("test_match_preflight_js: PASS");
+
+// MPF2's appended route-quality record: the same ladder, the same bands and the
+// same twelve wire bytes the native half pins, plus the two-way version refusal.
+assert.deepEqual(scoreMatchRoute({p95RttMs: 0, jitterMs: 0, lossPerThousand: 0,
+  latePerThousand: 0, undrained: 0}), {score: 10, band: MATCH_ROUTE_BAND_STEADY});
+assert.deepEqual(scoreMatchRoute({p95RttMs: 100, jitterMs: 10,
+  lossPerThousand: 0, latePerThousand: 30, undrained: 0}),
+  {score: 6, band: MATCH_ROUTE_BAND_UNEVEN});
+assert.deepEqual(scoreMatchRoute({p95RttMs: 0, jitterMs: 0,
+  lossPerThousand: 80, latePerThousand: 0, undrained: 0}),
+  {score: 4, band: MATCH_ROUTE_BAND_ROUGH});
+assert.equal(scoreMatchRoute({p95RttMs: 0, jitterMs: 0, lossPerThousand: 1001,
+  latePerThousand: 0, undrained: 0}), null);
+assert.equal(matchRouteBand(11), 0);
+
+const measured = {...report,
+  flags: MATCH_PREFLIGHT_ALL_FLAGS | MATCH_PREFLIGHT_ROUTE_MEASURED,
+  measurement: {p95RttMs: 45, jitterMs: 4, lossPerThousand: 3,
+    latePerThousand: 0, undrained: 0, score: 9, band: MATCH_ROUTE_BAND_STEADY}};
+const measuredBytes = encodeMatchPreflightAttestation(measured);
+assert.equal(toHex(measuredBytes.subarray(124)), "002d00040003000000000903");
+assert.deepEqual(decodeMatchPreflightAttestation(measuredBytes), measured);
+
+const wrongBand = measuredBytes.slice();
+wrongBand[135] = MATCH_ROUTE_BAND_ROUGH;
+assert.equal(decodeMatchPreflightAttestationReason(wrongBand).reason,
+  "malformed");
+const unflagged = measuredBytes.slice();
+unflagged[5] = MATCH_PREFLIGHT_ALL_FLAGS;
+assert.equal(decodeMatchPreflightAttestationReason(unflagged).reason,
+  "malformed");
+
+const legacy = new Uint8Array(124);
+legacy.set([0x4d, 0x50, 0x46, 0x31, 0x01], 0);
+assert.equal(decodeMatchPreflightAttestationReason(legacy).reason,
+  "legacy_mpf1");
+assert.equal(decodeMatchPreflightAttestationReason(legacy.subarray(0, 120))
+  .reason, "legacy_mpf1");
+// The frozen MPF1 header rule (exactly 124 bytes, tag "MPF1", version 1)
+// refuses an MPF2 report, so neither side can silently downgrade.
+assert(!(measuredBytes.byteLength === 124 && measuredBytes[3] === 0x31 &&
+  measuredBytes[4] === 0x01));

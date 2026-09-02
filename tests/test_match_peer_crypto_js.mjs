@@ -189,14 +189,16 @@ const duplicate = await openMatchPeerEnvelope(key, expectedDirection, replay,
   envelope, webcrypto);
 assert.equal(duplicate.result, "replay");
 
-// The real fixed 124-byte attestation crosses the 64-byte carrier as three
+// The real fixed 136-byte attestation crosses the 64-byte carrier as three
 // independently authenticated type-1 payloads. Transport sequence is global
 // for the direction and independent of report sequence and fragment order.
 const report = {matchEpoch: 7, connectionGeneration: 2, sequence: 13,
   endpointId: 100n, flags: MATCH_PREFLIGHT_ALL_FLAGS,
   descriptorDigest: Uint8Array.from({length: 32}, (_, index) => index + 1),
   transcriptDigest: Uint8Array.from({length: 32}, (_, index) => index + 0x41),
-  graphDigest: Uint8Array.from({length: 32}, (_, index) => index + 0x81)};
+  graphDigest: Uint8Array.from({length: 32}, (_, index) => index + 0x81),
+  measurement: {p95RttMs: 0, jitterMs: 0, lossPerThousand: 0,
+    latePerThousand: 0, undrained: 0, score: 0, band: 0}};
 const fragmentPayloads = encodeMatchPreflightFragments(report);
 assert.equal(fragmentPayloads.length, MATCH_PREFLIGHT_FRAGMENT_COUNT);
 const fragmentState = createMatchPreflightFragmentState(context);

@@ -1,14 +1,55 @@
-// Fixed browser half of platform/net/match_preflight.c's MPF1 attestation.
+// Fixed browser half of platform/net/match_preflight.c's MPF2 attestation.
 // The bytes travel only over a carrier that already authenticated endpointId.
-export const MATCH_PREFLIGHT_ATTESTATION_BYTES = 124;
+export const MATCH_PREFLIGHT_ATTESTATION_BYTES = 136;
+export const MATCH_PREFLIGHT_MEASUREMENT_OFFSET = 124;
 export const MATCH_PREFLIGHT_ROM_VERIFIED = 0x01;
 export const MATCH_PREFLIGHT_PHRASE_CONFIRMED = 0x02;
 export const MATCH_PREFLIGHT_CHANNELS_READY = 0x04;
+export const MATCH_PREFLIGHT_ROUTE_MEASURED = 0x08;
+// The three checks READY requires; the route measurement is reported, not
+// required.
 export const MATCH_PREFLIGHT_ALL_FLAGS = 0x07;
+export const MATCH_PREFLIGHT_FLAG_MASK = 0x0f;
 export const MATCH_PREFLIGHT_FRAGMENT_HEADER_BYTES = 6;
 export const MATCH_PREFLIGHT_FRAGMENT_DATA_BYTES = 58;
 export const MATCH_PREFLIGHT_FRAGMENT_COUNT = 3;
 export const MATCH_PREFLIGHT_FRAGMENT_PAYLOAD_BYTES = 64;
+
+// The score ladder, mirroring platform/net/match_preflight.c's table and
+// docs/ref/match-preflight-v1.md's v2 section byte for byte.
+const ROUTE_LADDER = {
+  p95RttMs: {rungs: [[40, 0], [70, 1], [110, 2], [160, 3], [220, 4]], worst: 5},
+  jitterMs: {rungs: [[5, 0], [12, 1], [25, 2], [45, 3]], worst: 4},
+  lossPerThousand: {rungs: [[5, 0], [20, 2], [50, 4]], worst: 6},
+  latePerThousand: {rungs: [[10, 0], [50, 1], [150, 2]], worst: 3},
+};
+const ROUTE_UNDRAINED_DEDUCTION = 3;
+export const MATCH_ROUTE_BAND_NONE = 0;
+export const MATCH_ROUTE_BAND_ROUGH = 1;
+export const MATCH_ROUTE_BAND_UNEVEN = 2;
+export const MATCH_ROUTE_BAND_STEADY = 3;
+
+export function matchRouteBand(score) {
+  if (!Number.isInteger(score) || score < 1 || score > 10)
+    return MATCH_ROUTE_BAND_NONE;
+  if (score >= 8) return MATCH_ROUTE_BAND_STEADY;
+  if (score >= 5) return MATCH_ROUTE_BAND_UNEVEN;
+  return MATCH_ROUTE_BAND_ROUGH;
+}
+
+// Returns {score, band} for a measurement's five metric fields, or null when
+// a rate exceeds 100%.
+export function scoreMatchRoute(measurement) {
+  if (measurement.lossPerThousand > 1000 || measurement.latePerThousand > 1000)
+    return null;
+  let deducted = measurement.undrained !== 0 ? ROUTE_UNDRAINED_DEDUCTION : 0;
+  for (const [field, {rungs, worst}] of Object.entries(ROUTE_LADDER)) {
+    const rung = rungs.find(([threshold]) => measurement[field] <= threshold);
+    deducted += rung ? rung[1] : worst;
+  }
+  const score = deducted >= 10 ? 1 : 10 - deducted;
+  return {score, band: matchRouteBand(score)};
+}
 
 const U32_MAX = 0xffff_ffff;
 const U64_MAX = (1n << 64n) - 1n;
@@ -31,11 +72,29 @@ function digest(value) {
   return value instanceof Uint8Array && value.byteLength === 32;
 }
 
+const MEASUREMENT_FIELDS = ["p95RttMs", "jitterMs", "lossPerThousand",
+  "latePerThousand", "undrained", "score", "band"];
+
+// A report either carries a scored measurement and says so, or carries an
+// all-zero record; a band that disagrees with its own score is refused.
+function measurementConsistent(flags, measurement) {
+  if (!measurement || MEASUREMENT_FIELDS.some(field =>
+    !Number.isInteger(measurement[field]) || measurement[field] < 0 ||
+    measurement[field] > (field === "score" || field === "band" ? 255 : 0xffff)))
+    return false;
+  if ((flags & MATCH_PREFLIGHT_ROUTE_MEASURED) === 0)
+    return MEASUREMENT_FIELDS.every(field => measurement[field] === 0);
+  const scored = scoreMatchRoute(measurement);
+  return scored !== null && scored.score === measurement.score &&
+    scored.band === measurement.band;
+}
+
 function valid(value) {
   return value && u32(value.matchEpoch) && u32(value.connectionGeneration) &&
     u32(value.sequence) && u64(value.endpointId) &&
     Number.isInteger(value.flags) && value.flags >= 0 &&
-    value.flags <= MATCH_PREFLIGHT_ALL_FLAGS &&
+    value.flags <= MATCH_PREFLIGHT_FLAG_MASK &&
+    measurementConsistent(value.flags, value.measurement) &&
     digest(value.descriptorDigest) && digest(value.transcriptDigest) &&
     digest(value.graphDigest);
 }
@@ -81,7 +140,7 @@ export async function digestMatchPreflightGraph(graph,
 export function encodeMatchPreflightAttestation(value) {
   if (!valid(value)) throw new TypeError("invalid match preflight attestation");
   const output = new Uint8Array(MATCH_PREFLIGHT_ATTESTATION_BYTES);
-  output.set([0x4d, 0x50, 0x46, 0x31, 0x01, value.flags], 0);
+  output.set([0x4d, 0x50, 0x46, 0x32, 0x02, value.flags], 0);
   const view = new DataView(output.buffer);
   view.setUint32(8, value.matchEpoch, false);
   view.setUint32(12, value.connectionGeneration, false);
@@ -90,16 +149,30 @@ export function encodeMatchPreflightAttestation(value) {
   output.set(value.descriptorDigest, 28);
   output.set(value.transcriptDigest, 60);
   output.set(value.graphDigest, 92);
+  const at = MATCH_PREFLIGHT_MEASUREMENT_OFFSET;
+  view.setUint16(at, value.measurement.p95RttMs, false);
+  view.setUint16(at + 2, value.measurement.jitterMs, false);
+  view.setUint16(at + 4, value.measurement.lossPerThousand, false);
+  view.setUint16(at + 6, value.measurement.latePerThousand, false);
+  view.setUint16(at + 8, value.measurement.undrained, false);
+  output[at + 10] = value.measurement.score;
+  output[at + 11] = value.measurement.band;
   return output;
 }
 
-export function decodeMatchPreflightAttestation(bytes) {
-  if (!(bytes instanceof Uint8Array) ||
-      bytes.byteLength !== MATCH_PREFLIGHT_ATTESTATION_BYTES ||
-      bytes[0] !== 0x4d || bytes[1] !== 0x50 || bytes[2] !== 0x46 ||
-      bytes[3] !== 0x31 || bytes[4] !== 0x01 || bytes[6] !== 0 ||
-      bytes[7] !== 0) return null;
+// "ok" | "legacy_mpf1" | "unknown_format" | "length" | "malformed". A peer
+// still sending the 124-byte MPF1 report is named rather than downgraded into.
+export function decodeMatchPreflightAttestationReason(bytes) {
+  if (!(bytes instanceof Uint8Array)) return {reason: "malformed"};
+  if (bytes.byteLength >= 4 && bytes[0] === 0x4d && bytes[1] === 0x50 &&
+      bytes[2] === 0x46 && bytes[3] === 0x31) return {reason: "legacy_mpf1"};
+  if (bytes.byteLength !== MATCH_PREFLIGHT_ATTESTATION_BYTES)
+    return {reason: "length"};
+  if (bytes[0] !== 0x4d || bytes[1] !== 0x50 || bytes[2] !== 0x46 ||
+      bytes[3] !== 0x32 || bytes[4] !== 0x02) return {reason: "unknown_format"};
+  if (bytes[6] !== 0 || bytes[7] !== 0) return {reason: "malformed"};
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const at = MATCH_PREFLIGHT_MEASUREMENT_OFFSET;
   const value = {
     matchEpoch: view.getUint32(8, false),
     connectionGeneration: view.getUint32(12, false),
@@ -108,9 +181,24 @@ export function decodeMatchPreflightAttestation(bytes) {
     descriptorDigest: bytes.slice(28, 60),
     transcriptDigest: bytes.slice(60, 92),
     graphDigest: bytes.slice(92, 124),
+    measurement: {
+      p95RttMs: view.getUint16(at, false),
+      jitterMs: view.getUint16(at + 2, false),
+      lossPerThousand: view.getUint16(at + 4, false),
+      latePerThousand: view.getUint16(at + 6, false),
+      undrained: view.getUint16(at + 8, false),
+      score: bytes[at + 10],
+      band: bytes[at + 11],
+    },
     flags: bytes[5],
   };
-  return valid(value) ? value : null;
+  return valid(value) ? {reason: "ok", attestation: value}
+                      : {reason: "malformed"};
+}
+
+export function decodeMatchPreflightAttestation(bytes) {
+  const decoded = decodeMatchPreflightAttestationReason(bytes);
+  return decoded.reason === "ok" ? decoded.attestation : null;
 }
 
 function fragmentDataSize(index) {

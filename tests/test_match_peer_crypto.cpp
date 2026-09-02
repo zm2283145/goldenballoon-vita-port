@@ -313,7 +313,7 @@ int main() {
         key, &direction, &replay, envelope4.data(), &decoded,
         opened.data()) == MDKR_MATCH_PEER_CRYPTO_REPLAY);
 
-    /* The authenticated type byte carries one complete 124-byte report in
+    /* The authenticated type byte carries one complete 136-byte report in
      * three reliable fixed payloads without exposing it to a one-hop
      * forwarder. Fragment order may differ from transport sequence order. */
     {

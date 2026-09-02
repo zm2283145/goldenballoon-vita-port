@@ -114,7 +114,99 @@ static MdkrMatchPreflightSubmitResult submit_report(
         preflight, report->endpoint_id, report->connection_generation, report);
 }
 
+/* MPF2's appended route-quality record, and the two-way version refusal: an
+ * MPF1 report offered here is named as a legacy report rather than silently
+ * downgraded, and the MPF1 header rule (exactly 124 bytes, tag "MPF1",
+ * version 1 -- docs/ref/match-preflight-v1.md) refuses an MPF2 report. */
+static int mpf1_would_accept(const uint8_t *bytes, size_t length) {
+    return length == 124u && bytes[0] == 'M' && bytes[1] == 'P' &&
+           bytes[2] == 'F' && bytes[3] == '1' && bytes[4] == 1u;
+}
+
+static void test_mpf2_measurement_record(void) {
+    MdkrMatchPreflightAttestationV1 report;
+    MdkrMatchPreflightAttestationV1 decoded;
+    uint8_t wire[MDKR_MATCH_PREFLIGHT_ATTESTATION_BYTES];
+    uint8_t legacy[124];
+    unsigned index;
+    memset(&report, 0, sizeof(report));
+    report.protocol_version = MDKR_MATCH_PREFLIGHT_VERSION;
+    report.match_epoch = 7u;
+    report.connection_generation = 2u;
+    report.sequence = 9u;
+    report.endpoint_id = 20u;
+    report.flags = MDKR_MATCH_PREFLIGHT_ALL_FLAGS |
+                   MDKR_MATCH_PREFLIGHT_ROUTE_MEASURED;
+    for (index = 0u; index < sizeof(report.descriptor_digest); index++) {
+        report.descriptor_digest[index] = (uint8_t)index;
+        report.transcript_digest[index] = (uint8_t)(0xa0u + index);
+        report.graph_digest[index] = (uint8_t)(0xc0u + index);
+    }
+    report.measurement.p95_rtt_ms = 45u;
+    report.measurement.jitter_ms = 4u;
+    report.measurement.loss_per_thousand = 3u;
+    report.measurement.late_per_thousand = 0u;
+    report.measurement.undrained = 0u;
+    expect(mdkr_match_route_measurement_score(&report.measurement) &&
+               report.measurement.score == 9u &&
+               report.measurement.band == MDKR_MATCH_ROUTE_BAND_STEADY,
+           "the fixture route scores nine and bands steady");
+
+    memset(wire, 0xa5, sizeof(wire));
+    expect(mdkr_match_preflight_attestation_encode(&report, wire,
+                                                    sizeof(wire)) &&
+               bytes_equal_hex(wire + MDKR_MATCH_PREFLIGHT_MEASUREMENT_OFFSET,
+                               12u, "002d00040003000000000903"),
+           "the MPF2 record occupies the exact appended twelve bytes");
+    memset(&decoded, 0xa5, sizeof(decoded));
+    expect(mdkr_match_preflight_attestation_decode(wire, sizeof(wire),
+                                                    &decoded) &&
+               memcmp(&decoded, &report, sizeof(decoded)) == 0,
+           "a measured report round-trips exactly");
+
+    wire[MDKR_MATCH_PREFLIGHT_MEASUREMENT_OFFSET + 11u] =
+        (uint8_t)MDKR_MATCH_ROUTE_BAND_ROUGH;
+    expect(mdkr_match_preflight_attestation_decode_reason(
+               wire, sizeof(wire), &decoded) ==
+               MDKR_MATCH_PREFLIGHT_DECODE_MALFORMED,
+           "a band that disagrees with its own score is refused");
+    wire[MDKR_MATCH_PREFLIGHT_MEASUREMENT_OFFSET + 11u] =
+        (uint8_t)MDKR_MATCH_ROUTE_BAND_STEADY;
+    wire[5] = MDKR_MATCH_PREFLIGHT_ALL_FLAGS;
+    expect(mdkr_match_preflight_attestation_decode_reason(
+               wire, sizeof(wire), &decoded) ==
+               MDKR_MATCH_PREFLIGHT_DECODE_MALFORMED,
+           "a record without its measured flag is refused");
+
+    memset(legacy, 0, sizeof(legacy));
+    legacy[0] = 'M';
+    legacy[1] = 'P';
+    legacy[2] = 'F';
+    legacy[3] = '1';
+    legacy[4] = 1u;
+    expect(mdkr_match_preflight_attestation_decode_reason(
+               legacy, sizeof(legacy), &decoded) ==
+               MDKR_MATCH_PREFLIGHT_DECODE_LEGACY_MPF1,
+           "an MPF1 report is refused by name, never downgraded into");
+    expect(strcmp(mdkr_match_preflight_decode_reason_name(
+                      MDKR_MATCH_PREFLIGHT_DECODE_LEGACY_MPF1),
+                  "legacy_mpf1") == 0,
+           "the legacy refusal has a stable name for a dump");
+    expect(mdkr_match_preflight_attestation_decode_reason(
+               legacy, 120u, &decoded) ==
+               MDKR_MATCH_PREFLIGHT_DECODE_LEGACY_MPF1,
+           "a short MPF1 report is still named a legacy report");
+    legacy[3] = '9';
+    expect(mdkr_match_preflight_attestation_decode_reason(
+               legacy, sizeof(legacy), &decoded) ==
+               MDKR_MATCH_PREFLIGHT_DECODE_LENGTH,
+           "an unknown report of the wrong length is refused on length");
+    expect(!mpf1_would_accept(wire, sizeof(wire)),
+           "the frozen MPF1 header rule refuses an MPF2 report");
+}
+
 int main(void) {
+    test_mpf2_measurement_record();
     MdkrMatchLaunchDescriptorV1 launch = descriptor();
     MdkrMatchPeerGraph connected = graph(1u);
     MdkrMatchPeerGraph disconnected = graph(0u);
@@ -215,14 +307,15 @@ int main(void) {
         mdkr_match_preflight_attestation_encode(&report, wire, sizeof(wire)) &&
             bytes_equal_hex(
                 wire, sizeof(wire),
-                "4d504631010700000000000700000002000000090000000000000014"
+                "4d504632020700000000000700000002000000090000000000000014"
                 "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e"
                 "1f"
                 "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbe"
                 "bf"
                 "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcddde"
-                "df"),
-        "MPF1 encoding matches the exact native/browser wire vector");
+                "df"
+                "000000000000000000000000"),
+        "MPF2 encoding matches the exact native/browser wire vector");
     memset(&decoded, 0xa5, sizeof(decoded));
     expect(
         mdkr_match_preflight_attestation_decode(wire, sizeof(wire), &decoded) &&
@@ -242,8 +335,8 @@ int main(void) {
                fragments[0][2] == 0u && fragments[0][3] == 9u &&
                fragments[0][4] == 0u && fragments[0][5] == 3u &&
                fragments[2][4] == 2u &&
-               bytes_all_zero(fragments[2] + 14u,
-                              MDKR_MATCH_PEER_PAYLOAD_BYTES - 14u),
+               bytes_all_zero(fragments[2] + 26u,
+                              MDKR_MATCH_PEER_PAYLOAD_BYTES - 26u),
            "fragment headers bind report sequence/index and tail padding is zero");
     memset(mutated, 0x5a, sizeof(mutated));
     expect(!mdkr_match_preflight_fragment_encode(
@@ -404,7 +497,8 @@ int main(void) {
                    "zero epoch, generation, sequence and endpoint reject");
         }
     }
-    for (index = 28u; index < sizeof(wire); index++) {
+    for (index = 28u; index < MDKR_MATCH_PREFLIGHT_MEASUREMENT_OFFSET;
+         index++) {
         memcpy(mutated, wire, sizeof(mutated));
         mutated[index] ^= 1u;
         expect(mdkr_match_preflight_attestation_decode(mutated, sizeof(mutated),

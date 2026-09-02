@@ -944,6 +944,25 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     endif()
     add_test(NAME match_preflight COMMAND mdkr_match_preflight_test)
 
+    add_executable(mdkr_match_route_quality_test
+        ${CMAKE_SOURCE_DIR}/tests/test_match_route_quality.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_preflight.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_peer_graph.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_launch_descriptor.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_manifest.c
+        ${CMAKE_SOURCE_DIR}/platform/net/net_impairment.c
+        ${CMAKE_SOURCE_DIR}/platform/sha256.c)
+    target_include_directories(mdkr_match_route_quality_test PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(MSVC)
+        target_compile_options(mdkr_match_route_quality_test PRIVATE /W4 /WX)
+    else()
+        target_compile_options(mdkr_match_route_quality_test PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME match_route_quality COMMAND mdkr_match_route_quality_test)
+
     add_executable(mdkr_online_race_results_test
         ${CMAKE_SOURCE_DIR}/tests/test_online_race_results.c
         ${CMAKE_SOURCE_DIR}/platform/net/online_race_results.c)
@@ -989,6 +1008,11 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/tests/test_online_lobby_view_model.c
         ${CMAKE_SOURCE_DIR}/platform/online/lobby_view_model.c
         ${CMAKE_SOURCE_DIR}/platform/online/lobby_core.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_preflight.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_peer_graph.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_launch_descriptor.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_manifest.c
+        ${CMAKE_SOURCE_DIR}/platform/sha256.c
         ${CMAKE_SOURCE_DIR}/platform/session/session_core.c)
     target_include_directories(mdkr_online_lobby_view_model_test PRIVATE
         ${CMAKE_SOURCE_DIR}
@@ -1009,6 +1033,11 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform/online/lobby_fake_adapter.c
         ${CMAKE_SOURCE_DIR}/platform/online/lobby_view_model.c
         ${CMAKE_SOURCE_DIR}/platform/online/lobby_core.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_preflight.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_peer_graph.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_launch_descriptor.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_manifest.c
+        ${CMAKE_SOURCE_DIR}/platform/sha256.c
         ${CMAKE_SOURCE_DIR}/platform/session/session_core.c)
     target_include_directories(mdkr_online_lobby_fake_adapter_test PRIVATE
         ${CMAKE_SOURCE_DIR}
@@ -1024,6 +1053,11 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform/online/lobby_fake_adapter.c
         ${CMAKE_SOURCE_DIR}/platform/online/lobby_view_model.c
         ${CMAKE_SOURCE_DIR}/platform/online/lobby_core.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_preflight.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_peer_graph.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_launch_descriptor.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_manifest.c
+        ${CMAKE_SOURCE_DIR}/platform/sha256.c
         ${CMAKE_SOURCE_DIR}/platform/session/session_core.c)
     target_include_directories(mdkr_online_lobby_browser_wasm_test PRIVATE
         ${CMAKE_SOURCE_DIR}
