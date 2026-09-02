@@ -922,6 +922,7 @@ if(NOT EMSCRIPTEN)
                 ${CMAKE_SOURCE_DIR}/platform/online/match_live_transport.cpp
                 ${CMAKE_SOURCE_DIR}/platform/online/match_signal_client.cpp
                 ${CMAKE_SOURCE_DIR}/platform/online/match_peer_transport.cpp
+                ${CMAKE_SOURCE_DIR}/platform/online/match_peer_lost_reason.cpp
                 ${CMAKE_SOURCE_DIR}/platform/online/online_track_table.c
                 ${CMAKE_SOURCE_DIR}/platform/app/online_live_wiring.cpp)
 
@@ -1110,6 +1111,7 @@ if(NOT EMSCRIPTEN)
                 add_executable(mdkr_match_peer_transport_test
                     ${CMAKE_SOURCE_DIR}/tests/test_match_peer_transport.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_peer_transport.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/match_peer_lost_reason.cpp
                     ${CMAKE_SOURCE_DIR}/platform/net/net_failure_ring.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_peer_crypto.cpp
                     ${CMAKE_SOURCE_DIR}/platform/net/match_peer_transcript.c
@@ -1207,6 +1209,7 @@ if(NOT EMSCRIPTEN)
                     ${CMAKE_SOURCE_DIR}/platform/online/match_live_adapter.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/online_track_table.c
                     ${CMAKE_SOURCE_DIR}/platform/online/match_peer_transport.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/match_peer_lost_reason.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_signal_client.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_launch_builder.c
                     ${CMAKE_SOURCE_DIR}/platform/online/lobby_view_model.c
@@ -1277,6 +1280,7 @@ if(NOT EMSCRIPTEN)
                     ${CMAKE_SOURCE_DIR}/platform/online/match_live_adapter.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/online_track_table.c
                     ${CMAKE_SOURCE_DIR}/platform/online/match_peer_transport.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/match_peer_lost_reason.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_signal_client.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_launch_builder.c
                     ${CMAKE_SOURCE_DIR}/platform/online/lobby_view_model.c
@@ -1454,6 +1458,7 @@ if(NOT EMSCRIPTEN)
                     ${CMAKE_SOURCE_DIR}/platform/online/match_live_adapter.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/online_track_table.c
                     ${CMAKE_SOURCE_DIR}/platform/online/match_peer_transport.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/match_peer_lost_reason.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_signal_client.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_launch_builder.c
                     ${CMAKE_SOURCE_DIR}/platform/online/lobby_view_model.c

@@ -2134,6 +2134,32 @@ host recovery can never disguise a changed simulation timestep. Same-profile,
 same-seed schedules are byte-identical and forced controls prove each branch is
 observable.
 
+`net_failure_ring` owns the allocation-free in-process forensics ring: 2048
+fixed-width typed records (rollback save/load, desync, recovery, queue
+pressure/overflow, frame commit, input predicted, late input discarded, peer
+loss, SIMHASH divergence, lifecycle boundary, progress watchdog, stall
+begin/ongoing/end with a per-peer RTT/jitter/byte snapshot, session failure).
+The unit test pins wrap retiring the oldest records, the typed field
+round-trips, the redaction filter that refuses any code source outside
+`[A-Za-z0-9_-]` whole (so no URL, host:port pair, ICE candidate line or spaced
+SAS phrase can reach a dump), stall/watchdog emission, and oldest-first dump
+ordering. Recording reads no clock of its own: the simulation side stamps its
+authored tick and the transport side the host clock it already samples.
+
+`net_failure_ring_impairment` is the lane over it. Two real match-transport
+endpoints exchange input across a seeded `net_impairment` carrier whose
+two-second outage strands the receiver further behind than the authored
+rollback window can replay; the transport latches its terminal recovery, the
+launcher-side decision resolves the peer as lost, and the ring's tail is dumped
+beside the `MDKR_STATE_HASH_FILE` evidence artifact as `<artifact>.netfail`.
+`check_net_failure_ring_impairment.py` (registered as a CTest, given both arms)
+requires that dump to name the loss reason by name and to carry the last stall
+record with a non-empty per-peer snapshot, and refuses any code field that
+escaped redaction. Its positive control is the identical harness built with
+`MDKR_NET_FAILURE_RING_DISABLED`: it runs the same race to the same peer loss
+and must FAIL those assertions, so a lane that stopped reading the recording
+cannot pass.
+
 `check_persistent_app_session.py` is the fast native ownership proof (three
 five-tick epochs). `check_persistent_rollback_rematch.py` is its ROM-backed
 release counterpart: the same launcher loans one engine three times for full
