@@ -46,6 +46,7 @@
 #include "match_live_adapter.h"
 
 #include "online_track_table.h"
+#include "online/match_peer_liveness.h"
 #include "net/match_input_bundle.h"
 #include "net/match_preflight.h"
 #include "net/match_transport.h"
@@ -55,6 +56,7 @@
 #include "net/net_failure_ring.h"
 #include "session/session_core.h"
 
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -83,6 +85,21 @@
 #endif
 
 namespace {
+
+/* A7 (soft-fail vs hard-fail liveness): the mesh's own control-ping ladder
+ * declares a peer lost after kMdkrMatchControlPingTimeoutMs with no pong,
+ * checked every kMdkrMatchControlPingIntervalMs. Deriving the presenter's
+ * escalation threshold as their ratio means the live status line's
+ * "Connection lost" lands at the SAME wall-clock boundary peerLost
+ * (PingTimeout) does -- never earlier, and never a separate budget to keep
+ * in sync by hand. Currently 15000 / 5000 = 3 consecutive missed probe
+ * intervals. Contractual: keep the static_assert true if either ladder
+ * constant changes. */
+static_assert(kMdkrMatchControlPingTimeoutMs % kMdkrMatchControlPingIntervalMs ==
+                  0u,
+              "A7 liveness escalation assumes a whole number of ping intervals");
+constexpr unsigned kMdkrPeerLivenessMissesToUnreachable =
+    kMdkrMatchControlPingTimeoutMs / kMdkrMatchControlPingIntervalMs;
 
 const char *roomPhaseName(MdkrRoomPhase room) {
     switch (room) {
@@ -1526,6 +1543,7 @@ private:
         raceLossFailureLatched_ = false;
         raceEndFailureLatched_ = false;
         raceDegraded_ = false;
+        peerLiveness_.fill(MdkrPeerLivenessTracker{});
         lastPreflightGate_ = -1;
         if (failure_ == MDKR_ONLINE_VIEW_FAILURE_ENGINE_FAILED
 #if MDKR_ENABLE_ONLINE_BETA
@@ -1995,6 +2013,46 @@ private:
         if (havePhrase_) {
             std::string current;
             if (!mesh_->phrase(current)) beginReVerify();
+        }
+        updateLiveness();
+    }
+
+    /* A7: fold each remote peer's control-ping observations into its
+     * soft-fail/hard-fail liveness tracker and reflect the worst one onto
+     * the RACING status line via the session's connectivity code -- the
+     * same field ON-03A's view builder already reads at MDKR_SCENE_RACE_CHROME
+     * (lobby_view_model.c). Only meaningful once a race is actually up: a
+     * peer still in its setup ladder is not "previously good" yet, and this
+     * function's own trackers stay untouched (see mdkr_peer_liveness_on_miss)
+     * until their first hit regardless, so the guard below is a cheap early
+     * exit rather than a correctness requirement. */
+    void updateLiveness() {
+        if (!mesh_ || !raceReady_) return;
+        MdkrMatchPeerLinkStats links[MDKR_NET_FAILURE_PEERS];
+        const unsigned count = mesh_->linkStats(links, MDKR_NET_FAILURE_PEERS);
+        MdkrPeerLivenessState worst = MdkrPeerLivenessState::Good;
+        for (unsigned index = 0u; index < count; ++index) {
+            const unsigned peer = links[index].rosterIndex;
+            if (peer >= MDKR_NET_FAILURE_PEERS) continue;
+            MdkrPeerLivenessTracker &tracker = peerLiveness_[peer];
+            if (links[index].consecutivePingMisses == 0u) {
+                tracker = mdkr_peer_liveness_on_hit(tracker, links[index].rttMs);
+            } else {
+                while (tracker.consecutiveMisses <
+                       links[index].consecutivePingMisses) {
+                    tracker = mdkr_peer_liveness_on_miss(
+                        tracker, kMdkrPeerLivenessMissesToUnreachable);
+                }
+            }
+            if (tracker.state > worst) worst = tracker.state;
+        }
+        const MdkrConnectivity mapped =
+            worst == MdkrPeerLivenessState::Unreachable ? MDKR_CONNECTIVITY_LOST
+            : worst == MdkrPeerLivenessState::Transient
+                ? MDKR_CONNECTIVITY_DEGRADED
+                : MDKR_CONNECTIVITY_DIRECT;
+        if (mapped != session_.state.connectivity) {
+            (void)sessionDispatch(MDKR_SESSION_COMMAND_SET_CONNECTIVITY, mapped);
         }
     }
 
@@ -2471,6 +2529,7 @@ private:
         raceInputDelay_ = opts_.inputDelay != 0u ? opts_.inputDelay : 2u;
         raceSendOwned_ = false;
         raceDegraded_ = false;
+        peerLiveness_.fill(MdkrPeerLivenessTracker{});
         raceSweepServiceCalls_ = 0u;
         raceReady_ = true;
         if (!raceReadyLogged_) {
@@ -3253,6 +3312,11 @@ private:
     /* Resend sweep + connection quality; peer-lost flag. */
     bool raceSendOwned_ = false;   /* true while race_advance drives the send */
     bool raceDegraded_ = false;
+    /* A7 live liveness: one soft-fail/hard-fail tracker per remote roster
+     * slot, indexed like linkStats()'s rosterIndex. Reset alongside
+     * raceDegraded_ so a rekeyed/rematched race never inherits a prior
+     * race's miss streak. */
+    std::array<MdkrPeerLivenessTracker, MDKR_NET_FAILURE_PEERS> peerLiveness_{};
     bool racePeerLost_ = false;
     bool raceAbortReceived_ = false; /* peer told us it aborted the race */
     bool raceLossFailureLatched_ = false; /* failure_ came from mapLostReason */

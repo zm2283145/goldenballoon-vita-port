@@ -366,6 +366,33 @@ static void test_loading_racing_and_results(void) {
            strstr(model.explanation, "non-pausing") != NULL,
            "race chrome states non-pausing behavior and deliberate leave");
 
+    session.state.connectivity = MDKR_CONNECTIVITY_DIRECT;
+    expect(mdkr_session_state_valid(&session.state) &&
+           mdkr_online_view_model_build(&input, &model) &&
+           model.kind == MDKR_ONLINE_VIEW_RACING &&
+           strcmp(model.status, "Direct Connection") == 0,
+           "a healthy direct link keeps the pre-A7 status copy");
+
+    /* A7: the live control-ping liveness tracker (match_live_adapter.cpp)
+     * drives these two connectivity codes during racing without ever
+     * touching the scene (session_core.c's SET_CONNECTIVITY only forces
+     * MDKR_SCENE_RECOVERY when the engine is NOT racing) -- pin their
+     * player-facing status text here so a status/copy drift is caught at
+     * the same projection the room panel reads. */
+    session.state.connectivity = MDKR_CONNECTIVITY_DEGRADED;
+    expect(mdkr_session_state_valid(&session.state) &&
+           mdkr_online_view_model_build(&input, &model) &&
+           model.kind == MDKR_ONLINE_VIEW_RACING &&
+           strcmp(model.status, "Connection hiccup — retrying") == 0,
+           "a soft-fail liveness miss keeps racing and shows the hiccup copy");
+    session.state.connectivity = MDKR_CONNECTIVITY_LOST;
+    expect(mdkr_session_state_valid(&session.state) &&
+           mdkr_online_view_model_build(&input, &model) &&
+           model.kind == MDKR_ONLINE_VIEW_RACING &&
+           strcmp(model.status, "Connection lost") == 0,
+           "a hard-fail liveness escalation keeps racing and shows the lost copy");
+    session.state.connectivity = MDKR_CONNECTIVITY_DIRECT;
+
     /* Packed placements: seat 0 first, seat 1 second, seats 2/3 unoccupied. */
     lobby_command(&lobby, 8u, MDKR_ONLINE_PUBLISH_RESULTS, 0u, 0xFFFF0100u);
     session_command(&session, MDKR_SESSION_COMMAND_SET_ENGINE_PHASE,

@@ -919,6 +919,7 @@ if(NOT EMSCRIPTEN)
             endif()
             list(APPEND APP_SOURCES
                 ${CMAKE_SOURCE_DIR}/platform/online/match_live_adapter.cpp
+                ${CMAKE_SOURCE_DIR}/platform/online/match_peer_liveness.cpp
                 ${CMAKE_SOURCE_DIR}/platform/online/match_live_transport.cpp
                 ${CMAKE_SOURCE_DIR}/platform/online/match_signal_client.cpp
                 ${CMAKE_SOURCE_DIR}/platform/online/match_peer_transport.cpp
@@ -1207,6 +1208,7 @@ if(NOT EMSCRIPTEN)
                 set(MDKR_ONLINE_LIVE_ADAPTER_SOURCES
                     ${CMAKE_SOURCE_DIR}/tests/test_online_live_adapter.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_live_adapter.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/match_peer_liveness.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/online_track_table.c
                     ${CMAKE_SOURCE_DIR}/platform/online/match_peer_transport.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_peer_lost_reason.cpp
@@ -1326,6 +1328,7 @@ if(NOT EMSCRIPTEN)
                 add_executable(mdkr_online_live_adapter_beta_test
                     ${CMAKE_SOURCE_DIR}/tests/test_online_live_adapter_beta.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_live_adapter.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/match_peer_liveness.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/online_track_table.c
                     ${CMAKE_SOURCE_DIR}/platform/online/match_peer_transport.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_peer_lost_reason.cpp
@@ -1504,6 +1507,7 @@ if(NOT EMSCRIPTEN)
                     ${CMAKE_SOURCE_DIR}/tests/test_online_live_transport_e2e_driver.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_live_transport.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_live_adapter.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/match_peer_liveness.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/online_track_table.c
                     ${CMAKE_SOURCE_DIR}/platform/online/match_peer_transport.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_peer_lost_reason.cpp

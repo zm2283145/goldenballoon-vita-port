@@ -1820,6 +1820,14 @@ unsigned MdkrMatchPeerMesh::linkStats(
         out[written].jitterMs = peer.jitterMs;
         out[written].bytesSent = peer.bytesSent;
         out[written].bytesReceived = peer.bytesReceived;
+        out[written].consecutivePingMisses = 0u;
+        if (peer.channelsReady && !peer.lost &&
+            peer.pingOutstandingSinceMs != 0u) {
+            const uint64_t elapsed = state_->now() - peer.pingOutstandingSinceMs;
+            const uint64_t misses = elapsed / kMdkrMatchControlPingIntervalMs;
+            out[written].consecutivePingMisses =
+                misses > UINT32_MAX ? UINT32_MAX : (uint32_t)misses;
+        }
         written++;
     }
     return written;

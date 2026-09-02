@@ -1128,6 +1128,24 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     endif()
     add_test(NAME party_retry_policy COMMAND mdkr_party_retry_policy_test)
 
+    # A7's soft-fail/hard-fail live liveness policy, isolated from the WebRTC
+    # transport entirely so the scripted miss/hit sequence (first miss stays
+    # Transient, Nth escalates to Unreachable) is exercised as plain
+    # arithmetic instead of through the real control-ping ladder.
+    add_executable(mdkr_match_peer_liveness_test
+        ${CMAKE_SOURCE_DIR}/tests/test_match_peer_liveness.cpp
+        ${CMAKE_SOURCE_DIR}/platform/online/match_peer_liveness.cpp)
+    target_include_directories(mdkr_match_peer_liveness_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_features(mdkr_match_peer_liveness_test PRIVATE cxx_std_17)
+    if(MSVC)
+        target_compile_options(mdkr_match_peer_liveness_test PRIVATE /W4 /WX)
+    else()
+        target_compile_options(mdkr_match_peer_liveness_test PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME match_peer_liveness COMMAND mdkr_match_peer_liveness_test)
+
     add_executable(mdkr_native_party_host_test
         ${CMAKE_SOURCE_DIR}/tests/test_native_party_host.cpp
         ${CMAKE_SOURCE_DIR}/platform/party/native_party_host.cpp

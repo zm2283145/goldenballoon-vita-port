@@ -1979,6 +1979,31 @@ peer-loss teardown at the transport layer; it does NOT boot the visible engine,
 and it is NOT the shipping cloud route (that is
 `check_online_native_flow_cloud.py`).
 
+`match_peer_liveness` (A7) is the pure soft-fail/hard-fail policy the live
+status line runs during racing, isolated from the WebRTC transport so a
+scripted miss/hit sequence is exercised as plain arithmetic. Pre-A7 the
+status line only ever said "Direct Connection" until the mesh's own
+control-ping ladder declared the peer lost outright, so a network wobble that
+recovered on its own carried no warning at all, and one that did not read as
+a sudden, unexplained loss. The gate drives a previously-good peer through a
+first missed probe (stays Transient, the last real RTT still shown, labelled
+a retrying hiccup -- never zeroed or hidden), a second miss (still Transient),
+recovery mid-streak, and the Nth consecutive miss (Unreachable). N is derived
+from the mesh's own ladder (`kMdkrMatchControlPingTimeoutMs /
+kMdkrMatchControlPingIntervalMs` = 3, pinned by a `static_assert` in
+`match_live_adapter.cpp`), so the presenter's escalation lands at the same
+wall-clock boundary `peerLost(PingTimeout)` does and never earlier -- that
+loss detection itself is unchanged. Positive control: a small reference
+implementation of the pre-A7 immediate-escalation shape (any miss ->
+Unreachable at once) is applied to the exact same first-miss observation and
+fails the "stays Transient" assertion the fixed policy passes, so the test
+provably discriminates the two shapes rather than passing regardless.
+`online_lobby_view_model` pins the player-facing copy the RACING status line
+shows once `match_live_adapter.cpp`'s tracker reflects that state onto the
+session's connectivity code -- "Connection hiccup — retrying" (Transient) and
+"Connection lost" (Unreachable), alongside the pre-existing "Direct
+Connection" for a healthy peer.
+
 `check_online_midrace_transport_loss.py` (registered) pins prompt, truthful
 mid-race peer loss ON THE TRANSPORT ITSELF -- the real-cloud kill signature: a
 SIGKILLed opponent's signal socket dies (the service broadcasts

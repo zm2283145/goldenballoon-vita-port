@@ -684,8 +684,20 @@ bool mdkr_online_view_model_build(const MdkrOnlineViewInput *input,
             next.title = "Online Race";
             next.explanation =
                 "The race keeps running while this non-pausing panel is open.";
+            /* A7: DEGRADED/LOST are the live soft-fail/hard-fail liveness
+             * codes match_live_adapter's control-ping tracker drives during
+             * racing (never a scene change -- see session_core.c's
+             * SET_CONNECTIVITY handler, which only forces MDKR_SCENE_RECOVERY
+             * when the engine is NOT racing). Every other code (CONNECTING /
+             * FORWARDED / RELAYED / OFFLINE) keeps the prior fallback text;
+             * none of them is reachable from this scene today. */
             next.status = input->session->connectivity == MDKR_CONNECTIVITY_DIRECT
-                ? "Direct Connection" : "Limited Connection";
+                ? "Direct Connection"
+                : input->session->connectivity == MDKR_CONNECTIVITY_DEGRADED
+                ? "Connection hiccup — retrying"
+                : input->session->connectivity == MDKR_CONNECTIVITY_LOST
+                ? "Connection lost"
+                : "Limited Connection";
             next.primary = control(
                 MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS,
                 "Connection Details", true);
