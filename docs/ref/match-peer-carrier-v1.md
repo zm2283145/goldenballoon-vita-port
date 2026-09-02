@@ -1,4 +1,4 @@
-# Match peer carrier v1 (transcript v2, envelope v2)
+# Match peer carrier v1 (transcript v2, envelope v3)
 
 Status: local foundation; production online-race admission remains disabled.
 
@@ -36,10 +36,11 @@ HKDF-SHA-256 consumes:
 
 - 32-byte ECDH secret as input key material;
 - the 32-byte canonical room/roster/public-key transcript digest as salt;
-- `golden-balloon-match-input-key-v1`, match epoch, source id/generation and
-  target id/generation as binary HKDF info.
+- `golden-balloon-match-lane-key-v3`, match epoch, source id/generation,
+  target id/generation and the one-byte channel lane as binary HKDF info.
 
-The reverse direction and every reconnect/epoch produce different keys. Native
+The reverse direction, every reconnect/epoch **and every channel** produce
+different keys. Native
 uses pinned Mbed TLS 3.6 LTS and explicitly zeroizes retired key bytes. Browser
 code uses non-extractable WebCrypto keys and retires their handles. The service
 and any forwarder receive public keys and ciphertext, never the ECDH secret or
@@ -101,29 +102,53 @@ one-controller approval SAS, because a multi-peer room can perform more setup
 retries. Native and browser share an exact digest/phrase vector, and entry order
 cannot change it.
 
+### Channels and lanes
+
+One peer connection carries three data channels, and each is a lane with its
+own derived key:
+
+| Lane | Label | Delivery | Payload |
+|---:|---|---|---|
+| 0 | `gb-match-state-v1` | unordered, `maxRetransmits 0` | input bundles |
+| 1 | `gb-match-control-v1` | reliable ordered | preflight fragments, ping |
+| 2 | `gb-match-authority-v1` | reliable unordered | input repair |
+
+The lane is HKDF info and authenticated header material, so each channel owns
+a separate key, a separate monotonic sequence space and a separate replay
+window. One channel's traffic can never advance another's nonce, and an
+envelope moved from one channel to another is refused as `WRONG_LANE` before
+decryption. The authority lane's delivery is deliberate: retransmitted, because
+a lost repair leaves the gap it names unfilled; unordered, because every repair
+message names the tick run it covers and is useful the moment it lands, so
+head-of-line blocking would spend exactly the ticks the repair exists to save.
+
 ### Versioning and downgrade
 
 The transcript domain carries the version (`…-transcript-v2`) and the envelope
-header carries protocol version byte `2`. The two versions cannot interoperate
-and cannot negotiate: a v1 transcript yields a different digest and therefore a
-different key, and a v1 envelope is rejected by the header parser **before any
-decryption is attempted**, surfacing as `INVALID` rather than an authentication
-failure. There is no version negotiation step to downgrade.
+header carries protocol version byte `3`. The versions cannot interoperate and
+cannot negotiate: a v1 transcript yields a different digest and therefore a
+different key, and a v1 or v2 envelope is rejected by the header parser
+**before any decryption is attempted**, surfacing as `INVALID` rather than an
+authentication failure. There is no version negotiation step to downgrade. v2
+shared one key between the state and control channels; a v2 peer therefore
+derives a different key on every lane and cannot be spoken to.
 
 ## Envelope
 
 AES-256-GCM seals exactly one fixed 64-byte payload. Authenticated payload type
-`0` is a redundant input bundle; type `1` is one reliable preflight fragment.
-Both types consume the same monotonically unique per-key sequence space. All
-integers are big-endian.
+`0` is a redundant input bundle, `1` one reliable preflight fragment, `2` an
+input-repair request and `3` an input-repair answer
+(`docs/ref/match-input-repair-v1.md`). Each lane's payload types consume that
+lane's own monotonically unique per-key sequence space. All integers are
+big-endian.
 
 | Offset | Bytes | Field |
 |---:|---:|---|
 | 0 | 4 | `MPE1` |
-| 4 | 1 | version `1` |
+| 4 | 1 | version `3` |
 | 5 | 1 | forward count: `0` or `1` |
-| 6 | 1 | payload type: input `0` or preflight fragment `1` |
-| 7 | 1 | zero reserved |
+| 6 | 1 | payload type `0`–`3` |
+| 7 | 1 | lane: state `0`, control `1`, authority `2` |
 | 8 | 4 | match epoch |
 | 12 | 8 | source endpoint id |
 | 20 | 4 | source connection generation |

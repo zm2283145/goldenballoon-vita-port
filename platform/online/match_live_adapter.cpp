@@ -48,6 +48,7 @@
 #include "online_track_table.h"
 #include "online/match_peer_liveness.h"
 #include "net/match_input_bundle.h"
+#include "net/match_input_repair.h"
 #include "net/match_preflight.h"
 #include "net/match_transport.h"
 #include "net/net_roster.h"
@@ -1580,6 +1581,7 @@ private:
         resultsReported_ = false;
         raceSendOwned_ = false;
         raceSweepServiceCalls_ = 0u;
+        resetInputRepair();
         racePeerLost_ = false;
         raceAbortReceived_ = false;
         raceLossFailureLatched_ = false;
@@ -1667,10 +1669,16 @@ private:
                 bump();
             }
         }
+        /* Input-gap repair runs in BOTH loop shapes. race_drain_local's
+         * carrier contract covers the STATE lane's bundles, which is what an
+         * impairment profile models; the authority lane is reliable by
+         * construction and is exactly the channel a repair must not be
+         * impaired on. */
+        raceSweepInputGaps();
         /* Resend sweep: only while race_advance owns the send side (the
          * production loop shape). race_drain_local's contract routes EVERY
-         * transmission through the driver's own carrier (the impairment
-         * matrix), so the sweep stays out of its way there. */
+         * bundle transmission through the driver's own carrier (the
+         * impairment matrix), so the sweep stays out of its way there. */
         if (!raceSendOwned_ || !mesh_) return;
         if (++raceSweepServiceCalls_ % kRaceSweepServicePeriod != 0u) return;
         if (raceNextTick_ <= raceFirstTick_) return; /* nothing sealed yet */
@@ -2029,6 +2037,9 @@ private:
                             "[MESH] signal lost (channels healthy; reconnecting)\n");
                         frontPreflightSignalLostCard();
                     }
+                    break;
+                case MdkrMatchPeerMeshEventType::InputRepairMessage:
+                    onInputRepair(ev);
                     break;
                 case MdkrMatchPeerMeshEventType::InputEnvelope:
                     if (consumeRouteProbe(ev)) break;
@@ -2801,6 +2812,7 @@ private:
                                   MDKR_CONNECTIVITY_DIRECT);
         }
         raceSweepServiceCalls_ = 0u;
+        resetInputRepair();
         raceReady_ = true;
         if (!raceReadyLogged_) {
             raceReadyLogged_ = true;
@@ -2831,6 +2843,196 @@ private:
     /* One opened INPUT envelope -> the launcher transport. The authenticated
      * slot mask is the SENDER's owned canonical slots (from the roster, never
      * the packet bytes); only covered ticks/slots are admitted. */
+    /* Per-race repair state. Cleared on both race edges so a later race in a
+     * tournament, or a race after a rekey, never inherits an outstanding
+     * request for a tick that means something else now. */
+    void resetInputRepair() {
+        for (unsigned slot = 0u; slot < MDKR_NET_INPUT_SLOTS; ++slot) {
+            repairRequested_[slot] = false;
+            repairRequestedTick_[slot] = 0u;
+        }
+        repairRequestsSent_ = 0u;
+        repairAnswersSent_ = 0u;
+        repairAnswersReceived_ = 0u;
+        repairTicksRestored_ = 0u;
+    }
+
+    /* ---- input-gap repair (docs/ref/match-input-repair-v1.md) ---------- *
+     *
+     * The realtime state channel is lossy by design and each bundle carries
+     * three ticks of redundancy, so a burst shorter than that heals itself on
+     * the next send. A longer burst leaves a contiguous hole no later bundle
+     * will ever cover, and the drain then predicts through it until the run
+     * outlives the retained rollback depth and the race is unrecoverable.
+     * These three functions close that hole explicitly on the reliable
+     * authority lane. */
+
+    /* Which peer authors a canonical slot, from the AUTHENTICATED roster map
+     * -- never from packet bytes. Zero when no peer owns it. */
+    uint64_t authorOfSlot(unsigned slot) const {
+        const uint8_t bit = static_cast<uint8_t>(1u << slot);
+        for (const auto &entry : peerSlotMask_) {
+            if ((entry.second & bit) != 0u) return entry.first;
+        }
+        return 0u;
+    }
+
+    /* True once this endpoint has committed its local input for `tick`, which
+     * is the only input it may answer with: handing a peer a frame this
+     * endpoint has not itself committed to would part the two histories on
+     * the author's next seal. The synthetic fixture is a pure function of the
+     * tick, so it is answerable up to the same sealed frontier. */
+    bool localInputSealed(uint32_t tick) const {
+        if (mdkr_net_tick_after(tick, raceNextTick_ + raceInputDelay_))
+            return false;
+        if (raceSyntheticInput_) return true;
+        return localHistTick_[tick % kLocalInputRing] == tick;
+    }
+
+    /* One request per remote slot per gap. The authority lane is reliable, so
+     * a sent request is delivered; re-asking for a first tick already asked
+     * for would only duplicate the answer. A gap whose first tick moves is a
+     * different gap and is asked for again. */
+    void raceSweepInputGaps() {
+        if (!raceReady_ || !raceRepairEnabled_ || mesh_ == nullptr) return;
+        for (unsigned slot = 0u; slot < MDKR_NET_INPUT_SLOTS; ++slot) {
+            uint32_t first = 0u;
+            uint32_t count = 0u;
+            if (!mdkr_match_transport_input_gap(&raceTransport_, slot, &first,
+                                                &count)) {
+                repairRequested_[slot] = false;
+                continue;
+            }
+            /* Still inside the carrier's redundancy: a later bundle covers
+             * it, and asking now would spend a round trip on nothing. */
+            if (raceTransport_.history.current_tick - first <=
+                MDKR_MATCH_INPUT_BUNDLE_FRAMES) {
+                continue;
+            }
+            if (repairRequested_[slot] && repairRequestedTick_[slot] == first)
+                continue;
+            const uint64_t author = authorOfSlot(slot);
+            if (author == 0u) continue;
+            MdkrMatchInputRepair request;
+            std::memset(&request, 0, sizeof(request));
+            request.kind = MDKR_MATCH_INPUT_REPAIR_REQUEST;
+            request.match_epoch = raceEpoch_;
+            request.first_tick = first;
+            request.count = static_cast<uint8_t>(count);
+            uint8_t bytes[MDKR_MATCH_INPUT_REPAIR_BYTES];
+            if (!mdkr_match_input_repair_encode(&request, bytes,
+                                                sizeof(bytes)) ||
+                !mesh_->sendInputRepair(
+                    author, MDKR_MATCH_PEER_PAYLOAD_INPUT_REPAIR_REQUEST,
+                    bytes)) {
+                continue;
+            }
+            repairRequested_[slot] = true;
+            repairRequestedTick_[slot] = first;
+            ++repairRequestsSent_;
+            /* The gap is exactly the run the drain is predicting through, so
+             * it belongs in the ring under the prediction record. */
+            mdkr_net_failure_ring_record_tick(
+                MDKR_NET_FAILURE_INPUT_PREDICTED,
+                raceTransport_.history.current_tick, slot,
+                MDKR_MATCH_INPUT_REPAIR_REQUEST, first, count);
+        }
+    }
+
+    /* One opened repair message from the authority lane. */
+    void onInputRepair(const MdkrMatchPeerMeshEvent &ev) {
+        MdkrMatchInputRepair message;
+        if (!raceReady_ ||
+            !mdkr_match_input_repair_decode(ev.payload.data(),
+                                            ev.payload.size(), &message)) {
+            return;
+        }
+        /* Epoch-scoped: a repair minted during a retired epoch names ticks
+         * that mean something else in this one, so it is dropped rather than
+         * carried across the boundary. */
+        if (message.match_epoch != raceEpoch_) return;
+        if (message.kind == MDKR_MATCH_INPUT_REPAIR_REQUEST) {
+            answerInputRepair(ev.context.key.source_endpoint_id, message);
+        } else {
+            applyInputRepair(ev.context.key.source_endpoint_id, message);
+        }
+    }
+
+    /* Answer a peer's request from the local input this endpoint has already
+     * committed, one message per owned slot per twelve ticks. A repaired
+     * input is the same input: every frame comes from localInputForTick, the
+     * same function this endpoint's own drain and every bundle retransmit
+     * read, so the peer commits byte-identical canonical input. */
+    void answerInputRepair(uint64_t peerEndpointId,
+                           const MdkrMatchInputRepair &request) {
+        const uint8_t localMask = raceTransport_.local_slot_mask;
+        if (mesh_ == nullptr) return;
+        for (unsigned slot = 0u; slot < MDKR_SESSION_MAX_PLAYERS; ++slot) {
+            if ((localMask & (1u << slot)) == 0u) continue;
+            for (uint32_t sent = 0u; sent < request.count;
+                 sent += MDKR_MATCH_INPUT_REPAIR_ANSWER_TICKS) {
+                MdkrMatchInputRepair answer;
+                std::memset(&answer, 0, sizeof(answer));
+                answer.kind = MDKR_MATCH_INPUT_REPAIR_ANSWER;
+                answer.match_epoch = raceEpoch_;
+                answer.first_tick = request.first_tick + sent;
+                answer.slot = static_cast<uint8_t>(slot);
+                const uint32_t remaining = request.count - sent;
+                const uint32_t span =
+                    remaining < MDKR_MATCH_INPUT_REPAIR_ANSWER_TICKS
+                        ? remaining
+                        : MDKR_MATCH_INPUT_REPAIR_ANSWER_TICKS;
+                uint32_t filled = 0u;
+                while (filled < span &&
+                       localInputSealed(answer.first_tick + filled)) {
+                    answer.samples[filled] = localInputForTick(
+                        static_cast<uint8_t>(slot), answer.first_tick + filled);
+                    ++filled;
+                }
+                if (filled == 0u) break; /* nothing sealed from here on */
+                answer.count = static_cast<uint8_t>(filled);
+                uint8_t bytes[MDKR_MATCH_INPUT_REPAIR_BYTES];
+                if (mdkr_match_input_repair_encode(&answer, bytes,
+                                                   sizeof(bytes)) &&
+                    mesh_->sendInputRepair(
+                        peerEndpointId,
+                        MDKR_MATCH_PEER_PAYLOAD_INPUT_REPAIR_ANSWER, bytes)) {
+                    ++repairAnswersSent_;
+                }
+                if (filled < span) break; /* the sealed run ended here */
+            }
+        }
+    }
+
+    /* Admit a repaired run through the SAME ingress the bundle carrier uses,
+     * under the sender's authenticated slot mask, so a repair can authorize
+     * nothing a bundle could not. */
+    void applyInputRepair(uint64_t peerEndpointId,
+                          const MdkrMatchInputRepair &answer) {
+        const auto it = peerSlotMask_.find(peerEndpointId);
+        if (it == peerSlotMask_.end()) return;
+        const uint8_t authMask = it->second;
+        if (answer.slot >= MDKR_SESSION_MAX_PLAYERS ||
+            (authMask & (uint8_t)(1u << answer.slot)) == 0u) {
+            return;
+        }
+        ++repairAnswersReceived_;
+        for (unsigned index = 0u; index < answer.count; ++index) {
+            const MdkrMatchTransportIngressResult result =
+                mdkr_match_transport_receive(
+                    &raceTransport_, answer.match_epoch, authMask, answer.slot,
+                    answer.first_tick + index, &answer.samples[index]);
+            if (result == MDKR_MATCH_INGRESS_ACCEPTED ||
+                result == MDKR_MATCH_INGRESS_CORRECTED) {
+                ++repairTicksRestored_;
+            }
+        }
+        mdkr_net_failure_ring_record_tick(
+            MDKR_NET_FAILURE_INPUT_PREDICTED,
+            raceTransport_.history.current_tick, answer.slot,
+            MDKR_MATCH_INPUT_REPAIR_ANSWER, answer.first_tick, answer.count);
+    }
+
     void feedInputEnvelope(const MdkrMatchPeerMeshEvent &ev) {
         if (!raceReady_) return;
         const auto it = peerSlotMask_.find(ev.context.key.source_endpoint_id);
@@ -3280,6 +3482,7 @@ public:
      * deterministic raceLocalSample fixture (per-tick variation that forces real
      * corrections). The shipped interactive boot never enables it. */
     void raceSetSyntheticInput(bool on) { raceSyntheticInput_ = on; }
+    void raceSetRepair(bool on) { raceRepairEnabled_ = on; }
 
     /* Stage the real local pads for the next seal. `local` is in local-seat
      * order (seat i reads controller port i), matching the physical[] the engine
@@ -3377,6 +3580,7 @@ public:
         if (mesh_) {
             const MdkrMatchPeerMeshStats m = mesh_->stats();
             out->meshRejectedState = m.rejectedStateEnvelopes;
+            out->meshRejectedAuthority = m.rejectedAuthorityEnvelopes;
             out->meshIgnoredStaleSignals = m.ignoredStaleSignals;
             out->meshDroppedEvents = m.droppedEvents;
         }
@@ -3398,6 +3602,10 @@ public:
         }
         out->resendSweeps = raceResendSweeps_;
         out->resendBundles = raceResendBundles_;
+        out->repairRequestsSent = repairRequestsSent_;
+        out->repairAnswersSent = repairAnswersSent_;
+        out->repairAnswersReceived = repairAnswersReceived_;
+        out->repairTicksRestored = repairTicksRestored_;
     }
 
     /* ---- Race-results handoff from the launcher --------------------------- */
@@ -3634,6 +3842,16 @@ private:
     unsigned raceSweepServiceCalls_ = 0u;
     uint32_t raceResendSweeps_ = 0u;
     uint32_t raceResendBundles_ = 0u;
+    /* Input-gap repair on the authority lane. One outstanding request per
+     * remote canonical slot, keyed on the gap's first tick so a gap that
+     * moves is asked for again and one that stands is not re-asked. */
+    bool raceRepairEnabled_ = true;
+    bool repairRequested_[MDKR_NET_INPUT_SLOTS] = {};
+    uint32_t repairRequestedTick_[MDKR_NET_INPUT_SLOTS] = {};
+    uint32_t repairRequestsSent_ = 0u;
+    uint32_t repairAnswersSent_ = 0u;
+    uint32_t repairAnswersReceived_ = 0u;
+    uint32_t repairTicksRestored_ = 0u;
     static constexpr unsigned kRaceSweepServicePeriod = 30u;
     static constexpr uint32_t kRaceSweepWindow = 60u;
 
@@ -3839,6 +4057,15 @@ bool mdkr_online_live_adapter_race_advance(IMdkrOnlineAdapter *adapter) {
     if (adapter == nullptr) return false;
     LiveAdapter *live = adapter->mdkrResolveLive();
     return live != nullptr && live->raceAdvance();
+}
+
+bool mdkr_online_live_adapter_race_set_repair(
+    IMdkrOnlineAdapter *adapter, bool on) {
+    if (adapter == nullptr) return false;
+    LiveAdapter *live = adapter->mdkrResolveLive();
+    if (live == nullptr) return false;
+    live->raceSetRepair(on);
+    return true;
 }
 
 bool mdkr_online_live_adapter_race_set_synthetic_input(

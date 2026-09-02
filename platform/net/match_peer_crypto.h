@@ -35,6 +35,7 @@ extern "C" {
 #define MDKR_MATCH_PEER_LANE_CONTROL   1u
 #define MDKR_MATCH_PEER_LANE_AUTHORITY 2u
 #define MDKR_MATCH_PEER_LANE_MAX       2u
+#define MDKR_MATCH_PEER_LANE_COUNT     (MDKR_MATCH_PEER_LANE_MAX + 1u)
 
 #if defined(__cplusplus)
 static_assert(MDKR_MATCH_PEER_ENVELOPE_BYTES ==

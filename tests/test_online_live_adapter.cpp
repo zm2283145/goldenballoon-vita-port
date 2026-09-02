@@ -12,6 +12,7 @@
 #include "online/match_live_adapter.h"
 
 #include "net/net_failure_ring.h"
+#include "net/match_input_bundle.h"
 #include "net/net_impairment.h"
 #include "net/net_roster_runtime.h"
 #include "net/party_link.h"
@@ -611,11 +612,34 @@ struct FullRunResult {
     bool injectedOnA = false;
     uint8_t inputDelayA = 0u;
     uint8_t inputDelayB = 0u;
+    /* N7 burst lane (burst != nullptr): how many B->A bundle sends the driver
+     * actually suppressed, and each endpoint's repair witnesses. */
+    unsigned burstDropped = 0u;
+    uint32_t repairRequestsA = 0u;
+    uint32_t repairAnswersSentB = 0u;
+    uint32_t repairAnswersReceivedA = 0u;
+    uint32_t repairTicksRestoredA = 0u;
+    uint64_t meshRejectedAuthorityA = 0u;
 };
 
 /* One net_impairment matrix cell: a named carrier profile + a deterministic
  * seed and its expected honest outcome. */
 enum MatrixExpect { MATRIX_CONVERGE, MATRIX_RECOVER, MATRIX_EITHER };
+/* N7: a deterministic loss BURST on the realtime state channel, long enough to
+ * outlive the 3-tick bundle redundancy. Unlike the seeded profiles this is not
+ * probabilistic: exactly `sends` consecutive B->A bundle transmissions are
+ * suppressed, so the hole the repair must close is an exact, reproducible run
+ * of authored ticks. */
+struct BurstSpec {
+    /* Race normally until A has folded this many confirmed ticks. */
+    unsigned afterTicks = 0u;
+    /* Then suppress this many consecutive B->A bundle sends. */
+    unsigned sends = 0u;
+    /* Positive control: with repair off the identical burst must be visible
+     * as rollback exhaustion or a race that never converges. */
+    bool repairEnabled = true;
+};
+
 struct ImpairmentSpec {
     MdkrNetImpairmentProfileName profile;
     const char *name;
@@ -673,7 +697,8 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
                                unsigned severAfterTicks = 0u,
                                bool sendAbortFromA = false,
                                unsigned routeClockStepMs = 0u,
-                               unsigned injectP95OnA = 0u) {
+                               unsigned injectP95OnA = 0u,
+                               const BurstSpec *burst = nullptr) {
     FullRunResult result;
     mdkr_net_roster_runtime_clear();
 
@@ -905,6 +930,88 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
                 ++cursor;
             }
         };
+        if (burst != nullptr) {
+            /* ---- N7 realtime loss burst ----------------------------- *
+             *
+             * The driver owns every STATE-lane transmission (the
+             * race_drain_local contract), so a suppressed send really is a
+             * lost datagram: no bundle covering those ticks ever crosses the
+             * mesh. The AUTHORITY lane is deliberately untouched -- it is
+             * reliable by construction, and impairing it would model a
+             * channel the transport does not create. */
+            if (!burst->repairEnabled) {
+                CHECK(mdkr_online_live_adapter_race_set_repair(A.get(), false));
+                CHECK(mdkr_online_live_adapter_race_set_repair(B.get(), false));
+            }
+            const uint8_t delay = ia.inputDelay;
+            unsigned burstRemaining = 0u;
+            bool burstArmed = false;
+            for (unsigned step = 0u; step < 20000u; ++step) {
+                A->service();
+                B->service();
+                MdkrOnlineLiveRaceInfo na{}, nb{};
+                mdkr_online_live_adapter_race_info(A.get(), &na);
+                mdkr_online_live_adapter_race_info(B.get(), &nb);
+                if (na.nextTick <= target) {
+                    const uint32_t sealTick = na.nextTick + delay;
+                    (void)mdkr_online_live_adapter_race_drain_local(A.get());
+                    (void)mdkr_online_live_adapter_race_resend(A.get(),
+                                                               sealTick);
+                }
+                if (nb.nextTick <= target) {
+                    const uint32_t sealTick = nb.nextTick + delay;
+                    (void)mdkr_online_live_adapter_race_drain_local(B.get());
+                    if (burstRemaining > 0u) {
+                        --burstRemaining;
+                        ++result.burstDropped;
+                    } else {
+                        (void)mdkr_online_live_adapter_race_resend(B.get(),
+                                                                   sealTick);
+                    }
+                }
+                foldReady(A.get(), cursorA, ia.activeSlotMask, hA);
+                foldReady(B.get(), cursorB, ib.activeSlotMask, hB);
+                if (!burstArmed &&
+                    cursorA >= ia.firstTick + burst->afterTicks) {
+                    burstArmed = true;
+                    burstRemaining = burst->sends;
+                }
+                MdkrOnlineLiveRaceStats sa{}, sb{};
+                mdkr_online_live_adapter_race_stats(A.get(), &sa);
+                mdkr_online_live_adapter_race_stats(B.get(), &sb);
+                if (sa.recoveryReason != 0u || sb.recoveryReason != 0u) {
+                    const MdkrOnlineLiveRaceStats &s =
+                        sa.recoveryReason != 0u ? sa : sb;
+                    result.recoveryReason = s.recoveryReason;
+                    result.recoveryFirstTick = s.recoveryFirstTick;
+                    result.recoveryObservedTick = s.recoveryObservedTick;
+                    result.recoverySlot = s.recoverySlot;
+                    break;
+                }
+                if (cursorA > target && cursorB > target) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                clock.nowMs += 2u;
+            }
+            result.racedTicks =
+                (cursorA <= cursorB ? cursorA : cursorB) - ia.firstTick;
+            result.hashA = hA;
+            result.hashB = hB;
+            result.bothReachedTarget = cursorA > target && cursorB > target;
+            result.raceConverged = result.bothReachedTarget && hA == hB;
+            MdkrOnlineLiveRaceStats sa{}, sb{};
+            mdkr_online_live_adapter_race_stats(A.get(), &sa);
+            mdkr_online_live_adapter_race_stats(B.get(), &sb);
+            result.repairRequestsA = sa.repairRequestsSent;
+            result.repairAnswersSentB = sb.repairAnswersSent;
+            result.repairAnswersReceivedA = sa.repairAnswersReceived;
+            result.repairTicksRestoredA = sa.repairTicksRestored;
+            result.meshRejectedAuthorityA = sa.meshRejectedAuthority;
+            result.inputEnvelopesA = sa.inputEnvelopesReceived;
+            result.inputEnvelopesB = sb.inputEnvelopesReceived;
+            result.transportAcceptedA = sa.transportAccepted;
+            result.transportAcceptedB = sb.transportAccepted;
+            return result;
+        }
         if (imp == nullptr) {
             for (unsigned step = 0u; step < 20000u; ++step) {
                 /* service() before the tick drain -- the load-bearing pump
@@ -1143,6 +1250,97 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
         result.impOverflow = simA.overflow + simB.overflow;
     }
     return result;
+}
+
+/* ---- N7: input-gap repair over a realtime loss burst ------------------- *
+ *
+ * Twenty-five consecutive B->A bundle sends are suppressed. That is far longer
+ * than the carrier's three ticks of redundancy, so without repair the run of
+ * authored ticks it costs A can never be covered by a later bundle. */
+constexpr unsigned kRepairBurstSends = 25u;
+constexpr unsigned kRepairBurstAfterTicks = 10u;
+constexpr unsigned kRepairRaceTicks = 120u;
+
+void test_repair_heals_a_realtime_burst() {
+    BurstSpec burst;
+    burst.afterTicks = kRepairBurstAfterTicks;
+    burst.sends = kRepairBurstSends;
+    const FullRunResult r = driveTwoAdapters(
+        /*bonusIdentityOnA=*/false, kRepairRaceTicks, /*imp=*/nullptr,
+        /*realInput=*/false, /*severAfterTicks=*/0u, /*sendAbortFromA=*/false,
+        /*routeClockStepMs=*/0u, /*injectP95OnA=*/0u, &burst);
+    CHECK(r.raceRun);
+    /* The burst really happened, on the realtime channel only. */
+    CHECK(r.burstDropped == kRepairBurstSends);
+    /* A named the hole and B filled it from its own committed input. */
+    CHECK(r.repairRequestsA > 0u);
+    CHECK(r.repairAnswersSentB > 0u);
+    CHECK(r.repairAnswersReceivedA > 0u);
+    CHECK(r.repairTicksRestoredA > 0u);
+    /* The run the redundancy could never cover was closed by repair alone. */
+    CHECK(r.repairTicksRestoredA >= kRepairBurstSends -
+                                        MDKR_MATCH_INPUT_BUNDLE_FRAMES);
+    /* Nothing on the authority lane was refused: a repair is either opened and
+     * applied or it never existed. */
+    CHECK(r.meshRejectedAuthorityA == 0u);
+    /* The race finished and BOTH endpoints committed the identical canonical
+     * timeline: a repaired input is the same input. */
+    CHECK(r.bothReachedTarget);
+    CHECK(r.hashA == r.hashB);
+    CHECK(r.raceConverged);
+    /* No rollback exhaustion: the gap never outlived the retained depth. */
+    CHECK(r.recoveryReason == 0u);
+    mdkr_net_roster_runtime_clear();
+}
+
+/* Positive control: the identical burst with repair turned off. The hole the
+ * redundancy cannot cover is then permanent, so A's confirmed frontier stalls
+ * and the gap ages past the retained rollback depth into typed recovery. */
+void test_realtime_burst_without_repair_exhausts_rollback() {
+    BurstSpec burst;
+    burst.afterTicks = kRepairBurstAfterTicks;
+    burst.sends = kRepairBurstSends;
+    burst.repairEnabled = false;
+    const FullRunResult r = driveTwoAdapters(
+        /*bonusIdentityOnA=*/false, kRepairRaceTicks, /*imp=*/nullptr,
+        /*realInput=*/false, /*severAfterTicks=*/0u, /*sendAbortFromA=*/false,
+        /*routeClockStepMs=*/0u, /*injectP95OnA=*/0u, &burst);
+    CHECK(r.raceRun);
+    CHECK(r.burstDropped == kRepairBurstSends);
+    /* Nothing was repaired, because repair was off. */
+    CHECK(r.repairRequestsA == 0u);
+    CHECK(r.repairTicksRestoredA == 0u);
+    /* MDKR_MATCH_RECOVERY_INPUT_GAP == 1: the timeline became unreconcilable
+     * exactly where the burst began, and the race never converged. */
+    CHECK(r.recoveryReason == 1u);
+    CHECK(!r.raceConverged);
+    mdkr_net_roster_runtime_clear();
+}
+
+/* A burst on the realtime channel must not age out a valid authority packet.
+ * The lanes hold separate keys, sequence spaces and replay windows, so the
+ * repair answers that cross DURING the burst -- behind a long run of state
+ * envelopes in wall-clock order -- are opened and applied rather than retired
+ * as replays of them. (test_match_peer_transport pins the same property at the
+ * transport boundary, including the shared-window control that drops the aged
+ * out packet.) */
+void test_realtime_burst_does_not_age_out_authority_packets() {
+    BurstSpec burst;
+    burst.afterTicks = kRepairBurstAfterTicks;
+    burst.sends = kRepairBurstSends;
+    const FullRunResult r = driveTwoAdapters(
+        /*bonusIdentityOnA=*/false, kRepairRaceTicks, /*imp=*/nullptr,
+        /*realInput=*/false, /*severAfterTicks=*/0u, /*sendAbortFromA=*/false,
+        /*routeClockStepMs=*/0u, /*injectP95OnA=*/0u, &burst);
+    CHECK(r.raceRun);
+    /* Far more than one replay window of state envelopes crossed the mesh. */
+    CHECK(r.inputEnvelopesA > 64u);
+    /* Every authority message A opened was delivered as a repair; none was
+     * dropped, and every answer sent was received. */
+    CHECK(r.meshRejectedAuthorityA == 0u);
+    CHECK(r.repairAnswersReceivedA == r.repairAnswersSentB);
+    CHECK(r.repairAnswersReceivedA > 0u);
+    mdkr_net_roster_runtime_clear();
 }
 
 void test_full_flow_installs_through_builder() {
@@ -3233,11 +3431,13 @@ int main(int argc, char **argv) {
     bool latencyOnly = false;
     bool forensicsOnly = false;
     bool routeOnly = false;
+    bool repairOnly = false;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--matrix") == 0) matrixOnly = true;
         if (std::strcmp(argv[i], "--latency") == 0) latencyOnly = true;
         if (std::strcmp(argv[i], "--forensics") == 0) forensicsOnly = true;
         if (std::strcmp(argv[i], "--route") == 0) routeOnly = true;
+        if (std::strcmp(argv[i], "--repair") == 0) repairOnly = true;
     }
     /* The token gate must be open for the live adapter to construct. The
      * matrix lane runs in its own process, so set it there too. */
@@ -3246,6 +3446,14 @@ int main(int argc, char **argv) {
 #else
     setenv("MDKR_INTERNAL_TEST_TOKEN", "mdkr64-online-live-v1", 1);
 #endif
+    if (repairOnly) {
+        test_repair_heals_a_realtime_burst();
+        test_realtime_burst_without_repair_exhausts_rollback();
+        test_realtime_burst_does_not_age_out_authority_packets();
+        std::fprintf(stderr, "online_live_repair: %d checks, %d failures\n",
+                     g_checks, g_failures);
+        return g_failures == 0 ? 0 : 1;
+    }
     if (routeOnly) {
         test_route_quality_measured_and_agreed();
         test_route_quality_widens_entry_timing();

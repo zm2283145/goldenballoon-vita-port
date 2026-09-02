@@ -1186,8 +1186,13 @@ The crypto gates mutate every 132-byte envelope position and require
 the complete caller-expected source-to-recipient direction, then authentication,
 before plaintext or replay state changes. A valid peer key cannot authenticate
 a header claiming another source endpoint or generation. Callers cannot choose
-the GCM sequence: a direction-bound seal window allocates it monotonically
-across input and preflight payloads. The gates cover network reordering, stale
+the GCM sequence: a direction-bound seal window allocates it monotonically.
+Each of the peer connection's three channels — state, control and authority —
+is a LANE with its own derived key, so both gates seal on all three and
+require distinct key records, that a seal advances only its own lane's window,
+and that every other lane's key refuses the envelope as `WRONG_LANE`. Dropping
+the lane from the HKDF info collapses the three derivations onto one keyring
+slot and fails that first assertion. The gates cover network reordering, stale
 receive-window rejection, corrupt/exhausted sender state, provider failure and
 two concurrent browser seals. Native used/exhausted window initialization and a
 second browser window for one derived key object refuse; browser state is
@@ -1246,6 +1251,23 @@ identical canonical state hash — the determinism claim the widen rests on.
 `online_live_adapter_beta` pins that a rekey or a re-verify mid-measurement
 restarts the whole route window rather than settling on samples sealed under
 retired keys; clearing only the publication latch (the pre-fix shape) fails it.
+
+`online_live_repair` (`mdkr_online_live_adapter_test --repair`) pins explicit
+input-gap repair on the reliable unordered authority channel over the same two
+real loopback DTLS meshes. The driver suppresses twenty-five consecutive bundle
+sends in one direction — far past the carrier's three ticks of redundancy — so
+the run of authored ticks it costs can never be covered by a later bundle. That
+run must be closed by repair alone and both endpoints must fold the identical
+canonical state hash: a repaired input is the same input. Two positive
+controls. Turning repair off with
+`mdkr_online_live_adapter_race_set_repair(adapter, false)` and replaying the
+identical burst must reach typed `INPUT_GAP` rollback exhaustion and never
+converge. And the burst must not age out a valid authority packet: more than
+one replay window of state envelopes crosses the mesh while repair answers are
+in flight, and every answer sent must be received. `match_peer_transport` pins
+that second property at the transport boundary with its own control — pointing
+the authority lane's replay window at the state lane's drops the delayed repair
+outright.
 
 `check_rollback_authority_wrapper.py` is the suite-facing entry for the frozen
 mutable-authority census and its omitted-state positive control.
@@ -2038,6 +2060,17 @@ the brief calls for needs no bookkeeping of its own here: the transport's
 peer.rttMs is untouched by a miss (only an answered pong updates it), so it
 is already the last measurement for free -- the tracker only needs to know
 THAT a peer was previously good, not what its RTT was.
+
+`match_peer_transport`'s `authorityLaneKeepsItsOwnReplayWindow` and
+`authorityWrongPayloadTypeIsTypedLoss` pin the third channel at the transport
+boundary: a repair answer sealed before seventy state envelopes and delivered
+after them is opened rather than retired as a replay of them, an envelope
+sealed for another lane and replayed onto the authority channel is a counted
+drop and never a delivered repair, and an envelope authenticated under the
+peer's own authority key carrying a payload type that channel does not serve
+is the typed `ControlChannelViolation`. Positive control: pointing the
+authority lane's replay window at the state lane's makes the delayed repair
+disappear and only that arm goes red.
 
 The pure policy alone does not prove `LiveAdapter` actually calls it, so two
 more gates cover the wiring. `match_peer_transport`'s

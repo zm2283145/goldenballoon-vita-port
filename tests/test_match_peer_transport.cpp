@@ -426,13 +426,13 @@ struct RawPeer {
     bool sentCommit = false;
 
     std::shared_ptr<rtc::PeerConnection> pc;
-    std::shared_ptr<rtc::DataChannel> state;
-    std::shared_ptr<rtc::DataChannel> control;
+    /* Indexed by MDKR_MATCH_PEER_LANE_*, like the mesh's own runtime. */
+    std::shared_ptr<rtc::DataChannel> channels[MDKR_MATCH_PEER_LANE_COUNT];
     std::mutex mutex;
     std::deque<std::string> controlText;
 
     MdkrMatchPeerKeyring ring{};
-    MdkrMatchPeerSealingKey *sealKey = nullptr;
+    MdkrMatchPeerSealingKey *sealKeys[MDKR_MATCH_PEER_LANE_COUNT] = {};
     bool keysDerived = false;
 
     RawPeer(uint64_t self, uint32_t generation, uint64_t mesh,
@@ -545,21 +545,26 @@ struct RawPeer {
             const std::string label = channel->label();
             std::lock_guard<std::mutex> lock(mutex);
             if (label == kMdkrMatchControlChannelLabel) {
-                control = channel;
+                channels[MDKR_MATCH_PEER_LANE_CONTROL] = channel;
                 channel->onMessage([this](rtc::message_variant message) {
                     if (!std::holds_alternative<std::string>(message)) return;
                     std::lock_guard<std::mutex> inner(mutex);
                     controlText.push_back(std::get<std::string>(message));
                 });
             } else if (label == kMdkrMatchStateChannelLabel) {
-                state = channel;
+                channels[MDKR_MATCH_PEER_LANE_STATE] = channel;
+            } else if (label == kMdkrMatchAuthorityChannelLabel) {
+                channels[MDKR_MATCH_PEER_LANE_AUTHORITY] = channel;
             }
         });
     }
 
     bool channelsOpen() {
         std::lock_guard<std::mutex> lock(mutex);
-        return state && state->isOpen() && control && control->isOpen();
+        for (unsigned lane = 0u; lane < MDKR_MATCH_PEER_LANE_COUNT; ++lane) {
+            if (!channels[lane] || !channels[lane]->isOpen()) return false;
+        }
+        return true;
     }
 
     /* Answer mesh pings so the stale ladder stays quiet where wanted. */
@@ -569,7 +574,7 @@ struct RawPeer {
         {
             std::lock_guard<std::mutex> lock(mutex);
             pending.swap(controlText);
-            channel = control;
+            channel = channels[MDKR_MATCH_PEER_LANE_CONTROL];
         }
         for (const std::string &text : pending) {
             Json value = Json::parse(text, nullptr, false);
@@ -619,17 +624,20 @@ struct RawPeer {
         outbound.source_generation = selfGeneration;
         outbound.destination_endpoint_id = meshId;
         outbound.destination_generation = meshGeneration;
-        sealKey = mdkr_match_peer_identity_derive_key(
-            &ring, identity, meshKey.data(), digest, &outbound);
-        assert(sealKey != nullptr);
+        for (unsigned lane = 0u; lane < MDKR_MATCH_PEER_LANE_COUNT; ++lane) {
+            outbound.lane = static_cast<uint8_t>(lane);
+            sealKeys[lane] = mdkr_match_peer_identity_derive_key(
+                &ring, identity, meshKey.data(), digest, &outbound);
+            assert(sealKeys[lane] != nullptr);
+        }
         keysDerived = true;
     }
 
-    bool sendStateBytes(const std::vector<uint8_t> &bytes) {
+    bool sendLaneBytes(uint8_t lane, const std::vector<uint8_t> &bytes) {
         std::shared_ptr<rtc::DataChannel> channel;
         {
             std::lock_guard<std::mutex> lock(mutex);
-            channel = state;
+            channel = channels[lane];
         }
         if (!channel || !channel->isOpen()) return false;
         std::vector<std::byte> raw(bytes.size());
@@ -638,24 +646,23 @@ struct RawPeer {
         catch (...) { return false; }
     }
 
+    bool sendStateBytes(const std::vector<uint8_t> &bytes) {
+        return sendLaneBytes(MDKR_MATCH_PEER_LANE_STATE, bytes);
+    }
+
     bool sendControlBytes(const std::vector<uint8_t> &bytes) {
-        std::shared_ptr<rtc::DataChannel> channel;
-        {
-            std::lock_guard<std::mutex> lock(mutex);
-            channel = control;
-        }
-        if (!channel || !channel->isOpen()) return false;
-        std::vector<std::byte> raw(bytes.size());
-        std::memcpy(raw.data(), bytes.data(), bytes.size());
-        try { return channel->send(raw.data(), raw.size()); }
-        catch (...) { return false; }
+        return sendLaneBytes(MDKR_MATCH_PEER_LANE_CONTROL, bytes);
+    }
+
+    bool sendAuthorityBytes(const std::vector<uint8_t> &bytes) {
+        return sendLaneBytes(MDKR_MATCH_PEER_LANE_AUTHORITY, bytes);
     }
 
     bool sendControlText(const std::string &text) {
         std::shared_ptr<rtc::DataChannel> channel;
         {
             std::lock_guard<std::mutex> lock(mutex);
-            channel = control;
+            channel = channels[MDKR_MATCH_PEER_LANE_CONTROL];
         }
         if (!channel || !channel->isOpen()) return false;
         try { return channel->send(text); }
@@ -664,26 +671,34 @@ struct RawPeer {
 
     std::vector<uint8_t> sealed(
         const std::array<uint8_t, MDKR_MATCH_PEER_PAYLOAD_BYTES> &payload,
-        uint8_t payloadType) {
+        uint8_t lane, uint8_t payloadType) {
         assert(keysDerived);
         MdkrMatchPeerSendContext context{};
-        context.key = sealKey->direction;
+        context.key = sealKeys[lane]->direction;
         context.intermediate_endpoint_id = 0u;
         context.payload_type = payloadType;
         std::vector<uint8_t> envelope(MDKR_MATCH_PEER_ENVELOPE_BYTES);
-        assert(mdkr_match_peer_seal(sealKey, &context, payload.data(),
+        assert(mdkr_match_peer_seal(sealKeys[lane], &context, payload.data(),
                                     envelope.data()));
         return envelope;
     }
 
     std::vector<uint8_t> sealedInput(
         const std::array<uint8_t, MDKR_MATCH_PEER_PAYLOAD_BYTES> &payload) {
-        return sealed(payload, MDKR_MATCH_PEER_PAYLOAD_INPUT);
+        return sealed(payload, MDKR_MATCH_PEER_LANE_STATE,
+                      MDKR_MATCH_PEER_PAYLOAD_INPUT);
     }
 
     std::vector<uint8_t> sealedFragment(
         const std::array<uint8_t, MDKR_MATCH_PEER_PAYLOAD_BYTES> &payload) {
-        return sealed(payload, MDKR_MATCH_PEER_PAYLOAD_PREFLIGHT_FRAGMENT);
+        return sealed(payload, MDKR_MATCH_PEER_LANE_CONTROL,
+                      MDKR_MATCH_PEER_PAYLOAD_PREFLIGHT_FRAGMENT);
+    }
+
+    std::vector<uint8_t> sealedRepairAnswer(
+        const std::array<uint8_t, MDKR_MATCH_PEER_PAYLOAD_BYTES> &payload) {
+        return sealed(payload, MDKR_MATCH_PEER_LANE_AUTHORITY,
+                      MDKR_MATCH_PEER_PAYLOAD_INPUT_REPAIR_ANSWER);
     }
 };
 
@@ -1269,6 +1284,106 @@ void delayedControlFragmentSurvivesInputBurst() {
     assert(rig.harness.countEvents(100u,
                MdkrMatchPeerMeshEventType::PeerLost) == 0u);
     std::printf("delayedControlFragmentSurvivesInputBurst: ok\n");
+}
+
+/* N7: the authority channel is a third independent stream. Its key, and
+ * therefore its sequence space and replay window, is its own: a burst on the
+ * lossy state channel cannot age out a valid authority packet, and an envelope
+ * sealed for one lane is refused on another rather than opened. */
+void authorityLaneKeepsItsOwnReplayWindow() {
+    RawHarness rig;
+    const std::vector<MdkrMatchPeerSlotOwner> roster = rosterOf({100u, 200u});
+    rig.mesh = rig.harness.add(100u, 1u, roster);
+    rig.rawFeed = rig.harness.hub.addEndpoint(200u, 2u);
+    rig.raw = std::make_unique<RawPeer>(200u, 2u, 100u, 1u, &rig.harness.hub);
+    rig.harness.hub.welcome(100u);
+    assert(rig.harness.pumpUntil([&]() {
+        rig.drainRawInbox();
+        rig.raw->serviceControl();
+        return rig.harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::PeerChannelsReady, 200u) >= 1u &&
+               rig.raw->channelsOpen() && rig.raw->meshHellos >= 3u;
+    }));
+    rig.raw->deriveKeys();
+
+    /* The repair answer is sealed FIRST (authority sequence 1), then delayed
+     * while 70 inputs advance the STATE lane through sequences 1..70. Under
+     * one shared key that burst would carry the shared window past the
+     * delayed message's sequence and retire it as a replay. */
+    const auto answer = payloadFixture(0x77u);
+    const std::vector<uint8_t> delayed = rig.raw->sealedRepairAnswer(answer);
+    for (unsigned index = 0u; index < 70u; index++) {
+        assert(rig.raw->sendStateBytes(rig.raw->sealedInput(
+            payloadFixture(static_cast<uint8_t>(index)))));
+    }
+    assert(rig.harness.pumpUntil([&]() {
+        rig.raw->serviceControl();
+        return rig.harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::InputEnvelope, 200u) >= 65u;
+    }));
+    assert(rig.raw->sendAuthorityBytes(delayed));
+    assert(rig.harness.pumpUntil([&]() {
+        rig.raw->serviceControl();
+        return rig.harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::InputRepairMessage, 200u) >= 1u;
+    }, 5000u));
+    const MdkrMatchPeerMeshEvent *repair = rig.harness.lastEvent(
+        100u, MdkrMatchPeerMeshEventType::InputRepairMessage, 200u);
+    assert(repair != nullptr && repair->payload == answer);
+    assert(repair->context.payload_type ==
+           MDKR_MATCH_PEER_PAYLOAD_INPUT_REPAIR_ANSWER);
+    assert(repair->context.key.lane == MDKR_MATCH_PEER_LANE_AUTHORITY);
+
+    /* A message sealed for the STATE lane and replayed onto the authority
+     * channel cannot open under the authority key: a counted drop, not a
+     * terminal verdict and never a delivered repair. */
+    const uint64_t rejectedBefore =
+        rig.mesh->stats().rejectedAuthorityEnvelopes;
+    assert(rig.raw->sendAuthorityBytes(
+        rig.raw->sealedInput(payloadFixture(0x5au))));
+    assert(rig.harness.pumpUntil([&]() {
+        rig.raw->serviceControl();
+        return rig.mesh->stats().rejectedAuthorityEnvelopes > rejectedBefore;
+    }, 5000u));
+    assert(rig.harness.countEvents(100u,
+               MdkrMatchPeerMeshEventType::InputRepairMessage, 200u) == 1u);
+    assert(rig.harness.countEvents(100u,
+               MdkrMatchPeerMeshEventType::PeerLost) == 0u);
+    std::printf("authorityLaneKeepsItsOwnReplayWindow: ok\n");
+}
+
+/* An envelope authenticated under the peer's own authority key but carrying a
+ * payload type that channel does not serve is proven misbehavior on a
+ * reliable channel, exactly as on the control channel. */
+void authorityWrongPayloadTypeIsTypedLoss() {
+    RawHarness rig;
+    const std::vector<MdkrMatchPeerSlotOwner> roster = rosterOf({100u, 200u});
+    rig.mesh = rig.harness.add(100u, 1u, roster);
+    rig.rawFeed = rig.harness.hub.addEndpoint(200u, 2u);
+    rig.raw = std::make_unique<RawPeer>(200u, 2u, 100u, 1u, &rig.harness.hub);
+    rig.harness.hub.welcome(100u);
+    assert(rig.harness.pumpUntil([&]() {
+        rig.drainRawInbox();
+        rig.raw->serviceControl();
+        return rig.harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::PeerChannelsReady, 200u) >= 1u &&
+               rig.raw->channelsOpen() && rig.raw->meshHellos >= 3u;
+    }));
+    rig.raw->deriveKeys();
+    assert(rig.raw->sendAuthorityBytes(rig.raw->sealed(
+        payloadFixture(0x31u), MDKR_MATCH_PEER_LANE_AUTHORITY,
+        MDKR_MATCH_PEER_PAYLOAD_INPUT)));
+    assert(rig.harness.pumpUntil([&]() {
+        rig.raw->serviceControl();
+        return rig.harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::PeerLost, 200u) >= 1u;
+    }, 5000u));
+    const MdkrMatchPeerMeshEvent *lost = rig.harness.lastEvent(
+        100u, MdkrMatchPeerMeshEventType::PeerLost, 200u);
+    assert(lost != nullptr &&
+           lost->lostReason ==
+               MdkrMatchPeerLostReason::ControlChannelViolation);
+    std::printf("authorityWrongPayloadTypeIsTypedLoss: ok\n");
 }
 
 /* Hello-only stand-in for a reconnected endpoint: one identity, the
@@ -2299,6 +2414,8 @@ int main() {
     /* Fix round 1: C1, I1, I2, I3, M1, M3, M4. */
     malformedControlJsonIsTypedLossNotCrash();
     delayedControlFragmentSurvivesInputBurst();
+    authorityLaneKeepsItsOwnReplayWindow();
+    authorityWrongPayloadTypeIsTypedLoss();
     rekeyGenerationBumpKeepsHonestPeers();
     helloProtocolPinning();
     offCurveRevealIsPerPeerLoss();

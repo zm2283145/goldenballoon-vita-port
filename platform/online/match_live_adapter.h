@@ -417,6 +417,9 @@ bool mdkr_online_live_adapter_race_inputs_for_tick(
 struct MdkrOnlineLiveRaceStats {
     uint64_t inputEnvelopesReceived = 0u; /* opened INPUT envelopes from peers */
     uint64_t meshRejectedState = 0u;
+    /* Authority-lane envelopes dropped non-terminally (no key yet, or a
+     * rekey-window open failure) -- never a delivered repair. */
+    uint64_t meshRejectedAuthority = 0u;
     uint64_t meshIgnoredStaleSignals = 0u;
     uint64_t meshDroppedEvents = 0u;
     uint32_t transportAccepted = 0u;
@@ -443,9 +446,26 @@ struct MdkrOnlineLiveRaceStats {
      * transmission is routed through the driver's own (impairment) carrier. */
     uint32_t resendSweeps = 0u;
     uint32_t resendBundles = 0u;
+    /* Input-gap repair on the reliable authority lane
+     * (docs/ref/match-input-repair-v1.md). requestsSent counts gaps this
+     * endpoint asked its peer to fill, answersSent the messages it filled for
+     * a peer, answersReceived the messages it opened, and ticksRestored the
+     * authored ticks those answers actually admitted (a duplicate a late
+     * bundle already carried is not counted). */
+    uint32_t repairRequestsSent = 0u;
+    uint32_t repairAnswersSent = 0u;
+    uint32_t repairAnswersReceived = 0u;
+    uint32_t repairTicksRestored = 0u;
 };
 bool mdkr_online_live_adapter_race_stats(const IMdkrOnlineAdapter *adapter,
                                          MdkrOnlineLiveRaceStats *out);
+
+/* Test-only: turn input-gap repair off for this endpoint, so a lane can prove
+ * what the repair is worth by running the identical loss burst without it and
+ * observing the rollback exhaustion or divergence it otherwise prevents.
+ * Never called by the launcher; repair is on for every shipped race. */
+bool mdkr_online_live_adapter_race_set_repair(IMdkrOnlineAdapter *adapter,
+                                              bool on);
 
 /* ---- race lifecycle + session-config C APIs (launcher/UI seams) ----- *
  *

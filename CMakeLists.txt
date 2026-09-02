@@ -393,6 +393,7 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/net/match_input_runtime.c # copy-out launcher-to-engine input provider
     ${CMAKE_SOURCE_DIR}/platform/net/match_input_packet.c # fixed hostile-input-safe carrier codec
     ${CMAKE_SOURCE_DIR}/platform/net/match_input_bundle.c # redundant three-frame carrier bundle
+    ${CMAKE_SOURCE_DIR}/platform/net/match_input_repair.c # explicit input-gap repair codec
     ${CMAKE_SOURCE_DIR}/platform/net/match_peer_graph.c # bounded direct/one-hop peer topology
     ${CMAKE_SOURCE_DIR}/platform/net/match_peer_forward.c # bounded opaque one-hop forwarding
     ${CMAKE_SOURCE_DIR}/platform/net/match_peer_transcript.c # canonical peer keys + phrase
@@ -1228,6 +1229,7 @@ if(NOT EMSCRIPTEN)
                     ${CMAKE_SOURCE_DIR}/platform/net/match_transport.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_failure_ring.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_input_bundle.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/match_input_repair.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_impairment.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_input.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_local_input.c
@@ -1347,6 +1349,7 @@ if(NOT EMSCRIPTEN)
                     ${CMAKE_SOURCE_DIR}/platform/net/match_transport.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_failure_ring.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_input_bundle.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/match_input_repair.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_impairment.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_input.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_local_input.c
@@ -1507,6 +1510,19 @@ if(NOT EMSCRIPTEN)
                     COMMAND mdkr_online_live_adapter_test --route)
                 set_tests_properties(online_live_route PROPERTIES TIMEOUT 300)
 
+                # N7 B3/B5: explicit input-gap repair on the reliable
+                # unordered authority channel, over the same two real loopback
+                # DTLS meshes. Twenty-five consecutive bundle sends in one
+                # direction are suppressed -- far past the carrier's three
+                # ticks of redundancy -- and the run that costs must be closed
+                # by repair alone, with both endpoints committing the identical
+                # canonical timeline. Two positive controls: the identical
+                # burst with repair off must reach typed rollback exhaustion,
+                # and the burst must not age out a valid authority packet.
+                add_test(NAME online_live_repair
+                    COMMAND mdkr_online_live_adapter_test --repair)
+                set_tests_properties(online_live_repair PROPERTIES TIMEOUT 300)
+
                 # online multiplayer CAPSTONE end-to-end race driver: the
                 # REAL online stack (production MatchRoom HTTP + /connect WS
                 # client, the signal-client mesh backend, the peer
@@ -1539,6 +1555,7 @@ if(NOT EMSCRIPTEN)
                     ${CMAKE_SOURCE_DIR}/platform/net/match_transport.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_failure_ring.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_input_bundle.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/match_input_repair.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_input.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_local_input.c
                     ${CMAKE_SOURCE_DIR}/platform/session/session_bridge.c

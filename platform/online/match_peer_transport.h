@@ -45,28 +45,38 @@
  * mirrors the house lowest-id tie-break already pinned in
  * match_peer_graph.h route selection. Glare is impossible by construction.
  *
- * Channels per peer:
- *   gb-match-state-v1   -- unordered, maxRetransmits 0 (lossy by design);
- *                          carries ONLY sealed INPUT envelopes. A datagram
- *                          that fails to open is counted and dropped, never
- *                          terminal.
- *   gb-match-control-v1 -- reliable ordered; sealed PREFLIGHT fragments +
- *                          the bounded ping. A reliable channel never
- *                          delivers STRUCTURAL garbage, so a wrong-size
- *                          binary frame, malformed ping JSON, or an
- *                          authenticated envelope of the wrong payload
- *                          type IS terminal for the peer. An envelope
- *                          that merely fails to open is NOT: during a
- *                          roster rekey (any peer's generation bump
- *                          retires every transcript-salted key) an honest
- *                          peer's in-flight old-digest fragment is
- *                          indistinguishable from garbage, so it is
- *                          counted and dropped instead of killing the
- *                          peer. Each channel keeps its own replay window
- *                          over the shared sender sequence space, so a
- *                          control fragment delayed behind a burst of
- *                          state envelopes can never be retired as a
- *                          replay.
+ * Channels per peer, one per MDKR_MATCH_PEER_LANE_*:
+ *   gb-match-state-v1     -- unordered, maxRetransmits 0 (lossy by design);
+ *                            carries ONLY sealed INPUT envelopes. A datagram
+ *                            that fails to open is counted and dropped, never
+ *                            terminal.
+ *   gb-match-control-v1   -- reliable ordered; sealed PREFLIGHT fragments +
+ *                            the bounded ping.
+ *   gb-match-authority-v1 -- reliable UNORDERED; sealed input-repair requests
+ *                            and answers (docs/ref/match-input-repair-v1.md).
+ *                            Retransmitted until delivered, because a repair
+ *                            that is itself lost leaves the gap it names
+ *                            unfilled; unordered, because every repair
+ *                            message carries the tick run it covers and is
+ *                            useful the moment it lands, so head-of-line
+ *                            blocking behind an older message would spend
+ *                            exactly the ticks the repair exists to save.
+ *
+ * Neither RELIABLE channel ever delivers STRUCTURAL garbage, so a wrong-size
+ * binary frame, malformed ping JSON, text on the authority channel, or an
+ * authenticated envelope carrying a payload type that channel does not serve
+ * IS terminal for the peer. An envelope that merely fails to open is NOT:
+ * during a roster rekey (any peer's generation bump retires every
+ * transcript-salted key) an honest peer's in-flight old-digest message is
+ * indistinguishable from garbage, so it is counted and dropped instead of
+ * killing the peer.
+ *
+ * Each channel derives its OWN key (match_peer_crypto.h: the lane is HKDF
+ * info and authenticated header material) and therefore owns its own
+ * monotonic sequence space and its own replay window. One channel's traffic
+ * can never advance another's nonce, a message cannot be spliced from one
+ * channel onto another, and a reliable message delayed behind a burst of
+ * state envelopes can never be retired as a replay of them.
  *
  * One-hop forwarding (match_peer_graph.h / match_peer_forward.h) is OUT of
  * scope for this transport revision: only the direct mesh is wired. The
@@ -98,6 +108,8 @@
 /* Channel labels (versioned, mirror mdkr-pad-*-v1's naming discipline). */
 inline constexpr char kMdkrMatchStateChannelLabel[] = "gb-match-state-v1";
 inline constexpr char kMdkrMatchControlChannelLabel[] = "gb-match-control-v1";
+inline constexpr char kMdkrMatchAuthorityChannelLabel[] =
+    "gb-match-authority-v1";
 
 /* Control ping ladder, contractual like the party transport's: one ping
  * every 5 s of quiet, a peer is stale after 15 s without its pong. */
@@ -233,7 +245,7 @@ struct MdkrMatchPeerSlotOwner {
 };
 
 enum class MdkrMatchPeerMeshEventType {
-    /* Both channels to this endpoint are open. */
+    /* Every channel to this endpoint is open. */
     PeerChannelsReady,
     /* This endpoint is gone for this mesh, with a typed reason. */
     PeerLost,
@@ -242,6 +254,9 @@ enum class MdkrMatchPeerMeshEventType {
     /* One opened PREFLIGHT fragment + its authenticated envelope context
      * (mdkr_match_preflight_fragment_submit consumes both). */
     PreflightFragment,
+    /* One opened input-repair request or answer (64 bytes) from this
+     * endpoint; context.payload_type says which. */
+    InputRepairMessage,
     /* Every peer's key is committed, opened and derived; phrase() answers. */
     PhraseReady,
     /* Mesh-level failure with a typed reason. */
@@ -314,6 +329,8 @@ struct MdkrMatchPeerMeshStats {
     /* Control-channel envelopes dropped non-terminally: correctly sized
      * but no key yet or failed to open -- the rekey-window race shape. */
     uint64_t rejectedControlEnvelopes = 0u;
+    /* The same non-terminal drop on the authority channel. */
+    uint64_t rejectedAuthorityEnvelopes = 0u;
     /* Signaling messages ignored for stale generation / wrong role /
      * unknown endpoint / unexpected timing. */
     uint64_t ignoredStaleSignals = 0u;
@@ -408,6 +425,14 @@ public:
         uint64_t peerEndpointId,
         const uint8_t fragment[MDKR_MATCH_PEER_PAYLOAD_BYTES]);
 
+    /* Seal one 64-byte input-repair message to one peer on its reliable
+     * unordered authority channel. `payloadType` must be
+     * MDKR_MATCH_PEER_PAYLOAD_INPUT_REPAIR_REQUEST or _ANSWER; the transport
+     * carries the bytes and never reads them. */
+    bool sendInputRepair(
+        uint64_t peerEndpointId, uint8_t payloadType,
+        const uint8_t message[MDKR_MATCH_PEER_PAYLOAD_BYTES]);
+
     /* F3: broadcast a plaintext race-abort (typed/versioned like ping) to every
      * reachable peer on the reliable control channel. Returns the number of
      * peers reached. Does not change any peer's connection state -- the local
@@ -449,7 +474,7 @@ public:
      * build a byte-identical graph. */
     bool peerGeneration(uint64_t peerEndpointId, uint32_t *out) const;
 
-    /* Live truth for "both channels to this peer are open right now"
+    /* Live truth for "every channel to this peer is open right now"
      * (launcher thread only, like every accessor). The adapter's re-verify
      * barrier (W3 fix round) rebuilds its channels-ready bookkeeping from
      * this instead of event replay, so it can never wipe a fresh
