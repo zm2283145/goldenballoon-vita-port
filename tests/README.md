@@ -7572,8 +7572,9 @@ KTX2 inspect/transcode bridge. Valid containers also feed authenticated embedded
 PNG/KTX2 payloads and the portrait PNG through their matching decoder. Decode
 allocation is capped at 16 MiB per input; production limits remain stricter and
 unchanged. The deterministic corpus contains valid and truncated generated PNG,
-valid ETC1S and UASTC/Zstandard textures, a valid generated character, and
-checksum-valid malformed/truncated controls. Its generator uses only the
+valid ETC1S and UASTC/Zstandard textures, a valid generated character,
+checksum-valid malformed/truncated controls, and the minimised reproducer for
+the wrapping-index out-of-memory below. Its generator uses only the
 license-clean test fixtures and must reproduce the tracked bytes exactly. Run
 against a copied corpus when discoveries should remain local; libFuzzer may add
 minimized inputs to a writable corpus directory.
@@ -7583,6 +7584,29 @@ The BasisU target is built with `fuzzer-no-link` instrumentation and the exact
 coverage enters both third-party decoders instead of stopping at their
 first-party bridges. `MDKR_ENABLE_FUZZERS` remains OFF by default and does not
 add fuzz code or sanitizer flags to ordinary release builds.
+
+### KTX2 bridge bounds — `tests/test_modern_character_ktx2.cpp`
+
+```bash
+ctest --test-dir build -R modern_character_ktx2
+```
+
+Drives `mdkr_ktx2_inspect` and `mdkr_ktx2_transcode` over two license-clean
+textures embedded in the test — 8x8 ETC1S/sRGB and 8x8 UASTC/linear Zstandard —
+pinning the reported dimensions, mip count, colour space and the exact
+allocation size for every target format, and requiring a truncated file to be
+refused.
+
+Four hostile arms patch one header field into the valid UASTC texture and
+require both entry points to refuse it, naming the bound that refused it. They
+cover the KTX2 index's offset/length pairs — key/value, data-format,
+supercompression global data, and a level's own byte range — each with a pair
+whose sum wraps its width, which the pinned transcoder reads as a small region
+and then walks or sizes from the length the pair actually holds. The key/value
+arm is the minimised libFuzzer out-of-memory reproducer, seeded as
+`tests/fuzz_corpus/modern_character_asset/wrapping-key-value-length.ktx2`. See
+`docs/open-items/misc.md`, wave "ktx2index". With the bound removed the arms
+fail: two by crashing on the walk, two by accepting the file.
 
 ### Online wire-parser fuzzers — `tests/fuzz_match_signal_wire.cpp`, `tests/fuzz_online_live_wire.cpp`
 

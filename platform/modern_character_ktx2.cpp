@@ -15,6 +15,72 @@ void set_error(char *error, size_t size, const char *message) {
     }
 }
 
+/* KTX2 header and level-index geometry: the header is 80 bytes, and the level
+ * index that follows it is 24 bytes per level, with one entry present even at
+ * levelCount zero. */
+constexpr uint64_t kHeaderBytes = 80u;
+constexpr uint64_t kLevelIndexBytes = 24u;
+
+uint32_t read_u32(const uint8_t *data) {
+    return static_cast<uint32_t>(data[0]) |
+           (static_cast<uint32_t>(data[1]) << 8u) |
+           (static_cast<uint32_t>(data[2]) << 16u) |
+           (static_cast<uint32_t>(data[3]) << 24u);
+}
+
+uint64_t read_u64(const uint8_t *data) {
+    return static_cast<uint64_t>(read_u32(data)) |
+           (static_cast<uint64_t>(read_u32(data + 4u)) << 32u);
+}
+
+/* An absent region carries no offset, so only a region with bytes in it has to
+ * land inside the payload and behind the header. Subtract instead of adding
+ * offset and length: the sum is what wraps. */
+bool region_within_payload(uint64_t offset, uint64_t length, uint64_t payload) {
+    if (length == 0u) return true;
+    return offset >= kHeaderBytes && offset <= payload &&
+           length <= payload - offset;
+}
+
+/* Every byte range the transcoder walks comes from the header's index: the
+ * data-format descriptor, the key/value data, the supercompression global
+ * data, and one offset/length pair per level. The transcoder bounds each of
+ * them by adding the pair in the pair's own width and comparing against the
+ * payload size, so a 32-bit key/value length of 0xFFFFFF74 at offset 0xDC
+ * compares as 80 bytes, and the key/value walk then reads ~4 GiB past the
+ * file and sizes a value allocation from a length it found out there. Refuse
+ * an index that does not describe the payload it arrived in. A file too short
+ * to hold a header, or without the KTX2 identifier, carries no index to check
+ * and the transcoder refuses it on those grounds instead. */
+bool index_within_payload(const uint8_t *data, size_t size) {
+    if (size < kHeaderBytes ||
+        std::memcmp(data, basist::g_ktx2_file_identifier,
+                    sizeof(basist::g_ktx2_file_identifier)) != 0) {
+        return true;
+    }
+    const uint64_t payload = size;
+    const uint32_t level_count = read_u32(data + 40u);
+    const uint64_t entries = level_count != 0u ? level_count : 1u;
+    if (entries > (payload - kHeaderBytes) / kLevelIndexBytes) return false;
+    if (!region_within_payload(read_u32(data + 48u), read_u32(data + 52u),
+                               payload) ||
+        !region_within_payload(read_u32(data + 56u), read_u32(data + 60u),
+                               payload) ||
+        !region_within_payload(read_u64(data + 64u), read_u64(data + 72u),
+                               payload)) {
+        return false;
+    }
+    for (uint64_t entry = 0u; entry < entries; ++entry) {
+        const uint8_t *level =
+            data + kHeaderBytes + entry * kLevelIndexBytes;
+        if (!region_within_payload(read_u64(level), read_u64(level + 8u),
+                                   payload)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool checked_add(size_t left, size_t right, size_t *result) {
     if (result == nullptr || right > std::numeric_limits<size_t>::max() - left) return false;
     *result = left + right;
@@ -35,6 +101,10 @@ bool inspect_transcoder(const uint8_t *data, size_t size,
     if (data == nullptr || transcoder == nullptr || info == nullptr ||
         size == 0u || size > UINT32_MAX) {
         set_error(error, error_size, "KTX2 payload is empty or exceeds the 4 GiB container limit");
+        return false;
+    }
+    if (!index_within_payload(data, size)) {
+        set_error(error, error_size, "KTX2 index describes a region outside the payload");
         return false;
     }
     if (!initialize_transcoder() || !transcoder->init(data, static_cast<uint32_t>(size))) {

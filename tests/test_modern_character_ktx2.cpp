@@ -55,6 +55,32 @@ void expect_transcode(const std::vector<uint8_t> &bytes,
     assert(image.allocation == nullptr && image.level_count == 0u);
 }
 
+/* The hostile arms below address KTX2 header fields by their byte offsets:
+ * the 80-byte header holds the data-format, key/value and supercompression
+ * index pairs, and the level index behind it holds 24 bytes per level. */
+void patch_le(std::vector<uint8_t> &bytes, size_t offset, size_t width,
+              uint64_t value) {
+    for (size_t byte = 0u; byte < width; ++byte) {
+        bytes[offset + byte] =
+            static_cast<uint8_t>((value >> (8u * byte)) & 0xFFu);
+    }
+}
+
+/* Both bridge entry points must refuse a file whose header index describes
+ * work the payload cannot back, and must name the bound that refused it. */
+void expect_refused(const std::vector<uint8_t> &bytes, const char *reason) {
+    MdkrKtx2Info info{};
+    MdkrKtx2Image image{};
+    char error[192];
+    assert(mdkr_ktx2_inspect(
+        bytes.data(), bytes.size(), &info, error, sizeof(error)) == 0);
+    assert(std::strstr(error, reason) != nullptr);
+    assert(mdkr_ktx2_transcode(bytes.data(), bytes.size(),
+                               MDKR_KTX2_TARGET_RGBA8, &image, error,
+                               sizeof(error)) == 0);
+    assert(image.allocation == nullptr && image.level_count == 0u);
+}
+
 } // namespace
 
 int main() {
@@ -81,6 +107,30 @@ int main() {
     assert(info.srgb == 0u && info.uastc == 1u && info.rgba_bytes == 340u);
     expect_transcode(uastc, MDKR_KTX2_TARGET_RGBA8, 340u);
     expect_transcode(uastc, MDKR_KTX2_TARGET_BC7, 112u);
+
+    /* Each pair below is bounded by the transcoder as offset + length against
+     * the file size, and each sum wraps. The key/value case is the minimised
+     * libFuzzer out-of-memory reproducer, also seeded as
+     * wrapping-key-value-length.ktx2: 0xDC + 0xFFFFFF74 wraps to 80, and the
+     * key/value walk then read past the end of the file and sized a 4 GiB
+     * value allocation from what it found out there. */
+    const char *outside = "index describes a region outside the payload";
+    std::vector<uint8_t> hostile = uastc;
+    patch_le(hostile, 60u, 4u, 0xFFFFFF74ull);             /* kvdByteLength */
+    expect_refused(hostile, outside);
+
+    hostile = uastc;
+    patch_le(hostile, 48u, 4u, 0xFFFFFFF0ull);             /* dfdByteOffset */
+    expect_refused(hostile, outside);
+
+    hostile = uastc;
+    patch_le(hostile, 64u, 8u, 0xFFFFFFFFFFFFFFF0ull);     /* sgdByteOffset */
+    patch_le(hostile, 72u, 8u, 0x20ull);                   /* sgdByteLength */
+    expect_refused(hostile, outside);
+
+    hostile = uastc;
+    patch_le(hostile, 80u, 8u, 0xFFFFFFFFFFFFFFF0ull); /* level 0 byteOffset */
+    expect_refused(hostile, outside);
 
     std::vector<uint8_t> truncated(etc1s.begin(), etc1s.end() - 1);
     assert(mdkr_ktx2_inspect(

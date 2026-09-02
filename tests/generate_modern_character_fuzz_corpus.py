@@ -48,6 +48,17 @@ def main() -> int:
         KTX2_ETC1S_SRGB[:96]
     )
 
+    # A KTX2 header indexes its data-format, key/value, supercompression and
+    # per-level byte ranges as offset/length pairs. This seed is the minimised
+    # libFuzzer out-of-memory reproducer: a key/value length whose sum with its
+    # offset wraps 32 bits, so the pair reads as an 80-byte region and the
+    # key/value walk then ran off the end of the file.
+    wrapping_key_values = bytearray(KTX2_UASTC_LINEAR_ZSTD)
+    struct.pack_into("<I", wrapping_key_values, 60, 0xFFFFFF74)
+    (CORPUS / "wrapping-key-value-length.ktx2").write_bytes(
+        bytes(wrapping_key_values)
+    )
+
     # The same PNG-only stb_image configuration decodes package textures and
     # portraits. A valid generated portrait reaches full RGBA decode; its
     # truncation anchors the PNG error paths without importing external art.
