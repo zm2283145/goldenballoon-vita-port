@@ -181,6 +181,24 @@ def phone_attempt(origin: str, chrome_path: str, profiles: Path,
         setup_started = time.monotonic()
         host.evaluate(
             "document.querySelector('#party-pending-list .btn-primary').click()")
+        # P2.1 compare-then-trust: approval alone grants no seat custody. The
+        # phone connects PROVISIONALLY (direct channels up, pairing phrase on
+        # both screens, pad inactive, its input_test unanswered) and the
+        # journey advances only after the host's Words Match decision. Wait
+        # for the provisional connection, then confirm through the same
+        # scriptable call the seat tile's button makes (the ritual
+        # check_phone_party_webrtc.py pins).
+        wait_value(phone, "!document.getElementById('state-assigned').hidden", bool,
+                   "canary compare screen", timeout)
+        controller_id = wait_value(host, """(() => {
+          const item=MDKRPartyHost.state().room?.controllers?.find(
+            value=>['leased','connected'].includes(value.phase));
+          if (!item?.seat || !MDKRPartyHost.remotePads()[item.seat-1]?.provisional) return '';
+          return item.controllerId;
+        })()""", lambda value: isinstance(value, str) and value != "",
+            "canary provisional connection", timeout)
+        rtt_started = time.monotonic()
+        host.evaluate(f"MDKRPartyHost.confirm({json.dumps(controller_id)})")
         seat = wait_value(host, """(() => {
           const item=MDKRPartyHost.state().room?.controllers?.find(
             value=>['leased','connected'].includes(value.phase));
@@ -190,14 +208,19 @@ def phone_attempt(origin: str, chrome_path: str, profiles: Path,
             "canary direct data channels", timeout)
         require(1 <= seat <= 4, "canary received an invalid controller seat")
         setup_time = elapsed_ms(setup_started)
-        wait_value(phone, "!document.getElementById('state-assigned').hidden", bool,
-                   "canary assigned phone", timeout)
-        rtt_started = time.monotonic()
-        phone.evaluate("document.getElementById('input-test').click()")
+        # seat_confirmed makes the phone run the auto input test itself
+        # (host-answered) and auto-advance to the controller surface; the
+        # measured round trip closes when Use controller unlocks. The guarded
+        # click keeps the manual fallback path for an ack that lands after
+        # the auto-advance window.
         wait_value(phone, "!document.getElementById('use-controller').disabled", bool,
                    "canary input round trip", timeout)
         input_rtt = elapsed_ms(rtt_started)
-        phone.evaluate("document.getElementById('use-controller').click()")
+        phone.evaluate("""(() => {
+          if (document.getElementById('state-controller').hidden) {
+            document.getElementById('use-controller').click();
+          }
+        })()""")
         wait_value(phone, "!document.getElementById('state-controller').hidden", bool,
                    "canary active controller", timeout)
         initial_sequence = host.evaluate(

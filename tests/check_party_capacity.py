@@ -203,6 +203,22 @@ def run(args: argparse.Namespace) -> None:
                     for domain in ("Page", "Runtime", "Log", "Inspector",
                                    "Accessibility"):
                         cdp.call(f"{domain}.enable")
+                    # The launcher computes surfaceEnabled once at load, and its
+                    # disabled-build open() guard keeps the dialog shut without
+                    # it: a post-load policy write configures live control but
+                    # cannot re-enable open(), leaving every DOM assertion
+                    # against a hidden dialog and the AX tree without the
+                    # recovery actions. Pin the enabled policy in a boot script
+                    # exactly like check_browser_online_two_person.py does; the
+                    # served config file's own strict-mode assignment goes
+                    # through the no-op setter without throwing.
+                    cdp.call("Page.addScriptToEvaluateOnNewDocument", {"source": (
+                        "(() => { const v = Object.freeze({enabled:true,"
+                        "serviceOrigin:location.origin});"
+                        "Object.defineProperty(globalThis,"
+                        "'__mdkrOnlineControlReleasePolicy',"
+                        "{configurable:false, get:() => v, set:() => {}}); })();"
+                    )})
                     cdp.call("Page.navigate", {"url": origin + "/"})
                     wait_value(cdp, "Boolean(globalThis.MDKROnlineRoom) && "
                                "document.readyState==='complete'", bool,
@@ -389,6 +405,8 @@ def run(args: argparse.Namespace) -> None:
                                 "partyControl": 1,
                                 "partyRotate": 0,
                                 "partySocket": 1,
+                                "partyNativeCreate": 0,
+                                "turnMint": 0,
                                 "legacy": 0,
                             },
                             "admitted": {
