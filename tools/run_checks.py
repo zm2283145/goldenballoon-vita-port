@@ -625,6 +625,12 @@ CHECKS = (
           "raw pointer/token narrowing confined to typed boundary helpers"),
     Check("delta_inventory", "check_delta_inventory.py", "source",
           "every //!@Delta simulation-cadence site carries an M0 classification"),
+    Check("test_assertions_armed", "check_test_assertions_armed_wrapper.py",
+          "source",
+          "every tests/*.c and tests/*.cpp TU calling assert() is TU- or "
+          "CMake-target-armed against NDEBUG, with unarmed and armed "
+          "positive controls",
+          ("--self-test",)),
     Check("net_roster_owner_guard", "check_net_roster_owner_guard.py", "source",
           "local-Play boot cannot inherit a foreign online roster; ownership is "
           "explicit and the guard is idempotent (compiles + runs standalone)"),

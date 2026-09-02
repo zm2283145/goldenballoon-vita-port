@@ -6329,6 +6329,33 @@ marker landing on that exact line cannot be silently swallowed. Positive
 control: a seeded bare `//!@Delta` must be rejected; a negative control
 proves a properly classified marker is accepted.
 
+### Test assertions armed — `tests/check_test_assertions_armed_wrapper.py`
+
+```bash
+python3 tools/check_test_assertions_armed.py --self-test
+```
+
+Structural gate for `tools/check_test_assertions_armed.py` (the suite runs it
+through the wrapper). CMakeLists.txt defaults `CMAKE_BUILD_TYPE` to Release
+when unset, and Release adds `-DNDEBUG`, which turns every `assert()` in
+`<assert.h>`/`<cassert>` into `((void)0)` -- the call still compiles, the
+check it guards silently never runs, and the test still reports PASS. 22
+test files shipped exactly this way once, fixed with a per-file `#undef
+NDEBUG` before the assert.h/cassert include; a sister project repeated the
+mistake with an allowlist that fell out of date as files were added. This
+gate has no allowlist: it scans every `tests/*.c` and `tests/*.cpp` TU that
+calls `assert(` and requires it to be either TU-armed (`#undef NDEBUG`
+precedes its own assert.h/cassert include) or target-armed (the CMake
+target it is compiled into, found by searching `cmake/tests.cmake` and
+`CMakeLists.txt` add_executable source lists, carries a `-UNDEBUG` compile
+option -- `NDEBUG=0` is explicitly rejected, since `<assert.h>` only tests
+whether NDEBUG is `#defined`). `--self-test` drives both arming predicates
+in both directions -- an undef-free TU, a too-late `#undef`, an assert(
+mentioned only in a comment, a CMake target with and without `-UNDEBUG`, and
+an end-to-end scan over a synthetic offender -- before it scans the real
+tree, so a predicate that stopped firing fails loudly instead of passing an
+empty sweep.
+
 ### CI contract — `tests/check_ci_contract.py`
 
 ```bash
