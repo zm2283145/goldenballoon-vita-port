@@ -922,6 +922,20 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform)
     add_test(NAME gfx_ptr_registry COMMAND mdkr_gfx_ptr_registry_test)
 
+    add_executable(mdkr_fast3d_dl_guards_test
+        ${CMAKE_SOURCE_DIR}/tests/test_fast3d_dl_guards.c)
+    target_include_directories(mdkr_fast3d_dl_guards_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/platform/fast3d
+        ${CMAKE_SOURCE_DIR}/game
+        ${CMAKE_SOURCE_DIR}/game/include
+        ${CMAKE_SOURCE_DIR}/game/include/PR)
+    target_compile_definitions(mdkr_fast3d_dl_guards_test PRIVATE
+        VERSION_us_v80
+        _LANGUAGE_C
+        NATIVE_PORT=1)
+    add_test(NAME fast3d_dl_guards COMMAND mdkr_fast3d_dl_guards_test)
+
     add_executable(mdkr_runtime_contracts_test
         ${CMAKE_SOURCE_DIR}/tests/test_runtime_contracts.c
         ${CMAKE_SOURCE_DIR}/game/src/runtime_contracts.c)

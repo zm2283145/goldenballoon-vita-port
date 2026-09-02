@@ -71,6 +71,7 @@
 #include "gfx_palette.h"
 #include "gfx_screen_config.h"
 #include "gfx_ptr.h"
+#include "gfx_dkr_dl_guards.h"
 #include "platform_os.h"   /* dkr_lo32_to_ptr + arena bounds (address resolution) */
 #include "display_config.h"
 
@@ -1589,21 +1590,6 @@ static size_t buf_vbo_num_tris;
  * gfx_resolve_addr() for segment tokens (gSPSegment / G_MW_SEGMENT sets, whose
  * bases live in gfx_segment_table) and any non-arena host pointer parked in the
  * gfx_ptr registry. Never returns a wild pointer — worst case is NULL. */
-/* A pointer is host-plausible if it is non-null and not a sign-extended 32-bit
- * token (high 32 bits all ones). User-space host mappings never live at
- * 0xffffffff........, and the arena's high bits are 0x4-0x7, so an all-ones high
- * half is unambiguously a truncated-then-sign-extended pointer. dkr_resolve
- * refuses to hand such a value to any DL consumer — the belt-and-suspenders side
- * of the char-select SIGSEGV fix (the truncation itself is fixed at its source
- * in tracks.c render_level_segment). */
-static inline bool dkr_ptr_plausible(const void *p) {
-    uintptr_t up = (uintptr_t) p;
-    if (up == 0) return false;
-#if UINTPTR_MAX > UINT32_MAX
-    if ((up >> 32) == UINT32_MAX) return false;
-#endif
-    return true;
-}
 
 /*
  * Map a resolved NON-ARENA pointer onto the bytes the real walk copied.
@@ -1754,7 +1740,18 @@ static inline void *dkr_resolve(uint32_t addr) {
  * external span. Returns SIZE_MAX for ordinary non-arena host pointers
  * (globals/rodata — trusted, their extent is unknown here). Used to bound bulk
  * struct/array reads so a resolved edge-of-arena or retained dependency can
- * never read beyond its owned image. */
+ * never read beyond its owned image.
+ *
+ * The guard band immediately ABOVE the arena answers 0 rather than SIZE_MAX. An
+ * address there is arena arithmetic that ran off the end — a sub-list without a
+ * G_ENDDL, or a base-plus-offset decode — not a global: the arena is aligned to
+ * its own 16 MB size and the binary's static storage sits far below it. Both
+ * walkers used to open-code that band next to their own room test, which left
+ * every other reader (matrices, vertices, triangles, texture rows) taking
+ * SIZE_MAX for the arena's own overrun. It belongs to the answer, not to the
+ * caller. */
+#define DKR_ARENA_OVERRUN_BAND 0x00010000u
+
 static inline size_t dkr_arena_room(const void *p) {
     uintptr_t up = (uintptr_t) p;
     uintptr_t base = (uintptr_t) g_dkrArenaBase;
@@ -1767,7 +1764,17 @@ static inline size_t dkr_arena_room(const void *p) {
         gfx_retained_task_dependency_room(p, &retained_room)) {
         return retained_room;
     }
+    if (g_dkrArenaSize != 0 && up >= end && up < end + DKR_ARENA_OVERRUN_BAND) {
+        return 0;            /* the arena's own overrun, not a global */
+    }
     return (size_t)-1;   /* not arena-backed: trust it */
+}
+
+/* Does a read of `need` bytes at `p` stay inside what dkr_arena_room() can
+ * account for? See dkr_room_admits() in gfx_dkr_dl_guards.h for why the
+ * SIZE_MAX case cannot be folded into a plain `room >= need`. */
+static inline bool dkr_room_for(const void *p, size_t need) {
+    return dkr_room_admits(dkr_arena_room(p), p, need);
 }
 
 /*
@@ -1838,7 +1845,7 @@ static bool dkr_shadow_lookup_live(
         return true;
     }
     if (!out->key_bytes_valid || ma == NULL ||
-        dkr_arena_room(ma) < sizeof(Mtx)) {
+        !dkr_room_for(ma, sizeof(Mtx))) {
         if (dkr_replay_pass && stale != NULL) {
             *stale = true;
         }
@@ -4409,12 +4416,7 @@ static void dkr_decode_matrix(int slot, const int32_t *a) {
 
 static void dkr_load_matrix(int slot, const void *addr) {
     if (slot < 0 || slot > 2) return;
-    if (!addr || dkr_arena_room(addr) < sizeof(Mtx)) { dkr_load_identity(slot); return; }
-    /* Belt-and-suspenders: a non-arena matrix pointer (room == SIZE_MAX) must be
-     * a plausible registered global; never deref a sign-extended wild pointer. */
-    if (dkr_arena_room(addr) == (size_t)-1 && !dkr_ptr_plausible(addr)) {
-        dkr_load_identity(slot); return;
-    }
+    if (!dkr_room_for(addr, sizeof(Mtx))) { dkr_load_identity(slot); return; }
     /* Standard N64 s15.16 split-format Mtx: 8 int words then 8 frac words, each
      * packing two elements' halves (ported from mgb64 gfx_sp_matrix). */
     dkr_decode_matrix(slot, (const int32_t *)addr);
@@ -5253,11 +5255,17 @@ static void dkr_dl_fault(const char *reason, const Gfx *cmd, int depth) {
     if (dkr_dl_census_enabled()) {
         s_dl_census_faults++;
     }
+    /* The commonest reason to fault is that this address cannot be read, so the
+     * diagnostic asks the same question the walk did before quoting the words.
+     * Printing them unconditionally makes the report itself the out-of-bounds
+     * read the fault was raised to prevent. */
+    const bool readable = dkr_room_for(cmd, sizeof(Gfx));
     fprintf(stderr,
-            "[DL] %s at depth=%d cmd=%p words=%08x/%08x%s\n",
+            "[DL] %s at depth=%d cmd=%p words=%08x/%08x%s%s\n",
             reason, depth, (const void *) cmd,
-            cmd != NULL ? cmd->words.w0 : 0,
-            cmd != NULL ? cmd->words.w1 : 0,
+            readable ? cmd->words.w0 : 0,
+            readable ? cmd->words.w1 : 0,
+            readable ? "" : " (unreadable)",
             strict ? " (strict: aborting)" : " (recovered: list stopped/skipped)");
     fflush(stderr);
     if (strict) {
@@ -5301,14 +5309,8 @@ static void dkr_scan_overlay_order(Gfx *cmd, int depth, int limit,
         if (++safety > 4000000L) {
             return;
         }
-        {
-            uintptr_t uc = (uintptr_t)cmd;
-            uintptr_t ab = (uintptr_t)g_dkrArenaBase;
-            uintptr_t ae = ab + (uintptr_t)g_dkrArenaSize;
-            if ((uc >= ae && uc < ae + 0x00010000u) ||
-                dkr_arena_room(cmd) < sizeof(Gfx)) {
-                return;
-            }
+        if (!dkr_room_for(cmd, sizeof(Gfx))) {
+            return;
         }
 
         uint8_t op = (uint8_t)C0(cmd, 24, 8);
@@ -5392,7 +5394,7 @@ static void dkr_scan_overlay_order(Gfx *cmd, int depth, int limit,
             case G_TEXRECTFLIP:
                 scan->primitive++;
                 if ((limit > 0 && (cmd - start) + 2 >= limit) ||
-                    dkr_arena_room(cmd) < sizeof(Gfx) * 3) {
+                    !dkr_room_for(cmd, sizeof(Gfx) * 3)) {
                     return;
                 }
                 if ((uint8_t)C0(cmd + 1, 24, 8) !=
@@ -5648,11 +5650,8 @@ static void dkr_capture_uv_scroll_endpoints(const Triangle *next,
         return;
     }
     byte_size = (size_t)num_tris * sizeof(*next);
-    {
-        size_t room = dkr_arena_room(next);
-        if (room == (size_t)-1 ? !dkr_ptr_plausible(next) : room < byte_size) {
-            return;
-        }
+    if (!dkr_room_for(next, byte_size)) {
+        return;
     }
     /*
      * AUTHORED RATE FIRST. A texscroll-driven batch does not need to be
@@ -5767,7 +5766,7 @@ static bool dkr_scan_future_deformations(Gfx *cmd, int depth, int limit) {
         if (limit > 0 && (cmd - start) >= limit) {
             return true;
         }
-        if (++safety > 4000000L || dkr_arena_room(cmd) < sizeof(Gfx)) {
+        if (++safety > 4000000L || !dkr_room_for(cmd, sizeof(Gfx))) {
             return false;
         }
         switch ((uint8_t)C0(cmd, 24, 8)) {
@@ -5893,8 +5892,8 @@ static bool dkr_scan_future_deformations(Gfx *cmd, int depth, int limit) {
                 bool packet_vertex = false;
 
                 if (vertices == NULL || count <= 0 || count > DKR_MAX_VERTICES ||
-                    dkr_arena_room(vertices) <
-                        (size_t)count * sizeof(*vertices)) {
+                    !dkr_room_for(vertices,
+                                  (size_t)count * sizeof(*vertices))) {
                     break;
                 }
                 memset(&packet_binding, 0, sizeof(packet_binding));
@@ -6673,26 +6672,15 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             dkr_dl_fault("unterminated display list", cmd, depth);
             return;
         }
-        /* Never fetch a command past the arena: an arena-backed sub-list that
-         * lacks a G_ENDDL terminator (or a mis-resolved DL pointer) would walk
-         * off the 16 MB arena into an unmapped page. Non-arena DLs (rodata init
-         * lists) return SIZE_MAX room and are trusted to self-terminate. */
-        /* Stop if this list has walked off the top of the arena — a mis-decoded
-         * or unterminated arena sub-list would otherwise fetch from the unmapped
-         * page immediately after the 16 MB block. dkr_arena_room() returns
-         * SIZE_MAX exactly AT arena_end (== is not < end), so guard the adjacent
-         * band explicitly; genuine non-arena globals live far away and pass. */
-        {
-            uintptr_t uc = (uintptr_t)cmd;
-            uintptr_t ab = (uintptr_t)g_dkrArenaBase;
-            uintptr_t ae = ab + (uintptr_t)g_dkrArenaSize;
-            if (uc >= ae && uc < ae + 0x00010000u) {
-                dkr_dl_fault("display list walked beyond RDRAM", cmd, depth);
-                return;
-            }
-        }
-        if (dkr_arena_room(cmd) < sizeof(Gfx)) {
-            dkr_dl_fault("truncated display-list command", cmd, depth);
+        /* Never fetch a command the arena does not back: an arena-backed
+         * sub-list that lacks a G_ENDDL terminator, or a mis-resolved DL
+         * pointer, walks off the 16 MB block into the unmapped page after it.
+         * dkr_arena_room() accounts for the overrun band above the arena as
+         * well as the last bytes inside it. Non-arena DLs (rodata init lists)
+         * have no extent to check and are trusted to self-terminate. */
+        if (!dkr_room_for(cmd, sizeof(Gfx))) {
+            dkr_dl_fault("display list walked past its backing memory", cmd,
+                         depth);
             return;
         }
         uint8_t op = (uint8_t)C0(cmd, 24, 8);
@@ -6797,7 +6785,7 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                 dkr_shadow_lookup_live(
                     ma, &rsp.shadow_matrix[slot], &shadow_matrix_stale);
             if (!dkr_replay_pass && ma != NULL &&
-                dkr_arena_room(ma) >= sizeof(Mtx)) {
+                dkr_room_for(ma, sizeof(Mtx))) {
                 (void)gfx_retained_task_capture_dependency(
                     ma, ma, sizeof(Mtx));
                 (void)gfx_shadow_matrix_note_walked_key(
@@ -7102,7 +7090,7 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                 bool faithful = false;
                 bool tolerated = false;
                 int64_t worst = -1;
-                if (ma != NULL && dkr_arena_room(ma) >= sizeof(Mtx)) {
+                if (ma != NULL && dkr_room_for(ma, sizeof(Mtx))) {
                     mdkr_camera_replay_mvp(
                         rsp.shadow_matrix[slot].world,
                         rsp.shadow_matrix[slot].captured_view_projection,
@@ -7255,7 +7243,7 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             if (draw_space != G_MTX_DKR_SPACE_INHERIT) {
                 dkr_set_draw_space(draw_space);
             }
-            if (dkr_trace_this_frame && ma && dkr_arena_room(ma) >= sizeof(Mtx)) {
+            if (dkr_trace_this_frame && ma && dkr_room_for(ma, sizeof(Mtx))) {
                 const uint32_t *w = (const uint32_t *)ma;
                 DTRACE("  mtx raw w[0..7]=%08x %08x %08x %08x %08x %08x %08x %08x",
                        w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
@@ -7899,7 +7887,7 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             int32_t uly = (int32_t)C1(cmd, 0, 12);
             /* Two trailing RDPHALF words carry s/t and dsdx/dtdy. */
             if ((limit > 0 && (cmd - start) + 2 >= limit) ||
-                dkr_arena_room(cmd) < sizeof(Gfx) * 3) {
+                !dkr_room_for(cmd, sizeof(Gfx) * 3)) {
                 dkr_dl_fault("truncated texture rectangle", cmd, depth);
                 return;
             }
