@@ -888,19 +888,34 @@ the advance's, and the shape was not falsified.
 It was replaced anyway, because it leaves the terminal cycle's correctness
 resting on one advance landing inside a window whose position moves with phase
 — the exact fragility that produced this defect. What shipped instead is
-terminal by construction: `mdkr_adventure_route_exhausted()`
-(`platform/mdkr_adventure.c`) reports when `MDKR_DRIVE_ROUTE` has retired its
-last step on every level leg — read-only, false with no route and before the
-route is parsed — and `postrace_render()` (`game/src/menu.c`) ORs in one
-`A_BUTTON` when that is true **and** `MDKR_TEST_POSTRACE_OPTION` is set, i.e.
-only for a fixture that already opted into a closed-loop hand on this screen,
-inside the existing `gIgnorePlayerInputTime == 0` window. While any route step
-remains the predicate is false and every earlier cycle keeps its exact present
-behaviour, so the quantizer is untouched; and unlike an advance it can never
-hand the kart throttle in the lobby. Measured, the terminal panels clear in
-**42 frames at both phases** (tip 21486 -> 21528, pre-merge 21148 -> 21190)
-instead of 999, against the 146 an advance-driven cycle takes — a shorter
-window than an ordinary one, so it cannot upload more.
+terminal by construction: `mdkr_adventure_route_cycles_exhausted()`
+(`platform/mdkr_adventure.c`) reports when `MDKR_DRIVE_ROUTE` **orders two or
+more door entries** and has retired its last step on every level leg — read-only,
+false with no route and before the route is parsed — and `postrace_render()`
+(`game/src/menu.c`) ORs in one `A_BUTTON` when that is true **and**
+`MDKR_TEST_POSTRACE_OPTION` is set, i.e. only for a fixture that already opted
+into a closed-loop hand on this screen, inside the existing
+`gIgnorePlayerInputTime == 0` window. While any route step remains the predicate
+is false and every earlier cycle keeps its exact present behaviour, so the
+quantizer is untouched; and unlike an advance it can never hand the kart
+throttle in the lobby. Measured, the terminal panels clear in **42 frames at
+both phases** (tip 21486 -> 21528, pre-merge 21148 -> 21190) instead of 999,
+against the 146 an advance-driven cycle takes — a shorter window than an
+ordinary one, so it cannot upload more.
+
+The two-entry half of the predicate is what keeps this to the case it exists
+for. Exhaustion alone is also true of a single-entry route (`...;12:E5`) for
+the whole of its only post-race, and the party fixtures that share that route
+— `check_adventure_party_progress`, `check_adventure_party_adventure_two`,
+`check_adventure_party_race_loop`, `check_fast3d_dl_hardening` — all set
+`MDKR_TEST_POSTRACE_OPTION`. They measured green against the exhaustion-only
+predicate, but only incidentally: their hub leg carries three waypoints AFTER
+its `E12`, so it is never exhausted while the kart is in the race, and a route
+edit that dropped those waypoints would have armed the seam under them
+silently. Requiring two ordered entries makes "terminal cycle of a repeated
+route" a property of the predicate rather than of where a route happens to put
+its last waypoint. A one-cycle `--development-cycles 1` run is likewise not
+armed, which is correct: it has no earlier cycle to be comparable with.
 
 One consequence to know about. A stray extra door ENTRY after the last ordered
 one is pre-existing and unrelated to any of this: the autopilot re-enters ~309

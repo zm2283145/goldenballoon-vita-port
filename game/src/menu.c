@@ -4369,16 +4369,19 @@ s32 postrace_render(s32 updateRate) {
              * race level, which moved AP-19's race texture census by 3 handles
              * on the terminal generation alone.
              *
-             * Once MDKR_DRIVE_ROUTE has no ordered move left there is no later
-             * cycle to protect, so hand the panels the advance the fixture can
-             * no longer send. Terminal by construction rather than by frame
-             * number: while any route step remains this is false and every
-             * earlier cycle keeps its exact present behaviour. Gated on
+             * Once a REPEATING route has no ordered move left there is no
+             * later cycle to protect, so hand the panels the advance the
+             * fixture can no longer send. Terminal by construction rather than
+             * by frame number: while any route step remains this is false, so
+             * every earlier cycle keeps its exact present behaviour, and a
+             * route that orders only ONE door entry never arms it at all --
+             * a single-race fixture has no earlier cycle to be comparable
+             * with, and its whole post-race would otherwise qualify. Gated on
              * MDKR_TEST_POSTRACE_OPTION as well, so it reaches only fixtures
              * that already opted into a closed-loop hand on this screen. */
             {
                 extern char *getenv(const char *);
-                if (mdkr_adventure_route_exhausted() &&
+                if (mdkr_adventure_route_cycles_exhausted() &&
                     getenv("MDKR_TEST_POSTRACE_OPTION") != NULL) {
                     buttonsPressedAllPlayers |= A_BUTTON;
                 }

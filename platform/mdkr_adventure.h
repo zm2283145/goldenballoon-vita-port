@@ -30,11 +30,13 @@ int mdkr_test_pad_absent(int seat);
  * (racerIndex 0..humanCount-1); CPUs are racerIndex >= humanCount. Racers are
  * matched by stable racerIndex, not playerIndex, because a finished human is
  * flipped to PLAYER_COMPUTER by update_player_racer. */
-/* TRUE once MDKR_DRIVE_ROUTE has no step left on any level leg -- i.e. the
- * routed run has made its last ordered move. Read-only; FALSE with no route
- * set. Lets a closed-loop fixture tell its LAST cycle from every earlier one
- * without knowing a frame number. */
-int mdkr_adventure_route_exhausted(void);
+/* TRUE only on the last cycle of a REPEATING MDKR_DRIVE_ROUTE: a route that
+ * orders two or more door entries and has no step left on any level leg --
+ * i.e. it has made its last ordered move of a loop it drove more than once.
+ * Read-only; FALSE with no route set, and FALSE for a single-entry route at
+ * any point. Lets a closed-loop fixture tell its LAST cycle from every earlier
+ * one without knowing a frame number. */
+int mdkr_adventure_route_cycles_exhausted(void);
 
 void mdkr_ap_force_race_winner(Object **racers, s32 numRacers, s32 humanCount);
 

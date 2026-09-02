@@ -845,24 +845,47 @@ int mdkr_test_pad_absent(int seat) {
     return sApDropTick[seat] >= 0 && g_simTickCounter >= sApDropTick[seat];
 }
 
-/* TRUE once every level leg of MDKR_DRIVE_ROUTE has retired its last step, so
- * the shared route has no further destination to drive the kart to. FALSE when
- * no route is configured, and FALSE before the route is parsed, so a caller
- * cannot read "exhausted" out of an unarmed driver. Loads only: this never
- * advances the cursor, and the driver's own retirement rules
+/* TRUE only on the LAST cycle of a REPEATING route: some level leg orders two
+ * or more door entries (so the route drives a cycle more than once and its
+ * cycles are meant to be comparable), AND every leg has retired its last step
+ * (so there is no ordered move left to make).
+ *
+ * Both halves are load-bearing. Exhaustion alone would also be true of a
+ * single-entry route -- "1:E5" -- from the moment its one door was taken,
+ * i.e. for the whole of its only post-race, which is not a terminal cycle in
+ * any sense a repeated-cycle census cares about; it would then be a property
+ * of where a route happens to put its last waypoint rather than of the route
+ * repeating. Requiring two ordered entries keeps this to the case it exists
+ * for: the run that races the same loop N times and whose last lap has no
+ * scripted input left.
+ *
+ * FALSE with no route configured and FALSE before the route is parsed, so a
+ * caller cannot read "exhausted" out of an unarmed driver. Loads only: this
+ * never advances the cursor, and the driver's own retirement rules
  * (mdkr_adventure_drive) remain the only writer. */
-int mdkr_adventure_route_exhausted(void) {
+int mdkr_adventure_route_cycles_exhausted(void) {
     s32 i;
+    s32 j;
+    s32 repeats = 0;
 
     if (sAdvLevelCount <= 0) {
         return 0;
     }
     for (i = 0; i < sAdvLevelCount; i++) {
+        s32 entries = 0;
         if (sAdvStepIdx[i] < sAdvLevels[i].count) {
             return 0;
         }
+        for (j = 0; j < sAdvLevels[i].count; j++) {
+            if (sAdvLevels[i].step[j].kind == MDKR_ADV_EXIT) {
+                entries++;
+            }
+        }
+        if (entries > repeats) {
+            repeats = entries;
+        }
     }
-    return 1;
+    return repeats >= 2;
 }
 
 static f32 mdkr_adv_num(const char **p) {
