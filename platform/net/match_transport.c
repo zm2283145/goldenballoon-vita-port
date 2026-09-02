@@ -2,6 +2,8 @@
 
 #include <string.h>
 
+#include "net_failure_ring.h"
+
 static bool sample_valid(const MdkrPadSample *sample) {
     return sample != NULL && sample->present <= 1u &&
         sample->stick_x >= -80 && sample->stick_x <= 80 &&
@@ -36,6 +38,11 @@ static void latch_recovery(
     MdkrMatchTransport *transport, MdkrMatchRecoveryReason reason,
     unsigned slot, uint32_t first_tick, uint32_t observed_tick) {
     if (transport->recovery.reason != MDKR_MATCH_RECOVERY_NONE) return;
+    /* Sticky: this fires exactly once per match, at the moment the timeline
+     * became unreconcilable, which is the record forensics needs. */
+    mdkr_net_failure_ring_record_tick(
+        MDKR_NET_FAILURE_RECOVERY, observed_tick, slot, (unsigned)reason,
+        first_tick, 0u);
     transport->recovery.reason = reason;
     transport->recovery.canonical_slot = (uint8_t)slot;
     transport->recovery.first_unrecoverable_tick = first_tick;
@@ -115,7 +122,7 @@ bool mdkr_match_transport_init(
     return true;
 }
 
-MdkrMatchTransportIngressResult mdkr_match_transport_receive(
+static MdkrMatchTransportIngressResult receive_result(
     MdkrMatchTransport *transport, uint32_t match_epoch,
     uint8_t authenticated_slot_mask, unsigned slot, uint32_t tick,
     const MdkrPadSample *sample) {
@@ -193,6 +200,24 @@ MdkrMatchTransportIngressResult mdkr_match_transport_receive(
             transport->stats.invalid++;
             return MDKR_MATCH_INGRESS_INVALID;
     }
+}
+
+MdkrMatchTransportIngressResult mdkr_match_transport_receive(
+    MdkrMatchTransport *transport, uint32_t match_epoch,
+    uint8_t authenticated_slot_mask, unsigned slot, uint32_t tick,
+    const MdkrPadSample *sample) {
+    const MdkrMatchTransportIngressResult result = receive_result(
+        transport, match_epoch, authenticated_slot_mask, slot, tick, sample);
+    /* A packet outside the authored rollback window is the one rejection that
+     * costs the peer a committed frame; every other rejection is structural
+     * and already terminal somewhere else. */
+    if (result == MDKR_MATCH_INGRESS_OUT_OF_WINDOW) {
+        mdkr_net_failure_ring_record_tick(
+            MDKR_NET_FAILURE_LATE_INPUT_DISCARDED, tick, slot,
+            (unsigned)result,
+            transport != NULL ? transport->history.current_tick : 0u, 0u);
+    }
+    return result;
 }
 
 bool mdkr_match_transport_drain_tick(
@@ -324,6 +349,19 @@ bool mdkr_match_transport_drain_tick(
     }
     next.stats.drained++;
     detect_unrecoverable_gaps(&next);
+    /* One record per committed frame carries the confirmed/present masks, and
+     * a second only when the set of slots running on prediction changes -- a
+     * per-slot record every tick would spend the whole ring on steady state. */
+    mdkr_net_failure_ring_record_tick(
+        MDKR_NET_FAILURE_FRAME_COMMIT, tick, MDKR_NET_FAILURE_NO_SLOT, 0u,
+        base.confirmed_mask, base.present_mask);
+    next.predicted_slot_mask = (uint8_t)(
+        next.remote_slot_mask & (uint8_t)~base.confirmed_mask);
+    if (next.predicted_slot_mask != transport->predicted_slot_mask) {
+        mdkr_net_failure_ring_record_tick(
+            MDKR_NET_FAILURE_INPUT_PREDICTED, tick, MDKR_NET_FAILURE_NO_SLOT,
+            0u, next.predicted_slot_mask, transport->predicted_slot_mask);
+    }
     next.bridge = transport->bridge;
     *transport->bridge = next_bridge;
     *transport = next;

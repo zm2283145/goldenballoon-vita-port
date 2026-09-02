@@ -1110,6 +1110,7 @@ if(NOT EMSCRIPTEN)
                 add_executable(mdkr_match_peer_transport_test
                     ${CMAKE_SOURCE_DIR}/tests/test_match_peer_transport.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_peer_transport.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/net/net_failure_ring.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_peer_crypto.cpp
                     ${CMAKE_SOURCE_DIR}/platform/net/match_peer_transcript.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_peer_graph.c
@@ -1220,6 +1221,7 @@ if(NOT EMSCRIPTEN)
                     ${CMAKE_SOURCE_DIR}/platform/net/match_peer_transcript.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_peer_graph.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_transport.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/net_failure_ring.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_input_bundle.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_impairment.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_input.c
@@ -1288,6 +1290,7 @@ if(NOT EMSCRIPTEN)
                     ${CMAKE_SOURCE_DIR}/platform/net/match_peer_transcript.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_peer_graph.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_transport.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/net_failure_ring.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_input_bundle.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_impairment.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_input.c
@@ -1464,6 +1467,7 @@ if(NOT EMSCRIPTEN)
                     ${CMAKE_SOURCE_DIR}/platform/net/match_peer_transcript.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_peer_graph.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_transport.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/net_failure_ring.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_input_bundle.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_input.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_local_input.c
@@ -1657,7 +1661,8 @@ if(NOT EMSCRIPTEN)
                 ${CMAKE_SOURCE_DIR}/platform/net/net_roster.c
                 ${CMAKE_SOURCE_DIR}/platform/net/net_local_input.c
                 ${CMAKE_SOURCE_DIR}/platform/net/net_input.c
-                ${CMAKE_SOURCE_DIR}/platform/net/match_transport.c)
+                ${CMAKE_SOURCE_DIR}/platform/net/match_transport.c
+                ${CMAKE_SOURCE_DIR}/platform/net/net_failure_ring.c)
             target_include_directories(mdkr_session_runtime_test PRIVATE
                 ${CMAKE_SOURCE_DIR}/platform
                 ${CMAKE_SOURCE_DIR}/platform/app)

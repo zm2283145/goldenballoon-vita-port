@@ -2,6 +2,8 @@
 
 #include <string.h>
 
+#include "../net/net_failure_ring.h"
+
 bool mdkr_rollback_driver_init(
     MdkrRollbackDriver *driver, MdkrNetInputHistory *inputs,
     MdkrRollbackRing *snapshots, MdkrRollbackEventJournal *events,
@@ -30,30 +32,56 @@ static bool resimulate_if_dirty(MdkrRollbackDriver *driver) {
     if (depth == 0u) return true;
     if (depth > driver->max_resimulation_ticks) {
         driver->error = MDKR_ROLLBACK_DRIVER_RESIM_LIMIT;
+        mdkr_net_failure_ring_record_tick(
+            MDKR_NET_FAILURE_DESYNC_TICK, driver->current_tick,
+            MDKR_NET_FAILURE_NO_SLOT, (unsigned)driver->error, dirty, depth);
         return false;
     }
     if (!mdkr_rollback_ring_restore(driver->snapshots, dirty - 1u, true)) {
         driver->error = MDKR_ROLLBACK_DRIVER_SNAPSHOT_MISSING;
+        mdkr_net_failure_ring_record_tick(
+            MDKR_NET_FAILURE_DESYNC_TICK, driver->current_tick,
+            MDKR_NET_FAILURE_NO_SLOT, (unsigned)driver->error, dirty, depth);
         return false;
     }
+    /* One load per rollback, carrying the restored label and how deep the
+     * correction reached; the re-captures below are the matching saves. */
+    mdkr_net_failure_ring_record_tick(
+        MDKR_NET_FAILURE_ROLLBACK_LOAD, driver->current_tick,
+        MDKR_NET_FAILURE_NO_SLOT, 0u, dirty - 1u, depth);
     if (driver->events != NULL) mdkr_rollback_events_begin_rewrite(driver->events, dirty);
     for (tick = dirty; tick != driver->current_tick; tick++) {
         MdkrNetInputSet set;
         if (!mdkr_net_input_for_tick(driver->inputs, tick, &set)) {
             driver->error = MDKR_ROLLBACK_DRIVER_INPUT_UNAVAILABLE;
+            mdkr_net_failure_ring_record_tick(
+                MDKR_NET_FAILURE_DESYNC_TICK, tick,
+                MDKR_NET_FAILURE_NO_SLOT, (unsigned)driver->error, dirty,
+                depth);
             if (driver->events != NULL) mdkr_rollback_events_force_clear(driver->events);
             return false;
         }
         if (!driver->simulate(driver->context, tick, &set, true)) {
             driver->error = MDKR_ROLLBACK_DRIVER_SIMULATION_FAILED;
+            mdkr_net_failure_ring_record_tick(
+                MDKR_NET_FAILURE_DESYNC_TICK, tick,
+                MDKR_NET_FAILURE_NO_SLOT, (unsigned)driver->error, dirty,
+                depth);
             if (driver->events != NULL) mdkr_rollback_events_force_clear(driver->events);
             return false;
         }
         if (!mdkr_rollback_ring_capture(driver->snapshots, tick)) {
             driver->error = MDKR_ROLLBACK_DRIVER_CAPTURE_FAILED;
+            mdkr_net_failure_ring_record_tick(
+                MDKR_NET_FAILURE_DESYNC_TICK, tick,
+                MDKR_NET_FAILURE_NO_SLOT, (unsigned)driver->error, dirty,
+                depth);
             if (driver->events != NULL) mdkr_rollback_events_force_clear(driver->events);
             return false;
         }
+        mdkr_net_failure_ring_record_tick(
+            MDKR_NET_FAILURE_ROLLBACK_SAVE, tick, MDKR_NET_FAILURE_NO_SLOT, 0u,
+            depth, 0u);
         driver->stats.resimulated_ticks++;
     }
     if (driver->events != NULL) mdkr_rollback_events_end_rewrite(driver->events);

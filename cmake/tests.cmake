@@ -846,6 +846,7 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     add_executable(mdkr_match_transport_test
         ${CMAKE_SOURCE_DIR}/tests/test_match_transport.c
         ${CMAKE_SOURCE_DIR}/platform/net/match_transport.c
+        ${CMAKE_SOURCE_DIR}/platform/net/net_failure_ring.c
         ${CMAKE_SOURCE_DIR}/platform/net/net_input.c
         ${CMAKE_SOURCE_DIR}/platform/net/net_local_input.c
         ${CMAKE_SOURCE_DIR}/platform/net/net_roster.c
@@ -1413,7 +1414,8 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_snapshot.c
         ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_ring.c
         ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_events.c
-        ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_driver.c)
+        ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_driver.c
+        ${CMAKE_SOURCE_DIR}/platform/net/net_failure_ring.c)
     target_include_directories(mdkr_rollback_driver_test PRIVATE ${CMAKE_SOURCE_DIR})
     add_test(NAME rollback_driver COMMAND mdkr_rollback_driver_test)
 
@@ -1424,7 +1426,8 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_snapshot.c
         ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_ring.c
         ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_events.c
-        ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_driver.c)
+        ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_driver.c
+        ${CMAKE_SOURCE_DIR}/platform/net/net_failure_ring.c)
     target_include_directories(mdkr_rollback_four_endpoint_test PRIVATE ${CMAKE_SOURCE_DIR})
     add_test(NAME rollback_four_endpoint COMMAND mdkr_rollback_four_endpoint_test)
 

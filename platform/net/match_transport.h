@@ -73,7 +73,10 @@ typedef struct MdkrMatchTransport {
     uint8_t active_slot_mask;
     uint8_t local_slot_mask;
     uint8_t remote_slot_mask;
-    uint8_t reserved;
+    /* Remote slots whose committed frame came from prediction, not a received
+     * packet, at the last drain. Only the forensics ring reads it: a change
+     * here is what the ring records as an input-prediction transition. */
+    uint8_t predicted_slot_mask;
     uint32_t remote_confirmed_through[MDKR_NET_INPUT_SLOTS];
     uint32_t ai_takeover_tick[MDKR_NET_INPUT_SLOTS];
     bool remote_have_confirmed[MDKR_NET_INPUT_SLOTS];
