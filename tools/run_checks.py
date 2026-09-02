@@ -932,6 +932,12 @@ CHECKS = (
     Check("party_capacity", "check_party_capacity.py", "browser_local",
           "real-Worker admission/forged-control floods, restart, weighted "
           "HTTP/socket reserve, telemetry, static recovery and zero kill switch"),
+    Check("online_wire_schema_parity",
+          "check_online_wire_schema_parity.py", "source",
+          "browser Online Room key sets against the Worker match wire schema, "
+          "its command, close, error and signaling vocabularies and the "
+          "/api/ops/health reservation buckets, with the R36 v2-wire gap "
+          "allowlisted member by member"),
     Check("party_internal_api", "check_party_internal_api.py", "source",
           "versioned Worker/Durable Object envelope and pre-storage skew rejection"),
     Check("party_edge_policy", "check_party_edge_policy.py", "source",
