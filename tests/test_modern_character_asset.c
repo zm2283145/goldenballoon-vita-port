@@ -5,6 +5,7 @@
 #include "modern_character_render.h"
 #include "modern_character_runtime.h"
 #include "modern_character_donor.h"
+#include "modern_character_ktx2.h"
 #include "workshop_preview_runtime.h"
 #include "fs_utf8.h"
 #include "fast3d/gfx_pc_dkr.h"
@@ -370,6 +371,56 @@ static void test_defensive_ktx2_stats_bounds(void) {
             "asset statistics reject an out-of-range KTX2 header before reading it");
 }
 
+/* A KTX2 file stores a level index of 24 bytes per level immediately after its
+ * 80-byte header. levelCount is attacker-controlled: statistics must refuse a
+ * count whose level table cannot fit the payload it was read from, and must
+ * refuse a count the bounded transcoder could never describe. */
+static void stats_for_ktx2_level_count(uint32_t level_count,
+                                       uint32_t payload_bytes,
+                                       MdkrModernCharacterStats *stats) {
+    MdkrModernCharacterAsset malformed;
+    static unsigned char texture_record[40];
+    static unsigned char texture_bytes[256];
+    memset(texture_record, 0, sizeof(texture_record));
+    memset(texture_bytes, 0, sizeof(texture_bytes));
+    memset(&malformed, 0, sizeof(malformed));
+    malformed.owned_bytes = texture_record;
+    malformed.sections[MDKR_MDKC_TEXTURES].data = texture_record;
+    malformed.sections[MDKR_MDKC_TEXTURES].size = sizeof(texture_record);
+    malformed.sections[MDKR_MDKC_TEXTURES].count = 1u;
+    malformed.sections[MDKR_MDKC_TEXTURES].stride = sizeof(texture_record);
+    malformed.sections[MDKR_MDKC_TEXTURE_DATA].data = texture_bytes;
+    malformed.sections[MDKR_MDKC_TEXTURE_DATA].size = payload_bytes;
+    malformed.sections[MDKR_MDKC_TEXTURE_DATA].count = payload_bytes;
+    malformed.sections[MDKR_MDKC_TEXTURE_DATA].stride = 1u;
+    write_u32_le(texture_record + 4u, 2u);            /* mime: KTX2 */
+    write_u32_le(texture_record + 8u, 0u);            /* data offset */
+    write_u32_le(texture_record + 12u, payload_bytes); /* data size */
+    write_u32_le(texture_record + 36u, (8u << 16u) | 8u);
+    write_u32_le(texture_bytes + 40u, level_count);   /* KTX2 levelCount */
+    mdkr_modern_character_asset_stats(&malformed, stats);
+}
+
+static void test_defensive_ktx2_level_table_bounds(void) {
+    MdkrModernCharacterStats stats;
+    stats_for_ktx2_level_count(1u, 256u, &stats);
+    require(stats.ktx2_textures == 1u && stats.ktx2_source_bytes == 256u &&
+                stats.decoded_texture_bytes == 256u,
+            "a KTX2 level table that fits its payload is counted exactly");
+    stats_for_ktx2_level_count(0x40000000u, 256u, &stats);
+    require(stats.ktx2_textures == 0u && stats.ktx2_source_bytes == 0u &&
+                stats.decoded_texture_bytes == 0u,
+            "asset statistics reject a KTX2 level count that overruns its payload");
+    stats_for_ktx2_level_count(MDKR_KTX2_LEVEL_MAX + 1u, 256u, &stats);
+    require(stats.ktx2_textures == 0u && stats.ktx2_source_bytes == 0u &&
+                stats.decoded_texture_bytes == 0u,
+            "asset statistics reject more KTX2 levels than the bounded transcoder describes");
+    stats_for_ktx2_level_count(4u, 128u, &stats);
+    require(stats.ktx2_textures == 0u && stats.ktx2_source_bytes == 0u &&
+                stats.decoded_texture_bytes == 0u,
+            "asset statistics reject a level table truncated by the payload it indexes");
+}
+
 int main(int argc, char **argv) {
     MdkrModernCharacterAsset asset;
     MdkrModernCharacterAsset refused;
@@ -432,6 +483,7 @@ int main(int argc, char **argv) {
     test_shadow_bounds();
     test_camera_object_position();
     test_defensive_ktx2_stats_bounds();
+    test_defensive_ktx2_level_table_bounds();
     char deletion_failure_witness[4096];
     char transaction_cache[TRANSACTION_FIXTURES][4096];
     char transaction_source[4096];

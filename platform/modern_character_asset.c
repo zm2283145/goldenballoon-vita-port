@@ -1,6 +1,7 @@
 #include "modern_character_asset.h"
 
 #include "fs_utf8.h"
+#include "modern_character_ktx2.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -1654,10 +1655,22 @@ void mdkr_modern_character_asset_stats(const MdkrModernCharacterAsset *asset,
                     texture_data->size) {
                 continue;
             }
-            out->ktx2_textures++;
-            out->ktx2_source_bytes += texture.data_size;
             levels = read_u32(texture_data->data +
                               texture.data_offset + 40u);
+            /* levelCount is attacker-controlled. A KTX2 file stores a level
+             * index of 24 bytes per level immediately after its 80-byte
+             * header, and one entry is present even when levelCount is zero.
+             * A count whose index table does not fit the payload, or that
+             * exceeds the bounded transcoder's level array, describes a table
+             * this reader would have to walk past the end of the section. */
+            if (levels > MDKR_KTX2_LEVEL_MAX ||
+                (uint64_t)80u +
+                        (uint64_t)(levels != 0u ? levels : 1u) * 24u >
+                    (uint64_t)texture.data_size) {
+                continue;
+            }
+            out->ktx2_textures++;
+            out->ktx2_source_bytes += texture.data_size;
         }
         width = texture.dimensions & 0xFFFFu;
         height = texture.dimensions >> 16u;
