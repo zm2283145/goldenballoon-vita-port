@@ -136,6 +136,12 @@ def run_arm(
             "MDKR_RENDER_SCALE": "1",
             "MDKR64_HIDDEN": "1",
             "MDKR_VIDEO_CONFIG_PATH": os.devnull,
+            # The MDKR scrub above also drops the suite's save pin, and since
+            # the 1.5.2 per-user save unification an unpinned engine reads the
+            # shared per-user save, not this arm's seeded EEPROM: on a host
+            # with an unlocked save the roster grows two bonus rows, the
+            # scripted cursor lands on the wrong seat, and the flag never binds.
+            "MDKR_SAVE_DIR": str(arm / "save"),
             "MDKR_CUSTOM_CHARACTER_DIRECTORY": str(characters),
             "MDKR_CUSTOM_CHARACTER_P1": PACKAGE_ID,
             "MDKR_DUMP_FROM": str(PORTRAIT_DUMP_FROM),
