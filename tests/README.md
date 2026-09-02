@@ -503,7 +503,22 @@ production coverage:
   walkers share (`platform/fast3d/gfx_dkr_dl_guards.h`) are unit-tested by
   ctest `fast3d_dl_guards`, which carries its own control: the rule it replaced
   — `room >= need` against `dkr_arena_room`'s SIZE_MAX "extent unknown" answer
-  — admitted every non-arena pointer at every read length.
+  — admitted every non-arena pointer at every read length. The opcode set is
+  one X-macro list, `DKR_DL_IMPLEMENTED_OPCODES`, that both the predicate and
+  the interpreter's dispatch gate read, so the two walkers cannot come to
+  disagree about which opcodes are commands; `check_webgpu_content_census.py`
+  binds that list to real content (46 routes under `MDKR_DL_STRICT=1`, zero
+  faults).
+- `fast3d_dl_hardening_asan` runs the same script with `--injected-only`
+  against the ASan build. The release arm proves the walkers stop and the route
+  survives; it cannot prove what the reads were. A command fetched one past the
+  end of an 80-byte global, and a fault printer quoting the words of an address
+  the walk had just refused, both land in mapped memory in a release build and
+  report success — measured: with the printer fix reverted the release arm
+  still passes and this lane aborts under
+  `ASAN_OPTIONS=abort_on_error=1`. Same relationship as
+  `live_toggle_settings_asan` and `widescreen_shadow_asan` to their release
+  arms.
 - `check_camera_snapshot_coverage.py` closes the non-sequential camera-ID
   boundary with real content. A two-player race must capture/interpolate camera
   1 in the lower half, and the production 3P HUD toggle must replace the minimap

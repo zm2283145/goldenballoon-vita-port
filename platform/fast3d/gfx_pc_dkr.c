@@ -6708,6 +6708,26 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             s_dl_census_commands++;
             s_dl_census_opcodes[op]++;
         }
+        /* Refuse before dispatching, from the list the prepass reads too
+         * (DKR_DL_IMPLEMENTED_OPCODES). Abandoning the list rather than
+         * stepping over the word is the point: an opcode this walk does not
+         * implement is proof that these bytes are not commands, and the walk
+         * has no other bound to fall back on — a non-arena list answers
+         * SIZE_MAX room, which is not "room available" but "no extent recorded
+         * here, trusted to self-terminate", trust this word has just
+         * disproved. Stepping on is how the walk read past the end of an
+         * 80-byte global it had reached by a mis-decode. The fault line has
+         * always said the list was stopped; now it is.
+         *
+         * Taking the decision here rather than in the switch's default arm is
+         * also what keeps the two walkers from drifting apart: a case label
+         * added below and not added to the list is unreachable, so it fails
+         * loudly on the first frame that uses it instead of leaving the
+         * prepass to stop on legal content by itself. */
+        if (!dkr_dl_opcode_implemented(op)) {
+            dkr_dl_fault("unknown display-list opcode", cmd, depth);
+            return;
+        }
         switch (op) {
 
         /* ---- SP: flow control ---- */
@@ -7945,16 +7965,11 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             break;
 
         default:
-            /* Abandon the list rather than step over the word. An opcode this
-             * switch does not implement is proof that these bytes are not
-             * commands, and the walk has no other bound to fall back on: a
-             * non-arena list answers SIZE_MAX room, which is not "room
-             * available" but "no extent recorded here, trusted to
-             * self-terminate" — trust this word has just disproved. Stepping on
-             * is how the walk read past the end of an 80-byte global it had
-             * reached by a mis-decode. The fault line
-             * has always said the list was stopped; now it is. */
-            dkr_dl_fault("unknown display-list opcode", cmd, depth);
+            /* Reachable only for an opcode DKR_DL_IMPLEMENTED_OPCODES names
+             * and this switch does not dispatch — the harmless half of a drift
+             * between the two, and the half that would otherwise be silent. */
+            dkr_dl_fault("display-list opcode listed but not dispatched", cmd,
+                         depth);
             return;
         }
         cmd++;

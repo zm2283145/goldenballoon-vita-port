@@ -40,6 +40,13 @@ Positive controls
   prepass reports every stop through the same channel, so a set missing an
   opcode real content uses shows up there as a stop on a clean route.
 
+`--injected-only` runs arm B alone. That is how the AddressSanitizer lane runs
+it: the release build survives the reads this gate is about -- a command
+fetched one past the end of an 80-byte global, and the fault printer quoting
+the words of an address the walk had just refused, both land in mapped memory
+and report success. Only a sanitized build makes those a failure, and
+ASAN_OPTIONS=abort_on_error=1 makes the first one fatal.
+
 Every launch is headless and muted. Exit 0 = pass.
 """
 
@@ -73,9 +80,10 @@ DL_FAULT_RE = re.compile(r"^\[DL\] (.*?) at depth=", re.MULTILINE)
 GFXTASK_RE = re.compile(r"gfxtask: type=\d+ dl=0x[0-9a-f]+ len=(\d+)")
 LEVEL_RE = re.compile(r"level_load: levelId=(-?\d+) ")
 CENSUS_RE = re.compile(r"^\[DL-CENSUS\] .*faults=(\d+)", re.MULTILINE)
+# The crash screen prints [CRASHSCREEN]; [CRASH] alone never matches it.
 BAD_RE = re.compile(
-    r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
-    r"runtime error:|Assertion failed")
+    r"\[CRASH(?:SCREEN)?\]|\[FATAL\]|AddressSanitizer|"
+    r"UndefinedBehaviorSanitizer|runtime error:|Assertion failed")
 
 PREPASS_STOP = "overlay prepass reached an unknown display-list opcode"
 INTERPRETER_STOP = "unknown display-list opcode"
@@ -91,7 +99,12 @@ def run_route(binary, rom, root, label, script, frames, extra_env, timeout,
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("MDKR", "GE007_"))}
     env.update(LC_ALL="C", MDKR_AUDIO="0", MDKR64_HIDDEN="1", MDKR_TRACE="1",
-               MDKR_AUTOPILOT="1", MDKR_FORCE_LAPS="1")
+               MDKR_AUTOPILOT="1", MDKR_FORCE_LAPS="1",
+               # Inert on an uninstrumented build; on the ASan lane it is what
+               # turns a past-the-end read into this gate's verdict.
+               ASAN_OPTIONS=("abort_on_error=1:malloc_context_size=30"
+                             ":detect_leaks=0"),
+               MallocNanoZone="0")
     env.update(extra_env)
     save_env(env, str(save_dir))
     env["MDKR_VIDEO_CONFIG_PATH"] = str(run_dir / "mdkr64.ini")
@@ -128,6 +141,9 @@ def main() -> int:
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--timeout", type=int, default=900)
     parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument(
+        "--injected-only", action="store_true",
+        help="run arm B alone (the AddressSanitizer lane's arm)")
     args = parser.parse_args()
 
     binary = Path(os.path.abspath(resolve_binary(args.build)))
@@ -150,24 +166,27 @@ def main() -> int:
     failures = []
     with tempfile.TemporaryDirectory(prefix="mdkr-fast3d-dl-") as tmp:
         root = Path(tmp)
+        clean = solo = None
         try:
-            clean = run_route(binary, rom, root, "clean", PARTY_SCRIPT,
-                              PARTY_FRAMES, party_env, args.timeout,
-                              args.verbose, party=True)
+            if not args.injected_only:
+                clean = run_route(binary, rom, root, "clean", PARTY_SCRIPT,
+                                  PARTY_FRAMES, party_env, args.timeout,
+                                  args.verbose, party=True)
             injected = run_route(
                 binary, rom, root, "injected", PARTY_SCRIPT, PARTY_FRAMES,
                 dict(party_env, MDKR_TEST_UNDERSIZED_DL_HEAP="1"),
                 args.timeout, args.verbose, party=True)
-            solo = run_route(binary, rom, root, "solo", SOLO_SCRIPT,
-                             SOLO_FRAMES,
-                             {"MDKR_LOAD_TRACK": "5", "MDKR_DL_CENSUS": "1"},
-                             args.timeout, args.verbose)
+            if not args.injected_only:
+                solo = run_route(binary, rom, root, "solo", SOLO_SCRIPT,
+                                 SOLO_FRAMES,
+                                 {"MDKR_LOAD_TRACK": "5", "MDKR_DL_CENSUS": "1"},
+                                 args.timeout, args.verbose)
         except (RuntimeError, subprocess.TimeoutExpired) as exc:
             print(f"check_fast3d_dl_hardening: FAIL -- {exc}", file=sys.stderr)
             return 1
 
         # --- arm A: the well-authored route reports nothing ---
-        clean_faults = DL_FAULT_RE.findall(clean)
+        clean_faults = DL_FAULT_RE.findall(clean) if clean is not None else []
         if clean_faults:
             failures.append(
                 "arm A: the well-authored 4P route reported "
@@ -198,7 +217,8 @@ def main() -> int:
 
         # --- positive control: the injector really did misauthor the stream ---
         injected_peak = peak_dl_length(injected)
-        clean_peak = peak_dl_length(clean)
+        clean_peak = (peak_dl_length(clean) if clean is not None
+                      else ONE_PLAYER_DL_COMMANDS + 1)
         if injected_peak <= ONE_PLAYER_DL_COMMANDS:
             failures.append(
                 f"positive control: the misauthored route's peak display list "
@@ -213,26 +233,33 @@ def main() -> int:
                 "not the control for arm B")
 
         # --- arm C: the shared renderer on a retail 1P route ---
-        solo_faults = DL_FAULT_RE.findall(solo)
-        if solo_faults:
-            failures.append(
-                f"arm C: the 1P route reported {len(solo_faults)} display-list "
-                f"faults, first {solo_faults[0]!r}")
-        census = CENSUS_RE.search(solo)
-        if census is None:
-            failures.append(
-                "arm C: MDKR_DL_CENSUS=1 emitted no [DL-CENSUS] row, so the "
-                "1P route's opcode coverage was never counted")
-        elif int(census.group(1)) != 0:
-            failures.append(
-                f"arm C: the 1P census counted {census.group(1)} display-list "
-                "faults")
+        if solo is not None:
+            solo_faults = DL_FAULT_RE.findall(solo)
+            if solo_faults:
+                failures.append(
+                    f"arm C: the 1P route reported {len(solo_faults)} "
+                    f"display-list faults, first {solo_faults[0]!r}")
+            census = CENSUS_RE.search(solo)
+            if census is None:
+                failures.append(
+                    "arm C: MDKR_DL_CENSUS=1 emitted no [DL-CENSUS] row, so "
+                    "the 1P route's opcode coverage was never counted")
+            elif int(census.group(1)) != 0:
+                failures.append(
+                    f"arm C: the 1P census counted {census.group(1)} "
+                    "display-list faults")
 
     if failures:
         for failure in failures:
             print(f"check_fast3d_dl_hardening: FAIL -- {failure}",
                   file=sys.stderr)
         return 1
+    if args.injected_only:
+        print("check_fast3d_dl_hardening: PASS -- arm B only: a four-viewport "
+              "party authoring past its display-list buffer is walked to a "
+              "stop by both the interpreter and the overlay prepass, and the "
+              "whole hub->lobby->race route still runs")
+        return 0
     print("check_fast3d_dl_hardening: PASS -- a four-viewport party authoring "
           "past its display-list buffer is walked to a stop by both the "
           "interpreter and the overlay prepass, the whole route still runs, "

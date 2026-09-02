@@ -455,6 +455,17 @@ CHECKS = (
           "an injected display-list overflow is walked to a stop by both the "
           "interpreter and the overlay prepass, with the well-authored party "
           "and retail 1P routes reporting nothing"),
+    # The release arm proves the walkers stop and the route survives. It cannot
+    # prove what the reads themselves were: a command fetched one past the end
+    # of an 80-byte global, and a fault printer quoting the words of an address
+    # the walk had just refused, both land in mapped memory in a release build
+    # and report success. Measured, not assumed -- with the printer fix
+    # reverted the release arm still passes and this lane aborts. This is the
+    # detector.
+    Check("fast3d_dl_hardening_asan", "check_fast3d_dl_hardening.py", "asan",
+          "ASan witness for the misauthored display-list route -- the "
+          "past-the-end command fetch and fault-printer read the walkers close",
+          ("--injected-only",)),
     Check("camera_obstruction_runtime", "check_camera_obstruction_runtime.py", "release",
           "same-binary legacy/center-ray controls, modern resolved-lens safety "
           "witness, the unset-default arm that must reproduce observe, and the "
