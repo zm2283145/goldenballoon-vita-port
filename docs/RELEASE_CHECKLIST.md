@@ -129,10 +129,19 @@ run.
 
 ```bash
 tools/web/build_web.sh          # builds, stages dist/web, runs the guard itself
-python3 tools/run_checks.py --jobs 6 \
+python3 tools/run_checks.py --jobs 6 --require-shipping-sdl \
   --build build-rel --release-build build-rel --asan-build build-asan \
   --wasm build-web/mdkr64_web.wasm
 ```
+
+`--require-shipping-sdl` makes preflight refuse a binary linked against
+Homebrew's `sdl2-compat` shim. The releases bundle the pinned upstream SDL2
+(`macos/Scripts/build_release_sdl2.sh`; configure with `PKG_CONFIG_PATH`
+pointing at its `install/lib/pkgconfig`), and the two libraries differ in
+unfocused-joystick delivery: the 1.6.0 qualification once went green under the
+shim on a lane that is red under the shipping library. Every run also prints
+`run_checks: sdl flavor: …` so a plain developer run still records which one it
+measured.
 
 `--jobs` pools the CPU-bound work — the `source` checks and the native/rom/
 release/asan checks whose verdict is a deterministic function of the ROM and

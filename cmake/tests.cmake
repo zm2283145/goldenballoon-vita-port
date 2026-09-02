@@ -2094,6 +2094,10 @@ if(BUILD_TESTING)
                     ${CMAKE_SOURCE_DIR}/tests/test_online_room_client.mjs)
     endif()
     add_test(
+        NAME run_checks_sdl_flavor
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_run_checks_sdl_flavor.py)
+    add_test(
         NAME oracle_reference_replay
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_oracle_reference_replay.py)
