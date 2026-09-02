@@ -161,9 +161,18 @@ exists.
 absolute difference between consecutive answered round trips in send order;
 `loss` counts probes never echoed, over probes sent; `late` counts answered
 probes slower than 100 ms — the depth past which a 30 Hz authored tick can no
-longer absorb the arrival — over probes answered; `undrained` counts probes the
-replay wanted to emit after its sample table filled, i.e. the outbound side did
-not drain.
+longer absorb the arrival — over probes answered; `undrained` is the carrier's
+inbound pump-drain drop count across the window — its bounded callback-to-pump
+and pump-to-drainEvents queues overflowed, so the local pump did not keep up.
+The launcher samples both counters at begin and at finish and scores the delta;
+the mesh holds no outbound queue, since a send either reaches the data channel
+or fails on the spot.
+
+Under that same pressure an echo the mesh drops on its way in never reaches the
+measurement, so it also counts toward `loss`: a saturated pump is partially
+double-counted, once as the queue overflow that caused it and once as the
+sample it cost. Both rungs deduct, which is the intended reading — a pump that
+cannot keep up is a worse route to race over than either metric alone says.
 
 The score starts at 10 and takes, per metric, the deduction of the first rung
 the value does not exceed, or the row's worst:
@@ -174,7 +183,7 @@ the value does not exceed, or the row's worst:
 | jitter (ms) | 5 → 0, 12 → 1, 25 → 2, 45 → 3 | 4 |
 | loss (‰) | 5 → 0, 20 → 2, 50 → 4 | 6 |
 | late (‰) | 10 → 0, 50 → 1, 150 → 2 | 3 |
-| undrained (carrier queue drops) | zero → 0 | 3 |
+| undrained (inbound pump-drain drops) | zero → 0 | 3 |
 
 The result is clamped to 1-10 and named:
 
@@ -197,7 +206,7 @@ session started on beside every later stall.
 | 126 | 2 | jitter, ms |
 | 128 | 2 | loss, per thousand |
 | 130 | 2 | late samples, per thousand |
-| 132 | 2 | undrained: carrier outbound queue drops (saturating) |
+| 132 | 2 | undrained: inbound pump-drain drops (saturating) |
 | 134 | 1 | score, 1-10 |
 | 135 | 1 | band (`1` rough, `2` uneven, `3` steady) |
 

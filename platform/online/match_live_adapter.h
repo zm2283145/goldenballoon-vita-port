@@ -302,7 +302,6 @@ struct MdkrOnlineLiveLaunchProbe {
     /* This endpoint's own settled route measurement (zero until it settles),
      * and the record every peer published in its MPF2 report. */
     bool routeMeasured = false;
-    bool routeMeasuring = false; /* a window is open and not yet settled */
     MdkrMatchRouteMeasurement routeMeasurement{};
     unsigned peerRouteMeasurements = 0u;
     MdkrMatchRouteMeasurement peerRouteMeasurement{};

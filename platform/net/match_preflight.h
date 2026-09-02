@@ -107,8 +107,9 @@ typedef struct MdkrMatchRouteMeasurement {
     uint16_t jitter_ms;
     uint16_t loss_per_thousand;
     uint16_t late_per_thousand;
-    /* Outbound payloads the carrier's own bounded queues dropped across the
-     * window: the queue-drain check, supplied by the caller at finish. */
+    /* Inbound pump-drain drops across the window: the carrier's bounded
+     * callback->pump and pump->drainEvents queues overflowed, so the local
+     * pump did not keep up. Supplied by the caller at finish. */
     uint16_t undrained;
     uint8_t  score; /* 1..10 */
     uint8_t  band;  /* MdkrMatchRouteBand */
@@ -174,8 +175,8 @@ void mdkr_match_route_measure_echo(MdkrMatchRouteMeasureState *state,
  * settles immediately, so a caller loop always terminates. */
 bool mdkr_match_route_measure_settled(const MdkrMatchRouteMeasureState *state,
                                       uint32_t now_ms);
-/* Reduces the samples to a scored record. `undrained` is the carrier's own
- * outbound queue-drop count across the window, which only the caller can see.
+/* Reduces the samples to a scored record. `undrained` is the carrier's inbound
+ * pump-drain drop count across the window, which only the caller can see.
  * False, output unchanged, when no probe was ever sent. */
 bool mdkr_match_route_measure_finish(const MdkrMatchRouteMeasureState *state,
                                      uint32_t undrained,

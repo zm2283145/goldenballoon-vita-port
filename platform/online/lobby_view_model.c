@@ -15,9 +15,6 @@ static bool title_word(const char *begin, const char *end) {
     return true;
 }
 
-/* The peer transcript generator emits exactly 3 Title-Case compounds. Keep
- * this projection parser narrower than generic display text: it prevents an
- * adapter bug from turning cryptographic UI into an injection/overflow seam. */
 /* A score outside the 1-10 ladder, or a missing/over-long band name, is a
  * caller error rather than something to render. */
 static bool route_quality_valid(const MdkrOnlineViewRouteQuality *quality) {
@@ -46,6 +43,9 @@ static bool route_quality_chip(const MdkrOnlineViewRouteQuality *quality,
     return false;
 }
 
+/* The peer transcript generator emits exactly 3 Title-Case compounds. Keep
+ * this projection parser narrower than generic display text: it prevents an
+ * adapter bug from turning cryptographic UI into an injection/overflow seam. */
 static bool verification_phrase_valid(const char *phrase, size_t *length_out) {
     const char *cursor = phrase;
     unsigned compound;

@@ -23,7 +23,9 @@ const ROUTE_LADDER = {
   lossPerThousand: {rungs: [[5, 0], [20, 2], [50, 4]], worst: 6},
   latePerThousand: {rungs: [[10, 0], [50, 1], [150, 2]], worst: 3},
 };
-// undrained is the carrier's own outbound queue-drop count over the window.
+// undrained is the carrier's inbound pump-drain drop count over the window:
+// its bounded callback->pump and pump->drainEvents queues overflowed, so the
+// local pump did not keep up.
 const ROUTE_UNDRAINED_DEDUCTION = 3;
 export const MATCH_ROUTE_BAND_NONE = 0;
 export const MATCH_ROUTE_BAND_ROUGH = 1;

@@ -563,7 +563,6 @@ public:
         p->preflightReady = preflightReady_;
         p->descriptor = descriptor_;
         p->routeMeasured = routeMeasured_;
-        p->routeMeasuring = routeMeasureRunning_;
         p->routeMeasurement = routeMeasurement_;
         p->peerRouteMeasurements = 0u;
         if (!preflightInit_) return;
@@ -2270,10 +2269,11 @@ private:
         }
         if (!mdkr_match_route_measure_settled(&routeMeasure_, now)) return;
         routeMeasureRunning_ = false;
-        /* The mesh's own bounded queues are the outbound side that must have
-         * drained across the window: an overflow between callback and pump, or
-         * between pump and drainEvents, is exactly the pressure the ladder
-         * deducts for. Saturating: the record's field is 16-bit. */
+        /* The mesh's bounded INBOUND queues are what must have drained across
+         * the window: an overflow between callback and pump, or between pump
+         * and drainEvents, means the local pump did not keep up, which is
+         * exactly the pressure the ladder deducts for. Saturating: the
+         * record's field is 16-bit. */
         const uint64_t drops = meshQueueDrops() - routeQueueDropsAtBegin_;
         if (!mdkr_match_route_measure_finish(
                 &routeMeasure_,
@@ -2286,7 +2286,9 @@ private:
         bump();
     }
 
-    /* Both bounded queues the mesh can overflow while the launcher pumps. */
+    /* Both bounded INBOUND queues the mesh can overflow while the launcher
+     * pumps: callback->pump and pump->drainEvents. The mesh holds no outbound
+     * queue -- a send reaches the data channel or fails on the spot. */
     uint64_t meshQueueDrops() const {
         if (mesh_ == nullptr) return 0u;
         const MdkrMatchPeerMeshStats stats = mesh_->stats();
