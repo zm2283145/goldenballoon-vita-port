@@ -227,10 +227,20 @@ def mutation_controls(racer: str, objects: str, app: str,
     else:
         raise AssertionError("viewport-to-world mutation control was not detected")
 
-    prefix, separator, suffix = app.rpartition(
-        "mdkr_net_roster_runtime_clear();"
+    # Remove the one roster clear the contract reads: the clear after the
+    # blocking boot inside runEngineSession. Removing the file's LAST clear used
+    # to be equivalent, until the online campaign added later clears in other
+    # functions; from then on the control deleted an unrelated call and the
+    # contract kept passing, so the control was detecting nothing.
+    session_body = function_body(app, "runEngineSession")
+    session_start = app.index(session_body)
+    session_clear = session_body.index(
+        "mdkr_net_roster_runtime_clear();",
+        session_body.index("mdkr64_engine_boot"),
     )
-    broken_app = prefix + suffix if separator else app
+    clear_at = session_start + session_clear
+    broken_app = (app[:clear_at] +
+                  app[clear_at + len("mdkr_net_roster_runtime_clear();"):])
     try:
         assert_launcher_handoff(broken_app)
     except (AssertionError, ValueError):

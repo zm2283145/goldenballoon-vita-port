@@ -14,10 +14,13 @@
  *               failure activates the fallback, after which every path resolves
  *               next to the executable and the relocation notice latches.
  *
- * The two modes never share on-disk state: only the default mode ever creates
- * portable.txt, and it removes it before exiting, so a parallel --fallback run
- * cannot observe it. The executable directory is derived here independently of
- * user_paths.c so the assertions cannot pass by echoing the code under test.
+ * Only the default mode ever creates portable.txt, and it removes it before
+ * exiting -- but for the marker's lifetime the two modes DO share on-disk state
+ * (the same executable directory), so a --fallback run scheduled into that
+ * window observes the marker and fails. The CTest registrations hold a shared
+ * RESOURCE_LOCK so the two arms never overlap. The executable directory is
+ * derived here independently of user_paths.c so the assertions cannot pass by
+ * echoing the code under test.
  */
 #include "user_paths.h"
 #include "fs_utf8.h"
