@@ -4,6 +4,14 @@
 
 #include "../video_config.h"
 
+// Issue #54: the one player-facing sentence shown when a durable save write
+// could not be completed and no relocation rescued it. Shared by the in-game
+// spoken notice (ui_overlay) and the launcher card (main_app) so the wording
+// cannot drift, and prose-gated by tests/check_player_prose.py.
+inline constexpr char kSavePersistFailedNotice[] =
+    "Your progress could not be saved. The save folder is not writable. "
+    "See mdkr64.log for the folder it tried.";
+
 enum class OverlayBackInput { Escape, ControllerB };
 
 struct OverlayBackState {
@@ -26,7 +34,7 @@ struct AppUiRomPanelVisibility {
 enum class AppUiRomPlayRequest {
     Ignore,
     StartFinalCheck,
-    SupersedeReplacementCheck,
+    AwaitReplacementCheck,
 };
 
 // An in-flight first or remembered-ROM check has no verdict yet. Do not flash
@@ -38,8 +46,12 @@ bool AppUi_romCandidateFeedbackVisible(
     bool candidateVisible, bool validationPending);
 
 // A proven active ROM remains playable while a replacement is being checked.
-// Play therefore supersedes only that candidate check; an initial/remembered
-// check or an already-running final Play check remains non-actionable.
+// Play must not cancel that unresolved check and re-affirm the ROM it would
+// replace -- that would silently discard a fully valid selection the player
+// just made. It waits instead: an initial/remembered check or an
+// already-running final Play check remains non-actionable, but a pending
+// REPLACEMENT check is left running so the eventual verdict (new ROM if
+// valid, the previous one otherwise) is what Play acts on.
 AppUiRomPlayRequest AppUi_romPlayRequest(
     bool ready, bool validationPending, bool playValidationPending);
 
@@ -155,12 +167,16 @@ AppUiSettingsSection AppUi_settingsSection(MdkrVideoKey key);
 // The same routing question for the shell preferences that have no schema key
 // and so cannot answer it through AppUi_settingsSection.
 //
-// UI scale is the only one: it is stored in the launcher's own preferences
-// rather than the video config, so nothing in MdkrVideoKey can say where it is
-// drawn. Routing it here rather than hand-placing the widget is what makes "it
-// is drawn in exactly one section" a property a test can read, instead of one
-// that holds until somebody copies the slider into a second header.
-enum class AppUiShellPreference { UiScale };
+// Both are stored in the launcher's own preferences rather than the video
+// config, so nothing in MdkrVideoKey can say where they are drawn. Routing
+// them here rather than hand-placing the widgets is what makes "it is drawn
+// in exactly one section" a property a test can read, instead of one that
+// holds until somebody copies the control into a second header.
+//
+// MenuToggleButton is mdkr64_app.ini's menu_toggle_button — the controller
+// button Overlay_gamepadToggleButton() reads to open the in-game menu. For a
+// shell preference, Category means its natural home section: Controls.
+enum class AppUiShellPreference { UiScale, MenuToggleButton };
 
 AppUiSettingsSection AppUi_shellPreferenceSection(AppUiShellPreference key);
 

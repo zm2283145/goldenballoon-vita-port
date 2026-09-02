@@ -169,6 +169,16 @@ def run_case(
             MDKR_SIMULATION_CADENCE=cadence,
             MDKR_SYNTH_FIELDS="2" if cadence == "original" else "1",
         )
+        # This arm SEEDS root/save/eeprom.bin with the Adventure/Adventure-Two
+        # unlock slot and reads the produced EEPROM back, but clean_env() drops
+        # the MDKR_SAVE_DIR the suite exports and a non-packaged build no longer
+        # resolves saves to $CWD/save (issue #54 unified them under the per-user
+        # pref dir). Without this pin the engine read the shared per-user save
+        # instead of the seed, so the unlock was absent and no mirrored track
+        # ever loaded (every track rows=0 maxcp=-1). Point MDKR_SAVE_DIR at the
+        # seeded dir; pin the video config (check_harness_isolation).
+        env["MDKR_SAVE_DIR"] = str(root / "save")
+        env["MDKR_VIDEO_CONFIG_PATH"] = os.devnull
         if renderer is not None:
             env["MDKR_RENDERER"] = renderer
         if dump_frames:
@@ -484,6 +494,11 @@ def announcement_rect_arm(binary: str, rom: str) -> list[tuple[str, str]]:
                 MDKR_TROPHY_COMPLETE_AFTER="600",
                 MDKR_TROPHY_ORDER=trophy.TIE_ORDER,
             )
+            # Same seeded-save isolation as run_case above: without pinning
+            # MDKR_SAVE_DIR the engine reads the shared per-user save instead of
+            # this arm's seeded slot (issue #54).
+            env["MDKR_SAVE_DIR"] = str(root / "save")
+            env["MDKR_VIDEO_CONFIG_PATH"] = os.devnull
             command = [binary, "--remastered", "--headless-frames",
                        str(frames), "--input-script", str(script),
                        "--rom", os.path.abspath(rom)]

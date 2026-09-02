@@ -282,6 +282,18 @@ def run_case(binary: str, rom: str, frame_dir: str | None, verdict: str):
             # arm measured BOTH outcomes across two trees.
             MDKR_TEST_POSTRACE_OPTION="1",
         )
+        # This arm creates run_dir/save and reads its EEPROM back, but scrubbing
+        # MDKR_ dropped the MDKR_SAVE_DIR the suite exports and a non-packaged
+        # build no longer resolves saves to $CWD/save (issue #54 unified them
+        # under the per-user pref dir). The engine therefore read the shared
+        # per-user save: an adventure-in-progress EEPROM made FILE SELECT resume
+        # instead of starting a new game, so the new-game intro cutscene
+        # (levelId=36) never played and the hub/lobby/race loads landed ~3000
+        # frames early (DINODOMAINHUB@2990 vs [6000,9000]). Point MDKR_SAVE_DIR
+        # at the run's own clean save dir so a genuine new game runs; pin the
+        # video config too (check_harness_isolation).
+        env["MDKR_SAVE_DIR"] = os.path.join(run_dir, "save")
+        env["MDKR_VIDEO_CONFIG_PATH"] = os.devnull
         if verdict == "win":
             env["MDKR_ADVENTURE_WIN"] = "1"
         elif verdict == "loss":

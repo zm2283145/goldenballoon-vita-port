@@ -277,6 +277,21 @@ int mdkr_online_browser_live_project(
         ? MDKR_ONLINE_NO_VOTE : (uint16_t)selected_track;
     lobby.selected_vehicle_mask = lobby_phase == MDKR_ONLINE_LOBBY
         ? 0u : (uint8_t)selected_vehicle_mask;
+    /* Session-configuration fields are not carried on the browser wire
+     * (LOBBY_KEYS has no configured-track/cup field), so the memset above is
+     * their only initializer -- and it flattens every "unset" sentinel that is
+     * not zero to a valid-but-wrong value. Restore the sentinels so the
+     * projection describes an unconfigured single-race room. configured_track
+     * is load-bearing: 0 reads as "track 0 is host-configured" and suppresses
+     * the per-seat track vote the browser UI drives, so it must be NO_VOTE.
+     * cup_id and last_placements only feed tournament/results paths the browser
+     * ABI never reaches (mode is always single-race here), but are restored for
+     * the same class of correctness. */
+    lobby.configured_track = MDKR_ONLINE_NO_VOTE;
+    lobby.cup_id = MDKR_ONLINE_NO_CUP;
+    for (index = 0u; index < MDKR_ONLINE_MAX_SEATS; index++) {
+        lobby.last_placements[index] = MDKR_ONLINE_NO_PLACEMENT;
+    }
     for (index = 0u; index < member_count; index++) {
         MdkrOnlineMember *member = &lobby.members[index];
         member->endpoint_id = index + 1u;

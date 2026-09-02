@@ -262,6 +262,14 @@ def run(args: argparse.Namespace) -> None:
                 clients.append((phone_process, phone))
 
                 for client in (established, blocked):
+                    # party-host.js computes surfaceEnabled once at load and
+                    # its openSheet() guard silently refuses open() without it
+                    # (the shipped policy stays phonePartyEnabled:false until
+                    # GO). Arm the loopback surface seam before navigation,
+                    # exactly like tools/run_party_experience_canary.py and
+                    # the passing party lanes' test-config seams.
+                    client.call("Page.addScriptToEvaluateOnNewDocument", {
+                        "source": "globalThis.__mdkrPartyHostSurfaceTest=true;"})
                     client.call("Page.navigate", {"url": origin + "/"})
                     wait_value(client, "Boolean(globalThis.MDKRPartyHost) && "
                                "document.readyState==='complete'", bool,

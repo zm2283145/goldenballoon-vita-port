@@ -1,16 +1,35 @@
-import {MATCH_LIMITS, MATCH_PROTOCOL_VERSION, type MatchCommandType,
+import {MATCH_LIMITS, MATCH_NO_CUP, MATCH_NO_PLACEMENT, MATCH_NO_TRACK,
+  MATCH_PROTOCOL_VERSION, type MatchCommandType,
   type MatchCommandV1, type MatchCompatibilityV1, type MatchError,
   type MatchLobbyV1, type MatchMember, type MatchSeat, type MatchStep,
   parseU64, validCompatibility} from "./protocol";
 
 const U32_MAX = 0xffff_ffff;
 const PHASES = new Set(["lobby", "loading", "racing", "results", "closed"]);
+/* Numeric ids mirror MdkrOnlineCommandType in platform/online/lobby_core.h;
+ * they feed the FNV command fingerprint so both reducers hash identically. */
 const COMMAND_NUMBER: Record<MatchCommandType, number> = {
   join: 1, leave: 2, disconnect: 3, reconnect: 4, set_ready: 5,
   set_vote: 6, begin_loading: 7, ack_loaded: 8, begin_race: 9,
   publish_results: 10, rematch: 11, transfer_leader: 12, close: 13,
   set_character: 14, set_vehicle: 15, cancel_loading: 16,
+  set_mode: 17, set_config_track: 18, set_cup: 19,
 };
+/* Cup schedules (Dino Domain, Snowflake Mountain, Sherbet Island, Dragon
+ * Forest, Future Fun Land) and DKR's authentic trophy-race scoring
+ * (gTrophyRacePointsArray), byte-mirrored from platform/online/lobby_core.c. */
+const CUP_TRACKS: readonly (readonly number[])[] = [
+  [5, 3, 29, 7], [13, 6, 9, 28], [8, 4, 10, 30],
+  [19, 18, 20, 31], [17, 32, 33, 15]];
+const CUP_ROUNDS = 4;
+/* The 20 race tracks reachable through the cup schedule are the only ids a
+ * leader may configure (mirrors known_race_track in lobby_core.c). Hub,
+ * cutscene, trophy-ceremony and battle ids fail like any invalid argument. */
+const RACE_TRACK_IDS: ReadonlySet<number> =
+  new Set(CUP_TRACKS.flatMap(cup => [...cup]));
+const TROPHY_POINTS: readonly number[] = [9, 7, 5, 3, 1, 0, 0, 0];
+const MAX_TOURNAMENT_POINTS = 36;
+const MODE_TOURNAMENT = 1;
 
 function sameCompatibility(a: MatchCompatibilityV1, b: MatchCompatibilityV1): boolean {
   return a.protocolVersion === b.protocolVersion && a.romRevision === b.romRevision &&
@@ -49,6 +68,12 @@ function step(lobby: MatchLobbyV1, accepted: boolean, error: MatchError,
 
 function member(lobby: MatchLobbyV1, endpointId: string): MatchMember | undefined {
   return lobby.members.find(item => item.endpointId === endpointId);
+}
+
+function resetTournamentSeries(lobby: MatchLobbyV1): void {
+  lobby.raceIndex = 0;
+  lobby.points = Array(MATCH_LIMITS.maxSeats).fill(0);
+  lobby.lastPlacements = Array(MATCH_LIMITS.maxSeats).fill(MATCH_NO_PLACEMENT);
 }
 
 function clearRound(lobby: MatchLobbyV1): void {
@@ -91,8 +116,13 @@ function addMember(lobby: MatchLobbyV1, endpointId: string, seatCount: number): 
   lobby.members.push({endpointId, lastCommandId: "0", lastCommandFingerprint: "",
     seatCount, connected: true, ready: false, loaded: false});
   for (let localIndex = 0; localIndex < seatCount; localIndex++) {
+    /* A newly filled seat starts a fresh series entry: a newcomer must never
+     * inherit a previous occupant's trophy points or placement. */
+    const seatIndex = lobby.seats.length;
     lobby.seats.push({endpointId, selectionRevision: 0, voteTrack: null,
       localIndex, characterId: null, vehicleId: null});
+    lobby.points[seatIndex] = 0;
+    lobby.lastPlacements[seatIndex] = MATCH_NO_PLACEMENT;
   }
   return true;
 }
@@ -105,7 +135,10 @@ export function createMatchLobby(roomId: string, leaderEndpointId: string,
   const lobby: MatchLobbyV1 = {protocolVersion: 1, revision: 1, matchEpoch: 0,
     leaderGeneration: 1, roomId, leaderEndpointId, phase: "lobby",
     compatibility: structuredClone(compatibility), members: [], seats: [],
-    receipts: [], nextReceipt: 0, selectedTrack: null, selectedVehicleMask: 0};
+    receipts: [], nextReceipt: 0, selectedTrack: null, selectedVehicleMask: 0,
+    mode: 0, configuredTrack: MATCH_NO_TRACK, cupId: MATCH_NO_CUP,
+    raceIndex: 0, points: [], lastPlacements: []};
+  resetTournamentSeries(lobby);
   return addMember(lobby, leaderEndpointId, leaderSeats) ? lobby : null;
 }
 
@@ -124,6 +157,24 @@ export function validMatchLobby(lobby: MatchLobbyV1): boolean {
         lobby.selectedTrack < 0 || lobby.selectedTrack > 255)) ||
       !Number.isInteger(lobby.selectedVehicleMask) || lobby.selectedVehicleMask < 0 ||
       lobby.selectedVehicleMask > 7 ||
+      /* Session configuration and tournament progress are legal in every
+       * phase: they persist across rounds instead of following the round
+       * lifecycle. Bounds mirror mdkr_online_lobby_valid exactly. */
+      !Number.isInteger(lobby.mode) || lobby.mode < 0 ||
+      lobby.mode > MODE_TOURNAMENT ||
+      !Number.isInteger(lobby.cupId) || lobby.cupId < 0 ||
+      (lobby.cupId !== MATCH_NO_CUP && lobby.cupId >= CUP_TRACKS.length) ||
+      !Number.isInteger(lobby.raceIndex) || lobby.raceIndex < 0 ||
+      lobby.raceIndex >= CUP_ROUNDS ||
+      !Number.isInteger(lobby.configuredTrack) || lobby.configuredTrack < 0 ||
+      (lobby.configuredTrack !== MATCH_NO_TRACK && lobby.configuredTrack > 255) ||
+      !Array.isArray(lobby.points) || lobby.points.length !== MATCH_LIMITS.maxSeats ||
+      lobby.points.some(value => !Number.isInteger(value) || value < 0 ||
+        value > MAX_TOURNAMENT_POINTS) ||
+      !Array.isArray(lobby.lastPlacements) ||
+      lobby.lastPlacements.length !== MATCH_LIMITS.maxSeats ||
+      lobby.lastPlacements.some(value => !Number.isInteger(value) || value < 0 ||
+        (value !== MATCH_NO_PLACEMENT && value >= 8)) ||
       lobby.receipts.length > MATCH_LIMITS.receiptWindow ||
       !Number.isInteger(lobby.nextReceipt) || lobby.nextReceipt < 0 ||
       lobby.nextReceipt >= MATCH_LIMITS.receiptWindow ||
@@ -239,7 +290,25 @@ export function dispatchMatchCommand(lobby: MatchLobbyV1,
       if ((next.phase !== "lobby" && next.phase !== "results") || next.members.length <= 1)
         return reject("invalid_state");
       next.members = next.members.filter(item => item.endpointId !== command.actorEndpointId);
-      next.seats = next.seats.filter(seat => seat.endpointId !== command.actorEndpointId);
+      /* Compact the seat array order-preserving and shift the parallel
+       * per-seat series state (points/lastPlacements) with the same
+       * permutation, zeroing the vacated tail — byte-mirrored with
+       * remove_member in lobby_core.c so seat i means the same racer when
+       * both reducers validate and attribute publish_results. */
+      const kept: number[] = [];
+      next.seats.forEach((seat, index) => {
+        if (seat.endpointId !== command.actorEndpointId) kept.push(index);
+      });
+      const points = Array<number>(MATCH_LIMITS.maxSeats).fill(0);
+      const lastPlacements =
+        Array<number>(MATCH_LIMITS.maxSeats).fill(MATCH_NO_PLACEMENT);
+      kept.forEach((from, to) => {
+        points[to] = next.points[from]!;
+        lastPlacements[to] = next.lastPlacements[from]!;
+      });
+      next.seats = kept.map(index => next.seats[index]!);
+      next.points = points;
+      next.lastPlacements = lastPlacements;
       if (next.leaderEndpointId === command.actorEndpointId) {
         const connected = next.members.filter(item => item.connected)
           .sort((a, b) => BigInt(a.endpointId) < BigInt(b.endpointId) ? -1 : 1);
@@ -286,8 +355,20 @@ export function dispatchMatchCommand(lobby: MatchLobbyV1,
     case "begin_loading": {
       if (next.leaderEndpointId !== command.actorEndpointId) return reject("unauthorized");
       if (next.phase !== "lobby" || !allReady(next)) return reject("not_ready");
-      const selected = selectTrack(next);
-      if (selected === null) return reject("not_ready");
+      /* Track resolution priority mirrors lobby_core.c: tournament cup
+       * schedule, then the leader-configured track, then legacy vote
+       * plurality. */
+      let selected: number;
+      if (next.mode === MODE_TOURNAMENT) {
+        if (next.cupId === MATCH_NO_CUP) return reject("not_ready");
+        selected = CUP_TRACKS[next.cupId]![next.raceIndex]!;
+      } else if (next.configuredTrack !== MATCH_NO_TRACK) {
+        selected = next.configuredTrack;
+      } else {
+        const voted = selectTrack(next);
+        if (voted === null) return reject("not_ready");
+        selected = voted;
+      }
       if (command.value < 1 || (command.value & ~7) !== 0 ||
           next.seats.some(seat => seat.vehicleId === null ||
             (command.value & (1 << seat.vehicleId)) === 0)) return reject("illegal_vehicle");
@@ -309,14 +390,74 @@ export function dispatchMatchCommand(lobby: MatchLobbyV1,
       if (next.leaderEndpointId !== command.actorEndpointId) return reject("unauthorized");
       if (next.phase !== "loading") return reject("invalid_state");
       next.phase = "lobby"; clearRound(next); break;
-    case "publish_results":
+    case "publish_results": {
+      /* value packs one placement byte per seat, little-endian: seat i lives
+       * in bits i*8..i*8+7. Occupied seats race for a unique placement below
+       * 8; unoccupied seats must carry the no-placement byte. The service
+       * lobby stores seats densely, so seat slot i is occupied exactly when
+       * i < seats.length. */
       if (next.leaderEndpointId !== command.actorEndpointId) return reject("unauthorized");
       if (next.phase !== "racing") return reject("invalid_state");
-      next.phase = "results"; break;
+      const placements: number[] = [];
+      let usedPlacements = 0;
+      for (let index = 0; index < MATCH_LIMITS.maxSeats; index++) {
+        const placement = (command.value >>> (index * 8)) & 0xff;
+        placements.push(placement);
+        if (index < next.seats.length) {
+          if (placement >= TROPHY_POINTS.length ||
+              (usedPlacements & (1 << placement)) !== 0) return reject("invalid_state");
+          usedPlacements |= 1 << placement;
+        } else if (placement !== MATCH_NO_PLACEMENT) {
+          return reject("invalid_state");
+        }
+      }
+      for (let index = 0; index < MATCH_LIMITS.maxSeats; index++) {
+        if (index >= next.seats.length) {
+          next.lastPlacements[index] = MATCH_NO_PLACEMENT;
+          continue;
+        }
+        next.lastPlacements[index] = placements[index]!;
+        if (next.mode === MODE_TOURNAMENT) {
+          next.points[index] = next.points[index]! + TROPHY_POINTS[placements[index]!]!;
+        }
+      }
+      next.phase = "results";
+      break;
+    }
     case "rematch":
       if (next.leaderEndpointId !== command.actorEndpointId) return reject("unauthorized");
       if (next.phase !== "results") return reject("invalid_state");
-      next.phase = "lobby"; clearRound(next); break;
+      next.phase = "lobby"; clearRound(next);
+      if (next.mode === MODE_TOURNAMENT && next.cupId !== MATCH_NO_CUP) {
+        if (next.raceIndex < CUP_ROUNDS - 1) next.raceIndex++;
+        /* The cup finished: the next round starts a fresh series. */
+        else resetTournamentSeries(next);
+      } else if (next.mode === 0) {
+        next.lastPlacements = Array(MATCH_LIMITS.maxSeats).fill(MATCH_NO_PLACEMENT);
+      }
+      break;
+    case "set_mode":
+    case "set_config_track":
+    case "set_cup":
+      if (next.leaderEndpointId !== command.actorEndpointId) return reject("unauthorized");
+      if (next.phase !== "lobby" ||
+          (command.type === "set_mode" && command.value > MODE_TOURNAMENT) ||
+          (command.type === "set_config_track" &&
+            !RACE_TRACK_IDS.has(command.value)) ||
+          (command.type === "set_cup" && command.value >= CUP_TRACKS.length)) {
+        return reject("invalid_state");
+      }
+      if (command.type === "set_mode") {
+        next.mode = command.value;
+        resetTournamentSeries(next);
+      } else if (command.type === "set_config_track") {
+        next.configuredTrack = command.value;
+      } else {
+        next.cupId = command.value;
+        resetTournamentSeries(next);
+      }
+      for (const item of next.members) item.ready = false;
+      break;
     case "transfer_leader": {
       if (next.leaderEndpointId !== command.actorEndpointId) return reject("unauthorized");
       const target = member(next, command.targetEndpointId);

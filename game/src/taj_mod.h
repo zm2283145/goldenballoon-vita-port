@@ -27,6 +27,37 @@ typedef enum ModRacerIdentity {
     MOD_RACER_IDENTITY_COUNT
 } ModRacerIdentity;
 
+/* Serialized Time-Trial ghost marker IDs.
+ *
+ * When an added (bonus) racer sets a Time-Trial time we still let the run save a
+ * player ghost, but the GhostHeader's `characterID` byte is stamped with one of
+ * these values instead of the donor character. They sit ABOVE the retail
+ * ten-wide character range (Character / NUM_CHARACTERS == 10), so a stored value
+ * inherently identifies the record as NON-AUTHENTIC without adding a new
+ * save-format field -- the reserved `unk3` byte stays zero and old ghosts
+ * (IDs 0..9) load and validate byte-identically.
+ *
+ * These IDs are a serialization marker ONLY. They must be translated back to the
+ * donor character via mod_racer_ghost_character_donor() before ANY retail
+ * ten-wide asset-table lookup (kart-model object table). The ghost menu resolves
+ * the bonus portrait from the identity instead of gRacerPortraits[]. */
+enum {
+    MOD_RACER_GHOST_CHARACTER_BASE = 10, /* == NUM_CHARACTERS */
+    MOD_RACER_GHOST_CHARACTER_TAJ = MOD_RACER_GHOST_CHARACTER_BASE + 0,
+    MOD_RACER_GHOST_CHARACTER_WIZPIG = MOD_RACER_GHOST_CHARACTER_BASE + 1,
+    MOD_RACER_GHOST_CHARACTER_TERRY = MOD_RACER_GHOST_CHARACTER_BASE + 2,
+    MOD_RACER_GHOST_CHARACTER_MAX = MOD_RACER_GHOST_CHARACTER_TERRY
+};
+
+/* Ghost-marker <-> identity translation. Implemented on the native/testing
+ * builds where bonus racers exist. */
+int mod_racer_ghost_character_id(ModRacerIdentity identity);
+ModRacerIdentity mod_racer_identity_from_ghost_character(int ghost_character);
+int mod_racer_ghost_character_is_bonus(int ghost_character);
+/* Retail donor character to index the ten-wide asset tables with. A base
+ * (0..9) character is returned unchanged. */
+int mod_racer_ghost_character_donor(int ghost_character);
+
 typedef enum TajModPersistenceIssue {
     TAJ_MOD_PERSISTENCE_NONE = 0,
     TAJ_MOD_PERSISTENCE_LOAD,

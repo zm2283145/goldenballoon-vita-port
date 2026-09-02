@@ -1,8 +1,8 @@
 /*
- * O-T6 production transport backends (declarations in match_live_transport.h).
+ * production transport backends (declarations in match_live_transport.h).
  *
  * A bounded, libcurl-free HTTP/1.1 client + RFC 6455 /connect WebSocket client
- * for the MatchRoom lobby, and a thin MdkrOnlineMeshSignalBackend over the O-T1
+ * for the MatchRoom lobby, and a thin MdkrOnlineMeshSignalBackend over the
  * MdkrMatchSignalClient. All sockets go through mbedtls: TLS (https/wss) with
  * the embedded Mozilla CA bundle + hostname verification, or plaintext TCP for
  * the loopback test lane behind mdkr_party_loopback_test_url_allowed. The
@@ -60,7 +60,7 @@ using Json = nlohmann::json;
 
 /* Bounds so a stalled/unreachable host (the exact Wave-2 NET-01 failure mode)
  * can never wedge the worker thread past a deadline: close()/join() then always
- * returns promptly. Mirrors the O-T1 signal client's discipline. */
+ * returns promptly. Mirrors the signal client's discipline. */
 constexpr uint64_t kConnectTimeoutMs = 8000u;
 constexpr uint64_t kWriteTimeoutMs = 8000u;
 constexpr uint32_t kPollSliceMs = 100u;
@@ -267,7 +267,7 @@ bool resolveAddresses(const std::string &host, const std::string &port,
     return !out.empty();
 }
 
-/* Deadline- and abort-aware TCP connect (O-T1 connectTcp discipline): a
+/* Deadline- and abort-aware TCP connect (connectTcp discipline): a
  * non-blocking connect polled in short slices, so an unreachable host stops at
  * the deadline and a close() during connect aborts within one slice. Returns
  * kBadSocket on any failure. The returned fd is left BLOCKING so mbedtls's
@@ -803,7 +803,7 @@ public:
             if (head.size() > 65536u) return false;
         }
         if (head.find("\r\n\r\n") == std::string::npos) return false;
-        /* RFC 6455 4.1 handshake validation (O-T1 discipline): 101 status,
+        /* RFC 6455 4.1 handshake validation (discipline): 101 status,
          * Upgrade: websocket, Connection: upgrade, the exact accept key, the
          * versioned subprotocol, and NO negotiated extension (we offered none,
          * so any Sec-WebSocket-Extensions would silently misframe). */
@@ -1155,6 +1155,48 @@ bool parseLobby(const Json &root, MdkrOnlineLobby &lobby) {
                 : MDKR_ONLINE_NO_VOTE;
         lobby.selected_vehicle_mask =
             static_cast<uint8_t>(readU32(l, "selectedVehicleMask", 0u));
+
+        /* Session configuration + tournament progress (wave-1 protocol).
+         * Absent / null / wrong-typed keys read as the reducer's inert
+         * sentinels -- NEVER as zero, which would mean "track 0 configured" /
+         * "cup 0 selected" / "everyone placed first". */
+        lobby.mode = static_cast<uint8_t>(readU32(l, "mode", 0u));
+        const Json &configured = l.value("configuredTrack", Json());
+        lobby.configured_track =
+            configured.is_number_integer() || configured.is_number_unsigned()
+                ? static_cast<uint16_t>(configured.get<unsigned>())
+                : MDKR_ONLINE_NO_VOTE;
+        const Json &cup = l.value("cupId", Json());
+        lobby.cup_id = cup.is_number_integer() || cup.is_number_unsigned()
+                           ? static_cast<uint8_t>(cup.get<unsigned>())
+                           : MDKR_ONLINE_NO_CUP;
+        lobby.race_index = static_cast<uint8_t>(readU32(l, "raceIndex", 0u));
+        for (unsigned i = 0u; i < MDKR_ONLINE_MAX_SEATS; ++i) {
+            lobby.points[i] = 0u;
+            lobby.last_placements[i] = MDKR_ONLINE_NO_PLACEMENT;
+        }
+        const Json &points = l.value("points", Json());
+        if (points.is_array()) {
+            for (size_t i = 0u;
+                 i < points.size() && i < MDKR_ONLINE_MAX_SEATS; ++i) {
+                if (points[i].is_number_integer() ||
+                    points[i].is_number_unsigned()) {
+                    lobby.points[i] =
+                        static_cast<uint16_t>(points[i].get<unsigned>());
+                }
+            }
+        }
+        const Json &placements = l.value("lastPlacements", Json());
+        if (placements.is_array()) {
+            for (size_t i = 0u;
+                 i < placements.size() && i < MDKR_ONLINE_MAX_SEATS; ++i) {
+                if (placements[i].is_number_integer() ||
+                    placements[i].is_number_unsigned()) {
+                    lobby.last_placements[i] =
+                        static_cast<uint8_t>(placements[i].get<unsigned>());
+                }
+            }
+        }
         lobby.next_receipt = 0u;
     } catch (...) {
         return false;
@@ -1247,6 +1289,11 @@ const char *commandTypeName(MdkrOnlineCommandType type) {
         case MDKR_ONLINE_SET_CHARACTER: return "set_character";
         case MDKR_ONLINE_SET_VEHICLE: return "set_vehicle";
         case MDKR_ONLINE_CANCEL_LOADING: return "cancel_loading";
+        /* Session-config commands (leader-only); names mirror the TS reducer
+         * byte-for-byte ("set_mode" / "set_config_track" / "set_cup"). */
+        case MDKR_ONLINE_SET_MODE: return "set_mode";
+        case MDKR_ONLINE_SET_CONFIG_TRACK: return "set_config_track";
+        case MDKR_ONLINE_SET_CUP: return "set_cup";
         case MDKR_ONLINE_LEAVE: return "leave";
         case MDKR_ONLINE_DISCONNECT: return "disconnect";
         case MDKR_ONLINE_RECONNECT: return "reconnect";
@@ -1268,6 +1315,29 @@ Json compatibilityJson(const MdkrOnlineCompatibilityV1 &c) {
     out["romRevision"] = c.rom_revision;
     out["cadenceHz"] = c.cadence_hz;
     return out;
+}
+
+/* Classify a refused create/join response for the panel's copy detail (see
+ * MdkrOnlineRoomJoinRefusalDetail): the failure VIEW routing stays with
+ * statusToFailure below; this only records which of the two INVITE_EXPIRED
+ * shapes the service actually reported. */
+MdkrOnlineRoomJoinRefusalDetail classifyJoinRefusal(int status,
+                                                    const std::string &body) {
+    std::string code;
+    try {
+        code = Json::parse(body).value("error", std::string());
+    } catch (...) {
+    }
+    if (code == "invite_expired") {
+        /* The service checked the TTL first: only a fresh code fixes this. */
+        return MDKR_ONLINE_ROOM_JOIN_REFUSAL_INVITE_EXPIRED;
+    }
+    if (code == "invalid_code" || code == "invalid_invite" || status == 404) {
+        /* The code matched no live room (or the wrong room's digest):
+         * re-typing the digits fixes this -- never "ask for a fresh code". */
+        return MDKR_ONLINE_ROOM_JOIN_REFUSAL_CODE_INVALID;
+    }
+    return MDKR_ONLINE_ROOM_JOIN_REFUSAL_NONE;
 }
 
 /* ---- The room transport -------------------------------------------------- */
@@ -1329,6 +1399,11 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         *out = invite_;
         return invite_.ready;
+    }
+
+    MdkrOnlineRoomJoinRefusalDetail joinRefusal() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return joinRefusal_;
     }
 
 private:
@@ -1408,6 +1483,12 @@ private:
             return;
         }
         if (res.status != 201) {
+            {
+                /* Record the refusal detail BEFORE the failure event so the
+                 * launcher's drain always observes a coherent pair. */
+                std::lock_guard<std::mutex> lock(mutex_);
+                joinRefusal_ = classifyJoinRefusal(res.status, res.body);
+            }
             enqueueFailure(statusToFailure(res.status, res.body));
             return;
         }
@@ -1626,6 +1707,24 @@ private:
                 continue;
             }
             parseCommandStep(res.body, ev.step);
+            /* Correlate the answer to the command it actually resolves: parse the
+             * commandId the server echoes (same "commandId" field the request
+             * carries, string- or number-typed) so the adapter attributes a
+             * refusal by id rather than by the most recently SENT command. A
+             * body with no echoed id leaves ev.commandId 0 -> the adapter falls
+             * back to its lastType_ behavior. Defensive whole-parse, mirroring
+             * parseCommandStep: any malformed body yields id 0, never a throw. */
+            ev.commandId = 0u;
+            try {
+                const Json root = Json::parse(res.body);
+                const auto it = root.find("commandId");
+                if (it != root.end()) {
+                    uint64_t echoed = 0u;
+                    if (parseU64(*it, echoed)) ev.commandId = echoed;
+                }
+            } catch (...) {
+                ev.commandId = 0u;
+            }
             enqueue(std::move(ev));
         }
     }
@@ -1671,6 +1770,11 @@ private:
     uint64_t localEndpointId_ = 0u;
     uint32_t lastRevision_ = 0u;
     bool roomClosedSeen_ = false;
+    /* The last refused create/join round trip's detail (mutex_-guarded; see
+     * MdkrOnlineRoomJoinRefusalDetail). The round trip runs once per adapter,
+     * so this is one-shot in practice. */
+    MdkrOnlineRoomJoinRefusalDetail joinRefusal_ =
+        MDKR_ONLINE_ROOM_JOIN_REFUSAL_NONE;
 
     std::thread worker_;
 };
@@ -1820,6 +1924,22 @@ bool mdkr_online_room_http_transport_invite(MdkrOnlineRoomTransport *transport,
     if (transport == nullptr || out == nullptr) return false;
     RoomHttpTransport *room = dynamic_cast<RoomHttpTransport *>(transport);
     return room != nullptr && room->invite(out);
+}
+
+MdkrOnlineRoomJoinRefusalDetail mdkr_online_room_http_transport_join_refusal(
+    MdkrOnlineRoomTransport *transport) {
+    if (transport == nullptr) return MDKR_ONLINE_ROOM_JOIN_REFUSAL_NONE;
+    RoomHttpTransport *room = dynamic_cast<RoomHttpTransport *>(transport);
+    return room != nullptr ? room->joinRefusal()
+                           : MDKR_ONLINE_ROOM_JOIN_REFUSAL_NONE;
+}
+
+MdkrOnlineRoomJoinRefusalDetail
+mdkr_online_room_transport_classify_refusal_for_test(int status,
+                                                     const char *body) {
+    return classifyJoinRefusal(status,
+                               body != nullptr ? std::string(body)
+                                               : std::string());
 }
 
 std::unique_ptr<MdkrOnlineMeshSignalBackend>

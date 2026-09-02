@@ -177,7 +177,8 @@ def run_arm(binary: str, rom: str, arm: Arm, verbose: bool) -> Arm:
                MDKR_VIDEO_CONFIG_PATH=os.path.join(save_dir, "video.ini"))
     # Nothing inherited may perturb the physics under measurement.
     for stale in ("MDKR_FORCE_BOOST", "MDKR_BOSS_SLOW", "MDKR_FORCE_LAPS",
-                  "MDKR_RNGSEED", "MDKR_ARCTAN", "MDKR_TRIG", "MDKR_LOAD_TRACK",
+                  "MDKR_RNGSEED", "MDKR_ARCTAN", "MDKR_TRIG",
+                  "MDKR_DEV_RUNTIME_TRIG", "MDKR_LOAD_TRACK",
                   "MDKR_DRIVE_ROUTE", "MDKR_PACE_REALTIME", "MDKR_VI_PACE"):
         env.pop(stale, None)
     cmd = [binary, "--headless-frames", str(FRAMES),

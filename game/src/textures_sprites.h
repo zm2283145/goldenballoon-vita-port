@@ -179,4 +179,12 @@ void material_set_blinking_lights(Gfx **dList, TextureHeader *texture_list, u32 
 void material_init(TextureHeader *tex, Gfx *_dList);
 s32 sprite_init_frame(SpriteAsset *spriteAsset, Sprite *sprite, s32 frameId);
 
+#ifdef NATIVE_PORT
+/* Scope a fresh-alloc'd parent asset's load chain (and its failure cleanup)
+ * so nested texture counting stays exactly-once even during rollback
+ * resimulation. See mdkr_asset_refcount_frozen() in textures_sprites.c. */
+void mdkr_asset_refcount_fresh_parent_begin(void);
+void mdkr_asset_refcount_fresh_parent_end(void);
+#endif
+
 #endif

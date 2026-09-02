@@ -170,6 +170,22 @@ static bool selection_state(const MdkrOnlineLobby *lobby, uint64_t endpoint_id,
     return found;
 }
 
+/* The seat leading a tournament series: highest cumulative points, ties won
+ * by the LOWER seat index (the strict > below never displaces an earlier
+ * seat), matching how the series reducer freezes seat order. Returns -1 when
+ * no seat is occupied. */
+static int champion_seat_index(const MdkrOnlineLobby *lobby) {
+    int winner = -1;
+    unsigned index;
+    for (index = 0u; index < MDKR_ONLINE_MAX_SEATS; index++) {
+        if (!lobby->seats[index].occupied) continue;
+        if (winner < 0 || lobby->points[index] > lobby->points[winner]) {
+            winner = (int)index;
+        }
+    }
+    return winner;
+}
+
 static void recovery_model(MdkrOnlineViewFailure failure,
                            MdkrOnlineViewModel *model) {
     model->kind = MDKR_ONLINE_VIEW_RECOVERY;
@@ -311,6 +327,43 @@ static void recovery_model(MdkrOnlineViewFailure failure,
             model->cancel = control(MDKR_ONLINE_VIEW_ACTION_LEAVE_ROOM,
                                     "Leave Room", true);
             break;
+#if MDKR_ENABLE_ONLINE_BETA
+        /* Truthful dead-ends: the reducer has NO RACING->LOBBY abandon path yet
+         * (that protocol change is Phase 2), so the primary must fully exit the
+         * room client-side. Reuse HOST_CLOSED's working PLAY_HERE primary (maps
+         * to RETURN_HOME in the adapter) and hide the secondary, so no dead
+         * "Return to Lobby" button promises a room the player can never get back
+         * to. Titles are Title Case and use a real em dash (the a11y announcer
+         * reads "--" raw). */
+        case MDKR_ONLINE_VIEW_FAILURE_OPPONENT_LEFT:
+            model->title = "Opponent Disconnected";
+            model->explanation =
+                "Your opponent lost connection, so this race ended. This room is done — create or join a new one to keep playing.";
+            model->primary = control(MDKR_ONLINE_VIEW_ACTION_PLAY_HERE,
+                                     "Play Here", true);
+            model->secondary = control(MDKR_ONLINE_VIEW_ACTION_NONE, NULL, false);
+            break;
+        case MDKR_ONLINE_VIEW_FAILURE_OPPONENT_NEVER_STARTED:
+            model->title = "Your Opponent Couldn't Start";
+            model->explanation =
+                "The race was canceled before it began. Create a fresh invite and try again.";
+            model->primary = control(MDKR_ONLINE_VIEW_ACTION_PLAY_HERE,
+                                     "Play Here", true);
+            model->secondary = control(MDKR_ONLINE_VIEW_ACTION_NONE, NULL, false);
+            break;
+        case MDKR_ONLINE_VIEW_FAILURE_CONNECTION_UNPLAYABLE:
+            /* The race DID connect, then the link degraded past recovery -- a
+             * truthfully different story from CONNECTION_CHECK's "could not
+             * establish". Same working dead-end exit as the other race-end
+             * cards (no RACING->LOBBY path exists yet). */
+            model->title = "Connection Became Unplayable";
+            model->explanation =
+                "The connection to your opponent degraded past recovery, so this race ended. This room is done — create or join a new one to keep playing.";
+            model->primary = control(MDKR_ONLINE_VIEW_ACTION_PLAY_HERE,
+                                     "Play Here", true);
+            model->secondary = control(MDKR_ONLINE_VIEW_ACTION_NONE, NULL, false);
+            break;
+#endif
         case MDKR_ONLINE_VIEW_FAILURE_NONE:
         case MDKR_ONLINE_VIEW_FAILURE_SERVICE_UNAVAILABLE:
         case MDKR_ONLINE_VIEW_FAILURE_COUNT:
@@ -484,7 +537,7 @@ bool mdkr_online_view_model_build(const MdkrOnlineViewInput *input,
                 if (input->verification_phrase != NULL) {
                     next.title = "Compare These Words";
                     next.explanation =
-                        "Read all 3 groups aloud. Continue only when every display shows exactly the same words.";
+                        "Read all three groups aloud. Continue only when every display shows exactly the same words.";
                     next.status = "Secure Phrase Ready";
                     memcpy(next.verification_phrase,
                            input->verification_phrase,
@@ -509,6 +562,14 @@ bool mdkr_online_view_model_build(const MdkrOnlineViewInput *input,
                         MDKR_ONLINE_VIEW_ACTION_RETRY, "Retry Checks");
                 }
             } else if (input->session->room == MDKR_ROOM_SELECTING) {
+                /* A room whose session the host configured (a chosen track,
+                 * or a tournament cup) never asks anyone for a track vote:
+                 * the vote step exists only for the legacy single-race room
+                 * where every seat still nominates a track. */
+                const bool tournament_mode =
+                    input->lobby->mode == MDKR_ONLINE_MODE_TOURNAMENT;
+                const bool vote_expected = !tournament_mode &&
+                    input->lobby->configured_track == MDKR_ONLINE_NO_VOTE;
                 if (!selection_state(input->lobby, input->local_endpoint_id,
                                      &character_missing, &vehicle_missing,
                                      &vote_missing)) {
@@ -528,7 +589,7 @@ bool mdkr_online_view_model_build(const MdkrOnlineViewInput *input,
                     next.primary = control(
                         MDKR_ONLINE_VIEW_ACTION_CHOOSE_VEHICLE,
                         "Choose Vehicle", true);
-                } else if (vote_missing) {
+                } else if (vote_missing && vote_expected) {
                     next.status = "Track Vote Needed";
                     next.primary = control(
                         MDKR_ONLINE_VIEW_ACTION_VOTE_TRACK,
@@ -537,6 +598,19 @@ bool mdkr_online_view_model_build(const MdkrOnlineViewInput *input,
                     next.status = "Selections Complete";
                     next.primary = control(MDKR_ONLINE_VIEW_ACTION_READY,
                                            "Ready", true);
+                } else if (next.local_member_is_leader &&
+                           next.member_count >= 2u &&
+                           next.ready_count == next.member_count &&
+                           input->race_admission_enabled &&
+                           tournament_mode &&
+                           input->lobby->cup_id == MDKR_ONLINE_NO_CUP) {
+                    /* Everyone is ready but the tournament has no cup yet, so
+                     * the reducer would refuse the start. Name the missing
+                     * host decision instead of offering a dead Start Race. */
+                    next.status = "Pick a Cup to Start";
+                    next.primary = control(
+                        MDKR_ONLINE_VIEW_ACTION_CHANGE_SELECTION,
+                        "Change Selection", true);
                 } else if (next.local_member_is_leader &&
                            next.member_count >= 2u &&
                            next.ready_count == next.member_count &&
@@ -552,6 +626,18 @@ bool mdkr_online_view_model_build(const MdkrOnlineViewInput *input,
                         MDKR_ONLINE_VIEW_ACTION_CHANGE_SELECTION,
                         "Change Selection", true);
                 }
+#if MDKR_ENABLE_ONLINE_BETA
+                /* Never-silent: selection can stall for the local player who is
+                 * done and only "Waiting for Friends". Arm the same 30 s
+                 * view-timeout card the other lobby surfaces carry so an endless
+                 * wait always offers a working escape (Leave Room), instead of a
+                 * spinner. Beta-gated to keep the OFF/release view model
+                 * byte-identical. */
+                next.timeout = timeout_view(
+                    "Selection Took Too Long",
+                    "The room is still waiting on everyone's choices. Leave and start a fresh room if it stays stuck.",
+                    MDKR_ONLINE_VIEW_ACTION_LEAVE_ROOM, "Leave Room");
+#endif
             } else {
                 return false;
             }
@@ -607,20 +693,96 @@ bool mdkr_online_view_model_build(const MdkrOnlineViewInput *input,
                                   "Leave Race", true);
             break;
 
-        case MDKR_SCENE_RESULTS:
-            if (input->lobby == NULL || member == NULL) return false;
+        case MDKR_SCENE_RESULTS: {
+            /* Results are mode-aware: a tournament round reports standings
+             * and hands the leader the next scheduled race, the final round
+             * crowns a champion, and a single race keeps the classic
+             * race-again/change-track pair. Only the room leader can send
+             * REMATCH, so a guest's primary never offers a dead button. */
+            const MdkrOnlineLobby *lobby = input->lobby;
+            bool tournament_series;
+            bool final_round = false;
+            bool local_champion = false;
+            if (lobby == NULL || member == NULL) return false;
+            tournament_series =
+                lobby->mode == MDKR_ONLINE_MODE_TOURNAMENT &&
+                lobby->cup_id != MDKR_ONLINE_NO_CUP;
+            if (tournament_series) {
+                const int winner = champion_seat_index(lobby);
+                final_round =
+                    lobby->race_index >= MDKR_ONLINE_CUP_ROUNDS - 1u;
+                local_champion = winner >= 0 &&
+                    lobby->seats[winner].endpoint_id ==
+                        input->local_endpoint_id;
+            }
             next.kind = MDKR_ONLINE_VIEW_RESULTS;
-            next.title = "Race Complete";
-            next.explanation =
-                "Keep the private room together for another race.";
-            next.status = "Results Confirmed";
-            next.primary = control(MDKR_ONLINE_VIEW_ACTION_RACE_AGAIN,
-                                   "Race Again", true);
-            next.secondary = control(MDKR_ONLINE_VIEW_ACTION_CHANGE_TRACK,
-                                     "Change Track", true);
             next.cancel = control(MDKR_ONLINE_VIEW_ACTION_RETURN_HOME,
                                   "Return Home", true);
+            if (tournament_series && final_round) {
+                next.title = "Tournament Complete";
+                next.explanation = local_champion
+                    ? "You take the trophy. Start a new tournament or keep "
+                      "the room together for more racing."
+                    : "The trophy is decided. Start a new tournament or keep "
+                      "the room together for more racing.";
+                next.status = local_champion
+                    ? "You Are the Champion"
+                    : "Your Friend Takes the Trophy";
+                if (next.local_member_is_leader) {
+                    next.primary = control(MDKR_ONLINE_VIEW_ACTION_RACE_AGAIN,
+                                           "New Tournament", true);
+                    next.secondary = control(
+                        MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS,
+                        "Connection Details", true);
+                } else {
+                    next.primary = control(
+                        MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS,
+                        "Connection Details", true);
+                }
+            } else if (tournament_series) {
+                next.title = "Race Results";
+                next.status = "Standings Updated";
+                if (next.local_member_is_leader) {
+                    next.explanation =
+                        "Points are on the board. Start the next race when "
+                        "everyone is set.";
+                    next.primary = control(MDKR_ONLINE_VIEW_ACTION_RACE_AGAIN,
+                                           "Next Race", true);
+                    next.secondary = control(
+                        MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS,
+                        "Connection Details", true);
+                } else {
+                    next.explanation =
+                        "Points are on the board. Waiting for the host to "
+                        "start the next race.";
+                    next.status = "Waiting for the Host";
+                    next.primary = control(
+                        MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS,
+                        "Connection Details", true);
+                }
+            } else {
+                next.title = "Race Complete";
+                if (next.local_member_is_leader) {
+                    next.explanation =
+                        "Keep the private room together for another race.";
+                    next.status = "Results Confirmed";
+                    next.primary = control(MDKR_ONLINE_VIEW_ACTION_RACE_AGAIN,
+                                           "Race Again", true);
+                    next.secondary = control(
+                        MDKR_ONLINE_VIEW_ACTION_CHANGE_TRACK,
+                        "Change Track", true);
+                } else {
+                    next.explanation =
+                        "The host chooses whether to race again or change "
+                        "the track.";
+                    next.status = "Waiting for the Host";
+                    next.primary = control(
+                        MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS,
+                        "Connection Details", true);
+                }
+            }
             break;
+        }
 
         default:
             return false;

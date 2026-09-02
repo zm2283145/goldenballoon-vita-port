@@ -65,6 +65,15 @@ def run_case(binary: Path, rom: Path, vehicle: int, frames: int,
         "MDKR_TERRY_AUDIO_TRACE": "1",
         "MDKR_VEHICLE_AUDIO_TRACE": "1",
     })
+    # Scrubbing MDKR* pins the video config above but still drops the per-task
+    # MDKR_SAVE_DIR the suite exports, so the engine falls back to the shared
+    # per-user save dir. An adventure-in-progress EEPROM left there by an earlier
+    # task re-routes the race_full_3lap_tt boot/menu flow, the plane race on track
+    # 15 never launches, and no flap cues are emitted ("plane: only 0 flap cues").
+    # Isolate the save into this case's own directory next to its log.
+    save_dir = output_path.parent / f"save-{vehicle}"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    env["MDKR_SAVE_DIR"] = str(save_dir)
     command = [
         str(binary), "--headless-frames", str(frames),
         "--input-script", str(SCRIPT), "--rom", str(rom),

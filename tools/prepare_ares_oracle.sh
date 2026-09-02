@@ -191,6 +191,30 @@ struct MdkrOracleState {
   u64 audioSamples = 0;
   u32 audioRate = 0;
   char audioPath[1024] = {0};
+  /*
+   * Track-exit poke lane (issue #55). The Hot Top Volcano destination -1 exit
+   * sits ~114 units below the drivable surface, so no scripted input route can
+   * trip obj_loop_exit's latch on the real ROM. This lane holds the human
+   * racer's OBJECT position at a fixed point for a presented-frame window and
+   * zeroes its velocity, so the retail latch, door drive, fade, and the
+   * MENU_UNUSED_8 routing all run authored code. Writes go through
+   * CPU::writeDebug (cache-aware): writing backing RDRAM here can be undone by
+   * a later dirty D-cache writeback, exactly the hazard the vehicle-RNG lane
+   * documents on its read side. The optional trophyWorld field seeds
+   * gTrophyRaceWorldId (and gTrophyRaceRound=2) once at window start so a
+   * post-transition status line can witness whether retail preserves them
+   * across the dead-end menu. From window start until exit a status line
+   * (map/menu/mode/trophy globals) prints every 30 presented frames.
+   */
+  bool pokeEnabled = false;
+  bool pokeAnnounced = false;
+  bool pokeSeeded = false;
+  u64 pokeStart = 0;
+  u64 pokeEnd = 0;
+  float pokeX = 0.0f;
+  float pokeY = 0.0f;
+  float pokeZ = 0.0f;
+  int pokeTrophyWorld = -1;
   u64 dumpEvery = 0;
   u64 dumpStart = 0;
   u64 marks[512] = {0};
@@ -222,6 +246,14 @@ struct MdkrOracleState {
   static constexpr u32 sLogicUpdateRateAddress = 0x800dd974;
   static constexpr u32 gCurrentRngSeedAddress = 0x800dd9a4;
   static constexpr u32 gVideoLastFramebufferAddress = 0x80126878;
+  /* Issue #55 poke/status lane, same US 1.1 symbol authority as above. */
+  static constexpr u32 gCurrentMenuIdAddress = 0x800df9f0;
+  static constexpr u32 gGameModeAddress = 0x80123a6c;
+  static constexpr u32 gPlayableMapIdAddress = 0x80123a74;
+  static constexpr u32 gLevelLoadLatchAddress = 0x80123a7c;  /* D_801234FC */
+  static constexpr u32 gTrophyRaceWorldIdAddress = 0x800e1568;
+  static constexpr u32 gTrophyRaceRoundAddress = 0x800e156c;
+  static constexpr u32 gLevelSettingsAddress = 0x801217d0;
 
   static auto validPointer(u32 address, u32 bytes = 1) -> bool {
     if(address < 0x80000000 || address >= 0x80800000) return false;
@@ -247,6 +279,28 @@ struct MdkrOracleState {
     static_assert(sizeof(value) == sizeof(bits));
     memcpy(&value, &bits, sizeof(value));
     return value;
+  }
+
+  /* CPU debug path: sign-extended KSEG0 vaddr, coherent with dirty D-cache
+   * lines in both directions. The poke lane must use these, not rdram.ram. */
+  static auto vaddrOf(u32 address) -> u64 {
+    return (u64)(s64)(s32)address;
+  }
+
+  static auto readDebugWord(u32 address) -> u32 {
+    return (u32)cpu.readDebug<Word>(vaddrOf(address));
+  }
+
+  static auto readDebugHalf(u32 address) -> u16 {
+    return (u16)cpu.readDebug<Half>(vaddrOf(address));
+  }
+
+  static auto readDebugByte(u32 address) -> u8 {
+    return (u8)cpu.readDebug<Byte>(vaddrOf(address));
+  }
+
+  static auto writeDebugWord(u32 address, u32 value) -> void {
+    cpu.writeDebug<Word>(vaddrOf(address), value);
   }
 
   static int clampAxis(int v) {
@@ -356,6 +410,29 @@ struct MdkrOracleState {
           fprintf(stderr, "mdkr64 oracle: cannot open audio dump %s\n", path);
         } else {
           snprintf(audioPath, sizeof(audioPath), "%s", path);
+        }
+      }
+    }
+    if(const char* poke = getenv("MDKR64_ARES_POKE_RACER_POS")) {
+      if(*poke) {
+        unsigned long long ps = 0, pe = 0;
+        float px = 0.0f, py = 0.0f, pz = 0.0f;
+        int ptw = -1;
+        int n = sscanf(poke, "%llu:%llu:%f:%f:%f:%d", &ps, &pe, &px, &py, &pz, &ptw);
+        if(n >= 5 && pe >= ps) {
+          pokeEnabled = true;
+          pokeStart = ps;
+          pokeEnd = pe;
+          pokeX = px;
+          pokeY = py;
+          pokeZ = pz;
+          pokeTrophyWorld = (n >= 6) ? ptw : -1;
+          fprintf(stderr,
+            "mdkr64 oracle: poke armed frames=[%llu,%llu] pos=(%g,%g,%g) trophyWorld=%d\n",
+            ps, pe, px, py, pz, pokeTrophyWorld);
+        } else {
+          fprintf(stderr,
+            "mdkr64 oracle: ignored malformed MDKR64_ARES_POKE_RACER_POS=%s\n", poke);
         }
       }
     }
@@ -532,10 +609,71 @@ struct MdkrOracleState {
     fflush(stateTrace);
   }
 
+  auto pokeTick() -> void {
+    if(!pokeEnabled || videoFrame < pokeStart) return;
+    if((videoFrame - pokeStart) % 30 == 0) {
+      fprintf(stderr,
+        "mdkr64 oracle: poke status frame=%llu map=%d menu=%d mode=%d "
+        "playable=%d trophyWorld=%d trophyRound=%d dest=%d loadLatch=%d\n",
+        (unsigned long long)videoFrame,
+        (s32)readDebugWord(gMapIdAddress),
+        (s32)readDebugWord(gCurrentMenuIdAddress),
+        (s32)readDebugWord(gGameModeAddress),
+        (s32)readDebugWord(gPlayableMapIdAddress),
+        (s32)readDebugWord(gTrophyRaceWorldIdAddress),
+        (s32)readDebugWord(gTrophyRaceRoundAddress),
+        (s32)(s8)readDebugByte(gLevelSettingsAddress + 2),
+        (s32)readDebugWord(gLevelLoadLatchAddress));
+      fflush(stderr);
+    }
+    if(videoFrame > pokeEnd) return;
+    u32 racerArray = readDebugWord(gRacersAddress);
+    s32 racerCount = (s32)readDebugWord(gNumRacersAddress);
+    if(racerCount < 1 || racerCount > 10
+        || !validPointer(racerArray, (u32)racerCount * 4)) return;
+    for(s32 slot = 0; slot < racerCount; slot++) {
+      u32 object = readDebugWord(racerArray + slot * 4);
+      if(!validPointer(object, 0x68)) continue;
+      u32 racer = readDebugWord(object + 0x64);
+      if(!validPointer(racer, 0x224)) continue;
+      if((s16)readDebugHalf(racer + 0x00) != 0) continue;  /* player one only */
+      u32 bits = 0;
+      memcpy(&bits, &pokeX, sizeof(bits));
+      writeDebugWord(object + 0x0c, bits);
+      memcpy(&bits, &pokeY, sizeof(bits));
+      writeDebugWord(object + 0x10, bits);
+      memcpy(&bits, &pokeZ, sizeof(bits));
+      writeDebugWord(object + 0x14, bits);
+      writeDebugWord(object + 0x1c, 0);
+      writeDebugWord(object + 0x20, 0);
+      writeDebugWord(object + 0x24, 0);
+      if(!pokeAnnounced) {
+        pokeAnnounced = true;
+        fprintf(stderr,
+          "mdkr64 oracle: poke engaged frame=%llu slot=%d object=0x%08x "
+          "racer=0x%08x pos=(%g,%g,%g)\n",
+          (unsigned long long)videoFrame, slot, object, racer,
+          pokeX, pokeY, pokeZ);
+        fflush(stderr);
+      }
+      if(pokeTrophyWorld >= 0 && !pokeSeeded) {
+        pokeSeeded = true;
+        writeDebugWord(gTrophyRaceWorldIdAddress, (u32)pokeTrophyWorld);
+        writeDebugWord(gTrophyRaceRoundAddress, 2);
+        fprintf(stderr,
+          "mdkr64 oracle: poke seeded gTrophyRaceWorldId=%d gTrophyRaceRound=2\n",
+          pokeTrophyWorld);
+        fflush(stderr);
+      }
+      break;
+    }
+  }
+
   // Called from screen.cpp on each present with the visible framebuffer.
   auto presentedDump(const u32* pixels, u32 pitch, u32 width, u32 height) -> void {
     configure();
     writeState();
+    pokeTick();
     if(pixels && pitch && width && height) {
       if(shouldDump()) writePpm(pixels, pitch, width, height);
     }
@@ -562,6 +700,10 @@ auto oracleState() -> MdkrOracleState& {
 
 auto mdkr64OracleControllerRead(n32 data, const void* gamepad) -> n32 {
   return oracleState().controllerRead(data, gamepad);
+}
+
+auto mdkr64OracleVideoFrameNow() -> u64 {
+  return oracleState().videoFrame;
 }
 
 auto mdkr64OracleAudioSample(s16 left, s16 right, double frequency) -> void {
@@ -600,6 +742,9 @@ if "mdkr64OracleAudioSample" not in text:
 if "mdkr64OraclePresentedVideoDump" not in text:
     declarations.append(
         "  auto mdkr64OraclePresentedVideoDump(Node::Video::Screen screen, const u32* pixels, u32 pitch, u32 width, u32 height) -> void;\n")
+if "mdkr64OracleVideoFrameNow" not in text:
+    declarations.append(
+        "  auto mdkr64OracleVideoFrameNow() -> u64;\n")
 if declarations:
     anchor = "  auto option(string name, string value) -> bool;\n"
     if anchor not in text:
@@ -770,6 +915,76 @@ if "mdkr64OracleTraceVehicleRng" not in text:
     text = text.replace(
         anchor,
         helper + anchor + "  mdkr64OracleTraceVehicleRng(*this);\n",
+        1,
+    )
+if "mdkr64OracleTraceMenuResult" not in text:
+    anchor = "auto CPU::instruction() -> bool {\n"
+    if anchor not in text:
+        raise SystemExit("FAIL: cpu.cpp menu-result anchor not found")
+    helper = r'''static auto mdkr64OracleTraceMenuResult(CPU& cpu) -> void {
+  static bool configured = false;
+  static FILE* trace = nullptr;
+  static u32 prevPC = 0;
+  static s32 lastMenuId = -0x7fffffff;
+  static u64 ordinal = 0;
+  /*
+   * Issue #55 witness: the exact value the retail US 1.1 menu_loop returns to
+   * mode_menu, per call. The C for MENU_UNUSED_8 (id 8) has no switch case and
+   * returns `ret` UNINITIALIZED (authored UB), so the value cannot be read
+   * from source -- only measured. Address ranges come from
+   * docs/ref/symbols/symbol_addrs.us.v80.txt: menu_loop 0x800819F4 (next
+   * function menu_number_render 0x80082054), its only caller mode_menu
+   * 0x8006DF38 (next function load_level_for_menu 0x8006E528). menu_loop's
+   * callees return INTO menu_loop and interrupts land in neither range, so an
+   * instruction boundary that steps from inside menu_loop directly to inside
+   * mode_menu is menu_loop's return, and v0 is the routed value. Rows are
+   * kept for every menuId==8 return plus each menuId change for context.
+   */
+  constexpr u32 menuLoopBegin = 0x800819f4, menuLoopEnd = 0x80082054;
+  constexpr u32 modeMenuBegin = 0x8006df38, modeMenuEnd = 0x8006e528;
+  if(!configured) {
+    configured = true;
+    if(const char* path = getenv("MDKR64_ARES_MENU_RESULT_TRACE")) {
+      if(*path) {
+        trace = fopen(path, "wb");
+        if(!trace) {
+          fprintf(stderr,
+            "mdkr64 oracle: cannot open menu result trace %s\n", path);
+        } else {
+          fprintf(trace,
+            "ordinal,frame,ret,menu_id,game_mode,playable_map,"
+            "trophy_world,trophy_round,level_settings2\n");
+        }
+      }
+    }
+  }
+  if(!trace) return;
+  u32 pc = (u32)cpu.ipu.pc;
+  bool wasInMenuLoop = prevPC >= menuLoopBegin && prevPC < menuLoopEnd;
+  prevPC = pc;
+  if(!wasInMenuLoop || pc < modeMenuBegin || pc >= modeMenuEnd) return;
+  u32 ret = (u32)cpu.ipu.r[2].u64;  /* v0 = menu_loop's return value */
+  s32 menuId = (s32)cpu.readDebug<Word>(0xffff'ffff'800d'f9f0ull);
+  ++ordinal;
+  if(menuId != lastMenuId || menuId == 8) {
+    lastMenuId = menuId;
+    fprintf(trace, "%llu,%llu,0x%08x,%d,%d,%d,%d,%d,%d\n",
+      (unsigned long long)ordinal,
+      (unsigned long long)mdkr64OracleVideoFrameNow(),
+      ret, menuId,
+      (s32)cpu.readDebug<Word>(0xffff'ffff'8012'3a6cull),   /* gGameMode */
+      (s32)cpu.readDebug<Word>(0xffff'ffff'8012'3a74ull),   /* gPlayableMapId */
+      (s32)cpu.readDebug<Word>(0xffff'ffff'800e'1568ull),   /* gTrophyRaceWorldId */
+      (s32)cpu.readDebug<Word>(0xffff'ffff'800e'156cull),   /* gTrophyRaceRound */
+      (s32)(s8)cpu.readDebug<Byte>(0xffff'ffff'8012'17d2ull) /* gLevelSettings[2] */);
+    fflush(trace);
+  }
+}
+
+'''
+    text = text.replace(
+        anchor,
+        helper + anchor + "  mdkr64OracleTraceMenuResult(*this);\n",
         1,
     )
 cpu_cpp.write_text(text, encoding="utf-8")

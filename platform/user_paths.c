@@ -61,6 +61,16 @@ static char s_exe_dir[MDKR_USER_PATH_MAX];
 static int s_portable;
 static int s_fallback_active;
 static int s_write_relocated;
+/* Non-packaged native per-user resolution (issue #54): the preference directory
+ * and launch working directory, resolved lazily so the getters work without an
+ * init call (unit tests) and a plain command-line launch adopts the same
+ * unified save location as the shell's logs/prefs. */
+static int s_per_user_resolved;
+/* Latch for the player-facing "your progress could not be saved" notice. Set by
+ * the save layer when a durable write fails and no relocation could rescue it;
+ * the app shell polls it and renders the notice. */
+static int s_save_write_failed;
+static char s_save_write_failed_dir[MDKR_USER_PATH_MAX];
 #endif
 
 static void set_last_error(const char *message, const char *path) {
@@ -754,10 +764,26 @@ static int MDKR_PACKAGED_ONLY migrate_save_directory(void) {
  * platform. Returns 1 when s_exe_dir holds a usable directory. */
 static int resolve_executable_directory(void) {
     char *executable = NULL;
+    const char *appimage;
     int ok;
     if (s_exe_dir[0] != '\0') {
         return 1;
     }
+    /* An AppImage executes from a read-only SquashFS mount, so /proc/self/exe
+     * (mdkr_running_executable_path_utf8) resolves inside /tmp/.mount_XXXX rather
+     * than to the .AppImage file the player can see and write beside. The
+     * AppImage runtime exports $APPIMAGE with the real on-disk path of the
+     * AppImage; its parent directory is where a portable.txt lives and where the
+     * write-fallback can actually write (issue #54). $APPDIR, by contrast, is the
+     * mount root -- the wrong, read-only place, so it is deliberately not used.
+     * Checked on every platform because the variable simply does not exist off
+     * Linux; that keeps the behaviour uniformly testable. */
+    appimage = getenv("APPIMAGE");
+    if (appimage != NULL && appimage[0] != '\0' &&
+        path_parent(s_exe_dir, sizeof(s_exe_dir), appimage)) {
+        return 1;
+    }
+    s_exe_dir[0] = '\0';
     if (mdkr_running_executable_path_utf8(&executable) != 0 ||
         executable == NULL) {
         return 0;
@@ -792,6 +818,38 @@ static int active_relocation_dir(char *output, size_t output_size) {
         return path_copy(output, output_size, s_exe_dir);
     }
     return 0;
+}
+
+/* Resolve, once, the per-user preference directory and launch working directory
+ * for a NON-packaged native build (issue #54). The packaged path resolves these
+ * eagerly in mdkr_user_paths_init(); this is the lazy equivalent so a getter
+ * called before init (unit tests) still works and a plain command-line launch
+ * adopts the same unified save location the shell already uses for logs/prefs. */
+static void ensure_per_user_resolved(void) {
+    char *preference_path;
+    if (s_per_user_resolved) {
+        return;
+    }
+    s_per_user_resolved = 1;
+    if (s_launch_cwd[0] == '\0') {
+#if defined(_WIN32)
+        if (_getcwd(s_launch_cwd, sizeof(s_launch_cwd)) == NULL) {
+#else
+        if (getcwd(s_launch_cwd, sizeof(s_launch_cwd)) == NULL) {
+#endif
+            s_launch_cwd[0] = '\0';
+        }
+    }
+    if (!s_pref_ready) {
+        preference_path = SDL_GetPrefPath("mdkr64", "mdkr64");
+        if (preference_path != NULL && preference_path[0] != '\0' &&
+            path_copy(s_pref_dir, sizeof(s_pref_dir), preference_path)) {
+            s_pref_ready = 1;
+        }
+        if (preference_path != NULL) {
+            SDL_free(preference_path);
+        }
+    }
 }
 #endif
 
@@ -861,6 +919,14 @@ int mdkr_user_paths_init(const char *executable_path) {
     }
     if (executable_path == NULL ||
         (marker = strstr(executable_path, MDKR_PACKAGE_MARKER)) == NULL) {
+        /* Non-packaged native build. Adopt the per-user save policy (issue #54)
+         * so a launcher-dependent working directory cannot scatter saves, and
+         * run the same copy-migration the .app path uses -- it no-ops here
+         * unless a populated legacy $CWD/save is being grandfathered. Capturing
+         * the working directory now, before any later chdir, keeps the legacy
+         * probe honest. This is NOT a signed bundle, so is_packaged stays 0. */
+        ensure_per_user_resolved();
+        (void)migrate_save_directory();
         return 0;
     }
     s_packaged = 1;
@@ -958,7 +1024,97 @@ int mdkr_user_save_directory(char *output, size_t output_size) {
     if (s_packaged) {
         return s_pref_ready && path_join(output, output_size, s_pref_dir, "save");
     }
+    /* Non-packaged native build (issue #54): unify saves under the per-user
+     * preference directory the shell already uses for logs and app prefs, so the
+     * location is STABLE no matter which directory the AppImage/binary is
+     * launched from. A populated legacy $CWD/save is preserved by
+     * migrate_save_directory() (run from mdkr_user_paths_init), which COPIES it
+     * here once; an empty or unrelated $CWD/save is deliberately NOT adopted --
+     * grandfathering it re-introduced the launch-directory dependence this issue
+     * is about and split saves from where logs/prefs live. Env and
+     * portable/fallback overrides above still win. */
+    ensure_per_user_resolved();
+    if (s_pref_ready) {
+        return path_join(output, output_size, s_pref_dir, "save");
+    }
+    /* SDL could not hand back a per-user directory; keep the historical
+     * CWD-relative spelling rather than fail the save layer outright. */
     return path_copy(output, output_size, "save");
+#endif
+}
+
+/* One-word classification of what mdkr_user_save_directory() just resolved,
+ * for the boot log line. Mirrors the resolution order above exactly. */
+const char *mdkr_user_paths_save_origin_label(void) {
+#ifdef __EMSCRIPTEN__
+    return "browser";
+#else
+    const char *override = getenv("MDKR_SAVE_DIR");
+    if (override != NULL && override[0] != '\0') {
+        return "env";
+    }
+    ensure_portable_resolved();
+    if (s_portable) {
+        return "portable";
+    }
+    if (s_fallback_active) {
+        return "fallback";
+    }
+    if (s_packaged) {
+        return "per-user";
+    }
+    ensure_per_user_resolved();
+    if (s_pref_ready) {
+        return "per-user";
+    }
+    return "cwd";
+#endif
+}
+
+/* The save layer calls this when a durable write has failed and no relocation
+ * could rescue it. Latched once per session (first failure's directory wins) so
+ * the app shell can surface a single player-facing notice. */
+void mdkr_user_paths_note_save_write_failure(const char *directory) {
+#ifdef __EMSCRIPTEN__
+    (void)directory;
+#else
+    if (!s_save_write_failed) {
+        s_save_write_failed = 1;
+        s_save_write_failed_dir[0] = '\0';
+        if (directory != NULL) {
+            (void)path_copy(s_save_write_failed_dir,
+                            sizeof(s_save_write_failed_dir), directory);
+        }
+        /* One diagnostic marker per session, whichever subsystem fails first.
+         * The interactive shell renders the player-facing notice by polling the
+         * latch; this line is what a support log and the headless surfacing
+         * check (tests/check_save_write_notice.py) read. */
+        fprintf(stderr,
+                "[SAVE] progress could not be saved: %s is not writable\n",
+                s_save_write_failed_dir);
+    }
+#endif
+}
+
+int mdkr_user_paths_save_write_failed(void) {
+#ifdef __EMSCRIPTEN__
+    return 0;
+#else
+    return s_save_write_failed;
+#endif
+}
+
+int mdkr_user_paths_save_write_failed_directory(char *output,
+                                                size_t output_size) {
+#ifdef __EMSCRIPTEN__
+    (void)output;
+    (void)output_size;
+    return 0;
+#else
+    if (!s_save_write_failed) {
+        return 0;
+    }
+    return path_copy(output, output_size, s_save_write_failed_dir);
 #endif
 }
 

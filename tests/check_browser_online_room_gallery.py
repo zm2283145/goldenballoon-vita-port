@@ -148,8 +148,15 @@ def run(args: argparse.Namespace) -> None:
                     for domain in ("Page", "Runtime", "Log", "Inspector",
                                    "Accessibility"):
                         cdp.call(f"{domain}.enable")
+                    # The launcher computes surfaceEnabled once at load and its
+                    # disabled-build open() guard refuses the dialog without it.
+                    # Arm the loopback surface seam exactly like the canonical
+                    # live lane (check_browser_online_room.py) and the match_room
+                    # fixture: this gallery fixture bypasses the release policy,
+                    # so it must supply the surface state the guard demands.
                     cdp.call("Page.addScriptToEvaluateOnNewDocument", {"source": """
                       globalThis.__mdkrOnlineRoomTestConfig={case:'entry',autoComplete:false};
+                      globalThis.__mdkrOnlineRoomSurfaceTest=true;
                     """})
                     cdp.call("Emulation.setDeviceMetricsOverride", {
                         "width": 960, "height": 720, "deviceScaleFactor": 1,

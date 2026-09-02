@@ -12,12 +12,25 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <deque>
 #include <map>
 #include <mutex>
 #include <utility>
 #include <variant>
+
+// Always-on (beta) [MESH] diagnostics for the WebRTC bring-up: ICE connection
+// state, STATE/control DataChannel open, channelsReady and peer-lost reasons.
+// The classic real-two-machine stall is the unordered STATE channel never
+// opening across NATs, so channelsReady never reaches the roster and the race
+// never boots -- these lines make that visible in a stderr capture. Compiled out
+// of any non-beta build of this TU (e.g. the standalone transport test).
+#if MDKR_ENABLE_ONLINE_BETA
+#define MDKR_MESH_LOG(...) std::fprintf(stderr, __VA_ARGS__)
+#else
+#define MDKR_MESH_LOG(...) ((void)0)
+#endif
 
 /*
  * Composition-only: every byte of key schedule, sealing and phrase logic
@@ -32,7 +45,7 @@
  * (match_peer_graph.h) selects the deterministic one-hop intermediate and
  * the forwarder admission window (match_peer_forward.h) bounds relayed
  * ciphertext; both would plug into stateData()/routing below without
- * touching the crypto layers. Out of scope for O-T2 by design.
+ * touching the crypto layers. Out of scope by design.
  */
 
 namespace {
@@ -182,6 +195,14 @@ struct PeerRuntime {
     uint64_t nextPingAtMs = 0u;
     uint64_t pingOutstandingSinceMs = 0u;
 
+    /* Vanish dwell (0 = disarmed): first tick at which this peer was BOTH
+     * absent from signaling AND without ready channels. Armed/disarmed by
+     * tick() from those two live facts each pump, so a presence re-assert or
+     * a channel recovery disarms it; expiry is PeerVanished. Deliberately
+     * NOT cleared by silentTeardown -- a teardown while absent is exactly
+     * the state the dwell bounds. */
+    uint64_t vanishedSinceMs = 0u;
+
     /* Derived directional keys (slots in the mesh keyring) + replay. The
      * two channels are independent streams over one sender sequence space:
      * a reliable control fragment delayed behind >64 lossy state envelopes
@@ -227,6 +248,10 @@ struct MdkrMatchPeerMesh::State
     bool signalLossReported = false;
     bool failed = false;
     bool closed = false;
+    /* F3: a peer sent a race_abort on the reliable control channel. Consumed
+     * (read-and-cleared) by the launcher through consumeRaceAbort(), so a fresh
+     * abort in a later race is observed independently. */
+    bool raceAbortReceived = false;
     std::deque<MdkrMatchPeerMeshEvent> events;
     MdkrMatchPeerMeshStats counters;
 
@@ -235,7 +260,7 @@ struct MdkrMatchPeerMesh::State
     std::deque<InternalEvent> internalQueue;
     uint64_t droppedInternal = 0u;
 
-    ~State() { teardown(); }
+    ~State() { teardown(/*announcePeerEnd=*/false); }
 
     uint64_t now() const {
         const uint64_t value = clock ? clock() : steadyNowMs();
@@ -313,6 +338,10 @@ struct MdkrMatchPeerMesh::State
 
     void peerLost(PeerRuntime &peer, MdkrMatchPeerLostReason reason) {
         if (peer.lost) return;
+        MDKR_MESH_LOG(
+            "[MESH] peer LOST ep=%llu reason=%d channelsReady=%u offerer=%u\n",
+            (unsigned long long)peer.endpointId, static_cast<int>(reason),
+            peer.channelsReady ? 1u : 0u, peer.offerer ? 1u : 0u);
         peer.lost = true;
         silentTeardown(peer);
         MdkrMatchPeerMeshEvent event;
@@ -380,6 +409,7 @@ struct MdkrMatchPeerMesh::State
         peer.gaveUp = false;
         peer.restartEpisodes = 0u;
         peer.lost = false;
+        peer.vanishedSinceMs = 0u; /* a reconnected peer starts a fresh dwell */
         silentTeardown(peer);
         if (retireTranscript) {
             /* Every pairwise key was salted with the old transcript digest;
@@ -455,6 +485,10 @@ struct MdkrMatchPeerMesh::State
             });
         peer.connection->onStateChange(
             [weak, endpointId, attempt](rtc::PeerConnection::State value) {
+                MDKR_MESH_LOG(
+                    "[MESH] ice/connection state ep=%llu attempt=%u state=%d\n",
+                    (unsigned long long)endpointId, attempt,
+                    static_cast<int>(value));
                 if (value != rtc::PeerConnection::State::Disconnected &&
                     value != rtc::PeerConnection::State::Failed &&
                     value != rtc::PeerConnection::State::Closed) {
@@ -557,6 +591,11 @@ struct MdkrMatchPeerMesh::State
     void createConnection(PeerRuntime &peer) {
         peer.attempt++;
         peer.answerApplied = false;
+        MDKR_MESH_LOG(
+            "[MESH] creating peer connection ep=%llu attempt=%u offerAttempts=%u "
+            "(offerer, creating STATE+control channels)\n",
+            (unsigned long long)peer.endpointId, peer.attempt,
+            peer.offerAttempts);
         /* M4: a machine where construction itself keeps throwing must not
          * recreate every tick forever -- bounded like everything else. */
         const auto buildFailed = [this, &peer]() {
@@ -604,8 +643,31 @@ struct MdkrMatchPeerMesh::State
             return nullptr;
         }
         const auto found = peers.find(id);
-        if (found == peers.end() || found->second.generation == 0u ||
-            found->second.generation != fromGeneration) {
+        if (found == peers.end() || found->second.generation == 0u) {
+            counters.ignoredStaleSignals++;
+            return nullptr;
+        }
+        /* A STRICTLY NEWER sender generation is the service's own attestation
+         * that the peer's replacement socket is live: from/generation on every
+         * delivered signal event are stamped by the relay from the
+         * authenticated sending socket (match-room injects them; a client
+         * cannot claim either), and generations are service-assigned,
+         * strictly increasing. Adopt it exactly like the presence bump it
+         * proves happened -- because that bump's broadcast is MISSABLE: when
+         * BOTH endpoints blip near-simultaneously, the peer's presence bump
+         * goes out while OUR socket is down, our own re-welcome then lists
+         * the still-reconnecting peer as absent, and every message the peer
+         * re-drives at us arrives under its new generation only to be dropped
+         * here as stale -- the vanish dwell (or, slower, the setup ladders)
+         * then declares a RETURNING peer gone. Not for a peer already
+         * declared lost: past the dwell's expiry the verdict stands and only
+         * the real presence bump re-admits, as before. */
+        if (fromGeneration > found->second.generation && !found->second.lost) {
+            rekeyPeer(found->second, fromGeneration);
+            found->second.present = true;
+            return &found->second;
+        }
+        if (found->second.generation != fromGeneration) {
             counters.ignoredStaleSignals++;
             return nullptr;
         }
@@ -946,10 +1008,18 @@ struct MdkrMatchPeerMesh::State
     void channelOpened(PeerRuntime &peer, bool isState) {
         if (isState) peer.stateOpen = true;
         else peer.controlOpen = true;
+        MDKR_MESH_LOG(
+            "[MESH] DataChannel open ep=%llu channel=%s stateOpen=%u "
+            "controlOpen=%u\n",
+            (unsigned long long)peer.endpointId, isState ? "STATE" : "control",
+            peer.stateOpen ? 1u : 0u, peer.controlOpen ? 1u : 0u);
         if (!peer.channelsReady && peer.stateOpen && peer.controlOpen) {
             peer.channelsReady = true;
             peer.pingOutstandingSinceMs = 0u;
             peer.nextPingAtMs = now() + kMdkrMatchControlPingIntervalMs;
+            MDKR_MESH_LOG(
+                "[MESH] channels ready ep=%llu (STATE+control both open)\n",
+                (unsigned long long)peer.endpointId);
             MdkrMatchPeerMeshEvent event;
             event.type = MdkrMatchPeerMeshEventType::PeerChannelsReady;
             event.endpointId = peer.endpointId;
@@ -962,6 +1032,17 @@ struct MdkrMatchPeerMesh::State
         if (!signalHealthy) {
             /* No signaling, no restart offer: the peer is gone for good. */
             peerLost(peer, MdkrMatchPeerLostReason::TransportFailed);
+            return;
+        }
+        if (!peer.present) {
+            /* An ABSENT peer can receive neither the peer_end "restart" nor
+             * a fresh offer, so a restart episode here is pure waste (it
+             * burns one of the three bounded episodes against the void).
+             * Just retire the dead connection; recovery is either the
+             * peer's presence returning (the offer ladder / a fresh offer
+             * re-drive from a clean slate) or the vanish dwell resolving
+             * the loss typed and bounded. */
+            silentTeardown(peer);
             return;
         }
         if (peer.restartEpisodes >= kMdkrMatchMaxRestartEpisodes) {
@@ -1096,6 +1177,13 @@ struct MdkrMatchPeerMesh::State
                 }
                 return;
             }
+            if (type == "race_abort") {
+                /* F3: the peer is abandoning the race start (or ended
+                 * mid-race). Latch it for the launcher; not a peer loss, so the
+                 * channel stays open and this endpoint keeps answering pings. */
+                raceAbortReceived = true;
+                return;
+            }
             peerLost(peer, MdkrMatchPeerLostReason::ControlChannelViolation);
         } catch (...) {
             peerLost(peer, MdkrMatchPeerLostReason::ControlChannelViolation);
@@ -1199,7 +1287,45 @@ struct MdkrMatchPeerMesh::State
         const uint64_t nowMs = now();
         for (auto &entry : peers) {
             PeerRuntime &peer = entry.second;
-            if (peer.lost || !peer.present || peer.generation == 0u) continue;
+            if (peer.lost || peer.generation == 0u) continue;
+            /* Vanish dwell: ABSENT from signaling AND channels down. Neither
+             * setup ladder can run against an endpoint the relay cannot
+             * reach (no offer/answer/hello can be delivered), so without
+             * this bound that state parks forever -- the real-cloud mid-race kill
+             * left the survivor exactly there once ICE tore the connection
+             * down. Both facts are transport state; either recovering
+             * disarms the dwell (a signal blip with healthy channels never
+             * arms it, and a reconnect bump re-admits the peer even after
+             * expiry via rekeyPeer's lost=false). A double blip -- our own
+             * re-welcome omitting a simultaneously-blipping peer whose bump
+             * broadcast we missed -- is covered by rosterPeer's adoption of
+             * a service-stamped newer sender generation: the returning
+             * peer's re-driven traffic cancels this clock before expiry.
+             * Residual: a reconnected peer that stays completely silent
+             * through the whole dwell is still declared lost at expiry;
+             * its later bump re-admits the mesh peer, only the
+             * already-latched race end stands. */
+            if (!peer.present && !peer.channelsReady) {
+                if (peer.vanishedSinceMs == 0u) {
+                    peer.vanishedSinceMs = nowMs;
+                } else if (nowMs - peer.vanishedSinceMs >=
+                           kMdkrMatchPeerVanishTimeoutMs) {
+                    peerLost(peer, MdkrMatchPeerLostReason::PeerVanished);
+                    continue;
+                }
+            } else {
+                peer.vanishedSinceMs = 0u;
+            }
+            /* The SETUP ladders (hellos, offers, the answerer's deadline)
+             * require a present peer: every step is a signaling delivery,
+             * and a re-appearing peer resumes them where they stood. The
+             * LIVENESS ladder (control ping, below) deliberately does NOT --
+             * it probes the established channels themselves, and gating it
+             * on presence starved mid-race loss detection whenever the
+             * relay truthfully reported the killed peer's socket closing
+             * (the shipped defect: presence dropped seconds after the SIGKILL,
+             * freezing the very ladder that would have caught it). */
+            if (peer.present) {
             /* Hellos: commit eagerly; reveal only after the peer commits.
              * Each of the three sends is guarded independently, so a
              * refused send (relay said peer_unavailable mid-blip) is
@@ -1257,7 +1383,13 @@ struct MdkrMatchPeerMesh::State
                     }
                 }
             }
-            /* Control ping ladder (5 s cadence, 15 s stale). */
+            } /* peer.present (setup ladders only) */
+            /* Control ping ladder (5 s cadence, 15 s stale) -- runs on the
+             * ESTABLISHED channels regardless of signal presence (see the
+             * presence note above): kMdkrMatchControlPingIntervalMs +
+             * kMdkrMatchControlPingTimeoutMs is the ping-path loss bound
+             * (kMdkrMatchMidRaceLossPingBoundMs; the composite worst case
+             * across orderings is kMdkrMatchMidRaceLossDetectBoundMs). */
             if (peer.channelsReady) {
                 if (peer.pingOutstandingSinceMs != 0u &&
                     nowMs - peer.pingOutstandingSinceMs >=
@@ -1354,6 +1486,28 @@ struct MdkrMatchPeerMesh::State
         return reached;
     }
 
+    /* F3: fan a plaintext race-abort out to every peer on its reliable control
+     * channel (versioned/typed like ping; the receiver does not correlate the
+     * nonce). Best-effort: a peer whose channel is not open is skipped. */
+    unsigned sendRaceAbort() {
+        if (closed || failed) return 0u;
+        unsigned reached = 0u;
+        for (auto &entry : peers) {
+            PeerRuntime &peer = entry.second;
+            if (peer.lost || !peer.control || !peer.control->isOpen()) continue;
+            try {
+                if (peer.control->send(Json{{"type", "race_abort"},
+                        {"protocol", kChannelProtocol},
+                        {"nonce", 0u}}.dump())) {
+                    reached++;
+                }
+            } catch (...) {
+                connectionDown(peer);
+            }
+        }
+        return reached;
+    }
+
     bool sendPreflightFragment(
         uint64_t peerEndpointId,
         const uint8_t fragment[MDKR_MATCH_PEER_PAYLOAD_BYTES]) {
@@ -1387,9 +1541,29 @@ struct MdkrMatchPeerMesh::State
 
     /* ---- Teardown ------------------------------------------------------------*/
 
-    void teardown() {
+    void teardown(bool announcePeerEnd) {
         if (closed) return;
         closed = true;
+        /* DELIBERATE local end only (see close()): announce peer_end "close"
+         * (the wire contract's goodbye -- handlePeerEnd on every conforming
+         * endpoint, relayed and sender-stamped by the service) to each
+         * still-viable peer BEFORE the connections come down, so a survivor
+         * resolves this endpoint as the immediate typed PeerLost(PeerEnded)
+         * instead of grinding the restart episodes / vanish dwell against a
+         * connection that will never return. Best-effort by design: a crash
+         * sends nothing (survivors keep the ladder-typed resolution), a send
+         * into a dead feed is inert, and an internal rebuild (announce false)
+         * says nothing at all. */
+        if (announcePeerEnd) {
+            for (auto &entry : peers) {
+                PeerRuntime &peer = entry.second;
+                if (peer.lost || peer.generation == 0u) continue;
+                MdkrMatchSignalOutbound goodbye;
+                goodbye.type = "peer_end";
+                goodbye.reason = "close";
+                (void)sendSignal(peer, std::move(goodbye));
+            }
+        }
         std::vector<std::shared_ptr<rtc::PeerConnection>> connections;
         for (auto &entry : peers) {
             PeerRuntime &peer = entry.second;
@@ -1503,6 +1677,16 @@ unsigned MdkrMatchPeerMesh::sendInput(
     return state_->sendInput(bundle);
 }
 
+unsigned MdkrMatchPeerMesh::sendRaceAbort() {
+    return state_ ? state_->sendRaceAbort() : 0u;
+}
+
+bool MdkrMatchPeerMesh::consumeRaceAbort() {
+    if (!state_ || !state_->raceAbortReceived) return false;
+    state_->raceAbortReceived = false;
+    return true;
+}
+
 bool MdkrMatchPeerMesh::sendPreflightFragment(
     uint64_t peerEndpointId,
     const uint8_t fragment[MDKR_MATCH_PEER_PAYLOAD_BYTES]) {
@@ -1555,8 +1739,8 @@ MdkrMatchPeerMeshStats MdkrMatchPeerMesh::stats() const {
     return stats;
 }
 
-void MdkrMatchPeerMesh::close() {
-    if (state_) state_->teardown();
+void MdkrMatchPeerMesh::close(bool announcePeerEnd) {
+    if (state_) state_->teardown(announcePeerEnd);
 }
 
 /* ---- Test seams -------------------------------------------------------------*/

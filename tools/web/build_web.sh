@@ -132,7 +132,8 @@ fi
 # browser records the same product version the native tools write into theirs.
 SRC_SHA="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 SRC_SHORT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
-if [[ -z "$(git status --porcelain --untracked-files=all 2>/dev/null)" ]]; then
+# Exclude .metadata_never_index (a macOS Spotlight opt-out marker, not source) so it cannot flip the stamp.
+if [[ -z "$(git status --porcelain --untracked-files=all 2>/dev/null -- . ':(glob,exclude)**/.metadata_never_index')" ]]; then
     SRC_DIRTY=false
 else
     SRC_DIRTY=true

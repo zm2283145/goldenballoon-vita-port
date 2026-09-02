@@ -18,6 +18,24 @@ option(MDKR_ENABLE_ONLINE_ROOM_PREVIEW
     "Compile the deferred native Online Room preview (development tests only)"
     ${MDKR_ONLINE_ROOM_PREVIEW_DEFAULT})
 
+# BETA-ONLY native online enablement. When ON, this composes the production live
+# online transport into the launcher's Online Room panel and opens the build gate
+# that lets two native instances pair + race over the live MatchRoom service,
+# fenced to 2 endpoints / STUN-only / retail identities. Modeled on the
+# MDKR_NATIVE_PHONE_PARTY option below. It defaults OFF and is NEVER set by
+# .github/workflows/release.yml or macos/Scripts/build_app_bundle.sh, so every
+# shipping build stays byte-identical -- the two release guardrails
+# (check_release_local_only_surface.py, check_release_party_origin.py) key on the
+# unchanged -DMDKR_ENABLE_ONLINE_ROOM_PREVIEW=OFF lines, which this leaves alone.
+option(MDKR_ENABLE_ONLINE_BETA
+    "Compose the live online transport into the launcher behind the native beta gate (never shipped)"
+    OFF)
+if(MDKR_ENABLE_ONLINE_BETA)
+    # The Online Room panel and its live-adapter seam only compile under the
+    # preview flag, so the beta forces it ON regardless of the default above.
+    set(MDKR_ENABLE_ONLINE_ROOM_PREVIEW ON)
+endif()
+
 # The launcher smoke tests share one physical graphics device and their isolated
 # files do not make concurrent GPU context creation safe.  Apply one named CTest
 # lock after all native tests have registered so adding another gpu-labelled test
@@ -341,6 +359,27 @@ file(GLOB GAME_SOURCES CONFIGURE_DEPENDS
     ${CMAKE_SOURCE_DIR}/game/src/hasm/*.c
     ${CMAKE_SOURCE_DIR}/game/src/hasm_native/*.c)
 
+# Separated online BETA boot path (game/src/online/). Deliberately NOT part of
+# the game/src/*.c glob above (that glob is non-recursive), and added ONLY inside
+# this beta gate -- exactly like party_link.c below -- so a normal (beta OFF)
+# build never compiles a byte of it and the release engine object is untouched.
+# It joins GAME_SOURCES (not PLATFORM_SOURCES) because it is engine/game code
+# that includes the decomp game headers, so it inherits the same warning regime
+# every other game/src TU does. Every TU here is itself #if MDKR_ENABLE_ONLINE_BETA.
+if(MDKR_ENABLE_ONLINE_BETA)
+    list(APPEND GAME_SOURCES
+        ${CMAKE_SOURCE_DIR}/game/src/online/online_session.c    # separated online session
+        ${CMAKE_SOURCE_DIR}/game/src/online/online_character_map.c # single-source online-id -> engine Character map
+        ${CMAKE_SOURCE_DIR}/game/src/online/online_screen_util.c # shared native-screen draw/state helpers
+        ${CMAKE_SOURCE_DIR}/game/src/online/online_charselect.c  # native online character select
+        ${CMAKE_SOURCE_DIR}/game/src/online/online_vehicleselect.c # native online vehicle select
+        ${CMAKE_SOURCE_DIR}/game/src/online/online_trackselect.c # native online track/cup select
+        ${CMAKE_SOURCE_DIR}/game/src/online/online_race_boot.c   # direct online race boot
+        ${CMAKE_SOURCE_DIR}/game/src/online/online_results.c    # native online results/standings
+        ${CMAKE_SOURCE_DIR}/game/src/online/online_ceremony.c   # native online champion ceremony
+        ${CMAKE_SOURCE_DIR}/game/src/online/online_race_pause.c) # non-blocking online pause overlay
+endif()
+
 # Native platform layer (this project's own M1 code). Listed explicitly rather
 # than globbed, so a vendored mgb64 TU dropped into platform/ is not dragged into
 # the build until the milestone that actually wires it up.
@@ -451,6 +490,7 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/net/net_local_input.c # endpoint seats -> canonical slots
     ${CMAKE_SOURCE_DIR}/platform/net/net_roster.c     # canonical players vs local viewports
     ${CMAKE_SOURCE_DIR}/platform/net/net_roster_runtime.c # immutable launcher roster publication
+    ${CMAKE_SOURCE_DIR}/platform/net/online_race_results.c # finished-race placements engine->launcher handoff
     ${CMAKE_SOURCE_DIR}/platform/net/local_listener_mix.c # endpoint-only physical audio listener policy
     ${CMAKE_SOURCE_DIR}/platform/net/net_impairment.c  # named deterministic carrier fault profiles
     ${CMAKE_SOURCE_DIR}/platform/net/net_clock.c       # named endpoint clock/opportunity profiles
@@ -603,6 +643,18 @@ if(MDKR_APP)
         ${CMAKE_SOURCE_DIR}/platform/host_window.c)         # window/device adoption
 endif()
 
+# Native online BETA live selection bridge (launcher->engine lobby snapshot +
+# engine->launcher local-intent channel). Engine-resident like
+# net_roster_runtime/online_race_results so BOTH the engine-side readers
+# (game/src, beta-gated) and the launcher-side writer/poller
+# (online_live_wiring.cpp in mdkr64_app) link ONE copy, but -- unlike those two,
+# which every build compiles -- it is gated so the release engine object never
+# carries it. In PLATFORM_SOURCES it inherits the strict warning baseline below.
+if(MDKR_ENABLE_ONLINE_BETA)
+    list(APPEND PLATFORM_SOURCES
+        ${CMAKE_SOURCE_DIR}/platform/net/party_link.c) # live selection bridge (beta)
+endif()
+
 # glad GL loader — desktop only (no GL in the browser build).
 if(NOT EMSCRIPTEN)
     set(GLAD_SOURCES ${CMAKE_SOURCE_DIR}/lib/glad/src/glad.c)
@@ -687,13 +739,25 @@ if(MDKR_ADVENTURE_PARTY_OMIT)
         MDKR_ADVENTURE_PARTY_OMIT=1)
 endif()
 
+# The online-beta direct-boot seam (mode_intro -> straight into the online race)
+# lives in the game/decomp translation units that compile into ${MDKR_TARGET}.
+# It is entirely #if MDKR_ENABLE_ONLINE_BETA, so a normal (beta OFF) build never
+# sees the macro and the engine object stays byte-identical to the release build.
+# Beta-only, matching the mdkr64_app definition below. The only PLATFORM_SOURCES
+# addition this macro makes is the beta live selection bridge (party_link.c,
+# gated above); every decomp TU that keys on the macro is entirely #if-guarded,
+# so a normal (beta OFF) build activates none of it.
+if(MDKR_ENABLE_ONLINE_BETA)
+    target_compile_definitions(${MDKR_TARGET} PRIVATE MDKR_ENABLE_ONLINE_BETA=1)
+endif()
+
 # --- Version stamping (PK-1, macOS packaging) ------------------------------
 # Single source of truth for the packaged release version. Wired to a real
 # surface (`mdkr64 --version`, platform/main_pc.c) and to the app bundle's
 # CFBundleShortVersionString, which macos/Scripts/build_app_bundle.sh stamps
 # from this same value via PlistBuddy. Kept as its own standalone statement
 # (not folded into the block above) so it stays a one-line, low-conflict diff.
-set(MDKR_VERSION "1.5.1" CACHE STRING "mdkr64 release version (semver)")
+set(MDKR_VERSION "1.6.0" CACHE STRING "mdkr64 release version (semver)")
 target_compile_definitions(${MDKR_TARGET} PRIVATE MDKR_VERSION_STRING="${MDKR_VERSION}")
 # The save CLI stamps app_version into every container it writes, so it must
 # carry the same release value the engine and app shell do. Its target is
@@ -736,12 +800,36 @@ else()
 endif()
 target_compile_options(${MDKR_TARGET} PRIVATE
     -fno-strict-aliasing
+    # FP contraction is pinned OFF for every engine lane. Unpinned, each
+    # compiler decides for itself whether a*b+c fuses into a single-rounding
+    # FMA (AppleClang on arm64 fuses at -O2 by default; GCC and emcc make
+    # their own calls per target), so identical source could compute
+    # differently-rounded floats per toolchain. Gameplay float state must be
+    # bit-reproducible across the native, wasm, and mingw builds — lockstep
+    # peers and every golden float hash depend on it — so force the strict
+    # IEEE two-rounding evaluation everywhere. This block is the shared flag
+    # seam all three lanes inherit (MDKR_TARGET is mdkr64 or mdkr64_web; the
+    # mingw cross build configures this same file through its toolchain
+    # file), and `-ffp-contract=off` is accepted by Clang, AppleClang, emcc,
+    # and GCC alike, so it needs no per-compiler gating.
+    -ffp-contract=off
     # Address-domain crossings must be explicit (uintptr_t, DKR_TOK/DKR_PTR, or
     # OS_K0_TOKEN_TO_PHYSICAL). A raw narrowing conversion is a correctness
     # defect on LP64 and must never silently return to the tree.
-    # GCC diagnoses these option names as invalid in C++ mode. C++ already
-    # rejects the corresponding implicit conversions in the language; keep the
-    # explicit warning classes on the C translation units they describe.
+    #
+    # Of these two, only -Werror=pointer-to-int-cast is C-family-only: GCC's
+    # cc1plus rejects it for C++ ("'-Werror=' argument
+    # '-Werror=pointer-to-int-cast' is not valid for C++"), which surfaces on
+    # Windows where a C++ TU (platform/a11y_speech_win.cpp, SAPI ISpVoice) is
+    # compiled into this otherwise-C engine target (and on the macOS ObjC++
+    # analogue). -Werror=int-to-pointer-cast, by contrast, IS accepted for C++
+    # (verified: g++ 16.2) -- it was silently active on that C++/ObjC++ TU before
+    # this scoping. Both are scoped to C sources anyway, deliberately: it drops
+    # the cc1plus rejection and keeps the int<->pointer cast policy symmetric and
+    # easy to reason about, at the cost of no longer applying int-to-pointer-cast
+    # to the one C++ TU (which never tripped it). C-file command lines are
+    # unchanged (the generator expression expands to the same flag for
+    # COMPILE_LANGUAGE C).
     $<$<COMPILE_LANGUAGE:C>:-Werror=int-to-pointer-cast>
     $<$<COMPILE_LANGUAGE:C>:-Werror=pointer-to-int-cast>
     # Matching-era source contains many harmless legacy warnings, but these
@@ -953,6 +1041,60 @@ if(NOT EMSCRIPTEN)
                 ${CMAKE_SOURCE_DIR}/platform/party/lan_party_stub.cpp)
         endif()
 
+        if(MDKR_ENABLE_ONLINE_BETA)
+            # Native online beta: the live lobby adapter plus its production
+            # MatchRoom HTTP transport, signal-client mesh backend and peer
+            # mesh, and the launcher-side wiring that composes them behind the
+            # beta gate (platform/app/online_live_wiring.cpp). These are exactly
+            # the online TUs the e2e driver links; every other dependency
+            # already rides in -- the lobby_*, net_*, match_* (transport/manifest/
+            # preflight/launch/roster), session_* and sha256/input_tick_queue set
+            # through PLATFORM_SOURCES, and match_peer_crypto + party_webrtc_
+            # signaling + party_retry_policy + LibDataChannel/MbedTLS through the
+            # MDKR_NATIVE_PHONE_PARTY block above, which the beta requires.
+            if(NOT MDKR_NATIVE_PHONE_PARTY)
+                message(FATAL_ERROR
+                    "MDKR_ENABLE_ONLINE_BETA requires MDKR_NATIVE_PHONE_PARTY=ON")
+            endif()
+            list(APPEND APP_SOURCES
+                ${CMAKE_SOURCE_DIR}/platform/online/match_live_adapter.cpp
+                ${CMAKE_SOURCE_DIR}/platform/online/match_live_transport.cpp
+                ${CMAKE_SOURCE_DIR}/platform/online/match_signal_client.cpp
+                ${CMAKE_SOURCE_DIR}/platform/online/match_peer_transport.cpp
+                ${CMAKE_SOURCE_DIR}/platform/online/online_track_table.c
+                ${CMAKE_SOURCE_DIR}/platform/app/online_live_wiring.cpp)
+
+            if(BUILD_TESTING)
+                # KEEP IN SYNC: these online/transport CTest exes (this one plus
+                # the party/match set in the MDKR_NATIVE_PHONE_PARTY block just
+                # below) are the same eleven names mirrored in two other places --
+                # the MinGW test-link dead-strip foreach (search
+                # "_mdkr_online_test", later in this file) and ONLINE_TEST_EXES in
+                # tools/mingw_cross_check.sh. Renaming/removing one means updating
+                # all three; the dead-strip foreach hard-errors the online
+                # configure on drift so this cannot rot silently.
+                #
+                # The launcher-side track/cup table (display order, picker
+                # narrowing, trophy cups) pinned against the independent v80
+                # ROM decode. Pure static data: ROM-, GPU- and network-free.
+                add_executable(mdkr_online_track_table_test
+                    ${CMAKE_SOURCE_DIR}/tests/test_online_track_table.c
+                    ${CMAKE_SOURCE_DIR}/platform/online/online_track_table.c)
+                target_include_directories(mdkr_online_track_table_test PRIVATE
+                    ${CMAKE_SOURCE_DIR}
+                    ${CMAKE_SOURCE_DIR}/platform)
+                if(MSVC)
+                    target_compile_options(mdkr_online_track_table_test PRIVATE
+                        /W4 /WX)
+                else()
+                    target_compile_options(mdkr_online_track_table_test PRIVATE
+                        -Wall -Wextra -Wpedantic -Werror)
+                endif()
+                add_test(NAME online_track_table
+                    COMMAND mdkr_online_track_table_test)
+            endif()
+        endif()
+
         add_library(mdkr_qrcodegen STATIC
             ${CMAKE_SOURCE_DIR}/third_party/qrcodegen/qrcodegen.cpp)
         target_include_directories(mdkr_qrcodegen PUBLIC
@@ -1056,7 +1198,7 @@ if(NOT EMSCRIPTEN)
                 endif()
                 add_test(NAME match_peer_crypto COMMAND mdkr_match_peer_crypto_test)
 
-                # O-T1 online multiplayer: the native match-signaling client
+                # online multiplayer: the native match-signaling client
                 # (platform/online/match_signal_client.cpp), pinned wire-level
                 # against a scriptable loopback fake of the
                 # /api/match/{roomId}/signal endpoint
@@ -1096,7 +1238,7 @@ if(NOT EMSCRIPTEN)
                 # a genuine hang instead of stalling the suite.
                 set_tests_properties(match_signal_client PROPERTIES TIMEOUT 120)
 
-                # O-T2 online multiplayer: the launcher-owned WebRTC peer
+                # online multiplayer: the launcher-owned WebRTC peer
                 # mesh (platform/online/match_peer_transport.cpp) over REAL
                 # libdatachannel DTLS on loopback, with the signaling relay
                 # faked in-process through the MdkrMatchPeerSignalFeed seam.
@@ -1191,23 +1333,25 @@ if(NOT EMSCRIPTEN)
                         -Wall -Wextra -Wpedantic -Werror)
                 endif()
 
-                # O-T3 online multiplayer: the launcher-owned LIVE lobby adapter
+                # online multiplayer: the launcher-owned LIVE lobby adapter
                 # (platform/online/match_live_adapter.cpp) composing the MatchRoom
-                # transport, the O-T2 peer mesh, the O-T5 launch builder (retail
+                # transport, the peer mesh, the launch builder (retail
                 # clamp), the preflight consensus barrier and the engine roster
                 # runtime. The lobby side is driven by an in-process MatchRoom
                 # double running the real reducer; the transport side rides the
-                # O-T2 loopback signal hub feeding real libdatachannel DTLS on
+                # loopback signal hub feeding real libdatachannel DTLS on
                 # 127.0.0.1. ROM-, GPU- and network-free.
                 add_executable(mdkr_online_live_adapter_test
                     ${CMAKE_SOURCE_DIR}/tests/test_online_live_adapter.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_live_adapter.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/online_track_table.c
                     ${CMAKE_SOURCE_DIR}/platform/online/match_peer_transport.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_signal_client.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_launch_builder.c
                     ${CMAKE_SOURCE_DIR}/platform/online/lobby_view_model.c
                     ${CMAKE_SOURCE_DIR}/platform/online/lobby_core.c
                     ${CMAKE_SOURCE_DIR}/platform/online/lobby_fake_adapter.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/party_link.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_preflight.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_roster_runtime.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_roster.c
@@ -1257,11 +1401,79 @@ if(NOT EMSCRIPTEN)
                 # internal waits are bounded, so this timeout backstops a hang.
                 set_tests_properties(online_live_adapter PROPERTIES TIMEOUT 180)
 
+                # F4: the SAME adapter TU, compiled WITH
+                # MDKR_ENABLE_ONLINE_BETA (the target above deliberately does not
+                # -- the define breaks its token-gate test), so the beta-only
+                # race-end-card truthfulness decisions (mapLostReason in-race
+                # branches + the F1 no-demotion rule) are actually exercised,
+                # plus the SAS re-verify peer-loss latch-clear regression.
+                # Mesh-free: only the exposed test wrappers are called (the
+                # latch-clear ones build a lobby-free, backend-less adapter),
+                # with no-op stubs for the boot-handoff hooks the beta build
+                # references, so it links the adapter without the wiring TU.
+                add_executable(mdkr_online_live_adapter_beta_test
+                    ${CMAKE_SOURCE_DIR}/tests/test_online_live_adapter_beta.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/match_live_adapter.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/online_track_table.c
+                    ${CMAKE_SOURCE_DIR}/platform/online/match_peer_transport.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/match_signal_client.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/match_launch_builder.c
+                    ${CMAKE_SOURCE_DIR}/platform/online/lobby_view_model.c
+                    ${CMAKE_SOURCE_DIR}/platform/online/lobby_core.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/match_preflight.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/net_roster_runtime.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/net_roster.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/match_launch_descriptor.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/match_manifest.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/match_peer_crypto.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/net/match_peer_transcript.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/match_peer_graph.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/match_transport.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/match_input_bundle.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/net_impairment.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/net_input.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/net_local_input.c
+                    ${CMAKE_SOURCE_DIR}/platform/session/session_bridge.c
+                    ${CMAKE_SOURCE_DIR}/platform/session/session_core.c
+                    ${CMAKE_SOURCE_DIR}/platform/input_tick_queue.c
+                    ${CMAKE_SOURCE_DIR}/platform/sha256.c
+                    ${CMAKE_SOURCE_DIR}/platform/party/party_retry_policy.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/party/party_webrtc_signaling.cpp)
+                target_compile_definitions(mdkr_online_live_adapter_beta_test
+                    PRIVATE MDKR_ENABLE_ONLINE_BETA=1)
+                target_include_directories(mdkr_online_live_adapter_beta_test
+                    PRIVATE
+                    ${CMAKE_SOURCE_DIR}
+                    ${CMAKE_SOURCE_DIR}/platform
+                    ${MDKR_LIBDATACHANNEL_JSON_INCLUDE}
+                    ${MDKR_PARTY_GENERATED_INCLUDE})
+                target_include_directories(mdkr_online_live_adapter_beta_test
+                    SYSTEM PRIVATE
+                    ${mdkr_libdatachannel_SOURCE_DIR}/include)
+                target_compile_features(mdkr_online_live_adapter_beta_test PRIVATE
+                    cxx_std_17)
+                target_link_libraries(mdkr_online_live_adapter_beta_test PRIVATE
+                    LibDataChannel::LibDataChannel MbedTLS::MbedTLS
+                    Threads::Threads)
+                if(WIN32)
+                    target_link_libraries(mdkr_online_live_adapter_beta_test
+                        PRIVATE ws2_32)
+                endif()
+                if(MSVC)
+                    target_compile_options(mdkr_online_live_adapter_beta_test
+                        PRIVATE /W4 /WX)
+                else()
+                    target_compile_options(mdkr_online_live_adapter_beta_test
+                        PRIVATE -Wall -Wextra -Wpedantic -Werror)
+                endif()
+                add_test(NAME online_live_adapter_beta
+                    COMMAND mdkr_online_live_adapter_beta_test)
+
                 # W3 connection robustness: the production MatchRoom transport
                 # (platform/online/match_live_transport.cpp) driven wire-level
                 # against a scriptable loopback fake of the MatchRoom service
                 # (HTTP create/command + the /connect RFC 6455 state socket),
-                # plus the mesh signal backend against the O-T1 loopback
+                # plus the mesh signal backend against the loopback
                 # signal fake. Pins the /connect reconnect ladder + revision
                 # dedupe, terminal 4000-class closes, the per-address connect
                 # budget, the bounded resolve, and the /signal replacement
@@ -1355,7 +1567,7 @@ if(NOT EMSCRIPTEN)
                 # within the 30-tick rollback window; a profile that exceeds the
                 # window (the 2 s outage) must fire the TYPED recovery path
                 # (INPUT_GAP) rather than a silent desync. Impairment is a
-                # test-only injection gated behind the O-T6 race seam
+                # test-only injection gated behind the race seam
                 # (race_drain_local + carrier-gated race_resend); production
                 # match_peer_transport / match_transport behaviour is untouched.
                 # ROM-, GPU- and (external-)network-free -- part of the same
@@ -1365,11 +1577,11 @@ if(NOT EMSCRIPTEN)
                 # Six full bring-up + 240-tick impaired races over real DTLS.
                 set_tests_properties(online_live_matrix PROPERTIES TIMEOUT 360)
 
-                # O-T6 online multiplayer CAPSTONE end-to-end race driver: the
+                # online multiplayer CAPSTONE end-to-end race driver: the
                 # REAL online stack (production MatchRoom HTTP + /connect WS
-                # client, the O-T1 signal-client mesh backend, the O-T2 peer
-                # mesh over real libdatachannel DTLS, the O-T3 live adapter, the
-                # O-T5 clamp and the O-T6 per-tick race feed). Deliberately no
+                # client, the signal-client mesh backend, the peer
+                # mesh over real libdatachannel DTLS, the live adapter, the
+                # clamp and the per-tick race feed). Deliberately no
                 # add_test() -- it needs a live local MatchRoom Worker and a
                 # second driver process that only tests/
                 # check_online_live_transport_e2e.py provides, the same
@@ -1378,6 +1590,7 @@ if(NOT EMSCRIPTEN)
                     ${CMAKE_SOURCE_DIR}/tests/test_online_live_transport_e2e_driver.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_live_transport.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_live_adapter.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/online_track_table.c
                     ${CMAKE_SOURCE_DIR}/platform/online/match_peer_transport.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_signal_client.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_launch_builder.c
@@ -1460,6 +1673,18 @@ if(NOT EMSCRIPTEN)
                 ${mdkr_libdatachannel_SOURCE_DIR}/include)
             target_link_libraries(mdkr64_app PRIVATE
                 LibDataChannel::LibDataChannel MbedTLS::MbedTLS)
+            if(WIN32)
+                # The app's own online/party TUs call Winsock directly
+                # (WSAStartup/closesocket in match_signal_client.cpp,
+                # match_live_transport.cpp and lan_party_server.cpp), so link
+                # ws2_32 explicitly instead of relying on LibDataChannel/webgpu
+                # to propagate it through their link interfaces. As a static lib
+                # this rides through to mdkr64. IPHLPAPI is not linked here: no
+                # app-owned TU calls it directly; it arrives with libjuice's
+                # interface enumeration. Matches the if(WIN32) ws2_32 link every
+                # online test target already carries.
+                target_link_libraries(mdkr64_app PRIVATE ws2_32)
+            endif()
         endif()
         # Keep warnings strict on the launcher code we own without inheriting
         # that policy into vendored Dear ImGui.  The engine's maintained C
@@ -1488,6 +1713,13 @@ if(NOT EMSCRIPTEN)
             MDKR_APP_VERSION_STR="${MDKR_VERSION}"
             MDKR_APP_BUILD_STAMP="${MDKR_BUILD_STAMP}"
             MDKR_PARTY_ORIGIN="${MDKR_PARTY_COMPILED_ORIGIN}")
+        if(MDKR_ENABLE_ONLINE_BETA)
+            # Turns the header seam (OnlineRoom_makeGatedLiveAdapter, the token
+            # gate, the panel-visibility gate) live and compiles the wiring TU.
+            # Beta-only, so a normal build never sees this macro or the online TUs.
+            target_compile_definitions(mdkr64_app PRIVATE MDKR_ENABLE_ONLINE_BETA=1)
+            target_include_directories(mdkr64_app PRIVATE ${CMAKE_SOURCE_DIR})
+        endif()
         target_include_directories(mdkr64_app PRIVATE
             ${IMGUI_DIR}
             ${IMGUI_DIR}/backends
@@ -2153,6 +2385,24 @@ if(NOT EMSCRIPTEN)
                         "PASS online room actions: actions=27 keyboard=27 gamepad=27"
                     TIMEOUT 300)
 
+                # The modal online lobby must fully take over the launcher while
+                # a live session is active: the nav rail, top tabs and the
+                # generic offline Play are suppressed so the offline launch is
+                # unreachable (the root fix for both reported online bugs). The
+                # per-frame probe is beta-only, so this gate is registered only
+                # for the native online beta build.
+                if(MDKR_ENABLE_ONLINE_BETA)
+                    add_test(NAME app_online_lobby_takeover
+                        COMMAND ${Python3_EXECUTABLE}
+                            ${CMAKE_SOURCE_DIR}/tests/check_online_lobby_takeover.py
+                            --build $<TARGET_FILE:${MDKR_TARGET}>)
+                    set_tests_properties(app_online_lobby_takeover PROPERTIES
+                        LABELS gpu
+                        PASS_REGULAR_EXPRESSION
+                            "PASS online lobby takeover: active-cases=9 entry-shell=1 offline-play-suppressed=1"
+                        TIMEOUT 300)
+                endif()
+
                 # The responsive launcher has three distinct navigation modes.
                 # Wide sidebar and dense dropdown coverage existed already;
                 # keep the intermediate top-tab layout from regressing into
@@ -2498,6 +2748,14 @@ if(WIN32)
         endif()
     endforeach()
 
+    # --- Test link dead-strip (MOVED OUT of if(WIN32)) ---------------------
+    # The online/transport test-link dead-strip + no-speculative-devirt flags
+    # are a GCC-codegen concern -- MinGW *and* the Linux release lane, both GCC
+    # -- not a Windows one, so they now live in a compiler-gated top-level block
+    # AFTER this if(WIN32)...endif(). Search
+    # "Test-link dead-strip / speculative-devirt (GCC lanes: MinGW + Linux)".
+    # Kept test-target-only there, exactly as when it lived here.
+
     # --- Subsystem ---------------------------------------------------------
     # Explorer double-click and game launchers start the exe with no inherited
     # console, so a console-subsystem build pops an empty console window on
@@ -2604,4 +2862,88 @@ if(WIN32)
             COMPILE_DEFINITIONS "MDKR_VER_CSV=${MDKR_VER_CSV};MDKR_VER_STR=${MDKR_VER_STR}"
             OBJECT_DEPENDS "${MDKR_MANIFEST_PATH}")
     endif()
+endif()
+
+# ==========================================================================
+# Test-link dead-strip / speculative-devirt (GCC lanes: MinGW + Linux)
+# ==========================================================================
+# TRUE CONDITION: this is a GCC-codegen concern, not a Windows one. It fires on
+# every GCC lane -- MinGW (cross from macOS/Linux, or MSYS2) AND the Linux
+# release lane, both GCC -- and on NO Clang lane (macOS AppleClang, Linux clang,
+# wasm/emscripten Clang), which need none of these flags. That is why the gate
+# below is CMAKE_C_COMPILER_ID STREQUAL "GNU" (the file's existing GCC idiom,
+# always defined since project() is C) rather than if(WIN32): this block was
+# moved out of the trailing Windows block precisely because the Linux release
+# lane is GCC and hits the identical codegen. Widening one mechanism across both
+# GCC platforms keeps a single source of truth (was: MinGW-only inside if(WIN32)).
+#
+# Several online test targets deliberately omit a defining TU, relying on the
+# omitted definition never being demanded because nothing reachable references
+# it (e.g. the MdkrMatchSignalClientFeed / MdkrOnlineFakeAdapterSeam wrappers
+# that would otherwise pull in match_signal_client.cpp / lobby_fake_adapter.c).
+# Clang leaves the relevant virtual call INDIRECT, so no reachable code names
+# the omitted symbol and the ld64/ELF links resolve with no flags at all -- this
+# is why the historical macOS/Linux-CLANG links passed unflagged. GCC is
+# different: it speculatively binds a virtual call whose only header-visible
+# override is `final` (MdkrMatchSignalClientFeed, MdkrOnlineFakeAdapterSeam) to
+# that override, embedding a DIRECT reference to the omitted definition inside a
+# REACHABLE function (MdkrMatchPeerMesh::State::sendSignal/pump) that no linker
+# can dead-strip. -fno-devirtualize-speculatively is the load-bearing flag: it
+# removes GCC's planted reference so the deliberate omission stays sound. This
+# reproduces identically on MinGW GCC (originally proven at -O2) and on the
+# Linux release lane (GCC at -O3) -- the Linux exposure is exactly why this is
+# no longer Windows-only. -ffunction-sections/-fdata-sections + -Wl,--gc-sections
+# are kept as dead-strip parity (belt-and-braces section GC); their effect in
+# isolation was never separately confirmed, but with speculation off the links
+# are clean on both lanes.
+#
+# TEST TARGETS ONLY -- no shipping target inherits these flags under ANY
+# configure. ${MDKR_TARGET} (the shipped mdkr64 engine/app) and every engine/app
+# archive are never named here and never carry omitted TUs; the flags are
+# applied per-target-PRIVATE, only to the eleven named test exes, and only when
+# if(TARGET) confirms the test exists. Disclosed cost: these test objects are
+# compiled with speculative devirtualization DISABLED, so their codegen differs
+# from the shipping build (which keeps it on); the tests exercise the same
+# sources with the one speculated call left as an ordinary indirect dispatch.
+#
+# KEEP IN SYNC (three copies of the online/transport test-target names):
+#   1. the add_executable(mdkr_online_* / mdkr_native_* / mdkr_match_* /
+#      mdkr_lan_* ...) sites under MDKR_ENABLE_ONLINE_BETA / MDKR_NATIVE_PHONE_
+#      PARTY + BUILD_TESTING earlier in this file (search
+#      "add_executable(mdkr_online_track_table_test").
+#   2. this dead-strip list.
+#   3. ONLINE_TEST_EXES in tools/mingw_cross_check.sh (the MinGW --online lane).
+# The if(TARGET)/elseif(FATAL_ERROR) pair hard-errors when the online-beta app
+# configure (MDKR_ENABLE_ONLINE_BETA AND MDKR_APP) names a target that does not
+# exist, so drift fails the configure instead of silently losing coverage; the
+# BUILD_TESTING gate leaves tests-off configures untouched, and the beta-off
+# lanes stay quiet (the beta-only target simply is not defined).
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU" AND BUILD_TESTING)
+    foreach(_mdkr_online_test
+            mdkr_online_track_table_test
+            mdkr_native_party_sas_test
+            mdkr_lan_party_transport_test
+            mdkr_match_peer_crypto_test
+            mdkr_match_signal_client_test
+            mdkr_match_peer_transport_test
+            mdkr_native_party_e2e_driver
+            mdkr_online_live_adapter_test
+            mdkr_online_live_adapter_beta_test
+            mdkr_match_live_transport_test
+            mdkr_online_live_transport_e2e_driver)
+        if(TARGET ${_mdkr_online_test})
+            target_compile_options(${_mdkr_online_test} PRIVATE
+                -ffunction-sections -fdata-sections
+                -fno-devirtualize-speculatively)
+            target_link_options(${_mdkr_online_test} PRIVATE
+                -Wl,--gc-sections)
+        elseif(MDKR_ENABLE_ONLINE_BETA AND MDKR_APP)
+            message(FATAL_ERROR
+                "GCC test dead-strip list names '${_mdkr_online_test}', but no "
+                "such target exists in this online configure. The list has "
+                "drifted from the test definitions -- update this foreach, the "
+                "add_executable() site above, and ONLINE_TEST_EXES in "
+                "tools/mingw_cross_check.sh together.")
+        endif()
+    endforeach()
 endif()

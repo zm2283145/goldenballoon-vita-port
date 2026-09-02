@@ -109,6 +109,12 @@
   entryFragment.capability = "";
   let pendingEntryExpiresAt = pendingEntryCapability ? Date.now() + 10 * 60_000 : 0;
   let pendingEntryTimer = 0;
+  // True once an invite landing has been presented, whether the capability
+  // arrived at load time or as a later in-document fragment change. The
+  // disabled-build open() guard keys off this, not the load-only entryFragment,
+  // so a hashchange arrival can open its fail-closed dialog on a build that
+  // first loaded clean.
+  let entryLandingPresented = false;
 
   let gateTitle = "Online Racing Is Not Enabled in This Build";
   let gateExplanation = "Private rooms are still being qualified. Opening " +
@@ -1518,6 +1524,7 @@
   // followed an invite link must see why it did not open a room — a disabled
   // build, an invalid link or a ROM prompt — never a silently dismissed dialog.
   function presentEntryLanding() {
+    entryLandingPresented = true;
     const policyEnabled = globalThis.__mdkrOnlineControlReleasePolicy?.enabled === true;
     if (!pendingEntryCapability) {
       gateTitle = "Check the Room Invitation";
@@ -1553,7 +1560,7 @@
     testConfig ? ensureModel() : Promise.resolve(false);
 
   function open() {
-    if (!surfaceEnabled && !entryFragment.attempted) return false;
+    if (!surfaceEnabled && !entryLandingPresented) return false;
     returnFocus = document.activeElement instanceof HTMLElement
       ? document.activeElement : trigger;
     syncLocalRecovery();

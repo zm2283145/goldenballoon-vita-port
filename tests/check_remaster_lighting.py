@@ -20,7 +20,7 @@ from pathlib import Path
 
 from harness_utils import (ASSERT_MARKERS, DEFAULT_BUILD_DIR, fatal_re,
                            FX_MARKERS, read_ppm as read_ppm_bytes,
-                           resolve_binary)
+                           resolve_binary, save_env)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -148,13 +148,21 @@ def run_arm(
         "--window-size", "320x240",
         f"--{mode}",
     ]
+    # environment() scrubs every MDKR* variable, discarding the per-task
+    # MDKR_SAVE_DIR/MDKR_VIDEO_CONFIG_PATH the suite exports. Without re-isolating
+    # them the engine resolves the shared per-user save dir; an adventure-in-
+    # progress EEPROM left there re-routes the nav_to_time_trial_race boot/menu
+    # flow so the MDKR_LOAD_TRACK race never loads and the smooth-sun arm lights
+    # no racer/character geometry ("target classes were not exercised"). Pin both
+    # to this arm's run dir (harness_utils.save_env / check_harness_isolation).
+    env = save_env(environment(backend, track_id, enabled), str(run_dir))
     if verbose:
         print(f"$ ({label}) {' '.join(command)}", flush=True)
     try:
         proc = subprocess.run(
             command,
             cwd=run_dir,
-            env=environment(backend, track_id, enabled),
+            env=env,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

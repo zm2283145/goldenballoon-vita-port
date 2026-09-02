@@ -138,6 +138,7 @@ SERIAL_ROLES = frozenset({
 # SERIAL_NAMES instead — the union is what the scheduler serializes.
 GPU_SERIAL_NAMES = frozenset({
     "overlay_pause_cutscene",
+    "widescreen_minimap_alignment",
     "enh_speedometer",
     "enh_draw_distance",
     "mod_texture_override",
@@ -225,9 +226,9 @@ GPU_SERIAL_NAMES = frozenset({
     "adventure_hub",
     "adventure_race_loop",
     "save_options_scroll_band",
+    "track_preview_time_steady",
     "determinism",
     "rom_revision",
-    "online_process_convergence",
 })
 SERIAL_NAMES = frozenset({
     "pacing_quality",        # realtime arms assert displayed-interval tails
@@ -546,6 +547,10 @@ CHECKS = (
           ("--soak-only",)),
     Check("state_hash", "check_state_hash.py", "release",
           "authoritative-hash determinism, window/backend invariance, legacy-RNG control"),
+    Check("sim_hash_artifact", "check_sim_hash_artifact.py", "release",
+          "on-disk per-tick [SIMHASH] artifact mode mirrors the stdout stream "
+          "byte-for-byte; the first-divergence comparator fails closed on "
+          "divergence, truncation, empty, missing and unparseable inputs"),
     Check("weather_rng_order", "check_weather_rng_order.py", "release",
           "weather-enabled authored object/weather/HUD RNG order and presentation invariance"),
     Check("weather_presentation_identity",
@@ -601,8 +606,6 @@ CHECKS = (
           ("--self-test",)),
     Check("match_launch_direct_load", "check_match_launch_direct_load.py", "native",
           "V3 descriptor direct-load track and canonical racer selections"),
-    Check("online_process_convergence", "check_online_process_convergence.py", "native",
-          "four isolated endpoint authority/input/event convergence"),
     Check("online_profile_rematch", "check_online_profile_rematch.py", "native",
           "multi-epoch impaired carrier with persistent launcher identity"),
     Check("persistent_rollback_rematch", "check_persistent_rollback_rematch.py", "asan",
@@ -614,6 +617,10 @@ CHECKS = (
     Check("rollback_item_matrix", "check_rollback_item_matrix.py", "native",
           "all 15 standard-race balloon levels activate inside a corrected "
           "input window with real effects and a suppressed-release control"),
+    Check("rollback_weapon_refcount", "check_rollback_weapon_refcount.py",
+          "native",
+          "a corrected weapon fire conserves the pinned item-model refcount "
+          "(snapshot-covered counts replay; uncovered counts freeze)"),
     Check("rollback_vehicle_matrix", "check_rollback_vehicle_matrix.py", "native",
           "every ROM-derived legal standard-track vehicle pairing"),
     Check("ci_contract", "check_ci_contract.py", "source",
@@ -635,6 +642,9 @@ CHECKS = (
           "raw pointer/token narrowing confined to typed boundary helpers"),
     Check("delta_inventory", "check_delta_inventory.py", "source",
           "every //!@Delta simulation-cadence site carries an M0 classification"),
+    Check("net_roster_owner_guard", "check_net_roster_owner_guard.py", "source",
+          "local-Play boot cannot inherit a foreign online roster; ownership is "
+          "explicit and the guard is idempotent (compiles + runs standalone)"),
     Check("harness_isolation", "check_harness_isolation.py", "source",
           "every check that isolates MDKR_SAVE_DIR also pins "
           "MDKR_VIDEO_CONFIG_PATH, so a repo-root mdkr64.ini cannot reach "
@@ -681,6 +691,12 @@ CHECKS = (
           "opt-in widescreen HUD pixel layout (#51): TT rows share one right "
           "anchor, the race-start hold stays offscreen, identity label and "
           "battle strip stay centered, 4:3 byte-identical with the option on"),
+    Check("widescreen_minimap_alignment",
+          "check_widescreen_minimap_alignment.py", "native",
+          "minimap marker-on-map alignment under the widescreen HUD (#57): "
+          "ortho sprite texels keep the safe pixel scale so the map image "
+          "and its markers shift as one (hub island and race track map), "
+          "4:3 byte-identical with the option on"),
     Check("framed_world_views", "check_framed_world_views.py", "native",
           "fixed-aspect live menu views remain inside their 4:3 regions"),
     Check("shadow_visual_ab", "check_shadow_visual_ab.py", "native",
@@ -985,9 +1001,17 @@ CHECKS = (
     Check("save_options_scroll_band", "check_save_options_scroll_band.py", "native",
           "inverted rectangles on the Save Options pak-switch scroll draw "
           "nothing, as on hardware (issue #52)"),
+    Check("track_preview_time_steady", "check_track_preview_time_steady.py", "native",
+          "best time/lap digit sprites hold still while the track-preview "
+          "flyby banks; the ortho sprite roll comes from the base viewport "
+          "camera, not the cutscene bank (issue #59)"),
     Check("postrace_door_fling", "check_postrace_door_fling.py", "native",
           "post-race lobby returns stay grounded on the quit paths, with the "
           "rising-door carry-frame legacy control"),
+    Check("track_exit_storage", "check_track_exit_storage.py", "native",
+          "Hot Top Volcano's destination -1 exit reloads the central hub "
+          "through the measured retail us.v80 path with trophy storage "
+          "intact, instead of the menu-8 dead-end hang (issue #55)"),
     Check("trophy_series", "check_trophy_series.py", "native",
           "all four Adventure trophy championships, quit/retry, and EEPROM reload"),
     Check("race_finish_time", "check_race_finish_time.py", "native",
@@ -1011,6 +1035,9 @@ CHECKS = (
           "perturbed-boost-constant positive controls"),
     Check("save_failsafe", "check_save_failsafe.py", "native",
           "EEPROM recovery and persistence"),
+    Check("save_write_notice", "check_save_write_notice.py", "native",
+          "a failed durable save surfaces one player notice instead of losing "
+          "progress silently (issue #54 Run B)"),
     Check("save_100_entry", "check_save_100_entry.py", "native",
           "a 100%-complete save is actually enterable through the FILE_SELECT "
           "input gate, with the AT2-config-bit defect as a positive control"),
@@ -1209,6 +1236,9 @@ CTEST_COMPANION_SCRIPTS = {
     # in cmake/tests.cmake; the broad ctest task owns its artifact-free run.
     "check_character_offset_studio.py",
     "check_multiplayer_boundaries.py",
+    # Registered as the gamecontrollerdb_lint CTest (cmake/tests.cmake); a
+    # plain source lint with no artifacts, run once by the ctest task.
+    "check_gamecontrollerdb.py",
     "check_controller_settings_persistence.py",
     "check_host_input_focus.py",
     "check_launcher_tabs.py",
@@ -1229,6 +1259,67 @@ WORKFLOW_COMPANION_SCRIPTS = {
     # has no frozen-importer artifact role and cannot substitute the game
     # binary for this executable-shaped contract.
     "check_frozen_character_importer.py",
+}
+
+# The native online-takeover (Golden Balloon beta) regression lanes. Every one
+# boots the REAL engine off the ROM and is TIMING-SENSITIVE (wall-clock
+# watchdogs, live loopback-transport convergence, countdown dwells that only
+# behave with the machine to themselves), so they must NEVER enter this parallel
+# runner's pool. They are OWNED by tools/run_online_checks.py -- the serial
+# aggregating exit gate that runs each lane strictly one at a time -- and several
+# are also runnable standalone. Registered here as owned/known so run_checks.py
+# --list and check_ci_contract accept the tree WITHOUT the runner ever executing
+# a flaky online lane. (online_profile_rematch ships as a real CHECKS entry
+# above, and online_live_transport_e2e as the browser_local capstone, so those
+# two are deliberately absent from this set.)
+#
+# check_online_process_convergence.py lives HERE, not in CHECKS, because its
+# verdict is a property of MDKR_ENABLE_ONLINE_BETA builds only: the
+# zero-viewport endpoint's determinism depends on the hud_audio_update() call
+# in game/src/thread3_main.c that is compiled only under the beta gate (kept
+# out of OFF builds so the isolation anchors stay byte-identical). Handing the
+# lane this runner's beta-OFF --build (build-rel) reproduces the pre-fix
+# row-2801 RNG fork by construction — a red about the invocation shape, not
+# the tree. The default tools/run_online_checks.py sweep runs the US arm
+# against build-beta, and --pal-rom joins the pal/cross arms.
+ONLINE_TAKEOVER_SCRIPTS = {
+    "check_online_beta_handoff.py",
+    "check_online_camera_capture_continuity.py",
+    "check_online_camera_lens.py",
+    "check_online_ceremony.py",
+    "check_online_character_map.py",
+    "check_online_charselect.py",
+    "check_online_engine_boot.py",
+    "check_online_engine_boot_direct.py",
+    "check_online_final_replay.py",
+    "check_online_isolation_selftest.py",
+    "check_online_joiner_terminal.py",
+    "check_online_left_reentry.py",
+    "check_online_lobby_single_endpoint.py",
+    "check_online_lobby_start.py",
+    "check_online_lobby_takeover.py",
+    "check_online_lobby_tournament.py",
+    "check_online_lobby_unconfigured.py",
+    "check_online_midrace_transport_loss.py",
+    "check_online_partition_integrity.py",
+    "check_online_pause_overlay.py",
+    "check_online_peer_loss.py",
+    "check_online_process_convergence.py",
+    "check_online_race_start_peer_loss.py",
+    "check_online_racer_lod_animation.py",
+    "check_online_rearm_third.py",
+    "check_online_region_reentry.py",
+    "check_online_resident_live.py",
+    "check_online_results_chooser.py",
+    "check_online_room_ready_rearm.py",
+    "check_online_session_boot.py",
+    "check_online_session_end.py",
+    "check_online_session_results.py",
+    "check_online_single_race_replay.py",
+    "check_online_tournament.py",
+    "check_online_tournament_cup_vehicle.py",
+    "check_online_trackselect.py",
+    "check_online_vehicleselect.py",
 }
 
 
@@ -1253,7 +1344,8 @@ def cmake_registered_test_scripts() -> set[str]:
 def validate_manifest() -> None:
     discovered = {path.name for path in TESTS.glob("check_*.py")}
     registered = ({check.script for check in CHECKS if check.script} |
-                  CTEST_COMPANION_SCRIPTS | WORKFLOW_COMPANION_SCRIPTS)
+                  CTEST_COMPANION_SCRIPTS | WORKFLOW_COMPANION_SCRIPTS |
+                  ONLINE_TAKEOVER_SCRIPTS)
     missing = sorted(discovered - registered)
     stale = sorted(registered - discovered)
     duplicate_names = sorted(

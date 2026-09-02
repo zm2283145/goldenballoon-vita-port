@@ -1,4 +1,5 @@
 #include "video.h"
+#include "video_mode_table.h"
 #include "memory.h"
 #include "PRinternal/viint.h"
 #include "types.h"
@@ -78,12 +79,31 @@ void video_init(s32 videoModeIndex, OSSched *sc) {
         gVideoHeightRatio = HEIGHT_RATIO_NTSC;
     }
 
+#ifdef NATIVE_PORT
+    /* The native persistent launcher runs video_init() once per in-process
+     * engine epoch (Return to Launcher -> Play again) instead of once per
+     * console power cycle, so the PAL height raise must be idempotent or it
+     * compounds the persistent global table (240 -> 264 -> 288 -> ...) and
+     * lifts every PAL SAFE_2D layout up on the second and later epochs. See
+     * mdkr_video_apply_pal_height_raise(). Byte-identical to the retail loop on
+     * NTSC (never called) and on the first PAL epoch. */
+    {
+        static s32 sPalHeightRaised = 0;
+        if (osTvType == OS_TV_TYPE_PAL) {
+            mdkr_video_apply_pal_height_raise(gVideoModeResolutions,
+                                              NUM_RESOLUTION_MODES,
+                                              PAL_HEIGHT_DIFFERENCE,
+                                              &sPalHeightRaised);
+        }
+    }
+#else
     if (osTvType == OS_TV_TYPE_PAL) {
         s32 i;
         for (i = 0; i <= NUM_RESOLUTION_MODES; i++) {
             gVideoModeResolutions[i].height += PAL_HEIGHT_DIFFERENCE;
         }
     }
+#endif
 
     video_delta_reset();
     fb_mode_set(videoModeIndex);

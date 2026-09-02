@@ -56,6 +56,8 @@
 #include "math_util.h"
 #include "menu.h"
 #include "network_player_authority.h"
+#include "net/net_roster_runtime.h"
+#include "net/online_race_results.h"
 #include "object_functions.h"
 #include "object_layout.h"
 #include "object_models.h"
@@ -954,6 +956,13 @@ static Object *gObjectSavedBobFor; /* pairing guard for the exact-bits restore.
     per-racer emitter loop. */
 static Object *gObjectRenderModelFor;
 static s32 gObjectRenderModelIndex;
+/* The draw seam's selection BEFORE the never-posed fence in
+ * racer_model_index_for_view() (presentation diagnostics only: the
+ * MDKR_TEST_ANIM_LOD_WITNESS reader correlates the requested and the drawn
+ * index; nothing in simulation reads either). Valid while
+ * gObjectRenderRequestedFor holds the racer being drawn. */
+static Object *gObjectRenderRequestedFor;
+static s32 gObjectRenderRequestedIndex;
 static s32 gObjectRenderRacerTexOffset;
 static Vertex *gObjectSavedCurVertData;
 static Object *gObjectSavedCurVertFor;
@@ -1020,6 +1029,9 @@ typedef struct MdkrRollbackAssetLease {
 static MdkrRollbackAssetLease
     sRollbackAssetLeases[MDKR_ROLLBACK_ASSET_LEASE_MAX];
 static s32 sRollbackAssetLeaseCount;
+/* Once-per-race dedup for the pinned-refcount deficit witness (indexed by
+ * lease slot of each unique model's first lease); reset at pin time. */
+static u8 sPinnedDeficitLogged[MDKR_ROLLBACK_ASSET_LEASE_MAX];
 #endif
 s32 gObjectMapIndex;
 Object **gParticlePtrList;
@@ -1690,6 +1702,22 @@ s32 mdkr_object_model_pool_ready(void) {
 }
 
 void mdkr_object_assets_unpin_rollback(void) {
+    if (sRollbackAssetLeaseCount > 0) {
+        /* Witness the covered reference counters while the leases still hold
+         * them. The values are deterministic per rig (pin contribution + live
+         * holders), so refcount-conservation experiments compare this line
+         * across builds/timelines; a count eroded by a discarded replay shows
+         * up here long before the mid-race free it would eventually cause. */
+        s16 *references[MDKR_ROLLBACK_ASSET_LEASE_MAX];
+        s32 count = mdkr_object_assets_rollback_references(
+            references, MDKR_ROLLBACK_ASSET_LEASE_MAX);
+        s32 index;
+        fprintf(stderr, "[ROLLBACK] pinned model references at unpin:");
+        for (index = 0; index < count; index++) {
+            fprintf(stderr, " r%d=%d", index, (s32)*references[index]);
+        }
+        fputc('\n', stderr);
+    }
     while (sRollbackAssetLeaseCount > 0) {
         MdkrRollbackAssetLease *lease =
             &sRollbackAssetLeases[--sRollbackAssetLeaseCount];
@@ -1783,6 +1811,9 @@ s32 mdkr_object_assets_pin_rollback(void) {
     s32 index;
 
     mdkr_object_assets_unpin_rollback();
+    for (index = 0; index < MDKR_ROLLBACK_ASSET_LEASE_MAX; index++) {
+        sPinnedDeficitLogged[index] = FALSE;
+    }
     for (index = 0; index < ARRAY_COUNT(kItemSpawnTypes); index++) {
         if (!mdkr_object_assets_pin_type(kItemSpawnTypes[index])) {
             fprintf(stderr,
@@ -1823,6 +1854,121 @@ s32 mdkr_object_assets_rollback_references(
         references[count++] = &instance->objModel->references;
     }
     return count;
+}
+
+/* ONE-SIDED conservation validator over the pinned item models, run at every
+ * authored rollback boundary. For each unique covered model it computes the
+ * FLOOR its references field can lawfully sit at: the lease registry's own
+ * holds plus every live gObjPtrList holder (an object of 3D-model type whose
+ * modelInstances slot points at the model). Holders outside that walk can
+ * only RAISE the true count, so a below-floor reading is always a genuinely
+ * lost reference -- the class where a correction window rewound past a live
+ * weapon spawn and the replay never re-applied its ++ (or a mispredicted
+ * live release) -- never a walk artifact. Logged once per model per race;
+ * the free-refusal tripwire in free_3d_model independently fail-safes the
+ * eventual UAF, so this is a witness, not a behavior change. */
+s32 mdkr_object_assets_pinned_reference_deficit(void) {
+    s32 deficits = 0;
+    s32 lease;
+    for (lease = 0; lease < sRollbackAssetLeaseCount; lease++) {
+        const ObjectModel *model;
+        const ModelInstance *leaseInstance;
+        s32 floor;
+        s32 other;
+        s32 index;
+        if (sRollbackAssetLeases[lease].modelType !=
+            OBJECT_MODEL_TYPE_3D_MODEL) {
+            continue;
+        }
+        leaseInstance =
+            (const ModelInstance *)sRollbackAssetLeases[lease].asset;
+        if (leaseInstance == NULL || leaseInstance->objModel == NULL) {
+            continue;
+        }
+        model = leaseInstance->objModel;
+        /* Evaluate each unique model once (at its first lease). */
+        for (other = 0; other < lease; other++) {
+            const ModelInstance *prior =
+                (const ModelInstance *)sRollbackAssetLeases[other].asset;
+            if (sRollbackAssetLeases[other].modelType ==
+                    OBJECT_MODEL_TYPE_3D_MODEL &&
+                prior != NULL && prior->objModel == model) {
+                break;
+            }
+        }
+        if (other != lease) {
+            continue;
+        }
+        floor = 0;
+        for (other = 0; other < sRollbackAssetLeaseCount; other++) {
+            const ModelInstance *held =
+                (const ModelInstance *)sRollbackAssetLeases[other].asset;
+            if (sRollbackAssetLeases[other].modelType ==
+                    OBJECT_MODEL_TYPE_3D_MODEL &&
+                held != NULL && held->objModel == model) {
+                floor++;
+            }
+        }
+        for (index = 0; index < gObjectCount; index++) {
+            const Object *obj = gObjPtrList[index];
+            s32 slot;
+            /* Particle-flagged entries have a different trailing layout (no
+             * modelInstances pointer array); the authority registration walk
+             * skips them for the same reason. */
+            if (obj == NULL ||
+                (obj->trans.flags & OBJ_FLAGS_PARTICLE) != 0 ||
+                obj->header == NULL ||
+                obj->header->modelType != OBJECT_MODEL_TYPE_3D_MODEL ||
+                obj->modelInstances == NULL) {
+                continue;
+            }
+            for (slot = 0; slot < obj->header->numberOfModelIds; slot++) {
+                if (obj->modelInstances[slot] != NULL &&
+                    obj->modelInstances[slot]->objModel == model) {
+                    floor++;
+                }
+            }
+        }
+        if ((s32)model->references < floor) {
+            deficits++;
+            if (!sPinnedDeficitLogged[lease]) {
+                sPinnedDeficitLogged[lease] = TRUE;
+                fprintf(stderr,
+                        "[ROLLBACK] pinned model reference deficit: "
+                        "model=%p references=%d floor=%d (leases+holders)\n",
+                        (const void *)model, (s32)model->references, floor);
+            }
+        }
+    }
+    return deficits;
+}
+
+/* TRUE iff this shared model's `references` counter is one of the fields
+ * mdkr_object_assets_rollback_references() enumerates -- i.e. the rollback
+ * authority snapshot-registers it (TAG_ITEM_MODEL_REFERENCE_BASE ranges) and
+ * restore owns its bytes. Keyed on the live lease registry, the SAME source
+ * of truth the registration reads, never a duplicated object-ID list: both
+ * walk sRollbackAssetLeases with the same 3D-model filter, so covered(model)
+ * and enumerated(&model->references) cannot drift apart. Leases exist only
+ * between pin (level_ready, before registry freeze) and unpin (level end),
+ * so offline retail races always answer FALSE. */
+s32 mdkr_object_assets_model_reference_covered(const ObjectModel *model) {
+    s32 index;
+    if (model == NULL) {
+        return FALSE;
+    }
+    for (index = 0; index < sRollbackAssetLeaseCount; index++) {
+        const ModelInstance *instance;
+        if (sRollbackAssetLeases[index].modelType !=
+            OBJECT_MODEL_TYPE_3D_MODEL) {
+            continue;
+        }
+        instance = (const ModelInstance *)sRollbackAssetLeases[index].asset;
+        if (instance != NULL && instance->objModel == model) {
+            return TRUE;
+        }
+    }
+    return FALSE;
 }
 #endif
 
@@ -4193,7 +4339,15 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
         }
         // Spawn player ghost.
         if (timetrial_valid_player_ghost()) {
+#ifdef NATIVE_PORT
+            /* A bonus-racer ghost stores a marker ID >= NUM_CHARACTERS; index the
+             * retail kart-model table with its donor character instead. */
+            s32 ghostSpawnCharacter =
+                mod_racer_ghost_character_donor(gTimeTrialCharacter);
+            objectID = gRacerObjectTable[ghostSpawnCharacter + (gTimeTrialVehicle * NUM_CHARACTERS)];
+#else
             objectID = gRacerObjectTable[gTimeTrialCharacter + (gTimeTrialVehicle * NUM_CHARACTERS)];
+#endif
             racerEntry->common.size = ((objectID & 0x100) >> 1) | 0x10;
             racerEntry->common.objectID = objectID;
             racerEntry->common.x = spawnX[0];
@@ -7410,6 +7564,71 @@ void obj_animate_tick(void) {
 }
 #endif
 
+#ifdef NATIVE_PORT
+/* Racer drawn-LOD animation discriminator (env MDKR_TEST_ANIM_LOD_WITNESS; NOT
+ * roster-gated and NOT online-gated -- every native build observes it, because
+ * the offline check_enh_draw_distance LodBias lane runs against a non-beta build
+ * and needs this witness to prove the never-posed fence redirected (the fence
+ * generalised to the offline LodBias class in 8a56352f; the witness had stayed
+ * behind MDKR_ENABLE_ONLINE_BETA from its online-only origin in 5de11751). It is
+ * inert unless the env var is set, read-only (every access is a load), and writes
+ * only to stderr, so no build's authoritative state or symbol set changes. At the
+ * authored draw, reports every racer whose DRAWN model index differs from the
+ * authoritative obj->modelIndex OR whose draw-seam selection was moved by the
+ * never-posed fence in racer_model_index_for_view(), together with the drawn
+ * instance's animationID and the pre-fence REQUESTED index + its animationID.
+ * The model_instance_init sentinel animationID == -1 means the instance has
+ * NEVER been posed by obj_animate and holds the bind pose: a -1 on the DRAWN
+ * side is the presented T-pose defect; a -1 on the REQUESTED side is the fence
+ * doing its job (and proves the sentinel plumbing is alive -- the lane's arm 1
+ * asserts exactly that). Read-only: every access is a load. */
+static s32 mdkr_anim_lod_witness_enabled(void) {
+    static s32 state = -1;
+    if (state < 0) {
+        const char *v = getenv("MDKR_TEST_ANIM_LOD_WITNESS");
+        state = (v != NULL && v[0] != '\0' && v[0] != '0') ? 1 : 0;
+    }
+    return state;
+}
+
+static void mdkr_anim_lod_witness(const Object *obj) {
+    s32 renderIndex;
+    s32 requestedIndex;
+    s32 requestedAnimationID;
+    const ModelInstance *drawn;
+    const ModelInstance *requested;
+    if (!mdkr_anim_lod_witness_enabled() || obj->behaviorId != BHV_RACER ||
+        obj->modelInstances == NULL) {
+        return;
+    }
+    renderIndex = object_render_model_index(obj);
+    requestedIndex = renderIndex;
+    if (gObjectRenderRequestedFor == obj) {
+        requestedIndex = gObjectRenderRequestedIndex;
+    }
+    if (renderIndex == obj->modelIndex && requestedIndex == renderIndex) {
+        return;
+    }
+    drawn = obj->modelInstances[renderIndex];
+    if (drawn == NULL || drawn->modelType != MODELTYPE_ANIMATED) {
+        return;
+    }
+    requested = (requestedIndex >= 0 &&
+                 requestedIndex < obj->header->numberOfModelIds)
+                    ? obj->modelInstances[requestedIndex]
+                    : NULL;
+    requestedAnimationID =
+        requested != NULL ? (s32) requested->animationID : 0;
+    fprintf(stderr,
+            "[anim-lod-witness] renderIndex=%d authoritativeIndex=%d "
+            "drawnAnimationID=%d drawnAnimationFrame=%d requestedIndex=%d "
+            "requestedAnimationID=%d\n",
+            renderIndex, obj->modelIndex, (s32) drawn->animationID,
+            (s32) drawn->animationFrame, requestedIndex,
+            requestedAnimationID);
+}
+#endif
+
 /**
  * Renders a 3D object, with support for vehicle part entities as part of the process.
  * Loads materials, and sets environment and/or primitive colours based on the material type.
@@ -7449,6 +7668,7 @@ void render_3d_model(Object *obj) {
     workshopOccluderTarget = FALSE;
     modernModelIndex = object_render_model_index(obj);
     modInst = obj->modelInstances[modernModelIndex];
+    mdkr_anim_lod_witness(obj);
 #else
     modInst = obj->modelInstances[obj->modelIndex];
 #endif
@@ -7985,12 +8205,111 @@ void func_80012CE8(Gfx **dList) {
     }
 }
 
+#if MDKR_ENABLE_ONLINE_BETA
+/* ---- online rollback partition-integrity hardening + observability ----
+ *
+ * The object list gObjPtrList is partitioned in two stages every authoritative
+ * tick (obj_sort_tick): func_8001E4C4 moves cutscene-inactive animation objects
+ * ahead of gObjectListStart, then get_first_active_object moves the remaining
+ * NON-rendered entries -- particles and every object whose header carries
+ * HEADER_FLAGS_UNK_0001, which includes a track's spectate BHV_CAMERA_CONTROL
+ * objects -- ahead of gFirstActiveObjectId. The scene draw walks only the tail
+ * [gObjSortFirstActive, gObjectCount), so those camera objects are normally
+ * never drawn.
+ *
+ * get_first_active_object CACHES that boundary in gFirstActiveObjectId and
+ * returns it verbatim whenever it is nonzero; the cache is only invalidated on a
+ * cutscene change or a list rebuild, and is maintained incrementally by the free
+ * path in between. The rollback snapshot (platform/rollback) restores gObjPtrList,
+ * gObjectCount and gObjectListStart, but NOT this cache -- so after a deep
+ * catch-up rollback on a solo online endpoint the cached boundary can disagree
+ * with the restored list. A boundary that ends up too low makes the render tail
+ * spill into the inactive front partition: the level's spectate cameras get
+ * drawn (the floating-camera artifact) and a recycled/inactive entry can feed a
+ * wild display-list sub-list pointer into the walk (a rare SIGSEGV). Same root,
+ * two symptoms.
+ *
+ * All of the hardening below is compiled only in the online-beta build and is
+ * inert unless mdkr_net_roster_runtime_active() (false offline), so offline play
+ * -- and the release binary -- is byte-identical. Set MDKR_TEST_DISABLE_PARTITION_FIX
+ * to A/B the fix (render-purity / repro). MDKR_TEST_PARTITION_TRACE narrates it.
+ */
+s32 gPartitionTraceCameraDraws; /* spectate cameras that reached render_object */
+
+static s32 mdkr_partition_trace_enabled(void) {
+    static s32 state = -1;
+    if (state < 0) {
+        const char *v = getenv("MDKR_TEST_PARTITION_TRACE");
+        state = (v != NULL && v[0] != '\0' && v[0] != '0') ? 1 : 0;
+    }
+    return state;
+}
+
+static s32 mdkr_partition_fix_enabled(void) {
+    static s32 state = -1;
+    if (state < 0) {
+        const char *v = getenv("MDKR_TEST_DISABLE_PARTITION_FIX");
+        state = (v != NULL && v[0] != '\0' && v[0] != '0') ? 0 : 1;
+    }
+    return state;
+}
+
+/* Test-only faithful reproduction of the post-rollback boundary state. A deep
+ * catch-up restores gObjPtrList/gObjectCount/gObjectListStart but NOT the cached
+ * boundary gFirstActiveObjectId, which the free path had lowered as front objects
+ * retired -- so the restore re-materialises those objects while the boundary
+ * stays below the live active region, and the render tail spills into the front
+ * partition (the spectate cameras). MDKR_TEST_PARTITION_STALE_AT=<n> forces that
+ * exact state on the n-th online render tick by dropping the cached boundary to
+ * gObjectListStart. The object list itself stays valid, so this is the real
+ * corruption made deterministic and offline; 0 disables. */
+static s32 mdkr_partition_stale_inject_tick(void) {
+    static s32 state = -1;
+    if (state < 0) {
+        const char *v = getenv("MDKR_TEST_PARTITION_STALE_AT");
+        long parsed = (v != NULL) ? strtol(v, NULL, 10) : 0;
+        state = (parsed > 0 && parsed < 100000000L) ? (s32)parsed : 0;
+    }
+    return state;
+}
+
+/* Scene render filter (online belt). TRUE when this object must be kept out of
+ * render_object: it is a non-particle object the active-partition classifies as
+ * non-rendered (HEADER_FLAGS_UNK_0001 -- a spectate BHV_CAMERA_CONTROL and its
+ * kin), so it can only be in the render tail because a post-rollback boundary
+ * went stale. Particles are excluded from this test: they route through the
+ * scene loops' own particle branch and are legitimately drawn. Never fires
+ * offline (roster inactive) or under the A/B disable, so offline/release render
+ * output is byte-identical. */
+s32 mdkr_scene_render_partition_excluded(const Object *obj) {
+    return mdkr_net_roster_runtime_active() && mdkr_partition_fix_enabled() &&
+           obj != NULL && !(obj->trans.flags & OBJ_FLAGS_PARTICLE) &&
+           obj->header != NULL &&
+           (obj->header->flags & HEADER_FLAGS_UNK_0001);
+}
+#endif
+
 /**
  * Update the object stack trace, set the draw pointers, then begin rendering the object.
  * Official Name: objPrintObject
  */
 void render_object(Gfx **dList, Mtx **mtx, Vertex **verts, Object *obj) {
     f32 scale;
+#if MDKR_ENABLE_ONLINE_BETA
+    /* Detector for the online rollback partition-corruption class: a spectate
+     * BHV_CAMERA_CONTROL object should be partitioned out of the render tail and
+     * never arrive here. Counting it (and, when tracing, narrating it) is what
+     * turns "floating cameras" into a number the repro/regression can assert. */
+    if (obj != NULL && obj->behaviorId == BHV_CAMERA_CONTROL) {
+        gPartitionTraceCameraDraws++;
+        if (mdkr_partition_trace_enabled()) {
+            fprintf(stderr,
+                    "[PARTITION-TRACE] spectate BHV_CAMERA_CONTROL reached "
+                    "render_object listStart=%d firstActive=%d count=%d\n",
+                    gObjectListStart, gFirstActiveObjectId, gObjectCount);
+        }
+    }
+#endif
 #ifdef NATIVE_PORT
     if (taj_visual_suppress_donor_draw(obj) || wizpig_visual_suppress_donor_draw(obj) ||
         terry_visual_suppress_donor_draw(obj)) {
@@ -8144,6 +8463,31 @@ static s32 racer_lod_index_for_scaled(s32 scaledDistance, const u8 *thresholds) 
     return 5;
 }
 
+/* TRUE when drawing modelInstances[modelIndex] would present vertices
+ * obj_animate() has never written: a NULL slot, or an ANIMATED instance still
+ * carrying the model_instance_init sentinel animationID == -1 over its
+ * base-mesh (bind pose) copy. Loads only.
+ *
+ * The -1 is ALSO written transiently, as a "re-pose me" marker on the COMMITTED
+ * instance (obj->modelInstances[obj->modelIndex]) at an animation wrap, by:
+ * func_80061C0C (in object_models.c); the six boss-vehicle updaters
+ * update_smokey / update_bluey / update_tricky / update_bubbler / update_wizpig
+ * / update_rocket (vehicle_*.c, dispatched from update_player_racer in
+ * racer.c); and the carpet re-pose flow (in racer.c, which itself calls
+ * func_80061C0C). Every one of those runs inside obj_update, and
+ * obj_animate_tick re-poses obj->modelInstances[obj->modelIndex] -- writing a
+ * real animationID >= 0 (in hasm_native/obj_animate.c) -- BEFORE render_scene
+ * ever selects a draw index: the fixed obj_update -> obj_animate_tick -> render
+ * order (in thread3_main.c) consumes each transient -1 on the
+ * committed instance before this fence can observe it. And even if one somehow
+ * survived to the draw, treating that single tick as never-posed merely
+ * redirects the draw to another posed instance, never the reverse. */
+static s32 racer_model_never_posed(const Object *obj, s32 modelIndex) {
+    const ModelInstance *held = obj->modelInstances[modelIndex];
+    return held == NULL || (held->modelType == MODELTYPE_ANIMATED &&
+                            held->animationID == -1);
+}
+
 /* Pure racer LOD selection. The caller supplies the viewport's private
  * distance and owns whether the result is committed to simulation (tick) or
  * retained as a draw-local override (render).
@@ -8160,6 +8504,7 @@ static s32 racer_model_index_for_view(Object *obj, Object_Racer *racer,
     s32 firstModel;
     s32 lastModel;
     s32 modelIndex;
+    s32 ladderChoice;
     s32 scaledDistance;
     s32 fromDistanceLadder = FALSE;
     u8 *thresholds;
@@ -8218,8 +8563,10 @@ static s32 racer_model_index_for_view(Object *obj, Object_Racer *racer,
      * this racer does not carry has to resolve to the model the authored index
      * would have picked anyway -- and because that is the only point at which
      * the setting can honestly report whether it changed anything. */
+    ladderChoice = modelIndex;
     if (allowLodBias && fromDistanceLadder) {
-        modelIndex = mdkr_enh_lod_bias_apply(modelIndex, firstModel, lastModel);
+        modelIndex =
+            mdkr_enh_lod_bias_apply(modelIndex, firstModel, lastModel);
     }
     /* Bonus-racer donor LOD cap. Gated on allowLodBias for exactly the reason the bias above is:
      * this is presentation-only, and `allowLodBias` is TRUE only on the draw seam in
@@ -8245,6 +8592,64 @@ static s32 racer_model_index_for_view(Object *obj, Object_Racer *racer,
     }
     if (modelIndex > lastModel) {
         modelIndex = lastModel;
+    }
+    /* Never-posed fence, draw seam only (allowLodBias is TRUE only in
+     * set_temp_model_transforms; the FALSE callers commit simulation state and
+     * must never take it). obj_animate_tick() poses ONLY
+     * modelInstances[obj->modelIndex], so any OTHER instance this draw selects
+     * holds whatever it held when it was last the committed index -- and an
+     * instance that was NEVER committed still holds the model_instance_init
+     * base-mesh copy with the sentinel animationID == -1: the bind pose, the
+     * remote racer "T-pose" of the 2026-08-31 two-Mac playtest.
+     *
+     * Two routes produce such a selection, one shared fence closes both:
+     *   - ONLINE: obj->modelIndex is [SIMHASH] v3 authority, committed from the
+     *     canonical LAST viewport's camera (scene_build_last_viewport_basis) on
+     *     every endpoint, while this draw ranks by the LOCAL lens distance. On
+     *     the endpoint whose seat is not that last viewport, the remote racer
+     *     commits near bands forever (it never leaves its own camera), so its
+     *     far-band instances are never posed -- drawn bind whenever the local
+     *     player falls behind and looks at it, recovering on catch-up.
+     *   - OFFLINE: Enhancements.LodBias holds a MORE-detailed model than the
+     *     ladder chose and can land on a band the committed ladder never
+     *     visits (measured red on the 2P split: ~3977 never-posed draws with
+     *     LodBias=2, and the 2026-08-29 real online race before the first,
+     *     roster-gated version of this clamp).
+     *
+     * Degrade in authored order: the unbiased ladder choice for THIS viewport
+     * distance first (exactly what LodBias=0 would draw -- restores the old
+     * clamp's target), then the authoritative committed instance (the one
+     * obj_animate_tick keeps live), else keep the selection (nothing better
+     * exists; matches the pre-fence draw). Candidates pass the same donor caps
+     * and range clamp the selection did. Presentation-only: obj->modelIndex is
+     * never written, no instance state is touched (loads only), and the FALSE
+     * callers are unreachable, so the v3 hash cannot move. */
+    if (allowLodBias) {
+        gObjectRenderRequestedFor = obj;
+        gObjectRenderRequestedIndex = modelIndex;
+        if (racer_model_never_posed(obj, modelIndex)) {
+            s32 candidate = wizpig_visual_cap_donor_lod(obj, ladderChoice);
+            candidate = terry_visual_cap_donor_lod(obj, candidate);
+            if (candidate < firstModel) {
+                candidate = firstModel;
+            }
+            if (candidate > lastModel) {
+                candidate = lastModel;
+            }
+            if (racer_model_never_posed(obj, candidate)) {
+                candidate = wizpig_visual_cap_donor_lod(obj, obj->modelIndex);
+                candidate = terry_visual_cap_donor_lod(obj, candidate);
+                if (candidate < firstModel) {
+                    candidate = firstModel;
+                }
+                if (candidate > lastModel) {
+                    candidate = lastModel;
+                }
+            }
+            if (!racer_model_never_posed(obj, candidate)) {
+                modelIndex = candidate;
+            }
+        }
     }
     return modelIndex;
 }
@@ -8551,6 +8956,9 @@ void unset_temp_model_transforms(Object *obj) {
     }
     if (gObjectRenderModelFor == obj) {
         gObjectRenderModelFor = NULL;
+    }
+    if (gObjectRenderRequestedFor == obj) {
+        gObjectRenderRequestedFor = NULL;
     }
 #endif
     if (!(obj->trans.flags & OBJ_FLAGS_PARTICLE) && obj->header->behaviorId == BHV_RACER &&
@@ -9491,6 +9899,77 @@ void obj_sort_tick(void) {
     savedCameraID = get_current_viewport();
     scene_build_last_viewport_basis();
     gObjSortFirstActive = get_first_active_object(&gObjSortObjCount);
+#if MDKR_ENABLE_ONLINE_BETA
+    if (mdkr_net_roster_runtime_active()) {
+        s32 injectAt = mdkr_partition_stale_inject_tick();
+        if (injectAt > 0) {
+            static s32 sInjectTickCounter = 0;
+            sInjectTickCounter++;
+            if (sInjectTickCounter >= injectAt) {
+                /* Persist the corruption exactly as a real restore would: the
+                 * cached boundary stays below the active region every subsequent
+                 * tick until a cutscene change / list rebuild would reset it. */
+                gFirstActiveObjectId = (s16)gObjectListStart;
+                gObjSortFirstActive = gObjectListStart;
+                if (sInjectTickCounter == injectAt) {
+                    fprintf(stderr,
+                            "[PARTITION-TRACE] INJECTED stale boundary at online "
+                            "tick %d: firstActive dropped to listStart=%d "
+                            "(count=%d)\n",
+                            sInjectTickCounter, gObjectListStart, gObjectCount);
+                }
+            }
+        }
+    }
+    /* Rollback partition-range bound (online only). The render walk covers
+     * exactly [gObjSortFirstActive, gObjSortObjCount). get_first_active_object
+     * returns the CACHED boundary gFirstActiveObjectId, which the rollback
+     * snapshot never captures: the free path lowers it as front objects retire,
+     * but a restore re-materialises those objects in the list WITHOUT undoing the
+     * decrement, so the boundary can be left below the live active region. Keep
+     * the walked span inside the restored list so a stale boundary or count can
+     * never index a wild Object* into the display-list walk (the rare SIGSEGV).
+     * The spectate cameras a stale-low boundary would expose are then dropped by
+     * the per-object scene filter (mdkr_scene_render_partition_excluded). This is
+     * a no-op whenever the boundary is already valid (always, offline/normal), so
+     * it never moves the list order or the canonical fold. Inert offline:
+     * mdkr_net_roster_runtime_active() is false there. */
+    if (mdkr_net_roster_runtime_active() && mdkr_partition_fix_enabled()) {
+        if (gObjSortObjCount < 0) {
+            gObjSortObjCount = 0;
+        }
+        if (gObjSortObjCount > gObjectCount) {
+            gObjSortObjCount = gObjectCount;
+        }
+        if (gObjSortFirstActive < gObjectListStart) {
+            gObjSortFirstActive = gObjectListStart;
+        }
+        if (gObjSortFirstActive > gObjSortObjCount) {
+            gObjSortFirstActive = gObjSortObjCount;
+        }
+    }
+    if (mdkr_partition_trace_enabled() && mdkr_net_roster_runtime_active()) {
+        /* Corruption detector, independent of the belt: count the spectate
+         * cameras sitting inside the render tail this tick. Normally zero -- the
+         * partition keeps them ahead of the boundary -- so any nonzero value is a
+         * stale-boundary event that the scene filter must then suppress. */
+        s32 cameras = 0;
+        s32 i;
+        for (i = gObjSortFirstActive; i < gObjSortObjCount; i++) {
+            Object *obj = gObjPtrList[i];
+            if (obj != NULL && obj->behaviorId == BHV_CAMERA_CONTROL) {
+                cameras++;
+            }
+        }
+        if (cameras != 0) {
+            fprintf(stderr,
+                    "[PARTITION-TRACE] render tail [%d,%d) of %d holds "
+                    "spectateCameras=%d cachedBoundary=%d (listStart=%d)\n",
+                    gObjSortFirstActive, gObjSortObjCount, gObjectCount,
+                    cameras, gFirstActiveObjectId, gObjectListStart);
+        }
+    }
+#endif
     sort_objects_by_dist(gObjSortFirstActive, gObjSortObjCount - 1);
     set_active_camera(savedCameraID);
 }
@@ -11753,6 +12232,32 @@ void race_check_finish(s32 updateRate) {
                         settings->racers[racerPos].starting_position = racer[racerPos]->finishPosition - 1;
                     }
 
+#if MDKR_ENABLE_ONLINE_BETA
+                    /* Online results capture, challenge/battle variant of the
+                     * tracks-race hook below (search [online-results]): the
+                     * loop above is THIS path's finish-order write, placement
+                     * = finishPosition - 1. Protocol v1 only admits standard
+                     * races, so this stays dormant until battle modes go
+                     * online; offline it is dead (roster inactive). */
+                    if (mdkr_net_roster_runtime_active()) {
+                        uint8_t onlinePlacements[MDKR_ONLINE_RACE_RESULT_SLOTS] = {
+                            MDKR_ONLINE_RACE_RESULT_NONE, MDKR_ONLINE_RACE_RESULT_NONE,
+                            MDKR_ONLINE_RACE_RESULT_NONE, MDKR_ONLINE_RACE_RESULT_NONE};
+                        for (racerPos = 0; racerPos < gNumRacers; racerPos++) {
+                            s32 onlinePlace = racer[racerPos]->finishPosition - 1;
+                            if (racer[racerPos]->playerIndex != PLAYER_COMPUTER &&
+                                racer[racerPos]->playerIndex >= 0 &&
+                                racer[racerPos]->playerIndex < (s32) MDKR_ONLINE_RACE_RESULT_SLOTS &&
+                                onlinePlace >= 0 &&
+                                onlinePlace < (s32) MDKR_ONLINE_RACE_RESULT_NONE) {
+                                onlinePlacements[racer[racerPos]->playerIndex] =
+                                    (uint8_t) onlinePlace;
+                            }
+                        }
+                        mdkr_online_race_results_publish(onlinePlacements);
+                    }
+#endif
+
                     music_play(newStartingPosition);
                     newStartingPosition = 4;
                     for (prevRacerPos = 0; prevRacerPos < 8; prevRacerPos++) {
@@ -12073,6 +12578,33 @@ void race_check_finish(s32 updateRate) {
                     i++;
                 } while (i < gNumRacers);
             }
+#if MDKR_ENABLE_ONLINE_BETA
+            /* Online results capture: the loop above is where DKR commits the
+             * race's final finish order (row i of gRacersByPosition is
+             * placement i; every racer was already force-finished at race end,
+             * so non-finishers sit in their padded rows). Online, the launcher
+             * owns the results/standings UI, so OBSERVE that same order here
+             * -- never alter it -- keyed by CANONICAL slot: for an online race
+             * playerIndex IS the canonical slot, and PLAYER_COMPUTER rows are
+             * ignored. One publish per race; the launcher reads it back
+             * through mdkr_online_race_results_poll() after the session ends.
+             * Offline this block is dead: mdkr_net_roster_runtime_active() is
+             * false there, and non-beta builds do not compile it at all. */
+            if (mdkr_net_roster_runtime_active()) {
+                uint8_t onlinePlacements[MDKR_ONLINE_RACE_RESULT_SLOTS] = {
+                    MDKR_ONLINE_RACE_RESULT_NONE, MDKR_ONLINE_RACE_RESULT_NONE,
+                    MDKR_ONLINE_RACE_RESULT_NONE, MDKR_ONLINE_RACE_RESULT_NONE};
+                for (i = 0; i < gNumRacers; i++) {
+                    curRacer = gRacersByPosition[i]->racer;
+                    if (curRacer->playerIndex != PLAYER_COMPUTER &&
+                        curRacer->playerIndex >= 0 &&
+                        curRacer->playerIndex < (s32) MDKR_ONLINE_RACE_RESULT_SLOTS) {
+                        onlinePlacements[curRacer->playerIndex] = (uint8_t) i;
+                    }
+                }
+                mdkr_online_race_results_publish(onlinePlacements);
+            }
+#endif
             gSwapLeadPlayer = FALSE;
             flags[2] = raceType;
             if (is_in_two_player_adventure() &&
@@ -12513,26 +13045,33 @@ void race_finish_time_trial(void) {
         }
         if (((!vehicleID) && (!vehicleID)) && (!vehicleID)) {} // Fakematch
         if (settings->timeTrialRacer == 0) {
-#ifdef NATIVE_PORT
-            /* A modded (Taj) run is non-canonical, so nothing PERSISTENT may
-             * come out of it: no player ghost, no staff-ghost retirement. It is
-             * still a time trial the player just finished, though, and the
-             * end-of-run announcement is pure HUD/audio with no record side
-             * effect, so keep the guard on the writes only. Wrapping the whole
-             * block left Taj time trials silent. */
-            if (!tajTimeTrial) {
-#endif
             if (bestCourseTime < 10800 && (vehicleID != gTimeTrialVehicle || timetrial_map_id() != level_id() ||
                                            bestCourseTime < gTimeTrialTime)) {
                 gTimeTrialTime = bestCourseTime;
                 gTimeTrialVehicle = gPrevTimeTrialVehicle;
+#ifdef NATIVE_PORT
+                /* An added (bonus) racer's run may now save and replay a ghost,
+                 * but its record must never masquerade as a base-racer one: stamp
+                 * the ghost's character with the bonus marker ID (>= NUM_CHARACTERS)
+                 * so the stored record is inherently non-authentic. Base racers
+                 * keep their retail character ID (0..9), byte-identical. The
+                 * AUTHENTIC record tables and the T.T.-unlock stay base-only --
+                 * they are still gated by !tajTimeTrial above and below. */
+                {
+                    ModRacerIdentity ghostIdentity =
+                        (ModRacerIdentity) mod_racer_physics_identity(bestRacer);
+                    int ghostCharacter =
+                        mod_racer_ghost_character_id(ghostIdentity);
+                    gTimeTrialCharacter = ghostCharacter >= 0
+                                              ? (s16) ghostCharacter
+                                              : settings->racers[0].character;
+                }
+#else
                 gTimeTrialCharacter = settings->racers[0].character;
+#endif
                 timetrial_swap_player_ghost(level_id());
                 gHasGhostToSave = TRUE;
             }
-#ifdef NATIVE_PORT
-            }
-#endif
             if (osTvType == OS_TV_TYPE_PAL) {
                 bestCourseTime = (bestCourseTime * 6) / 5;
             }
@@ -12556,7 +13095,10 @@ void race_finish_time_trial(void) {
         }
 #ifdef NATIVE_PORT
         if (tajTimeTrial) {
-            gHasGhostToSave = FALSE;
+            /* The AUTHENTIC record tables (fast-lap / course-time), the T.T.
+             * unlock, and staff-ghost retirement were all suppressed above -- a
+             * bonus run never pollutes canonical records. The ghost itself is
+             * kept (stamped non-authentic) and may still be saved by the player. */
             taj_physics_trace_record_suppressed(bestRacer);
         }
 #endif
@@ -12749,10 +13291,10 @@ s32 timetrial_init_player_ghost(s32 playerID) {
  */
 SIDeviceStatus timetrial_save_player_ghost(s32 controllerIndex) {
 #ifdef NATIVE_PORT
-    if (taj_physics_run_is_noncanonical()) {
-        taj_physics_trace_record_suppressed(NULL);
-        return CONTROLLER_PAK_BAD_DATA;
-    }
+    /* A bonus-racer run is non-canonical for RECORDS, but its ghost may now be
+     * saved: the ghost is stamped with a bonus marker character (>= NUM_CHARACTERS)
+     * so it can never be mistaken for a base-racer record. Authentic record
+     * tables and the T.T.-unlock were kept base-only in race_finish_time_trial(). */
     /* Issue #46: make sure this pair has its own or an empty window slot
      * before the authored write, so CONTROLLER_PAK_NO_ROOM_FOR_GHOSTS only
      * remains reachable for genuine device failures. */

@@ -26,14 +26,17 @@ def main() -> int:
     require("persistResultApplied" in HEADER,
             "visible-but-unconfirmed writes need one shared applied predicate")
 
-    # Both ordinary shell-preference save paths in this settings unit must
+    # Every ordinary shell-preference save path in this settings unit must
     # accept a visible-but-unconfirmed write through the shared applied
-    # predicate: the initial UI-scale commit and its Retry action. Permanent
-    # character cleanup now lives in the idempotent cleanup-journal reconciler.
-    # Unlike an ordinary preference, its pre-mutation marker and final removal
-    # must be confirmed durable before the file transaction can advance.
-    require(SETTINGS.count("AppConfig::persistResultApplied(persist)") == 2,
-            "both ordinary settings-panel save paths must accept visible "
+    # predicate: the initial UI-scale commit, its Retry action, and the
+    # menu-button combo (drawMenuToggleButton). A fourth path added without
+    # updating this count is a path someone wrote without deciding its
+    # durability story. Permanent character cleanup is deliberately NOT one of
+    # them: it lives in the idempotent cleanup-journal reconciler, and its
+    # pre-mutation marker and final removal must be confirmed durable before
+    # the file transaction can advance.
+    require(SETTINGS.count("AppConfig::persistResultApplied(persist)") == 3,
+            "all three ordinary settings-panel save paths must accept visible "
             "unconfirmed writes")
     require("forgetCharacterPackagePreferences(id)" in SETTINGS and
             "preferences == AppConfig::PersistResult::Durable" in SETTINGS and
@@ -61,6 +64,13 @@ def main() -> int:
     for fragment in ("UI scale applied", "could not confirm"):
         require(fragment in SETTINGS,
                 f"UI-scale warning must still say {fragment!r}")
+    # Same claim honesty for the menu-button row: applied, but unconfirmed --
+    # and its failure copy must say the value did NOT change, because
+    # AppConfig only promotes the in-memory value once the write applied.
+    require("Menu button applied" in SETTINGS,
+            "menu-button warning must say the choice was applied")
+    require("could not be saved and was not" in SETTINGS,
+            "menu-button failure copy must say the value did not change")
 
     # A freshly validated replacement and Forget both act on a path only once
     # it was applied. Retry deliberately re-enters that same validation and

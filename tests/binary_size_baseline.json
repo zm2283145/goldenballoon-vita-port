@@ -46,26 +46,26 @@
     {
       "name": "macos-app-bundle",
       "lane": "macos",
-      "pattern": "dist/mdkr64.app",
+      "pattern": "dist/Golden Balloon.app",
       "kind": "bundle",
       "producedBy": "macos/Scripts/build_app_bundle.sh",
       "bytes": 19807213,
       "ceiling": 30408704,
       "recordedOn": "2026-08-13",
       "recordedCommit": "e7e9e9f",
-      "recordedFrom": "dist/mdkr64.app"
+      "recordedFrom": "dist/Golden Balloon.app"
     },
     {
       "name": "macos-app-executable",
       "lane": "macos",
-      "pattern": "dist/mdkr64.app/Contents/MacOS/mdkr64",
+      "pattern": "dist/Golden Balloon.app/Contents/MacOS/mdkr64",
       "kind": "file",
       "producedBy": "macos/Scripts/build_app_bundle.sh",
       "bytes": 14960016,
       "ceiling": 24117248,
       "recordedOn": "2026-08-13",
       "recordedCommit": "e7e9e9f",
-      "recordedFrom": "dist/mdkr64.app/Contents/MacOS/mdkr64"
+      "recordedFrom": "dist/Golden Balloon.app/Contents/MacOS/mdkr64"
     },
     {
       "name": "macos-dmg-unsigned",

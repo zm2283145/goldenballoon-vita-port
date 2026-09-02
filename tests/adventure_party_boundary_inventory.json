@@ -452,6 +452,17 @@
     },
     {
       "file": "game/src/menu.c",
+      "line": "gIsInTwoPlayerAdventure = FALSE;",
+      "count": 1,
+      "kinds": [
+        "gIsInTwoPlayerAdventure"
+      ],
+      "classification": "flag-access",
+      "treatment": "unrelated",
+      "note": "1.6.0 online multiplayer: menu_online_versus_race_setup() seeds the Tracks-mode state a direct-boot online race needs without walking any menu (gIsInTracksMode TRUE, gIsInAdventureTwo FALSE, this flag FALSE). It is the online carrier's own retail-flag write inside its NATIVE_PORT arm, not a party adapter; the party session never reaches this function."
+    },
+    {
+      "file": "game/src/menu.c",
       "line": "gIsInTwoPlayerAdventure = (gNumberOfActivePlayers == 2);",
       "count": 1,
       "kinds": [

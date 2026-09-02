@@ -24,6 +24,31 @@ bool mdkr_net_roster_runtime_install_launch(
     const MdkrNetRoster *roster);
 void mdkr_net_roster_runtime_clear(void);
 bool mdkr_net_roster_runtime_active(void);
+
+/* Ownership-guard decision for the local-Play beach-ball (issue: a local boot
+ * inheriting an online session's process-global roster, flipping the engine into
+ * online-race mode and stalling forever on network input a local race never
+ * sends).
+ *
+ * This is the pure decision only; the mutable owner token and the actual
+ * install/clear live in the beta online-wiring layer (platform/app/
+ * online_live_wiring.cpp), NOT here, because this translation unit is compiled
+ * into every build WITHOUT the MDKR_ENABLE_ONLINE_BETA macro -- so keeping state
+ * or callable state-mutating functions here would leak code into the OFF/release
+ * binary. As a `static inline` that a non-beta build never calls, this emits no
+ * code there and the release object stays byte-identical, while remaining
+ * directly unit-testable.
+ *
+ * Returns true when a boot that presents `boot_owner` must force-clear the
+ * currently installed roster before booting: the roster is active and this boot
+ * does not own it. boot_owner == 0 means "this boot installs no roster"
+ * (ordinary local Play) and clears ANY active roster; a boot that installed its
+ * own roster passes its own nonzero token and is left untouched. */
+static inline bool mdkr_net_roster_guard_decides_clear(
+    bool roster_active, uint64_t current_owner, uint64_t boot_owner) {
+    return roster_active && (boot_owner == 0u || current_owner != boot_owner);
+}
+
 const MdkrNetRoster *mdkr_net_roster_runtime_get(void);
 const MdkrMatchManifestV1 *mdkr_net_roster_runtime_manifest(void);
 const MdkrMatchLaunchDescriptorV1 *

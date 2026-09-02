@@ -211,6 +211,22 @@ Things that turned out **not** to be blockers, having been checked:
   validates and selects that linker-generated end from the same per-revision
   descriptor as the asset LUT, so both supported revisions use their own extent.
 
+### Authored UB resolves per revision, and the contract is the measured value
+
+The revisions do not only differ in data: where the original C is undefined,
+each retail build froze its own accident of compilation. Hot Top Volcano's
+out-of-bounds exit (destination −1, issue #55) routes to `MENU_UNUSED_8`,
+whose `menu_loop` case does not exist — retail returns an uninitialized
+value there. On us.v80 that value measures as `0x8006CA60` (ares oracle,
+`docs/ORACLE.md` issue-#55 lanes), which retail's own downstream guards turn
+into a central-hub reload with trophy state intact — the community's "trophy
+storage" glitch; the reported US 1.0 outcome (dead black screen) is the same
+UB resolved by a different build, not an authored difference. The port's
+policy, per the `AVOID_UB` precedent in `racer.c`: **faithful means the
+measured behavior of the loaded, supported revision** — `menu.c` pins the
+us.v80 value at that dead end, and refused revisions have no behavior
+contract to preserve.
+
 ### Future scope expansion: the remaining three
 
 Adding **us.v77**, **pal.v77**, or **jpn.v79** is a future product-scope

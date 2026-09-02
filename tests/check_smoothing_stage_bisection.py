@@ -149,9 +149,22 @@ INTERNAL_TEST_TOKEN = "mdkr64-presentation-replay-v1"
 # so neither has ever driven the second kind. Level 19 is the second kind
 # twice over (authored V rates 127 and 85, both odd), which is what makes it
 # the arm that can fail: with the authored rate absent, no two of its ticks
-# can agree, the confirm-or-hold rule refuses every one of them, and its
-# water holds its texture phase on every interpolated present while the world
-# glides past it. That is the shimmer, and it is measured here red and green.
+# can agree, so the two-tick confirmation rule cannot recover them.
+#
+# WHERE they land when the authored rate is absent depends only on batch
+# shape, and this changed under the test. Both of level 19's fractional
+# scrollers are MULTI-triangle batches, and de1f713b (2026-08-17) taught the
+# measured path that one fold-resolved displacement shared across a batch's
+# triangles is itself the second observation -- so a multi-triangle batch is
+# recovered by cross-triangle corroboration into `uvscrollsolo` rather than
+# held. A SINGLE-triangle fractional scroller has no such witness, keeps the
+# two-tick rule, and holds its texture phase on every interpolated present
+# while the world glides past it -- the shimmer the authored rate exists to
+# remove, and the whole population this arm measured when it was written
+# (2026-08-09, before de1f713b). Either way the batch is still interpolated
+# from its own tick's true displacement; the authored rate only makes that
+# displacement exact to the quarter-unit instead of the whole unit. The
+# recovery is measured here red and green.
 ROUTE_C_TICKS = 3400
 ROUTE_C_TRACK = "19"
 
@@ -607,7 +620,8 @@ def fractional_scroller(green: str, red: str) -> tuple[list[str], str]:
     problems: list[str] = []
     on = parse_last(green, "PRESENT-PACKET")
     off = parse_last(red, "PRESENT-PACKET")
-    missing = [key for key in (*UV_AUTHORED_CONTRACT, *UV_HOLD_CLAUSES)
+    missing = [key for key in (*UV_AUTHORED_CONTRACT, *UV_HOLD_CLAUSES,
+                               "uvscrollsolo")
                if key not in on or key not in off]
     if missing:
         problems.append(
@@ -650,19 +664,30 @@ def fractional_scroller(green: str, red: str) -> tuple[list[str], str]:
                     "scrollers never hold")
 
     # The defect, red. Removing the authored rate must push exactly the batches
-    # it was carrying back into the phase clause -- the fail-closed refusal of a
-    # displacement that alternates by one and therefore never repeats. The
-    # bound is 90% rather than an identity because a batch's first published
-    # tick lands in the unpublished clause in both arms.
-    recovered = off["uvscrollholdphase"] - on["uvscrollholdphase"]
+    # it was carrying back into the measured fallback, and which clause absorbs
+    # them is fixed by batch shape (see the ROUTE_C note above):
+    #   * multi-triangle -> `uvscrollsolo`, recovered by cross-triangle
+    #     corroboration (de1f713b). This route's two fractional scrollers are
+    #     multi-triangle, so on this build every one of them recovers here;
+    #   * single-triangle -> `uvscrollholdphase`, the two-tick rule refusing a
+    #     displacement that alternates by one and never repeats -- the whole
+    #     population when this arm was written, before de1f713b.
+    # Summing the two clauses keeps the assertion agnostic to shape: the count
+    # that re-recovers is what has to track the authored confirmations, not the
+    # clause it happens to land in. The bound is 90% rather than an identity
+    # because a batch's first published tick lands in the unpublished clause in
+    # both arms.
+    recovered = ((off["uvscrollholdphase"] + off["uvscrollsolo"])
+                 - (on["uvscrollholdphase"] + on["uvscrollsolo"]))
     if recovered < 0.9 * on["uvscrollauthoredconfirm"]:
         problems.append(
             f"route C: opting the authored rate out moved {recovered} lookups "
-            f"into the phase clause against {on['uvscrollauthoredconfirm']} "
-            "authored confirmations. The two should track each other: if they "
-            "do not, the authored path is not what is carrying this route's "
-            "fractional scrollers and this arm is measuring something else. "
-            "See docs/evidence/smoothing-artifact-repro-2026-08.md section 5.2")
+            "into the measured fallback (phase-hold + solo-accept) against "
+            f"{on['uvscrollauthoredconfirm']} authored confirmations. The two "
+            "should track each other: if they do not, the authored path is not "
+            "what is carrying this route's fractional scrollers and this arm is "
+            "measuring something else. See "
+            "docs/evidence/smoothing-artifact-repro-2026-08.md section 5.2")
 
     # And it costs nothing elsewhere. The unpublished clause is a batch that
     # was not drawn on the previous tick, which the authored rate does not
@@ -680,6 +705,8 @@ def fractional_scroller(green: str, red: str) -> tuple[list[str], str]:
         f"authoredconfirm={on['uvscrollauthoredconfirm']} "
         f"phasehold_on={on['uvscrollholdphase']} "
         f"phasehold_off={off['uvscrollholdphase']} "
+        f"solo_on={on['uvscrollsolo']} "
+        f"solo_off={off['uvscrollsolo']} "
         f"recovered={recovered} "
         f"unpub_on={on['uvscrollholdunpub']} "
         f"unpub_off={off['uvscrollholdunpub']}")

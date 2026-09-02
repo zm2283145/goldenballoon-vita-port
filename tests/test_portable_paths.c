@@ -28,15 +28,18 @@
 #include <string.h>
 
 /* Link-time SDL preference provider so user_paths.c resolves without SDL. The
- * portable and fallback code paths deliberately never reach it. */
+ * portable and write-fallback code paths deliberately never reach it, but the
+ * non-portable, non-fallback default now does: issue #54 resolves a plain build's
+ * SAVE directory below this per-user root (config stays CWD-relative). */
+static const char kPrefRoot[] = "/tmp/mdkr-portable-unused-pref/";
+
 char *SDL_GetPrefPath(const char *organization, const char *application) {
-    static const char kPref[] = "/tmp/mdkr-portable-unused-pref/";
     char *result;
     (void)organization;
     (void)application;
-    result = (char *)malloc(sizeof(kPref));
+    result = (char *)malloc(sizeof(kPrefRoot));
     if (result != NULL) {
-        memcpy(result, kPref, sizeof(kPref));
+        memcpy(result, kPrefRoot, sizeof(kPrefRoot));
     }
     return result;
 }
@@ -95,6 +98,7 @@ static int resolve_exe_dir(char *output, size_t size) {
 
 int main(int argc, char **argv) {
     const int fallback_mode = argc > 1 && strcmp(argv[1], "--fallback") == 0;
+    const int appimage_mode = argc > 1 && strcmp(argv[1], "--appimage") == 0;
     char exe_dir[4096];
     char expected[4096];
     char marker[4096];
@@ -102,9 +106,75 @@ int main(int argc, char **argv) {
     char override_config[4096];
 
     /* A stray override inherited from the caller's shell would silence every
-     * precedence assertion below; strip both before anything reads them. */
+     * precedence assertion below; strip both before anything reads them. Also
+     * strip $APPIMAGE unless this run is deliberately exercising it, so a suite
+     * launched from inside an AppImage cannot relocate the non-appimage arms. */
     (void)mdkr_test_env_unset("MDKR_VIDEO_CONFIG_PATH");
     (void)mdkr_test_env_unset("MDKR_SAVE_DIR");
+    if (!appimage_mode) {
+        (void)mdkr_test_env_unset("APPIMAGE");
+    }
+
+    if (appimage_mode) {
+        /* An AppImage runs from a read-only SquashFS mount, so /proc/self/exe
+         * points inside /tmp/.mount_XXXX rather than at the .AppImage file the
+         * player can see. The runtime exports $APPIMAGE with the real on-disk
+         * path; portable.txt beside it, and the write-fallback, must resolve
+         * relative to THAT directory -- not the mount, and not the launch cwd
+         * (issue #54). This arm sets $APPIMAGE and a portable.txt beside the
+         * simulated AppImage, then launches from an unrelated working directory
+         * and asserts every user path lands beside the AppImage. */
+        char appdir[4096];
+        char appimage_path[4096];
+        char scratch_cwd[4096];
+        expect("simulated AppImage directory created",
+               mdkr_test_make_temp_directory(appdir, sizeof(appdir),
+                                             "mdkr-appimage"));
+        expect("APPIMAGE path built",
+               join(appimage_path, sizeof(appimage_path), appdir,
+                    "Golden-Balloon-x86_64.AppImage"));
+        expect("exported APPIMAGE",
+               mdkr_test_env_set("APPIMAGE", appimage_path, 1) == 0);
+        expect("portable marker beside the AppImage path",
+               join(marker, sizeof(marker), appdir, "portable.txt"));
+        {
+            FILE *file = mdkr_fopen_utf8(marker, "wb");
+            expect("created portable marker beside the AppImage", file != NULL);
+            if (file != NULL) {
+                (void)fputs("portable\n", file);
+                (void)fclose(file);
+            }
+        }
+        /* Launch from an unrelated directory to prove cwd-independence. */
+        expect("scratch working directory created",
+               mdkr_test_make_temp_directory(scratch_cwd, sizeof(scratch_cwd),
+                                             "mdkr-appimage-cwd"));
+        expect("entered scratch working directory", chdir(scratch_cwd) == 0);
+
+        expect("portable mode detected via $APPIMAGE",
+               mdkr_user_paths_is_portable());
+        expect("config resolves beside the AppImage",
+               mdkr_user_video_config_path(resolved, sizeof(resolved)) &&
+               join(expected, sizeof(expected), appdir, "mdkr64.ini") &&
+               strcmp(resolved, expected) == 0);
+        expect("save resolves beside the AppImage",
+               mdkr_user_save_directory(resolved, sizeof(resolved)) &&
+               join(expected, sizeof(expected), appdir, "save") &&
+               strcmp(resolved, expected) == 0);
+        expect("mods resolves beside the AppImage",
+               mdkr_user_mods_directory(resolved, sizeof(resolved)) &&
+               join(expected, sizeof(expected), appdir, "mods") &&
+               strcmp(resolved, expected) == 0);
+        expect("save origin is labelled portable",
+               strcmp(mdkr_user_paths_save_origin_label(), "portable") == 0);
+        (void)mdkr_remove_utf8(marker);
+        if (s_failures != 0) {
+            fprintf(stderr, "%d portable-path test(s) failed\n", s_failures);
+            return 1;
+        }
+        puts("portable appimage: PASS");
+        return 0;
+    }
 
     expect("resolved executable directory",
            resolve_exe_dir(exe_dir, sizeof(exe_dir)));
@@ -153,15 +223,29 @@ int main(int argc, char **argv) {
         (void)mdkr_test_env_unset("MDKR_VIDEO_CONFIG_PATH");
         (void)mdkr_remove_utf8(marker);
     } else {
-        /* No marker: the getters keep their historical CWD-relative spellings
-         * until the fallback is activated. */
+        char pref_save[4096];
+        char scratch_cwd[4096];
+        /* A fresh, empty working directory so no stray populated $CWD/save
+         * grandfathers itself over the per-user default this arm asserts
+         * (issue #54). Must precede the first save query, which caches the CWD. */
+        expect("scratch working directory created",
+               mdkr_test_make_temp_directory(scratch_cwd, sizeof(scratch_cwd),
+                                             "mdkr-portable-fallback"));
+        expect("entered scratch working directory", chdir(scratch_cwd) == 0);
+        /* No marker: config keeps its historical CWD-relative spelling, but the
+         * SAVE directory now resolves below the per-user preference root until
+         * the fallback relocates everything next to the executable. */
         expect("not portable without a marker", !mdkr_user_paths_is_portable());
         expect("config is CWD-relative before fallback",
                mdkr_user_video_config_path(resolved, sizeof(resolved)) &&
                strcmp(resolved, "mdkr64.ini") == 0);
-        expect("save is CWD-relative before fallback",
+        /* kPrefRoot ends in '/', so match path_join()'s single-separator form
+         * rather than the test join() helper's unconditional one. */
+        expect("per-user save path",
+               snprintf(pref_save, sizeof(pref_save), "%ssave", kPrefRoot) > 0);
+        expect("save resolves below the per-user root before fallback",
                mdkr_user_save_directory(resolved, sizeof(resolved)) &&
-               strcmp(resolved, "save") == 0);
+               strcmp(resolved, pref_save) == 0);
         expect("no relocation notice before a failure",
                !mdkr_user_paths_write_relocated());
         /* Simulate the home-directory write failing. */

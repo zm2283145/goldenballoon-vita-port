@@ -51,11 +51,11 @@ Automation windows render hidden or ordered behind the desktop by design (set
 complete suite wherever it runs. All application-launching roles stay
 serialized.
 
-The manifest registers 145 of the 149 `tests/check_*.py` scripts and expands to
-158 tasks. The four it does not name directly
-(`check_controller_settings_persistence.py`, `check_host_input_focus.py`,
-`check_launcher_tabs.py`, `check_overlay_input_handoff.py`) are CTest companions that `rom_free_units` owns, so
-every check script still runs exactly once in a complete pass. That task also
+The manifest registers the `tests/check_*.py` scripts as parallel tasks, apart
+from a set of CTest companions that `rom_free_units` owns and runs through the
+ctest task (`check_controller_settings_persistence.py`, `check_host_input_focus.py`,
+`check_launcher_tabs.py`, and `check_overlay_input_handoff.py` among them), so
+every registered check script still runs exactly once in a complete pass. That task also
 runs the ROM-free display/endian/magic-code/object-layout/allocator/
 runtime-contract, sprite-layout, RDP-interpolation, font-registry/SDF, and RL-1
 CTests, while filename entry, locked-door collision, RAW16 audio, native-layout
@@ -83,9 +83,11 @@ that historical one-field timeline. Shipping-cadence gates instead select
 gate verifies that distinction. Never repair a fixture mismatch by weakening
 its gameplay or pixel threshold without first classifying its time base.
 
-The v0.3 release gate passed the **38-task optimized native/sanitizer stage in
-22m17s**, the **29-task Debug primary stage in 12m31s**, and both wasm-only
-tasks — including the linked layout check and real Chromium — in **1m05s**. The
+As a historical reference point, the v0.3 release gate passed the **38-task
+optimized native/sanitizer stage in 22m17s**, the **29-task Debug primary stage
+in 12m31s**, and both wasm-only tasks — including the linked layout check and
+real Chromium — in **1m05s** (figures predate the current suite and are kept only
+to illustrate the stage shape). The
 vehicle sweep always emits a failed child's diagnostic tail and recognizes
 UBSan text; there is no retry or tolerated-failure path in the registered gate.
 The ROM-free CI-contract task fails closed if push/PR triggers,
@@ -436,6 +438,21 @@ production coverage:
   with MotionSmoothing=interpolate they may submit a complete immutable
   in-between image. Presentation cannot issue a simulation ticket, consume an
   input ticket, advance audio, or mutate the v3 authority stream.
+- `check_sim_hash_artifact.py` covers the on-disk artifact form of that same
+  `[SIMHASH]` stream and the tool that compares two of them. With
+  `MDKR_STATE_HASH_FILE=<path>` set beside `MDKR_STATE_HASH`, the engine mirrors
+  every stdout `[SIMHASH]` line into the file byte-for-byte and in order; the
+  parity arm proves the file equals the run's own stdout stream exactly, so the
+  artifact is a faithful second sink that changes neither what is hashed nor the
+  simulation (an unwritable path is reported to stderr and the sink dropped,
+  never fatal). The comparator, `tools/online/compare_sim_hash_artifacts.py`,
+  exits 0 only when two artifacts are non-empty, the same length and byte-equal
+  modulo line endings on every tick line (so a macOS LF and a Windows CRLF for
+  the same tick are not a divergence), and otherwise names the first divergent
+  tick or the
+  truncation point; it fails closed on a missing file, an empty file, an
+  unparseable line and a length mismatch, each with its own message. These are
+  the pieces a cross-OS / cross-region determinism comparison stands on.
 - `check_render_purity.py` is the fidelity spec's §12.2.1 gate. Skipping half
   of all scene renders (`MDKR_TEST_SKIP_RENDER=odd`) must leave the raw v3
   `[SIMHASH]` stream byte-identical. There is no test-only state subtraction:
@@ -514,15 +531,64 @@ production coverage:
   confined to `gGameMode == GAMEMODE_INGAME` -- the only mode that emits the
   expanded WIDE_HUD ortho -- so the intro/menu/lockup dialogue path is left
   untouched. A self-test replays all three assertions against the pre-fix source
-  to prove they fail red.
-- `check_widescreen_hud_layers.py` renders the real 1P/2P HUD at 4:3 and
-  ultrawide aspect ratios, checks that world expansion remains visible while
-  HUD groups preserve their authored safe-area relationships, and carries
-  detector controls so an empty or unchanged capture cannot pass.
-- `check_save_options_scroll_band.py` drives the real Save Options pak-switch
-  scroll and proves inverted off-screen glyph rectangles are skipped without
-  erasing valid text, sky, or wood-panel pixels. Its calibrated band detector
-  and nonzero `[RECT-SKIP]` witness close both the original defect and vacuity.
+  to prove they fail red. Since the issue-#51 batch it additionally requires
+  every `HudTypes` element to carry an explicit per-mode row in the
+  `sHudWidescreenAnchor` table (totality against a golden snapshot) and
+  censuses every draw-side `gHudOffsetX` consumer against the
+  `hud_slide_draw_offset()` owner list, with red self-tests per assertion.
+- `check_widescreen_hud_layers.py` is the pixel companion the scope gate
+  cannot be: the first check that actually enables `Video.WidescreenHUD` and
+  measures rendered frames. Its arms pin the issue-#51 fixes -- time-trial
+  lap rows laid out disjoint and ordered (labels no longer overprint the
+  times), the TAJ MAGIC identity label centered, the battle-mode HUD strip
+  at its authored center, and zero HUD pixels parked in the right expanded
+  gutter during the race-start pre-slide hold -- plus a 4:3 rail where the
+  widescreen-ON frame must stay byte-identical to OFF. Detector self-tests
+  run against synthetic rasters on every invocation.
+- `check_widescreen_minimap_alignment.py` pins the second half of issue #57:
+  under the widescreen HUD, billboard-mode ortho sprites bypassed the WIDE_HUD
+  matrix's horizontal compression and rendered 4/3 wider than authored, so the
+  minimap image's texels slid sideways around its (correct) anchor and the
+  driver marker sat ~100 px off the hub island. Its hub arm measures Taj's map
+  dot against the island's gate icon, its race arm measures the player arrow
+  against the checkered finish tile and the track-loop width (the draw path is
+  shared), each ON arm must prove the wide layout engaged and match the OFF
+  arm's [PACE] row at the capture frame, and a 4:3 rail requires the ON frame
+  byte-identical to OFF. Detector self-tests run against synthetic rasters on
+  every invocation.
+- `check_save_options_scroll_band.py` drives a seeded save to the Save
+  Options screen, scrolls between Game Paks, and asserts no screen-wide
+  band appears (issue #52): a glyph landing exactly at the left screen edge
+  makes the game emit a corner-swapped rectangle that real hardware's
+  span-invalid rule refuses, and the port now refuses identically
+  (`[RECT-SKIP]`). The check also requires the skip counter to be non-zero
+  (the guard is exercised, not vacuous) and known-good UI pixels to remain
+  (an over-skipping regression fails).
+- `check_track_preview_time_steady.py` drives Tracks mode to the Ancient Lake
+  setup screen and holds there while the preview flyby banks, asserting the
+  BEST TIME digit sprites never rock with the camera (issue #59): each
+  course-record glyph's trimmed shear spread must stay under 0.8 native
+  pixels across the whole flyby. Non-vacuity witnesses require the digits to
+  be found in the dumps and the flyby background to keep moving, so a route
+  drift or a frozen preview fails instead of passing an empty assertion.
+- `check_track_exit_storage.py` drives the Hot Top Volcano destination-(-1)
+  out-of-bounds exit through the `MDKR_FORCE_EXIT_LATCH` seam and asserts the
+  game reaches the hub instead of the pre-1.5.2 dead-end menu stall
+  (`menu_init menuId=8` with no further activity), and that the trophy-storage
+  globals survive the transition (issue #55). The dead-end used to return an
+  uninitialized menu result; the port now returns the ares-measured us.v80
+  value, so the speedrun trick works while the black-screen hang is gone.
+- `check_save_write_notice.py` drives a durable save into a read-only save
+  directory and asserts the game both logs the failure and surfaces exactly
+  one player-facing notice (issue #54): a save-write failure retries via the
+  write-relocation fallback and then announces "progress could not be saved"
+  rather than discarding the error silently.
+- `check_gamecontrollerdb.py` (the `gamecontrollerdb_lint` CTest companion)
+  parses the whole shipped `gamecontrollerdb.txt`, requires every `(GUID,
+  platform)` pair to be unique, and pins the six curated Nintendo Switch
+  Online N64 HIDAPI entries present + behaviorally equivalent to the
+  DirectInput entry with no BACK binding (issue #55), so the added lines are
+  inert for every other controller.
 - `check_live_toggle_settings.py` gates the same settings being CHANGED
   mid-run. `Video.FrameLimit`, `Video.MotionSmoothing` and
   `Video.AllowTearing` apply at the host-frame boundary and
@@ -958,7 +1024,11 @@ only; the engine must reject that mismatch before tick one, exit nonzero without
 an abort, and complete owner-last host teardown. `match_manifest`, `net_roster`
 and `rollback_game_runtime` separately pin atomic manifest+roster publication,
 standard-rules-only validation, track/race-type/regional-cadence matching, and
-wrong-value controls. Passing `--profile` repeats all four isolated endpoints under
+wrong-value controls. `tests/check_net_roster_owner_guard.py` is a standalone
+source proof (host `cc`, no ROM, no CMake target) that a local-Play boot cannot
+inherit an online session's process-global roster and stall on network input
+that never arrives -- ownership is explicit and the guard is idempotent. Passing
+`--profile` repeats all four isolated endpoints under
 LAN, regional-good, regional-variable, poor, two-second-outage or adversarial
 packet/clock schedules. Ordinary through poor must complete and converge;
 outage/adversarial must preserve the exact pre-fault prefix, detect the first
@@ -974,6 +1044,27 @@ occurred. `rollback_ring` also requires fail-atomic rejection when the selected
 slot count would exceed the explicit 16 MiB authority-memory cap; the current
 32-slot 4P real-game ring is 16,007,200 bytes.
 
+The same four-process gate takes a `--regions pal|cross` arm (with `--pal-rom`
+naming the European ROM): the two accepted ROM payloads are byte-identical, so a
+PAL endpoint racing the online 30 Hz manifest under the launcher-armed NTSC
+source identity must produce authority, input and canonical-event streams
+byte-identical to a US endpoint. `--regions pal` runs four PAL endpoints;
+`--regions cross` mixes US and PAL across both single-seat mask shapes and the
+couch endpoint. Every online epoch witnesses the armed NTSC identity while its
+true region stays observable, and no offline clock is latched inside it.
+`check_online_region_reentry.py` proves the identity is epoch-scoped: one
+process runs an online PAL epoch (NTSC identity armed) then an offline PAL epoch
+that re-latches the authentic 50 Hz source clock with the override cleared.
+`check_online_engine_boot.py --rom pal --authored-hz 30` asserts the converged
+PAL race hash EQUALS the pinned US golden (`--expect-hash`, imported from the
+direct-boot gate), i.e. bit-identity with a US epoch. The default
+`tools/run_online_checks.py` sweep schedules the US arm of
+`check_online_process_convergence.py` (no PAL ROM needed — it guards the
+US-only defect class, e.g. a no-render endpoint diverging from its rendering
+peers); `tools/run_online_checks.py --pal-rom <pal.v80>` joins all four of
+these cross-region lanes to the serial schedule after the default sweep;
+without `--pal-rom` the sweep is otherwise unchanged.
+
 `--ai-takeover-slot N --ai-takeover-tick T` overlays one immutable
 room-authorized disconnect decision on that same four-process proof. All
 endpoints must converge while the chosen slot may be locally owned on one and
@@ -987,6 +1078,15 @@ no-handback telemetry. The default cutoff is rollback tick 240/process tick
 2660, where the checked-in fixture authors an A edge for every player; the gate
 requires the selected slot to be present-neutral on that exact row, so the
 takeover proof cannot pass by replacing an already-idle sample.
+
+`check_online_character_map.py`, `check_online_racer_lod_animation.py`, and
+`check_online_trackselect.py` are further online-takeover lanes owned by
+`tools/run_online_checks.py`. The character-map lane pins the lobby-catalog-id to
+engine `Character` mapping so a joiner never mis-spawns (the Tiptup-as-Conker /
+T.T.-as-Diddy defect). The racer-LOD lane guards racer level-of-detail and
+animation across its offline, online-biased, and online idle-host fall-behind
+arms (the two-Mac beta-4 T-pose regression). The trackselect lane covers the
+online track-selection surface.
 
 `check_rollback_track_matrix.py` runs the same production delayed-correction
 and exact-second-replay proof on all 20 standard tracks using a human-driven
@@ -1026,14 +1126,31 @@ fail, while an invalid balloon index and an armed non-correction mode must fail
 closed. Every row also enforces the 16 MiB ring, timing, journal, forbidden-I/O
 and clean-teardown contracts.
 
+`check_rollback_weapon_refcount.py` guards the refcount-erasure class the item
+matrix cannot see: it fires the probe missile inside a delayed correction on
+Ancient Lake, where the projectile OUTLIVES the four-tick window, so its
+snapshot-covered `ObjectModel.references` ++ must survive the correction and
+be decremented exactly once by the later LIVE despawn. Resimulation freezes
+sprite/texture refcounts (host state outside the snapshot), but the pinned
+item models' counters are registered rollback authority: restore reverts them
+and the replayed re-application keeps them exact. Freezing those too erased
+the ++ of any weapon spawn a correction rewound past, walking the pinned model
+to zero and a mid-race free under live draws. The lane asserts the corrected
+fire is observed, the exact second replay stays byte-identical, and the
+engine's one-sided conservation validator (references never below lease holds
+plus live holders, checked every authored boundary) and the mid-race
+free-refusal tripwire both stay silent.
+
 `online_lobby_core` is the socket-free launcher room reducer. Native C and the
 service TypeScript reducer both consume
-`tests/fixtures/online_lobby_reducer_v1.tsv`: one 43-command lifecycle fixture
+`tests/fixtures/online_lobby_reducer_v1.tsv`: one 117-row lifecycle fixture
 that asserts the result/error and canonical lobby state after every valid or
 invalid transition. Its tests cover
 membership, exact compatibility, seat ownership, unique per-seat character and
 vehicle selections, selection revisions, Ready invalidation, voting, barriers,
-reconnect, leader custody, CAS and retry idempotency. `match_launch_descriptor`
+reconnect, leader custody, CAS and retry idempotency, plus the session-config
+and tournament columns (mode, configured track, cup, race_index, trophy
+points, last placements). `match_launch_descriptor`
 then freezes the Loading lobby into a fixed 148-byte manifest+selection record.
 It requires stable canonical seat order, a neutral unused tail, legal vehicles,
 unique characters and exact lobby/manifest epoch/track/mask/count agreement;
@@ -1444,6 +1561,456 @@ cross-proof) and non-neutral packets to cross the real ingress; further
 scenarios refuse a wrong six-digit code before pairing on the right one, trip the
 room's shared code bucket with thirteen rapid wrong codes, and require the phone
 to show `host_closed` when the host closes the room.
+
+`tests/check_online_live_transport_e2e.py` is the live-transport capstone: it
+races TWO
+`mdkr_online_live_transport_e2e_driver` native processes (one creator, one
+joiner-by-code) against a live local MatchRoom Worker (`wrangler dev --local`
+with real Durable Objects) over the entire production online path -- real HTTP
+create/join/code/command over the MatchRoom lobby routes and the authenticated
+`/connect` state WebSocket, the match-signal client, the peer mesh
+negotiating real WebRTC DataChannels (libdatachannel DTLS), the live
+adapter (selections, the auto-confirmed transcript verification phrase,
+preflight consensus, and descriptor install through the retail-identity
+clamp), and the per-tick transport feed that seals local input into 3-frame
+bundles, fans them out on the mesh, and drains authored ticks through
+`mdkr_match_transport_receive`. Each process races at least 1800 confirmed
+authored ticks; the golden path requires both verification phrases to match,
+both descriptors installed, and the two end-of-race FNV state hashes to be
+byte-identical. DEV lane, not release-required: the drivers speak plain
+`ws://`/`http://` to the loopback Worker only under the shared
+`MDKR_INTERNAL_TEST_TOKEN`, the same loopback-transport token the party e2e and
+signal-client tests use. **Scope class:** component (real-transport
+integration) -- it exercises the REAL production transport stack (a live local
+MatchRoom Worker with real Durable Objects, real WebRTC DataChannels over DTLS,
+and the match-signal/mesh/live-adapter/per-tick-feed client path) end-to-end
+between two native driver processes with NO input or fault seams; but it drives
+test-driver processes against a loopback Worker under the internal test token,
+not the shipping app, so it is a DEV integration lane, not the shipping-app
+acceptance route (that is `check_online_native_flow_cloud.py`).
+
+`check_online_engine_boot_direct.py` (run-checks registered in
+`tools/run_online_checks.py`) boots the VISIBLE engine into a
+live loopback online race (`MDKR_APP_TEST_ONLINE_LIVE`, two real adapters over
+the in-process hub, real libdatachannel DTLS) with NO menu-nav input script:
+the direct-boot seam must reach the race purely from the installed manifest,
+converge byte-for-byte with the peer and tear down cleanly. Its default
+invocation is the historical Ancient Lake lane (vote track 5, Car, mask 0x7)
+and stays byte-identical. `--track <id>` re-aims the same gate at any of the
+20 standard race tracks: the loopback leader fixes the track with
+SET_CONFIG_TRACK (env seam `MDKR_APP_TEST_ONLINE_TRACK` in
+`platform/app/online_live_wiring.cpp`; a configured session skips the
+track-vote step in the view exactly like retail, so the config alone drives
+the manifest) and the wiring derives that track's raw ROM vehicle mask and
+default vehicle. `--mask 0x<mm>` additionally pins the
+exact START_RACE mask the wiring froze. The narrow-mask lane is
+`--track 8 --mask 0x2`: Whale Bay is hovercraft-only with a non-Car default,
+so the previously zero-coverage admission arm (manifest mask ==
+`leveltable_vehicle_usable(track)` with mask != 0x07) plus per-seat vehicle
+legality (descriptor validation and BEGIN_LOADING both check the chosen
+vehicle bit against the mask) must hold end-to-end for the boot to happen at
+all. **Scope class:** seam-injection (config/input seams on an in-process
+loopback) -- the VISIBLE engine boots a live loopback race (real in-process
+hub, real libdatachannel DTLS) driven purely by config seams
+(`MDKR_APP_TEST_ONLINE_LIVE`, `--track`/`--mask`) with no menu-nav input; it is
+NOT the shipping cloud route (that is `check_online_native_flow_cloud.py`).
+Not CTest-registered -- like the other `MDKR_APP_TEST_ONLINE_LIVE` engine boots
+it needs the local US 1.1 ROM -- so it can also run standalone with `--build
+<dir> --rom <path>`.
+
+`check_online_session_boot.py` (run-checks registered in
+`tools/run_online_checks.py`) is
+the gate for the SEPARATED online boot path. Where the direct
+lane proves the race is reached with no menu-nav script, this proves it is now
+reached THROUGH a separate `GAMEMODE_ONLINE_SESSION` that holds its own state
+and never runs the offline `GAMEMODE_MENU` / `gCurrentMenuId` path. It stands up
+the same in-process live loopback session (real libdatachannel DTLS, roster +
+launch descriptor installed from the vote) and boots the engine with NO input
+script, but also sets `MDKR_TEST_ONLINE_SESSION_SCRIPT=<hold>` -- an engine-side
+seam (`game/src/online/online_session.c`, beta + env gated, inert otherwise)
+that installs the REAL `party_link` forward feed and publishes a scripted
+snapshot each `LOBBY_WAIT` tick: `MDKR_ONLINE_LOBBY` for `<hold>` ticks then
+`MDKR_ONLINE_LOADING`. The gate asserts the session mode was entered
+(`[online-session] begin`), that it genuinely idled in `LOBBY_WAIT` reading the
+scripted snapshot (`>= hold` ticks with `haveSnap=1 snapPhase=1`), that it then
+handed off to the race (`[online-session] phase=RACE`) with `gGameMode=2`
+(`GAMEMODE_ONLINE_SESSION`) and `gCurrentMenuId=0` (the offline `MENU_BOOT` was
+never loaded), and that the race still boots and converges byte-for-byte through
+the same `ENGINE-ONLINE-LIVE` witness the direct lane checks. **Scope class:**
+seam-injection (config + input seams on an in-process loopback) -- the same
+in-process live loopback session as the direct lane, with the engine-side
+`MDKR_TEST_ONLINE_SESSION_SCRIPT` seam publishing a scripted LOBBY_WAIT snapshot
+to prove the separated `GAMEMODE_ONLINE_SESSION` boot; it is NOT the shipping
+cloud route (that is `check_online_native_flow_cloud.py`). Default
+`--build build-beta` (the beta engine carries the seam).
+
+`check_online_charselect.py` (run-checks registered in
+`tools/run_online_checks.py`) is the
+gate for the native online CHARACTER SELECT screen. Where the
+session-boot lane proves LOBBY_WAIT hands off to the race, this proves the first
+player-facing SCREEN of the separated path. It stands up the same in-process live
+loopback session (real libdatachannel DTLS, roster + launch descriptor from the
+vote) but sets `MDKR_TEST_ONLINE_CHARSELECT=1`. That engine-side seam
+(`game/src/online/online_charselect.c`, beta + env gated, inert otherwise) stands
+in for the launcher: it installs the REAL `party_link` forward feed, publishes a
+scripted 2-seat `LOBBY` room (local seat 0; a scripted remote `RIVAL` who has
+already locked Bumper and readied), then each CHARSELECT tick acts as a minimal
+reducer -- it polls the screen's published intent, converges the local seat, and
+flips the lobby to `LOADING` once both seats are ready. The screen (which
+re-implements the presentation with the game's OWN portraits + font instead of
+calling the offline charselect `_loop`) walks its cursor to Pipsy, confirms and
+readies. The gate asserts the screen was entered and its portrait assets loaded
+(`[online-charselect] enter`), the remote seat rendered from the snapshot (a
+render row with the remote's char + name), the published intent reached the target
+character + the SAME default vehicle `menu_online_versus_race_setup` applies +
+ready, the local seat converged and rendered, the phase advanced on the scripted
+host-start (`[online-charselect] advance`), the assets were freed
+(`[online-charselect] exit`), and the session handed off to the race WITHOUT the
+offline menu (`gGameMode=2 gCurrentMenuId=0`), which still converges byte-for-byte
+through the `ENGINE-ONLINE-LIVE` witness. **Scope class:** seam-injection
+(config + input seams on an in-process loopback) -- the same live loopback
+session with the engine-side `MDKR_TEST_ONLINE_CHARSELECT` seam standing in for
+the launcher (scripted 2-seat LOBBY + minimal reducer) to prove the native
+character-select screen; it is NOT the shipping cloud route (that is
+`check_online_native_flow_cloud.py`). Default `--build build-beta`.
+
+`check_online_lobby_start.py` (run-checks registered in
+`tools/run_online_checks.py`) is the
+KEYSTONE gate: it proves the NATIVE online screens own RACE 1. Where the
+charselect/trackselect/session-boot lanes boot the engine race-READY (the
+descriptor already built), this stands up the two loopback adapters STOPPED at
+`SELECTING` (no descriptor, `party_link` installed) via
+`OnlineRoom_makeTestLobbyStartRoom` and boots the visible (host) engine
+DESCRIPTOR-LESS (`MDKR_APP_TEST_ONLINE_LIVE_LOBBY_START=1`). The engine's native
+CHARSELECT/TRACKSELECT scripted input (`MDKR_TEST_ONLINE_LOBBY_START=1` -- input
+only; it does NOT install the self-contained charselect/trackselect feed seams)
+drives the host's selection/ready/`SET_CONFIG_TRACK`/START through the REAL reverse
+feed into the adapter, building the descriptor live at `BEGIN_LOADING`. The gate
+asserts: the session BEGAN descriptor-less (`[online-session] begin: lobby-start`)
+and the descriptor-FIRST begin did NOT fire; CHARSELECT then TRACKSELECT fronted;
+the race-1 readiness gate DEFERRED the boot (`race-1 boot deferred ... -> LOBBY_WAIT
+re-wait`) until the launcher built + armed the descriptor
+(`[online-lobby-start] race-1 armed`); then race 1 booted EXACTLY ONCE and ONLY
+THEN (`phase=RACE ... [race=1]`) on the host-selected track 5 (`[online-boot]
+direct race: track=5`, honored, no divergence, no admission reject), with
+`gGameMode=2 gCurrentMenuId=0` throughout and the engine entering the online
+rollback race (`loadedTrack=5`). This is the descriptor-less-begin + race-1
+readiness-gate proof (never a NULL/stale descriptor deref). **Scope class:**
+seam-injection (input seams on an in-process loopback) -- two loopback adapters
+stopped at SELECTING (descriptor-less) with the input-only
+`MDKR_TEST_ONLINE_LOBBY_START` native-screen seam driving
+selection/ready/START through the real reverse feed to build the descriptor
+live; it is NOT the shipping cloud route (that is
+`check_online_native_flow_cloud.py`). Default
+`--build build-beta`.
+
+`check_online_lobby_unconfigured.py` (run-checks registered in
+`tools/run_online_checks.py`) is the PRODUCTION
+ROOM SHAPE regression gate for the two-peer cloud CHARSELECT wedge. The
+lobby-start lane's room carries a track-5 pre-config whose only purpose is to
+"unlock READY at SELECTING"; the REAL production pairing creates a FRESH
+single-race room with NO configured track, and on that shape the SELECTING view
+gates READY behind a track VOTE the native screens never cast -- so the first
+real two-process cloud run wedged at CHARSELECT forever (seat character
+converged, `seat.ready` never latched, stale-retry churn). This lane re-runs the
+same descriptor-less native flow with `MDKR_APP_TEST_ONLINE_UNCONFIGURED=1` (the
+room builder SKIPS the pre-config, witnessed) and
+`MDKR_APP_TEST_ONLINE_ROOM_LATENCY=3` (the loopback room channel gains 3 pumps
+of latency per leg with the State broadcast one pump SLOWER than a
+CommandResult -- the real transport's ordering, which starves a blind stale
+retry of the fresh revision). Asserts the full CHARSELECT -> TRACKSELECT ->
+VEHICLESELECT -> deferred/armed/booted chain with the native TRACKSELECT's
+`SET_CONFIG_TRACK=3` as the room's FIRST-EVER config and race 1 booting on
+track 3. The unit-level twin is `mdkr_online_live_adapter_test --latency`
+(tests/test_online_live_adapter.cpp, `online_live_adapter` ctest): two REAL
+live adapters + per-endpoint replicas of the reverse-feed pump over a
+latency/ordering room double, asserting bounded both-ready convergence, ready
+STAYING latched, no redundant accepted-SET churn, and the host lock + START
+reaching LOADING. **Scope class:** seam-injection (config + fault + input
+injection) -- it reproduces the PRODUCTION room SHAPE (no pre-config) on an
+in-process loopback via the `MDKR_APP_TEST_ONLINE_UNCONFIGURED` config seam and the
+`MDKR_APP_TEST_ONLINE_ROOM_LATENCY` fault seam, driven by scripted native-screen
+input; it is NOT the shipping two-process cloud route (that is
+`check_online_native_flow_cloud.py`). Default `--build build-beta`.
+
+`tools/online/check_online_native_flow_cloud.py` (MANUAL network lane -- NOT in
+`run_online_checks.py`'s default sweep; needs live Wi-Fi + the deployed
+party.goldenballoon.net service; run standalone, never two cloud runs concurrent)
+is the two-process real-cloud PRODUCTION-PATH acceptance instrument. Where `check_online_lobby_
+start.py` proves the descriptor-less native path on an IN-PROCESS loopback with a
+pre-configured room, this launches TWO SEPARATE `mdkr64` app processes over the
+REAL cloud and exercises the full flow with the ONLY automation being (a) pairing
+bootstrap -- `MDKR_APP_TEST_ONLINE_AUTOPAIR=create|join` (+ `_JOIN_CODE`) drives the
+interactive launcher's create/join chooser, join code, "Check Setup" secure
+handshake and Words-Match confirm (`ui_online_room.cpp` `autopairService`), then
+goes HANDS-OFF -- and (b) injected PAD INPUT: the input-only native-screen seams
+(`MDKR_TEST_ONLINE_LOBBY_START` for CHARSELECT/VEHICLE/TRACKSELECT, per-role
+`MDKR_TEST_ONLINE_CHARSELECT_PICK` so the two seats never collide,
+`MDKR_TEST_ONLINE_RESULTS_CHOOSER` for the more-races chooser) plus the
+deterministic race-input fixture (`MDKR_APP_TEST_ONLINE_SYNTH_RACE_INPUT`) standing
+in for the two absent human controllers. Everything after pairing is the PRODUCTION
+code path choosing its own route. Runs with VISIBLE windows (the interactive
+launcher only builds frames with a real drawable). The seven assertions: (a) the
+`[online-room-ready]` latch/publish/boot-enter fire on BOTH -- takeover self-fired;
+(b) the native session enters CHARSELECT descriptor-less (no
+`source=launch-descriptor`); (c) selections sync through the reducer; (d) race 1
+converges; (e) the chooser round-trips a converged race 2; (f) both end FINISHED --
+the host's FINISH first dispatches the EXISTING leader-only REMATCH wrap
+(`lobby_core.c`: RESULTS -> LOBBY + a fresh series), so the transition is
+reducer-observable and the real joiner's chooser mirror exits to its OWN champion
+ceremony from its latched final standings (no new reducer command, no Worker
+change); (g) the takeover re-fires on BOTH endpoints AND a second descriptor-less
+native session reaches CHARSELECT -- the automatic FINISHED re-take into the
+freshly wrapped fresh-series tournament room (the panel's re-arm observer completes
+immediately: the wrap's RESULTS-out-and-back was the rising edge). `--through`: `c`
+stops after the CHARSELECT -> TRACKSELECT advance; `e` stops after (a)-(e) (a
+faster intermediate stop -- needs `--tournament CUP`, since a single race never
+auto-finals); `full` (all seven assertions) is the GREEN bar. Convergence on this
+descriptor-less path is DUAL-witnessed per race: the reducer-agreed finish order
+(both processes commit the SAME placements per race_index) AND the cross-process
+STATE-HASH fold -- each endpoint's resident coordinator folds the same
+firstTick-anchored window of CONFIRMED canonical input frames into an FNV state
+hash (`[online-resident-live] race fold ...`, log-only, session-gated) and the
+capstone requires the identical span + identical hash on both processes, so
+identical finish orders can no longer mask divergent simulations. Default
+`--build build-beta`. The tournament-final joiner strand
+this lane originally caught (the host's FINISH was a purely local leave that sent
+NO reducer command, so neither of the joiner mirror's exits -- room-left-RESULTS /
+vanished-host -- could ever fire) is fixed by the FINISH wrap above; the local
+red-first pins live in `check_online_lobby_tournament.py` (the host's wrap must
+land before the ceremony) and `check_online_results_chooser.py` (the final mirror
+exits to its own ceremony, never re-selection). The SAME strand class existed for
+a SINGLE-RACE room's FINISH (a mandatory pre-beta extension): the host
+now commits the same REMATCH wrap there (phase-only in single-race), leaves via
+the race-winner ceremony into FINISHED, and the joiner's mirror KEEPS THE FOLLOW
+on the observed wrap (FINISH and RACE AGAIN are reducer-indistinguishable in
+single-race; the follow and the host's automatic FINISHED re-take re-converge both
+peers in CHARSELECT of the wrapped room). Its local red-first pins live in
+`check_online_single_race_replay.py` (the `finish` scenario: wrap committed +
+converged on the REAL loopback reducer, reason=FINISHED never LEFT) and
+`check_online_results_chooser.py` (`single-finish` / `single-joiner`).
+**Scope class:** production-path -- the real two-process cloud route exercised end-to-end, the ONLY automation being the pairing bootstrap and injected pad input standing in for the two absent human controllers; everything after pairing is the production code path choosing its own route. This is the one production-path acceptance lane the other online lanes' seam-injection scenarios stand in for.
+
+`check_online_lobby_tournament.py` (run-checks registered in
+`tools/run_online_checks.py`) is the KEYSTONE gate: it COMPOSES the lobby-start boot with the
+resident multi-race coordinator so a descriptor-less session runs a FULL
+tournament IN ONE engine process. Same descriptor-less begin as the lobby-start
+lane, but `MDKR_APP_TEST_ONLINE_MODE=tournament` + `MDKR_APP_TEST_ONLINE_CUP=1`
+(Snowflake cup: rounds 13/6/9/28, all Car-legal) so the room is pre-configured a
+tournament (READY-unlock; the native TRACKSELECT enters in tournament mode via
+`MDKR_TEST_ONLINE_LOBBY_TOURNAMENT=1` and rides the cup), and
+`MDKR_TEST_ONLINE_RESULTS_HOST_PRESS=1` drives the host's per-round advance. After
+race 1 the lobby-start coordinator HANDS OFF to the resident coordinator
+(`composed: handed off to resident coordinator`), so races 2..4 re-cycle in-process
+via the SAME mid-residency PUBLISH_RESULTS + frame-stepped `OnlineRoom_residentAdvanceStep`.
+Finality is FEED-derived (`MDKR_ONLINE_SESSION_CUP_ROUNDS`): the lane
+asserts EXACTLY 4 `[online-boot] direct race:` boots on the cup-1 schedule
+[13,6,9,28] in one process, native RESULTS each round (`haveResults=1`), feed-isFinal
+0 for races 1-3 and 1 at race 4 ONLY, points accruing by trophy weight to 34,30,
+`race_index` 0->3 via the reverse-feed REMATCH on fresh epochs [2,3,4], and
+`gGameMode=2 gCurrentMenuId=0` throughout with no admission reject / watchdog trip.
+It also runs two WEDGE sub-tests proving the deferred safety findings fire cleanly
+(never hang): (W1) `MDKR_APP_TEST_ONLINE_LOBBY_WEDGE=descriptor` -- the descriptor/
+match-input never arms, so the engine's WALL-CLOCK WATCHDOG
+(`descless wait TIMEOUT`) fires + exits clean; (W2) `...=cancel` -- the leader
+CANCEL_LOADINGs while a boot is pending, so the session UNWINDS (`lobby-start
+UNWIND`) + re-fronts CHARSELECT + recovers (race 1 still boots). A source-scan pins
+`MDKR_ONLINE_SESSION_CUP_ROUNDS == MDKR_ONLINE_CUP_ROUNDS`. **Scope
+class:** seam-injection (input + fault injection) -- the full descriptor-less
+tournament runs on an in-process loopback driven by scripted native-screen input +
+host-press seams (with the wedge/watchdog fault seams for the safety sub-tests); it
+is NOT the shipping cloud route (that is `check_online_native_flow_cloud.py`). It
+reaches its final-standings FINISH by the host committing the native chooser's
+FINISH option (`[online-results] chooser: committed option=FINISH -> LEAVE`).
+Default `--build build-beta`.
+
+`check_online_final_replay.py` (run-checks registered in
+`tools/run_online_checks.py`) is the RULED two-real-peer FINAL-REPLAY proof: at
+the tournament FINAL standings the host commits NEW TOURNAMENT instead of FINISH
+(`MDKR_TEST_ONLINE_RESULTS_CHOOSER=3,5`), which dispatches the SAME leader-only
+REMATCH wrap (fresh series, race_index 3 -> 0) -- the host then CONTINUES
+in-session (results -> TRACKSELECT, re-locks the cup, STARTs) while a real second
+peer's road is the ceremony -> FINISHED -> automatic re-take into the freshly
+wrapped room. The ruling holds because both roads re-converge through REDUCER
+AUTHORITY, and this lane proves the re-convergence on the loopback 2-endpoint
+rig: `MDKR_APP_TEST_ONLINE_SINGLE_ENDPOINT=1` drives the peer adapter as the
+stand-in remote process (re-readying itself in the wrapped room exactly as the
+re-taken joiner's fresh session does), the launcher's coordinator takes the
+OBSERVE-ONLY re-cycle on the observed final wrap (`tournament final wrap: room
+left RESULTS -> LOBBY (fresh series...)` -- never the auto-driving mid-cup
+advance, which would race the host's own re-selection), the match-input re-arms
+on the FRESH epoch 5, and race 5 boots as the fresh series' round 1
+(race_index=0) -- then the full second cup races ([13,6,9,28] x 2, results
+race_index 0..3 twice, 8/8 cross-endpoint state-hash folds converged=1) and its
+FINISH ends cleanly (wrap -> CEREMONY -> single FINISHED). RED at the pre-fix
+build: the coordinator's tournament re-cycle trigger was `race_index >
+rs->raceIndex`, which the final wrap (3 -> 0) never satisfies -- the coordinator
+parked in Results forever and the continuing host's race 5 never booted. **Scope
+class:** seam-injection (input seams on an in-process loopback); the shipping
+cloud route's FINISH leg is `check_online_native_flow_cloud.py`. Default
+`--build build-beta`.
+
+`check_online_session_end.py` (run-checks registered in
+`tools/run_online_checks.py`) is the
+gate for the engine->launcher FINISH/RETURN handshake (the session
+end-reason channel). After a native online session ends the engine notes WHY on
+the party_link channel (`mdkr_party_link_note_session_end`) + requests the platform
+exit; the launcher's `runOnlineLobbyStart{Live,Engine}Session` TAKES that reason
+(`mdkr_party_link_take_session_end`) right after the boot returns and BEFORE
+`OnlineRoom_clearPartyLink()`, logging `[online-session-end] reason=...`. The lane
+proves each reason end-to-end on the loopback lobby-start rig: FINISHED as the
+HOST ("A: FINISH" on the final standings -> exit 0), FINISHED as a JOINER
+(the non-host FOLLOWS the host out of the final standings once the
+snapshot phase leaves RESULTS -- otherwise it parked until window-close; proven via
+`MDKR_TEST_ONLINE_RESULTS_JOINER_FINISH`, terminal-only so the visible endpoint
+still drives rounds 1..N-1 as host), LEFT via a genuine CHARSELECT
+browse-B backout (`MDKR_TEST_ONLINE_CHARSELECT_BACKOUT`; the scripted lanes'
+tick-3 browse-B still STAYs), LEFT via a pre-START remote-vacated seat
+(`MDKR_TEST_ONLINE_REMOTE_VACATE`; debounced), LEFT via a mid-tournament
+leader cancel (a clean return replacing the earlier re-front-into-error),
+and ERROR via the wall-clock watchdog (nonzero exit). **Scope class:**
+seam-injection (input + fault injection) -- each session-end reason is stood up on
+the in-process loopback lobby-start rig via input/fault seams (the host FINISH via
+the native chooser, a charselect backout, a remote-vacate, a mid-tournament cancel,
+and a wall-clock wedge); it is NOT the shipping cloud route (that is
+`check_online_native_flow_cloud.py`). Default `--build build-beta`.
+
+`check_online_tournament.py` (run-checks registered in
+`tools/run_online_checks.py`)
+drives a FULL 4-race Dino Domain cup (mode
+tournament, cup 0: tracks 5, 3, 29, 7) through ONE loopback room
+(`MDKR_APP_TEST_ONLINE_MODE=tournament` + `MDKR_APP_TEST_ONLINE_CUP=0`). The
+loopback branch boots the visible engine exactly once per process, so the
+proof splits honestly and the PASS line says which is which: race 1 is
+ENGINE-proven -- the visible engine boots cup round 1 (track 5) off the live
+transport, converges (`[ENGINE-ONLINE-LIVE] converged=1`), races to the
+finish, ends its session ~2.5 s later (`[online-postrace]`), records real
+placements (`[online-results]`) and the launcher reports them accepted=1 --
+while races 2-4 are TRANSPORT-proven through the same live adapters (the
+`test_online_live_adapter.cpp` lifecycle-rig approach, run by the wiring's
+tournament continuation): the leader's REMATCH advances race_index, each
+round's frozen manifest must carry the cup schedule's track and raw ROM mask
+on a fresh epoch with byte-identical descriptors on both endpoints, at least
+30 authored ticks seal/drain hash-equal across the mesh, and the leader
+publishes fixed 0/1 placements through the launcher's exact report seam.
+Round 4 (Hot Top Volcano, mask 0x6) is a narrow-mask, no-Car round inside the
+cup. Final standings must equal the authentic 9/7/5/3/1 trophy accrual --
+36/28 when the visible endpoint also wins race 1, and otherwise exactly what
+the real race-1 placements plus three 9/7 rounds produce. Expect roughly 2-4
+minutes wall time (the engine race runs near real time to the finish; the
+default `--ticks 9000` is only a stall bound because the engine exits itself
+at the postrace witness). Both of these engine gates are timing-sensitive:
+run them one at a time, never concurrently with builds. Neither is
+CTest-registered -- like the other `MDKR_APP_TEST_ONLINE_LIVE` engine boots
+they need the local US 1.1 ROM -- so they can also run standalone with
+`--build <dir> --rom <path>`. **Scope class:** seam-injection (config + input
+seams on an in-process loopback) -- a full 4-race cup on one loopback room via
+config seams (`MDKR_APP_TEST_ONLINE_MODE=tournament`,
+`MDKR_APP_TEST_ONLINE_CUP`), race 1 engine-proven on the visible engine and
+races 2-4 transport-proven through the live adapters; it is NOT the shipping
+cloud route (that is `check_online_native_flow_cloud.py`).
+
+`check_online_room_ready_rearm.py` (run-checks registered in
+`tools/run_online_checks.py`; not CTest-registered) is the gate for the safe
+2nd-tournament room-ready
+RE-ARM state machine. The native takeover latch
+(`OnlineRoom_pollRoomReadyTransition`) is one-shot per adapter, so before this
+fix a SECOND tournament in the SAME session fell back to the per-race ImGui path
+instead of the native takeover; the re-arm is reason-aware and FINISHED-gated (a
+FINISHED native return ARMS `OnlineRoom_armRoomReadyRearm`; LEFT/ERROR/NONE do
+NOT; the panel's per-frame `OnlineRoom_observeRoomReadyRearm` completes a pending
+arm IMMEDIATELY -- the tournament-final FINISH wrap already took the room out of
+the takeover window at RESULTS and back to a fresh-series SELECTING during the
+session, which IS the rising edge -- so the next poll re-takes native exactly once
+per FINISHED return; a room transition alone never re-fires). The full
+interactive two-tournament loop needs a live cloud adapter + a human, so this
+lane drives the loopback tournament room through the wiring edges DIRECTLY via the
+`MDKR_APP_TEST_ONLINE_ROOM_READY_REARM_PROBE` seam and asserts every sub-flag of
+the probe verdict: `totalFires=3` (exactly one native takeover per tournament +
+the reset coda's fresh adapter -- no re-boot loop), `t1Once` (tournament #1 fired
+once), `leftNoRearm` (a LEFT/ERROR return never re-fires even with the condition
+still TRUE), `wrapAloneNoRefire` (the RESULTS-park -> FINISH-wrap round trip alone
+re-fires nothing), `finishedRetakeOnce`/`routed2` (the FINISHED arm completes and
+re-takes native exactly once, route=lobby-start), `noRetakeWithoutFinished` (a
+later condition cycle without a FINISHED return never re-fires), and
+`resetDropsPending` (a fresh adapter drops a stale pending arm). Like
+the sibling engine lanes it needs the local US 1.1 ROM; it can also run
+standalone with `--build <dir> --rom <path>`. **Scope class:** component
+(direct state-machine probe) -- it drives the loopback tournament room's re-arm
+edges DIRECTLY via the `MDKR_APP_TEST_ONLINE_ROOM_READY_REARM_PROBE` seam and
+asserts the probe verdict's sub-flags, rather than running a full session flow;
+it is NOT the shipping cloud route (that is
+`check_online_native_flow_cloud.py`).
+
+`check_online_peer_loss.py` (standalone lane, not run-checks / CTest
+registered) is the process-level peer-loss gate. It reuses the live-transport
+`mdkr_online_live_transport_e2e_driver` but drives it against small in-process
+FAKE servers (no wrangler, no ROM), so it is fast and deterministic. Two arms:
+a survivor whose opponent's `/connect` transport is SEVERED mid-session, and one
+whose opponent NEVER joins a valid one-seat room -- each must reach the room but
+install NO race descriptor (`[E2E] installed` never prints), report NO converged
+finish (`[E2E] result=ok` never prints), and tear down within its budget without
+wedging. That is the transport-layer shadow of the engine's OPPONENT_LEFT /
+OPPONENT_NEVER_STARTED routing; the engine reason-mapping (peer-loss -> failure,
+the no-demotion rule) and the recovery-card copy are pinned separately at the
+unit level by the `online_live_adapter_beta` and `online_lobby_view_model`
+CTests. It does NOT boot the visible engine, so the literal engine witnesses
+(`[online-live] peer lost mid-race`, `[START] ... aborting to the room`) and the
+`race_abort` control message are out of its reach -- those need the
+wrangler-backed two-process `MDKR_APP_TEST_ONLINE_LIVE_CLOUD` path. Run it on a
+quiet machine, standalone, with `--build build-beta`. **Scope class:** component
+(transport-layer, fake servers) -- it reuses the live-transport driver against
+small in-process FAKE signaling servers (no wrangler, no ROM) to prove
+peer-loss teardown at the transport layer; it does NOT boot the visible engine,
+and it is NOT the shipping cloud route (that is
+`check_online_native_flow_cloud.py`).
+
+`check_online_midrace_transport_loss.py` (registered) pins prompt, truthful
+mid-race peer loss ON THE TRANSPORT ITSELF -- the real-cloud kill signature: a
+SIGKILLed opponent's signal socket dies (the service broadcasts
+presence=false) while its mesh goes silent with channels nominally up. The
+lane's sever seam (`MDKR_APP_TEST_ONLINE_SEVER_PEER_AT_TICK`) reproduces that
+in-process on the descriptor-less lobby-start tournament session: it freezes
+the in-process peer's pump and drops its loopback signal presence, refusing
+NOTHING -- detection must come from the transport's own liveness ladders. The
+severed race runs at the authored 30 Hz (the seam arms `paceAdvanceHz`),
+because detection is wall-clock (ping interval + stale bound =
+`kMdkrMatchMidRaceLossPingBoundMs`, parsed from the header, never a magic
+number) while the unthrottled headless drain finishes a race in ~2 real
+seconds. Asserts: typed `[MESH] peer LOST` reason=PingTimeout within the named
+bound of the sever (tick-denominated), the truthful OPPONENT_LEFT mapping (the
+no-demotion rule), the EXISTING mid-race latch ending the race (no ghost
+race), the crash-fix clean LEFT return (exit 0, zero leaks, no abort), and
+that the watchdog path (`round advance TIMEOUT` / `descless wait TIMEOUT`)
+never fires. The laggy-but-alive false-positive guard is pinned at the mesh
+layer by `test_match_peer_transport.cpp`'s
+`presenceBlipWithHealthyChannelsIsNotPeerLoss`. **Scope class:** engine flow
+(loopback transport) -- the real-transport confirmation is
+`check_online_native_flow_cloud.py --drop mid-race --drop-method kill`.
+
+`check_online_pause_overlay.py` (registered) pins the two-machine PAUSE crash
+fix: pressing START in a live ONLINE race must never stop -- or crash -- the
+networked sim. Pre-fix, mode_game's retail pause branch consumed the CANONICAL
+input of every seat, so any START edge (local or remote, live or replayed by a
+rollback correction) engaged gIsPaused inside the online sim, and a paused sim
+made `mdkr_game_resimulate_tick` refuse every later correction replay
+(`game-tick completion rejected ... paused=1`) which
+`reconcile_network_inputs` escalated to abort() -- the non-pausing beta
+machine died with a crash dialog at the pause tick. Four arms on the
+in-process two-adapter loopback race, using the synthetic-pad button script
+(`MDKR_APP_TEST_ONLINE_SYNTH_PAD_SLOT`/`_SCRIPT`) to drive REAL canonical
+START/D-pad/A edges and `MDKR_APP_TEST_ONLINE_LIVE_PREDICT` to sustain the
+WAN-shaped correction storm: [storm] a remote START inside the storm (the
+exact beta crash shape) reconciles and the race converges to the budget;
+[live] an on-time remote START fires the deterministic suppression witness
+and opens NO local overlay; [leave] a local START opens the non-blocking
+CONTINUE/LEAVE overlay, resumes, reopens, and LEAVE RACE takes the clean
+note-LEFT return (exit 0, zero leaks) while corrections keep reconciling with
+the overlay open (the sim provably never stops); [belt] with the legacy
+engage re-allowed (`MDKR_APP_TEST_ONLINE_ALLOW_RETAIL_PAUSE`, test-only), the
+exact pre-fix abort trigger fires and is routed as `online correction replay
+refused (sim-state; recoverable)` -> clean LEFT -- never abort. **Scope
+class:** engine flow (loopback transport).
 
 `tests/check_lan_controller_assets.py` keeps the local-play controller asset set
 identical across the three places that must never disagree: the C++
@@ -2165,7 +2732,7 @@ It arms the boost rather than driving over a pad, for the reason in the ⚠️ a
 committed route can be relied on to keep crossing one particular pad, so a check
 calibrated on one would be measuring the AI, not the boost.
 `MDKR_ZIPPAD_BOOST=<tick>[:<ticks>]` (`objects.c mdkr_zippad_boost_hook`, no-op unless
-set) arms **player one only, once**, in exactly the state `racer.c:5727` arms it in for
+set) arms **player one only, once**, in exactly the state the decomp arms it in for
 `SURFACE_ZIP_PAD` on a car: `boostTimer = normalise_time(ticks)` (default 45, the
 authored constant), `boostType = BOOST_LARGE`. Everything downstream is untouched
 decomp code, so what is measured is the shipping boost with a deterministic trigger.
@@ -3583,8 +4150,8 @@ whole point of the wave.
 The class detector is separate and mechanical — UBSan `-fsanitize=shift-exponent`
 over routes that cross a world hub, Timber's Island at the Taj balloon threshold, a
 water track and a Tracks race. With the fix in place it reports 0 sites; reverted it
-reports 6 (`game.c:528/532/535`, `game.c:629`, `objects.c:1822`, `waves.c:2321`).
-`waves.c:2321` is hit by every route, so it is the sentinel that proves the
+reports 6 shift-exponent sites (in `game.c`, `objects.c`, and `waves.c`).
+The `waves.c` site is hit by every route, so it is the sentinel that proves the
 instrument is alive.
 
 ## Boss win verdict — `tests/check_boss_win_verdict.py` (RUN THIS AFTER ANY CHANGE THAT WRITES `courseFlagsPtr` OR `settings->bosses`)
@@ -3594,7 +4161,7 @@ MDKR_AUDIO=0 python3 tests/check_boss_win_verdict.py -v              # ~3 min
 MDKR_AUDIO=0 python3 tests/check_boss_win_verdict.py --break-invariant   # must FAIL
 ```
 
-`racer_boss_finish()` (`game/src/vehicle_tricky.c:360`) decides between "play the
+`racer_boss_finish()` (`game/src/vehicle_tricky.c`) decides between "play the
 win cutscene, award the amulet, write the save" and "just transition back" on
 **one bit** — `courseFlagsPtr[courseId] & RACE_CLEARED`. The already-cleared arm
 pushes nothing onto the level-property stack, so *no cutscene level is ever
@@ -3833,7 +4400,7 @@ not a slow arm: measured, the lobby is entered at frame ~2947 and the rematch at
 
 Seam C's redirect is invisible in the level-load stream and needs the
 `wizpigface:` trace: `game_load_level` logs the level it was *asked* for, then
-the branch at `game/src/game.c:642` pushes the hub, swaps in the mouth sequence,
+the redirect branch pushes the hub, swaps in the mouth sequence,
 and pops the hub back — so a redirected hub load and an ordinary one print the
 same two `levelId=0` lines. Reading those as "the cutscene never fired" is the
 mistake this seam was first reported with.
@@ -4110,7 +4677,7 @@ byte-identical to the shipped `a08bbcb0…`, so the offsets above are the real o
 **Native cannot catch this defect at all** — the gap is 0 there by luck, so every
 native fixture passes either way, and ASan does not redzone the
 `__DATA,__common` symbols involved. UBSan `-fsanitize=array-bounds` *does* flag the
-out-of-bounds indices (`waves.c:535-539`, `:691-710`) without any crash; that is the
+out-of-bounds indices (in `waves_alloc` and `waves_init`) without any crash; that is the
 native tell.
 
 ## Out-of-bounds index sweep — `tests/check_array_bounds_sweep.py` (RUN THIS AFTER ANY `game/src` CHANGE)
@@ -5419,7 +5986,7 @@ corrupted checksum-valid images hit it before the fix; 0 of 40 after.
 Case 5 is the one actually hit in play. `tajFlags` holds "Taj has OFFERED this
 challenge" (0x01/0x02/0x04) and "you have BEATEN it" (0x08/0x10/0x20) as two
 triples, written minutes apart by two different functions with two different save
-flushes. The offer gate (`objects.c:1794`) reads only the OFFERED half and the
+flushes. The offer gate (in `objects.c`) reads only the OFFERED half and the
 auto-offer dialogue never asks, so "beaten but never offered" replays a finished
 challenge on every hub entry — and Taj's dialogue holds `disable_racer_input()`
 down, so the player just stops. It is measured by DRIVING, not by exit code:
@@ -6874,7 +7441,7 @@ governed or already scaled on the same path, each with its proof in the
 comment), and 0 DISCRETE (this per-tick-constant family did not happen to
 produce a pure gated-event site; `check_cadence_gating.py` covers the
 discrete-gating half of the M3 split separately). One line
-(`game/src/racer.c:7372`) mentions the marker family in prose rather than
+(in `game/src/racer.c`) mentions the marker family in prose rather than
 being a marker itself and is excluded by exact line content, so a real new
 marker landing on that exact line cannot be silently swallowed. Positive
 control: a seeded bare `//!@Delta` must be rejected; a negative control

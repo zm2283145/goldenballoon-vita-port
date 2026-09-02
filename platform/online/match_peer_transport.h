@@ -1,5 +1,5 @@
 /*
- * Native match peer transport (O-T2): the launcher-owned <=4-endpoint
+ * Native match peer transport: the launcher-owned <=4-endpoint
  * full-mesh of WebRTC DataChannels behind one online race.
  *
  * Pure composition of proven layers -- this file adds NO crypto and NO game
@@ -127,6 +127,60 @@ inline constexpr unsigned kMdkrMatchOfferRetryDeadlineMs = 7000u;
 inline constexpr unsigned kMdkrMatchAnswererSetupDeadlineMs =
     3u * kMdkrMatchOfferRetryDeadlineMs;
 
+/* A peer that is BOTH absent from signaling (the service closed its socket
+ * and broadcast presence=false -- what a killed/quit process looks like to
+ * the relay) AND without ready channels can never complete a connection
+ * restart: no offer or answer can reach it. Bound that state instead of
+ * waiting forever. This dwell is keyed on two persistent TRANSPORT facts
+ * (signal presence + channel state), never on gameplay input; a peer whose
+ * signal socket merely blips while its channels stay healthy never arms it,
+ * and a peer that reconnects (presence bump) before it expires disarms it. */
+inline constexpr unsigned kMdkrMatchPeerVanishTimeoutMs = 10000u;
+
+/* MID-RACE PEER-LOSS DETECTION. On a hard mid-race transport loss (peer
+ * process killed / machine gone, its signal presence dropped by the
+ * service) detection is whichever transport verdict lands FIRST -- two
+ * orderings, each with its own bound:
+ *
+ * PING ordering (the channels still claim ready when detection fires): the
+ * next control ping goes out within kMdkrMatchControlPingIntervalMs of the
+ * last pong and goes stale after kMdkrMatchControlPingTimeoutMs, so
+ * peerLost(PingTimeout) fires within their SUM of the loss. */
+inline constexpr unsigned kMdkrMatchMidRaceLossPingBoundMs =
+    kMdkrMatchControlPingIntervalMs + kMdkrMatchControlPingTimeoutMs;
+
+/* ICE-FIRST ordering: ICE's own Disconnected/Closed verdict
+ * (libdatachannel's timeout, observed 15-24 s post-SIGKILL on the real
+ * cloud) -> ConnectionDown tears the channels down, which disarms the ping
+ * ladder and, with the peer's signal presence already dropped, arms the
+ * vanish dwell -> peerLost(PeerVanished) at teardown +
+ * kMdkrMatchPeerVanishTimeoutMs.
+ *
+ * COMPOSITE WORST CASE (this constant -- the TRUE detection bound, asserted
+ * by the strict cloud instrument): ICE-first can only preempt the ping
+ * ladder by tearing the channels down INSIDE the ping window, so the latest
+ * possible detection is a teardown at the very end of that window followed
+ * by the full vanish dwell: ping bound + vanish dwell. (Assumes the
+ * service's presence drop precedes/accompanies the teardown -- observed
+ * 1-2 s post-kill; a presence that somehow outlives the teardown keeps the
+ * peer on the present-peer setup ladders, which bound it separately at
+ * ~kMdkrMatchAnswererSetupDeadlineMs.)
+ * MEASURED (real-cloud mid-race SIGKILL, 2026-08-30, the drop instrument):
+ * kill -> [MESH] peer LOST in 25.0 s (ICE at kill+15 s + the 10 s vanish
+ * dwell, preempting the 20 s ping bound), truthful OPPONENT_LEFT latched
+ * and survivor session end (clean LEFT) 30 ms later -- vs the pre-fix
+ * ~119 s watchdog ERROR with no card. The instrument
+ * (tools/online/check_online_native_flow_cloud.py --drop mid-race
+ * --drop-method kill) re-measures kill -> peer LOST -> session end and
+ * asserts it within THIS composite bound + real-cloud slack on every run.
+ * Tightening toward the ruled <=10 s target would mean shortening the
+ * shipped ping cadence/stale constants themselves (shared by every
+ * launcher-pumped phase) at real false-positive risk on WAN jitter -- ruled
+ * out here; detection stays keyed on transport state, never input
+ * starvation. */
+inline constexpr unsigned kMdkrMatchMidRaceLossDetectBoundMs =
+    kMdkrMatchMidRaceLossPingBoundMs + kMdkrMatchPeerVanishTimeoutMs;
+
 /*
  * Injectable signaling seam. The mesh consumes validated match-signal
  * events and produces outbound messages through this interface only, so
@@ -216,6 +270,12 @@ enum class MdkrMatchPeerLostReason {
     PeerEnded,
     /* The channel died and no recovery path remains (signaling lost). */
     TransportFailed,
+    /* The peer VANISHED: the signal service closed its socket (presence
+     * dropped -- a killed/quit process) AND its channels are down, and the
+     * kMdkrMatchPeerVanishTimeoutMs dwell expired with neither recovering.
+     * No restart can complete against an endpoint signaling cannot reach.
+     * Appended so the prior reasons' logged values never shift. */
+    PeerVanished,
 };
 
 enum class MdkrMatchPeerMeshFailure {
@@ -315,6 +375,17 @@ public:
         uint64_t peerEndpointId,
         const uint8_t fragment[MDKR_MATCH_PEER_PAYLOAD_BYTES]);
 
+    /* F3: broadcast a plaintext race-abort (typed/versioned like ping) to every
+     * reachable peer on the reliable control channel. Returns the number of
+     * peers reached. Does not change any peer's connection state -- the local
+     * endpoint keeps answering pings so the peer's own teardown stays clean. */
+    unsigned sendRaceAbort();
+
+    /* F3: read-and-clear "a peer sent a race_abort since the last call". The
+     * launcher polls this each pump and latches it into its own race state; a
+     * later race observes a fresh abort independently. */
+    bool consumeRaceAbort();
+
     /* The transcript verification phrase. Available ONLY once every roster
      * peer's key is committed, opened and derived (mirrors the transcript
      * layer: no phrase from uncommitted key material); refuses otherwise. */
@@ -355,8 +426,17 @@ public:
     MdkrMatchPeerMeshStats stats() const;
 
     /* Terminal, idempotent, bounded: closes every peer connection and
-     * zeroizes the keyring. Never blocks on a remote peer. */
-    void close();
+     * zeroizes the keyring. Never blocks on a remote peer.
+     *
+     * announcePeerEnd distinguishes a DELIBERATE session end from an internal
+     * teardown. True (the owner is leaving for good -- adapter destruction):
+     * peer_end "close" is sent to every viable peer first, so each survivor
+     * resolves this endpoint as the immediate typed PeerLost(PeerEnded)
+     * instead of grinding its restart episodes / vanish dwell. False (the
+     * default -- destructor backstop, SAS-mismatch rekey, any rebuild that
+     * continues the session): nothing is announced, exactly as before, so a
+     * legitimate mesh rebuild is never presented to peers as a departure. */
+    void close(bool announcePeerEnd = false);
 
 private:
     struct State;

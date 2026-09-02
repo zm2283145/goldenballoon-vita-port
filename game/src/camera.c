@@ -976,6 +976,23 @@ f32 gEffectiveCamAspect = CAMERA_ASPECT;
 static MdkrCameraProjection sNativeProjectionByViewport[4];
 static bool sNativeProjectionValid[4];
 static s32 sNativeOrthoDrawSpace = G_MTX_DKR_SPACE_SAFE_2D;
+/*
+ * Horizontal clip-space compression of the 2D ortho matrix currently in slot
+ * 0.  mtx_ortho_wide_tagged() compresses real vertex x by safe/presentation
+ * so the wide draw spaces keep the safe area's uniform pixel scale, but
+ * billboard-mode sprite geometry (render_ortho_triangle_image*) never passes
+ * through slot 0: the local quad is transformed by the slot-2 matrix alone
+ * and added to the anchor's clip position (gfx_pc_dkr.c billboard notes),
+ * then mapped across the full presentation width.  Without the same
+ * compression every ortho sprite under a wide space rendered
+ * presentation/safe wider than authored -- anchors stayed correct while the
+ * sprite's texels slid sideways around them -- which mis-registered the
+ * minimap island against its (correctly anchored) markers under the
+ * widescreen HUD (issue #57).  1.0 whenever the standard centered ortho is
+ * in force, so SAFE_2D menus, 4:3 and widescreen-HUD-off draws are exactly
+ * as before.
+ */
+static f32 sNativeOrthoBillboardXScale = 1.0f;
 typedef struct MdkrOutputViewState {
     s32 viewport;
     s32 layout;
@@ -1971,8 +1988,29 @@ void viewport_main(Gfx **dlist, Mtx **mats) {
     if (cam_output_view_state()->viewport >= 0) {
         const s32 cameraID =
             gActiveCameraID + (gCutsceneCameraActive ? 4 : 0);
+        /* The world region (safe aperture vs presentation) is a lens input, and
+         * render draws the projection latched for the CANONICAL viewport
+         * (projectionViewport) -- cam_rebuild_native_projection below reads that
+         * exact record. The fixed-tick resolver latched it using the canonical
+         * viewport's own region. So the compatibility guard must recompute the
+         * output lens against that SAME viewport's region, not the local output
+         * rectangle's. They differ only for an online endpoint whose local
+         * presentation viewport index (e.g. 0) is not its canonical slot (e.g.
+         * the joiner's 1): a framed screen -- the post-race results aperture sets
+         * the LOCAL index 0 to safe -- otherwise made the guard compare a 4:3
+         * safe output against the canonical full-screen 16:9 lens render actually
+         * uses, failing closed every frame on the joiner while the host (local ==
+         * canonical) stayed compatible. Keying off projectionViewport keeps the
+         * solo endpoint's output lens the full-screen own-camera lens render
+         * draws, across post-race and rollback resims alike. */
         const s32 safeWorldRegion =
-            viewport_world_region_uses_safe_aperture(savedCameraID);
+            viewport_world_region_uses_safe_aperture(
+#if MDKR_ENABLE_ONLINE_BETA
+                projectionViewport
+#else
+                savedCameraID
+#endif
+            );
         if (!cam_output_projection_compatible(
                 outputViewport, outputLayout, projectionViewport, cameraID,
                 safeWorldRegion)) {
@@ -2510,6 +2548,7 @@ void mtx_ortho(Gfx **dList, Mtx **mtx) {
     gSPMatrixDKRTagged((*dList)++, OS_K0_TO_PHYSICAL((*mtx)++), G_MTX_DKR_INDEX_0,
                        sNativeOrthoDrawSpace);
     sNativeOrthoDrawSpace = G_MTX_DKR_SPACE_SAFE_2D;
+    sNativeOrthoBillboardXScale = 1.0f;
 #else
     gSPMatrixDKR((*dList)++, OS_K0_TO_PHYSICAL((*mtx)++), G_MTX_DKR_INDEX_0);
 #endif
@@ -2569,6 +2608,10 @@ static void mtx_ortho_wide_tagged(Gfx **dList, Mtx **mtx,
     }
     wideOrtho[0][0] *= horizontalScale;
     wideOrtho[3][0] += authoredOffset * horizontalScale;
+    /* Billboard sprite quads bypass this matrix; record its horizontal
+     * compression so render_ortho_triangle_image* can apply the identical
+     * factor to their clip-space x (see sNativeOrthoBillboardXScale). */
+    sNativeOrthoBillboardXScale = horizontalScale;
 
     widthAndHeight = fb_size();
     height = GET_VIDEO_HEIGHT(widthAndHeight);
@@ -3231,8 +3274,18 @@ void render_ortho_triangle_image(Gfx **dList, Mtx **mtx, Vertex **vtx, ObjectSeg
     gModelMatrixStackPos++;
     gCameraTransform.rotation.y_rotation = -MDKR_ORTHO_TRANSFORM->rotation.y_rotation;
     gCameraTransform.rotation.x_rotation = -MDKR_ORTHO_TRANSFORM->rotation.x_rotation;
+    /* The roll folded into an ortho sprite comes from the BASE viewport
+     * camera, never the cutscene bank. The original read here was
+     * gCameras[gActiveCameraID] with no +4 cutscene offset -- unlike the
+     * world billboard builder above, which always branched to the cutscene
+     * slot. Course previews and flybys run on the cutscene bank
+     * (write_to_object_render_stack), so taking cam_get_active_camera()
+     * here made every HUD digit sprite inherit the flyby camera's banking
+     * roll and rock back and forth with the camera while the base slot --
+     * the one the screen-space GUI is authored against -- sat still
+     * (issue #59). */
     gCameraTransform.rotation.z_rotation =
-        cam_get_active_camera()->trans.rotation.z_rotation +
+        cam_get_active_camera_no_cutscenes()->trans.rotation.z_rotation +
         MDKR_ORTHO_TRANSFORM->rotation.z_rotation;
     gCameraTransform.x_position = 0.0f;
     gCameraTransform.y_position = 0.0f;
@@ -3248,6 +3301,21 @@ void render_ortho_triangle_image(Gfx **dList, Mtx **mtx, Vertex **vtx, ObjectSeg
     }
     mtxf_from_inverse_transform(&aspectMtxF, &gCameraTransform);
     mtxf_mul(&gCurrentModelMatrixF, &aspectMtxF, gModelMatrixF[gModelMatrixStackPos]);
+#ifdef NATIVE_PORT
+    if (sNativeOrthoBillboardXScale != 1.0f) {
+        /* Wide 2D draw space (mtx_ortho_wide_tagged): the slot-0 ortho has
+         * its x output compressed by safe/presentation, but this billboard
+         * quad is added to the anchor in clip space through the slot-2
+         * matrix alone.  Compress the slot-2 clip-x OUTPUT column by the
+         * same factor so the sprite's texels keep the safe area's pixel
+         * scale around the (already correct) anchor; a rotated sprite
+         * compresses in screen space exactly like slot-0 geometry would. */
+        (*gModelMatrixF[gModelMatrixStackPos])[0][0] *= sNativeOrthoBillboardXScale;
+        (*gModelMatrixF[gModelMatrixStackPos])[1][0] *= sNativeOrthoBillboardXScale;
+        (*gModelMatrixF[gModelMatrixStackPos])[2][0] *= sNativeOrthoBillboardXScale;
+        (*gModelMatrixF[gModelMatrixStackPos])[3][0] *= sNativeOrthoBillboardXScale;
+    }
+#endif
     mtxf_to_mtx(gModelMatrixF[gModelMatrixStackPos], *mtx);
     gModelMatrix[gModelMatrixStackPos] = *mtx;
     gSPMatrixDKR((*dList)++, OS_K0_TO_PHYSICAL((*mtx)++), G_MTX_DKR_INDEX_2);

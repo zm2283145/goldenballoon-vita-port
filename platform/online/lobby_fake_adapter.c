@@ -543,12 +543,26 @@ MdkrOnlineFakeStep mdkr_online_fake_finish_race(
                          MDKR_ONLINE_FAKE_ERROR_INVALID_ACTION);
     }
     next = *adapter;
-    if (!lobby_dispatch(&next, next.lobby.leader_endpoint_id,
-                        MDKR_ONLINE_PUBLISH_RESULTS, 0u, 0u) ||
-        !session_dispatch(&next, MDKR_SESSION_COMMAND_SET_ENGINE_PHASE,
-                          MDKR_ENGINE_FINISHED)) {
-        return fake_step(adapter, false, false,
-                         MDKR_ONLINE_FAKE_ERROR_REDUCER);
+    /* PUBLISH_RESULTS now carries packed per-seat placements (byte i = seat
+     * i's finishing position, 0xFF unoccupied). The fake session has no race
+     * sim, so award places in seat order — valid by construction. */
+    {
+        uint32_t packed = 0u;
+        uint8_t place = 0u;
+        unsigned seat;
+        for (seat = 0u; seat < MDKR_ONLINE_MAX_SEATS; seat++) {
+            const uint8_t byte = next.lobby.seats[seat].occupied
+                                     ? place++
+                                     : (uint8_t)0xFFu;
+            packed |= (uint32_t)byte << (8u * seat);
+        }
+        if (!lobby_dispatch(&next, next.lobby.leader_endpoint_id,
+                            MDKR_ONLINE_PUBLISH_RESULTS, 0u, packed) ||
+            !session_dispatch(&next, MDKR_SESSION_COMMAND_SET_ENGINE_PHASE,
+                              MDKR_ENGINE_FINISHED)) {
+            return fake_step(adapter, false, false,
+                             MDKR_ONLINE_FAKE_ERROR_REDUCER);
+        }
     }
     next.revision++;
     *adapter = next;
@@ -576,6 +590,20 @@ MdkrOnlineFakeStep mdkr_online_fake_expire_timeout(
     return fake_step(adapter, true, false, MDKR_ONLINE_FAKE_OK);
 }
 
+/* The SELECTING view arms a "Selection Took Too Long" view-timeout card only
+ * under MDKR_ENABLE_ONLINE_BETA (see the beta-gated block in lobby_view_model.c
+ * around the MDKR_ROOM_SELECTING branch). Keep this storybook spec honest to the
+ * gated view model: every select-* case must declare the timeout present exactly
+ * when the shipped app would render it and absent otherwise. Compile-time, using
+ * the same gate as the view model itself, so an OFF/release build (and the
+ * beta-blind unit test, which compiles these TUs without the define) keeps the
+ * spec false and stays byte-identical. */
+#if MDKR_ENABLE_ONLINE_BETA
+#define MDKR_ONLINE_SELECT_TIMEOUT_PRESENT true
+#else
+#define MDKR_ONLINE_SELECT_TIMEOUT_PRESENT false
+#endif
+
 static const MdkrOnlineFakeGallerySpec k_gallery[] = {
     {"entry", MDKR_ONLINE_VIEW_ENTRY, MDKR_ONLINE_VIEW_FAILURE_NONE,
      MDKR_ONLINE_VIEW_ACTION_CREATE_ROOM, false, false},
@@ -596,25 +624,32 @@ static const MdkrOnlineFakeGallerySpec k_gallery[] = {
      MDKR_ONLINE_VIEW_ACTION_RETRY, true, false},
     {"select-character", MDKR_ONLINE_VIEW_SELECTING,
      MDKR_ONLINE_VIEW_FAILURE_NONE,
-     MDKR_ONLINE_VIEW_ACTION_CHOOSE_CHARACTER, false, false},
+     MDKR_ONLINE_VIEW_ACTION_CHOOSE_CHARACTER,
+     MDKR_ONLINE_SELECT_TIMEOUT_PRESENT, false},
     {"select-vehicle", MDKR_ONLINE_VIEW_SELECTING,
      MDKR_ONLINE_VIEW_FAILURE_NONE,
-     MDKR_ONLINE_VIEW_ACTION_CHOOSE_VEHICLE, false, false},
+     MDKR_ONLINE_VIEW_ACTION_CHOOSE_VEHICLE,
+     MDKR_ONLINE_SELECT_TIMEOUT_PRESENT, false},
     {"select-track", MDKR_ONLINE_VIEW_SELECTING,
      MDKR_ONLINE_VIEW_FAILURE_NONE,
-     MDKR_ONLINE_VIEW_ACTION_VOTE_TRACK, false, false},
+     MDKR_ONLINE_VIEW_ACTION_VOTE_TRACK,
+     MDKR_ONLINE_SELECT_TIMEOUT_PRESENT, false},
     {"select-ready", MDKR_ONLINE_VIEW_SELECTING,
      MDKR_ONLINE_VIEW_FAILURE_NONE,
-     MDKR_ONLINE_VIEW_ACTION_READY, false, false},
+     MDKR_ONLINE_VIEW_ACTION_READY,
+     MDKR_ONLINE_SELECT_TIMEOUT_PRESENT, false},
     {"select-waiting", MDKR_ONLINE_VIEW_SELECTING,
      MDKR_ONLINE_VIEW_FAILURE_NONE,
-     MDKR_ONLINE_VIEW_ACTION_CHANGE_SELECTION, false, false},
+     MDKR_ONLINE_VIEW_ACTION_CHANGE_SELECTION,
+     MDKR_ONLINE_SELECT_TIMEOUT_PRESENT, false},
     {"select-everyone-ready", MDKR_ONLINE_VIEW_SELECTING,
      MDKR_ONLINE_VIEW_FAILURE_NONE,
-     MDKR_ONLINE_VIEW_ACTION_CHANGE_SELECTION, false, false},
+     MDKR_ONLINE_VIEW_ACTION_CHANGE_SELECTION,
+     MDKR_ONLINE_SELECT_TIMEOUT_PRESENT, false},
     {"select-start", MDKR_ONLINE_VIEW_SELECTING,
      MDKR_ONLINE_VIEW_FAILURE_NONE,
-     MDKR_ONLINE_VIEW_ACTION_START_RACE, false, true},
+     MDKR_ONLINE_VIEW_ACTION_START_RACE,
+     MDKR_ONLINE_SELECT_TIMEOUT_PRESENT, true},
     {"loading", MDKR_ONLINE_VIEW_LOADING, MDKR_ONLINE_VIEW_FAILURE_NONE,
      MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS, true, true},
     {"loading-rematch", MDKR_ONLINE_VIEW_LOADING,

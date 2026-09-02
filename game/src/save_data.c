@@ -1493,9 +1493,18 @@ static s32 ghost_file_is_valid(
 static s32 ghost_write_args_are_valid(
     s16 levelId, s16 vehicleId, s16 characterId, s16 nodeCount,
     const u8 *nodes) {
+    /* Retail base characters are 0..9. The native port additionally accepts the
+     * bonus-racer ghost marker IDs (>= NUM_CHARACTERS), which stamp an added
+     * racer's saved ghost as non-authentic. Base-racer writes (0..9) validate
+     * byte-identically; only the extended upper bound differs. */
+#ifdef NATIVE_PORT
+    const s16 maxCharacterId = MOD_RACER_GHOST_CHARACTER_MAX;
+#else
+    const s16 maxCharacterId = 9;
+#endif
     return levelId >= 0 && levelId < 0xFF &&
            vehicleId >= 0 && vehicleId <= 2 &&
-           characterId >= 0 && characterId <= 9 &&
+           characterId >= 0 && characterId <= maxCharacterId &&
            nodeCount >= 0 && nodeCount <= DKR_GHOST_MAX_NODES &&
            (nodeCount == 0 || nodes != NULL);
 }

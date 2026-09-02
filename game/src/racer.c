@@ -5644,11 +5644,12 @@ void update_player_racer(Object *obj, s32 updateRate) {
             audspat_point_set_position(tempRacer->bananaSoundMask, obj->trans.x_position, obj->trans.y_position,
                                        obj->trans.z_position);
         }
-        if (is_in_time_trial() && tempRacer->playerIndex == PLAYER_ONE && gRaceStartTimer == 0
-#ifdef NATIVE_PORT
-            && taj_physics_canonical_records_allowed(tempRacer)
-#endif
-        ) {
+        /* Record player-1 ghost node data for EVERY Time Trial run, base or bonus.
+         * A bonus (added) racer's ghost is stamped non-authentic by its character
+         * marker; it still needs real node data so it can be saved and replayed.
+         * Base-racer recording is byte-identical (they always passed the old
+         * canonical gate). */
+        if (is_in_time_trial() && tempRacer->playerIndex == PLAYER_ONE && gRaceStartTimer == 0) {
             timetrial_ghost_write(obj, updateRate);
         }
         if (tempRacer->soundMask) {
@@ -6549,7 +6550,7 @@ void func_80050A28(Object *obj, Object_Racer *racer, s32 updateRate, f32 updateR
     }
     // Slow down gradually when not acellerating and almost at a standstill
     if (velSquare < 1.0f && !(gCurrentRacerInput & A_BUTTON)) {
-        racer->velocity -= racer->velocity * traction * 8.0f; //!@Delta CONTINUOUS: drag term subtracted from velocity every call with no updateRateF; func_80050A28 is the same thrust/drag shape update_car_velocity_ground has (see the mdkr_boss_cadence_clamp comment near line 7365), reached by boss vehicles via func_8004F7F4.
+        racer->velocity -= racer->velocity * traction * 8.0f; //!@Delta CONTINUOUS: drag term subtracted from velocity every call with no updateRateF; func_80050A28 is the same thrust/drag shape update_car_velocity_ground has (see the mdkr_boss_cadence_clamp rationale), reached by boss vehicles via func_8004F7F4.
     } else {
         racer->velocity -= velSquare * traction; //!@Delta CONTINUOUS: drag term, else-branch of the same standstill/moving split as 6176.
     }
@@ -7680,7 +7681,7 @@ void update_car_velocity_ground(Object *obj, Object_Racer *racer, s32 updateRate
         racer->boostTimer = normalise_time(45);
         racer->boostType = BOOST_UNK3;
     }
-    racer->velocity -= velSquare * traction; //!@Delta CONTINUOUS: drag term of update_car_velocity_ground's thrust/drag pair (see the mdkr_boss_cadence_clamp comment two functions below); normally equilibrium-governed for ordinary racers (measured cadence-neutral to within 0.2%), but the correct engineering fix is still to scale this term -- that is what makes the wheel-0 traction hole (M2) safe rather than merely clamped (M1).
+    racer->velocity -= velSquare * traction; //!@Delta CONTINUOUS: wheel-0-sampled drag term of update_car_velocity_ground's thrust/drag pair. Equilibrium-governed for ordinary racers (measured cadence-neutral to within 0.2%). The boss runaway here is an OCCUPANCY fault, not a scale fault -- see the mdkr_boss_cadence_clamp rationale (search "wheel 0 ALONE"): the fix is the occupancy-scoped clamp, NOT scaling this term. An earlier "scale the drag term" premise was refuted; occupancy is the real invariant.
     if (sp38) {
         if (racer->unk1EE < 16) {
             racer->unk1EE++;
@@ -9796,10 +9797,9 @@ void timetrial_free_staff_ghost(void) {
  */
 SIDeviceStatus timetrial_write_player_ghost(s32 controllerIndex, s32 mapId, s16 arg2, s16 arg3, s16 arg4) {
 #ifdef NATIVE_PORT
-    if (taj_physics_run_is_noncanonical()) {
-        taj_physics_trace_record_suppressed(NULL);
-        return CONTROLLER_PAK_BAD_DATA;
-    }
+    /* arg3 is the ghost character. For a bonus-racer run it is a marker ID
+     * (>= NUM_CHARACTERS) that keeps the saved ghost distinct from any base
+     * record; the write validator accepts that extended range. */
     {
         SIDeviceStatus writeStatus =
             func_80075000(controllerIndex, (s16) mapId, arg2, arg3, arg4, gGhostNodeCount[gCurrentGhostIndex],
@@ -9832,11 +9832,10 @@ void timetrial_ghost_write(Object *obj, s32 updateRate) {
     GhostNode *ghostNode;
 
     racer = obj->racer;
-#ifdef NATIVE_PORT
-    if (!taj_physics_canonical_records_allowed(racer)) {
-        return;
-    }
-#endif
+    /* Bonus (added) racers now record ghost node data too, so their run can be
+     * saved and replayed. Base-racer recording is unchanged (they always passed
+     * the old canonical gate). The stored ghost is stamped non-authentic via its
+     * character ID; it never touches the authentic record tables or T.T.-unlock. */
     yOffset = coss_f(racer->z_rotation_offset) * coss_f(racer->x_rotation_offset - racer->unk166);
     if (yOffset < 0) {
         yOffset *= 0.5;

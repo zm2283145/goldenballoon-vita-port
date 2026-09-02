@@ -377,6 +377,15 @@ void obj_visibility_tick(void);
 void obj_authoritative_texture_tick(Object *obj, s32 updateRate, f32 viewDistance);
 extern s32 gObjSortFirstActive;
 extern s32 gObjSortObjCount;
+#if MDKR_ENABLE_ONLINE_BETA
+/* Scene render filter (online belt) for the rollback partition class: TRUE when
+ * a non-particle HEADER_FLAGS_UNK_0001 object (a spectate camera) must be kept
+ * out of render_object. Inert offline and under the A/B disable. */
+s32 mdkr_scene_render_partition_excluded(const Object *obj);
+/* Count of spectate BHV_CAMERA_CONTROL objects that have reached render_object
+ * (should stay 0). Observability for the online rollback partition class. */
+extern s32 gPartitionTraceCameraDraws;
+#endif
 #endif
 u32 func_800179D0(void);
 void set_taj_challenge_type(s32 vehicleID);
@@ -625,6 +634,16 @@ void mdkr_object_assets_unpin_rollback(void);
  * These small mutable lifetime fields are rollback authority; model geometry
  * and textures remain immutable shared assets. Returns -1 on bad arguments. */
 s32 mdkr_object_assets_rollback_references(s16 **references, s32 capacity);
+/* TRUE iff this model's `references` field is in the set the enumeration
+ * above returns (and the rollback snapshot therefore owns). Keyed on the live
+ * lease registry -- the registration's own source of truth. Always FALSE
+ * offline (no leases exist outside an active rollback race/lab). */
+s32 mdkr_object_assets_model_reference_covered(const ObjectModel *model);
+/* One-sided pinned-refcount conservation check (references must never sit
+ * BELOW lease holds + live object holders). Returns the number of covered
+ * models currently in deficit; logs each once per race. Zero-cost truthful
+ * no-op offline (no leases). */
+s32 mdkr_object_assets_pinned_reference_deficit(void);
 #endif
 #ifndef NATIVE_PORT
 void obj_door_number(ObjectModel *, Object *);

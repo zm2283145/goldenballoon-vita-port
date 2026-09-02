@@ -965,6 +965,7 @@ static int sdl_should_hide_window(void) {
 #if defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 static void platform_macos_activate_app(const char *why);
 static void platform_macos_install_occlusion_shim(void);
+static int platform_macos_app_is_hidden(void);
 #endif
 
 static int sdl_automation_surface_requested(void) {
@@ -991,7 +992,27 @@ int platform_sdl_surface_presentable(void) {
         return 0;
     }
     const Uint32 flags = SDL_GetWindowFlags(s_window);
-    return (flags & (SDL_WINDOW_HIDDEN | SDL_WINDOW_MINIMIZED)) == 0;
+    if ((flags & (SDL_WINDOW_HIDDEN | SDL_WINDOW_MINIMIZED)) != 0) {
+        return 0;
+    }
+#if defined(__APPLE__)
+    /*
+     * Cmd-H / the app menu's Hide (and `System Events -> set visible to
+     * false`) hides the whole application WITHOUT reliably setting
+     * SDL_WINDOW_HIDDEN. A hidden app has no drawable, so its surface is not
+     * presentable and the WebGPU backend must NOT enter the blocking drawable
+     * acquire (see the occlusion-hang guard in gfx_webgpu.c). This is the one
+     * occlusion signal the present shim deliberately does not lie about:
+     * platform_macos_install_occlusion_shim swizzles -[NSWindow
+     * occlusionState] to always report Visible, so that property can no longer
+     * distinguish a genuinely off-screen surface, but -[NSApplication
+     * isHidden] is a separate, un-swizzled read that stays honest.
+     */
+    if (platform_macos_app_is_hidden()) {
+        return 0;
+    }
+#endif
+    return 1;
 #endif
 }
 
@@ -2531,6 +2552,21 @@ static void pad_hotplug_lazy_init(void) {
         s_hotplug[s_hotplugCount++] = entry;
         s_hotplugState = 1;
         cursor = end != NULL ? end + 1 : entry_end;
+    }
+    if (s_hotplugState == 1) {
+        /* Same problem, same cure as the launcher's virtual-gamepad smoke arm
+         * (app_host.cpp): an automation window exists but never holds keyboard
+         * focus, and SDL2 proper then swallows every away-from-neutral
+         * joystick delta (SDL_PrivateJoystickShouldIgnoreEvent), so a held
+         * direction on a virtual pad reads as permanent neutral downstream.
+         * sdl2-compat does not enforce that focus gate, which let this arm's
+         * verdict silently track WHICH SDL2 the build linked instead of the
+         * hotplug behaviour it measures. Opt in to background events for the
+         * scheduled-hotplug run only; this path never arms outside the
+         * MDKR_TEST_PAD_HOTPLUG fixture, so player-facing background-input
+         * policy is unchanged. */
+        SDL_SetHintWithPriority(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS,
+                                "1", SDL_HINT_OVERRIDE);
     }
 }
 
@@ -4271,6 +4307,23 @@ static void pace_lazy_init(void) {
         cadence =
             videoConfig->values[MDKR_VIDEO_SIMULATION_CADENCE].text;
     }
+    /* Online epochs race the manifest's fixed cadence: two fields per
+     * authored tick.  Race admission byte-compares only the field clock
+     * (source_field_hz/2), never the fields-per-tick modifier, so a
+     * one-sided "enhanced" (one field per tick = 60 authored ticks/s, plus
+     * its gameplay gates via platform_sim_cadence_is_enhanced()) would pass
+     * admission and desync at tick one.  Read the online-epoch predicate
+     * (platform_online_epoch(), which reports the armed NTSC identity override
+     * -- the two are one coupled fact: every online boot lane arms it) and pin
+     * the authored cadence whenever an online epoch governs. */
+    if (platform_online_epoch() != 0 &&
+        strcmp(cadence, "original") != 0) {
+        fprintf(stderr,
+                "[pace] online session pins Simulation.Cadence=original "
+                "(configured \"%s\" is not raced online)\n",
+                cadence);
+        cadence = "original";
+    }
     s_minFields = mdkr_pacing_min_fields(cadence);
     fieldHzOverride = getenv("MDKR_FIELD_HZ");
     s_fieldHz = mdkr_pacing_field_hz(
@@ -4785,6 +4838,80 @@ int platform_present_occlusion_visible_bit(void) {
 }
 
 /*
+ * Un-swizzled occlusionState read: invokes the ORIGINAL getter captured by the
+ * shim, bypassing its always-Visible lie (the plain
+ * platform_present_occlusion_visible_bit above goes through the swizzled getter
+ * and therefore always reports Visible). Returns 1 visible, 0 occluded, -1
+ * unknown (no window / shim not installed / not a Cocoa window). occlusionState
+ * is documented to false-flap to occluded on genuinely visible foreground
+ * windows, so this is trustworthy only as a LENIENT hint: a reported "occluded"
+ * may be spurious, but it never wrongly claims visible. Used to keep a
+ * covered-window drawable timeout off the fatal surface-recovery counter.
+ */
+int platform_present_occlusion_visible_bit_honest(void) {
+    SDL_SysWMinfo info;
+    if (s_window == NULL || s_occlusionOrigImp == NULL) {
+        return -1;
+    }
+    SDL_VERSION(&info.version);
+    if (!SDL_GetWindowWMInfo(s_window, &info) ||
+        info.subsystem != SDL_SYSWM_COCOA || info.info.cocoa.window == NULL) {
+        return -1;
+    }
+    {
+        unsigned long state = s_occlusionOrigImp(
+            (void *)info.info.cocoa.window,
+            sel_registerName("occlusionState"));
+        return (state & (1ul << 1)) != 0ul ? 1 : 0;
+    }
+}
+
+/*
+ * Honest, un-swizzled read of -[NSApplication isHidden] (Cmd-H / the app
+ * menu's Hide / `System Events -> set visible to false`). occlusionState is
+ * method-swizzled to always report Visible (see the shim above), so it can no
+ * longer be trusted to detect a genuinely off-screen surface; isHidden is a
+ * distinct NSApplication property that the shim never touches. Returns 1 when
+ * the application is hidden, 0 otherwise (also 0 if AppKit is unavailable).
+ * NSApplicationActivationPolicyAccessory (the MDKR_TEST/background-app case)
+ * does NOT set this bit, so automation/headless surfaces stay presentable.
+ */
+static int platform_macos_app_is_hidden(void) {
+    Class cls = objc_getClass("NSApplication");
+    void *app;
+    if (cls == NULL) {
+        return 0;
+    }
+    app = ((void *(*)(Class, SEL))objc_msgSend)(
+        cls, sel_registerName("sharedApplication"));
+    if (app == NULL) {
+        return 0;
+    }
+    return ((signed char (*)(void *, SEL))objc_msgSend)(
+               app, sel_registerName("isHidden")) != 0 ? 1 : 0;
+}
+
+/*
+ * [(CAMetalLayer *)metal_layer setAllowsNextDrawableTimeout:YES], via the objc
+ * runtime (this translation unit is C, not Objective-C). A CAMetalLayer
+ * defaults to YES, but wgpu-hal's Metal surface configure re-applies the
+ * layer's drawable state and disables the timeout, so the WebGPU backend
+ * re-asserts YES after every wgpuSurfaceConfigure (occlusion-hang safety net,
+ * Part B). With the timeout enabled, nextDrawable on a starved or genuinely
+ * occluded-but-composited layer FAILS after ~1s (wgpu then returns
+ * Timeout/unavailable and the frame takes the existing skip-present path)
+ * instead of blocking the main thread indefinitely.
+ */
+void platform_macos_enable_next_drawable_timeout(void *metal_layer) {
+    if (metal_layer == NULL) {
+        return;
+    }
+    ((void (*)(void *, SEL, signed char))objc_msgSend)(
+        metal_layer, sel_registerName("setAllowsNextDrawableTimeout:"),
+        (signed char)1);
+}
+
+/*
  * Recovery kick for a spurious Occluded acquire: pump the event loop so a
  * pending occlusion-state notification can land (the documented recovery
  * in wgpu-native #590), and on the first spurious event of the session
@@ -4826,6 +4953,9 @@ void platform_present_occlusion_kick(void) {
 void platform_present_occlusion_shim_install(void) {
 }
 int platform_present_occlusion_visible_bit(void) {
+    return -1;
+}
+int platform_present_occlusion_visible_bit_honest(void) {
     return -1;
 }
 void platform_present_occlusion_kick(void) {

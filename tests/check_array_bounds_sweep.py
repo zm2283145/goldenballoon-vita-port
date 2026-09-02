@@ -173,6 +173,17 @@ SHAPE_TRIAGE = {
         "caller (stubs_dkr.c presentation subloop) passes ARRAY_COUNT of a "
         "local GfxShadowReplayViewProjection views[4], matching "
         "GFX_SHADOW_MAX_VIEWS. NULL out returns 0.",
+    ("bare-pointer", "game/src/video_mode_table.c",
+     "mdkr_video_apply_pal_height_raise:modes"):
+        "BOUNDED BY THE CALLER'S OWN LAST INDEX: the loop is `for (i = 0; i <= "
+        "lastIndex; i++)` writing modes[i], and the sole game caller (video.c "
+        "video_init) passes NUM_RESOLUTION_MODES == sizeof(gVideoModeResolutions)"
+        "/sizeof(VideoModeResolution) - 1 -- the array's own last valid index, "
+        "derived from the array itself -- so modes[lastIndex] is the final of the "
+        "8 elements, never past it. Byte-identical to the retail `for (i = 0; i "
+        "<= NUM_RESOLUTION_MODES; i++)` PAL height loop it replaced; the only "
+        "added behaviour is the *raised once-flag that makes the raise idempotent "
+        "across in-process launcher epochs. NULL modes returns early.",
     ("bare-pointer", "game/src/tracks.c", "get_inside_segment_count_xz:arg2"):
         "BOUNDED (this commit): maxOut added; caller passes ARRAY_COUNT"
         "(segmentsInside[8]). Peak 4 of 8, min slack 4, 0 calls at the bound.",
@@ -280,6 +291,26 @@ SHAPE_TRIAGE = {
     ("bare-pointer", "game/src/font.c", "fontConvertString:outString"):
         "STRING CONTRACT: NUL-terminated copy with in-place code translation, "
         "output sized by the caller from the same literal.",
+    # -- the online-screen all-caps BIGFONT copy helpers. Present since the
+    #    online room-preview bring-up (both exist at the crossplay campaign base
+    #    b992e538; the sweep was never run there because array_bounds is a
+    #    rom-role/full-suite check, so these two sat untriaged until the land5
+    #    first-ever full-suite run surfaced them). Read end to end 2026-09-01;
+    #    each is self-bounded by its cap parameter, not by caller discipline.
+    ("bare-pointer", "game/src/online/online_trackselect.c",
+     "trackselect_upper:dst"):
+        "BOUNDED BY PARAMETER: the copy loop condition is "
+        "`src[i] != '\\0' && i + 1u < cap`, so body writes dst[i] stop at "
+        "i <= cap-2 and the trailing `dst[i] = '\\0'` lands at cap-1 at worst. "
+        "Self-bounded against `cap` regardless of caller; all three call sites "
+        "pass sizeof() of a local char buffer (nm[]) with a level_name() source. "
+        "NULL src is replaced with \"?\" before the loop.",
+    ("bare-pointer", "game/src/online/online_vehicleselect.c",
+     "vehicleselect_upper:dst"):
+        "BOUNDED BY PARAMETER: byte-identical idiom to trackselect_upper above -- "
+        "`src[i] != '\\0' && i + 1u < cap` caps body writes at cap-2 and the "
+        "terminator at cap-1. The sole caller passes sizeof(nameBuf) with a "
+        "level_name() source. NULL src is replaced with \"?\".",
     ("bare-pointer", "game/src/menu.c", "filename_trim:output"):
         "ALREADY HANDLED: this exact overrun was found and fixed in an earlier "
         "wave -- see the NATIVE_PORT comment at menu.c's trimmedFilename "
@@ -598,6 +629,24 @@ SHAPE_TRIAGE = {
     ("bare-pointer", "platform/stubs_dkr.c", "osContGetReadData:pad"):
         "BOUNDED BY LITERAL: same shape -- `i < MAXCONTROLLERS` writing pad[i], "
         "sole caller passes joypad.c's gControllerCurrData[MAXCONTROLLERS].",
+    # -- the ghost-bank window/directory codecs (1.5.2). --------------------
+    ("bare-pointer", "platform/ghost_bank.c", "window_stage_records:records"):
+        "BOUNDED BY CONSTRUCTION: the loop is `for (i = 0; i < "
+        "MDKR_GHOST_WINDOW_SLOTS; i++)` and `count` advances at most once per "
+        "iteration (occupied slots only -- empty slots `continue`), so count <= "
+        "MDKR_GHOST_WINDOW_SLOTS (6) and the highest records[count] write index "
+        "is 5. Both callers (mdkr_ghost_window_remove, mdkr_ghost_window_insert) "
+        "pass a local GhostWindowRecord records[MDKR_GHOST_WINDOW_SLOTS]. The "
+        "bound-ish size/scratch_capacity params guard the PARALLEL scratch copy "
+        "(`used + len > scratch_capacity` returns -1), NOT the records array -- "
+        "its bound is the loop's own slot count.",
+    ("bare-pointer", "platform/ghost_bank.c", "collect_records:pairs"):
+        "BOUNDED BY PARAMETER: the loop condition `while (count < capacity && "
+        "(entry = readdir(...)))` is a pre-check evaluated before every "
+        "pairs[count] write, and count has a single increment on the write path "
+        "-- so it cannot pass `capacity` without equalling it. Both callers "
+        "(wipe_library, reconcile's on_disk sweep) pass GHOST_BANK_SWEEP_MAX "
+        "(1024) with a matching local GhostBankSweepPair[GHOST_BANK_SWEEP_MAX].",
     ("shift-count", "platform/fast3d/gfx_pc_dkr.c", "dkr_generate_cc:MIPS-MASK-IDIOM"):
         "NOT UB: the enumerator's added-constant heuristic assumes a 32-bit "
         "operand, and `cc_id` is a uint64_t parameter. The loop is `i < 2 && (i "
@@ -646,7 +695,18 @@ SHAPE_INFO_MAX = {
     # tables, and one further site rides the campaign's growth of the
     # objects.c/menu.c populations. Measured, not summed, per the 2026-08-09
     # merge-hazard note below.
-    "equality-cap": 48,
+    #
+    # 48 -> 49, RE-MEASURED 2026-09-01 on the land5 first-ever full-suite run at
+    # the crossplay tip. The ceiling was stale from before the crossplay campaign
+    # base: measured 49 at b992e538 already (base == tip, so the crossplay
+    # campaign added ZERO equality-cap findings), and check_array_bounds_sweep.py
+    # is unchanged in-range. The one finding over the old ceiling is in the
+    # non-capacity-comparand INFO class (comparand is a small literal or a count,
+    # not an array size -- e.g. `i != 2`, `stack_count != 0`, `gModelMatrixStackPos
+    # == 0`), which is why the enumerator files it INFO not TRIAGE; runtime
+    # array-bounds UBSan over the 8 routes reports no overflow. Measured with
+    # tools/sweep_bug_shapes.py, not summed.
+    "equality-cap": 49,
     # +116 from platform/. Overwhelmingly `1u << port` / `1u << slot` bit masks
     # over small fixed domains and `value >> (i * 8)` byte extractions -- the
     # var-count flavour the enumerator reports without an added constant. The
@@ -752,7 +812,32 @@ SHAPE_INFO_MAX = {
     # already-counted files (gfx_pc_dkr.c effect-recipe paths, menu.c,
     # object_functions.c). Ceiling set to the measured population, not a
     # guess, per the standing rule.
-    "shift-count": 367,
+    #
+    # 367 -> 368, 2026-08-25 (release-1.5.2, issue #52). One new var-count
+    # shift, in platform/fast3d/gfx_pc_dkr.c: the inverted-rectangle
+    # span-invalid rule (dkr_dp_fill_rectangle / dkr_dp_texture_rectangle)
+    # reads the cycle type via `rdp.other_mode_h & (3U << G_MDSFT_CYCLETYPE)`
+    # to gate the fixed-point FILL/COPY `+1 << 2` coordinate adjustment before
+    # deciding whether an inverted rect draws. G_MDSFT_CYCLETYPE == 20
+    # (game/include/PR/gbi.h), so it is a compile-time-constant `3U << 20`
+    # into a u32 -- flagged var-count only because the count is a macro, not a
+    # numeric literal, and covered at runtime by -fsanitize=shift-exponent.
+    # Measured 368 with tools/sweep_bug_shapes.py, not summed.
+    #
+    # 368 -> 386, RE-MEASURED 2026-09-01 on the land5 first-ever full-suite run.
+    # Like the equality-cap ceiling above, this was stale from BEFORE the
+    # crossplay campaign: measured 386 at the campaign base b992e538 already
+    # (base == tip; the crossplay campaign and its FP-contraction/trig work added
+    # ZERO shift-count findings, and this check is unchanged in-range). The +18
+    # over the old ceiling accumulated between the release-1.5.2 measure and the
+    # campaign base (native-finish-line/HUD/track work) and went unseen because
+    # array_bounds is a rom-role check that only runs in a full local suite. All
+    # 386 are the var-count flavour (bit masks `1u << slot`, byte extractions
+    # `value >> (i * 8u)`) -- none is the added-constant MIPS-mask idiom (those
+    # are the shift-count TRIAGE entries), and every one is covered at runtime by
+    # -fsanitize=shift-exponent, which reported nothing across the 8 routes.
+    # Measured with tools/sweep_bug_shapes.py, not summed.
+    "shift-count": 386,
 }
 
 # Only array-bounds is load-bearing for this class. pointer-overflow is kept
@@ -1105,6 +1190,19 @@ def controls(binary, rom, logdir, verbose):
         env["MDKR_PRESENT_RATE"] = "original"
         env["MDKR_SIMULATION_CADENCE"] = "original"
         env["MDKR_SYNTH_FIELDS"] = "2"
+        # Each control forces a boundary from a clean new game, then reads a probe
+        # that only appears once the forced race is actually running. These runs
+        # inherit MDKR_SAVE_DIR from the process env, which the phase-1 census
+        # routes above (and any prior task) write into; a race/adventure EEPROM
+        # left there re-routes the boot/menu flow so the forced race never
+        # launches and the boundary reads xzClamped=0 / maxCandidates=0 / no
+        # probe -- the guard then goes untested. A non-packaged build no longer
+        # isolates saves to $CWD/save (issue #54), so pin each control to its own
+        # fresh save dir and video config to keep the route deterministic.
+        save = os.path.join(logdir, "save-" + name)
+        os.makedirs(save, exist_ok=True)
+        env["MDKR_SAVE_DIR"] = save
+        env["MDKR_VIDEO_CONFIG_PATH"] = os.path.join(save, "video.ini")
         env.update(env_extra)
         cmd = [binary, "--headless-frames", str(frames), "--rom", rom]
         if script:

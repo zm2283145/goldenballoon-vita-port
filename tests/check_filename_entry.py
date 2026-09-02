@@ -96,6 +96,11 @@ def main() -> int:
         print("$ " + " ".join(cmd))
 
     with tempfile.TemporaryDirectory(prefix="mdkr_filename_") as run_dir:
+        # A save/ folder beside the working directory keeps the new-file save
+        # this route creates inside the sandbox: a non-packaged build otherwise
+        # resolves an unpinned save under the per-user directory (issue #54),
+        # which is exactly the developer's real save this check must never touch.
+        (Path(run_dir) / "save").mkdir()
         try:
             proc = subprocess.run(
                 cmd,

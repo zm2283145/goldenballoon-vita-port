@@ -18,6 +18,13 @@ ROOT = Path(__file__).resolve().parent.parent
 FIXTURE = r"""
 (() => {
   globalThis.__mdkrOnlineRoomTestConfig={liveFixture:true};
+  // The live fixture below injects a room config directly, bypassing the
+  // release policy the shell normally gates on. A real enabled release ships
+  // online-control-config.js with enabled:true, so the launcher captures
+  // surfaceEnabled=true at load whenever a live config can exist; mirror that
+  // invariant with the loopback surface seam (as check_browser_online_room.py
+  // does) or the disabled-build open() guard keeps the live dialog shut.
+  globalThis.__mdkrOnlineRoomSurfaceTest=true;
   const compatibility={protocolVersion:1,
     buildId:Array.from({length:16},(_,i)=>i+1),
     gameplayDigest:Array.from({length:32},(_,i)=>128+i),

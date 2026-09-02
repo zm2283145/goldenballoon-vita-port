@@ -173,6 +173,18 @@ def run_case(
             env["MDKR_TROPHY_ORDER"] = order
         if world != 1:
             env["MDKR_TROPHY_WORLD"] = str(world)
+        # This arm SEEDS run_dir/save/eeprom.bin with the legitimately-unlocked
+        # cabinet state and reads the produced EEPROM back from there, but
+        # scrubbing MDKR_ dropped the MDKR_SAVE_DIR the suite exports and a
+        # non-packaged build no longer resolves saves to $CWD/save (issue #54
+        # unified them under the per-user pref dir). Without this pin the engine
+        # read the shared per-user save instead of the seed, so the Dino Domain
+        # cabinet gate (8 balloons + rematch bit) was never met, no cabinet was
+        # entered, and every world came back tracks=[] trophies=0x0. Point
+        # MDKR_SAVE_DIR at the seeded dir (also fixes the drive_gold_championship
+        # seam that check_campaign_progression / check_future_fun_land import).
+        env["MDKR_SAVE_DIR"] = str(run_dir / "save")
+        env["MDKR_VIDEO_CONFIG_PATH"] = os.devnull
         proc = subprocess.run(
             [
                 str(binary), "--headless-frames", str(frames),

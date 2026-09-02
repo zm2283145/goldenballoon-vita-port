@@ -27,6 +27,14 @@
 #include "fast3d/gfx_character_text.h"
 #include "modern_character_runtime.h"
 #include "modern_character_text.h"
+#if MDKR_ENABLE_ONLINE_BETA
+/* resident post-race re-entry (scoping ruling R-A). Both includes are
+ * beta-gated, so a normal (beta OFF) build sees neither and the release menu.o is
+ * byte-identical -- proven by rebuilding the OFF object. */
+#include "online/online_session.h"   /* mdkr_online_session_resume_results */
+#include "net/online_race_results.h" /* (availability query, via the session) */
+#include "online/online_character_map.h" /* mdkr_online_character_to_engine */
+#endif
 extern int g_frameCounter;
 #endif
 #include "asset_enums.h"
@@ -4083,7 +4091,43 @@ s32 menu_loop(Gfx **currDisplayList, Mtx **currHudMat, Vertex **currHudVerts, Tr
             break;
 #ifdef AVOID_UB
         default:
+#ifdef NATIVE_PORT
+            /* AVOID_UB resolved to the measured us.v80 value (issue #55).
+             *
+             * MENU_UNUSED_8 is where update_game() routes a BHV_EXIT whose
+             * destinationMapId is -1 (Hot Top Volcano's out-of-bounds exit,
+             * the community's "trophy storage" glitch). The menu has no init
+             * and no loop case, so retail returns `ret` UNINITIALIZED here --
+             * authored UB whose resolution is a per-build accident: US 1.1
+             * recovers, US 1.0 black-screens. This port ships us.v80, so the
+             * us.v80 accident is the contract.
+             *
+             * Measured on retail us.v80 in the instrumented ares oracle
+             * (docs/ORACLE.md, issue-#55 poke + menu-result lanes,
+             * 2026-08-24): menu_loop returns v0 = 0x8006CA60 for menuId 8,
+             * every time. Encode the whole 32-bit value, not a cleaned-up
+             * flag: mode_menu() consumes it through the MENU_RESULT_FLAGS_200
+             * arm (0x8006CA60 & 0x200), loads level 0x8006CA60 & 0x7F == 96,
+             * and level_load()'s own "LOADLEVEL Error: Level out of range"
+             * guard substitutes ASSET_LEVEL_CENTRALAREAHUB -- central hub,
+             * in-game, trophy globals untouched. Exactly the console
+             * behavior, glitch preserved. A generic "safe" value here is what
+             * produced 1.5.1's indefinite black screen (MENU_RESULT_CONTINUE
+             * forever, nothing drawn, input ignored).
+             *
+             * Same precedent as the D_800DCDA0[8] read in racer.c: measure
+             * what the shipped us.v80 build actually does and name that
+             * value. Every other caseless menu id keeps the neutral
+             * CONTINUE -- only menu 8's value has a measurement behind it.
+             * Witness: tests/check_track_exit_storage.py. */
+            if (gCurrentMenuId == MENU_UNUSED_8) {
+                ret = (s32) 0x8006CA60u;
+            } else {
+                ret = MENU_RESULT_CONTINUE;
+            }
+#else
             ret = MENU_RESULT_CONTINUE;
+#endif
 #endif
     }
     *currDisplayList = sMenuCurrDisplayList;
@@ -14361,6 +14405,20 @@ static DrawTexture *menu_racer_portrait_for_player(UNUSED s32 playerIndex,
 }
 #endif
 
+#if MDKR_ENABLE_ONLINE_BETA
+/* Online post-race exit (hostile-review CRITICAL C3). Grace-period clock and
+ * one-shot latch, armed by postrace_start() and driven by the
+ * POSTRACE_STAGE_FADE_OUT arm of menu_postrace(). Both are compiled only in
+ * the online beta and act only while the online roster is active, so offline
+ * post-race behavior is untouched. */
+static s32 sOnlinePostraceTicks;
+static s8 sOnlinePostraceEndRequested;
+/* the postrace-viewport latch (defined in thread3_main.c, no header) --
+ * the resident post-race fork clears it before handing control to the session so
+ * the next resident race does not re-enter menu_postrace with a stale TRUE. */
+extern s8 gPostRaceViewPort;
+#endif
+
 /**
  * Initialises the post race variables.
  * Sets different defaults based on being in adventure mode, tracks mode, or multiplayer.
@@ -14373,6 +14431,12 @@ void postrace_start(s32 finishState, s32 worldID) {
     rumble_init(FALSE);
 #ifdef NATIVE_PORT
     viewport_world_region_set(0, VIEWPORT_WORLD_REGION_PRESENTATION);
+#endif
+#if MDKR_ENABLE_ONLINE_BETA
+    /* Arm the online post-race exit: the grace clock starts at postrace entry
+     * (immediately after the race-finish results write in objects.c). */
+    sOnlinePostraceTicks = 0;
+    sOnlinePostraceEndRequested = FALSE;
 #endif
     header = level_header();
     gPostraceFinishState = finishState;
@@ -15115,6 +15179,71 @@ s32 menu_postrace(Gfx **dList, Mtx **matrices, Vertex **vertices, s32 updateRate
             }
             break;
         case POSTRACE_STAGE_FADE_OUT:
+#if MDKR_ENABLE_ONLINE_BETA
+            /* Online post-race exit (hostile-review CRITICAL C3). The stock
+             * multiplayer post-race parks here on LOCAL input: A/START arms
+             * POSTRACE_STAGE_END, whose gNumberOfActivePlayers >= 2 arm hands
+             * off to the single-player results menus (POSTRACE_OPT_8 ->
+             * LEVEL_CONTEXT_RESULTS in thread3_main.c) -- online, that strands
+             * each player alone in the offline front-end with the roster still
+             * installed. The launcher owns the online results/standings UI
+             * (fed by mdkr_online_race_results_poll), so instead let the
+             * finish banner/placements play for a short grace period, then end
+             * the engine session cleanly. platform_request_exit(0) is the same
+             * platform-owned flag the autoplay tick budget uses
+             * (platform_headless_tick_complete): the thread3 main loop honors
+             * it, mdkr64_headless_main returns 0, and control comes back to
+             * the launcher's engine-session call. Both endpoints do this
+             * independently; no network coordination is needed. Offline this
+             * whole arm is dead (roster inactive) and the retail input wait
+             * below runs unchanged. */
+            if (mdkr_net_roster_runtime_active()) {
+                sOnlinePostraceTicks += updateRate;
+                /* 150 time units ~= 2.5 s (see normalise_time(240) == 4 s). */
+                if (sOnlinePostraceTicks > 150 && !sOnlinePostraceEndRequested) {
+                    /* resident soak (scoping ruling R-A/R-B): re-enter the
+                     * separated session's RESULTS phase in THIS engine process
+                     * instead of exiting, proving >=2 races + RESULTS per process
+                     * via the session loop. On resume we run the same teardown
+                     * the normal POSTRACE_STAGE_END arm does before leaving
+                     * postrace; the just-finished race level is freed by the
+                     * session right before it re-boots the next race.
+                     *
+                     * RESUME DISCIPLINE. A DESCRIPTOR-LESS SINGLE-ENDPOINT
+                     * session's (a real 2-process room's) RESULTS signal is the
+                     * reducer snapshot, which arrives only after the LEADER's
+                     * PUBLISH_RESULTS round-trips the real network -- observed
+                     * slower than this 2.5 s grace on a real WAN, and a one-shot
+                     * decision here then ended the session reason=NONE with the
+                     * results screens never shown (a latency coin-flip). So for
+                     * that shape the resume is RETRIED every tick up to a
+                     * bounded window (+10 s), and only a still-absent RESULTS at
+                     * the bound takes the exit. Every other path -- the
+                     * descriptor-first boots, the scripted soaks, and the
+                     * two-adapter loopback descriptor-less lanes, whose resume
+                     * signal is process-local/synchronous and already present at
+                     * the grace -- keeps the historical one-shot decision,
+                     * byte-for-byte. */
+                    if (mdkr_online_session_resume_results()) {
+                        sOnlinePostraceEndRequested = TRUE;
+                        camDisableUserView(0, FALSE);
+                        postrace_free();
+                        dialogue_close(7);
+                        dialogue_clear(7);
+                        gPostRaceViewPort = FALSE;
+                    } else if (!mdkr_online_session_postrace_results_retry() ||
+                               sOnlinePostraceTicks > 750) {
+                        sOnlinePostraceEndRequested = TRUE;
+                        fprintf(stderr,
+                                "[online-postrace] session end requested\n");
+                        platform_request_exit(0);
+                    }
+                    /* else: descriptor-less live session still waiting on the
+                     * reducer RESULTS over the network -- retry next tick. */
+                }
+                break;
+            }
+#endif
             if (buttonsPressed & (A_BUTTON | START_BUTTON)) {
                 music_fade(-128);
                 transition_begin(&sMenuTransitionFadeIn);
@@ -16874,6 +17003,17 @@ void ghostmenu_render(UNUSED s32 updateRate) {
         }
 #endif
         textBuffer[i] = '\0'; // Set NULL terminator
+#ifdef NATIVE_PORT
+        /* Tag added (bonus) racer ghosts with a trailing asterisk. Their distinct
+         * portrait already marks them, but the asterisk reads as non-authentic in
+         * the plain list style too. */
+        if (mod_racer_ghost_character_is_bonus(gGhostCharacterIDsMenu[scroll]) &&
+            i < 61) {
+            textBuffer[i] = ' ';
+            textBuffer[i + 1] = '*';
+            textBuffer[i + 2] = '\0';
+        }
+#endif
         texrect_draw_scaled(&sMenuCurrDisplayList, gDrawTexWorldBgs[currentWorldId], x, y, 0.75f, 0.8125f,
                             COLOUR_RGBA32(255, 255, 255, 255), 0);
         func_80080E90(&sMenuCurrDisplayList, 40, y, 240, 52, 4, 4, 32, 80, 176, 128);
@@ -16894,8 +17034,30 @@ void ghostmenu_render(UNUSED s32 updateRate) {
         set_text_colour(200, 228, 80, 255, 255);
         draw_text(&sMenuCurrDisplayList, gGhostDataElementPositions[0] + GHOSTMENU_TEXT_OFFSET,
                   gGhostDataElementPositions[1] + y, textBuffer, ALIGN_MIDDLE_CENTER);
-        texrect_draw(&sMenuCurrDisplayList, gRacerPortraits[gGhostCharacterIDsMenu[scroll]],
-                     gGhostDataElementPositions[2] + 40, gGhostDataElementPositions[3] + y, 255, 255, 255, 255);
+        {
+            DrawTexture *ghostPortrait;
+#ifdef NATIVE_PORT
+            /* A bonus-racer ghost stores a marker ID >= NUM_CHARACTERS that would
+             * index gRacerPortraits[] out of bounds; resolve its Taj/Wizpig/Terry
+             * portrait from the identity instead. */
+            ModRacerIdentity ghostIdentity =
+                mod_racer_identity_from_ghost_character(gGhostCharacterIDsMenu[scroll]);
+            if (ghostIdentity != MOD_RACER_RETAIL) {
+                ghostPortrait = menu_mod_portrait(ghostIdentity);
+                if (ghostPortrait == NULL) {
+                    ghostPortrait = gRacerPortraits[CHARACTER_KRUNCH];
+                }
+            } else if (gGhostCharacterIDsMenu[scroll] < ARRAY_COUNT(gRacerPortraits)) {
+                ghostPortrait = gRacerPortraits[gGhostCharacterIDsMenu[scroll]];
+            } else {
+                ghostPortrait = gRacerPortraits[CHARACTER_KRUNCH];
+            }
+#else
+            ghostPortrait = gRacerPortraits[gGhostCharacterIDsMenu[scroll]];
+#endif
+            texrect_draw(&sMenuCurrDisplayList, ghostPortrait,
+                         gGhostDataElementPositions[2] + 40, gGhostDataElementPositions[3] + y, 255, 255, 255, 255);
+        }
         switch (gGhostVehicleIDsMenu[scroll]) {
             case 1:
                 vehicleSelectTex = gRaceSelectionHoverTex;
@@ -17864,7 +18026,20 @@ s8 get_character_id_from_slot(s32 slot) {
 #ifdef NATIVE_PORT
     const MdkrMatchSeatSelectionV1 *selection =
         slot >= 0 ? mdkr_net_roster_runtime_selection((unsigned)slot) : NULL;
-    if (selection != NULL) return (s8)selection->character_id;
+    if (selection != NULL) {
+#if MDKR_ENABLE_ONLINE_BETA
+        /* The launch descriptor carries an ONLINE-CATALOG id (the published
+         * hover_character, kCharacters order -- not the visual grid cell index),
+         * NOT an engine Character-enum value -- the two orderings differ. Map it
+         * through the single-source table so the racer that spawns is the one the
+         * lobby chose. Without this the raw id was used as the engine character,
+         * so Tiptup(online 3) raced CONKER(engine 3) and T.T.(online 9) raced
+         * DIDDY(engine 9). */
+        return (s8)mdkr_online_character_to_engine((int)selection->character_id);
+#else
+        return (s8)selection->character_id;
+#endif
+    }
 #endif
     return gCharacterIdSlots[slot];
 }
@@ -17943,6 +18118,41 @@ void enable_tracks_mode(s32 boolean) {
 s32 is_in_tracks_mode(void) {
     return gIsInTracksMode;
 }
+
+#if MDKR_ENABLE_ONLINE_BETA
+/**
+ * Online direct-boot: set the menu-owned globals that the front-end's
+ * tracks-mode versus route (Character Select -> Track Select -> GO) would leave
+ * behind just before load_next_ingame_level(). The engine can then start the
+ * online race without ever entering, rendering, or accepting input on any menu.
+ *
+ * Per-seat characters and vehicles already come from the online manifest through
+ * get_character_id_from_slot() / get_player_selected_vehicle(); this fills in the
+ * mode/track/count state those readers do not cover. gNumberOfActivePlayers is
+ * the CANONICAL racer count (not the local viewport count): it drives the
+ * fixed-tick authority layout that must be identical on every endpoint, while
+ * the number of locally presented viewports comes from the roster's
+ * viewport_count during the race (tracks.c). This matches, exactly, the state
+ * the proven race_2p_split.txt menu walk produced.
+ */
+void menu_online_versus_race_setup(s32 trackId, s32 canonicalPlayers) {
+    gIsInTracksMode = TRUE;
+    gIsInAdventureTwo = FALSE;
+    gIsInTwoPlayerAdventure = FALSE;
+    set_time_trial_enabled(FALSE);
+    gNumberOfActivePlayers = canonicalPlayers;
+    /* Racer-count select maps 0->2, 1->4, 2->6 racers. Pick the smallest bucket
+     * that seats every canonical racer (v1 = 2 players => bucket 0, no AI). */
+    gMultiplayerSelectedNumberOfRacers =
+        canonicalPlayers > 4 ? 2 : (canonicalPlayers > 2 ? 1 : 0);
+    gMultiplayerSelectedNumberOfRacersCopy = gMultiplayerSelectedNumberOfRacers;
+    reset_character_id_slots();
+    gTrackIdForPreview = trackId;
+    gTrackIdToLoad = trackId;
+    gTrackSpecifiedWithTrackIdToLoad = 1;
+    set_level_default_vehicle((Vehicle) get_player_selected_vehicle(PLAYER_ONE));
+}
+#endif
 
 /**
  * Sets the active & unlocked magic code flags.

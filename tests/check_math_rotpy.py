@@ -172,9 +172,10 @@ def run(binary, rom, frames, legacy, verbose):
     # MDKR_TRIG=libm would put the binary on a different sine from the reference
     # and fail both arms for a reason that has nothing to do with vec3f_rotate_py
     # -- measured: (27.0598, -70.7107, 65.3281) against a reference of
-    # (27.0568, -70.7092, 65.3172). The other two A/B toggles are cleared for the
-    # same hygiene, though neither feeds this function.
-    for k in ("MDKR_TRIG", "MDKR_ARCTAN", "MDKR_RNGSEED"):
+    # (27.0568, -70.7092, 65.3172). The other three A/B toggles are cleared for
+    # the same hygiene; of them only MDKR_DEV_RUNTIME_TRIG could touch this path
+    # (it would rebuild the binary's sine table through the host's libm).
+    for k in ("MDKR_TRIG", "MDKR_ARCTAN", "MDKR_RNGSEED", "MDKR_DEV_RUNTIME_TRIG"):
         env.pop(k, None)
     cmd = [binary, "--headless-frames", str(frames), "--rom", rom]
     if verbose:

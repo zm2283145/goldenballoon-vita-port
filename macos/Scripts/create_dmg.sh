@@ -202,8 +202,9 @@ else
         die "Source app failed Gatekeeper bundle verification"
 fi
 
-# Player-facing brand name. The .app is still built as mdkr64.app (the internal
-# name), so the bundle BASENAME must not drive anything a user reads. Take the
+# Player-facing brand name. The .app is built as "Golden Balloon.app" (its
+# CFBundleExecutable stays mdkr64), but the bundle BASENAME still must not drive
+# anything a user reads on its own. Take the
 # display name from the bundle's own Info.plist (CFBundleName, set to the
 # product brand by build_app_bundle.sh) and fall back to the basename only when
 # the plist has none -- the script stays app-bundle-agnostic either way.

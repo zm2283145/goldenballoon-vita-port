@@ -1698,8 +1698,40 @@ static int eeprom_store_image_internal(
     return 1;
 }
 
+/* Try to relocate saves next to the executable after a durable write failed,
+ * then report whether a retry could land somewhere new. When MDKR_SAVE_DIR is
+ * set the path is pinned, so a relocation retry would hit the same directory --
+ * skip it and go straight to the player notice (issue #54 Run B). */
+static int mdkr_save_relocate_for_retry(void) {
+#ifdef __EMSCRIPTEN__
+    return 0;
+#else
+    const char *pinned = getenv("MDKR_SAVE_DIR");
+    if (pinned != NULL && pinned[0] != '\0') {
+        return 0;
+    }
+    return mdkr_user_paths_activate_write_fallback();
+#endif
+}
+
 static int eeprom_store_image(const u8 image[DKR_EEPROM_BYTES]) {
-    return eeprom_store_image_internal(image, 1);
+    char failed_dir[sizeof(s_eepromDir)];
+    if (eeprom_store_image_internal(image, 1)) {
+        return 1;
+    }
+    /* Durable write failed. Extend the config/prefs write-relocation fallback
+     * (issue #33) to EEPROM saves: relocate next to the game and retry once. */
+    (void)snprintf(failed_dir, sizeof(failed_dir), "%s", s_eepromDir);
+    if (mdkr_save_relocate_for_retry()) {
+        s_eepromPathsReady = 0; /* re-resolve to the relocated directory */
+        if (eeprom_store_image_internal(image, 1)) {
+            return 1; /* saved beside the game; the relocation notice latched */
+        }
+        (void)snprintf(failed_dir, sizeof(failed_dir), "%s", s_eepromDir);
+    }
+    /* Still unwritable: surface it once instead of losing progress silently. */
+    mdkr_user_paths_note_save_write_failure(failed_dir);
+    return 0;
 }
 
 /* Copy the bytes we are about to reject to save/eeprom.bin.bad. Best effort:
@@ -2064,6 +2096,7 @@ static int virtual_pak_store(int channel, const MdkrVirtualPak *pak) {
     if (file == NULL) {
         fprintf(stderr, "[PFS] could not open %s: %s\n",
                 s_virtualPakTmpPath[channel], strerror(dkr_host_errno()));
+        mdkr_user_paths_note_save_write_failure(s_eepromDir);
         return 0;
     }
     wrote = fwrite(image, 1, sizeof(image), file);
@@ -2091,6 +2124,7 @@ static int virtual_pak_store(int channel, const MdkrVirtualPak *pak) {
         (void)mdkr_remove_utf8(s_virtualPakTmpPath[channel]);
         fprintf(stderr, "[PFS] durable write of %s failed: %s\n",
                 s_virtualPakPath[channel], strerror(saved_errno));
+        mdkr_user_paths_note_save_write_failure(s_eepromDir);
         return 0;
     }
 #ifndef __EMSCRIPTEN__

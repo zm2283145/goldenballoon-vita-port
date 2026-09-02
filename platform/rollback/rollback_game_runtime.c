@@ -91,6 +91,27 @@ typedef struct MdkrRollbackGameRuntime {
     bool item_probe_mutation_control;
     bool network_input;
     bool tick_prepared;
+    /* Set by validate_boundary when its LAST false return was a RECOVERABLE
+     * online-input starvation (an online race whose peer/bootstrap input for the
+     * boundary never arrived -- the peer LOST at race start / mid-race), or by
+     * prepare_tick's correction path when a replay tick was REFUSED by the sim's
+     * own admission/completion gates (a paused/zero-rate/level-ending state the
+     * replay cannot lawfully re-run -- the two-machine pause crash), as
+     * opposed to a genuine rollback INVARIANT violation (allocation lifetime or
+     * coverage changed, snapshot capture failed, side-effect journal rejected,
+     * tick counter exhausted). Cleared at the top of every validate_boundary so it
+     * only ever describes the most recent verdict. Queried by
+     * mdkr_rollback_game_runtime_online_input_recoverable() so the engine tick
+     * loop can route a peer loss to a clean return-to-room instead of abort()ing.
+     * Only ever set on the network_input path, so it is always false offline. */
+    bool recoverable_online_input_failure;
+    /* Which CLASS the recoverable verdict above belongs to, so the session's
+     * end witness stays truthful: true = the correction-replay belt's
+     * SIM-STATE refusal (a paused / zero-rate / level-ending tick the replay
+     * cannot lawfully re-run -- the transport was healthy); false = genuine
+     * peer/input starvation at a boundary. Meaningful only while
+     * recoverable_online_input_failure is set; cleared with it. */
+    bool recoverable_refusal_sim_state;
     bool side_effect_error;
     bool pending_sound;
     bool authored_frame_timing_active;
@@ -695,8 +716,17 @@ bool mdkr_rollback_game_runtime_level_ready(void) {
     if (network_input) {
         const MdkrMatchManifestV1 *manifest =
             mdkr_net_roster_runtime_manifest();
+        /* Authored sim cadence follows the LOADED ROM's source clock, NOT the
+         * compile-time REGION macro (fixed REGION_NA in the shipped US build).
+         * The port runs the byte-identical PAL v80 payload at 25 Hz (source
+         * field clock 50 -> sim tick 50/2), and the lobby manifest already
+         * derives 25 from that same ROM identity; deriving the authored cadence
+         * from REGION instead compared 25 (manifest) against 30 (macro) and
+         * rejected every EU race -- even EU+EU -- on the US binary.
+         * platform_source_field_hz() is the ROM-selected source truth (rom_io.c),
+         * so US ROMs still resolve to 30 and admit exactly as before. */
         const uint8_t authored_cadence_hz =
-            REGION == REGION_PAL ? 25u : 30u;
+            (uint8_t)(platform_source_field_hz() / 2);
         if (manifest == NULL || level_id() < 0 || level_id() > UINT16_MAX ||
             !mdkr_match_manifest_accepts_loaded_race(
                 manifest, (uint16_t)level_id(),
@@ -811,7 +841,7 @@ bool mdkr_rollback_game_runtime_level_ready(void) {
             "[ROLLBACK] %s race: loadedTrack=%d raceType=%d authoredHz=%u\n",
             network_input ? "online" : "lab", (int)level_id(),
             (int)leveltable_type(level_id()),
-            (unsigned)(REGION == REGION_PAL ? 25u : 30u));
+            (unsigned)(platform_source_field_hz() / 2));
     fprintf(stderr,
             "[ROLLBACK] %s ready: ranges=%u snapshot=%zu bytes ring=%zu bytes "
             "target=%u epoch=%u\n",
@@ -829,14 +859,57 @@ static bool reconcile_network_inputs(
     uint32_t dirty;
     uint32_t tick;
     if (!mdkr_match_input_runtime_take_dirty(&dirty)) return true;
-    if (dirty == 0u || dirty > last_tick ||
-        last_tick - dirty + 1u >= MDKR_ROLLBACK_LAB_SLOTS ||
-        !mdkr_rollback_ring_has(&runtime->ring, dirty - 1u)) {
+    /* A correction target that is zero or ahead of the committed frontier is
+     * nonsensical (a healthy transport never emits one). Skip it rather than
+     * fail the frame: thread3_main turns a failed prepare into abort(), and a
+     * malformed dirty marker must never crash a shipping online race. The
+     * confirmed frontier keeps advancing and re-drives real corrections. */
+    if (dirty == 0u || dirty > last_tick) {
         fprintf(stderr,
-                "[ROLLBACK] online correction outside retained window "
-                "dirty=%u current=%u capacity=%u\n",
-                dirty, last_tick, MDKR_ROLLBACK_LAB_SLOTS);
-        return false;
+                "[ROLLBACK] online correction target out of range "
+                "dirty=%u current=%u (skipped)\n",
+                dirty, last_tick);
+        return true;
+    }
+    /* GRACEFUL DEEP-CORRECTION DEGRADATION (fall-behind robustness).
+     *
+     * The client retains MDKR_ROLLBACK_LAB_SLOTS boundary snapshots, so it can
+     * rewind at most SLOTS-1 authored ticks. A correction reaching further back
+     * -- a real WAN latency spike, or an endpoint that fell far behind and is
+     * catching up -- previously FAILED the frame, and thread3_main escalates a
+     * failed prepare_tick into abort(): a hard crash on exactly the fall-behind
+     * path online play has to survive. (Reproduced deterministically with a
+     * per-tick main-loop stall on one endpoint: the peer's correction depth
+     * climbs 1 tick/frame until it crosses the 32-snapshot horizon and aborts.)
+     *
+     * Instead, clamp the rewind to the deepest retained boundary and reconcile
+     * the tail that IS still snapshotted. The un-rewindable older prefix keeps
+     * its already-committed (predicted) state -- a bounded visual pop, healed by
+     * the ongoing confirmed stream -- rather than taking the whole engine down.
+     * Worst case is a stutter or a brief desync, never a crash or a corrupt
+     * buffer.
+     *
+     * This branch only engages once a single correction reaches the 32-snapshot
+     * horizon. In-sync online play corrects a few ticks at a time and never gets
+     * here, so the faithful base sim and ordinary small-depth rollback are
+     * behaviour-identical. */
+    if (last_tick - dirty + 1u >= MDKR_ROLLBACK_LAB_SLOTS) {
+        const uint32_t clamped = last_tick - (MDKR_ROLLBACK_LAB_SLOTS - 2u);
+        fprintf(stderr,
+                "[ROLLBACK] online correction clamped to retained window "
+                "dirty=%u->%u current=%u capacity=%u\n",
+                dirty, clamped, last_tick, MDKR_ROLLBACK_LAB_SLOTS);
+        dirty = clamped;
+    }
+    /* The boundary snapshot immediately before the (possibly clamped) rewind
+     * point must still be retained. If it was evicted anyway, skip the
+     * correction gracefully instead of failing the frame. */
+    if (!mdkr_rollback_ring_has(&runtime->ring, dirty - 1u)) {
+        fprintf(stderr,
+                "[ROLLBACK] online correction boundary evicted "
+                "dirty=%u current=%u (skipped)\n",
+                dirty, last_tick);
+        return true;
     }
     for (tick = dirty; tick <= last_tick; tick++) {
         MdkrInputSet frame;
@@ -848,6 +921,10 @@ static bool reconcile_network_inputs(
             fprintf(stderr,
                     "[ROLLBACK] online corrected input unavailable tick=%u\n",
                     tick);
+            /* RECOVERABLE: a rewound tick's peer input is no longer available
+             * (peer/input starvation during a correction), not corruption. The
+             * ring-restore / replay-validation failures below stay CLEAR -> fatal. */
+            runtime->recoverable_online_input_failure = true;
             return false;
         }
         history->confirmed_mask = frame.confirmed_mask;
@@ -862,11 +939,40 @@ static bool reconcile_network_inputs(
         MdkrRollbackInputHistory *history =
             &runtime->input_history[tick % MDKR_ROLLBACK_LAB_SLOTS];
         begin_effect_tick(runtime, tick);
+        /* THE SIM-REFUSAL BELT (the owner-reported two-machine pause crash).
+         *
+         * mdkr_game_resimulate_tick REFUSES a replay tick when the sim state
+         * cannot lawfully re-run it -- its admission/completion gates reject a
+         * paused game (a START press that reached the canonical stream engaged
+         * the retail pause: pre-overlay-fix this was the crash; the gate also
+         * covers textboxes and the level-end latches), and a zero update_rate
+         * history tick (the app overlay's pause boundary authored it) refuses
+         * the same way. That is a SIM-STATE refusal on a live online race, NOT
+         * rollback invariant corruption -- yet this loop used to lump it with
+         * the fatal arms below and thread3_main escalated it to abort(): the
+         * non-pausing machine died with a crash dialog the instant the peer's
+         * START edge landed as a correction (reproduced: rc 134, "game-tick
+         * completion rejected ... paused=1" -> "correction replay failed").
+         * Route it as RECOVERABLE instead: the same clean note-LEFT return to
+         * the room every other online-input starvation takes. The allocation
+         * lifetime / dynamic coverage / snapshot capture arms below keep their
+         * CLEAR flag and stay fatal, byte-for-byte. */
         if (history->update_rate == 0u || history->update_rate > INT_MAX ||
             !mdkr_match_input_runtime_begin_tick(tick) ||
             !resimulate_timed(
-                runtime, (int)history->update_rate, history->input) ||
-            !mdkr_rollback_validate_live_allocations(&runtime->registry) ||
+                runtime, (int)history->update_rate, history->input)) {
+            force_clear_effects(runtime);
+            fprintf(stderr,
+                    "[ROLLBACK] online correction replay refused tick=%u "
+                    "(sim-state; recoverable)\n",
+                    tick);
+            runtime->recoverable_online_input_failure = true;
+            /* This is the ONE recoverable class that is NOT starvation: the
+             * transport delivered everything, the SIM refused the replay. */
+            runtime->recoverable_refusal_sim_state = true;
+            return false;
+        }
+        if (!mdkr_rollback_validate_live_allocations(&runtime->registry) ||
             !mdkr_rollback_game_authority_validate_dynamic_coverage(
                 &runtime->registry) ||
             !mdkr_rollback_ring_capture(&runtime->ring, tick)) {
@@ -898,6 +1004,12 @@ bool mdkr_rollback_game_runtime_prepare_tick(unsigned update_rate) {
     if (!runtime->active) {
         return true;
     }
+    /* Fresh verdict, mirroring validate_boundary: assume any false return below is
+     * a genuine invariant violation (fatal) until a RECOVERABLE online-input path
+     * (peer gone / input unavailable) explicitly sets this. So the tick-exhausted
+     * and prepared-twice invariants leave it clear and stay fatal. */
+    runtime->recoverable_online_input_failure = false;
+    runtime->recoverable_refusal_sim_state = false;
     if (runtime->validated_boundaries >= UINT32_MAX) {
         return false;
     }
@@ -927,6 +1039,10 @@ bool mdkr_rollback_game_runtime_prepare_tick(unsigned update_rate) {
             fprintf(stderr,
                     "[ROLLBACK] launcher input provider rejected tick=%u\n",
                     tick);
+            /* RECOVERABLE: the launcher's online input source could not supply
+             * this authored tick (peer gone / input unavailable) -- e.g. a peer
+             * that dropped cleanly MID-RACE. Not corruption. */
+            runtime->recoverable_online_input_failure = true;
             return false;
         }
         history = &runtime->input_history[
@@ -1763,6 +1879,11 @@ bool mdkr_rollback_game_runtime_validate_boundary(unsigned update_rate) {
     if (!sRollbackGameRuntime.active) {
         return true;
     }
+    /* Fresh verdict: assume any false return below is a genuine invariant
+     * violation (fatal) until a RECOVERABLE online-input path explicitly sets
+     * this. So the genuine-invariant checks that follow leave it clear. */
+    sRollbackGameRuntime.recoverable_online_input_failure = false;
+    sRollbackGameRuntime.recoverable_refusal_sim_state = false;
     if (sRollbackGameRuntime.authored_frame_timing_active) {
         const uint64_t finished = rollback_clock_now(NULL);
         mdkr_rollback_timing_record(
@@ -1816,6 +1937,9 @@ bool mdkr_rollback_game_runtime_validate_boundary(unsigned update_rate) {
                 !bridge_input_samples(&frame, history->input)) {
                 fprintf(stderr,
                         "[ROLLBACK] online bootstrap input unavailable tick=1\n");
+                /* RECOVERABLE: the peer/bootstrap input for the opening tick
+                 * never arrived (peer LOST at race start). Not corruption. */
+                sRollbackGameRuntime.recoverable_online_input_failure = true;
                 return false;
             }
             memcpy(history->received_input, history->input,
@@ -1830,6 +1954,9 @@ bool mdkr_rollback_game_runtime_validate_boundary(unsigned update_rate) {
             fprintf(stderr,
                     "[ROLLBACK] launcher input boundary was not prepared "
                     "tick=%u\n", tick);
+            /* RECOVERABLE: the launcher's online input source did not prepare
+             * this boundary (peer/input unavailable). Not corruption. */
+            sRollbackGameRuntime.recoverable_online_input_failure = true;
             return false;
         }
         sRollbackGameRuntime.tick_prepared = false;
@@ -1928,6 +2055,13 @@ bool mdkr_rollback_game_runtime_validate_boundary(unsigned update_rate) {
             confirm_effects_through(&sRollbackGameRuntime, confirm_tick);
         }
     }
+    /* Pinned-refcount conservation witness (one-sided, see objects.c): a
+     * covered model's references sitting BELOW its lease holds plus live
+     * object holders is a genuinely lost reference -- the correction-window
+     * erasure class -- caught at the very boundary the correction completed
+     * on. Witness only: the free-refusal tripwire in free_3d_model fail-safes
+     * the eventual UAF, so a live race keeps running. */
+    (void)mdkr_object_assets_pinned_reference_deficit();
     sRollbackGameRuntime.validated_boundaries = tick;
     if ((tick % 120u) == 0u) {
         const MdkrRollbackRingStats *stats = &sRollbackGameRuntime.ring.stats;
@@ -1956,4 +2090,24 @@ bool mdkr_rollback_game_runtime_validate_boundary(unsigned update_rate) {
     }
     log_authority_range_hashes(&sRollbackGameRuntime, tick);
     return true;
+}
+
+bool mdkr_rollback_game_runtime_online_input_recoverable(void) {
+    /* True only when the LAST validate_boundary verdict was a recoverable
+     * online-input starvation on an online (network_input) race. A genuine
+     * invariant violation leaves the flag clear, so the caller keeps aborting
+     * on real corruption. Always false offline (network_input is never set). */
+    return sRollbackGameRuntime.network_input &&
+           sRollbackGameRuntime.recoverable_online_input_failure;
+}
+
+bool mdkr_rollback_game_runtime_online_refusal_was_sim_state(void) {
+    /* Valid only while ..._online_input_recoverable() reports true (the
+     * paired flags are set together and cleared together): true = the
+     * correction-replay belt's sim-state refusal (transport healthy), false =
+     * peer/input starvation at a boundary. Lets the session's end witness
+     * name the class it actually took. */
+    return sRollbackGameRuntime.network_input &&
+           sRollbackGameRuntime.recoverable_online_input_failure &&
+           sRollbackGameRuntime.recoverable_refusal_sim_state;
 }

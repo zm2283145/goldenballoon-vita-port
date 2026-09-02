@@ -100,6 +100,21 @@ int platform_source_field_hz(void);  /* 50 PAL, 60 NTSC/MPAL */
  * narrower than PAL timing: menu language capability belongs to the validated
  * cartridge identity, not to a mutable header field or display standard. */
 int platform_source_is_european(void);
+/* Epoch-scoped NTSC identity for ONLINE sessions.  The accepted ROM payloads
+ * are byte-identical, so an online epoch presents tv_type NTSC / 60 Hz fields
+ * to every per-epoch latch regardless of the loaded region -- a PAL endpoint
+ * then authors, paces and hashes the 30 Hz online race bit-identically to a
+ * US endpoint.  Armed by the launcher's online engine-boot lanes immediately
+ * before mdkr64_engine_boot() and cleared when that boot returns; offline
+ * epochs in the same process always see the ROM's authentic values, and
+ * platform_source_is_european() is never overridden. */
+void platform_source_set_ntsc_identity_override(int armed);
+int  platform_source_ntsc_identity_override(void);
+/* Predicate form of the same fact for consumers that care about "am I inside an
+ * online engine epoch?" rather than the identity override specifically: the two
+ * are coupled (every online boot lane arms the override), so the pacer reads
+ * this to pin the online authored cadence.  See rom_io.c for the contract. */
+int  platform_online_epoch(void);
 
 /* ===== VI retrace / logic-update-rate pacing (the frame-pacing fix) ======= *
  * DKR normalises game speed against framerate via fb_update() (game/src/video.c),
@@ -212,6 +227,12 @@ void platform_present_endpoint_gate(void);
  * raise/activate the app once per session.
  */
 int  platform_present_occlusion_visible_bit(void);
+/* Un-swizzled occlusionState read: bypasses the always-Visible shim to report
+ * the TRUE bit. 1 visible, 0 occluded, -1 unknown/other-OS. Lenient hint only
+ * (occlusionState false-flaps occluded on visible windows); the WebGPU backend
+ * uses it to keep a covered-window drawable timeout off the fatal recovery
+ * counter so a window left covered recovers when shown instead of exiting. */
+int  platform_present_occlusion_visible_bit_honest(void);
 void platform_present_occlusion_kick(void);
 /* Install the process-global NSWindow.occlusionState shim (macOS; no-op
  * elsewhere). Idempotent. The app shell must call it after ITS SDL_Init:
@@ -314,6 +335,14 @@ int  platform_sdl_surface_presentable(void);
  * shares the SDL_Window. NULL before the window exists / off the Metal path. */
 void *platformGetMetalLayer(void);
 void *platformGetSdlWindow(void);
+
+/* macOS only: set -[CAMetalLayer allowsNextDrawableTimeout] = YES on the layer
+ * backing the WebGPU surface, so a drawable acquire on a starved/occluded layer
+ * fails after ~1s instead of blocking the main thread forever. The WebGPU
+ * backend re-asserts this after every wgpuSurfaceConfigure (wgpu-hal disables
+ * it during configure). No-op for a NULL layer; defined only on macOS and
+ * called only from the macOS WebGPU path. */
+void platform_macos_enable_next_drawable_timeout(void *metal_layer);
 
 enum MdkrWebGpuWindowSystem {
     MDKR_WGPU_WINDOW_UNKNOWN = 0,

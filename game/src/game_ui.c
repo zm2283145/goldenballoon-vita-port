@@ -368,25 +368,30 @@ static const s8 sHudWidescreenAnchor[HUD_ELEMENT_COUNT][HUD_WIDESCREEN_MODE_COUN
         MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_LEFT, MDKR_HUD_ANCHOR_RIGHT,
         MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT),
     /* Boss races move the banana counter group to the authored top-left
-     * (hud_init_element -120); everywhere else it rides the right edge. */
+     * (hud_init_element -120). In the banana-collection challenge (Smokey
+     * Castle et al., hud_main_treasure) the counter is authored into a gap
+     * inside the centered portrait strip, so it rides the same CENTER anchor
+     * as HUD_CHALLENGE_PORTRAIT there -- a RIGHT anchor drove it onto the
+     * portraits (issue #57). Everywhere else (races, hub) it rides the right
+     * edge with the lap counter (#50). */
     [HUD_BANANA_COUNT_ICON_SPIN] = HUD_ANCHOR_MODES(
         MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_LEFT,
-        MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT),
+        MDKR_HUD_ANCHOR_CENTER, MDKR_HUD_ANCHOR_RIGHT),
     [HUD_BANANA_COUNT_NUMBER_1] = HUD_ANCHOR_MODES(
         MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_LEFT,
-        MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT),
+        MDKR_HUD_ANCHOR_CENTER, MDKR_HUD_ANCHOR_RIGHT),
     [HUD_BANANA_COUNT_NUMBER_2] = HUD_ANCHOR_MODES(
         MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_LEFT,
-        MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT),
+        MDKR_HUD_ANCHOR_CENTER, MDKR_HUD_ANCHOR_RIGHT),
     [HUD_BANANA_COUNT_X] = HUD_ANCHOR_MODES(
         MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_LEFT,
-        MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT),
+        MDKR_HUD_ANCHOR_CENTER, MDKR_HUD_ANCHOR_RIGHT),
     [HUD_BANANA_COUNT_ICON_STATIC] = HUD_ANCHOR_MODES(
         MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_LEFT,
-        MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT),
+        MDKR_HUD_ANCHOR_CENTER, MDKR_HUD_ANCHOR_RIGHT),
     [HUD_BANANA_COUNT_SPARKLE] = HUD_ANCHOR_MODES(
         MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_LEFT,
-        MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT),
+        MDKR_HUD_ANCHOR_CENTER, MDKR_HUD_ANCHOR_RIGHT),
     [HUD_RACE_TIME_LABEL] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_RIGHT),
     [HUD_RACE_TIME_NUMBER] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_RIGHT),
     [HUD_RACE_START_GO] = HUD_ANCHOR_ALL_MODES(MDKR_HUD_ANCHOR_CENTER),
@@ -1702,7 +1707,29 @@ static void hud_player_tick(Object *obj, s32 updateRate) {
             racer->indicator_timer = 0;
         }
     }
-    if (cutscene_id() != 10) {
+    if (cutscene_id() != 10
+#if MDKR_ENABLE_ONLINE_BETA
+        /* Online endpoints present a single local viewport but simulate the
+         * canonical N-player layout, so gHUDNumPlayers is the CANONICAL count
+         * (e.g. TWO_PLAYERS for a solo endpoint in a 2-player match). The
+         * input-driven HUD toggles below -- course directions, the 2-player
+         * display-mode cycle (D_800E2794), and the minimap on/off
+         * (gHudToggleSettings) -- index shared per-LAYOUT presentation state and
+         * are driven off whichever canonical seat this tick is processing. The
+         * HUD tick walks every canonical seat, and the canonical race input for
+         * a non-local seat (and the synthesized input the test transport
+         * carries) can assert those C-buttons on any tick, so the shared toggle
+         * flips repeatedly. On a solo endpoint the whole HUD is rebased from
+         * that one shared state onto the single local viewport, so it flips the
+         * minimap and swaps the lap/banana readout on and off frame to frame.
+         * These are LOCAL presentation toggles, not canonical race state
+         * (the endpoints converge on the canonical input fold either way), so an
+         * online endpoint leaves them at their level-load defaults for a stable
+         * HUD. Inert offline: mdkr_net_roster_runtime_active() is false there,
+         * so the ROM's toggle behaviour is unchanged. */
+        && !mdkr_net_roster_runtime_active()
+#endif
+    ) {
         if (gHUDNumPlayers == ONE_PLAYER) {
             if (input_pressed(gHudController) & D_CBUTTONS && racer->raceFinished == FALSE &&
                 ((gHudLevelHeader->race_type == RACETYPE_DEFAULT) ||

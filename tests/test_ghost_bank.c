@@ -463,6 +463,13 @@ int mdkr_user_save_directory(char *output, size_t output_size) {
     return 0;
 }
 
+void mdkr_user_paths_note_save_write_failure(const char *directory) {
+    /* The player-notice latch lives in user_paths.c, which this focused test
+     * does not link; a ghost durable-write failure need only be observed as a
+     * store_image() failure here. */
+    (void)directory;
+}
+
 int mdkr_trace_enabled(void) {
     return 0;
 }

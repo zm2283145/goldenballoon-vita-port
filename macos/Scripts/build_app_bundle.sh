@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# build_app_bundle.sh -- Build a local ad-hoc-signed mdkr64.app bundle.
+# build_app_bundle.sh -- Build a local ad-hoc-signed "Golden Balloon.app" bundle.
 #
 # There is no Swift/AppKit shell to link against: the CMake target `mdkr64` is
 # already a complete, self-contained SDL2 executable. The native app shell owns
@@ -122,8 +122,8 @@ if candidate in (pathlib.Path("/"), user_home, project_root):
     reject(f"refusing broad target {candidate}")
 if candidate.suffix != ".app" or candidate.name == ".app":
     reject("target must have a nonempty name ending in .app")
-if candidate.name != "mdkr64.app":
-    reject("target basename must be mdkr64.app")
+if candidate.name != "Golden Balloon.app":
+    reject("target basename must be Golden Balloon.app")
 if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._ -]*\.app", candidate.name):
     reject("app bundle name contains unsupported characters")
 if candidate.parent == pathlib.Path("/"):
@@ -165,10 +165,10 @@ Options:
   --release              Build with Release optimizations (default)
   --debug                Build with Debug settings
   --build-dir PATH       CMake build directory (default: build-macos)
-  --output PATH          Output .app path (default: <build-dir>/mdkr64.app)
+  --output PATH          Output .app path (default: <build-dir>/Golden Balloon.app)
   --arch ARCH            Build one architecture: native, arm64, or x86_64
                          (default: native)
-  --version VER          CFBundleShortVersionString / MDKR_VERSION (default: 1.5.1)
+  --version VER          CFBundleShortVersionString / MDKR_VERSION (default: 1.5.2)
   --build-stamp SHA      Source commit shown in the About panel (default: empty)
   --party-origin URL     Phone Party service origin compiled into the launcher
                          (-DMDKR_PARTY_ORIGIN; default: empty). Must be empty
@@ -192,6 +192,16 @@ Options:
                          Build attestation produced with the validator.
   --character-lod-tool PATH
                          Native meshoptimizer LOD helper to bundle.
+  --allow-online-beta    LOCAL DEMO BUILDS ONLY -- NEVER FOR RELEASE. Adds
+                         -DMDKR_ENABLE_ONLINE_BETA=ON and
+                         -DMDKR_NATIVE_PHONE_PARTY=ON to the CMake configure
+                         and skips this script's cache assertion that the
+                         deferred Online Room preview stays off (the beta
+                         gate forces it on internally via a non-cache CMake
+                         set(), so the persisted cache entry is unaffected
+                         and stays OFF regardless). Pass --party-origin to
+                         bake in the live party service origin. Default off;
+                         every other default behavior is unchanged.
   --validate-output-only Validate --output safety and exit without writing
   --no-cmake             Reuse an existing <build-dir>/mdkr64
   -h, --help             Show this help
@@ -207,7 +217,7 @@ BUILD_TYPE="Release"
 BUILD_DIR=""
 OUTPUT_APP=""
 ARCH="native"
-APP_VERSION="1.5.1"
+APP_VERSION="1.6.0"
 BUILD_STAMP=""
 # Empty by default: a local developer build has no deployed Phone Party
 # service to point at, and an empty origin is a legal (party-free) build.
@@ -222,7 +232,17 @@ GLTF_VALIDATOR_MANIFEST=""
 CHARACTER_LOD_TOOL=""
 RUN_CMAKE=true
 VALIDATE_OUTPUT_ONLY=false
-APP_NAME="mdkr64"
+# Default OFF, and additive only: when true this adds two -D flags to the
+# CMake configure below and skips one cache assertion that those flags make
+# inapplicable (see the two sites tagged --allow-online-beta further down).
+# Every other line in this script runs exactly as it does today. This exists
+# ONLY to produce local, ad-hoc two-machine online-beta demo builds -- no
+# release lane (macos-release.yml or otherwise) may ever pass it.
+ALLOW_ONLINE_BETA=false
+# Player-facing bundle basename. Only the .app wrapper carries the product
+# brand; the CFBundleExecutable inside stays "mdkr64" (see EXECUTABLE_NAME
+# below) and CFBundleIdentifier stays com.mdkr64.app.
+APP_NAME="Golden Balloon"
 # CFBundleExecutable: the real binary, directly. It now contains the native
 # ImGui app shell (platform/app/), so a Finder double-click with no arguments
 # opens the launcher -- the first-run ROM picker, settings and diagnostics --
@@ -303,6 +323,7 @@ while [[ $# -gt 0 ]]; do
             CHARACTER_LOD_TOOL="$2"
             shift 2
             ;;
+        --allow-online-beta) ALLOW_ONLINE_BETA=true; shift ;;
         --validate-output-only) VALIDATE_OUTPUT_ONLY=true; shift ;;
         --no-cmake) RUN_CMAKE=false; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -472,6 +493,9 @@ fi
 if [[ "${BUNDLE_SDL2}" == true ]]; then
     info "Bundle SDL2       : enabled"
 fi
+if [[ "${ALLOW_ONLINE_BETA}" == true ]]; then
+    warn "Online beta       : ENABLED -- local demo build only, never for release"
+fi
 if [[ -n "${PARTY_ORIGIN}" ]]; then
     info "Phone Party origin: ${PARTY_ORIGIN}"
 else
@@ -486,6 +510,12 @@ if [[ "${RUN_CMAKE}" == true ]]; then
     PATH_MAP_FLAGS+=" -ffile-prefix-map=${BUILD_DIR}=mdkr64-build"
     PATH_MAP_FLAGS+=" -fmacro-prefix-map=${BUILD_DIR}=mdkr64-build"
     PATH_MAP_FLAGS+=" -fdebug-prefix-map=${BUILD_DIR}=mdkr64-build"
+    # --allow-online-beta (local demo builds only, never release): the sole
+    # additive configure-time effect of the flag. Empty and inert by default.
+    ONLINE_BETA_CMAKE_ARGS=()
+    if [[ "${ALLOW_ONLINE_BETA}" == true ]]; then
+        ONLINE_BETA_CMAKE_ARGS=(-DMDKR_ENABLE_ONLINE_BETA=ON -DMDKR_NATIVE_PHONE_PARTY=ON)
+    fi
     cmake -S "${PROJECT_ROOT}" -B "${BUILD_DIR}" \
         -DCMAKE_OSX_ARCHITECTURES="${CMAKE_ARCH}" \
         -DCMAKE_OSX_DEPLOYMENT_TARGET="${DEPLOYMENT_TARGET}" \
@@ -499,6 +529,7 @@ if [[ "${RUN_CMAKE}" == true ]]; then
         -DMDKR_PARTY_ORIGIN="${PARTY_ORIGIN}" \
         -DMDKR_ENABLE_ONLINE_ROOM_PREVIEW=OFF \
         -DMDKR_WEBGPU_BACKEND=ON \
+        ${ONLINE_BETA_CMAKE_ARGS[@]+"${ONLINE_BETA_CMAKE_ARGS[@]}"} \
         || die "CMake configuration failed."
 
     NCPU="$(sysctl -n hw.ncpu)"
@@ -520,8 +551,14 @@ CMAKE_CACHE="${BUILD_DIR}/CMakeCache.txt"
 [[ -f "${CMAKE_CACHE}" ]] || die "Missing CMake cache: ${CMAKE_CACHE}"
 grep -Eq '^MDKR_WEBGPU_BACKEND:BOOL=ON$' "${CMAKE_CACHE}" ||
     die "Build cache does not enable the required WebGPU backend."
-grep -Eq '^MDKR_ENABLE_ONLINE_ROOM_PREVIEW:BOOL=OFF$' "${CMAKE_CACHE}" ||
-    die "Build cache unexpectedly includes the deferred Online Room preview."
+# --allow-online-beta (local demo builds only, never release): the sole other
+# additive effect of the flag. This assertion exists to catch an
+# accidentally-enabled Online Room preview; --allow-online-beta enables the
+# online-beta gate on purpose, so skip only this one assertion for it.
+if [[ "${ALLOW_ONLINE_BETA}" != true ]]; then
+    grep -Eq '^MDKR_ENABLE_ONLINE_ROOM_PREVIEW:BOOL=OFF$' "${CMAKE_CACHE}" ||
+        die "Build cache unexpectedly includes the deferred Online Room preview."
+fi
 grep -Fqx "MDKR_VERSION:STRING=${APP_VERSION}" "${CMAKE_CACHE}" ||
     die "Build cache version does not match ${APP_VERSION}."
 grep -Fqx "MDKR_BUILD_STAMP:STRING=${BUILD_STAMP}" "${CMAKE_CACHE}" ||

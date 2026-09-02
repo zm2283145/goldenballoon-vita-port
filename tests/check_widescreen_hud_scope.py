@@ -60,14 +60,17 @@ GOLDEN_ANCHORS = {
     "HUD_LAP_COUNT_TOTAL": "RLRRR",
     "HUD_LAP_COUNT_FLAG": "RLRRR",
     # Boss races move the banana counter group to the authored top-left
-    # (-120); everywhere else the whole group (incl. the #50 "x" glyph)
+    # (-120). In the banana-collection challenge (Smokey Castle,
+    # hud_main_treasure) the counter sits in a gap inside the centered
+    # portrait strip and rides the CENTER anchor with it (issue #57);
+    # everywhere else (race, hub) the whole group (incl. the #50 "x" glyph)
     # rides the right edge with the lap counter.
-    "HUD_BANANA_COUNT_ICON_SPIN": "RRLRR",
-    "HUD_BANANA_COUNT_NUMBER_1": "RRLRR",
-    "HUD_BANANA_COUNT_NUMBER_2": "RRLRR",
-    "HUD_BANANA_COUNT_X": "RRLRR",
-    "HUD_BANANA_COUNT_ICON_STATIC": "RRLRR",
-    "HUD_BANANA_COUNT_SPARKLE": "RRLRR",
+    "HUD_BANANA_COUNT_ICON_SPIN": "RRLCR",
+    "HUD_BANANA_COUNT_NUMBER_1": "RRLCR",
+    "HUD_BANANA_COUNT_NUMBER_2": "RRLCR",
+    "HUD_BANANA_COUNT_X": "RRLCR",
+    "HUD_BANANA_COUNT_ICON_STATIC": "RRLCR",
+    "HUD_BANANA_COUNT_SPARKLE": "RRLCR",
     "HUD_RACE_TIME_LABEL": "RRRRR",
     "HUD_RACE_TIME_NUMBER": "RRRRR",
     "HUD_RACE_START_GO": "CCCCC",
@@ -255,6 +258,25 @@ def check_anchor_table(game_ui: str, header: str) -> list[str]:
             problems.append(
                 f"{name} must ride the race-mode right anchor with its "
                 f"counter group, got {rows.get(name)!r}")
+
+    # The #57 contract, its own named assertion: in the banana-collection
+    # challenge (hud_main_treasure, e.g. Smokey Castle) the counter is
+    # authored into a gap inside the centered portrait strip, so in challenge
+    # mode every counter glyph must ride the same CENTER anchor as
+    # HUD_CHALLENGE_PORTRAIT -- a RIGHT anchor there drove the counter onto
+    # the portraits.
+    challenge = MODES.index("challenge")
+    portrait_challenge = rows.get("HUD_CHALLENGE_PORTRAIT", "?????")[challenge]
+    if portrait_challenge != "C":
+        problems.append(
+            f"HUD_CHALLENGE_PORTRAIT must ride the challenge-mode CENTER "
+            f"anchor (the centered portrait strip), got {portrait_challenge!r}")
+    for name in BANANA_COUNTER:
+        if rows.get(name, "?????")[challenge] != "C":
+            problems.append(
+                f"{name} must ride the challenge-mode CENTER anchor with the "
+                f"portrait strip (issue #57), got "
+                f"{rows.get(name, '?????')[challenge]!r}")
     return problems
 
 
@@ -458,6 +480,29 @@ def self_test() -> int:
                for problem in check_anchor_table(drifted_ui, header)):
         print("self-test: FAIL -- golden snapshot passed a re-anchored table",
               file=sys.stderr)
+        return 1
+
+    # Regression 7 (#57): the banana counter re-anchored to RIGHT in challenge
+    # mode -- its pre-fix shape, which drove the counter onto the centered
+    # portrait strip in the banana-collection challenge -- must fail the
+    # challenge-mode contract.
+    prefix57_ui = game_ui.replace(
+        "    [HUD_BANANA_COUNT_ICON_SPIN] = HUD_ANCHOR_MODES(\n"
+        "        MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT, "
+        "MDKR_HUD_ANCHOR_LEFT,\n"
+        "        MDKR_HUD_ANCHOR_CENTER, MDKR_HUD_ANCHOR_RIGHT),",
+        "    [HUD_BANANA_COUNT_ICON_SPIN] = HUD_ANCHOR_MODES(\n"
+        "        MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT, "
+        "MDKR_HUD_ANCHOR_LEFT,\n"
+        "        MDKR_HUD_ANCHOR_RIGHT, MDKR_HUD_ANCHOR_RIGHT),", 1)
+    if prefix57_ui == game_ui:
+        print("self-test: FAIL -- could not synthesise the issue-57 regression",
+              file=sys.stderr)
+        return 1
+    if not any("issue #57" in problem
+               for problem in check_anchor_table(prefix57_ui, header)):
+        print("self-test: FAIL -- challenge-mode contract passed a "
+              "RIGHT-anchored banana counter", file=sys.stderr)
         return 1
 
     # Regression 4 (#51 slide census): a draw site consuming the raw slide

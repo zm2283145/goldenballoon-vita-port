@@ -1563,9 +1563,15 @@ void MdkrMatchSignalClient::State::run() {
         credentialOffer = "gb-match." + credential;
     }
     /* Native is originless: no Origin header, and the credential rides ONLY
-     * in the subprotocol offer. */
+     * in the subprotocol offer. A plain, benign User-Agent is sent as
+     * belt-and-suspenders: Cloudflare's Browser Integrity Check bans known
+     * scripting-tool signatures (python-urllib, curl, Go-http-client, ...) but
+     * passes normal or empty UAs, so a product UA lets this hand-rolled RFC 6455
+     * client reliably clear the edge. It carries no identity and is never
+     * parsed by the MatchRoom worker. */
     std::string request = "GET " + path + " HTTP/1.1\r\n" +
                           "Host: " + origin.hostHeader + "\r\n" +
+                          "User-Agent: GoldenBalloon/1.6.0\r\n" +
                           "Upgrade: websocket\r\n" +
                           "Connection: Upgrade\r\n" +
                           "Sec-WebSocket-Key: " + key + "\r\n" +

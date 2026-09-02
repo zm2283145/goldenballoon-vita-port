@@ -63,6 +63,20 @@
 #include <stdlib.h>
 #include <string.h>
 #include "net/net_roster_runtime.h"
+#if MDKR_ENABLE_ONLINE_BETA
+/* SEPARATED-BOOT-PATH: the online session mode + fork entry. Beta-only; a normal
+ * (beta OFF) build never sees this include and the file it names is not compiled
+ * (game/src/online/ is not globbed and is CMake-gated on the beta macro). */
+#include "online/online_session.h"
+/* mdkr_party_link_active() for the descriptor-less lobby-start fork
+ * below. Dependency-free header; the TU (party_link.c) is beta-only, so the OFF
+ * build never sees this include and thread3_main.o stays byte-identical. */
+#include "net/party_link.h"
+/* NON-BLOCKING online race pause: the deterministic retail-pause suppression
+ * (mode_game) + the per-frame local overlay (main_game_loop). Beta-only TU
+ * (game/src/online/, CMake-gated); the OFF build never sees this include. */
+#include "online/online_race_pause.h"
+#endif
 #include "platform_os.h"
 #include "app_overlay_hooks.h"
 #include "app/engine_entry.h"
@@ -1983,7 +1997,13 @@ void main_game_loop(void) {
          * input boundary one tick after that pulse was cleared. Restore the
          * preceding frame's bank without advancing its camera object; the
          * existing paused clear gate below then holds the authored pose. */
-        if (overlayPaused) {
+        if (overlayPaused
+#if MDKR_ENABLE_ONLINE_BETA
+            /* Online the overlay is non-pausing chrome (below), so the paused
+             * camera-bank restore must not fire over a still-running sim. */
+            && !mdkr_online_race_pause_suppressed()
+#endif
+        ) {
             cutscene_camera_pause_restore();
         }
         /* The scripted overlay gate needs the exact simulation boundary, not
@@ -2000,7 +2020,26 @@ void main_game_loop(void) {
             }
             previousOverlayPaused = overlayPaused;
         }
-        if (overlayPaused) {
+        if (overlayPaused
+#if MDKR_ENABLE_ONLINE_BETA
+            /* In a LIVE online rollback race the app overlay must NOT become a
+             * sim pause boundary: a zero-rate authored tick is exactly what a
+             * later correction replay refuses (rollback_game_runtime.c's
+             * sim-refusal arm), so zeroing the clock here turned "player opened
+             * the overlay" into the recoverable clean-LEFT unwind -- ejected
+             * from the race by a menu. Online the overlay is presentation-only
+             * chrome over the running sim, the same non-blocking contract as
+             * the START overlay (online_race_pause.h). While it owns the
+             * keyboard the platform input pump publishes one NEUTRAL pad
+             * sample (overlay_capture_sync), so the local seat coasts neutral
+             * and that neutral input seals canonically like any other frame --
+             * deterministic on both endpoints, live and in resim. Keyed on the
+             * same constant-per-race gate as the retail-pause suppression.
+             * Beta-gated: the OFF build sees the original condition and its
+             * thread3_main.c.o anchor stays byte-identical. */
+            && !mdkr_online_race_pause_suppressed()
+#endif
+        ) {
             logicUpdateRate = 0;
         }
     }
@@ -2008,6 +2047,24 @@ void main_game_loop(void) {
 #ifdef NATIVE_PORT
     if (!mdkr_rollback_game_runtime_prepare_tick(
             (unsigned)logicUpdateRate)) {
+#if MDKR_ENABLE_ONLINE_BETA
+        /* P0 CRASH FIX, mid-race sibling (beta only): a live online race whose
+         * peer/input for THIS authored tick vanished -- a peer/console that
+         * dropped cleanly mid-race, so the launcher input provider could not
+         * supply the tick (or a rewound correction's peer input is gone). That is
+         * a RECOVERABLE peer loss, NOT rollback invariant corruption: route it to
+         * the SAME clean return-to-room as the race-start path (note session-end
+         * LEFT + clean rollback teardown + platform_request_exit(0)) instead of
+         * crashing. Genuine invariant violations (tick-counter exhaustion,
+         * prepared-twice, snapshot restore, correction-replay allocation/coverage)
+         * leave the recoverable flag CLEAR and still hit the abort() below,
+         * byte-for-byte as before. Wrapped in MDKR_ENABLE_ONLINE_BETA so the OFF
+         * build's thread3_main.c.o (anchor 20ed811d) is byte-identical. */
+        if (mdkr_rollback_game_runtime_online_input_recoverable()) {
+            mdkr_online_session_return_to_room_on_peer_loss();
+            return;
+        }
+#endif
         fprintf(stderr,
                 "[FATAL] rollback lab could not prepare canonical input\n");
         abort();
@@ -2037,10 +2094,30 @@ void main_game_loop(void) {
         case GAMEMODE_INGAME: // In game (Controlling a character)
             mode_game(logicUpdateRate);
             break;
+#if MDKR_ENABLE_ONLINE_BETA
+        // Separated online boot path (beta). GAMEMODE_ONLINE_SESSION aliases the
+        // dead offline slot GAMEMODE_UNUSED_2, which offline code never produces,
+        // so this case is unreachable in a normal (beta OFF) build and compiles
+        // out entirely there.
+        case GAMEMODE_ONLINE_SESSION:
+            mdkr_online_session_tick(logicUpdateRate);
+            break;
+#endif
         case GAMEMODE_LOCKUP: // EPC (lockup display)
             mode_lockup(logicUpdateRate);
             break;
     }
+
+#if MDKR_ENABLE_ONLINE_BETA
+    /* NON-BLOCKING online race pause overlay (beta only): serviced AFTER the
+     * mode dispatch so it reads this frame's canonical local-seat edges and
+     * draws over the completed race frame -- and never during resimulation
+     * (resim re-enters mode_game directly, not this loop), so overlay state is
+     * pure local presentation the rollback authority never sees. Inert unless
+     * a live online rollback race is running. The OFF build strips this block
+     * and thread3_main.c.o stays byte-identical. */
+    mdkr_online_race_overlay_frame(logicUpdateRate);
+#endif
 
     // This is a good spot to place custom text if you want it to overlay it over ALL the
     // menus & gameplay.
@@ -2080,6 +2157,25 @@ void main_game_loop(void) {
      * finished authoring and fb_update has not issued the next ticket yet. */
     if (!mdkr_rollback_game_runtime_validate_boundary(
             (unsigned)logicUpdateRate)) {
+#if MDKR_ENABLE_ONLINE_BETA
+        /* P0 CRASH FIX (beta only): a live online race whose peer/bootstrap input
+         * vanished at race start -- the peer LOST (ICE failed) and the launcher's
+         * race-start barrier aborted the tick-1 drain -- starves this boundary.
+         * That is a RECOVERABLE peer loss, NOT rollback invariant corruption:
+         * route it to a clean return-to-room (note session-end LEFT + clean
+         * rollback teardown + platform_request_exit(0)) and break out of the tick
+         * loop, instead of crashing BOTH machines. Genuine invariant violations
+         * (authority allocation lifetime/coverage, snapshot capture, side-effect
+         * journal, tick-counter exhaustion) leave the recoverable flag CLEAR and
+         * still hit the abort() below, byte-for-byte as before. Wrapped in
+         * MDKR_ENABLE_ONLINE_BETA so the OFF build's thread3_main.c.o (anchor
+         * 20ed811d) is untouched: the preprocessor strips this block entirely and
+         * the offline / OFF abort() path is byte-identical. */
+        if (mdkr_rollback_game_runtime_online_input_recoverable()) {
+            mdkr_online_session_return_to_room_on_peer_loss();
+            return;
+        }
+#endif
         fprintf(stderr,
                 "[FATAL] rollback lab lost a registered authority allocation\n");
         abort();
@@ -2397,9 +2493,33 @@ void mode_game(s32 updateRate) {
             if (buttonPressedInputs & START_BUTTON && level_properties_get() == 0 && gDrumstickSceneLoadTimer == 0 &&
                 gGameMode == GAMEMODE_INGAME && gPostRaceViewPort == FALSE && gLevelLoadTimer == 0 &&
                 gPauseLockTimer == 0) {
-                buttonPressedInputs = 0;
-                gIsPaused = TRUE;
-                menu_pause_init();
+#if MDKR_ENABLE_ONLINE_BETA
+                /* ONLINE PAUSE CRASH FIX (beta only): in an online rollback race
+                 * the retail pause NEVER engages -- this branch consumes the
+                 * CANONICAL input of every seat, so a START press (local or the
+                 * remote player's, live or replayed by a correction) would pause
+                 * the networked sim itself, and a paused sim makes every later
+                 * correction replay refuse (mdkr_game_resimulate_tick admission/
+                 * completion) -- the two-machine beta abort. The suppression is
+                 * keyed only on the online input runtime (constant for the race,
+                 * identical on both machines and in resim), so both sims skip the
+                 * engage deterministically; the LOCAL non-blocking overlay in
+                 * main_game_loop owns the local START instead. Wrapped in
+                 * MDKR_ENABLE_ONLINE_BETA so the OFF build's thread3_main.c.o
+                 * (anchor) strips this block and offline pause is byte-identical. */
+                if (mdkr_online_race_pause_suppressed()) {
+                    if (!sRollbackResimulating) {
+                        fprintf(stderr,
+                                "[online-pause] retail pause suppressed "
+                                "(online race; overlay owns START)\n");
+                    }
+                } else
+#endif
+                {
+                    buttonPressedInputs = 0;
+                    gIsPaused = TRUE;
+                    menu_pause_init();
+                }
             }
 #if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
             /* A dropped bound pad forces the shared pause here, under the very
@@ -2661,6 +2781,23 @@ void mode_game(s32 updateRate) {
             updateRate);
         divider_clear_coverage(&gCurrDisplayList);
     }
+#if MDKR_ENABLE_ONLINE_BETA
+    else if (!sRollbackResimulating) {
+        /* Zero-viewport endpoint: skip the HUD draw, not the HUD audio
+         * authority. hud_audio_update() advances the crowd/delayed-voice
+         * lifecycle and restores the post-fade active-sound limit
+         * (sndp_set_active_sound_limit), and the sound-state pool it shapes
+         * decides when Object_Racer::soundMask releases -- a gate
+         * play_random_character_voice() consults before drawing gameplay RNG.
+         * Rendering endpoints reach this same call through
+         * hud_render_general() at this exact point in the tick, so a
+         * verifier endpoint must run it too or its RNG stream forks from the
+         * rendering peers'. Wrapped in MDKR_ENABLE_ONLINE_BETA so the OFF
+         * build's thread3_main object stays byte-for-byte (a roster can only
+         * be active in an online epoch). */
+        hud_audio_update(updateRate);
+    }
+#endif
     if (gFutureFunLandLevelTarget) {
         if (func_800214C4() != 0) {
             gPlayableMapId = ASSET_LEVEL_FUTUREFUNLANDHUB;
@@ -3480,7 +3617,19 @@ Settings *get_settings(void) {
  */
 s8 is_game_paused(void) {
 #ifdef NATIVE_PORT
-    if (platformOverlayWantsPause()) {
+    if (platformOverlayWantsPause()
+#if MDKR_ENABLE_ONLINE_BETA
+        /* Online the app overlay never pauses the sim (main_game_loop keeps
+         * the clock running under it), so it must be invisible to the sim's
+         * pause query too: this reads LIVE overlay state, and a TRUE here
+         * while the online sim runs would gate obj_update differently in the
+         * authored pass vs. a correction replay (resim cannot see the live
+         * overlay) -- a divergence, and the resimulate admission gate rejects
+         * a paused game outright. gIsPaused stays authoritative (it is
+         * registered rollback authority and never engages online). */
+        && !mdkr_online_race_pause_suppressed()
+#endif
+    ) {
         return TRUE;
     }
 #endif
@@ -4391,6 +4540,39 @@ void mode_intro(void) {
     }
     sBootDelayTimer++;
     if (sBootDelayTimer >= 8) {
+#if MDKR_ENABLE_ONLINE_BETA
+        /* A validated online roster + launch descriptor is installed only by the
+         * beta online-wiring layer, and only for a real online match. When one
+         * is present, skip the front-end entirely and load the manifest race. */
+        {
+            const MdkrMatchLaunchDescriptorV1 *launch =
+                mdkr_net_roster_runtime_launch_descriptor();
+            if (launch != NULL && mdkr_net_roster_runtime_active()) {
+                /* SEPARATED-BOOT-PATH: fork into the online session mode instead
+                 * of booting the race here. The session (a fully separate boot
+                 * path that never runs the offline menu state machine) stashes
+                 * the descriptor, waits in LOBBY_WAIT, then hands off to the same
+                 * race boot. Offline is provably unimpacted. */
+                mdkr_online_session_begin(launch);
+                return;
+            }
+            /* DESCRIPTOR-LESS lobby-start fork (SECOND condition; the
+             * descriptor-first condition above stays FIRST + unchanged). When the
+             * party_link bridge is installed but no descriptor/roster is present
+             * yet, the launcher wants the NATIVE online screens to own race 1: the
+             * session begins descriptor-less, fronts CHARSELECT -> TRACKSELECT,
+             * and the race-1 readiness gate holds the boot until the real
+             * descriptor + roster + match-input land. mdkr_party_link_active() is
+             * false for every non-lobby-start path (the bridge is installed only
+             * by a resident/lobby-start boot before the engine runs, and a
+             * resident boot ALSO installs a descriptor -> takes the first fork),
+             * so no existing lane reaches here. */
+            if (mdkr_party_link_active()) {
+                mdkr_online_session_begin(NULL);
+                return;
+            }
+        }
+#endif
         load_menu_with_level_background(MENU_BOOT, ASSET_LEVEL_OPTIONSBACKGROUND, 2);
     }
 }

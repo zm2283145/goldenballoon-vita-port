@@ -69,11 +69,18 @@ static bool panelVisible(int index) {
     if (index < 0 || index >= kPanelCount) return false;
     if (std::strcmp(kPanels[index].label, "Online Room") != 0) return true;
 #if MDKR_ENABLE_ONLINE_ROOM_PREVIEW
+#if MDKR_ENABLE_ONLINE_BETA
+    // Native online beta: the Online Room panel is always reachable so beta
+    // testers set no env; the build gate replaces the MDKR_ONLINE_ROOM_PREVIEW=1
+    // preview env. Release builds never define MDKR_ENABLE_ONLINE_BETA.
+    return true;
+#else
     static const bool preview = [] {
         const char *value = std::getenv("MDKR_ONLINE_ROOM_PREVIEW");
         return value != nullptr && value[0] == '1';
     }();
     return preview;
+#endif
 #else
     return false;
 #endif
@@ -97,6 +104,31 @@ float g_smokePanelScrollY = 0.0f;
 bool g_smokePanelScrollValid = false;
 bool g_smokePrimaryActionLabelContained = true;
 bool g_characterWorkshopReturnFocusRequested = false;
+
+#if MDKR_ENABLE_ONLINE_BETA
+// Modal lobby takeover witness (beta only; vanishes in the OFF build, so the
+// shipped object stays byte-identical). Each launcher control that must be
+// SUPPRESSED during an active online session stamps the current frame index as
+// it draws; the probe then reports whether it drew this frame. This is a
+// truthful witness: if the takeover ever fell through to the shell, the stamp
+// would show the generic Play / nav as drawn and the takeover check would fail.
+int g_betaFrame = 0;
+int g_betaPlayDrawnFrame = -1;
+int g_betaNavDrawnFrame = -1;
+
+void emitLobbyTakeoverProbe(bool onlineActive, bool tookTakeover) {
+    static const bool probe =
+        std::getenv("MDKR_APP_LOBBY_TAKEOVER_PROBE") != nullptr;
+    if (!probe) return;
+    std::fprintf(stderr,
+                 "[app-lobby-takeover] frame=%d online_active=%d "
+                 "took_takeover=%d play_drawn=%d nav_drawn=%d view_kind=%d\n",
+                 g_betaFrame, onlineActive ? 1 : 0, tookTakeover ? 1 : 0,
+                 g_betaPlayDrawnFrame == g_betaFrame ? 1 : 0,
+                 g_betaNavDrawnFrame == g_betaFrame ? 1 : 0,
+                 OnlineRoom_lobbyProbeViewKind());
+}
+#endif  // MDKR_ENABLE_ONLINE_BETA
 
 void fillBootConfig(LauncherState &state, MdkrBootConfig &boot) {
     boot = MdkrBootConfig{};
@@ -239,11 +271,20 @@ bool drawLauncherQuitButton(LauncherState &state, const ImVec2 &size) {
 
 void drawPrimaryLauncherAction(LauncherState &state, const ImVec2 &size,
                                bool workshopActive) {
+#if MDKR_ENABLE_ONLINE_BETA
+    // The generic offline Play. During an active online session the lobby
+    // takeover must never call this; the stamp witnesses that it did not.
+    g_betaPlayDrawnFrame = g_betaFrame;
+#endif
     const bool ready = !state.romPath.empty() && state.romInfo.valid;
     const bool characterBusy = Settings_characterWorkPending();
+    // romPlayAwaitingReplacement: Play was already pressed once and is
+    // waiting on a pending replacement check (see RomPanel_requestPlayValidation).
+    // Show that immediately so a second press cannot queue a duplicate wait.
     const bool busy = state.quitRequested || characterBusy ||
         (!workshopActive &&
          (state.romPlayValidationPending ||
+          state.romPlayAwaitingReplacement ||
           (!ready && state.romValidationPending)));
     const float actionWidth = size.x > 0.0f
         ? size.x : ImGui::GetContentRegionAvail().x;
@@ -492,6 +533,9 @@ float measuredRegionHeight(float regionTop, float contentTop) {
 }
 
 void drawNavigation(int &activePanel, LauncherState &state) {
+#if MDKR_ENABLE_ONLINE_BETA
+    g_betaNavDrawnFrame = g_betaFrame;   // suppressed by the lobby takeover
+#endif
     /*
      * The footer reservation splits the rail, so overstating it steals rows
      * from the destination list rather than from anything the footer owns. It
@@ -602,6 +646,9 @@ void drawNavigation(int &activePanel, LauncherState &state) {
 }
 
 void drawTopNavigation(int &activePanel, LauncherState &state) {
+#if MDKR_ENABLE_ONLINE_BETA
+    g_betaNavDrawnFrame = g_betaFrame;   // suppressed by the lobby takeover
+#endif
     const float scale = AppTheme::uiScale();
     const float availableWidth = ImGui::GetContentRegionAvail().x;
     const bool dense = availableWidth < 720.0f * scale;
@@ -932,6 +979,61 @@ void drawActivePanel(int activePanel, LauncherState &state, LauncherAction &acti
     g_smokePanelScrollValid = ImGui::GetScrollMaxY() > 0.0f;
     ImGui::EndChild();
 }
+
+#if MDKR_ENABLE_ONLINE_BETA
+// The modal online lobby. Owns the whole launcher window: a persistent header
+// (title, live status and the single Leave Room exit) over the state-driven
+// room body. The body is drawn through the SAME panel path the
+// normal router uses, so the online-room controls keep their ImGui IDs -- and
+// therefore their keyboard/gamepad focus -- across the shell->takeover
+// transition. The nav rail, top tabs and generic offline Play are simply never
+// drawn here, which is what makes the offline launch unreachable during a
+// session.
+void drawLobbyTakeover(LauncherState &state, LauncherAction &action) {
+    const float scale = AppTheme::uiScale();
+    OnlineLobbyHeaderInfo info{};
+    const bool haveInfo = OnlineRoom_lobbyHeaderInfo(&info);
+
+    ImGui::PushFont(AppTheme::fonts().title);
+    ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::brandSky());
+    ImGui::TextUnformatted("Private Online Room");
+    ImGui::PopStyleColor();
+    ImGui::PopFont();
+
+    const float leaveWidth = 160.0f * scale;
+    ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - leaveWidth);
+    // Every live-room exit shares one name; the body's cancel is also "Leave
+    // Room", and there may be no race yet (this shows from the first CONNECTING
+    // frame), so "Leave Race" overclaimed.
+    if (ImGui::Button("Leave Room", ImVec2(leaveWidth, ui::kBtnSecondary().y))) {
+        OnlineRoom_requestLeave();
+    }
+    ui::SpeakFocusedItem(
+        "Leave Room", "Exit online",
+        "Leaves the private room, closes the connection and returns to the "
+        "launcher home.");
+
+    if (haveInfo) {
+        ImGui::PushFont(AppTheme::fonts().small);
+        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::subtle());
+        // The composed, lobby- and reentry-aware line from the room panel; it
+        // agrees with the body below. Per-player "ready" chips were dropped: the
+        // model reports only aggregate counts, so the projection could crown the
+        // wrong player Ready, it duplicated the roster strip, and readiness is a
+        // game-owned concept after the takeover.
+        ImGui::TextUnformatted(info.statusLine != nullptr ? info.statusLine
+                                                          : "Online race");
+        ImGui::PopStyleColor();
+        ImGui::PopFont();
+    }
+    ui::BrandRule();
+
+    drawActivePanel(kLauncherPanelOnlineRoom, state, action);
+
+    // Deferred, non-blocking teardown once the body has finished drawing.
+    OnlineRoom_serviceLobbyLeave(state);
+}
+#endif  // MDKR_ENABLE_ONLINE_BETA
 
 }  // namespace
 
@@ -1282,6 +1384,9 @@ void drawAboutPanel(LauncherState &s, LauncherAction &out) {
 }  // namespace
 
 LauncherAction Launcher::draw(AppHost &host) {
+#if MDKR_ENABLE_ONLINE_BETA
+    ++g_betaFrame;
+#endif
     // Character subprocesses publish through launcher-owned UI state. Service
     // them on every destination so leaving the Workshop cannot strand a ready
     // result, race Play against a directory transaction, or turn application
@@ -1445,6 +1550,32 @@ LauncherAction Launcher::draw(AppHost &host) {
                  ImGuiWindowFlags_NoScrollbar |
                  ImGuiWindowFlags_NoScrollWithMouse);
 
+#if MDKR_ENABLE_ONLINE_BETA
+    // Evaluated at frame start (nothing before this touches the online adapter),
+    // so it reflects the takeover decision rather than any state a mid-frame
+    // draw would create.
+    const bool onlineActiveTakeover = OnlineRoom_isLobbyTakeoverActive();
+    if (onlineActiveTakeover) {
+        // MODAL LOBBY TAKEOVER. A live online session owns the whole window: the
+        // nav rail, top tabs, panel router and the generic offline Play are all
+        // suppressed, so the offline launch is unreachable -- the root fix for
+        // both reported bugs (originator launching offline over the room, joiner
+        // beach-balling by launching offline into a live session). Defensively
+        // drop any Play action a pending ROM re-check may have staged this
+        // frame, so offline can never fire while a session is live.
+        action = LauncherAction{};
+        drawLobbyTakeover(state_, action);
+        ImGui::End();
+        // Consume a deferred navigation (a clean "Leave Race" asks for home).
+        if (state_.requestTab >= 0 && state_.requestTab < kPanelCount) {
+            active_ = state_.requestTab;
+        }
+        state_.requestTab = -1;
+        state_.requestTabPriority = 0;
+        emitLobbyTakeoverProbe(true, true);
+        return action;
+    }
+#endif
     const bool compactNavigation =
         vp->Size.x < 860.0f * AppTheme::uiScale() ||
         vp->Size.y < 620.0f * AppTheme::uiScale();
@@ -1497,6 +1628,9 @@ LauncherAction Launcher::draw(AppHost &host) {
                 MDKR_CHARACTER_PREVIEW_NONE;
     }
 
+#if MDKR_ENABLE_ONLINE_BETA
+    emitLobbyTakeoverProbe(onlineActiveTakeover, false);
+#endif
     return action;
 }
 
