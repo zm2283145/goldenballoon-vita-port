@@ -52,8 +52,8 @@ big-endian.
 
 | Offset | Bytes | Field |
 |---:|---:|---|
-| 0 | 4 | `MPF1` |
-| 4 | 1 | version `1` |
+| 0 | 4 | `MPF2` |
+| 4 | 1 | version `2` |
 | 5 | 1 | ROM verified / phrase confirmed / channels ready bits |
 | 6 | 2 | zero reserved |
 | 8 | 4 | match epoch |
@@ -65,9 +65,9 @@ big-endian.
 | 92 | 32 | canonical directed graph SHA-256 |
 | 124 | 12 | route-quality record (v2; see below) |
 
-Byte 0-3 is `MPF2` and byte 4 is version `2`. Bit `0x08` of byte 5 is the
-route-measured flag; the three readiness bits are unchanged and `READY` still
-requires exactly those three.
+`MPF1` carried `MPF1`/version `1` in those same two fields and stopped at byte
+124. Bit `0x08` of byte 5 is the route-measured flag; the three readiness bits
+are unchanged and `READY` still requires exactly those three.
 
 Decode requires exactly 136 bytes and rejects malformed control bytes, reserved
 bits and zero identity/generation/sequence atomically. Digest mutations remain

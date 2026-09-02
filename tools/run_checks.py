@@ -1043,9 +1043,10 @@ CHECKS = (
 # role arguments. ``rom_free_units`` owns their execution.
 CTEST_COMPANION_SCRIPTS = {
     "check_multiplayer_boundaries.py",
-    # Registered as the net_failure_ring_impairment CTest (cmake/tests.cmake),
-    # which passes it both arms of the impairment harness; it launches no game
-    # and needs no ROM, so the ctest task owns it.
+    # Registered as the net_failure_ring_impairment CTest (CMakeLists.txt, in
+    # the MDKR_NATIVE_PHONE_PARTY block), which passes it both arms of the
+    # impairment harness; it launches no game and needs no ROM, so the ctest
+    # task owns it.
     "check_net_failure_ring_impairment.py",
     # Registered as the gamecontrollerdb_lint CTest (cmake/tests.cmake); a
     # plain source lint with no artifacts, run once by the ctest task.

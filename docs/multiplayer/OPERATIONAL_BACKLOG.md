@@ -291,7 +291,7 @@ imported by nothing but their tests, and the publisher policy still ships
 disabled. Each becomes reachable the moment a live carrier is bound, so all five
 were required to close before the written `GO`. **All five are now closed
 (2026-08-13);** the remaining `GO` conditions are the human/device evidence
-tracked in `STATUS.md`, not these findings.
+tracked in `STATUS.md` and the three netplay landing-review items below.
 
 **Decided during landing review, 2026-08-13 — tied-publication invite custody
 is fail-closed.** `online-room-live-state.js` previously let a publication that
@@ -316,6 +316,20 @@ removing the record.
 | G-3 | **Global budget exhaustion from unauthenticated requests.** Admission was charged before the body was parsed, so ~1,000 empty POSTs could spend the day's pairing reserve and fail-close the service until UTC midnight. | **CLOSED** | Every route in `services/party/src/worker.ts` now validates shape and (where present) credentials before charging; ordering contract documented in the `budget()` ordering-contract comment in `worker.ts`. **Design decision:** a validated *and authenticated* request that is then refused still charges and is never refunded — by then it has consumed the Durable Object fanout it is billed for, and refunding refusals would make the cheapest abuse the free one. Pinned by the malformed/unauth flood test in `test/worker.test.ts`: 64 malformed/unauthenticated requests across 16 shapes consume **zero** units. Against the unfixed worker the same 64 spent 184 pairing + 96 control units. |
 | G-4 | **Unbounded `peerGenerationHighWater` growth.** One entry per observed peer generation, never evicted, for the socket's lifetime. | **CLOSED** | `dist/web/online/match-signal-client.js` bounds the append-only map at `MAX_TRACKED_PEER_GENERATIONS = 64` and fails the socket closed with `peer_generation_overflow` on overflow. Eviction was rejected deliberately: dropping a high-water mark reopens the generation rollback the mark exists to refuse. A legal room contributes at most 3. Pinned by an identity-flood test in `tests/test_match_signal_client_js.mjs`, verified to fail when the cap is disabled. |
 | G-5 | **`hibernation-contract.test.ts` was a source-text grep suite.** Assertions like `expect(matchRoom.match(/\\bsocket\\.close\\(/g)).toHaveLength(1)` cannot fail for the reason they claim and break on legal refactors. | **CLOSED** | Rewritten as five behavioral tests that drive the real objects through `evictDurableObject(…, {webSockets: "hibernate"})` and observe the actual socket lifecycle: sockets survive eviction, restored attachments still drive routing, close custody publishes absence for exactly the closing generation, a dead peer neither fails a command nor blocks a survivor, and native/HTTP authority stays serialized. Two claims remain grep-shaped because workerd exposes no way to observe them — absence of timers/outbound sockets, and close-call provenance — and both were shrunk so they cannot pass vacuously: the first pairs each matcher with a positive control, the second resolves the helper by name and asserts every close falls inside its span. |
+
+### Netplay landing review (2026-09-02)
+
+The netplay branch closed the mid-race membership, entry-timing and wire gaps.
+Three of its consequences are owner decisions or release copy rather than code,
+so they are ledgered here on the same terms as the carrier findings above: each
+must be answered before the written `GO`, and each row says what happens if the
+answer is wrong.
+
+| # | Item | State | Decision needed / cost if wrong |
+|---|---|---|---|
+| N8-D | **Membership now decides a mid-race drop, and it decides it fast.** A player whose signaling socket drops mid-race but whose direct peer link is healthy is finalised and dropped by the survivor within roughly one tick. The previous regime waited for the transport's own ladders — the 20 s control-ping bound, or ICE teardown plus the 10 s vanish dwell. `MDKR_ONLINE_LOBBY_DROP=0` restores it. | **DECISION REQUIRED** | The room, not the peer-to-peer path, is what membership is measured against. That is the right call for a player staring at an opponent who is already gone, and the wrong one during a room-service wobble: a survivor would see a false "opponent left" while the peer link was fine the whole time. Needs an explicit `GO` on the trade, not an implicit one. `check_online_lobby_drop.py` measures both settings against each other. |
+| N5-D | **A race started within about 7 s of all channels opening runs on the manifest floor delay with no route chip.** Route quality measures for 6 s and drains for 1 s (`MDKR_MATCH_ROUTE_MEASURE_MS` / `_DRAIN_MS`), and the measurement only begins once every roster peer's channels are ready. Start before it settles and entry timing falls back to the manifest floor, with nothing shown about the route. | **DECISION REQUIRED** | Two options, and the choice is a product one. Hold Start until the measurement settles — honest, and it puts a wait in front of two people who are ready to race. Or measure from first channel-open rather than last — the window closes sooner and usually before anyone reaches Start, at the cost of scoring a route that the last peer had not joined yet. |
+| N6-D | **The wire broke; `1.6.0` online clients cannot interoperate.** Envelope v3 (per-lane keys, third channel), the `MPF2` preflight report and control protocol 2 all changed. Nothing negotiates and nothing downgrades. | **RELEASE COPY** | Already fails closed: the compatibility identity refuses a mixed build at room join, so a player meets "different build" rather than a race that mis-seals its first envelope. What is missing is one sentence of release copy when online ships — both players need the same version — so the refusal reads as expected rather than as a bug. |
 
 ## UI/UX acceptance ladder
 

@@ -79,7 +79,7 @@ static void test_score_ladder(void) {
            "late samples past 15% deduct three");
 
     expect(score_of(0u, 0u, 0u, 0u, 1u) == 7u,
-           "an undrained outbound queue deducts three");
+           "inbound pump-drain drops deduct three");
     expect(score_of(65535u, 65535u, 1000u, 1000u, 1u) == 1u,
            "the ladder floors at one rather than underflowing");
 }
@@ -287,9 +287,9 @@ static void test_measurement_phase(void) {
            "a zero tick period or origin id refuses to begin");
 
     {
-        /* The queue-drain term is the carrier's own outbound drop count, which
-         * only the caller can see; finish carries it into the record and the
-         * ladder deducts for it. */
+        /* The queue-drain term is the carrier's own count of inbound
+         * pump-drain drops, which only the caller can see; finish carries it
+         * into the record and the ladder deducts for it. */
         MdkrMatchRouteMeasureState pressured;
         MdkrMatchRouteMeasurement drained;
         MdkrMatchRouteMeasurement pressed;

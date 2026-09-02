@@ -1229,13 +1229,13 @@ mutating the caller's record; a route that lost everything still floors at one),
 the entry-timing widen from measured p95 RTT against the manifest floor and its
 four-tick cap, the fixed 64-byte probe payload codec, and the caller-clocked
 measurement phase replaying both lanes for 6 s with a 1 s drain, and the
-queue-drain term (the carrier's own outbound bounded-queue drop count, which
-only the caller can see) reaching the record and its rung. Its impairment lane
-injects 8% loss on the unreliable bundle lane through `net_impairment` and
-requires the `rough` band; the positive control for that lane is a real
-mutation of the production ladder — set `route_steady_floor` in
-`platform/net/match_preflight.c` to `1`, so every score bands steady, and
-"8% injected loss scores in the rough band" fails.
+queue-drain term (the carrier's own count of inbound pump-drain drops from its
+bounded queues, which only the caller can see) reaching the record and its
+rung. Its impairment lane injects 8% loss on the unreliable bundle lane
+through `net_impairment` and requires the `rough` band; the positive control
+for that lane is a real mutation of the production ladder — set
+`route_steady_floor` in `platform/net/match_preflight.c` to `1`, so every score
+bands steady, and "8% injected loss scores in the rough band" fails.
 
 `online_live_route` (`mdkr_online_live_adapter_test --route`) runs the whole
 thing over two real loopback DTLS meshes, in three arms. Both endpoints exchange
@@ -2322,8 +2322,7 @@ observable.
 `net_failure_ring` owns the allocation-free in-process forensics ring: 2048
 fixed-width typed records (rollback save/load, desync, recovery, queue
 pressure/overflow, frame commit, input predicted, late input discarded, peer
-loss, SIMHASH divergence, lifecycle boundary, progress watchdog, stall
-begin/ongoing/end with a per-peer RTT/jitter/byte snapshot, session failure).
+loss, lifecycle boundary, progress watchdog, stall begin/ongoing/end with a per-peer RTT/jitter/byte snapshot, session failure).
 The unit test pins wrap retiring the oldest records, the typed field
 round-trips, the redaction filter that refuses any code source outside
 `[A-Za-z0-9_-]` whole (so no URL, host:port pair, ICE candidate line or spaced
