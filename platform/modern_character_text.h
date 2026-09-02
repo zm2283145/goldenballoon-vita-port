@@ -26,6 +26,20 @@ typedef struct MdkrModernCharacterTextProjection {
  * mystery cells. Malformed input is handled safely but reported through
  * valid_utf8. The source must terminate inside source_capacity, and output
  * always terminates when output_capacity is nonzero. */
+/* Copy bounded identity text into a fixed-size buffer.
+ *
+ * A value that fits is copied exactly. A longer one is cut and gains a literal
+ * "..." so the loss is visible. The cut always lands on a UTF-8 codepoint
+ * boundary: a plain snprintf("%s", ...) stops at whatever byte the capacity
+ * falls on and can publish half a multibyte sequence, which no reader can
+ * decode and no font can draw.
+ *
+ * `capacity` includes the terminator. A capacity under five bytes leaves no
+ * room for a cut plus a visible ellipsis, so nothing is published. Returns the
+ * bytes written, excluding the terminator. */
+size_t mdkr_modern_character_copy_bounded_name(char *output, size_t capacity,
+                                               const char *value);
+
 int mdkr_modern_character_text_project(
     const char *source, size_t source_capacity,
     char *output, size_t output_capacity,

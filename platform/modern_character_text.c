@@ -47,6 +47,32 @@ static int continuation(unsigned char byte) {
     return (byte & 0xC0u) == 0x80u;
 }
 
+size_t mdkr_modern_character_copy_bounded_name(char *output, size_t capacity,
+                                               const char *value) {
+    size_t length;
+    if (output == NULL || capacity == 0u) return 0u;
+    output[0] = '\0';
+    if (value == NULL) return 0u;
+    length = strlen(value);
+    if (length < capacity) {
+        memcpy(output, value, length + 1u);
+        return length;
+    }
+    if (capacity < 5u) return 0u;
+    length = capacity - 4u;
+    /* 0b10xxxxxx is a UTF-8 continuation byte. Walk back until the first byte
+     * that will NOT be copied starts a codepoint, so the copied prefix ends on
+     * a whole character. Malformed input walks to zero and publishes the
+     * ellipsis alone rather than a fragment. */
+    while (length > 0u &&
+           ((unsigned char)value[length] & 0xC0u) == 0x80u) {
+        length--;
+    }
+    memcpy(output, value, length);
+    memcpy(output + length, "...", 4u);
+    return length + 3u;
+}
+
 static void emit(char value, char *output, size_t output_capacity,
                  size_t *used, int *truncated) {
     if (*used + 1u < output_capacity) {

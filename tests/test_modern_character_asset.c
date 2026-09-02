@@ -6,6 +6,7 @@
 #include "modern_character_runtime.h"
 #include "modern_character_donor.h"
 #include "modern_character_ktx2.h"
+#include "modern_character_text.h"
 #include "workshop_preview_runtime.h"
 #include "fs_utf8.h"
 #include "fast3d/gfx_pc_dkr.h"
@@ -421,6 +422,53 @@ static void test_defensive_ktx2_level_table_bounds(void) {
             "asset statistics reject a level table truncated by the payload it indexes");
 }
 
+/* A display label copied into a fixed buffer must be cut on a codepoint
+ * boundary. A raw snprintf("%s") would stop mid-sequence and publish a byte
+ * that no UTF-8 reader can decode. */
+static void test_bounded_name_copy_is_utf8_safe(void) {
+    /* U+00E9 (2 bytes) repeated: every odd byte index is a continuation. */
+    static const char two_byte[] =
+        "\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9\xc3\xa9";
+    /* U+1F600 (4 bytes) repeated. */
+    static const char four_byte[] =
+        "\xf0\x9f\x98\x80\xf0\x9f\x98\x80\xf0\x9f\x98\x80";
+    char output[12];
+    size_t written;
+
+    written = mdkr_modern_character_copy_bounded_name(output, sizeof(output),
+                                                      "Dixie");
+    require(written == 5u && strcmp(output, "Dixie") == 0,
+            "a name that fits is copied exactly");
+
+    /* 10 bytes into an 8-byte buffer: the cut lands at byte 4, a lead byte. */
+    written = mdkr_modern_character_copy_bounded_name(output, 8u, two_byte);
+    require(written == 7u && memcmp(output, two_byte, 4u) == 0 &&
+                strcmp(output + 4u, "...") == 0,
+            "a two-byte sequence is never split by the cut");
+
+    /* 12 bytes into a 12-byte buffer: byte 8 is a lead byte, so the cut is
+     * already aligned and two whole emoji survive. */
+    written = mdkr_modern_character_copy_bounded_name(output, 12u, four_byte);
+    require(written == 11u && memcmp(output, four_byte, 8u) == 0 &&
+                strcmp(output + 8u, "...") == 0,
+            "a four-byte sequence is never split by the cut");
+
+    /* 12 bytes into an 11-byte buffer: the naive cut at byte 7 is a
+     * continuation byte and must walk back to 4. */
+    written = mdkr_modern_character_copy_bounded_name(output, 11u, four_byte);
+    require(written == 7u && memcmp(output, four_byte, 4u) == 0 &&
+                strcmp(output + 4u, "...") == 0,
+            "the cut walks back over continuation bytes rather than splitting");
+
+    require(mdkr_modern_character_copy_bounded_name(output, sizeof(output),
+                                                    NULL) == 0u &&
+                output[0] == '\0',
+            "a missing name publishes an empty label");
+    require(mdkr_modern_character_copy_bounded_name(output, 4u, two_byte) == 0u &&
+                output[0] == '\0',
+            "a buffer with no room for a visible cut publishes nothing");
+}
+
 int main(int argc, char **argv) {
     MdkrModernCharacterAsset asset;
     MdkrModernCharacterAsset refused;
@@ -484,6 +532,7 @@ int main(int argc, char **argv) {
     test_camera_object_position();
     test_defensive_ktx2_stats_bounds();
     test_defensive_ktx2_level_table_bounds();
+    test_bounded_name_copy_is_utf8_safe();
     char deletion_failure_witness[4096];
     char transaction_cache[TRANSACTION_FIXTURES][4096];
     char transaction_source[4096];

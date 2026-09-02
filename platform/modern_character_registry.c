@@ -1,5 +1,7 @@
 #include "modern_character_registry.h"
 
+#include "modern_character_text.h"
+
 #include "fs_utf8.h"
 #include "modern_character_identity.h"
 
@@ -146,22 +148,8 @@ static int rig_role_slot(const char *name) {
  * the unambiguous compiled node index alongside it. */
 static void copy_node_name(char output[MDKR_MODERN_CHARACTER_NODE_NAME_MAX],
                            const char *value) {
-    const size_t capacity = MDKR_MODERN_CHARACTER_NODE_NAME_MAX;
-    size_t length;
-    if (value == NULL) {
-        output[0] = '\0';
-        return;
-    }
-    length = strlen(value);
-    if (length < capacity) {
-        memcpy(output, value, length + 1u);
-        return;
-    }
-    length = capacity - 4u;
-    while (length > 0u &&
-           (((unsigned char)value[length] & 0xC0u) == 0x80u)) length--;
-    memcpy(output, value, length);
-    memcpy(output + length, "...", 4u);
+    (void)mdkr_modern_character_copy_bounded_name(
+        output, MDKR_MODERN_CHARACTER_NODE_NAME_MAX, value);
 }
 
 static void add_skip(MdkrModernCharacterRegistry *registry,

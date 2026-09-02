@@ -3,6 +3,7 @@
 #include "fs_utf8.h"
 #include "modern_character_asset.h"
 #include "modern_character_registry.h"
+#include "modern_character_text.h"
 #include "sha256.h"
 #include "miniz.h"
 
@@ -772,18 +773,19 @@ static int portable_package_operation(
         if (result != NULL) {
             MdkrModernCharacterStats stats;
             (void)snprintf(result->id, sizeof(result->id), "%s", id);
-            (void)snprintf(result->display_name, sizeof(result->display_name),
-                           "%s", display);
+            (void)mdkr_modern_character_copy_bounded_name(
+                result->display_name, sizeof(result->display_name), display);
             if (!copy_string_exact(result->short_name,
                                    sizeof(result->short_name), display)) {
                 result_message(result,
                                "embedded character short name exceeds its bound");
                 goto done;
             }
-            (void)snprintf(result->narration_name,
-                           sizeof(result->narration_name), "%s", display);
-            (void)snprintf(result->sort_label, sizeof(result->sort_label),
-                           "%s", display);
+            (void)mdkr_modern_character_copy_bounded_name(
+                result->narration_name, sizeof(result->narration_name),
+                display);
+            (void)mdkr_modern_character_copy_bounded_name(
+                result->sort_label, sizeof(result->sort_label), display);
             (void)snprintf(result->package_sha256,
                            sizeof(result->package_sha256), "%s", hash);
             digest_hex(asset.source_sha256, result->source_digest);
@@ -889,12 +891,12 @@ static int portable_package_operation(
                                 "embedded character identity names are unavailable");
                             goto done;
                         }
-                        (void)snprintf(result->narration_name,
-                                       sizeof(result->narration_name), "%s",
-                                       narration_name);
-                        (void)snprintf(result->sort_label,
-                                       sizeof(result->sort_label), "%s",
-                                       sort_label);
+                        (void)mdkr_modern_character_copy_bounded_name(
+                            result->narration_name,
+                            sizeof(result->narration_name), narration_name);
+                        (void)mdkr_modern_character_copy_bounded_name(
+                            result->sort_label, sizeof(result->sort_label),
+                            sort_label);
                     }
                 }
                 if (mdkr_modern_character_asset_rig(&asset, &rig)) {

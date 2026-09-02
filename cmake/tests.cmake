@@ -430,6 +430,7 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform/modern_character_install.c
         ${CMAKE_SOURCE_DIR}/platform/modern_character_registry.c
         ${CMAKE_SOURCE_DIR}/platform/modern_character_pose.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_text.c
         ${CMAKE_SOURCE_DIR}/platform/modern_character_render.c
         ${CMAKE_SOURCE_DIR}/platform/modern_character_identity.c
         ${CMAKE_SOURCE_DIR}/platform/modern_character_runtime.c
