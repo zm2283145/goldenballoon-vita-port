@@ -280,11 +280,11 @@ struct MdkrMatchPeerMesh::State
      * (read-and-cleared) by the launcher through consumeRaceAbort(), so a fresh
      * abort in a later race is observed independently. */
     bool raceAbortReceived = false;
-    /* A3: the finalisation tick a peer proposed for a departed endpoint, held
-     * the same read-and-clear way as the abort latch. `raceDropEndpoint` is
-     * zero while nothing is pending; an endpoint id is never zero. */
-    uint64_t raceDropEndpoint = 0u;
-    uint32_t raceDropTick = 0u;
+    /* A3: finalisation ticks peers proposed, one per departed endpoint, held
+     * the same read-and-clear way as the abort latch. Keyed by endpoint rather
+     * than held one at a time so a second departure's proposal cannot be lost
+     * behind an unconsumed first; first proposal for an endpoint wins. */
+    std::map<uint64_t, uint32_t> raceDrops;
     std::deque<MdkrMatchPeerMeshEvent> events;
     MdkrMatchPeerMeshStats counters;
 
@@ -1315,13 +1315,11 @@ struct MdkrMatchPeerMesh::State
                              MdkrMatchPeerLostReason::ControlChannelViolation);
                     return;
                 }
-                /* First proposal for a seat wins; the channel is ordered, so
-                 * every recipient sees the same first one. */
-                if (raceDropEndpoint == 0u) {
-                    raceDropEndpoint = departed;
-                    raceDropTick =
-                        static_cast<uint32_t>(value["tick"].get<uint64_t>());
-                }
+                /* First proposal for an endpoint wins; the channel is
+                 * ordered, so every recipient sees the same first one. */
+                (void)raceDrops.emplace(
+                    departed,
+                    static_cast<uint32_t>(value["tick"].get<uint64_t>()));
                 return;
             }
             if (type == "race_abort") {
@@ -1982,19 +1980,19 @@ unsigned MdkrMatchPeerMesh::sendRaceDrop(uint64_t departedEndpointId,
 }
 
 bool MdkrMatchPeerMesh::peekRaceDrop() const {
-    return state_ && state_->raceDropEndpoint != 0u;
+    return state_ && !state_->raceDrops.empty();
 }
 
 bool MdkrMatchPeerMesh::consumeRaceDrop(uint64_t *departedEndpointId,
                                         uint32_t *tick) {
-    if (!state_ || state_->raceDropEndpoint == 0u ||
+    if (!state_ || state_->raceDrops.empty() ||
         departedEndpointId == nullptr || tick == nullptr) {
         return false;
     }
-    *departedEndpointId = state_->raceDropEndpoint;
-    *tick = state_->raceDropTick;
-    state_->raceDropEndpoint = 0u;
-    state_->raceDropTick = 0u;
+    const auto oldest = state_->raceDrops.begin();
+    *departedEndpointId = oldest->first;
+    *tick = oldest->second;
+    state_->raceDrops.erase(oldest);
     return true;
 }
 

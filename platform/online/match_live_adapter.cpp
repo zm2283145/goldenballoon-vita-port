@@ -3120,7 +3120,7 @@ private:
     void finaliseDepartedSeats(uint64_t endpointId, uint32_t tick) {
         const auto owned = peerSlotMask_.find(endpointId);
         if (owned == peerSlotMask_.end()) return;
-        for (unsigned slot = 0u; slot < MDKR_SESSION_MAX_PLAYERS; slot++) {
+        for (unsigned slot = 0u; slot < MDKR_NET_INPUT_SLOTS; slot++) {
             if ((owned->second & static_cast<uint8_t>(1u << slot)) == 0u) {
                 continue;
             }
@@ -3142,7 +3142,7 @@ private:
         const auto owned = peerSlotMask_.find(endpointId);
         if (owned == peerSlotMask_.end()) return false;
         bool any = false;
-        for (unsigned slot = 0u; slot < MDKR_SESSION_MAX_PLAYERS; slot++) {
+        for (unsigned slot = 0u; slot < MDKR_NET_INPUT_SLOTS; slot++) {
             uint32_t candidate = 0u;
             if ((owned->second & static_cast<uint8_t>(1u << slot)) == 0u) {
                 continue;
@@ -3162,8 +3162,8 @@ private:
     /* The room reported this endpoint gone. */
     void onRoomDeparture(uint64_t endpointId) {
         if (!roomDepartureFinalises(endpointId)) return;
-        departedEndpoints_.insert(endpointId);
         const std::vector<uint64_t> alive = survivingEndpoints(endpointId);
+        departedEndpoints_.insert(endpointId);
         uint32_t tick = 0u;
         if (mdkr_match_drop_is_proposer(
                 localEndpointId_, alive.data(),

@@ -2614,6 +2614,29 @@ void raceDropCarriesTheAgreedTickToEverySurvivor() {
     assert(departed == 300u && tick == 4242u);
     /* Read-and-clear, like the abort latch beside it. */
     assert(!harness.mesh(200u)->consumeRaceDrop(&departed, &tick));
+    /* First proposal for an endpoint wins: a later one cannot move a tick a
+     * survivor may already have committed to. */
+    assert(harness.mesh(100u)->sendRaceDrop(200u, 90u) == 1u);
+    assert(harness.pumpUntil([&]() {
+        return harness.mesh(300u)->peekRaceDrop();
+    }, 5000u));
+    assert(harness.mesh(100u)->sendRaceDrop(200u, 91u) == 1u);
+    /* Reliable ordered delivery puts 91 behind the 90 that already landed;
+     * pump (with the harness's real waits) well past its arrival, so the
+     * consume below reads a queue that has genuinely seen both. A never-true
+     * predicate is how this harness spells "pump for this long". */
+    (void)harness.pumpUntil([]() { return false; }, 500u);
+    /* And a second departure queues beside it rather than being lost behind
+     * an unconsumed first. */
+    assert(harness.mesh(100u)->sendRaceDrop(300u, 4242u) == 1u);
+    assert(harness.mesh(300u)->consumeRaceDrop(&departed, &tick));
+    assert(departed == 200u && tick == 90u);
+    assert(!harness.mesh(300u)->consumeRaceDrop(&departed, &tick));
+    assert(harness.pumpUntil([&]() {
+        return harness.mesh(200u)->peekRaceDrop();
+    }, 5000u));
+    assert(harness.mesh(200u)->consumeRaceDrop(&departed, &tick));
+    assert(departed == 300u && tick == 4242u);
     assert(!harness.mesh(300u)->peekRaceDrop());
     /* The proposal is not a verdict on the sender either: 200 keeps talking
      * to 100 exactly as before. */

@@ -483,8 +483,9 @@ public:
     /* Whether a peer's race_drop is waiting, without consuming it. */
     bool peekRaceDrop() const;
 
-    /* A3: read-and-clear the pending proposal, like the abort latch above.
-     * False, outputs untouched, when nothing is pending. */
+    /* A3: read-and-clear one pending proposal, like the abort latch above.
+     * Call until it returns false. False, outputs untouched, when nothing is
+     * pending. */
     bool consumeRaceDrop(uint64_t *departedEndpointId, uint32_t *tick);
 
     /* The transcript verification phrase. Available ONLY once every roster
