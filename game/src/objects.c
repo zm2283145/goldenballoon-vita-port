@@ -8628,8 +8628,26 @@ static s32 racer_model_index_for_view(Object *obj, Object_Racer *racer,
         gObjectRenderRequestedFor = obj;
         gObjectRenderRequestedIndex = modelIndex;
         if (racer_model_never_posed(obj, modelIndex)) {
+            /* The candidates pass every donor cap the selection did. The
+             * custom-character cap is one of them: a Workshop appearance draws
+             * its own posed mesh from the committed instance's frame and only
+             * needs the donor index to be a QUALIFIED level, so a candidate
+             * that skipped this cap could hand the replacement the committed
+             * far band (lod 5, the eight-vertex model) and make it fall back to
+             * the retail racer -- measured in the Adventure Party hub on every
+             * seat once the fence and the cap first met. */
+            const s32 modernSeat =
+                racer->playerIndex >= 0 &&
+                racer->playerIndex < MDKR_MODERN_CHARACTER_PLAYERS &&
+                mdkr_modern_character_matches(
+                    racer->playerIndex, racer->characterId,
+                    racer->vehicleIDPrev);
             s32 candidate = wizpig_visual_cap_donor_lod(obj, ladderChoice);
             candidate = terry_visual_cap_donor_lod(obj, candidate);
+            if (modernSeat) {
+                candidate = mdkr_modern_donor_cap_lod(
+                    racer->characterId, racer->vehicleIDPrev, candidate);
+            }
             if (candidate < firstModel) {
                 candidate = firstModel;
             }
@@ -8639,6 +8657,10 @@ static s32 racer_model_index_for_view(Object *obj, Object_Racer *racer,
             if (racer_model_never_posed(obj, candidate)) {
                 candidate = wizpig_visual_cap_donor_lod(obj, obj->modelIndex);
                 candidate = terry_visual_cap_donor_lod(obj, candidate);
+                if (modernSeat) {
+                    candidate = mdkr_modern_donor_cap_lod(
+                        racer->characterId, racer->vehicleIDPrev, candidate);
+                }
                 if (candidate < firstModel) {
                     candidate = firstModel;
                 }
