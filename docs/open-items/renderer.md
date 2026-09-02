@@ -813,6 +813,59 @@ and the browser-visible-table check still passes.
 The transferable scalar-byte-as-string defect shape is recorded in
 [`MGB64_BACKFLOW.md`](../MGB64_BACKFLOW.md).
 
+## FIXED (instrument): AP-19's race renderer census read a terminal-only ownership high
+
+`check_adventure_party_performance.py` failed on the 1.6.0 merge with
+
+```
+race renderer: terminal generations established a new ownership high in
+counter 1: [(6, 310, 0), (6, 310, 0), (6, 310, 0), (6, 310, 0), (6, 313, 0)]
+```
+
+Counter 1 is `texPeak` from the `renderer_generation:` line
+(`platform/fast3d/gfx_pc_dkr.c:2676`): the high-water number of GPU texture
+handles the fast3d texture cache held **at once** inside one generation. It is
+not a retained count. Every race generation in every run — failing and passing
+— reports `texCreated == texDeleted` and returns to `texLive=6`, so nothing was
+retained across cycles and nothing leaked. Only the last of the twenty
+generations peaked 3 handles higher, and it did so deterministically.
+
+The mechanism is the fixture's own clock, not the renderer. The route's sparse
+`A` advances (one every 300 frames,
+`tests/input_scripts/adventure_party_4p_performance.txt`) do double duty: they
+are the kart's throttle **and** the only thing that clears the post-race
+panels, because `postrace_render()`'s `POSTRACE_HOLD` rezeroes its own timer
+every frame while `gPostraceScaleMiddle` is negative (`game/src/menu.c:4375`)
+— there is no timeout to wait out. Each cycle therefore rounds up to the same
+multiple of the advance spacing, which is what made twenty generations
+comparable in the first place. `bounded_input_text()` truncated those advances
+at the last admission, so the **last** cycle alone had none left: measured on
+the failing tip, its results panels were held from frame 21486 to 22485 (999
+frames) against 184 frames in every earlier cycle, over a still-resident race
+level, and the extra results-screen textures that window uploaded (five
+`72x12`/`64x12` RGBA32 panel textures, replacing four the shorter window never
+reached) raised that one generation's `texPeak` from 310 to 313.
+
+Three measurements pin it, all on the same binary:
+
+- Cycle count is irrelevant, terminal-ness is: a 6-cycle development run
+  reproduces the same `310,310,310,310,313` with 313 on cycle 6.
+- Extending the advance horizon by 1200 frames moved the elevation to the
+  newly terminal seventh cycle (`318`) and let cycle 6 plateau at 310.
+- Keeping exactly **one** advance past the horizon — enough to land inside the
+  terminal panels and still short of the return, so no further door is entered
+  — makes all twenty race generations report `texPeak=310`.
+
+What the 1.6.0 merge contributed was phase, not objects. Its offline
+simulation differs from the pre-merge tip from the attract sequence onward (a
+one-ULP scale on an emitter at tick 171, diverging chaotically from there), and
+by the first race the route runs ~300 frames later. That drift moved the
+terminal cycle's panels past the last scripted advance; the pre-merge tip
+cleared them with 152 frames to spare, which is the whole margin the fixture
+had. The fix is `bounded_input_text()` keeping one advance past the horizon, so
+the last cycle is the same shape as the nineteen before it rather than
+depending on that margin.
+
 ## FIXED: banana sparkle sprite overran its own vertex region
 
 The banana-counter sparkle was not a blending or widescreen artifact. Sprite

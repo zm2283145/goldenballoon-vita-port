@@ -469,15 +469,34 @@ def bounded_input_text(cycles: int) -> str:
     legitimately drive straight back through that door. Truncating only the
     post-admission advance edges prevents an unrequested 21st cycle while the
     process remains in the final lobby long enough to flush its counters.
+
+    The last cycle keeps ONE advance past that horizon, and the census depends
+    on it. These sparse advances are also this route's clock: every cycle's
+    post-race panels are held until a player presses A (postrace_render()'s
+    POSTRACE_HOLD rezeroes its own timer while gPostraceScaleMiddle is
+    negative, so there is no timeout to wait out), which rounds each cycle up
+    to the same multiple of the advance spacing and is what makes twenty
+    generations comparable at all. Truncate at the admission itself and the
+    LAST cycle alone has no advance left: its panels then hold over a resident
+    race level for as long as it takes some other path to clear them —
+    measured at ~800 extra frames — and the extra results-screen textures that
+    window uploads raise that one generation's texPeak by 3, a terminal-only
+    "new ownership high" in a census whose whole premise is equal cycles. One
+    more advance costs nothing (it lands inside the terminal panels, before the
+    return, so no further door is entered) and makes the last cycle the same
+    shape as the nineteen before it.
     """
     horizon = 6300 + max(0, cycles - 1) * 3000
     kept: list[str] = []
+    past_horizon = 0
     for line in INPUT_PATH.read_text(encoding="utf-8").splitlines():
         fields = line.strip().split()
         if fields and fields[0].isdigit():
             frame = int(fields[0])
             if frame >= 3600 and frame > horizon:
-                continue
+                past_horizon += 1
+                if past_horizon > 1:
+                    continue
         kept.append(line)
     return "\n".join(kept) + "\n"
 
