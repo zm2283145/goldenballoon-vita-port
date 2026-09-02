@@ -27,6 +27,25 @@ import character_manifest_wizard as wizard  # noqa: E402
 from test_character_asset_probe import make_animated_glb, make_portrait_png  # noqa: E402
 
 
+# The generated fixture portrait (make_portrait_png) is an exact RGBA ramp:
+# red tracks x, green tracks y, and blue is the constant plane 160. That plane
+# is what proves a portrait was actually blitted -- mere colour variety is not,
+# because the animated character scene behind the chip supplies plenty of it.
+FIXTURE_PORTRAIT_BLUE = 160
+FIXTURE_PORTRAIT_BLUE_TOLERANCE = 8
+
+
+def portrait_signature(sample: "list[tuple[int, int, int]]") -> tuple[float, int]:
+    """Return the share of samples on the fixture blue plane and the colour count."""
+    if not sample:
+        return 0.0, 0
+    on_plane = sum(
+        1 for _, _, blue in sample
+        if abs(blue - FIXTURE_PORTRAIT_BLUE) <= FIXTURE_PORTRAIT_BLUE_TOLERANCE
+    )
+    return on_plane / len(sample), len(set(sample))
+
+
 def command_ok(command: list[str], *, cwd: Path) -> tuple[bool, str]:
     process = subprocess.run(
         command, cwd=cwd, text=True, stdout=subprocess.PIPE,
@@ -208,12 +227,15 @@ def main() -> int:
 
             if max(pixel(2, 2)) > 36:
                 failures.append("modal browser did not fully cover donor UI")
-            portrait_colours = {
+            plane, colours = portrait_signature([
                 pixel(x, y) for y in range(48, 82, 4)
                 for x in range(143, 178, 4)
-            }
-            if len(portrait_colours) < 12:
-                failures.append("catalog portrait was absent or visually empty")
+            ])
+            if plane < 0.9 or colours < 12:
+                failures.append(
+                    "catalog portrait tile did not carry the fixture image "
+                    f"(blue plane {plane:.0%}, {colours} colours)"
+                )
 
         width, height, pixels = read_ppm(dumps[1])
         if width % 320 or height % 240 or width * 3 != height * 4:
@@ -227,13 +249,14 @@ def main() -> int:
                 offset = ((y * scale) * width + x * scale) * 3
                 return tuple(pixels[offset:offset + 3])  # type: ignore[return-value]
 
-            selected_portrait_colours = {
+            plane, colours = portrait_signature([
                 selected_pixel(x, y) for y in range(151, 186, 4)
                 for x in range(5, 40, 4)
-            }
-            if len(selected_portrait_colours) < 12:
+            ])
+            if plane < 0.9 or colours < 12:
                 failures.append(
-                    "selected-player 40x40 portrait chip was absent or empty"
+                    "selected-player 40x40 portrait chip did not carry the "
+                    f"fixture image (blue plane {plane:.0%}, {colours} colours)"
                 )
 
     if failures:
