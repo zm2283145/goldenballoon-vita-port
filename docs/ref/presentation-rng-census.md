@@ -43,6 +43,12 @@ redirect changes the race even when the redirected value itself is only ever
 turned into a pitch or a palette index. Verdicts below therefore separate "what
 the value does" from "what the draw does".
 
+**This argument applies only to an UNCONDITIONAL redirect** — one that moves a
+caller onto the presentation stream at every cadence. A cadence-conditional
+redirect, the pattern the tree already uses for the 24 sites below, does not
+shift the stream any oracle records; what it spends is something else. See
+"What would change the answer".
+
 ## Measurements
 
 Two callers were redirected, measured, and reverted. Both are cases where
@@ -68,8 +74,11 @@ PC/return-address witness.
 **Menu image fields** — `game/src/menu.c:16916-16918`. `unk1A`/`unk1B`/`unk1C`
 on `gMenuImages` are written here and read nowhere in the tree. A probe counted
 **10 draws** on the same route, all of them before the race starts. Redirected,
-`check_state_hash.py` still passes — its arms compare the binary against itself,
-so a uniform stream shift is invisible to it — but the golden oracle fails:
+`check_state_hash.py` still passes. That is not a hole in it: its arms compare
+the binary against itself, which is the invariance it exists to state, and a
+uniform stream shift is not that question. RNG-stream shifts are adjudicated by
+`check_authored_rng_compat.py` at original cadence, and by nothing at enhanced
+cadence. Here the oracle fails:
 
 ```
 $ python3 tests/check_authored_rng_compat.py --build build
@@ -94,6 +103,11 @@ once per source line.
 | Already split (cadence-conditional) | 24 |
 | Not compiled | 1 |
 | **Redirectable at this commit** | **0** |
+
+"Redirectable" here means an *unconditional* redirect, on every cadence.
+The 8 latent callers could be moved cadence-conditionally without failing
+any gate in the tree; what that spends, and why it was not done, is under
+"What would change the answer".
 
 ### Simulation — 80 sites
 
@@ -144,10 +158,14 @@ carrying a compatibility switch to put them back.
 ## The gate
 
 `tests/check_presentation_rng_split.py` pins the split that exists.
-`MDKR_RNG_SPLIT_TRACE=1` emits one `[RNGSPLIT]` row per **presented** frame, so
-a frame that presents without an authoritative tick still produces a row. Menu
-idle at enhanced cadence is that state: the attract screen settles, the
-authored tick stops drawing, and texture animation keeps drawing.
+`MDKR_RNG_SPLIT_TRACE=1` emits one `[RNGSPLIT]` row per **presented** frame.
+Be precise about the route: at enhanced cadence with `MDKR_SYNTH_FIELDS=1` the
+simulation ticks on every presented frame and the `[SIMHASH]` hash changes on
+every one of them, so these are not frames that present without advancing the
+simulation. They are authoritative ticks whose settled menu-idle logic draws no
+random numbers, while texture animation keeps drawing from the presentation
+stream — two streams running side by side over the same frames, one of them
+required to stand still.
 
 Both halves are asserted, because either alone passes for the wrong reason — a
 run drawing no randomness at all would satisfy "the seeds did not move". Over
@@ -167,12 +185,35 @@ split is live and the assertion has something to see.
 
 ## What would change the answer
 
-A caller becomes redirectable when its draw stops being shared. Two routes to
-that, neither taken here:
+A caller becomes redirectable when its draw stops being shared, or when the
+redirect is arranged so that no recorded stream ever sees it. Three routes, none
+taken here:
+
+- **Cadence-conditional redirect — the cheapest route, and the one this census
+  deliberately did not take.** Route the 8 latent callers through
+  `cadence_compat_rand_range()` (`platform/math_util_native.c:300-305`) exactly
+  as the existing 24 are: authoritative stream at the shipping cadence,
+  presentation stream only at the opt-in enhanced cadence. No oracle rebaseline
+  is needed and every existing gate stays green, because every gate that records
+  an RNG stream records the original arm — `check_authored_rng_compat.py:189`
+  runs `MDKR_SIMULATION_CADENCE="original"` with `MDKR_SYNTH_FIELDS="2"`,
+  `check_state_hash.py` sets no cadence and takes that same default, and
+  `check_weather_rng_order.py:69` pins `EXPECTED_ORIGINAL_SHA256`, the original
+  arm alone.
+
+  What it spends is the second compatibility target named in the comment at
+  `platform/math_util_native.c:296-299`: "the pre-FPS native gameplay stream at
+  opt-in enhanced cadence". No gate holds that target today, so a redirect would
+  move the enhanced-cadence authoritative stream silently and nothing in the
+  tree would report it. Spending an ungated compatibility target is an owner
+  decision, not a test change — which is why the redirect stops here and the
+  eight callers are listed instead of moved.
 
 - Give a subsystem its own authoritative sub-stream seeded from the match seed,
   so removing its draws cannot shift anyone else's. That is a wire-format and
   snapshot change, and rebaselines `check_authored_rng_compat.py`.
-- Accept a rebaseline of the authored oracle for a caller proved
-  presentation-only. That trades away the ROM-ordering compatibility the oracle
-  exists to hold, and is an owner decision, not a test change.
+
+- Accept a rebaseline of the authored oracle for an unconditional redirect of a
+  caller proved presentation-only. That trades away the ROM-ordering
+  compatibility the oracle exists to hold, and is an owner decision, not a test
+  change.

@@ -6375,17 +6375,20 @@ The port carries two random streams. `rand_range()` steps
 snapshot (`rollback_game_authority.c:121-122`) and covered by the `[SIMHASH]`
 hash. `presentation_rand_range()` steps a platform-private word that is
 deliberately outside that registry. This gate asserts the split's whole point:
-on frames that present without advancing the simulation, the authoritative pair
-does not move one bit while the presentation stream keeps running.
+presentation randomness must not advance the authoritative pair.
 
-`MDKR_RNG_SPLIT_TRACE=1` emits one `[RNGSPLIT]` row per *presented* frame, so a
-frame with no authoritative tick still produces a row. The route is menu idle at
-enhanced cadence — the attract screen settles, the authored tick stops drawing
-random numbers, and texture animation keeps drawing them. At the shipping
-two-field cadence `cadence_compat_rand_range()` routes every HUD roll back onto
-the authoritative stream for byte-exact ROM ordering and the presentation stream
-never advances, so the assertion would hold vacuously; the lane pins the
-cadence where the split is live.
+`MDKR_RNG_SPLIT_TRACE=1` emits one `[RNGSPLIT]` row per *presented* frame. Be
+precise about what the route is: at `MDKR_SIMULATION_CADENCE=enhanced` with
+`MDKR_SYNTH_FIELDS=1` the simulation ticks on **every** presented frame and the
+`[SIMHASH]` hash changes on every one of them, so these are *not* frames that
+present without advancing the simulation. They are authoritative ticks whose
+settled menu-idle logic draws no random numbers, while texture animation keeps
+drawing from the presentation stream — two streams running side by side over the
+same frames, one required to stand still. At the shipping two-field cadence
+`cadence_compat_rand_range()` routes every HUD roll back onto the authoritative
+stream for byte-exact ROM ordering and the presentation stream never advances at
+all, so the assertion would hold vacuously; the lane pins the cadence where the
+split is live.
 
 Both halves are asserted, because either one alone passes for the wrong reason.
 Over the settled window the seeds must be byte-identical, the presentation draw

@@ -9,11 +9,16 @@ snapshot and that the ``[SIMHASH]`` state hash covers.
 platform-private word that is deliberately NOT in that registry, so nothing it
 produces can steer a rollback or a peer.
 
-The claim this gate makes is the split's whole point: on frames that present
-without advancing the simulation, the authoritative pair must not move one bit
-while the presentation stream keeps running. Menu idle at enhanced cadence is
-that state -- the title/attract screen settles, the authored tick stops drawing
-random numbers, and texture animation keeps drawing them.
+The claim this gate makes is the split's whole point: presentation randomness
+must not advance the authoritative pair. Menu idle at enhanced cadence isolates
+that. Note what the route is NOT: at MDKR_SIMULATION_CADENCE=enhanced with
+MDKR_SYNTH_FIELDS=1 the simulation ticks on EVERY presented frame, and the
+[SIMHASH] hash changes on every one of them, so these are not frames that
+present without advancing the simulation. They are authoritative ticks whose
+settled menu-idle logic happens to draw no random numbers, while texture
+animation keeps drawing from the presentation stream. That is the separation the
+gate needs: two streams running side by side over the same frames, one of them
+required to stand still.
 
 Both halves are asserted, because either one alone passes for the wrong reason:
 a run where nothing at all draws randomness would satisfy "the seeds did not
@@ -22,11 +27,12 @@ move", and a run that never reaches a settled frame would satisfy it too.
 Arms:
 
 * **A -- the assertion.** Over the settled window, ``gCurrentRNGSeed`` and
-  ``gPrevRNGSeed`` are byte-identical on every frame, the presentation draw
-  counter strictly increases, and the presentation seed takes many distinct
-  values. Before the window the authoritative seed is required to have moved,
-  which is what proves the trace can observe authoritative movement at all --
-  without it a trace that printed a constant would pass.
+  ``gPrevRNGSeed`` are byte-identical on every frame -- across authoritative
+  ticks, not across skipped ones -- while the presentation draw counter strictly
+  increases and the presentation seed takes many distinct values. Before the
+  window the authoritative seed is required to have moved, which is what proves
+  the trace can observe authoritative movement at all -- without it a trace that
+  printed a constant would pass.
 * **B -- positive control.** ``MDKR_TEST_RENDER_IMPURITY=1`` is the existing
   render-purity seam: it performs one authoritative RNG write inside every
   non-skipped render. That is exactly the defect this gate exists to catch --
@@ -54,7 +60,8 @@ from harness_utils import DEFAULT_BUILD_DIR, find_fatal, resolve_binary
 
 FRAMES = 400
 # The attract screen settles well before this; everything from here to the end
-# of the run is required to be a presentation-only frame.
+# of the run is required to be a settled frame: an authoritative tick that
+# draws no randomness of its own.
 WINDOW_START = 150
 MIN_DRAWS = 100
 MIN_DISTINCT = 16
@@ -96,12 +103,12 @@ def run_arm(binary: Path, rom: Path, root: Path, label: str,
         MDKR_AUDIO="0",
         MDKR_RENDERER="gl",
         MDKR_RNG_SPLIT_TRACE="1",
-        # One authored tick per presented field, so a settled attract screen
-        # yields frames that present without the simulation drawing. At the
-        # original two-field cadence cadence_compat_rand_range() routes the HUD
-        # back onto the authoritative stream for byte-exact ROM ordering, and
-        # the presentation stream never advances -- the assertion would hold
-        # vacuously.
+        # One authored tick per presented field. The simulation still ticks on
+        # every frame; what a settled attract screen gives is a tick whose own
+        # logic draws no randomness. At the original two-field cadence
+        # cadence_compat_rand_range() routes the HUD back onto the authoritative
+        # stream for byte-exact ROM ordering and the presentation stream never
+        # advances at all -- the assertion would hold vacuously.
         MDKR_SIMULATION_CADENCE="enhanced",
         MDKR_SYNTH_FIELDS="1",
         MDKR_SAVE_DIR=str(save_dir),
@@ -169,7 +176,7 @@ def main() -> int:
     if moved:
         return fail(
             f"authoritative RNG moved on {len(moved)} of {len(window)} "
-            f"presentation-only frames (first frame {moved[0]}); expected "
+            f"settled frames (first frame {moved[0]}); expected "
             f"sim={pinned_sim} prev={pinned_prev} throughout")
 
     # Arm A, half two: the presentation stream ran during those same frames.
@@ -219,7 +226,7 @@ def main() -> int:
 
     print(
         "check_presentation_rng_split: PASS — authoritative sim/prev pinned at "
-        f"{pinned_sim}/{pinned_prev} across {len(window)} presentation-only "
+        f"{pinned_sim}/{pinned_prev} across {len(window)} settled "
         f"frames while the presentation stream drew {advance} times over "
         f"{distinct} distinct seeds; the render-impurity control breaks the pin "
         "without touching those draws; two runs are byte-identical")
