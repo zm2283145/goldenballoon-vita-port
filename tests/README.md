@@ -2120,6 +2120,35 @@ retrying" (`MDKR_CONNECTIVITY_DEGRADED`) and "Connection lost"
 for a healthy peer -- so the pure module itself carries no player-copy
 lookup of its own to drift out of sync with it.
 
+`check_online_lobby_drop.py` (registered) pins the LOBBY-AUTHORITATIVE drop:
+the room knows a member left the moment its socket closes and broadcasts
+presence=false, so the survivor no longer waits out a transport ladder to
+learn it. Same in-process kill signature as the transport-loss lane below
+(`MDKR_APP_TEST_ONLINE_SEVER_PEER_AT_TICK`), opposite regime. Arm 1 (the
+shipped default) asserts the departed endpoint's seats are finalised at an
+agreed tick ahead of the authored head (`[MESH] room departure ... finalised
+at tick=T result=0`), the loss is typed as the room's own `PeerDeparted`
+(parsed from the header, never hard-coded), the attribution is still
+OPPONENT_LEFT, the mid-race latch reaches the card within TWO authored ticks
+of the presence drop, and the clean LEFT return holds with no watchdog and no
+leaks. Arm 2 is the positive control: the identical run with
+`MDKR_ONLINE_LOBBY_DROP=0` must NOT resolve inside those two ticks, must
+finalise no seat, and must fall back to `PingTimeout` inside the named ping
+bound -- so arm 1's number is attributable to the room's verdict rather than
+to a fast machine. The determinism half is adjudicated exactly, and
+separately, by `test_match_transport.c`: a finalised transport and a reference
+transport whose departed peer simply sends neutral input from the same tick
+commit byte-identical canonical frames for 30 ticks, with a run that never
+finalises diverging at the first tick past T as the in-test positive control.
+The canonical frame stream is the simulation's only input, so identical frames
+under an identical seed are an identical run. The mesh half --
+edge-triggered departure, silent retirement, the proposal reaching every
+survivor but the departed one, and a drop naming a non-roster endpoint as a
+control-channel violation -- is pinned by `test_match_peer_transport.cpp`; the
+decision's gates and the lowest-surviving-id proposer rule by
+`test_online_live_adapter_beta.cpp`. **Scope class:** engine flow (loopback
+transport).
+
 `check_online_midrace_transport_loss.py` (registered) pins prompt, truthful
 mid-race peer loss ON THE TRANSPORT ITSELF -- the real-cloud kill signature: a
 SIGKILLed opponent's signal socket dies (the service broadcasts
@@ -2128,6 +2157,10 @@ lane's sever seam (`MDKR_APP_TEST_ONLINE_SEVER_PEER_AT_TICK`) reproduces that
 in-process on the descriptor-less lobby-start tournament session: it freezes
 the in-process peer's pump and drops its loopback signal presence, refusing
 NOTHING -- detection must come from the transport's own liveness ladders. The
+room-authoritative drop is switched OFF here (`MDKR_ONLINE_LOBBY_DROP=0`):
+these ladders are what remains when the room says nothing at all (arm 3's
+lingering presence, a service slow to drop a member, the Worker itself down),
+and leaving the fast path on would resolve the same presence drop first. The
 severed race runs at the authored 30 Hz (the seam arms `paceAdvanceHz`),
 because detection is wall-clock (ping interval + stale bound =
 `kMdkrMatchMidRaceLossPingBoundMs`, parsed from the header, never a magic

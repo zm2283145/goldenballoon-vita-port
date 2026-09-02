@@ -1097,6 +1097,7 @@ ONLINE_TAKEOVER_SCRIPTS = {
     "check_online_isolation_selftest.py",
     "check_online_joiner_terminal.py",
     "check_online_left_reentry.py",
+    "check_online_lobby_drop.py",
     "check_online_lobby_single_endpoint.py",
     "check_online_lobby_start.py",
     "check_online_lobby_takeover.py",

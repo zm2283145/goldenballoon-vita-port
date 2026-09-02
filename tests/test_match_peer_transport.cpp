@@ -2558,15 +2558,17 @@ void retiringADepartedPeerIsTypedPeerDeparted() {
     const uint64_t atMs = pair.harness.clock.nowMs;
     assert(pair.harness.mesh(100u)->retireDepartedPeer(200u));
     pair.harness.pumpOnce();
-    const MdkrMatchPeerMeshEvent *event = pair.harness.lastEvent(
-        100u, MdkrMatchPeerMeshEventType::PeerLost, 200u);
-    assert(event != nullptr &&
-           event->lostReason == MdkrMatchPeerLostReason::PeerDeparted);
+    /* The launcher asked for the retirement, so the mesh does not tell it
+     * back -- that round trip would cost the very pump this exists to save. */
+    assert(pair.harness.countEvents(
+               100u, MdkrMatchPeerMeshEventType::PeerLost, 200u) == 0u);
     /* No ladder ran: the verdict came from the room, not from waiting. */
     assert(pair.harness.clock.nowMs == atMs);
-    /* Idempotent, and refused for an endpoint this room never had. */
+    /* The peer really is retired: idempotent, and nothing reaches it. */
     assert(!pair.harness.mesh(100u)->retireDepartedPeer(200u));
     assert(!pair.harness.mesh(100u)->retireDepartedPeer(999u));
+    assert(pair.harness.mesh(100u)->sendInput(
+               payloadFixture(0x11u).data()) == 0u);
     assert(std::strcmp(mdkr_match_peer_lost_reason_name(
                MdkrMatchPeerLostReason::PeerDeparted), "peer_departed") == 0);
     std::printf("retiringADepartedPeerIsTypedPeerDeparted: ok\n");

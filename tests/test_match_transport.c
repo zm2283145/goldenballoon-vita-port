@@ -263,28 +263,78 @@ int main(void) {
 
     /* ---- Lobby-authoritative drop: the agreed finalisation tick ----------
      *
-     * The tick a departed seat stops consuming peer input at. The floor is the
-     * confirmed frontier + 1 (nothing past it is common knowledge), the
-     * authored head raises it (an authored tick's inputs are already spent, and
-     * schedule_ai_takeover refuses it), and the agreed input-delay lead raises
-     * it again so a survivor whose head runs that far ahead can still adopt. */
+     * Three floors, exercised against a real history: the confirmed frontier,
+     * the authored head, and -- the one a live race actually trips -- the
+     * newest tick the departing slot has already sent input for. */
     {
-        /* No confirmed frontier yet: the head and the lead decide. */
-        assert(mdkr_match_drop_finalisation_tick(0u, false, 100u, 0u) == 101u);
-        assert(mdkr_match_drop_finalisation_tick(0u, false, 100u, 3u) == 104u);
-        /* The ordinary shape -- confirmation trails the head, so the head
-         * wins and the floor is already satisfied. */
-        assert(mdkr_match_drop_finalisation_tick(95u, true, 100u, 2u) == 103u);
-        /* A frontier at or past the head keeps the floor: finalising at 99
-         * would rewrite a frame committed with the departed peer's real input. */
-        assert(mdkr_match_drop_finalisation_tick(100u, true, 100u, 0u) == 101u);
-        assert(mdkr_match_drop_finalisation_tick(120u, true, 100u, 2u) == 123u);
-        /* Half-range ordering, not magnitude: the tick space wraps, and a
-         * numerically huge frontier just below the head is still behind it. */
+        MdkrSessionLaunchV2 tick_launch = launch();
+        MdkrSessionBridge tick_bridge;
+        MdkrMatchTransport tick_transport;
+        MdkrPadSample tick_local[2];
+        MdkrPadSample ahead = sample(0x0040u, 12);
+        uint32_t agreed = 0u;
+
+        tick_local[0] = sample(0x0100u, 1);
+        tick_local[1] = sample(0x0200u, -1);
+        mdkr_session_bridge_init(&tick_bridge);
+        assert(mdkr_session_bridge_apply_launch(&tick_bridge, &tick_launch));
+        assert(mdkr_session_bridge_set_engine_phase(
+            &tick_bridge, MDKR_ENGINE_BOOTING));
+        assert(mdkr_session_bridge_set_engine_phase(
+            &tick_bridge, MDKR_ENGINE_READY));
+        assert(mdkr_match_transport_init(&tick_transport, &tick_bridge, 500u));
+
+        /* Nothing authored and nothing received: the head decides, and the
+         * lead rides on top. */
         assert(mdkr_match_drop_finalisation_tick(
-                   0xfffffffeu, true, 0xffffffffu, 2u) == 2u);
+            &tick_transport, 1u, 0u, &agreed) && agreed == 501u);
         assert(mdkr_match_drop_finalisation_tick(
-                   0xffffffffu, true, 0xfffffffdu, 1u) == 1u);
+            &tick_transport, 1u, 3u, &agreed) && agreed == 504u);
+
+        for (uint32_t authored = 500u; authored <= 520u; authored++) {
+            assert(mdkr_match_transport_receive(
+                &tick_transport, 7u, 0x2u, 1u, authored, &ahead) ==
+                MDKR_MATCH_INGRESS_ACCEPTED);
+            assert(mdkr_match_transport_receive(
+                &tick_transport, 7u, 0x8u, 3u, authored, &ahead) ==
+                MDKR_MATCH_INGRESS_ACCEPTED);
+            assert(mdkr_match_transport_drain_tick(
+                &tick_transport, 7u, authored, tick_local, 2u));
+        }
+        /* Everything is confirmed through the head, so head+1 stands. */
+        assert(mdkr_match_drop_finalisation_tick(
+            &tick_transport, 1u, 2u, &agreed) && agreed == 523u);
+
+        /* THE LIVE SHAPE, and the bug the kill-drop lane caught: the departing
+         * peer sends ahead of the authored head by its own input delay. A tick
+         * it really did play must not be neutralised -- schedule_ai_takeover
+         * refuses that as a conflict rather than discarding the input. */
+        for (uint32_t future = 521u; future <= 525u; future++) {
+            assert(mdkr_match_transport_receive(
+                &tick_transport, 7u, 0x2u, 1u, future, &ahead) ==
+                MDKR_MATCH_INGRESS_ACCEPTED);
+        }
+        assert(mdkr_match_drop_finalisation_tick(
+            &tick_transport, 1u, 0u, &agreed) && agreed == 526u);
+        assert(mdkr_match_transport_schedule_ai_takeover(
+            &tick_transport, 7u, 1u, agreed) == MDKR_MATCH_TAKEOVER_ACCEPTED);
+        /* Positive control for that floor: one tick earlier is exactly the
+         * conflict the lane saw. */
+        {
+            MdkrMatchTransport clash = tick_transport;
+            clash.ai_takeover_scheduled_mask = 0u;
+            assert(mdkr_match_transport_schedule_ai_takeover(
+                &clash, 7u, 1u, agreed - 1u) == MDKR_MATCH_TAKEOVER_CONFLICT);
+        }
+        /* A slot the departing peer never sent for is bounded by the head
+         * alone, and an unusable request is refused rather than guessed. */
+        assert(mdkr_match_drop_finalisation_tick(
+            &tick_transport, 0u, 0u, &agreed) && agreed == 521u);
+        assert(!mdkr_match_drop_finalisation_tick(
+            &tick_transport, MDKR_NET_INPUT_SLOTS, 0u, &agreed));
+        assert(!mdkr_match_drop_finalisation_tick(NULL, 1u, 0u, &agreed));
+        assert(!mdkr_match_drop_finalisation_tick(
+            &tick_transport, 1u, 0u, NULL));
     }
 
     /* Exactly one survivor proposes, so two survivors cannot commit different
@@ -384,10 +434,9 @@ int main(void) {
                 /* The room reports the departure three ticks early; the agreed
                  * tick lands on the authored head plus the match's
                  * input-delay lead. */
+                uint32_t agreed = 0u;
                 assert(mdkr_match_drop_finalisation_tick(
-                    dropped.history.confirmed_through,
-                    dropped.history.have_confirmed,
-                    dropped.history.current_tick, 2u) == finalise);
+                    &dropped, 1u, 2u, &agreed) && agreed == finalise);
                 assert(mdkr_match_transport_schedule_ai_takeover(
                     &dropped, 7u, 1u, finalise) ==
                     MDKR_MATCH_TAKEOVER_ACCEPTED);

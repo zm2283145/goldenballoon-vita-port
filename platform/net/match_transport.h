@@ -165,18 +165,28 @@ bool mdkr_match_transport_recovery(
  * so, without which two endpoints could finalise the same seat differently and
  * author different races.
  *
- * The tick every endpoint must agree on. `confirmed_through` is the floor:
- * nothing past the confirmed frontier is common knowledge, so finalising
- * earlier would replace a frame already committed with the departed peer's
- * real input. `current_tick` raises it, because an authored tick's inputs are
- * already spent (schedule_ai_takeover refuses a tick that is not strictly
- * ahead of the head). `lead_ticks` -- the match's agreed input delay -- raises
- * it again, so a proposal is still ahead of a survivor whose own head runs that
- * far in front of this one by the time the proposal lands. Half-range tick
- * ordering throughout, so the result wraps with the tick space. */
-uint32_t mdkr_match_drop_finalisation_tick(
-    uint32_t confirmed_through, bool have_confirmed, uint32_t current_tick,
-    uint8_t lead_ticks);
+ * The tick every endpoint must agree on for `slot`, in *tick. Three floors,
+ * each the answer to a way the finalisation could otherwise land somewhere a
+ * peer has already committed something else:
+ *
+ *  - the confirmed frontier + 1: nothing past it is common knowledge, so
+ *    finalising earlier would replace a frame already committed with the
+ *    departed peer's real input;
+ *  - the authored head + 1: an authored tick's inputs are already spent, and
+ *    schedule_ai_takeover refuses a tick that is not strictly ahead of it;
+ *  - the newest tick this slot has RECEIVED input for, + 1: the departed peer
+ *    sent ahead of the head by its own input delay, and neutralising a tick it
+ *    really did play would be a conflict (which schedule_ai_takeover also
+ *    refuses, rather than silently discarding the input).
+ *
+ * `lead_ticks` -- the match's agreed input delay -- is added on top, so a
+ * proposal is still ahead of a survivor whose own head runs that far in front
+ * of this one by the time the proposal lands. Half-range tick ordering
+ * throughout, so the result wraps with the tick space. False, *tick untouched,
+ * for a transport that is not ready or a slot outside the roster. */
+bool mdkr_match_drop_finalisation_tick(
+    const MdkrMatchTransport *transport, unsigned slot, uint8_t lead_ticks,
+    uint32_t *tick);
 
 /* Whether this endpoint is the one that proposes the tick for a departure, out
  * of the `count` endpoints still in the room. The lowest surviving endpoint id

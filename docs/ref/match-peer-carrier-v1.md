@@ -110,7 +110,7 @@ own derived key:
 | Lane | Label | Delivery | Payload |
 |---:|---|---|---|
 | 0 | `gb-match-state-v1` | unordered, `maxRetransmits 0` | input bundles |
-| 1 | `gb-match-control-v1` | reliable ordered | preflight fragments, ping |
+| 1 | `gb-match-control-v1` | reliable ordered | preflight fragments, plaintext control messages |
 | 2 | `gb-match-authority-v1` | reliable unordered | input repair |
 
 The lane is HKDF info and authenticated header material, so each channel owns
@@ -122,16 +122,55 @@ a lost repair leaves the gap it names unfilled; unordered, because every repair
 message names the tick run it covers and is useful the moment it lands, so
 head-of-line blocking would spend exactly the ticks the repair exists to save.
 
+### Plaintext control messages
+
+Alongside the sealed preflight fragments, the control channel carries a small
+set of plaintext JSON messages. They are the connection talking about itself,
+never about race state, so they ride outside the envelope; the channel is
+already authenticated by the connection the key exchange established. Every
+message is an exact-key object carrying `type`, `protocol` (version `2`) and
+`nonce` (u32); anything else on this channel -- a wrong version, a missing or
+mistyped key, an unknown `type` -- is a control-channel violation and retires
+the peer.
+
+| `type` | Extra fields | Meaning |
+|---|---|---|
+| `ping` | — | Liveness probe; the recipient answers `pong` with the same `nonce`. |
+| `pong` | — | Answer to `ping`; correlated by `nonce`. |
+| `race_abort` | — | The sender abandoned its race-start barrier, or ended mid-race. `nonce` is zero and uncorrelated. |
+| `race_drop` | `endpoint` (u64), `tick` (u32) | The sender proposes that `endpoint`, which the room reported as having left, is finalised at authored tick `tick`. `nonce` is zero and uncorrelated. |
+
+`race_drop` is what keeps a departure deterministic when more than two
+endpoints are racing. The room owns membership and every survivor hears the
+same departure, but each is at a different authored head, so each would pick a
+different finalisation tick and author a different race. Exactly one survivor
+proposes -- the lowest surviving endpoint id, a rule every survivor evaluates
+identically -- and the rest adopt the tick it sends verbatim. The channel is
+reliable and ordered, so the first proposal for a seat is the first every
+recipient sees. `endpoint` must name a member of the room's fixed roster other
+than the recipient; anything else is a control-channel violation.
+
+A recipient that has already finalised that seat keeps its own tick: the
+finalisation schedule refuses a second, different tick for one seat, so the
+first agreement stands for the rest of the race. With two endpoints there is a
+single survivor, it is trivially the proposer, and no round trip happens at
+all -- the room has already confirmed the leave, and there is nobody left to
+agree with.
+
 ### Versioning and downgrade
 
-The transcript domain carries the version (`…-transcript-v2`) and the envelope
-header carries protocol version byte `3`. The versions cannot interoperate and
+The transcript domain carries the version (`…-transcript-v2`), the envelope
+header carries protocol version byte `3`, and the plaintext control messages
+above carry `protocol` `2` (version `1` had no `race_drop`). The versions cannot interoperate and
 cannot negotiate: a v1 transcript yields a different digest and therefore a
 different key, and a v1 or v2 envelope is rejected by the header parser
 **before any decryption is attempted**, surfacing as `INVALID` rather than an
 authentication failure. There is no version negotiation step to downgrade. v2
 shared one key between the state and control channels; a v2 peer therefore
-derives a different key on every lane and cannot be spoken to.
+derives a different key on every lane and cannot be spoken to. The plaintext
+message set does not negotiate either: a `protocol` `1` peer's `ping` is
+refused rather than half-understood, so a build that predates `race_drop`
+cannot silently ignore a finalisation it is required to commit to.
 
 ## Envelope
 

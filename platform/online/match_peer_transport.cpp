@@ -395,7 +395,12 @@ struct MdkrMatchPeerMesh::State
         peer.haveRtt = true;
     }
 
-    void peerLost(PeerRuntime &peer, MdkrMatchPeerLostReason reason) {
+    /* `announce` false retires the peer silently: the ring record, the typed
+     * log line and the teardown all still happen, but no PeerLost event is
+     * queued. Used when the LAUNCHER asked for the retirement and already
+     * knows -- telling it back would only cost a pump. */
+    void peerLost(PeerRuntime &peer, MdkrMatchPeerLostReason reason,
+                  bool announce = true) {
         if (peer.lost) return;
         MDKR_MESH_LOG(
             "[MESH] peer LOST ep=%llu reason=%d channelsReady=%u offerer=%u\n",
@@ -407,6 +412,7 @@ struct MdkrMatchPeerMesh::State
             mdkr_match_peer_lost_reason_name(reason));
         peer.lost = true;
         silentTeardown(peer);
+        if (!announce) return;
         MdkrMatchPeerMeshEvent event;
         event.type = MdkrMatchPeerMeshEventType::PeerLost;
         event.endpointId = peer.endpointId;
@@ -1963,7 +1969,8 @@ bool MdkrMatchPeerMesh::retireDepartedPeer(uint64_t endpointId) {
     if (!state_) return false;
     const auto found = state_->peers.find(endpointId);
     if (found == state_->peers.end() || found->second.lost) return false;
-    state_->peerLost(found->second, MdkrMatchPeerLostReason::PeerDeparted);
+    state_->peerLost(found->second, MdkrMatchPeerLostReason::PeerDeparted,
+                     /*announce=*/false);
     return true;
 }
 

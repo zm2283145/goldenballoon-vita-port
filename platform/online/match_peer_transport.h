@@ -473,10 +473,11 @@ public:
 
     /* A3: retire a peer the ROOM reported as gone, once the launcher has
      * decided the departure ends its race -- the mesh alone cannot, because
-     * only the launcher knows a race is running. Yields the ordinary typed
-     * PeerLost(PeerDeparted): the ring record, the teardown and the launcher's
-     * existing loss handling, with no second path to keep in step. False when
-     * the endpoint is not a roster peer or was already lost. */
+     * only the launcher knows a race is running. Records the ordinary typed
+     * PeerLost(PeerDeparted) in the failure ring and tears the connection
+     * down, but queues no event: the launcher asked for this and already
+     * knows, so telling it back would only cost it a pump. False when the
+     * endpoint is not a roster peer or was already lost. */
     bool retireDepartedPeer(uint64_t endpointId);
 
     /* Whether a peer's race_drop is waiting, without consuming it. */

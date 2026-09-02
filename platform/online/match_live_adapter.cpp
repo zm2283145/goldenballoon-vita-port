@@ -1990,45 +1990,7 @@ private:
                     onRoomDeparture(ev.endpointId);
                     break;
                 case MdkrMatchPeerMeshEventType::PeerLost:
-                    /* Expose the mid-race condition on the race info
-                     * feed too -- during the race nobody renders the lobby
-                     * failure surface, so the launcher's engine loop polls
-                     * peerLost to end the session; the failure below then
-                     * fronts the post-race recovery copy. */
-                    racePeerLost_ = true;
-                    if (phraseMismatchActive_ || phraseRekeyCountdown_ > 0u) {
-                        /* The deliberate mismatch teardown races both sides'
-                         * channel closes; keep the VERIFICATION_MISMATCH
-                         * surface instead of a misleading network failure. */
-                        MDKR_ONLINE_LOG(
-                            "[MESH] peer lost during SAS-mismatch rekey "
-                            "ep=%llu (suppressed)\n",
-                            (unsigned long long)ev.endpointId);
-                        break;
-                    }
-                    failure_ = mapLostReason(ev.lostReason, raceReady_);
-                    /* Mark this as the IN-RACE loss-mapped failure so the
-                     * capture path can clear exactly it (and nothing else, e.g.
-                     * a genuine VERIFICATION_MISMATCH) when a finish order was
-                     * committed before the peer dropped. */
-                    raceLossFailureLatched_ = true;
-                    /* While a race-END card (OPPONENT_LEFT /
-                     * CONNECTION_UNPLAYABLE, or the beta-OFF CONNECTION_CHECK
-                     * fallback) is latched, view() must front it even if a late
-                     * State snapshot re-latches a lobby whose phase disagrees
-                     * with the walked session. Only in-race losses arm this;
-                     * pre-connection losses keep the ordinary lobby input. */
-                    if (raceReady_) raceEndFailureLatched_ = true;
-                    /* The mesh already recorded the typed loss; this is the
-                     * one place that knows the session is over, so the tail
-                     * lands here beside the evidence artifact. */
-                    (void)mdkr_net_failure_ring_dump_beside_evidence();
-                    MDKR_ONLINE_LOG(
-                        "[MESH] peer LOST ep=%llu reason=%d -> failure=%u\n",
-                        (unsigned long long)ev.endpointId,
-                        static_cast<int>(ev.lostReason),
-                        static_cast<unsigned>(failure_));
-                    bump();
+                    onPeerLost(ev.endpointId, ev.lostReason);
                     break;
                 case MdkrMatchPeerMeshEventType::Failure:
                     /* SignalLost with healthy channels is a status, not a
@@ -3069,6 +3031,50 @@ private:
         }
     }
 
+    /* A roster peer is gone for this mesh, with a typed reason: end the race,
+     * front the truthful card and land the forensics tail. Reached from the
+     * mesh's own PeerLost event and, without the round trip through that
+     * queue, from the room-departure path below -- one handler either way, so
+     * the two can never word the same loss differently. */
+    void onPeerLost(uint64_t endpointId, MdkrMatchPeerLostReason reason) {
+        /* Expose the mid-race condition on the race info feed too -- during
+         * the race nobody renders the lobby failure surface, so the launcher's
+         * engine loop polls peerLost to end the session; the failure below
+         * then fronts the post-race recovery copy. */
+        racePeerLost_ = true;
+        if (phraseMismatchActive_ || phraseRekeyCountdown_ > 0u) {
+            /* The deliberate mismatch teardown races both sides' channel
+             * closes; keep the VERIFICATION_MISMATCH surface instead of a
+             * misleading network failure. */
+            MDKR_ONLINE_LOG(
+                "[MESH] peer lost during SAS-mismatch rekey ep=%llu "
+                "(suppressed)\n",
+                (unsigned long long)endpointId);
+            return;
+        }
+        failure_ = mapLostReason(reason, raceReady_);
+        /* Mark this as the IN-RACE loss-mapped failure so the capture path can
+         * clear exactly it (and nothing else, e.g. a genuine
+         * VERIFICATION_MISMATCH) when a finish order was committed before the
+         * peer dropped. */
+        raceLossFailureLatched_ = true;
+        /* While a race-END card (OPPONENT_LEFT / CONNECTION_UNPLAYABLE, or the
+         * beta-OFF CONNECTION_CHECK fallback) is latched, view() must front it
+         * even if a late State snapshot re-latches a lobby whose phase
+         * disagrees with the walked session. Only in-race losses arm this;
+         * pre-connection losses keep the ordinary lobby input. */
+        if (raceReady_) raceEndFailureLatched_ = true;
+        /* The mesh already recorded the typed loss; this is the one place that
+         * knows the session is over, so the tail lands here beside the
+         * evidence artifact. */
+        (void)mdkr_net_failure_ring_dump_beside_evidence();
+        MDKR_ONLINE_LOG(
+            "[MESH] peer LOST ep=%llu reason=%d -> failure=%u\n",
+            (unsigned long long)endpointId, static_cast<int>(reason),
+            static_cast<unsigned>(failure_));
+        bump();
+    }
+
     /* ---- Lobby-authoritative peer drop (N8) ----------------------------- *
      *
      * The room owns membership. Mid-race, a member whose room socket closed is
@@ -3129,26 +3135,55 @@ private:
         }
     }
 
+    /* The tick this endpoint proposes for a departing peer's seats: the latest
+     * any one of them can still be finalised at, so a single agreed tick
+     * satisfies every seat the peer owned. */
+    bool proposedDepartureTick(uint64_t endpointId, uint32_t *tick) const {
+        const auto owned = peerSlotMask_.find(endpointId);
+        if (owned == peerSlotMask_.end()) return false;
+        bool any = false;
+        for (unsigned slot = 0u; slot < MDKR_SESSION_MAX_PLAYERS; slot++) {
+            uint32_t candidate = 0u;
+            if ((owned->second & static_cast<uint8_t>(1u << slot)) == 0u) {
+                continue;
+            }
+            if (!mdkr_match_drop_finalisation_tick(
+                    &raceTransport_, slot, raceInputDelay_, &candidate)) {
+                continue;
+            }
+            if (!any || mdkr_net_tick_after(candidate, *tick)) {
+                *tick = candidate;
+                any = true;
+            }
+        }
+        return any;
+    }
+
     /* The room reported this endpoint gone. */
     void onRoomDeparture(uint64_t endpointId) {
         if (!roomDepartureFinalises(endpointId)) return;
         departedEndpoints_.insert(endpointId);
         const std::vector<uint64_t> alive = survivingEndpoints(endpointId);
+        uint32_t tick = 0u;
         if (mdkr_match_drop_is_proposer(
                 localEndpointId_, alive.data(),
-                static_cast<unsigned>(alive.size()))) {
-            const uint32_t tick = mdkr_match_drop_finalisation_tick(
-                raceTransport_.history.confirmed_through,
-                raceTransport_.history.have_confirmed,
-                raceTransport_.history.current_tick, raceInputDelay_);
+                static_cast<unsigned>(alive.size())) &&
+            proposedDepartureTick(endpointId, &tick)) {
             finaliseDepartedSeats(endpointId, tick);
             if (mesh_) (void)mesh_->sendRaceDrop(endpointId, tick);
         }
-        /* A survivor that does not own the proposal still ends its race now;
-         * only the tick the simulation finalises at has to be agreed. Retiring
-         * the peer routes this through the ordinary typed-loss handling --
-         * ring record, teardown, card -- instead of a second path beside it. */
+        endDepartedRace(endpointId);
+    }
+
+    /* Retire the peer and end this endpoint's race. A survivor that does not
+     * own the proposal ends its race just as promptly; only the tick the
+     * simulation finalises at has to be agreed. The retirement records the
+     * typed loss and tears the connection down without announcing it -- this
+     * endpoint asked for it, so routing the answer back through the mesh's
+     * event queue would only cost a service iteration. */
+    void endDepartedRace(uint64_t endpointId) {
         if (mesh_) (void)mesh_->retireDepartedPeer(endpointId);
+        onPeerLost(endpointId, MdkrMatchPeerLostReason::PeerDeparted);
     }
 
     /* The proposer's tick for a seat, adopted verbatim: the whole point of the
@@ -3161,7 +3196,7 @@ private:
         }
         departedEndpoints_.insert(endpointId);
         finaliseDepartedSeats(endpointId, tick);
-        if (mesh_) (void)mesh_->retireDepartedPeer(endpointId);
+        endDepartedRace(endpointId);
     }
 
     /* Admit a repaired run through the SAME ingress the bundle carrier uses,

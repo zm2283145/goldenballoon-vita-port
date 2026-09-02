@@ -519,15 +519,37 @@ bool mdkr_match_transport_recovery(
     return true;
 }
 
-uint32_t mdkr_match_drop_finalisation_tick(
-    uint32_t confirmed_through, bool have_confirmed, uint32_t current_tick,
-    uint8_t lead_ticks) {
-    uint32_t tick = current_tick + 1u;
-    if (have_confirmed &&
-        mdkr_net_tick_after(confirmed_through + 1u, tick)) {
-        tick = confirmed_through + 1u;
+bool mdkr_match_drop_finalisation_tick(
+    const MdkrMatchTransport *transport, unsigned slot, uint8_t lead_ticks,
+    uint32_t *tick) {
+    uint32_t floor;
+    unsigned index;
+    if (transport == NULL || !transport->ready || tick == NULL ||
+        slot >= MDKR_NET_INPUT_SLOTS) {
+        return false;
     }
-    return tick + lead_ticks;
+    floor = transport->history.current_tick + 1u;
+    if (transport->history.have_confirmed &&
+        mdkr_net_tick_after(transport->history.confirmed_through + 1u,
+                            floor)) {
+        floor = transport->history.confirmed_through + 1u;
+    }
+    for (index = 0u; index < MDKR_NET_INPUT_CAPACITY; index++) {
+        const MdkrNetInputCell *cell = &transport->history.cells[index];
+        if (!cell->occupied ||
+            cell->status[slot] != MDKR_NET_INPUT_RECEIVED) {
+            continue;
+        }
+        /* Half-range ordering excludes the ring's stale cells for free: a
+         * retired tick is behind the head, so it can never raise a floor that
+         * already starts one past it. Nothing can be too far ahead either --
+         * submit refuses a tick outside the window before it lands. */
+        if (mdkr_net_tick_after(cell->tick + 1u, floor)) {
+            floor = cell->tick + 1u;
+        }
+    }
+    *tick = floor + lead_ticks;
+    return true;
 }
 
 bool mdkr_match_drop_is_proposer(
