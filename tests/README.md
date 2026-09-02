@@ -6404,6 +6404,140 @@ Save fixture: the started Adventure One slot-0 save from
 `check_adventure_party_admission.py` (imported), resumed by the host's FILE_SELECT
 confirm. No developer save is read or written.
 
+### Adventure Party AP-18 campaign qualification — `tests/check_adventure_party_campaign.py`
+
+```bash
+python3 tests/check_adventure_party_campaign.py --build build --rom baserom.us.v80.z64
+python3 tests/check_adventure_party_campaign.py --self-test
+```
+
+AP-18 turns the campaign-support claim into an exhaustive, ROM-derived
+manifest. `tests/data/adventure_party_campaign_manifest.json` must account for
+each of the six playable Adventure lobbies and all thirty-four save-eligible
+courses exactly once. The checker independently decodes the level-header world
+and race type, level enum name, save order, default vehicle, and available
+vehicle mask, and compares those facts to every manifest row. The manifest also
+records the actual party-facing vehicle set, including the retail multiplayer
+narrowing (no hovercraft on Spaceport Alpha; no plane on Frosty Village). It
+requires the complete central-hub outbound/return transition set, all entry-door classes,
+and the Adventure One/Two, default, silver, challenge, boss, trophy, Taj and two
+deliberate fail-closed campaign branches to have an explicit party policy and
+witness. Removing one course is an in-process mutation control and must fail.
+
+The full arm then replaces the interim AP test-hook entry where retail geometry
+is headless-drivable. A legitimately boss-beaten save crosses the central hub,
+Dino Domain lobby and the **real Ancient Lake door**; the race's own retail
+predicate reports a silver race and finishes with eight team coins. A first-boss
+checkpoint crosses the real Hot Top door, wins the fourth race, returns to the
+lobby, then crosses the **real Tricky door**. That one route is the multi-hop
+`0 -> 12 -> 7 -> 12 -> 38 -> 12` breadth witness: it must suspend host-solo,
+finish as player index zero, restore an exact three-seat roster, and restore the
+same vehicle recorded on the pre-suspend lobby load at retail boss-return
+entrance 5. Stripping a silver transition and mutating only that restored
+vehicle must each fail their oracle.
+
+The conflicting-transition arm uses two genuinely different Dino race doors,
+E5 (Ancient Lake) and E3 (Fossil Canyon). The checker requires that exact pair
+in the per-seat route contract. With both routes active, exactly one of those
+destinations may latch/load and the other interaction must be rejected by the
+terminal transition latch. The rejection oracle is scoped after the Dino lobby
+load so an unrelated same-E12 hub collision cannot satisfy it; stripping that
+rejection is a positive control and must fail.
+
+No `MDKR_LOAD_TRACK`, `MDKR_SILVER_FORCE`, `MDKR_CHALLENGE_FORCE`, or
+`MDKR_TROPHY_FORCE` is allowed in this gate. Challenge and trophy policy remain
+covered by AP-15/AP-16, but their door geometry is not mislabeled as a real-door
+pass: the manifest records the exact headless limit. With the ROM-authored Dino
+key bit (`1 << keyID == 2`) set, E11 direct steering stalls at a measured minimum
+708.3 units from the exit (70-unit key-door open radius), behind the authored
+wall. The real trophy cabinet NPC is at `(933,-6,-2172)` in Dino Domain; two
+legitimate boss-beaten-save approaches either wedge at the interior wall or let
+another independently mobile party racer hit a real boss/overworld exit first.
+These are navigation-driver limits, not waived gameplay assertions; the
+manifest keeps them visible until a pathfinding-capable headless route can
+replace the two remaining envelope retargets.
+
+### Adventure Party AP-19 resource/performance — `tests/check_adventure_party_performance.py`
+
+```bash
+python3 tests/check_adventure_party_performance.py --build build --rom baserom.us.v80.z64
+python3 tests/check_adventure_party_performance.py --self-test
+python3 tests/check_adventure_party_performance_soaks.py --build build --rom baserom.us.v80.z64
+python3 tests/check_adventure_party_performance_soaks.py --self-test
+```
+
+The release invocation is one serialized four-camera process at the qualification
+window (640x480) and performs **twenty** genuine Dino Domain
+world-lobby → Ancient Lake → world-lobby cycles. The route does not reload or
+re-form the party between cycles: each race is a production one-lap replay field,
+each postrace return is selected from the live menu, and the session generation
+stays one while every race/return pair advances the level generation exactly twice.
+Each side of every cycle must republish exactly four identity controller bindings,
+four viewports, and four HUDs.
+The checked-in script contains sparse course-camera advance edges; each run
+projects those edges only through its requested cycle horizon. After the twentieth
+ordered door step there is no input edge at the return entrance, so the final
+lobby can flush its resource generation without accidentally starting cycle 21.
+
+The private save is the standard started Adventure-One fixture with only Ancient
+Lake's two-bit status pre-cleared at its ROM-derived save ordinal. That makes all
+twenty race loads ordinary no-award replays; otherwise the first natural human
+win schedules a one-player course cinematic before a later entry, contaminating
+the equivalence set. Progression itself remains AP-13's independently checked
+scope.
+
+Budgets are data, not constants hidden in the checker:
+`tests/data/adventure_party_performance_budgets.json` freezes the retail four-player
+display-list capacity at 11,000 Gfx commands and the qualification ceiling at
+10,750, preserving at least 250 commands of headroom. The capacity is the actual
+four-player allocation (`gNumF3dCmdsPerPlayer[2..3]`), not an inferred limit.
+The measured worst case is 10,507 on a legitimate 4P Dino-E0 return to the
+central hub: 493 commands below hard capacity and 243 below the qualification
+ceiling. The gate reads every
+`gfxtask` submitted in the four-camera central hub, world lobby, and race spans;
+the ordinary initial-entry 4P hub measurement is 9,670. It also requires at least 1 MiB main-
+pool free and a 512 KiB largest free block, bounded texture/registry occupancy,
+zero ambiguous/full registry inserts, and coherent fixed audio/controller pools.
+The last five equivalent race and lobby generations must have identical main-pool
+and audio-heap ownership. Texture/shader and pointer-registry counters may perform
+their documented one-generation retirement transfer, but the terminal two may not
+establish a new high or retain a rising three-generation suffix, and every count
+remains under its formal ceiling. A process that
+merely survives, or one whose individually plausible counters grow per generation,
+fails.
+
+The same check compiles `tests/data/adventure_party_performance_churn.c` against
+the production reducer and executes 20,000 complete FORM → race → optional
+host-solo suspension/restore → QUIT → DESTROY lifetimes. Session and level
+generations must land exactly at 20,000 and 70,000, while every dissolved session
+has zero roster, suspended roster, latch, and token state. Parser controls inject
+generation growth, a swapped controller binding, a retained churn failure, and a
+display-list over-budget relationship; each must be rejected. `--self-test` runs
+only those controls. `--development-cycles 1..19` is explicitly non-qualifying
+and is never used by the manifest.
+
+The serialized companion closes AP-19's other two literal repeated-operation
+criteria in real game processes. Its 4P Taj pair runs the same 640x480 scene
+with one and five CAR/HOVERCRAFT rebuilds. Every rebuild must publish exactly
+four live racers, the exact roster/bindings and four-view layout. Both arms then
+cross real E12 and E0 doors so queued renderer/registry retirement settles at a
+normalized central-hub endpoint; main/audio ownership, renderer-live and
+registry-live must match exactly. The measured five-transform endpoint is
+`mainLive=589`, `mainUsed=3831696`, `mainFree=12907120`,
+`mainLargest=12656336`, `rendererLive=0`, `registryLive=30`; its DL high-water
+is 9269/10750 commands.
+
+The boss arm uses AP-17's legal unbeaten checkpoint and five natural defeats,
+so no save mutation or first-win presentation makes the generations unequal.
+Each completed host-solo run must restore all four seats with `match=1`, advance
+the level generation exactly once, and begin one terminal flush suspension that
+publishes the fifth restore's renderer ownership. The last five boss and restore
+generations must plateau under the same formal memory/renderer/registry budgets;
+the measured DL high-water is 4283. A pre-cleared boss is deliberately not used:
+retail rematches self-reload and would never exercise the restore adapter.
+Mutation controls reject an extra Taj racer, retained final memory, boss growth,
+and a swapped restored controller.
+
 ### Adventure Party exact-once progression — `tests/check_adventure_party_progress.py`
 
 ```bash
@@ -6681,6 +6815,25 @@ textbox that blocks `npc_dialogue_loop` (and diverges shell-vs-headless), so the
 deterministic route keeps exactly one mover and the menu is host input. Save
 fixture: the started Adventure One slot-0 save; every run is in a private temp dir.
 
+### Adventure Party with custom characters — `tests/check_adventure_party_custom_characters.py`
+
+```bash
+python3 tests/check_adventure_party_custom_characters.py \
+  --build build --rom baserom.us.v80.z64
+```
+
+Cross-feature release gate for D1, D2, D6 and D7. It builds and installs four
+license-clean generated packages matching the exact retail donors selected by
+the 2P/3P party fixtures. A real 3P admission must publish the ordinary donor-id
+party roster while every seat renders its own package HUD identity. Taj's
+whole-party vehicle rebuild and a host-solo boss return must publish the same
+package-to-seat relationships at their live-racer seams. Finally, a 2P party
+win with customs must write a slot byte-identical to the same party win without
+custom presentation. Package ids remain outside the reducer and EEPROM; the
+`aparty_custom_identity` trace joins presentation to a live donor racer only for
+diagnostics. All arms require real WebGPU replacement draws, and donor mismatch
+plus missing transformed-seat positive controls must fail.
+
 ### Harness isolation — `tests/check_harness_isolation.py`
 
 ```bash
@@ -6795,6 +6948,38 @@ exact candidate must pass, while a dirty tree, a source commit that is not HEAD,
 a missing version, and a wrong version must each be rejected with the reason
 named. A provenance guard that stopped inspecting anything fails here instead of
 accepting every candidate.
+
+### Custom-character binary fuzzer — `tests/fuzz_modern_character_asset.cpp`
+
+```bash
+python3 tests/generate_modern_character_fuzz_corpus.py
+MDKR_BASISU_LOCAL_CACHE=/path/to/pinned-basisu-mirror \
+  cmake -S . -B build-fuzz -DMDKR_ENABLE_FUZZERS=ON \
+    -DCMAKE_C_COMPILER=$(brew --prefix llvm)/bin/clang \
+    -DCMAKE_CXX_COMPILER=$(brew --prefix llvm)/bin/clang++
+cmake --build build-fuzz --target mdkr_modern_character_asset_fuzzer -j6
+./build-fuzz/mdkr_modern_character_asset_fuzzer -max_total_time=300 \
+  tests/fuzz_corpus/modern_character_asset
+```
+
+ASan+UBSan libFuzzer coverage crosses all three custom-character binary trust
+boundaries in one process: every input reaches the exact shipped MDKC memory
+loader, the PNG-only/no-stdio `stb_image` build, and the exact Basis Universal
+KTX2 inspect/transcode bridge. Valid containers also feed authenticated embedded
+PNG/KTX2 payloads and the portrait PNG through their matching decoder. Decode
+allocation is capped at 16 MiB per input; production limits remain stricter and
+unchanged. The deterministic corpus contains valid and truncated generated PNG,
+valid ETC1S and UASTC/Zstandard textures, a valid generated character, and
+checksum-valid malformed/truncated controls. Its generator uses only the
+license-clean test fixtures and must reproduce the tracked bytes exactly. Run
+against a copied corpus when discoveries should remain local; libFuzzer may add
+minimized inputs to a writable corpus directory.
+
+The BasisU target is built with `fuzzer-no-link` instrumentation and the exact
+`stb_image_impl.c` translation unit is compiled into this dedicated target, so
+coverage enters both third-party decoders instead of stopping at their
+first-party bridges. `MDKR_ENABLE_FUZZERS` remains OFF by default and does not
+add fuzz code or sanitizer flags to ordinary release builds.
 
 ### Online wire-parser fuzzers — `tests/fuzz_match_signal_wire.cpp`, `tests/fuzz_online_live_wire.cpp`
 

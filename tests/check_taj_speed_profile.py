@@ -27,6 +27,9 @@ FRAMES = 5200
 WINDOW_START = 3500
 RATIO_MIN = 1.32
 RATIO_MAX = 1.38
+# The gate measures rendered real-ROM paths; 90 seconds was below the observed
+# runtime on otherwise healthy lower-throughput GPU hosts.
+PROCESS_TIMEOUT_SECONDS = 180
 
 BOOST_RE = re.compile(
     r"\[BOOST\] frame=(\d+) timer=(-?\d+) type=(-?\d+) vel=(\S+) "
@@ -69,7 +72,7 @@ def run_arm(binary: str, rom: str, vehicle: int, taj: bool,
               ("  # Taj" if taj else "  # stock"), flush=True)
     process = subprocess.run(
         command, cwd=ROOT, env=env, text=True, capture_output=True,
-        timeout=90, check=False,
+        timeout=PROCESS_TIMEOUT_SECONDS, check=False,
     )
     output = (process.stdout or "") + (process.stderr or "")
     if process.returncode != 0:

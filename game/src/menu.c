@@ -1871,6 +1871,8 @@ enum {
     CUSTOM_NAME_TILE_WIDTH = 64,
     CUSTOM_NAME_TILE_FIT_WIDTH = 54,
     CUSTOM_NAME_DISPLAY_WIDTH = 240,
+    CUSTOM_NAME_SELECTED_WIDTH = 40,
+    CUSTOM_NAME_SELECTED_FIT_WIDTH = 34,
     CUSTOM_NAME_COMMANDS = 12,
 };
 
@@ -1911,6 +1913,11 @@ typedef struct CustomDisplayNameTexture {
     u8 texels[CUSTOM_NAME_DISPLAY_WIDTH * CUSTOM_NAME_HEIGHT * 4];
 } CustomDisplayNameTexture;
 
+typedef struct CustomSelectedNameTexture {
+    TextureHeader header;
+    u8 texels[CUSTOM_NAME_SELECTED_WIDTH * CUSTOM_NAME_HEIGHT * 4];
+} CustomSelectedNameTexture;
+
 static CustomTileNameTexture
     sCustomRosterNameTextures[MDKR_CUSTOM_ROSTER_PAGE_SIZE];
 static Gfx *sCustomRosterNameCommands[MDKR_CUSTOM_ROSTER_PAGE_SIZE];
@@ -1930,6 +1937,16 @@ static u64 sCustomDisplayNameRevision;
 static s32 sCustomDisplayNameCatalogIndex;
 static u8 sCustomDisplayNameMode;
 
+static CustomSelectedNameTexture
+    sCustomSelectedNameTextures[MAXCONTROLLERS];
+static Gfx *sCustomSelectedNameCommands[MAXCONTROLLERS];
+static DrawTexture sCustomSelectedNames[MAXCONTROLLERS][2];
+static GfxCharacterTextMetrics sCustomSelectedNameMetrics[MAXCONTROLLERS];
+static u64 sCustomSelectedNameRevisions[MAXCONTROLLERS];
+static s32 sCustomSelectedNameCatalogIndices[MAXCONTROLLERS];
+/* 0 has not been attempted, 1 is native, 2 deliberately uses retail fallback. */
+static u8 sCustomSelectedNameModes[MAXCONTROLLERS];
+
 static void custom_name_cache_reset(void) {
     memset(sCustomRosterNameModes, 0, sizeof(sCustomRosterNameModes));
     memset(sCustomRosterNameCommands, 0,
@@ -1938,6 +1955,11 @@ static void custom_name_cache_reset(void) {
     sCustomDisplayNameMode = 0u;
     sCustomDisplayNameCommands = NULL;
     memset(sCustomDisplayName, 0, sizeof(sCustomDisplayName));
+    memset(sCustomSelectedNameModes, 0,
+           sizeof(sCustomSelectedNameModes));
+    memset(sCustomSelectedNameCommands, 0,
+           sizeof(sCustomSelectedNameCommands));
+    memset(sCustomSelectedNames, 0, sizeof(sCustomSelectedNames));
 }
 
 /* Taj has no retail results portrait. This small native RGBA card is original
@@ -2529,6 +2551,61 @@ static DrawTexture *menu_custom_display_name(
         dkr_dl_register_host_ptr(sCustomDisplayNameTexture.texels);
     }
     return sCustomDisplayNameMode == 1u ? sCustomDisplayName : NULL;
+}
+
+static DrawTexture *menu_custom_selected_name(
+    const MdkrCustomRosterItem *item, s32 player) {
+    CustomSelectedNameTexture *texture;
+    DrawTexture *name;
+    GfxCharacterTextMetrics *metrics;
+
+    if (item == NULL || player < 0 || player >= MAXCONTROLLERS) return NULL;
+    texture = &sCustomSelectedNameTextures[player];
+    name = sCustomSelectedNames[player];
+    metrics = &sCustomSelectedNameMetrics[player];
+    if (sCustomSelectedNameCatalogIndices[player] != item->catalog_index ||
+        sCustomSelectedNameRevisions[player] != item->revision ||
+        sCustomSelectedNameModes[player] == 0u) {
+        memset(texture, 0, sizeof(*texture));
+        memset(metrics, 0, sizeof(*metrics));
+        name[0].texture = NULL;
+        name[1].texture = NULL;
+        if (gfx_character_text_render_rgba(
+                item->display_name, sizeof(item->display_name),
+                CUSTOM_NAME_SELECTED_FIT_WIDTH, CUSTOM_NAME_HEIGHT,
+                texture->texels, sizeof(texture->texels),
+                CUSTOM_NAME_SELECTED_WIDTH * 4u, metrics)) {
+            if (sCustomSelectedNameCommands[player] == NULL) {
+                sCustomSelectedNameCommands[player] = mempool_alloc_safe(
+                    CUSTOM_NAME_COMMANDS *
+                        sizeof(*sCustomSelectedNameCommands[player]),
+                    COLOUR_TAG_MAGENTA);
+            }
+            name[0].texture = custom_name_finish(
+                &texture->header, texture->texels, sizeof(texture->texels),
+                CUSTOM_NAME_SELECTED_WIDTH,
+                sCustomSelectedNameCommands[player]);
+            name[0].xOffset = 0;
+            name[0].yOffset = 0;
+            sCustomSelectedNameModes[player] = 1u;
+        } else {
+            sCustomSelectedNameModes[player] = 2u;
+        }
+        sCustomSelectedNameCatalogIndices[player] = item->catalog_index;
+        sCustomSelectedNameRevisions[player] = item->revision;
+        MDKR_TRACE(
+            "custom_character_name: context=selected player=%d package=%s mode=%s reason=%s codepoints=%u glyphs=%u bidi_runs=%u rtl=%d width=%u truncated=%d",
+            player, item->id,
+            sCustomSelectedNameModes[player] == 1u
+                ? "native" : "retail-fallback",
+            gfx_character_text_fallback_reason_name(metrics->fallback_reason),
+            metrics->input_codepoints, metrics->rendered_glyphs,
+            metrics->bidi_runs, metrics->right_to_left,
+            metrics->width, metrics->truncated);
+    } else if (sCustomSelectedNameModes[player] == 1u) {
+        dkr_dl_register_host_ptr(texture->texels);
+    }
+    return sCustomSelectedNameModes[player] == 1u ? name : NULL;
 }
 #endif
 
@@ -9214,6 +9291,7 @@ static void charselect_custom_fit_text(const char *source, char *output,
                                        size_t outputSize, s32 maxWidth) {
     size_t used = 0u;
     s32 truncated;
+    s32 ellipsisWidth;
     MdkrModernCharacterTextProjection projection;
     if (output == NULL || outputSize == 0u) return;
     if (source == NULL) source = "";
@@ -9225,14 +9303,25 @@ static void charselect_custom_fit_text(const char *source, char *output,
     }
     used = projection.output_bytes;
     truncated = projection.output_truncated;
-    while (used > 0u &&
-           get_text_width(output, 0, ASSET_FONTS_FUNFONT) > maxWidth) {
-        used--;
-        output[used] = '\0';
+    ellipsisWidth = get_text_width("...", 0, ASSET_FONTS_FUNFONT);
+    if (get_text_width(output, 0, ASSET_FONTS_FUNFONT) > maxWidth) {
         truncated = TRUE;
     }
-    if (truncated && used > 0u) {
-        output[used - 1u] = '.';
+    if (truncated) {
+        /* Projection produces bounded ASCII, so reducing one byte here can
+         * never split a UTF-8 codepoint. Reserve the full visible ellipsis
+         * before publishing the fitted label. */
+        while (used > 0u &&
+               get_text_width(output, 0, ASSET_FONTS_FUNFONT) +
+                       ellipsisWidth > maxWidth) {
+            output[--used] = '\0';
+        }
+        while (used > 0u && output[used - 1u] == ' ') {
+            output[--used] = '\0';
+        }
+        if (used + 3u < outputSize && ellipsisWidth <= maxWidth) {
+            memcpy(output + used, "...", 4u);
+        }
     }
 }
 
@@ -9273,6 +9362,11 @@ static void charselect_custom_draw_panel(void) {
     }
     selected = mdkr_custom_roster_current(&sCustomCharacterRoster, cursor);
 
+    /* Keep the eight-tile browser full-screen at the authored 320x240 size:
+     * a partial-height grid made the portraits and shaped names illegible.
+     * Non-owner controls are still serviced by menu_character_select_loop(),
+     * and their updated selection is revealed as soon as the owner closes or
+     * commits the browser. */
     gSPDisplayList(sMenuCurrDisplayList++, dCreditsFade);
     gDPSetPrimColor(sMenuCurrDisplayList++, 0, 0, 8, 12, 24, 255);
     gDPSetCombineMode(sMenuCurrDisplayList++, G_CC_PRIMITIVE,
@@ -9314,7 +9408,7 @@ static void charselect_custom_draw_panel(void) {
         } else {
             set_text_colour(255, 112, 80, 0, 255);
             draw_text(&sMenuCurrDisplayList, x + 20, y + 18,
-                      "UPDATE", ALIGN_MIDDLE_CENTER);
+                      "NO ART", ALIGN_MIDDLE_CENTER);
         }
         nativeName = menu_custom_roster_name(item, slot);
         if (itemIndex == cursor->item) {
@@ -9424,7 +9518,7 @@ static void charselect_custom_draw_panel(void) {
     rendermode_reset(&sMenuCurrDisplayList);
 }
 
-static s32 charselect_custom_input(void) {
+static u32 charselect_custom_input(void) {
     MdkrCustomRosterCursor *cursor;
     const MdkrCustomRosterItem *item;
     char error[192];
@@ -9434,7 +9528,7 @@ static s32 charselect_custom_input(void) {
     s32 moved = FALSE;
     s32 i;
     if (owner < 0) {
-        if (sCustomCharacterRoster.count <= 0) return FALSE;
+        if (sCustomCharacterRoster.count <= 0) return 0u;
         for (i = 0; i < MAXCONTROLLERS; i++) {
             if (gActivePlayersArray[i] &&
                 gCharselectStatus[i] == CHARSELECT_STATUS_UNCONFIRMED &&
@@ -9448,21 +9542,21 @@ static s32 charselect_custom_input(void) {
                 mdkr_custom_roster_cursor_sync(&sCustomCharacterRoster,
                                                cursor);
                 sound_play(SOUND_SELECT2, NULL);
-                return TRUE;
+                return 1u << i;
             }
         }
-        return FALSE;
+        return 0u;
     }
     if (owner >= MAXCONTROLLERS || !gActivePlayersArray[owner] ||
         gCharselectStatus[owner] != CHARSELECT_STATUS_UNCONFIRMED) {
         sCustomCharacterRosterOwner = -1;
-        return TRUE;
+        return 0u;
     }
     cursor = &sCustomCharacterCursors[owner];
     if (gMenuButtons[owner] & B_BUTTON) {
         sCustomCharacterRosterOwner = -1;
         sound_play(SOUND_MENU_BACK3, NULL);
-        return TRUE;
+        return 1u << owner;
     }
     if (gMenuButtons[owner] & L_TRIG) {
         moved = mdkr_custom_roster_change_page(
@@ -9484,14 +9578,16 @@ static s32 charselect_custom_input(void) {
             &sCustomCharacterRoster, cursor, 1, 0);
     }
     if (moved) sound_play(SOUND_MENU_PICK3, NULL);
-    if (!(gMenuButtons[owner] & (A_BUTTON | START_BUTTON))) return TRUE;
+    if (!(gMenuButtons[owner] & (A_BUTTON | START_BUTTON))) {
+        return 1u << owner;
+    }
     item = mdkr_custom_roster_current(&sCustomCharacterRoster, cursor);
     if (item == NULL ||
         item->availability != MDKR_CUSTOM_ROSTER_AVAILABLE) {
         charselect_custom_set_error(
             "IDENTITY ART REQUIRED - UPDATE IN WORKSHOP");
         sound_play(SOUND_HORN_DRUMSTICK, NULL);
-        return TRUE;
+        return 1u << owner;
     }
     oldSelection = sCustomCharacterSelection[owner];
     sCustomCharacterSelection[owner] = cursor->item;
@@ -9501,7 +9597,7 @@ static s32 charselect_custom_input(void) {
         (void)charselect_custom_sync_runtime(NULL, 0u);
         charselect_custom_set_error(error);
         sound_play(SOUND_HORN_DRUMSTICK, NULL);
-        return TRUE;
+        return 1u << owner;
     }
     donorIndex = charselect_custom_donor_table_index(cursor->item);
     gPlayersCharacterArray[owner] = donorIndex;
@@ -9516,7 +9612,7 @@ static s32 charselect_custom_input(void) {
         "custom_roster_select: controller=%d race_player=%d package=%s donor=%u catalog=%d",
         owner, charselect_custom_race_slot(owner), item->id, item->donor,
         item->catalog_index);
-    return TRUE;
+    return 1u << owner;
 }
 #endif
 
@@ -9794,21 +9890,60 @@ void charselect_render_text(UNUSED s32 updateRate) {
         } else if (sCustomCharacterRoster.count > 0 &&
                    gNumberOfReadyPlayers < gNumberOfActivePlayers) {
             s32 player;
-            char selectedName[24];
+            char playerLabel[4];
+            char selectedName[MDKR_MODERN_CHARACTER_NAME_MAX];
             set_text_font(ASSET_FONTS_FUNFONT);
             for (player = 0; player < MAXCONTROLLERS; player++) {
                 s32 selection = sCustomCharacterSelection[player];
+                s32 cellLeft;
+                s32 labelCentre;
+                s32 portraitX;
+                s32 raceSlot;
+                DrawTexture *nativeName;
+                DrawTexture *portrait;
+                const MdkrCustomRosterItem *item;
                 if (!gActivePlayersArray[player] || selection < 0 ||
                     selection >= sCustomCharacterRoster.count) {
                     continue;
                 }
-                (void)snprintf(
-                    selectedName, sizeof(selectedName), "P%d %.10s",
-                    player + 1,
-                    sCustomCharacterRoster.items[selection].display_name);
+                item = &sCustomCharacterRoster.items[selection];
+                cellLeft = player * (SCREEN_WIDTH / MAXCONTROLLERS);
+                /* Portraits face inward at both screen edges. The 40px card
+                 * and 34px name budget remain inside an exact 80px player cell
+                 * even for P1/P4 and at the original 320px presentation. */
+                if (player < MAXCONTROLLERS / 2) {
+                    portraitX = cellLeft + 2;
+                    labelCentre = cellLeft + 61;
+                } else {
+                    portraitX = cellLeft + 38;
+                    labelCentre = cellLeft + 19;
+                }
+                raceSlot = charselect_custom_race_slot(player);
+                portrait = menu_custom_character_portrait(raceSlot);
+                if (portrait != NULL && portrait[0].texture != NULL) {
+                    texrect_draw(&sMenuCurrDisplayList, portrait,
+                                 portraitX, 148, 255, 255, 255, 255);
+                }
                 set_text_colour(184, 216, 255, 0, 255);
-                draw_text(&sMenuCurrDisplayList, 40 + player * 80, 184,
-                          selectedName, ALIGN_MIDDLE_CENTER);
+                (void)snprintf(playerLabel, sizeof(playerLabel),
+                               "P%d", player + 1);
+                draw_text(&sMenuCurrDisplayList, labelCentre, 158,
+                          playerLabel, ALIGN_MIDDLE_CENTER);
+                nativeName = menu_custom_selected_name(item, player);
+                if (nativeName != NULL) {
+                    texrect_draw(
+                        &sMenuCurrDisplayList, nativeName,
+                        labelCentre -
+                            (s32)sCustomSelectedNameMetrics[player].width / 2,
+                        168, 184, 216, 255, 255);
+                } else {
+                    charselect_custom_fit_text(
+                        item->display_name, selectedName,
+                        sizeof(selectedName),
+                        CUSTOM_NAME_SELECTED_FIT_WIDTH);
+                    draw_text(&sMenuCurrDisplayList, labelCentre, 177,
+                              selectedName, ALIGN_MIDDLE_CENTER);
+                }
             }
             set_text_colour(208, 224, 255, 0, 255);
             draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 196,
@@ -10202,16 +10337,67 @@ static s32 adventure_party_menu_admits(void) {
     return gNumberOfActivePlayers >= 2 && gNumberOfActivePlayers <= 4;
 }
 
-/* File-entry commit for an existing save: build the FORM roster from the joined
- * Character Select seats/characters (dense seats 0..N-1, host seat 0), then apply
- * FORM and the file-entry (RESUME_SAVE) event to the process-wide session,
- * emitting the read-only session/roster traces the admission gate asserts on. */
-static void adventure_party_menu_begin_session(void) {
+/* A menu adapter must never continue into a stock one-player campaign after a
+ * reducer refusal. Tear down any state this file-entry attempt owns and leave
+ * the caller to return to title. FORM itself is transactional, so this also
+ * safely closes a stale session when FORM was the refused step. */
+static void adventure_party_menu_abort_session(const char *phase,
+                                               AdventurePartyResult failure) {
+    AdventurePartySession *session = adventure_party_runtime_session();
+    AdventurePartyEvent quit = {0};
+    AdventurePartyEvent destroy = {0};
+    AdventurePartyResult quitResult;
+    AdventurePartyResult destroyResult;
+
+    if (mdkr_trace_enabled()) {
+        mdkr_trace("aparty_session_abort: phase=%s result=%d state=%s",
+                   phase, (int) failure,
+                   session == NULL ? "NULL" :
+                       adventure_party_state_name(session->state));
+    }
+    if (session == NULL || !adventure_party_is_active(session)) {
+        return;
+    }
+    if (session->state != ADVENTURE_PARTY_STATE_EXITING) {
+        quit.kind = ADVENTURE_PARTY_EVENT_QUIT;
+        quitResult = adventure_party_session_apply(session, &quit);
+        if (quitResult != ADVENTURE_PARTY_OK) {
+            if (mdkr_trace_enabled()) {
+                mdkr_trace("aparty_session_abort: phase=quit result=%d state=%s",
+                           (int) quitResult,
+                           adventure_party_state_name(session->state));
+            }
+            return;
+        }
+    }
+    destroy.kind = ADVENTURE_PARTY_EVENT_DESTROY;
+    destroyResult = adventure_party_session_apply(session, &destroy);
+    if (destroyResult != ADVENTURE_PARTY_OK && mdkr_trace_enabled()) {
+        mdkr_trace("aparty_session_abort: phase=destroy result=%d state=%s",
+                   (int) destroyResult,
+                   adventure_party_state_name(session->state));
+    }
+    adventure_party_trace_emit_session(session);
+}
+
+/* File-entry commit: build the FORM roster from the joined Character Select
+ * seats/characters (dense seats 0..N-1, host seat 0), then apply exactly one
+ * file-entry event. Existing files use RESUME_SAVE; new files use
+ * START_NEW_GAME before entering the stock one-player cinematic. Return the
+ * stable party count, or zero after a fail-closed teardown. */
+static s32 adventure_party_menu_begin_session(AdventurePartyEventKind entryKind) {
     AdventurePartySession *session = adventure_party_runtime_session();
     AdventurePartyEvent form = {0};
-    AdventurePartyEvent resume = {0};
+    AdventurePartyEvent entry = {0};
+    AdventurePartyResult result;
     s32 seat;
 
+    if (entryKind != ADVENTURE_PARTY_EVENT_RESUME_SAVE &&
+        entryKind != ADVENTURE_PARTY_EVENT_START_NEW_GAME) {
+        adventure_party_menu_abort_session("entry-kind",
+                                           ADVENTURE_PARTY_ERR_ARGUMENT);
+        return 0;
+    }
     form.kind = ADVENTURE_PARTY_EVENT_FORM;
     form.enabled = TRUE;
     form.adventure_selected = TRUE;
@@ -10221,17 +10407,60 @@ static void adventure_party_menu_begin_session(void) {
         form.roster.seat[seat] = (uint8_t) seat;
         form.roster.character[seat] = (uint8_t) gCharacterIdSlots[seat];
     }
-    /* FORM is legal only from OFF; a prior party is destroyed at quit-to-title,
-     * so a refusal here means a stale session and nothing is half-formed. */
-    if (adventure_party_session_apply(session, &form) != ADVENTURE_PARTY_OK) {
-        return;
+    result = adventure_party_session_apply(session, &form);
+    if (result != ADVENTURE_PARTY_OK) {
+        adventure_party_menu_abort_session("form", result);
+        return 0;
     }
     adventure_party_trace_emit_session(session);
     adventure_party_trace_emit_roster(&session->roster);
 
-    resume.kind = ADVENTURE_PARTY_EVENT_RESUME_SAVE;
-    adventure_party_session_apply(session, &resume);
+    entry.kind = entryKind;
+    result = adventure_party_session_apply(session, &entry);
+    if (result != ADVENTURE_PARTY_OK) {
+        adventure_party_menu_abort_session(
+            entryKind == ADVENTURE_PARTY_EVENT_START_NEW_GAME
+                ? "start-new-game" : "resume-save",
+            result);
+        return 0;
+    }
     adventure_party_trace_emit_session(session);
+    return adventure_party_participant_count(session);
+}
+
+/* The natural end of the unskippable new-game cinematic is the one seam that
+ * may publish SHARED_SCENE as ACTIVE_LOBBY. Validate the preserved positive
+ * menu result before advancing, so a lost/mismatched party count cannot load a
+ * one-player hub under a live party session. The state transition itself makes
+ * this exact-once: after success the session is no longer SHARED_SCENE. */
+static s32 adventure_party_menu_complete_shared_scene(void) {
+    AdventurePartySession *session = adventure_party_runtime_session();
+    AdventurePartyEvent complete = {0};
+    AdventurePartyResult result;
+    s32 participantCount;
+
+    if (session == NULL ||
+        session->state != ADVENTURE_PARTY_STATE_SHARED_SCENE) {
+        adventure_party_menu_abort_session("scene-state",
+                                           ADVENTURE_PARTY_ERR_ILLEGAL_EVENT);
+        return FALSE;
+    }
+    participantCount = adventure_party_participant_count(session);
+    if (participantCount < ADVENTURE_PARTY_MIN_PARTICIPANTS ||
+        participantCount > ADVENTURE_PARTY_MAX_PARTICIPANTS ||
+        gCinematicEnd != participantCount) {
+        adventure_party_menu_abort_session("scene-end-count",
+                                           ADVENTURE_PARTY_ERR_PARTICIPANT_COUNT);
+        return FALSE;
+    }
+    complete.kind = ADVENTURE_PARTY_EVENT_SCENE_COMPLETE;
+    result = adventure_party_session_apply(session, &complete);
+    if (result != ADVENTURE_PARTY_OK) {
+        adventure_party_menu_abort_session("scene-complete", result);
+        return FALSE;
+    }
+    adventure_party_trace_emit_session(session);
+    return TRUE;
 }
 #endif
 
@@ -10241,6 +10470,13 @@ s32 mdkr_workshop_preview_prepare(s32 players, s32 vehicle) {
     s32 candidate;
     s32 player;
     s32 slot;
+#ifndef MDKR_ADVENTURE_PARTY_OMIT
+    if (adventure_party_runtime_is_active()) {
+        MDKR_TRACE(
+            "aparty_workshop_preview_refused: reason=active_session");
+        return FALSE;
+    }
+#endif
     if (players < 1 || players > MAXCONTROLLERS ||
         vehicle < -1 || vehicle > VEHICLE_PLANE) {
         return FALSE;
@@ -10315,14 +10551,14 @@ s32 menu_character_select_loop(s32 updateRate) {
 
 #ifdef NATIVE_PORT
     char customSyncError[192];
-    s32 customInputHandled;
+    u32 customInputMask;
     charselect_update_taj_visual_state();
 #endif
     charselect_render_text(updateRate);
     charselect_music_channels(updateRate);
     menu_input();
 #ifdef NATIVE_PORT
-    customInputHandled = charselect_custom_input();
+    customInputMask = charselect_custom_input();
 #endif
 
     for (i = 0; i < ARRAY_COUNT(gCharselectStatus); i++) {
@@ -10339,7 +10575,27 @@ s32 menu_character_select_loop(s32 updateRate) {
         for (i = 0; i < ARRAY_COUNT(gActivePlayersArray); i++) { activePlayers[i] = gActivePlayersArray[i]; }
         // clang-format on
 #ifdef NATIVE_PORT
-        if (customInputHandled) return MENU_RESULT_CONTINUE;
+        if (customInputMask != 0u) {
+            /* The roster owns only its opener's controls. Other joined seats
+             * keep moving, confirming, or backing out of their retail picks
+             * while the browser is visible. The owner bit also prevents its
+             * A/B/R edge from being consumed twice by charselect_input(). */
+            for (i = 0; i < MAXCONTROLLERS; i++) {
+                if ((customInputMask & (1u << i)) != 0u) {
+                    activePlayers[i] = FALSE;
+                } else if (activePlayers[i] &&
+                           (gMenuButtons[i] != 0 ||
+                            gMenuStickX[i] != 0 || gMenuStickY[i] != 0)) {
+                    MDKR_TRACE(
+                        "custom_roster_input_passthrough: controller=%d buttons=%u stick=%d,%d",
+                        i, (unsigned)gMenuButtons[i],
+                        gMenuStickX[i], gMenuStickY[i]);
+                }
+            }
+            charselect_new_player();
+            charselect_input(activePlayers);
+            return MENU_RESULT_CONTINUE;
+        }
 #endif
         charselect_new_player();
         if (gNumberOfReadyPlayers == gNumberOfActivePlayers) {
@@ -11113,26 +11369,6 @@ s32 fileselect_input_root(UNUSED s32 updateRate) {
                         break;
                     }
                 }
-#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
-                if (adventure_party_menu_admits() && !gSavefileInfo[gSaveFileIndex].isStarted) {
-                    /* R26 interim: a party formation cannot begin a NEW campaign
-                     * yet (the new-game shared-scene envelope is AP-11). Retail
-                     * confirming an UN-STARTED file starts a new game, which for
-                     * an admitted party would silently collapse the formation to a
-                     * 1P new campaign. Fail closed at this confirm seam -- refuse
-                     * with the SAME feedback as the A2-mismatch refusal above
-                     * (SOUND_HORN_DRUMSTICK, cursor stays via break) and emit one
-                     * diagnostic. A STARTED file confirms exactly as today. Off
-                     * (or OMIT) this is compiled out and the retail confirm is
-                     * byte-identical. */
-                    if (mdkr_trace_enabled()) {
-                        mdkr_trace("aparty_file_refused: reason=newgame slot=%d",
-                                   (int) gSaveFileIndex);
-                    }
-                    sound_play(SOUND_HORN_DRUMSTICK, NULL);
-                    break;
-                }
-#endif
                 sound_play(SOUND_SELECT2, NULL);
                 return 1;
             case 1:
@@ -11399,6 +11635,9 @@ s32 menu_file_select_loop(s32 updateRate) {
     s32 currentMenuDelay;
     u32 buttonsPressed;
     Settings *settings;
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    s32 adventurePartyEndPlayers = 0;
+#endif
 
 #ifdef AVOID_UB
     // i can be undefined in certain cases, and it's used for the save file number.
@@ -11519,14 +11758,26 @@ s32 menu_file_select_loop(s32 updateRate) {
              * from a prior JOINTVENTURE 2P that quit to title, the row being
              * SCOPE_LIVE) can never leak into a party session and reach
              * reset_lead_player_index() or the retail-2P consumers below. A party
-             * session never SETS the flag; this only ever clears it (R15). An
-             * existing save then forms the session here (FORM + RESUME_SAVE); a
-             * new file keeps the stock 1P path — the new-game shared-scene
-             * envelope is AP-11. gNumberOfActivePlayers still collapses to 1 below
-             * exactly as retail; the campaign load protocol is unchanged. */
+             * session never SETS the flag; this only ever clears it (R15).
+             * Existing files form through FORM + RESUME_SAVE. New files form
+             * through FORM + START_NEW_GAME before the stock one-player
+             * cinematic; its positive end result preserves this stable count.
+             * gNumberOfActivePlayers still collapses to one while the cinematic
+             * itself runs, so no additional viewport/input is exposed there. */
             gIsInTwoPlayerAdventure = FALSE;
-            if (!settings->newGame) {
-                adventure_party_menu_begin_session();
+            adventurePartyEndPlayers = adventure_party_menu_begin_session(
+                settings->newGame
+                    ? ADVENTURE_PARTY_EVENT_START_NEW_GAME
+                    : ADVENTURE_PARTY_EVENT_RESUME_SAVE);
+            if (adventurePartyEndPlayers == 0) {
+                /* A reducer refusal must not degrade to retail's one-player load.
+                 * Free this menu exactly as the success path does, then return to
+                 * title with the session already torn down. */
+                gNumberOfActivePlayers = 1;
+                fileselect_free();
+                music_change_on();
+                menu_init(MENU_TITLE);
+                return MENU_RESULT_CONTINUE;
             }
         } else
 #endif
@@ -11546,7 +11797,15 @@ s32 menu_file_select_loop(s32 updateRate) {
             if (gIsInAdventureTwo) {
                 settings->cutsceneFlags |= CUTSCENE_ADVENTURE_TWO;
             }
-            cinematic_start((s8 *) get_misc_asset(ASSET_MISC_CINEMATIC_RACE), 0, gNumberOfActivePlayers, 0, 0, NULL);
+            cinematic_start((s8 *) get_misc_asset(ASSET_MISC_CINEMATIC_RACE), 0,
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+                            adventurePartyEndPlayers > 0
+                                ? adventurePartyEndPlayers
+                                : gNumberOfActivePlayers,
+#else
+                            gNumberOfActivePlayers,
+#endif
+                            0, 0, NULL);
             menu_init(MENU_NEWGAME_CINEMATIC);
             return MENU_RESULT_CONTINUE;
         }
@@ -16897,6 +17156,22 @@ s32 menu_cinematic_loop(UNUSED s32 updateRate) {
             if (gCinematicMusicChangeOff) {
                 music_change_off();
             }
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+            if (adventure_party_runtime_is_active()) {
+                AdventurePartySession *session =
+                    adventure_party_runtime_session();
+                if (session != NULL &&
+                    session->state == ADVENTURE_PARTY_STATE_SHARED_SCENE &&
+                    !adventure_party_menu_complete_shared_scene()) {
+                    /* Never hand mode_menu a positive player count after a
+                     * failed scene transition. Title init is also the universal
+                     * quit/destroy seam if teardown itself reported a refusal. */
+                    cinematic_free();
+                    menu_init(MENU_TITLE);
+                    return MENU_RESULT_CONTINUE;
+                }
+            }
+#endif
             cinematic_free();
             return gCinematicEnd;
         }

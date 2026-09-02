@@ -22,13 +22,17 @@ With the enhancement OFF, three/four players route to TRACK_SELECT exactly as
 stock and no ``aparty_`` line ever appears. One player is unchanged in both arms
 and never forms a party.
 
-Two file-authority facts are also asserted here:
+Three file-entry facts are also asserted here:
 
-* R26 new-game refusal. A party formation cannot begin a NEW campaign yet (the
-  new-game shared-scene envelope is AP-11), so confirming an UN-STARTED file is
-  fail-closed refused (``aparty_file_refused: reason=newgame``, cursor stays, no
-  session, no campaign load) instead of silently collapsing to a 1P new game;
-  the STARTED fixture file then confirms and forms the session normally.
+* New-game shared-scene envelope. A three-player party confirming an UN-STARTED
+  file forms ``FORMING -> SHARED_SCENE`` before the stock one-player cinematic,
+  publishes ``ACTIVE_LOBBY`` exactly once at its natural end, and reaches the
+  first hub as the original three-seat roster/layout/bindings. The cinematic's
+  positive result is therefore the stable party count, never the temporary
+  one-player scene count.
+* One-player new-game control. With the enhancement enabled but only one joined
+  player, the same empty-file route remains stock: no ``aparty_`` trace, a
+  one-player cinematic, then a one-player hub.
 * FIX 1 host-only copy/erase authority. ``fileselect_input_copy`` /
   ``fileselect_input_erase`` skip player-two aggregation in a party exactly as
   ``fileselect_input_root`` does. That guard is token-identical to the ROOT guard
@@ -45,6 +49,10 @@ Positive controls (mutating the route/env, never the sources)
 * A missing session trace: an ON-arm run with its ``aparty_session`` lines
   removed must FAIL the ON-arm assertions — otherwise the gate could not tell a
   formed session from an unformed one.
+* New-game envelope mutations remove ``SHARED_SCENE``, remove or duplicate
+  ``ACTIVE_LOBBY``, or collapse the first hub result/layout to one player. Each
+  must FAIL the new-game assertions, proving the gate requires scene entry,
+  exact-once completion before hub load, and the preserved party count.
 
 Save fixture provenance
 -----------------------
@@ -52,10 +60,9 @@ This check writes its own EEPROM image: a started, checksum-valid Adventure One
 save in slot 0, built with the shared ``harness_utils`` bit-stream encoders
 (``save_layout.h``: 3 x SaveFile(40) | SaveConfig(8) | 2 x CourseRecords(192)).
 It is the same slot shape ``tests/check_adventure_two.py`` resumes on its
-Adventure One arm, minus its progress, so the host's single FILE_SELECT confirm
-RESUMES an existing file rather than starting a new game — the new-game
-shared-scene envelope is AP-11, deliberately out of scope here. No developer save
-is read or written; every run uses a private temporary directory.
+Adventure One arm, minus its progress. Existing-save arms resume slot 0; the
+new-game arms move to empty slot 1 and enter a name. No developer save is read or
+written; every run uses a private temporary directory.
 """
 
 from __future__ import annotations
@@ -85,10 +92,12 @@ MENU_CHARACTER_SELECT = 3
 MENU_FILE_SELECT = 6
 MENU_TRACK_SELECT = 15
 MENU_GAME_SELECT = 19
+MENU_NEWGAME_CINEMATIC = 23
 MENU_CAUTION = 28
 
 ON_FRAMES = 4200
 OFF_FRAMES = 2600
+NEWGAME_FRAMES = 7000
 
 MENU_RE = re.compile(r"menu_init: menuId=(\d+) @frame~(\d+)")
 LEVEL_RE = re.compile(r"level_load: levelId=(-?\d+) numPlayers=(-?\d+).*@frame~(\d+)")
@@ -97,10 +106,9 @@ SESSION_RE = re.compile(
 )
 ROSTER_RE = re.compile(r"aparty_roster: n=(\d+) mask=0x([0-9a-fA-F]+)((?: c\d+=\d+)*)")
 LAYOUT_RE = re.compile(r"aparty_layout: viewports=(\d+) layout=(\d+)")
+BIND_RE = re.compile(r"aparty_binding: seat=(\d+) port=(\d+)")
 # JOINTVENTURE is magic code id 24 (see tests/check_taj_p2_adventure.py).
 JOINTVENTURE_RE = re.compile(r"magic_code_submit: accepted=1 id=24")
-# R26 interim refusal: confirming an UN-STARTED file in a party fails closed.
-REFUSE_RE = re.compile(r"aparty_file_refused: reason=(\w+) slot=(\d+)")
 BAD_RE = re.compile(
     r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
     r"runtime error:|Assertion failed"
@@ -379,59 +387,177 @@ def check_one_player(output: str) -> list[str]:
     return failures
 
 
-def check_newgame_refuse_arm(output: str, players: int) -> list[str]:
-    """R26: a party host confirming an UN-STARTED file is refused, then the
-    started fixture file confirms and forms the session normally.
-
-    The script drives the host to an EMPTY slot and confirms it (refused, no
-    session, no campaign load), then back to the started slot 0 and confirms it.
-    Returns failures.
-    """
+def check_newgame_arm(output: str, players: int) -> list[str]:
+    """A party new game crosses the shared cinematic envelope exactly once."""
     failures: list[str] = []
-    label = f"{players}P newgame-refuse"
+    label = f"{players}P newgame"
 
     if bad := BAD_RE.search(output):
         failures.append(f"{label}: fatal marker {bad.group(0)!r}")
 
-    # The empty-file confirm is refused, and it is OBSERVABLE.
-    refusals = list(REFUSE_RE.finditer(output))
-    if not refusals:
+    route = menu_route(output)
+    cinematic_matches = [
+        m for m in MENU_RE.finditer(output)
+        if int(m.group(1)) == MENU_NEWGAME_CINEMATIC
+    ]
+    cinematic_frames = [int(m.group(2)) for m in cinematic_matches]
+    if len(cinematic_matches) != 1:
         failures.append(
-            f"{label}: no aparty_file_refused diagnostic — an empty-file confirm "
-            f"was not fail-closed refused")
-        refuse_pos = 1 << 30
-    else:
-        refuse_pos = refusals[0].start()
-        if refusals[0].group(1) != "newgame":
-            failures.append(
-                f"{label}: refusal reason was {refusals[0].group(1)!r}, "
-                f"expected 'newgame'")
+            f"{label}: expected one NEWGAME_CINEMATIC menu, saw "
+            f"{cinematic_frames}; route={route}")
+    cinematic_pos = (cinematic_matches[0].start()
+                     if cinematic_matches else 1 << 60)
 
-    # The empty-file confirm forms NO session (exactly one FORMING, from the
-    # later started confirm) and starts NO campaign load before the refusal.
+    matches = list(SESSION_RE.finditer(output))
     sessions = session_lines(output)
-    forming = [s for s in sessions if s.state == "FORMING"]
-    if len(forming) != 1:
+    expected = [
+        SessionLine("FORMING", 1, 0, 0),
+        SessionLine("SHARED_SCENE", 1, 1, 0),
+        SessionLine("ACTIVE_LOBBY", 1, 2, 0),
+    ]
+    if sessions != expected:
         failures.append(
-            f"{label}: expected exactly ONE FORMING session (the empty confirm "
-            f"forms none, the started confirm forms one), saw {len(forming)}: "
-            f"{[s.state for s in sessions]}")
+            f"{label}: session sequence {sessions}, expected exactly {expected} "
+            f"(SCENE_COMPLETE must publish ACTIVE_LOBBY once)")
 
-    # The session only forms AFTER the refusal (i.e. from the started confirm),
-    # never from the refused empty confirm. (Only aparty_session lines are
-    # position-compared; the many pre-menu attract/title level_loads make a raw
-    # level_load position meaningless, so the campaign-load-after-file-select
-    # proof is delegated to check_on_arm's frame-aware assertion below.)
-    session_pos = [m.start() for m in SESSION_RE.finditer(output)]
-    if session_pos and min(session_pos) < refuse_pos:
+    # The intro is still the authored one-player scene. The first hub load must
+    # happen only after SCENE_COMPLETE published ACTIVE_LOBBY, and must receive
+    # N-1 in the engine's zero-based numberOfPlayers argument (proving the
+    # cinematic preserved N as its positive menu result).
+    loads = [m for m in LEVEL_RE.finditer(output)
+             if m.start() > cinematic_pos]
+    intro = [m for m in loads if int(m.group(1)) == 36]
+    hub = [m for m in loads if int(m.group(1)) == 0]
+    if not intro:
+        failures.append(f"{label}: no authored new-game intro level 36 load")
+    elif int(intro[0].group(2)) != 0:
         failures.append(
-            f"{label}: an aparty_session formed BEFORE the refusal — the empty "
-            f"confirm was not fully fail-closed")
+            f"{label}: intro used numPlayers={intro[0].group(2)}, expected 0 "
+            f"(stock one-player cinematic)")
+    if not hub:
+        failures.append(f"{label}: no first hub level 0 load after cinematic")
+    else:
+        if int(hub[-1].group(2)) != players - 1:
+            failures.append(
+                f"{label}: hub received numPlayers={hub[-1].group(2)}, expected "
+                f"{players - 1}; cinematic did not return the party count")
+        shared_match = next(
+            (m for m in matches if m.group(1) == "SHARED_SCENE"), None)
+        active_match = next(
+            (m for m in matches if m.group(1) == "ACTIVE_LOBBY"), None)
+        scene_loads = [m for m in loads if m.start() < hub[-1].start()]
+        if (shared_match is None or not intro or
+                shared_match.start() > intro[0].start()):
+            failures.append(
+                f"{label}: intro load preceded START_NEW_GAME/SHARED_SCENE")
+        if active_match is None or active_match.start() > hub[-1].start():
+            failures.append(
+                f"{label}: first hub load preceded SCENE_COMPLETE/ACTIVE_LOBBY")
+        elif scene_loads and active_match.start() < scene_loads[-1].start():
+            failures.append(
+                f"{label}: SCENE_COMPLETE/ACTIVE_LOBBY published before the "
+                f"authored cinematic's final level completed")
 
-    # After the refusal the party proceeds EXACTLY as the ordinary ON arm: it
-    # forms the session on the started fixture file and loads the campaign (the
-    # campaign level_load is asserted to happen after FILE_SELECT there).
-    failures.extend(check_on_arm(output, players))
+    if "aparty_session_abort:" in output:
+        failures.append(f"{label}: reducer fail-closed abort fired on valid route")
+
+    rosters = roster_lines(output)
+    expected_chars = EXPECTED_CHARACTERS[players]
+    expected_mask = (1 << players) - 1
+    if not rosters or not any(
+        r.n == players and r.mask == expected_mask and
+        r.characters == expected_chars for r in rosters
+    ):
+        failures.append(
+            f"{label}: exact formed/restored roster missing; saw {rosters}")
+
+    layouts = [(int(m.group(1)), int(m.group(2)))
+               for m in LAYOUT_RE.finditer(output)]
+    if (players, players - 1) not in layouts:
+        failures.append(
+            f"{label}: restored hub layout {(players, players - 1)} missing; "
+            f"saw {layouts}")
+    bindings = {(int(m.group(1)), int(m.group(2)))
+                for m in BIND_RE.finditer(output)}
+    expected_bindings = {(seat, seat) for seat in range(players)}
+    if not expected_bindings.issubset(bindings):
+        failures.append(
+            f"{label}: restored seat/port bindings {expected_bindings} missing; "
+            f"saw {bindings}")
+    return failures
+
+
+def check_one_player_newgame(output: str) -> list[str]:
+    """One player remains entirely on the stock new-game path."""
+    failures: list[str] = []
+    label = "1P newgame control"
+    if bad := BAD_RE.search(output):
+        failures.append(f"{label}: fatal marker {bad.group(0)!r}")
+    if "aparty_" in output:
+        line = next(ln for ln in output.splitlines() if "aparty_" in ln)
+        failures.append(f"{label}: party adapter ran outside 2-4 seats: {line}")
+    route = menu_route(output)
+    cinematic_matches = [
+        m for m in MENU_RE.finditer(output)
+        if int(m.group(1)) == MENU_NEWGAME_CINEMATIC
+    ]
+    if len(cinematic_matches) != 1:
+        failures.append(f"{label}: did not take stock new-game cinematic; {route}")
+    cinematic_pos = (cinematic_matches[0].start()
+                     if cinematic_matches else 1 << 60)
+    loads = [m for m in LEVEL_RE.finditer(output)
+             if m.start() > cinematic_pos]
+    intro = [m for m in loads if int(m.group(1)) == 36]
+    hub = [m for m in loads if int(m.group(1)) == 0]
+    if not intro or int(intro[0].group(2)) != 0:
+        failures.append(f"{label}: stock one-player intro load missing: {loads}")
+    if not hub or int(hub[-1].group(2)) != 0:
+        failures.append(f"{label}: stock one-player hub load missing: {loads}")
+    return failures
+
+
+def check_newgame_positive_controls(output: str, players: int) -> list[str]:
+    """Mutate recorded facts only; every broken envelope must be rejected."""
+    failures: list[str] = []
+    shared_stripped = "\n".join(
+        ln for ln in output.splitlines()
+        if "aparty_session: state=SHARED_SCENE" not in ln)
+    if not check_newgame_arm(shared_stripped, players):
+        failures.append(
+            "positive control (missing SHARED_SCENE): the new-game arm passed "
+            "without proving START_NEW_GAME before the cinematic")
+
+    active_stripped = "\n".join(
+        ln for ln in output.splitlines()
+        if "aparty_session: state=ACTIVE_LOBBY" not in ln)
+    if not check_newgame_arm(active_stripped, players):
+        failures.append(
+            "positive control (missing ACTIVE_LOBBY): the new-game arm passed "
+            "without proving SCENE_COMPLETE before hub load")
+
+    active_line = (
+        "aparty_session: state=ACTIVE_LOBBY sgen=1 lgen=2 host=0")
+    active_duplicated = output.replace(
+        active_line, active_line + "\n" + active_line, 1)
+    if active_duplicated == output:
+        failures.append(
+            "positive control (duplicate ACTIVE_LOBBY): source output lacked "
+            "the expected completion trace to mutate")
+    elif not check_newgame_arm(active_duplicated, players):
+        failures.append(
+            "positive control (duplicate ACTIVE_LOBBY): the new-game arm passed "
+            "with SCENE_COMPLETE published twice")
+
+    collapsed = re.sub(
+        rf"(level_load: levelId=0 numPlayers=){players - 1}(\b)",
+        r"\g<1>0\2", output)
+    collapsed = collapsed.replace(
+        f"aparty_layout: viewports={players} layout={players - 1}",
+        "aparty_layout: viewports=1 layout=0")
+    if not check_newgame_arm(collapsed, players):
+        failures.append(
+            "positive control (collapsed hub): the new-game arm passed after "
+            "mutating the hub result/layout to one player")
     return failures
 
 
@@ -497,6 +623,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
+    parser.add_argument(
+        "--newgame-only", action="store_true",
+        help="run only the 3P shared-scene and 1P stock new-game arms")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -508,8 +637,10 @@ def main() -> int:
         3: "tests/input_scripts/adventure_party_3p_admit.txt",
         4: "tests/input_scripts/adventure_party_4p_admit.txt",
     }
-    refuse_script = "tests/input_scripts/adventure_party_3p_newgame_refuse.txt"
-    required = [binary, rom, str(ROOT / refuse_script),
+    newgame_script = "tests/input_scripts/adventure_party_3p_newgame.txt"
+    one_newgame_script = "tests/input_scripts/adventure_party_1p_newgame.txt"
+    required = [binary, rom, str(ROOT / newgame_script),
+                str(ROOT / one_newgame_script),
                 *(str(ROOT / s) for s in scripts.values())]
     missing = [p for p in required if not os.path.exists(p)]
     if missing:
@@ -519,6 +650,27 @@ def main() -> int:
         return 1
 
     failures: list[str] = []
+
+    if args.newgame_only:
+        newgame_out = run_arm(
+            binary, rom, newgame_script, True, NEWGAME_FRAMES, args.verbose)
+        failures.extend(check_newgame_arm(newgame_out, 3))
+        one_newgame_out = run_arm(
+            binary, rom, one_newgame_script, True,
+            NEWGAME_FRAMES, args.verbose)
+        failures.extend(check_one_player_newgame(one_newgame_out))
+        failures.extend(check_newgame_positive_controls(newgame_out, 3))
+        if failures:
+            print("check_adventure_party_admission (newgame-only): FAIL",
+                  file=sys.stderr)
+            for f in failures:
+                print(f"  - {f}", file=sys.stderr)
+            return 1
+        print("check_adventure_party_admission (newgame-only): PASS -- 3P "
+              "FORMING -> SHARED_SCENE -> ACTIVE_LOBBY completed exactly once, "
+              "the 3P hub roster/layout/bindings were restored, the 1P route "
+              "stayed stock, and four mutation controls fired")
+        return 0
 
     # --- ON arm: 2/3/4 players admitted and a session formed. ---
     on_outputs: dict[int, str] = {}
@@ -538,11 +690,18 @@ def main() -> int:
     one = run_arm(binary, rom, scripts[1], True, ON_FRAMES, args.verbose)
     failures.extend(check_one_player(one))
 
-    # --- R26 new-game refusal arm: a 3P party's empty-file confirm is refused
-    #     (no session, no campaign load, refusal observable), then the started
-    #     fixture file confirms and proceeds normally. ---
-    refuse_out = run_arm(binary, rom, refuse_script, True, ON_FRAMES, args.verbose)
-    failures.extend(check_newgame_refuse_arm(refuse_out, 3))
+    # --- New-game SHARED_SCENE envelope: preserve the 3P roster across the
+    #     stock 1P cinematic, complete the scene exactly once, then restore the
+    #     3P hub result/layout/bindings. ---
+    newgame_out = run_arm(
+        binary, rom, newgame_script, True, NEWGAME_FRAMES, args.verbose)
+    failures.extend(check_newgame_arm(newgame_out, 3))
+
+    # --- Negative/off-path control: with only one player, enhancement ON must
+    #     leave the same empty-file new-game path wholly stock. ---
+    one_newgame_out = run_arm(
+        binary, rom, one_newgame_script, True, NEWGAME_FRAMES, args.verbose)
+    failures.extend(check_one_player_newgame(one_newgame_out))
 
     # --- FIX 1 copy/erase host-only file authority: source guard-presence. ---
     failures.extend(check_copy_erase_guard())
@@ -567,16 +726,9 @@ def main() -> int:
             "passed with every aparty_session line removed — the gate does not "
             "actually require a formed session")
 
-    # --- Positive control 3: a missing refusal diagnostic must FAIL the R26
-    #     new-game refusal arm (otherwise the gate cannot tell a fail-closed
-    #     refusal from a silent new-game collapse). ---
-    refuse_stripped = "\n".join(
-        ln for ln in refuse_out.splitlines() if "aparty_file_refused" not in ln)
-    if not check_newgame_refuse_arm(refuse_stripped, 3):
-        failures.append(
-            "positive control (missing refusal diagnostic): the R26 refusal arm "
-            "passed with every aparty_file_refused line removed — the gate does "
-            "not actually require the empty-file confirm to be refused")
+    # --- Positive controls 3-6: missing scene entry, missing or duplicate
+    #     completion, and a collapsed hub result/layout must each fail. ---
+    failures.extend(check_newgame_positive_controls(newgame_out, 3))
 
     if failures:
         print("check_adventure_party_admission: FAIL", file=sys.stderr)
@@ -584,10 +736,11 @@ def main() -> int:
             print(f"  - {f}", file=sys.stderr)
         return 1
     print("check_adventure_party_admission: PASS -- 2/3/4-player parties take the "
-          "ordinary Adventure route and form a session; a party's UN-STARTED file "
-          "confirm is fail-closed refused (R26) then the started file proceeds; "
-          "copy/erase keep host-only file authority (FIX 1 guard present); 1P and "
-          "the off arm are stock; three positive controls fired")
+          "ordinary Adventure route and form a session; a 3P new game crosses "
+          "FORMING -> SHARED_SCENE -> ACTIVE_LOBBY exactly once and restores the "
+          "3P hub roster/layout/bindings after the stock 1P cinematic; copy/erase "
+          "keep host-only authority; 1P/off paths are stock; six positive "
+          "controls fired")
     return 0
 
 

@@ -36,6 +36,13 @@ void mdkr_modern_draw_store_shutdown(void);
 /* Exact retained palette capacity, exposed for diagnostics and unit tests. */
 size_t mdkr_modern_draw_store_allocated_bytes(void);
 
+/*
+ * Process-lifetime count of stale generations that a renderer actually tried
+ * to resolve after bounded storage displaced them. Ordinary slot reuse is not
+ * an overflow; a nonzero value proves a retained replay exceeded capacity.
+ */
+uint64_t mdkr_modern_draw_store_overflow_count(void);
+
 #ifdef __cplusplus
 }
 #endif

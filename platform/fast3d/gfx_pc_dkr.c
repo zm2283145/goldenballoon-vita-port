@@ -1717,7 +1717,8 @@ static inline void *dkr_resolve(uint32_t addr) {
         return dkr_retain_resolved_pointer((void *)(uintptr_t)addr);
     }
 #endif
-    r = gfx_resolve_addr(addr);   /* genuine N64 segment tokens */
+    r = gfx_resolve_segment_addr_bounded(
+        addr, (uintptr_t)g_dkrArenaBase, (size_t)g_dkrArenaSize);
     return dkr_retain_resolved_pointer(r);
 }
 
@@ -5303,7 +5304,10 @@ static void dkr_scan_overlay_order(Gfx *cmd, int depth, int limit,
             case G_DMADL: {
                 int count = (int)C0(cmd, 16, 8);
                 Gfx *sub = (Gfx *)dkr_resolve(cmd->words.w1);
-                if (sub != NULL && count > 0) {
+                if (count <= 0) {
+                    return;
+                }
+                if (sub != NULL) {
                     dkr_scan_overlay_order(sub, depth + 1, count, scan);
                 }
                 break;
@@ -5360,6 +5364,12 @@ static void dkr_scan_overlay_order(Gfx *cmd, int depth, int limit,
                 scan->primitive++;
                 if ((limit > 0 && (cmd - start) + 2 >= limit) ||
                     dkr_arena_room(cmd) < sizeof(Gfx) * 3) {
+                    return;
+                }
+                if ((uint8_t)C0(cmd + 1, 24, 8) !=
+                        (uint8_t)G_RDPHALF_1 ||
+                    (uint8_t)C0(cmd + 2, 24, 8) !=
+                        (uint8_t)G_RDPHALF_2) {
                     return;
                 }
                 cmd += 2;

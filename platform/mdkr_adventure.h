@@ -23,12 +23,13 @@ int mdkr_test_pad_absent(int seat);
  * race, so the race-loop gate can drive a host win, a non-host-human win, and a
  * CPU win through the same return machinery. MDKR_AP_RACE_WINNER="<seat>" forces
  * the human on that controller port to first; "cpu" forces a computer racer.
- * No-op with no env set; only reassigns finish positions after the port-1 human
- * has genuinely finished (never manufactures a finish), so it changes the
- * verdict, not the drive. humanCount is the number of party humans (racerIndex
- * 0..humanCount-1); CPUs are racerIndex >= humanCount. Racers are matched by the
- * stable racerIndex, not playerIndex, because a finished human is flipped to
- * PLAYER_COMPUTER by update_player_racer. */
+ * No-op with no env set. It waits until the port-1 human genuinely finishes,
+ * then test-only code can mark the requested unfinished target as finished and
+ * reassign finish positions. It therefore selects a deterministic verdict
+ * without steering the live race. humanCount is the number of party humans
+ * (racerIndex 0..humanCount-1); CPUs are racerIndex >= humanCount. Racers are
+ * matched by stable racerIndex, not playerIndex, because a finished human is
+ * flipped to PLAYER_COMPUTER by update_player_racer. */
 void mdkr_ap_force_race_winner(Object **racers, s32 numRacers, s32 humanCount);
 
 #endif

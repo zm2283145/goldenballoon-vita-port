@@ -9,6 +9,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <stdio.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -33,7 +34,7 @@
 #define LEGACY_COMPILER_ID_V2 "mdkr-character-compiler/2"
 #define LEGACY_COMPILER_ID_V1 "mdkr-character-compiler/1"
 
-static unsigned s_stage_serial;
+static _Atomic unsigned s_stage_serial;
 
 static long native_process_id(void) {
 #if defined(__EMSCRIPTEN__)
@@ -109,6 +110,16 @@ static void result_message(MdkrModernCharacterInstallResult *result,
         (void)snprintf(result->message, sizeof(result->message), "%s",
                        message != NULL ? message : "unknown character import error");
     }
+}
+
+static int copy_string_exact(char *output, size_t capacity,
+                             const char *input) {
+    size_t length;
+    if (output == NULL || capacity == 0u || input == NULL) return 0;
+    length = strlen(input);
+    if (length >= capacity) return 0;
+    memcpy(output, input, length + 1u);
+    return 1;
 }
 
 static int id_valid(const char *id) {
@@ -207,18 +218,39 @@ static int ensure_directory(const char *directory) {
     return mdkr_path_is_link_or_reparse_utf8(directory) == 0;
 }
 
+static int open_stage_mode(const char *destination, char *stage,
+                           size_t stage_size, const char *mode,
+                           FILE **output) {
+    unsigned attempt;
+    if (stage == NULL || stage_size == 0u || mode == NULL || output == NULL) {
+        return 0;
+    }
+    stage[0] = '\0';
+    *output = NULL;
+    for (attempt = 0u; attempt < 64u; attempt++) {
+        const unsigned serial = atomic_fetch_add_explicit(
+            &s_stage_serial, 1u, memory_order_relaxed) + 1u;
+        const int written = snprintf(stage, stage_size, "%s.tmp.%ld.%u",
+                                     destination, native_process_id(),
+                                     serial);
+        if (written < 0 || (size_t)written >= stage_size) {
+            stage[0] = '\0';
+            return 0;
+        }
+        *output = mdkr_fopen_utf8(stage, mode);
+        if (*output != NULL) return 1;
+        if (errno != EEXIST) {
+            stage[0] = '\0';
+            return 0;
+        }
+    }
+    stage[0] = '\0';
+    return 0;
+}
+
 static int open_stage(const char *destination, char *stage, size_t stage_size,
                       FILE **output) {
-    unsigned attempt;
-    for (attempt = 0u; attempt < 64u; attempt++) {
-        const int written = snprintf(stage, stage_size, "%s.tmp.%u",
-                                     destination, ++s_stage_serial);
-        if (written < 0 || (size_t)written >= stage_size) return 0;
-        *output = mdkr_fopen_utf8(stage, "wbx");
-        if (*output != NULL) return 1;
-        if (errno != EEXIST) return 0;
-    }
-    return 0;
+    return open_stage_mode(destination, stage, stage_size, "wbx", output);
 }
 
 static int write_atomic(const char *destination, const void *bytes, size_t size) {
@@ -310,6 +342,22 @@ static int hash_file(FILE *file, char output[MDKR_SHA256_HEX_SIZE]) {
     return fseek(file, 0, SEEK_SET) == 0;
 }
 
+static void hash_bytes(const void *data, size_t size,
+                       char output[MDKR_SHA256_HEX_SIZE]) {
+    MdkrSha256 digest;
+    uint8_t bytes[MDKR_SHA256_DIGEST_SIZE];
+    static const char hex[] = "0123456789abcdef";
+    unsigned index;
+    mdkr_sha256_init(&digest);
+    mdkr_sha256_update(&digest, data, size);
+    mdkr_sha256_final(&digest, bytes);
+    for (index = 0u; index < sizeof(bytes); index++) {
+        output[index * 2u] = hex[bytes[index] >> 4u];
+        output[index * 2u + 1u] = hex[bytes[index] & 15u];
+    }
+    output[64] = '\0';
+}
+
 static int regular_files_equal(const char *left, const char *right) {
     FILE *left_file = NULL;
     FILE *right_file = NULL;
@@ -367,6 +415,27 @@ static int archive_entry(mz_zip_archive *archive, mz_uint index,
         return 0;
     }
     return 1;
+}
+
+static int package_snapshot_close(mz_zip_archive *archive, FILE **package,
+                                  char *snapshot_path) {
+    int okay = 1;
+    if (archive != NULL && archive->m_zip_mode != MZ_ZIP_MODE_INVALID &&
+        !mz_zip_reader_end(archive)) {
+        okay = 0;
+    }
+    if (package != NULL && *package != NULL) {
+        if (fclose(*package) != 0) okay = 0;
+        *package = NULL;
+    }
+    if (snapshot_path != NULL && snapshot_path[0] != '\0') {
+        if (mdkr_remove_utf8(snapshot_path) == 0 || errno == ENOENT) {
+            snapshot_path[0] = '\0';
+        } else {
+            okay = 0;
+        }
+    }
+    return okay;
 }
 
 typedef struct DigestExtractState {
@@ -434,6 +503,7 @@ static int portable_package_operation(
     };
     FILE *package = NULL;
     FILE *source_input = NULL;
+    void *package_memory = NULL;
     FILE *lock = NULL;
     mz_zip_archive archive;
     mz_zip_archive_file_stat stat;
@@ -452,6 +522,8 @@ static int portable_package_operation(
     char cache_path[4096] = {0};
     char disabled_cache_path[4096] = {0};
     char lock_path[4096] = {0};
+    char package_snapshot_base[4096] = {0};
+    char package_snapshot_path[4096] = {0};
     mz_uint64 package_size = 0u;
     mz_uint64 member_sizes[5] = {0u, 0u, 0u, 0u, 0u};
     uint8_t source_digest[32];
@@ -500,15 +572,49 @@ static int portable_package_operation(
         result_message(result, "character directory is unavailable");
         goto done;
     }
+    if (!inspect_only) {
+        if (!path_join(package_snapshot_base,
+                       sizeof(package_snapshot_base), directory,
+                       ".character-package-snapshot")) {
+            result_message(result,
+                           "character package snapshot path is too long");
+            goto done;
+        }
+    }
     source_input = mdkr_fopen_utf8(package_path, "rb");
-    package = tmpfile();
-    if (source_input == NULL || package == NULL) {
+    if (source_input == NULL) {
         result_message(result, "character package could not be opened");
         goto done;
     }
-    {
+    if (inspect_only) {
+        long measured_size;
+        if (fseek(source_input, 0, SEEK_END) != 0 ||
+            (measured_size = ftell(source_input)) <= 0 ||
+            (unsigned long)measured_size > SOURCE_PACKAGE_MAX ||
+            fseek(source_input, 0, SEEK_SET) != 0) {
+            result_message(result,
+                           "character package exceeds its bounded size or could not be read");
+            goto done;
+        }
+        package_size = (mz_uint64)(unsigned long)measured_size;
+        package_memory = malloc((size_t)package_size);
+        if (package_memory == NULL ||
+            fread(package_memory, 1u, (size_t)package_size, source_input) !=
+                (size_t)package_size ||
+            fgetc(source_input) != EOF || ferror(source_input)) {
+            result_message(result,
+                           "character package exceeds its bounded size or could not be snapshotted");
+            goto done;
+        }
+        hash_bytes(package_memory, (size_t)package_size, hash);
+    } else {
         unsigned char buffer[64u * 1024u];
         size_t count;
+        if (!open_stage_mode(package_snapshot_base, package_snapshot_path,
+                             sizeof(package_snapshot_path), "w+bx", &package)) {
+            result_message(result, "character package could not be opened");
+            goto done;
+        }
         while ((count = fread(buffer, 1u, sizeof(buffer), source_input)) != 0u) {
             if (package_size > SOURCE_PACKAGE_MAX - count ||
                 fwrite(buffer, 1u, count, package) != count) {
@@ -523,20 +629,25 @@ static int portable_package_operation(
             result_message(result, "character package exceeds its bounded size or could not be read");
             goto done;
         }
-        if (fclose(source_input) != 0) {
-            source_input = NULL;
-            result_message(result, "character package snapshot could not be finalized");
-            goto done;
-        }
-        source_input = NULL;
     }
+    if (fclose(source_input) != 0) {
+        source_input = NULL;
+        result_message(result,
+                       "character package snapshot could not be finalized");
+        goto done;
+    }
+    source_input = NULL;
     if (expected_package_sha256 != NULL &&
         strcmp(hash, expected_package_sha256) != 0) {
         result_message(result,
             "the package file changed after review; validate the new bytes before installing");
         goto done;
     }
-    if (!mz_zip_reader_init_cfile(&archive, package, package_size, 0u)) {
+    if (!(inspect_only
+              ? mz_zip_reader_init_mem(
+                    &archive, package_memory, (size_t)package_size, 0u)
+              : mz_zip_reader_init_cfile(
+                    &archive, package, package_size, 0u))) {
         result_message(result, "character package is not a readable deterministic ZIP");
         goto done;
     }
@@ -663,8 +774,12 @@ static int portable_package_operation(
             (void)snprintf(result->id, sizeof(result->id), "%s", id);
             (void)snprintf(result->display_name, sizeof(result->display_name),
                            "%s", display);
-            (void)snprintf(result->short_name, sizeof(result->short_name),
-                           "%s", display);
+            if (!copy_string_exact(result->short_name,
+                                   sizeof(result->short_name), display)) {
+                result_message(result,
+                               "embedded character short name exceeds its bound");
+                goto done;
+            }
             (void)snprintf(result->narration_name,
                            sizeof(result->narration_name), "%s", display);
             (void)snprintf(result->sort_label, sizeof(result->sort_label),
@@ -749,9 +864,13 @@ static int portable_package_operation(
                             "embedded character short name is unavailable");
                         goto done;
                     }
-                    (void)snprintf(result->short_name,
-                                   sizeof(result->short_name), "%s",
-                                   short_name);
+                    if (!copy_string_exact(result->short_name,
+                                           sizeof(result->short_name),
+                                           short_name)) {
+                        result_message(result,
+                            "embedded character short name exceeds its bound");
+                        goto done;
+                    }
                     if (mdkr_modern_character_asset_identity_names(
                             &asset, &identity_names)) {
                         const char *narration_name =
@@ -910,10 +1029,24 @@ static int portable_package_operation(
             goto done;
         }
     }
-    if (!copy_source_if_absent(package, source_path, hash) ||
-        !write_atomic(report_path, report_text, strlen(report_text)) ||
+    if (!copy_source_if_absent(package, source_path, hash)) {
+        result_message(result,
+                       "character source could not be installed transactionally");
+        goto done;
+    }
+    /* Retire the private snapshot before publishing the mutable report/cache.
+     * A cleanup failure may leave a harmless content-addressed source orphan,
+     * but it can never report failure after making the character playable. */
+    if (!package_snapshot_close(&archive, &package,
+                                package_snapshot_path)) {
+        result_message(result,
+                       "character package snapshot could not be removed");
+        goto done;
+    }
+    if (!write_atomic(report_path, report_text, strlen(report_text)) ||
         !write_atomic(publish_cache_path, compiled, compiled_size)) {
-        result_message(result, "character source or cache could not be installed transactionally");
+        result_message(result,
+                       "character report or cache could not be installed transactionally");
         goto done;
     }
     result_message(result, disabled_exists
@@ -928,9 +1061,19 @@ done:
     mdkr_modern_character_asset_unload(&asset);
     mdkr_modern_character_asset_unload(&installed_asset);
     free(compiled);
-    if (archive.m_zip_mode != MZ_ZIP_MODE_INVALID) mz_zip_reader_end(&archive);
-    if (package != NULL) fclose(package);
-    if (source_input != NULL) fclose(source_input);
+    free(package_memory);
+    if (source_input != NULL && fclose(source_input) != 0 && okay) {
+        result_message(result, "character package source could not be closed");
+        okay = 0;
+    }
+    if (!package_snapshot_close(&archive, &package,
+                                package_snapshot_path)) {
+        if (okay) {
+            result_message(result,
+                           "character package snapshot could not be removed");
+        }
+        okay = 0;
+    }
     return okay;
 }
 

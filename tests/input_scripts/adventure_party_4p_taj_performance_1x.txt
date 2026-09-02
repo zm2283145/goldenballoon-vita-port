@@ -1,0 +1,30 @@
+# AP-19 four-player Taj ownership baseline.
+#
+# Admission and final timing match the five-transform soak. The party performs
+# one CAR -> HOVERCRAFT rebuild, then deliberately leaves Taj's root menu idle
+# until the soak's fifth-transform endpoint. This makes both runs reach the
+# same final vehicle and release the shared dialogue at the same frame; only
+# the number of production racer rebuilds differs.
+
+1250 START 4
+1330 START 4
+1430 A 4 P2
+1470 A 4 P3
+1510 A 4 P4
+1600 A 4 P1
+1660 A 4 P2
+1720 A 4 P3
+1780 A 4 P4
+1880 A 4 P1
+2100 A 4 P1
+2350 A 4 P1
+
+# Transform 1: CAR -> HOVERCRAFT. Four-player approach/greeting is complete by
+# this horizon; earlier edges would be consumed before the root menu opens.
+4000 A 6 P1
+4120 DOWN 6 P1
+4240 A 6 P1
+
+# Release at the same horizon as the five-transform soak.
+7600 B 6 P1
+7720 B 6 P1

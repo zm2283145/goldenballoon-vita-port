@@ -1,5 +1,6 @@
 #include "modern_character_draw_store.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -13,6 +14,8 @@ typedef struct MdkrModernDrawStoreEntry {
 static MdkrModernDrawStoreEntry
     s_entries[MDKR_MODERN_DRAW_STORE_CAPACITY];
 static uint32_t s_serial = 1u;
+static uint64_t s_overflow_count;
+static int s_overflow_reported;
 
 static size_t palette_float_count(uint32_t bone_capacity) {
     return (size_t)bone_capacity * 16u;
@@ -83,6 +86,22 @@ const struct GfxModernSkinnedDraw *mdkr_modern_draw_store_resolve(
     }
     entry = &s_entries[token % MDKR_MODERN_DRAW_STORE_CAPACITY];
     if (entry->token != token) {
+        /* Reusing a bounded slot is normal: only a later attempt to replay the
+         * displaced generation proves that capacity was actually insufficient.
+         * Counting at registration made every long session look overfull even
+         * though its retired display lists could no longer reference the old
+         * token. Keep release/shutdown invalidations quiet (token == 0), while
+         * making a genuine delayed replay fail closed and observable. */
+        if (entry->token != 0u) {
+            if (s_overflow_count != UINT64_MAX) s_overflow_count++;
+            if (!s_overflow_reported) {
+                fprintf(stderr,
+                        "[modern-character] retained draw store capacity "
+                        "miss (capacity=%u); stale draw token dropped\n",
+                        (unsigned)MDKR_MODERN_DRAW_STORE_CAPACITY);
+                s_overflow_reported = 1;
+            }
+        }
         return NULL;
     }
     return &entry->draw;
@@ -116,4 +135,8 @@ size_t mdkr_modern_draw_store_allocated_bytes(void) {
                  2u * sizeof(float);
     }
     return total;
+}
+
+uint64_t mdkr_modern_draw_store_overflow_count(void) {
+    return s_overflow_count;
 }

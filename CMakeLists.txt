@@ -7,7 +7,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 include(CTest)
 option(MDKR_BUILD_FUZZERS "Build coverage-guided save-format fuzzers" OFF)
 option(MDKR_ENABLE_FUZZERS
-    "Build coverage-guided online wire-parser fuzzers (Clang/libFuzzer)" OFF)
+    "Build coverage-guided untrusted-input fuzzers (Clang/libFuzzer)" OFF)
 option(MDKR_ENABLE_GPU_TESTS
     "Register native GPU/window tests (dedicated test desktop only)" OFF)
 set(MDKR_ONLINE_ROOM_PREVIEW_DEFAULT OFF)
@@ -121,6 +121,46 @@ endif()
 enable_language(CXX)
 include(${CMAKE_SOURCE_DIR}/cmake/character_text_shaping.cmake)
 include(${CMAKE_SOURCE_DIR}/cmake/tests.cmake)
+
+# The custom-character cache and its embedded texture payloads are both
+# untrusted local inputs. Keep one libFuzzer process crossing the exact shipped
+# memory loader, PNG decoder configuration, and KTX2 bridge so mutations can
+# move between the container and decoder boundaries. This is additive and never
+# enters ordinary builds.
+if(MDKR_ENABLE_FUZZERS AND NOT EMSCRIPTEN)
+    if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang" OR
+       NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR
+            "MDKR_ENABLE_FUZZERS requires Clang/libFuzzer")
+    endif()
+    if(NOT MDKR_CHARACTER_KTX2 OR NOT TARGET mdkr_basisu_transcoder)
+        message(FATAL_ERROR
+            "MDKR_ENABLE_FUZZERS requires MDKR_CHARACTER_KTX2=ON")
+    endif()
+    add_executable(mdkr_modern_character_asset_fuzzer
+        ${CMAKE_SOURCE_DIR}/tests/fuzz_modern_character_asset.cpp
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_asset.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_ktx2.cpp
+        ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
+        ${CMAKE_SOURCE_DIR}/lib/stb/stb_image_impl.c)
+    target_include_directories(mdkr_modern_character_asset_fuzzer PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/lib/stb)
+    target_compile_features(mdkr_modern_character_asset_fuzzer PRIVATE
+        cxx_std_17)
+    target_link_libraries(mdkr_modern_character_asset_fuzzer PRIVATE
+        mdkr_basisu_transcoder)
+    target_compile_options(mdkr_modern_character_asset_fuzzer PRIVATE
+        -fsanitize=fuzzer,address,undefined
+        -fno-omit-frame-pointer)
+    target_link_options(mdkr_modern_character_asset_fuzzer PRIVATE
+        -fsanitize=fuzzer,address,undefined)
+    # Instrument the third-party decoder as well as the first-party bridge in
+    # this dedicated build tree; otherwise only calls around it would be seen.
+    target_compile_options(mdkr_basisu_transcoder PRIVATE
+        -fsanitize=fuzzer-no-link,address,undefined
+        -fno-omit-frame-pointer)
+endif()
 
 if(NOT EMSCRIPTEN)
     add_executable(mdkr-save

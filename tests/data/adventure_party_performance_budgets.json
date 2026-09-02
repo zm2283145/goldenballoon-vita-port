@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "qualification": {
+    "party_players": 4,
+    "race_cycles": 20,
+    "taj_transforms": 5,
+    "boss_suspensions": 5,
+    "warmed_generations": 5,
+    "window_width": 640,
+    "window_height": 480,
+    "churn_cycles": 20000
+  },
+  "display_list": {
+    "capacity_commands": 11000,
+    "qualification_max_commands": 10750,
+    "minimum_headroom_commands": 250
+  },
+  "memory": {
+    "minimum_main_free_bytes": 1048576,
+    "minimum_main_largest_free_bytes": 524288
+  },
+  "renderer": {
+    "maximum_texture_live": 1024,
+    "maximum_texture_peak": 1024,
+    "maximum_registry_live": 4096,
+    "maximum_registry_high": 4096,
+    "maximum_registry_probe": 4
+  }
+}

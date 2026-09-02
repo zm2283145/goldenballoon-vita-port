@@ -1114,6 +1114,12 @@ int mdkr_modern_characters_init(const char *directory) {
         strlen(playable) < sizeof(s_playable_list)) {
         memcpy(s_playable_list, playable, strlen(playable) + 1u);
     }
+    if (!s_playable_filter_active && s_registry.count != 0) {
+        fprintf(stderr,
+                "[modern-character] launcher playability filter inactive; "
+                "direct launch admits %d enabled installed custom character%s\n",
+                s_registry.count, s_registry.count == 1 ? "" : "s");
+    }
     base = getenv("MDKR_CUSTOM_CHARACTER");
     for (index = 0; index < MDKR_MODERN_CHARACTER_PLAYERS; index++) {
         char name[40];

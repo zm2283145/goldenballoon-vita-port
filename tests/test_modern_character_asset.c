@@ -343,6 +343,33 @@ static void test_retained_pose_interpolation(void) {
             "alpha one preserves exact current pose bits");
 }
 
+static void test_defensive_ktx2_stats_bounds(void) {
+    MdkrModernCharacterAsset malformed;
+    MdkrModernCharacterStats stats;
+    unsigned char texture_record[40] = {0};
+    unsigned char texture_bytes[16] = {0};
+    memset(&malformed, 0, sizeof(malformed));
+    malformed.owned_bytes = texture_record;
+    malformed.sections[MDKR_MDKC_TEXTURES].data = texture_record;
+    malformed.sections[MDKR_MDKC_TEXTURES].size = sizeof(texture_record);
+    malformed.sections[MDKR_MDKC_TEXTURES].count = 1u;
+    malformed.sections[MDKR_MDKC_TEXTURES].stride = sizeof(texture_record);
+    malformed.sections[MDKR_MDKC_TEXTURE_DATA].data = texture_bytes;
+    malformed.sections[MDKR_MDKC_TEXTURE_DATA].size = sizeof(texture_bytes);
+    malformed.sections[MDKR_MDKC_TEXTURE_DATA].count = UINT32_MAX;
+    malformed.sections[MDKR_MDKC_TEXTURE_DATA].stride = 1u;
+    write_u32_le(texture_record + 4u, 2u);
+    write_u32_le(texture_record + 8u, UINT32_MAX - 8u);
+    write_u32_le(texture_record + 12u, 44u);
+    write_u32_le(texture_record + 36u, (8u << 16u) | 8u);
+    mdkr_modern_character_asset_stats(&malformed, &stats);
+    require(stats.textures == 1u && stats.encoded_texture_bytes == 16u &&
+                stats.ktx2_textures == 0u &&
+                stats.ktx2_source_bytes == 0u &&
+                stats.decoded_texture_bytes == 0u,
+            "asset statistics reject an out-of-range KTX2 header before reading it");
+}
+
 int main(int argc, char **argv) {
     MdkrModernCharacterAsset asset;
     MdkrModernCharacterAsset refused;
@@ -404,6 +431,7 @@ int main(int argc, char **argv) {
     char removal_recovery_hash[65];
     test_shadow_bounds();
     test_camera_object_position();
+    test_defensive_ktx2_stats_bounds();
     char deletion_failure_witness[4096];
     char transaction_cache[TRANSACTION_FIXTURES][4096];
     char transaction_source[4096];

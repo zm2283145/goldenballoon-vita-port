@@ -591,6 +591,16 @@ The Workshop annotates this choice with the validated-ROM summary above, but
 the annotation is read-only evidence: saving still records only the donor ID
 and compatibility mask.
 
+The compatibility mask is a presentation eligibility contract, not a vehicle
+lock. If gameplay moves an assigned character into an unsupported vehicle, the
+built-in donor remains visible for that context and all gameplay continues
+unchanged; returning to a supported vehicle resumes the custom appearance. The
+Workshop, package review, and select roster disclose coverage before play. The
+runtime deliberately adds no mid-scene warning or substitute model: a warning
+would be presentation state with no corrective action, while a different model
+would violate the reviewed package identity. Gates observe the exact
+`matches=0` draw predicate and the later supported-context recovery.
+
 `revise-rig` uses that transaction for an exact bounded rig draft. It accepts
 only the dedicated draft schema, rejects non-regular or oversized input,
 upgrades identity-capable v3 sources to v4, recompiles the full node/joint and
@@ -814,6 +824,15 @@ Explicit `MDKR_CUSTOM_CHARACTER_Pn_*` variables remain higher-priority
 diagnostic overrides. Older per-player preferences are read only as a migration
 fallback and are no longer synthesized into overrides that could contaminate a
 different package selected later.
+
+Normal launcher play supplies an explicit allowlist of packages that passed the
+current playability/readiness decision. A developer who starts the game binary
+directly has no launcher process to supply that filter; in that intentional
+direct-launch mode, every enabled, structurally valid installed package is
+admitted and a diagnostic states that the filter is inactive. Disabled or
+invalid packages remain excluded. This is a local development convenience, not
+a second product admission policy and not a fail-open path used by packaged
+launcher play.
 
 The source contract accepts embedded PNG and the exact ordinary 2D
 `KHR_texture_basisu` profile. KTX2 inputs retain their authored mip chain and

@@ -88,6 +88,8 @@ int mdkr_modern_identity_init(const MdkrModernCharacterAsset *asset,
     int width = 0;
     int height = 0;
     int components = 0;
+    int inspected_width;
+    int inspected_height;
     if (out == NULL || asset == NULL) {
         set_error(error, error_size, "portrait arguments are invalid");
         return 0;
@@ -108,10 +110,22 @@ int mdkr_modern_identity_init(const MdkrModernCharacterAsset *asset,
                   "compiled portrait is not a bounded square RGB/RGBA PNG");
         return 0;
     }
+    inspected_width = width;
+    inspected_height = height;
     decoded = stbi_load_from_memory(encoded, (int)identity.portrait_size,
                                     &width, &height, &components, 4);
     if (decoded == NULL) {
-        set_error(error, error_size, "compiled portrait PNG could not be decoded");
+        set_error(error, error_size,
+                  "compiled portrait PNG could not be decoded");
+        return 0;
+    }
+    if (width != inspected_width || height != inspected_height ||
+        width < MODERN_PORTRAIT_SOURCE_MIN ||
+        width > MODERN_PORTRAIT_SOURCE_MAX || height != width ||
+        (components != 3 && components != 4)) {
+        stbi_image_free(decoded);
+        set_error(error, error_size,
+                  "compiled portrait PNG changed dimensions during bounded decode");
         return 0;
     }
     resize_portrait(decoded, (unsigned)width, out->portrait_rgba);

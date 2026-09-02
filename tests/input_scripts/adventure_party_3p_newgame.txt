@@ -1,0 +1,42 @@
+# Adventure Party shared-scene new game -- THREE local players.
+#
+# The admission prologue matches adventure_party_3p_admit.txt through File
+# Select. The host then chooses the empty slot 1, enters the default three-letter
+# name, and lets the stock one-player new-game cinematic run to its natural end.
+# The gate requires FORMING -> SHARED_SCENE before the cinematic, exactly one
+# ACTIVE_LOBBY publication at its end, and a restored three-seat hub afterwards.
+#
+# Save fixture: tests/check_adventure_party_admission.py writes a started
+# Adventure One save in slot 0; slots 1 and 2 are empty. Choosing slot 1 keeps
+# the ordinary existing-save admission arms and this new-game arm on the same
+# deterministic EEPROM fixture.
+
+# --- Title: reveal Start/Options, then Character Select ---
+1250 START 4
+1330 START 4
+
+# --- PLAYER SELECT: players two and three join on their own controllers ---
+1450 A 4 P2
+1490 A 4 P3
+
+# --- Each player confirms their own character ---
+1580 A 4 P1
+1640 A 4 P2
+1700 A 4 P3
+
+# --- "OK?" accept -> GAME_SELECT ---
+1800 A 4 P1
+
+# --- GAME_SELECT: Adventure One is option 0 -> FILE_SELECT ---
+2050 A 4 P1
+
+# --- FILE_SELECT: choose empty slot 1 and enter three name characters + END ---
+2300 RIGHT 4 P1
+2440 A 4 P1
+2500 A 4 P1
+2530 A 4 P1
+2560 A 4 P1
+2600 A 4 P1
+
+# No input during the unskippable stock cinematic. The hub loads near frame
+# 6260 on this later-starting route; the 7000-frame gate observes roster/layout.

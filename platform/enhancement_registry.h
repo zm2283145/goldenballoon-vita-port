@@ -49,10 +49,9 @@ typedef enum MdkrEnhProofProfile {
      * gate is unchanged. */
     MDKR_ENH_PROOF_SOLO_RACE = 0,
     /* An Adventure-admission enhancement whose real effect only appears on a
-     * two-to-four-player Adventure route. That full off/on/compiled-out proof
-     * lands with the menu-admission task; until then the gate proves the row's
-     * OFF-arm compatibility invariant, which IS provable today — flipping a
-     * dormant party-admission policy on the SOLO fixture must be a no-op. */
+     * two-to-four-player Adventure route. The authority gate proves the full
+     * disabled/enabled/compiled-out contract on its three-player campaign
+     * fixture; a solo fixture cannot exercise this row's admission effect. */
     MDKR_ENH_PROOF_ADVENTURE_PARTY_3P
 } MdkrEnhProofProfile;
 

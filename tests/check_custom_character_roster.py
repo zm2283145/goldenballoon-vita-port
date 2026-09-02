@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -86,6 +87,27 @@ def main() -> int:
     license_path.write_text("CC0 1.0 Universal\n", encoding="utf-8")
 
     failures: list[str] = []
+    menu_source = (ROOT / "game" / "src" / "menu.c").read_text(
+        encoding="utf-8"
+    )
+    preview_start = menu_source.find("s32 mdkr_workshop_preview_prepare(")
+    preview_end = menu_source.find("\n}\n#endif", preview_start)
+    if preview_start < 0 or preview_end < 0:
+        failures.append("Workshop Preview prepare seam is unavailable")
+    else:
+        preview_source = menu_source[preview_start:preview_end]
+        guard_at = preview_source.find("adventure_party_runtime_is_active()")
+        mutation_at = preview_source.find("reset_character_id_slots()")
+        if guard_at < 0 or mutation_at < 0 or guard_at > mutation_at:
+            failures.append(
+                "active Adventure Party guard does not precede preview mutation"
+            )
+        refusal = "aparty_workshop_preview_refused: reason=active_session"
+        if refusal not in preview_source:
+            failures.append("party-active preview refusal has no diagnostic")
+    if '"NO ART", ALIGN_MIDDLE_CENTER' not in menu_source:
+        failures.append("missing portrait does not disclose NO ART in the roster")
+
     ok, output = command_ok([
         sys.executable, str(ROOT / "tools" / "character_asset_probe.py"),
         "pack", "--model", str(model), "--manifest", str(manifest_path),
@@ -106,7 +128,12 @@ def main() -> int:
 
     script = evidence / "open-custom-roster.txt"
     script.write_text(
-        "1250 START 4\n1330 START 4\n1500 R 4\n",
+        "1250 START 4 P1\n"
+        "1330 START 4 P1\n"
+        "1420 A 4 P2\n"
+        "1500 R 4 P1\n"
+        "1520 RIGHT 4 P2\n"
+        "1580 A 4 P1\n",
         encoding="utf-8",
     )
     if not failures:
@@ -117,11 +144,11 @@ def main() -> int:
             MDKR_RENDERER="webgpu", MDKR_RENDER_SCALE="1",
             MDKR_VIDEO_CONFIG_PATH=os.devnull,
             MDKR_CUSTOM_CHARACTER_DIRECTORY=str(characters),
-            MDKR_DUMP_FROM="1538", MDKR_DUMP_EVERY="10000",
+            MDKR_DUMP_FROM="1538", MDKR_DUMP_EVERY="120",
             MDKR64_HIDDEN="1",
         )
         process = subprocess.run([
-            str(binary), "--headless-frames", "1540", "--input-script",
+            str(binary), "--headless-frames", "1660", "--input-script",
             str(script), "--dump-frames", str(frames), "--rom", str(rom),
             "--window-size", "1280x960", "--restored",
         ], cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE,
@@ -134,8 +161,6 @@ def main() -> int:
     for marker in ("[FATAL]", "AddressSanitizer", "runtime error:"):
         if marker in output:
             failures.append(f"fatal marker {marker}")
-    if "catalog directory override:" not in output:
-        failures.append("isolated catalog override was not honored")
     if "custom_roster: catalog=1 visible=1 rejected=0 pages=1" not in output:
         failures.append("generated package did not reach the roster model")
     for context in ("tile", "display"):
@@ -147,10 +172,29 @@ def main() -> int:
             failures.append(
                 f"{context} did not use the ROM-independent native glyph path"
             )
+    if "custom_roster_input_passthrough: controller=1" not in output:
+        failures.append(
+            "P2 selection input was not serviced while P1 browsed the roster"
+        )
+    selected_match = re.search(
+        r"custom_character_name: context=selected player=0 "
+        r"package=org\.mdkr\.roster-proof mode=native reason=none .*"
+        r"width=(\d+) truncated=1",
+        output,
+    )
+    if selected_match is None or int(selected_match.group(1)) > 34:
+        failures.append(
+            "selected-player label did not use bounded native UTF-8 "
+            "ellipsis fitting"
+        )
+    if "custom_character_portrait: player=0" not in output:
+        failures.append("selected-player portrait was not published")
 
     dumps = sorted(frames.glob("frame_*.ppm"))
-    if len(dumps) != 1:
-        failures.append(f"expected one browser capture, got {len(dumps)}")
+    if len(dumps) != 2:
+        failures.append(
+            f"expected browser and selected-player captures, got {len(dumps)}"
+        )
     else:
         width, height, pixels = read_ppm(dumps[0])
         if width % 320 or height % 240 or width * 3 != height * 4:
@@ -171,6 +215,27 @@ def main() -> int:
             if len(portrait_colours) < 12:
                 failures.append("catalog portrait was absent or visually empty")
 
+        width, height, pixels = read_ppm(dumps[1])
+        if width % 320 or height % 240 or width * 3 != height * 4:
+            failures.append(
+                "selected-player capture has the wrong presentation shape"
+            )
+        else:
+            scale = width // 320
+
+            def selected_pixel(x: int, y: int) -> tuple[int, int, int]:
+                offset = ((y * scale) * width + x * scale) * 3
+                return tuple(pixels[offset:offset + 3])  # type: ignore[return-value]
+
+            selected_portrait_colours = {
+                selected_pixel(x, y) for y in range(151, 186, 4)
+                for x in range(5, 40, 4)
+            }
+            if len(selected_portrait_colours) < 12:
+                failures.append(
+                    "selected-player 40x40 portrait chip was absent or empty"
+                )
+
     if failures:
         print("check_custom_character_roster: FAIL", file=sys.stderr)
         for failure in failures:
@@ -178,8 +243,8 @@ def main() -> int:
         print(f"  evidence: {evidence}", file=sys.stderr)
         return 1
     print("check_custom_character_roster: PASS -- isolated package catalog, "
-          "real R-button route, native Greek/Cyrillic names, centered identity "
-          "portrait, and modal layout")
+          "real R-button route, concurrent P2 input, bounded native names, "
+          "catalog and selected-player portraits, and modal layout")
     if args.evidence_dir is not None:
         print(f"evidence: {evidence}")
     if temporary is not None:

@@ -1,0 +1,28 @@
+# Adventure Party off-path control -- ONE local player starts a new game.
+#
+# Enhancements.AdventureParty is enabled, but one player is outside its 2-4
+# admission envelope. This therefore exercises the untouched stock new-game
+# path: no aparty_ trace, the same one-player cinematic, then a one-player hub.
+
+1250 START 4
+1330 START 4
+
+# Character confirm, then accept.
+1450 A 4 P1
+1560 A 4 P1
+
+# One-player CAUTION acknowledgement.
+1750 A 4 P1
+
+# Adventure One -> FILE_SELECT.
+1950 A 4 P1
+
+# Choose empty slot 1 and enter three name characters + END.
+2160 RIGHT 4 P1
+2300 A 4 P1
+2360 A 4 P1
+2390 A 4 P1
+2420 A 4 P1
+2460 A 4 P1
+
+# No input during the unskippable cinematic; the 7000-frame gate sees the hub.

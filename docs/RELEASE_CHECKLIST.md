@@ -432,6 +432,15 @@ Before publishing any build that exposes the Workshop:
       the importer, validator, BasisU, and meshoptimizer notices. Keep the
       character model, ROM, saves, screenshots, and device-profile exports out
       of the public release archive.
+- [ ] At the candidate cut, review the exact pinned Basis Universal/KTX-Software
+      commit and vendored `stb_image` commit against their upstream security
+      advisories and the CVE database. Record the query date, immutable pins,
+      findings and disposition in private release evidence; do not substitute
+      an unpinned update or claim that an offline build performed this review.
+- [ ] Run the ASan+UBSan custom-character MDKC/KTX2 fuzzer from
+      `tests/README.md` against a copy of its deterministic corpus. Preserve and
+      regress any crash before release; a time-bounded clean run supplements,
+      but never replaces, the structural unit and package gates.
 - [ ] Validate the completed privacy-bounded receipt against the exact artifact
       and provenance bytes. A template is intentionally red until every
       required observation is replaced:

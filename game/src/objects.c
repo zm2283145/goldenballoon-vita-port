@@ -3160,6 +3160,35 @@ static void adventure_party_roster_request_from_roster(
     }
 }
 
+/* Presentation identity never enters the Adventure Party reducer or save
+ * state: the party stores only each custom character's retail donor id.  This
+ * trace joins those two independently-owned views at the point where live
+ * racer objects exist, so integration gates can prove that a hub/race/restore
+ * rebuilt the same package-facing seats without making package ids
+ * authoritative. */
+static void adventure_party_trace_custom_identities(const char *phase,
+                                                     s32 count) {
+    s32 seat;
+    if (!mdkr_trace_enabled() || phase == NULL) {
+        return;
+    }
+    for (seat = 0; seat < count; seat++) {
+        Object *racerObj = gRacersByPort[seat];
+        Object_Racer *racer = racerObj != NULL ? racerObj->racer : NULL;
+        const char *package = mdkr_modern_character_player_package(seat);
+        s32 donor = mdkr_modern_character_player_donor(seat);
+        if (package == NULL || racer == NULL) {
+            continue;
+        }
+        mdkr_trace(
+            "aparty_custom_identity: phase=%s seat=%d package=%s donor=%d racer=%d vehicle=%d matches=%d",
+            phase, (int) seat, package, (int) donor,
+            (int) racer->characterId, (int) racer->vehicleIDPrev,
+            mdkr_modern_character_matches(
+                seat, racer->characterId, racer->vehicleIDPrev));
+    }
+}
+
 /*
  * AP-12 / R16 arrival adapter. When a level finishes loading, advance the party
  * session to match the level just entered. This is the arrival half of Task 8's
@@ -4132,6 +4161,7 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
             for (apSeat = 0; apSeat < apPartySeats; apSeat++) {
                 adventure_party_trace_emit_binding((uint8_t) apSeat, (uint8_t) apSeat);
             }
+            adventure_party_trace_custom_identities("hub", apPartySeats);
         }
     }
     /* AP-12 adapter (trace): a party DEFAULT race published its roster too — N
@@ -4147,6 +4177,7 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
             for (apSeat = 0; apSeat < apRaceSeats; apSeat++) {
                 adventure_party_trace_emit_binding((uint8_t) apSeat, (uint8_t) apSeat);
             }
+            adventure_party_trace_custom_identities("race", apRaceSeats);
         }
     }
 #endif
@@ -4722,6 +4753,7 @@ static void adventure_party_taj_transform_commit(void) {
         for (seat = 0; seat < count; seat++) {
             adventure_party_trace_emit_binding((uint8_t) seat, (uint8_t) seat);
         }
+        adventure_party_trace_custom_identities("taj-transform", count);
     }
 }
 #endif
@@ -12145,10 +12177,14 @@ void race_check_finish(s32 updateRate) {
  */
 s8 set_course_finish_flags(Settings *settings) {
     Object_Racer *racer;
+#ifdef NATIVE_PORT
     s32 silverCoins;
+#endif
 
     racer = gRacersByPosition[PLAYER_ONE]->racer;
+#ifdef NATIVE_PORT
     silverCoins = racer->silverCoinCount;
+#endif
 #if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
     /* AP-14: a party silver-coin race banks ONE team tally — any human collects a
      * coin and it vanishes for every viewport — so the >= 8 clear test below reads
@@ -12195,7 +12231,13 @@ s8 set_course_finish_flags(Settings *settings) {
             gFirstTimeFinish = TRUE;
             settings->courseFlagsPtr[settings->courseId] |= RACE_CLEARED;
         }
-    } else if (gIsSilverCoinRace && silverCoins >= 8 && gIsTimeTrial == FALSE) {
+    } else if (gIsSilverCoinRace &&
+#ifdef NATIVE_PORT
+               silverCoins >= 8 &&
+#else
+               racer->silverCoinCount >= 8 &&
+#endif
+               gIsTimeTrial == FALSE) {
         gFirstTimeFinish = TRUE;
         settings->courseFlagsPtr[settings->courseId] |= RACE_CLEARED_SILVER_COINS;
     }

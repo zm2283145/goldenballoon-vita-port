@@ -1599,6 +1599,7 @@ void mdkr_modern_character_asset_unload(MdkrModernCharacterAsset *asset) {
 
 void mdkr_modern_character_asset_stats(const MdkrModernCharacterAsset *asset,
                                        MdkrModernCharacterStats *out) {
+    const MdkrModernSectionView *texture_data;
     uint32_t primitive_index;
     uint32_t texture_index;
     if (out == NULL) return;
@@ -1633,21 +1634,30 @@ void mdkr_modern_character_asset_stats(const MdkrModernCharacterAsset *asset,
         asset->sections[MDKR_MDKC_SECONDARY_CHAINS].count;
     out->secondary_joints =
         asset->sections[MDKR_MDKC_SECONDARY_JOINTS].count;
-    out->encoded_texture_bytes = asset->sections[MDKR_MDKC_TEXTURE_DATA].size;
+    texture_data = &asset->sections[MDKR_MDKC_TEXTURE_DATA];
+    out->encoded_texture_bytes = texture_data->size;
     for (texture_index = 0u; texture_index < out->textures; texture_index++) {
         MdkrModernTexture texture;
         uint32_t width;
         uint32_t height;
         uint32_t levels = 0u;
         uint32_t level;
-        (void)mdkr_modern_character_asset_texture(asset, texture_index,
-                                                  &texture);
+        if (!mdkr_modern_character_asset_texture(asset, texture_index,
+                                                 &texture)) {
+            continue;
+        }
         if (texture.mime == 2u) {
+            if (texture_data->data == NULL || texture.data_size < 44u ||
+                !range_u32(texture.data_offset, texture.data_size,
+                           texture_data->count) ||
+                (uint64_t)texture.data_offset + texture.data_size >
+                    texture_data->size) {
+                continue;
+            }
             out->ktx2_textures++;
             out->ktx2_source_bytes += texture.data_size;
-            levels = read_u32(
-                asset->sections[MDKR_MDKC_TEXTURE_DATA].data +
-                texture.data_offset + 40u);
+            levels = read_u32(texture_data->data +
+                              texture.data_offset + 40u);
         }
         width = texture.dimensions & 0xFFFFu;
         height = texture.dimensions >> 16u;

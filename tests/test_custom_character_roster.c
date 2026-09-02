@@ -43,6 +43,8 @@ int main(void) {
     int i;
     char projected[32];
     MdkrModernCharacterTextProjection text_projection;
+    char maximum_short_name[MDKR_MODERN_CHARACTER_SHORT_NAME_MAX];
+    char unterminated_short_name[MDKR_MODERN_CHARACTER_SHORT_NAME_MAX];
 
     require(mdkr_modern_character_text_project(
                 "Dixie Kong", 11u, projected, sizeof(projected),
@@ -155,6 +157,23 @@ int main(void) {
     mdkr_custom_roster_cursor_sync(&roster, &cursor);
     require(cursor.item == -1 && mdkr_custom_roster_page_count(&roster) == 0,
             "empty roster must have no cursor or pages");
+
+    memset(maximum_short_name, 'S', sizeof(maximum_short_name) - 1u);
+    maximum_short_name[sizeof(maximum_short_name) - 1u] = '\0';
+    catalog = view("bounded", "Bounded", 1u);
+    catalog.short_name = maximum_short_name;
+    require(mdkr_custom_roster_add(&roster, 1, &catalog) &&
+                strlen(roster.items[0].short_name) ==
+                    sizeof(maximum_short_name) - 1u &&
+                strcmp(roster.items[0].short_name, maximum_short_name) == 0,
+            "maximum bounded short name is copied without truncation");
+    memset(unterminated_short_name, 'T', sizeof(unterminated_short_name));
+    catalog = view("unterminated", "Unterminated", 1u);
+    catalog.short_name = unterminated_short_name;
+    require(!mdkr_custom_roster_add(&roster, 2, &catalog) &&
+                roster.count == 1 && roster.rejected == 1,
+            "unterminated short name is rejected without partial publication");
+    mdkr_custom_roster_reset(&roster);
 
     catalog = view("zeta", "Zeta", 1u);
     catalog.short_name = "Z";

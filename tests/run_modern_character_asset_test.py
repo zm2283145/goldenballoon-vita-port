@@ -105,7 +105,11 @@ def main() -> int:
         mismatched_portable = Path(directory) / "mismatched-portable.mdkrchar"
         legacy_portable = Path(directory) / "legacy-portable.mdkrchar"
         legacy_v5_portable = Path(directory) / "legacy-v5-portable.mdkrchar"
-        install_directory = Path(directory) / "native-install"
+        # The native importer must not fall back to the process/global temp
+        # directory: ordinary non-admin Windows accounts need the package
+        # snapshot to use the same writable UTF-8 destination directory as the
+        # files it will publish.
+        install_directory = Path(directory) / "native-install-安装"
         model.write_bytes(model_bytes)
         manifest.write_text(json.dumps(manifest_data), encoding="utf-8")
         license_file.write_text("CC0-1.0 generated fixture\n", encoding="utf-8")
@@ -184,14 +188,36 @@ def main() -> int:
             for name in probe.PORTABLE_PACKAGE_MEMBERS_V3:
                 info, payload = probe._zip_entry(name, v5_members[name])
                 archive.writestr(info, payload)
-        completed = subprocess.run(
-            [str(args.loader), str(cache), directory, str(source_package),
-             str(portable_package), str(install_directory),
-             str(corrupt_portable), str(mismatched_portable),
-             str(legacy_portable), str(legacy_v5_portable),
-             str(fixture_directory), str(ktx_cache)],
-            check=False, text=True
-        )
+        # Inspection is mutation-free even when a downloaded/source directory
+        # is read-only. Installation snapshots separately in its writable
+        # destination; neither operation relies on a global temporary folder.
+        read_only_source = Path(directory) / "read-only-source"
+        read_only_source.mkdir()
+        read_only_portable = read_only_source / "portable.mdkrchar"
+        read_only_portable.write_bytes(portable_package.read_bytes())
+        read_only_source.chmod(0o555)
+        try:
+            completed = subprocess.run(
+                [str(args.loader), str(cache), directory, str(source_package),
+                 str(read_only_portable), str(install_directory),
+                 str(corrupt_portable), str(mismatched_portable),
+                 str(legacy_portable), str(legacy_v5_portable),
+                 str(fixture_directory), str(ktx_cache)],
+                check=False, text=True
+            )
+        finally:
+            read_only_source.chmod(0o755)
+        snapshot_leftovers = [
+            path for path in Path(directory).rglob("*")
+            if ".snapshot.tmp." in path.name
+        ]
+        if snapshot_leftovers:
+            print(
+                "native package inspection left private snapshot files: " +
+                ", ".join(str(path) for path in snapshot_leftovers),
+                file=sys.stderr,
+            )
+            return 1
         return completed.returncode
 
 

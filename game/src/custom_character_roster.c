@@ -11,6 +11,16 @@ static int roster_string_valid(const char *text, size_t capacity) {
     return length > 0u && length < capacity;
 }
 
+static int roster_string_copy(char *output, size_t capacity,
+                              const char *text) {
+    size_t length;
+    if (output == NULL || capacity == 0u || text == NULL) return 0;
+    length = strnlen(text, capacity);
+    if (length == 0u || length >= capacity) return 0;
+    memcpy(output, text, length + 1u);
+    return 1;
+}
+
 static int roster_ascii_compare(const char *left, const char *right) {
     const char *left_start = left;
     const char *right_start = right;
@@ -78,21 +88,27 @@ int mdkr_custom_roster_add(MdkrCustomRoster *roster, int catalog_index,
             return 0;
         }
     }
-    item = &roster->items[roster->count++];
+    item = &roster->items[roster->count];
     memset(item, 0, sizeof(*item));
-    (void)snprintf(item->id, sizeof(item->id), "%s", view->id);
-    (void)snprintf(item->display_name, sizeof(item->display_name), "%s",
-                   view->display_name);
-    (void)snprintf(item->short_name, sizeof(item->short_name), "%s",
-                   view->short_name != NULL && view->short_name[0] != '\0'
-                       ? view->short_name : view->display_name);
-    (void)snprintf(
-        item->narration_name, sizeof(item->narration_name), "%s",
-        view->narration_name != NULL && view->narration_name[0] != '\0'
-            ? view->narration_name : view->display_name);
-    (void)snprintf(item->sort_label, sizeof(item->sort_label), "%s",
-                   view->sort_label != NULL && view->sort_label[0] != '\0'
-                       ? view->sort_label : view->display_name);
+    if (!roster_string_copy(item->id, sizeof(item->id), view->id) ||
+        !roster_string_copy(item->display_name, sizeof(item->display_name),
+                            view->display_name) ||
+        !roster_string_copy(
+            item->short_name, sizeof(item->short_name),
+            view->short_name != NULL && view->short_name[0] != '\0'
+                ? view->short_name : view->display_name) ||
+        !roster_string_copy(
+            item->narration_name, sizeof(item->narration_name),
+            view->narration_name != NULL && view->narration_name[0] != '\0'
+                ? view->narration_name : view->display_name) ||
+        !roster_string_copy(
+            item->sort_label, sizeof(item->sort_label),
+            view->sort_label != NULL && view->sort_label[0] != '\0'
+                ? view->sort_label : view->display_name)) {
+        memset(item, 0, sizeof(*item));
+        roster->rejected++;
+        return 0;
+    }
     item->catalog_index = catalog_index;
     item->donor = view->donor;
     item->vehicle_mask = view->vehicle_mask;
@@ -103,6 +119,7 @@ int mdkr_custom_roster_add(MdkrCustomRoster *roster, int catalog_index,
             view->portrait_stride == MDKR_MODERN_PORTRAIT_SIZE * 4u
         ? MDKR_CUSTOM_ROSTER_AVAILABLE
         : MDKR_CUSTOM_ROSTER_IDENTITY_REQUIRED;
+    roster->count++;
     return 1;
 }
 

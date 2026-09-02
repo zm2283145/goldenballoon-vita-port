@@ -3,6 +3,7 @@
 #include "fast3d/gfx_mipgen.h"
 
 #include <float.h>
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,6 +15,9 @@
 
 #define MODERN_TEXTURE_DIMENSION_MAX 4096
 #define MODERN_DECODED_TEXTURE_BYTES_MAX (512u * 1024u * 1024u)
+
+_Static_assert(MODERN_DECODED_TEXTURE_BYTES_MAX <= (unsigned)INT_MAX,
+               "the bounded texture section must fit stb_image's int length");
 
 static void set_error(char *error, size_t size, const char *message) {
     if (error != NULL && size != 0u) {

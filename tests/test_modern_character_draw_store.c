@@ -89,12 +89,18 @@ int main(void) {
             "asset release preserves unrelated draws");
 
     draw = fixture_draw(&second_asset, NULL, NULL, 0u);
+    require(mdkr_modern_draw_store_overflow_count() == 0u,
+            "fresh draw store has no capacity overflows");
     for (index = 0u; index < MDKR_MODERN_DRAW_STORE_CAPACITY; index++) {
         require(mdkr_modern_draw_store_register(&draw) != 0u,
                 "bounded ring continues registering");
     }
+    require(mdkr_modern_draw_store_overflow_count() == 0u,
+            "ordinary bounded-ring reuse is not reported as an overflow");
     require(mdkr_modern_draw_store_resolve(second_token) == NULL,
             "overtaken token fails closed");
+    require(mdkr_modern_draw_store_overflow_count() == 1u,
+            "an attempted stale replay is counted once observed");
 
     mdkr_modern_draw_store_shutdown();
     require(mdkr_modern_draw_store_allocated_bytes() == 0u,
@@ -104,6 +110,8 @@ int main(void) {
     draw = fixture_draw(&second_asset, NULL, NULL, 0u);
     require(mdkr_modern_draw_store_register(&draw) != first_token,
             "renderer restart cannot reuse a stale generation token");
+    require(mdkr_modern_draw_store_overflow_count() == 1u,
+            "renderer restart preserves process-lifetime overflow evidence");
     mdkr_modern_draw_store_shutdown();
 
     if (failures != 0) {

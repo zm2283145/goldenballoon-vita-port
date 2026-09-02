@@ -24,6 +24,10 @@ static AppUiDpiState g_dpiState;
 static const ImWchar kCharacterNameGlyphRanges[] = {
     0x0100, 0x024F, 0x0300, 0x052F, 0x1E00, 0x1FFF,
     0x2000, 0x206F, 0x20A0, 0x20CF, 0x2100, 0x214F,
+    // Workshop navigation and relationship copy uses the Unicode arrows in
+    // this block. Keep them in the packaged atlas instead of relying on a host
+    // font (which rendered the same labels as tofu on clean installations).
+    0x2190, 0x21FF,
     0x2DE0, 0x2DFF, 0xA640, 0xA69F, 0xFF01, 0xFF5E,
     0xFFFD, 0xFFFD, 0,
 };

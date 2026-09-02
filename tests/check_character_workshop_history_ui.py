@@ -31,8 +31,39 @@ from character_validation_fixture import accepted_character_validation  # noqa: 
 PACKAGE_ID = "org.mdkr.history-proof"
 
 
-def install_fixture(root: Path, *, display_name: str = "History Proof") -> Path:
-    source = root / "source"
+def verify_status_capture_scope() -> None:
+    source = (ROOT / "platform" / "app" / "ui_settings.cpp").read_text(
+        encoding="utf-8"
+    )
+    setter = source[source.index("void setStatus("):
+                    source.index("void drawWorkshopStatusHistory()")]
+    if "g_workshopStatusCaptureDepth == 0u" not in setter:
+        raise RuntimeError(
+            "Workshop history is not isolated from unrelated settings status"
+        )
+    for function in (
+        "bool Settings_activateCharacterWorkshopPrimaryAction()",
+        "bool Settings_drawCharacterWorkshop(",
+        "void Settings_serviceCharacterWork()",
+        "SettingsCharacterStudioFrame Settings_drawCharacterOffsetStudio(",
+    ):
+        start = source.index(function)
+        if "WorkshopStatusCapture capture" not in source[start:start + 500]:
+            raise RuntimeError(
+                f"character status source is outside scoped history: {function}"
+            )
+    generic = source[source.index("void reportResult("):
+                     source.index("bool resultSucceeded(")]
+    if "WorkshopStatusCapture" in generic:
+        raise RuntimeError(
+            "generic video status was incorrectly routed into Workshop history"
+        )
+
+
+def install_fixture(root: Path, *, display_name: str = "History Proof",
+                    package_id: str = PACKAGE_ID,
+                    source_name: str = "source") -> Path:
+    source = root / source_name
     characters = root / "characters"
     source.mkdir()
     model = source / "model.glb"
@@ -43,7 +74,7 @@ def install_fixture(root: Path, *, display_name: str = "History Proof") -> Path:
     model.write_bytes(make_humanoid_glb(with_lod=True))
     portrait.write_bytes(make_portrait_png(40))
     manifest, _ = wizard.build_manifest(
-        model, PACKAGE_ID, display_name, "CC0-1.0",
+        model, package_id, display_name, "CC0-1.0",
         "Generated MDKR fixture", "https://example.invalid/history-proof",
         "diddy", ["car", "hovercraft", "plane"], portrait=portrait,
         minimap_rgb=[100, 180, 240], rig_mode="humanoid-retarget-v1",
@@ -58,6 +89,59 @@ def install_fixture(root: Path, *, display_name: str = "History Proof") -> Path:
     with accepted_character_validation(manager):
         manager.install(package, characters)
     return characters
+
+
+def run_delete_confirmation(binary: Path, root: Path, characters: Path,
+                            *, collision: bool) -> None:
+    run_root = root / ("delete-collision" if collision else "delete-unique")
+    prefs = run_root / "prefs"
+    saves = run_root / "saves"
+    prefs.mkdir(parents=True)
+    saves.mkdir()
+    (prefs / "mdkr64_app.ini").write_text(
+        f"character_workshop_last_selected={PACKAGE_ID}\n"
+        "character_workshop_last_tab=package\n",
+        encoding="utf-8",
+    )
+    environment = {
+        key: value for key, value in os.environ.items()
+        if not key.startswith(("MDKR", "GE007_"))
+    }
+    environment.update({
+        "LC_ALL": "C",
+        "MDKR_APP_SMOKE_FRAMES": "12",
+        "MDKR_APP_SMOKE_WINDOW_SIZE": "1280x720",
+        "MDKR_APP_PANEL": "Character Workshop",
+        "MDKR_APP_UI_TRACE": "1",
+        "MDKR_APP_PREFS_DIR": str(prefs),
+        "MDKR_SAVE_DIR": str(saves),
+        "MDKR_CUSTOM_CHARACTER_DIRECTORY": str(characters),
+        "MDKR_CHARACTER_MANAGER": str(
+            ROOT / "tests" / "run_character_manager_fixture.py"
+        ),
+        "MDKR_NO_CRASH_HANDLER": "1",
+        "MDKR64_HIDDEN": "1",
+        "MDKR_AUDIO": "0",
+        "MDKR_APP_SMOKE_CHARACTER_REMOVAL_CONFIRMATION":
+            "mdkr64-character-removal-confirmation-v1",
+    })
+    process = subprocess.run(
+        [str(binary)], cwd=run_root, env=environment, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        timeout=180, check=False,
+    )
+    marker = (
+        f"character-delete-confirmation package={PACKAGE_ID} "
+        f"collision={1 if collision else 0} "
+        f"confirm={'package-id' if collision else 'display-name'} "
+        "hold-ms=1250 external-source=retained"
+    )
+    if process.returncode != 0 or marker not in process.stdout:
+        raise RuntimeError(
+            "friendly deletion confirmation did not render its "
+            f"{'collision' if collision else 'unique-name'} policy\n" +
+            process.stdout[-8000:]
+        )
 
 
 def inventory(directory: Path) -> dict[str, str]:
@@ -203,6 +287,25 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
         raise RuntimeError(
             f"{tab} history route exited {process.returncode}\n"
             f"{process.stdout[-8000:]}"
+        )
+    expected_layout = "compact" if accessible else "wide"
+    expected_scale = "2.0" if accessible else "1.0"
+    expected_popup = "1" if accessible else "0"
+    ux_marker = (
+        "character-workshop-ux "
+        f"layout={expected_layout} scale={expected_scale} "
+        "glyphs=arrows "
+        f"tab-list-popup={expected_popup} "
+        "readiness-row-links=1 header-next=1 status-history=3 "
+        "undo=visible-tool library-next=1 rig-band=1 overlay-guidance=1 "
+        "vehicle-fit-use=1 delete=name-or-id+hold controller-port=1 "
+        "keyboard-authoring=required "
+        "pad-play-setup=complete"
+    )
+    if ux_marker not in process.stdout:
+        raise RuntimeError(
+            f"{tab} omitted the complete responsive Workshop UX contract\n"
+            + process.stdout[-8000:]
         )
     for tool in expected:
         marker = f"character-history tool={tool} "
@@ -446,6 +549,7 @@ def main() -> int:
     binary = Path(resolve_binary(args.build)).resolve()
     rom = args.rom.resolve() if args.rom is not None else None
     try:
+        verify_status_capture_scope()
         with tempfile.TemporaryDirectory(
                 prefix="mdkr-workshop-history-") as temporary:
             root = Path(temporary)
@@ -453,18 +557,39 @@ def main() -> int:
             before = inventory(characters)
             routes = (
                 ("identity", ("Identity",)),
-                ("rig-motion", ("Rig",)),
-                ("profile", ("Profile",)),
-                ("vehicles", ("Fit",)),
+                ("rig-motion", ("Rig & Motion",)),
+                ("profile", ("Gameplay",)),
+                ("vehicles", ("Offset Studio",)),
                 ("performance", ("Performance",)),
-                ("test", ("Test setup",)),
+                ("test", ("Test",)),
             )
             for tab, tools in routes:
                 run_tab(binary, root, characters, tab, tools, rom)
             run_gamepad_import_focus(binary, root, characters)
+            run_delete_confirmation(
+                binary, root, characters, collision=False
+            )
             if inventory(characters) != before:
                 raise RuntimeError(
                     "rendering history controls mutated installed character bytes"
+                )
+            collision_root = root / "collision-fixture"
+            collision_root.mkdir()
+            collision_characters = install_fixture(collision_root)
+            install_fixture(
+                collision_root,
+                package_id="org.mdkr.history-proof-twin",
+                source_name="source-twin",
+            )
+            collision_before = inventory(collision_characters)
+            run_delete_confirmation(
+                binary, collision_root, collision_characters,
+                collision=True,
+            )
+            if inventory(collision_characters) != collision_before:
+                raise RuntimeError(
+                    "rendering collision-aware deletion confirmation mutated "
+                    "installed character bytes"
                 )
     except (OSError, RuntimeError, subprocess.SubprocessError,
             probe.ProbeError, manager.ManagerError) as error:
@@ -476,6 +601,8 @@ def main() -> int:
           "accessible donor metric badges, reversible animation intent, "
           "spatial fit/contact controls, "
           "keyboard/controller dense-editor escape routes, "
+          "wide and 200% compact tab/readiness/status/shortcut policy, "
+          "unique-name and collision-safe hold-to-delete confirmation, "
           "accessible performance targets with runtime-equivalent "
           "LOD assembly math, and all semantic pose inspection controls render "
           "without mutating installed bytes")

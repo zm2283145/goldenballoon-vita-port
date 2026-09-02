@@ -620,7 +620,7 @@ CharacterWorkshopPrimaryAction CharacterWorkshop_primaryAction(
                 CharacterWorkshopTab::Overview,
                 "Continue candidate review",
                 "Review candidate",
-                "Returns to the beginning of the mutation-free package comparison. Nothing installs until the review and local-use confirmation are complete.",
+                "Returns to the beginning of the read-only package comparison. The candidate is authenticated against installed state, and nothing installs until review and local-use confirmation are complete.",
             };
         case CharacterWorkshopJourney::RawAuthoring:
             return {
@@ -675,37 +675,42 @@ const char *CharacterWorkshop_primaryActionId(
     return "invalid";
 }
 
+namespace {
+
+struct CharacterWorkshopTabNomenclature {
+    const char *label;
+    const char *storageId;
+};
+
+// The single user-facing vocabulary for navigation, readiness destinations,
+// persistent routes, and spoken actions. Add or rename a workspace here so a
+// checklist cannot silently drift from the tab it opens.
+constexpr CharacterWorkshopTabNomenclature kWorkshopTabs[] = {
+    {"Overview", "overview"},
+    {"Identity", "identity"},
+    {"Rig & Motion", "rig-motion"},
+    {"Gameplay", "profile"},
+    {"Offset Studio", "vehicles"},
+    {"Performance", "performance"},
+    {"Test", "test"},
+    {"Package", "package"},
+};
+static_assert(std::size(kWorkshopTabs) ==
+              static_cast<size_t>(CharacterWorkshopTab::Count));
+
+} // namespace
+
 const char *CharacterWorkshop_tabLabel(CharacterWorkshopTab tab) {
-    static constexpr const char *kLabels[] = {
-        "Overview",
-        "Identity",
-        "Rig & Motion",
-        "Gameplay",
-        "Offset Studio",
-        "Performance",
-        "Test",
-        "Package",
-    };
     const size_t index = static_cast<size_t>(tab);
     return index < static_cast<size_t>(CharacterWorkshopTab::Count)
-               ? kLabels[index]
+               ? kWorkshopTabs[index].label
                : "Overview";
 }
 
 const char *CharacterWorkshop_tabStorageId(CharacterWorkshopTab tab) {
-    static constexpr const char *kIds[] = {
-        "overview",
-        "identity",
-        "rig-motion",
-        "profile",
-        "vehicles",
-        "performance",
-        "test",
-        "package",
-    };
     const size_t index = static_cast<size_t>(tab);
     return index < static_cast<size_t>(CharacterWorkshopTab::Count)
-               ? kIds[index]
+               ? kWorkshopTabs[index].storageId
                : "overview";
 }
 

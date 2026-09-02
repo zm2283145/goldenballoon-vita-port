@@ -768,6 +768,52 @@ static void test_participant_count_fixed_mid_session(void) {
            "count: still the formed party of two");
 }
 
+/* D8 cross-feature boundary: custom package ids stay presentation-side, so the
+ * reducer records only their retail donor characters.  Quitting and destroying
+ * a four-seat session must erase those donor facts before a differently-shaped
+ * party FORM publishes its new roster; otherwise presentation can correctly
+ * reassign a package while party authority retains a stale prior seat. */
+static void test_quit_and_reform_replaces_donor_roster(void) {
+    AdventurePartySession s;
+    AdventurePartyEvent first = make_event(ADVENTURE_PARTY_EVENT_FORM, 4);
+    AdventurePartyEvent second = make_event(ADVENTURE_PARTY_EVENT_FORM, 2);
+    static const uint8_t first_donors[4] = {9, 0, 1, 5};
+    static const uint8_t second_donors[2] = {3, 7};
+
+    adventure_party_session_init(&s);
+    for (int seat = 0; seat < 4; seat++) {
+        first.roster.character[seat] = first_donors[seat];
+    }
+    expect(adventure_party_session_apply(&s, &first) == ADVENTURE_PARTY_OK,
+           "reform-donor: first custom-donor roster formed");
+    expect(apply(&s, ADVENTURE_PARTY_EVENT_RESUME_SAVE, 4) ==
+               ADVENTURE_PARTY_OK,
+           "reform-donor: first roster active");
+    expect(apply(&s, ADVENTURE_PARTY_EVENT_QUIT, 4) == ADVENTURE_PARTY_OK,
+           "reform-donor: first roster quit");
+    expect(apply(&s, ADVENTURE_PARTY_EVENT_DESTROY, 4) == ADVENTURE_PARTY_OK,
+           "reform-donor: first roster destroyed");
+    expect(adventure_party_participant_count(&s) == 0 &&
+               adventure_party_character_for_seat(&s, 0) == -1 &&
+               adventure_party_character_for_seat(&s, 3) == -1,
+           "reform-donor: destroy erased every prior donor seat");
+
+    for (int seat = 0; seat < 2; seat++) {
+        second.roster.character[seat] = second_donors[seat];
+    }
+    expect(adventure_party_session_apply(&s, &second) == ADVENTURE_PARTY_OK,
+           "reform-donor: second custom-donor roster formed");
+    expect(adventure_party_participant_count(&s) == 2 &&
+               adventure_party_character_for_seat(&s, 0) == second_donors[0] &&
+               adventure_party_character_for_seat(&s, 1) == second_donors[1],
+           "reform-donor: second roster contains only current donors");
+    expect(adventure_party_character_for_seat(&s, 2) == -1 &&
+               adventure_party_character_for_seat(&s, 3) == -1,
+           "reform-donor: removed seats carry no stale donor identity");
+    expect(s.session_generation == 2,
+           "reform-donor: second party has a new session generation");
+}
+
 /* "Host seat never changes": across a full campaign walk the host is seat 0
  * after every single accepted event. */
 static void test_host_seat_never_changes(void) {
@@ -1009,6 +1055,7 @@ int main(int argc, char **argv) {
     test_quit_from_forming_and_shared_states();
     test_restore_mismatches_fail();
     test_participant_count_fixed_mid_session();
+    test_quit_and_reform_replaces_donor_roster();
     test_host_seat_never_changes();
     test_race_winner_never_changes_seats();
     test_property_random_sequences(seed, 20000);

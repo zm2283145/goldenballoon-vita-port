@@ -77,6 +77,27 @@ static_assert(
 std::string g_status;
 ImVec4      g_statusColor;
 
+struct WorkshopStatusEntry {
+    std::string text;
+    ImVec4      color;
+    uint32_t    serial;
+};
+
+// A later success must not erase the explanation for a preceding failure.
+// Keep a small process-local history: it is enough context to recover without
+// turning the Workshop into a log viewer, and every item can be acknowledged.
+std::vector<WorkshopStatusEntry> g_workshopStatusHistory;
+uint32_t g_workshopStatusSerial = 0u;
+unsigned g_workshopStatusCaptureDepth = 0u;
+
+class WorkshopStatusCapture {
+  public:
+    WorkshopStatusCapture() { ++g_workshopStatusCaptureDepth; }
+    ~WorkshopStatusCapture() { --g_workshopStatusCaptureDepth; }
+    WorkshopStatusCapture(const WorkshopStatusCapture &) = delete;
+    WorkshopStatusCapture &operator=(const WorkshopStatusCapture &) = delete;
+};
+
 struct EditState {
     bool initialized = false;
     bool active = false;
@@ -130,6 +151,53 @@ ImVec2 g_paceRectMax[3];
 void setStatus(const char *text, const ImVec4 &color) {
     g_status = text ? text : "";
     g_statusColor = color;
+    if (g_status.empty() || g_workshopStatusCaptureDepth == 0u) return;
+    if (!g_workshopStatusHistory.empty() &&
+        g_workshopStatusHistory.front().text == g_status) {
+        g_workshopStatusHistory.front().color = color;
+        return;
+    }
+    g_workshopStatusHistory.insert(
+        g_workshopStatusHistory.begin(),
+        {g_status, color, ++g_workshopStatusSerial});
+    if (g_workshopStatusHistory.size() > 3u) {
+        g_workshopStatusHistory.resize(3u);
+    }
+}
+
+void drawWorkshopStatusHistory() {
+    if (g_workshopStatusHistory.empty()) return;
+    ImGui::SeparatorText("Recent activity");
+    size_t acknowledgeIndex = g_workshopStatusHistory.size();
+    for (size_t index = 0u; index < g_workshopStatusHistory.size(); ++index) {
+        WorkshopStatusEntry &entry = g_workshopStatusHistory[index];
+        ImGui::PushID(static_cast<int>(entry.serial));
+        bool acknowledged = false;
+        if (ui::CardBegin("##character-workshop-status", entry.color, 0.0f)) {
+            ImGui::PushStyleColor(ImGuiCol_Text, entry.color);
+            ImGui::TextWrapped("%s", entry.text.c_str());
+            ImGui::PopStyleColor();
+            acknowledged = ImGui::SmallButton("Acknowledge");
+            ui::SpeakFocusedItem(
+                "Acknowledge Workshop message", entry.text.c_str(),
+                "Removes this message from the three most recent Workshop activities. It does not retry or undo the operation.");
+        }
+        ui::CardEnd();
+        ImGui::PopID();
+        if (acknowledged) acknowledgeIndex = index;
+    }
+    if (acknowledgeIndex < g_workshopStatusHistory.size()) {
+        g_workshopStatusHistory.erase(
+            g_workshopStatusHistory.begin() +
+            static_cast<std::ptrdiff_t>(acknowledgeIndex));
+        if (g_workshopStatusHistory.empty()) {
+            g_status.clear();
+        } else {
+            g_status = g_workshopStatusHistory.front().text;
+            g_statusColor = g_workshopStatusHistory.front().color;
+        }
+    }
+    ui::Gap(ui::kGapS);
 }
 
 /*
@@ -1880,7 +1948,8 @@ bool g_characterAdapterSmokeReviewFocused = false;
 std::string g_characterManagerReport;
 std::string g_characterInstallWarning;
 std::string g_characterPendingRemoval;
-char g_characterRemovalConfirmation[MDKR_MODERN_CHARACTER_ID_MAX] = {};
+char g_characterRemovalConfirmation[MDKR_MODERN_CHARACTER_NAME_MAX] = {};
+float g_characterRemovalHoldSeconds = 0.0f;
 std::string g_characterWorkshopSelection;
 bool g_characterWorkshopSelectionLoaded = false;
 CharacterWorkshopTab g_characterWorkshopTab = CharacterWorkshopTab::Overview;
@@ -8171,6 +8240,8 @@ void drawCharacterFitOverlay(const MdkrCharacterPreviewResult &result,
         selectedView >= 0
             ? "Measured target-space fit in the same plane as the editor. The shaded rectangle is the calibrated volume; the diamond is the fitted ground or seat anchor after authored corrections; the blue arrow is the rendered forward direction."
             : "Exact target-space fit from the successful replacement draw. The shaded rectangle is the calibrated volume; the diamond is the fitted ground or seat anchor after authored corrections; the blue arrow is the rendered forward direction.");
+    ui::TextSubtleWrapped(
+        "Use the plot to inspect fit; use the adjacent numeric controls to make precise keyboard or controller changes.");
     const float available = ImGui::GetContentRegionAvail().x;
     const int columns = viewCount == 1 ? 1
         : available >= 780.0f ? 3 : available >= 500.0f ? 2 : 1;
@@ -10052,7 +10123,7 @@ bool drawCharacterTuningEditor(int player,
         "Offset Studio setup", showFitInputs ? "expanded" : "collapsed",
         "Contains infrequent source normalization and vehicle coverage controls. Exact context preview and fitting follow immediately after it.");
     if (showFitInputs) {
-        ImGui::TextUnformatted("Enable this appearance in game on");
+        ImGui::TextUnformatted("Vehicles to fit and use");
         for (unsigned vehicle = 0u; vehicle < 3u; ++vehicle) {
             if (vehicle != 0u) ImGui::SameLine();
             const unsigned bit = 1u << vehicle;
@@ -10076,7 +10147,9 @@ bool drawCharacterTuningEditor(int player,
             if (!qualified) ImGui::EndDisabled();
         }
         ui::TextSubtleWrapped(
-            "This is a local enable/disable subset of the package compatibility saved above. The in-game vehicle choice still owns physics and handling.");
+            "Choose where this appearance can be used. The built-in vehicle still controls physics and handling.");
+        ui::HelpMarker(
+            "This local selection is limited to the package's authenticated compatibility mask. It changes presentation eligibility only; simulation and records remain owned by the built-in donor.");
 
         ImGui::SeparatorText("Source normalization");
         if ((entry->calibration_flags & 1u) != 0u) {
@@ -10142,20 +10215,25 @@ bool drawCharacterTuningEditor(int player,
         ui::TextSubtleWrapped(
             "Numeric editing remains available without a ROM. The studio will not pretend a generic viewport can validate kart occlusion, selection-room placement, or the game camera.");
     }
-    unsigned reviewContexts = 1u;
-    unsigned reviewedContexts = characterFitReviewed(
-        entry, edit, MDKR_CHARACTER_CONTEXT_SELECT) ? 1u : 0u;
+    const bool selectReviewed = characterFitReviewed(
+        entry, edit, MDKR_CHARACTER_CONTEXT_SELECT);
+    unsigned vehicleContexts = 0u;
+    unsigned reviewedVehicles = 0u;
     for (unsigned context = MDKR_CHARACTER_CONTEXT_CAR;
          context < MDKR_CHARACTER_CONTEXT_COUNT; ++context) {
         if ((edit.vehicleMask & (1u << (context - 1u))) == 0u) continue;
-        ++reviewContexts;
-        if (characterFitReviewed(entry, edit, context)) ++reviewedContexts;
+        ++vehicleContexts;
+        if (characterFitReviewed(entry, edit, context)) ++reviewedVehicles;
     }
-    ImGui::TextColored(
-        reviewedContexts == reviewContexts
-            ? AppTheme::good() : AppTheme::accent(),
-        "Fit review: %u of %u enabled contexts current",
-        reviewedContexts, reviewContexts);
+    ImGui::PushStyleColor(
+        ImGuiCol_Text,
+        selectReviewed && reviewedVehicles == vehicleContexts
+            ? AppTheme::good() : AppTheme::accent());
+    ImGui::TextWrapped(
+        "Fit check: Character Select %s · %u of %u vehicles reviewed since your last change",
+        selectReviewed ? "reviewed" : "needs review",
+        reviewedVehicles, vehicleContexts);
+    ImGui::PopStyleColor();
     int nextFitContext = -1;
     for (unsigned context = 0u;
          context < MDKR_CHARACTER_CONTEXT_COUNT; ++context) {
@@ -21461,12 +21539,18 @@ bool applyCharacterHistoryPayload(
 
 const char *characterHistoryToolName(CharacterHistoryTool tool) {
     switch (tool) {
-        case CharacterHistoryTool::Identity: return "Identity";
-        case CharacterHistoryTool::Profile: return "Profile";
-        case CharacterHistoryTool::Rig: return "Rig";
-        case CharacterHistoryTool::Fit: return "Fit";
-        case CharacterHistoryTool::Performance: return "Performance";
-        case CharacterHistoryTool::Test: return "Test setup";
+        case CharacterHistoryTool::Identity:
+            return CharacterWorkshop_tabLabel(CharacterWorkshopTab::Identity);
+        case CharacterHistoryTool::Profile:
+            return CharacterWorkshop_tabLabel(CharacterWorkshopTab::Profile);
+        case CharacterHistoryTool::Rig:
+            return CharacterWorkshop_tabLabel(CharacterWorkshopTab::RigMotion);
+        case CharacterHistoryTool::Fit:
+            return CharacterWorkshop_tabLabel(CharacterWorkshopTab::Vehicles);
+        case CharacterHistoryTool::Performance:
+            return CharacterWorkshop_tabLabel(CharacterWorkshopTab::Performance);
+        case CharacterHistoryTool::Test:
+            return CharacterWorkshop_tabLabel(CharacterWorkshopTab::Test);
         default: return "Editor";
     }
 }
@@ -21503,8 +21587,17 @@ CharacterHistoryFrame beginCharacterHistory(
     const std::string undoLabel = std::string("Undo ") +
         characterHistoryToolName(tool);
     const bool undoReady = CharacterEditHistory::canUndo(track);
+    // Focused routing lets an active text/numeric editor keep its native undo
+    // before the surrounding visible Workshop tool claims the chord.
+    const ImGuiInputFlags historyShortcutFlags =
+        ImGuiInputFlags_RouteFocused;
+    const bool undoShortcut =
+        ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Z,
+                        historyShortcutFlags) ||
+        ImGui::Shortcut(ImGuiMod_Super | ImGuiKey_Z,
+                        historyShortcutFlags);
     if (!undoReady) ImGui::BeginDisabled();
-    if (ImGui::Button(undoLabel.c_str()) && undoReady) {
+    if ((ImGui::Button(undoLabel.c_str()) || undoShortcut) && undoReady) {
         std::string target;
         std::string error;
         if (CharacterEditHistory::undoTarget(track, target) &&
@@ -21528,8 +21621,15 @@ CharacterHistoryFrame beginCharacterHistory(
     const std::string redoLabel = std::string("Redo ") +
         characterHistoryToolName(tool);
     const bool redoReady = CharacterEditHistory::canRedo(track);
+    const bool redoShortcut =
+        ImGui::Shortcut(
+            ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z,
+            historyShortcutFlags) ||
+        ImGui::Shortcut(
+            ImGuiMod_Super | ImGuiMod_Shift | ImGuiKey_Z,
+            historyShortcutFlags);
     if (!redoReady) ImGui::BeginDisabled();
-    if (ImGui::Button(redoLabel.c_str()) && redoReady) {
+    if ((ImGui::Button(redoLabel.c_str()) || redoShortcut) && redoReady) {
         std::string target;
         std::string error;
         if (CharacterEditHistory::redoTarget(track, target) &&
@@ -23389,12 +23489,15 @@ void loadCharacterWorkshopTab() {
     g_characterWorkshopTabForceSelection = true;
 }
 
-void drawCharacterWorkshopTabs() {
+void drawCharacterWorkshopTabs(bool compact) {
     loadCharacterWorkshopTab();
     CharacterWorkshopTab visible = g_characterWorkshopTab;
+    const ImGuiTabBarFlags tabFlags = ImGuiTabBarFlags_FittingPolicyScroll |
+        (compact ? ImGuiTabBarFlags_TabListPopupButton
+                 : ImGuiTabBarFlags_None);
     if (ImGui::BeginTabBar(
             "##character-workshop-tabs",
-            ImGuiTabBarFlags_FittingPolicyScroll)) {
+            tabFlags)) {
         for (size_t index = 0u;
              index < static_cast<size_t>(CharacterWorkshopTab::Count);
              ++index) {
@@ -23535,6 +23638,23 @@ ImVec4 characterWorkshopStatusColour(
     return AppTheme::subtle();
 }
 
+std::string characterWorkshopVehicleSummary(
+    const MdkrModernCharacterEntry *entry) {
+    if (entry == nullptr) return "None";
+    static constexpr const char *kVehicleNames[] = {
+        "Car", "Hovercraft", "Plane",
+    };
+    const CharacterTuningEdit &tuning = loadCharacterTuning(0, entry->id);
+    const uint32_t enabled = entry->vehicle_mask & tuning.vehicleMask;
+    std::string summary;
+    for (size_t vehicle = 0u; vehicle < std::size(kVehicleNames); ++vehicle) {
+        if ((enabled & (1u << vehicle)) == 0u) continue;
+        if (!summary.empty()) summary += ", ";
+        summary += kVehicleNames[vehicle];
+    }
+    return summary.empty() ? "None" : summary;
+}
+
 void drawCharacterReadiness(
     const MdkrModernCharacterEntry   *entry,
     const CharacterWorkshopReadiness &readiness,
@@ -23558,7 +23678,26 @@ void drawCharacterReadiness(
         for (const CharacterWorkshopReadinessRow &row : readiness.rows) {
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
-            ImGui::TextUnformatted(CharacterWorkshop_readinessLabel(row.id));
+            ImGui::PushID(static_cast<int>(row.id));
+            const bool complete =
+                row.status == CharacterWorkshopReadinessStatus::Ready ||
+                row.status == CharacterWorkshopReadinessStatus::Accepted;
+            if (complete) {
+                ImGui::TextUnformatted(CharacterWorkshop_readinessLabel(row.id));
+            } else {
+                if (ImGui::SmallButton(
+                        CharacterWorkshop_readinessLabel(row.id))) {
+                    persistCharacterWorkshopTab(row.actionTab, true);
+                }
+                ui::SpeakFocusedItem(
+                    CharacterWorkshop_readinessLabel(row.id),
+                    CharacterWorkshop_statusLabel(row.status),
+                    "Opens the Workshop workspace that can complete this readiness area. It does not save or publish a change by itself.");
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("· in %s",
+                                CharacterWorkshop_tabLabel(row.actionTab));
+            ImGui::PopID();
             ImGui::TableNextColumn();
             ImGui::TextColored(
                 characterWorkshopStatusColour(row.status),
@@ -23760,7 +23899,18 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
                             entry->short_name,
                             donorName(entry->donor));
     }
-    drawCharacterWorkshopTabs();
+    const std::string headerNext = std::string("Next: ") +
+        readiness.nextActionLabel + " · in " +
+        CharacterWorkshop_tabLabel(readiness.nextActionTab);
+    ui::TextSubtleWrapped("%s", headerNext.c_str());
+    if (ImGui::SmallButton("Open next step##character-workshop-header-next")) {
+        persistCharacterWorkshopTab(readiness.nextActionTab, true);
+    }
+    ui::SpeakFocusedItem(
+        readiness.nextActionLabel,
+        CharacterWorkshop_tabLabel(readiness.nextActionTab),
+        "Opens the selected character's highest-priority next step without saving, building, enabling, assigning, or launching it.");
+    drawCharacterWorkshopTabs(compact);
     if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
         static std::string tracedInspectorRoute;
         const std::string traceKey = std::string(entry->id) + "\n" +
@@ -23779,6 +23929,17 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
 
     if (g_characterWorkshopTab == CharacterWorkshopTab::Overview) {
         ImGui::SeparatorText("Overview");
+        drawCharacterReadiness(
+            entry,
+            readiness,
+            normalized,
+            anchored,
+            attachmentSocketsMapped,
+            motionReady,
+            qualified,
+            identityReady,
+            rigStatus);
+        ImGui::SeparatorText("Package details");
         ImGui::TextDisabled(
             "Short label: %s · Narration: %s · Sort: %s",
             entry->short_name,
@@ -23859,20 +24020,29 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
         ui::TextSubtleWrapped(
             "The guide uses the actual nearest LOD plus package-wide resource costs. It is not measured frame time; use the assembly below to inspect split-screen structural load before an exact-context stress run.");
 
-        drawCharacterReadiness(
-            entry,
-            readiness,
-            normalized,
-            anchored,
-            attachmentSocketsMapped,
-            motionReady,
-            qualified,
-            identityReady,
-            rigStatus);
     }
 
     if (g_characterWorkshopTab == CharacterWorkshopTab::RigMotion) {
-        ImGui::SeparatorText("Rig and motion status");
+        ImGui::SeparatorText("Rig & Motion");
+        const CharacterWorkshopReadinessRow &rigReadiness =
+            readiness.rows[static_cast<size_t>(
+                CharacterWorkshopReadinessId::RigMotion)];
+        const ImVec4 rigBandColour =
+            characterWorkshopStatusColour(rigReadiness.status);
+        if (ui::CardBegin("##character-rig-motion-status", rigBandColour,
+                          0.0f)) {
+            ImGui::PushStyleColor(ImGuiCol_Text, rigBandColour);
+            ImGui::TextUnformatted(
+                CharacterWorkshop_statusLabel(rigReadiness.status));
+            ImGui::PopStyleColor();
+            ui::TextSubtleWrapped(
+                motionReady
+                    ? "Motion is ready. Review the detailed rig evidence below whenever the source changes."
+                    : humanoidRig
+                        ? "Review the humanoid mapping and motion checks below before normal play."
+                        : "Add complete authored motion, or provide and review a humanoid rig.");
+        }
+        ui::CardEnd();
         if (entry->rig_role_mask != 0u) {
             ImGui::TextDisabled(
                 "Rig contract: %s · %u/16 humanoid roles · %u inferred · minimum confidence %.0f%%",
@@ -24147,6 +24317,16 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
     }
 
     if (g_characterWorkshopTab == CharacterWorkshopTab::Package) {
+        ImGui::SeparatorText("Vehicles to fit and use");
+        const std::string enabledVehicles =
+            characterWorkshopVehicleSummary(entry);
+        ImGui::TextWrapped("Current: %s", enabledVehicles.c_str());
+        if (ImGui::SmallButton("Change in Offset Studio")) {
+            persistCharacterWorkshopTab(CharacterWorkshopTab::Vehicles, true);
+        }
+        ui::SpeakFocusedItem(
+            "Change vehicles to fit and use", enabledVehicles.c_str(),
+            "Opens Offset Studio, where presentation eligibility and each enabled vehicle's exact fit are reviewed. Built-in vehicle physics are unchanged.");
         ImGui::SeparatorText("Named drafts and build");
         if (drawCharacterDraftLifecycle(entry)) {
             /* Building refreshes the registry and invalidates `entry`. */
@@ -24241,9 +24421,22 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
         const bool deletionInventoriesWritable =
             g_characterDraftsWritable && g_characterTestEvidenceWritable;
         if (!deletionInventoriesWritable) ImGui::BeginDisabled();
+        const char *removalSmoke = std::getenv(
+            "MDKR_APP_SMOKE_CHARACTER_REMOVAL_CONFIRMATION");
+        static std::set<std::string> removalSmokePackages;
+        if (removalSmoke != nullptr &&
+            std::strcmp(removalSmoke,
+                        "mdkr64-character-removal-confirmation-v1") == 0 &&
+            removalSmokePackages.insert(entry->id).second) {
+            g_characterPendingRemoval = entry->id;
+            g_characterRemovalConfirmation[0] = '\0';
+            g_characterRemovalHoldSeconds = 0.0f;
+            ImGui::OpenPopup("Permanently delete custom character?");
+        }
         if (ImGui::Button("Permanently delete package...")) {
             g_characterPendingRemoval = entry->id;
             g_characterRemovalConfirmation[0] = '\0';
+            g_characterRemovalHoldSeconds = 0.0f;
             ImGui::OpenPopup("Permanently delete custom character?");
         }
         if (!deletionInventoriesWritable) ImGui::EndDisabled();
@@ -24268,9 +24461,39 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
                 entry->provenance_reports);
             ui::TextSubtleWrapped(
                 "The external .mdkrchar file you originally chose is not touched. A revision created only inside the Workshop may have no other copy. Export a retained source above before continuing if you need a recoverable backup.");
+            unsigned matchingNames = 0u;
+            const int registryCount =
+                mdkr_modern_character_registry_count(&g_characterRegistry);
+            for (int index = 0; index < registryCount; ++index) {
+                const MdkrModernCharacterEntry *candidate =
+                    mdkr_modern_character_registry_entry(
+                        &g_characterRegistry, index);
+                if (candidate != nullptr &&
+                    std::strcmp(candidate->display_name,
+                                entry->display_name) == 0) {
+                    ++matchingNames;
+                }
+            }
+            const bool nameCollision = matchingNames > 1u;
+            const char *confirmationValue =
+                nameCollision ? entry->id : entry->display_name;
+            if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+                static std::set<std::string> tracedRemovalConfirmations;
+                const std::string traceKey = std::string(entry->id) +
+                    (nameCollision ? "-id" : "-name");
+                if (tracedRemovalConfirmations.insert(traceKey).second) {
+                    std::fprintf(
+                        stderr,
+                        "[app-ui] character-delete-confirmation package=%s collision=%d confirm=%s hold-ms=1250 external-source=retained\n",
+                        entry->id, nameCollision ? 1 : 0,
+                        nameCollision ? "package-id" : "display-name");
+                }
+            }
             ImGui::TextWrapped(
-                "To confirm, type the exact package ID: %s",
-                entry->id);
+                nameCollision
+                    ? "Two installed characters share this name. To confirm, type the package ID: %s"
+                    : "To confirm, type the character name: %s",
+                confirmationValue);
             ImGui::SetNextItemWidth(-1.0f);
             ImGui::InputText(
                 "##character-removal-confirmation",
@@ -24278,15 +24501,18 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
                 sizeof(g_characterRemovalConfirmation));
             ui::SpeakFocusedItem(
                 "Permanent deletion confirmation", nullptr,
-                "Type the exact package identifier shown above. Display names are not accepted.");
+                nameCollision
+                    ? "Because another installed character has the same display name, type the exact package identifier shown above."
+                    : "Type the exact displayed character name shown above. The package identifier is not required when the name is unique.");
             const bool deletionConfirmed =
                 g_characterPendingRemoval == entry->id &&
                 std::strcmp(g_characterRemovalConfirmation,
-                            entry->id) == 0;
+                            confirmationValue) == 0;
             const bool popupAppearing = ImGui::IsWindowAppearing();
             if (ImGui::Button("Cancel")) {
                 g_characterPendingRemoval.clear();
                 g_characterRemovalConfirmation[0] = '\0';
+                g_characterRemovalHoldSeconds = 0.0f;
                 ImGui::CloseCurrentPopup();
             }
             if (popupAppearing) ImGui::SetItemDefaultFocus();
@@ -24296,11 +24522,31 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
             ImGui::SameLine();
             if (!deletionConfirmed) ImGui::BeginDisabled();
             ImGui::PushStyleColor(ImGuiCol_Button, AppTheme::bad());
-            const bool deletePressed =
-                ImGui::Button("Delete package and revisions") &&
-                deletionConfirmed;
+            (void)ImGui::Button("Hold to delete package and revisions");
+            ui::SpeakFocusedItem(
+                "Hold to delete package and revisions",
+                deletionConfirmed
+                    ? "Hold for one and a quarter seconds to confirm."
+                    : nameCollision
+                        ? "Type the exact package identifier to enable deletion."
+                        : "Type the exact character name to enable deletion.",
+                "A sustained keyboard, controller, or pointer hold transactionally quarantines every locally retained file before removing package-owned settings and revisions. The external file originally imported is unchanged.");
+            if (deletionConfirmed && ImGui::IsItemActive()) {
+                g_characterRemovalHoldSeconds += ImGui::GetIO().DeltaTime;
+            } else if (!ImGui::IsItemActive()) {
+                g_characterRemovalHoldSeconds = 0.0f;
+            }
+            const bool deletePressed = deletionConfirmed &&
+                g_characterRemovalHoldSeconds >= 1.25f;
             ImGui::PopStyleColor();
             if (!deletionConfirmed) ImGui::EndDisabled();
+            ImGui::ProgressBar(
+                std::clamp(g_characterRemovalHoldSeconds / 1.25f,
+                           0.0f, 1.0f),
+                ImVec2(-1.0f, 0.0f),
+                deletionConfirmed
+                    ? "Hold for 1.25 seconds to confirm"
+                    : "Enter the confirmation above first");
             if (deletePressed) {
                 const std::string removedId = g_characterPendingRemoval;
                 if (removeCharacterPackage(removedId)) {
@@ -24316,6 +24562,7 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
                             : AppTheme::accent());
                     g_characterPendingRemoval.clear();
                     g_characterRemovalConfirmation[0] = '\0';
+                    g_characterRemovalHoldSeconds = 0.0f;
                     ImGui::CloseCurrentPopup();
                     ImGui::EndPopup();
                     ImGui::PopID();
@@ -24327,12 +24574,6 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
                 }
                 ImGui::CloseCurrentPopup();
             }
-            ui::SpeakFocusedItem(
-                "Delete package and revisions",
-                deletionConfirmed
-                    ? nullptr
-                    : "Type the exact package identifier to enable deletion.",
-                "Transactionally quarantines every locally retained file before removing package-owned settings and revisions. The external file originally imported is unchanged.");
             ImGui::EndPopup();
         }
     }
@@ -25197,7 +25438,7 @@ void drawCharacterRawIntakeEditor(bool rail) {
     }
     ImGui::SeparatorText("Raw GLB authoring draft");
     ui::TextSubtleWrapped(
-        "This resumable draft creates a source-only package, then hands it to the same mutation-free review and local-rights confirmation as every other import. Nothing here changes the installed library.");
+        "This draft builds a package from your source, then lets you review it and confirm local-use rights before anything is installed. You can leave and resume without changing the installed library.");
     const std::string activeLabel = intake.displayName[0] != '\0'
         ? intake.displayName : intake.modelPath;
     ImGui::SetNextItemWidth(-1.0f);
@@ -25546,7 +25787,7 @@ void drawCharacterRawIntakeEditor(bool rail) {
     ui::SpeakFocusedItem(
         "Gameplay donor", donors[intake.donor],
         "Chooses the built-in racer that remains authoritative for physics, collision, audio, ghosts, records, and network identity.");
-    ImGui::TextUnformatted("Supported vehicles");
+    ImGui::TextUnformatted("Vehicles to fit and use");
     static const char *vehicles[] = {"Car", "Hovercraft", "Plane"};
     for (int vehicle = 0; vehicle < 3; ++vehicle) {
         changed |= ImGui::Checkbox(vehicles[vehicle], &intake.vehicles[vehicle]);
@@ -26147,7 +26388,7 @@ void drawCharacterImportControls(bool rail) {
                       AppTheme::accent(), 0.0f)) {
         ImGui::TextUnformatted("Validating package in the background");
         ui::TextSubtleWrapped(
-            "The Workshop remains usable. Validation is bounded and mutation-free; install stays unavailable until the complete result is published on this UI thread.");
+            "You can keep using the Workshop while this check runs. Nothing will be installed unless the complete result is ready for your review.");
         if (ImGui::Button("Discard result when finished")) {
             g_characterPackageInspection.discardResult();
             setStatus(
@@ -26715,6 +26956,8 @@ const MdkrModernCharacterEntry *drawCharacterLibrary(bool rail) {
             characterWorkshopReadinessForEntry(entry);
         const bool        selected = g_characterWorkshopSelection == entry->id;
         const std::string label    = std::string(entry->display_name) + "\n" +
+                                     "Next: " + readiness.nextActionCompactLabel +
+                                     " · " +
                                      std::to_string(readiness.readyCount) + "/" +
                                      std::to_string(readiness.rows.size()) + " ready · " +
                                      (entry->enabled != 0u ? "Enabled" : "Disabled") +
@@ -26746,6 +26989,8 @@ bool drawCharacterAssignments() {
     ImGui::SeparatorText("Use in game");
     ui::TextSubtleWrapped(
         "Assignments are separate from editing. A character's saved fit follows the package, regardless of which local player uses it.");
+    ui::TextSubtleWrapped(
+        "Player N = controller port N for local multiplayer.");
     bool attestationChanged = false;
     for (int index = 0; index < characterCount; ++index) {
         const MdkrModernCharacterEntry *entry =
@@ -26928,9 +27173,23 @@ bool drawCustomCharactersSection(bool compact) {
         }
     }
     ui::TextSubtleWrapped(
-        compact
-            ? "Local appearance only. A qualified built-in donor still owns gameplay, audio, records, and online identity."
-            : "Appearance packages are local presentation only. The selected fingerprint-qualified built-in donor still owns simulation, collision, audio, ghosts, records, and network/rollback identity; no second ROM is required.");
+        "Custom characters change appearance only. A built-in racer still controls handling, voice, records, and online play.");
+    ui::HelpMarker(
+        "The selected fingerprint-qualified built-in donor remains authoritative for simulation, collision, audio, ghosts, records, and network/rollback identity. The package is local presentation and requires no second ROM.");
+    ui::TextSubtleWrapped(
+        "A keyboard is required to enter source paths, names, and license details. Assigning, enabling, and testing an installed character is fully navigable with a controller.");
+    if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+        static std::set<std::string> tracedWorkshopUx;
+        const std::string traceKey = std::string(compact ? "compact" : "wide") +
+            (AppTheme::uiScale() >= 1.99f ? "-200" : "-standard");
+        if (tracedWorkshopUx.insert(traceKey).second) {
+            std::fprintf(
+                stderr,
+                "[app-ui] character-workshop-ux layout=%s scale=%.1f glyphs=arrows tab-list-popup=%d readiness-row-links=1 header-next=1 status-history=3 undo=visible-tool library-next=1 rig-band=1 overlay-guidance=1 vehicle-fit-use=1 delete=name-or-id+hold controller-port=1 keyboard-authoring=required pad-play-setup=complete\n",
+                compact ? "compact" : "wide",
+                static_cast<double>(AppTheme::uiScale()), compact ? 1 : 0);
+        }
+    }
     if (mdkr_render_backend() != MDKR_BACKEND_WEBGPU) {
         ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
         ImGui::TextWrapped(
@@ -27620,6 +27879,7 @@ Settings_characterWorkshopPrimaryAction() {
 }
 
 bool Settings_activateCharacterWorkshopPrimaryAction() {
+    const WorkshopStatusCapture capture;
     const CharacterWorkshopPrimaryAction action =
         resolveCharacterWorkshopPrimaryAction();
     switch (action.kind) {
@@ -27667,17 +27927,9 @@ bool Settings_activateCharacterWorkshopPrimaryAction() {
 }
 
 bool Settings_drawCharacterWorkshop(SDL_Window *window, bool compact) {
+    const WorkshopStatusCapture capture;
     (void)window;
-    if (!g_status.empty()) {
-        if (ui::CardBegin("##character-workshop-status", g_statusColor,
-                          0.0f)) {
-            ImGui::PushStyleColor(ImGuiCol_Text, g_statusColor);
-            ImGui::TextWrapped("%s", g_status.c_str());
-            ImGui::PopStyleColor();
-        }
-        ui::CardEnd();
-        ui::Gap(ui::kGapS);
-    }
+    drawWorkshopStatusHistory();
     return drawCustomCharactersSection(compact);
 }
 
@@ -27688,6 +27940,7 @@ bool Settings_takeCharacterWorkshopOpenRequest() {
 }
 
 void Settings_serviceCharacterWork() {
+    const WorkshopStatusCapture capture;
     serviceAllCharacterWork();
 }
 
@@ -27818,6 +28071,7 @@ void rollbackCharacterStudioPersistence(
 SettingsCharacterStudioFrame Settings_drawCharacterOffsetStudio(
     SDL_Window *window, const char *packageId,
     MdkrCharacterPreviewContext previewContext, bool initializeRuntime) {
+    const WorkshopStatusCapture capture;
     (void)window;
     SettingsCharacterStudioFrame frame;
     const MdkrModernCharacterEntry *entry = characterStudioEntry(packageId);
@@ -27852,6 +28106,8 @@ SettingsCharacterStudioFrame Settings_drawCharacterOffsetStudio(
         context == MDKR_CHARACTER_CONTEXT_SELECT
             ? "Adjust the model against the real selection-room floor, donor animation, and game camera. Changes appear in the scene on the next rendered frame."
             : "Adjust the model against the real donor, vehicle, seat frame, animation, and game camera. Changes appear in the scene on the next rendered frame.");
+    ui::TextSubtleWrapped(
+        "Changes are previewed live and stay in this fit draft until you return to the Workshop.");
 
     CharacterHistoryFrame history = beginCharacterHistory(
         entry, CharacterHistoryTool::Fit);

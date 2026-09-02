@@ -1,7 +1,9 @@
 # Adventure Party — split-screen Adventure for two to four players
 
-**Status:** implementation plan; no feature claims in this document are shipped
-unless a gate is explicitly recorded as passing.
+**Status:** AP-00 through AP-17 are implemented behind an off-by-default gate;
+AP-18 through AP-22 release qualification remains in progress. No feature claim
+is release-qualified unless its gate and candidate evidence are explicitly
+recorded as passing.
 
 **Goal:** make two, three, or four local players able to enter Adventure together,
 drive independently in every lobby, complete the campaign as one party, and keep
@@ -131,6 +133,23 @@ test oracle before implementation.
 | Online | Out of scope; Adventure Party is local-only and never changes online player authority |
 | Persistence | No party/session data in EEPROM; ordinary campaign progress persists exactly as retail progress does |
 | Native save states | Unavailable while a party session is active in v1, with an existing-style explanatory prompt; serialization requires a later native sidecar contract |
+
+Several implementation rulings make that contract precise:
+
+- Party admission explicitly clears, and never sets, retail
+  `gIsInTwoPlayerAdventure`; this prevents stale `JOINTVENTURE` lead swapping
+  from leaking into a new party while leaving the retail two-player path intact.
+- A whole-party Taj vehicle transform is an in-place roster transaction. It
+  preserves the session and level generations; only a real activity/level
+  transition advances the level generation.
+- `QUIT` is legal from every live party state and always enters teardown. Only
+  `OFF` and an already-`EXITING` session refuse it, so shared scenes, dialogue,
+  host-solo suspension, and restore cannot strand a session at title exit.
+- Trophy races use the retail eight-racer field with every party human plus
+  CPUs. All humans contend in the standings, but the one shared championship
+  result and trophy are keyed to the host's racer-zero rank because the retail
+  ceremony exposes one campaign owner. “Best party human” would be a different
+  progression rule and is not inferred.
 
 Adventure Two uses the same party policy and its existing save flag, mirrored
 tracks, coin object set, and progression rules. It is a required matrix arm, not a
@@ -366,6 +385,19 @@ Illegal events return a typed error and do not mutate state. Starting a second
 transition, committing a stale generation, awarding twice, restoring a different
 roster, or changing participant count mid-session are unit-test failures.
 
+The new-game cinematic has one explicit adapter envelope. After the host commits
+the new filename, File Select builds the joined roster and applies `FORM` then
+`START_NEW_GAME` before starting the authored cinematic. The cinematic remains
+stock one-player (`gNumberOfActivePlayers == 1`) with no live party input, while
+its positive menu result preserves the stable 2–4 participant count. At the
+natural, unskippable terminus, the menu applies `SCENE_COMPLETE` exactly once
+before returning that count to the first hub load. The existing lobby adapter
+then publishes the full roster, split layout, and seat-to-controller bindings.
+A reducer refusal at formation, scene entry, or scene completion tears down the
+attempt and returns to title; it may never degrade into a one-player campaign
+under a live session. Quit-to-title is legal from `SHARED_SCENE` and follows the
+same `QUIT -> DESTROY` teardown used by every other live party state.
+
 ### Activity capability table
 
 Do not equate a `race_type` with a complete product rule. Resolve a capability at
@@ -547,10 +579,10 @@ calendar promises. Every ticket includes its test and positive control.
 | AP-05 Instrumentation | M | AP-02 | Read-only traces for session, roster, controller binding, transition, interaction, award, layout, and restore generations |
 | AP-06 Activation/admission | M | AP-03 | Gameplay enhancement/category/proof profile plus normal Character Select → Game Select → File Select route for 2–4; off/compiled-out paths byte-identical; party-active save-state refusal registered in `platform/save_state.*` with its existing-style prompt |
 | AP-07 Formation planner | M | AP-03, AP-04 | Pure candidate planner and collision-validating adapter; deterministic all-hub fixtures |
-| AP-08 Lobby roster | L | AP-05–07 | Atomic 2/3/4 racer spawn, viewport layout, per-seat input and HUD in one representative lobby; fixtures use existing-save files until AP-11 delivers the new-game shared-scene envelope |
+| AP-08 Lobby roster | L | AP-05–07 | Atomic 2/3/4 racer spawn, viewport layout, per-seat input and HUD in one representative lobby; existing-save and new-game shared-scene admission fixtures both restore the roster |
 | AP-09 Transition arbiter | M | AP-02, AP-05 | Simultaneous/conflicting doors/exits reduce to one authored transition |
 | AP-10 Lobby interactions | L | AP-08, AP-09 | Doors, exits, key-locked doors, balloons, teleporters, pause, quit, and controller-disconnect pause/reconnect use shared authority in representative lobby |
-| AP-11 Taj/shared scenes | L | AP-08–10 | Nearest summon, host dialogue, party-wide transform, camera/fog, roster restoration; owns the `SHARED_SCENE` envelope used by new-game and world cutscenes |
+| AP-11 Taj/shared scenes | L | AP-08–10 | Nearest summon, host dialogue, party-wide transform, camera/fog, roster restoration; new-game `FORM -> SHARED_SCENE -> ACTIVE_LOBBY` runs around the stock one-player cinematic and returns the stable party count before first hub load |
 | AP-12 Default races | L | AP-08, AP-09 | 2/3/4 start, input, camera/HUD, field rule, results, retry, and lobby return; race entry is a party transition, so the arbiter is a dependency |
 | AP-13 Progress exact-once | L | AP-03, AP-05, AP-12 | Any-human win, and hidden course keys collected by any human, each map to one existing retail commit; losing/quit/retry and simultaneous finishes cannot award |
 | AP-14 Silver coins | L | AP-10, AP-13 | Shared count/visibility/HUD, eight-plus-win rule, replay behavior, save equivalence |
