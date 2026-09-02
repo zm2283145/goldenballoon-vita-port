@@ -341,18 +341,31 @@ bool mdkr_match_transport_drain_tick(
     }
     next.stats.drained++;
     detect_unrecoverable_gaps(&next);
-    /* One record per committed frame carries the confirmed/present masks, and
-     * a second only when the set of slots running on prediction changes -- a
-     * per-slot record every tick would spend the whole ring on steady state. */
-    mdkr_net_failure_ring_record_tick(
-        MDKR_NET_FAILURE_FRAME_COMMIT, tick, MDKR_NET_FAILURE_NO_SLOT, 0u,
-        base.confirmed_mask, base.present_mask);
-    next.predicted_slot_mask = (uint8_t)(
+    /* Both records fire on a CHANGE only, carrying how long the state they
+     * replace had held, so a quiet race costs the ring nothing and its tail
+     * spans the whole session instead of the last minute of it. */
+    next.commit_trace.confirmed_mask = base.confirmed_mask;
+    next.commit_trace.present_mask = base.present_mask;
+    next.commit_trace.predicted_slot_mask = (uint8_t)(
         next.remote_slot_mask & (uint8_t)~base.confirmed_mask);
-    if (next.predicted_slot_mask != transport->predicted_slot_mask) {
+    if (!transport->commit_trace.started ||
+        base.confirmed_mask != transport->commit_trace.confirmed_mask ||
+        base.present_mask != transport->commit_trace.present_mask) {
+        mdkr_net_failure_ring_record_tick(
+            MDKR_NET_FAILURE_FRAME_COMMIT, tick, MDKR_NET_FAILURE_NO_SLOT, 0u,
+            (uint32_t)base.confirmed_mask | ((uint32_t)base.present_mask << 8),
+            transport->commit_trace.run_ticks);
+        next.commit_trace.run_ticks = 1u;
+    } else {
+        next.commit_trace.run_ticks = transport->commit_trace.run_ticks + 1u;
+    }
+    next.commit_trace.started = true;
+    if (next.commit_trace.predicted_slot_mask !=
+        transport->commit_trace.predicted_slot_mask) {
         mdkr_net_failure_ring_record_tick(
             MDKR_NET_FAILURE_INPUT_PREDICTED, tick, MDKR_NET_FAILURE_NO_SLOT,
-            0u, next.predicted_slot_mask, transport->predicted_slot_mask);
+            0u, next.commit_trace.predicted_slot_mask,
+            transport->commit_trace.predicted_slot_mask);
     }
     next.bridge = transport->bridge;
     *transport->bridge = next_bridge;

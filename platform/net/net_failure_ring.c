@@ -29,11 +29,12 @@ static uint64_t g_recorded;
 /* The newest authored tick the simulation side has stamped, so a transport-side
  * record can be placed on the same timeline without reading it. */
 static uint32_t g_authored_tick;
+/* Install-scoped, not race-scoped: cleared only by an explicit set. */
+static char g_log_directory[1024];
 
 /* Stall tracker state (see mdkr_net_failure_ring_progress). */
 static uint32_t g_confirmed_through;
 static uint32_t g_confirmed_at_ms;
-static uint32_t g_stall_began_ms;
 static uint32_t g_stall_noted_ms;
 static bool g_stall_open;
 static bool g_stall_watchdogged;
@@ -95,6 +96,14 @@ void mdkr_net_failure_ring_redact(
 }
 
 #if MDKR_NET_FAILURE_RECORDING
+/* A re-simulated tick is behind the authored front by construction, so those
+ * kinds must not drag the tick a transport-side record inherits backwards. */
+static bool kind_replays(MdkrNetFailureKind kind) {
+    return kind == MDKR_NET_FAILURE_ROLLBACK_SAVE ||
+           kind == MDKR_NET_FAILURE_ROLLBACK_LOAD ||
+           kind == MDKR_NET_FAILURE_DESYNC_TICK;
+}
+
 static MdkrNetFailureRecord *push(MdkrNetFailureKind kind, unsigned slot,
                                   unsigned detail) {
     MdkrNetFailureRecord *record =
@@ -108,13 +117,22 @@ static MdkrNetFailureRecord *push(MdkrNetFailureKind kind, unsigned slot,
 }
 #endif
 
+void mdkr_net_failure_ring_set_log_directory(const char *directory) {
+    size_t length;
+    if (directory == NULL || directory[0] == '\0' ||
+        (length = strlen(directory)) >= sizeof(g_log_directory)) {
+        g_log_directory[0] = '\0';
+        return;
+    }
+    memcpy(g_log_directory, directory, length + 1u);
+}
+
 void mdkr_net_failure_ring_reset(void) {
     memset(g_records, 0, sizeof(g_records));
     g_recorded = 0u;
     g_authored_tick = 0u;
     g_confirmed_through = 0u;
     g_confirmed_at_ms = 0u;
-    g_stall_began_ms = 0u;
     g_stall_noted_ms = 0u;
     g_stall_open = false;
     g_stall_watchdogged = false;
@@ -129,7 +147,7 @@ void mdkr_net_failure_ring_record_tick(
     record->tick = tick;
     record->value_a = value_a;
     record->value_b = value_b;
-    g_authored_tick = tick;
+    if (!kind_replays(kind)) g_authored_tick = tick;
 #else
     (void)kind; (void)tick; (void)slot; (void)detail;
     (void)value_a; (void)value_b;
@@ -171,20 +189,22 @@ void mdkr_net_failure_ring_progress(
     if (!g_progress_seen || confirmed_through != g_confirmed_through) {
         g_progress_seen = true;
         g_confirmed_through = confirmed_through;
-        g_confirmed_at_ms = host_ms;
         if (g_stall_open) {
+            /* Measured from the LAST CONFIRMATION, the same origin stall_begin
+             * and stall_ongoing use, so every stall record reads on one scale.
+             * Computed before the new confirmation moves that origin. */
             push_stall(MDKR_NET_FAILURE_STALL_END, tick, host_ms,
-                       host_ms - g_stall_began_ms, peers);
+                       host_ms - g_confirmed_at_ms, peers);
             g_stall_open = false;
             g_stall_watchdogged = false;
         }
+        g_confirmed_at_ms = host_ms;
         return;
     }
     stalled_ms = host_ms - g_confirmed_at_ms;
     if (!g_stall_open) {
         if (stalled_ms < MDKR_NET_FAILURE_STALL_BEGIN_MS) return;
         g_stall_open = true;
-        g_stall_began_ms = host_ms;
         g_stall_noted_ms = host_ms;
         push_stall(MDKR_NET_FAILURE_STALL_BEGIN, tick, host_ms, stalled_ms,
                    peers);
@@ -282,13 +302,30 @@ bool mdkr_net_failure_ring_dump(const char *path) {
 
 bool mdkr_net_failure_ring_dump_beside_evidence(void) {
     /* The online lanes mirror their per-tick [SIMHASH] rows to
-     * MDKR_STATE_HASH_FILE; the tail lands next to that artifact so one
-     * capture carries both halves of the divergence story. */
+     * MDKR_STATE_HASH_FILE; when one is configured the tail lands next to that
+     * artifact so a single capture carries both halves of the story.
+     *
+     * A player has no such artifact, and a loss they cannot show anyone is
+     * worth nothing, so the fallback is the log directory the app shell handed
+     * over at install (mdkr_user_log_directory -- where mdkr64.log lives).
+     * Overwritten per loss: the race that just ended is what a report is
+     * about. */
     const char *artifact = getenv("MDKR_STATE_HASH_FILE");
-    char path[1024];
+    char path[sizeof(g_log_directory) + 64];
+    size_t length;
     int written;
-    if (artifact == NULL || artifact[0] == '\0') return false;
-    written = snprintf(path, sizeof(path), "%s.netfail", artifact);
+    if (artifact != NULL && artifact[0] != '\0') {
+        written = snprintf(path, sizeof(path), "%s.netfail", artifact);
+        if (written < 0 || (size_t)written >= sizeof(path)) return false;
+        return mdkr_net_failure_ring_dump(path);
+    }
+    if (g_log_directory[0] == '\0') return false;
+    length = strlen(g_log_directory);
+    written = snprintf(
+        path, sizeof(path), "%s%s%s", g_log_directory,
+        (g_log_directory[length - 1u] == '/' ||
+         g_log_directory[length - 1u] == '\\') ? "" : "/",
+        MDKR_NET_FAILURE_DUMP_LEAF);
     if (written < 0 || (size_t)written >= sizeof(path)) return false;
     return mdkr_net_failure_ring_dump(path);
 }

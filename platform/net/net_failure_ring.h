@@ -27,6 +27,10 @@ extern "C" {
 /* Records that belong to no single canonical slot. */
 #define MDKR_NET_FAILURE_NO_SLOT 0xffu
 
+/* The dump's file name when no evidence artifact is configured; it sits in the
+ * directory the app shell keeps mdkr64.log in. */
+#define MDKR_NET_FAILURE_DUMP_LEAF "mdkr64-online-failure.txt"
+
 /* The text a redaction-filtered code becomes when its source carries material
  * this ring must never retain. */
 #define MDKR_NET_FAILURE_REDACTED "redacted"
@@ -96,6 +100,14 @@ bool mdkr_net_failure_ring_recording(void);
 
 void mdkr_net_failure_ring_reset(void);
 
+/* Where a dump goes when no evidence artifact is configured -- every shipped
+ * build. The app shell resolves the directory the same way it names mdkr64.log
+ * (mdkr_user_log_directory) and hands it over once, so this module stays free
+ * of the path policy's SDL and filesystem dependencies. NULL or "" clears it.
+ * Survives mdkr_net_failure_ring_reset(): it is a property of the install, not
+ * of a race. */
+void mdkr_net_failure_ring_set_log_directory(const char *directory);
+
 /* Simulation-side record: the caller owns the tick, and no clock is read. */
 void mdkr_net_failure_ring_record_tick(
     MdkrNetFailureKind kind, uint32_t tick, unsigned slot, unsigned detail,
@@ -136,8 +148,11 @@ const char *mdkr_net_failure_kind_name(MdkrNetFailureKind kind);
 bool mdkr_net_failure_ring_dump(const char *path);
 
 /* Dump beside the per-tick state-hash evidence artifact the online lanes
- * already write (MDKR_STATE_HASH_FILE), as "<artifact>.netfail". False when
- * no artifact is configured -- there is then nothing to sit beside. */
+ * already write (MDKR_STATE_HASH_FILE), as "<artifact>.netfail". With no
+ * artifact configured -- every shipped build -- it falls back to
+ * MDKR_NET_FAILURE_DUMP_LEAF in the log directory set above, so a player's
+ * loss lands beside the mdkr64.log support already asks for. Overwritten per
+ * loss: the race that just ended is what a report is about. */
 bool mdkr_net_failure_ring_dump_beside_evidence(void);
 
 #ifdef __cplusplus

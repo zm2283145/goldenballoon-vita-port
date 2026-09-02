@@ -66,6 +66,20 @@ typedef struct MdkrMatchTransportStats {
     uint32_t takeover_ignored_inputs;
 } MdkrMatchTransportStats;
 
+/* What the last committed frame looked like, for the forensics ring alone.
+ * Recording a frame-commit every tick would spend the whole ring on steady
+ * state, so only a CHANGE in the committed masks is worth a record, and the
+ * run length says how many ticks the state it replaces had held. */
+typedef struct MdkrMatchCommitTrace {
+    uint32_t run_ticks;
+    uint8_t confirmed_mask;
+    uint8_t present_mask;
+    /* Remote slots whose committed frame came from prediction, not a received
+     * packet: a change here is the input-prediction transition. */
+    uint8_t predicted_slot_mask;
+    bool started;
+} MdkrMatchCommitTrace;
+
 typedef struct MdkrMatchTransport {
     MdkrNetInputHistory history;
     MdkrSessionBridge *bridge;
@@ -73,16 +87,14 @@ typedef struct MdkrMatchTransport {
     uint8_t active_slot_mask;
     uint8_t local_slot_mask;
     uint8_t remote_slot_mask;
-    /* Remote slots whose committed frame came from prediction, not a received
-     * packet, at the last drain. Only the forensics ring reads it: a change
-     * here is what the ring records as an input-prediction transition. */
-    uint8_t predicted_slot_mask;
+    uint8_t reserved;
     uint32_t remote_confirmed_through[MDKR_NET_INPUT_SLOTS];
     uint32_t ai_takeover_tick[MDKR_NET_INPUT_SLOTS];
     bool remote_have_confirmed[MDKR_NET_INPUT_SLOTS];
     uint8_t ai_takeover_scheduled_mask;
     uint8_t ai_takeover_started_mask;
     MdkrMatchRecovery recovery;
+    MdkrMatchCommitTrace commit_trace;
     MdkrMatchTransportStats stats;
     bool ready;
 } MdkrMatchTransport;

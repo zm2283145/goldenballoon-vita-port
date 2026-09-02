@@ -1204,7 +1204,7 @@ if(NOT EMSCRIPTEN)
                 # double running the real reducer; the transport side rides the
                 # loopback signal hub feeding real libdatachannel DTLS on
                 # 127.0.0.1. ROM-, GPU- and network-free.
-                add_executable(mdkr_online_live_adapter_test
+                set(MDKR_ONLINE_LIVE_ADAPTER_SOURCES
                     ${CMAKE_SOURCE_DIR}/tests/test_online_live_adapter.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_live_adapter.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/online_track_table.c
@@ -1235,6 +1235,8 @@ if(NOT EMSCRIPTEN)
                     ${CMAKE_SOURCE_DIR}/platform/sha256.c
                     ${CMAKE_SOURCE_DIR}/platform/party/party_retry_policy.cpp
                     ${CMAKE_SOURCE_DIR}/platform/party/party_webrtc_signaling.cpp)
+                add_executable(mdkr_online_live_adapter_test
+                    ${MDKR_ONLINE_LIVE_ADAPTER_SOURCES})
                 target_include_directories(mdkr_online_live_adapter_test PRIVATE
                     ${CMAKE_SOURCE_DIR}
                     ${CMAKE_SOURCE_DIR}/platform
@@ -1264,6 +1266,52 @@ if(NOT EMSCRIPTEN)
                 # Two real loopback DTLS meshes reaching preflight consensus;
                 # internal waits are bounded, so this timeout backstops a hang.
                 set_tests_properties(online_live_adapter PROPERTIES TIMEOUT 180)
+
+                # B4/A4 positive control: the SAME adapter, mesh and transport
+                # with the failure ring compiled out. It runs the identical
+                # --forensics scenario to the identical peer loss and writes no
+                # dump, so the forensics lane's assertions are proven to read
+                # the PRODUCTION recorder rather than the scenario.
+                add_executable(mdkr_online_live_adapter_norecord
+                    ${MDKR_ONLINE_LIVE_ADAPTER_SOURCES})
+                target_compile_definitions(mdkr_online_live_adapter_norecord
+                    PRIVATE MDKR_NET_FAILURE_RING_DISABLED=1)
+                target_include_directories(mdkr_online_live_adapter_norecord
+                    PRIVATE
+                    ${CMAKE_SOURCE_DIR}
+                    ${CMAKE_SOURCE_DIR}/platform
+                    ${MDKR_LIBDATACHANNEL_JSON_INCLUDE}
+                    ${MDKR_PARTY_GENERATED_INCLUDE})
+                target_include_directories(mdkr_online_live_adapter_norecord
+                    SYSTEM PRIVATE
+                    ${mdkr_libdatachannel_SOURCE_DIR}/include)
+                target_compile_features(mdkr_online_live_adapter_norecord
+                    PRIVATE cxx_std_17)
+                target_link_libraries(mdkr_online_live_adapter_norecord PRIVATE
+                    LibDataChannel::LibDataChannel MbedTLS::MbedTLS
+                    Threads::Threads)
+                if(WIN32)
+                    target_link_libraries(
+                        mdkr_online_live_adapter_norecord PRIVATE ws2_32)
+                endif()
+                if(MSVC)
+                    target_compile_options(
+                        mdkr_online_live_adapter_norecord PRIVATE /W4 /WX)
+                else()
+                    target_compile_options(
+                        mdkr_online_live_adapter_norecord PRIVATE
+                        -Wall -Wextra -Wpedantic -Werror)
+                endif()
+                find_package(Python3 COMPONENTS Interpreter REQUIRED)
+                add_test(
+                    NAME net_failure_ring_impairment
+                    COMMAND ${Python3_EXECUTABLE}
+                            ${CMAKE_SOURCE_DIR}/tests/check_net_failure_ring_impairment.py
+                            --record $<TARGET_FILE:mdkr_online_live_adapter_test>
+                            --norecord
+                            $<TARGET_FILE:mdkr_online_live_adapter_norecord>)
+                set_tests_properties(net_failure_ring_impairment
+                    PROPERTIES TIMEOUT 300)
 
                 # F4: the SAME adapter TU, compiled WITH
                 # MDKR_ENABLE_ONLINE_BETA (the target above deliberately does not

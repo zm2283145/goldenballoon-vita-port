@@ -11,6 +11,7 @@
  */
 #include "online/match_live_adapter.h"
 
+#include "net/net_failure_ring.h"
 #include "net/net_impairment.h"
 #include "net/net_roster_runtime.h"
 #include "net/party_link.h"
@@ -1019,6 +1020,45 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
             clock.nowMs += 2u;
             ++simTick;
+        }
+        if (severAfterTicks > 0u) {
+            /* The carrier has already starved A's confirmed frontier (the
+             * adapter's per-tick progress observations recorded the stall);
+             * now B goes silent for good, so A's own ping ladder resolves the
+             * typed PeerLost and the adapter takes its production loss path. */
+            result.severed = true;
+            result.racedBeforeSever =
+                cursorA > ia.firstTick ? cursorA - ia.firstTick : 0u;
+            /* Predict alone through the silence at the race's real cadence.
+             * A real engine loop keeps drawing frames while the peer is gone,
+             * and that is the only thing that hands the adapter a progress
+             * observation; stepping the fake clock one authored tick at a time
+             * (rather than the loop's 2 ms nudge) is what makes the confirmed
+             * frontier's stall measurable on the scale the race runs on. Held
+             * below the ping interval + stale window, so this phase is the
+             * stall and the jump below is the loss. */
+            for (unsigned step = 0u; step < 240u; ++step) {
+                A->service();
+                MdkrOnlineLiveRaceInfo pending{};
+                mdkr_online_live_adapter_race_info(A.get(), &pending);
+                if (pending.nextTick > target) break;
+                (void)mdkr_online_live_adapter_race_drain_local(A.get());
+                clock.nowMs += 1000u / 30u;
+            }
+            clock.nowMs += kMdkrMatchControlPingIntervalMs + 1u;
+            A->service(); /* A sends the ping B will never answer. */
+            clock.nowMs += kMdkrMatchControlPingTimeoutMs + 1u;
+            for (unsigned step = 0u; step < 5000u; ++step) {
+                A->service();
+                if (mdkr_online_live_adapter_race_peer_lost(A.get())) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                clock.nowMs += 2u;
+            }
+            result.survivorPeerLostAccessor =
+                mdkr_online_live_adapter_race_peer_lost(A.get());
+            MdkrOnlineLiveRaceInfo endA{};
+            mdkr_online_live_adapter_race_info(A.get(), &endA);
+            result.survivorPeerLostInfo = endA.peerLost;
         }
         result.racedTicks =
             (cursorA <= cursorB ? cursorA : cursorB) - ia.firstTick;
@@ -2926,14 +2966,49 @@ void test_stale_retry_cap_terminates_under_cross_type_traffic() {
     mdkr_net_roster_runtime_clear();
 }
 
+/* B4/A4 forensics: the SAME production path as
+ * test_midrace_peer_loss_ends_survivor, but starved by a seeded
+ * net_impairment carrier first, so the adapter's own per-tick progress
+ * observations record a stall before its own PeerLost handler dumps the ring's
+ * tail. Nothing here writes a record or calls dump: every record and the dump
+ * itself come from platform/net + platform/online. Delete the mesh recorder or
+ * the adapter's dump and the lane that reads this dump goes red. */
+void test_forensics_dump_on_midrace_peer_loss() {
+    const ImpairmentSpec outage{MDKR_NET_PROFILE_TWO_SECOND_OUTAGE,
+                                "two-second-outage", MATRIX_RECOVER,
+                                UINT64_C(0x4e455446)};
+    /* Both adapters record into the one process ring, so the pre-severance
+     * half of the dump carries each endpoint's ticks interleaved. */
+    const FullRunResult r =
+        driveTwoAdapters(/*bonusIdentityOnA=*/false, /*raceTicks=*/240u,
+                         /*imp=*/&outage, /*realInput=*/false,
+                         /*severAfterTicks=*/12u);
+    CHECK(r.raceRun);
+    CHECK(r.severed);
+    /* The carrier really starved the link before the loss. */
+    CHECK(r.impOutageDropped > 0u);
+    /* The survivor took the production loss path -- the one that dumps. */
+    CHECK(r.survivorPeerLostAccessor);
+    CHECK(r.survivorPeerLostInfo);
+    std::fprintf(stderr,
+                 "[forensics] peer loss after impairment: racedBeforeSever=%u "
+                 "outageDropped=%llu recording=%d\n",
+                 r.racedBeforeSever,
+                 (unsigned long long)r.impOutageDropped,
+                 mdkr_net_failure_ring_recording() ? 1 : 0);
+    mdkr_net_roster_runtime_clear();
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
     bool matrixOnly = false;
     bool latencyOnly = false;
+    bool forensicsOnly = false;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--matrix") == 0) matrixOnly = true;
         if (std::strcmp(argv[i], "--latency") == 0) latencyOnly = true;
+        if (std::strcmp(argv[i], "--forensics") == 0) forensicsOnly = true;
     }
     /* The token gate must be open for the live adapter to construct. The
      * matrix lane runs in its own process, so set it there too. */
@@ -2942,6 +3017,12 @@ int main(int argc, char **argv) {
 #else
     setenv("MDKR_INTERNAL_TEST_TOKEN", "mdkr64-online-live-v1", 1);
 #endif
+    if (forensicsOnly) {
+        test_forensics_dump_on_midrace_peer_loss();
+        std::fprintf(stderr, "online_live_forensics: %d checks, %d failures\n",
+                     g_checks, g_failures);
+        return g_failures == 0 ? 0 : 1;
+    }
     if (matrixOnly) {
         test_impairment_matrix();
         std::fprintf(stderr, "online_live_matrix: %d checks, %d failures\n",

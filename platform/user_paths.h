@@ -60,6 +60,11 @@ int mdkr_user_paths_write_relocated(void);
  * the operating system could not represent. */
 int mdkr_user_paths_relocation_base(char *output, size_t output_size);
 
+/* The directory the app shell keeps mdkr64.log in (platform/app/diag_log.cpp
+ * names the file inside it). Honours MDKR_APP_PREFS_DIR exactly as the logger
+ * does, then the per-user preference root. 1 on success. */
+int mdkr_user_log_directory(char *output, size_t output_size);
+
 int mdkr_user_video_config_path(char *output, size_t output_size);
 int mdkr_user_save_directory(char *output, size_t output_size);
 

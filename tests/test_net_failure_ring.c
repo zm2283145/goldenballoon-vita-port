@@ -8,9 +8,39 @@
 #include <string.h>
 
 #include "platform/net/net_failure_ring.h"
+#include "platform/fs_utf8.h"
+#include "platform/user_paths.h"
 
 static const char kDumpPath[] = "net_failure_ring_dump.txt";
 static const char kEvidencePath[] = "net_failure_ring_evidence.txt";
+/* The log directory the ring falls back to is resolved by the REAL path
+ * policy, so this test links platform/user_paths.c and stands in for SDL at
+ * link time (the discipline of tests/test_save_resolution.c) -- the fallback
+ * is then proven end to end without SDL and without touching a real profile. */
+static const char kPrefRoot[] = "net_failure_ring_prefs/";
+
+char *SDL_GetPrefPath(const char *organization, const char *application) {
+    char *result;
+    (void)organization;
+    (void)application;
+    result = (char *)malloc(sizeof(kPrefRoot));
+    if (result != NULL) memcpy(result, kPrefRoot, sizeof(kPrefRoot));
+    return result;
+}
+
+void SDL_free(void *memory) { free(memory); }
+
+static void set_env(const char *name, const char *value) {
+#if defined(_WIN32)
+    assert(_putenv_s(name, value == NULL ? "" : value) == 0);
+#else
+    if (value == NULL) {
+        assert(unsetenv(name) == 0);
+    } else {
+        assert(setenv(name, value, 1) == 0);
+    }
+#endif
+}
 
 static unsigned long line_count(const char *path, const char *needle) {
     char line[512];
@@ -216,26 +246,66 @@ static void test_dump_beside_evidence(void) {
     mdkr_net_failure_ring_reset();
     mdkr_net_failure_ring_record_tick(
         MDKR_NET_FAILURE_LIFECYCLE, 1u, MDKR_NET_FAILURE_NO_SLOT, 0u, 0u, 0u);
-#if defined(_WIN32)
-    assert(_putenv_s("MDKR_STATE_HASH_FILE", kEvidencePath) == 0);
-#else
-    assert(setenv("MDKR_STATE_HASH_FILE", kEvidencePath, 1) == 0);
-#endif
+    set_env("MDKR_STATE_HASH_FILE", kEvidencePath);
     artifact = fopen(kEvidencePath, "wb");
     assert(artifact != NULL);
     fclose(artifact);
     assert(mdkr_net_failure_ring_dump_beside_evidence());
     snprintf(beside, sizeof(beside), "%s.netfail", kEvidencePath);
     assert(line_count(beside, "lifecycle") == 1u);
-#if defined(_WIN32)
-    assert(_putenv_s("MDKR_STATE_HASH_FILE", "") == 0);
-#else
-    assert(unsetenv("MDKR_STATE_HASH_FILE") == 0);
-#endif
-    /* No configured artifact means nothing to sit beside. */
-    assert(!mdkr_net_failure_ring_dump_beside_evidence());
     remove(beside);
     remove(kEvidencePath);
+}
+
+/* The shipped-build path: no evidence artifact, so the dump must land beside
+ * mdkr64.log in the directory the app shell resolves through user_paths. */
+static void test_dump_fallback_to_log_directory(void) {
+    char directory[512];
+    char expected[640];
+
+    /* mdkr_user_log_directory resolves the same two sources diag_log.cpp does:
+     * the MDKR_APP_PREFS_DIR override first, then the per-user root. */
+    set_env("MDKR_APP_PREFS_DIR", "net_failure_ring_override");
+    assert(mdkr_user_log_directory(directory, sizeof(directory)));
+    assert(strcmp(directory, "net_failure_ring_override") == 0);
+    set_env("MDKR_APP_PREFS_DIR", NULL);
+    assert(mdkr_user_log_directory(directory, sizeof(directory)));
+    assert(strcmp(directory, kPrefRoot) == 0);
+
+    mdkr_net_failure_ring_reset();
+    mdkr_net_failure_ring_record_tick(
+        MDKR_NET_FAILURE_LIFECYCLE, 2u, MDKR_NET_FAILURE_NO_SLOT, 0u, 0u, 0u);
+    /* Nothing configured at all: no artifact, no log directory, no dump. */
+    set_env("MDKR_STATE_HASH_FILE", NULL);
+    mdkr_net_failure_ring_set_log_directory(NULL);
+    assert(!mdkr_net_failure_ring_dump_beside_evidence());
+
+    /* The app shell hands over exactly what user_paths resolved. */
+    (void)mdkr_mkdir_utf8("net_failure_ring_prefs");
+    mdkr_net_failure_ring_set_log_directory(directory);
+    assert(mdkr_net_failure_ring_dump_beside_evidence());
+    snprintf(expected, sizeof(expected), "%s%s", kPrefRoot,
+             MDKR_NET_FAILURE_DUMP_LEAF);
+    assert(line_count(expected, "lifecycle") == 1u);
+    remove(expected);
+
+    /* A directory without a trailing separator joins the same way. */
+    mdkr_net_failure_ring_set_log_directory("net_failure_ring_prefs");
+    assert(mdkr_net_failure_ring_dump_beside_evidence());
+    assert(line_count(expected, "lifecycle") == 1u);
+
+    /* A configured artifact still wins over the fallback. */
+    set_env("MDKR_STATE_HASH_FILE", kEvidencePath);
+    assert(mdkr_net_failure_ring_dump_beside_evidence());
+    remove(expected);
+    {
+        char beside[256];
+        snprintf(beside, sizeof(beside), "%s.netfail", kEvidencePath);
+        assert(line_count(beside, "lifecycle") == 1u);
+        remove(beside);
+    }
+    set_env("MDKR_STATE_HASH_FILE", NULL);
+    mdkr_net_failure_ring_set_log_directory(NULL);
 }
 
 int main(void) {
@@ -246,6 +316,7 @@ int main(void) {
     test_stall_records();
     test_dump_order();
     test_dump_beside_evidence();
+    test_dump_fallback_to_log_directory();
     remove(kDumpPath);
     puts("test_net_failure_ring: PASS");
     return 0;

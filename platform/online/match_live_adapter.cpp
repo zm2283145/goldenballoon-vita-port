@@ -1588,6 +1588,9 @@ private:
             MdkrMatchRecovery rec;
             if (mdkr_match_transport_recovery(&raceTransport_, &rec)) {
                 raceDegraded_ = true;
+                /* The gap can no longer be replayed: terminal for this race,
+                 * so the tail is worth as much here as at a peer loss. */
+                (void)mdkr_net_failure_ring_dump_beside_evidence();
                 MDKR_ONLINE_LOG(
                     "[ONLINE] race connection degraded: recovery reason=%d "
                     "firstTick=%u observed=%u slot=%u\n",
@@ -1974,6 +1977,11 @@ private:
          * our race exactly like a lost peer. */
         if (mesh_ && mesh_->consumeRaceAbort() && !raceAbortReceived_) {
             raceAbortReceived_ = true;
+            mdkr_net_failure_ring_record_host(
+                MDKR_NET_FAILURE_LIFECYCLE, (uint32_t)nowMs_(),
+                MDKR_NET_FAILURE_NO_SLOT, MDKR_NET_LIFECYCLE_RACE_ENDED,
+                nullptr);
+            (void)mdkr_net_failure_ring_dump_beside_evidence();
             MDKR_ONLINE_LOG(
                 "[MESH] race-abort received from peer -> ending local race\n");
             bump();
@@ -2467,6 +2475,11 @@ private:
         raceReady_ = true;
         if (!raceReadyLogged_) {
             raceReadyLogged_ = true;
+            /* One ring per RACE, not per mesh: a tournament runs several races
+             * over one mesh and a SAS rekey rebuilds the mesh mid-session, so
+             * mesh-up is ambiguous. raceReadyLogged_ is cleared on every race
+             * teardown, making this the one unambiguous per-race edge. */
+            mdkr_net_failure_ring_reset();
             mdkr_net_failure_ring_record_host(
                 MDKR_NET_FAILURE_LIFECYCLE, (uint32_t)nowMs_(),
                 MDKR_NET_FAILURE_NO_SLOT, MDKR_NET_LIFECYCLE_RACE_ARMED,

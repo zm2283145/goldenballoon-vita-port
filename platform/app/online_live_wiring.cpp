@@ -27,12 +27,14 @@
 #include "online/match_live_adapter.h"
 #include "online/match_live_transport.h"
 #include "online/online_track_table.h"
+#include "net/net_failure_ring.h"
 #include "net/net_roster_runtime.h"
 #include "net/party_link.h"
 
 #include "app_version.h"
 #include "online/compatibility_identity.h"
 #include "platform_os.h"  /* platform_source_is_european(): loopback ROM region */
+#include "user_paths.h"
 
 #include <algorithm>
 #include <cctype>
@@ -315,6 +317,15 @@ std::unique_ptr<IMdkrOnlineAdapter> OnlineRoom_makeGatedLiveAdapter(
                      "[online-live] refused: compatibility is not this "
                      "build's provenance identity (canned fixture?)\n");
         return nullptr;
+    }
+
+    /* Give the failure ring somewhere to land a dump. A shipped build sets no
+     * state-hash artifact, so without this a peer loss would record a tail
+     * nobody can read. The directory is the one diag_log names mdkr64.log in,
+     * which is the file support asks a player for. */
+    char logDirectory[1024];
+    if (mdkr_user_log_directory(logDirectory, sizeof(logDirectory))) {
+        mdkr_net_failure_ring_set_log_directory(logDirectory);
     }
 
     /* Construction never touches the network: the room transport begins on the

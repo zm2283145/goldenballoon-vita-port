@@ -2146,19 +2146,30 @@ SAS phrase can reach a dump), stall/watchdog emission, and oldest-first dump
 ordering. Recording reads no clock of its own: the simulation side stamps its
 authored tick and the transport side the host clock it already samples.
 
-`net_failure_ring_impairment` is the lane over it. Two real match-transport
-endpoints exchange input across a seeded `net_impairment` carrier whose
-two-second outage strands the receiver further behind than the authored
-rollback window can replay; the transport latches its terminal recovery, the
-launcher-side decision resolves the peer as lost, and the ring's tail is dumped
-beside the `MDKR_STATE_HASH_FILE` evidence artifact as `<artifact>.netfail`.
-`check_net_failure_ring_impairment.py` (registered as a CTest, given both arms)
-requires that dump to name the loss reason by name and to carry the last stall
-record with a non-empty per-peer snapshot, and refuses any code field that
-escaped redaction. Its positive control is the identical harness built with
+The unit test also pins where a dump lands. With `MDKR_STATE_HASH_FILE` set it
+sits beside that artifact as `<artifact>.netfail`; with none set -- every
+shipped build -- it falls back to `mdkr64-online-failure.txt` in the directory
+the app shell keeps `mdkr64.log` in, resolved by `mdkr_user_log_directory()`
+and handed to the ring once at live-adapter construction. The test links the
+real `platform/user_paths.c` with a link-time preference provider, so that
+fallback is proven end to end without SDL.
+
+`net_failure_ring_impairment` is the lane over it, and it drives the PRODUCTION
+path only. Its scenario is the live adapter's own `--forensics` test
+(`test_forensics_dump_on_midrace_peer_loss`): two real adapters over a real
+loopback DTLS mesh with every mesh transmission gated by a seeded
+`net_impairment` two-second-outage carrier, then the opponent goes silent until
+the survivor's control-ping ladder resolves the typed `PeerLost`. The test
+writes no ring record and calls no dump -- every record comes from
+`platform/net` and `platform/online`, and the dump is the one the adapter's own
+peer-loss handler writes. `check_net_failure_ring_impairment.py` (registered as
+a CTest, given both arms) requires that dump to name the loss reason by name
+and to carry the last stall record with a per-peer snapshot showing real mesh
+traffic, and refuses any code field that escaped redaction. Its positive
+control is the identical adapter, mesh and transport built with
 `MDKR_NET_FAILURE_RING_DISABLED`: it runs the same race to the same peer loss
-and must FAIL those assertions, so a lane that stopped reading the recording
-cannot pass.
+and must FAIL those assertions, so deleting the mesh recorder or the adapter's
+dump cannot leave the lane green.
 
 `check_persistent_app_session.py` is the fast native ownership proof (three
 five-tick epochs). `check_persistent_rollback_rematch.py` is its ROM-backed

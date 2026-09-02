@@ -1,28 +1,32 @@
 #!/usr/bin/env python3
 """Forensics lane: a forced peer loss must leave a readable failure-ring dump.
 
-The harness (tests/test_net_failure_ring_impairment.cpp) runs two real
-match-transport endpoints across a seeded net_impairment carrier whose profile
-carries a two-second outage. The outage strands the receiving endpoint further
-behind than the authored rollback window can replay, the transport latches its
-terminal recovery, and the launcher-side decision resolves the peer as lost --
-then dumps the ring's tail beside the state-hash evidence artifact.
+The scenario is the live adapter's own
+``test_forensics_dump_on_midrace_peer_loss`` (tests/test_online_live_adapter.cpp
+``--forensics``): two REAL adapters over a real loopback DTLS mesh, every mesh
+transmission gated by a seeded net_impairment carrier carrying a two-second
+outage, then the opponent goes silent until the survivor's control-ping ladder
+resolves the typed PeerLost. Nothing in that test writes a ring record or calls
+the dump: every record comes from platform/net + platform/online, and the dump
+is the one the adapter's own PeerLost handler writes. Delete the mesh recorder
+or the adapter's dump and this lane goes red.
 
-This lane reads that dump and requires it to carry the two things an owner
-needs to explain the loss:
+The lane reads that dump and requires it to carry the two things an owner needs
+to explain the loss:
 
   * the typed loss itself, by NAME (``kind=peer_lost ... code=ping_timeout``),
     not an enum ordinal; and
-  * the last stall record before it, carrying the per-peer RTT / jitter / byte
-    snapshot that says what the link was doing while progress stopped.
+  * the last stall record before it, carrying the per-peer snapshot that says
+    what the link was doing while progress stopped.
 
 It also refuses a dump that leaks endpoint material: every code field must have
 survived the ring's redaction filter.
 
-POSITIVE CONTROL. The identical scenario is built a second time with the ring
-compiled out (MDKR_NET_FAILURE_RING_DISABLED). That arm runs the same race to
-the same peer loss and is required to FAIL these assertions -- if it passes,
-the assertions are not reading the recording and this lane proves nothing.
+POSITIVE CONTROL. The identical adapter, mesh and transport are built a second
+time with the ring compiled out (MDKR_NET_FAILURE_RING_DISABLED). That arm runs
+the same race to the same peer loss and is required to FAIL these assertions --
+if it passes, they are not reading the PRODUCTION recorder and this lane proves
+nothing.
 
 Usage:
     check_net_failure_ring_impairment.py --record <binary> --norecord <binary>
@@ -67,13 +71,16 @@ def run_arm(binary: Path, run_dir: Path) -> Path:
     # survive into every process this lane launches.
     env["MDKR_SAVE_DIR"] = str(run_dir / "save")
     (run_dir / "save").mkdir(parents=True, exist_ok=True)
+    # The token gate the live adapter construction requires; the scenario is
+    # otherwise ROM-, GPU- and network-free.
+    env["MDKR_INTERNAL_TEST_TOKEN"] = "mdkr64-online-live-v1"
     completed = subprocess.run(
-        [str(binary)], cwd=str(run_dir), env=env, timeout=120,
+        [str(binary), "--forensics"], cwd=str(run_dir), env=env, timeout=300,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     if completed.returncode != 0:
         raise LaneFailure(
             f"{binary.name} exited {completed.returncode}:\n{completed.stdout}")
-    if "[IMPAIR] peer_lost" not in completed.stdout:
+    if "[forensics] peer loss after impairment" not in completed.stdout:
         raise LaneFailure(
             f"{binary.name} never forced the peer loss:\n{completed.stdout}")
     return Path(str(artifact) + ".netfail")
@@ -116,9 +123,13 @@ def verify(dump: Path) -> str:
     peers = [m.groupdict() for m in PEER_SNAPSHOT_RE.finditer(last_stall["tail"])]
     if not peers:
         raise LaneFailure("the last stall record carries no per-peer snapshot")
-    if not any(int(peer["rtt"]) > 0 and int(peer["tx"]) > 0 for peer in peers):
+    # The mesh's byte accounting must have reached the record. RTT is NOT
+    # required to be non-zero: the scenario drives a fake clock over loopback,
+    # where a ping and its pong land in the same millisecond, so a zero there
+    # is honest measurement rather than a missing field.
+    if not any(int(peer["tx"]) > 0 or int(peer["rx"]) > 0 for peer in peers):
         raise LaneFailure(
-            "the last stall record's snapshot is empty (no RTT and no bytes)")
+            "the last stall record's snapshot carries no peer traffic")
 
     for record in records:
         if record["code"] == "-":
@@ -135,10 +146,10 @@ def verify(dump: Path) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--record", required=True, type=Path,
-                        help="the impairment harness built WITH recording")
+                        help="the live-adapter test built WITH recording")
     parser.add_argument("--norecord", required=True, type=Path,
-                        help="the same harness with the ring compiled out "
-                             "(the positive control)")
+                        help="the same adapter/mesh/transport with the ring "
+                             "compiled out (the positive control)")
     args = parser.parse_args()
 
     with tempfile.TemporaryDirectory(prefix="net_failure_ring_") as root:

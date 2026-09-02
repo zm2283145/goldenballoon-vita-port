@@ -1364,40 +1364,16 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     target_include_directories(mdkr_net_impairment_test PRIVATE ${CMAKE_SOURCE_DIR})
     add_test(NAME net_impairment COMMAND mdkr_net_impairment_test)
 
+    # Links the REAL path policy (with a link-time preference provider in the
+    # test, as tests/test_save_resolution.c does) so the dump's fallback to the
+    # app shell's log directory is proven end to end, without SDL.
     add_executable(mdkr_net_failure_ring_test
         ${CMAKE_SOURCE_DIR}/tests/test_net_failure_ring.c
-        ${CMAKE_SOURCE_DIR}/platform/net/net_failure_ring.c)
+        ${CMAKE_SOURCE_DIR}/platform/net/net_failure_ring.c
+        ${CMAKE_SOURCE_DIR}/platform/user_paths.c
+        ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c)
     target_include_directories(mdkr_net_failure_ring_test PRIVATE ${CMAKE_SOURCE_DIR})
     add_test(NAME net_failure_ring COMMAND mdkr_net_failure_ring_test)
-
-    # The impairment lane's two arms: the same two-endpoint carrier scenario
-    # built with recording on and with it compiled out. Only the dump differs,
-    # which is what makes the disabled arm a positive control rather than a
-    # second assertion.
-    set(MDKR_NET_FAILURE_IMPAIRMENT_SOURCES
-        ${CMAKE_SOURCE_DIR}/tests/test_net_failure_ring_impairment.cpp
-        ${CMAKE_SOURCE_DIR}/platform/net/net_failure_ring.c
-        ${CMAKE_SOURCE_DIR}/platform/net/net_impairment.c
-        ${CMAKE_SOURCE_DIR}/platform/net/match_transport.c
-        ${CMAKE_SOURCE_DIR}/platform/net/net_input.c
-        ${CMAKE_SOURCE_DIR}/platform/net/net_local_input.c
-        ${CMAKE_SOURCE_DIR}/platform/net/net_roster.c
-        ${CMAKE_SOURCE_DIR}/platform/net/match_manifest.c
-        ${CMAKE_SOURCE_DIR}/platform/net/match_launch_descriptor.c
-        ${CMAKE_SOURCE_DIR}/platform/online/match_peer_lost_reason.cpp
-        ${CMAKE_SOURCE_DIR}/platform/session/session_bridge.c)
-    foreach(arm record norecord)
-        add_executable(mdkr_net_failure_ring_impairment_${arm}
-            ${MDKR_NET_FAILURE_IMPAIRMENT_SOURCES})
-        target_include_directories(mdkr_net_failure_ring_impairment_${arm}
-            PRIVATE
-            ${CMAKE_SOURCE_DIR}
-            ${CMAKE_SOURCE_DIR}/platform)
-        target_compile_features(mdkr_net_failure_ring_impairment_${arm}
-            PRIVATE cxx_std_17)
-    endforeach()
-    target_compile_definitions(mdkr_net_failure_ring_impairment_norecord
-        PRIVATE MDKR_NET_FAILURE_RING_DISABLED=1)
 
     add_executable(mdkr_net_clock_test
         ${CMAKE_SOURCE_DIR}/tests/test_net_clock.c
@@ -2174,16 +2150,6 @@ if(BUILD_TESTING)
         NAME harness_utils
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_harness_utils.py)
-    # B4/A4: the failure ring's forensics lane. Runs the two-endpoint
-    # impairment scenario in both arms and reads the dump each leaves behind;
-    # the recording-disabled arm is the positive control.
-    add_test(
-        NAME net_failure_ring_impairment
-        COMMAND ${Python3_EXECUTABLE}
-                ${CMAKE_SOURCE_DIR}/tests/check_net_failure_ring_impairment.py
-                --record $<TARGET_FILE:mdkr_net_failure_ring_impairment_record>
-                --norecord
-                $<TARGET_FILE:mdkr_net_failure_ring_impairment_norecord>)
     add_test(
         NAME check_save_dir_hermeticity
         COMMAND ${Python3_EXECUTABLE}
