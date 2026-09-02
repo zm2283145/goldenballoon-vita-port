@@ -835,7 +835,9 @@ a second product admission policy and not a fail-open path used by packaged
 launcher play: the structural validation every package passes on load is the
 actual admission boundary, and it runs identically whether or not the Workshop
 supplied an allowlist. A report describing direct launch as "skipping the
-Workshop gate" is describing this design, not naming a bypass to close.
+Workshop gate" is describing this design, not naming a bypass to close, and
+nothing should be added to make direct launch refuse a package the launcher
+would have filtered.
 
 The source contract accepts embedded PNG and the exact ordinary 2D
 `KHR_texture_basisu` profile. KTX2 inputs retain their authored mip chain and

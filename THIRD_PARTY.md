@@ -91,19 +91,26 @@ assets — see `tools/check_no_rom.sh` (shipped-artifact guard) and
 `tools/check_clean_room.sh` (repository-history guard), both of which run in
 CI (`.github/workflows/correctness.yml`).
 
-## Advisory tracking for the two untrusted-input decoders
+## Advisory tracking for the three untrusted-input decoders
 
-`stb_image.h` (pinned `v2.30`, row above) and the Basis Universal/KTX2
-transcoder (pinned to KTX-Software commit `4d6fc70eaf62ad0558e63e8d97eb9766118327a6`,
-row above) are the two vendored components that parse bytes an attacker
-controls: a content-pack PNG for the former, a custom-character KTX2 texture
-for the latter. Both are watched on GitHub Security Advisories for their
-respective upstream repositories, `nothings/stb` and `BinomialLLC/basis_universal`
-(KTX-Software re-vendors the same transcoder source these advisories cover). A
-version bump for either is qualified before it lands by re-running
-`tests/fuzz_modern_character_asset.cpp` — which drives `stbi_load_from_memory`
-and the bounded `mdkr_ktx2_inspect`/`mdkr_ktx2_transcode` path on the same
-untrusted-input boundary the advisory would concern — for a fixed corpus-hours
-budget with no new crash or sanitizer finding, and the full
-`tests/test_modern_character_ktx2.cpp` unit suite passing unchanged. Only then
-is the vendored file and its SHA-256 pin above updated.
+`stb_image.h` (pinned `v2.30`, row above), the Basis Universal/KTX2
+transcoder, and the single-file Zstandard decoder it uses for supercompressed
+KTX2 (all three pinned to KTX-Software commit
+`4d6fc70eaf62ad0558e63e8d97eb9766118327a6`, row above) are the vendored
+components that parse bytes an attacker controls: a content-pack PNG for the
+first, a custom-character KTX2 texture for the other two (supercompressed
+KTX2 feeds its Zstandard frame straight to the vendored `zstd.c` decoder
+before the transcoder ever sees the result). All three are watched on GitHub
+Security Advisories for their respective upstream repositories:
+`nothings/stb`, `BinomialLLC/basis_universal`, and `facebook/zstd`
+(KTX-Software re-vendors the same transcoder and decoder source these
+advisories cover). A version bump for any of the three is qualified before it
+lands by re-running `tests/fuzz_modern_character_asset.cpp` — which drives
+`stbi_load_from_memory` and the bounded
+`mdkr_ktx2_inspect`/`mdkr_ktx2_transcode` path on the same untrusted-input
+boundary the advisory would concern — under ASan+UBSan over the tracked
+`tests/fuzz_corpus/modern_character_asset/` corpus for at least 600 seconds
+(`-max_total_time=600`; task-A1's qualifying run covered 4,946,075 executions
+in 601 seconds with zero crash/OOM/leak artifacts) with no new finding, and
+the full `tests/test_modern_character_ktx2.cpp` unit suite passing unchanged.
+Only then is the vendored file and its SHA-256 pin above updated.
