@@ -7,6 +7,14 @@ Original cadence. Golden Balloon 1.0.3 and the US 1.1 game agree closely enough
 to close the issue; Enhanced cadence remains a useful positive control because
 it reproduces the faster-boss symptom.
 
+> **Update 2026-08-25.** The boss-cadence governor of 2026-08-09 (issue #26)
+> clamps boss racers to the authored pace under Enhanced cadence, so the
+> Enhanced arm now finishes in the Original band (measured 3,450 against the
+> progression arm's Original 3,518). The historical runaway measured below
+> (3,022 / 1.139822×) reproduces only under `MDKR_BOSS_CADENCE_COMPAT=0`.
+> The measurements in this note are the pre-governor v1.0.3 closeout and are
+> retained unchanged as the record of that decision.
+
 This note contains only measurements and hashes. The ROM, EEPROM images, PCM,
 screenshots, and instrumented-emulator output remain local and uncommitted.
 
@@ -142,7 +150,9 @@ python3 tests/check_bluey2_rematch.py --build build --rom /path/to/owned-us-v11.
 
 [`check_bluey2_rematch.py`](../tests/check_bluey2_rematch.py) requires the
 progression-valid Original race to finish in the reference band, requires the
-Enhanced arm to reproduce a materially earlier/faster finish, validates the
+governed Enhanced arm to finish inside the Original band (since 2026-08-09,
+issue #26; the pre-governor materially-earlier finish is reproduced only under
+`MDKR_BOSS_CADENCE_COMPAT=0`), validates the
 natural boss verdict and EEPROM checksum, and asserts the exact audio cue
 transition without allowing the mix to drop out. It also substitutes Original
 for the Enhanced result and requires its own sensitivity control to reject the

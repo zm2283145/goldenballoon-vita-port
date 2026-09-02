@@ -45,11 +45,12 @@ First-launch notes:
   ([Apple's guide](https://support.apple.com/102445)).
 - **Windows**: the app is not code-signed. If SmartScreen warns, choose
   **More info → Run anyway**.
-- **Windows portable data**: non-English account and folder names work normally.
-  To deliberately keep settings, saves, and add-ons beside
-  `GoldenBalloon.exe`, create an empty `portable.txt` next to it. Without that
-  file, an unwritable user-data folder falls back beside the game and reports
-  the location instead of losing settings.
+- **Portable data** (Windows and Linux/native since 1.5.2): non-English account
+  and folder names work normally.
+  To deliberately keep settings, saves, and add-ons beside the executable,
+  create an empty `portable.txt` next to it. Without that
+  file, data lives in the per-user folder; an unwritable user-data folder falls
+  back beside the game and reports the location instead of losing settings.
 
 ## Features
 

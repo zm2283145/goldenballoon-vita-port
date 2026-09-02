@@ -276,20 +276,27 @@ tools/run_oracle.sh bluey2_state_oracle \
 Expected: `compare_oracle_state: PASS`. Both runners must finish, reach the same
 lap and checkpoint, retain at least 95% checkpoint/lap agreement, and keep
 position p95 within 200 world units. Do not use the Enhanced one-field arm as
-the reference: that is the intentional positive control which reproduces the
-historical boss-speed error.
+the reference. Since the boss-cadence governor of 2026-08-09 (issue #26) it no
+longer reproduces the historical boss-speed error on defaults —
+`check_bluey2_rematch.py` now requires the Enhanced arm to finish inside the
+Original band, and the pre-governor runaway is reproduced only under
+`MDKR_BOSS_CADENCE_COMPAT=0`.
 
 Run `python3 tests/check_bluey2_rematch.py --build build-rel --rom <owned ROM>`
 as the progression-valid, audio-bearing standing gate. The measured release
 closeout and timer-sampling explanation are in
 [`BLUEY2_PARITY.md`](BLUEY2_PARITY.md).
 
-The broader Ancient Lake `race_state_oracle` remains a deliberately red
-diagnostic for longstanding open-loop floating-point drift, as documented in
-[`ORACLE.md`](ORACLE.md); it is not a substitute for this passing cadence gate.
+The broader Ancient Lake `race_state_oracle` is a divergence-onset diagnostic
+(`state_classification: diagnostic` since 2026-08-25) for longstanding
+open-loop floating-point drift, as documented in
+[`ORACLE.md`](ORACLE.md); it reports threshold observations and exits clean
+rather than presenting as a failing parity gate, and it is not a substitute
+for this passing cadence gate.
 For a change which intentionally touches gameplay math or authority ordering,
-record before/after Ancient Lake reports as differential evidence instead of
-loosening its strict real-ROM thresholds.
+record before/after Ancient Lake reports as differential evidence — its
+unchanged strict thresholds define what an observation is, so do not loosen
+them.
 
 ### Menu navigation fixtures
 

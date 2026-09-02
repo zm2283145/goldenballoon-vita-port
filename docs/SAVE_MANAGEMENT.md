@@ -12,9 +12,11 @@ does not need a ROM, WebGPU, or the game engine to manage it.
 In a native packaged app, live EEPROM, recovery points, and Controller Paks are
 stored under `SDL_GetPrefPath("mdkr64", "mdkr64")/save`, never in the signed app
 bundle or its working directory. `MDKR_SAVE_DIR` remains the explicit native
-override for command-line tools and isolated tests. Non-packaged CLI builds
-retain their CWD-relative `save/` default, and the browser remains `/save` on
-IDBFS. A first packaged launch copy-migrates a complete known legacy save set
+override for command-line tools and isolated tests. Since 1.5.2 (issue #54),
+non-packaged native builds resolve the same per-user `SDL_GetPrefPath` default:
+an *existing* legacy `$CWD/save` is grandfathered, `portable.txt` beside the
+executable keeps data folder-local, and save-write failures are surfaced in the
+app instead of being silently dropped. The browser remains `/save` on IDBFS. A first packaged launch copy-migrates a complete known legacy save set
 only when the destination directory is absent: it stages every file in a
 sibling directory, atomically installs the whole directory, and never mutates
 the legacy source. Interrupted stages created by this version are recognized by

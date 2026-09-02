@@ -137,13 +137,24 @@ The first independent state lane now drives the real US 1.1 ROM and native port
 through a full Ancient Lake lap. The authored two-field arm measures 63.663%
 checkpoint/lap agreement and 1,259.956 position p95; the shipping 60 Hz arm
 measures 7.526% and 7,767.070. Both complete a lap and both fail strict parity.
+*(2026-08-25 note: these v1.0.0-era figures were superseded on 2026-08-01 —
+39.241% authored / 67.747% reference-replay after the `oracle_reference_replay`
+work (see ROADMAP.md F-18) — and the authored oracle trace was rebaselined
+twice after that (2026-08-04/05 RNG-stream fixes), so none of these numbers
+describes the current build; re-run `tools/run_oracle.sh race_state_oracle`
+before citing one. The open-loop agreement percentage was deprecated as a
+figure of merit and the lane reclassified `diagnostic` on 2026-08-25 — see
+ROADMAP.md F-18.)*
 F-18 is therefore partial, not open; challenge breadth, multiplayer,
 progression/save, audio, renderer-state, and standard-race parity remain.
 
 The new all-racer Bluey 2 lane closes the cadence-policy part of that gap.
 Unmodified US 1.1 Bluey finishes at tick 3,459; native Original two-field Bluey
 at 3,458 with a 1.00065× mean-speed ratio, while the Enhanced one-field arm
-finishes at 3,022 with a 1.13982× speed ratio. Interactive gameplay therefore
+finishes at 3,022 with a 1.13982× speed ratio. *(2026-08-25 note: since the
+boss-cadence governor of 2026-08-09 — issue #26 — the Enhanced arm finishes in
+the Original band; the 3,022 runaway reproduces only under
+`MDKR_BOSS_CADENCE_COMPAT=0`.)* Interactive gameplay therefore
 defaults to persisted `Gameplay.SimulationCadence=original`; the one-field
 behavior remains an explicit restart-scoped `enhanced` option. The release,
 progression, audio, and timer-sampling evidence is in
