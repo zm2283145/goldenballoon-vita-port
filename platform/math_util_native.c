@@ -264,6 +264,7 @@ s16 gArcTanTable[1026];
 s32 gCurrentRNGSeed = DKR_RNG_SEED_ROM;
 s32 gPrevRNGSeed    = DKR_RNG_SEED_ROM;
 static u32 gPresentationRNGSeed = DKR_RNG_SEED_ROM ^ 0x50524553u;
+static unsigned long long gPresentationRNGDraws;
 u8  gIntDisFlag     = 0; /* EXPORT(gIntDisFlag) .byte 0x00 -- matches */
 
 /* Renderer/HUD-only randomness. It intentionally uses the ROM generator's
@@ -279,6 +280,7 @@ s32 presentation_rand_range(s32 min, s32 max) {
     temp ^= ((u64)(seed & 0xFFFFFu) << 12);
     seed = (u32)(temp ^ ((temp >> 20) & 0xFFFu));
     gPresentationRNGSeed = seed;
+    gPresentationRNGDraws++;
     if (max < min) {
         s32 swap = min;
         min = max;
@@ -300,6 +302,18 @@ s32 cadence_compat_rand_range(s32 min, s32 max) {
         return rand_range(min, max);
     }
     return presentation_rand_range(min, max);
+}
+
+/* Observation seam for tests/check_presentation_rng_split.py. The presentation
+ * stream lives outside the rollback snapshot registry, so a lane cannot read it
+ * back out of a state hash the way it reads gCurrentRNGSeed; these accessors are
+ * the only way to witness that it advanced. */
+u32 mdkr_presentation_rng_seed(void) {
+    return gPresentationRNGSeed;
+}
+
+unsigned long long mdkr_presentation_rng_draws(void) {
+    return gPresentationRNGDraws;
 }
 
 static unsigned int mdkr_fnv1a32_u16(const s16 *vals, int n) {

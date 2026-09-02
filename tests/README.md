@@ -6363,6 +6363,45 @@ final one; the production arm must consume the retained object x viewport route,
 and the broken-direction arm substitutes the final viewport's route everywhere,
 reproducing MP-001 exactly.
 
+### Presentation RNG split — `tests/check_presentation_rng_split.py`
+
+```bash
+python3 tests/check_presentation_rng_split.py --build build \
+  --rom baserom.us.v80.z64
+```
+
+The port carries two random streams. `rand_range()` steps
+`gCurrentRNGSeed`/`gPrevRNGSeed`, the retail pair registered in the rollback
+snapshot (`rollback_game_authority.c:121-122`) and covered by the `[SIMHASH]`
+hash. `presentation_rand_range()` steps a platform-private word that is
+deliberately outside that registry. This gate asserts the split's whole point:
+on frames that present without advancing the simulation, the authoritative pair
+does not move one bit while the presentation stream keeps running.
+
+`MDKR_RNG_SPLIT_TRACE=1` emits one `[RNGSPLIT]` row per *presented* frame, so a
+frame with no authoritative tick still produces a row. The route is menu idle at
+enhanced cadence — the attract screen settles, the authored tick stops drawing
+random numbers, and texture animation keeps drawing them. At the shipping
+two-field cadence `cadence_compat_rand_range()` routes every HUD roll back onto
+the authoritative stream for byte-exact ROM ordering and the presentation stream
+never advances, so the assertion would hold vacuously; the lane pins the
+cadence where the split is live.
+
+Both halves are asserted, because either one alone passes for the wrong reason.
+Over the settled window the seeds must be byte-identical, the presentation draw
+counter must strictly increase by at least 100 across at least 16 distinct
+seeds, and the authoritative seed must have moved *before* the window — that
+last one is what keeps a trace printing a constant from passing. Arm B is the
+positive control: `MDKR_TEST_RENDER_IMPURITY=1`, the existing render-purity
+seam, performs one authoritative RNG write inside every render and must break
+the pin while leaving the presentation draw counts identical. Arm C requires two
+runs to be byte-identical, because the presentation stream is seeded from a
+constant, not host state, and the pixel-comparison lanes depend on that.
+
+The census behind the redirect decisions — every `rand_range()` caller in
+`game/src`, its verdict, and the two measured-then-reverted redirects that
+decide it — is `docs/ref/presentation-rng-census.md`.
+
 ### Weather RNG order — `tests/check_weather_rng_order.py`
 
 ```bash

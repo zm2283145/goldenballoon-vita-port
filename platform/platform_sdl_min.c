@@ -5823,6 +5823,31 @@ static void platform_frame_sync_impl(int swap, int count_present) {
         mdkr_boss_state_probe();
     }
 
+    /* RNG-stream split trace (MDKR_RNG_SPLIT_TRACE=1), emitted once per
+     * PRESENTED frame so a frame on which the simulation does not tick still
+     * produces a row. gCurrentRNGSeed/gPrevRNGSeed are the authoritative pair
+     * carried in the rollback snapshot; the presentation pair is read through
+     * the platform accessors because that stream is deliberately outside the
+     * registry. tests/check_presentation_rng_split.py reads these rows. */
+    {
+        static int s_rngSplitTrace = -1;
+        if (s_rngSplitTrace < 0) {
+            const char *value = getenv("MDKR_RNG_SPLIT_TRACE");
+            s_rngSplitTrace = value != NULL && value[0] != '\0' &&
+                              strcmp(value, "0") != 0;
+        }
+        if (s_rngSplitTrace) {
+            extern int32_t gCurrentRNGSeed;
+            extern int32_t gPrevRNGSeed;
+            extern uint32_t mdkr_presentation_rng_seed(void);
+            extern unsigned long long mdkr_presentation_rng_draws(void);
+            printf("[RNGSPLIT] frame=%d sim=%08x prev=%08x pres=%08x draws=%llu\n",
+                   g_frameCounter, (unsigned int)gCurrentRNGSeed,
+                   (unsigned int)gPrevRNGSeed, mdkr_presentation_rng_seed(),
+                   mdkr_presentation_rng_draws());
+        }
+    }
+
     /* Pacing/motion trace (MDKR_TRACE>=1). Greppable "[PACE]" line: the
      * updateRate the game will see (R), the true wall/synthetic field count
      * (wf) and its cumulative (cumwf, a 60 Hz wall-clock proxy), plus the

@@ -534,6 +534,10 @@ CHECKS = (
           "on-disk per-tick [SIMHASH] artifact mode mirrors the stdout stream "
           "byte-for-byte; the first-divergence comparator fails closed on "
           "divergence, truncation, empty, missing and unparseable inputs"),
+    Check("presentation_rng_split", "check_presentation_rng_split.py", "release",
+          "the authoritative RNG pair stays pinned across presentation-only "
+          "frames while the presentation stream advances, with a "
+          "render-impurity control and a run-to-run identity arm"),
     Check("weather_rng_order", "check_weather_rng_order.py", "release",
           "weather-enabled authored object/weather/HUD RNG order and presentation invariance"),
     Check("weather_presentation_identity",
