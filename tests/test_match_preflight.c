@@ -238,6 +238,8 @@ int main(void) {
     fragment_context.key.source_generation = 2u;
     fragment_context.key.destination_endpoint_id = 10u;
     fragment_context.key.destination_generation = 1u;
+    /* Fragments ride the reliable control channel. */
+    fragment_context.key.lane = MDKR_MATCH_PEER_LANE_CONTROL;
     fragment_context.sequence = 1u;
     fragment_context.payload_type =
         MDKR_MATCH_PEER_PAYLOAD_PREFLIGHT_FRAGMENT;
@@ -377,6 +379,15 @@ int main(void) {
                memcmp(&fragments_state, &fragments_untouched,
                       sizeof(fragments_state)) == 0,
            "fragments from another authenticated direction cannot be spliced");
+    wrong_fragment_context = fragment_context;
+    wrong_fragment_context.key.lane = MDKR_MATCH_PEER_LANE_STATE;
+    fragments_untouched = fragments_state;
+    expect(mdkr_match_preflight_fragment_submit(
+               &fragments_state, &wrong_fragment_context, fragments[2],
+               &decoded) == MDKR_MATCH_PREFLIGHT_FRAGMENT_CONTEXT_MISMATCH &&
+               memcmp(&fragments_state, &fragments_untouched,
+                      sizeof(fragments_state)) == 0,
+           "fragments from another channel lane cannot be spliced");
     memset(&decoded, 0xa5, sizeof(decoded));
     expect(mdkr_match_preflight_fragment_submit(
                &fragments_state, &fragment_context, fragments[2], &decoded) ==
@@ -460,6 +471,37 @@ int main(void) {
                           sizeof(fragments_state)) == 0 &&
                    memcmp(&decoded, &decoded_untouched, sizeof(decoded)) == 0,
                "complete report cannot claim another authenticated endpoint");
+    }
+    {
+        /* A newer report sequence discards the partial reassembly and keeps
+         * ONLY the authenticated direction. Rebuilding that direction field by
+         * field once dropped the channel lane, so every later fragment read as
+         * a splice from another lane and no reassembly could ever complete. */
+        MdkrMatchPreflightAttestationV1 newer = report;
+        uint8_t newer_fragments[MDKR_MATCH_PREFLIGHT_FRAGMENT_COUNT]
+                               [MDKR_MATCH_PEER_PAYLOAD_BYTES];
+        newer.sequence = report.sequence + 1u;
+        for (index = 0u; index < MDKR_MATCH_PREFLIGHT_FRAGMENT_COUNT; index++)
+            expect(mdkr_match_preflight_fragment_encode(
+                       &newer, index, newer_fragments[index]),
+                   "superseding report encodes structurally");
+        expect(mdkr_match_preflight_fragment_state_init(
+                   &fragments_state, &fragment_context.key) &&
+                   mdkr_match_preflight_fragment_submit(
+                       &fragments_state, &fragment_context, fragments[0],
+                       &decoded) == MDKR_MATCH_PREFLIGHT_FRAGMENT_ACCEPTED &&
+                   mdkr_match_preflight_fragment_submit(
+                       &fragments_state, &fragment_context,
+                       newer_fragments[0], &decoded) ==
+                       MDKR_MATCH_PREFLIGHT_FRAGMENT_ACCEPTED,
+               "a newer report sequence supersedes the partial reassembly");
+        expect(fragments_state.direction.lane ==
+                   MDKR_MATCH_PEER_LANE_CONTROL,
+               "superseding keeps the reassembly's authenticated lane");
+        expect(mdkr_match_preflight_fragment_submit(
+                   &fragments_state, &fragment_context, newer_fragments[1],
+                   &decoded) == MDKR_MATCH_PREFLIGHT_FRAGMENT_ACCEPTED,
+               "the superseding report reassembles on its own direction");
     }
 
     memset(&decoded, 0xa5, sizeof(decoded));

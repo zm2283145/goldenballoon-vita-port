@@ -760,16 +760,9 @@ bool mdkr_match_preflight_fragment_state_init(
     if (state == NULL || !key_context_valid(authenticated_direction))
         return false;
     memset(&next, 0, sizeof(next));
-    next.direction.match_epoch = authenticated_direction->match_epoch;
-    next.direction.source_endpoint_id =
-        authenticated_direction->source_endpoint_id;
-    next.direction.source_generation =
-        authenticated_direction->source_generation;
-    next.direction.destination_endpoint_id =
-        authenticated_direction->destination_endpoint_id;
-    next.direction.destination_generation =
-        authenticated_direction->destination_generation;
-    next.direction.lane = authenticated_direction->lane;
+    /* Whole-struct: the direction is one identity, and copying it field by
+     * field silently drops any field the context later grows. */
+    next.direction = *authenticated_direction;
     *state = next;
     return true;
 }
@@ -807,14 +800,7 @@ MdkrMatchPreflightFragmentResult mdkr_match_preflight_fragment_submit(
     next = *state;
     if (sequence > next.sequence) {
         memset(&next, 0, sizeof(next));
-        next.direction.match_epoch = state->direction.match_epoch;
-        next.direction.source_endpoint_id =
-            state->direction.source_endpoint_id;
-        next.direction.source_generation = state->direction.source_generation;
-        next.direction.destination_endpoint_id =
-            state->direction.destination_endpoint_id;
-        next.direction.destination_generation =
-            state->direction.destination_generation;
+        next.direction = state->direction;
         next.sequence = sequence;
     }
     if ((next.present_mask & (uint8_t)(1u << index)) != 0u) {
