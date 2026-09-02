@@ -20,9 +20,10 @@ static AppUiDpiState g_dpiState;
  * below it is HarfBuzz/SheenBidi shaped. Merging the same pinned script faces
  * here prevents tofu in editable fields, library rows, narration and recovery
  * copy without consulting a host font. Keep neutral punctuation in Roboto so
- * the application's ordinary metrics do not change. */
-/* These ranges select from the embedded subset face; they cannot conjure a
- * glyph it was not subset with. Its repertoire is recorded in
+ * the application's ordinary metrics do not change.
+ *
+ * A range selects from the embedded subset face; it cannot conjure a glyph the
+ * face was subset without. That repertoire is recorded in
  * gfx_character_text_face.h -- arrows, dingbats and geometric shapes are
  * outside it, so UI copy stays inside what canDrawGlyph() reports. */
 static const ImWchar kCharacterNameGlyphRanges[] = {
