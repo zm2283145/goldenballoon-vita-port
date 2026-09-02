@@ -122,7 +122,7 @@ bool mdkr_match_transport_init(
     return true;
 }
 
-static MdkrMatchTransportIngressResult receive_result(
+MdkrMatchTransportIngressResult mdkr_match_transport_receive(
     MdkrMatchTransport *transport, uint32_t match_epoch,
     uint8_t authenticated_slot_mask, unsigned slot, uint32_t tick,
     const MdkrPadSample *sample) {
@@ -169,6 +169,12 @@ static MdkrMatchTransportIngressResult receive_result(
         transport->history.current_tick - tick >
             MDKR_MATCH_TRANSPORT_ROLLBACK_TICKS) {
         transport->stats.out_of_window++;
+        /* The one rejection that costs the peer a committed frame: the packet
+         * arrived past what the authored window can still replay. */
+        mdkr_net_failure_ring_record_tick(
+            MDKR_NET_FAILURE_LATE_INPUT_DISCARDED, tick, slot,
+            (unsigned)MDKR_MATCH_INGRESS_OUT_OF_WINDOW,
+            transport->history.current_tick, 0u);
         latch_recovery(
             transport, MDKR_MATCH_RECOVERY_LATE_INPUT, slot, tick,
             transport->history.current_tick);
@@ -195,29 +201,15 @@ static MdkrMatchTransportIngressResult receive_result(
         case MDKR_NET_SUBMIT_TOO_OLD:
         case MDKR_NET_SUBMIT_TOO_FAR_FUTURE:
             transport->stats.out_of_window++;
+            mdkr_net_failure_ring_record_tick(
+                MDKR_NET_FAILURE_LATE_INPUT_DISCARDED, tick, slot,
+                (unsigned)MDKR_MATCH_INGRESS_OUT_OF_WINDOW,
+                transport->history.current_tick, (uint32_t)result);
             return MDKR_MATCH_INGRESS_OUT_OF_WINDOW;
         default:
             transport->stats.invalid++;
             return MDKR_MATCH_INGRESS_INVALID;
     }
-}
-
-MdkrMatchTransportIngressResult mdkr_match_transport_receive(
-    MdkrMatchTransport *transport, uint32_t match_epoch,
-    uint8_t authenticated_slot_mask, unsigned slot, uint32_t tick,
-    const MdkrPadSample *sample) {
-    const MdkrMatchTransportIngressResult result = receive_result(
-        transport, match_epoch, authenticated_slot_mask, slot, tick, sample);
-    /* A packet outside the authored rollback window is the one rejection that
-     * costs the peer a committed frame; every other rejection is structural
-     * and already terminal somewhere else. */
-    if (result == MDKR_MATCH_INGRESS_OUT_OF_WINDOW) {
-        mdkr_net_failure_ring_record_tick(
-            MDKR_NET_FAILURE_LATE_INPUT_DISCARDED, tick, slot,
-            (unsigned)result,
-            transport != NULL ? transport->history.current_tick : 0u, 0u);
-    }
-    return result;
 }
 
 bool mdkr_match_transport_drain_tick(
