@@ -501,6 +501,39 @@ static void test_owning_wrapper_accessors_resolve_through_wrapper() {
     CHECK(wrapSetMode);
 }
 
+/* N8: the room owns membership, so a mid-race departure it reports finalises
+ * the departed seat instead of waiting out a transport ladder. Every gate on
+ * that decision, and the proposer rule that keeps two survivors from
+ * finalising the same seat at different ticks.
+ *
+ * Bit 0 of the seam is "this departure finalises a seat now"; bit 1 is "this
+ * endpoint proposes the tick" (the other survivors adopt what it sends). */
+static void test_room_departure_gates_and_proposer() {
+    enum { kFinalises = 1u, kProposes = 2u };
+    /* 2P mid-race: the sole survivor finalises and proposes in one step --
+     * there is nobody left to agree with and the room already confirmed the
+     * leave. */
+    CHECK(mdkr_online_live_adapter_test_room_departure(
+              /*raceUp=*/true, /*enabled=*/true, /*known=*/true,
+              /*thirdPeer=*/false) == (kFinalises | kProposes));
+    /* A third survivor with a lower endpoint id owns the proposal; this one
+     * still fronts the card, but adopts the tick it is sent. */
+    CHECK(mdkr_online_live_adapter_test_room_departure(
+              true, true, true, true) == kFinalises);
+    /* No race is running: a departure is the lobby's business, and the
+     * pre-race ladders are untouched by design. */
+    CHECK(mdkr_online_live_adapter_test_room_departure(
+              false, true, true, false) == 0u);
+    /* The positive control the kill-drop lane arms: with the plumbing off the
+     * departure decides nothing and the transport ladders resolve the loss at
+     * their own pace. */
+    CHECK(mdkr_online_live_adapter_test_room_departure(
+              true, false, true, false) == 0u);
+    /* An endpoint that owns no seat in this race cannot finalise one. */
+    CHECK(mdkr_online_live_adapter_test_room_departure(
+              true, true, false, false) == 0u);
+}
+
 int main() {
     test_map_lost_reason_in_race_branches();
     test_race_end_no_demotion_rule();
@@ -509,6 +542,7 @@ int main() {
     test_retry_genuinely_retries();
     test_signal_lost_during_preflight_fronts_service_card();
     test_owning_wrapper_accessors_resolve_through_wrapper();
+    test_room_departure_gates_and_proposer();
     std::fprintf(stderr, "online_live_adapter_beta: %d checks, %d failures\n",
                  g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

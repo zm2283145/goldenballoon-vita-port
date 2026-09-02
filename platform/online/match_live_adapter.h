@@ -588,6 +588,15 @@ bool mdkr_online_live_adapter_signal_lost_card(const IMdkrOnlineAdapter *adapter
  * called by the launcher. */
 bool mdkr_online_live_adapter_test_signal_lost_card(bool preflight,
                                                     bool race_up);
+/* Pin the room-departure decision's gates on a mesh-free adapter. Returns a
+ * bitfield: bit 0 -- the departure finalises the departed seat now; bit 1 --
+ * this endpoint is the one that proposes the finalisation tick (every other
+ * survivor adopts what it sends). `race_up` stages a ready race transport,
+ * `enabled` the lobby-drop plumbing, `known` whether the departed endpoint
+ * owns a seat in this race, and `third_peer` a second survivor with a lower
+ * endpoint id. Never called by the launcher. */
+unsigned mdkr_online_live_adapter_test_room_departure(
+    bool race_up, bool enabled, bool known, bool third_peer);
 #endif
 
 /* Seal + fan out the race's OPENING input window (firstTick..firstTick+

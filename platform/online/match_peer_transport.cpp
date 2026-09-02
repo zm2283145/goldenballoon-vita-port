@@ -58,8 +58,10 @@ constexpr size_t kMaxPublicEvents = 256u;
 constexpr size_t kMaxControlTextBytes = 4096u;
 constexpr size_t kMaxSdpBytes = 60u * 1024u;
 constexpr size_t kMaxCandidateBytes = 4096u;
-/* Channel-message protocol version for ping/pong (the party discipline). */
-constexpr unsigned kChannelProtocol = 1u;
+/* Channel-message protocol version for the plaintext control-channel messages
+ * (the party discipline). v2 adds race_drop; the set does not negotiate, so a
+ * v1 peer's ping is refused rather than half-understood. */
+constexpr unsigned kChannelProtocol = 2u;
 constexpr size_t kMaxPeerMessageBytes = 4096u;
 
 uint64_t steadyNowMs() {
@@ -278,6 +280,11 @@ struct MdkrMatchPeerMesh::State
      * (read-and-cleared) by the launcher through consumeRaceAbort(), so a fresh
      * abort in a later race is observed independently. */
     bool raceAbortReceived = false;
+    /* A3: the finalisation tick a peer proposed for a departed endpoint, held
+     * the same read-and-clear way as the abort latch. `raceDropEndpoint` is
+     * zero while nothing is pending; an endpoint id is never zero. */
+    uint64_t raceDropEndpoint = 0u;
+    uint32_t raceDropTick = 0u;
     std::deque<MdkrMatchPeerMeshEvent> events;
     MdkrMatchPeerMeshStats counters;
 
@@ -828,7 +835,16 @@ struct MdkrMatchPeerMesh::State
         }
         PeerRuntime &peer = found->second;
         if (!present) {
-            if (peer.generation == generation) peer.present = false;
+            /* Edge-triggered: the room reports absence repeatedly while a
+             * member stays gone, and only the crossing is a departure. A
+             * generation the relay has already superseded says nothing about
+             * the peer this mesh is talking to. */
+            if (peer.generation != generation || !peer.present) return;
+            peer.present = false;
+            MdkrMatchPeerMeshEvent event;
+            event.type = MdkrMatchPeerMeshEventType::PeerDeparted;
+            event.endpointId = peer.endpointId;
+            emit(std::move(event));
             return;
         }
         if (peer.generation == 0u) {
@@ -1271,6 +1287,37 @@ struct MdkrMatchPeerMesh::State
                 }
                 return;
             }
+            if (type == "race_drop") {
+                /* A3: the proposer names the departed endpoint and the tick
+                 * every survivor finalises its seat at. The roster is fixed
+                 * for the room, so a name outside it -- or the recipient's own
+                 * -- is garbage on the reliable channel, like any other
+                 * malformed control message. */
+                if (!value.contains("endpoint") ||
+                    !value["endpoint"].is_number_unsigned() ||
+                    !value.contains("tick") ||
+                    !value["tick"].is_number_unsigned() ||
+                    value["tick"].get<uint64_t>() > UINT32_MAX) {
+                    peerLost(peer,
+                             MdkrMatchPeerLostReason::ControlChannelViolation);
+                    return;
+                }
+                const uint64_t departed = value["endpoint"].get<uint64_t>();
+                if (departed == localEndpointId ||
+                    peers.find(departed) == peers.end()) {
+                    peerLost(peer,
+                             MdkrMatchPeerLostReason::ControlChannelViolation);
+                    return;
+                }
+                /* First proposal for a seat wins; the channel is ordered, so
+                 * every recipient sees the same first one. */
+                if (raceDropEndpoint == 0u) {
+                    raceDropEndpoint = departed;
+                    raceDropTick =
+                        static_cast<uint32_t>(value["tick"].get<uint64_t>());
+                }
+                return;
+            }
             if (type == "race_abort") {
                 /* F3: the peer is abandoning the race start (or ended
                  * mid-race). Latch it for the launcher; not a peer loss, so the
@@ -1703,6 +1750,40 @@ struct MdkrMatchPeerMesh::State
         return reached;
     }
 
+    /* A3: fan the agreed finalisation tick out on the reliable control
+     * channel. `checkRoster` is the production path's refusal of an endpoint
+     * this room never had; the test seam sends without it so the RECIPIENT's
+     * validation is what a test observes. */
+    unsigned sendRaceDrop(uint64_t departedEndpointId, uint32_t tick,
+                          bool checkRoster) {
+        if (closed || failed || departedEndpointId == 0u) return 0u;
+        if (checkRoster && peers.find(departedEndpointId) == peers.end()) {
+            return 0u;
+        }
+        unsigned reached = 0u;
+        for (auto &entry : peers) {
+            PeerRuntime &peer = entry.second;
+            const std::shared_ptr<rtc::DataChannel> &controlChannel =
+                peer.channels[MDKR_MATCH_PEER_LANE_CONTROL];
+            if (peer.lost || peer.endpointId == departedEndpointId ||
+                !controlChannel || !controlChannel->isOpen()) {
+                continue;
+            }
+            try {
+                if (controlChannel->send(Json{{"type", "race_drop"},
+                        {"protocol", kChannelProtocol},
+                        {"nonce", 0u},
+                        {"endpoint", departedEndpointId},
+                        {"tick", tick}}.dump())) {
+                    reached++;
+                }
+            } catch (...) {
+                connectionDown(peer);
+            }
+        }
+        return reached;
+    }
+
     bool sendPreflightFragment(
         uint64_t peerEndpointId,
         const uint8_t fragment[MDKR_MATCH_PEER_PAYLOAD_BYTES]) {
@@ -1878,6 +1959,38 @@ bool MdkrMatchPeerMesh::consumeRaceAbort() {
     return true;
 }
 
+bool MdkrMatchPeerMesh::retireDepartedPeer(uint64_t endpointId) {
+    if (!state_) return false;
+    const auto found = state_->peers.find(endpointId);
+    if (found == state_->peers.end() || found->second.lost) return false;
+    state_->peerLost(found->second, MdkrMatchPeerLostReason::PeerDeparted);
+    return true;
+}
+
+unsigned MdkrMatchPeerMesh::sendRaceDrop(uint64_t departedEndpointId,
+                                         uint32_t tick) {
+    return state_ ? state_->sendRaceDrop(departedEndpointId, tick,
+                                         /*checkRoster=*/true)
+                  : 0u;
+}
+
+bool MdkrMatchPeerMesh::peekRaceDrop() const {
+    return state_ && state_->raceDropEndpoint != 0u;
+}
+
+bool MdkrMatchPeerMesh::consumeRaceDrop(uint64_t *departedEndpointId,
+                                        uint32_t *tick) {
+    if (!state_ || state_->raceDropEndpoint == 0u ||
+        departedEndpointId == nullptr || tick == nullptr) {
+        return false;
+    }
+    *departedEndpointId = state_->raceDropEndpoint;
+    *tick = state_->raceDropTick;
+    state_->raceDropEndpoint = 0u;
+    state_->raceDropTick = 0u;
+    return true;
+}
+
 bool MdkrMatchPeerMesh::sendPreflightFragment(
     uint64_t peerEndpointId,
     const uint8_t fragment[MDKR_MATCH_PEER_PAYLOAD_BYTES]) {
@@ -1982,6 +2095,12 @@ bool mdkr_match_peer_mesh_exhaust_seal_for_test(MdkrMatchPeerMesh &mesh,
     sealing->window.ready = false;
     sealing->window.next_sequence = 0u;
     return true;
+}
+
+bool mdkr_match_peer_mesh_send_raw_race_drop_for_test(
+    MdkrMatchPeerMesh &mesh, uint64_t departedEndpointId, uint32_t tick) {
+    return mesh.state_ && mesh.state_->sendRaceDrop(
+        departedEndpointId, tick, /*checkRoster=*/false) > 0u;
 }
 
 bool mdkr_match_peer_mesh_kill_channels_for_test(MdkrMatchPeerMesh &mesh,

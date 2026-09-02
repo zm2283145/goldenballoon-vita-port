@@ -2506,6 +2506,139 @@ void deliberateCloseIsImmediateTypedPeerEnd() {
 
 }  // namespace
 
+/* A3: the room's own membership verdict, surfaced the pump it arrives on.
+ * PeerDeparted is an OBSERVATION, not a verdict: it changes nothing about this
+ * peer's connection, so the loss ladders and the presence-blip invariant below
+ * stay exactly as they were and the launcher -- which alone knows whether a
+ * race is running -- decides what a departure means. */
+void roomDepartureIsSurfacedOnTheArrivingPump() {
+    PairHarness pair;
+    assert(pair.connect());
+    const uint64_t atMs = pair.harness.clock.nowMs;
+    pair.harness.hub.inject(100u, presenceEvent(200u, 2u, false));
+    pair.harness.pumpOnce();
+    assert(pair.harness.countEvents(
+               100u, MdkrMatchPeerMeshEventType::PeerDeparted, 200u) == 1u);
+    /* No fake time passed, so nothing timed out: this came from the room. */
+    assert(pair.harness.clock.nowMs == atMs);
+    assert(pair.harness.countEvents(
+               100u, MdkrMatchPeerMeshEventType::PeerLost, 200u) == 0u);
+    /* Departure is edge-triggered: a repeated absence is not a second leave. */
+    pair.harness.hub.inject(100u, presenceEvent(200u, 2u, false));
+    pair.harness.pumpOnce();
+    assert(pair.harness.countEvents(
+               100u, MdkrMatchPeerMeshEventType::PeerDeparted, 200u) == 1u);
+    /* A returning peer can depart again. */
+    pair.harness.hub.inject(100u, presenceEvent(200u, 2u, true));
+    pair.harness.pumpOnce();
+    pair.harness.hub.inject(100u, presenceEvent(200u, 2u, false));
+    pair.harness.pumpOnce();
+    assert(pair.harness.countEvents(
+               100u, MdkrMatchPeerMeshEventType::PeerDeparted, 200u) == 2u);
+    /* A generation the relay has already superseded says nothing about the
+     * peer the mesh is talking to. */
+    pair.harness.hub.inject(100u, presenceEvent(200u, 1u, false));
+    pair.harness.pumpOnce();
+    assert(pair.harness.countEvents(
+               100u, MdkrMatchPeerMeshEventType::PeerDeparted, 200u) == 2u);
+    std::printf("roomDepartureIsSurfacedOnTheArrivingPump: ok\n");
+}
+
+/* A3: the launcher's half of the departure. The mesh reports the room's
+ * verdict; the launcher, which alone knows a race is running, retires the peer
+ * -- and gets the ordinary typed loss, ring record and teardown for it, with
+ * no second path beside the transport ladders' own. */
+void retiringADepartedPeerIsTypedPeerDeparted() {
+    PairHarness pair;
+    assert(pair.connect());
+    pair.harness.hub.inject(100u, presenceEvent(200u, 2u, false));
+    pair.harness.pumpOnce();
+    assert(pair.harness.countEvents(
+               100u, MdkrMatchPeerMeshEventType::PeerDeparted, 200u) == 1u);
+    const uint64_t atMs = pair.harness.clock.nowMs;
+    assert(pair.harness.mesh(100u)->retireDepartedPeer(200u));
+    pair.harness.pumpOnce();
+    const MdkrMatchPeerMeshEvent *event = pair.harness.lastEvent(
+        100u, MdkrMatchPeerMeshEventType::PeerLost, 200u);
+    assert(event != nullptr &&
+           event->lostReason == MdkrMatchPeerLostReason::PeerDeparted);
+    /* No ladder ran: the verdict came from the room, not from waiting. */
+    assert(pair.harness.clock.nowMs == atMs);
+    /* Idempotent, and refused for an endpoint this room never had. */
+    assert(!pair.harness.mesh(100u)->retireDepartedPeer(200u));
+    assert(!pair.harness.mesh(100u)->retireDepartedPeer(999u));
+    assert(std::strcmp(mdkr_match_peer_lost_reason_name(
+               MdkrMatchPeerLostReason::PeerDeparted), "peer_departed") == 0);
+    std::printf("retiringADepartedPeerIsTypedPeerDeparted: ok\n");
+}
+
+/* A3: the proposer's finalisation tick reaches the other survivors on the
+ * reliable ordered control channel, where ordering is what makes the first
+ * proposal for a seat the one everyone commits to. */
+void raceDropCarriesTheAgreedTickToEverySurvivor() {
+    MeshHarness harness;
+    const std::vector<MdkrMatchPeerSlotOwner> roster =
+        rosterOf({100u, 200u, 300u});
+    harness.add(100u, 1u, roster);
+    harness.add(200u, 2u, roster);
+    harness.add(300u, 3u, roster);
+    harness.hub.welcome(100u);
+    harness.hub.welcome(200u);
+    harness.hub.welcome(300u);
+    assert(harness.pumpUntil([&]() {
+        return harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::PeerChannelsReady, 200u) >= 1u &&
+               harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::PeerChannelsReady, 300u) >= 1u &&
+               harness.countEvents(200u,
+                   MdkrMatchPeerMeshEventType::PeerChannelsReady, 100u) >= 1u &&
+               harness.countEvents(300u,
+                   MdkrMatchPeerMeshEventType::PeerChannelsReady, 100u) >= 1u;
+    }, 30000u));
+
+    uint64_t departed = 0u;
+    uint32_t tick = 0u;
+    /* Nothing to consume before a proposal lands. */
+    assert(!harness.mesh(200u)->consumeRaceDrop(&departed, &tick));
+    /* 100 is the lowest surviving id, so it proposes 300's finalisation. The
+     * departed endpoint is not one of the recipients. */
+    assert(harness.mesh(100u)->sendRaceDrop(300u, 4242u) == 1u);
+    /* An endpoint this room never had is refused before it reaches the wire. */
+    assert(harness.mesh(100u)->sendRaceDrop(999u, 4242u) == 0u);
+    assert(harness.pumpUntil([&]() {
+        return harness.mesh(200u)->peekRaceDrop();
+    }, 5000u));
+    assert(harness.mesh(200u)->consumeRaceDrop(&departed, &tick));
+    assert(departed == 300u && tick == 4242u);
+    /* Read-and-clear, like the abort latch beside it. */
+    assert(!harness.mesh(200u)->consumeRaceDrop(&departed, &tick));
+    assert(!harness.mesh(300u)->peekRaceDrop());
+    /* The proposal is not a verdict on the sender either: 200 keeps talking
+     * to 100 exactly as before. */
+    assert(harness.countEvents(
+               200u, MdkrMatchPeerMeshEventType::PeerLost, 100u) == 0u);
+    std::printf("raceDropCarriesTheAgreedTickToEverySurvivor: ok\n");
+}
+
+/* A drop naming an endpoint outside this room's fixed roster, or naming the
+ * recipient itself, is garbage on the reliable channel -- the same verdict
+ * every other malformed control message gets. */
+void raceDropNamingANonRosterEndpointIsTypedLoss() {
+    PairHarness pair;
+    assert(pair.connect());
+    assert(mdkr_match_peer_mesh_send_raw_race_drop_for_test(*pair.harness.mesh(200u), 999u, 7u));
+    assert(pair.harness.pumpUntil([&]() {
+        return pair.harness.countEvents(
+                   100u, MdkrMatchPeerMeshEventType::PeerLost, 200u) >= 1u;
+    }, 5000u));
+    const MdkrMatchPeerMeshEvent *event = pair.harness.lastEvent(
+        100u, MdkrMatchPeerMeshEventType::PeerLost, 200u);
+    assert(event != nullptr &&
+           event->lostReason ==
+               MdkrMatchPeerLostReason::ControlChannelViolation);
+    std::printf("raceDropNamingANonRosterEndpointIsTypedLoss: ok\n");
+}
+
 int main() {
     twoPeerHappyPath();
     threePeerMeshEveryoneReachesEveryone();
@@ -2546,6 +2679,12 @@ int main() {
     reconnectTrafficDuringDwellCancelsVanish();
     /* Deliberate end: the teardown goodbye reaches the survivor typed. */
     deliberateCloseIsImmediateTypedPeerEnd();
+    /* A3 lobby-authoritative drop: the room's membership verdict and the
+     * finalisation tick the survivors agree on. */
+    roomDepartureIsSurfacedOnTheArrivingPump();
+    retiringADepartedPeerIsTypedPeerDeparted();
+    raceDropCarriesTheAgreedTickToEverySurvivor();
+    raceDropNamingANonRosterEndpointIsTypedLoss();
     std::printf("all match_peer_transport cases passed\n");
     return 0;
 }

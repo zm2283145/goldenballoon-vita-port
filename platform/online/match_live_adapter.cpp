@@ -369,6 +369,12 @@ public:
                 viewTimeoutMs_ = static_cast<uint64_t>(v);
             }
         }
+        /* The kill-drop lane's positive control: with the room's membership
+         * verdict off, a departure decides nothing and the transport ladders
+         * resolve the loss at their own pace (the pre-N8 stall). */
+        if (const char *t = std::getenv("MDKR_ONLINE_LOBBY_DROP")) {
+            lobbyDropEnabled_ = std::strtoul(t, nullptr, 10) != 0u;
+        }
     }
 
     ~LiveAdapter() override {
@@ -1583,6 +1589,7 @@ private:
         raceSweepServiceCalls_ = 0u;
         resetInputRepair();
         racePeerLost_ = false;
+        departedEndpoints_.clear();
         raceAbortReceived_ = false;
         raceLossFailureLatched_ = false;
         raceEndFailureLatched_ = false;
@@ -1979,6 +1986,9 @@ private:
                 case MdkrMatchPeerMeshEventType::PreflightFragment:
                     onPreflightFragment(ev);
                     break;
+                case MdkrMatchPeerMeshEventType::PeerDeparted:
+                    onRoomDeparture(ev.endpointId);
+                    break;
                 case MdkrMatchPeerMeshEventType::PeerLost:
                     /* Expose the mid-race condition on the race info
                      * feed too -- during the race nobody renders the lobby
@@ -2057,6 +2067,13 @@ private:
          * mesh and latch it locally; the drain's barrier AND mid-race polls both
          * key on racePeerLost(), which folds this in, so a received abort ends
          * our race exactly like a lost peer. */
+        if (mesh_) {
+            uint64_t proposedFor = 0u;
+            uint32_t proposedTick = 0u;
+            while (mesh_->consumeRaceDrop(&proposedFor, &proposedTick)) {
+                adoptRoomDeparture(proposedFor, proposedTick);
+            }
+        }
         if (mesh_ && mesh_->consumeRaceAbort() && !raceAbortReceived_) {
             raceAbortReceived_ = true;
             mdkr_net_failure_ring_record_host(
@@ -2190,6 +2207,11 @@ public:
                 return MDKR_ONLINE_VIEW_FAILURE_CONNECTION_CHECK;
             case MdkrMatchPeerLostReason::PingTimeout:
             case MdkrMatchPeerLostReason::PeerEnded:
+            /* PeerDeparted: the ROOM said this member left, and the launcher
+             * finalised it at the agreed tick. The most direct departure there
+             * is -- membership itself -- so it maps where every other
+             * departure does. */
+            case MdkrMatchPeerLostReason::PeerDeparted:
             /* PeerVanished: the signal service saw the peer's socket die AND
              * its transport went down (the mid-race kill/quit signature) --
              * the peer DEPARTED. Same truthful attribution as a ping-out:
@@ -3047,6 +3069,101 @@ private:
         }
     }
 
+    /* ---- Lobby-authoritative peer drop (N8) ----------------------------- *
+     *
+     * The room owns membership. Mid-race, a member whose room socket closed is
+     * gone, and the transport's own ladders need up to
+     * kMdkrMatchMidRaceLossDetectBoundMs to reach the same verdict -- every
+     * one of those ticks spent racing an opponent that is not there. Acting on
+     * the room's verdict costs the survivor one service iteration instead.
+     *
+     * The departure event is itself the evidence that this endpoint's
+     * signaling is trustworthy: presence updates arrive only over a live
+     * socket, and a dead one surfaces as SignalLost rather than as a
+     * departure. The deliberate consequence is that a member who loses the
+     * room while keeping its peer connection is treated as gone -- the room,
+     * not the peer-to-peer path, is what membership is measured against.
+     */
+
+    /* Whether a room-reported departure finalises a seat now: a race is
+     * running, the plumbing is armed, the endpoint owns seats in this race,
+     * and this is the first report for it. */
+    bool roomDepartureFinalises(uint64_t endpointId) const {
+        return raceReady_ && lobbyDropEnabled_ &&
+               peerSlotMask_.count(endpointId) != 0u &&
+               departedEndpoints_.count(endpointId) == 0u;
+    }
+
+    /* Every endpoint still in this race, this one included, in roster order. */
+    std::vector<uint64_t> survivingEndpoints(uint64_t departing) const {
+        std::vector<uint64_t> alive;
+        for (const MdkrMatchPeerSlotOwner &owner : meshRoster_) {
+            if (owner.endpointId == departing ||
+                departedEndpoints_.count(owner.endpointId) != 0u) {
+                continue;
+            }
+            alive.push_back(owner.endpointId);
+        }
+        return alive;
+    }
+
+    /* Stop the departed endpoint's seats consuming its input at `tick` and
+     * author neutral frames for them from there. The takeover schedule IS the
+     * commitment: it refuses a second, different tick for the same seat, so
+     * whichever agreement lands first stands for the rest of the race. */
+    void finaliseDepartedSeats(uint64_t endpointId, uint32_t tick) {
+        const auto owned = peerSlotMask_.find(endpointId);
+        if (owned == peerSlotMask_.end()) return;
+        for (unsigned slot = 0u; slot < MDKR_SESSION_MAX_PLAYERS; slot++) {
+            if ((owned->second & static_cast<uint8_t>(1u << slot)) == 0u) {
+                continue;
+            }
+            const MdkrMatchTakeoverResult result =
+                mdkr_match_transport_schedule_ai_takeover(
+                    &raceTransport_, raceEpoch_, slot, tick);
+            MDKR_ONLINE_LOG(
+                "[MESH] room departure ep=%llu slot=%u finalised at tick=%u "
+                "result=%d\n",
+                (unsigned long long)endpointId, slot, tick,
+                static_cast<int>(result));
+        }
+    }
+
+    /* The room reported this endpoint gone. */
+    void onRoomDeparture(uint64_t endpointId) {
+        if (!roomDepartureFinalises(endpointId)) return;
+        departedEndpoints_.insert(endpointId);
+        const std::vector<uint64_t> alive = survivingEndpoints(endpointId);
+        if (mdkr_match_drop_is_proposer(
+                localEndpointId_, alive.data(),
+                static_cast<unsigned>(alive.size()))) {
+            const uint32_t tick = mdkr_match_drop_finalisation_tick(
+                raceTransport_.history.confirmed_through,
+                raceTransport_.history.have_confirmed,
+                raceTransport_.history.current_tick, raceInputDelay_);
+            finaliseDepartedSeats(endpointId, tick);
+            if (mesh_) (void)mesh_->sendRaceDrop(endpointId, tick);
+        }
+        /* A survivor that does not own the proposal still ends its race now;
+         * only the tick the simulation finalises at has to be agreed. Retiring
+         * the peer routes this through the ordinary typed-loss handling --
+         * ring record, teardown, card -- instead of a second path beside it. */
+        if (mesh_) (void)mesh_->retireDepartedPeer(endpointId);
+    }
+
+    /* The proposer's tick for a seat, adopted verbatim: the whole point of the
+     * proposal is that every survivor finalises the same seat at the same
+     * tick, so a local recomputation here would defeat it. */
+    void adoptRoomDeparture(uint64_t endpointId, uint32_t tick) {
+        if (!raceReady_ || !lobbyDropEnabled_ ||
+            peerSlotMask_.count(endpointId) == 0u) {
+            return;
+        }
+        departedEndpoints_.insert(endpointId);
+        finaliseDepartedSeats(endpointId, tick);
+        if (mesh_) (void)mesh_->retireDepartedPeer(endpointId);
+    }
+
     /* Admit a repaired run through the SAME ingress the bundle carrier uses,
      * under the sender's authenticated slot mask, so a repair can authorize
      * nothing a bundle could not. */
@@ -3271,6 +3388,34 @@ public:
         a.raceReady_ = raceUp;
         a.frontPreflightSignalLostCard();
         return a.preflightSignalLostCard();
+    }
+
+    /* Test-only (beta): the room-departure decision on a mesh-free adapter.
+     * Bit 0 says the departure finalises the departed seat now; bit 1 says
+     * this endpoint proposes the tick. Staged directly rather than through a
+     * race bring-up, because every gate here reads adapter state, not the
+     * transport (which pins the tick arithmetic itself). */
+    static unsigned testRoomDeparture(bool raceUp, bool enabled, bool known,
+                                      bool thirdPeer) {
+        MdkrOnlineLiveAdapterOptions o;
+        o.sessionId = 1u;
+        LiveAdapter a(o);
+        a.localEndpointId_ = 200u;
+        a.raceReady_ = raceUp;
+        a.lobbyDropEnabled_ = enabled;
+        if (known) a.peerSlotMask_[300u] = 0x2u;
+        a.meshRoster_.push_back(MdkrMatchPeerSlotOwner{200u, 0x1u});
+        a.meshRoster_.push_back(MdkrMatchPeerSlotOwner{300u, 0x2u});
+        if (thirdPeer) {
+            a.meshRoster_.push_back(MdkrMatchPeerSlotOwner{100u, 0x4u});
+        }
+        if (!a.roomDepartureFinalises(300u)) return 0u;
+        const std::vector<uint64_t> alive = a.survivingEndpoints(300u);
+        return 1u | (mdkr_match_drop_is_proposer(
+                         a.localEndpointId_, alive.data(),
+                         static_cast<unsigned>(alive.size()))
+                         ? 2u
+                         : 0u);
     }
 
     /* Test-only (beta): force an ICE-down on every REMOTE peer connection of
@@ -3877,6 +4022,11 @@ private:
      * race's miss streak. */
     std::array<MdkrPeerLivenessTracker, MDKR_NET_FAILURE_PEERS> peerLiveness_{};
     bool racePeerLost_ = false;
+    /* N8: endpoints the ROOM has reported as having left this race, so a
+     * repeated report finalises nothing twice and the surviving roster the
+     * proposer rule reads is the one that is actually still here. */
+    std::set<uint64_t> departedEndpoints_;
+    bool lobbyDropEnabled_ = true;
     bool raceAbortReceived_ = false; /* peer told us it aborted the race */
     bool raceLossFailureLatched_ = false; /* failure_ came from mapLostReason */
     bool raceEndFailureLatched_ = false;  /* suppress stale lobby under a
@@ -4070,6 +4220,11 @@ bool mdkr_online_live_adapter_test_rekey_restarts_route_measurement(
 
 bool mdkr_online_live_adapter_test_rekey_clears_peer_loss(bool via_abort) {
     return LiveAdapter::testRekeyClearsPeerLoss(via_abort);
+}
+
+unsigned mdkr_online_live_adapter_test_room_departure(
+    bool race_up, bool enabled, bool known, bool third_peer) {
+    return LiveAdapter::testRoomDeparture(race_up, enabled, known, third_peer);
 }
 
 bool mdkr_online_live_adapter_test_reverify_clears_peer_loss(bool via_abort) {

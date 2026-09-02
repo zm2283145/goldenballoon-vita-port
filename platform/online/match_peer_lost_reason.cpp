@@ -19,6 +19,7 @@ const char *mdkr_match_peer_lost_reason_name(MdkrMatchPeerLostReason reason) {
         case MdkrMatchPeerLostReason::PeerVanished: return "peer_vanished";
         case MdkrMatchPeerLostReason::ChannelSetMismatch:
             return "channel_set_mismatch";
+        case MdkrMatchPeerLostReason::PeerDeparted: return "peer_departed";
     }
     return "unknown";
 }

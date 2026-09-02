@@ -261,6 +261,13 @@ enum class MdkrMatchPeerMeshEventType {
     PhraseReady,
     /* Mesh-level failure with a typed reason. */
     Failure,
+    /* The ROOM reports this endpoint left: its signal presence crossed from
+     * asserted to absent at the generation this mesh is connected on. An
+     * OBSERVATION, not a verdict -- this peer's connection, ladders and dwells
+     * are untouched, because only the launcher knows whether a race is running
+     * and therefore what a departure means. Appended so the prior types'
+     * logged values never shift. */
+    PeerDeparted,
 };
 
 enum class MdkrMatchPeerLostReason {
@@ -298,6 +305,11 @@ enum class MdkrMatchPeerLostReason {
      * only when at least one channel DID open, so a genuinely unreachable peer
      * still resolves as ConnectTimeout. Appended for the same reason. */
     ChannelSetMismatch,
+    /* The ROOM said this member left, and the launcher finalised it at the
+     * agreed tick instead of waiting for a transport ladder to notice. The
+     * room owns membership, so this is the promptest truthful departure the
+     * launcher can have. Appended for the same reason. */
+    PeerDeparted,
 };
 
 /* Stable typed name for a peer-loss reason: the forensics ring stores it as a
@@ -451,6 +463,29 @@ public:
      * later race observes a fresh abort independently. */
     bool consumeRaceAbort();
 
+    /* A3: fan the agreed finalisation tick for a departed endpoint out to
+     * every reachable peer on the reliable control channel (typed/versioned
+     * like race_abort; ordered delivery is what makes the first proposal for a
+     * seat the one every recipient commits to). Returns the number of peers
+     * reached; refuses an endpoint outside this room's fixed roster. Changes
+     * no peer's connection state. */
+    unsigned sendRaceDrop(uint64_t departedEndpointId, uint32_t tick);
+
+    /* A3: retire a peer the ROOM reported as gone, once the launcher has
+     * decided the departure ends its race -- the mesh alone cannot, because
+     * only the launcher knows a race is running. Yields the ordinary typed
+     * PeerLost(PeerDeparted): the ring record, the teardown and the launcher's
+     * existing loss handling, with no second path to keep in step. False when
+     * the endpoint is not a roster peer or was already lost. */
+    bool retireDepartedPeer(uint64_t endpointId);
+
+    /* Whether a peer's race_drop is waiting, without consuming it. */
+    bool peekRaceDrop() const;
+
+    /* A3: read-and-clear the pending proposal, like the abort latch above.
+     * False, outputs untouched, when nothing is pending. */
+    bool consumeRaceDrop(uint64_t *departedEndpointId, uint32_t *tick);
+
     /* The transcript verification phrase. Available ONLY once every roster
      * peer's key is committed, opened and derived (mirrors the transcript
      * layer: no phrase from uncommitted key material); refuses otherwise. */
@@ -516,6 +551,8 @@ private:
         MdkrMatchPeerMesh &mesh, uint64_t peerEndpointId);
     friend bool mdkr_match_peer_mesh_kill_channels_for_test(
         MdkrMatchPeerMesh &mesh, uint64_t peerEndpointId);
+    friend bool mdkr_match_peer_mesh_send_raw_race_drop_for_test(
+        MdkrMatchPeerMesh &mesh, uint64_t departedEndpointId, uint32_t tick);
 };
 
 /* ---- Test seams (the *_for_test convention of the party transport) ------ */
@@ -531,5 +568,11 @@ bool mdkr_match_peer_mesh_exhaust_seal_for_test(
  * ICE-restart path. */
 bool mdkr_match_peer_mesh_kill_channels_for_test(
     MdkrMatchPeerMesh &mesh, uint64_t peerEndpointId);
+
+/* Sends a race_drop naming `departedEndpointId` WITHOUT the roster check
+ * sendRaceDrop applies, so the recipient's own validation is what the test
+ * observes. Returns the number of peers reached. */
+bool mdkr_match_peer_mesh_send_raw_race_drop_for_test(
+    MdkrMatchPeerMesh &mesh, uint64_t departedEndpointId, uint32_t tick);
 
 #endif /* MDKR_MATCH_PEER_TRANSPORT_H */
