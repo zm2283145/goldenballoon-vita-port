@@ -5707,7 +5707,12 @@ selection and palette-replacement surfaces to render at 200% UI scale in the
 compact launcher. Each variant preserves framing and cleanup, changes only the
 draft style recipe, and remains installed-byte-pure. A keyboard-only
 speech walk must announce the consequential controls, and both arms must leave
-installed source/cache bytes unchanged. Pure `character_portrait_studio` and
+installed source/cache bytes unchanged. The same arm collects every non-ASCII
+codepoint written in a `platform/app` string literal and requires the live
+atlas to draw all of them: the app never consults a host font, so a codepoint
+outside the embedded subset is a tofu box on every machine. Positive control:
+putting a `\u2192` back into any launcher string reports it as missing and
+fails the gate. Pure `character_portrait_studio` and
 `character_draft_snapshot` tests prove CRC and APNG refusal, mutation-free decode
 failure, image operations, bounded provenance recipes, deterministic output,
 analysis, opaque background compositing and deterministic screening transforms,

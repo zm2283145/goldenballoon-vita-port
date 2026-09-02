@@ -22,6 +22,7 @@
 #include <cassert>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <utility>
 
 namespace {
@@ -1533,6 +1534,38 @@ LauncherAction Launcher::draw(AppHost &host) {
                     stderr,
                     "[app-ui] character-workshop-quit completed=1 pending=0\n");
             }
+        }
+    }
+
+    /* Font-coverage witness. The launcher never consults a host font, so any
+     * codepoint the packaged subset omits renders as a box for every player.
+     * The gate hands in the exact non-ASCII codepoints platform/app writes and
+     * this answers with the ones the atlas cannot draw. */
+    if (const char *coverage = std::getenv("MDKR_APP_SMOKE_FONT_COVERAGE")) {
+        static bool tracedFontCoverage = false;
+        if (!tracedFontCoverage) {
+            tracedFontCoverage = true;
+            unsigned    requested = 0u;
+            std::string missing;
+            for (const char *cursor = coverage; *cursor != '\0';) {
+                char         *end = nullptr;
+                const unsigned long codepoint =
+                    std::strtoul(cursor, &end, 16);
+                if (end == cursor) break;
+                ++requested;
+                if (!AppTheme::canDrawGlyph(
+                        static_cast<unsigned>(codepoint))) {
+                    char formatted[16];
+                    std::snprintf(formatted, sizeof(formatted), "%s%04lX",
+                                  missing.empty() ? "" : ",", codepoint);
+                    missing += formatted;
+                }
+                cursor = (*end == ',') ? end + 1 : end;
+            }
+            std::fprintf(
+                stderr,
+                "[app-ui] font-coverage requested=%u missing=%s\n",
+                requested, missing.empty() ? "none" : missing.c_str());
         }
     }
 

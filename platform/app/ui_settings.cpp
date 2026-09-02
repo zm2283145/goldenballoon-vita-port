@@ -7404,7 +7404,7 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
                 if (proposal.joint >= 0 &&
                     proposal.joint < static_cast<int>(edit.joints.size())) {
                     ImGui::TextWrapped(
-                        "%s → #%u · %s · %.0f%% · %s · rest %s · bend %s",
+                        "%s: #%u · %s · %.0f%% · %s · rest %s · bend %s",
                         kHumanoidRigRoles[role].name,
                         edit.joints[proposal.joint].node,
                         edit.joints[proposal.joint].name.c_str(),
@@ -7414,7 +7414,7 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
                         proposal.bendAxisAvailable ? "derived" : "automatic");
                 } else {
                     ImGui::TextColored(
-                        AppTheme::accent(), "%s → unresolved",
+                        AppTheme::accent(), "%s: unresolved",
                         kHumanoidRigRoles[role].name);
                 }
             }
@@ -7793,11 +7793,11 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
         ui::TextSubtleWrapped(
             "Confirm the five readable regions in the bind-pose canvas before approving reference motion. These checks are tied to this reversible draft and clear together whenever a role or basis changes.");
         static const char *taskLabels[] = {
-            "Torso and head: hips → spine → chest → head",
-            "Left arm: upper arm → lower arm → hand",
-            "Right arm: upper arm → lower arm → hand",
-            "Left leg: upper leg → lower leg → foot",
-            "Right leg: upper leg → lower leg → foot",
+            "Torso and head: hips to spine to chest to head",
+            "Left arm: upper arm to lower arm to hand",
+            "Right arm: upper arm to lower arm to hand",
+            "Left leg: upper leg to lower leg to foot",
+            "Right leg: upper leg to lower leg to foot",
         };
         const bool tasksAvailable = hierarchyError.empty();
         if (!tasksAvailable) ImGui::BeginDisabled();
@@ -8818,7 +8818,7 @@ void drawCharacterContactDiagnostics(
                                  ImGuiTableFlags_SizingStretchProp)) {
         ImGui::TableSetupColumn("Contact");
         ImGui::TableSetupColumn("Endpoint error");
-        ImGui::TableSetupColumn("Target → endpoint (X, Y, Z m)");
+        ImGui::TableSetupColumn("Target to endpoint (X, Y, Z m)");
         ImGui::TableHeadersRow();
         for (unsigned contact = 0u;
              contact < MDKR_CHARACTER_PREVIEW_CONTACTS; ++contact) {
@@ -8840,7 +8840,7 @@ void drawCharacterContactDiagnostics(
             const long long *target =
                 result.contact_target_micrometres[contact];
             const long long *end = result.contact_end_micrometres[contact];
-            ImGui::TextWrapped("%+.3f,%+.3f,%+.3f → %+.3f,%+.3f,%+.3f",
+            ImGui::TextWrapped("%+.3f,%+.3f,%+.3f to %+.3f,%+.3f,%+.3f",
                 target[0] / 1000000.0, target[1] / 1000000.0,
                 target[2] / 1000000.0, end[0] / 1000000.0,
                 end[1] / 1000000.0, end[2] / 1000000.0);
@@ -10363,7 +10363,8 @@ bool drawCharacterTuningEditor(int player,
         const bool reviewed = characterFitReviewed(entry, edit, context);
         ImGui::TextColored(
             reviewed ? AppTheme::good() : AppTheme::accent(),
-            "%s  %s", reviewed ? "✓" : "○", contextNames[context]);
+            "%s · %s", contextNames[context],
+            reviewed ? "reviewed" : "needs review");
     }
     if (nextFitContext >= 0) {
         const std::string continueLabel = std::string("Continue fit: ") +
@@ -12139,13 +12140,13 @@ void drawCharacterPerformanceAssembly(
             const CharacterWorkshopLodBand &range = lodBands[band];
             if (std::isinf(range.maximumProjectedHeight)) {
                 ImGui::BulletText(
-                    "%.1f+ px → LOD%u · %u triangles · %u vertices",
+                    "%.1f+ px uses LOD%u · %u triangles · %u vertices",
                     static_cast<double>(range.minimumProjectedHeight), range.lod,
                     entry->lod_triangles[range.lod],
                     entry->lod_vertices[range.lod]);
             } else {
                 ImGui::BulletText(
-                    "%.1f–%.1f px → LOD%u · %u triangles · %u vertices",
+                    "%.1f–%.1f px uses LOD%u · %u triangles · %u vertices",
                     static_cast<double>(range.minimumProjectedHeight),
                     static_cast<double>(range.maximumProjectedHeight), range.lod,
                     entry->lod_triangles[range.lod],
@@ -14510,7 +14511,7 @@ void drawCharacterPreviewResult(const MdkrModernCharacterEntry *entry) {
         }
         if (transition) {
             ImGui::Text(
-                "A %s %.1f%%  →  B %s %.1f%%",
+                "A %s %.1f%% to B %s %.1f%%",
                 transitionFromPose->label,
                 result.transition_from_phase_milli / 10.0,
                 pose->label, result.pose_phase_milli / 10.0);
@@ -15155,7 +15156,7 @@ void drawRegisteredCharacterComparison(
         std::min(420.0f, std::max(180.0f,
             ImGui::GetContentRegionAvail().x)));
     if (ImGui::SliderInt(
-            "Custom ↔ retail donor", &donorPercent, 0, 100,
+            "Custom to retail donor", &donorPercent, 0, 100,
             "Donor %d%%", ImGuiSliderFlags_AlwaysClamp)) {
         blend = donorPercent / 100.0f;
     }
@@ -17837,7 +17838,7 @@ void drawCharacterExactTests(const MdkrModernCharacterEntry *entry) {
             "Held sample", inspectionMode == 0 ? "Selected" : "Not selected",
             "Holds one normalized phase in the exact runtime.");
         ImGui::TableNextColumn();
-        (void)ImGui::RadioButton("A ↔ B transition", &inspectionMode, 1);
+        (void)ImGui::RadioButton("A to B transition", &inspectionMode, 1);
         ui::SpeakFocusedItem(
             "A to B transition",
             inspectionMode == 1 ? "Selected" : "Not selected",
@@ -25988,7 +25989,7 @@ void drawCharacterRawIntakeEditor(bool rail) {
         if (selected) {
             ImGui::PushStyleColor(ImGuiCol_Button, AppTheme::accent());
         }
-        const std::string label = std::string(selected ? "✓ " : "") +
+        const std::string label = std::string(selected ? "• " : "") +
                                   forwards[candidate] + "##raw-forward";
         if (ImGui::Button(label.c_str(), ImVec2(candidateWidth, 0.0f)) &&
             !selected) {
@@ -27293,7 +27294,7 @@ bool drawCustomCharactersSection(bool compact) {
         if (tracedWorkshopUx.insert(traceKey).second) {
             std::fprintf(
                 stderr,
-                "[app-ui] character-workshop-ux layout=%s scale=%.1f glyphs=arrows tab-list-popup=%d readiness-row-links=1 header-next=1 status-history=3 undo=visible-tool library-next=1 rig-band=1 overlay-guidance=1 vehicle-fit-use=1 delete=name-or-id+hold controller-port=1 keyboard-authoring=required pad-play-setup=complete\n",
+                "[app-ui] character-workshop-ux layout=%s scale=%.1f tab-list-popup=%d readiness-row-links=1 header-next=1 status-history=3 undo=visible-tool library-next=1 rig-band=1 overlay-guidance=1 vehicle-fit-use=1 delete=name-or-id+hold controller-port=1 keyboard-authoring=required pad-play-setup=complete\n",
                 compact ? "compact" : "wide",
                 static_cast<double>(AppTheme::uiScale()), compact ? 1 : 0);
         }

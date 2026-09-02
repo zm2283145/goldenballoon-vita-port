@@ -21,13 +21,13 @@ static AppUiDpiState g_dpiState;
  * here prevents tofu in editable fields, library rows, narration and recovery
  * copy without consulting a host font. Keep neutral punctuation in Roboto so
  * the application's ordinary metrics do not change. */
+/* These ranges select from the embedded subset face; they cannot conjure a
+ * glyph it was not subset with. Its repertoire is recorded in
+ * gfx_character_text_face.h -- arrows, dingbats and geometric shapes are
+ * outside it, so UI copy stays inside what canDrawGlyph() reports. */
 static const ImWchar kCharacterNameGlyphRanges[] = {
     0x0100, 0x024F, 0x0300, 0x052F, 0x1E00, 0x1FFF,
     0x2000, 0x206F, 0x20A0, 0x20CF, 0x2100, 0x214F,
-    // Workshop navigation and relationship copy uses the Unicode arrows in
-    // this block. Keep them in the packaged atlas instead of relying on a host
-    // font (which rendered the same labels as tofu on clean installations).
-    0x2190, 0x21FF,
     0x2DE0, 0x2DFF, 0xA640, 0xA69F, 0xFF01, 0xFF5E,
     0xFFFD, 0xFFFD, 0,
 };
@@ -291,6 +291,12 @@ void refreshFramebufferScale(float fbScale) {
     if (!AppUi_applyDpiTransition(&g_dpiState, fbScale)) return;
     g_fbScale = g_dpiState.framebufferScale;
     buildFonts(g_fbScale);
+}
+
+bool canDrawGlyph(unsigned codepoint) {
+    return g_fonts.body != nullptr &&
+           codepoint <= static_cast<unsigned>(IM_UNICODE_CODEPOINT_MAX) &&
+           g_fonts.body->IsGlyphInFont(static_cast<ImWchar>(codepoint));
 }
 
 }  // namespace AppTheme

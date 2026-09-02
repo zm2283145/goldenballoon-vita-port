@@ -50,6 +50,11 @@ unsigned uiScaleApplicationCount();
 
 const AppFonts &fonts();
 
+// True when the packaged atlas can draw this codepoint. The app never consults
+// a host font, so a codepoint outside the embedded subset renders as a box on
+// every machine; UI copy has to stay inside what this reports.
+bool canDrawGlyph(unsigned codepoint);
+
 // Brand colors for direct use in panels (ImGui-normalized RGBA).
 ImVec4 primary();     // brand cobalt — active location/selection
 ImVec4 accent();      // amber gold — highlights, valid states

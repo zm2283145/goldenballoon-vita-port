@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -21,6 +22,29 @@ sys.path.insert(0, str(ROOT / "tests"))
 from check_character_workshop_history_ui import install_fixture  # noqa: E402
 
 PACKAGE_ID = "org.mdkr.history-proof"
+
+STRING_LITERAL = re.compile(r'"((?:[^"\\\n]|\\.)*)"')
+
+
+def app_string_codepoints() -> tuple[int, ...]:
+    """Every non-ASCII codepoint the launcher's own copy asks the atlas for.
+
+    The app never consults a host font, so a codepoint the embedded subset
+    omits is a box on every machine -- the "->" tofu class. Scanning the
+    literals here and probing them in the live atlas below catches the next
+    one at the commit that writes it.
+    """
+
+    codepoints: set[int] = set()
+    directory = ROOT / "platform" / "app"
+    for path in sorted(directory.glob("*.cpp")) + sorted(directory.glob("*.h")):
+        source = path.read_text(encoding="utf-8")
+        for literal in STRING_LITERAL.finditer(source):
+            codepoints.update(
+                ord(character) for character in literal.group(1)
+                if ord(character) > 0x7F
+            )
+    return tuple(sorted(codepoints))
 
 
 def inventory(directory: Path) -> dict[str, str]:
@@ -74,6 +98,9 @@ def environment(root: Path, characters: Path, shot: Path, *,
         "MDKR_APP_SMOKE_PORTRAIT_SOURCE": str(portrait_source),
         "MDKR_APP_SMOKE_PORTRAIT_SOURCE_TOKEN":
             "mdkr64-portrait-source-v1",
+        "MDKR_APP_SMOKE_FONT_COVERAGE": ",".join(
+            f"{codepoint:04X}" for codepoint in app_string_codepoints()
+        ),
     })
     if compact:
         result.update({
@@ -190,6 +217,7 @@ def main() -> int:
             "kCharacterNameGlyphRanges",
             "kArabicGlyphRanges",
             "kHebrewGlyphRanges",
+            "bool canDrawGlyph(unsigned codepoint)",
             "gfx_character_text_latin_face_base85()",
             "gfx_character_text_arabic_face_base85()",
             "gfx_character_text_hebrew_face_base85()",
@@ -215,6 +243,8 @@ def main() -> int:
                             compact=True, accessible=False,
                             portrait_source=portrait_source),
                 ("active-panel=Character Workshop",
+                 "font-coverage requested="
+                 f"{len(app_string_codepoints())} missing=none",
                  "compact-layout dense=1 contained=1 ",
                  "character-portrait-variants package=" + PACKAGE_ID +
                  " count=6 source=canvas columns=1 scale=2.00",

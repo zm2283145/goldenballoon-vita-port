@@ -699,7 +699,7 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
                 const char *to = characterPreviewPoseLabel(
                     s.characterPreviewPose);
                 ImGui::Text(
-                    "A %s %.1f%%  ↔  B %s %.1f%%",
+                    "A %s %.1f%% to B %s %.1f%%",
                     from != nullptr ? from : "Unknown",
                     s.characterPreviewTransitionFromPhaseMilli / 10.0,
                     to != nullptr ? to : "Unknown",

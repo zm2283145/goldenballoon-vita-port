@@ -294,7 +294,6 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
     ux_marker = (
         "character-workshop-ux "
         f"layout={expected_layout} scale={expected_scale} "
-        "glyphs=arrows "
         f"tab-list-popup={expected_popup} "
         "readiness-row-links=1 header-next=1 status-history=3 "
         "undo=visible-tool library-next=1 rig-band=1 overlay-guidance=1 "
