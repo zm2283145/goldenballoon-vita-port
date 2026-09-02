@@ -1363,6 +1363,12 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     target_include_directories(mdkr_net_impairment_test PRIVATE ${CMAKE_SOURCE_DIR})
     add_test(NAME net_impairment COMMAND mdkr_net_impairment_test)
 
+    add_executable(mdkr_net_failure_ring_test
+        ${CMAKE_SOURCE_DIR}/tests/test_net_failure_ring.c
+        ${CMAKE_SOURCE_DIR}/platform/net/net_failure_ring.c)
+    target_include_directories(mdkr_net_failure_ring_test PRIVATE ${CMAKE_SOURCE_DIR})
+    add_test(NAME net_failure_ring COMMAND mdkr_net_failure_ring_test)
+
     add_executable(mdkr_net_clock_test
         ${CMAKE_SOURCE_DIR}/tests/test_net_clock.c
         ${CMAKE_SOURCE_DIR}/platform/net/net_clock.c)

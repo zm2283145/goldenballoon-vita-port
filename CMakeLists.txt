@@ -404,6 +404,7 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/net/online_race_results.c # finished-race placements engine->launcher handoff
     ${CMAKE_SOURCE_DIR}/platform/net/local_listener_mix.c # endpoint-only physical audio listener policy
     ${CMAKE_SOURCE_DIR}/platform/net/net_impairment.c  # named deterministic carrier fault profiles
+    ${CMAKE_SOURCE_DIR}/platform/net/net_failure_ring.c # allocation-free online failure/stall forensics
     ${CMAKE_SOURCE_DIR}/platform/net/net_clock.c       # named endpoint clock/opportunity profiles
     ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_snapshot.c # bounded in-process authority snapshots
     ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_ring.c     # preallocated snapshot history
