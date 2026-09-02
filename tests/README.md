@@ -1194,8 +1194,8 @@ second browser window for one derived key object refuse; browser state is
 read-only. The wire contract is documented in
 `docs/ref/match-peer-carrier-v1.md`.
 
-`match_preflight` and `match_preflight_js` share one exact fixed 124-byte report
-vector and cover the pure launcher consensus gate over the frozen
+`match_preflight` and `match_preflight_js` share one exact fixed 136-byte `MPF2`
+report vector and cover the pure launcher consensus gate over the frozen
 launch-descriptor SHA-256, peer-key transcript, order-independent canonical
 directed-graph SHA-256, exact epoch/generations, local supported-ROM
 verification, phrase confirmation and ready channel graph. It
@@ -1209,8 +1209,30 @@ completed report to one carrier-authenticated peer direction, and covers
 reorder, exact duplicate, conflict, stale replacement, final-padding,
 cross-source splicing and forged-attribution negatives. `READY`
 has no engine or network authority.
+The two halves also pin the appended twelve-byte route-quality record: the
+score/band consistency rule, the refusal of a band that disagrees with its own
+score, and the two-way version refusal (an `MPF1` report is named
+`legacy_mpf1` rather than downgraded into, and the frozen `MPF1` header rule
+refuses an `MPF2` report).
 The UX, wire and security contract is documented in
 `docs/ref/match-preflight-v1.md`.
+
+`match_route_quality` covers the pre-flight route measurement itself: every rung
+of the score ladder at its own boundary and one unit past it, the named bands
+over the 1-10 score, degenerate records (a rate above 100% rejects without
+mutating the caller's record; a route that lost everything still floors at one),
+the entry-timing widen from measured p95 RTT against the manifest floor and its
+four-tick cap, the fixed 64-byte probe payload codec, and the caller-clocked
+measurement phase replaying both lanes for 6 s with a 1 s drain. Its positive
+control is an impairment lane: 8% loss injected on the unreliable bundle lane
+through `net_impairment` must score in the `rough` band, and a neutered band
+mapping fails that same assertion. `online_live_route`
+(`mdkr_online_live_adapter_test --route`) runs the whole thing over two real
+loopback DTLS meshes: both endpoints exchange the record in their `MPF2` reports
+and must agree on the band, and a second run with a round trip a single authored
+tick cannot absorb must widen BOTH endpoints' operative lead above the manifest
+floor while the two independent endpoints still fold the identical canonical
+state hash.
 
 `check_rollback_authority_wrapper.py` is the suite-facing entry for the frozen
 mutable-authority census and its omitted-state positive control.

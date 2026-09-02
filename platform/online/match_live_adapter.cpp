@@ -490,6 +490,7 @@ public:
                 ? phrase_
                 : nullptr;
         in.race_admission_enabled = opts_.raceAdmissionEnabled;
+        in.route_quality = routeMeasured_ ? &routeMeasurement_ : nullptr;
         return mdkr_online_view_model_build(&in, out);
     }
 
@@ -535,6 +536,20 @@ public:
         p->phraseConfirmed = phraseConfirmed_;
         p->preflightReady = preflightReady_;
         p->descriptor = descriptor_;
+        p->routeMeasured = routeMeasured_;
+        p->routeMeasurement = routeMeasurement_;
+        p->peerRouteMeasurements = 0u;
+        if (!preflightInit_) return;
+        for (unsigned index = 0u; index < graph_.endpoint_count; ++index) {
+            const MdkrMatchPreflightAttestationV1 &att =
+                preflight_.attestations[index];
+            if ((preflight_.present_mask & (1u << index)) == 0u ||
+                att.endpoint_id == localEndpointId_ ||
+                (att.flags & MDKR_MATCH_PREFLIGHT_ROUTE_MEASURED) == 0u)
+                continue;
+            p->peerRouteMeasurement = att.measurement;
+            ++p->peerRouteMeasurements;
+        }
     }
 
 private:
@@ -1517,6 +1532,7 @@ private:
         descriptorBuilt_ = false;
         refusal_ = MDKR_MATCH_LAUNCH_ADMITTED;
         preflightInit_ = false;
+        routeReportSent_ = false; /* the new round republishes the record */
         preflightInitLogged_ = false;
         ownSubmitted_ = false;
         preflightReady_ = false;
@@ -1665,6 +1681,7 @@ private:
         haveConfirmedDigest_ = false;
         channelsReady_.clear();
         preflightInit_ = false;
+        routeReportSent_ = false; /* the new round republishes the record */
         preflightInitLogged_ = false;
         ownSubmitted_ = false;
         preflightReady_ = false;
@@ -1803,6 +1820,7 @@ private:
         phraseConfirmed_ = false; /* never reuse Ready */
         haveConfirmedDigest_ = false; /* the confirmed transcript is retired */
         preflightInit_ = false;
+        routeReportSent_ = false; /* the new round republishes the record */
         ownSubmitted_ = false;
         preflightReady_ = false;
         fragStates_.clear();
@@ -1987,6 +2005,7 @@ private:
                     }
                     break;
                 case MdkrMatchPeerMeshEventType::InputEnvelope:
+                    if (consumeRouteProbe(ev)) break;
                     if (inputEnvelopes_ == 0u) {
                         MDKR_ONLINE_LOG(
                             "[MESH] first race input envelope received\n");
@@ -2022,6 +2041,8 @@ private:
             std::string current;
             if (!mesh_->phrase(current)) beginReVerify();
         }
+        serviceRouteMeasurement();
+        publishRouteMeasurement();
         updateLiveness();
     }
 
@@ -2188,6 +2209,133 @@ private:
         bump();
     }
 
+    /* ---- Pre-flight route quality ------------------------------------- *
+     *
+     * Once every roster peer's channels are open and before the race
+     * transport exists, replay both real lanes at their real cadence and
+     * payload size for MDKR_MATCH_ROUTE_MEASURE_MS, drain for
+     * MDKR_MATCH_ROUTE_DRAIN_MS, then score what came back. The bundle lane
+     * rides the unreliable state channel (sealed INPUT payloads, where a lost
+     * datagram stays lost); the control lane rides the reliable ordered
+     * control channel (sealed PREFLIGHT payloads). Neither lane needs a new
+     * sealed payload type, and a probe can only be decoded in this window
+     * because raceReady_ closes it. */
+    void serviceRouteMeasurement() {
+        if (routeMeasured_ || raceReady_ || !meshUp_ || !mesh_) return;
+        if (meshRoster_.empty() ||
+            channelsReady_.size() + 1u < meshRoster_.size())
+            return;
+        const uint32_t now = static_cast<uint32_t>(nowMs_());
+        if (!routeMeasureRunning_) {
+            if (!mdkr_match_route_measure_begin(
+                    &routeMeasure_, now, 1000u / opts_.compatibility.cadence_hz,
+                    localEndpointId_))
+                return;
+            routeMeasureRunning_ = true;
+            MDKR_ONLINE_LOG("[PREFLIGHT] route measurement begun\n");
+        }
+        MdkrMatchRouteProbe probe;
+        while (mdkr_match_route_measure_due(&routeMeasure_, now, &probe)) {
+            uint8_t payload[MDKR_MATCH_PEER_PAYLOAD_BYTES];
+            if (!mdkr_match_route_probe_encode(&probe, payload)) continue;
+            sendRouteProbe(probe.lane, payload, 0u);
+        }
+        if (!mdkr_match_route_measure_settled(&routeMeasure_, now)) return;
+        routeMeasureRunning_ = false;
+        if (!mdkr_match_route_measure_finish(&routeMeasure_,
+                                             &routeMeasurement_))
+            return;
+        routeMeasured_ = true;
+        recordRouteMeasurement(now);
+        bump();
+    }
+
+    /* The bundle lane fans out to every reachable peer exactly as race input
+     * does; the control lane is addressed, so an echo goes back only to the
+     * endpoint that asked. `only` is zero for an outbound probe. */
+    void sendRouteProbe(uint8_t lane,
+                        const uint8_t payload[MDKR_MATCH_PEER_PAYLOAD_BYTES],
+                        uint64_t only) {
+        if (lane == MDKR_MATCH_ROUTE_LANE_BUNDLE) {
+            (void)mesh_->sendInput(payload);
+            return;
+        }
+        for (const MdkrMatchPeerSlotOwner &o : meshRoster_) {
+            if (o.endpointId == localEndpointId_) continue;
+            if (only != 0u && o.endpointId != only) continue;
+            (void)mesh_->sendPreflightFragment(o.endpointId, payload);
+        }
+    }
+
+    /* True when the payload was a route probe and this pump consumed it. */
+    bool consumeRouteProbe(const MdkrMatchPeerMeshEvent &ev) {
+        MdkrMatchRouteProbe probe;
+        if (raceReady_ || !mesh_ ||
+            !mdkr_match_route_probe_decode(ev.payload.data(), &probe))
+            return false;
+        if (probe.kind == MDKR_MATCH_ROUTE_ECHO) {
+            /* A bundle-lane echo is broadcast, so only the endpoint that
+             * originated the probe may time it. */
+            if (routeMeasureRunning_ &&
+                probe.origin_endpoint_id == localEndpointId_) {
+                mdkr_match_route_measure_echo(
+                    &routeMeasure_, probe.sequence,
+                    static_cast<uint32_t>(nowMs_()));
+            }
+            return true;
+        }
+        uint8_t payload[MDKR_MATCH_PEER_PAYLOAD_BYTES];
+        MdkrMatchRouteProbe echo = probe;
+        echo.kind = static_cast<uint8_t>(MDKR_MATCH_ROUTE_ECHO);
+        if (mdkr_match_route_probe_encode(&echo, payload))
+            sendRouteProbe(probe.lane, payload,
+                           ev.context.key.source_endpoint_id);
+        return true;
+    }
+
+    /* The measurement's outcome joins the mesh bring-up boundary already in
+     * the forensics ring, so a dump reads "the route this session started on"
+     * beside every later stall. The code carries the band and the score. */
+    void recordRouteMeasurement(uint32_t hostMs) {
+        const char *band = mdkr_match_route_band_name(
+            static_cast<MdkrMatchRouteBand>(routeMeasurement_.band));
+        char code[MDKR_NET_FAILURE_CODE_BYTES];
+        std::snprintf(code, sizeof(code), "route-%s-%u",
+                      band != nullptr ? band : "none",
+                      static_cast<unsigned>(routeMeasurement_.score));
+        mdkr_net_failure_ring_record_host(
+            MDKR_NET_FAILURE_LIFECYCLE, hostMs, MDKR_NET_FAILURE_NO_SLOT,
+            MDKR_NET_LIFECYCLE_MESH_UP, code);
+        MDKR_ONLINE_LOG(
+            "[PREFLIGHT] route measured p95=%ums jitter=%ums loss=%u/1000 "
+            "late=%u/1000 score=%u band=%s\n",
+            static_cast<unsigned>(routeMeasurement_.p95_rtt_ms),
+            static_cast<unsigned>(routeMeasurement_.jitter_ms),
+            static_cast<unsigned>(routeMeasurement_.loss_per_thousand),
+            static_cast<unsigned>(routeMeasurement_.late_per_thousand),
+            static_cast<unsigned>(routeMeasurement_.score),
+            band != nullptr ? band : "none");
+    }
+
+    /* The measured report is a second, higher-sequence attestation rather than
+     * a precondition for READY: a route that measures badly informs the player
+     * and widens this endpoint's entry timing, it never refuses the launch. */
+    void publishRouteMeasurement() {
+        if (!routeMeasured_ || routeReportSent_ || !preflightInit_ ||
+            !mesh_ || !descriptorBuilt_)
+            return;
+        MdkrMatchPreflightAttestationV1 att;
+        buildOwnAttestation(&att);
+        if (mdkr_match_preflight_submit(&preflight_, localEndpointId_,
+                                        meshGeneration_, &att) !=
+            MDKR_MATCH_PREFLIGHT_SUBMIT_ACCEPTED)
+            return;
+        sendOwnFragments(att);
+        routeReportSent_ = true;
+        MDKR_ONLINE_LOG("[PREFLIGHT] measured report published (seq=%u)\n",
+                        att.sequence);
+    }
+
     /* ---- Preflight consensus + install -------------------------------- */
 
     void runPreflight() {
@@ -2348,7 +2496,11 @@ private:
          * strictly grows), so a round-2 fragment reaching a peer whose
          * reassembly still holds round 1 replaces it through the codec's own
          * newer-sequence path instead of colliding on a constant 1. */
-        att->sequence = descriptor_.manifest.match_epoch;
+        /* Two report generations per round: the compatibility report, then the
+         * same report once the route measurement has settled. Doubling keeps
+         * both strictly below round N+1's pair. */
+        att->sequence = descriptor_.manifest.match_epoch * 2u +
+                        (routeMeasured_ ? 1u : 0u);
         att->endpoint_id = localEndpointId_;
         (void)mdkr_match_preflight_descriptor_digest(&descriptor_,
                                                      att->descriptor_digest);
@@ -2358,6 +2510,10 @@ private:
         if (opts_.romVerified) att->flags |= MDKR_MATCH_PREFLIGHT_ROM_VERIFIED;
         if (phraseConfirmed_) att->flags |= MDKR_MATCH_PREFLIGHT_PHRASE_CONFIRMED;
         att->flags |= MDKR_MATCH_PREFLIGHT_CHANNELS_READY;
+        if (routeMeasured_) {
+            att->flags |= MDKR_MATCH_PREFLIGHT_ROUTE_MEASURED;
+            att->measurement = routeMeasurement_;
+        }
     }
 
     void sendOwnFragments(const MdkrMatchPreflightAttestationV1 &att) {
@@ -2400,6 +2556,7 @@ private:
 
     void onPreflightFragment(const MdkrMatchPeerMeshEvent &ev) {
         const uint64_t peer = ev.context.key.source_endpoint_id;
+        if (consumeRouteProbe(ev)) return;
         if (isPhraseMismatchNotice(ev.payload.data())) {
             /* A human on the peer display reported "Words Differ": leave the
              * confirm surface, present the mismatch recovery, and retire the
@@ -2554,7 +2711,27 @@ private:
             if (o.endpointId == localEndpointId_) continue;
             peerSlotMask_[o.endpointId] = o.slotMask;
         }
-        raceInputDelay_ = opts_.inputDelay != 0u ? opts_.inputDelay : 2u;
+        /* The manifest's input_delay is the admission-compared FLOOR every
+         * endpoint agreed on; this endpoint may lead by further whole authored
+         * ticks resolved from its OWN measured p95 RTT, up to the documented
+         * cap. Leading further is local: bundles carry their own tick numbers,
+         * so two endpoints leading by different amounts still commit the same
+         * canonical timeline. */
+        const uint8_t inputDelayFloor =
+            opts_.inputDelay != 0u ? opts_.inputDelay : 2u;
+        raceInputDelay_ =
+            routeMeasured_
+                ? mdkr_match_route_input_delay(
+                      routeMeasurement_.p95_rtt_ms,
+                      1000u / opts_.compatibility.cadence_hz, inputDelayFloor)
+                : inputDelayFloor;
+        if (raceInputDelay_ != inputDelayFloor) {
+            MDKR_ONLINE_LOG(
+                "[START] entry timing widened %u -> %u ticks (p95=%ums)\n",
+                static_cast<unsigned>(inputDelayFloor),
+                static_cast<unsigned>(raceInputDelay_),
+                static_cast<unsigned>(routeMeasurement_.p95_rtt_ms));
+        }
         raceSendOwned_ = false;
         raceDegraded_ = false;
         peerLiveness_.fill(MdkrPeerLivenessTracker{});
@@ -3340,6 +3517,13 @@ private:
     uint32_t raceFirstTick_ = 1u;
     uint32_t raceNextTick_ = 1u;
     uint8_t raceInputDelay_ = 2u;
+    /* Pre-flight route quality: the caller-clocked measurement phase, the
+     * record it produced, and whether the measured report has been published. */
+    MdkrMatchRouteMeasureState routeMeasure_{};
+    MdkrMatchRouteMeasurement routeMeasurement_{};
+    bool routeMeasureRunning_ = false;
+    bool routeMeasured_ = false;
+    bool routeReportSent_ = false;
     std::map<uint64_t, uint8_t> peerSlotMask_;
     /* Once-per-epoch lobby loading handshake latches. */
     bool ackLoadedSent_ = false;

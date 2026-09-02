@@ -595,6 +595,9 @@ void drawRoomPanel(LauncherState &state) {
                                                        : "Private Room Preview");
         ui::TextSubtle("%u members • %u racer seats • %u ready",
                        model.member_count, model.seat_count, model.ready_count);
+        /* One chip for the measured route, beside the room's own counts. */
+        if (model.route_quality[0] != '\0')
+            ui::TextSubtle("%s", model.route_quality);
         if (!g_online.adapter->raceAdmissionEnabled()) {
             ui::TextSubtleWrapped(
                 "Interaction preview only. Start Race is held by the local "

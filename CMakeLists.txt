@@ -1494,6 +1494,19 @@ if(NOT EMSCRIPTEN)
                 # Six full bring-up + 240-tick impaired races over real DTLS.
                 set_tests_properties(online_live_matrix PROPERTIES TIMEOUT 360)
 
+                # N5 A5/B1: the pre-flight route-quality measurement over the
+                # same two real loopback DTLS meshes. Both endpoints replay
+                # both lanes at their real cadence and payload size, exchange
+                # the record in their MPF2 reports and must agree on the band;
+                # a second run with a round trip a single authored tick cannot
+                # absorb must widen BOTH endpoints' entry timing above the
+                # manifest floor while the two still converge byte for byte.
+                # The probe/echo round trip is timed against the adapter's
+                # injected clock, so no external network is involved.
+                add_test(NAME online_live_route
+                    COMMAND mdkr_online_live_adapter_test --route)
+                set_tests_properties(online_live_route PROPERTIES TIMEOUT 300)
+
                 # online multiplayer CAPSTONE end-to-end race driver: the
                 # REAL online stack (production MatchRoom HTTP + /connect WS
                 # client, the signal-client mesh backend, the peer

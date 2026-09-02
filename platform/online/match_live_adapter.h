@@ -25,6 +25,7 @@
 #include "online/match_launch_builder.h"
 #include "online/match_peer_transport.h"
 #include "net/party_link.h"  /* MdkrPartyLinkSessionEndReason (session-end / re-entry) */
+#include "net/match_preflight.h"  /* MdkrMatchRouteMeasurement (route quality) */
 #include "session/session_bridge.h"
 #include "session/session_types.h"
 
@@ -272,7 +273,9 @@ struct MdkrOnlineLiveAdapterOptions {
     /* Launcher-local ROM verification result (the ROM_VERIFIED preflight flag).
      * Never sourced from room/service data. */
     bool romVerified = false;
-    uint8_t inputDelay = 2u; /* manifest input delay, <= 8 */
+    /* Manifest input delay, <= 8: the agreed floor, never the operative lead
+     * (the route measurement may widen this endpoint's own lead above it). */
+    uint8_t inputDelay = 2u;
     std::function<uint64_t()> nowMs; /* clock seam; empty -> steady clock */
     /* Borrowed; both must outlive the adapter. */
     MdkrOnlineRoomTransport *room = nullptr;
@@ -296,6 +299,12 @@ struct MdkrOnlineLiveLaunchProbe {
     bool phraseConfirmed = false;
     bool preflightReady = false;
     MdkrMatchLaunchDescriptorV1 descriptor{};
+    /* This endpoint's own settled route measurement (zero until it settles),
+     * and the record every peer published in its MPF2 report. */
+    bool routeMeasured = false;
+    MdkrMatchRouteMeasurement routeMeasurement{};
+    unsigned peerRouteMeasurements = 0u;
+    MdkrMatchRouteMeasurement peerRouteMeasurement{};
 };
 bool mdkr_online_live_adapter_probe(const IMdkrOnlineAdapter *adapter,
                                     MdkrOnlineLiveLaunchProbe *out);
@@ -336,7 +345,11 @@ struct MdkrOnlineLiveRaceInfo {
     uint8_t activeSlotMask = 0u; /* every canonical slot in the manifest */
     uint8_t localSlotMask = 0u;  /* this endpoint's owned canonical slots */
     uint8_t remoteSlotMask = 0u; /* peers' canonical slots (fed from the mesh) */
-    uint8_t inputDelay = 0u;     /* ticks the sealed input leads the drain */
+    /* Ticks the sealed input leads the drain. The manifest's input_delay is
+     * the admission-compared FLOOR; this endpoint may lead by further whole
+     * authored ticks resolved from its own measured p95 RTT, capped at
+     * MDKR_MATCH_ROUTE_INPUT_DELAY_CAP (docs/ref/match-preflight-v1.md, v2). */
+    uint8_t inputDelay = 0u;
     /* A roster peer was lost (typed PeerLost from the mesh) since the race
      * transport came up. The launcher's engine-session loop polls this to end
      * the visible race instead of predicting against a dead peer forever; the

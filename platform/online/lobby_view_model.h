@@ -3,6 +3,7 @@
 #define MDKR_ONLINE_LOBBY_VIEW_MODEL_H
 
 #include "lobby_core.h"
+#include "net/match_preflight.h" /* MdkrMatchRouteMeasurement */
 #include "session/session_types.h"
 
 #include <stdbool.h>
@@ -122,6 +123,7 @@ typedef enum MdkrOnlineInviteState {
 } MdkrOnlineInviteState;
 
 enum { MDKR_ONLINE_VERIFICATION_PHRASE_BYTES = 64 };
+enum { MDKR_ONLINE_ROUTE_QUALITY_BYTES = 32 };
 
 typedef struct MdkrOnlineViewInput {
     const MdkrSessionState *session;
@@ -134,6 +136,9 @@ typedef struct MdkrOnlineViewInput {
      * from room/service state. NULL means the secure check is still running.
      * The projection validates and copies at most 63 display bytes. */
     const char *verification_phrase;
+    /* This endpoint's settled pre-flight route measurement, or NULL while it
+     * is still running. Locally measured; never accepted from room state. */
+    const MdkrMatchRouteMeasurement *route_quality;
     /* Local release configuration only. Never derive this from room/service
      * data. It remains false until the separately reviewed rollback GO. */
     bool race_admission_enabled;
@@ -160,6 +165,8 @@ typedef struct MdkrOnlineViewModel {
     const char *status;
     /* Non-empty only in the explicit human-confirmation preflight state. */
     char verification_phrase[MDKR_ONLINE_VERIFICATION_PHRASE_BYTES];
+    /* One room chip, "~45 ms . steady". Empty until the route settles. */
+    char route_quality[MDKR_ONLINE_ROUTE_QUALITY_BYTES];
     MdkrOnlineViewControl primary;
     MdkrOnlineViewControl secondary;
     MdkrOnlineViewControl cancel;

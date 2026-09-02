@@ -820,6 +820,39 @@ static void test_race_scoped_recovery_cards(void) {
 }
 #endif
 
+/* N5: the one pre-flight route-quality chip. It states a round trip a player
+ * can feel and the band's name, and it stays empty until the route settles. */
+static void test_route_quality_chip(void) {
+    MdkrSessionCore session;
+    MdkrOnlineViewInput input;
+    MdkrOnlineViewModel model;
+    MdkrMatchRouteMeasurement measurement;
+
+    memset(&measurement, 0, sizeof(measurement));
+    measurement.p95_rtt_ms = 45u;
+    measurement.jitter_ms = 4u;
+    expect(mdkr_match_route_measurement_score(&measurement),
+           "the chip fixture scores");
+
+    mdkr_session_core_init(&session, 1u);
+    input = input_for(&session, NULL);
+    expect(mdkr_online_view_model_build(&input, &model) &&
+           model.route_quality[0] == '\0',
+           "no chip is shown before the route measurement settles");
+
+    input.route_quality = &measurement;
+    expect(mdkr_online_view_model_build(&input, &model) &&
+           strcmp(model.route_quality, "~45 ms \xc2\xb7 steady") == 0,
+           "the chip states the round trip and the band");
+    expect(strstr(model.route_quality, "qualified") == NULL &&
+           strstr(model.route_quality, "gate") == NULL,
+           "the chip carries no process vocabulary");
+
+    measurement.band = (uint8_t)MDKR_MATCH_ROUTE_BAND_ROUGH;
+    expect(!mdkr_online_view_model_build(&input, &model),
+           "a band that disagrees with its own score is refused");
+}
+
 int main(void) {
     test_entry_connecting_and_timeouts();
     test_room_selection_and_release_gate();
@@ -827,6 +860,7 @@ int main(void) {
     test_host_config_and_tournament();
     test_failure_primary_actions_reachable();
     test_failure_catalog_and_atomicity();
+    test_route_quality_chip();
 #if MDKR_ENABLE_ONLINE_BETA
     test_race_scoped_recovery_cards();
 #endif

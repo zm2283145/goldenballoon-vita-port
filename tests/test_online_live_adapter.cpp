@@ -605,6 +605,11 @@ struct FullRunResult {
     bool receiverLatchedAbort = false;      /* race_peer_lost(B) after A's abort */
     bool receiverInfoPeerLost = false;      /* raceInfo(B).peerLost */
     bool senderStillConnected = false;      /* A did NOT self-latch its own send */
+    /* N5 route quality (routeClockStepMs > 0): each endpoint's own settled
+     * measurement and the operative entry-timing lead it raced with. */
+    bool routeSettled = false;
+    uint8_t inputDelayA = 0u;
+    uint8_t inputDelayB = 0u;
 };
 
 /* One net_impairment matrix cell: a named carrier profile + a deterministic
@@ -665,7 +670,8 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
                                const ImpairmentSpec *imp = nullptr,
                                bool realInput = false,
                                unsigned severAfterTicks = 0u,
-                               bool sendAbortFromA = false) {
+                               bool sendAbortFromA = false,
+                               unsigned routeClockStepMs = 0u) {
     FullRunResult result;
     mdkr_net_roster_runtime_clear();
 
@@ -726,6 +732,29 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
         return result;
     }
 
+    /* N5: hold in SELECTING until both endpoints' route measurement settles.
+     * The probe/echo round trip is timed against the fake clock, so the step
+     * size IS the route's measured latency: 10 ms reads as a LAN route, a
+     * larger step as a route whose entry timing must widen. */
+    if (routeClockStepMs != 0u) {
+        const unsigned budget =
+            (MDKR_MATCH_ROUTE_MEASURE_MS + MDKR_MATCH_ROUTE_DRAIN_MS) * 3u;
+        for (unsigned elapsed = 0u; elapsed <= budget;
+             elapsed += routeClockStepMs) {
+            MdkrOnlineLiveLaunchProbe pa{}, pb{};
+            A->service();
+            B->service();
+            mdkr_online_live_adapter_probe(A.get(), &pa);
+            mdkr_online_live_adapter_probe(B.get(), &pb);
+            if (pa.routeMeasured && pb.routeMeasured) {
+                result.routeSettled = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            clock.nowMs += routeClockStepMs;
+        }
+    }
+
     /* Selections + Ready for both endpoints (one seat each). */
     auto selectReady = [&](IMdkrOnlineAdapter *self, unsigned character) {
         auto until = [&](MdkrOnlineViewAction next) {
@@ -768,8 +797,26 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
         return pa.installed && pb.preflightReady;
     }, 30000u);
 
+    /* The measured MPF2 report is published after consensus, so let both
+     * endpoints exchange it before the probe snapshot is taken. */
+    if (routeClockStepMs != 0u) {
+        (void)pumpUntil(both, clock, [&]() {
+            MdkrOnlineLiveLaunchProbe pa{}, pb{};
+            mdkr_online_live_adapter_probe(A.get(), &pa);
+            mdkr_online_live_adapter_probe(B.get(), &pb);
+            return pa.peerRouteMeasurements > 0u &&
+                   pb.peerRouteMeasurements > 0u;
+        }, 5000u);
+    }
     mdkr_online_live_adapter_probe(A.get(), &result.probeA);
     mdkr_online_live_adapter_probe(B.get(), &result.probeB);
+    {
+        MdkrOnlineLiveRaceInfo delayA{}, delayB{};
+        if (mdkr_online_live_adapter_race_info(A.get(), &delayA))
+            result.inputDelayA = delayA.inputDelay;
+        if (mdkr_online_live_adapter_race_info(B.get(), &delayB))
+            result.inputDelayB = delayB.inputDelay;
+    }
 
     /* race: with both descriptors installed, feed real sealed input
      * bundles over the loopback mesh for `raceTicks` authored ticks and fold
@@ -3067,16 +3114,89 @@ void test_forensics_dump_on_midrace_peer_loss() {
     mdkr_net_roster_runtime_clear();
 }
 
+/* N5 A5/B1: the pre-flight route-quality measurement over the REAL loopback
+ * DTLS mesh. Both endpoints replay both lanes at their real cadence and payload
+ * size, exchange the resulting record in their MPF2 reports, and must agree on
+ * the band. A LAN-shaped route leaves the agreed entry timing alone; a route
+ * whose round trip needs more authored ticks widens this endpoint's lead above
+ * the manifest floor while the two endpoints still converge on one canonical
+ * timeline. */
+void test_route_quality_measured_and_agreed() {
+    const FullRunResult r = driveTwoAdapters(
+        /*bonusIdentityOnA=*/false, /*raceTicks=*/60u, /*imp=*/nullptr,
+        /*realInput=*/false, /*severAfterTicks=*/0u, /*sendAbortFromA=*/false,
+        /*routeClockStepMs=*/10u);
+    CHECK(r.routeSettled);
+    CHECK(r.probeA.routeMeasured);
+    CHECK(r.probeB.routeMeasured);
+    /* The record crossed the wire in both directions. */
+    CHECK(r.probeA.peerRouteMeasurements == 1u);
+    CHECK(r.probeB.peerRouteMeasurements == 1u);
+    /* Both peers agree on the band -- each on its own measurement and on the
+     * one it received. */
+    CHECK(r.probeA.routeMeasurement.band == r.probeB.routeMeasurement.band);
+    CHECK(r.probeA.peerRouteMeasurement.band == r.probeB.routeMeasurement.band);
+    CHECK(r.probeB.peerRouteMeasurement.band == r.probeA.routeMeasurement.band);
+    CHECK(r.probeA.routeMeasurement.band == MDKR_MATCH_ROUTE_BAND_STEADY);
+    /* A LAN-shaped route needs no more lead than the manifest already agreed. */
+    CHECK(r.inputDelayA == r.probeA.descriptor.manifest.input_delay);
+    CHECK(r.inputDelayB == r.probeB.descriptor.manifest.input_delay);
+    CHECK(r.raceConverged);
+    std::fprintf(stderr,
+                 "[route] lan p95=%ums score=%u band=%u delay=%u/%u\n",
+                 static_cast<unsigned>(r.probeA.routeMeasurement.p95_rtt_ms),
+                 static_cast<unsigned>(r.probeA.routeMeasurement.score),
+                 static_cast<unsigned>(r.probeA.routeMeasurement.band),
+                 static_cast<unsigned>(r.inputDelayA),
+                 static_cast<unsigned>(r.inputDelayB));
+    mdkr_net_roster_runtime_clear();
+}
+
+/* Positive control for the widen: the same run with a round trip a single
+ * authored tick can no longer absorb must raise BOTH endpoints' operative lead
+ * above the manifest floor, and the two independent endpoints must still fold
+ * the identical canonical state hash. Neuter the widen (return the floor) and
+ * the delay assertion below fails while convergence still passes -- the widen
+ * is the only thing this arm can be measuring. */
+void test_route_quality_widens_entry_timing() {
+    const FullRunResult r = driveTwoAdapters(
+        /*bonusIdentityOnA=*/false, /*raceTicks=*/60u, /*imp=*/nullptr,
+        /*realInput=*/false, /*severAfterTicks=*/0u, /*sendAbortFromA=*/false,
+        /*routeClockStepMs=*/120u);
+    CHECK(r.routeSettled);
+    CHECK(r.probeA.routeMeasured && r.probeB.routeMeasured);
+    CHECK(r.probeA.routeMeasurement.p95_rtt_ms >= 100u);
+    CHECK(r.inputDelayA > r.probeA.descriptor.manifest.input_delay);
+    CHECK(r.inputDelayB > r.probeB.descriptor.manifest.input_delay);
+    CHECK(r.inputDelayA <= MDKR_MATCH_ROUTE_INPUT_DELAY_CAP);
+    CHECK(r.inputDelayB <= MDKR_MATCH_ROUTE_INPUT_DELAY_CAP);
+    /* The widen is per endpoint and outside the descriptor, so the shared
+     * timeline is unchanged: both endpoints still converge byte for byte. */
+    CHECK(r.raceConverged);
+    CHECK(r.hashA == r.hashB);
+    std::fprintf(stderr,
+                 "[route] widened p95=%ums band=%u delay=%u/%u floor=%u\n",
+                 static_cast<unsigned>(r.probeA.routeMeasurement.p95_rtt_ms),
+                 static_cast<unsigned>(r.probeA.routeMeasurement.band),
+                 static_cast<unsigned>(r.inputDelayA),
+                 static_cast<unsigned>(r.inputDelayB),
+                 static_cast<unsigned>(
+                     r.probeA.descriptor.manifest.input_delay));
+    mdkr_net_roster_runtime_clear();
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
     bool matrixOnly = false;
     bool latencyOnly = false;
     bool forensicsOnly = false;
+    bool routeOnly = false;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--matrix") == 0) matrixOnly = true;
         if (std::strcmp(argv[i], "--latency") == 0) latencyOnly = true;
         if (std::strcmp(argv[i], "--forensics") == 0) forensicsOnly = true;
+        if (std::strcmp(argv[i], "--route") == 0) routeOnly = true;
     }
     /* The token gate must be open for the live adapter to construct. The
      * matrix lane runs in its own process, so set it there too. */
@@ -3085,6 +3205,13 @@ int main(int argc, char **argv) {
 #else
     setenv("MDKR_INTERNAL_TEST_TOKEN", "mdkr64-online-live-v1", 1);
 #endif
+    if (routeOnly) {
+        test_route_quality_measured_and_agreed();
+        test_route_quality_widens_entry_timing();
+        std::fprintf(stderr, "online_live_route: %d checks, %d failures\n",
+                     g_checks, g_failures);
+        return g_failures == 0 ? 0 : 1;
+    }
     if (forensicsOnly) {
         test_forensics_dump_on_midrace_peer_loss();
         std::fprintf(stderr, "online_live_forensics: %d checks, %d failures\n",

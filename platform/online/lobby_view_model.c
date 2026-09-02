@@ -2,6 +2,7 @@
 
 #include "session/session_core.h"
 
+#include <stdio.h>
 #include <string.h>
 
 static bool title_word(const char *begin, const char *end) {
@@ -17,6 +18,26 @@ static bool title_word(const char *begin, const char *end) {
 /* The peer transcript generator emits exactly 3 Title-Case compounds. Keep
  * this projection parser narrower than generic display text: it prevents an
  * adapter bug from turning cryptographic UI into an injection/overflow seam. */
+/* The one room chip for pre-flight route quality: the round trip a player can
+ * feel, then the band's name. Composed here rather than in match_preflight,
+ * which owns no copy. False leaves the chip empty. */
+static bool route_quality_chip(const MdkrMatchRouteMeasurement *measurement,
+                               char out[MDKR_ONLINE_ROUTE_QUALITY_BYTES]) {
+    const char *band;
+    int written;
+    out[0] = '\0';
+    if (measurement == NULL) return false;
+    band = mdkr_match_route_band_name(
+        (MdkrMatchRouteBand)measurement->band);
+    if (band == NULL) return false;
+    written = snprintf(out, MDKR_ONLINE_ROUTE_QUALITY_BYTES,
+                       "~%u ms \xc2\xb7 %s",
+                       (unsigned)measurement->p95_rtt_ms, band);
+    if (written > 0 && written < MDKR_ONLINE_ROUTE_QUALITY_BYTES) return true;
+    out[0] = '\0';
+    return false;
+}
+
 static bool verification_phrase_valid(const char *phrase, size_t *length_out) {
     const char *cursor = phrase;
     unsigned compound;
@@ -402,6 +423,11 @@ bool mdkr_online_view_model_build(const MdkrOnlineViewInput *input,
         return false;
     }
     if (input->failure < MDKR_ONLINE_VIEW_FAILURE_NONE) return false;
+    if (input->route_quality != NULL &&
+        mdkr_match_route_band((uint8_t)input->route_quality->score) !=
+            (MdkrMatchRouteBand)input->route_quality->band) {
+        return false;
+    }
     if (input->verification_phrase != NULL &&
         (input->session->scene != MDKR_SCENE_LOBBY ||
          input->session->room != MDKR_ROOM_PREFLIGHT ||
@@ -452,6 +478,7 @@ bool mdkr_online_view_model_build(const MdkrOnlineViewInput *input,
         return true;
     }
 
+    (void)route_quality_chip(input->route_quality, next.route_quality);
     next.announcement = MDKR_ONLINE_ANNOUNCE_POLITE;
     switch (input->session->scene) {
         case MDKR_SCENE_HOME:
