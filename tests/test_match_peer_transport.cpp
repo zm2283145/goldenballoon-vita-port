@@ -412,6 +412,12 @@ struct RawPeer {
     FakeHub *hub;
     bool sendHellos = true;
     bool answerPings = true;
+    /* Offerer mode: this peer builds the connection and chooses which channels
+     * it carries, so a lane can present the two-channel set an endpoint that
+     * predates the authority channel would offer. Unset, the peer answers. */
+    bool offerer = false;
+    bool offerAuthorityChannel = true;
+    bool offerSent = false;
 
     MdkrMatchPeerIdentity *identity = nullptr;
     std::array<uint8_t, MDKR_MATCH_PEER_PUBLIC_KEY_BYTES> publicKey{};
@@ -516,6 +522,11 @@ struct RawPeer {
             try {
                 pc->setRemoteDescription(rtc::Description(event.sdp, "offer"));
             } catch (...) { assert(false && "offer rejected"); }
+        } else if (event.type == MdkrMatchSignalEventType::WebrtcAnswer) {
+            if (!pc) return;
+            try {
+                pc->setRemoteDescription(rtc::Description(event.sdp, "answer"));
+            } catch (...) { assert(false && "answer rejected"); }
         } else if (event.type == MdkrMatchSignalEventType::WebrtcIce) {
             if (!pc) return;
             try {
@@ -525,12 +536,40 @@ struct RawPeer {
         }
     }
 
+    /* Build the connection and offer a chosen channel set. The mesh peers the
+     * numerically HIGHER id, so a harness that wants the mesh to answer gives
+     * this peer the lower one. */
+    void startOffer() {
+        if (pc || offerSent) return;
+        offerer = true;
+        startPeer();
+        rtc::DataChannelInit stateConfiguration;
+        stateConfiguration.reliability.unordered = true;
+        stateConfiguration.reliability.maxRetransmits = 0u;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            channels[MDKR_MATCH_PEER_LANE_STATE] = pc->createDataChannel(
+                kMdkrMatchStateChannelLabel, stateConfiguration);
+            channels[MDKR_MATCH_PEER_LANE_CONTROL] =
+                pc->createDataChannel(kMdkrMatchControlChannelLabel);
+            if (offerAuthorityChannel) {
+                rtc::DataChannelInit authorityConfiguration;
+                authorityConfiguration.reliability.unordered = true;
+                channels[MDKR_MATCH_PEER_LANE_AUTHORITY] =
+                    pc->createDataChannel(kMdkrMatchAuthorityChannelLabel,
+                                          authorityConfiguration);
+            }
+        }
+        offerSent = true;
+    }
+
     void startPeer() {
         if (pc) return;
         rtc::Configuration configuration; /* loopback: no ICE servers */
         pc = std::make_shared<rtc::PeerConnection>(configuration);
         pc->onLocalDescription([this](rtc::Description description) {
-            sendSignal("webrtc_answer", [&](MdkrMatchSignalOutbound &m) {
+            sendSignal(offerer ? "webrtc_offer" : "webrtc_answer",
+                       [&](MdkrMatchSignalOutbound &m) {
                 m.sdp = std::string(description);
             });
         });
@@ -559,12 +598,17 @@ struct RawPeer {
         });
     }
 
-    bool channelsOpen() {
+    unsigned openChannelCount() {
         std::lock_guard<std::mutex> lock(mutex);
+        unsigned open = 0u;
         for (unsigned lane = 0u; lane < MDKR_MATCH_PEER_LANE_COUNT; ++lane) {
-            if (!channels[lane] || !channels[lane]->isOpen()) return false;
+            if (channels[lane] && channels[lane]->isOpen()) open++;
         }
-        return true;
+        return open;
+    }
+
+    bool channelsOpen() {
+        return openChannelCount() == MDKR_MATCH_PEER_LANE_COUNT;
     }
 
     /* Answer mesh pings so the stale ladder stays quiet where wanted. */
@@ -1384,6 +1428,69 @@ void authorityWrongPayloadTypeIsTypedLoss() {
            lost->lostReason ==
                MdkrMatchPeerLostReason::ControlChannelViolation);
     std::printf("authorityWrongPayloadTypeIsTypedLoss: ok\n");
+}
+
+/* N7: an endpoint that predates the authority channel offers only the two
+ * older ones. Its connection comes up and its channels open, so it looks
+ * exactly like a peer whose ICE never completed -- the answerer must name the
+ * channel-set difference instead of reporting a connect timeout. */
+void shortChannelSetOfferIsNamedAtTheSetupDeadline() {
+    RawHarness rig;
+    /* The mesh takes the HIGHER id so it answers and the raw peer offers. */
+    const std::vector<MdkrMatchPeerSlotOwner> roster = rosterOf({100u, 200u});
+    rig.mesh = rig.harness.add(200u, 2u, roster);
+    rig.rawFeed = rig.harness.hub.addEndpoint(100u, 1u);
+    rig.raw = std::make_unique<RawPeer>(100u, 1u, 200u, 2u, &rig.harness.hub);
+    rig.raw->offerAuthorityChannel = false;
+    rig.harness.hub.welcome(200u);
+    /* Both older channels open on the mesh side, and the third never does. */
+    assert(rig.harness.pumpUntil([&]() {
+        rig.drainRawInbox();
+        rig.raw->startOffer();
+        rig.raw->serviceControl();
+        return rig.raw->openChannelCount() >= 2u;
+    }));
+    assert(rig.harness.countEvents(
+               200u, MdkrMatchPeerMeshEventType::PeerChannelsReady, 100u) == 0u);
+    /* The answerer's setup deadline is the bounded verdict. */
+    rig.harness.clock.nowMs += kMdkrMatchAnswererSetupDeadlineMs + 1u;
+    assert(rig.harness.pumpUntil([&]() {
+        rig.drainRawInbox();
+        rig.raw->serviceControl();
+        return rig.harness.countEvents(
+                   200u, MdkrMatchPeerMeshEventType::PeerLost, 100u) >= 1u;
+    }, 5000u));
+    const MdkrMatchPeerMeshEvent *lost = rig.harness.lastEvent(
+        200u, MdkrMatchPeerMeshEventType::PeerLost, 100u);
+    assert(lost != nullptr &&
+           lost->lostReason == MdkrMatchPeerLostReason::ChannelSetMismatch);
+    /* The reason reaches the forensics ring by NAME, not as an ordinal. */
+    assert(std::strcmp(mdkr_match_peer_lost_reason_name(lost->lostReason),
+                       "channel_set_mismatch") == 0);
+    std::printf("shortChannelSetOfferIsNamedAtTheSetupDeadline: ok\n");
+}
+
+/* Control: the SAME offerer carrying the full channel set reaches
+ * PeerChannelsReady and is never lost, so the verdict above reads the missing
+ * channel and not merely "this peer offered". */
+void fullChannelSetOfferReachesReady() {
+    RawHarness rig;
+    const std::vector<MdkrMatchPeerSlotOwner> roster = rosterOf({100u, 200u});
+    rig.mesh = rig.harness.add(200u, 2u, roster);
+    rig.rawFeed = rig.harness.hub.addEndpoint(100u, 1u);
+    rig.raw = std::make_unique<RawPeer>(100u, 1u, 200u, 2u, &rig.harness.hub);
+    rig.harness.hub.welcome(200u);
+    assert(rig.harness.pumpUntil([&]() {
+        rig.drainRawInbox();
+        rig.raw->startOffer();
+        rig.raw->serviceControl();
+        return rig.harness.countEvents(
+                   200u, MdkrMatchPeerMeshEventType::PeerChannelsReady,
+                   100u) >= 1u;
+    }));
+    assert(rig.harness.countEvents(
+               200u, MdkrMatchPeerMeshEventType::PeerLost, 100u) == 0u);
+    std::printf("fullChannelSetOfferReachesReady: ok\n");
 }
 
 /* Hello-only stand-in for a reconnected endpoint: one identity, the
@@ -2416,6 +2523,8 @@ int main() {
     delayedControlFragmentSurvivesInputBurst();
     authorityLaneKeepsItsOwnReplayWindow();
     authorityWrongPayloadTypeIsTypedLoss();
+    fullChannelSetOfferReachesReady();
+    shortChannelSetOfferIsNamedAtTheSetupDeadline();
     rekeyGenerationBumpKeepsHonestPeers();
     helloProtocolPinning();
     offCurveRevealIsPerPeerLoss();

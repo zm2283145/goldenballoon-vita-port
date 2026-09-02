@@ -1450,7 +1450,14 @@ struct MdkrMatchPeerMesh::State
                 } else if (nowMs - peer.setupStartedMs >=
                            kMdkrMatchAnswererSetupDeadlineMs) {
                     peer.gaveUp = true;
-                    peerLost(peer, MdkrMatchPeerLostReason::ConnectTimeout);
+                    /* Channels DID open, just not all of them: the offer's
+                     * channel set is short, which is what an endpoint that
+                     * predates a channel looks like. Name it instead of
+                     * reporting the ICE-never-completed verdict. */
+                    peerLost(peer, missingChannel(peer) ?
+                                       MdkrMatchPeerLostReason::
+                                           ChannelSetMismatch
+                                     : MdkrMatchPeerLostReason::ConnectTimeout);
                     continue;
                 }
             }
@@ -1470,7 +1477,14 @@ struct MdkrMatchPeerMesh::State
                             kMdkrMatchOfferRetryDeadlineMs);
                     if (decision.giveUp) {
                         peer.gaveUp = true;
-                        peerLost(peer, MdkrMatchPeerLostReason::ConnectTimeout);
+                        /* Same diagnosis as the answerer's deadline: channels
+                         * opened but not the whole set, so the peer's protocol
+                         * is short a channel rather than unreachable. */
+                        peerLost(peer, missingChannel(peer) ?
+                                           MdkrMatchPeerLostReason::
+                                               ChannelSetMismatch
+                                         : MdkrMatchPeerLostReason::
+                                               ConnectTimeout);
                         continue;
                     }
                     if (decision.recreatePeer) {
@@ -1575,6 +1589,25 @@ struct MdkrMatchPeerMesh::State
     }
 
     /* ---- Data plane ---------------------------------------------------------*/
+
+    /* True when the peer's connection produced SOME channels but never the
+     * whole set: at the setup deadline that is a protocol-version mismatch,
+     * not an unreachable endpoint. Logs the labels that never arrived, so a
+     * stderr capture names the missing channel even where the reason code
+     * alone would not. */
+    static bool missingChannel(const PeerRuntime &peer) {
+        const unsigned open = openChannelCount(peer);
+        if (open == 0u || open == MDKR_MATCH_PEER_LANE_COUNT) return false;
+        for (unsigned lane = 0u; lane < MDKR_MATCH_PEER_LANE_COUNT; ++lane) {
+            if (!peer.channelOpen[lane]) {
+                MDKR_MESH_LOG(
+                    "[MESH] peer ep=%llu never opened channel=%s\n",
+                    (unsigned long long)peer.endpointId,
+                    kMdkrMatchChannelLabels[lane]);
+            }
+        }
+        return true;
+    }
 
     static unsigned openChannelCount(const PeerRuntime &peer) {
         unsigned open = 0u;

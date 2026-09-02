@@ -291,6 +291,13 @@ enum class MdkrMatchPeerLostReason {
      * No restart can complete against an endpoint signaling cannot reach.
      * Appended so the prior reasons' logged values never shift. */
     PeerVanished,
+    /* The peer's connection reached this endpoint but its offer never carried
+     * every channel this protocol version requires -- the shape of an endpoint
+     * that predates a channel, which is otherwise indistinguishable from ICE
+     * that never completed. Resolved at the answerer's setup deadline, and
+     * only when at least one channel DID open, so a genuinely unreachable peer
+     * still resolves as ConnectTimeout. Appended for the same reason. */
+    ChannelSetMismatch,
 };
 
 /* Stable typed name for a peer-loss reason: the forensics ring stores it as a
