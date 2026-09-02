@@ -38,6 +38,18 @@ extern "C" {
       MDKR_MATCH_INPUT_REPAIR_ANSWER_TICKS - 1u) /                             \
      MDKR_MATCH_INPUT_REPAIR_ANSWER_TICKS)
 
+/* Answers one peer may be sent per authored tick. One honest request costs at
+ * most MDKR_MATCH_INPUT_REPAIR_MAX_ANSWERS messages for each canonical slot the
+ * responder owns, so this is exactly one full request's worth: a legitimate
+ * requester is always answered in full, and a flood costs no more.
+ *
+ * A budget rather than a (peer, first_tick) duplicate filter, because a flood
+ * need not repeat itself: walking first_tick across the rollback window defeats
+ * a duplicate filter entirely while costing the responder just as much. The
+ * budget bounds the cost whatever the requests say. */
+#define MDKR_MATCH_INPUT_REPAIR_ANSWER_BUDGET                                  \
+    (MDKR_MATCH_INPUT_REPAIR_MAX_ANSWERS * MDKR_SESSION_MAX_PLAYERS)
+
 typedef enum MdkrMatchInputRepairKind {
     MDKR_MATCH_INPUT_REPAIR_REQUEST = 0,
     MDKR_MATCH_INPUT_REPAIR_ANSWER = 1
@@ -54,6 +66,23 @@ typedef struct MdkrMatchInputRepair {
     uint8_t count;
     MdkrPadSample samples[MDKR_MATCH_INPUT_REPAIR_ANSWER_TICKS];
 } MdkrMatchInputRepair;
+
+/* Caller-owned, zero-initialized, one per peer. Pure: it reads no clock and
+ * holds no identity -- the caller supplies the authored tick it charges
+ * against, so the policy is exactly as deterministic as the drain. */
+typedef struct MdkrMatchInputRepairBudget {
+    uint32_t tick;
+    uint32_t spent;
+    bool started;
+} MdkrMatchInputRepairBudget;
+
+/* Charge one answer against `tick`'s budget, returning false once the peer has
+ * spent MDKR_MATCH_INPUT_REPAIR_ANSWER_BUDGET answers for it -- the caller must
+ * then not send. The budget refills whenever the authored tick DIFFERS from the
+ * charged one: a peer cannot choose the responder's own drain frontier, so no
+ * request can refill a budget early by naming a tick. */
+bool mdkr_match_input_repair_budget_charge(
+    MdkrMatchInputRepairBudget *budget, uint32_t tick);
 
 /* Both directions are total and structural: an encode refuses anything the
  * decode would reject, so the two are exact inverses over valid messages. */

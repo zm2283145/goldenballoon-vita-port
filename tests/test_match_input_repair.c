@@ -140,6 +140,35 @@ int main(void) {
     mutated[3] = 2u;
     assert(!mdkr_match_input_repair_decode(mutated, sizeof(mutated), &decoded));
 
+    /* ---- per-peer answer budget --------------------------------------- */
+    {
+        MdkrMatchInputRepairBudget budget;
+        unsigned charged;
+        memset(&budget, 0, sizeof(budget));
+        /* One honest request's worth is always answerable in full. */
+        for (charged = 0u; charged < MDKR_MATCH_INPUT_REPAIR_ANSWER_BUDGET;
+             charged++) {
+            assert(mdkr_match_input_repair_budget_charge(&budget, 500u));
+        }
+        /* A flood past it costs the responder nothing more, however many
+         * different runs the requests name. */
+        for (charged = 0u; charged < 1000u; charged++) {
+            assert(!mdkr_match_input_repair_budget_charge(&budget, 500u));
+        }
+        assert(budget.spent == MDKR_MATCH_INPUT_REPAIR_ANSWER_BUDGET);
+        /* The budget refills when the responder's OWN authored tick advances,
+         * and a legitimate request in the next tick is answered in full. */
+        for (charged = 0u; charged < MDKR_MATCH_INPUT_REPAIR_ANSWER_BUDGET;
+             charged++) {
+            assert(mdkr_match_input_repair_budget_charge(&budget, 501u));
+        }
+        assert(!mdkr_match_input_repair_budget_charge(&budget, 501u));
+        /* A budget spent on a tick is not refilled by returning to it: the
+         * charge tracks the last tick seen, never a set of them. */
+        assert(mdkr_match_input_repair_budget_charge(&budget, 500u));
+        assert(!mdkr_match_input_repair_budget_charge(NULL, 500u));
+    }
+
     assert(!mdkr_match_input_repair_encode(NULL, bytes, sizeof(bytes)));
     assert(!mdkr_match_input_repair_encode(&source, NULL, sizeof(bytes)));
     assert(!mdkr_match_input_repair_decode(bytes, sizeof(bytes), NULL));

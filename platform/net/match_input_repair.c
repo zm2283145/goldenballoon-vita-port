@@ -150,3 +150,16 @@ bool mdkr_match_input_repair_decode(
     *message = decoded;
     return true;
 }
+
+bool mdkr_match_input_repair_budget_charge(
+    MdkrMatchInputRepairBudget *budget, uint32_t tick) {
+    if (budget == NULL) return false;
+    if (!budget->started || budget->tick != tick) {
+        budget->started = true;
+        budget->tick = tick;
+        budget->spent = 0u;
+    }
+    if (budget->spent >= MDKR_MATCH_INPUT_REPAIR_ANSWER_BUDGET) return false;
+    budget->spent++;
+    return true;
+}
