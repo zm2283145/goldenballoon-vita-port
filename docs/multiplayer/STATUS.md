@@ -283,6 +283,18 @@ in-process room + real headless-Chromium controller over real DTLS, no Worker).
 The real-phone acceptance items are in
 [`../RC_PHONE_PARTY_CHECKLIST.md`](../RC_PHONE_PARTY_CHECKLIST.md).
 
+## Shipping runtime switches
+
+Environment switches a build honours in production (as distinct from the
+`MDKR_APP_TEST_*` and `MDKR_TEST_*` seams, which exist only to stage the
+automated lanes). Each defaults to the shipped behaviour; set one only to
+diagnose, and never in a release run.
+
+| Switch | Default | Effect |
+|---|---|---|
+| `MDKR_ONLINE_LOBBY_DROP` | on | Set `0` to stop acting on the room's departure verdict. A peer that leaves mid-race is then detected only by the transport's own ladders, which take the control-ping bound (20 s) or ICE teardown plus the 10 s vanish dwell. This is the fallback if room-driven drops are ever mistrusted in the field, and `check_online_lobby_drop.py` measures both settings against each other. |
+| `MDKR_ONLINE_VIEW_TIMEOUT_MS` | 30000 | Raises the online room's view-progress timeout (minimum 1000). For diagnosing a slow room without the recovery card fronting first. |
+
 ## Repeatable evidence commands
 
 Automation windows render hidden or ordered behind the desktop by design (set

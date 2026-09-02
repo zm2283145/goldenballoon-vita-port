@@ -597,6 +597,16 @@ bool mdkr_online_live_adapter_test_signal_lost_card(bool preflight,
  * endpoint id. Never called by the launcher. */
 unsigned mdkr_online_live_adapter_test_room_departure(
     bool race_up, bool enabled, bool known, bool third_peer);
+/* Pin the guard on a PEER's finalisation proposal: true when the claim is
+ * allowed to reach the finalisation schedule. Staged on a mesh-free adapter
+ * with roster 100/200/300/400, local 200, departing 400 at race epoch 5.
+ * Never called by the launcher. */
+bool mdkr_online_live_adapter_test_drop_proposal_accepted(
+    uint64_t sender, uint32_t epoch, bool room_verdict);
+/* Pin that a proposal is APPLIED only where the room's own verdict and an
+ * agreed tick meet: `order` 0 the verdict first, 1 the proposal first, 2 the
+ * proposal with no room verdict at all. Never called by the launcher. */
+bool mdkr_online_live_adapter_test_drop_proposal_applied(unsigned order);
 #endif
 
 /* Seal + fan out the race's OPENING input window (firstTick..firstTick+

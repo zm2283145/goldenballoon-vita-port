@@ -466,10 +466,12 @@ public:
     /* A3: fan the agreed finalisation tick for a departed endpoint out to
      * every reachable peer on the reliable control channel (typed/versioned
      * like race_abort; ordered delivery is what makes the first proposal for a
-     * seat the one every recipient commits to). Returns the number of peers
-     * reached; refuses an endpoint outside this room's fixed roster. Changes
-     * no peer's connection state. */
-    unsigned sendRaceDrop(uint64_t departedEndpointId, uint32_t tick);
+     * seat the one every recipient commits to). `matchEpoch` scopes the
+     * proposal to one race. Returns the number of peers reached; refuses an
+     * endpoint outside this room's fixed roster. Changes no peer's connection
+     * state. */
+    unsigned sendRaceDrop(uint64_t departedEndpointId, uint32_t matchEpoch,
+                          uint32_t tick);
 
     /* A3: retire a peer the ROOM reported as gone, once the launcher has
      * decided the departure ends its race -- the mesh alone cannot, because
@@ -485,8 +487,22 @@ public:
 
     /* A3: read-and-clear one pending proposal, like the abort latch above.
      * Call until it returns false. False, outputs untouched, when nothing is
-     * pending. */
-    bool consumeRaceDrop(uint64_t *departedEndpointId, uint32_t *tick);
+     * pending.
+     *
+     * The SENDER comes back with the proposal because a race_drop is only a
+     * CLAIM: this layer can tell that the named endpoint is on the room's
+     * fixed roster and is neither the recipient nor the sender, but not
+     * whether the sender was ENTITLED to propose for it, which depends on
+     * which endpoints have already departed. The launcher owns that and must
+     * check it -- an unchecked proposal is one peer ending another's race. */
+    bool consumeRaceDrop(uint64_t *senderEndpointId,
+                         uint64_t *departedEndpointId, uint32_t *matchEpoch,
+                         uint32_t *tick);
+
+    /* Discard every pending proposal. A proposal is about one race; the
+     * launcher drops them when its race state resets, so a late one cannot be
+     * consumed against the next race. */
+    void clearRaceDrops();
 
     /* The transcript verification phrase. Available ONLY once every roster
      * peer's key is committed, opened and derived (mirrors the transcript
@@ -554,7 +570,8 @@ private:
     friend bool mdkr_match_peer_mesh_kill_channels_for_test(
         MdkrMatchPeerMesh &mesh, uint64_t peerEndpointId);
     friend bool mdkr_match_peer_mesh_send_raw_race_drop_for_test(
-        MdkrMatchPeerMesh &mesh, uint64_t departedEndpointId, uint32_t tick);
+        MdkrMatchPeerMesh &mesh, uint64_t departedEndpointId,
+        uint32_t matchEpoch, uint32_t tick);
 };
 
 /* ---- Test seams (the *_for_test convention of the party transport) ------ */
@@ -575,6 +592,7 @@ bool mdkr_match_peer_mesh_kill_channels_for_test(
  * sendRaceDrop applies, so the recipient's own validation is what the test
  * observes. Returns the number of peers reached. */
 bool mdkr_match_peer_mesh_send_raw_race_drop_for_test(
-    MdkrMatchPeerMesh &mesh, uint64_t departedEndpointId, uint32_t tick);
+    MdkrMatchPeerMesh &mesh, uint64_t departedEndpointId, uint32_t matchEpoch,
+    uint32_t tick);
 
 #endif /* MDKR_MATCH_PEER_TRANSPORT_H */

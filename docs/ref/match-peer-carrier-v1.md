@@ -125,20 +125,23 @@ head-of-line blocking would spend exactly the ticks the repair exists to save.
 ### Plaintext control messages
 
 Alongside the sealed preflight fragments, the control channel carries a small
-set of plaintext JSON messages. They are the connection talking about itself,
-never about race state, so they ride outside the envelope; the channel is
-already authenticated by the connection the key exchange established. Every
-message is an exact-key object carrying `type`, `protocol` (version `2`) and
-`nonce` (u32); anything else on this channel -- a wrong version, a missing or
-mistyped key, an unknown `type` -- is a control-channel violation and retires
-the peer.
+set of plaintext JSON messages. They are **not** sealed under the lane key and
+carry no envelope, sequence or replay window: their only authentication is
+DTLS, which binds them to the peer connection and so to the endpoint identity
+that connection was established for. That is enough to say WHO sent a message,
+which is all these messages need — but it is not a claim about whether the
+sender was entitled to say it, and `race_drop` below turns on exactly that
+distinction. Every message is an exact-key object carrying `type`, `protocol`
+(version `2`) and `nonce` (u32); anything else on this channel -- a wrong
+version, a missing or mistyped key, an unknown `type` -- is a control-channel
+violation and retires the peer.
 
 | `type` | Extra fields | Meaning |
 |---|---|---|
 | `ping` | — | Liveness probe; the recipient answers `pong` with the same `nonce`. |
 | `pong` | — | Answer to `ping`; correlated by `nonce`. |
 | `race_abort` | — | The sender abandoned its race-start barrier, or ended mid-race. `nonce` is zero and uncorrelated. |
-| `race_drop` | `endpoint` (u64), `tick` (u32) | The sender proposes that `endpoint`, which the room reported as having left, is finalised at authored tick `tick`. `nonce` is zero and uncorrelated. |
+| `race_drop` | `endpoint` (u64), `epoch` (u32), `tick` (u32) | The sender proposes that `endpoint`, which the room reported as having left, is finalised at authored tick `tick` of match `epoch`. `nonce` is zero and uncorrelated. |
 
 `race_drop` is what keeps a departure deterministic when more than two
 endpoints are racing. The room owns membership and every survivor hears the
@@ -147,8 +150,34 @@ different finalisation tick and author a different race. Exactly one survivor
 proposes -- the lowest surviving endpoint id, a rule every survivor evaluates
 identically -- and the rest adopt the tick it sends verbatim. The channel is
 reliable and ordered, so the first proposal for a seat is the first every
-recipient sees. `endpoint` must name a member of the room's fixed roster other
-than the recipient; anything else is a control-channel violation.
+recipient sees.
+
+**A `race_drop` is a claim, never a verdict.** DTLS says which endpoint sent
+it; nothing about the message says the sender was entitled to send it, and a
+recipient that simply obeyed one would let any player finalise a third party's
+seats and end everyone's race with no departure having happened. A recipient
+therefore checks it against three things it knows independently:
+
+- `endpoint` names a member of the room's fixed roster that is neither the
+  recipient nor the sender — an endpoint talking on this channel has plainly
+  not left. A violation of this is structural and terminal, like any other
+  garbage on a reliable channel;
+- `epoch` is the recipient's current match epoch. A proposal is about one
+  race, and a late one must not finalise a seat in the next;
+- the sender is the proposer for the recipient's own view of the surviving
+  roster (the lowest surviving endpoint id).
+
+A proposal that passes all three is still only half of the decision: the tick
+is applied **only once the recipient has heard the room's own departure verdict
+for that endpoint**. The room decides who has left; the proposal decides only
+where in the timeline that fact takes effect. Either half may arrive first,
+and the finalisation happens where they meet.
+
+The last two checks refuse the proposal rather than retiring the sender: two
+honest survivors can briefly disagree about who has already departed, and a
+momentary disagreement must not cost an honest connection. The refusal is
+recorded in the failure ring either way, so an unentitled proposal is visible
+rather than silent.
 
 A recipient that has already finalised that seat keeps its own tick: the
 finalisation schedule refuses a second, different tick for one seat, so the

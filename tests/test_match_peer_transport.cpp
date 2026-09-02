@@ -2576,7 +2576,9 @@ void retiringADepartedPeerIsTypedPeerDeparted() {
 
 /* A3: the proposer's finalisation tick reaches the other survivors on the
  * reliable ordered control channel, where ordering is what makes the first
- * proposal for a seat the one everyone commits to. */
+ * proposal for a seat the one everyone commits to. The mesh carries the claim
+ * -- sender, epoch and tick -- and leaves entitlement to the launcher, which
+ * is the only layer that knows who has already departed. */
 void raceDropCarriesTheAgreedTickToEverySurvivor() {
     MeshHarness harness;
     const std::vector<MdkrMatchPeerSlotOwner> roster =
@@ -2598,46 +2600,60 @@ void raceDropCarriesTheAgreedTickToEverySurvivor() {
                    MdkrMatchPeerMeshEventType::PeerChannelsReady, 100u) >= 1u;
     }, 30000u));
 
+    uint64_t sender = 0u;
     uint64_t departed = 0u;
+    uint32_t epoch = 0u;
     uint32_t tick = 0u;
     /* Nothing to consume before a proposal lands. */
-    assert(!harness.mesh(200u)->consumeRaceDrop(&departed, &tick));
-    /* 100 is the lowest surviving id, so it proposes 300's finalisation. The
-     * departed endpoint is not one of the recipients. */
-    assert(harness.mesh(100u)->sendRaceDrop(300u, 4242u) == 1u);
+    assert(!harness.mesh(200u)->consumeRaceDrop(&sender, &departed, &epoch,
+                                                &tick));
+    /* 100 proposes 300's finalisation. The departed endpoint is not one of
+     * the recipients. */
+    assert(harness.mesh(100u)->sendRaceDrop(300u, 9u, 4242u) == 1u);
     /* An endpoint this room never had is refused before it reaches the wire. */
-    assert(harness.mesh(100u)->sendRaceDrop(999u, 4242u) == 0u);
+    assert(harness.mesh(100u)->sendRaceDrop(999u, 9u, 4242u) == 0u);
     assert(harness.pumpUntil([&]() {
         return harness.mesh(200u)->peekRaceDrop();
     }, 5000u));
-    assert(harness.mesh(200u)->consumeRaceDrop(&departed, &tick));
-    assert(departed == 300u && tick == 4242u);
+    assert(harness.mesh(200u)->consumeRaceDrop(&sender, &departed, &epoch,
+                                               &tick));
+    /* The whole claim survives the trip: who said it, about which race. */
+    assert(sender == 100u && departed == 300u && epoch == 9u && tick == 4242u);
     /* Read-and-clear, like the abort latch beside it. */
-    assert(!harness.mesh(200u)->consumeRaceDrop(&departed, &tick));
+    assert(!harness.mesh(200u)->consumeRaceDrop(&sender, &departed, &epoch,
+                                                &tick));
+    assert(!harness.mesh(300u)->peekRaceDrop());
+
     /* First proposal for an endpoint wins: a later one cannot move a tick a
-     * survivor may already have committed to. */
-    assert(harness.mesh(100u)->sendRaceDrop(200u, 90u) == 1u);
+     * survivor may already have committed to. Proving that needs to know both
+     * proposals ARRIVED, which a sleep can only guess at -- so a race_abort is
+     * sent behind them on the SAME reliable ordered channel and used as the
+     * arrival marker. Once 300 sees the abort, both proposals have certainly
+     * landed and the map's contents are final. */
+    assert(harness.mesh(100u)->sendRaceDrop(200u, 9u, 90u) == 1u);
+    assert(harness.mesh(100u)->sendRaceDrop(200u, 9u, 91u) == 1u);
+    assert(harness.mesh(100u)->sendRaceAbort() == 2u);
     assert(harness.pumpUntil([&]() {
-        return harness.mesh(300u)->peekRaceDrop();
+        return harness.mesh(300u)->consumeRaceAbort();
     }, 5000u));
-    assert(harness.mesh(100u)->sendRaceDrop(200u, 91u) == 1u);
-    /* Reliable ordered delivery puts 91 behind the 90 that already landed;
-     * pump (with the harness's real waits) well past its arrival, so the
-     * consume below reads a queue that has genuinely seen both. A never-true
-     * predicate is how this harness spells "pump for this long". */
-    (void)harness.pumpUntil([]() { return false; }, 500u);
-    /* And a second departure queues beside it rather than being lost behind
-     * an unconsumed first. */
-    assert(harness.mesh(100u)->sendRaceDrop(300u, 4242u) == 1u);
-    assert(harness.mesh(300u)->consumeRaceDrop(&departed, &tick));
-    assert(departed == 200u && tick == 90u);
-    assert(!harness.mesh(300u)->consumeRaceDrop(&departed, &tick));
+    assert(harness.mesh(300u)->consumeRaceDrop(&sender, &departed, &epoch,
+                                               &tick));
+    assert(sender == 100u && departed == 200u && epoch == 9u && tick == 90u);
+    /* Exactly one entry for that endpoint: 91 was refused, not queued. */
+    assert(!harness.mesh(300u)->consumeRaceDrop(&sender, &departed, &epoch,
+                                                &tick));
+
+    /* A proposal names one race; clearRaceDrops is what the launcher runs when
+     * its race state resets, so a late one cannot reach the next race. */
+    assert(harness.mesh(100u)->sendRaceDrop(300u, 9u, 55u) == 1u);
     assert(harness.pumpUntil([&]() {
         return harness.mesh(200u)->peekRaceDrop();
     }, 5000u));
-    assert(harness.mesh(200u)->consumeRaceDrop(&departed, &tick));
-    assert(departed == 300u && tick == 4242u);
-    assert(!harness.mesh(300u)->peekRaceDrop());
+    harness.mesh(200u)->clearRaceDrops();
+    assert(!harness.mesh(200u)->peekRaceDrop());
+    assert(!harness.mesh(200u)->consumeRaceDrop(&sender, &departed, &epoch,
+                                                &tick));
+
     /* The proposal is not a verdict on the sender either: 200 keeps talking
      * to 100 exactly as before. */
     assert(harness.countEvents(
@@ -2651,7 +2667,8 @@ void raceDropCarriesTheAgreedTickToEverySurvivor() {
 void raceDropNamingANonRosterEndpointIsTypedLoss() {
     PairHarness pair;
     assert(pair.connect());
-    assert(mdkr_match_peer_mesh_send_raw_race_drop_for_test(*pair.harness.mesh(200u), 999u, 7u));
+    assert(mdkr_match_peer_mesh_send_raw_race_drop_for_test(
+        *pair.harness.mesh(200u), 999u, 9u, 7u));
     assert(pair.harness.pumpUntil([&]() {
         return pair.harness.countEvents(
                    100u, MdkrMatchPeerMeshEventType::PeerLost, 200u) >= 1u;
@@ -2662,6 +2679,26 @@ void raceDropNamingANonRosterEndpointIsTypedLoss() {
            event->lostReason ==
                MdkrMatchPeerLostReason::ControlChannelViolation);
     std::printf("raceDropNamingANonRosterEndpointIsTypedLoss: ok\n");
+}
+
+/* A sender cannot name ITSELF as the departed endpoint: an endpoint that is
+ * talking on this channel has plainly not left, so the claim is structurally
+ * false and terminal, like any other garbage on a reliable channel. */
+void raceDropNamingTheSenderIsTypedLoss() {
+    PairHarness pair;
+    assert(pair.connect());
+    assert(mdkr_match_peer_mesh_send_raw_race_drop_for_test(
+        *pair.harness.mesh(200u), 200u, 9u, 7u));
+    assert(pair.harness.pumpUntil([&]() {
+        return pair.harness.countEvents(
+                   100u, MdkrMatchPeerMeshEventType::PeerLost, 200u) >= 1u;
+    }, 5000u));
+    const MdkrMatchPeerMeshEvent *self = pair.harness.lastEvent(
+        100u, MdkrMatchPeerMeshEventType::PeerLost, 200u);
+    assert(self != nullptr &&
+           self->lostReason ==
+               MdkrMatchPeerLostReason::ControlChannelViolation);
+    std::printf("raceDropNamingTheSenderIsTypedLoss: ok\n");
 }
 
 int main() {
@@ -2710,6 +2747,7 @@ int main() {
     retiringADepartedPeerIsTypedPeerDeparted();
     raceDropCarriesTheAgreedTickToEverySurvivor();
     raceDropNamingANonRosterEndpointIsTypedLoss();
+    raceDropNamingTheSenderIsTypedLoss();
     std::printf("all match_peer_transport cases passed\n");
     return 0;
 }

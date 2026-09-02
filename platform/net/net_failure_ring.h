@@ -62,7 +62,17 @@ typedef enum MdkrNetFailureLifecycle {
     MDKR_NET_LIFECYCLE_RACE_ARMED,
     MDKR_NET_LIFECYCLE_RACE_FIRST_TICK,
     MDKR_NET_LIFECYCLE_RACE_ENDED,
-    MDKR_NET_LIFECYCLE_MESH_CLOSED
+    MDKR_NET_LIFECYCLE_MESH_CLOSED,
+    /* A room-reported departure finalised a seat: value_a carries the
+     * MdkrMatchTakeoverResult, so a one-sided finalisation (a CONFLICT or
+     * TOO_LATE on one survivor and an ACCEPTED on another) is visible in a
+     * dump instead of only in a log line. Appended so the prior codes' values
+     * never shift. */
+    MDKR_NET_LIFECYCLE_DEPARTURE_FINALISED,
+    /* A peer's finalisation proposal was refused before it could take effect
+     * -- the wrong sender for the surviving roster, another race's epoch, or
+     * no room verdict of our own to intersect it with. */
+    MDKR_NET_LIFECYCLE_DEPARTURE_REFUSED
 } MdkrNetFailureLifecycle;
 
 /* Per-peer link snapshot carried by every stall record. Widths are fixed and

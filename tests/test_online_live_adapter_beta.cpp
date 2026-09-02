@@ -534,6 +534,47 @@ static void test_room_departure_gates_and_proposer() {
               true, true, false, false) == 0u);
 }
 
+/* N8 fix round 1 -- the critical one. A race_drop is a CLAIM by another
+ * player, not a verdict. Adopting one unchecked let any peer name a third
+ * party, finalise its seats and end this endpoint's race with no room
+ * departure at all. Three independent things must hold before a proposal
+ * means anything, and each is checked here on its own. */
+static void test_drop_proposal_is_checked_before_it_counts() {
+    /* The honest case: the lowest surviving id proposes, for this race, about
+     * an endpoint the room has told US is gone. 400 is departing, so the
+     * surviving roster is 100/200/300 and 100 owns the proposal. */
+    CHECK(mdkr_online_live_adapter_test_drop_proposal_accepted(
+        /*sender=*/100u, /*epoch=*/5u, /*room_verdict=*/true));
+    /* THE ATTACK: a peer that is not the proposer tries to finalise a third
+     * party. 300 is a survivor but not the lowest, so it has no standing. */
+    CHECK(!mdkr_online_live_adapter_test_drop_proposal_accepted(
+        300u, 5u, true));
+    /* The departing endpoint proposing its own removal is equally unentitled. */
+    CHECK(!mdkr_online_live_adapter_test_drop_proposal_accepted(
+        400u, 5u, true));
+    /* An endpoint outside the room cannot propose at all. */
+    CHECK(!mdkr_online_live_adapter_test_drop_proposal_accepted(
+        999u, 5u, true));
+    /* Another race's proposal, arriving late, must not finalise a seat in
+     * this one. */
+    CHECK(!mdkr_online_live_adapter_test_drop_proposal_accepted(
+        100u, 4u, true));
+    CHECK(!mdkr_online_live_adapter_test_drop_proposal_accepted(
+        100u, 6u, true));
+
+    /* The intersection itself: a well-formed proposal from the right sender
+     * is ACCEPTED as an agreed tick but must not finalise anything until this
+     * endpoint has heard the room's own verdict -- otherwise the peer, not the
+     * room, is deciding who is still racing. */
+    CHECK(mdkr_online_live_adapter_test_drop_proposal_accepted(
+        100u, 5u, /*room_verdict=*/false));
+    CHECK(!mdkr_online_live_adapter_test_drop_proposal_applied(
+        /*order=*/2u));
+    /* Once both halves are present it applies, in either arrival order. */
+    CHECK(mdkr_online_live_adapter_test_drop_proposal_applied(0u));
+    CHECK(mdkr_online_live_adapter_test_drop_proposal_applied(1u));
+}
+
 int main() {
     test_map_lost_reason_in_race_branches();
     test_race_end_no_demotion_rule();
@@ -543,6 +584,7 @@ int main() {
     test_signal_lost_during_preflight_fronts_service_card();
     test_owning_wrapper_accessors_resolve_through_wrapper();
     test_room_departure_gates_and_proposer();
+    test_drop_proposal_is_checked_before_it_counts();
     std::fprintf(stderr, "online_live_adapter_beta: %d checks, %d failures\n",
                  g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
