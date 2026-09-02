@@ -7118,6 +7118,8 @@ display-list over-budget relationship; each must be rejected. `--self-test` runs
 only those controls. `--development-cycles 1..19` is explicitly non-qualifying
 and is never used by the manifest.
 
+### Adventure Party AP-19 soak companion — `tests/check_adventure_party_performance_soaks.py`
+
 The serialized companion closes AP-19's other two literal repeated-operation
 criteria in real game processes. Its 4P Taj pair runs the same 640x480 scene
 with one and five CAR/HOVERCRAFT rebuilds. Every rebuild must publish exactly
