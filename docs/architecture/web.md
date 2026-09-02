@@ -19,15 +19,6 @@ running engine. The shared codec, raw/container formats, storage transaction,
 UX, security model, and test gates are documented in
 [`../SAVE_MANAGEMENT.md`](../SAVE_MANAGEMENT.md).
 
-## Browser 1.0 player-data requirement
-
-IDBFS persistence is implemented, but browser storage is not durable custody.
-Browser 1.0 therefore also requires launcher-level save export, transactional
-import, and a validated simple editor that work without a ROM, WebGPU, or a
-running engine. The shared codec, raw/container formats, storage transaction,
-UX, security model, test gates, and `SP-1`–`SP-10` backlog are specified in
-[`../SAVE_PORTABILITY_EDITOR_SPEC_2026-07-27.md`](../SAVE_PORTABILITY_EDITOR_SPEC_2026-07-27.md).
-
 ## Why the current architecture is already web-ready
 - **Cooperative single thread** (architecture decision 1): no wasm pthreads needed. The blocking
   `osRecvMesg` on the retrace queue IS the frame boundary — under emscripten it
