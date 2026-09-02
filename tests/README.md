@@ -1258,7 +1258,11 @@ real loopback DTLS meshes. The driver suppresses twenty-five consecutive bundle
 sends in one direction — far past the carrier's three ticks of redundancy — so
 the run of authored ticks it costs can never be covered by a later bundle. That
 run must be closed by repair alone and both endpoints must fold the identical
-canonical state hash: a repaired input is the same input. Two positive
+canonical state hash: a repaired input is the same input. That hash is a fold of
+the CONFIRMED CANONICAL INPUT timeline read back through
+`race_inputs_for_tick`, not engine or simulation state — this lane is ROM-free
+and proves the two endpoints commit the same inputs, which the rollback and
+SIMHASH lanes then turn into the same simulation. Two positive
 controls. Turning repair off with
 `mdkr_online_live_adapter_race_set_repair(adapter, false)` and replaying the
 identical burst must reach typed `INPUT_GAP` rollback exhaustion and never
@@ -1272,6 +1276,18 @@ two-second-outage profile is a loss run far past the bundle's redundancy, so it
 now converges with repair (and must show repair restoring ticks) and runs a
 second time on the identical seed with repair off, where it must still latch
 `INPUT_GAP` at the 31-tick replay boundary.
+
+Two further arms cover the request policy itself. The author's drain is frozen
+for the first half of a burst, so the requester's first ask names ticks the
+author has not committed and cannot answer, and its sends stay suppressed for
+the second half, so the ticks it then commits never arrive as bundles: only a
+re-ask can close that run. With the shipped eight-authored-tick re-ask window
+the race converges; with the window pushed past the whole race — the single-shot
+latch it replaced — the stranded gap ages into `INPUT_GAP`. `match_input_repair`
+pins the responder's side: one honest request's worth of answers is always
+charged successfully, a flood past the per-tick budget is refused however many
+different runs it names, and the budget refills only when the responder's own
+authored tick advances.
 
 `check_rollback_authority_wrapper.py` is the suite-facing entry for the frozen
 mutable-authority census and its omitted-state positive control.
@@ -2074,7 +2090,13 @@ drop and never a delivered repair, and an envelope authenticated under the
 peer's own authority key carrying a payload type that channel does not serve
 is the typed `ControlChannelViolation`. Positive control: pointing the
 authority lane's replay window at the state lane's makes the delayed repair
-disappear and only that arm goes red.
+disappear and only that arm goes red. Two more arms cover the protocol-version
+edge: an offerer that carries only the two older channels comes up, opens them
+and never reaches ready, so at the answerer's setup deadline it must resolve as
+the named `ChannelSetMismatch` (recorded in the failure ring by that name, with
+the missing label logged) rather than as the ICE-never-completed
+`ConnectTimeout`; the same offerer carrying the full set reaches
+`PeerChannelsReady` and is never lost.
 
 The pure policy alone does not prove `LiveAdapter` actually calls it, so two
 more gates cover the wiring. `match_peer_transport`'s

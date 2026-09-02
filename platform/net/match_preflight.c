@@ -84,6 +84,7 @@ static bool key_context_valid(const MdkrMatchPeerKeyContext *context) {
            context->source_generation != 0u &&
            context->destination_endpoint_id != 0u &&
            context->destination_generation != 0u &&
+           context->lane <= MDKR_MATCH_PEER_LANE_MAX &&
            context->source_endpoint_id != context->destination_endpoint_id;
 }
 
