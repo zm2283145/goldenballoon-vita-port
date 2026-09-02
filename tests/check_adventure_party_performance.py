@@ -470,33 +470,31 @@ def bounded_input_text(cycles: int) -> str:
     post-admission advance edges prevents an unrequested 21st cycle while the
     process remains in the final lobby long enough to flush its counters.
 
-    The last cycle keeps ONE advance past that horizon, and the census depends
-    on it. These sparse advances are also this route's clock: every cycle's
-    post-race panels are held until a player presses A (postrace_render()'s
-    POSTRACE_HOLD rezeroes its own timer while gPostraceScaleMiddle is
-    negative, so there is no timeout to wait out), which rounds each cycle up
-    to the same multiple of the advance spacing and is what makes twenty
-    generations comparable at all. Truncate at the admission itself and the
-    LAST cycle alone has no advance left: its panels then hold over a resident
-    race level for as long as it takes some other path to clear them —
-    measured at ~800 extra frames — and the extra results-screen textures that
-    window uploads raise that one generation's texPeak by 3, a terminal-only
-    "new ownership high" in a census whose whole premise is equal cycles. One
-    more advance costs nothing (it lands inside the terminal panels, before the
-    return, so no further door is entered) and makes the last cycle the same
-    shape as the nineteen before it.
+    These sparse advances are also this route's clock, which is why the LAST
+    cycle needs help this function deliberately does not give it. Every
+    post-race panel is opened with postrace_offsets(..., 0.5f, 15.0f, 0.5f,
+    ...), so gPostraceScaleMiddle is 900 and POSTRACE_HOLD (menu.c) runs a
+    TIMED hold that an A/START press short-circuits: measured, a cycle whose
+    advance lands inside the panels clears them in 146 frames, a cycle with
+    none left waits the hold out in 999. Short-circuiting is also what rounds
+    each cycle up to the same multiple of the advance spacing and makes twenty
+    generations exactly 3000 frames long and comparable at all. Truncating here
+    leaves the last cycle alone sitting out the full hold over a resident race
+    level, whose extra results-screen textures raised that one generation's
+    texPeak by 3 -- a terminal-only "new ownership high" in a census whose
+    premise is equal cycles. The advances are NOT extended to cover it, because
+    they are throttle as well as menu input; postrace_render() clears the
+    terminal cycle's panels from the route instead, once
+    mdkr_adventure_route_exhausted() reports the last ordered move spent.
     """
     horizon = 6300 + max(0, cycles - 1) * 3000
     kept: list[str] = []
-    past_horizon = 0
     for line in INPUT_PATH.read_text(encoding="utf-8").splitlines():
         fields = line.strip().split()
         if fields and fields[0].isdigit():
             frame = int(fields[0])
             if frame >= 3600 and frame > horizon:
-                past_horizon += 1
-                if past_horizon > 1:
-                    continue
+                continue
         kept.append(line)
     return "\n".join(kept) + "\n"
 
