@@ -1379,6 +1379,29 @@ keeps forged/refused floods at zero observations. The second environment proves 
 while static/local paths remain available and its health aggregate remains
 empty/complete.
 
+`tests/check_online_wire_schema_parity.py` extracts the match wire vocabulary
+from `services/party/src/match/protocol.ts`, `match-room.ts` and `signaling.ts`
+-- the public state projection and its nested lobby/member/seat/control-step key
+sets, the command types and request body, the lobby phases, the `MatchError`
+and typed error tokens, the socket close code/reason pairs, both signaling
+envelopes and the `/api/ops/health` reservation buckets -- and compares each one
+against the key set `dist/web/online/*.js` actually reads or writes. It fails
+when either side gains, loses or renames a member the other does not follow,
+when a response envelope no longer matches a combination `validWireKeys()`
+admits, when the browser issues a command the schema does not define, when a
+4000-class close reason is not in `terminalLiveCloseCode`, or when the capacity
+gate's exact `/api/ops/health` pin diverges from `BUDGET_OPERATIONS`. The
+members the browser deliberately does not speak -- the six v2 lobby fields,
+top-level `iceServers`, the `schemaVersion` 1 pin (ruling R36, still open) and
+the thirteen commands no browser path issues -- are listed with their reason,
+and a listed member that stops disagreeing fails the gate too, so the gap
+cannot change size in either direction unrecorded. Fifteen positive controls run
+on every invocation: each feeds a synthetic one-line drift (renamed lobby field,
+added or removed key, moved `schemaVersion`, renamed close reason, extra budget
+operation, renamed command) through the same comparison and requires the
+matching failure, and a blanked source must fail closed rather than find zero
+keys and pass. Source-only: no ROM, build, network or service.
+
 `tests/check_party_internal_api.py` freezes the 17-call Worker→Durable Object
 census and requires every call to use the internal v1 envelope. It also requires
 PartyBudget, PartyRoom, PartyCodeDirectory and MatchRoom to reject an unknown
