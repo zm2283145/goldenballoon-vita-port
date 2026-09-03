@@ -1594,6 +1594,9 @@ static inline void *dkr_retain_resolved_pointer(void *resolved) {
     return resolved;
 }
 
+#if defined(__vita__)
+extern void mdkr_vita_boot_log(const char *msg);
+#endif
 static inline void *dkr_resolve(uint32_t addr) {
     if (addr == 0) {
         return NULL;
@@ -1670,10 +1673,35 @@ static inline void *dkr_resolve(uint32_t addr) {
      * Keying this to pointer width, not Emscripten, gives every supported ILP32
      * host the same non-colliding token domains. */
     if (addr >= 0x80000000u) {
+#if defined(__vita__)
+        {
+            static int s_resolveLogCount = 0;
+            if (s_resolveLogCount < 20) {
+                char lb[128];
+                snprintf(lb, sizeof(lb),
+                         "resolve: ILP32 flip-path addr=0x%x -> flip=0x%x",
+                         (unsigned)addr, (unsigned)flip);
+                mdkr_vita_boot_log(lb);
+                s_resolveLogCount++;
+            }
+        }
+#endif
         return flip
             ? dkr_retain_resolved_pointer((void *)(uintptr_t)flip) : NULL;
     }
     if (addr != 0 && addr < 0x01000000u) {
+#if defined(__vita__)
+        {
+            static int s_resolveLowLogCount = 0;
+            if (s_resolveLowLogCount < 20) {
+                char lb[128];
+                snprintf(lb, sizeof(lb),
+                         "resolve: ILP32 low-path addr=0x%x", (unsigned)addr);
+                mdkr_vita_boot_log(lb);
+                s_resolveLowLogCount++;
+            }
+        }
+#endif
         return dkr_retain_resolved_pointer((void *)(uintptr_t)addr);
     }
 #endif
@@ -5068,6 +5096,34 @@ typedef struct DkrOverlayScan {
     uint64_t last_world;
 } DkrOverlayScan;
 
+#if defined(__vita__)
+extern void mdkr_vita_boot_log(const char *msg);
+/* A genuine Gfx* is always 4-byte aligned (two uint32_t words) and must lie
+ * either inside the DKR arena stand-in or be a recognizable host pointer.
+ * dkr_ptr_plausible()'s sign-extension guard is a no-op on 32-bit targets
+ * (nothing to sign-extend into), so a resolution bug that would be caught
+ * there on desktop sails through unfiltered here. This is a Vita-only
+ * belt-and-suspenders check to turn a wild jump into a logged, safe abort
+ * of just this sub-list walk instead of a crash into unrelated code. */
+static inline bool dkr_vita_sub_ptr_safe(const Gfx *sub, uint32_t raw_addr,
+                                          const char *where) {
+    uintptr_t up = (uintptr_t)sub;
+    static int s_rejectLogCount = 0;
+    if ((up & 3u) != 0u) {
+        if (s_rejectLogCount < 20) {
+            char lb[128];
+            snprintf(lb, sizeof(lb),
+                     "dl-safety: rejecting misaligned %s sub=%p raw_addr=0x%x",
+                     where, (void *)sub, (unsigned)raw_addr);
+            mdkr_vita_boot_log(lb);
+            s_rejectLogCount++;
+        }
+        return false;
+    }
+    return true;
+}
+#endif
+
 static void dkr_scan_overlay_order(Gfx *cmd, int depth, int limit,
                                    DkrOverlayScan *scan) {
     Gfx *start;
@@ -5099,6 +5155,12 @@ static void dkr_scan_overlay_order(Gfx *cmd, int depth, int limit,
             case G_DL: {
                 uint8_t nopush = (uint8_t)C0(cmd, 16, 8);
                 Gfx *sub = (Gfx *)dkr_resolve(cmd->words.w1);
+#if defined(__vita__)
+                if (sub != NULL &&
+                    !dkr_vita_sub_ptr_safe(sub, cmd->words.w1, "G_DL")) {
+                    sub = NULL;
+                }
+#endif
                 if (sub == NULL) {
                     if (nopush == G_DL_NOPUSH) {
                         return;
@@ -5116,6 +5178,12 @@ static void dkr_scan_overlay_order(Gfx *cmd, int depth, int limit,
             case G_DMADL: {
                 int count = (int)C0(cmd, 16, 8);
                 Gfx *sub = (Gfx *)dkr_resolve(cmd->words.w1);
+#if defined(__vita__)
+                if (sub != NULL &&
+                    !dkr_vita_sub_ptr_safe(sub, cmd->words.w1, "G_DMADL")) {
+                    sub = NULL;
+                }
+#endif
                 if (sub != NULL && count > 0) {
                     dkr_scan_overlay_order(sub, depth + 1, count, scan);
                 }
