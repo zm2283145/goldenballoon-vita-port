@@ -4912,6 +4912,22 @@ The positive control has two arms: removing the emission entirely fails naming
 all 52 controls, and skipping a single key fails naming that one — so the gate
 isolates rather than only detecting all-or-nothing.
 
+The Online Room panel is resolved per BUILD rather than assumed OFF: it reads
+`MDKR_ENABLE_ONLINE_BETA` and `MDKR_ENABLE_ONLINE_ROOM_PREVIEW` out of the
+build's own `CMakeCache.txt` (`harness_utils.cmake_cache_bool`, mirroring
+`tools/run_checks.py`'s helper of the same name) and asserts accordingly: with
+either flag ON, opening the panel must announce "Online Room" like any other
+panel; with both OFF, the launcher must refuse the request and announce the
+Play home it lands on instead. Checking only the PREVIEW cache entry used to
+be wrong for a `--allow-online-beta` release bundle
+(`macos/Scripts/build_app_bundle.sh`): `MDKR_ENABLE_ONLINE_BETA=ON` forces the
+panel in through a non-cache `set()` in `CMakeLists.txt`, so its own
+CMakeCache.txt keeps reporting `MDKR_ENABLE_ONLINE_ROOM_PREVIEW=OFF` even
+though the panel is compiled in — the gate demanded a refusal from a build
+that could not produce one. A self-test (a stub `CMakeCache.txt` reporting
+each configuration, including the BETA-on/PREVIEW-off shipping case) runs at
+the top of every invocation as the positive control for that detection.
+
 ## Race announcements — `tests/check_a11y_race.py`
 
 ```bash

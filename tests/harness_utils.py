@@ -44,6 +44,27 @@ EEPROM_ARTIFACTS = (
 DEFAULT_BUILD_DIR = "build"
 
 
+def cmake_cache_bool(binary: str | os.PathLike[str], name: str) -> bool:
+    """Whether cache variable ``name`` is ON in the build beside ``binary``.
+
+    Mirrors ``tools/run_checks.py``'s helper of the same name so a check does
+    not hand-roll its own CMakeCache.txt parser. ``binary`` is the executable
+    (or a directory that resolves through :func:`resolve_binary`); its sibling
+    CMakeCache.txt is read. A missing file or a missing key both read as OFF,
+    matching a build that never turned the option on -- callers that need to
+    distinguish "never configured" from "configured OFF" check
+    ``.is_file()`` on the cache themselves first.
+    """
+    cache = Path(binary).parent / "CMakeCache.txt"
+    if not cache.is_file():
+        return False
+    prefix = f"{name}:BOOL="
+    for line in cache.read_text(encoding="utf-8", errors="replace").splitlines():
+        if line.startswith(prefix):
+            return line[len(prefix):].strip().upper() in {"1", "ON", "TRUE", "YES"}
+    return False
+
+
 def resolve_binary(build: str | os.PathLike[str]) -> str:
     """Resolve ``--build`` consistently from either a directory or executable.
 
