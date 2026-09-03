@@ -2064,8 +2064,13 @@ private:
             }
         }
         /* Any open peer-silence grace, judged against this pump's authored
-         * head. After the drains above, so a proposal or an input bundle that
-         * arrived in this same pump is part of the judgement. */
+         * head. After the drains above, so a proposal drained this pump is
+         * part of the judgement. Packets are not: a grace opened in this same
+         * pump snapshotted the count AFTER the event drain, so everything that
+         * arrived alongside the verdict is already inside packetsAtOpen and
+         * only SUBSEQUENT pumps can find the peer speaking. That is the
+         * intended reading -- the grace asks what the peer did after the room
+         * gave up on it, not before. */
         serviceDepartureGraces();
         if (mesh_ && mesh_->consumeRaceAbort() && !raceAbortReceived_) {
             raceAbortReceived_ = true;
@@ -3171,7 +3176,16 @@ private:
      * this endpoint now: a race is running, the plumbing is armed, the
      * endpoint owns seats in this race, and this is the first report for it --
      * whether that report is still inside its grace, was already acted on, or
-     * was held. */
+     * was held.
+     *
+     * A held endpoint is terminal for the race by design: the verdict was
+     * dropped, so a later one about the same member cannot re-arm the grace,
+     * and a member that wobbles and then genuinely quits pays the transport
+     * ladders. The alternative -- re-arming on every fresh verdict -- would
+     * hand a flapping room the power to retry the drop until one grace
+     * happened to fall in a gap between the peer's bundles, which is the
+     * false drop wearing a different hat. Recorded in the N8-D residual and
+     * in STATUS.md's switch row. */
     bool roomDepartureFinalises(uint64_t endpointId) const {
         return raceReady_ && lobbyDropEnabled_ &&
                peerSlotMask_.count(endpointId) != 0u &&
@@ -3357,13 +3371,14 @@ private:
      * has not yet finished listening has no business making it. A proposer
      * that holds therefore proposes nothing, and with no agreed tick no
      * survivor finalises anything -- so a hold by the one endpoint entitled to
-     * propose is unanimous by construction. The asymmetry that remains
-     * needs three or more endpoints: a survivor that holds while the PROPOSER
-     * heard silence refuses a proposal it has no room verdict left to
-     * intersect, and carries on racing where the proposer ended. Agreeing on a hold, rather than only on
-     * a tick, needs a round trip this layer does not have; 2P (the only shape
-     * any end-to-end lane runs) cannot reach it, because the sole survivor is
-     * always the proposer. */
+     * propose is unanimous by construction. The asymmetry that remains needs
+     * three or more endpoints: a survivor that holds while the PROPOSER heard
+     * silence refuses a proposal it has no room verdict left to intersect, and
+     * carries on racing where the proposer ended. Agreeing on a hold, rather
+     * than only on a tick, needs a round trip this layer does not have; 2P
+     * (the only shape any end-to-end lane runs) cannot reach it, because the
+     * sole survivor is always the proposer. Recorded as the N8-D residual in
+     * docs/multiplayer/OPERATIONAL_BACKLOG.md, with the fix shape. */
 
     struct DepartureGrace {
         /* Authored head when the room's verdict arrived. */
@@ -3406,7 +3421,9 @@ private:
         const uint32_t tickNow = authoredTick();
         std::vector<uint64_t> pending;
         pending.reserve(departureGrace_.size());
-        for (const auto &entry : departureGrace_) pending.push_back(entry.first);
+        for (const auto &entry : departureGrace_) {
+            pending.push_back(entry.first);
+        }
         for (uint64_t endpointId : pending) {
             resolveDepartureGrace(endpointId,
                                   peerAuthenticatedPackets(endpointId),

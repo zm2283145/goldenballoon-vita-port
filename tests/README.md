@@ -2147,7 +2147,9 @@ until the peer is really severed 90 ticks later -- at which point the ping
 ladder ends it, as it does whenever the room says nothing. Arm C is arm B's
 positive control: the identical wobble with `MDKR_ONLINE_LOBBY_DROP_GRACE=0`
 is the pre-grace code, and it finalises the seat and cards inside those four
-ticks -- the false "opponent left" the grace removes. The determinism half is adjudicated exactly, and
+ticks -- the false "opponent left" the grace removes.
+
+The determinism half is adjudicated exactly, and
 separately, by `test_match_transport.c`: a finalised transport and a reference
 transport whose departed peer simply sends neutral input from the same tick
 commit byte-identical canonical frames for 30 ticks, with a run that never

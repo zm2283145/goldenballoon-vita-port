@@ -1471,7 +1471,8 @@ static std::uint32_t liveTestRoomDepartureAtTick(void) {
     if (cached < 0) {
         const char *env =
             std::getenv("MDKR_APP_TEST_ONLINE_ROOM_DEPARTURE_AT_TICK");
-        const long parsed = (env != nullptr) ? std::strtol(env, nullptr, 10) : 0;
+        const long parsed =
+            (env != nullptr) ? std::strtol(env, nullptr, 10) : 0;
         cached = (parsed > 0) ? parsed : 0;
     }
     return static_cast<std::uint32_t>(cached);
