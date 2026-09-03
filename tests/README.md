@@ -3631,13 +3631,40 @@ and every visual comparison quietly meaningless.
 ## Authored state/RNG compatibility — `tests/check_authored_rng_compat.py`
 
 This gate is intentionally narrower and stricter than the general determinism
-suite: it covers only the original/authored two-field cadence on the 4,800-frame
-`race_state_oracle` route. All 27,840 all-racer rows—including positions,
-velocities, race progress, logical delta, and the shared authored RNG—must have
-the raw SHA-256
-`d74efe02aec07aa59710ce457e54180c28a22022f3d35e7087096d5130dba49b`.
-The check also flips one RNG bit in the first row and fails unless its own
-validator rejects that mutation.
+suite: it records the raw all-racer stream of the `race_state_oracle` route,
+one arm per cadence. The **original** arm is the ROM-compatibility pin — the
+authored two-field cadence, 4,800 frames, 27,840 rows; the **enhanced** arm
+(added 2026-09-03, below) is the route's own enhanced arm at 9,500 frames and
+54,880 rows. Each arm's rows — positions, velocities, race progress, logical
+delta, and the shared authored RNG — must have the raw SHA-256 pinned for that
+arm in `tests/check_authored_rng_compat.py`; the digests live only there, with
+their rebaseline history, so this page cannot drift out of step with them. Run
+one arm with `--arm original` / `--arm enhanced`, both by default.
+
+Three controls keep it from passing for the wrong reason: it flips one RNG bit
+in the first row of each arm and fails unless its own validator rejects that
+mutation; it re-reads `frames`, `cadence` and `synth_fields` for each arm out
+of `tools/oracle_routes/race_state_oracle.json` and fails when the pin and the
+route disagree, so a digest cannot quietly come to describe a different route;
+and it fails when the two arms produce the *same* digest, which would mean one
+of them did not take the cadence it asked for.
+
+### The enhanced arm is the first pin of that stream
+
+Until this arm landed, every gate that recorded an RNG stream recorded the
+original cadence: this oracle, `check_weather_rng_order.py`'s
+`EXPECTED_ORIGINAL_SHA256`, and `check_state_hash.py`, which sets no cadence and
+takes the original default. The second compatibility target named at
+`platform/math_util_native.c` — "the pre-FPS native gameplay stream at opt-in
+enhanced cadence" — was therefore held by nothing, and any change to it would
+have moved silently. `docs/ref/presentation-rng-census.md` names that gap as the
+reason it declined to redirect its eight latent presentation-output callers.
+
+The enhanced digest is expected to move **exactly once**: in the commit that
+redirects those eight callers through `cadence_compat_rand_range()`, which by
+construction moves the enhanced-cadence stream and leaves the original-cadence
+stream byte-identical. Any other change to it is a regression, and a change to
+the original-cadence digest alongside it is a misclassification.
 
 The reference is clean commit
 `64936e36b4c9ef7ecdce5beb93cd662d4318548d`. This deliberately replaces the

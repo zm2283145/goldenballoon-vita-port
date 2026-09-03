@@ -203,11 +203,21 @@ taken here:
 
   What it spends is the second compatibility target named in the comment at
   `platform/math_util_native.c:296-299`: "the pre-FPS native gameplay stream at
-  opt-in enhanced cadence". No gate holds that target today, so a redirect would
-  move the enhanced-cadence authoritative stream silently and nothing in the
-  tree would report it. Spending an ungated compatibility target is an owner
-  decision, not a test change — which is why the redirect stops here and the
-  eight callers are listed instead of moved.
+  opt-in enhanced cadence". No gate held that target when this census was
+  written, so a redirect would have moved the enhanced-cadence authoritative
+  stream silently and nothing in the tree would have reported it. Spending an
+  ungated compatibility target is an owner decision, not a test change — which
+  is why the redirect stopped here and the eight callers were listed instead of
+  moved.
+
+  **That gap is now closed.** `tests/check_authored_rng_compat.py` carries an
+  `enhanced` arm: the route's own enhanced arm (9,500 frames, one synthetic
+  field), 54,880 all-racer rows, pinned by raw SHA-256 exactly as the original
+  arm is. It is the first pin of that stream, so it records what the stream is
+  today rather than what it should be, and it is expected to move exactly once
+  — in the commit that performs the redirect below, where the original-cadence
+  digest must not move at all. With both arms recorded, a cadence-conditional
+  redirect is no longer an ungated spend: it is a measured one.
 
 - Give a subsystem its own authoritative sub-stream seeded from the match seed,
   so removing its draws cannot shift anyone else's. That is a wire-format and

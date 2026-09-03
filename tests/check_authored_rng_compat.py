@@ -50,6 +50,24 @@ measured), and the sim_hash.c file sink (b624b584/b1064204) is I/O-only: it
 mirrors the identical [SIMHASH] line to MDKR_STATE_HASH_FILE, which this lane
 never sets, and never touches the hash or the sim. Measured on a fresh Release
 build at 21b0519d carrying the pin (-ffp-contract=off in 225 TUs).
+
+ENHANCED ARM, first pin 2026-09-03. Until this arm existed, every gate in the
+tree that recorded an RNG stream recorded the ORIGINAL cadence only (this
+oracle, tests/check_weather_rng_order.py's EXPECTED_ORIGINAL_SHA256,
+tests/check_state_hash.py's cadence default), so the second compatibility
+target named at platform/math_util_native.c -- "the pre-FPS native gameplay
+stream at opt-in enhanced cadence" -- was held by nothing and could move
+silently. docs/ref/presentation-rng-census.md states that gap as the reason it
+declined to redirect its eight latent presentation-output callers. This arm
+closes it: the same all-racer row schema and raw digest, recorded on the
+route's own `enhanced` arm (9500 frames, one synthetic field, event divisor 1).
+
+The enhanced digest below is expected to move EXACTLY ONCE, in the commit that
+redirects those eight callers through cadence_compat_rand_range(): by
+construction that redirect moves the enhanced-cadence stream and leaves the
+original-cadence stream byte-identical. After that rebaseline it is a pin like
+any other. A change to ENHANCED_SHA256 that is not that one commit, or any
+change to EXPECTED_SHA256 alongside it, is a regression, not a rebaseline.
 """
 
 from __future__ import annotations
@@ -61,16 +79,21 @@ import os
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
 
 ROOT = Path(__file__).resolve().parent.parent
 ROUTE_TOOL = ROOT / "tools" / "dkr_oracle_route.py"
+ROUTE = "race_state_oracle"
 FRAMES = 4800
 REFERENCE_COMMIT = "670c984837ce21a9bd5ff54f0a2d4339267fb872"
 EXPECTED_ROWS = 27_840
 EXPECTED_SHA256 = "191bee35a973b2bde6133cc6ae2c2c41961a97ec72a9b034a08574d53aacba5b"
+ENHANCED_FRAMES = 9500
+ENHANCED_ROWS = 54_880
+ENHANCED_SHA256 = "64bf3d28463664f716eb348d16c7fa2b36806cc32c89c1bb171a7b0a1f960767"
 # Superseded by the racing-line rebaseline documented above. Kept named so a
 # bisect that lands on the old stream reports which pin it matched.
 SUPERSEDED_SHA256 = "d74efe02aec07aa59710ce457e54180c28a22022f3d35e7087096d5130dba49b"
@@ -83,6 +106,36 @@ FIELDS = (
     "pidx", "vehicle", "grounded", "clock", "start", "delta", "rate", "rng",
 )
 FLOAT_FIELDS = {"x", "y", "z", "xv", "yv", "zv", "fvel", "vel"}
+
+
+@dataclass(frozen=True)
+class Arm:
+    """One cadence of the route, with the stream it is pinned to.
+
+    ``frames``/``cadence``/``synth_fields`` are also declared in the route
+    (tools/oracle_routes/race_state_oracle.json). They are repeated here so the
+    pin says out loud what it recorded, and checked against the route on every
+    run by :func:`check_route_agreement`, so an edit to either side that
+    silently re-aims a digest at a different route fails instead of passing.
+    """
+
+    name: str
+    cadence: str
+    synth_fields: int
+    frames: int
+    rows: int
+    digest: str
+
+
+ORIGINAL_ARM = Arm(
+    name="original", cadence="original", synth_fields=2, frames=FRAMES,
+    rows=EXPECTED_ROWS, digest=EXPECTED_SHA256,
+)
+ENHANCED_ARM = Arm(
+    name="enhanced", cadence="enhanced", synth_fields=1, frames=ENHANCED_FRAMES,
+    rows=ENHANCED_ROWS, digest=ENHANCED_SHA256,
+)
+ARMS = (ORIGINAL_ARM, ENHANCED_ARM)
 
 
 # game/src/racer.c's three consecutive s8 tables, by content. The AI balloon
@@ -138,9 +191,32 @@ def check_racing_line_overrun_witness(image: bytes) -> int:
     return table
 
 
-def validate(rows: list[str]) -> str:
-    if len(rows) != EXPECTED_ROWS:
-        raise ValueError(f"expected {EXPECTED_ROWS} [ORACLE] rows, got {len(rows)}")
+def check_route_agreement(arm: Arm) -> None:
+    """Fail when the arm this file pins is not the arm the route defines."""
+    for field, expected in (("cadence", arm.cadence),
+                            ("synth_fields", arm.synth_fields),
+                            ("frames", arm.frames)):
+        query = subprocess.run(
+            [sys.executable, str(ROUTE_TOOL), "arm-field", ROUTE, arm.name, field],
+            cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=30, check=False,
+        )
+        if query.returncode != 0:
+            raise RuntimeError(
+                f"route arm-field {arm.name}.{field} exited "
+                f"{query.returncode}:\n{query.stdout}")
+        actual = (query.stdout or "").strip()
+        if actual != str(expected):
+            raise ValueError(
+                f"{arm.name} arm: route says {field}={actual!r}, this pin was "
+                f"recorded with {field}={expected!r} -- the digest below does "
+                "not describe the route that would run")
+
+
+def validate(rows: list[str], arm: Arm) -> str:
+    if len(rows) != arm.rows:
+        raise ValueError(
+            f"{arm.name} arm: expected {arm.rows} [ORACLE] rows, got {len(rows)}")
     for row_index, row in enumerate(rows):
         tokens = row.split()
         if tokens[:2] != ["[TRACE]", "[ORACLE]"] or len(tokens) != len(FIELDS) + 2:
@@ -164,18 +240,19 @@ def validate(rows: list[str]) -> str:
             "still clamps 8th place's racing-line selector to D_800DCDA0[7] "
             "instead of taking the adjacent table's first byte -- see the "
             "rebaseline note at the top of this file")
-    if digest != EXPECTED_SHA256:
-        raise ValueError(f"raw stream SHA-256 {digest}, expected {EXPECTED_SHA256}")
+    if digest != arm.digest:
+        raise ValueError(
+            f"{arm.name} arm: raw stream SHA-256 {digest}, expected {arm.digest}")
     return digest
 
 
-def run(binary: Path, rom: Path, timeout: int, verbose: bool) -> list[str]:
+def run(binary: Path, rom: Path, arm: Arm, timeout: int, verbose: bool) -> list[str]:
     with tempfile.TemporaryDirectory(prefix="mdkr-authored-rng-") as tmp:
         run_dir = Path(tmp)
-        script = run_dir / "race_state_oracle_original.txt"
+        script = run_dir / f"race_state_oracle_{arm.name}.txt"
         route = subprocess.run(
-            [sys.executable, str(ROUTE_TOOL), "native-script", "race_state_oracle",
-             "--arm", "original"],
+            [sys.executable, str(ROUTE_TOOL), "native-script", ROUTE,
+             "--arm", arm.name],
             cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             timeout=30, check=False,
         )
@@ -186,13 +263,14 @@ def run(binary: Path, rom: Path, timeout: int, verbose: bool) -> list[str]:
         env = {key: value for key, value in os.environ.items()
                if not key.startswith(("MDKR", "GE007_"))}
         env.update(
-            LC_ALL="C", MDKR_AUDIO="0", MDKR_SIMULATION_CADENCE="original",
-            MDKR_SYNTH_FIELDS="2", MDKR_TRACE="1", MDKR_ORACLE_STATE="1",
+            LC_ALL="C", MDKR_AUDIO="0", MDKR_SIMULATION_CADENCE=arm.cadence,
+            MDKR_SYNTH_FIELDS=str(arm.synth_fields), MDKR_TRACE="1",
+            MDKR_ORACLE_STATE="1",
             MDKR_RENDERER="gl", MDKR_SAVE_DIR=str(run_dir / "save"),
             # Isolate the video config with the save (see check_door_blocks.py).
             MDKR_VIDEO_CONFIG_PATH=str(run_dir / "save" / "video.ini"),
         )
-        command = [str(binary), "--headless-frames", str(FRAMES),
+        command = [str(binary), "--headless-frames", str(arm.frames),
                    "--input-script", str(script), "--rom", str(rom)]
         if verbose:
             print("$ " + " ".join(command), flush=True)
@@ -212,8 +290,12 @@ def main() -> int:
     parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--timeout", type=int, default=600)
+    parser.add_argument("--arm", choices=[arm.name for arm in ARMS], action="append",
+                        help="run only this cadence arm (repeatable; default both)")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
+    arms = ARMS if not args.arm else tuple(
+        arm for arm in ARMS if arm.name in set(args.arm))
 
     binary = Path(os.path.abspath(resolve_binary(args.build)))
     rom = Path(os.path.abspath(args.rom))
@@ -236,26 +318,41 @@ def main() -> int:
             raise RuntimeError("racing-line witness accepted a mutated ROM")
         del image, mutated
 
-        rows = run(binary, rom, args.timeout, args.verbose)
-        digest = validate(rows)
+        digests: dict[str, str] = {}
+        for arm in arms:
+            check_route_agreement(arm)
+            rows = run(binary, rom, arm, args.timeout, args.verbose)
+            digests[arm.name] = validate(rows, arm)
 
-        # Broken-oracle control: prove a one-field change is rejected.
-        mutated = list(rows)
-        old_rng = mutated[0].rsplit("rng=", 1)[1]
-        mutated[0] = mutated[0].rsplit("rng=", 1)[0] + f"rng={int(old_rng) ^ 1}"
-        try:
-            validate(mutated)
-        except ValueError:
-            pass
-        else:
-            raise RuntimeError("mutated-row positive control was not rejected")
+            # Broken-oracle control: prove a one-field change is rejected.
+            broken = list(rows)
+            old_rng = broken[0].rsplit("rng=", 1)[1]
+            broken[0] = broken[0].rsplit("rng=", 1)[0] + f"rng={int(old_rng) ^ 1}"
+            try:
+                validate(broken, arm)
+            except ValueError:
+                pass
+            else:
+                raise RuntimeError(
+                    f"{arm.name} arm: mutated-row positive control was not rejected")
+
+        # The two arms must not collapse onto one stream: if they did, one of
+        # them is not running the cadence it names and neither digest pins what
+        # it claims to.
+        if len(digests) == 2 and len(set(digests.values())) != 2:
+            raise RuntimeError(
+                "the original and enhanced arms produced the same digest -- "
+                "one of them did not take the cadence it asked for")
     except (OSError, RuntimeError, subprocess.TimeoutExpired, ValueError) as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         return 1
 
+    summary = ", ".join(
+        f"{arm.name} {arm.rows} rows {digests[arm.name][:12]}"
+        for arm in arms if arm.name in digests)
     print(
         "check_authored_rng_compat: PASS "
-        f"({EXPECTED_ROWS} rows, {digest}, reference {REFERENCE_COMMIT[:12]}, "
+        f"({summary}, reference {REFERENCE_COMMIT[:12]}, "
         f"ares car-RNG witness {ARES_VEHICLE_RNG_PREFIX_SHA256[:12]}, "
         f"racing-line overrun witness ROM {table:#x}+8 == "
         f"{RACING_LINE_OVERRUN_VALUE})"
