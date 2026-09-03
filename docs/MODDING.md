@@ -1,7 +1,9 @@
 # Content packs
 
 How to replace Golden Balloon's textures with your own, and how the game
-decides which file to use.
+decides which file to use. This includes the portraits for Taj, Wizpig and
+Terry, which the port draws itself because the original game has none —
+see [The three bonus racers' portraits](#the-three-bonus-racers-portraits).
 
 > **This project ships no content and hosts none.** Everything below reads files
 > that you, or a pack author, put on your own machine. No pack is distributed

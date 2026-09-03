@@ -10,6 +10,13 @@ save formats). Everything below 1.0.0 predates that commitment.
 
 ## [Unreleased]
 
+### Added
+
+- Content packs can replace Taj's, Wizpig's and Terry's portraits. Those three
+  racers have no portrait in the original game, so the port draws its own; a
+  pack can now put your picture in its place, at whatever size you author it.
+  [`docs/MODDING.md`](docs/MODDING.md) has the three filenames.
+
 ### Fixed
 
 - The sky in split-screen races no longer has black bars down each side on

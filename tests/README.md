@@ -6361,10 +6361,16 @@ The gate is registered as `bonus_results_portraits` in
 
 This real-ROM gate proves the three generated bonus-racer portraits are
 replaceable through the ordinary Content Packs texture path, and that their
-published digests do not drift. Five runs of the same post-race flow
+published digests do not drift. Seven runs of the same post-race flow
 `check_bonus_results_portraits.py` uses: a no-pack baseline with
 `MDKR_MOD_TEXTURE_DUMP` on, one pack arm per racer overriding that racer's
-pinned digest, and the identical pack switched off by its own `pack.ini`.
+pinned digest, the identical pack switched off by its own `pack.ini`, and the
+baseline and Taj pack arms again on WebGPU — the renderer that ships, so a
+digest published from GL alone would be a name most players never produce.
+Every arm proves it got the backend it asked for, so a silent adapter fallback
+cannot pass as WebGPU evidence. Frames are not compared across backends: two
+rasterizers need not agree byte-for-byte and nothing here claims they do, while
+the digest is fixed before either backend sees the texels.
 
 The pack image is the synthetic magenta-corner-on-green quadrant PNG imported
 from `check_mod_texture_override.py`, at 64x64 — not a solid colour, so the

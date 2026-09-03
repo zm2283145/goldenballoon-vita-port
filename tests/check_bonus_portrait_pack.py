@@ -40,14 +40,29 @@ post-race flow, the same capture frame and the same result-card anchor
 `check_bonus_results_portraits.py` already uses, so the region sampled here is
 a region another gate independently proves holds a portrait. Each character is
 put in player 0 by its own bootstrap variable (`MDKR_TAJ_TEST_PLAYER` and its
-two siblings). Five runs, each in its own throwaway working directory, which
+two siblings). Seven runs, each in its own throwaway working directory, which
 is also where that arm's `mods/` and dumped corpus live:
 
-    baseline   Taj, no `mods/` at all, MDKR_MOD_TEXTURE_DUMP on
-    taj        Taj, one pack overriding the pinned Taj digest
-    disabled   the identical pack with `enabled = 0` in its pack.ini
-    wizpig     Wizpig, one pack overriding the pinned Wizpig digest
-    terry      Terry, one pack overriding the pinned Terry digest
+    baseline          Taj, no `mods/` at all, MDKR_MOD_TEXTURE_DUMP on
+    taj               Taj, one pack overriding the pinned Taj digest
+    wizpig            Wizpig, the same at the pinned Wizpig digest
+    terry             Terry, the same at the pinned Terry digest
+    disabled          the identical pack with `enabled = 0` in its pack.ini
+    webgpu-baseline   the baseline arm again on the shipped default backend
+    webgpu-taj        the taj arm again on the shipped default backend
+
+The last two are not decoration. WebGPU is what ships, and a digest measured
+only on GL would be a name published from a renderer most players never run.
+The digest excludes everything renderer-chosen BY CONSTRUCTION -- the allocation
+address, row addressing, mips, the font atlas -- so the three names should be
+backend-independent; "should be" is what these arms convert into an observation.
+They were also measured by hand across both backends before being written: all
+three digests are byte-identical on GL and WebGPU, which is why docs/MODDING.md
+publishes one table and not two.
+
+Frames are NOT compared across backends anywhere here. Two rasterizers need not
+produce the same bytes and nothing in this file claims they do; the byte-identity
+assertion (5) stays within GL.
 
 The pack image is `quadrant_png()` imported from check_mod_texture_override.py
 -- the same synthetic magenta-corner-on-green PNG that gate authors for itself,
@@ -99,6 +114,12 @@ What is asserted
     the whole assertion: a merely "different" frame would also be produced by a
     pack that half-applied. This is the no-pack guarantee -- an install with no
     pack renders what it rendered before packs existed.
+
+ 6. AND ALL OF IT HOLDS ON THE RENDERER THAT SHIPS. On WebGPU the corpus
+    publishes the SAME Taj digest (assertion 2 again, so the published name is
+    not a GL artifact) and a pack at that name draws the card (assertion 3
+    again). Every arm additionally proves it got the backend it asked for, so
+    an adapter that quietly fell back to GL cannot pass as WebGPU evidence.
 
 Self-validation -- this check is proven to be able to fail
 -----------------------------------------------------------
@@ -241,7 +262,8 @@ def classify(path: Path, bounds: tuple[float, float, float, float]) -> tuple[int
 
 def run_arm(binary: Path, rom: Path, root: Path, label: str, character: str,
             pack: str | None, enabled: bool, corpus: bool,
-            timeout: int, verbose: bool) -> tuple[Path, str, Path | None]:
+            timeout: int, verbose: bool,
+            renderer: str = "gl") -> tuple[Path, str, Path | None]:
     """One headless run. Returns (frame, stdout, corpus dir or None)."""
     run_dir = root / label
     save = run_dir / "save"
@@ -269,7 +291,7 @@ def run_arm(binary: Path, rom: Path, root: Path, label: str, character: str,
         "MDKR_LOAD_TRACK": "5:0",
         variable: "0",
         "MDKR_SAVE_DIR": str(save),
-        "MDKR_RENDERER": "gl",
+        "MDKR_RENDERER": renderer,
         "MDKR64_HIDDEN": "1",
         "MDKR_DUMP_FROM": str(CAPTURE_FRAME),
         "MDKR_DUMP_EVERY": "10000",
@@ -296,6 +318,12 @@ def run_arm(binary: Path, rom: Path, root: Path, label: str, character: str,
             f"{label}: runner exited {process.returncode}")
     for marker in BAD_MARKERS:
         require(marker not in output, f"{label}: emitted {marker}")
+
+    # Without this the WebGPU arms below could silently be a second pair of GL
+    # arms -- an unavailable adapter falling back would assert nothing about
+    # the backend the game actually ships on, which is the whole point of them.
+    require(f"renderer backend: {renderer}" in output,
+            f"{label}: asked for the {renderer} backend and did not get it")
 
     frame = frames / f"frame_{CAPTURE_FRAME}.ppm"
     require(frame.is_file(), f"{label}: no capture at frame {CAPTURE_FRAME}")
@@ -442,6 +470,31 @@ def main() -> int:
                 "generated card exactly (frame "
                 f"{hashlib.sha256(frame.read_bytes()).hexdigest()[:16]} vs "
                 f"baseline {hashlib.sha256(baseline_bytes).hexdigest()[:16]})")
+
+        # WebGPU is the shipped default renderer, so the two claims this file
+        # makes have to hold there and not only on the GL arms above. They are
+        # two runs rather than one because a dump taken with a pack installed
+        # records the OVERRIDE's pixels under the ROM-side name (see the report
+        # note on mdkr_mod_texture_dump_observe), which would make a combined
+        # arm assert the digest against an image it did not describe.
+        #
+        # Frames are NOT compared across renderers: two backends need not
+        # rasterize the same bytes, and nothing here claims they do. What is
+        # claimed is the digest -- which is a function of the generated texels
+        # and the tile header, both decided before either backend sees them.
+        _, output, corpus = run_arm(
+            binary, rom, root, "webgpu-baseline", "taj", None, True, True,
+            args.timeout, args.verbose, renderer="webgpu")
+        assert_reached_card("webgpu-baseline", "taj", output)
+        assert_corpus_publishes("webgpu-baseline", corpus, TAJ_DIGEST)
+
+        frame, output, _ = run_arm(
+            binary, rom, root, "webgpu-taj", "taj", TAJ_DIGEST, True, False,
+            args.timeout, args.verbose, renderer="webgpu")
+        assert_reached_card("webgpu-taj", "taj", output)
+        require("[MODS]   active: Portrait Test (priority 100)" in output,
+                "webgpu-taj: the pack did not install")
+        assert_pack_drew_card("webgpu-taj", frame)
     except (OSError, ValueError, subprocess.TimeoutExpired,
             CheckError) as error:
         print(f"check_bonus_portrait_pack: FAIL -- {error}", file=sys.stderr)
@@ -449,9 +502,10 @@ def main() -> int:
         return 1
 
     print("check_bonus_portrait_pack: PASS -- a pack redrew the generated Taj, "
-          "Wizpig and Terry cards at their published digests, the author dump "
-          "publishes those digests, and switching the pack off restored the "
-          "generated cards byte-for-byte")
+          "Wizpig and Terry cards at their published digests on GL and on the "
+          "shipped WebGPU default, the author dump publishes those digests, "
+          "and switching the pack off restored the generated cards "
+          "byte-for-byte")
     if args.evidence_dir:
         print(f"evidence: {root}")
     if temporary:
