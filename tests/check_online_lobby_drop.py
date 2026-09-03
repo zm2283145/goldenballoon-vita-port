@@ -25,14 +25,30 @@ ARM 1 -- the drop (plumbing on, the shipped default):
     to a connection-establishment card;
   * the survivor reaches that card within CARD_TICKS authored ticks of the
     sever: the mid-race latch (`[online-live] peer lost mid-race at tick N`)
-    fires within two ticks of the presence drop;
+    fires within two ticks of the presence drop, after the two authored ticks
+    of peer silence the D1 grace listens for;
   * the clean return still holds -- LEFT, exit 0, zero leaks, no watchdog.
 
 ARM 2 -- the positive control (MDKR_ONLINE_LOBBY_DROP=0): the identical run
-with the event plumbing disabled must NOT resolve within those two ticks. It
+with the event plumbing disabled must NOT resolve within those four ticks. It
 falls back to the transport ladder, resolving as PingTimeout somewhere inside
 the named ping bound -- the pre-N8 stall, and the measurement that makes arm
 1's number mean something.
+
+ARM B -- the room-service wobble (D1). The room reports the member gone while
+that member is plainly still racing: MDKR_APP_TEST_ONLINE_ROOM_DEPARTURE_AT_
+TICK drops only the peer's loopback presence and leaves the peer pumping,
+sealing and ponging. The survivor must NOT card. Its verdict is held --
+`[MESH] room departure ... HELD` -- no seat is finalised, and the race carries
+on until the peer is really severed much later, at which point the transport's
+own ping ladder ends it, as it does whenever the room says nothing.
+
+ARM C -- arm B's positive control (MDKR_ONLINE_LOBBY_DROP_GRACE=0). The
+identical wobble with the grace length set to zero is the pre-D1 code: it
+finalises the seat and cards within CARD_TICKS, a false "opponent left" with
+the peer still sending. That is the defect D1 removes, and it is what makes
+arm B's silence attributable to the grace rather than to a run that happened
+not to drop.
 
 The determinism half of the fix is adjudicated where it can be adjudicated
 exactly: tests/test_match_transport.c drives a finalised transport and a
@@ -60,7 +76,14 @@ from online_lane_util import (
 ROOT = Path(__file__).resolve().parent.parent
 TICKS = 40000
 SEVER_TICK = 60           # well past the opening tick; round 1 is under way
-CARD_TICKS = 2            # the ruled promptness: two authored ticks
+# The ruled promptness: two authored ticks to reach the card, plus the two
+# authored ticks of peer silence the D1 grace listens for first.
+GRACE_TICKS = 2
+CARD_TICKS = 2 + GRACE_TICKS
+# Arm B: the room's verdict lands here, the peer keeps racing, and only this
+# much later is it really severed so a ladder can end the run.
+DEPART_TICK = 60
+LATE_SEVER_TICK = 150
 DETECT_SLACK_SECONDS = 8  # scheduling slack on top of the named ladder bound
 AUTHORED_HZ = 30
 
@@ -77,6 +100,12 @@ MESH_LOST_FAILURE_RE = re.compile(
     r"^\[MESH\] peer LOST ep=\d+ reason=(\d+) -> failure=(\d+)", re.MULTILINE)
 MIDRACE_LATCH_RE = re.compile(
     r"^\[online-live\] peer lost mid-race at tick (\d+)", re.MULTILINE)
+DEPART_RE = re.compile(
+    r"^\[online-live\] TEST: peer ROOM PRESENCE dropped at tick (\d+)",
+    re.MULTILINE)
+HELD_RE = re.compile(
+    r"^\[MESH\] room departure ep=\d+ HELD: (\d+) authenticated packets",
+    re.MULTILINE)
 GRACEFUL_LEFT_RE = re.compile(
     r"^\[online-session\] LEFT: online peer/input lost", re.MULTILINE)
 HOST_SHUTDOWN_RE = re.compile(
@@ -319,8 +348,101 @@ def main() -> int:
                     f"expected the ladder's PingTimeout "
                     f"({ping_timeout_reason})", output)
 
+    # ===== Arm B: the room-service wobble ===================================
+    # The room says the member left; the member is still racing. The verdict
+    # must be held, and the loss must come from the ladder once the peer is
+    # really severed, 90 ticks later.
+    wobble_env = base_env()
+    wobble_env["MDKR_APP_TEST_ONLINE_ROOM_DEPARTURE_AT_TICK"] = str(DEPART_TICK)
+    wobble_env["MDKR_APP_TEST_ONLINE_SEVER_PEER_AT_TICK"] = str(
+        LATE_SEVER_TICK)
+    try:
+        returncode, output = run_engine(
+            binary, rom, ticks=args.ticks, timeout=args.timeout,
+            verbose=args.verbose, extra_env=wobble_env,
+            prefix="mdkr64-online-lobby-drop-wobble-")
+    except subprocess.TimeoutExpired as error:
+        return fail(f"[wobble] engine run timed out: {error}")
+    marker = forbidden_marker(output, *FORBIDDEN, *ABORT_MARKERS)
+    if marker:
+        return fail(f"[wobble] observed fatal/abort marker {marker!r}", output)
+    if returncode != 0:
+        return fail(f"[wobble] process exited {returncode}, expected 0",
+                    output)
+    depart = DEPART_RE.search(output)
+    if not depart:
+        return fail("[wobble] the room-only departure seam never fired, so "
+                    "this arm measures nothing", output)
+    depart_tick = int(depart.group(1))
+    if FINALISE_RE.search(output):
+        return fail("[wobble] a seat was finalised while the peer was still "
+                    "sending -- a false opponent-left drop", output)
+    held = HELD_RE.search(output)
+    if not held:
+        return fail("[wobble] the room's verdict was never held -- the peer "
+                    "was still sending authenticated packets and the grace "
+                    "had to drop the verdict", output)
+    if int(held.group(1)) == 0:
+        return fail("[wobble] the verdict was held on ZERO authenticated "
+                    "packets, so the hold proves nothing about the peer "
+                    "still racing", output)
+    wobble_latch = MIDRACE_LATCH_RE.search(output)
+    if not wobble_latch:
+        return fail("[wobble] the race never ended, so the ladder backstop is "
+                    "unmeasured", output)
+    wobble_ticks = int(wobble_latch.group(1)) - depart_tick
+    if wobble_ticks <= CARD_TICKS:
+        return fail(f"[wobble] the race ended {wobble_ticks} ticks after the "
+                    f"room's verdict -- the held verdict still dropped the "
+                    f"peer", output)
+    wobble_lost = MESH_LOST_RE.search(output)
+    if not wobble_lost or int(wobble_lost.group(1)) != ping_timeout_reason:
+        return fail(f"[wobble] the loss resolved as reason="
+                    f"{wobble_lost.group(1) if wobble_lost else 'none'}, "
+                    f"expected the ladder's PingTimeout "
+                    f"({ping_timeout_reason}) once the peer was really "
+                    f"severed", output)
+
+    # ===== Arm C: arm B's positive control (the grace disabled) =============
+    false_env = dict(wobble_env)
+    false_env["MDKR_ONLINE_LOBBY_DROP_GRACE"] = "0"
+    try:
+        returncode, output = run_engine(
+            binary, rom, ticks=args.ticks, timeout=args.timeout,
+            verbose=args.verbose, extra_env=false_env,
+            prefix="mdkr64-online-lobby-drop-nograce-")
+    except subprocess.TimeoutExpired as error:
+        return fail(f"[no-grace] engine run timed out: {error}")
+    marker = forbidden_marker(output, *FORBIDDEN, *ABORT_MARKERS)
+    if marker:
+        return fail(f"[no-grace] observed fatal/abort marker {marker!r}",
+                    output)
+    if returncode != 0:
+        return fail(f"[no-grace] process exited {returncode}, expected 0",
+                    output)
+    if HELD_RE.search(output):
+        return fail("[no-grace] the verdict was still held with the grace "
+                    "length set to zero -- the switch does not switch "
+                    "anything off", output)
+    if not FINALISE_RE.search(output):
+        return fail("[no-grace] the identical wobble did not finalise a seat "
+                    "with the grace off, so arm B's held verdict is not "
+                    "attributable to the grace", output)
+    false_depart = DEPART_RE.search(output)
+    false_latch = MIDRACE_LATCH_RE.search(output)
+    if not false_depart or not false_latch:
+        return fail("[no-grace] the run did not depart and end, so it "
+                    "measures nothing", output)
+    false_ticks = int(false_latch.group(1)) - int(false_depart.group(1))
+    if false_ticks > CARD_TICKS:
+        return fail(f"[no-grace] the false drop took {false_ticks} ticks, so "
+                    f"it is not the prompt room-authoritative drop arm B "
+                    f"suppresses", output)
+
     print(f"check_online_lobby_drop: PASS (card in {drop_ticks} ticks of the "
-          f"room event; {control_ticks} ticks with the plumbing off)")
+          f"room event; {control_ticks} ticks with the plumbing off; a live "
+          f"peer's verdict held for {wobble_ticks} ticks to the ladder, "
+          f"{false_ticks} with the grace off)")
     return 0
 
 

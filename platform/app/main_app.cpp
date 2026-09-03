@@ -1142,6 +1142,10 @@ struct LiveMatchInputContext {
      * loopback rig whose hub delivers the presence drop; null in production
      * and in every lane that leaves the seam env unset. */
     bool peerSevered = false;
+    /* TEST-ONLY room-only departure seam state (see
+     * liveTestRoomDepartureAtTick): the peer's loopback presence has been
+     * dropped once, and the peer is otherwise untouched. */
+    bool peerRoomDeparted = false;
     MdkrOnlineTestLoopbackRace *severRig = nullptr;
     /* Test-only (MDKR_APP_TEST_ONLINE_LIVE_PREDICT): on the in-process loopback
      * proof the visible endpoint normally spins until the peer's input for the
@@ -1452,6 +1456,27 @@ static bool liveTestSeverLingerPresence(void) {
     return cached == 1;
 }
 
+/* TEST-ONLY (beta) ROOM-ONLY departure seam. When
+ * MDKR_APP_TEST_ONLINE_ROOM_DEPARTURE_AT_TICK=<N> (N > firstTick) is set on a
+ * loopback rig, the loopback signal hub broadcasts the in-process peer's
+ * presence=false at authored tick N -- and NOTHING else. The peer keeps being
+ * pumped, keeps sealing input and keeps answering pings, so the survivor sees
+ * exactly the room-service wobble the departure grace exists for: the room
+ * says a member left while that member is plainly still racing. The sever seam
+ * above is the opposite signature (the peer really is gone), and the two can
+ * be armed together to drop the room's verdict first and kill the peer later.
+ * 0 / unset == off. */
+static std::uint32_t liveTestRoomDepartureAtTick(void) {
+    static long cached = -1;
+    if (cached < 0) {
+        const char *env =
+            std::getenv("MDKR_APP_TEST_ONLINE_ROOM_DEPARTURE_AT_TICK");
+        const long parsed = (env != nullptr) ? std::strtol(env, nullptr, 10) : 0;
+        cached = (parsed > 0) ? parsed : 0;
+    }
+    return static_cast<std::uint32_t>(cached);
+}
+
 /* Advance the visible endpoint's race transport up to `tick` (idempotent), then
  * copy the canonical frame for `tick`. Authored ticks are 1-based and align with
  * the adapter's raceFirstTick (1), so one drain == one race_advance. */
@@ -1519,6 +1544,23 @@ bool liveDrainMatchInput(void *opaque, std::uint32_t /*epoch*/,
                              "UNAVAILABLE (peer-loss seam); ending session\n",
                              drainTick);
                 return false;
+            }
+        }
+        /* TEST-ONLY (beta): drop ONLY the in-process peer's room presence at
+         * this authored tick (see liveTestRoomDepartureAtTick). The peer is
+         * left running, so the survivor must decide between the room's
+         * verdict and a peer that is still sending. */
+        {
+            const std::uint32_t departAt = liveTestRoomDepartureAtTick();
+            if (departAt != 0u && !ctx->peerRoomDeparted &&
+                drainTick >= departAt && drainTick > info.firstTick &&
+                ctx->severRig != nullptr) {
+                ctx->peerRoomDeparted = true;
+                OnlineRoom_testLoopbackSeverPeerPresence(ctx->severRig);
+                std::fprintf(stderr,
+                             "[online-live] TEST: peer ROOM PRESENCE dropped "
+                             "at tick %u (peer still racing)\n",
+                             drainTick);
             }
         }
         /* TEST-ONLY (beta): HARD-SEVER the in-process peer's transport at
@@ -2713,10 +2755,15 @@ int runOnlineLobbyStartEngineSession(AppHost &host, const MdkrBootConfig &config
      * REAL-TIME liveness ladder (ping interval + stale bound), while the
      * unthrottled headless drain finishes a whole race in ~2 real seconds,
      * which no wall-clock detector could ever land inside (the real cloud
-     * session is 30 Hz wall-clock). Inert unless
-     * MDKR_APP_TEST_ONLINE_SEVER_PEER_AT_TICK is set. */
+     * session is 30 Hz wall-clock). The room-only departure seam
+     * (MDKR_APP_TEST_ONLINE_ROOM_DEPARTURE_AT_TICK) uses the same rig and the
+     * same cadence, for the same reason. Inert unless one of the two is
+     * set. */
     context.severRig = race;
-    if (liveTestSeverPeerAtTick() != 0u) context.paceAdvanceHz = 30u;
+    if (liveTestSeverPeerAtTick() != 0u ||
+        liveTestRoomDepartureAtTick() != 0u) {
+        context.paceAdvanceHz = 30u;
+    }
     g_liveMatchInput = &context;
 
     /* Install party_link + PRIME the forward feed BEFORE the engine boots, so

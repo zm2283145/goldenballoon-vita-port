@@ -2129,13 +2129,25 @@ shipped default) asserts the departed endpoint's seats are finalised at an
 agreed tick ahead of the authored head (`[MESH] room departure ... finalised
 at tick=T result=0`), the loss is typed as the room's own `PeerDeparted`
 (parsed from the header, never hard-coded), the attribution is still
-OPPONENT_LEFT, the mid-race latch reaches the card within TWO authored ticks
-of the presence drop, and the clean LEFT return holds with no watchdog and no
-leaks. Arm 2 is the positive control: the identical run with
-`MDKR_ONLINE_LOBBY_DROP=0` must NOT resolve inside those two ticks, must
-finalise no seat, and must fall back to `PingTimeout` inside the named ping
-bound -- so arm 1's number is attributable to the room's verdict rather than
-to a fast machine. The determinism half is adjudicated exactly, and
+OPPONENT_LEFT, the mid-race latch reaches the card within FOUR authored ticks
+of the presence drop (two for the peer-silence grace below, two to card), and
+the clean LEFT return holds with no watchdog and no leaks. Arm 2 is the
+positive control: the identical run with `MDKR_ONLINE_LOBBY_DROP=0` must NOT
+resolve inside those four ticks, must finalise no seat, and must fall back to
+`PingTimeout` inside the named ping bound -- so arm 1's number is attributable
+to the room's verdict rather than to a fast machine.
+
+Arms B and C pin the PEER-SILENCE GRACE the verdict now waits out. Arm B is
+the room-service wobble: `MDKR_APP_TEST_ONLINE_ROOM_DEPARTURE_AT_TICK` drops
+only the peer's loopback presence and leaves the peer pumping, sealing and
+ponging, so the room says a member left while that member is plainly still
+racing. The survivor must hold the verdict (`[MESH] room departure ... HELD`,
+on a nonzero count of authenticated packets), finalise no seat, and carry on
+until the peer is really severed 90 ticks later -- at which point the ping
+ladder ends it, as it does whenever the room says nothing. Arm C is arm B's
+positive control: the identical wobble with `MDKR_ONLINE_LOBBY_DROP_GRACE=0`
+is the pre-grace code, and it finalises the seat and cards inside those four
+ticks -- the false "opponent left" the grace removes. The determinism half is adjudicated exactly, and
 separately, by `test_match_transport.c`: a finalised transport and a reference
 transport whose departed peer simply sends neutral input from the same tick
 commit byte-identical canonical frames for 30 ticks, with a run that never
@@ -2145,8 +2157,11 @@ under an identical seed are an identical run. The mesh half --
 edge-triggered departure, silent retirement, the proposal reaching every
 survivor but the departed one, and a drop naming a non-roster endpoint as a
 control-channel violation -- is pinned by `test_match_peer_transport.cpp`; the
-decision's gates and the lowest-surviving-id proposer rule by
-`test_online_live_adapter_beta.cpp`. **Scope class:** engine flow (loopback
+decision's gates, the lowest-surviving-id proposer rule and the grace's own
+decision table by `test_online_live_adapter_beta.cpp`; and what counts as an
+authenticated packet -- an envelope that opened under the peer's own lane key,
+never garbage and never the control channel's plaintext JSON -- again by
+`test_match_peer_transport.cpp`. **Scope class:** engine flow (loopback
 transport).
 
 `check_online_midrace_transport_loss.py` (registered) pins prompt, truthful

@@ -293,6 +293,7 @@ diagnose, and never in a release run.
 | Switch | Default | Effect |
 |---|---|---|
 | `MDKR_ONLINE_LOBBY_DROP` | on | Set `0` to stop acting on the room's departure verdict. A peer that leaves mid-race is then detected only by the transport's own ladders, which take the control-ping bound (20 s) or ICE teardown plus the 10 s vanish dwell. This is the fallback if room-driven drops are ever mistrusted in the field, and `check_online_lobby_drop.py` measures both settings against each other. |
+| `MDKR_ONLINE_LOBBY_DROP_GRACE` | 2 | Authored ticks of peer silence a room departure waits out before it is acted on. An authenticated packet from the departed endpoint inside the grace drops the verdict for that race and hands the loss back to the transport ladders, so a room-service wobble cannot produce a false "opponent left" while the peer link is fine. Set `0` to act on the verdict the moment it arrives (the pre-grace behaviour, and the lane's positive control); values above 30 are ignored, because lengthening the grace is not how the drop is switched off. |
 | `MDKR_ONLINE_VIEW_TIMEOUT_MS` | 30000 | Raises the online room's view-progress timeout (minimum 1000). For diagnosing a slow room without the recovery card fronting first. |
 
 ## Repeatable evidence commands
