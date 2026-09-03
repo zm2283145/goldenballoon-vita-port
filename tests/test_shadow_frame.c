@@ -25,6 +25,7 @@ int main(void) {
     float view_projection[4][4];
     float viewport_a[4] = {0.0f, 0.0f, 320.0f, 240.0f};
     float viewport_b[4] = {0.0f, 0.0f, 160.0f, 240.0f};
+    float view_eye[3] = {11.0f, 22.0f, 33.0f};
     float positions[9] = {
         -2.0f, 1.0f, 4.0f,
          3.0f, 2.0f, 5.0f,
@@ -65,6 +66,7 @@ int main(void) {
         !gfx_shadow_matrix_register(
             NULL, world, view_projection, GFX_SHADOW_MOBILITY_STATIC),
         "NULL matrix key fails closed");
+    gfx_shadow_matrix_set_view_eye(view_eye);
     expect(
         gfx_shadow_matrix_register(
             &key_a, world, view_projection, GFX_SHADOW_MOBILITY_STATIC),
@@ -75,7 +77,9 @@ int main(void) {
         memcmp(binding.world, world, sizeof(world)) == 0 &&
         memcmp(binding.view_projection, view_projection,
                sizeof(view_projection)) == 0 &&
-        binding.mobility == GFX_SHADOW_MOBILITY_STATIC,
+        binding.mobility == GFX_SHADOW_MOBILITY_STATIC &&
+        binding.view_eye_valid &&
+        memcmp(binding.view_eye_position, view_eye, sizeof(view_eye)) == 0,
         "matrix binding round trips by exact pointer");
     expect(
         !gfx_shadow_matrix_lookup(&key_b, &binding),
@@ -106,6 +110,7 @@ int main(void) {
     /* Per-call tags must clear on failure: a rejected key cannot lend its
      * object identity to the following untagged matrix. */
     gfx_shadow_matrix_set_presentation_owner(&owner);
+    gfx_shadow_matrix_set_view_eye(view_eye);
     expect(!gfx_shadow_matrix_register(
                NULL, world, view_projection, GFX_SHADOW_MOBILITY_DYNAMIC),
            "presentation owner failure control rejects the null key");
@@ -115,8 +120,9 @@ int main(void) {
            "matrix after failed owner registration still registers");
     memset(&binding, 0, sizeof(binding));
     expect(gfx_shadow_matrix_lookup(&consumed_key, &binding) &&
-               !binding.presentation_owner.valid,
-           "failed registration consumes presentation owner metadata");
+               !binding.presentation_owner.valid &&
+               !binding.view_eye_valid,
+           "failed registration consumes presentation owner and eye metadata");
     memset(&owner_stats, 0, sizeof(owner_stats));
     gfx_shadow_presentation_owner_get_stats(&owner_stats);
     expect(owner_stats.registrations == 3 && owner_stats.roots == 1 &&
@@ -172,6 +178,7 @@ int main(void) {
         frame->views[0].bounds_min[2] == -6.0f &&
         frame->views[0].bounds_max[1] == 7.0f,
         "world bounds cover every captured vertex");
+
     expect(
         frame->static_ranges[0].vertex_count == 3 &&
         frame->static_ranges[0].view_index == UINT8_MAX &&
@@ -495,11 +502,16 @@ int main(void) {
         override.authored_tick = 90u;
         override.numerator = 1u;
         override.denominator = 2u;
+        override.view_eye_valid = true;
+        override.view_eye_position[0] = 41.0f;
+        override.view_eye_position[1] = 42.0f;
+        override.view_eye_position[2] = 43.0f;
         memcpy(override.view_projection, midpoint_vp,
                sizeof(override.view_projection));
 
         gfx_shadow_matrix_registry_reset();
         gfx_shadow_matrix_set_context(0, true);
+        gfx_shadow_matrix_set_view_eye(view_eye);
         expect(gfx_shadow_matrix_register(
                    &unwalked_key, world, unwalked_vp,
                    GFX_SHADOW_MOBILITY_DYNAMIC),
@@ -525,6 +537,10 @@ int main(void) {
         memset(&binding, 0, sizeof(binding));
         expect(gfx_shadow_matrix_lookup(&walked_key, &binding) &&
                    binding.vp_overridden &&
+                   binding.view_eye_valid &&
+                   memcmp(binding.view_eye_position,
+                          override.view_eye_position,
+                          sizeof(binding.view_eye_position)) == 0 &&
                    memcmp(binding.view_projection, midpoint_vp,
                           sizeof(midpoint_vp)) == 0,
                "replay reachability: walked task matrix receives midpoint VP");
@@ -532,6 +548,48 @@ int main(void) {
                "replay reachability: restored registry releases cleanly");
         gfx_shadow_matrix_registry_reset();
     }
+
+    /* A GPU-owned caster contributes to cascade fitting without duplicating
+     * its geometry into either CPU replay stream. Keep this after the legacy
+     * telemetry census above so its independent ownership remains explicit. */
+    gfx_shadow_capture_begin();
+    view_a = gfx_shadow_capture_view(viewport_a, view_projection);
+    {
+        const float external_bounds[6] = {
+            -11.0f, -12.0f, -13.0f,
+             14.0f,  15.0f,  16.0f,
+        };
+        expect(gfx_shadow_capture_caster_bounds(
+                   view_a, external_bounds, 2u),
+               "external GPU caster bounds are admitted");
+    }
+    gfx_shadow_capture_commit();
+    frame = gfx_shadow_frame_previous();
+    expect(frame->valid && frame->vertex_count == 0u &&
+               frame->external_caster_count == 1u &&
+               frame->views[0].bounds_min[0] == -11.0f &&
+               frame->views[0].bounds_max[2] == 16.0f,
+           "external bounds affect planning but not CPU replay geometry");
+    gfx_world_fx_get_stats(&stats);
+    expect(stats.external_caster_bounds == 1u,
+           "external caster admissions are observable");
+
+    gfx_shadow_capture_begin();
+    view_a = gfx_shadow_capture_view(viewport_a, view_projection);
+    {
+        const float invalid_bounds[3] = {NAN, 0.0f, 0.0f};
+        expect(!gfx_shadow_capture_caster_bounds(
+                   view_a, invalid_bounds, 1u),
+               "non-finite external caster bounds fail closed");
+    }
+    gfx_shadow_capture_suppress(true);
+    expect(!gfx_shadow_capture_caster_bounds(view_a, positions, 3u),
+           "presentation replay cannot duplicate external caster bounds");
+    gfx_shadow_capture_suppress(false);
+    gfx_shadow_capture_commit();
+    gfx_world_fx_get_stats(&stats);
+    expect(stats.external_caster_rejections == 1u,
+           "invalid external bounds have a distinct rejection census");
 
     gfx_shadow_frame_shutdown();
     gfx_world_fx_get_stats(&stats);

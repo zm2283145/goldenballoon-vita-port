@@ -52,10 +52,26 @@
 #include <stddef.h> /* offsetof — layout locks below */
 #include <stdio.h>  /* fprintf — malformed dynamic-entry diagnostics */
 #include <stdlib.h> /* abort */
+#include <string.h> /* memset — AP-11 Taj session-event init */
+#include "modern_character_runtime.h"
 #include "mdkr_adventure.h"
 #include "mdkr_challenge.h"
 #include "mdkr_trace.h"
 extern int g_frameCounter;
+#ifndef MDKR_ADVENTURE_PARTY_OMIT
+/* AP-09/10 transition arbitration + shared-collection adapters. Every call to
+ * them is behind NATIVE_PORT && !MDKR_ADVENTURE_PARTY_OMIT with an immediate
+ * stock else, so the OMIT build and the matching N64 path compile out entirely
+ * (Task 6/7 precedent). */
+#include "adventure_party/adventure_party_policy.h"
+#include "adventure_party/adventure_party_runtime.h"
+#include "adventure_party/adventure_party_state.h"
+#include "adventure_party/adventure_party_trace.h"
+extern int g_simTickCounter;
+/* Adapter vocabulary for AdventurePartyTransitionRequest.trigger_kind. Lobby
+ * warps are all BHV_EXIT objects; one kind is enough for AP-10. */
+#define AP_TRIGGER_EXIT 1u
+#endif
 #endif
 
 /************ .data ************/
@@ -688,6 +704,46 @@ void obj_loop_trophycab(Object *obj, s32 updateRate) {
         if (worldBalloons) {
             worldBalloons = ((1 << (settings->worldId + 6)) & bossFlags) != 0;
         }
+#ifdef NATIVE_PORT
+        {
+            /* AP-16 gate reachability (R20/R24 retarget precedent). A headless
+             * party cannot drive the world-lobby trophy cabinet's collision/
+             * dialogue: with the cabinet's real precondition set (world boss
+             * beaten), the party wedges on a central-hub Taj-summon SHARED_DIALOGUE
+             * before it ever reaches the lobby (the exact boss-beaten-fixture wall
+             * AP-14 documented), and the boss-beaten lobby also repositions the
+             * party away from the cabinet. So the gate keeps the REACHABLE
+             * boss-not-beaten world lobby (a plain started save the AP-13 progress
+             * route drives into) and, when MDKR_TROPHY_FORCE_ENTER is set, forces
+             * the cabinet's OWN begin_trophy_race_teleport() once this loop is
+             * running (so the party is in a world lobby and worldId is set). This
+             * is the least-fake entry: the real trophy-series machinery
+             * (trophyround_adventure, the four rounds, the rankings/championship,
+             * the trophy award) runs unchanged; only the cabinet's precondition-
+             * gated collision+dialogue is bypassed (that gate is covered 1P by the
+             * retail check_trophy_series anchor). A plain NATIVE_PORT diagnostic
+             * (no adventure-party symbol, like MDKR_TROPHY_COLLIDE), inert without
+             * the env var and byte-neutral for OMIT and the retail anchor. */
+            static s32 sMdkrTrophyForcedEnter;
+            const char *forceEnter = getenv("MDKR_TROPHY_FORCE_ENTER");
+            if (forceEnter != NULL && forceEnter[0] != '\0' &&
+                forceEnter[0] != '0' && !sMdkrTrophyForcedEnter &&
+                obj->properties.trophyCabinet.action == 0) {
+                /* begin_trophy_race_teleport() itself no-ops unless the level
+                 * load timer is idle, so no extra guard is needed here. */
+                sMdkrTrophyForcedEnter = TRUE;
+                if (mdkr_trace_enabled()) {
+                    mdkr_trace("trophycabinet: FORCED-ENTER world=%d "
+                               "balloons=%d bosses=0x%x @frame~%d",
+                               (int) settings->worldId,
+                               (int) settings->balloonsPtr[settings->worldId],
+                               (unsigned) settings->bosses, g_frameCounter);
+                }
+                begin_trophy_race_teleport();
+                obj->properties.trophyCabinet.action = 2;
+            }
+        }
+#endif
         if (obj->properties.trophyCabinet.action == 0 && textbox_visible() == FALSE) {
             if (obj->collisionData->collidedObj != NULL) {
                 if (jingle_state->cooldown == 0) {
@@ -1240,24 +1296,38 @@ void obj_loop_characterflag(Object *obj, UNUSED s32 updateRate) {
             flagModel->texture = obj->textures[obj->properties.characterFlag.characterID];
 #ifdef NATIVE_PORT
             /* Virtual racers use in-range donors, so the bounds guard above
-             * cannot catch a false donor portrait. Bind the same native card
-             * the HUD and Rankings draw for every bonus identity. */
+             * cannot catch a false donor portrait. Bind the same package or
+             * native card the HUD and Rankings draw. */
             {
                 ModRacerIdentity identity =
                     (ModRacerIdentity)mod_racer_physics_identity(racer);
-                DrawTexture *bonusPortrait = menu_mod_portrait(identity);
-                if (bonusPortrait != NULL &&
-                    bonusPortrait[0].texture != NULL) {
-                    flagModel->texture = bonusPortrait[0].texture;
+                DrawTexture *identityPortrait =
+                    menu_custom_character_portrait(racer->playerIndex);
+                const char *source = "retail-card";
+                const char *packageId = NULL;
+                if (identityPortrait != NULL &&
+                    identityPortrait[0].texture != NULL) {
+                    flagModel->texture = identityPortrait[0].texture;
+                    source = "package-card";
+                    packageId = mdkr_modern_character_player_package(
+                        racer->playerIndex);
+                } else {
+                    identityPortrait = menu_mod_portrait(identity);
+                    if (identityPortrait != NULL &&
+                        identityPortrait[0].texture != NULL) {
+                        flagModel->texture = identityPortrait[0].texture;
+                        source = "native-card";
+                    }
                 }
                 /* One bounded row per portrait, at the single moment the lazy
                  * geometry build binds a racer. characterID is latched >= 0
                  * here and the branch never re-enters, so this cannot spam. */
-                MDKR_TRACE("charflag_bound: playerID=%d characterID=%d texture=%s identity=%d",
+                MDKR_TRACE("charflag_bound: playerID=%d characterID=%d texture=%s identity=%d source=%s package=%s",
                            (s32) obj->properties.characterFlag.playerID,
                            (s32) obj->properties.characterFlag.characterID,
                            flagModel->texture != NULL ? "ok" : "missing",
-                           identity);
+                           identity, source,
+                           packageId != NULL ? packageId : "-");
             }
 #endif
             /* S10.5 texture coordinates. Stock packs them as N64 words --
@@ -2421,6 +2491,31 @@ void obj_loop_char_select(Object *charSelectObj, s32 updateRate) {
                 taj_visual_select_apply_authored_actor(charSelectObj, i);
                 wizpig_visual_select_apply_authored_actor(charSelectObj, i);
                 terry_visual_select_apply_authored_actor(charSelectObj, i);
+                {
+                    u32 hoverMask = 0u;
+                    u32 confirmedMask = 0u;
+                    const s32 donor = menu_character_select_donor(i);
+                    s32 controller;
+                    s32 logicalPlayer = 0;
+                    s8 *selectStatus = charselect_status();
+                    for (controller = 0; controller < MAXCONTROLLERS;
+                         controller++) {
+                        const s32 selectedIndex =
+                            get_player_character(controller);
+                        if (selectedIndex < 0) continue;
+                        if (selectedIndex == i) {
+                            hoverMask |= 1u << logicalPlayer;
+                            if (selectStatus[controller] !=
+                                CHARSELECT_STATUS_UNCONFIRMED) {
+                                confirmedMask |= 1u << logicalPlayer;
+                            }
+                        }
+                        logicalPlayer++;
+                    }
+                    obj_modern_character_select_update(
+                        charSelectObj, donor, hoverMask, confirmedMask,
+                        (f32)updateRate / 60.0f);
+                }
 #endif
                 charSelectObj->animationID = 1;
                 for (playerIndex = 0, numCursors = 0; playerIndex < MAXCONTROLLERS; playerIndex++) {
@@ -2817,8 +2912,60 @@ void obj_loop_exit(Object *obj, UNUSED s32 updateRate) {
                     rotDiff = (exit->directionX * racerObj->trans.x_position) +
                               (exit->directionZ * racerObj->trans.z_position) + exit->rotationDiff;
                     if (rotDiff < 0.0f) {
-                        racer->exitObj = obj;
-                        racer->transitionTimer = -120;
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+                        AdventurePartySession *apSession = adventure_party_runtime_session();
+                        if (adventure_party_runtime_is_active()) {
+                            if (apSession->state == ADVENTURE_PARTY_STATE_ACTIVE_LOBBY) {
+                            /* Any party racer may trigger a lobby exit; the pure
+                             * reducer picks exactly one winner per level
+                             * generation (lowest tick, ties to lowest seat)
+                             * independent of object iteration order. Only the
+                             * winner latches an exit, so a losing/simultaneous
+                             * door press can never become a second whole-party
+                             * load. The winner runs the authored door animation
+                             * and func_8006D968 exactly as retail; the party
+                             * travels as one and Task 7's roster machinery
+                             * re-forms it at the destination lobby. */
+                            AdventurePartyTransitionRequest req;
+                            AdventurePartyArbitration verdict;
+                            req.level_generation = apSession->level_generation;
+                            req.simulation_tick = (uint32_t) g_simTickCounter;
+                            req.trigger_kind = AP_TRIGGER_EXIT;
+                            req.destination = obj->level_entry->exit.destinationMapId;
+                            req.entrance = obj->level_entry->exit.returnSpawnIndex;
+                            req.object_id = obj->level_entry->exit.destinationMapId;
+                            req.initiating_seat = (uint8_t) racer->playerIndex;
+                            verdict = adventure_party_arbitrate_transition(
+                                &apSession->transition_latch, &req,
+                                apSession->level_generation,
+                                apSession->roster.seat_mask);
+                            if (verdict == ADVENTURE_PARTY_ARBITRATE_LATCHED) {
+                                racer->exitObj = obj;
+                                racer->transitionTimer = -120;
+                            } else {
+                                static s32 sApExitRejectReported;
+                                if (!sApExitRejectReported) {
+                                    sApExitRejectReported = 1; /* one diagnostic at most */
+                                    adventure_party_trace_emit_interaction(
+                                        (uint8_t) racer->playerIndex,
+                                        ADVENTURE_PARTY_ACTION_TRIGGER_TRANSITION, verdict);
+                                }
+                            }
+                            }
+                            /* AP-11: party active but NOT ACTIVE_LOBBY -- a Taj
+                             * SHARED_DIALOGUE is open (R10). A door MUST NOT latch:
+                             * falling through to the stock else would set exitObj
+                             * and racer_enter_door would load a level, bypassing
+                             * the state machine's "no ACTIVE_LOBBY->race from
+                             * SHARED_DIALOGUE" rule. Reject silently (scene input
+                             * is blocked anyway; a parked racer at a door cannot
+                             * become a second transition mid-dialogue). */
+                        } else
+#endif
+                        {
+                            racer->exitObj = obj;
+                            racer->transitionTimer = -120;
+                        }
                     }
                 }
             }
@@ -2924,6 +3071,191 @@ void set_taj_voice_line(s16 soundID) {
     gTajSoundID = soundID;
 }
 
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+/* ------------------------------------------------------------------ AP-11 ----
+ * Party-lobby Taj shared-scene adapters. Retail obj_loop_parkwarden binds the
+ * whole scene -- distance test, horn summon, dialogue camera/fog, transform --
+ * to PLAYER_ONE. In a party any participant may summon, the NEAREST one is the
+ * scene focus (so seat 2 summoning is followed, not player one somewhere across
+ * the lobby), player one still owns the menu choices (taj_menu_loop already
+ * reads input_pressed(PLAYER_ONE)), and the transform rebuilds the WHOLE party.
+ * These helpers own the summoner/nearest focus, the DIALOGUE latch lifecycle
+ * (R10: latch on summon, release when Taj returns to roam), and the lock-step
+ * fade. All are no-ops off a live party lobby, so retail Taj is byte-identical. */
+
+/* The latched summoner: the scene must not jump between karts mid-dialogue. */
+static s32 sApTajFocusSeat = PLAYER_ONE;
+
+/* A party Taj scene is live while a session can summon (ACTIVE_LOBBY) or is in
+ * the shared dialogue it summoned (SHARED_DIALOGUE). */
+static s32 adventure_party_taj_active(void) {
+    AdventurePartySession *s = adventure_party_runtime_session();
+    return adventure_party_runtime_is_active() && s != NULL &&
+           (s->state == ADVENTURE_PARTY_STATE_ACTIVE_LOBBY ||
+            s->state == ADVENTURE_PARTY_STATE_SHARED_DIALOGUE);
+}
+
+/* Which party seat the scene follows this frame: the latched summoner while a
+ * dialogue is open, else the nearest occupied participant to Taj. PLAYER_ONE
+ * when this is not a party lobby (retail behaviour). */
+static s32 adventure_party_taj_focus(Object *taj) {
+    AdventurePartySession *s = adventure_party_runtime_session();
+    s32 count;
+    s32 i;
+    s32 best = PLAYER_ONE;
+    f32 bestDist = 1.0e30f;
+
+    if (!adventure_party_runtime_is_active() || s == NULL) {
+        return PLAYER_ONE;
+    }
+    if (s->state == ADVENTURE_PARTY_STATE_SHARED_DIALOGUE) {
+        return sApTajFocusSeat;
+    }
+    if (s->state != ADVENTURE_PARTY_STATE_ACTIVE_LOBBY) {
+        return PLAYER_ONE;
+    }
+    count = adventure_party_participant_count(s);
+    for (i = 0; i < count; i++) {
+        Object *r = get_racer_object(i);
+        f32 dx;
+        f32 dz;
+        f32 d;
+        if (r == NULL) {
+            continue;
+        }
+        dx = r->trans.x_position - taj->trans.x_position;
+        dz = r->trans.z_position - taj->trans.z_position;
+        d = (dx * dx) + (dz * dz);
+        if (d < bestDist) {
+            bestDist = d;
+            best = i;
+        }
+    }
+    return best;
+}
+
+/* Summon accepted by `seat`: latch the shared dialogue (ACTIVE_LOBBY ->
+ * SHARED_DIALOGUE) and remember the summoner as the scene focus. Any occupied
+ * seat may trigger it (TRIGGER_TRANSITION authority); the host still owns the
+ * menu. No-op unless a party is in ACTIVE_LOBBY with no door mid-transition. */
+static void adventure_party_taj_summon(s32 seat) {
+    AdventurePartySession *s = adventure_party_runtime_session();
+    AdventurePartyEvent ev;
+
+    if (!adventure_party_runtime_is_active() || s == NULL) {
+        return;
+    }
+    if (s->state != ADVENTURE_PARTY_STATE_ACTIVE_LOBBY) {
+        return;
+    }
+    if (s->transition_latch.latched) {
+        return; /* a door is mid-transition; input is blocked, no summon */
+    }
+    if (!adventure_party_seat_may_act((int) seat, s->roster.seat_mask,
+                                      ADVENTURE_PARTY_ACTION_TRIGGER_TRANSITION)) {
+        return;
+    }
+    memset(&ev, 0, sizeof ev);
+    ev.kind = ADVENTURE_PARTY_EVENT_DIALOGUE_START;
+    if (adventure_party_session_apply(s, &ev) == ADVENTURE_PARTY_OK) {
+        sApTajFocusSeat = seat;
+        adventure_party_trace_emit_interaction((uint8_t) seat,
+                                               ADVENTURE_PARTY_ACTION_TRIGGER_TRANSITION,
+                                               ADVENTURE_PARTY_ARBITRATE_LATCHED);
+        adventure_party_trace_emit_session(s);
+    }
+}
+
+/* R10 latch release: when Taj has finished and returned to roam, release the
+ * shared dialogue (SHARED_DIALOGUE -> ACTIVE_LOBBY) so a door can latch again in
+ * the same lobby visit (Taj-then-door). */
+static void adventure_party_taj_maybe_complete(Object *taj) {
+    AdventurePartySession *s = adventure_party_runtime_session();
+    AdventurePartyEvent ev;
+
+    if (!adventure_party_runtime_is_active() || s == NULL) {
+        return;
+    }
+    if (s->state != ADVENTURE_PARTY_STATE_SHARED_DIALOGUE) {
+        return;
+    }
+    if (taj->properties.taj.action != TAJ_MODE_ROAM) {
+        return;
+    }
+    memset(&ev, 0, sizeof ev);
+    ev.kind = ADVENTURE_PARTY_EVENT_DIALOGUE_COMPLETE;
+    if (adventure_party_session_apply(s, &ev) == ADVENTURE_PARTY_OK) {
+        sApTajFocusSeat = PLAYER_ONE;
+        adventure_party_trace_emit_session(s);
+    }
+}
+
+/* Fade every party racer EXCEPT the focus in lock-step with the focus racer, so
+ * the whole party dissolves together before the transactional rebuild (the
+ * retail fade only touches the focus racer's transparency). */
+static void adventure_party_taj_fade_others(s32 focus, s32 amount) {
+    AdventurePartySession *s = adventure_party_runtime_session();
+    s32 count;
+    s32 i;
+
+    if (!adventure_party_runtime_is_active() || s == NULL) {
+        return;
+    }
+    count = adventure_party_participant_count(s);
+    for (i = 0; i < count; i++) {
+        Object *r;
+        Object_Racer *rr;
+        if (i == focus) {
+            continue;
+        }
+        r = get_racer_object(i);
+        if (r == NULL || r->racer == NULL) {
+            continue;
+        }
+        rr = r->racer;
+        if (rr->transparency > amount) {
+            rr->transparency -= amount;
+        } else {
+            rr->transparency = 0;
+        }
+    }
+}
+
+/* Restore every party seat's engine (vehicle) sound at Taj's END_DIALOGUE re-init
+ * moment, matching retail timing. Retail frees the focus racer's vehicleSound on
+ * summon (racer_sound_free at the accept) and re-inits it here, and the transform
+ * additionally freed+rebuilt ALL seats with vehicleSound=0. Re-initialising here
+ * (not in the commit) keeps the karts silent during the fade/rebuild exactly as
+ * retail does, and brings the sound back when Taj says goodbye. The NULL guard
+ * makes this leak-free and correct on both paths: after a transform every seat is
+ * NULL and gets a sound; after a no-transform summon only the focus is NULL, so a
+ * seat that still holds a live vehicleSound is left untouched. */
+static void adventure_party_taj_reinit_sounds(void) {
+    AdventurePartySession *s = adventure_party_runtime_session();
+    s32 count;
+    s32 i;
+
+    if (!adventure_party_runtime_is_active() || s == NULL) {
+        return;
+    }
+    count = adventure_party_participant_count(s);
+    for (i = 0; i < count; i++) {
+        Object *r = get_racer_object(i);
+        Object_Racer *rr;
+        if (r == NULL || r->racer == NULL) {
+            continue;
+        }
+        rr = r->racer;
+        if (rr->vehicleSound == NULL) {
+            rr->vehicleSound = racer_sound_init(rr->characterId, rr->vehicleID);
+            if (mdkr_trace_enabled()) {
+                mdkr_trace("aparty_taj_sound: seat=%d reinit=1", (int) i);
+            }
+        }
+    }
+}
+#endif
+
 /**
  * Hub world Taj loop behaviour.
  * Handles all the behaviour for the Taj NPC found in the overworld.
@@ -2954,6 +3286,14 @@ void obj_loop_parkwarden(Object *obj, s32 updateRate) {
     f32 var_f2;
     s32 arctan;
     s32 temp;
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    s32 apFocus;
+/* The scene focus. Off a party lobby it IS PLAYER_ONE, so the retail and N64
+ * paths compile the literal token unchanged (byte-identical). */
+#define TAJ_FOCUS apFocus
+#else
+#define TAJ_FOCUS PLAYER_ONE
+#endif
 
     spawnSmoke = FALSE;
     tempPosY = obj->trans.y_position;
@@ -2965,6 +3305,12 @@ void obj_loop_parkwarden(Object *obj, s32 updateRate) {
     }
     taj = obj->npc;
     levelHeader = level_header();
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    /* R10 release first (Taj back to roam ends the shared dialogue), then pick
+     * this frame's focus: latched summoner during a dialogue, else nearest. */
+    adventure_party_taj_maybe_complete(obj);
+    apFocus = adventure_party_taj_focus(obj);
+#endif
     obj->particleEmittersEnabled = OBJ_EMIT_NONE;
     if (obj->animFrame == 0 && taj->animFrameF > 1.0) {
         taj->animFrameF = 0.0f;
@@ -2972,7 +3318,7 @@ void obj_loop_parkwarden(Object *obj, s32 updateRate) {
     distance = 0.0f;
     obj->x_velocity = 0.0f;
     obj->z_velocity = 0.0f;
-    racerObj = get_racer_object(PLAYER_ONE);
+    racerObj = get_racer_object(TAJ_FOCUS);
     if (racerObj == NULL) {
         return;
     }
@@ -2980,7 +3326,7 @@ void obj_loop_parkwarden(Object *obj, s32 updateRate) {
     xPosDiff = (racerObj->trans.x_position - (racer->ox1 * 50.0f)) - obj->trans.x_position;
     zPosDiff = (racerObj->trans.z_position - (racer->oz1 * 50.0f)) - obj->trans.z_position;
     distance = sqrtf((xPosDiff * xPosDiff) + (zPosDiff * zPosDiff));
-    buttonsPressed = input_pressed(PLAYER_ONE);
+    buttonsPressed = input_pressed(TAJ_FOCUS);
     var_a2 = FALSE;
     if ((obj->properties.taj.action == 0) && (distance < 300.0) &&
         (((obj->interactObj->flags & INTERACT_FLAGS_PUSHING) && (racerObj == obj->interactObj->obj)) ||
@@ -3027,9 +3373,15 @@ void obj_loop_parkwarden(Object *obj, s32 updateRate) {
             obj->properties.taj.action = TAJ_MODE_TELEPORT_TO_PLAYER_BEGIN;
             spawnSmoke = TRUE;
         }
-        get_fog_settings(PLAYER_ONE, &taj->fogNear, &taj->fogFar, &taj->fogR, &taj->fogG, &taj->fogB);
-        slowly_change_fog(PLAYER_ONE, 255, 0, 120, 960, 1100, 240);
+        get_fog_settings(TAJ_FOCUS, &taj->fogNear, &taj->fogFar, &taj->fogR, &taj->fogG, &taj->fogB);
+        slowly_change_fog(TAJ_FOCUS, 255, 0, 120, 960, 1100, 240);
         taj->animFrameF = 0.0f;
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+        /* The summon was accepted this frame -- latch the shared dialogue (R10)
+         * and record the summoning seat as the scene focus. Any occupied seat may
+         * summon; the host still owns the menu choices. */
+        adventure_party_taj_summon(TAJ_FOCUS);
+#endif
     }
 
     if (!(obj->properties.taj.action == TAJ_MODE_ROAM || obj->properties.taj.action == TAJ_MODE_RACE ||
@@ -3164,7 +3516,7 @@ void obj_loop_parkwarden(Object *obj, s32 updateRate) {
                 obj->animationID = 2;
                 taj->unk1C = 0;
                 play_taj_voice_clip(SOUND_VOICE_TAJ_BYE, TRUE);
-                slowly_change_fog(PLAYER_ONE, taj->fogR, taj->fogG, taj->fogB, taj->fogNear, taj->fogFar, 180);
+                slowly_change_fog(TAJ_FOCUS, taj->fogR, taj->fogG, taj->fogB, taj->fogNear, taj->fogFar, 180);
                 music_voicelimit_set_from_level_header(levelHeader->voiceLimit);
                 music_play(levelHeader->music);
                 music_dynamic_set(levelHeader->instruments);
@@ -3183,6 +3535,31 @@ void obj_loop_parkwarden(Object *obj, s32 updateRate) {
             }
             if (dialogueID & 0x40) {
                 gTajDialogueChoice = dialogueID & 0xF;
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+                if (adventure_party_taj_active()) {
+                    /* R27: the in-hub Taj CHALLENGE race is not yet classified for
+                     * a party -- it would spawn a lone Taj-vs-host race and strand
+                     * the other seats. Fail closed at the dialogue-choice seam:
+                     * refuse the challenge row in BOTH forms (the direct
+                     * choice==current-vehicle race and the transform-then-race
+                     * form), so no TAJ_MODE_SET_CHALLENGE / TAJ_MODE_RACE ever
+                     * starts during a party session. Keyed on a live party SESSION
+                     * (adventure_party_taj_active), NEVER on player count, so retail
+                     * JOINTVENTURE 2P challenges are byte-untouched. Vehicle-
+                     * transform rows (dialogueID & 0x80, the CHANGE VEHICLE menu)
+                     * are unaffected. Least-surprising native behaviour: reopen
+                     * Taj's ROOT menu -- the same set_menu_id_if_option_equal escape
+                     * retail already uses to back out of a dead submenu -- with the
+                     * menu-back jingle, so the shared dialogue stays open and the
+                     * host can still transform or leave. */
+                    sound_play(SOUND_MENU_BACK3, NULL);
+                    set_menu_id_if_option_equal(DIALOGUEPAGE_TAJ_CHALLENGES_2, DIALOGUEPAGE_TAJ_ROOT);
+                    if (mdkr_trace_enabled()) {
+                        mdkr_trace("aparty_taj_challenge: seat=%d refused=1 choice=%d",
+                                   (int) sApTajFocusSeat, (int) (dialogueID & 0xF));
+                    }
+                } else
+#endif
                 if (gTajDialogueChoice != racer->vehicleID) {
                     gTajDialogueChoice |= 0x80;
                     obj->properties.taj.action = TAJ_MODE_TRANSFORM_BEGIN;
@@ -3212,9 +3589,35 @@ void obj_loop_parkwarden(Object *obj, s32 updateRate) {
                 taj->animFrameF = 60.0f;
                 if (racer->transparency > (updateRate * 16)) {
                     racer->transparency -= (updateRate * 16);
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+                    /* Fade the rest of the party in lock-step so the whole roster
+                     * dissolves together before the transactional rebuild. */
+                    adventure_party_taj_fade_others(TAJ_FOCUS, updateRate * 16);
+#endif
                 } else {
                     racer->transparency = 0;
-                    despawn_player_racer(racerObj, gTajDialogueChoice & 0xF);
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+                    if (adventure_party_taj_active()) {
+                        AdventurePartySession *apS = adventure_party_runtime_session();
+                        /* Trace the host's dialogue-choice authority (host-only
+                         * per the contract; taj_menu_loop reads PLAYER_ONE input),
+                         * then run the transactional WHOLE-PARTY transform instead
+                         * of the retail single-racer despawn. */
+                        if (apS != NULL &&
+                            adventure_party_seat_may_act((int) apS->host_seat,
+                                                         apS->roster.seat_mask,
+                                                         ADVENTURE_PARTY_ACTION_DIALOGUE_CHOICE)) {
+                            adventure_party_trace_emit_interaction(
+                                (uint8_t) apS->host_seat,
+                                ADVENTURE_PARTY_ACTION_DIALOGUE_CHOICE,
+                                ADVENTURE_PARTY_ARBITRATE_LATCHED);
+                        }
+                        adventure_party_taj_transform_begin(gTajDialogueChoice & 0xF);
+                    } else
+#endif
+                    {
+                        despawn_player_racer(racerObj, gTajDialogueChoice & 0xF);
+                    }
                     obj->properties.taj.action = TAJ_MODE_TRANSFORM_END;
                     sound_play(SOUND_CYMBAL, NULL);
                     transition_begin(&gTajTransformTransitionEnd);
@@ -3264,7 +3667,18 @@ void obj_loop_parkwarden(Object *obj, s32 updateRate) {
                 }
                 obj->properties.taj.action = TAJ_MODE_TELEPORT_AWAY_BEGIN;
                 sound_play(SOUND_WHOOSH4, NULL);
-                racer->vehicleSound = racer_sound_init(racer->characterId, racer->vehicleID);
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+                if (adventure_party_taj_active()) {
+                    /* The whole-party transform freed+rebuilt every seat with
+                     * vehicleSound=0; retail re-inits only the focus here, which
+                     * would leave seats 1..N-1 driving silently until the next
+                     * level load. Re-init every seat at this same retail moment. */
+                    adventure_party_taj_reinit_sounds();
+                } else
+#endif
+                {
+                    racer->vehicleSound = racer_sound_init(racer->characterId, racer->vehicleID);
+                }
             }
             break;
         case TAJ_MODE_TELEPORT_TO_PLAYER_BEGIN:
@@ -3324,7 +3738,7 @@ void obj_loop_parkwarden(Object *obj, s32 updateRate) {
                 obj->opacity -= var_a2;
             } else {
                 racer->vehicleSound = racer_sound_init(racer->characterId, racer->vehicleID);
-                slowly_change_fog(PLAYER_ONE, taj->fogR, taj->fogG, taj->fogB, taj->fogNear, taj->fogFar, 180);
+                slowly_change_fog(TAJ_FOCUS, taj->fogR, taj->fogG, taj->fogB, taj->fogNear, taj->fogFar, 180);
                 music_voicelimit_set_from_level_header(levelHeader->voiceLimit);
                 music_play(levelHeader->music);
                 music_dynamic_set(levelHeader->instruments);
@@ -3425,10 +3839,10 @@ void obj_loop_parkwarden(Object *obj, s32 updateRate) {
                 }
             }
             racerObjs = get_racer_objects(&numRacers);
-            if (racerObjs[PLAYER_ONE] != NULL) {
-                xPosDiff = racerObjs[PLAYER_ONE]->trans.x_position - obj->trans.x_position;
-                distance = racerObjs[PLAYER_ONE]->trans.y_position - obj->trans.y_position;
-                zPosDiff = racerObjs[PLAYER_ONE]->trans.z_position - obj->trans.z_position;
+            if (racerObjs[TAJ_FOCUS] != NULL) {
+                xPosDiff = racerObjs[TAJ_FOCUS]->trans.x_position - obj->trans.x_position;
+                distance = racerObjs[TAJ_FOCUS]->trans.y_position - obj->trans.y_position;
+                zPosDiff = racerObjs[TAJ_FOCUS]->trans.z_position - obj->trans.z_position;
                 var_f2 = sqrtf((xPosDiff * xPosDiff) + (distance * distance) + (zPosDiff * zPosDiff));
                 if (var_f2 < 1000.0f) {
                     var_f2 = 1000.0f - var_f2;
@@ -3526,6 +3940,7 @@ void obj_loop_parkwarden(Object *obj, s32 updateRate) {
     obj->animFrame = taj->animFrameF * 1.0;
     func_80061C0C(obj);
     obj_spawn_particle(obj, updateRate);
+#undef TAJ_FOCUS
 }
 
 /**
@@ -3833,7 +4248,28 @@ void obj_loop_goldenballoon(Object *obj, s32 updateRate) {
                 racerObj = interactObj->obj;
                 if ((racerObj && (racerObj->header->behaviorId == 1))) {
                     racer = racerObj->racer;
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+                    /* Shared hub balloon: any occupied party seat may collect
+                     * (policy COLLECT authority), not only player one. The
+                     * collected flag written below is per-course and set exactly
+                     * once, so the first toucher (the nearest racer the collision
+                     * system already resolved into interactObj->obj) wins and no
+                     * second racer can re-collect. AP-13 owns the exact-once SAVE
+                     * award; this task only lifts the P1-only gate. Off/OMIT this
+                     * is exactly the stock `playerIndex == PLAYER_ONE`. */
+                    int apMayCollect;
+                    if (adventure_party_runtime_is_active()) {
+                        apMayCollect = adventure_party_seat_may_act(
+                            racer->playerIndex,
+                            adventure_party_runtime_session()->roster.seat_mask,
+                            ADVENTURE_PARTY_ACTION_COLLECT);
+                    } else {
+                        apMayCollect = (racer->playerIndex == PLAYER_ONE);
+                    }
+                    if (apMayCollect) {
+#else
                     if (racer->playerIndex == PLAYER_ONE) {
+#endif
                         settings->balloonsPtr[settings->worldId]++;
                         if (isPirated == 1) {} // Fakematch
                         if (settings->worldId != WORLD_CENTRAL_AREA) {
@@ -3847,6 +4283,14 @@ void obj_loop_goldenballoon(Object *obj, s32 updateRate) {
                         obj->particleEmittersEnabled = OBJ_EMIT_2;
                         obj->trans.flags |= OBJ_FLAGS_INVISIBLE;
                         obj_spawn_particle(obj, updateRate);
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+                        if (adventure_party_runtime_is_active()) {
+                            adventure_party_trace_emit_interaction(
+                                (uint8_t) racer->playerIndex,
+                                ADVENTURE_PARTY_ACTION_COLLECT,
+                                ADVENTURE_PARTY_ARBITRATE_LATCHED);
+                        }
+#endif
                     }
                 }
             }
@@ -4976,6 +5420,49 @@ void obj_loop_silvercoin(Object *obj, s32 updateRate) {
             if (racerObj != NULL && racerObj->header->behaviorId == BHV_RACER) {
                 racer = racerObj->racer;
                 if (racer->playerIndex != PLAYER_COMPUTER) {
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+                    /* AP-14 team-shared silver coins. The FIRST human to touch an
+                     * active coin retires it for EVERY viewport and advances the ONE
+                     * team tally — do NOT engage the retail per-player ownership path
+                     * (SILVER_COIN_COLLECTED/INVIS_PLAYER1 << playerIndex), which
+                     * gives each player their own copy and is unrepresentable for a
+                     * party (only two invisibility bits exist; viewports 2/3 alias
+                     * viewports 0/1 via viewport & 1). Setting BOTH invisibility bits
+                     * is the full-invisibility retirement (the 1P/inactive path), so
+                     * every viewport sees it vanish. Marking the coin INACTIVE drops
+                     * it from the loop's active test next frame — exactly once per
+                     * coin, by the object state machine (like Task 8 balloons). */
+                    if (adventure_party_silver_race_active()) {
+                        if (racer->raceFinished == FALSE &&
+                            obj->properties.silverCoin.action == SILVER_COIN_ACTIVE) {
+                            obj->properties.silverCoin.action = SILVER_COIN_INACTIVE;
+                            obj->properties.silverCoin.timer = 16;
+                            obj->trans.flags |=
+                                OBJ_FLAGS_INVIS_PLAYER1 | OBJ_FLAGS_INVIS_PLAYER2;
+                            /* Jingle pitch rises with the TEAM total (pre-increment),
+                             * so the whole party hears one shared 1..8 progression
+                             * no matter which human collected. */
+                            music_jingle_play(SEQUENCE_SILVER_COIN_1 +
+                                              adventure_party_silver_team_coins());
+                            adventure_party_silver_team_collect();
+                            /* Post-increment team count, matching the retail trace's
+                             * post-increment count; playerIndex names the collector
+                             * (a non-host proves any-human collection). invis prints
+                             * the coin's two engine invisibility bits AFTER the retire:
+                             * both set (0x600 = INVIS_PLAYER1|INVIS_PLAYER2) is the
+                             * per-viewport object-state witness that the coin vanished
+                             * for EVERY viewport (0/1 direct, 2/3 aliased). */
+                            MDKR_TRACE("silvercoin: playerIndex=%d count=%d action=0x%x invis=0x%x @frame~%d",
+                                       (int) racer->playerIndex,
+                                       (int) adventure_party_silver_team_coins(),
+                                       (unsigned) obj->properties.silverCoin.action,
+                                       (unsigned) (obj->trans.flags &
+                                                   (OBJ_FLAGS_INVIS_PLAYER1 |
+                                                    OBJ_FLAGS_INVIS_PLAYER2)),
+                                       (int) g_frameCounter);
+                        }
+                    } else
+#endif
                     if (racer->raceFinished == FALSE &&
                         !(obj->properties.silverCoin.action & (SILVER_COIN_COLLECTED << racer->playerIndex))) {
                         obj->properties.silverCoin.action |= SILVER_COIN_COLLECTED << racer->playerIndex;
@@ -5053,6 +5540,21 @@ void obj_loop_worldkey(Object *worldKeyObj, s32 updateRate) {
                     settings = get_settings();
                     settings->keys |= 1 << worldKeyObj->properties.worldKey.keyID; // Set key flag
                     free_object(worldKeyObj);                                      // Makes the key unload.
+#ifdef NATIVE_PORT
+                    /* NATIVE_PORT, read-only: the key commit gates on
+                     * "playerIndex != PLAYER_COMPUTER" -- ANY live human, so in an
+                     * Adventure Party race any seat (not just the host) collects,
+                     * and the write is already exact-once (the flag is idempotent
+                     * and free_object retires the object; obj_init_worldkey deletes
+                     * an already-collected key on re-entry, so it never re-spawns).
+                     * Nothing else prints the collector, so this makes the seat
+                     * that grabbed it observable to tests/check_adventure_party_progress.py.
+                     * Trace-gated; one line per key collected. */
+                    MDKR_TRACE("worldkey: keyID=%d playerIndex=%d keys=0x%x @frame~%d",
+                               (int) worldKeyObj->properties.worldKey.keyID,
+                               (int) racer->playerIndex, (unsigned) settings->keys,
+                               g_frameCounter);
+#endif
                 }
             }
         }

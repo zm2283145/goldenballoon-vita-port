@@ -2,8 +2,11 @@
 #ifdef NATIVE_PORT
 #include "address_domains.h"
 #include "fast3d/gfx_presentation_packet.h"
+#include "mdkr_trace.h"
 #include "present_sched.h"
 #include "presentation_snapshot.h"
+#include <stdio.h>
+#include <stdlib.h>
 #endif
 #include "camera.h"
 #include "macros.h"
@@ -74,6 +77,85 @@ s32 presentation_task_peek_authored(const Gfx **begin, const Gfx **end,
 
 u64 presentation_task_authoring_tick(void) {
     return sPresentationAuthoredValid ? sPresentationAuthoredTick : 0u;
+}
+
+/* Display-list high-water against the row the buffer was allocated to.
+ *
+ * gDisplayLists[] is one allocation whose Gfx region is immediately followed
+ * by gMatrixHeap[] (alloc_displaylist_heap, thread3_main.c). Authoring past
+ * gCurrNumF3dCmdsPerPlayer commands therefore does not fault: it overwrites
+ * matrices, and both display-list walkers then parse matrix words as commands
+ * until one decodes as a jump out of the arena -- the four-viewport party-hub
+ * overflow AddressSanitizer settled. Nothing measured the remaining margin.
+ *
+ * Submission is the one place the authored length is known, and it is also the
+ * one place gCurrNumF3dCmdsPerPlayer is guaranteed to describe this list: the
+ * row and the write cursor only ever change together, in alloc_displaylist_heap.
+ */
+static long sDlHighWaterBytes;
+static long sDlHighWaterLimitBytes;
+extern s32 gCurrNumF3dCmdsPerPlayer;
+
+/* MDKR_TEST_UNDERSIZED_DL_HEAP holds four viewports to the retail one-player
+ * row so tests/check_fast3d_dl_hardening.py can walk the overflowing stream
+ * the sanitizer settled. That route has to reach the walkers, so it reports
+ * the overflow through the witness and runs on instead of aborting. Read the
+ * value the way alloc_displaylist_heap reads it. */
+static s32 dl_undersized_heap_injected(void) {
+    static s32 injected = -1;
+
+    if (injected < 0) {
+        const char *value = getenv("MDKR_TEST_UNDERSIZED_DL_HEAP");
+        injected = (value != NULL && value[0] == '1');
+    }
+    return injected;
+}
+
+/* MDKR_TEST_DL_HIGH_WATER_LIMIT replaces the row with a command count a
+ * well-authored route already exceeds. It is how tests/check_dl_high_water.py
+ * proves the abort below still fires; nothing sets it in production. */
+static long dl_authored_limit_bytes(void) {
+    static long forced = -1;
+
+    if (forced < 0) {
+        const char *value = getenv("MDKR_TEST_DL_HIGH_WATER_LIMIT");
+        forced = (value != NULL) ? strtol(value, NULL, 10) : 0;
+        if (forced < 0) {
+            forced = 0;
+        }
+    }
+    if (forced > 0) {
+        return forced * (long) sizeof(Gfx);
+    }
+    return (long) gCurrNumF3dCmdsPerPlayer * (long) sizeof(Gfx);
+}
+
+static void dl_high_water_observe(const Gfx *dlBegin, const Gfx *dlEnd) {
+    const long authored = (long) (dlEnd - dlBegin) * (long) sizeof(Gfx);
+    const long limit = dl_authored_limit_bytes();
+
+    /* Between the thread3 reset and the first alloc_displaylist_heap no row is
+     * installed, so there is nothing to measure against. */
+    if (limit <= 0) {
+        return;
+    }
+    /* A level load can move to a wider or narrower row. The high-water belongs
+     * to the row it was reached in, so start it over when the row changes. */
+    if (limit != sDlHighWaterLimitBytes) {
+        sDlHighWaterLimitBytes = limit;
+        sDlHighWaterBytes = 0;
+    }
+    if (authored > sDlHighWaterBytes) {
+        sDlHighWaterBytes = authored;
+        MDKR_TRACE("dl_high_water: bytes=%ld limit=%ld", authored, limit);
+    }
+    if (authored > limit && !dl_undersized_heap_injected()) {
+        fprintf(stderr,
+                "[FATAL] display list overflowed its heap row "
+                "(bytes=%ld limit=%ld commands=%d)\n",
+                authored, limit, gCurrNumF3dCmdsPerPlayer);
+        abort();
+    }
 }
 
 static u64 presentation_task_take_authored_tick(Gfx *begin, Gfx *end) {
@@ -231,6 +313,9 @@ OSMesgQueue *osScInterruptQ;
 s32 gfxtask_run_xbus(Gfx *dlBegin, Gfx *dlEnd, UNUSED s32 recvMesg) {
     DKR_OSTask *dkrtask;
 
+#ifdef NATIVE_PORT
+    dl_high_water_observe(dlBegin, dlEnd);
+#endif
     gGfxTaskIsRunning = TRUE;
     dkrtask = &gGfxTaskBuf[gGfxBufCounter];
     gGfxBufCounter++;

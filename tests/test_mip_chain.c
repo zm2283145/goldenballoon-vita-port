@@ -10,6 +10,7 @@
 #include "fast3d/gfx_mipgen.h"
 #include "fast3d/gfx_texture_edge.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -122,6 +123,38 @@ static void test_alpha_is_linear(void) {
 
     expect_true("alpha build ok", gfx_mip_build(src, 2, 1, scratch, sizeof(scratch), &chain));
     expect_near_u8("alpha is a plain mean", chain.level[1][3], 100, 1);
+}
+
+static void test_material_data_is_not_gamma_filtered(void) {
+    uint8_t src[2 * 4] = { 0, 64, 255, 10, 255, 192, 0, 210 };
+    uint8_t scratch[16];
+    GfxMipChain chain;
+    expect_true("linear material mip build ok",
+                gfx_mip_build_linear(src, 2, 1, scratch, sizeof(scratch), &chain));
+    expect_near_u8("metallic channel is byte-linear", chain.level[1][0], 128, 1);
+    expect_near_u8("roughness channel is byte-linear", chain.level[1][1], 128, 1);
+    expect_near_u8("occlusion channel is byte-linear", chain.level[1][2], 128, 1);
+    expect_near_u8("data texture alpha remains linear", chain.level[1][3], 110, 1);
+}
+
+static void test_normal_map_mips_renormalize(void) {
+    /* Equal +X and +Y tangent normals average to normalize(1,1,0). */
+    uint8_t src[2 * 4] = { 255, 128, 128, 255, 128, 255, 128, 255 };
+    uint8_t scratch[16];
+    GfxMipChain chain;
+    float nx;
+    float ny;
+    float nz;
+    float length;
+    expect_true("normal-map mip build ok",
+                gfx_mip_build_normal(src, 2, 1, scratch, sizeof(scratch), &chain));
+    nx = (float)chain.level[1][0] / 127.5f - 1.0f;
+    ny = (float)chain.level[1][1] / 127.5f - 1.0f;
+    nz = (float)chain.level[1][2] / 127.5f - 1.0f;
+    length = sqrtf(nx * nx + ny * ny + nz * nz);
+    expect_near_u8("normal mip points diagonally in X", chain.level[1][0], 218, 2);
+    expect_near_u8("normal mip points diagonally in Y", chain.level[1][1], 218, 2);
+    expect_true("normal mip remains unit length", length > 0.99f && length < 1.01f);
 }
 
 /* ---- NPOT: the area box must weight partial source texels -------------- */
@@ -308,6 +341,8 @@ int main(void) {
     test_uniform_is_lossless();
     test_linear_space_average();
     test_alpha_is_linear();
+    test_material_data_is_not_gamma_filtered();
+    test_normal_map_mips_renormalize();
     test_npot_area_box();
     test_npot_dimensions();
     test_contracts();

@@ -65,6 +65,14 @@ namespace {
 
 using Json = nlohmann::json;
 
+int roomSendFlags() {
+#ifdef MSG_NOSIGNAL
+    return MSG_NOSIGNAL;
+#else
+    return 0;
+#endif
+}
+
 uint64_t nowMs() {
     return static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -105,7 +113,7 @@ bool sendAllRoom(RoomSocket fd, const std::string &bytes) {
 #else
             bytes.size() - sent,
 #endif
-            0));
+            roomSendFlags()));
         if (wrote <= 0) return false;
         sent += static_cast<size_t>(wrote);
     }

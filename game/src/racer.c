@@ -17,6 +17,14 @@
 #include "network_player_authority.h"
 #include "video.h"
 #include "platform_os.h"
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+/* AP-09/10 door-transition consumption authority: only the arbiter's latch
+ * winner runs racer_enter_door(). Behind NATIVE_PORT && !OMIT with a stock
+ * else, so OMIT / matching N64 compile it out. */
+#include "adventure_party/adventure_party_runtime.h"
+#include "adventure_party/adventure_party_state.h"
+#include "adventure_party/adventure_party_trace.h"
+#endif
 
 #include "asset_enums.h"
 #include "asset_loading.h"
@@ -56,9 +64,11 @@
 #include "net/match_input_runtime.h"
 #include "mdkr_adventure.h"
 #include "gameplay_event_trace.h"
+#include "modern_character_runtime.h"
 #include "present_sched.h"
 #include "presentation_snapshot.h"
 #include "steering_compat.h"
+#include "workshop_preview_runtime.h"
 #include <stdio.h>  /* fprintf — loud non-finite-position assert below */
 #include <stdlib.h> /* abort */
 #include <string.h> /* memset — native intent sidecar capture */
@@ -73,6 +83,171 @@ static s32 racer_pos_is_finite(f32 v) {
     } bits;
     bits.f = v;
     return (bits.u & 0x7F800000u) != 0x7F800000u;
+}
+
+extern Camera *gCameraObject;
+
+/* The renderer publishes this package/context's fitted calibration bounds
+ * after a complete replacement draw. Convert that previous-frame local focus
+ * through the live racer transform so arbitrary source scale, author offsets,
+ * facing correction, and vehicle fit all influence inspection framing. */
+static s32 racer_workshop_preview_focus(Object *obj, Object_Racer *racer,
+                                        f32 *targetX, f32 *targetY,
+                                        f32 *targetZ, f32 *radius) {
+    float localCenter[3];
+    float localRadius;
+    MtxF world;
+    MdkrModernCharacterContext context;
+    if (obj == NULL || racer == NULL || targetX == NULL || targetY == NULL ||
+        targetZ == NULL || radius == NULL) return FALSE;
+    *targetX = obj->trans.x_position + racer->ox1 * 10.0f;
+    *targetY = obj->trans.y_position + racer->oy1 * 10.0f + 42.0f;
+    *targetZ = obj->trans.z_position + racer->oz1 * 10.0f;
+    *radius = 0.0f;
+    if (racer->vehicleIDPrev < VEHICLE_CAR ||
+        racer->vehicleIDPrev > VEHICLE_PLANE) return FALSE;
+    context = (MdkrModernCharacterContext)(
+        MDKR_CHARACTER_CONTEXT_CAR + racer->vehicleIDPrev);
+    if (!mdkr_modern_character_player_focus(
+            racer->playerIndex, context, localCenter, &localRadius)) {
+        return FALSE;
+    }
+    mtxf_from_transform(&world, &obj->trans);
+    *targetX = localCenter[0] * world[0][0] +
+               localCenter[1] * world[1][0] +
+               localCenter[2] * world[2][0] + world[3][0];
+    *targetY = localCenter[0] * world[0][1] +
+               localCenter[1] * world[1][1] +
+               localCenter[2] * world[2][1] + world[3][1];
+    *targetZ = localCenter[0] * world[0][2] +
+               localCenter[1] * world[1][2] +
+               localCenter[2] * world[2][2] + world[3][2];
+    *radius = localRadius *
+        (obj->trans.scale < 0.0f ? -obj->trans.scale : obj->trans.scale);
+    if (!racer_pos_is_finite(*targetX) ||
+        !racer_pos_is_finite(*targetY) ||
+        !racer_pos_is_finite(*targetZ) ||
+        !racer_pos_is_finite(*radius) || *radius <= 0.0f) {
+        *targetX = obj->trans.x_position + racer->ox1 * 10.0f;
+        *targetY = obj->trans.y_position + racer->oy1 * 10.0f + 42.0f;
+        *targetZ = obj->trans.z_position + racer->oz1 * 10.0f;
+        *radius = 0.0f;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+/* A nonzero Workshop view is an absolute, racer-relative inspection orbit.
+ * Zero/zero deliberately leaves the ordinary gameplay camera untouched; all
+ * other presets must not inherit a transient race-start, dialogue, finish, or
+ * scripted camera. The renderer's fitted character volume supplies the target
+ * and minimum distance, while a vehicle floor keeps the whole donor vehicle
+ * readable for tiny or unusually compact source models. */
+static void racer_apply_workshop_preview_view(Object *obj,
+                                              Object_Racer *racer) {
+    int yawDegrees;
+    int pitchDegrees;
+    s32 yaw;
+    s32 pitch;
+    f32 targetX;
+    f32 targetY;
+    f32 targetZ;
+    f32 forwardX;
+    f32 forwardY;
+    f32 forwardZ;
+    f32 rightX;
+    f32 rightY;
+    f32 rightZ;
+    f32 upX;
+    f32 upY;
+    f32 upZ;
+    f32 orbitX;
+    f32 orbitY;
+    f32 orbitZ;
+    f32 x;
+    f32 y;
+    f32 z;
+    f32 horizontal;
+    f32 distance;
+    f32 minimumDistance;
+    f32 radius;
+    f32 cosine;
+    f32 sine;
+    if (obj == NULL || racer == NULL || gCameraObject == NULL ||
+        racer->playerIndex < PLAYER_ONE ||
+        racer->playerIndex > PLAYER_FOUR ||
+        !mdkr_workshop_preview_view(&yawDegrees, &pitchDegrees)) {
+        return;
+    }
+    yaw = (s32)(((s64)yawDegrees * 0x8000) / 180);
+    pitch = (s32)(((s64)pitchDegrees * 0x8000) / 180);
+    (void)racer_workshop_preview_focus(
+        obj, racer, &targetX, &targetY, &targetZ, &radius);
+    minimumDistance = racer->vehicleIDPrev == VEHICLE_PLANE ? 215.0f
+        : racer->vehicleIDPrev == VEHICLE_HOVERCRAFT ? 190.0f : 155.0f;
+    if (cam_get_viewport_layout() != VIEWPORT_LAYOUT_1_PLAYER) {
+        minimumDistance *= 1.25f;
+    }
+    distance = radius > 0.0f ? radius * 2.75f + 36.0f : 0.0f;
+    if (distance < minimumDistance) distance = minimumDistance;
+
+    forwardX = racer->ox1;
+    forwardY = racer->oy1;
+    forwardZ = racer->oz1;
+    rightX = racer->ox3;
+    rightY = racer->oy3;
+    rightZ = racer->oz3;
+    upX = racer->ox2;
+    upY = racer->oy2;
+    upZ = racer->oz2;
+    cosine = coss_f(yaw);
+    sine = sins_f(yaw);
+    orbitX = -forwardX * cosine + rightX * sine;
+    orbitY = -forwardY * cosine + rightY * sine;
+    orbitZ = -forwardZ * cosine + rightZ * sine;
+    if (pitchDegrees == MDKR_WORKSHOP_PREVIEW_TOP_PITCH_DEGREES ||
+        pitchDegrees == MDKR_WORKSHOP_PREVIEW_PITCH_MIN_DEGREES) {
+        /* Avoid feeding the exact Euler pole through fixed-angle cosine. The
+         * eye lies exactly on the racer-relative up axis; yaw still selects a
+         * stable screen orientation when world-horizontal look direction is
+         * otherwise undefined. */
+        const f32 vertical = pitchDegrees > 0 ? 1.0f : -1.0f;
+        x = distance * upX * vertical;
+        y = distance * upY * vertical;
+        z = distance * upZ * vertical;
+    } else {
+        cosine = coss_f(pitch);
+        sine = sins_f(pitch);
+        x = distance * (orbitX * cosine + upX * sine);
+        y = distance * (orbitY * cosine + upY * sine);
+        z = distance * (orbitZ * cosine + upZ * sine);
+    }
+    horizontal = sqrtf(x * x + z * z);
+    gCameraObject->trans.x_position = targetX + x;
+    gCameraObject->trans.y_position = targetY + y;
+    gCameraObject->trans.z_position = targetZ + z;
+    if (horizontal < 0.001f) {
+        gCameraObject->trans.rotation.y_rotation =
+            0x8000 - arctan2_f(orbitX, orbitZ);
+        gCameraObject->trans.rotation.x_rotation =
+            pitchDegrees > 0 ? 0x4000 : -0x4000;
+    } else {
+        gCameraObject->trans.rotation.y_rotation =
+            0x8000 - arctan2_f(x, z);
+        gCameraObject->trans.rotation.x_rotation =
+            arctan2_f(y, horizontal);
+    }
+    gCameraObject->trans.rotation.z_rotation = 0;
+    gCameraObject->pitch = 0;
+    gCameraObject->x_velocity = 0.0f;
+    gCameraObject->y_velocity = 0.0f;
+    gCameraObject->z_velocity = 0.0f;
+    gCameraObject->shakeMagnitude = 0.0f;
+    gCameraObject->cameraSegmentID = get_level_segment_index_from_position(
+        gCameraObject->trans.x_position,
+        gCameraObject->trans.y_position,
+        gCameraObject->trans.z_position);
+    mdkr_workshop_preview_note_camera_override();
 }
 
 #endif
@@ -294,6 +469,8 @@ static void racer_camera_apply_finish_exclusion(Object_Racer *racer) {
  */
 static void racer_camera_obstruction_capture_intent(Object *obj, Object_Racer *racer) {
     MdkrCameraIntent intent;
+    int workshopYaw;
+    int workshopPitch;
 
     if (obj == NULL || racer == NULL || gCameraObject == NULL ||
         racer->playerIndex < PLAYER_ONE || racer->playerIndex > PLAYER_FOUR) {
@@ -327,6 +504,18 @@ static void racer_camera_obstruction_capture_intent(Object *obj, Object_Racer *r
      * while lifting only the presentation target. */
     if (intent.family != MDKR_CAMERA_INTENT_FAMILY_FINISH_CHALLENGE) {
         intent.target.y += 20.0f;
+    }
+    if (mdkr_workshop_preview_view(&workshopYaw, &workshopPitch)) {
+        f32 focusX;
+        f32 focusY;
+        f32 focusZ;
+        f32 focusRadius;
+        (void)racer_workshop_preview_focus(
+            obj, racer, &focusX, &focusY, &focusZ, &focusRadius);
+        intent.pivot.x = focusX;
+        intent.pivot.y = focusY;
+        intent.pivot.z = focusZ;
+        intent.target = intent.pivot;
     }
     intent.target_valid = TRUE;
     camera_obstruction_intent_capture(&intent);
@@ -4948,6 +5137,34 @@ void update_player_racer(Object *obj, s32 updateRate) {
         }
         tempVar = tempRacer->playerIndex;
         if (tempRacer->playerIndex != PLAYER_COMPUTER) {
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+            /* AP-09/10 door-transition consumption authority. In a party lobby
+             * exactly ONE racer -- the arbiter's settled latch winner -- may run
+             * racer_enter_door() (which owns the authored fade and the single
+             * func_8006D968 level load). A racer that briefly latched an exit but
+             * is not the winner (a same-tick displacement) drops it here and
+             * resumes normal control, so two racers can never both enter a door.
+             * The winning transition is emitted once per generation from the
+             * settled latch, naming the FINAL winner. */
+            if (tempRacer->exitObj != NULL && adventure_party_runtime_is_active()) {
+                AdventurePartySession *apS = adventure_party_runtime_session();
+                const AdventurePartyTransitionLatch *apLatch = &apS->transition_latch;
+                int apWinner = apLatch->latched &&
+                    apLatch->winner.initiating_seat == (uint8_t) tempRacer->playerIndex;
+                if (apS->state == ADVENTURE_PARTY_STATE_ACTIVE_LOBBY && !apWinner) {
+                    tempRacer->exitObj = NULL;
+                    tempRacer->transitionTimer = 0;
+                } else if (apWinner) {
+                    static uint32_t sApEmittedGen;
+                    static int sApEmittedValid;
+                    if (!sApEmittedValid || sApEmittedGen != apS->level_generation) {
+                        sApEmittedValid = 1;
+                        sApEmittedGen = apS->level_generation;
+                        adventure_party_trace_emit_transition(&apLatch->winner);
+                    }
+                }
+            }
+#endif
             if (tempRacer->exitObj == 0) {
                 if (is_race_started_by_player_two()) {
                     tempVar = 1 - tempVar;
@@ -8901,6 +9118,7 @@ void update_player_camera(Object *obj, Object_Racer *racer, f32 updateRateF) {
         gCameraObject->shakeMagnitude = -gCameraObject->shakeMagnitude * 0.75;
     }
 #ifdef NATIVE_PORT
+    racer_apply_workshop_preview_view(obj, racer);
     /* Final author seam: dialogue translation, yaw, and shake are all final.
      * Transition code may call this twice; the intent sidecar intentionally
      * keeps only this last author while the fixed-tick finalizer solves once. */

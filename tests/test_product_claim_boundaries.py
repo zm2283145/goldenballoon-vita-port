@@ -164,6 +164,107 @@ def main() -> int:
         require_contains(
             path, "The service that pairs you can see that you're both connected."
         )
+    # Custom characters are presentation identities. Keep the Workshop's save
+    # review precise: ghosts/network retain a retail character ID, but course
+    # records and adventure saves do not become donor-owned data, and peer
+    # package negotiation is still future work.
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "Course records and adventure saves remain ordinary game data; they ",
+    )
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "do not embed the custom package.",
+    )
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "Package negotiation for online peers ",
+    )
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "is not implemented, so the donor is always the safe authoritative ",
+    )
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "Ghost and network/rollback character ID",
+    )
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "Acceleration curve by vehicle",
+    )
+    if "records, ghosts, saves, and ordinary online authority remain" in settings:
+        raise AssertionError(
+            "the Workshop must not describe ordinary record/save data as "
+            "donor-owned"
+        )
+    # Package selection is a review, not an install side effect. Both native
+    # portable and source-only compiler routes bind the bytes and installed
+    # base that were actually shown before the final action is enabled.
+    for claim in (
+        "Validate and review",
+        "Install reviewed character",
+        "Install reviewed update",
+        "I confirm I have the right to use this package locally",
+        "the importer cannot verify copyright, trademark, attribution, or redistribution rights",
+        "The package or installed character may have changed; validate and review it again.",
+        "License (SPDX)",
+        "Creator / attribution",
+        "Unavailable (legacy cache)",
+        "These declarations and the exact LICENSE.txt bytes are authenticated by the active source digest.",
+    ):
+        require_contains("platform/app/ui_settings.cpp", claim)
+    require_contains(
+        "platform/modern_character_install.c",
+        "the package file changed after review; validate the new bytes before installing",
+    )
+    require_contains(
+        "tools/character_package_manager.py",
+        '"the installed character changed after review; review the "',
+    )
+    require_contains(
+        "docs/MODDING.md",
+        "Drag-and-drop stages the same review instead of bypassing it.",
+    )
+    require_contains(
+        "docs/architecture/custom-character-pipeline.md",
+        "describing those as “owned by the donor” would be incorrect.",
+    )
+    # Disable and delete have intentionally different recoverability. A later
+    # Workshop-authored revision may exist only in the managed directory, so a
+    # generic "remove cache" confirmation would materially understate loss.
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "Disable is reversible and retains every Workshop revision, fit setting, review, and player assignment.",
+    )
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "A revision created only inside the Workshop may have no other copy.",
+    )
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "The external .mdkrchar file you originally chose is not touched.",
+    )
+    require_contains(
+        "docs/MODDING.md",
+        "Importing an update or saving a Portrait, Rig, or Profile Studio revision preserves that state.",
+    )
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "It will be fully revalidated and compiled before becoming current. The present source stays retained",
+    )
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "Writes the exact authenticated mdkrchar source and refuses to overwrite an existing file.",
+    )
+    registry = (ROOT / "platform/modern_character_registry.c").read_text(
+        encoding="utf-8"
+    )
+    if "registry_init(registry, directory, 0)" not in registry or \
+            "registry_init(registry, directory, 1)" not in registry:
+        raise AssertionError(
+            "runtime discovery and Workshop inventory must retain distinct "
+            "disabled-cache policies"
+        )
     print("product claim boundaries passed")
     return 0
 

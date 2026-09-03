@@ -104,7 +104,15 @@ typedef enum MdkrSaveStateResult {
     MDKR_SAVE_STATE_ERR_SIZE = -7,      /* declared length is impossible */
     MDKR_SAVE_STATE_ERR_CAPACITY = -8,  /* payload does not fit the caller */
     MDKR_SAVE_STATE_ERR_CHECKSUM = -9,
-    MDKR_SAVE_STATE_ERR_IO = -10
+    MDKR_SAVE_STATE_ERR_IO = -10,
+    /*
+     * An Adventure Party session is live. A save state captured now would omit
+     * the native roster/generation state and silently lose the party, so
+     * capture/restore fail closed here rather than producing such a state. The
+     * refusal is decided from the process, not the header, and never fires when
+     * no session is active or the module is compiled out (MDKR_ADVENTURE_PARTY_OMIT).
+     */
+    MDKR_SAVE_STATE_ERR_PARTY_ACTIVE = -11
 } MdkrSaveStateResult;
 
 /*

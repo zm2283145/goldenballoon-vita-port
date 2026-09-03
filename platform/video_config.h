@@ -135,6 +135,13 @@ typedef enum MdkrVideoKey {
     MDKR_A11Y_SPEECH_RACE,
     /* Presentation-only HUD anchoring; appended to preserve every prior key. */
     MDKR_VIDEO_WIDESCREEN_HUD,
+    /*
+     * Adventure Party admission. An enhancement like the four above, appended
+     * here for the same "never renumber a prior key" reason; it carries a
+     * GAMEPLAY authority class in platform/enhancement_registry.c. Off by
+     * default and inert until the menu-admission adapter reads it.
+     */
+    MDKR_ENH_ADVENTURE_PARTY,
     MDKR_VIDEO_KEY_COUNT
 } MdkrVideoKey;
 

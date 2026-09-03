@@ -318,8 +318,9 @@ void CautionBox(const char *title, const char *body) {
 bool CardBegin(const char *id, const ImVec4 &borderColor, float height) {
     ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(borderColor.x, borderColor.y, borderColor.z, 0.55f));
     const ImGuiChildFlags flags = height > 0.0f
-        ? ImGuiChildFlags_Borders
-        : ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY;
+        ? ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened
+        : ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY |
+              ImGuiChildFlags_NavFlattened;
     bool open = ImGui::BeginChild(id, ImVec2(0, height), flags);
     return open;
 }

@@ -10,6 +10,9 @@
 #include "joypad.h"
 #include "macros.h"
 #include "math_util.h"
+#ifdef NATIVE_PORT
+#include "mdkr_trace.h"
+#endif
 #include "objects.h"
 #include "PR/libaudio.h"
 #include "printf.h"
@@ -1089,6 +1092,21 @@ void racer_sound_update_all(Object **racerObjs, s32 numRacers, Camera *cameras, 
 
     // First, calculate engine and idle sound parameters for each player.
     for (i = 0; i < numCameras; i++) {
+#ifdef NATIVE_PORT
+        /* R19: a party viewport can momentarily outrun its racer object's
+         * spawn/teardown, leaving gRacersByPort[i] itself NULL (the retail
+         * console never observed this; a hosted process SIGSEGVs on the deref
+         * below). Skip the absent slot exactly as the racer==NULL arm below
+         * skips an absent racer, and trace it so a NULL slot is distinguishable
+         * from a dangling racer in the field. */
+        if (racerObjs[i] == NULL) {
+            if (mdkr_trace_enabled()) {
+                mdkr_trace("audspat_absent_racer: viewport=%d numCameras=%d",
+                           (int) i, (int) numCameras);
+            }
+            continue;
+        }
+#endif
         racer = racerObjs[i]->racer;
         if (racer != NULL) {
             gRacerSound = racer->vehicleSound;

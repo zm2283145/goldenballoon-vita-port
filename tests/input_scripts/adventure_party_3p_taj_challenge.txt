@@ -1,0 +1,59 @@
+# Adventure Party R27 Taj challenge refusal -- THREE players.
+#
+# Admission prologue is byte-identical to adventure_party_3p_taj.txt (routes to
+# the central hub with a 3-seat session). A NON-HOST (seat 1 / player two) summons
+# Taj (MDKR_AP_SEAT_ROUTE="1=-197,193"). The HOST (player one) navigates the Taj
+# menu to a CHALLENGE row, which -- during a party session -- is fail-closed
+# refused (R27: no TAJ_MODE_RACE ever starts for a party), observable as
+# `aparty_taj_challenge: ... refused=1`. The menu reopens; the host then still
+# performs a vehicle TRANSFORM (CHANGE VEHICLE -> HOVERCRAFT), proving transform
+# rows are unaffected and the party survived the refused challenge.
+#
+# Save fixture: check_adventure_party_taj writes the started Adventure One slot 0
+# with TAJ_FLAGS_CAR_CHAL_UNLOCKED set, so Taj's ROOT menu exposes the CHALLENGES
+# row (the retail dialogue is otherwise identical to the transform gate).
+
+# --- Title: reveal Start/Options, then Character Select ---
+1250 START 4
+1330 START 4
+
+# --- PLAYER SELECT: players two and three join on their own controllers ---
+1450 A 4 P2
+1490 A 4 P3
+
+# --- Each player confirms their own character ---
+1580 A 4 P1
+1640 A 4 P2
+1700 A 4 P3
+
+# --- "OK?" accept -> GAME_SELECT ---
+1800 A 4 P1
+
+# --- GAME_SELECT: Adventure One is option 0 -> FILE_SELECT ---
+2050 A 4 P1
+
+# --- FILE_SELECT: host (player one) resumes the started slot 0 ---
+2300 A 4 P1
+
+# --- In the hub (loaded ~2319): seat 1 drives into Taj (~tick 2356) and the
+#     shared dialogue latches. Host navigates the reopened Taj menu (patient
+#     spacing: each press registers once the menu reaches the next state). ---
+
+# ROOT menu: default highlight is CHANGE VEHICLE(0); DOWN -> CHALLENGES(1)
+2600 DOWN 6 P1
+# A selects CHALLENGES -> CHALLENGE SELECT menu
+2740 A 6 P1
+# A selects the first challenge row -> R27 REFUSAL (aparty_taj_challenge), the
+# menu reopens at ROOT with the menu-back jingle (no race starts).
+2880 A 6 P1
+
+# --- Transform still works after the refusal: ROOT -> CHANGE VEHICLE(0) ---
+3080 A 6 P1
+# VEHICLE SELECT: default highlight is CAR(0); DOWN -> HOVERCRAFT(1)
+3220 DOWN 6 P1
+# A confirms HOVERCRAFT -> whole-party transform
+3360 A 6 P1
+# After the transform the menu reopens; B backs out -> Taj teleports away ->
+# dialogue released.
+3720 B 6 P1
+3840 B 6 P1

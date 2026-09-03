@@ -304,6 +304,92 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     endif()
     add_test(NAME enhancement_registry COMMAND mdkr_enhancement_registry_test)
 
+    # Adventure Party session state machine (AP-02). Pure and ROM-free by
+    # design; these tests are the module's whole edge-case surface — every
+    # legal/illegal state-event pair, generation staleness, exact-once award
+    # consumption and roster suspend/restore — so they must keep running even
+    # when MDKR_ADVENTURE_PARTY_OMIT strips the module from the game binary
+    # (the test compiles the sources directly and does not care).
+    add_executable(mdkr_adventure_party_state_test
+        ${CMAKE_SOURCE_DIR}/tests/test_adventure_party_state.c
+        ${CMAKE_SOURCE_DIR}/platform/adventure_party/adventure_party_state.c)
+    target_include_directories(mdkr_adventure_party_state_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_adventure_party_state_test PRIVATE m)
+    endif()
+    add_test(NAME adventure_party_state COMMAND mdkr_adventure_party_state_test)
+
+    # Adventure Party policy core (AP-03): the v1 capability table with its
+    # fail-closed unknowns, the three-way count vocabulary, deterministic
+    # transition arbitration and exact-once token issuance. Links the state
+    # module too because the exact-once and count tests exercise a real
+    # session end to end — that composition is the invariant.
+    add_executable(mdkr_adventure_party_policy_test
+        ${CMAKE_SOURCE_DIR}/tests/test_adventure_party_policy.c
+        ${CMAKE_SOURCE_DIR}/platform/adventure_party/adventure_party_policy.c
+        ${CMAKE_SOURCE_DIR}/platform/adventure_party/adventure_party_state.c)
+    target_include_directories(mdkr_adventure_party_policy_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_adventure_party_policy_test PRIVATE m)
+    endif()
+    add_test(NAME adventure_party_policy COMMAND mdkr_adventure_party_policy_test)
+
+    # Adventure Party read-only trace schema (AP-05). Pure formatters over the
+    # state/policy value structs; links adventure_party_state.c only for
+    # adventure_party_state_name() (the session line). The load-bearing check is
+    # the cross-language golden contract: this C test compares one exemplar line
+    # per fact class byte-exact against tests/data/adventure_party_trace_golden.txt,
+    # and tests/adventure_party_trace.py parses the SAME file, so drift in either
+    # language fails one of the two. The golden path is passed explicitly so the
+    # comparison is independent of the CTest working directory.
+    add_executable(mdkr_adventure_party_trace_test
+        ${CMAKE_SOURCE_DIR}/tests/test_adventure_party_trace.c
+        ${CMAKE_SOURCE_DIR}/platform/adventure_party/adventure_party_trace.c
+        ${CMAKE_SOURCE_DIR}/platform/adventure_party/adventure_party_state.c)
+    target_include_directories(mdkr_adventure_party_trace_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_adventure_party_trace_test PRIVATE m)
+    endif()
+    add_test(NAME adventure_party_trace
+        COMMAND mdkr_adventure_party_trace_test
+                ${CMAKE_SOURCE_DIR}/tests/data/adventure_party_trace_golden.txt)
+
+    # Adventure Party formation planner (AP-07, pure half). Deterministic
+    # candidate geometry with no ROM: symmetry across the heading axis, byte
+    # determinism, rigid rotation invariance, bounded/duplicate-free fallback,
+    # count coverage 2/3/4, and typed rejection of degenerate params. Links m
+    # for sinf/cosf (the one accepted per-platform variance). The
+    # collision-validating game adapter is NOT this module and lands with Wave C.
+    add_executable(mdkr_adventure_party_spawn_test
+        ${CMAKE_SOURCE_DIR}/tests/test_adventure_party_spawn.c
+        ${CMAKE_SOURCE_DIR}/platform/adventure_party/adventure_party_spawn.c)
+    target_include_directories(mdkr_adventure_party_spawn_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_adventure_party_spawn_test PRIVATE m)
+    endif()
+    add_test(NAME adventure_party_spawn COMMAND mdkr_adventure_party_spawn_test)
+
+    # Adventure Party runtime singleton (AP-06a, controller ruling R12): the one
+    # process-wide session and the two queries adapters and save_state reach it
+    # through. Links adventure_party_state.c because the lifecycle assertions
+    # drive a real FORM through the reducer. Compiled directly and never keyed on
+    # MDKR_ADVENTURE_PARTY_OMIT, so it exercises the real runtime on both arms.
+    add_executable(mdkr_adventure_party_runtime_test
+        ${CMAKE_SOURCE_DIR}/tests/test_adventure_party_runtime.c
+        ${CMAKE_SOURCE_DIR}/platform/adventure_party/adventure_party_runtime.c
+        ${CMAKE_SOURCE_DIR}/platform/adventure_party/adventure_party_state.c)
+    target_include_directories(mdkr_adventure_party_runtime_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_adventure_party_runtime_test PRIVATE m)
+    endif()
+    add_test(NAME adventure_party_runtime
+        COMMAND mdkr_adventure_party_runtime_test)
+
     # Pack discovery, load order and path resolution. fs_utf8.c is a real link
     # dependency, not decoration: path access goes through mdkr_fopen_utf8 and
     # mdkr_path_query_utf8 so the Windows arm inherits the existing UTF-8
@@ -329,6 +415,160 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     endif()
     add_test(NAME mod_registry COMMAND mdkr_mod_registry_test
              ${CMAKE_CURRENT_BINARY_DIR}/mod_registry_scratch)
+
+    # Generic modern-character caches are generated from a tiny license-clean
+    # animated GLB at test time. The native half proves that the engine-facing
+    # loader consumes the exact compiler output and rejects corrupt headers and
+    # payloads before publishing any section pointer.
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(NAME character_asset_probe
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_character_asset_probe.py)
+    add_executable(mdkr_modern_character_asset_test
+        ${CMAKE_SOURCE_DIR}/tests/test_modern_character_asset.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_asset.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_install.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_registry.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_pose.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_text.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_render.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_identity.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_runtime.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_surface_intersection.c
+        ${CMAKE_SOURCE_DIR}/platform/workshop_preview_runtime.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_donor.c
+        ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_mipgen.c
+        ${CMAKE_SOURCE_DIR}/lib/stb/stb_image_impl.c
+        ${CMAKE_SOURCE_DIR}/lib/miniz/miniz.c
+        ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
+        ${CMAKE_SOURCE_DIR}/platform/sha256.c)
+    target_include_directories(mdkr_modern_character_asset_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/game/include
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/platform/fast3d
+        ${CMAKE_SOURCE_DIR}/lib/stb
+        ${CMAKE_SOURCE_DIR}/lib/miniz)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_modern_character_asset_test PRIVATE m)
+    endif()
+    add_test(NAME modern_character_asset
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/run_modern_character_asset_test.py
+                --loader $<TARGET_FILE:mdkr_modern_character_asset_test>)
+    add_test(NAME character_package_manager
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_character_package_manager.py)
+    add_test(NAME character_source_adapter
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_character_source_adapter.py)
+    add_test(NAME character_importer_build
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_character_importer_build.py)
+    add_test(NAME character_text_font_generator
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_character_text_font_generator.py)
+    add_test(NAME gltf_validator_adapter
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_gltf_validator_adapter.py)
+    add_test(NAME character_manifest_wizard
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_character_manifest_wizard.py)
+    add_test(NAME character_spike_fixture
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_character_spike_fixture.py)
+    add_test(NAME character_spike_evidence
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_character_spike_evidence.py)
+    add_test(NAME character_release_evidence
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_character_release_evidence.py)
+    add_executable(mdkr_character_workshop_model_test
+        ${CMAKE_SOURCE_DIR}/tests/test_character_workshop_model.cpp
+        ${CMAKE_SOURCE_DIR}/platform/app/character_workshop_model.cpp)
+    target_include_directories(mdkr_character_workshop_model_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/platform/app)
+    target_compile_features(mdkr_character_workshop_model_test PRIVATE cxx_std_17)
+    add_test(NAME character_workshop_model
+        COMMAND mdkr_character_workshop_model_test)
+    add_executable(mdkr_character_async_job_test
+        ${CMAKE_SOURCE_DIR}/tests/test_character_async_job.cpp)
+    target_include_directories(mdkr_character_async_job_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform/app)
+    target_compile_features(mdkr_character_async_job_test PRIVATE cxx_std_17)
+    target_link_libraries(mdkr_character_async_job_test PRIVATE Threads::Threads)
+    add_test(NAME character_async_job
+        COMMAND mdkr_character_async_job_test)
+    add_executable(mdkr_modern_character_gpu_timing_test
+        ${CMAKE_SOURCE_DIR}/tests/test_modern_character_gpu_timing.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_gpu_timing.c)
+    target_include_directories(mdkr_modern_character_gpu_timing_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME modern_character_gpu_timing
+        COMMAND mdkr_modern_character_gpu_timing_test)
+    add_executable(mdkr_modern_character_draw_store_test
+        ${CMAKE_SOURCE_DIR}/tests/test_modern_character_draw_store.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_draw_store.c)
+    target_include_directories(mdkr_modern_character_draw_store_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/platform/fast3d)
+    add_test(NAME modern_character_draw_store
+        COMMAND mdkr_modern_character_draw_store_test)
+    add_executable(mdkr_modern_character_capture_projection_test
+        ${CMAKE_SOURCE_DIR}/tests/test_modern_character_capture_projection.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_capture_projection.c)
+    target_include_directories(
+        mdkr_modern_character_capture_projection_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(
+            mdkr_modern_character_capture_projection_test PRIVATE m)
+    endif()
+    add_test(NAME modern_character_capture_projection
+        COMMAND mdkr_modern_character_capture_projection_test)
+
+    add_executable(mdkr_modern_character_surface_intersection_test
+        ${CMAKE_SOURCE_DIR}/tests/test_modern_character_surface_intersection.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_surface_intersection.c)
+    target_include_directories(
+        mdkr_modern_character_surface_intersection_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_options(
+        mdkr_modern_character_surface_intersection_test PRIVATE
+        -Wall -Wextra -Wpedantic -Werror)
+    if(NOT MSVC)
+        target_link_libraries(
+            mdkr_modern_character_surface_intersection_test PRIVATE m)
+    endif()
+    add_test(NAME modern_character_surface_intersection
+        COMMAND mdkr_modern_character_surface_intersection_test)
+    add_executable(mdkr_character_portrait_studio_test
+        ${CMAKE_SOURCE_DIR}/tests/test_character_portrait_studio.cpp
+        ${CMAKE_SOURCE_DIR}/platform/app/character_png_validation.cpp
+        ${CMAKE_SOURCE_DIR}/platform/app/character_portrait_import.cpp
+        ${CMAKE_SOURCE_DIR}/platform/app/character_portrait_studio.cpp
+        ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
+        ${CMAKE_SOURCE_DIR}/platform/sha256.c
+        ${CMAKE_SOURCE_DIR}/lib/stb/stb_image_impl.c)
+    target_include_directories(mdkr_character_portrait_studio_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/platform/app
+        ${CMAKE_SOURCE_DIR}/lib/stb)
+    target_compile_features(mdkr_character_portrait_studio_test PRIVATE cxx_std_17)
+    add_test(NAME character_portrait_studio
+        COMMAND mdkr_character_portrait_studio_test)
+    add_test(NAME collada_to_glb
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_collada_to_glb.py)
+    add_test(NAME high_fidelity_character
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_high_fidelity_character.py)
+    if(MDKR_CHARACTER_LOD_TOOLS)
+        add_test(NAME character_lod_builder
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tests/test_character_lod_builder.py
+                    --helper $<TARGET_FILE:mdkr-character-lod>)
+    endif()
 
     # When a pack PNG is refused, relative to when it is decoded. A pack is a
     # file a player downloaded from a stranger, so the cache cap is only a
@@ -427,9 +667,16 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     # or save_codec.c: a save state is not the progress save, and the two must
     # not be able to become each other. The truncation sweep writes and re-reads
     # a real file at every offset, so it needs no ROM and no window.
+    # The adventure_party runtime + state sources are here because the
+    # party-active refusal is wired to the runtime singleton: the test drives a
+    # real session through it to prove validate()/read() fail closed while a
+    # party is live, and pass unchanged otherwise. Still NOTHING from
+    # save_container.c or save_codec.c — the two save formats stay separate.
     add_executable(mdkr_save_state_container_test
         ${CMAKE_SOURCE_DIR}/tests/test_save_state_container.c
-        ${CMAKE_SOURCE_DIR}/platform/save_state.c)
+        ${CMAKE_SOURCE_DIR}/platform/save_state.c
+        ${CMAKE_SOURCE_DIR}/platform/adventure_party/adventure_party_runtime.c
+        ${CMAKE_SOURCE_DIR}/platform/adventure_party/adventure_party_state.c)
     target_include_directories(mdkr_save_state_container_test PRIVATE
         ${CMAKE_SOURCE_DIR}/platform)
     if(NOT MSVC)
@@ -562,6 +809,32 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         NATIVE_PORT=1 VERSION_us_v80 _LANGUAGE_C MODERN_CC)
     add_test(NAME taj_select_layout COMMAND mdkr_taj_select_layout_test)
 
+    add_executable(mdkr_custom_character_roster_test
+        ${CMAKE_SOURCE_DIR}/tests/test_custom_character_roster.c
+        ${CMAKE_SOURCE_DIR}/game/src/custom_character_roster.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_text.c)
+    target_include_directories(mdkr_custom_character_roster_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/game/src
+        ${CMAKE_SOURCE_DIR}/game/include
+        ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_definitions(mdkr_custom_character_roster_test PRIVATE
+        NATIVE_PORT=1 VERSION_us_v80 _LANGUAGE_C MODERN_CC)
+    add_test(NAME custom_character_roster COMMAND mdkr_custom_character_roster_test)
+
+    add_executable(mdkr_character_text_test
+        ${CMAKE_SOURCE_DIR}/tests/test_character_text.c
+        ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_character_text.c)
+    target_include_directories(mdkr_character_text_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/platform/fast3d
+        ${CMAKE_SOURCE_DIR}/lib/stb)
+    target_link_libraries(mdkr_character_text_test PRIVATE
+        mdkr_character_text_shaping)
+    if(NOT WIN32)
+        target_link_libraries(mdkr_character_text_test PRIVATE m)
+    endif()
+    add_test(NAME character_text COMMAND mdkr_character_text_test)
+
     add_executable(mdkr_taj_mod_state_file_test
         ${CMAKE_SOURCE_DIR}/tests/test_taj_mod_state_file.c
         ${CMAKE_SOURCE_DIR}/platform/magic_codes_state.c
@@ -648,6 +921,20 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     target_include_directories(mdkr_gfx_ptr_registry_test PRIVATE
         ${CMAKE_SOURCE_DIR}/platform)
     add_test(NAME gfx_ptr_registry COMMAND mdkr_gfx_ptr_registry_test)
+
+    add_executable(mdkr_fast3d_dl_guards_test
+        ${CMAKE_SOURCE_DIR}/tests/test_fast3d_dl_guards.c)
+    target_include_directories(mdkr_fast3d_dl_guards_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/platform/fast3d
+        ${CMAKE_SOURCE_DIR}/game
+        ${CMAKE_SOURCE_DIR}/game/include
+        ${CMAKE_SOURCE_DIR}/game/include/PR)
+    target_compile_definitions(mdkr_fast3d_dl_guards_test PRIVATE
+        VERSION_us_v80
+        _LANGUAGE_C
+        NATIVE_PORT=1)
+    add_test(NAME fast3d_dl_guards COMMAND mdkr_fast3d_dl_guards_test)
 
     add_executable(mdkr_runtime_contracts_test
         ${CMAKE_SOURCE_DIR}/tests/test_runtime_contracts.c
@@ -1893,10 +2180,9 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/game
         ${CMAKE_SOURCE_DIR}/game/src
         ${CMAKE_SOURCE_DIR}/game/include
-        ${CMAKE_SOURCE_DIR}/game/include/PR
-        ${CMAKE_SOURCE_DIR}/game/include/sys
         ${CMAKE_SOURCE_DIR}/game/libultra
         ${CMAKE_SOURCE_DIR}/game/libultra/src/audio)
+    mdkr_add_legacy_game_quote_includes(mdkr_ghost_bank_test)
     target_compile_definitions(mdkr_ghost_bank_test PRIVATE
         VERSION_us_v80
         _LANGUAGE_C
@@ -2079,6 +2365,16 @@ endif()
 # Repository-publication policy is backend-independent and must run in every
 # native CTest configuration, including OpenGL-only and sanitizer lanes.
 if(BUILD_TESTING)
+    if(MDKR_CHARACTER_KTX2)
+        add_executable(mdkr_modern_character_ktx2_test
+            ${CMAKE_SOURCE_DIR}/tests/test_modern_character_ktx2.cpp)
+        target_link_libraries(mdkr_modern_character_ktx2_test PRIVATE
+            mdkr_character_ktx2_bridge)
+        target_compile_options(mdkr_modern_character_ktx2_test PRIVATE
+            $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall;-Wextra;-Wpedantic;-Werror>)
+        add_test(NAME modern_character_ktx2
+            COMMAND mdkr_modern_character_ktx2_test)
+    endif()
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
     find_program(MDKR_NODE_EXECUTABLE NAMES node nodejs)
     add_test(
@@ -2089,6 +2385,14 @@ if(BUILD_TESTING)
         NAME multiplayer_boundaries
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/check_multiplayer_boundaries.py)
+    # AP-05 trace schema, Python half of the cross-language golden contract:
+    # parses tests/data/adventure_party_trace_golden.txt (the same file the C
+    # unit test compares against) and asserts field round-trip + schema. Runs
+    # with --self-test so its own parser controls fire in CTest.
+    add_test(
+        NAME adventure_party_trace_schema
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/adventure_party_trace.py --self-test)
     # Source-shaped: the D1 deferral is only safe if every menu transition
     # that closes the racer-bindings window also services it; those hooks
     # live in call sites the taj_mod unit binary cannot reach.
@@ -2270,6 +2574,10 @@ if(BUILD_TESTING)
         NAME overlay_input_handoff_contract
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/check_overlay_input_handoff.py)
+    add_test(
+        NAME character_offset_studio_contract
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/check_character_offset_studio.py)
     add_test(
         NAME web_document_structure
         COMMAND ${Python3_EXECUTABLE}

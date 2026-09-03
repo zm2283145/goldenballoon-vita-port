@@ -1,0 +1,33 @@
+# Adventure Party admission — TWO local players from the title.
+#
+# Char-select join/confirm timing mirrors race_2p_split.txt (the proven
+# two-pad menu graph). Retail routes two Adventure players STRAIGHT to
+# TRACK_SELECT(15) (menu_character_select_loop: confirmOffset==1 < 2). With
+# Enhancements.AdventureParty on, the AP-06 admission adapter instead routes
+# them to GAME_SELECT(19) -> Adventure -> FILE_SELECT(6) and, on an existing
+# save, forms the party session at file entry.
+#
+# Save fixture: tests/check_adventure_party_admission.py writes a started,
+# checksum-valid Adventure One save into slot 0 (see its header for provenance),
+# so the host's single FILE_SELECT confirm RESUMES rather than starting a new
+# game (the new-game shared-scene envelope is AP-11, out of scope here).
+
+# --- Title: reveal Start/Options, then Character Select ---
+1250 START 4
+1330 START 4
+
+# --- PLAYER SELECT: player two joins on its own controller ---
+1450 A 4 P2
+
+# --- Each player confirms their own character ---
+1560 A 4 P1
+1670 A 4 P2
+
+# --- "OK?" accept -> GAME_SELECT (on) / TRACK_SELECT (off) ---
+1780 A 4 P1
+
+# --- GAME_SELECT: Adventure One is option 0 -> FILE_SELECT ---
+2050 A 4 P1
+
+# --- FILE_SELECT: host (player one) resumes the started slot 0 ---
+2300 A 4 P1

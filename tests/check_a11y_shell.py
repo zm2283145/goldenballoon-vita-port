@@ -276,7 +276,8 @@ def check_panels(executable: Path, root: Path, timeout: int) -> str:
     """
     online_room = online_room_compiled(executable)
     announced = []
-    for panel in ("Play", "Online Room", "Diagnostics", "About"):
+    for panel in ("Play", "Online Room", "Diagnostics", "About",
+                  "Character Workshop"):
         output = walk_panel(executable, root, panel, timeout)
         sections = [text for category, _priority, text in utterances(output)
                     if category == "section"]

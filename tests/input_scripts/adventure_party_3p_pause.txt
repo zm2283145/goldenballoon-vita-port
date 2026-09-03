@@ -1,0 +1,33 @@
+# Adventure Party shared pause (AP-10) — THREE players. Admission prologue is
+# byte-identical to adventure_party_3p_admit.txt (routes to the central hub with
+# a 3-seat session). Then a NON-HOST (player three / seat 2) presses Start to
+# open the ONE shared pause, and the HOST (player one) confirms Continue to
+# resume: any seat may open the pause, but the host owns the menu decision.
+
+# --- Title: reveal Start/Options, then Character Select ---
+1250 START 4
+1330 START 4
+
+# --- PLAYER SELECT: players two and three join on their own controllers ---
+1450 A 4 P2
+1490 A 4 P3
+
+# --- Each player confirms their own character ---
+1580 A 4 P1
+1640 A 4 P2
+1700 A 4 P3
+
+# --- "OK?" accept -> GAME_SELECT ---
+1800 A 4 P1
+
+# --- GAME_SELECT: Adventure One is option 0 -> FILE_SELECT ---
+2050 A 4 P1
+
+# --- FILE_SELECT: host (player one) resumes the started slot 0 ---
+2300 A 4 P1
+
+# --- In the hub (loaded ~2320): NON-HOST (seat 2) opens the shared pause ---
+2600 START 4 P3
+
+# --- HOST (seat 1/player one) confirms Continue to resume ---
+2900 A 6 P1

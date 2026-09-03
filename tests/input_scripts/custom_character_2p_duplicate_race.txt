@@ -1,0 +1,23 @@
+# Two players independently choose the same installed custom package through
+# the real R-button roster, then start an ordinary split-screen race. The
+# temporary C4 catalog sorts the car-only Banjo proof first, so A selects it for
+# both controllers without relying on launcher assignments.
+1250 START 4 P1
+1330 START 4 P1
+1450 A 4 P2
+
+1500 R 4 P1
+1580 A 4 P1
+1700 R 4 P2
+1780 A 4 P2
+
+# Both custom selections confirm their owners. Accept the ready screen and use
+# the ordinary multiplayer Track Select graph.
+1910 A 4 P1
+2110 A 4 P1
+2270 A 4 P1
+2270 A 4 P2
+2420 A 4 P1
+2570 A 4 P1
+2700 A 4 P1
+2700 A 4 P2

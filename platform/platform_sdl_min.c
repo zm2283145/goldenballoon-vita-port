@@ -178,6 +178,8 @@ uint64_t platform_perf_monotonic_ns(void) {
 #include "fast3d/gfx_shadow_cascade.h"
 #include "fast3d/gfx_shadow_frame.h"
 #include "fast3d/gfx_uniforms.h"
+#define STBI_WRITE_NO_STDIO
+#include <stb_image_write.h>
 #ifndef __EMSCRIPTEN__
 #include "fast3d/gfx_opengl.h"
 #endif
@@ -1348,11 +1350,21 @@ void platform_sdl_sync_drawable_size(void) {
     gfx_set_dimensions((uint32_t)width, (uint32_t)height);
 }
 
-/* Capture the last completed frame to DIR/frame_%04d.ppm as binary P6.
- * Backend readback returns rows bottom-up; PPM is top-down, so rows are flipped
- * on write. No external deps. */
+/* Capture the last completed frame either to the diagnostic PPM sequence or
+ * one exclusive Workshop PNG. Backend readback returns rows bottom-up; both
+ * encoders require top-down rows, so the flip is shared. */
 static int s_dumpFrom = -2;
 static int s_dumpEvery = 1;
+static int s_frameCapturePending;
+static int s_frameCaptureModernCharacter;
+static int s_frameCaptureAutoReturnReady;
+static char s_frameCapturePath[1024];
+static MdkrModernCharacterCaptureProjection
+    s_modernCharacterCaptureProjection;
+static int s_modernCharacterCaptureProjectionValid;
+static MdkrModernCharacterVisibilityStatus s_modernCharacterVisibilityStatus;
+static MdkrModernCharacterVisibilityDiagnostics
+    s_modernCharacterVisibilityDiagnostics;
 void platform_frame_dump_drain(void); /* defined with the writer below */
 /* F9 capture toggle: every-present dumps + per-frame [CAPTURE*] rows for as
  * long as the player holds the defect on screen. See the keydown handler. */
@@ -1393,6 +1405,7 @@ static void platform_frame_dump_filter_init(void) {
 }
 
 int platform_frame_dump_due(void) {
+    if (s_frameCapturePending) return 1;
     if (!g_dumpFramesDir) return 0;
     if (s_captureActive) return 1;
     platform_frame_dump_filter_init();
@@ -1408,6 +1421,7 @@ int platform_frame_dump_prepare_due(void) {
     enum { DUMP_ADMISSION_PREROLL = 8 };
     int distance;
 
+    if (s_frameCapturePending) return 1;
     if (!g_dumpFramesDir) return 0;
     if (s_captureActive) return 1;
     platform_frame_dump_filter_init();
@@ -1439,6 +1453,8 @@ typedef struct DumpJob {
     unsigned char *pix; /* bottom-up rows, owned by the job */
     int w, h;
     char path[1024];
+    int png;
+    int components;
 } DumpJob;
 static DumpJob s_dumpQueue[DUMP_QUEUE_DEPTH];
 static int s_dumpQueueHead, s_dumpQueueLen;
@@ -1448,20 +1464,70 @@ static SDL_Thread *s_dumpThread;
 static int s_dumpThreadStop;
 static uint64_t s_dumpWritten, s_dumpDropped;
 
-static void dump_write_ppm(const DumpJob *job) {
-    FILE *f = mdkr_fopen_utf8(job->path, "wb");
-    if (f == NULL) {
-        return;
+typedef struct DumpPngFile {
+    FILE *file;
+    int failed;
+} DumpPngFile;
+
+static void dump_png_write(void *context, void *data, int size) {
+    DumpPngFile *output = (DumpPngFile *)context;
+    if (output->failed || size <= 0) return;
+    if (fwrite(data, 1u, (size_t)size, output->file) != (size_t)size) {
+        output->failed = 1;
     }
-    fprintf(f, "P6\n%d %d\n255\n", job->w, job->h);
+}
+
+static int dump_write_job(DumpJob *job) {
+    FILE *f = mdkr_fopen_utf8(job->path, job->png ? "wbx" : "wb");
+    if (f == NULL) {
+        return 0;
+    }
+    if (job->png) {
+        const size_t rowBytes =
+            (size_t)job->w * (size_t)job->components;
+        unsigned char *scratch = (unsigned char *)malloc(rowBytes);
+        int y;
+        int encoded;
+        DumpPngFile output = { f, 0 };
+        if (scratch == NULL) {
+            (void)fclose(f);
+            (void)mdkr_remove_utf8(job->path);
+            return 0;
+        }
+        for (y = 0; y < job->h / 2; ++y) {
+            unsigned char *top = job->pix + (size_t)y * rowBytes;
+            unsigned char *bottom =
+                job->pix + (size_t)(job->h - 1 - y) * rowBytes;
+            memcpy(scratch, top, rowBytes);
+            memcpy(top, bottom, rowBytes);
+            memcpy(bottom, scratch, rowBytes);
+        }
+        free(scratch);
+        encoded = stbi_write_png_to_func(
+            dump_png_write, &output, job->w, job->h, job->components,
+            job->pix, (int)rowBytes);
+        if (fflush(f) != 0 || mdkr_file_sync(f) != 0) output.failed = 1;
+        if (fclose(f) != 0) output.failed = 1;
+        if (!encoded || output.failed) {
+            (void)mdkr_remove_utf8(job->path);
+            return 0;
+        }
+        (void)mdkr_parent_directory_sync_utf8(job->path);
+        return 1;
+    }
     {
+        int written = fprintf(f, "P6\n%d %d\n255\n", job->w, job->h) > 0;
         const size_t rowBytes = (size_t)job->w * 3u;
         int y;
-        for (y = job->h - 1; y >= 0; y--) {
-            fwrite(job->pix + (size_t)y * rowBytes, 1, rowBytes, f);
+        for (y = job->h - 1; y >= 0 && written; y--) {
+            written = fwrite(
+                job->pix + (size_t)y * rowBytes,
+                1u, rowBytes, f) == rowBytes;
         }
+        if (fclose(f) != 0) written = 0;
+        if (!written) (void)mdkr_remove_utf8(job->path);
+        return written;
     }
-    fclose(f);
 }
 
 static int dump_writer_main(void *arg) {
@@ -1480,10 +1546,14 @@ static int dump_writer_main(void *arg) {
             s_dumpQueueLen--;
             SDL_CondBroadcast(s_dumpCond); /* wake a space-waiting producer */
             SDL_UnlockMutex(s_dumpMutex);
-            dump_write_ppm(&job);
+            const int written = dump_write_job(&job);
             free(job.pix);
             SDL_LockMutex(s_dumpMutex);
-            s_dumpWritten++;
+            if (written) {
+                s_dumpWritten++;
+            } else {
+                s_dumpDropped++;
+            }
         }
     }
     SDL_UnlockMutex(s_dumpMutex);
@@ -1492,11 +1562,20 @@ static int dump_writer_main(void *arg) {
 
 /* Returns 1 when the job (and ownership of pix) was accepted. */
 static int dump_writer_enqueue(unsigned char *pix, int w, int h,
-                               const char *path) {
+                               const char *path, int png, int components) {
+    if (pix == NULL || w <= 0 || h <= 0 ||
+        (components != 3 && components != 4) ||
+        (!png && components != 3) || w > INT_MAX / components) {
+        return 0;
+    }
     if (s_dumpMutex == NULL) {
         s_dumpMutex = SDL_CreateMutex();
         s_dumpCond = SDL_CreateCond();
         if (s_dumpMutex == NULL || s_dumpCond == NULL) {
+            if (s_dumpCond != NULL) SDL_DestroyCond(s_dumpCond);
+            if (s_dumpMutex != NULL) SDL_DestroyMutex(s_dumpMutex);
+            s_dumpCond = NULL;
+            s_dumpMutex = NULL;
             return 0;
         }
     }
@@ -1530,6 +1609,8 @@ static int dump_writer_enqueue(unsigned char *pix, int w, int h,
         job->w = w;
         job->h = h;
         snprintf(job->path, sizeof(job->path), "%s", path);
+        job->png = png;
+        job->components = components;
         s_dumpQueueLen++;
     }
     SDL_CondSignal(s_dumpCond);
@@ -1579,20 +1660,47 @@ static void platform_dump_frame(void) {
      * next frame while readback still contains the previous one. WebGPU may
      * additionally debounce its committed output target for a few frames.
      */
+    const int modern_character =
+        s_frameCapturePending && s_frameCaptureModernCharacter;
     uint32_t capture_width = 0, capture_height = 0;
-    if (!gfx_get_capture_dimensions(&capture_width, &capture_height) ||
+    if ((modern_character
+             ? !gfx_get_modern_character_capture_dimensions(
+                   &capture_width, &capture_height)
+             : !gfx_get_capture_dimensions(
+                   &capture_width, &capture_height)) ||
         capture_width > INT_MAX || capture_height > INT_MAX) {
         return;
     }
     int w = (int)capture_width;
     int h = (int)capture_height;
-    size_t rowBytes = (size_t) w * 3u;
+    const int components = modern_character ? 4 : 3;
+    MdkrModernCharacterCaptureProjection captureProjection;
+    memset(&captureProjection, 0, sizeof(captureProjection));
+    if (modern_character &&
+        (!gfx_get_modern_character_capture_projection(&captureProjection) ||
+         captureProjection.output_width != capture_width ||
+         captureProjection.output_height != capture_height)) {
+        return;
+    }
+    if (w <= 0 || h <= 0 ||
+        (size_t)w > SIZE_MAX / (size_t)components ||
+        (size_t)w * (size_t)components > SIZE_MAX / (size_t)h ||
+        (size_t)w * (size_t)components > INT_MAX) {
+        return;
+    }
+    size_t rowBytes = (size_t)w * (size_t)components;
     unsigned char *pix = (unsigned char *) malloc(rowBytes * (size_t) h);
     if (!pix) {
         return;
     }
 #ifdef MDKR_WEBGPU_BACKEND
-    if (is_webgpu) {
+    if (modern_character) {
+        if (!is_webgpu ||
+            !gfx_read_modern_character_capture_rgba(w, h, pix)) {
+            free(pix);
+            return;
+        }
+    } else if (is_webgpu) {
         /* gfx_read_framebuffer_rgb (gfx_pc_dkr.c) delegates to the active
          * backend's read_framebuffer_rgb. On failure, leave the (uninitialised)
          * buffer unwritten — skip the frame rather than dump garbage. */
@@ -1624,12 +1732,284 @@ static void platform_dump_frame(void) {
     }
 
     char path[1024];
-    snprintf(path, sizeof(path), "%s/frame_%04d.ppm", g_dumpFramesDir, g_frameCounter);
-    if (!dump_writer_enqueue(pix, w, h, path)) {
+    const int oneShot = s_frameCapturePending;
+    if (oneShot) {
+        (void)snprintf(path, sizeof(path), "%s", s_frameCapturePath);
+    } else {
+        snprintf(path, sizeof(path), "%s/frame_%04d.ppm",
+                 g_dumpFramesDir, g_frameCounter);
+    }
+    if (!dump_writer_enqueue(
+            pix, w, h, path, oneShot, components)) {
         /* Writer saturated or unavailable: drop rather than stall the
          * present thread (counted, reported at CAPTURE-STOP/drain). */
         free(pix);
+    } else if (oneShot) {
+        const char *auto_return = getenv(
+            "MDKR_CHARACTER_WORKSHOP_CAPTURE_AUTO_RETURN");
+        if (modern_character) {
+            s_modernCharacterCaptureProjection = captureProjection;
+            s_modernCharacterCaptureProjectionValid = 1;
+        }
+        s_frameCapturePending = 0;
+        s_frameCaptureModernCharacter = 0;
+        s_frameCaptureAutoReturnReady =
+            auto_return != NULL && strcmp(auto_return, "1") == 0;
+        s_frameCapturePath[0] = '\0';
+        fprintf(stderr,
+                "[WORKSHOP-CAPTURE] queued frame=%d kind=%s channels=%d path=%s\n",
+                g_frameCounter,
+                modern_character ? "modern-character-alpha" : "scene",
+                components, path);
     }
+}
+
+static int platform_frame_capture_request(
+    const char *png_path, int modern_character,
+    char *error, size_t error_size) {
+    int exists = 0;
+    const size_t length = png_path != NULL ? strlen(png_path) : 0u;
+    const int suffix = length >= 4u &&
+        strcmp(png_path + length - 4u, ".png") == 0;
+    const char *message = "";
+    if (s_frameCapturePending) {
+        message = "a Workshop frame capture is already pending";
+#ifdef MDKR_WEBGPU_BACKEND
+    } else if (modern_character &&
+               mdkr_render_backend() != MDKR_BACKEND_WEBGPU) {
+        message =
+            "transparent model-only capture requires the WebGPU renderer";
+#else
+    } else if (modern_character) {
+        message =
+            "transparent model-only capture is unavailable in this build";
+#endif
+    } else if (length == 0u || length >= sizeof(s_frameCapturePath) ||
+               !suffix) {
+        message = "the Workshop capture path must be a bounded PNG path";
+    } else {
+        /* POSIX reports a missing path as a failed stat while Windows reports
+         * a successful query with exists=0. Missing is precisely what the
+         * exclusive writer requires, so only a positively observed entry is
+         * a refusal here. The writer remains final authority for permissions,
+         * parent availability, and races. */
+        (void)mdkr_path_query_utf8(png_path, &exists, NULL, NULL);
+        if (exists) {
+            message = "the Workshop capture path already exists";
+        } else {
+            (void)snprintf(s_frameCapturePath,
+                           sizeof(s_frameCapturePath), "%s", png_path);
+            s_frameCapturePending = 1;
+            s_frameCaptureModernCharacter = modern_character ? 1 : 0;
+        }
+    }
+    if (error != NULL && error_size != 0u) {
+        (void)snprintf(error, error_size, "%s", message);
+    }
+    return message[0] == '\0';
+}
+
+int platform_frame_capture_request_once(const char *png_path,
+                                        char *error, size_t error_size) {
+    return platform_frame_capture_request(
+        png_path, 0, error, error_size);
+}
+
+int platform_modern_character_capture_request_once(
+    const char *png_path, char *error, size_t error_size) {
+    const int requested = platform_frame_capture_request(
+        png_path, 1, error, error_size);
+    if (requested) {
+        memset(&s_modernCharacterCaptureProjection, 0,
+               sizeof(s_modernCharacterCaptureProjection));
+        s_modernCharacterCaptureProjectionValid = 0;
+    }
+    return requested;
+}
+
+int platform_frame_capture_pending(void) {
+    return s_frameCapturePending;
+}
+
+int platform_modern_character_capture_pending(void) {
+    return s_frameCapturePending && s_frameCaptureModernCharacter;
+}
+
+int platform_modern_character_capture_projection(
+    MdkrModernCharacterCaptureProjection *projection) {
+    if (projection == NULL || !s_modernCharacterCaptureProjectionValid ||
+        !mdkr_modern_character_capture_projection_valid(
+            &s_modernCharacterCaptureProjection)) {
+        return 0;
+    }
+    *projection = s_modernCharacterCaptureProjection;
+    return 1;
+}
+
+int platform_modern_character_visibility_request_once(void) {
+    if (s_modernCharacterVisibilityStatus ==
+            MDKR_MODERN_CHARACTER_VISIBILITY_REQUESTED ||
+        s_modernCharacterVisibilityStatus ==
+            MDKR_MODERN_CHARACTER_VISIBILITY_IN_FLIGHT) return 0;
+    memset(&s_modernCharacterVisibilityDiagnostics, 0,
+           sizeof(s_modernCharacterVisibilityDiagnostics));
+    s_modernCharacterVisibilityStatus =
+        MDKR_MODERN_CHARACTER_VISIBILITY_REQUESTED;
+    return 1;
+}
+
+int platform_modern_character_visibility_requested(void) {
+    return s_modernCharacterVisibilityStatus ==
+        MDKR_MODERN_CHARACTER_VISIBILITY_REQUESTED;
+}
+
+int platform_modern_character_visibility_pending(void) {
+    return s_modernCharacterVisibilityStatus ==
+            MDKR_MODERN_CHARACTER_VISIBILITY_REQUESTED ||
+        s_modernCharacterVisibilityStatus ==
+            MDKR_MODERN_CHARACTER_VISIBILITY_IN_FLIGHT;
+}
+
+int platform_modern_character_visibility_begin(void) {
+    if (!platform_modern_character_visibility_requested()) return 0;
+    s_modernCharacterVisibilityStatus =
+        MDKR_MODERN_CHARACTER_VISIBILITY_IN_FLIGHT;
+    return 1;
+}
+
+static uint32_t modern_character_visibility_bit_count(uint64_t mask) {
+    uint32_t count = 0u;
+    while (mask != 0u) {
+        count += (uint32_t)(mask & 1u);
+        mask >>= 1u;
+    }
+    return count;
+}
+
+void platform_modern_character_visibility_publish(
+    const MdkrModernCharacterVisibilityDiagnostics *diagnostics) {
+    uint64_t classifiedDraws = diagnostics != NULL
+        ? (uint64_t)diagnostics->opaque_draws +
+              diagnostics->masked_draws + diagnostics->transparent_draws
+        : 0u;
+    int rectsValid = diagnostics != NULL &&
+        diagnostics->output_width != 0u &&
+        diagnostics->output_height != 0u &&
+        diagnostics->output_width <= 16384u &&
+        diagnostics->output_height <= 16384u;
+    if (rectsValid) {
+        uint32_t component;
+        for (component = 0u; component < 4u; ++component) {
+            const int64_t limit = (component & 1u)
+                ? diagnostics->output_height : diagnostics->output_width;
+            if (diagnostics->viewport[component] < 0 ||
+                diagnostics->scissor[component] < 0 ||
+                diagnostics->viewport[component] > limit ||
+                diagnostics->scissor[component] > limit) {
+                rectsValid = 0;
+            }
+        }
+        rectsValid = rectsValid &&
+            diagnostics->viewport[2] != 0 &&
+            diagnostics->viewport[3] != 0 &&
+            diagnostics->scissor[2] != 0 &&
+            diagnostics->scissor[3] != 0 &&
+            (int64_t)diagnostics->viewport[0] +
+                    diagnostics->viewport[2] <= diagnostics->output_width &&
+            (int64_t)diagnostics->viewport[1] +
+                    diagnostics->viewport[3] <= diagnostics->output_height &&
+            (int64_t)diagnostics->scissor[0] +
+                    diagnostics->scissor[2] <= diagnostics->output_width &&
+            (int64_t)diagnostics->scissor[1] +
+                    diagnostics->scissor[3] <= diagnostics->output_height;
+    }
+    int occludersValid = diagnostics != NULL &&
+        (diagnostics->occluder_present_mask & ~0x7u) == 0u &&
+        (diagnostics->occluder_qualified_mask &
+         ~diagnostics->occluder_present_mask) == 0u;
+    if (occludersValid) {
+        for (uint32_t category = 0u;
+             category < MDKR_MODERN_CHARACTER_OCCLUDER_CLASSES;
+             ++category) {
+            const uint32_t bit = 1u << category;
+            const uint32_t draws = diagnostics->occluder_draws[category];
+            const uint32_t unqualified =
+                diagnostics->occluder_unqualified_draws[category];
+            const uint64_t overlap =
+                diagnostics->occluder_overlap_tile_mask[category];
+            const int present =
+                (diagnostics->occluder_present_mask & bit) != 0u;
+            const int qualified =
+                (diagnostics->occluder_qualified_mask & bit) != 0u;
+            if (unqualified > draws || present != (draws != 0u) ||
+                modern_character_visibility_bit_count(overlap) !=
+                    diagnostics->occluder_overlap_tiles[category] ||
+                diagnostics->occluder_overlap_tiles[category] > 64u ||
+                (overlap & ~diagnostics->isolated_tile_mask) != 0u ||
+                (qualified && (draws == 0u || unqualified != 0u)) ||
+                (!qualified && overlap != 0u)) {
+                occludersValid = 0;
+                break;
+            }
+        }
+    }
+    if (s_modernCharacterVisibilityStatus !=
+            MDKR_MODERN_CHARACTER_VISIBILITY_IN_FLIGHT ||
+        diagnostics == NULL ||
+        diagnostics->version !=
+            MDKR_MODERN_CHARACTER_VISIBILITY_VERSION ||
+        diagnostics->valid != 1u ||
+        diagnostics->qualified > 1u ||
+        !rectsValid || !occludersValid ||
+        diagnostics->primitive_draws == 0u ||
+        classifiedDraws != diagnostics->primitive_draws ||
+        diagnostics->grid_columns != 8u || diagnostics->grid_rows != 8u ||
+        diagnostics->isolated_visible_tiles > 64u ||
+        diagnostics->scene_visible_tiles >
+            diagnostics->isolated_visible_tiles ||
+        modern_character_visibility_bit_count(
+            diagnostics->isolated_tile_mask) !=
+                diagnostics->isolated_visible_tiles ||
+        modern_character_visibility_bit_count(
+            diagnostics->scene_tile_mask) !=
+                diagnostics->scene_visible_tiles ||
+        (diagnostics->scene_tile_mask &
+         ~diagnostics->isolated_tile_mask) != 0u ||
+        (diagnostics->qualified
+             ? diagnostics->transparent_draws != 0u
+             : diagnostics->transparent_draws == 0u ||
+                   diagnostics->occluder_qualified_mask != 0u ||
+                   diagnostics->isolated_visible_tiles != 0u ||
+                   diagnostics->scene_visible_tiles != 0u ||
+                   diagnostics->isolated_tile_mask != 0u ||
+                   diagnostics->scene_tile_mask != 0u)) {
+        platform_modern_character_visibility_fail();
+        return;
+    }
+    s_modernCharacterVisibilityDiagnostics = *diagnostics;
+    s_modernCharacterVisibilityStatus =
+        MDKR_MODERN_CHARACTER_VISIBILITY_AVAILABLE;
+}
+
+void platform_modern_character_visibility_fail(void) {
+    if (s_modernCharacterVisibilityStatus ==
+            MDKR_MODERN_CHARACTER_VISIBILITY_IN_FLIGHT ||
+        s_modernCharacterVisibilityStatus ==
+            MDKR_MODERN_CHARACTER_VISIBILITY_REQUESTED) {
+        memset(&s_modernCharacterVisibilityDiagnostics, 0,
+               sizeof(s_modernCharacterVisibilityDiagnostics));
+        s_modernCharacterVisibilityStatus =
+            MDKR_MODERN_CHARACTER_VISIBILITY_UNAVAILABLE;
+    }
+}
+
+int platform_modern_character_visibility_diagnostics(
+    MdkrModernCharacterVisibilityDiagnostics *diagnostics) {
+    if (diagnostics == NULL ||
+        s_modernCharacterVisibilityStatus !=
+            MDKR_MODERN_CHARACTER_VISIBILITY_AVAILABLE) return 0;
+    *diagnostics = s_modernCharacterVisibilityDiagnostics;
+    return 1;
 }
 
 /* ---- Content packs (see platform_os.h) ---------------------------------- *
@@ -5800,6 +6180,13 @@ static void platform_frame_sync_impl(int swap, int count_present) {
         return;
     }
     g_frameCounter++;
+    if (s_frameCaptureAutoReturnReady) {
+        s_frameCaptureAutoReturnReady = 0;
+        fprintf(stderr,
+                "[WORKSHOP-CAPTURE] auto-return after presented frame=%d\n",
+                g_frameCounter);
+        platform_request_exit(0);
+    }
     MDKR_TRACE("frame %d presented", g_frameCounter);
     {
         extern void mdkr_oracle_trace_racers(int frame);
@@ -6402,6 +6789,17 @@ int platform_engine_session_begin(void) {
     s_initialWindowHeight = DEFAULT_WIN_H;
     s_dumpFrom = -2;
     s_dumpEvery = 1;
+    s_frameCapturePending = 0;
+    s_frameCaptureModernCharacter = 0;
+    s_frameCaptureAutoReturnReady = 0;
+    s_frameCapturePath[0] = '\0';
+    memset(&s_modernCharacterCaptureProjection, 0,
+           sizeof(s_modernCharacterCaptureProjection));
+    s_modernCharacterCaptureProjectionValid = 0;
+    s_modernCharacterVisibilityStatus =
+        MDKR_MODERN_CHARACTER_VISIBILITY_IDLE;
+    memset(&s_modernCharacterVisibilityDiagnostics, 0,
+           sizeof(s_modernCharacterVisibilityDiagnostics));
 
     /* Settings can scan packs while the shell is home. Retire that view before
      * the engine binds a fresh store using this epoch's resolved settings. */

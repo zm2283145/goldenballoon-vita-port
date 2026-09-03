@@ -52,6 +52,13 @@ tests/fuzz_corpus/match_signal_wire/ping_then_text
 tests/fuzz_corpus/match_signal_wire/raw_welcome_json
 tests/fuzz_corpus/match_signal_wire/rsv_violation
 tests/fuzz_corpus/match_signal_wire/welcome_frame
+tests/fuzz_corpus/modern_character_asset/hostile-section-offset.mdkc
+tests/fuzz_corpus/modern_character_asset/truncated-character.mdkc
+tests/fuzz_corpus/modern_character_asset/truncated-level-table.ktx2
+tests/fuzz_corpus/modern_character_asset/valid-character.mdkc
+tests/fuzz_corpus/modern_character_asset/valid-etc1s-srgb.ktx2
+tests/fuzz_corpus/modern_character_asset/valid-uastc-zstd.ktx2
+tests/fuzz_corpus/modern_character_asset/wrapping-key-value-length.ktx2
 tests/fuzz_corpus/online_live_wire/big16_frame
 tests/fuzz_corpus/online_live_wire/chunked_state
 tests/fuzz_corpus/online_live_wire/close_4000

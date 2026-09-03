@@ -412,6 +412,69 @@ pass. Confirm the file list it prints is what you expect to publish, and that
 `mdkr64_web.js` / `mdkr64_web.wasm` are present in `dist/web` but **not** tracked in
 git.
 
+## 4b. Custom Character Workshop release evidence
+
+Section 2b's unrestricted suite is also the automated release gate for the
+Custom Character Workshop. Its log must contain passing roster, live identity,
+collection-flag, raw-intake, history, draft-transfer, Portrait Studio,
+test-evidence, and exact-renderer-preview tasks. A focused rerun is useful while
+fixing a failure, but its `SUBSET` verdict never replaces the complete-suite
+record.
+
+Before publishing any build that exposes the Workshop:
+
+- [ ] Run **Custom Character Workshop acceptance** in
+      [`RELEASE_CANDIDATE_TEST_GUIDE.md`](RELEASE_CANDIDATE_TEST_GUIDE.md) on
+      the exact packaged candidate, not a source-tree executable.
+- [ ] Complete its mouse, keyboard, controller, touch, app-spoken-guidance, 200%
+      scale, narrow-layout, reduced-motion, and colour-vision matrix. Do not
+      record spoken guidance as screen-reader compatibility. Record
+      `not available` honestly where a platform lacks a modality; do not turn
+      an unobserved cell into a pass.
+- [ ] Exercise clean install, offline relaunch, disable, rebuild/update,
+      last-known-good recovery, portable export/review, and permanent removal.
+      The user's original model and license must remain outside application
+      custody and unchanged.
+- [ ] Capture select plus car, hovercraft, and plane evidence for floor,
+      facing, seat, contacts, pose transitions, occlusion, and the complete
+      1P-4P cost matrix. Retain privacy-bounded profiles from representative
+      low-, mid-, and high-tier physical WebGPU devices. Record every
+      amber/error row; a local performance exception is evidence, not a
+      manufactured pass.
+- [ ] Verify both a native mixed-direction name and a missing-glyph fallback,
+      including their keyboard/spoken-guidance descriptions and exact live
+      roster pixels.
+- [ ] Verify the package contains the HarfBuzz and SheenBidi notices alongside
+      the importer, validator, BasisU, and meshoptimizer notices. Keep the
+      character model, ROM, saves, screenshots, and device-profile exports out
+      of the public release archive.
+- [ ] At the candidate cut, review the exact pinned Basis Universal/KTX-Software
+      commit and vendored `stb_image` commit against their upstream security
+      advisories and the CVE database. Record the query date, immutable pins,
+      findings and disposition in private release evidence; do not substitute
+      an unpinned update or claim that an offline build performed this review.
+- [ ] Run the ASan+UBSan custom-character MDKC/KTX2 fuzzer from
+      `tests/README.md` against a copy of its deterministic corpus. Preserve and
+      regress any crash before release; a time-bounded clean run supplements,
+      but never replaces, the structural unit and package gates.
+- [ ] Validate the completed privacy-bounded receipt against the exact artifact
+      and provenance bytes. A template is intentionally red until every
+      required observation is replaced:
+
+      ```bash
+      python3 tools/check_character_release_evidence.py \
+        character-acceptance.json --artifact-dir /path/to/candidate-artifacts
+      ```
+
+Record the candidate commit and artifact hash, package/source digest, platform,
+GPU/driver, output/render size, input/accessibility modalities, completed
+contexts, evidence-report hash, and first failed step. Screenshots and model
+captures may contain user-licensed or ROM-derived pixels: retain them as private
+acceptance evidence unless their redistribution rights were reviewed
+separately. The receipt schema is
+[`ref/mdkr-character-release-acceptance-v1.schema.json`](ref/mdkr-character-release-acceptance-v1.schema.json);
+archive the validator's receipt SHA-256 with the release decision.
+
 ## 5. Desktop packaging and publication
 
 Desktop workflow version inputs are filename components, so public releases use

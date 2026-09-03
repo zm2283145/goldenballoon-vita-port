@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <utility>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -110,6 +111,40 @@ bool AppRestart_setEnv(const char *name, const char *value) {
 
 bool AppRestart_getEnv(const char *name, std::string &value) {
     return getEnvironment(name, value);
+}
+
+AppEnvironmentTransaction::~AppEnvironmentTransaction() {
+    (void)restore();
+}
+
+bool AppEnvironmentTransaction::set(const char *name, const char *value) {
+    if (name == nullptr || name[0] == '\0') return false;
+    bool known = false;
+    for (const Snapshot &snapshot : snapshots_) {
+        if (snapshot.name == name) {
+            known = true;
+            break;
+        }
+    }
+    if (!known) {
+        Snapshot snapshot;
+        snapshot.name = name;
+        snapshot.existed = getEnvironment(name, snapshot.value);
+        snapshots_.push_back(std::move(snapshot));
+    }
+    return setEnvironment(name, value);
+}
+
+bool AppEnvironmentTransaction::restore() {
+    bool restored = true;
+    for (auto snapshot = snapshots_.rbegin(); snapshot != snapshots_.rend();
+         ++snapshot) {
+        restored = setEnvironment(
+            snapshot->name.c_str(),
+            snapshot->existed ? snapshot->value.c_str() : "") && restored;
+    }
+    snapshots_.clear();
+    return restored;
 }
 
 bool AppRestart_stageGame(const char *romPath, bool autoplaySession) {

@@ -973,8 +973,16 @@ int runEngineSession(AppHost &host, SessionRuntime &session,
                               host.wgpuSurface(), host.wgpuFormat());
         platformSetHostWebGpuRecovery(recoverAppHostWebGpu, &host);
     }
-    Overlay_setPauseAllowed(session.overlayMayPause());
-    Overlay_install(host.window());
+    if (config.character_preview_studio) {
+        Overlay_installCharacterStudio(
+            host.window(), config.character_preview_package,
+            config.character_preview_context);
+    } else if (config.character_motion_review) {
+        Overlay_installCharacterReview(host.window());
+    } else {
+        Overlay_setPauseAllowed(session.overlayMayPause());
+        Overlay_install(host.window());
+    }
     /* Online epochs present the NTSC source identity to the engine
      * (rom_io.c): the accepted ROM payloads are byte-identical, so a PAL
      * endpoint authoring the manifest's 30 Hz cadence is bit-identical to a
@@ -3100,15 +3108,62 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         std::getenv("MDKR_APP_SMOKE_SELECT_PRESENTATION_PACE");
     bool smokePaceClickQueued = false;
     /*
-     * The scripted accessibility walk: hold Tab down through the launcher and
-     * let the shared row helper announce whatever the keyboard lands on.
+     * The scripted accessibility walk uses Tab/arrow navigation for keyboard
+     * runs and the virtual controller's D-pad for gamepad runs, then lets the
+     * shared row helper announce whichever production widget receives focus.
      *
-     * It drives the SAME synthetic-keyboard route as the Frame limit script --
-     * SDL event -> ImGui backend -> the production widget -- because a walk
-     * that called the panel's draw functions directly would prove the rows can
-     * speak, not that a player pressing Tab ever reaches them.
+     * Both routes enter through SDL -> ImGui -> the production widget. Calling
+     * panel draw functions directly would prove only that rows can speak, not
+     * that a player's input can reach them.
      */
     const bool smokeA11yWalk = AppUi_a11yWalkArmed();
+    const char *smokeCharacterImportFocus =
+        std::getenv("MDKR_APP_SMOKE_CHARACTER_IMPORT_FOCUS");
+    const char *smokeCharacterImportFocusToken =
+        std::getenv("MDKR_APP_SMOKE_CHARACTER_IMPORT_FOCUS_TOKEN");
+    const bool anyCharacterImportFocusContract =
+        (smokeCharacterImportFocus && smokeCharacterImportFocus[0]) ||
+        (smokeCharacterImportFocusToken &&
+         smokeCharacterImportFocusToken[0]);
+    const bool smokeCharacterImportFocusArmed =
+        anyCharacterImportFocusContract && smokeA11yWalk &&
+        smokeCharacterImportFocus &&
+        std::strcmp(smokeCharacterImportFocus, "1") == 0 &&
+        smokeCharacterImportFocusToken &&
+        std::strcmp(smokeCharacterImportFocusToken,
+                    "mdkr64-character-import-focus-v1") == 0;
+    if (anyCharacterImportFocusContract &&
+        !smokeCharacterImportFocusArmed) {
+        std::fprintf(
+            stderr,
+            "[app] smoke: invalid Character Workshop import-focus contract\n");
+        host.shutdown();
+        return 2;
+    }
+    const char *smokeCharacterWorkshopReturn =
+        std::getenv("MDKR_APP_SMOKE_CHARACTER_WORKSHOP_RETURN");
+    const char *smokeCharacterWorkshopReturnToken =
+        std::getenv("MDKR_APP_SMOKE_CHARACTER_WORKSHOP_RETURN_TOKEN");
+    const bool anyCharacterWorkshopReturnContract =
+        (smokeCharacterWorkshopReturn &&
+         smokeCharacterWorkshopReturn[0]) ||
+        (smokeCharacterWorkshopReturnToken &&
+         smokeCharacterWorkshopReturnToken[0]);
+    const bool smokeCharacterWorkshopReturnArmed =
+        anyCharacterWorkshopReturnContract && smokeA11yWalk &&
+        smokeCharacterWorkshopReturn &&
+        std::strcmp(smokeCharacterWorkshopReturn, "1") == 0 &&
+        smokeCharacterWorkshopReturnToken &&
+        std::strcmp(smokeCharacterWorkshopReturnToken,
+                    "mdkr64-character-workshop-return-v1") == 0;
+    if (anyCharacterWorkshopReturnContract &&
+        !smokeCharacterWorkshopReturnArmed) {
+        std::fprintf(
+            stderr,
+            "[app] smoke: invalid Character Workshop return contract\n");
+        host.shutdown();
+        return 2;
+    }
     const char *smokeUiScale =
         std::getenv("MDKR_APP_SMOKE_UI_SCALE_DRAG");
     const char *smokeTouchScroll =
@@ -3255,6 +3310,47 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         frames = smokeMinimumFrames;
     }
     const char *shot      = std::getenv("MDKR_APP_SMOKE_SHOT");
+    const char *smokeCharacterWait =
+        std::getenv("MDKR_APP_SMOKE_WAIT_CHARACTER_JOBS");
+    const char *smokeCharacterWaitToken =
+        std::getenv("MDKR_APP_SMOKE_WAIT_CHARACTER_JOBS_TOKEN");
+    const bool anyCharacterWaitContract =
+        (smokeCharacterWait && smokeCharacterWait[0]) ||
+        (smokeCharacterWaitToken && smokeCharacterWaitToken[0]);
+    const bool waitForCharacterJobs = anyCharacterWaitContract &&
+        smokeCharacterWait &&
+        std::strcmp(smokeCharacterWait, "1") == 0 &&
+        smokeCharacterWaitToken &&
+        std::strcmp(smokeCharacterWaitToken,
+                    "mdkr64-character-jobs-v1") == 0;
+    if (anyCharacterWaitContract && !waitForCharacterJobs) {
+        std::fprintf(stderr,
+                     "[app] smoke: invalid Character Workshop wait contract\n");
+        host.shutdown();
+        return 2;
+    }
+    const char *smokeQuitDuringCharacterWork =
+        std::getenv("MDKR_APP_SMOKE_QUIT_DURING_CHARACTER_WORK");
+    const char *smokeQuitDuringCharacterWorkToken =
+        std::getenv("MDKR_APP_SMOKE_QUIT_DURING_CHARACTER_WORK_TOKEN");
+    const bool anyCharacterQuitContract =
+        (smokeQuitDuringCharacterWork &&
+         smokeQuitDuringCharacterWork[0]) ||
+        (smokeQuitDuringCharacterWorkToken &&
+         smokeQuitDuringCharacterWorkToken[0]);
+    const bool quitDuringCharacterWork = anyCharacterQuitContract &&
+        waitForCharacterJobs && smokeQuitDuringCharacterWork &&
+        std::strcmp(smokeQuitDuringCharacterWork, "1") == 0 &&
+        smokeQuitDuringCharacterWorkToken &&
+        std::strcmp(smokeQuitDuringCharacterWorkToken,
+                    "mdkr64-character-quit-v1") == 0;
+    if (anyCharacterQuitContract && !quitDuringCharacterWork) {
+        std::fprintf(
+            stderr,
+            "[app] smoke: invalid Character Workshop quit contract\n");
+        host.shutdown();
+        return 2;
+    }
     // Drag-and-drop coverage (Q2): the picker's NSOpenPanel and path-field
     // paths run through the same RomPanel_setRom() the C++ unit tests already
     // exercise directly, but the SDL_DROPFILE handler — used by a real
@@ -3275,6 +3371,9 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         std::getenv("MDKR_APP_SMOKE_REPLACEMENT_PLAY");
     const int   dropFrame = (frames > 1) ? 1 : 0;
     bool        sawQuit   = false;
+    bool characterQuitRequested = false;
+    bool characterQuitPublished = false;
+    bool characterQuitPublishedWhilePending = false;
     /* Starts false whenever an image was requested: only the final frame's
      * successful write may set it. A break before that frame must not leave
      * the AUDIT-0046 capture gate reporting an image nobody produced. */
@@ -3316,6 +3415,9 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
     float wheelFinalScroll = 0.0f;
     bool wheelQueued = false;
     bool onlineActionInputQueued = false;
+    int smokeA11yWalkFrame = 0;
+    int smokeA11yWaitFrames = 0;
+    const Uint64 smokeA11yDeadline = SDL_GetTicks64() + 120000u;
     int smokePlayActions = 0;
     std::string smokePlayActionRom;
     auto observeSmokePlay = [&](const LauncherAction &action) {
@@ -3323,6 +3425,15 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         ++smokePlayActions;
         smokePlayActionRom = action.boot.rom_path ? action.boot.rom_path : "";
     };
+    auto observeSmokeQuit = [&](const LauncherAction &action) {
+        if (action.type != LauncherActionType::Quit) return;
+        characterQuitPublished = true;
+        characterQuitPublishedWhilePending =
+            characterQuitPublishedWhilePending ||
+            Settings_characterWorkPending();
+    };
+    int characterServiceFrames = 0;
+    bool characterJobsSettled = true;
     if (smokeDropPlayMutate && !smokeDropPlay) {
         std::fprintf(stderr,
                      "[app] smoke: final Play mutation requires final Play check\n");
@@ -3346,22 +3457,89 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         host.shutdown();
         return 2;
     }
-    for (int i = 0; i < frames; ++i) {
+    for (int i = 0;
+         i < frames ||
+         (smokeA11yWalk && smokeA11yWalkFrame < frames &&
+          SDL_GetTicks64() < smokeA11yDeadline);
+         ++i) {
         if (smokeDrop && smokeDrop[0] && i == dropFrame) {
             host.queueDropFileForSmoke(smokeDrop);
         }
-        if (host.pumpAndShouldQuit()) sawQuit = true;
+        if (host.pumpAndShouldQuit()) {
+            sawQuit = true;
+            launcher.requestQuit();
+        }
         host.beginFrame();
         const LauncherAction action = launcher.draw(host);
         observeSmokePlay(action);
-        const bool ok = host.endFrame((i == frames - 1) ? shot : nullptr);
+        observeSmokeQuit(action);
+        const bool smokeSequenceFinalFrame = smokeA11yWalk
+            ? !launcher.state().romValidationPending &&
+                  smokeA11yWalkFrame == frames - 1
+            : i == frames - 1;
+        const bool ok = host.endFrame(
+            (smokeSequenceFinalFrame && !waitForCharacterJobs)
+                ? shot : nullptr);
         renderOk      = renderOk && ok;
-        if (i == frames - 1) captureOk = ok;
+        if (smokeSequenceFinalFrame && !waitForCharacterJobs) captureOk = ok;
         /* A renderer failure is terminal. Starting another ImGui frame and
          * returning before ImGui::Render leaves dynamic texture state
          * half-transitioned and can make renderer shutdown release an
          * invalid atlas handle. Stop at the first failed presentation. */
         if (!ok) break;
+
+        if (quitDuringCharacterWork && !characterQuitRequested &&
+            Settings_characterWorkPending()) {
+            launcher.requestQuit();
+            characterQuitRequested = true;
+        }
+
+        /* Character authoring chains multiple real subprocess publications
+         * (for example ZIP conversion followed by GLB inspection).
+         * Unthrottled smoke frames are not a clock and can all render before
+         * either worker gets CPU. Pause scripted input while servicing the
+         * same launcher/UI-thread publication route, with a hard deadline so
+         * a broken compiler cannot hang CI. This also makes every following
+         * scripted action operate on the settled UI a player would see. */
+        if (waitForCharacterJobs) {
+            const Uint64 characterDeadline = SDL_GetTicks64() + 15000u;
+            while (Settings_smokeCharacterWorkPending() &&
+                   SDL_GetTicks64() < characterDeadline && renderOk) {
+                if (host.waitAndPump(1)) {
+                    sawQuit = true;
+                    launcher.requestQuit();
+                }
+                host.beginFrame();
+                const LauncherAction serviceAction = launcher.draw(host);
+                observeSmokePlay(serviceAction);
+                observeSmokeQuit(serviceAction);
+                renderOk = host.endFrame() && renderOk;
+                ++characterServiceFrames;
+            }
+            if (Settings_smokeCharacterWorkPending()) {
+                characterJobsSettled = false;
+                renderOk = false;
+            }
+            if (i == frames - 1 && renderOk) {
+                if (host.waitAndPump(1)) {
+                    sawQuit = true;
+                    launcher.requestQuit();
+                }
+                host.beginFrame();
+                const LauncherAction settledAction = launcher.draw(host);
+                observeSmokePlay(settledAction);
+                observeSmokeQuit(settledAction);
+                const bool settledFrameOk = host.endFrame(shot);
+                renderOk = renderOk && settledFrameOk;
+                captureOk = settledFrameOk;
+                ++characterServiceFrames;
+                if (Settings_smokeCharacterWorkPending()) {
+                    characterJobsSettled = false;
+                    renderOk = false;
+                }
+            }
+            if (!renderOk) break;
+        }
 
         if (smokeNavigation && !smokeNavigationQueued) {
             int x = 0;
@@ -3632,30 +3810,111 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
             }
         }
 
-        if (smokeA11yWalk) {
+        if (smokeA11yWalk && !launcher.state().romValidationPending) {
             /*
-             * Two phases, not one interleaved stream. Tab is a linear walk of
-             * the panel and is what carries the coverage claim, so it gets a
-             * clean run at it; mixing arrow presses into that walk made the
-             * sequence periodic and left the same nine rows unvisited on every
-             * lap. The arrow keys are the other way a player moves, and a row
-             * that answers only to Tab is still a row somebody cannot reach, so
-             * the remainder of the run drives Down and Up over the same panel.
-             * The boundary is printed because it is what lets the gate insist
-             * the arrow phase spoke too, rather than counting the Tab phase's
-             * utterances twice.
+             * Two phases, not one interleaved stream. Keyboard gets a clean
+             * linear Tab pass before arrow navigation. Gamepad gets a forward
+             * right/down spatial sweep before its reverse left/up sample. The
+             * boundary lets each gate distinguish its primary coverage from
+             * the shorter directional-reversal phase.
              */
             const int tabFrames = frames - frames / 4;
-            if (i < tabFrames) {
-                host.queueKeyPressForSmoke(SDLK_TAB);
+            const int importFocusFrame = 16;
+            const int workshopReturnFrame = 24;
+            const bool shortcutSettle =
+                (smokeCharacterImportFocusArmed &&
+                 (smokeA11yWalkFrame == importFocusFrame ||
+                  smokeA11yWalkFrame == importFocusFrame + 1)) ||
+                (smokeCharacterWorkshopReturnArmed &&
+                 (smokeA11yWalkFrame == workshopReturnFrame ||
+                  smokeA11yWalkFrame == workshopReturnFrame + 1));
+            if (smokeA11yWalkFrame == importFocusFrame &&
+                smokeCharacterImportFocusArmed) {
+                if (smokeUsesGamepad) {
+                    renderOk = host.queueGamepadPressForSmoke(
+                                   SDL_CONTROLLER_BUTTON_BACK) &&
+                        renderOk;
+                } else {
+                    host.queueKeyChordForSmoke(SDLK_i, KMOD_CTRL);
+                }
+                std::fprintf(
+                    stderr,
+                    "[app-ui-test] character import-focus shortcut queued input=%s\n",
+                    smokeUsesGamepad ? "gamepad" : "keyboard");
+            }
+            if (smokeA11yWalkFrame == workshopReturnFrame &&
+                smokeCharacterWorkshopReturnArmed) {
+                if (smokeUsesGamepad) {
+                    renderOk = host.queueGamepadPressForSmoke(
+                                   SDL_CONTROLLER_BUTTON_B) &&
+                        renderOk;
+                } else {
+                    host.queueKeyPressForSmoke(SDLK_ESCAPE);
+                }
+                std::fprintf(
+                    stderr,
+                    "[app-ui-test] character Workshop return shortcut queued input=%s\n",
+                    smokeUsesGamepad ? "gamepad" : "keyboard");
+            }
+            if (shortcutSettle) {
+                // Leave one complete post-shortcut frame free of navigation
+                // input so the newly focused source control is both rendered
+                // and announced before the ordinary traversal resumes.
+            } else if (smokeA11yWalkFrame < tabFrames) {
+                if (smokeUsesGamepad) {
+                    // Sweep across each responsive row before advancing. A
+                    // D-pad-only vertical walk can skip every second radio
+                    // button and all but the first cell of a grid even though
+                    // those controls are reachable by a real controller.
+                    const SDL_GameControllerButton direction =
+                        smokeA11yWalkFrame % 4 == 3
+                            ? SDL_CONTROLLER_BUTTON_DPAD_DOWN
+                            : SDL_CONTROLLER_BUTTON_DPAD_RIGHT;
+                    renderOk = host.queueGamepadPressForSmoke(
+                                   direction) &&
+                        renderOk;
+                } else {
+                    host.queueKeyPressForSmoke(SDLK_TAB);
+                }
             } else {
-                if (i == tabFrames) {
-                    std::printf("[app-a11y-walk] tab phase complete frame=%d\n", i);
+                if (smokeA11yWalkFrame == tabFrames) {
+                    if (smokeUsesGamepad) {
+                        std::printf(
+                            "[app-a11y-walk] primary phase complete input=gamepad frame=%d\n",
+                            smokeA11yWalkFrame);
+                    } else {
+                        std::printf(
+                            "[app-a11y-walk] tab phase complete frame=%d\n",
+                            smokeA11yWalkFrame);
+                    }
                     std::fflush(stdout);
                 }
-                host.queueKeyPressForSmoke(
-                    ((i - tabFrames) % 8) < 6 ? SDLK_DOWN : SDLK_UP);
+                const bool forward =
+                    ((smokeA11yWalkFrame - tabFrames) % 8) < 6;
+                if (smokeUsesGamepad) {
+                    const bool vertical =
+                        (smokeA11yWalkFrame - tabFrames) % 4 == 3;
+                    SDL_GameControllerButton direction;
+                    if (vertical) {
+                        direction = forward
+                            ? SDL_CONTROLLER_BUTTON_DPAD_DOWN
+                            : SDL_CONTROLLER_BUTTON_DPAD_UP;
+                    } else {
+                        direction = forward
+                            ? SDL_CONTROLLER_BUTTON_DPAD_RIGHT
+                            : SDL_CONTROLLER_BUTTON_DPAD_LEFT;
+                    }
+                    renderOk = host.queueGamepadPressForSmoke(
+                                   direction) &&
+                        renderOk;
+                } else {
+                    host.queueKeyPressForSmoke(
+                        forward ? SDLK_DOWN : SDLK_UP);
+                }
             }
+            ++smokeA11yWalkFrame;
+        } else if (smokeA11yWalk) {
+            ++smokeA11yWaitFrames;
         }
 
         // Real widget navigation: keyboard movement follows the focused row in
@@ -3729,6 +3988,36 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
              * activate whichever row focus had drifted to. The same-process
              * Retry arm only ever passed by winning that race. */
         }
+    }
+
+    if (smokeA11yWalk) {
+        const bool completed = smokeA11yWalkFrame == frames;
+        std::fprintf(
+            stderr,
+            "[app-ui-test] accessibility walk frames=%d/%d readiness-wait-frames=%d settled=%d\n",
+            smokeA11yWalkFrame, frames, smokeA11yWaitFrames,
+            launcher.state().romValidationPending ? 0 : 1);
+        renderOk = renderOk && completed;
+    }
+
+    if (waitForCharacterJobs) {
+        std::fprintf(
+            stderr,
+            "[app] smoke: Character Workshop serviceFrames=%d settled=%d\n",
+            characterServiceFrames, characterJobsSettled ? 1 : 0);
+    }
+    if (quitDuringCharacterWork) {
+        std::fprintf(
+            stderr,
+            "[app-ui-test] character quit lifecycle requested=%d published=%d pending-at-publication=%d settled=%d\n",
+            characterQuitRequested ? 1 : 0,
+            characterQuitPublished ? 1 : 0,
+            characterQuitPublishedWhilePending ? 1 : 0,
+            Settings_characterWorkPending() ? 0 : 1);
+        renderOk = renderOk && characterQuitRequested &&
+            characterQuitPublished &&
+            !characterQuitPublishedWhilePending &&
+            !Settings_characterWorkPending();
     }
 
     if (smokeTouch) {
@@ -5407,11 +5696,14 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
                            std::string *bootRecoveryMessage) {
     bool running  = true;
     int  exitCode = 0;
+    bool finishStudioSmokeAfterFrame = false;
     // Issue #54: show the "could not save" card the first time the player is
     // back at the launcher after a durable save write failed, for players who
     // cannot hear the in-game spoken notice.
     bool saveFailureCardShown = false;
     while (running) {
+        Settings_serviceCharacterWork();
+        if (launcher.quitReady()) break;
         const bool drawableAvailable =
             host.drawableWidth() > 0 && host.drawableHeight() > 0;
         const AppUiIdleDecision idle = AppUi_idleDecision(
@@ -5421,10 +5713,14 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
             // Occluded WebGPU surfaces are retried at a bounded 40 Hz. A truly
             // minimized zero-drawable window skips ImGui construction entirely
             // until restore, while close/quit remains event-driven and prompt.
-            if (host.waitAndPump(static_cast<int>(idle.waitMilliseconds))) break;
+            if (host.waitAndPump(static_cast<int>(idle.waitMilliseconds))) {
+                launcher.requestQuit();
+                if (launcher.quitReady()) break;
+            }
             if (!idle.buildFrame) continue;
         } else if (host.pumpAndShouldQuit()) {
-            break;
+            launcher.requestQuit();
+            if (launcher.quitReady()) break;
         }
         host.beginFrame();
         const LauncherAction action = launcher.draw(host);
@@ -5432,6 +5728,14 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
             showPresentationFailure(host);
             exitCode = 1;
             running  = false;
+            continue;
+        }
+        if (finishStudioSmokeAfterFrame) {
+            std::fprintf(
+                stderr,
+                "[app-ui] exact-character-studio smoke completed "
+                "published launcher return\n");
+            running = false;
             continue;
         }
 #if MDKR_ENABLE_ONLINE_BETA
@@ -5569,10 +5873,23 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
                 launcher.setBootError(kSavePersistFailedNotice);
             }
             if (exitCode == 0 && transition != nullptr &&
-                transition->request == OverlayExitRequest::ReturnToLauncher) {
+                (transition->request == OverlayExitRequest::ReturnToLauncher ||
+                 transition->request ==
+                     OverlayExitRequest::ReturnToLauncherWithoutMeasurement)) {
                 /* Return through the surviving host/runtime. The engine has
                  * released its adopted children; no exec, second app process,
                  * or lost Party state is needed. */
+                if (transition->request ==
+                        OverlayExitRequest::ReturnToLauncherWithoutMeasurement &&
+                    action.boot.character_preview_result != nullptr) {
+                    MdkrCharacterPreviewResult &result =
+                        *action.boot.character_preview_result;
+                    result.warmup_complete = 0;
+                    result.fit_diagnostics_valid = 0;
+                    result.camera_projection_valid = 0;
+                    result.vehicle_surface_valid = 0;
+                    result.fit_projection_valid = 0;
+                }
                 if (!session.returnHome()) {
                     std::fprintf(stderr,
                                  "[session] could not return engine result Home\n");
@@ -5585,6 +5902,13 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
                                  "[session] returned to persistent launcher id=%llu\n",
                                  static_cast<unsigned long long>(
                                      session.state().session_id));
+                    const char *studioSmokeToken = std::getenv(
+                        "MDKR_APP_SMOKE_CHARACTER_STUDIO_TOKEN");
+                    if (studioSmokeToken != nullptr &&
+                        std::strcmp(studioSmokeToken,
+                                    "mdkr64-character-studio-v1") == 0) {
+                        finishStudioSmokeAfterFrame = true;
+                    }
                 }
             } else {
                 running = false;

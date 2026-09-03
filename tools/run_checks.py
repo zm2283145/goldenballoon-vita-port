@@ -192,9 +192,27 @@ GPU_SERIAL_NAMES = frozenset({
     "race_2p_split",
     "race_2p_split_enhanced",
     "race_multiplayer",
+    # Reads per-viewport pixels for the split-screen liveness assertions, so it
+    # must not share a GPU surface with pooled checks.
+    "adventure_party_hub",
+    # AP-19's verdict is the four-camera DL/resource high-water itself. Running
+    # beside another renderer process would invalidate the plateau evidence.
+    "adventure_party_performance",
+    "adventure_party_performance_soaks",
     "challenge_modes",
     "taj_challenges",
     "bonus_character_select",
+    "custom_character_roster",
+    "custom_character_identity_surfaces",
+    "adventure_party_custom_characters",
+    "custom_character_flag_portrait",
+    "character_raw_intake_ui",
+    "character_quit_lifecycle_ui",
+    "character_workshop_history_ui",
+    "character_draft_transfer_ui",
+    "character_portrait_studio_ui",
+    "character_test_evidence_ui",
+    "custom_character_workshop_preview",
     "bonus_results_portraits",
     "taj_character_select",
     "taj_character_select_webgpu",
@@ -434,6 +452,25 @@ CHECKS = (
           "GL/WebGPU cascaded maps, receivers, state invariance, and truthful decal fallback"),
     Check("render_purity", "check_render_purity.py", "release",
           "skip-render authoritative invariance (spec 12.2.1) with divergence control"),
+    Check("dl_high_water", "check_dl_high_water.py", "release",
+          "the display-list high-water witness reports a retail 1P race "
+          "against the row its buffer was allocated to, and a length past "
+          "that row aborts fail-closed"),
+    Check("fast3d_dl_hardening", "check_fast3d_dl_hardening.py", "release",
+          "an injected display-list overflow is walked to a stop by both the "
+          "interpreter and the overlay prepass, with the well-authored party "
+          "and retail 1P routes reporting nothing"),
+    # The release arm proves the walkers stop and the route survives. It cannot
+    # prove what the reads themselves were: a command fetched one past the end
+    # of an 80-byte global, and a fault printer quoting the words of an address
+    # the walk had just refused, both land in mapped memory in a release build
+    # and report success. Measured, not assumed -- with the printer fix
+    # reverted the release arm still passes and this lane aborts. This is the
+    # detector.
+    Check("fast3d_dl_hardening_asan", "check_fast3d_dl_hardening.py", "asan",
+          "ASan witness for the misauthored display-list route -- the "
+          "past-the-end command fetch and fault-printer read the walkers close",
+          ("--injected-only",)),
     Check("camera_obstruction_runtime", "check_camera_obstruction_runtime.py", "release",
           "same-binary legacy/center-ray controls, modern resolved-lens safety "
           "witness, the unset-default arm that must reproduce observe, and the "
@@ -656,6 +693,12 @@ CHECKS = (
     Check("cadence_gating", "check_cadence_gating.py", "source",
           "no updateRate ==/!= 1/2 mode test outside "
           "platform_sim_cadence_is_enhanced()"),
+    Check("adventure_party_boundaries", "check_adventure_party_boundaries.py",
+          "source",
+          "AP-01 boundary gate: every Adventure count/lead branch declared in "
+          "the inventory, no party-path 2P-global write, online-authority leak, "
+          "ambiguous party-count global, or adventure_party vocabulary leak into "
+          "the test hook / Phone Party infrastructure"),
     Check("camera_track_occlusion_cache", "check_camera_track_occlusion_cache.py", "source",
           "native static visual-triangle camera cache lifecycle and provenance"),
     Check("camera_object_occlusion_cache", "check_camera_object_occlusion_cache.py", "source",
@@ -748,10 +791,58 @@ CHECKS = (
           "save, and terminal-gate controls"),
     Check("taj_challenges", "check_taj_challenges.py", "native",
           "car, hovercraft, and plane Taj challenges: first win, loss, abort, "
-          "replay, completion controls, and save reload"),
+          "replay, completion controls, and save reload",
+          timeout=7200),
     Check("bonus_character_select", "check_bonus_character_select.py", "native",
           "contiguous 13-racer picker with independent Taj, Wizpig, and Terry "
           "actor/placard composition, pose states, and controller navigation"),
+    Check("custom_character_roster", "check_custom_character_roster.py", "native",
+          "isolated generated custom package, independent paginated browser, "
+          "portrait composition, and real controller entry route"),
+    Check("custom_character_identity_surfaces",
+          "check_custom_character_identity_surfaces.py", "native",
+          "generated package donor authority plus authored minimap colour and "
+          "portrait pixels across a real race and post-race flow"),
+    Check("custom_character_flag_portrait",
+          "check_custom_character_flag_portrait.py", "native",
+          "generated package portrait ownership and isolated WebGPU pixels on "
+          "the real Fire Mountain collection-arena flag"),
+    Check("character_raw_intake_ui", "check_character_raw_intake_ui.py", "native",
+          "ROM-free review-first data-only adapter handoff, multi-draft GLB "
+          "intake, same-source branching, source-bound "
+          "mapping restore, accessible no-overwrite LOD-copy authoring, "
+          "close/resume navigation, exact switch/delete/install "
+          "cleanup, legacy migration, source-byte "
+          "purity, corruption refusal, keyboard speech, and 200% compact "
+          "Workshop rendering"),
+    Check("character_quit_lifecycle_ui",
+          "check_character_quit_lifecycle_ui.py", "native",
+          "ROM-free visible/cancellable shutdown settlement, global result "
+          "publication, Play/import exclusion, source purity, and private "
+          "result-file cleanup"),
+    Check("character_workshop_history_ui",
+          "check_character_workshop_history_ui.py", "native",
+          "ROM-free exact-source Identity/Profile/Rig/Fit/Performance/Test "
+          "history routing without installed-byte mutation"),
+    Check("character_draft_transfer_ui",
+          "check_character_draft_transfer_ui.py", "native",
+          "ROM-free exclusive path-private exact-source export, mutation-free "
+          "accessible review, additive atomic import, duplicate idempotence, "
+          "and wrong-source refusal"),
+    Check("character_portrait_studio_ui",
+          "check_character_portrait_studio_ui.py", "native",
+          "ROM-free deterministic portrait style/pixel tools at 200% compact "
+          "layout with keyboard speech and installed-byte purity"),
+    Check("character_test_evidence_ui",
+          "check_character_test_evidence_ui.py", "native",
+          "ROM-free durable 4x4 exact-test matrix, qualified baseline lifecycle, "
+          "device/source/fit/LOD binding, corruption refusal, 200% layout, and "
+          "keyboard plus virtual-controller speech traversal"),
+    Check("custom_character_workshop_preview",
+          "check_custom_character_workshop_preview.py", "native",
+          "script-free exact select/car/hovercraft/plane launches, semantic "
+          "camera/light inspection, exclusive stabilized PNG capture, and real "
+          "one-to-four-player WebGPU character stress with fail-closed inputs"),
     Check("bonus_results_portraits", "check_bonus_results_portraits.py", "native",
           "real post-race Wizpig/Terry portrait ownership, retail dimensions, "
           "and distinct card pixels"),
@@ -775,7 +866,8 @@ CHECKS = (
           "lead state"),
     Check("taj_playable", "check_taj_playable.py", "native",
           "Taj unlock, virtual select, carpet lifecycle, OP handling, two-player "
-          "identity, sidecar persistence, and Time Trial quarantine"),
+          "identity, sidecar persistence, and Time Trial quarantine",
+          timeout=3600),
     Check("taj_p2_adventure", "check_taj_p2_adventure.py", "native",
           "P2-visible Taj selection, retail Adventure lead handoff, post-swap "
           "live-port rebinding, and no virtual character IDs"),
@@ -788,7 +880,145 @@ CHECKS = (
     Check("taj_vehicle_sweep", "check_vehicle_sweep.py", "native",
           "Taj identity, presentation, shield anchoring, and dash evidence over "
           "all forty-seven legal track/vehicle pairs",
-          ("--taj", "--frames", "5200")),
+          ("--taj", "--frames", "5200"), timeout=7200),
+    Check("adventure_party_admission", "check_adventure_party_admission.py",
+          "native",
+          "AP-06 Adventure Party menu admission: 2/3/4 players reach the ordinary "
+          "Adventure route and form a session with the enhancement on; a party's "
+          "UN-STARTED file confirm is fail-closed refused (R26) then the started "
+          "file proceeds; copy/erase keep host-only file authority (FIX 1); 1P and "
+          "the off arm are stock; retail 2P globals never engaged"),
+    Check("adventure_party_hub", "check_adventure_party_hub.py", "native",
+          "AP-08 Adventure Party hub roster: 2/3/4 humans spawn atomically with N "
+          "viewports (3P minimap), per-seat input binding, and a per-viewport hub "
+          "HUD; off routes to Tracks; flat-field and swapped-binding controls fire"),
+    Check("adventure_party_transition", "check_adventure_party_transition.py",
+          "native",
+          "AP-09/10 shared lobby interactions: exactly one arbitrated whole-party "
+          "door transition (single + conflicting, 2P/3P), any-seat balloon "
+          "collect-once, non-host pause open with host resume authority, and "
+          "disconnect-forced shared pause; two positive controls fire"),
+    Check("adventure_party_race_loop", "check_adventure_party_race_loop.py",
+          "native",
+          "AP-12/R16 default party race loop: party crosses hub->lobby->race "
+          "(R16 two-hop), a default race fields six racers (N humans + 6-N CPUs, "
+          "N viewports, per-seat binding) at 2P/3P/4P, and a host/non-host/CPU "
+          "win, a retry and a mid-race quit-to-lobby each return the same party "
+          "to the lobby (sgen stable, lgen advanced); two positive controls fire"),
+    Check("adventure_party_performance",
+          "check_adventure_party_performance.py", "native",
+          "AP-19 formal four-player budgets and deterministic plateau: twenty "
+          "world-lobby->race->world-lobby cycles keep main-pool/audio/renderer/"
+          "pointer-registry ownership flat, every four-camera display list below "
+          "the checked-in 10750/11000-command threshold, four controller bindings "
+          "and session generations exact; a ROM-free 20000-lifetime formation/"
+          "suspension/dissolution churn retains no state; mutation controls fire",
+          timeout=14400),
+    Check("adventure_party_performance_soaks",
+          "check_adventure_party_performance_soaks.py", "native",
+          "AP-19 game-side ownership soaks: one versus five four-player Taj "
+          "racer rebuilds reach an exact normalized hub ownership endpoint; "
+          "five real host-solo boss defeat/restore lifetimes plateau main-pool, "
+          "audio, renderer and pointer-registry ownership; display-list, exact "
+          "roster/controller/session and mutation oracles remain mandatory",
+          timeout=14400),
+    Check("adventure_party_taj", "check_adventure_party_taj.py", "native",
+          "AP-11 Taj transaction + shared-scene envelope: a non-host summons Taj "
+          "(shared dialogue latched once), the host owns the vehicle choice, and the "
+          "WHOLE party (2P/3P) transforms transactionally to the new vehicle with the "
+          "same seat->character identities and split layout (live==N, never a collapse "
+          "to 1); the dialogue releases to ACTIVE_LOBBY in the same generation (R10); "
+          "a host CHALLENGE-row selection during the party dialogue is fail-closed "
+          "refused (R27: no TAJ_MODE_RACE, no extra racer, transform still works "
+          "after); four positive controls fire and retail 2P Taj "
+          "(check_taj_p2_adventure) is untouched"),
+    Check("adventure_party_progress", "check_adventure_party_progress.py",
+          "native",
+          "AP-13 exact-once campaign progression: a party default-race win at "
+          "each winner seat (P1/P2/P3/P4, by stable racerIndex) persists a slot "
+          "BYTE-IDENTICAL to a 1P win (empty whitelist), gated by one aparty_award "
+          "token issue+consume and one RACE_CLEARED write; a CPU-first loss and a "
+          "quit write nothing, a win + re-entry of the cleared course still writes "
+          "exactly one clear, and the save round-trips into 1P Adventure; two "
+          "positive controls fire (CPU-as-win, doubled-award)"),
+    Check("adventure_party_challenges", "check_adventure_party_challenges.py",
+          "native",
+          "AP-15 host-solo special-challenge envelope: a party (3P + a 2P arm) "
+          "suspends to a retail four-racer host-solo challenge (SOLO_ACTIVITY + "
+          "suspended roster, [CHALLENGE] racers=4, no party race field), a host WIN "
+          "commits one T.T. amulet piece exactly once (one aparty_award challenge "
+          "token issue+consume, ttAmulet 0->1 CLEARED, byte-identical to a 1P win), "
+          "a re-entry of the cleared challenge refuses a second token, and a defeat "
+          "commits nothing; two positive controls fire (defeat-as-win, "
+          "strip-suspension). The shared return-to-lobby RESTORE is proven by "
+          "check_adventure_party_boss_restore (identical arrival-adapter code)"),
+    Check("adventure_party_boss_restore", "check_adventure_party_boss_restore.py",
+          "native",
+          "AP-17 host-solo boss envelope: a 3P party suspends to a retail host-solo "
+          "boss (SOLO_ACTIVITY + suspended roster, no party race field, host "
+          "finishes), a first WIN commits the world boss bit exactly once (one "
+          "aparty_award boss token issue+consume, save delta), a LOSS awards nothing, "
+          "the beaten boss re-suspends on a rematch and refuses a new token, and "
+          "EVERY return restores the exact party (aparty_restore match=1); two "
+          "positive controls fire (one-racer, doubled-award)"),
+    Check("adventure_party_silver", "check_adventure_party_silver.py",
+          "native",
+          "AP-14 team-shared silver coins: a party silver-coin race (3P central "
+          "scene + a 2P arm) banks ONE team tally -- any human (incl. a non-host "
+          "seat) collects a coin, it vanishes for ALL viewports (invis=0x600), the "
+          "tally increments 1..8 once each, every viewport's HUD shows the same "
+          "total, and EIGHT team coins + a human first awards "
+          "RACE_CLEARED_SILVER_COINS exactly once via a SILVER completion token "
+          "(the finish reading the TEAM total, not the leading racer's own count), "
+          "persisting a slot BYTE-IDENTICAL to a 1P silver win; a CPU-first finish "
+          "with eight team coins awards nothing, and the post-clear replay is no "
+          "longer a silver race (no coins, no second award); two positive controls "
+          "fire (seven-coins, stripped-collection). Adventure Two: NOT RUN "
+          "(AP-16 owns the A2 matrix)",
+          # Five full-race arms plus two replayed positive controls: the gate
+          # finishes but can exceed the default 30-minute task ceiling. Wedge
+          # bound only; the arms keep their own per-run frame budgets.
+          timeout=3600),
+    Check("adventure_party_trophy", "check_adventure_party_trophy.py", "native",
+          "AP-16 Part A = SPLIT: a party enters the real Adventure trophy series "
+          "(forced past the headless-unreachable cabinet via the R20/R24 retarget "
+          "precedent), every round fields the retail EIGHT-racer split (total=8, N "
+          "humans + 8-N CPUs, N viewports -- the measured 4P DL high-water 6354 fits "
+          "the 11000 budget), all four production rounds run with accumulating "
+          "standings, and a gold championship writes the Dino trophy exactly once via "
+          "ONE COMPLETION_TROPHY token, persisting a save slot BYTE-IDENTICAL to a 1P "
+          "gold (whole 40-byte slot, empty whitelist -- subsumes no-balloon/no-RACE_CLEARED "
+          "write for the rounds); a 1P-ref awards the same gold with NO party token; the "
+          "party returns to the same lobby; two positive controls fire "
+          "(duplicate-consume, stripped-field)"),
+    Check("adventure_party_adventure_two", "check_adventure_party_adventure_two.py",
+          "native",
+          "AP-16 Part C matrix: an Adventure-Two-flagged party fixture drives the "
+          "SAME party policy with no new game-side branch -- (1) 3P admission -> hub "
+          "on A2 (party forms, A2 save resumed), (2) a default race win is exact-once "
+          "and byte-identical to a 1P A2 win of the same mirrored course, (3) a silver "
+          "scene banks one team tally over the A2 coin object set (any human collect, "
+          "invis=0x600, one SILVER award); adventure_mode adventureTwo=1 mirrored=1 "
+          "throughout; two positive controls fire"),
+    Check("adventure_party_campaign", "check_adventure_party_campaign.py",
+          "native",
+          "AP-18 release campaign manifest + real-door breadth: ROM-derived exact "
+          "classification of all six lobbies, thirty-four save courses, legal "
+          "vehicles, world transitions, door classes and campaign branches; a "
+          "real silver door, real first-boss door with multi-hop restore and "
+          "vehicle witness, and two distinct simultaneously conflicting race "
+          "doors; challenge-key and "
+          "trophy-cabinet headless geometry limits remain explicit rather than "
+          "being mistaken for behavioural passes; mutation controls fire",
+          timeout=3600),
+    Check("adventure_party_custom_characters",
+          "check_adventure_party_custom_characters.py", "native",
+          "Adventure Party/custom-character composites: a 3P donor-only party "
+          "roster retains three presentation packages, Taj transform and a "
+          "host-solo boss restore preserve every package, and a custom-equipped "
+          "party win writes byte-identical progress to the same plain party win; "
+          "two positive controls fire",
+          timeout=3600),
     Check("adventure_hub", "check_adventure_hub.py", "native",
           "Adventure hub traversal"),
     Check("adventure_two", "check_adventure_two.py", "native",
@@ -1042,6 +1272,9 @@ CHECKS = (
 # artifacts produced inside that CTest fixture rather than the runner's normal
 # role arguments. ``rom_free_units`` owns their execution.
 CTEST_COMPANION_SCRIPTS = {
+    # Cross-layer source contract registered as character_offset_studio_contract
+    # in cmake/tests.cmake; the broad ctest task owns its artifact-free run.
+    "check_character_offset_studio.py",
     "check_multiplayer_boundaries.py",
     # Registered as the net_failure_ring_impairment CTest (CMakeLists.txt, in
     # the MDKR_NATIVE_PHONE_PARTY block), which passes it both arms of the
@@ -1066,6 +1299,11 @@ CTEST_COMPANION_SCRIPTS = {
 # manufacture that release-only stage, so workflow ownership is explicit here.
 WORKFLOW_COMPANION_SCRIPTS = {
     "check_browser_local_only_release.py",
+    # Release workflows build a platform-specific frozen importer, smoke it
+    # before packaging, then smoke the staged copy again. The ordinary runner
+    # has no frozen-importer artifact role and cannot substitute the game
+    # binary for this executable-shaped contract.
+    "check_frozen_character_importer.py",
 }
 
 # The native online-takeover (Golden Balloon beta) regression lanes. Every one

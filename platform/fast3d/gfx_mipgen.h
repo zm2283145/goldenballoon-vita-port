@@ -89,6 +89,18 @@ bool gfx_mip_build(const uint8_t *src_rgba, int width, int height,
                    uint8_t *scratch, size_t scratch_bytes,
                    GfxMipChain *out);
 
+/* Data textures (metallic/roughness and occlusion) are already linear bytes;
+ * applying the sRGB transfer used for albedo would bias their material values. */
+bool gfx_mip_build_linear(const uint8_t *src_rgba, int width, int height,
+                          uint8_t *scratch, size_t scratch_bytes,
+                          GfxMipChain *out);
+
+/* Tangent-space normal maps are averaged as signed vectors and renormalized at
+ * every level. Alpha remains an ordinary linear channel. */
+bool gfx_mip_build_normal(const uint8_t *src_rgba, int width, int height,
+                          uint8_t *scratch, size_t scratch_bytes,
+                          GfxMipChain *out);
+
 /*
  * As gfx_mip_build, but for ALPHA-TESTED CUTOUT materials (foliage, fences,
  * grates — anything drawn with a discard rather than a blend).

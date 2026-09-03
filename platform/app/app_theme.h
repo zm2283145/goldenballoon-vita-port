@@ -2,8 +2,9 @@
 //
 // One place defines the look so every panel reads as one system. Brand cobalt,
 // Amber Gold, website sky blue, and charcoal surfaces carry the public brand
-// without importing web-only artwork. Fonts are the embedded Roboto Medium
-// (app_font.h), rasterized at the physical pixel size for Retina crispness.
+// without importing web-only artwork. Fonts are embedded Roboto Medium plus
+// the reviewed custom-name Roboto/Noto script faces, rasterized at the physical
+// pixel size for Retina crispness without consulting host fonts.
 #ifndef MDKR_APP_THEME_H
 #define MDKR_APP_THEME_H
 
@@ -48,6 +49,11 @@ unsigned atlasGeneration();
 unsigned uiScaleApplicationCount();
 
 const AppFonts &fonts();
+
+// True when the packaged atlas can draw this codepoint. The app never consults
+// a host font, so a codepoint outside the embedded subset renders as a box on
+// every machine; UI copy has to stay inside what this reports.
+bool canDrawGlyph(unsigned codepoint);
 
 // Brand colors for direct use in panels (ImGui-normalized RGBA).
 ImVec4 primary();     // brand cobalt — active location/selection

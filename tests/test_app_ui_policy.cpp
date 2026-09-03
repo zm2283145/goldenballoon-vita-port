@@ -178,7 +178,7 @@ int main() {
     // setting away from the player instead of moving it.
     const MdkrVideoKey enhancementKeys[] = {
         MDKR_ENH_SPEEDOMETER, MDKR_ENH_DRAW_DISTANCE, MDKR_ENH_LOD_BIAS,
-        MDKR_ENH_AI_DIFFICULTY,
+        MDKR_ENH_AI_DIFFICULTY, MDKR_ENH_ADVENTURE_PARTY,
     };
     for (MdkrVideoKey key : enhancementKeys) {
         expect(AppUi_settingsSection(key) == AppUiSettingsSection::Enhancements,

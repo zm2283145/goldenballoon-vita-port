@@ -26,8 +26,36 @@ typedef enum MdkrEnhAuthority {
 typedef enum MdkrEnhCategory {
     MDKR_ENH_CAT_DISPLAY = 0,
     MDKR_ENH_CAT_DIFFICULTY,
-    MDKR_ENH_CAT_COSMETIC
+    MDKR_ENH_CAT_COSMETIC,
+    /* Local multiplayer / session enhancements. Added rather than folding a
+     * multiplayer feature into DIFFICULTY or COSMETIC, neither of which
+     * describes it — see Enhancements.AdventureParty. */
+    MDKR_ENH_CAT_MULTIPLAYER
 } MdkrEnhCategory;
+
+/* How the authority gate PROVES this row's authority claim.
+ *
+ * The gate (tests/check_enhancement_authority.py) dispatches on this field, so a
+ * new kind of enhancement brings its own proof route without the gate growing a
+ * drift-prone key list. It lives in the row, and is dumped with it, for exactly
+ * the reason probe_value does: a proof route kept only in the test is a second
+ * list that silently goes stale the moment a row is added and it is forgotten.
+ */
+typedef enum MdkrEnhProofProfile {
+    /* The historical proof: flip the row on one solo time-trial fixture and
+     * compare the [SIMHASH] v3 stream. A presentation row must leave it
+     * byte-identical; a gameplay row must move it. Every enhancement that
+     * predates this field migrated to SOLO_RACE and its behaviour under the
+     * gate is unchanged. */
+    MDKR_ENH_PROOF_SOLO_RACE = 0,
+    /* An Adventure-admission enhancement whose real effect only appears on a
+     * two-to-four-player Adventure route. The authority gate proves the
+     * disabled/enabled contract on its three-player campaign fixture; a solo
+     * fixture cannot exercise this row's admission effect. The compiled-out
+     * arm is proven separately, by the MDKR_ADVENTURE_PARTY_OMIT build's own
+     * off-arm evidence, and behaves as the off arm here. */
+    MDKR_ENH_PROOF_ADVENTURE_PARTY_3P
+} MdkrEnhProofProfile;
 
 typedef struct MdkrEnhancement {
     MdkrVideoKey     key;       /* persistence, env override, INI round-trip */
@@ -44,6 +72,10 @@ typedef struct MdkrEnhancement {
      * forces you to say how to exercise it, and the row-completeness test
      * fails if you do not. */
     const char      *probe_value;
+    /* How the authority gate proves this row (see MdkrEnhProofProfile). Kept in
+     * the row, and dumped with it, for the same anti-drift reason probe_value
+     * is: the gate dispatches on it rather than on a list of its own. */
+    MdkrEnhProofProfile proof_profile;
 } MdkrEnhancement;
 
 int                     mdkr_enhancement_count(void);

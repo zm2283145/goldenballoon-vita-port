@@ -1,0 +1,41 @@
+# Adventure Party hub roster (AP-08) — THREE local players into the Adventure
+# lobby, then a per-seat binding witness.
+#
+# The admission prologue is byte-identical to adventure_party_3p_admit.txt: with
+# Enhancements.AdventureParty on, three players route to GAME_SELECT -> Adventure
+# -> FILE_SELECT and resume the started slot-0 save, landing in the central hub.
+# AP-08 then spawns three human racers, three viewports, and a per-viewport HUB
+# HUD. After the hub settles, each pad drives its own racer in isolation (A =
+# accelerate) so the gate can prove seat->port->racer binding: the racer driven
+# in each round is the one that moves.
+
+# --- Title: reveal Start/Options, then Character Select ---
+1250 START 4
+1330 START 4
+
+# --- PLAYER SELECT: players two and three join on their own controllers ---
+1450 A 4 P2
+1490 A 4 P3
+
+# --- Each player confirms their own character ---
+1580 A 4 P1
+1640 A 4 P2
+1700 A 4 P3
+
+# --- "OK?" accept -> GAME_SELECT ---
+1800 A 4 P1
+
+# --- GAME_SELECT: Adventure One is option 0 -> FILE_SELECT ---
+2050 A 4 P1
+
+# --- FILE_SELECT: host (player one) resumes the started slot 0 ---
+2300 A 4 P1
+
+# --- In the hub (loaded ~2320): let it settle before driving ---
+
+# Round 1: only P1 accelerates.
+2700 A 90 P1
+# Round 2: only P2 accelerates.
+2880 A 90 P2
+# Round 3: only P3 accelerates.
+3060 A 90 P3

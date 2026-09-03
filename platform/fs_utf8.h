@@ -49,6 +49,13 @@ int mdkr_path_is_link_or_reparse_utf8(const char *path);
  * applies the Windows quoting rule below before handing argv to the CRT. */
 int mdkr_exec_replace_utf8(const char *path, const char *const *arguments);
 
+/** Start a child process without a shell and wait for it. `arguments` excludes
+ * argv[0], exactly like mdkr_exec_replace_utf8. Returns zero when the child was
+ * launched and reaped (its actual status is written to `exit_code`), or an
+ * errno-style value when it could not be started/waited. */
+int mdkr_spawn_wait_utf8(const char *path, const char *const *arguments,
+                         int *exit_code);
+
 /** Quote one argument so that the Windows command-line parser
  * (CommandLineToArgvW and the CRT's own argv construction) recovers it
  * verbatim: the whole argument is wrapped in quotes, embedded quotes are

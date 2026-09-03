@@ -438,11 +438,41 @@ static void requestValidation(LauncherState &s, ValidationPurpose purpose,
     validationWorker().request(purpose, path);
 }
 
+static void clearCharacterPreviewRequest(LauncherState &s) {
+    s.characterPreviewPackage.clear();
+    s.characterPreviewSourceSha256.clear();
+    s.characterPreviewFitSha256.clear();
+    s.characterPreviewPresentationSha256.clear();
+    s.characterPreviewContext = MDKR_CHARACTER_PREVIEW_NONE;
+    s.characterPreviewScene = MDKR_CHARACTER_PREVIEW_SCENE_BASELINE;
+    s.characterPreviewPlayers = 0;
+    s.characterPreviewPose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+    s.characterPreviewPosePhaseMilli = 0u;
+    s.characterPreviewTransitionFromPose =
+        MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+    s.characterPreviewTransitionFromPhaseMilli = 0u;
+    s.characterPreviewViewYawDegrees = 0;
+    s.characterPreviewViewPitchDegrees = 0;
+    s.characterPreviewLighting =
+        MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
+    s.characterPreviewCapturePng.clear();
+    s.characterPreviewCaptureKind =
+        MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
+    s.characterPreviewAutoReturn = false;
+    s.characterPreviewCaptureLauncherOwned = false;
+    s.characterPreviewPortraitSourceHandoff = false;
+    s.characterPreviewInteractiveStudio = false;
+    s.characterPreviewRepresentativeMotionReview = false;
+    s.characterPreviewDonorReference = false;
+    s.characterPreviewDispatched = false;
+}
+
 /* A cancellation is a user-visible decision, not merely a progress-bar change.
  * Invalidate the worker's generation before restoring the current selection so
  * a completed replacement/remembered result cannot publish after Cancel Change
  * or Forget Saved Path has returned the launcher to its previous state. */
 static void cancelValidation(LauncherState &s, bool clearUnusableSelection) {
+    const bool cancelledPlay = s.romPlayValidationPending;
     const std::string checkingPath = s.romValidationPath;
     if (s.romValidationPending) {
         validationWorker().cancel();
@@ -458,10 +488,42 @@ static void cancelValidation(LauncherState &s, bool clearUnusableSelection) {
     s.romValidationPending = false;
     s.romPlayValidationPending = false;
     s.romPlayValidationPassed = false;
+    if (cancelledPlay) {
+        clearCharacterPreviewRequest(s);
+    }
     s.romPlayAwaitingReplacement = false;
     s.romValidationPath.clear();
     s.romValidationBytes = 0u;
     s.romValidationTotal = 0u;
+}
+
+static const char *characterPreviewContextLabel(
+    MdkrCharacterPreviewContext context) {
+    switch (context) {
+        case MDKR_CHARACTER_PREVIEW_SELECT: return "character select";
+        case MDKR_CHARACTER_PREVIEW_CAR: return "a car race";
+        case MDKR_CHARACTER_PREVIEW_HOVERCRAFT: return "a hovercraft race";
+        case MDKR_CHARACTER_PREVIEW_PLANE: return "a plane race";
+        default: return "the game";
+    }
+}
+
+static const char *characterPreviewPoseLabel(MdkrCharacterPreviewPose pose) {
+    switch (pose) {
+#define MDKR_CHARACTER_PREVIEW_LABEL(suffix, semantic, label) \
+        case MDKR_CHARACTER_PREVIEW_POSE_##suffix: return label;
+        MDKR_MODERN_CHARACTER_INSPECTION_SEMANTICS(
+            MDKR_CHARACTER_PREVIEW_LABEL)
+#undef MDKR_CHARACTER_PREVIEW_LABEL
+        default: return nullptr;
+    }
+}
+
+static void cancelCharacterPreview(LauncherState &s) {
+    if (s.romPlayValidationPending) {
+        cancelValidation(s, /*clearUnusableSelection=*/false);
+    }
+    clearCharacterPreviewRequest(s);
 }
 
 void RomPanel_setRom(LauncherState &s, const char *path) {
@@ -507,6 +569,7 @@ void RomPanel_serviceValidation(LauncherState &s) {
                 "reconnect the drive or choose another file.",
                 result.info.message);
             s.bootErrorVisible = true;
+            clearCharacterPreviewRequest(s);
             /* Service priority: this pass can run after the navigation controls
              * have already drawn, so a plain assignment here would erase a tab
              * the player pressed during the in-flight Play check. The recovery
@@ -605,6 +668,63 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
 
     const bool haveRom = !s.romPath.empty();
     const bool ready   = haveRom && s.romInfo.valid;
+
+    if (!s.characterPreviewPackage.empty() &&
+        s.characterPreviewContext != MDKR_CHARACTER_PREVIEW_NONE) {
+        ui::Gap(ui::kGapS);
+        if (ui::CardBegin("##character-preview-request", AppTheme::accent(),
+                          0.0f)) {
+            ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
+            ImGui::PushFont(AppTheme::fonts().title);
+            ImGui::TextUnformatted(
+                s.characterPreviewPose == MDKR_CHARACTER_PREVIEW_POSE_LIVE
+                    ? "Custom Character Test"
+                    : s.characterPreviewTransitionFromPose !=
+                              MDKR_CHARACTER_PREVIEW_POSE_LIVE
+                        ? "Custom Character Transition Review"
+                    : "Custom Character Pose Inspection");
+            ImGui::PopFont();
+            ImGui::PopStyleColor();
+            ImGui::TextWrapped(
+                "Opening %s with %d local %s after the final ROM check.",
+                characterPreviewContextLabel(s.characterPreviewContext),
+                s.characterPreviewPlayers,
+                s.characterPreviewPlayers == 1 ? "player" : "players");
+            ui::TextSubtleUnformattedWrapped(
+                s.characterPreviewPackage.c_str());
+            if (s.characterPreviewTransitionFromPose !=
+                    MDKR_CHARACTER_PREVIEW_POSE_LIVE) {
+                const char *from = characterPreviewPoseLabel(
+                    s.characterPreviewTransitionFromPose);
+                const char *to = characterPreviewPoseLabel(
+                    s.characterPreviewPose);
+                ImGui::Text(
+                    "A %s %.1f%% to B %s %.1f%%",
+                    from != nullptr ? from : "Unknown",
+                    s.characterPreviewTransitionFromPhaseMilli / 10.0,
+                    to != nullptr ? to : "Unknown",
+                    s.characterPreviewPosePhaseMilli / 10.0);
+            }
+            ui::TextSubtleWrapped(
+                s.characterPreviewPose == MDKR_CHARACTER_PREVIEW_POSE_LIVE
+                    ? "The first 120 authored ticks warm the scene. Stay at least three seconds longer for a useful real-time sample; opening F1 freezes it."
+                    : s.characterPreviewTransitionFromPose !=
+                              MDKR_CHARACTER_PREVIEW_POSE_LIVE
+                        ? "The exact pose player alternates A and B once per second and uses each destination mapping's real blend duration. Return with F1 after several changes; the result identifies authored, reviewed-reference, or package-fallback motion for both states."
+                    : "The requested semantic is held at an exact phase when authored or supplied by a reviewed humanoid map. The result reports source fallback explicitly; inspection is session-only and cannot replace performance evidence.");
+            const char *cancelLabel =
+                s.characterPreviewPose == MDKR_CHARACTER_PREVIEW_POSE_LIVE
+                    ? "Cancel Test" : "Cancel Inspection";
+            if (ImGui::Button(cancelLabel, ui::kBtnSecondary())) {
+                cancelCharacterPreview(s);
+            }
+            ui::SpeakFocusedItem(
+                cancelLabel, nullptr,
+                "Cancels this custom character preview without changing saved player assignments.");
+        }
+        ui::CardEnd();
+        ui::Gap(ui::kGapS);
+    }
 
     /* What pressing Play will actually do, named on the home screen so the
      * player never has to open Settings to find out. Reads the EFFECTIVE

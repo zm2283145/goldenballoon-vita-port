@@ -169,6 +169,16 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "make them faster. Changes how the game plays.",
         MDKR_VIDEO_CAT_PACING
     },
+    [MDKR_ENH_ADVENTURE_PARTY] = {
+        "Enhancements.AdventureParty", "MDKR_ENH_ADVENTURE_PARTY",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 1.0f,
+        "Adventure Party",
+        "Lets two to four local players explore and race together in Adventure. "
+        "With it on, this setting owns Adventure admission for those players; "
+        "the JOINTVENTURE magic code does not add lead swapping on top. Changes "
+        "how the game plays.",
+        MDKR_VIDEO_CAT_INTERFACE
+    },
     [MDKR_VIDEO_GAMEPLAY_FOV] = {
         "Video.GameplayFOV", "MDKR_FOV",
         MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 0.0f,
@@ -721,7 +731,8 @@ int mdkr_video_key_is_content(MdkrVideoKey key) {
 
 int mdkr_video_key_is_enhancement(MdkrVideoKey key) {
     return key == MDKR_ENH_SPEEDOMETER || key == MDKR_ENH_DRAW_DISTANCE ||
-           key == MDKR_ENH_LOD_BIAS || key == MDKR_ENH_AI_DIFFICULTY;
+           key == MDKR_ENH_LOD_BIAS || key == MDKR_ENH_AI_DIFFICULTY ||
+           key == MDKR_ENH_ADVENTURE_PARTY;
 }
 
 int mdkr_video_key_is_accessibility(MdkrVideoKey key) {

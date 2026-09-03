@@ -26,15 +26,34 @@ def main() -> int:
     require("persistResultApplied" in HEADER,
             "visible-but-unconfirmed writes need one shared applied predicate")
 
-    # Every shell-preference save path in the settings panel must accept a
-    # visible-but-unconfirmed write through the shared applied predicate:
-    # the initial UI-scale commit, its Retry action, and the menu-button
-    # combo (drawMenuToggleButton). A fourth path added without updating
-    # this count is a path someone wrote without deciding its durability
-    # story, which is exactly what this contract exists to force.
+    # Every ordinary shell-preference save path in this settings unit must
+    # accept a visible-but-unconfirmed write through the shared applied
+    # predicate: the initial UI-scale commit, its Retry action, and the
+    # menu-button combo (drawMenuToggleButton). A fourth path added without
+    # updating this count is a path someone wrote without deciding its
+    # durability story. Permanent character cleanup is deliberately NOT one of
+    # them: it lives in the idempotent cleanup-journal reconciler, and its
+    # pre-mutation marker and final removal must be confirmed durable before
+    # the file transaction can advance.
     require(SETTINGS.count("AppConfig::persistResultApplied(persist)") == 3,
-            "all three settings-panel save paths must accept visible "
+            "all three ordinary settings-panel save paths must accept visible "
             "unconfirmed writes")
+    require("forgetCharacterPackagePreferences(id)" in SETTINGS and
+            "preferences == AppConfig::PersistResult::Durable" in SETTINGS and
+            "character_workshop_cleanup_pending" in SETTINGS and
+            "mdkr_modern_character_reconcile_removal_coordinated" in SETTINGS and
+            "mdkr_modern_character_remove_installed_coordinated" in SETTINGS and
+            "commitCharacterPackageCleanup" in SETTINGS and
+            "differentGeneration" in SETTINGS and
+            "sourceDigest" in SETTINGS,
+            "permanent character deletion must durably reconcile its "
+            "native quarantine and package-owned preference cleanup under "
+            "one generation-bound cross-process lifecycle boundary")
+    require("g_characterRegistryInventoryAvailable" in SETTINGS and
+            "destructive recovery and deletion remain disabled" in SETTINGS and
+            "record.present" in SETTINGS,
+            "cleanup recovery must distinguish an unreadable inventory and "
+            "surface malformed durable markers without touching packages")
     require(SETTINGS.count("PersistResult::DurabilityUnconfirmed") >= 2,
             "both UI-scale save paths must distinguish durability uncertainty")
     # Pin the CLAIM, not the sentence. This assertion used to pin exact prose,

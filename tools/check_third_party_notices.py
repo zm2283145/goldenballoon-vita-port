@@ -60,6 +60,48 @@ def main() -> int:
             "Project Nayuki QR Code generator MIT License",
             "b47d81ee765b2eed51f75b9cb599522fdd6f9eda7511b025214c63cc4c3336a7",
         ),
+        "third_party/character_importer/CPython-LICENSE.txt": (
+            "PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2",
+            "A. HISTORY OF THE SOFTWARE",
+            "ZERO-CLAUSE BSD LICENSE FOR CODE IN THE PYTHON DOCUMENTATION",
+        ),
+        "third_party/character_importer/PyInstaller-COPYING.txt": (
+            "The PyInstaller licensing terms",
+            "Bootloader Exception",
+            "GNU GENERAL PUBLIC LICENSE",
+        ),
+        "third_party/gltf_validator/LICENSE.txt": (
+            "Apache License", "Version 2.0, January 2004",
+        ),
+        "third_party/character_text/HarfBuzz-COPYING.txt": (
+            "HarfBuzz is licensed under the so-called \"Old MIT\" license",
+            "Permission is hereby granted",
+        ),
+        "third_party/gltf_validator/NOTICES.txt": (
+            "Dart SDK", "args", "collection",
+        ),
+        "third_party/gltf_validator/README.md": (
+            "2.0.0-dev.3.10", "Dart SDK 2.19.6", "pubspec.lock",
+        ),
+        "third_party/basisu/LICENSE.txt": (
+            "Apache License", "Version 2.0, January 2004",
+        ),
+        "third_party/basisu/Zstd-LICENSE.txt": (
+            "BSD License", "For Zstandard software",
+        ),
+        "third_party/basisu/README.md": (
+            "4d6fc70eaf62ad0558e63e8d97eb9766118327a6",
+            "MDKR_BASISU_LOCAL_CACHE", "No encoder",
+        ),
+        "third_party/meshoptimizer/LICENSE.md": (
+            "Copyright (c) 2016-2026 Arseny Kapoulkine",
+            "Permission is hereby granted, free of charge",
+        ),
+        "third_party/meshoptimizer/README.md": (
+            "meshoptimizer v1.2",
+            "9d9890c73011d75920af614485296d1e03e95448",
+            "MDKR_MESHOPTIMIZER_LOCAL_CACHE",
+        ),
         "cmake/patches/libdatachannel-windows-mbedtls-verify.patch": (
             "defined(_WIN32) && !USE_MBEDTLS",
             "TLS certificate verification with root CA is not supported on Windows",
@@ -101,6 +143,26 @@ def main() -> int:
             "8948b57053deb5d132bfc675ca2688b7abef9f03ec633c0de59770c945a66fc9",
         "third_party/native_phone_party/NOTICE.txt":
             "dc48863706380100072297911937267b5eaee28a40a972516e07b285cc7635dd",
+        "third_party/character_importer/CPython-LICENSE.txt":
+            "78b12c3a81360b357002334f0e70ea0e92eebf7a9b358805c03c48484945f3bb",
+        "third_party/character_importer/PyInstaller-COPYING.txt":
+            "dcf75fdb959db1e3b41c0f8505069d2ece781b5ec6b3d0a4d30975cfc6580245",
+        "third_party/gltf_validator/LICENSE.txt":
+            "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+        "third_party/character_text/HarfBuzz-COPYING.txt":
+            "ba8f810f2455c2f08e2d56bb49b72f37fcf68f1f4fade38977cfd7372050ad64",
+        "third_party/gltf_validator/NOTICES.txt":
+            "d7a1cefe85110c1308632d0384b7a67a18c125193e54175c50d1982d8c81a2f4",
+        "third_party/gltf_validator/pubspec.lock":
+            "9fec69b760a6789506e1d03881e48c0b9024779559b67ba427a1b0309c841749",
+        "third_party/basisu/LICENSE.txt":
+            "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+        "third_party/basisu/Zstd-LICENSE.txt":
+            "2c1a7fa704df8f3a606f6fc010b8b5aaebf403f3aeec339a12048f1ba7331a0b",
+        "third_party/basisu/README.md":
+            "d15b94b7cb320ed39156c8ddf7d8e814185c6d0de51005113f1d18784785975c",
+        "third_party/meshoptimizer/LICENSE.md":
+            "f03037ca7bad1e3eb7f4a63fa6084a8baabd5ba30d3c239a9a7f35705d873e26",
         "cmake/patches/libdatachannel-windows-mbedtls-verify.patch":
             "b47d81ee765b2eed51f75b9cb599522fdd6f9eda7511b025214c63cc4c3336a7",
     }
@@ -163,6 +225,20 @@ def main() -> int:
             "third_party/qrcodegen/qrcodegen.ts",
             "third_party/qrcodegen/qrcodegen.hpp",
             "third_party/native_phone_party/NOTICE.txt",
+            "third_party/character_importer/CPython-LICENSE.txt",
+            "third_party/character_importer/PyInstaller-COPYING.txt",
+            "tools/character_importer_build_requirements.txt",
+            "third_party/gltf_validator/",
+            "third_party/basisu/",
+            "third_party/meshoptimizer/",
+            "9d9890c73011d75920af614485296d1e03e95448",
+            "4d6fc70eaf62ad0558e63e8d97eb9766118327a6",
+            "Zstd-LICENSE.txt",
+            "KhronosGroup/glTF-Validator",
+            "bcd52cc4ba5f333b2999a58f67cc05ddf28b4fb1",
+            "Dart SDK 2.19.6",
+            "CPython",
+            "PyInstaller",
             "cmake/patches/libdatachannel-windows-mbedtls-verify.patch",
             "2c9044de6b049ca25cb3cd1649ed7e27aa055138",
             "c6696d157b5612df2a741d9a03b192b47ab6cefb",
@@ -182,6 +258,15 @@ def main() -> int:
             "game/include/PR/",
             "Project Nayuki",
             "third_party/native_phone_party/NOTICE.txt",
+            "third_party/character_importer/",
+            "CPython 3.13.13",
+            "PyInstaller 6.22.2",
+            "Khronos glTF Validator 2.0.0-dev.3.10",
+            "third_party/gltf_validator/",
+            "third_party/basisu/",
+            "Basis Universal KTX2",
+            "meshoptimizer v1.2",
+            "third_party/meshoptimizer/",
         ):
             if needle not in notice_text:
                 problems.append(f"NOTICE.md is missing expected text: {needle!r}")

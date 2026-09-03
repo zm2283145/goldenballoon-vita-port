@@ -79,6 +79,11 @@ CMAKE_PROJECT = ROOT / "CMakeLists.txt"
 UI_SETTINGS = ROOT / "platform" / "app" / "ui_settings.cpp"
 APP_SOURCE_DIR = ROOT / "platform" / "app"
 RELEASE_CHECKLIST = ROOT / "docs" / "RELEASE_CHECKLIST.md"
+RELEASE_CANDIDATE_GUIDE = ROOT / "docs" / "RELEASE_CANDIDATE_TEST_GUIDE.md"
+CHARACTER_RELEASE_EVIDENCE = ROOT / "tools" / "check_character_release_evidence.py"
+CHARACTER_RELEASE_SCHEMA = (
+    ROOT / "docs" / "ref" / "mdkr-character-release-acceptance-v1.schema.json"
+)
 RELEASE_NOTES = ROOT / "RELEASE_NOTES.md"
 TESTS = ROOT / "tests"
 TESTS_README = TESTS / "README.md"
@@ -124,6 +129,9 @@ SOURCES = {
     "cmake": CMAKE_PROJECT,
     "ui_settings": UI_SETTINGS,
     "checklist": RELEASE_CHECKLIST,
+    "candidate_guide": RELEASE_CANDIDATE_GUIDE,
+    "character_release_evidence": CHARACTER_RELEASE_EVIDENCE,
+    "character_release_schema": CHARACTER_RELEASE_SCHEMA,
     "release_notes": RELEASE_NOTES,
     "tests_readme": TESTS_README,
 }
@@ -803,10 +811,28 @@ def validate_desktop_release(sources: dict[str, str]) -> list[str]:
         "GoldenBalloon/",
         "GoldenBalloon/GoldenBalloon.exe",
         "GoldenBalloon/LICENSE",
+        "GoldenBalloon/BasisU-LICENSE.txt",
+        "GoldenBalloon/BasisU-Zstd-LICENSE.txt",
+        "GoldenBalloon/BasisU-README.md",
+        "GoldenBalloon/CharacterText-HarfBuzz-COPYING.txt",
+        "GoldenBalloon/CharacterText-SheenBidi-LICENSE.txt",
+        "GoldenBalloon/Meshoptimizer-LICENSE.md",
+        "GoldenBalloon/Meshoptimizer-README.md",
         "GoldenBalloon/NativePhoneParty-NOTICES.txt",
         "GoldenBalloon/README.md",
         "GoldenBalloon/RUN_ME.txt",
         "GoldenBalloon/gamecontrollerdb.txt",
+        "GoldenBalloon/tools/",
+        "GoldenBalloon/tools/character_importer.exe",
+        "GoldenBalloon/tools/character_importer.exe.manifest.json",
+        "GoldenBalloon/tools/mdkr-character-lod.exe",
+        "GoldenBalloon/tools/CPython-LICENSE.txt",
+        "GoldenBalloon/tools/PyInstaller-COPYING.txt",
+        "GoldenBalloon/tools/validators/",
+        "GoldenBalloon/tools/validators/gltf_validator.exe",
+        "GoldenBalloon/tools/validators/gltf_validator.exe.manifest.json",
+        "GoldenBalloon/tools/validators/LICENSE.txt",
+        "GoldenBalloon/tools/validators/NOTICES.txt",
     }
     actual_windows_entries = (
         set(
@@ -831,6 +857,13 @@ def validate_desktop_release(sources: dict[str, str]) -> list[str]:
     expected_linux_entries = {
         "Golden-Balloon.AppDir/AppRun",
         "Golden-Balloon.AppDir/LICENSE",
+        "Golden-Balloon.AppDir/BasisU-LICENSE.txt",
+        "Golden-Balloon.AppDir/BasisU-Zstd-LICENSE.txt",
+        "Golden-Balloon.AppDir/BasisU-README.md",
+        "Golden-Balloon.AppDir/CharacterText-HarfBuzz-COPYING.txt",
+        "Golden-Balloon.AppDir/CharacterText-SheenBidi-LICENSE.txt",
+        "Golden-Balloon.AppDir/Meshoptimizer-LICENSE.md",
+        "Golden-Balloon.AppDir/Meshoptimizer-README.md",
         "Golden-Balloon.AppDir/NativePhoneParty-NOTICES.txt",
         "Golden-Balloon.AppDir/README.md",
         "Golden-Balloon.AppDir/RUN_ME.txt",
@@ -838,6 +871,15 @@ def validate_desktop_release(sources: dict[str, str]) -> list[str]:
         "Golden-Balloon.AppDir/mdkr64.png",
         "Golden-Balloon.AppDir/usr/bin/gamecontrollerdb.txt",
         "Golden-Balloon.AppDir/usr/bin/mdkr64",
+        "Golden-Balloon.AppDir/usr/bin/tools/character_importer",
+        "Golden-Balloon.AppDir/usr/bin/tools/character_importer.manifest.json",
+        "Golden-Balloon.AppDir/usr/bin/tools/mdkr-character-lod",
+        "Golden-Balloon.AppDir/usr/bin/tools/CPython-LICENSE.txt",
+        "Golden-Balloon.AppDir/usr/bin/tools/PyInstaller-COPYING.txt",
+        "Golden-Balloon.AppDir/usr/bin/tools/validators/gltf_validator",
+        "Golden-Balloon.AppDir/usr/bin/tools/validators/gltf_validator.manifest.json",
+        "Golden-Balloon.AppDir/usr/bin/tools/validators/LICENSE.txt",
+        "Golden-Balloon.AppDir/usr/bin/tools/validators/NOTICES.txt",
     }
     actual_linux_entries = (
         set(
@@ -862,6 +904,18 @@ def validate_desktop_release(sources: dict[str, str]) -> list[str]:
         failures.append("both portable release binaries must assert their exact version")
     if workflow.count("needs.validate.outputs.version") < 8:
         failures.append("portable artifact naming/stamping is not bound to validated version")
+    if workflow.count('python-version: "3.13.13"') != 2:
+        failures.append(
+            "Linux and Windows releases must use the exact importer Python runtime"
+        )
+    if workflow.count("--require-hashes --only-binary=:all:") != 2:
+        failures.append(
+            "Linux and Windows releases must install only hashed importer wheels"
+        )
+    if workflow.count('"$importer" tool-info') != 2:
+        failures.append(
+            "Linux and Windows extracted packages must execute the frozen importer"
+        )
     if workflow.count(
         'python3 tests/check_app_capture.py "$work/launcher.bmp" --self-test'
     ) != 2:

@@ -311,6 +311,30 @@ void reset_lead_player_index(void);
 s8 find_non_car_racers(void);
 s8 check_if_silver_coin_race(void);
 void despawn_player_racer(Object *obj, s32 vehicleID);
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+/* AP-11 Taj party transform transaction. despawn_player_racer/transform_player_vehicle
+ * rebuild a transformed roster as EXACTLY ONE racer, which would destroy a
+ * party. These two entry points replace that with a transactional whole-party
+ * rebuild: the Taj loop calls _begin() (capture + free ALL N racers, arm the
+ * deferred rebuild) instead of despawn_player_racer, and transform_player_vehicle
+ * runs the deferred commit when _pending() is set. Both live in objects.c beside
+ * the retail machinery they mirror; the retail path is byte-identical off/omit. */
+void adventure_party_taj_transform_begin(s32 vehicle);
+s32 adventure_party_taj_transform_pending(void);
+/* AP-14 team-shared silver coins. One team tally (a file-scope counter in
+ * objects.c — NOT a racer/settings field, so the save layout is untouched) is
+ * incremented once per coin by the collect adapter (object_functions.c) and read
+ * by the HUD (game_ui.c) and finish so every viewport shows one total and the
+ * >= 8 win test scores the team, not the leading racer. _race_active gates all
+ * three arms; it is TRUE only for a live party session on a silver-coin course. */
+s32 adventure_party_silver_race_active(void);
+s32 adventure_party_silver_team_coins(void);
+void adventure_party_silver_team_collect(void);
+/* AP-16 trophy-series award token witness. Called from the trophy rankings
+ * ceremony (menu.c) when a party's championship upgrades a trophy, to mint+consume
+ * one COMPLETION_TROPHY token beside the exact-once retail write. */
+void adventure_party_trophy_award_note(Settings *settings);
+#endif
 void set_time_trial_enabled(s32 status);
 u8 is_time_trial_enabled(void);
 u8 is_in_time_trial(void);
@@ -524,6 +548,14 @@ u8 timetrial_init_staff_ghost(s32 trackId);
 s8 set_course_finish_flags(Settings *settings);
 void process_object_interactions(void);
 void render_3d_model(Object *obj);
+#ifdef NATIVE_PORT
+/* Character-select presentation adapter. Logical-player masks use the same
+ * compact player order that becomes racer playerIndex after confirmation. */
+void obj_modern_character_select_update(Object *obj, s32 donor,
+                                        u32 hoverMask, u32 confirmedMask,
+                                        f32 seconds);
+void obj_modern_character_select_forget(const Object *obj);
+#endif
 void mode_end_taj_race(s32 reason);
 void ainode_update(void);
 void func_8001E6EC(s8);

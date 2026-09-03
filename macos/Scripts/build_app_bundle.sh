@@ -183,6 +183,15 @@ Options:
                          version than --deployment-target.
   --bundle-sdl2          Copy the linked SDL2 dylib into Contents/Frameworks
                          and rewrite the engine binary's load path to the bundle.
+  --character-importer PATH
+                         Frozen arm64 Character Workshop importer to bundle.
+  --character-importer-manifest PATH
+                         Build attestation produced with the importer.
+  --gltf-validator PATH  Native arm64 Khronos validator to bundle.
+  --gltf-validator-manifest PATH
+                         Build attestation produced with the validator.
+  --character-lod-tool PATH
+                         Native meshoptimizer LOD helper to bundle.
   --allow-online-beta    Opt this build into the online beta. Adds
                          -DMDKR_ENABLE_ONLINE_BETA=ON and
                          -DMDKR_NATIVE_PHONE_PARTY=ON to the CMake configure
@@ -218,6 +227,11 @@ PARTY_ORIGIN=""
 DEPLOYMENT_TARGET="13.0"
 STRICT_DEPLOYMENT_TARGET=false
 BUNDLE_SDL2=false
+CHARACTER_IMPORTER=""
+CHARACTER_IMPORTER_MANIFEST=""
+GLTF_VALIDATOR=""
+GLTF_VALIDATOR_MANIFEST=""
+CHARACTER_LOD_TOOL=""
 RUN_CMAKE=true
 VALIDATE_OUTPUT_ONLY=false
 # Default OFF, and additive only: when true this adds two -D flags to the
@@ -286,6 +300,31 @@ while [[ $# -gt 0 ]]; do
             ;;
         --strict-deployment-target) STRICT_DEPLOYMENT_TARGET=true; shift ;;
         --bundle-sdl2) BUNDLE_SDL2=true; shift ;;
+        --character-importer)
+            [[ $# -ge 2 ]] || die "--character-importer requires a path"
+            CHARACTER_IMPORTER="$2"
+            shift 2
+            ;;
+        --character-importer-manifest)
+            [[ $# -ge 2 ]] || die "--character-importer-manifest requires a path"
+            CHARACTER_IMPORTER_MANIFEST="$2"
+            shift 2
+            ;;
+        --gltf-validator)
+            [[ $# -ge 2 ]] || die "--gltf-validator requires a path"
+            GLTF_VALIDATOR="$2"
+            shift 2
+            ;;
+        --gltf-validator-manifest)
+            [[ $# -ge 2 ]] || die "--gltf-validator-manifest requires a path"
+            GLTF_VALIDATOR_MANIFEST="$2"
+            shift 2
+            ;;
+        --character-lod-tool)
+            [[ $# -ge 2 ]] || die "--character-lod-tool requires a path"
+            CHARACTER_LOD_TOOL="$2"
+            shift 2
+            ;;
         --allow-online-beta) ALLOW_ONLINE_BETA=true; shift ;;
         --validate-output-only) VALIDATE_OUTPUT_ONLY=true; shift ;;
         --no-cmake) RUN_CMAKE=false; shift ;;
@@ -330,6 +369,32 @@ case "${ARCH}" in
     arm64|x86_64) CMAKE_ARCH="${ARCH}" ;;
     *) die "--arch must be native, arm64, or x86_64" ;;
 esac
+
+if [[ "${BUILD_TYPE}" == "Release" || -n "${CHARACTER_IMPORTER}" ||
+      -n "${CHARACTER_IMPORTER_MANIFEST}" || -n "${GLTF_VALIDATOR}" ||
+      -n "${GLTF_VALIDATOR_MANIFEST}" || -n "${CHARACTER_LOD_TOOL}" ]]; then
+    [[ -n "${CHARACTER_IMPORTER}" && -x "${CHARACTER_IMPORTER}" ]] ||
+        die "Release bundles require --character-importer with an executable helper."
+    [[ -n "${CHARACTER_IMPORTER_MANIFEST}" &&
+       -f "${CHARACTER_IMPORTER_MANIFEST}" ]] ||
+        die "Release bundles require --character-importer-manifest."
+    python3 "${PROJECT_ROOT}/tools/verify_character_importer.py" \
+        --repo-root "${PROJECT_ROOT}" \
+        --executable "${CHARACTER_IMPORTER}" \
+        --manifest "${CHARACTER_IMPORTER_MANIFEST}" \
+        --target "darwin-${CMAKE_ARCH}" ||
+        die "Character importer verification failed."
+    [[ -n "${GLTF_VALIDATOR}" && -x "${GLTF_VALIDATOR}" ]] ||
+        die "Release bundles require --gltf-validator with an executable helper."
+    [[ -n "${GLTF_VALIDATOR_MANIFEST}" &&
+       -f "${GLTF_VALIDATOR_MANIFEST}" ]] ||
+        die "Release bundles require --gltf-validator-manifest."
+    python3 "${PROJECT_ROOT}/tools/verify_gltf_validator.py" \
+        --executable "${GLTF_VALIDATOR}" \
+        --manifest "${GLTF_VALIDATOR_MANIFEST}" \
+        --target "darwin-${CMAKE_ARCH}" ||
+        die "Khronos glTF Validator verification failed."
+fi
 
 for tool in cmake pkg-config plutil ditto iconutil python3 sips codesign xattr otool shasum strings /usr/libexec/PlistBuddy; do
     if ! command -v "$tool" &>/dev/null; then
@@ -471,13 +536,17 @@ if [[ "${RUN_CMAKE}" == true ]]; then
 
     NCPU="$(sysctl -n hw.ncpu)"
     info "Building mdkr64 with ${NCPU} parallel jobs..."
-    cmake --build "${BUILD_DIR}" --target mdkr64 --parallel "${NCPU}" \
+    cmake --build "${BUILD_DIR}" --target mdkr64 mdkr-character-lod --parallel "${NCPU}" \
         || die "mdkr64 build failed."
 fi
 
 ENGINE_BUILD_OUTPUT="${BUILD_DIR}/mdkr64"
 if [[ ! -f "${ENGINE_BUILD_OUTPUT}" ]]; then
     die "Missing built executable: ${ENGINE_BUILD_OUTPUT}. Run without --no-cmake first."
+fi
+if [[ "${BUILD_TYPE}" == "Release" || -n "${CHARACTER_IMPORTER}" ]]; then
+    [[ -n "${CHARACTER_LOD_TOOL}" && -x "${CHARACTER_LOD_TOOL}" ]] ||
+        die "Release bundles require --character-lod-tool with an executable helper."
 fi
 
 CMAKE_CACHE="${BUILD_DIR}/CMakeCache.txt"
@@ -563,6 +632,72 @@ PHONE_PARTY_NOTICE_DEST="${OUTPUT_APP}/Contents/Resources/ThirdParty/NativePhone
 mkdir -p "$(dirname "${PHONE_PARTY_NOTICE_DEST}")"
 ditto "${PHONE_PARTY_NOTICE_SRC}" "${PHONE_PARTY_NOTICE_DEST}" ||
     die "Failed to copy native Phone Party notices into the app bundle."
+THIRD_PARTY_RESOURCE_DIR="${OUTPUT_APP}/Contents/Resources/ThirdParty"
+ditto "${PROJECT_ROOT}/third_party/basisu/LICENSE.txt" \
+    "${THIRD_PARTY_RESOURCE_DIR}/BasisU-LICENSE.txt" ||
+    die "Failed to copy the Basis Universal license."
+ditto "${PROJECT_ROOT}/third_party/basisu/Zstd-LICENSE.txt" \
+    "${THIRD_PARTY_RESOURCE_DIR}/BasisU-Zstd-LICENSE.txt" ||
+    die "Failed to copy the Basis Universal Zstandard license."
+ditto "${PROJECT_ROOT}/third_party/basisu/README.md" \
+    "${THIRD_PARTY_RESOURCE_DIR}/BasisU-README.md" ||
+    die "Failed to copy the Basis Universal provenance notice."
+ditto "${PROJECT_ROOT}/third_party/character_text/HarfBuzz-COPYING.txt" \
+    "${THIRD_PARTY_RESOURCE_DIR}/CharacterText-HarfBuzz-COPYING.txt" ||
+    die "Failed to copy the HarfBuzz license."
+ditto "${PROJECT_ROOT}/third_party/gltf_validator/LICENSE.txt" \
+    "${THIRD_PARTY_RESOURCE_DIR}/CharacterText-SheenBidi-LICENSE.txt" ||
+    die "Failed to copy the SheenBidi Apache license."
+
+CHARACTER_IMPORTER_BUNDLED=""
+CHARACTER_IMPORTER_MANIFEST_DEST=""
+GLTF_VALIDATOR_BUNDLED=""
+GLTF_VALIDATOR_MANIFEST_DEST=""
+CHARACTER_LOD_BUNDLED=""
+if [[ -n "${CHARACTER_IMPORTER}" ]]; then
+    CHARACTER_TOOL_DIR="${OUTPUT_APP}/Contents/MacOS/tools"
+    CHARACTER_NOTICE_DIR="${OUTPUT_APP}/Contents/Resources/ThirdParty"
+    CHARACTER_IMPORTER_BUNDLED="${CHARACTER_TOOL_DIR}/character_importer"
+    CHARACTER_IMPORTER_MANIFEST_DEST="${CHARACTER_NOTICE_DIR}/CharacterImporter-MANIFEST.json"
+    mkdir -p "${CHARACTER_TOOL_DIR}" "${CHARACTER_NOTICE_DIR}"
+    ditto "${CHARACTER_IMPORTER}" "${CHARACTER_IMPORTER_BUNDLED}" ||
+        die "Failed to copy the Character Workshop importer."
+    chmod +x "${CHARACTER_IMPORTER_BUNDLED}"
+    ditto "${CHARACTER_IMPORTER_MANIFEST}" \
+        "${CHARACTER_IMPORTER_MANIFEST_DEST}" ||
+        die "Failed to copy the Character Workshop importer manifest."
+    ditto "${PROJECT_ROOT}/third_party/character_importer/CPython-LICENSE.txt" \
+        "${CHARACTER_NOTICE_DIR}/CharacterImporter-CPython-LICENSE.txt" ||
+        die "Failed to copy the Character Workshop CPython license."
+    ditto "${PROJECT_ROOT}/third_party/character_importer/PyInstaller-COPYING.txt" \
+        "${CHARACTER_NOTICE_DIR}/CharacterImporter-PyInstaller-COPYING.txt" ||
+        die "Failed to copy the Character Workshop PyInstaller terms."
+    GLTF_VALIDATOR_DIR="${CHARACTER_TOOL_DIR}/validators"
+    GLTF_VALIDATOR_BUNDLED="${GLTF_VALIDATOR_DIR}/gltf_validator"
+    GLTF_VALIDATOR_MANIFEST_DEST="${CHARACTER_NOTICE_DIR}/GltfValidator-MANIFEST.json"
+    mkdir -p "${GLTF_VALIDATOR_DIR}"
+    ditto "${GLTF_VALIDATOR}" "${GLTF_VALIDATOR_BUNDLED}" ||
+        die "Failed to copy the Khronos glTF Validator."
+    chmod +x "${GLTF_VALIDATOR_BUNDLED}"
+    ditto "${GLTF_VALIDATOR_MANIFEST}" "${GLTF_VALIDATOR_MANIFEST_DEST}" ||
+        die "Failed to copy the Khronos glTF Validator manifest."
+    ditto "${PROJECT_ROOT}/third_party/gltf_validator/LICENSE.txt" \
+        "${CHARACTER_NOTICE_DIR}/GltfValidator-LICENSE.txt" ||
+        die "Failed to copy the Khronos glTF Validator license."
+    ditto "${PROJECT_ROOT}/third_party/gltf_validator/NOTICES.txt" \
+        "${CHARACTER_NOTICE_DIR}/GltfValidator-NOTICES.txt" ||
+        die "Failed to copy the Khronos glTF Validator notices."
+    CHARACTER_LOD_BUNDLED="${CHARACTER_TOOL_DIR}/mdkr-character-lod"
+    ditto "${CHARACTER_LOD_TOOL}" "${CHARACTER_LOD_BUNDLED}" ||
+        die "Failed to copy the Character Workshop LOD helper."
+    chmod +x "${CHARACTER_LOD_BUNDLED}"
+    ditto "${PROJECT_ROOT}/third_party/meshoptimizer/LICENSE.md" \
+        "${CHARACTER_NOTICE_DIR}/Meshoptimizer-LICENSE.md" ||
+        die "Failed to copy the meshoptimizer license."
+    ditto "${PROJECT_ROOT}/third_party/meshoptimizer/README.md" \
+        "${CHARACTER_NOTICE_DIR}/Meshoptimizer-README.md" ||
+        die "Failed to copy the meshoptimizer provenance notice."
+fi
 
 ICONSET_DIR="${BUILD_DIR}/AppIcon.iconset"
 APP_ICON="${OUTPUT_APP}/Contents/Resources/AppIcon.icns"
@@ -692,6 +827,78 @@ echo "APPL????" > "${OUTPUT_APP}/Contents/PkgInfo"
 # xattrs, sign nested code first, then seal the outer bundle. A later Developer
 # ID release signature replaces these ad-hoc signatures inside-out.
 xattr -cr "${OUTPUT_APP}"
+if [[ -n "${CHARACTER_LOD_BUNDLED}" ]]; then
+    info "Applying ad-hoc integrity signature to Character Workshop LOD helper..."
+    codesign --force --sign - "${CHARACTER_LOD_BUNDLED}" ||
+        die "Failed to ad-hoc sign the Character Workshop LOD helper."
+fi
+if [[ -n "${GLTF_VALIDATOR_BUNDLED}" ]]; then
+    info "Applying ad-hoc integrity signature to Khronos glTF Validator..."
+    codesign --force --sign - "${GLTF_VALIDATOR_BUNDLED}" ||
+        die "Failed to ad-hoc sign the Khronos glTF Validator."
+    python3 - "${GLTF_VALIDATOR_BUNDLED}" \
+        "${GLTF_VALIDATOR_MANIFEST_DEST}" <<'PY'
+import hashlib
+import json
+import os
+import sys
+from pathlib import Path
+
+executable = Path(sys.argv[1])
+manifest_path = Path(sys.argv[2])
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+payload = executable.read_bytes()
+manifest["executable_bytes"] = len(payload)
+manifest["executable_sha256"] = hashlib.sha256(payload).hexdigest()
+temporary = manifest_path.with_name(manifest_path.name + ".tmp")
+with temporary.open("x", encoding="utf-8", newline="\n") as stream:
+    json.dump(manifest, stream, indent=2, sort_keys=True)
+    stream.write("\n")
+    stream.flush()
+    os.fsync(stream.fileno())
+os.replace(temporary, manifest_path)
+PY
+    python3 "${PROJECT_ROOT}/tools/verify_gltf_validator.py" \
+        --executable "${GLTF_VALIDATOR_BUNDLED}" \
+        --manifest "${GLTF_VALIDATOR_MANIFEST_DEST}" \
+        --target "darwin-${CMAKE_ARCH}" ||
+        die "Signed Khronos glTF Validator attestation failed."
+fi
+if [[ -n "${CHARACTER_IMPORTER_BUNDLED}" ]]; then
+    info "Applying ad-hoc integrity signature to Character Workshop importer..."
+    codesign --force --sign - "${CHARACTER_IMPORTER_BUNDLED}" ||
+        die "Failed to ad-hoc sign the Character Workshop importer."
+    python3 - "${CHARACTER_IMPORTER_BUNDLED}" \
+        "${CHARACTER_IMPORTER_MANIFEST_DEST}" <<'PY'
+import hashlib
+import json
+import os
+import sys
+from pathlib import Path
+
+executable = Path(sys.argv[1])
+manifest_path = Path(sys.argv[2])
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+payload = executable.read_bytes()
+manifest["executable"] = executable.name
+manifest["executable_bytes"] = len(payload)
+manifest["executable_sha256"] = hashlib.sha256(payload).hexdigest()
+temporary = manifest_path.with_name(manifest_path.name + ".tmp")
+with temporary.open("x", encoding="utf-8", newline="\n") as stream:
+    json.dump(manifest, stream, indent=2, sort_keys=True)
+    stream.write("\n")
+    stream.flush()
+    os.fsync(stream.fileno())
+os.replace(temporary, manifest_path)
+PY
+    python3 "${PROJECT_ROOT}/tools/verify_character_importer.py" \
+        --repo-root "${PROJECT_ROOT}" \
+        --executable "${CHARACTER_IMPORTER_BUNDLED}" \
+        --manifest "${CHARACTER_IMPORTER_MANIFEST_DEST}" \
+        --target "darwin-${CMAKE_ARCH}" \
+        --allow-signed ||
+        die "Ad-hoc-signed Character Workshop importer attestation failed."
+fi
 if [[ -n "${SDL2_BUNDLED_PATH}" ]]; then
     info "Applying ad-hoc integrity signature to bundled SDL2..."
     codesign --force --sign - "${SDL2_BUNDLED_PATH}" \
@@ -720,6 +927,12 @@ info "App icon      : ${APP_ICON}"
 info "SDL2 link     : $(otool -L "${ENGINE_PATH}" | grep -E 'libSDL2' | sed 's/^[[:space:]]*//' || echo 'not found')"
 if [[ -n "${SDL2_BUNDLED_PATH}" ]]; then
     info "SDL2 bundled  : ${SDL2_BUNDLED_PATH}"
+fi
+if [[ -n "${CHARACTER_IMPORTER_BUNDLED}" ]]; then
+    info "Char importer : ${CHARACTER_IMPORTER_BUNDLED}"
+fi
+if [[ -n "${CHARACTER_LOD_BUNDLED}" ]]; then
+    info "LOD helper    : ${CHARACTER_LOD_BUNDLED}"
 fi
 info "Verify assets : ${PROJECT_ROOT}/macos/Scripts/verify_asset_free.sh '${OUTPUT_APP}'"
 info "CLI/CI use    : '${ENGINE_PATH}' --rom ROM --headless-frames N   (any argument bypasses the launcher)"

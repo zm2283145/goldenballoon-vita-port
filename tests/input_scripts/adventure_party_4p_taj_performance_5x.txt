@@ -1,0 +1,47 @@
+# AP-19 four-player Taj repeated-transform soak.
+#
+# A non-host summons Taj through MDKR_AP_SEAT_ROUTE. The host alternates the
+# whole party CAR <-> HOVERCRAFT five times without leaving the shared scene.
+# The final state and release timing match the one-transform baseline exactly.
+
+1250 START 4
+1330 START 4
+1430 A 4 P2
+1470 A 4 P3
+1510 A 4 P4
+1600 A 4 P1
+1660 A 4 P2
+1720 A 4 P3
+1780 A 4 P4
+1880 A 4 P1
+2100 A 4 P1
+2350 A 4 P1
+
+# Transform 1: CAR -> HOVERCRAFT. Four-player approach/greeting is complete by
+# this horizon; earlier edges would be consumed before the root menu opens.
+4000 A 6 P1
+4120 DOWN 6 P1
+4240 A 6 P1
+
+# Transform 2: HOVERCRAFT -> CAR.
+4700 A 6 P1
+4820 UP 6 P1
+4940 A 6 P1
+
+# Transform 3: CAR -> HOVERCRAFT.
+5400 A 6 P1
+5520 DOWN 6 P1
+5640 A 6 P1
+
+# Transform 4: HOVERCRAFT -> CAR.
+6100 A 6 P1
+6220 UP 6 P1
+6340 A 6 P1
+
+# Transform 5: CAR -> HOVERCRAFT.
+6800 A 6 P1
+6920 DOWN 6 P1
+7040 A 6 P1
+
+7600 B 6 P1
+7720 B 6 P1

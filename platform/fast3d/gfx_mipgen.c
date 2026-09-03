@@ -84,8 +84,14 @@ size_t gfx_mip_chain_bytes(int width, int height) {
  * ever leaves the texture and no wrap/clamp rule is required. Partial source
  * texels at each end contribute their fractional overlap.
  */
+typedef enum GfxMipMode {
+    GFX_MIP_SRGB,
+    GFX_MIP_LINEAR,
+    GFX_MIP_NORMAL
+} GfxMipMode;
+
 static void reduce_level(const uint8_t *src, int sw, int sh,
-                         uint8_t *dst, int dw, int dh) {
+                         uint8_t *dst, int dw, int dh, GfxMipMode mode) {
     const float x_scale = (float) sw / (float) dw;
     const float y_scale = (float) sh / (float) dh;
 
@@ -123,10 +129,19 @@ static void reduce_level(const uint8_t *src, int sw, int sh,
                     }
                     w = wx * wy;
                     p = src + ((size_t) sy * (size_t) sw + (size_t) sx) * 4u;
-                    /* Colour in linear light; alpha is coverage, so linear as-is. */
-                    acc_r += s_srgb_to_linear[p[0]] * w;
-                    acc_g += s_srgb_to_linear[p[1]] * w;
-                    acc_b += s_srgb_to_linear[p[2]] * w;
+                    if (mode == GFX_MIP_SRGB) {
+                        acc_r += s_srgb_to_linear[p[0]] * w;
+                        acc_g += s_srgb_to_linear[p[1]] * w;
+                        acc_b += s_srgb_to_linear[p[2]] * w;
+                    } else if (mode == GFX_MIP_NORMAL) {
+                        acc_r += ((float)p[0] / 127.5f - 1.0f) * w;
+                        acc_g += ((float)p[1] / 127.5f - 1.0f) * w;
+                        acc_b += ((float)p[2] / 127.5f - 1.0f) * w;
+                    } else {
+                        acc_r += (float)p[0] * w;
+                        acc_g += (float)p[1] * w;
+                        acc_b += (float)p[2] * w;
+                    }
                     acc_a += (float) p[3] * w;
                     acc_w += w;
                 }
@@ -136,9 +151,28 @@ static void reduce_level(const uint8_t *src, int sw, int sh,
                 uint8_t *o = dst + ((size_t) y * (size_t) dw + (size_t) x) * 4u;
                 if (acc_w > 0.0f) {
                     const float inv = 1.0f / acc_w;
-                    o[0] = linear_to_srgb_u8(acc_r * inv);
-                    o[1] = linear_to_srgb_u8(acc_g * inv);
-                    o[2] = linear_to_srgb_u8(acc_b * inv);
+                    if (mode == GFX_MIP_SRGB) {
+                        o[0] = linear_to_srgb_u8(acc_r * inv);
+                        o[1] = linear_to_srgb_u8(acc_g * inv);
+                        o[2] = linear_to_srgb_u8(acc_b * inv);
+                    } else if (mode == GFX_MIP_NORMAL) {
+                        float nx = acc_r * inv;
+                        float ny = acc_g * inv;
+                        float nz = acc_b * inv;
+                        float length = sqrtf(nx * nx + ny * ny + nz * nz);
+                        if (length > 1.0e-8f) {
+                            nx /= length; ny /= length; nz /= length;
+                        } else {
+                            nx = ny = 0.0f; nz = 1.0f;
+                        }
+                        o[0] = (uint8_t)((nx * 0.5f + 0.5f) * 255.0f + 0.5f);
+                        o[1] = (uint8_t)((ny * 0.5f + 0.5f) * 255.0f + 0.5f);
+                        o[2] = (uint8_t)((nz * 0.5f + 0.5f) * 255.0f + 0.5f);
+                    } else {
+                        o[0] = (uint8_t)(acc_r * inv + 0.5f);
+                        o[1] = (uint8_t)(acc_g * inv + 0.5f);
+                        o[2] = (uint8_t)(acc_b * inv + 0.5f);
+                    }
                     o[3] = (uint8_t) (acc_a * inv + 0.5f);
                 } else {
                     o[0] = o[1] = o[2] = o[3] = 0;
@@ -266,17 +300,10 @@ static void preserve_alpha_coverage(uint8_t *rgba, int width, int height,
     }
 }
 
-bool gfx_mip_build(const uint8_t *src_rgba, int width, int height,
-                   uint8_t *scratch, size_t scratch_bytes,
-                   GfxMipChain *out) {
-    return gfx_mip_build_cutout(src_rgba, width, height, scratch, scratch_bytes,
-                                0, out);
-}
-
-bool gfx_mip_build_cutout(const uint8_t *src_rgba, int width, int height,
-                          uint8_t *scratch, size_t scratch_bytes,
-                          uint8_t alpha_threshold,
-                          GfxMipChain *out) {
+static bool gfx_mip_build_mode(const uint8_t *src_rgba, int width, int height,
+                               uint8_t *scratch, size_t scratch_bytes,
+                               uint8_t alpha_threshold, GfxMipMode mode,
+                               GfxMipChain *out) {
     int levels;
     size_t used = 0;
     const uint8_t *prev;
@@ -293,7 +320,7 @@ bool gfx_mip_build_cutout(const uint8_t *src_rgba, int width, int height,
         return false;
     }
 
-    srgb_table_init();
+    if (mode == GFX_MIP_SRGB) srgb_table_init();
 
     memset(out, 0, sizeof(*out));
     out->level_count = levels;
@@ -313,7 +340,7 @@ bool gfx_mip_build_cutout(const uint8_t *src_rgba, int width, int height,
         const int ch = next_dim(ph);
         uint8_t *dst = scratch + used;
 
-        reduce_level(prev, pw, ph, dst, cw, ch);
+        reduce_level(prev, pw, ph, dst, cw, ch, mode);
 
         out->width[l] = cw;
         out->height[l] = ch;
@@ -344,4 +371,33 @@ bool gfx_mip_build_cutout(const uint8_t *src_rgba, int width, int height,
         }
     }
     return true;
+}
+
+bool gfx_mip_build(const uint8_t *src_rgba, int width, int height,
+                   uint8_t *scratch, size_t scratch_bytes,
+                   GfxMipChain *out) {
+    return gfx_mip_build_mode(src_rgba, width, height, scratch, scratch_bytes,
+                              0u, GFX_MIP_SRGB, out);
+}
+
+bool gfx_mip_build_linear(const uint8_t *src_rgba, int width, int height,
+                          uint8_t *scratch, size_t scratch_bytes,
+                          GfxMipChain *out) {
+    return gfx_mip_build_mode(src_rgba, width, height, scratch, scratch_bytes,
+                              0u, GFX_MIP_LINEAR, out);
+}
+
+bool gfx_mip_build_normal(const uint8_t *src_rgba, int width, int height,
+                          uint8_t *scratch, size_t scratch_bytes,
+                          GfxMipChain *out) {
+    return gfx_mip_build_mode(src_rgba, width, height, scratch, scratch_bytes,
+                              0u, GFX_MIP_NORMAL, out);
+}
+
+bool gfx_mip_build_cutout(const uint8_t *src_rgba, int width, int height,
+                          uint8_t *scratch, size_t scratch_bytes,
+                          uint8_t alpha_threshold,
+                          GfxMipChain *out) {
+    return gfx_mip_build_mode(src_rgba, width, height, scratch, scratch_bytes,
+                              alpha_threshold, GFX_MIP_SRGB, out);
 }

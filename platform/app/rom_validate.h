@@ -17,6 +17,7 @@
 #define MDKR64_ROM_VALIDATE_H
 
 #include "rom_validation.h"
+#include "modern_character_gameplay_profile.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -34,6 +35,8 @@ typedef struct {
     unsigned size_bytes;
     DkrRomValidationCode validation_code;
     int  integrity_verified;
+    MdkrDonorGameplayProfiles donor_profiles;
+    char donor_profiles_message[192];
     int  cancelled;
     char sha256[MDKR_SHA256_HEX_SIZE];
     // Sized to match DkrRomValidation.message (rom_validation.h): this is a

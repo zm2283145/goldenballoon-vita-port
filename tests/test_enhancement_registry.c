@@ -23,6 +23,12 @@ static void test_every_row_is_complete(void) {
          * pass, so an absent probe is a table defect, not a test detail. */
         snprintf(what, sizeof what, "row %d declares a probe value", i);
         expect(e->probe_value != NULL && e->probe_value[0] != '\0', what);
+        /* The gate dispatches on the proof profile, so a row that declares an
+         * out-of-range one would be routed nowhere. Every row must name a
+         * profile the gate knows how to prove. */
+        snprintf(what, sizeof what, "row %d declares a known proof profile", i);
+        expect(e->proof_profile == MDKR_ENH_PROOF_SOLO_RACE ||
+               e->proof_profile == MDKR_ENH_PROOF_ADVENTURE_PARTY_3P, what);
     }
 }
 

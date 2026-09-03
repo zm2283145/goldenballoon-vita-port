@@ -32,6 +32,7 @@ int main(void) {
     int regular = 0;
     int directory = 0;
     FILE *file;
+    int child_exit = -1;
     char bytes[8] = {0};
     char *running_executable = (char *)"sentinel";
     static const char rom_suffix[] =
@@ -52,6 +53,18 @@ int main(void) {
 #if !defined(_WIN32)
     expect(running_executable != NULL && running_executable[0] == '/',
            "the resolved executable path is absolute, not a PATH lookup");
+#endif
+#if defined(_WIN32)
+    {
+        const char *const arguments[] = {"/D", "/C", "exit 7", NULL};
+        expect(mdkr_spawn_wait_utf8("cmd.exe", arguments, &child_exit) == 0 &&
+                   child_exit == 7,
+               "spawn and reap a child with an exact nonzero exit status");
+    }
+#elif !defined(__EMSCRIPTEN__)
+    expect(mdkr_spawn_wait_utf8("false", NULL, &child_exit) == 0 &&
+               child_exit != 0,
+           "spawn and reap a child with an exact nonzero exit status");
 #endif
     free(running_executable);
     running_executable = NULL;

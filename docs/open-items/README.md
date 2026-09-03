@@ -26,7 +26,7 @@ unchanged.
 | [`multiplayer.md`](multiplayer.md) | Multiplayer — 2 entries |
 | [`gameplay.md`](gameplay.md) | Gameplay, race and Adventure — 12 entries |
 | [`portability.md`](portability.md) | 64-bit (LP64), endianness and portability — 13 entries |
-| [`misc.md`](misc.md) | Everything else — 6 entries |
+| [`misc.md`](misc.md) | Everything else — 7 entries |
 
 
 ## Contents
@@ -216,6 +216,10 @@ what was done and what proves it.
 - [FIXED: the settings panel's scripted gates depended on a hand-written list of section names — wave "gaterects"](misc.md#fixed-the-settings-panels-scripted-gates-depended-on-a-hand-written-list-of-section-names--wave-gaterects)
 - [OPEN: check_a11y_shell's in-game overlay arm covers a different number of rows every run — wave "shellwalk"](misc.md#open-check_a11y_shells-in-game-overlay-arm-covers-a-different-number-of-rows-every-run--wave-shellwalk)
 - [CLOSED: 17 checks scrubbed `MDKR_SAVE_DIR` out of their engine environment and then launched — wave "savehermetic"](misc.md#closed-17-checks-scrubbed-mdkr_save_dir-out-of-their-engine-environment-and-then-launched--wave-savehermetic)
+
+**Untrusted input**
+
+- [FIXED: a KTX2 header index pair whose sum wraps sized a 4 GiB allocation from past the end of the file — wave "ktx2index"](misc.md#fixed-a-ktx2-header-index-pair-whose-sum-wraps-sized-a-4-gib-allocation-from-past-the-end-of-the-file--wave-ktx2index)
 
 **Deferred — none outstanding**
 

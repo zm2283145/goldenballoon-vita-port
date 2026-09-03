@@ -1,0 +1,104 @@
+{
+  "schema": 1,
+  "scope": "All playable Adventure lobbies and save-eligible courses in the supported ROM",
+  "lobbies": [
+    {"id": 0, "name": "CENTRALAREAHUB", "world": 0, "policy": "split_party", "route": "campaign_hub_breadth"},
+    {"id": 12, "name": "DINODOMAINHUB", "world": 1, "policy": "split_party", "route": "campaign_hub_breadth"},
+    {"id": 14, "name": "SHERBETISLANDHUB", "world": 2, "policy": "split_party", "route": "campaign_hub_breadth"},
+    {"id": 24, "name": "SNOWFLAKEMOUNTAINHUB", "world": 3, "policy": "split_party", "route": "campaign_hub_breadth"},
+    {"id": 2, "name": "DRAGONFORESTHUB", "world": 4, "policy": "split_party", "route": "campaign_hub_breadth"},
+    {"id": 35, "name": "FUTUREFUNLANDHUB", "world": 5, "policy": "split_party", "route": "future_fun_land_unlock"}
+  ],
+  "world_transitions": [
+    {"from": 0, "to": 12, "class": "world_lobby", "requirement": "one_global_balloon", "route": "campaign_real_boss_and_silver"},
+    {"from": 0, "to": 24, "class": "world_lobby", "requirement": "two_global_balloons", "route": "adventure_hub_tour"},
+    {"from": 0, "to": 14, "class": "world_lobby", "requirement": "ten_global_balloons", "route": "adventure_hub_tour"},
+    {"from": 0, "to": 2, "class": "world_lobby", "requirement": "sixteen_global_balloons", "route": "adventure_hub_tour"},
+    {"from": 0, "to": 35, "class": "future_fun_land", "requirement": "four_trophies_and_wizpig_amulet", "route": "future_fun_land_unlock"},
+    {"from": 12, "to": 0, "class": "world_return", "requirement": "none", "route": "adventure_party_transition"},
+    {"from": 24, "to": 0, "class": "world_return", "requirement": "none", "route": "adventure_hub_tour"},
+    {"from": 14, "to": 0, "class": "world_return", "requirement": "none", "route": "adventure_hub_tour"},
+    {"from": 2, "to": 0, "class": "world_return", "requirement": "none", "route": "adventure_hub_tour"},
+    {"from": 35, "to": 0, "class": "world_return", "requirement": "none", "route": "future_fun_land_unlock"}
+  ],
+  "courses": [
+    {"id": 5, "name": "ANCIENTLAKE", "world": 1, "class": "default", "policy": "split_party_six_racers", "default_vehicle": 0, "vehicles": [0, 1, 2], "party_vehicles": [0, 1, 2], "door": "default_or_silver"},
+    {"id": 3, "name": "FOSSILCANYON", "world": 1, "class": "default", "policy": "split_party_six_racers", "default_vehicle": 0, "vehicles": [0, 1, 2], "party_vehicles": [0, 1, 2], "door": "default_or_silver"},
+    {"id": 29, "name": "JUNGLEFALLS", "world": 1, "class": "default", "policy": "split_party_six_racers", "default_vehicle": 0, "vehicles": [0, 1, 2], "party_vehicles": [0, 1, 2], "door": "default_or_silver"},
+    {"id": 7, "name": "HOTTOPVOLCANO", "world": 1, "class": "default", "policy": "split_party_six_racers", "default_vehicle": 2, "vehicles": [1, 2], "party_vehicles": [1, 2], "door": "default_or_silver"},
+    {"id": 8, "name": "WHALEBAY", "world": 2, "class": "default", "policy": "split_party_six_racers", "default_vehicle": 1, "vehicles": [1], "party_vehicles": [1], "door": "default_or_silver"},
+    {"id": 4, "name": "PIRATELAGOON", "world": 2, "class": "default", "policy": "split_party_six_racers", "default_vehicle": 1, "vehicles": [1], "party_vehicles": [1], "door": "default_or_silver"},
+    {"id": 10, "name": "CRESCENTISLAND", "world": 2, "class": "default", "policy": "split_party_six_racers", "default_vehicle": 0, "vehicles": [0, 1], "party_vehicles": [0, 1], "door": "default_or_silver"},
+    {"id": 30, "name": "TREASURECAVES", "world": 2, "class": "default", "policy": "split_party_six_racers", "default_vehicle": 0, "vehicles": [0, 1, 2], "party_vehicles": [0, 1, 2], "door": "default_or_silver"},
+    {"id": 13, "name": "EVERFROSTPEAK", "world": 3, "class": "default", "policy": "split_party_six_racers", "default_vehicle": 2, "vehicles": [0, 1, 2], "party_vehicles": [0, 1, 2], "door": "default_or_silver"},
+    {"id": 6, "name": "WALRUSCOVE", "world": 3, "class": "default", "policy": "split_party_six_racers", "default_vehicle": 0, "vehicles": [0, 1], "party_vehicles": [0, 1], "door": "default_or_silver"},
+    {"id": 9, "name": "SNOWBALLVALLEY", "world": 3, "class": "default", "policy": "split_party_six_racers", "default_vehicle": 0, "vehicles": [0, 1], "party_vehicles": [0, 1], "door": "default_or_silver"},
+    {"id": 28, "name": "FROSTYVILLAGE", "world": 3, "class": "default", "policy": "split_party_six_racers", "default_vehicle": 0, "vehicles": [0, 1, 2], "party_vehicles": [0, 1], "door": "default_or_silver"},
+    {"id": 19, "name": "BOULDERCANYON", "world": 4, "class": "default", "policy": "split_party_six_racers", "default_vehicle": 1, "vehicles": [1], "party_vehicles": [1], "door": "default_or_silver"},
+    {"id": 18, "name": "GREENWOODVILLAGE", "world": 4, "class": "default", "policy": "split_party_six_racers", "default_vehicle": 0, "vehicles": [0, 1], "party_vehicles": [0, 1], "door": "default_or_silver"},
+    {"id": 20, "name": "WINDMILLPLAINS", "world": 4, "class": "default", "policy": "split_party_six_racers", "default_vehicle": 2, "vehicles": [0, 1, 2], "party_vehicles": [0, 1, 2], "door": "default_or_silver"},
+    {"id": 31, "name": "HAUNTEDWOODS", "world": 4, "class": "default", "policy": "split_party_six_racers", "default_vehicle": 0, "vehicles": [0, 1], "party_vehicles": [0, 1], "door": "default_or_silver"},
+    {"id": 17, "name": "SPACEDUSTALLEY", "world": 5, "class": "default", "policy": "split_party_six_racers", "default_vehicle": 2, "vehicles": [0, 1, 2], "party_vehicles": [0, 1, 2], "door": "default_or_silver"},
+    {"id": 32, "name": "DARKMOONCAVERNS", "world": 5, "class": "default", "policy": "split_party_six_racers", "default_vehicle": 0, "vehicles": [0, 1], "party_vehicles": [0, 1], "door": "default_or_silver"},
+    {"id": 33, "name": "STARCITY", "world": 5, "class": "default", "policy": "split_party_six_racers", "default_vehicle": 0, "vehicles": [0, 1, 2], "party_vehicles": [0, 1, 2], "door": "default_or_silver"},
+    {"id": 15, "name": "SPACEPORTALPHA", "world": 5, "class": "default", "policy": "split_party_six_racers", "default_vehicle": 2, "vehicles": [0, 1, 2], "party_vehicles": [0, 2], "door": "default_or_silver"},
+
+    {"id": 11, "name": "FIREMOUNTAIN", "world": 1, "class": "challenge_eggs", "policy": "host_solo_restore", "door": "world_key"},
+    {"id": 26, "name": "DARKWATERBEACH", "world": 2, "class": "challenge_battle", "policy": "host_solo_restore", "door": "world_key"},
+    {"id": 27, "name": "ICICLEPYRAMID", "world": 3, "class": "challenge_battle", "policy": "host_solo_restore", "door": "world_key"},
+    {"id": 25, "name": "SMOKEYCASTLE", "world": 4, "class": "challenge_bananas", "policy": "host_solo_restore", "door": "world_key"},
+
+    {"id": 38, "name": "TRICKYTOPS1", "world": 1, "class": "boss_first", "policy": "host_solo_restore", "door": "boss_first"},
+    {"id": 46, "name": "TRICKYTOPS2", "world": 1, "class": "boss_rematch", "policy": "host_solo_restore", "door": "boss_rematch"},
+    {"id": 40, "name": "BUBBLER1", "world": 2, "class": "boss_first", "policy": "host_solo_restore", "door": "boss_first"},
+    {"id": 53, "name": "BUBBLER2", "world": 2, "class": "boss_rematch", "policy": "host_solo_restore", "door": "boss_rematch"},
+    {"id": 1, "name": "BLUEY1", "world": 3, "class": "boss_first", "policy": "host_solo_restore", "door": "boss_first"},
+    {"id": 52, "name": "BLUEY2", "world": 3, "class": "boss_rematch", "policy": "host_solo_restore", "door": "boss_rematch"},
+    {"id": 41, "name": "SMOKEY1", "world": 4, "class": "boss_first", "policy": "host_solo_restore", "door": "boss_first"},
+    {"id": 54, "name": "SMOKEY2", "world": 4, "class": "boss_rematch", "policy": "host_solo_restore", "door": "boss_rematch"},
+    {"id": 37, "name": "WIZPIG1", "world": 0, "class": "boss_final_one", "policy": "host_solo_restore", "door": "amulet_face"},
+    {"id": 55, "name": "WIZPIG2", "world": 5, "class": "boss_final_two", "policy": "host_solo_restore", "door": "tt_door"}
+  ],
+  "door_classes": {
+    "world_lobby": {"policy": "shared_transition", "dynamic_witness": "campaign_hub_breadth"},
+    "world_return": {"policy": "shared_transition", "dynamic_witness": "campaign_hub_breadth"},
+    "default": {"policy": "shared_transition", "dynamic_witness": "adventure_party_race_loop"},
+    "silver": {"policy": "shared_transition", "dynamic_witness": "campaign_real_silver_door"},
+    "world_key": {"policy": "host_solo", "dynamic_witness": "campaign_key_door_probe", "headless_route": "unreachable"},
+    "boss_first": {"policy": "host_solo", "dynamic_witness": "campaign_real_boss_door"},
+    "boss_rematch": {"policy": "host_solo", "dynamic_witness": "campaign_real_boss_rematch"},
+    "trophy_cabinet": {"policy": "split_party_eight_racers", "dynamic_witness": "campaign_trophy_cabinet_probe", "headless_route": "unreachable"},
+    "future_fun_land": {"policy": "shared_scene_then_split_party", "dynamic_witness": "future_fun_land_unlock"}
+  },
+  "headless_route_limits": {
+    "world_key": {
+      "level": 12,
+      "destination": 11,
+      "fixture_key_bit": 2,
+      "exit_position": [-1647, 34, 1677],
+      "door_positions": [[-1831, -2, 1637], [-1532, -2, 1516]],
+      "open_radius": 70,
+      "closest_approach": 708.3,
+      "blocking_position_band": [[-973, 0, 1420], [-862, 0, 1479]],
+      "attempt": "real E11 destination search after the lobby cutscene with the ROM-authored key bit set; direct steering repeatedly stalls behind collision geometry"
+    },
+    "trophy_cabinet": {
+      "level": 12,
+      "npc_behavior": 74,
+      "npc_position": [933, -6, -2172],
+      "attempt": "two legitimate boss-beaten-save waypoint approaches; the direct east-side approach stalls at the interior wall and the west loop is intercepted by the independently mobile party's real boss/overworld exits before cabinet collision"
+    }
+  },
+  "campaign_branches": {
+    "adventure_one": "adventure_party_progress",
+    "adventure_two": "adventure_party_adventure_two",
+    "default_race": "adventure_party_race_loop",
+    "silver_race": "adventure_party_silver",
+    "challenge": "adventure_party_challenges",
+    "boss": "adventure_party_boss_restore",
+    "trophy": "adventure_party_trophy",
+    "taj_transform": "adventure_party_taj",
+    "new_game": "fail_closed_until_shared_scene_envelope",
+    "in_hub_taj_challenge": "fail_closed_until_challenge_envelope"
+  }
+}

@@ -111,6 +111,30 @@ int main() {
     expect(std::remove(path.c_str()) == 0,
            "maximum-path preference fixture removed");
     AppConfig::load();
+    AppConfig::set("custom_character_profile_org.example.hero_scale", "1.5");
+    AppConfig::set("custom_character_profile_org.example.hero_car_review_signature",
+                   "review");
+    AppConfig::set("custom_character_profile_org.example.hero2_scale", "2.0");
+    AppConfig::set("unrelated", "kept");
+    expect(AppConfig::save() == AppConfig::PersistResult::Durable,
+           "package-owned preference fixture saved");
+    expect(AppConfig::erasePrefix(
+               "custom_character_profile_org.example.hero_") == 2u,
+           "exact package-owned preference prefix erased");
+    expect(AppConfig::erasePrefix("") == 0u,
+           "empty preference prefix can never erase the store");
+    expect(AppConfig::save() == AppConfig::PersistResult::Durable,
+           "package-owned preference cleanup persisted");
+    AppConfig::load();
+    expect(AppConfig::get(
+               "custom_character_profile_org.example.hero_scale").empty() &&
+               AppConfig::get(
+                   "custom_character_profile_org.example.hero_car_review_signature").empty(),
+           "package tuning and review evidence stay erased after reload");
+    expect(AppConfig::get(
+               "custom_character_profile_org.example.hero2_scale") == "2.0" &&
+               AppConfig::get("unrelated") == "kept",
+           "prefix cleanup preserves longer identities and unrelated settings");
 #if !defined(_WIN32)
     const pid_t first = fork();
     if (first == 0) {
