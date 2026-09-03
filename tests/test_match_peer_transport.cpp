@@ -999,6 +999,78 @@ struct RawHarness {
     }
 };
 
+/* D1: the room-departure grace asks one question of the transport -- has
+ * ANYTHING authenticated arrived from this endpoint since the verdict? -- and
+ * a wrong answer either drops a peer that is still racing or keeps a survivor
+ * racing a ghost. So the counter moves for exactly the traffic that proves a
+ * peer is still there: an envelope that OPENED under its own derived lane key.
+ * Garbage does not move it (anyone can send garbage), and neither does the
+ * control channel's plaintext JSON, which is authenticated by DTLS alone and
+ * says only that a socket is alive. */
+void authenticatedPacketCountTracksOpenedEnvelopesOnly() {
+    RawHarness rig;
+    const std::vector<MdkrMatchPeerSlotOwner> roster = rosterOf({100u, 200u});
+    rig.mesh = rig.harness.add(100u, 1u, roster);
+    rig.rawFeed = rig.harness.hub.addEndpoint(200u, 2u);
+    rig.raw = std::make_unique<RawPeer>(200u, 2u, 100u, 1u, &rig.harness.hub);
+    rig.harness.hub.welcome(100u);
+    assert(rig.harness.pumpUntil([&]() {
+        rig.drainRawInbox();
+        rig.raw->serviceControl();
+        return rig.harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::PeerChannelsReady, 200u) >= 1u &&
+               rig.raw->channelsOpen() && rig.raw->meshHellos >= 3u;
+    }));
+    rig.raw->deriveKeys();
+
+    uint64_t count = 1u;
+    assert(rig.mesh->authenticatedPacketCount(200u, &count) && count == 0u);
+    /* An endpoint outside the roster has no count to read. */
+    uint64_t stranger = 7u;
+    assert(!rig.mesh->authenticatedPacketCount(999u, &stranger) &&
+           stranger == 7u);
+
+    /* Garbage on the lossy lane: rejected, and no evidence of anything. */
+    const std::vector<uint8_t> junk(MDKR_MATCH_PEER_ENVELOPE_BYTES, 0xEEu);
+    assert(rig.raw->sendStateBytes(junk));
+    assert(rig.harness.pumpUntil([&]() {
+        rig.raw->serviceControl();
+        return rig.mesh->stats().rejectedStateEnvelopes >= 1u;
+    }, 5000u));
+    assert(rig.mesh->authenticatedPacketCount(200u, &count) && count == 0u);
+
+    /* A sealed input bundle -- the traffic a peer that is still racing
+     * produces every tick -- counts. */
+    assert(rig.raw->sendStateBytes(
+        rig.raw->sealedInput(payloadFixture(0x33u))));
+    assert(rig.harness.pumpUntil([&]() {
+        rig.raw->serviceControl();
+        return rig.harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::InputEnvelope, 200u) >= 1u;
+    }, 5000u));
+    assert(rig.mesh->authenticatedPacketCount(200u, &count) && count == 1u);
+
+    /* So does a sealed reliable-lane envelope -- and the plaintext control
+     * message sent AHEAD of it on that same ordered lane does not. The order
+     * is what makes this exact: the ping is delivered and answered first, so a
+     * count of 2 rather than 3 is proof it was not evidence of anything. */
+    assert(rig.raw->sendControlText(
+        Json{{"type", "ping"}, {"protocol", 2u}, {"nonce", 7u}}.dump()));
+    assert(rig.raw->sendControlBytes(
+        rig.raw->sealedFragment(payloadFixture(0x44u))));
+    assert(rig.harness.pumpUntil([&]() {
+        rig.raw->serviceControl();
+        return rig.harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::PreflightFragment, 200u) >= 1u;
+    }, 5000u));
+    assert(rig.mesh->authenticatedPacketCount(200u, &count) && count == 2u);
+    /* The ping was WELL FORMED -- a malformed control message is terminal for
+     * the peer -- so its exclusion is a rule about what counts as evidence,
+     * not a message the mesh refused. */
+    assert(rig.harness.countEvents(100u,
+               MdkrMatchPeerMeshEventType::PeerLost, 200u) == 0u);
+}
+
 void badStateEnvelopeDroppedAndCounted() {
     RawHarness rig;
     const std::vector<MdkrMatchPeerSlotOwner> roster = rosterOf({100u, 200u});
@@ -2708,6 +2780,7 @@ int main() {
     phraseRefusedBeforeCommitmentCompletes();
     sealWindowExhaustionIsTypedPeerLoss();
     badStateEnvelopeDroppedAndCounted();
+    authenticatedPacketCountTracksOpenedEnvelopesOnly();
     controlPingTimeoutIsTypedPeerLoss();
     controlPingMissCountsBeforeTimeout();
     iceRestartRecoversAfterChannelDeath();

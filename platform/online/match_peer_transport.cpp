@@ -225,6 +225,15 @@ struct PeerRuntime {
     uint64_t bytesSent = 0u;
     uint64_t bytesReceived = 0u;
 
+    /* Envelopes from this peer that OPENED under its own derived lane key --
+     * an input bundle, a preflight fragment or an input repair. Monotonic
+     * across the mesh's lifetime and never reset, so a caller can compare two
+     * readings and know whether anything authenticated arrived between them
+     * (D1's peer-silence grace does exactly that). Bytes and rejected
+     * counters cannot answer that question: they also move for garbage, and
+     * garbage is not evidence that the peer is still racing. */
+    uint64_t authenticatedPackets = 0u;
+
     /* Vanish dwell (0 = disarmed): first tick at which this peer was BOTH
      * absent from signaling AND without ready channels. Armed/disarmed by
      * tick() from those two live facts each pump, so a presence re-assert or
@@ -1190,6 +1199,7 @@ struct MdkrMatchPeerMesh::State
             counters.rejectedStateEnvelopes++;
             return;
         }
+        peer.authenticatedPackets++;
         event.type = MdkrMatchPeerMeshEventType::InputEnvelope;
         event.endpointId = peer.endpointId;
         event.context = context;
@@ -1244,6 +1254,7 @@ struct MdkrMatchPeerMesh::State
             peerLost(peer, MdkrMatchPeerLostReason::ControlChannelViolation);
             return;
         }
+        peer.authenticatedPackets++;
         event.type = authority
             ? MdkrMatchPeerMeshEventType::InputRepairMessage
             : MdkrMatchPeerMeshEventType::PreflightFragment;
@@ -2067,6 +2078,15 @@ bool MdkrMatchPeerMesh::peerGeneration(uint64_t peerEndpointId,
         return false;
     }
     *out = found->second.generation;
+    return true;
+}
+
+bool MdkrMatchPeerMesh::authenticatedPacketCount(uint64_t peerEndpointId,
+                                                 uint64_t *out) const {
+    if (out == nullptr || !state_) return false;
+    const auto found = state_->peers.find(peerEndpointId);
+    if (found == state_->peers.end()) return false;
+    *out = found->second.authenticatedPackets;
     return true;
 }
 

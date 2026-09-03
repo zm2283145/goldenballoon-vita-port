@@ -72,7 +72,13 @@ typedef enum MdkrNetFailureLifecycle {
     /* A peer's finalisation proposal was refused before it could take effect
      * -- the wrong sender for the surviving roster, another race's epoch, or
      * no room verdict of our own to intersect it with. */
-    MDKR_NET_LIFECYCLE_DEPARTURE_REFUSED
+    MDKR_NET_LIFECYCLE_DEPARTURE_REFUSED,
+    /* A room departure verdict was HELD rather than acted on: an
+     * authenticated packet arrived from the departed endpoint inside the
+     * peer-silence grace, so the peer was plainly still racing and the
+     * transport ladders were left to decide. value_a carries the authenticated
+     * packets counted in the grace, value_b the tick the grace opened at. */
+    MDKR_NET_LIFECYCLE_DEPARTURE_HELD
 } MdkrNetFailureLifecycle;
 
 /* Per-peer link snapshot carried by every stall record. Widths are fixed and

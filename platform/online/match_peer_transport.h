@@ -535,6 +535,21 @@ public:
      * build a byte-identical graph. */
     bool peerGeneration(uint64_t peerEndpointId, uint32_t *out) const;
 
+    /* How many envelopes from this peer have OPENED under its own derived
+     * lane key since the mesh was built -- input bundles on the state lane,
+     * preflight fragments on the control lane, input repairs on the authority
+     * lane. Monotonic and never reset, so two readings around a window answer
+     * "did anything authenticated arrive from this peer in it": the question
+     * the room-departure grace (D1) has to answer before it believes a
+     * membership verdict about a peer that may still be racing. False, output
+     * untouched, for an endpoint outside the roster.
+     *
+     * Only SEALED traffic counts. The control channel's plaintext JSON
+     * (ping/pong/race_abort/race_drop) is authenticated by DTLS alone and is
+     * excluded: it says the peer's socket is alive, not that the peer is
+     * still feeding the race. Launcher thread only, like every accessor. */
+    bool authenticatedPacketCount(uint64_t peerEndpointId, uint64_t *out) const;
+
     /* Live truth for "every channel to this peer is open right now"
      * (launcher thread only, like every accessor). The adapter's re-verify
      * barrier (W3 fix round) rebuilds its channels-ready bookkeeping from
