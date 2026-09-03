@@ -68,8 +68,20 @@ extern int g_frameCounter;
 
 #define CHARSELECT_RUNTIME_CAPACITY 13
 #define CHARSELECT_DATA(index) gCurrCharacterSelectData[(index)]
+
+/* menu_image_load() seeds three gMenuImages fields that nothing in this tree
+ * reads; they are presentation output by inspection, not by argument. The
+ * draws, though, are the shared stream's, and they are taken before the green
+ * light, so at 60 Hz a host would arrive at the start line having consumed a
+ * different amount of the race's randomness than a peer at 30 Hz.
+ *
+ * Same switch as the HUD sites: rand_range() at the shipping two-field cadence
+ * for byte-exact ROM ordering, the presentation stream only at the opt-in
+ * enhanced cadence. See docs/ref/presentation-rng-census.md. */
+#define menu_presentation_rand_range cadence_compat_rand_range
 #else
 #define CHARSELECT_DATA(index) (*gCurrCharacterSelectData)[(index)]
+#define menu_presentation_rand_range rand_range
 #endif
 
 /**
@@ -16913,9 +16925,9 @@ void menu_image_load(s32 imageID) {
     gMenuImages[imageID].trans.z_position = sMenuImageProperties[imageID].trans.z_position;
     gMenuImages[imageID].trans.scale = sMenuImageProperties[imageID].trans.scale;
     gMenuImages[imageID].spriteOffset = sMenuImageProperties[imageID].spriteOffset;
-    gMenuImages[imageID].unk1A = rand_range(0, 0xFFFF);
-    gMenuImages[imageID].unk1B = rand_range(0, 0xFFFF);
-    gMenuImages[imageID].unk1C = rand_range(0, 0xFFFF);
+    gMenuImages[imageID].unk1A = menu_presentation_rand_range(0, 0xFFFF);
+    gMenuImages[imageID].unk1B = menu_presentation_rand_range(0, 0xFFFF);
+    gMenuImages[imageID].unk1C = menu_presentation_rand_range(0, 0xFFFF);
     gMenuImages[imageID].unk1D = sMenuImageProperties[imageID].unk1D;
 }
 
