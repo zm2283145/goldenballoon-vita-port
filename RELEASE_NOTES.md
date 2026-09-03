@@ -157,11 +157,6 @@ good or bad — on the GitHub issues page.
   lit from the wrong place next to the original racers.
 - The Character Workshop's arrows and ticks draw as arrows and ticks instead of
   empty boxes.
-- Online races and replays stay in step regardless of what is on screen. The
-  engine-note wobble, which voice clip a boss plays, the pictures behind the
-  menus and the credits cheat all used to draw from the race's own sequence of
-  random numbers, so two players whose machines drew at different rates could
-  drift apart.
 - A four-player Adventure Party hub draws far more than the one-player screen
   the game set aside room for, which could corrupt the picture or take the game
   down. The game now sets aside room for the party it is actually showing, and
