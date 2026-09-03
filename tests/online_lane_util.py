@@ -93,6 +93,143 @@ def check_trophy_weights_pin(root: Path, expected: tuple[int, ...],
     return None
 
 
+# The online-catalog id -> engine Character mapping the direct-boot racer spawn
+# rides (menu.c get_character_id_from_slot -> mdkr_online_character_to_engine).
+# The lobby numbers racers in its OWN catalog order and the engine Character enum
+# is a DIFFERENT order, so a launch descriptor's character_id is NOT the engine
+# character: a lane that compares the two id spaces for EQUALITY is asserting the
+# raw-id defect (Tiptup(online 3) spawning CONKER(engine 3), T.T.(online 9)
+# spawning DIDDY(engine 9)), not the shipped behaviour. Both orders are read from
+# their C sources below so no test literal can drift from the product.
+CHARACTER_MAP_SOURCE = "game/src/online/online_character_map.h"
+CHARACTER_MAP_SYMBOL = "MDKR_ONLINE_CHARACTER_ENGINE_ORDER"
+CHARACTER_ENUM_SOURCE = "game/include/enums.h"
+
+
+def scan_character_enum(root: Path) -> dict[str, int] | None:
+    """CHARACTER_* symbol -> engine Character value, parsed from enums.h.
+
+    Fails closed (None) when the enum cannot be read or any member carries an
+    explicit `= value`, which would break the positional numbering this derives.
+    """
+    try:
+        text = (root / CHARACTER_ENUM_SOURCE).read_text()
+    except OSError:
+        return None
+    match = re.search(r"enum\s+Character\s*\{(.*?)\}\s*Character\s*;",
+                      text, re.DOTALL)
+    if match is None or "=" in match.group(1):
+        return None
+    names = re.findall(r"\b(CHARACTER_[A-Z_0-9]+)\b", match.group(1))
+    if not names:
+        return None
+    return {name: index for index, name in enumerate(names)}
+
+
+def scan_online_to_engine(root: Path) -> tuple[int, ...] | None:
+    """The online-catalog id -> engine Character table, parsed from its C source.
+
+    Reads MDKR_ONLINE_CHARACTER_ENGINE_ORDER (the single-source macro
+    online_character_map.c expands) and resolves each CHARACTER_* symbol through
+    the enums.h Character enum. Returns the table indexed by online id, or None
+    if either source cannot be read -- callers fail closed on None so a moved or
+    renamed source can never make the translation pin vacuously pass.
+    """
+    enum = scan_character_enum(root)
+    if enum is None:
+        return None
+    try:
+        text = (root / CHARACTER_MAP_SOURCE).read_text()
+    except OSError:
+        return None
+    match = re.search(
+        r"#define\s+" + re.escape(CHARACTER_MAP_SYMBOL) + r"\b(.*?)(?<!\\)\n\n",
+        text + "\n\n", re.DOTALL)
+    if match is None:
+        return None
+    names = re.findall(r"\b(CHARACTER_[A-Z_0-9]+)\b", match.group(1))
+    if not names or any(name not in enum for name in names):
+        return None
+    return tuple(enum[name] for name in names)
+
+
+# The two witness lines whose id spaces this pin relates: what the launcher
+# handed the engine, and what the engine actually seated.
+NET_LAUNCH_RE = re.compile(
+    r"^\[NET-LAUNCH\] epoch=(\d+) descriptor=([0-9a-f]{16}) track=(\d+) "
+    r"selections=((?:\d+:\d+/\d+,?)+)$", re.MULTILINE)
+NET_SELECTIONS_RE = re.compile(
+    r"^\[NET-SELECTIONS\] epoch=(\d+) racers=((?:\d+:\d+/\d+,?)+) "
+    r"source=launch-descriptor$", re.MULTILINE)
+
+
+def parse_seat_selections(text: str) -> list[tuple[int, int]] | None:
+    """`0:9/0,1:4/0,...` -> [(character, vehicle), ...] in seat order."""
+    seats: list[tuple[int, int]] = []
+    for index, field in enumerate(text.split(",")):
+        match = re.fullmatch(r"(\d+):(\d+)/(\d+)", field)
+        if match is None or int(match.group(1)) != index:
+            return None
+        seats.append((int(match.group(2)), int(match.group(3))))
+    return seats or None
+
+
+def check_launch_selection_translation(output: str, root: Path, fail,
+                                       seat_count: int | None = None
+                                       ) -> int | None:
+    """Pin the seated racers to the TRANSLATION of the launch descriptor.
+
+    The descriptor carries online-catalog ids; the engine seats engine Character
+    ids. This asserts, per seat, applied == scan_online_to_engine()[descriptor]
+    (and vehicles unchanged -- the two vehicle catalogs are asserted equal in C by
+    match_launch_builder.c), then requires at least one seat where the two ids
+    DIFFER. That last clause is the non-vacuity control: if the engine ever
+    regressed to handing the raw online id to the racer spawn, every seat would
+    match trivially and the first clause alone would still pass.
+
+    Returns a fail() exit code on any drift, else None.
+    """
+    launch = NET_LAUNCH_RE.search(output)
+    applied = NET_SELECTIONS_RE.search(output)
+    if launch is None or applied is None:
+        return fail("missing the [NET-LAUNCH]/[NET-SELECTIONS] pair the "
+                    "descriptor-vs-applied identity pin needs", output)
+    table = scan_online_to_engine(root)
+    if table is None:
+        return fail(f"could not read {CHARACTER_MAP_SYMBOL} from "
+                    f"{CHARACTER_MAP_SOURCE} / the Character enum from "
+                    f"{CHARACTER_ENUM_SOURCE} (the identity pin cannot vouch "
+                    f"for the seated racers)")
+    descriptor = parse_seat_selections(launch.group(4))
+    seated = parse_seat_selections(applied.group(2))
+    if descriptor is None or seated is None or len(descriptor) != len(seated):
+        return fail("unparsable descriptor/applied selection lists", output)
+    if seat_count is not None and len(descriptor) != seat_count:
+        return fail(f"expected {seat_count} descriptor seats, saw "
+                    f"{len(descriptor)}", output)
+    translated = 0
+    for seat, ((wanted, wantedVehicle), (got, gotVehicle)) in enumerate(
+            zip(descriptor, seated)):
+        if wanted >= len(table):
+            return fail(f"seat {seat} descriptor character {wanted} is outside "
+                        f"the {len(table)}-entry online catalog", output)
+        if got != table[wanted]:
+            return fail(f"seat {seat} raced character {got}; the descriptor "
+                        f"asked for online id {wanted}, which is engine "
+                        f"character {table[wanted]}", output)
+        if gotVehicle != wantedVehicle:
+            return fail(f"seat {seat} raced vehicle {gotVehicle}; the "
+                        f"descriptor asked for {wantedVehicle}", output)
+        if got != wanted:
+            translated += 1
+    if translated == 0:
+        return fail("no seat's engine character differs from its online-catalog "
+                    "id, so this run cannot tell a translated spawn from a raw "
+                    "passthrough -- the descriptor must seat at least one racer "
+                    "whose two ids differ", output)
+    return None
+
+
 # --------------------------------------------------------------------------- #
 #  Forbidden markers
 # --------------------------------------------------------------------------- #
