@@ -183,6 +183,25 @@ extern int32_t gFreeQueueCount;
 #define DEFAULT_ROM "baserom.us.v80.z64"
 #endif
 
+#ifdef __vita__
+/* No visible console on Vita: a plain fprintf(stderr, ...) on any of the
+ * fail-fast paths below never reaches anyone, so a failure there looks
+ * exactly like a graceful voluntary exit (brief black screen, clean close,
+ * no crash dialog). This appends short breadcrumbs to a file on ux0: -- read
+ * it back by pulling the SD/SD2Vita card or over VitaShell's FTP server --
+ * so a silent early exit can be diagnosed after the fact. Diagnostic-only;
+ * not wired into any other platform. */
+static void mdkr_vita_boot_log(const char *msg) {
+    FILE *f = fopen("ux0:data/goldenballoon/mdkr_boot.log", "a");
+    if (f) {
+        fprintf(f, "%s\n", msg);
+        fclose(f);
+    }
+}
+#else
+#define mdkr_vita_boot_log(msg) ((void)0)
+#endif
+
 /* Set by CMake (see CMakeLists.txt's "Version stamping" block) to the
  * MDKR_VERSION cache variable; the packaged app bundle stamps the same value
  * into Info.plist's CFBundleShortVersionString. Fall back covers non-CMake
@@ -424,20 +443,45 @@ int main(int argc, char **argv) {
      * identifies the binary; product naming lives in the window title, not here.
      * ASCII only — Windows consoles mojibake non-ASCII punctuation. */
     printf("[mdkr64] native port %s\n", MDKR_VERSION_STRING);
+#ifdef __vita__
+    {
+        char logbuf[256];
+        snprintf(logbuf, sizeof(logbuf), "boot: entered main(); romPath=%s", romPath);
+        mdkr_vita_boot_log(logbuf);
+        /* vitashark (the runtime GLSL->GXP shader compiler vitaGL uses) needs
+         * this support module at a fixed path; it is NOT part of a stock
+         * enso/HENkaku install and is easy to miss. Missing it is a very
+         * common cause of exactly this symptom on other vitaGL/vitashark
+         * homebrew titles. */
+        FILE *shacccg = fopen("ux0:data/external/libshacccg.suprx", "rb");
+        if (shacccg) {
+            fclose(shacccg);
+            mdkr_vita_boot_log("boot: libshacccg.suprx FOUND at ux0:data/external/");
+        } else {
+            mdkr_vita_boot_log("boot: libshacccg.suprx MISSING at ux0:data/external/ "
+                                "-- vitashark shader compilation will fail");
+        }
+    }
+#endif
 
     /* Phase 1: ROM (fail-fast — assets are read from it at runtime). */
     if (platformInitRom(romPath) != 0) {
         fprintf(stderr, "[mdkr64] Could not load ROM: %s\n", romPath);
         fprintf(stderr, "[mdkr64] Pass --rom <path> or place baserom.us.v80.z64 here.\n");
+        mdkr_vita_boot_log("boot: platformInitRom FAILED");
         return 1;
     }
+    mdkr_vita_boot_log("boot: platformInitRom OK");
 
     /* Phase 2: SDL2 window + selected backend context/device. */
+    mdkr_vita_boot_log("boot: calling platform_sdl_init (vglInitExtended on Vita)");
     if (platform_sdl_init() != 0) {
         fprintf(stderr, "[mdkr64] window/context initialization failed.\n");
+        mdkr_vita_boot_log("boot: platform_sdl_init FAILED");
         exitCode = 1;
         goto shutdown;
     }
+    mdkr_vita_boot_log("boot: platform_sdl_init OK");
     platform_input_init();               /* open gamepads + load mappings */
     /* A fixture that fails to parse must ABORT, not run a truncated route: a
      * partially loaded script still exits 0 and still "passes" any survival-only
@@ -517,15 +561,18 @@ int main(int argc, char **argv) {
     gfx_set_dimensions((unsigned int)renderer_width,
                        (unsigned int)renderer_height);
     printf("[mdkr64] renderer backend: %s\n", mdkr_render_backend_name());
+    mdkr_vita_boot_log("boot: calling gfx_init (shader compilation via vitashark on Vita)");
     if (!gfx_init(rapi)) {
         fprintf(stderr,
                 "[mdkr64] renderer initialization failed for backend %s; "
                 "stopping without an automatic fallback. Set MDKR_RENDERER=gl "
                 "explicitly for diagnostics.\n",
                 mdkr_render_backend_name());
+        mdkr_vita_boot_log("boot: gfx_init FAILED");
         exitCode = 1;
         goto shutdown;
     }
+    mdkr_vita_boot_log("boot: gfx_init OK");
     MDKR_TRACE("gfx_init(%s) done; dimensions %dx%d",
                mdkr_render_backend_name(), renderer_width, renderer_height);
 
@@ -553,9 +600,11 @@ int main(int argc, char **argv) {
     camera_obstruction_runtime_install_config_apply();
 
     /* Phase 4: the game boot chain, collapsed onto this thread. */
+    mdkr_vita_boot_log("boot: entering Phase 4 (osInitialize/thread0_create/thread3_main)");
     osInitialize();
     thread0_create();
     thread3_main(NULL);   /* returns after a cooperative host-exit request */
+    mdkr_vita_boot_log("boot: thread3_main returned; shutting down normally");
     exitCode = platform_exit_code();
 
 shutdown:
