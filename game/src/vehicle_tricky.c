@@ -18,6 +18,22 @@
 #include "thread3_main.h"
 #include "types.h"
 
+#ifdef NATIVE_PORT
+/* The boss voice-clip pick is presentation output: randomOffset only chooses
+ * which of two adjacent entries of gBossSoundIDOffset[] is played, and neither
+ * function writes anything else. The draw, however, sits in the authoritative
+ * boss update, so at 60 Hz a host presenting more often would consume more of
+ * the shared stream than a peer presenting less often.
+ *
+ * Same switch as the HUD sites and the engine jitter: rand_range() at the
+ * shipping two-field cadence for byte-exact ROM ordering, the presentation
+ * stream only at the opt-in enhanced cadence. See
+ * docs/ref/presentation-rng-census.md. */
+#define boss_voice_rand_range cadence_compat_rand_range
+#else
+#define boss_voice_rand_range rand_range
+#endif
+
 /************ .data ************/
 
 // The highest index that ever seems to be read from this table is 6.
@@ -246,7 +262,7 @@ void set_boss_voice_clip_offset(u16 *soundID) {
  * Also has worldspace values.
  */
 void racer_boss_sound_spatial(f32 x, f32 y, f32 z, s32 offset) {
-    s8 randomOffset = rand_range(0, 1);
+    s8 randomOffset = boss_voice_rand_range(0, 1);
     if (offset == 0) {
         randomOffset = 0;
     }
@@ -258,7 +274,7 @@ void racer_boss_sound_spatial(f32 x, f32 y, f32 z, s32 offset) {
  * Add a random amount to offset, then play a random voice clip within that range.
  */
 void play_random_boss_sound(s32 offset) {
-    s8 randomOffset = rand_range(0, 1);
+    s8 randomOffset = boss_voice_rand_range(0, 1);
     if (offset == 0) {
         randomOffset = 0;
     }
