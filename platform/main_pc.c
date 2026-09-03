@@ -203,7 +203,7 @@ int _newlib_heap_size_user = 256 * 1024 * 1024;
  * it back by pulling the SD/SD2Vita card or over VitaShell's FTP server --
  * so a silent early exit can be diagnosed after the fact. Diagnostic-only;
  * not wired into any other platform. */
-static void mdkr_vita_boot_log(const char *msg) {
+void mdkr_vita_boot_log(const char *msg) {
     FILE *f = fopen("ux0:data/goldenballoon/mdkr_boot.log", "a");
     if (f) {
         fprintf(f, "%s\n", msg);
@@ -460,18 +460,36 @@ int main(int argc, char **argv) {
         char logbuf[256];
         snprintf(logbuf, sizeof(logbuf), "boot: entered main(); romPath=%s", romPath);
         mdkr_vita_boot_log(logbuf);
-        /* vitashark (the runtime GLSL->GXP shader compiler vitaGL uses) needs
-         * this support module at a fixed path; it is NOT part of a stock
-         * enso/HENkaku install and is easy to miss. Missing it is a very
-         * common cause of exactly this symptom on other vitaGL/vitashark
-         * homebrew titles. */
-        FILE *shacccg = fopen("ux0:data/external/libshacccg.suprx", "rb");
-        if (shacccg) {
-            fclose(shacccg);
-            mdkr_vita_boot_log("boot: libshacccg.suprx FOUND at ux0:data/external/");
-        } else {
-            mdkr_vita_boot_log("boot: libshacccg.suprx MISSING at ux0:data/external/ "
-                                "-- vitashark shader compilation will fail");
+        /* vitashark (the runtime GLSL->GXP shader compiler vitaGL uses)
+         * hardcodes DEFAULT_SHACCCG_PATH = "ur0:/data/libshacccg.suprx"
+         * (vitaShaRK/source/vitashark.c) unless a caller passes a different
+         * path to shark_init/shark_init_simple -- vitaGL does not, so this is
+         * the one location that actually matters at runtime. It is NOT part
+         * of a stock enso/HENkaku install and people commonly place it
+         * somewhere else by mistake. Check the real default plus the two
+         * other locations people commonly use, so the log says definitively
+         * which one(s) exist. */
+        {
+            static const char *const kShacccgCandidates[] = {
+                "ur0:data/libshacccg.suprx",       /* vitaShaRK's actual default */
+                "ur0:data/external/libshacccg.suprx",
+                "ux0:data/external/libshacccg.suprx",
+            };
+            size_t si;
+            for (si = 0; si < sizeof(kShacccgCandidates) / sizeof(kShacccgCandidates[0]); ++si) {
+                FILE *shacccg = fopen(kShacccgCandidates[si], "rb");
+                char lb[192];
+                if (shacccg) {
+                    fclose(shacccg);
+                    snprintf(lb, sizeof(lb), "boot: libshacccg.suprx FOUND at %s%s",
+                             kShacccgCandidates[si],
+                             si == 0 ? " (the path vitashark actually uses)" : "");
+                } else {
+                    snprintf(lb, sizeof(lb), "boot: libshacccg.suprx missing at %s",
+                             kShacccgCandidates[si]);
+                }
+                mdkr_vita_boot_log(lb);
+            }
         }
     }
 #endif

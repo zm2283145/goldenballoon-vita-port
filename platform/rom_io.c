@@ -30,6 +30,15 @@
 #include "rom_validation.h"
 #include "address_domains.h"
 
+#ifdef __vita__
+/* Defined in main_pc.c; not static there specifically so this TU (and any
+ * other __vita__ code that wants the same silent-early-exit visibility) can
+ * reach it. See main_pc.c for why this exists (no visible console on Vita). */
+extern void mdkr_vita_boot_log(const char *msg);
+#else
+#define mdkr_vita_boot_log(msg) ((void)0)
+#endif
+
 uint8_t *g_romData = NULL;
 uint32_t g_romSize = 0;
 static int s_sourceTvType = 1;
@@ -95,6 +104,7 @@ int platformInitRom(const char *path) {
     FILE *f = mdkr_fopen_utf8(path, "rb");
     if (!f) {
         fprintf(stderr, "[ROM] Failed to open: %s\n", path);
+        mdkr_vita_boot_log("rom: fopen FAILED");
         return -1;
     }
     fseek(f, 0, SEEK_END);
@@ -102,6 +112,7 @@ int platformInitRom(const char *path) {
     rewind(f);
     if (size <= 0) {
         fprintf(stderr, "[ROM] Could not size: %s\n", path);
+        mdkr_vita_boot_log("rom: ftell/size-probe FAILED");
         fclose(f);
         return -1;
     }
@@ -111,23 +122,28 @@ int platformInitRom(const char *path) {
                 "[ROM] %s is %ld bytes; a Diddy Kong Racing ROM must be exactly "
                 "%d bytes (12 MB). Wrong game, headered dump, or truncated file.\n",
                 path, size, (int)DKR_ROM_SIZE_BYTES);
+        mdkr_vita_boot_log("rom: SIZE MISMATCH");
         fclose(f);
         return -1;
     }
     g_romData = (uint8_t *)malloc((size_t)size);
     if (!g_romData) {
         fprintf(stderr, "[ROM] malloc(%ld) failed\n", size);
+        mdkr_vita_boot_log("rom: malloc FAILED");
         fclose(f);
         return -1;
     }
+    mdkr_vita_boot_log("rom: malloc OK, about to fread");
     size_t rd = fread(g_romData, 1, (size_t)size, f);
     fclose(f);
     if ((long)rd != size) {
         fprintf(stderr, "[ROM] short read: %zu of %ld\n", rd, size);
+        mdkr_vita_boot_log("rom: fread SHORT READ");
         free(g_romData);
         g_romData = NULL;
         return -1;
     }
+    mdkr_vita_boot_log("rom: fread OK, full image read; about to validate");
     g_romSize = (uint32_t)size;
 
     /* --- 2-5. Authoritative image validation. -------------------------------
@@ -149,9 +165,12 @@ int platformInitRom(const char *path) {
         if (!dkr_rom_validate_image(g_romData, g_romSize, path, &options,
                                     &validation)) {
             fprintf(stderr, "[ROM] %s\n", validation.message);
+            mdkr_vita_boot_log("rom: dkr_rom_validate_image FAILED:");
+            mdkr_vita_boot_log(validation.message);
             free(g_romData); g_romData = NULL; g_romSize = 0;
             return -1;
         }
+        mdkr_vita_boot_log("rom: dkr_rom_validate_image OK");
         id = &validation.id;
         dkr_rom_describe(id, path, msg, sizeof(msg));
         if (strcmp(validation.byteOrder, "z64") != 0) {
@@ -199,6 +218,7 @@ int platformInitRom(const char *path) {
         } else {
             fprintf(stderr, "[ROM] Invalid revision bounds for %s.\n",
                     id->decompBuild != NULL ? id->decompBuild : "unknown revision");
+            mdkr_vita_boot_log("rom: invalid revision bounds");
             free(g_romData); g_romData = NULL; g_romSize = 0;
             return -1;
         }
