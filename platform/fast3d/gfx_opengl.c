@@ -1003,6 +1003,23 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
     size_t vs_len = 0;
     size_t fs_len = 0;
     size_t num_floats = 4;
+#if defined(__vita__)
+    /* DIAGNOSTIC: the crash that killed iteration 1 happened deep inside
+     * SceGxm's own shader-patcher link path (glLinkProgram), AFTER both
+     * shader stages compiled successfully -- so this is vitaShaRK/SceGxm
+     * choking on something in a valid-looking GLSL program, not a GLSL
+     * syntax error we'd catch. Frame 0's shader linked fine; frame 1 needs
+     * a different shader_id combination. `noperspective` is the most
+     * exotic interpolation qualifier this generator emits and is data-
+     * driven per shader (exactly the kind of thing that would differ
+     * between frame 0 and frame 1's shader needs) -- and vitaShaRK's
+     * GLSL->Cg/GXP translator is not guaranteed to support it correctly.
+     * Force it off on Vita as a testable hypothesis; a wrong perspective
+     * interpolation is a visual bug, not a crash, so this is safe to try. */
+    const char *input_interp = "";
+    const char *texcoord_interp = "";
+    const char *fog_interp = "";
+#else
     const char *input_interp =
         (gfx_diag_noperspective_inputs_enabled() || cc_features.noperspective_inputs) ?
         "noperspective " : "";
@@ -1010,6 +1027,7 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
         (gfx_diag_noperspective_texcoords_enabled() || cc_features.noperspective_texcoords) ?
         "noperspective " : "";
     const char *fog_interp = cc_features.noperspective_fog ? "noperspective " : "";
+#endif
     bool quantize_combiner = gfx_diag_quantize_combiner_enabled();
     bool uses_tile_mask =
         cc_features.tile_mask[0][0] || cc_features.tile_mask[0][1] ||
@@ -1592,6 +1610,24 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
         }
     }
 
+#if defined(__vita__)
+    {
+        static int s_shaderLogCount = 0;
+        if (s_shaderLogCount < 20) {
+            char lb[192];
+            snprintf(lb, sizeof(lb),
+                     "shader: about to compile+link id0=0x%llx id1=0x%x tex=%d,%d fog=%d "
+                     "alpha=%d 2cyc=%d inputs=%d worldpos=%d vs_len=%u fs_len=%u",
+                     (unsigned long long)shader_id0, (unsigned)shader_id1,
+                     cc_features.used_textures[0], cc_features.used_textures[1],
+                     cc_features.opt_fog, cc_features.opt_alpha, cc_features.opt_2cyc,
+                     cc_features.num_inputs, cc_features.opt_world_pos,
+                     (unsigned)vs_len, (unsigned)fs_len);
+            mdkr_vita_boot_log(lb);
+            s_shaderLogCount++;
+        }
+    }
+#endif
     const GLchar *sources[2] = { vs_buf, fs_buf };
     const GLint lengths[2] = { (GLint)vs_len, (GLint)fs_len };
     GLint success;
@@ -1627,7 +1663,13 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
     GLuint shader_program = glCreateProgram();
     glAttachShader(shader_program, vertex_shader);
     glAttachShader(shader_program, fragment_shader);
+#if defined(__vita__)
+    mdkr_vita_boot_log("shader: both stages compiled OK, calling glLinkProgram");
+#endif
     glLinkProgram(shader_program);
+#if defined(__vita__)
+    mdkr_vita_boot_log("shader: glLinkProgram returned (survived)");
+#endif
 
     glDeleteShader(vertex_shader);
     glDeleteShader(fragment_shader);
