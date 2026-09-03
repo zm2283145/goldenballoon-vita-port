@@ -142,6 +142,14 @@ typedef enum MdkrVideoKey {
      * default and inert until the menu-admission adapter reads it.
      */
     MDKR_ENH_ADVENTURE_PARTY,
+    /*
+     * Shell behaviour, appended for the "never renumber a prior key" reason
+     * above. Off by default. Whether the launcher opens at all when a
+     * remembered game file is already known and verified; the launch-time hold
+     * (Shift, or both shoulders on a pad) opens it regardless, so this can
+     * never be the reason a player cannot reach their own launcher.
+     */
+    MDKR_APP_SKIP_LAUNCHER,
     MDKR_VIDEO_KEY_COUNT
 } MdkrVideoKey;
 

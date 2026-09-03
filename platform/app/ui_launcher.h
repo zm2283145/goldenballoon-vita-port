@@ -197,6 +197,18 @@ public:
     // in the launcher instead of booting a game session.
     void requestPlayValidationForSmoke();
 
+    // "Skip the launcher" (Launcher.SkipWhenReady, issue #60). main() makes
+    // the launch decision -- the setting, and what was being held when the app
+    // opened -- and arms this before the first frame. Once armed, the first
+    // frame on which the remembered ROM has settled and verified presses the
+    // SAME Play the player would have pressed: the mandatory final ROM check
+    // still runs, and only its verdict publishes a boot. Nothing is skipped
+    // except the waiting.
+    void armSkipWhenReady();
+    // Read-only witnesses for tests/check_launcher_skip.py.
+    bool skipArmedForSmoke() const { return skipArmed_; }
+    bool skipDispatchedForSmoke() const { return skipDispatched_; }
+
     // Read-only view of the shared panel state (ROM path/verdict). Exists for
     // the headless shell smoke (MDKR_APP_SMOKE_DROP) to observe the outcome of
     // a smoke-generated SDL_DROPFILE the same way a screenshot proves a
@@ -237,6 +249,11 @@ private:
     bool lanChecked_ = false;
     uint64_t lanCheckedMs_ = 0u;     // last availability check (SDL ticks)
     LauncherState state_;
+    // The launch decision, and whether this launch has already asked to boot.
+    // Once per launch: a boot that fails its final check leaves the player in
+    // the launcher looking at the reason, and must not be retried behind them.
+    bool skipArmed_ = false;
+    bool skipDispatched_ = false;
     int  active_ = 0;               // index into the panel table
     bool panelEnvChecked_ = false;  // MDKR_APP_PANEL design-review/CI hook
 };

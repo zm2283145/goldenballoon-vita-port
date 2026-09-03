@@ -161,6 +161,21 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "or installed.",
         MDKR_VIDEO_CAT_INTERFACE
     },
+    [MDKR_APP_SKIP_LAUNCHER] = {
+        "Launcher.SkipWhenReady", "MDKR_SKIP_LAUNCHER",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 1.0f,
+        "Skip the launcher",
+        /* Second sentence is the way back, and it is deliberately part of the
+         * setting's own line rather than a note somewhere else on the page: a
+         * player reading this is deciding whether to give up the launcher, and
+         * the answer to "how do I get it back" has to be in front of them
+         * while they decide. The game file is still checked before it opens,
+         * exactly as pressing Play checks it. */
+        "Open the game straight away, using the game file you played last. "
+        "Hold Shift, or both shoulder buttons on a controller, while it "
+        "opens to see the launcher instead.",
+        MDKR_VIDEO_CAT_INTERFACE
+    },
     [MDKR_ENH_AI_DIFFICULTY] = {
         "Enhancements.AIDifficulty", "MDKR_ENH_AI_DIFFICULTY",
         MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
@@ -760,7 +775,11 @@ int mdkr_video_key_is_player_comfort(MdkrVideoKey key) {
            mdkr_video_key_is_content(key) ||
            mdkr_video_key_is_enhancement(key) ||
            mdkr_video_key_is_accessibility(key) ||
-           key == MDKR_WINDOW_MODE;
+           key == MDKR_WINDOW_MODE ||
+           /* Skip the launcher is a shell choice, not art direction. A player
+            * comparing two looks must not silently get their launcher back --
+            * or, worse, lose it -- because they switched preset. */
+           key == MDKR_APP_SKIP_LAUNCHER;
 }
 
 static int mdkr_video_ci_equal(const char *a, const char *b) {
@@ -872,6 +891,15 @@ static const float s_preset[MDKR_VIDEO_KEY_COUNT][3] = {
     [MDKR_A11Y_SPEECH_VOLUME] = {    100.0f,   100.0f,     100.0f },
     [MDKR_A11Y_SPEECH_RACE]   = {      1.0f,     1.0f,       1.0f },
     [MDKR_VIDEO_WIDESCREEN_HUD] = {    0.0f,     0.0f,       0.0f },
+    /*
+     * Skip the launcher. Three identical columns for the same reason the
+     * speech rows have them: no art-direction preset has an opinion about
+     * whether a player wants to see their launcher. The row exists so
+     * mdkr_video_config_defaults() seeds the shipped OFF, and
+     * mdkr_video_key_is_player_comfort() keeps a preset switch from writing
+     * it back.
+     */
+    [MDKR_APP_SKIP_LAUNCHER]  = {      0.0f,     0.0f,       0.0f },
 };
 
 /*
