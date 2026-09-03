@@ -175,6 +175,18 @@ extern void transition_workspace_shutdown(void);
 extern int32_t gFreeQueueCount;
 
 #ifdef __vita__
+/* VitaSDK/newlib's default malloc heap is small unless overridden -- this
+ * weak symbol is read by the crt0 startup code before main() runs. The ROM
+ * alone is a single 12MB malloc (rom_io.c, platformInitRom), on top of
+ * whatever vitaGL/vitashark/SDL2 have already claimed, which comfortably
+ * exceeds a small default heap. Rinnegatamante's Lighthouse (another vitaGL
+ * port, the concrete reference project for this whole branch) sets this
+ * exact symbol to 256MB in its src/port/Game.cpp -- mirrored here.
+ * ATTRIBUTE2=12 ("unsafe" homebrew, already set in this project's
+ * vita-mksfoex packaging step) is what makes a budget this size available. */
+#include <vitasdk.h>
+int _newlib_heap_size_user = 256 * 1024 * 1024;
+
 /* app0: (the VPK bundle) is read-only; ROM + saves live on ux0:. The user
  * creates this folder and drops their own ROM dump in it -- see
  * PORTING_STATUS.md. */
