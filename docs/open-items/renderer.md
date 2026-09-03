@@ -940,17 +940,27 @@ pitch at frame 2832 (`xrot=1290` vs `1280`). By the first race the route runs
 last scripted advance; the pre-merge tip cleared them with 152 frames to spare,
 which was the whole margin the fixture had.
 
-**OPEN (for the owner, not this item):** that one-ULP divergence is
-**unattributed to any 1.6.0 commit**. `-ffp-contract=off` is set tree-wide
-(`CMakeLists.txt:815`) and both trig tables hash identically
-(`arctanFnv=0xe0d93ef8`, `sineFnv=0x3b41e221`), so it is not FMA formation and
-not the baked-table change. If 1.6.0 did not *intend* an offline simulation
-change, a one-ULP move in an attract-mode emitter's scale is expression
-contraction or reordering somewhere in the shared math path and should be
-attributed. A cross-build `[SIMHASH]` comparison cannot be used to chase it:
-`platform/sim_hash.c` itself changed across the merge, so the two streams have
-different field sets by construction; the per-object `[HASHOBJ]` dumps are the
-valid instrument.
+**ATTRIBUTED, and not a defect.** That one-ULP divergence is commit
+`84b89c7d`, "build: pin FP contraction off across every engine lane" — a
+deliberate 1.6.0 determinism fix. The paragraph that used to stand here ruled
+FMA formation out because `-ffp-contract=off` is set tree-wide; that was
+inverted. The pin is set on the merged side only — `a223eb78` has no
+`-ffp-contract` at all — so the merge is precisely where FMA fusion stops.
+Unpinned, AppleClang on arm64 fuses `a*b+c` into one `fmadd` at `-O2` and
+rounds once; pinned, the expression rounds twice, which is a one-ULP move in an
+emitter scale.
+
+Measured, not inferred: at the 1.6.0 tip (`83a847cc`), deleting only the
+`-ffp-contract=off` line reproduces `cbe389b3`'s `[SIMHASH]` stream and its
+per-object `[HASHOBJ]` dumps **byte-identically for 3000 ticks**, while the
+shipped tip diverges from that reference at tick 90 — so no other commit in the
+472-commit range touches the offline simulation, and `sim_hash.c`'s own 1.6.0
+change is confirmed I/O-only rather than assumed to be. It stays as it is:
+lockstep peers and every golden float hash need float state to be
+bit-reproducible across the native, wasm and mingw lanes. Removing the pin
+fails `check_weather_rng_order` and `check_authored_rng_compat` on their frozen
+whole-stream digests (both measured). Full record:
+[`gameplay.md` § NOT A DEFECT: the one-ULP attract-simulation move](gameplay.md#not-a-defect-the-one-ulp-attract-simulation-move-across-the-v160-merge-is-the-fp-contraction-pin-84b89c7d).
 
 ## FIXED: banana sparkle sprite overran its own vertex region
 
