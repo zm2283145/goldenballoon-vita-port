@@ -331,17 +331,23 @@ void *dkr_arena_init(uint32_t size) {
      * 4 GB boundary — then every arena pointer shares one high-32-bit value. */
     uintptr_t align = size;
 #if UINTPTR_MAX == UINT32_MAX
-    /* ILP32: pointers are 32-bit and the arena's high bits are 0, so an
-     * arena address is its own low-32. On LP64 the arena sits at a high 64-bit
-     * address (e.g. 0xc16000000) whose low-32 never collides with DKR's N64
-     * segment tokens (0x0N000000, segments 0-15 => 0x00000000..0x0FFFFFFF). On
-     * ILP32 a low arena (e.g. 0x02000000) DOES collide: dkr_resolve's arena
-     * reconstruction would swallow the framebuffer/zbuffer segment token
-     * 0x0N000000 (SETCIMG->NULL, the M3b white-z-clear-FILLRECT symptom). Force
-     * the arena ABOVE the 256 MB segment ceiling so segment tokens always fall
-     * through to the segment table and arena addresses (>= 0x10000000) never look
-     * like a segment token — no change to the shared resolver. */
+#if defined(__vita__)
+    /* Vita user processes are always mapped at a fixed high load address
+     * (observed ~0x81000000+ in practice), far above the 256 MB
+     * segment-token ceiling described above, so plain pointer alignment is
+     * enough here. Forcing a 256 MB-aligned allocation (the plain ILP32
+     * branch below) asks the allocator for up to ~272 MB of contiguous,
+     * 256 MB-aligned space out of a heap whose *entire* budget is itself
+     * only 256 MB (see _newlib_heap_size_user in main_pc.c, already shared
+     * with the ROM buffer, vitaGL, vitaShaRK and SDL2 by the time this
+     * runs) -- that pathological memalign() request is what was corrupting
+     * the heap and crashing later inside an unrelated free(). The runtime
+     * check right after allocation below still catches the (essentially
+     * impossible on Vita) case of a low arena address. */
+    align = sizeof(void *);
+#else
     if (align < 0x10000000u) align = 0x10000000u;
+#endif
 #endif
     void *p = NULL;
 #ifdef _WIN32
@@ -370,6 +376,14 @@ void *dkr_arena_init(uint32_t size) {
         fprintf(stderr, "[MEM] arena alloc of %u bytes failed\n", size);
         abort();
     }
+#if defined(__vita__)
+    if ((uintptr_t)p < 0x10000000u) {
+        fprintf(stderr, "[MEM] arena base %p is below the 256 MB "
+                        "segment-token ceiling -- the low-arena/segment-token "
+                        "collision this port avoids by placement would apply here\n", p);
+        abort();
+    }
+#endif
     memset(p, 0, size);
     g_dkrArenaBase = p;
     g_dkrArenaSize = size;
