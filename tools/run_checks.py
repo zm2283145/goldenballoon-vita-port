@@ -323,6 +323,10 @@ CHECKS = (
     Check("shell_dropfile", "check_shell_dropfile.py", "native",
           "app-shell SDL_DROPFILE ROM acquisition: accepted and refused, "
           "isolated from shared prefs"),
+    Check("launcher_skip", "check_launcher_skip.py", "native",
+          "the opt-in skip boots the remembered ROM through the same final "
+          "check Play uses, and Shift or both shoulders held at launch opens "
+          "the launcher anyway"),
     Check("app_adopted_pacing", "check_app_adopted_pacing.py", "native",
           "app-shell WebGPU-default and GL adopted handoffs at numeric and "
           "uncapped rates"),

@@ -429,6 +429,87 @@ int main() {
                SmokeMode::Invalid,
            "a pace selection without an input mode is rejected");
 
+    // --- Skip the launcher (issue #60) --------------------------------------
+    // The hold is the way back in, so it is tested first and hardest: if this
+    // is wrong, a player who turned the setting on and has no other machine
+    // has no way to reach their own launcher again.
+    expect(AppUi_launcherHoldOpensLauncher({true, false, false}),
+           "Shift on its own opens the launcher");
+    expect(AppUi_launcherHoldOpensLauncher({false, true, true}),
+           "both shoulders open the launcher");
+    expect(AppUi_launcherHoldOpensLauncher({true, true, true}),
+           "a keyboard and a pad held together still open the launcher");
+    expect(!AppUi_launcherHoldOpensLauncher({false, false, false}),
+           "holding nothing is not a request");
+    // One shoulder is what a pad in a bag holds down. Accepting it would turn
+    // the setting off for anyone who owns a controller and never touches it.
+    expect(!AppUi_launcherHoldOpensLauncher({false, true, false}),
+           "L on its own is not a request");
+    expect(!AppUi_launcherHoldOpensLauncher({false, false, true}),
+           "R on its own is not a request");
+
+    expect(!AppUi_launcherSkipArmed(false, false),
+           "the setting is off by default and the launcher opens");
+    expect(AppUi_launcherSkipArmed(true, false),
+           "the setting on with nothing held boots the game");
+    expect(!AppUi_launcherSkipArmed(true, true),
+           "the hold beats the setting");
+    expect(!AppUi_launcherSkipArmed(false, true),
+           "holding it with the setting off changes nothing");
+
+    // The readiness gate. Start from the one state that must boot, then take
+    // away one fact at a time: every removal has to stop it.
+    const AppUiLauncherSkipReadiness ready = {
+        /*armed=*/true, /*dispatched=*/false, /*romRemembered=*/true,
+        /*romValid=*/true, /*validationPending=*/false,
+        /*playValidationPending=*/false, /*bootErrorVisible=*/false,
+        /*otherWorkPending=*/false};
+    expect(AppUi_launcherSkipShouldBoot(ready),
+           "an armed launch with a settled, valid remembered ROM boots");
+    {
+        AppUiLauncherSkipReadiness state = ready;
+        state.armed = false;
+        expect(!AppUi_launcherSkipShouldBoot(state),
+               "an unarmed launch never boots itself");
+        state = ready;
+        state.dispatched = true;
+        expect(!AppUi_launcherSkipShouldBoot(state),
+               "the direct boot is asked for once per launch");
+        state = ready;
+        state.romRemembered = false;
+        expect(!AppUi_launcherSkipShouldBoot(state),
+               "a first run has no ROM to boot and shows the launcher");
+        state = ready;
+        state.romValid = false;
+        expect(!AppUi_launcherSkipShouldBoot(state),
+               "a remembered ROM that no longer verifies shows the launcher");
+        state = ready;
+        state.validationPending = true;
+        expect(!AppUi_launcherSkipShouldBoot(state),
+               "nothing is decided while the remembered ROM is still being read");
+        state = ready;
+        state.playValidationPending = true;
+        expect(!AppUi_launcherSkipShouldBoot(state),
+               "the final check is not started twice");
+        state = ready;
+        state.bootErrorVisible = true;
+        expect(!AppUi_launcherSkipShouldBoot(state),
+               "a card the player has not read is not booted past");
+        state = ready;
+        state.otherWorkPending = true;
+        expect(!AppUi_launcherSkipShouldBoot(state),
+               "a Workshop preview keeps Play for itself");
+    }
+    // Where the setting is drawn. It is a launcher behaviour, not an access
+    // need and not one of the extras, so it belongs with the other shell rows
+    // (the update check, the developer tools) rather than in a section a reset
+    // action or the accessibility grouping would sweep up.
+    expect(AppUi_settingsSection(MDKR_APP_SKIP_LAUNCHER) ==
+               AppUiSettingsSection::Category,
+           "Skip the launcher is drawn beside the other shell settings");
+    expect(!AppUi_enhancementResetIncludes(MDKR_APP_SKIP_LAUNCHER),
+           "Reset enhancements leaves Skip the launcher alone");
+
     if (failures) {
         std::printf("%d app UI policy failure(s)\n", failures);
         return 1;

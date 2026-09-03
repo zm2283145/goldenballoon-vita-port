@@ -264,8 +264,19 @@ Advanced because that is what they are.
    player looks for as a list.
 8. **Content packs** — Custom content · Skipped packs · the installed/skipped
    accounting.
-9. **Advanced** — Check for updates · Developer tools · the Interface-category
-   catch-all · the unclaimed-key safety net.
+9. **Advanced** — Check for updates · Developer tools · Skip the launcher ·
+   the Interface-category catch-all · the unclaimed-key safety net.
+   *Skip the launcher* (`Launcher.SkipWhenReady`, issue #60) sits here for the
+   reason the update check does: it is a shell behaviour rather than a picture,
+   a sound or an access need. Because this page is drawn verbatim by the
+   in-game F1 overlay as well as by the launcher, that placement is also what
+   makes the setting reachable from inside a running game — a player who turned
+   it on can turn it off again without ever needing the launcher, and does not
+   have to know about the launch-time hold to get out. That hold (Shift, or
+   both shoulders) is sampled every launcher frame until the boot dispatches
+   rather than once at startup, so the window a player aims at is "while the
+   launcher is on screen" — SDL derives keyboard state from events, and a key
+   already down before the window existed is invisible to a single sample.
 
 Group membership is a routing decision, and it stays where routing decisions
 already live (`AppUi_settingsSection`, `AppUi_shellPreferenceSection`), so

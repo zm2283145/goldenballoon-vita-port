@@ -9,6 +9,7 @@
 #include "app_activation.h"
 #include "app_config.h"
 #include "app_host.h"
+#include "app_launch_hold.h"
 #include "app_relaunch.h"
 #include "app_restart.h"
 #include "app_theme.h"
@@ -338,6 +339,46 @@ int applyAutoplayVideoSetting() {
                      ? "applied; durability unconfirmed" : "applied",
                  pair);
     return 1;
+}
+
+/*
+ * "Skip the launcher" (issue #60): the FIRST sample of what the player is
+ * holding. Deliberately not the only one -- AppLaunchHold_sample()'s header
+ * explains why a single sample taken here cannot see a Shift that was already
+ * down, and Launcher::draw() keeps sampling until the direct boot dispatches.
+ * This one exists so the common case (a hold that is already down and stays
+ * down) is decided before a single frame is built.
+ *
+ * The launch decision itself, made once and logged in full. Logged even when
+ * it is "open the launcher", because "why did it not boot straight in" is the
+ * first question a player who turned this on will ask, and the answer --
+ * setting off, or something held -- has to be in mdkr64.log.
+ */
+bool armSkipLauncher(Launcher &launcher) {
+    const MdkrVideoConfig *config = mdkr_video_config_desired();
+    const bool settingEnabled =
+        config != nullptr &&
+        config->values[MDKR_APP_SKIP_LAUNCHER].number != 0.0f;
+    const AppUiLauncherHold hold = AppLaunchHold_sample(0u);
+    const bool holdOpensLauncher = AppUi_launcherHoldOpensLauncher(hold);
+    const bool armed = AppUi_launcherSkipArmed(settingEnabled, holdOpensLauncher);
+    std::fprintf(stderr,
+                 "[app] skip-launcher setting=%d shift=%d shoulderL=%d "
+                 "shoulderR=%d holdOpensLauncher=%d armed=%d\n",
+                 settingEnabled ? 1 : 0, hold.shift ? 1 : 0,
+                 hold.leftShoulder ? 1 : 0, hold.rightShoulder ? 1 : 0,
+                 holdOpensLauncher ? 1 : 0, armed ? 1 : 0);
+    if (armed) launcher.armSkipWhenReady();
+    /*
+     * Give back whatever sample 0 borrowed, armed or not. main() takes exactly
+     * one sample and then hands the window to whichever launcher path runs
+     * next, and every one of those calls host.shutdown() itself -- so handles
+     * kept across that boundary are handles some later teardown has to
+     * remember to release. The launcher reopens them on its first frame, for
+     * as long as it is actually sampling.
+     */
+    AppLaunchHold_release();
+    return armed;
 }
 
 int recoverAppHostWebGpu(void *userdata, int phase) {
@@ -4248,6 +4289,47 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         }
     }
 
+    /*
+     * "Skip the launcher" (issue #60). The decision was already taken in
+     * main() and, when it armed, Launcher::draw() has been pressing Play on
+     * its own since the remembered ROM settled. All this arm adds is TIME:
+     * hashing a 32 MiB image takes longer than the handful of frames a smoke
+     * renders, so keep drawing real launcher frames until a Play action
+     * arrives or the deadline passes, then report what happened.
+     *
+     * Deliberately no pass/fail opinion here beyond rendering. Most of the
+     * cases tests/check_launcher_skip.py drives expect NO boot, and a smoke
+     * that failed on "no Play action" could not express them.
+     */
+    if (std::getenv("MDKR_APP_SMOKE_SKIP_LAUNCHER") != nullptr && renderOk) {
+        int skipServiceFrames = 0;
+        const Uint64 skipDeadline = SDL_GetTicks64() + 15000u;
+        while (renderOk && smokePlayActions == 0 &&
+               SDL_GetTicks64() < skipDeadline &&
+               (launcher.state().romValidationPending ||
+                launcher.state().romPlayValidationPending ||
+                skipServiceFrames < 2)) {
+            if (host.waitAndPump(1)) sawQuit = true;
+            host.beginFrame();
+            const LauncherAction action = launcher.draw(host);
+            observeSmokePlay(action);
+            renderOk = host.endFrame();
+            ++skipServiceFrames;
+        }
+        const LauncherState &skipState = launcher.state();
+        std::printf(
+            "[app] smoke: skip-launcher armed=%d dispatched=%d "
+            "serviceFrames=%d actions=%d actionRom=%s romPath=%s romValid=%d "
+            "settled=%d\n",
+            launcher.skipArmedForSmoke() ? 1 : 0,
+            launcher.skipDispatchedForSmoke() ? 1 : 0,
+            skipServiceFrames, smokePlayActions,
+            smokePlayActionRom.empty() ? "(none)" : smokePlayActionRom.c_str(),
+            skipState.romPath.empty() ? "(none)" : skipState.romPath.c_str(),
+            skipState.romInfo.valid ? 1 : 0,
+            skipState.romValidationPending ? 0 : 1);
+    }
+
     /* Release-candidate verification must prove compositor presentation in
      * addition to the window-independent capture. Give a newly activated
      * macOS app a bounded opportunity to obtain its first CAMetalLayer
@@ -4397,6 +4479,12 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
     }
     const bool presentOk = !requirePresent ||
                            host.presentedFrames() >= requiredPresents;
+    /* The smoke's launcher window ends here, and host.shutdown() below reaches
+     * SDL_Quit(). Release while SDL still owns the pads: ~Launcher runs after
+     * main()'s scope ends, which is far too late to hand a handle back. The
+     * seven earlier bails in this function return before a frame is drawn, so
+     * they have no window to close. */
+    AppLaunchHold_release();
     host.shutdown();
     // A requested capture that was not written must fail the run, so a CI
     // smoke can never pass without its image.
@@ -5861,6 +5949,12 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
         }
 #endif
         if (action.type == LauncherActionType::Quit) {
+            /* The reachable leak: skip armed, a remembered ROM that never
+             * dispatched, and the player picks Quit. Nothing else on this path
+             * has released the pads, and ~Launcher's backstop runs after
+             * main()'s host.shutdown() -- i.e. after SDL_Quit(). Give them back
+             * here, while SDL still owns them. */
+            AppLaunchHold_release();
             running = false;
         } else if (action.type == LauncherActionType::Play) {
             // Blocks while the game renders into the launcher's host window.
@@ -5923,6 +6017,12 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
      * the FINISHED re-take put the endpoint back in a live session). */
     OnlineRoom_shutdownForAppExit();
 #endif
+    /* Every way out of the loop above, including the ones that break early
+     * (quitReady, a presentation failure, a session that could not return
+     * Home). main() calls host.shutdown() after this returns, so this is the
+     * last point at which giving the pads back is an ordinary close rather
+     * than a call into freed SDL state. */
+    AppLaunchHold_release();
     return exitCode;
 }
 
@@ -6126,6 +6226,18 @@ int main(int argc, char **argv) {
     }
 
     EngineSessionTransition transition;
+
+    /* Issue #60. Made here, before any launcher path runs, so the headless
+     * shell smoke and the real launcher take the identical decision through
+     * the identical code -- a gate that armed the skip through a route a
+     * player cannot take would prove nothing about the product.
+     *
+     * Autoplay is the one exception: it boots the engine itself and never
+     * consults the launcher's Play transition, so arming it there would ask
+     * for a boot nothing is waiting to receive. */
+    if (std::getenv("MDKR_APP_AUTOPLAY") == nullptr) {
+        (void)armSkipLauncher(launcher);
+    }
 
     // Headless shell smoke (CI + design review): render a bounded launcher
     // sequence and optionally capture the last frame.

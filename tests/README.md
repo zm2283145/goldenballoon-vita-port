@@ -335,6 +335,59 @@ alongside `MDKR_SAVE_DIR`) at a private temporary directory, so this is the one
 check that can reach a successful `AppConfig::save()` without ever touching the
 real machine-shared `SDL_GetPrefPath("mdkr64","mdkr64")` prefs file.
 
+### Skip the launcher — `tests/check_launcher_skip.py`
+
+```bash
+python3 tests/check_launcher_skip.py --build build \
+  --rom baserom.us.v80.z64
+```
+
+Issue #60. `Launcher.SkipWhenReady` (off by default) trades the launcher for a
+faster start; the gate spends five of its seven arms on the way back, because
+that is the part whose failure strands a player. `main()` takes one decision
+before the first frame and logs it in full (`[app] skip-launcher setting=…
+shift=… shoulderL=… shoulderR=… holdOpensLauncher=… armed=…`); when it arms,
+`Launcher::draw()` calls the same `RomPanel_requestPlayValidation()` the Play
+button calls, so the mandatory final ROM check still runs and only its verdict
+publishes a boot. `MDKR_APP_SMOKE_SKIP_LAUNCHER=1` adds no behaviour — it keeps
+the headless launcher smoke rendering until a Play action arrives or a deadline
+passes (hashing a 32 MiB image outlasts four frames) and prints one parseable
+report.
+
+The hold is sampled **every launcher frame until the boot dispatches**, not
+once at startup, and the first sighting disarms the skip one-way. SDL folds
+keyboard state from events, so a Shift already down before the window existed
+is invisible to a single sample taken at window creation — on macOS the first
+thing SDL learns about that key is its release. Re-sampling makes the window a
+player has to aim at "while the launcher is on screen", which is at least as
+long as hashing the ROM takes, rather than one unhittable instant.
+
+Arms: the setting on and nothing held **boots**, carrying the remembered ROM;
+Shift held, or both shoulders held, opens the launcher instead; the shipped
+default (setting absent) does not boot, which is the positive control proving
+arm 1's boot came from the setting; **one shoulder alone still boots**, the
+positive control proving the two hold arms were stopped by the hold policy and
+not by the mere presence of `MDKR_APP_TEST_LAUNCH_HOLD` (which injects the raw
+hold, never the decision — `@<sample>` makes it appear only from that sample
+onward — so `AppUi_launcherHoldOpensLauncher()` runs for real in every arm); a
+hold that appears only from launcher frame 3 **arms and then disarms without
+dispatching**, which is the arm a one-shot sample fails and the reason the
+per-frame sampling exists; a remembered file that is not a ROM arms but never
+dispatches; an inherited `MDKR_APP_BOOT_RECOVERY` message arms but never
+dispatches — that one is the infinite-relaunch guard, since a failed boot
+relaunches the app carrying exactly that message; and a **teardown** arm holds
+a real controller (attached by the virtual-gamepad smoke contract) through a
+launch that never dispatches, then requires every release carrying handles to
+have happened while `SDL_INIT_GAMECONTROLLER` was still up. `main()` owns
+`AppHost` by value and calls `host.shutdown()` — reaching `SDL_Quit()` — before
+its scope ends, so `~Launcher`'s release backstop runs after SDL freed the
+devices. That is asserted as an ordering rather than by a sanitizer on purpose:
+**ASan does not catch it on SDL 2.x**, because `SDL_GameControllerClose`
+validates its argument against an internal list `SDL_Quit` has already emptied
+and drops a stale handle without dereferencing it. Confirmed by building it and
+looking, not assumed. The pure policy, including
+every readiness field, is unit-tested in `tests/test_app_ui_policy.cpp`.
+
 `user_paths` is the ROM/SDL-window-free packaged-data contract. It supplies a
 deterministic preference provider to a synthetic `.app`, verifies that video
 config and the complete known save set migrate outside the bundle, checks

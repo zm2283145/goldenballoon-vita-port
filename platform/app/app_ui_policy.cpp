@@ -248,6 +248,38 @@ AppUiSettingsSection AppUi_shellPreferenceSection(AppUiShellPreference key) {
     return AppUiSettingsSection::Category;
 }
 
+bool AppUi_launcherHoldOpensLauncher(AppUiLauncherHold hold) {
+    // Shift is unambiguous at launch, so it stands alone. A pad has to hold
+    // BOTH shoulders: L or R on its own is what a controller pressed against
+    // the inside of a bag reports for hours, and treating that as a request
+    // would quietly switch the setting off for anyone who owns one.
+    return hold.shift || (hold.leftShoulder && hold.rightShoulder);
+}
+
+bool AppUi_launcherSkipArmed(bool settingEnabled, bool holdOpensLauncher) {
+    // The hold is evaluated last and wins outright. That ordering is the whole
+    // safety property: there is no combination of persisted state that can
+    // leave a player unable to reach their launcher.
+    return settingEnabled && !holdOpensLauncher;
+}
+
+bool AppUi_launcherSkipShouldBoot(AppUiLauncherSkipReadiness state) {
+    if (!state.armed || state.dispatched) return false;
+    // Undecided is not "no". While the remembered file is still being read
+    // there is no verdict to act on, so the answer is "not yet" -- the launcher
+    // keeps drawing and this is asked again next frame.
+    if (state.validationPending || state.playValidationPending) return false;
+    // No remembered game, or one that no longer verifies: the launcher is
+    // exactly where the player needs to be, and it already says why.
+    if (!state.romRemembered || !state.romValid) return false;
+    // Something is on screen to be read (a failed boot, a save that could not
+    // be written). Booting past it would throw the message away unseen.
+    if (state.bootErrorVisible) return false;
+    // A Workshop preview drives the same Play transition for its own reasons.
+    // Two owners of one boot is one too many.
+    return !state.otherWorkPending;
+}
+
 bool AppUi_enhancementResetIncludes(MdkrVideoKey key) {
     // Exactly the rows the Enhancements section draws, and nothing else. In
     // particular NOT the content keys: they share the section's "things you
