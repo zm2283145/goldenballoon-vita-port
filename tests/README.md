@@ -373,9 +373,19 @@ onward — so `AppUi_launcherHoldOpensLauncher()` runs for real in every arm); a
 hold that appears only from launcher frame 3 **arms and then disarms without
 dispatching**, which is the arm a one-shot sample fails and the reason the
 per-frame sampling exists; a remembered file that is not a ROM arms but never
-dispatches; and an inherited `MDKR_APP_BOOT_RECOVERY` message arms but never
-dispatches — that last one is the infinite-relaunch guard, since a failed boot
-relaunches the app carrying exactly that message. The pure policy, including
+dispatches; an inherited `MDKR_APP_BOOT_RECOVERY` message arms but never
+dispatches — that one is the infinite-relaunch guard, since a failed boot
+relaunches the app carrying exactly that message; and a **teardown** arm holds
+a real controller (attached by the virtual-gamepad smoke contract) through a
+launch that never dispatches, then requires every release carrying handles to
+have happened while `SDL_INIT_GAMECONTROLLER` was still up. `main()` owns
+`AppHost` by value and calls `host.shutdown()` — reaching `SDL_Quit()` — before
+its scope ends, so `~Launcher`'s release backstop runs after SDL freed the
+devices. That is asserted as an ordering rather than by a sanitizer on purpose:
+**ASan does not catch it on SDL 2.x**, because `SDL_GameControllerClose`
+validates its argument against an internal list `SDL_Quit` has already emptied
+and drops a stale handle without dereferencing it. Confirmed by building it and
+looking, not assumed. The pure policy, including
 every readiness field, is unit-tested in `tests/test_app_ui_policy.cpp`.
 
 `user_paths` is the ROM/SDL-window-free packaged-data contract. It supplies a

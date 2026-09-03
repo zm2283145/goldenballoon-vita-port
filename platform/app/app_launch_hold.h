@@ -36,6 +36,12 @@ AppUiLauncherHold AppLaunchHold_sample(unsigned sampleIndex);
 // direct boot dispatching, a hold disarming it, a launch that never armed, any
 // other boot, and the launcher's own teardown. Idempotent, and a later sample
 // simply opens the pads again.
+//
+// Safe to call after SDL has been shut down: it closes only while
+// SDL_INIT_GAMECONTROLLER is still up, and drops the handles either way. main()
+// runs host.shutdown() before its scope ends, so ~Launcher's backstop call
+// lands after SDL_Quit() -- the guard is what keeps that from being a
+// use-after-free rather than an ordering nobody may ever change.
 void AppLaunchHold_release();
 
 #endif  // MDKR64_APP_LAUNCH_HOLD_H

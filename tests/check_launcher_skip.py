@@ -58,7 +58,29 @@ The arms
 7. **bad ROM**     setting on, remembered file is not a ROM -> armed, but
                    never dispatched and no Play action. The direct boot cannot
                    route around the ROM check.
-8. **recovery**    setting on, a valid ROM, and a failed previous boot's
+8. **teardown**    setting on, a bad ROM (so the boot never dispatches and
+                   the pads are never released along the way), and a REAL
+                   controller attached via the virtual-gamepad smoke contract.
+                   main() owns AppHost by value and calls host.shutdown() --
+                   which reaches SDL_Quit() -- before its scope ends, so
+                   ~Launcher's release backstop runs after SDL freed every
+                   device it owned. Handing those handles back to
+                   SDL_GameControllerClose() there is a use-after-free.
+
+                   Asserted as an ORDERING, not via a sanitizer. ASan does not
+                   catch this on SDL 2.x -- SDL_GameControllerClose validates
+                   its argument against an internal list SDL_Quit has already
+                   emptied, so a stale handle is dropped without being
+                   dereferenced. That is SDL's internal luck, not a contract.
+                   The app therefore states the fact directly: every release
+                   that is carrying handles prints
+                   `[app] skip-launcher released pads=N sdlUp=<0|1>`, and this
+                   arm requires at least one such release and none of them with
+                   `sdlUp=0`. The virtual pad is what makes it mean anything --
+                   with no controller attached the release loop is empty, and
+                   the arm would pass whether or not the ordering was safe, so
+                   `watching pads=` must report at least one.
+9. **recovery**    setting on, a valid ROM, and a failed previous boot's
                    message inherited -> armed, but never dispatched. This is
                    the one that matters most and is the least obvious: a boot
                    that fails relaunches the app with MDKR_APP_BOOT_RECOVERY
@@ -110,6 +132,9 @@ REPORT_RE = re.compile(
     r"^\[app\] smoke: skip-launcher armed=(\d) dispatched=(\d) "
     r"serviceFrames=(\d+) actions=(\d+) actionRom=(.*) romPath=(.*) "
     r"romValid=(\d) settled=(\d)$", re.MULTILINE)
+PADS_RE = re.compile(r"^\[app\] skip-launcher watching pads=(\d+)$", re.MULTILINE)
+RELEASE_RE = re.compile(
+    r"^\[app\] skip-launcher released pads=(\d+) sdlUp=(\d)$", re.MULTILINE)
 BAD_RE = re.compile(
     r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
     r"runtime error:|Assertion failed")
@@ -167,10 +192,17 @@ class Arm:
         disarm = DISARM_RE.search(output)
         self.disarm_sample = int(disarm.group(1)) if disarm else None
 
+        pads = PADS_RE.search(output)
+        self.pads = int(pads.group(1)) if pads else None
+        # (handles, sdl-still-up) for every release that had something to give
+        # back. Silent releases are not listed: they had nothing to get wrong.
+        self.releases = [(int(count), int(up))
+                         for count, up in RELEASE_RE.findall(output)]
+
 
 def run_arm(binary: Path, root: Path, name: str, rom: Path,
             settings_on: bool, hold: str | None, recovery: str | None,
-            timeout: int, verbose: bool) -> Arm:
+            timeout: int, verbose: bool, gamepad: bool = False) -> Arm:
     home = root / name
     prefs = home / "prefs"
     saves = home / "saves"
@@ -202,6 +234,18 @@ def run_arm(binary: Path, root: Path, name: str, rom: Path,
     )
     if hold is not None:
         env["MDKR_APP_TEST_LAUNCH_HOLD"] = hold
+    if gamepad:
+        # A complete, versioned synthetic-input contract -- AppHost attaches a
+        # virtual SDL controller for it, which is the only way this gate can
+        # put a real handle in the sampler's hands on a machine with no pad
+        # plugged in. The a11y walk is the script the contract requires; it
+        # drives the D-pad and never touches a shoulder, so it cannot
+        # accidentally supply the hold.
+        env.update(
+            MDKR_APP_SMOKE_INPUT="gamepad",
+            MDKR_APP_SMOKE_INPUT_TOKEN="mdkr64-app-ui-input-v1",
+            MDKR_APP_SMOKE_A11Y_WALK="1",
+        )
     if recovery is not None:
         env["MDKR_APP_BOOT_RECOVERY"] = recovery
     if verbose:
@@ -329,6 +373,8 @@ def main() -> int:
                                 args.timeout, args.verbose)
             bad_rom = run_arm(binary, root, "bad-rom", garbage, True, None,
                               None, args.timeout, args.verbose)
+            teardown = run_arm(binary, root, "teardown", garbage, True, None,
+                               None, args.timeout, args.verbose, gamepad=True)
             recovery = run_arm(
                 binary, root, "recovery", rom, True, None,
                 "The game did not start. Your ROM and settings were kept.",
@@ -377,6 +423,47 @@ def main() -> int:
             problems.append(
                 "bad-rom: the fixture was accepted as a ROM, so this arm "
                 "proved nothing about the direct boot's ROM check")
+        # The teardown-ordering arm. run_arm() already refused a non-zero exit
+        # and any [CRASH]/AddressSanitizer/"runtime error:" marker, so reaching
+        # here means the process came down cleanly; what is asserted below is
+        # that it had something to come down WITH. A pads=0 run exercises an
+        # empty release loop and proves nothing about the ordering.
+        problems += check_stays(
+            teardown, 1, 0,
+            "the remembered file is not a ROM, so the boot never dispatched")
+        if teardown.pads is None:
+            problems.append(
+                "teardown: the launcher never reported how many controllers "
+                "the hold sampler borrowed, so this arm cannot tell whether "
+                "the release it survived had anything in it")
+        elif teardown.pads < 1:
+            problems.append(
+                "teardown: the hold sampler borrowed no controller, so the "
+                "release ran an empty loop and this arm would pass whether or "
+                "not ~Launcher hands freed handles back to SDL after "
+                "host.shutdown(). The virtual-gamepad smoke contract did not "
+                "attach a pad.")
+        if not teardown.releases:
+            problems.append(
+                "teardown: no release ever carried a controller handle, so "
+                "nothing here touches the teardown ordering at all")
+        for count, sdl_up in teardown.releases:
+            if sdl_up == 0:
+                problems.append(
+                    f"teardown: {count} controller handle(s) were given back "
+                    "to SDL_GameControllerClose() AFTER the game-controller "
+                    "subsystem was shut down. main() runs host.shutdown() -- "
+                    "and so SDL_Quit() -- before its scope ends, so this is "
+                    "~Launcher closing handles SDL has already freed. ASan "
+                    "will not report it (SDL drops an unrecognised handle "
+                    "without dereferencing it), which is why the ordering is "
+                    "asserted here instead.")
+        if "error" in teardown.output.lower() and "SDL" in teardown.output:
+            for line in teardown.output.splitlines():
+                lowered = line.lower()
+                if "sdl" in lowered and "error" in lowered:
+                    problems.append(f"teardown: SDL reported {line.strip()!r}")
+
         problems += check_stays(
             recovery, 1, 0,
             "a failed previous boot left a message for the player to read")
@@ -399,7 +486,7 @@ def main() -> int:
         for problem in problems:
             print(f"FAIL {problem}", file=sys.stderr)
         return 1
-    print("PASS launcher skip: arms=8 boots=2 stays=6 controls=2")
+    print("PASS launcher skip: arms=9 boots=2 stays=7 controls=2")
     return 0
 
 

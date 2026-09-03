@@ -368,14 +368,16 @@ bool armSkipLauncher(Launcher &launcher) {
                  settingEnabled ? 1 : 0, hold.shift ? 1 : 0,
                  hold.leftShoulder ? 1 : 0, hold.rightShoulder ? 1 : 0,
                  holdOpensLauncher ? 1 : 0, armed ? 1 : 0);
-    if (armed) {
-        launcher.armSkipWhenReady();
-    } else {
-        /* The window closed here: no direct boot will be waited for, so give
-         * back the pads sample 0 borrowed rather than holding them for the
-         * life of the launcher. */
-        AppLaunchHold_release();
-    }
+    if (armed) launcher.armSkipWhenReady();
+    /*
+     * Give back whatever sample 0 borrowed, armed or not. main() takes exactly
+     * one sample and then hands the window to whichever launcher path runs
+     * next, and every one of those calls host.shutdown() itself -- so handles
+     * kept across that boundary are handles some later teardown has to
+     * remember to release. The launcher reopens them on its first frame, for
+     * as long as it is actually sampling.
+     */
+    AppLaunchHold_release();
     return armed;
 }
 
@@ -4477,6 +4479,12 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
     }
     const bool presentOk = !requirePresent ||
                            host.presentedFrames() >= requiredPresents;
+    /* The smoke's launcher window ends here, and host.shutdown() below reaches
+     * SDL_Quit(). Release while SDL still owns the pads: ~Launcher runs after
+     * main()'s scope ends, which is far too late to hand a handle back. The
+     * seven earlier bails in this function return before a frame is drawn, so
+     * they have no window to close. */
+    AppLaunchHold_release();
     host.shutdown();
     // A requested capture that was not written must fail the run, so a CI
     // smoke can never pass without its image.
@@ -5941,6 +5949,12 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
         }
 #endif
         if (action.type == LauncherActionType::Quit) {
+            /* The reachable leak: skip armed, a remembered ROM that never
+             * dispatched, and the player picks Quit. Nothing else on this path
+             * has released the pads, and ~Launcher's backstop runs after
+             * main()'s host.shutdown() -- i.e. after SDL_Quit(). Give them back
+             * here, while SDL still owns them. */
+            AppLaunchHold_release();
             running = false;
         } else if (action.type == LauncherActionType::Play) {
             // Blocks while the game renders into the launcher's host window.
@@ -6003,6 +6017,12 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
      * the FINISHED re-take put the endpoint back in a live session). */
     OnlineRoom_shutdownForAppExit();
 #endif
+    /* Every way out of the loop above, including the ones that break early
+     * (quitReady, a presentation failure, a session that could not return
+     * Home). main() calls host.shutdown() after this returns, so this is the
+     * last point at which giving the pads back is an ordinary close rather
+     * than a call into freed SDL state. */
+    AppLaunchHold_release();
     return exitCode;
 }
 

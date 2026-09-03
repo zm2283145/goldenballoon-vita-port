@@ -34,6 +34,13 @@ void openPads() {
             g_pads.push_back(pad);
         }
     }
+    /* How many handles this window is holding. A test machine with no
+     * controller attached borrows none, and then the release path below has
+     * nothing to close -- so an arm that means to prove the teardown ordering
+     * is safe has to be able to see that it actually had a handle to get
+     * wrong. Without this line that arm would pass on an empty loop. */
+    std::fprintf(stderr, "[app] skip-launcher watching pads=%zu\n",
+                 g_pads.size());
 }
 
 /*
@@ -137,7 +144,42 @@ AppUiLauncherHold AppLaunchHold_sample(unsigned sampleIndex) {
 }
 
 void AppLaunchHold_release() {
-    for (SDL_GameController *pad : g_pads) SDL_GameControllerClose(pad);
+    /*
+     * Closing is conditional; forgetting is not.
+     *
+     * main() owns AppHost by value and calls host.shutdown() -- which reaches
+     * SDL_Quit() -- BEFORE its scope ends, so anything running during the
+     * subsequent unwind (~Launcher, which calls this as its backstop) is
+     * running after SDL freed every device it owned. Handing those pointers
+     * back to SDL_GameControllerClose() there is a use-after-free, and it is
+     * reachable: skip armed, a remembered ROM that never dispatches, and the
+     * player picks Quit.
+     *
+     * Every ordinary exit now releases while SDL is still up, so this guard
+     * should never be the thing that saves us. It is here because "should
+     * never" and "cannot" are different claims, and only one of them is worth
+     * betting a crash on.
+     */
+    const bool sdlUp = SDL_WasInit(SDL_INIT_GAMECONTROLLER) != 0;
+    /*
+     * The witness for the ordering above, and the only deterministic one there
+     * is. ASan does NOT catch the bad ordering on SDL 2.x: SDL_GameControllerClose
+     * validates its argument against an internal list that SDL_Quit has already
+     * emptied, so a stale handle is dropped without being dereferenced. That is
+     * SDL's internal luck, not a contract -- it is not documented, and it is
+     * exactly the kind of thing that differs between SDL versions and
+     * platforms. So the gate asserts the ORDERING (a release carrying handles
+     * must happen while the subsystem is still up) rather than waiting for a
+     * sanitizer report that this SDL will never produce.
+     */
+    if (!g_pads.empty()) {
+        std::fprintf(stderr,
+                     "[app] skip-launcher released pads=%zu sdlUp=%d\n",
+                     g_pads.size(), sdlUp ? 1 : 0);
+    }
+    if (sdlUp) {
+        for (SDL_GameController *pad : g_pads) SDL_GameControllerClose(pad);
+    }
     g_pads.clear();
     g_padsOpen = false;
 }
