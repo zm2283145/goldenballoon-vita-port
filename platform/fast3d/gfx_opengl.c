@@ -1062,9 +1062,62 @@ static void dkr_vita_rewrite_glsl_to_legacy(char *buf, size_t *len, int is_fragm
             i++;
         }
 
-        char rewritten[512];
+        /* Step 1: textureLod(tex, uv, 0.0) -> drop the explicit-LOD
+         * argument. Every textureLod() call this generator emits samples
+         * at LOD 0 and ends its statement with the literal ", 0.0);"
+         * suffix (checked against the actual generator: true in every
+         * call site as of this writing), so a plain suffix strip is
+         * enough -- no expression parsing needed. */
+        char stage1[768];
+        size_t stage1_len;
+        {
+            static const char kLodSuffix[] = ", 0.0);";
+            size_t suffix_len = sizeof(kLodSuffix) - 1;
+            if (raw_line_len >= suffix_len &&
+                memcmp(buf + line_start + raw_line_len - suffix_len, kLodSuffix,
+                       suffix_len) == 0) {
+                size_t keep_len = raw_line_len - suffix_len;
+                memcpy(stage1, buf + line_start, keep_len);
+                stage1_len = keep_len;
+                stage1[stage1_len++] = ')';
+                stage1[stage1_len++] = ';';
+            } else {
+                memcpy(stage1, buf + line_start, raw_line_len);
+                stage1_len = raw_line_len;
+            }
+        }
+
+        /* Step 2: texture(/textureLod( -> texture2D(. vitaGL's runtime
+         * translator's texture-sampling handling only recognizes the
+         * legacy GLSL ES 1.00 call name; the unified ES3 texture()
+         * overload passes straight through as unrecognized Cg and
+         * hard-aborts the closed-source compiler, same failure mode as
+         * the in/out/fragColor issue this function was first written
+         * for. */
+        char stage2[768];
+        size_t stage2_len = 0;
+        {
+            size_t j = 0;
+            while (j < stage1_len) {
+                if (j + 11 <= stage1_len && memcmp(stage1 + j, "textureLod(", 11) == 0) {
+                    memcpy(stage2 + stage2_len, "texture2D(", 10);
+                    stage2_len += 10;
+                    j += 11;
+                    continue;
+                }
+                if (j + 8 <= stage1_len && memcmp(stage1 + j, "texture(", 8) == 0) {
+                    memcpy(stage2 + stage2_len, "texture2D(", 10);
+                    stage2_len += 10;
+                    j += 8;
+                    continue;
+                }
+                stage2[stage2_len++] = stage1[j++];
+            }
+        }
+
+        char rewritten[768];
         size_t rewritten_len = dkr_vita_rewrite_line_fragcolor(
-            rewritten, sizeof(rewritten), buf + line_start, raw_line_len);
+            rewritten, sizeof(rewritten), stage2, stage2_len);
 
         if (rewritten_len == strlen("out vec4 gl_FragColor;") &&
             memcmp(rewritten, "out vec4 gl_FragColor;", rewritten_len) == 0) {
@@ -1741,12 +1794,12 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
     {
         static int s_shaderSrcLogCount = 0;
         if (s_shaderSrcLogCount < 5) {
-            char lb[600];
+            char lb[1700];
             snprintf(lb, sizeof(lb), "shader: rewritten VS (len=%u):\n%.*s",
-                     (unsigned)vs_len, (int)(vs_len < 500 ? vs_len : 500), vs_buf);
+                     (unsigned)vs_len, (int)(vs_len < 1600 ? vs_len : 1600), vs_buf);
             mdkr_vita_boot_log(lb);
             snprintf(lb, sizeof(lb), "shader: rewritten FS (len=%u):\n%.*s",
-                     (unsigned)fs_len, (int)(fs_len < 500 ? fs_len : 500), fs_buf);
+                     (unsigned)fs_len, (int)(fs_len < 1600 ? fs_len : 1600), fs_buf);
             mdkr_vita_boot_log(lb);
             s_shaderSrcLogCount++;
         }
