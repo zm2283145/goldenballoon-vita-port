@@ -2923,13 +2923,25 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
              * dkr_upload_tile_texture() just produced) otherwise -- whichever
              * pixels actually reached gfx_rapi->upload_texture() above, so the
              * dumped PNG is what the game displays rather than a re-decode this
-             * module would otherwise have to invent and keep in sync by hand. */
+             * module would otherwise have to invent and keep in sync by hand.
+             *
+             * The dimensions are the PIXEL BUFFER's, which for an override is
+             * NOT uw/uh. Those two answer a different question by this point:
+             * the block above deliberately reset them to the tile's LOGICAL
+             * size so the texcoords normalise against the authored tile
+             * (issue #34), while mod_texture_store.h defines these parameters
+             * as describing `rgba` itself -- "tightly packed, width * height *
+             * 4 bytes". Passing the logical size with a replacement's buffer
+             * encoded a 64x64 image as 40x40 at a 160-byte stride: in bounds,
+             * silently sheared, and wrong. The two sizes only coincide when no
+             * pack answered, which is why it survived. */
             char origin[64];
             snprintf(origin, sizeof origin, "frame %d, texture unit %d",
                      dkr_frame_index, unit);
             mdkr_mod_texture_dump_observe(
                 digest, over_used ? over.rgba : tex_decode_buf,
-                (int)uw, (int)uh, fmt, siz, origin);
+                over_used ? over.width : (int)uw,
+                over_used ? over.height : (int)uh, fmt, siz, origin);
         }
         tex_cache[slot] = (struct DkrTexCacheEntry){
             .key = achieved,

@@ -98,6 +98,12 @@ covers the textures you want; the menus, a track, a particular character.
 `mod-texture-dump/` is git-ignored for that reason, and the clean-room guard
 fails closed if any of it is ever tracked.
 
+What you get is what the game drew. If one of your own packs was installed
+during the run, that texture is dumped as your replacement, at your
+replacement's size — under the same filename, because the name belongs to the
+picture being replaced. Dump with your packs out of the way when you want the
+original.
+
 The dump path is inert when the tool is not running: with the environment
 variable unset the digest is not computed and no directory is created.
 

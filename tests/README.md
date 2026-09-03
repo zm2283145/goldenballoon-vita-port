@@ -6379,6 +6379,15 @@ any game art. Under a pack the card region is entirely the pack's two colours,
 green-dominant three to one; beside the card, zero pack pixels; with the pack
 switched off, the frame is byte-identical to the no-pack baseline.
 
+The Taj pack arm additionally runs with the dump on — a pack installed *and*
+`MDKR_MOD_TEXTURE_DUMP` set is the one combination that reaches the dump's
+encode path for an override, and no other arm or gate produces it. The written
+PNG must be 64x64 and pixel-identical to the pack's own image. It pins a fixed
+defect: the renderer passed the pack's 64x64 buffer with the tile's logical
+40x40 size, so stb encoded 40x40 at a 160-byte stride out of a 256-byte-stride
+image — in bounds, no crash, no sanitizer report, just a sheared picture handed
+to the author who asked what the game drew.
+
 The digest assertion is the point of the file. A ROM texture's digest is frozen
 because the ROM is; these three are a function of `game/src/menu.c`, so
 retouching the artwork renames them and silently breaks every pack in the wild.

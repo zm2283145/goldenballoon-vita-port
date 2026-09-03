@@ -44,7 +44,7 @@ two siblings). Seven runs, each in its own throwaway working directory, which
 is also where that arm's `mods/` and dumped corpus live:
 
     baseline          Taj, no `mods/` at all, MDKR_MOD_TEXTURE_DUMP on
-    taj               Taj, one pack overriding the pinned Taj digest
+    taj               Taj, one pack overriding the pinned Taj digest, dump ON
     wizpig            Wizpig, the same at the pinned Wizpig digest
     terry             Terry, the same at the pinned Terry digest
     disabled          the identical pack with `enabled = 0` in its pack.ini
@@ -115,7 +115,19 @@ What is asserted
     pack that half-applied. This is the no-pack guarantee -- an install with no
     pack renders what it rendered before packs existed.
 
- 6. AND ALL OF IT HOLDS ON THE RENDERER THAT SHIPS. On WebGPU the corpus
+ 6. THE DUMP RECORDS AN OVERRIDE WHOLE, AND AT ITS OWN SIZE. The `taj` arm
+    runs with a pack installed AND the dump on -- the one combination that
+    reaches the encode path, and one no other arm and no other gate produces.
+    The written PNG must be 64x64 and pixel-identical to the pack's own image,
+    and its sidecar must agree. This is a regression pin: the renderer used to
+    pass the pack's 64x64 buffer with the tile's LOGICAL 40x40 size, because
+    the two share `uw`/`uh` by that point and the second had been reset for
+    texcoord normalisation. stb then encoded 40x40 at a 160-byte stride from a
+    256-byte-stride image -- in bounds, so no crash and no sanitizer report,
+    just a silently sheared picture handed to the author who asked what the
+    game drew.
+
+ 7. AND ALL OF IT HOLDS ON THE RENDERER THAT SHIPS. On WebGPU the corpus
     publishes the SAME Taj digest (assertion 2 again, so the published name is
     not a GL artifact) and a pack at that name draws the card (assertion 3
     again). Every arm additionally proves it got the backend it asked for, so
@@ -161,9 +173,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import zlib
 from pathlib import Path
 
-from check_mod_texture_override import quadrant_png
+from check_mod_texture_override import (PACK_RGBA, PACK_RGBA_ALT,
+                                        quadrant_png)
 from harness_utils import DEFAULT_BUILD_DIR, read_ppm, resolve_binary
 
 
@@ -233,6 +247,82 @@ def install_pack(run_dir: Path, digest: str, enabled: bool) -> None:
     (pack / "textures").mkdir(parents=True)
     (pack / "pack.ini").write_bytes(PACK_INI if enabled else PACK_INI_OFF)
     (pack / "textures" / f"{digest}.png").write_bytes(quadrant_png(PACK_SIZE))
+
+
+def decode_png(blob: bytes) -> tuple[int, int, bytes]:
+    """(width, height, RGBA8 bytes) from an 8-bit RGBA non-interlaced PNG.
+
+    Standard library only, and deliberately a real decoder rather than a
+    header peek: assertion 6 has to compare the dumped PIXELS, not just the
+    dimensions in the IHDR. A sheared image carries the right header. Its
+    own non-vacuity is checked by round-tripping quadrant_png() through it
+    before it is trusted with the game's output.
+    """
+    require(blob[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG")
+    offset = 8
+    header: tuple[int, ...] | None = None
+    idat = bytearray()
+    while offset + 8 <= len(blob):
+        length = int.from_bytes(blob[offset:offset + 4], "big")
+        tag = blob[offset + 4:offset + 8]
+        body = blob[offset + 8:offset + 8 + length]
+        offset += 12 + length
+        if tag == b"IHDR":
+            header = (
+                int.from_bytes(body[0:4], "big"),
+                int.from_bytes(body[4:8], "big"),
+                body[8], body[9], body[12],
+            )
+        elif tag == b"IDAT":
+            idat += body
+        elif tag == b"IEND":
+            break
+    require(header is not None, "PNG has no IHDR")
+    width, height, depth, colour, interlace = header
+    require(depth == 8 and colour == 6 and interlace == 0,
+            f"unexpected PNG encoding: depth={depth} colour={colour} "
+            f"interlace={interlace}")
+
+    raw = zlib.decompress(bytes(idat))
+    stride = width * 4
+    out = bytearray()
+    previous = bytearray(stride)
+    position = 0
+    for _ in range(height):
+        kind = raw[position]
+        position += 1
+        line = bytearray(raw[position:position + stride])
+        position += stride
+        if kind == 1:
+            for i in range(4, stride):
+                line[i] = (line[i] + line[i - 4]) & 0xFF
+        elif kind == 2:
+            for i in range(stride):
+                line[i] = (line[i] + previous[i]) & 0xFF
+        elif kind == 3:
+            for i in range(stride):
+                left = line[i - 4] if i >= 4 else 0
+                line[i] = (line[i] + ((left + previous[i]) >> 1)) & 0xFF
+        elif kind == 4:
+            for i in range(stride):
+                left = line[i - 4] if i >= 4 else 0
+                up = previous[i]
+                corner = previous[i - 4] if i >= 4 else 0
+                estimate = left + up - corner
+                da, db, dc = (abs(estimate - left), abs(estimate - up),
+                              abs(estimate - corner))
+                if da <= db and da <= dc:
+                    predictor = left
+                elif db <= dc:
+                    predictor = up
+                else:
+                    predictor = corner
+                line[i] = (line[i] + predictor) & 0xFF
+        else:
+            require(kind == 0, f"unsupported PNG row filter {kind}")
+        out += line
+        previous = line
+    return width, height, bytes(out)
 
 
 def classify(path: Path, bounds: tuple[float, float, float, float]) -> tuple[int, int, int]:
@@ -367,6 +457,55 @@ def assert_corpus_publishes(label: str, dump: Path, digest: str) -> None:
             f"{label}: {digest} is not the 40x40 card: {text!r}")
 
 
+def assert_override_dump(label: str, dump: Path, digest: str) -> None:
+    """Assertion 6: the dump wrote the OVERRIDE, whole and at its own size.
+
+    The regression this pins: the renderer used to hand the dump the pack's
+    64x64 buffer together with the tile's LOGICAL 40x40 size, because the two
+    live in the same `uw`/`uh` pair by that point and the second one had been
+    reset for texcoord normalisation (issue #34). stb encoded 40x40 at a
+    160-byte stride out of a 256-byte-stride image: in bounds, so no crash and
+    no sanitizer report, and only reachable with a pack installed AND the dump
+    on -- neither the corpus arms (no pack) nor the pack arms (no dump) could
+    see it, which is exactly how it survived being written.
+
+    Dimensions alone would not catch a re-introduction cleanly, so the pixels
+    are compared: the dumped image must equal the pack's own PNG, decoded.
+    """
+    expected_w, expected_h, expected = decode_png(quadrant_png(PACK_SIZE))
+    # The decoder is checked before it is trusted: a decoder that returned the
+    # same wrong answer for both files would make the comparison below vacuous.
+    require((expected_w, expected_h) == (PACK_SIZE, PACK_SIZE) and
+            len(expected) == PACK_SIZE * PACK_SIZE * 4,
+            f"{label}: this file's own PNG reader is broken "
+            f"({expected_w}x{expected_h}, {len(expected)} bytes)")
+    corner = expected[0:4]
+    far = expected[((PACK_SIZE - 1) * PACK_SIZE + PACK_SIZE - 1) * 4:][:4]
+    require(bytes(corner) == bytes(PACK_RGBA) and
+            bytes(far) == bytes(PACK_RGBA_ALT),
+            f"{label}: this file's own PNG reader does not round-trip the "
+            f"quadrant (corner={tuple(corner)}, far={tuple(far)})")
+
+    written = dump / f"{digest}.png"
+    require(written.is_file(), f"{label}: the dump wrote no {digest}.png")
+    width, height, actual = decode_png(written.read_bytes())
+    require((width, height) == (PACK_SIZE, PACK_SIZE),
+            f"{label}: the dump wrote the override at {width}x{height}, not "
+            f"the replacement's own {PACK_SIZE}x{PACK_SIZE}; the logical tile "
+            "size reached the encoder and the image is sheared")
+    require(actual == expected,
+            f"{label}: the dumped override is not the pack's own image "
+            f"({sum(a != b for a, b in zip(actual, expected))} of "
+            f"{len(expected)} bytes differ)")
+
+    sidecar = (dump / f"{digest}.txt").read_text(encoding="utf-8",
+                                                 errors="replace")
+    require(f"width={PACK_SIZE}" in sidecar and
+            f"height={PACK_SIZE}" in sidecar,
+            f"{label}: the sidecar disagrees with the PNG it describes: "
+            f"{sidecar!r}")
+
+
 def assert_pack_drew_card(label: str, frame: Path) -> None:
     """Assertions 3 and 4: the card is the pack image, and nothing else is."""
     magenta, green, total = classify(frame, CARD_BOUNDS)
@@ -443,13 +582,20 @@ def main() -> int:
         baseline_bytes = baseline.read_bytes()
 
         for character, (_, digest, _identity) in PORTRAITS.items():
-            frame, output, _ = run_arm(
-                binary, rom, root, character, character, digest, True, False,
-                args.timeout, args.verbose)
+            # The Taj arm carries the dump as well, so the override-dump
+            # assertion costs no extra run: a pack installed AND the dump on is
+            # the one combination that reaches the sheared-encode path, and it
+            # is a combination no other arm and no other gate produces.
+            wants_corpus = character == "taj"
+            frame, output, dump = run_arm(
+                binary, rom, root, character, character, digest, True,
+                wants_corpus, args.timeout, args.verbose)
             assert_reached_card(character, character, output)
             require("[MODS]   active: Portrait Test (priority 100)" in output,
                     f"{character}: the pack did not install")
             assert_pack_drew_card(character, frame)
+            if wants_corpus:
+                assert_override_dump(character, dump, digest)
 
         # The positive control: the identical pack, switched off by its own
         # pack.ini, must give back the generated card exactly.
@@ -472,11 +618,11 @@ def main() -> int:
                 f"baseline {hashlib.sha256(baseline_bytes).hexdigest()[:16]})")
 
         # WebGPU is the shipped default renderer, so the two claims this file
-        # makes have to hold there and not only on the GL arms above. They are
-        # two runs rather than one because a dump taken with a pack installed
-        # records the OVERRIDE's pixels under the ROM-side name (see the report
-        # note on mdkr_mod_texture_dump_observe), which would make a combined
-        # arm assert the digest against an image it did not describe.
+        # makes have to hold there and not only on the GL arms above. They stay
+        # two runs rather than one folded arm: a dump taken with a pack
+        # installed correctly records the REPLACEMENT (assertion 6 is what
+        # says so), so it cannot also show what an author dumping a fresh
+        # corpus sees, which is the whole of what webgpu-baseline claims.
         #
         # Frames are NOT compared across renderers: two backends need not
         # rasterize the same bytes, and nothing here claims they do. What is

@@ -850,8 +850,9 @@ CHECKS = (
     Check("bonus_portrait_pack", "check_bonus_portrait_pack.py", "native",
           "a pack redraws the generated Taj/Wizpig/Terry cards at their "
           "published digests on GL and on the shipped WebGPU default, the "
-          "author dump publishes those digests, and a pack.ini that switches "
-          "the pack off restores the generated cards byte-for-byte"),
+          "author dump publishes those digests and records an installed "
+          "override whole at its own size, and a pack.ini that switches the "
+          "pack off restores the generated cards byte-for-byte"),
     Check("taj_character_select", "check_taj_character_select.py", "native",
           "visible, contiguous Taj roster tile and real selection across all "
           "four 8/9/9/10-character retail layouts"),
