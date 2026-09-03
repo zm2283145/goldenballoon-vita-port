@@ -79,9 +79,17 @@ extern int g_frameCounter;
  * for byte-exact ROM ordering, the presentation stream only at the opt-in
  * enhanced cadence. See docs/ref/presentation-rng-census.md. */
 #define menu_presentation_rand_range cadence_compat_rand_range
+
+/* menu_credits_init()'s cheat pick has the same shape: the value chooses which
+ * cheat the credits print and reaches no authoritative state, but the draw is
+ * the race's. The credits are not on any recorded route -- they precede a
+ * return to racing, which is what made the draw worth moving rather than
+ * leaving. */
+#define credits_presentation_rand_range cadence_compat_rand_range
 #else
 #define CHARSELECT_DATA(index) (*gCurrCharacterSelectData)[(index)]
 #define menu_presentation_rand_range rand_range
+#define credits_presentation_rand_range rand_range
 #endif
 
 /**
@@ -15990,7 +15998,7 @@ void menu_credits_init(void) {
             gCreditsArray[84] = gCreditsLastMessageArray[0]; // "THE END?"
         }
 
-        cheat = gCheatsInCreditsArray[rand_range(0, NUMBER_CHEATS_IN_CREDITS - 1)];
+        cheat = gCheatsInCreditsArray[credits_presentation_rand_range(0, NUMBER_CHEATS_IN_CREDITS - 1)];
         cheatIndex = -1;
         while (cheat != 0) {
             cheat >>= 1;
