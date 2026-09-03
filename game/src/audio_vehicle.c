@@ -33,6 +33,24 @@
 #define VEHICLE_LOG log
 #endif
 
+#ifdef NATIVE_PORT
+/* Engine jitter is presentation output. Its two rolls feed engineJitter, which
+ * is read at exactly one place -- the pitch and volume deltas a few lines
+ * below -- and reaches no authoritative state; the retail ROM nonetheless draws
+ * them from the shared stream, which the pinned ares PC/return-address witness
+ * proved directly (tests/README.md, tests/check_authored_rng_compat.py).
+ *
+ * Both facts are kept: at the shipping two-field cadence this routes back to
+ * rand_range() for byte-exact ROM ordering, and only at the opt-in enhanced
+ * cadence does it draw from the presentation stream, so a host that renders
+ * more often does not consume more of the race's randomness. This is the same
+ * switch the 24 HUD sites use (game/src/game_ui.c hud_rand_range). See
+ * docs/ref/presentation-rng-census.md. */
+#define engine_jitter_rand_range cadence_compat_rand_range
+#else
+#define engine_jitter_rand_range rand_range
+#endif
+
 /************ .data ************/
 
 u8 gVehicleSounds = TRUE;
@@ -514,8 +532,8 @@ void racer_sound_car(Object *obj, u32 buttonsPressed, u32 buttonsHeld, s32 ticks
             // Add engine jitter effect for player cars to simulate engine vibration
             // Max pitch variation ±0.02, volume variation ±5
             if (gSoundRacerObj->playerIndex != PLAYER_COMPUTER) {
-                if (rand_range(0, 10) < 7) {
-                    gRacerSound->engineJitter += rand_range(0, 10) - 5;
+                if (engine_jitter_rand_range(0, 10) < 7) {
+                    gRacerSound->engineJitter += engine_jitter_rand_range(0, 10) - 5;
                     if (gRacerSound->engineJitter > 5) {
                         gRacerSound->engineJitter = 5;
                     } else if (gRacerSound->engineJitter < -5) {
