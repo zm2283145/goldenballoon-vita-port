@@ -171,6 +171,16 @@ bool mdkr_match_route_measure_due(MdkrMatchRouteMeasureState *state,
 /* One returned echo. Unknown, duplicate and unsent sequences are ignored. */
 void mdkr_match_route_measure_echo(MdkrMatchRouteMeasureState *state,
                                    uint32_t sequence, uint32_t now_ms);
+/* Cut the window short at `now_ms` and report how many samples were dropped.
+ * For a caller whose lanes stop being available to the measurement before the
+ * window closes -- the race latched, and Start is never held for a route
+ * check. Trailing probes that were still inside their answer window (sent
+ * within MDKR_MATCH_ROUTE_LATE_SAMPLE_MS of the cut and not yet echoed) are
+ * removed from the sample set instead of being scored as loss: they were lost
+ * to the caller's own cut, not to the route. Everything older stands,
+ * genuine loss included, and no further probe is ever emitted. */
+unsigned mdkr_match_route_measure_cut(MdkrMatchRouteMeasureState *state,
+                                      uint32_t now_ms);
 /* True once the send window and the drain have both elapsed. A corrupt state
  * settles immediately, so a caller loop always terminates. */
 bool mdkr_match_route_measure_settled(const MdkrMatchRouteMeasureState *state,

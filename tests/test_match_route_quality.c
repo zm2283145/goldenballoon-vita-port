@@ -310,6 +310,56 @@ static void test_measurement_phase(void) {
     }
 }
 
+/* A window can be cut short: Start is never blocked, so a race that begins
+ * before the measurement settles takes both lanes back and the launcher scores
+ * what came back rather than throwing the window away. The probes that were
+ * still inside their answer window at the cut are dropped from the sample set
+ * -- they were lost to the cut, not to the route -- while everything older,
+ * including real loss, stands. */
+static void test_cut_window(void) {
+    MdkrMatchRouteMeasureState state;
+    MdkrMatchRouteMeasureState uncut;
+    MdkrMatchRouteMeasurement whole;
+    MdkrMatchRouteMeasurement scored;
+    MdkrMatchRouteProbe probe;
+    uint32_t now;
+    unsigned dropped;
+    memset(&whole, 0, sizeof(whole));
+    memset(&scored, 0, sizeof(scored));
+    expect(mdkr_match_route_measure_begin(&state, 1000u, 1000u / 30u, 42u),
+           "the cut phase begins");
+    /* One second of both lanes against a 10 ms carrier. Sequence 3's echo is
+     * genuinely lost; nothing sent in the last 100 ms is answered, which is
+     * what an in-flight tail looks like when the race latch closes the lanes. */
+    for (now = 1000u; now < 2000u; now += 5u) {
+        while (mdkr_match_route_measure_due(&state, now, &probe)) {
+            if (probe.sequence == 3u || now >= 1900u) continue;
+            mdkr_match_route_measure_echo(&state, probe.sequence, now + 10u);
+        }
+    }
+    uncut = state;
+    expect(mdkr_match_route_measure_finish(&uncut, 0u, &whole),
+           "the uncut window still scores");
+
+    dropped = mdkr_match_route_measure_cut(&state, 2000u);
+    expect(dropped > 0u, "the cut drops the probes still in flight");
+    expect(mdkr_match_route_measure_cut(&state, 2000u) == 0u,
+           "a second cut has nothing left to drop");
+    expect(!mdkr_match_route_measure_due(&state, 2500u, &probe),
+           "a cut window emits no further probe");
+    expect(mdkr_match_route_measure_cut(NULL, 2000u) == 0u,
+           "cutting nothing drops nothing");
+
+    expect(mdkr_match_route_measure_finish(&state, 0u, &scored),
+           "the cut window still scores");
+    expect(scored.loss_per_thousand < whole.loss_per_thousand,
+           "the in-flight tail is not counted as loss");
+    expect(scored.loss_per_thousand > 0u,
+           "an echo lost before the cut is still loss");
+    expect(scored.p95_rtt_ms == 10u,
+           "the cut window reports the round trip it did measure");
+}
+
 /* The degraded band's lane: 8% injected loss on the unreliable bundle lane must
  * land in ROUGH. Its positive control is a real mutation of the production
  * ladder -- route_steady_floor 8 -> 1, so every score bands steady -- which
@@ -367,8 +417,10 @@ int main(void) {
     test_entry_timing_widen();
     test_probe_codec();
     test_measurement_phase();
+    test_cut_window();
     test_impairment_eight_percent_loss();
     if (failures != 0) return 1;
-    puts("match route quality: PASS (ladder, bands, widen, measurement, 8% loss)");
+    puts("match route quality: PASS (ladder, bands, widen, measurement, cut, "
+         "8% loss)");
     return 0;
 }

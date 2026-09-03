@@ -518,6 +518,31 @@ void mdkr_match_route_measure_echo(MdkrMatchRouteMeasureState *state,
     state->echoed[slot] = 1u;
 }
 
+unsigned mdkr_match_route_measure_cut(MdkrMatchRouteMeasureState *state,
+                                      uint32_t now_ms) {
+    unsigned lane;
+    unsigned sent;
+    unsigned dropped = 0u;
+    if (!route_measure_valid(state)) return 0u;
+    sent = state->next_sequence - 1u;
+    /* Only the TRAILING run: the scan stops at the first probe that was
+     * answered, or that has been unanswered for longer than a sample's answer
+     * window, so real loss inside the measured stretch is never erased. */
+    while (sent > 0u && state->echoed[sent - 1u] == 0u &&
+           now_ms - state->sent_ms[sent - 1u] <
+               MDKR_MATCH_ROUTE_LATE_SAMPLE_MS) {
+        sent--;
+        dropped++;
+    }
+    state->next_sequence = sent + 1u;
+    /* Park both lanes at the window's edge: due() emits nothing past it, so a
+     * caller that keeps pumping cannot reopen a cut window. */
+    for (lane = 0u; lane < (unsigned)MDKR_MATCH_ROUTE_LANE_COUNT; lane++)
+        state->next_send_ms[lane] =
+            state->begin_ms + MDKR_MATCH_ROUTE_MEASURE_MS;
+    return dropped;
+}
+
 bool mdkr_match_route_measure_settled(const MdkrMatchRouteMeasureState *state,
                                       uint32_t now_ms) {
     if (!route_measure_valid(state)) return true;
