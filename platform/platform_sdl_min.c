@@ -927,6 +927,10 @@ static void sdl_apply_gl_present_policy(void) {
 }
 
 #if defined(__vita__)
+extern void mdkr_vita_boot_log(const char *msg);
+#endif
+
+#if defined(__vita__)
 static int sdl_init_gl(Uint32 base_flags) {
     (void)base_flags;
     /* vitaGL owns display/context creation directly via sceGxm; there is no
@@ -942,11 +946,24 @@ static int sdl_init_gl(Uint32 base_flags) {
      * the first thing to tune against real hardware once the game boots --
      * the DKR HUD/minimap draw calls in gfx_pc_dkr.c were never profiled
      * against a PowerVR SGX543MP4+. */
-    vglInitExtended(0, s_initialWindowWidth, s_initialWindowHeight, 0x1800000,
+    GLboolean vglOk = vglInitExtended(0, s_initialWindowWidth, s_initialWindowHeight, 0x1800000,
                      SCE_GXM_MULTISAMPLE_4X);
     s_window = NULL;
     g_sdlWindow = NULL;
     s_glReady = 1;
+    {
+        char glb[192];
+        snprintf(glb, sizeof(glb), "vitaGL: vglInitExtended returned %d (1=ok,0=FAILED)", (int)vglOk);
+        mdkr_vita_boot_log(glb);
+        snprintf(glb, sizeof(glb), "vitaGL: GL_VERSION=%s", (const char *)glGetString(GL_VERSION));
+        mdkr_vita_boot_log(glb);
+        snprintf(glb, sizeof(glb), "vitaGL: GL_RENDERER=%s", (const char *)glGetString(GL_RENDERER));
+        mdkr_vita_boot_log(glb);
+        snprintf(glb, sizeof(glb), "vitaGL: mem free VRAM=%u RAM=%u PHYCONT=%u",
+                 (unsigned)vglMemFree(VGL_MEM_VRAM), (unsigned)vglMemFree(VGL_MEM_RAM),
+                 (unsigned)vglMemFree(VGL_MEM_PHYCONT));
+        mdkr_vita_boot_log(glb);
+    }
     printf("[SDL] GL ready (vitaGL): %s / %s\n",
            (const char *)glGetString(GL_VERSION),
            (const char *)glGetString(GL_RENDERER));
@@ -3600,6 +3617,17 @@ void platform_sdl_present(void) {
 #endif
         sdl_gl_resource_heartbeat("before-swap", 0);
 #if defined(__vita__)
+        {
+            static int s_vitaPresentLogCount = 0;
+            if (s_vitaPresentLogCount < 8) {
+                GLenum vitaPresentErr = glGetError();
+                char plb[128];
+                snprintf(plb, sizeof(plb), "present: frame=%u glGetError-before-swap=0x%x",
+                         (unsigned)g_surfaceFrameCounter, (unsigned)vitaPresentErr);
+                mdkr_vita_boot_log(plb);
+                s_vitaPresentLogCount++;
+            }
+        }
         vglSwapBuffers(GL_FALSE);
 #else
         SDL_GL_SwapWindow(s_window);
