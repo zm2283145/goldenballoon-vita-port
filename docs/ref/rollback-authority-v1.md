@@ -279,22 +279,104 @@ reader and writer. It prevents a declaration from silently bypassing that
 decision. Local automatic variables and heap fields remain covered by the v3
 family audit and the engine range registry.
 
-The reviewed baseline is now 1,747 declarations. Its one-hundred-and-one-row
-delta (no removals) is classified: zero rows are simulation authority,
-sixty-six are test/seam-gated and thirty-five are presentation or host
-bookkeeping. Ninety-four rows belong to the native online-screen takeover
-(the separated session `online_session.c` and its CHARSELECT / TRACKSELECT /
-VEHICLESELECT / RESULTS / CEREMONY screens plus `online_screen_util.c`). The
-structural ruling: those screens tick only under `GAMEMODE_ONLINE_SESSION`,
-which never coexists with a live rollback ring — the ring exists only inside
-a gameplay level and resimulation re-enters `mode_game` directly, not the
-thread3 frame loop — so no screen static is readable by simulation inside a
-rollback window. Match-relevant screen products (locked track/cup/mode,
-confirmed character, committed vehicle) reach the race only through the
-party-link reducer and the session's boot configuration, i.e. pre-freeze load
-work: the same match-constant ruling as this baseline's character arrays.
-Within those ninety-four rows, the sixty-six test/seam rows are the
-`MDKR_TEST_*` env-resolution latches, scripted inputs/scenarios, stand-in
+The reviewed baseline is now 1,821 declarations. Its seventy-four-row delta (no
+removals) is classified: zero rows are simulation authority, twenty-four are
+test/seam-gated and fifty are presentation or host bookkeeping. Sixty-four rows
+belong to the Character Workshop / custom-character pipeline: thirty-three
+`menu.c` character-select rows (the `sCustomCharacterRoster` / cursors /
+selection and default-selection arrays, the roster owner and its error banner
+and timer, and the display-name, selected-name, roster-name and portrait
+texture / `Gfx` command / metrics / catalog-index / revision / render-mode
+caches), one `game_ui.c` row (`sCustomMinimapRevisions`), twenty-three
+`thread3_main.c` Workshop preview and motion-review rows, and seven `objects.c`
+rows for the presentation sidecar and its draw-local replacement fence. The
+structural ruling for the `menu.c` and `game_ui.c` rows: they are menu-scene and
+HUD presentation — texture uploads keyed on `(catalog_index, revision)`, the
+native/retail-fallback text mode latch, and change-detect keys whose only other
+consumer is an `MDKR_TRACE` line — and their one match-relevant product,
+the confirmed custom package, reaches the race exclusively through
+`charselect_custom_sync_runtime` writing `gCharacterIdSlots[]` and
+`mod_racer_set_player_identity()` at character-select commit, i.e. pre-freeze
+boot configuration: the same match-constant ruling as this document's
+character arrays. The `thread3_main.c` rows are the test/seam-gated
+twenty-three: the whole Workshop route hangs off `workshop_preview_start()`,
+which returns immediately unless `MDKR_CHARACTER_WORKSHOP_PREVIEW` is set, and
+every service and status reader early-returns while
+`g_mdkrCharacterPreviewResult` / `g_mdkrCharacterMotionReviewResult` are NULL —
+they are non-NULL only during a launcher-owned one-shot preview boot, which
+never enters a race. The seven `objects.c` sidecar rows are presentation:
+`sModernCharacterWasAirborne` / `sModernCharacterLandTicks` are the airborne
+edge and the bounded twelve-tick landing window that only choose a semantic
+string for `mdkr_modern_character_tick()`, declared a presentation-only adapter
+that never writes `Object_Racer`; `sModernCharacterReplacementObject`'s
+companions `Donor` / `Vehicle` / `Lod` / `Select` are a synchronous draw-local
+transaction, armed in the racer draw and cleared at the same object's draw tail,
+whose only reader is the donor batch-visibility fence in `render_mesh`; and
+`sModernCharacterWarningBits` is a per-player warn-once dedup latch on stderr
+(the `sPinnedDeficitLogged` precedent).
+
+Seven rows are the Adventure Party co-op work — `objects.c`'s
+`sApRaceWinnerSeat`, `sApSilverTeamCoins`, `sApTajPlan` and the
+`sApTajTransform` pending/count/vehicle trio, and `object_functions.c`'s
+`sApTajFocusSeat`. These carry real local-campaign gameplay meaning:
+`sApSilverTeamCoins` is the team-shared tally the finish permit and
+`set_course_finish_flags` read for the silver `>= 8` win test. They are
+nevertheless outside every rollback window by construction, and this is the
+guard that makes it true: all seven are compiled out on the
+`MDKR_ADVENTURE_PARTY_OMIT` arm, and on the shipping arm every authoritative
+reader is behind `adventure_party_race_award_active()` /
+`adventure_party_silver_race_active()` / `adventure_party_taj_active()`, each of
+which requires a live `AdventurePartySession` in a party state. A session is
+formed only by `adventure_party_menu_begin_session()` on the local Adventure
+file-select commit, admitted only for two to four *local* players with the
+`Enhancements.AdventureParty` row on, and `menu_init(MENU_TITLE)` applies QUIT
+then DESTROY to any live session on every quit to title — the sole route to the
+`GAMEMODE_ONLINE_SESSION` boot that a rollback ring lives under. So no online
+rollback race can run with a party session active, `adventure_party_is_active()`
+answers zero for the whole ring's life, and all seven rows are inert there.
+They are counted as host bookkeeping on that ruling, not as match constants.
+
+The remaining three rows: `hasm/math_util.c`'s `gAuthoritativeRNGDraws` is the
+authoritative-draw counter stepped inside `rand_range()` itself under
+`NATIVE_PORT`. It is an observation counter and it is deliberately *not*
+registered. It exists because the stream digests are blind to a draw-count
+change: the generator enters a period-20 cycle eleven draws after boot, so two
+builds whose counts differ by a multiple of twenty record byte-identical
+streams, and a count has no such blind spot. Its only reader in the tree is
+`mdkr_authoritative_rng_draws()`, whose only caller is the end-of-run
+`[RNGDRAWS]` line under the headless frame seam that
+`tests/check_authored_rng_compat.py` pins beside each arm's digest; it appears
+in no state hash, in no wire payload and in no simulation branch, and
+`gCurrentRNGSeed` — the state a resimulation must actually restore — remains
+registered as `TAG_RNG_CURRENT`. Registering the counter would be wrong, not
+merely unnecessary: two peers that have *presented* a different number of times
+must not be made to disagree about it. `rcp_dkr.c`'s `sDlHighWaterBytes` /
+`sDlHighWaterLimitBytes` are the display-list submission witness — the authored
+byte high-water and the heap row it was reached in, restarted when a level load
+moves the row — read only by their own comparison, which emits an `MDKR_TRACE`
+line and aborts a genuine overflow; `MDKR_TEST_DL_HIGH_WATER_LIMIT` and
+`MDKR_TEST_UNDERSIZED_DL_HEAP` exist only so a test can drive that abort and
+the sanitizer's overflowing stream. Era attribution: the Adventure Party co-op
+wave (the seven party rows), the Character Workshop / custom-character pipeline
+(the sixty-four roster, preview and sidecar rows), the rollback-presentation RNG
+split (`gAuthoritativeRNGDraws`), and the display-list high-water witness (the
+`rcp_dkr.c` pair).
+
+The prior 1,747 baseline's one-hundred-and-one-row delta (no removals) remains
+classified: zero rows are simulation authority, sixty-six are test/seam-gated
+and thirty-five are presentation or host bookkeeping. Ninety-four rows belong
+to the native online-screen takeover (the separated session `online_session.c`
+and its CHARSELECT / TRACKSELECT / VEHICLESELECT / RESULTS / CEREMONY screens
+plus `online_screen_util.c`). The structural ruling: those screens tick only
+under `GAMEMODE_ONLINE_SESSION`, which never coexists with a live rollback
+ring — the ring exists only inside a gameplay level and resimulation re-enters
+`mode_game` directly, not the thread3 frame loop — so no screen static is
+readable by simulation inside a rollback window. Match-relevant screen products
+(locked track/cup/mode, confirmed character, committed vehicle) reach the race
+only through the party-link reducer and the session's boot configuration, i.e.
+pre-freeze load work: the same match-constant ruling as this baseline's
+character arrays. Within those ninety-four rows, the sixty-six test/seam rows
+are the `MDKR_TEST_*` env-resolution latches, scripted inputs/scenarios, stand-in
 reducer fixtures (`sTestRoom`/`sTsRoom`/`sVsRoom`, points/placement/seat
 fixtures) and witness change-detect keys — all inert without their env and
 read by no authoritative path; the presentation rows are screen state
