@@ -785,6 +785,21 @@ if(VITA)
     # the flags Rinnegatamante's Lighthouse (another Vita/SDL2/vitaGL port)
     # passes in its Makefile.vita for the same reason.
     target_compile_options(${MDKR_TARGET} PRIVATE -fno-short-enums -fsigned-char)
+    # `-Wl,-q` (--emit-relocs) keeps the linker's relocation records in the
+    # final ELF instead of discarding them -- vita-elf-create needs those
+    # records to build a valid .velf (segment layout + Vita-specific
+    # relocation table). Without this flag the plain ELF still links fine
+    # (nothing about compiling/linking on the host fails), but vita-elf-create
+    # produces a SELF the Vita's module manager cannot recognize, which
+    # surfaces on-device as VitaShell install error 0x80101130, not as a
+    # build-time error -- there is no way to catch this short of installing
+    # on hardware. `--allow-multiple-definition` and `--pic-veneer` are the
+    # other linker flags Lighthouse's Makefile.vita passes for the same
+    # arm-vita-eabi/ld combination; `--wrap,pte_osSemaphorePost` is omitted
+    # since that symbol belongs to Lighthouse's bundled pthread-embedded
+    # library, which this project does not vendor.
+    target_link_options(${MDKR_TARGET} PRIVATE
+        -Wl,-q -Wl,--allow-multiple-definition -Wl,--pic-veneer)
 endif()
 # emcc is Clang-based, so the Clang-only parse flags apply to it too.
 # The decomp is warning-noisy. Clang's umbrella suppression is useful, but GCC
