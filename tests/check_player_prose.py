@@ -21,6 +21,15 @@ Scope, and why it stops where it does
   the player reads is the slop this gate exists to catch. Conflating the two
   is exactly the kind of gate that gets disabled within a week, so the
   scanner below tokenizes C/C++ source and only ever looks inside `"..."`.
+* **The settings schema copy** -- `platform/video_config.c` and
+  `platform/enhancement_registry.c`. These live outside `platform/app/` but
+  they are not engine internals: the `label` and `help` fields on every schema
+  and enhancement row are the single largest body of player copy in the
+  product. The settings panel draws them verbatim (`ui_settings.cpp`'s
+  `row()`), the in-game overlay draws the same rows, and
+  `check_a11y_shell.py` requires a voice to *speak* each one. Copy a player
+  reads and hears was outside this gate purely because of the directory it
+  is declared in, which is not a distinction a player can perceive.
 * **Release notes** -- `RELEASE_NOTES.md`, the only doc this project
   publishes as changelog copy for players (see the top of the file: "*The
   smooth, modern version..."). It is intentionally plain, concrete prose, and
@@ -231,9 +240,21 @@ def scan_doc(path: Path) -> list[str]:
     return failures
 
 
+# The schema rows whose label/help the settings panel and the in-game overlay
+# draw verbatim, and check_a11y_shell.py requires a voice to speak. Named
+# individually rather than globbed: the rest of platform/ is engine internals
+# whose strings are diagnostics, and sweeping them in is how a gate ends up
+# flagging "ensure the lock is held" and getting switched off.
+SCHEMA_COPY_FILES = (
+    Path("platform") / "video_config.c",
+    Path("platform") / "enhancement_registry.c",
+)
+
+
 def player_facing_cpp_files() -> list[Path]:
     app_dir = ROOT / "platform" / "app"
-    return sorted(app_dir.glob("*.cpp")) + sorted(app_dir.glob("*.h"))
+    return (sorted(app_dir.glob("*.cpp")) + sorted(app_dir.glob("*.h")) +
+            [ROOT / relative for relative in SCHEMA_COPY_FILES])
 
 
 def player_facing_docs() -> list[Path]:
@@ -301,7 +322,7 @@ def main() -> int:
 
     print(
         "check_player_prose: PASS "
-        f"({len(player_facing_cpp_files())} platform/app source files, "
+        f"({len(player_facing_cpp_files())} app + schema source files, "
         f"{len(player_facing_docs())} player-facing docs clean; "
         "positive control confirmed the scanner is not vacuous)"
     )

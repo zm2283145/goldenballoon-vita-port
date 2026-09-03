@@ -272,7 +272,11 @@ Advanced because that is what they are.
    in-game F1 overlay as well as by the launcher, that placement is also what
    makes the setting reachable from inside a running game — a player who turned
    it on can turn it off again without ever needing the launcher, and does not
-   have to know about the launch-time hold to get out.
+   have to know about the launch-time hold to get out. That hold (Shift, or
+   both shoulders) is sampled every launcher frame until the boot dispatches
+   rather than once at startup, so the window a player aims at is "while the
+   launcher is on screen" — SDL derives keyboard state from events, and a key
+   already down before the window existed is invisible to a single sample.
 
 Group membership is a routing decision, and it stays where routing decisions
 already live (`AppUi_settingsSection`, `AppUi_shellPreferenceSection`), so

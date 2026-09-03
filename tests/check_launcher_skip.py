@@ -45,10 +45,20 @@ The arms
                    hold policy rather than by the mere presence of the test
                    variable, and pins the "a pad resting in a bag is not a
                    request" rule.
-6. **bad ROM**     setting on, remembered file is not a ROM -> armed, but
+6. **late hold**   setting on, the hold appears only from launcher frame 3
+                   -> the launch ARMS (main()'s pre-frame sample saw nothing)
+                   and then disarms without ever dispatching. This is the arm
+                   a one-shot sample fails: SDL folds keyboard state from
+                   events, so a Shift already down before the window existed is
+                   invisible to a single sample taken at window creation -- on
+                   macOS the first thing SDL learns about that key is its
+                   RELEASE. `armed=1 dispatched=0` is a signature only
+                   per-frame sampling can produce; the one-shot sampler gives
+                   `armed=0` for arm 2 and `armed=1 dispatched=1` here.
+7. **bad ROM**     setting on, remembered file is not a ROM -> armed, but
                    never dispatched and no Play action. The direct boot cannot
                    route around the ROM check.
-7. **recovery**    setting on, a valid ROM, and a failed previous boot's
+8. **recovery**    setting on, a valid ROM, and a failed previous boot's
                    message inherited -> armed, but never dispatched. This is
                    the one that matters most and is the least obvious: a boot
                    that fails relaunches the app with MDKR_APP_BOOT_RECOVERY
@@ -57,7 +67,8 @@ The arms
                    time.
 
 `MDKR_APP_TEST_LAUNCH_HOLD` injects the RAW hold (`shift`, `shoulders`,
-`left-shoulder`, `right-shoulder`), not the decision, so
+`left-shoulder`, `right-shoulder`, any of them suffixed `@<sample>` to make it
+appear only from that sample onward), not the decision, so
 `AppUi_launcherHoldOpensLauncher()` still runs for real in every arm above --
 arm 5 in particular is a case no automated run could produce with a real hand.
 The pure policy itself, including every readiness field, is unit-tested in
@@ -80,6 +91,11 @@ import tempfile
 from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
 
 FRAMES = 4
+# Which launcher frame the late hold appears on. main()'s pre-frame sample is 0
+# and the launcher's frames continue from 1, so this is comfortably after the
+# decision has armed and far before the ROM hash settles and the boot could
+# dispatch (a real run reaches the dispatch around sample 45).
+LATE_HOLD_SAMPLE = 3
 
 DECISION_RE = re.compile(
     r"^\[app\] skip-launcher setting=(\d) shift=(\d) shoulderL=(\d) "
@@ -87,6 +103,9 @@ DECISION_RE = re.compile(
 DISPATCH_RE = re.compile(
     r"^\[app-ui\] skip-launcher direct boot requested rom=(.*) "
     r"finalCheck=(\d)$", re.MULTILINE)
+DISARM_RE = re.compile(
+    r"^\[app-ui\] skip-launcher disarmed by hold sample=(\d+) shift=(\d) "
+    r"shoulderL=(\d) shoulderR=(\d)$", re.MULTILINE)
 REPORT_RE = re.compile(
     r"^\[app\] smoke: skip-launcher armed=(\d) dispatched=(\d) "
     r"serviceFrames=(\d+) actions=(\d+) actionRom=(.*) romPath=(.*) "
@@ -144,6 +163,9 @@ class Arm:
         dispatch = DISPATCH_RE.search(output)
         self.dispatch_rom = dispatch.group(1) if dispatch else None
         self.final_check = int(dispatch.group(2)) if dispatch else None
+
+        disarm = DISARM_RE.search(output)
+        self.disarm_sample = int(disarm.group(1)) if disarm else None
 
 
 def run_arm(binary: Path, root: Path, name: str, rom: Path,
@@ -231,15 +253,28 @@ def check_boots(arm: Arm, rom: Path) -> list[str]:
 
 
 def check_stays(arm: Arm, expect_armed: int, expect_dispatched: int,
-                reason: str) -> list[str]:
-    """A launch that must leave the player in their launcher."""
+                reason: str, expect_still_armed: int | None = None) -> list[str]:
+    """A launch that must leave the player in their launcher.
+
+    `expect_armed` is the LAUNCH DECISION main() logged; `expect_still_armed`
+    is whether the launcher was still armed when it finished. They differ for
+    exactly one arm -- a hold that appears after the window did, which arms and
+    then disarms -- and keeping them separate is what makes that arm say
+    something a one-shot sampler could not also say.
+    """
+    if expect_still_armed is None:
+        expect_still_armed = expect_armed
     problems: list[str] = []
-    if arm.armed != expect_armed or arm.report_armed != expect_armed:
+    if arm.armed != expect_armed:
         problems.append(
-            f"{arm.name}: expected armed={expect_armed} ({reason}), got "
-            f"{arm.armed} (setting={arm.setting} shift={arm.shift} "
-            f"L={arm.shoulder_l} R={arm.shoulder_r} "
+            f"{arm.name}: expected the launch decision armed={expect_armed} "
+            f"({reason}), got {arm.armed} (setting={arm.setting} "
+            f"shift={arm.shift} L={arm.shoulder_l} R={arm.shoulder_r} "
             f"holdOpensLauncher={arm.hold_opens_launcher})")
+    if arm.report_armed != expect_still_armed:
+        problems.append(
+            f"{arm.name}: expected the launcher to end armed="
+            f"{expect_still_armed} ({reason}), got {arm.report_armed}")
     if arm.dispatched != expect_dispatched:
         problems.append(
             f"{arm.name}: expected dispatched={expect_dispatched} ({reason}), "
@@ -289,6 +324,9 @@ def main() -> int:
             one_shoulder = run_arm(binary, root, "one-shoulder", rom, True,
                                    "left-shoulder", None, args.timeout,
                                    args.verbose)
+            late_hold = run_arm(binary, root, "late-hold", rom, True,
+                                f"shift@{LATE_HOLD_SAMPLE}", None,
+                                args.timeout, args.verbose)
             bad_rom = run_arm(binary, root, "bad-rom", garbage, True, None,
                               None, args.timeout, args.verbose)
             recovery = run_arm(
@@ -312,6 +350,27 @@ def main() -> int:
                 "one-shoulder: L on its own was read as a request for the "
                 "launcher. A pad resting in a bag holds one shoulder down for "
                 "hours; the setting would be off for everyone who owns one.")
+        # The arm a one-shot sample fails. It must ARM -- main()'s pre-frame
+        # sample legitimately saw nothing -- and then disarm from a launcher
+        # frame, without ever dispatching. Both halves are asserted, because
+        # `armed=0` here would mean the seam leaked into the pre-frame sample
+        # and the arm was proving arm 2 over again.
+        problems += check_stays(
+            late_hold, 1, 0,
+            "the hold appeared while the launcher was on screen",
+            expect_still_armed=0)
+        if late_hold.disarm_sample is None:
+            problems.append(
+                "late-hold: the launcher never re-sampled the hold, so it "
+                "never saw one that appeared after the window did. SDL folds "
+                "keyboard state from events: a Shift already down before the "
+                "window existed is invisible to a single sample taken at "
+                "window creation, which is every real macOS hold.")
+        elif late_hold.disarm_sample < LATE_HOLD_SAMPLE:
+            problems.append(
+                f"late-hold: disarmed at sample {late_hold.disarm_sample}, "
+                f"before the hold was scripted to appear ({LATE_HOLD_SAMPLE}). "
+                "The seam is not injecting what this arm thinks it is.")
         problems += check_stays(
             bad_rom, 1, 0, "the remembered file is not a ROM")
         if bad_rom.rom_valid != 0:
@@ -340,7 +399,7 @@ def main() -> int:
         for problem in problems:
             print(f"FAIL {problem}", file=sys.stderr)
         return 1
-    print("PASS launcher skip: arms=7 boots=2 stays=5 controls=2")
+    print("PASS launcher skip: arms=8 boots=2 stays=6 controls=2")
     return 0
 
 

@@ -354,18 +354,29 @@ the headless launcher smoke rendering until a Play action arrives or a deadline
 passes (hashing a 32 MiB image outlasts four frames) and prints one parseable
 report.
 
+The hold is sampled **every launcher frame until the boot dispatches**, not
+once at startup, and the first sighting disarms the skip one-way. SDL folds
+keyboard state from events, so a Shift already down before the window existed
+is invisible to a single sample taken at window creation — on macOS the first
+thing SDL learns about that key is its release. Re-sampling makes the window a
+player has to aim at "while the launcher is on screen", which is at least as
+long as hashing the ROM takes, rather than one unhittable instant.
+
 Arms: the setting on and nothing held **boots**, carrying the remembered ROM;
 Shift held, or both shoulders held, opens the launcher instead; the shipped
 default (setting absent) does not boot, which is the positive control proving
 arm 1's boot came from the setting; **one shoulder alone still boots**, the
 positive control proving the two hold arms were stopped by the hold policy and
 not by the mere presence of `MDKR_APP_TEST_LAUNCH_HOLD` (which injects the raw
-hold, never the decision, so `AppUi_launcherHoldOpensLauncher()` runs for real
-in every arm); a remembered file that is not a ROM arms but never dispatches;
-and an inherited `MDKR_APP_BOOT_RECOVERY` message arms but never dispatches —
-that last one is the infinite-relaunch guard, since a failed boot relaunches
-the app carrying exactly that message. The pure policy, including every
-readiness field, is unit-tested in `tests/test_app_ui_policy.cpp`.
+hold, never the decision — `@<sample>` makes it appear only from that sample
+onward — so `AppUi_launcherHoldOpensLauncher()` runs for real in every arm); a
+hold that appears only from launcher frame 3 **arms and then disarms without
+dispatching**, which is the arm a one-shot sample fails and the reason the
+per-frame sampling exists; a remembered file that is not a ROM arms but never
+dispatches; and an inherited `MDKR_APP_BOOT_RECOVERY` message arms but never
+dispatches — that last one is the infinite-relaunch guard, since a failed boot
+relaunches the app carrying exactly that message. The pure policy, including
+every readiness field, is unit-tested in `tests/test_app_ui_policy.cpp`.
 
 `user_paths` is the ROM/SDL-window-free packaged-data contract. It supplies a
 deterministic preference provider to a synthetic `.app`, verifies that video
