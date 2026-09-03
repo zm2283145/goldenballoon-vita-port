@@ -269,12 +269,19 @@ static int           s_glReady = 0;
 static int           s_sdlReady = 0;
 static int           s_renderBackend = -1;
 static int           s_renderBackendUnavailable = 0;
+/* Surface-elision and the minimize-simulation test seam are read only by
+ * platform_surface_visibility_update(), which is native-only (PAC-007): the
+ * browser canvas has no minimize/occlusion concept for it to elide against. */
+#ifndef __EMSCRIPTEN__
 static int           s_surfaceRenderElided;
+#endif
 static int           s_surfaceResumeRebasePending;
 static MdkrPresentIntervalClassifier s_quantumIntervals;
+#ifndef __EMSCRIPTEN__
 static int           s_testMinimizeStart = -2;
 static int           s_testMinimizeEnd = -2;
 static int           s_testForcedMinimized;
+#endif
 #if defined(MDKR_WEBGPU_BACKEND) && defined(__APPLE__)
 static SDL_MetalView s_metalView = NULL;   /* CAMetalLayer host for the WGPUSurface */
 #endif
@@ -1017,11 +1024,15 @@ int platform_sdl_surface_presentable(void) {
 }
 
 int platform_sdl_init(void) {
+#ifndef __EMSCRIPTEN__
     s_surfaceRenderElided = 0;
+#endif
     s_surfaceResumeRebasePending = 0;
+#ifndef __EMSCRIPTEN__
     s_testMinimizeStart = -2;
     s_testMinimizeEnd = -2;
     s_testForcedMinimized = 0;
+#endif
     present_sched_set_surface_elided(false);
 #ifndef __EMSCRIPTEN__
     if (sdl_automation_surface_requested()) {
@@ -4665,8 +4676,8 @@ static bool s_presentSoftwareDeadline;
 static MdkrPresentDeadlineClock s_presentDeadline;
 #ifndef __EMSCRIPTEN__
 static MdkrPresentDeadlineClock s_occludedDeadline;
-#endif
 static bool s_occludedDeadlineReady;
+#endif
 static uint64_t s_presentLastNs;
 static uint64_t s_presentSyntheticPhase;
 /*
@@ -4699,9 +4710,9 @@ static unsigned s_presentDisplayRate;
  */
 #ifndef __EMSCRIPTEN__
 static MdkrPresentDeadlineClock s_shedDeadline;
-#endif
 static bool s_shedDeadlineReady;
 static bool s_presentLastHeld;
+#endif
 /*
  * Closed-loop discipline for the native WebGPU display policy. When armed,
  * the software deadline above stops being open-loop: every present's
@@ -4723,8 +4734,12 @@ static uint64_t s_disciplineUnavailable;
 static uint64_t s_disciplineLeads;
 static uint64_t s_disciplineLeadMissTotalNs;
 static uint64_t s_disciplineLeadMissMaxNs;
-/* The display slot the led endpoint should present on (0 = no lead armed). */
+/* The display slot the led endpoint should present on (0 = no lead armed).
+ * Read only by the WebGPU present-discipline loop (native-only, -Werror on
+ * Emscripten forbids an unguarded write with no reachable read there). */
+#if defined(MDKR_WEBGPU_BACKEND) && !defined(__EMSCRIPTEN__)
 static uint64_t s_disciplineEndpointSlotNs;
+#endif
 
 /* MDKR_PRESENT_ENDPOINT_LEAD_US: how early the tick-carrying wake runs so
  * the authored endpoint can be computed and still presented on its slot.
@@ -5000,7 +5015,9 @@ static uint64_t discipline_block_percentile_us(unsigned permille) {
 
 static void discipline_reset(void) {
     s_presentDiscipline = false;
+#if defined(MDKR_WEBGPU_BACKEND) && !defined(__EMSCRIPTEN__)
     s_disciplineEndpointSlotNs = 0u;
+#endif
     memset(s_disciplineBlockHist, 0, sizeof(s_disciplineBlockHist));
     s_disciplineBlockSamples = 0u;
     s_disciplineBlockMaxNs = 0u;
@@ -5420,8 +5437,10 @@ static void present_pace_note_display_changed(void) {
             (void)mdkr_present_deadline_init(
                 &s_presentDeadline, s_presentEffectiveRate);
         }
+#ifndef __EMSCRIPTEN__
         s_occludedDeadlineReady = false;
         s_shedDeadlineReady = false;
+#endif
     }
     /*
      * Re-rank the present mode. Only the WebGPU backend ranks against the
@@ -5503,9 +5522,11 @@ void platform_present_config_apply(void) {
     s_presentSoftwareDeadline = false;
     s_presentEffectiveRate = 0u;
     s_presentSyntheticPhase = 0u;
+#ifndef __EMSCRIPTEN__
     s_occludedDeadlineReady = false;
     s_shedDeadlineReady = false;
     s_presentLastHeld = false;
+#endif
     discipline_reset();
     mdkr_present_interval_reset(&s_quantumIntervals);
     present_pace_lazy_init();
@@ -5701,10 +5722,12 @@ uint64_t platform_vi_present_pace_units(void) {
         s_surfaceResumeRebasePending = 0;
         mdkr_present_interval_reset(&s_quantumIntervals);
         s_presentLastNs = pace_host_ns();
+#ifndef __EMSCRIPTEN__
         s_occludedDeadlineReady = false;
         /* Suspension time is retired, not paced across: the floor's grid
          * phase belongs to the session that was interrupted. */
         s_shedDeadlineReady = false;
+#endif
         if (s_presentSoftwareDeadline) {
             (void)mdkr_present_deadline_init(
                 &s_presentDeadline, s_presentEffectiveRate);
@@ -6544,7 +6567,9 @@ static void platform_frame_sync_impl(int swap, int count_present) {
 void platform_frame_sync(void) {
     /* This opportunity hands an image to the presentation queue, so the queue
      * is what paces the next one; the shed floor stands down. */
+#ifndef __EMSCRIPTEN__
     s_presentLastHeld = false;
+#endif
     platform_frame_sync_impl(1, 1);
 }
 
@@ -6587,7 +6612,9 @@ void platform_frame_sync(void) {
 void platform_frame_sync_no_swap(void) {
     /* Nothing was queued, so nothing will block the next opportunity. The
      * pacer's shed floor reads this (platform_vi_present_pace_units). */
+#ifndef __EMSCRIPTEN__
     s_presentLastHeld = true;
+#endif
     platform_frame_sync_impl(0, 1);
 }
 
@@ -6747,11 +6774,15 @@ int platform_engine_session_begin(void) {
 
     s_renderBackend = -1;
     s_renderBackendUnavailable = 0;
+#ifndef __EMSCRIPTEN__
     s_surfaceRenderElided = 0;
+#endif
     s_surfaceResumeRebasePending = 0;
+#ifndef __EMSCRIPTEN__
     s_testMinimizeStart = -2;
     s_testMinimizeEnd = -2;
     s_testForcedMinimized = 0;
+#endif
 
     memset(s_pads, 0, sizeof(s_pads));
     memset(&s_inputQueue, 0, sizeof(s_inputQueue));
@@ -6847,13 +6878,15 @@ int platform_engine_session_begin(void) {
 #ifndef __EMSCRIPTEN__
     memset(&s_occludedDeadline, 0, sizeof(s_occludedDeadline));
     memset(&s_shedDeadline, 0, sizeof(s_shedDeadline));
-#endif
     s_occludedDeadlineReady = false;
+#endif
     s_presentLastNs = 0u;
     s_presentSyntheticPhase = 0u;
     s_presentDisplayRate = 0u;
+#ifndef __EMSCRIPTEN__
     s_shedDeadlineReady = false;
     s_presentLastHeld = false;
+#endif
     discipline_reset();
     s_disciplineEverActive = false;
     s_displaySwitchState = -1;
