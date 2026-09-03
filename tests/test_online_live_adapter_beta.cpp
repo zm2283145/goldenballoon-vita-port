@@ -153,9 +153,12 @@ static void test_reverify_paths_restart_route_measurement() {
     CHECK(mdkr_online_live_adapter_test_rekey_restarts_route_measurement(false));
     CHECK(mdkr_online_live_adapter_test_rekey_restarts_route_measurement(true));
     /* The other half of the rule (D-N5): the boundary BETWEEN two races of one
-     * tournament retires the epoch, not the mesh, so the record it measured
-     * survives and is exchanged again for the new round. */
-    CHECK(mdkr_online_live_adapter_test_race_latch_reset_keeps_route());
+     * tournament retires the epoch, not the mesh, so a FULL window's record
+     * survives and is exchanged again for the new round -- while a record
+     * whose window a race start cut short is retired there, because the lanes
+     * are idle between rounds and a whole window costs nobody a wait. */
+    CHECK(mdkr_online_live_adapter_test_race_latch_reset_keeps_route(false));
+    CHECK(mdkr_online_live_adapter_test_race_latch_reset_keeps_route(true));
 }
 
 /* RETRY must genuinely retry (audit story gap #2). Pre-Ready -- the create/

@@ -519,7 +519,9 @@ public:
                 static_cast<MdkrMatchRouteBand>(routeMeasurement_.band));
             if (quality.band != nullptr) in.route_quality = &quality;
         }
-        in.route_measuring = routeMeasureRunning_ && !routeMeasured_;
+        /* Never both: finishRouteMeasurement clears the flag before it
+         * publishes a record. */
+        in.route_measuring = routeMeasureRunning_;
         return mdkr_online_view_model_build(&in, out);
     }
 
@@ -583,6 +585,7 @@ public:
         p->preflightReady = preflightReady_;
         p->descriptor = descriptor_;
         p->routeMeasured = routeMeasured_;
+        p->routeCutShort = routeCutShort_;
         p->routeMeasurement = routeMeasurement_;
         p->peerRouteMeasurements = 0u;
         if (!preflightInit_) return;
@@ -2315,16 +2318,29 @@ private:
             /* Start arrived before the window settled. Start is never held for
              * a route check, so this race already resolved its entry timing
              * from the manifest floor; the window is cut here rather than
-             * abandoned, and the record it scores is published as this round's
-             * second attestation and carried into the NEXT race of a
-             * tournament. Probes still in flight at the cut are dropped rather
-             * than scored as loss -- they were lost to our own Start. */
+             * abandoned, and a record it can still stand behind is published
+             * as this round's second attestation and carried into the NEXT
+             * race of a tournament. Probes still in flight at the cut are
+             * dropped rather than scored as loss -- they were lost to our own
+             * Start. A window without the evidence behind it (the two floors
+             * in match_preflight.h) is discarded instead of banded: this
+             * session then simply has no record, races on the manifest floor
+             * with the checking chip, and measures again next round. */
             const unsigned cut =
                 mdkr_match_route_measure_cut(&routeMeasure_, now);
+            if (!mdkr_match_route_measure_adoptable(&routeMeasure_)) {
+                routeMeasureRunning_ = false;
+                MDKR_ONLINE_LOG(
+                    "[PREFLIGHT] route window cut too early to band "
+                    "(%u in flight); racing on the floor\n",
+                    cut);
+                bump();
+                return;
+            }
             MDKR_ONLINE_LOG(
                 "[PREFLIGHT] route window cut by race start (%u in flight)\n",
                 cut);
-            finishRouteMeasurement(now);
+            finishRouteMeasurement(now, /*cutShort=*/true);
             return;
         }
         MdkrMatchRouteProbe probe;
@@ -2334,11 +2350,14 @@ private:
             sendRouteProbe(probe.lane, payload, 0u);
         }
         if (!mdkr_match_route_measure_settled(&routeMeasure_, now)) return;
-        finishRouteMeasurement(now);
+        finishRouteMeasurement(now, /*cutShort=*/false);
     }
 
-    /* Score the window that just closed -- settled, or cut by a race start. */
-    void finishRouteMeasurement(uint32_t now) {
+    /* Score the window that just closed -- settled, or cut by a race start.
+     * `cutShort` is remembered because a cut record, however honest, saw less
+     * of the route than a full window: it is held only for the race it was
+     * cut by, and the next round measures again. */
+    void finishRouteMeasurement(uint32_t now, bool cutShort) {
         routeMeasureRunning_ = false;
         /* The mesh's bounded INBOUND queues are what must have drained across
          * the window: an overflow between callback and pump, or between pump
@@ -2353,6 +2372,7 @@ private:
                 &routeMeasurement_))
             return; /* nothing came back to score; a later window may. */
         routeMeasured_ = true;
+        routeCutShort_ = cutShort;
         recordRouteMeasurement(now);
         bump();
     }
@@ -2367,15 +2387,24 @@ private:
     }
 
     /* Between the races of one tournament the mesh, its keys and its channels
-     * all survive (see resetRaceLatches), so the route this session measured is
-     * still the truth about the route the next race will run over -- including
-     * a record whose window was cut short by the race that just ran. Keep it
-     * and only re-arm its exchange, so the new epoch's preflight publishes it
+     * all survive (see resetRaceLatches), so a FULL window's record is still
+     * the truth about the route the next race will run over. Keep it and
+     * re-arm only its exchange, so the new epoch's preflight publishes it
      * again as that round's second attestation and the next setUpRace resolves
-     * the widen from it. A window still in flight is left running; if nothing
-     * was ever scored, serviceRouteMeasurement opens a fresh one for the new
-     * round. */
-    void rearmRouteReportForNextRace() { routeReportSent_ = false; }
+     * the widen from it.
+     *
+     * A record whose window a race start cut short is different: it saw part
+     * of the route, and between rounds the lanes are idle, so a fresh full
+     * window costs nothing anyone is waiting on. Retire it and measure again.
+     * A window still in flight is left running either way; if nothing was ever
+     * scored, serviceRouteMeasurement opens a fresh one for the new round. */
+    void rearmRouteReportForNextRace() {
+        if (routeCutShort_) {
+            resetRouteMeasurement();
+            return;
+        }
+        routeReportSent_ = false;
+    }
 
     /* A retired mesh or a rekey invalidates a window in flight AND anything it
      * already scored: those samples belong to keys that no longer exist, so
@@ -2387,6 +2416,7 @@ private:
         routeMeasureRunning_ = false;
         routeMeasured_ = false;
         routeReportSent_ = false;
+        routeCutShort_ = false;
         routeQueueDropsAtBegin_ = 0u;
         routeEchoBudget_.clear();
     }
@@ -3738,17 +3768,23 @@ public:
      * one tournament) keeps this session's settled record and re-arms only its
      * exchange, so the next round publishes it again and resolves the widen
      * from it. Never called by the launcher. */
-    static bool testRaceLatchResetKeepsRoute() {
+    static bool testRaceLatchResetKeepsRoute(bool cutShort) {
         MdkrOnlineLiveAdapterOptions o;
         o.sessionId = 1u;
         LiveAdapter a(o);
         a.routeMeasured_ = true;
         a.routeReportSent_ = true;
+        a.routeCutShort_ = cutShort;
         a.routeMeasurement_.p95_rtt_ms = 240u;
         a.raceReady_ = true;
         a.resetRaceLatches("test");
-        return a.routeMeasured_ && !a.routeReportSent_ &&
-               a.routeMeasurement_.p95_rtt_ms == 240u && !a.raceReady_;
+        if (a.raceReady_ || a.routeReportSent_) return false;
+        /* A full window's record is held for the tournament and re-exchanged;
+         * a cut one is retired so the next round measures fresh. */
+        return cutShort ? (!a.routeMeasured_ && !a.routeCutShort_ &&
+                           a.routeMeasurement_.p95_rtt_ms == 0u)
+                        : (a.routeMeasured_ &&
+                           a.routeMeasurement_.p95_rtt_ms == 240u);
     }
 
     /* Test-only (beta): the per-peer echo budget consumeRouteProbe charges
@@ -4601,6 +4637,9 @@ private:
     bool routeMeasureRunning_ = false;
     bool routeMeasured_ = false;
     bool routeReportSent_ = false;
+    /* The held record came from a window a race start cut short, so it is
+     * retired at the next race-latch reset instead of held for the round. */
+    bool routeCutShort_ = false;
     uint64_t routeQueueDropsAtBegin_ = 0u;
     /* One echo budget per peer, charged against the mesh pump now draining
      * (see chargeRouteEcho). meshPumpSequence_ is the launcher's own pump
@@ -4837,8 +4876,8 @@ bool mdkr_online_live_adapter_test_rekey_restarts_route_measurement(
     return LiveAdapter::testRekeyRestartsRouteMeasurement(via_reverify);
 }
 
-bool mdkr_online_live_adapter_test_race_latch_reset_keeps_route(void) {
-    return LiveAdapter::testRaceLatchResetKeepsRoute();
+bool mdkr_online_live_adapter_test_race_latch_reset_keeps_route(bool cut_short) {
+    return LiveAdapter::testRaceLatchResetKeepsRoute(cut_short);
 }
 
 bool mdkr_online_live_adapter_test_rekey_clears_peer_loss(bool via_abort) {

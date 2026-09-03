@@ -34,7 +34,7 @@ they match, you know you are linked to the right person.
 - **Both players need the same platform for now.** Mixed pairs, like Mac to
   Windows, are declined when joining; cross-platform play comes in a later
   update.
-- Both players need the same version of the game. A different version is
+- **Both players need the same version of the game.** A different version is
   declined when joining, so update together before you race.
 - Online play runs over Golden Balloon's free hosted service.
 

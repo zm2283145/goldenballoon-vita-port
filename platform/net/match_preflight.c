@@ -518,19 +518,53 @@ void mdkr_match_route_measure_echo(MdkrMatchRouteMeasureState *state,
     state->echoed[slot] = 1u;
 }
 
+/* 95th percentile of the round trips answered so far, zero with none. The
+ * cut's margin scales with it, so a slow route is not charged for its own
+ * round trip. Separate from finish()'s reduction on purpose: this one runs
+ * mid-window, over the samples that exist at the cut. */
+static uint16_t route_measure_p95(const MdkrMatchRouteMeasureState *state) {
+    uint16_t sorted[MDKR_MATCH_ROUTE_MAX_PROBES];
+    unsigned answered = 0u;
+    unsigned sent;
+    unsigned index;
+    unsigned rank;
+    sent = state->next_sequence - 1u;
+    for (index = 0u; index < sent; index++) {
+        if (state->echoed[index] == 0u) continue;
+        sorted[answered++] = state->rtt_ms[index];
+    }
+    if (answered == 0u) return 0u;
+    for (index = 1u; index < answered; index++) {
+        const uint16_t value = sorted[index];
+        unsigned position = index;
+        while (position > 0u && sorted[position - 1u] > value) {
+            sorted[position] = sorted[position - 1u];
+            position--;
+        }
+        sorted[position] = value;
+    }
+    rank = (answered * 95u + 99u) / 100u;
+    return sorted[rank - 1u];
+}
+
 unsigned mdkr_match_route_measure_cut(MdkrMatchRouteMeasureState *state,
                                       uint32_t now_ms) {
     unsigned lane;
     unsigned sent;
     unsigned dropped = 0u;
+    uint32_t margin;
+    uint32_t twice_p95;
     if (!route_measure_valid(state)) return 0u;
     sent = state->next_sequence - 1u;
+    twice_p95 = (uint32_t)route_measure_p95(state) * 2u;
+    margin = twice_p95 > MDKR_MATCH_ROUTE_CUT_MARGIN_MS
+                 ? twice_p95
+                 : MDKR_MATCH_ROUTE_CUT_MARGIN_MS;
     /* Only the TRAILING run: the scan stops at the first probe that was
-     * answered, or that has been unanswered for longer than a sample's answer
-     * window, so real loss inside the measured stretch is never erased. */
+     * answered, or that has been unanswered for longer than the margin, so
+     * real loss inside the measured stretch is never erased. */
     while (sent > 0u && state->echoed[sent - 1u] == 0u &&
-           now_ms - state->sent_ms[sent - 1u] <
-               MDKR_MATCH_ROUTE_LATE_SAMPLE_MS) {
+           now_ms - state->sent_ms[sent - 1u] < margin) {
         sent--;
         dropped++;
     }
@@ -541,6 +575,23 @@ unsigned mdkr_match_route_measure_cut(MdkrMatchRouteMeasureState *state,
         state->next_send_ms[lane] =
             state->begin_ms + MDKR_MATCH_ROUTE_MEASURE_MS;
     return dropped;
+}
+
+bool mdkr_match_route_measure_adoptable(
+    const MdkrMatchRouteMeasureState *state) {
+    unsigned answered = 0u;
+    unsigned sent;
+    unsigned index;
+    if (!route_measure_valid(state)) return false;
+    sent = state->next_sequence - 1u;
+    if (sent == 0u) return false;
+    for (index = 0u; index < sent; index++)
+        if (state->echoed[index] != 0u) answered++;
+    if (answered < MDKR_MATCH_ROUTE_CUT_MIN_SAMPLES) return false;
+    /* The span the surviving samples actually cover, measured from the
+     * window's own start to the last probe still in the set. */
+    return state->sent_ms[sent - 1u] - state->begin_ms >=
+           MDKR_MATCH_ROUTE_CUT_MIN_SPAN_MS;
 }
 
 bool mdkr_match_route_measure_settled(const MdkrMatchRouteMeasureState *state,

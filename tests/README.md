@@ -1231,12 +1231,18 @@ four-tick cap, the fixed 64-byte probe payload codec, and the caller-clocked
 measurement phase replaying both lanes for 6 s with a 1 s drain, and the
 queue-drain term (the carrier's own count of inbound pump-drain drops from its
 bounded queues, which only the caller can see) reaching the record and its
-rung. Its cut arm pins what a race start does to a window still in flight: the
-trailing probes still inside their answer window are dropped rather than scored
-as loss, an echo genuinely lost before the cut still is, and a cut window emits
-no further probe. The positive control is a real mutation — return `0` from
-`mdkr_match_route_measure_cut` before it scans and the three cut assertions
-fail. Its impairment lane injects 8% loss on the unreliable bundle lane
+rung. Its cut arms pin what a race start does to a window still in flight: the
+trailing probes younger than the cut margin are dropped rather than scored as
+loss, an echo genuinely lost before the cut still is, and a cut window emits no
+further probe. A second arm holds the margin to the route — a 240 ms carrier
+that lost nothing must measure no loss when the cut lands, where a fixed 100 ms
+margin would charge it a third of a second of healthy probes — and a third pins
+both adoption floors at their boundaries: 29 answered samples are refused, 30
+over a two-second span are adopted, and samples that clear the count but not the
+span are refused on span alone. Positive controls, both real mutations: return
+`0` from `mdkr_match_route_measure_cut` before it scans and the cut assertions
+fail; drop the sample floor to `1` in `mdkr_match_route_measure_adoptable` and
+the 29-sample refusal fails. Its impairment lane injects 8% loss on the unreliable bundle lane
 through `net_impairment` and requires the `rough` band; the positive control
 for that lane is a real mutation of the production ladder — set
 `route_steady_floor` in `platform/net/match_preflight.c` to `1`, so every score
@@ -1255,16 +1261,21 @@ DIFFERENT operative leads over the same descriptor and must still fold the
 identical canonical state hash — the determinism claim the widen rests on.
 The fourth arm presses Start into a window that is still open (D-N5): the race
 must run on the manifest floor with the room chip reading
-"Checking connection…", and the cut window must still settle on both endpoints
-and still cross the wire as the round's second attestation. Two positive
-controls, each failing a different half: make the projection fall back to an
-empty chip while the measurement runs and only the chip assertion fails;
+"Checking connection…", and the cut window must still be adopted on both
+endpoints and still cross the wire as the round's second attestation. Two
+positive controls, each failing a different half: make the projection fall back
+to an empty chip while the measurement runs and only the chip assertion fails;
 restore the old `raceReady_` early return in `serviceRouteMeasurement` and only
-the settle/exchange assertions fail. The record's survival across the boundary
-between two races of one tournament is pinned separately in
+the settle/exchange assertions fail. The fifth arm runs TWO races through one
+live room on the lifecycle rig: race 1 starts into an open window and both
+endpoints adopt a CUT record, the rematch boundary retires it, and race 2 runs
+on a FULL one whose chip is a measured round trip rather than the checking copy.
+Its positive control is `rearmRouteReportForNextRace` holding a cut record like
+a full one — race 2 then still reports a cut record and never measures again.
+Which record survives which boundary is pinned at the unit level too, in
 `online_live_adapter_beta`
-(`mdkr_online_live_adapter_test_race_latch_reset_keeps_route`), whose control is
-calling `resetRouteMeasurement()` from `resetRaceLatches` again.
+(`mdkr_online_live_adapter_test_race_latch_reset_keeps_route(cut_short)`), whose
+control is calling `resetRouteMeasurement()` from `resetRaceLatches` again.
 `online_live_adapter_beta` pins that a rekey or a re-verify mid-measurement
 restarts the whole route window rather than settling on samples sealed under
 retired keys; clearing only the publication latch (the pre-fix shape) fails it.

@@ -804,14 +804,16 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
         }
     }
 
-    /* D2: run the window for a couple of seconds -- long enough to have
-     * measured a real route, far short of the 7 s it needs to settle -- and
-     * then press Start into it. The hub delivers synchronously, so fake-clock
-     * time only passes where a loop spends it; without this the race would
-     * arm in the same millisecond the window opened and there would be no
-     * measurement to cut. */
+    /* D2: run the window past the cut floors (MDKR_MATCH_ROUTE_CUT_MIN_SPAN_MS
+     * of window and MDKR_MATCH_ROUTE_CUT_MIN_SAMPLES answered), far short of
+     * the 7 s it needs to settle, and then press Start into it. The hub
+     * delivers synchronously, so fake-clock time only passes where a loop
+     * spends it; without this the race would arm in the same millisecond the
+     * window opened and there would be nothing to cut. */
     if (startBeforeRouteSettles) {
-        for (unsigned elapsed = 0u; elapsed < 2000u; elapsed += 10u) {
+        for (unsigned elapsed = 0u;
+             elapsed < MDKR_MATCH_ROUTE_CUT_MIN_SPAN_MS + 500u;
+             elapsed += 10u) {
             A->service();
             B->service();
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -3613,6 +3615,8 @@ void test_route_start_before_settle_never_blocks() {
      * records still crossed the wire as the round's second attestation. */
     CHECK(r.routeSettledAfterStart);
     CHECK(r.probeA.routeMeasured && r.probeB.routeMeasured);
+    /* Adopted, and remembered as a cut window -- it saw part of the route. */
+    CHECK(r.probeA.routeCutShort && r.probeB.routeCutShort);
     CHECK(r.probeA.peerRouteMeasurements > 0u);
     CHECK(r.probeB.peerRouteMeasurements > 0u);
     CHECK(r.raceConverged);
@@ -3623,6 +3627,87 @@ void test_route_start_before_settle_never_blocks() {
                  static_cast<unsigned>(r.inputDelayB),
                  static_cast<unsigned>(r.probeA.routeMeasurement.p95_rtt_ms),
                  static_cast<unsigned>(r.probeA.routeMeasurement.band));
+    mdkr_net_roster_runtime_clear();
+}
+
+/* D2 fix round: a cut record is held only for the race that cut it. Race 1
+ * starts into an open window, so both endpoints adopt a CUT record; the
+ * rematch boundary retires it (the lanes are idle in the lobby, so a whole
+ * window costs nobody a wait) and race 2 runs on a FULL one. Its positive
+ * control is `rearmRouteReportForNextRace` keeping a cut record like a full
+ * one: race 2 then still reports routeCutShort and never measures again. */
+void test_route_cut_record_is_replaced_next_round() {
+    LifecycleRig rig;
+    CHECK(rig.init());
+    if (!rig.A || !rig.B) return;
+    IMdkrOnlineAdapter *A = rig.A.get();
+    IMdkrOnlineAdapter *B = rig.B.get();
+    auto probeOf = [](IMdkrOnlineAdapter *a) {
+        MdkrOnlineLiveLaunchProbe p{};
+        mdkr_online_live_adapter_probe(a, &p);
+        return p;
+    };
+    /* Spend fake-clock time in the open window; the hub delivers
+     * synchronously, so time only passes where a loop spends it. */
+    auto spendWindow = [&](unsigned ms) {
+        for (unsigned elapsed = 0u; elapsed < ms; elapsed += 10u) {
+            A->service();
+            B->service();
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            rig.clock.nowMs += 10u;
+        }
+    };
+
+    CHECK(rig.toSelecting());
+    /* Past the cut floors, far short of the 7 s the window needs to settle. */
+    spendWindow(MDKR_MATCH_ROUTE_CUT_MIN_SPAN_MS + 500u);
+    CHECK(!probeOf(A).routeMeasured);
+    CHECK(std::strcmp(viewOf(A).route_quality,
+                      "Checking connection\xe2\x80\xa6") == 0);
+
+    rig.selectReady(A, 1u);
+    rig.selectReady(B, 2u);
+    CHECK(rig.pumpBoth([&]() {
+        return viewOf(A).ready_count == 2u && viewOf(B).ready_count == 2u;
+    }, 3000u));
+
+    /* ---- Race 1: Start beat the window ---- */
+    CHECK(rig.startRace());
+    CHECK(rig.pumpBoth([&]() {
+        return probeOf(A).routeMeasured && probeOf(B).routeMeasured;
+    }, 10000u));
+    CHECK(probeOf(A).routeCutShort && probeOf(B).routeCutShort);
+    CHECK(rig.pumpBoth([&]() {
+        return rig.lobbiesAt(MDKR_ONLINE_RACING);
+    }, 10000u));
+    CHECK(rig.driveConvergedTicks(30u));
+
+    const uint8_t placements[4] = {0u, 1u, 0xFFu, 0xFFu};
+    CHECK(mdkr_online_live_adapter_report_results(A, placements));
+    CHECK(rig.pumpBoth([&]() {
+        return rig.lobbiesAt(MDKR_ONLINE_RESULTS);
+    }, 10000u));
+    mdkr_net_roster_runtime_clear();
+
+    /* ---- The rematch boundary retires the cut record ---- */
+    CHECK(A->submit(cmd(A, MDKR_ONLINE_VIEW_ACTION_RACE_AGAIN)).accepted);
+    CHECK(rig.pumpBoth([&]() {
+        return viewOf(A).kind == MDKR_ONLINE_VIEW_SELECTING &&
+               viewOf(B).kind == MDKR_ONLINE_VIEW_SELECTING;
+    }, 10000u));
+    CHECK(!probeOf(A).routeMeasured && !probeOf(B).routeMeasured);
+
+    /* ---- Race 2 runs on a full window ---- */
+    spendWindow(MDKR_MATCH_ROUTE_MEASURE_MS + MDKR_MATCH_ROUTE_DRAIN_MS + 500u);
+    CHECK(probeOf(A).routeMeasured && probeOf(B).routeMeasured);
+    CHECK(!probeOf(A).routeCutShort && !probeOf(B).routeCutShort);
+    CHECK(std::strcmp(viewOf(A).route_quality, "") != 0);
+    CHECK(std::strstr(viewOf(A).route_quality, "Checking") == nullptr);
+    std::fprintf(stderr,
+                 "[route] next-round chip=\"%s\" p95=%ums cut=%u\n",
+                 viewOf(A).route_quality,
+                 static_cast<unsigned>(probeOf(A).routeMeasurement.p95_rtt_ms),
+                 probeOf(A).routeCutShort ? 1u : 0u);
     mdkr_net_roster_runtime_clear();
 }
 
@@ -3663,6 +3748,7 @@ int main(int argc, char **argv) {
         test_route_quality_widens_entry_timing();
         test_route_quality_asymmetric_leads_still_converge();
         test_route_start_before_settle_never_blocks();
+        test_route_cut_record_is_replaced_next_round();
         std::fprintf(stderr, "online_live_route: %d checks, %d failures\n",
                      g_checks, g_failures);
         return g_failures == 0 ? 0 : 1;

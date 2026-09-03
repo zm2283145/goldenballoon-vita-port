@@ -131,17 +131,42 @@ and the broadcast bundle lane is the mesh's own input send, which skips a peer
 whose channel is not open. A peer that opens mid-window simply joins the lanes
 late; every endpoint measures and reports its own route.
 
+What first-open actually buys, and where: **at 3-4P** it removes the wait for
+the slowest peer, which used to push the whole 7 s window past the moment
+everyone else was ready. **At 2P — the only shape any lane in this tree runs —
+it changes nothing**: there is one peer, so its `PeerChannelsReady` is both the
+first and the last open, and the 7 s wall stands exactly where it did. What
+2P gets from this rule is the other half: a race that starts inside the window
+is no longer a race with no measurement at all. Whether the window is normally
+settled before Start at 2P rests on the human time in front of the phrase
+comparison, not on when the window opens.
+
 If a race starts before the window settles, entry timing resolves from whatever
 record exists at that moment — the manifest floor if there is none — and the
 room chip says “Checking connection…” instead of a measured one. The window is
-then **cut**, not discarded: the trailing probes that were still inside their
-answer window at the cut are dropped from the sample set rather than scored as
-loss (they were lost to the player's own Start), and what came back before it is
-scored normally. That record is still published as the round's second
-attestation, and it survives the race-latch reset between the races of one
-tournament — the mesh, its keys and its channels all survive that boundary — so
-the next race resolves its widen and its chip from it. A rekey or a re-verify
-does retire it, because its samples were sealed under keys that no longer exist.
+then **cut**, not discarded: the trailing probes younger than the cut margin —
+max(`MDKR_MATCH_ROUTE_CUT_MARGIN_MS` = 500 ms, twice the p95 answered so far) —
+are dropped from the sample set rather than scored as loss (they were lost to
+the player's own Start, and the drain that would have answered them never runs,
+because the race owns the lanes now). The margin follows the route because a
+fixed one charges a slow route for its own round trip: at 240 ms RTT a 100 ms
+margin scores half a second of healthy probes as loss.
+
+A cut window is only **adopted** with evidence behind it: at least
+`MDKR_MATCH_ROUTE_CUT_MIN_SAMPLES` (30, one second of the 30 Hz state lane)
+answered samples, spanning at least `MDKR_MATCH_ROUTE_CUT_MIN_SPAN_MS` (2000
+ms) of window. Below either floor the window is discarded, the race runs on the
+manifest floor with the checking chip, and the next round measures fresh —
+two lucky echoes must not band a route as “steady”.
+
+An adopted record is published as the round's second attestation even though
+the race has started. A **full** window's record then survives the race-latch
+reset between the races of one tournament — the mesh, its keys and its channels
+all survive that boundary — so the next race resolves its widen and its chip
+from it. A **cut** record does not: it saw part of the route, the lanes are idle
+in the lobby between rounds, and a whole window there costs nobody a wait, so it
+is retired and measured again. A rekey or a re-verify retires either, because
+those samples were sealed under keys that no longer exist.
 
 ### Replay
 

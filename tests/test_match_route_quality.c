@@ -358,6 +358,124 @@ static void test_cut_window(void) {
            "an echo lost before the cut is still loss");
     expect(scored.p95_rtt_ms == 10u,
            "the cut window reports the round trip it did measure");
+    expect(!mdkr_match_route_measure_adoptable(&state),
+           "one second of window does not span enough to band a route");
+}
+
+/* The margin that drops the in-flight tail scales with the route: at a 240 ms
+ * round trip a fixed 100 ms margin would score a third of a second of
+ * perfectly healthy probes as loss, and the drain that would have answered
+ * them never runs, because the race owns the lanes now. */
+static void test_cut_margin_follows_the_route(void) {
+    MdkrMatchRouteMeasureState state;
+    MdkrMatchRouteMeasureState uncut;
+    MdkrMatchRouteMeasurement whole;
+    MdkrMatchRouteMeasurement scored;
+    MdkrMatchRouteProbe probe;
+    uint32_t pending_at[MDKR_MATCH_ROUTE_MAX_PROBES];
+    uint32_t pending_seq[MDKR_MATCH_ROUTE_MAX_PROBES];
+    unsigned pending = 0u;
+    uint32_t now;
+    memset(&whole, 0, sizeof(whole));
+    memset(&scored, 0, sizeof(scored));
+    memset(pending_at, 0, sizeof(pending_at));
+    memset(pending_seq, 0, sizeof(pending_seq));
+    expect(mdkr_match_route_measure_begin(&state, 1000u, 1000u / 30u, 42u),
+           "the 240 ms phase begins");
+    /* A carrier that answers everything, 240 ms later. Nothing is lost; the
+     * probes sent in the last 240 ms simply have not come back yet. */
+    for (now = 1000u; now < 4000u; now += 5u) {
+        unsigned index = 0u;
+        while (index < pending) {
+            if (pending_at[index] <= now) {
+                mdkr_match_route_measure_echo(&state, pending_seq[index], now);
+                pending_at[index] = pending_at[pending - 1u];
+                pending_seq[index] = pending_seq[pending - 1u];
+                pending--;
+                continue;
+            }
+            index++;
+        }
+        while (mdkr_match_route_measure_due(&state, now, &probe)) {
+            if (pending >= MDKR_MATCH_ROUTE_MAX_PROBES) continue;
+            pending_at[pending] = now + 240u;
+            pending_seq[pending] = probe.sequence;
+            pending++;
+        }
+    }
+    uncut = state;
+    expect(mdkr_match_route_measure_finish(&uncut, 0u, &whole) &&
+               whole.loss_per_thousand > 0u,
+           "scoring the whole window charges the unanswered tail as loss");
+    expect(mdkr_match_route_measure_cut(&state, 4000u) > 0u,
+           "the cut drops the tail a 240 ms route has not answered yet");
+    expect(mdkr_match_route_measure_finish(&state, 0u, &scored),
+           "the cut 240 ms window still scores");
+    expect(scored.loss_per_thousand == 0u,
+           "a route that lost nothing measures no loss when Start cuts it");
+    expect(scored.p95_rtt_ms >= 240u,
+           "and it still reports the round trip it measured");
+    expect(mdkr_match_route_measure_adoptable(&state),
+           "three seconds of answered samples is worth adopting");
+}
+
+/* A cut window is only adopted with evidence behind it. Both floors are real:
+ * a handful of lucky echoes must not band a route nobody measured, and neither
+ * must a burst of samples taken over a moment. */
+static void test_cut_adoption_floor(void) {
+    MdkrMatchRouteMeasureState state;
+    MdkrMatchRouteProbe probe;
+    uint32_t now;
+    unsigned answered = 0u;
+    const unsigned floor_samples = MDKR_MATCH_ROUTE_CUT_MIN_SAMPLES;
+
+    /* One short of the sample floor, spread over a long enough span. */
+    expect(mdkr_match_route_measure_begin(&state, 1000u, 1000u / 30u, 42u),
+           "the sample-floor phase begins");
+    for (now = 1000u; now <= 1000u + MDKR_MATCH_ROUTE_CUT_MIN_SPAN_MS;
+         now += 5u) {
+        while (mdkr_match_route_measure_due(&state, now, &probe)) {
+            if (answered + 1u >= floor_samples) continue;
+            mdkr_match_route_measure_echo(&state, probe.sequence, now + 5u);
+            answered++;
+        }
+    }
+    expect(answered == floor_samples - 1u, "exactly one sample short");
+    expect(!mdkr_match_route_measure_adoptable(&state),
+           "29 answered samples are not enough to band a route");
+
+    /* The same window with the last sample answered clears the floor. */
+    answered = 0u;
+    expect(mdkr_match_route_measure_begin(&state, 1000u, 1000u / 30u, 42u),
+           "the adopted phase begins");
+    for (now = 1000u; now <= 1000u + MDKR_MATCH_ROUTE_CUT_MIN_SPAN_MS;
+         now += 5u) {
+        while (mdkr_match_route_measure_due(&state, now, &probe)) {
+            if (answered >= floor_samples) continue;
+            mdkr_match_route_measure_echo(&state, probe.sequence, now + 5u);
+            answered++;
+        }
+    }
+    expect(answered == floor_samples, "exactly the sample floor");
+    expect(mdkr_match_route_measure_adoptable(&state),
+           "30 answered samples over the span floor are worth adopting");
+
+    /* Enough samples, but taken over too little window: the span floor
+     * refuses it. The state lane alone reaches the sample floor in about a
+     * second, which is why the two floors are separate rules. */
+    answered = 0u;
+    expect(mdkr_match_route_measure_begin(&state, 1000u, 1000u / 30u, 42u),
+           "the span-floor phase begins");
+    for (now = 1000u; now <= 2200u; now += 5u) {
+        while (mdkr_match_route_measure_due(&state, now, &probe)) {
+            mdkr_match_route_measure_echo(&state, probe.sequence, now + 5u);
+            answered++;
+        }
+    }
+    expect(answered >= floor_samples,
+           "the short window cleared the sample floor");
+    expect(!mdkr_match_route_measure_adoptable(&state),
+           "samples that do not span two seconds are refused on span alone");
 }
 
 /* The degraded band's lane: 8% injected loss on the unreliable bundle lane must
@@ -418,9 +536,11 @@ int main(void) {
     test_probe_codec();
     test_measurement_phase();
     test_cut_window();
+    test_cut_margin_follows_the_route();
+    test_cut_adoption_floor();
     test_impairment_eight_percent_loss();
     if (failures != 0) return 1;
-    puts("match route quality: PASS (ladder, bands, widen, measurement, cut, "
-         "8% loss)");
+    puts("match route quality: PASS (ladder, bands, widen, measurement, "
+         "cut, floors, 8% loss)");
     return 0;
 }

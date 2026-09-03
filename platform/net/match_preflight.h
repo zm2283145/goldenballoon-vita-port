@@ -79,6 +79,23 @@ _Static_assert(MDKR_MATCH_PREFLIGHT_FRAGMENT_COUNT ==
 /* Every endpoint leads by at least the manifest's agreed input_delay and by
  * at most this many authored ticks, however bad its own route measures. */
 #define MDKR_MATCH_ROUTE_INPUT_DELAY_CAP   4u
+/* ---- Cutting a window short -------------------------------------------
+ *
+ * A race start takes both lanes back before the window closes. What is left
+ * is only worth adopting with real evidence behind it: a handful of lucky
+ * echoes can band "steady" on a route nobody measured. Both floors must
+ * hold -- at least this many ANSWERED samples, spanning at least this much
+ * of the window -- or the caller discards the window and races on the
+ * manifest floor instead. Thirty samples is one second of the 30 Hz state
+ * lane, and two seconds is the span that makes a p95 mean anything. */
+#define MDKR_MATCH_ROUTE_CUT_MIN_SAMPLES   30u
+#define MDKR_MATCH_ROUTE_CUT_MIN_SPAN_MS   2000u
+/* The youngest samples at a cut were never given time to answer. The margin
+ * that drops them is at least this, and at least twice the p95 measured so
+ * far, so a route slower than a fixed guess is not charged for its own
+ * round trip: at 240 ms RTT a 100 ms margin would score half a second of
+ * perfectly healthy probes as loss. */
+#define MDKR_MATCH_ROUTE_CUT_MARGIN_MS     500u
 
 typedef enum MdkrMatchRouteLane {
     MDKR_MATCH_ROUTE_LANE_BUNDLE = 0,
@@ -174,13 +191,17 @@ void mdkr_match_route_measure_echo(MdkrMatchRouteMeasureState *state,
 /* Cut the window short at `now_ms` and report how many samples were dropped.
  * For a caller whose lanes stop being available to the measurement before the
  * window closes -- the race latched, and Start is never held for a route
- * check. Trailing probes that were still inside their answer window (sent
- * within MDKR_MATCH_ROUTE_LATE_SAMPLE_MS of the cut and not yet echoed) are
- * removed from the sample set instead of being scored as loss: they were lost
- * to the caller's own cut, not to the route. Everything older stands,
- * genuine loss included, and no further probe is ever emitted. */
+ * check. Trailing probes younger than the cut margin -- max(
+ * MDKR_MATCH_ROUTE_CUT_MARGIN_MS, twice the p95 answered so far) -- and not
+ * yet echoed are removed from the sample set instead of being scored as loss:
+ * they were lost to the caller's own cut, not to the route. Everything older
+ * stands, genuine loss included, and no further probe is ever emitted. */
 unsigned mdkr_match_route_measure_cut(MdkrMatchRouteMeasureState *state,
                                       uint32_t now_ms);
+/* Whether a cut window carries enough evidence to be adopted: both floors
+ * above. False for a window nobody should band, which the caller discards. */
+bool mdkr_match_route_measure_adoptable(
+    const MdkrMatchRouteMeasureState *state);
 /* True once the send window and the drain have both elapsed. A corrupt state
  * settles immediately, so a caller loop always terminates. */
 bool mdkr_match_route_measure_settled(const MdkrMatchRouteMeasureState *state,
