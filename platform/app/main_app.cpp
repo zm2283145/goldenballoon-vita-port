@@ -9,6 +9,7 @@
 #include "app_activation.h"
 #include "app_config.h"
 #include "app_host.h"
+#include "app_launch_hold.h"
 #include "app_relaunch.h"
 #include "app_restart.h"
 #include "app_theme.h"
@@ -341,68 +342,24 @@ int applyAutoplayVideoSetting() {
 }
 
 /*
- * "Skip the launcher" (issue #60): what the player was holding when the app
- * opened.
+ * "Skip the launcher" (issue #60): the FIRST sample of what the player is
+ * holding. Deliberately not the only one -- AppLaunchHold_sample()'s header
+ * explains why a single sample taken here cannot see a Shift that was already
+ * down, and Launcher::draw() keeps sampling until the direct boot dispatches.
+ * This one exists so the common case (a hold that is already down and stays
+ * down) is decided before a single frame is built.
  *
- * Sampled once, from the live device state rather than from the event queue,
- * because a key that was already down when the process started never produces
- * a key-down event for us to see. A pad is opened and closed here for the same
- * reason: nothing else in the shell has one open yet at this point, and SDL2
- * refcounts the handle, so this neither steals a controller from the engine
- * nor closes one the smoke opened.
- *
- * MDKR_APP_TEST_LAUNCH_HOLD injects the RAW hold rather than the decision, so
- * an automated run still exercises AppUi_launcherHoldOpensLauncher() itself --
- * including "one shoulder is not a request", which is the case a real hand
- * cannot be relied on to produce.
- */
-AppUiLauncherHold sampleLaunchHold() {
-    AppUiLauncherHold hold;
-    if (const char *scripted = std::getenv("MDKR_APP_TEST_LAUNCH_HOLD")) {
-        hold.shift = std::strcmp(scripted, "shift") == 0;
-        hold.leftShoulder = std::strcmp(scripted, "shoulders") == 0 ||
-                            std::strcmp(scripted, "left-shoulder") == 0;
-        hold.rightShoulder = std::strcmp(scripted, "shoulders") == 0 ||
-                             std::strcmp(scripted, "right-shoulder") == 0;
-        return hold;
-    }
-    SDL_PumpEvents();
-    int         keyCount = 0;
-    const Uint8 *keys = SDL_GetKeyboardState(&keyCount);
-    if (keys != nullptr && keyCount > SDL_SCANCODE_RSHIFT) {
-        hold.shift = keys[SDL_SCANCODE_LSHIFT] != 0 ||
-                     keys[SDL_SCANCODE_RSHIFT] != 0;
-    }
-    SDL_GameControllerUpdate();
-    for (int i = 0; i < SDL_NumJoysticks(); ++i) {
-        if (!SDL_IsGameController(i)) continue;
-        SDL_GameController *pad = SDL_GameControllerOpen(i);
-        if (pad == nullptr) continue;
-        if (SDL_GameControllerGetButton(
-                pad, SDL_CONTROLLER_BUTTON_LEFTSHOULDER) != 0) {
-            hold.leftShoulder = true;
-        }
-        if (SDL_GameControllerGetButton(
-                pad, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) != 0) {
-            hold.rightShoulder = true;
-        }
-        SDL_GameControllerClose(pad);
-    }
-    return hold;
-}
-
-/*
- * The launch decision, made once and logged in full. Logged even when it is
- * "open the launcher", because "why did it not boot straight in" is the first
- * question a player who turned this on will ask, and the answer -- setting off,
- * or something was held -- has to be in mdkr64.log.
+ * The launch decision itself, made once and logged in full. Logged even when
+ * it is "open the launcher", because "why did it not boot straight in" is the
+ * first question a player who turned this on will ask, and the answer --
+ * setting off, or something held -- has to be in mdkr64.log.
  */
 bool armSkipLauncher(Launcher &launcher) {
     const MdkrVideoConfig *config = mdkr_video_config_desired();
     const bool settingEnabled =
         config != nullptr &&
         config->values[MDKR_APP_SKIP_LAUNCHER].number != 0.0f;
-    const AppUiLauncherHold hold = sampleLaunchHold();
+    const AppUiLauncherHold hold = AppLaunchHold_sample(0u);
     const bool holdOpensLauncher = AppUi_launcherHoldOpensLauncher(hold);
     const bool armed = AppUi_launcherSkipArmed(settingEnabled, holdOpensLauncher);
     std::fprintf(stderr,
@@ -4331,7 +4288,7 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
      * renders, so keep drawing real launcher frames until a Play action
      * arrives or the deadline passes, then report what happened.
      *
-     * Deliberately no pass/fail opinion here beyond rendering. Two of the four
+     * Deliberately no pass/fail opinion here beyond rendering. Most of the
      * cases tests/check_launcher_skip.py drives expect NO boot, and a smoke
      * that failed on "no Play action" could not express them.
      */

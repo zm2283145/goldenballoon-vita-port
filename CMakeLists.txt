@@ -981,6 +981,7 @@ if(NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/platform/app/app_relaunch.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/app_restart.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/app_theme.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/app_launch_hold.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/app_ui_policy.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/app_window.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/arg_triage.cpp

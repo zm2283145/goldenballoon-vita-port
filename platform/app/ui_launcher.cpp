@@ -1,6 +1,7 @@
 // ui_launcher.cpp — nav rail, panel router, Play button, About.
 #include "ui_launcher.h"
 #include "app_host.h"
+#include "app_launch_hold.h"
 #include "app_ui_policy.h"
 #include "app_theme.h"
 #include "app_brand.h"
@@ -1531,6 +1532,33 @@ LauncherAction Launcher::draw(AppHost &host) {
      * pressing Play would have done.
      */
     {
+        /*
+         * Re-sample the hold every frame until the boot dispatches, and disarm
+         * the first time it is seen. main()'s single pre-frame sample cannot be
+         * the whole answer: SDL folds keyboard state from events, so a Shift
+         * already down before the window existed is invisible there -- on macOS
+         * the first thing SDL learns about that key is its RELEASE. Sampling
+         * here turns the window a player has to aim at from one instant into
+         * "while the launcher is on screen", which is at least as long as
+         * hashing the ROM takes.
+         *
+         * Disarming is one-way. A hold seen at any point in that window means
+         * the player asked for their launcher, and letting a later frame
+         * re-arm the skip would boot them out of it mid-decision.
+         */
+        if (skipArmed_ && !skipDispatched_) {
+            const AppUiLauncherHold hold = AppLaunchHold_sample(++holdSamples_);
+            if (AppUi_launcherHoldOpensLauncher(hold)) {
+                skipArmed_ = false;
+                std::fprintf(stderr,
+                             "[app-ui] skip-launcher disarmed by hold "
+                             "sample=%u shift=%d shoulderL=%d shoulderR=%d\n",
+                             holdSamples_, hold.shift ? 1 : 0,
+                             hold.leftShoulder ? 1 : 0,
+                             hold.rightShoulder ? 1 : 0);
+            }
+        }
+
         AppUiLauncherSkipReadiness readiness;
         readiness.armed = skipArmed_;
         readiness.dispatched = skipDispatched_;

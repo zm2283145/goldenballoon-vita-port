@@ -254,6 +254,10 @@ private:
     // the launcher looking at the reason, and must not be retried behind them.
     bool skipArmed_ = false;
     bool skipDispatched_ = false;
+    // Samples of the launch hold taken by this launcher. main()'s pre-frame
+    // sample is 0, so these continue from 1; the count is what lets the test
+    // seam make a hold appear partway through the window.
+    unsigned holdSamples_ = 0u;
     int  active_ = 0;               // index into the panel table
     bool panelEnvChecked_ = false;  // MDKR_APP_PANEL design-review/CI hook
 };
