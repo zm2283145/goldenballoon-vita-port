@@ -29,7 +29,9 @@
  * this file stays a clean diff against mgb64's copy; removing them here
  * would just be cosmetic drift for no behavioral gain on this repo's
  * targets. */
-#ifdef MGB64_PORTMASTER_GLES
+#if defined(__vita__)
+#include <vitaGL.h>
+#elif defined(MGB64_PORTMASTER_GLES)
 #include <GLES3/gl32.h>
 #elif defined(__APPLE__)
 #define GL_SILENCE_DEPRECATION
@@ -744,11 +746,13 @@ static void gfx_opengl_set_uniforms(struct ShaderProgram *prg) {
         glUniform4f(
             prg->shadow_splits_layers_location,
             split_start, split_end, layer0, layer1);
+#ifndef __vita__
         GLint prev_active = 0;
         glGetIntegerv(GL_ACTIVE_TEXTURE, &prev_active);
         glActiveTexture(GL_TEXTURE5);
         glBindTexture(GL_TEXTURE_2D_ARRAY, g_shadow_depth_tex);
         glActiveTexture((GLenum)prev_active);
+#endif
     }
     if (prg->opt_dfdx_light) {
         if (prg->sun_color_location >= 0)
@@ -1899,8 +1903,12 @@ static bool gfx_opengl_upload_texture_mipped(const uint8_t *const *level_rgba,
         glTexImage2D(GL_TEXTURE_2D, l, GL_RGBA8, level_w[l], level_h[l], 0,
                      GL_RGBA, GL_UNSIGNED_BYTE, level_rgba[l]);
     }
+#ifndef __vita__
+    /* vitaGL has no GL_TEXTURE_BASE_LEVEL/MAX_LEVEL -- it has no fixed mip
+     * range clamp at all; every uploaded level is simply usable. */
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, level_count - 1);
+#endif
     if (glGetError() != GL_NO_ERROR) {
         return false;
     }
@@ -1933,19 +1941,29 @@ static bool gfx_opengl_upload_texture(const uint8_t *rgba32_buf, int width, int 
      * particularly sensitive to incomplete mip state on frontend NPOT uploads
      * such as the 440x1 eye-intro strips, and will silently substitute a zero
      * texture when the object is considered unloadable. */
+#ifndef __vita__
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+#endif
     GLenum err = glGetError();
     if (err != GL_NO_ERROR) {
         fprintf(stderr, "[GL-TEX-UPLOAD-ERR] width=%d height=%d err=0x%x\n", width, height, err);
         texDebugDumpRecentFireEvents(stderr);
         return false;
     }
+#if defined(__vita__)
+    /* vitaGL has no glGetTexLevelParameteriv (no GLES-safe equivalent
+     * exists) -- the upload above either succeeded at the requested
+     * dimensions or glGetError() already caught it. */
+    GLint actual_width = width;
+    GLint actual_height = height;
+#else
     GLint actual_width = 0;
     GLint actual_height = 0;
     glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &actual_width);
     glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &actual_height);
     err = glGetError();
+#endif
     if (err != GL_NO_ERROR || actual_width != width || actual_height != height) {
         fprintf(stderr,
                 "[GL-TEX-UPLOAD-BAD] width=%d height=%d actual=%d,%d err=0x%x\n",
@@ -2199,8 +2217,10 @@ static bool gfx_opengl_ensure_framebuffer_snapshot_texture(int width, int height
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+#ifndef __vita__
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+#endif
     if (g_diag_framebuffer_snapshot_w != width ||
         g_diag_framebuffer_snapshot_h != height) {
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0,
@@ -2266,7 +2286,11 @@ static bool gfx_opengl_copy_framebuffer_snapshot(const GLint viewport[4],
 
     glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &saved_read_fbo);
     glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &saved_draw_fbo);
+#if defined(__vita__)
+    (void)saved_read_buffer;   /* vitaGL has no GL_READ_BUFFER selection state */
+#else
     glGetIntegerv(GL_READ_BUFFER, &saved_read_buffer);
+#endif
     saved_scissor = glIsEnabled(GL_SCISSOR_TEST);
 
     read_fbo = (GLuint)saved_draw_fbo;
@@ -2294,13 +2318,17 @@ static bool gfx_opengl_copy_framebuffer_snapshot(const GLint viewport[4],
     }
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, read_fbo);
+#ifndef __vita__
     glReadBuffer(read_fbo != 0 ? GL_COLOR_ATTACHMENT0 : GL_BACK);
+#endif
     glCopyTexSubImage2D(GL_TEXTURE_2D, 0, dst_x, dst_y,
                         copy_rect[0], copy_rect[1],
                         copy_rect[2], copy_rect[3]);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)saved_read_fbo);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)saved_draw_fbo);
+#ifndef __vita__
     glReadBuffer((GLenum)saved_read_buffer);
+#endif
     if (saved_scissor) {
         glEnable(GL_SCISSOR_TEST);
     } else {
@@ -2614,7 +2642,11 @@ static bool gfx_opengl_read_framebuffer_rgb(int x, int y, int width, int height,
     glGetIntegerv(GL_PACK_ALIGNMENT, &saved_pack_alignment);
     glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &saved_read_fbo);
     glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &saved_draw_fbo);
+#if defined(__vita__)
+    (void)saved_read_buffer;
+#else
     glGetIntegerv(GL_READ_BUFFER, &saved_read_buffer);
+#endif
     saved_scissor = glIsEnabled(GL_SCISSOR_TEST);
 
     read_fbo = (GLuint)saved_draw_fbo;
@@ -2629,14 +2661,18 @@ static bool gfx_opengl_read_framebuffer_rgb(int x, int y, int width, int height,
     }
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, read_fbo);
+#ifndef __vita__
     glReadBuffer(read_fbo != 0 ? GL_COLOR_ATTACHMENT0 : GL_BACK);
+#endif
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadPixels(x, y, width, height, GL_RGB, GL_UNSIGNED_BYTE, rgb_out);
     GLenum err = glGetError();
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)saved_read_fbo);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)saved_draw_fbo);
+#ifndef __vita__
     glReadBuffer((GLenum)saved_read_buffer);
+#endif
     glPixelStorei(GL_PACK_ALIGNMENT, saved_pack_alignment);
     if (saved_scissor) {
         glEnable(GL_SCISSOR_TEST);
@@ -2699,19 +2735,27 @@ void gfx_opengl_capture_default_framebuffer(void) {
     }
 
     glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &saved_read_fbo);
+#if defined(__vita__)
+    (void)saved_read_buffer;
+#else
     glGetIntegerv(GL_READ_BUFFER, &saved_read_buffer);
+#endif
     glGetIntegerv(GL_PACK_ALIGNMENT, &saved_pack_alignment);
     saved_scissor = glIsEnabled(GL_SCISSOR_TEST);
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+#ifndef __vita__
     glReadBuffer(GL_BACK); /* default-framebuffer back buffer, pre-swap: defined in GLES3 */
+#endif
     glDisable(GL_SCISSOR_TEST);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, g_capture_frame_buf);
     GLenum err = glGetError();
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)saved_read_fbo);
+#ifndef __vita__
     glReadBuffer((GLenum)saved_read_buffer);
+#endif
     glPixelStorei(GL_PACK_ALIGNMENT, saved_pack_alignment);
     if (saved_scissor) {
         glEnable(GL_SCISSOR_TEST);
@@ -2819,6 +2863,13 @@ static float gfx_opengl_effective_render_scale(void) {
 }
 
 static int gfx_opengl_effective_msaa_samples(void) {
+#if defined(__vita__)
+    /* vitaGL has no ARB_framebuffer_object multisample path (no
+     * GL_MAX_SAMPLES, no glRenderbufferStorageMultisample) -- MSAA is
+     * unavailable on this backend for the initial Vita port. Video.RenderScale
+     * remains available as the anti-aliasing option instead. */
+    return 0;
+#else
     static int last_requested = -1;
     static int last_effective = -1;
     static int warned_clamp;
@@ -2856,6 +2907,7 @@ static int gfx_opengl_effective_msaa_samples(void) {
     last_effective = effective;
 
     return effective;
+#endif
 }
 
 /* SSAO is a remaster screen-space effect: gated by the master RemasterFX switch
@@ -2946,8 +2998,10 @@ static bool gfx_opengl_ensure_scene_target(int width, int height) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+#ifndef __vita__
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+#endif
 
     if (g_scene_w != width || g_scene_h != height ||
         g_scene_has_stencil != need_stencil) {
@@ -2960,11 +3014,22 @@ static bool gfx_opengl_ensure_scene_target(int width, int height) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+#ifndef __vita__
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+#endif
         if (need_stencil) {
+#if defined(__vita__)
+            /* vitaGL has no packed depth24-stencil8 upload (no
+             * GL_DEPTH_STENCIL / GL_UNSIGNED_INT_24_8) -- this diagnostic-only
+             * coverage-stencil path (GE007_DIAG_XLU_COVERAGE_STENCIL_CC, off
+             * by default) degrades to depth-only on the initial Vita port. */
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, width, height, 0,
+                         GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL);
+#else
             glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, width, height, 0,
                          GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, NULL);
+#endif
         } else {
             glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, width, height, 0,
                          GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL);
@@ -3004,6 +3069,9 @@ static bool gfx_opengl_ensure_scene_target(int width, int height) {
         return false;
     }
 
+#ifndef __vita__
+    /* vitaGL has no glRenderbufferStorageMultisample -- unreachable anyway
+     * since gfx_opengl_effective_msaa_samples() always returns 0 on Vita. */
     if (samples > 0) {
         if (g_scene_msaa_fbo == 0) {
             glGenFramebuffers(1, &g_scene_msaa_fbo);
@@ -3066,6 +3134,9 @@ static bool gfx_opengl_ensure_scene_target(int width, int height) {
             return false;
         }
     }
+#else
+    (void)samples;
+#endif
 
     RESTORE_SCENE_TEXTURE_BINDING();
 #undef RESTORE_SCENE_TEXTURE_BINDING
@@ -3816,8 +3887,10 @@ static void gfx_opengl_ensure_filter_texture(GLuint *tex_id,
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+#ifndef __vita__
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+#endif
 
     if (*tex_w != width || *tex_h != height) {
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0,
@@ -4022,7 +4095,11 @@ static void gfx_opengl_apply_output_vi_filter(void) {
     }
 
     glGetIntegerv(GL_CURRENT_PROGRAM, &saved_program);
+#if defined(__vita__)
+    saved_vao = 0;   /* vitaGL has no GL_VERTEX_ARRAY_BINDING query */
+#else
     glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &saved_vao);
+#endif
     glGetIntegerv(GL_ACTIVE_TEXTURE, &saved_active_texture);
     glActiveTexture(GL_TEXTURE0);
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &saved_texture0);
@@ -4032,7 +4109,11 @@ static void gfx_opengl_apply_output_vi_filter(void) {
     saved_scissor = glIsEnabled(GL_SCISSOR_TEST);
     saved_depth_test = glIsEnabled(GL_DEPTH_TEST);
     saved_blend = glIsEnabled(GL_BLEND);
+#if defined(__vita__)
+    saved_dither = GL_FALSE;   /* vitaGL has no GL_DITHER */
+#else
     saved_dither = glIsEnabled(GL_DITHER);
+#endif
     saved_a2c = glIsEnabled(GL_SAMPLE_ALPHA_TO_COVERAGE);
     glGetBooleanv(GL_DEPTH_WRITEMASK, &saved_depth_mask);
 
@@ -4044,7 +4125,9 @@ static void gfx_opengl_apply_output_vi_filter(void) {
     glDisable(GL_SCISSOR_TEST);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_BLEND);
+#ifndef __vita__
     glDisable(GL_DITHER);
+#endif
     glDisable(GL_SAMPLE_ALPHA_TO_COVERAGE);
     glDepthMask(GL_FALSE);
 
@@ -4135,11 +4218,13 @@ static void gfx_opengl_apply_output_vi_filter(void) {
     } else {
         glDisable(GL_SCISSOR_TEST);
     }
+#ifndef __vita__
     if (saved_dither) {
         glEnable(GL_DITHER);
     } else {
         glDisable(GL_DITHER);
     }
+#endif
     if (saved_a2c) {
         glEnable(GL_SAMPLE_ALPHA_TO_COVERAGE);
     } else {
@@ -4288,6 +4373,7 @@ static uint64_t s_shadow_complete_frames = 0;
 static uint64_t s_shadow_fallback_frames = 0;
 static uint64_t s_shadow_resource_failures = 0;
 
+#if !defined(__vita__)
 static bool gfx_opengl_shadow_resource_fail(int res, int layers) {
     s_shadow_resource_fail_count++;
     s_shadow_resource_failures++;
@@ -4768,6 +4854,15 @@ static void gfx_opengl_render_shadow_map(void) {
     }
     gfx_opengl_dump_shadow_pgm();
 }
+#else
+/* Sun-shadow mapping needs GL_TEXTURE_2D_ARRAY / glTexImage3D /
+ * glFramebufferTextureLayer, none of which vitaGL implements -- the whole
+ * feature is compiled out for the initial Vita port (see PORTING_STATUS.md).
+ * g_pc_shadow_map_ready / g_pc_shadow_mat_valid stay at their zero-init
+ * values, so the receiver side (shader uniforms in gfx_opengl_set_uniforms)
+ * correctly treats shadows as never-ready. */
+static void gfx_opengl_render_shadow_map(void) {}
+#endif /* !defined(__vita__) */
 
 static bool gfx_opengl_start_frame(void) {
     /*

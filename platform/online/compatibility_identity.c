@@ -24,6 +24,13 @@
 #define MDKR_ONLINE_OS_TAG "windows"
 #elif defined(__linux__)
 #define MDKR_ONLINE_OS_TAG "linux"
+#elif defined(__vita__)
+/* Online itself stays off on Vita (MDKR_ENABLE_ONLINE_BETA is not set by the
+ * Vita build) -- this only satisfies the compile-time fence above so the
+ * file (unconditionally part of PLATFORM_SOURCES) compiles. If online is
+ * ever enabled on Vita later, this correctly makes it its own determinism
+ * domain rather than silently colliding with another platform's tag. */
+#define MDKR_ONLINE_OS_TAG "vita"
 #else
 #error "online OS tag unmapped for this platform: prove its gameplay \
 determinism domain and add it here (and to the pinned unit vectors) before \

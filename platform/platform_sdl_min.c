@@ -46,8 +46,19 @@
 #endif
 #include <windows.h>
 #endif
+#if defined(__vita__)
+#include <vitaGL.h>             /* provides real GL entry points; no loader step needed */
+/* vitaGL already #define's GLsync (as a plain int32_t -- see vitaGL.h) but
+ * implements no real ARB_sync: no glFenceSync/glClientWaitSync/glDeleteSync.
+ * The only callers of those three live in the GL-fence frame-pacing
+ * backpressure path below (sdl_gl_retire_oldest /
+ * sdl_gl_backpressure_after_swap), which is compiled to a no-op on Vita in
+ * this same file -- vitaGL/sceGxm does its own frame pacing, so no shim is
+ * needed here at all. */
+#else
 #include <glad/glad.h>          /* GL loader — desktop only; web is WebGPU-only */
 #include <SDL_syswm.h>
+#endif
 #else
 #include <emscripten/emscripten.h>
 #include <emscripten/em_js.h>
@@ -719,6 +730,7 @@ static uint64_t sdl_gl_monotonic_ns(void) {
            (uint64_t)ts.tv_nsec;
 }
 
+#if !defined(__vita__)
 static bool sdl_gl_retire_oldest(bool wait) {
     GLsync fence;
     GLenum status;
@@ -773,6 +785,17 @@ static bool sdl_gl_retire_oldest(bool wait) {
     platform_request_exit(EXIT_FAILURE);
     return false;
 }
+#else
+/* GL fence objects have no real semantics under vitaGL (GLsync is just an
+ * opaque int32_t there, no glClientWaitSync/glDeleteSync exist) -- and this
+ * whole backpressure path stays dead at runtime on Vita anyway (see
+ * sdl_gl_backpressure_after_swap's early return). Report "nothing
+ * outstanding" instead of pretending to wait on fences that don't exist. */
+static bool sdl_gl_retire_oldest(bool wait) {
+    (void)wait;
+    return true;
+}
+#endif
 
 static void sdl_gl_backpressure_after_swap(void) {
     uint64_t now;
@@ -788,6 +811,15 @@ static void sdl_gl_backpressure_after_swap(void) {
         return; /* FIFO swap itself is the queue bound. */
     }
 
+#if defined(__vita__)
+    /* Unreachable: s_glSwapEffective starts at 1 and is only changed by
+     * sdl_apply_gl_present_policy(), which the Vita sdl_init_gl branch never
+     * calls -- so the early return above always fires first. Kept as a
+     * compile-time no-op (rather than deleting the rest of the function) so
+     * this function's shape stays close to the desktop version; no real
+     * GL-fence backpressure exists under vitaGL. */
+    (void)slot;
+#else
     if (glFenceSync == NULL || glClientWaitSync == NULL ||
         glDeleteSync == NULL) {
         /* A 3.3 core context should always expose sync objects. glFinish is a
@@ -823,6 +855,7 @@ static void sdl_gl_backpressure_after_swap(void) {
     if (s_glFencesInFlight >= GL_FRAME_IN_FLIGHT_MAX) {
         (void)sdl_gl_retire_oldest(true);
     }
+#endif
 }
 
 static void sdl_gl_backpressure_shutdown(void) {
@@ -893,6 +926,33 @@ static void sdl_apply_gl_present_policy(void) {
                             (tearing && effective == 0)) ? 1 : 0);
 }
 
+#if defined(__vita__)
+static int sdl_init_gl(Uint32 base_flags) {
+    (void)base_flags;
+    /* vitaGL owns display/context creation directly via sceGxm; there is no
+     * SDL video/GL driver involved on Vita. s_window and s_glctx stay NULL --
+     * every other touchpoint that reads them (platform_sdl_present's swap,
+     * platform_sdl_drawable_size's fallback) already guards on s_window ==
+     * NULL and falls back to s_initialWindowWidth/Height (960x544, set in
+     * main_pc.c), which is exactly the real framebuffer size here.
+     *
+     * Ring buffer (2nd arg after the unused pool-mem pointer... see vitaGL's
+     * README for the vglInitExtended signature) and MSAA level are the
+     * defaults most vitaGL ports start from. PORTING_STATUS.md flags this as
+     * the first thing to tune against real hardware once the game boots --
+     * the DKR HUD/minimap draw calls in gfx_pc_dkr.c were never profiled
+     * against a PowerVR SGX543MP4+. */
+    vglInitExtended(0, s_initialWindowWidth, s_initialWindowHeight, 0x1800000,
+                     SCE_GXM_MULTISAMPLE_4X);
+    s_window = NULL;
+    g_sdlWindow = NULL;
+    s_glReady = 1;
+    printf("[SDL] GL ready (vitaGL): %s / %s\n",
+           (const char *)glGetString(GL_VERSION),
+           (const char *)glGetString(GL_RENDERER));
+    return 0;
+}
+#else
 static int sdl_init_gl(Uint32 base_flags) {
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
@@ -933,6 +993,7 @@ static int sdl_init_gl(Uint32 base_flags) {
            (const char *)glGetString(GL_RENDERER));
     return 0;
 }
+#endif /* __vita__ */
 #endif /* !__EMSCRIPTEN__ */
 
 static int sdl_should_hide_window(void) {
@@ -1229,7 +1290,7 @@ void *platformGetMetalLayer(void) {
 #endif
 }
 
-#if !defined(__EMSCRIPTEN__) && !defined(__APPLE__)
+#if !defined(__EMSCRIPTEN__) && !defined(__APPLE__) && !defined(__vita__)
 enum MdkrWebGpuWindowSystem platformWebGpuWindowInfo(
     void *sdl_window, void **out_display, void **out_window,
     unsigned long long *out_id) {
@@ -3538,7 +3599,11 @@ void platform_sdl_present(void) {
         (void)platformOverlayRender();
 #endif
         sdl_gl_resource_heartbeat("before-swap", 0);
+#if defined(__vita__)
+        vglSwapBuffers(GL_FALSE);
+#else
         SDL_GL_SwapWindow(s_window);
+#endif
         g_surfaceFrameCounter++;
 #ifndef __EMSCRIPTEN__
         sdl_gl_backpressure_after_swap();

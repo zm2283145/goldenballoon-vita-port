@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<livearea style="a1" content-id="vita-portmdkr64">
+  <frame id="frame0" autoflip="visible">
+    <pos>center middle</pos>
+    <bg>
+      <img>bg.png</img>
+    </bg>
+  </frame>
+  <gate>
+    <img>startup.png</img>
+  </gate>
+</livearea>

@@ -604,10 +604,18 @@ int mdkr_exec_replace_utf8(const char *path, const char *const *arguments) {
     for (index = 0u; index < count; ++index) {
         vector[index + 1u] = (char *)arguments[index];
     }
+#if defined(__vita__)
+    /* No process/exec model on Vita (no fork/exec) -- self-relaunch-with-new-
+     * args has no platform equivalent yet (see PORTING_STATUS.md). */
+    (void)saved;
+    free(vector);
+    return ENOSYS;
+#else
     execvp(path, vector);
     saved = errno ? errno : EIO;
     free(vector);
     return saved;
+#endif
 }
 int mdkr_file_sync(FILE *file) {
     if (file == NULL || fflush(file) != 0) return -1;
@@ -660,19 +668,25 @@ int mdkr_file_lock_acquire_utf8(const char *path, MdkrFileLock *lock) {
     lock->handle = -1;
     descriptor = open(path, O_CREAT | O_RDWR, 0600);
     if (descriptor < 0) return -1;
+#if !defined(__vita__)
+    /* Advisory multi-process locking; a Vita app is always the only process
+     * touching its own save data, so there is nothing to arbitrate against. */
     if (flock(descriptor, LOCK_EX) != 0) {
         const int saved = errno;
         close(descriptor);
         errno = saved;
         return -1;
     }
+#endif
     lock->handle = (intptr_t)descriptor;
     return 0;
 }
 void mdkr_file_lock_release(MdkrFileLock *lock) {
     const int descriptor = lock != NULL ? (int)lock->handle : -1;
     if (descriptor < 0) return;
+#if !defined(__vita__)
     (void)flock(descriptor, LOCK_UN);
+#endif
     (void)close(descriptor);
     lock->handle = -1;
 }

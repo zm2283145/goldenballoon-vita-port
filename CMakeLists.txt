@@ -90,7 +90,19 @@ endif()
 # Native links system SDL2 + OpenGL. Under Emscripten neither exists as a
 # package: SDL2 comes from the emcc port (-sUSE_SDL=2) and there is no GL
 # backend in the wasm binary (WebGPU only), so skip the finders entirely.
-if(NOT EMSCRIPTEN)
+if(VITA)
+    # arm-vita-eabi-pkg-config (shipped by VitaSDK) is a bash script; there is
+    # no bash on a plain Windows/PowerShell build host, so SDL2 is pointed at
+    # the VitaSDK sysroot directly instead of going through
+    # find_package(PkgConfig). There is no OpenGL.framework/libGL on the Vita
+    # either -- gfx_opengl.c renders through vitaGL instead (see the VITA
+    # branches in the GL backend and link-library sections below).
+    set(SDL2_INCLUDE_DIRS
+        "$ENV{VITASDK}/arm-vita-eabi/include/SDL2"
+        "$ENV{VITASDK}/arm-vita-eabi/include")
+    set(SDL2_LIBRARY_DIRS "$ENV{VITASDK}/arm-vita-eabi/lib")
+    set(SDL2_LIBRARIES SDL2)
+elseif(NOT EMSCRIPTEN)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(SDL2 REQUIRED sdl2)
     if(APPLE)
@@ -105,7 +117,13 @@ endif()
 # Python contract checks -- extracted to keep the build definition below from
 # being buried under a thousand lines of test registration. See that file's
 # header for why it is included at this exact point.
-include(${CMAKE_SOURCE_DIR}/cmake/tests.cmake)
+#
+# Skipped entirely on VITA: this is a desktop unit-test suite (threads,
+# loopback sockets, a Python-driven contract harness) with no bearing on the
+# shipped Vita game binary, and no reason to make cross-compile cleanly.
+if(NOT VITA)
+    include(${CMAKE_SOURCE_DIR}/cmake/tests.cmake)
+endif()
 
 if(NOT EMSCRIPTEN)
     add_executable(mdkr-save
@@ -199,6 +217,22 @@ if(EMSCRIPTEN)
     set(MDKR_WEBGPU_BACKEND ON CACHE BOOL "" FORCE)   # web = WebGPU only
 endif()
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake)
+# --- Vita platform (initial port) ------------------------------------------
+# Forced off, not merely defaulted off, and BEFORE include(cmake/webgpu.cmake)
+# below (which fails configure for an OS/CPU triple it doesn't recognize
+# unless MDKR_WEBGPU_BACKEND is already OFF by the time it runs). MDKR_APP and
+# MDKR_NATIVE_PHONE_PARTY are pre-seeded in the cache here too, even though
+# their own option() declarations are further down the file: option() only
+# sets a value when the cache doesn't already have one, so seeding it early
+# still wins. None of the three has a Vita implementation yet (no WebGPU
+# driver; the desktop ImGui launcher pulls in file dialogs, DPI/multi-monitor
+# queries and other desktop-only surface; Phone Party needs the
+# datachannel/WebRTC stack) -- see PORTING_STATUS.md.
+if(VITA)
+    set(MDKR_WEBGPU_BACKEND OFF CACHE BOOL "" FORCE)
+    set(MDKR_APP OFF CACHE BOOL "" FORCE)
+    set(MDKR_NATIVE_PHONE_PARTY OFF CACHE BOOL "" FORCE)
+endif()
 include(cmake/webgpu.cmake)
 
 # --- Native app shell (ImGui launcher + in-game overlay) -------------------
@@ -546,8 +580,9 @@ if(MDKR_ENABLE_ONLINE_BETA)
         ${CMAKE_SOURCE_DIR}/platform/net/party_link.c) # live selection bridge (beta)
 endif()
 
-# glad GL loader — desktop only (no GL in the browser build).
-if(NOT EMSCRIPTEN)
+# glad GL loader — desktop only (no GL in the browser build, and vitaGL
+# provides real GL entry points directly with no loader step on Vita).
+if(NOT EMSCRIPTEN AND NOT VITA)
     set(GLAD_SOURCES ${CMAKE_SOURCE_DIR}/lib/glad/src/glad.c)
 else()
     set(GLAD_SOURCES "")
@@ -643,6 +678,17 @@ endif()
 # (not folded into the block above) so it stays a one-line, low-conflict diff.
 set(MDKR_VERSION "1.6.0" CACHE STRING "mdkr64 release version (semver)")
 target_compile_definitions(${MDKR_TARGET} PRIVATE MDKR_VERSION_STRING="${MDKR_VERSION}")
+if(VITA)
+    # Activates the GLES-safe branches gfx_opengl.c already carries for the
+    # mgb64 sibling project's PortMaster/GLES handheld target (no
+    # glPolygonMode, no explicit glDrawBuffer on the depth-only FBO, etc.) --
+    # see the big comment at the top of that file. The header include itself
+    # is patched separately (a Vita `#if defined(__vita__)` branch ahead of
+    # this one, since vitaGL is not literally <GLES3/gl32.h>); this macro only
+    # needs to activate the *feature* guards, which vitaGL's reduced surface
+    # needs just as much as real GLES3 does.
+    target_compile_definitions(${MDKR_TARGET} PRIVATE MGB64_PORTMASTER_GLES=1)
+endif()
 # The save CLI stamps app_version into every container it writes, so it must
 # carry the same release value the engine and app shell do. Its target is
 # declared above this statement, hence the guarded definition here rather than
@@ -729,6 +775,17 @@ if(NOT EMSCRIPTEN)
     # native-only (avoids an unknown-flag-in-some-configs surprise on wasm).
     target_compile_options(${MDKR_TARGET} PRIVATE -fcommon)
 endif()
+if(VITA)
+    # ARM EABI default: a plain `enum` uses the smallest integer type that
+    # fits its enumerator values (can end up unsigned), and `char` defaults
+    # unsigned -- both differ from the x86/x64 GCC defaults this codebase
+    # implicitly assumes (int-sized signed enums, signed char), which trips
+    # -Werror=type-limits on comparisons like `(int)key < 0` that are only
+    # ever reachable because the enum is assumed to be a signed int. Matches
+    # the flags Rinnegatamante's Lighthouse (another Vita/SDL2/vitaGL port)
+    # passes in its Makefile.vita for the same reason.
+    target_compile_options(${MDKR_TARGET} PRIVATE -fno-short-enums -fsigned-char)
+endif()
 # emcc is Clang-based, so the Clang-only parse flags apply to it too.
 # The decomp is warning-noisy. Clang's umbrella suppression is useful, but GCC
 # does not implement it; worse, GCC rejects Clang's shift-sign-overflow and
@@ -800,6 +857,26 @@ if(NOT EMSCRIPTEN)
         # AVFoundation: AVSpeechSynthesizer, behind platform/a11y_speech_mac.mm.
         target_link_libraries(${MDKR_TARGET} PRIVATE ${OPENGL_LIB}
             "-framework AVFoundation" "-framework Foundation")
+    elseif(VITA)
+        # vitaGL (GL-over-sceGxm) + vitashark (runtime GLSL->GXP shader
+        # compiler) + the stub import libraries the engine's SDL2/GL/audio/
+        # input/save paths touch. Matches the library set Rinnegatamante's
+        # Lighthouse (another libultraship/SDL2/vitaGL Vita port) links in its
+        # Makefile.vita; trimmed of the Sce*_stub libs that project needs only
+        # for its Randomizer/network features, which this engine build does
+        # not compile (MDKR_ENABLE_ONLINE_BETA and friends default OFF).
+        target_link_libraries(${MDKR_TARGET} PRIVATE
+            vitaGL vitashark SceShaccCgExt taihen_stub mathneon
+            SceGxm_stub SceDisplay_stub SceCtrl_stub SceTouch_stub SceHid_stub
+            SceAudio_stub SceAudioIn_stub SceCommonDialog_stub
+            SceSysmodule_stub SceMotion_stub SceAppUtil_stub SceAppMgr_stub
+            SceShaccCg_stub ScePower_stub SceKernelDmacMgr_stub SceIme_stub
+            # libvitaGL.a's runtime GLSL preprocessor (expression.cpp) is C++
+            # (exceptions, std::string, operator new) -- this project links
+            # with the plain C driver (arm-vita-eabi-gcc), which doesn't pull
+            # in libstdc++ automatically the way g++ would. Matches
+            # Lighthouse's Makefile.vita (LIBS += -lstdc++).
+            stdc++)
     else()
         # CMAKE_DL_LIBS also carries the dlopen that platform/a11y_speech_linux.c
         # loads speech-dispatcher through — deliberately at runtime, so a tarball

@@ -34,6 +34,10 @@
 #else
 #include <fcntl.h>
 #include <unistd.h>
+#if defined(__vita__)
+#include <malloc.h>    /* memalign -- posix_memalign is declared in VitaSDK's
+                         * newlib <stdlib.h> but not implemented in its libc */
+#endif
 #endif
 #endif
 
@@ -355,7 +359,11 @@ void *dkr_arena_init(uint32_t size) {
     }
 #endif
     if (!p) {
+#if defined(__vita__)
+        p = memalign(align, size);
+#else
         if (posix_memalign(&p, align, size) != 0) p = NULL;
+#endif
     }
 #endif
     if (!p) {

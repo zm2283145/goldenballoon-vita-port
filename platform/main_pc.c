@@ -18,8 +18,8 @@
 #endif
 #ifndef __EMSCRIPTEN__
 #include <signal.h>
-#ifndef _WIN32
-#include <execinfo.h>       /* backtrace() — glibc/macOS only; absent on wasm AND Windows */
+#if !defined(_WIN32) && !defined(__vita__)
+#include <execinfo.h>       /* backtrace() — glibc/macOS only; absent on wasm, Windows, Vita */
 #endif
 #endif
 #ifndef SDL_MAIN_HANDLED
@@ -108,7 +108,10 @@ static void mdkr_crash_write(const char *text, unsigned len) {
  * a wasm trap surfaces in the browser's JS console instead (see the shell). */
 static void mdkr_crash_handler(int sig) {
     void *bt[40];
-#ifdef _WIN32
+#if defined(__vita__)
+    (void)bt;
+    fprintf(stderr, "\n[CRASH] signal %d (no backtrace facility on Vita)\n", sig);
+#elif defined(_WIN32)
     /* Windows has neither <execinfo.h> nor backtrace_symbols_fd.
      * CaptureStackBackTrace lives in kernel32, so it needs no dbghelp.dll and
      * cannot itself fail to load inside a crash handler — but it only yields
@@ -171,7 +174,14 @@ extern void transition_workspace_shutdown(void);
  * assumed) by the shutdown report so a non-empty queue is visible. */
 extern int32_t gFreeQueueCount;
 
+#ifdef __vita__
+/* app0: (the VPK bundle) is read-only; ROM + saves live on ux0:. The user
+ * creates this folder and drops their own ROM dump in it -- see
+ * PORTING_STATUS.md. */
+#define DEFAULT_ROM "ux0:data/goldenballoon/baserom.us.v80.z64"
+#else
 #define DEFAULT_ROM "baserom.us.v80.z64"
+#endif
 
 /* Set by CMake (see CMakeLists.txt's "Version stamping" block) to the
  * MDKR_VERSION cache variable; the packaged app bundle stamps the same value
@@ -224,6 +234,10 @@ int main(int argc, char **argv) {
     const char *inputScript = NULL;
     int initialWindowWidth = 640;
     int initialWindowHeight = 480;
+#ifdef __vita__
+    initialWindowWidth = 960;   /* PS Vita native panel resolution */
+    initialWindowHeight = 544;
+#endif
     int videoListRequested = 0;
     int exitCode = 0;
     bool audioInitialized = false;
