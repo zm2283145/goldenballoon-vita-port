@@ -233,9 +233,11 @@ implemented.
 
 ## NOT A DEFECT: the one-ULP attract-simulation move across the v1.6.0 merge is the FP-contraction pin (84b89c7d)
 
-The A6 investigation recorded that the offline simulation of the 1.6.0-merged
-adventure-party tree (`95b3016d`) diverges from the pre-merge tip (`a223eb78`)
-from the attract sequence onward: the first divergent authoritative field is a
+The AP-19 race-renderer soak investigation ([`renderer.md` § FIXED
+(instrument): AP-19's race renderer census](renderer.md#fixed-instrument-ap-19s-race-renderer-census-read-a-terminal-only-ownership-high))
+found that the offline simulation of the 1.6.0-merged adventure-party tree
+(`95b3016d`) diverges from the pre-merge tip (`a223eb78`) from the attract
+sequence onward: the first divergent authoritative field is a
 one-ULP `trans.scale` on a smoke emitter (`objectID=0x0095`, `[HASHOBJ]
 tick=171`, `3e840bca` vs `3e840bc9`), and the first `[GRND]` difference is
 racer 2's pitch at frame 2832 (`xrot=1290` vs `1280`). It left the move
@@ -259,7 +261,7 @@ worktree, same toolchain, same deps, run on the minimal probe route
 `MDKR_STATE_HASH=3`, `MDKR_AUTOPILOT=1`, headless, muted, 3000 ticks, with
 `MDKR_HASH_DUMP_TICK=160 MDKR_HASH_DUMP_UNTIL=180 MDKR_HASH_DUMP_IDS=1` for the
 per-object rows). Smoke emitter `objectID=0x0095` is live at tick 171 on this
-route too, so it probes the same actor the A6 dumps named.
+route too, so it probes the same actor those dumps named.
 
 | build | `[SIMHASH]`/`[HASHOBJ]` stream |
 |---|---|
@@ -286,14 +288,17 @@ the online direct-boot golden were re-minted in that campaign, and
 with the re-freeze rationale recorded beside the digest.
 
 The attract-phase consequence for the adventure-party fixture is separately
-handled and is not a simulation defect either — see the AP-19 entry in
-[`renderer.md`](renderer.md).
+handled and is not a simulation defect either — see [`renderer.md` § FIXED
+(instrument): AP-19's race renderer census](renderer.md#fixed-instrument-ap-19s-race-renderer-census-read-a-terminal-only-ownership-high).
 
 ### The recurrence is already gated, with a positive control
 
-No new golden pin was added, because two existing gates already fail if the pin
-is removed, and that was measured rather than assumed. On a `83a847cc` build
-with only the `-ffp-contract=off` line deleted:
+No new golden pin was added, because two gates the suite already runs —
+`tests/check_authored_rng_compat.py` and `tests/check_weather_rng_order.py`,
+registered in `tools/run_checks.py` as `authored_rng_compat` and
+`weather_rng_order` — already fail if the pin is removed, and that was measured
+rather than assumed. On a `83a847cc` build with only the `-ffp-contract=off`
+line deleted:
 
 - `check_weather_rng_order`: **FAIL** — `Original weather oracle digest
   changed: 253847b6… != 54e42a67…`, and the one-ticket-late control digest
