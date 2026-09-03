@@ -196,6 +196,10 @@ UNUSED s32 D_80123568[3]; // BSS Padding
  * Main looping function for the main thread.
  * Official Name: mainThread
  */
+#if defined(__vita__)
+extern void mdkr_vita_boot_log(const char *msg);
+#endif
+
 void thread3_main(UNUSED void *unused) {
     /* These values live in the original cartridge's .data, whose initializer
      * ran once per process. A persistent launcher can invoke the engine more
@@ -261,7 +265,29 @@ void thread3_main(UNUSED void *unused) {
                 ; // Infinite loop
             }
         }
+#if defined(__vita__)
+        {
+            static int s_vitaLoopLogCount = 0;
+            if (s_vitaLoopLogCount < 20) {
+                char llb[64];
+                snprintf(llb, sizeof(llb), "loop: iteration %d starting main_game_loop()", s_vitaLoopLogCount);
+                mdkr_vita_boot_log(llb);
+                s_vitaLoopLogCount++;
+            }
+        }
+#endif
         main_game_loop();
+#if defined(__vita__)
+        {
+            static int s_vitaLoopLogCount2 = 0;
+            if (s_vitaLoopLogCount2 < 20) {
+                char llb[64];
+                snprintf(llb, sizeof(llb), "loop: iteration %d main_game_loop() returned", s_vitaLoopLogCount2);
+                mdkr_vita_boot_log(llb);
+                s_vitaLoopLogCount2++;
+            }
+        }
+#endif
 #ifdef NATIVE_PORT
         if (platform_exit_requested()) {
             break;
