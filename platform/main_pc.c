@@ -8,6 +8,9 @@
  * which runs init_game() and the infinite main loop. The blocking osRecvMesg
  * inside that loop is the cooperative frame pacer.
  */
+#if defined(__vita__)
+#include <vitashark.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -476,11 +479,15 @@ int main(int argc, char **argv) {
                 "ux0:data/external/libshacccg.suprx",
             };
             size_t si;
+            const char *working_path = NULL;
             for (si = 0; si < sizeof(kShacccgCandidates) / sizeof(kShacccgCandidates[0]); ++si) {
                 FILE *shacccg = fopen(kShacccgCandidates[si], "rb");
                 char lb[192];
                 if (shacccg) {
                     fclose(shacccg);
+                    if (working_path == NULL) {
+                        working_path = kShacccgCandidates[si];
+                    }
                     snprintf(lb, sizeof(lb), "boot: libshacccg.suprx FOUND at %s%s",
                              kShacccgCandidates[si],
                              si == 0 ? " (the path vitashark actually uses)" : "");
@@ -489,6 +496,32 @@ int main(int argc, char **argv) {
                              kShacccgCandidates[si]);
                 }
                 mdkr_vita_boot_log(lb);
+            }
+            /* vitaGL lazy-inits vitaShaRK internally on the FIRST real
+             * glCompileShader call, using shark_init() with vitaShaRK's own
+             * compiled-in default path -- which this project's own comment
+             * above already flags as "ur0:/data/libshacccg.suprx" (WITH a
+             * slash after the colon), not the "ur0:data/..." (no slash)
+             * form the fopen() check above just verified actually opens.
+             * fopen()/newlib is forgiving about that slash; vitaShaRK's own
+             * internal sceIoOpen is not guaranteed to be. If vitaGL's lazy
+             * shark_init() silently fails on that path mismatch and it does
+             * not check the return value before compiling, every later
+             * shark_compile_shader/shark_get_internal_compile_output call
+             * runs against an uninitialized compiler -- exactly the SceGxm-
+             * internal crash observed on the very first real shader link.
+             * Call shark_init() ourselves, explicitly, with the path we just
+             * proved actually opens, before vitaGL ever gets a chance to. */
+            if (working_path != NULL) {
+                int shark_rc = shark_init(working_path);
+                char lb[128];
+                snprintf(lb, sizeof(lb),
+                         "boot: explicit shark_init(\"%s\") returned %d",
+                         working_path, shark_rc);
+                mdkr_vita_boot_log(lb);
+            } else {
+                mdkr_vita_boot_log(
+                    "boot: no libshacccg.suprx candidate found; skipping explicit shark_init");
             }
         }
     }

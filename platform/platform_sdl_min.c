@@ -963,6 +963,19 @@ static int sdl_init_gl(Uint32 base_flags) {
                  (unsigned)vglMemFree(VGL_MEM_VRAM), (unsigned)vglMemFree(VGL_MEM_RAM),
                  (unsigned)vglMemFree(VGL_MEM_PHYCONT));
         mdkr_vita_boot_log(glb);
+        /* DIAGNOSTIC: vitaGL defaults to VGL_MODE_POSTPONED, which per its
+         * own header comment moves the REAL shader compilation (the runtime
+         * GLSL->Cg translation + shark_compile_shader call) out of
+         * glCompileShader and into glLinkProgram -- exactly the call where
+         * this engine's very first real shader crashes on real hardware.
+         * gfx_opengl_create_and_load_new_shader() already compiles vertex
+         * then fragment back-to-back for every shader (the exact usage
+         * pattern VGL_MODE_SHADER_PAIR documents as its premise), so force
+         * that mode instead: it does the real translation/compile at
+         * glCompileShader time (proven working per our "both stages
+         * compiled OK" logs) rather than deferring it into glLinkProgram. */
+        vglSetSemanticBindingMode(VGL_MODE_SHADER_PAIR);
+        mdkr_vita_boot_log("vitaGL: forced vglSetSemanticBindingMode(VGL_MODE_SHADER_PAIR)");
     }
     printf("[SDL] GL ready (vitaGL): %s / %s\n",
            (const char *)glGetString(GL_VERSION),
