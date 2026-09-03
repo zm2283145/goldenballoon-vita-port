@@ -209,7 +209,13 @@ def run_case(
             parse_depth(output),
         )
     except subprocess.TimeoutExpired as exc:
-        captured = (exc.stdout or "") + (exc.stderr or "")
+        # TimeoutExpired carries the raw bytes even under text=True; decode
+        # them so the timed-out arm reports a timeout, not a TypeError.
+        captured = "".join(
+            part.decode("utf-8", "replace") if isinstance(part, bytes)
+            else (part or "")
+            for part in (exc.stdout, exc.stderr)
+        )
         result = RunResult(
             label, command, 124, captured, normalized_pace(captured), None, None
         )
