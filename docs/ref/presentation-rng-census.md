@@ -1,10 +1,13 @@
 # Presentation RNG census
 
-Status: **census complete; no caller is redirectable at this commit.** The
-split mechanism already exists and is already applied to everything it can
-reach. This document records what every remaining `rand_range()` caller does,
-why it stays on the authoritative stream, and the two measurements that decide
-it.
+Status: **census complete; all eight latent callers redirected
+cadence-conditionally (2026-09-03).** The census originally found nothing
+redirectable, because the one route it could take spent an ungated
+compatibility target. That target is gated now — `check_authored_rng_compat.py`
+carries an enhanced-cadence arm — so the redirect was taken, measured, and the
+enhanced digest rebaselined once. This document records what every
+`rand_range()` caller does, which stream it draws from, and the measurements
+that decide it.
 
 ## The two streams
 
@@ -99,15 +102,16 @@ once per source line.
 | Verdict | Sites |
 |---|---|
 | Simulation | 80 |
-| Presentation output, stream-owning draw | 8 |
-| Already split (cadence-conditional) | 24 |
+| Already split (cadence-conditional) | 32 |
 | Not compiled | 1 |
-| **Redirectable at this commit** | **0** |
+| **Redirectable unconditionally** | **0** |
 
-"Redirectable" here means an *unconditional* redirect, on every cadence.
-The 8 latent callers could be moved cadence-conditionally without failing
-any gate in the tree; what that spends, and why it was not done, is under
-"What would change the answer".
+The 8 "presentation output, stream-owning draw" sites of the first edition are
+now part of the 32 already-split ones: they were redirected
+cadence-conditionally on 2026-09-03, one class per commit, with the
+original-cadence digest unmoved after each. **Redirectable unconditionally** is
+still zero, and for the unchanged reason — an unconditional redirect moves the
+ROM-ordering stream, which the original arm exists to hold.
 
 ### Simulation — 80 sites
 
@@ -123,20 +127,30 @@ any gate in the tree; what that spends, and why it was not done, is under
 | `waves_init` | `waves.c:750-751` (2) | wave field | `gWaveHeightIndices` is snapshot-registered (`TAG_ALLOC_WAVE_HEIGHT_INDICES`). |
 | `spawn_boss_hazard` | `vehicle_smokey.c:323` | object spawn | Sets `animFrame` on a spawned object, a hashed object field. |
 
-### Presentation output, stream-owning draw — 8 sites
+### Presentation output, stream-owning draw — 8 sites, all redirected
 
 Condition 1 holds for all eight: the value never reaches authoritative state.
-Condition 2 fails: the draw is pinned by an ordering-sensitive gate. None is
-redirectable.
+Condition 2 fails for an *unconditional* redirect, which is why the first
+edition of this census left them in place. All eight now draw through
+`cadence_compat_rand_range()`: authoritative stream at the shipping two-field
+cadence, presentation stream at the opt-in enhanced cadence. Each class was
+redirected in its own commit and measured with the original arm of
+`check_authored_rng_compat.py`, `check_state_hash.py`,
+`check_render_purity.py` and `check_presentation_rng_split.py`; the
+original-cadence digest stayed at `191bee35` after every one, which is the test
+that says the classification was right.
 
-| Caller | File:line | Path | Evidence |
-|---|---|---|---|
-| `racer_sound_car` | `audio_vehicle.c:517-518` (2) | engine audio | Measured above: 989 draws, `check_state_hash.py` fails on redirect; ares witness pins retail ownership. |
-| `racer_boss_sound_spatial`, `play_random_boss_sound` | `vehicle_tricky.c:249,261` (2) | boss sound choice | Value selects a sound offset only, but the draw sits in the authoritative boss update alongside `check_fadeout_transition` consumers. |
-| `menu_image_load` | `menu.c:16916-16918` (3) | menu image fields | Measured above: written, never read, 10 pre-race draws, `check_authored_rng_compat.py` fails on redirect. |
-| `menu_credits_init` | `menu.c:15981` | credits cheat pick | Chooses which cheat the credits display. Not reached on the recorded route, but the credits screen precedes a return to racing, so the draw still shifts a later race. |
+| Caller | File:line | Path | Verdict | Evidence |
+|---|---|---|---|---|
+| `racer_sound_car` | `audio_vehicle.c:517-518` (2) | engine audio | **Redirected** | 989 draws on the determinism route with `MDKR_AUDIO=0`. Original digest unmoved; enhanced digest `64bf3d28` → `c2ac09ae` — this class is the entire enhanced rebaseline. `check_state_hash.py` passes, unlike the unconditional redirect the first edition measured, because the shipping cadence still calls `rand_range()`. The ares PC/return-address witness that pins retail ownership of these draws still describes the shipping build. |
+| `racer_boss_sound_spatial`, `play_random_boss_sound` | `vehicle_tricky.c:249,261` (2) | boss sound choice | **Redirected** | Neither arm of the oracle moves: the `race_state_oracle` route is Ancient Lake and never fights a boss. The gate that does reach this code is `check_weather_rng_order.py`, whose route is Wizpig 1 (level 37) and whose golden digest is the original arm; it stayed at `54e42a67`. |
+| `menu_image_load` | `menu.c:16916-16918` (3) | menu image fields | **Redirected** | Original digest unmoved. The enhanced digest is also unmoved, and that is measured rather than assumed: `MDKR_RNG_SPLIT_TRACE` shows the route's 10 calls diverting 20 draws (25490 → 25510) and the authoritative seed diverging from frame 2031, re-converging at 2599 when the settled menu stops drawing — before the oracle's first recorded row at frame 2640. An **unconditional** redirect of these three still moves the original arm to `bb1e7c49`, reproduced exactly as the first edition recorded it; that difference is what the cadence switch buys. |
+| `menu_credits_init` | `menu.c:15981` | credits cheat pick | **Redirected** | No recorded route reaches the credits, so neither arm moves. Redirected on the same argument as the rest: the draw precedes a return to racing. |
 
-### Already split — 24 sites
+No caller in this class was reverted: the original-cadence digest moved for
+none of them.
+
+### Already split before this census — 24 sites
 
 On the presentation stream at enhanced cadence, back on the authoritative
 stream at the shipping cadence, via `cadence_compat_rand_range()`. This is the
@@ -190,7 +204,8 @@ redirect is arranged so that no recorded stream ever sees it. Three routes, none
 taken here:
 
 - **Cadence-conditional redirect — the cheapest route, and the one this census
-  deliberately did not take.** Route the 8 latent callers through
+  first declined and has since taken (2026-09-03).** Route the 8 latent callers
+  through
   `cadence_compat_rand_range()` (`platform/math_util_native.c:300-305`) exactly
   as the existing 24 are: authoritative stream at the shipping cadence,
   presentation stream only at the opt-in enhanced cadence. No oracle rebaseline
@@ -215,9 +230,15 @@ taken here:
   field), 54,880 all-racer rows, pinned by raw SHA-256 exactly as the original
   arm is. It is the first pin of that stream, so it records what the stream is
   today rather than what it should be, and it is expected to move exactly once
-  — in the commit that performs the redirect below, where the original-cadence
+  — in the commit that performs the redirect, where the original-cadence
   digest must not move at all. With both arms recorded, a cadence-conditional
   redirect is no longer an ungated spend: it is a measured one.
+
+  **Done.** All eight were redirected, one class per commit; the original arm
+  held `191bee35` after every one, and the enhanced arm was rebaselined exactly
+  once, `64bf3d28` → `c2ac09ae`, attributable in full to the engine-jitter
+  class (the only one of the four reached on that route). Per-class evidence is
+  in the verdict table above.
 
 - Give a subsystem its own authoritative sub-stream seeded from the match seed,
   so removing its draws cannot shift anyone else's. That is a wire-format and

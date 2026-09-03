@@ -3660,11 +3660,14 @@ enhanced cadence" — was therefore held by nothing, and any change to it would
 have moved silently. `docs/ref/presentation-rng-census.md` names that gap as the
 reason it declined to redirect its eight latent presentation-output callers.
 
-The enhanced digest is expected to move **exactly once**: in the commit that
+The enhanced digest was expected to move **exactly once**: in the commit that
 redirects those eight callers through `cadence_compat_rand_range()`, which by
 construction moves the enhanced-cadence stream and leaves the original-cadence
-stream byte-identical. Any other change to it is a regression, and a change to
-the original-cadence digest alongside it is a misclassification.
+stream byte-identical. That happened on 2026-09-03 (`64bf3d28` → `c2ac09ae`,
+with the original arm unmoved at `191bee35`), and the superseded pre-redirect
+value is kept named in the file so a bisect that lands on it says so. From here
+a change to the enhanced digest is a regression, and a change to the
+original-cadence digest is a misclassification.
 
 The reference is clean commit
 `64936e36b4c9ef7ecdce5beb93cd662d4318548d`. This deliberately replaces the
@@ -6479,8 +6482,11 @@ runs to be byte-identical, because the presentation stream is seeded from a
 constant, not host state, and the pixel-comparison lanes depend on that.
 
 The census behind the redirect decisions — every `rand_range()` caller in
-`game/src`, its verdict, and the two measured-then-reverted redirects that
-decide it — is `docs/ref/presentation-rng-census.md`.
+`game/src`, its verdict, and the measurements that decide it — is
+`docs/ref/presentation-rng-census.md`. As of 2026-09-03 it carries 32
+cadence-conditional sites, not 24: the eight it had listed as latent
+presentation output were redirected once the enhanced-cadence arm of
+`check_authored_rng_compat.py` existed to measure what that spends.
 
 ### Weather RNG order — `tests/check_weather_rng_order.py`
 

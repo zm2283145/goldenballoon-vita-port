@@ -62,12 +62,9 @@ declined to redirect its eight latent presentation-output callers. This arm
 closes it: the same all-racer row schema and raw digest, recorded on the
 route's own `enhanced` arm (9500 frames, one synthetic field, event divisor 1).
 
-The enhanced digest below is expected to move EXACTLY ONCE, in the commit that
-redirects those eight callers through cadence_compat_rand_range(): by
-construction that redirect moves the enhanced-cadence stream and leaves the
-original-cadence stream byte-identical. After that rebaseline it is a pin like
-any other. A change to ENHANCED_SHA256 that is not that one commit, or any
-change to EXPECTED_SHA256 alongside it, is a regression, not a rebaseline.
+That move has now happened -- once, as planned; see the ENHANCED_SHA256
+rebaseline note below. From here the enhanced arm is a pin like any other, and
+a change to it is a regression until argued otherwise.
 """
 
 from __future__ import annotations
@@ -93,7 +90,29 @@ EXPECTED_ROWS = 27_840
 EXPECTED_SHA256 = "191bee35a973b2bde6133cc6ae2c2c41961a97ec72a9b034a08574d53aacba5b"
 ENHANCED_FRAMES = 9500
 ENHANCED_ROWS = 54_880
-ENHANCED_SHA256 = "64bf3d28463664f716eb348d16c7fa2b36806cc32c89c1bb171a7b0a1f960767"
+# REBASELINE 2026-09-03 (64bf3d28 -> c2ac09ae), the one move this arm was
+# pinned in order to measure. The eight callers docs/ref/presentation-rng-
+# census.md listed as latent presentation-output now draw through
+# cadence_compat_rand_range(): engine jitter (audio_vehicle.c), the boss voice
+# pick (vehicle_tricky.c), the menu-image fields and the credits cheat pick
+# (menu.c). At the shipping two-field cadence that helper still calls
+# rand_range(), so the ORIGINAL arm is byte-identical -- 191bee35, unchanged
+# across all four redirects, which is the whole classification argument. At the
+# enhanced cadence the draws move to the presentation stream, so the
+# authoritative stream this arm records is exactly 989-odd engine-jitter draws
+# shorter and reaches a different, still fully deterministic sequence.
+#
+# The whole delta is attributable: of the four classes, only the engine jitter
+# is reached on this route, and it alone moved the digest (64bf3d28 ->
+# c2ac09ae). The other three moved it not at all -- the boss sound and the
+# credits are not on the route, and the menu-image draws diverge the seed from
+# frame 2031 and re-converge at 2599, before the first recorded row at 2640.
+ENHANCED_SHA256 = "c2ac09ae9928a67c89551284b97bee874913bcfeee5b3192de59c12dc4194dcd"
+# The pre-redirect stream, kept named so a bisect landing on it reports which
+# pin it matched rather than an unexplained mismatch.
+ENHANCED_SUPERSEDED_SHA256 = (
+    "64bf3d28463664f716eb348d16c7fa2b36806cc32c89c1bb171a7b0a1f960767"
+)
 # Superseded by the racing-line rebaseline documented above. Kept named so a
 # bisect that lands on the old stream reports which pin it matched.
 SUPERSEDED_SHA256 = "d74efe02aec07aa59710ce457e54180c28a22022f3d35e7087096d5130dba49b"
@@ -240,6 +259,12 @@ def validate(rows: list[str], arm: Arm) -> str:
             "still clamps 8th place's racing-line selector to D_800DCDA0[7] "
             "instead of taking the adjacent table's first byte -- see the "
             "rebaseline note at the top of this file")
+    if arm is ENHANCED_ARM and digest == ENHANCED_SUPERSEDED_SHA256:
+        raise ValueError(
+            f"enhanced arm: raw stream SHA-256 {digest} is the SUPERSEDED "
+            "pre-redirect pin: this build still draws the eight presentation "
+            "callers from the authoritative stream at enhanced cadence -- see "
+            "the rebaseline note at the top of this file")
     if digest != arm.digest:
         raise ValueError(
             f"{arm.name} arm: raw stream SHA-256 {digest}, expected {arm.digest}")
