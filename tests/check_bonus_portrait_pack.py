@@ -125,7 +125,9 @@ What is asserted
     texcoord normalisation. stb then encoded 40x40 at a 160-byte stride from a
     256-byte-stride image -- in bounds, so no crash and no sanitizer report,
     just a silently sheared picture handed to the author who asked what the
-    game drew.
+    game drew. This arm runs on GL only: the call site it pins is in
+    gfx_pc_dkr.c, above the backend interface and shared by both renderers, so
+    a second WebGPU copy of it would cost a run to observe the same code.
 
  7. AND ALL OF IT HOLDS ON THE RENDERER THAT SHIPS. On WebGPU the corpus
     publishes the SAME Taj digest (assertion 2 again, so the published name is
@@ -254,9 +256,17 @@ def decode_png(blob: bytes) -> tuple[int, int, bytes]:
 
     Standard library only, and deliberately a real decoder rather than a
     header peek: assertion 6 has to compare the dumped PIXELS, not just the
-    dimensions in the IHDR. A sheared image carries the right header. Its
-    own non-vacuity is checked by round-tripping quadrant_png() through it
-    before it is trusted with the game's output.
+    dimensions in the IHDR. A sheared image carries the right header.
+
+    Its own non-vacuity is checked by round-tripping quadrant_png() through it
+    before it is trusted with the game's output -- but that fixture is written
+    with row filter 0 on every row, so the self-check exercises the unfiltered
+    path ONLY. stb_image_write picks filters per row heuristically and the
+    game's dumps were measured using types 1, 2 and 4, so those branches are
+    covered only by the pixel comparison itself: if one of them is wrong, the
+    comparison fails and this docstring is the first place to look. A fixture
+    that exercised all five would have to be hand-encoded, which is a decoder
+    of its own to get wrong.
     """
     require(blob[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG")
     offset = 8
@@ -453,7 +463,11 @@ def assert_corpus_publishes(label: str, dump: Path, digest: str) -> None:
     require((dump / f"{digest}.png").is_file(),
             f"{label}: {digest} has a sidecar but no PNG")
     text = sidecar.read_text(encoding="utf-8", errors="replace")
-    require("width=40" in text and "height=40" in text,
+    # Anchored, like the search above: unanchored, "width=40" is also a
+    # substring of width=400 and "height=40" of height=408, so a differently
+    # sized texture that happened to collide with this digest would read as
+    # the card.
+    require("width=40\nheight=40\n" in text,
             f"{label}: {digest} is not the 40x40 card: {text!r}")
 
 
@@ -500,8 +514,7 @@ def assert_override_dump(label: str, dump: Path, digest: str) -> None:
 
     sidecar = (dump / f"{digest}.txt").read_text(encoding="utf-8",
                                                  errors="replace")
-    require(f"width={PACK_SIZE}" in sidecar and
-            f"height={PACK_SIZE}" in sidecar,
+    require(f"width={PACK_SIZE}\nheight={PACK_SIZE}\n" in sidecar,
             f"{label}: the sidecar disagrees with the PNG it describes: "
             f"{sidecar!r}")
 
