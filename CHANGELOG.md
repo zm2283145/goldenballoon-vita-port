@@ -10,6 +10,16 @@ save formats). Everything below 1.0.0 predates that commitment.
 
 ## [Unreleased]
 
+### Added
+
+- **Skip the launcher** (issue #60), off by default. With it on, the app opens
+  the game you played last instead of the launcher. Holding Shift, or both
+  shoulder buttons on a controller, while it opens shows the launcher anyway,
+  and the setting itself is in the in-game settings under Advanced, so turning
+  it back off never needs the launcher. The game file is verified before it
+  opens, exactly as pressing Play verifies it: a file that has moved or changed
+  lands you in the launcher with the reason.
+
 ### Fixed
 
 - The sky in split-screen races no longer has black bars down each side on

@@ -335,6 +335,38 @@ alongside `MDKR_SAVE_DIR`) at a private temporary directory, so this is the one
 check that can reach a successful `AppConfig::save()` without ever touching the
 real machine-shared `SDL_GetPrefPath("mdkr64","mdkr64")` prefs file.
 
+### Skip the launcher — `tests/check_launcher_skip.py`
+
+```bash
+python3 tests/check_launcher_skip.py --build build \
+  --rom baserom.us.v80.z64
+```
+
+Issue #60. `Launcher.SkipWhenReady` (off by default) trades the launcher for a
+faster start; the gate spends five of its seven arms on the way back, because
+that is the part whose failure strands a player. `main()` takes one decision
+before the first frame and logs it in full (`[app] skip-launcher setting=…
+shift=… shoulderL=… shoulderR=… holdOpensLauncher=… armed=…`); when it arms,
+`Launcher::draw()` calls the same `RomPanel_requestPlayValidation()` the Play
+button calls, so the mandatory final ROM check still runs and only its verdict
+publishes a boot. `MDKR_APP_SMOKE_SKIP_LAUNCHER=1` adds no behaviour — it keeps
+the headless launcher smoke rendering until a Play action arrives or a deadline
+passes (hashing a 32 MiB image outlasts four frames) and prints one parseable
+report.
+
+Arms: the setting on and nothing held **boots**, carrying the remembered ROM;
+Shift held, or both shoulders held, opens the launcher instead; the shipped
+default (setting absent) does not boot, which is the positive control proving
+arm 1's boot came from the setting; **one shoulder alone still boots**, the
+positive control proving the two hold arms were stopped by the hold policy and
+not by the mere presence of `MDKR_APP_TEST_LAUNCH_HOLD` (which injects the raw
+hold, never the decision, so `AppUi_launcherHoldOpensLauncher()` runs for real
+in every arm); a remembered file that is not a ROM arms but never dispatches;
+and an inherited `MDKR_APP_BOOT_RECOVERY` message arms but never dispatches —
+that last one is the infinite-relaunch guard, since a failed boot relaunches
+the app carrying exactly that message. The pure policy, including every
+readiness field, is unit-tested in `tests/test_app_ui_policy.cpp`.
+
 `user_paths` is the ROM/SDL-window-free packaged-data contract. It supplies a
 deterministic preference provider to a synthetic `.app`, verifies that video
 config and the complete known save set migrate outside the bundle, checks
