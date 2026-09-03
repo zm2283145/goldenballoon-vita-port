@@ -5154,22 +5154,82 @@ static void dkr_scan_overlay_order(Gfx *cmd, int depth, int limit,
     long safety = 0;
 
     if (cmd == NULL || scan == NULL || depth >= DKR_DL_MAX_DEPTH) {
+#if defined(__vita__)
+        if (depth == 0) {
+            static int s_earlyOutLogCount = 0;
+            if (s_earlyOutLogCount < 20) {
+                char lb[96];
+                snprintf(lb, sizeof(lb),
+                         "dl-safety: top-level early-out cmd=%p depth=%d",
+                         (void *)cmd, depth);
+                mdkr_vita_boot_log(lb);
+                s_earlyOutLogCount++;
+            }
+        }
+#endif
         return;
     }
+#if defined(__vita__)
+    if (depth == 0) {
+        static int s_topEnterLogCount = 0;
+        if (s_topEnterLogCount < 20) {
+            char lb[96];
+            snprintf(lb, sizeof(lb), "dl-safety: top-level ENTER cmd=%p limit=%d",
+                     (void *)cmd, limit);
+            mdkr_vita_boot_log(lb);
+            s_topEnterLogCount++;
+        }
+    }
+#endif
     start = cmd;
     for (;;) {
         if (limit > 0 && (cmd - start) >= limit) {
             return;
         }
         if (++safety > 4000000L) {
+#if defined(__vita__)
+            {
+                char lb[96];
+                snprintf(lb, sizeof(lb),
+                         "dl-safety: dkr_scan_overlay_order hit 4M safety cap, depth=%d",
+                         depth);
+                mdkr_vita_boot_log(lb);
+            }
+#endif
             return;
         }
+#if defined(__vita__)
+        {
+            static int s_heartbeatLogCount = 0;
+            if ((safety % 200000L) == 0 && s_heartbeatLogCount < 20) {
+                char lb[96];
+                snprintf(lb, sizeof(lb),
+                         "dl-safety: heartbeat safety=%ld depth=%d cmd=%p",
+                         safety, depth, (void *)cmd);
+                mdkr_vita_boot_log(lb);
+                s_heartbeatLogCount++;
+            }
+        }
+#endif
         {
             uintptr_t uc = (uintptr_t)cmd;
             uintptr_t ab = (uintptr_t)g_dkrArenaBase;
             uintptr_t ae = ab + (uintptr_t)g_dkrArenaSize;
             if ((uc >= ae && uc < ae + 0x00010000u) ||
                 dkr_arena_room(cmd) < sizeof(Gfx)) {
+#if defined(__vita__)
+                if (depth == 0) {
+                    static int s_arenaBoundLogCount = 0;
+                    if (s_arenaBoundLogCount < 20) {
+                        char lb[96];
+                        snprintf(lb, sizeof(lb),
+                                 "dl-safety: arena-bound return cmd=%p depth=%d",
+                                 (void *)cmd, depth);
+                        mdkr_vita_boot_log(lb);
+                        s_arenaBoundLogCount++;
+                    }
+                }
+#endif
                 return;
             }
         }
@@ -5214,6 +5274,17 @@ static void dkr_scan_overlay_order(Gfx *cmd, int depth, int limit,
                 break;
             }
             case (uint8_t)G_ENDDL:
+#if defined(__vita__)
+                if (depth == 0) {
+                    static int s_topExitLogCount = 0;
+                    if (s_topExitLogCount < 20) {
+                        char lb[64];
+                        snprintf(lb, sizeof(lb), "dl-safety: top-level ENDDL exit");
+                        mdkr_vita_boot_log(lb);
+                        s_topExitLogCount++;
+                    }
+                }
+#endif
                 return;
             case G_MTX: {
                 uint8_t draw_space = (uint8_t)C0(cmd, 16, 8) & 7;
