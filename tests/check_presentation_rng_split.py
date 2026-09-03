@@ -41,8 +41,8 @@ Arms:
   proving the control moved only the half it claims to.
 * **C -- reproducibility.** The presentation stream is seeded from a constant
   derived from the ROM seed, not from host state, so two runs of the same route
-  emit byte-identical rows. Lanes that compare pixels between two arms of one
-  route depend on this; a host-seeded presentation stream would break them
+  emit byte-identical rows. Lanes that diff rendered output between two arms of
+  one route depend on this; a host-seeded presentation stream would break them
   silently.
 """
 

@@ -17,14 +17,14 @@ unchanged.
 
 | File | Covers |
 |---|---|
-| [`renderer.md`](renderer.md) | Renderer and visual fidelity — 34 entries |
+| [`renderer.md`](renderer.md) | Renderer and visual fidelity — 36 entries |
 | [`audio.md`](audio.md) | Audio — 9 entries |
 | [`save.md`](save.md) | Saves and progression — 3 entries |
 | [`collision.md`](collision.md) | Collision — 4 entries |
 | [`allocator.md`](allocator.md) | Allocator and native memory layout — 2 entries |
 | [`web.md`](web.md) | Browser (wasm) build — 3 entries |
 | [`multiplayer.md`](multiplayer.md) | Multiplayer — 2 entries |
-| [`gameplay.md`](gameplay.md) | Gameplay, race and Adventure — 12 entries |
+| [`gameplay.md`](gameplay.md) | Gameplay, race and Adventure — 13 entries |
 | [`portability.md`](portability.md) | 64-bit (LP64), endianness and portability — 13 entries |
 | [`misc.md`](misc.md) | Everything else — 7 entries |
 
@@ -159,6 +159,7 @@ what was done and what proves it.
 - [Race gameplay — tiny racer models + crawl speed — FIXED (single root cause)](gameplay.md#race-gameplay--tiny-racer-models--crawl-speed--fixed-single-root-cause)
 - [High-rate native delivery cadence — CLOSED (immutable-presentation wave)](renderer.md#high-rate-native-delivery-cadence--closed-immutable-presentation-wave)
 - [Frame pacing / slow-motion — RESOLVED (pacing wave)](renderer.md#frame-pacing--slow-motion--resolved-pacing-wave)
+- [NOT A DEFECT: the one-ULP attract-simulation move across the v1.6.0 merge is the FP-contraction pin (84b89c7d)](gameplay.md#not-a-defect-the-one-ulp-attract-simulation-move-across-the-v160-merge-is-the-fp-contraction-pin-84b89c7d)
 
 **Renderer and visual fidelity**
 
@@ -180,6 +181,7 @@ what was done and what proves it.
 - [M4 render state (this wave — input + interactive menus)](renderer.md#m4-render-state-this-wave--input--interactive-menus)
 - [M3 rendering state (UPDATED — M3b renderer bring-up)](renderer.md#m3-rendering-state-updated--m3b-renderer-bring-up)
 - [From F3DDKR renderer workstream (M3-gfx, commit a8dcd00)](renderer.md#from-f3ddkr-renderer-workstream-m3-gfx-commit-a8dcd00)
+- [FIXED (instrument): AP-19's race renderer census read a terminal-only ownership high](renderer.md#fixed-instrument-ap-19s-race-renderer-census-read-a-terminal-only-ownership-high)
 
 **Audio**
 
