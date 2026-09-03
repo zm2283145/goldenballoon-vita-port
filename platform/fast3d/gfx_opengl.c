@@ -46,6 +46,15 @@
 #include "gfx_texture_edge.h"
 #include "gfx_rendering_api.h"
 #include "gfx_screen_config.h"
+
+#ifdef __vita__
+/* Defined in main_pc.c (not static there specifically so TUs like this one
+ * can reach it). See main_pc.c for why this exists: no visible console on
+ * Vita, so a silent early exit needs breadcrumbs written to a file instead. */
+extern void mdkr_vita_boot_log(const char *msg);
+#else
+#define mdkr_vita_boot_log(msg) ((void)0)
+#endif
 #include "gfx_shadow_cascade.h"
 #include "gfx_shadow_frame.h"
 #include "gfx_pc_dkr.h"        /* gfx_dkr_replay_pass_active — noise seed guard */
@@ -4244,30 +4253,59 @@ static void gfx_opengl_apply_output_vi_filter(void) {
 
 static bool gfx_opengl_init(void) {
     /* glad is already loaded by platform_sdl.c before this is called */
+#if defined(__vita__)
+    /* vitaGL owns display/context creation directly (vglInitExtended, called
+     * from platform_sdl_min.c's Vita sdl_init_gl) and deliberately never
+     * touches SDL's video/GL subsystem -- s_window/g_sdlWindow stay NULL on
+     * this platform by design. SDL_GL_GetCurrentContext() therefore always
+     * returns NULL here even when vitaGL is fully initialized and has a real
+     * GL context via sceGxm; only glGetString(GL_VERSION) is a meaningful
+     * "is vitaGL actually up" check on this platform. */
+    if (glGetString(GL_VERSION) == NULL) {
+        fprintf(stderr, "[fast3d] OpenGL init: vitaGL has no version string\n");
+        mdkr_vita_boot_log("gfx_init: glGetString(GL_VERSION) NULL -- vitaGL not ready");
+        return false;
+    }
+#else
     if (SDL_GL_GetCurrentContext() == NULL || glGetString(GL_VERSION) == NULL) {
         fprintf(stderr, "[fast3d] OpenGL init has no current usable context\n");
         return false;
     }
+#endif
+    mdkr_vita_boot_log("gfx_init: context check OK, creating VAO/VBO");
 
     glGenVertexArrays(1, &opengl_vao);
     glBindVertexArray(opengl_vao);
 
     glGenBuffers(1, &opengl_vbo);
     glBindBuffer(GL_ARRAY_BUFFER, opengl_vbo);
-    if (opengl_vao == 0 || opengl_vbo == 0 || glGetError() != GL_NO_ERROR) {
-        fprintf(stderr, "[fast3d] OpenGL init could not create core buffers\n");
-        /* shutdown() is not reached for a backend that never came up, so this
-         * path owns whatever it did create. */
-        if (opengl_vbo != 0) {
-            glDeleteBuffers(1, &opengl_vbo);
-            opengl_vbo = 0;
+    {
+        GLenum vaoVboErr = glGetError();
+        if (opengl_vao == 0 || opengl_vbo == 0 || vaoVboErr != GL_NO_ERROR) {
+            fprintf(stderr, "[fast3d] OpenGL init could not create core buffers\n");
+#if defined(__vita__)
+            {
+                char lb[128];
+                snprintf(lb, sizeof(lb),
+                         "gfx_init: VAO/VBO create FAILED (vao=%u vbo=%u glGetError=0x%x)",
+                         (unsigned)opengl_vao, (unsigned)opengl_vbo, (unsigned)vaoVboErr);
+                mdkr_vita_boot_log(lb);
+            }
+#endif
+            /* shutdown() is not reached for a backend that never came up, so this
+             * path owns whatever it did create. */
+            if (opengl_vbo != 0) {
+                glDeleteBuffers(1, &opengl_vbo);
+                opengl_vbo = 0;
+            }
+            if (opengl_vao != 0) {
+                glDeleteVertexArrays(1, &opengl_vao);
+                opengl_vao = 0;
+            }
+            return false;
         }
-        if (opengl_vao != 0) {
-            glDeleteVertexArrays(1, &opengl_vao);
-            opengl_vao = 0;
-        }
-        return false;
     }
+    mdkr_vita_boot_log("gfx_init: VAO/VBO created OK");
 
     glDepthFunc(GL_LESS);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
