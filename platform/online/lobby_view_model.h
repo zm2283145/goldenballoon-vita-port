@@ -151,6 +151,10 @@ typedef struct MdkrOnlineViewInput {
      * measurement is still running. Locally measured; never accepted from
      * room/service state. */
     const MdkrOnlineViewRouteQuality *route_quality;
+    /* True while the measurement is running and has not settled. Start is
+     * never held for it, so the chip has to be able to say the check is still
+     * happening rather than show nothing at all. */
+    bool route_measuring;
     /* Local release configuration only. Never derive this from room/service
      * data. It remains false until the separately reviewed rollback GO. */
     bool race_admission_enabled;
@@ -177,7 +181,8 @@ typedef struct MdkrOnlineViewModel {
     const char *status;
     /* Non-empty only in the explicit human-confirmation preflight state. */
     char verification_phrase[MDKR_ONLINE_VERIFICATION_PHRASE_BYTES];
-    /* One room chip, "~45 ms · steady". Empty until the route settles. */
+    /* One room chip, "~45 ms · steady", or "Checking connection…" while
+     * the measurement is still running. Empty when neither applies. */
     char route_quality[MDKR_ONLINE_ROUTE_QUALITY_BYTES];
     MdkrOnlineViewControl primary;
     MdkrOnlineViewControl secondary;

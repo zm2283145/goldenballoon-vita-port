@@ -519,6 +519,7 @@ public:
                 static_cast<MdkrMatchRouteBand>(routeMeasurement_.band));
             if (quality.band != nullptr) in.route_quality = &quality;
         }
+        in.route_measuring = routeMeasureRunning_ && !routeMeasured_;
         return mdkr_online_view_model_build(&in, out);
     }
 
@@ -1577,7 +1578,7 @@ private:
         descriptorBuilt_ = false;
         refusal_ = MDKR_MATCH_LAUNCH_ADMITTED;
         preflightInit_ = false;
-        resetRouteMeasurement();
+        rearmRouteReportForNextRace();
         preflightInitLogged_ = false;
         ownSubmitted_ = false;
         preflightReady_ = false;
@@ -2275,22 +2276,33 @@ private:
 
     /* ---- Pre-flight route quality ------------------------------------- *
      *
-     * Once every roster peer's channels are open and before the race
-     * transport exists, replay both real lanes at their real cadence and
-     * payload size for MDKR_MATCH_ROUTE_MEASURE_MS, drain for
-     * MDKR_MATCH_ROUTE_DRAIN_MS, then score what came back. The bundle lane
-     * rides the unreliable state channel (sealed INPUT payloads, where a lost
-     * datagram stays lost); the control lane rides the reliable ordered
-     * control channel (sealed PREFLIGHT payloads). Neither lane needs a new
-     * sealed payload type, and a probe can only be decoded in this window
-     * because raceReady_ closes it. */
+     * From the FIRST peer whose channels open, and before the race transport
+     * exists, replay both real lanes at their real cadence and payload size
+     * for MDKR_MATCH_ROUTE_MEASURE_MS, drain for MDKR_MATCH_ROUTE_DRAIN_MS,
+     * then score what came back. The bundle lane rides the unreliable state
+     * channel (sealed INPUT payloads, where a lost datagram stays lost); the
+     * control lane rides the reliable ordered control channel (sealed
+     * PREFLIGHT payloads). Neither lane needs a new sealed payload type, and a
+     * probe can only be decoded in this window because raceReady_ closes it.
+     *
+     * First open, not last: waiting for every roster peer put the whole 7 s
+     * window after the slowest peer's bring-up, which in a 3-4P room is
+     * routinely after a human has pressed Start. Probes only ever flow over
+     * channels that ARE open -- the transport's unit of readiness is the peer
+     * (its state and control DataChannels open together, one
+     * PeerChannelsReady), so per-lane gating is per-peer gating here: the
+     * addressed control lane fans out to ready peers only, and the broadcast
+     * bundle lane is the mesh's own sendInput, which skips a peer whose
+     * channel is not open. A peer that opens mid-window simply joins the
+     * lanes late; the record describes the route this endpoint measured, and
+     * every endpoint measures its own. */
     void serviceRouteMeasurement() {
-        if (routeMeasured_ || raceReady_ || !meshUp_ || !mesh_) return;
-        if (meshRoster_.empty() ||
-            channelsReady_.size() + 1u < meshRoster_.size())
-            return;
+        if (routeMeasured_ || !meshUp_ || !mesh_) return;
+        if (meshRoster_.empty() || channelsReady_.empty()) return;
         const uint32_t now = static_cast<uint32_t>(nowMs_());
         if (!routeMeasureRunning_) {
+            /* The race owns both lanes; a window cannot be opened under it. */
+            if (raceReady_) return;
             if (!mdkr_match_route_measure_begin(
                     &routeMeasure_, now, 1000u / opts_.compatibility.cadence_hz,
                     localEndpointId_))
@@ -2299,6 +2311,22 @@ private:
             routeQueueDropsAtBegin_ = meshQueueDrops();
             MDKR_ONLINE_LOG("[PREFLIGHT] route measurement begun\n");
         }
+        if (raceReady_) {
+            /* Start arrived before the window settled. Start is never held for
+             * a route check, so this race already resolved its entry timing
+             * from the manifest floor; the window is cut here rather than
+             * abandoned, and the record it scores is published as this round's
+             * second attestation and carried into the NEXT race of a
+             * tournament. Probes still in flight at the cut are dropped rather
+             * than scored as loss -- they were lost to our own Start. */
+            const unsigned cut =
+                mdkr_match_route_measure_cut(&routeMeasure_, now);
+            MDKR_ONLINE_LOG(
+                "[PREFLIGHT] route window cut by race start (%u in flight)\n",
+                cut);
+            finishRouteMeasurement(now);
+            return;
+        }
         MdkrMatchRouteProbe probe;
         while (mdkr_match_route_measure_due(&routeMeasure_, now, &probe)) {
             uint8_t payload[MDKR_MATCH_PEER_PAYLOAD_BYTES];
@@ -2306,6 +2334,11 @@ private:
             sendRouteProbe(probe.lane, payload, 0u);
         }
         if (!mdkr_match_route_measure_settled(&routeMeasure_, now)) return;
+        finishRouteMeasurement(now);
+    }
+
+    /* Score the window that just closed -- settled, or cut by a race start. */
+    void finishRouteMeasurement(uint32_t now) {
         routeMeasureRunning_ = false;
         /* The mesh's bounded INBOUND queues are what must have drained across
          * the window: an overflow between callback and pump, or between pump
@@ -2318,7 +2351,7 @@ private:
                 drops > UINT16_MAX ? UINT16_MAX
                                    : static_cast<uint32_t>(drops),
                 &routeMeasurement_))
-            return;
+            return; /* nothing came back to score; a later window may. */
         routeMeasured_ = true;
         recordRouteMeasurement(now);
         bump();
@@ -2333,9 +2366,21 @@ private:
         return stats.droppedInternalEvents + stats.droppedEvents;
     }
 
-    /* A retired mesh, a rekey or a race-latch reset invalidates a window in
-     * flight: its probe sequences belong to keys that no longer exist, so it
-     * restarts rather than settling on samples from the old connection. */
+    /* Between the races of one tournament the mesh, its keys and its channels
+     * all survive (see resetRaceLatches), so the route this session measured is
+     * still the truth about the route the next race will run over -- including
+     * a record whose window was cut short by the race that just ran. Keep it
+     * and only re-arm its exchange, so the new epoch's preflight publishes it
+     * again as that round's second attestation and the next setUpRace resolves
+     * the widen from it. A window still in flight is left running; if nothing
+     * was ever scored, serviceRouteMeasurement opens a fresh one for the new
+     * round. */
+    void rearmRouteReportForNextRace() { routeReportSent_ = false; }
+
+    /* A retired mesh or a rekey invalidates a window in flight AND anything it
+     * already scored: those samples belong to keys that no longer exist, so
+     * the measurement restarts rather than carrying the old connection's
+     * record into the new one. */
     void resetRouteMeasurement() {
         routeMeasure_ = MdkrMatchRouteMeasureState{};
         routeMeasurement_ = MdkrMatchRouteMeasurement{};
@@ -2348,7 +2393,13 @@ private:
 
     /* The bundle lane fans out to every reachable peer exactly as race input
      * does; the control lane is addressed, so an echo goes back only to the
-     * endpoint that asked. `only` is zero for an outbound probe. */
+     * endpoint that asked. `only` is zero for an outbound probe.
+     *
+     * A probe never goes to a peer whose channels are not open yet: the
+     * window can now begin on the FIRST peer, so the roster may still hold
+     * endpoints that have nothing to send over. (sendInput refuses the same
+     * peer inside the mesh; the control lane is filtered here, where the
+     * launcher holds the readiness set.) */
     void sendRouteProbe(uint8_t lane,
                         const uint8_t payload[MDKR_MATCH_PEER_PAYLOAD_BYTES],
                         uint64_t only) {
@@ -2359,6 +2410,7 @@ private:
         for (const MdkrMatchPeerSlotOwner &o : meshRoster_) {
             if (o.endpointId == localEndpointId_) continue;
             if (only != 0u && o.endpointId != only) continue;
+            if (channelsReady_.count(o.endpointId) == 0u) continue;
             (void)mesh_->sendPreflightFragment(o.endpointId, payload);
         }
     }
@@ -2370,13 +2422,16 @@ private:
      * budget charges against the authored tick (match_input_repair.h): a peer
      * cannot choose this endpoint's pump cadence, so no flood can refill the
      * budget early. Sized above the honest rate it imitates -- the measurement
-     * emits at most MDKR_MATCH_ROUTE_MAX_PROBES over
-     * MDKR_MATCH_ROUTE_MEASURE_MS across both lanes, one probe per ~23 ms, so
-     * this budget still answers every honest probe across a pump gap of nearly
-     * 200 ms. Beyond it the probe is dropped, not the sender: an honest peer on
-     * a stalled launcher loses a sample and widens its own measured jitter,
-     * which is the truth about this route. */
-    static constexpr uint32_t kRouteEchoBudgetPerPump = 8u;
+     * emits 182 bundle-lane probes and 30 control-lane ones over
+     * MDKR_MATCH_ROUTE_MEASURE_MS, one probe per ~28 ms, so this budget still
+     * answers every honest probe across a pump gap of nearly 450 ms. Sixteen
+     * rather than eight because the window now opens at the FIRST channel
+     * (D-N5), which is the launcher's busiest stretch -- bring-up, phrase and
+     * descriptor work all land inside it, and a pump gap there must not move
+     * anyone's chip. Beyond the budget the probe is dropped, not the sender:
+     * an honest peer on a stalled launcher loses a sample and widens its own
+     * measured loss, which is the truth about this route. */
+    static constexpr uint32_t kRouteEchoBudgetPerPump = 16u;
     /* Authored ticks a room departure listens to the peer link before it is
      * acted on (D1). Two: one full authored tick of silence plus the tick the
      * verdict landed in, which is ~66 ms at 30 Hz -- long enough that a peer
@@ -2540,6 +2595,11 @@ private:
                 MDKR_MATCH_PREFLIGHT_SUBMIT_ACCEPTED) {
                 sendOwnFragments(att);
                 ownSubmitted_ = true;
+                /* A round that inits with a record already in hand published
+                 * it in this very report (buildOwnAttestation carries it at
+                 * the round's second sequence); there is no later one to
+                 * send. */
+                if (routeMeasured_) routeReportSent_ = true;
                 lastFragmentSendMs_ = nowMs_();
                 MDKR_ONLINE_LOG(
                     "[PREFLIGHT] own attestation submitted "
@@ -3674,6 +3734,23 @@ public:
                a.routeMeasurement_.p95_rtt_ms == 0u;
     }
 
+    /* Test-only (beta): a race-latch reset (the boundary between two races of
+     * one tournament) keeps this session's settled record and re-arms only its
+     * exchange, so the next round publishes it again and resolves the widen
+     * from it. Never called by the launcher. */
+    static bool testRaceLatchResetKeepsRoute() {
+        MdkrOnlineLiveAdapterOptions o;
+        o.sessionId = 1u;
+        LiveAdapter a(o);
+        a.routeMeasured_ = true;
+        a.routeReportSent_ = true;
+        a.routeMeasurement_.p95_rtt_ms = 240u;
+        a.raceReady_ = true;
+        a.resetRaceLatches("test");
+        return a.routeMeasured_ && !a.routeReportSent_ &&
+               a.routeMeasurement_.p95_rtt_ms == 240u && !a.raceReady_;
+    }
+
     /* Test-only (beta): the per-peer echo budget consumeRouteProbe charges
      * before it answers a probe (N7 shape). Drives `probesPerPump` arrivals
      * from each of `peers` senders across `pumps` mesh pumps on a mesh-free
@@ -4758,6 +4835,10 @@ bool mdkr_online_live_adapter_test_race_end_demotes(
 bool mdkr_online_live_adapter_test_rekey_restarts_route_measurement(
     bool via_reverify) {
     return LiveAdapter::testRekeyRestartsRouteMeasurement(via_reverify);
+}
+
+bool mdkr_online_live_adapter_test_race_latch_reset_keeps_route(void) {
+    return LiveAdapter::testRaceLatchResetKeepsRoute();
 }
 
 bool mdkr_online_live_adapter_test_rekey_clears_peer_loss(bool via_abort) {

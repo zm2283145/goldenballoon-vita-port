@@ -564,6 +564,11 @@ bool mdkr_online_live_adapter_test_rekey_clears_peer_loss(bool via_abort);
  * Never called by the launcher. */
 bool mdkr_online_live_adapter_test_rekey_restarts_route_measurement(
     bool via_reverify);
+/* Pin the other half of that rule: the race-latch reset BETWEEN the races of
+ * one tournament keeps the settled record (the mesh, its keys and its channels
+ * all survive it) and only re-arms its exchange, so the next round publishes
+ * it again and races on the widen it earned. Never called by the launcher. */
+bool mdkr_online_live_adapter_test_race_latch_reset_keeps_route(void);
 bool mdkr_online_live_adapter_test_reverify_clears_peer_loss(bool via_abort);
 /* Force an ICE-down on every REMOTE peer connection of a LIVE mesh (via the
  * transport's existing kill-channels seam) WITHOUT touching signal presence --

@@ -821,9 +821,10 @@ static void test_race_scoped_recovery_cards(void) {
 #endif
 
 /* N5: the one pre-flight route-quality chip. It states a round trip a player
- * can feel and the band's name, and it stays empty until the route settles.
- * The projection takes an already-scored quality, not the wire record, so the
- * browser build of this reducer links no preflight code. */
+ * can feel and the band's name; while the measurement is still running it says
+ * so instead, because Start is never held for it. The projection takes an
+ * already-scored quality, not the wire record, so the browser build of this
+ * reducer links no preflight code. */
 static void test_route_quality_chip(void) {
     MdkrSessionCore session;
     MdkrOnlineViewInput input;
@@ -839,9 +840,21 @@ static void test_route_quality_chip(void) {
     input = input_for(&session, NULL);
     expect(mdkr_online_view_model_build(&input, &model) &&
            model.route_quality[0] == '\0',
-           "no chip is shown before the route measurement settles");
+           "no chip is shown when no route measurement is running");
+
+    input.route_measuring = true;
+    expect(mdkr_online_view_model_build(&input, &model) &&
+           strcmp(model.route_quality, "Checking connection\xe2\x80\xa6") == 0,
+           "a running measurement says it is checking rather than nothing");
+    expect(strstr(model.route_quality, "measur") == NULL &&
+           strstr(model.route_quality, "probe") == NULL,
+           "the checking chip carries no process vocabulary");
 
     input.route_quality = &quality;
+    expect(mdkr_online_view_model_build(&input, &model) &&
+           strcmp(model.route_quality, "~45 ms \xc2\xb7 steady") == 0,
+           "a settled measurement replaces the checking chip");
+    input.route_measuring = false;
     expect(mdkr_online_view_model_build(&input, &model) &&
            strcmp(model.route_quality, "~45 ms \xc2\xb7 steady") == 0,
            "the chip states the round trip and the band");

@@ -609,6 +609,11 @@ struct FullRunResult {
     /* N5 route quality (routeClockStepMs > 0): each endpoint's own settled
      * measurement and the operative entry-timing lead it raced with. */
     bool routeSettled = false;
+    /* D2 (startBeforeRouteSettles): the room chip A showed at the instant
+     * Start was pressed, and whether the record settled and crossed the wire
+     * afterwards, with the race already armed on the floor. */
+    char chipAtStart[MDKR_ONLINE_ROUTE_QUALITY_BYTES] = {0};
+    bool routeSettledAfterStart = false;
     bool injectedOnA = false;
     uint8_t inputDelayA = 0u;
     uint8_t inputDelayB = 0u;
@@ -714,7 +719,8 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
                                bool sendAbortFromA = false,
                                unsigned routeClockStepMs = 0u,
                                unsigned injectP95OnA = 0u,
-                               const BurstSpec *burst = nullptr) {
+                               const BurstSpec *burst = nullptr,
+                               bool startBeforeRouteSettles = false) {
     FullRunResult result;
     mdkr_net_roster_runtime_clear();
 
@@ -798,6 +804,21 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
         }
     }
 
+    /* D2: run the window for a couple of seconds -- long enough to have
+     * measured a real route, far short of the 7 s it needs to settle -- and
+     * then press Start into it. The hub delivers synchronously, so fake-clock
+     * time only passes where a loop spends it; without this the race would
+     * arm in the same millisecond the window opened and there would be no
+     * measurement to cut. */
+    if (startBeforeRouteSettles) {
+        for (unsigned elapsed = 0u; elapsed < 2000u; elapsed += 10u) {
+            A->service();
+            B->service();
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            clock.nowMs += 10u;
+        }
+    }
+
     /* Give ONE endpoint a slower measured route, so the two resolve DIFFERENT
      * operative leads over the same descriptor. */
     if (injectP95OnA != 0u) {
@@ -834,6 +855,12 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
         return result;
     }
 
+    /* What the room chip says at the instant Start is pressed. With no settle
+     * loop above, the window is still open here (it runs for 7 s from the
+     * first channel) and the chip must say the check is still happening. */
+    std::snprintf(result.chipAtStart, sizeof(result.chipAtStart), "%s",
+                  viewOf(A.get()).route_quality);
+
     /* Leader starts the race -> BEGIN_LOADING; both follow the lobby phase. */
     A->submit(cmd(A.get(), MDKR_ONLINE_VIEW_ACTION_START_RACE, 0u, 1u));
     result.reachedLoading = pumpUntil(both, clock, [&]() {
@@ -857,6 +884,19 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
             return pa.peerRouteMeasurements > 0u &&
                    pb.peerRouteMeasurements > 0u;
         }, 5000u);
+    }
+    /* D2: Start beat the window. The race is already armed on the manifest
+     * floor; the cut window must still settle and its record must still be
+     * exchanged, which is what the NEXT race of a tournament runs on. */
+    if (startBeforeRouteSettles) {
+        result.routeSettledAfterStart = pumpUntil(both, clock, [&]() {
+            MdkrOnlineLiveLaunchProbe pa{}, pb{};
+            mdkr_online_live_adapter_probe(A.get(), &pa);
+            mdkr_online_live_adapter_probe(B.get(), &pb);
+            return pa.routeMeasured && pb.routeMeasured &&
+                   pa.peerRouteMeasurements > 0u &&
+                   pb.peerRouteMeasurements > 0u;
+        }, 10000u);
     }
     mdkr_online_live_adapter_probe(A.get(), &result.probeA);
     mdkr_online_live_adapter_probe(B.get(), &result.probeB);
@@ -3550,6 +3590,42 @@ void test_route_quality_asymmetric_leads_still_converge() {
     mdkr_net_roster_runtime_clear();
 }
 
+/* D-N5: Start is never held for the route check. Pressing Start while the
+ * window is still open races on the manifest floor -- and the room chip says
+ * the connection is being checked rather than showing an empty space. The
+ * record must still settle afterwards and must still cross the wire, because
+ * that is what the NEXT race of a tournament resolves its widen and its chip
+ * from. Its positive control is the checking chip itself: make the projection
+ * fall back to an empty chip while the measurement runs and the chip assertion
+ * fails while everything else here still passes. */
+void test_route_start_before_settle_never_blocks() {
+    const FullRunResult r = driveTwoAdapters(
+        /*bonusIdentityOnA=*/false, /*raceTicks=*/60u, /*imp=*/nullptr,
+        /*realInput=*/false, /*severAfterTicks=*/0u, /*sendAbortFromA=*/false,
+        /*routeClockStepMs=*/0u, /*injectP95OnA=*/0u, /*burst=*/nullptr,
+        /*startBeforeRouteSettles=*/true);
+    /* Start arrived first, so this race ran on the agreed floor -- never held,
+     * never widened off a record that did not exist yet. */
+    CHECK(r.inputDelayA == r.probeA.descriptor.manifest.input_delay);
+    CHECK(r.inputDelayB == r.probeB.descriptor.manifest.input_delay);
+    CHECK(std::strcmp(r.chipAtStart, "Checking connection\xe2\x80\xa6") == 0);
+    /* ... and the cut window still settled, on both endpoints, and both
+     * records still crossed the wire as the round's second attestation. */
+    CHECK(r.routeSettledAfterStart);
+    CHECK(r.probeA.routeMeasured && r.probeB.routeMeasured);
+    CHECK(r.probeA.peerRouteMeasurements > 0u);
+    CHECK(r.probeB.peerRouteMeasurements > 0u);
+    CHECK(r.raceConverged);
+    std::fprintf(stderr,
+                 "[route] start-before-settle chip=\"%s\" delay=%u/%u "
+                 "p95=%ums band=%u\n",
+                 r.chipAtStart, static_cast<unsigned>(r.inputDelayA),
+                 static_cast<unsigned>(r.inputDelayB),
+                 static_cast<unsigned>(r.probeA.routeMeasurement.p95_rtt_ms),
+                 static_cast<unsigned>(r.probeA.routeMeasurement.band));
+    mdkr_net_roster_runtime_clear();
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -3586,6 +3662,7 @@ int main(int argc, char **argv) {
         test_route_quality_measured_and_agreed();
         test_route_quality_widens_entry_timing();
         test_route_quality_asymmetric_leads_still_converge();
+        test_route_start_before_settle_never_blocks();
         std::fprintf(stderr, "online_live_route: %d checks, %d failures\n",
                      g_checks, g_failures);
         return g_failures == 0 ? 0 : 1;

@@ -152,6 +152,10 @@ static void test_reverify_paths_clear_stale_peer_loss() {
 static void test_reverify_paths_restart_route_measurement() {
     CHECK(mdkr_online_live_adapter_test_rekey_restarts_route_measurement(false));
     CHECK(mdkr_online_live_adapter_test_rekey_restarts_route_measurement(true));
+    /* The other half of the rule (D-N5): the boundary BETWEEN two races of one
+     * tournament retires the epoch, not the mesh, so the record it measured
+     * survives and is exchanged again for the new round. */
+    CHECK(mdkr_online_live_adapter_test_race_latch_reset_keeps_route());
 }
 
 /* RETRY must genuinely retry (audit story gap #2). Pre-Ready -- the create/
@@ -626,20 +630,20 @@ static void test_route_echo_budget_bounds_a_flood() {
     CHECK(mdkr_online_live_adapter_test_route_echoes_allowed(1u, 1u, 200u) ==
           200u);
     /* Still honest: a burst inside the budget echoes in full. */
-    CHECK(mdkr_online_live_adapter_test_route_echoes_allowed(1u, 8u, 3u) ==
-          24u);
-    /* THE FLOOD: 1,000 probes inside one pump cost 8 echoes, not 1,000. */
+    CHECK(mdkr_online_live_adapter_test_route_echoes_allowed(1u, 16u, 3u) ==
+          48u);
+    /* THE FLOOD: 1,000 probes inside one pump cost 16 echoes, not 1,000. */
     CHECK(mdkr_online_live_adapter_test_route_echoes_allowed(1u, 1000u, 1u) ==
-          8u);
+          16u);
     /* And it does not refill inside the pump: the same flood over ten pumps
      * costs ten budgets, not ten thousand echoes. */
     CHECK(mdkr_online_live_adapter_test_route_echoes_allowed(1u, 1000u, 10u) ==
-          80u);
+          160u);
     /* Per sender, so one flooding peer cannot starve an honest one: three
      * peers flooding cost three budgets per pump, and an honest peer among
      * them still gets its own. */
     CHECK(mdkr_online_live_adapter_test_route_echoes_allowed(3u, 1000u, 1u) ==
-          24u);
+          48u);
 }
 
 /* The forensics ring is 2048 fixed-width slots and it is the only record of

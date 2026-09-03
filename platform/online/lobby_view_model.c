@@ -29,12 +29,24 @@ static bool route_quality_valid(const MdkrOnlineViewRouteQuality *quality) {
 
 /* The one room chip for pre-flight route quality: the round trip a player can
  * feel, then the band's name. Composed here rather than in match_preflight,
- * which owns no copy. False leaves the chip empty. */
+ * which owns no copy. Pressing Start never waits for the measurement, so a
+ * player can reach the chip while it is still running: say the check is
+ * happening rather than show an empty space that reads as a missing feature.
+ * False leaves the chip empty. */
 static bool route_quality_chip(const MdkrOnlineViewRouteQuality *quality,
+                               bool measuring,
                                char out[MDKR_ONLINE_ROUTE_QUALITY_BYTES]) {
     int written;
     out[0] = '\0';
-    if (!route_quality_valid(quality)) return false;
+    if (!route_quality_valid(quality)) {
+        if (!measuring) return false;
+        written = snprintf(out, MDKR_ONLINE_ROUTE_QUALITY_BYTES,
+                           "Checking connection…");
+        if (written > 0 && written < MDKR_ONLINE_ROUTE_QUALITY_BYTES)
+            return true;
+        out[0] = '\0';
+        return false;
+    }
     written = snprintf(out, MDKR_ONLINE_ROUTE_QUALITY_BYTES,
                        "~%u ms \xc2\xb7 %s",
                        (unsigned)quality->p95_rtt_ms, quality->band);
@@ -485,7 +497,8 @@ bool mdkr_online_view_model_build(const MdkrOnlineViewInput *input,
         return true;
     }
 
-    (void)route_quality_chip(input->route_quality, next.route_quality);
+    (void)route_quality_chip(input->route_quality, input->route_measuring,
+                             next.route_quality);
     next.announcement = MDKR_ONLINE_ANNOUNCE_POLITE;
     switch (input->session->scene) {
         case MDKR_SCENE_HOME:
