@@ -2899,15 +2899,19 @@ python3 tests/check_webgpu_recovery.py \
   --build build --rom baserom.us.v80.z64
 ```
 
-This integration matrix injects 96 failures across instance, surface, adapter,
+This integration matrix runs 97 cases: 96 injected failures across instance, surface, adapter,
 device, queue, and configure bring-up; every surface-status repair class;
 featureless depth clipping; both native device-loss outcomes; and all
 Pure/Remastered scene-target, shader, texture, draw, post, resolve, mip, capture,
-and readback constructors reached by DKR. The last 20 arms install a generated
-custom character into a private catalog and drive the direct Workshop preview
-context, the only route that reaches the skinned renderer and its optional
-occlusion-evidence pass; each proves the failure stays local — the custom draw
-is refused or the evidence is withheld while the frame still completes.
+and readback constructors reached by DKR, plus one un-injected baseline. The
+last 21 arms install a generated custom character into a private catalog and
+drive the direct Workshop preview context, the only route that reaches the
+skinned renderer and its optional occlusion-evidence pass. The baseline first
+shows that route accepting every custom draw and publishing visibility
+evidence; each of the 20 injections then proves the failure stays local — the
+custom draw is refused or the evidence is withheld while the frame still
+completes. These 21 runs of 180 frames each add several minutes to this
+GPU-serial lane.
 Required resources may rebuild the
 WebGPU device once, then must terminate cleanly without switching renderers;
 mip and diagnostic failures must stay local. Every

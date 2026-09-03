@@ -621,6 +621,48 @@ def main() -> int:
         skinned_args = ("--window-size", "1280x960")
         skinned_frames = 180
 
+        # Baseline: the same route with nothing injected. The twenty arms below
+        # assert refusedDraws >= 1 and visibility=0, so this run must show the
+        # opposite -- refusedDraws=0 and visibility evidence published -- or
+        # those assertions would hold for reasons unrelated to the fault.
+        baseline_output = run_case(
+            binary,
+            rom,
+            "skinned baseline -> custom draws accepted, visibility published",
+            skinned_env,
+            (
+                "character_workshop_result:",
+                completion(skinned_frames),
+            ),
+            (
+                "[webgpu-fault] injected",
+                "attempting one native device reinitialization",
+                "switched to OpenGL",
+            ),
+            frames=skinned_frames,
+            mode="restored",
+            extra_args=skinned_args,
+        )
+        baseline_refused = re.search(
+            r"\[WGPU-MODERN-CHARACTER\].*?refusedDraws=(\d+)", baseline_output
+        )
+        if baseline_refused is None or int(baseline_refused.group(1)) != 0:
+            raise CheckFailure(
+                "skinned baseline: the un-injected preview refused custom "
+                "draws, so refusedDraws>=1 would prove nothing about a fault\n"
+                + baseline_output[-6000:]
+            )
+        baseline_visibility = re.search(
+            r"character_workshop_result:.*?visibility=(-?\d+)/(-?\d+)",
+            baseline_output,
+        )
+        if baseline_visibility is None or baseline_visibility.group(1) == "0":
+            raise CheckFailure(
+                "skinned baseline: the un-injected preview published no "
+                "visibility evidence, so visibility=0 would prove nothing "
+                "about a fault\n" + baseline_output[-6000:]
+            )
+
         skinned_local_degrade_points = (
             "skinned.module",
             "skinned.bind-group-layout",
@@ -776,6 +818,7 @@ def main() -> int:
         + 2
         + 4
         + 4
+        + 1  # skinned baseline
         + len(skinned_local_degrade_points)
         + len(skinned_visibility_points)
     )
