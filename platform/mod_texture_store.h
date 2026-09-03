@@ -106,7 +106,19 @@ bool mdkr_mod_texture_dump_active(void);
  * bytes) must be the pixels the renderer is about to upload for this bind --
  * an installed pack's override when one applied, the ROM decode otherwise --
  * so the dumped PNG is what the game actually displays, not a re-decode this
- * module invents on its own. Writes <dir>/<digest_hex>.png and
+ * module invents on its own.
+ *
+ * `width` and `height` describe THAT BUFFER and nothing else. When an override
+ * applied they are the replacement's own size, which is NOT the logical tile
+ * size the caller normalises texcoords against -- those diverge by design
+ * (gfx_pc_dkr.c, issue #34), and passing the wrong one of the two encodes a
+ * correct buffer at a wrong stride: in bounds, silently sheared, and only
+ * visible with a pack installed AND the dump on. `fmt` and `siz` stay the
+ * SOURCE tile's, because they describe the picture the digest names rather
+ * than the pixels written; they are the one pair here that is deliberately
+ * not about `rgba`.
+ *
+ * Writes <dir>/<digest_hex>.png and
  * <digest_hex>.txt (width, height, fmt, siz, first_seen) the first time this
  * digest is observed in the process, and is a no-op on every call after.
  * Unconditionally a no-op unless MDKR_MOD_TEXTURE_DUMP is set: that is the

@@ -1,7 +1,9 @@
 # Content packs
 
 How to replace Golden Balloon's textures with your own, and how the game
-decides which file to use.
+decides which file to use. This includes the portraits for Taj, Wizpig and
+Terry, which the port draws itself because the original game has none —
+see [The three bonus racers' portraits](#the-three-bonus-racers-portraits).
 
 > **This project ships no content and hosts none.** Everything below reads files
 > that you, or a pack author, put on your own machine. No pack is distributed
@@ -96,6 +98,12 @@ covers the textures you want; the menus, a track, a particular character.
 `mod-texture-dump/` is git-ignored for that reason, and the clean-room guard
 fails closed if any of it is ever tracked.
 
+What you get is what the game drew. If one of your own packs was installed
+during the run, that texture is dumped as your replacement, at your
+replacement's size — under the same filename, because the name belongs to the
+picture being replaced. Dump with your packs out of the way when you want the
+original.
+
 The dump path is inert when the tool is not running: with the environment
 variable unset the digest is not computed and no directory is created.
 
@@ -120,6 +128,35 @@ decided to upload it.
 
 **The digest is a published contract.** If it ever has to change, the version
 constant is bumped, the old path keeps working, and this page says so.
+
+## The three bonus racers' portraits
+
+Taj, Wizpig and Terry have no portrait in the original game, so the port draws
+theirs itself. They are still ordinary pictures as far as a pack is concerned:
+put `textures/<digest>.png` in your pack and it replaces the card, the same way
+it replaces anything else. One file covers every place that racer's portrait
+appears — the results card and the Adventure HUD both.
+
+Your replacement does not have to be 40×40. Whatever size you author, it fills
+the same card.
+
+Today the three are:
+
+| Racer | `textures/…` |
+|---|---|
+| Taj | `7757ffb6d3f809fbde246ca559d51eb4.png` |
+| Wizpig | `813ff52ed6575a1f29c8fa2fc47b2464.png` |
+| Terry | `fd222569d7bd95580075402b7315e178.png` |
+
+You can also find them yourself, exactly as above: dump the textures on a route
+that reaches the results screen with that racer in first place, and look for the
+40×40 card in the output.
+
+One thing to know before you build on them. These three are drawn by the port
+rather than read from the game, so if a future release retouches the artwork,
+its name changes and a pack aimed at the old name quietly stops applying. The
+names above are the ones this release uses; when they change, this page changes
+with them.
 
 ## Replacing music
 

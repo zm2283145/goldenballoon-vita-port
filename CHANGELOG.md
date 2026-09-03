@@ -19,6 +19,10 @@ save formats). Everything below 1.0.0 predates that commitment.
   it back off never needs the launcher. The game file is verified before it
   opens, exactly as pressing Play verifies it: a file that has moved or changed
   lands you in the launcher with the reason.
+- Content packs can replace Taj's, Wizpig's and Terry's portraits. Those three
+  racers have no portrait in the original game, so the port draws its own; a
+  pack can now put your picture in its place, at whatever size you author it.
+  [`docs/MODDING.md`](docs/MODDING.md) has the three filenames.
 
 ### Fixed
 
