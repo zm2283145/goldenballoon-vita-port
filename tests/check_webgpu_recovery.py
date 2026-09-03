@@ -11,17 +11,84 @@ WebGPU once, but it must never enter GL unless GL was explicitly selected.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 from harness_utils import resolve_binary
 
 
+ROOT = Path(__file__).resolve().parent
+SKINNED_PACKAGE_ID = "org.mdkr.webgpu-fault-proof"
+
+
 class CheckFailure(RuntimeError):
     pass
+
+
+def build_skinned_fixture(directory: Path) -> Path:
+    """Install a generated custom character into a private catalog.
+
+    The custom-character skinned renderer only draws once a Workshop package
+    is installed and assigned, so its fault points are unreachable on every
+    ROM-only route. The fixture below is generated here (synthetic animated
+    GLB plus a synthetic portrait), so this stays ROM-art free and never
+    touches the player's real character library.
+    """
+
+    sys.path.insert(0, str(ROOT.parent / "tools"))
+    sys.path.insert(0, str(ROOT))
+    import character_manifest_wizard as wizard  # noqa: E402
+    from test_character_asset_probe import (  # noqa: E402
+        make_animated_glb,
+        make_portrait_png,
+    )
+
+    source = directory / "source"
+    source.mkdir(parents=True, exist_ok=True)
+    catalog = directory / "characters"
+    model = source / "model.glb"
+    portrait = source / "portrait.png"
+    manifest_path = source / "manifest.json"
+    license_path = source / "LICENSE.txt"
+    package = source / "fault-proof.mdkrchar"
+    model.write_bytes(make_animated_glb(volumetric=True))
+    portrait.write_bytes(make_portrait_png(40))
+    manifest, _ = wizard.build_manifest(
+        model, SKINNED_PACKAGE_ID, "Fault Proof", "CC0-1.0",
+        "Generated MDKR fixture", "https://example.invalid/fault-proof",
+        "bumper", ["car", "hovercraft", "plane"], portrait=portrait,
+        minimap_rgb=[90, 210, 140],
+    )
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    license_path.write_text("CC0 1.0 Universal\n", encoding="utf-8")
+    for command in (
+        [
+            sys.executable, str(ROOT.parent / "tools" / "character_asset_probe.py"),
+            "pack", "--model", str(model), "--manifest", str(manifest_path),
+            "--license", str(license_path), "--portrait", str(portrait),
+            "--output", str(package),
+        ],
+        [
+            sys.executable, str(ROOT / "run_character_manager_fixture.py"),
+            "--directory", str(catalog), "install", str(package),
+        ],
+    ):
+        process = subprocess.run(
+            command, cwd=ROOT.parent, text=True, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, timeout=120, check=False,
+        )
+        if process.returncode != 0:
+            raise CheckFailure(
+                "custom-character fixture install failed: "
+                f"{' '.join(command)}\n{process.stdout}"
+            )
+    return catalog
 
 
 def run_case(
@@ -36,6 +103,7 @@ def run_case(
     dump_frames: bool = False,
     hidden: bool = True,
     expect_failure: bool = False,
+    extra_args: tuple[str, ...] = (),
 ) -> str:
     always_forbidden = (
         "[CRASH]",
@@ -82,6 +150,7 @@ def run_case(
             str(frames),
             f"--{mode}",
         ]
+        command.extend(extra_args)
         if dump_frames:
             frame_dir = case_dir / "frames"
             frame_dir.mkdir()
@@ -529,6 +598,111 @@ def main() -> int:
             dump_frames=True,
         )
 
+    # ---------------------------------------------------------------
+    # Custom-character (Character Workshop) skinned renderer.
+    #
+    # These points only exist while a player has installed and selected a
+    # custom character, so no ROM-only route reaches them. Install a generated
+    # fixture package into a private catalog and drive the direct Workshop
+    # preview context, which draws the skinned character every frame and, once
+    # replacement draws are flowing, requests the optional occlusion-evidence
+    # pass. Each arm requires its own injection line, so a point that never
+    # fires on this route fails here instead of being credited silently.
+    with tempfile.TemporaryDirectory(prefix="mdkr-wgpu-skinned-") as skinned_dir:
+        catalog = build_skinned_fixture(Path(skinned_dir))
+        skinned_env = {
+            "MDKR_TRACE": "1",
+            "MDKR_RENDER_SCALE": "1",
+            "MDKR_CUSTOM_CHARACTER_DIRECTORY": str(catalog),
+            "MDKR_CHARACTER_WORKSHOP_PREVIEW": "car",
+            "MDKR_CHARACTER_WORKSHOP_PREVIEW_PLAYERS": "1",
+            "MDKR_CUSTOM_CHARACTER_P1": SKINNED_PACKAGE_ID,
+        }
+        skinned_args = ("--window-size", "1280x960")
+        skinned_frames = 180
+
+        skinned_local_degrade_points = (
+            "skinned.module",
+            "skinned.bind-group-layout",
+            "skinned.pipeline-layout",
+            "skinned.pipeline",
+            "skinned.vertex-buffer",
+            "skinned.index-buffer",
+            "skinned.texture",
+            "skinned.view",
+            "skinned.uniform",
+            "skinned.sampler",
+            "skinned.bind-group",
+        )
+        for point in skinned_local_degrade_points:
+            output = run_case(
+                binary,
+                rom,
+                f"{point} -> custom draw refused, retail scene continues",
+                {**skinned_env, "MDKR_WEBGPU_FAULT": point},
+                (
+                    f"[webgpu-fault] injected {point}@1",
+                    "character_workshop_result:",
+                    completion(skinned_frames),
+                ),
+                (
+                    "attempting one native device reinitialization",
+                    "switched to OpenGL",
+                ),
+                frames=skinned_frames,
+                mode="restored",
+                extra_args=skinned_args,
+            )
+            refused = re.search(
+                r"\[WGPU-MODERN-CHARACTER\].*?refusedDraws=(\d+)", output
+            )
+            if refused is None or int(refused.group(1)) < 1:
+                raise CheckFailure(
+                    f"{point}: no refused custom draw was recorded; the "
+                    "injection did not reach the skinned draw path\n"
+                    + output[-6000:]
+                )
+
+        skinned_visibility_points = (
+            "skinned.visibility-query",
+            "skinned.visibility-resolve",
+            "skinned.visibility-readback",
+            "skinned.visibility-texture",
+            "skinned.visibility-view",
+            "skinned.visibility-seed-pipeline",
+            "skinned.visibility-equal-pipeline",
+            "skinned.visibility-occluded-pipeline",
+            "skinned.visibility-pass",
+        )
+        for point in skinned_visibility_points:
+            output = run_case(
+                binary,
+                rom,
+                f"{point} -> occlusion evidence unavailable, preview continues",
+                {**skinned_env, "MDKR_WEBGPU_FAULT": f"{point}@all"},
+                (
+                    f"[webgpu-fault] injected {point}@1",
+                    "character_workshop_result:",
+                    completion(skinned_frames),
+                ),
+                (
+                    "attempting one native device reinitialization",
+                    "switched to OpenGL",
+                ),
+                frames=skinned_frames,
+                mode="restored",
+                extra_args=skinned_args,
+            )
+            visibility = re.search(
+                r"character_workshop_result:.*?visibility=(-?\d+)/(-?\d+)",
+                output,
+            )
+            if visibility is None or visibility.group(1) != "0":
+                raise CheckFailure(
+                    f"{point}: the Workshop still published visibility "
+                    "evidence after the injection\n" + output[-6000:]
+                )
+
     segmented = run_case(
         binary,
         rom,
@@ -602,6 +776,8 @@ def main() -> int:
         + 2
         + 4
         + 4
+        + len(skinned_local_degrade_points)
+        + len(skinned_visibility_points)
     )
     print(
         "PASS: WebGPU recovery integration "
