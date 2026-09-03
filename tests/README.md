@@ -6357,6 +6357,39 @@ python3 tests/check_bonus_results_portraits.py --build build-wizpig \
 The gate is registered as `bonus_results_portraits` in
 `tools/run_checks.py`.
 
+## Bonus portrait packs — `tests/check_bonus_portrait_pack.py`
+
+This real-ROM gate proves the three generated bonus-racer portraits are
+replaceable through the ordinary Content Packs texture path, and that their
+published digests do not drift. Five runs of the same post-race flow
+`check_bonus_results_portraits.py` uses: a no-pack baseline with
+`MDKR_MOD_TEXTURE_DUMP` on, one pack arm per racer overriding that racer's
+pinned digest, and the identical pack switched off by its own `pack.ini`.
+
+The pack image is the synthetic magenta-corner-on-green quadrant PNG imported
+from `check_mod_texture_override.py`, at 64x64 — not a solid colour, so the
+arms witness texture addressing rather than only presence, and not derived from
+any game art. Under a pack the card region is entirely the pack's two colours,
+green-dominant three to one; beside the card, zero pack pixels; with the pack
+switched off, the frame is byte-identical to the no-pack baseline.
+
+The digest assertion is the point of the file. A ROM texture's digest is frozen
+because the ROM is; these three are a function of `game/src/menu.c`, so
+retouching the artwork renames them and silently breaks every pack in the wild.
+The baseline arm reads the dumped corpus and fails — naming the digest the art
+now produces — when the pinned name is no longer the one a pack author would
+find. A one-channel change to a single pixel of Taj's card is enough to trip it;
+nothing else in the suite notices.
+
+```bash
+python3 tests/check_bonus_portrait_pack.py --build build \
+  --rom baserom.us.v80.z64
+```
+
+The published digests also appear in [`docs/MODDING.md`](../docs/MODDING.md);
+the two must be changed together. The gate is registered as
+`bonus_portrait_pack` in `tools/run_checks.py`.
+
 ## Terry flight audio — `tests/check_terry_flight_audio.py`
 
 This real-ROM gate runs Terry on the same course in a plane and kart. The plane
