@@ -1687,14 +1687,37 @@ static inline void *dkr_resolve(uint32_t addr) {
          * which is not a valid Vita host address, and got dereferenced
          * anyway. Reject it here instead of one call site at a time. */
         if (flip != 0 && flip < 0x10000000u) {
-            static int s_resolveRejectLogCount = 0;
-            if (s_resolveRejectLogCount < 20) {
-                char lb[128];
+            /* flip lands in this codebase's own documented "genuine N64
+             * segment token" range (0x01000000..0x0FFFFFFF, see the
+             * ILP32 DIRECT RECOVERY comment above and the addr<0x01000000
+             * handling below) -- it is NOT a real host pointer at all, so
+             * treating it as one (the bug that caused the original
+             * wild-jump crash) was wrong. But returning NULL outright was
+             * ALSO wrong: a value in exactly this range is a legitimate,
+             * still-unresolved segment-relative token that just needs the
+             * same gfx_resolve_addr() segment-table lookup used for the
+             * non-flipped `addr` case a few lines below -- not a direct
+             * pointer cast, and not a hard reject either. Blanket-
+             * rejecting instead of resolving silently discarded
+             * legitimate display-list data: observed on device as menu
+             * background art and other textures never appearing (boxes/
+             * flat colors instead) while content resolved through a
+             * different path rendered fine. gfx_resolve_addr() is
+             * documented to never return a wild pointer -- worst case is
+             * NULL -- so this keeps the original crash fixed while no
+             * longer dropping real data. */
+            void *seg = gfx_resolve_addr(flip);
+            static int s_resolveSegLogCount = 0;
+            if (s_resolveSegLogCount < 20) {
+                char lb[160];
                 snprintf(lb, sizeof(lb),
-                         "resolve: REJECTING implausible flip addr=0x%x -> flip=0x%x (below 256MB floor)",
-                         (unsigned)addr, (unsigned)flip);
+                         "resolve: flip=0x%x is a segment token, gfx_resolve_addr -> %p",
+                         (unsigned)flip, seg);
                 mdkr_vita_boot_log(lb);
-                s_resolveRejectLogCount++;
+                s_resolveSegLogCount++;
+            }
+            if (dkr_ptr_plausible(seg)) {
+                return dkr_retain_resolved_pointer(seg);
             }
             return NULL;
         }
