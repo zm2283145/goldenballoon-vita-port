@@ -5248,6 +5248,18 @@ void update_player_racer(Object *obj, s32 updateRate) {
             racer_AI_pathing_inputs(obj, tempRacer, updateRate);
             tempRacer->playerIndex = savedPlayerIndex;
             /*
+             * TEST HOOK -- MDKR_ZIPPAD_BOOST holds the accelerator for the
+             * racer it armed, for as long as that boost runs. The AI just
+             * written above lifts off during a boost on its own roll
+             * (func_80042D20, `unk209 |= 4`), which swaps the authored
+             * quadratic drag for the linear one and takes the measured boost
+             * far past its authored terminal speed. Placed here, after the AI
+             * has written gCurrentRacerInput and before the velocity update
+             * reads it. No-op unless the seam armed a boost
+             * (game/src/objects.c).
+             */
+            mdkr_zippad_boost_hold_throttle(tempRacer);
+            /*
              * TEST HOOK -- MDKR_AUTOPILOT_UNSTICK re-arms the AI's own
              * stuck-recovery cooldown once the autopilot kart is provably
              * wedged (platform/mdkr_adventure.c). No-op unless set.
