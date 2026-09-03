@@ -5,7 +5,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import character_text_subset  # noqa: E402
 
 
 GOOGLE_FONTS_COMMIT = "ade3d1533e06b2b1462ffcde8e08b129627ca360"
@@ -92,6 +97,18 @@ def main() -> int:
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
     if digest != face["payload_sha"]:
         raise SystemExit(f"compressed font declaration digest mismatch: {digest}")
+    inert = character_text_subset.empty_ranges(
+        character_text_subset.font_codepoints(
+            character_text_subset.subset_from_declaration(payload)
+        ),
+        character_text_subset.parse_ranges(face["ranges"]),
+    )
+    if inert:
+        raise SystemExit(
+            "subset contributed no glyph for " + ", ".join(inert) +
+            " -- the source font does not carry that range, so the header "
+            "would advertise coverage the launcher cannot draw"
+        )
     rendered = banner(args.face, face) + "\n" + payload + "\n\n#endif\n"
     args.output.write_text(rendered, encoding="utf-8", newline="\n")
     print(f"wrote {args.output} ({len(rendered.encode('utf-8'))} bytes)")

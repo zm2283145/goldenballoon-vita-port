@@ -25,7 +25,7 @@
  *   # Download and sha256-check the exact upstream paths/pins above.
  *   venv/bin/python -c "from fontTools import ttLib; from fontTools.varLib import instancer; f=ttLib.TTFont('Roboto.ttf'); instancer.instantiateVariableFont(f,{'wght':600,'wdth':100},updateFontNames=True).save('Roboto-SemiBold.ttf')"
  *   venv/bin/pyftsubset Roboto-SemiBold.ttf \
- *     --unicodes=U+0020-024F,U+0300-052F,U+1E00-1FFF,U+2000-206F,U+20A0-20CF,U+2100-214F,U+2DE0-2DFF,U+A640-A69F,U+FF01-FF5E,U+FFFD \
+ *     --unicodes=U+0020-024F,U+0300-052F,U+1E00-1FFF,U+2000-206F,U+20A0-20CF,U+2100-214F,U+FFFD \
  *     --ignore-missing-unicodes --output-file=Roboto-MDKR-Character-Text.ttf \
  *     --no-hinting --layout-features='*' --glyph-names \
  *     --name-IDs='*' --name-languages='*'
@@ -41,6 +41,12 @@
  * marks, and neutral punctuation. The runtime uses it with pinned HarfBuzz and
  * SheenBidi plus reviewed Noto script faces; missing glyphs and unsafe invisible
  * controls fail closed instead of consulting host fonts.
+ *
+ * The subset list holds only ranges this face actually carries. Upstream Roboto
+ * has no arrow (U+2190-21FF), Cyrillic Extended-A/B (U+2DE0-2DFF, U+A640-A69F)
+ * or fullwidth-form (U+FF01-FF5E) glyph, so asking for those produced the same
+ * bytes while implying a coverage the launcher did not have. The generator now
+ * refuses a range that contributes nothing.
  */
 #ifndef MDKR_GFX_CHARACTER_TEXT_FACE_H
 #define MDKR_GFX_CHARACTER_TEXT_FACE_H

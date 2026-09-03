@@ -2,21 +2,37 @@
 """Wrap the pinned custom-character text face as a generated C header.
 
 The actual compression is intentionally delegated to Dear ImGui's audited
-``binary_to_compressed_c`` tool. This wrapper rejects an unexpected payload and
-adds the project provenance/contract banner and include guard.
+``binary_to_compressed_c`` tool. This wrapper rejects an unexpected payload,
+rejects a ``--unicodes`` range the subset does not actually carry, and adds the
+project provenance/contract banner and include guard.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import character_text_subset  # noqa: E402
 
 
 SYMBOL = "MdkrCharacterText_compressed_data_base85"
 PAYLOAD_SHA256 = "3bb210c02c70ab0860f8ad2d9694853212ebac66e62181a04901067f0d9b4482"
 
-BANNER = r"""/*
+# The repertoire the subset step asks for. Every entry is verified below to
+# contribute at least one glyph, because pyftsubset accepts a range the source
+# font has never carried and drops it in silence.
+SUBSET_RANGES = (
+    "U+0020-024F,U+0300-052F,U+1E00-1FFF,U+2000-206F,U+20A0-20CF,"
+    "U+2100-214F,U+FFFD"
+)
+
+
+def banner(unicodes: str) -> str:
+    return f"""/*
  * gfx_character_text_face.h -- GENERATED FILE, DO NOT EDIT.
  *
  * Project-owned native glyph source for custom-character display/short names.
@@ -41,15 +57,15 @@ BANNER = r"""/*
  *   python3 -m venv venv
  *   venv/bin/python -m pip install fonttools==4.63.0
  *   # Download and sha256-check the exact upstream paths/pins above.
- *   venv/bin/python -c "from fontTools import ttLib; from fontTools.varLib import instancer; f=ttLib.TTFont('Roboto.ttf'); instancer.instantiateVariableFont(f,{'wght':600,'wdth':100},updateFontNames=True).save('Roboto-SemiBold.ttf')"
- *   venv/bin/pyftsubset Roboto-SemiBold.ttf \
- *     --unicodes=U+0020-024F,U+0300-052F,U+1E00-1FFF,U+2000-206F,U+20A0-20CF,U+2100-214F,U+2DE0-2DFF,U+A640-A69F,U+FF01-FF5E,U+FFFD \
- *     --ignore-missing-unicodes --output-file=Roboto-MDKR-Character-Text.ttf \
- *     --no-hinting --layout-features='*' --glyph-names \
+ *   venv/bin/python -c "from fontTools import ttLib; from fontTools.varLib import instancer; f=ttLib.TTFont('Roboto.ttf'); instancer.instantiateVariableFont(f,{{'wght':600,'wdth':100}},updateFontNames=True).save('Roboto-SemiBold.ttf')"
+ *   venv/bin/pyftsubset Roboto-SemiBold.ttf \\
+ *     --unicodes={unicodes} \\
+ *     --ignore-missing-unicodes --output-file=Roboto-MDKR-Character-Text.ttf \\
+ *     --no-hinting --layout-features='*' --glyph-names \\
  *     --name-IDs='*' --name-languages='*'
- *   binary_to_compressed_c -base85 Roboto-MDKR-Character-Text.ttf \
+ *   binary_to_compressed_c -base85 Roboto-MDKR-Character-Text.ttf \\
  *     MdkrCharacterText > compressed.inc
- *   tools/gen_character_text_font_header.py compressed.inc \
+ *   tools/gen_character_text_font_header.py compressed.inc \\
  *     platform/fast3d/gfx_character_text_face.h
  *
  * The face is SIL Open Font License 1.1. See lib/fonts/LICENSE.txt and
@@ -59,6 +75,12 @@ BANNER = r"""/*
  * marks, and neutral punctuation. The runtime uses it with pinned HarfBuzz and
  * SheenBidi plus reviewed Noto script faces; missing glyphs and unsafe invisible
  * controls fail closed instead of consulting host fonts.
+ *
+ * The subset list holds only ranges this face actually carries. Upstream Roboto
+ * has no arrow (U+2190-21FF), Cyrillic Extended-A/B (U+2DE0-2DFF, U+A640-A69F)
+ * or fullwidth-form (U+FF01-FF5E) glyph, so asking for those produced the same
+ * bytes while implying a coverage the launcher did not have. The generator now
+ * refuses a range that contributes nothing.
  */
 #ifndef MDKR_GFX_CHARACTER_TEXT_FACE_H
 #define MDKR_GFX_CHARACTER_TEXT_FACE_H
@@ -69,6 +91,10 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("compressed", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument(
+        "--unicodes", default=SUBSET_RANGES,
+        help="the pyftsubset --unicodes list the payload was built from",
+    )
     args = parser.parse_args()
 
     source = args.compressed.read_text(encoding="utf-8")
@@ -84,7 +110,19 @@ def main() -> int:
         raise SystemExit(
             f"compressed font declaration digest mismatch: {digest}"
         )
-    rendered = BANNER + "\n" + payload + "\n\n#endif\n"
+    inert = character_text_subset.empty_ranges(
+        character_text_subset.font_codepoints(
+            character_text_subset.subset_from_declaration(payload)
+        ),
+        character_text_subset.parse_ranges(args.unicodes),
+    )
+    if inert:
+        raise SystemExit(
+            "subset contributed no glyph for " + ", ".join(inert) +
+            " -- the source font does not carry that range, so the header "
+            "would advertise coverage the launcher cannot draw"
+        )
+    rendered = banner(args.unicodes) + "\n" + payload + "\n\n#endif\n"
     args.output.write_text(rendered, encoding="utf-8", newline="\n")
     print(f"wrote {args.output} ({len(rendered.encode('utf-8'))} bytes)")
     return 0

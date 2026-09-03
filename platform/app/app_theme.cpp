@@ -25,11 +25,13 @@ static AppUiDpiState g_dpiState;
  * A range selects from the embedded subset face; it cannot conjure a glyph the
  * face was subset without. That repertoire is recorded in
  * gfx_character_text_face.h -- arrows, dingbats and geometric shapes are
- * outside it, so UI copy stays inside what canDrawGlyph() reports. */
+ * outside it, so UI copy stays inside what canDrawGlyph() reports. The list
+ * below mirrors that header's subset list; a range upstream Roboto does not
+ * carry (arrows, Cyrillic Extended-A/B, fullwidth forms) is not listed here,
+ * because a selector over an absent glyph reads as coverage and is not. */
 static const ImWchar kCharacterNameGlyphRanges[] = {
     0x0100, 0x024F, 0x0300, 0x052F, 0x1E00, 0x1FFF,
     0x2000, 0x206F, 0x20A0, 0x20CF, 0x2100, 0x214F,
-    0x2DE0, 0x2DFF, 0xA640, 0xA69F, 0xFF01, 0xFF5E,
     0xFFFD, 0xFFFD, 0,
 };
 static const ImWchar kArabicGlyphRanges[] = {
