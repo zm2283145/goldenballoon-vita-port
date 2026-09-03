@@ -21,6 +21,10 @@ import character_text_subset  # noqa: E402
 
 SYMBOL = "MdkrCharacterText_compressed_data_base85"
 PAYLOAD_SHA256 = "3bb210c02c70ab0860f8ad2d9694853212ebac66e62181a04901067f0d9b4482"
+# The head.modified inside the shipped face. FontTools recalculates that
+# field on save, so without this the documented commands cannot reproduce
+# the recorded subset digest.
+SOURCE_DATE_EPOCH = 1787935697
 
 # The repertoire the subset step asks for. Every entry is verified below to
 # contribute at least one glyph, because pyftsubset accepts a range the source
@@ -57,6 +61,7 @@ def banner(unicodes: str) -> str:
  *   python3 -m venv venv
  *   venv/bin/python -m pip install fonttools==4.63.0
  *   # Download and sha256-check the exact upstream paths/pins above.
+ *   export SOURCE_DATE_EPOCH={SOURCE_DATE_EPOCH}
  *   venv/bin/python -c "from fontTools import ttLib; from fontTools.varLib import instancer; f=ttLib.TTFont('Roboto.ttf'); instancer.instantiateVariableFont(f,{{'wght':600,'wdth':100}},updateFontNames=True).save('Roboto-SemiBold.ttf')"
  *   venv/bin/pyftsubset Roboto-SemiBold.ttf \\
  *     --unicodes={unicodes} \\
@@ -67,6 +72,13 @@ def banner(unicodes: str) -> str:
  *     MdkrCharacterText > compressed.inc
  *   tools/gen_character_text_font_header.py compressed.inc \\
  *     platform/fast3d/gfx_character_text_face.h
+ *
+ * SOURCE_DATE_EPOCH is what makes the subset digest above checkable. Without
+ * it FontTools stamps the run's own clock into head.modified, and the result
+ * differs from the shipped face in exactly 12 bytes -- head.modified, the
+ * checkSumAdjustment derived from it, and head's entry in the sfnt table
+ * directory. Every glyph, name and layout byte is identical either way; the
+ * pinned value is the timestamp inside the face this header carries.
  *
  * The face is SIL Open Font License 1.1. See lib/fonts/LICENSE.txt and
  * THIRD_PARTY.md. Roboto reserves no font name.

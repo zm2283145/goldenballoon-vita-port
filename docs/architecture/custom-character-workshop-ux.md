@@ -257,7 +257,13 @@ direction, fallback reason, folded and fallback counts. Narration retains
 authored UTF-8. The launcher merges the same pinned Latin/Greek/Cyrillic,
 Arabic, and Hebrew faces into its ordinary ImGui atlas so editable logical-order
 UTF-8, library rows, and recovery messages never degrade to missing-glyph
-boxes. ImGui editing remains
+boxes. The atlas can only select from what those faces carry, and upstream
+Roboto carries no arrow: there is no glyph at any codepoint in U+2190-21FF, so
+an arrow in Workshop copy was never subset away, it was never there. Workshop
+copy therefore spells the relation out in words ("hips to spine to chest to
+head", "reviewed" and "needs review"), which is the intended wording rather
+than a placeholder, and the launcher's font-coverage gate fails the build if a
+new string reaches for a codepoint the packaged subset cannot draw. ImGui editing remains
 codepoint-oriented rather than a substitute for a shaped text editor: the
 selected-character heading and the explicit Identity previews therefore render
 through the exact game rasterizer and are the authoritative visual result for

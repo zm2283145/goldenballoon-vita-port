@@ -17,6 +17,7 @@
  * Reproduce after downloading and checking the exact upstream file above:
  *   python3 -m venv venv
  *   venv/bin/python -m pip install fonttools==4.63.0
+ *   export SOURCE_DATE_EPOCH=1787939216
  *   venv/bin/python -c "from fontTools import ttLib; from fontTools.varLib import instancer; f=ttLib.TTFont('source.ttf'); instancer.instantiateVariableFont(f,{'wght':600,'wdth':100},updateFontNames=True).save('static.ttf')"
  *   venv/bin/pyftsubset static.ttf --unicodes=U+0020-007E,U+0300-036F,U+0600-06FF,U+0750-077F,U+0870-089F,U+08A0-08FF,U+2000-206F,U+20A0-20CF,U+FB50-FDFF,U+FE70-FEFF \
  *     --ignore-missing-unicodes --output-file=NotoSansArabic-MDKR.ttf \
@@ -25,6 +26,11 @@
  *   binary_to_compressed_c -base85 NotoSansArabic-MDKR.ttf \
  *     MdkrCharacterTextArabic > compressed.inc
  *   tools/gen_character_text_script_font_header.py arabic compressed.inc output.h
+ *
+ * The epoch pin is what makes the subset digest checkable: without it FontTools
+ * stamps the run's clock into head.modified and the output differs from the
+ * shipped face in exactly 12 bytes -- head.modified, the derived
+ * checkSumAdjustment, and head's entry in the sfnt table directory.
  *
  * Licensed under SIL Open Font License 1.1; see lib/fonts/LICENSE.txt.
  */

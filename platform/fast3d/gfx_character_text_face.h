@@ -23,6 +23,7 @@
  *   python3 -m venv venv
  *   venv/bin/python -m pip install fonttools==4.63.0
  *   # Download and sha256-check the exact upstream paths/pins above.
+ *   export SOURCE_DATE_EPOCH=1787935697
  *   venv/bin/python -c "from fontTools import ttLib; from fontTools.varLib import instancer; f=ttLib.TTFont('Roboto.ttf'); instancer.instantiateVariableFont(f,{'wght':600,'wdth':100},updateFontNames=True).save('Roboto-SemiBold.ttf')"
  *   venv/bin/pyftsubset Roboto-SemiBold.ttf \
  *     --unicodes=U+0020-024F,U+0300-052F,U+1E00-1FFF,U+2000-206F,U+20A0-20CF,U+2100-214F,U+FFFD \
@@ -33,6 +34,13 @@
  *     MdkrCharacterText > compressed.inc
  *   tools/gen_character_text_font_header.py compressed.inc \
  *     platform/fast3d/gfx_character_text_face.h
+ *
+ * SOURCE_DATE_EPOCH is what makes the subset digest above checkable. Without
+ * it FontTools stamps the run's own clock into head.modified, and the result
+ * differs from the shipped face in exactly 12 bytes -- head.modified, the
+ * checkSumAdjustment derived from it, and head's entry in the sfnt table
+ * directory. Every glyph, name and layout byte is identical either way; the
+ * pinned value is the timestamp inside the face this header carries.
  *
  * The face is SIL Open Font License 1.1. See lib/fonts/LICENSE.txt and
  * THIRD_PARTY.md. Roboto reserves no font name.

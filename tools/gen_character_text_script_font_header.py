@@ -16,6 +16,10 @@ import character_text_subset  # noqa: E402
 GOOGLE_FONTS_COMMIT = "ade3d1533e06b2b1462ffcde8e08b129627ca360"
 TOOL_COMMIT = "776bf2ab0d61e719e58f2c6d27d109ab5dcf2af1"
 TOOL_SHA256 = "8f39e8890cd03c9374be72973f6d95b335d31c8b6862f7b249e9d45ff0daf691"
+# head.modified inside both shipped faces. FontTools recalculates that field
+# on save, so without the pin the commands below reproduce every glyph byte
+# but not the recorded digest.
+SOURCE_DATE_EPOCH = 1787939216
 
 FACES = {
     "arabic": {
@@ -63,6 +67,7 @@ def banner(kind: str, face: dict[str, str]) -> str:
  * Reproduce after downloading and checking the exact upstream file above:
  *   python3 -m venv venv
  *   venv/bin/python -m pip install fonttools==4.63.0
+ *   export SOURCE_DATE_EPOCH={SOURCE_DATE_EPOCH}
  *   venv/bin/python -c \"from fontTools import ttLib; from fontTools.varLib import instancer; f=ttLib.TTFont('source.ttf'); instancer.instantiateVariableFont(f,{{'wght':600,'wdth':100}},updateFontNames=True).save('static.ttf')\"
  *   venv/bin/pyftsubset static.ttf --unicodes={face['ranges']} \\
  *     --ignore-missing-unicodes --output-file={face['file']} \\
@@ -71,6 +76,11 @@ def banner(kind: str, face: dict[str, str]) -> str:
  *   binary_to_compressed_c -base85 {face['file']} \\
  *     {face['symbol'].removesuffix('_compressed_data_base85')} > compressed.inc
  *   tools/gen_character_text_script_font_header.py {kind} compressed.inc output.h
+ *
+ * The epoch pin is what makes the subset digest checkable: without it FontTools
+ * stamps the run's clock into head.modified and the output differs from the
+ * shipped face in exactly 12 bytes -- head.modified, the derived
+ * checkSumAdjustment, and head's entry in the sfnt table directory.
  *
  * Licensed under SIL Open Font License 1.1; see lib/fonts/LICENSE.txt.
  */
