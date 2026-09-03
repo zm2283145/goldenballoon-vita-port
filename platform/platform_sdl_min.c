@@ -947,7 +947,7 @@ static int sdl_init_gl(Uint32 base_flags) {
      * the DKR HUD/minimap draw calls in gfx_pc_dkr.c were never profiled
      * against a PowerVR SGX543MP4+. */
     GLboolean vglOk = vglInitExtended(0, s_initialWindowWidth, s_initialWindowHeight, 0x1800000,
-                     SCE_GXM_MULTISAMPLE_4X);
+                     SCE_GXM_MULTISAMPLE_NONE);
     s_window = NULL;
     g_sdlWindow = NULL;
     s_glReady = 1;
