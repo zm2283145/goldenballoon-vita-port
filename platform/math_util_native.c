@@ -318,6 +318,10 @@ u64 mdkr_presentation_rng_draws(void) {
     return gPresentationRNGDraws;
 }
 
+u64 mdkr_authoritative_rng_draws(void) {
+    return gAuthoritativeRNGDraws;
+}
+
 static unsigned int mdkr_fnv1a32_u16(const s16 *vals, int n) {
     unsigned int h = 2166136261u;
     int i;

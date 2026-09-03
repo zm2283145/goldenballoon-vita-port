@@ -31,6 +31,22 @@ at the shipping two-field cadence it routes back to `rand_range()` for
 byte-exact ROM ordering, and only at the opt-in enhanced cadence does it use the
 presentation stream.
 
+## The generator cycles, and that limits what a digest can prove
+
+`rand_range()` is not injective. From the boot seed `0x5141564D` it enters a
+cycle of **period 20** after 11 draws, so `gCurrentRNGSeed` thereafter only ever
+takes 20 values. Two builds whose authoritative draw counts differ by *k*
+produce byte-identical streams whenever *k* ≡ 0 (mod 20), and phase-shifted
+streams otherwise.
+
+Every "the digest did not move" statement in this document is therefore a
+statement about *k* mod 20, not about the draw. Measured on this tree with the
+`MDKR_TEST_AUTH_RNG_BURN` seam: 20 extra authoritative draws leave both arms of
+`check_authored_rng_compat.py` byte-identical (`191bee35`, `c2ac09ae`) and every
+other stream oracle green. That is why each arm now also pins the authoritative
+and presentation **draw counts**, read from the run's own `[RNGDRAWS]` line;
+those move one for one and have no blind spot.
+
 ## The rule the census applies
 
 A caller is redirectable only if **both** hold:
@@ -74,7 +90,7 @@ Retail ownership of this draw is independently pinned: the header of
 consumes the shared RNG stream, proved against hardware with the ares
 PC/return-address witness.
 
-**Menu image fields** — `game/src/menu.c:16916-16918`. `unk1A`/`unk1B`/`unk1C`
+**Menu image fields** — `game/src/menu.c:16916-16918` (now `:16936-16938`). `unk1A`/`unk1B`/`unk1C`
 on `gMenuImages` are written here and read nowhere in the tree. A probe counted
 **10 draws** on the same route, all of them before the race starts. Redirected,
 `check_state_hash.py` still passes. That is not a hole in it: its arms compare
@@ -133,22 +149,46 @@ Condition 1 holds for all eight: the value never reaches authoritative state.
 Condition 2 fails for an *unconditional* redirect, which is why the first
 edition of this census left them in place. All eight now draw through
 `cadence_compat_rand_range()`: authoritative stream at the shipping two-field
-cadence, presentation stream at the opt-in enhanced cadence. Each class was
-redirected in its own commit and measured with the original arm of
-`check_authored_rng_compat.py`, `check_state_hash.py`,
-`check_render_purity.py` and `check_presentation_rng_split.py`; the
-original-cadence digest stayed at `191bee35` after every one, which is the test
-that says the classification was right.
+cadence, presentation stream at the opt-in enhanced cadence.
+
+**What the classification rests on, and what it does not.** It rests on reading
+each consumer: `engineJitter` is read only where it becomes a pitch and volume
+delta; `gMenuImages[].unk1A/1B/1C` are written and read nowhere in the tree;
+the boss `randomOffset` only indexes `gBossSoundIDOffset[]`; the credits pick
+only selects a `gCreditsArray` string. None of the four appears in
+`platform/sim_hash.c`, and none is snapshot-registered.
+
+It does **not** rest on the original-cadence digest staying at `191bee35` after
+each redirect. That result is structural, not evidential:
+`cadence_compat_rand_range()` branches on `platform_sim_tick_fields()`, which is
+a per-run constant, so under `MDKR_SYNTH_FIELDS=2` every redirected site calls
+`rand_range()` down the identical path it called before. The original arm could
+not have moved. It is a guard against writing the redirect wrongly — putting a
+site on the presentation stream unconditionally, say — and nothing more. It is
+recorded below because a guard that held is worth recording, not because it
+proves anything about the consumers.
+
+Each class was redirected in its own commit and measured with both arms of
+`check_authored_rng_compat.py`, `check_state_hash.py`, `check_render_purity.py`
+and `check_presentation_rng_split.py`.
 
 | Caller | File:line | Path | Verdict | Evidence |
 |---|---|---|---|---|
-| `racer_sound_car` | `audio_vehicle.c:517-518` (2) | engine audio | **Redirected** | 989 draws on the determinism route with `MDKR_AUDIO=0`. Original digest unmoved; enhanced digest `64bf3d28` → `c2ac09ae` — this class is the entire enhanced rebaseline. `check_state_hash.py` passes, unlike the unconditional redirect the first edition measured, because the shipping cadence still calls `rand_range()`. The ares PC/return-address witness that pins retail ownership of these draws still describes the shipping build. |
-| `racer_boss_sound_spatial`, `play_random_boss_sound` | `vehicle_tricky.c:249,261` (2) | boss sound choice | **Redirected** | Neither arm of the oracle moves: the `race_state_oracle` route is Ancient Lake and never fights a boss. The gate that does reach this code is `check_weather_rng_order.py`, whose route is Wizpig 1 (level 37) and whose golden digest is the original arm; it stayed at `54e42a67`. |
-| `menu_image_load` | `menu.c:16916-16918` (3) | menu image fields | **Redirected** | Original digest unmoved. The enhanced digest is also unmoved, and that is measured rather than assumed: `MDKR_RNG_SPLIT_TRACE` shows the route's 10 calls diverting 20 draws (25490 → 25510) and the authoritative seed diverging from frame 2031, re-converging at 2599 when the settled menu stops drawing — before the oracle's first recorded row at frame 2640. An **unconditional** redirect of these three still moves the original arm to `bb1e7c49`, reproduced exactly as the first edition recorded it; that difference is what the cadence switch buys. |
-| `menu_credits_init` | `menu.c:15981` | credits cheat pick | **Redirected** | No recorded route reaches the credits, so neither arm moves. Redirected on the same argument as the rest: the draw precedes a return to racing. |
+| `racer_sound_car` | `audio_vehicle.c:517-518` (2) | engine audio | **Redirected** | 989 draws on the determinism route with `MDKR_AUDIO=0`. Enhanced digest `64bf3d28` → `c2ac09ae` — this class is the entire enhanced rebaseline, and it registered because its diverted count is not a multiple of 20, so it shifted the cycle's phase and every consumer with it. `check_state_hash.py` passes, unlike the unconditional redirect the first edition measured, because the shipping cadence still calls `rand_range()`. The ares PC/return-address witness that pins retail ownership of these draws still describes the shipping build. |
+| `racer_boss_sound_spatial`, `play_random_boss_sound` | `vehicle_tricky.c:249,261` (2) | boss sound choice | **Redirected** | Neither arm of the oracle moves, and here that genuinely is the route: `race_state_oracle` is Ancient Lake and never fights a boss, so the draw count does not move either. `check_weather_rng_order.py` does reach this code — Wizpig 1, level 37 — and stayed at `54e42a67`, but at original cadence, where the redirect is a no-op by construction. No gate in the tree exercises these two sites at enhanced cadence; see Gaps. |
+| `menu_image_load` | `menu.c:16936-16938` (3) | menu image fields | **Redirected** | The enhanced digest does not move, and the reason is the generator, not the route: this class's net effect is exactly **−20 authoritative draws** (16576 → 16556, from `[RNGDRAWS]`), one full turn of the 20-draw cycle, which no digest can see. The route makes 10 `menu_image_load()` calls of 3 draws each; 30 leave the authoritative stream at the call sites and the pre-race path returns 10, for the −20 net. An **unconditional** redirect of these three still moves the original arm to `bb1e7c49`, reproduced exactly as the first edition recorded it; that difference is what the cadence switch buys. |
+| `menu_credits_init` | `menu.c:15981` | credits cheat pick | **Redirected** | No recorded route reaches the credits, so neither the digest nor the draw count moves. Redirected on the same argument as the rest: the draw precedes a return to racing. Unexercised; see Gaps. |
 
-No caller in this class was reverted: the original-cadence digest moved for
-none of them.
+No caller in this class was reverted.
+
+### Gaps
+
+Two of the four classes are exercised by no gate at enhanced cadence — the boss
+sound because no recorded route fights a boss, the credits pick because no
+recorded route reaches the credits. Their redirects are correct by inspection
+and identical in shape to the two that are measured, but "no gate moved" is not
+evidence about them; it is the absence of evidence. A boss route recorded at
+enhanced cadence would close the first.
 
 ### Already split before this census — 24 sites
 
@@ -234,11 +274,12 @@ taken here:
   digest must not move at all. With both arms recorded, a cadence-conditional
   redirect is no longer an ungated spend: it is a measured one.
 
-  **Done.** All eight were redirected, one class per commit; the original arm
-  held `191bee35` after every one, and the enhanced arm was rebaselined exactly
-  once, `64bf3d28` → `c2ac09ae`, attributable in full to the engine-jitter
-  class (the only one of the four reached on that route). Per-class evidence is
-  in the verdict table above.
+  **Done.** All eight were redirected, one class per commit, and the enhanced
+  arm was rebaselined exactly once, `64bf3d28` → `c2ac09ae`. Only the
+  engine-jitter class moved that digest — not because the others did nothing,
+  but because a digest sees a draw-count change only when it is not a multiple
+  of the generator's 20-draw cycle. The arms now carry draw-count goldens for
+  exactly that reason. Per-class evidence is in the verdict table above.
 
 - Give a subsystem its own authoritative sub-stream seeded from the match seed,
   so removing its draws cannot shift anyone else's. That is a wire-format and

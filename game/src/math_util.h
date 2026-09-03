@@ -46,6 +46,11 @@ s32 rand_range(s32, s32);
 #ifdef NATIVE_PORT
 s32 presentation_rand_range(s32 min, s32 max);
 s32 cadence_compat_rand_range(s32 min, s32 max);
+/* Authoritative draw counter; stepped by rand_range() below. See the comment
+ * on its definition in platform/math_util_native.c for why a count is pinned
+ * beside the stream digests. */
+extern u64 gAuthoritativeRNGDraws;
+u64 mdkr_authoritative_rng_draws(void);
 #endif
 void mtxf_to_mtxs(MtxF *mf, MtxS *mi);
 void mtxf_transform_point(float mf[4][4], float x, float y, float z, float *ox, float *oy, float *oz);

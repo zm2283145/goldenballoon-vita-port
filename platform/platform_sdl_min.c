@@ -5823,6 +5823,31 @@ static void platform_frame_sync_impl(int swap, int count_present) {
         mdkr_boss_state_probe();
     }
 
+    /* Positive control for the authoritative draw-count golden
+     * (MDKR_TEST_AUTH_RNG_BURN=<n>): step the authoritative generator n extra
+     * times, once, on the first presented frame -- before the route has
+     * navigated anywhere, so the whole run is shifted uniformly.
+     *
+     * Its point is the blind spot it exposes. At n=20 the generator's cycle
+     * brings the seed back to where it started, so every recorded stream in
+     * the tree is byte-identical and every digest oracle passes; only a count
+     * moves. tests/check_authored_rng_compat.py drives exactly that arm and
+     * requires the count golden to fail on it. Off unless the variable is set,
+     * and never set by anything but a test. */
+    {
+        static int s_authRngBurnDone = 0;
+        if (!s_authRngBurnDone) {
+            const char *value = getenv("MDKR_TEST_AUTH_RNG_BURN");
+            long burn = (value != NULL && value[0] != '\0')
+                            ? strtol(value, NULL, 10) : 0;
+            s_authRngBurnDone = 1;
+            while (burn-- > 0) {
+                extern int32_t rand_range(int32_t min, int32_t max);
+                (void)rand_range(0, 1);
+            }
+        }
+    }
+
     /* RNG-stream split trace (MDKR_RNG_SPLIT_TRACE=1), emitted once per
      * PRESENTED frame so a frame on which the simulation does not tick still
      * produces a row. gCurrentRNGSeed/gPrevRNGSeed are the authoritative pair
@@ -5888,6 +5913,20 @@ static void platform_frame_sync_impl(int swap, int count_present) {
     }
 
     if (g_headlessFrames >= 0 && g_frameCounter >= g_headlessFrames) {
+        /* How many times each RNG stream was stepped over the whole run. The
+         * authoritative count is the observable the stream digests cannot
+         * supply: the ROM generator enters a period-20 cycle 11 draws after
+         * boot, so a build that takes 20, 40 or 60 more authoritative draws
+         * than another reaches the identical seed and records an identical
+         * stream. tests/check_authored_rng_compat.py pins this beside each
+         * arm's digest for exactly that reason. */
+        {
+            extern uint64_t mdkr_authoritative_rng_draws(void);
+            extern uint64_t mdkr_presentation_rng_draws(void);
+            printf("[RNGDRAWS] auth=%llu pres=%llu\n",
+                   (unsigned long long)mdkr_authoritative_rng_draws(),
+                   (unsigned long long)mdkr_presentation_rng_draws());
+        }
         /* Texture-decode path counters, so a headless check can confirm the route
          * it drove actually exercised them (see gfx_pc_dkr.h). */
         printf("[TEX] lineSwappedUploads=%u\n", gfx_dkr_texload_line_swapped);

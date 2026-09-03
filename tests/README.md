@@ -3641,13 +3641,39 @@ arm in `tests/check_authored_rng_compat.py`; the digests live only there, with
 their rebaseline history, so this page cannot drift out of step with them. Run
 one arm with `--arm original` / `--arm enhanced`, both by default.
 
-Three controls keep it from passing for the wrong reason: it flips one RNG bit
-in the first row of each arm and fails unless its own validator rejects that
-mutation; it re-reads `frames`, `cadence` and `synth_fields` for each arm out
-of `tools/oracle_routes/race_state_oracle.json` and fails when the pin and the
-route disagree, so a digest cannot quietly come to describe a different route;
-and it fails when the two arms produce the *same* digest, which would mean one
-of them did not take the cadence it asked for.
+Each arm also pins **how many times each generator was stepped** — the
+authoritative and presentation draw counts, read from the run's own
+`[RNGDRAWS]` line. That is not a restatement of the digest, and the reason is
+worth stating plainly:
+
+> `rand_range()` is not injective. From the boot seed `0x5141564D` it enters a
+> cycle of **period 20** after 11 draws, and `gCurrentRNGSeed` thereafter only
+> ever takes 20 values. Two builds whose authoritative draw counts differ by a
+> multiple of 20 record byte-identical streams. Measured on this tree: burning
+> 20 extra authoritative draws leaves **both** arms' digests exactly as pinned
+> and every other stream oracle in the tree green.
+
+So a digest that did not move is not evidence that a stream did not move — it
+is evidence about the draw-count delta modulo 20. The counts have no such blind
+spot; they move one for one, and they are what actually holds the
+cadence-conditional redirects, because a draw count is precisely what those
+change.
+
+Four controls keep the gate from passing for the wrong reason:
+
+1. it flips one RNG bit in the first row of each arm and fails unless its own
+   validator rejects that mutation;
+2. it re-reads `frames`, `cadence` and `synth_fields` for each arm out of
+   `tools/oracle_routes/race_state_oracle.json` and fails when the pin and the
+   route disagree, so a digest cannot quietly come to describe a different
+   route — with an in-process control that feeds it a deliberately wrong
+   `synth_fields` and requires the rejection;
+3. it drives `MDKR_TEST_AUTH_RNG_BURN=20` — one full turn of the cycle — and
+   requires the digest to be **unchanged** and the draw-count golden to
+   **fail**. If that control ever stops failing, the counts have stopped being
+   an independent observable;
+4. it fails when the two arms produce the *same* digest, which would mean one
+   of them did not take the cadence it asked for.
 
 ### The enhanced arm is the first pin of that stream
 
@@ -3661,13 +3687,18 @@ have moved silently. `docs/ref/presentation-rng-census.md` names that gap as the
 reason it declined to redirect its eight latent presentation-output callers.
 
 The enhanced digest was expected to move **exactly once**: in the commit that
-redirects those eight callers through `cadence_compat_rand_range()`, which by
-construction moves the enhanced-cadence stream and leaves the original-cadence
-stream byte-identical. That happened on 2026-09-03 (`64bf3d28` → `c2ac09ae`,
-with the original arm unmoved at `191bee35`), and the superseded pre-redirect
-value is kept named in the file so a bisect that lands on it says so. From here
-a change to the enhanced digest is a regression, and a change to the
-original-cadence digest is a misclassification.
+redirects those eight callers through `cadence_compat_rand_range()`. That
+happened on 2026-09-03 (`64bf3d28` → `c2ac09ae`), and the superseded
+pre-redirect value is kept named in the file so a bisect that lands on it says
+so. From here a change to the enhanced digest is a regression.
+
+The original-cadence digest did not move, and that is worth being precise
+about: it *could not have*. `cadence_compat_rand_range()` branches on
+`platform_sim_tick_fields()`, a per-run constant, so at two fields every
+redirected site calls `rand_range()` down the identical path. The original arm
+is a guard against writing a redirect unconditionally by mistake, not evidence
+that a redirected value is presentation-only — that classification rests on
+reading each consumer, and is recorded in the census.
 
 The reference is clean commit
 `64936e36b4c9ef7ecdce5beb93cd662d4318548d`. This deliberately replaces the
