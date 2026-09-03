@@ -49,6 +49,12 @@ static int dkr_host_errno(void) {
 }
 #undef errno
 
+#if defined(__vita__)
+extern void mdkr_vita_boot_log(const char *msg);
+#else
+#define mdkr_vita_boot_log(msg) ((void)0)
+#endif
+
 /* ======================================================================== *
  *  Durable-write primitives (POSIX / Win32 / Emscripten)
  * ------------------------------------------------------------------------
@@ -327,6 +333,7 @@ uintptr_t g_dkrArenaHi   = 0;
 uint32_t  g_dkrArenaSize = 0;
 
 void *dkr_arena_init(uint32_t size) {
+    { char lb0[96]; snprintf(lb0, sizeof(lb0), "arena: dkr_arena_init size=0x%x requested", (unsigned)size); mdkr_vita_boot_log(lb0); }
     /* Align the block to its own size so [base, base+size) never straddles a
      * 4 GB boundary — then every arena pointer shares one high-32-bit value. */
     uintptr_t align = size;
@@ -374,16 +381,19 @@ void *dkr_arena_init(uint32_t size) {
 #endif
     if (!p) {
         fprintf(stderr, "[MEM] arena alloc of %u bytes failed\n", size);
+        { char lb1[128]; snprintf(lb1, sizeof(lb1), "arena: memalign/aligned_alloc FAILED for size=0x%x align=0x%x", (unsigned)size, (unsigned)align); mdkr_vita_boot_log(lb1); }
         abort();
     }
 #if defined(__vita__)
     if ((uintptr_t)p < 0x10000000u) {
+        { char lb2[128]; snprintf(lb2, sizeof(lb2), "arena: base %p below 256MB ceiling (FATAL)", p); mdkr_vita_boot_log(lb2); }
         fprintf(stderr, "[MEM] arena base %p is below the 256 MB "
                         "segment-token ceiling -- the low-arena/segment-token "
                         "collision this port avoids by placement would apply here\n", p);
         abort();
     }
 #endif
+    { char lb3[96]; snprintf(lb3, sizeof(lb3), "arena: alloc OK, base=%p size=0x%x", p, (unsigned)size); mdkr_vita_boot_log(lb3); }
     memset(p, 0, size);
     g_dkrArenaBase = p;
     g_dkrArenaSize = size;
