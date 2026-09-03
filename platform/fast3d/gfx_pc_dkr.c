@@ -1674,6 +1674,30 @@ static inline void *dkr_resolve(uint32_t addr) {
      * host the same non-colliding token domains. */
     if (addr >= 0x80000000u) {
 #if defined(__vita__)
+        /* This platform's own convention (see dkr_arena_init / the arena
+         * ceiling checks elsewhere in this file) treats anything below the
+         * 256 MB segment-token ceiling as NOT a real host pointer -- code,
+         * the arena, and every other legitimate Vita allocation this app
+         * owns live well above it. Unlike the arena-reconstruction loop
+         * just above (which only accepts a candidate that lands INSIDE the
+         * known arena window), this 'direct recovery' fast path had no
+         * floor at all and would hand back literally any bit pattern with
+         * bit 31 set as a trusted pointer. That is what produced the
+         * observed wild-jump crash: addr=0x815041f0 flipped to 0x015041f0,
+         * which is not a valid Vita host address, and got dereferenced
+         * anyway. Reject it here instead of one call site at a time. */
+        if (flip != 0 && flip < 0x10000000u) {
+            static int s_resolveRejectLogCount = 0;
+            if (s_resolveRejectLogCount < 20) {
+                char lb[128];
+                snprintf(lb, sizeof(lb),
+                         "resolve: REJECTING implausible flip addr=0x%x -> flip=0x%x (below 256MB floor)",
+                         (unsigned)addr, (unsigned)flip);
+                mdkr_vita_boot_log(lb);
+                s_resolveRejectLogCount++;
+            }
+            return NULL;
+        }
         {
             static int s_resolveLogCount = 0;
             if (s_resolveLogCount < 20) {
