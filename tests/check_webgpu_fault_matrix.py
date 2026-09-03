@@ -5,6 +5,12 @@ This is deliberately ROM/GPU-free. Runtime checks prove the reachable routes;
 this gate prevents the registry from growing names that no constructor/status
 site consumes, and prevents inherited compatibility code from being mistaken
 for shipped DKR coverage.
+
+Shipped-conditional routes are shipped, not dormant: the custom-character
+skinned renderer only draws once a player has installed and selected a
+Character Workshop package, but it is real player-reachable code in both
+dialects, so its points carry runtime coverage on a route that installs a
+generated fixture character and actually draws it.
 """
 
 from __future__ import annotations
@@ -56,6 +62,45 @@ MODERN = {
     "modern.uniform",
     "modern.sampler",
     "modern.bind-group",
+}
+SKINNED_CHARACTER = {
+    # Custom-character (Character Workshop) skinned renderer. Unlike MODERN
+    # above -- inherited mgb64 mesh code no DKR route ever reaches -- this path
+    # is shipped: gfx_pc_dkr.c calls draw_modern_skinned() for every registered
+    # replacement draw, and gfx_webgpu.c owns it in both dialects (the same
+    # translation unit builds for native and Emscripten, with no guard around
+    # the skinned path). It is conditional on a player having installed and
+    # selected a custom character, which is why no ROM-only route reaches it.
+    # Every constructor here is consumed by wgpu_draw_modern_skinned(), which
+    # answers a NULL with s_skinned_refused_draws++ and an early return: the
+    # custom draw is dropped for that frame and the retail donor scene keeps
+    # rendering. No renderer switch, no device rebuild, no retry.
+    "skinned.module",
+    "skinned.bind-group-layout",
+    "skinned.pipeline-layout",
+    "skinned.pipeline",
+    "skinned.vertex-buffer",
+    "skinned.index-buffer",
+    "skinned.texture",
+    "skinned.view",
+    "skinned.uniform",
+    "skinned.sampler",
+    "skinned.bind-group",
+}
+SKINNED_VISIBILITY = {
+    # The Workshop's optional occlusion-evidence pass (opaque-depth visibility
+    # tiles). Every failure lands on platform_modern_character_visibility_fail()
+    # -- the diagnostic is published UNAVAILABLE and the preview continues
+    # drawing. The feature is skipped; the frame is not.
+    "skinned.visibility-query",
+    "skinned.visibility-resolve",
+    "skinned.visibility-readback",
+    "skinned.visibility-texture",
+    "skinned.visibility-view",
+    "skinned.visibility-seed-pipeline",
+    "skinned.visibility-equal-pipeline",
+    "skinned.visibility-occluded-pipeline",
+    "skinned.visibility-pass",
 }
 DORMANT_MIDFRAME_READBACK = {
     "readback.partial-finish",
@@ -159,6 +204,19 @@ def classify(name: str) -> Classification:
             "fatal-at-boundary",
         )
 
+    if name in SKINNED_CHARACTER:
+        return Classification(
+            "shipped-conditional-skinned-character",
+            "native+browser",
+            "local-degrade-refused-custom-draw",
+        )
+    if name in SKINNED_VISIBILITY:
+        return Classification(
+            "shipped-conditional-workshop-visibility",
+            "native+browser",
+            "local-degrade-visibility-unavailable",
+        )
+
     if name in LOCAL_DEGRADE:
         return Classification("shipped-conditional", "native+browser", "local-degrade")
     if name in BOUNDED_RETRY:
@@ -225,7 +283,23 @@ def wired_symbols(source: str) -> set[str]:
         r"WGPU_FAULT_CREATE\s*\(\s*([A-Z0-9_]+)\s*,",
         source,
     )
-    return set(direct) | set(constructors)
+    # A site that picks one of several points for the same call selects them
+    # through a local `enum GfxWebgpuFaultPoint` variable. Credit those symbols
+    # only when that exact variable is the argument of a fault query, so naming
+    # a point without querying it still counts as unwired.
+    selected = set()
+    for variable, initializer in re.findall(
+        r"enum\s+GfxWebgpuFaultPoint\s+(\w+)\s*=(.*?);", source, re.S
+    ):
+        if re.search(
+            r"gfx_webgpu_fault_(?:hit|selected)\s*\(\s*"
+            + re.escape(variable) + r"\s*\)",
+            source,
+        ):
+            selected |= set(
+                re.findall(r"GFX_WEBGPU_FAULT_([A-Z0-9_]+)", initializer)
+            )
+    return set(direct) | set(constructors) | selected
 
 
 def named_runtime_points(source: str, public_names: set[str]) -> set[str]:
@@ -244,7 +318,12 @@ def named_runtime_points(source: str, public_names: set[str]) -> set[str]:
 
 
 def main() -> int:
-    registry = REGISTRY_RE.findall(HEADER.read_text(encoding="utf-8"))
+    # The X-macro list is a backslash-continued #define, and a long entry may
+    # wrap between its symbol and its public name. Join the continuations
+    # first: a wrapped entry that the pattern skipped would silently escape
+    # both the wiring proof and the classification below.
+    header = HEADER.read_text(encoding="utf-8").replace("\\\n", " ")
+    registry = REGISTRY_RE.findall(header)
     if not registry:
         raise AssertionError("fault registry is empty or unreadable")
     symbols = [symbol for symbol, _ in registry]

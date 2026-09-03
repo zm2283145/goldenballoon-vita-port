@@ -432,8 +432,8 @@ last-complete-frame hold. It reports the raw maximum and frame number without
 using that scheduler/menu-transition
 outlier as a pipeline proxy.
 
-`check_webgpu_fault_matrix.py` cross-checks the public 113-point registry
-against the executable runtime matrices. All 83 native-required points must be
+`check_webgpu_fault_matrix.py` cross-checks the public 133-point registry
+against the executable runtime matrices. All 103 native-required points must be
 named by `check_webgpu_recovery.py` or `check_app_adopted_pacing.py`; all three
 browser-required points (one browser-only and two with intentionally different
 native/browser policies) must be named by `check_browser_runtime.py`; and none
@@ -2899,11 +2899,20 @@ python3 tests/check_webgpu_recovery.py \
   --build build --rom baserom.us.v80.z64
 ```
 
-This integration matrix injects 76 failures across instance, surface, adapter,
+This integration matrix runs 97 cases: 96 injected failures across instance, surface, adapter,
 device, queue, and configure bring-up; every surface-status repair class;
 featureless depth clipping; both native device-loss outcomes; and all
 Pure/Remastered scene-target, shader, texture, draw, post, resolve, mip, capture,
-and readback constructors reached by DKR. Required resources may rebuild the
+and readback constructors reached by DKR, plus one un-injected baseline. The
+last 21 arms install a generated custom character into a private catalog and
+drive the direct Workshop preview context, the only route that reaches the
+skinned renderer and its optional occlusion-evidence pass. The baseline first
+shows that route accepting every custom draw and publishing visibility
+evidence; each of the 20 injections then proves the failure stays local — the
+custom draw is refused or the evidence is withheld while the frame still
+completes. These 21 runs of 180 frames each add several minutes to this
+GPU-serial lane.
+Required resources may rebuild the
 WebGPU device once, then must terminate cleanly without switching renderers;
 mip and diagnostic failures must stay local. Every
 case uses a private save directory and rejects driver validation errors,
@@ -2916,7 +2925,10 @@ every public fault name to be wired to a real backend site and classifies every
 site by product route, dialect, and failure policy. It deliberately identifies
 the inherited MGB64 minimap, modern-mesh, and prewarm paths — and GE007's
 uncalled mid-draw readback probes — as dormant in DKR; those names are not
-counted as runtime coverage.
+counted as runtime coverage. The custom-character skinned points are the
+opposite case: shipped-conditional, reachable only with an installed and
+selected Workshop package, and therefore covered by real arms rather than
+excused.
 
 ## Real browser runtime — `tests/check_browser_runtime.py`
 
