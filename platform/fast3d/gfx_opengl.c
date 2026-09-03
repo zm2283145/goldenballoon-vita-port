@@ -994,6 +994,115 @@ static int gfx_world_pos_diag_enabled(void) {
     return v;
 }
 
+#if defined(__vita__)
+static int dkr_vita_is_ident_char(char c) {
+    return c == '_' ||
+           (c >= '0' && c <= '9') ||
+           (c >= 'a' && c <= 'z') ||
+           (c >= 'A' && c <= 'Z');
+}
+
+/* Copies `line` into `dst`, rewriting every whole-word occurrence of
+ * "fragColor" into "gl_FragColor". Returns the number of bytes written
+ * (never NUL-terminated; caller tracks length explicitly). */
+static size_t dkr_vita_rewrite_line_fragcolor(char *dst, size_t dst_cap,
+                                               const char *line, size_t line_len) {
+    size_t out = 0;
+    size_t i = 0;
+    while (i < line_len) {
+        int is_word_start = (i == 0) || !dkr_vita_is_ident_char(line[i - 1]);
+        if (is_word_start && (line_len - i) >= 9 &&
+            strncmp(line + i, "fragColor", 9) == 0 &&
+            ((i + 9 >= line_len) || !dkr_vita_is_ident_char(line[i + 9]))) {
+            if (out + 12 > dst_cap) {
+                break;
+            }
+            memcpy(dst + out, "gl_FragColor", 12);
+            out += 12;
+            i += 9;
+            continue;
+        }
+        if (out + 1 > dst_cap) {
+            break;
+        }
+        dst[out++] = line[i++];
+    }
+    return out;
+}
+
+/* vitaGL's runtime GLSL->Cg translator only understands the legacy
+ * WebGL/GLSL-ES-1.00 dialect: `attribute`/`varying` storage qualifiers
+ * and the builtin `gl_FragColor` output (its glsl_translator_hdr.h
+ * hardcodes exactly those semantic bindings; `#version`/`precision`
+ * lines are safely comment-stripped, but there is no handling anywhere
+ * in the translator for ES3 top-level `in`/`out` variable qualifiers or
+ * a user-declared fragment output variable). This generator emits ES3-
+ * style GLSL (`#version 320 es`, `in`/`out`, `out vec4 fragColor;`) for
+ * the MGB64_PORTMASTER_GLES platforms it targets elsewhere; fed straight
+ * through on Vita, those unrecognized qualifiers and the never-bound
+ * `fragColor` output reach the closed-source vitaShaRK/Cg compiler as
+ * malformed Cg, which hard-aborts() instead of failing gracefully --
+ * the exact very-first-real-shader-compile crash this file's other
+ * Vita-only diagnostics were added to chase. Rewrite the fully-built
+ * source into the legacy dialect in place, line by line, before it is
+ * ever handed to glCompileShader. */
+static void dkr_vita_rewrite_glsl_to_legacy(char *buf, size_t *len, int is_fragment) {
+    static char tmp[18432];
+    size_t out_len = 0;
+    size_t i = 0;
+    size_t total = *len;
+    while (i < total) {
+        size_t line_start = i;
+        while (i < total && buf[i] != '\n') {
+            i++;
+        }
+        size_t raw_line_len = i - line_start;
+        int had_newline = (i < total);
+        if (had_newline) {
+            i++;
+        }
+
+        char rewritten[512];
+        size_t rewritten_len = dkr_vita_rewrite_line_fragcolor(
+            rewritten, sizeof(rewritten), buf + line_start, raw_line_len);
+
+        if (rewritten_len == strlen("out vec4 gl_FragColor;") &&
+            memcmp(rewritten, "out vec4 gl_FragColor;", rewritten_len) == 0) {
+            /* Drop: redeclaring the gl_FragColor builtin is illegal once
+             * it's the rename target above. */
+            continue;
+        }
+
+        const char *new_prefix = NULL;
+        size_t old_prefix_len = 0;
+        if (rewritten_len >= 3 && memcmp(rewritten, "in ", 3) == 0) {
+            new_prefix = is_fragment ? "varying " : "attribute ";
+            old_prefix_len = 3;
+        } else if (rewritten_len >= 4 && memcmp(rewritten, "out ", 4) == 0) {
+            new_prefix = "varying ";
+            old_prefix_len = 4;
+        }
+
+        if (new_prefix != NULL) {
+            size_t new_prefix_len = strlen(new_prefix);
+            memcpy(tmp + out_len, new_prefix, new_prefix_len);
+            out_len += new_prefix_len;
+            size_t rest_len = rewritten_len - old_prefix_len;
+            memcpy(tmp + out_len, rewritten + old_prefix_len, rest_len);
+            out_len += rest_len;
+        } else {
+            memcpy(tmp + out_len, rewritten, rewritten_len);
+            out_len += rewritten_len;
+        }
+        if (had_newline) {
+            tmp[out_len++] = '\n';
+        }
+    }
+    memcpy(buf, tmp, out_len);
+    *len = out_len;
+}
+#endif
+
 static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shader_id0, uint32_t shader_id1) {
     struct CCFeatures cc_features;
     gfx_cc_get_features(shader_id0, shader_id1, &cc_features);
@@ -1617,7 +1726,7 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
             char lb[192];
             snprintf(lb, sizeof(lb),
                      "shader: about to compile+link id0=0x%llx id1=0x%x tex=%d,%d fog=%d "
-                     "alpha=%d 2cyc=%d inputs=%d worldpos=%d vs_len=%u fs_len=%u",
+                     "alpha=%d 2cyc=%d inputs=%d worldpos=%d vs_len=%u fs_len=%u (pre-rewrite)",
                      (unsigned long long)shader_id0, (unsigned)shader_id1,
                      cc_features.used_textures[0], cc_features.used_textures[1],
                      cc_features.opt_fog, cc_features.opt_alpha, cc_features.opt_2cyc,
@@ -1625,6 +1734,21 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
                      (unsigned)vs_len, (unsigned)fs_len);
             mdkr_vita_boot_log(lb);
             s_shaderLogCount++;
+        }
+    }
+    dkr_vita_rewrite_glsl_to_legacy(vs_buf, &vs_len, 0);
+    dkr_vita_rewrite_glsl_to_legacy(fs_buf, &fs_len, 1);
+    {
+        static int s_shaderSrcLogCount = 0;
+        if (s_shaderSrcLogCount < 5) {
+            char lb[600];
+            snprintf(lb, sizeof(lb), "shader: rewritten VS (len=%u):\n%.*s",
+                     (unsigned)vs_len, (int)(vs_len < 500 ? vs_len : 500), vs_buf);
+            mdkr_vita_boot_log(lb);
+            snprintf(lb, sizeof(lb), "shader: rewritten FS (len=%u):\n%.*s",
+                     (unsigned)fs_len, (int)(fs_len < 500 ? fs_len : 500), fs_buf);
+            mdkr_vita_boot_log(lb);
+            s_shaderSrcLogCount++;
         }
     }
 #endif
