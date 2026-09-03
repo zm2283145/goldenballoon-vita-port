@@ -375,6 +375,18 @@ public:
         if (const char *t = std::getenv("MDKR_ONLINE_LOBBY_DROP")) {
             lobbyDropEnabled_ = std::strtoul(t, nullptr, 10) != 0u;
         }
+        /* The grace's own control (D1): 0 acts on the room's verdict the
+         * moment it arrives, as the plumbing did before the grace existed.
+         * Bounded so the switch can only shorten the ladders' work, never
+         * turn the drop off by the back door -- MDKR_ONLINE_LOBBY_DROP is
+         * what does that. */
+        if (const char *t = std::getenv("MDKR_ONLINE_LOBBY_DROP_GRACE")) {
+            char *end = nullptr;
+            const unsigned long v = std::strtoul(t, &end, 10);
+            if (end != t && *end == '\0' && v <= kLobbyDropGraceMaxTicks) {
+                lobbyDropGraceTicks_ = static_cast<uint32_t>(v);
+            }
+        }
     }
 
     ~LiveAdapter() override {
@@ -1592,6 +1604,8 @@ private:
         roomDeparted_.clear();
         pendingDropTicks_.clear();
         departureFinalised_.clear();
+        departureGrace_.clear();
+        departureHeld_.clear();
         dropRefusalsRecorded_.clear();
         dropRefusalsSeen_ = 0u;
         /* A proposal names one race. Drop any still queued in the mesh, so a
@@ -2049,6 +2063,10 @@ private:
                                    proposedTick);
             }
         }
+        /* Any open peer-silence grace, judged against this pump's authored
+         * head. After the drains above, so a proposal or an input bundle that
+         * arrived in this same pump is part of the judgement. */
+        serviceDepartureGraces();
         if (mesh_ && mesh_->consumeRaceAbort() && !raceAbortReceived_) {
             raceAbortReceived_ = true;
             mdkr_net_failure_ring_record_host(
@@ -2354,6 +2372,15 @@ private:
      * a stalled launcher loses a sample and widens its own measured jitter,
      * which is the truth about this route. */
     static constexpr uint32_t kRouteEchoBudgetPerPump = 8u;
+    /* Authored ticks a room departure listens to the peer link before it is
+     * acted on (D1). Two: one full authored tick of silence plus the tick the
+     * verdict landed in, which is ~66 ms at 30 Hz -- long enough that a peer
+     * still feeding the race at its own send cadence is certain to be heard,
+     * short enough that a real quit still cards inside four ticks. The
+     * ceiling bounds MDKR_ONLINE_LOBBY_DROP_GRACE so that switch can shorten
+     * the ladders' work but never quietly disable the drop. */
+    static constexpr uint32_t kLobbyDropGraceTicks = 2u;
+    static constexpr uint32_t kLobbyDropGraceMaxTicks = 30u;
     struct RouteEchoBudget {
         uint64_t pump;
         uint32_t spent;
@@ -3140,13 +3167,17 @@ private:
      * not the peer-to-peer path, is what membership is measured against.
      */
 
-    /* Whether the ROOM's own verdict about `endpointId` can act on this
-     * endpoint now: a race is running, the plumbing is armed, the endpoint
-     * owns seats in this race, and this is the first report for it. */
+    /* Whether the ROOM's own verdict about `endpointId` can open a grace on
+     * this endpoint now: a race is running, the plumbing is armed, the
+     * endpoint owns seats in this race, and this is the first report for it --
+     * whether that report is still inside its grace, was already acted on, or
+     * was held. */
     bool roomDepartureFinalises(uint64_t endpointId) const {
         return raceReady_ && lobbyDropEnabled_ &&
                peerSlotMask_.count(endpointId) != 0u &&
-               roomDeparted_.count(endpointId) == 0u;
+               roomDeparted_.count(endpointId) == 0u &&
+               departureGrace_.count(endpointId) == 0u &&
+               departureHeld_.count(endpointId) == 0u;
     }
 
     /* Every endpoint still in this race, this one included, in roster order.
@@ -3271,17 +3302,145 @@ private:
             departureFinalised_.count(endpointId) != 0u) {
             return;
         }
+        /* The room's verdict is in, but this endpoint's own grace has not run
+         * out yet: a peer's proposal must not finalise a seat this endpoint is
+         * still listening to the peer on. A held verdict never reaches here at
+         * all -- holding erases the room verdict itself. */
+        if (departureGrace_.count(endpointId) != 0u) return;
         const auto agreed = pendingDropTicks_.find(endpointId);
         if (agreed == pendingDropTicks_.end()) return;
         departureFinalised_.insert(endpointId);
         finaliseDepartedSeats(endpointId, agreed->second);
     }
 
-    /* The room reported this endpoint gone. */
+    /* The room reported this endpoint gone. The verdict is recorded and a
+     * peer-silence grace opens on it; nothing is proposed, finalised or shown
+     * until that grace runs out (see the grace's own comment). */
     void onRoomDeparture(uint64_t endpointId) {
         if (!roomDepartureFinalises(endpointId)) return;
-        const std::vector<uint64_t> alive = survivingEndpoints(endpointId);
         roomDeparted_.insert(endpointId);
+        const uint64_t packets = peerAuthenticatedPackets(endpointId);
+        const uint32_t opened = authoredTick();
+        departureGrace_.emplace(endpointId, DepartureGrace{opened, packets});
+        MDKR_ONLINE_LOG(
+            "[MESH] room departure ep=%llu grace opened at tick=%u for %u "
+            "ticks (packets=%llu)\n",
+            (unsigned long long)endpointId, opened, lobbyDropGraceTicks_,
+            (unsigned long long)packets);
+        /* A zero grace resolves in this same pump, which is what the grace's
+         * positive control measures against. */
+        resolveDepartureGrace(endpointId, packets, opened);
+    }
+
+    /* ---- The peer-silence grace (D1) ------------------------------------ *
+     *
+     * A false "opponent left" mid-race is the worst thing this plumbing can
+     * do to a player, and the room's verdict alone cannot tell a real quit
+     * from a room-service wobble: both close a member's socket, and only one
+     * of them stops the peer racing. So the room stays the trigger, and the
+     * peer link is the corroboration. For kLobbyDropGraceTicks authored ticks
+     * after the verdict arrives, an authenticated packet from that endpoint --
+     * an input bundle, a preflight fragment, an input repair -- is proof the
+     * peer is still there, and the verdict is dropped for this race: the
+     * transport's own ladders go back to owning the loss, exactly as they do
+     * when the room says nothing at all.
+     *
+     * The grace is measured in AUTHORED TICKS, never in wall-clock: this
+     * decision changes what the simulation commits, so it may only depend on
+     * the input history every endpoint shares. A real quit closes the peer's
+     * channels too, so the common case stays silent through the grace and
+     * pays it in full -- two ticks, ~66 ms at 30 Hz, against the 20-30 s the
+     * ladders would have taken.
+     *
+     * The proposer waits out its OWN grace before it proposes anything: a
+     * proposal is a claim that a peer has stopped racing, and an endpoint that
+     * has not yet finished listening has no business making it. A proposer
+     * that holds therefore proposes nothing, and with no agreed tick no
+     * survivor finalises anything -- so a hold by the one endpoint entitled to
+     * propose is unanimous by construction. The asymmetry that remains
+     * needs three or more endpoints: a survivor that holds while the PROPOSER
+     * heard silence refuses a proposal it has no room verdict left to
+     * intersect, and carries on racing where the proposer ended. Agreeing on a hold, rather than only on
+     * a tick, needs a round trip this layer does not have; 2P (the only shape
+     * any end-to-end lane runs) cannot reach it, because the sole survivor is
+     * always the proposer. */
+
+    struct DepartureGrace {
+        /* Authored head when the room's verdict arrived. */
+        uint32_t openedAtTick;
+        /* Authenticated packets seen from the endpoint at that moment. */
+        uint64_t packetsAtOpen;
+    };
+
+    uint32_t authoredTick() const {
+        return raceTransport_.history.current_tick;
+    }
+
+    uint64_t peerAuthenticatedPackets(uint64_t endpointId) const {
+        uint64_t packets = 0u;
+        if (mesh_) (void)mesh_->authenticatedPacketCount(endpointId, &packets);
+        return packets;
+    }
+
+    /* One grace's decision, given what the peer has sent and where the
+     * authored head is now. Silent and elapsed: act on the verdict. Spoke:
+     * hold it for the rest of the race. Neither: keep waiting. Split from its
+     * inputs so the decision can be pinned without a mesh or a live race. */
+    void resolveDepartureGrace(uint64_t endpointId, uint64_t packetsNow,
+                               uint32_t tickNow) {
+        const auto grace = departureGrace_.find(endpointId);
+        if (grace == departureGrace_.end()) return;
+        if (packetsNow != grace->second.packetsAtOpen) {
+            holdDeparture(endpointId, packetsNow - grace->second.packetsAtOpen,
+                          grace->second.openedAtTick);
+            return;
+        }
+        if (tickNow - grace->second.openedAtTick < lobbyDropGraceTicks_) return;
+        departureGrace_.erase(grace);
+        actOnDeparture(endpointId);
+    }
+
+    /* Every open grace, against the live mesh and the live authored head. */
+    void serviceDepartureGraces() {
+        if (departureGrace_.empty()) return;
+        const uint32_t tickNow = authoredTick();
+        std::vector<uint64_t> pending;
+        pending.reserve(departureGrace_.size());
+        for (const auto &entry : departureGrace_) pending.push_back(entry.first);
+        for (uint64_t endpointId : pending) {
+            resolveDepartureGrace(endpointId,
+                                  peerAuthenticatedPackets(endpointId),
+                                  tickNow);
+        }
+    }
+
+    /* The peer spoke inside its grace, so the room's verdict is wrong about
+     * this race and is discarded: the endpoint leaves roomDeparted_ (it is
+     * still a survivor, and the proposer rule must keep counting it) and is
+     * remembered as held, so a repeat of the same verdict cannot re-arm the
+     * grace and a peer's proposal for it can never find a room verdict to
+     * intersect. Recorded in the forensics ring, not only in the log: a card
+     * the player did NOT see is invisible in a capture otherwise. */
+    void holdDeparture(uint64_t endpointId, uint64_t packets,
+                       uint32_t openedAtTick) {
+        departureGrace_.erase(endpointId);
+        roomDeparted_.erase(endpointId);
+        pendingDropTicks_.erase(endpointId);
+        departureHeld_.insert(endpointId);
+        mdkr_net_failure_ring_record_tick(
+            MDKR_NET_FAILURE_LIFECYCLE, authoredTick(),
+            MDKR_NET_FAILURE_NO_SLOT, MDKR_NET_LIFECYCLE_DEPARTURE_HELD,
+            static_cast<uint32_t>(packets), openedAtTick);
+        MDKR_ONLINE_LOG(
+            "[MESH] room departure ep=%llu HELD: %llu authenticated packets "
+            "inside the grace opened at tick=%u; transport ladders decide\n",
+            (unsigned long long)endpointId, (unsigned long long)packets,
+            openedAtTick);
+    }
+
+    /* The grace ran out in silence: the room's verdict stands. */
+    void actOnDeparture(uint64_t endpointId) {
+        const std::vector<uint64_t> alive = survivingEndpoints(endpointId);
         uint32_t tick = 0u;
         if (mdkr_match_drop_is_proposer(
                 localEndpointId_, alive.data(),
@@ -3668,6 +3827,41 @@ public:
                          static_cast<unsigned>(alive.size()))
                          ? 2u
                          : 0u);
+    }
+
+    /* Test-only (beta): the peer-silence grace on a room departure, staged on
+     * a mesh-free adapter (local 200, departing 300, race epoch 5) so the
+     * decision can be driven without a live peer to fall silent. The room's
+     * verdict opens the grace; `ticksElapsed` is where the authored head has
+     * reached when it is next judged, and `peerSpoke` whether an
+     * authenticated packet arrived from the departed endpoint meanwhile.
+     * Returns a bitfield: 1 the grace is still open, 2 the verdict was held,
+     * 4 the seats were finalised, 8 a finalisation tick was proposed, 16 the
+     * race ended. Never called by the launcher. */
+    static unsigned testDepartureGrace(unsigned graceTicks,
+                                       unsigned ticksElapsed, bool peerSpoke) {
+        MdkrOnlineLiveAdapterOptions o;
+        o.sessionId = 1u;
+        LiveAdapter a(o);
+        a.localEndpointId_ = 200u;
+        a.raceReady_ = true;
+        a.raceEpoch_ = 5u;
+        a.lobbyDropGraceTicks_ = static_cast<uint32_t>(graceTicks);
+        /* Enough of a transport for the tick rule to answer at all: the
+         * arithmetic itself is pinned in test_match_transport.c, and what is
+         * being read here is only WHETHER the grace let it run. */
+        a.raceTransport_.ready = true;
+        a.peerSlotMask_[300u] = 0x2u;
+        a.meshRoster_.push_back(MdkrMatchPeerSlotOwner{200u, 0x1u});
+        a.meshRoster_.push_back(MdkrMatchPeerSlotOwner{300u, 0x2u});
+        a.onRoomDeparture(300u);
+        a.resolveDepartureGrace(300u, peerSpoke ? 1u : 0u,
+                                static_cast<uint32_t>(ticksElapsed));
+        return (a.departureGrace_.count(300u) != 0u ? 1u : 0u) |
+               (a.departureHeld_.count(300u) != 0u ? 2u : 0u) |
+               (a.departureFinalised_.count(300u) != 0u ? 4u : 0u) |
+               (a.pendingDropTicks_.count(300u) != 0u ? 8u : 0u) |
+               (a.racePeerLost_ ? 16u : 0u);
     }
 
     /* Test-only (beta): the guard on a PEER's finalisation proposal, on a
@@ -4345,12 +4539,19 @@ private:
     std::set<uint64_t> roomDeparted_;
     std::map<uint64_t, uint32_t> pendingDropTicks_;
     std::set<uint64_t> departureFinalised_;
+    /* D1. `departureGrace_` is the verdicts still listening for the peer, and
+     * `departureHeld_` the ones the peer talked its way out of -- dropped for
+     * the rest of this race, and remembered so the same verdict cannot re-arm
+     * the grace. Race-scoped like the three above. */
+    std::map<uint64_t, DepartureGrace> departureGrace_;
+    std::set<uint64_t> departureHeld_;
     /* Which (sender, DropRefusal) pairs already reached the forensics ring
      * this race, one bit per reason, and the total refusals behind them.
      * Race-scoped like the three above. */
     std::map<uint64_t, uint8_t> dropRefusalsRecorded_;
     uint32_t dropRefusalsSeen_ = 0u;
     bool lobbyDropEnabled_ = true;
+    uint32_t lobbyDropGraceTicks_ = kLobbyDropGraceTicks;
     bool raceAbortReceived_ = false; /* peer told us it aborted the race */
     bool raceLossFailureLatched_ = false; /* failure_ came from mapLostReason */
     bool raceEndFailureLatched_ = false;  /* suppress stale lobby under a
@@ -4563,6 +4764,13 @@ bool mdkr_online_live_adapter_test_drop_proposal_applied(unsigned order) {
 unsigned mdkr_online_live_adapter_test_route_echoes_allowed(
     unsigned peers, unsigned probes_per_pump, unsigned pumps) {
     return LiveAdapter::testRouteEchoesAllowed(peers, probes_per_pump, pumps);
+}
+
+unsigned mdkr_online_live_adapter_test_departure_grace(unsigned grace_ticks,
+                                                       unsigned ticks_elapsed,
+                                                       bool peer_spoke) {
+    return LiveAdapter::testDepartureGrace(grace_ticks, ticks_elapsed,
+                                           peer_spoke);
 }
 
 unsigned mdkr_online_live_adapter_test_drop_refusal_records(unsigned rounds) {

@@ -614,6 +614,17 @@ bool mdkr_online_live_adapter_test_drop_proposal_applied(unsigned order);
  * launcher. */
 unsigned mdkr_online_live_adapter_test_route_echoes_allowed(
     unsigned peers, unsigned probes_per_pump, unsigned pumps);
+/* Pin the peer-silence grace on a room departure (D1), staged on a mesh-free
+ * adapter with local 200 and departing 300. `grace_ticks` is the grace length
+ * in authored ticks, `ticks_elapsed` where the authored head has reached when
+ * the grace is next judged, and `peer_spoke` whether an authenticated packet
+ * arrived from the departed endpoint meanwhile. Returns a bitfield: 1 the
+ * grace is still open, 2 the verdict was held, 4 the seats were finalised,
+ * 8 a finalisation tick was proposed, 16 the race ended. Never called by the
+ * launcher. */
+unsigned mdkr_online_live_adapter_test_departure_grace(unsigned grace_ticks,
+                                                       unsigned ticks_elapsed,
+                                                       bool peer_spoke);
 /* Pin that a race_drop refusal flood leaves a bounded mark on the forensics
  * ring: `rounds` refusals of each of the three reasons, and the count of
  * DEPARTURE_REFUSED records the ring holds afterwards. Resets the ring.

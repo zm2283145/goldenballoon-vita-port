@@ -575,6 +575,46 @@ static void test_drop_proposal_is_checked_before_it_counts() {
     CHECK(mdkr_online_live_adapter_test_drop_proposal_applied(1u));
 }
 
+/* D1: the peer-silence grace on the room's departure verdict. The room owns
+ * membership, but a room-service wobble closes a member's socket exactly like
+ * a quit does -- and only one of the two stops the peer racing. So the verdict
+ * waits out a grace measured in AUTHORED ticks, and an authenticated packet
+ * from the departed endpoint inside it drops the verdict for the race.
+ *
+ * Seam bits: 1 the grace is still open, 2 the verdict was held, 4 the seats
+ * were finalised, 8 a finalisation tick was proposed, 16 the race ended. */
+static void test_departure_grace_holds_a_live_peers_verdict() {
+    enum {
+        kOpen = 1u, kHeld = 2u, kFinalised = 4u, kProposed = 8u, kEnded = 16u
+    };
+    /* Silence, and the grace has not run out: nothing has happened yet -- and
+     * in particular nothing has been PROPOSED. A proposal is a claim that a
+     * peer stopped racing, and this endpoint has not finished listening. */
+    CHECK(mdkr_online_live_adapter_test_departure_grace(
+              /*grace_ticks=*/2u, /*ticks_elapsed=*/0u,
+              /*peer_spoke=*/false) == kOpen);
+    CHECK(mdkr_online_live_adapter_test_departure_grace(2u, 1u, false) ==
+          kOpen);
+    /* Silence for the whole grace: the room's verdict stands, and the sole
+     * survivor proposes the tick, finalises the seat and ends its race. */
+    CHECK(mdkr_online_live_adapter_test_departure_grace(2u, 2u, false) ==
+          (kFinalised | kProposed | kEnded));
+    /* THE DEFECT D1 REMOVES: the peer is still sending. The verdict is held,
+     * no seat is finalised, no tick is proposed and the race carries on for
+     * the transport's ladders to end. */
+    CHECK(mdkr_online_live_adapter_test_departure_grace(2u, 2u, true) == kHeld);
+    /* A hold does not wait out the grace: the first authenticated packet
+     * settles it, whatever the authored head has reached. */
+    CHECK(mdkr_online_live_adapter_test_departure_grace(2u, 0u, true) == kHeld);
+    /* The lane's positive control (MDKR_ONLINE_LOBBY_DROP_GRACE=0) is the
+     * pre-D1 code: it acts on the verdict in the pump it arrives in, and it
+     * drops a peer that is still sending. */
+    CHECK(mdkr_online_live_adapter_test_departure_grace(0u, 0u, false) ==
+          (kFinalised | kProposed | kEnded));
+    CHECK(mdkr_online_live_adapter_test_departure_grace(0u, 0u, true) ==
+          (kFinalised | kProposed | kEnded));
+}
+
 /* N7-shaped bound on the route-probe echo. Every decoded probe used to be
  * echoed unconditionally, and in a 3-4P room one broadcast probe yields N-1
  * sealed echoes -- so a peer replaying probes at pump rate could make every
@@ -631,6 +671,7 @@ int main() {
     test_owning_wrapper_accessors_resolve_through_wrapper();
     test_room_departure_gates_and_proposer();
     test_drop_proposal_is_checked_before_it_counts();
+    test_departure_grace_holds_a_live_peers_verdict();
     test_route_echo_budget_bounds_a_flood();
     test_drop_refusal_flood_leaves_a_bounded_mark();
     std::fprintf(stderr, "online_live_adapter_beta: %d checks, %d failures\n",
