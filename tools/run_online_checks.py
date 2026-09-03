@@ -69,6 +69,9 @@ LANES = (
                                             #  (default arms need no PAL ROM)
     "check_online_session_boot.py",
     "check_online_charselect.py",
+    "check_match_launch_direct_load.py",    # the descriptor's online-catalog ids
+                                            #  must seat the TRANSLATED engine
+                                            #  Characters (source-derived pin)
     "check_online_vehicleselect.py",
     "check_online_trackselect.py",
     "check_online_session_results.py",
