@@ -8,12 +8,32 @@ same libultraship/vitaGL pattern as
 (a Banjo-Kazooie Vita port used as the concrete reference for library
 choices, link flags, and the VPK packaging recipe).
 
-**Status: builds and links clean (`arm-vita-eabi-gcc` → `mdkr64` ELF →
-`mdkr64.vpk`). Not yet booted on real hardware.** Everything below is
-compiler-error-driven engineering, not guesswork — but a first boot on a
-real Vita will surface a second round of issues (input mapping, audio,
-performance, GPU-side rendering correctness) that no amount of further
-desk-checking will find. See "What needs hardware verification" at the end.
+**Status: boots on real hardware, reaches the main menu with audio and
+textured rendering, actively being debugged past there.** This moved past
+"builds and links clean" through hands-on, on-device bring-up: real
+crashes, pulled via a boot-time file logger and coredumps, root-caused one
+at a time. Fixed so far, in the order they were hit:
+
+1. **Black screen, audio/input alive.** `platform_sdl_surface_presentable()`
+   treated vitaGL's intentionally-always-NULL `s_window` as "not
+   presentable," permanently eliding presentation after frame 0.
+2. **Wild-jump crash once rendering started.** `dkr_resolve()`'s 32-bit
+   "direct recovery" fast path trusted any pointer-shaped value with no
+   bounds check — safe on 64-bit targets (where it's naturally filtered),
+   a real bug on Vita's 32-bit ABI. Fixed with an explicit floor check.
+3. **Hard crash inside SceGxm/vitaShaRK on the very first real shader
+   compile, on every shader regardless of complexity.** Root cause: this
+   file's `MGB64_PORTMASTER_GLES` code path emits ES3-style GLSL
+   (`#version 320 es`, `in`/`out` qualifiers, a user `fragColor` output,
+   `texture()`/`textureLod()`), but vitaGL's runtime GLSL→Cg translator
+   only understands the legacy GLSL ES 1.00 dialect. Fixed with a
+   Vita-only source rewrite (`dkr_vita_rewrite_glsl_to_legacy()` in
+   `gfx_opengl.c`) run on the generated shader text right before it's
+   compiled.
+
+Currently being debugged past the main menu — see "What needs
+hardware verification" at the end for what's still open, and the git log
+on this branch for the blow-by-blow.
 
 ## How to build
 
@@ -136,6 +156,16 @@ starting point — but all of it is unverified:
   ID across mip-chain-length changes; the existing `gfx_gl_set_has_mips`
   bookkeeping should prevent this in practice, but it hasn't been eyeballed
   in-game.
+- **`textureSize()`/`texelFetch()` in the texture clamp/tile-mask,
+  SSAO, and framebuffer-diagnostic code paths** — unlike plain
+  `texture()`/`textureLod()` (fixed by renaming to `texture2D()`, see the
+  git log), these ES3 functions have no equivalent at all in the legacy
+  GLSL ES 1.00 dialect vitaGL's runtime translator understands, so a
+  shader that reaches one of these paths on Vita will need an actual
+  logic rewrite (e.g. passing texture size as a uniform), not just a
+  syntax translation. Not yet hit by any shader reached so far; flagged
+  here so the next occurrence is recognized immediately instead of
+  requiring a fresh round of coredump archaeology.
 - **Coverage-stencil / framebuffer-snapshot degradations** — both are
   opt-in diagnostics off by default; if a future contributor enables them
   on Vita, verify the degraded (depth-only / no-read-buffer-select)
