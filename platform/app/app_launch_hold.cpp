@@ -6,11 +6,38 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 namespace {
 
 /*
- * Parse the test seam: "<hold>" or "<hold>@<sample>". An unrecognised spelling
+ * The controllers borrowed for this sampling window, opened on the first
+ * sample that needs them and closed by AppLaunchHold_release().
+ *
+ * Opening and closing every pad on every frame would have been ~46 open/close
+ * pairs for one launch, and SDL's open path is not free: it re-reads the
+ * mapping database and re-initialises the device. Holding the handles for the
+ * window instead is both cheaper and more honest about what is going on -- we
+ * are watching these buttons for a bounded period, not asking a fresh question
+ * each frame. SDL2 refcounts the handle, so this remains a balanced borrow that
+ * neither steals a controller from another owner nor closes one.
+ */
+std::vector<SDL_GameController *> g_pads;
+bool                              g_padsOpen = false;
+
+void openPads() {
+    if (g_padsOpen) return;
+    g_padsOpen = true;
+    for (int i = 0; i < SDL_NumJoysticks(); ++i) {
+        if (!SDL_IsGameController(i)) continue;
+        if (SDL_GameController *pad = SDL_GameControllerOpen(i)) {
+            g_pads.push_back(pad);
+        }
+    }
+}
+
+/*
+ * Parse the test seam: "<hold>" or "<hold>@<sample>". Every rejected spelling
  * is announced rather than silently treated as "nothing held" -- a typo there
  * would otherwise turn an arm that means to prove the hold works into an arm
  * that proves nothing at all, and pass.
@@ -22,9 +49,21 @@ bool scriptedHold(const char *scripted, unsigned sampleIndex,
     const size_t nameLength =
         at != nullptr ? static_cast<size_t>(at - scripted) : std::strlen(scripted);
     if (at != nullptr) {
-        char *end = nullptr;
-        const unsigned long parsed = std::strtoul(at + 1, &end, 10);
-        if (end == at + 1 || *end != '\0') {
+        const char *digits = at + 1;
+        char       *end = nullptr;
+        /* strtoul accepts a leading '-' and wraps it, so "@-1" would otherwise
+         * parse as ULONG_MAX and silently become "a hold that never appears" --
+         * an arm that can only pass. Reject the sign before parsing. */
+        if (*digits < '0' || *digits > '9') {
+            std::fprintf(stderr,
+                         "[app] MDKR_APP_TEST_LAUNCH_HOLD=%s has a sample "
+                         "index that is not a non-negative number; nothing "
+                         "is held\n",
+                         scripted);
+            return false;
+        }
+        const unsigned long parsed = std::strtoul(digits, &end, 10);
+        if (end == digits || *end != '\0' || parsed > 0xFFFFFFFFul) {
             std::fprintf(stderr,
                          "[app] MDKR_APP_TEST_LAUNCH_HOLD=%s has an "
                          "unparseable sample index; nothing is held\n",
@@ -81,14 +120,10 @@ AppUiLauncherHold AppLaunchHold_sample(unsigned sampleIndex) {
     }
     /* The pad half needs no such care -- HID polling reports absolute button
      * state on the first read -- but it costs nothing to keep the two answers
-     * on one clock. Opening and closing here neither steals a controller from
-     * the engine nor closes one another owner opened: SDL2 refcounts the
-     * handle, so this is a balanced borrow. */
+     * on one clock. */
+    openPads();
     SDL_GameControllerUpdate();
-    for (int i = 0; i < SDL_NumJoysticks(); ++i) {
-        if (!SDL_IsGameController(i)) continue;
-        SDL_GameController *pad = SDL_GameControllerOpen(i);
-        if (pad == nullptr) continue;
+    for (SDL_GameController *pad : g_pads) {
         if (SDL_GameControllerGetButton(
                 pad, SDL_CONTROLLER_BUTTON_LEFTSHOULDER) != 0) {
             hold.leftShoulder = true;
@@ -97,7 +132,12 @@ AppUiLauncherHold AppLaunchHold_sample(unsigned sampleIndex) {
                 pad, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) != 0) {
             hold.rightShoulder = true;
         }
-        SDL_GameControllerClose(pad);
     }
     return hold;
+}
+
+void AppLaunchHold_release() {
+    for (SDL_GameController *pad : g_pads) SDL_GameControllerClose(pad);
+    g_pads.clear();
+    g_padsOpen = false;
 }

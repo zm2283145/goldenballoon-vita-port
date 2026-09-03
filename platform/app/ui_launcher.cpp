@@ -1126,7 +1126,13 @@ void Launcher::applyLanStop() {
     selectPartyTransport(PartyTransportKind::Cloud);
 }
 
-Launcher::~Launcher() = default;
+Launcher::~Launcher() {
+    /* Backstop for the hold-sampling window. Every ordinary exit already
+     * releases (dispatch, disarm, any published boot); this covers a launcher
+     * torn down before one of those happened -- a quit from the ROM-less first
+     * run, say -- so the borrowed pads never outlive the object watching them. */
+    AppLaunchHold_release();
+}
 
 void Launcher::requestQuit() {
     requestLauncherQuit(state_);
@@ -1550,6 +1556,7 @@ LauncherAction Launcher::draw(AppHost &host) {
             const AppUiLauncherHold hold = AppLaunchHold_sample(++holdSamples_);
             if (AppUi_launcherHoldOpensLauncher(hold)) {
                 skipArmed_ = false;
+                AppLaunchHold_release();
                 std::fprintf(stderr,
                              "[app-ui] skip-launcher disarmed by hold "
                              "sample=%u shift=%d shoulderL=%d shoulderR=%d\n",
@@ -1573,6 +1580,7 @@ LauncherAction Launcher::draw(AppHost &host) {
              state_.characterPreviewContext != MDKR_CHARACTER_PREVIEW_NONE);
         if (AppUi_launcherSkipShouldBoot(readiness)) {
             skipDispatched_ = true;
+            AppLaunchHold_release();
             RomPanel_requestPlayValidation(state_);
             std::fprintf(stderr,
                          "[app-ui] skip-launcher direct boot requested "
@@ -1585,6 +1593,7 @@ LauncherAction Launcher::draw(AppHost &host) {
     if (state_.romPlayValidationPassed &&
         !Settings_characterWorkPending() && !state_.quitRequested) {
         state_.romPlayValidationPassed = false;
+        AppLaunchHold_release();
         action.type = LauncherActionType::Play;
         fillBootConfig(state_, action.boot);
     }

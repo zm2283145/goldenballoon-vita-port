@@ -368,7 +368,14 @@ bool armSkipLauncher(Launcher &launcher) {
                  settingEnabled ? 1 : 0, hold.shift ? 1 : 0,
                  hold.leftShoulder ? 1 : 0, hold.rightShoulder ? 1 : 0,
                  holdOpensLauncher ? 1 : 0, armed ? 1 : 0);
-    if (armed) launcher.armSkipWhenReady();
+    if (armed) {
+        launcher.armSkipWhenReady();
+    } else {
+        /* The window closed here: no direct boot will be waited for, so give
+         * back the pads sample 0 borrowed rather than holding them for the
+         * life of the launcher. */
+        AppLaunchHold_release();
+    }
     return armed;
 }
 

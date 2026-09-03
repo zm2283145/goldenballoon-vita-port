@@ -192,9 +192,12 @@ bool AppUi_enhancementResetIncludes(MdkrVideoKey key);
 // without a window, a ROM, or a GPU -- and so the one that decides whether a
 // player sees their launcher at all is a function a test can call directly.
 
-// What was being held when the app opened, sampled once before the first
-// launcher frame. Later input is ordinary input: a player pressing Shift while
-// the game loads is not asking to go back.
+// What the player is holding to keep their launcher. Sampled repeatedly, not
+// once: from before the first launcher frame until the direct boot dispatches
+// or a hold disarms it. That window is deliberate -- see app_launch_hold.h for
+// why one sample at window creation cannot see a Shift that was already down.
+// Once the boot has been asked for, later input is ordinary input: a player
+// pressing Shift while the game loads is not asking to go back.
 struct AppUiLauncherHold {
     bool shift = false;          // either Shift key
     bool leftShoulder = false;   // controller L

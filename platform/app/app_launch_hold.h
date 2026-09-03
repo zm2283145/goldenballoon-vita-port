@@ -30,4 +30,12 @@
 //   <any of the above>@<n>                               held from sample n
 AppUiLauncherHold AppLaunchHold_sample(unsigned sampleIndex);
 
+// End the sampling window and give back the controllers it borrowed. Sampling
+// opens each pad once and holds it for the window rather than reopening ~46
+// times, so the window needs an end; call this at every exit from it -- the
+// direct boot dispatching, a hold disarming it, a launch that never armed, any
+// other boot, and the launcher's own teardown. Idempotent, and a later sample
+// simply opens the pads again.
+void AppLaunchHold_release();
+
 #endif  // MDKR64_APP_LAUNCH_HOLD_H
