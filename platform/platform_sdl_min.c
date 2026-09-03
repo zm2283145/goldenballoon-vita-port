@@ -1063,6 +1063,18 @@ static int sdl_should_start_fullscreen(void) {
 int platform_sdl_surface_presentable(void) {
 #ifdef __EMSCRIPTEN__
     return 1;
+#elif defined(__vita__)
+    /* vitaGL owns display/context creation directly via sceGxm; s_window
+     * is intentionally always NULL here (see sdl_init_gl's Vita branch), so
+     * the s_window == NULL check below -- meant to detect "no window has
+     * been created yet" on desktop -- misfires as "never presentable" on
+     * Vita. That silently and permanently elided every present after the
+     * very first frame (present_sched_set_surface_elided(true) latches),
+     * which is why the game ran (audio/input/logic all fine) behind a
+     * black screen: vglSwapBuffers was simply never being called again.
+     * There is no SDL-window occlusion/minimize concept on Vita, so the
+     * surface is always presentable here. */
+    return 1;
 #else
     if (s_window == NULL) {
         return 0;
