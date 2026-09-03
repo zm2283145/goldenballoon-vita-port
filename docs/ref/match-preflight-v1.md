@@ -120,6 +120,29 @@ nothing on the simulation side of the authority boundary is involved. It runs
 only while the race transport does not exist, and it touches no simulation
 state.
 
+### When it runs
+
+The window opens at the **first** peer channel-open, not the last, and Start is
+never held for it. Probes only ever flow over channels that are actually open:
+the transport's unit of readiness is the peer — its state and control
+DataChannels open together as one `PeerChannelsReady` — so per-lane gating is
+per-peer gating here. The addressed control lane fans out to ready peers only,
+and the broadcast bundle lane is the mesh's own input send, which skips a peer
+whose channel is not open. A peer that opens mid-window simply joins the lanes
+late; every endpoint measures and reports its own route.
+
+If a race starts before the window settles, entry timing resolves from whatever
+record exists at that moment — the manifest floor if there is none — and the
+room chip says “Checking connection…” instead of a measured one. The window is
+then **cut**, not discarded: the trailing probes that were still inside their
+answer window at the cut are dropped from the sample set rather than scored as
+loss (they were lost to the player's own Start), and what came back before it is
+scored normally. That record is still published as the round's second
+attestation, and it survives the race-latch reset between the races of one
+tournament — the mesh, its keys and its channels all survive that boundary — so
+the next race resolves its widen and its chip from it. A rekey or a re-verify
+does retire it, because its samples were sealed under keys that no longer exist.
+
 ### Replay
 
 Both real lanes are replayed at their real cadence and payload size for 6000
@@ -194,9 +217,11 @@ The result is clamped to 1-10 and named:
 | 1-4 | `rough` | “~260 ms · rough” |
 
 The launcher shows exactly one chip: the round trip a player can feel, then the
-band's name. The outcome also joins the mesh bring-up boundary in the online
-forensics ring as the code `route-<band>-<score>`, so a dump reads the route a
-session started on beside every later stall.
+band's name — or “Checking connection…” while the measurement is still running,
+since a player can reach the room chip before it settles. The outcome also
+joins the mesh bring-up boundary in the online forensics ring as the code
+`route-<band>-<score>`, so a dump reads the route a session started on beside
+every later stall.
 
 ### Record
 

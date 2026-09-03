@@ -85,8 +85,9 @@ First-launch notes:
 
 ## Online multiplayer
 
-Race a friend over the internet with a private six-digit code.
-Full release notes for each version are in [RELEASE_NOTES.md](RELEASE_NOTES.md).
+Race a friend over the internet with a private six-digit code. Both players
+need the same version of the game. Full release notes for each version are in
+[RELEASE_NOTES.md](RELEASE_NOTES.md).
 
 What online does not do yet:
 

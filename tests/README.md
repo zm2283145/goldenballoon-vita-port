@@ -1231,7 +1231,12 @@ four-tick cap, the fixed 64-byte probe payload codec, and the caller-clocked
 measurement phase replaying both lanes for 6 s with a 1 s drain, and the
 queue-drain term (the carrier's own count of inbound pump-drain drops from its
 bounded queues, which only the caller can see) reaching the record and its
-rung. Its impairment lane injects 8% loss on the unreliable bundle lane
+rung. Its cut arm pins what a race start does to a window still in flight: the
+trailing probes still inside their answer window are dropped rather than scored
+as loss, an echo genuinely lost before the cut still is, and a cut window emits
+no further probe. The positive control is a real mutation — return `0` from
+`mdkr_match_route_measure_cut` before it scans and the three cut assertions
+fail. Its impairment lane injects 8% loss on the unreliable bundle lane
 through `net_impairment` and requires the `rough` band; the positive control
 for that lane is a real mutation of the production ladder — set
 `route_steady_floor` in `platform/net/match_preflight.c` to `1`, so every score
@@ -1248,6 +1253,18 @@ gives ONE endpoint a slower measured route
 (`mdkr_online_live_adapter_test_set_route_measurement`), so the two race with
 DIFFERENT operative leads over the same descriptor and must still fold the
 identical canonical state hash — the determinism claim the widen rests on.
+The fourth arm presses Start into a window that is still open (D-N5): the race
+must run on the manifest floor with the room chip reading
+"Checking connection…", and the cut window must still settle on both endpoints
+and still cross the wire as the round's second attestation. Two positive
+controls, each failing a different half: make the projection fall back to an
+empty chip while the measurement runs and only the chip assertion fails;
+restore the old `raceReady_` early return in `serviceRouteMeasurement` and only
+the settle/exchange assertions fail. The record's survival across the boundary
+between two races of one tournament is pinned separately in
+`online_live_adapter_beta`
+(`mdkr_online_live_adapter_test_race_latch_reset_keeps_route`), whose control is
+calling `resetRouteMeasurement()` from `resetRaceLatches` again.
 `online_live_adapter_beta` pins that a rekey or a re-verify mid-measurement
 restarts the whole route window rather than settling on samples sealed under
 retired keys; clearing only the publication latch (the pre-fix shape) fails it.
@@ -1301,6 +1318,12 @@ keeps raw provider/transport terms out of player copy, maps unknown reasons to
 one actionable fallback, preserves **Play Here**, rejects mismatched snapshots
 fail-atomically, and proves room data cannot expose **Start Race** before the
 local release gate (which also requires leader, 2+ members and everyone Ready).
+It also pins the one route chip in all three of its states: a measured record
+reads "~45 ms · steady", a measurement still running reads
+"Checking connection…" (Start is never held for it, so a player reaches the chip
+before it settles), and neither reads as nothing at all. Its positive control is
+a real mutation — make the projection return an empty chip while the
+measurement runs and the checking assertion fails on its own.
 
 `check_app_background_activation.py` (registered as
 `app_background_activation_contract`) and `app_window` enforce desktop-safe

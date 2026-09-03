@@ -141,6 +141,16 @@ def main() -> int:
     # Online boundaries: the same six facts pinned in both places a player
     # reads them (RELEASE_NOTES.md's current release section, README.md's
     # online section), so a future rewrite cannot drop one from either.
+    # D-WIRE: envelope v3, the MPF2 report and control protocol 2 all changed
+    # in 1.6.0, nothing negotiates and nothing downgrades, so a mixed pair is
+    # refused at room join. One sentence of release copy makes that refusal
+    # read as expected rather than as a bug -- and it belongs in the CURRENT
+    # release section, not merely somewhere in the file's history.
+    if "Both players need the same version of the game." not in release_notes_words:
+        raise AssertionError(
+            "the current release notes must say both players need the same version"
+        )
+    require_contains("README.md", "Both players need the same version of the game.")
     for path in ("RELEASE_NOTES.md", "README.md"):
         require_contains(path, "Both players must be on the same platform.")
         require_contains(path, "A race is two players, not more.")
