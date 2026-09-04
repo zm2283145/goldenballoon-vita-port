@@ -279,8 +279,8 @@ reader and writer. It prevents a declaration from silently bypassing that
 decision. Local automatic variables and heap fields remain covered by the v3
 family audit and the engine range registry.
 
-The reviewed baseline is now 1,821 declarations. Its seventy-four-row delta (no
-removals) is classified: zero rows are simulation authority, twenty-four are
+The reviewed baseline is now 1,823 declarations. Its seventy-six-row delta (no
+removals) is classified: zero rows are simulation authority, twenty-six are
 test/seam-gated and fifty are presentation or host bookkeeping. Sixty-four rows
 belong to the Character Workshop / custom-character pipeline: thirty-three
 `menu.c` character-select rows (the `sCustomCharacterRoster` / cursors /
@@ -336,7 +336,7 @@ rollback race can run with a party session active, `adventure_party_is_active()`
 answers zero for the whole ring's life, and all seven rows are inert there.
 They are counted as host bookkeeping on that ruling, not as match constants.
 
-The remaining three rows: `hasm/math_util.c`'s `gAuthoritativeRNGDraws` is the
+The remaining five rows: `hasm/math_util.c`'s `gAuthoritativeRNGDraws` is the
 authoritative-draw counter stepped inside `rand_range()` itself under
 `NATIVE_PORT`. It is an observation counter and it is deliberately *not*
 registered. It exists because the stream digests are blind to a draw-count
@@ -356,11 +356,17 @@ byte high-water and the heap row it was reached in, restarted when a level load
 moves the row — read only by their own comparison, which emits an `MDKR_TRACE`
 line and aborts a genuine overflow; `MDKR_TEST_DL_HIGH_WATER_LIMIT` and
 `MDKR_TEST_UNDERSIZED_DL_HEAP` exist only so a test can drive that abort and
-the sanitizer's overflowing stream. Era attribution: the Adventure Party co-op
-wave (the seven party rows), the Character Workshop / custom-character pipeline
-(the sixty-four roster, preview and sidecar rows), the rollback-presentation RNG
-split (`gAuthoritativeRNGDraws`), and the display-list high-water witness (the
-`rcp_dkr.c` pair).
+the sanitizer's overflowing stream. `objects.c`'s `sZipPadHolding` /
+`sZipPadLift` are a native-only boost-regression seam: the former is armed only
+by `MDKR_ZIPPAD_BOOST`, the latter records the AI lift bit solely for that
+test's `[BOOST]` trace, and the normal runtime leaves both false. They are read
+only by the seam's throttle hold/trace helpers, never by online authority, and
+are therefore test/seam-gated rather than snapshot state. Era attribution: the
+Adventure Party co-op wave (the seven party rows), the Character Workshop /
+custom-character pipeline (the sixty-four roster, preview and sidecar rows),
+the rollback-presentation RNG split (`gAuthoritativeRNGDraws`), the display-list
+high-water witness (the `rcp_dkr.c` pair), and the boost-magnitude seam (the
+`objects.c` pair).
 
 The prior 1,747 baseline's one-hundred-and-one-row delta (no removals) remains
 classified: zero rows are simulation authority, sixty-six are test/seam-gated

@@ -85,6 +85,8 @@ def main() -> int:
     parser.add_argument("--rom", type=Path, default="baserom.us.v80.z64")
     parser.add_argument("--ticks", type=int, default=TICKS)
     parser.add_argument("--timeout", type=int, default=300)
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="accepted for consistency with the online sweep")
     args = parser.parse_args()
 
     binary = Path(resolve_binary(args.build)).expanduser().resolve()

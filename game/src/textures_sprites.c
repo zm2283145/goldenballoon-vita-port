@@ -953,7 +953,18 @@ void directional_lighting_off(void) {
  * Shift the texture header by the offset and return the result.
  * Official Name: texFrame
  */
+static bool texture_header_aligned(const TextureHeader *texHead) {
+    return texHead != NULL &&
+           (((uintptr_t) texHead & (_Alignof(TextureHeader) - 1u)) == 0u);
+}
+
 TextureHeader *set_animated_texture_header(TextureHeader *texHead, s32 offset) {
+    /* A serialized texture token can outlive its cache allocation during a
+     * malformed presentation pass.  Do not turn that into an unaligned host
+     * struct access while selecting an animation frame. */
+    if (!texture_header_aligned(texHead)) {
+        return NULL;
+    }
     if (offset > 0) {
         if (offset < texHead->numOfTextures << 8) {
             texHead = (TextureHeader *) (((u8 *) texHead) + ((offset >> 16) * texHead->textureSize));
@@ -961,7 +972,7 @@ TextureHeader *set_animated_texture_header(TextureHeader *texHead, s32 offset) {
             texHead = (TextureHeader *) (((u8 *) texHead) + ((texHead->numOfTextures >> 8) - 1) * texHead->textureSize);
         }
     }
-    return texHead;
+    return texture_header_aligned(texHead) ? texHead : NULL;
 }
 
 /**
@@ -986,11 +997,18 @@ void material_set(Gfx **dList, TextureHeader *texhead, s32 flags, s32 texOffset)
     forceFlags = gForceFlags;
     doPipeSync = TRUE;
 
-    if (texhead != NULL) {
-        if (texOffset && (texOffset < texhead->numOfTextures << 8)) {
-            texhead = (TextureHeader *) ((s8 *) texhead + ((texOffset >> 16) * texhead->textureSize));
-        }
+    if (!texture_header_aligned(texhead)) {
+        texhead = NULL;
+    }
 
+    if (texhead != NULL && texOffset && (texOffset < texhead->numOfTextures << 8)) {
+        texhead = (TextureHeader *) ((s8 *) texhead + ((texOffset >> 16) * texhead->textureSize));
+        if (!texture_header_aligned(texhead)) {
+            texhead = NULL;
+        }
+    }
+
+    if (texhead != NULL) {
         flags |= texhead->flags;
         if (texhead != gCurrentTextureHeader) {
             gDkrDmaDisplayList((*dList)++, OS_K0_TOKEN_TO_PHYSICAL(texhead->cmd),

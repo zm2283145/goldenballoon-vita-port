@@ -3976,12 +3976,17 @@ static void dkr_sp_vertex(const Vertex *verts, int n, bool append,
     /* Never read a vertex batch past the arena (edge/mis-decoded pointer), and
      * never dereference a non-arena pointer that isn't a plausible registered
      * global (a sign-extended wild pointer from an upstream LP64 truncation). */
+    if (((uintptr_t)verts & (_Alignof(Vertex) - 1u)) != 0u) return;
     size_t room = dkr_arena_room(verts);
     if (room == (size_t)-1 && !dkr_ptr_plausible(verts)) return;
     if ((size_t)n * sizeof(Vertex) > room) n = (int)(room / sizeof(Vertex));
     if (n <= 0) return;
 
     const Vec3s *normal_stream = rsp.smooth_normals;
+    if (((uintptr_t)normal_stream & (_Alignof(Vec3s) - 1u)) != 0u) {
+        normal_stream = NULL;
+        gfx_dkr_remaster_missing_normal_batches++;
+    }
     size_t normal_room =
         normal_stream != NULL ? dkr_arena_room(normal_stream) : 0;
     if (normal_stream != NULL &&
@@ -4131,6 +4136,7 @@ static void dkr_sp_polygon(const Triangle *tris, int num_tris, bool tex_enabled,
     /* Never read a triangle batch past the arena (edge/mis-decoded pointer), and
      * never dereference a non-arena pointer that isn't a plausible registered
      * global (a sign-extended wild pointer from an upstream LP64 truncation). */
+    if (((uintptr_t)tris & (_Alignof(Triangle) - 1u)) != 0u) return;
     size_t room = dkr_arena_room(tris);
     if (room == (size_t)-1 && !dkr_ptr_plausible(tris)) return;
     if ((size_t)num_tris * sizeof(Triangle) > room)
@@ -4428,7 +4434,11 @@ static void dkr_decode_matrix(int slot, const int32_t *a) {
 
 static void dkr_load_matrix(int slot, const void *addr) {
     if (slot < 0 || slot > 2) return;
-    if (!dkr_room_for(addr, sizeof(Mtx))) { dkr_load_identity(slot); return; }
+    if (!dkr_room_for(addr, sizeof(Mtx)) ||
+        ((uintptr_t)addr & (_Alignof(int32_t) - 1u)) != 0u) {
+        dkr_load_identity(slot);
+        return;
+    }
     /* Standard N64 s15.16 split-format Mtx: 8 int words then 8 frac words, each
      * packing two elements' halves (ported from mgb64 gfx_sp_matrix). */
     dkr_decode_matrix(slot, (const int32_t *)addr);
@@ -5255,6 +5265,10 @@ static bool dkr_dl_census_enabled(void) {
 /* Interpret a display list. `limit` bounds the number of 64-bit command slots
  * processed (used by G_DMADL, whose DMA sub-lists carry a command count and may
  * lack a G_ENDDL terminator); limit == 0 runs until G_ENDDL / list end. */
+static bool dkr_dl_command_aligned(const Gfx *cmd) {
+    return ((uintptr_t)cmd & (_Alignof(Gfx) - 1u)) == 0u;
+}
+
 static void dkr_dl_fault(const char *reason, const Gfx *cmd, int depth) {
     static int strict = -1;
     if (strict < 0) {
@@ -5271,13 +5285,14 @@ static void dkr_dl_fault(const char *reason, const Gfx *cmd, int depth) {
      * diagnostic asks the same question the walk did before quoting the words.
      * Printing them unconditionally makes the report itself the out-of-bounds
      * read the fault was raised to prevent. */
-    const bool readable = dkr_room_for(cmd, sizeof(Gfx));
+    const bool readable = dkr_dl_command_aligned(cmd) &&
+                          dkr_room_for(cmd, sizeof(Gfx));
     fprintf(stderr,
             "[DL] %s at depth=%d cmd=%p words=%08x/%08x%s%s\n",
             reason, depth, (const void *) cmd,
             readable ? cmd->words.w0 : 0,
             readable ? cmd->words.w1 : 0,
-            readable ? "" : " (unreadable)",
+            readable ? "" : " (unreadable or unaligned)",
             strict ? " (strict: aborting)" : " (recovered: list stopped/skipped)");
     fflush(stderr);
     if (strict) {
@@ -5322,6 +5337,11 @@ static void dkr_scan_overlay_order(Gfx *cmd, int depth, int limit,
             return;
         }
         if (!dkr_room_for(cmd, sizeof(Gfx))) {
+            return;
+        }
+        if (!dkr_dl_command_aligned(cmd)) {
+            dkr_dl_fault("overlay prepass reached an unaligned display-list command",
+                         cmd, depth);
             return;
         }
 
@@ -5792,6 +5812,11 @@ static bool dkr_scan_future_deformations(Gfx *cmd, int depth, int limit) {
             return true;
         }
         if (++safety > 4000000L || !dkr_room_for(cmd, sizeof(Gfx))) {
+            return false;
+        }
+        if (!dkr_dl_command_aligned(cmd)) {
+            dkr_dl_fault("future-deformation scan reached an unaligned display-list command",
+                         cmd, depth);
             return false;
         }
         switch ((uint8_t)C0(cmd, 24, 8)) {
@@ -6639,7 +6664,8 @@ static void dkr_capture_nonarena_list(const Gfx *sub, int count) {
     /* Not armed means no capture is staged, so the scan below would be pure
      * cost on the default path -- Original pacing with smoothing off never
      * replays anything. */
-    if (dkr_replay_pass || sub == NULL || !present_sched_replay_armed() ||
+    if (dkr_replay_pass || sub == NULL || !dkr_dl_command_aligned(sub) ||
+        !present_sched_replay_armed() ||
         dkr_arena_room(sub) != (size_t)-1) {
         return;   /* replay pass, unarmed, or arena-backed and already copied */
     }
@@ -6712,6 +6738,11 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
          * have no extent to check and are trusted to self-terminate. */
         if (!dkr_room_for(cmd, sizeof(Gfx))) {
             dkr_dl_fault("display list walked past its backing memory", cmd,
+                         depth);
+            return;
+        }
+        if (!dkr_dl_command_aligned(cmd)) {
+            dkr_dl_fault("display list reached an unaligned command", cmd,
                          depth);
             return;
         }
