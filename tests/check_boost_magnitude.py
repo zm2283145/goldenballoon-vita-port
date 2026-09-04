@@ -114,7 +114,7 @@ FRAMES = 4200          # ARM_FRAME + the 90-frame observation window + slack
 SPAN = 90              # observation window, in frames, from the arming frame
 STRIDE = 3             # trace sample stride -> 30 samples per arm
 
-BOOST_TICKS = 45       # the authored constant: racer.c:5727 normalise_time(45)
+BOOST_TICKS = 45       # the authored constant: racer.c:6555 normalise_time(45)
 
 # --- thresholds (provenance: the measured table in the module docstring) -------
 #

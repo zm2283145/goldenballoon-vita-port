@@ -54,7 +54,12 @@ fi
 # line so the cache always tracks it. CMakeLists stays authoritative -- the
 # literal is read from it here, never written into this script.
 emcmake cmake -S . -B build-web -DMDKR_VERSION="$APP_VERSION"
-cmake --build build-web -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
+BUILD_JOBS="${MDKR_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
+if [[ ! "$BUILD_JOBS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "build_web: FAIL -- MDKR_BUILD_JOBS must be a positive integer." >&2
+    exit 2
+fi
+cmake --build build-web --parallel "$BUILD_JOBS"
 
 # CMake owns the release version. Read back the configured cache value rather
 # than copying a version literal into this shell script, then carry it through

@@ -124,9 +124,19 @@ def run_route(binary, rom, root, label, script, frames, extra_env, timeout,
     if process.returncode != 0:
         raise RuntimeError(
             f"{label}: exit {process.returncode}\n{output[-3000:]}")
-    if BAD_RE.search(output):
+    fatal = BAD_RE.search(output)
+    if fatal is not None:
+        # The route emits a large shutdown census after the interesting line.
+        # Printing only the output tail used to erase the actual sanitizer or
+        # fatal verdict, leaving release qualification with an unclassifiable
+        # "fatal marker" failure. Preserve bounded context around the first
+        # marker so the next dedicated-desktop run identifies the defect.
+        context_start = max(0, fatal.start() - 1500)
+        context_end = min(len(output), fatal.end() + 6000)
+        fatal_context = output[context_start:context_end]
         raise RuntimeError(
-            f"{label}: fatal marker in output\n{output[-3000:]}")
+            f"{label}: fatal marker {fatal.group(0)!r} in output\n"
+            f"{fatal_context}")
     return output
 
 

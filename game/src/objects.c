@@ -1477,7 +1477,7 @@ static void dkr_force_effect_shell_hook(Object_Racer *racer) {
  *
  *   MDKR_ZIPPAD_BOOST=<frame>[:<ticks>]
  *       On the first update at or after <frame>, arm the HUMAN racer exactly as
- *       `racer.c:5727` arms it for `SURFACE_ZIP_PAD` on a car:
+ *       `racer.c:6554` arms it for `SURFACE_ZIP_PAD` on a car:
  *       `boostTimer = normalise_time(ticks)`, `boostType = BOOST_LARGE`, and
  *       hold that racer's accelerator for as long as that boost runs, because a
  *       pad boost is authored to be ridden with the throttle down and the
