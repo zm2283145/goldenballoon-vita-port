@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Deliberately empty. The bundled SDL dylib is signed with the same
+	     Developer ID as the app, Metal compiles shaders in Apple's driver, and
+	     SDL game-controller input needs no App Sandbox entitlement. Keeping the
+	     Hardened Runtime entitlement surface empty preserves library validation
+	     and W^X instead of disabling either protection speculatively. -->
+</dict>
+</plist>

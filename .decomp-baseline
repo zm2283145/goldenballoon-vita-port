@@ -1,0 +1,36 @@
+c66957033046b1d66e72fcb096bf90fb49bcedba  # decomp commit synced 2026-08-07
+#
+# THIS IS A REAL UPSTREAM COMMIT on DavidSM64/Diddy-Kong-Racing master
+# ("fix void function, rework abs macro", PR #766). `git merge-base
+# --is-ancestor <this> origin/master` is TRUE, so `git show <this>:path` gives
+# exact base blobs for the next 3-way merge. Verify that before trusting a sync.
+#
+# The previous baseline, 3b2dd520, was NOT an upstream commit -- the same defect
+# class the 2026-07-24 entry recorded, missed again. It was a local commit by
+# akratch on the fork branch `fork/match-func_8008FF1C` ("match: func_8008FF1C"),
+# forked from upstream ed3a12b1. `git merge-base --is-ancestor 3b2dd520
+# origin/master` was FALSE. It was still a *usable* base -- base blobs are only
+# required to equal what we actually vendored, and we did vendor that fork tree
+# -- but the recorded hash pointed at a ref that only exists on a private fork.
+# That work has since landed upstream verbatim as 8131d0da (PR #751), so nothing
+# is carried outside master any more.
+#
+# BOTH previously recorded exceptions are now RETIRED, because both landed on
+# upstream master in the 3b2dd520..c6695703 range:
+#
+#   * func_80017A18 (game/src/objects.c) -- was upstream 9da89ecb, living only on
+#     branch `match-func_80017A18`. Merged upstream as db7482cc (PR #749). The
+#     body in this tree is now plain master text (named parameters, `for` facet
+#     loop) plus the three documented NATIVE_PORT deltas. The
+#     ours-newer-than-theirs hazard no longer applies.
+#   * func_8008FF1C -- was the fork commit described above. Merged upstream as
+#     8131d0da (PR #751).
+#
+# Anything vendored under game/{src,include,libultra} is base+NATIVE_PORT patches
+# -- never re-copy, always 3-way merge. See docs/DECOMP_SYNC.md.
+#
+# NOTE for the next sync: `tools/sync_decomp.sh` reads "theirs" from the decomp
+# checkout's WORKING TREE. The checkout at ../Diddy-Kong-Racing sits on local
+# branches that diverge from master in vendored paths, so syncing straight from
+# it silently vendors local WIP. This sync used a scratch clone checked out at
+# the upstream commit above instead. Point --decomp at a clean master tree.

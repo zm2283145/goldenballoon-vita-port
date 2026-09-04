@@ -1,0 +1,164 @@
+#ifndef MDKR_ONLINE_SCREEN_UTIL_H
+#define MDKR_ONLINE_SCREEN_UTIL_H
+
+/* SEPARATED-BOOT-PATH shared native-screen draw/state helpers.
+ *
+ * The small helper families every native online SCREEN (charselect / trackselect /
+ * vehicleselect / results / ceremony) needs, lifted DRY so the four screens can
+ * never drift:
+ *   - mdkr_online_screen_local_seat    which snapshot seat is the local player
+ *   - mdkr_online_screen_text          font + colour + 1px drop-shadow text draw
+ *   - mdkr_online_screen_panel/strip   the dark menu-board card / full-width band
+ *                                      the text blocks sit on (retail figure-ground)
+ *   - mdkr_online_screen_pulse         the 0..16 triangle-wave cursor/heartbeat
+ *   - mdkr_online_screen_seat_name     one seat's short name (snapshot / char / Pn)
+ *   - mdkr_online_screen_seconds_left  ceil of a 60ths-of-a-second countdown
+ *   - mdkr_online_screen_draw_portrait the guarded racer-portrait blit
+ *   - mdkr_online_screen_draw_vehicle  the guarded car/hover/plane art blit
+ *   - fade_in_from_black / menu_music  seamless transitions + retail menu ambiance
+ *   - backdrop / backdrop_clear        the shared scrolling-sky background
+ *   - sky_world_for_cup / _for_snapshot cup/snapshot -> sky world index
+ * Each was previously copy-pasted per screen; a single source (online_screen_util.c)
+ * guarantees the shared visual/state vocabulary is byte-for-byte the same on every
+ * screen. This header is the declarations; the definitions live in the .c.
+ *
+ * The ENTIRE header is #if MDKR_ENABLE_ONLINE_BETA so a normal (beta OFF) build sees
+ * nothing here, and it is only ever included by the beta-gated online screen TUs
+ * (game/src/online/ is NOT auto-globbed). online_screen_util.c is likewise added to
+ * the build only inside the beta CMake gate.
+ */
+#if MDKR_ENABLE_ONLINE_BETA
+
+#include "types.h"
+#include "enums.h"          /* AlignmentFlags */
+#include "menu.h"           /* DrawTexture (gRacerPortraits) */
+#include "rcp_dkr.h"        /* Gfx (gCurrDisplayList) */
+#include "net/party_link.h" /* MdkrPartyLinkSnapshot */
+
+#include <stdbool.h>
+#include <stddef.h> /* size_t */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Engine globals the helpers reach without editing menu.c / game.c (all already have
+ * external linkage). Declared here ONCE so the screen TUs and online_screen_util.c
+ * share one set of decls. Authoritative definitions:
+ *   gCurrDisplayList  thread3_main.c (the engine's live 2D frame list; also the list
+ *                     menu_missing_controller() draws into)
+ *   gRacerPortraits   menu.c (decoded racer portraits; gRacerPortraits[k] is a
+ *                     DrawTexture[2] -- [0] the portrait, [1] the NULL terminator
+ *                     texrect_draw stops on -- in its OWN order, see sOnlineToPortrait)
+ *   gMenuAssets       menu.c (TextureHeader* per loaded TEXTURE_* id)
+ *   leveltable_world  game.c (1-based world of a track; 0 == none) */
+extern Gfx *gCurrDisplayList;
+extern DrawTexture *gRacerPortraits[10];
+extern void *gMenuAssets[128];
+extern s8 leveltable_world(s32 mapId);
+
+/* The ten sky tiles (five worlds x TOP+BOTTOM) + the -1 terminator that
+ * menu_assetgroup_load/free stop on. ONE definition (online_screen_util.c); every
+ * screen loads/frees this shared group. Non-const because the loader takes s16*. */
+extern s16 sOnlineSkyAssetIds[];
+
+/* Charselect's neutral/hub backdrop: Dino Domain's bright sky (world 0). */
+#define MDKR_ONLINE_SKY_WORLD_NEUTRAL 0u
+
+s32 mdkr_online_screen_local_seat(const MdkrPartyLinkSnapshot *snap);
+
+/* High-definition text for the native online screens. While at least one
+ * screen holds a ref, the renderer derives the coloured display faces
+ * (BIGFONT / FUNFONT) at high resolution through the SAME machinery the
+ * Remastered preset uses for them (fast3d's ROM-derived SDF upscale); the two
+ * plain body faces are already high-resolution in Restored via the
+ * Video.HighResolutionText outline path. RETAIL-LOOK CONSTRAINT: this is a
+ * resolution upgrade of the authored ROM letterforms (colours, gradients and
+ * layout unchanged), never a font change, and it follows the player's
+ * Video.HighResolutionText switch -- structurally never active in Pure.
+ * Refcounted (ref in _enter beside the load_font group, unref in _exit beside
+ * the unload_font group) so adjacent screens' enter/exit interleavings can
+ * never strand the renderer latch. */
+void mdkr_online_screen_hd_text_ref(void);
+void mdkr_online_screen_hd_text_unref(void);
+/* Force the HD-text latch OFF and zero the refcount (a fresh session must never
+ * inherit a stale latch left by a watchdog exit that bypassed a screen _exit).
+ * Called from mdkr_online_session_begin. */
+void mdkr_online_screen_hd_text_reset(void);
+
+void mdkr_online_screen_text(s32 x, s32 y, s32 fontId, char *text,
+                             AlignmentFlags align, s32 r, s32 g, s32 b);
+/* One rounded dialogue-box quad + 1px border, fill AND edge colours parameterised
+ * -- the ONE box vocabulary the navy menu-board (mdkr_online_screen_panel) and the
+ * retail RANKINGS blue dialogue box (online_results.c) both build on. */
+void mdkr_online_screen_box(s32 x1, s32 y1, s32 x2, s32 y2, s32 fr, s32 fg, s32 fb,
+                           s32 fa, s32 er, s32 eg, s32 eb, s32 ea);
+void mdkr_online_screen_panel(s32 x1, s32 y1, s32 x2, s32 y2);
+void mdkr_online_screen_strip(s32 y1, s32 y2);
+/* A small solid card (e.g. the retail P1/P2 seat-number block): flat fill +
+ * 1px darker border, the same font-module fill vocabulary the panels use. */
+void mdkr_online_screen_card(s32 x1, s32 y1, s32 x2, s32 y2, s32 r, s32 g, s32 b,
+                             s32 a);
+s32 mdkr_online_screen_pulse(u32 ticks);
+/* Retail selected-item blink level 0..255 (menu.c gOptionBlinkTimer: the caller's
+ * (t + updateRate) & 0x3F timer, *8 then triangle-folded). Slower + deeper than
+ * mdkr_online_screen_pulse -- the authentic DKR selection cadence. */
+s32 mdkr_online_screen_blink(u32 timer);
+void mdkr_online_screen_seat_name(const MdkrPartyLinkSnapshot *snap, bool haveSnap,
+                                  unsigned slot, char *out, size_t cap);
+u32 mdkr_online_screen_seconds_left(u32 done, u32 limit);
+/* Generic borrowed-tile texrect blits (the DRY of trackselect / vehicleselect's
+ * hand-rolled DrawTexture dt[2] + texrect_draw(_scaled) art draws). Both keep the
+ * not-resident / zero-dims no-op guards those sites carried. */
+void mdkr_online_screen_blit(TextureHeader *tex, s32 x, s32 y, u8 r, u8 g, u8 b,
+                             u8 a);
+void mdkr_online_screen_blit_scaled(TextureHeader *tex, f32 x, f32 y, f32 sx,
+                                    f32 sy, u32 rgba);
+void mdkr_online_screen_draw_portrait(u8 character, s32 x, s32 y, u8 r, u8 g, u8 b);
+bool mdkr_online_screen_draw_vehicle(u8 vehicle, s32 cx, s32 topY, u8 r, u8 g, u8 b,
+                                     u8 a);
+void mdkr_online_screen_fade_in_from_black(void);
+/* Duration (in ticks) of both the reveal and the exit fade -- the retail menu
+ * cadence (menu.c's transitions are 18). The session holds a phase hand-off this
+ * many ticks after firing the exit fade so the veil fully covers the outgoing screen
+ * before the switch. */
+#define MDKR_ONLINE_SCREEN_EXIT_FADE_TICKS 18
+/* Fade the OUTGOING screen to black (retail sMenuTransitionFadeIn: veil 0 -> 255,
+ * held) before a phase hand-off; the incoming screen's fade_in_from_black reveal
+ * then takes over. Paired deferral lives in online_session.c. */
+void mdkr_online_screen_fade_out_to_black(void);
+/* Abort a still-black exit fade: reveal the current screen again (used when the
+ * session abandons a hand-off it had started fading toward). */
+void mdkr_online_screen_fade_cancel_to_reveal(void);
+/* One-shot: the NEXT fade_in_from_black() call is skipped (no black veil). The
+ * session arms this for the INTRA-track-screen stage flips (browse <-> vehicle
+ * stage), which retail presents as ONE screen -- a fade there would read as a
+ * separate menu. Cleared by the next fade_in_from_black() call. */
+void mdkr_online_screen_fade_skip_once(void);
+/* Retire the CURRENT frame's authored display list BEFORE freeing screen assets
+ * it references. texrect_draw() embeds gDkrDmaDisplayList(tex->cmd) pointers INTO
+ * each texture allocation, so menu_assetgroup_free() while this frame's list (or
+ * the still-in-flight previous task) references the tiles makes the task walker
+ * interpret freed/reused texture bytes as display-list commands ("[DL] unknown
+ * display-list opcode" spew, intermittent SEGV). This mirrors the engine's own
+ * unload discipline (unload_level_game, thread3_main.c: gfxtask_wait + truncate
+ * the authored list + skip this frame's task). Every screen _exit() that frees a
+ * texture group MUST call this first. */
+void mdkr_online_screen_dl_retire(void);
+void mdkr_online_screen_menu_music(void);
+/* Start / keep a specific menu-family sequence via the self-contained music_play()
+ * primitive (idempotent). menu_music() is this with SEQUENCE_MAIN_MENU; charselect
+ * borrows it for SEQUENCE_CHOOSE_YOUR_RACER (the retail PLAYER SELECT track). */
+void mdkr_online_screen_music(u8 sequence);
+void mdkr_online_screen_backdrop(u8 skyWorld);
+void mdkr_online_screen_backdrop_clear(void);
+u8 mdkr_online_screen_sky_world_for_cup(u8 cupId);
+u8 mdkr_online_screen_sky_world_for_snapshot(const MdkrPartyLinkSnapshot *snap,
+                                             bool haveSnap);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* MDKR_ENABLE_ONLINE_BETA */
+#endif /* MDKR_ONLINE_SCREEN_UTIL_H */

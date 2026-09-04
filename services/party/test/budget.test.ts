@@ -1,0 +1,252 @@
+import {env} from "cloudflare:workers";
+import {runInDurableObject} from "cloudflare:test";
+import {describe, expect, it} from "vitest";
+import {boundedSetting} from "../src/party-budget";
+import {INTERNAL_API_HEADER} from "../src/internal-api";
+import type {Env} from "../src/types";
+
+describe("zero-cost budget settings", () => {
+  it("honors the literal zero admission kill switch", () => {
+    expect(boundedSetting("0", 10_000, 0, 12_000)).toBe(0);
+  });
+
+  it("bounds operator input and fails malformed text to the safest bound", () => {
+    expect(boundedSetting("99999", 10_000, 0, 12_000)).toBe(12_000);
+    expect(boundedSetting("-1", 10_000, 0, 12_000)).toBe(0);
+    expect(boundedSetting("not-a-number", 10_000, 0, 12_000)).toBe(0);
+    expect(boundedSetting("0", 5_000, 2_000, 8_000)).toBe(2_000);
+  });
+
+  it("reports only bounded aggregate state and latches refusal once", async () => {
+    const bindings = env as unknown as Env;
+    const stub = bindings.PARTY_BUDGETS.get(
+      bindings.PARTY_BUDGETS.idFromName("budget-status-unit"));
+    await runInDurableObject(stub, async (_instance, state) => {
+      await state.storage.put("counters", {pairing: 10_000, control: 4});
+    });
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const refused = await stub.fetch(
+        "https://budget/admit?kind=pairing&units=1", {method: "POST"});
+      expect(refused.status).toBe(503);
+      expect(await refused.json()).toEqual(
+        {allowed: false, error: "service_budget_safe"});
+    }
+    const stored = await runInDurableObject(stub, async (_instance, state) =>
+      state.storage.get<Record<string, unknown>>("counters"));
+    expect(stored).toEqual({pairing: 10_000, control: 4,
+      pairingRefusalObserved: true});
+    const response = await stub.fetch("https://budget/status");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({
+      schemaVersion: 1,
+      admitted: {pairingUnits: 10_000, controlUnits: 4},
+      refusalObserved: {pairing: true, control: false},
+      remaining: {admissionUnits: 0, controlUnits: 9_896},
+      admissionPercent: 100,
+      level: "closed",
+    });
+
+    await runInDurableObject(stub, async (_instance, state) => {
+      await state.storage.put("counters", {pairing: 10_000, control: 9_900,
+        pairingRefusalObserved: true});
+    });
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const refused = await stub.fetch(
+        "https://budget/admit?kind=control&units=1", {method: "POST"});
+      expect(refused.status).toBe(503);
+    }
+    const controlLatch = await runInDurableObject(stub,
+      async (_instance, state) =>
+        state.storage.get<Record<string, unknown>>("counters"));
+    expect(controlLatch).toEqual({pairing: 10_000, control: 9_900,
+      pairingRefusalObserved: true, controlRefusalObserved: true});
+  });
+
+  it("maps exact utilization boundaries to stable operator levels", async () => {
+    const bindings = env as unknown as Env;
+    const stub = bindings.PARTY_BUDGETS.get(
+      bindings.PARTY_BUDGETS.idFromName("budget-level-unit"));
+    for (const [pairing, percent, level] of [
+      [4_999, 49, "normal"], [5_000, 50, "watch"],
+      [7_500, 75, "freeze"], [9_000, 90, "closed"],
+    ] as const) {
+      await runInDurableObject(stub, async (_instance, state) => {
+        await state.storage.put("counters", {pairing, control: 0});
+      });
+      const response = await stub.fetch("https://budget/status");
+      expect(await response.json()).toMatchObject({admissionPercent: percent,
+        level});
+    }
+  });
+
+  it("schedules finite daily-shard retention and deletes on alarm", async () => {
+    const bindings = env as unknown as Env;
+    const stub = bindings.PARTY_BUDGETS.get(
+      bindings.PARTY_BUDGETS.idFromName("budget-retention-unit"));
+    const admitted = await stub.fetch(
+      "https://budget/admit?kind=pairing&units=1", {method: "POST"});
+    expect(admitted.status).toBe(200);
+    const alarm = await runInDurableObject(stub, async (_instance, state) =>
+      state.storage.getAlarm());
+    expect(alarm).not.toBeNull();
+    expect(alarm!).toBeGreaterThan(Date.now() + 31 * 24 * 60 * 60_000);
+    await runInDurableObject(stub, async (instance) => instance.alarm());
+    const stored = await runInDurableObject(stub, async (_instance, state) =>
+      state.storage.list());
+    expect(stored.size).toBe(0);
+  });
+
+  it("accepts only versioned fixed operation shapes and reports bounded aggregates",
+      async () => {
+    const bindings = env as unknown as Env;
+    const stub = bindings.PARTY_BUDGETS.get(
+      bindings.PARTY_BUDGETS.idFromName("budget-health-unit"));
+    const headers = {[INTERNAL_API_HEADER]: "1"};
+    for (const path of [
+      "/admit?kind=pairing&units=3",
+      "/admit?kind=pairing&units=3&operation=unknown",
+      "/admit?kind=pairing&units=2&operation=matchCodeJoin",
+      "/admit?kind=control&units=28&operation=partyControl",
+      "/admit?kind=control&units=14&operation=matchSignalSocket",
+      "/admit?kind=pairing&units=2&operation=turnMint",
+      "/admit?kind=control&units=3&operation=turnMint",
+    ]) {
+      const response = await stub.fetch(`https://budget${path}`,
+        {method: "POST", headers});
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({error: "invalid_operation"});
+    }
+    expect((await stub.fetch(
+      "https://budget/admit?kind=pairing&units=3&operation=matchCodeJoin",
+      {method: "POST", headers})).status).toBe(200);
+    expect((await stub.fetch(
+      "https://budget/admit?kind=control&units=28&operation=partySocket",
+      {method: "POST", headers})).status).toBe(200);
+    expect((await stub.fetch(
+      "https://budget/admit?kind=control&units=15&operation=matchSignalSocket",
+      {method: "POST", headers})).status).toBe(200);
+    // Missing operation remains readable only for the frozen pre-v1 Worker.
+    expect((await stub.fetch("https://budget/admit?kind=pairing&units=1",
+      {method: "POST"})).status).toBe(200);
+    const health = await stub.fetch("https://budget/health", {headers});
+    expect(health.headers.get("cache-control")).toBe("no-store");
+    expect(await health.json()).toEqual({schemaVersion: 2,
+      reservationRequests: 4,
+      reservations: {
+        matchCreate: 0, matchLinkJoin: 0, matchCodeJoin: 1,
+        matchControl: 0, matchRotate: 0, matchSocket: 0, matchSignalSocket: 1,
+        partyCreate: 0, partyLinkJoin: 0, partyCodeJoin: 0,
+        partyControl: 0, partyRotate: 0, partySocket: 1,
+        partyNativeCreate: 0, turnMint: 0, legacy: 1,
+      },
+      admitted: {pairingUnits: 4, controlUnits: 43},
+      tracked: {pairingUnits: 3, controlUnits: 43},
+      tracking: "partial",
+    });
+  });
+
+  /* S3: the native create+socket bootstrap previously made two serialized
+   * budget round trips (partyCreate pairing 10, then partySocket control 28).
+   * partyNativeCreate is the one-round-trip compound with the SAME unit
+   * accounting: one admitted request reserves pairing 10 AND control 28
+   * atomically; a refusal of either ceiling charges neither. */
+  it("admits the compound native bootstrap in one atomic reservation", async () => {
+    const bindings = env as unknown as Env;
+    const stub = bindings.PARTY_BUDGETS.get(
+      bindings.PARTY_BUDGETS.idFromName("budget-compound-unit"));
+    const headers = {[INTERNAL_API_HEADER]: "1"};
+    const source = "S".repeat(43);
+    /* The declared shape stays fixed: the pairing half (the anti-abuse create
+     * side, carrying the source) is the URL contract; anything else refuses. */
+    for (const [path, error] of [
+      [`/admit?kind=control&units=28&operation=partyNativeCreate&source=${source}`,
+        "invalid_operation"],
+      /* Declaring the compound's 38-unit total is refused twice over: by the
+       * global per-admission unit bound and by the fixed operation shape. */
+      [`/admit?kind=pairing&units=38&operation=partyNativeCreate&source=${source}`,
+        "invalid_units"],
+      [`/admit?kind=pairing&units=28&operation=partyNativeCreate&source=${source}`,
+        "invalid_operation"],
+    ] as const) {
+      const refused = await stub.fetch(`https://budget${path}`,
+        {method: "POST", headers});
+      expect(refused.status).toBe(400);
+      expect(await refused.json()).toEqual({error});
+    }
+    /* A create-class compound without its source identity fails closed. */
+    const unsourced = await stub.fetch(
+      "https://budget/admit?kind=pairing&units=10&operation=partyNativeCreate",
+      {method: "POST", headers});
+    expect(unsourced.status).toBe(400);
+    expect(await unsourced.json()).toEqual({error: "invalid_source"});
+    const admitted = await stub.fetch("https://budget/admit?kind=pairing&" +
+      `units=10&operation=partyNativeCreate&source=${source}`,
+      {method: "POST", headers});
+    expect(admitted.status).toBe(200);
+    const health = await stub.fetch("https://budget/health", {headers});
+    /* Unit-for-unit equivalence with the two-call flow it replaces, and the
+     * health invariant still reconciles to "complete". */
+    expect(await health.json()).toEqual({schemaVersion: 2,
+      reservationRequests: 1,
+      reservations: {
+        matchCreate: 0, matchLinkJoin: 0, matchCodeJoin: 0,
+        matchControl: 0, matchRotate: 0, matchSocket: 0, matchSignalSocket: 0,
+        partyCreate: 0, partyLinkJoin: 0, partyCodeJoin: 0,
+        partyControl: 0, partyRotate: 0, partySocket: 0,
+        partyNativeCreate: 1, turnMint: 0, legacy: 0,
+      },
+      admitted: {pairingUnits: 10, controlUnits: 28},
+      tracked: {pairingUnits: 10, controlUnits: 28},
+      tracking: "complete",
+    });
+    /* The compound counts against the same per-source daily create allowance
+     * as every other create: nothing about collapsing the round trips may
+     * loosen I-2. 24 more creates exhaust the bucket; the 26th refuses. */
+    for (let attempt = 0; attempt < 24; attempt++) {
+      const again = await stub.fetch("https://budget/admit?kind=pairing&" +
+        `units=10&operation=partyNativeCreate&source=${source}`,
+        {method: "POST", headers});
+      expect(again.status).toBe(200);
+    }
+    const throttled = await stub.fetch("https://budget/admit?kind=pairing&" +
+      `units=10&operation=partyNativeCreate&source=${source}`,
+      {method: "POST", headers});
+    expect(throttled.status).toBe(429);
+    expect(await throttled.json()).toEqual(
+      {allowed: false, error: "create_rate_limited"});
+  });
+
+  it("refuses the compound atomically when either ceiling would be crossed", async () => {
+    const bindings = env as unknown as Env;
+    const headers = {[INTERNAL_API_HEADER]: "1"};
+    const source = "S".repeat(43);
+    /* Control reserve would be crossed: the pairing half must not charge. */
+    const controlStub = bindings.PARTY_BUDGETS.get(
+      bindings.PARTY_BUDGETS.idFromName("budget-compound-control-unit"));
+    await runInDurableObject(controlStub, async (_instance, state) => {
+      await state.storage.put("counters", {pairing: 0, control: 19_880});
+    });
+    const controlRefused = await controlStub.fetch("https://budget/admit?" +
+      `kind=pairing&units=10&operation=partyNativeCreate&source=${source}`,
+      {method: "POST", headers});
+    expect(controlRefused.status).toBe(503);
+    const controlCounters = await runInDurableObject(controlStub,
+      async (_instance, state) =>
+        state.storage.get<Record<string, unknown>>("counters"));
+    expect(controlCounters).toMatchObject({pairing: 0, control: 19_880});
+    /* Pairing ceiling would be crossed: the control half must not charge. */
+    const pairingStub = bindings.PARTY_BUDGETS.get(
+      bindings.PARTY_BUDGETS.idFromName("budget-compound-pairing-unit"));
+    await runInDurableObject(pairingStub, async (_instance, state) => {
+      await state.storage.put("counters", {pairing: 9_995, control: 0});
+    });
+    const pairingRefused = await pairingStub.fetch("https://budget/admit?" +
+      `kind=pairing&units=10&operation=partyNativeCreate&source=${source}`,
+      {method: "POST", headers});
+    expect(pairingRefused.status).toBe(503);
+    const pairingCounters = await runInDurableObject(pairingStub,
+      async (_instance, state) =>
+        state.storage.get<Record<string, unknown>>("counters"));
+    expect(pairingCounters).toMatchObject({pairing: 9_995, control: 0});
+  });
+});

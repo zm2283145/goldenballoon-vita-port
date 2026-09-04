@@ -1,0 +1,6 @@
+# known_markdown_link_failures.txt -- pre-existing links that intentionally
+# point outside this repository. Any unlisted problem remains a hard failure.
+
+# MGB64_BACKFLOW cites the sibling project by design; that checkout is not part
+# of this source tree.
+docs/MGB64_BACKFLOW.md: points outside repository: *

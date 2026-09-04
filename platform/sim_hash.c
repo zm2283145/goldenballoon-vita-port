@@ -1,0 +1,2236 @@
+/*
+ * sim_hash.c — authoritative-state hash.
+ *
+ * One 64-bit FNV-1a hash per authoritative tick over a VERSIONED field
+ * stream. This is the anchor instrument for every later fidelity gate:
+ * render purity, the presentation-rate matrix and catch-up equivalence
+ * are all "the [SIMHASH] stream is identical" assertions.
+ *
+ * SELECTING A VERSION. MDKR_STATE_HASH picks the field set:
+ *
+ *   unset / "0"  off (zero cost beyond one cached getenv)
+ *   "1"          v1 — the original field set, byte-for-byte
+ *   "2"          v2 — archived object/particle integrator field set
+ *   "2x"         legacy v2 render-owned diagnostic
+ *   "3"          v3 — the current authority and render-purity gate
+ *
+ * Any other non-empty value is v1, so every log and script written before
+ * v2 existed keeps its exact meaning and a cross-version A/B against an
+ * archived stream stays possible. The version number is folded into the
+ * hash as its first input, so two versions can never produce a colliding
+ * stream that would let an A/B silently compare unlike things.
+ *
+ * ---------------------------------------------------------------------
+ * v1 (SIM_HASH_VERSION_V1) — retained verbatim
+ * ---------------------------------------------------------------------
+ *   - the gameplay RNG seed (the most divergence-sensitive scalar);
+ *   - the live object count; and
+ *   - per-object: behaviour id, position, Y ROTATION ONLY, and scale,
+ *     read bitwise so float identity is exact.
+ *
+ * v1's y-rotation-only coverage is a measured blind spot, not a
+ * theoretical one. On level 37 a line particle's x_rotation and
+ * z_rotation diverged between two runs of the same binary at tick 3378 and
+ * v1 could not see it until the drift had accumulated through
+ * angularVelocity into y_rotation at tick 3381 — three ticks downstream of
+ * the actual event. The [HASHOBJW] diagnostic row reads those fields by
+ * hand; v2 is that row promoted into the hash.
+ *
+ * ---------------------------------------------------------------------
+ * v2 (SIM_HASH_VERSION_V2) — a strict superset of v1
+ * ---------------------------------------------------------------------
+ * Every byte v1 hashes, v2 hashes too, so v2 detects everything v1
+ * detects. Global inputs are unchanged: version, RNG seed, object count.
+ *
+ * The object list is MIXED: particles live in gObjPtrList alongside
+ * objects and are flagged OBJ_FLAGS_PARTICLE (objects.c:2964). Object and
+ * Particle share ObjectTransform and, on LP64 as on the N64, are both
+ * pointer-free through offset 0x3C, so their first 0x3C bytes are the
+ * same layout with different names. v2 hashes that shared prefix for
+ * every entry and then branches, so each entry is read as what it
+ * actually is:
+ *
+ *   shared prefix (Object name / Particle name)
+ *     trans.rotation.x_rotation                        NEW in v2
+ *     trans.rotation.y_rotation                        (v1)
+ *     trans.rotation.z_rotation                        NEW in v2
+ *     trans.flags                                      NEW in v2
+ *     trans.scale                                      (v1)
+ *     trans.x_position / y_position / z_position       (v1)
+ *     animFrame        / textureFrame       (0x18)     NEW in v2
+ *     numActiveEmitters/ textureFrameStep   (0x1A)     NEW in v2
+ *     x_velocity       / velocity.x         (0x1C)     NEW in v2
+ *     y_velocity       / velocity.y         (0x20)     NEW in v2
+ *     z_velocity       / velocity.z         (0x24)     NEW in v2
+ *     unk28            / scaleVelocity      (0x28)     NEW in v2
+ *     headerType       / kind               (0x2C)     NEW in v2
+ *     segmentID        / segmentID          (0x2E)     NEW in v2
+ *
+ *   non-particle Object only
+ *     behaviorId                                       (v1)
+ *     objectID                                         NEW in v2
+ *     animationID                                      NEW in v2
+ *
+ *   Particle only
+ *     movementType, destroyTimer, descFlags            NEW in v2
+ *     localPos.x / .y / .z                             NEW in v2
+ *     opacity, opacityVel, opacityTimer                NEW in v2
+ *     angularVelocity.x / .y / .z                      NEW in v2
+ *     the gravity / line-phase union word              NEW in v2
+ *
+ * v1 hashed `object->behaviorId` for particles too, which on LP64 lands
+ * on Particle::unk_48 — a byte v2 no longer reads under that name. It is
+ * still a superset in the sense that matters: v2 covers every particle
+ * field that byte could have witnessed a change in, and many more, so no
+ * divergence v1 can see is invisible to v2. Verified by running both
+ * versions over the same sweep.
+ *
+ * ---------------------------------------------------------------------
+ * Historical v2 exclusions
+ * ---------------------------------------------------------------------
+ * Excluded by design and unchanged from v1: pointers, allocation
+ * addresses, renderer caches, display lists, GPU handles, audio queue
+ * fill, wall-clock values, presentation snapshots. Particle::parentObj,
+ * ::model/::sprite and the ::lineEmitter arm of the movementParam union
+ * are all host pointers on LP64 and are excluded on exactly that ground —
+ * hashing them would make the stream a function of the memory map. This
+ * is not hypothetical: the level-37 divergence above was recycled pointer
+ * bytes reaching an authoritative field.
+ *
+ * v2 excluded these because they were render-owned at the time:
+ *
+ *   Object::distanceToCamera  written by sort_objects_by_dist
+ *                             (objects.c:6332/6347/6349/6352/6358)
+ *   Object::opacity           written by render_3d_billboard
+ *                             (objects.c:4726/4728) and
+ *                             check_if_in_draw_range (tracks.c:2748…)
+ *   Object::modelIndex        LOD, written by set_temp_model_transforms
+ *                             (objects.c:5562)
+ *
+ * Excluded because they are PRESENTATION-only — stored in a simulation
+ * struct, but read by nothing except the display-list builder:
+ *
+ *   Particle::colour      feeds gDPSetEnvColor / vertex colour
+ *   Particle::brightness  feeds gDPSetPrimColor (particles.c:2598/2637/
+ *                         2654); the ONLY writes are the three
+ *                         constructors, the ONLY reads are those three
+ *                         gDPSetPrimColor calls plus two `!= 255` guards
+ *
+ * brightness is worth its own paragraph, because it is not merely
+ * unhashed — it is hashed-and-then-removed, and the reason is measured.
+ * It is seeded at construction from `obj->shading->unk0 * 255.0f`, and
+ * shading->unk0 is written on the RENDER path: shadow_update()
+ * (tracks.c:5065 and the :4918 accumulator) is called from render_scene
+ * (tracks.c:461). So a particle born on a tick whose render was skipped
+ * captures a different brightness than one born on a rendered tick. With
+ * brightness in the set, the render-purity skip-odd arm went red on level
+ * 5 at tick 3410, four particles at once (list indices 123-126, kinds 3
+ * and 128), br=199 against br=255 — a real render→state coupling,
+ * correctly detected. It is left as a known gap rather than fixed here
+ * because the field it corrupts is one nothing in the simulation reads:
+ * the consequence is a particle drawn at the wrong brightness, which is a
+ * presentation-fidelity bug in the same family as `colour`, not an
+ * authoritative-state bug. Putting it in the authoritative hash would
+ * assert that render lighting IS authoritative state, which is false.
+ *
+ * ---------------------------------------------------------------------
+ * v3 (SIM_HASH_VERSION_V3) — current gate
+ * ---------------------------------------------------------------------
+ * v3 retains v2 and adds, field-by-field with no host pointer bytes:
+ *
+ *   - game mode, level/load/race timers, pause/countdown and save flags;
+ *   - Settings progression, racer records, course/flap time records,
+ *     time-trial state, course flags and world balloon counts;
+ *   - stable object-list index/presence, distanceToCamera, unk34/unk38,
+ *     opacity, modelIndex, particle-emitter enable state and interactions;
+ *   - scalar members of the behavior-selected ObjProperties arm;
+ *   - Object_Racer gameplay fields (including physics, route/lap, inventory,
+ *     timers, AI/controller state and animation controls); and
+ *   - scalar animation state for every ModelInstance of real 3D-model objects,
+ *     including dormant LODs that can become authoritative later.
+ *
+ * The former render-owned trio is now valid authority: distance/order and
+ * racer LOD are committed once by the fixed tick, while per-viewport distance,
+ * opacity and LOD are draw-local overrides. Model animation cadence is likewise
+ * committed in the fixed-step epilogue. Raw normal-vs-skip render schedules are
+ * byte-identical under v3; no test-only state subtraction exists.
+ *
+ * Deliberate v3 exclusions are pointers/addresses, display lists and renderer
+ * caches, GPU/audio queue/wall-clock state, presentation snapshots, particle
+ * colour/brightness, shading, and Object_Racer::lightFlags. lightFlags is the
+ * brake/headlight texture state machine; its NIGHT bit samples render-computed
+ * shading and no physics, AI, progression or input path consumes it.
+ *
+ * ---------------------------------------------------------------------
+ * Playable-Taj sidecar state — a deliberate v3 exclusion
+ * ---------------------------------------------------------------------
+ * game/src/taj_physics.c keeps a per-racer sidecar (dashTicks, cooldownTicks,
+ * entrySpeed, wasDrifting, selected) and game/src/taj_mod.c keeps the identity
+ * masks (player_mask, racer_mask). None of it is hashed. It is not hashed
+ * because it is not independently observable: every one of these values reaches
+ * the hash through racer velocity ON THE SAME TICK it is read.
+ *
+ *   player_mask / racer_mask   taj_physics_is_taj() gates
+ *                              taj_physics_pre/post_vehicle_update, so a
+ *                              divergent mask means a racer is or is not
+ *                              speed-clamped, attack-immune and dash-capable
+ *                              in that same update_player_racer() call.
+ *   entrySpeed / wasDrifting   read and consumed inside the same
+ *                              taj_physics_post_vehicle_update().
+ *   dashTicks                  taj_physics_advance_dash() runs before the
+ *                              speed solve in the same call, and a nonzero
+ *                              dashTicks both adds TAJ_PHYSICS_DASH_ACCELERATION
+ *                              and raises maxSpeed, so it lands in
+ *                              racer->velocity and Object::x/z_velocity —
+ *                              all hashed — on the tick it changes.
+ *
+ * The one value with real detection latency is cooldownTicks. While it counts
+ * down it changes nothing observable; a divergence in it is invisible until the
+ * next drift release, which it then allows or refuses — and THAT shows up as a
+ * dashTicks/velocity difference on the tick it happens. So the gap is bounded
+ * by "until the next drift release", not unbounded, and the divergence is still
+ * caught by the same [SIMHASH] stream when it becomes real.
+ *
+ * They are excluded rather than added because adding them would rewrite the
+ * published byte stream for EVERY run — including the ordinary non-Taj runs the
+ * determinism and render-purity gates compare — to cover a value that is
+ * already covered one hop downstream. The presentation-object exclusion below
+ * is a correction to what the stream means; this would only be a re-baseline.
+ *
+ * `tests/check_state_hash.py` independently perturbs every v3 family for one
+ * sample and proves exact restoration. `tests/check_render_purity.py` compares
+ * raw schedules and uses an explicit injected leak as its positive control.
+ */
+#include <ultra64.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "structs.h"
+#include "camera.h"
+#include "game.h"
+#include "object_behaviors.h"
+#include "object_models.h"
+#include "particles.h"
+#include "textures_sprites.h"
+#include "thread3_main.h"
+
+/* The read-only object view this file publishes for the in-game viewer. */
+#include "sim_hash_view.h"
+
+#define SIM_HASH_VERSION_V1 1u
+#define SIM_HASH_VERSION_V2 2u
+#define SIM_HASH_VERSION_V3 3u
+/* "v2 + render-owned", a legacy diagnostic. Keep it outside the public
+ * version sequence so MDKR_STATE_HASH=3 can name the real v3 field set. */
+#define SIM_HASH_VERSION_V2X 0x80000002u
+
+extern s32 get_rng_seed(void);
+extern s32 get_race_countdown(void);
+extern Object **objGetObjList(s32 *first, s32 *count);
+extern s16 gLevelLoadTimer;
+extern s32 gRaceStartTimer;
+extern s16 gRaceEndTimer;
+extern Camera gCameras[8];
+extern s32 gTTCamPlayerID;
+extern s32 gTTCamID;
+extern s32 gTTCamSmoothTimer;
+extern s32 gTTCamSpectateIndex[10];
+
+static uint64_t fnv1a64(uint64_t hash, const void *data, size_t size) {
+    const unsigned char *bytes = (const unsigned char *)data;
+    for (size_t index = 0; index < size; index++) {
+        hash ^= bytes[index];
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+#define SIM_HASH_FIELD(h, obj, member) \
+    ((h) = fnv1a64((h), &(obj)->member, sizeof((obj)->member)))
+
+/* ---------------------------------------------------------------------------
+ * READABLE FIELD ALIASES
+ * ---------------------------------------------------------------------------
+ * The field streams below are the authoritative-state contract, and most of
+ * Object_Racer is still spelled `unkNN` by the decomp — an offset, not a name.
+ * A stream of ~90 consecutive `unkNN` lines is unreviewable: nobody can tell
+ * whether a field belongs in the hash, or notice one going missing.
+ *
+ * These aliases expand to the raw member token, so `SIM_HASH_FIELD(h, racer,
+ * RACER_STUCK_TIMER)` is textually identical to the old `unk213` form after
+ * preprocessing. THIS LAYER CANNOT CHANGE THE HASH: it renames nothing in the
+ * struct, reorders nothing, and adds and removes no field. Byte-identity of the
+ * v3 stream was measured before and after, not assumed.
+ *
+ * Meanings are derived from how game/src actually reads and writes each field,
+ * and the confidence is recorded honestly:
+ *
+ *   plain name          the usage is unambiguous (a value set to N and counted
+ *                       down while gating an effect is that effect's timer)
+ *   "~" in the comment  suggestive but not conclusive — the name is the best
+ *                       available reading, not an established fact
+ *   *_UNIDENTIFIED_*    no usable evidence: the field is written and read
+ *                       nowhere in this tree, or only copied around. These are
+ *                       named by type and offset ON PURPOSE. Do not replace one
+ *                       with a plausible-sounding guess; upstream has not named
+ *                       them either, and a wrong name here is worse than none.
+ *
+ * The aliases are #undef'd after the last stream that uses them, so they cannot
+ * leak into anything else in this file.
+ * ------------------------------------------------------------------------- */
+
+/* Object (shared prefix + v3 additions). */
+#define OBJ_SCALE_VELOCITY                   unk28  /* Particle calls it scaleVelocity */
+#define OBJ_CULL_RADIUS                      unk34  /* header field 0x50 * trans.scale;
+                                                     * added as the radius term in the
+                                                     * frustum plane test, and `> 1000`
+                                                     * is the always-visible escape */
+#define OBJ_UNIDENTIFIED_S8_38               unk38  /* only touched by an UNUSED function */
+
+/* Behaviour-selected ObjProperties arms. */
+#define OBJPROP_DISTANCE_UNIDENTIFIED_04     properties.distance.unk4
+#define OBJPROP_PROJECTILE_AGE_TIMER         properties.projectile.unk4      /* += updateRate; drives the scale ramp */
+#define OBJPROP_WIZPIGSHIP_UNIDENTIFIED_00   properties.wizpigship.unk0
+#define OBJPROP_ANIMOBJ_RACER_ID             properties.animatedObj.unk0     /* read as racerID */
+#define OBJPROP_ANIMOBJ_TRIGGER_RESULT       properties.animatedObj.unk4     /* ~ obj_update_animated_object result, == 0 */
+#define OBJPROP_BRIDGE_RAMP_TIMER            properties.bridgeWhaleRamp.unk0 /* entry->unkD * 2, counted down */
+#define OBJPROP_RAMP_SWITCH_BRIDGE_ID        properties.rampSwitch.unk0      /* passed to start_bridge_timer() */
+#define OBJPROP_BUBBLER_PARTICLE_DENSITY     properties.bubbler.unk0         /* entry->particleDensity vs rand_range */
+
+/* Camera trailing bytes. Hashed because they sit inside the authoritative
+ * camera record, but nothing in this tree reads or writes them. */
+#define CAM_UNIDENTIFIED_U8_3C               unk3C
+#define CAM_UNIDENTIFIED_U8_3D               unk3D
+#define CAM_UNIDENTIFIED_U8_3E               unk3E
+#define CAM_UNIDENTIFIED_U8_3F               unk3F
+
+/* ObjectInteraction. */
+#define OBJ_INTERACT_KIND                    unk11  /* 0..4; selects the collision response */
+#define OBJ_INTERACT_HEIGHT_MIN              unk16  /* ~ with _MAX, the vertical band tested
+                                                     * as `y < unk16 * 10 || unk17 * 10 < y`
+                                                     * when the kind is 1 */
+#define OBJ_INTERACT_HEIGHT_MAX              unk17
+
+/* Settings (save/progression). */
+#define SETTINGS_UNIDENTIFIED_PROGRESS_WORD_A unkA   /* ~ cleared beside keys/bosses/trophies; never read */
+#define SETTINGS_BEST_LAP_OWNER               unk115 /* [0] = racerIndex, [1] = lap index, of the best lap */
+
+/* Object_Racer. Offsets are the decomp's, i.e. the byte offset in the struct. */
+#define RACER_UNIDENTIFIED_S32_04            unk4
+#define RACER_LAST_VOICE_SOUND_ID            unk2A  /* gates interrupting the masked voice line */
+#define RACER_VEHICLE_PITCH                  unk34  /* local-Y of world velocity; suspension reaction */
+#define RACER_AI_SPLINE_ANCHOR_X             unk68  /* AI's tracked point along the checkpoint spline */
+#define RACER_AI_SPLINE_ANCHOR_Y             unk6C
+#define RACER_AI_SPLINE_ANCHOR_Z             unk70
+#define RACER_CAMERA_Y_FOLLOW_DIVISOR        unk74  /* ~ 8.0 on a trick, decays to 2.0; divides camera Y catch-up */
+#define RACER_DRIFT_VELOCITY_X               unk84  /* decomp comment calls unk84/unk88 "drift" */
+#define RACER_DRIFT_VELOCITY_Z               unk88
+#define RACER_UNIDENTIFIED_F32_98            unk98
+#define RACER_AI_SPLINE_TRAVEL_RATE          unkAC  /* self-tunes to the AI's real speed */
+#define RACER_WHEEL_SPIN_PHASE               unkB0  /* wraps in [0,5); steps wheel modelIndex */
+#define RACER_UNIDENTIFIED_F32_BC            unkBC
+#define RACER_BUOYANCY_LIFT_RAMP             unkC4  /* eases to 0.75; softens lift on water re-entry */
+#define RACER_CAMERA_LATERAL_OFFSET          unkC8  /* smoothed sideways camera offset */
+#define RACER_UNIDENTIFIED_F32_CC            unkCC
+#define RACER_TUMBLE_Y_OFFSET_DECAY          unkD0  /* ~ decays to 0; added to the tumble Y offset */
+#define RACER_FALL_IMPACT_MAGNITUDE          unkD4  /* ~ -y_velocity * 7 clamped [0,35]; no reader found */
+#define RACER_COLLISION_PROBE_POINTS         unkD8  /* f32[12] == 4 x Vec3f wheel probes */
+#define RACER_DRIFT_LEAN_ANGLE               unk10C /* eases to drift_direction << 13 */
+#define RACER_SAVED_CAR_STEER_VEL            unk110 /* per-racer save/restore of gCurrentCarSteerVel */
+#define RACER_UNIDENTIFIED_S32_114           unk114
+#define RACER_WALL_RECOIL_VEL_X              unk11C /* decomp comment: "wall recoil at half weight" */
+#define RACER_WALL_RECOIL_VEL_Z              unk120
+#define RACER_AI_RUBBERBAND_SPEED_BONUS      unk124 /* substitutes for `bananas` on AI racers */
+#define RACER_UNIDENTIFIED_S32_13C           unk13C
+#define RACER_TARGET_X_ROTATION_OFFSET       unk166 /* unsmoothed target; delta vs x_rotation_offset is a Y offset */
+#define RACER_VELOCITY_HEADING_ANGLE         unk168 /* arctan2(xVel,zVel)+0x8000; steers cameraYaw */
+#define RACER_DRIFT_COUNTERSTEER_WOBBLE      unk16E /* > 80 fails the drift into a spinout */
+#define RACER_WEAPON_ICON_SPIN_GATE          unk170 /* ~ gates the HUD weapon-icon spin; no writer found */
+#define RACER_UNIDENTIFIED_S16_176           unk176
+#define RACER_UNIDENTIFIED_U8_186            unk186
+#define RACER_PENDING_BANANA_DROP_COUNT      unk188 /* the `number` argument to drop_bananas() */
+#define RACER_STEER_WOBBLE_TIMER             unk18A /* re-rolls the random steer jitter as it counts down */
+#define RACER_ATTACK_REACTION_TIMER          unk18C /* ~ set to 360 when struck; no reader gates on it */
+#define RACER_STEER_ROTATION_RECOVERY_TARGET unk198 /* heading latched at the vehicle-mode trigger */
+#define RACER_SPECIAL_VEHICLE_MODE_TIMER     unk19A /* > 600 restores vehicleIDPrev */
+#define RACER_WALL_COLLISION_SPIN_ANGLE      unk19C /* latched +/-2048 spin kick after a wall crash */
+#define RACER_SPIN_CAMERA_YAW_RECOIL         unk19E /* decaying camera-yaw kick after a spin */
+#define RACER_CHECKPOINT_PROGRESS_TIEBREAK   unk1A8 /* breaks race-position ties on equal checkpoints */
+#define RACER_POSITION_STABLE_FRAMES         unk1B0 /* debounce before racerOrder becomes racePosition */
+#define RACER_POSITION_CHANGE_TIMER          unk1B2 /* ~ armed to 10 on a position change; no reader */
+#define RACER_UNIDENTIFIED_S32_1B4           unk1B4
+#define RACER_UNIDENTIFIED_S16_1B8           unk1B8
+#define RACER_AI_LINE_OFFSET_X               unk1BA /* lateral offset from the racing line; OOB check at +/-400 */
+#define RACER_AI_LINE_OFFSET_Y               unk1BC
+#define RACER_AI_TARGET_YAW                  unk1BE
+#define RACER_AI_TARGET_PITCH                unk1C0
+#define RACER_AI_PREV_TARGET_YAW             unk1C2 /* previous frame's value; delta drives gCurrentStickX */
+#define RACER_AI_PREV_TARGET_PITCH           unk1C4 /* previous frame's value; delta drives gCurrentStickY */
+#define RACER_AI_ACTION_TIMER                unk1C6 /* how long the AI stays committed to a decision */
+#define RACER_AI_ATTACK_ACTION_STATE         unk1C9 /* item/attack decision state; gates Z_TRIG */
+#define RACER_AI_LINE_INDEX                  unk1CA /* selects among alternate AI racing lines */
+#define RACER_SPAWN_VEHICLE_CLASS            unk1CB /* ~ spawn vehicle clamped to CAR..PLANE; no reader found */
+#define RACER_AI_GOAL_OR_SAVED_ANIM          unk1CD /* ~ reused: egg-challenge AI goal, and saved animationID
+                                                     * on the lean-bike vehicles */
+#define RACER_AI_TARGET_NODE_OR_COMMAND      unk1CE /* ~ AI node id (0xFF = none), also read as & 0x40 / & 0x80 */
+#define RACER_STEER_JITTER_OFFSET            unk1D1 /* rand_range added straight into gCurrentStickX */
+#define RACER_CRASH_SPIN_TIMER               unk1D2 /* set to 7 on a hard hit; locks the spin direction */
+#define RACER_TRICK_ROTATION_FLAG            unk1D4 /* trick rotation passed zero; allows the landing */
+#define RACER_TRICK_HOLD_TIMER               unk1D5 /* extends the trick while R is held */
+#define RACER_POST_FINISH_COUNTER            unk1D9 /* ~ counts to 60 after raceFinished; no reader */
+#define RACER_UNIDENTIFIED_U8_1DA            unk1DA
+#define RACER_WHEEL_GROUND_MASK              unk1E3 /* one bit per wheel; counted into groundedWheels */
+#define RACER_OBJECT_COLLISION_FLAGS         unk1E4 /* from collision_objectmodel(); gates pitch levelling */
+#define RACER_STEER_ANGLE_SECONDARY          unk1E8 /* ~ eased stick-Y, also the reverse-gear steer fallback */
+#define RACER_UNIDENTIFIED_S8_1E9            unk1E9
+#define RACER_UNIDENTIFIED_S8_1EA            unk1EA
+#define RACER_SKID_DURATION_COUNTER          unk1EE /* ~ counts up while sliding, capped at 15; no reader */
+#define RACER_WATER_PATH_RECOVERY_FLAG       unk1F0 /* steering back to the path after bogging in water */
+#define RACER_SPIN_PHASE                     unk1F1 /* 0 none, 1 airborne, 2 grounded */
+#define RACER_MISC_ANIM_STATE                unk1F2 /* 0 slide, 3 boost, 4 crash, 5 horn, 6 reverse */
+#define RACER_MISC_ANIM_FLAGS                unk1F3 /* 0x4 boost, 0x8 crash, 0x80 playback direction */
+#define RACER_CRASH_SOUND_COOLDOWN           unk1F6 /* reset to 30; gates the crash sound + anim */
+#define RACER_THROTTLE_HOLD_TIMER            unk1FB /* 60 while accelerating; sustains slide fx after release */
+#define RACER_EFFECT_ZONE_TYPE               unk1FE /* effect-box type, -1 when in none */
+#define RACER_EFFECT_ZONE_STRENGTH           unk1FF /* that effect box's magnitude */
+#define RACER_ONSCREEN_AI_ACTIVE_TIMER       unk201 /* 30 while recently rendered; gates AI + particles */
+#define RACER_LIGHT_DIM_JITTER_TIMER         unk206 /* ~ dims lighting and feeds the steer wobble; no writer */
+#define RACER_UNIDENTIFIED_S8_208            unk208
+#define RACER_AI_ITEM_DECISION_FLAGS         unk209 /* 0x1 picked up, 0x2 rolled, 0x4 release throttle */
+#define RACER_PREV_RACE_ORDER_INDEX          unk20B /* previous order index; drives overtake voice lines */
+#define RACER_UNIDENTIFIED_U8_20D            unk20D
+#define RACER_EGG_THROW_DEBOUNCE             unk211 /* suppresses re-trigger of Z_TRIG after releasing an egg */
+#define RACER_STUCK_TIMER                    unk213 /* AI stall accumulator; > 60 starts recovery */
+#define RACER_STUCK_REVERSE_TIMER            unk214 /* 60 ticks of forced reverse input */
+#define RACER_STUCK_RECOVERY_COOLDOWN        unk215 /* 120; only decremented while actually driving */
+#define RACER_UNIDENTIFIED_U8_216            unk216
+#define RACER_UNIDENTIFIED_U8_217            unk217
+
+/* ---------------------------------------------------------------------------
+ * PRESENTATION-OBJECT EXCLUSION
+ * ---------------------------------------------------------------------------
+ * gObjPtrList is not purely authoritative. A port feature may compose an
+ * object that exists ONLY to be drawn: it owns no racer, AI, collision,
+ * progression or input state, nothing in the simulation reads it back, and it
+ * is free to be transformed from presentational sources. The playable-Taj
+ * magic-carpet/rider companions (game/src/taj_visual.c) are the first such
+ * objects: their trans.scale, trans.rotation.z_rotation and animFrame are
+ * rewritten every tick from a bob phase and a dash pulse, three of those
+ * inputs sit behind MDKR_TAJ_VISUAL_* environment flags, and whether they
+ * exist at all depends on allocation success.
+ *
+ * Hashing them would assert that presentation IS authoritative state, which is
+ * false, and it would make the anchor instrument a function of an environment
+ * variable and of the allocator. That is the same argument that keeps
+ * Particle::colour, ::brightness and Object_Racer::lightFlags out of v3 -- the
+ * difference is only that here the whole object, not one field, is
+ * presentational, so the exclusion is applied once at the walk instead of
+ * field by field.
+ *
+ * ONE MECHANISM, FILTER SIDE. Every object walk in this file -- v1, v2, v3, the
+ * family digests, both diagnostic dumps and the perturbation control -- passes
+ * each entry through sim_hash_object_is_presentation() and skips it whole: no
+ * index byte, no presence byte, no fields. The producing module does not get to
+ * decide what the hash sees; it only answers "is this object mine". A future
+ * presentation-only object joins by extending this one predicate.
+ *
+ * WHAT THIS DOES NOT CHANGE. A skipped entry does not renumber its neighbours:
+ * the surviving objects keep their gObjPtrList index, so a run that composes no
+ * presentation objects produces a byte-identical stream to the one it produced
+ * before this filter existed. The published count is likewise the authoritative
+ * count, so a companion that fails to allocate no longer moves `objs=`.
+ *
+ * RESIDUAL, STATED PLAINLY. Companions still occupy list slots, so in a run
+ * that composes them a LATER ordinary object can receive a different
+ * gObjPtrList index than it would in a companion-free run, and the stream
+ * differs on that ground. That is not a presentation leak: slot assignment is a
+ * deterministic function of authoritative state (which players selected Taj,
+ * which racers are live) and of the level, never of the render schedule, the
+ * presentation cadence or the MDKR_TAJ_VISUAL_* flags -- which is exactly the
+ * invariance tests/check_state_hash.py mutation-proves.
+ */
+extern s32 taj_visual_is_presentation_object(const Object *object);
+extern s32 wizpig_visual_is_presentation_object(const Object *object);
+extern s32 terry_visual_is_presentation_object(const Object *object);
+
+static int sim_hash_object_is_presentation(const Object *object) {
+    if (object == NULL) {
+        return 0;
+    }
+    /* A particle can never be a presentation companion and reinterpreting one
+     * as an Object to ask would read the wrong members. */
+    if (object->trans.flags & OBJ_FLAGS_PARTICLE) {
+        return 0;
+    }
+    return taj_visual_is_presentation_object(object) != 0 ||
+           wizpig_visual_is_presentation_object(object) != 0 ||
+           terry_visual_is_presentation_object(object) != 0;
+}
+
+/* The authoritative population: what `objs=` reports and what the per-object
+ * walks will actually visit. */
+static s32 sim_hash_authoritative_count(Object **objects, s32 count) {
+    s32 authoritative = 0;
+    if (objects == NULL) {
+        return count;
+    }
+    for (s32 index = 0; index < count; index++) {
+        if (!sim_hash_object_is_presentation(objects[index])) {
+            authoritative++;
+        }
+    }
+    return authoritative;
+}
+
+/* 0 = off, otherwise SIM_HASH_VERSION_*. Parsed once. */
+static uint32_t sim_hash_version(void) {
+    static uint32_t version = 0xffffffffu;
+    if (version == 0xffffffffu) {
+        const char *value = getenv("MDKR_STATE_HASH");
+        if (value == NULL || value[0] == '\0' || strcmp(value, "0") == 0) {
+            version = 0u;
+        } else if (strcmp(value, "2") == 0) {
+            version = SIM_HASH_VERSION_V2;
+        } else if (strcmp(value, "2x") == 0) {
+            version = SIM_HASH_VERSION_V2X;
+        } else if (strcmp(value, "3") == 0) {
+            version = SIM_HASH_VERSION_V3;
+        } else {
+            /* Every value that meant "on" before v2 existed still means
+             * v1, so archived streams stay comparable. */
+            version = SIM_HASH_VERSION_V1;
+        }
+    }
+    return version;
+}
+
+static int sim_hash_enabled(void) {
+    return sim_hash_version() != 0u;
+}
+
+/* v1, unchanged. Kept as its own function rather than as branches inside
+ * the v2 walk so that "v1 still means exactly what it meant" is verifiable
+ * by reading, not by tracing conditionals. */
+static uint64_t sim_hash_compute_legacy_core_v1(uint64_t hash, Object **objects,
+                                    s32 count) {
+    for (s32 index = 0; index < count; index++) {
+        const Object *object = objects[index];
+        if (object == NULL) {
+            continue;
+        }
+        if (sim_hash_object_is_presentation(object)) {
+            continue;
+        }
+        SIM_HASH_FIELD(hash, object, behaviorId);
+        SIM_HASH_FIELD(hash, object, trans.x_position);
+        SIM_HASH_FIELD(hash, object, trans.y_position);
+        SIM_HASH_FIELD(hash, object, trans.z_position);
+        SIM_HASH_FIELD(hash, object, trans.rotation.y_rotation);
+        SIM_HASH_FIELD(hash, object, trans.scale);
+    }
+    return hash;
+}
+
+static uint64_t sim_hash_compute_object_particle_v2(uint64_t hash, Object **objects,
+                                    s32 count, int with_render_owned) {
+    for (s32 index = 0; index < count; index++) {
+        const Object *object = objects[index];
+        if (object == NULL) {
+            continue;
+        }
+        if (sim_hash_object_is_presentation(object)) {
+            continue;
+        }
+        /* Shared prefix. Object and Particle are both pointer-free through
+         * 0x3C, so these members name the same bytes in both. */
+        SIM_HASH_FIELD(hash, object, trans.rotation.x_rotation);
+        SIM_HASH_FIELD(hash, object, trans.rotation.y_rotation);
+        SIM_HASH_FIELD(hash, object, trans.rotation.z_rotation);
+        SIM_HASH_FIELD(hash, object, trans.flags);
+        SIM_HASH_FIELD(hash, object, trans.scale);
+        SIM_HASH_FIELD(hash, object, trans.x_position);
+        SIM_HASH_FIELD(hash, object, trans.y_position);
+        SIM_HASH_FIELD(hash, object, trans.z_position);
+        SIM_HASH_FIELD(hash, object, animFrame);
+        SIM_HASH_FIELD(hash, object, numActiveEmitters);
+        SIM_HASH_FIELD(hash, object, x_velocity);
+        SIM_HASH_FIELD(hash, object, y_velocity);
+        SIM_HASH_FIELD(hash, object, z_velocity);
+        SIM_HASH_FIELD(hash, object, OBJ_SCALE_VELOCITY);
+        SIM_HASH_FIELD(hash, object, headerType);
+        SIM_HASH_FIELD(hash, object, segmentID);
+
+        if (object->trans.flags & OBJ_FLAGS_PARTICLE) {
+            /* Past 0x3C the two layouts part company on LP64 (Object's
+             * next member is a pointer, Particle's alignment differs), so
+             * everything below MUST be read through the right type. */
+            const Particle *particle = (const Particle *)object;
+            SIM_HASH_FIELD(hash, particle, movementType);
+            SIM_HASH_FIELD(hash, particle, destroyTimer);
+            SIM_HASH_FIELD(hash, particle, descFlags);
+            SIM_HASH_FIELD(hash, particle, localPos.x);
+            SIM_HASH_FIELD(hash, particle, localPos.y);
+            SIM_HASH_FIELD(hash, particle, localPos.z);
+            SIM_HASH_FIELD(hash, particle, opacity);
+            SIM_HASH_FIELD(hash, particle, opacityVel);
+            SIM_HASH_FIELD(hash, particle, opacityTimer);
+            /* The pair 2a4f281 found uninitialised. rotation above is the
+             * accumulator; this is what drives it. */
+            SIM_HASH_FIELD(hash, particle, angularVelocity.x_rotation);
+            SIM_HASH_FIELD(hash, particle, angularVelocity.y_rotation);
+            SIM_HASH_FIELD(hash, particle, angularVelocity.z_rotation);
+            SIM_HASH_FIELD(hash, particle, gravity);
+            if (with_render_owned) {
+                SIM_HASH_FIELD(hash, particle, brightness);
+                SIM_HASH_FIELD(hash, particle, colour.word);
+            }
+        } else {
+            SIM_HASH_FIELD(hash, object, behaviorId);
+            SIM_HASH_FIELD(hash, object, objectID);
+            SIM_HASH_FIELD(hash, object, animationID);
+            if (with_render_owned) {
+                SIM_HASH_FIELD(hash, object, distanceToCamera);
+                SIM_HASH_FIELD(hash, object, opacity);
+                SIM_HASH_FIELD(hash, object, modelIndex);
+            }
+        }
+    }
+    return hash;
+}
+
+/* Hash the scalar part of the behavior-selected ObjProperties arm. Pointer
+ * members are deliberately skipped; scalar siblings remain covered. Unknown
+ * and pointer-only arms contribute their behavior id through the object walk
+ * but no host-address bytes. */
+static uint64_t sim_hash_properties_v3(uint64_t hash, const Object *object) {
+    switch (object->behaviorId) {
+        case BHV_FOG_CHANGER:
+        case BHV_WEATHER:
+            SIM_HASH_FIELD(hash, object, properties.distance.radius);
+            SIM_HASH_FIELD(hash, object, OBJPROP_DISTANCE_UNIDENTIFIED_04);
+            break;
+        case BHV_TORCH_MIST:
+            SIM_HASH_FIELD(hash, object, properties.torchMist.speed);
+            break;
+        case BHV_BANANA:
+            SIM_HASH_FIELD(hash, object, properties.banana.status);
+            SIM_HASH_FIELD(hash, object, properties.banana.intangibleTimer);
+            SIM_HASH_FIELD(hash, object, properties.banana.destroyTimer);
+            break;
+        case BHV_LEVEL_NAME:
+            SIM_HASH_FIELD(hash, object, properties.levelName.radius);
+            SIM_HASH_FIELD(hash, object, properties.levelName.levelID);
+            SIM_HASH_FIELD(hash, object, properties.levelName.opacity);
+            break;
+        case BHV_WEAPON_2:
+            SIM_HASH_FIELD(hash, object, properties.projectile.timer);
+            SIM_HASH_FIELD(hash, object, OBJPROP_PROJECTILE_AGE_TIMER);
+            break;
+        case BHV_BUOY_PIRATE_SHIP:
+        case BHV_LOG:
+            SIM_HASH_FIELD(hash, object, properties.log.angleVel);
+            SIM_HASH_FIELD(hash, object, properties.log.velocityY);
+            break;
+        case BHV_SCENERY:
+            SIM_HASH_FIELD(hash, object, properties.scenery.hitTimer);
+            SIM_HASH_FIELD(hash, object, properties.scenery.angleVel);
+            break;
+        case BHV_FIREBALL_OCTOWEAPON:
+        case BHV_FIREBALL_OCTOWEAPON_2:
+            SIM_HASH_FIELD(hash, object, properties.fireball.timer);
+            break;
+        case BHV_LASER_BOLT:
+            SIM_HASH_FIELD(hash, object, properties.laserbolt.timer);
+            break;
+        case BHV_TROPHY_CABINET:
+            SIM_HASH_FIELD(hash, object, properties.trophyCabinet.action);
+            SIM_HASH_FIELD(hash, object, properties.trophyCabinet.trophy);
+            break;
+        case BHV_ZIPPER_GROUND:
+            SIM_HASH_FIELD(hash, object, properties.zipper.radius);
+            break;
+        case BHV_CHARACTER_FLAG:
+            SIM_HASH_FIELD(hash, object, properties.characterFlag.playerID);
+            SIM_HASH_FIELD(hash, object, properties.characterFlag.characterID);
+            break;
+        case BHV_GOLDEN_BALLOON:
+            SIM_HASH_FIELD(hash, object, properties.goldenBalloon.action);
+            SIM_HASH_FIELD(hash, object, properties.goldenBalloon.timer);
+            break;
+        case BHV_SILVER_COIN:
+        case BHV_SILVER_COIN_2:
+            SIM_HASH_FIELD(hash, object, properties.silverCoin.action);
+            SIM_HASH_FIELD(hash, object, properties.silverCoin.timer);
+            break;
+        case BHV_STOPWATCH_MAN:
+            SIM_HASH_FIELD(hash, object, properties.tt.action);
+            SIM_HASH_FIELD(hash, object, properties.tt.timer);
+            break;
+        case BHV_PARK_WARDEN:
+        case BHV_PARK_WARDEN_2:
+            SIM_HASH_FIELD(hash, object, properties.taj.action);
+            SIM_HASH_FIELD(hash, object, properties.taj.timer);
+            break;
+        case BHV_LAVA_SPURT:
+            SIM_HASH_FIELD(hash, object, properties.lavaSpurt.actionTimer);
+            SIM_HASH_FIELD(hash, object, properties.lavaSpurt.delayTimer);
+            break;
+        case BHV_POS_ARROW:
+            SIM_HASH_FIELD(hash, object, properties.posArrow.playerID);
+            break;
+        case BHV_ANIMATION:
+            SIM_HASH_FIELD(hash, object, properties.animation.action);
+            SIM_HASH_FIELD(hash, object, properties.animation.behaviourID);
+            break;
+        case BHV_WIZPIG_SHIP:
+            SIM_HASH_FIELD(hash, object, OBJPROP_WIZPIGSHIP_UNIDENTIFIED_00);
+            SIM_HASH_FIELD(hash, object, properties.wizpigship.timer);
+            break;
+        case BHV_DINO_WHALE:
+        case BHV_ANIMATED_OBJECT:
+        case BHV_CAMERA_ANIMATION:
+        case BHV_CAR_ANIMATION:
+        case BHV_CHARACTER_SELECT:
+        case BHV_VEHICLE_ANIMATION:
+        case BHV_HIT_TESTER:
+        case BHV_HIT_TESTER_2:
+        case BHV_ANIMATED_OBJECT_2:
+        case BHV_ANIMATED_OBJECT_3:
+        case BHV_ANIMATED_OBJECT_4:
+        case BHV_SNOWBALL:
+        case BHV_SNOWBALL_2:
+        case BHV_SNOWBALL_3:
+        case BHV_SNOWBALL_4:
+        case BHV_HIT_TESTER_3:
+        case BHV_HIT_TESTER_4:
+        case BHV_DOOR_OPENER:
+        case BHV_PIG_ROCKETEER:
+        case BHV_WIZPIG_GHOSTS:
+            SIM_HASH_FIELD(hash, object, OBJPROP_ANIMOBJ_RACER_ID);
+            SIM_HASH_FIELD(hash, object, OBJPROP_ANIMOBJ_TRIGGER_RESULT);
+            break;
+        case BHV_INFO_POINT:
+            SIM_HASH_FIELD(hash, object, properties.infoPoint.radius);
+            SIM_HASH_FIELD(hash, object, properties.infoPoint.visible);
+            break;
+        case BHV_BOMB_EXPLOSION:
+            SIM_HASH_FIELD(hash, object, properties.bombExplosion.timer);
+            SIM_HASH_FIELD(hash, object, properties.bombExplosion.opacity);
+            break;
+        case BHV_TELEPORT:
+            SIM_HASH_FIELD(hash, object, properties.lighthouse.active);
+            break;
+        case BHV_DOOR:
+        case BHV_TT_DOOR:
+            SIM_HASH_FIELD(hash, object, properties.door.closeAngle);
+            SIM_HASH_FIELD(hash, object, properties.door.openAngle);
+            break;
+        case BHV_BRIDGE_WHALE_RAMP:
+            SIM_HASH_FIELD(hash, object, OBJPROP_BRIDGE_RAMP_TIMER);
+            break;
+        case BHV_RAMP_SWITCH:
+            SIM_HASH_FIELD(hash, object, OBJPROP_RAMP_SWITCH_BRIDGE_ID);
+            break;
+        case BHV_SKY_CONTROL:
+            SIM_HASH_FIELD(hash, object, properties.skyControl.setting);
+            SIM_HASH_FIELD(hash, object, properties.skyControl.radius);
+            break;
+        case BHV_TREASURE_SUCKER:
+            SIM_HASH_FIELD(hash, object, properties.treasureSucker.playerID);
+            SIM_HASH_FIELD(hash, object, properties.treasureSucker.spawnTimer);
+            break;
+        case BHV_FLY_COIN:
+            SIM_HASH_FIELD(hash, object, properties.flyCoin.diff);
+            break;
+        case BHV_BANANA_SPAWNER:
+            SIM_HASH_FIELD(hash, object, properties.bananaSpawner.timer);
+            SIM_HASH_FIELD(hash, object, properties.bananaSpawner.spawn);
+            break;
+        case BHV_WORLD_KEY:
+            SIM_HASH_FIELD(hash, object, properties.worldKey.keyID);
+            break;
+        case BHV_WEAPON_BALLOON:
+            SIM_HASH_FIELD(hash, object, properties.weaponBalloon.balloonID);
+            SIM_HASH_FIELD(hash, object, properties.weaponBalloon.particleTimer);
+            break;
+        case BHV_SETUP_POINT:
+            SIM_HASH_FIELD(hash, object, properties.setupPoint.racerIndex);
+            SIM_HASH_FIELD(hash, object, properties.setupPoint.entranceID);
+            break;
+        case BHV_WEAPON:
+            SIM_HASH_FIELD(hash, object, properties.weapon.decayTimer);
+            SIM_HASH_FIELD(hash, object, properties.weapon.status);
+            SIM_HASH_FIELD(hash, object, properties.weapon.submerged);
+            SIM_HASH_FIELD(hash, object, properties.weapon.scale);
+            break;
+        case BHV_CAMERA_CONTROL:
+            SIM_HASH_FIELD(hash, object, properties.camControl.cameraID);
+            break;
+        case BHV_TIMETRIAL_GHOST:
+            SIM_HASH_FIELD(hash, object, properties.timeTrial.timestamp);
+            break;
+        case BHV_BUBBLER:
+            SIM_HASH_FIELD(hash, object, OBJPROP_BUBBLER_PARTICLE_DENSITY);
+            break;
+        case BHV_BOOST:
+            SIM_HASH_FIELD(hash, object, properties.boost.indexes);
+            break;
+        default:
+            break;
+    }
+    return hash;
+}
+
+static uint64_t sim_hash_racer_v3(uint64_t hash, const Object_Racer *racer) {
+    /* Pointer and SoundHandle members are excluded field-by-field. Everything
+     * below is a scalar/array that can influence a later racer tick. */
+    SIM_HASH_FIELD(hash, racer, playerIndex);
+    SIM_HASH_FIELD(hash, racer, racerIndex);
+    SIM_HASH_FIELD(hash, racer, characterId);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_S32_04);
+    SIM_HASH_FIELD(hash, racer, forwardVel);
+    SIM_HASH_FIELD(hash, racer, animationSpeed);
+    SIM_HASH_FIELD(hash, racer, lastSoundID);
+    SIM_HASH_FIELD(hash, racer, RACER_LAST_VOICE_SOUND_ID);
+    SIM_HASH_FIELD(hash, racer, velocity);
+    SIM_HASH_FIELD(hash, racer, lateral_velocity);
+    SIM_HASH_FIELD(hash, racer, RACER_VEHICLE_PITCH);
+    SIM_HASH_FIELD(hash, racer, ox1);
+    SIM_HASH_FIELD(hash, racer, oy1);
+    SIM_HASH_FIELD(hash, racer, oz1);
+    SIM_HASH_FIELD(hash, racer, ox2);
+    SIM_HASH_FIELD(hash, racer, oy2);
+    SIM_HASH_FIELD(hash, racer, oz2);
+    SIM_HASH_FIELD(hash, racer, ox3);
+    SIM_HASH_FIELD(hash, racer, oy3);
+    SIM_HASH_FIELD(hash, racer, oz3);
+    SIM_HASH_FIELD(hash, racer, prev_x_position);
+    SIM_HASH_FIELD(hash, racer, prev_y_position);
+    SIM_HASH_FIELD(hash, racer, prev_z_position);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_SPLINE_ANCHOR_X);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_SPLINE_ANCHOR_Y);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_SPLINE_ANCHOR_Z);
+    SIM_HASH_FIELD(hash, racer, RACER_CAMERA_Y_FOLLOW_DIVISOR);
+    SIM_HASH_FIELD(hash, racer, carBobX);
+    SIM_HASH_FIELD(hash, racer, carBobY);
+    SIM_HASH_FIELD(hash, racer, carBobZ);
+    SIM_HASH_FIELD(hash, racer, RACER_DRIFT_VELOCITY_X);
+    SIM_HASH_FIELD(hash, racer, RACER_DRIFT_VELOCITY_Z);
+    SIM_HASH_FIELD(hash, racer, stretch_height);
+    SIM_HASH_FIELD(hash, racer, stretch_height_cap);
+    SIM_HASH_FIELD(hash, racer, camera_zoom);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_F32_98);
+    SIM_HASH_FIELD(hash, racer, pitch);
+    SIM_HASH_FIELD(hash, racer, roll);
+    SIM_HASH_FIELD(hash, racer, yaw);
+    SIM_HASH_FIELD(hash, racer, checkpoint_distance);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_SPLINE_TRAVEL_RATE);
+    SIM_HASH_FIELD(hash, racer, RACER_WHEEL_SPIN_PHASE);
+    SIM_HASH_FIELD(hash, racer, throttle);
+    SIM_HASH_FIELD(hash, racer, brake);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_F32_BC);
+    SIM_HASH_FIELD(hash, racer, buoyancy);
+    SIM_HASH_FIELD(hash, racer, RACER_BUOYANCY_LIFT_RAMP);
+    SIM_HASH_FIELD(hash, racer, RACER_CAMERA_LATERAL_OFFSET);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_F32_CC);
+    SIM_HASH_FIELD(hash, racer, RACER_TUMBLE_Y_OFFSET_DECAY);
+    SIM_HASH_FIELD(hash, racer, RACER_FALL_IMPACT_MAGNITUDE);
+    SIM_HASH_FIELD(hash, racer, RACER_COLLISION_PROBE_POINTS);
+    SIM_HASH_FIELD(hash, racer, RACER_DRIFT_LEAN_ANGLE);
+    SIM_HASH_FIELD(hash, racer, RACER_SAVED_CAR_STEER_VEL);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_S32_114);
+    SIM_HASH_FIELD(hash, racer, RACER_WALL_RECOIL_VEL_X);
+    SIM_HASH_FIELD(hash, racer, RACER_WALL_RECOIL_VEL_Z);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_RUBBERBAND_SPEED_BONUS);
+    SIM_HASH_FIELD(hash, racer, lap_times);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_S32_13C);
+    SIM_HASH_FIELD(hash, racer, y_rotation_offset);
+    SIM_HASH_FIELD(hash, racer, x_rotation_offset);
+    SIM_HASH_FIELD(hash, racer, z_rotation_offset);
+    SIM_HASH_FIELD(hash, racer, RACER_TARGET_X_ROTATION_OFFSET);
+    SIM_HASH_FIELD(hash, racer, RACER_VELOCITY_HEADING_ANGLE);
+    SIM_HASH_FIELD(hash, racer, headAngle);
+    SIM_HASH_FIELD(hash, racer, headAngleTarget);
+    SIM_HASH_FIELD(hash, racer, RACER_DRIFT_COUNTERSTEER_WOBBLE);
+    SIM_HASH_FIELD(hash, racer, RACER_WEAPON_ICON_SPIN_GATE);
+    SIM_HASH_FIELD(hash, racer, balloon_type);
+    SIM_HASH_FIELD(hash, racer, balloon_quantity);
+    SIM_HASH_FIELD(hash, racer, balloon_level);
+    SIM_HASH_FIELD(hash, racer, magnetTimer);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_S16_176);
+    SIM_HASH_FIELD(hash, racer, magnetModelID);
+    SIM_HASH_FIELD(hash, racer, bananas);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_U8_186);
+    SIM_HASH_FIELD(hash, racer, attackType);
+    SIM_HASH_FIELD(hash, racer, RACER_PENDING_BANANA_DROP_COUNT);
+    SIM_HASH_FIELD(hash, racer, shieldType);
+    SIM_HASH_FIELD(hash, racer, RACER_STEER_WOBBLE_TIMER);
+    SIM_HASH_FIELD(hash, racer, RACER_ATTACK_REACTION_TIMER);
+    SIM_HASH_FIELD(hash, racer, shieldTimer);
+    SIM_HASH_FIELD(hash, racer, courseCheckpoint);
+    SIM_HASH_FIELD(hash, racer, nextCheckpoint);
+    SIM_HASH_FIELD(hash, racer, lap);
+    SIM_HASH_FIELD(hash, racer, countLap);
+    SIM_HASH_FIELD(hash, racer, magnetLevel3);
+    SIM_HASH_FIELD(hash, racer, cameraYaw);
+    SIM_HASH_FIELD(hash, racer, RACER_STEER_ROTATION_RECOVERY_TARGET);
+    SIM_HASH_FIELD(hash, racer, RACER_SPECIAL_VEHICLE_MODE_TIMER);
+    SIM_HASH_FIELD(hash, racer, RACER_WALL_COLLISION_SPIN_ANGLE);
+    SIM_HASH_FIELD(hash, racer, RACER_SPIN_CAMERA_YAW_RECOIL);
+    SIM_HASH_FIELD(hash, racer, steerVisualRotation);
+    SIM_HASH_FIELD(hash, racer, y_rotation_vel);
+    SIM_HASH_FIELD(hash, racer, x_rotation_vel);
+    SIM_HASH_FIELD(hash, racer, z_rotation_vel);
+    SIM_HASH_FIELD(hash, racer, RACER_CHECKPOINT_PROGRESS_TIEBREAK);
+    SIM_HASH_FIELD(hash, racer, racerOrder);
+    SIM_HASH_FIELD(hash, racer, finishPosition);
+    SIM_HASH_FIELD(hash, racer, racePosition);
+    SIM_HASH_FIELD(hash, racer, RACER_POSITION_STABLE_FRAMES);
+    SIM_HASH_FIELD(hash, racer, RACER_POSITION_CHANGE_TIMER);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_S32_1B4);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_S16_1B8);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_LINE_OFFSET_X);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_LINE_OFFSET_Y);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_TARGET_YAW);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_TARGET_PITCH);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_PREV_TARGET_YAW);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_PREV_TARGET_PITCH);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_ACTION_TIMER);
+    SIM_HASH_FIELD(hash, racer, isOnAlternateRoute);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_ATTACK_ACTION_STATE);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_LINE_INDEX);
+    SIM_HASH_FIELD(hash, racer, RACER_SPAWN_VEHICLE_CLASS);
+    SIM_HASH_FIELD(hash, racer, aiSkill);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_GOAL_OR_SAVED_ANIM);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_TARGET_NODE_OR_COMMAND);
+    SIM_HASH_FIELD(hash, racer, eggHudCounter);
+    SIM_HASH_FIELD(hash, racer, spectateCamID);
+    SIM_HASH_FIELD(hash, racer, RACER_STEER_JITTER_OFFSET);
+    SIM_HASH_FIELD(hash, racer, RACER_CRASH_SPIN_TIMER);
+    SIM_HASH_FIELD(hash, racer, boostTimer);
+    SIM_HASH_FIELD(hash, racer, RACER_TRICK_ROTATION_FLAG);
+    SIM_HASH_FIELD(hash, racer, RACER_TRICK_HOLD_TIMER);
+    SIM_HASH_FIELD(hash, racer, vehicleID);
+    SIM_HASH_FIELD(hash, racer, vehicleIDPrev);
+    SIM_HASH_FIELD(hash, racer, raceFinished);
+    SIM_HASH_FIELD(hash, racer, RACER_POST_FINISH_COUNTER);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_U8_1DA);
+    SIM_HASH_FIELD(hash, racer, spinout_timer);
+    SIM_HASH_FIELD(hash, racer, wheel_surfaces);
+    SIM_HASH_FIELD(hash, racer, trickType);
+    SIM_HASH_FIELD(hash, racer, steerAngle);
+    SIM_HASH_FIELD(hash, racer, groundedWheels);
+    SIM_HASH_FIELD(hash, racer, RACER_WHEEL_GROUND_MASK);
+    SIM_HASH_FIELD(hash, racer, RACER_OBJECT_COLLISION_FLAGS);
+    SIM_HASH_FIELD(hash, racer, waterTimer);
+    SIM_HASH_FIELD(hash, racer, drift_direction);
+    SIM_HASH_FIELD(hash, racer, miscAnimCounter);
+    SIM_HASH_FIELD(hash, racer, RACER_STEER_ANGLE_SECONDARY);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_S8_1E9);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_S8_1EA);
+    SIM_HASH_FIELD(hash, racer, tapTimerR);
+    SIM_HASH_FIELD(hash, racer, tappedR);
+    SIM_HASH_FIELD(hash, racer, squish_timer);
+    SIM_HASH_FIELD(hash, racer, RACER_SKID_DURATION_COUNTER);
+    SIM_HASH_FIELD(hash, racer, boost_sound);
+    SIM_HASH_FIELD(hash, racer, RACER_WATER_PATH_RECOVERY_FLAG);
+    SIM_HASH_FIELD(hash, racer, RACER_SPIN_PHASE);
+    SIM_HASH_FIELD(hash, racer, RACER_MISC_ANIM_STATE);
+    SIM_HASH_FIELD(hash, racer, RACER_MISC_ANIM_FLAGS);
+    SIM_HASH_FIELD(hash, racer, startInput);
+    SIM_HASH_FIELD(hash, racer, zipperDirCorrection);
+    SIM_HASH_FIELD(hash, racer, RACER_CRASH_SOUND_COOLDOWN);
+    SIM_HASH_FIELD(hash, racer, transparency);
+    SIM_HASH_FIELD(hash, racer, indicator_type);
+    SIM_HASH_FIELD(hash, racer, indicator_timer);
+    SIM_HASH_FIELD(hash, racer, drifting);
+    SIM_HASH_FIELD(hash, racer, RACER_THROTTLE_HOLD_TIMER);
+    SIM_HASH_FIELD(hash, racer, wrongWayCounter);
+    SIM_HASH_FIELD(hash, racer, cameraIndex);
+    SIM_HASH_FIELD(hash, racer, RACER_EFFECT_ZONE_TYPE);
+    SIM_HASH_FIELD(hash, racer, RACER_EFFECT_ZONE_STRENGTH);
+    SIM_HASH_FIELD(hash, racer, transitionTimer);
+    SIM_HASH_FIELD(hash, racer, RACER_ONSCREEN_AI_ACTIVE_TIMER);
+    SIM_HASH_FIELD(hash, racer, silverCoinCount);
+    SIM_HASH_FIELD(hash, racer, boostType);
+    SIM_HASH_FIELD(hash, racer, bubbleTrapTimer);
+    SIM_HASH_FIELD(hash, racer, RACER_LIGHT_DIM_JITTER_TIMER);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_S8_208);
+    SIM_HASH_FIELD(hash, racer, RACER_AI_ITEM_DECISION_FLAGS);
+    /* lightFlags is the brake/headlight texture state machine. Its only
+     * consumers are racer.c's light timer and objects.c's texture-offset
+     * selection; the NIGHT bit samples render-computed shading. It is
+     * presentation state stored in Object_Racer, not gameplay authority. */
+    SIM_HASH_FIELD(hash, racer, RACER_PREV_RACE_ORDER_INDEX);
+    SIM_HASH_FIELD(hash, racer, throttleReleased);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_U8_20D);
+    SIM_HASH_FIELD(hash, racer, delaySoundID);
+    SIM_HASH_FIELD(hash, racer, delaySoundTimer);
+    SIM_HASH_FIELD(hash, racer, RACER_EGG_THROW_DEBOUNCE);
+    SIM_HASH_FIELD(hash, racer, elevation);
+    SIM_HASH_FIELD(hash, racer, RACER_STUCK_TIMER);
+    SIM_HASH_FIELD(hash, racer, RACER_STUCK_REVERSE_TIMER);
+    SIM_HASH_FIELD(hash, racer, RACER_STUCK_RECOVERY_COOLDOWN);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_U8_216);
+    SIM_HASH_FIELD(hash, racer, RACER_UNIDENTIFIED_U8_217);
+    return hash;
+}
+
+static uint64_t sim_hash_globals_v3(uint64_t hash) {
+    Settings *settings = get_settings();
+    s32 levelCount = 0;
+    s32 worldCount = 0;
+    s32 gameMode = get_game_mode();
+    s8 paused = is_game_paused();
+    s32 level = level_id();
+    s32 countdown = get_race_countdown();
+
+    hash = fnv1a64(hash, &gameMode, sizeof(gameMode));
+    hash = fnv1a64(hash, &paused, sizeof(paused));
+    hash = fnv1a64(hash, &level, sizeof(level));
+    hash = fnv1a64(hash, &gLevelLoadTimer, sizeof(gLevelLoadTimer));
+    hash = fnv1a64(hash, &gRaceStartTimer, sizeof(gRaceStartTimer));
+    hash = fnv1a64(hash, &gRaceEndTimer, sizeof(gRaceEndTimer));
+    hash = fnv1a64(hash, &countdown, sizeof(countdown));
+    hash = fnv1a64(hash, &gSaveDataFlags, sizeof(gSaveDataFlags));
+    /* Three-player TT camera state is authoritative on native: its pose and
+     * target feed next-tick object sort/LOD/visibility. Hash the exact camera
+     * slot rendered as PLAYER_FOUR, plus its cross-tick target/smoothing state,
+     * so a render-elision leak cannot hide outside the object graph. */
+    SIM_HASH_FIELD(hash, &gCameras[PLAYER_FOUR], trans);
+    SIM_HASH_FIELD(hash, &gCameras[PLAYER_FOUR], cam_unk_18);
+    SIM_HASH_FIELD(hash, &gCameras[PLAYER_FOUR], boomLength);
+    SIM_HASH_FIELD(hash, &gCameras[PLAYER_FOUR], cam_unk_20);
+    SIM_HASH_FIELD(hash, &gCameras[PLAYER_FOUR], x_velocity);
+    SIM_HASH_FIELD(hash, &gCameras[PLAYER_FOUR], y_velocity);
+    SIM_HASH_FIELD(hash, &gCameras[PLAYER_FOUR], z_velocity);
+    SIM_HASH_FIELD(hash, &gCameras[PLAYER_FOUR], shakeMagnitude);
+    SIM_HASH_FIELD(hash, &gCameras[PLAYER_FOUR], cameraSegmentID);
+    SIM_HASH_FIELD(hash, &gCameras[PLAYER_FOUR], mode);
+    SIM_HASH_FIELD(hash, &gCameras[PLAYER_FOUR], pitch);
+    SIM_HASH_FIELD(hash, &gCameras[PLAYER_FOUR], shakeTimer);
+    SIM_HASH_FIELD(hash, &gCameras[PLAYER_FOUR], zoom);
+    SIM_HASH_FIELD(hash, &gCameras[PLAYER_FOUR], CAM_UNIDENTIFIED_U8_3C);
+    SIM_HASH_FIELD(hash, &gCameras[PLAYER_FOUR], CAM_UNIDENTIFIED_U8_3D);
+    SIM_HASH_FIELD(hash, &gCameras[PLAYER_FOUR], CAM_UNIDENTIFIED_U8_3E);
+    SIM_HASH_FIELD(hash, &gCameras[PLAYER_FOUR], CAM_UNIDENTIFIED_U8_3F);
+    hash = fnv1a64(hash, &gTTCamPlayerID, sizeof(gTTCamPlayerID));
+    hash = fnv1a64(hash, &gTTCamID, sizeof(gTTCamID));
+    hash = fnv1a64(hash, &gTTCamSmoothTimer, sizeof(gTTCamSmoothTimer));
+    hash = fnv1a64(hash, gTTCamSpectateIndex,
+                   sizeof(gTTCamSpectateIndex));
+    if (settings == NULL) {
+        return hash;
+    }
+
+    SIM_HASH_FIELD(hash, settings, keys);
+    SIM_HASH_FIELD(hash, settings, SETTINGS_UNIDENTIFIED_PROGRESS_WORD_A);
+    SIM_HASH_FIELD(hash, settings, bosses);
+    SIM_HASH_FIELD(hash, settings, trophies);
+    SIM_HASH_FIELD(hash, settings, cutsceneFlags);
+    SIM_HASH_FIELD(hash, settings, tajFlags);
+    SIM_HASH_FIELD(hash, settings, ttAmulet);
+    SIM_HASH_FIELD(hash, settings, wizpigAmulet);
+    SIM_HASH_FIELD(hash, settings, worldId);
+    SIM_HASH_FIELD(hash, settings, courseId);
+    SIM_HASH_FIELD(hash, settings, gNumRacers);
+    SIM_HASH_FIELD(hash, settings, newGame);
+    SIM_HASH_FIELD(hash, settings, filename);
+    SIM_HASH_FIELD(hash, settings, racers);
+    SIM_HASH_FIELD(hash, settings, timeTrialRacer);
+    SIM_HASH_FIELD(hash, settings, SETTINGS_BEST_LAP_OWNER);
+    SIM_HASH_FIELD(hash, settings, display_times);
+
+    level_count(&levelCount, &worldCount);
+    hash = fnv1a64(hash, &levelCount, sizeof(levelCount));
+    hash = fnv1a64(hash, &worldCount, sizeof(worldCount));
+    if (settings->courseFlagsPtr != NULL && levelCount > 0) {
+        hash = fnv1a64(hash, settings->courseFlagsPtr,
+                       (size_t)levelCount * sizeof(*settings->courseFlagsPtr));
+    }
+    if (settings->balloonsPtr != NULL && worldCount > 0) {
+        hash = fnv1a64(hash, settings->balloonsPtr,
+                       (size_t)worldCount * sizeof(*settings->balloonsPtr));
+    }
+    if (levelCount > 0) {
+        for (s32 vehicle = 0; vehicle < 3; vehicle++) {
+            if (settings->flapInitialsPtr[vehicle] != NULL) {
+                hash = fnv1a64(
+                    hash, settings->flapInitialsPtr[vehicle],
+                    (size_t)levelCount *
+                        sizeof(*settings->flapInitialsPtr[vehicle]));
+            }
+            if (settings->flapTimesPtr[vehicle] != NULL) {
+                hash = fnv1a64(
+                    hash, settings->flapTimesPtr[vehicle],
+                    (size_t)levelCount *
+                        sizeof(*settings->flapTimesPtr[vehicle]));
+            }
+            if (settings->courseInitialsPtr[vehicle] != NULL) {
+                hash = fnv1a64(
+                    hash, settings->courseInitialsPtr[vehicle],
+                    (size_t)levelCount *
+                        sizeof(*settings->courseInitialsPtr[vehicle]));
+            }
+            if (settings->courseTimesPtr[vehicle] != NULL) {
+                hash = fnv1a64(
+                    hash, settings->courseTimesPtr[vehicle],
+                    (size_t)levelCount *
+                        sizeof(*settings->courseTimesPtr[vehicle]));
+            }
+        }
+    }
+    return hash;
+}
+
+static int sim_hash_object_has_models_v3(const Object *object) {
+    return object->header != NULL &&
+           object->header->modelType == OBJECT_MODEL_TYPE_3D_MODEL &&
+           object->modelInstances != NULL &&
+           object->header->numberOfModelIds > 0;
+}
+
+static uint64_t sim_hash_models_v3(uint64_t hash, const Object *object) {
+    if (!sim_hash_object_has_models_v3(object)) {
+        return hash;
+    }
+    for (s32 index = 0; index < object->header->numberOfModelIds; index++) {
+        const ModelInstance *instance = object->modelInstances[index];
+        uint8_t present = instance != NULL;
+        hash = fnv1a64(hash, &index, sizeof(index));
+        hash = fnv1a64(hash, &present, sizeof(present));
+        if (instance == NULL) {
+            continue;
+        }
+        SIM_HASH_FIELD(hash, instance, animationID);
+        SIM_HASH_FIELD(hash, instance, animationFrame);
+        SIM_HASH_FIELD(hash, instance, animationFrameCount);
+        SIM_HASH_FIELD(hash, instance, offsetX);
+        SIM_HASH_FIELD(hash, instance, offsetY);
+        SIM_HASH_FIELD(hash, instance, offsetZ);
+        SIM_HASH_FIELD(hash, instance, headTilt);
+        SIM_HASH_FIELD(hash, instance, modelType);
+        /* animationTaskNum is the address-selection phase of the model's
+         * double buffer, not model state. Rollback resimulation intentionally
+         * authors no GPU task, so it may reach the same animation pose with
+         * the opposite buffer index. Hash the selected geometry by value below
+         * instead: this preserves collision/attach-point coverage while
+         * normalizing which equivalent host buffer contains that pose. */
+        SIM_HASH_FIELD(hash, instance, animUpdateTimer);
+        if (instance->modelType == MODELTYPE_ANIMATED &&
+            instance->objModel != NULL &&
+            instance->objModel->numberOfVertices > 0 &&
+            instance->animationTaskNum >= 0 &&
+            instance->animationTaskNum < 3 &&
+            instance->vertices[instance->animationTaskNum] != NULL) {
+            const Vertex *vertices =
+                instance->vertices[instance->animationTaskNum];
+            const s16 vertex_count = instance->objModel->numberOfVertices;
+            hash = fnv1a64(hash, &vertex_count, sizeof(vertex_count));
+            for (s32 vertex = 0; vertex < vertex_count; vertex++) {
+                SIM_HASH_FIELD(hash, &vertices[vertex], x);
+                SIM_HASH_FIELD(hash, &vertices[vertex], y);
+                SIM_HASH_FIELD(hash, &vertices[vertex], z);
+            }
+        }
+    }
+    return hash;
+}
+
+static uint64_t sim_hash_compute_authoritative_v3(uint64_t hash, Object **objects,
+                                    s32 count) {
+    hash = sim_hash_globals_v3(hash);
+    for (s32 index = 0; index < count; index++) {
+        const Object *object = objects[index];
+        uint8_t present;
+        if (sim_hash_object_is_presentation(object)) {
+            continue;
+        }
+        present = object != NULL;
+        hash = fnv1a64(hash, &index, sizeof(index));
+        hash = fnv1a64(hash, &present, sizeof(present));
+        if (object == NULL) {
+            continue;
+        }
+
+        /* v3 is a strict field superset of v2. */
+        hash = sim_hash_compute_object_particle_v2(hash, (Object **)&objects[index], 1, 0);
+        if (object->trans.flags & OBJ_FLAGS_PARTICLE) {
+            continue;
+        }
+        SIM_HASH_FIELD(hash, object, distanceToCamera);
+        SIM_HASH_FIELD(hash, object, OBJ_CULL_RADIUS);
+        SIM_HASH_FIELD(hash, object, OBJ_UNIDENTIFIED_S8_38);
+        SIM_HASH_FIELD(hash, object, opacity);
+        SIM_HASH_FIELD(hash, object, modelIndex);
+        SIM_HASH_FIELD(hash, object, particleEmittersEnabled);
+        if (object->interactObj != NULL) {
+            SIM_HASH_FIELD(hash, object->interactObj, x_position);
+            SIM_HASH_FIELD(hash, object->interactObj, y_position);
+            SIM_HASH_FIELD(hash, object->interactObj, z_position);
+            SIM_HASH_FIELD(hash, object->interactObj, hitboxRadius);
+            SIM_HASH_FIELD(hash, object->interactObj, OBJ_INTERACT_KIND);
+            SIM_HASH_FIELD(hash, object->interactObj, pushForce);
+            SIM_HASH_FIELD(hash, object->interactObj, distance);
+            SIM_HASH_FIELD(hash, object->interactObj, flags);
+            SIM_HASH_FIELD(hash, object->interactObj, OBJ_INTERACT_HEIGHT_MIN);
+            SIM_HASH_FIELD(hash, object->interactObj, OBJ_INTERACT_HEIGHT_MAX);
+        }
+        hash = sim_hash_properties_v3(hash, object);
+        if (object->behaviorId == BHV_RACER && object->racer != NULL) {
+            hash = sim_hash_racer_v3(hash, object->racer);
+        }
+        hash = sim_hash_models_v3(hash, object);
+    }
+    return hash;
+}
+
+/* Independent v3 family digests for diagnostics. These are not the published
+ * [SIMHASH] byte stream; they let the render census name which family moved
+ * without weakening or reordering that stream. */
+typedef struct SimHashV3Parts {
+    uint64_t globals;
+    uint64_t core;
+    uint64_t object_extra;
+    uint64_t interaction;
+    uint64_t property;
+    uint64_t racer;
+    uint64_t model;
+    uint64_t object_distance;
+    uint64_t object_opacity;
+    uint64_t object_model_index;
+    uint64_t racer_light_flags;
+    uint64_t model_anim_timer;
+    uint64_t racer_head_angle;
+} SimHashV3Parts;
+
+static SimHashV3Parts sim_hash_v3_parts(void) {
+    const uint64_t basis = 14695981039346656037ull;
+    SimHashV3Parts parts = {
+        basis, basis, basis, basis, basis, basis, basis,
+        basis, basis, basis, basis, basis, basis
+    };
+    s32 first = 0;
+    s32 count = 0;
+    Object **objects = objGetObjList(&first, &count);
+
+    parts.globals = sim_hash_globals_v3(parts.globals);
+    for (s32 index = 0; objects != NULL && index < count; index++) {
+        const Object *object = objects[index];
+        if (object == NULL || sim_hash_object_is_presentation(object)) {
+            continue;
+        }
+        parts.core = sim_hash_compute_object_particle_v2(
+            parts.core, &objects[index], 1, 0);
+        if (object->trans.flags & OBJ_FLAGS_PARTICLE) {
+            continue;
+        }
+        SIM_HASH_FIELD(parts.object_extra, object, distanceToCamera);
+        SIM_HASH_FIELD(parts.object_extra, object, unk34);
+        SIM_HASH_FIELD(parts.object_extra, object, unk38);
+        SIM_HASH_FIELD(parts.object_extra, object, opacity);
+        SIM_HASH_FIELD(parts.object_extra, object, modelIndex);
+        SIM_HASH_FIELD(parts.object_extra, object, particleEmittersEnabled);
+        SIM_HASH_FIELD(parts.object_distance, object, distanceToCamera);
+        SIM_HASH_FIELD(parts.object_opacity, object, opacity);
+        SIM_HASH_FIELD(parts.object_model_index, object, modelIndex);
+        if (object->interactObj != NULL) {
+            SIM_HASH_FIELD(parts.interaction, object->interactObj, x_position);
+            SIM_HASH_FIELD(parts.interaction, object->interactObj, y_position);
+            SIM_HASH_FIELD(parts.interaction, object->interactObj, z_position);
+            SIM_HASH_FIELD(parts.interaction, object->interactObj, hitboxRadius);
+            SIM_HASH_FIELD(parts.interaction, object->interactObj, unk11);
+            SIM_HASH_FIELD(parts.interaction, object->interactObj, pushForce);
+            SIM_HASH_FIELD(parts.interaction, object->interactObj, distance);
+            SIM_HASH_FIELD(parts.interaction, object->interactObj, flags);
+            SIM_HASH_FIELD(parts.interaction, object->interactObj, unk16);
+            SIM_HASH_FIELD(parts.interaction, object->interactObj, unk17);
+        }
+        parts.property = sim_hash_properties_v3(parts.property, object);
+        if (object->behaviorId == BHV_RACER && object->racer != NULL) {
+            parts.racer = sim_hash_racer_v3(parts.racer, object->racer);
+            SIM_HASH_FIELD(parts.racer_light_flags, object->racer, lightFlags);
+            SIM_HASH_FIELD(parts.racer_head_angle, object->racer, headAngle);
+        }
+        parts.model = sim_hash_models_v3(parts.model, object);
+        if (sim_hash_object_has_models_v3(object)) {
+            for (s32 model = 0;
+                 model < object->header->numberOfModelIds; model++) {
+                const ModelInstance *instance = object->modelInstances[model];
+                if (instance != NULL) {
+                    SIM_HASH_FIELD(parts.model_anim_timer, instance,
+                                   animUpdateTimer);
+                }
+            }
+        }
+    }
+    return parts;
+}
+
+/*
+ * Dispatch quick reference. MDKR_STATE_HASH's numeric values are an
+ * external contract (dozens of tests and docs pin "1"/"3" literally; see
+ * the version doc at the top of this file for the full field-set
+ * rationale) — the function NAMES below are free to be descriptive
+ * because nothing outside this file names them.
+ *
+ *   MDKR_STATE_HASH="1" -> SIM_HASH_VERSION_V1
+ *     sim_hash_compute_legacy_core_v1 — original field set, byte-for-byte.
+ *   MDKR_STATE_HASH="2" or "2x" -> SIM_HASH_VERSION_V2 / _V2X
+ *     sim_hash_compute_object_particle_v2 — archived object/particle
+ *     integrator fields ("2x" additionally folds in the render-owned
+ *     trio; see top-of-file "Historical v2 exclusions").
+ *   MDKR_STATE_HASH="3" (default gate) -> SIM_HASH_VERSION_V3
+ *     sim_hash_compute_authoritative_v3 — current authority and
+ *     render-purity gate; strict superset of v2.
+ */
+static uint64_t sim_hash_compute(s32 *out_count) {
+    uint64_t hash = 14695981039346656037ull;
+    uint32_t version = sim_hash_version();
+    s32 first = 0;
+    s32 count = 0;
+    s32 authoritative;
+    s32 rng;
+    Object **objects;
+
+    hash = fnv1a64(hash, &version, sizeof(version));
+    rng = get_rng_seed();
+    hash = fnv1a64(hash, &rng, sizeof(rng));
+    objects = objGetObjList(&first, &count);
+    /* The published population is the authoritative one: a presentation
+     * companion that succeeds or fails to allocate must not move it. */
+    authoritative = sim_hash_authoritative_count(objects, count);
+    hash = fnv1a64(hash, &authoritative, sizeof(authoritative));
+    if (objects != NULL) {
+        if (version == SIM_HASH_VERSION_V1) {
+            hash = sim_hash_compute_legacy_core_v1(hash, objects, count);
+        } else if (version == SIM_HASH_VERSION_V3) {
+            hash = sim_hash_compute_authoritative_v3(hash, objects, count);
+        } else {
+            hash = sim_hash_compute_object_particle_v2(
+                hash, objects, count,
+                version == SIM_HASH_VERSION_V2X);
+        }
+    }
+    if (out_count != NULL) {
+        *out_count = authoritative;
+    }
+    return hash;
+}
+
+/* Diagnostic: MDKR_HASH_DUMP_TICK=N dumps one row per object at tick N so a
+ * skip-render A/B can name the exact leaking object. Test-only. */
+static long long hash_dump_tick(void) {
+    static long long value = -2;
+    if (value == -2) {
+        const char *env = getenv("MDKR_HASH_DUMP_TICK");
+        value = env != NULL ? atoll(env) : -1;
+    }
+    return value;
+}
+
+/* MDKR_HASH_DUMP_UNTIL=M extends MDKR_HASH_DUMP_TICK=N to the closed range
+ * [N, M], so a field's history across the divergence can be read directly
+ * instead of one tick at a time. Unset == the single tick N. */
+static long long hash_dump_until(void) {
+    static long long value = -2;
+    if (value == -2) {
+        const char *env = getenv("MDKR_HASH_DUMP_UNTIL");
+        value = env != NULL ? atoll(env) : -1;
+    }
+    return value;
+}
+
+static int hash_dump_selected(unsigned long long tick) {
+    long long first = hash_dump_tick();
+    long long last = hash_dump_until();
+
+    if (first < 0) {
+        return 0;
+    }
+    if (last < first) {
+        last = first;
+    }
+    return (long long)tick >= first && (long long)tick <= last;
+}
+
+/* Diagnostic companion to MDKR_HASH_DUMP_TICK: MDKR_HASH_DUMP_IDS=1 adds one
+ * [HASHOBJID] row per object naming it (objectID, behaviour, host address, and
+ * the racer slot when it has one), so a divergent [HASHOBJ] row can be tied to
+ * a concrete actor. Kept separate from [HASHOBJ] because the host address moves
+ * with the mapping and would otherwise make every row differ. Test-only. */
+static int hash_dump_ids(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *value = getenv("MDKR_HASH_DUMP_IDS");
+        enabled = value != NULL && value[0] != '\0' &&
+                  strcmp(value, "0") != 0;
+    }
+    return enabled;
+}
+
+static void sim_hash_dump_object_ids(unsigned long long tick) {
+    s32 first = 0;
+    s32 count = 0;
+    Object **objects = objGetObjList(&first, &count);
+
+    if (objects == NULL) {
+        return;
+    }
+    for (s32 index = 0; index < count; index++) {
+        const Object *object = objects[index];
+        const Object_Racer *racer;
+        if (object == NULL || sim_hash_object_is_presentation(object)) {
+            continue;
+        }
+        /* A Particle overlays an Object and shares only ObjectTransform, so the
+         * Object fields below are other members reinterpreted. Print the real
+         * ones instead when the transform says this slot is a particle. */
+        if (object->trans.flags & OBJ_FLAGS_PARTICLE) {
+            const Particle *particle = (const Particle *)object;
+            printf("[HASHOBJID] tick=%llu i=%d obj=%p PARTICLE kind=%d "
+                   "move=%d seg=%d destroyTimer=%d descFlags=0x%08x "
+                   "parent=%p opacity=%d\n",
+                   tick, (int)index, (const void *)object,
+                   (int)particle->kind, (int)particle->movementType,
+                   (int)particle->segmentID, (int)particle->destroyTimer,
+                   (unsigned)particle->descFlags,
+                   (const void *)particle->parentObj,
+                   (int)particle->opacity);
+            continue;
+        }
+        racer = object->behaviorId == BHV_RACER ? object->racer : NULL;
+        printf("[HASHOBJID] tick=%llu i=%d obj=%p bhv=%d objectID=0x%04x "
+               "hdrType=%d seg=%d anim=%d model=%d racer=%p player=%d "
+               "vehicle=%d\n",
+               tick, (int)index, (const void *)object,
+               (int)object->behaviorId, (unsigned)object->objectID,
+               (int)object->headerType, (int)object->segmentID,
+               (int)object->animationID, (int)object->modelIndex,
+               (const void *)racer,
+               racer != NULL ? (int)racer->playerIndex : -1,
+               racer != NULL ? (int)racer->vehicleID : -1);
+    }
+}
+
+static void sim_hash_dump_objects(unsigned long long tick) {
+    s32 first = 0;
+    s32 count = 0;
+    Object **objects = objGetObjList(&first, &count);
+    if (objects == NULL) {
+        return;
+    }
+    printf("[HASHOBJ] tick=%llu RNG=%08x\n", tick,
+           (unsigned)get_rng_seed());
+    for (s32 index = 0; index < count; index++) {
+        const Object *object = objects[index];
+        unsigned px, py, pz, sc;
+        if (object == NULL || sim_hash_object_is_presentation(object)) continue;
+        memcpy(&px, &object->trans.x_position, 4);
+        memcpy(&py, &object->trans.y_position, 4);
+        memcpy(&pz, &object->trans.z_position, 4);
+        memcpy(&sc, &object->trans.scale, 4);
+        printf("[HASHOBJ] tick=%llu i=%d bhv=%d p=%08x,%08x,%08x r=%04x s=%08x\n",
+               tick, (int)index, (int)object->behaviorId, px, py, pz,
+               (unsigned)(object->trans.rotation.y_rotation & 0xffff), sc);
+        /* Wider companion row (MDKR_HASH_DUMP_IDS=1): the fields v1 does NOT
+         * cover. Under v1 the hash sees y_rotation only, so an x/z rotation or
+         * a velocity that diverges first is invisible to it and the first
+         * [SIMHASH] disagreement is already downstream of the real event.
+         * Under v2 every field on this row IS hashed, so the row is no longer
+         * the only way to see these values: it is how you read them once the
+         * hash has told you which tick and which object to look at. */
+        if (hash_dump_ids()) {
+            unsigned vx, vy, vz;
+            memcpy(&vx, &object->x_velocity, 4);
+            memcpy(&vy, &object->y_velocity, 4);
+            memcpy(&vz, &object->z_velocity, 4);
+            printf("[HASHOBJW] tick=%llu i=%d rx=%04x rz=%04x flags=%04x "
+                   "v=%08x,%08x,%08x af=%d seg=%d op=%u\n",
+                   tick, (int)index,
+                   (unsigned)(object->trans.rotation.x_rotation & 0xffff),
+                   (unsigned)(object->trans.rotation.z_rotation & 0xffff),
+                   (unsigned)(object->trans.flags & 0xffff), vx, vy, vz,
+                   (int)object->animFrame, (int)object->segmentID,
+                   (unsigned)object->opacity);
+            /* [HASHOBJV2]: the rest of the v2 field set, so the dump covers
+             * EXACTLY what the gate hashes. A field that is hashed but not
+             * dumped can only be bisected for: on level 11, [SIMHASH] once
+             * disagreed at tick 2729 while every printed row matched, because
+             * the differing field (a line particle's localPos) was hashed and
+             * not dumped. Hash set and dump set are kept in step deliberately. */
+            {
+                unsigned u28;
+                memcpy(&u28, &object->unk28, 4);
+                if (object->trans.flags & OBJ_FLAGS_PARTICLE) {
+                    const Particle *p = (const Particle *)object;
+                    unsigned lx, ly, lz, gr;
+                    memcpy(&lx, &p->localPos.x, 4);
+                    memcpy(&ly, &p->localPos.y, 4);
+                    memcpy(&lz, &p->localPos.z, 4);
+                    memcpy(&gr, &p->gravity, 4);
+                    printf("[HASHOBJV2] tick=%llu i=%d PARTICLE kind=%d "
+                           "sv=%08x mv=%d dt=%d df=%08x lp=%08x,%08x,%08x "
+                           "op=%d ov=%d ot=%d br=%d av=%04x,%04x,%04x "
+                           "g=%08x tf=%d tfs=%d\n",
+                           tick, (int)index, (int)p->kind, u28,
+                           (int)p->movementType, (int)p->destroyTimer,
+                           (unsigned)p->descFlags, lx, ly, lz,
+                           (int)p->opacity, (int)p->opacityVel,
+                           (int)p->opacityTimer, (int)p->brightness,
+                           (unsigned)(p->angularVelocity.x_rotation & 0xffff),
+                           (unsigned)(p->angularVelocity.y_rotation & 0xffff),
+                           (unsigned)(p->angularVelocity.z_rotation & 0xffff),
+                           gr, (int)p->textureFrame,
+                           (int)p->textureFrameStep);
+                } else {
+                    printf("[HASHOBJV2] tick=%llu i=%d OBJECT unk28=%08x "
+                           "hdr=%d objectID=0x%04x animID=%d nae=%d\n",
+                           tick, (int)index, u28, (int)object->headerType,
+                           (unsigned)object->objectID,
+                           (int)object->animationID,
+                           (int)object->numActiveEmitters);
+                }
+            }
+        }
+    }
+    if (sim_hash_version() == SIM_HASH_VERSION_V3) {
+        const uint64_t basis = 14695981039346656037ull;
+        uint64_t globals = sim_hash_globals_v3(basis);
+        printf("[HASHV3] tick=%llu globals=%016llx\n", tick,
+               (unsigned long long)globals);
+        for (s32 index = 0; index < count; index++) {
+            const Object *object = objects[index];
+            uint64_t core = basis;
+            uint64_t extra = basis;
+            uint64_t property = basis;
+            uint64_t interaction = basis;
+            uint64_t racer = basis;
+            uint64_t model = basis;
+            if (object == NULL || sim_hash_object_is_presentation(object)) {
+                continue;
+            }
+            core = sim_hash_compute_object_particle_v2(core, &objects[index], 1, 0);
+            if (!(object->trans.flags & OBJ_FLAGS_PARTICLE)) {
+                SIM_HASH_FIELD(extra, object, distanceToCamera);
+                SIM_HASH_FIELD(extra, object, OBJ_CULL_RADIUS);
+                SIM_HASH_FIELD(extra, object, OBJ_UNIDENTIFIED_S8_38);
+                SIM_HASH_FIELD(extra, object, opacity);
+                SIM_HASH_FIELD(extra, object, modelIndex);
+                SIM_HASH_FIELD(extra, object, particleEmittersEnabled);
+                property = sim_hash_properties_v3(property, object);
+                if (object->interactObj != NULL) {
+                    SIM_HASH_FIELD(interaction, object->interactObj, x_position);
+                    SIM_HASH_FIELD(interaction, object->interactObj, y_position);
+                    SIM_HASH_FIELD(interaction, object->interactObj, z_position);
+                    SIM_HASH_FIELD(interaction, object->interactObj, hitboxRadius);
+                    SIM_HASH_FIELD(interaction, object->interactObj, OBJ_INTERACT_KIND);
+                    SIM_HASH_FIELD(interaction, object->interactObj, pushForce);
+                    SIM_HASH_FIELD(interaction, object->interactObj, distance);
+                    SIM_HASH_FIELD(interaction, object->interactObj, flags);
+                    SIM_HASH_FIELD(interaction, object->interactObj, OBJ_INTERACT_HEIGHT_MIN);
+                    SIM_HASH_FIELD(interaction, object->interactObj, OBJ_INTERACT_HEIGHT_MAX);
+                }
+                if (object->behaviorId == BHV_RACER &&
+                    object->racer != NULL) {
+                    racer = sim_hash_racer_v3(racer, object->racer);
+                }
+                model = sim_hash_models_v3(model, object);
+                if (sim_hash_object_has_models_v3(object)) {
+                    for (s32 modelIndex = 0;
+                         modelIndex < object->header->numberOfModelIds;
+                         modelIndex++) {
+                        const ModelInstance *instance =
+                            object->modelInstances[modelIndex];
+                        if (instance == NULL) {
+                            continue;
+                        }
+                        printf("[HASHMODEL] tick=%llu i=%d mi=%d aid=%d "
+                               "af=%d afc=%d off=%d,%d,%d tilt=%d type=%d "
+                               "task=%d timer=%d\n",
+                               tick, (int)index, (int)modelIndex,
+                               (int)instance->animationID,
+                               (int)instance->animationFrame,
+                               (int)instance->animationFrameCount,
+                               (int)instance->offsetX, (int)instance->offsetY,
+                               (int)instance->offsetZ,
+                               (int)instance->headTilt,
+                               (int)instance->modelType,
+                               (int)instance->animationTaskNum,
+                               (int)instance->animUpdateTimer);
+                    }
+                }
+            }
+            printf("[HASHV3] tick=%llu i=%d core=%016llx extra=%016llx "
+                   "prop=%016llx interact=%016llx racer=%016llx "
+                   "model=%016llx\n", tick, (int)index,
+                   (unsigned long long)core, (unsigned long long)extra,
+                   (unsigned long long)property,
+                   (unsigned long long)interaction,
+                   (unsigned long long)racer, (unsigned long long)model);
+            if (object->behaviorId == BHV_RACER && object->racer != NULL) {
+                const Object_Racer *r = object->racer;
+                printf("[HASHRACER] tick=%llu i=%d head=%d target=%d "
+                       "light=%u indicator=%d/%u visible=%d anim=%d "
+                       "timer=%d transition=%d transparency=%u "
+                       "misc=%d,%d,%d,%d\n", tick, (int)index,
+                       (int)r->headAngle, (int)r->headAngleTarget,
+                       (unsigned)r->lightFlags, (int)r->indicator_timer,
+                       (unsigned)r->indicator_type, (int)r->unk201,
+                       (int)object->animationID, (int)r->miscAnimCounter,
+                       (int)r->transitionTimer, (unsigned)r->transparency,
+                       (int)r->unk1F0, (int)r->unk1F1, (int)r->unk1F2,
+                       (int)r->unk1F3);
+            }
+        }
+    }
+}
+
+/* End of the field streams — drop the aliases so they cannot reach anything
+ * below, which addresses these structs by their real member names. */
+#undef OBJ_SCALE_VELOCITY
+#undef OBJ_CULL_RADIUS
+#undef OBJ_UNIDENTIFIED_S8_38
+#undef OBJPROP_DISTANCE_UNIDENTIFIED_04
+#undef OBJPROP_PROJECTILE_AGE_TIMER
+#undef OBJPROP_WIZPIGSHIP_UNIDENTIFIED_00
+#undef OBJPROP_ANIMOBJ_RACER_ID
+#undef OBJPROP_ANIMOBJ_TRIGGER_RESULT
+#undef OBJPROP_BRIDGE_RAMP_TIMER
+#undef OBJPROP_RAMP_SWITCH_BRIDGE_ID
+#undef OBJPROP_BUBBLER_PARTICLE_DENSITY
+#undef CAM_UNIDENTIFIED_U8_3C
+#undef CAM_UNIDENTIFIED_U8_3D
+#undef CAM_UNIDENTIFIED_U8_3E
+#undef CAM_UNIDENTIFIED_U8_3F
+#undef OBJ_INTERACT_KIND
+#undef OBJ_INTERACT_HEIGHT_MIN
+#undef OBJ_INTERACT_HEIGHT_MAX
+#undef SETTINGS_UNIDENTIFIED_PROGRESS_WORD_A
+#undef SETTINGS_BEST_LAP_OWNER
+#undef RACER_UNIDENTIFIED_S32_04
+#undef RACER_LAST_VOICE_SOUND_ID
+#undef RACER_VEHICLE_PITCH
+#undef RACER_AI_SPLINE_ANCHOR_X
+#undef RACER_AI_SPLINE_ANCHOR_Y
+#undef RACER_AI_SPLINE_ANCHOR_Z
+#undef RACER_CAMERA_Y_FOLLOW_DIVISOR
+#undef RACER_DRIFT_VELOCITY_X
+#undef RACER_DRIFT_VELOCITY_Z
+#undef RACER_UNIDENTIFIED_F32_98
+#undef RACER_AI_SPLINE_TRAVEL_RATE
+#undef RACER_WHEEL_SPIN_PHASE
+#undef RACER_UNIDENTIFIED_F32_BC
+#undef RACER_BUOYANCY_LIFT_RAMP
+#undef RACER_CAMERA_LATERAL_OFFSET
+#undef RACER_UNIDENTIFIED_F32_CC
+#undef RACER_TUMBLE_Y_OFFSET_DECAY
+#undef RACER_FALL_IMPACT_MAGNITUDE
+#undef RACER_COLLISION_PROBE_POINTS
+#undef RACER_DRIFT_LEAN_ANGLE
+#undef RACER_SAVED_CAR_STEER_VEL
+#undef RACER_UNIDENTIFIED_S32_114
+#undef RACER_WALL_RECOIL_VEL_X
+#undef RACER_WALL_RECOIL_VEL_Z
+#undef RACER_AI_RUBBERBAND_SPEED_BONUS
+#undef RACER_UNIDENTIFIED_S32_13C
+#undef RACER_TARGET_X_ROTATION_OFFSET
+#undef RACER_VELOCITY_HEADING_ANGLE
+#undef RACER_DRIFT_COUNTERSTEER_WOBBLE
+#undef RACER_WEAPON_ICON_SPIN_GATE
+#undef RACER_UNIDENTIFIED_S16_176
+#undef RACER_UNIDENTIFIED_U8_186
+#undef RACER_PENDING_BANANA_DROP_COUNT
+#undef RACER_STEER_WOBBLE_TIMER
+#undef RACER_ATTACK_REACTION_TIMER
+#undef RACER_STEER_ROTATION_RECOVERY_TARGET
+#undef RACER_SPECIAL_VEHICLE_MODE_TIMER
+#undef RACER_WALL_COLLISION_SPIN_ANGLE
+#undef RACER_SPIN_CAMERA_YAW_RECOIL
+#undef RACER_CHECKPOINT_PROGRESS_TIEBREAK
+#undef RACER_POSITION_STABLE_FRAMES
+#undef RACER_POSITION_CHANGE_TIMER
+#undef RACER_UNIDENTIFIED_S32_1B4
+#undef RACER_UNIDENTIFIED_S16_1B8
+#undef RACER_AI_LINE_OFFSET_X
+#undef RACER_AI_LINE_OFFSET_Y
+#undef RACER_AI_TARGET_YAW
+#undef RACER_AI_TARGET_PITCH
+#undef RACER_AI_PREV_TARGET_YAW
+#undef RACER_AI_PREV_TARGET_PITCH
+#undef RACER_AI_ACTION_TIMER
+#undef RACER_AI_ATTACK_ACTION_STATE
+#undef RACER_AI_LINE_INDEX
+#undef RACER_SPAWN_VEHICLE_CLASS
+#undef RACER_AI_GOAL_OR_SAVED_ANIM
+#undef RACER_AI_TARGET_NODE_OR_COMMAND
+#undef RACER_STEER_JITTER_OFFSET
+#undef RACER_CRASH_SPIN_TIMER
+#undef RACER_TRICK_ROTATION_FLAG
+#undef RACER_TRICK_HOLD_TIMER
+#undef RACER_POST_FINISH_COUNTER
+#undef RACER_UNIDENTIFIED_U8_1DA
+#undef RACER_WHEEL_GROUND_MASK
+#undef RACER_OBJECT_COLLISION_FLAGS
+#undef RACER_STEER_ANGLE_SECONDARY
+#undef RACER_UNIDENTIFIED_S8_1E9
+#undef RACER_UNIDENTIFIED_S8_1EA
+#undef RACER_SKID_DURATION_COUNTER
+#undef RACER_WATER_PATH_RECOVERY_FLAG
+#undef RACER_SPIN_PHASE
+#undef RACER_MISC_ANIM_STATE
+#undef RACER_MISC_ANIM_FLAGS
+#undef RACER_CRASH_SOUND_COOLDOWN
+#undef RACER_THROTTLE_HOLD_TIMER
+#undef RACER_EFFECT_ZONE_TYPE
+#undef RACER_EFFECT_ZONE_STRENGTH
+#undef RACER_ONSCREEN_AI_ACTIVE_TIMER
+#undef RACER_LIGHT_DIM_JITTER_TIMER
+#undef RACER_UNIDENTIFIED_S8_208
+#undef RACER_AI_ITEM_DECISION_FLAGS
+#undef RACER_PREV_RACE_ORDER_INDEX
+#undef RACER_UNIDENTIFIED_U8_20D
+#undef RACER_EGG_THROW_DEBOUNCE
+#undef RACER_STUCK_TIMER
+#undef RACER_STUCK_REVERSE_TIMER
+#undef RACER_STUCK_RECOVERY_COOLDOWN
+#undef RACER_UNIDENTIFIED_U8_216
+#undef RACER_UNIDENTIFIED_U8_217
+
+/* Test-only field-set controls. The historical numeric spelling still means
+ * object:<tick>; v3 adds one independently selected target per field family:
+ *
+ *   MDKR_TEST_HASH_PERTURB=object:2000
+ *   MDKR_TEST_HASH_PERTURB=racer:2000
+ *   MDKR_TEST_HASH_PERTURB=global:2000
+ *
+ * One byte is flipped only while the hash is computed and is restored before
+ * any game code can observe it. A control must therefore move exactly one
+ * [SIMHASH] row. No movement means the advertised family is not covered;
+ * later movement means restoration leaked into simulation state. */
+typedef enum HashPerturbClass {
+    HASH_PERTURB_NONE,
+    HASH_PERTURB_OBJECT,
+    HASH_PERTURB_PARTICLE,
+    HASH_PERTURB_RACER,
+    HASH_PERTURB_GLOBAL,
+    HASH_PERTURB_SETTINGS,
+    HASH_PERTURB_PROPERTY,
+    HASH_PERTURB_INTERACTION,
+    HASH_PERTURB_MODEL,
+    HASH_PERTURB_RENDER_OWNED,
+    HASH_PERTURB_CAMERA
+} HashPerturbClass;
+
+typedef struct HashPerturbSpec {
+    HashPerturbClass class_id;
+    long long tick;
+} HashPerturbSpec;
+
+static int hash_perturb_class_is(const char *name, size_t length,
+                                 const char *expected) {
+    return strlen(expected) == length &&
+           strncmp(name, expected, length) == 0;
+}
+
+static HashPerturbSpec hash_perturb_spec(void) {
+    static HashPerturbSpec spec = { HASH_PERTURB_NONE, -1 };
+    static int parsed;
+    const char *env;
+    const char *colon;
+    const char *tick_text;
+    size_t class_length;
+    char *end;
+
+    if (parsed) {
+        return spec;
+    }
+    parsed = 1;
+    env = getenv("MDKR_TEST_HASH_PERTURB");
+    if (env == NULL || env[0] == '\0') {
+        return spec;
+    }
+    colon = strchr(env, ':');
+    if (colon == NULL) {
+        spec.class_id = HASH_PERTURB_OBJECT;
+        tick_text = env;
+    } else {
+        class_length = (size_t)(colon - env);
+        tick_text = colon + 1;
+        if (hash_perturb_class_is(env, class_length, "object")) {
+            spec.class_id = HASH_PERTURB_OBJECT;
+        } else if (hash_perturb_class_is(env, class_length, "particle")) {
+            spec.class_id = HASH_PERTURB_PARTICLE;
+        } else if (hash_perturb_class_is(env, class_length, "racer")) {
+            spec.class_id = HASH_PERTURB_RACER;
+        } else if (hash_perturb_class_is(env, class_length, "global")) {
+            spec.class_id = HASH_PERTURB_GLOBAL;
+        } else if (hash_perturb_class_is(env, class_length, "settings")) {
+            spec.class_id = HASH_PERTURB_SETTINGS;
+        } else if (hash_perturb_class_is(env, class_length, "property")) {
+            spec.class_id = HASH_PERTURB_PROPERTY;
+        } else if (hash_perturb_class_is(env, class_length, "interaction")) {
+            spec.class_id = HASH_PERTURB_INTERACTION;
+        } else if (hash_perturb_class_is(env, class_length, "model")) {
+            spec.class_id = HASH_PERTURB_MODEL;
+        } else if (hash_perturb_class_is(env, class_length,
+                                         "render-owned")) {
+            spec.class_id = HASH_PERTURB_RENDER_OWNED;
+        } else if (hash_perturb_class_is(env, class_length, "camera")) {
+            spec.class_id = HASH_PERTURB_CAMERA;
+        } else {
+            return spec;
+        }
+    }
+    spec.tick = strtoll(tick_text, &end, 10);
+    if (end == tick_text || *end != '\0' || spec.tick < 0) {
+        spec.class_id = HASH_PERTURB_NONE;
+        spec.tick = -1;
+    }
+    return spec;
+}
+
+static const char *hash_perturb_class_name(HashPerturbClass class_id) {
+    switch (class_id) {
+        case HASH_PERTURB_OBJECT: return "object";
+        case HASH_PERTURB_PARTICLE: return "particle";
+        case HASH_PERTURB_RACER: return "racer";
+        case HASH_PERTURB_GLOBAL: return "global";
+        case HASH_PERTURB_SETTINGS: return "settings";
+        case HASH_PERTURB_PROPERTY: return "property";
+        case HASH_PERTURB_INTERACTION: return "interaction";
+        case HASH_PERTURB_MODEL: return "model";
+        case HASH_PERTURB_RENDER_OWNED: return "render-owned";
+        case HASH_PERTURB_CAMERA: return "camera";
+        default: return "none";
+    }
+}
+
+static uint64_t sim_hash_compute_perturbed(HashPerturbClass class_id,
+                                           s32 *out_count) {
+    s32 first = 0;
+    s32 count = 0;
+    Object **objects = objGetObjList(&first, &count);
+    uint64_t hash;
+    void *target = NULL;
+
+    if (class_id == HASH_PERTURB_GLOBAL) {
+        target = &gLevelLoadTimer;
+    } else if (class_id == HASH_PERTURB_CAMERA) {
+        target = &gCameras[PLAYER_FOUR].trans.x_position;
+    } else if (class_id == HASH_PERTURB_SETTINGS) {
+        Settings *settings = get_settings();
+        if (settings != NULL) {
+            target = &settings->bosses;
+        }
+    } else {
+        for (s32 index = 0; objects != NULL && index < count; index++) {
+            Object *object = objects[index];
+            /* Never aim a positive control at an object the hash does not
+             * read: it would report applied=1 and prove nothing. */
+            if (object == NULL || sim_hash_object_is_presentation(object)) {
+                continue;
+            }
+            if (class_id == HASH_PERTURB_PARTICLE) {
+                if (object->trans.flags & OBJ_FLAGS_PARTICLE) {
+                    Particle *particle = (Particle *)object;
+                    target = &particle->angularVelocity.x_rotation;
+                    break;
+                }
+                continue;
+            }
+            if (object->trans.flags & OBJ_FLAGS_PARTICLE) {
+                continue;
+            }
+            switch (class_id) {
+                case HASH_PERTURB_OBJECT:
+                    target = &object->trans.rotation.x_rotation;
+                    break;
+                case HASH_PERTURB_RACER:
+                    if (object->behaviorId == BHV_RACER &&
+                        object->racer != NULL) {
+                        target = &object->racer->velocity;
+                    }
+                    break;
+                case HASH_PERTURB_PROPERTY:
+                    if (object->behaviorId == BHV_BANANA) {
+                        target = &object->properties.banana.status;
+                    }
+                    break;
+                case HASH_PERTURB_INTERACTION:
+                    if (object->interactObj != NULL) {
+                        target = &object->interactObj->x_position;
+                    }
+                    break;
+                case HASH_PERTURB_MODEL:
+                    if (object->header != NULL &&
+                        object->header->modelType ==
+                            OBJECT_MODEL_TYPE_3D_MODEL &&
+                        object->modelInstances != NULL &&
+                        object->modelIndex >= 0 &&
+                        object->modelIndex < object->header->numberOfModelIds &&
+                        object->modelInstances[object->modelIndex] != NULL) {
+                        target = &object->modelInstances[object->modelIndex]
+                                      ->animationFrame;
+                    }
+                    break;
+                case HASH_PERTURB_RENDER_OWNED:
+                    target = &object->opacity;
+                    break;
+                default:
+                    break;
+            }
+            if (target != NULL) {
+                break;
+            }
+        }
+    }
+    if (target == NULL) {
+        printf("[HASHCONTROL] class=%s applied=0\n",
+               hash_perturb_class_name(class_id));
+        return sim_hash_compute(out_count);
+    }
+    *(unsigned char *)target ^= 1u;
+    hash = sim_hash_compute(out_count);
+    *(unsigned char *)target ^= 1u;
+    printf("[HASHCONTROL] class=%s applied=1\n",
+           hash_perturb_class_name(class_id));
+    return hash;
+}
+
+/* One format string for both sinks below, so the file can never drift from
+ * stdout: they format the same values with the same specifiers. */
+#define SIM_HASH_LINE_FMT "[SIMHASH] tick=%llu objs=%d h=%016llx\n"
+
+/*
+ * Optional second sink for the per-tick hash stream.
+ *
+ * MDKR_STATE_HASH_FILE=<path> mirrors every [SIMHASH] line that goes to stdout
+ * into <path>, byte-for-byte and in the same order. It is a pure duplicate of a
+ * value already computed for stdout: it never changes WHAT is hashed or WHEN,
+ * so a run with the file set produces the identical stdout stream and identical
+ * simulation as one without it. Unset or empty means no file is opened and
+ * nothing is written.
+ *
+ * Lifetime contract: the sink is opened once and kept for the whole process --
+ * it is never fclose()d on the normal path. Together with the per-tick fflush
+ * in mdkr_sim_hash_frame, that guarantees a killed process leaves a usable,
+ * line-aligned prefix on disk. The only close is the failure path: a path that
+ * cannot be opened, or a sink that later fails a write, is reported once to
+ * stderr and dropped (fclose + NULL) so a hashing run never crashes, diverges,
+ * or spams because an artifact path went bad. Resolved once and cached, like
+ * the version selector above.
+ */
+static FILE *s_sim_hash_sink = NULL; /* process-lifetime sink, NULL once dropped */
+
+static FILE *sim_hash_file_sink(void) {
+    static int resolved = 0;
+    if (!resolved) {
+        const char *path = getenv("MDKR_STATE_HASH_FILE");
+        resolved = 1;
+        if (path != NULL && path[0] != '\0') {
+            s_sim_hash_sink = fopen(path, "w");
+            if (s_sim_hash_sink == NULL) {
+                fprintf(stderr,
+                        "[SIMHASH] cannot open MDKR_STATE_HASH_FILE '%s'; "
+                        "file sink disabled\n", path);
+            }
+        }
+    }
+    return s_sim_hash_sink;
+}
+
+void mdkr_sim_hash_frame(void) {
+    static unsigned long long tick;
+    HashPerturbSpec perturb;
+    FILE *sink;
+    s32 count = 0;
+    uint64_t hash;
+
+    if (!sim_hash_enabled()) {
+        return;
+    }
+    if (hash_dump_selected(tick)) {
+        sim_hash_dump_objects(tick);
+        if (hash_dump_ids()) {
+            sim_hash_dump_object_ids(tick);
+        }
+    }
+    perturb = hash_perturb_spec();
+    if (perturb.tick >= 0 && (long long)tick == perturb.tick) {
+        hash = sim_hash_compute_perturbed(perturb.class_id, &count);
+    } else {
+        hash = sim_hash_compute(&count);
+    }
+    printf(SIM_HASH_LINE_FMT, tick, (int)count, (unsigned long long)hash);
+    sink = sim_hash_file_sink();
+    if (sink != NULL) {
+        /* Flush per tick so a killed run still leaves a usable prefix; one
+         * flush per authoritative tick is negligible against a rendered frame.
+         * Both the write and the flush are checked: a mid-run failure (e.g. the
+         * disk filling after a good fopen) is reported once and drops the sink,
+         * so later ticks neither spam stderr nor append a torn line. stdout and
+         * the simulation are untouched on every path. */
+        if (fprintf(sink, SIM_HASH_LINE_FMT, tick, (int)count,
+                    (unsigned long long)hash) < 0 ||
+            fflush(sink) != 0) {
+            fprintf(stderr,
+                    "[SIMHASH] cannot write MDKR_STATE_HASH_FILE; "
+                    "file sink disabled\n");
+            fclose(sink);
+            s_sim_hash_sink = NULL;
+        }
+    }
+    tick++;
+}
+
+#undef SIM_HASH_LINE_FMT
+
+/*
+ * Render-mutation probe: hash the authoritative state immediately before and
+ * after render_scene() and count ticks where the RENDER path changed it. It
+ * measures impurity visible to whichever version MDKR_STATE_HASH selects; v3
+ * is the release gate and its component hashes identify the mutated family.
+ * Enabled by MDKR_RENDER_CENSUS=1; one summary row every 600 ticks and at each
+ * change.
+ */
+static int render_census_enabled(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *value = getenv("MDKR_RENDER_CENSUS");
+        enabled = value != NULL && value[0] != '\0' &&
+                  strcmp(value, "0") != 0;
+    }
+    return enabled;
+}
+
+static uint64_t s_census_pre_hash;
+static SimHashV3Parts s_census_pre_parts;
+static unsigned long long s_census_ticks;
+static unsigned long long s_census_mutated;
+static unsigned long long s_census_v3_globals;
+static unsigned long long s_census_v3_core;
+static unsigned long long s_census_v3_object_extra;
+static unsigned long long s_census_v3_interaction;
+static unsigned long long s_census_v3_property;
+static unsigned long long s_census_v3_racer;
+static unsigned long long s_census_v3_model;
+static unsigned long long s_census_v3_distance;
+static unsigned long long s_census_v3_opacity;
+static unsigned long long s_census_v3_model_index;
+static unsigned long long s_census_v3_racer_light;
+static unsigned long long s_census_v3_model_timer;
+static unsigned long long s_census_v3_racer_head;
+
+/*
+ * Render-purity gate seams. Env-gated, zero-cost when unset.
+ *
+ * MDKR_TEST_SKIP_RENDER=odd  — render_scene's body is skipped on odd
+ *   authoritative ticks. With every migrated subsystem out of the render
+ *   path, skipping half of all renders must not change one bit of the
+ *   authoritative stream; the registered check asserts exactly that.
+ * MDKR_TEST_RENDER_IMPURITY=1 — explicit positive control: inject one
+ *   authoritative RNG write inside each non-skipped render. The raw purity
+ *   arms must detect this; production has no subtraction/bracketing mode.
+ */
+static int skip_render_mode(void) {
+    static int mode = -1;
+    if (mode < 0) {
+        const char *value = getenv("MDKR_TEST_SKIP_RENDER");
+        mode = value != NULL && strcmp(value, "odd") == 0;
+    }
+    return mode;
+}
+
+static unsigned long long s_render_tick_parity;
+
+int mdkr_test_render_skip_this_tick(void) {
+    if (!skip_render_mode()) {
+        return 0;
+    }
+    return (s_render_tick_parity & 1ull) != 0;
+}
+
+void mdkr_test_render_tick_advance(void) {
+    s_render_tick_parity++;
+}
+
+extern void set_rng_seed(s32 seed);
+
+void mdkr_test_render_impurity_inject(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *value = getenv("MDKR_TEST_RENDER_IMPURITY");
+        enabled = value != NULL && value[0] != '\0' &&
+                  strcmp(value, "0") != 0;
+    }
+    if (enabled) {
+        uint32_t seed = (uint32_t)get_rng_seed();
+        set_rng_seed((s32)(seed * 1664525u + 1013904223u));
+    }
+}
+
+void mdkr_render_census_pre(void) {
+    if (!render_census_enabled()) {
+        return;
+    }
+    s_census_pre_hash = sim_hash_compute(NULL);
+    if (sim_hash_version() == SIM_HASH_VERSION_V3) {
+        s_census_pre_parts = sim_hash_v3_parts();
+    }
+}
+
+void mdkr_render_census_post(void) {
+    uint64_t post;
+    SimHashV3Parts post_parts;
+
+    /*
+     * The closing half of the presentation-depth tool scope; see
+     * platform/app_overlay_hooks.h for what it is for and why it has to exist.
+     *
+     * It rides this function because this function IS the boundary: it is the
+     * statement immediately after render_scene() returns, at both of
+     * thread3_main.c's call sites, and it is the last thing in the frame before
+     * the next fixed tick's obj_visibility_tick reads the lens globals the
+     * drawn frame left behind. Deliberately BEFORE the census's own early-out:
+     * a tool's substitution must be closed whether or not MDKR_RENDER_CENSUS is
+     * on, and gating the close on a diagnostic would make the diagnostic change
+     * the run.
+     *
+     * Declared locally, the way thread3_main.c declares this function itself.
+     * Nothing is registered on any CLI invocation, so this is one null compare
+     * per drawn frame there.
+     */
+    {
+        extern void platformPresentationEndHook(void);
+        platformPresentationEndHook();
+    }
+
+    if (!render_census_enabled()) {
+        return;
+    }
+    post = sim_hash_compute(NULL);
+    s_census_ticks++;
+    if (post != s_census_pre_hash) {
+        s_census_mutated++;
+    }
+    if (sim_hash_version() == SIM_HASH_VERSION_V3) {
+        post_parts = sim_hash_v3_parts();
+        s_census_v3_globals +=
+            post_parts.globals != s_census_pre_parts.globals;
+        s_census_v3_core += post_parts.core != s_census_pre_parts.core;
+        s_census_v3_object_extra +=
+            post_parts.object_extra != s_census_pre_parts.object_extra;
+        s_census_v3_interaction +=
+            post_parts.interaction != s_census_pre_parts.interaction;
+        s_census_v3_property +=
+            post_parts.property != s_census_pre_parts.property;
+        s_census_v3_racer += post_parts.racer != s_census_pre_parts.racer;
+        s_census_v3_model += post_parts.model != s_census_pre_parts.model;
+        s_census_v3_distance +=
+            post_parts.object_distance != s_census_pre_parts.object_distance;
+        s_census_v3_opacity +=
+            post_parts.object_opacity != s_census_pre_parts.object_opacity;
+        s_census_v3_model_index +=
+            post_parts.object_model_index !=
+                s_census_pre_parts.object_model_index;
+        s_census_v3_racer_light +=
+            post_parts.racer_light_flags !=
+                s_census_pre_parts.racer_light_flags;
+        s_census_v3_model_timer +=
+            post_parts.model_anim_timer !=
+                s_census_pre_parts.model_anim_timer;
+        s_census_v3_racer_head +=
+            post_parts.racer_head_angle !=
+                s_census_pre_parts.racer_head_angle;
+    }
+    if ((s_census_ticks % 600ull) == 0) {
+        printf("[RENDER-MUT] ticks=%llu mutated=%llu\n",
+               s_census_ticks, s_census_mutated);
+        if (sim_hash_version() == SIM_HASH_VERSION_V3) {
+            printf("[RENDER-MUT-V3] globals=%llu core=%llu object=%llu "
+                   "interaction=%llu property=%llu racer=%llu model=%llu\n",
+                   s_census_v3_globals, s_census_v3_core,
+                   s_census_v3_object_extra, s_census_v3_interaction,
+                   s_census_v3_property, s_census_v3_racer,
+                   s_census_v3_model);
+            printf("[RENDER-MUT-FIELDS] distance=%llu opacity=%llu "
+                   "modelIndex=%llu racerLight=%llu modelTimer=%llu "
+                   "racerHead=%llu\n",
+                   s_census_v3_distance, s_census_v3_opacity,
+                   s_census_v3_model_index, s_census_v3_racer_light,
+                   s_census_v3_model_timer, s_census_v3_racer_head);
+        }
+    }
+}
+
+/* ======================================================================== *
+ *  Read-only object view -- see platform/sim_hash_view.h
+ * ======================================================================== *
+ * These are here, and not in the app shell, so the in-game object viewer and
+ * the [SIMHASH] v3 stream can never disagree about what is live: they walk the
+ * same objGetObjList() array, in the same order, through the same
+ * sim_hash_object_is_presentation() filter, and count the population with the
+ * same sim_hash_authoritative_count(). A viewer that re-derived any of that
+ * could agree with itself while disagreeing with the authority.
+ *
+ * Pure reads. No allocation, no caching, no writes to any Object.
+ */
+int mdkr_sim_object_count(void) {
+    s32 first = 0;
+    s32 count = 0;
+
+    return objGetObjList(&first, &count) != NULL ? (int)count : 0;
+}
+
+int mdkr_sim_object_authoritative_count(void) {
+    s32 first = 0;
+    s32 count = 0;
+    Object **objects = objGetObjList(&first, &count);
+
+    return objects != NULL ? (int)sim_hash_authoritative_count(objects, count) : 0;
+}
+
+bool mdkr_sim_object_view(int index, MdkrSimObjectView *out) {
+    s32 first = 0;
+    s32 count = 0;
+    Object **objects = objGetObjList(&first, &count);
+    const Object *object;
+
+    if (out == NULL || objects == NULL || index < 0 || index >= (int)count) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    out->index = (int32_t)index;
+    out->behaviour_id = -1;
+
+    object = objects[index];
+    if (object == NULL) {
+        /* A successful read of an empty slot. The v3 walk mixes exactly this
+         * distinction (index + a presence byte) before it looks at anything
+         * else, so the viewer shows it rather than compacting the list. */
+        return true;
+    }
+    out->live = 1u;
+    out->hashed = (uint8_t)(sim_hash_object_is_presentation(object) ? 0 : 1);
+    /* The shared Object/Particle prefix: these members name the same bytes in
+     * both layouts (see sim_hash_compute_object_particle_v2's own note), so
+     * they are safe to read before the layouts part company. */
+    out->flags = (int32_t)object->trans.flags;
+    out->position[0] = object->trans.x_position;
+    out->position[1] = object->trans.y_position;
+    out->position[2] = object->trans.z_position;
+    out->active_emitters = (int32_t)object->numActiveEmitters;
+    if (object->trans.flags & OBJ_FLAGS_PARTICLE) {
+        /* Past the prefix a particle is a Particle, and behaviorId /
+         * particleEmittersEnabled would be the wrong members. The hash's
+         * particle arm skips them for the same reason. */
+        out->is_particle = 1u;
+        return true;
+    }
+    out->behaviour_id = (int32_t)object->behaviorId;
+    out->emitters_on = (uint8_t)(object->particleEmittersEnabled != 0);
+    return true;
+}

@@ -1,0 +1,299 @@
+# Campaign: faithful Enhanced cadence
+
+**Goal.** Enhanced runs the game at 60 Hz with the gameplay a player would get
+on Original. Original itself does not move a single instruction. Alongside it:
+code structure and repo hygiene enforced by gates rather than by intention, and
+no AI-slop prose anywhere a player or a reviewer can see it.
+
+This is the plan of record. It is written to be falsifiable: every milestone
+has a gate that fails when the milestone is not met, and a positive control
+that proves the gate is not vacuous.
+
+---
+
+## 0. What is provably impossible, stated up front
+
+"Enhanced with zero deviation from Original" is not reachable, for three
+independent reasons, each sufficient alone:
+
+1. **RNG consumption is per-tick.** Twice the ticks is twice the draws.
+   `EVENTHASH` and `SIMHASH` diverge at tick zero, not gradually — the same
+   mechanism that makes `check_state_hash`'s legacy-RNG control diverge
+   immediately.
+2. **The integrator is nonlinear.** `velocity -= velSquare * traction` applied
+   twice at half strength is not the same as once at full strength. No choice
+   of scaling constant fixes this; it is a property of the arithmetic.
+3. **The authored state is fixed-point.** `s16` rotations, the 2-bit UV
+   accumulators, `x_rotation += angle >> 3`. Half-steps quantise differently
+   and the residue accumulates with a sign rather than cancelling.
+
+Chasing bit-identity would therefore produce a gate that can only be satisfied
+by lying. The contract below is the honest one, and it is stricter where it can
+be and explicit where it cannot.
+
+**THE CONTRACT.** At authored 30 Hz tick boundaries, under Enhanced:
+
+| stream | requirement |
+|---|---|
+| `EVENTHASH` | **bit-identical** to Original |
+| `INPUTHASH` | **bit-identical** to Original |
+| `PCM` | **bit-identical** to Original |
+| `SIMHASH` | divergence bounded by a published tolerance over a full race |
+
+Original's own streams stay bit-identical to what they are today, always. That
+is not a target; it is a precondition on every commit in this campaign.
+
+---
+
+## 1. The architecture: split the tick
+
+A DKR tick welds together two things, and only one of them resists
+subdivision.
+
+* **Discrete** — RNG draws, checkpoint crossings, item logic, AI decisions,
+  timers, audio cue triggers, lap and finish events. These are events, not
+  integrals. Subdividing them is meaningless, and it is what breaks the
+  streams.
+* **Continuous** — position and velocity integration, camera solve, animation
+  phase, suspension and pitch. These are integrals over time. Subdividing them
+  is what they are for.
+
+Enhanced runs **discrete logic only on authored boundaries, in authored
+order**, and **continuous integration at 60 Hz with correct dt**. That is what
+makes the first three rows of the contract achievable at all.
+
+Issue #26 is the evidence for this split. The boss was not merely moving
+faster — it was *deciding* twice as often, and the wheel-0 traction hole turned
+that into an unbounded runaway.
+
+---
+
+## 2. Milestones
+
+### M0 — Classify every per-tick site
+The ~59 `//!@Delta` markers (49 `racer.c`, 4 `object_functions.c`, 6 `menu.c`)
+plus the boss start-timer constants in `vehicle_*.c` are the inventory. Each
+gets one of four labels: CONTINUOUS (scale by dt), DISCRETE (gate to authored
+boundary), THRESHOLD (scale the bound, as the menu auto-repeat fix does), or
+INERT (equilibrium-governed or already scaled — proven, not assumed).
+
+**Gate:** `check_delta_inventory.py` — every `//!@Delta` in the tree carries a
+classification comment; an unclassified one fails. **Positive control:** adding
+a bare `//!@Delta` fails the gate.
+
+### M1 — Delta-correctness sweep
+Apply the M0 classification. Additive terms take `× updateRateF * 0.5`; decays
+become `k^(updateRate/2)`; thresholds scale. Removes the 2× acceleration
+transients and the measured 3–8% AI lap delta.
+
+**Gate:** extend `check_bluey2_rematch` and add an ordinary-racer arm asserting
+Enhanced/Original lap-time parity within tolerance on a non-boss track.
+**Positive control:** `MDKR_BOSS_CADENCE_COMPAT=0` still reproduces the runaway.
+
+### M2 — Occupancy, not traction — THE PREMISE HERE WAS WRONG
+
+**This milestone was specified on a false premise and is rewritten.** It
+originally said: close the wheel-0 traction hole, because
+`update_car_velocity_ground()` samples drag from `wheel_surfaces[0]` alone
+while the human path averages all contacting wheels, so a boss with wheel 0
+lifted keeps full thrust with zero drag. The stated gate was "boss peak
+|velocity| at or under the authored governor with the clamp disabled", on the
+claim that "Original sits exactly on that ceiling and never exceeds it".
+
+**That claim is measurably false, and the data to refute it was already in
+hand when the claim was written.** Measured peaks against a governor ceiling of
+16.29: Bubbler 16.20, Bluey 2 **16.91** on a time-trial route and **19.09** on
+the adventure route. Tracing the Original boss through its peak shows velocity
+climbing at +0.6171/tick across frames with `groundedWheels` between 1 and 3 —
+no drag term at all — then decaying once all four regain contact. **The
+authored boss's pace USES the drag-free episode.** The wheel-0 hole is not a
+bug the boss suffers; it is a mechanism the boss's speed depends on.
+
+So closing the hole makes the boss too slow, and it was measured doing exactly
+that: the traction fix took the boss from 7.0% slow to 9.4% slow and handed the
+player the win. It was reverted.
+
+**What is actually wrong under Enhanced is the OCCUPANCY of that state, not the
+state itself.** Ticks spent at partial contact (1–3 wheels), Bluey 2:
+
+| | Original | Enhanced |
+|---|---|---|
+| boss | 11.8% | **20.2%** (1.7x) |
+| human | 15.4% | 26.9% |
+| fully airborne | 10.2% | 9.8% (unchanged) |
+
+Airtime is unchanged, so this is contact and attitude dynamics, not flight. The
+boss is taking roughly twice the authored dose of drag-free thrust. No value of
+the traction term fixes that: any partial drag puts the peak back over the
+ceiling, and zero drag is what Original does. **Peak ≤ 16.3 and "boss pace =
+Original" are mutually exclusive while occupancy is 2x** — which is why the old
+gate over-constrained and could not be satisfied honestly.
+
+**The real fix is M1-shaped:** scale the per-tick attitude and suspension terms
+that put the boss into partial contact twice as often. Several carry no
+`//!@Delta` marker at all — `y_rotation += temp_s16 >> 2`,
+`unk10C = (unk10C * 7) >> 3`, `y_rotation_vel = (y_rotation_vel * 7) >> 3`, and
+`y_rotation_vel += (gCurrentCarSteerVel - y_rotation_vel) >> 3`. The
+lateral-loop rule applies: a source/sink pair must be scaled as a whole or not
+at all.
+
+**Revised gate:** partial-contact occupancy under Enhanced within tolerance of
+Original on both bosses, and boss finish inside the Original band with the
+clamp disabled. Occupancy is the invariant that was actually violated, so it is
+what the gate should measure. **Positive control:** `MDKR_BOSS_CADENCE_COMPAT=0`
+on an unfixed build still reproduces the runaway.
+
+### M3 — The discrete/continuous split
+Gate discrete call sites to authored boundaries. Large but mechanical once M0
+exists.
+
+**Gate:** `EVENTHASH`/`INPUTHASH`/`PCM` bit-identical between cadences on three
+routes; `SIMHASH` divergence within the published bound.
+
+### M4 — Input latency, measured before it is optimised
+The tick quantum is the second-order term; the pipeline may dominate.
+Instrument input→photon and publish the budget split before deciding whether
+M3 earns its cost for latency specifically.
+
+**Gate:** a recorded budget with a method others can re-run.
+
+**The instrument (2026-08-10).** `platform/input_latency_census.c`, armed by
+`MDKR_INPUT_LATENCY=1`, reported at shutdown as `[INPUT-LATENCY]` rows with
+n/mean/p50/p95/p99/max in ms. Four terms, on the pacer's own host clock:
+
+| term | measures |
+|---|---|
+| `queue` | SDL event timestamp → the pump that dispatched it. SDL2 stamps in ms, so this term is ms-resolution and no better. |
+| `sample` | last host capture that fed a ticket → the commit that published it. Dead time: the sample is taken and then waits. |
+| `tick` | commit → commit. The authored quantum, and the anchor the other rows are read against. |
+| `present` | commit → the swap that returns for the frame that ran on that input. Simulation, list build, submit, and the block inside the swap. |
+
+Scanout past the swap is not observable in-process. Bound it by hand from the
+backend's own `[PRESENT-MODE] frameLatency=` row plus one refresh; the WebGPU
+path pins `desiredMaximumFrameLatency` to 1.
+
+**Method, re-runnable:**
+
+```
+MDKR_INPUT_LATENCY=1 MDKR_PACE_REALTIME=1 \
+  ./build-rel/mdkr64 --rom baserom.us.v80.z64 2>&1 | grep INPUT-LATENCY
+```
+
+Play the run by hand to populate `queue`; `sample` is measured from ordinary
+host-state captures even without an input edge. Vary `MDKR_PRESENT_RATE`
+(`original`, `60`, `120`) to move the `sample` term and confirm it tracks the
+present interval. **`MDKR_PACE_REALTIME=1` is not optional**: under the
+synthetic pacer every wall-clock number in this census is meaningless (§0 of
+`CAMPAIGN_HIGH_FPS.md`), and the config row printed with the budget records
+which pacing produced it so a synthetic run cannot be misread as a real one.
+
+**The structural result, derived from the loop and independent of the
+measurement.** In `stubs_dkr.c`'s retrace branch the presentation subloop is
+
+```
+for (;;) {
+    units = platform_vi_present_pace_units();   /* the wait */
+    ticks_due = present_sched_advance_units(units, rebased);
+    if (ticks_due != 0) break;                  /* exits with no pump */
+    ... replay ...  platform_frame_sync();      /* pumps, then presents */
+}
+... platform_input_commit_tick(ticket);
+```
+
+Every host capture runs from `platform_input_pump`, and the pump runs from
+`platform_frame_sync_impl`. In the presentation subloop, the loop breaks
+straight out of the wait, so **no capture happens between the last intermediate
+present and the commit**. Original takes a different path: it paces first and
+then pumps the authored endpoint immediately before the commit. The measured
+shape follows that control flow:
+
+| presentation | `sample`, structurally |
+|---|---|
+| Frame limit Original (30 Hz) | census floor, ~0.1 ms — pump follows the pacing wait |
+| 60 Hz | ~16.7 ms |
+| 120 Hz | ~8.3 ms |
+
+**The reducible term is material specifically when the presentation subloop is
+active.** At 60 Hz it is almost one display interval; at Original it is already
+gone. `present` remains bounded by the backend queue and scanout, with WebGPU's
+`frameLatency` pinned to 1.
+
+**M3 does not earn its cost for latency.** At Interpolated 60 Hz, late sampling
+removes the measured ~16 ms accidental wait without changing authoritative
+cadence or simulation state. Latency therefore does not justify changing the
+gameplay tick rate.
+
+**Implemented: `platform_input_sample_late()`** (default on;
+`MDKR_INPUT_JIT=0` is the diagnostic opt-out), called at the tick boundary
+immediately before the commit. It reruns the
+same event dispatch and the same capture through the same
+`present_sched_input_target_tick()` accessor, so it adds host captures — which
+the bounded queue already accepts in unbounded number per tick and coalesces —
+and adds no ticket, no consume and no controller read. The DKR-visible contract
+is one published pad sample per authored tick, unchanged.
+
+**Default-on evidence (2026-08-12, same Mac/ProMotion host):** at the shipped
+Interpolated/display policy resolving to 60 Hz, the `sample` p50 fell from
+16.1 ms to the census floor of 0.1 ms (p99 17.3 ms to 0.1 ms). Original was
+already at the 0.1 ms floor because its pump occurs after the authored pacing
+wait, so the extra sample is intentionally redundant there. The arbitrary-rate
+gate runs its 60 Hz scripted arm both ways and requires the state, ordered-event,
+consumed-input and PCM streams to remain byte-identical; scripted inputs are
+time-independent, so any divergence proves the change touched processing rather
+than timing.
+
+---
+
+## 3. Code quality gates
+
+These are lessons this repo has already paid for. Each becomes a gate so the
+lesson does not have to be re-learned.
+
+1. **Cadence gating keys on launch-time cadence, never on `updateRate`.** Under
+   Original a lag tick legitimately arrives with `updateRate` 3 or more, and
+   the authored code must handle it byte-identically. A grep gate rejects
+   `updateRate == 1` / `updateRate == 2` used as a mode test.
+2. **Every behavioural fix ships a positive control that fails without it.**
+   `check_bluey2_rematch` sat green for months while asserting the defect it
+   was written to catch. A gate with no failing control is a gate with no
+   evidence.
+3. **No `git add -A`.** This campaign already produced one commit whose message
+   described three renderer fixes while the commit also contained an unreviewed
+   launcher redesign and a gameplay change. Stage explicit paths.
+4. **A root cause is not closed until its class is swept.** #25 and #27 were the
+   same function failing to save borrowed state; sweeping that class found two
+   more defects nobody had reported.
+5. **Parallel work is scoped by INVARIANT, not by file.** Two agents were
+   given disjoint file scopes — `racer.c` versus `vehicle_*.c` — and still
+   collided, because the boss countdowns read `gRaceStartTimer`, which
+   `racer.c` owns, and because both were graded by the same gate. Disjoint
+   files are not disjoint state. Before parallelising, ask what shared
+   invariant the pieces are both standing on; if they share one, serialise
+   them. Corollary already paid for: never run the suite while anything is
+   editing the tree it measures.
+6. **A measurement is not believed until its subject is confirmed.**
+   `MDKR_LOAD_TRACK` only binds once the route reaches track select; a short run
+   silently races a default level. Confirm via `[TRACE] level_light: level=N`.
+   This cost three wrong measurements in one day.
+
+---
+
+## 4. Prose quality
+
+**The rule:** anything a player or a reviewer reads should sound like a game
+developer wrote it — short, concrete, specific. No process vocabulary in
+player-facing text. No sentence whose purpose is to sound thorough.
+
+Banned in player-facing strings: *seamlessly, leverage, ensure, robust, enhance
+your experience, comprehensive, authored presentation states, safe frame
+boundary, durable storage, compatibility mode*. Release notes are for players:
+no validation or process words.
+
+**Structural finding to fix first:** player-facing strings are pinned by
+contract tests across `CMakeLists.txt`, `macos/Scripts/verify_unsigned_release.sh`
+and `tests/ci_contract_manifest.py`, so improving one sentence is a five-file
+change. That is *why* the slop survived. The pinning should assert the claims
+that matter (no false product claims) rather than exact prose.
+
+**Gate:** `check_player_prose.py` — banned vocabulary in player-facing strings
+and release notes fails. **Positive control:** a seeded "seamlessly" fails.

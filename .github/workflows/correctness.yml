@@ -1,0 +1,228 @@
+name: correctness
+
+# This workflow never receives or downloads a game ROM. It preserves the
+# source/build foundation on every change; proprietary-ROM gameplay remains a
+# local pre-release gate run by a maintainer against a legally-owned ROM, and
+# is documented in docs/RELEASE_CHECKLIST.md.
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: correctness-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  policy:
+    name: Policy and source contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - name: Clean-room history
+        run: tools/check_clean_room.sh
+      - name: Public tree and new-commit boundary
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+          CURRENT_SHA: ${{ github.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          python3 tools/check_public_surface.py --tree "$CURRENT_SHA"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            python3 tools/check_public_surface.py --range "origin/$BASE_REF..HEAD"
+          elif [ "$EVENT_NAME" = "push" ] &&
+               [ "$REF_TYPE" != "tag" ] &&
+               [ -n "$BEFORE_SHA" ] &&
+               [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            python3 tools/check_public_surface.py --range "$BEFORE_SHA..$CURRENT_SHA"
+          elif [ "$EVENT_NAME" = "push" ] && [ "$REF_TYPE" != "tag" ]; then
+            python3 tools/check_public_surface.py \
+              --range "origin/$DEFAULT_BRANCH..$CURRENT_SHA"
+          fi
+          if [ "$REF_TYPE" = "tag" ]; then
+            tag_oid="$(git rev-parse "refs/tags/$REF_NAME")"
+            tag_commit="$(git rev-parse "${tag_oid}^{commit}")"
+            git merge-base --is-ancestor "$tag_commit" "origin/$DEFAULT_BRANCH" || {
+              echo "FAIL: release tags must point into public $DEFAULT_BRANCH history" >&2
+              exit 1
+            }
+            if [ "$(git cat-file -t "$tag_oid")" = "tag" ]; then
+              python3 tools/check_public_surface.py --tag "$tag_oid"
+            fi
+          fi
+      - name: Native SDK surface, third-party notices, and image metadata
+        run: |
+          python3 tools/check_native_sdk_surface.py
+          python3 tools/check_third_party_notices.py
+          python3 tools/check_image_metadata.py
+      - name: Shell and Python syntax
+        run: |
+          find tools -type f -name '*.sh' -print0 | xargs -0 -n1 bash -n
+          python3 -m compileall -q tests tools
+      - name: Public shell tool syntax
+        run: python3 tools/check_shell_syntax.py --repo-root .
+      - name: Public documentation links
+        run: python3 tools/check_markdown_links.py --repo-root .
+      - name: Ignored-artifact hygiene
+        run: tools/ci/check_high_risk_ignored_artifacts.sh
+      - name: CI and WebGPU source contracts
+        run: |
+          python3 tests/check_ci_contract.py
+          python3 tests/check_release_ready_web_provenance.py
+          python3 tests/check_release_local_only_surface.py
+          python3 tests/check_address_domains.py
+          python3 tests/check_webgpu_fault_matrix.py
+          python3 tests/test_public_surface.py
+
+  party_service:
+    name: Zero-cost Party and MatchRoom service
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.16.0"
+          cache: npm
+          cache-dependency-path: services/party/package-lock.json
+      - name: Install locked service dependencies
+        working-directory: services/party
+        run: npm ci --ignore-scripts
+      - name: Type, reducer, Durable Object, migration and abuse contracts
+        working-directory: services/party
+        run: npm run check
+      - name: Production-path signaling-loss canary smoke
+        run: python3 tests/check_party_experience_canary_smoke.py
+
+  native:
+    name: Native ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Linux WebGPU
+            os: ubuntu-latest
+            compiler: gcc
+            webgpu: "ON"
+            extra_flags: ""
+          - label: Linux OpenGL-only
+            os: ubuntu-latest
+            compiler: gcc
+            webgpu: "OFF"
+            extra_flags: ""
+          - label: macOS WebGPU warnings
+            os: macos-latest
+            compiler: clang
+            webgpu: "ON"
+            extra_flags: "-Wreturn-type -Wuninitialized -Wsometimes-uninitialized -Warray-bounds -Wshift-sign-overflow -Wshift-negative-value -Wnull-pointer-arithmetic"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dev libsdl2-dev pkg-config
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install pkg-config sdl2
+      - name: Configure
+        env:
+          CC: ${{ matrix.compiler }}
+        run: >-
+          cmake -S . -B build-ci
+          -DCMAKE_BUILD_TYPE=Release
+          -DMDKR_WEBGPU_BACKEND=${{ matrix.webgpu }}
+          -DMDKR_EXTRA_C_FLAGS="${{ matrix.extra_flags }}"
+      - name: Build
+        run: cmake --build build-ci --parallel 4
+      - name: ROM-free unit and format contracts
+        run: ctest --test-dir build-ci --output-on-failure -LE gpu
+
+  sanitizers:
+    name: Linux ROM-free ASan + UBSan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libgl1-mesa-dev libsdl2-dev pkg-config
+      - name: Configure
+        env:
+          CC: clang
+        run: >-
+          cmake -S . -B build-sanitize
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DMDKR_WEBGPU_BACKEND=OFF
+          -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+      - name: Build
+        run: cmake --build build-sanitize --parallel 4
+      - name: ROM-free sanitizer contracts
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --test-dir build-sanitize --output-on-failure -LE gpu
+      - name: WebGPU asynchronous callback ThreadSanitizer
+        run: |
+          clang -std=c11 -Wall -Wextra -Wpedantic -Werror \
+            -fsanitize=thread -g -pthread \
+            -Iplatform/fast3d \
+            tests/test_webgpu_callback_latch.c \
+            platform/fast3d/gfx_webgpu_callback_latch.c \
+            -o build-sanitize/webgpu_callback_latch_tsan
+          TSAN_OPTIONS=halt_on_error=1 \
+            build-sanitize/webgpu_callback_latch_tsan
+          clang -std=c11 -Wall -Wextra -Wpedantic -Werror \
+            -fsanitize=thread -g -pthread \
+            -Iplatform/fast3d \
+            tests/test_webgpu_async_request.c \
+            platform/fast3d/gfx_webgpu_async_request.c \
+            -o build-sanitize/webgpu_async_request_tsan
+          TSAN_OPTIONS=halt_on_error=1 \
+            build-sanitize/webgpu_async_request_tsan
+
+  web:
+    name: Linked wasm and browser save custody
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: mymindstorm/setup-emsdk@6ab9eb1bda2574c4ddb79809fc9247783eaf9021 # v14
+        with:
+          version: "4.0.10"
+      - name: Build linked browser artifacts
+        run: EMSDK_DIR="$EMSDK" tools/web/build_web.sh
+      - name: Linked wasm layout
+        run: python3 tests/check_wave_visible_table.py --wasm build-web/mdkr64_web.wasm
+      - name: ROM-free browser save custody
+        run: >-
+          python3 tests/check_browser_save_ui.py
+          --engine-dir dist/web
+          --shell-dir dist/web
+          --chrome google-chrome
+          --timeout 90
+      - name: Local-only publication boundary
+        run: |
+          set -euo pipefail
+          rm -rf publish-web-full publish-web
+          cp -a dist/web publish-web-full
+          tools/web/stamp_publish.sh \
+            --dir publish-web-full --stamp "${GITHUB_SHA::7}"
+          python3 tools/web/prepare_local_only_release.py \
+            --source publish-web-full --out publish-web
+          python3 tests/check_browser_local_only_release.py \
+            --shell-dir publish-web --chrome google-chrome --timeout 90
+          tools/check_no_rom.sh publish-web
+      - name: Shipped-artifact ROM guard
+        run: tools/check_no_rom.sh dist/web

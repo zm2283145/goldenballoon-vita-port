@@ -1,0 +1,252 @@
+# Windows EXECUTION validation lane.
+#
+# Adapted from mgb64's .github/workflows/windows-validate.yml. The credibility
+# gate that proves the Windows build RUNS, not just compiles. The local
+# cross-compile check (tools/mingw_cross_check.sh) proves compile+link from a
+# macOS/Linux host; this lane closes the "verified by execution" gap: it
+# builds mdkr64.exe on a real windows-latest kernel via MSYS2 (mirroring the
+# release.yml Windows job exactly), then EXERCISES it:
+#
+#   1. Import-table guard on real Windows — the libgcc_s_seh regression class
+#      (a non-self-contained exe that dies "DLL not found" on a player's PC) is
+#      caught here, on the actual toolchain, not on a player's machine.
+#   2. Headless execution smoke — drives the ROM-free surfaces (--help,
+#      --video-list; see platform/main_pc.c) with SDL dummy drivers. This
+#      exercises real Windows process startup and the video-config
+#      report/CLI-parsing logic on a real kernel. No ROM, no GPU.
+#   3. ROM-free CTest suite — the compiled C/C++ unit tests run as native
+#      Windows executables. correctness.yml already proves this same ctest
+#      suite is ROM-free and headless-safe on Linux/macOS runners (no Xvfb,
+#      no ROM); this step proves the same for Windows. mdkr64's CMakeLists.txt
+#      labels the display-dependent tests `gpu`, so this lane selects by that
+#      label (-LE gpu) and runs everything else, audio unit tests included:
+#      they use the SDL dummy audio driver and need no device.
+#   4. Exact portable packaging plus extracted startup from an unrelated CWD.
+#
+# This is deliberately not a publication lane. GitHub's windows-latest VM does
+# not promise a qualifying D3D12/Vulkan adapter or GL 3.3 context. Treating the
+# GPU-free surfaces above as a launcher-render substitute would recreate the
+# release-gate bug this audit is closing. Accordingly this workflow uploads no
+# executable or zip. Automatic publication remains disabled; a maintainer may
+# attach only an exact archive that separately passed real-hardware acceptance.
+#
+# Manual-only (workflow_dispatch), matching the repo's deliberate
+# no-auto-trigger posture for release/validation lanes (see release.yml,
+# macos-release.yml). A maintainer dispatches this and it should be GREEN
+# before a release cut. It needs no secrets and writes no repository state —
+# it only compiles and validates the ASSET-FREE source, consistent with the
+# bring-your-own-ROM provenance policy.
+#
+# tools/mingw_cross_check.sh and cmake/mingw-w64-x86_64.cmake (referenced by
+# path above) and macos/Scripts/verify_asset_free.sh (the last step) all
+# landed on `main` via their respective ports during the development of this
+# workflow.
+
+name: Windows validate (execution)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-validate:
+    name: Windows build + execute (windows-latest / MSYS2)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # Mirror release.yml's Windows toolchain EXACTLY (same UCRT64 msystem,
+      # same package set) so the build half is known-good by construction.
+      # UCRT64, not MINGW64 — see the release.yml comment: the msvcrt-linked
+      # MINGW64 flavor rejects fopen's 'x' flag and shipped as the withdrawn
+      # v1.2.1 settings-save regression (issue #32). The fs_utf8 ctest below
+      # pins exclusive create on the exact CRT this lane links.
+      # `python` is added for the asset-free verifier and Python CTests; `git`
+      # is added for the public-surface tests' isolated-repository fixtures.
+      - uses: msys2/setup-msys2@d40200dc2db4c351366b048a9565ad82919e1c24 # v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-SDL2 mingw-w64-ucrt-x86_64-pkg-config
+            mingw-w64-ucrt-x86_64-ninja zip unzip python git
+
+      # Same CMake config as the release.yml Windows job, plus BUILD_TESTING
+      # (ON by default via include(CTest) in CMakeLists.txt) so the ROM-free
+      # CTest unit exes are produced alongside mdkr64.exe. No --target filter:
+      # the default build target builds mdkr64 plus every ctest executable.
+      #
+      # MDKR_PARTY_ORIGIN is threaded through for the same reason: this lane
+      # exists to mirror the release.yml Windows job, and a mirror that omits a
+      # compiled-in build parameter stops mirroring the artifact. There is no
+      # origin GATE here, deliberately -- this lane publishes nothing, so it
+      # must stay runnable on a fork or a repository with no variables set, and
+      # an empty origin is a legal (party-free) build.
+      - name: Build the app + ROM-free test exes (Release)
+        env:
+          PARTY_ORIGIN: ${{ vars.MDKR_PARTY_ORIGIN }}
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DMDKR_PARTY_ORIGIN="$PARTY_ORIGIN"
+          cmake --build build -j
+          test -f build/mdkr64.exe || { echo "FAIL: build/mdkr64.exe missing"; exit 1; }
+          file build/mdkr64.exe
+
+      # Import-table guard (the same check tools/mingw_cross_check.sh runs, here on
+      # the REAL Windows toolchain's objdump). The exe must import only Windows
+      # COMDLG32.dll is on the list deliberately: the app shell's ROM picker uses
+      # GetOpenFileNameW (platform/app/file_dialog_win.cpp) so the player can
+      # select their own file without the launcher enumerating any directory.
+      # It is a stock Windows system DLL, present on every install.
+      # SDL2, libgcc, libstdc++, and winpthread are static. The shared import
+      # guard permits only stock Windows DLLs (including wgpu-native's
+      # D3D12/DXGI/BCRYPT family) and rejects an SDL2/toolchain DLL regression.
+      - name: Import-table guard (self-contained on stock Windows)
+        run: ./tools/check_windows_imports.sh build/mdkr64.exe
+
+      # Headless EXECUTION smoke: prove the exe RUNS on a real kernel without a
+      # ROM. SDL dummy drivers so no display/GPU is required. Each command must
+      # exit 0 and print its expected marker. mdkr64 fails fast without a ROM
+      # (platform/main_pc.c), so --help and --video-list are the only two
+      # execution paths that return before ROM/window/audio initialization --
+      # this exercises process startup + CRT + static runtimes and the
+      # video-config CLI/report logic on a real kernel.
+      - name: Headless execution smoke (ROM-free surfaces)
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_AUDIODRIVER: dummy
+        run: |
+          set -e
+          echo "--- (a) --help ---"
+          ./build/mdkr64.exe --help > help.txt 2>help.err
+          cat help.txt
+          grep -q '^Usage: ' help.txt
+
+          echo "--- (b) --video-list (resolved video config report) ---"
+          ./build/mdkr64.exe --video-list > video.txt 2>video.err
+          cat video.txt
+          grep -qE '^\[video\] mode=' video.txt
+
+          echo "PASS: all ROM-free execution surfaces ran and produced expected output."
+
+      # ROM-free CTest suite: the compiled C/C++ unit tests, run as native
+      # Windows exes. correctness.yml runs this identical suite on Linux and
+      # macOS runners with no Xvfb and no ROM, so it is proven ROM-free and
+      # headless-safe by construction; this proves the same on Windows.
+      # GPU-labelled tests need a real display and are exercised by packaged
+      # release lanes. Nothing else is excluded: the audio and mixer tests are
+      # the ones most likely to expose a Windows CRT/toolchain difference, so
+      # skipping them by name was removing this lane's best signal.
+      - name: ROM-free CTest suite
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_AUDIODRIVER: dummy
+        run: |
+          ctest --test-dir build --output-on-failure -LE gpu
+
+      # Authoritative proof of the issue #33 fix on the actual failing platform:
+      # a Windows home path whose account name contains non-ASCII characters
+      # means %APPDATA%\mdkr64\mdkr64\ cannot be written, so settings are lost.
+      # The owner-approved fix is a portable.txt marker beside the executable
+      # that relocates config/save/mods next to the exe (a UTF-8-safe,
+      # user-chosen directory), sidestepping the home path entirely. This step
+      # reproduces the non-ASCII directory the reporter hit, drives a real
+      # launcher-persist config write, and proves the settings file is written
+      # to -- and reads back from -- that non-ASCII path. It mirrors how the #32
+      # fs_utf8 exclusive-create fix is validated on this same UCRT64 lane.
+      - name: Portable config write from a non-ASCII path (issue #33)
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_AUDIODRIVER: dummy
+        run: |
+          set -euo pipefail
+          # A directory whose name is deliberately non-ASCII (Cyrillic + CJK),
+          # standing in for a Windows profile like C:\Users\Пользователь. Kept
+          # under RUNNER_TEMP so it never touches the checkout.
+          install="$RUNNER_TEMP/Пользователь-游戏/GoldenBalloon"
+          workdir="$RUNNER_TEMP/unrelated-portable-cwd"
+          mkdir -p "$install" "$workdir"
+          cp build/mdkr64.exe "$install/mdkr64.exe"
+          printf 'portable\n' > "$install/portable.txt"
+
+          # Persist a launcher choice, then exit through --video-list. The write
+          # target is resolved from the executable's own directory (portable
+          # mode), NOT from %APPDATA% and NOT from the working directory.
+          ( cd "$workdir" && "$install/mdkr64.exe" \
+              --video-launch-persist --video-launch-mode remastered --video-list \
+              > "$RUNNER_TEMP/portable-write.out" 2>&1 )
+          cat "$RUNNER_TEMP/portable-write.out"
+
+          test -f "$install/mdkr64.ini" \
+            || { echo "FAIL: mdkr64.ini was not written next to the binary on the non-ASCII path"; exit 1; }
+          test ! -f "$workdir/mdkr64.ini" \
+            || { echo "FAIL: portable mode leaked mdkr64.ini into the working directory"; exit 1; }
+
+          # Read it back: a fresh run must resolve the persisted config FROM the
+          # non-ASCII path and report the mode that was saved.
+          ( cd "$install" && "$install/mdkr64.exe" --video-list \
+              > "$RUNNER_TEMP/portable-read.out" 2>&1 )
+          cat "$RUNNER_TEMP/portable-read.out"
+          grep -qx '[video] mode=remastered' "$RUNNER_TEMP/portable-read.out" \
+            || { echo "FAIL: persisted mode did not read back from the non-ASCII path"; exit 1; }
+          grep -q 'mdkr64.ini' "$RUNNER_TEMP/portable-read.out" \
+            || { echo "FAIL: read-back did not cite the on-disk config as its source"; exit 1; }
+          echo "PASS: settings written and read back from a non-ASCII path via portable.txt."
+
+      # Asset-free verify (mirror the release job's post-build check): the binary
+      # must contain no ROM-derived copyrighted data. MSYS2 `nm` reads the PE and
+      # the ROM-magic byte scan is portable Python.
+      - name: Verify asset-free
+        run: ./macos/Scripts/verify_asset_free.sh build/mdkr64.exe
+
+      # The extraction directory deliberately contains a space. A player's does
+      # (C:\Program Files\..., C:\Users\First Last\...), and the Windows CRT
+      # joins an argument vector into a command line without quoting it, so a
+      # space is the difference between a process replacement that reopens the
+      # launcher and one that starts headless and looks like a crash. The
+      # relaunch itself needs a GPU launcher and stays out of this lane; the
+      # quoting rule it depends on is asserted by the app_lifecycle CTest
+      # above, which runs on this real Windows kernel.
+      - name: Package and verify extracted startup (not published)
+        env:
+          PARTY_ORIGIN: ${{ vars.MDKR_PARTY_ORIGIN }}
+        run: |
+          set -euo pipefail
+          ./tools/package_windows_zip.sh --binary build/mdkr64.exe --version dev
+          expected_version="$(./build/mdkr64.exe --version | tr -d '\r')"
+          package_root="$RUNNER_TEMP/windows package with spaces"
+          unrelated="$RUNNER_TEMP/unrelated-launch-cwd"
+          mkdir -p "$package_root" "$unrelated"
+          unzip -q dist/Golden-Balloon-dev-windows-x64.zip -d "$package_root"
+          executable="$package_root/GoldenBalloon/GoldenBalloon.exe"
+          (
+            cd "$unrelated"
+            version_output="$("$executable" --version | tr -d '\r')"
+            test "$version_output" = "$expected_version"
+            "$executable" --help > help.txt
+            grep -q '^Usage: ' help.txt
+          )
+          # Partyful builds prove that the packaged .exe carries the configured
+          # cloud surface. An empty origin is a deliberate partyless mirror.
+          if [[ -n "${PARTY_ORIGIN:-}" ]]; then
+            python3 tests/check_party_binary_surface.py "$executable" \
+              --expect-origin "$PARTY_ORIGIN"
+          else
+            echo "Partyless build: packaged Phone Party surface assertion is intentionally absent."
+          fi
+          # This lane does not pass -DMDKR_VERSION, so the bound version is
+          # whatever the packaged launcher reports, not a workflow input.
+          built_version="${expected_version#mdkr64 }"
+          MDKR_PARTY_BRINGUP_VERSION="$built_version" \
+            ./build/mdkr_native_party_bringup_test.exe \
+            | tee "$RUNNER_TEMP/party-bringup-package.txt"
+          grep -qE "^\[party-bringup\] version=${built_version} .* ok=1\$" \
+            "$RUNNER_TEMP/party-bringup-package.txt"
+          echo "Windows artifact not uploaded: hosted GPU launcher qualification is unavailable."

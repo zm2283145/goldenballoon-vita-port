@@ -1,0 +1,409 @@
+# Manual, asset-free macOS release pipeline. The default patch-release path
+# produces an ad-hoc integrity-sealed (not Developer ID signed or notarized)
+# Apple-silicon DMG. The protected credentialed path remains available when
+# explicitly requested. No ROM or ROM-derived asset is accepted.
+
+name: macOS release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Bundle version, without a v prefix (for example 1.0.5)"
+        required: true
+        default: "1.6.0"
+      trusted_signing:
+        description: "Developer ID sign and notarize (requires protected credentials)"
+        required: false
+        type: boolean
+        default: false
+      release_tag:
+        description: "Optional v<version> release tag; must resolve to this workflow commit"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-release
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Build and package macOS
+    runs-on: macos-14
+    timeout-minutes: 45
+    environment: macos-release
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate release inputs
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          TRUSTED_SIGNING: ${{ inputs.trusted_signing }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]] || {
+            echo "version must look like 1.0 or 1.0.4 (no v prefix)" >&2
+            exit 1
+          }
+          if [[ "$TRUSTED_SIGNING" == "true" && -n "$RELEASE_TAG" ]]; then
+            echo "trusted signing artifacts cannot be published until the documented post-sign LaunchServices/WebGPU runtime gate is automated" >&2
+            exit 1
+          fi
+          if [[ -n "$RELEASE_TAG" ]]; then
+            EXPECTED_RELEASE_TAG="v${RELEASE_VERSION}"
+            [[ "$RELEASE_TAG" == "$EXPECTED_RELEASE_TAG" ]] || {
+              echo "release_tag must exactly equal $EXPECTED_RELEASE_TAG" >&2
+              exit 1
+            }
+            TAG_COMMIT="$(git rev-parse --verify "${RELEASE_TAG}^{commit}")"
+            [[ "$TAG_COMMIT" == "$GITHUB_SHA" ]] || {
+              echo "release_tag resolves to $TAG_COMMIT, not $GITHUB_SHA" >&2
+              exit 1
+            }
+          fi
+
+      # Phone Party origin gate, before anything is built. MDKR_PARTY_ORIGIN is
+      # COMPILED INTO the launcher (CMakeLists.txt) and a build without it
+      # shows no Phone Party surface at all, so an unset origin ships a bundle
+      # that silently does not have the feature. Fail closed: either a valid
+      # deployed origin is configured, or a partyless release is declared on
+      # purpose and said out loud in the log. Kept byte-identical in intent to
+      # the same gate in release.yml's validate job.
+      - id: party
+        name: Resolve and gate the compiled Phone Party origin
+        env:
+          PARTY_ORIGIN: ${{ vars.MDKR_PARTY_ORIGIN }}
+          ALLOW_PARTYLESS: ${{ vars.MDKR_ALLOW_PARTYLESS_RELEASE }}
+        run: |
+          set -euo pipefail
+          origin="${PARTY_ORIGIN:-}"
+          allow="${ALLOW_PARTYLESS:-}"
+          if [[ -n "$origin" ]]; then
+            # Exactly https://HOST[:PORT]. A trailing slash, path, query,
+            # fragment or embedded credentials all change the URL the phone
+            # dials, and the service compares origins byte for byte.
+            if [[ ! "$origin" =~ ^https://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?$ ]]; then
+              echo "::error::vars.MDKR_PARTY_ORIGIN must be exactly https://HOST[:PORT] with no trailing slash, path, query, fragment or credentials (got '$origin')"
+              exit 1
+            fi
+            host="${origin#https://}"
+            host="$(printf '%s' "${host%%:*}" | tr '[:upper:]' '[:lower:]')"
+            case "$host" in
+              localhost|*.invalid|*.example|example.com|example.net|example.org|*.example.com|*.example.net|*.example.org)
+                echo "::error::vars.MDKR_PARTY_ORIGIN is a reserved placeholder host ('$host'); a release must be built against the deployed Phone Party service"
+                exit 1
+                ;;
+            esac
+            echo "Phone Party origin compiled into this release: $origin"
+          elif [[ "$allow" == "1" ]]; then
+            echo "::warning::PARTYLESS RELEASE: this bundle ships with Phone Party absent"
+            echo "=============================================================="
+            echo "PARTYLESS RELEASE (vars.MDKR_ALLOW_PARTYLESS_RELEASE=1)"
+            echo "This bundle ships with Phone Party UNAVAILABLE. With no"
+            echo "compiled origin the launcher shows no Phone Party surface at"
+            echo "all -- players get a build that does not have the feature."
+            echo "To ship a working Phone Party, set the repository variable"
+            echo "MDKR_PARTY_ORIGIN to the deployed https:// origin and re-run."
+            echo "=============================================================="
+          else
+            echo "::error::No Phone Party origin for this release: this bundle would ship with Phone Party absent (an origin-less build shows no Phone Party surface at all). Set the repository variable MDKR_PARTY_ORIGIN to the deployed https:// origin, or set MDKR_ALLOW_PARTYLESS_RELEASE=1 to ship deliberately without Phone Party."
+            exit 1
+          fi
+          echo "party_origin=$origin" >> "$GITHUB_OUTPUT"
+
+      - name: Install build tools
+        run: brew install cmake pkg-config
+
+      - name: Build pinned standalone SDL2 for macOS 13
+        run: |
+          source ./macos/Scripts/release_sdl2_config.sh
+          SDL_WORK_DIR="$RUNNER_TEMP/sdl2-${MDKR_RELEASE_SDL2_VERSION}"
+          ./macos/Scripts/build_release_sdl2.sh \
+            --work-dir "$SDL_WORK_DIR" \
+            --prefix "$SDL_WORK_DIR/install" \
+            --arch arm64 \
+            --deployment-target 13.0
+          printf 'MDKR_RELEASE_SDL2_PREFIX=%s\n' \
+            "$SDL_WORK_DIR/install" >> "$GITHUB_ENV"
+
+      - name: Build self-contained ad-hoc integrity bundle
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          # Gated above: either a valid deployed https:// origin or,
+          # deliberately and loudly, empty. Empty stays legal (that is the
+          # partyless path), so it must not be defaulted to anything here.
+          PARTY_ORIGIN: ${{ steps.party.outputs.party_origin }}
+        run: |
+          : "${MDKR_RELEASE_SDL2_PREFIX:?pinned SDL2 prefix was not exported}"
+          export PKG_CONFIG_PATH="${MDKR_RELEASE_SDL2_PREFIX}/lib/pkgconfig"
+          ./macos/Scripts/build_app_bundle.sh \
+            --release \
+            --party-origin "$PARTY_ORIGIN" \
+            --build-dir build-macos-release \
+            --output "dist/Golden Balloon.app" \
+            --arch arm64 \
+            --version "$RELEASE_VERSION" \
+            --build-stamp "$GITHUB_SHA" \
+            --deployment-target 13.0 \
+            --strict-deployment-target \
+            --bundle-sdl2
+          ./macos/Scripts/verify_asset_free.sh "dist/Golden Balloon.app"
+          ./macos/Scripts/verify_gatekeeper_bundle.sh "dist/Golden Balloon.app"
+          ./macos/Scripts/verify_unsigned_release.sh \
+            --version "$RELEASE_VERSION" --commit "$GITHUB_SHA" \
+            "dist/Golden Balloon.app"
+
+      # Qualify the packaged app's Phone Party host without a GPU, a window, a
+      # network or a ROM. The smoke executable is built from build-macos-release
+      # -- the same configured tree, flags and version the shipped bundle came
+      # from -- so no second configure is needed and the evidence belongs to
+      # this artifact. Honest limits: this proves the host's pairing surface
+      # (secure-origin bootstrap, invite URL + six-digit code, QR encoding,
+      # pairing phrase, fail-closed on a missing/insecure origin) and that the
+      # bundle links the native WSS/WebRTC transport. It does not prove that a
+      # bootstrap listener is up, and it does not witness the launcher's own
+      # drawn party surface: the MDKR_APP_PARTY_TRACE seam that Linux uses for
+      # that (platform/app/ui_phone_party.cpp) needs a real AppHost launch, and
+      # this lane never starts one -- there is no xvfb equivalent here and the
+      # hosted macOS runner's window/GPU behaviour is not qualified.
+      # The origin gate at the top of this job records whether this bundle is
+      # deliberately partyful or partyless, and --party-origin threads that
+      # decision into the build. The drawn-surface witness runs on the Linux
+      # lane with the same resolved origin.
+      - name: Phone Party bring-up smoke and packaged version stamp
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          PARTY_ORIGIN: ${{ steps.party.outputs.party_origin }}
+        run: |
+          set -euo pipefail
+          app="dist/Golden Balloon.app"
+          executable="$app/Contents/MacOS/mdkr64"
+          plist_version="$(/usr/libexec/PlistBuddy -c \
+            'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
+          test "$plist_version" = "$RELEASE_VERSION"
+          bundle_version="$("$executable" --version | tr -d '\r')"
+          test "$bundle_version" = "mdkr64 $RELEASE_VERSION"
+          if [[ -n "${PARTY_ORIGIN:-}" ]]; then
+            python3 tests/check_party_binary_surface.py "$app" \
+              --expect-origin "$PARTY_ORIGIN"
+          else
+            echo "Partyless build: packaged Phone Party surface assertion is intentionally absent."
+          fi
+          cmake --build build-macos-release \
+            --target mdkr_native_party_bringup_test \
+                     mdkr_native_party_host_test \
+                     mdkr_native_party_qr_test \
+                     mdkr_native_party_sas_test \
+            --parallel "$(sysctl -n hw.ncpu)"
+          ctest --test-dir build-macos-release --output-on-failure \
+            --no-tests=error \
+            -R '^(native_party_bringup|native_party_host|native_party_qr|native_party_sas)$'
+          # Stamp the smoke record with the version read back out of the
+          # packaged bundle, binding the evidence to the shipped artifact.
+          MDKR_PARTY_BRINGUP_VERSION="${bundle_version#mdkr64 }" \
+            ./build-macos-release/mdkr_native_party_bringup_test \
+            | tee "$RUNNER_TEMP/party-bringup-macos.txt"
+          grep -qE "^\[party-bringup\] version=${RELEASE_VERSION} .* ok=1\$" \
+            "$RUNNER_TEMP/party-bringup-macos.txt"
+
+      - name: Import certificate, sign, notarize, and build final DMG
+        if: ${{ inputs.trusted_signing }}
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          DEVELOPER_ID_APPLICATION: ${{ vars.DEVELOPER_ID_APPLICATION }}
+          APPLE_API_PRIVATE_KEY_BASE64: ${{ secrets.APPLE_API_PRIVATE_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          : "${MACOS_CERTIFICATE_P12_BASE64:?missing repository secret}"
+          : "${MACOS_CERTIFICATE_PASSWORD:?missing repository secret}"
+          : "${DEVELOPER_ID_APPLICATION:?missing repository variable}"
+          : "${APPLE_API_PRIVATE_KEY_BASE64:?missing repository secret}"
+          : "${APPLE_API_KEY_ID:?missing repository secret}"
+          : "${APPLE_API_ISSUER_ID:?missing repository secret}"
+
+          KEYCHAIN_PATH="$RUNNER_TEMP/mdkr-release.keychain-db"
+          CERTIFICATE_PATH="$RUNNER_TEMP/developer-id.p12"
+          APPLE_API_KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          export APPLE_API_KEY_PATH
+
+          cleanup() {
+            security delete-keychain "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
+            rm -f "$CERTIFICATE_PATH" "$APPLE_API_KEY_PATH"
+          }
+          trap cleanup EXIT
+
+          python3 - "$CERTIFICATE_PATH" "$APPLE_API_KEY_PATH" <<'PY'
+          import base64
+          import os
+          import sys
+
+          for variable, path in (
+              ("MACOS_CERTIFICATE_P12_BASE64", sys.argv[1]),
+              ("APPLE_API_PRIVATE_KEY_BASE64", sys.argv[2]),
+          ):
+              with open(path, "wb") as output:
+                  output.write(base64.b64decode(os.environ[variable], validate=True))
+          PY
+          chmod 600 "$CERTIFICATE_PATH" "$APPLE_API_KEY_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -k "$KEYCHAIN_PATH" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign \
+            -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+
+          ./macos/Scripts/sign_and_notarize.sh "dist/Golden Balloon.app"
+          ./macos/Scripts/verify_gatekeeper_bundle.sh \
+            --distribution "dist/Golden Balloon.app"
+
+          DMG_PATH="dist/Golden-Balloon-${RELEASE_VERSION}-macos-arm64-signed-notarized.dmg"
+          ./macos/Scripts/create_dmg.sh "dist/Golden Balloon.app" "$DMG_PATH"
+          codesign --force --sign "$DEVELOPER_ID_APPLICATION" \
+            --timestamp "$DMG_PATH"
+          ./macos/Scripts/notarize_artifact.sh "$DMG_PATH"
+          hdiutil verify "$DMG_PATH"
+
+          ./macos/Scripts/stamp_macos_provenance.sh \
+            --signing developer-id-notarized "$DMG_PATH" "$RELEASE_VERSION"
+          DMG_DIR="$(dirname "$DMG_PATH")"
+          DMG_NAME="$(basename "$DMG_PATH")"
+          (
+            cd "$DMG_DIR"
+            shasum -a 256 "$DMG_NAME" > "$DMG_NAME.sha256"
+          )
+
+      - name: Build intentionally unsigned patch-release DMG
+        if: ${{ !inputs.trusted_signing }}
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          DMG_PATH="dist/Golden-Balloon-${RELEASE_VERSION}-macos-arm64-unsigned.dmg"
+          ./macos/Scripts/create_dmg.sh "dist/Golden Balloon.app" "$DMG_PATH"
+          ./macos/Scripts/verify_unsigned_dmg.sh \
+            --version "$RELEASE_VERSION" --commit "$GITHUB_SHA" "$DMG_PATH"
+          ./macos/Scripts/stamp_macos_provenance.sh \
+            --signing ad-hoc-unsigned "$DMG_PATH" "$RELEASE_VERSION"
+          DMG_DIR="$(dirname "$DMG_PATH")"
+          DMG_NAME="$(basename "$DMG_PATH")"
+          (
+            cd "$DMG_DIR"
+            shasum -a 256 "$DMG_NAME" > "$DMG_NAME.sha256"
+          )
+          echo "::notice::This artifact is ad-hoc integrity sealed but intentionally not Developer ID signed or notarized. Users should expect macOS's unidentified-developer warning, never a damaged-app error."
+
+      # Fail closed between stamping and upload, through the same verifier the
+      # publish job re-runs on the downloaded artifact.
+      - name: Verify provenance of the packaged DMG before upload
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          EXPECTED_SIGNING: ${{ inputs.trusted_signing && 'developer-id-notarized' || 'ad-hoc-unsigned' }}
+        run: |
+          set -euo pipefail
+          ./tools/release/verify_provenance.sh \
+            --dist dist \
+            --version "$RELEASE_VERSION" \
+            --commit "$GITHUB_SHA" \
+            --require platform=macos \
+            --require "macos_signing=$EXPECTED_SIGNING"
+
+      - name: Upload macOS workflow artifact
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4
+        with:
+          name: Golden-Balloon-${{ inputs.version }}-macos-arm64-${{ inputs.trusted_signing && 'signed-notarized' || 'unsigned' }}
+          path: |
+            dist/Golden-Balloon-${{ inputs.version }}-macos-arm64-*.dmg
+            dist/Golden-Balloon-${{ inputs.version }}-macos-arm64-*.dmg.sha256
+            dist/Golden-Balloon-${{ inputs.version }}-macos-arm64-*.dmg.provenance.json
+          if-no-files-found: error
+
+  publish:
+    name: Publish macOS artifact
+    # The unsigned patch path has a post-seal LaunchServices/WebGPU runtime
+    # gate. Keep trusted artifacts upload-only until the equivalent post-sign,
+    # post-staple gate is automated; documentation alone must not authorize a
+    # public upload.
+    if: ${{ inputs.release_tag != '' && !inputs.trusted_signing }}
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # The publish job is the step that writes to a public release, so it is the
+    # one that must carry the protected environment's reviewers and rules. The
+    # build job keeps it as well: the trusted-signing path reads Developer ID
+    # and notarization credentials scoped to that environment.
+    environment: macos-release
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout provenance tooling
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Download macOS workflow artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: Golden-Balloon-${{ inputs.version }}-macos-arm64-${{ inputs.trusted_signing && 'signed-notarized' || 'unsigned' }}
+          path: dist
+
+      - name: Revalidate artifact identity and publish to existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          SOURCE_COMMIT: ${{ github.sha }}
+          TRUSTED_SIGNING: ${{ inputs.trusted_signing }}
+        run: |
+          set -euo pipefail
+          EXPECTED_RELEASE_TAG="v${RELEASE_VERSION}"
+          [[ "$RELEASE_TAG" == "$EXPECTED_RELEASE_TAG" ]] || {
+            echo "release_tag must exactly equal $EXPECTED_RELEASE_TAG" >&2
+            exit 1
+          }
+          TAG_COMMIT="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_TAG}" --jq '.sha')"
+          [[ "$TAG_COMMIT" == "$SOURCE_COMMIT" ]] || {
+            echo "release_tag resolves to $TAG_COMMIT, not $SOURCE_COMMIT" >&2
+            exit 1
+          }
+          [[ "$TRUSTED_SIGNING" == "false" ]] || {
+            echo "trusted macOS publication is disabled until post-sign runtime qualification is automated" >&2
+            exit 1
+          }
+          DMG_PATH="dist/Golden-Balloon-${RELEASE_VERSION}-macos-arm64-unsigned.dmg"
+          DMG_DIR="$(dirname "$DMG_PATH")"
+          DMG_NAME="$(basename "$DMG_PATH")"
+          (
+            cd "$DMG_DIR"
+            shasum -a 256 -c "$DMG_NAME.sha256"
+          )
+          # One provenance implementation for every lane: the shared verifier
+          # asserts artifact/digest/version/commit and a clean source tree, and
+          # --require adds this lane's macOS-specific sidecar fields.
+          ./tools/release/verify_provenance.sh \
+            --dist "$DMG_DIR" \
+            --version "$RELEASE_VERSION" \
+            --commit "$SOURCE_COMMIT" \
+            --require platform=macos \
+            --require macos_signing=ad-hoc-unsigned
+          gh release view "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" >/dev/null
+          gh release upload "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            "$DMG_PATH" "${DMG_PATH}.sha256" "${DMG_PATH}.provenance.json"

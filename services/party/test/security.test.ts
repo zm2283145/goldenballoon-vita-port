@@ -1,0 +1,198 @@
+import {env} from "cloudflare:workers";
+import {describe, expect, it} from "vitest";
+import {allowedOrigin, boundCredential, fallbackCode, normalizeName, readJson,
+  readRequestBytes, utf8Exceeds,
+  validBoundCredential, validPartyOrigin} from "../src/security";
+import type {Env} from "../src/types";
+
+describe("room-bound credentials", () => {
+  const jsonHeaders = {"content-type": "application/json"};
+
+  it("normalizes controller names without visual-order controls", () => {
+    expect(normalizeName(`  ${"\u202e".repeat(30)}Sam\u2066's phone  `))
+      .toBe("Sam's phone");
+    expect([...normalizeName("x".repeat(30))]).toHaveLength(24);
+  });
+
+  it("caps normalized names at the 48-byte wire bound every host enforces", () => {
+    // 24 code points of four-byte emoji is 96 UTF-8 bytes — legal under the
+    // old code-point-only cap, but over the 48-byte name bound the native
+    // host (native_party_host.cpp kMaxName), the browser host
+    // (validControllerName) and the transports (safeString(...,48)) all
+    // refuse. A worker-legal name must never be host-refused: the byte cap
+    // trims whole code points from the end, never splitting a sequence.
+    const balloons = normalizeName("🎈".repeat(30));
+    expect(new TextEncoder().encode(balloons).byteLength).toBeLessThanOrEqual(48);
+    expect([...balloons]).toHaveLength(12);
+    // A name already under both bounds is untouched.
+    expect(normalizeName("Sam's phone")).toBe("Sam's phone");
+    // Mixed widths trim to the last whole code point that still fits.
+    const mixed = normalizeName("ab" + "🎈".repeat(24));
+    expect(new TextEncoder().encode(mixed).byteLength).toBeLessThanOrEqual(48);
+    expect(mixed).toBe("ab" + "🎈".repeat(11));
+  });
+
+  it("accepts only a canonical HTTPS or loopback Party origin", () => {
+    for (const origin of [
+      "https://party.example.test",
+      "https://party.example.test:8443",
+      "http://localhost:8787",
+      "http://phone.localhost:8787",
+      "http://127.0.0.1:8787",
+      "http://[::1]:8787",
+    ]) expect(validPartyOrigin(origin)).toBe(true);
+    for (const origin of [
+      "http://party.example.test",
+      "https://party.example.test/",
+      "https://party.example.test/controller/",
+      "https://party.example.test?preview=1",
+      "https://party.example.test#fragment",
+      "https://user@party.example.test",
+      "//party.example.test",
+      "javascript:alert(1)",
+      "",
+    ]) expect(validPartyOrigin(origin)).toBe(false);
+    const bindings = {PARTY_ORIGIN: "https://party.example.test"} as Env;
+    expect(allowedOrigin(new Request("https://worker.test", {
+      headers: {origin: bindings.PARTY_ORIGIN},
+    }), bindings)).toBe(true);
+    bindings.PARTY_ORIGIN = "https://party.example.test/";
+    expect(allowedOrigin(new Request("https://worker.test", {
+      headers: {origin: bindings.PARTY_ORIGIN},
+    }), bindings)).toBe(false);
+  });
+
+  it("keeps the 43-character wire shape while binding role and room", async () => {
+    const bindings = env as unknown as Env;
+    const first = await boundCredential(bindings, "host", "room-one");
+    const second = await boundCredential(bindings, "host", "room-one");
+    expect(first).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(second).not.toBe(first);
+    expect(await validBoundCredential(bindings, "host", "room-one", first))
+      .toBe(true);
+    expect(await validBoundCredential(bindings, "controller", "room-one", first))
+      .toBe(false);
+    expect(await validBoundCredential(bindings, "host", "room-two", first))
+      .toBe(false);
+    const changed = `${first.slice(0, -1)}${first.endsWith("A") ? "B" : "A"}`;
+    expect(await validBoundCredential(bindings, "host", "room-one", changed))
+      .toBe(false);
+  });
+
+  it("bounds UTF-8 wire length without confusing code units and bytes", () => {
+    expect(utf8Exceeds("a".repeat(4096), 4096)).toBe(false);
+    expect(utf8Exceeds("a".repeat(4097), 4096)).toBe(true);
+    expect(utf8Exceeds("é".repeat(2048), 4096)).toBe(false);
+    expect(utf8Exceeds("é".repeat(2049), 4096)).toBe(true);
+    expect(utf8Exceeds("😀".repeat(1024), 4096)).toBe(false);
+    expect(utf8Exceeds("😀".repeat(1025), 4096)).toBe(true);
+    expect(utf8Exceeds("\ud800", 2)).toBe(true);
+    expect(utf8Exceeds("\ud800", 3)).toBe(false);
+  });
+
+  it("admits only object-shaped JSON protocol messages", async () => {
+    await expect(readJson<Record<string, unknown>>(new Request("https://test/", {
+      method: "POST", headers: jsonHeaders, body: "{\"protocolVersion\":1}",
+    }))).resolves.toEqual({protocolVersion: 1});
+    for (const body of ["null", "[]", "1", "\"text\"", "not-json"]) {
+      try {
+        await readJson(new Request("https://test/", {
+          method: "POST", headers: jsonHeaders, body,
+        }));
+        throw new Error(`unexpectedly accepted ${body}`);
+      } catch (error) {
+        expect(error).toBeInstanceOf(Response);
+        expect((error as Response).status).toBe(400);
+        expect(await (error as Response).text()).toBe("invalid_json");
+      }
+    }
+  });
+
+  it("cancels chunked overflow before aggregate allocation", async () => {
+    const request = new Request("https://test/", {method: "POST",
+      body: new Uint8Array(17)});
+    try {
+      await readRequestBytes(request, 16);
+      throw new Error("unexpectedly accepted oversized chunked body");
+    } catch (error) {
+      expect(error).toBeInstanceOf(Response);
+      expect((error as Response).status).toBe(413);
+      expect(await (error as Response).text()).toBe("request_too_large");
+    }
+  });
+
+  it("rejects malformed UTF-8 instead of decoding replacement text", async () => {
+    const bytes = new Uint8Array([
+      0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xff, 0x22, 0x7d,
+    ]);
+    try {
+      await readJson(new Request("https://test/", {
+        method: "POST", headers: jsonHeaders, body: bytes,
+      }));
+      throw new Error("unexpectedly accepted invalid UTF-8");
+    } catch (error) {
+      expect(error).toBeInstanceOf(Response);
+      expect((error as Response).status).toBe(400);
+      expect(await (error as Response).text()).toBe("invalid_json");
+    }
+  });
+
+  it("rejects JSON bodies without the JSON media type before parsing", async () => {
+    for (const contentType of [null, "text/plain", "application/jsonp"]) {
+      const headers = new Headers();
+      if (contentType) headers.set("content-type", contentType);
+      try {
+        await readJson(new Request("https://test/", {
+          method: "POST", headers, body: "{}",
+        }));
+        throw new Error(`unexpectedly accepted ${contentType || "missing type"}`);
+      } catch (error) {
+        expect(error).toBeInstanceOf(Response);
+        expect((error as Response).status).toBe(415);
+        expect(await (error as Response).text()).toBe("unsupported_media_type");
+      }
+    }
+  });
+});
+
+describe("fallback code sampling", () => {
+  /* 4_294_000_000 is the largest multiple of 1_000_000 that fits in a
+   * Uint32Array slot. A plain modulo folds the 967_296 values above it back
+   * onto codes 000000-967295, making those codes ~0.02% likelier; the sampler
+   * must reroll every draw at or beyond the bound instead. */
+  const bound = 4_294_000_000;
+
+  function feeding(values: number[]): {draws: () => number; taken: () => number} {
+    let index = 0;
+    return {
+      draws: () => {
+        if (index >= values.length) throw new Error("sampler drew past the feed");
+        return values[index++]!;
+      },
+      taken: () => index,
+    };
+  }
+
+  it("rerolls every draw at or above the rejection bound", () => {
+    const feed = feeding([bound, 4_294_967_295, 4_293_123_456]);
+    expect(fallbackCode(feed.draws)).toBe("123456");
+    expect(feed.taken()).toBe(3);
+  });
+
+  it("keeps the draw just below the bound without rerolling", () => {
+    const feed = feeding([bound - 1]);
+    expect(fallbackCode(feed.draws)).toBe("999999");
+    expect(feed.taken()).toBe(1);
+  });
+
+  it("zero-pads small draws to exactly six digits", () => {
+    expect(fallbackCode(() => 0)).toBe("000000");
+    expect(fallbackCode(() => 1_000_007)).toBe("000007");
+  });
+
+  it("draws six decimal digits from the default RNG", () => {
+    for (let round = 0; round < 64; round++) {
+      expect(fallbackCode()).toMatch(/^\d{6}$/);
+    }
+  });
+});

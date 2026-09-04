@@ -1,0 +1,467 @@
+#include "video.h"
+#include "video_mode_table.h"
+#include "memory.h"
+#include "PRinternal/viint.h"
+#include "types.h"
+#ifdef NATIVE_PORT
+#include "platform_os.h"
+#include "fast3d/gfx_pc_dkr.h" /* gfx_dkr_set_logical_surface */
+#endif
+
+/************ .data ************/
+
+u16 *gVideoDepthBuffer = NULL;
+UNUSED s32 D_800DE774 = 0;
+UNUSED s8 D_800DE778 = 2;
+
+VideoModeResolution gVideoModeResolutions[] = {
+    { SCREEN_WIDTH, SCREEN_HEIGHT },                   // 320x240
+    { SCREEN_WIDTH, SCREEN_HEIGHT },                   // 320x240
+    { HIGH_RES_SCREEN_WIDTH, SCREEN_HEIGHT },          // 640x240
+    { HIGH_RES_SCREEN_WIDTH, SCREEN_HEIGHT },          // 640x240
+    { HIGH_RES_SCREEN_WIDTH, HIGH_RES_SCREEN_HEIGHT }, // 640x480
+    { HIGH_RES_SCREEN_WIDTH, HIGH_RES_SCREEN_HEIGHT }, // 640x480
+    { HIGH_RES_SCREEN_WIDTH, HIGH_RES_SCREEN_HEIGHT }, // 640x480
+    { HIGH_RES_SCREEN_WIDTH, HIGH_RES_SCREEN_HEIGHT }, // 640x480
+};
+
+// This value exists in order to make sure there are no out of bounds accesses of gVideoModeResolutions
+#define NUM_RESOLUTION_MODES ((s32) (sizeof(gVideoModeResolutions) / sizeof(VideoModeResolution)) - 1)
+
+/*******************************/
+
+/************ .bss ************/
+
+s32 gVideoRefreshRate; // Official Name: viFramesPerSecond
+f32 gVideoAspectRatio;
+f32 gVideoHeightRatio;
+OSMesg gVideoMesgBuf[8];
+OSMesgQueue gVideoMesgQueue[8];
+OSViMode gTvViMode;
+s32 gVideoFbWidths[2];
+s32 gVideoFbHeights[2];
+u16 *gVideoFramebuffers[2];
+s32 gVideoCurrFbIndex;
+s32 gVideoModeIndex;
+s32 sBlackScreenTimer;
+u16 *gVideoCurrFramebuffer; // Official Name: currentScreen
+u16 *gVideoLastFramebuffer; // Official Name: otherScreen
+u16 *gVideoCurrDepthBuffer;
+u16 *gVideoLastDepthBuffer;
+u8 D_801262E4;
+UNUSED OSMesg D_801262E8[8];
+u8 gVideoDeltaCounter;
+u8 gVideoDeltaTime;
+#ifdef NATIVE_PORT
+static u8 sNativeVideoDeltaPrimed;
+#endif
+OSScClient gVideoSched;
+
+/******************************/
+
+/**
+ * Set up the framebuffers and the VI.
+ * Framebuffers are allocated at runtime.
+ * Official Name: viInit
+ */
+void video_init(s32 videoModeIndex, OSSched *sc) {
+    if (osTvType == OS_TV_TYPE_PAL) {
+        gVideoRefreshRate = REFRESH_50HZ;
+        gVideoAspectRatio = ASPECT_RATIO_PAL;
+        gVideoHeightRatio = HEIGHT_RATIO_PAL;
+    } else if (osTvType == OS_TV_TYPE_MPAL) {
+        gVideoRefreshRate = REFRESH_60HZ;
+        gVideoAspectRatio = ASPECT_RATIO_MPAL;
+        gVideoHeightRatio = HEIGHT_RATIO_MPAL;
+    } else {
+        gVideoRefreshRate = REFRESH_60HZ;
+        gVideoAspectRatio = ASPECT_RATIO_NTSC;
+        gVideoHeightRatio = HEIGHT_RATIO_NTSC;
+    }
+
+#ifdef NATIVE_PORT
+    /* The native persistent launcher runs video_init() once per in-process
+     * engine epoch (Return to Launcher -> Play again) instead of once per
+     * console power cycle, so the PAL height raise must be idempotent or it
+     * compounds the persistent global table (240 -> 264 -> 288 -> ...) and
+     * lifts every PAL SAFE_2D layout up on the second and later epochs. See
+     * mdkr_video_apply_pal_height_raise(). Byte-identical to the retail loop on
+     * NTSC (never called) and on the first PAL epoch. */
+    {
+        static s32 sPalHeightRaised = 0;
+        if (osTvType == OS_TV_TYPE_PAL) {
+            mdkr_video_apply_pal_height_raise(gVideoModeResolutions,
+                                              NUM_RESOLUTION_MODES,
+                                              PAL_HEIGHT_DIFFERENCE,
+                                              &sPalHeightRaised);
+        }
+    }
+#else
+    if (osTvType == OS_TV_TYPE_PAL) {
+        s32 i;
+        for (i = 0; i <= NUM_RESOLUTION_MODES; i++) {
+            gVideoModeResolutions[i].height += PAL_HEIGHT_DIFFERENCE;
+        }
+    }
+#endif
+
+    video_delta_reset();
+    fb_mode_set(videoModeIndex);
+    gVideoFramebuffers[0] = NULL;
+    gVideoFramebuffers[1] = NULL;
+    fb_alloc(0);
+    fb_alloc(1);
+    gVideoCurrFbIndex = 1;
+    fb_swap();
+#ifdef NATIVE_PORT
+    /*
+     * Tell the renderer which surface the display list is authored in. On PAL
+     * that is 320x264, not 320x240: the loop above raised every mode by
+     * PAL_HEIGHT_DIFFERENCE and the menus place their art across the taller
+     * field. The presentation mapping has to divide by the same number the game
+     * multiplied by, or PAL 2D content is magnified and runs off the bottom.
+     */
+    {
+        s32 size = fb_size();
+        gfx_dkr_set_logical_surface((u32) GET_VIDEO_WIDTH(size),
+                                    (u32) (GET_VIDEO_HEIGHT(size) & 0xFFFF));
+    }
+#endif
+    osCreateMesgQueue((OSMesgQueue *) &gVideoMesgQueue, gVideoMesgBuf, ARRAY_COUNT(gVideoMesgBuf));
+    osScAddClient(sc, &gVideoSched, (OSMesgQueue *) &gVideoMesgQueue, OS_SC_ID_VIDEO);
+    fb_init_vi();
+    sBlackScreenTimer = 12;
+    osViBlack(TRUE);
+    gVideoDeltaCounter = 0;
+    D_801262E4 = 3;
+}
+
+/**
+ * Set the current video mode to the id specified.
+ */
+void fb_mode_set(s32 videoModeIndex) {
+    gVideoModeIndex = videoModeIndex;
+}
+
+/**
+ * Unused function that would return the current video mode index.
+ */
+UNUSED s32 fb_mode(void) {
+    return gVideoModeIndex;
+}
+
+/**
+ * Unused function that would change the framebuffer dimensions.
+ * Since only one kind of video mode is ever used, this function is never called.
+ */
+UNUSED void fb_mode_size(s32 fbIndex) {
+    gVideoFbWidths[fbIndex] = gVideoModeResolutions[gVideoModeIndex & NUM_RESOLUTION_MODES].width;
+    gVideoFbHeights[fbIndex] = gVideoModeResolutions[gVideoModeIndex & NUM_RESOLUTION_MODES].height;
+}
+
+/**
+ * Return the current framebuffer dimensions as a single s32 value.
+ * The high 16 bits are the height of the frame, and the low 16 bits are the width.
+ * Official Name: viGetCurrentSize
+ */
+s32 fb_size(void) {
+    return (gVideoFbHeights[gVideoCurrFbIndex] << 16) | gVideoFbWidths[gVideoCurrFbIndex];
+}
+
+/**
+ * Initialise the VI settings.
+ * It first checks the TV type ad then will set the properties of the VI
+ * depending on the gVideoModeIndex value.
+ * Most of these go unused, as the value is always 1.
+ * Official Name: viSetTiming
+ */
+void fb_init_vi(void) {
+    s32 viModeTableIndex;
+    OSViMode *tvViMode;
+
+    viModeTableIndex = OS_VI_NTSC_LPN1;
+    if (osTvType == OS_TV_TYPE_PAL) {
+        viModeTableIndex = OS_VI_PAL_LPN1;
+    } else if (osTvType == OS_TV_TYPE_MPAL) {
+        viModeTableIndex = OS_VI_MPAL_LPN1;
+    }
+
+    switch (gVideoModeIndex & NUM_RESOLUTION_MODES) {
+        case VIDEO_MODE_LOWRES_LAN:
+            stubbed_printf("320 by 240 Point sampled, Non interlaced.\n");
+            osViSetMode(&osViModeTable[viModeTableIndex]);
+            break;
+        case VIDEO_MODE_LOWRES_LPN:
+            //!@bug: The video mode being set here is Point sampled
+            // but the printf implies it was intended to be Anti-aliased.
+            // By my understanding, this is the case we will always hit in code,
+            // So maybe it was swapped out late in development?
+            stubbed_printf("320 by 240 Anti-aliased, Non interlaced.\n");
+            tvViMode = &osViModeNtscLpn1;
+            if (osTvType == OS_TV_TYPE_PAL) {
+                tvViMode = &osViModePalLpn1;
+            } else if (osTvType == OS_TV_TYPE_MPAL) {
+                tvViMode = &osViModeMpalLpn1;
+            }
+            fb_memcpy((u8 *) tvViMode, (u8 *) &gTvViMode, sizeof(OSViMode));
+            if (osTvType == OS_TV_TYPE_PAL) {
+                // A simple osViExtendVStart to add an additional 24 scanlines?
+                gTvViMode.fldRegs[0].vStart -= (PAL_HEIGHT_DIFFERENCE << 16);
+                gTvViMode.fldRegs[1].vStart -= (PAL_HEIGHT_DIFFERENCE << 16);
+                gTvViMode.fldRegs[0].vStart += PAL_HEIGHT_DIFFERENCE;
+                gTvViMode.fldRegs[1].vStart += PAL_HEIGHT_DIFFERENCE;
+            }
+            osViSetMode(&gTvViMode);
+            break;
+        case VIDEO_MODE_MEDRES_LPN:
+            stubbed_printf("640 by 240 Point sampled, Non interlaced.\n");
+            tvViMode = &osViModeNtscLpn1;
+            if (osTvType == OS_TV_TYPE_PAL) {
+                tvViMode = &osViModePalLpn1;
+            } else if (osTvType == OS_TV_TYPE_MPAL) {
+                tvViMode = &osViModeMpalLpn1;
+            }
+
+            fb_memcpy((u8 *) tvViMode, (u8 *) &gTvViMode, sizeof(OSViMode));
+            gTvViMode.comRegs.width = WIDTH(HIGH_RES_SCREEN_WIDTH);
+            gTvViMode.comRegs.xScale = SCALE(1, 0);
+            gTvViMode.fldRegs[0].origin = ORIGIN(HIGH_RES_SCREEN_WIDTH * 2);
+            gTvViMode.fldRegs[1].origin = ORIGIN(HIGH_RES_SCREEN_WIDTH * 2);
+            osViSetMode(&gTvViMode);
+            break;
+        case VIDEO_MODE_MEDRES_LAN:
+            stubbed_printf("640 by 240 Anti-aliased, Non interlaced.\n");
+            tvViMode = &osViModeNtscLan1;
+            if (osTvType == OS_TV_TYPE_PAL) {
+                tvViMode = &osViModePalLan1;
+            } else if (osTvType == OS_TV_TYPE_MPAL) {
+                tvViMode = &osViModeMpalLan1;
+            }
+            fb_memcpy((u8 *) tvViMode, (u8 *) &gTvViMode, sizeof(OSViMode));
+            gTvViMode.comRegs.width = WIDTH(HIGH_RES_SCREEN_WIDTH);
+            gTvViMode.comRegs.xScale = SCALE(1, 0);
+            gTvViMode.fldRegs[0].origin = ORIGIN(HIGH_RES_SCREEN_WIDTH * 2);
+            gTvViMode.fldRegs[1].origin = ORIGIN(HIGH_RES_SCREEN_WIDTH * 2);
+            osViSetMode(&gTvViMode);
+            break;
+        case VIDEO_MODE_HIGHRES_HPN:
+            stubbed_printf("640 by 480 Point sampled, Interlaced.\n");
+            osViSetMode(&osViModeTable[viModeTableIndex + OS_VI_NTSC_HPN1]);
+            break;
+        case VIDEO_MODE_HIGHRES_HAN:
+            stubbed_printf("640 by 480 Anti-aliased, Interlaced.\n");
+            osViSetMode(&osViModeTable[viModeTableIndex + OS_VI_NTSC_HAN1]);
+            break;
+        case VIDEO_MODE_HIGHRES_HPF:
+            stubbed_printf("640 by 480 Point sampled, Interlaced, De-flickered.\n");
+            osViSetMode(&osViModeTable[viModeTableIndex + OS_VI_NTSC_HPF1]);
+            break;
+        case VIDEO_MODE_HIGHRES_HAF:
+            stubbed_printf("640 by 480 Anti-aliased, Interlaced, De-flickered.\n");
+            osViSetMode(&osViModeTable[viModeTableIndex + OS_VI_NTSC_HAF1]);
+            break;
+    }
+    // Could have just called this once like in JFG:
+    // osViSetSpecialFeatures(OS_VI_DIVOT_ON | OS_VI_DITHER_FILTER_ON | OS_VI_GAMMA_OFF);
+    osViSetSpecialFeatures(OS_VI_DIVOT_ON);
+    osViSetSpecialFeatures(OS_VI_DITHER_FILTER_ON);
+    osViSetSpecialFeatures(OS_VI_GAMMA_OFF);
+}
+
+/**
+ * Allocate the selected framebuffer index from the main pool.
+ * Will also allocate the depthbuffer if it does not already exist.
+ * Framebuffers should be 64 bit aligned, but since the memory allocator
+ * already aligns by 16, it only needs 48 bits of alignment in addition.
+ */
+void fb_alloc(s32 index) {
+    if (gVideoFramebuffers[index] != 0) {
+        mempool_locked_unset((u8 *) gVideoFramebuffers[index]); // Effectively unused.
+        mempool_free(gVideoFramebuffers[index]);
+    }
+    gVideoFbWidths[index] = gVideoModeResolutions[gVideoModeIndex & NUM_RESOLUTION_MODES].width;
+    gVideoFbHeights[index] = gVideoModeResolutions[gVideoModeIndex & NUM_RESOLUTION_MODES].height;
+    if (gVideoModeIndex >= VIDEO_MODE_MIDRES_MASK) {
+        gVideoFramebuffers[index] =
+            mempool_alloc_safe((HIGH_RES_SCREEN_WIDTH * HIGH_RES_SCREEN_HEIGHT * 2) + 0x30, COLOUR_TAG_WHITE);
+        gVideoFramebuffers[index] = FBALIGN(gVideoFramebuffers[index]);
+        if (gVideoDepthBuffer == NULL) {
+            gVideoDepthBuffer =
+                mempool_alloc_safe((HIGH_RES_SCREEN_WIDTH * HIGH_RES_SCREEN_HEIGHT * 2) + 0x30, COLOUR_TAG_WHITE);
+            gVideoDepthBuffer = FBALIGN(gVideoDepthBuffer);
+        }
+    } else {
+        gVideoFramebuffers[index] =
+            mempool_alloc_safe((gVideoFbWidths[index] * gVideoFbHeights[index] * 2) + 0x30, COLOUR_TAG_WHITE);
+        gVideoFramebuffers[index] = FBALIGN(gVideoFramebuffers[index]);
+        if (gVideoDepthBuffer == NULL) {
+            gVideoDepthBuffer =
+                mempool_alloc_safe((gVideoFbWidths[index] * gVideoFbHeights[index] * 2) + 0x30, COLOUR_TAG_WHITE);
+            gVideoDepthBuffer = FBALIGN(gVideoDepthBuffer);
+        }
+    }
+}
+
+/**
+ * Sets the video counters to their default values.
+ * Another renmant from an unused system.
+ * Official Name: viFrameRateReset
+ */
+void video_delta_reset(void) {
+    gVideoDeltaCounter = 0;
+#ifdef NATIVE_PORT
+    if (platform_sim_tick_fields() == LOGIC_30FPS) {
+        gVideoDeltaTime = LOGIC_30FPS;
+        /* The legacy two-field queue remains phase-primed after its one
+         * post-bootstrap half-width semantic pass, including level resets. */
+    } else {
+        gVideoDeltaTime = LOGIC_60FPS;
+        sNativeVideoDeltaPrimed = TRUE;
+    }
+#else
+    gVideoDeltaTime = LOGIC_30FPS;
+#endif
+}
+
+#ifdef NATIVE_PORT
+/**
+ * Preserve the legacy queue's one post-bootstrap logical-delta settling pass
+ * without allowing that compatibility phase to become a second clock. The
+ * HostFrameDriver ticket stays exactly two fields in Original cadence; after
+ * 20 game passes one consumer-visible pass uses rate 1, then the logical rate
+ * returns to 2 and remains phase-primed across level resets. The 27,832-row
+ * authored RNG/state oracle is byte-identical to the pre-FPS baseline only
+ * with this phase. Enhanced cadence has fixed one-field semantics throughout.
+ */
+static void video_logic_delta_observe_fixed_ticket(void) {
+    u8 observedUpdateRate;
+
+    if (platform_sim_tick_fields() != LOGIC_30FPS) {
+        return;
+    }
+
+    observedUpdateRate = sNativeVideoDeltaPrimed
+        ? (u8)platform_sim_tick_fields()
+        : LOGIC_60FPS;
+
+    if (observedUpdateRate < gVideoDeltaTime) {
+        if (gVideoDeltaCounter < 20) {
+            gVideoDeltaCounter++;
+        }
+        if (gVideoDeltaCounter == 20) {
+            gVideoDeltaTime = observedUpdateRate;
+            gVideoDeltaCounter = 0;
+            sNativeVideoDeltaPrimed = TRUE;
+        }
+    } else {
+        gVideoDeltaCounter = 0;
+        if ((gVideoDeltaTime < observedUpdateRate) &&
+            (D_801262E4 >= observedUpdateRate)) {
+            gVideoDeltaTime = observedUpdateRate;
+        }
+    }
+}
+
+s32 video_logic_update_rate(s32 fixedUpdateRate) {
+    if (!platform_vi_pace_compensating() ||
+        platform_sim_tick_fields() != LOGIC_30FPS ||
+        fixedUpdateRate > LOGIC_30FPS) {
+        return fixedUpdateRate;
+    }
+    return (s32)gVideoDeltaTime;
+}
+#endif
+
+/**
+ * Wait for the finished message from the scheduler while counting up a timer,
+ * then update the current framebuffer index.
+ * This function also has a section where it counts a timer that goes no higher
+ * than an update magnitude of 2. It's only purpose is to be used as a divisor
+ * in the unused function, vi_refresh_rate.
+ * Official Name: viFrameSync
+ */
+s32 fb_update(s32 mesg) {
+#ifndef NATIVE_PORT
+    u8 tempUpdateRate;
+
+    tempUpdateRate = LOGIC_60FPS;
+#endif
+    if (sBlackScreenTimer) {
+        sBlackScreenTimer--;
+        if (sBlackScreenTimer == 0) {
+            osViBlack(FALSE);
+        }
+    }
+    if (mesg != MESG_SKIP_BUFFER_SWAP) {
+        fb_swap();
+    }
+#ifdef NATIVE_PORT
+    video_logic_delta_observe_fixed_ticket();
+    osViSwapBuffer(gVideoLastFramebuffer);
+    osRecvMesg(gVideoMesgQueue, NULL, OS_MESG_BLOCK);
+    return g_viLastFields;
+#else
+    while (osRecvMesg(gVideoMesgQueue, NULL, OS_MESG_NOBLOCK) != -1) {
+        tempUpdateRate++;
+    }
+
+    if (tempUpdateRate < gVideoDeltaTime) {
+        if (gVideoDeltaCounter < 20) {
+            gVideoDeltaCounter++;
+        }
+        if (gVideoDeltaCounter == 20) {
+            gVideoDeltaTime = tempUpdateRate;
+            gVideoDeltaCounter = 0;
+        }
+    } else {
+        gVideoDeltaCounter = 0;
+        if ((gVideoDeltaTime < tempUpdateRate) && (D_801262E4 >= tempUpdateRate)) {
+            gVideoDeltaTime = tempUpdateRate;
+        }
+    }
+    while (tempUpdateRate < gVideoDeltaTime) {
+        osRecvMesg(gVideoMesgQueue, NULL, OS_MESG_BLOCK);
+        tempUpdateRate++;
+    }
+
+    osViSwapBuffer(gVideoLastFramebuffer);
+    osRecvMesg(gVideoMesgQueue, NULL, OS_MESG_BLOCK);
+    return tempUpdateRate;
+#endif
+}
+
+void func_8007AB24(u8 arg0) {
+    D_801262E4 = arg0;
+}
+
+/**
+ * Unused function that returns the refresh rate, after performance.
+ * A fully performant game would return 60.
+ * Perhaps may have been used originally to calculate the factor in which to handle frameskipping with.
+ */
+UNUSED s32 vi_refresh_rate(void) {
+    return (s32) ((f32) gVideoRefreshRate / (f32) gVideoDeltaTime);
+}
+
+/**
+ * Flips the current framebuffer index, swapping to the other framebuffer
+ * for the next frame, then update the current and previous framebuffer pointers.
+ */
+void fb_swap(void) {
+    gVideoLastFramebuffer = gVideoFramebuffers[gVideoCurrFbIndex];
+    gVideoLastDepthBuffer = gVideoDepthBuffer;
+    gVideoCurrFbIndex ^= 1;
+    gVideoCurrFramebuffer = gVideoFramebuffers[gVideoCurrFbIndex];
+    gVideoCurrDepthBuffer = gVideoDepthBuffer;
+}
+
+/**
+ * Copy byte-by-byte a region from one address to another.
+ */
+void fb_memcpy(u8 *src, u8 *dest, s32 len) {
+    s32 i;
+
+    for (i = 0; i < len; i++) {
+        *dest++ = *src++;
+    }
+}

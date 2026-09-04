@@ -1,0 +1,130 @@
+export const LIMITS = Object.freeze({
+  inviteTtlMs: 2 * 60_000,
+  roomTtlMs: 24 * 60 * 60_000,
+  maxPending: 8,
+  maxSeats: 4,
+  maxJsonBytes: 16 * 1024,
+  maxSignalBytes: 64 * 1024,
+  maxNameCodePoints: 24,
+  /* The name's UTF-8 wire bound. Every consumer refuses names past it — the
+   * native host (native_party_host.cpp kMaxName), the browser host
+   * (party-host.js validControllerName) and both transports' room-state
+   * parsers — so normalizeName must emit nothing they would refuse: a
+   * code-point cap alone lets 24 four-byte emoji reach 96 bytes. */
+  maxNameBytes: 48,
+  maxTransitions: 4096,
+});
+
+export function partyInviteRemainingMs(inviteExpiresAt: unknown,
+                                       now: unknown): number | null {
+  if (!Number.isSafeInteger(inviteExpiresAt) || !Number.isSafeInteger(now) ||
+      Number(now) < 0 || Number(inviteExpiresAt) <= Number(now)) return null;
+  return Math.min(LIMITS.inviteTtlMs,
+    Number(inviteExpiresAt) - Number(now));
+}
+
+/* Phone Party owns controller admission/leases, not gameplay progression.
+ * Starting a local race revokes the displayed invite but leaves this room
+ * open, keeping the launcher/service boundary out of game state. */
+export type RoomPhase = "open" | "closed";
+export type ControllerPhase =
+  "pending" | "approved" | "leased" | "connected" | "closed";
+export type CloseReason =
+  | "invite_expired" | "invite_rotated" | "room_full" | "pending_full"
+  | "approval_rejected" | "host_closed" | "room_expired"
+  | "protocol_update_required" | "duplicate_controller" | "seat_reclaimed"
+  | "rate_limited" | "service_budget_safe" | "transport_lost";
+
+export interface Env {
+  PARTY_ROOMS: DurableObjectNamespace<import("./party-room").PartyRoom>;
+  PARTY_BUDGETS: DurableObjectNamespace<import("./party-budget").PartyBudget>;
+  PARTY_CODES: DurableObjectNamespace<import("./party-code-directory").PartyCodeDirectory>;
+  MATCH_ROOMS: DurableObjectNamespace<import("./match/match-room").MatchRoom>;
+  PARTY_HMAC_KEY: string;
+  PARTY_ORIGIN: string;
+  MAX_ADMISSIONS_PER_DAY: string;
+  CONTROL_RESERVE_PER_DAY: string;
+  OPS_READ_TOKEN?: string;
+  /* Cloudflare Realtime TURN secrets (turn.ts). Deliberately optional: their
+   * absence is a supported deployment that serves STUN-only iceServers. */
+  TURN_KEY_ID?: string;
+  TURN_API_TOKEN?: string;
+  /* Optional region override for the singleton placement hint below. Kept
+   * optional so it can be introduced per deployment (wrangler var or secret)
+   * without a tracked-config change; absence means the code default. */
+  SINGLETON_LOCATION_HINT?: string;
+}
+
+/* The per-day budget object (`idFromName(day)`) and the code directories
+ * ("v1"/"match-v1") are global singletons on every hot path. Without a hint
+ * their placement is wherever the day's (or deployment's) first request
+ * landed — random with respect to any given player, up to another continent
+ * of tail latency on every serialized budget/code hop, all day. Every
+ * singleton `.get()` passes this hint so the object is created near the
+ * primary audience region; room objects stay creator-local and unhinted.
+ * The hint only affects first creation and is advisory by contract, so a
+ * malformed override degrades to the default rather than failing a request. */
+export const SINGLETON_LOCATION_HINTS = Object.freeze([
+  "wnam", "enam", "sam", "weur", "eeur", "apac", "oc", "afr", "me",
+] as const);
+export type SingletonLocationHint = typeof SINGLETON_LOCATION_HINTS[number];
+export const DEFAULT_SINGLETON_LOCATION_HINT: SingletonLocationHint = "wnam";
+
+export function singletonLocationHint(env: Env): SingletonLocationHint {
+  const value = env.SINGLETON_LOCATION_HINT;
+  return typeof value === "string" &&
+    (SINGLETON_LOCATION_HINTS as readonly string[]).includes(value)
+    ? value as SingletonLocationHint : DEFAULT_SINGLETON_LOCATION_HINT;
+}
+
+export interface StoredController {
+  id: string;
+  credentialDigest: string;
+  phase: ControllerPhase;
+  seat: number | null;
+  leaseGeneration: number;
+  connectionSequence: number;
+  name: string;
+  controllerPublicKey: string;
+  createdAt: number;
+}
+
+export interface StoredRoom {
+  version: 2;
+  /* Additive v2 field. Older browser-created rooms may omit it; only the
+   * native authenticated socket needs the name to rotate its invite in-DO. */
+  roomId?: string;
+  phase: RoomPhase;
+  createdAt: number;
+  expiresAt: number;
+  inviteExpiresAt: number;
+  inviteDigest: string;
+  inviteGeneration: number;
+  hostCredentialDigest: string;
+  hostPublicKey: string;
+  fallbackCodeDigest: string;
+  transitionId: number;
+  nextLeaseGeneration: number;
+  controllers: StoredController[];
+  closedReason: CloseReason | null;
+}
+
+export interface CreateRoomInput {
+  roomId?: string;
+  inviteDigest: string;
+  hostCredentialDigest: string;
+  hostPublicKey: string;
+  fallbackCodeDigest: string;
+  now: number;
+}
+
+export interface RedeemInput {
+  inviteDigest: string;
+  fallbackCodeDigest: string;
+  controllerId: string;
+  credentialDigest: string;
+  name: string;
+  controllerPublicKey: string;
+  protocol: number;
+  now: number;
+}

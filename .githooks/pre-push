@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+#
+# pre-push -- clean-room plus exact outgoing-public-commit guard.
+#
+# Constraint enforced here: no push, to any remote, may carry ROM or
+# ROM-derived data, in the working tree or anywhere in reachable history.
+# tools/check_clean_room.sh is the evidence and runs unconditionally, on every
+# push and every remote, matching .githooks/pre-commit (see that file for why
+# check_clean_room.sh, not check_no_rom.sh, is the right guard).
+#
+# Enable in a checkout with: tools/install_git_hooks.sh  (sets
+# core.hooksPath=.githooks).
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+tools/check_clean_room.sh
+tools/ci/check_public_push.sh "${1:-origin}"
