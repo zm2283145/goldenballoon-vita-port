@@ -169,16 +169,31 @@ def plateau_exact(rows: list[tuple[int, ...]], warmed: int,
 
 def plateau_no_new_high(rows: list[tuple[int, ...]], warmed: int,
                         projection, label: str) -> list[str]:
-    """Reject a terminal new maximum or a spike-masked rising suffix.
+    """Reject a terminal new maximum or a staircase the retirement lag cannot fund.
 
     Renderer/registry live counts may oscillate by a few handles because queued
     globals retire one generation later. Equality would call that ownership
     transfer a leak. Comparing only terminal maxima is also too weak: an early
-    transient high could mask a later 20,21,22,23 staircase. The terminal pair
-    therefore may not exceed the earlier maximum, and a non-decreasing suffix
-    spanning at least three generations may not finish above where it began.
-    Stable/alternating ownership and downward settling pass; sustained growth
-    fails. Every count remains subject to explicit hard ceilings separately.
+    transient high could mask a later 20,21,22,23 staircase. Two clauses
+    therefore apply to every counter of the warmed window:
+
+    1. the terminal pair may not exceed the maximum of the earlier
+       generations -- no new ownership high at the end of the window;
+    2. the window's trailing non-decreasing run may not contain three or more
+       strict rises. The one-generation lag can fund a rise, a hold while the
+       queue drains, and a second rise; three increases inside a single run
+       with no generation ever giving a handle back is growth the lag cannot
+       explain, and it fails even when an early transient high keeps clause 1
+       quiet (25,20,21,22,23).
+
+    A +-k oscillation that revisits ground the window already occupied
+    therefore passes -- 313,311,312,312,313 rises twice inside its run and
+    never finishes above the 313 the window opened on -- as do alternating
+    ownership and downward settling. Sustained growth fails clause 1 the
+    moment it reaches a new high, and clause 2 while a spike still masks it.
+    Five samples cannot separate a +2 lag oscillation from a +2 climb hidden
+    under a spike; every count remains subject to explicit hard ceilings
+    (maximum_texture_live/peak, maximum_registry_live/high) separately.
     """
     if len(rows) < warmed:
         return [f"{label}: only {len(rows)} generations, need {warmed}"]
@@ -199,9 +214,10 @@ def plateau_no_new_high(rows: list[tuple[int, ...]], warmed: int,
         strict_rises = sum(
             values[index] > values[index - 1]
             for index in range(suffix_start + 1, len(values)))
-        if (len(values) - suffix_start >= 3 and strict_rises >= 2):
-            return [f"{label}: terminal generations retained a rising ownership "
-                    f"suffix in counter {column}: {tail}"]
+        if strict_rises >= 3:
+            return [f"{label}: terminal generations climbed through {strict_rises} "
+                    f"ownership increases without one retirement in counter "
+                    f"{column}: {tail}"]
     return []
 
 

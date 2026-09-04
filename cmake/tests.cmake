@@ -2507,6 +2507,10 @@ if(BUILD_TESTING)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_check_save_dir_hermeticity.py)
     add_test(
+        NAME check_adventure_party_performance_plateau
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_check_adventure_party_performance_plateau.py)
+    add_test(
         NAME texture_cache_identity
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_texture_cache_identity.py)
