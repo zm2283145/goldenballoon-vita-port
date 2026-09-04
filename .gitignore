@@ -61,7 +61,7 @@ dist/web/*.data
 /dist/*.app/
 /dist/*.AppImage
 /dist/*.dmg
-/dist/*.dmg.sha256
+/dist/*.sha256
 /dist/*.provenance.json
 /dist/*.tar.gz
 /dist/Golden-Balloon-SHA256SUMS-*

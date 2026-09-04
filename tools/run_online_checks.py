@@ -271,7 +271,7 @@ def main() -> int:
     for name, ok, elapsed in results:
         print(f"  [{'PASS' if ok else 'FAIL'}] {name} ({elapsed:.1f}s)")
     # M1(a): surface any isolation warning/degradation in the summary so it cannot
-    # hide behind a GREEN result (e.g. an --allow-hash-drift toolchain bump).
+    # hide behind a GREEN result (e.g. an --allow-hash-drift build-input change).
     for warning in isolation_warnings:
         print(f"  [WARN] isolation: {warning}")
     all_ok = passed == total and isolation_ok

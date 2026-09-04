@@ -29,7 +29,7 @@
 #include "modern_character_text.h"
 #if MDKR_ENABLE_ONLINE_BETA
 /* resident post-race re-entry (scoping ruling R-A). Both includes are
- * beta-gated, so a normal (beta OFF) build sees neither and the release menu.o is
+ * beta-gated, so a normal (beta OFF) build sees neither and its menu.o is
  * byte-identical -- proven by rebuilding the OFF object. */
 #include "online/online_session.h"   /* mdkr_online_session_resume_results */
 #include "net/online_race_results.h" /* (availability query, via the session) */

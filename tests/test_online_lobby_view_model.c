@@ -266,7 +266,7 @@ static void test_room_selection_and_release_gate(void) {
 #if MDKR_ENABLE_ONLINE_BETA
     /* never-silent hole: selection arms the same 30 s view-timeout card
      * the other lobby surfaces carry, so an endless wait always offers a working
-     * escape rather than a dead spinner. Beta-gated (OFF/release view model is
+     * escape rather than a dead spinner. Beta-gated (beta-OFF view model is
      * byte-identical). */
     expect(model.timeout.present &&
            model.timeout.title != NULL &&

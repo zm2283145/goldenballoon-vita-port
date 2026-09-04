@@ -678,7 +678,7 @@ bool mdkr_online_view_model_build(const MdkrOnlineViewInput *input,
                  * done and only "Waiting for Friends". Arm the same 30 s
                  * view-timeout card the other lobby surfaces carry so an endless
                  * wait always offers a working escape (Leave Room), instead of a
-                 * spinner. Beta-gated to keep the OFF/release view model
+                 * spinner. Beta-gated to keep the beta-OFF view model
                  * byte-identical. */
                 next.timeout = timeout_view(
                     "Selection Took Too Long",

@@ -17,7 +17,7 @@
 
 #if MDKR_ENABLE_ONLINE_BETA
 // Native online beta only: the create/join chooser, invite QR and live status
-// UX. None of this compiles into a shipping (OFF) build, so the OFF object stays
+// UX. None of this compiles into a beta-OFF build, so that object stays
 // byte-identical.
 #include "online/online_track_table.h"
 
@@ -199,10 +199,12 @@ MdkrOnlineCompatibilityV1 fakeCompatibility() {
     return value;
 }
 
-// Constructs the launcher-owned adapter behind the seam. The default path is
-// the deterministic fake (the view-model oracle); the live adapter is swapped
-// in only behind the internal-test-token gate AND the compile-time Online Room
-// preview gate below -- never in a normal build.
+// Constructs the legacy/fake adapter behind the shared panel seam. In a native
+// beta the interactive create/join path builds its live adapter later in
+// drawBetaOnlinePanel; this helper honors only an explicit fake smoke. In a
+// beta-OFF preview, the token-gated live-factory call below resolves to the
+// header's inline null stub, so the panel remains fail-closed unless its
+// deterministic fake oracle was explicitly requested.
 std::unique_ptr<IMdkrOnlineAdapter> makeAdapter(
     const MdkrOnlineCompatibilityV1 &compatibility) {
 #if MDKR_ENABLE_ONLINE_ROOM_PREVIEW
@@ -461,9 +463,9 @@ void handleAction(MdkrOnlineViewAction action, LauncherState &state) {
         // (drawBetaSelectingHandoff) and produces START_RACE via the party-link
         // TRACKSELECT intent instead, never this path. Every curated preview
         // track permits all base vehicles, so the full base mask is exact for the
-        // oracle. Gated (PREVIEW || BETA) so the OFF/release build -- which has no
-        // START_RACE branch and falls through to the generic dispatch below --
-        // stays byte-identical.
+        // oracle. Gated (PREVIEW || BETA) so a build with both gates OFF --
+        // which has no START_RACE branch and falls through to the generic
+        // dispatch below -- stays byte-identical.
         dispatch(action, 0u, MDKR_ONLINE_PLAYER_VEHICLE_MASK);
 #endif
     } else if (action == MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS) {
@@ -674,7 +676,7 @@ void drawRoomPanel(LauncherState &state) {
 // `active` is set, which happens exclusively while a synthetic fake stage is
 // being rendered for a headless screenshot. The live/production beta path never
 // sets it, so its behaviour (OnlineRoom_liveInvite) is unchanged; the whole
-// struct is compiled only under MDKR_ENABLE_ONLINE_BETA, so the OFF/release
+// struct is compiled only under MDKR_ENABLE_ONLINE_BETA, so the beta-OFF
 // build never sees it.
 struct BetaFakeInviteOverride {
     bool active = false;
@@ -2600,7 +2602,7 @@ void drawBetaRoom(LauncherState &state) {
 // This seam synthesizes a faithful MdkrOnlineViewModel (+ lobby snapshot) for a
 // chosen stage and drives the SAME drawBeta* widget family drawBetaRoom uses, so
 // each surface renders standalone for MDKR_APP_SMOKE_SHOT. It is STRICTLY beta +
-// test-only: compiled only under MDKR_ENABLE_ONLINE_BETA (a release/OFF build
+// test-only: compiled only under MDKR_ENABLE_ONLINE_BETA (a beta-OFF build
 // never sees it) and reached only when MDKR_APP_ONLINE_BETA_FAKE is set --
 // mirroring the MDKR_APP_ONLINE_FAKE gate. No live adapter is ever built
 // (g_online.adapter stays null), so the real (non-fake) path is unchanged.
@@ -3143,7 +3145,7 @@ void OnlineRoomPanel_draw(LauncherState &state, LauncherAction &action) {
     // (MDKR_APP_ONLINE_BETA_STAGE) through the real drawBeta* widgets so each
     // shipping lobby surface can be screenshotted headlessly. No adapter is
     // built (ensureInitialized deferred it: MDKR_APP_ONLINE_FAKE is unset here),
-    // and a release/OFF build never compiles this branch. Mirrors the
+    // and a beta-OFF build never compiles this branch. Mirrors the
     // fakeEnabled() gate below.
     if (betaFakeStageEnabled()) {
         drawBetaRoomFake(state);

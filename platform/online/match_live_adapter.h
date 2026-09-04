@@ -12,9 +12,12 @@
  * mesh and advances the state machine).
  *
  * The live adapter itself (declaration at the bottom, definition in
- * match_live_adapter.cpp) is reachable ONLY behind an internal-test-token gate
- * (mdkr_online_live_lobby_gate_open, mirroring the party loopback gate) AND the
- * pre-existing online release locks. A normal build never constructs it.
+ * match_live_adapter.cpp) is reachable only in a native-online-beta build,
+ * where the compile-time gate replaces the older internal-test-token decision.
+ * A beta-OFF build keeps the owning factory as an inline null stub, even if a
+ * development preview reveals the fail-closed panel. The endpoint/identity/
+ * STUN-only and release-provenance locks remain independent of that
+ * reachability decision.
  */
 #ifndef MDKR_MATCH_LIVE_ADAPTER_H
 #define MDKR_MATCH_LIVE_ADAPTER_H
@@ -215,7 +218,7 @@ struct MdkrOnlineRoomEvent {
      * in-flight command_id->type map on this so a refusal is attributed to the
      * command it actually answered, not merely the most recently SENT one (two
      * commands can be in flight). Lives on the event rather than MdkrOnlineStep
-     * so the shared lobby_core.h struct -- compiled into the OFF/release build
+     * so the shared lobby_core.h struct -- compiled into the beta-OFF build
      * -- stays byte-identical. */
     uint64_t commandId = 0u;
     /* Failure: a pre-mapped stable launcher failure -- never a raw wire code. */
@@ -764,17 +767,16 @@ bool mdkr_online_live_adapter_walk_engine_out_of_race(
  * adapter. */
 bool mdkr_online_live_adapter_race_send_abort(IMdkrOnlineAdapter *adapter);
 
-/* ---- Internal-test-token gate for the live adapter ---------------------- *
+/* ---- Compile-time beta / internal-test-token live-adapter gate ---------- *
  *
- * Fail-closed, mirroring platform/party/native_party_host.h's loopback gate:
- * the live adapter is reachable only when MDKR_INTERNAL_TEST_TOKEN holds this
- * adapter's own versioned value. This is an ADDITIONAL required condition on
- * top of the compile-time Online Room preview gate and the shipped online
- * release locks (publisher config, presenter fixture check) -- never a
- * replacement for any of them. A production build leaves the token unset, so
- * the launcher keeps instantiating the fake adapter and the fail-closed "not
- * enabled" surface. `inline` because the launcher and the tests link it into
- * different binaries and each must evaluate it independently.
+ * A native-online-beta build opens this gate directly, so packaged beta users
+ * need no environment variable. In a beta-OFF build the older versioned token
+ * can open this predicate for isolated seam tests, but the owning live factory
+ * remains an inline null stub: no token can add the omitted transport objects
+ * or start a network race. The endpoint/identity/STUN-only and release-
+ * provenance locks are independent and remain mandatory downstream. `inline`
+ * because the launcher and tests link it into different binaries and each must
+ * evaluate it independently.
  */
 inline constexpr char kMdkrOnlineLiveLobbyTestToken[] = "mdkr64-online-live-v1";
 
@@ -806,7 +808,7 @@ inline bool mdkr_online_live_lobby_gate_open() {
  * In every other build it stays a header-inline stub returning nullptr, so the
  * app never links the heavy live-adapter/transport translation units and the
  * launcher -- even with the token gate open -- keeps constructing the
- * fail-closed fake adapter; no shipping configuration can start an online race
+ * fail-closed fake adapter; no beta-OFF configuration can start an online race
  * from the panel. */
 #if MDKR_ENABLE_ONLINE_BETA
 std::unique_ptr<IMdkrOnlineAdapter> OnlineRoom_makeGatedLiveAdapter(
@@ -995,7 +997,7 @@ void OnlineRoom_requestRoomReadyReentry(void);
  * by an online boot and must never be inherited by a later local-Play boot, which
  * would flip the engine into online-race mode and stall on network input a local
  * race never sends. The owner token lives in the beta wiring layer (not in the
- * always-compiled net_roster TU) so the OFF/release build stays byte-identical;
+ * always-compiled net_roster TU) so the beta-OFF build stays byte-identical;
  * the pure decision is mdkr_net_roster_guard_decides_clear() in
  * net_roster_runtime.h. Defined in platform/app/online_live_wiring.cpp. */
 void OnlineRoom_setRosterOwner(uint64_t token);

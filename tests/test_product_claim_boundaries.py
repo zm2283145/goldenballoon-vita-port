@@ -151,6 +151,27 @@ def main() -> int:
             "the current release notes must say both players need the same version"
         )
     require_contains("README.md", "Both players need the same version of the game.")
+    native_only_claim = (
+        "Online Room ships in native desktop packages. The published browser "
+        "build remains local-only."
+    )
+    if native_only_claim not in release_notes_words:
+        raise AssertionError(
+            "the current release notes must identify Online Room as native-only"
+        )
+    require_contains("README.md", native_only_claim)
+    for known_camera_claim in (
+        "Keep the camera out of walls",
+        "remains an optional, experimental camera mode.",
+        "the default camera, is unaffected.",
+        "check also fails in 1.6.0 on brief correction re-engagements",
+        "class is not new to 1.7.0",
+    ):
+        if known_camera_claim not in release_notes_words:
+            raise AssertionError(
+                "the current release notes must disclose the optional-camera "
+                f"motion residual: {known_camera_claim!r}"
+            )
     for path in ("RELEASE_NOTES.md", "README.md"):
         require_contains(path, "Both players must be on the same platform.")
         require_contains(path, "A race is two players, not more.")

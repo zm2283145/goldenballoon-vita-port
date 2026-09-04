@@ -10,6 +10,10 @@ save formats). Everything below 1.0.0 predates that commitment.
 
 ## [Unreleased]
 
+No changes yet.
+
+## [1.7.0] — 2026-09-04
+
 ### Added
 
 - **Adventure Party** (`Enhancements.AdventureParty` / `MDKR_ENH_ADVENTURE_PARTY`,
@@ -119,6 +123,15 @@ save formats). Everything below 1.0.0 predates that commitment.
 
 ### Fixed
 
+- Native Linux, Windows, and macOS release builds now explicitly compile the
+  Online Room beta that the release notes advertise. The release workflows had
+  kept the bare preview switch off without applying the separate beta opt-in,
+  so their packaged launchers could omit Online Room even though development
+  and qualification builds included it. The native match-signaling
+  `User-Agent` now receives its version from `MDKR_VERSION` as well, removing a
+  second release literal that had remained at 1.6.0. The macOS bundle builder
+  also forces and verifies both beta states, so reusing a beta-configured build
+  directory cannot silently opt a later ordinary package back in.
 - A racer wearing a custom appearance could drop back to its retail character at
   any **Model Detail** setting. The 1.6.0 never-posed fence re-applied the
   Wizpig and Terry donor caps to its candidates but not the custom-character
@@ -167,6 +180,81 @@ save formats). Everything below 1.0.0 predates that commitment.
   widescreen displays. The two-player backdrop was drawn at the original 4:3
   width, so the edges of the screen were left unpainted — most obvious on
   Fossil Canyon and the other tracks with a black horizon.
+
+## [1.6.0] — 2026-09-01
+
+### Added
+
+- Native online multiplayer entered beta: two players on the same platform can
+  create or join a private six-digit-code room, compare a three-part
+  verification phrase, choose racers and tracks, and run a single race or a
+  tournament. US 1.1 and European 1.1 copies interoperate at the common online
+  cadence. Different application versions, platforms, ROM revisions, or rules
+  fail closed before the race; direct connectivity remains STUN-only with no
+  relay.
+- Added-character Time Trial ghosts are stored separately from the ten original
+  racers while retaining ordinary compatible save identities.
+
+### Fixed
+
+- Racers no longer briefly appear unanimated at race start at any **Model
+  Detail** setting (issue #48).
+- Best-time and best-lap digits no longer rock during track-preview flybys
+  (issue #59).
+- The Widescreen HUD no longer overlaps the banana counter with a portrait in
+  the banana challenge, and minimap markers align with the resized map
+  (issue #57).
+
+## [1.5.2] — 2026-08-25
+
+### Fixed
+
+- Completed the reported Widescreen HUD layout fixes: Time Trial lap rows,
+  centered TAJ MAGIC text, battle HUD placement, and race-start slide position
+  now follow their intended anchors (issue #51).
+- Rectangles whose corners arrive reversed are discarded like the original
+  hardware, removing stretched flashes from Game Pak switching, name entry,
+  and the credits (issues #52 and #56).
+- PAL menu text no longer creeps upward after returning to the launcher and
+  starting the game again.
+- Time Trial records and ghosts save reliably on Linux and other non-macOS
+  native builds. Per-user storage, existing folder-local saves, explicit
+  `portable.txt`, and visible write failures replace silent loss (issue #54).
+- Hot Top Volcano's out-of-bounds trophy-storage exit returns to the hub instead
+  of hanging on black (issue #55).
+- Nintendo Switch Online N64 controllers map their C and Z buttons correctly
+  over Bluetooth, and the overlay button is configurable (issue #55).
+
+## [1.5.1] — 2026-08-21
+
+### Fixed
+
+- Treasure Caves and other tunnel sound effects use the intended room reverb
+  again while music retains its separate reverb (issue #49).
+- The Widescreen HUD no longer pushes the pause menu and Taj dialogue off
+  center or overlaps the banana and lap counters (issue #50).
+- Source builds work with stock Ubuntu 22.04 again.
+
+## [1.5.0] — 2026-08-19
+
+### Added
+
+- Time Trial ghosts are banked per track and vehicle outside the virtual
+  Controller Pak, removing the handful-of-ghosts capacity limit while keeping
+  the Pak format and the ghost bytes themselves compatible (issue #46).
+
+### Changed
+
+- The visual-only draw-distance setting reaches 1600%, up from 400%, so distant
+  pickups remain visible when planning challenge routes (issue #47).
+
+### Fixed
+
+- Finish-camera/results ownership no longer flickers after the line, and the
+  post-race track preview follows the same smoothing handoff (issue #44).
+- The mouse pointer hides during play and returns for launcher menus and the
+  overlay (issue #45).
+- Source builds work with stock Ubuntu 22.04 again.
 
 ## [1.4.0] — 2026-08-18
 

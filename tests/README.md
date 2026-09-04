@@ -1703,9 +1703,10 @@ resolved origin into every CMake configure it runs; without it a release lane
 can silently ship a launcher whose Phone Party surface is compiled out.
 `--self-test` proves each assertion still rejects the lane it names.
 
-`tests/check_release_local_only_surface.py` freezes the deferred-feature
-boundary for local-only desktop and Pages releases: native launchers compile
-Online Room out, and the web publisher removes every cloud route and runtime.
+`tests/check_release_local_only_surface.py` freezes the two release boundaries:
+native desktop workflows explicitly opt into the online beta while keeping the
+bare preview switch off and every cloud surface origin-gated, while the Pages
+publisher removes every cloud route and runtime.
 The adjacent `check_browser_local_only_release.py` gate then exercises that
 stripped `publish-web` artifact in Chromium inside the Pages workflow; it is
 workflow-owned because the general suite does not produce that release stage.

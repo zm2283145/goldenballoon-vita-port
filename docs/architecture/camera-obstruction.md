@@ -1367,6 +1367,16 @@ and the lake route picks up one correction re-engagement it does not have under
 camera, it converts a shoulder step into a longer emergency hold. Choosing it
 has to be argued on composition, not on these numbers.
 
+**Qualification update, 2026-09-04:** the hard motion row is not currently
+green and must not be described as such. The pre-cut 1.7 tree reported one
+rapid correction re-engagement on Ancient Lake plus one continuous-surface
+shoulder flip in the 3P+T.T. route. Re-running the same current checker against
+the v1.6.0 binary reported one Ancient Lake and three 3P+T.T. re-engagements
+(zero shoulder flips). That A/B rules out treating the class as a newly
+introduced 1.7 defect, but it does not turn either result into a pass. The
+optional mode stays disclosed and the authored camera stays the default; the
+final candidate still needs its own dedicated-desktop rerun.
+
 ### 7.4 Display matrix
 
 At minimum:

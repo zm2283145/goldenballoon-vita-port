@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """ISOLATION GUARD -- prove the online beta feature is byte-for-byte absent from a
-fresh OFF (release) build, so the battle-tested offline engine cannot regress.
+fresh OFF build, so the battle-tested offline engine cannot regress.
 
 The native online takeover deliberately inlines beta forks into two crown-jewel
 engine TUs (game/src/thread3_main.c, game/src/menu.c) and shares one TU compiled
@@ -12,11 +12,12 @@ offline regression. This guard closes that hole:
 
   1. Fresh-configures + builds a scratch OFF (MDKR_ENABLE_ONLINE_BETA=OFF) tree,
      reusing an existing build's already-fetched dependency sources so it needs no
-     network and stays fast (~25-30s).
+     network. Compilation defaults to two parallel jobs and can be adjusted
+     explicitly with --jobs.
   2. Asserts the 3 pinned anchor object sha256 prefixes are byte-identical:
-        game/src/thread3_main.c.o          20ed811d
-        game/src/menu.c.o                  0552cf73
-        platform/net/online_race_results.c.o  12487bac
+        game/src/thread3_main.c.o          f3c010bc
+        game/src/menu.c.o                  73382451
+        platform/net/online_race_results.c.o  7e46ac0a
   3. Asserts the OFF `mdkr64` binary links ZERO online symbols (mdkr_online_* /
      party_link / ceremony) -- a second, name-based gate that also catches a leak
      whose codegen happens to leave the anchor bytes untouched.
@@ -29,10 +30,11 @@ an offline TU's codegen without referencing anything online; only the anchor
 hashes see that. The guard already pins the compiler (/usr/bin/cc) and Release,
 so on the toolchain the pins were minted on the bytes must not move.
 
-For a DELIBERATE toolchain bump (a legitimate compiler upgrade that moves the
-bytes while isolation still holds), pass --allow-hash-drift: the mismatch is then
-downgraded to a WARNING (the run still PASSES) and the new prefixes are printed so
-the pins can be re-minted. Without that flag, a moved anchor hash fails the guard.
+For a DELIBERATE, reviewed change to the beta-OFF source or its pinned build
+inputs (for example a compiler/flag upgrade), pass --allow-hash-drift: the
+mismatch is then downgraded to a WARNING (the run still PASSES) and the new
+prefixes are printed so the pins can be re-minted after the object/symbol gates
+are read. Without that flag, a moved anchor hash fails the guard.
 """
 
 from __future__ import annotations
@@ -48,10 +50,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 # The pinned anchors: object path (relative to the build dir) -> sha256 prefix.
+# Re-minted 2026-09-04 after the reviewed 1.7 beta-OFF source/build-input wave.
+# Two clean builds reproduced these bytes with MDKR_VERSION=1.7.0 and 1.6.0,
+# while the beta-TU-object and symbol gates independently found zero leaks.
 ANCHORS = {
-    "CMakeFiles/mdkr64.dir/game/src/thread3_main.c.o": "20ed811d",
-    "CMakeFiles/mdkr64.dir/game/src/menu.c.o": "0552cf73",
-    "CMakeFiles/mdkr64.dir/platform/net/online_race_results.c.o": "12487bac",
+    "CMakeFiles/mdkr64.dir/game/src/thread3_main.c.o": "f3c010bc",
+    "CMakeFiles/mdkr64.dir/game/src/menu.c.o": "73382451",
+    "CMakeFiles/mdkr64.dir/platform/net/online_race_results.c.o": "7e46ac0a",
 }
 
 # BETA-FEATURE symbols that must be ABSENT from an OFF binary. Deliberately NOT a
@@ -77,7 +82,7 @@ LEAK_SYMBOLS = (
 
 # The engine target's object directory, relative to a build dir. The OFF-leak
 # object scan is SCOPED here so it is robust regardless of how the OFF tree was
-# built: a beta-only TU that leaked into the release engine lands under this dir,
+# built: a beta-only TU that leaked into the beta-OFF engine lands under this dir,
 # whereas the SAME source compiled by a legitimate UNIT-TEST target lands under
 # that test target's own CMakeFiles/<target>.dir and is NOT a leak. Concretely,
 # platform/net/party_link.c carries no #if-beta guard and is compiled -- beta
@@ -134,7 +139,7 @@ def sha256_prefix(path: Path) -> str:
 def present_beta_tu_basenames(build_dir: Path) -> set[str]:
     """The BETA_TU_OBJECTS basenames that exist under `build_dir`'s ENGINE object
     dir (CMakeFiles/mdkr64.dir), and ONLY there -- never under a unit-test
-    target's object dir. A beta-only TU that leaks into the release engine lands
+    target's object dir. A beta-only TU that leaks into the OFF engine lands
     at CMakeFiles/mdkr64.dir/<rel>, so this exact-path scan catches a real leak
     while ignoring the same source legitimately compiled into a test target.
     Feed the result to leaked_tu_objects()."""
@@ -199,13 +204,19 @@ def main() -> int:
         "--keep", action="store_true",
         help="keep the scratch OFF build dir (default: remove after hashing)")
     parser.add_argument(
+        "--jobs", type=int, default=2,
+        help="parallel compiler jobs for the scratch build (default: 2)")
+    parser.add_argument(
         "--allow-hash-drift", action="store_true",
         help="downgrade an anchor byte-identity MISMATCH from a HARD failure to a "
-             "WARNING (still exits 0). Use ONLY for a deliberate toolchain bump: it "
-             "prints the new prefixes so the pins can be re-minted. The symbol + "
-             "TU-object gates stay HARD regardless.")
+             "WARNING (still exits 0). Use ONLY for a deliberate, reviewed "
+             "beta-OFF source or build-input change: it prints the new prefixes "
+             "so the pins can be re-minted. The symbol + TU-object gates stay "
+             "HARD regardless.")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
+    if args.jobs < 1:
+        parser.error("--jobs must be a positive integer")
 
     # Resolve the dependency source dirs from a reference build's cache.
     fetch_args: list[str] = []
@@ -240,7 +251,6 @@ def main() -> int:
             "-DMDKR_APP=ON",
             "-DMDKR_NATIVE_PHONE_PARTY=ON",
             "-DMDKR_WEBGPU_BACKEND=ON",
-            "-DMDKR_VERSION=1.6.0",
         ] + fetch_args
         cfg = subprocess.run(configure, cwd=ROOT, text=True,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -249,7 +259,8 @@ def main() -> int:
             return fail("the fresh OFF configure failed")
 
         build = subprocess.run(
-            ["cmake", "--build", str(scratch), "--target", "mdkr64", "-j6"],
+            ["cmake", "--build", str(scratch), "--target", "mdkr64",
+             "--parallel", str(args.jobs)],
             cwd=ROOT, text=True, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT)
         if build.returncode != 0:
@@ -309,33 +320,36 @@ def main() -> int:
                   file=sys.stderr)
             print("\n".join("    " + s for s in leaked[:40]), file=sys.stderr)
             return fail(f"the OFF binary links {len(leaked)} online symbol(s) -- "
-                        f"an isolation leak into the release engine")
+                        f"an isolation leak into the beta-OFF engine")
 
         if not hash_ok:
             # I-1: the anchor bytes are the GROUND TRUTH for isolation. A hash
             # mismatch is a HARD failure by default -- the symbol allowlist is a
             # fixed set of name prefixes and cannot see a leak that inlines with no
             # external symbol, uses an un-listed name, or only perturbs an offline
-            # TU's codegen. Only a DELIBERATE toolchain bump (--allow-hash-drift)
-            # downgrades it to a WARNING so a legit compiler upgrade is not a wall.
+            # TU's codegen. Only a DELIBERATE reviewed beta-OFF source/build-input
+            # change (--allow-hash-drift) downgrades it to a WARNING long enough
+            # to inspect the independent leak gates and re-mint the bytes.
             print("\n".join(hash_report), file=sys.stderr)
             if not args.allow_hash_drift:
                 return fail(
                     "anchor object bytes MOVED on the pinned toolchain (/usr/bin/cc "
                     "+ Release). The anchor bytes are the isolation ground truth, so "
                     "this is a HARD failure: an offline TU's codegen changed. If this "
-                    "is a DELIBERATE toolchain bump (not a leak), re-run with "
-                    "--allow-hash-drift and re-mint the pinned prefixes above.")
+                    "is a DELIBERATE reviewed beta-OFF source/build-input change "
+                    "(not a leak), re-run with --allow-hash-drift, read the "
+                    "object/symbol verdicts, and re-mint the prefixes above.")
             print("[isolation] WARNING: anchor hashes moved but --allow-hash-drift "
-                  "was given -- treating as a deliberate toolchain bump. Re-mint the "
-                  "pinned prefixes above (ANCHORS in this file) so the guard hard-"
-                  "enforces the NEW toolchain's bytes.", file=sys.stderr)
+                  "was given -- treating this as a deliberate reviewed beta-OFF "
+                  "source/build-input change. Re-mint the prefixes above (ANCHORS "
+                  "in this file) so the guard hard-enforces the new bytes.",
+                  file=sys.stderr)
 
         print(
             "PASS online isolation: a FRESH clean OFF build links ZERO online "
-            "symbols (mdkr_online_*/party_link/ceremony) into the release engine"
+            "symbols (mdkr_online_*/party_link/ceremony) into the beta-OFF engine"
             + (", and all 3 anchor objects are byte-identical (thread3_main "
-               "20ed811d, menu 0552cf73, online_race_results 12487bac)"
+               "f3c010bc, menu 73382451, online_race_results 7e46ac0a)"
                if hash_ok else " (anchor hashes DRIFTED -- see WARNING above; "
                "--allow-hash-drift)")
             + ".")

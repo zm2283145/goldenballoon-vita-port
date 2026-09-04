@@ -478,11 +478,15 @@ archive the validator's receipt SHA-256 with the release decision.
 ## 5. Desktop packaging and publication
 
 Desktop workflow version inputs are filename components, so public releases use
-bare semantic versions such as `1.6.0`, never `v1.6.0`. The `v` prefix belongs
-only to the Git tag. For version 1.6.0, the portable workflow must produce:
+bare semantic versions such as `1.7.0`, never `v1.7.0`. The `v` prefix belongs
+only to the Git tag. For version 1.7.0, the portable workflow must produce:
 
-- `Golden-Balloon-1.6.0-linux-x86_64.AppImage`
-- `Golden-Balloon-1.6.0-linux-x86_64.tar.gz`
+- `Golden-Balloon-1.7.0-linux-x86_64.AppImage`
+- `Golden-Balloon-1.7.0-linux-x86_64.tar.gz`
+
+Each portable artifact must have adjacent `.sha256` and `.provenance.json`
+sidecars. The checksum file contains exactly the artifact SHA-256 and basename,
+so it remains usable after all three files are downloaded into one directory.
 
 Automatic Windows publication is intentionally disabled for this release because
 `windows-latest` does not guarantee a qualifying D3D12/Vulkan adapter or GL 3.3
@@ -491,7 +495,7 @@ rendered launcher or gameplay gate. The workflow still builds, unit-tests,
 import-checks, packages, extracts, and launches `GoldenBalloon.exe` from an
 unrelated CWD.
 
-The exact-manifest `Golden-Balloon-1.6.0-windows-x64.zip` may be attached only
+The exact-manifest `Golden-Balloon-1.7.0-windows-x64.zip` may be attached only
 after manual acceptance on Windows hardware proves the extracted package can:
 
 1. open the real launcher through default WebGPU;
@@ -501,24 +505,19 @@ after manual acceptance on Windows hardware proves the extracted package can:
 5. exit and relaunch cleanly.
 
 Record the tester, Windows version, GPU, archive SHA-256, and outcome with the
-release. Publish the exact checksum-verified archive and provenance sidecars
+release. Publish the exact checksum-verified archive and provenance sidecars:
+its `.sha256` and `.provenance.json` files
 that were accepted; never substitute or rebuild it afterward. Explicit GL is a
 diagnostic follow-up, not a prerequisite for endorsing the WebGPU-default
 Windows artifact. This is a manual native GPU acceptance boundary, not an
 automated GPU-qualification claim.
 
-Dispatch it with:
-
-```bash
-gh workflow run release.yml --ref v1.6.0 \
-  -f version=1.6.0 \
-  -f release_tag=v1.6.0
-```
-
 Use `version=dev` only for disposable test artifacts, never for a public
 release; `release_tag` must then be empty. A semantic-version build requires the
 exact `v<version>` tag, and that tag must resolve to the workflow's source
-commit. The workflow must reject every other input shape, compile that exact
+commit. The tagged dispatch belongs to the exact assembly sequence below; do
+not dispatch it from a moving branch or before the candidate tag exists. The
+workflow must reject every other input shape, compile that exact
 value into both validation binaries, and compare each binary's `--version`
 output before packaging. The Windows zip's exact payload remains
 the `GoldenBalloon/` directory containing `GoldenBalloon.exe`, `LICENSE`,
@@ -538,9 +537,42 @@ pass in the same job before the Linux artifacts are uploaded. If any part of
 that job fails or is unavailable, publish no Linux artifact and do not attach a
 locally produced replacement under the canonical release filenames.
 
-### macOS 1.6.0 — unsigned/ad-hoc release artifact
+Before creating the release tag, put the exact behaviorally qualified candidate
+on public `main`, check it out cleanly, and run the external repository gate:
 
-The public 1.6.0 macOS artifact intentionally skips Developer ID signing and
+```bash
+tools/manual/check_github_launch_ready.sh --repo akratch/goldenballoon
+```
+
+Expected: `GitHub public readiness passed`. Do not tag or dispatch a release
+while it reports `[FAIL]`. This is the authoritative gate for public repository
+settings and surfaces that source CI cannot prove, including branch protection,
+Actions SHA-pin enforcement and retention, security endpoints, stale public
+commit references, workflow artifacts, protected release/Pages environments,
+and release-asset sidecars. `macos-release` must require an environment reviewer
+and permit only branch `main` plus tag `v*`; `github-pages` must permit only tag
+`v*`. Review every
+warning explicitly even though warnings alone do not fail the command.
+Hosted workflow paths are compared in full. The exact GitHub-managed
+`dynamic/dependabot/dependabot-updates` path is accepted only while the source
+tree tracks `.github/dependabot.yml`; every other untracked or moved workflow
+still fails closed.
+GitHub's immutable closed-PR refs may sit outside rewritten `main` only when
+their exact ref and full SHA appear in
+`tools/public_retained_ref_allowlist.tsv`; every listed commit's complete
+reachable history has passed the current public-surface policy. A new or moved
+PR ref, any mutable branch/tag ref, and stale workflow runs still fail closed.
+For canonical desktop artifacts, the gate uses GitHub's authoritative asset
+SHA-256, downloads only the small adjacent sidecars, and rejects checksum byte
+mismatches, dirty or wrong-commit provenance, wrong 1.7 Phone Party/signing
+modes, and orphan sidecars. For every 1.7+ release it also requires both Linux
+formats, Windows, at least one recognised macOS DMG, and one Phone Party mode
+across every platform sidecar. Sidecar filenames alone are not release
+evidence.
+
+### macOS 1.7.0 — unsigned/ad-hoc release artifact
+
+The public 1.7.0 macOS artifact intentionally skips Developer ID signing and
 notarization. “Unsigned” in its filename means there is no trusted signing
 identity: the app must still have a valid inside-out ad-hoc integrity seal. The
 only expected first-launch interruption is macOS's unidentified-developer
@@ -548,22 +580,29 @@ warning; a “damaged” warning is always a release failure.
 
 The exact public files are:
 
-- `Golden-Balloon-1.6.0-macos-arm64-unsigned.dmg`
-- `Golden-Balloon-1.6.0-macos-arm64-unsigned.dmg.sha256`
-- `Golden-Balloon-1.6.0-macos-arm64-unsigned.dmg.provenance.json`
+- `Golden-Balloon-1.7.0-macos-arm64-unsigned.dmg`
+- `Golden-Balloon-1.7.0-macos-arm64-unsigned.dmg.sha256`
+- `Golden-Balloon-1.7.0-macos-arm64-unsigned.dmg.provenance.json`
 
 The provenance sidecar must name that exact DMG, the exact 40-character source
-commit, version `1.6.0`, platform `macos`, the DMG SHA-256, and
-`macos_signing: ad-hoc-unsigned`.
+commit, version `1.7.0`, platform `macos`, the DMG SHA-256, and
+`macos_signing: ad-hoc-unsigned`. It must also record `phone_party: partyless`
+or `phone_party: cloud-enabled`, exactly matching the release workflow's gated
+origin decision; an origin-less artifact must never claim cloud capability.
 
 Before producing the candidate:
 
 - [ ] The source tree and index are clean.
 - [ ] `CMakeLists.txt`, `macos/Resources/Info.plist`, the app's `--version`
-      output, and the release notes all agree on `1.6.0`.
-- [ ] The release commit is the intended `v1.6.0` tag commit. A test artifact
+      output, and the release notes all agree on `1.7.0`. Both desktop producer
+      workflows independently reject a release-version input that differs from
+      the checked-out `CMakeLists.txt` authority.
+- [ ] Linux, Windows, and macOS release workflows explicitly enable
+      `MDKR_ENABLE_ONLINE_BETA`; the resulting launcher exposes **Online Room**,
+      while the published browser payload remains local-only.
+- [ ] The release commit is the intended `v1.7.0` tag commit. A test artifact
       may omit `release_tag`; an artifact may be published only with
-      `release_tag=v1.6.0` resolving to the workflow's exact source commit.
+      `release_tag=v1.7.0` resolving to the workflow's exact source commit.
 - [ ] The pinned standalone SDL2 build is used for arm64/macOS 13. Homebrew
       `sdl2-compat`, SDL3, Homebrew load paths, mixed architectures, and a
       deployment target newer than 13.0 are release blockers.
@@ -571,9 +610,19 @@ Before producing the candidate:
 Build and validate a non-publishing candidate through the protected workflow:
 
 ```bash
-gh workflow run macos-release.yml \
-  -f version=1.6.0 \
+gh workflow run macos-release.yml --repo akratch/goldenballoon --ref main \
+  -f version=1.7.0 \
   -f trusted_signing=false
+```
+
+Record the resulting run as `MACOS_TEST_RUN_ID`; require its source SHA to be
+the same clean public-main candidate before accepting any result:
+
+```bash
+MACOS_TEST_RUN_ID="replace-with-exact-run-id"
+gh run watch "$MACOS_TEST_RUN_ID" --repo akratch/goldenballoon --exit-status
+test "$(gh run view "$MACOS_TEST_RUN_ID" --repo akratch/goldenballoon \
+  --json headSha --jq .headSha)" = "$(git rev-parse HEAD)"
 ```
 
 The package job must complete all of these checks before its artifact is
@@ -581,7 +630,7 @@ accepted:
 
 - [ ] Build SHA-pinned standalone SDL2 2.32.10 for arm64/macOS 13.
 - [ ] Build `Golden Balloon.app` with `--strict-deployment-target`, embed version
-      `1.6.0` and the exact source commit, bundle SDL2, then seal nested code
+      `1.7.0` and the exact source commit, bundle SDL2, then seal nested code
       before the outer app.
 - [ ] Run `verify_asset_free.sh`, `verify_gatekeeper_bundle.sh`, and
       `verify_unsigned_release.sh`. The last check must prove the ad-hoc seal,
@@ -601,30 +650,186 @@ For a local reconstruction of those same build and verification steps, use the
 commands in [`../macos/README.md`](../macos/README.md). Do not replace its
 pinned SDL2 prefix with a machine-local Homebrew package.
 
-After the test artifact passes and `v1.6.0` exists on the exact candidate
-commit, publish by dispatching the same source commit with the binding enabled:
+### Exact tag, draft release, and artifact assembly
+
+Do not start this sequence until the entire behavioral matrix, the unsigned
+macOS test artifact above, and the pre-tag public GitHub readiness gate have
+passed against one clean commit. Keep the GitHub Release as a draft until every
+required platform artifact below is present and verified. The established
+release tags are signed annotated tags; preserve that boundary:
 
 ```bash
-gh workflow run macos-release.yml --ref v1.6.0 \
-  -f version=1.6.0 \
+RELEASE_SHA="$(git rev-parse HEAD)"
+test "$(git rev-parse public/main)" = "$RELEASE_SHA"
+git tag -s v1.7.0 "$RELEASE_SHA" -m "Golden Balloon 1.7.0"
+git tag -v v1.7.0
+git push public refs/tags/v1.7.0
+test "$(gh api repos/akratch/goldenballoon/commits/v1.7.0 --jq .sha)" = "$RELEASE_SHA"
+
+gh release create v1.7.0 --repo akratch/goldenballoon \
+  --verify-tag --draft \
+  --title "Golden Balloon 1.7.0" \
+  --notes-file RELEASE_NOTES.md
+```
+
+Dispatch the qualified portable workflow from that tag:
+
+```bash
+gh workflow run release.yml --repo akratch/goldenballoon --ref v1.7.0 \
+  -f version=1.7.0 \
+  -f release_tag=v1.7.0
+```
+
+Record the run ID shown by GitHub Actions as `PORTABLE_RUN_ID`; never use an
+unqualified "latest artifact" download. Require the run to succeed at the
+release commit, then download its Linux and Windows artifacts into separate
+empty directories and re-run the shared provenance verifier. Each invocation
+names every required primary artifact explicitly, so a valid sidecar for only
+half of a promised platform set cannot make the download pass:
+
+```bash
+PORTABLE_RUN_ID="replace-with-exact-run-id"
+PHONE_PARTY_MODE=partyless # or cloud-enabled: match the workflow's gated output
+RELEASE_STAGING="$(mktemp -d "${TMPDIR:-/tmp}/golden-balloon-1.7.0.XXXXXX")"
+
+gh run watch "$PORTABLE_RUN_ID" --repo akratch/goldenballoon --exit-status
+test "$(gh run view "$PORTABLE_RUN_ID" --repo akratch/goldenballoon \
+  --json headSha --jq .headSha)" = "$RELEASE_SHA"
+gh run download "$PORTABLE_RUN_ID" --repo akratch/goldenballoon \
+  --name Golden-Balloon-1.7.0-linux-x86_64 --dir "$RELEASE_STAGING/linux"
+gh run download "$PORTABLE_RUN_ID" --repo akratch/goldenballoon \
+  --name Golden-Balloon-1.7.0-windows-x64 --dir "$RELEASE_STAGING/windows"
+
+tools/release/verify_provenance.sh \
+  --dist "$RELEASE_STAGING/linux" --version 1.7.0 --commit "$RELEASE_SHA" \
+  --require-asset Golden-Balloon-1.7.0-linux-x86_64.AppImage \
+  --require-asset Golden-Balloon-1.7.0-linux-x86_64.tar.gz \
+  --require platform=linux --require "phone_party=$PHONE_PARTY_MODE"
+tools/release/verify_provenance.sh \
+  --dist "$RELEASE_STAGING/windows" --version 1.7.0 --commit "$RELEASE_SHA" \
+  --require-asset Golden-Balloon-1.7.0-windows-x64.zip \
+  --require platform=windows --require "phone_party=$PHONE_PARTY_MODE"
+
+test "$(gh release view v1.7.0 --repo akratch/goldenballoon \
+  --json isDraft --jq .isDraft)" = true
+LINUX_UPLOAD_PATHS=(
+  "$RELEASE_STAGING/linux/Golden-Balloon-1.7.0-linux-x86_64.AppImage"
+  "$RELEASE_STAGING/linux/Golden-Balloon-1.7.0-linux-x86_64.AppImage.sha256"
+  "$RELEASE_STAGING/linux/Golden-Balloon-1.7.0-linux-x86_64.AppImage.provenance.json"
+  "$RELEASE_STAGING/linux/Golden-Balloon-1.7.0-linux-x86_64.tar.gz"
+  "$RELEASE_STAGING/linux/Golden-Balloon-1.7.0-linux-x86_64.tar.gz.sha256"
+  "$RELEASE_STAGING/linux/Golden-Balloon-1.7.0-linux-x86_64.tar.gz.provenance.json"
+)
+RELEASE_ID="$(gh api repos/akratch/goldenballoon/releases/tags/v1.7.0 --jq .id)"
+EXISTING_ASSETS="$(gh api --paginate \
+  "repos/akratch/goldenballoon/releases/$RELEASE_ID/assets?per_page=100" \
+  --jq '.[].name')"
+for upload_path in "${LINUX_UPLOAD_PATHS[@]}"; do
+  upload_name="$(basename "$upload_path")"
+  if [[ ! -f "$upload_path" ]]; then
+    echo "required local release file is missing; refusing upload: $upload_path" >&2
+    exit 1
+  fi
+  if printf '%s\n' "$EXISTING_ASSETS" | grep -Fqx "$upload_name"; then
+    echo "release asset already exists; refusing upload: $upload_name" >&2
+    exit 1
+  fi
+done
+gh release upload v1.7.0 --repo akratch/goldenballoon \
+  "${LINUX_UPLOAD_PATHS[@]}"
+```
+
+Do not use `gh release upload --clobber`: duplicate names are a stop condition,
+not permission to replace qualified bytes. Preserve the downloaded Windows
+directory unchanged through the real-hardware acceptance above. Only after it
+passes, upload that exact zip and its two sidecars:
+
+```bash
+test "$(gh release view v1.7.0 --repo akratch/goldenballoon \
+  --json isDraft --jq .isDraft)" = true
+WINDOWS_UPLOAD_PATHS=(
+  "$RELEASE_STAGING/windows/Golden-Balloon-1.7.0-windows-x64.zip"
+  "$RELEASE_STAGING/windows/Golden-Balloon-1.7.0-windows-x64.zip.sha256"
+  "$RELEASE_STAGING/windows/Golden-Balloon-1.7.0-windows-x64.zip.provenance.json"
+)
+RELEASE_ID="$(gh api repos/akratch/goldenballoon/releases/tags/v1.7.0 --jq .id)"
+EXISTING_ASSETS="$(gh api --paginate \
+  "repos/akratch/goldenballoon/releases/$RELEASE_ID/assets?per_page=100" \
+  --jq '.[].name')"
+for upload_path in "${WINDOWS_UPLOAD_PATHS[@]}"; do
+  upload_name="$(basename "$upload_path")"
+  if [[ ! -f "$upload_path" ]]; then
+    echo "required local release file is missing; refusing upload: $upload_path" >&2
+    exit 1
+  fi
+  if printf '%s\n' "$EXISTING_ASSETS" | grep -Fqx "$upload_name"; then
+    echo "release asset already exists; refusing upload: $upload_name" >&2
+    exit 1
+  fi
+done
+gh release upload v1.7.0 --repo akratch/goldenballoon \
+  "${WINDOWS_UPLOAD_PATHS[@]}"
+```
+
+Publish the unsigned macOS artifact into the existing draft by dispatching the
+same tagged source commit with its binding enabled:
+
+```bash
+gh workflow run macos-release.yml --repo akratch/goldenballoon --ref v1.7.0 \
+  -f version=1.7.0 \
   -f trusted_signing=false \
-  -f release_tag=v1.6.0
+  -f release_tag=v1.7.0
 ```
 
 The publish job must independently re-check the tag/commit binding, checksum,
 exact artifact name, provenance fields, and provenance digest before uploading
-to the existing `v1.6.0` GitHub Release.
+to the existing draft `v1.7.0` GitHub Release. It preflights all three target
+names before the first upload and must reject an absent, already-published,
+prerelease, or colliding target rather than exposing a partial release.
+
+Before publishing the draft, compare its complete asset inventory with the
+twelve exact artifact/sidecar names, then re-run the public GitHub gate so the
+new release metadata and sidecar contents are checked too:
+
+```bash
+printf '%s\n' \
+  Golden-Balloon-1.7.0-linux-x86_64.AppImage \
+  Golden-Balloon-1.7.0-linux-x86_64.AppImage.sha256 \
+  Golden-Balloon-1.7.0-linux-x86_64.AppImage.provenance.json \
+  Golden-Balloon-1.7.0-linux-x86_64.tar.gz \
+  Golden-Balloon-1.7.0-linux-x86_64.tar.gz.sha256 \
+  Golden-Balloon-1.7.0-linux-x86_64.tar.gz.provenance.json \
+  Golden-Balloon-1.7.0-windows-x64.zip \
+  Golden-Balloon-1.7.0-windows-x64.zip.sha256 \
+  Golden-Balloon-1.7.0-windows-x64.zip.provenance.json \
+  Golden-Balloon-1.7.0-macos-arm64-unsigned.dmg \
+  Golden-Balloon-1.7.0-macos-arm64-unsigned.dmg.sha256 \
+  Golden-Balloon-1.7.0-macos-arm64-unsigned.dmg.provenance.json \
+  | LC_ALL=C sort > "$RELEASE_STAGING/expected-assets.txt"
+gh release view v1.7.0 --repo akratch/goldenballoon \
+  --json assets,isDraft --jq '.assets[].name' \
+  | LC_ALL=C sort > "$RELEASE_STAGING/actual-assets.txt"
+diff -u "$RELEASE_STAGING/expected-assets.txt" "$RELEASE_STAGING/actual-assets.txt"
+test "$(gh release view v1.7.0 --repo akratch/goldenballoon \
+  --json isDraft --jq .isDraft)" = true
+tools/manual/check_github_launch_ready.sh --repo akratch/goldenballoon
+gh release edit v1.7.0 --repo akratch/goldenballoon --draft=false --latest
+```
+
+Any mismatch leaves the release in draft. Do not delete, replace, or rebuild an
+artifact to make the list pass; diagnose the exact failed producer or acceptance
+record and repeat that lane from the unchanged tag.
 
 ### Optional trusted macOS artifact
 
-The credentialed path is not part of the unsigned 1.6.0 release. If it is used
+The credentialed path is not part of the unsigned 1.7.0 release. If it is used
 later, its exact artifact name is
-`Golden-Balloon-1.6.0-macos-arm64-signed-notarized.dmg`, with matching
+`Golden-Balloon-1.7.0-macos-arm64-signed-notarized.dmg`, with matching
 `.sha256` and `.provenance.json` sidecars and
 `macos_signing: developer-id-notarized`. Dispatch with
 `trusted_signing=true`; the workflow must Developer ID-sign with Hardened
 Runtime, notarize and staple the app, sign and notarize the DMG, require
-Gatekeeper acceptance, and still enforce `release_tag=v1.6.0` against the exact
+Gatekeeper acceptance, and still enforce `release_tag=v1.7.0` against the exact
 workflow commit before publication. There is no release-approved skip-notary
 path.
 
@@ -640,6 +845,21 @@ Publishing is `workflow_dispatch`-only, by deliberate maintainer decision — it
 fires on push, tag or schedule. The workflow re-runs the size budget, ROM-absence
 guard, browser save-custody gate, and tracked-ROM check as their own red steps,
 so the release does not depend on a script the build could have skipped.
+It also refuses every branch, raw commit, moving `main`, and stale tag: dispatch
+the exact project-version tag only, after that tag is bound to the qualified
+candidate:
+
+```bash
+gh workflow run web-demo.yml --ref v1.7.0
+```
+
+The tag-binding step must report `web deployment bound to v1.7.0 at <SHA>`,
+where `<SHA>` is the same qualified commit recorded by the desktop artifacts.
+The next gate must confirm that `v1.7.0` is already the latest published,
+non-prerelease GitHub Release; a pushed tag, draft, prerelease, or older
+published tag cannot update or roll back the production site. The deploy job
+repeats both state and latest-tag checks immediately before calling Pages, so a
+release withdrawn or superseded while the build runs also fails closed.
 
 Before dispatching:
 

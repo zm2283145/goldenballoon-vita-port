@@ -6,6 +6,12 @@ taxonomy, the visual system, and the interaction rules. It is written as an
 audit followed by a numbered change plan, so every delta can be traced to the
 problem it solves.
 
+Release status note (1.7.0): the audit and numbered plan record the original
+beta-OFF launcher redesign. The later native Online Room beta deliberately
+extends that design: `MDKR_ENABLE_ONLINE_BETA` packages expose the live panel
+without an environment variable; beta-OFF development previews still require
+`MDKR_ONLINE_ROOM_PREVIEW=1`; builds with both compile-time gates off omit it.
+
 The bar it is written against: *beautiful, on parity with modern game
 launchers, super clean and clear, with no duplicative options and no
 unexplained effects, and easy to navigate.*
@@ -19,7 +25,7 @@ unexplained effects, and easy to navigate.*
 | # | Label | What it holds |
 |---|-------|---------------|
 | 0 | Game ROM | Drop zone, native picker, typed-path entry, validation verdict, **and the Phone Party host** |
-| 1 | Online Room | Room browser for an online mode this release does not ship |
+| 1 | Online Room | Room browser for the then-unshipped online mode |
 | 2 | Settings | 11 collapsible groups over ~56 controls |
 | 3 | Diagnostics | Renderer/SDL/OS line, log path, copy-to-clipboard, log tail |
 | 4 | About | Licence and provenance copy, key hints |
@@ -35,9 +41,9 @@ format. A modern launcher opens on the thing you came to do.
 controllers is a decision you make when you sit down to play, with people in
 the room. It is at the bottom of the page about locating a cartridge image.
 
-**Online Room ships a room for a mode that does not exist.** Race admission
-is already fail-closed, so the panel is inert — which is worse than absent: it
-is a promise the build does not keep. Commit `96fceab` hid it behind
+**Online Room exposed a room for a mode that did not yet ship.** Race admission
+was already fail-closed, so the panel was inert — which was worse than absent:
+it was a promise the build did not keep. Commit `96fceab` hid it behind
 `MDKR_ONLINE_ROOM_PREVIEW=1` and was reverted for release-scheduling reasons,
 not design ones.
 
@@ -214,7 +220,7 @@ renumbered.
 | # | Was | Is | Rationale |
 |---|-----|----|-----------|
 | 0 | Game ROM | **Play** | The home. It is what the launcher opens on, so it should be the thing you came for. |
-| 1 | Online Room | **Online Room**, hidden unless `MDKR_ONLINE_ROOM_PREVIEW=1` | A shipping build offers exactly what the release offers. |
+| 1 | Online Room | **Online Room**, always visible in a native-beta package; environment-gated in a beta-OFF preview; absent with both build gates off | A packaged launcher offers exactly the online mode it contains. |
 | 2 | Settings | **Settings** | — |
 | 3 | Diagnostics | **Diagnostics** | — |
 | 4 | About | **About** | — |
@@ -417,7 +423,10 @@ unchanged throughout; a merged control reads the keys that already exist.
    the `panelVisible()` predicate and all five enumeration sites from
    `96fceab`. Indices stay stable; a hidden panel gets no tab and refuses
    selection by name or index. *Why: no teasers — a shipped build offers
-   exactly what the release offers.*
+   exactly what the release offers.* The later 1.7.0 native beta keeps that
+   principle but makes its compile-time beta gate sufficient: beta packages
+   expose the live panel, while this environment gate remains exclusive to
+   beta-OFF development previews.
 
 ### Settings
 
@@ -460,7 +469,9 @@ unchanged throughout; a merged control reads the keys that already exist.
     three `check_online_room_*` gates to the new truth — new panel name, new
     group names, preview env armed — **without lowering any assertion**.
     Recalibrated palette and draw-bounds expectations carry before/after
-    evidence in the commit that changes them. `a11y_race` is untouched.
+    evidence in the commit that changes them. `a11y_race` is untouched. These
+    original preview gates arm the environment variable; native-beta release
+    qualification instead proves the panel is present from the build gate alone.
 
     Two constraints the audit surfaced and this design works *around* rather
     than through:

@@ -24,7 +24,7 @@
  * pointer-free, and the launcher-only projection helper below takes its lobby
  * inputs by forward-declared pointer so an engine TU that includes this header
  * pulls in no launcher headers. The translation unit (party_link.c) is compiled
- * ONLY under MDKR_ENABLE_ONLINE_BETA (the CMake gate), so the release engine
+ * ONLY under MDKR_ENABLE_ONLINE_BETA (the CMake gate), so the beta-OFF engine
  * object never carries it.
  */
 #ifndef MDKR_NET_PARTY_LINK_H

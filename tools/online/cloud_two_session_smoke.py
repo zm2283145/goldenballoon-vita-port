@@ -75,7 +75,22 @@ from typing import Callable, Optional
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_PARTY_ORIGIN = "https://party.goldenballoon.net"
-NATIVE_USER_AGENT = "GoldenBalloon/1.6.0"  # matches match_signal_client.cpp
+
+
+def source_release_version() -> str:
+    """Read the native client's User-Agent version from its CMake authority."""
+    source = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+    match = re.search(
+        r'^set\(MDKR_VERSION "([0-9]+\.[0-9]+\.[0-9]+)" CACHE STRING ',
+        source, re.MULTILINE)
+    if match is None:
+        raise RuntimeError("could not resolve MDKR_VERSION from CMakeLists.txt")
+    return match.group(1)
+
+
+# match_signal_client.cpp receives this same MDKR_VERSION through CMake's
+# MDKR_MATCH_USER_AGENT_VERSION definition.
+NATIVE_USER_AGENT = f"GoldenBalloon/{source_release_version()}"
 
 ROOM = re.compile(r"^\[E2E\] room=(\S+) code=(\d{6})$")
 PHRASE = re.compile(r"^\[E2E\] phrase=(.+)$")
@@ -273,7 +288,7 @@ def run_two_sessions(binary: Path, party_origin: str, ticks: int,
             "join", join_log, verbose)
 
         try:
-            joiner.wait_line(lambda l: l == "[E2E] joined",
+            joiner.wait_line(lambda line: line == "[E2E] joined",
                              "join accepted by cloud", 30.0)
             phase(True, "cloud_join",
                   "joiner's cloud HTTP join-by-code + /connect WS succeeded")

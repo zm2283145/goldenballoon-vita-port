@@ -58,7 +58,7 @@ typedef enum MdkrOnlineViewFailure {
     /* Race-scoped recovery reasons owned by the beta online-live engine
      * session (platform/app/main_app.cpp), routed to the post-race panel
      * after the visible engine ends. Gated behind the beta macro so the
-     * OFF/release build's MdkrOnlineViewFailure layout -- and every switch /
+     * beta-OFF build's MdkrOnlineViewFailure layout -- and every switch /
      * range check keyed on _COUNT -- stays byte-identical. OPPONENT_LEFT: a
      * roster peer vanished mid-race. OPPONENT_NEVER_STARTED: the race-start
      * barrier aborted before the first authored tick (peer never delivered

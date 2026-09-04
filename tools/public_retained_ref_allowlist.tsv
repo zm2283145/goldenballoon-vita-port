@@ -1,0 +1,10 @@
+# GitHub retains closed pull-request refs and repository owners cannot delete
+# them. Each tab-separated ref/SHA pair below was reviewed with the current
+# public-surface policy over its complete reachable history on 2026-09-04.
+#
+# Syntax: refs/pull/<number>/<head|merge><TAB><full 40-character commit SHA>
+refs/pull/1/head	4d7d3bb6ac2d4920126f9d5be18887cf5408f4d7
+refs/pull/1/merge	350f0a6d7b99c8c7f45459c5d40f243c990e1757
+refs/pull/3/head	d3e6f1b1906ffc52b91f28b9a87ec5fc294ea33e
+refs/pull/15/head	30f28d07f7dbb575b20ad40bde4dfc92215b07e6
+refs/pull/15/merge	a4d5a905947568928ca8d70b19d384c6b0dfa0a4

@@ -56,6 +56,9 @@ WINDOWS_IMPORT_GUARD = ROOT / "tools" / "check_windows_imports.sh"
 LINUX_PACKAGER = ROOT / "tools" / "package_linux_appimage.sh"
 PROVENANCE_STAMP = ROOT / "tools" / "release" / "stamp_provenance.sh"
 PROVENANCE_VERIFY = ROOT / "tools" / "release" / "verify_provenance.sh"
+GITHUB_LAUNCH_READY = ROOT / "tools" / "manual" / "check_github_launch_ready.sh"
+PUBLIC_RETAINED_REFS = ROOT / "tools" / "public_retained_ref_allowlist.tsv"
+GITHUB_PUBLIC_COMMIT_REFS = ROOT / "tools" / "check_github_public_commit_refs.py"
 MACOS_BUILDER = ROOT / "macos" / "Scripts" / "build_app_bundle.sh"
 MACOS_SIGNER = ROOT / "macos" / "Scripts" / "sign_and_notarize.sh"
 MACOS_NOTARY = ROOT / "macos" / "Scripts" / "notarize_artifact.sh"
@@ -76,6 +79,7 @@ MACOS_INFO_PLIST = ROOT / "macos" / "Resources" / "Info.plist"
 MACOS_README = ROOT / "macos" / "README.md"
 APP_PACING_CHECK = ROOT / "tests" / "check_app_adopted_pacing.py"
 CMAKE_PROJECT = ROOT / "CMakeLists.txt"
+GITIGNORE = ROOT / ".gitignore"
 UI_SETTINGS = ROOT / "platform" / "app" / "ui_settings.cpp"
 APP_SOURCE_DIR = ROOT / "platform" / "app"
 RELEASE_CHECKLIST = ROOT / "docs" / "RELEASE_CHECKLIST.md"
@@ -109,6 +113,9 @@ SOURCES = {
     "linux_packager": LINUX_PACKAGER,
     "provenance_stamp": PROVENANCE_STAMP,
     "provenance_verify": PROVENANCE_VERIFY,
+    "github_launch_ready": GITHUB_LAUNCH_READY,
+    "public_retained_refs": PUBLIC_RETAINED_REFS,
+    "github_public_commit_refs": GITHUB_PUBLIC_COMMIT_REFS,
     "builder": MACOS_BUILDER,
     "signer": MACOS_SIGNER,
     "notary": MACOS_NOTARY,
@@ -127,6 +134,7 @@ SOURCES = {
     "macos_readme": MACOS_README,
     "app_pacing": APP_PACING_CHECK,
     "cmake": CMAKE_PROJECT,
+    "gitignore": GITIGNORE,
     "ui_settings": UI_SETTINGS,
     "checklist": RELEASE_CHECKLIST,
     "candidate_guide": RELEASE_CANDIDATE_GUIDE,
@@ -1018,8 +1026,9 @@ def validate_web_demo(sources: dict[str, str]) -> list[str]:
     ]
     if any(index < 0 for index in ordered) or ordered != sorted(ordered):
         failures.append(
-            "web-demo no longer builds, validates linked layout, ROM-scans, "
-            "and uploads the exact artifact in that order"
+            "web-demo no longer binds a published release, builds, validates "
+            "linked layout, ROM-scans, uploads the exact artifact, rechecks "
+            "release state, and deploys in that order"
         )
     return failures
 
@@ -1473,10 +1482,34 @@ def validate_release_checklist(sources: dict[str, str]) -> list[str]:
             "release checklist must bind both portable and macOS publication "
             f"to {RELEASE_TAG}"
         )
-    if source.count(f"--ref {RELEASE_TAG}") < 2:
+    if source.count(f"--ref {RELEASE_TAG}") < 3:
         failures.append(
-            "release checklist must dispatch both portable and macOS publication "
+            "release checklist must dispatch portable, macOS, and web publication "
             f"from the exact {RELEASE_TAG} ref"
+        )
+    if source.count('gh run download "$PORTABLE_RUN_ID"') < 2:
+        failures.append(
+            "release checklist must download Linux and Windows artifacts from "
+            "one explicitly recorded portable workflow run"
+        )
+    if source.count(
+        f"gh release upload {RELEASE_TAG} --repo akratch/goldenballoon"
+    ) < 2:
+        failures.append(
+            "release checklist must upload the independently verified Linux and "
+            "accepted Windows artifact sets to the draft"
+        )
+    if source.count(
+        "tools/manual/check_github_launch_ready.sh --repo akratch/goldenballoon"
+    ) < 2:
+        failures.append(
+            "release checklist must run public GitHub readiness both before the "
+            "tag and after draft artifact assembly"
+        )
+    if source.count('--json isDraft --jq .isDraft)" = true') < 3:
+        failures.append(
+            "release checklist must prove the target is still a draft before "
+            "both manual uploads and before final publication"
         )
     failures.extend(pinned("release_checklist", sources))
     return failures

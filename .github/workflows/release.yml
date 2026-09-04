@@ -61,6 +61,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       party_origin: ${{ steps.party.outputs.party_origin }}
+      party_mode: ${{ steps.party.outputs.party_mode }}
     steps:
       - name: Checkout full tag history
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -83,6 +84,13 @@ jobs:
               exit 1
             }
           else
+            SOURCE_RELEASE_VERSION="$(sed -nE \
+              's/^[[:space:]]*set\(MDKR_VERSION "([^"]+)" CACHE STRING.*$/\1/p' \
+              CMakeLists.txt)"
+            [[ "$SOURCE_RELEASE_VERSION" == "$RELEASE_VERSION" ]] || {
+              echo "release version $RELEASE_VERSION does not match CMakeLists.txt ($SOURCE_RELEASE_VERSION)" >&2
+              exit 1
+            }
             EXPECTED_RELEASE_TAG="v${RELEASE_VERSION}"
             [[ "$RELEASE_TAG" == "$EXPECTED_RELEASE_TAG" ]] || {
               echo "release_tag must exactly equal $EXPECTED_RELEASE_TAG" >&2
@@ -103,7 +111,9 @@ jobs:
       # partyless for three releases. Fail closed here, before anything
       # is built: either a valid deployed origin is configured, or a partyless
       # release is declared on purpose and said out loud in the log. The build
-      # jobs consume the resolved value as this job's `party_origin` output.
+      # jobs consume the resolved origin as `party_origin`; provenance consumes
+      # the independently explicit `party_mode` output so an origin-less build
+      # cannot later be described as cloud-enabled.
       - id: party
         name: Resolve and gate the compiled Phone Party origin
         env:
@@ -113,6 +123,7 @@ jobs:
           set -euo pipefail
           origin="${PARTY_ORIGIN:-}"
           allow="${ALLOW_PARTYLESS:-}"
+          mode=""
           if [[ -n "$origin" ]]; then
             # Exactly https://HOST[:PORT]. A trailing slash, path, query,
             # fragment or embedded credentials all change the URL the phone
@@ -130,6 +141,7 @@ jobs:
                 ;;
             esac
             echo "Phone Party origin compiled into this release: $origin"
+            mode="cloud-enabled"
           elif [[ "$allow" == "1" ]]; then
             echo "::warning::PARTYLESS RELEASE: these artifacts ship with Phone Party absent"
             echo "=============================================================="
@@ -140,11 +152,13 @@ jobs:
             echo "To ship a working Phone Party, set the repository variable"
             echo "MDKR_PARTY_ORIGIN to the deployed https:// origin and re-run."
             echo "=============================================================="
+            mode="partyless"
           else
             echo "::error::No Phone Party origin for this release: these artifacts would ship with Phone Party absent (an origin-less build shows no Phone Party surface at all). Set the repository variable MDKR_PARTY_ORIGIN to the deployed https:// origin, or set MDKR_ALLOW_PARTYLESS_RELEASE=1 to ship deliberately without Phone Party."
             exit 1
           fi
           echo "party_origin=$origin" >> "$GITHUB_OUTPUT"
+          echo "party_mode=$mode" >> "$GITHUB_OUTPUT"
       # A dispatch can name any ref. Run the same clean-room / public-surface
       # policy gates correctness.yml runs, before anything is built or
       # published, so an unvetted ref cannot ship.
@@ -187,6 +201,7 @@ jobs:
         run: |
           cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
             -DMDKR_VERSION="$RELEASE_VERSION" \
+            -DMDKR_ENABLE_ONLINE_BETA=ON \
             -DMDKR_ENABLE_ONLINE_ROOM_PREVIEW=OFF \
             -DMDKR_PARTY_ORIGIN="$PARTY_ORIGIN"
           cmake --build build -j
@@ -294,8 +309,8 @@ jobs:
 
           qualify_launcher webgpu "" "$GITHUB_WORKSPACE/build/mdkr64"
           qualify_launcher gl gl "$GITHUB_WORKSPACE/build/mdkr64"
-          qualify_launcher deferred-preview "" "$GITHUB_WORKSPACE/build/mdkr64" \
-            "Online Room" Play
+          qualify_launcher online-beta "" "$GITHUB_WORKSPACE/build/mdkr64" \
+            "Online Room" "Online Room"
 
           # Phone Party surface witness (direct, not a proxy). The party
           # section lives on the launcher's Play panel, so this run opens that
@@ -478,7 +493,7 @@ jobs:
 
           qualify_package webgpu ""
           qualify_package gl gl
-          qualify_package deferred-preview "" "Online Room" Play
+          qualify_package online-beta "" "Online Room" "Online Room"
 
           # Phone Party surface witness for the artifact players actually get.
           # Same seam and same honest limits as the built-tree step above. A
@@ -537,23 +552,32 @@ jobs:
             echo "package: party surface drew, $party_line"
           fi
       - name: Stamp provenance (bind assets to this commit)
+        env:
+          PHONE_PARTY_MODE: ${{ needs.validate.outputs.party_mode }}
         run: |
           for f in dist/Golden-Balloon-*-linux-x86_64.*; do
-            case "$f" in *.provenance.json) continue ;; esac
-            ./tools/release/stamp_provenance.sh "$f" "${{ needs.validate.outputs.version }}"
+            case "$f" in *.provenance.json|*.sha256) continue ;; esac
+            ./tools/release/stamp_provenance.sh \
+              --phone-party "$PHONE_PARTY_MODE" \
+              "$f" "${{ needs.validate.outputs.version }}"
           done
-      # Fail closed between stamping and upload: every artifact about to leave
-      # this job must carry a sidecar binding it to this exact commit, and no
-      # unrecognised or cross-version artifact may be sitting in dist/.
+      # Fail closed between stamping and upload: both promised Linux artifacts
+      # must exist, every artifact about to leave this job must carry checksum +
+      # provenance sidecars binding it to this exact commit, and no unrecognised
+      # or cross-version artifact may be sitting in dist/.
       - name: Verify provenance of every artifact before upload
         env:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          PHONE_PARTY_MODE: ${{ needs.validate.outputs.party_mode }}
         run: |
           ./tools/release/verify_provenance.sh \
             --dist dist \
             --version "$RELEASE_VERSION" \
             --commit "$GITHUB_SHA" \
+            --require-asset "Golden-Balloon-${RELEASE_VERSION}-linux-x86_64.AppImage" \
+            --require-asset "Golden-Balloon-${RELEASE_VERSION}-linux-x86_64.tar.gz" \
             --require platform=linux \
+            --require "phone_party=$PHONE_PARTY_MODE" \
             --out-checksums "$RUNNER_TEMP/linux-SHA256SUMS.txt" \
             --out-manifest "$RUNNER_TEMP/linux-manifest.json"
           cat "$RUNNER_TEMP/linux-SHA256SUMS.txt"
@@ -561,6 +585,7 @@ jobs:
         with:
           name: Golden-Balloon-${{ needs.validate.outputs.version }}-linux-x86_64
           path: dist/Golden-Balloon-${{ needs.validate.outputs.version }}-linux-x86_64.*
+          if-no-files-found: error
 
   windows:
     # No automatic publishing by design. A windows-latest VM is useful for ABI, import,
@@ -613,6 +638,7 @@ jobs:
         run: |
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
             -DMDKR_VERSION="$RELEASE_VERSION" \
+            -DMDKR_ENABLE_ONLINE_BETA=ON \
             -DMDKR_ENABLE_ONLINE_ROOM_PREVIEW=OFF \
             -DMDKR_PARTY_ORIGIN="$PARTY_ORIGIN"
           # The full ROM-free suite runs in the cross-platform correctness
@@ -793,19 +819,25 @@ jobs:
       # artifact (not a release attachment); manual acceptance then attaches
       # exactly what was validated, provenance sidecar and all.
       - name: Stamp provenance (bind the validated zip to this commit)
+        env:
+          PHONE_PARTY_MODE: ${{ needs.validate.outputs.party_mode }}
         run: |
           ./tools/release/stamp_provenance.sh \
+            --phone-party "$PHONE_PARTY_MODE" \
             "dist/Golden-Balloon-${{ needs.validate.outputs.version }}-windows-x64.zip" \
             "${{ needs.validate.outputs.version }}"
       - name: Verify provenance of every artifact before upload
         env:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          PHONE_PARTY_MODE: ${{ needs.validate.outputs.party_mode }}
         run: |
           ./tools/release/verify_provenance.sh \
             --dist dist \
             --version "$RELEASE_VERSION" \
             --commit "$GITHUB_SHA" \
+            --require-asset "Golden-Balloon-${RELEASE_VERSION}-windows-x64.zip" \
             --require platform=windows \
+            --require "phone_party=$PHONE_PARTY_MODE" \
             --out-checksums "$RUNNER_TEMP/windows-SHA256SUMS.txt" \
             --out-manifest "$RUNNER_TEMP/windows-manifest.json"
           cat "$RUNNER_TEMP/windows-SHA256SUMS.txt"
@@ -814,6 +846,7 @@ jobs:
           name: Golden-Balloon-${{ needs.validate.outputs.version }}-windows-x64
           path: |
             dist/Golden-Balloon-*-windows-x64.zip
+            dist/Golden-Balloon-*-windows-x64.zip.sha256
             dist/Golden-Balloon-*-windows-x64.zip.provenance.json
           if-no-files-found: error
       - name: Confirm Windows publication remains manual

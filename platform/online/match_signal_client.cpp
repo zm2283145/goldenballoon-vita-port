@@ -38,6 +38,13 @@
 #include <utility>
 #include <vector>
 
+/* CMake binds this to MDKR_VERSION for every target that compiles this shared
+ * transport source. The fallback keeps non-CMake analysis builds usable
+ * without letting a release carry a second hand-maintained version literal. */
+#ifndef MDKR_MATCH_USER_AGENT_VERSION
+#define MDKR_MATCH_USER_AGENT_VERSION "dev"
+#endif
+
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -1571,7 +1578,8 @@ void MdkrMatchSignalClient::State::run() {
      * parsed by the MatchRoom worker. */
     std::string request = "GET " + path + " HTTP/1.1\r\n" +
                           "Host: " + origin.hostHeader + "\r\n" +
-                          "User-Agent: GoldenBalloon/1.6.0\r\n" +
+                          "User-Agent: GoldenBalloon/" MDKR_MATCH_USER_AGENT_VERSION
+                          "\r\n" +
                           "Upgrade: websocket\r\n" +
                           "Connection: Upgrade\r\n" +
                           "Sec-WebSocket-Key: " + key + "\r\n" +

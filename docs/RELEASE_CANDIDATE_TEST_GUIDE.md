@@ -1,13 +1,18 @@
-# Golden Balloon 1.3.0 acceptance guide
+# Golden Balloon 1.7.0 acceptance guide
 
 Use this guide only with artifacts built from the same clean candidate commit.
 Do not publish, retag, or substitute a rebuilt file after testing begins.
 
-This is the complete player-facing walkthrough for changes since 1.2.0. It
-includes the fixes prepared for the withdrawn 1.2.1 candidate. Phone Party and
-Online Room are not part of 1.3.0: this candidate must show neither entry point,
-ship no browser role route, and attempt no service API. Keyboard, touch,
-gamepads, and local split-screen remain available.
+This is the complete player-facing walkthrough for changes since 1.6.0:
+Adventure Party, the Character Workshop, Skip the launcher, Content Pack bonus
+portraits, and the native online beta's route measurement, loss repair and
+departure handling. Native release artifacts must expose Online Room. The
+published browser remains local-only: it must ship no Online Room, cloud Phone
+Party, controller, or room route and must attempt no service API. Local LAN
+phone controllers may remain available in desktop packages without a cloud
+origin. Cloud Phone Party is accepted only when the candidate carries the
+deployed origin; a deliberately partyless release must say so in its provenance
+and show no cloud Phone Party surface.
 
 Use a legally owned US 1.1 or European 1.1 ROM. Share text logs and hashes in a
 bug report, not ROMs or ROM-derived captures.
@@ -16,10 +21,10 @@ bug report, not ROMs or ROM-derived captures.
 
 For each desktop artifact, record its filename and SHA-256. Verify the adjacent
 `.sha256` file where supplied and inspect `.provenance.json`: version must be
-`1.3.0`, `commit` must match the candidate commit, and its recorded hash
+`1.7.0`, `commit` must match the candidate commit, and its recorded hash
 must match the artifact.
 
-For the browser build, open `build-info.json` and confirm version `1.3.0`, the
+For the browser build, open `build-info.json` and confirm version `1.7.0`, the
 same source commit, and `source_dirty: false`. Hard-refresh before testing.
 
 Stop if any identity differs. Do not test an archive in place: extract it to a
@@ -96,6 +101,13 @@ Use WebGPU with Restored presentation unless a step says otherwise.
    lag. Repeat on a variable-refresh display if one is available.
 9. Return Motion smoothing to Off and Frame Limit to Original. Confirm the
    authored presentation remains stable.
+10. Confirm **Keep the camera out of walls** remains opt-in and **Authored** is
+    the default. If reviewing the optional mode, record every rapid
+    blocked-to-clear-to-blocked correction and every side switch. Its known
+    motion-quality replay is already red on the 1.6.0 comparison artifact, so
+    do not mislabel the existing chatter as a new 1.7 regression or as a pass;
+    any penetration, invalid/degraded pose, default-camera change, or worsening
+    against the exact 1.6.0 comparison blocks the candidate.
 
 ## 4. Wizpig, Terry, and persistent Magic Codes
 
@@ -245,6 +257,130 @@ cells, silent `not_available` values, substituted bytes, placeholder hashes,
 private machine paths, and unexplained performance exceptions. Record the
 printed receipt SHA-256 in the release decision; a source-tree test log is not a
 substitute.
+
+## 5c. Adventure Party acceptance
+
+Use disposable copies of a fresh save and a progressed Adventure Two save. The
+setting is off by default; first confirm an unchanged one-player Adventure with
+it off, then enable **Adventure Party** and restart when asked.
+
+1. Admit two, three, and four local controllers at character select. Give every
+   player a different racer and verify that controller, viewport, HUD, racer,
+   pause and results identities stay aligned through a hub-to-race-to-hub cycle.
+   Reorder physical controllers before a separate run; seats must follow the
+   explicit assignments rather than discovery order.
+2. In at least two different hubs, have non-host players collect a balloon and
+   a hidden key and enter a door while another player reaches a competing exit.
+   The party must receive each award once and take one whole-party transition;
+   no player may be stranded in the old level or receive duplicate progress.
+3. Finish ordinary races with 2P, 3P, and 4P parties. The field must contain six
+   racers in each case, every human must control the selected racer, and the
+   party must return to the same hub positions without losing its roster.
+4. Finish a silver-coin race after splitting the eight coins across multiple
+   humans. The shared count must advance once per coin on every viewport and
+   award the result only when the party has all eight and a human wins.
+5. Run a complete trophy series. Confirm the ordinary eight-racer field,
+   per-race standings, and the championship result based on player one's rank.
+6. Ask Taj for each vehicle transform. Every party member must change together
+   without a seat, identity, camera, or input swap. Repeat one transform after a
+   race and one in Adventure Two.
+7. Enter one boss and one four-racer challenge. Only player one participates;
+   the other players wait, and the original party must return afterwards with
+   its roster, positions and shared progress intact.
+8. Pause from a non-host controller, disconnect each occupied controller in
+   turn, reconnect it, then resume. Simulation must remain stopped during the
+   interruption, stale input must be neutral, and no other player may inherit
+   the missing controller.
+9. Attempt a native save-state capture while the party is live. It must be
+   visibly refused without changing the campaign save. Save through the game's
+   ordinary path, relaunch, and verify the shared progress on player one's file.
+
+Any roster/identity swap, duplicated or lost progression, split transition,
+stale disconnected input, display-list fault, or failure to restore after a
+host-solo activity blocks the release.
+
+## 5d. Native online beta acceptance
+
+Use two separately installed 1.7.0 candidates on the same supported platform,
+with clean data directories and legally owned supported ROMs. Repeat the core
+route on macOS, Windows, and Linux before claiming those platforms; do not infer
+cross-platform support, relay support, or more than two racers from a same-LAN
+test.
+
+1. Create a private room, join by the six-digit code, and compare the displayed
+   verification words before accepting them. Deliberately reject one mismatched
+   phrase and verify both clients return to a safe retry state without starting
+   a race or leaking the room capability.
+2. Select racers whose online-catalog and engine IDs differ (for example Diddy
+   and Pipsy), then run one car, hovercraft, and plane race. Each player must
+   spawn as the racer and vehicle they selected, with correct HUD/results
+   identity and byte-identical race outcome on both endpoints.
+3. Wait for the connection chip to settle, then start another race before it
+   settles. Start must never wait for measurement; the chip must report a real
+   route result when available and a slow route must widen only the local input
+   lead, never refuse an otherwise compatible match.
+4. Under controlled packet loss, drop a contiguous run longer than the input
+   bundle's redundancy. The authority channel must repair the gap and both
+   endpoints must finish converged rather than ending the race.
+5. Introduce a short signaling/service interruption while the direct peer link
+   remains healthy. The race must continue and must not claim the opponent left.
+   Then close one endpoint: the survivor must reach the typed opponent-left
+   result after the brief authored-tick grace, without waiting for the old
+   20–30 second transport timeout.
+6. Exercise a single-race rematch and every round of one tournament. Check
+   character/vehicle/track ownership, results choice, re-keying, route
+   remeasurement, and clean return to the room across consecutive races.
+7. Join once with a different version and once with an unsupported ROM revision.
+   Both must fail before racing with truthful compatibility copy. A custom
+   character must remain local presentation only; the peer sees its built-in
+   donor and neither side claims package transfer.
+
+Record both endpoint logs and redact room credentials. Any divergent state,
+wrong racer, unrepaired input gap, false departure, stale room authority,
+credential disclosure, or unbounded wait blocks the release.
+
+## 5e. Skip-launcher and bonus-portrait acceptance
+
+1. Confirm **Skip the launcher** is off by default. Enable it, close normally,
+   and verify the same validated ROM starts on the next launch without a visible
+   launcher flash.
+2. Hold Shift throughout one launch and both controller shoulders throughout a
+   second. Each hold must keep the launcher open. Tap only after dispatch on a
+   control run; it must not retroactively cancel a launch already committed.
+3. Move or alter the remembered ROM before relaunch. The app must return to a
+   usable launcher with the validation reason, not start the changed file or
+   exit. Turn the setting off from the in-game Advanced panel and verify the
+   launcher returns on the next ordinary start.
+4. Quit from the hold-open launcher and from the game, with a controller
+   attached. Both exits must be clean; no pad may remain open past SDL teardown.
+5. Install a Content Pack that replaces Taj's, Wizpig's, and Terry's portrait
+   keys with three visibly different, license-clean images and non-default
+   dimensions. Verify each portrait in character select and relevant HUD/result
+   surfaces, dump the replacements, and confirm every dumped PNG keeps the
+   replacement's own dimensions. Disable the pack and verify the generated
+   defaults return.
+
+## 5f. Phone Party acceptance when the cloud surface ships
+
+If artifact provenance declares a partyless release, confirm the cloud Phone
+Party card is absent and skip the cloud-only steps below; local LAN phone
+controllers still require their own two-phone route. Otherwise the compiled
+origin must be the deployed HTTPS service used for this acceptance.
+
+1. Pair one iOS and one Android phone by QR and by the fallback code. Compare
+   the verification phrase, approve distinct seats, and finish a local
+   split-screen race using both phones at once.
+2. Add two more phones and verify four independent seats, mixed physical-pad
+   plus phone input, rotation, browser chrome changes, touch chords, optional
+   haptics, and explicit per-seat removal without disturbing another phone.
+3. Background and restore each phone, lock/unlock once, change networks once,
+   rotate the invite, and close/reopen the launcher around an engine loan. Input
+   must fail neutral while absent, a stale capability or generation must not
+   regain a seat, and an approved current lease must recover without reassignment.
+4. Repeat the essential route at 200% UI scale with reduced motion and the app's
+   spoken focus guidance. Record iOS/Android versions, device models, network
+   topology, artifact hash and any unavailable modality without claiming native
+   screen-reader semantics.
 
 ## 6. Browser custody and the local-only boundary
 

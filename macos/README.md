@@ -1,12 +1,12 @@
 # macOS release packaging
 
-The 1.5.1 patch release intentionally skips Developer ID signing and
+The 1.7.0 release intentionally skips Developer ID signing and
 notarization. It is still sealed with an ad-hoc signature after every bundle
 mutation. That signature provides the code/resource integrity Apple silicon
 requires; it is not a trust signature. Players should see macOS's normal
 unidentified-developer warning on first open, never a “damaged” app error.
 
-## Unsigned 1.5.1 release (default)
+## Unsigned 1.7.0 release (default)
 
 Build only from a clean release commit. The provenance sidecar names `HEAD`, so
 stamping an artifact made from uncommitted source would be dishonest.
@@ -18,8 +18,17 @@ if [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
   exit 1
 fi
 
-RELEASE_VERSION=1.5.1
+RELEASE_VERSION=1.7.0
 SOURCE_COMMIT="$(git rev-parse HEAD)"
+# Choose deliberately. Leave PARTY_ORIGIN empty only for a partyless release;
+# otherwise set it to the deployed HTTPS origin and use cloud-enabled.
+PARTY_ORIGIN=""
+PHONE_PARTY_MODE=partyless
+if [[ -n "$PARTY_ORIGIN" ]]; then
+  [[ "$PHONE_PARTY_MODE" == cloud-enabled ]]
+else
+  [[ "$PHONE_PARTY_MODE" == partyless ]]
+fi
 source ./macos/Scripts/release_sdl2_config.sh
 SDL_PREFIX="$PWD/build-macos-deps/sdl2-${MDKR_RELEASE_SDL2_VERSION}/install"
 PYTHON_313=/opt/homebrew/bin/python3.13
@@ -54,6 +63,8 @@ build-tools/python/bin/python tests/check_frozen_character_importer.py \
 PKG_CONFIG_PATH="$SDL_PREFIX/lib/pkgconfig" \
 ./macos/Scripts/build_app_bundle.sh \
   --release \
+  --allow-online-beta \
+  --party-origin "$PARTY_ORIGIN" \
   --build-dir build-macos-release \
   --output "dist/Golden Balloon.app" \
   --arch arm64 \
@@ -78,12 +89,22 @@ DMG_PATH="dist/Golden-Balloon-${RELEASE_VERSION}-macos-arm64-unsigned.dmg"
 ./macos/Scripts/verify_unsigned_dmg.sh \
   --version "$RELEASE_VERSION" --commit "$(git rev-parse HEAD)" "$DMG_PATH"
 ./macos/Scripts/stamp_macos_provenance.sh \
-  --signing ad-hoc-unsigned "$DMG_PATH" "$RELEASE_VERSION"
+  --signing ad-hoc-unsigned \
+  --phone-party "$PHONE_PARTY_MODE" \
+  "$DMG_PATH" "$RELEASE_VERSION"
 (
   cd "$(dirname "$DMG_PATH")"
   DMG_NAME="$(basename "$DMG_PATH")"
   shasum -a 256 "$DMG_NAME" > "$DMG_NAME.sha256"
 )
+./tools/release/verify_provenance.sh \
+  --dist "$(dirname "$DMG_PATH")" \
+  --version "$RELEASE_VERSION" \
+  --commit "$SOURCE_COMMIT" \
+  --require-asset "Golden-Balloon-${RELEASE_VERSION}-macos-arm64-unsigned.dmg" \
+  --require platform=macos \
+  --require macos_signing=ad-hoc-unsigned \
+  --require "phone_party=$PHONE_PARTY_MODE"
 ```
 
 The untracked-file check is release-critical: CMake discovers native app-shell
@@ -111,19 +132,20 @@ immutable absolute resource root. Video configuration and game saves live under
 `SDL_GetPrefPath("mdkr64", "mdkr64")`; the app never changes into Resources or
 writes through its signature seal.
 The DMG filename ends in `-unsigned.dmg`, and its provenance sidecar records
-`"macos_signing": "ad-hoc-unsigned"`; neither can be mistaken for a notarized
-Developer ID build.
+`"macos_signing": "ad-hoc-unsigned"` plus the deliberate `phone_party` mode;
+neither can be mistaken for a notarized Developer ID build or for an artifact
+with a different cloud-Phone-Party policy.
 
 The equivalent protected workflow command is:
 
 ```bash
 gh workflow run macos-release.yml \
-  -f version=1.5.1 \
+  -f version=1.7.0 \
   -f trusted_signing=false
 ```
 
 Leave `release_tag` empty while producing a test artifact. Publishing is
-allowed only when it is exactly `v1.5.1` and that tag resolves to the workflow's
+allowed only when it is exactly `v1.7.0` and that tag resolves to the workflow's
 source commit; both the package and publish jobs enforce that binding.
 
 ## Human candidate play-test
@@ -132,7 +154,7 @@ Do this against the exact DMG and its two sidecars produced above, before
 tagging or publishing anything:
 
 1. In the artifact directory, run
-   `shasum -a 256 -c Golden-Balloon-1.2.1-macos-arm64-unsigned.dmg.sha256`.
+   `shasum -a 256 -c Golden-Balloon-1.7.0-macos-arm64-unsigned.dmg.sha256`.
 2. Open the DMG and drag `Golden Balloon.app` into a new, empty test folder. Launch that
    copy from Finder, with no `MDKR_RENDERER` environment override.
 3. If macOS blocks the unidentified developer, first attempt the launch, then
@@ -161,7 +183,7 @@ certificate and App Store Connect team API key, then dispatch:
 
 ```bash
 gh workflow run macos-release.yml \
-  -f version=1.5.1 \
+  -f version=1.7.0 \
   -f trusted_signing=true
 ```
 
@@ -174,8 +196,8 @@ outside the repository and rotate them immediately if exposed.
 With `trusted_signing=true`, the workflow signs nested code and the app with
 Developer ID + Hardened Runtime, notarizes and staples the app, signs and
 notarizes the DMG, and requires Gatekeeper acceptance. There is no
-`--skip-notarize` path in the workflow. For 1.5.1, that optional artifact is
-exactly `Golden-Balloon-1.5.1-macos-arm64-signed-notarized.dmg` and records
+`--skip-notarize` path in the workflow. For 1.7.0, that optional artifact is
+exactly `Golden-Balloon-1.7.0-macos-arm64-signed-notarized.dmg` and records
 `developer-id-notarized` in provenance.
 
 Gatekeeper acceptance is a static trust check, not a renderer smoke. Before a

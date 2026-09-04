@@ -1,7 +1,7 @@
-# Golden Balloon — unreleased
+# Golden Balloon 1.7.0
 
-*Not cut yet. Online multiplayer is still a beta; Adventure Party and custom
-characters are new — see below.*
+*Online multiplayer is still a beta; Adventure Party and custom characters are
+new — see below.*
 
 Adventure is no longer a one-player game. Two to four people on the same couch
 can now pick their own racers, explore the worlds together and race through the
@@ -68,7 +68,8 @@ a model — a `.glb` file, or a `.dae` or `.zip` it converts for you — give it
 name, a portrait and a licence, look over how it stands and how it sits in the
 car, hovercraft and plane, then install it. Installed characters show up at
 character select and can be handed to any of players one to four.
-[`docs/MODDING.md`](docs/MODDING.md) walks through it.
+The [modding guide](https://github.com/akratch/goldenballoon/blob/v1.7.0/docs/MODDING.md)
+walks through it.
 
 - Nothing changes until you say so. The Workshop reads a package, shows you what
   it contains and how it differs from what you already have, and only then
@@ -111,9 +112,13 @@ in the launcher with the reason.
 Content packs can now replace Taj's, Wizpig's and Terry's portraits. Those three
 racers have no portrait in the original game, so the port draws its own; a pack
 can put your picture in its place, at whatever size you draw it.
-[`docs/MODDING.md`](docs/MODDING.md) has the three filenames.
+The [modding guide](https://github.com/akratch/goldenballoon/blob/v1.7.0/docs/MODDING.md)
+has the three filenames.
 
 ## Online multiplayer (beta)
+
+Online Room ships in native desktop packages. The published browser build
+remains local-only.
 
 - **You can see the connection before the race starts.** Once both of you are
   in the room, the game measures the round trip between you and shows what it
@@ -150,6 +155,9 @@ good or bad — on the GitHub issues page.
 
 ## Fixes
 
+- Native release packages now include the **Online Room** beta they describe.
+  The release builder could previously leave that entry out even when an
+  online-enabled qualification build had it present.
 - A racer wearing a custom appearance no longer drops back to its original
   character in an Adventure Party hub, at any **Model Detail** setting.
 - Custom characters now use the same colour handling and the same highlight
@@ -170,6 +178,15 @@ good or bad — on the GitHub issues page.
   widescreen displays. The two-player backdrop was drawn at the original 4:3
   width, so the edges of the screen were left unpainted — most obvious on
   Fossil Canyon and the other tracks with a black horizon.
+
+## Known issue
+
+- **Keep the camera out of walls** remains an optional, experimental camera
+  mode. Near some continuous walls it can briefly release and reapply its
+  correction, and a three-player spectator view has shown a single side switch.
+  **Authored**, the default camera, is unaffected. The broader motion-quality
+  check also fails in 1.6.0 on brief correction re-engagements, so this known
+  class is not new to 1.7.0; it remains open rather than being counted as fixed.
 
 ## Compatibility
 

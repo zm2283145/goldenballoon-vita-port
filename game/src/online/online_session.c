@@ -3,7 +3,7 @@
  * The whole translation unit is #if MDKR_ENABLE_ONLINE_BETA and the file is
  * added to the build ONLY inside the beta CMake gate (game/src/online/ is NOT
  * auto-globbed), so a normal (beta OFF) build never compiles a byte of it and
- * the release engine object is untouched. See game/src/online/online_session.h
+ * the beta-OFF engine object is untouched. See game/src/online/online_session.h
  * for the architecture rationale.
  *
  * The session owns its own state and drives the phase machine: LOBBY_WAIT (read

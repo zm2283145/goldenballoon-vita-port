@@ -56,12 +56,12 @@ static_assert(kPanelCount == kLauncherPanelCount,
               "launcher panel count must match the public smoke contract");
 
 /*
- * Online races are not part of this release, and the room is already
- * fail-closed (no I/O, Start unreachable). This hides the SURFACE as well, so a
- * shipped launcher offers exactly what the release offers rather than a room
- * for a mode the build does not have. A development build configured with
- * MDKR_ENABLE_ONLINE_ROOM_PREVIEW=ON may use MDKR_ONLINE_ROOM_PREVIEW=1 for
- * the online-room gates; release builds compile that route out.
+ * Online Room has three deliberate build states. A native-online-beta build
+ * always exposes the live panel; a beta-OFF development preview exposes its
+ * fail-closed fake panel only under MDKR_ONLINE_ROOM_PREVIEW=1; and a build
+ * with both compile-time gates off omits the surface completely. Thus a
+ * packaged 1.7 beta needs no environment variable, while an ordinary local
+ * build cannot advertise a mode it does not contain.
  *
  * The panel keeps its INDEX either way, so the smoke-contract arrays and panel
  * routing stay stable and check_launcher_tabs' MDKR_APP_SMOKE_NAV_TARGET=1
@@ -74,7 +74,7 @@ static bool panelVisible(int index) {
 #if MDKR_ENABLE_ONLINE_BETA
     // Native online beta: the Online Room panel is always reachable so beta
     // testers set no env; the build gate replaces the MDKR_ONLINE_ROOM_PREVIEW=1
-    // preview env. Release builds never define MDKR_ENABLE_ONLINE_BETA.
+    // preview env. The 1.7 native release workflows define this beta gate.
     return true;
 #else
     static const bool preview = [] {

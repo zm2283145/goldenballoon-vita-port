@@ -23,11 +23,12 @@ option(MDKR_ENABLE_ONLINE_ROOM_PREVIEW
 # that lets two native instances pair + race over the live MatchRoom service,
 # fenced to 2 endpoints / STUN-only / retail identities. Modeled on the
 # MDKR_NATIVE_PHONE_PARTY option below. It defaults OFF for a developer build
-# and is never set by .github/workflows/release.yml; macos/Scripts/build_app_bundle.sh
-# passes it only when a release explicitly opts in with --allow-online-beta --
-# the two release guardrails (check_release_local_only_surface.py,
-# check_release_party_origin.py) key on the unchanged
-# -DMDKR_ENABLE_ONLINE_ROOM_PREVIEW=OFF lines, which this leaves alone.
+# and is set by .github/workflows/release.yml only for its explicit release
+# builds; macos/Scripts/build_app_bundle.sh passes it only when a release
+# explicitly opts in with --allow-online-beta. The release guardrails
+# (check_release_local_only_surface.py, check_release_party_origin.py) require
+# that explicit beta opt-in, keep the bare preview switch off, and independently
+# preserve the browser publication's local-only boundary.
 option(MDKR_ENABLE_ONLINE_BETA
     "Compose the live online transport into the launcher behind the native beta gate; OFF by default, release bundles pass this explicitly"
     OFF)
@@ -363,7 +364,7 @@ file(GLOB GAME_SOURCES CONFIGURE_DEPENDS
 # Separated online BETA boot path (game/src/online/). Deliberately NOT part of
 # the game/src/*.c glob above (that glob is non-recursive), and added ONLY inside
 # this beta gate -- exactly like party_link.c below -- so a normal (beta OFF)
-# build never compiles a byte of it and the release engine object is untouched.
+# build never compiles a byte of it and the beta-OFF engine object is untouched.
 # It joins GAME_SOURCES (not PLATFORM_SOURCES) because it is engine/game code
 # that includes the decomp game headers, so it inherits the same warning regime
 # every other game/src TU does. Every TU here is itself #if MDKR_ENABLE_ONLINE_BETA.
@@ -651,7 +652,7 @@ endif()
 # net_roster_runtime/online_race_results so BOTH the engine-side readers
 # (game/src, beta-gated) and the launcher-side writer/poller
 # (online_live_wiring.cpp in mdkr64_app) link ONE copy, but -- unlike those two,
-# which every build compiles -- it is gated so the release engine object never
+# which every build compiles -- it is gated so the beta-OFF engine object never
 # carries it. In PLATFORM_SOURCES it inherits the strict warning baseline below.
 if(MDKR_ENABLE_ONLINE_BETA)
     list(APPEND PLATFORM_SOURCES
@@ -745,7 +746,8 @@ endif()
 # The online-beta direct-boot seam (mode_intro -> straight into the online race)
 # lives in the game/decomp translation units that compile into ${MDKR_TARGET}.
 # It is entirely #if MDKR_ENABLE_ONLINE_BETA, so a normal (beta OFF) build never
-# sees the macro and the engine object stays byte-identical to the release build.
+# sees the macro and the engine object stays byte-identical to the pinned OFF
+# configuration.
 # Beta-only, matching the mdkr64_app definition below. The only PLATFORM_SOURCES
 # addition this macro makes is the beta live selection bridge (party_link.c,
 # gated above); every decomp TU that keys on the macro is entirely #if-guarded,
@@ -760,8 +762,15 @@ endif()
 # CFBundleShortVersionString, which macos/Scripts/build_app_bundle.sh stamps
 # from this same value via PlistBuddy. Kept as its own standalone statement
 # (not folded into the block above) so it stays a one-line, low-conflict diff.
-set(MDKR_VERSION "1.6.0" CACHE STRING "mdkr64 release version (semver)")
+set(MDKR_VERSION "1.7.0" CACHE STRING "mdkr64 release version (semver)")
 target_compile_definitions(${MDKR_TARGET} PRIVATE MDKR_VERSION_STRING="${MDKR_VERSION}")
+# The hand-written native WebSocket client is compiled into the app and into
+# several standalone transport/test targets. Give every one of those
+# compilations the same product-version token, instead of maintaining a second
+# release literal in match_signal_client.cpp.
+set_source_files_properties(
+    ${CMAKE_SOURCE_DIR}/platform/online/match_signal_client.cpp PROPERTIES
+    COMPILE_DEFINITIONS "MDKR_MATCH_USER_AGENT_VERSION=\"${MDKR_VERSION}\"")
 # The save CLI stamps app_version into every container it writes, so it must
 # carry the same release value the engine and app shell do. Its target is
 # declared above this statement, hence the guarded definition here rather than

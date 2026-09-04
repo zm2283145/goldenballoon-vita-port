@@ -783,8 +783,8 @@ ConsumeOnceHandoff sRaceBoot;
  * beta-only wiring TU, rather than in platform/net/net_roster_runtime.c: that
  * file is compiled into every build without the MDKR_ENABLE_ONLINE_BETA macro,
  * so state or state-mutating functions added there would leak into the
- * OFF/release binary. Only online boots install a roster, so the token belongs
- * with the online code and the release build stays byte-identical. */
+ * beta-OFF binary. Only online boots install a roster, so the token belongs
+ * with the online code and the beta-OFF build stays byte-identical. */
 uint64_t sRosterOwnerToken = 0u;
 }  // namespace
 

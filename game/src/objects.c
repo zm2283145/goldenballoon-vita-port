@@ -3226,7 +3226,9 @@ static s32 sApSilverTeamCoins;
  * invisible boundary wall, and reject "no floor found" (SURFACE_NONE). Frozen
  * water (walkable ice) and every land surface pass. */
 static s32 adventure_party_surface_spawnable(s8 surface) {
-    switch (surface) {
+    /* SurfaceType is stored as one byte; preserve SURFACE_NONE's 0xFF value
+     * when the collision API hands that byte to us through its signed s8 ABI. */
+    switch ((u8) surface) {
     case SURFACE_WATER_CALM:
     case SURFACE_WATER_WAVY:
     case SURFACE_WATER_UNK_F:

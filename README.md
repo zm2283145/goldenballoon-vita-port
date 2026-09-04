@@ -89,6 +89,9 @@ Race a friend over the internet with a private six-digit code. Both players
 need the same version of the game. Full release notes for each version are in
 [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
+Online Room ships in native desktop packages. The published browser build
+remains local-only.
+
 What online does not do yet:
 
 - Both players must be on the same platform.

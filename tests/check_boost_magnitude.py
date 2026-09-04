@@ -214,12 +214,17 @@ def run_arm(binary: str, rom: str, arm: Arm, verbose: bool) -> Arm:
         arm.errors.append(f"exit code {proc.returncode}")
     for marker in ("[CRASH]", "[FATAL]"):
         if marker in out:
-            line = next((l for l in out.splitlines() if marker in l), marker)
+            line = next(
+                (output_line for output_line in out.splitlines()
+                 if marker in output_line),
+                marker)
             arm.errors.append(f"{marker} in output: {line.strip()}")
     m = SANITIZER_RE.search(out)
     if m is not None:
-        line = next((l for l in out.splitlines() if SANITIZER_RE.search(l)),
-                    m.group(0))
+        line = next(
+            (output_line for output_line in out.splitlines()
+             if SANITIZER_RE.search(output_line)),
+            m.group(0))
         arm.errors.append(f"sanitizer diagnostic: {line.strip()}")
 
     if not ARM_RE.search(out):

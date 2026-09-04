@@ -338,6 +338,7 @@ for f in \
   docs/RELEASE_CHECKLIST.md \
   docs/RELEASE_CANDIDATE_TEST_GUIDE.md \
   docs/ref/mdkr-character-release-acceptance-v1.schema.json \
+  tools/public_retained_ref_allowlist.tsv \
   tests/test_character_release_evidence.py \
   tools/check_character_release_evidence.py; do
   if [ ! -s "$f" ]; then
@@ -346,6 +347,44 @@ for f in \
 done
 if section_clean; then
   echo "  OK -- required docs are present."
+fi
+
+echo
+echo "== Tagged changelog coverage =="
+section_begin
+if [ "$HAVE_GIT" -eq 1 ]; then
+  if [ "$candidate" -eq 1 ]; then
+    escaped_candidate_version="${candidate_version//./\\.}"
+    if ! grep -Eq "^## \\[${escaped_candidate_version}\\] — [0-9]{4}-[0-9]{2}-[0-9]{2}$" \
+        CHANGELOG.md; then
+      note "candidate version ${candidate_version} has no dated CHANGELOG.md section"
+    fi
+    if grep -Eiq 'release candidate|not published yet' RELEASE_NOTES.md; then
+      note "candidate RELEASE_NOTES.md still describes an unpublished candidate"
+    fi
+    if grep -Eq '\]\((docs/|\./|\.\./)' RELEASE_NOTES.md; then
+      note "candidate RELEASE_NOTES.md has repository-relative links that will break in the GitHub Release body"
+    fi
+  fi
+  while IFS= read -r release_tag; do
+    [ -n "$release_tag" ] || continue
+    [[ "$release_tag" =~ ^v1\.[0-9]+\.[0-9]+$ ]] || continue
+    release_version="${release_tag#v}"
+    escaped_version="${release_version//./\\.}"
+    if ! grep -Eq "^## \\[${escaped_version}\\] — [0-9]{4}-[0-9]{2}-[0-9]{2}$" \
+        CHANGELOG.md; then
+      note "reachable release tag ${release_tag} has no dated CHANGELOG.md section"
+    fi
+  done < <(git tag --merged HEAD --list 'v1.*' | LC_ALL=C sort)
+else
+  echo "  SKIP -- archive contents have no git tags to reconcile."
+fi
+if section_clean; then
+  if [ "$candidate" -eq 1 ]; then
+    echo "  OK -- candidate version and every reachable v1.x.y tag have dated changelog sections."
+  else
+    echo "  OK -- every reachable v1.x.y tag has a dated changelog section."
+  fi
 fi
 
 echo

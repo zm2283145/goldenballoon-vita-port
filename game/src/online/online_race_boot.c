@@ -7,7 +7,7 @@
  *
  * The whole TU is #if MDKR_ENABLE_ONLINE_BETA and it is added to the build ONLY
  * inside the beta CMake gate (game/src/online/ is not globbed), so a normal (beta
- * OFF) build never compiles a byte of it and the release engine object is
+ * OFF) build never compiles a byte of it and the beta-OFF engine object is
  * untouched.
  */
 #include "online/online_race_boot.h"

@@ -200,7 +200,7 @@ def online_room_compiled(executable: Path) -> bool:
     MDKR_ONLINE_ROOM_PREVIEW=1. The build's own cache is the authority here
     (see :func:`_online_room_reachable`), so the gate demands the panel
     exactly where the panel can exist -- neither demanding a preview surface
-    of a release binary, nor quietly excusing a preview or beta build that
+    of a beta-OFF binary, nor quietly excusing a preview or beta build that
     lost its announcement.
     """
     cache = executable.parent / "CMakeCache.txt"
