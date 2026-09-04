@@ -190,6 +190,8 @@ let testRafIndex = 0;
 let testRafNow = null;
 let testActualRafLast = null;
 globalThis.__mdkrActualRafDeltas = testConfig ? [] : null;
+globalThis.__mdkrActualRafCallbacks = testConfig ? 0 : null;
+globalThis.__mdkrActualRafTimestamp = testConfig ? null : undefined;
 globalThis.__mdkrLastAnimationFrameDeltaNs = 0;
 globalThis.__mdkrSyntheticAnimationFrameClock =
   testRafDeltas !== null || testRafDeltasNs !== null;
@@ -207,6 +209,9 @@ globalThis.__mdkrWaitAnimationFrame = async function () {
   }
   const actual = await new Promise((resolve) => requestAnimationFrame(resolve));
   if (globalThis.__mdkrActualRafDeltas) {
+    globalThis.__mdkrActualRafCallbacks =
+      (Number(globalThis.__mdkrActualRafCallbacks) || 0) + 1;
+    globalThis.__mdkrActualRafTimestamp = actual;
     if (testActualRafLast !== null) {
       globalThis.__mdkrActualRafDeltas.push(actual - testActualRafLast);
       if (globalThis.__mdkrActualRafDeltas.length > 12000) {
@@ -487,6 +492,19 @@ if (testState) {
       persistenceWait: testState.persistenceWait
         ? { ...testState.persistenceWait } : null,
       audio: testAudioInfo(),
+      browserScheduling: {
+        visibilityState: document.visibilityState,
+        hasFocus: document.hasFocus(),
+        actualRafCallbacks:
+          Number(globalThis.__mdkrActualRafCallbacks) || 0,
+        actualRafDeltaCount: Array.isArray(globalThis.__mdkrActualRafDeltas)
+          ? globalThis.__mdkrActualRafDeltas.length : 0,
+        millisecondsSinceLastRaf:
+          Number(globalThis.__mdkrActualRafCallbacks) > 0 &&
+          Number.isFinite(Number(globalThis.__mdkrActualRafTimestamp))
+            ? performance.now() - Number(globalThis.__mdkrActualRafTimestamp)
+            : null,
+      },
       engineRuns: testState.runs.slice(),
       wasmModuleCreations,
     };

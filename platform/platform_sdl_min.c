@@ -77,13 +77,15 @@ EM_ASYNC_JS(void, platformWaitAnimationFrame, (void), {
      * at the production rAF boundary, so cadence failures can distinguish a
      * slow/occluded host from scheduler or renderer work. */
     if (Array.isArray(globalThis.__mdkrActualRafDeltas)) {
+        const callbacks = Number(globalThis.__mdkrActualRafCallbacks) || 0;
         const prior = Number(globalThis.__mdkrActualRafTimestamp);
-        if (Number.isFinite(prior)) {
+        if (callbacks > 0 && Number.isFinite(prior)) {
             globalThis.__mdkrActualRafDeltas.push(timestamp - prior);
             if (globalThis.__mdkrActualRafDeltas.length > 12000) {
                 globalThis.__mdkrActualRafDeltas.shift();
             }
         }
+        globalThis.__mdkrActualRafCallbacks = callbacks + 1;
         globalThis.__mdkrActualRafTimestamp = timestamp;
     }
 });
