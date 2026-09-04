@@ -1,5 +1,20 @@
 #!/usr/bin/env python3
-"""Prove the V3 launcher descriptor, not retail menus, selects an online race."""
+"""Prove the V3 launcher descriptor, not retail menus, selects an online race.
+
+The descriptor's per-seat character_id is an ONLINE-CATALOG id (the lobby's own
+racer order, what the reducer publishes as hover_character), NOT an engine
+Character-enum value; the engine translates it at the racer spawn
+(menu.c get_character_id_from_slot -> mdkr_online_character_to_engine). So the
+seats this lane's synthetic descriptor asks for -- online 0,1,2,3 == Diddy,
+Timber, Pipsy, Tiptup -- are seated as engine characters 9,4,7,2.
+
+This gate used to require the [NET-SELECTIONS] racers to be the descriptor's ids
+VERBATIM, which is only true when the engine hands the raw online id to the
+spawn: exactly the wrong-characters defect the translation fixes. It now asserts
+the TRANSLATION (online_lane_util.check_launch_selection_translation), derived
+from the C sources of both id spaces, with a non-vacuity clause that fails if no
+seat's two ids differ -- so a regression back to raw passthrough fails here.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +26,7 @@ import sys
 import tempfile
 
 from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
+from online_lane_util import check_launch_selection_translation
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -84,8 +100,11 @@ def main() -> int:
     required = (
         "[NET-LAUNCH] epoch=1 ",
         "track=6 selections=0:0/0,1:1/0,2:2/0,3:3/0",
+        # Diddy/Timber/Pipsy/Tiptup: the engine characters the descriptor's
+        # online ids 0,1,2,3 translate to. The relation (not this literal) is
+        # what the translation pin below actually enforces.
         "[NET-SELECTIONS] epoch=1 racers="
-        "0:0/0,1:1/0,2:2/0,3:3/0 source=launch-descriptor",
+        "0:9/0,1:4/0,2:7/0,3:2/0 source=launch-descriptor",
         "[ROLLBACK] online race: loadedTrack=6 raceType=0 authoredHz=30",
         "[PVEH] frame=", "player=0 vehicleID=0",
         "[HOST-SHUTDOWN] rom=0 arena=0 delayedFree=0",
@@ -104,7 +123,21 @@ def main() -> int:
               file=sys.stderr)
         print(output[-16000:], file=sys.stderr)
         return 1
-    print("match launch V3 direct-load gate passed: track=6 characters=0,1,2,3 vehicles=car")
+
+
+    def fail(message: str, output_text: str = "") -> int:
+        print(f"FAIL match launch direct load: {message}", file=sys.stderr)
+        if output_text:
+            print(output_text[-16000:], file=sys.stderr)
+        return 1
+
+    translation = check_launch_selection_translation(output, ROOT, fail,
+                                                     seat_count=4)
+    if translation is not None:
+        return translation
+    print("match launch V3 direct-load gate passed: track=6 "
+          "descriptor online ids 0,1,2,3 seated as engine characters "
+          "9,4,7,2 (Diddy, Timber, Pipsy, Tiptup) vehicles=car")
     return 0
 
 

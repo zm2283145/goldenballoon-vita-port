@@ -1611,10 +1611,16 @@ int mdkr_modern_character_player_lod_diagnostics(
 int mdkr_modern_character_request_surface_diagnostics(
     int player, MdkrModernCharacterContext context) {
     MdkrModernRuntimePlayer *slot;
-    const uint32_t bit = 1u << (unsigned)context;
+    uint32_t bit;
     if (player < 0 || player >= MDKR_MODERN_CHARACTER_PLAYERS ||
         context < MDKR_CHARACTER_CONTEXT_CAR ||
         context > MDKR_CHARACTER_CONTEXT_PLANE) return 0;
+    /* The bit is derived AFTER the range check, not in the declaration: the
+     * guard exists because `context` is a caller's value, and a declaration
+     * initialiser runs before it. A negative or wide context would otherwise
+     * shift by a count at or past the width of a uint32_t -- undefined -- on
+     * the very path this function refuses. */
+    bit = 1u << (unsigned)context;
     slot = &s_players[player];
     if (slot->pool < 0) return 0;
     memset(&slot->surface_diagnostics[context], 0,

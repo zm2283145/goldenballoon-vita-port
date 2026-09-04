@@ -1478,7 +1478,10 @@ static void dkr_force_effect_shell_hook(Object_Racer *racer) {
  *   MDKR_ZIPPAD_BOOST=<frame>[:<ticks>]
  *       On the first update at or after <frame>, arm the HUMAN racer exactly as
  *       `racer.c:5727` arms it for `SURFACE_ZIP_PAD` on a car:
- *       `boostTimer = normalise_time(ticks)`, `boostType = BOOST_LARGE`.
+ *       `boostTimer = normalise_time(ticks)`, `boostType = BOOST_LARGE`, and
+ *       hold that racer's accelerator for as long as that boost runs, because a
+ *       pad boost is authored to be ridden with the throttle down and the
+ *       autopilot AI lifts off on a roll (see mdkr_zippad_boost_hold_throttle).
  *       <ticks> defaults to 45, the authored constant. Armed once per run.
  *       Passing any other <ticks> is the perturbed-constant BROKEN DIRECTION
  *       arm: it must move the speed trace out of the baseline envelope.
@@ -1493,6 +1496,10 @@ static void dkr_force_effect_shell_hook(Object_Racer *racer) {
  * once, so the boost decays on its own schedule and the magnitude that comes out
  * is the authored one. Both are zero cost when unset.
  */
+/* Seam state shared with mdkr_zippad_boost_hold_throttle() below. */
+static s32 sZipPadHolding = FALSE;  /* the seam's own boost is still running */
+static s32 sZipPadLift = FALSE;     /* the AI elected to lift off this tick */
+
 void mdkr_zippad_boost_hook(Object *obj, Object_Racer *racer) {
     /* AUTHORED TICKS — see dkr_force_boost_hook. */
     extern int g_simTickCounter;
@@ -1525,8 +1532,62 @@ void mdkr_zippad_boost_hook(Object *obj, Object_Racer *racer) {
     sArmed = TRUE;
     racer->boostTimer = normalise_time(sTicks);
     racer->boostType = BOOST_LARGE;
+    sZipPadHolding = TRUE;
     mdkr_trace("[BOOSTARM] tick=%d ticks=%d timer=%d", g_simTickCounter, sTicks,
                racer->boostTimer);
+}
+
+/*
+ * THE SEAM'S THIRD ASSIGNMENT: hold the accelerator for the armed racer, for
+ * exactly as long as the seam's own boost runs.
+ *
+ * A pad boost is authored to be ridden with the accelerator DOWN. That is the
+ * state a player is in when they cross a pad, and it is the state whose
+ * equilibrium is the authored terminal speed:
+ * sqrt(2.0 / gSurfaceTractionTable[SURFACE_DEFAULT]) = sqrt(2.0 / 0.004)
+ * = 22.36, the same constant mdkr_boss_cadence_clamp() calls the boost
+ * allowance.
+ *
+ * The magnitude fixture drives with DKR'S OWN AI (MDKR_AUTOPILOT), and that AI
+ * decides per boost, on a `roll_percent_chance()` (racer.c:1036), whether to
+ * lift off while boosting: it sets `unk209 |= 4`, which clears A_BUTTON. With A
+ * released the authored velocity update takes the OTHER side of the
+ * `velSquare < 1.0f` split (racer.c:6564) — and velSquare is negated while
+ * driving forward, so that side is taken at any speed — swapping the quadratic
+ * drag `v*v*traction` for the linear `v*traction*8`. The same 2.0/tick boost
+ * thrust then runs toward 2.0 / (8 * 0.004) = 62.5 instead of 22.36, and 45
+ * ticks is nowhere near enough to reach it, so the measured peak stops being
+ * the boost's terminal speed and becomes "wherever the racing line cut the ramp
+ * off". Worse for this fixture in particular, the roll's own chance is
+ * interpolated from the number of CPU racers AHEAD of the racer (sp3A,
+ * racer.c:987), so an uncontrolled roll makes the measurement racer-count
+ * dependent — which is precisely the question the fixture exists to answer.
+ *
+ * All of that is authored decomp behaviour and stays untouched: the AI's
+ * election is left exactly as it made it (unk209 is never written here), and
+ * mdkr_boost_trace reports it as lift=1 so a contaminated arm is visible rather
+ * than silent. Only the input the fixture is entitled to control — the human
+ * racer's accelerator — is asserted, after the AI has written its inputs.
+ *
+ * No-op unless MDKR_ZIPPAD_BOOST armed a boost, so no ordinary run, and no
+ * other fixture, can reach it.
+ */
+void mdkr_zippad_boost_hold_throttle(Object_Racer *racer) {
+    extern u32 gCurrentRacerInput;
+
+    if (!sZipPadHolding || racer == NULL) {
+        return;
+    }
+    if (racer->playerIndex == PLAYER_COMPUTER || racer->racerIndex != 0) {
+        return;
+    }
+    if (racer->boostTimer <= 0) {
+        sZipPadHolding = FALSE;
+        sZipPadLift = FALSE;
+        return;
+    }
+    sZipPadLift = (racer->unk209 & 4) ? TRUE : FALSE;
+    gCurrentRacerInput |= A_BUTTON;
 }
 
 void mdkr_boost_trace(Object *obj, Object_Racer *racer) {
@@ -1544,11 +1605,11 @@ void mdkr_boost_trace(Object *obj, Object_Racer *racer) {
         return;
     }
     mdkr_trace("[BOOST] frame=%d timer=%d type=%d vel=%.9g x=%.9g y=%.9g z=%.9g "
-               "surf=%d grounded=%d start=%d",
+               "surf=%d grounded=%d start=%d lift=%d",
                g_frameCounter, racer->boostTimer, racer->boostType,
                racer->velocity, obj->trans.x_position, obj->trans.y_position,
                obj->trans.z_position, racer->wheel_surfaces[0],
-               racer->groundedWheels, get_race_start_timer());
+               racer->groundedWheels, get_race_start_timer(), sZipPadLift);
 }
 #endif
 

@@ -462,6 +462,7 @@ void dkr_force_boost_hook(Object_Racer *racer);
  * their env var is set. See the definitions in objects.c, tests/README.md and
  * tests/check_boost_magnitude.py. */
 void mdkr_zippad_boost_hook(Object *obj, Object_Racer *racer);
+void mdkr_zippad_boost_hold_throttle(Object_Racer *racer);
 void mdkr_boost_trace(Object *obj, Object_Racer *racer);
 #else
 #define GET_BOOST_TABLE() ((Object_Boost *) get_misc_asset(ASSET_MISC_20))
