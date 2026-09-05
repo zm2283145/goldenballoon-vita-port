@@ -77,9 +77,10 @@ lower-resolution pause UI when player two pauses.
 - **Purple viewport: unresolved acceptance.** Must reproduce the reported
   two-player Walrus Cove loop/tunnel route and inspect both viewports. A
   single-player cave flash or a Fossil Canyon sky-edge pass does not settle it.
-- **P2 pause resolution: unresolved acceptance.** Must compare pause initiated
-  by P1 and P2 under the same presentation/backend settings. The existing
-  single-player HUD-resolution check does not exercise that distinction.
+- **P2 pause resolution: automated macOS acceptance passes; Windows remains.**
+  The dedicated two-player check now compares both pause owners in Restored
+  and Remastered on GL and WebGPU, including real scaled-UI and wrong-font
+  controls. This is not a verdict about the reporter's Windows/NVIDIA setup.
 
 **Focused native investigation.** An optimized US 1.1/WebGPU two-player
 Walrus Cove run reached 6,200 presentation frames, with P1 on lap 2 and P2
@@ -91,6 +92,26 @@ Separate same-input two-player Ancient Lake runs paused with P1 or P2 at frame
 inspection showed matching pause lettering and the expected different panel
 colors. This is a current macOS observation, not a Windows/GPU-matrix verdict
 or a substitute for a quantitative pause-resolution regression.
+
+**Quantitative pause acceptance (2026-09-05).** The packaged arm64 executable
+from clean commit `f1fd70e4c1ff5d14df69c4aa8d8288bf6ff6b10b` passes
+`check_split_screen_pause_resolution.py` on both GL and WebGPU: eight arms
+per backend, with independent saves/configuration. P1's blue and P2's red
+panel prove the requested owner. The common RESTART RACE glyph contours
+overlap by 98.29% in Restored and 99.25% in Remastered. Native-output text
+edge detail exceeds each owner's scaled-UI control by 36.4%/36.5% in
+Restored and 33.3%/33.2% in Remastered. Substituting the original bitmap
+font for Remastered P2 gives only 57.16% contour overlap and is rejected.
+Both racers' simulation streams remain identical across all eight arms;
+output-pass telemetry has no late world draws or begin failures.
+
+The check uses a 960x540-point window (1920x1080 drawable on this Retina
+host) and 2x scene rendering. At 720 points, GL's Restored bitmap glyphs
+align to an integer pixel grid and the downsampled control has essentially
+the same edges; the non-integer source-pixel scale is necessary to make
+that control discriminate. No product renderer change or reduced threshold
+was used to obtain these passes. The test is registered as serial GPU work
+in the main suite. All image evidence remains local and ROM-derived.
 
 Keep the issue open until all three are accounted for.
 

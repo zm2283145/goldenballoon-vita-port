@@ -671,6 +671,20 @@ production coverage:
   without the widening: viewport 0 12.7%, viewport 1 10.7%; with it 0.2% and
   4.3% (viewport 1's floor is a real shadowed canyon wall). Detector
   self-tests run on synthetic rasters first.
+- `check_split_screen_pause_resolution.py` covers issue #61's pause-owner
+  distinction. On both WebGPU and GL it pauses the same real two-player
+  Ancient Lake race with P1 or P2, in Restored and Remastered. Different panel
+  colours prove the requested owner; the shared RESTART RACE glyph contour
+  must agree across owners. Each owner's output-resolution UI must gain at
+  least 15% edge detail over its own disabled-UI control. Substituting the
+  original-bitmap Restored capture for Remastered P2 must fail the font
+  comparison, so equal resolution cannot conceal the wrong font path.
+  Both racers' simulation streams remain identical across all arms; overlay
+  telemetry rejects late world draws and failed output passes. Run with
+  `--renderer webgpu` or `--renderer gl` for a subset, or omit the option for
+  both. `--keep-frames DIR` retains local-only captures and logs. Acceptance
+  only covers the hardware and renderer actually run, not the entire #61
+  report or untested Windows drivers.
 - `check_widescreen_minimap_alignment.py` pins the second half of issue #57:
   under the widescreen HUD, billboard-mode ortho sprites bypassed the WIDE_HUD
   matrix's horizontal compression and rendered 4/3 wider than authored, so the

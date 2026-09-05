@@ -148,6 +148,7 @@ GPU_SERIAL_NAMES = frozenset({
     "font_sdf",
     "font_outline",
     "native_ui_resolution",
+    "split_screen_pause_resolution",
     "mip_motion",
     "rl1_vertex_colour_ab",
     "remaster_lighting",
@@ -730,6 +731,10 @@ CHECKS = (
           "multiplayer sky backdrop coverage (#61): the >=2-viewport gradient "
           "quad spans the widescreen frustum with no unpainted sides, and 4:3 "
           "still derives the ROM's authored 200x150 extent"),
+    Check("split_screen_pause_resolution", "check_split_screen_pause_resolution.py", "native",
+          "P1/P2 pause fonts and output resolution (#61): real owner-colour, "
+          "glyph-contour, scaled-UI and original-font controls on GL/WebGPU "
+          "in Restored and Remastered, with identical simulation", timeout=1800),
     Check("widescreen_minimap_alignment",
           "check_widescreen_minimap_alignment.py", "native",
           "minimap marker-on-map alignment under the widescreen HUD (#57): "
