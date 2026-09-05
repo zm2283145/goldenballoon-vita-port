@@ -567,8 +567,8 @@ SHA-256, downloads only the small adjacent sidecars, and rejects checksum byte
 mismatches, dirty or wrong-commit provenance, wrong 1.7 Phone Party/signing
 modes, and orphan sidecars. For every 1.7+ release it also requires both Linux
 formats, Windows, at least one recognised macOS DMG, and one Phone Party mode
-across every platform sidecar. Sidecar filenames alone are not release
-evidence.
+across every platform sidecar.
+Sidecar filenames alone are not release evidence.
 
 ### macOS 1.7.0 — unsigned/ad-hoc release artifact
 

@@ -670,7 +670,16 @@ def validate_macos_release(sources: dict[str, str]) -> list[str]:
         failures.append("both macOS checksum sidecars must record only the DMG basename")
     if active_source.count('cd "$DMG_DIR"') < 3:
         failures.append("macOS checksum generation/verification is not artifact-local")
-    if active_source.count('--repo "$GITHUB_REPOSITORY"') < 2:
+    # Read-only release lookups use repository-qualified `gh api` endpoints.
+    # Check each remaining release command, not a historical command count:
+    # adding a second unqualified command must fail even when upload is safe.
+    release_commands = re.findall(
+        r'\bgh[ \t]+release[ \t]+[^;\n&|]+',
+        active_source.replace('\\\n', ' '))
+    if not release_commands or any(
+        '--repo "$GITHUB_REPOSITORY"' not in command
+        for command in release_commands
+    ):
         failures.append("macOS publish commands do not name the release repository")
     trusted_order = [
         source.find('notarize_artifact.sh "$DMG_PATH"'),
@@ -810,6 +819,12 @@ def validate_desktop_release(sources: dict[str, str]) -> list[str]:
     provenance_verify = sources["provenance_verify"]
     failures = pinned("desktop_release", sources)
     failures.extend(validate_windows_manifest_version(workflow))
+    checklist = sources["checklist"]
+    readiness_at = checklist.find(
+        "tools/manual/check_github_launch_ready.sh --repo akratch/goldenballoon")
+    tag_at = checklist.find(f"git tag -s v{VERSION}")
+    if readiness_at < 0 or tag_at < 0 or readiness_at > tag_at:
+        failures.append("public GitHub readiness must precede release tagging")
     windows_manifest = re.search(
         r"expected=\"\$\(printf '%s\\n'(?P<body>.*?)\| LC_ALL=C sort\)\"",
         windows_packager,

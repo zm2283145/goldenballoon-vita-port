@@ -476,7 +476,7 @@ bool mdkr_mod_texture_store_active(void) {
     return s_enabled && s_registry != NULL && s_enabled_packs > 0;
 }
 
-int mdkr_mod_texture_lookup(const char *digest_hex, MdkrModTexture *out) {
+static int texture_lookup_exact(const char *digest_hex, MdkrModTexture *out) {
     StoreSlot *slot;
 
     if (out != NULL) {
@@ -500,6 +500,20 @@ int mdkr_mod_texture_lookup(const char *digest_hex, MdkrModTexture *out) {
     out->width = slot->width;
     out->height = slot->height;
     return 1;
+}
+
+int mdkr_mod_texture_lookup(const char *digest_hex, MdkrModTexture *out) {
+    if (texture_lookup_exact(digest_hex, out)) return 1;
+    /* Issue #58 retouches only our generated Taj card. A valid current-name
+     * replacement wins; otherwise retain the published pre-1.7 pack name.
+     * Both paths use the same enable, validation, caching, and size limits.
+     * Never rewrite the content digest itself: author dumps must still name
+     * the pixels they actually saw, and unrelated textures remain unchanged. */
+    if (digest_hex != NULL &&
+        strcmp(digest_hex, MDKR_MOD_TAJ_PORTRAIT_DIGEST) == 0) {
+        return texture_lookup_exact(MDKR_MOD_TAJ_PORTRAIT_LEGACY_DIGEST, out);
+    }
+    return 0;
 }
 
 void mdkr_mod_texture_set_enabled(bool enabled) {

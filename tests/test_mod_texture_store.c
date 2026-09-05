@@ -303,7 +303,7 @@ static void write_giant_declared_png(const char *root, const char *pack,
  * allowed to be asked for. Pixel (x, y) is (x * 16, y * 16, 0x40, 0xFF), so a
  * lookup that returned some other picture would not match. */
 static void write_small_rgba_png(const char *root, const char *pack,
-                                 const char *digest) {
+                                 const char *digest, unsigned char blue) {
     unsigned char raw[8 * (1 + 8 * 4)];
     unsigned char idat[5 + sizeof raw + 6];
     PngBuffer     png;
@@ -318,7 +318,7 @@ static void write_small_rgba_png(const char *root, const char *pack,
         for (x = 0; x < 8; x++) {
             raw[cursor++] = (unsigned char)(x * 16);
             raw[cursor++] = (unsigned char)(y * 16);
-            raw[cursor++] = 0x40u;
+            raw[cursor++] = blue;
             raw[cursor++] = 0xFFu;
         }
     }
@@ -410,6 +410,33 @@ static void test_an_unreadable_header_still_reaches_the_decoder(void) {
            "by the decoder, which was still given the chance to name the defect");
 }
 
+static void test_generated_portrait_alias(const char *mods,
+                                          MdkrModRegistry *registry) {
+    MdkrModTexture texture;
+    int found = mdkr_mod_texture_lookup(MDKR_MOD_TAJ_PORTRAIT_DIGEST, &texture);
+    expect(found && texture.width == 8 && texture.height == 8 &&
+           texture.rgba[2] == 0x40u,
+           "a pre-1.7 Taj pack still replaces the recoloured card");
+
+    mdkr_mod_texture_set_enabled(false);
+    found = mdkr_mod_texture_lookup(MDKR_MOD_TAJ_PORTRAIT_DIGEST, &texture);
+    expect(!found && texture.rgba == NULL,
+           "turning packs off also disables generated-portrait aliases");
+    mdkr_mod_texture_set_enabled(true);
+
+    found = mdkr_mod_texture_lookup("dcd45f4f32c9e1da4abeb3c1c1f8011a", &texture);
+    expect(!found, "a different digest cannot inherit Taj's legacy override");
+
+    write_small_rgba_png(mods, "probe", MDKR_MOD_TAJ_PORTRAIT_DIGEST, 0xE0u);
+    mdkr_mod_texture_store_init(registry);
+    found = mdkr_mod_texture_lookup(MDKR_MOD_TAJ_PORTRAIT_DIGEST, &texture);
+    expect(found && texture.rgba[2] == 0xE0u,
+           "a current-name replacement takes precedence over the legacy name");
+    found = mdkr_mod_texture_lookup(MDKR_MOD_TAJ_PORTRAIT_LEGACY_DIGEST, &texture);
+    expect(found && texture.rgba[2] == 0x40u,
+           "direct legacy lookup still returns the legacy file");
+}
+
 int main(int argc, char **argv) {
     const char     *scratch = argc > 1 ? argv[1] : "mod_texture_store_scratch";
     const char     *notpng = "this is not a PNG, it is a sentence";
@@ -427,7 +454,8 @@ int main(int argc, char **argv) {
 
     write_pack_text(mods, "probe", "pack.ini", "[pack]\nname=Probe\n");
     write_giant_declared_png(mods, "probe", DIGEST_GIANT, 32768u, 32768u);
-    write_small_rgba_png(mods, "probe", DIGEST_SOUND);
+    write_small_rgba_png(mods, "probe", DIGEST_SOUND, 0x40u);
+    write_small_rgba_png(mods, "probe", MDKR_MOD_TAJ_PORTRAIT_LEGACY_DIGEST, 0x40u);
     write_pack_bytes(mods, "probe", "textures/" DIGEST_NOTPNG ".png",
                      (const unsigned char *)notpng, strlen(notpng));
 
@@ -442,6 +470,7 @@ int main(int argc, char **argv) {
     test_declared_size_is_refused_before_the_decode();
     test_a_texture_that_fits_still_loads();
     test_an_unreadable_header_still_reaches_the_decoder();
+    test_generated_portrait_alias(mods, &registry);
 
     mdkr_mod_texture_store_shutdown();
     mdkr_mod_registry_shutdown(&registry);

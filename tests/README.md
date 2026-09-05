@@ -5800,16 +5800,23 @@ sidecar store creates a missing save directory and leaves no temporary file.
 `tests/check_taj_results_portrait.py` carries the same identity through a real
 two-player race into Rankings. It captures Taj beside an ordinary Diddy,
 requires the project-owned Taj card to match the retail portrait's 40x40
-contract, and checks its authored purple, blue, face, and jewel regions against
-the unchanged Diddy negative control. The route then returns to Track Select,
+contract, and checks its purple turban, blue elephant face/trunk, and gold
+detail against the unchanged Diddy negative control. The old tan portrait
+fails the face checks; a pixel control removes the gold detail and must fail
+that specific assertion. `--keep-frames DIR` retains captures and the log for
+visual review. The route then returns to Track Select,
 starts the race again, and repeats the capture after a full stage/menu teardown;
 this protects both the portrait identity and its native display-list/texture
 lifetime.
 
+Both Taj portrait gates default to the shipping WebGPU backend; `--renderer gl`
+retains the diagnostic comparison. They require the requested backend's runtime
+witness rather than accepting a silent renderer fallback.
+
 `tests/check_taj_hud_portrait.py` proves the same card in the retail P2
 Adventure HUD slot. It selects Taj as P2, reaches the real hub without changing
 lead state, and joins the exact HUD identity trace to visible purple, blue,
-face, and jewel pixels at the authored portrait anchor.
+elephant face, and jewel pixels at the authored portrait anchor.
 
 `tests/check_taj_p2_adventure.py` covers the lead-player seam ordinary Tracks
 multiplayer cannot reach. It enters `JOINTVENTURE` through the retail Magic
@@ -6443,12 +6450,16 @@ The gate is registered as `bonus_results_portraits` in
 
 This real-ROM gate proves the three generated bonus-racer portraits are
 replaceable through the ordinary Content Packs texture path, and that their
-published digests do not drift. Seven runs of the same post-race flow
+published digests do not drift. Nine runs of the same post-race flow
 `check_bonus_results_portraits.py` uses: a no-pack baseline with
 `MDKR_MOD_TEXTURE_DUMP` on, one pack arm per racer overriding that racer's
 pinned digest, the identical pack switched off by its own `pack.ini`, and the
 baseline and Taj pack arms again on WebGPU — the renderer that ships, so a
 digest published from GL alone would be a name most players never produce.
+Two further arms use the pre-1.7 Taj filename on GL and WebGPU, proving that
+retouching the generated card does not silently invalidate existing packs.
+The ROM-free `mod_texture_store` test pins current-name precedence, disabling
+aliases with the pack toggle, and isolation from unrelated texture digests.
 Every arm proves it got the backend it asked for, so a silent adapter fallback
 cannot pass as WebGPU evidence. Frames are not compared across backends: two
 rasterizers need not agree byte-for-byte and nothing here claims they do, while

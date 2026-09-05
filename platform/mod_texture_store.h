@@ -43,6 +43,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* Generated first-party artwork can change without invalidating existing
+ * packs. These are content digests, not a change to the v1 digest algorithm. */
+#define MDKR_MOD_TAJ_PORTRAIT_DIGEST "dcd45f4f32c9e1da4abeb3c1c1f8011b"
+#define MDKR_MOD_TAJ_PORTRAIT_LEGACY_DIGEST "7757ffb6d3f809fbde246ca559d51eb4"
+
 #ifdef __cplusplus
 extern "C" {
 #endif

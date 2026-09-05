@@ -2393,6 +2393,27 @@ CONTROL_GROUPS: dict[str, ControlGroup] = {
         summary='macOS CI positive controls unexpectedly passed: ',
         controls=(
             Control(
+                "macOS release command repository binding",
+                "macos_release",
+                '--repo "$GITHUB_REPOSITORY"',
+                '--repo "unrelated/repository"',
+                count=1,
+            ),
+            Control(
+                "additional macOS release command without repository binding",
+                "macos_release",
+                'gh release upload "$RELEASE_TAG"',
+                'gh release view "$RELEASE_TAG"\n          gh release upload "$RELEASE_TAG"',
+                count=1,
+            ),
+            Control(
+                "same-line macOS release command without repository binding",
+                "macos_release",
+                'gh release upload "$RELEASE_TAG"',
+                'gh release view "$RELEASE_TAG" && gh release upload "$RELEASE_TAG"',
+                count=1,
+            ),
+            Control(
                 "read-only signing job",
                 "macos_release",
                 '\npermissions:\n  contents: read',

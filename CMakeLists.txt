@@ -2179,6 +2179,15 @@ if(NOT EMSCRIPTEN)
                 LABELS app_process
                 PASS_REGULAR_EXPRESSION "${MDKR_FRAME_LIMIT_UI_CONTRACT_REGEX}")
 
+            # Issue #62: the actual widget's option routing must expose all
+            # three choices, with readable labels, instead of a text field.
+            add_test(NAME app_opponent_skill_choices COMMAND ${MDKR_TARGET})
+            set_tests_properties(app_opponent_skill_choices PROPERTIES
+                ENVIRONMENT "MDKR_APP_DUMP_SCHEMA=1;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                LABELS app_process
+                PASS_REGULAR_EXPRESSION
+                    "choices key=Enhancements.AIDifficulty count=3 authored=\"Original — as released\" hard=\"Hard — faster opponents\" brutal=\"Brutal — fastest opponents\"")
+
             # Shell render smoke: drive the launcher for a few frames and require
             # a real captured frame. This is what makes the gate honest — it
             # proves pixels reached a framebuffer, not merely that main() returned

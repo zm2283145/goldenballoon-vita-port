@@ -6,8 +6,8 @@ Why this exists
 The three bonus racers have no retail portrait, so the port draws theirs from
 code: `taj_portrait_texture()`, `wizpig_portrait_texture()` and
 `terry_portrait_texture()` in game/src/menu.c compose 40x40 RGBA cards out of
-rectangles and ellipses. The project cannot ship art resembling Rare's, so a
-player who wants a different Taj has exactly one route -- a content pack.
+rectangles and ellipses without bundling extracted portraits. A player can
+replace that first-party fallback artwork with a content pack.
 
 That route already works, and this gate is the thing that says so out loud and
 keeps it true. A generated portrait is an ORDINARY texture bind: menu.c hands
@@ -28,10 +28,10 @@ name goes quietly inert: no crash, no log line, no failing test. The player
 sees the stock portrait and has no way to tell a broken pack from a pack they
 installed wrong.
 
-So the three digests below are pinned deliberately. If this gate fails on the
-digest, the procedural art moved, and that is a decision to make on purpose --
-retouch the art and republish the digests in docs/MODDING.md, or leave the art
-alone. It must not be a side effect noticed by a modder six months later.
+So the three current digests below are pinned deliberately. Retouching the art
+must update docs/MODDING.md and preserve published pack names as aliases. The
+blue-elephant Taj revision retains its old name, with separate GL/WebGPU arms
+below proving that an unmodified pre-1.7 pack still draws the replacement.
 
 The route
 ---------
@@ -40,7 +40,7 @@ post-race flow, the same capture frame and the same result-card anchor
 `check_bonus_results_portraits.py` already uses, so the region sampled here is
 a region another gate independently proves holds a portrait. Each character is
 put in player 0 by its own bootstrap variable (`MDKR_TAJ_TEST_PLAYER` and its
-two siblings). Seven runs, each in its own throwaway working directory, which
+two siblings). Nine runs, each in its own throwaway working directory, which
 is also where that arm's `mods/` and dumped corpus live:
 
     baseline          Taj, no `mods/` at all, MDKR_MOD_TEXTURE_DUMP on
@@ -193,7 +193,8 @@ FRAMES = CAPTURE_FRAME + 20
 # Reproduce them with
 #   MDKR_MOD_TEXTURE_DUMP=<dir> MDKR_<NAME>_TEST_PLAYER=0 ... --headless-frames
 # and look for the 40x40 RGBA sidecar, which is what assertion 2 does.
-TAJ_DIGEST = "7757ffb6d3f809fbde246ca559d51eb4"
+TAJ_DIGEST = "dcd45f4f32c9e1da4abeb3c1c1f8011b"
+TAJ_LEGACY_DIGEST = "7757ffb6d3f809fbde246ca559d51eb4"
 WIZPIG_DIGEST = "813ff52ed6575a1f29c8fa2fc47b2464"
 TERRY_DIGEST = "fd222569d7bd95580075402b7315e178"
 
@@ -457,9 +458,9 @@ def assert_corpus_publishes(label: str, dump: Path, digest: str) -> None:
             path.read_text(encoding="utf-8", errors="replace"))
         raise CheckError(
             f"{label}: MDKR_MOD_TEXTURE_DUMP did not publish {digest}. "
-            "The generated portrait art has almost certainly changed, which "
-            "renames it and silently breaks every pack that addressed the old "
-            f"name. 40x40 digests this route did dump: {found or 'none'}")
+            "The generated portrait art has changed: update the current name "
+            "and prove the previously published pack name remains an alias. "
+            f"40x40 digests this route did dump: {found or 'none'}")
     require((dump / f"{digest}.png").is_file(),
             f"{label}: {digest} has a sidecar but no PNG")
     text = sidecar.read_text(encoding="utf-8", errors="replace")
@@ -610,6 +611,15 @@ def main() -> int:
             if wants_corpus:
                 assert_override_dump(character, dump, digest)
 
+        frame, output, dump = run_arm(
+            binary, rom, root, "taj-legacy", "taj", TAJ_LEGACY_DIGEST, True,
+            True, args.timeout, args.verbose)
+        assert_reached_card("taj-legacy", "taj", output)
+        assert_pack_drew_card("taj-legacy", frame)
+        # The author dump names current source content even when the installed
+        # replacement was discovered through a historical-name alias.
+        assert_override_dump("taj-legacy", dump, TAJ_DIGEST)
+
         # The positive control: the identical pack, switched off by its own
         # pack.ini, must give back the generated card exactly.
         frame, output, _ = run_arm(
@@ -654,6 +664,11 @@ def main() -> int:
         require("[MODS]   active: Portrait Test (priority 100)" in output,
                 "webgpu-taj: the pack did not install")
         assert_pack_drew_card("webgpu-taj", frame)
+        frame, output, _ = run_arm(
+            binary, rom, root, "webgpu-taj-legacy", "taj", TAJ_LEGACY_DIGEST,
+            True, False, args.timeout, args.verbose, renderer="webgpu")
+        assert_reached_card("webgpu-taj-legacy", "taj", output)
+        assert_pack_drew_card("webgpu-taj-legacy", frame)
     except (OSError, ValueError, subprocess.TimeoutExpired,
             CheckError) as error:
         print(f"check_bonus_portrait_pack: FAIL -- {error}", file=sys.stderr)
@@ -663,6 +678,7 @@ def main() -> int:
     print("check_bonus_portrait_pack: PASS -- a pack redrew the generated Taj, "
           "Wizpig and Terry cards at their published digests on GL and on the "
           "shipped WebGPU default, the author dump publishes those digests, "
+          "pre-1.7 Taj packs remain compatible on both backends, "
           "and switching the pack off restored the generated cards "
           "byte-for-byte")
     if args.evidence_dir:

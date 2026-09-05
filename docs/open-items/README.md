@@ -11,6 +11,10 @@ it.
 
 ## Where things live
 
+The [public issue acceptance register](github-issues.md) tracks the remaining
+GitHub reports, their individual symptoms, and the evidence required before
+claiming they are resolved.
+
 This was one 422 KB document. It is split by subsystem so that a change to one
 area has one place to read and one place to add to. The entries themselves are
 unchanged.

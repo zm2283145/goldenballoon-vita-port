@@ -2165,21 +2165,23 @@ static TextureHeader *taj_portrait_texture(void) {
     taj_portrait_rect(14, 25, 18, 31,
                       COLOUR_RGBA32(142, 62, 184, 255));
 
-    /* Ears, head, and cheek shading. */
+    /* Blue elephant ears, head, and cheek shading. The former tan palette
+     * read as a human face at this size (public issue #58). Keep this original
+     * geometric artwork independent of ROM-derived portrait assets. */
     taj_portrait_ellipse(8, 17, 4, 5,
-                         COLOUR_RGBA32(92, 52, 38, 255));
+                         COLOUR_RGBA32(24, 74, 112, 255));
     taj_portrait_ellipse(24, 17, 4, 5,
-                         COLOUR_RGBA32(92, 52, 38, 255));
+                         COLOUR_RGBA32(24, 74, 112, 255));
     taj_portrait_ellipse(8, 17, 3, 4,
-                         COLOUR_RGBA32(204, 136, 92, 255));
+                         COLOUR_RGBA32(62, 151, 195, 255));
     taj_portrait_ellipse(24, 17, 3, 4,
-                         COLOUR_RGBA32(204, 136, 92, 255));
+                         COLOUR_RGBA32(62, 151, 195, 255));
     taj_portrait_ellipse(16, 17, 9, 10,
-                         COLOUR_RGBA32(86, 45, 33, 255));
+                         COLOUR_RGBA32(24, 64, 99, 255));
     taj_portrait_ellipse(16, 17, 8, 9,
-                         COLOUR_RGBA32(222, 158, 103, 255));
+                         COLOUR_RGBA32(67, 143, 182, 255));
     taj_portrait_ellipse(18, 18, 5, 7,
-                         COLOUR_RGBA32(236, 178, 119, 255));
+                         COLOUR_RGBA32(106, 184, 217, 255));
 
     /* Purple turban, gold band, and jewel. */
     taj_portrait_ellipse(16, 9, 10, 6,
@@ -2218,12 +2220,12 @@ static TextureHeader *taj_portrait_texture(void) {
 
     /* Trunk and unmistakable ivory tusks finish the silhouette. */
     taj_portrait_ellipse(16, 20, 4, 4,
-                         COLOUR_RGBA32(188, 119, 76, 255));
+                         COLOUR_RGBA32(39, 119, 164, 255));
     taj_portrait_rect(14, 19, 18, 25,
-                      COLOUR_RGBA32(218, 151, 96, 255));
+                      COLOUR_RGBA32(77, 160, 199, 255));
     taj_portrait_rect(15, 21, 18, 26,
-                      COLOUR_RGBA32(232, 170, 110, 255));
-    taj_portrait_pixel(18, 26, COLOUR_RGBA32(192, 122, 78, 255));
+                      COLOUR_RGBA32(114, 193, 221, 255));
+    taj_portrait_pixel(18, 26, COLOUR_RGBA32(42, 123, 166, 255));
     for (y = 0; y < 5; y++) {
         taj_portrait_pixel(11 - (y >> 1), 20 + y,
                            COLOUR_RGBA32(250, 244, 205, 255));

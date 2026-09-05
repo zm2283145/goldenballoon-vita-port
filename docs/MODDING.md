@@ -144,7 +144,7 @@ Today the three are:
 
 | Racer | `textures/…` |
 |---|---|
-| Taj | `7757ffb6d3f809fbde246ca559d51eb4.png` |
+| Taj | `dcd45f4f32c9e1da4abeb3c1c1f8011b.png` |
 | Wizpig | `813ff52ed6575a1f29c8fa2fc47b2464.png` |
 | Terry | `fd222569d7bd95580075402b7315e178.png` |
 
@@ -152,11 +152,13 @@ You can also find them yourself, exactly as above: dump the textures on a route
 that reaches the results screen with that racer in first place, and look for the
 40×40 card in the output.
 
-One thing to know before you build on them. These three are drawn by the port
-rather than read from the game, so if a future release retouches the artwork,
-its name changes and a pack aimed at the old name quietly stops applying. The
-names above are the ones this release uses; when they change, this page changes
-with them.
+These three are drawn by the port rather than read from the game, so retouching
+the artwork changes its content digest. The blue-elephant Taj portrait in 1.7
+keeps `7757ffb6d3f809fbde246ca559d51eb4.png` as a compatibility alias: existing
+packs need no changes. If valid replacements exist under both Taj names, the
+current name wins. Disabling packs disables both names. The author dump always
+uses the current digest, including when the replacement came from an old-name
+file. Wizpig and Terry's names are unchanged.
 
 ## Replacing music
 

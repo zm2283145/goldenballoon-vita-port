@@ -180,8 +180,9 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "Enhancements.AIDifficulty", "MDKR_ENH_AI_DIFFICULTY",
         MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
         "Opponent skill",
-        "authored races the opponents as they were written. hard and brutal "
-        "make them faster. Changes how the game plays.",
+        "Original keeps the game's original opponent speeds. Hard makes "
+        "computer racers faster; Brutal is the fastest setting. "
+        "Changes how the game plays.",
         MDKR_VIDEO_CAT_PACING
     },
     [MDKR_ENH_ADVENTURE_PARTY] = {

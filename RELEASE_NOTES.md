@@ -155,6 +155,14 @@ good or bad — on the GitHub issues page.
 
 ## Fixes
 
+- **Taj's portrait is a blue elephant.** The original procedural results/HUD
+  card now has a blue face and trunk instead of the tan placeholder. Existing
+  portrait packs continue to work without renaming their files.
+
+- **Opponent skill is a dropdown.** Choose Original, Hard or Brutal without
+  typing a configuration value. Each choice explains its effect; changes take
+  effect after restarting the game. Original retains the original speeds.
+
 - Native release packages now include the **Online Room** beta they describe.
   The release builder could previously leave that entry out even when an
   online-enabled qualification build had it present.

@@ -555,6 +555,11 @@ const Option kRumbleProfile[] = {
     {"balanced", "Balanced — 65%"},
     {"strong", "Strong — 100%"},
 };
+const Option kOpponentSkill[] = {
+    {"authored", "Original — as released"},
+    {"hard", "Hard — faster opponents"},
+    {"brutal", "Brutal — fastest opponents"},
+};
 const Option kControllerAction[] = {
     {"none", "None"},
     {"a", "N64 A"},
@@ -600,6 +605,9 @@ bool optionsFor(MdkrVideoKey k, Options &out) {
             out = {kMenuLanguages, 2}; return true;
         case MDKR_WINDOW_MODE:              out = {kWindowMode, 2}; return true;
         case MDKR_INPUT_RUMBLE_PROFILE:     out = {kRumbleProfile, 3}; return true;
+        case MDKR_ENH_AI_DIFFICULTY:
+            out = {kOpponentSkill, static_cast<int>(std::size(kOpponentSkill))};
+            return true;
         default: return false;
     }
 }
@@ -29505,6 +29513,17 @@ void Settings_dumpSchemaContract() {
             AppUi_videoSettingVisible(key, /*webGpuRenderer=*/true,
                                       /*legacyStretchActive=*/false) ? 1 : 0,
             copy != nullptr ? copy->label : s->label, value);
+        // Report the same finite-domain route used by drawKey(), not a second
+        // inventory. This makes an accidental fallback to free text testable.
+        Options options;
+        if (optionsFor(key, options)) {
+            std::printf("[app] choices key=%s count=%d", s->name, options.count);
+            for (int option = 0; option < options.count; ++option) {
+                std::printf(" %s=\"%s\"", options.items[option].value,
+                            options.items[option].label);
+            }
+            std::printf("\n");
+        }
     }
 }
 
