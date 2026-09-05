@@ -71,6 +71,7 @@ Downloads the pinned upstream SDL2 source archive, verifies its SHA-256, and
 builds a standalone shared SDL2 library for the requested macOS target. The
 installed pkg-config file can then be selected for build_app_bundle.sh by
 prepending <prefix>/lib/pkgconfig to PKG_CONFIG_PATH.
+Set CMAKE_BUILD_PARALLEL_LEVEL to limit build jobs on a shared workstation.
 
 Options:
   --work-dir PATH       Source/build/cache directory
@@ -219,7 +220,8 @@ cmake -S "${SOURCE_DIR}" -B "${BUILD_DIR}" \
     -DSDL_TEST=OFF \
     -DSDL_TESTS=OFF \
     -DSDL2_DISABLE_INSTALL=OFF
-cmake --build "${BUILD_DIR}" --target install --parallel "$(sysctl -n hw.ncpu)"
+cmake --build "${BUILD_DIR}" --target install \
+    --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-$(sysctl -n hw.ncpu)}"
 
 DYLIB="${PREFIX}/lib/libSDL2-2.0.0.dylib"
 PC_FILE="${PREFIX}/lib/pkgconfig/sdl2.pc"

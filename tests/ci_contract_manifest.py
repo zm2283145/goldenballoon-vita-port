@@ -452,6 +452,10 @@ PIN_GROUPS: dict[str, PinGroup] = {
         active_shell=True,
         pins=(
             Pin("builder", f"builder {VERSION} default", must_contain=f'APP_VERSION="{VERSION}"'),
+            Pin("builder", "app builder honors caller job limit",
+                must_contain='NCPU="${CMAKE_BUILD_PARALLEL_LEVEL:-$(sysctl -n hw.ncpu)}"'),
+            Pin("sdl_builder", "SDL2 builder honors caller job limit",
+                must_contain='--parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-$(sysctl -n hw.ncpu)}"'),
             Pin("info_plist", f"Info.plist {VERSION} default",
                 must_contain=f"<string>{VERSION}</string>"),
             Pin("sdl_config", "pinned SDL2 version",
@@ -2836,6 +2840,20 @@ CONTROL_GROUPS: dict[str, ControlGroup] = {
                 "builder",
                 "pkg-config resolves sdl2 to sdl2-compat",
                 "unsupported dependency",
+                count=1,
+            ),
+            Control(
+                "app builder caller job limit",
+                "builder",
+                'NCPU="${CMAKE_BUILD_PARALLEL_LEVEL:-$(sysctl -n hw.ncpu)}"',
+                'NCPU="$(sysctl -n hw.ncpu)"',
+                count=1,
+            ),
+            Control(
+                "SDL2 builder caller job limit",
+                "sdl_builder",
+                '--parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-$(sysctl -n hw.ncpu)}"',
+                '--parallel "$(sysctl -n hw.ncpu)"',
                 count=1,
             ),
             Control(

@@ -212,6 +212,7 @@ By default the resulting bundle is ad-hoc signed for integrity only and still
 depends on SDL2 at the path reported by pkg-config. For a distributable build,
 use --strict-deployment-target --bundle-sdl2 and run the unsigned release
 verifier. Developer ID signing/notarization is a separate optional path.
+Set CMAKE_BUILD_PARALLEL_LEVEL to limit build jobs on a shared workstation.
 EOF
 }
 
@@ -535,7 +536,7 @@ if [[ "${RUN_CMAKE}" == true ]]; then
         ${ONLINE_BETA_CMAKE_ARGS[@]+"${ONLINE_BETA_CMAKE_ARGS[@]}"} \
         || die "CMake configuration failed."
 
-    NCPU="$(sysctl -n hw.ncpu)"
+    NCPU="${CMAKE_BUILD_PARALLEL_LEVEL:-$(sysctl -n hw.ncpu)}"
     info "Building mdkr64 with ${NCPU} parallel jobs..."
     cmake --build "${BUILD_DIR}" --target mdkr64 mdkr-character-lod --parallel "${NCPU}" \
         || die "mdkr64 build failed."
