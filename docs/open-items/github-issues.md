@@ -47,6 +47,10 @@ compilation now pass; these are not behavioral acceptance results.
 The subsequent complete Windows cross-build now passes after fixes for three
 unit-target portability failures and a test-fixture bounds error. No Windows
 executable was run, and the Windows/NVIDIA and package gaps remain open.
+The web engine at `0f5222f3` additionally passes compilation and non-executing
+JavaScript/WebAssembly checks, not browser acceptance. A Windows portable-mode
+read-back predicate is corrected with pending CI controls; that source fix does
+not establish Windows settings persistence or package acceptance.
 See the release checklist for these separate
 qualification gaps; neither changes the Windows/NVIDIA or controller verdicts.
 

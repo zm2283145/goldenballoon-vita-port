@@ -209,6 +209,19 @@ affected unit targets also compile in native optimized and ASan/UBSan builds.
 These are compile/link results, not Windows runtime, GPU, package, or controller
 acceptance; behavioral checks for the changed units remain pending.
 
+The web engine also compiles at `0f5222f3`, including the later PNG admission
+and caller-limit guards. Generated JavaScript passes syntax checking, and the
+WebAssembly module passes structural validation with the compiler's required
+features enabled. Private hashes bind that compilation evidence; browser
+gameplay, staged-payload provenance, and final web acceptance remain pending.
+
+Source review found a separate Windows workflow predicate bug: portable-mode
+read-back used regex brackets where the application prints literal brackets.
+The candidate uses an exact whole-line fixed-string match against the fresh
+read log. CI controls cover the old regex, partial-line matching, and the wrong
+log. YAML/Python parsing and embedded-shell syntax checks pass; the new contract
+controls and actual Windows persistence workflow have not been executed.
+
 ## 0. Prerequisites
 
 You supply your own legally-owned ROM. It is never committed.

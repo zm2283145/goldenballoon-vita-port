@@ -1142,6 +1142,8 @@ PIN_GROUPS: dict[str, PinGroup] = {
                 must_contain="./build/mdkr64.exe --help"),
             Pin("windows_validate", "GPU-free CTest routing",
                 must_contain="ctest --test-dir build --output-on-failure -LE gpu"),
+            Pin("windows_validate", "literal whole-line portable mode read-back",
+                must_contain="grep -Fqx '[video] mode=remastered' \"$RUNNER_TEMP/portable-read.out\""),
             Pin("windows_validate", "exact portable packaging",
                 must_contain="./tools/package_windows_zip.sh"),
             Pin("windows_validate", "pinned native validator preparation",
@@ -1670,6 +1672,27 @@ CONTROL_GROUPS: dict[str, ControlGroup] = {
     'windows_validate': ControlGroup(
         summary='Windows non-publishing controls unexpectedly passed: ',
         controls=(
+            Control(
+                "portable read-back treats brackets as regex",
+                "windows_validate",
+                "grep -Fqx '[video] mode=remastered'",
+                "grep -qx '[video] mode=remastered'",
+                count=1,
+            ),
+            Control(
+                "portable read-back permits partial lines",
+                "windows_validate",
+                "grep -Fqx '[video] mode=remastered'",
+                "grep -Fq '[video] mode=remastered'",
+                count=1,
+            ),
+            Control(
+                "portable read-back checks the write log",
+                "windows_validate",
+                "grep -Fqx '[video] mode=remastered' \"$RUNNER_TEMP/portable-read.out\"",
+                "grep -Fqx '[video] mode=remastered' \"$RUNNER_TEMP/portable-write.out\"",
+                count=1,
+            ),
             Control(
                 "packaged startup",
                 "windows_validate",

@@ -215,7 +215,7 @@ jobs:
           ( cd "$install" && "$install/mdkr64.exe" --video-list \
               > "$RUNNER_TEMP/portable-read.out" 2>&1 )
           cat "$RUNNER_TEMP/portable-read.out"
-          grep -qx '[video] mode=remastered' "$RUNNER_TEMP/portable-read.out" \
+          grep -Fqx '[video] mode=remastered' "$RUNNER_TEMP/portable-read.out" \
             || { echo "FAIL: persisted mode did not read back from the non-ASCII path"; exit 1; }
           grep -q 'mdkr64.ini' "$RUNNER_TEMP/portable-read.out" \
             || { echo "FAIL: read-back did not cite the on-disk config as its source"; exit 1; }

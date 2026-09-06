@@ -52,6 +52,12 @@ link-time optimization to discard unrelated engine references before linking;
 configuration fails if that capability is unavailable rather than omitting the
 test. GNU link-time work for this target is limited to one compiler worker.
 
+The CI contract also pins Windows portable-settings read-back to a literal,
+whole-line match against the fresh process's read log. Its controls cover the
+old bracket-as-regex mistake, a weakened partial-line match, and accidentally
+checking the write log instead. Native Windows execution remains necessary to
+prove persistence; these source-contract checks are not a runtime substitute.
+
 ## Complete suite runner and `--build` contract
 
 Every behavioural script accepts the same `--build` value: either a directory
