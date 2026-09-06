@@ -109,7 +109,11 @@ at `9e8e034d`, with CI-pinned Python and Node, finishes 275/278 passed:
 `online_live_adapter` and `online_live_matrix` fail assertions, and
 `match_live_transport` terminates with a segmentation fault. These are unresolved
 qualification failures; the latter also reproduces in isolation. Packaging
-correctly stops. Portable packages and software-rendered launcher qualification
+correctly stops. Sanitizer diagnosis identifies an unseeded WebSocket random
+generator on plaintext loopback connections. The candidate seeds it before
+either plaintext or TLS use; macOS transport tests, including a fresh-nonce
+reconnect regression check, pass. Linux optimized/sanitizer confirmation is
+still required. Portable packages and software-rendered launcher qualification
 remain pending. Container evidence cannot establish physical
 Linux GPU acceptance. Existing `12cab88c` macOS/web artifact identities remain
 unchanged and must not be relabeled as this later source checkpoint.

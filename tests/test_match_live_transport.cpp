@@ -394,6 +394,11 @@ public:
         return state_->upgradeCount;
     }
 
+    std::string lastWebSocketKey() const {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        return headerValueOf(state_->lastWsHead, "sec-websocket-key");
+    }
+
     bool sendStateRevision(uint32_t revision) {
         Json root;
         {
@@ -677,6 +682,13 @@ void wsDropReconnectsResubscribesAndDedupes() {
     RoomRig rig;
     assert(rig.bringUp());
     assert(rig.server.waitForUpgrades(1u));
+    const std::string firstKey = rig.server.lastWebSocketKey();
+    unsigned char nonce[16];
+    size_t nonceBytes = 0u;
+    assert(mbedtls_base64_decode(nonce, sizeof(nonce), &nonceBytes,
+        reinterpret_cast<const unsigned char *>(firstKey.data()),
+        firstKey.size()) == 0);
+    assert(nonceBytes == sizeof(nonce));
     const uint32_t base = rig.server.baseRevision();
     assert(rig.server.sendStateRevision(base + 1u));
     assert(rig.pumpUntil(
@@ -693,6 +705,15 @@ void wsDropReconnectsResubscribesAndDedupes() {
     assert(rig.count(MdkrOnlineRoomEvent::Type::Failure) == 0u);
     /* ...and the ladder must produce a fresh authenticated subscription. */
     assert(rig.server.waitForUpgrades(2u, 5000u));
+    /* Ordinary loopback connections must seed the WebSocket generator too.
+     * Reconnecting must not repeat a deterministic unseeded nonce. This is
+     * a lifecycle regression check, not a statistical randomness audit. */
+    const std::string secondKey = rig.server.lastWebSocketKey();
+    assert(mbedtls_base64_decode(nonce, sizeof(nonce), &nonceBytes,
+        reinterpret_cast<const unsigned char *>(secondKey.data()),
+        secondKey.size()) == 0);
+    assert(nonceBytes == sizeof(nonce));
+    assert(firstKey != secondKey);
 
     /* Redelivery of the revision we already hold is idempotent. */
     const unsigned statesBefore = rig.count(MdkrOnlineRoomEvent::Type::State);

@@ -483,13 +483,15 @@ public:
         net_.fd = static_cast<int>(fd);
         setSocketTimeouts(fd, static_cast<uint32_t>(kWriteTimeoutMs));
         tls_ = origin.tls;
-        if (!tls_) {
-            open_ = true;
-            return true;
-        }
+        /* WebSocket nonces and client control-frame masks need a seeded
+         * generator on plaintext loopback connections too, not just TLS. */
         if (mbedtls_ctr_drbg_seed(&drbg_, mbedtls_entropy_func, &entropy_,
                                   nullptr, 0) != 0) {
             return false;
+        }
+        if (!tls_) {
+            open_ = true;
+            return true;
         }
         if (mbedtls_x509_crt_parse(
                 &ca_, kMdkrMozillaCaBundle,
