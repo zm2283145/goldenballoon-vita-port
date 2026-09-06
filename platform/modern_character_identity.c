@@ -12,6 +12,10 @@
 #define MODERN_PORTRAIT_SOURCE_MAX 1024
 #define MODERN_PORTRAIT_ENCODED_MAX (8u * 1024u * 1024u)
 
+_Static_assert((uint64_t)MODERN_PORTRAIT_SOURCE_MAX *
+                   MODERN_PORTRAIT_SOURCE_MAX <= (uint64_t)INT_MAX / 8u,
+               "PNG decode intermediates must fit signed integer sizes");
+
 _Static_assert(MODERN_PORTRAIT_ENCODED_MAX <= (unsigned)INT_MAX,
                "the bounded portrait must fit stb_image's int length");
 

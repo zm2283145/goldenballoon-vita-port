@@ -74,6 +74,12 @@
  * and a hard stop for one that replaces everything at 4K. */
 #define MDKR_MOD_TEXTURE_CACHE_BYTES_MAX ((size_t)512u * 1024u * 1024u)
 
+/* PNG decoding can use 16-bit RGBA intermediates even when we request 8-bit
+ * output. Keep the admitted pixel budget inside the pinned decoder's integer
+ * conversion bounds; increasing it requires a fresh decoder-boundary review. */
+_Static_assert(MDKR_MOD_TEXTURE_CACHE_BYTES_MAX <= (size_t)INT_MAX / 2u,
+               "PNG decode intermediates must fit signed integer sizes");
+
 /* Largest PNG file this will read into memory before handing it to the decoder.
  * A legitimate 4K RGBA PNG compresses to a few tens of megabytes; anything past
  * this is either not a texture or is not one this store is willing to hold. */

@@ -20,6 +20,11 @@ namespace {
 
 constexpr size_t kMaximumPngBytes = 32u * 1024u * 1024u;
 
+static_assert(static_cast<uint64_t>(CharacterPortraitImport::kMaximumDimension) *
+                  CharacterPortraitImport::kMaximumDimension <=
+                  static_cast<uint64_t>(std::numeric_limits<int>::max()) / 8u,
+              "PNG decode intermediates must fit signed integer sizes");
+
 using CharacterPortraitImport::Background;
 using CharacterPortraitImport::Image;
 using CharacterPortraitImport::Recipe;

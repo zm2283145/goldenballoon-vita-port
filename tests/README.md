@@ -6507,6 +6507,10 @@ unreadable headers without entering the decoder, and verifies that returned
 dimensions agree with admission. The dimension-mismatch controls change only
 the test wrapper's metadata after decoding an ordinary small PNG; a matching
 image must still load with its exact pixels.
+The four first-party PNG callers also carry compile-time bounds for 16-bit
+intermediate storage, including callers that request 8-bit output. Raising
+their dimension/cache limits beyond those bounds must fail compilation until
+the decoder-size contract is reviewed; this is independent of test execution.
 Every arm proves it got the backend it asked for, so a silent adapter fallback
 cannot pass as WebGPU evidence. Frames are not compared across backends: two
 rasterizers need not agree byte-for-byte and nothing here claims they do, while

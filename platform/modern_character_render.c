@@ -16,6 +16,11 @@
 #define MODERN_TEXTURE_DIMENSION_MAX 4096
 #define MODERN_DECODED_TEXTURE_BYTES_MAX (512u * 1024u * 1024u)
 
+/* Include 16-bit RGBA intermediates in the pinned PNG conversion bound. */
+_Static_assert((uint64_t)MODERN_TEXTURE_DIMENSION_MAX *
+                   MODERN_TEXTURE_DIMENSION_MAX <= (uint64_t)INT_MAX / 8u,
+               "PNG decode intermediates must fit signed integer sizes");
+
 _Static_assert(MODERN_DECODED_TEXTURE_BYTES_MAX <= (unsigned)INT_MAX,
                "the bounded texture section must fit stb_image's int length");
 _Static_assert(MODERN_DECODED_TEXTURE_BYTES_MAX ==
