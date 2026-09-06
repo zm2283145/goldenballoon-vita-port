@@ -32,8 +32,8 @@ writable folder first.
 
 ## 2. Launcher and settings
 
-Run these checks on macOS and Windows; repeat the browser-relevant steps on the
-web build.
+Run these checks on macOS, Windows, and Linux; repeat the browser-relevant steps
+on the web build.
 
 1. Start without a saved ROM. The launcher must remain responsive while a ROM
    is checked, and an invalid file must not replace the last valid selection.
@@ -58,6 +58,13 @@ web build.
 8. Change a restart-scoped video setting during play and choose **Restart &
    Apply**. The same ROM must reopen. A forced startup failure must return to a
    usable launcher with diagnostics rather than exit.
+9. Use a physical controller to change **Opponent skill** through **Original**,
+   **Hard**, and **Brutal** in both launcher Settings and the F1 overlay. Check
+   focus, selection, confirmation, and backing out without changing another
+   setting. Restart when requested, then relaunch and verify the saved choice.
+   Restore defaults and confirm **Original** returns. Record the controller
+   model and candidate hash; keyboard or synthetic-input evidence alone does
+   not close issue #62's physical-controller acceptance.
 
 ## 3. Core gameplay and presentation
 
@@ -103,11 +110,37 @@ Use WebGPU with Restored presentation unless a step says otherwise.
    authored presentation remains stable.
 10. Confirm **Keep the camera out of walls** remains opt-in and **Authored** is
     the default. If reviewing the optional mode, record every rapid
-    blocked-to-clear-to-blocked correction and every side switch. Its known
-    motion-quality replay is already red on the 1.6.0 comparison artifact, so
-    do not mislabel the existing chatter as a new 1.7 regression or as a pass;
-    any penetration, invalid/degraded pose, default-camera change, or worsening
-    against the exact 1.6.0 comparison blocks the candidate.
+    blocked-to-clear-to-blocked correction and every side switch. Compare the
+    exact 1.6.0 artifact to classify regressions, not to waive a failed gate.
+    A historical baseline failure does not waive a current release gate.
+    The unresolved rapid-reengagement motion-quality failure remains a release
+    blocker even if it is unchanged from 1.6.0. Any penetration, invalid/degraded
+    pose, default-camera change, or worsening also blocks the candidate.
+
+## 3b. Separate split-screen acceptance for issue #61
+
+Record three separate symptom verdicts; a pass for one does not close the others.
+Use two physical controllers and record the candidate hash, OS, GPU/driver,
+renderer, ROM revision, aspect ratio, and presentation mode for each observation.
+
+1. **Sky edges:** play two-player races on several tracks at 4:3 and widescreen,
+   inspecting both viewports for black sky edges or uncovered background. Repeat
+   with WebGPU and diagnostic OpenGL in Restored and Remastered presentation.
+2. **Pause detail:** pause from player 1, resume, then pause from player 2 at the
+   same window size and UI scale. Text and menu detail must be equivalent, with
+   correct player ownership, in Restored and Remastered. Authored differences
+   in panel color alone are not a resolution failure.
+3. **Walrus Cove purple/blue:** reproduce the reported two-player route through
+   the loop/tunnel on Windows/NVIDIA hardware and inspect both views. Compare
+   Restored and Remastered against **Original** (`pure` in configuration) as
+   the authored reference. The void curtain must still cover holes without
+   obscuring track geometry or scenery; Original intentionally retains the
+   authored presentation. Local macOS blue-area
+   evidence does not establish that the Windows/NVIDIA purple report is fixed.
+
+Keep unavailable hardware or an unobserved reported symptom marked pending,
+not passed. Reconcile each result with `docs/open-items/github-issues.md`;
+issue closure still requires explicit maintainer approval.
 
 ## 4. Wizpig, Terry, and persistent Magic Codes
 
@@ -360,6 +393,11 @@ credential disclosure, or unbounded wait blocks the release.
    replacement's own dimensions. Disable the pack and verify the generated
    defaults return.
 
+Dixie, Tiny, and NDS tracks requested in issue #58 are not implemented by the
+bonus-portrait changes. Record the maintainer's release-scope decision in the
+issue ledger before claiming complete 1.7.0 acceptance; this walkthrough does
+not silently defer that content or count a portrait pass as its completion.
+
 ## 5f. Phone Party acceptance when the cloud surface ships
 
 If artifact provenance declares a partyless release, confirm the cloud Phone
@@ -468,6 +506,11 @@ diagnostic OpenGL under the available X11/Wayland session. ROM selection is by
 drag/drop or an absolute typed path. Record the distribution, display server,
 GPU/driver, controller, and audio device; Linux remains best effort until this
 physical breadth exists.
+
+Launch the outer AppImage file itself, not only its extracted `AppRun` payload.
+Record that runtime result separately from extracted-payload and tarball checks;
+matching payload bytes or software-GPU passes do not prove AppImage startup on
+the target desktop.
 
 ## 8. Campaign breadth and report
 

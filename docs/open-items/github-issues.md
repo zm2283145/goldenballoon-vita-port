@@ -91,6 +91,10 @@ controller acceptance run.
 
 **Remaining acceptance:** physical-controller navigation and selection on the
 packaged candidate, followed by release availability.
+The [acceptance guide, section 2](../RELEASE_CANDIDATE_TEST_GUIDE.md#2-launcher-and-settings)
+now specifies both settings surfaces, all three choices, persistence, defaults,
+and the physical controller/candidate identity to record. This is an acceptance
+procedure, not new device evidence.
 
 ## #60 — Skip launcher after setup
 
@@ -121,6 +125,10 @@ gestures, invalid-ROM refusal, and failed-boot recovery on the final artifact.
 [Report](https://github.com/akratch/goldenballoon/issues/61): Walrus Cove's
 purple viewport after the loop/tunnel, black sky edges on multiple tracks, and
 lower-resolution pause UI when player two pauses.
+
+The [separate symptom walkthrough](../RELEASE_CANDIDATE_TEST_GUIDE.md#3b-separate-split-screen-acceptance-for-issue-61)
+requires independent sky, pause-owner, and Windows/NVIDIA Walrus Cove verdicts.
+Its addition does not change any of the evidence statuses below.
 
 - **Sky edges: fixed and rechecked in the candidate.** See
   [the mechanism and mutation control](renderer.md#fixed-the-split-screen-sky-quad-is-a-43-object-in-a-widescreen-frustum--issue-61).

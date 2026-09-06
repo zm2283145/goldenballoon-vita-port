@@ -302,17 +302,41 @@ git status --porcelain --ignored | grep -iE '\.(ppm|wav|raw|z64|n64|v64)$' || ec
 
 ## 2. Build clean — **both configurations**
 
+Use a clean candidate checkout and fresh build directories for qualification;
+do not overwrite artifacts or build trees belonging to an active run. The
+native profile below enables the shipping online beta and KTX2 decoder, while
+registering the GPU tests needed later in this checklist. The bare development
+preview stays disabled; the beta composes its required panel internally.
+The empty cloud origin matches the current deliberately partyless candidate.
+If a cloud-enabled candidate is approved, use its exact recorded origin in all
+three native builds and their packaged artifacts. Keep the web's local-only
+profile separate. On macOS, first select the pinned shipping SDL2 prefix via
+`PKG_CONFIG_PATH`, as described in section 2b.
+
 ```bash
-cmake -S . -B build     && nice -n 15 cmake --build build --parallel 2   # Debug
-cmake -S . -B build-rel -DCMAKE_BUILD_TYPE=Release \
-                        && nice -n 15 cmake --build build-rel --parallel 2
-cmake -S . -B build-asan \
-  -DCMAKE_C_FLAGS="-fsanitize=address -g -O1 -fno-omit-frame-pointer" \
-  -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address" \
-                        && nice -n 15 cmake --build build-asan --parallel 2
+release_native_args=(
+  -DBUILD_TESTING=ON
+  -DMDKR_ENABLE_GPU_TESTS=ON
+  -DMDKR_ENABLE_ONLINE_BETA=ON
+  -DMDKR_ENABLE_ONLINE_ROOM_PREVIEW=OFF
+  -DMDKR_CHARACTER_KTX2=ON
+  -DMDKR_PARTY_ORIGIN=
+)
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug "${release_native_args[@]}" &&
+  nice -n 15 cmake --build build --parallel 2
+cmake -S . -B build-rel -DCMAKE_BUILD_TYPE=Release "${release_native_args[@]}" &&
+  nice -n 15 cmake --build build-rel --parallel 2
+cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug "${release_native_args[@]}" \
+  -DCMAKE_C_FLAGS="-fsanitize=address,undefined -g -O1 -fno-omit-frame-pointer" \
+  -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -g -O1 -fno-omit-frame-pointer" \
+  -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" &&
+  nice -n 15 cmake --build build-asan --parallel 2
 ```
 
 Expected: `[100%] Built target mdkr64`, no new warnings, from all three.
+Check the generated compile and link commands: both C and C++ must carry
+ASan/UBSan in the sanitizer build, including the custom-character decoder.
+Compilation alone does not qualify any behavioral or sanitizer gate.
 
 The web link additionally treats every wasm-ld warning as fatal, and all
 Clang/Emscripten translation units reject implicit function declarations. One
