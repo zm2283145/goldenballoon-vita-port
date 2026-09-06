@@ -221,6 +221,13 @@ profile is not the final partyless package. These are compile/link results, not
 Windows runtime, GPU, package, or controller acceptance; behavioral checks for
 the changed units remain pending.
 
+Fresh Linux x86_64 Release compilation at clean `da4d9924` now passes all default
+targets, including the later PNG admission and zero-time camera corrections.
+Its read-only source checkout remains unchanged; the binary contains the exact
+candidate build stamp. KTX2, native online beta and GPU test inventory are
+enabled, with the cloud origin empty. This is a new compilation-only result,
+not a rerun of the earlier Linux CTests, launcher checks or package qualification.
+
 The web engine also compiles at `c701145d`, including the later PNG admission,
 caller-limit guards, and zero-time camera correction. Generated JavaScript
 passes syntax checking, and the

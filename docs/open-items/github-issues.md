@@ -42,6 +42,10 @@ CTest run's stale lobby-takeover success count is also corrected; its focused
 CTest and CI drift controls now pass, not the complete unrestricted suite.
 Further texture-pack PNG admission hardening is compiled but awaits behavioral
 validation; it is not included in the earlier qualified Linux artifacts.
+Fresh clean-source Linux Release compilation at `da4d9924` now includes that
+PNG hardening and the zero-time camera correction, with the partyless beta/KTX2
+profile and exact binary build stamp. All default targets compile; no Linux
+test, launcher or new package has been qualified at that source checkpoint.
 Clean Debug compilation at `c522ebae` and focused ASan/UBSan-instrumented
 compilation now pass; these are not behavioral acceptance results.
 The subsequent complete Windows cross-build now passes after fixes for three
