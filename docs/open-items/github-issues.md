@@ -27,8 +27,12 @@ The unrestricted diagnostic run also reports Modern-camera motion failures;
 the candidate corrects a shoulder-census miscount, but a separate correction
 re-engagement remains unresolved. Neither is issue-closure evidence. Linux
 Release compilation now passes at the later `ba620a1b` checkpoint, but Linux package/runtime
-qualification is incomplete and its complete ROM-free rerun has three online
-test failures. See the release checklist for these separate
+qualification is incomplete. Its first complete ROM-free rerun had three online
+test failures; the transport fix passes focused Linux optimized/sanitizer
+checks, and the complete rerun with the adapter-harness correction passes
+279/279 tests. Built-launcher checks also pass, but strict AppImage packaging
+needs another attempt with a missing container dependency installed.
+See the release checklist for these separate
 qualification gaps; neither changes the Windows/NVIDIA or controller verdicts.
 
 ## #62 — Opponent skill

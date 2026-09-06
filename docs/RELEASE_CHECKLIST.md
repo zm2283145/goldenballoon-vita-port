@@ -107,14 +107,16 @@ and the save-directory isolation scanner passes. That CTest attempt was also
 interrupted by its container's normal build-workflow exit. The complete rerun
 at `9e8e034d`, with CI-pinned Python and Node, finishes 275/278 passed:
 `online_live_adapter` and `online_live_matrix` fail assertions, and
-`match_live_transport` terminates with a segmentation fault. These are unresolved
-qualification failures; the latter also reproduces in isolation. Packaging
+`match_live_transport` terminates with a segmentation fault. These blocked
+qualification at that checkpoint; the latter also reproduced in isolation. Packaging
 correctly stops. Sanitizer diagnosis identifies an unseeded WebSocket random
 generator on plaintext loopback connections. The candidate seeds it before
 either plaintext or TLS use; macOS transport tests, including a fresh-nonce
 reconnect regression check, pass. Linux optimized/sanitizer confirmation is
-still required. Portable packages and software-rendered launcher qualification
-remain pending. Container evidence cannot establish physical
+now complete at `46e6643f`: three consecutive optimized runs and the full
+transport suite under ASan/UBSan pass. Leak checking was not enabled in the
+emulated container. Packaged-launcher qualification remains pending.
+Container evidence cannot establish physical
 Linux GPU acceptance. Existing `12cab88c` macOS/web artifact identities remain
 unchanged and must not be relabeled as this later source checkpoint.
 
@@ -124,8 +126,25 @@ The harness candidate requires exactly one installer, both peers' agreed
 descriptor, and the winning peer's actual local-seat/viewport mapping. Its
 deterministic checks cover either winner and reject absent, duplicate, or
 wrong-owner installs. The macOS adapter, impairment matrix, route, and repair
-lanes pass (646 assertions total); Linux confirmation remains pending. This
+lanes pass (646 assertions total). This
 does not change production installation or race-convergence behavior.
+The complete selected Linux ROM-free rerun at clean `5fc099fc` passes 279/279
+tests in 178.83 seconds. Both endpoints are observed winning installation with
+matching runtime ownership. Four built-launcher arms (WebGPU, OpenGL, Online
+Room, Play) also pass under Mesa/Xvfb. Strict packaging then stops: the emulator
+cannot execute appimagetool directly, and the container lacks `unsquashfs` for
+the packager's existing extraction path. That container dependency is now added;
+the strict rerun is pending. No tar-only release waiver was used.
+
+A subsequent defensive PNG-writer admission change checks packed RGB/RGBA
+layout against the pinned encoder's internal size calculations before export
+or capture encoding. It retains ordinary 4K/8K/16K layouts and does not change
+the encoder or decoder pins. Allocation-free boundary tests, small RGB/RGBA
+roundtrips, optimized and ASan/UBSan units pass; a control with the former
+positive-size-only admission fails the new boundary check. Texture-export
+integration and the complete Workshop preview/capture gate also pass, including
+RGB gameplay and transparent RGBA capture. Final-platform/artifact reruns and
+the broader advisory disposition remain required.
 
 ## 0. Prerequisites
 

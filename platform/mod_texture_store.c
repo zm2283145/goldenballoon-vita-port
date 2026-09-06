@@ -30,6 +30,7 @@
  * Single-threaded; see the header. No lock, by standing decision.
  */
 #include "mod_texture_store.h"
+#include "png_write_layout.h"
 
 #include <limits.h>
 #include <stdio.h>
@@ -637,11 +638,21 @@ static void dump_png_write_cb(void *context, void *chunk, int size) {
     size_t         needed;
 
     if (buffer->failed || size <= 0) return;
+    if ((size_t)size > SIZE_MAX - buffer->size) {
+        buffer->failed = true;
+        return;
+    }
     needed = buffer->size + (size_t)size;
     if (needed > buffer->capacity) {
         size_t   next = buffer->capacity == 0 ? 65536u : buffer->capacity;
         uint8_t *grown;
-        while (next < needed) next *= 2u;
+        while (next < needed) {
+            if (next > SIZE_MAX / 2u) {
+                next = needed;
+                break;
+            }
+            next *= 2u;
+        }
         grown = (uint8_t *)realloc(buffer->data, next);
         if (grown == NULL) {
             buffer->failed = true;
@@ -663,11 +674,15 @@ void mdkr_mod_texture_dump_observe(const char *digest_hex, const uint8_t *rgba,
     char          txt_body[256];
     int           txt_length;
     DumpPngBuffer png = { NULL, 0, 0, false };
+    MdkrPngWriteLayout layout;
 
     if (dir == NULL) return;
     if (digest_hex == NULL || rgba == NULL) return;
-    if (width <= 0 || height <= 0) return;
     if (strlen(digest_hex) != MDKR_MOD_TEXTURE_DIGEST_CHARS) return;
+    if (!mdkr_png_write_layout(width, height, 4, &layout)) {
+        report_dump_failure(digest_hex, dir, "the image exceeds PNG encoder limits");
+        return;
+    }
     if (!dump_mark_seen(digest_hex)) return; /* already written this run */
 
     if (snprintf(png_path, sizeof png_path, "%s/%s.png", dir, digest_hex) >=
@@ -679,7 +694,7 @@ void mdkr_mod_texture_dump_observe(const char *digest_hex, const uint8_t *rgba,
     }
 
     if (!stbi_write_png_to_func(dump_png_write_cb, &png, width, height, 4,
-                                rgba, width * 4) ||
+                                rgba, (int)layout.row_bytes) ||
         png.failed || png.data == NULL) {
         free(png.data);
         report_dump_failure(digest_hex, png_path, "the PNG could not be encoded");

@@ -551,6 +551,16 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     endif()
     add_test(NAME modern_character_surface_intersection
         COMMAND mdkr_modern_character_surface_intersection_test)
+    add_executable(mdkr_png_write_layout_test
+        ${CMAKE_SOURCE_DIR}/tests/test_png_write_layout.c
+        ${CMAKE_SOURCE_DIR}/lib/stb/stb_image_impl.c)
+    target_include_directories(mdkr_png_write_layout_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform ${CMAKE_SOURCE_DIR}/lib/stb)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_png_write_layout_test PRIVATE m)
+    endif()
+    add_test(NAME png_write_layout COMMAND mdkr_png_write_layout_test)
+
     add_executable(mdkr_character_portrait_studio_test
         ${CMAKE_SOURCE_DIR}/tests/test_character_portrait_studio.cpp
         ${CMAKE_SOURCE_DIR}/platform/app/character_png_validation.cpp

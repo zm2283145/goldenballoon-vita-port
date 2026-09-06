@@ -34,6 +34,7 @@
 #include <stdint.h>
 #include <limits.h>
 #include <time.h>
+#include "png_write_layout.h"
 #ifndef __EMSCRIPTEN__
 #ifdef _WIN32
 /* Ahead of SDL_syswm.h, which pulls the same header in without these guards.
@@ -1491,13 +1492,16 @@ static void dump_png_write(void *context, void *data, int size) {
 }
 
 static int dump_write_job(DumpJob *job) {
+    MdkrPngWriteLayout layout;
+    if (job->png && !mdkr_png_write_layout(job->w, job->h, job->components, &layout)) {
+        return 0;
+    }
     FILE *f = mdkr_fopen_utf8(job->path, job->png ? "wbx" : "wb");
     if (f == NULL) {
         return 0;
     }
     if (job->png) {
-        const size_t rowBytes =
-            (size_t)job->w * (size_t)job->components;
+        const size_t rowBytes = layout.row_bytes;
         unsigned char *scratch = (unsigned char *)malloc(rowBytes);
         int y;
         int encoded;
@@ -1576,11 +1580,13 @@ static int dump_writer_main(void *arg) {
 /* Returns 1 when the job (and ownership of pix) was accepted. */
 static int dump_writer_enqueue(unsigned char *pix, int w, int h,
                                const char *path, int png, int components) {
+    MdkrPngWriteLayout layout;
     if (pix == NULL || w <= 0 || h <= 0 ||
         (components != 3 && components != 4) ||
         (!png && components != 3) || w > INT_MAX / components) {
         return 0;
     }
+    if (png && !mdkr_png_write_layout(w, h, components, &layout)) return 0;
     if (s_dumpMutex == NULL) {
         s_dumpMutex = SDL_CreateMutex();
         s_dumpCond = SDL_CreateCond();
@@ -1702,6 +1708,10 @@ static void platform_dump_frame(void) {
         return;
     }
     size_t rowBytes = (size_t)w * (size_t)components;
+    if (s_frameCapturePending) {
+        MdkrPngWriteLayout layout;
+        if (!mdkr_png_write_layout(w, h, components, &layout)) return;
+    }
     unsigned char *pix = (unsigned char *) malloc(rowBytes * (size_t) h);
     if (!pix) {
         return;
