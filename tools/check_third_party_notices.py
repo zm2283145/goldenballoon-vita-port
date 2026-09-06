@@ -160,7 +160,7 @@ def main() -> int:
         "third_party/basisu/Zstd-LICENSE.txt":
             "2c1a7fa704df8f3a606f6fc010b8b5aaebf403f3aeec339a12048f1ba7331a0b",
         "third_party/basisu/README.md":
-            "d15b94b7cb320ed39156c8ddf7d8e814185c6d0de51005113f1d18784785975c",
+            "5336f7e852dcc067ffaa0a12c3d36892d7fe7c09ddf74a035da6a2811d0d4cbf",
         "third_party/meshoptimizer/LICENSE.md":
             "f03037ca7bad1e3eb7f4a63fa6084a8baabd5ba30d3c239a9a7f35705d873e26",
         "cmake/patches/libdatachannel-windows-mbedtls-verify.patch":

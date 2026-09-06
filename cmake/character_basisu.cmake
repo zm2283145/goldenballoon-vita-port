@@ -70,6 +70,10 @@ foreach(spec IN LISTS _mdkr_basisu_specs)
     list(APPEND _mdkr_basisu_sources "${downloaded_source}")
 endforeach()
 
+include(${CMAKE_CURRENT_LIST_DIR}/character_basisu_alignment.cmake)
+mdkr_basisu_align_blocks(
+    "${_mdkr_basisu_root}/external/basisu/transcoder/basisu_transcoder.cpp")
+
 add_library(mdkr_basisu_transcoder STATIC ${_mdkr_basisu_sources})
 target_include_directories(mdkr_basisu_transcoder SYSTEM PUBLIC
     "${_mdkr_basisu_root}/external/basisu/transcoder")

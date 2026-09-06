@@ -1,5 +1,12 @@
 # Regression fixtures
 
+Follow the maintainer's current local validation authorization in `AGENTS.md`.
+The maintainer authorized this workstation for behavioral validation on
+2026-09-06, including native, GPU, browser, ROM, and compiled tests. That
+standing authorization permits the existing test-environment flags without
+another confirmation each turn. Other workstations need their own authorization;
+hidden-window settings alone do not establish it.
+
 Input scripts for `--input-script` headless verification of menu navigation.
 Run e.g.:
 ```
@@ -46,10 +53,11 @@ python3 tools/run_checks.py --jobs 6 \
   --wasm build-web/mdkr64_web.wasm
 ```
 
-Automation windows render hidden or ordered behind the desktop by design (set
-`MDKR_TEST_VISIBLE_HEADLESS=1` to watch one), and the release gate is the
-complete suite wherever it runs. All application-launching roles stay
-serialized.
+The runner and `tools/ci/ci_local.sh` require the caller's human-attested
+`MDKR_DEDICATED_TEST_DESKTOP=1` before execution. The runner's `--list` is a
+non-executing inventory exception. Hidden windows and background scheduling
+are defense in depth. The release gate is the complete suite on an authorized
+test desktop; GPU and timing-sensitive tasks remain serialized.
 
 The manifest registers the `tests/check_*.py` scripts as parallel tasks, apart
 from a set of CTest companions that `rom_free_units` owns and runs through the
@@ -63,13 +71,13 @@ safety, and widescreen/shadow safety run in their specialized
 primary/Release/ASan/alignment configurations. Startup fails if a new check
 script is not
 registered, or if a `tests/test_*.py` has no CMake `add_test()` to carry it into
-the ctest task. The run owns one temporary save directory and exports it as both
-`MDKR_SAVE_DIR` and `MDKR_TEST_SAVE_DIR`, so no suite run writes the
-repository's playable `save/`; tasks run sequentially because they share that one
-directory and several fixtures intentionally replace its `eeprom.bin`. A
+the ctest task. Each task receives its own temporary save directory, exported as
+both `MDKR_SAVE_DIR` and `MDKR_TEST_SAVE_DIR`, so parallel tasks cannot overwrite
+one another's EEPROM fixtures or the repository's playable `save/`. A
 standalone check still defaults to `save/` and restores the EEPROM images it
-found there. Inherited `MDKR*` hooks are cleared except for those two and
-`MDKR_TEXCACHE_VERIFY`, `MDKR_VIDEO_CONFIG_PATH` is pointed at the null device,
+found there. Inherited `MDKR*` hooks are cleared except for those two,
+`MDKR_TEXCACHE_VERIFY`, and the caller's `MDKR_DEDICATED_TEST_DESKTOP`
+attestation. `MDKR_VIDEO_CONFIG_PATH` is pointed at the null device,
 and audio is forced off. `--only NAME`, `--role ROLE`, `--primary-only`,
 `--skip-instrumented`, and `--skip-wasm` are iteration/configuration tools; a
 default run is the complete gate.
@@ -685,6 +693,26 @@ production coverage:
   both. `--keep-frames DIR` retains local-only captures and logs. Acceptance
   only covers the hardware and renderer actually run, not the entire #61
   report or untested Windows drivers.
+- `check_split_screen_void_coverage.py` drives the real two-player Walrus
+  Cove loop/tunnel route on GL and WebGPU in Restored, Remastered, and Pure.
+  Separate P1/P2 witnesses compare production pixels to both the authored
+  foreground curtain and a no-curtain control: valid scenery must reappear,
+  but coverage over actual holes must remain. The same verdict must reject
+  the authored, deleted-curtain, and early-but-depth-writing controls. Pure
+  retains byte-identical authored frames; SIMHASH v3 and both racer streams
+  must agree within each preset. ROM header metadata selects fixed US 1.1
+  witnesses (P1 frame 3061, P2 frame 3100) or European 1.1 witnesses (P1 frame
+  2980, P2 frame 3058), and every arm verifies the engine's revision identity.
+  US uses ten captures through frame 3412; Europe uses twelve through 3409.
+  All byte orders supported by the engine select the same regional plan.
+  `--renderer` and `--mode` select diagnostic subsets; the registered serial
+  GPU task runs every group. `--keep-frames DIR` retains private ROM-derived
+  evidence. This gate requires a human-attested dedicated test desktop and
+  does not establish acceptance on hardware where it has not been run.
+- `test_void_render_policy.c` is the ROM-free `void_render_policy` CTest
+  companion. It covers preset defaults, invalid overrides, both required
+  override gates, and which policies draw before scenery. It does not certify
+  rendered pixels and requires dedicated-desktop authorization to execute.
 - `check_widescreen_minimap_alignment.py` pins the second half of issue #57:
   under the widescreen HUD, billboard-mode ortho sprites bypassed the WIDE_HUD
   matrix's horizontal compression and rendered 4/3 wider than authored, so the
@@ -8247,15 +8275,26 @@ accepting every candidate.
 
 ### Custom-character binary fuzzer — `tests/fuzz_modern_character_asset.cpp`
 
+Use an authorized test environment, including for the corpus generator below.
+The KTX2/BasisU alignment finding has a local decoder amendment and a
+valid-texture regression covering all four output formats across host buffer
+alignments. Release qualification still requires sanitizer fuzzing and exact
+artifact checks; prior runs do not certify a changed decoder. Keep discovery
+artifacts private and discuss findings at defensive engineering level.
+
 ```bash
 python3 tests/generate_modern_character_fuzz_corpus.py
 MDKR_BASISU_LOCAL_CACHE=/path/to/pinned-basisu-mirror \
   cmake -S . -B build-fuzz -DMDKR_ENABLE_FUZZERS=ON \
     -DCMAKE_C_COMPILER=$(brew --prefix llvm)/bin/clang \
     -DCMAKE_CXX_COMPILER=$(brew --prefix llvm)/bin/clang++
-cmake --build build-fuzz --target mdkr_modern_character_asset_fuzzer -j6
-./build-fuzz/mdkr_modern_character_asset_fuzzer -max_total_time=300 \
-  tests/fuzz_corpus/modern_character_asset
+nice -n 15 cmake --build build-fuzz \
+  --target mdkr_modern_character_asset_fuzzer --parallel 2
+CHARACTER_FUZZ_ROOT="$(mktemp -d /tmp/mdkr-character-fuzz.XXXXXX)"
+cp -R tests/fuzz_corpus/modern_character_asset "$CHARACTER_FUZZ_ROOT/corpus"
+nice -n 15 ./build-fuzz/mdkr_modern_character_asset_fuzzer \
+  -max_total_time=600 -artifact_prefix="$CHARACTER_FUZZ_ROOT/" \
+  "$CHARACTER_FUZZ_ROOT/corpus"
 ```
 
 ASan+UBSan libFuzzer coverage crosses all three custom-character binary trust

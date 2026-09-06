@@ -93,6 +93,13 @@ CI (`.github/workflows/correctness.yml`).
 
 ## Advisory tracking for the three untrusted-input decoders
 
+The pinned BasisU source has a local input-alignment amendment in
+`cmake/character_basisu_alignment.cmake`, applied after download hash
+verification and documented in the packaged `third_party/basisu/README.md`.
+The upstream pin identifies the base source; it does not claim that the
+compiled transcoder is unmodified. The KTX2 unit compares all four shipped
+output formats for a valid texture across host buffer alignments.
+
 `stb_image.h` (pinned `v2.30` at nothings/stb commit
 `f58f558c120e9b32c217290b80bad1a0729fbb2c`, row above), the Basis
 Universal/KTX2 transcoder, and its single-file Zstandard decoder (both pinned

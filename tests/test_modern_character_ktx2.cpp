@@ -1,9 +1,12 @@
 #include "modern_character_ktx2.h"
+#include "basisu_transcoder.h"
+#include "zstd.h"
 
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
 #include <cassert>
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -66,6 +69,58 @@ void patch_le(std::vector<uint8_t> &bytes, size_t offset, size_t width,
     }
 }
 
+/* Make an ordinary, correctly padded raw UASTC container from the same
+ * license-clean texture used by the compressed-format checks. */
+std::vector<uint8_t> without_supercompression(const std::vector<uint8_t> &bytes) {
+    basist::ktx2_transcoder source;
+    assert(source.init(bytes.data(), static_cast<uint32_t>(bytes.size())));
+    size_t first_level = bytes.size();
+    for (const auto &level : source.get_level_index()) {
+        first_level = std::min(first_level, static_cast<size_t>(level.m_byte_offset));
+    }
+    std::vector<uint8_t> result(bytes.begin(), bytes.begin() + first_level);
+    patch_le(result, 44u, 4u, basist::KTX2_SS_NONE);
+    for (uint32_t index = source.get_levels(); index-- > 0u;) {
+        const auto &level = source.get_level_index()[index];
+        const size_t offset = (result.size() + 15u) & ~size_t(15u);
+        const size_t length = static_cast<size_t>(level.m_uncompressed_byte_length);
+        result.resize(offset + length);
+        assert(ZSTD_decompress(result.data() + offset, length,
+                               bytes.data() + static_cast<size_t>(level.m_byte_offset),
+                               static_cast<size_t>(level.m_byte_length)) == length);
+        patch_le(result, 80u + index * 24u, 8u, offset);
+        patch_le(result, 88u + index * 24u, 8u, length);
+    }
+    return result;
+}
+
+/* File alignment and host address alignment are independent. A valid texture
+ * in a byte-addressed caller buffer must decode identically at every address
+ * alignment, for every shipped target format. No malformed file is needed. */
+void expect_address_independent(const std::vector<uint8_t> &compressed,
+                                const std::vector<uint8_t> &raw) {
+    for (unsigned format = 0u; format < 4u; ++format) {
+        const auto target = static_cast<MdkrKtx2TargetFormat>(format);
+        MdkrKtx2Image reference{};
+        char error[192];
+        assert(mdkr_ktx2_transcode(compressed.data(), compressed.size(), target,
+                                   &reference, error, sizeof(error)) == 1);
+        for (size_t alignment = 0u; alignment < 16u; ++alignment) {
+            std::vector<uint8_t> storage(raw.size() + alignment);
+            std::memcpy(storage.data() + alignment, raw.data(), raw.size());
+            MdkrKtx2Image actual{};
+            assert(mdkr_ktx2_transcode(storage.data() + alignment, raw.size(), target,
+                                       &actual, error, sizeof(error)) == 1);
+            assert(actual.level_count == reference.level_count);
+            assert(actual.allocation_size == reference.allocation_size);
+            assert(std::memcmp(actual.allocation, reference.allocation,
+                                reference.allocation_size) == 0);
+            mdkr_ktx2_image_release(&actual);
+        }
+        mdkr_ktx2_image_release(&reference);
+    }
+}
+
 /* Both bridge entry points must refuse a file whose header index describes
  * work the payload cannot back, and must name the bound that refused it. */
 void expect_refused(const std::vector<uint8_t> &bytes, const char *reason) {
@@ -107,6 +162,9 @@ int main() {
     assert(info.srgb == 0u && info.uastc == 1u && info.rgba_bytes == 340u);
     expect_transcode(uastc, MDKR_KTX2_TARGET_RGBA8, 340u);
     expect_transcode(uastc, MDKR_KTX2_TARGET_BC7, 112u);
+    expect_transcode(uastc, MDKR_KTX2_TARGET_ETC2_RGBA8, 112u);
+    expect_transcode(uastc, MDKR_KTX2_TARGET_ASTC_4X4, 112u);
+    expect_address_independent(uastc, without_supercompression(uastc));
 
     /* Each pair below is bounded by the transcoder as offset + length against
      * the file size, and each sum wraps. The key/value case is the minimised

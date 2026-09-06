@@ -23,6 +23,7 @@
 #include "wizpig_visual.h"
 #include "terry_visual.h"
 #include "viewport_route_cache.h"
+#include "video_config.h"
 #endif
 #include "camera.h"
 #include "collision.h"
@@ -54,6 +55,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+/* Keep libc-backed helpers after the legacy libultra declarations above. */
+#include "void_render_policy.h"
 #endif
 
 // Maximum size for a level model is 522.5 KiB
@@ -1635,6 +1638,16 @@ void void_free(void) {
     }
 }
 
+#ifdef NATIVE_PORT
+static MdkrVoidRenderPolicy void_native_policy(void) {
+    const MdkrVideoConfig *config = mdkr_video_config_current();
+    return mdkr_void_render_policy(
+        config == NULL || config->mode == MDKR_VIDEO_MODE_PURE,
+        getenv("MDKR_TEST_VOID_POLICY"), getenv("MDKR_TEST_VOID_TOKEN"),
+        getenv("MDKR_DEDICATED_TEST_DESKTOP"));
+}
+#endif
+
 // root func for the out of bounds void rendering
 void void_check(u8 *segmentIds, s32 numberOfSegments, s32 viewportIndex) {
     s16 i;
@@ -1652,6 +1665,7 @@ void void_check(u8 *segmentIds, s32 numberOfSegments, s32 viewportIndex) {
     LevelModelSegmentBoundingBox *bbox;
     s16 sum;
 #ifdef NATIVE_PORT
+    const MdkrVoidRenderPolicy policy = void_native_policy();
     // Triage sweep (BUG_CLASS_SWEEP_REPORT.md #14, tracks.c void_check): the
     // ROM-era array is sized as a guess at the N64 frame layout ("real size is
     // unknown"), with no bound on the push below. D_8011D49E can hold up to
@@ -1672,7 +1686,17 @@ void void_check(u8 *segmentIds, s32 numberOfSegments, s32 viewportIndex) {
     gVoidTris[1] = gVoidMesh[viewportIndex].tris[1];
     gVoidVerts[0] = gVoidMesh[viewportIndex].verts[0];
     gVoidVerts[1] = gVoidMesh[viewportIndex].verts[1];
+#ifdef NATIVE_PORT
+    /* The background curtain must not write its artificial 250-unit depth:
+     * otherwise it still rejects the later scenery it is meant to sit behind.
+     * The solid-colour translucent table preserves the same colour/alpha
+     * combiner and fog policy, but removes Z_UPD. Its vertices remain opaque.
+     * Use material_set so subsequent materials invalidate this state normally. */
+    material_set_no_tex_offset(&gTrackDL, NULL, RENDER_ANTI_ALIASING | RENDER_Z_COMPARE |
+        (policy == MDKR_VOID_BACKGROUND ? RENDER_SEMI_TRANSPARENT : 0));
+#else
     material_set_no_tex_offset(&gTrackDL, NULL, RENDER_ANTI_ALIASING | RENDER_Z_COMPARE);
+#endif
     D_8011D49C = 0;
     D_8011D49E = 0;
 
@@ -1817,6 +1841,13 @@ void void_check(u8 *segmentIds, s32 numberOfSegments, s32 viewportIndex) {
     }
     gTrackVtxPtr = vtx;
     gTrackTriPtr = tri;
+#ifdef NATIVE_PORT
+    if (getenv("MDKR_VOID_COVERAGE_TRACE") != NULL) {
+        fprintf(stderr, "[VOID-COVERAGE] viewport=%d policy=%d primitives=%d colour=%u,%u,%u\n",
+                viewportIndex, (int)policy, gVoidPrimCount,
+                (unsigned)gVoidColourR, (unsigned)gVoidColourG, (unsigned)gVoidColourB);
+    }
+#endif
 }
 
 void func_80026070(LevelModelSegmentBoundingBox *arg0, f32 arg1, f32 arg2, f32 arg3) {
@@ -4213,6 +4244,18 @@ void render_level_geometry_and_objects(void) {
 
     objectsVisible[0] = TRUE;
 
+#ifdef NATIVE_PORT
+    /* A curtain masks holes, not real scenery. The authored final pass sits
+     * 250 units from the camera and can obscure an entire valid bridge when
+     * the camera/racer line crosses a collision plane (Walrus Cove, #61).
+     * Draw the same mesh as non-depth-writing background coverage before
+     * opaque scenery and actors. Pure keeps the authored final pass below. */
+    if (mdkr_void_before_scenery(void_native_policy()) &&
+        gVoidData != NULL && func_80027568()) {
+        void_check(segmentIds, numberOfSegments, get_current_viewport());
+    }
+#endif
+
     if (gDrawLevelSegments) {
         for (i = 0; i < numberOfSegments; i++) {
             render_level_segment(segmentIds[i], FALSE); // Render opaque segments
@@ -4488,7 +4531,11 @@ void render_level_geometry_and_objects(void) {
     gSceneDrawDistanceValid = FALSE;
 #endif
 
-    if (gVoidData != NULL && func_80027568()) {
+    if (
+#ifdef NATIVE_PORT
+        void_native_policy() == MDKR_VOID_AUTHORED &&
+#endif
+        gVoidData != NULL && func_80027568()) {
         void_check(segmentIds, numberOfSegments, get_current_viewport());
     }
     gAntiAliasing = FALSE;

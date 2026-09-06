@@ -7,9 +7,68 @@ the clear legally — they are scripts, not judgement calls, and they fail close
 Nothing here is optional, and nothing here should be reasoned around. If a gate
 fails, the release stops.
 
+## Current candidate status (2026-09-06)
+
+**Not release-ready.** The `int-1.7.0` candidate is undergoing artifact
+qualification. Behavioral validation has resumed under the maintainer's standing
+workstation authorization. Public issue acceptance is
+tracked in [`open-items/github-issues.md`](open-items/github-issues.md).
+
+- **Decoder qualification in progress:** the KTX2/BasisU alignment finding has
+  a local amendment applied after upstream source hash verification. KTX2 stays
+  enabled. The prior private failing input now passes; a new valid-texture
+  regression passes across all four output formats and 16 host alignments under
+  ASan/UBSan. Linking the same regression to the original pinned decoder fails
+  under UBSan, confirming detection. A fresh ASan/UBSan fuzz run completed
+  4,004,077 executions in 601 seconds with no new finding. The known alignment
+  defect is fixed in the candidate; exact release-artifact qualification and
+  the broader advisory review remain required.
+- **Local renderer evidence:** the saved neighboring-gate log records PASS for
+  `world_fx_matrix`, `render_purity`, `camera_snapshot_coverage`,
+  `split_screen_backdrop`, `split_screen_pause_resolution`, and
+  `split_screen_void_coverage`. The void candidate passed 20 US 1.1 arms on
+  local shipping-SDL2 GL/WebGPU, including Pure pixel identity and unchanged
+  simulation. These are six selected gates, not a full release pass. The log
+  contains stale-artifact warnings (including a native binary older than
+  `cmake/tests.cmake`); rebuild and requalify the exact final candidate.
+  A subsequent native rebuild passes fresh 20-arm US and 20-arm European void
+  runs. European witnesses come from a separate dense survey because regional
+  gameplay timing differs; both revisions use identical acceptance thresholds
+  and broken-render controls. The initial US-timed European probe remains
+  recorded as a failed qualification attempt.
+- **Acceptance gaps:** Windows/NVIDIA's reported purple viewport is not yet
+  proven equivalent to the locally corrected blue obstruction; Windows/package
+  launcher proof (#60), physical-controller opponent-skill acceptance (#62),
+  broader European revision coverage, and the full release/platform/device matrix
+  remain pending. Taj portrait evidence does not implement Dixie, Tiny, or
+  NDS tracks (#58); their release scope needs a maintainer decision.
+- **Release gates still required:** complete the checklist against final
+  artifact hashes and provenance, including current pinned-dependency advisory
+  review and Character Workshop acceptance. Saved captures, raw logs, ROMs,
+  and private sanitizer artifacts must remain outside the public repository.
+  Publishing, pushing, tagging, deploying, and issue closure require explicit
+  maintainer approval.
+
+The optimized CTest inventory ran 278 tests: 277 passed and one obsolete
+runner-authorization assertion failed. After reconciling that assertion with
+the current CI contract, its focused rerun passed; the complete CI contract
+also passed. Nine focused optimized units and three ASan/UBSan units passed.
+Source release hygiene and third-party notices passed. Native and Windows
+cross-builds succeeded; these build results do not substitute for final
+package provenance or Windows runtime acceptance.
+
 ## 0. Prerequisites
 
 You supply your own legally-owned ROM. It is never committed.
+
+Follow the maintainer's current `AGENTS.md` validation policy. On 2026-09-06
+the maintainer gave standing authorization for this workstation, including
+behavioral, native, GPU, browser, ROM, and compiled tests. That authorization
+permits supplying `MDKR_DEDICATED_TEST_DESKTOP=1` to the existing runners;
+no additional confirmation each turn is required. The suite inherits the flag
+and refuses execution without it; `--list` remains a non-executing exception.
+Hidden-window hints alone do not authorize another machine. Prefer low-priority
+builds and bounded concurrency.
 
 When running from the private assembly checkout, refresh the separate public
 source branch first:
@@ -79,13 +138,13 @@ git status --porcelain --ignored | grep -iE '\.(ppm|wav|raw|z64|n64|v64)$' || ec
 ## 2. Build clean — **both configurations**
 
 ```bash
-cmake -S . -B build     && cmake --build build     -j8   # Debug, the default
+cmake -S . -B build     && nice -n 15 cmake --build build --parallel 2   # Debug
 cmake -S . -B build-rel -DCMAKE_BUILD_TYPE=Release \
-                        && cmake --build build-rel -j8   # what the browser ships
+                        && nice -n 15 cmake --build build-rel --parallel 2
 cmake -S . -B build-asan \
   -DCMAKE_C_FLAGS="-fsanitize=address -g -O1 -fno-omit-frame-pointer" \
   -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address" \
-                        && cmake --build build-asan -j8  # first-session safety gate
+                        && nice -n 15 cmake --build build-asan --parallel 2
 ```
 
 Expected: `[100%] Built target mdkr64`, no new warnings, from all three.
@@ -165,13 +224,11 @@ like host contention rather than a code defect, re-run that task alone
 (`--only <name>`) before treating it as a regression — the same discipline
 the GPU-labelled ctests already require.
 
-Automation windows render hidden or ordered behind the desktop by design (set
-`MDKR_TEST_VISIBLE_HEADLESS=1` to watch one), and the release gate is the
-complete suite wherever it runs. The `rom_free_units`
-task excludes GPU-labelled native-window tests by default. Those tests are not
-even registered in an ordinary build tree, so a forgotten label exclusion cannot
-activate or monopolize the workstation. A release owner registers and runs them
-explicitly:
+The complete suite requires an authorized dedicated test desktop. The
+`rom_free_units` task runs all registered CTests without a label exclusion;
+GPU-labelled native-window tests are registered only when the build enables
+`MDKR_ENABLE_GPU_TESTS`. A release owner with authorization for GPU tests
+registers and runs that lane explicitly on the dedicated desktop:
 
 ```bash
 cmake -S . -B build-rel -DCMAKE_BUILD_TYPE=Release \
@@ -181,14 +238,11 @@ env MDKR64_HIDDEN=1 MDKR_AUDIO=0 \
   ctest --test-dir build-rel -L gpu --output-on-failure --no-tests=error -j1
 ```
 
-`MDKR64_HIDDEN=1` remains mandatory:
-on macOS it keeps automation non-key and ordered behind existing
-windows. These are independent of the default
-`-LE 'gpu|app_process|browser'` exclusion. The
-runner also exports SDL's `SDL_MAC_BACKGROUND_APP=1` and
-`SDL_WINDOW_NO_ACTIVATION_WHEN_SHOWN=1` hints. Those survive legacy test
-harnesses that intentionally scrub `MDKR*` variables and are the final
-fail-closed focus boundary.
+`MDKR64_HIDDEN=1` and SDL's `SDL_MAC_BACKGROUND_APP=1` and
+`SDL_WINDOW_NO_ACTIVATION_WHEN_SHOWN=1` hints remain mandatory defense in
+depth. They do not guarantee focus isolation or authorize execution on an
+occupied workstation. Local CI's optional ordinary CTest lane excludes
+`gpu|app_process|browser`; the complete suite runner does not.
 
 `check_key_cutscene_once.py` is the one check that is **build-type-sensitive by
 design**. The runner verifies that its dedicated binary has an optimized
@@ -457,6 +511,10 @@ Before publishing any build that exposes the Workshop:
       `tests/README.md` against a copy of its deterministic corpus. Preserve and
       regress any crash before release; a time-bounded clean run supplements,
       but never replaces, the structural unit and package gates.
+      **Local decoder qualification passes:** the alignment amendment passes
+      its sanitizer regression and 4,004,077 fuzz executions over 601 seconds.
+      Final-artifact qualification remains; prior unit passes alone do not
+      clear this gate for another build.
 - [ ] Validate the completed privacy-bounded receipt against the exact artifact
       and provenance bytes. A template is intentionally red until every
       required observation is replaced:

@@ -149,8 +149,9 @@ def main() -> int:
             "native GPU/window CTests must require a configure-time opt-in")
     require('if(MDKR_ENABLE_GPU_TESTS AND NOT MDKR_SKIP_GPU_TESTS)' in cmake,
             "native GPU/window CTests must be absent by default")
-    # The suite has no human gate: a bare run covers every class. The
-    # --with-* flags survive only as accepted no-ops.
+    # An authorized suite run covers every class. The --with-* flags survive
+    # as accepted no-ops. check_ci_contract owns runner authorization; the
+    # activation contract independently preserves the window-layer behavior.
     for flag in ('"--with-browser-tests"', '"--with-app-tests"',
                  '"--with-compiled-tests"', '"--with-gpu-tests"'):
         require(flag in runner,
@@ -161,7 +162,6 @@ def main() -> int:
                     'args.app_tests_excluded',
                     'environment["MDKR_APP_TESTS_ALLOWED"] = "1"',
                     'environment["MDKR_BROWSER_TESTS_ALLOWED"] = "1"',
-                    'MDKR_DEDICATED_TEST_DESKTOP',
                     'command += ["-LE", "gpu|app_process|browser"]'):
         require(removed not in runner,
                 f"runner must no longer gate or exclude via {removed}")

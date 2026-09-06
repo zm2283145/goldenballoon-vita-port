@@ -2266,11 +2266,23 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         COMMAND ${CMAKE_COMMAND} -P
                 ${CMAKE_SOURCE_DIR}/tests/check_webgpu_artifacts.cmake)
 
+    add_executable(mdkr_void_render_policy_test
+        ${CMAKE_SOURCE_DIR}/tests/test_void_render_policy.c)
+    target_include_directories(mdkr_void_render_policy_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(MSVC)
+        target_compile_options(mdkr_void_render_policy_test PRIVATE /W4 /WX)
+    else()
+        target_compile_options(mdkr_void_render_policy_test PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME void_render_policy COMMAND mdkr_void_render_policy_test)
+
     # Void-curtain pair walker (issue #53 fallout): links the PRODUCTION
     # game/src/tracks.c so the s8-narrowing and saturation-orphan defects are
     # exercised against the shipped walker, not a test-local copy. tracks.c
     # references the whole engine; the dead-strip/--gc-sections link is what
-    # confines this ROM-free target to the void subsystem's closure (two
+    # confines this ROM-free target to the void subsystem's closure (three
     # renderer symbols are stubbed in the test). MSVC has no equivalent
     # linker contract, and no MSVC lane builds these tests today.
     if(NOT MSVC)
@@ -2369,7 +2381,9 @@ if(BUILD_TESTING)
         add_executable(mdkr_modern_character_ktx2_test
             ${CMAKE_SOURCE_DIR}/tests/test_modern_character_ktx2.cpp)
         target_link_libraries(mdkr_modern_character_ktx2_test PRIVATE
-            mdkr_character_ktx2_bridge)
+            mdkr_character_ktx2_bridge mdkr_basisu_transcoder)
+        target_include_directories(mdkr_modern_character_ktx2_test SYSTEM PRIVATE
+            "${_mdkr_basisu_root}/external/basisu/zstd")
         target_compile_options(mdkr_modern_character_ktx2_test PRIVATE
             $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall;-Wextra;-Wpedantic;-Werror>)
         add_test(NAME modern_character_ktx2

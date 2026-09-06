@@ -16,6 +16,7 @@ guards executed as subprocesses, and the tests/README coverage sweep.
 
 from __future__ import annotations
 
+import os
 import plistlib
 import re
 import subprocess
@@ -511,9 +512,8 @@ def validate_gpu_test_routing(sources: dict[str, str]) -> list[str]:
             "run_checks CTest route must not exclude labels; GPU-labelled "
             "tests run inside rom_free_units again"
         )
-    # The --with-* flags survive only as accepted no-ops: a bare run covers
-    # every class, because desktop safety is a window-layer property rather
-    # than a refusal to execute.
+    # The --with-* class selectors are accepted no-ops, but every execution
+    # still requires the caller's independently inherited desktop attestation.
     for flag in ("--with-gpu-tests", "--with-browser-tests", "--with-app-tests",
                  "--with-compiled-tests"):
         if flag not in sources["run_checks"]:
@@ -522,13 +522,28 @@ def validate_gpu_test_routing(sources: dict[str, str]) -> list[str]:
         failures.append(
             "run_checks must document that the --with-* flags no longer gate"
         )
-    for removed in ('MDKR_DEDICATED_TEST_DESKTOP',
-                    'environment["MDKR_APP_TESTS_ALLOWED"] = "1"',
+    for removed in ('environment["MDKR_APP_TESTS_ALLOWED"] = "1"',
                     'environment["MDKR_BROWSER_TESTS_ALLOWED"] = "1"',
                     'if app_checks and not args.with_app_tests:',
                     'command += ["-LE", "gpu|app_process|browser"]'):
         if removed in sources["run_checks"]:
             failures.append(f"run_checks must no longer gate on {removed}")
+    runner = run_checks_manifest()
+    if "MDKR_DEDICATED_TEST_DESKTOP" not in runner.MDKR_ENV_ALLOWLIST:
+        failures.append("run_checks must preserve the caller's desktop attestation")
+    guard = 'if os.environ.get("MDKR_DEDICATED_TEST_DESKTOP") != "1":'
+    source = sources["run_checks"]
+    list_position = source.find("if args.list:")
+    guard_position = source.find(guard)
+    preflight_position = source.find("preflight(checks,")
+    if not 0 <= list_position < guard_position < preflight_position:
+        failures.append("run_checks must refuse before preflight, but keep --list non-executing")
+    if '"MDKR_DEDICATED_TEST_DESKTOP": "1"' in source:
+        failures.append("run_checks must not manufacture a desktop attestation")
+    local_source = sources["ci_local"]
+    local_guard = 'if [ "${MDKR_DEDICATED_TEST_DESKTOP:-}" != "1" ]; then'
+    if not 0 <= local_source.find(local_guard) < local_source.find('step "Release hygiene'):
+        failures.append("local CI must refuse before executing any validation lane")
     if '-DMDKR_ENABLE_GPU_TESTS="$RUN_GPU_TESTS"' not in sources["ci_local"]:
         failures.append("local CI configure does not honor its GPU opt-in")
     if 'JOBS="${MDKR_CI_JOBS:-2}"' not in sources["ci_local"]:
@@ -594,9 +609,10 @@ def validate_gpu_test_routing(sources: dict[str, str]) -> list[str]:
     if "GPU_SERIAL_NAMES = frozenset({" not in sources["run_checks"]:
         failures.append(
             "run_checks must curate GPU_SERIAL_NAMES for render/GPU checks")
-    for representative in ('"framed_world_views"', '"world_shadows"',
-                           '"render_purity"', '"taj_character_select"'):
-        if representative not in sources["run_checks"]:
+    for representative in ("framed_world_views", "world_shadows", "render_purity",
+                           "taj_character_select", "split_screen_pause_resolution",
+                           "split_screen_void_coverage"):
+        if representative not in runner.GPU_SERIAL_NAMES:
             failures.append(
                 f"GPU_SERIAL_NAMES must serialize render gate {representative}")
     if "GPU_VERDICT_MARKERS" not in sources["run_checks"]:
@@ -1580,6 +1596,30 @@ def validate_invocation_shapes() -> list[str]:
     return failures
 
 
+def validate_runner_desktop_refusal() -> list[str]:
+    """Probe refusal before even nonexistent-artifact preflight; never launch a game."""
+    failures = []
+    with tempfile.TemporaryDirectory(prefix="mdkr-runner-refusal-") as directory:
+        command = [sys.executable, str(RUN_CHECKS), "--only",
+                   "split_screen_void_coverage", "--build",
+                   str(Path(directory) / "missing-build")]
+        for value in (None, "", "0", "11"):
+            env = dict(os.environ)
+            env.pop("MDKR_DEDICATED_TEST_DESKTOP", None)
+            if value is not None:
+                env["MDKR_DEDICATED_TEST_DESKTOP"] = value
+            result = subprocess.run(command, env=env, text=True, capture_output=True,
+                                    timeout=30, check=False)
+            if result.returncode != 2 or "run_checks: REFUSED" not in result.stderr:
+                failures.append(f"runner did not refuse desktop attestation {value!r}")
+        env.pop("MDKR_DEDICATED_TEST_DESKTOP", None)
+        result = subprocess.run(command + ["--list"], env=env, text=True,
+                                capture_output=True, timeout=30, check=False)
+        if result.returncode or "split_screen_void_coverage" not in result.stdout:
+            failures.append("runner --list requires an execution attestation")
+    return failures
+
+
 def main() -> int:
     sources = read_sources()
     failures = validate(sources)
@@ -1590,6 +1630,7 @@ def main() -> int:
     failures.extend(validate_web_demo(sources))
     failures.extend(validate_macos_release(sources))
     failures.extend(validate_gpu_test_routing(sources))
+    failures.extend(validate_runner_desktop_refusal())
     failures.extend(validate_macos_packaging(sources))
     failures.extend(validate_output_guard(MACOS_BUILDER))
     failures.extend(validate_dmg_output_guard(MACOS_DMG))

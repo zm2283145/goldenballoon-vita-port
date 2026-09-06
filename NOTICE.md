@@ -204,6 +204,8 @@ bounded Basis Universal KTX2 transcoder and its Zstandard decoder from exact,
 SHA-256-pinned source files. Their complete Apache-2.0 and BSD license texts,
 plus immutable source provenance, are retained in `third_party/basisu/` and
 travel with every native package. No encoder or example texture is included.
+The transcoder has a local input-alignment amendment applied after upstream
+hash verification; its scope is recorded in `third_party/basisu/README.md`.
 
 The optional offline custom-character LOD authoring helper statically compiles
 the meshoptimizer v1.2 simplifier from exact SHA-256-pinned source files. Its

@@ -7,6 +7,14 @@ configure time from immutable raw GitHub URLs, or from the optional
 `MDKR_BASISU_LOCAL_CACHE` mirror, and every individual file is checked against
 the SHA-256 manifest in `cmake/character_basisu.cmake`.
 
+The fetched transcoder is locally amended by
+`cmake/character_basisu_alignment.cmake` after upstream hash verification.
+The amendment copies byte-addressed UASTC input blocks into aligned local
+storage before decoding the formats shipped by Golden Balloon. It changes
+neither the encoded data nor the output-format algorithms. Configure fails
+if the amendment no longer matches the pinned source. This is a local change,
+not an upstream release or an unmodified upstream binary.
+
 Only the files enumerated in that CMake manifest are compiled. No encoder,
 command-line tool, sample asset, or character content is downloaded or shipped.
 

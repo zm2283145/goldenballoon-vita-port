@@ -16,12 +16,12 @@ the roles that share a build tree or a local port, the render/GPU checks, and
 the wall-clock measurement checks stay serial (see the SERIAL_ROLES /
 GPU_SERIAL_NAMES / SERIAL_NAMES model below).
 
-A bare ``python3 tools/run_checks.py`` runs the complete suite. There is no
-human gate on testing: automation windows render hidden or ordered behind the
-desktop by design (set ``MDKR_TEST_VISIBLE_HEADLESS=1`` to watch one), so a run
-never seizes focus from interactive work, and bulk children are launched at
-background scheduling priority (wall-clock measurement checks and the browser
-lanes run foreground, one at a time -- see yield_wrapper). ``--with-app-tests``,
+A bare ``python3 tools/run_checks.py`` runs the complete suite only with an
+inherited human-attested ``MDKR_DEDICATED_TEST_DESKTOP=1``. Hidden windows and
+background scheduling are defense in depth, not permission to run on an
+occupied workstation. ``--list`` is the non-executing exception. Bulk children
+are launched at background scheduling priority (wall-clock measurement checks
+and browser lanes run foreground, one at a time -- see yield_wrapper). ``--with-app-tests``,
 ``--with-compiled-tests``, ``--with-browser-tests`` and ``--with-gpu-tests``
 are accepted but ignored: those classes now run by default.
 """
@@ -49,6 +49,8 @@ TESTS = ROOT / "tests"
 # cannot steer a run. These are the variables the suite itself owns and must
 # therefore survive the scrub.
 MDKR_ENV_ALLOWLIST = frozenset({
+    # Inherit the caller's attestation; never manufacture one in this runner.
+    "MDKR_DEDICATED_TEST_DESKTOP",
     "MDKR_SAVE_DIR",
     "MDKR_TEST_SAVE_DIR",
     "MDKR_TEXCACHE_VERIFY",
@@ -149,6 +151,7 @@ GPU_SERIAL_NAMES = frozenset({
     "font_outline",
     "native_ui_resolution",
     "split_screen_pause_resolution",
+    "split_screen_void_coverage",
     "mip_motion",
     "rl1_vertex_colour_ab",
     "remaster_lighting",
@@ -735,6 +738,10 @@ CHECKS = (
           "P1/P2 pause fonts and output resolution (#61): real owner-colour, "
           "glyph-contour, scaled-UI and original-font controls on GL/WebGPU "
           "in Restored and Remastered, with identical simulation", timeout=1800),
+    Check("split_screen_void_coverage", "check_split_screen_void_coverage.py", "native",
+          "Walrus Cove P1/P2 hole coverage without obscuring real scenery (#61): "
+          "authored, disabled and depth-write controls on GL/WebGPU; "
+          "Pure byte identity and unchanged authoritative state", timeout=2400),
     Check("widescreen_minimap_alignment",
           "check_widescreen_minimap_alignment.py", "native",
           "minimap marker-on-map alignment under the widescreen HUD (#57): "
@@ -2126,11 +2133,9 @@ def main() -> int:
     parser.add_argument("--list", action="store_true", help="list tasks and exit")
     args = parser.parse_args()
 
-    # Desktop safety is a window-layer property, not a refusal to run: every
-    # automation surface is created hidden or ordered behind the desktop, so a
-    # suite run never steals focus from interactive work. There is deliberately
-    # no human attestation step — the only human gate in this project is
-    # blessing a release candidate.
+    # The maintainer's standing local authorization can satisfy the execution
+    # guard below. Hidden-window hints remain defense in depth; they do not
+    # themselves establish authorization or guarantee focus isolation.
 
     # Bulk tasks yield to interactive work by being LAUNCHED into the
     # background band (see yield_wrapper): the runner itself keeps the
@@ -2162,7 +2167,7 @@ def main() -> int:
         checks = [
             check for check in checks if check.role in {"source", "native", "ctest"}
         ]
-    # Enumerate before the opt-in gates below remove roles. --list is a
+    # Enumerate before the execution guard below. --list is a
     # read-only inventory of the manifest: it starts no process, so it must
     # show the whole suite (and answer --only for a gated task) without the
     # dedicated-desktop attestation. Gating what --list can *name* would send
@@ -2178,6 +2183,12 @@ def main() -> int:
 
     if not checks:
         print("run_checks: FAIL — selection is empty", file=sys.stderr)
+        return 2
+
+    if os.environ.get("MDKR_DEDICATED_TEST_DESKTOP") != "1":
+        print("run_checks: REFUSED — execution requires a human-attested "
+              "dedicated test desktop (MDKR_DEDICATED_TEST_DESKTOP=1); "
+              "use --list for non-executing inventory", file=sys.stderr)
         return 2
 
     native = resolve_binary(args.build)
