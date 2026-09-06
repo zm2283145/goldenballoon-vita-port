@@ -35,6 +35,15 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     endif()
     add_test(NAME camera_obstruction COMMAND mdkr_camera_obstruction_test)
 
+    add_executable(mdkr_camera_motion_shoulder_test
+        ${CMAKE_SOURCE_DIR}/tests/test_camera_motion_shoulder.c)
+    target_include_directories(mdkr_camera_motion_shoulder_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_camera_motion_shoulder_test PRIVATE m)
+    endif()
+    add_test(NAME camera_motion_shoulder COMMAND mdkr_camera_motion_shoulder_test)
+
     add_executable(mdkr_camera_obstruction_resolver_test
         ${CMAKE_SOURCE_DIR}/tests/test_camera_obstruction_resolver.c
         ${CMAKE_SOURCE_DIR}/platform/camera_obstruction_resolver.c

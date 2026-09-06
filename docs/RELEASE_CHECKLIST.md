@@ -82,10 +82,18 @@ The corrected CI contract and four focused routing checks (`subentry_bounds`,
 
 The diagnostic run also fails `camera_motion_quality`: one Ancient Lake
 correction re-engagement and one 3P+T.T. continuous-surface shoulder-flip report.
-Fresh level-2 traces reproduce both. The latter needs further measurement
-review because its side label changes while the published pivot-relative eye
-and forward direction remain effectively fixed. Neither failure has been
-waived, and no motion threshold or release-hold timer has been relaxed.
+Fresh level-2 traces reproduce both. Measurement review finds that the latter's
+side label changes while the published pivot-relative eye
+and forward direction remain effectively fixed. A subsequent census correction
+separates this held-eye/reference-axis crossing from actual shoulder flips.
+The 3P rerun reports zero flips and one separately visible basis crossing, with
+all 20,463 published camera-observation rows unchanged. Optimized and sanitizer
+units retain genuine switch detection, including slow/deadband crossings;
+controls reject both the old miscount and suppressed real flips. Ancient Lake's
+re-engagement remains a hard failure. No motion threshold, camera resolver, or
+release-hold timer has been relaxed or changed.
+The complete three-route/240 Hz rerun confirms that Ancient Lake re-engagement
+is the remaining hard failure; the hub and 3P routes report none.
 
 Linux x86_64 Release compilation now passes at `ba620a1b` in an isolated,
 two-CPU Ubuntu 22.04 container, with KTX2 and online beta enabled and the
@@ -96,8 +104,12 @@ The first ROM-free CTest attempt exposed a Python 3.10 parser incompatibility
 in a verbose save-check diagnostic; the candidate fixes it without changing
 the check's assertions. All 433 tracked Python files then parse under 3.10,
 and the save-directory isolation scanner passes. That CTest attempt was also
-interrupted by its container's normal build-workflow exit, so a complete rerun
-is required. Portable packages and software-rendered launcher qualification
+interrupted by its container's normal build-workflow exit. The complete rerun
+at `9e8e034d`, with CI-pinned Python and Node, finishes 275/278 passed:
+`online_live_adapter` and `online_live_matrix` fail assertions, and
+`match_live_transport` terminates with a segmentation fault. These are unresolved
+qualification failures; the latter also reproduces in isolation. Packaging
+correctly stops. Portable packages and software-rendered launcher qualification
 remain pending. Container evidence cannot establish physical
 Linux GPU acceptance. Existing `12cab88c` macOS/web artifact identities remain
 unchanged and must not be relabeled as this later source checkpoint.

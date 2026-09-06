@@ -116,6 +116,12 @@ def main() -> int:
         "camera_obstruction_shipped_family_treatment",
         "MDKR_CAMERA_PROFILE_FORCE",
         "camera_obstruction_motion_sample",
+        "MdkrCameraShoulderHistory shoulder;",
+        "mdkr_camera_shoulder_sample(",
+        "&motion->shoulder, eye, observe->intent.pivot, side, alternate && pose_valid)",
+        "shoulder_change == MDKR_CAMERA_SHOULDER_BASIS_CROSSING",
+        "shoulder_change == MDKR_CAMERA_SHOULDER_FLIP",
+        "sCameraMotion.shoulder_basis_crossings++;",
         "camera_motion summary slot_ticks=%llu ",
         "camera_motion stat name=%s unit=%s samples=%llu ",
         # The retraction release band. Wiring it to 0, or dropping the config

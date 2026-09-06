@@ -221,6 +221,7 @@ def parse_summary(row: str) -> dict[str, float]:
         "shoulder_flips_continuous_surface":
             block_scalar(row, "shoulder", "continuous_surface"),
         "shoulder_flips_new_surface": block_scalar(row, "shoulder", "new_surface"),
+        "shoulder_basis_crossings": block_scalar(row, "shoulder", "basis_crossings"),
         "blocker_changes": block_scalar(row, "churn", "blocker_changes"),
         "blocker_changes_same_surface": block_scalar(row, "churn", "same_surface"),
         "blocker_changes_new_surface": block_scalar(row, "churn", "new_surface"),
@@ -382,6 +383,8 @@ def report_baseline(name: str, summary: dict, stats: dict) -> None:
     print(f"    shoulder flips           total={summary['shoulder_flips']} "
           f"continuous_surface={summary['shoulder_flips_continuous_surface']} "
           f"new_surface={summary['shoulder_flips_new_surface']}")
+    print(f"    shoulder basis crossings {summary['shoulder_basis_crossings']} "
+          "-- side-label changes with the published pivot-relative eye held")
     print(f"    chatter (HARD)           "
           f"reengagements={summary['correction_reengagements']}")
     print(f"    short blocked spans      "

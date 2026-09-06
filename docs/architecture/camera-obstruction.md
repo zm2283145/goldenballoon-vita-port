@@ -1377,6 +1377,21 @@ introduced 1.7 defect, but it does not turn either result into a pass. The
 optional mode stays disclosed and the authored camera stays the default; the
 final candidate still needs its own dedicated-desktop rerun.
 
+**Census correction, 2026-09-06:** the repeated 3P trace isolates a side-label
+crossing while the published eye stays fixed relative to the racer and the
+authored reference ray rotates past it. That is not a new shoulder candidate.
+The census now reports this as `shoulder.basis_crossings`, separately from
+actual camera flips. Its production-backed `camera_motion_shoulder` unit retains
+real immediate and slow switches through the lateral deadband, inactive/invalid
+history resets, and a cumulative-drift bound so repeated float rounding cannot
+hide a genuine slow crossing. Controls reject both the previous miscount and a
+classifier that suppresses actual flips. Optimized and ASan/UBSan units pass.
+The repeated 3P route reports one basis crossing, zero flips, and byte-identical
+published camera-observation rows throughout all 20,463 samples. This changes
+measurement only, not the resolver, published poses, or hard motion thresholds.
+Ancient Lake's separate correction re-engagement remains a hard failure; this
+correction does not establish complete motion or release qualification.
+
 ### 7.4 Display matrix
 
 At minimum:
