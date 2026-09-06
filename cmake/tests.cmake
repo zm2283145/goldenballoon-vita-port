@@ -2699,6 +2699,10 @@ if(BUILD_TESTING)
         NAME audio_sink_evidence_contract
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_audio_sink_evidence_contract.py)
+    add_test(
+        NAME pacing_quality_reporting
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_pacing_quality_reporting.py)
 endif()
 
 # SDL queue-mode contract: still ROM-free, but deliberately placed after the

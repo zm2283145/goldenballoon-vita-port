@@ -960,12 +960,29 @@ def baseline_note(result: Run) -> str:
         f"p95={displayed.get('p95')}us p99={displayed.get('p99')}us "
         f"max={displayed.get('max')}us var={displayed.get('var')}us^2 "
         f"n={displayed.get('n')}; alpha-delta p50={alpha.get('p50')}ppm "
-        f"p99={alpha.get('p99')}ppm var={alpha.get('var')}ppm^2; "
+        f"p95={alpha.get('p95')}ppm p99={alpha.get('p99')}ppm "
+        f"var={alpha.get('var')}ppm^2 grid={alpha.get('gridppm')}ppm "
+        f"displayed={alpha.get('displayed')} stalls={alpha.get('stalls')} "
+        f"regressions={alpha.get('regressions')} "
+        f"slotanchors={result.summary.get('slotanchors')}; "
         f"queue-depth mean={latency.get('meandepthmilli', 0) / 1000:.3f} "
         f"max={latency.get('maxdepth')} frames -> "
         f"latency mean={latency.get('meanlatencyus')}us "
         f"max={latency.get('maxlatencyus')}us "
         f"at {latency.get('refreshhz')}Hz")
+
+
+def report_failure(failures: list[str], baselines: list[str],
+                   notes: list[str]) -> int:
+    """Keep each retry's evidence attached to its own arm, including failures."""
+    print("check_pacing_quality: FAIL")
+    for failure in failures:
+        print(f"  - {failure}")
+    for baseline in baselines:
+        print(f"  - measured: {baseline}")
+    for note in notes:
+        print(f"  - {note}")
+    return 1
 
 
 def main() -> int:
@@ -1171,6 +1188,11 @@ def main() -> int:
                             f"{label}: no valid measurement — {honest_cause}")
                         continue
                     honest_paced = True
+                    # This attempt owns the slot-quality measurements. Keep
+                    # them separate from the strict baseline so a companion
+                    # pass cannot imply that the strict arm obtained one.
+                    notes.append(
+                        f"slot measurement: {baseline_note(honest_result)}")
                     # mode-vs-state consistency is structural and never
                     # excused by a busy host; the slot-quality tails are
                     # bimodal for the same reason the strict arm's are, so
@@ -1202,14 +1224,7 @@ def main() -> int:
             failures.append(str(error))
 
     if failures:
-        print("check_pacing_quality: FAIL")
-        for failure in failures:
-            print(f"  - {failure}")
-        # The distributions the failure is about, so the numbers do not have to
-        # be reproduced by hand before anyone can read the result.
-        for baseline in baselines:
-            print(f"  - measured: {baseline}")
-        return 1
+        return report_failure(failures, baselines, notes)
     if not baselines:
         print("check_pacing_quality: PASS (REALTIME QUALITY NOT MEASURED) -- "
               "the synthetic arms, no-tearing and no-underrun assertions "

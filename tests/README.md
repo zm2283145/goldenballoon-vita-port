@@ -2869,6 +2869,13 @@ phase advanced between displayed frames — as fixed-bucket
 flight at present, times the refresh period) that quantifies the cost of a FIFO
 present mode.
 
+Failure reports retain each paced companion attempt's own distributions,
+displayed-frame count, slot quantum, stalls, phase regressions, re-anchor count,
+and retry/classifier notes. A strict-arm baseline is not evidence about a
+different failing companion arm. The ROM-free `pacing_quality_reporting` CTest
+checks that attribution and keeps a failed slot budget red; it also verifies
+that companion evidence cannot populate the strict-baseline success list.
+
 Synthetic arms cover every presentation policy — including the battery-friendly
 `40` cap and `display-margin` — crossed with both smoothing
 settings and assert only structural identities: the census must count the same

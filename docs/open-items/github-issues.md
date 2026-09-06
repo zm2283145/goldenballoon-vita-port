@@ -59,6 +59,9 @@ read-back predicate is corrected with pending CI controls; that source fix does
 not establish Windows settings persistence or package acceptance.
 See the release checklist for these separate
 qualification gaps; neither changes the Windows/NVIDIA or controller verdicts.
+The older full diagnostic run has also failed its realtime pacing re-anchor
+budget. That release gate remains unresolved; improved per-attempt reporting
+does not fix the pacing result or establish its cause.
 
 ## #62 — Opponent skill
 

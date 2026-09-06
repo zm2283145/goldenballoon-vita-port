@@ -116,6 +116,15 @@ contact retraction even at zero time. This does not change the configured hold
 duration or establish a fix for Ancient Lake. Behavioral qualification and the
 original hard motion route remain required.
 
+The older diagnostic run also fails `pacing_quality`: the final non-strict
+companion retry reports 43 slot re-anchors against a budget of 3. This is not
+a missing-display-baseline exemption, and the cause is not yet established.
+Its failure report printed only the strict arm's distributions, so those
+numbers must not be attributed to the failing companion. The candidate now
+retains each companion attempt's own measurements and retry notes, with a
+registered reporting contract awaiting execution. No pacing threshold, retry
+budget or product pacing behavior was changed; the failed gate remains open.
+
 Linux x86_64 Release compilation now passes at `ba620a1b` in an isolated,
 two-CPU Ubuntu 22.04 container, with KTX2 and online beta enabled and the
 cloud origin empty. This follows explicit camera-pointer and diagnostic-format
