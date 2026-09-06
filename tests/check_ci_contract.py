@@ -16,6 +16,7 @@ guards executed as subprocesses, and the tests/README coverage sweep.
 
 from __future__ import annotations
 
+import ast
 import os
 import plistlib
 import re
@@ -1546,6 +1547,36 @@ def validate_release_checklist(sources: dict[str, str]) -> list[str]:
     return failures
 
 
+def validate_selected_artifacts(check, command: list[str], native: Path,
+                                release: Path, asan: Path,
+                                roms: Path) -> list[str]:
+    """Optional CLI flags must not silently fall back to another build/tree."""
+    if check.role not in {"rom", "native", "release", "asan"}:
+        return []
+    source = ast.parse((ROOT / "tests" / check.script).read_text(encoding="utf-8"))
+    options = {
+        argument.value
+        for node in ast.walk(source)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "add_argument"
+        for argument in node.args
+        if isinstance(argument, ast.Constant) and isinstance(argument.value, str)
+    }
+    expected = {
+        "--build": {"release": release, "asan": asan}.get(check.role, native),
+        "--roms": roms,
+    }
+    failures = []
+    for option, value in expected.items():
+        if option not in options:
+            continue
+        positions = [i for i, word in enumerate(command) if word == option]
+        if (len(positions) != 1
+                or command[positions[0] + 1:positions[0] + 2] != [str(value)]):
+            failures.append(f"{check.name}: suite must forward {option} {value}")
+    return failures
+
+
 def validate_invocation_shapes() -> list[str]:
     """Every artifact-role gate must accept the suite's invocation shape.
 
@@ -1571,6 +1602,11 @@ def validate_invocation_shapes() -> list[str]:
             check, missing / "native", missing / "release", missing / "asan",
             missing / "rom.z64", missing / "roms", missing / "web.wasm",
             True)
+        routing = validate_selected_artifacts(
+            check, cmd, missing / "native", missing / "release",
+            missing / "asan", missing / "roms")
+        if routing:
+            return "; ".join(routing)
         try:
             proc = sp.run(cmd, stdout=sp.PIPE, stderr=sp.STDOUT,
                           timeout=30, check=False)
@@ -1593,6 +1629,20 @@ def validate_invocation_shapes() -> list[str]:
         for verdict in pool.map(probe, shaped):
             if verdict:
                 failures.append(verdict)
+    # Missing paths alone used to pass this shape probe even when a ROM task
+    # silently ignored --build. Prove both omitted and wrong-artifact controls
+    # are rejected without executing any product code.
+    check = next(item for item in manifest.CHECKS if item.name == "rom_checker_page")
+    for command in (
+        ["probe", "--roms", str(missing / "roms")],
+        ["probe", "--build", str(missing / "release"),
+         "--roms", str(missing / "roms")],
+        ["probe", "--build", str(missing / "native")],
+    ):
+        if not validate_selected_artifacts(
+                check, command, missing / "native", missing / "release",
+                missing / "asan", missing / "roms"):
+            failures.append("selected-artifact routing control unexpectedly passed")
     return failures
 
 

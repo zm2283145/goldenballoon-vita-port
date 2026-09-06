@@ -16,6 +16,13 @@ enabled; final-artifact qualification is pending. See
 The passes below remain historical evidence until explicitly requalified;
 local testing has resumed under the maintainer's standing authorization.
 
+Clean-source artifact checkpoint `12cab88c` additionally passes macOS bundle
+and mounted-DMG LaunchServices/WebGPU qualification with exact provenance.
+Its packaged launcher-skip check passes all nine arms. The clean local-only
+browser payload passes rendered cloud-surface absence and save-custody checks.
+These narrow artifact results neither establish Windows/NVIDIA equivalence
+nor replace physical-controller acceptance or the unrestricted release suite.
+
 ## #62 — Opponent skill
 
 [Report](https://github.com/akratch/goldenballoon/issues/62): a text field does

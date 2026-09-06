@@ -49,13 +49,36 @@ tracked in [`open-items/github-issues.md`](open-items/github-issues.md).
   Publishing, pushing, tagging, deploying, and issue closure require explicit
   maintainer approval.
 
-The optimized CTest inventory ran 278 tests: 277 passed and one obsolete
-runner-authorization assertion failed. After reconciling that assertion with
-the current CI contract, its focused rerun passed; the complete CI contract
-also passed. Nine focused optimized units and three ASan/UBSan units passed.
-Source release hygiene and third-party notices passed. Native and Windows
-cross-builds succeeded; these build results do not substitute for final
-package provenance or Windows runtime acceptance.
+The corrected optimized CTest selection now passes a complete 278/278 run
+(excluding `gpu|app_process|browser` labels). The earlier 277-pass run and
+obsolete runner-authorization assertion failure remain recorded separately.
+The complete CI contract, nine focused optimized units, and three ASan/UBSan
+units also passed. These results do not substitute for the unrestricted suite.
+
+Clean-source artifact checkpoint `12cab88c` now has a macOS arm64 DMG that
+passes bundle and mounted-copy LaunchServices/WebGPU qualification, asset
+absence, and exact checksum/provenance verification. It is ad-hoc signed,
+not Developer ID signed or notarized. The packaged launcher-skip gate passes
+all nine arms. The clean web build and its prepared local-only payload pass
+candidate provenance/source hygiene, real-browser cloud-surface absence,
+and save-custody checks; full browser gameplay qualification remains pending.
+Native packaging pins now match the reviewed amended BasisU notice on all
+three desktop platforms, with a source guard against future drift. Windows
+ZIP and Linux tarball packaging self-tests pass, but fixture archives and
+Windows cross-compilation are not Windows/Linux release-package acceptance.
+Private logs, artifacts, and hashes are retained outside the repository.
+
+The unrestricted 271-task run at `12cab88c` exposed a runner qualification
+defect: sixteen engine-using tasks were classified `rom` and did not receive
+the selected native binary, so they used an absent default build instead.
+The candidate runner now routes those tasks through `native` and forwards
+the ROM-revision directory to the ROM-checker page gate. CI also checks that
+declared artifact flags receive the selected paths, including missing/wrong
+path controls. The failed run is retained; a new complete run with the
+corrected runner is required before claiming suite qualification.
+The corrected CI contract and four focused routing checks (`subentry_bounds`,
+`input_hotplug`, `rom_checker_page`, `a11y_shell`) pass. The latter is explicitly
+`SUBSET 4/271`, not a replacement for that complete run.
 
 ## 0. Prerequisites
 
