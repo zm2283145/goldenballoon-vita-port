@@ -606,8 +606,9 @@ def run_check() -> int:
                                 f"({got[:6].hex()} vs {good_slot[:6].hex()}) — the "
                                 "fail-safe must reject the bad slot only")
     if args.verbose:
+        slot0_erased = after[0:SLOT_BYTES] == b"\xff" * SLOT_BYTES
         print(f"  poison: rc={rc} FILE SELECT @{fsel} slot0 erased="
-              f"{after[0:SLOT_BYTES] == b'\xff' * SLOT_BYTES}")
+              f"{slot0_erased}")
 
     # ---- case 5: a consistent-checksum save whose Taj progress disagrees ----
     print("case 5: tajFlags says the car challenge is BEATEN but was never OFFERED")

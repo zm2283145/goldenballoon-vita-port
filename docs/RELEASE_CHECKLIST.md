@@ -80,6 +80,28 @@ The corrected CI contract and four focused routing checks (`subentry_bounds`,
 `input_hotplug`, `rom_checker_page`, `a11y_shell`) pass. The latter is explicitly
 `SUBSET 4/271`, not a replacement for that complete run.
 
+The diagnostic run also fails `camera_motion_quality`: one Ancient Lake
+correction re-engagement and one 3P+T.T. continuous-surface shoulder-flip report.
+Fresh level-2 traces reproduce both. The latter needs further measurement
+review because its side label changes while the published pivot-relative eye
+and forward direction remain effectively fixed. Neither failure has been
+waived, and no motion threshold or release-hold timer has been relaxed.
+
+Linux x86_64 Release compilation now passes at `ba620a1b` in an isolated,
+two-CPU Ubuntu 22.04 container, with KTX2 and online beta enabled and the
+cloud origin empty. This follows explicit camera-pointer and diagnostic-format
+maintenance; first-party warnings remain errors. The Linux frozen Workshop
+importer and validator now verify, and the importer's offline lifecycle passes.
+The first ROM-free CTest attempt exposed a Python 3.10 parser incompatibility
+in a verbose save-check diagnostic; the candidate fixes it without changing
+the check's assertions. All 433 tracked Python files then parse under 3.10,
+and the save-directory isolation scanner passes. That CTest attempt was also
+interrupted by its container's normal build-workflow exit, so a complete rerun
+is required. Portable packages and software-rendered launcher qualification
+remain pending. Container evidence cannot establish physical
+Linux GPU acceptance. Existing `12cab88c` macOS/web artifact identities remain
+unchanged and must not be relabeled as this later source checkpoint.
+
 ## 0. Prerequisites
 
 You supply your own legally-owned ROM. It is never committed.
