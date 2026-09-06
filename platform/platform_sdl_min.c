@@ -1492,7 +1492,7 @@ static void dump_png_write(void *context, void *data, int size) {
 }
 
 static int dump_write_job(DumpJob *job) {
-    MdkrPngWriteLayout layout;
+    MdkrPngWriteLayout layout = {0};
     if (job->png && !mdkr_png_write_layout(job->w, job->h, job->components, &layout)) {
         return 0;
     }
