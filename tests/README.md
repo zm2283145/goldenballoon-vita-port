@@ -195,6 +195,10 @@ recovery, last-safe revalidation after projection changes, discontinuity reset,
 invalid-world fail-safe behavior, deterministic repeatability, and the diagnostic
 center-ray near-plane false-clear control. It intentionally owns no DKR state or
 environment parsing; the fixed-tick integration supplies those inputs.
+Release-hold cases include repeated zero-time projection revalidation at every
+point before release: the eye and clear-tick counter stay held, positive-time
+resume serves exactly one tick, and contact still retracts immediately at zero
+time. The zero-duration hold remains the no-hysteresis control.
 
 `camera_object_bvh` is a ROM-free white-box test of the production immutable
 object-model index. It compares indexed sphere and exact rounded-lens results

@@ -347,6 +347,10 @@ Paused behavior requires an explicit rule: pose time does not advance, but a pen
 display/FOV generation must still be resolved before the next authored image. Use
 zero-time revalidation—no recovery integration—so changing video options cannot
 manufacture a collision or move a stationary camera over time.
+The retraction release hold also measures accepted positive-time authored steps,
+not resolver calls. Repeated zero-time clear queries may update the validated
+projection but cannot consume this hold. A newly detected contact still
+retracts immediately and restarts the hold, even at zero elapsed time.
 
 ### 5.3 Effective projection handshake
 

@@ -97,8 +97,8 @@ The 3P rerun reports zero flips and one separately visible basis crossing, with
 all 20,463 published camera-observation rows unchanged. Optimized and sanitizer
 units retain genuine switch detection, including slow/deadband crossings;
 controls reject both the old miscount and suppressed real flips. Ancient Lake's
-re-engagement remains a hard failure. No motion threshold, camera resolver, or
-release-hold timer has been relaxed or changed.
+re-engagement remains a hard failure. That measurement correction did not change
+the camera resolver, release-hold timer, or motion thresholds.
 The complete three-route/240 Hz rerun confirms that Ancient Lake re-engagement
 is the remaining hard failure; the hub and 3P routes report none.
 Source audit separately finds that the documented proportional expansion bound
@@ -106,6 +106,15 @@ in camera architecture section 7.3 is not implemented: recovery has speed and
 absolute-step caps, but no 25%-of-remaining-error cap. That calibration and
 coverage gap remains open; changing recovery alone has not been shown to fix
 Ancient Lake, and no hard motion assertion has been waived.
+
+A separate source-backed pause defect is corrected in the candidate: zero-time
+camera revalidation no longer consumes release-hold ticks. The runtime supplies
+zero elapsed time while paused; previously repeated clear queries could retire
+the hold before any authored time advanced. Regression cases now cover every
+point in the hold, projection changes, exact resume timing, and immediate
+contact retraction even at zero time. This does not change the configured hold
+duration or establish a fix for Ancient Lake. Behavioral qualification and the
+original hard motion route remain required.
 
 Linux x86_64 Release compilation now passes at `ba620a1b` in an isolated,
 two-CPU Ubuntu 22.04 container, with KTX2 and online beta enabled and the
