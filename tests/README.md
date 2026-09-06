@@ -41,6 +41,17 @@ palette in every build.
 **Always run muted and headless** — `MDKR_AUDIO=0` plus `--headless-frames N`.
 Omitting `--headless-frames` opens a window *and* the SDL audio device.
 
+## Native unit build portability
+
+The Windows validation build includes every registered unit target, not just
+the game. `ghost_bank` includes the Windows process-ID declaration explicitly;
+the SDL-stubbed `app_window` unit owns its console entry point and does not link
+an SDL application startup shim. The non-MSVC `void_pairs` target links the
+production `tracks.c` walker. MinGW additionally requires supported
+link-time optimization to discard unrelated engine references before linking;
+configuration fails if that capability is unavailable rather than omitting the
+test. GNU link-time work for this target is limited to one compiler worker.
+
 ## Complete suite runner and `--build` contract
 
 Every behavioural script accepts the same `--build` value: either a directory
@@ -2536,7 +2547,10 @@ a slot and may not carry samples; an answer's cells past `count` must be zero
 on the wire, so two encodings of one run are byte-identical. Carried samples
 are held to the bundle carrier's own shape (present, sticks within +/-80). The
 exhaustive one-byte mutation loop rejects every corrupt byte, and an unknown
-version or kind is refused rather than parsed on its byte layout.
+version or kind is refused rather than parsed on its byte layout. Its answer
+fixture builder asserts its storage bound; rejection cases change metadata
+only after constructing bounded sample storage, so the test harness does not
+violate the condition it is checking in the codec.
 
 `net_impairment` and `net_clock` own deterministic hostile-environment
 schedules. The named LAN/regional/poor/outage/adversarial packet profiles cover

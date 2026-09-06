@@ -31,6 +31,7 @@
 
 #if defined(_WIN32)
 #include <direct.h>
+#include <process.h>
 #else
 #include <sys/stat.h>
 #include <unistd.h>

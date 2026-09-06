@@ -18,6 +18,7 @@ static MdkrPadSample sample(unsigned index) {
 
 static void fill_answer(MdkrMatchInputRepair *answer, uint8_t count) {
     unsigned index;
+    assert(count <= MDKR_MATCH_INPUT_REPAIR_ANSWER_TICKS);
     memset(answer, 0, sizeof(*answer));
     answer->kind = MDKR_MATCH_INPUT_REPAIR_ANSWER;
     answer->match_epoch = UINT32_C(0x0a0b0c0d);
@@ -93,8 +94,10 @@ int main(void) {
     assert(mdkr_match_input_repair_decode(bytes, sizeof(bytes), &decoded));
     assert(memcmp(&source, &decoded, sizeof(source)) == 0);
 
-    /* One answer message cannot carry more than its fixed cell count. */
-    fill_answer(&source, MDKR_MATCH_INPUT_REPAIR_ANSWER_TICKS + 1u);
+    /* Change only the rejected metadata; the fixture itself must stay within
+     * its sample storage, even when exercising the encoder's count check. */
+    fill_answer(&source, MDKR_MATCH_INPUT_REPAIR_ANSWER_TICKS);
+    source.count = MDKR_MATCH_INPUT_REPAIR_ANSWER_TICKS + 1u;
     assert(!mdkr_match_input_repair_encode(&source, bytes, sizeof(bytes)));
 
     /* Every carried sample must be a present pad inside the canonical stick

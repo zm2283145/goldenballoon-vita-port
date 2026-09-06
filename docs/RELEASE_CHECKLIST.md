@@ -10,9 +10,10 @@ fails, the release stops.
 ## Current candidate status (2026-09-06)
 
 **Not release-ready.** The `int-1.7.0` candidate is undergoing artifact
-qualification. Behavioral validation has resumed under the maintainer's standing
-workstation authorization. Public issue acceptance is
-tracked in [`open-items/github-issues.md`](open-items/github-issues.md).
+qualification. Behavioral validation is authorized under the maintainer's standing
+workstation policy; new local runs currently await an execution-policy reload.
+The already-running old-source diagnostic suite continues separately. Public
+issue acceptance is tracked in [`open-items/github-issues.md`](open-items/github-issues.md).
 
 - **Decoder qualification in progress:** the KTX2/BasisU alignment finding has
   a local amendment applied after upstream source hash verification. KTX2 stays
@@ -185,6 +186,28 @@ runtime behavior are unchanged by these guards. Private advisory review now
 distinguishes a reported missing check already present in this pin from
 size-conversion concerns constrained by caller admission. The older general-
 loader disposition and final-candidate behavioral qualification remain open.
+
+Clean macOS Debug compilation at `c522ebae` now completes with shipping SDL
+2.32.10, KTX2 and online beta enabled, and the cloud origin empty. Its detached
+source remains clean, and the build stamp and binary hashes are recorded in
+private evidence. The game and two PNG unit targets also compile with
+ASan/UBSan instrumentation at this source checkpoint. Neither compilation result
+is a new behavioral or sanitizer-test pass. The complete Debug matrix and the
+new PNG admission regression/control runs remain required. The older `12cab88c`
+diagnostic suite has separately passed camera snapshot coverage and arbitrary
+presentation-rate checks; those results do not qualify this newer source.
+
+A complete Windows cross-build at that checkpoint exposed three test-target
+portability failures: a missing process-ID declaration, insufficient isolation
+of the production void walker at link time, and SDL entry-point remapping in a
+stubbed window-policy unit. It also diagnosed an out-of-bounds write in the
+input-repair test fixture itself. The candidate fixes those harness/build
+issues without changing product behavior or dropping tests. The full Windows
+cross-build now completes, including all unit executables; a strict compiler
+control rejects the old fixture and accepts the bounded replacement. The four
+affected unit targets also compile in native optimized and ASan/UBSan builds.
+These are compile/link results, not Windows runtime, GPU, package, or controller
+acceptance; behavioral checks for the changed units remain pending.
 
 ## 0. Prerequisites
 

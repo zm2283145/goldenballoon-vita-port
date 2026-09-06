@@ -2125,6 +2125,9 @@ if(NOT EMSCRIPTEN)
                 ${CMAKE_SOURCE_DIR}/platform/app
                 ${SDL2_INCLUDE_DIRS})
             target_compile_features(mdkr_app_window_test PRIVATE cxx_std_17)
+            # This unit supplies SDL stubs and its own console entry point;
+            # SDL's Windows main remapping must not require an SDL2main shim.
+            target_compile_definitions(mdkr_app_window_test PRIVATE SDL_MAIN_HANDLED)
             add_test(NAME app_window COMMAND mdkr_app_window_test)
 
             add_test(NAME app_background_activation_contract

@@ -2347,6 +2347,29 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
                 -fdata-sections)
             target_link_options(mdkr_void_pairs_test PRIVATE -Wl,--gc-sections)
         endif()
+        if(MINGW)
+            # PE/COFF section GC alone does not isolate this production TU:
+            # MinGW still diagnoses its unrelated engine references. Remove
+            # the unused code before the final link, retaining the actual
+            # walker and the test's assertions rather than stubbing the engine.
+            include(CheckIPOSupported)
+            check_ipo_supported(RESULT MDKR_VOID_PAIRS_IPO_SUPPORTED
+                OUTPUT MDKR_VOID_PAIRS_IPO_ERROR LANGUAGES C)
+            if(NOT MDKR_VOID_PAIRS_IPO_SUPPORTED)
+                message(FATAL_ERROR
+                    "MinGW void_pairs requires IPO to isolate tracks.c: "
+                    "${MDKR_VOID_PAIRS_IPO_ERROR}")
+            endif()
+            set_property(TARGET mdkr_void_pairs_test PROPERTY
+                INTERPROCEDURAL_OPTIMIZATION TRUE)
+            if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+                # CMake's MinGW executable link stages objects with plain ar,
+                # which also needs native symbols when no LTO plugin is loaded.
+                target_compile_options(mdkr_void_pairs_test PRIVATE -ffat-lto-objects)
+                # Keep link-time compiler work bounded as well as the build.
+                target_link_options(mdkr_void_pairs_test PRIVATE -flto=1)
+            endif()
+        endif()
         target_link_libraries(mdkr_void_pairs_test PRIVATE m)
         add_test(NAME void_pairs COMMAND mdkr_void_pairs_test)
     endif()

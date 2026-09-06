@@ -14,7 +14,9 @@ and a clean 601-second ASan/UBSan fuzz run (4,004,077 executions). KTX2 remains
 enabled; final-artifact qualification is pending. See
 [the release blockers](../RELEASE_CHECKLIST.md#current-candidate-status-2026-09-06).
 The passes below remain historical evidence until explicitly requalified;
-local testing has resumed under the maintainer's standing authorization.
+local testing is authorized under the maintainer's standing policy, but new
+runs currently await an execution-policy reload. The already-running old-source
+diagnostic suite continues; its results do not qualify newer source changes.
 
 Clean-source artifact checkpoint `12cab88c` additionally passes macOS bundle
 and mounted-DMG LaunchServices/WebGPU qualification with exact provenance.
@@ -40,6 +42,11 @@ CTest run's stale lobby-takeover success count is also corrected; its focused
 CTest and CI drift controls now pass, not the complete unrestricted suite.
 Further texture-pack PNG admission hardening is compiled but awaits behavioral
 validation; it is not included in the earlier qualified Linux artifacts.
+Clean Debug compilation at `c522ebae` and focused ASan/UBSan-instrumented
+compilation now pass; these are not behavioral acceptance results.
+The subsequent complete Windows cross-build now passes after fixes for three
+unit-target portability failures and a test-fixture bounds error. No Windows
+executable was run, and the Windows/NVIDIA and package gaps remain open.
 See the release checklist for these separate
 qualification gaps; neither changes the Windows/NVIDIA or controller verdicts.
 
