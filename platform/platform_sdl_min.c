@@ -6281,7 +6281,7 @@ static void platform_frame_sync_impl(int swap, int count_present) {
             printf("[RNGSPLIT] frame=%d sim=%08x prev=%08x pres=%08x draws=%llu\n",
                    g_frameCounter, (unsigned int)gCurrentRNGSeed,
                    (unsigned int)gPrevRNGSeed, mdkr_presentation_rng_seed(),
-                   mdkr_presentation_rng_draws());
+                   (unsigned long long)mdkr_presentation_rng_draws());
         }
     }
 
