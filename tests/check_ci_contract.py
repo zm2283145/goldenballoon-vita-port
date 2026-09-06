@@ -135,6 +135,7 @@ SOURCES = {
     "info_plist": MACOS_INFO_PLIST,
     "macos_readme": MACOS_README,
     "app_pacing": APP_PACING_CHECK,
+    "lobby_takeover": TESTS / "check_online_lobby_takeover.py",
     "cmake": CMAKE_PROJECT,
     "gitignore": GITIGNORE,
     "ui_settings": UI_SETTINGS,
@@ -430,9 +431,42 @@ def validate_frame_limit_help_pins(sources: dict[str, str]) -> list[str]:
     return failures
 
 
+def validate_lobby_takeover_count(sources: dict[str, str]) -> list[str]:
+    """Keep CTest's success predicate in sync with the actual active-view arms."""
+    try:
+        tree = ast.parse(sources["lobby_takeover"])
+        assignments = [
+            node.value for node in tree.body if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "ACTIVE_SLUGS"
+                    for target in node.targets)
+        ]
+        if len(assignments) != 1:
+            raise ValueError("expected one active-view inventory")
+        slugs = ast.literal_eval(assignments[0])
+        if (not isinstance(slugs, tuple) or not slugs
+                or any(not isinstance(slug, str) or not slug for slug in slugs)
+                or len(set(slugs)) != len(slugs)):
+            raise ValueError("expected unique nonempty active-view slugs")
+    except (SyntaxError, ValueError, TypeError) as error:
+        return [f"lobby takeover inventory is invalid: {error}"]
+    properties = re.search(
+        r"set_tests_properties\(app_online_lobby_takeover PROPERTIES(?P<body>.*?)\)",
+        active_shell_source(sources["cmake"]), re.DOTALL,
+    )
+    expected = (
+        f'"PASS online lobby takeover: active-cases={len(slugs)} '
+        'entry-shell=1 offline-play-suppressed=1"'
+    )
+    if properties is None or re.search(
+            r"\bPASS_REGULAR_EXPRESSION\s+" + re.escape(expected),
+            properties.group("body")) is None:
+        return ["lobby takeover CTest success predicate disagrees with its active-view inventory"]
+    return []
+
+
 def validate_gpu_test_routing(sources: dict[str, str]) -> list[str]:
     """Keep real-GPU smoke out of headless CTest without losing release proof."""
-    failures: list[str] = []
+    failures = validate_lobby_takeover_count(sources)
     cmake = sources["cmake"]
     smoke = re.search(
         r"set_tests_properties\(app_shell_smoke PROPERTIES(?P<body>.*?)\)",

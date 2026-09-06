@@ -1357,6 +1357,28 @@ CONTROL_GROUPS: dict[str, ControlGroup] = {
         summary='GPU-routing positive controls unexpectedly passed: ',
         controls=(
             Control(
+                "lobby takeover stale active-view count",
+                "cmake",
+                r"PASS online lobby takeover: active-cases=\d+",
+                "PASS online lobby takeover: active-cases=999",
+                count=1,
+                regex=True,
+            ),
+            Control(
+                "lobby takeover active-view inventory drift",
+                "lobby_takeover",
+                '    "room-friends",\n',
+                "",
+                count=1,
+            ),
+            Control(
+                "lobby takeover success predicate removal",
+                "cmake",
+                "PASS online lobby takeover:",
+                "REMOVED online lobby takeover:",
+                count=1,
+            ),
+            Control(
                 "GPU label deletion",
                 "cmake",
                 '(set_tests_properties\\(app_shell_smoke PROPERTIES.*?)\\n\\s+LABELS gpu',

@@ -8218,6 +8218,12 @@ source it inspects and must reject it. It also derives the release version from
 `CMakeLists.txt`'s `MDKR_VERSION` and requires this file's task list to match
 `tools/run_checks.py`'s manifest.
 
+The GPU-routing contract also compares the lobby-takeover CTest success count
+with the check's actual active-view inventory. Stale counts, inventory drift,
+and removal of that success predicate are rejected by mutation controls; the
+application check still asserts offline-shell suppression for every active arm
+and the opposite behavior at the entry chooser.
+
 The exact text it pins lives beside it in `tests/ci_contract_manifest.py`: one
 `Pin` per literal a named file must, or must never, contain, and one `Control`
 per deliberate break of a pin. Reword a workflow step, a refusal message or an

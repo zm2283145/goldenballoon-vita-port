@@ -2517,7 +2517,7 @@ if(NOT EMSCRIPTEN)
                     set_tests_properties(app_online_lobby_takeover PROPERTIES
                         LABELS gpu
                         PASS_REGULAR_EXPRESSION
-                            "PASS online lobby takeover: active-cases=9 entry-shell=1 offline-play-suppressed=1"
+                            "PASS online lobby takeover: active-cases=7 entry-shell=1 offline-play-suppressed=1"
                         TIMEOUT 300)
                 endif()
 
