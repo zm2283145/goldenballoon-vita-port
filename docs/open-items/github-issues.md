@@ -30,8 +30,16 @@ Release compilation now passes at the later `ba620a1b` checkpoint, but Linux pac
 qualification is incomplete. Its first complete ROM-free rerun had three online
 test failures; the transport fix passes focused Linux optimized/sanitizer
 checks, and the complete rerun with the adapter-harness correction passes
-279/279 tests. Built-launcher checks also pass, but strict AppImage packaging
-needs another attempt with a missing container dependency installed.
+279/279 tests. Strict packaging at `5fc099fc` now produces both Linux artifacts;
+tarball launcher checks pass and the AppImage's shared payload matches it.
+A subsequent clean `72770712` qualification includes PNG-writer hardening and
+passes 280/280 selected tests, built/packaged launcher checks, strict packaging,
+and shared-payload parity. Native AppImage runtime/hardware acceptance and
+final-source full qualification remain pending. The original native diagnostic
+CTest run's stale lobby-takeover success count is also corrected; its focused
+CTest and CI drift controls now pass, not the complete unrestricted suite.
+Further texture-pack PNG admission hardening is compiled but awaits behavioral
+validation; it is not included in the earlier qualified Linux artifacts.
 See the release checklist for these separate
 qualification gaps; neither changes the Windows/NVIDIA or controller verdicts.
 

@@ -76,6 +76,12 @@ the ROM-revision directory to the ROM-checker page gate. CI also checks that
 declared artifact flags receive the selected paths, including missing/wrong
 path controls. The failed run is retained; a new complete run with the
 corrected runner is required before claiming suite qualification.
+Its native CTest phase separately reported 320/321 passing: the lobby-takeover
+script passed seven active views, but CMake still required nine after two
+obsolete selection previews were retired. The candidate corrects that stale
+success count without changing the application's behavioral assertions.
+The actual lobby CTest and complete CI contract now pass; three mutation
+controls reject stale counts, inventory drift, and a removed success predicate.
 The corrected CI contract and four focused routing checks (`subentry_bounds`,
 `input_hotplug`, `rom_checker_page`, `a11y_shell`) pass. The latter is explicitly
 `SUBSET 4/271`, not a replacement for that complete run.
@@ -94,6 +100,11 @@ re-engagement remains a hard failure. No motion threshold, camera resolver, or
 release-hold timer has been relaxed or changed.
 The complete three-route/240 Hz rerun confirms that Ancient Lake re-engagement
 is the remaining hard failure; the hub and 3P routes report none.
+Source audit separately finds that the documented proportional expansion bound
+in camera architecture section 7.3 is not implemented: recovery has speed and
+absolute-step caps, but no 25%-of-remaining-error cap. That calibration and
+coverage gap remains open; changing recovery alone has not been shown to fix
+Ancient Lake, and no hard motion assertion has been waived.
 
 Linux x86_64 Release compilation now passes at `ba620a1b` in an isolated,
 two-CPU Ubuntu 22.04 container, with KTX2 and online beta enabled and the
@@ -131,10 +142,14 @@ does not change production installation or race-convergence behavior.
 The complete selected Linux ROM-free rerun at clean `5fc099fc` passes 279/279
 tests in 178.83 seconds. Both endpoints are observed winning installation with
 matching runtime ownership. Four built-launcher arms (WebGPU, OpenGL, Online
-Room, Play) also pass under Mesa/Xvfb. Strict packaging then stops: the emulator
-cannot execute appimagetool directly, and the container lacks `unsquashfs` for
-the packager's existing extraction path. That container dependency is now added;
-the strict rerun is pending. No tar-only release waiver was used.
+Room, Play) also pass under Mesa/Xvfb. The first strict packaging attempt stopped
+on a missing container extraction dependency. After adding it, the full rerun
+passes 279/279 again and produces both AppImage and tarball. All four packaged
+launcher arms pass from the extracted tarball. The AppImage's 44 shared payload
+entries match that qualified tree in bytes, modes, and symlinks; its only extra
+entry is the expected desktop-icon link. The outer AppImage runtime was not
+executed under emulation. No tar-only release waiver was used. These artifacts
+are private `5fc099fc` evidence, not the later PNG-hardening candidate.
 
 A subsequent defensive PNG-writer admission change checks packed RGB/RGBA
 layout against the pinned encoder's internal size calculations before export
@@ -145,6 +160,31 @@ positive-size-only admission fails the new boundary check. Texture-export
 integration and the complete Workshop preview/capture gate also pass, including
 RGB gameplay and transparent RGBA capture. Final-platform/artifact reruns and
 the broader advisory disposition remain required.
+Its full Linux build also exposed a GCC dataflow warning for the PNG job-layout
+temporary; initialization is now explicit and warnings remain errors. The new
+clean Linux `72770712` build and qualification pass: 280/280 selected tests
+(179.87 seconds), four built and four tarball-packaged launcher arms, strict
+AppImage/tarball packaging, and 44-entry shared payload parity. Those artifacts
+include the PNG hardening but precede the lobby CTest-contract correction.
+Outer AppImage runtime/hardware acceptance and the final-source full matrix
+remain pending; private artifact hashes are recorded with the evidence.
+
+The next source candidate makes texture-pack PNG header admission mandatory:
+failed inspection cannot enter pixel decoding, and decoded dimensions must
+match the admitted header. Regression coverage reuses the existing unreadable
+header case and ordinary small-image fixtures, with test-only returned-metadata
+controls for width/height disagreement. Strict compiler checks and bounded
+native compilation pass; these updated behavioral checks have not run.
+This first-party hardening does not change the decoder pins, close the pending
+advisory review, or qualify the earlier packaged artifacts as this new source.
+All four first-party PNG caller limits now have compile-time conversion-size
+guards. Current limits compile under native Clang and Windows GCC; four
+deliberately oversized-limit source controls fail at the intended assertions,
+without executing a decoder or allocating image buffers. The limits and
+runtime behavior are unchanged by these guards. Private advisory review now
+distinguishes a reported missing check already present in this pin from
+size-conversion concerns constrained by caller admission. The older general-
+loader disposition and final-candidate behavioral qualification remain open.
 
 ## 0. Prerequisites
 
