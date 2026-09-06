@@ -176,6 +176,22 @@ def main() -> int:
                     "review upstream provenance and update the pin deliberately"
                 )
 
+    # The package validators deliberately pin redistributed notices too. A
+    # reviewed source-notice update must reach every shipping platform, not
+    # merely pass this source-tree guard and fail later during packaging.
+    basisu_readme_hash = pinned_hashes["third_party/basisu/README.md"]
+    for rel_path in (
+        "macos/Scripts/verify_unsigned_release.sh",
+        "tools/package_windows_zip.sh",
+        "tools/package_linux_appimage.sh",
+    ):
+        path = root / rel_path
+        if not path.is_file() or basisu_readme_hash not in read_text(path):
+            problems.append(
+                f"{rel_path} must pin the reviewed BasisU README SHA-256 "
+                f"{basisu_readme_hash}"
+            )
+
     # mixer.c/.h must credit the perfect_dark origin in the file itself, not
     # just in THIRD_PARTY.md -- the source-level attribution is what a
     # downstream consumer sees if they only grab the file.

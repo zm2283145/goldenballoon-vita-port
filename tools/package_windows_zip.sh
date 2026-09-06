@@ -160,7 +160,7 @@ with zipfile.ZipFile(sys.argv[1], "r") as archive:
         "GoldenBalloon/BasisU-Zstd-LICENSE.txt":
             "2c1a7fa704df8f3a606f6fc010b8b5aaebf403f3aeec339a12048f1ba7331a0b",
         "GoldenBalloon/BasisU-README.md":
-            "d15b94b7cb320ed39156c8ddf7d8e814185c6d0de51005113f1d18784785975c",
+            "5336f7e852dcc067ffaa0a12c3d36892d7fe7c09ddf74a035da6a2811d0d4cbf",
         "GoldenBalloon/CharacterText-HarfBuzz-COPYING.txt":
             "ba8f810f2455c2f08e2d56bb49b72f37fcf68f1f4fade38977cfd7372050ad64",
         "GoldenBalloon/CharacterText-SheenBidi-LICENSE.txt":
