@@ -215,14 +215,19 @@ issues without changing product behavior or dropping tests. The full Windows
 cross-build now completes, including all unit executables; a strict compiler
 control rejects the old fixture and accepts the bounded replacement. The four
 affected unit targets also compile in native optimized and ASan/UBSan builds.
-These are compile/link results, not Windows runtime, GPU, package, or controller
-acceptance; behavioral checks for the changed units remain pending.
+The complete incremental Windows build also passes at `c701145d`, including the
+zero-time camera release-hold correction. Its existing cloud-enabled developer
+profile is not the final partyless package. These are compile/link results, not
+Windows runtime, GPU, package, or controller acceptance; behavioral checks for
+the changed units remain pending.
 
-The web engine also compiles at `0f5222f3`, including the later PNG admission
-and caller-limit guards. Generated JavaScript passes syntax checking, and the
+The web engine also compiles at `c701145d`, including the later PNG admission,
+caller-limit guards, and zero-time camera correction. Generated JavaScript
+passes syntax checking, and the
 WebAssembly module passes structural validation with the compiler's required
-features enabled. Private hashes bind that compilation evidence; browser
-gameplay, staged-payload provenance, and final web acceptance remain pending.
+features enabled. Private hashes bind this incremental compilation evidence;
+browser gameplay, staged-payload provenance, and final web acceptance remain
+pending. Neither build executes its resulting game or test binaries.
 
 Source review found a separate Windows workflow predicate bug: portable-mode
 read-back used regex brackets where the application prints literal brackets.
