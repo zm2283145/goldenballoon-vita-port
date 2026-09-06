@@ -13,6 +13,8 @@
  * every allocation the decoder makes passes through a counter, and the decode
  * entry point is wrapped in one. A store that consults the declared size first
  * enters neither for a picture it refuses.
+ * The decode wrapper can also report alternate dimensions for a successfully
+ * decoded ordinary fixture, to exercise the caller's post-decode contract.
  */
 #ifndef MDKR64_TEST_MOD_TEXTURE_STORE_PROBE_H
 #define MDKR64_TEST_MOD_TEXTURE_STORE_PROBE_H
@@ -23,8 +25,9 @@
 extern "C" {
 #endif
 
-/* Zeroes both counters. `refuse_above`, when non-zero, makes the decoder's
- * allocator return NULL for any single request larger than it -- the request
+/* Zeroes both counters and clears dimension overrides. `refuse_above`, when
+ * non-zero, makes the decoder's allocator return NULL for any single request
+ * larger than it -- the request
  * is still recorded, so the test reads the size that WOULD have been taken
  * without the machine having to find it. That is what lets the deliberately
  * broken build be run safely: a gigabyte is measured, never allocated. */
@@ -35,6 +38,10 @@ size_t mdkr_texture_probe_largest_request(void);
 
 /* How many times stbi_load_from_memory() has been entered since the reset. */
 int    mdkr_texture_probe_decode_calls(void);
+
+/* Test-only returned-metadata seam; does not change the image or its decoder.
+ * Both dimensions must be positive to enable the override. Reset clears it. */
+void mdkr_texture_probe_override_decoded_dimensions(int width, int height);
 
 #ifdef __cplusplus
 }

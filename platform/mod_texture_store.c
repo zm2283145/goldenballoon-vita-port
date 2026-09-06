@@ -379,15 +379,25 @@ static void slot_resolve(StoreSlot *slot) {
      * stores -- and a one-channel image is precisely the case where the two
      * differ by four.
      *
-     * A header that cannot be parsed at all falls through to the decode on
-     * purpose. The decoder parses the same header and will fail on it with
-     * stb's own wording, which names the defect better than this module could
-     * about a header it could not read; and every check after the decode still
-     * runs regardless, because stbi_info() reports what the header claims and
-     * a header that lies has to be caught by the decode itself. */
+     * Header inspection is admission, not an optional optimization: without
+     * dimensions we cannot establish the decode budget. stbi_info() already
+     * supplies stb's own failure reason, so reporting it does not require a
+     * second parse through the pixel decoder. Retain the post-decode checks
+     * and require the decoded dimensions to match the admitted header. */
     if (stbi_info_from_memory(file_bytes, (int)file_size, &declared_width,
-                              &declared_height, &declared_channels) != 0 &&
-        declared_width > 0 && declared_height > 0) {
+                              &declared_height, &declared_channels) == 0) {
+        free(file_bytes);
+        slot->state = SLOT_REJECTED;
+        report_rejection(slot->digest, stbi_failure_reason());
+        return;
+    }
+    if (declared_width <= 0 || declared_height <= 0) {
+        free(file_bytes);
+        slot->state = SLOT_REJECTED;
+        report_rejection(slot->digest, "the image has no pixels");
+        return;
+    }
+    {
         uint64_t declared = (uint64_t)declared_width *
                             (uint64_t)declared_height * 4u;
         if (declared > (uint64_t)MDKR_MOD_TEXTURE_CACHE_BYTES_MAX) {
@@ -416,6 +426,14 @@ static void slot_resolve(StoreSlot *slot) {
         stbi_image_free(pixels);
         slot->state = SLOT_REJECTED;
         report_rejection(slot->digest, "the image has no pixels");
+        return;
+    }
+
+    if (width != declared_width || height != declared_height) {
+        stbi_image_free(pixels);
+        slot->state = SLOT_REJECTED;
+        report_rejection(slot->digest,
+                         "the image changed dimensions during bounded decode");
         return;
     }
 

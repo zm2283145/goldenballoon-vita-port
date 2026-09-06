@@ -6502,6 +6502,11 @@ Two further arms use the pre-1.7 Taj filename on GL and WebGPU, proving that
 retouching the generated card does not silently invalidate existing packs.
 The ROM-free `mod_texture_store` test pins current-name precedence, disabling
 aliases with the pack toggle, and isolation from unrelated texture digests.
+It also requires bounded PNG header admission before pixel decoding, rejects
+unreadable headers without entering the decoder, and verifies that returned
+dimensions agree with admission. The dimension-mismatch controls change only
+the test wrapper's metadata after decoding an ordinary small PNG; a matching
+image must still load with its exact pixels.
 Every arm proves it got the backend it asked for, so a silent adapter fallback
 cannot pass as WebGPU evidence. Frames are not compared across backends: two
 rasterizers need not agree byte-for-byte and nothing here claims they do, while

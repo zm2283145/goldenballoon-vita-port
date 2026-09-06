@@ -394,11 +394,9 @@ static void test_a_texture_that_fits_still_loads(void) {
     }
 }
 
-/* 3. A header the size check cannot read is not a header the size check gets
- * to reject. Reading the declared size first must not become a second, blinder
- * rejection path: a file stbi_info() cannot parse still goes to the decoder,
- * which is what puts the decoder's own account of the defect in the log. */
-static void test_an_unreadable_header_still_reaches_the_decoder(void) {
+/* 3. No bounded header means no pixel-decode admission. The header inspector
+ * already supplies the decoder library's own error message. */
+static void test_an_unreadable_header_is_refused_before_decode(void) {
     MdkrModTexture texture;
     int            found;
 
@@ -406,8 +404,38 @@ static void test_an_unreadable_header_still_reaches_the_decoder(void) {
     found = mdkr_mod_texture_lookup(DIGEST_NOTPNG, &texture);
 
     expect(found == 0, "a pack texture that is not a PNG at all is refused");
-    expect(mdkr_texture_probe_decode_calls() == 1,
-           "by the decoder, which was still given the chance to name the defect");
+    expect(mdkr_texture_probe_decode_calls() == 0,
+           "and unreadable dimensions never reach the pixel decoder");
+    expect(texture.rgba == NULL && texture.width == 0 && texture.height == 0,
+           "and rejected header admission leaves no readable pixels");
+    found = mdkr_mod_texture_lookup(DIGEST_NOTPNG, &texture);
+    expect(found == 0 && mdkr_texture_probe_decode_calls() == 0,
+           "and a repeated lookup keeps the rejection without decoding");
+}
+
+/* 4. The decoder's successful result must agree with the admitted dimensions.
+ * Reuse the ordinary 8x8 fixture; only the wrapper's reported metadata changes,
+ * never the PNG bytes or the decoder implementation. */
+static void test_decode_matches_admitted_dimensions(MdkrModRegistry *registry) {
+    const int dimensions[][2] = {{7, 8}, {8, 7}};
+    size_t index;
+    for (index = 0; index < sizeof dimensions / sizeof dimensions[0]; ++index) {
+        MdkrModTexture texture;
+        int found;
+        mdkr_mod_texture_store_init(registry);
+        mdkr_texture_probe_reset(PROBE_REFUSE_ABOVE);
+        mdkr_texture_probe_override_decoded_dimensions(
+            dimensions[index][0], dimensions[index][1]);
+        found = mdkr_mod_texture_lookup(DIGEST_SOUND, &texture);
+        expect(mdkr_texture_probe_decode_calls() == 1,
+               "dimension agreement is checked after a real ordinary decode");
+        expect(found == 0 && texture.rgba == NULL &&
+               texture.width == 0 && texture.height == 0,
+               "a decoded dimension mismatch cannot publish a texture");
+    }
+    mdkr_mod_texture_store_init(registry);
+    mdkr_texture_probe_reset(PROBE_REFUSE_ABOVE);
+    test_a_texture_that_fits_still_loads();
 }
 
 static void test_generated_portrait_alias(const char *mods,
@@ -469,7 +497,8 @@ int main(int argc, char **argv) {
 
     test_declared_size_is_refused_before_the_decode();
     test_a_texture_that_fits_still_loads();
-    test_an_unreadable_header_still_reaches_the_decoder();
+    test_an_unreadable_header_is_refused_before_decode();
+    test_decode_matches_admitted_dimensions(&registry);
     test_generated_portrait_alias(mods, &registry);
 
     mdkr_mod_texture_store_shutdown();
