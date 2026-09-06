@@ -4176,7 +4176,8 @@ void camera_obstruction_runtime_apply_config(void) {
         sCameraObstructionAppliedPolicy[0] = '\0';
     } else {
         snprintf(sCameraObstructionAppliedPolicy,
-                 sizeof(sCameraObstructionAppliedPolicy), "%s", value);
+                 sizeof(sCameraObstructionAppliedPolicy), "%.*s",
+                 (int)sizeof(sCameraObstructionAppliedPolicy) - 1, value);
         /* A previously-reported typo belongs to the value that was replaced. */
         sCameraObstructionPolicyFallbackReported = FALSE;
     }
@@ -4189,7 +4190,8 @@ void camera_obstruction_runtime_apply_config(void) {
         sCameraComfortApplied[0] = '\0';
         return;
     }
-    snprintf(sCameraComfortApplied, sizeof(sCameraComfortApplied), "%s", value);
+    snprintf(sCameraComfortApplied, sizeof(sCameraComfortApplied), "%.*s",
+             (int)sizeof(sCameraComfortApplied) - 1, value);
     sCameraComfortFallbackReported = FALSE;
 }
 

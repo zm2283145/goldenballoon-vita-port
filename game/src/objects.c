@@ -1887,7 +1887,7 @@ s32 mdkr_object_assets_pin_rollback(void) {
     }
     fprintf(stderr,
             "[ROLLBACK] assets pinned: objectTypes=%zu leases=%d\n",
-            ARRAY_COUNT(kItemSpawnTypes), sRollbackAssetLeaseCount);
+            (size_t)ARRAY_COUNT(kItemSpawnTypes), sRollbackAssetLeaseCount);
     return TRUE;
 }
 
@@ -3899,7 +3899,7 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
     s32 k;
     u8 raceType;
     LevelHeader *levelHeader;
-    Camera *cutsceneCameraSegment;
+    Camera *cutsceneCameraSegment = NULL;
 #ifdef NATIVE_PORT
     Vehicle requestedVehicle = vehicle;
 #endif
@@ -4574,7 +4574,8 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
         }
     }
     D_8011AD24[0] = TRUE;
-    if (cutsceneID >= 0) {
+    /* Restore only the camera captured by the time-trial setup above. */
+    if (cutsceneCameraSegment != NULL && cutsceneID >= 0) {
         cutsceneCameraSegment->zoom = cutsceneID;
     }
     // Menu demos will skip straight to the action.

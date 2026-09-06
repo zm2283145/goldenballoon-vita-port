@@ -1187,7 +1187,8 @@ static s32 charselect_custom_donor_table_index(s32 rosterIndex) {
 
 static void charselect_custom_set_error(const char *message) {
     (void)snprintf(sCustomCharacterRosterError,
-                   sizeof(sCustomCharacterRosterError), "%s",
+                   sizeof(sCustomCharacterRosterError), "%.*s",
+                   (int)sizeof(sCustomCharacterRosterError) - 1,
                    message != NULL && message[0] != '\0'
                        ? message : "CUSTOM RACER IS UNAVAILABLE");
     sCustomCharacterRosterErrorTimer = 240;
