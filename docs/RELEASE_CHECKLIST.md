@@ -118,6 +118,15 @@ remain pending. Container evidence cannot establish physical
 Linux GPU acceptance. Existing `12cab88c` macOS/web artifact identities remain
 unchanged and must not be relabeled as this later source checkpoint.
 
+The two adapter tests also assumed endpoint A wins asynchronous preflight,
+although their two endpoints share a once-only process-global engine roster.
+The harness candidate requires exactly one installer, both peers' agreed
+descriptor, and the winning peer's actual local-seat/viewport mapping. Its
+deterministic checks cover either winner and reject absent, duplicate, or
+wrong-owner installs. The macOS adapter, impairment matrix, route, and repair
+lanes pass (646 assertions total); Linux confirmation remains pending. This
+does not change production installation or race-convergence behavior.
+
 ## 0. Prerequisites
 
 You supply your own legally-owned ROM. It is never committed.

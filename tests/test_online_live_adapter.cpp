@@ -545,6 +545,51 @@ void test_transport_failure_preserves_lobby() {
     CHECK(m.member_count == 1u);
 }
 
+/* Two test endpoints share ONE engine runtime. Async preflight completion may
+ * let either endpoint install first; both must still finish preflight and
+ * create independent race transports. Neither zero nor two installers passes. */
+bool singleInstallerReady(const MdkrOnlineLiveLaunchProbe &a,
+                          const MdkrOnlineLiveLaunchProbe &b) {
+    return a.installed != b.installed && a.preflightReady && b.preflightReady;
+}
+
+bool rosterMatchesInstaller(const MdkrOnlineLiveLaunchProbe &a,
+                            const MdkrOnlineLiveLaunchProbe &b,
+                            uint64_t endpointA, uint64_t endpointB,
+                            const MdkrMatchLaunchDescriptorV1 *launch,
+                            const MdkrNetRoster *roster) {
+    if (!singleInstallerReady(a, b) || !a.descriptorBuilt || !b.descriptorBuilt ||
+        !a.phraseConfirmed || !b.phraseConfirmed ||
+        a.refusal != MDKR_MATCH_LAUNCH_ADMITTED ||
+        b.refusal != MDKR_MATCH_LAUNCH_ADMITTED ||
+        endpointA == 0u || endpointB == 0u || endpointA == endpointB ||
+        launch == nullptr || roster == nullptr ||
+        !mdkr_match_launch_descriptor_validate(launch) ||
+        std::memcmp(launch, &a.descriptor, sizeof(*launch)) != 0 ||
+        std::memcmp(launch, &b.descriptor, sizeof(*launch)) != 0) return false;
+
+    const uint64_t installer = a.installed ? endpointA : endpointB;
+    uint8_t localSlots[MDKR_MATCH_SLOTS];
+    unsigned count = 0u;
+    for (unsigned slot = 0u; slot < launch->manifest.slot_count; ++slot) {
+        if (launch->manifest.slot_owner[slot] == installer)
+            localSlots[count++] = static_cast<uint8_t>(slot);
+    }
+    MdkrNetRoster expected{};
+    if (count == 0u || !mdkr_net_roster_init(&expected, &launch->manifest) ||
+        !mdkr_net_roster_configure_local(&expected, localSlots, count) ||
+        !mdkr_net_roster_set_viewports(&expected, localSlots, count)) return false;
+    return roster->canonical_player_count == expected.canonical_player_count &&
+        roster->local_seat_count == expected.local_seat_count &&
+        roster->viewport_count == expected.viewport_count &&
+        std::memcmp(roster->canonical_owner, expected.canonical_owner,
+                    sizeof(expected.canonical_owner)) == 0 &&
+        std::memcmp(roster->local_to_canonical, expected.local_to_canonical,
+                    sizeof(expected.local_to_canonical)) == 0 &&
+        std::memcmp(roster->viewport_to_canonical, expected.viewport_to_canonical,
+                    sizeof(expected.viewport_to_canonical)) == 0;
+}
+
 /* Drive two adapters from create/join through the loopback mesh to the Loading
  * barrier. `bonusIdentityOnA` seeds a non-retail local identity on A to force
  * the retail-identity clamp. Returns the two probes. */
@@ -552,6 +597,9 @@ struct FullRunResult {
     bool reachedLoading = false;
     MdkrOnlineLiveLaunchProbe probeA{};
     MdkrOnlineLiveLaunchProbe probeB{};
+    uint64_t endpointA = 0u;
+    uint64_t endpointB = 0u;
+    bool runtimeMatchesInstaller = false;
     bool raceRun = false;
     bool raceConverged = false;
     uint32_t racedTicks = 0u;
@@ -873,7 +921,7 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
             /* A refuses at the clamp; B never reaches consensus without A. */
             return pa.descriptorBuilt || pa.refusal != MDKR_MATCH_LAUNCH_ADMITTED;
         }
-        return pa.installed && pb.preflightReady;
+        return singleInstallerReady(pa, pb);
     }, 30000u);
 
     /* The measured MPF2 report is published after consensus, so let both
@@ -902,6 +950,20 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
     }
     mdkr_online_live_adapter_probe(A.get(), &result.probeA);
     mdkr_online_live_adapter_probe(B.get(), &result.probeB);
+    result.endpointA = backendA.began;
+    result.endpointB = backendB.began;
+    result.runtimeMatchesInstaller = rosterMatchesInstaller(
+        result.probeA, result.probeB, result.endpointA, result.endpointB,
+        mdkr_net_roster_runtime_launch_descriptor(), mdkr_net_roster_runtime_get());
+    if (!bonusIdentityOnA) {
+        std::fprintf(stderr,
+            "shared roster: A=%u B=%u preflight=%u/%u runtime_matches=%u\n",
+            result.probeA.installed ? 1u : 0u, result.probeB.installed ? 1u : 0u,
+            result.probeA.preflightReady ? 1u : 0u,
+            result.probeB.preflightReady ? 1u : 0u,
+            result.runtimeMatchesInstaller ? 1u : 0u);
+        CHECK(result.runtimeMatchesInstaller);
+    }
     {
         MdkrOnlineLiveRaceInfo delayA{}, delayB{};
         if (mdkr_online_live_adapter_race_info(A.get(), &delayA))
@@ -910,7 +972,7 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
             result.inputDelayB = delayB.inputDelay;
     }
 
-    /* race: with both descriptors installed, feed real sealed input
+    /* race: with both descriptors agreed, feed real sealed input
      * bundles over the loopback mesh for `raceTicks` authored ticks and fold
      * every confirmed canonical frame into a per-endpoint FNV state hash. The
      * two independent endpoints must converge on the identical hash. */
@@ -1494,6 +1556,65 @@ void test_realtime_burst_does_not_age_out_authority_packets() {
     mdkr_net_roster_runtime_clear();
 }
 
+/* Exercise the harness ownership check deterministically for BOTH winners,
+ * independent of the OS's real DTLS completion order. Start from the actual
+ * agreed descriptor and never mutate the installed production runtime. */
+void test_installer_ownership_checks(const FullRunResult &r) {
+    for (bool aWins : {true, false}) {
+        auto a = r.probeA;
+        auto b = r.probeB;
+        a.installed = aWins;
+        b.installed = !aWins;
+        const uint64_t owner = aWins ? r.endpointA : r.endpointB;
+        uint8_t slots[MDKR_MATCH_SLOTS];
+        unsigned count = 0u;
+        for (unsigned i = 0u; i < a.descriptor.manifest.slot_count; ++i) {
+            if (a.descriptor.manifest.slot_owner[i] == owner)
+                slots[count++] = static_cast<uint8_t>(i);
+        }
+        MdkrNetRoster roster{};
+        CHECK(count == 1u); /* this fixture gives each endpoint one seat */
+        CHECK(mdkr_net_roster_init(&roster, &a.descriptor.manifest));
+        CHECK(mdkr_net_roster_configure_local(&roster, slots, count));
+        CHECK(mdkr_net_roster_set_viewports(&roster, slots, count));
+        const auto matches = [&](const MdkrOnlineLiveLaunchProbe &pa,
+                                 const MdkrOnlineLiveLaunchProbe &pb,
+                                 const MdkrNetRoster *candidate) {
+            return rosterMatchesInstaller(pa, pb, r.endpointA, r.endpointB,
+                                          &r.probeA.descriptor, candidate);
+        };
+        CHECK(matches(a, b, &roster));
+        CHECK(!matches(a, b, nullptr));
+        auto otherA = a;
+        auto otherB = b;
+        otherA.installed = otherB.installed = false;
+        CHECK(!matches(otherA, otherB, &roster));
+        otherA.installed = otherB.installed = true;
+        CHECK(!matches(otherA, otherB, &roster));
+        otherA = a;
+        otherB = b;
+        otherA.installed = !a.installed;
+        otherB.installed = !b.installed;
+        CHECK(!matches(otherA, otherB, &roster)); /* wrong owner's local seats */
+        otherA = a;
+        otherB = b;
+        otherA.preflightReady = false;
+        CHECK(!matches(otherA, otherB, &roster));
+        otherA = a;
+        otherB.preflightReady = false;
+        CHECK(!matches(otherA, otherB, &roster));
+        otherB = b;
+        otherB.descriptor.manifest.match_epoch++;
+        CHECK(!matches(otherA, otherB, &roster)); /* no descriptor consensus */
+        auto wrongRoster = roster;
+        wrongRoster.local_to_canonical[0] ^= 1u;
+        CHECK(!matches(a, b, &wrongRoster));
+        wrongRoster = roster;
+        wrongRoster.viewport_to_canonical[0] ^= 1u;
+        CHECK(!matches(a, b, &wrongRoster));
+    }
+}
+
 void test_full_flow_installs_through_builder() {
     const FullRunResult r = driveTwoAdapters(/*bonusIdentityOnA=*/false);
     CHECK(r.reachedLoading);
@@ -1501,7 +1622,7 @@ void test_full_flow_installs_through_builder() {
     CHECK(r.probeA.descriptorBuilt);
     CHECK(r.probeA.refusal == MDKR_MATCH_LAUNCH_ADMITTED);
     CHECK(r.probeA.preflightReady);
-    CHECK(r.probeA.installed);
+    CHECK(r.runtimeMatchesInstaller);
     /* The descriptor was installed into the engine runtime through the builder. */
     CHECK(mdkr_net_roster_runtime_active());
     const MdkrMatchLaunchDescriptorV1 *installed =
@@ -1517,13 +1638,14 @@ void test_full_flow_installs_through_builder() {
     }
     CHECK(r.probeB.preflightReady);
     CHECK(r.probeB.descriptorBuilt);
+    if (r.runtimeMatchesInstaller) test_installer_ownership_checks(r);
     mdkr_net_roster_runtime_clear();
 }
 
 void test_two_endpoint_race_converges() {
     const FullRunResult r = driveTwoAdapters(/*bonusIdentityOnA=*/false,
                                              /*raceTicks=*/240u);
-    CHECK(r.probeA.installed);  /* the process-global roster holder */
+    CHECK(r.runtimeMatchesInstaller);  /* exactly one process-global roster holder */
     CHECK(r.probeA.preflightReady && r.probeB.preflightReady);
     CHECK(r.raceRun);
     CHECK(r.racedTicks >= 240u);
@@ -2152,7 +2274,10 @@ void test_multi_race_lifecycle() {
         CHECK(pa.descriptor.manifest.match_epoch == 2u);
         CHECK(std::memcmp(&pa.descriptor, &pb.descriptor,
                           sizeof(pa.descriptor)) == 0);
-        CHECK(pa.installed); /* the roster re-installed after the clear */
+        /* The roster re-installed after the clear, for whichever endpoint
+         * completed preflight first. Its local seats must belong to that peer. */
+        CHECK(rosterMatchesInstaller(pa, pb, rig.backendA.began, rig.backendB.began,
+            mdkr_net_roster_runtime_launch_descriptor(), mdkr_net_roster_runtime_get()));
     }
     CHECK(rig.pumpBoth([&]() {
         return rig.lobbiesAt(MDKR_ONLINE_RACING);
@@ -2664,7 +2789,7 @@ void test_impairment_matrix() {
             driveTwoAdapters(/*bonusIdentityOnA=*/false, /*raceTicks=*/240u,
                              &spec);
         /* The stack came up and installed under this profile. */
-        CHECK(r.probeA.installed);
+        CHECK(r.runtimeMatchesInstaller);
         CHECK(r.probeA.preflightReady && r.probeB.preflightReady);
         CHECK(r.raceRun);
         /* The carrier was genuinely in the path (non-vacuous) and never
