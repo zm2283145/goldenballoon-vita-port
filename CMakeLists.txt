@@ -140,6 +140,23 @@ if(MDKR_CHARACTER_LOD_TOOLS AND NOT EMSCRIPTEN)
 endif()
 enable_language(CXX)
 include(${CMAKE_SOURCE_DIR}/cmake/character_text_shaping.cmake)
+# FP contraction is pinned OFF for EVERY target in this project, not just the
+# engine. The per-target block below states the requirement -- gameplay float
+# state must be bit-reproducible, "lockstep peers and every golden float hash
+# depend on it" -- but applying it PRIVATE to ${MDKR_TARGET} left two gaps:
+# mdkr64_app, and every fixture in cmake/tests.cmake (which mentions this flag
+# zero times while compiling game/src/hasm/math_util.c and game/src/tracks.c in
+# eight targets). A fixture that fuses a*b+c into an FMA while the engine does
+# not is computing different floats from the thing it is asserting about, so a
+# golden-hash gate can agree by luck and mask a real difference -- or disagree
+# for a reason that has nothing to do with the code under test.
+#
+# Directory scope is the fix rather than a per-target repeat: it cannot be
+# forgotten by the next target somebody adds. AppleClang on arm64 fuses at -O2
+# by default, so this is exactly the flag that keeps an arm64 host and an
+# x86_64 peer computing the same float.
+add_compile_options(-ffp-contract=off)
+
 include(${CMAKE_SOURCE_DIR}/cmake/tests.cmake)
 
 # The custom-character cache and its embedded texture payloads are both
