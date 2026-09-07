@@ -2,7 +2,10 @@
 
 Start with the ordered [operational backlog](OPERATIONAL_BACKLOG.md), then use
 the [status ledger](STATUS.md) for current evidence and S10–S13 for normative
-acceptance detail.
+acceptance detail. Scoping for three and four online racers and for filling an
+unoccupied seat with a computer racer lives in
+[four seats and bot-fill](FOUR_SEAT_AND_BOT_FILL.md); it is a design map, not an
+approval.
 
 > **Active implementation program.** A0 automated foundations and the browser
 > Phone Party direct path exist; physical-device release evidence, native host,
