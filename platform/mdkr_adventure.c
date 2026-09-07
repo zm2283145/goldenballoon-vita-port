@@ -2081,7 +2081,7 @@ void mdkr_trophy_control_world(Settings *settings) {
         return;
     }
     world = atoi(value);
-    if (world >= 1 && world <= 4) {
+    if (world >= WORLD_DINO_DOMAIN && world <= WORLD_FUTURE_FUN_LAND) {
         settings->worldId = world;
     }
 }

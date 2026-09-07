@@ -363,11 +363,13 @@ def run_trophy_series(
     if "trophyround: world=1 round=0 track=5 points0=0" not in retry_proc.stdout:
         failures.append("post-quit retry did not restart at round zero")
 
-    # The other three production championship schedules and podium branches.
+    # All remaining championship schedules, including Future Funland's fifth
+    # saved trophy field (issue #63), and the remaining podium branches.
     world_matrix = (
         (2, "1,0,2,3,4,5,6,7", (8, 4, 10, 30), 1, 28, 0x8),
         (3, "1,2,0,3,4,5,6,7", (13, 6, 9, 28), 2, 20, 0x10),
         (4, "1,2,3,0,4,5,6,7", (19, 18, 20, 31), 3, 12, 0x0),
+        (5, "0,1,2,3,4,5,6,7", (17, 32, 33, 15), 0, 36, 0x300),
     )
     matrix_outputs: list[tuple[int, str]] = []
     for world, per_round, tracks, rank, points, trophy_bits in world_matrix:
@@ -397,9 +399,14 @@ def run_trophy_series(
             failures.append(
                 f"world {world} award tuple {matrix_award.groups()}"
             )
-        if len(matrix_save) == EEPROM_BYTES:
+        if len(matrix_save) != EEPROM_BYTES:
+            failures.append(f"world {world} EEPROM length {len(matrix_save)}")
+        else:
+            slot = matrix_save[:SLOT_BYTES]
+            if int.from_bytes(slot[:2], "big") != slot_checksum(slot):
+                failures.append(f"world {world} EEPROM checksum mismatch")
             persisted = read_bits(
-                matrix_save[:SLOT_BYTES], TROPHY_BIT_OFFSET, 10
+                slot, TROPHY_BIT_OFFSET, 10
             )
             if persisted != trophy_bits:
                 failures.append(

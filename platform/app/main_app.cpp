@@ -88,6 +88,24 @@ public:
     DiagLogScope &operator=(const DiagLogScope &) = delete;
 };
 
+void shutdownLauncherHost(AppHost &host, Launcher &launcher) {
+    // Only post-init paths call this helper. Restart can reach it both inside
+    // its session runner and again in main; never service work after SDL quit.
+    if (host.window() == nullptr) return;
+    // Every post-construction terminal path uses this order, including paths
+    // that never enter the interactive loop. The launcher joins all network
+    // owners and global RTC cleanup while host services and logging still live.
+    launcher.finishCharacterWorkForExit();
+    Overlay_setPhonePartyHost(nullptr);
+    const bool networkClean = launcher.finishNetworkShutdownForExit();
+    if (!networkClean) {
+        std::fprintf(stderr,
+                     "[app] network shutdown failed; exiting with failure and refusing relaunch\n");
+    }
+    AppLaunchHold_release();
+    host.shutdown();
+}
+
 /* RAII latch for the epoch-scoped NTSC source identity (rom_io.c).  Every
  * online engine boot wraps its blocking mdkr64_engine_boot() in one of these:
  * the constructor arms the override iff the epoch is online, and the destructor
@@ -3132,7 +3150,7 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
     if (anyNavigationContract && !smokeNavigation) {
         std::fprintf(stderr,
                      "[app] smoke: invalid top-navigation input contract\n");
-        host.shutdown();
+        shutdownLauncherHost(host, launcher);
         return 2;
     }
     if (smokeNavigation && frames < 4) frames = 4;
@@ -3178,7 +3196,7 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         std::fprintf(
             stderr,
             "[app] smoke: invalid Character Workshop import-focus contract\n");
-        host.shutdown();
+        shutdownLauncherHost(host, launcher);
         return 2;
     }
     const char *smokeCharacterWorkshopReturn =
@@ -3202,7 +3220,7 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         std::fprintf(
             stderr,
             "[app] smoke: invalid Character Workshop return contract\n");
-        host.shutdown();
+        shutdownLauncherHost(host, launcher);
         return 2;
     }
     const char *smokeUiScale =
@@ -3248,7 +3266,7 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
     if (anyOnlineActionContract && !smokeOnlineActionArmed) {
         std::fprintf(stderr,
                      "[app] smoke: invalid Online Room action contract\n");
-        host.shutdown();
+        shutdownLauncherHost(host, launcher);
         return 2;
     }
     const bool anyTouchContract =
@@ -3260,7 +3278,7 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
     if (anyTouchContract && !smokeTouch) {
         std::fprintf(stderr,
                      "[app] smoke: invalid touchscreen input contract\n");
-        host.shutdown();
+        shutdownLauncherHost(host, launcher);
         return 2;
     }
     const bool anyWheelContract =
@@ -3272,7 +3290,7 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
     if (anyWheelContract && !smokeWheel) {
         std::fprintf(stderr,
                      "[app] smoke: invalid mouse-wheel input contract\n");
-        host.shutdown();
+        shutdownLauncherHost(host, launcher);
         return 2;
     }
     // In flipped mode the injected notches are marked SDL_MOUSEWHEEL_FLIPPED
@@ -3290,7 +3308,7 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
          std::fabs(smokeUiScaleTarget - 2.0f) > 0.001f)) {
         std::fprintf(stderr,
                      "[app] smoke: UI-scale drag target must be 2.00\n");
-        host.shutdown();
+        shutdownLauncherHost(host, launcher);
         return 2;
     }
     if ((smokeUiScaleDrag && smokeFrameLimit) ||
@@ -3309,7 +3327,7 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
           smokeNavigation))) {
         std::fprintf(stderr,
                      "[app] smoke: pointer scripts cannot share one input run\n");
-        host.shutdown();
+        shutdownLauncherHost(host, launcher);
         return 2;
     }
     if (smokePresentationPace &&
@@ -3318,7 +3336,7 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         std::fprintf(stderr,
                      "[app] smoke: unsupported presentation pace %s "
                      "(original or smooth)\n", smokePresentationPace);
-        host.shutdown();
+        shutdownLauncherHost(host, launcher);
         return 2;
     }
     if (smokePresentationPace && frames < 8) frames = 8;
@@ -3367,7 +3385,7 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
     if (anyCharacterWaitContract && !waitForCharacterJobs) {
         std::fprintf(stderr,
                      "[app] smoke: invalid Character Workshop wait contract\n");
-        host.shutdown();
+        shutdownLauncherHost(host, launcher);
         return 2;
     }
     const char *smokeQuitDuringCharacterWork =
@@ -3389,7 +3407,7 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         std::fprintf(
             stderr,
             "[app] smoke: invalid Character Workshop quit contract\n");
-        host.shutdown();
+        shutdownLauncherHost(host, launcher);
         return 2;
     }
     // Drag-and-drop coverage (Q2): the picker's NSOpenPanel and path-field
@@ -3478,14 +3496,14 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
     if (smokeDropPlayMutate && !smokeDropPlay) {
         std::fprintf(stderr,
                      "[app] smoke: final Play mutation requires final Play check\n");
-        host.shutdown();
+        shutdownLauncherHost(host, launcher);
         return 2;
     }
     if (smokeReplacementPlay && smokeReplacementPlay[0] &&
         (!smokeDrop || !smokeDrop[0])) {
         std::fprintf(stderr,
                      "[app] smoke: replacement Play requires an initial drop\n");
-        host.shutdown();
+        shutdownLauncherHost(host, launcher);
         return 2;
     }
     if (smokeFrameLimit &&
@@ -3495,7 +3513,7 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
                      "[app] smoke: unsupported scripted frame limit %s "
                      "(only 240 is defined)\n",
                      smokeFrameLimit);
-        host.shutdown();
+        shutdownLauncherHost(host, launcher);
         return 2;
     }
     for (int i = 0;
@@ -4485,7 +4503,7 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
      * seven earlier bails in this function return before a frame is drawn, so
      * they have no window to close. */
     AppLaunchHold_release();
-    host.shutdown();
+    shutdownLauncherHost(host, launcher);
     // A requested capture that was not written must fail the run, so a CI
     // smoke can never pass without its image.
     if (shot && shot[0] && !captureOk) {
@@ -4519,7 +4537,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
         if (!AppRestart_consumeGame(restartRom)) {
             std::fprintf(stderr,
                          "[app] invalid Restart & Apply handoff; returning safely\n");
-            host.shutdown();
+            shutdownLauncherHost(host, launcher);
             return 2;
         }
         config.rom_path = restartRom.c_str();
@@ -4533,12 +4551,12 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
          * The parent then has to restore a normal launcher, not autoplay again. */
         std::fprintf(stderr,
                      "[app-restart-test] forcing post-restart boot failure\n");
-        host.shutdown();
+        shutdownLauncherHost(host, launcher);
         return 2;
     }
     config.video_mode = -1;
     if (!applyAutoplayVideoSetting()) {
-        host.shutdown();
+        shutdownLauncherHost(host, launcher);
         return 2;
     }
     if (const char *ticks = std::getenv("MDKR_APP_AUTOPLAY_TICKS")) {
@@ -4549,7 +4567,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
                          "[app] invalid MDKR_APP_AUTOPLAY_TICKS=%s "
                          "(expected 1..1000000)\n",
                          ticks);
-            host.shutdown();
+            shutdownLauncherHost(host, launcher);
             return 2;
         }
         config.automation_ticks = static_cast<int>(parsed);
@@ -4563,7 +4581,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
                          "[app] invalid/conflicting MDKR_APP_AUTOPLAY_FRAMES=%s "
                          "(expected 1..1000000 and no tick limit)\n",
                          frames);
-            host.shutdown();
+            shutdownLauncherHost(host, launcher);
             return 2;
         }
         config.automation_frames = static_cast<int>(parsed);
@@ -4597,7 +4615,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
             std::fprintf(stderr,
                          "[session-test] invalid online mask contract "
                          "(local must be 1..15; viewport must be its subset)\n");
-            host.shutdown();
+            shutdownLauncherHost(host, launcher);
             return 2;
         }
         if (!session.beginOnline() ||
@@ -4606,7 +4624,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
             std::fprintf(stderr,
                          "[session-test] could not compose first online "
                          "launcher envelope\n");
-            host.shutdown();
+            shutdownLauncherHost(host, launcher);
             return 2;
         }
         bool launchApplied = false;
@@ -4625,7 +4643,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
             std::fprintf(stderr,
                          "[session-test] could not freeze first online "
                          "launcher envelope\n");
-            host.shutdown();
+            shutdownLauncherHost(host, launcher);
             return 2;
         }
     }
@@ -4641,7 +4659,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
            SDL_GetTicks64() < warmupDeadline) {
         if (host.pumpAndShouldQuit()) {
             std::fprintf(stderr, "[app] autoplay: quit during surface warm-up\n");
-            host.shutdown();
+            shutdownLauncherHost(host, launcher);
             return 1;
         }
         host.beginFrame();
@@ -4650,7 +4668,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
             std::fprintf(stderr,
                          "[app] autoplay: host renderer failed during surface "
                          "warm-up\n");
-            host.shutdown();
+            shutdownLauncherHost(host, launcher);
             return 1;
         }
         ++warmupAttempts;
@@ -4660,7 +4678,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
         !host.lastSurfaceWasOccluded()) {
         std::fprintf(stderr,
                      "[app] autoplay: host surface did not present within 2000 ms\n");
-        host.shutdown();
+        shutdownLauncherHost(host, launcher);
         return 1;
     }
     if (host.presentedFrames() != initialPresents) {
@@ -4689,7 +4707,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
      * autoplay never sets this variable, so the seam stays inert. */
     if (std::getenv("MDKR_APP_TEST_PARTY_LINK_FAKE") != nullptr) {
         OnlineRoom_runTestPartyLinkFake();
-        host.shutdown();
+        shutdownLauncherHost(host, launcher);
         return 0;
     }
     /* Scripted RESIDENT SOAK: prove >=2 engine races + RESULTS in ONE
@@ -4760,7 +4778,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
             !mdkr_net_roster_set_viewports(&roster, bothSlots, 2u)) {
             std::fprintf(stderr,
                          "[online-resident] roster build failed\n");
-            host.shutdown();
+            shutdownLauncherHost(host, launcher);
             return 2;
         }
         desc.version = MDKR_MATCH_LAUNCH_DESCRIPTOR_VERSION;
@@ -4778,14 +4796,14 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
         if (!mdkr_match_launch_descriptor_validate(&desc)) {
             std::fprintf(stderr,
                          "[online-resident] launch descriptor invalid\n");
-            host.shutdown();
+            shutdownLauncherHost(host, launcher);
             return 2;
         }
         mdkr_net_roster_runtime_clear();
         if (!mdkr_net_roster_runtime_install_launch(&desc, &roster)) {
             std::fprintf(stderr,
                          "[online-resident] roster/descriptor install refused\n");
-            host.shutdown();
+            shutdownLauncherHost(host, launcher);
             return 2;
         }
         std::fprintf(stderr,
@@ -4848,11 +4866,11 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
                          "result=%d\n",
                          offlineResult);
             if (offlineResult != 0) {
-                host.shutdown();
+                shutdownLauncherHost(host, launcher);
                 return offlineResult;
             }
         }
-        host.shutdown();
+        shutdownLauncherHost(host, launcher);
         return residentResult;
     }
     /* Headless proof of the make-or-break wiring: stand up two REAL live adapters
@@ -4889,7 +4907,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
             std::fprintf(stderr,
                          "[online-room-ready-probe] loopback room setup failed: %s\n",
                          probeErr.c_str());
-            host.shutdown();
+            shutdownLauncherHost(host, launcher);
             return 2;
         }
         /* Hold the VISIBLE endpoint as the PRODUCTION OwningLiveAdapter wrapper --
@@ -4910,7 +4928,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
                          "unavailable\n");
             OnlineRoom_unwrapVisibleOwningAdapter(race, std::move(visibleWrapper));
             OnlineRoom_destroyTestLoopbackRace(race);
-            host.shutdown();
+            shutdownLauncherHost(host, launcher);
             return 2;
         }
         OnlineRoom_resetRoomReadyLatch();
@@ -4942,7 +4960,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
          * destruction path -- the wrapper existed only for the poll loop above. */
         OnlineRoom_unwrapVisibleOwningAdapter(race, std::move(visibleWrapper));
         OnlineRoom_destroyTestLoopbackRace(race);
-        host.shutdown();
+        shutdownLauncherHost(host, launcher);
         /* EITHER mode fires exactly once + routes to lobby-start. Formerly a
          * single-race room (no tournament env) fired zero times and fell through to
          * the race-ready ImGui path; the tournament-only gate is now dropped, so the
@@ -4991,7 +5009,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
                          "[online-room-ready-rearm-probe] loopback room setup "
                          "failed: %s\n",
                          probeErr.c_str());
-            host.shutdown();
+            shutdownLauncherHost(host, launcher);
             return 2;
         }
         IMdkrOnlineAdapter *visible = OnlineRoom_testLoopbackVisible(race);
@@ -5131,7 +5149,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
                      routed2 ? 1 : 0, noRetakeWithoutFinished ? 1 : 0,
                      resetDropsPending ? 1 : 0, ok ? "PASS" : "FAIL");
         OnlineRoom_destroyTestLoopbackRace(race);
-        host.shutdown();
+        shutdownLauncherHost(host, launcher);
         return ok ? 0 : 3;
     }
     if (std::getenv("MDKR_APP_TEST_ONLINE_LEFT_REENTRY_PROBE") != nullptr) {
@@ -5161,7 +5179,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
                          "[online-left-reentry-probe] loopback room setup failed: "
                          "%s\n",
                          probeErr.c_str());
-            host.shutdown();
+            shutdownLauncherHost(host, launcher);
             return 2;
         }
         IMdkrOnlineAdapter *visible = OnlineRoom_testLoopbackVisible(race);
@@ -5236,7 +5254,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
                      fires, controlOffered ? 1 : 0, noRebootWithoutPress ? 1 : 0,
                      reentryRefires ? 1 : 0, routed ? 1 : 0, ok ? "PASS" : "FAIL");
         OnlineRoom_destroyTestLoopbackRace(race);
-        host.shutdown();
+        shutdownLauncherHost(host, launcher);
         return ok ? 0 : 3;
     }
     if (std::getenv("MDKR_APP_TEST_ONLINE_ROOM_READY_REARM3_PROBE") != nullptr) {
@@ -5264,7 +5282,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
                          "[online-room-ready-rearm3-probe] loopback room setup "
                          "failed: %s\n",
                          probeErr.c_str());
-            host.shutdown();
+            shutdownLauncherHost(host, launcher);
             return 2;
         }
         IMdkrOnlineAdapter *visible = OnlineRoom_testLoopbackVisible(race);
@@ -5355,7 +5373,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
                      wrapHeld3 ? 1 : 0, t3Once ? 1 : 0,
                      ok ? "PASS" : "FAIL");
         OnlineRoom_destroyTestLoopbackRace(race);
-        host.shutdown();
+        shutdownLauncherHost(host, launcher);
         return ok ? 0 : 3;
     }
     if (const char *lobbyStartEnv =
@@ -5369,13 +5387,13 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
             std::fprintf(stderr,
                          "[online-lobby-start] loopback room setup failed: %s\n",
                          liveErr.c_str());
-            host.shutdown();
+            shutdownLauncherHost(host, launcher);
             return 2;
         }
         const int liveResult =
             runOnlineLobbyStartEngineSession(host, config, race);
         OnlineRoom_destroyTestLoopbackRace(race);
-        host.shutdown();
+        shutdownLauncherHost(host, launcher);
         return liveResult;
     }
     /* Resolve the ROM's validated region up front so the in-process loopback
@@ -5421,7 +5439,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
             std::fprintf(stderr,
                          "[online-resident-live] loopback race setup failed: %s\n",
                          liveErr.c_str());
-            host.shutdown();
+            shutdownLauncherHost(host, launcher);
             return 2;
         }
         const int liveResult = runOnlineLiveEngineSession(
@@ -5432,7 +5450,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
          * RESULTS mid-residency, so there is NO post-exit report here (unlike the
          * non-resident lane below). */
         OnlineRoom_destroyTestLoopbackRace(race);
-        host.shutdown();
+        shutdownLauncherHost(host, launcher);
         return liveResult;
     }
     if (std::getenv("MDKR_APP_TEST_ONLINE_LIVE") != nullptr) {
@@ -5443,7 +5461,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
             std::fprintf(stderr,
                          "[online-live] loopback race setup failed: %s\n",
                          liveErr.c_str());
-            host.shutdown();
+            shutdownLauncherHost(host, launcher);
             return 2;
         }
         LiveRaceEndReason liveEndReason = LiveRaceEndReason::Completed;
@@ -5476,7 +5494,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
         reportOnlineRaceResults(OnlineRoom_testLoopbackVisible(race),
                                 liveEndReason);
         OnlineRoom_destroyTestLoopbackRace(race);
-        host.shutdown();
+        shutdownLauncherHost(host, launcher);
         return liveResult;
     }
     /* The two-PROCESS proof: this process drives ONE production-shaped live
@@ -5496,7 +5514,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
             std::fprintf(stderr,
                          "[online-live-cloud] invalid/missing "
                          "MDKR_APP_ONLINE_ROLE (expected create|join)\n");
-            host.shutdown();
+            shutdownLauncherHost(host, launcher);
             return 2;
         }
         const char *joinCodeEnv = std::getenv("MDKR_APP_ONLINE_JOIN_CODE");
@@ -5505,7 +5523,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
             std::fprintf(stderr,
                          "[online-live-cloud] MDKR_APP_ONLINE_ROLE=join "
                          "requires MDKR_APP_ONLINE_JOIN_CODE\n");
-            host.shutdown();
+            shutdownLauncherHost(host, launcher);
             return 2;
         }
         std::uint64_t timeoutMs = 60000u;
@@ -5520,7 +5538,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
                              "MDKR_APP_ONLINE_TIMEOUT_MS=%s (expected "
                              "1000..600000)\n",
                              timeoutEnv);
-                host.shutdown();
+                shutdownLauncherHost(host, launcher);
                 return 2;
             }
             timeoutMs = static_cast<std::uint64_t>(parsed);
@@ -5538,7 +5556,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
             std::fprintf(stderr,
                          "[online-live-cloud] session setup failed: %s\n",
                          cloudErr.c_str());
-            host.shutdown();
+            shutdownLauncherHost(host, launcher);
             return 2;
         }
         /* Headless autoplay drains authored ticks unthrottled; a REAL peer
@@ -5556,7 +5574,8 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
                              "[online-live-cloud] invalid MDKR_APP_ONLINE_PACE_HZ="
                              "%s (expected 0..1000)\n",
                              paceEnv);
-                host.shutdown();
+                OnlineRoom_destroyTestCloudLiveSession(cloud);
+                shutdownLauncherHost(host, launcher);
                 return 2;
             }
             paceHz = static_cast<unsigned>(parsed);
@@ -5565,7 +5584,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
             host, config, OnlineRoom_testCloudLiveAdapter(cloud), nullptr,
             paceHz, /*syntheticInput=*/true);
         OnlineRoom_destroyTestCloudLiveSession(cloud);
-        host.shutdown();
+        shutdownLauncherHost(host, launcher);
         return liveResult;
     }
 #endif
@@ -5578,7 +5597,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
             restartProbe != nullptr) {
             std::fprintf(stderr,
                          "[session-test] invalid round-trip contract\n");
-            host.shutdown();
+            shutdownLauncherHost(host, launcher);
             return 2;
         }
         roundTrips = static_cast<int>(parsed);
@@ -5701,7 +5720,7 @@ int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
                          "for active ROM\n");
         }
     }
-    host.shutdown();
+    shutdownLauncherHost(host, launcher);
     return result;
 }
 
@@ -5759,14 +5778,14 @@ int runRestartSession(AppHost &host, Launcher &launcher, SessionRuntime &session
     while (host.presentedFrames() == initialPresents &&
            SDL_GetTicks64() < warmupDeadline) {
         if (host.pumpAndShouldQuit()) {
-            host.shutdown();
+            shutdownLauncherHost(host, launcher);
             return 0;
         }
         host.beginFrame();
         launcher.draw(host);
         if (!host.endFrame()) {
             showPresentationFailure(host);
-            host.shutdown();
+            shutdownLauncherHost(host, launcher);
             return 1;
         }
         if (host.presentedFrames() == initialPresents) SDL_Delay(1);
@@ -5774,7 +5793,7 @@ int runRestartSession(AppHost &host, Launcher &launcher, SessionRuntime &session
 
     const int result = runEngineSession(host, session, config, transition);
     if (result != 0) describeBootFailure(host, result, bootRecoveryMessage);
-    host.shutdown();
+    shutdownLauncherHost(host, launcher);
     return result;
 }
 
@@ -5789,9 +5808,27 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
     // back at the launcher after a durable save write failed, for players who
     // cannot hear the in-game spoken notice.
     bool saveFailureCardShown = false;
+    bool onlineClosing = false;
+    Uint64 onlineClosingStarted = 0u;
+    // The cancellable Workshop phase finishes first. Once online ownership is
+    // retired, draw only closing progress and never return to normal dispatch.
+    const auto readyToExit = [&]() {
+        if (!onlineClosing) {
+            if (!launcher.quitReady()) return false;
+            launcher.finishCharacterWorkForExit();
+            onlineClosing = true;
+            onlineClosingStarted = SDL_GetTicks64();
+            AppLaunchHold_release();
+            Overlay_setPhonePartyHost(nullptr);
+            launcher.beginNetworkShutdown();
+        }
+        const bool terminal = launcher.pollNetworkShutdown();
+        if (terminal && launcher.networkShutdownFailed()) exitCode = 2;
+        return terminal;
+    };
     while (running) {
-        Settings_serviceCharacterWork();
-        if (launcher.quitReady()) break;
+        launcher.serviceCharacterWork();
+        if (readyToExit()) break;
         const bool drawableAvailable =
             host.drawableWidth() > 0 && host.drawableHeight() > 0;
         const AppUiIdleDecision idle = AppUi_idleDecision(
@@ -5803,21 +5840,31 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
             // until restore, while close/quit remains event-driven and prompt.
             if (host.waitAndPump(static_cast<int>(idle.waitMilliseconds))) {
                 launcher.requestQuit();
-                if (launcher.quitReady()) break;
+                if (readyToExit()) break;
             }
             if (!idle.buildFrame) continue;
         } else if (host.pumpAndShouldQuit()) {
             launcher.requestQuit();
-            if (launcher.quitReady()) break;
+            if (readyToExit()) break;
         }
         host.beginFrame();
-        const LauncherAction action = launcher.draw(host);
+        LauncherAction action{};
+        if (onlineClosing) {
+            launcher.drawOnlineClosing(SDL_GetTicks64() - onlineClosingStarted >= 10000u);
+        } else {
+            action = launcher.draw(host);
+        }
         if (!host.endFrame()) {
             showPresentationFailure(host);
             exitCode = 1;
             running  = false;
             continue;
         }
+        // Quit can be requested by a control inside this very frame. Honor it
+        // before either online registry can dispatch a game, including while
+        // a Workshop operation is still completing. The next iteration begins
+        // retirement only when that operation has actually settled.
+        if (onlineClosing || launcher.quitRequested()) continue;
         if (finishStudioSmokeAfterFrame) {
             std::fprintf(
                 stderr,
@@ -6009,14 +6056,8 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
             }
         }
     }
-#if MDKR_ENABLE_ONLINE_BETA
-    /* ORDERED app-exit teardown of any live online room adapter: join its
-     * mesh/signal worker threads on this thread BEFORE main returns, so a late
-     * ICE/data-channel callback can never race static destruction (an uncaught
-     * "mutex lock failed" SIGABRT, first observed quitting the app right after
-     * the FINISHED re-take put the endpoint back in a live session). */
-    OnlineRoom_shutdownForAppExit();
-#endif
+    // Main's shared shutdown helper covers error exits as well as normal Quit,
+    // completing Workshop work, all network owners and global RTC cleanup.
     /* Every way out of the loop above, including the ones that break early
      * (quitReady, a presentation failure, a session that could not return
      * Home). main() calls host.shutdown() after this returns, so this is the
@@ -6242,7 +6283,8 @@ int main(int argc, char **argv) {
     // Headless shell smoke (CI + design review): render a bounded launcher
     // sequence and optionally capture the last frame.
     if (const char *smoke = std::getenv("MDKR_APP_SMOKE_FRAMES")) {
-        return runShellSmoke(host, launcher, smokeInputMode, smoke);
+        const int smokeResult = runShellSmoke(host, launcher, smokeInputMode, smoke);
+        return launcher.networkShutdownFailed() && smokeResult == 0 ? 2 : smokeResult;
     }
 
     // Validation/CI: boot straight into the shell window, proving the
@@ -6251,6 +6293,11 @@ int main(int argc, char **argv) {
         bool restartReplacement = false;
         const int autoplayResult = runAutoplay(
             host, launcher, session, &transition, &restartReplacement);
+        // Autoplay's terminal helper has joined its owners. Never exec or
+        // convert failed cleanup into a successful automation result.
+        if (launcher.networkShutdownFailed()) {
+            return autoplayResult == 0 ? 2 : autoplayResult;
+        }
         if (transition.request != OverlayExitRequest::None) {
             if (transition.request == OverlayExitRequest::RestartGame &&
                 !AppRestart_stageGame(transition.romPath.c_str(),
@@ -6305,7 +6352,8 @@ int main(int argc, char **argv) {
         exitCode = runInteractiveLauncher(
             host, launcher, session, &transition, &bootRecoveryMessage);
     }
-    host.shutdown();
+    shutdownLauncherHost(host, launcher);
+    if (launcher.networkShutdownFailed()) return exitCode == 0 ? 2 : exitCode;
     if (transition.request != OverlayExitRequest::None ||
         !bootRecoveryMessage.empty()) {
         // End the tee before exec: fd 1/2 are restored, its pipe reader is

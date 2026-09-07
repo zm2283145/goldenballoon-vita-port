@@ -23,6 +23,9 @@ void setRow(CharacterWorkshopReadiness      &readiness,
         status == CharacterWorkshopReadinessStatus::Accepted) {
         ++readiness.readyCount;
     }
+    if (status == CharacterWorkshopReadinessStatus::Accepted) {
+        ++readiness.exceptionCount;
+    }
 }
 
 std::string normalizedRigName(const std::string &name) {
@@ -584,6 +587,152 @@ CharacterWorkshopReadiness CharacterWorkshop_evaluate(
         result.nextActionCompactLabel = "Run exact test";
     }
     return result;
+}
+
+CharacterWorkshopRawChoices CharacterWorkshop_filterRawChoices(
+    const std::vector<std::string> &choices, const std::string &query,
+    int selected) {
+    CharacterWorkshopRawChoices result;
+    const auto fold = [](unsigned char byte) {
+        return byte >= 'A' && byte <= 'Z'
+            ? static_cast<unsigned char>(byte - 'A' + 'a') : byte;
+    };
+    for (size_t index = 0u; index < choices.size(); ++index) {
+        const auto &choice = choices[index];
+        if (!query.empty() && std::search(
+                choice.begin(), choice.end(), query.begin(), query.end(),
+                [&](unsigned char left, unsigned char right) {
+                    return fold(left) == fold(right);
+                }) == choice.end()) continue;
+        if (static_cast<int>(index) == selected) {
+            result.selectedPosition = static_cast<int>(result.indices.size());
+        }
+        result.indices.push_back(static_cast<int>(index));
+    }
+    return result;
+}
+
+bool CharacterWorkshop_requestRawFocus(CharacterWorkshopRawFocus &focus,
+    CharacterWorkshopRawField field, bool enabled) {
+    if (field == CharacterWorkshopRawField::Count || focus.target != field ||
+        focus.issued || !enabled) return false;
+    focus.issued = true;
+    return true;
+}
+
+void CharacterWorkshop_observeRawFocus(CharacterWorkshopRawFocus &focus,
+    CharacterWorkshopRawField field, bool visible, bool focused) {
+    if (focus.target == field && focus.issued && visible && focused) focus = {};
+}
+
+CharacterWorkshopRawField CharacterWorkshop_resolveRawField(
+    CharacterWorkshopRawField field, bool transformReviewAvailable) {
+    return field == CharacterWorkshopRawField::Transform && !transformReviewAvailable
+        ? CharacterWorkshopRawField::Inspection : field;
+}
+
+const char *CharacterWorkshop_rawFieldLabel(CharacterWorkshopRawField field) {
+    switch (field) {
+        case CharacterWorkshopRawField::Inspection: return "Inspect or reinspect the GLB";
+        case CharacterWorkshopRawField::PackageId: return "Package ID";
+        case CharacterWorkshopRawField::DisplayName: return "Display name";
+        case CharacterWorkshopRawField::License: return "License or notice file";
+        case CharacterWorkshopRawField::Spdx: return "SPDX license expression";
+        case CharacterWorkshopRawField::Attribution: return "Creator / attribution";
+        case CharacterWorkshopRawField::SourceUrl: return "Source URL";
+        case CharacterWorkshopRawField::Vehicles: return "Vehicles to fit and use";
+        case CharacterWorkshopRawField::Height: return "Standing height in metres";
+        case CharacterWorkshopRawField::Transform: return "Accept scale and facing proposal";
+        case CharacterWorkshopRawField::Fallback: return "Fallback animation";
+        case CharacterWorkshopRawField::Seat: return "Seat or pelvis node";
+        case CharacterWorkshopRawField::Head: return "Head node";
+        case CharacterWorkshopRawField::Build: return "Build source package for review";
+        case CharacterWorkshopRawField::Count: return "No pending field";
+    }
+    return "No pending field";
+}
+
+CharacterWorkshopRawGuide CharacterWorkshop_rawGuide(
+    const CharacterWorkshopRawGuideFacts &facts) {
+    CharacterWorkshopRawGuide result;
+    static constexpr const char *labels[] = {
+        "Source inspection", "Character identity", "Rights and provenance",
+        "Gameplay and vehicles", "Scale and facing", "Motion and anchors",
+    };
+    for (size_t index = 0u; index < result.rows.size(); ++index) {
+        result.rows[index].label = labels[index];
+        result.rows[index].complete = true;
+    }
+    const auto require = [&](CharacterWorkshopRawStep step, CharacterWorkshopRawField field, bool present,
+                             const char *missing) {
+        if (present) return;
+        if (result.nextField == CharacterWorkshopRawField::Build) result.nextField = field;
+        auto &row = result.rows[static_cast<size_t>(step)];
+        row.complete = false;
+        if (!row.missing.empty()) row.missing += "; ";
+        row.missing += missing;
+    };
+    using Step = CharacterWorkshopRawStep;
+    using Field = CharacterWorkshopRawField;
+    require(Step::Inspection, Field::Inspection, facts.inspected, "inspect the current GLB");
+    require(Step::Identity, Field::PackageId, facts.packageIdValid, "enter a valid package ID");
+    require(Step::Identity, Field::DisplayName, facts.displayNamed, "enter a display name");
+    require(Step::Provenance, Field::License, facts.licenseSelected, "choose a license or notice file");
+    require(Step::Provenance, Field::Spdx, facts.spdxValid, "enter a valid SPDX expression");
+    require(Step::Provenance, Field::Attribution, facts.attributionNamed, "enter creator attribution");
+    require(Step::Provenance, Field::SourceUrl, facts.sourceUrlNamed, "enter the source URL");
+    require(Step::Gameplay, Field::Vehicles, facts.hasVehicle, "choose at least one vehicle");
+    require(Step::Transform, Field::Height, facts.heightAllowed, "set standing height from 0.1 to 10 metres");
+    require(Step::Transform, Field::Transform, facts.transformAccepted, "review and accept exact scale/facing");
+    require(Step::Mappings, Field::Fallback, facts.fallbackMapped, "choose fallback motion");
+    require(Step::Mappings, Field::Seat, facts.seatMapped, "choose the seat/pelvis node");
+    require(Step::Mappings, Field::Head, facts.headMapped, "choose the head node");
+    for (size_t index = 0u; index < result.rows.size(); ++index) {
+        if (!result.rows[index].complete) {
+            result.next = static_cast<Step>(index);
+            break;
+        }
+    }
+    result.ready = result.next == Step::Build;
+    return result;
+}
+
+CharacterWorkshopTabSelection CharacterWorkshop_observeTabSelection(
+    CharacterWorkshopTab requested, bool awaitingVisibility,
+    CharacterWorkshopTab observed) {
+    CharacterWorkshopTabSelection result{requested, awaitingVisibility};
+    if (static_cast<size_t>(observed) >=
+        static_cast<size_t>(CharacterWorkshopTab::Count)) return result;
+    if (awaitingVisibility) {
+        result.awaitingVisibility = observed != requested;
+    } else {
+        result.tab = observed;
+    }
+    return result;
+}
+
+bool CharacterWorkshopDraftHandoff::matches(
+    const std::string &currentPackageId,
+    const std::string &currentSourceDigest) const {
+    return !packageId.empty() && !sourceDigest.empty() &&
+        packageId == currentPackageId && sourceDigest == currentSourceDigest;
+}
+
+std::string CharacterWorkshop_readinessSummary(
+    const CharacterWorkshopReadiness &readiness) {
+    const unsigned total = static_cast<unsigned>(readiness.rows.size());
+    const unsigned complete = std::min(readiness.readyCount, total);
+    const unsigned exceptions = std::min(readiness.exceptionCount, complete);
+    std::string summary = std::to_string(complete - exceptions) +
+        " of " + std::to_string(total) + " areas ready";
+    if (exceptions != 0u) {
+        summary += "; " + std::to_string(exceptions) +
+            (exceptions == 1u ? " accepted exception" : " accepted exceptions");
+    }
+    if (complete != total) {
+        summary += "; " + std::to_string(total - complete) + " remaining";
+    }
+    return summary;
 }
 
 CharacterWorkshopPrimaryAction CharacterWorkshop_primaryAction(

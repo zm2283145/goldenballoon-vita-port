@@ -41,7 +41,333 @@ palette in every build.
 **Always run muted and headless** — `MDKR_AUDIO=0` plus `--headless-frames N`.
 Omitting `--headless-frames` opens a window *and* the SDL audio device.
 
+## PNG allocation and layout contracts
+
+`png_write_layout` also exercises the first-party PNG decoder allocation
+helpers: empty request refusal, retained ownership after refused resize, small
+positive allocation/growth/shrink, and ordinary RGB/RGBA PNG roundtrips through
+the production implementation. The texture-store probe delegates to the same
+helpers. These additions compile but still need behavioral and sanitizer
+execution on the current candidate; they do not clear the broader advisory
+review. See [decoder boundaries](../docs/security/image-decoder-boundaries.md).
+
+`stb_conversion_ownership` covers the decoder's local conversion-failure
+amendment. Small ordinary pixel buffers exercise both bit-depth conversions
+for 1–4 components, successful sample values and destination-allocation refusal.
+An ordinary encoded 8-bit 2x2 RGBA PNG exercises the product's 8-bit RGBA entry
+point and optional 16-bit output API, with deterministic allocation refusal and
+optional flip on/off. Allocation counters must return
+to zero; assertions are not disabled by optimized builds. The fixture compiles
+the actual amended header with the production allocation policy plus counters,
+not a replacement converter. Only the vendored PNG-only header's unused-helper
+warning is locally exempted; first-party warnings remain errors. Runtime,
+sanitizer and old-code-control execution are pending. No malformed image or
+external reproducer is used, and this does not clear the advisory review.
+The narrowing helper uses ordinary 16-bit buffers directly; encoded 16-bit PNG
+and caller-admission coverage are separate, not implied by this fixture.
+
 ## Native unit build portability
+
+`run_checks_artifact_routing` covers selected native drivers/game executables
+and early dependency admission for the seven local Worker consumers. Missing
+Wrangler must fail before stage inspection or subprocesses; embedded-LAN must
+not acquire a Worker dependency. `party_worker_startup_reporting` covers
+readiness ownership, launch refusal, unexpected failure/interruption cleanup,
+and bounded metadata without raw output. `party_worker_reporting` covers the
+two-person/chaos aggregate error boundaries and whole-log error scanning across
+chunk boundaries. Process/browser/network boundaries are mocked in these
+fixtures. They are registered but remain unexecuted; none replaces real local
+service or multiplayer qualification.
+
+`online_teardown_tracker` covers the shared native room shutdown drain. The
+warning deadline must not authorize detached workers outliving their tracker or
+network globals. Empty/already-complete and deliberately held two-worker cases
+check warning delivery outside the lock, completion before return and repeated
+drain behavior. The fixture uses ordinary threads and condition variables, not
+networking, sleeps or app startup. CTest's 30-second fixture timeout detects a
+deadlocked regression; it is not a claimed product shutdown deadline. Strict
+C++17 syntax passes; behavioral execution remains pending. The fixture also
+uses the production retirement helper for background destruction, injected
+thread-launch refusal/inline cleanup and recovery, and sixteen completed
+retirements reaped while another destructor is deliberately held. These are
+unexecuted assertions, not evidence of actual transport responsiveness.
+Polling coverage additionally requires held workers to return not-ready without
+waiting, independent completed-handle reclamation and idempotent ready results.
+Storage allocation refusal is handled before launch by source construction;
+allocation-failure injection and real transport cancellation/closing UI still
+need separate qualification.
+
+`app_cleanup_completion` covers the dependency-free asynchronous cleanup observer:
+no startup before owner retirement, exactly one startup across pending polls,
+successful and exceptional futures, throwing startup, and explicit rejection of
+invalid/deferred futures. A deferred callback must never execute on the polling
+thread. Completion can mean failure; callers must inspect `failed()` before
+claiming successful cleanup. The fixture uses promises, not RTC or networking,
+and does not qualify actual library shutdown. Behavioral execution remains pending.
+
+`datachannel_cleanup_worker` compiles the same helper used by the reviewed RTC
+final-token amendment. It covers refusal of either reserved thread, detach
+refusal, cancellation before arming, destruction under an initialization mutex,
+cleanup that joins the final owner's thread, and exception/TLS completion before
+the result. Both workers are reserved before initialization; the publisher joins
+the cleanup worker before settling the ordinary promise, without a late
+thread-exit registration. The fixture does not execute RTC or prove rollback of
+partially initialized RTC subsystems. Strict syntax and optimized/ASan+UBSan compilation
+pass; its assertions and actual library startup/shutdown remain unexecuted.
+
+`datachannel_startup_stages` exercises the production polling/registry ownership
+helpers used by the dependency amendment. Allocation and worker-start refusal
+must leave empty stopped polling ownership; a successful retry must own exactly
+one worker. Registry allocation precedes C startup, and publication follows its
+return. These fixtures do not inject failures into the actual RTC subsystems or
+establish recovery from internal C startup failures.
+
+`rtc_initialization_transaction` combines the real state and reserved-worker
+helpers with subsystem counters. It covers seven partial-start failure points,
+pending rollback, original exception preservation, successful retry, and cleanup
+failure at each of Pool, Poll, SCTP and Sockets. Deferred/invalid completion,
+duplicate initialization, omitted retirement and repeated failed retirement
+must never admit another epoch or discard ownership. Real token/preload weak-owner
+reuse, dependency fault injection and Windows socket behavior still require
+separate qualification. These added assertions remain unexecuted.
+Stage-call counters distinguish zero started pool workers from no acquired pool;
+the sockets-only failure also proves no unacquired pool cleanup is requested.
+Pending admission checks use the same thread with the owner mutex held; they do
+not establish responsive concurrent API calls while real RTC cleanup holds that
+mutex through subsystem retirement.
+
+`datachannel_work_admission` uses the actual `MdkrScheduledWork` record and
+production priority-queue container/comparator to extract large callables with
+allocation/copy refusal, unchanged deadline ordering and owner destruction after
+the scheduler lock. Its shared insertion helper uses real deque allocator
+refusal, measurement/move refusal and successful retry to check size/amount
+consistency. CMake binds the helper through the independent dependency patch;
+the optimized fixture compiles but has not executed. It does not cover allocating
+submission, Processor continuation, off-thread teardown or receive counters
+(RTC-ALLOC-01a/c/d/e).
+
+`datachannel_prepared_work` uses the production prepared-node FIFO and typed
+scope guard for move-only owners, preparation refusal/retry, allocation-free
+accepted publication/extraction/continuation, standard/non-standard task throws,
+settled-pending owner release and iterative queue destruction. It is a helper
+fixture, not a substitute for actual scheduler concurrency.
+`datachannel_prepared_dispatch` separately links the patched vendor ThreadPool
+and Processor. Its seven groups cover timer/ready order in both directions,
+accepted continuation under allocation refusal and task exceptions, bounded
+admission wakeup, final-owner join, active-worker timed cancellation outside locks
+and repeated idle-pool joins. Publication assumes a live epoch and the inspected
+strong-owner Processor callers; the clear case does not prove arbitrary
+post-join publishers safe. Both CTests are registered (helper 30 seconds, actual
+dispatcher 60 seconds). Final optimized, ASan/UBSan and Windows cross-builds
+compile/link the game plus both prepared fixtures, the existing work fixture
+and Workshop model after correcting the new vendor fixture's private include
+paths. Generated registration is present for all four fixtures in each profile;
+all new assertions remain unexecuted. These builds include settled Workshop
+mapping/detail focus, reinspection and invalid-height guidance. Windows retains
+its historical cloud origin, not final partyless artifact provenance.
+The refusal seam intercepts ordinary throwing `new`/`new[]`, not `malloc`,
+over-aligned allocation or exception-runtime allocation. Explicit `bad_alloc`
+throws cover exception continuation, not actual body-allocation refusal. The
+bounded-admission case's 100 ms no-return window is a black-box observation,
+not deterministic condition-wait entry proof.
+Generic allocating `noexcept` admission, SCTP refusal ownership, mandatory
+transport retirement and user task-body allocation remain separate requirements.
+
+`datachannel_transport_retirement` links the actual serial teardown Processor
+with the production reservation helper. Ten groups cover preparation and shared
+control-block refusal, weak-controlblock/epoch lifetime, one-shot stop, throwing
+stop, post-ownership initialization unwind, start/stop ordering and serialized
+blocking deletion with continued pool progress. Its ordinary-new interception
+does not cover C allocators or real ICE/SCTP initialization failure.
+
+`datachannel_transport_edges` separately exercises the actual vendor Transport
+base implementation and production chain-retirement helper. Eleven groups cover
+unstarted losers, occupied-edge rejection, constructor unwind, same-owner and
+replacement registration, permanent sealing before deferred stop, external
+callback replacement, reserved and foreign-owner cascades, callback removal
+reentry and reentrant destruction of a retired callback capture. The concurrent
+removal case is bounded interleaving stress, not a
+deterministic old-code deadlock control. It initializes RTC global services but
+opens no peer/app/ROM session. This does not exercise the private peer/WebSocket
+publication CAS or qualify actual network/platform shutdown. Both fixtures are
+registered with 60-second limits; assertions remain unexecuted.
+Optimized, ASan/UBSan and Windows cross-builds compile/link the game, both new
+fixtures, prepared dispatcher and Workshop model including the latest field-focus
+interruption correction. Generated registration is present in all three profiles.
+Windows retains its historical cloud origin, not final partyless artifact
+provenance; existing BasisU GCC warnings remain. No new tests or apps executed.
+
+`party_open_transaction` is a production-source contract for connection setup,
+callback registration, publication and failed-open retirement ordering. It is
+not a runtime WebSocket fault-injection fixture or rendered recovery result.
+The source assertions remain unexecuted; constructor/registration/open failures,
+callback interleavings and actual reconnect/shutdown require behavioral evidence.
+
+`party_callback_identity` compiles the same predicates used at Phone Party's
+locked commits. Its deterministic capture/change/commit model rejects a retired
+socket, replaced peer, stale initializing placeholder and revoked retry/ping
+decision, while allowing completed direct peers to survive signaling reconnect.
+Always-on expectations remain enabled in optimized builds. This is not the actual
+TransportState or RTC callback scheduler; source bindings in
+`party_open_transaction` tie predicates to production publication/retirement,
+but neither fixture substitutes for real concurrent callback acceptance. The
+new assertions are unexecuted.
+
+`party_peer_setup_retry` uses the production bounded early-setup policy: three
+lifecycle setup failures, 300ms/600ms backoff, no duplicate-hello bypass, stale
+generation/revision completion refusal and preserved unanswered-offer budget.
+Exhaustion cannot authorize a fourth fresh unanswered offer. Production may
+begin a new unanswered-offer episode after a previously authenticated peer fails;
+that does not replenish its lifecycle setup-failure counter. Source bindings in
+`party_open_transaction` require reservation before allocation, current-token
+failure/success commits, due retry checks and pending exhaustion reporting.
+The optimized fixture compiles; its assertions and real callback/allocation
+recovery journeys remain unexecuted.
+
+The existing `match_signal_client` fixture now includes a one-shot refused
+socket-worker start through the actual `connect()` exception boundary. It asserts
+Idle rollback, the ordinary refusal code, empty events, repeated refusal without
+a diagnostic destination, then a real same-client loopback welcome and repeated
+close. This coverage is added, not executed; it does not simulate all allocation
+failures in the running socket worker or establish Windows socket ownership.
+An added actual-client close-event refusal seam verifies that mandatory stopping
+and worker transfer precede optional reporting, with joining still required.
+This assertion is compiled, not executed.
+
+The same fixture now includes factory refusal/retry, three transactional send
+admission stages with unchanged sequence/correlation on refusal, and worker
+publication plus terminal-event/drain allocation refusal. It drives the actual
+client, not a second signaling implementation. `match_signal_admission_source`
+has six production bindings for ordering, rollback, worker unwind, nonallocating
+terminal fallback, storage-before-consumption drain semantics and local secret
+buffer guards. The actual fixture also uses `scoped_string_wipe.h` to assert
+synthetic-buffer erasure during early unwind and idempotent explicit erasure.
+Production reserves final capacity before copying secrets and guards the local
+offer/request/comparison buffers with `mbedtls_platform_zeroize`; this does not
+promise to erase previously released growth copies or all process memory.
+Final integrated optimized, ASan/UBSan and Windows cross-compilation passes;
+all new behavioral/source assertions
+remain unexecuted, and do not qualify caller-wide allocation or backpressure.
+
+`network_lifetime` exercises the production shared lease and Winsock reference
+policy with fake OS calls: allocation-before-start, refused-start/version retry,
+last-owner cleanup failure and sticky refusal, copied/moved ownership without
+allocation, result-before-release ordering, concurrent independent copies,
+repeated sessions and non-Windows no-op behavior. `network_lifetime_source`
+has eight source methods binding the policy to actual OS calls, resolver member
+order, socket close order, LAN lookup/listener/retained aliases, mandatory timeout
+admission, callback-capture retirement and launcher failure reporting. These are
+added, unexecuted assertions, not Windows OS injection or a LAN lifecycle run.
+The separate `lan_party_server` fixture now adds six actual-server groups for
+listener admission refusal/restart, accepted allocation/registry/thread refusal,
+upgrade allocation failure, consumer exceptions, callback stop requests and
+callback-capture destruction. Accepted timeout/required socket-option refusal
+is covered before worker admission; the worker marker remains active while
+callback captures are explicitly released.
+The source candidate stages fd ownership, preserves registry join ownership,
+uses a sealed common finalizer and lets only the launcher finish joins. Strict
+source/fixture syntax passed; these new loopback assertions remain unexecuted.
+Exceptional destructor join failure deliberately retains state and records
+failed cleanup; neither the fixture nor lease model establishes successful
+retirement on that exceptional branch. Final optimized, ASan/UBSan and Windows
+cross-builds compile/link the game and all five network/peer/queue/signal/LAN
+fixtures after the latest timeout/capture changes. This is not Windows execution
+or final-package proof; that cross-build retains a historical cloud origin rather
+than final partyless provenance. Existing dependency compiler warnings remain.
+
+`native_party_notice_pins` exercises recipe-to-notice consistency: matching
+multiline pins, independently or consistently stale notices, ambiguous/missing
+recipe definitions, missing consumers and false prefix matches. Its pure helper
+is shared with the real third-party notice gate, which additionally pins the
+combined manifest and each amendment's source bytes and checks all desktop
+notice-hash validators. The fixture is registered but unexecuted; source checks
+do not prove that a packaged artifact actually contains the required notices.
+
+`async_work_budget` covers move-only work permits, fixed capacity, refused
+acquisitions, destruction/reassignment and scheduling-failure release, permit
+state surviving its budget object's lifetime, and 24 contending workers sharing
+eight slots. A second translation unit checks that the inline resolver accessor
+shares one eight-slot process budget instead of creating a pool per source file.
+Eight bounds outstanding first-party DNS work, not active connections or players.
+Held workers retain capacity through their owned lookup/result cleanup even
+after a caller abandons the result.
+The fixture uses no resolver or network; it cannot prove OS lookup cancellation
+or bound libdatachannel/libjuice's independently owned work. Its behavioral
+assertions remain unexecuted; the 30-second timeout is a fixture deadlock bound,
+not a product shutdown promise.
+
+`online_resolver_budget` binds both production clients to that shared budget:
+admission precedes lookup allocation/start, cancellation and deadlines apply to
+capacity waits, worker captures own their strings and task, and a task-held
+permit survives through address-result and synchronization cleanup. It also
+checks that a failed detach retains and joins the handle. This source contract
+launches no resolver; concurrency and actual shutdown behavior require separate
+executed qualification. `online_lobby_takeover_source` additionally requires
+zero outstanding first-party resolver work before global RTC cleanup begins.
+
+`app_launch_hold` compiles the actual launcher sampler against deterministic SDL
+functions, without linking SDL or opening devices. It covers same-controller
+shoulder pairing, late attachment, index/identity races, detachment and balanced
+borrow release. `ai_difficulty_value` checks the shared pure gameplay/UI
+interpretation across all canonical case variants and legacy fallbacks;
+`ai_difficulty_ui` binds it to independent current/desired display, speech,
+selection and unchanged source locks. These fixtures still require execution.
+
+`match_live_transport` includes silent TLS-handshake and HTTP-response close
+cases plus a short connect-deadline case. They use ordinary loopback sockets
+with finite server holds, not a public service or certificate bypass. They
+qualify socket cancellation only when executed; no OS DNS cancellation or
+libdatachannel global-cleanup verdict follows. Unknown case selectors now fail
+instead of reporting success after running no cases.
+Its `sigpipe` case additionally exercises the production send helper against an
+ordinarily disconnected local peer in an isolated child with default SIGPIPE
+handling. This prevents incidental process-wide signal configuration from hiding
+the regression; platforms without per-send suppression explicitly mark this case
+not applicable. Compilation is not proof that the assertion passed.
+
+`match_transport_tls_io` is a source contract for the HTTP transport's
+nonblocking TLS BIO, cancellation/deadline checks, retryable polling, bounded
+readiness waits, SIGPIPE-safe plaintext/TLS sends, and retained certificate/hostname
+verification. It launches no
+endpoint and cannot substitute for the loopback TLS behavioral cases above.
+
+`online_room_takeover_policy` compiles static assertions against the native
+launcher's shared ownership/view policy. An owned session with an unavailable
+view must retain takeover; only an actual release or known entry view permits
+the normal shell. `check_online_lobby_takeover.py` also checks production wiring
+and deferred leave ordering before its existing rendered scenarios. The new
+policy assertions pass compilation, not an actual window/transport test. A
+failed view before/after service, actionable exit, registry cleanup and a fresh
+room after recovery still need behavioral qualification; a successful static
+assertion must not be reported as that broader result.
+
+The same fixture also implements `IMdkrOnlineAdapter` and calls the production
+`OnlineRoom_readViewKind` boundary: null/uninitialized admission, exact view
+forwarding, failure before/after service, read-only observation, ownership
+release and fresh-entry recovery. These are runtime assertions, unlike the
+truth-table static assertions above, and have not yet executed. The stub owns
+no transport; its destruction counter does not qualify production registry or
+worker teardown. A rendered invalid-view/Leave Room fixture is still required.
+The target links the existing ROM-free fake-adapter/view/lobby/session sources:
+GCC can emit a virtual-call candidate for the interface header's inline fake
+seam even though the fixture owns its own deterministic adapter. This resolves
+the Windows link dependency without a substitute function or optimization waiver.
+The takeover source contract also pins end-of-frame barriers after invite and
+stranded-room rebuild attempts and live timeout/primary/secondary/cancel
+actions. Actual successful/refused retries and focus/scope checks remain part
+of native acceptance; the source guard is not a rendered result.
+
+`online_join_code_input` compiles the same `OnlineRoom_drawJoinCodeInput`
+helper used by the native beta launcher against ImGui's CPU-only core. It
+exercises typed/pasted digit filtering and leading zeroes, middle click/arrow
+editing, deletion, selection replacement, undo/redo, visible text/caret/selection
+geometry and narrow-field horizontal scrolling at two widget scales. It uses
+a private in-memory clipboard; no platform/render backend, SDL, GPU, ROM or
+native window is initialized. The test is still executable validation and
+does not create an exception to an execution-tool refusal. It is registered
+and compiles, but its new assertions have not run. Real launcher fonts/themes,
+OS clipboard/input, controller entry and packaged 200% layouts still require
+the acceptance guide's native-online journey.
 
 The Windows validation build includes every registered unit target, not just
 the game. `ghost_bank` includes the Windows process-ID declaration explicitly;
@@ -59,6 +385,24 @@ checking the write log instead. Native Windows execution remains necessary to
 prove persistence; these source-contract checks are not a runtime substitute.
 
 ## Complete suite runner and `--build` contract
+
+### Retaining pacing diagnosis evidence
+
+For an authorized diagnostic invocation of `check_pacing_quality.py`, add
+`--keep-evidence` to retain its uniquely created private temporary directory.
+The checker prints that location before launching any arm. Each attempt keeps
+`process.log` and labelled `process.json` before parsing or checking the result,
+including nonzero exits, startup failures and partial timeout output. The
+directory also contains the isolated saves/configs used by the run; treat the
+whole directory as private, potentially ROM-derived evidence and never commit
+or publish it. No ROM file or environment dump is copied into evidence.
+
+Without the flag, the temporary directory is removed as before. The flag changes
+retention only: it neither authorizes app execution nor changes pacing policy,
+retry counts, quality thresholds or baseline exemptions. Parser checks pass;
+the new evidence-file and mocked-process regression assertions still need
+execution. Use this retention mode on the next approved investigation of the
+43-re-anchor companion failure, whose original full trace was not retained.
 
 Every behavioural script accepts the same `--build` value: either a directory
 (`--build build-rel`) or the executable inside it
@@ -306,6 +650,14 @@ The remaining registered camera runtime gates are deliberately orthogonal:
   cuts, blocker churn) on the lake, hub, and 3P T.T. spectate routes under
   Modern. Chatter and shoulder-flip invariants gate hard; the analog
   distributions print as the labelled baseline for threshold-setting.
+  Level-1 re-engagement events retain release/gap, per-slot contact history and
+  recovery state in each arm's optional `--baseline-out` JSON. Console context
+  is bounded to 16 events per arm; missing event rows from older binaries are
+  disclosed without weakening the aggregate failure. The ROM-free
+  `camera_motion_reporting` CTest entry (`test_camera_motion_reporting.py`)
+  checks extraction, bounded reporting and failed authored/high-rate arm
+  isolation without launching a game. These additions still need execution on
+  the current candidate; they do not resolve Ancient Lake's hard motion failure.
 - `check_camera_obstruction_performance_runtime.py` runs one optimized binary in
   Observe, Modern, and Modern + reduced motion over a long 4P route, requiring
   at least 5,000 active four-viewport fixed ticks (more than 83 seconds at 60 Hz).
@@ -2875,6 +3227,12 @@ and retry/classifier notes. A strict-arm baseline is not evidence about a
 different failing companion arm. The ROM-free `pacing_quality_reporting` CTest
 checks that attribution and keeps a failed slot budget red; it also verifies
 that companion evidence cannot populate the strict-baseline success list.
+Both realtime retry loops call the same mandatory integrity check before any
+no-display/unthrottled exemption: realtime identity, present-mode evidence,
+no tearing, no live-sink underruns and no backward phase movement. The contract
+covers missing counters and each broken invariant, and checks the integration
+order in both loops. These additional cases await execution; quality thresholds
+and retry budgets are unchanged.
 
 Synthetic arms cover every presentation policy — including the battery-friendly
 `40` cap and `display-margin` — crossed with both smoothing
@@ -3355,6 +3713,28 @@ traced arm, and the arm must carry no `[PACE]` rows at all. This gate dumps no
 frames, so the pixel half of the same question is carried by
 `check_world_shadows.py`, `check_shadow_visual_ab.py`,
 `check_shadow_plausibility.py` and `check_presentation_shadows.py`.
+
+Each arm must exit successfully and emit exactly one clean completion for the
+requested frame count. Traced arms must contain every `[PACE]` frame in order,
+exactly once. A timeout or incomplete trace still fails the gate, but unequal
+partial trace lengths are reported as an **unavailable comparison**, not a
+simulation divergence. Missing shadow and depth summaries are reported
+independently, and failure context includes the untraced shipping arm. The
+180-second per-arm timeout and 4,000-frame default route are unchanged.
+
+Use `--keep-evidence` when diagnosing a failure to retain full per-arm output
+and process metadata (command, timeout status, elapsed time, requested/completed
+frames) in a fresh private temporary directory. These logs may contain
+ROM-derived state: do not commit or distribute them. The normal mode retains no
+new artifacts; both modes continue to use isolated disposable saves.
+
+`test_widescreen_shadow_reporting.py` exercises reporting with synthetic output
+and mocked process boundaries: completed controls, actual stream differences,
+partial/time-limited runs, missing or reordered trace rows, completion markers,
+missing summaries, sanitizer diagnostics, launch failures, private evidence,
+and all six failure contexts. It launches no game. The reporting correction
+does **not** fix or explain an underlying application timeout; complete real
+renderer/sanitizer arms remain required for qualification.
 
 For the multiplayer projection path, `check_race_2p_split.py` also accepts
 `--window-size WIDTHxHEIGHT`; use `--window-size 1260x540` to exercise both
@@ -6620,11 +7000,31 @@ python3 tests/check_trophy_series.py -v
 
 This starts from a checksum-valid checkpoint with the Dino Domain cabinet
 legitimately unlocked, enters it through production collision/dialogue code, and
-drives all four championship rounds. Additional arms select the other three
-world schedules at the same production entry boundary. Assertions cover all 16
+drives all four championship rounds. Additional arms select the other four
+world schedules at the same production entry boundary. Assertions cover all 20
 tracks, per-round point accumulation, a stable 32-point tie, gold/silver/bronze
 and no-award finals, the trophy cinematic, the rankings QUIT path, post-quit
 retry, checksum-valid EEPROM, and a fresh-process cabinet display from reload.
+
+The Future Funland arm added for issue #63 requires a 36-point gold across
+Spacedust Alley, Darkmoon Caverns, Star City and Spaceport Alpha, persisting
+`0x300` in the existing ten-bit trophy field. Its world selector changes only
+the series world at the existing entry boundary; it is not evidence of driving
+to Future Funland's own cabinet. The existing fresh-process display check is
+for Dino Domain. Future Funland cabinet/Tracks display after restart, existing
+saved trophies, Adventure Two and no-downgrade behavior remain required release
+acceptance. The extended arm is pending execution.
+
+The ROM-free `runtime_contracts` unit exhausts all 1,024 ten-bit trophy values
+across the five championship worlds and retains invalid-world/null-output
+rejection. This replaces an incorrect expectation that world 5 was invalid;
+it does not change the four-mainland-trophy rocket unlock requirement.
+The same unit checks medal merging as per-world maximum (bronze plus silver
+must not become gold), including all rank pairs, neighbors, identity and gold
+dominance. `save_codec` additionally round-trips every ten-bit trophy value
+while preserving the other save blocks. `runtime_safety` checks that the
+production Tracks merge and five-world status counter retain these helpers,
+with its existing removed-fragment controls. These additions await execution.
 
 `MDKR_TROPHY_COMPLETE_AFTER` advances lap state only after a real race has run;
 `race_check_finish()` still creates the finish order. `MDKR_TROPHY_ORDER` accepts

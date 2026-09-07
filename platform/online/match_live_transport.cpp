@@ -10,6 +10,8 @@
  * gb-match.{credential} subprotocol (WS), never a URL or query.
  */
 #include "match_live_transport.h"
+#include "async_work_budget.h"
+#include "net/native_socket_lifetime.h"
 
 #include "party/native_party_host.h" /* mdkr_party_loopback_test_url_allowed */
 #include "mozilla_ca_bundle.h"
@@ -58,9 +60,9 @@ namespace {
 
 using Json = nlohmann::json;
 
-/* Bounds so a stalled/unreachable host (the exact Wave-2 NET-01 failure mode)
- * can never wedge the worker thread past a deadline: close()/join() then always
- * returns promptly. Mirrors the signal client's discipline. */
+/* Socket waits honor cancellation and deadlines in slices, matching the signal
+ * client. This does not cancel the OS resolver helper or impose a wall-clock
+ * guarantee on synchronous library initialization or scheduler delays. */
 constexpr uint64_t kConnectTimeoutMs = 8000u;
 constexpr uint64_t kWriteTimeoutMs = 8000u;
 constexpr uint32_t kPollSliceMs = 100u;
@@ -100,13 +102,6 @@ uint64_t nowMs() {
 using SocketFd = SOCKET;
 constexpr SocketFd kBadSocket = INVALID_SOCKET;
 void closeSocket(SocketFd fd) { ::closesocket(fd); }
-void ensureNetStartup() {
-    static std::once_flag once;
-    std::call_once(once, []() {
-        WSADATA data;
-        (void)::WSAStartup(MAKEWORD(2, 2), &data);
-    });
-}
 bool setBlocking(SocketFd fd, bool blocking) {
     u_long mode = blocking ? 0u : 1u;
     return ::ioctlsocket(fd, FIONBIO, &mode) == 0;
@@ -115,7 +110,6 @@ bool setBlocking(SocketFd fd, bool blocking) {
 using SocketFd = int;
 constexpr SocketFd kBadSocket = -1;
 void closeSocket(SocketFd fd) { ::close(fd); }
-void ensureNetStartup() {}
 bool setBlocking(SocketFd fd, bool blocking) {
     const int flags = ::fcntl(fd, F_GETFL, 0);
     if (flags < 0) return false;
@@ -143,6 +137,8 @@ std::mutex &resolverSeamMutex() {
 std::string g_prependAddressForTest;      /* guarded by resolverSeamMutex() */
 uint16_t g_prependPortForTest = 0u;       /* guarded by resolverSeamMutex() */
 std::atomic<unsigned> g_resolverStallMsForTest{0u};
+std::atomic<uint64_t> g_resolverStartsForTest{0u};
+std::atomic<uint64_t> g_resolverCapacityWaitsForTest{0u};
 
 void appendAddrinfo(const struct addrinfo *results,
                     std::vector<ResolvedAddress> &out) {
@@ -184,100 +180,145 @@ bool prependTestAddress(uint16_t port, std::vector<ResolvedAddress> &out) {
     return true;
 }
 
-/* Resolve on a detached helper thread, polled in kPollSliceMs slices against
- * the deadline and the abort flag (N6c): getaddrinfo is uninterruptible, and
- * it used to run directly on the worker thread that close() joins, so a DNS
- * outage could freeze the launcher for the resolver timeout. On give-up the
- * helper is ABANDONED (it frees its own result), never joined. Same
- * detached-resolver choice as match_signal_client.cpp and for the same
- * reason: pre-resolving before thread start would just move the identical
- * synchronous hit onto the launcher thread. */
+using AddrinfoOwner = std::unique_ptr<struct addrinfo, decltype(&::freeaddrinfo)>;
+
+/* OS getaddrinfo remains uncancellable. Room and signal clients share a bounded
+ * permit pool; abandoned work retains its permit through resource cleanup.
+ * The waiter remains deadline/cancellation aware, without an unbounded queue. */
 struct ResolveTask {
+    ResolveTask(AsyncWorkBudget::Permit ownedPermit, const MdkrNativeSocketLease &network)
+        : permit(std::move(ownedPermit)), networkLease(network) {}
+    // First member dies last: results, mutex and every waiter/worker owner must
+    // disappear before the permit can declare this resolver fully retired.
+    AsyncWorkBudget::Permit permit;
+    MdkrNativeSocketLease networkLease; // Released after results, before the permit.
     std::mutex mutex;
     std::condition_variable cv;
     bool done = false;
     bool abandoned = false;
     int rc = -1;
-    struct addrinfo *results = nullptr;
+    AddrinfoOwner results{nullptr, ::freeaddrinfo};
 };
-/* Abandoned helpers accumulate only until their getaddrinfo returns (the
- * resolver timeout, worst case ~30 s), and new ones are minted only by
- * connect attempts, which the reconnect ladders bound (<= 6 per outage per
- * socket) -- so the in-principle-unbounded detached threads are ladder-
- * bounded in practice and each self-frees its result. */
 
-bool resolveAddresses(const std::string &host, const std::string &port,
-                      uint64_t deadlineMs, const std::atomic<bool> *abort,
-                      std::vector<ResolvedAddress> &out) {
+bool resolveAddresses(const std::string &host, const std::string &port, uint64_t deadlineMs,
+                      const std::atomic<bool> *abort, std::vector<ResolvedAddress> &out,
+                      const MdkrNativeSocketLease &network) {
     out.clear();
-    uint16_t numericPort = 0u;
-    for (const char c : port) {
-        numericPort = static_cast<uint16_t>(numericPort * 10u +
-                                            static_cast<uint16_t>(c - '0'));
-    }
-    (void)prependTestAddress(numericPort, out);
-    auto task = std::make_shared<ResolveTask>();
-    const unsigned stallMs = g_resolverStallMsForTest.load();
-    std::thread helper([task, host, port, stallMs]() {
-        if (stallMs != 0u) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(stallMs));
-        }
-        struct addrinfo hints;
-        std::memset(&hints, 0, sizeof(hints));
-        hints.ai_family = AF_UNSPEC;
-        hints.ai_socktype = SOCK_STREAM;
-        hints.ai_protocol = IPPROTO_TCP;
-        struct addrinfo *results = nullptr;
-        const int rc = ::getaddrinfo(host.c_str(), port.c_str(), &hints,
-                                     &results);
-        std::lock_guard<std::mutex> lock(task->mutex);
-        if (task->abandoned) {
-            if (results != nullptr) ::freeaddrinfo(results);
-        } else {
-            task->rc = rc;
-            task->results = results;
-        }
-        task->done = true;
-        task->cv.notify_all();
-    });
-    helper.detach();
-
-    struct addrinfo *results = nullptr;
-    int rc = -1;
-    {
-        std::unique_lock<std::mutex> lock(task->mutex);
-        while (!task->done) {
-            if ((abort != nullptr && abort->load()) ||
-                nowMs() >= deadlineMs) {
-                task->abandoned = true;
-                return !out.empty(); /* only a test prepend, if any */
+    try {
+        AsyncWorkBudget::Permit permit;
+        bool capacityWaitRecorded = false;
+        for (;;) {
+            const uint64_t now = nowMs();
+            if ((abort != nullptr && abort->load()) || now >= deadlineMs)
+                return false;
+            permit = onlineResolverWorkBudget().tryAcquire();
+            if (permit)
+                break;
+            if (!capacityWaitRecorded) {
+                g_resolverCapacityWaitsForTest.fetch_add(1u);
+                capacityWaitRecorded = true;
             }
-            task->cv.wait_for(lock, std::chrono::milliseconds(kPollSliceMs));
+            const uint64_t remaining = deadlineMs - now;
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(remaining < kPollSliceMs ? remaining : kPollSliceMs));
         }
-        rc = task->rc;
-        results = task->results;
-        task->results = nullptr;
-    }
-    if (rc != 0 || results == nullptr) {
-        if (results != nullptr) ::freeaddrinfo(results);
+        uint16_t numericPort = 0u;
+        for (const char c : port) {
+            numericPort = static_cast<uint16_t>(numericPort * 10u + static_cast<uint16_t>(c - '0'));
+        }
+        (void)prependTestAddress(numericPort, out);
+        std::string ownedHost = host;
+        std::string ownedPort = port;
+        auto task = std::make_shared<ResolveTask>(std::move(permit), network);
+        const unsigned stallMs = g_resolverStallMsForTest.load();
+        if ((abort != nullptr && abort->load()) || nowMs() >= deadlineMs)
+            return false;
+        std::thread helper;
+        try {
+            helper = std::thread(
+                [task, host = std::move(ownedHost), port = std::move(ownedPort), stallMs]() {
+                    if (stallMs != 0u) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(stallMs));
+                    }
+                    {
+                        std::lock_guard<std::mutex> lock(task->mutex);
+                        if (task->abandoned) {
+                            task->done = true;
+                            task->cv.notify_all();
+                            return;
+                        }
+                    }
+                    struct addrinfo hints;
+                    std::memset(&hints, 0, sizeof(hints));
+                    hints.ai_family = AF_UNSPEC;
+                    hints.ai_socktype = SOCK_STREAM;
+                    hints.ai_protocol = IPPROTO_TCP;
+                    struct addrinfo *rawResults = nullptr;
+                    const int rc = ::getaddrinfo(host.c_str(), port.c_str(), &hints, &rawResults);
+                    AddrinfoOwner results(rawResults, ::freeaddrinfo);
+                    std::lock_guard<std::mutex> lock(task->mutex);
+                    if (!task->abandoned) {
+                        task->rc = rc;
+                        task->results = std::move(results);
+                    }
+                    task->done = true;
+                    task->cv.notify_all();
+                });
+            g_resolverStartsForTest.fetch_add(1u);
+            helper.detach();
+        } catch (...) {
+            if (helper.joinable()) {
+                {
+                    std::lock_guard<std::mutex> lock(task->mutex);
+                    task->abandoned = true;
+                }
+                // Detach failure is exceptional: retain ownership and join rather
+                // than destroy a joinable handle. An OS lookup may delay this join.
+                helper.join();
+            }
+            return false;
+        }
+
+        AddrinfoOwner results(nullptr, ::freeaddrinfo);
+        int rc = -1;
+        {
+            std::unique_lock<std::mutex> lock(task->mutex);
+            while (!task->done) {
+                if ((abort != nullptr && abort->load()) || nowMs() >= deadlineMs) {
+                    task->abandoned = true;
+                    return !out.empty(); /* only a test prepend, if any */
+                }
+                task->cv.wait_for(lock, std::chrono::milliseconds(kPollSliceMs));
+            }
+            if ((abort != nullptr && abort->load()) || nowMs() >= deadlineMs)
+                return false;
+            rc = task->rc;
+            results = std::move(task->results);
+        }
+        if (rc != 0 || results == nullptr) {
+            return !out.empty();
+        }
+        appendAddrinfo(results.get(), out);
         return !out.empty();
+    } catch (...) {
+        // Allocation/copy/startup failure is an ordinary resolution failure,
+        // not an exception escaping the owning transport's worker thread.
+        out.clear();
+        return false;
     }
-    appendAddrinfo(results, out);
-    ::freeaddrinfo(results);
-    return !out.empty();
 }
 
 /* Deadline- and abort-aware TCP connect (connectTcp discipline): a
  * non-blocking connect polled in short slices, so an unreachable host stops at
  * the deadline and a close() during connect aborts within one slice. Returns
- * kBadSocket on any failure. The returned fd is left BLOCKING so mbedtls's
- * recv_timeout/send operate on it exactly as before. */
+ * kBadSocket on any failure. The returned fd remains nonblocking for all
+ * subsequent TLS/plaintext I/O. */
 SocketFd connectWithDeadline(const std::string &host, const std::string &port,
                              uint64_t deadlineMs,
-                             const std::atomic<bool> *abort) {
-    ensureNetStartup();
+                             const std::atomic<bool> *abort,
+                             const MdkrNativeSocketLease &network) {
     std::vector<ResolvedAddress> addresses;
-    if (!resolveAddresses(host, port, deadlineMs, abort, addresses) ||
+    if (!resolveAddresses(host, port, deadlineMs, abort, addresses, network) ||
         addresses.empty()) {
         return kBadSocket;
     }
@@ -356,7 +397,9 @@ SocketFd connectWithDeadline(const std::string &host, const std::string &port,
             }
             break;
         }
-        if (established && setBlocking(fd, true)) {
+        if (established) {
+            // Keep the socket nonblocking for TLS and writes too. Restoring
+            // blocking mode here makes cancellation depend on kernel timeouts.
             /* Disable Nagle immediately post-connect: lobby commands and
              * /connect state frames are all small (~300 B), and Nagle +
              * delayed ACK adds up to ~40-200 ms per request against the
@@ -455,7 +498,30 @@ bool parseOrigin(const std::string &origin, ParsedOrigin &out) {
     return true;
 }
 
-/* ---- mbedtls socket (plaintext or TLS), blocking with per-read timeout ----- */
+/* ---- mbedtls socket (plaintext or TLS), interruptible bounded waits -------- */
+
+// The BSD/macOS socket option above suppresses SIGPIPE, but Linux requires a
+// per-send flag. Our deadline-aware connector does not call mbedtls_net_connect
+// (which installs a process-wide signal disposition); do not rely on another
+// library having done that. Share this choke point between plaintext and TLS.
+int netSendNoSignal(void *context, const unsigned char *data, size_t length) {
+#ifdef MSG_NOSIGNAL
+    const auto *net = static_cast<const mbedtls_net_context *>(context);
+    const int wrote = static_cast<int>(::send(net->fd, data, length, MSG_NOSIGNAL));
+    if (wrote < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+            return MBEDTLS_ERR_SSL_WANT_WRITE;
+        }
+        if (errno == EPIPE || errno == ECONNRESET) {
+            return MBEDTLS_ERR_NET_CONN_RESET;
+        }
+        return MBEDTLS_ERR_NET_SEND_FAILED;
+    }
+    return wrote;
+#else
+    return mbedtls_net_send(context, data, length);
+#endif
+}
 
 class WireSocket {
 public:
@@ -473,15 +539,15 @@ public:
 
     bool connect(const ParsedOrigin &origin, uint64_t deadline,
                  const std::atomic<bool> *abort) {
+        if (!networkLease_.acquire()) return false;
         abort_ = abort;
         const uint64_t connectDeadline =
             deadline < nowMs() + kConnectTimeoutMs ? deadline
                                                    : nowMs() + kConnectTimeoutMs;
         const SocketFd fd = connectWithDeadline(origin.host, origin.port,
-                                                connectDeadline, abort);
+                                                connectDeadline, abort, networkLease_);
         if (fd == kBadSocket) return false;
         net_.fd = static_cast<int>(fd);
-        setSocketTimeouts(fd, static_cast<uint32_t>(kWriteTimeoutMs));
         tls_ = origin.tls;
         /* WebSocket nonces and client control-frame masks need a seeded
          * generator on plaintext loopback connections too, not just TLS. */
@@ -489,6 +555,7 @@ public:
                                   nullptr, 0) != 0) {
             return false;
         }
+        if (cancelled() || nowMs() >= deadline) return false;
         if (!tls_) {
             open_ = true;
             return true;
@@ -510,41 +577,60 @@ public:
         if (mbedtls_ssl_set_hostname(&ssl_, origin.host.c_str()) != 0) {
             return false;
         }
-        mbedtls_ssl_set_bio(&ssl_, &net_, mbedtls_net_send, nullptr,
-                            mbedtls_net_recv_timeout);
-        int ret = 0;
-        while ((ret = mbedtls_ssl_handshake(&ssl_)) != 0) {
+        // TLS TIMEOUT is fatal under the pinned mbedTLS API contract; a quiet
+        // poll slice is WANT_READ/WRITE, not a reusable SSL timeout. Check the
+        // budget inside EVERY BIO call: one SSL operation may perform several
+        // successful socket reads/writes before returning to this outer loop.
+        ioDeadline_ = deadline;
+        mbedtls_ssl_set_bio(&ssl_, this, sendTls, recvTls, nullptr);
+        for (;;) {
+            if (cancelled() || nowMs() >= deadline) return false;
+            const int ret = mbedtls_ssl_handshake(&ssl_);
+            if (ret == 0) break;
             if (ret != MBEDTLS_ERR_SSL_WANT_READ &&
                 ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
                 return false;
             }
-            if (nowMs() > deadline || (abort_ && abort_->load())) return false;
+            if (!waitReady(ret == MBEDTLS_ERR_SSL_WANT_WRITE, deadline)) return false;
         }
+        if (cancelled() || nowMs() >= deadline) return false;
         if (mbedtls_ssl_get_verify_result(&ssl_) != 0) return false;
         open_ = true;
         return true;
     }
 
-    /* Deadline-bounded write: SO_SNDTIMEO caps each stalled send() and the
-     * deadline caps the whole transfer, so an unresponsive host cannot block
-     * the worker thread past `deadline`. */
+    /* Every send is nonblocking. Check cancellation and the transfer deadline
+     * before each attempt, including successful partial writes, and wait only
+     * one poll slice on backpressure. */
     bool writeAll(const uint8_t *data, size_t len, uint64_t deadline) {
+        if (!open_) return false;
+        ioDeadline_ = deadline;
         size_t sent = 0u;
         while (sent < len) {
+            if (cancelled() || nowMs() >= deadline) {
+                open_ = false;
+                return false;
+            }
             int n;
             if (tls_) {
                 n = mbedtls_ssl_write(&ssl_, data + sent, len - sent);
             } else {
-                n = mbedtls_net_send(&net_, data + sent, len - sent);
+                n = netSendNoSignal(&net_, data + sent, len - sent);
             }
             if (n == MBEDTLS_ERR_SSL_WANT_READ ||
                 n == MBEDTLS_ERR_SSL_WANT_WRITE) {
-                if (nowMs() >= deadline || (abort_ && abort_->load())) {
+                // Preserve the exact pointer/length until mbedTLS acknowledges
+                // bytes: WANT_WRITE can retain a partly emitted TLS record.
+                if (!waitReady(n == MBEDTLS_ERR_SSL_WANT_WRITE, deadline)) {
+                    open_ = false;
                     return false;
                 }
                 continue;
             }
-            if (n <= 0) return false;
+            if (n <= 0) {
+                open_ = false; // No close_notify after a fatal TLS result.
+                return false;
+            }
             sent += static_cast<size_t>(n);
         }
         return true;
@@ -556,23 +642,37 @@ public:
 
     /* Returns bytes read (>0), 0 on timeout, -1 on close/error. */
     int read(uint8_t *buf, size_t len, uint32_t timeoutMs) {
-        int n;
-        if (tls_) {
-            mbedtls_ssl_conf_read_timeout(&conf_, timeoutMs);
-            n = mbedtls_ssl_read(&ssl_, buf, len);
-        } else {
-            n = mbedtls_net_recv_timeout(&net_, buf, len, timeoutMs);
+        if (!open_ || cancelled()) return -1;
+        // Callers may request a longer response wait, but ownership teardown
+        // must regain control each slice. Never turn zero into an infinite wait.
+        const uint32_t slice = timeoutMs == 0u || timeoutMs > kPollSliceMs
+                                   ? kPollSliceMs : timeoutMs;
+        const uint64_t deadline = nowMs() + slice;
+        ioDeadline_ = deadline;
+        for (;;) {
+            if (cancelled()) return -1;
+            if (nowMs() >= deadline) return 0;
+            const int n = tls_ ? mbedtls_ssl_read(&ssl_, buf, len)
+                               : mbedtls_net_recv(&net_, buf, len);
+            if (cancelled()) return -1;
+            if (n == MBEDTLS_ERR_SSL_WANT_READ || n == MBEDTLS_ERR_SSL_WANT_WRITE) {
+                if (!waitReady(n == MBEDTLS_ERR_SSL_WANT_WRITE, deadline)) {
+                    open_ = false;
+                    return -1;
+                }
+                continue;
+            }
+            if (n <= 0) {
+                open_ = false;
+                return -1;
+            }
+            return n;
         }
-        if (n == MBEDTLS_ERR_SSL_TIMEOUT || n == MBEDTLS_ERR_SSL_WANT_READ ||
-            n == MBEDTLS_ERR_SSL_WANT_WRITE) {
-            return 0;
-        }
-        if (n <= 0) return -1;
-        return n;
     }
 
     void close() {
-        if (open_ && tls_) {
+        if (open_ && tls_ && !cancelled()) {
+            // One nonblocking best-effort notification, never an exit wait.
             (void)mbedtls_ssl_close_notify(&ssl_);
         }
         mbedtls_ssl_free(&ssl_);
@@ -582,27 +682,59 @@ public:
         mbedtls_entropy_free(&entropy_);
         mbedtls_net_free(&net_);
         open_ = false;
+        networkLease_.reset(); // No socket remains; abandoned DNS owns its copy.
     }
 
     mbedtls_ctr_drbg_context *drbg() { return &drbg_; }
 
 private:
-    static void setSocketTimeouts(SocketFd fd, uint32_t ms) {
+    bool cancelled() const { return abort_ != nullptr && abort_->load(); }
+
+    static int sendTls(void *context, const unsigned char *data, size_t length) {
+        auto &socket = *static_cast<WireSocket *>(context);
+        if (socket.cancelled()) return MBEDTLS_ERR_NET_SEND_FAILED;
+        if (nowMs() >= socket.ioDeadline_) return MBEDTLS_ERR_SSL_WANT_WRITE;
+        return netSendNoSignal(&socket.net_, data, length);
+    }
+
+    static int recvTls(void *context, unsigned char *data, size_t length) {
+        auto &socket = *static_cast<WireSocket *>(context);
+        if (socket.cancelled()) return MBEDTLS_ERR_NET_RECV_FAILED;
+        if (nowMs() >= socket.ioDeadline_) return MBEDTLS_ERR_SSL_WANT_READ;
+        return mbedtls_net_recv(&socket.net_, data, length);
+    }
+
+    // True means readiness or an ordinary poll timeout/interruption; the
+    // caller rechecks its deadline/cancellation before trying I/O again.
+    // Permanent poll errors are failures, not a deadline-long busy retry.
+    bool waitReady(bool writable, uint64_t deadline) const {
+        if (cancelled()) return false;
+        const uint64_t now = nowMs();
+        if (now >= deadline) return true;
+        const uint64_t remaining = deadline - now;
+        const uint32_t waitMs = remaining < kPollSliceMs
+                                    ? static_cast<uint32_t>(remaining) : kPollSliceMs;
 #ifdef _WIN32
-        DWORD value = ms;
-        ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO,
-                     reinterpret_cast<const char *>(&value), sizeof(value));
-        ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO,
-                     reinterpret_cast<const char *>(&value), sizeof(value));
+        fd_set ready;
+        FD_ZERO(&ready);
+        FD_SET(static_cast<SocketFd>(net_.fd), &ready);
+        struct timeval slice;
+        slice.tv_sec = 0;
+        slice.tv_usec = static_cast<long>(waitMs) * 1000;
+        const int result = ::select(0, writable ? nullptr : &ready,
+                                    writable ? &ready : nullptr, nullptr, &slice);
+        return result >= 0 || WSAGetLastError() == WSAEINTR;
 #else
-        struct timeval tv;
-        tv.tv_sec = static_cast<time_t>(ms / 1000u);
-        tv.tv_usec = static_cast<suseconds_t>((ms % 1000u) * 1000u);
-        ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-        ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        struct pollfd item;
+        item.fd = net_.fd;
+        item.events = writable ? POLLOUT : POLLIN;
+        item.revents = 0;
+        const int result = ::poll(&item, 1, static_cast<int>(waitMs));
+        return result >= 0 || errno == EINTR;
 #endif
     }
 
+    MdkrNativeSocketLease networkLease_;
     mbedtls_net_context net_;
     mbedtls_entropy_context entropy_;
     mbedtls_ctr_drbg_context drbg_;
@@ -610,6 +742,7 @@ private:
     mbedtls_ssl_config conf_;
     mbedtls_x509_crt ca_;
     const std::atomic<bool> *abort_ = nullptr;
+    uint64_t ioDeadline_ = 0u; // worker-owned, scoped to the current operation
     bool tls_ = false;
     bool open_ = false;
 };
@@ -1390,9 +1523,9 @@ public:
             if (stop_) return;
             stop_ = true;
         }
-        /* Abort any in-flight connect/handshake/read/write on the worker thread
-         * within a poll slice so join() returns promptly even against a stalled
-         * or unreachable host. */
+        /* In-flight socket waits observe cancellation within their next slice;
+         * the owning worker is still joined. Detached, self-owned DNS resolution
+         * is a separate lifetime (see resolveAddresses), not joined here. */
         aborting_.store(true);
         if (worker_.joinable()) worker_.join();
     }
@@ -1961,6 +2094,33 @@ void mdkr_online_room_transport_prepend_address_for_test(const char *ip,
 
 void mdkr_online_room_transport_stall_resolver_for_test(unsigned ms) {
     g_resolverStallMsForTest.store(ms);
+}
+
+void mdkr_online_room_transport_resolver_activity_for_test(
+    uint64_t *started, uint64_t *capacityWaits) {
+    if (started) *started = g_resolverStartsForTest.load();
+    if (capacityWaits) *capacityWaits = g_resolverCapacityWaitsForTest.load();
+}
+
+/* Exercises the real TLS connect deadline independently of HTTP's larger
+ * request budget. Test-only call surface: no certificate bypass or alternate
+ * transport implementation. */
+bool mdkr_online_room_transport_connect_for_test(const std::string &origin,
+                                                unsigned budgetMs) {
+    ParsedOrigin parsed;
+    if (!parseOrigin(origin, parsed)) return false;
+    std::atomic<bool> abort{false};
+    WireSocket socket;
+    return socket.connect(parsed, nowMs() + budgetMs, &abort);
+}
+
+// Uses the exact send choke point without transferring caller socket ownership.
+int mdkr_online_room_transport_send_for_test(int fd, const uint8_t *data,
+                                            size_t length) {
+    mbedtls_net_context net;
+    mbedtls_net_init(&net);
+    net.fd = fd;
+    return netSendNoSignal(&net, data, length);
 }
 
 /* ---- Fuzz seam (declaration in match_live_transport.h) -------------------- */

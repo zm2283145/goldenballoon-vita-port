@@ -2,6 +2,10 @@
 #include "ui_launcher.h"
 #include "app_host.h"
 #include "app_launch_hold.h"
+#include "app_cleanup_completion.h"
+#include "online_teardown_tracker.h"
+#include "online/async_work_budget.h"
+#include "net/network_lifetime.h"
 #include "app_ui_policy.h"
 #include "app_theme.h"
 #include "app_brand.h"
@@ -19,11 +23,13 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <cassert>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <utility>
 
 namespace {
@@ -1039,7 +1045,21 @@ void drawLobbyTakeover(LauncherState &state, LauncherAction &action) {
 
 }  // namespace
 
-Launcher::Launcher() {
+struct LauncherNetworkShutdown {
+    struct PartyOwners {
+        // Destruction is reversed: the host calls its still-owned transport.
+        std::unique_ptr<MdkrPartyTransport> transport;
+        std::unique_ptr<MdkrNativePartyHost> host;
+    };
+    OnlineRoomTeardownTracker retiring;
+    AppCleanupCompletion completion;
+    bool started = false;
+    bool finished = false;
+    bool failureReported = false;
+};
+
+Launcher::Launcher()
+    : networkShutdown_(std::make_unique<LauncherNetworkShutdown>()) {
     /* The shipped default is the cloud transport (the compiled https Party
      * service). Task 5 wires a UI toggle to selectPartyTransport(Lan) for
      * zero-internet local play; routing both factories through this one seam is
@@ -1049,12 +1069,14 @@ Launcher::Launcher() {
 
 void Launcher::selectPartyTransport(PartyTransportKind kind,
                                    MdkrLanPartyTransportConfig config) {
+    if (networkShutdown_->started) return;
     /* Runtime mutual-exclusion: exactly one live party transport. Tear the
      * current host down first -- ~MdkrNativePartyHost tells the phones goodbye
      * and shuts its transport down -- then release the transport before
      * building the next, so a cloud and a LAN transport can never both be live.
      * The assert pins the invariant the seam exists to guarantee. */
     state_.phoneParty = nullptr;
+    Overlay_setPhonePartyHost(nullptr);
     phoneParty_.reset();
     partyTransport_.reset();
     assert(!partyTransport_ && !phoneParty_);
@@ -1127,6 +1149,10 @@ void Launcher::applyLanStop() {
 }
 
 Launcher::~Launcher() {
+    // Explicit terminal paths run this before host/log shutdown. Also cover
+    // an early scope exit: never let a retirement worker outlive its tracker.
+    if (!networkShutdown_->started) finishCharacterWorkForExit();
+    (void)finishNetworkShutdownForExit();
     /* Backstop for the hold-sampling window. Every ordinary exit already
      * releases (dispatch, disarm, any published boot); this covers a launcher
      * torn down before one of those happened -- a quit from the ROM-less first
@@ -1134,12 +1160,149 @@ Launcher::~Launcher() {
     AppLaunchHold_release();
 }
 
+void Launcher::beginNetworkShutdown() {
+    auto &shutdown = *networkShutdown_;
+    if (shutdown.started) return;
+    shutdown.started = true;
+#if MDKR_ENABLE_ONLINE_BETA
+    OnlineRoom_beginAppExit();
+#endif
+    // Retract every borrowed alias before the host can die off-thread. No
+    // normal panel service or engine dispatch is permitted after this point.
+    state_.phoneParty = nullptr;
+    Overlay_setPhonePartyHost(nullptr);
+    std::unique_ptr<LauncherNetworkShutdown::PartyOwners> owners;
+    try {
+        // Allocate before moving ownership; failure retains both local owners.
+        owners = std::make_unique<LauncherNetworkShutdown::PartyOwners>();
+    } catch (...) {
+        std::fprintf(stderr, "[app-network] retirement allocation failed; "
+                             "closing phone connections synchronously\n");
+        phoneParty_.reset();
+        partyTransport_.reset();
+        return;
+    }
+    owners->transport = std::move(partyTransport_);
+    owners->host = std::move(phoneParty_);
+    if (!shutdown.retiring.retire(std::move(owners))) {
+        std::fprintf(stderr, "[app-network] retirement scheduling failed; "
+                             "phone connections closed synchronously\n");
+    }
+}
+
+bool Launcher::pollNetworkShutdown() {
+    auto &shutdown = *networkShutdown_;
+    if (shutdown.finished) return true;
+    if (!shutdown.started) return false;
+    // Poll both groups even while either is pending, so completed workers are
+    // reaped independently. Cleanup is process-wide, never per-room.
+    const bool partyRetired = shutdown.retiring.pollReady();
+#if MDKR_ENABLE_ONLINE_BETA
+    const bool roomRetired = OnlineRoom_pollAppExit();
+#else
+    const bool roomRetired = true;
+#endif
+    // A cancelled client can leave a self-owned OS lookup finishing in the
+    // background. Wait for its results to be released before RTC tears down
+    // shared socket-library state (including Winsock). No owner may start new
+    // lookups once both retirement groups have completed.
+    const bool resolverRetired = onlineResolverWorkInUse() == 0u;
+    const bool finished = shutdown.completion.poll(
+        partyRetired && roomRetired && resolverRetired, mdkr_native_party_cleanup);
+    shutdown.finished = finished;
+    if (finished && networkShutdownFailed() && !shutdown.failureReported) {
+        shutdown.failureReported = true;
+        if (mdkrFirstPartyNetworkCleanupFailed.load()) {
+            std::fprintf(stderr, "[app-network] first-party socket-library cleanup FAILED\n");
+        }
+        if (shutdown.completion.failed()) {
+            try {
+                std::rethrow_exception(shutdown.completion.error());
+            } catch (const std::exception &error) {
+                std::fprintf(stderr, "[app-network] global cleanup FAILED: %s\n",
+                             error.what());
+            } catch (...) {
+                std::fprintf(stderr, "[app-network] global cleanup FAILED: "
+                                     "unknown exception\n");
+            }
+        }
+    }
+    return finished;
+}
+
+bool Launcher::networkShutdownFailed() const {
+    return networkShutdown_->completion.failed() || mdkrFirstPartyNetworkCleanupFailed.load();
+}
+
+bool Launcher::finishNetworkShutdownForExit() {
+    // Explicit terminal paths already finished before host/log shutdown. The
+    // destructor backstop must not revisit global owners after that boundary.
+    if (networkShutdown_->finished) return !networkShutdownFailed();
+    beginNetworkShutdown();
+#if MDKR_ENABLE_ONLINE_BETA
+    OnlineRoom_shutdownForAppExit();
+#endif
+    networkShutdown_->retiring.drain(std::chrono::seconds(10), []() noexcept {
+        std::fprintf(stderr, "[app-network] phone connections still closing; "
+                             "waiting for owned workers\n");
+    });
+    // Exceptional exits cannot render. Never detach or infer completion from
+    // elapsed time; an OS resolver may still keep library cleanup pending.
+    const auto started = std::chrono::steady_clock::now();
+    bool delayed = false;
+    while (!pollNetworkShutdown()) {
+        if (!delayed && std::chrono::steady_clock::now() - started >=
+                            std::chrono::seconds(10)) {
+            delayed = true;
+            std::fprintf(stderr, "[app-network] global cleanup still pending; "
+                                 "waiting for completion\n");
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return !networkShutdownFailed();
+}
+
 void Launcher::requestQuit() {
     requestLauncherQuit(state_);
 }
 
 bool Launcher::quitReady() const {
-    return state_.quitRequested && !Settings_characterWorkPending();
+    // A returned preview publishes through serviceCharacterWork() before it can launch its
+    // follow-up transaction. A queued OS close must not skip that publication
+    // merely because no background worker has been started yet.
+    return state_.quitRequested && !state_.characterPreviewDispatched &&
+           !Settings_characterWorkPending();
+}
+
+bool Launcher::quitRequested() const { return state_.quitRequested; }
+
+void Launcher::drawOnlineClosing(bool delayed) {
+    const ImGuiViewport *vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->Pos);
+    ImGui::SetNextWindowSize(vp->Size);
+    ImGui::Begin("##launcher-online-closing", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                 ImGuiWindowFlags_NoBringToFrontOnFocus);
+    const char *title = delayed ? "Still closing online connections…"
+                                : "Closing online connections…";
+    ui::SpeakSection(title);
+    if (ui::CardBegin("##online-close-progress", AppTheme::accent(), 0.0f)) {
+        ImGui::PushFont(AppTheme::fonts().section);
+        ImGui::TextWrapped("%s", title);
+        ImGui::PopFont();
+        ui::TextSubtleWrapped(
+            "Golden Balloon will close automatically when online cleanup finishes. "
+            "No new race or room will start while closing.");
+        ui::Gap(ui::kGapM);
+        ui::TextSubtleWrapped(delayed
+            ? "The connection is taking longer to close. The window remains responsive; "
+              "cleanup is still in progress. There is no reliable time estimate."
+            : "Finishing the room and releasing its connections. You can move or "
+              "minimize this window while you wait.");
+    }
+    ui::CardEnd();
+    ImGui::End();
 }
 
 void Launcher_requestTab(LauncherState &s, int panel, int priority) {
@@ -1391,10 +1554,7 @@ void drawAboutPanel(LauncherState &s, LauncherAction &out) {
 
 }  // namespace
 
-LauncherAction Launcher::draw(AppHost &host) {
-#if MDKR_ENABLE_ONLINE_BETA
-    ++g_betaFrame;
-#endif
+void Launcher::serviceCharacterWork() {
     // Character subprocesses publish through launcher-owned UI state. Service
     // them on every destination so leaving the Workshop cannot strand a ready
     // result, race Play against a directory transaction, or turn application
@@ -1457,6 +1617,24 @@ LauncherAction Launcher::draw(AppHost &host) {
         state_.characterPreviewDonorReference = false;
         state_.characterPreviewDispatched = false;
     }
+}
+
+void Launcher::finishCharacterWorkForExit() {
+    serviceCharacterWork();
+    while (state_.characterPreviewDispatched || Settings_characterWorkPending()) {
+        // Only the exceptional, non-renderable exit uses this wait. Normal
+        // Quit keeps pumping and displaying progress in the launcher loop.
+        SDL_Delay(10);
+        serviceCharacterWork();
+    }
+}
+
+LauncherAction Launcher::draw(AppHost &host) {
+    if (networkShutdown_->started) return {};
+#if MDKR_ENABLE_ONLINE_BETA
+    ++g_betaFrame;
+#endif
+    serviceCharacterWork();
     state_.hostWindow = host.window();
     phoneParty_->service(static_cast<uint64_t>(SDL_GetTicks64()));
     refreshLanControls();

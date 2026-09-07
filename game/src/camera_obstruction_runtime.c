@@ -275,6 +275,13 @@ typedef struct MdkrCameraMotionSlot {
     uint8_t block_span_degenerate;
     uint8_t retract_pending;
     uint8_t release_held;
+    /* Diagnostic contact history survives clear/held ticks. Unlike the churn
+     * history above, it is never used to classify a hard motion verdict. */
+    uint64_t last_contact_tick;
+    uint32_t last_contact_kind;
+    uint32_t last_contact_id;
+    MdkrCameraVec3 last_contact_normal;
+    uint8_t last_contact_normal_valid;
 } MdkrCameraMotionSlot;
 
 typedef enum MdkrCameraMotionPhase {
@@ -3519,6 +3526,35 @@ static void camera_obstruction_motion_sample(
                  * came straight back. This is the chatter a player sees as the
                  * camera "pumping" against one wall. */
                 sCameraMotion.correction_reengagements++;
+                if (trace_level >= 1) {
+                    /* Keep the actual offending event in the ordinary gate's
+                     * trace, without requiring a second level-2 ROM run.
+                     * Last contact is not necessarily the same wall; normal
+                     * agreement or a different face ID cannot excuse chatter. */
+                    fprintf(stderr,
+                            "camera_motion reengagement tick=%llu viewport=%d "
+                            "normal_slot=%d physical_slot=%d release_tick=%llu gap=%llu "
+                            "last_contact={tick=%llu kind=%u id=%u normal_valid=%d "
+                            "normal=(%.5f,%.5f,%.5f)} "
+                            "contact={kind=%u id=%u normal_valid=%d normal=(%.5f,%.5f,%.5f)} "
+                            "state={prior_recovering=%d recovering=%d held=%d "
+                            "alternate=%d emergency=%d degenerate=%d}\n",
+                            (unsigned long long)tick, observe->viewport,
+                            normal_slot, physical_slot,
+                            (unsigned long long)motion->clear_onset_tick,
+                            (unsigned long long)(tick - motion->clear_onset_tick),
+                            (unsigned long long)motion->last_contact_tick,
+                            motion->last_contact_kind, motion->last_contact_id,
+                            motion->last_contact_normal_valid,
+                            motion->last_contact_normal.x, motion->last_contact_normal.y,
+                            motion->last_contact_normal.z,
+                            observe->blocker_kind, observe->blocker_stable_id,
+                            observe->blocker_normal_valid,
+                            observe->blocker_normal.x, observe->blocker_normal.y,
+                            observe->blocker_normal.z,
+                            motion->recovering, recovering, held, alternate, emergency,
+                            degenerate);
+                }
             }
             motion->block_onset_tick = tick;
             motion->block_span_degenerate = (uint8_t)(degenerate != 0);
@@ -3599,6 +3635,13 @@ static void camera_obstruction_motion_sample(
      * recovery -- this metric measures how noisy the reported identity is, and
      * gives the shoulder-flip gate its continuous-surface test.
      */
+    if (observe->blocker_stable_id != 0U) {
+        motion->last_contact_tick = tick;
+        motion->last_contact_kind = observe->blocker_kind;
+        motion->last_contact_id = observe->blocker_stable_id;
+        motion->last_contact_normal = observe->blocker_normal;
+        motion->last_contact_normal_valid = observe->blocker_normal_valid;
+    }
     if (blocked && observe->blocker_stable_id != 0U) {
         if (motion->blocker_valid &&
             motion->blocker_stable_id != observe->blocker_stable_id) {

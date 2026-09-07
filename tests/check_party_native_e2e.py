@@ -444,7 +444,8 @@ def scenario_stall(origin: str, binary: Path, chrome_path: str, base: Path,
 
 def run(args: argparse.Namespace) -> None:
     build = resolve(args.build)
-    binary = build / "mdkr_native_party_e2e_driver"
+    binary = build / ("mdkr_native_party_e2e_driver.exe" if os.name == "nt"
+                      else "mdkr_native_party_e2e_driver")
     require(binary.is_file(),
             f"missing {binary}; build the mdkr_native_party_e2e_driver "
             "target first (requires -DMDKR_NATIVE_PHONE_PARTY=ON)")

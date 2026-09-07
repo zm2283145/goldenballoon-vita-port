@@ -183,6 +183,8 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out);
 void RomPanel_setRom(LauncherState &s, const char *path);    // drag-and-drop entry (validates)
 void DiagPanel_draw(LauncherState &s, LauncherAction &out);
 
+struct LauncherNetworkShutdown;
+
 class Launcher {
 public:
     Launcher();
@@ -190,7 +192,25 @@ public:
     LauncherAction draw(AppHost &host);
     void setBootError(const char *message);
     void requestQuit();
+    bool quitRequested() const;
     bool quitReady() const;
+    // Non-rendering completion publication, including returned preview results.
+    // Called even while minimized, before deciding whether Quit can proceed.
+    void serviceCharacterWork();
+    // Exceptional exits cannot draw progress but still publish completed work
+    // before launcher/global owners are destroyed. Does not abandon workers.
+    void finishCharacterWorkForExit();
+    // Irreversible app-exit phase, after Workshop/engine work has settled.
+    // Retires room and phone owners before observing process-wide RTC cleanup.
+    void beginNetworkShutdown();
+    // Terminal includes failure; inspect networkShutdownFailed() before success.
+    bool pollNetworkShutdown();
+    bool networkShutdownFailed() const;
+    // Exceptional/non-renderable exit backstop; waits, returning success only
+    // after every owner and the global cleanup have completed successfully.
+    bool finishNetworkShutdownForExit();
+    // Closing-only surface: no panel service, drop intake, Play or room actions.
+    void drawOnlineClosing(bool delayed);
 
     // Test-only entry point for the shell smoke.  It uses the exact same
     // asynchronous final recheck as the Play widget, while leaving the smoke
@@ -239,6 +259,7 @@ private:
     // Refresh lanParty.available/active/note for the card (cheap; throttled).
     void refreshLanControls();
 
+    std::unique_ptr<LauncherNetworkShutdown> networkShutdown_;
     std::unique_ptr<MdkrPartyTransport> partyTransport_;
     std::unique_ptr<MdkrNativePartyHost> phoneParty_;
     PartyTransportKind partyKind_ = PartyTransportKind::Cloud;

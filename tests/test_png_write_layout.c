@@ -1,4 +1,5 @@
 #include "png_write_layout.h"
+#include "stb_image_alloc.h"
 
 #define STBI_ONLY_PNG
 #define STBI_NO_STDIO
@@ -15,6 +16,36 @@ static void expect(int condition, const char *message) {
         fprintf(stderr, "FAIL: %s\n", message);
         exit(1);
     }
+}
+
+static void test_decoder_allocation_admission(void) {
+    unsigned char *pixels;
+    unsigned char *resized;
+    size_t index;
+    expect(mdkr_stbi_malloc(0u) == NULL, "empty decoder allocation refused");
+    expect(mdkr_stbi_realloc(NULL, 0u) == NULL, "empty initial resize refused");
+    pixels = (unsigned char *)mdkr_stbi_realloc(NULL, 8u);
+    expect(pixels != NULL, "positive initial resize retained");
+    for (index = 0u; index < 8u; ++index) pixels[index] = (unsigned char)index;
+    expect(mdkr_stbi_realloc(pixels, 0u) == NULL, "empty resize refused");
+    for (index = 0u; index < 8u; ++index) {
+        expect(pixels[index] == (unsigned char)index,
+               "refused resize retains ownership and contents");
+    }
+    resized = (unsigned char *)mdkr_stbi_realloc(pixels, 16u);
+    expect(resized != NULL, "positive growth retained after refusal");
+    for (index = 0u; index < 8u; ++index) {
+        expect(resized[index] == (unsigned char)index, "growth preserves contents");
+    }
+    pixels = (unsigned char *)mdkr_stbi_realloc(resized, 4u);
+    expect(pixels != NULL, "positive shrink retained");
+    for (index = 0u; index < 4u; ++index) {
+        expect(pixels[index] == (unsigned char)index, "shrink preserves contents");
+    }
+    free(pixels);
+    pixels = (unsigned char *)mdkr_stbi_malloc(1u);
+    expect(pixels != NULL, "small positive allocation retained");
+    free(pixels);
 }
 
 static void test_layout_without_allocating_pixels(void) {
@@ -89,6 +120,7 @@ static void test_small_roundtrip(int components) {
 }
 
 int main(void) {
+    test_decoder_allocation_admission();
     test_layout_without_allocating_pixels();
     test_small_roundtrip(3);
     test_small_roundtrip(4);

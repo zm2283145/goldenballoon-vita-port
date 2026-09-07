@@ -60,7 +60,15 @@
  * when this yields. On the narrow ASYNCIFY_ADD spine (osRecvMesg reaches it via
  * direct calls). Models mgb64's platformWaitAnimationFrame. */
 EM_ASYNC_JS(void, platformWaitAnimationFrame, (void), {
+    const trace = typeof globalThis.__mdkrStartupTrace === 'function' ? (phase) => {
+        try {
+            if (typeof globalThis.__mdkrStartupTrace === 'function') {
+                globalThis.__mdkrStartupTrace(phase);
+            }
+        } catch (error) {}
+    } : null;
     while (document.visibilityState === 'hidden') {
+        if (trace) trace('raf-visibility-wait');
         await new Promise((resolve) => {
             const visible = () => {
                 if (document.visibilityState !== 'hidden') {
@@ -71,8 +79,10 @@ EM_ASYNC_JS(void, platformWaitAnimationFrame, (void), {
             document.addEventListener('visibilitychange', visible);
         });
     }
+    if (trace) trace('raf-requested');
     const timestamp = await new Promise(
         (resolve) => requestAnimationFrame(resolve));
+    if (trace) trace('raf-resolved');
     /* The browser regression shell exposes this bounded array only under its
      * inert CDP test bridge. Capture the actual compositor opportunities here,
      * at the production rAF boundary, so cadence failures can distinguish a

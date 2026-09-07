@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import re
 import sys
 from pathlib import Path
 
@@ -24,6 +25,22 @@ def parse_args() -> argparse.Namespace:
 
 def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
+
+
+def native_party_pin_problems(recipe: str, notices: dict[str, str]) -> list[str]:
+    """Compare source notices with the authoritative recipe, not stale copies."""
+    problems: list[str] = []
+    for setting in ("MDKR_LIBDATACHANNEL_VERSION", "MDKR_LIBDATACHANNEL_COMMIT"):
+        values = re.findall(r"set\(" + setting + r'\s+"([^"\n]+)"\s*\)', recipe)
+        if len(values) != 1:
+            problems.append(f"cmake/datachannel.cmake must define exactly one {setting}")
+            continue
+        value = values[0]
+        value_pattern = r"(?<![0-9A-Za-z.])" + re.escape(value) + r"(?![0-9A-Za-z.])"
+        for rel_path, text in notices.items():
+            if re.search(value_pattern, text) is None:
+                problems.append(f"{rel_path} does not identify current {setting}={value}")
+    return problems
 
 
 def main() -> int:
@@ -52,7 +69,42 @@ def main() -> int:
             "Permission is hereby granted, free of charge",
         ),
         "third_party/native_phone_party/NOTICE.txt": (
-            "c6696d157b5612df2a741d9a03b192b47ab6cefb",
+            "443f6934d9007eb7076ab7825ba330f355fcbead",
+            "3c40a3545b6b1b62c7adee7f8f2bd58aa290afd6",
+            "fec583d54493f879d2ae44a743423bf8a04371ab",
+            "https://github.com/paullouisageneau/usrsctp/tree/fec583d54493f879d2ae44a743423bf8a04371ab",
+            "55f93686c01528224f448c19128836e7df245f72",
+            "94899e0b926ac1b0f4750bfbd495167b4a6ae9ef",
+            "cmake/apply_libdatachannel_patch.cmake",
+            "53d437ced9902a056210cf349a44a1eb2b55bb1afb0d27cd37e978197d3bc674",
+            "cmake/verify_datachannel_startup.cmake",
+            "a77aa87cd74c8105d38fa05be99c38a95726e5b994045cff9b8255d97c450130",
+            "__PRETTY_FUNCTION__ to __func__",
+            "cmake/patches/libdatachannel-cleanup-worker.patch",
+            "platform/online/reserved_cleanup_worker.h",
+            "eb697e5b4c0cf368c73d1fec010e0666438cab6be88935e979f17f60b3c3f2cf",
+            "25b834a6e85361c7a92464a403bfbade7f8abd90bf2efa397960d0a645ca28bc",
+            "cmake/patches/libdatachannel-initialization.patch",
+            "8baa28ca33a2bda267f705f4421cd893dd477f10a621ff5b81b9415876f6d3b8",
+            "cmake/patches/libdatachannel-startup-stages.patch",
+            "6ca224f6e854f552c14f7a58c3a51ed0db51f2e08088c80065d6531bb5cbaee9",
+            "platform/online/rtc_initialization_transaction.h",
+            "3ca47672b3d592c3ab7fe173a607850bea36be01b22d7f7f188f26b28ec39063",
+            "platform/online/startup_stage_ownership.h",
+            "237215c96916d572fc35d3105e83cdb1e0998eb00e1cdb15777760d7a83ebb70",
+            "cmake/patches/libdatachannel-work-admission.patch",
+            "c5a510b2f7e1e11193a768ca1fda9536c3900bbeca5b04f4e54c147bbb883df7",
+            "platform/online/queued_work_admission.h",
+            "8b20dd49ccfc6cadf249ed431f2df186d94b49fdce85952a6970bee71be71a19",
+            "cmake/patches/libdatachannel-prepared-work.patch",
+            "1b68e4b688d1f7f9828fcac91ee191f55fec7666aa6fd20ba65958d14da31131",
+            "platform/online/prepared_work_queue.h",
+            "fe94925f249243a2b801ecc122059bea51418cc5269adaa0a27660268d100f4e",
+            "cmake/patches/libdatachannel-transport-retirement.patch",
+            "384ef834c198f2bdf641a8ceb88591ee1539b767b178671bad4b050f3cc17c24",
+            "platform/online/transport_retirement.h",
+            "554a003764072ebc70fb3bf606e5c99dbf8d4449c5225eb201d75b2e1b1f7af8",
+            "seven libdatachannel patches",
             "a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6",
             "Mozilla Public License Version 2.0",
             "Mbed TLS upstream dual-license file",
@@ -106,6 +158,72 @@ def main() -> int:
             "defined(_WIN32) && !USE_MBEDTLS",
             "TLS certificate verification with root CA is not supported on Windows",
         ),
+        "cmake/patches/libdatachannel-cleanup-worker.patch": (
+            "src/impl/init.cpp",
+            "reserved_cleanup_worker.h",
+            "cleanupWorker.arm();",
+        ),
+        "platform/online/reserved_cleanup_worker.h": (
+            "class MdkrReservedCleanupWorker",
+        ),
+        "cmake/apply_libdatachannel_patch.cmake": (
+            "PLOG_GET_FUNC()",
+            "__PRETTY_FUNCTION__",
+            "__func__",
+            "all seven RTC patch paths",
+            'mdkr_apply_checked_patch("${RETIREMENT_PATCH_FILE}")',
+        ),
+        "cmake/patches/libdatachannel-initialization.patch": (
+            "src/impl/init.cpp", "src/impl/init.hpp", "mInitialization.admit",
+        ),
+        "cmake/patches/libdatachannel-startup-stages.patch": (
+            "src/impl/pollservice.cpp", "src/impl/sctptransport.cpp",
+            "startup_stage_ownership.h",
+        ),
+        "platform/online/rtc_initialization_transaction.h": (
+            "class MdkrRtcInitializationTransaction",
+        ),
+        "platform/online/startup_stage_ownership.h": (
+            "mdkrStartOwnedPolling", "mdkrStartOwnedRegistry",
+        ),
+        "cmake/verify_datachannel_startup.cmake": (
+            "function(mdkr_verify_datachannel_startup source_dir)",
+            "file(SHA256", "libdatachannel-startup-stages.patch",
+            "libdatachannel-transport-retirement.patch",
+            "init.cpp|", "init.hpp|",
+            "threadpool.hpp|", "threadpool.cpp|", "processor.hpp|",
+            "processor.cpp|", "queue.hpp|",
+            "transport.hpp|", "transport.cpp|", "peerconnection.cpp|",
+            "websocket.cpp|", "icetransport.cpp|", "icetransport.hpp|",
+            "sctptransport.cpp|", "sctptransport.hpp|", "tcpserver.cpp|",
+        ),
+        "cmake/patches/libdatachannel-work-admission.patch": (
+            "src/impl/threadpool.hpp", "src/impl/threadpool.cpp", "src/impl/queue.hpp",
+            "takeCallable()", "mdkrCommitQueueInsertion",
+        ),
+        "platform/online/queued_work_admission.h": (
+            "struct MdkrScheduledWork", "mdkrCommitQueueInsertion",
+        ),
+        "cmake/patches/libdatachannel-prepared-work.patch": (
+            "src/impl/threadpool.hpp", "src/impl/threadpool.cpp",
+            "src/impl/processor.hpp", "src/impl/processor.cpp",
+            "enqueuePrepared", "MdkrNoAllocScopeExit",
+        ),
+        "platform/online/prepared_work_queue.h": (
+            "class MdkrPreparedWorkQueue", "class MdkrNoAllocScopeExit",
+        ),
+        "cmake/patches/libdatachannel-transport-retirement.patch": (
+            "src/impl/processor.hpp", "src/impl/transport.hpp",
+            "src/impl/transport.cpp", "src/impl/peerconnection.cpp",
+            "src/impl/websocket.cpp", "src/impl/icetransport.cpp",
+            "src/impl/icetransport.hpp", "src/impl/sctptransport.cpp",
+            "src/impl/sctptransport.hpp", "src/impl/tcpserver.cpp",
+            "transport_retirement.h",
+        ),
+        "platform/online/transport_retirement.h": (
+            "class MdkrTransportRetirement", "enqueuePrepared",
+            "requestStop", "beginStart",
+        ),
         "lib/glad/LICENSE": (
             "The glad source code",
             "Copyright (c) 2013-2021 David Herberth",
@@ -142,7 +260,7 @@ def main() -> int:
         "third_party/qrcodegen/qrcodegen.cpp":
             "8948b57053deb5d132bfc675ca2688b7abef9f03ec633c0de59770c945a66fc9",
         "third_party/native_phone_party/NOTICE.txt":
-            "dc48863706380100072297911937267b5eaee28a40a972516e07b285cc7635dd",
+            "09dc99293dc43b80a49049e9ad91d0e14fc1010da770ad1b13fe766b6f9f3fee",
         "third_party/character_importer/CPython-LICENSE.txt":
             "78b12c3a81360b357002334f0e70ea0e92eebf7a9b358805c03c48484945f3bb",
         "third_party/character_importer/PyInstaller-COPYING.txt":
@@ -165,6 +283,34 @@ def main() -> int:
             "f03037ca7bad1e3eb7f4a63fa6084a8baabd5ba30d3c239a9a7f35705d873e26",
         "cmake/patches/libdatachannel-windows-mbedtls-verify.patch":
             "b47d81ee765b2eed51f75b9cb599522fdd6f9eda7511b025214c63cc4c3336a7",
+        "cmake/patches/libdatachannel-cleanup-worker.patch":
+            "eb697e5b4c0cf368c73d1fec010e0666438cab6be88935e979f17f60b3c3f2cf",
+        "platform/online/reserved_cleanup_worker.h":
+            "25b834a6e85361c7a92464a403bfbade7f8abd90bf2efa397960d0a645ca28bc",
+        "cmake/apply_libdatachannel_patch.cmake":
+            "53d437ced9902a056210cf349a44a1eb2b55bb1afb0d27cd37e978197d3bc674",
+        "cmake/verify_datachannel_startup.cmake":
+            "a77aa87cd74c8105d38fa05be99c38a95726e5b994045cff9b8255d97c450130",
+        "cmake/patches/libdatachannel-initialization.patch":
+            "8baa28ca33a2bda267f705f4421cd893dd477f10a621ff5b81b9415876f6d3b8",
+        "cmake/patches/libdatachannel-startup-stages.patch":
+            "6ca224f6e854f552c14f7a58c3a51ed0db51f2e08088c80065d6531bb5cbaee9",
+        "platform/online/rtc_initialization_transaction.h":
+            "3ca47672b3d592c3ab7fe173a607850bea36be01b22d7f7f188f26b28ec39063",
+        "platform/online/startup_stage_ownership.h":
+            "237215c96916d572fc35d3105e83cdb1e0998eb00e1cdb15777760d7a83ebb70",
+        "cmake/patches/libdatachannel-work-admission.patch":
+            "c5a510b2f7e1e11193a768ca1fda9536c3900bbeca5b04f4e54c147bbb883df7",
+        "platform/online/queued_work_admission.h":
+            "8b20dd49ccfc6cadf249ed431f2df186d94b49fdce85952a6970bee71be71a19",
+        "cmake/patches/libdatachannel-prepared-work.patch":
+            "1b68e4b688d1f7f9828fcac91ee191f55fec7666aa6fd20ba65958d14da31131",
+        "platform/online/prepared_work_queue.h":
+            "fe94925f249243a2b801ecc122059bea51418cc5269adaa0a27660268d100f4e",
+        "cmake/patches/libdatachannel-transport-retirement.patch":
+            "384ef834c198f2bdf641a8ceb88591ee1539b767b178671bad4b050f3cc17c24",
+        "platform/online/transport_retirement.h":
+            "554a003764072ebc70fb3bf606e5c99dbf8d4449c5225eb201d75b2e1b1f7af8",
     }
     for rel_path, expected in pinned_hashes.items():
         candidate = root / rel_path
@@ -180,6 +326,7 @@ def main() -> int:
     # reviewed source-notice update must reach every shipping platform, not
     # merely pass this source-tree guard and fail later during packaging.
     basisu_readme_hash = pinned_hashes["third_party/basisu/README.md"]
+    phone_party_notice_hash = pinned_hashes["third_party/native_phone_party/NOTICE.txt"]
     for rel_path in (
         "macos/Scripts/verify_unsigned_release.sh",
         "tools/package_windows_zip.sh",
@@ -191,6 +338,25 @@ def main() -> int:
                 f"{rel_path} must pin the reviewed BasisU README SHA-256 "
                 f"{basisu_readme_hash}"
             )
+        if not path.is_file() or phone_party_notice_hash not in read_text(path):
+            problems.append(
+                f"{rel_path} must pin the reviewed native Phone Party notice SHA-256 "
+                f"{phone_party_notice_hash}"
+            )
+
+    # The build recipe is authoritative for the reviewed top-level pin. A
+    # dependency update must not leave all notices consistently describing an
+    # older release while this guard accepts their old independent literals.
+    recipe = root / "cmake/datachannel.cmake"
+    if not recipe.is_file():
+        problems.append("missing native Phone Party dependency recipe")
+    else:
+        notices = {}
+        for rel_path in ("NOTICE.md", "THIRD_PARTY.md",
+                         "third_party/native_phone_party/NOTICE.txt"):
+            path = root / rel_path
+            notices[rel_path] = read_text(path) if path.is_file() else ""
+        problems.extend(native_party_pin_problems(read_text(recipe), notices))
 
     # mixer.c/.h must credit the perfect_dark origin in the file itself, not
     # just in THIRD_PARTY.md -- the source-level attribution is what a
@@ -225,6 +391,8 @@ def main() -> int:
     third_party_text = ""
     if third_party.is_file():
         third_party_text = read_text(third_party)
+        if phone_party_notice_hash not in third_party_text:
+            problems.append("THIRD_PARTY.md does not identify the reviewed native Phone Party notice SHA-256")
         for needle in (
             "lib/glad/LICENSE",
             "lib/sdl_gamecontrollerdb",
@@ -257,7 +425,25 @@ def main() -> int:
             "PyInstaller",
             "cmake/patches/libdatachannel-windows-mbedtls-verify.patch",
             "2c9044de6b049ca25cb3cd1649ed7e27aa055138",
-            "c6696d157b5612df2a741d9a03b192b47ab6cefb",
+            "443f6934d9007eb7076ab7825ba330f355fcbead",
+            "3c40a3545b6b1b62c7adee7f8f2bd58aa290afd6",
+            "fec583d54493f879d2ae44a743423bf8a04371ab",
+            "55f93686c01528224f448c19128836e7df245f72",
+            "94899e0b926ac1b0f4750bfbd495167b4a6ae9ef",
+            "cmake/apply_libdatachannel_patch.cmake",
+            "cmake/patches/libdatachannel-cleanup-worker.patch",
+            "platform/online/reserved_cleanup_worker.h",
+            "cmake/patches/libdatachannel-initialization.patch",
+            "cmake/patches/libdatachannel-startup-stages.patch",
+            "platform/online/rtc_initialization_transaction.h",
+            "platform/online/startup_stage_ownership.h",
+            "cmake/verify_datachannel_startup.cmake",
+            "cmake/patches/libdatachannel-work-admission.patch",
+            "platform/online/queued_work_admission.h",
+            "cmake/patches/libdatachannel-prepared-work.patch",
+            "platform/online/prepared_work_queue.h",
+            "cmake/patches/libdatachannel-transport-retirement.patch",
+            "platform/online/transport_retirement.h",
             "Mbed TLS",
         ):
             if needle not in third_party_text:

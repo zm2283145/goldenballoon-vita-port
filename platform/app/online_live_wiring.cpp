@@ -1,9 +1,10 @@
 /*
  * Native online BETA: launcher-side live-adapter wiring.
  *
- * Compiled ONLY under MDKR_ENABLE_ONLINE_BETA (the CMake beta gate; never in a
- * shipping build -- the option defaults OFF and release.yml/build_app_bundle.sh
- * never set it). Provides the real OnlineRoom_makeGatedLiveAdapter the Online
+ * Compiled ONLY under MDKR_ENABLE_ONLINE_BETA (defaults OFF for ordinary
+ * development builds; native release profiles explicitly enable the beta).
+ * The published browser remains local-only. Provides the real
+ * OnlineRoom_makeGatedLiveAdapter the Online
  * Room panel calls: it composes the production MatchRoom HTTP transport, the
  * real signal-client mesh backend and the live match adapter EXACTLY as the
  * end-to-end transport driver does

@@ -240,6 +240,79 @@ def check_bmp(path: Path, minimum_width: int, minimum_height: int) -> None:
         raise RuntimeError("Portrait Studio capture is visually empty")
 
 
+def verify_publication_hierarchy(settings_source: str) -> None:
+    """Pin destination disclosure and keep navigation free of publication calls.
+
+    This source contract complements, rather than replaces, rendered focus,
+    named-draft, revision-success and failure-recovery observations.
+    """
+    studio = settings_source.split(
+        "bool drawCharacterPortraitStudio(", 1
+    )[1].split("template <typename Value>", 1)[0]
+    pixels = settings_source.split(
+        "bool drawPortraitPixelEditor(", 1
+    )[1].split("CharacterIdentityEdit &loadCharacterIdentityEdit(", 1)[0]
+    for marker in (
+        "Editing destination: the open named draft.",
+        "Editing destination: local editor state, not a saved named draft.",
+        'ImGui::CollapsingHeader(\n'
+        '        "Quick-publish authored square PNG##character-portrait-quick-publish")',
+        '"expanded" : "collapsed"',
+        "This bypasses the framed source, style preview and pixel canvas",
+        "The package keeps its enabled or disabled state.",
+    ):
+        if marker not in studio:
+            raise RuntimeError(f"portrait publication hierarchy lost {marker!r}")
+    # A closed compatibility section must never hide the shared colour editor.
+    if not studio.index("ImGui::ColorEdit3(") < studio.index("if (quickPublishOpen)"):
+        raise RuntimeError("shared minimap colour moved inside quick publication")
+    for section, button in (
+        (studio, 'ImGui::Button("Install PNG revision"'),
+        (pixels, 'ImGui::Button("Install canvas revision"'),
+    ):
+        action = section.index(button)
+        for disclosure in (
+            "Destination:",
+            "Installation reloads this editor from the new revision.",
+            "Save a named draft first to retain other unpublished work.",
+            "Undo Identity cannot undo installation",
+            "Revision history and recovery",
+        ):
+            if disclosure not in section[:action]:
+                raise RuntimeError(
+                    f"{button} lost pre-action consequence {disclosure!r}"
+                )
+    compact_studio = re.sub(r"\s+", "", studio)
+    compact_pixels = re.sub(r"\s+", "", pixels)
+    for source, predicate in (
+        (compact_studio,
+         "constboolcanSave=edit.portraitPath[0]!='\\0'&&!stagingDraft;"),
+        (compact_pixels,
+         "constboolcanSaveCanvas=edit.canvasDirty||minimapDirty;"),
+        (compact_pixels,
+         "if(!canSaveCanvas||stagingDraft)ImGui::BeginDisabled();"),
+        (compact_studio,
+         "reviseCharacterIdentity(packageId.c_str(),edit.portraitPath,edit.minimapRgb,"),
+        (compact_pixels,
+         "reviseCharacterIdentityRgba(entry->id,edit.canvas,edit.minimapRgb,"),
+    ):
+        if predicate not in source:
+            raise RuntimeError("portrait presentation changed publication inputs or gating")
+    navigation = studio.split(
+        'if (ImGui::Button("Open Package##portrait-package"', 1
+    )[1].split("ui::SpeakFocusedItem(", 1)[0]
+    for marker in (
+        "finishCharacterHistory(entry, history);",
+        "persistCharacterWorkshopTab(CharacterWorkshopTab::Package, true);",
+        "return false;",
+    ):
+        if marker not in navigation:
+            raise RuntimeError(f"portrait Package navigation lost {marker!r}")
+    if re.search(r"\b(?:revise\w*|queue\w*|save\w*|restore\w*|close\w*|delete\w*)\(",
+                 navigation):
+        raise RuntimeError("portrait Package navigation acquired a mutation action")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--build", type=Path, default=Path(DEFAULT_BUILD_DIR))
@@ -251,6 +324,7 @@ def main() -> int:
         settings_source = (
             ROOT / "platform" / "app" / "ui_settings.cpp"
         ).read_text(encoding="utf-8")
+        verify_publication_hierarchy(settings_source)
         theme_source = (
             ROOT / "platform" / "app" / "app_theme.cpp"
         ).read_text(encoding="utf-8")
@@ -440,7 +514,8 @@ def main() -> int:
                     "native bidi preview or accessibility walk mutated "
                     "installed package bytes"
                 )
-    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+    except (OSError, RuntimeError, IndexError, ValueError,
+            subprocess.SubprocessError) as error:
         print(f"check_character_portrait_studio_ui: FAIL -- {error}",
               file=sys.stderr)
         return 1

@@ -22,6 +22,9 @@
 // launcher's per-frame samples continue from 1. It exists so the test seam can
 // make a hold APPEAR partway through the window -- the case the one-shot
 // sampler got wrong, and the one a scripted run cannot otherwise produce.
+// Live shoulder input is a same-controller pair; separate pads cannot combine
+// a gesture. Each sample also discovers newly connected controllers and releases
+// detached borrows, without reopening the devices that remain connected.
 //
 // MDKR_APP_TEST_LAUNCH_HOLD (test-only) injects the RAW hold rather than the
 // decision, so AppUi_launcherHoldOpensLauncher() still runs for real:

@@ -28,6 +28,7 @@
 
 #include "controller_mapping.h"
 #include "enhancement_registry.h"
+#include "enh_ai_difficulty_value.h"
 #include "fs_utf8.h"
 #include "mod_registry.h"
 #include "modern_character_install.h"
@@ -408,11 +409,21 @@ bool differsFromLive(MdkrVideoKey k, const MdkrVideoSchema *s) {
     return d->number != l->number;
 }
 
+const char *effectiveOptionValue(MdkrVideoKey key, const char *value) {
+    // Interpret the supplied snapshot, not the gameplay accessor: that accessor
+    // latches the running session and cannot describe a staged Next Play value.
+    // Keep raw config/edit text intact for persistence, retries and source locks.
+    return key == MDKR_ENH_AI_DIFFICULTY
+        ? mdkr_ai_difficulty_effective_value(value) : value;
+}
+
 void formatValue(MdkrVideoKey key, const MdkrVideoSchema *s,
                  const MdkrVideoValue *v, char *out, size_t cap) {
     if (!v) { std::snprintf(out, cap, "?"); return; }
     switch (s->type) {
-        case MDKR_VIDEO_TYPE_STRING: std::snprintf(out, cap, "%s", v->text); break;
+        case MDKR_VIDEO_TYPE_STRING:
+            std::snprintf(out, cap, "%s", effectiveOptionValue(key, v->text));
+            break;
         case MDKR_VIDEO_TYPE_INT:
             if (mdkr_video_key_is_audio(key)) {
                 std::snprintf(out, cap, "%d%%", (int)v->number);
@@ -613,6 +624,7 @@ bool optionsFor(MdkrVideoKey k, Options &out) {
 }
 
 const char *optionLabel(MdkrVideoKey key, const char *value) {
+    value = effectiveOptionValue(key, value);
     if (key == MDKR_VIDEO_MODE && std::strcmp(value, "custom") == 0) {
         return "Custom (Individual Settings)";
     }
@@ -994,8 +1006,9 @@ bool drawKey(SDL_Window *window, MdkrVideoKey k, bool compact) {
             g_smokeGamepadFocusUsed = true;
         }
         int cur = -1;
+        const char *effectiveEdit = effectiveOptionValue(k, editState.text);
         for (int i = 0; i < opts.count; ++i) {
-            if (std::strcmp(opts.items[i].value, editState.text) == 0) {
+            if (std::strcmp(opts.items[i].value, effectiveEdit) == 0) {
                 cur = i;
                 break;
             }
@@ -2807,6 +2820,9 @@ std::map<std::string, bool> g_characterPendingDraftFit;
 std::string g_characterPendingDraftRemoval;
 char g_characterDraftName[CharacterDraftStore::kMaximumNameBytes + 1u] = {};
 std::string g_characterDraftNameOwner;
+CharacterWorkshopDraftHandoff g_characterDraftIdentityHandoff;
+bool g_characterDraftNameFocusRequested = false;
+bool g_characterIdentityNameFocusRequested = false;
 char g_characterDraftBundleImportPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {};
 char g_characterDraftBundleExportPath[MDKR_MODERN_CHARACTER_PATH_MAX] = {};
 bool g_characterDraftBundleShareRightsConfirmed = false;
@@ -6803,6 +6819,50 @@ bool characterSecondaryRoleNode(const CharacterRigEdit &edit,
         });
 }
 
+// Preserve the caller's native widget identity and fixed-height selection
+// behavior, but paint authored text literally instead of parsing ## as markup.
+bool drawCharacterLiteralChoice(const char *widgetLabel, const char *visibleText,
+                                 bool selected) {
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const float width = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    const float height = ImGui::GetTextLineHeight();
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+    const bool activated = ImGui::Selectable(
+        widgetLabel, selected, 0, ImVec2(width, height));
+    ImGui::PopStyleColor();
+    if (ImGui::IsItemVisible()) {
+        const ImVec4 clip(origin.x, origin.y, origin.x + width, origin.y + height);
+        ImGui::GetWindowDrawList()->AddText(
+            ImGui::GetFont(), ImGui::GetFontSize(), origin,
+            ImGui::GetColorU32(ImGuiCol_Text), visibleText, nullptr, 0.0f, &clip);
+    }
+    return activated;
+}
+
+bool beginCharacterLiteralCombo(const char *label, const char *preview) {
+    // BeginCombo may enter its popup. Capture the parent drawing geometry and
+    // colour first; drawing adds no item and cannot steal the combo's focus.
+    ImDrawList *draw = ImGui::GetWindowDrawList();
+    ImFont *font = ImGui::GetFont();
+    const float fontSize = ImGui::GetFontSize();
+    const ImU32 colour = ImGui::GetColorU32(ImGuiCol_Text);
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const ImVec2 padding = ImGui::GetStyle().FramePadding;
+    const float width = ImGui::CalcItemWidth();
+    const float height = ImGui::GetFrameHeight();
+    const bool previewVisible = ImGui::IsRectVisible(ImVec2(width, height));
+    const bool open = ImGui::BeginCombo(label, "");
+    const float right = origin.x + width - height;
+    if (previewVisible && preview != nullptr && right > origin.x + padding.x) {
+        const ImVec4 clip(origin.x + padding.x, origin.y,
+                          right, origin.y + height);
+        draw->AddText(font, fontSize,
+                      ImVec2(origin.x + padding.x, origin.y + padding.y),
+                      colour, preview, nullptr, 0.0f, &clip);
+    }
+    return open;
+}
+
 void drawCharacterMotionAuthoringStudio(CharacterRigEdit &edit,
                                         bool compact) {
     ImGui::SeparatorText("Motion limits and follow-through");
@@ -6952,7 +7012,8 @@ void drawCharacterMotionAuthoringStudio(CharacterRigEdit &edit,
                 " · " + std::to_string(chain.jointCount) + " joint" +
                 (chain.jointCount == 1u ? "" : "s");
             const bool open = ImGui::TreeNodeEx(
-                title.c_str(), ImGuiTreeNodeFlags_DefaultOpen);
+                "##secondary-chain", ImGuiTreeNodeFlags_DefaultOpen,
+                "%s", title.c_str());
             bool removed = false;
             if (open) {
                 if (ImGui::InputText(
@@ -6964,7 +7025,7 @@ void drawCharacterMotionAuthoringStudio(CharacterRigEdit &edit,
                     "Use a unique lowercase slug beginning with a letter; dots, dashes, and underscores are allowed.");
                 const char *rootPreview = chain.rootNode < edit.nodeNames.size()
                     ? edit.nodeNames[chain.rootNode].c_str() : "Choose root";
-                if (ImGui::BeginCombo("Stable root", rootPreview)) {
+                if (beginCharacterLiteralCombo("Stable root", rootPreview)) {
                     for (uint32_t node = 0u;
                          node < edit.nodeNames.size(); ++node) {
                         if (edit.nodeNames[node].empty() ||
@@ -6974,13 +7035,22 @@ void drawCharacterMotionAuthoringStudio(CharacterRigEdit &edit,
                         const std::string label = "#" +
                             std::to_string(node) + " · " +
                             edit.nodeNames[node];
-                        if (ImGui::Selectable(label.c_str(), selected) &&
+                        // Imported names are content, not identity. The final
+                        // fixed suffix and per-node seed survive authored ###.
+                        ImGui::PushID(static_cast<int>(node));
+                        const std::string itemLabel = label + "###secondary-root";
+                        if (drawCharacterLiteralChoice(
+                                itemLabel.c_str(), label.c_str(), selected) &&
                             !selected) {
                             chain.rootNode = node;
                             chain.jointCount = 0u;
                             invalidateCharacterRigReview(edit);
                         }
                         if (selected) ImGui::SetItemDefaultFocus();
+                        ui::SpeakFocusedItem(
+                            label.c_str(), selected ? "selected" : "available",
+                            "Chooses this exact node as the stable root and clears the existing draft chain path.");
+                        ImGui::PopID();
                     }
                     ImGui::EndCombo();
                 }
@@ -7023,10 +7093,17 @@ void drawCharacterMotionAuthoringStudio(CharacterRigEdit &edit,
                         const std::string label = "#" +
                             std::to_string(edit.joints[joint].node) + " · " +
                             edit.joints[joint].name;
-                        if (ImGui::Selectable(label.c_str(), false)) {
+                        ImGui::PushID(static_cast<int>(edit.joints[joint].node));
+                        const std::string itemLabel = label + "###secondary-child";
+                        if (drawCharacterLiteralChoice(
+                                itemLabel.c_str(), label.c_str(), false)) {
                             chain.joints[chain.jointCount++] = joint;
                             invalidateCharacterRigReview(edit);
                         }
+                        ui::SpeakFocusedItem(
+                            label.c_str(), "eligible direct child",
+                            "Adds this exact joint to the draft chain and reopens rig review.");
+                        ImGui::PopID();
                     }
                     ImGui::EndCombo();
                 }
@@ -7676,7 +7753,7 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
                 const CharacterRigEdit::Joint &joint = edit.joints[role.joint];
                 preview = "#" + std::to_string(joint.node) + " · " + joint.name;
             }
-            if (ImGui::BeginCombo(kHumanoidRigRoles[slot].name,
+            if (beginCharacterLiteralCombo(kHumanoidRigRoles[slot].name,
                                   preview.c_str())) {
                 edit.selectedRole = static_cast<int>(slot);
                 edit.selectedJoint = role.joint;
@@ -7693,12 +7770,12 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
                     const CharacterRigEdit::Joint &joint =
                         edit.joints[jointIndex];
                     const std::string label = "#" +
-                        std::to_string(joint.node) + " · " + joint.name +
-                        "##rig-joint";
+                        std::to_string(joint.node) + " · " + joint.name;
+                    const std::string itemLabel = label + "##rig-joint";
                     ImGui::PushID(static_cast<int>(jointIndex));
                     if (used) ImGui::BeginDisabled();
-                    if (ImGui::Selectable(
-                            label.c_str(), role.joint ==
+                    if (drawCharacterLiteralChoice(
+                            itemLabel.c_str(), label.c_str(), role.joint ==
                                 static_cast<int>(jointIndex)) && !used &&
                         role.joint != static_cast<int>(jointIndex)) {
                         role = CharacterRigEdit::Role{};
@@ -7706,6 +7783,11 @@ bool drawCharacterRigStudio(const MdkrModernCharacterEntry *entry,
                         edit.selectedJoint = role.joint;
                         invalidateCharacterRigReview(edit);
                     }
+                    ui::SpeakFocusedItem(
+                        label.c_str(), used ? "already mapped to another role"
+                            : role.joint == static_cast<int>(jointIndex)
+                                ? "selected" : "available",
+                        "Assigns this exact joint to the selected humanoid role and reopens rig review.");
                     if (used) ImGui::EndDisabled();
                     ImGui::PopID();
                 }
@@ -11795,7 +11877,7 @@ void drawCharacterPerformanceSourceHandoff(
                          chosenDraft->modelPath)
             : "Choose the exact source draft";
         ImGui::SetNextItemWidth(-1.0f);
-        const bool sourceListOpen = ImGui::BeginCombo(
+        const bool sourceListOpen = beginCharacterLiteralCombo(
             "Source draft for LOD copy", preview.c_str());
         ui::SpeakFocusedItem(
             "Source draft for LOD copy",
@@ -11808,8 +11890,8 @@ void drawCharacterPerformanceSourceHandoff(
                     (draft->displayName.empty() ? "Unnamed raw draft"
                                                 : draft->displayName) +
                     " — " + draft->modelPath + " [" + draft->id + "]";
-                if (ImGui::Selectable(
-                        visible.c_str(), draft->id == selectedId)) {
+                if (drawCharacterLiteralChoice(
+                        visible.c_str(), visible.c_str(), draft->id == selectedId)) {
                     selectedId = draft->id;
                     chosenDraft = draft;
                 }
@@ -19127,22 +19209,18 @@ bool drawPortraitSourceImport(const MdkrModernCharacterEntry *entry,
     }
     ImGui::SeparatorText("Start portrait artwork");
     ui::TextSubtleWrapped(
-        "Start from an exact-renderer model capture, any local RGB/RGBA PNG, or the pixel canvas. Source decoding and conversion stay local; applying a framed source records the exact 40 × 40 result in the draft, so a moved external PNG cannot invalidate saved work.");
-    ImGui::SetNextItemWidth(
-        filedialog::isAvailable()
-            ? std::max(120.0f, ImGui::GetContentRegionAvail().x -
-                                  ui::kBtnSecondary().x - ui::kGapS)
-            : -1.0f);
+        "Start from an exact-renderer model capture, a local RGB/RGBA PNG, or the pixel canvas. Framing is provisional: its own Undo restores crop, sampling, matte, background and mask changes. Send or Apply commits the framed source to this editor, not the installed character. Save a named draft to retain the exact result without depending on the external PNG.");
+    ImGui::TextWrapped("Portrait input PNG");
+    ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputTextWithHint(
-        "Portrait input PNG##character-portrait-import-path",
+        "##character-portrait-import-path",
         "/path/to/source-or-capture.png", edit.importPath,
         sizeof(edit.importPath));
     ui::SpeakFocusedItem(
-        "Portrait input PNG", nullptr,
+        "Portrait input PNG", edit.importPath,
         "Accepts a bounded, non-animated, non-interlaced RGB or RGBA PNG from sixteen through four thousand ninety-six pixels per side.");
     if (filedialog::isAvailable()) {
-        ImGui::SameLine();
-        if (ImGui::Button("Choose image...", ui::kBtnSecondary())) {
+        if (ImGui::Button("Choose image...", ui::kBtnFullWidth())) {
             std::string picked;
             if (filedialog::openPortraitImage(picked)) {
                 std::snprintf(edit.importPath, sizeof(edit.importPath), "%s",
@@ -19456,6 +19534,8 @@ bool drawPortraitSourceImport(const MdkrModernCharacterEntry *entry,
         drawPortraitStudioCanvas(edit.importPreview, "Framed source");
         ImGui::SameLine();
         ImGui::BeginGroup();
+        ui::TextSubtleWrapped(
+            "Send changes the style source only. Apply also replaces the editable pixel canvas. Neither installs a revision; Undo Identity restores the editor state.");
         if (ImGui::Button("Send to DKR-style lab")) {
             edit.styleSource = edit.importPreview;
             commitPortraitImportSource(edit);
@@ -19476,7 +19556,7 @@ bool drawPortraitSourceImport(const MdkrModernCharacterEntry *entry,
             edit.canvasDirty = true;
             changed = true;
             setStatus(
-                "Portrait source framed, styled, and copied to the exact game canvas; review it before Build.",
+                "Styled source copied to the editor canvas, not installed. Review it before draft Build or Install canvas revision.",
                 AppTheme::good());
         }
         ui::SpeakFocusedItem(
@@ -19799,7 +19879,7 @@ bool drawPortraitStyleLab(const MdkrModernCharacterEntry *entry,
                           CharacterIdentityEdit &edit) {
     bool changed = false;
     ui::TextSubtleWrapped(
-        "Reframe one local source and generate a deterministic game-size result. The source, recipe, and exact output stay in the named draft; no network service or generative model is used.");
+        "Reframe one local source and preview a deterministic game-size result. Apply copies the styled result into the pixel canvas; changing the recipe alone does not update that canvas or the installed character. A saved named draft retains the source, recipe and exact output. No network service or generative model is used.");
     ImGui::SetNextItemWidth(std::min(280.0f, ImGui::GetContentRegionAvail().x));
     changed |= ImGui::SliderInt("Framing zoom (%)", &edit.styleRecipe.zoomPercent,
                                 50, 250);
@@ -20202,13 +20282,20 @@ bool drawPortraitPixelEditor(const MdkrModernCharacterEntry *entry,
     const bool canSaveCanvas = edit.canvasDirty || minimapDirty;
     const bool stagingDraft = g_characterActiveDrafts.find(entry->id) !=
         g_characterActiveDrafts.end();
+    ui::TextSubtleWrapped(stagingDraft
+        ? "Destination: the open named draft. This canvas and minimap colour join names, profile and rig in Package's draft Build. Installing a canvas-only revision is unavailable while the draft is open."
+        : "Destination: a new installed local revision containing this exact canvas and minimap colour, not the external quick-publish PNG. Installing makes it current after validation and keeps the package's enabled or disabled state. Other unpublished editor changes are not included.");
+    if (!stagingDraft) {
+        ui::TextSubtleWrapped(
+            "Installation reloads this editor from the new revision. Save a named draft first to retain other unpublished work. Undo Identity cannot undo installation; recover an earlier source in Package's Revision history and recovery. Failed installation leaves the current character unchanged.");
+    }
     if (!canSaveCanvas || stagingDraft) ImGui::BeginDisabled();
-    if (ImGui::Button("Save pixel canvas revision")) {
+    if (ImGui::Button("Install canvas revision", ui::kBtnFullWidth())) {
         saved = reviseCharacterIdentityRgba(
             entry->id, edit.canvas, edit.minimapRgb, [](bool revised) {
                 setStatus(
                     revised
-                        ? "Pixel portrait compiled and activated."
+                        ? "Canvas revision installed locally. For an earlier source, open Package's revision history."
                         : "Pixel portrait failed; the active character was not changed.",
                     revised ? AppTheme::good() : AppTheme::bad());
             });
@@ -20218,12 +20305,12 @@ bool drawPortraitPixelEditor(const MdkrModernCharacterEntry *entry,
             saved ? AppTheme::accent() : AppTheme::bad());
     }
     ui::SpeakFocusedItem(
-        "Save pixel canvas revision",
+        "Install canvas revision",
         canSaveCanvas && !stagingDraft
             ? "available" : stagingDraft
                 ? "unavailable while a named draft is open"
                 : "no canvas or minimap changes",
-        "Compiles and atomically activates the exact canvas. Named drafts use Build so identity, profile, and rig publish together.");
+        "Compiles and makes the exact canvas and minimap colour current locally, then reloads this editor. Save a named draft first to retain other unpublished edits. Undo Identity cannot restore an installed revision; use Package's revision history. Named drafts use Build instead.");
     if (!canSaveCanvas || stagingDraft) ImGui::EndDisabled();
     if (stagingDraft) {
         ui::TextSubtleWrapped(
@@ -20347,6 +20434,22 @@ static bool prepareCharacterWorkshopHeading(
     return raster.ready;
 }
 
+bool returnToCharacterIdentityAfterDraft(const MdkrModernCharacterEntry *entry) {
+    const std::string digest = characterDigestHex(entry->source_sha256);
+    if (!g_characterDraftIdentityHandoff.matches(entry->id, digest)) return false;
+    const auto active = g_characterActiveDrafts.find(entry->id);
+    const CharacterDraftStore::Draft *draft =
+        active != g_characterActiveDrafts.end()
+            ? CharacterDraftStore::find(g_characterDrafts, active->second) : nullptr;
+    if (draft == nullptr || draft->packageId != entry->id ||
+        draft->baseSourceDigest != digest) return false;
+    g_characterDraftIdentityHandoff = {};
+    g_characterDraftNameFocusRequested = false;
+    g_characterIdentityNameFocusRequested = true;
+    persistCharacterWorkshopTab(CharacterWorkshopTab::Identity, true);
+    return true;
+}
+
 bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
     CharacterIdentityEdit &edit = loadCharacterIdentityEdit(entry);
     const auto pending = g_characterPendingPortraitSources.find(entry->id);
@@ -20377,11 +20480,40 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
     MdkrModernCharacterTextProjection shortEvidence;
     ui::TextSubtleWrapped(
         "Author the character's player-facing names, square portrait artwork, and readable minimap colour. Named drafts compile these identity fields with gameplay and rig choices as one reviewed source revision.");
+    ui::TextSubtleWrapped(stagingDraft
+        ? "Editing destination: the open named draft. Review its save state in Package; draft Build publishes the combined revision. Framing, styling and painting here do not change the installed character."
+        : "Editing destination: local editor state, not a saved named draft. Choose a draft to keep this work for later, or explicitly install a portrait revision below. Framing, styling and painting alone do not change the installed character.");
+    if (!stagingDraft) {
+        ui::TextSubtleWrapped(
+            "To edit names, create or resume a named draft. Choose it in Package; after a successful save or resume, you will return here. The playable character stays unchanged.");
+        if (g_characterIdentityNameFocusRequested) {
+            ImGui::SetKeyboardFocusHere();
+            g_characterIdentityNameFocusRequested = false;
+        }
+        if (ImGui::Button("Choose a draft##identity-draft-handoff", ui::kBtnFullWidth())) {
+            g_characterDraftIdentityHandoff = {
+                entry->id, characterDigestHex(entry->source_sha256)};
+            g_characterDraftNameFocusRequested = true;
+            persistCharacterWorkshopTab(CharacterWorkshopTab::Package, true);
+            finishCharacterHistory(entry, history);
+            return false;
+        }
+        ui::SpeakFocusedItem(
+            "Create or resume a named draft", "Opens Package, then returns to Identity",
+            "Opens the draft choices for this character. Nothing is created, resumed, built, activated, or assigned until you choose a separate action.");
+    }
     if (!stagingDraft) ImGui::BeginDisabled();
+    ImGui::TextWrapped("Display name");
     ImGui::SetNextItemWidth(std::min(420.0f, ImGui::GetContentRegionAvail().x));
+    const bool focusIdentityName = g_characterIdentityNameFocusRequested;
+    if (focusIdentityName) {
+        if (stagingDraft) ImGui::SetKeyboardFocusHere();
+        g_characterIdentityNameFocusRequested = false;
+    }
     (void)ImGui::InputTextWithHint(
-        "Display name##character-display-name", "Dixie Kong",
+        "##character-display-name", "Dixie Kong",
         edit.displayName, sizeof(edit.displayName));
+    if (focusIdentityName && stagingDraft) ImGui::SetScrollHereY(0.35f);
     const bool displayValid = mdkr_modern_character_text_project(
         edit.displayName, sizeof(edit.displayName), displayProjection,
         sizeof(displayProjection), &displayEvidence) != 0;
@@ -20416,9 +20548,10 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
     ui::SpeakFocusedItem(
         "Display name", edit.displayName,
         displayProjectionHelp);
+    ImGui::TextWrapped("Short name");
     ImGui::SetNextItemWidth(std::min(420.0f, ImGui::GetContentRegionAvail().x));
     (void)ImGui::InputTextWithHint(
-        "Short name##character-short-name", "Dixie",
+        "##character-short-name", "Dixie",
         edit.shortName, sizeof(edit.shortName));
     const bool shortValid = mdkr_modern_character_text_project(
         edit.shortName, sizeof(edit.shortName), shortProjection,
@@ -20452,16 +20585,18 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
     ui::SpeakFocusedItem(
         "Short name", edit.shortName,
         shortProjectionHelp);
+    ImGui::TextWrapped("Narration name");
     ImGui::SetNextItemWidth(std::min(420.0f, ImGui::GetContentRegionAvail().x));
     (void)ImGui::InputTextWithHint(
-        "Narration name##character-narration-name", "Dixie Kong",
+        "##character-narration-name", "Dixie Kong",
         edit.narrationName, sizeof(edit.narrationName));
     ui::SpeakFocusedItem(
         "Narration name", edit.narrationName,
         "Sets the language-aware spoken label independently of the retail visual game font.");
+    ImGui::TextWrapped("Sort label");
     ImGui::SetNextItemWidth(std::min(420.0f, ImGui::GetContentRegionAvail().x));
     (void)ImGui::InputTextWithHint(
-        "Sort label##character-sort-label", "Kong, Dixie",
+        "##character-sort-label", "Kong, Dixie",
         edit.sortLabel, sizeof(edit.sortLabel));
     ui::SpeakFocusedItem(
         "Sort label", edit.sortLabel,
@@ -20612,64 +20747,85 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
         ui::TextSubtleWrapped(
             "Create or resume a named draft to edit names. This prevents a metadata-only shortcut from publishing a partial identity revision.");
     }
-    (void)drawPortraitSourceImport(entry, edit);
-    ImGui::SeparatorText("Quick-publish authored square PNG");
-    ui::TextSubtleWrapped(
-        "This compatibility shortcut compiles an already-finished square portrait directly. For model captures, non-square art, background cleanup, or pixel styling, use the framed source workflow above.");
-    if (stagingDraft) ImGui::BeginDisabled();
-    ImGui::SetNextItemWidth(-1.0f);
-    ImGui::InputTextWithHint(
-        "Portrait source PNG##character-portrait-path",
-        "/path/to/square-portrait.png", edit.portraitPath,
-        sizeof(edit.portraitPath));
-    if (filedialog::isAvailable() && ImGui::Button("Browse for portrait...")) {
-        std::string picked;
-        if (filedialog::openPortraitImage(picked)) {
-            std::snprintf(edit.portraitPath, sizeof(edit.portraitPath), "%s",
-                          picked.c_str());
-        }
-    }
-    if (stagingDraft) ImGui::EndDisabled();
+    ImGui::SeparatorText("Shared minimap colour");
     ImGui::SetNextItemWidth(std::min(360.0f, ImGui::GetContentRegionAvail().x));
     (void)ImGui::ColorEdit3(
-        "Minimap colour##character-minimap-colour", edit.minimapRgb,
+        "##character-minimap-colour", edit.minimapRgb,
         ImGuiColorEditFlags_DisplayRGB | ImGuiColorEditFlags_InputRGB |
             ImGuiColorEditFlags_PickerHueWheel);
+    ui::SpeakFocusedItem(
+        "Shared minimap colour", nullptr,
+        "Included in a draft Build or either portrait installation route. Editing the colour alone does not install it.");
     ui::TextSubtleWrapped(
-        "PNG profile: 16–1024 px square, 8-bit RGB/RGBA, non-animated and non-interlaced. Transparency is preserved. The exact current in-game pixels and colour are shown in Overview above.");
-    const bool canSave = edit.portraitPath[0] != '\0' && !stagingDraft;
-    if (!canSave) ImGui::BeginDisabled();
+        "Draft Build, Install canvas revision and Install PNG revision each include this colour. Changing it here does not update the installed character. Overview shows the current installed identity.");
+    (void)drawPortraitSourceImport(entry, edit);
+    const bool quickPublishOpen = ImGui::CollapsingHeader(
+        "Quick-publish authored square PNG##character-portrait-quick-publish");
+    ui::SpeakFocusedItem(
+        "Quick-publish authored square PNG", quickPublishOpen ? "expanded" : "collapsed",
+        "Optional compatibility route for a finished square PNG. Expand to review its separate local installation action. This does not use the style preview or pixel canvas.");
     bool saved = false;
-    if (ImGui::Button("Save identity revision")) {
-        const std::string packageId = entry->id;
-        saved = reviseCharacterIdentity(
-            packageId.c_str(), edit.portraitPath, edit.minimapRgb,
-            [packageId](bool revised) {
-                if (revised) {
-                    g_characterIdentityEdits[packageId].portraitPath[0] = '\0';
-                }
-                setStatus(
-                    revised
-                        ? "Portrait and minimap identity compiled and activated."
-                        : "Identity revision failed; the active character was not changed.",
-                    revised ? AppTheme::good() : AppTheme::bad());
-            });
-        if (saved) {
-            setStatus(
-                "Saving and validating the portrait identity in the background.",
-                AppTheme::accent());
-        } else {
-            setStatus(
-                "Identity revision could not start; the active character was not changed.",
-                AppTheme::bad());
-        }
-    }
-    if (!canSave) ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::TextDisabled("non-destructive local revision");
-    if (stagingDraft) {
+    if (quickPublishOpen) {
         ui::TextSubtleWrapped(
-            "A named draft builds from its exact 40 × 40 canvas. Use the pixel editor below while the draft is open; close the draft first if you want the PNG revision shortcut.");
+            "Destination: a new installed local revision from the selected PNG and shared minimap colour. This bypasses the framed source, style preview and pixel canvas; other unpublished editor changes are not included. Validation must succeed before it becomes current. The package keeps its enabled or disabled state.");
+        ui::TextSubtleWrapped(
+            "Installation reloads this editor from the new revision. Save a named draft first to retain other unpublished work. Undo Identity cannot undo installation. Restore an earlier retained source in Package's Revision history and recovery. A failed installation leaves the current character unchanged.");
+        if (stagingDraft) ImGui::BeginDisabled();
+        ImGui::TextWrapped("Portrait source PNG");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::InputTextWithHint(
+            "##character-portrait-path",
+            "/path/to/square-portrait.png", edit.portraitPath,
+            sizeof(edit.portraitPath));
+        ui::SpeakFocusedItem(
+            "Portrait source PNG", edit.portraitPath,
+            "The complete local path used only by Install PNG revision; this does not select the editable pixel canvas.");
+        if (filedialog::isAvailable() && ImGui::Button("Browse for portrait...")) {
+            std::string picked;
+            if (filedialog::openPortraitImage(picked)) {
+                std::snprintf(edit.portraitPath, sizeof(edit.portraitPath), "%s",
+                              picked.c_str());
+            }
+        }
+        if (stagingDraft) ImGui::EndDisabled();
+        ui::TextSubtleWrapped(
+            "PNG profile: 16–1024 px square, 8-bit RGB/RGBA, non-animated and non-interlaced. Transparency is preserved. For other supported PNG shapes, captures or cleanup, use Start portrait artwork instead.");
+        const bool canSave = edit.portraitPath[0] != '\0' && !stagingDraft;
+        if (!canSave) ImGui::BeginDisabled();
+        if (ImGui::Button("Install PNG revision", ui::kBtnFullWidth())) {
+            const std::string packageId = entry->id;
+            saved = reviseCharacterIdentity(
+                packageId.c_str(), edit.portraitPath, edit.minimapRgb,
+                [packageId](bool revised) {
+                    if (revised) {
+                        g_characterIdentityEdits[packageId].portraitPath[0] = '\0';
+                    }
+                    setStatus(
+                        revised
+                            ? "PNG revision installed locally. For an earlier source, open Package's revision history."
+                            : "Identity revision failed; the active character was not changed.",
+                        revised ? AppTheme::good() : AppTheme::bad());
+                });
+            if (saved) {
+                setStatus(
+                    "Saving and validating the portrait identity in the background.",
+                    AppTheme::accent());
+            } else {
+                setStatus(
+                    "Identity revision could not start; the active character was not changed.",
+                    AppTheme::bad());
+            }
+        }
+        ui::SpeakFocusedItem(
+            "Install PNG revision",
+            canSave ? "available" : stagingDraft
+                ? "unavailable while a named draft is open" : "choose a square PNG first",
+            "Makes the selected PNG and minimap colour current locally after validation, then reloads this editor. It does not install the pixel canvas or other unpublished edits; save a named draft first to retain that work. Undo Identity is not revision recovery; use Package's revision history.");
+        if (!canSave) ImGui::EndDisabled();
+        if (stagingDraft) {
+            ui::TextSubtleWrapped(
+                "This shortcut is unavailable while a named draft is open. Apply artwork to its exact 40 × 40 canvas, then open Package to review and Build the combined draft. Close the draft in Package to use the PNG shortcut separately.");
+        }
     }
     if (saved) {
         return true;
@@ -20691,6 +20847,16 @@ bool drawCharacterPortraitStudio(const MdkrModernCharacterEntry *entry) {
             return true;
         }
     }
+    ui::TextSubtleWrapped(
+        "Next: open Package to review named draft save and Build choices, or restore a retained installed revision. These remain separate actions.");
+    if (ImGui::Button("Open Package##portrait-package", ui::kBtnFullWidth())) {
+        finishCharacterHistory(entry, history);
+        persistCharacterWorkshopTab(CharacterWorkshopTab::Package, true);
+        return false;
+    }
+    ui::SpeakFocusedItem(
+        "Open Package: drafts and recovery", "Navigation only",
+        "Opens named draft save and Build choices plus installed revision history. Opening the tab does not build, install, restore, close or delete anything. Choose a separate action there.");
     finishCharacterHistory(entry, history);
     return saved;
 }
@@ -22870,7 +23036,8 @@ void drawCharacterDraftTransfer(const MdkrModernCharacterEntry *entry) {
             for (const CharacterDraftStore::Draft &draft :
                  review.bundle.inventory.drafts) {
                 ImGui::PushID(draft.id.c_str());
-                (void)ImGui::Selectable(draft.name.c_str(), false);
+                (void)drawCharacterLiteralChoice(
+                    draft.name.c_str(), draft.name.c_str(), false);
                 const std::string detail =
                     "Source locked editor snapshot saved " +
                     characterRevisionTimestamp(draft.updatedUnix) +
@@ -23004,6 +23171,26 @@ void drawCharacterDraftTransfer(const MdkrModernCharacterEntry *entry) {
 
 bool drawCharacterDraftLifecycle(const MdkrModernCharacterEntry *entry) {
     loadCharacterDraftInventory();
+    const std::string currentDigest = characterDigestHex(entry->source_sha256);
+    const bool identityHandoff =
+        g_characterDraftIdentityHandoff.matches(entry->id, currentDigest);
+    if (!identityHandoff) {
+        g_characterDraftIdentityHandoff = {};
+        g_characterDraftNameFocusRequested = false;
+    } else {
+        ui::TextSubtleWrapped(
+            "Continue Identity: name and save a new draft, or resume a current-base draft below. A successful save or resume returns to the name fields without changing the playable character.");
+        if (ImGui::Button("Back to Identity##draft-handoff-back", ui::kBtnFullWidth())) {
+            g_characterDraftIdentityHandoff = {};
+            g_characterDraftNameFocusRequested = false;
+            g_characterIdentityNameFocusRequested = true;
+            persistCharacterWorkshopTab(CharacterWorkshopTab::Identity, true);
+            return false;
+        }
+        ui::SpeakFocusedItem(
+            "Back to Identity", "No draft action",
+            "Returns without creating, resuming, building, or deleting a draft. Existing work remains unchanged.");
+    }
     ui::TextSubtleWrapped(
         "Named drafts preserve portrait pixels, profile choices, rig mapping, fit/contact tuning, quality layout, and review acknowledgements without compiling or replacing the playable last-known-good character.");
     if (!g_characterDraftsWritable) {
@@ -23014,7 +23201,6 @@ bool drawCharacterDraftLifecycle(const MdkrModernCharacterEntry *entry) {
             "The existing file is left untouched. Draft saving stays disabled so corrupt or unreadable work is never overwritten silently.");
         return false;
     }
-    const std::string currentDigest = characterDigestHex(entry->source_sha256);
     if (g_characterDraftNameOwner != entry->id) {
         g_characterDraftNameOwner = entry->id;
         g_characterDraftName[0] = '\0';
@@ -23082,9 +23268,18 @@ bool drawCharacterDraftLifecycle(const MdkrModernCharacterEntry *entry) {
             "Restores the active saved local fit in the editor. The named draft remains retained.");
     }
     ImGui::SetNextItemWidth(-1.0f);
+    const bool focusDraftName = g_characterDraftNameFocusRequested;
+    if (focusDraftName) {
+        ImGui::SetKeyboardFocusHere();
+        g_characterDraftNameFocusRequested = false;
+    }
     ImGui::InputTextWithHint(
         "Draft name##character-draft-name", "e.g. Vehicle fit polish",
         g_characterDraftName, sizeof(g_characterDraftName));
+    if (focusDraftName) ImGui::SetScrollHereY(0.35f);
+    ui::SpeakFocusedItem(
+        "Draft name", g_characterDraftName,
+        "Name the draft before saving. Typing does not create, build, or activate it; existing current-base drafts can be resumed below.");
     const bool named = g_characterDraftName[0] != '\0';
     if (!named) ImGui::BeginDisabled();
     if (ImGui::Button(activeDraft != nullptr ? "Save draft" : "Save new draft")) {
@@ -23092,6 +23287,7 @@ bool drawCharacterDraftLifecycle(const MdkrModernCharacterEntry *entry) {
             setStatus(
                 "Draft saved atomically; the playable character was not changed.",
                 AppTheme::good());
+            (void)returnToCharacterIdentityAfterDraft(entry);
             return false;
         } else {
             setStatus("Draft save failed; the prior saved draft is intact.",
@@ -23105,6 +23301,7 @@ bool drawCharacterDraftLifecycle(const MdkrModernCharacterEntry *entry) {
                 setStatus(
                     "New named draft saved; the original draft and playable character were retained.",
                     AppTheme::good());
+                (void)returnToCharacterIdentityAfterDraft(entry);
                 return false;
             } else {
                 setStatus("New draft could not be saved.", AppTheme::bad());
@@ -23192,6 +23389,10 @@ bool drawCharacterDraftLifecycle(const MdkrModernCharacterEntry *entry) {
                 setStatus(
                     "Draft resumed against its exact source; the playable character remains unchanged.",
                     AppTheme::good());
+                if (returnToCharacterIdentityAfterDraft(entry)) {
+                    ImGui::PopID();
+                    return false;
+                }
             } else {
                 g_characterDraftError = error;
                 setStatus("Draft could not be resumed safely.", AppTheme::bad());
@@ -23591,6 +23792,11 @@ bool drawCharacterRevisionRecovery(const MdkrModernCharacterEntry *entry) {
 
 void persistCharacterWorkshopTab(CharacterWorkshopTab tab,
                                  bool                 forceSelection) {
+    if (tab != CharacterWorkshopTab::Package &&
+        !g_characterDraftIdentityHandoff.packageId.empty()) {
+        g_characterDraftIdentityHandoff = {};
+        g_characterDraftNameFocusRequested = false;
+    }
     g_characterWorkshopTab               = tab;
     g_characterWorkshopTabLoaded         = true;
     g_characterWorkshopTabForceSelection = forceSelection;
@@ -23619,7 +23825,7 @@ ImGuiTabBarFlags characterWorkshopTabBarFlags(bool compact) {
 
 void drawCharacterWorkshopTabs(bool compact) {
     loadCharacterWorkshopTab();
-    CharacterWorkshopTab visible = g_characterWorkshopTab;
+    CharacterWorkshopTab visible = CharacterWorkshopTab::Count;
     if (ImGui::BeginTabBar(
             "##character-workshop-tabs",
             characterWorkshopTabBarFlags(compact))) {
@@ -23647,9 +23853,17 @@ void drawCharacterWorkshopTabs(bool compact) {
         }
         ImGui::EndTabBar();
     }
-    g_characterWorkshopTabForceSelection = false;
-    if (visible != g_characterWorkshopTab) {
-        persistCharacterWorkshopTab(visible, false);
+    // SetSelected only queues ImGui's next layout selection. Do not mistake
+    // the previous visible tab for a manual switch and cancel a draft return
+    // intent. A clipped bar supplies no observation, so it cannot acknowledge
+    // the request either. Once observed, release SetSelected so subsequent
+    // keyboard/controller/pointer tab choices remain authoritative.
+    const CharacterWorkshopTabSelection selection =
+        CharacterWorkshop_observeTabSelection(
+            g_characterWorkshopTab, g_characterWorkshopTabForceSelection, visible);
+    g_characterWorkshopTabForceSelection = selection.awaitingVisibility;
+    if (selection.tab != g_characterWorkshopTab) {
+        persistCharacterWorkshopTab(selection.tab, false);
     }
 }
 
@@ -23791,132 +24005,130 @@ void drawCharacterReadiness(
     bool                              identityReady,
     const char                       *rigStatus) {
     ImGui::SeparatorText("Readiness");
+    // Choose from the actual editor width, not the outer launcher layout:
+    // the library rail and 200% scale can make a wide window's editor narrow.
+    const bool stacked = ImGui::GetContentRegionAvail().x <
+                         680.0f * AppTheme::uiScale();
+    const auto drawEvidence = [&](const CharacterWorkshopReadinessRow &row) {
+        switch (row.id) {
+            case CharacterWorkshopReadinessId::Identity:
+                ImGui::TextWrapped(identityReady
+                    ? "Four authored names and exact 40 × 40 portrait"
+                    : "Author names, portrait, and minimap colour");
+                break;
+            case CharacterWorkshopReadinessId::Calibration:
+                ImGui::TextWrapped(
+                    "Normalization %s · anchors %s · seat/head sockets %s",
+                    normalized ? "confirmed" : "needs review",
+                    anchored ? "complete" : "missing",
+                    attachmentSocketsMapped ? "mapped" : "missing");
+                break;
+            case CharacterWorkshopReadinessId::RigMotion:
+                ImGui::TextWrapped("%s · motion %s", rigStatus,
+                                   motionReady ? "complete" : "incomplete");
+                break;
+            case CharacterWorkshopReadinessId::GameplayProfile:
+                ImGui::TextWrapped("%s · %s", donorName(entry->donor),
+                    qualified ? "fingerprint-qualified" : "ROM evidence unavailable");
+                break;
+            case CharacterWorkshopReadinessId::VehicleFit: {
+                const CharacterTuningEdit &tuning = loadCharacterTuning(0, entry->id);
+                unsigned required = 1u;
+                unsigned reviewed = characterFitReviewed(
+                    entry, tuning, MDKR_CHARACTER_CONTEXT_SELECT) ? 1u : 0u;
+                const uint32_t supported = entry->vehicle_mask & tuning.vehicleMask;
+                for (unsigned context = 1u;
+                     context < MDKR_CHARACTER_CONTEXT_COUNT; ++context) {
+                    if ((supported & (1u << (context - 1u))) == 0u) continue;
+                    ++required;
+                    if (characterFitReviewed(entry, tuning, context)) ++reviewed;
+                }
+                ImGui::TextWrapped("%u of %u enabled contexts reviewed",
+                                   reviewed, required);
+                break;
+            }
+            case CharacterWorkshopReadinessId::Performance: {
+                const CharacterTuningEdit &tuning = loadCharacterTuning(0, entry->id);
+                const auto performance = characterPerformanceEvidenceState(entry, tuning);
+                const char *measurement =
+                    performance == CharacterWorkshopPerformanceState::TargetMet
+                        ? "complete matrix meets target"
+                    : performance == CharacterWorkshopPerformanceState::OverTargetAccepted
+                        ? "complete matrix exceeds target · explicit exception recorded"
+                    : performance == CharacterWorkshopPerformanceState::OverTarget
+                        ? "complete matrix exceeds target"
+                        : "real-device matrix incomplete";
+                ImGui::TextWrapped(
+                    "%s · %u authored LOD%s · %s texture accounting · %s",
+                    characterPerformanceTier(entry), entry->stats.lod_levels,
+                    entry->stats.lod_levels == 1u ? "" : "s",
+                    entry->stats.textures == 0u || entry->stats.decoded_texture_bytes != 0u
+                        ? "exact" : "legacy", measurement);
+                break;
+            }
+            case CharacterWorkshopReadinessId::Count: break;
+        }
+    };
     if (ImGui::BeginTable(
             "##character-workshop-readiness",
-            3,
+            stacked ? 1 : 3,
             ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg |
                 ImGuiTableFlags_SizingStretchProp)) {
-        ImGui::TableSetupColumn("Area", ImGuiTableColumnFlags_WidthStretch, 1.1f);
-        ImGui::TableSetupColumn("State", ImGuiTableColumnFlags_WidthFixed, 100.0f * AppTheme::uiScale());
-        ImGui::TableSetupColumn("Evidence", ImGuiTableColumnFlags_WidthStretch, 2.0f);
-        ImGui::TableHeadersRow();
+        if (!stacked) {
+            ImGui::TableSetupColumn("Area", ImGuiTableColumnFlags_WidthStretch, 1.1f);
+            ImGui::TableSetupColumn("State", ImGuiTableColumnFlags_WidthFixed, 100.0f * AppTheme::uiScale());
+            ImGui::TableSetupColumn("Evidence", ImGuiTableColumnFlags_WidthStretch, 2.0f);
+            ImGui::TableHeadersRow();
+        }
         for (const CharacterWorkshopReadinessRow &row : readiness.rows) {
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
             ImGui::PushID(static_cast<int>(row.id));
-            const bool complete =
-                row.status == CharacterWorkshopReadinessStatus::Ready ||
-                row.status == CharacterWorkshopReadinessStatus::Accepted;
-            if (complete) {
-                ImGui::TextUnformatted(CharacterWorkshop_readinessLabel(row.id));
-            } else {
-                if (ImGui::SmallButton(
-                        CharacterWorkshop_readinessLabel(row.id))) {
-                    persistCharacterWorkshopTab(row.actionTab, true);
-                }
-                ui::SpeakFocusedItem(
-                    CharacterWorkshop_readinessLabel(row.id),
-                    CharacterWorkshop_statusLabel(row.status),
-                    "Opens the Workshop workspace that can complete this readiness area. It does not save or publish a change by itself.");
-            }
-            ImGui::SameLine();
-            ImGui::TextDisabled("· in %s",
-                                CharacterWorkshop_tabLabel(row.actionTab));
-            ImGui::PopID();
-            ImGui::TableNextColumn();
+            ImGui::TextWrapped("%s", CharacterWorkshop_readinessLabel(row.id));
+            if (!stacked) ImGui::TableNextColumn();
             ImGui::TextColored(
                 characterWorkshopStatusColour(row.status),
                 "%s",
                 CharacterWorkshop_statusLabel(row.status));
-            ImGui::TableNextColumn();
-            switch (row.id) {
-                case CharacterWorkshopReadinessId::Identity:
-                    ImGui::TextWrapped(
-                        identityReady
-                            ? "Four authored names and exact 40 × 40 portrait"
-                            : "Author names, portrait, and minimap colour");
-                    break;
-                case CharacterWorkshopReadinessId::Calibration:
-                    ImGui::TextWrapped(
-                        "Normalization %s · anchors %s · seat/head sockets %s",
-                        normalized ? "confirmed" : "needs review",
-                        anchored ? "complete" : "missing",
-                        attachmentSocketsMapped ? "mapped" : "missing");
-                    break;
-                case CharacterWorkshopReadinessId::RigMotion:
-                    ImGui::TextWrapped("%s · motion %s", rigStatus, motionReady ? "complete" : "incomplete");
-                    break;
-                case CharacterWorkshopReadinessId::GameplayProfile:
-                    ImGui::TextWrapped("%s · %s", donorName(entry->donor), qualified ? "fingerprint-qualified" : "ROM evidence unavailable");
-                    break;
-                case CharacterWorkshopReadinessId::VehicleFit: {
-                    const CharacterTuningEdit &tuning =
-                        loadCharacterTuning(0, entry->id);
-                    unsigned       required = 1u;
-                    unsigned       reviewed = characterFitReviewed(
-                                                  entry,
-                                                  tuning,
-                                                  MDKR_CHARACTER_CONTEXT_SELECT)
-                                                  ? 1u
-                                                  : 0u;
-                    const uint32_t supported =
-                        entry->vehicle_mask & tuning.vehicleMask;
-                    for (unsigned context = 1u;
-                         context < MDKR_CHARACTER_CONTEXT_COUNT;
-                         ++context) {
-                        if ((supported & (1u << (context - 1u))) == 0u) continue;
-                        ++required;
-                        if (characterFitReviewed(entry, tuning, context)) {
-                            ++reviewed;
-                        }
-                    }
-                    ImGui::TextWrapped("%u of %u enabled contexts reviewed",
-                                       reviewed,
-                                       required);
-                    break;
-                }
-                case CharacterWorkshopReadinessId::Performance:
-                {
-                    const CharacterTuningEdit &tuning =
-                        loadCharacterTuning(0, entry->id);
-                    const auto performance =
-                        characterPerformanceEvidenceState(entry, tuning);
-                    const char *measurement =
-                        performance == CharacterWorkshopPerformanceState::TargetMet
-                            ? "complete matrix meets target"
-                        : performance ==
-                              CharacterWorkshopPerformanceState::OverTargetAccepted
-                            ? "complete matrix exceeds target · explicit exception recorded"
-                        : performance == CharacterWorkshopPerformanceState::OverTarget
-                            ? "complete matrix exceeds target"
-                            : "real-device matrix incomplete";
-                    ImGui::TextWrapped(
-                        "%s · %u authored LOD%s · %s texture accounting · %s",
-                        characterPerformanceTier(entry),
-                        entry->stats.lod_levels,
-                        entry->stats.lod_levels == 1u ? "" : "s",
-                        entry->stats.textures == 0u ||
-                                entry->stats.decoded_texture_bytes != 0u
-                            ? "exact"
-                            : "legacy",
-                        measurement);
-                    break;
-                }
-                case CharacterWorkshopReadinessId::Count:
-                    break;
+            if (!stacked) ImGui::TableNextColumn();
+            drawEvidence(row);
+            const std::string destination = std::string("Open ") +
+                CharacterWorkshop_tabLabel(row.actionTab);
+            // The short action stays readable even when the descriptive area
+            // name needs multiple lines. Ready/exception rows remain
+            // navigable too, so their supporting evidence is not mouse-only.
+            const char *buttonLabel = ImGui::CalcTextSize(destination.c_str()).x +
+                    2.0f * ImGui::GetStyle().FramePadding.x <=
+                    ImGui::GetContentRegionAvail().x
+                ? destination.c_str() : "Open area";
+            if (ImGui::Button(buttonLabel, ui::kBtnFullWidth())) {
+                persistCharacterWorkshopTab(row.actionTab, true);
             }
+            const std::string actionGuidance =
+                "Opens the Workshop workspace that can complete this readiness area. " +
+                destination + ". It does not save or publish a change by itself.";
+            ui::SpeakFocusedItem(
+                CharacterWorkshop_readinessLabel(row.id),
+                CharacterWorkshop_statusLabel(row.status),
+                actionGuidance.c_str());
+            ImGui::PopID();
         }
         ImGui::EndTable();
     }
-    ImGui::TextDisabled(
-        "%u/%zu areas ready · Preview %s · Play %s",
-        readiness.readyCount,
-        readiness.rows.size(),
-        readiness.readyToPreview ? "ready" : "unavailable",
+    const std::string summary = CharacterWorkshop_readinessSummary(readiness);
+    ui::TextSubtleWrapped("%s", summary.c_str());
+    ui::TextSubtleWrapped(
+        "Geometry %s · Play %s",
+        readiness.readyToPreview ? "available for preview" : "unavailable",
         readiness.readyToPlay ? "ready" : "not ready");
-    const std::string action = std::string("Next: ") +
-                               readiness.nextActionLabel;
-    if (ImGui::Button(action.c_str(), ui::kBtnFullWidth())) {
+    ui::TextSubtleWrapped(
+        "Exact in-game previews require WebGPU and a linked, verified base-game ROM. Import, identity, and draft authoring do not require a ROM.");
+    if (readiness.exceptionCount != 0u) {
+        ui::TextSubtleWrapped(
+            "An accepted performance exception allows local use; it does not mean the measured target was met. Inspect it in Performance.");
+    }
+    ui::TextSubtleWrapped("Next: %s", readiness.nextActionLabel);
+    if (ImGui::Button("Open next step##readiness-next", ui::kBtnFullWidth())) {
         persistCharacterWorkshopTab(readiness.nextActionTab, true);
     }
     ui::SpeakFocusedItem(
@@ -24014,7 +24226,8 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
             : entry->enabled != 0u
                 ? "Enabled · Play blocked — review required"
                 : "Disabled · Workshop incomplete";
-    ImGui::TextDisabled("%s", lifecycleSummary);
+    ui::TextSubtleWrapped("%s%s", lifecycleSummary,
+        readiness.exceptionCount != 0u ? " · Performance exception accepted" : "");
     if (nativeNameHeading) {
         ImGui::TextDisabled(
             "%s gameplay profile · exact compact label in Identity",
@@ -24425,6 +24638,10 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
             ImGui::PopID();
             return true;
         }
+        if (g_characterWorkshopTab != CharacterWorkshopTab::Identity) {
+            ImGui::PopID();
+            return changed;
+        }
     }
 
     if (g_characterWorkshopTab == CharacterWorkshopTab::Performance) {
@@ -24457,6 +24674,10 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
             /* Building refreshes the registry and invalidates `entry`. */
             ImGui::PopID();
             return true;
+        }
+        if (g_characterWorkshopTab != CharacterWorkshopTab::Package) {
+            ImGui::PopID();
+            return changed;
         }
         ImGui::SeparatorText("Local files");
         int compiledCacheExists = 0;
@@ -25477,33 +25698,165 @@ bool characterRawPackageIdValid(const char *value) {
     return true;
 }
 
+void requestCharacterRawFieldFocus(CharacterWorkshopRawFocus &focus,
+                                   CharacterWorkshopRawField field,
+                                   bool enabled = true) {
+    if (CharacterWorkshop_requestRawFocus(focus, field, enabled)) {
+        // The vendored tabbing-focus API activates text entry, not ordinary
+        // buttons/combos. Inspection/acceptance/Build still require confirmation.
+        ImGui::SetKeyboardFocusHere();
+        ImGui::SetNavCursorVisible(true);
+    }
+}
+
+void observeCharacterRawFieldFocus(CharacterWorkshopRawFocus &focus,
+                                   CharacterWorkshopRawField field) {
+    if (focus.target != field || !focus.issued ||
+        (ImGui::GetItemFlags() & ImGuiItemFlags_Disabled) != 0) return;
+    const bool visible = ImGui::IsItemVisible();
+    if (!visible) ImGui::SetScrollHereY(0.2f);
+    // InputFloat is a native group: its active input is forwarded by EndGroup,
+    // while ordinary inputs/buttons/combos expose their focused item directly.
+    CharacterWorkshop_observeRawFocus(focus, field, visible,
+        ImGui::IsItemFocused() || ImGui::IsItemActive());
+}
+
 bool drawCharacterRawChoice(const char *label,
                             const std::vector<std::string> &choices,
-                            int &selected, const char *help) {
+                            int &selected, const char *help,
+                            const std::string &sourceOwner,
+                            CharacterWorkshopRawFocus &fieldFocus,
+                            CharacterWorkshopRawField field) {
+    // Only one combo popup is active at once. Keep its bounded search state
+    // separate from authoring and discard it on reopen or exact-source change.
+    static std::string searchOwner;
+    static ImGuiID searchWidget = 0;
+    static char query[128]{};
+    static int detailIndex = -1;
+    const ImGuiID widget = ImGui::GetID(label);
     const char *preview = selected >= 0 &&
             selected < static_cast<int>(choices.size())
         ? choices[static_cast<size_t>(selected)].c_str() : "Choose mapping";
+    ImGui::TextUnformatted(label);
+    // This vendored ImGui hashes ###label identically to label. Keep the
+    // existing field identity while moving its caption above a full-width box.
+    const std::string comboLabel = std::string("###") + label;
     ImGui::SetNextItemWidth(-1.0f);
-    const bool open = ImGui::BeginCombo(label, preview);
+    ImGui::SetNextWindowSizeConstraints(
+        ImVec2(0.0f, 0.0f),
+        ImVec2(std::max(1.0f, ImGui::GetContentRegionAvail().x),
+               ImGui::GetMainViewport()->WorkSize.y));
+    requestCharacterRawFieldFocus(fieldFocus, field);
+    const bool open = beginCharacterLiteralCombo(comboLabel.c_str(), preview);
+    if (!open) observeCharacterRawFieldFocus(fieldFocus, field);
     ui::SpeakFocusedItem(label, preview, help);
     bool changed = false;
     if (open) {
-        ImGuiListClipper clipper;
-        clipper.Begin(static_cast<int>(choices.size()));
-        while (clipper.Step()) {
-            for (int index = clipper.DisplayStart;
-                 index < clipper.DisplayEnd; ++index) {
-                ImGui::PushID(index);
-                if (ImGui::Selectable(
-                        choices[static_cast<size_t>(index)].c_str(),
-                        selected == index)) {
-                    selected = index;
-                    changed = true;
+        const bool appearing = ImGui::IsWindowAppearing();
+        const bool ownerChanged = searchOwner != sourceOwner || searchWidget != widget;
+        if (appearing || ownerChanged) {
+            searchOwner = sourceOwner;
+            searchWidget = widget;
+            query[0] = '\0';
+            detailIndex = selected;
+        }
+        // An already-open popup cannot apply a stale click to a new draft or
+        // inventory. The author can reopen it explicitly for that source.
+        if (ownerChanged && !appearing) {
+            ImGui::CloseCurrentPopup();
+            ImGui::EndCombo();
+            return false;
+        }
+        ImGui::TextUnformatted("Find a source name");
+        ImGui::SetNextItemWidth(-1.0f);
+        bool filterChanged = ImGui::InputTextWithHint(
+            "##raw-choice-search", "Type part of an exact source name…",
+            query, sizeof(query));
+        ui::SpeakFocusedItem("Find a source name", query,
+            "Filters this list without changing its mapping. ASCII letters ignore case; other text matches exactly. Leave empty to browse every name with the keyboard or controller.");
+        if (query[0] != '\0') {
+            if (ImGui::Button("Clear search", ui::kBtnFullWidth())) {
+                query[0] = '\0';
+                filterChanged = true;
+            }
+            ui::SpeakFocusedItem("Clear mapping search", nullptr,
+                "Shows the complete source inventory without changing the selected mapping.");
+        }
+        // The fingerprint/field owner above keeps the inventory immutable for
+        // this popup. Do not rescan long names on every navigation frame.
+        static CharacterWorkshopRawChoices filtered;
+        if (appearing || filterChanged) {
+            filtered = CharacterWorkshop_filterRawChoices(choices, query, selected);
+        }
+        if (filterChanged) detailIndex = -1;
+        const int previousDetailIndex = detailIndex;
+        int focusedIndex = -1;
+        int hoveredIndex = -1;
+        ui::TextSubtleWrapped("%zu of %zu source names", filtered.indices.size(), choices.size());
+        // Keep search/recovery outside the virtualized fixed-height rows.
+        // Flatten navigation so entering the list needs no extra activation.
+        const float listHeight = ImGui::GetTextLineHeightWithSpacing() * 6.0f;
+        if (ImGui::BeginChild("##raw-choice-list", ImVec2(0.0f, listHeight),
+                ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened)) {
+            if (filterChanged) ImGui::SetScrollY(0.0f);
+            ImGuiListClipper clipper;
+            clipper.Begin(static_cast<int>(filtered.indices.size()));
+            if (appearing && filtered.selectedPosition >= 0) {
+                clipper.IncludeItemByIndex(filtered.selectedPosition);
+            }
+            while (clipper.Step()) {
+                for (int position = clipper.DisplayStart;
+                     position < clipper.DisplayEnd; ++position) {
+                    const int index = filtered.indices[static_cast<size_t>(position)];
+                    const std::string &choice = choices[static_cast<size_t>(index)];
+                    ImGui::PushID(index);
+                    if (drawCharacterLiteralChoice(
+                            "##raw-choice", choice.c_str(), selected == index)) {
+                        selected = index;
+                        changed = true;
+                    }
+                    if (appearing && selected == index) {
+                        ImGui::SetItemDefaultFocus();
+                        ImGui::SetScrollHereY(0.5f);
+                    }
+                    if (ImGui::IsItemFocused()) focusedIndex = index;
+                    if (ImGui::IsItemHovered()) hoveredIndex = index;
+                    ui::SpeakFocusedItem(
+                        choice.c_str(), selected == index ? "selected" : "available",
+                        help);
+                    ImGui::PopID();
                 }
-                ImGui::PopID();
             }
         }
+        ImGui::EndChild();
+        if (focusedIndex >= 0) detailIndex = focusedIndex;
+        else if (hoveredIndex >= 0) detailIndex = hoveredIndex;
+        if (filtered.indices.empty()) {
+            ImGui::TextWrapped("No source names match. Clear or shorten the search; your mapping is unchanged.");
+        }
+        if (ImGui::BeginChild("##raw-choice-detail",
+                ImVec2(0.0f, ImGui::GetTextLineHeightWithSpacing() * 3.0f),
+                ImGuiChildFlags_Borders)) {
+            if (detailIndex != previousDetailIndex) ImGui::SetScrollY(0.0f);
+            if (detailIndex >= 0 && detailIndex < static_cast<int>(choices.size())) {
+                ImGui::TextWrapped("Source name: %s", choices[static_cast<size_t>(detailIndex)].c_str());
+            } else {
+                ui::TextSubtleWrapped("Focus or point to a result to read its full source name.");
+            }
+        }
+        ImGui::EndChild();
+        // Unlike the result list, this text-only child must not be flattened:
+        // ImGui needs its scroll-only entry target for keyboard/controller use.
+        ui::SpeakFocusedItem("Full source name",
+            detailIndex >= 0 && detailIndex < static_cast<int>(choices.size())
+                ? choices[static_cast<size_t>(detailIndex)].c_str() : nullptr,
+            "Enter this panel to scroll the full name. Return to the result list to choose a mapping; reading this panel does not change it.");
         ImGui::EndCombo();
+    }
+    if (selected >= 0 && selected < static_cast<int>(choices.size())) {
+        ui::TextSubtleWrapped("Selected: %s", choices[static_cast<size_t>(selected)].c_str());
+    } else {
+        ui::TextSubtleWrapped("Required: choose a source name. Browsing and searching do not change the draft.");
     }
     return changed;
 }
@@ -25574,7 +25927,7 @@ void drawCharacterRawIntakeEditor(bool rail) {
         g_characterWorkshopFocusRequest =
             CharacterWorkshopFocusRequest::None;
     }
-    const bool draftListOpen = ImGui::BeginCombo(
+    const bool draftListOpen = beginCharacterLiteralCombo(
         "Raw authoring draft", activeLabel.c_str());
     ui::SpeakFocusedItem(
         "Raw authoring draft", activeLabel.c_str(),
@@ -25583,12 +25936,11 @@ void drawCharacterRawIntakeEditor(bool rail) {
     if (draftListOpen) {
         for (const CharacterRawDraftStore::Draft &draft :
              g_characterRawDrafts.drafts) {
-            const std::string label =
-                (draft.displayName.empty() ? draft.modelPath
-                                           : draft.displayName) +
-                "##raw-draft-" + draft.id;
-            if (ImGui::Selectable(
-                    label.c_str(), draft.id == intake.draftId)) {
+            const std::string visible = draft.displayName.empty()
+                ? draft.modelPath : draft.displayName;
+            const std::string label = visible + "##raw-draft-" + draft.id;
+            if (drawCharacterLiteralChoice(
+                    label.c_str(), visible.c_str(), draft.id == intake.draftId)) {
                 switchToDraft = draft.id;
             }
             const std::string state = draft.id == intake.draftId
@@ -25612,7 +25964,7 @@ void drawCharacterRawIntakeEditor(bool rail) {
                 AppTheme::bad());
         }
     }
-    ImGui::TextDisabled(
+    ui::TextSubtleWrapped(
         "%zu of %zu local raw drafts · Draft ID: %s",
         g_characterRawDrafts.drafts.size(),
         CharacterRawDraftStore::kMaximumDrafts,
@@ -25655,6 +26007,194 @@ void drawCharacterRawIntakeEditor(bool rail) {
         "Choose another GLB in the source field above to create or resume another draft. Each model keeps independent identity, provenance, donor, vehicle, axis, scale, and source-bound mapping choices.");
     ImGui::TextWrapped("Model: %s", intake.modelPath);
     bool changed = false;
+    using RawStep = CharacterWorkshopRawStep;
+    using RawField = CharacterWorkshopRawField;
+    // Only navigation is retained here. Switching source/draft/fingerprint
+    // invalidates a pending jump; no authoring or approval state is copied.
+    static std::string rawJumpOwner;
+    static RawStep rawJump = RawStep::Count;
+    static CharacterWorkshopRawFocus rawFieldFocus;
+    static int rawFocusLastFrame = -1;
+    const std::string jumpOwner = intake.draftId + "\n" + intake.modelPath +
+        "\n" + intake.inventory.modelSha256;
+    if (rawJumpOwner != jumpOwner) {
+        rawJumpOwner = jumpOwner;
+        rawJump = RawStep::Count;
+        rawFieldFocus = {};
+    }
+    const int rawFocusFrame = ImGui::GetFrameCount();
+    if (rawFieldFocus.target != RawField::Count) {
+        const ImGuiIO &io = ImGui::GetIO();
+        bool cancelled = rawFocusLastFrame != rawFocusFrame - 1 ||
+            ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel) ||
+            ImGui::IsMouseClicked(ImGuiMouseButton_Left) ||
+            ImGui::IsMouseClicked(ImGuiMouseButton_Right) ||
+            ImGui::IsMouseClicked(ImGuiMouseButton_Middle) ||
+            io.MouseWheel != 0.0f || io.MouseWheelH != 0.0f ||
+            !io.InputQueueCharacters.empty() ||
+            ((io.KeyCtrl || io.KeySuper) && ImGui::IsKeyPressed(ImGuiKey_I, false));
+        // Deletion and editing shortcuts need not enqueue text characters.
+        // Observe them without routing/consuming them: manual editing cancels
+        // our outstanding jump, including one not yet issued to native focus.
+        if (io.KeyCtrl || io.KeySuper) {
+            for (ImGuiKey key : {ImGuiKey_A, ImGuiKey_C, ImGuiKey_V,
+                    ImGuiKey_X, ImGuiKey_Y, ImGuiKey_Z}) {
+                cancelled |= ImGui::IsKeyPressed(key, false);
+            }
+        }
+        for (ImGuiKey key : {ImGuiKey_Escape, ImGuiKey_Tab, ImGuiKey_Enter,
+                ImGuiKey_KeypadEnter, ImGuiKey_Backspace, ImGuiKey_Delete,
+                ImGuiKey_Insert,
+                ImGuiKey_Space, ImGuiKey_UpArrow, ImGuiKey_DownArrow,
+                ImGuiKey_LeftArrow, ImGuiKey_RightArrow, ImGuiKey_PageUp,
+                ImGuiKey_PageDown, ImGuiKey_Home, ImGuiKey_End,
+                ImGuiKey_GamepadFaceDown, ImGuiKey_GamepadFaceRight,
+                ImGuiKey_GamepadBack, ImGuiKey_GamepadLStickUp,
+                ImGuiKey_GamepadLStickDown, ImGuiKey_GamepadLStickLeft,
+                ImGuiKey_GamepadLStickRight,
+                ImGuiKey_GamepadDpadUp, ImGuiKey_GamepadDpadDown,
+                ImGuiKey_GamepadDpadLeft, ImGuiKey_GamepadDpadRight}) {
+            cancelled |= ImGui::IsKeyPressed(key, false);
+        }
+        if (cancelled) rawFieldFocus = {};
+    }
+    rawFocusLastFrame = rawFocusFrame;
+    const auto guideFor = [&](bool acceptedTransform, bool validSpdx) {
+        CharacterWorkshopRawGuideFacts facts;
+        facts.inspected = intake.inspected;
+        facts.packageIdValid = characterRawPackageIdValid(intake.packageId);
+        facts.displayNamed = intake.displayName[0] != '\0';
+        facts.licenseSelected = intake.licensePath[0] != '\0';
+        facts.spdxValid = validSpdx;
+        facts.attributionNamed = intake.attribution[0] != '\0';
+        facts.sourceUrlNamed = intake.sourceUrl[0] != '\0';
+        facts.hasVehicle = intake.vehicles[0] || intake.vehicles[1] || intake.vehicles[2];
+        facts.transformAccepted = acceptedTransform;
+        facts.heightAllowed = intake.targetHeight >= 0.1f && intake.targetHeight <= 10.0f;
+        facts.fallbackMapped = intake.fallback >= 0;
+        facts.seatMapped = intake.seat >= 0;
+        facts.headMapped = intake.head >= 0;
+        return CharacterWorkshop_rawGuide(facts);
+    };
+    CharacterWorkshopSourceTransformReview guideTransform;
+    if (intake.inspected && intake.inventory.detailedBounds) {
+        CharacterWorkshopSourceTransformFacts facts;
+        facts.meshLocalMinimum = intake.inventory.meshLocalMinimum;
+        facts.meshLocalMaximum = intake.inventory.meshLocalMaximum;
+        facts.sceneWorldMinimum = intake.inventory.sceneWorldMinimum;
+        facts.sceneWorldMaximum = intake.inventory.sceneWorldMaximum;
+        facts.targetHeightMetres = intake.targetHeight;
+        guideTransform = CharacterWorkshop_reviewSourceTransform(facts);
+    }
+    const std::string guideTransformSignature = characterRawTransformReviewSignature(intake);
+    std::string guideSpdxError;
+    const auto guide = guideFor(
+        guideTransform.valid && !guideTransformSignature.empty() &&
+            intake.transformReviewSignature == guideTransformSignature,
+        CharacterSpdxExpression::validate(intake.spdx, guideSpdxError));
+    const auto openRawStep = [&](RawStep step) {
+        rawFieldFocus = {};
+        rawJump = step;
+    };
+    const auto openRawField = [&](RawField field, bool transformReviewAvailable) {
+        rawJump = RawStep::Count;
+        rawFieldFocus = {CharacterWorkshop_resolveRawField(field, transformReviewAvailable), false};
+    };
+    const auto drawRawStepAnchor = [&](RawStep step, const char *label) {
+        ImGui::Separator();
+        ImGui::PushID(static_cast<int>(step));
+        const bool jump = rawJump == step;
+        if (jump) ImGui::SetKeyboardFocusHere();
+        // A focusable section heading exposes the same destination for mouse,
+        // keyboard and controller; selecting it never performs the operation.
+        (void)ImGui::Selectable(label, false);
+        ui::SpeakFocusedItem(label, "Authoring section",
+            "Review the controls below. Reaching this section does not inspect, accept, build, or install anything.");
+        if (jump) {
+            ImGui::SetScrollHereY(0.1f);
+            // Scrolling and focus can be deferred for an off-screen item.
+            // Keep the request until its actual section is visible.
+            if (ImGui::IsItemVisible()) rawJump = RawStep::Count;
+        }
+        ImGui::PopID();
+    };
+    ImGui::SeparatorText("Build checklist");
+    ui::TextSubtleWrapped(
+        "These are form requirements, not in-game approval. Inputs and exact files are checked again during build; fitting, motion and device tests follow package review. Every step stays available to revisit.");
+    const bool guideTransformAvailable = guideTransform.valid && !guideTransformSignature.empty();
+    const char *nextStep = CharacterWorkshop_rawFieldLabel(
+        CharacterWorkshop_resolveRawField(guide.nextField, guideTransformAvailable));
+    ui::TextSubtleWrapped("Next: %s", nextStep);
+    if (ImGui::Button("Go to next step##raw-guide-next", ui::kBtnFullWidth())) {
+        openRawField(guide.nextField, guideTransformAvailable);
+    }
+    ui::SpeakFocusedItem("Go to next authoring step", nextStep,
+        "Moves focus to the first incomplete field, or to Build when all inputs are supplied. Confirm the focused action separately; navigation changes no draft values.");
+    const int guideColumns = ImGui::GetContentRegionAvail().x >=
+        640.0f * AppTheme::uiScale() ? 2 : 1;
+    if (ImGui::BeginTable("##raw-build-checklist", guideColumns,
+            ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_BordersInnerH)) {
+        for (size_t index = 0u; index < guide.rows.size(); ++index) {
+            ImGui::TableNextColumn();
+            ImGui::PushID(static_cast<int>(index));
+            const auto &row = guide.rows[index];
+            ImGui::TextWrapped("%zu. %s · %s", index + 1u, row.label,
+                row.complete ? "Inputs supplied" : "Action needed");
+            if (!row.complete) ImGui::TextWrapped("%s", row.missing.c_str());
+            if (ImGui::Button("Open step", ui::kBtnFullWidth())) {
+                openRawStep(static_cast<RawStep>(index));
+            }
+            ui::SpeakFocusedItem(row.label,
+                row.complete ? "Inputs supplied; available to revisit" : row.missing.c_str(),
+                "Moves focus to this section without changing the draft or running a build.");
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    const auto drawRawInspectionAction = [&](const char *buttonLabel, bool reinspection, bool guideDestination) {
+        // Queueing inspection clears transient inventory and mapping indices.
+        // Refuse while any owner is busy, and preserve authored names before
+        // that reset. Never restore old inspection evidence after queue refusal.
+        const bool canInspect = !g_characterManagerWorker.busy() &&
+            !g_characterPortableInstallWorker.busy() &&
+            !g_characterPackageInspection.busy();
+        if (!canInspect) ImGui::BeginDisabled();
+        if (guideDestination) requestCharacterRawFieldFocus(rawFieldFocus, RawField::Inspection, canInspect);
+        const bool requested = ImGui::Button(buttonLabel, ui::kBtnFullWidth()) && canInspect;
+        if (guideDestination) observeCharacterRawFieldFocus(rawFieldFocus, RawField::Inspection);
+        if (!canInspect) ImGui::EndDisabled();
+        ui::SpeakFocusedItem(
+            reinspection ? "Reinspect GLB model" : "Inspect GLB model",
+            canInspect ? nullptr : "Wait for the current character operation.",
+            reinspection
+                ? "Saves your current draft, then rereads the same source path. Saved mappings return only for matching source bytes. Changed source bytes require mapping and transform review. Nothing builds, installs, or changes the external GLB."
+                : "Validates and fingerprints the model, then inventories animation and node names without building or installing a package.");
+        if (!requested) return false;
+        if (reinspection && !saveCharacterRawIntake()) {
+            setStatus(("The current draft could not be saved; reinspection did not start. Correct any invalid fields or persistence problem, then retry: " +
+                       g_characterRawDraftError).c_str(), AppTheme::bad());
+            return true;
+        }
+        const std::string modelPath = intake.modelPath;
+        if (queueCharacterRawGlbInspection(
+                modelPath, [](bool inspected) {
+                    setStatus(
+                        inspected
+                            ? "GLB inspected; review every restored or inferred authoring choice."
+                            : "GLB inspection failed; the source and saved draft remain available. Open the manager report, correct the problem, and retry inspection.",
+                        inspected ? AppTheme::good() : AppTheme::bad());
+                })) {
+            setStatus(
+                "Inspecting the GLB in the background; the launcher remains available. Build waits for the new inspection.",
+                AppTheme::accent());
+        } else {
+            setStatus(
+                "GLB inspection could not start; the source and saved draft remain available. Open the manager report and retry inspection.",
+                AppTheme::bad());
+        }
+        return true; // Caller ends this frame before using pre-reset facts.
+    };
+    drawRawStepAnchor(RawStep::Inspection, "Source inspection");
     if (!intake.inspected) {
         ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
         ImGui::TextWrapped(
@@ -25662,38 +26202,23 @@ void drawCharacterRawIntakeEditor(bool rail) {
             intake.savedMappingModelSha256.empty()
                 ? "" : " to resume and verify this saved draft");
         ImGui::PopStyleColor();
-        if (ImGui::Button("Inspect GLB model")) {
-            const std::string modelPath = intake.modelPath;
-            if (queueCharacterRawGlbInspection(
-                    modelPath, [](bool inspected) {
-                        setStatus(
-                            inspected
-                                ? "GLB inspected; review every inferred authoring choice."
-                                : "GLB inspection failed; open the manager report.",
-                            inspected ? AppTheme::good()
-                                      : AppTheme::bad());
-                    })) {
-                setStatus(
-                    "Inspecting the GLB in the background; the launcher remains available.",
-                    AppTheme::accent());
-            } else {
-                setStatus(
-                    "GLB inspection could not start; open the manager report.",
-                    AppTheme::bad());
-            }
+        if (drawRawInspectionAction("Inspect GLB model", false, true)) {
+            return;
         }
-        ui::SpeakFocusedItem(
-            "Inspect GLB model", nullptr,
-            "Validates and fingerprints the model, then inventories animation and node names without building or installing a package.");
     } else {
-        ImGui::TextDisabled(
+        ui::TextSubtleWrapped(
             "%u vertices · %u triangles · %u joints · %u LOD level%s · %.3g m source height",
             intake.inventory.vertices, intake.inventory.triangles,
             intake.inventory.joints, intake.inventory.lodLevels,
             intake.inventory.lodLevels == 1u ? "" : "s",
             intake.inventory.sourceHeightM);
-        ImGui::TextDisabled("Inspected GLB SHA-256: %s",
-                            intake.inventory.modelSha256.c_str());
+        ui::TextSubtleWrapped("Inspected GLB SHA-256: %s",
+                             intake.inventory.modelSha256.c_str());
+        ui::TextSubtleWrapped(
+            "Changed the source file or need current measurements? Reinspection saves this draft and rereads the same GLB. Building pauses until inspection succeeds; changed source bytes require mapping and scale/facing review.");
+        if (drawRawInspectionAction("Reinspect GLB model##raw-source-reinspect", true, true)) {
+            return;
+        }
         ImGui::SeparatorText("Performance geometry (optional)");
         if (intake.inventory.lodLevels == 0u) {
             ImGui::TextColored(
@@ -25775,16 +26300,19 @@ void drawCharacterRawIntakeEditor(bool rail) {
                 characterSourceKind(lodOutputPath) ==
                 CharacterSourceKind::Glb;
             if (!lodOutputPath.empty() && !lodOutputIsGlb) {
-                ImGui::TextColored(
-                    AppTheme::bad(), "Destination must end in .glb.");
+                ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
+                ImGui::TextWrapped("Destination must end in .glb.");
+                ImGui::PopStyleColor();
             } else if (lodOutputExists != 0) {
-                ImGui::TextColored(
-                    AppTheme::bad(),
+                ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
+                ImGui::TextWrapped(
                     "That destination already exists; choose a new filename.");
+                ImGui::PopStyleColor();
             } else if (lodOutputPath == intake.modelPath) {
-                ImGui::TextColored(
-                    AppTheme::bad(),
+                ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
+                ImGui::TextWrapped(
                     "Destination must differ from the inspected source.");
+                ImGui::PopStyleColor();
             }
             const bool canGenerate =
                 !lodOutputPath.empty() && lodOutputIsGlb &&
@@ -25818,32 +26346,41 @@ void drawCharacterRawIntakeEditor(bool rail) {
         }
     }
 
+    drawRawStepAnchor(RawStep::Identity, "Character identity");
     ImGui::TextUnformatted("Package ID");
     ImGui::SetNextItemWidth(-1.0f);
+    requestCharacterRawFieldFocus(rawFieldFocus, RawField::PackageId);
     changed |= ImGui::InputTextWithHint(
         "##raw-package-id", "org.example.character", intake.packageId,
         sizeof(intake.packageId));
+    observeCharacterRawFieldFocus(rawFieldFocus, RawField::PackageId);
     ui::SpeakFocusedItem(
         "Package ID", intake.packageId,
         "A stable 2 to 64 character lowercase identifier. Updating the same ID preserves package-owned settings and assignments.");
     if (intake.packageId[0] != '\0' &&
         !characterRawPackageIdValid(intake.packageId)) {
-        ImGui::TextColored(
-            AppTheme::bad(),
+        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
+        ImGui::TextWrapped(
             "Use 2–64 lowercase letters, digits, dots, underscores, or hyphens.");
+        ImGui::PopStyleColor();
     }
     ImGui::TextUnformatted("Display name");
     ImGui::SetNextItemWidth(-1.0f);
+    requestCharacterRawFieldFocus(rawFieldFocus, RawField::DisplayName);
     changed |= ImGui::InputText(
         "##raw-display-name", intake.displayName, sizeof(intake.displayName));
+    observeCharacterRawFieldFocus(rawFieldFocus, RawField::DisplayName);
     ui::SpeakFocusedItem("Display name", intake.displayName,
                          "The authored roster and Workshop name.");
 
+    drawRawStepAnchor(RawStep::Provenance, "Rights and provenance");
     ImGui::TextUnformatted("Exact license or notice file");
     ImGui::SetNextItemWidth(-1.0f);
+    requestCharacterRawFieldFocus(rawFieldFocus, RawField::License);
     changed |= ImGui::InputTextWithHint(
         "##raw-license-path", "/path/to/LICENSE", intake.licensePath,
         sizeof(intake.licensePath));
+    observeCharacterRawFieldFocus(rawFieldFocus, RawField::License);
     ui::SpeakFocusedItem(
         "License file", intake.licensePath,
         "The exact bounded text bytes embedded and authenticated in the package.");
@@ -25862,8 +26399,10 @@ void drawCharacterRawIntakeEditor(bool rail) {
     }
     ImGui::TextUnformatted("SPDX license expression");
     ImGui::SetNextItemWidth(-1.0f);
+    requestCharacterRawFieldFocus(rawFieldFocus, RawField::Spdx);
     changed |= ImGui::InputTextWithHint(
         "##raw-spdx", "CC-BY-4.0", intake.spdx, sizeof(intake.spdx));
+    observeCharacterRawFieldFocus(rawFieldFocus, RawField::Spdx);
     ui::SpeakFocusedItem(
         "SPDX license expression", intake.spdx,
         "A structurally validated declaration supplied by the author. The Workshop does not guess it from the license file or claim that it grants rights.");
@@ -25875,8 +26414,9 @@ void drawCharacterRawIntakeEditor(bool rail) {
             ImGui::TextColored(
                 AppTheme::good(), "Valid SPDX expression structure");
         } else {
-            ImGui::TextColored(
-                AppTheme::bad(), "%s", spdxError.c_str());
+            ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
+            ImGui::TextWrapped("%s", spdxError.c_str());
+            ImGui::PopStyleColor();
         }
     }
     if (!spdxValid && intake.spdx[0] != '\0' &&
@@ -25889,18 +26429,23 @@ void drawCharacterRawIntakeEditor(bool rail) {
     }
     ImGui::TextUnformatted("Creator / attribution");
     ImGui::SetNextItemWidth(-1.0f);
+    requestCharacterRawFieldFocus(rawFieldFocus, RawField::Attribution);
     changed |= ImGui::InputText(
         "##raw-attribution", intake.attribution,
         sizeof(intake.attribution));
+    observeCharacterRawFieldFocus(rawFieldFocus, RawField::Attribution);
     ui::SpeakFocusedItem("Creator and attribution", intake.attribution,
                          "The credit authenticated in the package manifest.");
     ImGui::TextUnformatted("Source URL");
     ImGui::SetNextItemWidth(-1.0f);
+    requestCharacterRawFieldFocus(rawFieldFocus, RawField::SourceUrl);
     changed |= ImGui::InputText(
         "##raw-source-url", intake.sourceUrl, sizeof(intake.sourceUrl));
+    observeCharacterRawFieldFocus(rawFieldFocus, RawField::SourceUrl);
     ui::SpeakFocusedItem("Source URL", intake.sourceUrl,
                          "The author-declared origin of these model bytes.");
 
+    drawRawStepAnchor(RawStep::Gameplay, "Gameplay and vehicles");
     static const char *donors[] = {
         "Krunch", "Bumper", "Tiptup", "Conker", "Timber",
         "Banjo", "Drumstick", "Pipsy", "T.T.", "Diddy",
@@ -25915,16 +26460,21 @@ void drawCharacterRawIntakeEditor(bool rail) {
     ImGui::TextUnformatted("Vehicles to fit and use");
     static const char *vehicles[] = {"Car", "Hovercraft", "Plane"};
     for (int vehicle = 0; vehicle < 3; ++vehicle) {
+        if (vehicle == 0) requestCharacterRawFieldFocus(rawFieldFocus, RawField::Vehicles);
         changed |= ImGui::Checkbox(vehicles[vehicle], &intake.vehicles[vehicle]);
+        if (vehicle == 0) observeCharacterRawFieldFocus(rawFieldFocus, RawField::Vehicles);
         ui::SpeakFocusedItem(
             vehicles[vehicle], intake.vehicles[vehicle] ? "Supported" : "Excluded",
             "Declares whether this source package exposes an authoring and test context for the vehicle.");
         if (!rail && vehicle != 2) ImGui::SameLine();
     }
 
+    drawRawStepAnchor(RawStep::Transform, "Scale and facing");
     ImGui::SeparatorText("Transform Review");
     ui::TextSubtleWrapped(
         "Confirm the source's scale and forward axis before building. The Workshop never rewrites the GLB: these choices become a reversible package transform, and vehicle placement is calibrated separately after import.");
+    const bool authoredHeightAllowed = std::isfinite(intake.targetHeight) &&
+        intake.targetHeight >= 0.1f && intake.targetHeight <= 10.0f;
     CharacterWorkshopSourceTransformReview transformReview;
     if (intake.inspected && intake.inventory.detailedBounds) {
         CharacterWorkshopSourceTransformFacts facts;
@@ -25935,7 +26485,12 @@ void drawCharacterRawIntakeEditor(bool rail) {
         facts.targetHeightMetres = intake.targetHeight;
         transformReview = CharacterWorkshop_reviewSourceTransform(facts);
     }
-    if (!intake.inspected) {
+    if (!authoredHeightAllowed) {
+        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
+        ImGui::TextWrapped(
+            "Correct Standing height in metres below: enter a finite value from 0.1 to 10. Reinspection cannot repair this draft setting; the source bounds have not been diagnosed as invalid.");
+        ImGui::PopStyleColor();
+    } else if (!intake.inspected) {
         ImGui::TextColored(
             AppTheme::accent(),
             "Inspect the GLB to measure its local and scene transforms.");
@@ -25993,6 +26548,15 @@ void drawCharacterRawIntakeEditor(bool rail) {
             "These are measured coordinate-space facts, not a guess about the artist's intended units. Unusual values require attention but are not automatically wrong.");
     }
 
+    if (intake.inspected && authoredHeightAllowed &&
+        (!intake.inventory.detailedBounds || !transformReview.valid)) {
+        ui::TextSubtleWrapped(
+            "Reinspect this same GLB to refresh missing evidence or after correcting invalid source bounds. Reinspection preserves the external source file.");
+        if (drawRawInspectionAction("Reinspect GLB model##raw-transform-reinspect", true, false)) {
+            return;
+        }
+    }
+
     static const char *forwards[] = {"+Z", "-Z", "+X", "-X"};
     ImGui::TextUnformatted("Which way does the unmodified model face?");
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
@@ -26021,11 +26585,14 @@ void drawCharacterRawIntakeEditor(bool rail) {
     ui::TextSubtleWrapped(
         "The four choices are coordinate-axis candidates, not rendered previews. Confirm the result in the exact character-select and vehicle contexts after build.");
     ImGui::SetNextItemWidth(-1.0f);
+    requestCharacterRawFieldFocus(rawFieldFocus, RawField::Height);
     transformChanged |= ImGui::InputFloat(
         "Standing height in metres", &intake.targetHeight, 0.01f, 0.1f,
         "%.3f");
+    observeCharacterRawFieldFocus(rawFieldFocus, RawField::Height);
     ui::SpeakFocusedItem(
-        "Standing height in metres", nullptr,
+        "Standing height in metres",
+        authoredHeightAllowed ? nullptr : "Enter a finite value from 0.1 to 10; reinspection does not fix this draft field.",
         "Sets normalized authored height from 0.1 to 10 metres; vehicle placement is calibrated separately after import.");
     if (transformChanged) {
         intake.transformReviewSignature.clear();
@@ -26048,7 +26615,11 @@ void drawCharacterRawIntakeEditor(bool rail) {
         transformAccepted) {
         ImGui::BeginDisabled();
     }
-    if (ImGui::Button("Accept scale and facing proposal")) {
+    requestCharacterRawFieldFocus(rawFieldFocus, RawField::Transform,
+        transformReview.valid && !currentTransformSignature.empty() && !transformAccepted);
+    const bool acceptTransformRequested = ImGui::Button("Accept scale and facing proposal");
+    observeCharacterRawFieldFocus(rawFieldFocus, RawField::Transform);
+    if (acceptTransformRequested) {
         intake.transformReviewSignature = currentTransformSignature;
         if (saveCharacterRawIntake()) {
             setStatus(
@@ -26086,6 +26657,7 @@ void drawCharacterRawIntakeEditor(bool rail) {
         g_characterRawTransformTracePrinted = true;
     }
 
+    drawRawStepAnchor(RawStep::Mappings, "Motion and anchors");
     if (intake.inspected) {
         const bool bindFallback = intake.inventory.clips.size() == 1u &&
             intake.inventory.clips[0] == "$bind";
@@ -26104,14 +26676,17 @@ void drawCharacterRawIntakeEditor(bool rail) {
         } else {
             changed |= drawCharacterRawChoice(
                 "Fallback animation", intake.inventory.clips, intake.fallback,
-                "Required motion source used when a semantic clip is absent.");
+                "Required motion source used when a semantic clip is absent.", jumpOwner,
+                rawFieldFocus, RawField::Fallback);
         }
         changed |= drawCharacterRawChoice(
             "Seat or pelvis node", intake.inventory.nodes, intake.seat,
-            "Required vehicle anchor. Review the inference; a root node is not always the pelvis.");
+            "Required vehicle anchor. Review the inference; a root node is not always the pelvis.", jumpOwner,
+            rawFieldFocus, RawField::Seat);
         changed |= drawCharacterRawChoice(
             "Head node", intake.inventory.nodes, intake.head,
-            "Required head anchor used by presentation and camera-aware placement.");
+            "Required head anchor used by presentation and camera-aware placement.", jumpOwner,
+            rawFieldFocus, RawField::Head);
     }
 
     if (changed && !saveCharacterRawIntake()) {
@@ -26144,9 +26719,28 @@ void drawCharacterRawIntakeEditor(bool rail) {
         intake.sourceUrl[0] != '\0' && hasVehicle &&
         intake.targetHeight >= 0.1f && intake.targetHeight <= 10.0f &&
         intake.fallback >= 0 && intake.seat >= 0 && intake.head >= 0;
+    drawRawStepAnchor(RawStep::Build, "Build for review");
+    // Read the post-edit inputs here; the top checklist reflects frame-entry
+    // state, but the button and its blockers must agree after this frame's edits.
+    const auto finalGuide = guideFor(finalTransformAccepted, spdxValid);
+    const bool finalTransformAvailable = transformReview.valid && !currentTransformSignature.empty();
+    if (!ready) {
+        for (const auto &row : finalGuide.rows) {
+            if (!row.complete) ImGui::TextWrapped("%s: %s", row.label, row.missing.c_str());
+        }
+        if (ImGui::Button("Review first blocker##raw-guide-blocker", ui::kBtnFullWidth())) {
+            openRawField(finalGuide.nextField, finalTransformAvailable);
+        }
+        ui::SpeakFocusedItem("Review first build blocker",
+            CharacterWorkshop_rawFieldLabel(CharacterWorkshop_resolveRawField(
+                finalGuide.nextField, finalTransformAvailable)),
+            "Returns to the actual incomplete field. Correct height before accepting transforms; unavailable source evidence routes to explicit inspection. No operation starts automatically.");
+    }
     if (!ready) ImGui::BeginDisabled();
+    requestCharacterRawFieldFocus(rawFieldFocus, RawField::Build, ready);
     bool buildRequested = ImGui::Button("Build source package for review") &&
                           ready;
+    observeCharacterRawFieldFocus(rawFieldFocus, RawField::Build);
     const bool smokeBuildRequested =
         smokeBuildActionRequested && ready;
     if (smokeBuildRequested) {
@@ -26337,18 +26931,20 @@ void drawCharacterFailureRecovery(bool rail) {
         inventory.rows[static_cast<size_t>(inventory.selected)];
     const std::string preview = rowLabel(selected);
     ImGui::SetNextItemWidth(-1.0f);
-    if (ImGui::BeginCombo("Failed import", preview.c_str())) {
+    if (beginCharacterLiteralCombo("Failed import", preview.c_str())) {
         for (size_t index = 0u; index < inventory.rows.size(); ++index) {
             const CharacterFailureIndex::Row &row = inventory.rows[index];
-            const std::string label = rowLabel(row) + "##failure-" + row.recordId;
-            if (ImGui::Selectable(
-                    label.c_str(), inventory.selected == static_cast<int>(index))) {
+            const std::string visible = rowLabel(row);
+            const std::string label = visible + "##failure-" + row.recordId;
+            if (drawCharacterLiteralChoice(
+                    label.c_str(), visible.c_str(),
+                    inventory.selected == static_cast<int>(index))) {
                 inventory.selected = static_cast<int>(index);
             }
             const std::string state = row.sourceAvailable
                 ? row.sourceChanged ? "source changed" : "ready to retry"
                 : "source missing";
-            ui::SpeakFocusedItem(label.c_str(), state.c_str(),
+            ui::SpeakFocusedItem(visible.c_str(), state.c_str(),
                 "Selects one private failed-import diagnostic without reading or changing its source file.");
         }
         ImGui::EndCombo();
@@ -27001,6 +27597,9 @@ void selectCharacterWorkshopEntry(const MdkrModernCharacterEntry *entry) {
         (void)setCharacterRawEditorOpen(false);
     }
     if (g_characterWorkshopSelection == entry->id) return;
+    g_characterDraftIdentityHandoff = {};
+    g_characterDraftNameFocusRequested = false;
+    g_characterIdentityNameFocusRequested = false;
     g_characterWorkshopSelection          = entry->id;
     const AppConfig::PersistResult result = AppConfig::setAndSave(
         "character_workshop_last_selected",
@@ -27010,6 +27609,35 @@ void selectCharacterWorkshopEntry(const MdkrModernCharacterEntry *entry) {
             "Character selected, but the launcher could not remember it for next time.",
             AppTheme::accent());
     }
+}
+
+// Keep the native selectable's hit target, focus and popup behavior, but draw
+// its full label with explicit wrapping. Author-provided names (including ##)
+// are content, never ImGui IDs. Painting does not replace the last item, so
+// the caller's spoken guidance still belongs to the selectable.
+bool drawCharacterLibraryRow(const char *packageId, const std::string &label,
+                             bool selected, float minimumHeight) {
+    const float width = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    const ImVec2 padding = ImGui::GetStyle().FramePadding;
+    const float wrapWidth = std::max(1.0f, width - padding.x * 2.0f);
+    const ImVec2 textSize = ImGui::CalcTextSize(
+        label.c_str(), nullptr, false, wrapWidth);
+    const float height = std::max(minimumHeight, textSize.y + padding.y * 2.0f);
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImGui::PushID(packageId);
+    const bool activated = ImGui::Selectable(
+        "##character-library-row", selected, 0,
+        ImVec2(width, height));
+    if (ImGui::IsItemVisible()) {
+        const ImVec4 clip(origin.x, origin.y, origin.x + width, origin.y + height);
+        ImGui::GetWindowDrawList()->AddText(
+            ImGui::GetFont(), ImGui::GetFontSize(),
+            ImVec2(origin.x + padding.x, origin.y + padding.y),
+            ImGui::GetColorU32(ImGuiCol_Text), label.c_str(), nullptr,
+            wrapWidth, &clip);
+    }
+    ImGui::PopID();
+    return activated;
 }
 
 const MdkrModernCharacterEntry *drawCharacterLibrary(bool rail) {
@@ -27030,13 +27658,18 @@ const MdkrModernCharacterEntry *drawCharacterLibrary(bool rail) {
         return nullptr;
     }
     if (!rail) {
+        ImGui::TextWrapped("Character to edit");
         ImGui::SetNextItemWidth(-1.0f);
         const std::string workshopPreview  = workshopEntry != nullptr
                                                  ? std::string(workshopEntry->display_name) +
                                                        (workshopEntry->enabled != 0u ? "" : " (disabled)")
                                                  : "Choose a character";
-        const bool        libraryComboOpen = ImGui::BeginCombo(
-            "Character to edit##character-workshop-library",
+        ImGui::SetNextWindowSizeConstraints(
+            ImVec2(0.0f, 0.0f),
+            ImVec2(std::max(1.0f, ImGui::GetContentRegionAvail().x),
+                   ImGui::GetMainViewport()->WorkSize.y));
+        const bool        libraryComboOpen = beginCharacterLiteralCombo(
+            "##character-workshop-library",
             workshopPreview.c_str());
         ui::SpeakFocusedItem(
             "Character to edit",
@@ -27054,9 +27687,10 @@ const MdkrModernCharacterEntry *drawCharacterLibrary(bool rail) {
                 const std::string item      = std::string(entry->display_name) +
                                               (entry->enabled != 0u ? "" : " (disabled)") +
                                               (qualified ? "" : " (review only)");
-                if (ImGui::Selectable(
-                        item.c_str(),
-                        g_characterWorkshopSelection == entry->id)) {
+                if (drawCharacterLibraryRow(
+                        entry->id, item,
+                        g_characterWorkshopSelection == entry->id,
+                        ui::kTouchRowHeight())) {
                     selectCharacterWorkshopEntry(entry);
                     workshopEntry = entry;
                 }
@@ -27070,6 +27704,11 @@ const MdkrModernCharacterEntry *drawCharacterLibrary(bool rail) {
             }
             ImGui::EndCombo();
         }
+        if (workshopEntry != nullptr) {
+            // The combo preview is intentionally single-line; keep its entire
+            // selected value available visually without opening the popup.
+            ImGui::TextWrapped("Selected: %s", workshopEntry->display_name);
+        }
         return workshopEntry;
     }
 
@@ -27082,22 +27721,20 @@ const MdkrModernCharacterEntry *drawCharacterLibrary(bool rail) {
         const bool        selected = g_characterWorkshopSelection == entry->id;
         const std::string label    = std::string(entry->display_name) + "\n" +
                                      "Next: " + readiness.nextActionCompactLabel +
-                                     " · " +
-                                     std::to_string(readiness.readyCount) + "/" +
+                                     "\n" +
+                                     std::to_string(readiness.readyCount -
+                                                    readiness.exceptionCount) + "/" +
                                      std::to_string(readiness.rows.size()) + " ready · " +
-                                     (entry->enabled != 0u ? "Enabled" : "Disabled") +
-                                     "##character-library-" + entry->id;
-        if (ImGui::Selectable(
-                label.c_str(),
-                selected,
-                0,
-                ImVec2(0.0f, ui::kTouchRowHeight() * 1.35f))) {
+                                     (readiness.exceptionCount != 0u
+                                          ? "Exception · " : "") +
+                                     (entry->enabled != 0u ? "Enabled" : "Disabled");
+        if (drawCharacterLibraryRow(
+                entry->id, label, selected, ui::kTouchRowHeight() * 1.35f)) {
             selectCharacterWorkshopEntry(entry);
             workshopEntry = entry;
         }
         const std::string spokenState =
-            std::to_string(readiness.readyCount) + " of " +
-            std::to_string(readiness.rows.size()) + " areas ready, " +
+            CharacterWorkshop_readinessSummary(readiness) + "; " +
             (entry->enabled != 0u ? "enabled" : "disabled");
         ui::SpeakFocusedItem(
             entry->narration_name,
@@ -27171,7 +27808,7 @@ bool drawCharacterAssignments() {
             "Player " + std::to_string(player + 1) + "##custom-character";
         const std::string spokenLabel =
             "Player " + std::to_string(player + 1) + " character";
-        const bool assignmentComboOpen = ImGui::BeginCombo(
+        const bool assignmentComboOpen = beginCharacterLiteralCombo(
             label.c_str(),
             preview.c_str());
         ui::SpeakFocusedItem(
@@ -27216,7 +27853,9 @@ bool drawCharacterAssignments() {
                                                     : " (Workshop incomplete)");
                 const bool assignable = readiness.readyToPlay;
                 if (!assignable) ImGui::BeginDisabled();
-                if (ImGui::Selectable(item.c_str(), selected == entry->id)) {
+                if (drawCharacterLibraryRow(
+                        entry->id, item, selected == entry->id,
+                        ui::kTouchRowHeight())) {
                     const AppConfig::PersistResult result =
                         AppConfig::setAndSave(key, entry->id);
                     if (AppConfig::persistResultApplied(result)) {

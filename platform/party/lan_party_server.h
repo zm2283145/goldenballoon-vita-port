@@ -98,6 +98,7 @@ inline const char *mdkr_lan_party_content_type(const std::string &path) {
 std::vector<std::string> mdkr_lan_party_machine_ipv4_addresses();
 
 #ifdef MDKR_LAN_PARTY_TESTING
+#include <atomic>
 /*
  * Test-only seams, compiled solely into the unit test: cmake/tests.cmake
  * defines MDKR_LAN_PARTY_TESTING there and nowhere else, so no shipped
@@ -113,6 +114,15 @@ extern unsigned mdkr_lan_party_test_http_deadline_ms; /* 0 = product value */
 /* Post-upgrade idle-reaper close deadline; the ping fires at half of it. 0 =
  * product value. Lets the reaper test run in a second, not 45. */
 extern unsigned mdkr_lan_party_test_ws_idle_deadline_ms;
+// One-shot failures at ordinary allocation/thread admission boundaries. Only
+// the dedicated server fixture contains these seams; no product fault control.
+enum class MdkrLanPartyTestFailure {
+    None, StartHosts, StartThread, AcceptTimeout, AcceptAllocation, AcceptRegistry,
+    AcceptThread, ServeBuffer, WebSocketState, WebSocketWrapper
+};
+extern std::atomic<MdkrLanPartyTestFailure> mdkr_lan_party_test_failure;
+extern std::atomic<unsigned> mdkr_lan_party_test_failures_observed;
+extern std::atomic<unsigned> mdkr_lan_party_test_live_connections;
 #endif
 
 struct MdkrLanPartyWsState; /* Internal; defined in lan_party_server.cpp. */
@@ -165,12 +175,18 @@ public:
         std::function<void(std::shared_ptr<MdkrLanPartyWebSocket>)> callback);
 
     /* Bind (port 0 = ephemeral), freeze the manifest, and begin serving.
-     * Returns false if already running or the socket cannot bind. */
+     * Returns false for socket, setup-allocation or accept-thread admission
+     * failure. Passing an lvalue manifest can still throw while copying the
+     * by-value argument, before this method is entered. */
     bool start(uint16_t port, MdkrLanPartyManifest manifest);
 
     /* Idempotent. Joins the accept thread and every connection thread;
      * live WebSockets observe their onClosed. The instance is restartable
-     * afterwards. */
+     * afterwards. A defensive call from a server callback requests shutdown
+     * only; the launcher owner must still call stop() to complete the joins.
+     * An OS join failure propagates with thread/lease ownership retained for
+     * retry. Destructor-time join failure retains that state deliberately and
+     * marks global network cleanup failed; it is not successful teardown. */
     void stop();
 
     /* The bound port while running, 0 otherwise. */

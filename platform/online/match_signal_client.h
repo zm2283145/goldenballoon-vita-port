@@ -175,7 +175,9 @@ struct MdkrMatchSignalOutbound {
 
 /* send() outcome: ok with the consumed sequence, or a refusal whose error is
  * signal_not_connected, "invalid match signal message" or
- * signal_peer_unavailable -- the JS throw surface as a value. */
+ * signal_peer_unavailable -- the JS throw surface as a value. Native resource
+ * refusal is signal_transport_lost and consumes no sequence or queued message.
+ * If even diagnostics storage is unavailable, error is empty; ok is still false. */
 struct MdkrMatchSignalSendResult {
     bool ok = false;
     uint32_t sequence = 0u;
@@ -214,7 +216,7 @@ struct MdkrMatchSignalClientOptions {
 
 /* ---- Test seams (the *_for_test convention of the party transport) -------
  *
- * Process-global, test-binary-only knobs over the client's resolver. The
+ * Process-global test seams over the client's resolver and worker admission. The
  * production launcher never calls them; they exist so the connect loop's
  * address-budget and bounded-resolve behavior are pinned by wire-level tests
  * instead of only being reachable against a broken home network.
@@ -232,6 +234,27 @@ void mdkr_match_signal_client_prepend_address_for_test(const char *ip,
  * deadline-bounded and abandoned, never joined). 0 clears. */
 void mdkr_match_signal_client_stall_resolver_for_test(unsigned ms);
 
+/* Refuse the next actual socket-worker start before any thread is created.
+ * One-shot and called only by test binaries; no environment-controlled route.
+ * Exercises connect() rollback through the production exception boundary. */
+void mdkr_match_signal_client_refuse_next_thread_start_for_test();
+
+/* Refuse the next pending-connect close notification, after mandatory worker
+ * retirement has committed. One-shot, used only by the focused fixture. */
+void mdkr_match_signal_client_refuse_next_close_event_for_test();
+
+/* Refuse a single send at preparation (1), tracking admission (2), or queue
+ * admission after tracking (3). Zero clears; no environment-controlled route. */
+void mdkr_match_signal_client_refuse_next_send_stage_for_test(unsigned stage);
+
+/* One-shot refusals at actual event publication/drain and client construction
+ * boundaries. Worker/report failure must preserve terminal recovery, and a
+ * refused drain must leave events available to the next launcher poll. */
+void mdkr_match_signal_client_refuse_next_worker_event_for_test();
+void mdkr_match_signal_client_refuse_next_failure_event_for_test();
+void mdkr_match_signal_client_refuse_next_event_drain_for_test();
+void mdkr_match_signal_client_refuse_next_create_for_test();
+
 /* ---- Fuzz seam (W3 N7) ---------------------------------------------------
  *
  * Drives the EXACT shipped parsers -- the RFC 6455 server-frame extractor
@@ -248,6 +271,7 @@ public:
      * Validates identity and origin exactly like the JS factory; returns
      * nullptr with *errorMessage set to kMdkrMatchSignalInvalidIdentity or
      * kMdkrMatchSignalCrossOriginRefused on refusal. Never connects.
+     * Socket-library acquisition failure uses kMdkrMatchSignalTransportLost.
      */
     static std::unique_ptr<MdkrMatchSignalClient> create(
         const MdkrMatchSignalClientOptions &options,
@@ -263,6 +287,9 @@ public:
      * connecting or already open; the outcome arrives on the event queue as
      * Welcome or Failure. False with *errorCode = signal_client_closed once
      * the client has failed or closed (the JS rejected-promise path).
+     * Worker-start refusal returns false and restores Idle for retry without
+     * queueing a terminal event. Its best-effort error is signal_transport_lost;
+     * diagnostic allocation failure cannot turn that refusal into an exception.
      */
     bool connect(std::string *errorCode = nullptr);
 

@@ -25,6 +25,7 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include "user_paths.h"
+#include "web_startup_diagnostics.h"
 #include "fs_utf8.h"
 #include "audio.h"
 #ifndef __EMSCRIPTEN__
@@ -550,6 +551,7 @@ static void sched_dispatch_task(OSMesg msg) {
     ShimScTask *t = (ShimScTask *)msg;
     if (!t) return;
     if (t->task.type == M_GFXTASK) {
+        mdkr_web_startup_phase("gfx-task-enter");
         /* One M_GFXTASK == one frame's display list (DKR submits a single gfx
          * task per frame). Bracket the interpret with start/end frame so the
          * F3DDKR HLE resets per-frame state, walks the DL, and flushes+presents
@@ -586,8 +588,11 @@ static void sched_dispatch_task(OSMesg msg) {
             platform_request_exit(EXIT_FAILURE);
             goto task_complete;
         }
+        mdkr_web_startup_phase("gfx-walk-before");
         gfx_run((void *)t->task.data_ptr);
+        mdkr_web_startup_phase("gfx-walk-after");
         gfx_end_frame();
+        mdkr_web_startup_phase("gfx-frame-ended");
         /*
          * Zero-delta replay harness (Phase 3 Wave B slice 1). Re-walk the list
          * this tick just consumed, with the frozen matrix registry restored and

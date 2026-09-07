@@ -11,6 +11,7 @@
  * facts, not function-call facts.
  */
 #include "party/lan_party_server.h"
+#include "net/native_socket_lifetime.h"
 
 /* Assert-driven test: NDEBUG would compile every check away. */
 #undef NDEBUG
@@ -18,6 +19,7 @@
 #include <atomic>
 #include <cassert>
 #include <cctype>
+#include <cerrno>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -27,6 +29,8 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <new>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -60,10 +64,7 @@ void closeTestSocket(TestSocket fd) {
 class TestClient {
 public:
     explicit TestClient(uint16_t port) {
-#ifdef _WIN32
-        WSADATA data;
-        WSAStartup(MAKEWORD(2, 2), &data);
-#endif
+        assert(networkLease_.acquire());
         fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
         assert(fd_ != kBadSocket);
 #ifdef SO_NOSIGPIPE
@@ -165,7 +166,21 @@ public:
         }
     }
 
+    bool peerRetired() {
+        char byte;
+        const int got = static_cast<int>(::recv(fd_, &byte, 1, 0));
+        if (got == 0) return true;
+        if (got > 0) return false;
+#ifdef _WIN32
+        const auto error = WSAGetLastError();
+        return error != WSAETIMEDOUT && error != WSAEWOULDBLOCK && error != WSAEINTR;
+#else
+        return errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR;
+#endif
+    }
+
 private:
+    MdkrNativeSocketLease networkLease_;
     TestSocket fd_ = kBadSocket;
 };
 
@@ -966,6 +981,158 @@ void stopWithALiveWebSocketReturnsAndTearsDown(
     assert(waitFor([&probe]() { return probe.wasClosed(); }));
 }
 
+void startupAdmissionFailureRollsBackAndRestarts(const MdkrLanPartyManifest &manifest) {
+    for (const auto stage : {MdkrLanPartyTestFailure::StartHosts,
+                            MdkrLanPartyTestFailure::StartThread}) {
+        MdkrLanPartyServer server;
+        const auto before = mdkr_lan_party_test_failures_observed.load();
+        mdkr_lan_party_test_failure = stage;
+        assert(!server.start(0u, manifest));
+        assert(mdkr_lan_party_test_failures_observed == before + 1u);
+        assert(server.port() == 0u);
+        server.stop();
+        assert(server.start(0u, manifest));
+        TestClient client(server.port());
+        client.send(simpleGet("/controller/index.html"));
+        assert(readResponse(client).statusLine.find("HTTP/1.1 200") == 0u);
+        server.stop();
+        assert(mdkr_lan_party_test_live_connections == 0u);
+    }
+}
+
+void acceptedAdmissionFailuresRetireSocketsAndPreserveListener(const MdkrLanPartyManifest &manifest) {
+    MdkrLanPartyServer server;
+    assert(server.start(0u, manifest));
+    for (const auto stage : {MdkrLanPartyTestFailure::AcceptTimeout,
+                            MdkrLanPartyTestFailure::AcceptAllocation,
+                            MdkrLanPartyTestFailure::AcceptRegistry,
+                            MdkrLanPartyTestFailure::AcceptThread,
+                            MdkrLanPartyTestFailure::ServeBuffer}) {
+        const auto before = mdkr_lan_party_test_failures_observed.load();
+        mdkr_lan_party_test_failure = stage;
+        TestClient refused(server.port());
+        assert(waitFor([before]() { return mdkr_lan_party_test_failures_observed == before + 1u; }));
+        assert(refused.peerRetired()); // a receive timeout is NOT evidence of close
+    }
+    // More refused launches than the registry's 32-slot capacity: rollback
+    // must remove the slot, not merely close its socket and strand its record.
+    for (unsigned index = 0; index < 34u; ++index) {
+        const auto before = mdkr_lan_party_test_failures_observed.load();
+        mdkr_lan_party_test_failure = MdkrLanPartyTestFailure::AcceptThread;
+        TestClient refused(server.port());
+        assert(waitFor([before]() { return mdkr_lan_party_test_failures_observed == before + 1u; }));
+        assert(refused.peerRetired());
+    }
+    TestClient healthy(server.port());
+    healthy.send(simpleGet("/controller/index.html"));
+    assert(readResponse(healthy).statusLine.find("HTTP/1.1 200") == 0u);
+    server.stop();
+    assert(mdkr_lan_party_test_live_connections == 0u);
+}
+
+void upgradeAllocationFailuresRetireTheConnection(const MdkrLanPartyManifest &manifest) {
+    MdkrLanPartyServer server;
+    server.onWebSocket([](std::shared_ptr<MdkrLanPartyWebSocket>) {});
+    assert(server.start(0u, manifest));
+    for (const auto stage : {MdkrLanPartyTestFailure::WebSocketState,
+                            MdkrLanPartyTestFailure::WebSocketWrapper}) {
+        const auto before = mdkr_lan_party_test_failures_observed.load();
+        mdkr_lan_party_test_failure = stage;
+        TestClient client(server.port());
+        completeUpgrade(client);
+        assert(waitFor([before]() { return mdkr_lan_party_test_failures_observed == before + 1u; }));
+        assert(client.peerRetired());
+    }
+    server.stop();
+    assert(mdkr_lan_party_test_live_connections == 0u);
+}
+
+void consumerExceptionsStillSealNotifyAndJoin(const MdkrLanPartyManifest &manifest) {
+    for (bool throwDuringUpgrade : {false, true}) {
+        MdkrLanPartyServer server;
+        std::mutex mutex;
+        std::shared_ptr<MdkrLanPartyWebSocket> retained;
+        std::atomic<unsigned> closed{0u};
+        server.onWebSocket([&](std::shared_ptr<MdkrLanPartyWebSocket> socket) {
+            socket->onClosed([&]() {
+                ++closed;
+                throw std::runtime_error("fixture close callback failure");
+            });
+            socket->onMessage([](const std::string &) { throw std::bad_alloc(); });
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                retained = socket;
+            }
+            if (throwDuringUpgrade) throw std::bad_alloc();
+        });
+        assert(server.start(0u, manifest));
+        TestClient client(server.port());
+        completeUpgrade(client);
+        assert(waitFor([&]() {
+            std::lock_guard<std::mutex> lock(mutex);
+            return bool(retained);
+        }));
+        if (!throwDuringUpgrade) client.send(maskedFrame(0x1u, "ready", true, true));
+        assert(client.peerRetired());
+        assert(waitFor([&]() { return closed == 1u; }));
+        server.stop();
+        assert(mdkr_lan_party_test_live_connections == 0u);
+        assert(!retained->isOpen());
+        assert(!retained->sendText("after-retirement"));
+        retained->close();
+        assert(closed == 1u);
+    }
+}
+
+void callbackStopRequestsWithoutSelfJoin(const MdkrLanPartyManifest &manifest) {
+    MdkrLanPartyServer server;
+    std::atomic<bool> returned{false};
+    server.onWebSocket([&](std::shared_ptr<MdkrLanPartyWebSocket>) {
+        server.stop(); // defensive request only, not a callback-side join
+        returned = true;
+    });
+    assert(server.start(0u, manifest));
+    TestClient client(server.port());
+    completeUpgrade(client);
+    assert(waitFor([&]() { return returned.load(); }));
+    server.stop(); // launcher owner completes all joins
+    assert(client.peerRetired());
+    assert(mdkr_lan_party_test_live_connections == 0u);
+    assert(server.start(0u, manifest));
+    server.stop();
+}
+
+void callbackCaptureDestructionKeepsServerThreadIdentity(const MdkrLanPartyManifest &manifest) {
+    MdkrLanPartyServer server;
+    std::atomic<bool> attached{false};
+    std::atomic<unsigned> stopRequests{0u};
+    struct StopOnLastRelease {
+        MdkrLanPartyServer *server;
+        std::atomic<unsigned> *requests;
+        ~StopOnLastRelease() {
+            server->stop(); // Must remain a worker-side request, not a join.
+            ++*requests;
+        }
+    };
+    server.onWebSocket([&](std::shared_ptr<MdkrLanPartyWebSocket> socket) {
+        auto capture = std::make_shared<StopOnLastRelease>();
+        capture->server = &server;
+        capture->requests = &stopRequests;
+        socket->onMessage([capture](const std::string &) { (void)capture; });
+        attached = true;
+    });
+    assert(server.start(0u, manifest));
+    auto client = std::make_unique<TestClient>(server.port());
+    completeUpgrade(*client);
+    assert(waitFor([&]() { return attached.load(); }));
+    client.reset(); // Reader finalization releases the final callback capture.
+    assert(waitFor([&]() { return stopRequests == 1u; }));
+    server.stop(); // Launcher owns the subsequent complete join.
+    assert(mdkr_lan_party_test_live_connections == 0u);
+    assert(server.start(0u, manifest));
+    server.stop();
+}
+
 } // namespace
 
 int main() {
@@ -1001,6 +1168,12 @@ int main() {
 
     abruptTeardownWaitsForTheInFlightSender(manifest);
     stopWithALiveWebSocketReturnsAndTearsDown(manifest);
+    startupAdmissionFailureRollsBackAndRestarts(manifest);
+    acceptedAdmissionFailuresRetireSocketsAndPreserveListener(manifest);
+    upgradeAllocationFailuresRetireTheConnection(manifest);
+    consumerExceptionsStillSealNotifyAndJoin(manifest);
+    callbackStopRequestsWithoutSelfJoin(manifest);
+    callbackCaptureDestructionKeepsServerThreadIdentity(manifest);
     std::fprintf(stderr, "test_lan_party_server: all cases passed\n");
     return 0;
 }

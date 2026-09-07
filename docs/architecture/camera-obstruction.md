@@ -1396,6 +1396,21 @@ measurement only, not the resolver, published poses, or hard motion thresholds.
 Ancient Lake's separate correction re-engagement remains a hard failure; this
 correction does not establish complete motion or release qualification.
 
+**Event-context follow-up, 2026-09-06 (unqualified candidate):** source inspection
+confirms that the phase machine treats `RECOVERING` as released, not blocked.
+Consequently, adding a proportional expansion limit cannot be assumed to close
+the re-engagement gate simply by extending recovery duration. The hold, phase
+definition, hard window and resolver policy remain unchanged. The ordinary
+level-1 trace now emits each counted re-engagement with its release tick/gap,
+slot, last measured contact and current contact (including normal-validity),
+and recovery/hold/emergency state. Contact history is diagnostic-only and
+survives clear ticks; a different face or agreeing normal does not excuse the
+event. The checker retains each arm's rows in optional baseline JSON and prints
+up to 16 rows per arm, explicitly disclosing missing context from older builds.
+Source/compilation and reporting regression additions are not a motion pass;
+execute the new reporting checks and original complete route gate before
+claiming this instrumentation qualified or the underlying defect fixed.
+
 ### 7.4 Display matrix
 
 At minimum:

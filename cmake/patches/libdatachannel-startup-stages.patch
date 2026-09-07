@@ -1,0 +1,68 @@
+diff --git a/src/impl/pollservice.cpp b/src/impl/pollservice.cpp
+--- a/src/impl/pollservice.cpp
++++ b/src/impl/pollservice.cpp
+@@ -9,6 +9,7 @@
+ #include "pollservice.hpp"
+ #include "internals.hpp"
+ #include "utils.hpp"
++#include "startup_stage_ownership.h"
+ 
+ #if RTC_ENABLE_WEBSOCKET
+ 
+@@ -31,10 +32,12 @@
+ PollService::~PollService() {}
+ 
+ void PollService::start() {
+-	mSocks = std::make_unique<SocketMap>();
+-	mInterrupter = std::make_unique<PollInterrupter>();
+-	mStopped = false;
+-	mThread = std::thread(&PollService::runLoop, this);
++	// Allocation or launch refusal leaves no published resource or worker.
++	mdkrStartOwnedPolling(
++	    mSocks, mInterrupter, mStopped, mThread,
++	    [] { return std::make_unique<SocketMap>(); },
++	    [] { return std::make_unique<PollInterrupter>(); },
++	    [this] { return std::thread(&PollService::runLoop, this); });
+ }
+ 
+ void PollService::join() {
+diff --git a/src/impl/sctptransport.cpp b/src/impl/sctptransport.cpp
+--- a/src/impl/sctptransport.cpp
++++ b/src/impl/sctptransport.cpp
+@@ -9,6 +9,7 @@
+ #include "sctptransport.hpp"
+ #include "dtlstransport.hpp"
+ #include "internals.hpp"
+ #include "logcounter.hpp"
+ #include "utils.hpp"
++#include "startup_stage_ownership.h"
+ 
+@@ -85,17 +86,21 @@
+ SctpTransport::InstancesSet* SctpTransport::Instances = nullptr;
+ 
+ void SctpTransport::Init() {
+-	usrsctp_init(0, SctpTransport::WriteCallback, SctpTransport::DebugCallback);
+-	usrsctp_sysctl_set_sctp_pr_enable(1);  // Enable Partial Reliability Extension (RFC 3758)
+-	usrsctp_sysctl_set_sctp_ecn_enable(0); // Disable Explicit Congestion Notification
++	// The registry allocation must not fail after the C subsystem starts.
++	// On return Init owns SCTP before any subsequent SetSettings can throw.
++	mdkrStartOwnedRegistry(Instances,
++	    [] { return std::make_unique<InstancesSet>(); },
++	    [] {
++		usrsctp_init(0, SctpTransport::WriteCallback, SctpTransport::DebugCallback);
++		usrsctp_sysctl_set_sctp_pr_enable(1);  // Enable Partial Reliability Extension (RFC 3758)
++		usrsctp_sysctl_set_sctp_ecn_enable(0); // Disable Explicit Congestion Notification
+ #ifndef SCTP_ACCEPT_ZERO_CHECKSUM
+-	usrsctp_enable_crc32c_offload(); // We'll compute CRC32 only for outgoing packets
++		usrsctp_enable_crc32c_offload(); // We'll compute CRC32 only for outgoing packets
+ #endif
+ #ifdef SCTP_DEBUG
+-	usrsctp_sysctl_set_sctp_debug_on(SCTP_DEBUG_ALL);
++		usrsctp_sysctl_set_sctp_debug_on(SCTP_DEBUG_ALL);
+ #endif
+-
+-	Instances = new InstancesSet;
++	    });
+ }
+ 
+ void SctpTransport::SetSettings(const SctpSettings &s) {

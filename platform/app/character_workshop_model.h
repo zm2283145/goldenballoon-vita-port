@@ -84,7 +84,10 @@ struct CharacterWorkshopReadiness {
     std::array<CharacterWorkshopReadinessRow,
                static_cast<size_t>(CharacterWorkshopReadinessId::Count)>
                          rows{};
+    // Completed gates, including explicitly accepted exceptions. Keep the
+    // exception count separate in every presentation of this aggregate.
     unsigned             readyCount      = 0u;
+    unsigned             exceptionCount  = 0u;
     bool                 readyToPreview  = false;
     // All authoring, fit, and measured-performance gates are satisfied. This
     // is intentionally independent of the local normal-play enable switch so
@@ -98,6 +101,97 @@ struct CharacterWorkshopReadiness {
     // not a truncation: every label still names the destination or outcome.
     const char          *nextActionCompactLabel = "Inspect character";
 };
+
+// Session-only navigation intent, never permission to create/resume a draft.
+// The draft store remains responsible for exact-base validation and persistence.
+struct CharacterWorkshopDraftHandoff {
+    std::string packageId;
+    std::string sourceDigest;
+    bool matches(const std::string &currentPackageId,
+                 const std::string &currentSourceDigest) const;
+};
+
+struct CharacterWorkshopTabSelection {
+    CharacterWorkshopTab tab = CharacterWorkshopTab::Overview;
+    bool awaitingVisibility = false;
+};
+
+enum class CharacterWorkshopRawStep : uint8_t {
+    Inspection, Identity, Provenance, Gameplay, Transform, Mappings, Build, Count,
+};
+
+enum class CharacterWorkshopRawField : uint8_t {
+    Inspection, PackageId, DisplayName, License, Spdx, Attribution, SourceUrl,
+    Vehicles, Height, Transform, Fallback, Seat, Head, Build, Count,
+};
+
+struct CharacterWorkshopRawFocus {
+    CharacterWorkshopRawField target = CharacterWorkshopRawField::Count;
+    bool issued = false;
+};
+
+// Navigation only: issue once when the exact control is enabled, then wait
+// for its visible/focused observation. The UI cancels on owner/user changes.
+bool CharacterWorkshop_requestRawFocus(CharacterWorkshopRawFocus &focus,
+    CharacterWorkshopRawField field, bool enabled);
+void CharacterWorkshop_observeRawFocus(CharacterWorkshopRawFocus &focus,
+    CharacterWorkshopRawField field, bool visible, bool focused);
+CharacterWorkshopRawField CharacterWorkshop_resolveRawField(
+    CharacterWorkshopRawField field, bool transformReviewAvailable);
+const char *CharacterWorkshop_rawFieldLabel(CharacterWorkshopRawField field);
+
+// Presentation of the existing raw-intake form predicates, not admission or
+// source validation. A complete form still requires the ordinary build/review.
+struct CharacterWorkshopRawGuideFacts {
+    bool inspected = false;
+    bool packageIdValid = false;
+    bool displayNamed = false;
+    bool licenseSelected = false;
+    bool spdxValid = false;
+    bool attributionNamed = false;
+    bool sourceUrlNamed = false;
+    bool hasVehicle = false;
+    bool transformAccepted = false;
+    bool heightAllowed = false;
+    bool fallbackMapped = false;
+    bool seatMapped = false;
+    bool headMapped = false;
+};
+
+struct CharacterWorkshopRawGuideRow {
+    const char *label = "";
+    bool complete = false;
+    std::string missing;
+};
+
+struct CharacterWorkshopRawGuide {
+    std::array<CharacterWorkshopRawGuideRow, 6> rows{};
+    CharacterWorkshopRawStep next = CharacterWorkshopRawStep::Build;
+    CharacterWorkshopRawField nextField = CharacterWorkshopRawField::Build;
+    bool ready = false;
+};
+
+CharacterWorkshopRawGuide CharacterWorkshop_rawGuide(
+    const CharacterWorkshopRawGuideFacts &facts);
+
+// Search is presentation-only: indices always refer to the untouched source
+// inventory, including duplicate/literal names. ASCII letters ignore case;
+// non-ASCII text is matched byte-for-byte without rewriting authored names.
+struct CharacterWorkshopRawChoices {
+    std::vector<int> indices;
+    int selectedPosition = -1;
+};
+
+CharacterWorkshopRawChoices CharacterWorkshop_filterRawChoices(
+    const std::vector<std::string> &choices, const std::string &query,
+    int selected);
+
+// ImGui queues SetSelected for a later layout. An old visible tab is not a
+// manual navigation while that request is pending. Count means no tab was
+// observed (e.g. a clipped tab bar), not confirmation of the requested tab.
+CharacterWorkshopTabSelection CharacterWorkshop_observeTabSelection(
+    CharacterWorkshopTab requested, bool awaitingVisibility,
+    CharacterWorkshopTab observed);
 
 // Top-level Workshop journey state. The launcher must not infer this from UI
 // globals: candidate review, raw authoring, and installed-package readiness
@@ -328,6 +422,8 @@ struct CharacterWorkshopRigSuggestion {
 
 CharacterWorkshopReadiness CharacterWorkshop_evaluate(
     const CharacterWorkshopFacts &facts);
+std::string CharacterWorkshop_readinessSummary(
+    const CharacterWorkshopReadiness &readiness);
 CharacterWorkshopPrimaryAction CharacterWorkshop_primaryAction(
     CharacterWorkshopJourney journey,
     const CharacterWorkshopReadiness &readiness = {});

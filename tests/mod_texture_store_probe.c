@@ -10,7 +10,8 @@
  *
  *   STBI_MALLOC/REALLOC/FREE route the decoder's allocations through a counter
  *   (and, optionally, a refusal) so a test can read the largest allocation the
- *   decoder ever asked for.
+ *   decoder ever asked for. Successful admission delegates to the same
+ *   first-party allocation helpers used by the production implementation.
  *
  *   stbi_load_from_memory is renamed while the implementation is compiled, and
  *   a wrapper of the original name is defined below it. Every caller -- the
@@ -23,6 +24,7 @@
  * exactly as lib/stb/stb_image_impl.c and lib/miniz/miniz.c are.
  */
 #include "mod_texture_store_probe.h"
+#include "stb_image_alloc.h"
 
 #include <stdlib.h>
 
@@ -35,13 +37,13 @@ static int    s_decoded_height;
 static void *probe_malloc(size_t size) {
     if (size > s_largest_request) s_largest_request = size;
     if (s_refuse_above != 0 && size > s_refuse_above) return NULL;
-    return malloc(size);
+    return mdkr_stbi_malloc(size);
 }
 
 static void *probe_realloc(void *pointer, size_t size) {
     if (size > s_largest_request) s_largest_request = size;
     if (s_refuse_above != 0 && size > s_refuse_above) return NULL;
-    return realloc(pointer, size);
+    return mdkr_stbi_realloc(pointer, size);
 }
 
 #define STBI_MALLOC(sz)        probe_malloc((size_t)(sz))

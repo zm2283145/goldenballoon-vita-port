@@ -43,6 +43,9 @@ void testEmptyCharacter() {
     assert(!readiness.readyToEnable);
     assert(!readiness.readyToPlay);
     assert(readiness.readyCount == 0u);
+    assert(readiness.exceptionCount == 0u);
+    assert(CharacterWorkshop_readinessSummary(readiness) ==
+           "0 of 6 areas ready; 6 remaining");
     assert(readiness.nextActionTab == CharacterWorkshopTab::Identity);
     assert(std::strcmp(readiness.nextActionLabel,
                        "Create roster identity") == 0);
@@ -50,6 +53,183 @@ void testEmptyCharacter() {
            CharacterWorkshopReadinessStatus::Unavailable);
     assert(row(readiness, CharacterWorkshopReadinessId::VehicleFit).status ==
            CharacterWorkshopReadinessStatus::Missing);
+}
+
+void testRawIntakeGuideMatchesAllRequirements() {
+    using Facts = CharacterWorkshopRawGuideFacts;
+    const std::array<bool Facts::*, 13> members{{
+        &Facts::inspected, &Facts::packageIdValid, &Facts::displayNamed,
+        &Facts::licenseSelected, &Facts::spdxValid, &Facts::attributionNamed,
+        &Facts::sourceUrlNamed, &Facts::hasVehicle, &Facts::transformAccepted,
+        &Facts::heightAllowed, &Facts::fallbackMapped, &Facts::seatMapped,
+        &Facts::headMapped,
+    }};
+    constexpr std::array<size_t, 13> stepFor{{0, 1, 1, 2, 2, 2, 2, 3, 4, 4, 5, 5, 5}};
+    constexpr unsigned combinations = 1u << 13u;
+    for (unsigned mask = 0u; mask < combinations; ++mask) {
+        Facts facts;
+        std::array<bool, 6> expected{{true, true, true, true, true, true}};
+        for (size_t index = 0u; index < members.size(); ++index) {
+            const bool present = (mask & (1u << index)) != 0u;
+            facts.*members[index] = present;
+            expected[stepFor[index]] = expected[stepFor[index]] && present;
+        }
+        const auto guide = CharacterWorkshop_rawGuide(facts);
+        assert(guide.ready == (mask == combinations - 1u));
+        auto next = CharacterWorkshopRawStep::Build;
+        for (size_t index = 0u; index < expected.size(); ++index) {
+            assert(guide.rows[index].complete == expected[index]);
+            assert(guide.rows[index].missing.empty() == expected[index]);
+            assert(guide.rows[index].label[0] != '\0');
+            if (!expected[index] && next == CharacterWorkshopRawStep::Build) {
+                next = static_cast<CharacterWorkshopRawStep>(index);
+            }
+        }
+        assert(guide.next == next);
+        using Field = CharacterWorkshopRawField;
+        // Same thirteen facts; height is the actionable prerequisite before
+        // acceptance even though the readiness aggregate is unchanged.
+        const std::array<size_t, 13> fieldOrder{{0, 1, 2, 3, 4, 5, 6, 7, 9, 8, 10, 11, 12}};
+        const std::array<Field, 13> fieldFor{{Field::Inspection, Field::PackageId,
+            Field::DisplayName, Field::License, Field::Spdx, Field::Attribution,
+            Field::SourceUrl, Field::Vehicles, Field::Transform, Field::Height,
+            Field::Fallback, Field::Seat, Field::Head}};
+        Field nextField = Field::Build;
+        for (size_t index : fieldOrder) {
+            if (!(facts.*members[index])) {
+                nextField = fieldFor[index];
+                break;
+            }
+        }
+        assert(guide.nextField == nextField);
+        assert(CharacterWorkshop_rawFieldLabel(nextField)[0] != '\0');
+    }
+}
+
+void testRawFieldFocusWaitsForActualControl() {
+    using Field = CharacterWorkshopRawField;
+    for (unsigned index = 0u; index < static_cast<unsigned>(Field::Count); ++index) {
+        const auto field = static_cast<Field>(index);
+        const auto other = field == Field::Inspection ? Field::Head : Field::Inspection;
+        CharacterWorkshopRawFocus focus{field, false};
+        assert(!CharacterWorkshop_requestRawFocus(focus, Field::Count, true));
+        assert(!CharacterWorkshop_requestRawFocus(focus, other, true));
+        assert(!CharacterWorkshop_requestRawFocus(focus, field, false));
+        CharacterWorkshop_observeRawFocus(focus, field, true, true);
+        assert(focus.target == field && !focus.issued); // No unissued acknowledgement.
+        assert(CharacterWorkshop_requestRawFocus(focus, field, true));
+        assert(!CharacterWorkshop_requestRawFocus(focus, field, true));
+        for (unsigned frame = 0u; frame < 4u; ++frame) {
+            CharacterWorkshop_observeRawFocus(focus, other, true, true);
+            CharacterWorkshop_observeRawFocus(focus, Field::Count, true, true);
+            CharacterWorkshop_observeRawFocus(focus, field, true, false);
+            CharacterWorkshop_observeRawFocus(focus, field, false, true);
+            assert(focus.target == field && focus.issued);
+            assert(!CharacterWorkshop_requestRawFocus(focus, field, true));
+        }
+        CharacterWorkshop_observeRawFocus(focus, field, true, true);
+        assert(focus.target == Field::Count && !focus.issued);
+        assert(!CharacterWorkshop_requestRawFocus(focus, field, true));
+        focus = {field, true};
+        focus = {}; // UI owner change, explicit navigation or interrupted editor.
+        CharacterWorkshop_observeRawFocus(focus, field, true, true);
+        assert(focus.target == Field::Count && !focus.issued);
+        assert(CharacterWorkshop_rawFieldLabel(field)[0] != '\0');
+        assert(CharacterWorkshop_resolveRawField(field, true) == field);
+        assert(CharacterWorkshop_resolveRawField(field, false) ==
+            (field == Field::Transform ? Field::Inspection : field));
+    }
+}
+
+void testRawChoiceFilteringPreservesSourceIdentity() {
+    const std::vector<std::string> choices{
+        "", "Root", "HEAD##lod0", "head###lod1", "Head", "Head", "骨盤###座席",
+        "HÉAD", std::string(2048u, 'x') + "SeatEnd",
+    };
+    const auto original = choices;
+    auto result = CharacterWorkshop_filterRawChoices(choices, "", 5);
+    assert(result.indices.size() == choices.size());
+    for (size_t index = 0u; index < choices.size(); ++index) {
+        assert(result.indices[index] == static_cast<int>(index));
+    }
+    assert(result.selectedPosition == 5);
+    result = CharacterWorkshop_filterRawChoices(choices, "hEaD", 5);
+    assert((result.indices == std::vector<int>{2, 3, 4, 5}));
+    assert(result.selectedPosition == 3); // Exact duplicate occurrence, not first name.
+    result = CharacterWorkshop_filterRawChoices(choices, "###", 6);
+    assert((result.indices == std::vector<int>{3, 6}));
+    assert(result.selectedPosition == 1);
+    result = CharacterWorkshop_filterRawChoices(choices, "骨盤", 6);
+    assert((result.indices == std::vector<int>{6}));
+    assert(result.selectedPosition == 0);
+    result = CharacterWorkshop_filterRawChoices(choices, "héad", 7);
+    assert(result.indices.empty() && result.selectedPosition == -1); // No invented Unicode folding.
+    result = CharacterWorkshop_filterRawChoices(choices, "seatend", 5);
+    assert((result.indices == std::vector<int>{8}));
+    assert(result.selectedPosition == -1); // Hiding the selected row is not remapping.
+    result = CharacterWorkshop_filterRawChoices(choices, "absent", 5);
+    assert(result.indices.empty() && result.selectedPosition == -1);
+    assert(CharacterWorkshop_filterRawChoices(choices, "", -1).selectedPosition == -1);
+    assert(CharacterWorkshop_filterRawChoices(choices, "", 999).selectedPosition == -1);
+    assert(CharacterWorkshop_filterRawChoices({}, "", 0).indices.empty());
+    assert(choices == original); // Search never rewrites or reorders the inventory.
+
+    std::vector<std::string> large;
+    for (int index = 0; index < 8192; ++index) {
+        large.push_back("Joint " + std::to_string(index));
+    }
+    result = CharacterWorkshop_filterRawChoices(large, "", 8191);
+    assert(result.indices.back() == 8191 && result.selectedPosition == 8191);
+    result = CharacterWorkshop_filterRawChoices(large, "Joint 8191", 8191);
+    assert((result.indices == std::vector<int>{8191}));
+    assert(result.selectedPosition == 0);
+}
+
+void testDeferredTabSelection() {
+    using Tab = CharacterWorkshopTab;
+    // The real ImGui SetSelected route queues NextSelectedTabId while its
+    // current VisibleTabId still belongs to the old tab. Model that temporal
+    // contract explicitly rather than assuming request and observation match.
+    for (const auto requested : {Tab::Package, Tab::Identity}) {
+        const auto previous = requested == Tab::Package ? Tab::Identity : Tab::Package;
+        CharacterWorkshopTabSelection selection{requested, true};
+        for (unsigned frame = 0u; frame < 3u; ++frame) {
+            selection = CharacterWorkshop_observeTabSelection(
+                selection.tab, selection.awaitingVisibility, previous);
+            assert(selection.tab == requested);
+            assert(selection.awaitingVisibility);
+        }
+        // No BeginTabBar / no visible BeginTabItem cannot acknowledge target.
+        selection = CharacterWorkshop_observeTabSelection(
+            selection.tab, selection.awaitingVisibility, Tab::Count);
+        assert(selection.tab == requested && selection.awaitingVisibility);
+        selection = CharacterWorkshop_observeTabSelection(
+            selection.tab, selection.awaitingVisibility, requested);
+        assert(selection.tab == requested && !selection.awaitingVisibility);
+        // Do not keep forcing the old request after it has appeared: genuine
+        // manual tab navigation must work immediately on its next observation.
+        selection = CharacterWorkshop_observeTabSelection(
+            selection.tab, selection.awaitingVisibility, Tab::Performance);
+        assert(selection.tab == Tab::Performance && !selection.awaitingVisibility);
+        selection = CharacterWorkshop_observeTabSelection(
+            selection.tab, selection.awaitingVisibility, Tab::Count);
+        assert(selection.tab == Tab::Performance && !selection.awaitingVisibility);
+    }
+}
+
+void testDraftHandoffOwnership() {
+    CharacterWorkshopDraftHandoff handoff;
+    assert(!handoff.matches("org.mdkr.character", "source-a"));
+    assert(!handoff.matches("", ""));
+    handoff = {"org.mdkr.character", "source-a"};
+    assert(handoff.matches("org.mdkr.character", "source-a"));
+    assert(!handoff.matches("org.mdkr.other", "source-a"));
+    assert(!handoff.matches("org.mdkr.character", "source-b"));
+    assert(!handoff.matches("org.mdkr.character", ""));
+    // Navigating cannot validate source bytes, alter drafts, or confer build
+    // permission. Matching this intent is only a prerequisite for returning.
+    handoff = {};
+    assert(!handoff.matches("org.mdkr.character", "source-a"));
 }
 
 void testTransparentPrimitiveOrdering() {
@@ -240,6 +420,10 @@ void testVehicleReviewMaskAndRequiredPerformance() {
     const auto acceptedOverTarget = CharacterWorkshop_evaluate(facts);
     assert(acceptedOverTarget.readyToEnable);
     assert(acceptedOverTarget.readyToPlay);
+    assert(acceptedOverTarget.readyCount == 6u);
+    assert(acceptedOverTarget.exceptionCount == 1u);
+    assert(CharacterWorkshop_readinessSummary(acceptedOverTarget) ==
+           "5 of 6 areas ready; 1 accepted exception");
     assert(row(acceptedOverTarget,
                CharacterWorkshopReadinessId::Performance).status ==
            CharacterWorkshopReadinessStatus::Accepted);
@@ -248,6 +432,9 @@ void testVehicleReviewMaskAndRequiredPerformance() {
     const auto targetMet = CharacterWorkshop_evaluate(facts);
     assert(targetMet.readyToEnable);
     assert(targetMet.readyToPlay);
+    assert(targetMet.exceptionCount == 0u);
+    assert(CharacterWorkshop_readinessSummary(targetMet) ==
+           "6 of 6 areas ready");
 
     facts.reviewedContextMask = 0x1u;
     const auto missingCar     = CharacterWorkshop_evaluate(facts);
@@ -255,6 +442,13 @@ void testVehicleReviewMaskAndRequiredPerformance() {
     assert(!missingCar.readyToPlay);
     assert(row(missingCar, CharacterWorkshopReadinessId::VehicleFit).status ==
            CharacterWorkshopReadinessStatus::Review);
+    facts.performance =
+        CharacterWorkshopPerformanceState::OverTargetAccepted;
+    const auto incompleteWithException = CharacterWorkshop_evaluate(facts);
+    assert(!incompleteWithException.readyToEnable);
+    assert(!incompleteWithException.readyToPlay);
+    assert(CharacterWorkshop_readinessSummary(incompleteWithException) ==
+           "4 of 6 areas ready; 1 accepted exception; 1 remaining");
 }
 
 void testAuthoredMotionDoesNotRequireOptionalRig() {
@@ -773,6 +967,11 @@ void testStructuralRigInference() {
 
 int main() {
     testEmptyCharacter();
+    testRawIntakeGuideMatchesAllRequirements();
+    testRawFieldFocusWaitsForActualControl();
+    testRawChoiceFilteringPreservesSourceIdentity();
+    testDeferredTabSelection();
+    testDraftHandoffOwnership();
     testTransparentPrimitiveOrdering();
     testReadinessOrdering();
     testContextualPrimaryAction();

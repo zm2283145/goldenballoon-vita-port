@@ -22,16 +22,53 @@ namespace {
  * each frame. SDL2 refcounts the handle, so this remains a balanced borrow that
  * neither steals a controller from another owner nor closes one.
  */
-std::vector<SDL_GameController *> g_pads;
+struct BorrowedPad {
+    SDL_GameController *handle;
+    SDL_JoystickID instance;
+};
+std::vector<BorrowedPad> g_pads;
 bool                              g_padsOpen = false;
 
 void openPads() {
-    if (g_padsOpen) return;
+    bool changed = !g_padsOpen;
     g_padsOpen = true;
-    for (int i = 0; i < SDL_NumJoysticks(); ++i) {
+    // Reconcile once per sample. Device indices move after unplugging, whereas
+    // SDL instance IDs identify this connection. Keep connected handles borrowed
+    // and discover late attachments without reopening every pad every frame.
+    for (auto it = g_pads.begin(); it != g_pads.end();) {
+        if (!SDL_GameControllerGetAttached(it->handle)) {
+            SDL_GameControllerClose(it->handle);
+            it = g_pads.erase(it);
+            changed = true;
+        } else {
+            ++it;
+        }
+    }
+    const int count = SDL_NumJoysticks();
+    for (int i = 0; i < count; ++i) {
         if (!SDL_IsGameController(i)) continue;
+        const SDL_JoystickID instance = SDL_JoystickGetDeviceInstanceID(i);
+        if (instance < 0) continue;
+        bool borrowed = false;
+        for (const BorrowedPad &pad : g_pads) {
+            if (pad.instance == instance) borrowed = true;
+        }
+        if (borrowed) continue;
         if (SDL_GameController *pad = SDL_GameControllerOpen(i)) {
-            g_pads.push_back(pad);
+            // A hotplug can change the index between enumeration and open.
+            // Do not keep an incorrectly identified borrow; retry next sample.
+            if (SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(pad)) !=
+                instance) {
+                SDL_GameControllerClose(pad);
+                continue;
+            }
+            try {
+                g_pads.push_back({pad, instance});
+            } catch (...) {
+                SDL_GameControllerClose(pad);
+                throw;
+            }
+            changed = true;
         }
     }
     /* How many handles this window is holding. A test machine with no
@@ -39,8 +76,10 @@ void openPads() {
      * nothing to close -- so an arm that means to prove the teardown ordering
      * is safe has to be able to see that it actually had a handle to get
      * wrong. Without this line that arm would pass on an empty loop. */
-    std::fprintf(stderr, "[app] skip-launcher watching pads=%zu\n",
-                 g_pads.size());
+    if (changed) {
+        std::fprintf(stderr, "[app] skip-launcher watching pads=%zu\n",
+                     g_pads.size());
+    }
 }
 
 /*
@@ -130,14 +169,15 @@ AppUiLauncherHold AppLaunchHold_sample(unsigned sampleIndex) {
      * on one clock. */
     openPads();
     SDL_GameControllerUpdate();
-    for (SDL_GameController *pad : g_pads) {
-        if (SDL_GameControllerGetButton(
-                pad, SDL_CONTROLLER_BUTTON_LEFTSHOULDER) != 0) {
-            hold.leftShoulder = true;
-        }
-        if (SDL_GameControllerGetButton(
-                pad, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) != 0) {
-            hold.rightShoulder = true;
+    for (const BorrowedPad &pad : g_pads) {
+        // The escape gesture belongs to ONE controller, never the union of
+        // an incidental left shoulder on one pad and right on another.
+        if (SDL_GameControllerGetAttached(pad.handle) &&
+            SDL_GameControllerGetButton(
+                pad.handle, SDL_CONTROLLER_BUTTON_LEFTSHOULDER) != 0 &&
+            SDL_GameControllerGetButton(
+                pad.handle, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) != 0) {
+            hold.leftShoulder = hold.rightShoulder = true;
         }
     }
     return hold;
@@ -178,7 +218,9 @@ void AppLaunchHold_release() {
                      g_pads.size(), sdlUp ? 1 : 0);
     }
     if (sdlUp) {
-        for (SDL_GameController *pad : g_pads) SDL_GameControllerClose(pad);
+        for (const BorrowedPad &pad : g_pads) {
+            SDL_GameControllerClose(pad.handle);
+        }
     }
     g_pads.clear();
     g_padsOpen = false;

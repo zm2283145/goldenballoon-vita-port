@@ -1,0 +1,499 @@
+diff --git a/src/impl/peerconnection.hpp b/src/impl/peerconnection.hpp
+index 22826cc..b890597 100644
+--- a/src/impl/peerconnection.hpp
++++ b/src/impl/peerconnection.hpp
+@@ -15,6 +15,7 @@
+ #include "icetransport.hpp"
+ #include "init.hpp"
+ #include "processor.hpp"
++#include "reserved_owner_work.h"
+ #include "sctptransport.hpp"
+ #include "track.hpp"
+ 
+@@ -38,6 +39,7 @@ struct PeerConnection : std::enable_shared_from_this<PeerConnection> {
+ 
+ 	void close();
+ 	void remoteClose();
++	void requestTerminalClose(State terminalState, optional<IceState> terminalIce = nullopt);
+ 
+ 	optional<Description> localDescription() const;
+ 	optional<Description> remoteDescription() const;
+@@ -132,6 +134,12 @@ struct PeerConnection : std::enable_shared_from_this<PeerConnection> {
+ 	synchronized_callback<shared_ptr<rtc::Track>> trackCallback;
+ 
+ private:
++	friend struct MdkrTerminalNotificationTestAccess;
++	struct TerminalState {
++		State state = State::Failed;
++		optional<IceState> ice;
++	};
++	void completeTerminalClose(TerminalState terminal);
+ 	void dispatchMedia(message_ptr message);
+ 	void updateTrackSsrcCache(const Description &description);
+ 
+@@ -139,6 +147,11 @@ private:
+ 	future_certificate_ptr mCertificate;
+ 
+ 	Processor mProcessor;
++	MdkrReservedOwnerWork<PeerConnection, Processor, TerminalState> mTerminalWork;
++	MdkrReservedOwnerWork<PeerConnection, Processor, bool> mChannelCloseWork;
++	std::mutex mTerminalMutex;
++	bool mTerminalRequested = false;
++	std::atomic<bool> mCloseWorkRequested = false;
+ 	optional<Description> mLocalDescription;
+ 	optional<Description> mCurrentLocalDescription;
+ 	mutable std::mutex mLocalDescriptionMutex;
+diff --git a/src/impl/peerconnection.cpp b/src/impl/peerconnection.cpp
+index cca8368..fb36764 100644
+--- a/src/impl/peerconnection.cpp
++++ b/src/impl/peerconnection.cpp
+@@ -46,7 +46,15 @@ static LogCounter
+ 
+ const string PemBeginCertificateTag = "-----BEGIN CERTIFICATE-----";
+ 
+-PeerConnection::PeerConnection(Configuration config_) : config(std::move(config_)) {
++PeerConnection::PeerConnection(Configuration config_)
++    : config(std::move(config_)),
++      mTerminalWork(mProcessor, [](PeerConnection &owner, TerminalState terminal) {
++          owner.completeTerminalClose(terminal);
++      }),
++      mChannelCloseWork(mProcessor, [](PeerConnection &owner, bool) {
++          owner.closeDataChannels();
++          owner.closeTracks();
++      }) {
+ 	PLOG_VERBOSE << "Creating PeerConnection";
+ 
+ 	if (config.certificatePemFile && config.keyPemFile) {
+@@ -86,23 +94,51 @@ PeerConnection::~PeerConnection() {
+ 
+ void PeerConnection::close() {
+ 	if (!closing.exchange(true)) {
+-		PLOG_VERBOSE << "Closing PeerConnection";
+ 		if (auto transport = std::atomic_load(&mSctpTransport))
+-			transport->stop();
++			requestTransportStop(transport);
+ 		else
+ 			remoteClose();
+ 	}
+ }
+ 
+ void PeerConnection::remoteClose() {
+-	close();
+-	if (state.load() != State::Closed) {
+-		// Close data channels and tracks asynchronously
+-		mProcessor.enqueue(&PeerConnection::closeDataChannels, shared_from_this());
+-		mProcessor.enqueue(&PeerConnection::closeTracks, shared_from_this());
++	closing = true;
++	if (!mCloseWorkRequested.exchange(true))
++		mChannelCloseWork.publish(shared_from_this(), false);
++	closeTransports();
++}
+ 
+-		closeTransports();
++void PeerConnection::requestTerminalClose(State terminalState, optional<IceState> terminalIce) {
++	auto owner = shared_from_this();
++	{
++		std::lock_guard lock(mTerminalMutex);
++		if (mTerminalRequested || state.load() == State::Closed)
++			return;
++		mTerminalRequested = true;
++		closing = true;
++		// A concurrent Closed commit remains a sink; never overwrite it.
++		auto previous = state.load();
++		do {
++			if (previous == State::Closed) return;
++		} while (!state.compare_exchange_weak(previous, terminalState));
++		if (terminalIce) {
++			auto previousIce = iceState.load();
++			while (previousIce != IceState::Closed &&
++			       !iceState.compare_exchange_weak(previousIce, *terminalIce)) {}
++		}
+ 	}
++	mTerminalWork.publish(owner, TerminalState{terminalState, terminalIce});
++}
++
++void PeerConnection::completeTerminalClose(TerminalState terminal) {
++	// Same Processor lane as earlier accepted notifications; optional callback
++	// failure must not prevent mandatory parent/channel/transport retirement.
++	if (state.load() == State::Closed) return;
++	if (terminal.ice) {
++		try { iceStateChangeCallback(*terminal.ice); } catch (...) {}
++	}
++	try { stateChangeCallback(terminal.state); } catch (...) {}
++	remoteClose();
+ }
+ 
+ optional<Description> PeerConnection::localDescription() const {
+@@ -179,6 +215,8 @@ shared_ptr<IceTransport> PeerConnection::initIceTransport() {
+ 		    [this, weak_this = weak_from_this()](IceTransport::State transportState) {
+ 			    if (auto locked = weak_this.lock())
+ 				    std::invoke([=]() {
++					    if (closing.load() && transportState != IceTransport::State::Failed &&
++					        transportState != IceTransport::State::Disconnected) return;
+ 					    switch (transportState) {
+ 					    case IceTransport::State::Connecting:
+ 						    changeIceState(IceState::Checking);
+@@ -192,14 +230,10 @@ shared_ptr<IceTransport> PeerConnection::initIceTransport() {
+ 						    changeIceState(IceState::Completed);
+ 						    break;
+ 					    case IceTransport::State::Failed:
+-						    changeIceState(IceState::Failed);
+-						    changeState(State::Failed);
+-						    mProcessor.enqueue(&PeerConnection::remoteClose, shared_from_this());
++						    requestTerminalClose(State::Failed, IceState::Failed);
+ 						    break;
+ 					    case IceTransport::State::Disconnected:
+-						    changeIceState(IceState::Disconnected);
+-						    changeState(State::Disconnected);
+-						    mProcessor.enqueue(&PeerConnection::remoteClose, shared_from_this());
++						    requestTerminalClose(State::Disconnected, IceState::Disconnected);
+ 						    break;
+ 					    default:
+ 						    // Ignore
+@@ -261,6 +295,8 @@ shared_ptr<DtlsTransport> PeerConnection::initDtlsTransport() {
+ 		                                   DtlsTransport::State transportState) {
+ 			if (auto locked = weak_this.lock())
+ 				std::invoke([=]() {
++					if (closing.load() && transportState != DtlsTransport::State::Failed &&
++					    transportState != DtlsTransport::State::Disconnected) return;
+ 					switch (transportState) {
+ 					case DtlsTransport::State::Connected:
+ 						if (auto remote = remoteDescription(); remote && remote->hasApplication())
+@@ -271,12 +307,10 @@ shared_ptr<DtlsTransport> PeerConnection::initDtlsTransport() {
+ 						mProcessor.enqueue(&PeerConnection::openTracks, shared_from_this());
+ 						break;
+ 					case DtlsTransport::State::Failed:
+-						changeState(State::Failed);
+-						mProcessor.enqueue(&PeerConnection::remoteClose, shared_from_this());
++							requestTerminalClose(State::Failed);
+ 						break;
+ 					case DtlsTransport::State::Disconnected:
+-						changeState(State::Disconnected);
+-						mProcessor.enqueue(&PeerConnection::remoteClose, shared_from_this());
++							requestTerminalClose(State::Disconnected);
+ 						break;
+ 					default:
+ 						// Ignore
+@@ -346,6 +380,8 @@ shared_ptr<SctpTransport> PeerConnection::initSctpTransport() {
+ 		    [this, weak_this = weak_from_this()](SctpTransport::State transportState) {
+ 			    if (auto locked = weak_this.lock())
+ 				    std::invoke([=]() {
++					    if (closing.load() && transportState != SctpTransport::State::Failed &&
++					        transportState != SctpTransport::State::Disconnected) return;
+ 					    switch (transportState) {
+ 					    case SctpTransport::State::Connected:
+ 						    changeState(State::Connected);
+@@ -354,12 +390,10 @@ shared_ptr<SctpTransport> PeerConnection::initSctpTransport() {
+ 						                       shared_from_this());
+ 						    break;
+ 					    case SctpTransport::State::Failed:
+-						    changeState(State::Failed);
+-						    mProcessor.enqueue(&PeerConnection::remoteClose, shared_from_this());
++							    requestTerminalClose(State::Failed);
+ 						    break;
+ 					    case SctpTransport::State::Disconnected:
+-						    changeState(State::Disconnected);
+-						    mProcessor.enqueue(&PeerConnection::remoteClose, shared_from_this());
++							    requestTerminalClose(State::Disconnected);
+ 						    break;
+ 					    default:
+ 						    // Ignore
+@@ -391,14 +425,21 @@ shared_ptr<SctpTransport> PeerConnection::getSctpTransport() const {
+ }
+ 
+ void PeerConnection::closeTransports() {
+-	PLOG_VERBOSE << "Closing transports";
+-
+-	// Change ICE state to sink state Closed
+-	changeIceState(IceState::Closed);
+-
+-	// Change state to sink state Closed
+-	if (!changeState(State::Closed))
++	// Commit the sink before callbacks: recursive close observes completion
++	// ownership instead of attempting a second detachment. Reporting is optional.
++	if (state.exchange(State::Closed) == State::Closed)
+ 		return; // already closed
++	const bool notifyIce = iceState.exchange(IceState::Closed) != IceState::Closed;
++	if (notifyIce) {
++		try {
++			auto callback = std::move(iceStateChangeCallback);
++			callback(IceState::Closed);
++		} catch (...) {}
++	}
++	try {
++		auto callback = std::move(stateChangeCallback);
++		callback(State::Closed);
++	} catch (...) {}
+ 
+ 	// Reset interceptor and callbacks now that state is changed
+ 	setMediaHandler(nullptr);
+@@ -474,6 +515,7 @@ void PeerConnection::forwardMessage(message_ptr message) {
+ 		remoteCloseDataChannels();
+ 		return;
+ 	}
++	if (closing.load()) return;
+ 
+ 	auto iceTransport = std::atomic_load(&mIceTransport);
+ 	auto sctpTransport = std::atomic_load(&mSctpTransport);
+@@ -509,6 +551,7 @@ void PeerConnection::forwardMessage(message_ptr message) {
+ 		    weak_bind(&PeerConnection::triggerDataChannel, this, weak_ptr<DataChannel>{channel});
+ 
+ 		std::unique_lock lock(mDataChannelsMutex); // we are going to emplace
++		if (closing.load()) return;
+ 		mDataChannels.emplace(stream, channel);
+ 	} else if (!found) {
+ 		if (message->type == Message::Reset)
+@@ -685,6 +728,8 @@ void PeerConnection::forwardBufferedAmount(uint16_t stream, size_t amount) {
+ 
+ shared_ptr<DataChannel> PeerConnection::emplaceDataChannel(string label, DataChannelInit init) {
+ 	std::unique_lock lock(mDataChannelsMutex); // we are going to emplace
++	if (closing.load())
++		throw std::logic_error("PeerConnection is closing");
+ 
+ 	// If the DataChannel is user-negotiated, do not negotiate it in-band
+ 	auto channel =
+@@ -807,15 +852,37 @@ void PeerConnection::openDataChannels() {
+ }
+ 
+ void PeerConnection::closeDataChannels() {
+-	iterateDataChannels([&](shared_ptr<DataChannel> channel) { channel->close(); });
++	// Detach without allocating a strong-owner snapshot. Include channels that
++	// never received a stream ID, and invoke callbacks outside registry locks.
++	decltype(mDataChannels) assigned;
++	decltype(mUnassignedDataChannels) unassigned;
++	{
++		std::unique_lock lock(mDataChannelsMutex);
++		assigned.swap(mDataChannels);
++		unassigned.swap(mUnassignedDataChannels);
++	}
++	for (auto &entry : assigned)
++		if (auto channel = entry.second.lock()) {
++			try { channel->close(); } catch (...) {}
++		}
++	for (auto &entry : unassigned)
++		if (auto channel = entry.lock()) {
++			try { channel->close(); } catch (...) {}
++		}
+ }
+ 
+ void PeerConnection::remoteCloseDataChannels() {
++	if (closing.load()) {
++		closeDataChannels();
++		return;
++	}
+ 	iterateDataChannels([&](shared_ptr<DataChannel> channel) { channel->remoteClose(); });
+ }
+ 
+ shared_ptr<Track> PeerConnection::emplaceTrack(Description::Media description) {
+ 	std::unique_lock lock(mTracksMutex); // we are going to emplace
++	if (closing.load())
++		throw std::logic_error("PeerConnection is closing");
+ 
+ #if !RTC_ENABLE_MEDIA
+ 	// No media support, mark as removed
+@@ -924,7 +991,17 @@ void PeerConnection::openTracks() {
+ }
+ 
+ void PeerConnection::closeTracks() {
+-	iterateTracks([&](shared_ptr<Track> track) { track->close(); });
++	decltype(mTrackLines) tracks;
++	{
++		std::unique_lock lock(mTracksMutex);
++		tracks.swap(mTrackLines);
++		mTracks.clear();
++		mTracksBySsrc.clear();
++	}
++	for (auto &entry : tracks)
++		if (auto track = entry.lock()) {
++			try { track->close(); } catch (...) {}
++		}
+ }
+ 
+ void PeerConnection::validateRemoteDescription(const Description &description) {
+@@ -1340,6 +1417,8 @@ bool PeerConnection::changeState(State newState) {
+ 	State current;
+ 	do {
+ 		current = state.load();
++		if (closing.load() && newState != State::Closed)
++			return false;
+ 		if (current == State::Closed)
+ 			return false;
+ 		if (current == newState)
+diff --git a/src/impl/websocket.cpp b/src/impl/websocket.cpp
+index 4f2abe4..7ea2f47 100644
+--- a/src/impl/websocket.cpp
++++ b/src/impl/websocket.cpp
+@@ -151,9 +151,9 @@ void WebSocket::close() {
+ }
+ 
+ void WebSocket::remoteClose() {
+-	close();
+-	if (state.load() != State::Closed)
+-		closeTransports();
++	// Mandatory remote/forced closure must not first allocate a graceful-close
++	// timer or frame. Each detached transport already owns reserved retirement.
++	closeTransports();
+ }
+ 
+ bool WebSocket::isOpen() const { return state == State::Open; }
+@@ -261,7 +261,7 @@ shared_ptr<TcpTransport> WebSocket::setTcpTransport(shared_ptr<TcpTransport> tra
+ 							initWsTransport();
+ 						break;
+ 					case State::Failed:
+-						triggerError("TCP connection failed");
++						try { triggerError("TCP connection failed"); } catch (...) {}
+ 						remoteClose();
+ 						break;
+ 					case State::Disconnected:
+@@ -285,8 +285,8 @@ shared_ptr<TcpTransport> WebSocket::setTcpTransport(shared_ptr<TcpTransport> tra
+ 		return emplaceTransport(this, &mTcpTransport, std::move(transport));
+ 
+ 	} catch (const std::exception &e) {
+-		PLOG_ERROR << e.what();
+ 		remoteClose();
++		PLOG_ERROR << e.what();
+ 		throw std::runtime_error("TCP transport initialization failed");
+ 	}
+ }
+@@ -313,7 +313,7 @@ shared_ptr<HttpProxyTransport> WebSocket::initProxyTransport() {
+ 							initWsTransport();
+ 						break;
+ 					case State::Failed:
+-						triggerError("Proxy connection failed");
++						try { triggerError("Proxy connection failed"); } catch (...) {}
+ 						remoteClose();
+ 						break;
+ 					case State::Disconnected:
+@@ -333,8 +333,8 @@ shared_ptr<HttpProxyTransport> WebSocket::initProxyTransport() {
+ 		return emplaceTransport(this, &mProxyTransport, std::move(transport));
+ 
+ 	} catch (const std::exception &e) {
+-		PLOG_ERROR << e.what();
+ 		remoteClose();
++		PLOG_ERROR << e.what();
+ 		throw std::runtime_error("Tcp Proxy transport initialization failed");
+ 	}
+ }
+@@ -369,7 +369,7 @@ shared_ptr<TlsTransport> WebSocket::initTlsTransport() {
+ 						initWsTransport();
+ 						break;
+ 					case State::Failed:
+-						triggerError("TLS connection failed");
++						try { triggerError("TLS connection failed"); } catch (...) {}
+ 						remoteClose();
+ 						break;
+ 					case State::Disconnected:
+@@ -406,8 +406,8 @@ shared_ptr<TlsTransport> WebSocket::initTlsTransport() {
+ 		return emplaceTransport(this, &mTlsTransport, std::move(transport));
+ 
+ 	} catch (const std::exception &e) {
+-		PLOG_ERROR << e.what();
+ 		remoteClose();
++		PLOG_ERROR << e.what();
+ 		throw std::runtime_error("TLS transport initialization failed");
+ 	}
+ }
+@@ -456,7 +456,7 @@ shared_ptr<WsTransport> WebSocket::initWsTransport() {
+ 						}
+ 						break;
+ 					case State::Failed:
+-						triggerError("WebSocket connection failed");
++						try { triggerError("WebSocket connection failed"); } catch (...) {}
+ 						remoteClose();
+ 						break;
+ 					case State::Disconnected:
+@@ -476,8 +476,8 @@ shared_ptr<WsTransport> WebSocket::initWsTransport() {
+ 		return emplaceTransport(this, &mWsTransport, std::move(transport));
+ 
+ 	} catch (const std::exception &e) {
+-		PLOG_ERROR << e.what();
+ 		remoteClose();
++		PLOG_ERROR << e.what();
+ 		throw std::runtime_error("WebSocket transport initialization failed");
+ 	}
+ }
+@@ -499,8 +499,6 @@ shared_ptr<WsHandshake> WebSocket::getWsHandshake() const {
+ }
+ 
+ void WebSocket::closeTransports() {
+-	PLOG_VERBOSE << "Closing transports";
+-
+ 	if (!changeState(State::Closed))
+ 		return; // already closed
+ 
+@@ -527,7 +525,7 @@ void WebSocket::closeTransports() {
+ 	// its own one-shot reservation, independent of later WebSocket cycles.
+ 	retireTransportChain(std::move(transports));
+ 
+-	triggerClosed();
++	try { triggerClosed(); } catch (...) {}
+ }
+ 
+ void WebSocket::scheduleConnectionTimeout() {
+@@ -537,8 +535,10 @@ void WebSocket::scheduleConnectionTimeout() {
+ 		ThreadPool::Instance().schedule(timeout, [weak_this = weak_from_this()]() {
+ 			if (auto locked = weak_this.lock()) {
+ 				if (locked->state == WebSocket::State::Connecting) {
+-					PLOG_WARNING << "WebSocket connection timed out";
+-					locked->triggerError("Connection timed out");
++					try {
++						PLOG_WARNING << "WebSocket connection timed out";
++						locked->triggerError("Connection timed out");
++					} catch (...) {}
+ 					locked->remoteClose();
+ 				}
+ 			}
+diff --git a/src/impl/datachannel.cpp b/src/impl/datachannel.cpp
+index 710a398..b10b469 100644
+--- a/src/impl/datachannel.cpp
++++ b/src/impl/datachannel.cpp
+@@ -95,8 +95,6 @@ DataChannel::~DataChannel() {
+ }
+ 
+ void DataChannel::close() {
+-	PLOG_VERBOSE << "Closing DataChannel";
+-
+ 	shared_ptr<SctpTransport> transport;
+ 	{
+ 		std::shared_lock lock(mMutex);
+@@ -104,10 +102,20 @@ void DataChannel::close() {
+ 	}
+ 
+ 	if (!mIsClosed.exchange(true)) {
+-		if (transport && mStream.has_value())
+-			transport->closeStream(mStream.value());
++		auto parent = mPeerConnection.lock();
++		try {
++			// Parent terminal closure retires the association itself. Do not
++			// allocate/reset its individual streams on that mandatory path.
++			if (transport && mStream.has_value() && (!parent || !parent->closing.load()))
++				transport->closeStream(mStream.value());
++		} catch (...) {
++			// Local closure is already committed. A refused reset must neither
++			// strand its callback/reset nor leave the parent silently healthy.
++			if (parent)
++				parent->requestTerminalClose(PeerConnection::State::Failed);
++		}
+ 
+-		triggerClosed();
++		try { triggerClosed(); } catch (...) {}
+ 		resetCallbacks();
+ 	}	
+ }
+diff --git a/src/impl/track.cpp b/src/impl/track.cpp
+index f4cac85..b4268cb 100644
+--- a/src/impl/track.cpp
++++ b/src/impl/track.cpp
+@@ -66,11 +66,9 @@ void Track::setDescription(Description::Media desc) {
+ }
+ 
+ void Track::close() {
+-	PLOG_VERBOSE << "Closing Track";
+-
+ 	if (!mIsClosed.exchange(true))
+ 	{
+-		triggerClosed();
++		try { triggerClosed(); } catch (...) {}
+ 		setMediaHandler(nullptr);
+ 		resetCallbacks();
+ 	}

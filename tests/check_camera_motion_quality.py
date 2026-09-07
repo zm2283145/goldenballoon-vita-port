@@ -57,6 +57,7 @@ from harness_utils import (ASSERT_MARKERS, DEFAULT_BUILD_DIR, find_fatal,
 MOTION_SUMMARY = "camera_motion summary"
 MOTION_STAT = "camera_motion stat"
 OBSERVE_SUMMARY = "camera_obstruction_observe summary"
+REENGAGEMENT_EVENT = "camera_motion reengagement "
 
 # The doc's chatter window (section 7.3), mirrored from the runtime constant so
 # the reported violation and the measured one cannot drift apart.
@@ -351,6 +352,27 @@ def inspect(route: Route, output: str) -> tuple[dict, dict, list[str]]:
     return summary, stats, failures
 
 
+def reengagement_evidence(output: str) -> list[str]:
+    """Retain this arm's event witnesses, separate from aggregate verdicts."""
+    return [line for line in output.splitlines()
+            if line.startswith(REENGAGEMENT_EVENT)]
+
+
+def report_reengagements(name: str, output: str, count: int) -> None:
+    events = reengagement_evidence(output)
+    if not events and count == 0:
+        return
+    print(f"  [{name}] reengagement evidence: {len(events)} event rows, "
+          f"{count} census events")
+    for event in events[:16]:
+        print(f"    {event}")
+    if len(events) > 16:
+        print(f"    {len(events) - 16} additional rows omitted from console; "
+              "use --baseline-out to retain all rows")
+    if len(events) != count:
+        print("    incomplete event context; aggregate hard verdict is unchanged")
+
+
 def report_baseline(name: str, summary: dict, stats: dict) -> None:
     print(f"  [{name}] census")
     print(f"    slot ticks sampled       {summary['slot_ticks']}")
@@ -454,6 +476,7 @@ def inspect_high_rate(arm: HighRateArm, route: Route, output: str,
             "authored-rate run this is reported against")
 
     measured = {
+        "summary": summary,
         "present_rate": arm.present_rate,
         "presents": presents,
         "interpolated_presents": interpolated,
@@ -554,8 +577,10 @@ def main() -> int:
             failures.append(f"{route.name}: {error}")
             continue
         failures.extend(route_failures)
-        baseline[route.name] = {"summary": summary, "stats": stats}
+        baseline[route.name] = {"summary": summary, "stats": stats,
+                               "reengagement_events": reengagement_evidence(output)}
         report_baseline(route.name, summary, stats)
+        report_reengagements(route.name, output, summary["correction_reengagements"])
 
     high_rate: dict[str, dict] = {}
     selected_routes = {route.name for route in routes}
@@ -584,7 +609,10 @@ def main() -> int:
             failures.append(f"{label}: {error}")
             continue
         failures.extend(arm_failures)
+        measured["reengagement_events"] = reengagement_evidence(output)
         high_rate[label] = measured
+        report_reengagements(label, output,
+                            measured["summary"]["correction_reengagements"])
         if not arm_failures:
             report_high_rate(arm, measured)
 

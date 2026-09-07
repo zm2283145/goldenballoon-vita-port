@@ -67,6 +67,7 @@
 #include "structs.h"     /* Vertex (10B), Triangle (0x10), TexCoords */
 
 #include "gfx_rendering_api.h"
+#include "web_startup_diagnostics.h"
 #include "gfx_cc.h"
 #include "gfx_palette.h"
 #include "gfx_screen_config.h"
@@ -8424,13 +8425,21 @@ void gfx_finish_modern_character_gpu_timing(
 }
 
 bool gfx_start_frame(uint64_t authored_tick) {
+    mdkr_web_startup_phase("gfx-backend-before");
     if (gfx_rapi == NULL || gfx_rapi->start_frame == NULL ||
         !gfx_rapi->start_frame()) {
+        mdkr_web_startup_phase("gfx-backend-refused");
         return false;
     }
+    mdkr_web_startup_phase("gfx-backend-after");
+    mdkr_web_startup_phase("gfx-shadow-before");
     gfx_shadow_capture_begin();
+    mdkr_web_startup_phase("gfx-shadow-after");
+    mdkr_web_startup_phase("gfx-interpreter-before");
     gfx_dkr_reset_interpreter_state();
+    mdkr_web_startup_phase("gfx-interpreter-after");
     dkr_last_walked_authored_tick = authored_tick;
+    mdkr_web_startup_phase("gfx-retained-before");
     if (present_sched_replay_armed()) {
         (void)gfx_retained_task_capture_begin(
             authored_tick, g_dkrArenaBase, g_dkrArenaSize);
@@ -8447,6 +8456,7 @@ bool gfx_start_frame(uint64_t authored_tick) {
         dkr_walk_entry_texrect = dkr_in_texrect;
         dkr_walk_entry_valid = true;
     }
+    mdkr_web_startup_phase("gfx-retained-after");
     return true;
 }
 

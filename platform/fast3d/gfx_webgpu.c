@@ -41,6 +41,7 @@
 #include "gfx_shadow_frame.h"
 #include "fs_utf8.h"
 #include "gpu_diagnostics.h"
+#include "web_startup_diagnostics.h"
 #include "modern_character_limits.h"
 #include "modern_character_capture_projection.h"
 #ifdef MDKR_CHARACTER_KTX2
@@ -3090,6 +3091,7 @@ static void wgpu_update_light_ubo(void) {
 }
 
 static bool wgpu_start_frame(void) {
+    mdkr_web_startup_phase("webgpu-start-enter");
     const bool replay = gfx_dkr_replay_pass_active();
     if (!replay) {
         struct WgpuSkinnedShadowBank *write;
@@ -3098,7 +3100,9 @@ static bool wgpu_start_frame(void) {
         write->count = 0u;
         write->overflow = false;
     }
+    mdkr_web_startup_phase("webgpu-callback-before");
     (void)wgpu_consume_callback_failure();
+    mdkr_web_startup_phase("webgpu-callback-after");
     /* Commands retain backend handles only until this frame's auxiliary
      * replay has been encoded. Release the previous frame before recycling
      * vertex-stream offsets. */
@@ -3171,9 +3175,11 @@ static bool wgpu_start_frame(void) {
                 (unsigned long long)s_gpu_frame_submissions,
                 (unsigned long long)s_gpu_frame_completions);
     }
-    if (!wgpu_backpressure_check_below(
-            wgpu_backpressure_limit_before_frame(), true,
-            runtime_admission)) {
+    mdkr_web_startup_phase("webgpu-admission-before");
+    const bool admitted = wgpu_backpressure_check_below(
+        wgpu_backpressure_limit_before_frame(), true, runtime_admission);
+    mdkr_web_startup_phase("webgpu-admission-after");
+    if (!admitted) {
         /* Return without opening an encoder so the scheduler stays responsive.
          * Replays reserve one slot for the next authored endpoint; authored
          * frames may use both slots but never block for either one. */
@@ -3292,6 +3298,7 @@ static bool wgpu_start_frame(void) {
     g_pc_ssao_proj_b = 0.0f;
     g_pc_ssao_proj_x = 0.0f;
     g_pc_ssao_proj_y = 0.0f;
+    mdkr_web_startup_phase("webgpu-targets-before");
     /* (Re)create the offscreen scene target + depth buffer at the render res. */
     if (s_scene_view == NULL || s_scene_w != rw || s_scene_h != rh) {
         WGPUTexture new_scene_tex = NULL;
@@ -3468,6 +3475,8 @@ static bool wgpu_start_frame(void) {
             s_resolve_w = out_w; s_resolve_h = out_h;
         }
     }
+    mdkr_web_startup_phase("webgpu-targets-after");
+    mdkr_web_startup_phase("webgpu-surface-before");
     /*
      * Only configure/commit the surface after every size-coupled offscreen
      * resource exists. This prevents a resize from publishing dimensions that
@@ -3486,14 +3495,17 @@ static bool wgpu_start_frame(void) {
             "continue from the last persisted save.");
         return false;
     }
+    mdkr_web_startup_phase("webgpu-surface-after");
     if (s_scene_view == NULL || s_depth_view == NULL) {
         return false;
     }
 
     /* WEB-027: advance + upload the per-frame noise uniform now that s_scene_h is
      * established, before any draw builds a bind group that references it. */
+    mdkr_web_startup_phase("webgpu-uniforms-before");
     wgpu_update_noise_ubo();
     wgpu_update_light_ubo();
+    mdkr_web_startup_phase("webgpu-uniforms-after");
 
     /* WEB-053: every draw recorded from here on belongs to a new encoder. A
      * texture last drawn under an earlier epoch has had its command buffer
@@ -3503,8 +3515,10 @@ static bool wgpu_start_frame(void) {
     if (s_draw_epoch == 0) {
         s_draw_epoch = 1;   /* 0 is the never-drawn sentinel */
     }
+    mdkr_web_startup_phase("webgpu-encoder-before");
     s_encoder = WGPU_FAULT_CREATE(
         FRAME_ENCODER, wgpuDeviceCreateCommandEncoder(s_device, NULL));
+    mdkr_web_startup_phase("webgpu-encoder-after");
     if (s_encoder == NULL) {
         fprintf(stderr, "[webgpu] command encoder creation failed\n");
         s_ready = false;
@@ -3517,7 +3531,9 @@ static bool wgpu_start_frame(void) {
 
     /* Replay the previous immutable caster frame before the ordinary scene
      * pass opens. This is a second GPU pass, never a second game/DL traversal. */
+    mdkr_web_startup_phase("webgpu-shadow-pass-before");
     wgpu_render_shadow_maps();
+    mdkr_web_startup_phase("webgpu-shadow-pass-after");
 
     WGPURenderPassColorAttachment att = {0};
     att.view = s_scene_view;
@@ -3540,11 +3556,15 @@ static bool wgpu_start_frame(void) {
     rp.colorAttachmentCount = 1;
     rp.colorAttachments = &att;
     rp.depthStencilAttachment = &depth;
+    mdkr_web_startup_phase("webgpu-timing-before");
     if (wgpu_character_gpu_timing_frame_begin(&timestamp_writes)) {
         rp.timestampWrites = &timestamp_writes;
     }
+    mdkr_web_startup_phase("webgpu-timing-after");
+    mdkr_web_startup_phase("webgpu-pass-before");
     s_pass = WGPU_FAULT_CREATE(
         FRAME_PASS, wgpuCommandEncoderBeginRenderPass(s_encoder, &rp));
+    mdkr_web_startup_phase("webgpu-pass-after");
     if (s_pass == NULL) {
         wgpu_character_gpu_timing_abandon_frame();
         wgpuCommandEncoderRelease(s_encoder);

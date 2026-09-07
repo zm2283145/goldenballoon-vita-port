@@ -53,6 +53,7 @@ MDKR_ENV_ALLOWLIST = frozenset({
     "MDKR_DEDICATED_TEST_DESKTOP",
     "MDKR_SAVE_DIR",
     "MDKR_TEST_SAVE_DIR",
+    "MDKR_TEST_BROWSER_STARTUP_DIAGNOSTICS",
     "MDKR_TEXCACHE_VERIFY",
 })
 
@@ -1295,6 +1296,12 @@ CHECKS = (
 # artifacts produced inside that CTest fixture rather than the runner's normal
 # role arguments. ``rom_free_units`` owns their execution.
 CTEST_COMPANION_SCRIPTS = {
+    "check_ai_difficulty_ui.py",
+    "check_match_transport_tls_io.py",
+    "check_online_resolver_budget.py",
+    "check_party_open_transaction.py",
+    "check_network_lifetime.py",
+    "check_match_signal_admission.py",
     # Cross-layer source contract registered as character_offset_studio_contract
     # in cmake/tests.cmake; the broad ctest task owns its artifact-free run.
     "check_character_offset_studio.py",
@@ -1637,6 +1644,45 @@ def selected_checks(pattern_values: list[str] | None) -> list[Check]:
 # exempting them keeps at most ONE foreground child running at a time.
 FOREGROUND_ROLES = frozenset({"browser", "browser_save", "browser_local"})
 
+# These browser-local gates also consume a native driver. Route the selected
+# build explicitly; their standalone default must not silently select another
+# checkout/build, and missing drivers must fail preflight before a long suite.
+NATIVE_BROWSER_DRIVERS = {
+    "party_native_e2e": "mdkr_native_party_e2e_driver",
+    "party_lan_e2e": "mdkr_native_party_e2e_driver",
+    "online_live_transport_e2e": "mdkr_online_live_transport_e2e_driver",
+}
+
+# These browser-local gates consume the selected game executable itself, not a
+# sibling driver. Keep file routing separate so custom executable names and
+# Windows suffixes are retained exactly as selected by the caller.
+NATIVE_BROWSER_BINARIES = {
+    "browser_online_room_gallery": "native gallery binary",
+}
+
+# These checks launch the local Party Worker, directly or through the shared
+# startup helper. Admit its lockfile-installed entrypoint before any suite
+# subprocess or staged-artifact inspection. The LAN-only route deliberately
+# does not depend on Wrangler. Never fetch a replacement tool from the network.
+PARTY_WORKER_CHECKS = frozenset({
+    "party_capacity",
+    "party_experience_canary_smoke",
+    "party_service_chaos",
+    "party_native_e2e",
+    "online_live_transport_e2e",
+    "browser_online_two_person",
+    "party_firewall_negative",
+})
+PARTY_WRANGLER = ROOT / "services" / "party" / "node_modules" / "wrangler" / "bin" / "wrangler.js"
+
+
+def native_browser_driver(check: Check, native: Path) -> Path | None:
+    name = NATIVE_BROWSER_DRIVERS.get(check.name)
+    if name is None:
+        return None
+    suffix = ".exe" if os.name == "nt" else ""
+    return native.parent / (name + suffix)
+
 
 def yield_wrapper(check: Check) -> list[str]:
     """Launcher prefix that makes a bulk task yield to interactive work.
@@ -1686,7 +1732,12 @@ def command_for(
         return command
     cmd = yield_wrapper(check) + [sys.executable, str(TESTS / check.script)]
     if check.role in {"source", "browser_local"}:
-        pass
+        if check.name in NATIVE_BROWSER_BINARIES:
+            cmd += ["--build", str(native),
+                    "--shell-dir", str(ROOT / "dist" / "web")]
+        elif native_browser_driver(check, native) is not None:
+            cmd += ["--build", str(native.parent),
+                    "--shell-dir", str(ROOT / "dist" / "web")]
     elif check.role == "rom":
         cmd += ["--rom", str(rom)]
     elif check.role == "native":
@@ -1955,9 +2006,24 @@ def preflight(
         )
     if "browser_save" in roles:
         required.append(("native save CLI", native.parent / "mdkr-save"))
+    for check in checks:
+        if check.name in NATIVE_BROWSER_BINARIES:
+            required.append((f"{check.name} {NATIVE_BROWSER_BINARIES[check.name]}",
+                             native))
+        driver = native_browser_driver(check, native)
+        if driver is not None:
+            required.append((f"{check.name} native driver", driver))
+    worker_checks = sorted({check.name for check in checks} & PARTY_WORKER_CHECKS)
+    if worker_checks:
+        required.append(("lockfile-pinned Party Wrangler (" + ", ".join(worker_checks) + ")",
+                         PARTY_WRANGLER))
     missing = [f"{label}: {path}" for label, path in required if not path.is_file()]
     if missing:
-        raise RuntimeError("missing required artifact(s):\n  " + "\n  ".join(missing))
+        guidance = ("\nInstall the local Party dependencies from "
+                    "services/party/package-lock.json with npm ci in services/party; "
+                    "preflight does not install dependencies."
+                    if worker_checks and not PARTY_WRANGLER.is_file() else "")
+        raise RuntimeError("missing required artifact(s):\n  " + "\n  ".join(missing) + guidance)
 
     if roles & {"native", "release", "ctest"} and native.is_file():
         report_sdl_flavor(native, require_shipping_sdl)

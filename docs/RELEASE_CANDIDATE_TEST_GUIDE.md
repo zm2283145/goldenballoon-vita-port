@@ -142,6 +142,35 @@ Keep unavailable hardware or an unobserved reported symptom marked pending,
 not passed. Reconcile each result with `docs/open-items/github-issues.md`;
 issue closure still requires explicit maintainer approval.
 
+## 3c. Future Funland trophy and related progression acceptance (#63)
+
+Use disposable save copies and record the exact candidate hash and ROM revision.
+Do not overwrite the player's original save to prepare these checks.
+
+1. Enter Future Funland's own cabinet and complete all four championship races
+   with a first-place overall finish. Confirm the ceremony, cabinet statue,
+   Tracks trophy-completion marker, and persistence after a full restart.
+2. Load an independently prepared, checksum-valid save that already contains a
+   Future Funland trophy. Confirm its cabinet display without requiring another
+   win. Cover bronze, silver and gold; replay a lower finish after gold and
+   confirm that neither this trophy nor other worlds' medals are downgraded.
+3. Repeat the award/reload path in Adventure Two. Include both supported ROM
+   revisions across the acceptance record and exercise final native packages;
+   verify the corresponding browser save/reload behavior separately.
+4. In separate save slots, retain only bronze and silver for the same world.
+   Tracks must not manufacture a gold/completion marker by combining them.
+   A genuine gold in any slot must still show completion. Repeat with the
+   first and fifth worlds, preserving the other worlds and original saves.
+5. Verify mainland progression is unchanged: the first four gold trophies
+   still satisfy their part of the rocket/Drumstick unlock conditions without
+   a Future Funland trophy. T.T.'s status page must remain stable with zero,
+   four and five golds; its authored four-icon layout is unchanged.
+
+The automation's world-selection seam is not a substitute for entering the
+real Future Funland cabinet. Historical wins that were never persisted cannot
+be inferred from a missing trophy field; do not invent a retroactive award.
+Retain failed/unobserved rows as pending, not as a passing source review.
+
 ## 4. Wizpig, Terry, and persistent Magic Codes
 
 Use a disposable save for code tests, then repeat the earned-unlock paths on a
@@ -240,6 +269,15 @@ operator identity.
    all seven readability views. Verify the exact 40x40 portrait in character
    select, HUD, results/rankings, minimap/collection flag, and the independent
    custom roster.
+   Distinguish provisional framing, style preview, editable canvas, named-draft
+   Build and the optional finished-square-PNG route without coaching. Confirm
+   the shared minimap colour remains reachable when that compatibility section
+   is collapsed. Observe each install action's destination and editor-reload
+   warning before using it. Preserve unrelated edits in a named draft, then
+   separately qualify successful canvas/PNG revisions, failure with the prior
+   revision intact, unchanged enabled state and recovery through Package.
+   Identity Undo must never be presented as installed-revision rollback.
+   Repeat navigation and disclosures with keyboard/controller and narrow/200%.
 6. Set a mixed Latin/Arabic or Latin/Hebrew display and short name. Confirm the
    exact native shaped preview, direction announcement, live roster pixels, and
    cluster-safe compact fit. Then add an uncovered glyph and confirm the UI
@@ -340,10 +378,34 @@ route on macOS, Windows, and Linux before claiming those platforms; do not infer
 cross-platform support, relay support, or more than two racers from a same-LAN
 test.
 
+For shutdown qualification, exercise Quit both with a room still owned and
+immediately after Leave hands its adapter to background retirement. Retiring
+workers must complete before host/network globals are destroyed. A controlled
+delayed-close fixture must trigger the slow-close diagnostic without detaching
+workers; real cancellation, progress feedback and responsiveness remain required
+separately. A passing thread-only drain fixture does not prove those transport
+or rendered behaviors. No irreversible user data or shared service should be
+used to induce failure.
+
 1. Create a private room, join by the six-digit code, and compare the displayed
    verification words before accepting them. Deliberately reject one mismatched
    phrase and verify both clients return to a safe retry state without starting
    a race or leaking the room capability.
+   Exercise Words Match, Words Differ and Leave Room independently. Each input
+   must produce at most one decision, with no old-state action afterward;
+   accepted or rejected decisions must yield accurate next-frame feedback.
+   A developer fixture must also verify disabled decision controls cannot
+   dispatch. Check balanced card scopes and keyboard/controller focus after
+   each transition; the protocol's existing verification requirements remain
+   mandatory regardless of the visual state.
+   Before submitting a valid room code, exercise the actual native join field:
+   leading zeroes, paste with spaces/hyphens, click and arrow-key middle edits,
+   Backspace/Delete, selection replacement and undo. The visible caret,
+   selection and edited digits must agree; the six-digit buffer, spoken count
+   and Join enablement must reflect the same edit. Repeat with narrow layout
+   and 200% scale, keyboard and the supported controller text-entry route.
+   Restore the valid invite before joining. A static gallery capture does not
+   qualify editing, and the read-only host's grouped code is not the editor.
 2. Select racers whose online-catalog and engine IDs differ (for example Diddy
    and Pipsy), then run one car, hovercraft, and plane race. Each player must
    spawn as the racer and vehicle they selected, with correct HUD/results
@@ -367,6 +429,38 @@ test.
    Both must fail before racing with truthful compatibility copy. A custom
    character must remain local presentation only; the peer sees its built-in
    donor and neither side claims package transfer.
+8. Add a developer-only recovery fixture to exercise an owned adapter whose room view
+   is unavailable, both at frame start and after service. The offline Play/nav
+   shell must stay suppressed, the error panel and persistent Leave Room must
+   remain reachable, and leaving must clean up the old room before local play
+   or a fresh room is offered. Also cover an owned uninitialized adapter and
+   normal idle/entry controls. Do not induce this by corrupting real saves,
+   credentials or shared services. This fixture's runtime coverage is still
+   required; compile-time ownership checks alone do not qualify the journey.
+9. Exercise fresh-host retries from both an expired invite and a stranded room,
+   then a preflight retry and code re-entry. Cover successful reconstruction
+   and a refused reconstruction. Once an action changes the room, no timeout,
+   control or room-ready launch may consume the previous frame's snapshot.
+   Confirm the next frame shows the new room or actionable refusal, its exit
+   works, and card scopes and keyboard/controller focus remain intact. Include
+   ordinary Connection Details and re-entry controls as neighboring regressions.
+10. Quit with an active room and immediately after Leave Room. During normal
+    delayed cleanup, the closing-only surface must remain responsive, announce
+    its status, explain a delay after ten seconds without a fake estimate, and
+    close automatically only after workers finish. Repeated window-close events,
+    minimize/restore, narrow/200% layout and queued room-ready/race-boot events
+    must not restart a room or enter gameplay. When a Workshop transaction is
+    pending, its existing Keep launcher open choice must still work before
+    online retirement begins. A failed renderer must retain ordered cleanup
+    without detaching workers. Qualify scheduling-refusal cleanup separately;
+    the synchronous fallback and permanently stalled transports are not proved
+    responsive or time-bounded by the progress surface.
+    Also close immediately after a character preview returns, including while
+    minimized: its result must publish once before exit, with any resulting
+    transaction settled. A renderer failure during existing Workshop work must
+    not strand completed results until static destruction. Separately execute
+    HTTP TLS/response cancellation and deadline controls; whole-RTC cleanup and
+    resolver completion remain additional lifecycle requirements.
 
 Record both endpoint logs and redact room credentials. Any divergent state,
 wrong racer, unrepaired input gap, false departure, stale room authority,
@@ -386,6 +480,11 @@ credential disclosure, or unbounded wait blocks the release.
    launcher returns on the next ordinary start.
 4. Quit from the hold-open launcher and from the game, with a controller
    attached. Both exits must be clean; no pad may remain open past SDL teardown.
+   With two controllers, holding only left on one and right on the other must
+   not satisfy the two-shoulder escape gesture. Both shoulders on one controller
+   must work. Also connect/reconnect a controller while ROM validation is still
+   pending; that controller must be recognized without reopening or losing the
+   existing controllers. Verify the same behavior in the packaged Windows build.
 5. Install a Content Pack that replaces Taj's, Wizpig's, and Terry's portrait
    keys with three visibly different, license-clean images and non-default
    dimensions. Verify each portrait in character select and relevant HUD/result

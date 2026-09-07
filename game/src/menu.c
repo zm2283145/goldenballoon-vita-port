@@ -4648,7 +4648,8 @@ void trackmenu_set_records(void) {
     settings->bosses = 0;
     settings->cutsceneFlags = 0;
     for (i = 0; i < NUMBER_OF_SAVE_FILES; i++) {
-        settings->trophies |= gSavefileData[i]->trophies;
+        settings->trophies = mdkr_trophy_records_merge(
+            settings->trophies, gSavefileData[i]->trophies);
         settings->keys |= gSavefileData[i]->keys;
         settings->bosses |= gSavefileData[i]->bosses;
         settings->cutsceneFlags |= gSavefileData[i]->cutsceneFlags;
@@ -16778,18 +16779,10 @@ s32 menu_trophy_race_rankings_loop(s32 updateRate) {
                             gInAdvModeTrophyRace = FALSE;
                             ret = settings->courseId | MENU_RESULT_FLAGS_200;
                             if (sp34 < 3) {
-                                // Triage sweep (BUG_CLASS_SWEEP_REPORT.md #15):
-                                // `worldId - 1` doubled is a negative/UB shift
-                                // count whenever worldId <= 0 (WORLD_NONE=-1,
-                                // WORLD_CENTRAL_AREA=0). mdkr_trophy_state()
-                                // already exists and bounds worldId to 1..4 for
-                                // the two READ sites of this same trophies
-                                // field (object_functions.c, objects.c); this
-                                // WRITE site was left doing the raw shift.
-                                // Reachability of worldId<=0 here specifically
-                                // was not established either way by the sweep,
-                                // so route this through the same contract the
-                                // readers use rather than leave the asymmetry.
+                                // Validate the championship world before the
+                                // shift, using the same five-world contract as
+                                // the cabinet and trophy-model readers. Future
+                                // Funland owns the final two saved trophy bits.
                                 u32 trophyState;
                                 if (mdkr_trophy_state(settings->trophies,
                                                        settings->worldId,
@@ -19235,6 +19228,7 @@ void dialogue_tt_gamestatus(void) {
     s32 numOfItem;
     Settings *settings;
     s32 flag;
+    u32 trophyState;
     s16 tempX;
 
     if (gGameStatusVisible == TRUE) {
@@ -19288,8 +19282,10 @@ void dialogue_tt_gamestatus(void) {
     gMenuImages[16].spriteOffset = settings->ttAmulet;
     menu_element_render(16);
 
-    for (flag = 3, numOfItem = 0, i = 0; i < 16; flag <<= 2, i++) {
-        if (flag == (settings->trophies & flag)) {
+    /* Count only the five saved fields, without shifting a signed mask past
+     * its range. The authored status screen still has four trophy icons. */
+    for (numOfItem = 0, i = WORLD_DINO_DOMAIN; i <= WORLD_FUTURE_FUN_LAND; i++) {
+        if (mdkr_trophy_state(settings->trophies, i, &trophyState) && trophyState == 3) {
             numOfItem++;
         }
     }

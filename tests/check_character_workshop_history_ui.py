@@ -78,6 +78,10 @@ def verify_workshop_ux_contract() -> None:
     )
     text = re.escape
     for pattern, lost in (
+        (text('ImGui::Button("Choose a draft##identity-draft-handoff"'),
+         "Identity lost its non-mutating named-draft handoff"),
+        (text('ImGui::Button("Back to Identity##draft-handoff-back"'),
+         "draft setup lost its safe Identity return"),
         # The compact layout reaches the off-screen tabs through the tab bar's
         # own popup button, and the UX trace reads the same helper.
         (text("ImGuiTabBarFlags_TabListPopupButton"),
@@ -120,6 +124,352 @@ def verify_workshop_ux_contract() -> None:
     ):
         if re.search(pattern, source) is None:
             raise RuntimeError(lost)
+
+    handoff = source[source.index("bool returnToCharacterIdentityAfterDraft("):
+                     source.index("bool drawCharacterPortraitStudio(")]
+    for required in (
+        "g_characterDraftIdentityHandoff.matches(entry->id, digest)",
+        "draft == nullptr || draft->packageId != entry->id",
+        "draft->baseSourceDigest != digest",
+        "g_characterIdentityNameFocusRequested = true",
+    ):
+        if required not in handoff:
+            raise RuntimeError("Identity return lost ownership/focus check: " + required)
+    route_start = source.index('ImGui::Button("Choose a draft##identity-draft-handoff"')
+    route = source[route_start:source.index("ui::SpeakFocusedItem(", route_start)]
+    if "characterDigestHex(entry->source_sha256)" not in route:
+        raise RuntimeError("Identity draft handoff lost its exact-source intent")
+    for forbidden in ("saveCharacterDraft(", "applyCharacterDraftSnapshot(",
+                      "buildCharacterDraftSource(", "reviseCharacterIdentity("):
+        if forbidden in route:
+            raise RuntimeError("Identity navigation acquired mutation authority: " + forbidden)
+    lifecycle = source[source.index("bool drawCharacterDraftLifecycle("):
+                       source.index("std::string characterRevisionTimestamp(",
+                                    source.index("bool drawCharacterDraftLifecycle("))]
+    if lifecycle.count("returnToCharacterIdentityAfterDraft(entry)") != 3:
+        raise RuntimeError("Identity return must follow save, save-as, and resume success")
+    tabs = source[source.index("void drawCharacterWorkshopTabs("):
+                  source.index("CharacterWorkshopReadiness characterWorkshopReadiness(")]
+    for required in (
+        "CharacterWorkshopTab visible = CharacterWorkshopTab::Count",
+        "CharacterWorkshop_observeTabSelection(",
+        "g_characterWorkshopTab, g_characterWorkshopTabForceSelection, visible",
+        "g_characterWorkshopTabForceSelection = selection.awaitingVisibility",
+        "persistCharacterWorkshopTab(selection.tab, false)",
+    ):
+        if required not in tabs:
+            raise RuntimeError("Workshop tabs lost deferred-selection policy: " + required)
+    if "g_characterWorkshopTabForceSelection = false" in tabs:
+        raise RuntimeError("Workshop tab request was cleared before target observation")
+    raw = source[source.index("void drawCharacterRawIntakeEditor("):
+                 source.index("const char *characterFailureKindLabel(")]
+    compact = lambda value: re.sub(r"\s+", "", value)
+    admission = re.search(r"const bool ready = (.*?);", raw, re.DOTALL)
+    expected_admission = r"""
+        intake.inspected && finalTransformAccepted &&
+        characterRawPackageIdValid(intake.packageId) &&
+        intake.displayName[0] != '\0' && intake.licensePath[0] != '\0' &&
+        spdxValid && intake.attribution[0] != '\0' &&
+        intake.sourceUrl[0] != '\0' && hasVehicle &&
+        intake.targetHeight >= 0.1f && intake.targetHeight <= 10.0f &&
+        intake.fallback >= 0 && intake.seat >= 0 && intake.head >= 0
+    """
+    if admission is None or compact(admission.group(1)) != compact(expected_admission):
+        raise RuntimeError("Raw Build prerequisites changed; reconcile the guide and all-input regression")
+    for required in (
+        "facts.inspected = intake.inspected;",
+        "facts.packageIdValid = characterRawPackageIdValid(intake.packageId);",
+        r"facts.displayNamed = intake.displayName[0] != '\0';",
+        r"facts.licenseSelected = intake.licensePath[0] != '\0';",
+        "facts.spdxValid = validSpdx;",
+        r"facts.attributionNamed = intake.attribution[0] != '\0';",
+        r"facts.sourceUrlNamed = intake.sourceUrl[0] != '\0';",
+        "facts.hasVehicle = intake.vehicles[0] || intake.vehicles[1] || intake.vehicles[2];",
+        "facts.transformAccepted = acceptedTransform;",
+        "facts.heightAllowed = intake.targetHeight >= 0.1f && intake.targetHeight <= 10.0f;",
+        "facts.fallbackMapped = intake.fallback >= 0;",
+        "facts.seatMapped = intake.seat >= 0;",
+        "facts.headMapped = intake.head >= 0;",
+        "finalGuide = guideFor(finalTransformAccepted, spdxValid);",
+        "if (rawJumpOwner != jumpOwner)",
+        "if (ImGui::IsItemVisible()) rawJump = RawStep::Count;",
+    ):
+        if compact(required) not in compact(raw):
+            raise RuntimeError("Raw guide lost prerequisite/navigation parity: " + required)
+    navigation = raw[raw.index("const auto openRawStep ="):
+                     raw.index("const auto drawRawStepAnchor =")]
+    if re.search(r"\b(?:queue\w*|build\w*|save\w*)\s*\(", navigation):
+        raise RuntimeError("Raw guide navigation started an authoring operation")
+    inspection_action = raw.split("const auto drawRawInspectionAction =", 1)[1].split(
+        'drawRawStepAnchor(RawStep::Inspection, "Source inspection");', 1
+    )[0]
+    for marker in (
+        "!g_characterManagerWorker.busy() && !g_characterPortableInstallWorker.busy() && !g_characterPackageInspection.busy()",
+        "ImGui::Button(buttonLabel, ui::kBtnFullWidth()) && canInspect",
+        "if (!requested) return false;",
+        "if (reinspection && !saveCharacterRawIntake())",
+        "const std::string modelPath = intake.modelPath;",
+        "queueCharacterRawGlbInspection(",
+    ):
+        if compact(marker) not in compact(inspection_action):
+            raise RuntimeError("Raw reinspection lost guarded source-preserving admission: " + marker)
+    if not (inspection_action.index("if (!requested)") <
+            inspection_action.index("saveCharacterRawIntake()") <
+            inspection_action.index("queueCharacterRawGlbInspection(")):
+        raise RuntimeError("Raw reinspection must save before the existing reset/queue transaction")
+    for label, reinspection, guide_destination in (
+        ("Inspect GLB model", "false", "true"),
+        ("Reinspect GLB model##raw-source-reinspect", "true", "true"),
+        ("Reinspect GLB model##raw-transform-reinspect", "true", "false"),
+    ):
+        expected = f'if (drawRawInspectionAction("{label}", {reinspection}, {guide_destination})) {{ return; }}'
+        if compact(expected) not in compact(raw):
+            raise RuntimeError("Inspection request must stop the frame before stale facts/autosave: " + label)
+    if re.search(r"\b(?:resetCharacterRawGlbInspection|applyCharacterRawGlbInspection)\s*\(", raw):
+        raise RuntimeError("Raw reinspection UI bypassed the existing worker publication transaction")
+    transform = raw.split('drawRawStepAnchor(RawStep::Transform, "Scale and facing");', 1)[1].split(
+        'static const char *forwards[]', 1
+    )[0]
+    for marker in (
+        "const bool authoredHeightAllowed = std::isfinite(intake.targetHeight) && intake.targetHeight >= 0.1f && intake.targetHeight <= 10.0f;",
+        "if (!authoredHeightAllowed)",
+        "if (intake.inspected && authoredHeightAllowed && (!intake.inventory.detailedBounds || !transformReview.valid))",
+        "Reinspection cannot repair this draft setting",
+    ):
+        if compact(marker) not in compact(transform):
+            raise RuntimeError("Height-entry errors must not prescribe source reinspection: " + marker)
+    if transform.index("if (!authoredHeightAllowed)") > transform.index("else if (!transformReview.valid)"):
+        raise RuntimeError("Editable height must be diagnosed before blaming source bounds")
+    for marker in (
+        "openRawField(guide.nextField, guideTransformAvailable)",
+        "openRawField(finalGuide.nextField, finalTransformAvailable)",
+        "rawFieldFocus = {CharacterWorkshop_resolveRawField(field, transformReviewAvailable), false}",
+        "rawFocusLastFrame != rawFocusFrame - 1",
+        "ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel",
+        "if (cancelled) rawFieldFocus = {}",
+        "ImGuiKey_Escape", "ImGuiKey_GamepadFaceRight", "ImGuiKey_GamepadBack",
+        "ImGui::IsMouseClicked(ImGuiMouseButton_Left)",
+        "if (guideDestination) requestCharacterRawFieldFocus(rawFieldFocus, RawField::Inspection, canInspect)",
+        "if (guideDestination) observeCharacterRawFieldFocus(rawFieldFocus, RawField::Inspection)",
+    ):
+        if compact(marker) not in compact(raw):
+            raise RuntimeError("Raw blocker navigation lost field routing/cancellation: " + marker)
+    interruption = raw.split("if (rawFieldFocus.target != RawField::Count)", 1)[1].split(
+        "rawFocusLastFrame = rawFocusFrame;", 1
+    )[0]
+    for marker in (
+        "!io.InputQueueCharacters.empty()",
+        "if (io.KeyCtrl || io.KeySuper) { for (ImGuiKey key : {ImGuiKey_A, ImGuiKey_C, ImGuiKey_V, ImGuiKey_X, ImGuiKey_Y, ImGuiKey_Z}) { cancelled |= ImGui::IsKeyPressed(key, false); } }",
+        "ImGuiKey_KeypadEnter, ImGuiKey_Backspace, ImGuiKey_Delete, ImGuiKey_Insert",
+    ):
+        if compact(marker) not in compact(interruption):
+            raise RuntimeError("Raw focus must yield to character-free manual editing: " + marker)
+    if re.search(r"ImGui::(?:Shortcut|SetKeyOwner|SetShortcutRouting)\s*\(", interruption):
+        raise RuntimeError("Focus cancellation must observe manual editing without consuming it")
+    owner_reset = raw.split("if (rawJumpOwner != jumpOwner)", 1)[1].split("}", 1)[0]
+    if "rawFieldFocus = {" not in owner_reset:
+        raise RuntimeError("Raw field intent survived an exact source/draft change")
+    if "rawFieldFocus = {}" not in navigation:
+        raise RuntimeError("Section revisit must cancel pending field navigation")
+    for field in ("PackageId", "DisplayName", "License", "Spdx", "Attribution",
+                  "SourceUrl", "Vehicles", "Height", "Transform", "Build"):
+        for action in ("request", "observe"):
+            marker = f"{action}CharacterRawFieldFocus(rawFieldFocus, RawField::{field}"
+            if marker not in raw:
+                raise RuntimeError("Raw field has no actual-control focus binding: " + marker)
+    focus_helpers = source.split("void requestCharacterRawFieldFocus(", 1)[1].split(
+        "bool drawCharacterRawChoice(", 1
+    )[0]
+    for marker in (
+        "CharacterWorkshop_requestRawFocus(focus, field, enabled)",
+        "ImGui::SetKeyboardFocusHere()", "ImGui::SetNavCursorVisible(true)",
+        "ImGuiItemFlags_Disabled", "ImGui::IsItemVisible()",
+        "CharacterWorkshop_observeRawFocus(focus, field, visible, ImGui::IsItemFocused() || ImGui::IsItemActive())",
+    ):
+        if compact(marker) not in compact(focus_helpers):
+            raise RuntimeError("Raw focus lost native deferred/disabled acknowledgement: " + marker)
+    if re.search(r"\b(?:queue\w*|build\w*|save\w*|ActivateItem\w*)\s*\(", focus_helpers):
+        raise RuntimeError("Raw field focus attempted authoring or action activation")
+    # The vendored API queues tabbing focus, which activates text entry only.
+    # Pin that real implementation distinction before using it on Build/Accept.
+    imgui = (ROOT / "lib" / "imgui" / "imgui.cpp").read_text(encoding="utf-8")
+    if compact("if ((g.NavMoveFlags & ImGuiNavMoveFlags_IsTabbing) && (result->ItemFlags & ImGuiItemFlags_Inputable) == 0) g.NavMoveFlags &= ~ImGuiNavMoveFlags_Activate;") not in compact(imgui):
+        raise RuntimeError("Review native focus API: navigation must not activate non-inputable controls")
+    verify_workshop_containment_contract(source)
+
+
+def verify_workshop_containment_contract(source: str) -> None:
+    """Keep full authored text separate from IDs and bounded field geometry.
+
+    Rendered qualification must still exercise duplicate names, literal ##,
+    long Unicode names/unbroken paths, narrow panels and 200 percent scale.
+    """
+    row = source.split("bool drawCharacterLibraryRow(", 1)[1].split(
+        "const MdkrModernCharacterEntry *drawCharacterLibrary(", 1
+    )[0]
+    compact = lambda text: re.sub(r"\s+", "", text)
+    for marker in (
+        "ImGui::PushID(packageId);",
+        'ImGui::Selectable("##character-library-row", selected, 0,',
+        "label.c_str(), nullptr, false, wrapWidth);",
+        "textSize.y + padding.y * 2.0f",
+        "ImGui::GetCursorScreenPos();",
+        "origin.x + width, origin.y + height",
+        "wrapWidth, &clip);",
+        "ImGui::IsItemVisible()",
+    ):
+        if compact(marker) not in compact(row):
+            raise RuntimeError("wrapped package row lost " + marker)
+    if "ImGui::Text" in row or "ImGui::Dummy" in row:
+        raise RuntimeError("row drawing replaced the selectable's focused last item")
+    library = source.split(
+        "const MdkrModernCharacterEntry *drawCharacterLibrary(", 1
+    )[1].split("bool drawCharacterAssignments(", 1)[0]
+    if library.count("drawCharacterLibraryRow(") != 2:
+        raise RuntimeError("compact and rail libraries must share wrapped package-ID rows")
+    if "ImGui::Selectable(" in library:
+        raise RuntimeError("library regained name-derived selection IDs")
+    for marker in (
+        "ImGui::SetNextWindowSizeConstraints(",
+        'ImGui::TextWrapped("Selected: %s", workshopEntry->display_name);',
+        "entry->narration_name",
+    ):
+        if marker not in library:
+            raise RuntimeError("library lost bounded/full-value presentation: " + marker)
+    for field in (
+        "character-display-name", "character-short-name",
+        "character-narration-name", "character-sort-label",
+        "character-portrait-import-path", "character-portrait-path",
+        "character-workshop-library", "character-minimap-colour",
+    ):
+        if f'"##{field}"' not in source:
+            raise RuntimeError("stacked field lost its independent input ID: " + field)
+        if re.search(r'"[^"\n#]+##' + re.escape(field) + '"', source):
+            raise RuntimeError("full-width field regained an overflowing side label: " + field)
+    if 'ImGui::TextWrapped("%s", spdxError.c_str());' not in source:
+        raise RuntimeError("raw SPDX corrective errors lost wrapping")
+    assignments = source.split("bool drawCharacterAssignments(", 1)[1].split(
+        "void drawSkippedCharacterInventory(", 1
+    )[0]
+    for marker in (
+        "drawCharacterLibraryRow(entry->id, item, selected == entry->id,",
+        "const bool assignable = readiness.readyToPlay;",
+        "if (!assignable) ImGui::BeginDisabled();",
+        "AppConfig::setAndSave(key, entry->id);",
+    ):
+        if compact(marker) not in compact(assignments):
+            raise RuntimeError("assignment selection lost exact identity/gating: " + marker)
+    if "ImGui::Selectable(item.c_str()" in assignments:
+        raise RuntimeError("assignment selection regained authored-name IDs")
+    motion = source.split("void drawCharacterMotionAuthoringStudio(", 1)[1].split(
+        "bool drawCharacterRigStudio(", 1
+    )[0]
+    for marker in (
+        'ImGui::TreeNodeEx("##secondary-chain", ImGuiTreeNodeFlags_DefaultOpen, "%s", title.c_str());',
+        "ImGui::PushID(static_cast<int>(node));",
+        'const std::string itemLabel = label + "###secondary-root";',
+        "ImGui::PushID(static_cast<int>(edit.joints[joint].node));",
+        'const std::string itemLabel = label + "###secondary-child";',
+        "chain.rootNode = node;",
+        "chain.joints[chain.jointCount++] = joint;",
+    ):
+        if compact(marker) not in compact(motion):
+            raise RuntimeError("secondary node selection lost fixed identity: " + marker)
+    raw_choices = source.split("bool drawCharacterRawChoice(", 1)[1].split(
+        "void drawCharacterRawIntakeEditor(", 1
+    )[0]
+    for marker in (
+        "CharacterWorkshop_filterRawChoices(choices, query, selected)",
+        "ImGui::TextUnformatted(label);",
+        'const std::string comboLabel = std::string("###") + label;',
+        "beginCharacterLiteralCombo(comboLabel.c_str(), preview)",
+        "if (appearing || filterChanged)",
+        "clipper.Begin(static_cast<int>(filtered.indices.size()));",
+        "const int index = filtered.indices[static_cast<size_t>(position)];",
+        "clipper.IncludeItemByIndex(filtered.selectedPosition);",
+        "if (appearing && selected == index)",
+        "ImGui::SetItemDefaultFocus();",
+        "ImGui::SetScrollHereY(0.5f);",
+        "ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened",
+        "searchOwner != sourceOwner || searchWidget != widget",
+        "if (ownerChanged && !appearing)",
+        "ImGui::CloseCurrentPopup();",
+        'ImGui::Button("Clear search", ui::kBtnFullWidth())',
+        'ui::TextSubtleWrapped("Selected: %s", choices[static_cast<size_t>(selected)].c_str());',
+        'ImGui::TextWrapped("Source name: %s", choices[static_cast<size_t>(detailIndex)].c_str());',
+        'ImGui::BeginChild("##raw-choice-detail", ImVec2(0.0f, ImGui::GetTextLineHeightWithSpacing() * 3.0f), ImGuiChildFlags_Borders)',
+        'ui::SpeakFocusedItem("Full source name",',
+        "ImGui::PushID(index);",
+        'drawCharacterLiteralChoice("##raw-choice", choice.c_str(), selected == index)',
+        'ui::SpeakFocusedItem(choice.c_str(), selected == index ? "selected" : "available", help);',
+    ):
+        if compact(marker) not in compact(raw_choices):
+            raise RuntimeError("raw choices lost fixed-height literal-label semantics: " + marker)
+    if "SetKeyboardFocusHere" in raw_choices:
+        raise RuntimeError("mapping search must not steal text-entry focus on popup frames")
+    if len(re.findall(r"\bselected\s*=(?!=)", raw_choices)) != 1:
+        raise RuntimeError("mapping changes must remain solely explicit row selection")
+    raw = source.split("void drawCharacterRawIntakeEditor(", 1)[1].split(
+        "const char *characterFailureKindLabel(", 1
+    )[0]
+    calls = re.findall(r"drawCharacterRawChoice\((.*?)\);", raw, re.DOTALL)
+    if len(calls) != 3 or any(
+        compact("jumpOwner, rawFieldFocus, RawField::") not in compact(call)
+        for call in calls
+    ):
+        raise RuntimeError("all raw mapping selectors must be bound to the exact draft/source")
+    for marker in (
+        "requestCharacterRawFieldFocus(fieldFocus, field)",
+        "if (!open) observeCharacterRawFieldFocus(fieldFocus, field)",
+    ):
+        if marker not in raw_choices:
+            raise RuntimeError("Raw mapping focus must bind to its combo, not trailing text: " + marker)
+    literal_row = source.split("bool drawCharacterLiteralChoice(", 1)[1].split(
+        "bool beginCharacterLiteralCombo(", 1
+    )[0]
+    for marker in (
+        "const float height = ImGui::GetTextLineHeight();",
+        "ImGui::Selectable(widgetLabel, selected, 0, ImVec2(width, height));",
+        "ImGui::IsItemVisible()",
+        "ImGui::GetColorU32(ImGuiCol_Text), visibleText, nullptr, 0.0f, &clip);",
+    ):
+        if compact(marker) not in compact(literal_row):
+            raise RuntimeError("literal choices lost native identity/geometry: " + marker)
+    if not (literal_row.index("ImGui::PushStyleColor(") <
+            literal_row.index("ImGui::Selectable(") <
+            literal_row.index("ImGui::PopStyleColor();") <
+            literal_row.index("->AddText(")):
+        raise RuntimeError("literal choice text opacity was not restored before painting")
+    literal_combo = source.split("bool beginCharacterLiteralCombo(", 1)[1].split(
+        "void drawCharacterMotionAuthoringStudio(", 1
+    )[0]
+    for marker in (
+        "ImDrawList *draw = ImGui::GetWindowDrawList();",
+        "const float width = ImGui::CalcItemWidth();",
+        "const float height = ImGui::GetFrameHeight();",
+        'ImGui::BeginCombo(label, "");',
+        "origin.x + width - height",
+        "previewVisible && preview != nullptr",
+        "colour, preview, nullptr, 0.0f, &clip);",
+    ):
+        if compact(marker) not in compact(literal_combo):
+            raise RuntimeError("literal combo lost native preview semantics: " + marker)
+    if not (literal_combo.index("ImGui::GetWindowDrawList();") <
+            literal_combo.index("ImGui::BeginCombo(") <
+            literal_combo.index("draw->AddText(")):
+        raise RuntimeError("combo preview no longer paints into its captured parent")
+    for section in (literal_row, literal_combo):
+        if "ImGui::Text" in section or "ImGui::Dummy" in section:
+            raise RuntimeError("literal painting replaced the native focused item")
+    for marker in (
+        "itemLabel.c_str(), label.c_str(), role.joint ==",
+        "visible.c_str(), visible.c_str(), draft->id == selectedId",
+        "draft.name.c_str(), draft.name.c_str(), false",
+        "label.c_str(), visible.c_str(), draft.id == intake.draftId",
+        "label.c_str(), visible.c_str(), inventory.selected == static_cast<int>(index)",
+    ):
+        if compact(marker) not in compact(source):
+            raise RuntimeError("an authored selector lost its separate literal text: " + marker)
 
 
 def install_fixture(root: Path, *, display_name: str = "History Proof",

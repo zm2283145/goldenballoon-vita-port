@@ -1,0 +1,652 @@
+diff --git a/src/impl/processor.hpp b/src/impl/processor.hpp
+--- a/src/impl/processor.hpp
++++ b/src/impl/processor.hpp
+@@ -34,6 +34,11 @@
+ 
+ 	void join();
+ 
++	using PreparedWork = ThreadPool::PreparedWork;
++	// Records are bound to this Processor; prepare before resource admission.
++	template <class F> PreparedWork prepare(F &&f);
++	void enqueuePrepared(PreparedWork task) noexcept;
++
+ 	template <class F, class... Args> void enqueue(F &&f, Args &&...args) noexcept;
+ 
+ private:
+@@ -56,16 +61,25 @@
+ 	~TearDownProcessor();
+ };
+ 
++template <class F> Processor::PreparedWork Processor::prepare(F &&f) {
++	return ThreadPool::prepare([this, function = std::forward<F>(f)]() mutable {
++		MdkrNoAllocScopeExit continuation([this]() noexcept { schedule(); });
++		return function();
++	});
++}
++
+ template <class F, class... Args> void Processor::enqueue(F &&f, Args &&...args) noexcept {
+ 	// Preparation may still fail under this legacy noexcept API. SCTP upcall
+ 	// and terminal teardown refusal ownership must be fixed before changing it.
+ 	// Every shipped peer/SCTP task retains its owner; teardown's Processor is
+ 	// immortal. Do not enqueue ownerless raw pointers into a retiring Processor.
+ 	auto bound = std::bind(std::forward<F>(f), std::forward<Args>(args)...);
+-	auto task = ThreadPool::prepare([this, bound = std::move(bound)]() mutable {
+-		MdkrNoAllocScopeExit continuation([this]() noexcept { schedule(); });
+-		return bound();
+-	});
++	enqueuePrepared(prepare(std::move(bound)));
++}
++
++inline void Processor::enqueuePrepared(PreparedWork task) noexcept {
++	// Only records returned by this instance's prepare() are admissible. The
++	// immortal teardown Processor is unbounded; no wait is needed on that lane.
+ 	auto &pool = ThreadPool::Instance();
+ 	std::unique_lock lock(mMutex);
+ 	// Backpressure must release this mutex: schedule() needs it to make space.
+diff --git a/src/impl/transport.hpp b/src/impl/transport.hpp
+--- a/src/impl/transport.hpp
++++ b/src/impl/transport.hpp
+@@ -13,8 +13,11 @@
+ #include "init.hpp"
+ #include "internals.hpp"
+ #include "message.hpp"
++#include "processor.hpp"
++#include "transport_retirement.h"
+ 
+ #include <atomic>
++#include <array>
+ #include <functional>
+ #include <memory>
+ #include <mutex>
+@@ -48,11 +51,28 @@
+ 	virtual bool outgoing(message_ptr message);
+ 
+ private:
++	void installIncoming(Transport *owner, message_callback callback);
++	void removeIncoming(Transport *owner);
++	bool claimIncomingRetirement(Transport *owner);
++	void replaceRecv(Transport *owner, message_callback callback);
++
+ 	const init_token mInitToken = Init::Instance().token();
+ 
+ 	shared_ptr<Transport> mLower;
+ 	synchronized_callback<State> mStateChangeCallback;
+-	synchronized_callback<message_ptr> mRecvCallback;
++	struct ReceiveCallback final : synchronized_callback<message_ptr> {
++		using synchronized_callback<message_ptr>::operator=;
++		std::unique_lock<std::recursive_mutex> acquire() const {
++			return std::unique_lock<std::recursive_mutex>(mutex);
++		}
++		// Caller owns acquire(). Move old captures out; never destroy them
++		// under Transport's nonrecursive pending/edge mutex.
++		message_callback exchange(message_callback replacement) noexcept {
++			callback.swap(replacement);
++			return replacement;
++		}
++	};
++	ReceiveCallback mRecvCallback;
+ 
+ 	std::atomic<State> mState = State::Disconnected;
+ 
+@@ -60,10 +80,68 @@
+ 	// replayed when onRecv() is first called with a non-null callback.
+ 	// This prevents the ICE->DTLS and DTLS->SCTP races where one side
+ 	// sends its first packet before the other side has called registerIncoming().
++	// Always acquire mRecvCallback's recursive lock BEFORE this pending/edge
++	// mutex. Callback invocation/replay releases this mutex but retains callback
++	// lifetime synchronization, including reentrant removal on the same thread.
+ 	std::mutex mPendingMutex;
+ 	std::vector<message_ptr> mPendingRecv;
++	Transport *mIncomingOwner = nullptr;
++	Transport *mChainOwner = nullptr;
++	bool mIncomingRetiring = false;
+ };
+ 
++static_assert(MIN_THREADPOOL_SIZE >= 2,
++              "Serial transport retirement needs a second worker for joined Processor work");
++using TransportRetirement = MdkrTransportRetirement<TearDownProcessor, init_token, Transport>;
++
++// All shipped transport factories reserve stop and deletion before construction.
++// Internal foreign owners keep their explicit legacy stop behavior.
++inline void requestTransportStop(const shared_ptr<Transport> &transport) {
++	if (transport && !TransportRetirement::requestStop(transport))
++		transport->stop();
++}
++
++template <typename T, typename... Args>
++shared_ptr<T> makeRetiredTransport(Args &&...args) {
++	auto token = Init::Instance().token();
++	auto &dispatcher = TearDownProcessor::Instance();
++	return TransportRetirement::make<T>(dispatcher, std::move(token), std::forward<Args>(args)...);
++}
++
++template <size_t N>
++void retireTransportChain(std::array<shared_ptr<Transport>, N> transports) {
++	bool reserved = true;
++	for (const auto &transport : transports)
++		reserved = reserved && TransportRetirement::hasReservation(transport);
++	if (!reserved) {
++		// Internal foreign owners were previously stopped and released together
++		// off-thread. Preserve that legacy behavior; this allocating fallback
++		// does not acquire the shipped factories' reserved-admission guarantee.
++		TearDownProcessor::Instance().enqueue(
++		    [transports = std::move(transports), token = Init::Instance().token()]() mutable {
++			    for (const auto &transport : transports) {
++				    if (transport) {
++					    transport->stop();
++					    break;
++				    }
++			    }
++			    for (auto &transport : transports)
++				    transport.reset();
++		    });
++		return;
++	}
++	for (const auto &transport : transports) {
++		if (transport) {
++			TransportRetirement::requestStop(transport);
++			break;
++		}
++	}
++	// Lower-chain references preserve lifetime until the upper resource retires;
++	// each final release publishes its independently reserved serial deletion.
++	for (auto &transport : transports)
++		transport.reset();
++}
++
+ } // namespace rtc::impl
+ 
+ #endif
+diff --git a/src/impl/transport.cpp b/src/impl/transport.cpp
+--- a/src/impl/transport.cpp
++++ b/src/impl/transport.cpp
+@@ -17,7 +17,12 @@
+ 	unregisterIncoming();
+ 
+ 	if (mLower) {
+-		mLower->stop();
++		// Constructor unwind must not synchronously stop a thread-sensitive
++		// lower resource. An unstarted/losing upper transport also must not clear
++		// or stop a healthy sibling's lower chain. Only the exact registered
++		// chain owner may seal that lower edge and request its reserved stop.
++		if (mLower->claimIncomingRetirement(this))
++			requestTransportStop(mLower);
+ 		mLower.reset();
+ 	}
+ }
+@@ -25,28 +30,72 @@
+ void Transport::registerIncoming() {
+ 	if (mLower) {
+ 		PLOG_VERBOSE << "Registering incoming callback";
+-		mLower->onRecv(std::bind(&Transport::incoming, this, std::placeholders::_1));
++		mLower->installIncoming(this, std::bind(&Transport::incoming, this, std::placeholders::_1));
+ 	}
+ }
+ 
+ void Transport::unregisterIncoming() {
+ 	if (mLower) {
+ 		PLOG_VERBOSE << "Unregistering incoming callback";
+-		mLower->onRecv(nullptr);
++		mLower->removeIncoming(this);
+ 	}
+ }
+ 
+ Transport::State Transport::state() const { return mState; }
+ 
+-void Transport::onRecv(message_callback callback) {
++void Transport::onRecv(message_callback callback) { replaceRecv(nullptr, std::move(callback)); }
++
++void Transport::installIncoming(Transport *owner, message_callback callback) {
++	replaceRecv(owner, std::move(callback));
++}
++
++void Transport::removeIncoming(Transport *owner) {
++	auto callbackLock = mRecvCallback.acquire();
++	message_callback retired;
++	std::vector<message_ptr> dropped;
++	{
++		std::lock_guard lock(mPendingMutex);
++		if (mIncomingOwner != owner)
++			return;
++		retired = mRecvCallback.exchange(nullptr);
++		dropped.swap(mPendingRecv);
++		mIncomingOwner = nullptr;
++		// Retain chain-stop authority until destruction or a new registration.
++	}
++	// Retired captures may reenter this transport on destruction. Keep callback
++	// lifetime synchronization, but release the pending/edge lock before that.
++}
++
++bool Transport::claimIncomingRetirement(Transport *owner) {
++	auto callbackLock = mRecvCallback.acquire();
++	std::lock_guard lock(mPendingMutex);
++	if (mChainOwner != owner)
++		return false;
++	mChainOwner = nullptr;
++	// Seal under the same lock as registration. A new owner must not slip
++	// between this claim and the off-lock stop publication and be stopped.
++	mIncomingRetiring = true;
++	return true;
++}
++
++void Transport::replaceRecv(Transport *owner, message_callback callback) {
+ 	std::vector<message_ptr> pending;
++	auto callbackLock = mRecvCallback.acquire();
++	message_callback retired;
++	std::vector<message_ptr> dropped;
+ 	{
+ 		std::lock_guard lock(mPendingMutex);
+-		mRecvCallback = std::move(callback);
++		if (owner && (mIncomingRetiring || (mIncomingOwner && mIncomingOwner != owner)))
++			throw std::logic_error("Incoming transport edge is already owned or retiring");
++		retired = mRecvCallback.exchange(std::move(callback));
++		// onRecv is an explicit external replacement, not implicit chain
++		// admission. Neither replacement nor clearing reopens a retired edge.
++		mIncomingOwner = owner;
++		mChainOwner = owner;
+ 		if (mRecvCallback)
+ 			pending = std::move(mPendingRecv);
+ 		else
+-			mPendingRecv.clear();
++			dropped.swap(mPendingRecv);
+ 	}
+ 	for (auto &msg : pending) {
+ 		try {
+@@ -69,6 +118,7 @@
+ 
+ void Transport::recv(message_ptr message) {
+ 	try {
++		auto callbackLock = mRecvCallback.acquire();
+ 		std::unique_lock lock(mPendingMutex);
+ 		if (!mRecvCallback) {
+ 			// No callback registered yet; buffer the message for replay when
+diff --git a/src/impl/peerconnection.cpp b/src/impl/peerconnection.cpp
+--- a/src/impl/peerconnection.cpp
++++ b/src/impl/peerconnection.cpp
+@@ -135,17 +135,32 @@
+ // Helper for PeerConnection::initXTransport methods: start and emplace the transport
+ template <typename T>
+ shared_ptr<T> emplaceTransport(PeerConnection *pc, shared_ptr<T> *member, shared_ptr<T> transport) {
+-	std::atomic_store(member, transport);
++	shared_ptr<T> empty;
++	if (!std::atomic_compare_exchange_strong(member, &empty, transport)) {
++		requestTransportStop(transport);
++		return nullptr;
++	}
+ 	try {
++		if (!TransportRetirement::beginStart(transport)) {
++			auto expected = transport;
++			std::atomic_compare_exchange_strong(member, &expected, shared_ptr<T>());
++			return nullptr;
++		}
++		MdkrNoAllocScopeExit finishStart([owner = transport]() noexcept {
++			TransportRetirement::finishStart(owner);
++		});
+ 		transport->start();
+ 	} catch (...) {
+-		std::atomic_store(member, decltype(transport)(nullptr));
++		auto expected = transport;
++		std::atomic_compare_exchange_strong(member, &expected, shared_ptr<T>());
++		requestTransportStop(transport);
+ 		throw;
+ 	}
+ 
+ 	if (pc->closing.load() || pc->state.load() == PeerConnection::State::Closed) {
+-		std::atomic_store(member, decltype(transport)(nullptr));
+-		transport->stop();
++		auto expected = transport;
++		std::atomic_compare_exchange_strong(member, &expected, shared_ptr<T>());
++		requestTransportStop(transport);
+ 		return nullptr;
+ 	}
+ 
+@@ -159,7 +174,7 @@
+ 
+ 		PLOG_VERBOSE << "Starting ICE transport";
+ 
+-		auto transport = std::make_shared<IceTransport>(
++		auto transport = makeRetiredTransport<IceTransport>(
+ 		    config, weak_bind(&PeerConnection::processLocalCandidate, this, _1),
+ 		    [this, weak_this = weak_from_this()](IceTransport::State transportState) {
+ 			    if (auto locked = weak_this.lock())
+@@ -210,6 +225,7 @@
+ 				    });
+ 		    });
+ 
++		transport->initialize(config);
+ 		return emplaceTransport(this, &mIceTransport, std::move(transport));
+ 
+ 	} catch (const std::exception &e) {
+@@ -276,7 +292,7 @@
+ 			PLOG_INFO << "This connection requires media support";
+ 
+ 			// DTLS-SRTP
+-			transport = std::make_shared<DtlsSrtpTransport>(
++			transport = makeRetiredTransport<DtlsSrtpTransport>(
+ 			    lower, certificate, config.mtu, fingerprintAlgorithm, verifierCallback,
+ 			    weak_bind(&PeerConnection::forwardMedia, this, _1), dtlsStateChangeCallback);
+ #else
+@@ -286,7 +302,7 @@
+ 
+ 		if (!transport) {
+ 			// DTLS only
+-			transport = std::make_shared<DtlsTransport>(lower, certificate, config.mtu,
++			transport = makeRetiredTransport<DtlsTransport>(lower, certificate, config.mtu,
+ 			                                            fingerprintAlgorithm, verifierCallback,
+ 			                                            dtlsStateChangeCallback);
+ 		}
+@@ -324,7 +340,7 @@
+ 		ports.local = local->application()->sctpPort().value_or(DEFAULT_SCTP_PORT);
+ 		ports.remote = remote->application()->sctpPort().value_or(DEFAULT_SCTP_PORT);
+ 
+-		auto transport = std::make_shared<SctpTransport>(
++		auto transport = makeRetiredTransport<SctpTransport>(
+ 		    lower, config, std::move(ports), weak_bind(&PeerConnection::forwardMessage, this, _1),
+ 		    weak_bind(&PeerConnection::forwardBufferedAmount, this, _1, _2),
+ 		    [this, weak_this = weak_from_this()](SctpTransport::State transportState) {
+@@ -352,6 +368,7 @@
+ 				    });
+ 		    });
+ 
++		transport->initialize(config);
+ 		return emplaceTransport(this, &mSctpTransport, std::move(transport));
+ 
+ 	} catch (const std::exception &e) {
+@@ -404,18 +421,7 @@
+ 		if (t)
+ 			t->onStateChange(nullptr);
+ 
+-	TearDownProcessor::Instance().enqueue(
+-	    [transports = std::move(transports), token = Init::Instance().token()]() mutable {
+-		    for (const auto &t : transports) {
+-			    if (t) {
+-				    t->stop();
+-				    break;
+-			    }
+-		    }
+-
+-		    for (auto &t : transports)
+-			    t.reset();
+-	    });
++	retireTransportChain(std::move(transports));
+ }
+ 
+ void PeerConnection::endLocalCandidates() {
+diff --git a/src/impl/websocket.cpp b/src/impl/websocket.cpp
+--- a/src/impl/websocket.cpp
++++ b/src/impl/websocket.cpp
+@@ -131,10 +131,10 @@
+ 	changeState(State::Connecting);
+ 
+ 	if (config.proxyServer) {
+-		setTcpTransport(std::make_shared<TcpTransport>(
++		setTcpTransport(makeRetiredTransport<TcpTransport>(
+ 		    config.proxyServer->hostname, std::to_string(config.proxyServer->port), nullptr));
+ 	} else {
+-		setTcpTransport(std::make_shared<TcpTransport>(hostname, service, nullptr));
++		setTcpTransport(makeRetiredTransport<TcpTransport>(hostname, service, nullptr));
+ 	}
+ }
+ 
+@@ -203,18 +203,32 @@
+ // Helper for WebSocket::initXTransport methods: start and emplace the transport
+ template <typename T>
+ shared_ptr<T> emplaceTransport(WebSocket *ws, shared_ptr<T> *member, shared_ptr<T> transport) {
+-	std::atomic_store(member, transport);
++	shared_ptr<T> empty;
++	if (!std::atomic_compare_exchange_strong(member, &empty, transport)) {
++		requestTransportStop(transport);
++		return nullptr;
++	}
+ 	try {
++		if (!TransportRetirement::beginStart(transport)) {
++			auto expected = transport;
++			std::atomic_compare_exchange_strong(member, &expected, shared_ptr<T>());
++			return nullptr;
++		}
++		MdkrNoAllocScopeExit finishStart([owner = transport]() noexcept {
++			TransportRetirement::finishStart(owner);
++		});
+ 		transport->start();
+ 	} catch (...) {
+-		std::atomic_store(member, decltype(transport)(nullptr));
+-		transport->stop();
++		auto expected = transport;
++		std::atomic_compare_exchange_strong(member, &expected, shared_ptr<T>());
++		requestTransportStop(transport);
+ 		throw;
+ 	}
+ 
+ 	if (ws->state == WebSocket::State::Closed) {
+-		std::atomic_store(member, decltype(transport)(nullptr));
+-		transport->stop();
++		auto expected = transport;
++		std::atomic_compare_exchange_strong(member, &expected, shared_ptr<T>());
++		requestTransportStop(transport);
+ 		return nullptr;
+ 	}
+ 
+@@ -313,7 +327,7 @@
+ 				});
+ 		};
+ 
+-		auto transport = std::make_shared<HttpProxyTransport>(
++		auto transport = makeRetiredTransport<HttpProxyTransport>(
+ 		    lower, mHostname.value(), mService.value(), stateChangeCallback);
+ 
+ 		return emplaceTransport(this, &mProxyTransport, std::move(transport));
+@@ -382,12 +396,12 @@
+ 
+ 		shared_ptr<TlsTransport> transport;
+ 		if (verify)
+-			transport = std::make_shared<VerifiedTlsTransport>(lower, mHostname.value(),
++			transport = makeRetiredTransport<VerifiedTlsTransport>(lower, mHostname.value(),
+ 			                                                   mCertificate, stateChangeCallback,
+ 			                                                   config.caCertificatePemFile);
+ 		else
+ 			transport =
+-			    std::make_shared<TlsTransport>(lower, mHostname, mCertificate, stateChangeCallback);
++			    makeRetiredTransport<TlsTransport>(lower, mHostname, mCertificate, stateChangeCallback);
+ 
+ 		return emplaceTransport(this, &mTlsTransport, std::move(transport));
+ 
+@@ -455,7 +469,7 @@
+ 				});
+ 		};
+ 
+-		auto transport = std::make_shared<WsTransport>(lower, mWsHandshake, config,
++		auto transport = makeRetiredTransport<WsTransport>(lower, mWsHandshake, config,
+ 		                                               weak_bind(&WebSocket::incoming, this, _1),
+ 		                                               stateChangeCallback);
+ 
+@@ -493,6 +507,7 @@
+ 	// Pass the pointers to a thread, allowing to terminate a transport from its own thread
+ 	auto ws = std::atomic_exchange(&mWsTransport, decltype(mWsTransport)(nullptr));
+ 	auto tls = std::atomic_exchange(&mTlsTransport, decltype(mTlsTransport)(nullptr));
++	auto proxy = std::atomic_exchange(&mProxyTransport, decltype(mProxyTransport)(nullptr));
+ 	auto tcp = std::atomic_exchange(&mTcpTransport, decltype(mTcpTransport)(nullptr));
+ 
+ 	if (ws)
+@@ -501,26 +516,17 @@
+ 	if (tcp)
+ 		tcp->onBufferedAmount(nullptr);
+ 
+-	using array = std::array<shared_ptr<Transport>, 3>;
+-	array transports{std::move(ws), std::move(tls), std::move(tcp)};
++	using array = std::array<shared_ptr<Transport>, 4>;
++	array transports{std::move(ws), std::move(tls), std::move(proxy), std::move(tcp)};
+ 
+ 	for (const auto &t : transports)
+ 		if (t)
+ 			t->onStateChange(nullptr);
+ 
+-	TearDownProcessor::Instance().enqueue(
+-	    [transports = std::move(transports), token = Init::Instance().token()]() mutable {
+-		    for (const auto &t : transports) {
+-			    if (t) {
+-				    t->stop();
+-				    break;
+-			    }
+-		    }
++	// Each resource (including accepted TCP, proxy and reopen resources) carries
++	// its own one-shot reservation, independent of later WebSocket cycles.
++	retireTransportChain(std::move(transports));
+ 
+-		    for (auto &t : transports)
+-			    t.reset();
+-	    });
+-
+ 	triggerClosed();
+ }
+ 
+diff --git a/src/impl/icetransport.cpp b/src/impl/icetransport.cpp
+--- a/src/impl/icetransport.cpp
++++ b/src/impl/icetransport.cpp
+@@ -47,7 +47,7 @@
+ 	// Dummy
+ }
+ 
+-IceTransport::IceTransport(const Configuration &config, candidate_callback candidateCallback,
++IceTransport::IceTransport([[maybe_unused]] const Configuration &config, candidate_callback candidateCallback,
+                            state_callback stateChangeCallback,
+                            gathering_state_callback gatheringStateChangeCallback)
+     : Transport(nullptr, std::move(stateChangeCallback)), mRole(Description::Role::ActPass),
+@@ -56,6 +56,11 @@
+       mGatheringStateChangeCallback(std::move(gatheringStateChangeCallback)),
+       mAgent(nullptr, nullptr) {
+ 
++}
++
++void IceTransport::initialize(const Configuration &config) {
++	if (mAgent)
++		throw std::logic_error("ICE transport is already initialized");
+ 	PLOG_DEBUG << "Initializing ICE transport (libjuice)";
+ 
+ 	juice_log_level_t level;
+@@ -393,6 +398,11 @@
+ 
+ #else // USE_NICE == 1
+ 
++// The configured release uses libjuice. Preserve the optional libnice backend's
++// existing construction contract; its partial initialization requires its own
++// backend-specific audit rather than pretending the libjuice split covers it.
++void IceTransport::initialize(const Configuration &) {}
++
+ IceTransport::MainLoopWrapper *IceTransport::MainLoop = nullptr;
+ 
+ IceTransport::MainLoopWrapper::MainLoopWrapper()
+diff --git a/src/impl/icetransport.hpp b/src/impl/icetransport.hpp
+--- a/src/impl/icetransport.hpp
++++ b/src/impl/icetransport.hpp
+@@ -44,6 +44,9 @@
+ 	             state_callback stateChangeCallback,
+ 	             gathering_state_callback gatheringStateChangeCallback);
+ 	~IceTransport();
++	// The selected libjuice backend admits its agent only after shared ownership
++	// and off-thread retirement have been reserved by the transport factory.
++	void initialize(const Configuration &config);
+ 
+ 	Description::Role role() const;
+ 	GatheringState gatheringState() const;
+diff --git a/src/impl/sctptransport.cpp b/src/impl/sctptransport.cpp
+--- a/src/impl/sctptransport.cpp
++++ b/src/impl/sctptransport.cpp
+@@ -168,7 +168,11 @@
+       mPorts(std::move(ports)), mSendQueue(0, message_size_func),
+       mBufferedAmountCallback(std::move(bufferedAmountCallback)) {
+ 	onRecv(std::move(recvCallback));
++}
+ 
++void SctpTransport::initialize(const Configuration &config) {
++	if (mSock)
++		throw std::logic_error("SCTP transport is already initialized");
+ 	PLOG_DEBUG << "Initializing SCTP transport";
+ 
+ 	mSock = usrsctp_socket(AF_CONN, SOCK_STREAM, IPPROTO_SCTP, nullptr, nullptr, 0, nullptr);
+@@ -315,7 +319,12 @@
+ 		                         std::to_string(errno));
+ 
+ 	usrsctp_register_address(this);
++	mAddressRegistered = true;
++	// Upcall/WriteCallback first acquire Instances->lock(this). Keep insertion
++	// as the final fallible initialization operation so post-owned construction
++	// cannot admit callbacks against partial socket/options/address setup.
+ 	Instances->insert(this);
++	mInstanceRegistered = true;
+ }
+ 
+ SctpTransport::~SctpTransport() {
+@@ -330,10 +339,13 @@
+ 
+ 	unregisterIncoming();
+ 
+-	usrsctp_close(mSock);
++	if (mSock)
++		usrsctp_close(mSock);
+ 
+-	usrsctp_deregister_address(this);
+-	Instances->erase(this);
++	if (mAddressRegistered)
++		usrsctp_deregister_address(this);
++	if (mInstanceRegistered)
++		Instances->erase(this);
+ }
+ 
+ void SctpTransport::onBufferedAmount(amount_callback callback) {
+diff --git a/src/impl/sctptransport.hpp b/src/impl/sctptransport.hpp
+--- a/src/impl/sctptransport.hpp
++++ b/src/impl/sctptransport.hpp
+@@ -42,6 +42,7 @@
+ 	              message_callback recvCallback, amount_callback bufferedAmountCallback,
+ 	              state_callback stateChangeCallback);
+ 	~SctpTransport();
++	void initialize(const Configuration &config);
+ 
+ 	void onBufferedAmount(amount_callback callback);
+ 
+@@ -98,7 +99,9 @@
+ 
+ 	const size_t mMaxMessageSize;
+ 	const Ports mPorts;
+-	struct socket *mSock;
++	struct socket *mSock = nullptr;
++	bool mAddressRegistered = false;
++	bool mInstanceRegistered = false;
+ 	std::optional<uint16_t> mNegotiatedStreamsCount;
+ 
+ 	Processor mProcessor;
+diff --git a/src/impl/tcpserver.cpp b/src/impl/tcpserver.cpp
+--- a/src/impl/tcpserver.cpp
++++ b/src/impl/tcpserver.cpp
+@@ -67,10 +67,27 @@
+ 
+ 			if (incomingSock != INVALID_SOCKET) {
+ 				try {
+-					return std::make_shared<TcpTransport>(incomingSock, nullptr); // no state callback
+-				} catch(const std::exception &e) {
+-					PLOG_WARNING << e.what();
+-					::closesocket(incomingSock);
++					auto token = Init::Instance().token();
++					auto &dispatcher = TearDownProcessor::Instance();
++					return TransportRetirement::makeWith<TcpTransport>(
++					    dispatcher, std::move(token), [&]() {
++						    auto *transport = new TcpTransport(incomingSock, nullptr);
++						    // Construction owns the socket now. A later shared_ptr
++						    // controlblock refusal queues its reserved deletion;
++						    // the outer catch must not close this descriptor again.
++						    incomingSock = INVALID_SOCKET;
++						    return transport;
++					    });
++				} catch (...) {
++					// Before successful construction the accept scope owns the fd.
++					// Cleanup precedes optional logging, which itself may allocate.
++					if (incomingSock != INVALID_SOCKET)
++						::closesocket(incomingSock);
++					try {
++						throw;
++					} catch (const std::exception &e) {
++						PLOG_WARNING << e.what();
++					}
+ 				}
+ 			} else if (sockerrno != SEAGAIN && sockerrno != SEWOULDBLOCK) {
+ 				PLOG_ERROR << "TCP server failed, errno=" << sockerrno;

@@ -500,6 +500,106 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     target_compile_features(mdkr_character_workshop_model_test PRIVATE cxx_std_17)
     add_test(NAME character_workshop_model
         COMMAND mdkr_character_workshop_model_test)
+    # Exercise the real native input widget with ImGui's CPU-only core. No
+    # platform/render backend, OS clipboard, shell hook, SDL, GPU or ROM.
+    add_executable(mdkr_online_join_code_input_test
+        ${CMAKE_SOURCE_DIR}/tests/test_online_join_code_input.cpp
+        ${CMAKE_SOURCE_DIR}/lib/imgui/imgui.cpp
+        ${CMAKE_SOURCE_DIR}/lib/imgui/imgui_draw.cpp
+        ${CMAKE_SOURCE_DIR}/lib/imgui/imgui_tables.cpp
+        ${CMAKE_SOURCE_DIR}/lib/imgui/imgui_widgets.cpp)
+    target_include_directories(mdkr_online_join_code_input_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform/app ${CMAKE_SOURCE_DIR}/lib/imgui)
+    target_compile_features(mdkr_online_join_code_input_test PRIVATE cxx_std_17)
+    target_compile_definitions(mdkr_online_join_code_input_test PRIVATE
+        IMGUI_DISABLE_WIN32_FUNCTIONS IMGUI_DISABLE_DEFAULT_SHELL_FUNCTIONS)
+    add_test(NAME online_join_code_input COMMAND mdkr_online_join_code_input_test)
+    add_executable(mdkr_online_room_takeover_policy_test
+        ${CMAKE_SOURCE_DIR}/tests/test_online_room_takeover_policy.cpp
+        # The actual adapter interface header includes its inline fake seam.
+        # GCC can emit that virtual-view candidate even when this fixture owns
+        # only ViewAdapter. Link its real ROM-free dependencies; do not stub
+        # the function or disable the compiler's virtual-call optimization.
+        ${CMAKE_SOURCE_DIR}/platform/online/lobby_fake_adapter.c
+        ${CMAKE_SOURCE_DIR}/platform/online/lobby_view_model.c
+        ${CMAKE_SOURCE_DIR}/platform/online/lobby_core.c
+        ${CMAKE_SOURCE_DIR}/platform/session/session_core.c)
+    target_include_directories(mdkr_online_room_takeover_policy_test PRIVATE
+        ${CMAKE_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/platform ${CMAKE_SOURCE_DIR}/platform/app)
+    target_compile_features(mdkr_online_room_takeover_policy_test PRIVATE cxx_std_17)
+    add_test(NAME online_room_takeover_policy COMMAND mdkr_online_room_takeover_policy_test)
+    add_executable(mdkr_online_teardown_tracker_test
+        ${CMAKE_SOURCE_DIR}/tests/test_online_teardown_tracker.cpp)
+    target_include_directories(mdkr_online_teardown_tracker_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform/app)
+    target_compile_features(mdkr_online_teardown_tracker_test PRIVATE cxx_std_17)
+    target_link_libraries(mdkr_online_teardown_tracker_test PRIVATE Threads::Threads)
+    add_test(NAME online_teardown_tracker COMMAND mdkr_online_teardown_tracker_test)
+    set_tests_properties(online_teardown_tracker PROPERTIES TIMEOUT 30)
+    # Observe real shared futures without RTC, SDL, sockets or application code.
+    add_executable(mdkr_app_cleanup_completion_test
+        ${CMAKE_SOURCE_DIR}/tests/test_app_cleanup_completion.cpp)
+    target_include_directories(mdkr_app_cleanup_completion_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform/app)
+    target_compile_features(mdkr_app_cleanup_completion_test PRIVATE cxx_std_17)
+    target_link_libraries(mdkr_app_cleanup_completion_test PRIVATE Threads::Threads)
+    add_test(NAME app_cleanup_completion COMMAND mdkr_app_cleanup_completion_test)
+    set_tests_properties(app_cleanup_completion PROPERTIES TIMEOUT 30)
+    # Compile the same reserved worker used by the amended RTC token. No RTC,
+    # sockets, renderer or application is linked into this focused fixture.
+    add_executable(mdkr_datachannel_cleanup_worker_test
+        ${CMAKE_SOURCE_DIR}/tests/test_datachannel_cleanup_worker.cpp)
+    target_include_directories(mdkr_datachannel_cleanup_worker_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform/online)
+    target_compile_features(mdkr_datachannel_cleanup_worker_test PRIVATE cxx_std_17)
+    target_link_libraries(mdkr_datachannel_cleanup_worker_test PRIVATE Threads::Threads)
+    add_test(NAME datachannel_cleanup_worker COMMAND mdkr_datachannel_cleanup_worker_test)
+    set_tests_properties(datachannel_cleanup_worker PROPERTIES TIMEOUT 30)
+    foreach(MDKR_STARTUP_FIXTURE datachannel_startup_stages rtc_initialization_transaction datachannel_work_admission datachannel_prepared_work)
+        add_executable(mdkr_${MDKR_STARTUP_FIXTURE}_test
+            ${CMAKE_SOURCE_DIR}/tests/test_${MDKR_STARTUP_FIXTURE}.cpp)
+        target_include_directories(mdkr_${MDKR_STARTUP_FIXTURE}_test PRIVATE
+            ${CMAKE_SOURCE_DIR}/platform/online)
+        target_compile_features(mdkr_${MDKR_STARTUP_FIXTURE}_test PRIVATE cxx_std_17)
+        target_link_libraries(mdkr_${MDKR_STARTUP_FIXTURE}_test PRIVATE Threads::Threads)
+        add_test(NAME ${MDKR_STARTUP_FIXTURE} COMMAND mdkr_${MDKR_STARTUP_FIXTURE}_test)
+        set_tests_properties(${MDKR_STARTUP_FIXTURE} PROPERTIES TIMEOUT 30)
+    endforeach()
+    # Callback identity is shared by Phone Party's actual locked admissions.
+    # This pure fixture has no RTC, network, renderer or application dependency.
+    add_executable(mdkr_party_callback_identity_test
+        ${CMAKE_SOURCE_DIR}/tests/test_party_callback_identity.cpp)
+    target_include_directories(mdkr_party_callback_identity_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_features(mdkr_party_callback_identity_test PRIVATE cxx_std_17)
+    add_test(NAME party_callback_identity COMMAND mdkr_party_callback_identity_test)
+    set_tests_properties(party_callback_identity PROPERTIES TIMEOUT 30)
+    add_executable(mdkr_party_peer_setup_retry_test
+        ${CMAKE_SOURCE_DIR}/tests/test_party_peer_setup_retry.cpp)
+    target_include_directories(mdkr_party_peer_setup_retry_test PRIVATE ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_features(mdkr_party_peer_setup_retry_test PRIVATE cxx_std_17)
+    add_test(NAME party_peer_setup_retry COMMAND mdkr_party_peer_setup_retry_test)
+    set_tests_properties(party_peer_setup_retry PROPERTIES TIMEOUT 30)
+    add_executable(mdkr_network_lifetime_test ${CMAKE_SOURCE_DIR}/tests/test_network_lifetime.cpp)
+    target_include_directories(mdkr_network_lifetime_test PRIVATE ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_features(mdkr_network_lifetime_test PRIVATE cxx_std_17)
+    target_link_libraries(mdkr_network_lifetime_test PRIVATE Threads::Threads)
+    add_test(NAME network_lifetime COMMAND mdkr_network_lifetime_test)
+    set_tests_properties(network_lifetime PROPERTIES TIMEOUT 30)
+    add_executable(mdkr_async_work_budget_test
+        ${CMAKE_SOURCE_DIR}/tests/test_async_work_budget.cpp
+        ${CMAKE_SOURCE_DIR}/tests/async_work_budget_other_tu.cpp)
+    target_include_directories(mdkr_async_work_budget_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_features(mdkr_async_work_budget_test PRIVATE cxx_std_17)
+    target_link_libraries(mdkr_async_work_budget_test PRIVATE Threads::Threads)
+    add_test(NAME async_work_budget COMMAND mdkr_async_work_budget_test)
+    set_tests_properties(async_work_budget PROPERTIES TIMEOUT 30)
+    add_executable(mdkr_ai_difficulty_value_test
+        ${CMAKE_SOURCE_DIR}/tests/test_ai_difficulty_value.c)
+    target_include_directories(mdkr_ai_difficulty_value_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME ai_difficulty_value COMMAND mdkr_ai_difficulty_value_test)
     add_executable(mdkr_character_async_job_test
         ${CMAKE_SOURCE_DIR}/tests/test_character_async_job.cpp)
     target_include_directories(mdkr_character_async_job_test PRIVATE
@@ -560,6 +660,17 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         target_link_libraries(mdkr_png_write_layout_test PRIVATE m)
     endif()
     add_test(NAME png_write_layout COMMAND mdkr_png_write_layout_test)
+
+    add_executable(mdkr_stb_conversion_ownership_test
+        ${CMAKE_SOURCE_DIR}/tests/test_stb_conversion_ownership.c)
+    target_include_directories(mdkr_stb_conversion_ownership_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/lib/stb)
+    if(NOT MSVC)
+        target_compile_options(mdkr_stb_conversion_ownership_test PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+        target_link_libraries(mdkr_stb_conversion_ownership_test PRIVATE m)
+    endif()
+    add_test(NAME stb_conversion_ownership COMMAND mdkr_stb_conversion_ownership_test)
 
     add_executable(mdkr_character_portrait_studio_test
         ${CMAKE_SOURCE_DIR}/tests/test_character_portrait_studio.cpp
@@ -2474,6 +2585,11 @@ if(BUILD_TESTING)
                 --source-only)
     if(MDKR_NODE_EXECUTABLE)
         add_test(
+            NAME browser_startup_diagnostics_js
+            COMMAND ${MDKR_NODE_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tests/test_browser_startup_diagnostics.mjs)
+        set_tests_properties(browser_startup_diagnostics_js PROPERTIES TIMEOUT 30)
+        add_test(
             NAME party_protocol_js
             COMMAND ${MDKR_NODE_EXECUTABLE}
                     ${CMAKE_SOURCE_DIR}/tests/test_party_protocol_js.cjs)
@@ -2603,6 +2719,56 @@ if(BUILD_TESTING)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/check_network_viewport_invariance.py)
     add_test(
+        NAME match_transport_tls_io
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/check_match_transport_tls_io.py)
+    set_tests_properties(match_transport_tls_io PROPERTIES TIMEOUT 30)
+    add_test(
+        NAME online_lobby_takeover_source
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/check_online_lobby_takeover.py --source-only)
+    set_tests_properties(online_lobby_takeover_source PROPERTIES TIMEOUT 30)
+    add_test(
+        NAME online_resolver_budget
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/check_online_resolver_budget.py)
+    set_tests_properties(online_resolver_budget PROPERTIES TIMEOUT 30)
+    add_test(NAME party_open_transaction
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/check_party_open_transaction.py)
+    set_tests_properties(party_open_transaction PROPERTIES TIMEOUT 30)
+    add_test(NAME network_lifetime_source
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/check_network_lifetime.py)
+    set_tests_properties(network_lifetime_source PROPERTIES TIMEOUT 30)
+    add_test(NAME match_signal_admission_source
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/check_match_signal_admission.py)
+    set_tests_properties(match_signal_admission_source PROPERTIES TIMEOUT 30)
+
+    add_test(
+        NAME run_checks_artifact_routing
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_run_checks_artifact_routing.py)
+    set_tests_properties(run_checks_artifact_routing PROPERTIES TIMEOUT 30)
+    add_test(
+        NAME browser_startup_diagnostics
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_browser_startup_diagnostics.py)
+    set_tests_properties(browser_startup_diagnostics PROPERTIES TIMEOUT 30)
+    add_test(
+        NAME party_worker_startup_reporting
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_party_worker_startup.py)
+    set_tests_properties(party_worker_startup_reporting PROPERTIES TIMEOUT 30)
+    add_test(
+        NAME party_worker_reporting
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_party_worker_reporting.py)
+    set_tests_properties(party_worker_reporting PROPERTIES TIMEOUT 30)
+    add_test(
+        NAME native_party_notice_pins
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_native_party_notice_pins.py)
+    set_tests_properties(native_party_notice_pins PROPERTIES TIMEOUT 30)
+    add_test(
         NAME camera_track_occlusion_cache
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/check_camera_track_occlusion_cache.py)
@@ -2703,6 +2869,18 @@ if(BUILD_TESTING)
         NAME pacing_quality_reporting
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_pacing_quality_reporting.py)
+    add_test(
+        NAME camera_motion_reporting
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_camera_motion_reporting.py)
+    add_test(
+        NAME widescreen_shadow_reporting
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_widescreen_shadow_reporting.py)
+    add_test(
+        NAME ai_difficulty_ui
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/check_ai_difficulty_ui.py)
 endif()
 
 # SDL queue-mode contract: still ROM-free, but deliberately placed after the
@@ -2727,4 +2905,16 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
                 --require-driver dummy)
     set_tests_properties(audio_sink_contract PROPERTIES
         ENVIRONMENT "SDL_AUDIODRIVER=dummy")
+
+    # Compile the actual launcher sampler against a deterministic device seam;
+    # the fixture supplies SDL boundary functions and links no SDL runtime.
+    add_executable(mdkr_app_launch_hold_test
+        ${CMAKE_SOURCE_DIR}/tests/test_app_launch_hold.cpp
+        ${CMAKE_SOURCE_DIR}/platform/app/app_launch_hold.cpp)
+    target_include_directories(mdkr_app_launch_hold_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform/app ${SDL2_INCLUDE_DIRS})
+    target_compile_features(mdkr_app_launch_hold_test PRIVATE cxx_std_17)
+    target_compile_definitions(mdkr_app_launch_hold_test PRIVATE SDL_MAIN_HANDLED)
+    add_test(NAME app_launch_hold COMMAND mdkr_app_launch_hold_test)
+    set_tests_properties(app_launch_hold PROPERTIES TIMEOUT 30)
 endif()

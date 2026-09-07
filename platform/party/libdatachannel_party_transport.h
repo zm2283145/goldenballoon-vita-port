@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <future>
 #include <map>
 #include <memory>
 #include <set>
@@ -14,6 +15,12 @@
 #include <vector>
 
 std::unique_ptr<MdkrPartyTransport> mdkr_create_native_party_transport();
+
+// App-exit only: every RTC endpoint owner (not just Phone Party) must have
+// retired, and new connections must be forbidden. Observe/get the returned
+// future before destroying process globals; a ready exceptional future is a
+// cleanup failure, not successful teardown. The no-RTC profile returns ready.
+std::shared_future<void> mdkr_native_party_cleanup();
 
 /* One resolved ICE server the cloud transport hands to libdatachannel: a
  * stun/turn/turns URL, plus the TURN credential pair when the service minted

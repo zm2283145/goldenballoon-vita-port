@@ -9,11 +9,253 @@ fails, the release stops.
 
 ## Current candidate status (2026-09-06)
 
-**Not release-ready.** The `int-1.7.0` candidate is undergoing artifact
-qualification. Behavioral validation is authorized under the maintainer's standing
-workstation policy; new local runs currently await an execution-policy reload.
-The already-running old-source diagnostic suite continues separately. Public
+**Not release-ready.** The `int-1.7.0` candidate is undergoing defect resolution
+and artifact qualification. This checkpoint uses non-executing checks under the latest
+conversation-supplied validation instructions; it does not revoke the saved
+workstation policy. Actual execution controls must also permit a later run.
+The old-source diagnostic suite at `12cab88c` has finished: **36/271 tasks failed**
+in 626m50s, and the process exited 1. All 271 tasks were attempted; this is a
+failed diagnostic result, not qualification of the newer local changes. Public
 issue acceptance is tracked in [`open-items/github-issues.md`](open-items/github-issues.md).
+All 36 failed tasks, their evidence classes and required follow-up are inventoried
+in [the diagnostic failure ledger](open-items/diagnostic-suite-failures.md).
+The workstream inventory, parallel Workshop ownership proposal and competitive
+comparison are in [the release work plan](RELEASE_WORK_PLAN.md); that plan does
+not replace any gate below.
+
+The native join-editor correction now has a shared production-widget regression
+target, `online_join_code_input`, covering editing and CPU draw geometry without
+platform/GPU backends. Strict syntax, native optimized/ASan+UBSan compilation,
+Windows widget-target cross-compilation and CTest registration are verified;
+the assertions remain unexecuted. This does not establish native
+multiplayer UX, controller or final-package acceptance.
+
+The native invalid-view recovery candidate now retains takeover based on adapter
+ownership, offers a deferred safe exit and does not mistake an owned uninitialized
+adapter for an idle chooser. Compile-time policy assertions pass; actual failed-view,
+leave/registry-cleanup and next-room behavior remain unqualified. See the
+[native multiplayer quality plan](multiplayer/NATIVE_MULTIPLAYER_QUALITY_PLAN.md).
+Broader feature ambitions and visual polish do not clear this qualification gap.
+The neighboring stale-snapshot correction now ends the old frame after adapter
+rebuilds and room actions. Successful/refused retries, re-entry and rendered
+scope/focus regressions remain unqualified in that same plan. The adapter-view
+fixture now compiles runtime assertions against the actual launcher interface;
+those assertions have not executed and do not prove worker/registry cleanup.
+The same review now covers word-comparison decisions: one enabled action is
+dispatched after UI scopes close, then the caller recomposes next frame.
+Phrase verification semantics are unchanged; decision/cancel/rejection and
+focus/layout behavioral checks remain required.
+
+A neighboring native shutdown review found that the 10-second retirement drain
+could detach workers still using static state. The candidate always joins via
+the shared `online_teardown_tracker` after reporting a slow drain. Its focused
+thread fixture and production-binding source contract still need execution;
+real transport cancellation, responsive exit and registry/global lifetime
+qualification remain open. This does not establish a total shutdown deadline.
+The shared retirement helper now stores its record before launching, retains
+ownership until thread creation succeeds, safely falls back to inline cleanup
+on scheduling refusal, and reaps completed handles despite other stalled closes.
+Launch-refusal/recovery and repeated-session assertions are added, not executed;
+storage-allocation fault injection remains open. Normal Quit now uses a native
+closing-only progress surface and polls completed retirement handles after
+Workshop work settles, with same-frame engine-handoff suppression. Actual
+responsive/slow-close and Workshop-cancellation acceptance remains pending;
+transport cancellation and resource-exhaustion behavior are separate obligations.
+
+The next lifecycle candidate includes launcher-owned phone transports in that
+retirement barrier, clears borrowed aliases before moving ownership, and observes
+the process-wide RTC cleanup future only after both room and phone workers finish.
+Cleanup failure is explicit and must prevent a successful exit/relaunch verdict.
+New completion/source-contract assertions remain unexecuted. The HTTP transport
+also now uses per-BIO cancellation/deadline checks, correct nonblocking TLS retry
+semantics and SIGPIPE-safe sends on Linux. Trusted-TLS success/backpressure,
+ordinary peer-close behavior, all terminal paths and final-package teardown still
+need qualification. First-party room/signaling lookups now share an eight-job
+budget, retained through abandoned-result cleanup, and global RTC cleanup waits
+for that budget to drain. RAII result ownership and startup-failure handling are
+also implemented. New saturation, cancellation, recovery and cross-translation-unit
+assertions remain unexecuted. OS resolver cancellation and library-internal lookup
+lifecycle qualification remain open; no hard exit deadline is established.
+
+Dependency review found that libdatachannel's final-token destructor could
+terminate on cleanup-thread creation refusal. The candidate now reserves two
+workers before initialization: cleanup executes on one, and its joining
+publisher reports the result only after cleanup-thread completion. Thread
+creation/detach is no longer performed by the noexcept token destructor. The
+tracked patch and shared helper compile in the optimized and ASan/UBSan native
+game and focused fixture; new assertions and real RTC shutdown remain unexecuted. A separate
+upstream partial-initialization failure was then traced to stale ready state and
+incomplete stage ownership. A new transaction candidate now publishes rollback
+before acquisition, tracks selective retirement and refuses a new epoch until
+retirement succeeds. The original reserved-job cancellation fixture alone did
+not clear that defect. See the [lifecycle follow-up](
+multiplayer/NATIVE_MULTIPLAYER_QUALITY_PLAN.md#dependency-cleanup-reservation-and-partial-initialization-follow-up).
+The [RTC initialization audit](open-items/native-rtc-initialization-audit.md)
+records the implemented PollService/SCTP failure-order corrections and Phone
+Party construction-error boundary. Optimized and ASan/UBSan
+game/stage/transaction builds pass;
+actual fault-injection, retry and global-lifetime qualification remain required.
+Queued-work noexcept allocation failures and internal C startup exits remain
+separate unresolved classes, not covered by this transaction.
+The independent bounded work-admission candidate addresses only RTC-ALLOC-01b
+(callable extraction without copying) and -01f (accounting after insertion).
+Its optimized game/helper compilation passes; assertions remain unexecuted.
+RTC-ALLOC-01a/c/d/e still require coordinated implementation and qualification.
+The newer dependent prepared-dispatch candidate implements the accepted-work
+portion of -01c: nonallocating continuation, timer ordering, accepted-lane join
+and final-owner destruction under an explicit live-epoch contract. Both shared
+helper and actual patched-vendor fixtures are registered but unexecuted.
+Final optimized, ASan/UBSan and Windows cross-builds compile/link the game,
+`datachannel_prepared_work`, `datachannel_prepared_dispatch`,
+`datachannel_work_admission` and `character_workshop_model` after correcting the
+new fixture's private include paths. All include settled Workshop reinspection
+and invalid-height guidance; no new assertions executed. Windows retains a
+historical cloud origin, not final partyless artifact provenance. Exact composed scheduler/
+Processor/Queue pins and source-form notice gates are updated. Generic allocating
+`noexcept`, SCTP refusal ownership and terminal retirement are not cleared.
+The subsequent transport-retirement candidate now reserves serial stop/deletion
+before construction, coordinates start/stop and exact-owner publication, and
+preserves healthy shared-lower ownership when an unstarted candidate loses.
+Review also corrected callback/pending lock inversion and retired-capture
+destruction under the pending lock. Optimized, ASan/UBSan and Windows cross-builds
+compile/link the game, both new actual-vendor fixtures, prepared dispatcher and
+Workshop model. The 10 retirement
+and 11 edge fixture groups remain unexecuted; real network refusal/recovery and
+stop/destructor allocating bodies remain open. See the
+[bounded ownership follow-up](open-items/native-rtc-work-admission-audit.md#per-resource-reservation-and-lower-edge-correction-candidate).
+Workshop raw blocker navigation also now yields to deletion and Ctrl/Cmd editing
+shortcuts, in addition to text/navigation input. Source/model checks and the
+three-profile integration compiles do not qualify rendered or controller focus.
+Windows retains its historical cloud origin, not final partyless artifact
+provenance; BasisU GCC warnings remain unresolved. No apps or tests executed.
+The same audit records the in-flight callback publication candidate: generation
+and peer-identity checks now protect actual state/event commits after parsing;
+unfinished setup and delayed retry/ping/give-up decisions retain their exact
+owner and current-state requirements. Shared-predicate and source-binding
+fixtures are added, not executed. Real callback interleavings and recovery
+remain unqualified; already-admitted RTC I/O is not synchronously cancelled.
+Early peer-setup refusal now has bounded autonomous retries: lifecycle-scoped
+failure/offer budgets, generation/revision ownership and delayed retry admission
+are source-bound to the shared policy. Optimized compilation is not executed
+fault/recovery or rendered exhaustion acceptance.
+The related native match-signaling worker-start correction restores retryable
+Idle state instead of leaving a workerless Connecting client on launch refusal.
+Its production-path refusal/retry fixture is implemented but unexecuted;
+the [source audit](open-items/native-rtc-initialization-audit.md#rtc-signal-01--native-signaling-worker-start-refusal-poisoned-connecting)
+distinguishes that correction from broader running-worker allocation limits.
+Mandatory signal close now precedes best-effort rejection-event construction;
+reporting refusal cannot strand the joinable worker. Its new actual-client
+assertion is compiled, not executed.
+The subsequent signal factory/send/reporting candidate adds atomic outbound and
+correlation insertion, no sequence consumption on refusal, a retained terminal
+fallback, loss-preserving drain preparation and RAII local credential-buffer
+erasure on unwind. Final optimized, ASan/UBSan and Windows cross-builds compile/
+link the game plus `network_lifetime`, `party_peer_setup_retry`,
+`datachannel_work_admission`, `match_signal_client` and `lan_party_server`,
+including the latest LAN timeout/capture-retirement follow-ups. Actual refusal/
+retry assertions and broader backpressure/caller coverage remain pending. The
+Windows profile retains native beta and a historical nonempty cloud origin,
+not final partyless artifact provenance. BasisU GCC and libdatachannel
+function-cast warnings remain; build success does not clear them.
+The [Windows network-lifetime audit](open-items/windows-network-lifetime-audit.md)
+records source-confirmed first-party startup/ownership and cold LAN-enumeration
+gaps plus their implemented checked shared-lease candidates. Resolver results,
+sockets and retained aliases keep their prerequisites; cleanup failure remains
+visible in the terminal no-relaunch verdict. Shared-policy/source fixtures are
+added, not executed; actual Windows faults and package acceptance remain open.
+RTC's own startup/cleanup amendment does not own these references. LAN now has
+a separate syntax-checked post-accept/handler candidate: staged ownership and
+rollback, common sealed finalization, nonblocking listener and callback-safe
+stop requests, checked mandatory timeouts and callback-capture retirement.
+Its six actual-server fixture groups remain unexecuted;
+exceptional retained join ownership explicitly reports incomplete cleanup.
+
+The integrated callback/signaling/startup checkpoint compiles the native game
+and all five affected fixtures (`party_callback_identity`, `match_signal_client`,
+`rtc_initialization_transaction`, `datachannel_startup_stages`, and
+`datachannel_cleanup_worker`) in optimized and ASan/UBSan profiles. These were
+bounded compilation-only runs; no executable assertions, RTC sessions or apps
+ran. Python 3.10 AST parsing, strict helper C++17 syntax, affected shell/JavaScript
+syntax and whitespace checks pass. Existing dependency CMake warnings remain.
+
+The same graph audit reconciled stale transport notices with the actual
+libdatachannel 0.24.5 and libjuice source pins, recorded the previously omitted
+plog source amendment and the cleanup patch/helper, and synchronized all three
+desktop notice-hash validators. Full license texts remain unchanged. Source
+identity, Python AST and shell syntax checks pass; the new notice consistency
+regressions, package validators and rebuilt shipping packages have not executed.
+
+The original older-source `widescreen_shadow_asan` check also failed: six timeouts
+and missing final shadow reports, with unequal partial trace lengths. Investigate
+and rerun on the final candidate; neither sanitizer clearance nor a proven
+simulation divergence can be inferred from those incomplete arms. Keep the gate
+failing until complete qualifying evidence exists. The reporting candidate now
+refuses incomplete parity comparisons and retains optional private per-arm
+evidence; new mock assertions are registered but unexecuted. No timeout or route
+length was relaxed.
+
+Later observations of that same immutable diagnostic run record passes for
+`full_ubsan`, `native_layout` and the engine-independent browser save UI. They
+also record browser resource/session/touch/presentation timeouts, three missing
+native end-to-end driver artifacts, and several Party Worker startup failures.
+These remain separate qualification failures requiring triage; they neither
+prove a shared root cause nor qualify the newer integrated source. The existing
+run and its private evidence have not been restarted or modified.
+
+The missing-driver triage confirms a runner routing defect: three browser/native
+end-to-end checks received no selected build and silently used their standalone
+`build-rel` default. They now receive the selected native directory and staged
+shell explicitly; preflight requires the corresponding drivers. Standalone
+resolution also handles Windows executable suffixes. Mock routing/preflight
+regressions are added, not executed. Even the non-executing `--list` attempt was
+rejected by the current command control; no alternate entry point was used.
+The same sweep also fixed the gallery's separate selected-game-executable route;
+it is not a sibling-driver consumer. Mock routing/preflight assertions await
+execution for all four native/browser gates.
+
+The seven local Worker consumers now require the lockfile-installed Wrangler
+entrypoint during runner preflight, before staged-artifact inspection or suite
+subprocesses. Missing-tool guidance names the lockfile and does not install
+anything. The embedded-LAN check has no new Worker dependency. Shared startup
+keeps ownership until readiness succeeds and attempts cleanup on normal failure,
+unexpected exception or interruption. Diagnostic failures do not replace the
+original failure class. New routing/admission and mocked process assertions
+remain unexecuted.
+
+Worker startup and the two-person/chaos failure boundaries now retain only
+allowlisted categories, source locations and bounded private metadata. They do
+not copy raw logs, command arguments, response bodies or browser state into the
+aggregate report. Chaos retains its whole-log error gate with bounded-memory
+scanning. These privacy/reporting changes do not establish the two historical
+early-exit causes, successful service behavior or any public deployment.
+
+Browser startup diagnosis now has opt-in bounded phase markers around actual
+renderer setup, display-list walking and engine RAF waits, plus an independent
+browser RAF heartbeat. Enable only for a diagnostic attempt through test config
+`startupDiagnostics: true` or `MDKR_TEST_BROWSER_STARTUP_DIAGNOSTICS=1`; explicit
+config `false` wins. Normal play and normal qualification keep the heartbeat off;
+native markers compile away. History retains at most 32 events, and heartbeat
+observation stops at terminal/pagehide or its observation limit. Timeout snapshots
+collect this bounded diagnostic state rather than additional save/ROM data.
+These observations do not establish a browser root cause or replace completed
+uninstrumented timing/performance gates. JS/Python fixtures and C source bindings
+are registered but unexecuted; the instrumented-capable wasm engine compiles and
+generated/source JavaScript syntax checks pass. It has not been browser-qualified
+or copied into an immutable release stage.
+
+The pacing check now offers `--keep-evidence` for the next authorized diagnostic
+run, preserving separate attempt output and process outcomes before parsing.
+The original failing companion's temporary trace was deleted; its 43 re-anchors
+cannot be explained from the strict run's histogram. Retention tests are added
+but unexecuted, and the pacing failure remains open with unchanged thresholds.
+
+The PNG decoder now also carries a small local ownership/early-return amendment
+for ordinary bit-depth-conversion allocation failure. This is not an unmodified
+upstream header: base and amended hashes are recorded in THIRD_PARTY/NOTICE.
+The registered `stb_conversion_ownership` regression uses ordinary pixels and
+allocator refusal, not malformed input. Its assertions, old-code control and
+final-source sanitizer/fuzz run remain required before release. This amendment
+does not clear the broader advisory disposition or change KTX2 qualification.
 
 - **Decoder qualification in progress:** the KTX2/BasisU alignment finding has
   a local amendment applied after upstream source hash verification. KTX2 stays
@@ -106,6 +348,11 @@ in camera architecture section 7.3 is not implemented: recovery has speed and
 absolute-step caps, but no 25%-of-remaining-error cap. That calibration and
 coverage gap remains open; changing recovery alone has not been shown to fix
 Ancient Lake, and no hard motion assertion has been waived.
+The candidate now retains level-1 re-engagement event context per arm, including
+release/gap and last/current contact evidence. `camera_motion_reporting` adds
+ROM-free reporting regressions, including failed authored/high-rate arm
+isolation. Compilation and parser checks pass; new tests and route execution
+remain pending. This is diagnostic work, not a fix for the hard failure.
 
 A separate source-backed pause defect is corrected in the candidate: zero-time
 camera revalidation no longer consumes release-hold ticks. The runtime supplies
@@ -122,8 +369,24 @@ a missing-display-baseline exemption, and the cause is not yet established.
 Its failure report printed only the strict arm's distributions, so those
 numbers must not be attributed to the failing companion. The candidate now
 retains each companion attempt's own measurements and retry notes, with a
-registered reporting contract awaiting execution. No pacing threshold, retry
+registered reporting contract awaiting execution. Both realtime paths now share
+mandatory run-identity, no-tearing, no-underrun and no-backward-phase checks
+before any missing-baseline exemption, with regression cases pending execution.
+No pacing threshold, retry
 budget or product pacing behavior was changed; the failed gate remains open.
+
+New pre-release issue #63 has a source-confirmed trophy-domain defect:
+Future Funland (world 5) was excluded by the helper shared by trophy awarding
+and cabinet/model display, despite having its own saved two-bit field. The
+candidate corrects that bound and adds unit/production-series coverage; runtime
+award, persistence, reload, cabinet/Tracks display, no-downgrade and Adventure
+Two/final-package acceptance remain pending. See [the #63 backlog entry](
+open-items/github-issues.md#63--future-funland-trophy-missing). No automatic
+achievement grant or save-format change is part of this correction.
+The related sweep also corrects false gold from OR-merging medals across saves
+and limits the T.T. trophy counter to five fields. Optimized and sanitizer
+game/unit compilation pass; executable regression and negative-control checks
+remain pending. See [the trophy-domain audit](open-items/trophy-domain-audit.md).
 
 Linux x86_64 Release compilation now passes at `ba620a1b` in an isolated,
 two-CPU Ubuntu 22.04 container, with KTX2 and online beta enabled and the
@@ -205,6 +468,17 @@ distinguishes a reported missing check already present in this pin from
 size-conversion concerns constrained by caller admission. The older general-
 loader disposition and final-candidate behavioral qualification remain open.
 
+A later candidate applies the cited upstream integration's empty-allocation
+defense at the first-party PNG decoder allocator. Refused resize retains the
+original allocation; positive-size requests and image limits are unchanged.
+The texture-store probe shares these helpers, and `png_write_layout` adds
+small ownership/growth/shrink cases alongside ordinary PNG roundtrips. Native
+optimized and ASan/UBSan compilation, strict C syntax and decoder-configuration
+preprocessing pass; no new test/decoder execution occurred. Vendored header
+hashes are unchanged. This is a candidate mitigation, not final disposition
+of the broader general-loader advisory. The complete caller inventory and
+remaining gates are in [decoder boundaries](security/image-decoder-boundaries.md).
+
 Clean macOS Debug compilation at `c522ebae` now completes with shipping SDL
 2.32.10, KTX2 and online beta enabled, and the cloud origin empty. Its detached
 source remains clean, and the build stamp and binary hashes are recorded in
@@ -244,6 +518,14 @@ WebAssembly module passes structural validation with the compiler's required
 features enabled. Private hashes bind this incremental compilation evidence;
 browser gameplay, staged-payload provenance, and final web acceptance remain
 pending. Neither build executes its resulting game or test binaries.
+
+The later incremental web build also includes the local PNG conversion-failure
+amendment. Its generated JavaScript passes `node --check`; the wasm passes
+`WebAssembly.validate` without module instantiation or execution. Private
+hashes identify the same-link JS/wasm/symbol-map triple. KTX2 remains enabled,
+native app and online beta are disabled, and no `dist/web` payload was staged
+or published by this check. Browser gameplay/save/recovery, exact staged-payload
+provenance and the final clean-candidate web gates remain required.
 
 Source review found a separate Windows workflow predicate bug: portable-mode
 read-back used regex brackets where the application prints literal brackets.

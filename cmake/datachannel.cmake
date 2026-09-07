@@ -89,13 +89,52 @@ FetchContent_Declare(mdkr_libdatachannel
     GIT_REPOSITORY https://github.com/paullouisageneau/libdatachannel.git
     GIT_TAG "v${MDKR_LIBDATACHANNEL_VERSION}"
     GIT_SHALLOW TRUE
+    # Final reviewed source hashes are byte-exact. Do not inherit a Windows
+    # user's automatic CRLF conversion into this authenticated dependency tree.
+    GIT_CONFIG core.autocrlf=false core.eol=lf
     GIT_SUBMODULES deps/plog deps/usrsctp deps/libjuice deps/json
     GIT_SUBMODULES_RECURSE TRUE
     PATCH_COMMAND "${CMAKE_COMMAND}"
       "-DSOURCE_DIR=<SOURCE_DIR>"
       "-DPATCH_FILE=${CMAKE_SOURCE_DIR}/cmake/patches/libdatachannel-windows-mbedtls-verify.patch"
+      "-DCLEANUP_PATCH_FILE=${CMAKE_SOURCE_DIR}/cmake/patches/libdatachannel-cleanup-worker.patch"
+      "-DINIT_PATCH_FILE=${CMAKE_SOURCE_DIR}/cmake/patches/libdatachannel-initialization.patch"
+      "-DSTAGES_PATCH_FILE=${CMAKE_SOURCE_DIR}/cmake/patches/libdatachannel-startup-stages.patch"
+      "-DWORK_PATCH_FILE=${CMAKE_SOURCE_DIR}/cmake/patches/libdatachannel-work-admission.patch"
+      "-DPREPARED_PATCH_FILE=${CMAKE_SOURCE_DIR}/cmake/patches/libdatachannel-prepared-work.patch"
+      "-DRETIREMENT_PATCH_FILE=${CMAKE_SOURCE_DIR}/cmake/patches/libdatachannel-transport-retirement.patch"
       -P "${CMAKE_SOURCE_DIR}/cmake/apply_libdatachannel_patch.cmake")
 FetchContent_MakeAvailable(mdkr_libdatachannel)
+
+# The last RTC token can die under Init's mutex or on a worker cleanup joins.
+# Require the reservation and queued-work amendments even for FETCHCONTENT_SOURCE_DIR overrides,
+# which bypass FetchContent's patch step. Never mutate an override here: another
+# worktree may own it. The shared helper is a private build input, not an export.
+include("${CMAKE_CURRENT_LIST_DIR}/verify_datachannel_startup.cmake")
+mdkr_verify_datachannel_startup("${mdkr_libdatachannel_SOURCE_DIR}")
+file(READ "${mdkr_libdatachannel_SOURCE_DIR}/src/impl/init.cpp"
+    MDKR_LIBDATACHANNEL_INIT_SOURCE)
+foreach(MDKR_CLEANUP_LITERAL
+        "#include \"reserved_cleanup_worker.h\""
+        ": cleanupWorker([] { Init::Instance().doCleanup(); })"
+        "cleanupWorker.arm();"
+        "MdkrReservedCleanupWorker cleanupWorker;")
+    string(FIND "${MDKR_LIBDATACHANNEL_INIT_SOURCE}"
+        "${MDKR_CLEANUP_LITERAL}" MDKR_CLEANUP_LITERAL_AT)
+    if(MDKR_CLEANUP_LITERAL_AT EQUAL -1)
+        message(FATAL_ERROR
+            "libdatachannel cleanup reservation amendment is missing; use the "
+            "reviewed patched source, not an unamended source-directory override")
+    endif()
+endforeach()
+unset(MDKR_LIBDATACHANNEL_INIT_SOURCE)
+unset(MDKR_CLEANUP_LITERAL)
+unset(MDKR_CLEANUP_LITERAL_AT)
+foreach(MDKR_DATA_CHANNEL_TARGET datachannel datachannel-static)
+    target_include_directories(${MDKR_DATA_CHANNEL_TARGET} PRIVATE
+        "${CMAKE_SOURCE_DIR}/platform/online")
+endforeach()
+unset(MDKR_DATA_CHANNEL_TARGET)
 
 # The DTLS read-length fix is load-bearing on every platform: without it the
 # Mbed TLS server side reports whole-buffer datagrams and no phone's first

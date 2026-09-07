@@ -43,12 +43,13 @@ from pathlib import Path
 from typing import Any
 
 from check_browser_online_two_person import (
-    SERVICE, WRANGLER, free_port, node_binary, wait_worker,
+    WRANGLER, free_port, node_binary,
 )
 from check_browser_runtime import (
     CDPClient, ChromeProcess, CheckFailure, find_chrome, page_websocket,
     require, wait_value,
 )
+from check_party_capacity import require_worker_dependency, start_worker_command
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -137,10 +138,9 @@ def worker_command(origin: str, shell: Path, state: Path) -> list[str]:
 
 def start_worker(origin: str, shell: Path, state: Path,
                  log: Any) -> subprocess.Popen[bytes]:
-    process = subprocess.Popen(worker_command(origin, shell, state),
-                               cwd=SERVICE, stdout=log, stderr=subprocess.STDOUT)
-    wait_worker(origin, process, 60)
-    return process
+    require_worker_dependency()
+    return start_worker_command(worker_command(origin, shell, state), origin,
+                                log, stop=stop_worker)
 
 
 def stop_worker(process: subprocess.Popen[bytes] | None) -> None:
@@ -230,7 +230,7 @@ def run(args: argparse.Namespace) -> None:
     require((shell / "index.html").is_file(), "missing web shell")
     require((shell / "controller/index.html").is_file(),
             "missing controller page")
-    require(WRANGLER.is_file(), "missing lockfile-pinned Wrangler")
+    require_worker_dependency()
     chrome_path = find_chrome(args.chrome)
 
     with tempfile.TemporaryDirectory(prefix="mdkr-party-firewall-") as temporary:

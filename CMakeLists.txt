@@ -349,6 +349,25 @@ if(MDKR_NATIVE_PHONE_PARTY)
 endif()
 if(MDKR_APP AND MDKR_NATIVE_PHONE_PARTY)
     include(cmake/datachannel.cmake)
+    if(BUILD_TESTING AND NOT EMSCRIPTEN)
+        # Actual amended vendor dispatch/transport code, not duplicate models.
+        # Edge coverage starts RTC global services but no app or peer session.
+        foreach(MDKR_RTC_FIXTURE datachannel_prepared_dispatch
+                datachannel_transport_retirement datachannel_transport_edges)
+            add_executable(mdkr_${MDKR_RTC_FIXTURE}_test
+                ${CMAKE_SOURCE_DIR}/tests/test_${MDKR_RTC_FIXTURE}.cpp)
+            target_include_directories(mdkr_${MDKR_RTC_FIXTURE}_test PRIVATE
+                ${mdkr_libdatachannel_SOURCE_DIR}/src
+                ${mdkr_libdatachannel_SOURCE_DIR}/include/rtc
+                ${mdkr_libdatachannel_SOURCE_DIR}/deps/plog/include
+                ${CMAKE_SOURCE_DIR}/platform/online)
+            target_compile_features(mdkr_${MDKR_RTC_FIXTURE}_test PRIVATE cxx_std_17)
+            target_link_libraries(mdkr_${MDKR_RTC_FIXTURE}_test PRIVATE
+                datachannel Threads::Threads)
+            add_test(NAME ${MDKR_RTC_FIXTURE} COMMAND mdkr_${MDKR_RTC_FIXTURE}_test)
+            set_tests_properties(${MDKR_RTC_FIXTURE} PROPERTIES TIMEOUT 60)
+        endforeach()
+    endif()
 endif()
 
 # --- Sources --------------------------------------------------------------

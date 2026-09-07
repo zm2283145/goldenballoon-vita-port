@@ -5,8 +5,8 @@ It records the exact reviewed source inputs, source-form locations, and license 
 
 COMPONENT MANIFEST
 
-- libdatachannel 0.24.3, commit c6696d157b5612df2a741d9a03b192b47ab6cefb
-  Source: https://github.com/paullouisageneau/libdatachannel/tree/c6696d157b5612df2a741d9a03b192b47ab6cefb
+- libdatachannel 0.24.5, commit 443f6934d9007eb7076ab7825ba330f355fcbead
+  Source: https://github.com/paullouisageneau/libdatachannel/tree/443f6934d9007eb7076ab7825ba330f355fcbead
   License: MPL-2.0. Built static, with WebSocket/DataChannel support and media disabled.
   Golden Balloon applies the source-form patch
   cmake/patches/libdatachannel-windows-mbedtls-verify.patch (SHA-256
@@ -15,11 +15,72 @@ COMPONENT MANIFEST
   It preserves certificate verification on Windows when the Mbed TLS backend
   receives Golden Balloon's explicit CA PEM; upstream disables default-root
   verification for every Windows backend before selecting VerifiedTlsTransport.
-- libjuice, commit 22145ec3473c73d811417ac9a6aee0de530aaa3f
-  Source: https://github.com/paullouisageneau/libjuice/tree/22145ec3473c73d811417ac9a6aee0de530aaa3f
+  The cleanup-worker source amendment is
+  cmake/patches/libdatachannel-cleanup-worker.patch (SHA-256
+  eb697e5b4c0cf368c73d1fec010e0666438cab6be88935e979f17f60b3c3f2cf).
+  It modifies MPL-covered src/impl/init.cpp to reserve cleanup execution before
+  initialization, so last-token destruction signals preallocated work instead
+  of allocating a new thread. Its corresponding helper source is
+  platform/online/reserved_cleanup_worker.h (SHA-256
+  25b834a6e85361c7a92464a403bfbade7f8abd90bf2efa397960d0a645ca28bc).
+  The transactional-initialization amendment builds on that cleanup patch:
+  cmake/patches/libdatachannel-initialization.patch (SHA-256
+  8baa28ca33a2bda267f705f4421cd893dd477f10a621ff5b81b9415876f6d3b8).
+  It modifies MPL-covered src/impl/init.cpp and src/impl/init.hpp to publish
+  rollback completion before acquisition, retain per-stage ownership, commit
+  readiness only after successful startup, and gate new epochs on successful
+  retirement without rejecting reuse of existing live tokens.
+  Its corresponding helper source is platform/online/rtc_initialization_transaction.h
+  (SHA-256 3ca47672b3d592c3ab7fe173a607850bea36be01b22d7f7f188f26b28ec39063).
+  The prerequisite stage-start amendment is
+  cmake/patches/libdatachannel-startup-stages.patch (SHA-256
+  6ca224f6e854f552c14f7a58c3a51ed0db51f2e08088c80065d6531bb5cbaee9).
+  It modifies MPL-covered src/impl/pollservice.cpp and src/impl/sctptransport.cpp
+  to reclaim staged polling resources on thread-launch refusal and allocate the
+  SCTP C++ registry before starting its C subsystem. Its corresponding helper is
+  platform/online/startup_stage_ownership.h (SHA-256
+  237215c96916d572fc35d3105e83cdb1e0998eb00e1cdb15777760d7a83ebb70).
+  The bounded queued-work amendment is
+  cmake/patches/libdatachannel-work-admission.patch (SHA-256
+  c5a510b2f7e1e11193a768ca1fda9536c3900bbeca5b04f4e54c147bbb883df7).
+  It modifies MPL-covered src/impl/threadpool.hpp, src/impl/threadpool.cpp and
+  src/impl/queue.hpp to extract an admitted callable without copying it and
+  commit queue accounting only after successful insertion. The corresponding
+  helper source is platform/online/queued_work_admission.h (SHA-256
+  8b20dd49ccfc6cadf249ed431f2df186d94b49fdce85952a6970bee71be71a19).
+  The dependent prepared-dispatch amendment is
+  cmake/patches/libdatachannel-prepared-work.patch (SHA-256
+  1b68e4b688d1f7f9828fcac91ee191f55fec7666aa6fd20ba65958d14da31131).
+  It modifies MPL-covered src/impl/processor.hpp, src/impl/processor.cpp,
+  src/impl/threadpool.hpp and src/impl/threadpool.cpp to prepare owning work
+  nodes before admission, transfer accepted continuations without allocation,
+  drain their lane before joining, and release cancelled timed captures outside
+  scheduler locks. Its corresponding helper source is
+  platform/online/prepared_work_queue.h (SHA-256
+  fe94925f249243a2b801ecc122059bea51418cc5269adaa0a27660268d100f4e).
+  The dependent transport-retirement amendment is
+  cmake/patches/libdatachannel-transport-retirement.patch (SHA-256
+  384ef834c198f2bdf641a8ceb88591ee1539b767b178671bad4b050f3cc17c24).
+  It modifies MPL-covered src/impl/processor.hpp, src/impl/transport.hpp,
+  src/impl/transport.cpp, src/impl/peerconnection.cpp, src/impl/websocket.cpp,
+  src/impl/icetransport.cpp, src/impl/icetransport.hpp,
+  src/impl/sctptransport.cpp, src/impl/sctptransport.hpp and src/impl/tcpserver.cpp
+  to reserve serialized off-thread stop/deletion dispatch before transport
+  construction, retain initialization ownership through destruction, and
+  coordinate start/stop ownership. The corresponding helper source is
+  platform/online/transport_retirement.h (SHA-256
+  554a003764072ebc70fb3bf606e5c99dbf8d4449c5225eb201d75b2e1b1f7af8).
+  These tracked patches and helper sources must accompany the approved release's
+  source-form materials. These candidate amendments have not completed runtime
+  qualification. They do not establish bounded OS resolver/overall network
+  shutdown, recovery from internal usrsctp process exits, or handling of every
+  RTC queued-work allocation failure.
+- libjuice, commit 3c40a3545b6b1b62c7adee7f8f2bd58aa290afd6
+  Source: https://github.com/paullouisageneau/libjuice/tree/3c40a3545b6b1b62c7adee7f8f2bd58aa290afd6
   License: MPL-2.0.
 - usrsctp, commit fec583d54493f879d2ae44a743423bf8a04371ab
-  Source: https://github.com/sctplab/usrsctp/tree/fec583d54493f879d2ae44a743423bf8a04371ab
+  Source: https://github.com/paullouisageneau/usrsctp/tree/fec583d54493f879d2ae44a743423bf8a04371ab
+  Build input is libdatachannel's pinned fork of upstream sctplab/usrsctp.
   License: BSD-3-Clause.
 - nlohmann/json, commit 55f93686c01528224f448c19128836e7df245f72
   Source: https://github.com/nlohmann/json/tree/55f93686c01528224f448c19128836e7df245f72
@@ -27,6 +88,15 @@ COMPONENT MANIFEST
 - plog, commit 94899e0b926ac1b0f4750bfbd495167b4a6ae9ef
   Source: https://github.com/SergiusTheBest/plog/tree/94899e0b926ac1b0f4750bfbd495167b4a6ae9ef
   License: MIT.
+  Golden Balloon's cmake/apply_libdatachannel_patch.cmake changes the fallback
+  PLOG_GET_FUNC() definition in deps/plog/include/plog/Log.h from
+  __PRETTY_FUNCTION__ to __func__. This local source amendment retains plog's
+  license and changes the captured function-name spelling only.
+  The exact application recipe is cmake/apply_libdatachannel_patch.cmake,
+  SHA-256 53d437ced9902a056210cf349a44a1eb2b55bb1afb0d27cd37e978197d3bc674;
+  this tracked source file also applies the seven libdatachannel patches above.
+  Its composed-source verification recipe is cmake/verify_datachannel_startup.cmake,
+  SHA-256 a77aa87cd74c8105d38fa05be99c38a95726e5b994045cff9b8255d97c450130.
 - Mbed TLS 3.6.7, official archive SHA-256
   a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6
   Source: https://github.com/Mbed-TLS/mbedtls/releases/tag/mbedtls-3.6.7
@@ -43,11 +113,11 @@ COMPONENT MANIFEST
   Source: https://github.com/nayuki/QR-Code-generator/tree/2c9044de6b049ca25cb3cd1649ed7e27aa055138
   License: MIT.
 
-Exact upstream source form is available at the immutable links above. The complete
-Golden Balloon modification is the patch named and hashed above; the build recipe and
-authenticated pins are in cmake/datachannel.cmake. Golden Balloon remains a Larger
+Exact upstream source form is available at the immutable links above. Golden Balloon's
+local source amendments are identified above; the build recipe and authenticated
+pins are in cmake/datachannel.cmake. Golden Balloon remains a Larger
 Work under its own terms; the MPL-2.0 terms continue to govern the MPL-covered files
-and this modification.
+and local modifications to those files.
 
 ========================================================================
 Mozilla Public License 2.0 (libdatachannel, libjuice, Mozilla CA extract)

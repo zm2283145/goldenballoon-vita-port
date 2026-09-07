@@ -4,19 +4,24 @@ This register separates implementation, verification, and release availability.
 An existing feature or a passing test for one symptom is not evidence that an
 entire public issue is resolved. The repository inventory on 2026-09-05 found
 four open issues in `akratch/goldenballoon`, and none in `akratch/mdkr64` or
-`akratch/goldenballoon-staging`.
+`akratch/goldenballoon-staging`. A read-only refresh of `akratch/goldenballoon`
+on 2026-09-06 finds five open issues, including new report #63; the other
+repositories were not refreshed in that check.
 
 **Release-worktree reconciliation (2026-09-06).** This update uses the local
-source tree and saved validation logs; it does not refresh GitHub state or close
-issues. The candidate is **not release-ready**. The custom-character KTX2/BasisU
+source tree and saved validation logs, plus the read-only #63 inventory refresh;
+it does not mutate or close issues. The candidate is **not release-ready**. The custom-character KTX2/BasisU
 alignment finding is fixed in the candidate with a valid-texture regression
 and a clean 601-second ASan/UBSan fuzz run (4,004,077 executions). KTX2 remains
 enabled; final-artifact qualification is pending. See
 [the release blockers](../RELEASE_CHECKLIST.md#current-candidate-status-2026-09-06).
-The passes below remain historical evidence until explicitly requalified;
-local testing is authorized under the maintainer's standing policy, but new
-runs currently await an execution-policy reload. The already-running old-source
-diagnostic suite continues; its results do not qualify newer source changes.
+The passes below remain historical evidence until explicitly requalified.
+This checkpoint uses non-executing checks under the latest conversation-supplied
+instructions; the saved workstation policy is unchanged. Earlier execution-control
+refusals are not a current hardware diagnosis or a new validation result.
+The old-source diagnostic suite
+at `12cab88c` has finished with 36/271 failed tasks in 626m50s and process exit 1.
+Its results do not qualify newer source changes or justify issue closure.
 
 Clean-source artifact checkpoint `12cab88c` additionally passes macOS bundle
 and mounted-DMG LaunchServices/WebGPU qualification with exact provenance.
@@ -63,6 +68,54 @@ The older full diagnostic run has also failed its realtime pacing re-anchor
 budget. That release gate remains unresolved; improved per-attempt reporting
 does not fix the pacing result or establish its cause.
 
+## #63 — Future Funland trophy missing
+
+[Report](https://github.com/akratch/goldenballoon/issues/63), opened
+2026-09-05: winning Future Funland's championship leaves the trophy cabinet
+empty and Tracks does not acknowledge the trophy clear. The reporter lists
+version 1.5.2 and RTX 2070 Super; OS, ROM revision, backend and exact build are
+not specified. A later read-only refresh found a maintainer comment at
+2026-09-06T11:47:07Z confirming the helper defect and targeting the next release;
+the issue remains open. That comment is not package-validation evidence.
+
+**Confirmed source defect; candidate fix awaiting behavioral validation.**
+`mdkr_trophy_state()` rejected worlds above 4 even though Future Funland is
+world 5 and the EEPROM stores five two-bit trophy fields. The same helper
+guards the championship award in `menu.c`, cabinet spawning in
+`object_functions.c`, and trophy model selection in `objects.c`. Thus world 5
+could neither acquire its trophy bits nor display an already-saved trophy.
+Tracks reads the fifth field directly, so the suppressed award also explains
+its missing completion marker without implicating the reporter's GPU.
+
+The candidate accepts all five championship worlds using the world enum while
+retaining invalid-world/null-output guards. The previous unit assertion that
+world 5 was invalid is replaced with exhaustive coverage of all 1,024 saved
+trophy combinations across five worlds, plus invalid-boundary cases. The
+existing production-series harness now includes Future Funland's four rounds
+and gold award/EEPROM check; its world-selection control also accepts world 5.
+The four-mainland-trophy rocket unlock condition and save format are unchanged.
+
+**Related-pattern sweep:** Tracks also ORed medal fields across save slots,
+allowing bronze plus silver to appear as unearned gold. The candidate merges
+the best rank per world instead. The T.T. status counter now visits only the
+five saved trophy fields instead of shifting a signed mask across 16 fields;
+its four-icon authored layout is unchanged. Optimized and ASan/UBSan game,
+runtime-contract and save-codec targets compile. Python 3.10 parser and diff
+checks pass; new behavioral tests and old-code controls have not executed.
+See [the domain audit](trophy-domain-audit.md) for scope, retained mainland-only
+rules and the remaining validation matrix.
+
+**Pre-release priority / remaining acceptance:** execute the unit and old-bound
+negative control; win all four Future Funland rounds through production menus,
+confirm award and checksum-valid persistence, restart and inspect the cabinet
+and Tracks marker. Also verify existing fifth-world trophies display, lower
+finishes do not downgrade gold, other worlds stay intact, and Adventure Two
+and final packaged builds behave correctly. Source confirmation is not a
+claim that the reporter's exact environment has been reproduced. Existing
+saves whose award was never written cannot have that missing achievement
+inferred safely; no automatic gold grant or save migration is introduced.
+Keep #63 open until these checks and release availability are established.
+
 ## #62 — Opponent skill
 
 [Report](https://github.com/akratch/goldenballoon/issues/62): a text field does
@@ -100,6 +153,14 @@ controller acceptance run.
 
 **Remaining acceptance:** physical-controller navigation and selection on the
 packaged candidate, followed by release availability.
+The renewed sweep also found that mixed-case and unknown legacy values could
+display raw text instead of their effective named choice. Gameplay already
+accepts case-insensitive names and falls back to Original for unknown values.
+The new shared pure resolver preserves that behavior while aligning combo
+selection, spoken labels and separate current/Next Play snapshots. Raw settings,
+restart staging and environment locks are unchanged. Case-variant/fallback and
+source-binding regressions are registered, not executed; neither those additions
+nor the earlier widget pass qualifies the final physical-controller journey.
 The [acceptance guide, section 2](../RELEASE_CANDIDATE_TEST_GUIDE.md#2-launcher-and-settings)
 now specifies both settings surfaces, all three choices, persistence, defaults,
 and the physical controller/candidate identity to record. This is an acceptance
@@ -128,6 +189,14 @@ launcher decision/dispatch tests, not proof of a shipped Windows executable.
 
 **Remaining acceptance:** Windows/package proof of direct launch, the escape
 gestures, invalid-ROM refusal, and failed-boot recovery on the final artifact.
+The renewed source sweep also found two gaps outside the historical scripted
+hold tests: separate controllers could combine one shoulder each into the
+two-shoulder gesture, and controllers attached during ROM validation were not
+discovered. The candidate now recognizes pairs on one controller and reconciles
+borrowed handles by stable SDL instance ID, including detachment and index races.
+A production-sampler fixture with a deterministic SDL boundary is added, not
+executed. Real controller and final-package acceptance remain required. See
+[the follow-up sweep](release-issue-followup.md).
 
 ## #61 — Three separate split-screen symptoms
 

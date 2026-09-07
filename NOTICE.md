@@ -220,22 +220,42 @@ language ports and the browser artifact retain the complete notice. The launcher
 short-lived controller capability URL; QR decoding is a development-only test.
 
 Native Phone Party statically links the pinned, media-disabled libdatachannel
-0.24.3 graph and Mbed TLS 3.6.7, and embeds a hash-pinned Mozilla CA extract for
-verified WSS without a machine-specific TLS dependency. One hash-pinned MPL
-source patch preserves explicit-CA Mbed TLS verification on Windows; its exact
-source form ships through the public repository. Exact commits, patch/archive
+0.24.5 graph (commit `443f6934d9007eb7076ab7825ba330f355fcbead`) and Mbed TLS
+3.6.7, and embeds a hash-pinned Mozilla CA extract for
+verified WSS without a machine-specific TLS dependency. Hash-pinned MPL source
+amendments preserve explicit-CA Mbed TLS verification on Windows and reserve
+cleanup execution before library initialization. Additional amendments provide
+transactional initialization and polling/SCTP startup ownership. A bounded
+queued-work amendment removes callable copying during dequeue and commits queue
+accounting only after successful insertion. A dependent prepared-dispatch
+amendment transfers accepted Processor continuations without allocation, drains
+their lane before joining, and releases cancelled timed captures outside locks.
+A dependent transport-retirement amendment reserves serialized stop and deletion
+before construction, coordinates start/stop ownership, and binds lower receive
+edges and chain retirement to their exact owner. Callback mutation and capture
+retirement preserve the receive-lifetime lock without holding the pending lock
+through capture destruction. These amendments
+and their corresponding helpers are runtime-unqualified candidates, not a
+bounded-shutdown or complete allocation-failure recovery guarantee. Their source
+form and composed-source verification recipe are tracked in the repository. The build recipe also
+carries a local MIT-licensed plog function-name amendment. Exact commits, patch/archive
 hashes, immutable source-form URLs, license choices and full applicable license
 texts are recorded in `third_party/native_phone_party/NOTICE.txt`. That notice
 is hash-checked and shipped in every macOS, Windows and Linux native package;
 the complete component mapping is in [THIRD_PARTY.md](THIRD_PARTY.md).
 
 `lib/stb/stb_image.h` is stb_image v2.30 by Sean Barrett, vendored from
-`nothings/stb` at commit `f58f558c120e9b32c217290b80bad1a0729fbb2c`; the
-vendored file's SHA-256 is
-`594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3`. It is dual
+`nothings/stb` at commit `f58f558c120e9b32c217290b80bad1a0729fbb2c`. The original
+upstream header's SHA-256 is
+`594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3`.
+The local header includes a conversion-failure ownership/early-return amendment;
+its SHA-256 is
+`da083afef754bfd12da87512bf1e713025f5152a65f6ac3f1bef09c92084cd89`.
+See [decoder boundaries](docs/security/image-decoder-boundaries.md) for its scope
+and qualification. It is dual
 MIT / public-domain, and both texts travel with the file. It decodes the PNG
-textures in a player's own content packs and is built with only its PNG decoder
-enabled. No image is shipped with this repository for it to read.
+textures in a player's own content packs, custom-character textures and portraits,
+and Portrait Studio imports; only its PNG decoder is enabled.
 
 `lib/stb/stb_image_write.h` is stb_image_write v1.16 by Sean Barrett, vendored
 from `nothings/stb` at the same commit, `f58f558c120e9b32c217290b80bad1a0729fbb2c`;
@@ -244,9 +264,10 @@ the vendored file's SHA-256 is
 MIT / public-domain, and both texts travel with the file. It encodes the PNG
 corpus `tools/mod_texture_dump.py` writes for pack authors
 (`MDKR_MOD_TEXTURE_DUMP`, a debug/authoring path that is inert unless that
-environment variable is set) and is built without its own file I/O, writing
-through the port's own UTF-8-safe file access instead. No image is shipped
-with this repository for it to write.
+environment variable is set), as well as native RGB/RGBA captures including
+Workshop captures. It is built without its own file I/O, writing through the
+port's own UTF-8-safe file access instead. Private ROM-derived captures are not
+release content.
 
 `lib/miniz/miniz.h` and `lib/miniz/miniz.c` are miniz 3.0.2 by Rich Geldreich
 and contributors, vendored from the pinned upstream release archive

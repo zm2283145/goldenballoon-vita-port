@@ -2,16 +2,19 @@
  * MdkrMatchSignalClient: the native launcher-side match-signaling client,
  * pinned rule-for-rule against the dormant browser reference client
  * (dist/web/online/match-signal-client.js) and the wire contract in
- * docs/ref/match-signaling-v1.md. Every case runs against a scriptable
+ * docs/ref/match-signaling-v1.md. Wire cases run against a scriptable
  * loopback fake of the signal endpoint (match_signal_test_server.h), so
- * every property asserted here is a wire-level fact: what the client offers
+ * wire properties asserted here cover what the client offers
  * on the upgrade, what it refuses, which close code it sends, and which
  * failure-code string reaches the launcher.
+ * Separate worker-admission assertions inject refusal before thread creation,
+ * then verify a real loopback retry through the same client instance.
  */
 #include "online/match_signal_client.h"
 
 #include "match_signal_test_server.h"
 #include "party/party_webrtc_signaling.h"
+#include "online/scoped_string_wipe.h"
 
 /* Assert-driven test: NDEBUG would compile every check away. */
 #undef NDEBUG
@@ -24,7 +27,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
+#include <new>
 #include <string>
 #include <thread>
 #include <vector>
@@ -37,6 +42,28 @@ const char kRoomId[] = "Rm0123456789abcdefABCD";              /* 22 chars */
 const char kCredential[] =
     "cred_cred_cred_cred_cred_cred_cred_cred_012";            /* 43 chars */
 const char kSelfEndpoint[] = "101";
+
+unsigned wipeCalls = 0u;
+void eraseFixtureBuffer(void *data, size_t size) noexcept {
+    ++wipeCalls;
+    std::memset(data, 0, size);
+}
+
+void credentialBufferGuardHandlesEarlyUnwind() {
+    std::string buffer(128u, 'x'); // Synthetic marker, not a credential.
+    try {
+        MdkrScopedStringWipe<eraseFixtureBuffer> guard(buffer);
+        throw std::bad_alloc();
+    } catch (const std::bad_alloc &) {}
+    assert(buffer.empty() && wipeCalls == 1u);
+    {
+        MdkrScopedStringWipe<eraseFixtureBuffer> guard(buffer);
+        buffer.assign(128u, 'x');
+        guard.wipe();
+        assert(buffer.empty() && wipeCalls == 2u);
+    }
+    assert(wipeCalls == 2u); // Explicit erasure and destructor are idempotent.
+}
 
 std::string validPublicKey(uint8_t seed = 1u) {
     uint8_t raw[65];
@@ -751,6 +778,44 @@ void sendToAnUnknownGenerationIsRefusedLocally() {
     assert(result.sequence == 1u);
 }
 
+void refusedSendAdmissionKeepsCorrelationAndSequenceAtomic() {
+    Rig rig;
+    rig.welcome(7u, {{"202", 5u}});
+    MdkrMatchSignalOutbound message;
+    message.type = "peer_end";
+    message.toEndpointId = "202";
+    message.toConnectionGeneration = 5u;
+    message.reason = "restart";
+    for (unsigned stage = 1u; stage <= 3u; ++stage) {
+        const auto before = rig.client->snapshot();
+        mdkr_match_signal_client_refuse_next_send_stage_for_test(stage);
+        const auto refused = rig.client->send(message);
+        assert(!refused.ok && refused.sequence == 0u);
+        assert(refused.error == kMdkrMatchSignalTransportLost);
+        assert(rig.client->snapshot().phase == MdkrMatchSignalPhase::Open);
+        assert(rig.client->snapshot().nextSequence == before.nextSequence);
+
+        // This uses the actual client's unique tracking-map insertion. An
+        // orphaned record from a refused queue admission would block this retry.
+        const auto sent = rig.client->send(message);
+        assert(sent.ok && sent.sequence == before.nextSequence);
+        assert(rig.server.waitForTextMessages(stage));
+        const auto wire = rig.server.textMessages();
+        assert(wire.size() == stage);
+        assert(Json::parse(wire.back())["sequence"] == sent.sequence);
+        assert(rig.server.sendText(Json{{"protocolVersion", 1},
+                                        {"type", "signal_error"},
+                                        {"sequence", sent.sequence},
+                                        {"toEndpointId", "202"},
+                                        {"toConnectionGeneration", 5u},
+                                        {"error", "peer_unavailable"}}.dump()));
+        assert(waitForEvents(*rig.client, rig.events, rig.events.size() + 1u));
+        assert(rig.events.back().type == MdkrMatchSignalEventType::SignalError);
+        assert(rig.events.back().sequence == sent.sequence);
+        assert(rig.client->snapshot().phase == MdkrMatchSignalPhase::Open);
+    }
+}
+
 void invalidOutboundMessagesAreRefusedBeforeTheWire() {
     Rig rig;
     rig.welcome(7u, {{"202", 5u}});
@@ -1143,6 +1208,127 @@ void serverCloseFrameIsTransportLost() {
     rig.expectTerminalFailure(kMdkrMatchSignalTransportLost);
 }
 
+void refusedCloseReportStillRetiresWorker() {
+    Rig rig;
+    assert(rig.server.waitForOpen());
+    assert(rig.client->snapshot().phase == MdkrMatchSignalPhase::Connecting);
+    mdkr_match_signal_client_refuse_next_close_event_for_test();
+    rig.client->close();
+    assert(rig.client->snapshot().phase == MdkrMatchSignalPhase::Closed);
+    rig.client->close();
+    std::vector<MdkrMatchSignalEvent> events;
+    rig.client->drainEvents(events);
+    assert(events.size() == 1u);
+    assert(events.front().type == MdkrMatchSignalEventType::Failure);
+    assert(events.front().failureCode == kMdkrMatchSignalClientClosed);
+    rig.client->drainEvents(events);
+    assert(events.empty());
+    rig.client.reset(); // Destruction must not encounter an unjoined worker.
+}
+
+void refusedWorkerPublicationRetainsTerminalRecovery() {
+    for (bool retainWelcome : {false, true}) {
+        Rig rig;
+        const auto awaitPhase = [&](MdkrMatchSignalPhase phase) {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (rig.client->snapshot().phase != phase &&
+                   std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            assert(rig.client->snapshot().phase == phase);
+        };
+        assert(rig.server.waitForOpen());
+        if (retainWelcome) {
+            assert(rig.server.sendText(welcomeMessage(7u, {{"202", 5u}}).dump()));
+            awaitPhase(MdkrMatchSignalPhase::Open); // Keep Welcome queued, not drained.
+        }
+        mdkr_match_signal_client_refuse_next_worker_event_for_test();
+        mdkr_match_signal_client_refuse_next_failure_event_for_test();
+        assert(rig.server.sendText(retainWelcome
+            ? presenceMessage("203", 9u, true).dump()
+            : welcomeMessage(7u, {{"202", 5u}}).dump()));
+        awaitPhase(MdkrMatchSignalPhase::Failed);
+        if (retainWelcome) {
+            rig.client->close(); // Closing before delivery must retain the original cause.
+            assert(rig.client->snapshot().phase == MdkrMatchSignalPhase::Closed);
+        }
+        std::vector<MdkrMatchSignalEvent> events;
+        mdkr_match_signal_client_refuse_next_event_drain_for_test();
+        rig.client->drainEvents(events);
+        assert(events.empty()); // Failed delivery consumes neither event nor terminal code.
+        rig.client->drainEvents(events);
+        assert(events.size() == (retainWelcome ? 2u : 1u));
+        if (retainWelcome) assert(events.front().type == MdkrMatchSignalEventType::Welcome);
+        assert(events.back().type == MdkrMatchSignalEventType::Failure);
+        assert(events.back().failureCode == kMdkrMatchSignalTransportLost);
+        rig.client->drainEvents(events);
+        assert(events.empty());
+        rig.client->close();
+        rig.client->close();
+    }
+}
+
+void refusedCreationReturnsAnOrdinaryFailure() {
+    MdkrMatchSignalTestServer server;
+    assert(server.start());
+    const auto options = baseOptions(server.port());
+    std::string error;
+    mdkr_match_signal_client_refuse_next_create_for_test();
+    assert(!MdkrMatchSignalClient::create(options, &error));
+    assert(error == kMdkrMatchSignalTransportLost);
+    mdkr_match_signal_client_refuse_next_create_for_test();
+    assert(!MdkrMatchSignalClient::create(options));
+    auto client = MdkrMatchSignalClient::create(options);
+    assert(client && client->connect());
+    assert(server.waitForOpen());
+    client->close();
+    server.stop();
+}
+
+void refusedWorkerStartLeavesRetryableClient() {
+    MdkrMatchSignalTestServer server;
+    assert(server.start());
+    auto client = MdkrMatchSignalClient::create(baseOptions(server.port()));
+    assert(client);
+    std::string error;
+    mdkr_match_signal_client_refuse_next_thread_start_for_test();
+    assert(!client->connect(&error));
+    assert(error == kMdkrMatchSignalTransportLost);
+    auto snapshot = client->snapshot();
+    assert(snapshot.phase == MdkrMatchSignalPhase::Idle);
+    assert(!snapshot.connected && snapshot.connectionGeneration == 0u);
+    assert(snapshot.nextSequence == 1u);
+    std::vector<MdkrMatchSignalEvent> events;
+    client->drainEvents(events);
+    assert(events.empty()); // No phantom worker or terminal event was admitted.
+
+    mdkr_match_signal_client_refuse_next_thread_start_for_test();
+    assert(!client->connect()); // The no-diagnostic caller also gets a refusal.
+    assert(client->snapshot().phase == MdkrMatchSignalPhase::Idle);
+    {
+        auto abandoned = MdkrMatchSignalClient::create(baseOptions(server.port()));
+        assert(abandoned);
+        mdkr_match_signal_client_refuse_next_thread_start_for_test();
+        assert(!abandoned->connect());
+        abandoned->close();
+        abandoned->close();
+        assert(abandoned->snapshot().phase == MdkrMatchSignalPhase::Closed);
+        assert(!abandoned->connect(&error));
+        assert(error == kMdkrMatchSignalClientClosed);
+    } // Failed-start destruction owns no thread or live connection.
+    assert(client->connect());
+    assert(server.waitForOpen());
+    assert(server.sendText(welcomeMessage(7u, {}).dump()));
+    assert(waitForEvents(*client, events, 1u));
+    assert(events.back().type == MdkrMatchSignalEventType::Welcome);
+    assert(client->snapshot().phase == MdkrMatchSignalPhase::Open);
+    assert(client->snapshot().connectionGeneration == 7u);
+    client->close();
+    client->close();
+    assert(client->snapshot().phase == MdkrMatchSignalPhase::Closed);
+    server.stop();
+}
+
 } // namespace
 
 int main() {
@@ -1153,6 +1339,12 @@ int main() {
 #endif
 
     createRefusesInvalidIdentityAndForeignOrigins();
+    credentialBufferGuardHandlesEarlyUnwind();
+    refusedCreationReturnsAnOrdinaryFailure();
+    refusedWorkerStartLeavesRetryableClient();
+    refusedCloseReportStillRetiresWorker();
+    refusedWorkerPublicationRetainsTerminalRecovery();
+    refusedSendAdmissionKeepsCorrelationAndSequenceAtomic();
     happyPathRoundTripPinsTheFullContract();
 
     serverSelectingTheCredentialSubprotocolIsRefused();

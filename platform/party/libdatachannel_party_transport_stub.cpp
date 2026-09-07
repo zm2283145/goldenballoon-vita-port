@@ -25,3 +25,10 @@ public:
 std::unique_ptr<MdkrPartyTransport> mdkr_create_native_party_transport() {
     return std::make_unique<UnavailableTransport>();
 }
+
+std::shared_future<void> mdkr_native_party_cleanup() {
+    std::promise<void> completed;
+    auto future = completed.get_future().share();
+    completed.set_value();
+    return future;
+}

@@ -1,0 +1,187 @@
+diff --git a/src/impl/init.cpp b/src/impl/init.cpp
+index 1ec0b26..8144675 100644
+--- a/src/impl/init.cpp
++++ b/src/impl/init.cpp
+@@ -42,11 +42,12 @@ struct Init::TokenPayload {
+ 		// All job, future, thread creation and detach work precedes doInit.
+ 		// Failure here is catchable construction failure, not an exception
+ 		// escaping this token's noexcept destructor while holding mMutex.
+-		auto reservedFuture = cleanupWorker.future();
+-		Init::Instance().doInit();
++		// Publish and arm before acquisition: a failed constructor must schedule
++		// partial rollback, not cancel its job or return the previous ready future.
+ 		if (cleanupFuture)
+-			*cleanupFuture = std::move(reservedFuture);
++			*cleanupFuture = cleanupWorker.future();
+ 		cleanupWorker.arm();
++		Init::Instance().doInit();
+ 	}
+ 
+ 	// Last-token destruction only signals the reserved worker. doCleanup
+@@ -72,6 +73,7 @@ init_token Init::token() {
+ 	if (auto locked = mWeak.lock())
+ 		return locked;
+ 
++	mInitialization.admit(mCleanupFuture);
+ 	mGlobal = std::make_shared<TokenPayload>(&mCleanupFuture);
+ 	mWeak = *mGlobal;
+ 	return *mGlobal;
+@@ -80,6 +82,11 @@ init_token Init::token() {
+ void Init::preload() {
+ 	std::lock_guard lock(mMutex);
+ 	if (!mGlobal) {
++		if (auto locked = mWeak.lock()) {
++			mGlobal = std::move(locked); // Retain the existing epoch and its future.
++			return;
++		}
++		mInitialization.admit(mCleanupFuture);
+ 		mGlobal = std::make_shared<TokenPayload>(&mCleanupFuture);
+ 		mWeak = *mGlobal;
+ 	}
+@@ -106,46 +113,41 @@ void Init::setSctpSettings(SctpSettings s) {
+ }
+ 
+ void Init::doInit() {
+-	// mMutex needs to be locked
+-
+-	if (std::exchange(mInitialized, true))
+-		return;
+-
+-	PLOG_DEBUG << "Global initialization";
+-
++	// Only the reviewed shipped graph has a complete partial-ownership contract.
++#if !USE_MBEDTLS || USE_GNUTLS || USE_NICE || RTC_ENABLE_MEDIA
++#error "MDKR transactional initialization requires the reviewed MbedTLS/libjuice/media-off graph"
++#endif
++	// mMutex is held. The reserved worker will retire partial state after the
++	// constructor unwinds and releases it; never wait for that worker here.
++	using Stage = MdkrRtcInitializationTransaction::Stage;
++	mInitialization.initialize([&] {
++		PLOG_DEBUG << "Global initialization";
+ #ifdef _WIN32
+-	WSADATA wsaData;
+-	if (WSAStartup(MAKEWORD(2, 2), &wsaData))
+-		throw std::runtime_error("WSAStartup failed, error=" + std::to_string(WSAGetLastError()));
++		WSADATA wsaData;
++		if (WSAStartup(MAKEWORD(2, 2), &wsaData))
++			throw std::runtime_error("WSAStartup failed, error=" + std::to_string(WSAGetLastError()));
++		mInitialization.acquired(Stage::Sockets);
+ #endif
+ 
+-	unsigned int count = mThreadPoolSize > 0 ? mThreadPoolSize : std::thread::hardware_concurrency();
+-	count = std::max(count, MIN_THREADPOOL_SIZE);
+-	PLOG_DEBUG << "Spawning " << count << " threads";
+-	ThreadPool::Instance().spawn(count);
+-
++		unsigned int count = mThreadPoolSize > 0 ? mThreadPoolSize : std::thread::hardware_concurrency();
++		count = std::max(count, MIN_THREADPOOL_SIZE);
++		PLOG_DEBUG << "Spawning " << count << " threads";
++		auto &pool = ThreadPool::Instance(); // No flag before singleton allocation succeeds.
++		mInitialization.acquired(Stage::Pool); // spawn can acquire only some workers.
++		pool.spawn(count);
+ #if RTC_ENABLE_WEBSOCKET
+-	PollService::Instance().start();
+-#endif
+-
+-#if USE_GNUTLS
+-	// Nothing to do
+-#elif USE_MBEDTLS
+-	// Nothing to do
+-#else
+-	openssl::init();
++		PollService::Instance().start(); // Strong failure guarantee from the stage amendment.
++		mInitialization.acquired(Stage::Poll);
+ #endif
+-
+-	SctpTransport::Init();
+-	SctpTransport::SetSettings(mCurrentSctpSettings);
+-	DtlsTransport::Init();
++		SctpTransport::Init(); // Registry allocation precedes C startup.
++		mInitialization.acquired(Stage::Sctp); // Settings conversion can throw.
++		SctpTransport::SetSettings(mCurrentSctpSettings);
++		DtlsTransport::Init();
+ #if RTC_ENABLE_WEBSOCKET
+-	TlsTransport::Init();
+-#endif
+-#if RTC_ENABLE_MEDIA
+-	DtlsSrtpTransport::Init();
++		TlsTransport::Init();
+ #endif
+-	IceTransport::Init();
++		IceTransport::Init();
++	});
+ }
+ 
+ void Init::doCleanup() {
+@@ -153,30 +155,32 @@ void Init::doCleanup() {
+ 	if (mGlobal)
+ 		return;
+ 
+-	if (!std::exchange(mInitialized, false))
+-		return;
+-
+-	PLOG_DEBUG << "Global cleanup";
+-
+-	ThreadPool::Instance().join();
+-	ThreadPool::Instance().clear();
++	using Stage = MdkrRtcInitializationTransaction::Stage;
++	mInitialization.retire([&] {
++		// Do not retire supporting libraries after a failed worker join. Each
++		// ownership bit is cleared only after its own complete release succeeds.
++		mInitialization.release(Stage::Pool, [] {
++			ThreadPool::Instance().join();
++			ThreadPool::Instance().clear();
++		});
+ #if RTC_ENABLE_WEBSOCKET
+-	PollService::Instance().join();
++		mInitialization.release(Stage::Poll, [] { PollService::Instance().join(); });
+ #endif
+-
+-	SctpTransport::Cleanup();
+-	DtlsTransport::Cleanup();
++		mInitialization.release(Stage::Sctp, [] {
++			SctpTransport::Cleanup();
++			DtlsTransport::Cleanup();
+ #if RTC_ENABLE_WEBSOCKET
+-	TlsTransport::Cleanup();
++			TlsTransport::Cleanup();
+ #endif
+-#if RTC_ENABLE_MEDIA
+-	DtlsSrtpTransport::Cleanup();
+-#endif
+-	IceTransport::Cleanup();
+-
++			IceTransport::Cleanup();
++		});
+ #ifdef _WIN32
+-	WSACleanup();
++		mInitialization.release(Stage::Sockets, [] {
++			if (WSACleanup() != 0)
++				throw std::runtime_error("RTC socket-library cleanup failed");
++		});
+ #endif
++	});
+ }
+ 
+ } // namespace rtc::impl
+diff --git a/src/impl/init.hpp b/src/impl/init.hpp
+index 23f84c7..f7ab2ae 100644
+--- a/src/impl/init.hpp
++++ b/src/impl/init.hpp
+@@ -11,6 +11,7 @@
+ 
+ #include "common.hpp"
+ #include "global.hpp" // for SctpSettings
++#include "rtc_initialization_transaction.h"
+ 
+ #include <chrono>
+ #include <future>
+@@ -45,7 +46,7 @@ private:
+ 
+ 	std::optional<shared_ptr<void>> mGlobal;
+ 	weak_ptr<void> mWeak;
+-	bool mInitialized = false;
++	MdkrRtcInitializationTransaction mInitialization;
+ 	SctpSettings mCurrentSctpSettings = {};
+ 	unsigned int mThreadPoolSize = 0;
+ 	std::mutex mMutex;
