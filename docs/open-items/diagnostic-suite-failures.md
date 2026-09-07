@@ -13,6 +13,33 @@ Current-source inspection was performed on the newer dirty release worktree on
 attempt. No tests, applications, builds, or network services were run for this
 triage. Later evidence must identify the exact source and artifact revision.
 
+## Executed re-verification on `6e5d4e4a` (2026-09-07)
+
+The corrections below are no longer source candidates: they were run. Of the 36
+failed tasks, **23 now pass by execution**, on the committed candidate with the
+selected build and a real ROM.
+
+| Group | Tasks | Result |
+| --- | --- | --- |
+| Native artifact routing | 15 | **15/15 PASS** in 52m00s (`enhancement_authority`, `subentry_bounds`, `dev_tools_purity`, `a11y_race`, `input_hotplug`, `rom_text_indices`, `a11y_shell`, `future_fun_land`, `mod_music_override`, `enh_ai_difficulty`, `crash_screen`, `enh_speedometer`, `enh_draw_distance`, `mod_texture_override`, `tool_freecam`) |
+| Native driver routing | 3 | **3/3 PASS** in 2m33s (`party_native_e2e`, `online_live_transport_e2e`, `party_lan_e2e`) |
+| Local Worker startup/dependency | 5 | **5/5 PASS** in 57s (`party_experience_canary_smoke`, `party_capacity`, `party_service_chaos`, `party_firewall_negative` — plus `browser_online_two_person` remains engine-blocked, see below) |
+| Full native CTest | 358 | **358/358 PASS**, 0 failed, 5m22s |
+
+The five Worker failures were an artifact of the immutable `12cab88c` checkout
+lacking `services/party/node_modules`; the lockfile-pinned Wrangler is present
+in the release worktree and those gates pass unchanged.
+
+`run_checks_artifact_routing` (CTest #243) passes, so the routing correction has
+fixture coverage as well as end-to-end evidence.
+
+**Still open:** the 8 browser engine-progress tasks plus
+`browser_online_room_gallery` and `browser_online_two_person` are blocked behind
+one shared defect (see the browser section below — the engine does not advance
+past frame 1). The measured camera, pacing and shadow failures are unchanged and
+remain real. `rom_free_units`' stale success count is corrected in source but
+requires the complete suite to confirm.
+
 ## Confirmed native artifact-routing failures (15 tasks)
 
 The recorded commands passed `--rom` but omitted `--build`; the runner had already
