@@ -980,6 +980,23 @@ SHAPE_INFO_MAX = {
     # siblings already counted in this population, on a uint16_t with a
     # literal count of 8.
     #
+    # 539 -> 542, RE-MEASURED 2026-09-08 after the 1.7.0 candidate delta was
+    # committed. The ceiling had been measured on a tree where that work was
+    # still uncommitted, so committing it put the population over a ceiling
+    # that had never seen it. Diffing the class against c657fa62 by content
+    # rather than by line number gives exactly three new entries and none
+    # removed, all in one function, mdkr_trophy_records_merge
+    # (game/src/runtime_contracts.c) from the issue #63 per-world best-medal
+    # merge:
+    #     u32 leftState  = (left  >> shift) & 3U;
+    #     u32 rightState = (right >> shift) & 3U;
+    #     merged |= (leftState > rightState ? leftState : rightState) << shift;
+    # `shift` is loop-local: (world - WORLD_DINO_DOMAIN) * 2 over
+    # WORLD_DINO_DOMAIN..WORLD_FUTURE_FUN_LAND, which enums.h fixes at 1..5, so
+    # it takes exactly {0, 2, 4, 6, 8} on a u32. The count cannot reach 32 and
+    # the shift cannot be undefined; these are the ordinary two-bit-per-world
+    # pack/unpack this class already counts elsewhere. Ceiling moves by three.
+    #
     # 388 -> 539, RE-MEASURED 2026-09-03 on the int-1.7.0 line
     # (fix/m3-reds-3), the first sweep since v1.6.0 merged the Adventure Party
     # co-op code, the Character Workshop / custom-character pipeline
@@ -1061,7 +1078,7 @@ SHAPE_INFO_MAX = {
     # index over its own domain constant or already past its guard; 1614 was
     # the only one whose guard stood behind it.
     # Measured with tools/sweep_bug_shapes.py, not summed.
-    "shift-count": 539,
+    "shift-count": 542,
 }
 
 # Only array-bounds is load-bearing for this class. pointer-overflow is kept
