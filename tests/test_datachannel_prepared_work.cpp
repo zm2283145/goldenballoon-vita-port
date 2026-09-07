@@ -1,3 +1,6 @@
+/* Assert-driven test: release builds must not compile its checks away. */
+#undef NDEBUG
+
 #include "prepared_work_queue.h"
 
 #include <array>

@@ -1,3 +1,6 @@
+/* Assert-driven test: release builds must not compile its checks away. */
+#undef NDEBUG
+
 #include "online/async_work_budget.h"
 
 #include <condition_variable>

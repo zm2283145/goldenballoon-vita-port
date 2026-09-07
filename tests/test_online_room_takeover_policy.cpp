@@ -1,3 +1,6 @@
+/* Assert-driven test: release builds must not compile its checks away. */
+#undef NDEBUG
+
 #include "online_room_takeover_policy.h"
 
 #include <cstdio>
