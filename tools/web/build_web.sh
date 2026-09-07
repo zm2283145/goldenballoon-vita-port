@@ -22,22 +22,41 @@ cd "$(dirname "$0")/../.."
 CLEAN=0
 [[ "${1:-}" == "--clean" ]] && CLEAN=1
 
-# Activate emsdk if emcmake is not already on PATH.
-if ! command -v emcmake >/dev/null 2>&1; then
-    for candidate in "${EMSDK_DIR:-}" "$HOME/emsdk" /usr/local/emsdk /opt/emsdk; do
-        if [[ -n "$candidate" && -f "$candidate/emsdk_env.sh" ]]; then
-            # shellcheck disable=SC1091
-            source "$candidate/emsdk_env.sh" >/dev/null 2>&1 || true
-            break
-        fi
-    done
-fi
+# The Emscripten toolchain is PINNED. A stray emcc on PATH is not equivalent:
+# emdawnwebgpu's queue-future delivery changed after this version, and building
+# the engine with a newer/dev emcc produces a wasm whose
+# wgpuQueueOnSubmittedWorkDone callbacks never dispatch. The frame queue then
+# never drains, admission is refused every frame, and the game presents exactly
+# one frame and freezes -- with no build error and no runtime message. Pin it,
+# and prefer the pinned SDK over whatever happens to be on PATH.
+MDKR_EMSCRIPTEN_VERSION="${MDKR_EMSCRIPTEN_VERSION:-4.0.10}"
+
+# Activate the pinned emsdk FIRST so it wins over any PATH emcc.
+for candidate in "${EMSDK_DIR:-}" "$HOME/emsdk" /usr/local/emsdk /opt/emsdk; do
+    if [[ -n "$candidate" && -f "$candidate/emsdk_env.sh" ]]; then
+        # shellcheck disable=SC1091
+        source "$candidate/emsdk_env.sh" >/dev/null 2>&1 || true
+        break
+    fi
+done
 if ! command -v emcmake >/dev/null 2>&1; then
     echo "build_web: emcmake not found. Install emsdk and/or set EMSDK_DIR." >&2
     exit 2
 fi
 
-echo ">> emcc: $(emcc --version | head -1)"
+EMCC_VERSION_LINE="$(emcc --version | head -1)"
+echo ">> emcc: $EMCC_VERSION_LINE"
+if [[ "$EMCC_VERSION_LINE" != *"$MDKR_EMSCRIPTEN_VERSION"* ]]; then
+    echo "build_web: FAIL -- Emscripten $MDKR_EMSCRIPTEN_VERSION is required, but this is:" >&2
+    echo "    $EMCC_VERSION_LINE" >&2
+    echo "    emcc in use: $(command -v emcc)" >&2
+    echo "  A different emcc silently produces a wasm that freezes after one" >&2
+    echo "  frame (emdawnwebgpu queue-completion callbacks never dispatch)." >&2
+    echo "  Install the pinned SDK (emsdk install $MDKR_EMSCRIPTEN_VERSION &&" >&2
+    echo "  emsdk activate $MDKR_EMSCRIPTEN_VERSION), or set EMSDK_DIR to it." >&2
+    echo "  To override deliberately: MDKR_EMSCRIPTEN_VERSION=<version>." >&2
+    exit 2
+fi
 
 [[ "$CLEAN" -eq 1 ]] && rm -rf build-web
 
