@@ -11,12 +11,23 @@ No pack has to be installed to use this -- that is the whole point. An author
 dumping a first corpus has none yet, and the store treats a running dump as
 reason enough to resolve every texture's digest even with zero packs found.
 
-Each run writes `<out>/<digest>.png` (the picture, RGBA8, exactly what the
-game uploaded for that texture) and `<out>/<digest>.txt` (its width, height,
-RDP `fmt`/`siz`, and where in the run it was first requested) for every
-distinct texture the script causes to load. Copy a PNG this writes into
-`<pack>/textures/<digest>.png`, unmodified filename, and it overrides that
-exact texture -- see docs/MODDING.md.
+Each run writes three files per distinct texture the script causes to load:
+
+    <out>/<digest>.png     the picture, RGBA8, exactly what the game uploaded
+    <out>/<digest>.txt     width, height, RDP fmt/siz, the source tile's own
+                           geometry and row pitch, and where in the run it was
+                           first requested
+    <out>/<digest>.texels  the raw N64 texel bytes the digest was taken over
+
+Copy a PNG this writes into `<pack>/textures/<digest>.png`, unmodified
+filename, and it overrides that exact texture -- see docs/MODDING.md. A pack
+author needs nothing else here.
+
+The other two are for tooling. `.texels` is the ROM's own bytes, not decoded
+pixels, and exists so an offline tool can recompute somebody else's hash of the
+same span -- a Rice pack's CRC-32 (tools/ricepack/) is the case it was added
+for. Treat the whole output directory as ROM-derived; that is what the --out
+refusal below is about.
 
 Usage:
     tools/mod_texture_dump.py --input-script tests/input_scripts/race_drive_long.txt \
@@ -67,7 +78,8 @@ def parse_args() -> argparse.Namespace:
                              "must cover however long the script takes to reach the "
                              "textures you want dumped")
     parser.add_argument("--out", required=True,
-                        help="directory to write <digest>.png/<digest>.txt into; "
+                        help="directory to write <digest>.png, <digest>.txt "
+                             "and <digest>.texels into; "
                              "created if missing. Keep it outside the repository -- "
                              "these are decoded ROM textures, never commit them")
     parser.add_argument("--renderer", choices=("gl", "webgpu"), default="gl")
@@ -170,7 +182,15 @@ def main() -> int:
         )
         return 1
 
+    # Counted separately from the pictures. A corpus whose spans are missing
+    # looks exactly like a healthy one to anyone counting PNGs, and the tool
+    # that consumes the spans would then report every texture as unusable with
+    # no clue as to why. Said here, at the point the difference is visible.
+    spans = sum(1 for _ in out_dir.glob("*.texels"))
     print(f"mod_texture_dump: wrote {len(written)} texture(s) to {out_dir}")
+    if spans != len(written):
+        print(f"  NOTE: {spans} of {len(written)} carry a .texels span; a "
+              "binary predating MDKR_MOD_TEXTURE_DUMP_FORMAT 2 writes none")
     if args.verbose:
         for digest in written:
             print(f"  {digest}.png")

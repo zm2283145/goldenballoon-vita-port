@@ -689,13 +689,29 @@ static void dump_png_write_cb(void *context, void *chunk, int size) {
     buffer->size += (size_t)size;
 }
 
+/* True when `source` carries a span worth writing. A source with no bytes is
+ * not an error -- a caller that had none to offer says so with a null, and a
+ * zero-length span is the same statement -- so both write the record without
+ * its source fields and no `.texels` beside it. A reader keys on that file
+ * existing, so the pair is refused as unusable rather than half-read. */
+static bool dump_source_has_span(const MdkrModTextureSource *source) {
+    return source != NULL && source->texels != NULL && source->texel_bytes > 0;
+}
+
 void mdkr_mod_texture_dump_observe(const char *digest_hex, const uint8_t *rgba,
                                    int width, int height, uint8_t fmt,
-                                   uint8_t siz, const char *first_seen) {
+                                   uint8_t siz,
+                                   const MdkrModTextureSource *source,
+                                   const char *first_seen) {
     const char   *dir = dump_directory();
     char          png_path[MDKR_MOD_PATH_MAX];
     char          txt_path[MDKR_MOD_PATH_MAX];
-    char          txt_body[256];
+    char          texels_path[MDKR_MOD_PATH_MAX];
+    /* Eleven fields, of which first_seen is the only unbounded one and its
+     * one caller writes about forty characters. Sized so the record cannot be
+     * truncated in practice, and checked below so it cannot be truncated
+     * silently if it ever is. */
+    char          txt_body[512];
     int           txt_length;
     DumpPngBuffer png = { NULL, 0, 0, false };
     MdkrPngWriteLayout layout;
@@ -712,7 +728,9 @@ void mdkr_mod_texture_dump_observe(const char *digest_hex, const uint8_t *rgba,
     if (snprintf(png_path, sizeof png_path, "%s/%s.png", dir, digest_hex) >=
             (int)sizeof png_path ||
         snprintf(txt_path, sizeof txt_path, "%s/%s.txt", dir, digest_hex) >=
-            (int)sizeof txt_path) {
+            (int)sizeof txt_path ||
+        snprintf(texels_path, sizeof texels_path, "%s/%s.texels", dir,
+                 digest_hex) >= (int)sizeof texels_path) {
         report_dump_failure(digest_hex, dir, "the dump path is too long");
         return;
     }
@@ -731,12 +749,45 @@ void mdkr_mod_texture_dump_observe(const char *digest_hex, const uint8_t *rgba,
     }
     free(png.data);
 
-    txt_length = snprintf(txt_body, sizeof txt_body,
-                          "width=%d\nheight=%d\nfmt=%u\nsiz=%u\nfirst_seen=%s\n",
-                          width, height, (unsigned)fmt, (unsigned)siz,
-                          first_seen != NULL ? first_seen : "");
+    /* The raw span goes down before the record that describes it. A reader
+     * keys on the `.texels` file existing, so writing the record first would
+     * leave a window -- and, if the span write then failed, a permanent
+     * record -- claiming bytes that are not there. */
+    if (dump_source_has_span(source) &&
+        !dump_write_bytes(texels_path, source->texels, source->texel_bytes)) {
+        report_dump_failure(digest_hex, texels_path,
+                            "the texel span could not be written");
+        return;
+    }
+
+    if (dump_source_has_span(source)) {
+        txt_length = snprintf(
+            txt_body, sizeof txt_body,
+            "dump_format=%u\nwidth=%d\nheight=%d\nfmt=%u\nsiz=%u\n"
+            "source_width=%d\nsource_height=%d\nsource_line_bytes=%u\n"
+            "source_size_bytes=%u\nsource_texel_bytes=%zu\nfirst_seen=%s\n",
+            MDKR_MOD_TEXTURE_DUMP_FORMAT, width, height, (unsigned)fmt,
+            (unsigned)siz, source->width, source->height,
+            (unsigned)source->line_bytes, (unsigned)source->size_bytes,
+            source->texel_bytes, first_seen != NULL ? first_seen : "");
+    } else {
+        txt_length = snprintf(
+            txt_body, sizeof txt_body,
+            "dump_format=%u\nwidth=%d\nheight=%d\nfmt=%u\nsiz=%u\n"
+            "first_seen=%s\n",
+            MDKR_MOD_TEXTURE_DUMP_FORMAT, width, height, (unsigned)fmt,
+            (unsigned)siz, first_seen != NULL ? first_seen : "");
+    }
     if (txt_length < 0) return;
-    if ((size_t)txt_length >= sizeof txt_body) txt_length = (int)sizeof(txt_body) - 1;
+    /* Refused rather than truncated. This record is parsed by a tool, and a
+     * cut-off `key=value` line is not a shorter record -- it is a wrong one
+     * (`source_line_bytes=12` where the value was 128), which is exactly the
+     * failure this whole path exists to avoid. */
+    if ((size_t)txt_length >= sizeof txt_body) {
+        report_dump_failure(digest_hex, txt_path,
+                            "the record does not fit its buffer");
+        return;
+    }
     if (!dump_write_bytes(txt_path, txt_body, (size_t)txt_length)) {
         report_dump_failure(digest_hex, txt_path, "the file could not be written");
     }

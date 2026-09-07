@@ -2687,6 +2687,14 @@ if(BUILD_TESTING)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_texture_cache_identity.py)
     add_test(
+        NAME ricepack_import
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_ricepack_import.py)
+    add_test(
+        NAME rice_crc
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_rice_crc.py)
+    add_test(
         NAME camera_obstruction_authority
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_camera_obstruction_authority.py)

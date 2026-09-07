@@ -6918,6 +6918,15 @@ unreadable headers without entering the decoder, and verifies that returned
 dimensions agree with admission. The dimension-mismatch controls change only
 the test wrapper's metadata after decoding an ordinary small PNG; a matching
 image must still load with its exact pixels.
+Its last case is about the author dump's `<digest>.txt` record and the
+`<digest>.texels` companion beside it, field by field: those are parsed by
+`tools/ricepack/`, so a field that is absent, misnamed or truncated becomes a
+confident wrong CRC offline rather than a visible failure. The fixture's source
+span is deliberately padded — a 24-byte pitch over 16-byte rows — so a dump that
+wrote a tightly packed span, or reported the packed pitch, fails here instead of
+passing on an unpadded fixture and mis-hashing every real tile. The record is
+versioned (`dump_format`), and a record with no version line is version 1, which
+is how a corpus dumped before the field existed stays readable.
 The four first-party PNG callers also carry compile-time bounds for 16-bit
 intermediate storage, including callers that request 8-bit output. Raising
 their dimension/cache limits beyond those bounds must fail compilation until
@@ -8816,3 +8825,43 @@ libFuzzer runtime; use Homebrew LLVM as above. Seed corpora are derived from
 the suites' wire-level test vectors (valid welcome/hello/ICE frames,
 fragmentation, masked/RSV violations, oversize declarations, a full 201
 create response, chunked state, 4000-class closes).
+
+## Rice pack importer — `ricepack_import`, `rice_crc`
+
+```bash
+ctest --test-dir build --output-on-failure -R '^(ricepack_import|rice_crc)$'
+```
+
+Two ROM-free Python units over `tools/ricepack/`, which converts a
+Rice/GLideN64 high-resolution texture pack into a content pack. Both run in
+under a tenth of a second, read no pack content, and build every fixture they
+need — a handful of four-pixel PNGs, plus deliberately dishonest headers for
+the cap tests.
+
+| Unit | What it owns | The assertion that would otherwise rot |
+|---|---|---|
+| `ricepack_import` | The filename allowlist, the `_all`-over-split precedence, the orphan-half rules, the caps and the manifest | The junk files fall out of the *pattern* — the allowlist is asserted to contain no `Thumbs`/`DS_Store` literal, so a special case cannot creep in; the same pack decides identically with its `_all` sorting before or after the halves it shadows; a re-run is byte-identical; and `complete` coverage is false whenever any input was refused |
+| `rice_crc` | The candidate Rice CRC | The CRC-32 primitive is checked against `zlib.crc32` rather than a remembered constant; row padding is proven to be outside the hash; and the four accumulation variants are proven distinct, so a hit-rate sweep across them measures something |
+
+`rice_crc` cannot show that the algorithm is the one Rice uses — that needs a
+ROM. Its pinned vectors are change detectors and say nothing about correctness;
+a commit that establishes the real algorithm is expected to replace them with
+emulator-derived ones.
+
+The measurement that settles it is a real-ROM experiment, not a test, and runs
+as one command:
+
+```bash
+python3 tools/ricepack/measure_crc_variants.py \
+    --build build --rom baserom.us.v80.z64 \
+    --pack /path/to/rice-pack --out ~/dkr-crc-experiment
+```
+
+It drives four routes with `MDKR_MOD_TEXTURE_DUMP` set, computes all four
+candidate CRCs over every dumped `<digest>.texels` span, and prints how many of
+the pack's mappable keys each variant matched. A key counts only when the CRC
+*and* the fmt/siz agree, so a wrong variant is expected to score exactly zero —
+which is what makes a single-digit result readable as noise and a three-digit
+one readable as the answer. All-zero across the four means the input is wrong
+before the arithmetic is; the skip counts printed above the table say which.
+`--out` must be outside the repository and is refused otherwise, twice.
