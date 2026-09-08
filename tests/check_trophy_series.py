@@ -372,11 +372,13 @@ def run_trophy_series(
         (5, "0,1,2,3,4,5,6,7", (17, 32, 33, 15), 0, 36, 0x300),
     )
     matrix_outputs: list[tuple[int, str]] = []
+    matrix_saves: dict[int, bytes] = {}
     for world, per_round, tracks, rank, points, trophy_bits in world_matrix:
         order = "/".join((per_round,) * 4)
         matrix_proc, matrix_save = run_case(
             binary, rom, 13000, eeprom_image(), "full", order, world
         )
+        matrix_saves[world] = matrix_save
         matrix_output = matrix_proc.stdout
         matrix_outputs.append((world, matrix_output))
         if matrix_proc.returncode != 0:
@@ -388,6 +390,27 @@ def run_trophy_series(
             failures.append(
                 f"world {world} tracks {got_tracks}, expected {list(tracks)}"
             )
+        # Issue #63's reported symptom is the cabinet staying EMPTY with the
+        # championship already won, which the award/persistence assertions do
+        # not reach: they prove the bits were written, not that the cabinet
+        # reads them back and instantiates the trophy. Dino Domain's reload arm
+        # covers world 1, and world 1 was never the broken one --
+        # mdkr_trophy_state() rejected worlds above 4, so worlds 2..5 could
+        # neither record nor display. Require the production cabinet to publish
+        # the state this world just earned. World 4 finishes rank 3, which is no
+        # trophy, and doubles as the negative control: state 0 must NOT display.
+        expected_state = (3 - rank) & 3
+        display = (f"trophycabinet: DISPLAY world={world} "
+                   f"state={expected_state} trophies=0x{trophy_bits:x}")
+        if expected_state == 0:
+            if f"trophycabinet: DISPLAY world={world}" in matrix_output:
+                failures.append(
+                    f"world {world} displayed a trophy for a rank-{rank} finish")
+        elif display not in matrix_output:
+            failures.append(
+                f"world {world} cabinet did not display the earned trophy "
+                f"(expected '{display}')")
+
         matrix_award = AWARD_RE.search(matrix_output)
         if matrix_award is None:
             failures.append(f"world {world} final award decision missing")
@@ -436,7 +459,8 @@ def run_trophy_series(
         return 1
     print(
         "PASS: trophy series — cabinet entry, four production rounds, "
-        "stable tie, gold + reload, fail-closed order, quit + retry"
+        "stable tie, gold + reload, five-world cabinet display, "
+        "fail-closed order, quit + retry"
     )
     if verbose:
         for line in output.splitlines():
