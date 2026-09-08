@@ -35,6 +35,21 @@ Currently being debugged past the main menu — see "What needs
 hardware verification" at the end for what's still open, and the git log
 on this branch for the blow-by-blow.
 
+**vitaGL / vitaShaRK versions:** built from
+[Rinnegatamante/vitaGL](https://github.com/Rinnegatamante/vitaGL) commit
+`cd3791e` and [Rinnegatamante/vitaShaRK](https://github.com/Rinnegatamante/vitaShaRK)
+commit `df24065` (both HEAD as of 2026-08-30/2026-08-22 respectively),
+built from source rather than dpm's prebuilt packages (no make on this
+toolchain's host machine, so both are compiled via one-off scripts that
+replicate their Makefiles). Splash screen enabled (NO_SPLASHSCREEN unset)
+so the vitaGL boot logo shows on real hardware as a visual "did vitaGL
+initialize" signal. Earlier in bring-up, vitaGL HEAD alone (without
+updating vitaShaRK to match) failed to link -- HEAD's
+glSetShaderAssociationPath calls shark_set_shader_association_path,
+introduced in vitaShaRK the same day but absent from the vitaShaRK version
+originally paired with this toolchain -- so the two must be updated
+together, not independently.
+
 ## How to build
 
 ```powershell
@@ -54,22 +69,39 @@ the toolchain file itself.
 
 ## Packaging (VPK)
 
-```powershell
-arm-vita-eabi-strip -g build-vita/mdkr64.elf
-vita-elf-create build-vita/mdkr64.elf build-vita/mdkr64.velf
-vita-make-fself -c -s build-vita/mdkr64.velf build-vita/eboot.bin
-vita-mksfoex -s TITLE_ID=GBLN00001 -d ATTRIBUTE2=12 "GoldenBalloon DKR" build-vita/param.sfo
-vita-pack-vpk -s build-vita/param.sfo -b build-vita/eboot.bin build-vita/mdkr64.vpk `
-    -a vita/livearea/icon0.png=sce_sys/icon0.png `
-    -a vita/livearea/bg.png=sce_sys/livearea/contents/bg.png `
-    -a vita/livearea/startup.png=sce_sys/livearea/contents/startup.png `
-    -a vita/livearea/template.xml=sce_sys/livearea/contents/template.xml
-```
+The one-time `vita-mksfoex` step (below) aside, packaging is scripted --
+run `tools/package_vita.ps1` after every rebuild rather than reproducing
+the individual strip/elf-create/fself/pack-vpk commands by hand. Two things
+that script gets right that a naive hand-rolled version will not:
+
+- `vita-make-fself -c -pm 0x2000000 ...` -- the `-pm 0x2000000` (32MB
+  physically-contiguous memory budget) flag is required. Without it,
+  vitaGL's `vglInitExtended` silently fails (returns `GL_FALSE`) even
+  though free-memory-pool numbers look healthy afterward -- the game boots
+  and audio/input/game logic all run fine, but nothing ever renders.
+  Diagnosed via `mdkr_vita_boot_log` instrumentation around
+  `vglInitExtended`.
+- No `-a vita/livearea/...=sce_sys/...` LiveArea-asset arguments to
+  `vita-pack-vpk` by default (`-IncludeIcons` opts back in for a
+  deliberate one-off test). Bundling them currently breaks VitaShell's
+  install on the real hardware this project is tested against -- confirmed
+  twice, including once after ruling out `-Wl,-q` as the cause. The
+  placeholder `icon0.png`/`bg.png`/`startup.png` are individually
+  valid PNGs at the expected LiveArea dimensions, so this looks like a
+  `vita-pack-vpk`/VitaShell interaction rather than bad art; root cause
+  not yet isolated. Until it is, ship without LiveArea assets (Vita falls
+  back to a default icon/background).
+
+`powershell
+vita-mksfoex -s TITLE_ID=GBLN00001 -d ATTRIBUTE2=12 "GoldenBalloon DKR" build-vita/param.sfo   # one-time / only if param.sfo is missing
+pwsh -File tools/package_vita.ps1 -BuildDir build-vita
+`
 
 `vita/livearea/*.png` are **programmatically generated placeholders**
-(solid background + wordmark text), not final art — replace them before any
-public release. `vita/livearea/gen_livearea_assets.py` (not committed;
-available on request) regenerates them if needed.
+(solid background + wordmark text), not final art, and are currently
+unused in packaging for the reason above. `vita/livearea/gen_livearea_assets.py`
+(not committed; available on request) regenerates them if needed once the
+install-failure cause is found and fixed.
 
 **ROM placement:** the engine looks for the ROM at a fixed path on Vita —
 `ux0:data/goldenballoon/baserom.us.v80.z64` — since there is no in-app
