@@ -5165,9 +5165,29 @@ static void dkr_dl_fault(const char *reason, const Gfx *cmd, int depth) {
         static int s_dlZeroScanLogCount = 0;
         if (s_dlZeroScanLogCount < 5 && cmd != NULL) {
             const uint32_t *w = (const uint32_t *)((uintptr_t)cmd & ~(uintptr_t)3);
-            uintptr_t scanFloor = (uintptr_t)g_dkrArenaBase;
+            uintptr_t arenaBase = (uintptr_t)g_dkrArenaBase;
+            uintptr_t arenaEnd = arenaBase + (uintptr_t)g_dkrArenaSize;
+            int cmdInArena = g_dkrArenaSize != 0 &&
+                             (uintptr_t)cmd >= arenaBase && (uintptr_t)cmd < arenaEnd;
+            /* This diagnostic previously crashed the game (closed at the
+             * splash logo): it trusted g_dkrArenaBase alone as the walk's
+             * floor, but this fault can fire before the arena exists (base
+             * 0/stale) or for a cmd that isn't arena-backed at all, so the
+             * walk went unbounded toward address 0 across unmapped pages.
+             * cmd itself is known-readable -- dkr_run_dl already walked to
+             * it one command at a time -- but nothing further back is
+             * known-safe. Cap the walk to a small fixed distance no matter
+             * what the arena globals say, and only relax that floor up to
+             * the arena's real base when cmd is verifiably inside it. */
+            long maxBackWords = 4096; /* 16 KB: enough to find a nearby boundary */
+            uintptr_t hardFloor = (uintptr_t)w > (uintptr_t)(maxBackWords * 4)
+                                       ? (uintptr_t)w - (uintptr_t)(maxBackWords * 4)
+                                       : 0;
+            uintptr_t scanFloor = hardFloor;
+            if (cmdInArena && arenaBase > scanFloor) {
+                scanFloor = arenaBase;
+            }
             long backWords = 0;
-            long maxBackWords = 1L << 20; /* 4 MB backward, generous for this arena */
             int foundNonZero = 0;
             while ((uintptr_t)w > scanFloor && backWords < maxBackWords) {
                 if (*w != 0) { foundNonZero = 1; break; }
@@ -5176,12 +5196,12 @@ static void dkr_dl_fault(const char *reason, const Gfx *cmd, int depth) {
             }
             char lb2[224];
             snprintf(lb2, sizeof(lb2),
-                     "dl-zero-scan: cmd=%p zeroRunBytes=%ld foundNonZero=%d at=%p val=0x%08x "
-                     "seg1base=0x%lx arenaBase=0x%lx arenaSize=0x%lx",
-                     (const void *)cmd, backWords * 4L, foundNonZero, (const void *)w,
-                     (unsigned)*w,
+                     "dl-zero-scan: cmd=%p inArena=%d zeroRunBytes=%ld foundNonZero=%d at=%p "
+                     "val=0x%08x seg1base=0x%lx arenaBase=0x%lx arenaSize=0x%lx",
+                     (const void *)cmd, cmdInArena, backWords * 4L, foundNonZero,
+                     (const void *)w, (unsigned)*w,
                      (unsigned long)gfx_segment_table[1],
-                     (unsigned long)(uintptr_t)g_dkrArenaBase,
+                     (unsigned long)arenaBase,
                      (unsigned long)(uintptr_t)g_dkrArenaSize);
             mdkr_vita_boot_log(lb2);
             s_dlZeroScanLogCount++;
