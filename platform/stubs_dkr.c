@@ -551,7 +551,33 @@ void dkr_dl_register_host_ptr(const void *x) {
             uint32_t seg = (uint32_t)(p >> 24) & 0x0Fu;
             uintptr_t segBase = gfx_segment_table[seg];
             uint32_t offset = (uint32_t)p & 0x00FFFFFFu;
-            int plausible_token = 0;
+            /*
+             * Default to the ORIGINAL, safe behavior: assume it is a
+             * genuine segment token (excluded from registration) unless
+             * proven otherwise. This matters because G_SETTIMG/G_SETCIMG/
+             * G_SETZIMG (gSetImage, also routed through this same function)
+             * routinely carry a raw segment token for a segment that is
+             * simply not assigned YET at the moment this DL word is built --
+             * gfx_segment_table[seg] == 0 here is completely normal for
+             * those commands and must NOT be read as "this can't really be
+             * a segment token." Registering it anyway is exactly the
+             * registry-poisoning bug the is_segment_token_range exclusion
+             * was originally added to prevent (see the comment above), and
+             * confirmed again on real Vita hardware: this exact regression
+             * broke the very first thing the game draws (the 2D DKR logo
+             * texture, set up via G_SETTIMG with a not-yet-assigned segment
+             * token) into a reproducible crash.
+             *
+             * Only override that default -- and register the pointer -- when
+             * the segment it names IS currently assigned AND the offset
+             * demonstrably falls outside that segment's real allocated span.
+             * That positive-evidence case is what actually identifies a
+             * collision like gViewportStack's (segment 1 assigned, offset
+             * 4+ MB past its ~150 KB buffer): a real segment token's offset
+             * always lands inside its segment's real, currently-assigned
+             * allocation, by construction.
+             */
+            int plausible_token = 1;
             if (segBase != 0) {
                 void *allocBase = NULL;
                 size_t allocSize = 0;
@@ -559,8 +585,7 @@ void dkr_dl_register_host_ptr(const void *x) {
                     plausible_token = offset < allocSize;
                 }
             }
-            is_segment_token_range = plausible_token;
-        }
+            is_segment_token_range = plausible_token;        }
         if (p != 0 && !in_arena && !is_segment_token_range) {
             gfx_ptr_store_persistent(x);
         }    }
