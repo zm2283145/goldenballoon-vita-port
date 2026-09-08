@@ -1460,8 +1460,44 @@ void platform_sdl_drawable_size(int *w, int *h) {
 
 void platform_sdl_sync_drawable_size(void) {
     int width, height;
+#if defined(__vita__)
+    {
+        static int s_vitaCrumbSyncA = 0;
+        if (s_vitaCrumbSyncA < 16) {
+            char cbD[96];
+            snprintf(cbD, sizeof(cbD), "crumb: frame=%u sync-drawable-size: before", (unsigned)g_surfaceFrameCounter);
+            mdkr_vita_boot_log(cbD);
+            mdkr_vita_boot_log_flush();
+            s_vitaCrumbSyncA++;
+        }
+    }
+#endif
     platform_sdl_drawable_size(&width, &height);
+#if defined(__vita__)
+    {
+        static int s_vitaCrumbSyncB = 0;
+        if (s_vitaCrumbSyncB < 16) {
+            char cbE[112];
+            snprintf(cbE, sizeof(cbE), "crumb: frame=%u sync-drawable-size: got w=%d h=%d", (unsigned)g_surfaceFrameCounter, width, height);
+            mdkr_vita_boot_log(cbE);
+            mdkr_vita_boot_log_flush();
+            s_vitaCrumbSyncB++;
+        }
+    }
+#endif
     gfx_set_dimensions((uint32_t)width, (uint32_t)height);
+#if defined(__vita__)
+    {
+        static int s_vitaCrumbSyncC = 0;
+        if (s_vitaCrumbSyncC < 16) {
+            char cbF[96];
+            snprintf(cbF, sizeof(cbF), "crumb: frame=%u sync-drawable-size: after gfx_set_dimensions", (unsigned)g_surfaceFrameCounter);
+            mdkr_vita_boot_log(cbF);
+            mdkr_vita_boot_log_flush();
+            s_vitaCrumbSyncC++;
+        }
+    }
+#endif
 }
 
 /* Capture the last completed frame to DIR/frame_%04d.ppm as binary P6.
@@ -3266,7 +3302,31 @@ static void settings_toggle_poll(void) {
 static void input_dispatch_events(uint64_t target_tick) {
     if (s_sdlReady) {
         SDL_Event e;
+#if defined(__vita__)
+        {
+            static int s_vitaCrumbPumpA = 0;
+            if (s_vitaCrumbPumpA < 24) {
+                char cbG[96];
+                snprintf(cbG, sizeof(cbG), "crumb: frame=%u before-SDL_PollEvent-loop", (unsigned)g_surfaceFrameCounter);
+                mdkr_vita_boot_log(cbG);
+                mdkr_vita_boot_log_flush();
+                s_vitaCrumbPumpA++;
+            }
+        }
+#endif
         while (SDL_PollEvent(&e)) {
+#if defined(__vita__)
+            {
+                static int s_vitaCrumbPumpB = 0;
+                if (s_vitaCrumbPumpB < 24) {
+                    char cbH[96];
+                    snprintf(cbH, sizeof(cbH), "crumb: frame=%u SDL_PollEvent-returned type=%u", (unsigned)g_surfaceFrameCounter, (unsigned)e.type);
+                    mdkr_vita_boot_log(cbH);
+                    mdkr_vita_boot_log_flush();
+                    s_vitaCrumbPumpB++;
+                }
+            }
+#endif
             int input_changed = 0;
 #if defined(MDKR_APP) || defined(__EMSCRIPTEN__)
             /*
@@ -3668,6 +3728,18 @@ void platform_sdl_present(void) {
             mdkr_vita_boot_log_flush();
         }
         vglSwapBuffers(GL_FALSE);
+#if defined(__vita__)
+        {
+            static int s_vitaCrumbSwap = 0;
+            if (s_vitaCrumbSwap < 16) {
+                char cbA[96];
+                snprintf(cbA, sizeof(cbA), "crumb: frame=%u after-vglSwapBuffers", (unsigned)g_surfaceFrameCounter);
+                mdkr_vita_boot_log(cbA);
+                mdkr_vita_boot_log_flush();
+                s_vitaCrumbSwap++;
+            }
+        }
+#endif
 #else
         SDL_GL_SwapWindow(s_window);
 #endif
@@ -3675,7 +3747,31 @@ void platform_sdl_present(void) {
 #ifndef __EMSCRIPTEN__
         sdl_gl_backpressure_after_swap();
 #endif
+#if defined(__vita__)
+        {
+            static int s_vitaCrumbBP = 0;
+            if (s_vitaCrumbBP < 16) {
+                char cbB[96];
+                snprintf(cbB, sizeof(cbB), "crumb: frame=%u after-backpressure", (unsigned)g_surfaceFrameCounter);
+                mdkr_vita_boot_log(cbB);
+                mdkr_vita_boot_log_flush();
+                s_vitaCrumbBP++;
+            }
+        }
+#endif
         sdl_gl_resource_heartbeat("after-swap", 0);
+#if defined(__vita__)
+        {
+            static int s_vitaCrumbHB = 0;
+            if (s_vitaCrumbHB < 16) {
+                char cbC[96];
+                snprintf(cbC, sizeof(cbC), "crumb: frame=%u after-heartbeat-afterswap", (unsigned)g_surfaceFrameCounter);
+                mdkr_vita_boot_log(cbC);
+                mdkr_vita_boot_log_flush();
+                s_vitaCrumbHB++;
+            }
+        }
+#endif
     }
     /* WebGPU has no swap here: wgpu_end_frame already presented the surface
      * (WGPU_COMPAT_PRESENT) inside gfx_end_frame. Nothing to do. */
