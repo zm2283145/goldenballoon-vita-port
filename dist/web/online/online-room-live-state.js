@@ -14,51 +14,18 @@
   const MAX_CONTROL_TAIL = 64;
   const LOBBY_PHASE = Object.freeze({lobby: 1, loading: 2, racing: 3,
     results: 4, closed: 5});
-  // The room object's wire schema version (services/party/src/match/protocol.ts).
-  // Version 2 added the session-configuration/tournament lobby fields and the
-  // delivered iceServers. This constant, WIRE_LOBBY_EXTRA_KEYS and ICE_KEYS are
-  // the three halves of that same bump: while this said 1, a valid state was
-  // rejected outright and the room reported "Could Not Reach the Room" on a 201
-  // create, having never attempted its socket.
-  const MATCH_STATE_SCHEMA_VERSION = 2;
-
   const COMPATIBILITY_KEYS = Object.freeze(["protocolVersion", "buildId",
     "gameplayDigest", "romRevision", "cadenceHz"]);
   const PUBLIC_STATE_KEYS = Object.freeze(["type", "schemaVersion", "expiresAt",
     "inviteExpiresAt", "inviteGeneration", "closedReason", "lobby", "controlTail"]);
   const IDENTITY_KEYS = Object.freeze(["roomId", "endpointId", "credential"]);
   const INVITE_KEYS = Object.freeze(["fallbackCode", "inviteExpiresInMs", "inviteUrl"]);
-  // The room object attaches its ICE servers to every create/join response
-  // (services/party/src/worker.ts deliveredIceServers), and the native client
-  // consumes them. This validator did not list the key, and because the shape
-  // check is exact rather than a subset, an otherwise valid state was rejected
-  // outright: create returned 201, ingest returned null, and the room reported
-  // "Could Not Reach the Room" without ever attempting its socket.
-  const ICE_KEYS = Object.freeze(["iceServers"]);
   const HELD_INVITE_KEYS = Object.freeze(["expiresAt", "fallbackCode",
     "inviteGeneration", "inviteUrl"]);
   const CANONICAL_STATE_KEYS = Object.freeze([...PUBLIC_STATE_KEYS, ...IDENTITY_KEYS]);
-  // The CANONICAL lobby: exactly what frozenState() projects and what the
-  // presenter consumes. validate() checks a frozen state against this, so it
-  // must not grow just because the service sends more.
   const LOBBY_KEYS = Object.freeze(["protocolVersion", "revision", "matchEpoch",
     "leaderGeneration", "roomId", "leaderEndpointId", "phase", "compatibility",
     "members", "seats", "selectedTrack", "selectedVehicleMask"]);
-  // The WIRE lobby: what the room object may legitimately send
-  // (services/party/src/match/, via services/party/src/worker.ts). The shape
-  // check is exact, so a key the service added and this list has not is a hard
-  // rejection of an otherwise valid state rather than a tolerated extra. The
-  // championship group arrived exactly that way, and the room reported
-  // "Could Not Reach the Room" on a 201 create because this list could not
-  // name fields the service had been sending.
-  //
-  // These two lists are deliberately separate. Projecting a field is a
-  // presenter decision; accepting one is a compatibility fact. Merging them
-  // makes every new service field either a silent rejection or an unreviewed
-  // addition to the canonical state.
-  const WIRE_LOBBY_EXTRA_KEYS = Object.freeze(["mode", "cupId", "raceIndex",
-    "points", "lastPlacements", "configuredTrack"]);
-  const WIRE_LOBBY_KEYS = Object.freeze([...LOBBY_KEYS, ...WIRE_LOBBY_EXTRA_KEYS]);
   const MEMBER_KEYS = Object.freeze(["endpointId", "seatCount", "connected",
     "ready", "loaded"]);
   const SEAT_KEYS = Object.freeze(["endpointId", "selectionRevision", "voteTrack",
@@ -142,8 +109,7 @@
     const lobby = value?.lobby;
     const local = String(localEndpointId || value?.endpointId || "");
     if (!exactKeys(value, CANONICAL_STATE_KEYS) ||
-        value.type !== "match_state" ||
-        value.schemaVersion !== MATCH_STATE_SCHEMA_VERSION ||
+        value.type !== "match_state" || value.schemaVersion !== 1 ||
         !exactKeys(lobby, LOBBY_KEYS) ||
         lobby.protocolVersion !== 1 || !Number.isInteger(lobby.revision) ||
         lobby.revision < 1 || lobby.revision > U32_MAX ||
@@ -267,7 +233,7 @@
   // raw wire objects must be shape-checked before that point.
   function strictNestedShape(value) {
     const lobby = value?.lobby;
-    if (!exactKeys(lobby, WIRE_LOBBY_KEYS) ||
+    if (!exactKeys(lobby, LOBBY_KEYS) ||
         !exactKeys(lobby.compatibility, COMPATIBILITY_KEYS) ||
         !Array.isArray(lobby.members) || !Array.isArray(lobby.seats) ||
         !Array.isArray(value.controlTail)) return false;
@@ -276,22 +242,11 @@
       value.controlTail.every((item) => exactKeys(item, CONTROL_KEYS));
   }
 
-  // Every optional group is independently present or absent, so enumerate the
-  // combinations rather than spelling them out: with three groups the explicit
-  // list is eight lines and the next key added silently drops a case, which is
-  // exactly how `iceServers` came to be rejected. The check stays EXACT -- an
-  // unknown key still fails every combination.
-  const OPTIONAL_KEY_GROUPS = Object.freeze([IDENTITY_KEYS, INVITE_KEYS, ICE_KEYS]);
-
   function validWireKeys(value) {
-    for (let mask = 0; mask < (1 << OPTIONAL_KEY_GROUPS.length); mask++) {
-      const keys = [...PUBLIC_STATE_KEYS];
-      for (let group = 0; group < OPTIONAL_KEY_GROUPS.length; group++) {
-        if (mask & (1 << group)) keys.push(...OPTIONAL_KEY_GROUPS[group]);
-      }
-      if (exactKeys(value, keys)) return true;
-    }
-    return false;
+    return exactKeys(value, PUBLIC_STATE_KEYS) ||
+      exactKeys(value, [...PUBLIC_STATE_KEYS, ...IDENTITY_KEYS]) ||
+      exactKeys(value, [...PUBLIC_STATE_KEYS, ...INVITE_KEYS]) ||
+      exactKeys(value, [...PUBLIC_STATE_KEYS, ...IDENTITY_KEYS, ...INVITE_KEYS]);
   }
 
   function validInvite(value, origin) {
