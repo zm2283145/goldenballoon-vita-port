@@ -51,17 +51,13 @@ SOURCE_FILES = {
 # entry must still name a real member of the side it claims; the comparison
 # below reports an entry that has gone stale exactly as loudly as new drift.
 
-# MatchLobbyV1 fields the Worker sends and the browser validator's LOBBY_KEYS
-# omits, so every current lobby is refused as an unknown shape.
-R36_LOBBY_SCHEMA_ONLY = frozenset({
-    "mode", "configuredTrack", "cupId", "raceIndex", "points", "lastPlacements",
-})
-# Top-level response member the Worker attaches to create/join and to the state
-# socket welcome. The browser's wire check is exact-key, so it refuses these
-# bodies before reading the lobby at all.
-R36_ENVELOPE_SCHEMA_ONLY = frozenset({"iceServers"})
-# The stored/wire schemaVersion the browser validator still pins.
-R36_CLIENT_SCHEMA_VERSION = 1
+# R36 CLOSED 2026-09-08. The browser client speaks the v2 wire: it accepts
+# schemaVersion 2, the delivered iceServers envelope member, and the six
+# session-configuration lobby fields. The allowlists stay here, empty, so a
+# regression reports as new drift against an empty allowance instead of quietly
+# reintroducing a gap that once had a ruling attached to it.
+R36_LOBBY_SCHEMA_ONLY = frozenset()
+R36_ENVELOPE_SCHEMA_ONLY = frozenset()
 
 # Command types the schema defines that no dist/web/online path issues.
 COMMANDS_NOT_SENT_BY_BROWSER = {
@@ -433,8 +429,12 @@ def schema_health(sources: dict[str, str]) -> tuple[set[str], set[str]]:
 def client_vocabulary(sources: dict[str, str]) -> dict[str, object]:
     live = sources["live_state"]
     room = sources["room"]
+    # "wire_lobby" is what the service may send; "lobby" stays the canonical
+    # shape frozenState() projects. "ice" is the delivered iceServers envelope
+    # member. Both arrived with the v2 wire.
     names = {"state": "PUBLIC_STATE_KEYS", "identity": "IDENTITY_KEYS",
-             "invite": "INVITE_KEYS", "lobby": "LOBBY_KEYS",
+             "invite": "INVITE_KEYS", "ice": "ICE_KEYS",
+             "wire_lobby": "WIRE_LOBBY_KEYS", "lobby": "LOBBY_KEYS",
              "member": "MEMBER_KEYS", "seat": "SEAT_KEYS",
              "control": "CONTROL_KEYS", "compatibility": "COMPATIBILITY_KEYS"}
     vocabulary: dict[str, object] = {
@@ -445,7 +445,13 @@ def client_vocabulary(sources: dict[str, str]) -> dict[str, object]:
     if phases is None:
         raise Drift("live-state.js no longer declares LOBBY_PHASE")
     vocabulary["phases"] = object_keys(balanced(live, phases.end() - 1))
-    version = re.search(r"value\.schemaVersion !== (\d+)", live)
+    # The pin moved from a literal comparison to a named constant when the
+    # client learned the v2 wire. Accept either spelling: this gate compares
+    # the VALUE against the schema, and failing because a constant was given a
+    # name would be measuring code shape rather than compatibility.
+    version = re.search(r"MATCH_STATE_SCHEMA_VERSION\s*=\s*(\d+)", live)
+    if version is None:
+        version = re.search(r"value\.schemaVersion !== (\d+)", live)
     if version is None:
         raise Drift("live-state.js no longer pins a schemaVersion")
     vocabulary["schema_version"] = int(version.group(1))
@@ -520,7 +526,7 @@ def client_accepted_envelopes(sources: dict[str, str],
         keys: set[str] = set()
         for name in re.findall(r"([A-Z_]+_KEYS)", arguments):
             role = {"PUBLIC_STATE_KEYS": "state", "IDENTITY_KEYS": "identity",
-                    "INVITE_KEYS": "invite"}.get(name)
+                    "INVITE_KEYS": "invite", "ICE_KEYS": "ice"}.get(name)
             if role is None:
                 raise Drift(f"validWireKeys admits unknown key set {name}")
             keys |= client[role]
@@ -608,8 +614,21 @@ def analyze(sources: dict[str, str]) -> list[str]:
     failures: list[str] = []
 
     failures += compare("state body", schema["state"], client["state"])
-    failures += compare("lobby", schema["lobby"], client["lobby"],
+    # Compared against WIRE_LOBBY_KEYS, the shape the client ACCEPTS, not
+    # against LOBBY_KEYS, the canonical shape it projects. Those are different
+    # decisions: refusing a field the service sends breaks the room outright,
+    # while declining to project one is a presenter choice. Holding the client
+    # to its projection here would report every unprojected field as drift and
+    # make the two lists impossible to keep apart.
+    failures += compare("lobby", schema["lobby"], client["wire_lobby"],
                         allowed_schema_only=R36_LOBBY_SCHEMA_ONLY)
+    # Every canonical key must still be a key the client accepts, or the
+    # presenter projects a field the wire check would have refused.
+    unprojectable = client["lobby"] - client["wire_lobby"]
+    if unprojectable:
+        failures.append(
+            f"lobby: LOBBY_KEYS projects {sorted(unprojectable)!r} which "
+            "WIRE_LOBBY_KEYS does not accept")
     failures += compare("member", schema["member"], client["member"])
     failures += compare("seat", schema["seat"], client["seat"])
     failures += compare("control step", schema["control"], client["control"])
@@ -622,15 +641,10 @@ def analyze(sources: dict[str, str]) -> list[str]:
                         client["closed_reasons"])
 
     if schema["schema_version"] != client["schema_version"]:
-        if client["schema_version"] != R36_CLIENT_SCHEMA_VERSION:
-            failures.append(
-                f"schemaVersion: the browser client pins "
-                f"{client['schema_version']}, the schema stores "
-                f"{schema['schema_version']}, and only "
-                f"{R36_CLIENT_SCHEMA_VERSION} is the allowlisted R36 pin")
-    elif client["schema_version"] == R36_CLIENT_SCHEMA_VERSION:
-        failures.append("schemaVersion: the R36 version gap is closed — drop "
-                        "R36_CLIENT_SCHEMA_VERSION")
+        failures.append(
+            f"schemaVersion: the browser client pins "
+            f"{client['schema_version']} and the schema stores "
+            f"{schema['schema_version']}")
 
     accepted = client_accepted_envelopes(sources, client)
     for label, keys in schema_envelopes(sources, schema["state"]):
@@ -720,8 +734,11 @@ def analyze(sources: dict[str, str]) -> list[str]:
 # --- positive controls -------------------------------------------------------
 
 CONTROLS = (
+    # With R36 closed there is no allowlist to land in: renaming a lobby field
+    # in the schema must now read as ordinary drift against a client that
+    # accepts the real name.
     ("protocol", "  points: number[];", "  scores: number[];",
-     "'points' is allowlisted as a member the browser client does not speak"),
+     "the schema defines 'scores'"),
     ("protocol", "  localIndex: number;", "  localIndex: number;\n  nickname: string;",
      "the schema defines 'nickname'"),
     ("protocol", '| "set_cup";', '| "set_cup" | "set_teleport";',
@@ -731,8 +748,9 @@ CONTROLS = (
     ("live_state", '"localIndex", "characterId", "vehicleId"]',
      '"localIndex", "characterId", "vehicleId", "nickname"]',
      "the browser client expects 'nickname'"),
-    ("live_state", "value.schemaVersion !== 1", "value.schemaVersion !== 3",
-     "only 1 is the allowlisted R36 pin"),
+    ("live_state", "MATCH_STATE_SCHEMA_VERSION = 2",
+     "MATCH_STATE_SCHEMA_VERSION = 3",
+     "the browser client pins 3"),
     ("live_state", '"host_closed", "room_expired"].includes',
      '"host_closed", "room_gone"].includes',
      "closed reason"),
@@ -754,8 +772,11 @@ CONTROLS = (
      "the browser sends 'set_warp'"),
     ("room", 'sendLiveCommand("set_vote"', 'sendLiveCommand("set_cup"',
      "'set_cup' is allowlisted as browser-unsent"),
+    # Was: prove the gate notices when the gap closes. R36 is closed, so the
+    # same mutation now proves the plain equality check still bites in the
+    # other direction -- the schema moving away from the client.
     ("protocol", "  schemaVersion: 2;", "  schemaVersion: 1;",
-     "the R36 version gap is closed"),
+     "the browser client pins 2 and the schema stores 1"),
 )
 
 

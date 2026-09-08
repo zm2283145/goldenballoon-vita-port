@@ -56,9 +56,13 @@
   // presenter decision; accepting one is a compatibility fact. Merging them
   // makes every new service field either a silent rejection or an unreviewed
   // addition to the canonical state.
-  const WIRE_LOBBY_EXTRA_KEYS = Object.freeze(["mode", "cupId", "raceIndex",
-    "points", "lastPlacements", "configuredTrack"]);
-  const WIRE_LOBBY_KEYS = Object.freeze([...LOBBY_KEYS, ...WIRE_LOBBY_EXTRA_KEYS]);
+  // Spelled out rather than composed by spreading LOBBY_KEYS: the parity gate
+  // reads these member lists literally, and a spread yields it nothing.
+  const WIRE_LOBBY_KEYS = Object.freeze(["protocolVersion", "revision",
+    "matchEpoch", "leaderGeneration", "roomId", "leaderEndpointId", "phase",
+    "compatibility", "members", "seats", "selectedTrack", "selectedVehicleMask",
+    "mode", "cupId", "raceIndex", "points", "lastPlacements",
+    "configuredTrack"]);
   const MEMBER_KEYS = Object.freeze(["endpointId", "seatCount", "connected",
     "ready", "loaded"]);
   const SEAT_KEYS = Object.freeze(["endpointId", "selectionRevision", "voteTrack",
@@ -276,22 +280,22 @@
       value.controlTail.every((item) => exactKeys(item, CONTROL_KEYS));
   }
 
-  // Every optional group is independently present or absent, so enumerate the
-  // combinations rather than spelling them out: with three groups the explicit
-  // list is eight lines and the next key added silently drops a case, which is
-  // exactly how `iceServers` came to be rejected. The check stays EXACT -- an
-  // unknown key still fails every combination.
-  const OPTIONAL_KEY_GROUPS = Object.freeze([IDENTITY_KEYS, INVITE_KEYS, ICE_KEYS]);
-
+  // Spelled out rather than enumerated from a group list. The wire-schema
+  // parity gate reads these combinations literally out of this source to
+  // compare the client's accepted envelopes against the service's, and a loop
+  // hides them from it. Each optional group is independently present or
+  // absent, so all eight combinations are listed; the check stays EXACT, and
+  // an unknown key still fails every one.
   function validWireKeys(value) {
-    for (let mask = 0; mask < (1 << OPTIONAL_KEY_GROUPS.length); mask++) {
-      const keys = [...PUBLIC_STATE_KEYS];
-      for (let group = 0; group < OPTIONAL_KEY_GROUPS.length; group++) {
-        if (mask & (1 << group)) keys.push(...OPTIONAL_KEY_GROUPS[group]);
-      }
-      if (exactKeys(value, keys)) return true;
-    }
-    return false;
+    return exactKeys(value, PUBLIC_STATE_KEYS) ||
+      exactKeys(value, [...PUBLIC_STATE_KEYS, ...IDENTITY_KEYS]) ||
+      exactKeys(value, [...PUBLIC_STATE_KEYS, ...INVITE_KEYS]) ||
+      exactKeys(value, [...PUBLIC_STATE_KEYS, ...ICE_KEYS]) ||
+      exactKeys(value, [...PUBLIC_STATE_KEYS, ...IDENTITY_KEYS, ...INVITE_KEYS]) ||
+      exactKeys(value, [...PUBLIC_STATE_KEYS, ...IDENTITY_KEYS, ...ICE_KEYS]) ||
+      exactKeys(value, [...PUBLIC_STATE_KEYS, ...INVITE_KEYS, ...ICE_KEYS]) ||
+      exactKeys(value, [...PUBLIC_STATE_KEYS, ...IDENTITY_KEYS, ...INVITE_KEYS,
+        ...ICE_KEYS]);
   }
 
   function validInvite(value, origin) {

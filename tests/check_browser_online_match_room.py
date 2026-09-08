@@ -171,7 +171,9 @@ FIXTURE = r"""
       roomId:'42',leaderEndpointId:host,phase:'lobby',compatibility,
       members:[{endpointId:host,seatCount:1,connected:true,ready:false,loaded:false}],
       seats:[{endpointId:host,selectionRevision:0,voteTrack:null,localIndex:0,
-        characterId:null,vehicleId:null}],selectedTrack:null,selectedVehicleMask:0};
+        characterId:null,vehicleId:null}],selectedTrack:null,selectedVehicleMask:0,
+      mode:0,cupId:255,raceIndex:0,points:[0,0,0,0],
+      lastPlacements:[255,255,255,255],configuredTrack:65535};
   };
   globalThis.__liveSubscriptions=()=>subscriptions;
 })();
