@@ -928,6 +928,7 @@ static void sdl_apply_gl_present_policy(void) {
 
 #if defined(__vita__)
 extern void mdkr_vita_boot_log(const char *msg);
+extern void mdkr_vita_boot_log_flush(void);
 #endif
 
 #if defined(__vita__)
@@ -3664,6 +3665,7 @@ void platform_sdl_present(void) {
                 mdkr_vita_boot_log(plb);
                 s_vitaPresentLogCount++;
             }
+            mdkr_vita_boot_log_flush();
         }
         vglSwapBuffers(GL_FALSE);
 #else

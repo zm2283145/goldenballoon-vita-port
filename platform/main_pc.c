@@ -221,12 +221,49 @@ int _newlib_heap_size_user = 256 * 1024 * 1024;
  * it back by pulling the SD/SD2Vita card or over VitaShell's FTP server --
  * so a silent early exit can be diagnosed after the fact. Diagnostic-only;
  * not wired into any other platform. */
-void mdkr_vita_boot_log(const char *msg) {
+/* Buffered: each mdkr_vita_boot_log() call used to fopen+fprintf+fclose
+ * on every single line, which is real uncached filesystem I/O on Vita.
+ * At the call volumes the display-list diagnostics reach, that measurably
+ * tanked the frame rate on real hardware (confirmed on-device: a build
+ * with heavier logging became too slow to even reach the main menu).
+ * Accumulate lines in memory and write them out in one fopen/fwrite/fclose
+ * either when the buffer is close to full or when explicitly flushed (see
+ * mdkr_vita_boot_log_flush(), called once per presented frame from
+ * platform_sdl_min.c) so a crash still loses at most about one frame's
+ * worth of lines instead of nothing. */
+#define MDKR_BOOT_LOG_BUFSZ 4096
+static char s_mdkrBootLogBuf[MDKR_BOOT_LOG_BUFSZ];
+static size_t s_mdkrBootLogBufLen = 0;
+
+void mdkr_vita_boot_log_flush(void) {
+    if (s_mdkrBootLogBufLen == 0) {
+        return;
+    }
     FILE *f = fopen("ux0:data/goldenballoon/mdkr_boot.log", "a");
     if (f) {
-        fprintf(f, "%s\n", msg);
+        fwrite(s_mdkrBootLogBuf, 1, s_mdkrBootLogBufLen, f);
         fclose(f);
     }
+    s_mdkrBootLogBufLen = 0;
+}
+
+void mdkr_vita_boot_log(const char *msg) {
+    size_t len = strlen(msg);
+    if (len + 1 >= MDKR_BOOT_LOG_BUFSZ) {
+        mdkr_vita_boot_log_flush();
+        FILE *f = fopen("ux0:data/goldenballoon/mdkr_boot.log", "a");
+        if (f) {
+            fprintf(f, "%s\n", msg);
+            fclose(f);
+        }
+        return;
+    }
+    if (s_mdkrBootLogBufLen + len + 1 >= MDKR_BOOT_LOG_BUFSZ) {
+        mdkr_vita_boot_log_flush();
+    }
+    memcpy(s_mdkrBootLogBuf + s_mdkrBootLogBufLen, msg, len);
+    s_mdkrBootLogBufLen += len;
+    s_mdkrBootLogBuf[s_mdkrBootLogBufLen++] = '\n';
 }
 #else
 #define mdkr_vita_boot_log(msg) ((void)0)
