@@ -2857,6 +2857,23 @@ static void gfx_opengl_draw_triangles_cvg_wrap_stencil(size_t buf_vbo_num_tris) 
 }
 
 static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_vbo_num_tris) {
+#if defined(__vita__)
+    {
+        static int s_drawTriLogCount = 0;
+        if (s_drawTriLogCount < 40) {
+            GLint vp[4] = {0, 0, 0, 0};
+            glGetIntegerv(GL_VIEWPORT, vp);
+            char lb[160];
+            snprintf(lb, sizeof(lb),
+                     "draw-tris: tris=%u vbolen=%u viewport=%d,%d,%d,%d prog=%p",
+                     (unsigned)buf_vbo_num_tris, (unsigned)buf_vbo_len,
+                     (int)vp[0], (int)vp[1], (int)vp[2], (int)vp[3],
+                     (void*)current_shader_program);
+            mdkr_vita_boot_log(lb);
+            s_drawTriLogCount++;
+        }
+    }
+#endif
     if (current_shader_program != NULL) {
         gfx_opengl_set_uniforms(current_shader_program);
     }
