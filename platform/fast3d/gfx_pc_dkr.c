@@ -92,6 +92,7 @@
 #include "mod_texture_store.h"   /* the override layer in front of the ROM path */
 #include "gfx_uniforms.h"
 #include "gfx_pc_dkr.h"
+#include "memory.h"       /* mdkr_mempool_allocation_span -- diagnostic-only allocator introspection */
 #ifdef MDKR_WEBGPU_BACKEND
 #include "gfx_webgpu.h"
 #endif
@@ -5204,6 +5205,24 @@ static void dkr_dl_fault(const char *reason, const Gfx *cmd, int depth) {
                      (unsigned long)arenaBase,
                      (unsigned long)(uintptr_t)g_dkrArenaSize);
             mdkr_vita_boot_log(lb2);
+            /* Ask the allocator itself how big the block backing segment 1
+             * actually is. If that real allocation size is smaller than the
+             * offset from seg1base to this fault, the zero region is simply
+             * unallocated memory past the end of an undersized buffer -- not
+             * missing/truncated content, and not a resolve bug. */
+            {
+                void *seg1ptr = (void *)gfx_segment_table[1];
+                void *allocBase = NULL;
+                size_t allocSize = 0;
+                s32 allocOk = mdkr_mempool_allocation_span(seg1ptr, &allocBase, &allocSize);
+                char lb3[192];
+                snprintf(lb3, sizeof(lb3),
+                         "dl-zero-scan: seg1 span ok=%d base=%p size=0x%lx seg1ptr=%p "
+                         "faultOffsetFromSeg1=0x%lx",
+                         (int)allocOk, allocBase, (unsigned long)allocSize, seg1ptr,
+                         (unsigned long)((uintptr_t)cmd - (uintptr_t)seg1ptr));
+                mdkr_vita_boot_log(lb3);
+            }
             s_dlZeroScanLogCount++;
         }
     }
