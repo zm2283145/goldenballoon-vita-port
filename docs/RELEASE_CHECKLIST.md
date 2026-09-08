@@ -714,10 +714,18 @@ run.
 
 ```bash
 tools/web/build_web.sh          # builds, stages dist/web, runs the guard itself
-python3 tools/run_checks.py --jobs 6 --require-shipping-sdl \
+python3 tools/run_checks.py --jobs 6 --require-shipping-sdl --require-fresh \
   --build build-rel --release-build build-rel --asan-build build-asan \
   --wasm build-web/mdkr64_web.wasm
 ```
+
+`--require-fresh` refuses an artifact older than a source file it is built from.
+Without it the runner prints `STALE ARTIFACT ... Rebuild before trusting this
+run` and then runs anyway, which is not a warning a ten-hour release run can act
+on: the 2026-09-08 qualification of `b6e8ff40` carried a `build-asan` binary two
+days older than `platform/mod_texture_store.h`, so the fourteen tasks that take
+the ASan role reported on a tree the candidate no longer was. A release run has
+no reason to accept that, and the flag existed before this was written down.
 
 `--require-shipping-sdl` makes preflight refuse a binary linked against
 Homebrew's `sdl2-compat` shim. The releases bundle the pinned upstream SDL2
