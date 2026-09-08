@@ -4560,12 +4560,28 @@ static void dkr_map_logical_rect(const struct FloatXYWidthHeight *logical,
         if (iy1 < iy0) iy1 = iy0;
     }
 
+#if defined(__vita__)
+    if ((ix1 - ix0) <= 0 || (iy1 - iy0) <= 0) {
+        extern void mdkr_vita_boot_log(const char *msg);
+        static int s_degenViewportLogCount = 0;
+        if (s_degenViewportLogCount < 15) {
+            char lb[220];
+            snprintf(lb, sizeof(lb),
+                     "map-rect-degen: space=%d clamp=%d region=%.1f,%.1f,%.1fx%.1f logical=%.1f,%.1f,%.1fx%.1f mapped=%d,%d,%dx%d",
+                     (int)draw_space, (int)clamp_to_drawable,
+                     (double)region.x, (double)region.y, (double)region.width, (double)region.height,
+                     (double)logical->x, (double)logical->y, (double)logical->width, (double)logical->height,
+                     (int)ix0, (int)iy0, (int)(ix1 - ix0), (int)(iy1 - iy0));
+            mdkr_vita_boot_log(lb);
+            s_degenViewportLogCount++;
+        }
+    }
+#endif
     mapped->x = ix0;
     mapped->y = iy0;
     mapped->width = ix1 - ix0;
     mapped->height = iy1 - iy0;
 }
-
 static void dkr_remap_viewport_and_scissor(void) {
     if (rdp.view.logical_viewport_valid) {
         dkr_map_logical_rect(&rdp.view.logical_viewport, rsp.draw_space, false, &rdp.view.viewport);
