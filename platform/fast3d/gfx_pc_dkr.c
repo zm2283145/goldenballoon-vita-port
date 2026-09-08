@@ -5140,6 +5140,9 @@ static bool dkr_dl_census_enabled(void) {
 /* Interpret a display list. `limit` bounds the number of 64-bit command slots
  * processed (used by G_DMADL, whose DMA sub-lists carry a command count and may
  * lack a G_ENDDL terminator); limit == 0 runs until G_ENDDL / list end. */
+#if defined(__vita__)
+static void dkr_dl_ring_dump(void); /* forward decl -- defined next to dkr_run_dl below, which the ring buffer belongs to */
+#endif
 static void dkr_dl_fault(const char *reason, const Gfx *cmd, int depth) {
     static int strict = -1;
     if (strict < 0) {
@@ -5186,6 +5189,7 @@ static void dkr_dl_fault(const char *reason, const Gfx *cmd, int depth) {
     if (strcmp(reason, "unterminated display list") == 0) {
         static int s_dlZeroScanLogCount = 0;
         if (s_dlZeroScanLogCount < 5 && cmd != NULL) {
+            dkr_dl_ring_dump();
             const uint32_t *w = (const uint32_t *)((uintptr_t)cmd & ~(uintptr_t)3);
             uintptr_t arenaBase = (uintptr_t)g_dkrArenaBase;
             uintptr_t arenaEnd = arenaBase + (uintptr_t)g_dkrArenaSize;
@@ -6738,6 +6742,38 @@ static void dkr_capture_nonarena_list(const Gfx *sub, int count) {
         sub, sub, commands * sizeof(Gfx));
 }
 
+#if defined(__vita__)
+/* Ring buffer of the most recent commands dkr_run_dl actually walked,
+ * dumped by dkr_dl_fault() on an "unterminated display list" fault. The
+ * previous diagnostics ruled out a mis-resolved/undersized segment-1
+ * target (segment 1 only ever points at one of two correctly-sized real
+ * objects) -- so the remaining question is whether the interpreter itself
+ * desyncs on some opcode shortly before the fault (misreads its length or
+ * fields, then keeps reading garbage as if it were still aligned to real
+ * commands). This makes the actual command stream leading up to a fault
+ * visible instead of inferred. */
+#define DKR_DL_RING_SIZE 16
+typedef struct { uint32_t w0; uint32_t w1; } DkrDlRingEntry;
+static DkrDlRingEntry s_dlRing[DKR_DL_RING_SIZE];
+static int s_dlRingPos = 0;
+static long s_dlRingTotal = 0;
+
+static void dkr_dl_ring_dump(void) {
+    char buf[600];
+    int n = 0;
+    long count = s_dlRingTotal < DKR_DL_RING_SIZE ? s_dlRingTotal : DKR_DL_RING_SIZE;
+    long start = s_dlRingTotal < DKR_DL_RING_SIZE ? 0 : s_dlRingPos;
+    long i;
+    n += snprintf(buf + n, sizeof(buf) - n, "dl-ring(%ld):", s_dlRingTotal);
+    for (i = 0; i < count && n < (int)sizeof(buf) - 24; i++) {
+        long idx = (start + i) % DKR_DL_RING_SIZE;
+        n += snprintf(buf + n, sizeof(buf) - n, " %08x/%08x",
+                      (unsigned)s_dlRing[idx].w0, (unsigned)s_dlRing[idx].w1);
+    }
+    mdkr_vita_boot_log(buf);
+}
+#endif
+
 static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
     const bool census = dkr_dl_census_enabled();
     if (cmd == NULL) {
@@ -6790,6 +6826,12 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             s_dl_census_commands++;
             s_dl_census_opcodes[op]++;
         }
+#if defined(__vita__)
+        s_dlRing[s_dlRingPos % DKR_DL_RING_SIZE].w0 = cmd->words.w0;
+        s_dlRing[s_dlRingPos % DKR_DL_RING_SIZE].w1 = cmd->words.w1;
+        s_dlRingPos++;
+        s_dlRingTotal++;
+#endif
         switch (op) {
 
         /* ---- SP: flow control ---- */
