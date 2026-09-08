@@ -1336,6 +1336,30 @@ WORKFLOW_COMPANION_SCRIPTS = {
     "check_frozen_character_importer.py",
 }
 
+# The cross-architecture determinism gate. It is registered as owned/known
+# rather than as a CHECKS entry because this runner CANNOT manufacture what it
+# needs: a second executable of a different CPU architecture, built from the
+# same source with the same configuration. On macOS that means an x86_64 tree
+# alongside the native arm64 one, and an x86_64 SDL2 built from source because
+# Apple Silicon Homebrew ships arm64 only. Putting it in CHECKS would make every
+# suite run on a host without that second tree red for a missing build
+# directory rather than for a defect.
+#
+# It is NOT optional, and it is not a subset the release can quietly skip. The
+# online compatibility identity does not carry the architecture
+# (platform/online/compatibility_identity.h), so cross-architecture sessions are
+# admitted today and no other gate in this tree has ever measured one. The
+# operator runs it directly against the two build directories:
+#
+#   tests/check_crossarch_determinism.py --build build-rel \
+#       --build-x86 build-rel-x86_64 --rom baserom.us.v80.z64
+#
+# See docs/architecture/cross-architecture-determinism.md for how to produce the
+# second tree and for what the gate does and does not prove.
+CROSSARCH_OPERATOR_SCRIPTS = {
+    "check_crossarch_determinism.py",
+}
+
 # The native online-takeover (Golden Balloon beta) regression lanes. Every one
 # boots the REAL engine off the ROM and is TIMING-SENSITIVE (wall-clock
 # watchdogs, live loopback-transport convergence, countdown dwells that only
@@ -1421,7 +1445,7 @@ def validate_manifest() -> None:
     discovered = {path.name for path in TESTS.glob("check_*.py")}
     registered = ({check.script for check in CHECKS if check.script} |
                   CTEST_COMPANION_SCRIPTS | WORKFLOW_COMPANION_SCRIPTS |
-                  ONLINE_TAKEOVER_SCRIPTS)
+                  ONLINE_TAKEOVER_SCRIPTS | CROSSARCH_OPERATOR_SCRIPTS)
     missing = sorted(discovered - registered)
     stale = sorted(registered - discovered)
     duplicate_names = sorted(

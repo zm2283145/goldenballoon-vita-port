@@ -20,6 +20,7 @@ identity is kept in each file's title — it is how the commit log, `docs/STATUS
 | [taj-playable-mod.md](taj-playable-mod.md) | proposed mod architecture | A virtual playable Taj: easter-egg unlocks, carpet presentation, OP handling, persistence, compatibility boundaries, and execution gates |
 | [playable-wizpig-terry-campaign.md](playable-wizpig-terry-campaign.md) | bonus-racer implementation campaign | Playable Wizpig and Terry: virtual identity, balance, vehicle policy, assets, persistence migration, regression controls, and release gates |
 | [playable-wizpig-terry-integration.md](playable-wizpig-terry-integration.md) | bonus-racer integration guide | Exact implementation commit, product contract, subsystem ownership, conflict hotspots, completed qualification, known caveats, and post-merge checklist |
+| [cross-architecture-determinism.md](cross-architecture-determinism.md) | cross-architecture determinism gate | Why the online compatibility identity omits the CPU architecture, the arm64-versus-x86_64 authoritative-hash gate, how to build the x86_64 tree on Apple Silicon, and what the gate does and does not prove |
 
 ## Reading order
 
