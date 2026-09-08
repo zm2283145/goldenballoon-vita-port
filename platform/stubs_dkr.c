@@ -496,8 +496,29 @@ void dkr_dl_register_host_ptr(const void *x) {
      * texture" / severe slowdown after the title logo. Registering here,
      * exactly like the LP64 path (skipping arena-resident pointers, which
      * already have their own working reconstruction path), is the fix. */
-    if (p != 0 && !in_arena) {
-        gfx_ptr_store_persistent(x);
+    {
+        /* Segment tokens (0x01000000..0x0FFFFFFF) are reserved by this
+         * codebase's own addressing convention (see dkr_resolve's ILP32
+         * DIRECT RECOVERY comment) and are never real host pointers --
+         * gDPSetColorImage/gDPSetTextureImage/gDPSetDepthImage in particular
+         * are legitimately called with a raw segment-relative token (e.g.
+         * 0x01000000 for "segment 1, offset 0") instead of a host pointer,
+         * exactly like gSPDisplayList could in principle carry one. 
+         * Registering one of these here poisons the registry: dkr_resolve's
+         * raw-registry lookup (attempt 2) then matches it and hands back the
+         * token unchanged, BEFORE the correct segment-table lookup
+         * (gfx_resolve_addr) ever runs. Confirmed on real Vita hardware: a
+         * material-setup list's G_SETCIMG/G_SETZIMG tokens (0x01000000 /
+         * 0x02000000) resolved to themselves instead of the segment
+         * addresses assigned moments earlier, leaving color_image_address /
+         * z_buf_address pointing at low, unmapped memory -- a crash a few
+         * commands later once something dereferenced them. Exclude the
+         * whole range from registration; anything in it must resolve
+         * through the segment table, never the pointer registry. */
+        int is_segment_token_range = p >= 0x01000000u && p < 0x10000000u;
+        if (p != 0 && !in_arena && !is_segment_token_range) {
+            gfx_ptr_store_persistent(x);
+        }
     }
 #endif
 }
