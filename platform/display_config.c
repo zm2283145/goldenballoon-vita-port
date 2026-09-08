@@ -699,6 +699,24 @@ void mdkr_display_set_dimensions(unsigned int width, unsigned int height) {
            layout.safe.width, layout.safe.height,
            layout.safe.x, layout.safe.y,
            layout.presentation_aspect);
+#if defined(__vita__)
+    {
+        extern void mdkr_vita_boot_log(const char *msg);
+        char lb[220];
+        snprintf(lb, sizeof(lb),
+                 "DISPLAY: drawable=%ux%u widescreen=%d forcedAspect=%.5f "
+                 "presentation=%.0fx%.0f@%.0f,%.0f safe=%.0fx%.0f@%.0f,%.0f "
+                 "presAspect=%.5f legacyStretch=%d",
+                 width, height, s_display.widescreen_enabled,
+                 (double)s_display.forced_aspect,
+                 (double)layout.presentation.width, (double)layout.presentation.height,
+                 (double)layout.presentation.x, (double)layout.presentation.y,
+                 (double)layout.safe.width, (double)layout.safe.height,
+                 (double)layout.safe.x, (double)layout.safe.y,
+                 (double)layout.presentation_aspect, layout.legacy_stretch);
+        mdkr_vita_boot_log(lb);
+    }
+#endif
 }
 
 uint64_t mdkr_display_config_generation(void) {
