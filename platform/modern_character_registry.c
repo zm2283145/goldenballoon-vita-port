@@ -440,7 +440,13 @@ static int registry_init(MdkrModernCharacterRegistry *registry,
         }
         {
             uint32_t index;
-            uint8_t animation_moves[64] = {0};
+            /* Sized by the validator's own ceiling, not by a number that
+             * happened to be large enough when this was written. At 64 an asset
+             * with 65+ animations wrote 1 byte per extra clip into the stack
+             * frame beside `entry`, `path[4096]` and an asset whose owned_bytes
+             * is freed below -- reached at every boot and every roster refresh,
+             * without the character ever being selected. */
+            uint8_t animation_moves[MDKR_MODERN_ANIMATIONS_MAX] = {0};
             for (index = 0u; index < entry.stats.sockets; index++) {
                 MdkrModernSocket socket;
                 if (mdkr_modern_character_asset_socket(&asset, index, &socket)) {
@@ -449,7 +455,14 @@ static int registry_init(MdkrModernCharacterRegistry *registry,
                                                            socket.semantic));
                 }
             }
-            for (index = 0u; index < entry.stats.animations; index++) {
+            /* Defence in depth: the validator already refuses a count above
+             * the array bound, so this cannot clamp a valid asset. It is here so
+             * that a future ceiling change cannot silently reintroduce the
+             * overflow before anyone notices the two constants disagree. */
+            for (index = 0u;
+                 index < entry.stats.animations &&
+                 index < MDKR_MODERN_ANIMATIONS_MAX;
+                 index++) {
                 MdkrModernAnimation animation;
                 uint32_t channel_offset;
                 (void)mdkr_modern_character_asset_animation(
@@ -509,8 +522,12 @@ static int registry_init(MdkrModernCharacterRegistry *registry,
                 } else {
                     entry.semantic_mask |= bit;
                 }
+                /* Same ceiling as the write loop above: this READS
+                 * animation_moves[animation_index], so bounding only the write
+                 * would have left an out-of-bounds read behind. */
                 for (animation_index = 0u;
-                     animation_index < entry.stats.animations;
+                     animation_index < entry.stats.animations &&
+                     animation_index < MDKR_MODERN_ANIMATIONS_MAX;
                      animation_index++) {
                     MdkrModernAnimation animation;
                     const char *animation_name;

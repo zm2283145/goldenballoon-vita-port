@@ -757,7 +757,8 @@ static int validate_references(const MdkrModernCharacterAsset *asset,
         textures->count > 1024u ||
         texture_data->count > MDKR_MODERN_TEXTURE_DATA_BYTES_MAX ||
         nodes->count > 16384u || skins->count > 256u || joints->count > 65536u ||
-        animations->count > 256u || channels->count > 16384u ||
+        animations->count > MDKR_MODERN_ANIMATIONS_MAX ||
+        channels->count > 16384u ||
         keys->count > 4000000u ||
         asset->sections[MDKR_MDKC_SEMANTICS].count > 65u ||
         asset->sections[MDKR_MDKC_SOCKETS].count > 32u) {

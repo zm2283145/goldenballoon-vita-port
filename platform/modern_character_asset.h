@@ -30,6 +30,14 @@ extern "C" {
  * and modern_character_render.c), so raising one without the other fails to
  * compile rather than truncating a length at run time. */
 #define MDKR_MODERN_TEXTURE_DATA_BYTES_MAX (512u * 1024u * 1024u)
+
+/* The animation-record ceiling validate_references() admits. It is published
+ * here because a consumer indexed a fixed-size local by this count while the
+ * ceiling lived as a bare 256u inside the validator: the array was 64 entries,
+ * so an asset with 65 or more animations wrote past it. Any array indexed by
+ * stats.animations must be declared with this, and any code that walks that
+ * count must bound itself by it. */
+#define MDKR_MODERN_ANIMATIONS_MAX 256u
 #define MDKR_MODERN_HUMANOID_ROLE_COUNT 16u
 
 typedef enum MdkrModernSectionType {
