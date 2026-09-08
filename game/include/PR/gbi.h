@@ -2251,6 +2251,31 @@ extern void dkr_dl_register_host_ptr(const void *x);
 	gsSPSetOtherMode(G_SETOTHERMODE_L, G_MDSFT_RENDERMODE, 29, 	\
 			 (c0) | (c1))
 
+#if defined(NATIVE_PORT)
+/* On real N64 hardware i is already a segment-relative token or an
+ * OS_K0_TO_PHYSICAL()'d pointer that the RDP DMA engine consumes directly,
+ * so no bookkeeping is needed there. On the native ports, i is
+ * frequently a raw host pointer to a texture/color/depth image that was
+ * never itself pushed through gDma1p (gSetImage is its own macro, not
+ * built on top of gDma1p) -- so unlike gSPDisplayList/gSPVertex/gSPMatrix
+ * targets, it was never recorded in the pointer registry. On ILP32
+ * targets (Vita) that gap let a legitimate direct image pointer whose low
+ * bits carry a live segment nibble get misresolved by dkr_resolve()'s
+ * segment-token heuristic instead of being recognized as a direct
+ * pointer -- the same failure mode fixed for gDma1p, just for
+ * G_SETTIMG/G_SETCIMG/G_SETZIMG. Register it here too. */
+#define	gSetImage(pkt, cmd, fmt, siz, width, i)				\
+{									\
+	Gfx *_g = (Gfx *)(pkt);						\
+	uintptr_t _i = (uintptr_t)(i);				\
+	dkr_dl_register_host_ptr((const void *)_i);			\
+									\
+	_g->words.w0 = _SHIFTL(cmd, 24, 8) | _SHIFTL(fmt, 21, 3) |	\
+		       _SHIFTL(siz, 19, 2) | _SHIFTL((width)-1, 0, 12);	\
+	_g->words.w1 = (unsigned int)_i;				\
+}
+
+#else
 #define	gSetImage(pkt, cmd, fmt, siz, width, i)				\
 {									\
 	Gfx *_g = (Gfx *)(pkt);						\
@@ -2260,6 +2285,7 @@ extern void dkr_dl_register_host_ptr(const void *x);
 	_g->words.w1 = (unsigned int)(i);				\
 }
 
+#endif
 #define	gsSetImage(cmd, fmt, siz, width, i)				\
 {{									\
 	_SHIFTL(cmd, 24, 8) | _SHIFTL(fmt, 21, 3) |			\
