@@ -19,6 +19,31 @@ filter_bad_imports() {
   grep -viE "${system_dlls}" || true
 }
 
+# The stock-DLL allowlist above deliberately admits both CRTs, because either
+# one is a legitimate Windows DLL. Which one the binary links is a different
+# question, and a release-critical one: v1.2.1 shipped msvcrt-linked, where
+# fopen's exclusive "wbx" mode returns EINVAL, and every save silently failed.
+# The build pins msystem UCRT64 for exactly this reason (see the comments in
+# .github/workflows/release.yml), but that pin lives in CI. A locally produced
+# MINGW64 binary satisfies every other check in this file, so assert the CRT
+# against the artifact itself rather than trusting the environment that built
+# it.
+check_crt() {
+  local imports="$1"
+  local msvcrt ucrt
+  msvcrt="$(printf '%s\n' "${imports}" | grep -ciE '^MSVCRT\.dll$' || true)"
+  ucrt="$(printf '%s\n' "${imports}" | grep -ciE '^(UCRTBASE|api-ms-win-crt-.*)\.dll$' || true)"
+  if [[ "${msvcrt}" -gt 0 ]]; then
+    die "binary imports MSVCRT.dll: this is a MINGW64 build, not UCRT64. \
+Exclusive fopen(\"wbx\") returns EINVAL against the legacy CRT and every save \
+fails silently. Rebuild under msystem UCRT64."
+  fi
+  if [[ "${ucrt}" -eq 0 ]]; then
+    die "binary imports no UCRT (UCRTBASE.dll or api-ms-win-crt-*.dll); the \
+CRT could not be identified, so the save path is unverified"
+  fi
+}
+
 if [[ "${1:-}" == "--self-test" ]]; then
   safe_imports=$'KERNEL32.dll\nMSVCRT.dll\nDINPUT8.dll\nD3D12.dll\napi-ms-win-core-file-l1-1-0.dll'
   [[ -z "$(printf '%s\n' "${safe_imports}" | filter_bad_imports)" ]] ||
@@ -27,6 +52,15 @@ if [[ "${1:-}" == "--self-test" ]]; then
   rejected="$(printf '%s\n' "${unsafe_imports}" | filter_bad_imports)"
   [[ "${rejected}" == "${unsafe_imports}" ]] ||
     die "non-system broken control escaped the allowlist"
+  # The CRT check has to bite in both directions, or it is decoration.
+  ( check_crt $'KERNEL32.dll\nUCRTBASE.dll' ) ||
+    die "UCRT positive control was rejected"
+  ( check_crt $'KERNEL32.dll\napi-ms-win-crt-stdio-l1-1-0.dll' ) ||
+    die "api-ms-win-crt positive control was rejected"
+  ( check_crt $'KERNEL32.dll\nMSVCRT.dll' 2>/dev/null ) &&
+    die "msvcrt-linked broken control was accepted"
+  ( check_crt $'KERNEL32.dll' 2>/dev/null ) &&
+    die "CRT-less broken control was accepted"
   printf 'check_windows_imports: self-test PASS\n'
   exit 0
 fi
@@ -50,4 +84,6 @@ if [[ -n "${bad_imports}" ]]; then
   die "non-system DLL import found; the portable package must be one executable"
 fi
 
-printf 'check_windows_imports: PASS — stock Windows DLLs only\n'
+check_crt "${imports}"
+
+printf 'check_windows_imports: PASS — stock Windows DLLs only, UCRT linked\n'
