@@ -110,10 +110,30 @@ class HashedSpan(unittest.TestCase):
 
 class Variants(unittest.TestCase):
     def test_every_variant_is_distinct(self):
-        payload = bytes((index * 37 + 11) & 0xFF for index in range(256))
-        values = rice_crc.all_variants(payload, 32, 4, 1)
+        # The span must be PADDED. The `-tight` variants are defined to ignore
+        # the recorded pitch and treat the span as tightly packed, so on a
+        # tightly packed fixture they are the same function as their
+        # counterparts and collapse the count. That is the definition working,
+        # not a collision, which is why the fixture carries a wider pitch.
+        row, pitch, height = 32, 48, 4
+        payload = bytes((index * 37 + 11) & 0xFF for index in range(pitch * height))
+        values = rice_crc.all_variants(payload, 32, height, 1, pitch)
         self.assertEqual(sorted(values), sorted(rice_crc.VARIANTS))
         self.assertEqual(len(set(values.values())), len(rice_crc.VARIANTS))
+
+    def test_tight_variants_collapse_on_a_tightly_packed_span(self):
+        """The overlap above, asserted rather than left as a footnote.
+
+        A hit-rate sweep shows both members of each pair scoring identically on
+        a corpus of tightly packed textures. That looks like a bug in the sweep
+        and is not one, so pin it.
+        """
+        payload = bytes((index * 37 + 11) & 0xFF for index in range(256))
+        values = rice_crc.all_variants(payload, 32, 4, 1)
+        self.assertEqual(values[rice_crc.VARIANT_RICE_HIRES],
+                         values[rice_crc.VARIANT_RICE_HIRES_TIGHT])
+        self.assertEqual(values[rice_crc.VARIANT_RICE_HIRES_SWAP],
+                         values[rice_crc.VARIANT_RICE_HIRES_SWAP_TIGHT])
 
     def test_summing_variants_cannot_see_row_order_and_streaming_ones_can(self):
         """The cheapest discriminator between the two families.
@@ -172,6 +192,10 @@ class PinnedVectors(unittest.TestCase):
                 rice_crc.VARIANT_ROW_SUM_FINAL: "7EE9FFF0",
                 rice_crc.VARIANT_STREAM_RAW: "F3162C9C",
                 rice_crc.VARIANT_STREAM_FINAL: "0CE9D363",
+                rice_crc.VARIANT_RICE_HIRES: "E61E8D98",
+                rice_crc.VARIANT_RICE_HIRES_TIGHT: "E61E8D98",
+                rice_crc.VARIANT_RICE_HIRES_SWAP: "ED4A66AA",
+                rice_crc.VARIANT_RICE_HIRES_SWAP_TIGHT: "ED4A66AA",
             })
 
 
