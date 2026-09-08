@@ -737,6 +737,37 @@ static void test_bonus_roster_gate(void) {
     CHECK(parsed.terry_unlocked == 1);
     CHECK(parsed.wizpig_unlocked == 1);
 
+    /* Progress made WHILE the roster is off still banks the unlock -- gating
+     * visibility, not storage -- but must not announce it. Before this was
+     * gated, mod_racer_unlock() queued a banner that consume() handed straight
+     * back, so a player who asked not to see Taj was told he had arrived, for a
+     * racer who would not be on the select screen when they looked. */
+    mod_racer_set_bonus_roster_allowed(1);
+    taj_mod_reset_for_test();
+    taj_mod_boot(&storage);
+    mod_racer_set_bonus_roster_allowed(0);
+    CHECK(mod_racer_unlock_from_adventure_progress(
+              MOD_RACER_WIZPIG, WIZPIG_MOD_COMPLETED_BOSSES));
+    CHECK(!mod_racer_consume_unlock_announcement(MOD_RACER_WIZPIG));
+    CHECK(!mod_racer_is_unlocked(MOD_RACER_WIZPIG));
+    /* Turning the key on shows the racer that progress earned, and still no
+     * stale banner for a moment that has long passed. */
+    mod_racer_set_bonus_roster_allowed(1);
+    CHECK(mod_racer_is_unlocked(MOD_RACER_WIZPIG));
+    CHECK(!mod_racer_consume_unlock_announcement(MOD_RACER_WIZPIG));
+
+    /* The reset owns the default, so a later case never inherits an off
+     * roster from this one. */
+    mod_racer_set_bonus_roster_allowed(0);
+    taj_mod_reset_for_test();
+    CHECK(mod_racer_bonus_roster_allowed());
+
+    taj_mod_reset_for_test();
+    taj_mod_boot(&storage);
+    CHECK(mod_racer_submit_magic_code("ABRACADABRA") == MOD_RACER_TAJ);
+    CHECK(mod_racer_submit_magic_code("TERRYFLY") == MOD_RACER_TERRY);
+    CHECK(mod_racer_submit_magic_code("WIZPIGPOWER") == MOD_RACER_WIZPIG);
+
     /* And turning it back on restores what was earned. */
     mod_racer_set_bonus_roster_allowed(1);
     CHECK(mod_racer_is_unlocked(MOD_RACER_TAJ));

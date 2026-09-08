@@ -529,7 +529,22 @@ void mod_racer_set_enabled(ModRacerIdentity identity, int enabled) {
 
 int mod_racer_consume_unlock_announcement(ModRacerIdentity identity) {
     unsigned int bit = mod_racer_identity_bit(identity);
-    int result = (s_roster.unlock_announcement_mask & bit) != 0;
+    int result;
+
+    /* Adventure progress still banks an unlock while the bonus roster is off --
+     * that is the point of gating visibility rather than storage, so a player
+     * who turns the key back on keeps what they earned. But mod_racer_unlock()
+     * queues a banner alongside that write, and announcing "Taj unlocked" to a
+     * player who asked not to see Taj, for a racer who will not be on the
+     * select screen when they look, is the one thing this key exists to
+     * prevent. Drop the bit rather than hold it: the banner marks a moment, and
+     * replaying it whenever the key next goes on would surface it with no
+     * context at all. The unlock itself is untouched and the roster shows it. */
+    if (!s_bonus_roster_allowed) {
+        s_roster.unlock_announcement_mask &= ~bit;
+        return 0;
+    }
+    result = (s_roster.unlock_announcement_mask & bit) != 0;
     s_roster.unlock_announcement_mask &= ~bit;
     return result;
 }
@@ -861,7 +876,14 @@ TAJ_MOD_KEEPALIVE void taj_mod_report_persistence_success(
 }
 
 #ifdef TAJ_MOD_TESTING
-void taj_mod_reset_for_test(void) { memset(&s_roster, 0, sizeof(s_roster)); }
+void taj_mod_reset_for_test(void) {
+    memset(&s_roster, 0, sizeof(s_roster));
+    /* s_bonus_roster_allowed is its own static and survives that memset, so a
+     * case that switched the roster off would otherwise hand an empty roster to
+     * every case after it -- failing them for a reason none of them is about.
+     * The reset owns the default. */
+    s_bonus_roster_allowed = 1;
+}
 void taj_mod_set_async_persistence_for_test(int enabled) {
     s_roster.test_async_persistence = enabled != 0;
 }

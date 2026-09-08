@@ -410,6 +410,28 @@ static void test_presets(void) {
                 !strcmp(cfg.values[MDKR_VIDEO_MOTION_SMOOTHING].text,
                         "interpolate"));
 
+    /* Content.BonusRacers survives every preset. Pure/Restored/Remastered are
+     * art-direction choices; a player comparing two looks must not lose the
+     * bonus roster to one. This is a regression pin: the key was added without
+     * a row in mdkr_video_key_is_content(), which is what feeds
+     * mdkr_video_key_is_player_comfort(), and with no preset row of its own
+     * every preset switch re-pinned it to 0 -- silently removing Taj, Terry
+     * and Wizpig. */
+    expect_int("bonus roster is exempt from art-direction presets",
+               mdkr_video_key_is_player_comfort(MDKR_CONTENT_BONUS_RACERS), 1);
+    cfg.values[MDKR_CONTENT_BONUS_RACERS].number = 1.0f;
+    mdkr_video_config_apply_preset(&cfg, MDKR_VIDEO_MODE_PURE);
+    expect_true("pure preserves the bonus roster",
+                cfg.values[MDKR_CONTENT_BONUS_RACERS].number != 0.0f);
+    mdkr_video_config_apply_preset(&cfg, MDKR_VIDEO_MODE_REMASTERED);
+    expect_true("remastered preserves the bonus roster",
+                cfg.values[MDKR_CONTENT_BONUS_RACERS].number != 0.0f);
+    /* And a player who switched it off keeps it off across a preset switch. */
+    cfg.values[MDKR_CONTENT_BONUS_RACERS].number = 0.0f;
+    mdkr_video_config_apply_preset(&cfg, MDKR_VIDEO_MODE_RESTORED);
+    expect_true("restored preserves a switched-off bonus roster",
+                cfg.values[MDKR_CONTENT_BONUS_RACERS].number == 0.0f);
+
     /* The same positive control for the camera: a player who opted in must not
      * be opted back out by picking a presentation mode. */
     mdkr_video_config_defaults(&cfg);

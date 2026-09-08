@@ -750,8 +750,15 @@ int mdkr_video_key_is_input(MdkrVideoKey key) {
 }
 
 int mdkr_video_key_is_content(MdkrVideoKey key) {
+    /* Content.BonusRacers belongs here for the reason the two pack keys do,
+     * and the cost of leaving it out was not theoretical: this predicate feeds
+     * mdkr_video_key_is_player_comfort(), so a key missing from it is re-pinned
+     * to the preset table on every Pure/Restored/Remastered switch -- and with
+     * no row of its own that pin reads 0. A player comparing two looks would
+     * have lost Taj, Terry and Wizpig to a presentation preset. */
     return key == MDKR_CONTENT_PACKS_ENABLED ||
-           key == MDKR_CONTENT_PACK_DISABLED;
+           key == MDKR_CONTENT_PACK_DISABLED ||
+           key == MDKR_CONTENT_BONUS_RACERS;
 }
 
 int mdkr_video_key_is_enhancement(MdkrVideoKey key) {
