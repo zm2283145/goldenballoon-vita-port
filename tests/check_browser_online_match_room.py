@@ -42,17 +42,12 @@ FIXTURE = r"""
   let closedReason=null;
   const roomExpiresAt=fixtureNow+86400000;
   let inviteExpiresAt=fixtureNow+600000;
-  // Mirrors the room object's v2 lobby, including the session-configuration
-  // group. A fixture pinned to a shape the service no longer publishes tests
-  // the presenter against a wire that does not exist.
   let lobby={protocolVersion:1,revision:1,matchEpoch:0,leaderGeneration:1,
     roomId:'42',leaderEndpointId:host,phase:'lobby',compatibility,
     members:[{endpointId:host,seatCount:1,connected:true,ready:false,loaded:false}],
     seats:[{endpointId:host,selectionRevision:0,voteTrack:null,localIndex:0,
-      characterId:null,vehicleId:null}],selectedTrack:null,selectedVehicleMask:0,
-    mode:0,cupId:255,raceIndex:0,points:[0,0,0,0],
-    lastPlacements:[255,255,255,255],configuredTrack:65535};
-  const snapshot=(extra={})=>({type:'match_state',schemaVersion:2,
+      characterId:null,vehicleId:null}],selectedTrack:null,selectedVehicleMask:0};
+  const snapshot=(extra={})=>({type:'match_state',schemaVersion:1,
     expiresAt:roomExpiresAt,inviteExpiresAt,
     inviteGeneration,closedReason,lobby:structuredClone(lobby),
     controlTail:[],...extra});
