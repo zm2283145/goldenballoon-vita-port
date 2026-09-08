@@ -4406,7 +4406,7 @@ static void dkr_sp_moveword(uint8_t index, uint16_t offset, uint32_t data) {
                  * a crash traced to G_SETZIMG using segment 2's table entry,
                  * which nothing here had ever logged an assignment for. */
                 static int s_segAssignLogCount = 0;
-                if (s_segAssignLogCount < 80) {
+                if (s_segAssignLogCount < 600) {
                     void *allocBase = NULL;
                     size_t allocSize = 0;
                     s32 allocOk = resolved != NULL
@@ -6872,8 +6872,8 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
              * whatever is on disk when the fault freezes the file is at most
              * ~16 commands stale -- close enough to show the actual crash
              * site instead of just the last successfully-entered sub-DL. */
-            static long s_periodicDumpBudget = 250;
-            if (s_periodicDumpBudget > 0 && (s_dlRingTotal % 16) == 0) {
+            static long s_periodicDumpBudget = 2000;
+            if (s_periodicDumpBudget > 0 && (s_dlRingTotal % 64) == 0) {
                 dkr_dl_ring_dump();
                 s_periodicDumpBudget--;
             }
@@ -7981,7 +7981,7 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
 #if defined(__vita__)
             {
                 static int s_cimgLogCount = 0;
-                if (s_cimgLogCount < 40) {
+                if (s_cimgLogCount < 300) {
                     char lb[128];
                     snprintf(lb, sizeof(lb), "G_SETCIMG: token=0x%x -> %p",
                              (unsigned)cmd->words.w1, rdp.color_image_address);
@@ -7998,7 +7998,7 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
 #if defined(__vita__)
             {
                 static int s_zimgLogCount = 0;
-                if (s_zimgLogCount < 40) {
+                if (s_zimgLogCount < 300) {
                     char lb[128];
                     snprintf(lb, sizeof(lb), "G_SETZIMG: token=0x%x -> %p",
                              (unsigned)cmd->words.w1, rdp.z_buf_address);
@@ -8016,7 +8016,7 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
 #if defined(__vita__)
             {
                 static int s_timgLogCount = 0;
-                if (s_timgLogCount < 80) {
+                if (s_timgLogCount < 600) {
                     char lb[140];
                     snprintf(lb, sizeof(lb),
                              "G_SETTIMG: token=0x%x siz=%u width=%u -> %p",
