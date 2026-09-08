@@ -2151,7 +2151,8 @@ def main() -> int:
     parser.add_argument(
         "--roms",
         default="build/roms",
-        help="optional ROM-revision directory passed to check_rom_revision",
+        help="ROM-revision directory (US and PAL v80). Optional for a subset "
+             "run; a release run needs it, and twelve tasks fail without it",
     )
     parser.add_argument("--wasm", default="build-web/mdkr64_web.wasm")
     parser.add_argument(

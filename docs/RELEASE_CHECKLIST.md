@@ -716,8 +716,16 @@ run.
 tools/web/build_web.sh          # builds, stages dist/web, runs the guard itself
 python3 tools/run_checks.py --jobs 6 --require-shipping-sdl --require-fresh \
   --build build-rel --release-build build-rel --asan-build build-asan \
-  --wasm build-web/mdkr64_web.wasm
+  --wasm build-web/mdkr64_web.wasm --roms /path/to/rom-revisions
 ```
+
+`--roms` must point at a directory holding BOTH source revisions, US and PAL
+v80. Its default, `build/roms`, is normally empty, and the runner's help calls
+the flag optional because most single-revision gates are happy without it -- but
+a release run is not most gates. Omitting it fails twelve tasks outright, the
+first being `simulation_cadence`, which refuses with "no supported PAL v80 ROM
+found ... the release cadence gate requires both source clocks". Those twelve
+failures look like a broken candidate and are a missing flag.
 
 `--require-fresh` refuses an artifact older than a source file it is built from.
 Without it the runner prints `STALE ARTIFACT ... Rebuild before trusting this
