@@ -358,6 +358,19 @@ if [ "$HAVE_GIT" -eq 1 ]; then
     if ! grep -Eq "^## \\[${escaped_candidate_version}\\] — [0-9]{4}-[0-9]{2}-[0-9]{2}$" \
         CHANGELOG.md; then
       note "candidate version ${candidate_version} has no dated CHANGELOG.md section"
+    else
+      # A dated section is not the same as a correctly dated one. The gate above
+      # accepts any well-formed date, so a section left over from an earlier
+      # candidate publishes a release date that precedes commits the release
+      # contains. Compare against the newest commit rather than against today:
+      # cutting on the commit date or later is legitimate, cutting before it is
+      # not, and that holds however long the cut is delayed.
+      changelog_date="$(sed -nE "s/^## \\[${escaped_candidate_version}\\] — ([0-9]{4}-[0-9]{2}-[0-9]{2})$/\\1/p" CHANGELOG.md | head -n 1)"
+      head_date="$(git log -1 --date=format:%Y-%m-%d --format=%cd HEAD)"
+      if [ -n "$changelog_date" ] && [ -n "$head_date" ] && \
+         [ "$changelog_date" \< "$head_date" ]; then
+        note "candidate CHANGELOG.md dates ${candidate_version} ${changelog_date}, before its newest commit ${head_date}; restamp the section at the cut"
+      fi
     fi
     if grep -Eiq 'release candidate|not published yet' RELEASE_NOTES.md; then
       note "candidate RELEASE_NOTES.md still describes an unpublished candidate"
