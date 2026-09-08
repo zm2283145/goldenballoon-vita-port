@@ -61,6 +61,7 @@
  * refuses anything that is not exactly its digest length), and main() checks
  * it rather than trusting a hand count. */
 #define DIGEST_GIANT "a1111111111111111111111111111111"
+#define DIGEST_WIDE  "a2222222222222222222222222222222"
 #define DIGEST_SOUND "b2222222222222222222222222222222"
 #define DIGEST_NOTPNG "c3333333333333333333333333333333"
 
@@ -378,6 +379,30 @@ static void test_declared_size_is_refused_before_the_decode(void) {
            "and the caller is handed nothing to read");
 }
 
+/* 1b. Under the byte ceiling, over the per-side one.
+ *
+ * The byte cap admits ~11585 per side, and no shipping backend uploads a side
+ * over 4096 -- gfx_opengl_upload_texture refuses outright. A failed bind SKIPS
+ * the draw rather than falling back to the ROM texture, so an admitted
+ * oversized replacement made its object invisible for the whole session while
+ * its pixels held cache the store believed were in use, and the only clue was a
+ * generic bind-failed line naming neither the pack nor the digest. The importer
+ * capped here already; a pack built by any other tool did not. */
+static void test_a_side_no_backend_can_upload_is_refused(void) {
+    MdkrModTexture texture;
+    int            found;
+
+    mdkr_texture_probe_reset(PROBE_REFUSE_ABOVE);
+    found = mdkr_mod_texture_lookup(DIGEST_WIDE, &texture);
+
+    expect(found == 0, "a texture wider than any backend uploads is refused "
+                       "even though it fits the cache");
+    expect(mdkr_texture_probe_decode_calls() == 0,
+           "and it is refused from the header, before the decode");
+    expect(texture.rgba == NULL && texture.width == 0 && texture.height == 0,
+           "and the caller is handed nothing to read");
+}
+
 /* 2. The gate must not cost a legitimate pack its textures. */
 static void test_a_texture_that_fits_still_loads(void) {
     MdkrModTexture texture;
@@ -623,6 +648,9 @@ int main(int argc, char **argv) {
 
     write_pack_text(mods, "probe", "pack.ini", "[pack]\nname=Probe\n");
     write_giant_declared_png(mods, "probe", DIGEST_GIANT, 32768u, 32768u);
+    /* Under the cache-bytes ceiling (8192*2048*4 = 64 MiB of 512) and over
+     * the per-side one. This is the shape the byte cap alone admitted. */
+    write_giant_declared_png(mods, "probe", DIGEST_WIDE, 8192u, 2048u);
     write_small_rgba_png(mods, "probe", DIGEST_SOUND, 0x40u);
     write_small_rgba_png(mods, "probe", MDKR_MOD_TAJ_PORTRAIT_LEGACY_DIGEST, 0x40u);
     write_pack_bytes(mods, "probe", "textures/" DIGEST_NOTPNG ".png",
@@ -637,6 +665,7 @@ int main(int argc, char **argv) {
     }
 
     test_declared_size_is_refused_before_the_decode();
+    test_a_side_no_backend_can_upload_is_refused();
     test_a_texture_that_fits_still_loads();
     test_an_unreadable_header_is_refused_before_decode();
     test_decode_matches_admitted_dimensions(&registry);

@@ -832,7 +832,16 @@ static int validate_references(const MdkrModernCharacterAsset *asset,
             !finite_array(material.base_color, 4u) || !finite_array(material.emissive, 3u) ||
             !isfinite(material.metallic) || !isfinite(material.roughness) ||
             !isfinite(material.normal_scale) || !isfinite(material.occlusion_strength) ||
-            !isfinite(material.alpha_cutoff) || (material.flags & ~7u) != 0u) {
+            /* The low two bits are the alpha mode, and only OPAQUE/MASK/BLEND
+             * exist. Accepting the fourth encoding let a package install, show
+             * a valid portrait and stats, and be assigned to a player -- and
+             * then never draw: the runtime computes flags & 3u and
+             * order_primitive_rows() refuses anything above 2, so the material
+             * errored every frame and the character silently raced as its
+             * retail donor forever. Refusing at intake turns a package that
+             * cannot work into one that says so. */
+            !isfinite(material.alpha_cutoff) || (material.flags & ~7u) != 0u ||
+            (material.flags & 3u) > 2u) {
             set_error(error, error_size, "compiled material is invalid");
             return 0;
         }

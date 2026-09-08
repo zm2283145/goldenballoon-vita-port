@@ -74,6 +74,17 @@
  * and a hard stop for one that replaces everything at 4K. */
 #define MDKR_MOD_TEXTURE_CACHE_BYTES_MAX ((size_t)512u * 1024u * 1024u)
 
+/* The largest side any shipping backend will upload. The store's only size
+ * ceiling used to be the cache-bytes one above, which admits ~11585 per side,
+ * while gfx_opengl_upload_texture() refuses anything over 4096. An oversized
+ * replacement was therefore accepted, cached, and then refused by the renderer
+ * every bind -- and a failed bind SKIPS the draw rather than falling back to
+ * the ROM texture, so the object was invisible for the whole session while its
+ * pixels held cache the store believed were in use. The importer already caps
+ * here (tools/ricepack MAX_TEXTURE_DIMENSION); a pack assembled by any other
+ * tool did not. Refusing at admission makes it a reported rejection instead. */
+#define MDKR_MOD_TEXTURE_DIMENSION_MAX 4096
+
 /* PNG decoding can use 16-bit RGBA intermediates even when we request 8-bit
  * output. Keep the admitted pixel budget inside the pinned decoder's integer
  * conversion bounds; increasing it requires a fresh decoder-boundary review. */
@@ -401,6 +412,19 @@ static void slot_resolve(StoreSlot *slot) {
         free(file_bytes);
         slot->state = SLOT_REJECTED;
         report_rejection(slot->digest, "the image has no pixels");
+        return;
+    }
+    if (declared_width > MDKR_MOD_TEXTURE_DIMENSION_MAX ||
+        declared_height > MDKR_MOD_TEXTURE_DIMENSION_MAX) {
+        char too_wide[128];
+        snprintf(too_wide, sizeof too_wide,
+                 "the image declares %dx%d; no backend uploads a side over %d, "
+                 "so this would silently skip every draw that binds it",
+                 declared_width, declared_height,
+                 MDKR_MOD_TEXTURE_DIMENSION_MAX);
+        free(file_bytes);
+        slot->state = SLOT_REJECTED;
+        report_rejection(slot->digest, too_wide);
         return;
     }
     {
