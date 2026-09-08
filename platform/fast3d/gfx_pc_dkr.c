@@ -4371,7 +4371,28 @@ static void dkr_sp_moveword(uint8_t index, uint16_t offset, uint32_t data) {
             break;
         case G_MW_SEGMENT: {    /* 0x06 — set an RSP segment base */
             uint32_t seg = (offset / 4) & 0xf;
-            gfx_segment_table[seg] = (uintptr_t)dkr_resolve(data);
+            void *resolved = dkr_resolve(data);
+            gfx_segment_table[seg] = (uintptr_t)resolved;
+#if defined(__vita__)
+            if (seg == 1) {
+                static int s_seg1AssignLogCount = 0;
+                if (s_seg1AssignLogCount < 30) {
+                    void *allocBase = NULL;
+                    size_t allocSize = 0;
+                    s32 allocOk = resolved != NULL
+                        ? mdkr_mempool_allocation_span(resolved, &allocBase, &allocSize)
+                        : 0;
+                    char lb[192];
+                    snprintf(lb, sizeof(lb),
+                             "seg1-assign: data=0x%x -> resolved=%p allocOk=%d allocBase=%p "
+                             "allocSize=0x%lx",
+                             (unsigned)data, resolved, (int)allocOk, allocBase,
+                             (unsigned long)allocSize);
+                    mdkr_vita_boot_log(lb);
+                    s_seg1AssignLogCount++;
+                }
+            }
+#endif
             break;
         }
         default:
