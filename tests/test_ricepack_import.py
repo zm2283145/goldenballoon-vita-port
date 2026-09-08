@@ -566,6 +566,26 @@ class Materialising(RicepackTestCase):
         self.assertIn("name = Test Pack",
                       (out / "pack.ini").read_text(encoding="utf-8"))
 
+    def test_a_lone_opaque_colour_half_builds_instead_of_crashing(self):
+        """The build side of REASON_SELECTED_OPAQUE.
+
+        resolve_keys() selects a lone `_rgb` on a format with no alpha, and
+        `plan` reported it selected -- but `build` then read parts["a"], raised
+        KeyError past the PngError handler, and died partway through textures/
+        without ever reaching write_pack_ini(). The pack directory was left with
+        images and no pack.ini, which is a shape nothing downstream expects.
+        Only the plan side was covered, so the crash was invisible.
+        """
+        payload = solid_png(colour=(5, 6, 7, 255))
+        self.fixture.add(name_for("AABBCCDD", 1, 2, "rgb"), payload)
+        path = self.crosswalk({"AABBCCDD#1#2#": self.DIGEST_A})
+        out, result = self.build("--crosswalk", str(path))
+        self.assertEqual(result["code"], 0)
+        self.assertEqual(
+            (out / "textures" / f"{self.DIGEST_A}.png").read_bytes(), payload)
+        self.assertIn("name = Test Pack",
+                      (out / "pack.ini").read_text(encoding="utf-8"))
+
     def test_a_split_pair_takes_alpha_from_the_coverage_image_red_channel(self):
         """Measured, not assumed.
 

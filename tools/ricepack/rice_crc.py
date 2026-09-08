@@ -293,6 +293,15 @@ def rice_hires_crc(texels: bytes, width: int, height: int, siz: int,
     LAST value read, not into a fresh zero. A transcription that resets it per
     row produces a different, plausible-looking number.
     """
+    # The RDP defines four size codes and no others. The table walk below
+    # refuses anything else by name; this variant returns before reaching it, so
+    # it has to make the same refusal itself. Without this an undefined code
+    # still raised -- but from the span-length check further down, for a reason
+    # that named the wrong thing, and only while the caller's span happened to
+    # be short. A wide enough span and siz=7 returned a plausible number in
+    # silence, which for a keying function is the worst possible outcome.
+    if siz not in (0, 1, 2, 3):
+        raise ValueError(f"undefined RDP size code: {siz}")
     bytes_per_line = ((width << siz) + 1) // 2
     row_pitch = bytes_per_line if pitch is None else pitch
     if width <= 0 or height <= 0 or bytes_per_line < 4:

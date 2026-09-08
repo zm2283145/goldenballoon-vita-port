@@ -104,8 +104,16 @@ class HashedSpan(unittest.TestCase):
             rice_crc.rice_crc32(b"\x00" * 256, 32, 4, 1, pitch=16)
 
     def test_an_undefined_size_code_is_refused(self):
-        with self.assertRaises(ValueError):
-            rice_crc.rice_crc32(b"\x00" * 256, 32, 4, 7)
+        # Assert the REASON, not merely that something raised. The default
+        # variant dispatches to rice_hires_crc before the table walk's size-code
+        # check, so this used to pass on the span-length refusal instead -- a
+        # wide enough span and siz=7 would have returned a plausible number in
+        # silence. Pin every variant, since the dispatch is what made it vacuous.
+        for variant in rice_crc.VARIANTS:
+            with self.assertRaises(ValueError) as caught:
+                rice_crc.rice_crc32(b"\x00" * 4096, 32, 4, 7, variant=variant)
+            self.assertIn("undefined RDP size code", str(caught.exception),
+                          f"variant {variant} refused for the wrong reason")
 
 
 class Variants(unittest.TestCase):

@@ -843,6 +843,16 @@ def materialise(scan: ScanResult, source_root: Path, out_dir: Path,
         target = textures / f"{digest}.png"
         if "all" in parts:
             shutil.copyfile(source_root / parts["all"], target)
+        elif "a" not in parts:
+            # A lone colour half on a format with no alpha component at all.
+            # resolve_keys() selects exactly this shape as REASON_SELECTED_OPAQUE
+            # ("carries no alpha, so the _rgb file is complete on its own"), and
+            # the split branch below would then read parts["a"] and raise
+            # KeyError -- which the PngError handler does not catch, so `build`
+            # died partway through textures/ and never reached write_pack_ini(),
+            # leaving a directory with textures and no pack.ini. The half IS the
+            # texture here, so copy it the way an `all` file is copied.
+            shutil.copyfile(source_root / parts["rgb"], target)
         else:
             try:
                 width, height, rgba = png_probe.compose_split(
