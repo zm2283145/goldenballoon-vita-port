@@ -104,6 +104,15 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "while you play, so you can compare against the original.",
         MDKR_VIDEO_CAT_FIDELITY
     },
+    [MDKR_CONTENT_BONUS_RACERS] = {
+        "Content.BonusRacers", "MDKR_CONTENT_BONUS_RACERS",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 1.0f,
+        "Bonus racers",
+        "Let Taj, Terry and Wizpig be unlocked and raced. Turn this off for "
+        "the roster the original game shipped with. Racers you have already "
+        "unlocked are remembered, and come back if you turn this on again.",
+        MDKR_VIDEO_CAT_FIDELITY
+    },
     [MDKR_CONTENT_PACK_DISABLED] = {
         "Content.PackDisabled", "MDKR_CONTENT_PACK_DISABLED",
         MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
@@ -1066,6 +1075,14 @@ void mdkr_video_config_defaults(MdkrVideoConfig *config) {
      * never heard of packs.
      */
     config->values[MDKR_CONTENT_PACKS_ENABLED].number = 1.0f;
+
+    /*
+     * The bonus roster is on by default: it is what the last four
+     * releases shipped, and a player who has unlocked Taj should not
+     * lose him to an upgrade. Turning it off is an explicit choice for
+     * an original-roster run.
+     */
+    config->values[MDKR_CONTENT_BONUS_RACERS].number = 1.0f;
 
     /*
      * Looking for a newer release defaults to ON, but the notice it produces

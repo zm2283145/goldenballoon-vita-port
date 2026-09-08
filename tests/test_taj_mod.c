@@ -682,6 +682,69 @@ static void test_ghost_character_marker_mapping(void) {
           TERRY_MOD_DONOR_CHARACTER);
 }
 
+/*
+ * Content.BonusRacers off: the roster the cartridge shipped with.
+ *
+ * The point of each assertion is that a DIFFERENT surface goes quiet, because
+ * the gate sits under mod_racer_is_unlocked() and every one of these reaches
+ * the roster through it. The last block is the one that matters most: turning
+ * the key back on must return the unlock the player earned, not a fresh
+ * locked roster.
+ */
+static void test_bonus_roster_gate(void) {
+    MemoryStore store = { {0}, 0, 0, 1 };
+    TajModStateStorage storage = storage_for(&store);
+    TajModPersistentState parsed;
+
+    taj_mod_reset_for_test();
+    mod_racer_set_bonus_roster_allowed(1);
+    taj_mod_boot(&storage);
+
+    /* Earn all three the ordinary way. */
+    CHECK(mod_racer_submit_magic_code("ABRACADABRA") == MOD_RACER_TAJ);
+    CHECK(mod_racer_submit_magic_code("TERRYFLY") == MOD_RACER_TERRY);
+    CHECK(mod_racer_submit_magic_code("WIZPIGPOWER") == MOD_RACER_WIZPIG);
+    CHECK(mod_racer_unlocked_count() == 3);
+    mod_racer_set_player_identity(0, MOD_RACER_TAJ);
+    CHECK(mod_racer_player_identity(0) == MOD_RACER_TAJ);
+
+    /* The switch. */
+    mod_racer_set_bonus_roster_allowed(0);
+    CHECK(!mod_racer_bonus_roster_allowed());
+
+    /* Nothing is unlocked, enabled, countable or reachable from a cheat row. */
+    CHECK(!mod_racer_is_unlocked(MOD_RACER_TAJ));
+    CHECK(!mod_racer_is_unlocked(MOD_RACER_TERRY));
+    CHECK(!mod_racer_is_unlocked(MOD_RACER_WIZPIG));
+    CHECK(!mod_racer_is_enabled(MOD_RACER_TAJ));
+    CHECK(!taj_mod_is_unlocked() && !taj_mod_is_enabled());
+    CHECK(mod_racer_unlocked_count() == 0);
+    CHECK(mod_racer_identity_for_cheat_row(0) == MOD_RACER_RETAIL);
+
+    /* A player left seated as Taj is returned to the retail racer. */
+    CHECK(mod_racer_player_identity(0) == MOD_RACER_RETAIL);
+
+    /* No banner is owed for a racer the player asked not to see. */
+    CHECK(!mod_racer_consume_unlock_announcement(MOD_RACER_TAJ));
+
+    /* Re-entering a code while the roster is off does not seat one either. */
+    CHECK(mod_racer_submit_magic_code("ABRACADABRA") == MOD_RACER_RETAIL);
+
+    /* Storage was never touched: the sidecar still carries all three. */
+    taj_mod_state_defaults(&parsed);
+    CHECK(taj_mod_state_parse(&parsed, store.text, store.length));
+    CHECK(parsed.taj_unlocked == 1);
+    CHECK(parsed.terry_unlocked == 1);
+    CHECK(parsed.wizpig_unlocked == 1);
+
+    /* And turning it back on restores what was earned. */
+    mod_racer_set_bonus_roster_allowed(1);
+    CHECK(mod_racer_is_unlocked(MOD_RACER_TAJ));
+    CHECK(mod_racer_is_unlocked(MOD_RACER_TERRY));
+    CHECK(mod_racer_is_unlocked(MOD_RACER_WIZPIG));
+    CHECK(mod_racer_unlocked_count() == 3);
+}
+
 int main(void) {
     test_state_format();
     test_ghost_character_marker_mapping();
@@ -696,6 +759,7 @@ int main(void) {
     test_wizpig_unlock_and_identity();
     test_terry_unlock_and_identity();
     test_cheat_row_identity_mapping();
+    test_bonus_roster_gate();
     if (failures != 0) {
         fprintf(stderr, "taj-mod tests: %d failure(s)\n", failures);
         return 1;

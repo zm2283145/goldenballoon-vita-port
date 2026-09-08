@@ -467,7 +467,36 @@ int taj_mod_retry_persistence(void) {
     return 1;
 }
 
+/* Default allowed: every release before Content.BonusRacers behaved this way,
+ * and a caller that never sets it must keep behaving that way. */
+static int s_bonus_roster_allowed = 1;
+
+int mod_racer_bonus_roster_allowed(void) { return s_bonus_roster_allowed; }
+
+void mod_racer_set_bonus_roster_allowed(int allowed) {
+    int player;
+
+    s_bonus_roster_allowed = allowed ? 1 : 0;
+    if (s_bonus_roster_allowed) return;
+    /* Drop anything the roster is currently holding. Clearing the enabled mask
+     * alone would leave a player still seated as Taj from before the key
+     * changed, and the announcement queue still owing a banner for a racer the
+     * player has asked not to see. The persisted unlock is untouched. */
+    s_roster.enabled_mask = 0;
+    s_roster.pending_enabled_mask = 0;
+    s_roster.unlock_announcement_mask = 0;
+    for (player = 0; player < TAJ_MOD_MAX_PLAYERS; player++) {
+        s_roster.player_identity[player] = MOD_RACER_RETAIL;
+        s_roster.racer_identity[player] = MOD_RACER_RETAIL;
+    }
+}
+
 int mod_racer_is_unlocked(ModRacerIdentity identity) {
+    /* Ahead of the test-player escape on purpose: MDKR_TAJ_TEST_PLAYER and its
+     * siblings force an identity active for harnesses, and a player who asked
+     * for the authored roster should not get one back because a stray variable
+     * is set in their environment. */
+    if (!s_bonus_roster_allowed) return 0;
     return mod_racer_valid_identity(identity) &&
            (mod_racer_persisted_unlocked(&s_roster.persisted, identity) ||
             mod_racer_test_identity_active(identity));
@@ -507,6 +536,14 @@ int mod_racer_consume_unlock_announcement(ModRacerIdentity identity) {
 
 ModRacerIdentity mod_racer_submit_magic_code(const char *input) {
     if (input == NULL) return MOD_RACER_RETAIL;
+    /* With the bonus roster switched off these three codes do not exist, which
+     * is the authored behaviour a player asking for the original roster wants:
+     * the entry reads as an unrecognised code rather than silently banking an
+     * unlock they would then have to notice and undo. Refusing BEFORE
+     * mod_racer_unlock() also keeps the sidecar free of a write the player
+     * never sees the result of; entering the code again after turning the key
+     * back on unlocks normally. */
+    if (!s_bonus_roster_allowed) return MOD_RACER_RETAIL;
     if (strcmp(input, "ABRACADABRA") == 0) {
         mod_racer_unlock(MOD_RACER_TAJ);
         return MOD_RACER_TAJ;

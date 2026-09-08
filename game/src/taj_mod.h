@@ -76,6 +76,28 @@ TajModPersistenceIssue taj_mod_persistence_issue(void);
  * flight. The return value reports whether a new store was accepted. */
 int taj_mod_retry_persistence(void);
 int taj_mod_persistence_pending(void);
+/*
+ * The bonus roster gate (Content.BonusRacers).
+ *
+ * A player who wants the roster the cartridge shipped with turns this off, and
+ * Taj, Terry and Wizpig stop existing everywhere the roster is consulted: the
+ * character select tiles, the magic-code rows that unlock them, the identity a
+ * racer resolves to, and the announcement queue.
+ *
+ * It is deliberately a SEAM rather than a read of video_config.h. This module
+ * links into mdkr_taj_mod_test with only taj_mod_state.c beside it, so a config
+ * dependency here would either break that link or have to be compiled out --
+ * and a gate compiled out of the unit test is a gate nothing covers. The
+ * platform sets it once beside taj_mod_boot(); the default is "allowed", so a
+ * caller that never sets it behaves exactly as before this key existed.
+ *
+ * It gates VISIBILITY, never STORAGE. An unlock already written to the sidecar
+ * stays written, and returns intact when the key goes back on -- turning the
+ * roster off must not cost a player the Taj they earned.
+ */
+void mod_racer_set_bonus_roster_allowed(int allowed);
+int mod_racer_bonus_roster_allowed(void);
+
 int mod_racer_is_unlocked(ModRacerIdentity identity);
 int mod_racer_is_enabled(ModRacerIdentity identity);
 void mod_racer_set_enabled(ModRacerIdentity identity, int enabled);

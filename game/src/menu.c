@@ -4773,6 +4773,13 @@ void init_title_screen_variables(void) {
         MDKR_TRACE("magic_codes_restore: unlocked=%08X active=%08X",
                    persistedUnlocked, persistedActive);
     }
+    /* Content.BonusRacers, resolved before the roster boots so the first
+     * character-select visit already agrees with it. Restart-scoped, so reading
+     * it once here is the whole contract; the sidecar is still loaded either
+     * way, and an unlock earned before the key was turned off survives it. */
+    mod_racer_set_bonus_roster_allowed(
+        mdkr_video_config_current()->values[MDKR_CONTENT_BONUS_RACERS].number
+            != 0.0f);
     taj_mod_boot(taj_mod_state_file_storage());
     taj_mod_on_title_return();
     /* Reconcile pre-mod/imported Adventure challenge completion before the

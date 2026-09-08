@@ -159,6 +159,12 @@ good or bad — on the GitHub issues page.
   card now has a blue face and trunk instead of the tan placeholder. Existing
   portrait packs continue to work without renaming their files.
 
+- **You can switch the bonus racers off.** Taj, Terry and Wizpig are on by
+  default, as before. Turn **Bonus racers** off for the roster the original game
+  shipped with, and they stop appearing on the character select. Anyone you have
+  already unlocked is remembered and comes straight back if you turn it on
+  again. Takes effect after restarting the game.
+
 - **Opponent skill is a dropdown.** Choose Original, Hard or Brutal without
   typing a configuration value. Each choice explains its effect; changes take
   effect after restarting the game. Original retains the original speeds.

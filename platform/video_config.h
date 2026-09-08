@@ -107,6 +107,15 @@ typedef enum MdkrVideoKey {
     MDKR_CONTENT_PACKS_ENABLED,
     MDKR_CONTENT_PACK_DISABLED,
     /*
+     * The bonus roster (Taj, Terry, Wizpig). Sits with the content keys
+     * rather than the enhancements because turning it off ADDS nothing
+     * and removes something: it is the fidelity switch for a player who
+     * wants the roster the cartridge shipped with. It gates visibility,
+     * never storage -- an unlock already earned stays in the save and
+     * returns intact when the key goes back on.
+     */
+    MDKR_CONTENT_BONUS_RACERS,
+    /*
      * Enhancements. Each one also carries an AUTHORITY CLASS in
      * platform/enhancement_registry.c, and that class — not this enum — is what
      * decides whether the key is allowed to move authoritative state. Adding a

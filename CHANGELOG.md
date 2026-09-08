@@ -101,6 +101,13 @@ No changes yet.
   N=3 is derived from `kMdkrMatchControlPingTimeoutMs` /
   `kMdkrMatchControlPingIntervalMs`, so the hard-fail text can never precede the
   real `peerLost(PingTimeout)` verdict.
+- **Bonus racers can be switched off** (`Content.BonusRacers` /
+  `MDKR_CONTENT_BONUS_RACERS`, on by default). Turning it off gives the roster
+  the original game shipped with: Taj, Terry and Wizpig stop appearing on the
+  character select, their magic codes read as unrecognised, and a player already
+  seated as one is returned to the retail racer. It gates visibility, not
+  storage -- unlocks already earned stay in the save file and come back intact
+  when the setting is turned on again. Restart-scoped.
 - **Skip the launcher** (issue #60), off by default. With it on, the app opens
   the game you played last instead of the launcher. Holding Shift, or both
   shoulder buttons on a controller, while it opens shows the launcher anyway,
