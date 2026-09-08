@@ -5151,6 +5151,42 @@ static void dkr_dl_fault(const char *reason, const Gfx *cmd, int depth) {
             s_dlFaultLogCount++;
         }
     }
+    /* Address resolution for the "unterminated display list" case has
+     * already been verified correct: every segment-token address seen for
+     * this fault resolves as gfx_segment_table[seg] + (addr & 0xFFFFFF)
+     * with byte-for-byte matching deltas between tokens and their hosts.
+     * The open question is whether the ARENA MEMORY at the fault point was
+     * ever actually written, or is genuinely untouched/zeroed -- i.e. a
+     * missing/short content write upstream of rendering, not a pointer-math
+     * bug here. Walk backward from the fault to find where real (non-zero)
+     * content stops, bounded by the arena's own base so this can never read
+     * before the arena's allocation. */
+    if (strcmp(reason, "unterminated display list") == 0) {
+        static int s_dlZeroScanLogCount = 0;
+        if (s_dlZeroScanLogCount < 5 && cmd != NULL) {
+            const uint32_t *w = (const uint32_t *)((uintptr_t)cmd & ~(uintptr_t)3);
+            uintptr_t scanFloor = (uintptr_t)g_dkrArenaBase;
+            long backWords = 0;
+            long maxBackWords = 1L << 20; /* 4 MB backward, generous for this arena */
+            int foundNonZero = 0;
+            while ((uintptr_t)w > scanFloor && backWords < maxBackWords) {
+                if (*w != 0) { foundNonZero = 1; break; }
+                w--;
+                backWords++;
+            }
+            char lb2[224];
+            snprintf(lb2, sizeof(lb2),
+                     "dl-zero-scan: cmd=%p zeroRunBytes=%ld foundNonZero=%d at=%p val=0x%08x "
+                     "seg1base=0x%lx arenaBase=0x%lx arenaSize=0x%lx",
+                     (const void *)cmd, backWords * 4L, foundNonZero, (const void *)w,
+                     (unsigned)*w,
+                     (unsigned long)gfx_segment_table[1],
+                     (unsigned long)(uintptr_t)g_dkrArenaBase,
+                     (unsigned long)(uintptr_t)g_dkrArenaSize);
+            mdkr_vita_boot_log(lb2);
+            s_dlZeroScanLogCount++;
+        }
+    }
 #endif
     if (strict) {
         abort();
