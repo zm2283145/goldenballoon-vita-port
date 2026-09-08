@@ -946,27 +946,26 @@ static int sdl_init_gl(Uint32 base_flags) {
      * the first thing to tune against real hardware once the game boots --
      * the DKR HUD/minimap draw calls in gfx_pc_dkr.c were never profiled
      * against a PowerVR SGX543MP4+. */
+    /* This return value is vitaGL's "did we fall back to a smaller
+     * resolution" flag, NOT a success/failure flag (see
+     * vglInitWithCustomSizes's res_fallback in vitaGL's own vgl.c).
+     * GL_FALSE (the common case) means the requested resolution fit and
+     * was used as-is -- a fully successful init. Treating GL_FALSE as
+     * "FAILED" (as this code used to) made the game abort immediately
+     * after every completely successful vitaGL init, every time --
+     * confirmed by instrumenting vitaGL's own gxm.c directly: 
+     * sceGxmCreateContext succeeded (valid context) on every run this
+     * code nonetheless reported as "vglInitExtended FAILED". Do not
+     * treat it as an error; a real init failure would crash inside
+     * vitaGL/sceGxm, not return through this flag. */
     GLboolean vglOk = vglInitExtended(0, s_initialWindowWidth, s_initialWindowHeight, 0x20000,
                      SCE_GXM_MULTISAMPLE_NONE);
-    if (!vglOk) {
-        fprintf(stderr, "[SDL] vglInitExtended FAILED\n");
-        /* This used to be stderr-only, which is invisible on Vita (nothing
-         * captures it there) -- every prior "platform_sdl_init FAILED"
-         * boot-log line told us THAT init failed but never WHY, since this
-         * is the only call inside it that can actually fail. vglInitExtended
-         * failing outright (as opposed to crashing/aborting later) is a
-         * known vitaGL/sceGxm symptom of a previous process's GPU context
-         * not being released cleanly -- exactly what repeated abort()s /
-         * force-closes during bring-up leave behind -- so log it plainly. */
-        mdkr_vita_boot_log("vitaGL: vglInitExtended FAILED (returned 0)");
-        return -1;
-    }
     s_window = NULL;
     g_sdlWindow = NULL;
     s_glReady = 1;
     {
         char glb[192];
-        snprintf(glb, sizeof(glb), "vitaGL: vglInitExtended returned %d (1=ok,0=FAILED)", (int)vglOk);
+        snprintf(glb, sizeof(glb), "vitaGL: vglInitExtended OK, fallback-resolution-used=%d", (int)vglOk);
         mdkr_vita_boot_log(glb);
         snprintf(glb, sizeof(glb), "vitaGL: GL_VERSION=%s", (const char *)glGetString(GL_VERSION));
         mdkr_vita_boot_log(glb);
