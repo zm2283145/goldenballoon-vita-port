@@ -3267,15 +3267,35 @@ static bool gfx_opengl_scene_target_enabled(void) {
         if (!s_sceneTargetLogged) {
             char lb[160];
             snprintf(lb, sizeof(lb),
-                     "scene-target: enabled=%d remasterFX=%d scale=%.2f msaa=%d",
+                     "scene-target: wouldEnable=%d remasterFX=%d scale=%.2f msaa=%d roomXluCvg=%d -- forced off on vita",
                      (int)enabled, g_pcRemasterFX, (double)render_scale,
-                     gfx_opengl_effective_msaa_samples());
+                     gfx_opengl_effective_msaa_samples(),
+                     (int)gfx_opengl_room_xlu_cvg_memory_enabled());
             mdkr_vita_boot_log(lb);
             s_sceneTargetLogged = 1;
         }
     }
-#endif
+    /* gfx_opengl_room_xlu_cvg_memory_enabled() defaults to 1 (a real
+     * blending feature for room translucency, not a diagnostic toggle --
+     * see its "g_room_xlu_cvg_memory_enabled = 1;" default a few lines up),
+     * so it alone forces `enabled` true above regardless of RemasterFX,
+     * render scale, or MSAA. That means the scene-FBO + output-filter
+     * compositing chain runs unconditionally on every Vita boot, not just
+     * under Remastered/Restored presets as the MSAA/render-scale carve-outs
+     * assumed. Confirmed on real hardware after those carve-outs alone:
+     * "scene-target: enabled=1 ... scale=1.00 msaa=0" still logged, and the
+     * screen was still solid black/blue with UI text rendering as blank
+     * white blocks (a texture that never got the compositing pass's content,
+     * per gfx_opengl_ensure_scene_target()'s vitaGL-only depth/stencil
+     * fallback comments a few functions down). Rather than keep chasing
+     * which OR'd condition is live, take the whole offscreen path out of
+     * the picture for this initial Vita port: render straight to the
+     * default framebuffer unconditionally, the same direct path 2D-only
+     * content already uses successfully. */
+    return false;
+#else
     return enabled;
+#endif
 }
 
 static bool gfx_opengl_ensure_scene_target(int width, int height) {
