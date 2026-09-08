@@ -7910,12 +7910,28 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                         data, data, sizeof(Vp_t));
                 }
                 const Vp_t *vp = (const Vp_t *)data;
+#if defined(__vita__)
+                if (vp->vscale[0] == 0 && vp->vscale[1] == 0) {
+                    extern void mdkr_vita_boot_log(const char *msg);
+                    static int s_zeroVpLogCount = 0;
+                    if (s_zeroVpLogCount < 10) {
+                        char lb[220];
+                        snprintf(lb, sizeof(lb),
+                                 "zero-vp: rawAddr=0x%08x resolved=%p vscale=[%d %d %d] vtrans=[%d %d %d] drawspace=%d replay=%d",
+                                 (unsigned)cmd->words.w1, data,
+                                 (int)vp->vscale[0], (int)vp->vscale[1], (int)vp->vscale[2],
+                                 (int)vp->vtrans[0], (int)vp->vtrans[1], (int)vp->vtrans[2],
+                                 (int)rsp.draw_space, (int)dkr_replay_pass);
+                        mdkr_vita_boot_log(lb);
+                        s_zeroVpLogCount++;
+                    }
+                }
+#endif
                 dkr_calc_viewport(vp);
                 DTRACE("G_MOVEMEM VIEWPORT scale=[%d %d %d] trans=[%d %d %d] -> vp{x=%d y=%d w=%d h=%d}",
                        vp->vscale[0], vp->vscale[1], vp->vscale[2],
                        vp->vtrans[0], vp->vtrans[1], vp->vtrans[2],
-                       rdp.view.viewport.x, rdp.view.viewport.y, rdp.view.viewport.width, rdp.view.viewport.height);
-            } else {
+                       rdp.view.viewport.x, rdp.view.viewport.y, rdp.view.viewport.width, rdp.view.viewport.height);            } else {
                 dkr_dl_fault("unsupported or unresolved G_MOVEMEM", cmd,
                              depth);
             }
