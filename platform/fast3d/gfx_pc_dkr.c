@@ -8013,6 +8013,20 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                                      dkr_resolve(cmd->words.w1));
             DTRACE("G_SETTIMG siz=%u width=%u addr=%08x->%p", (unsigned)C0(cmd,19,2),
                    (unsigned)(C0(cmd,0,12)+1), cmd->words.w1, (const void *)rdp.to_load.addr);
+#if defined(__vita__)
+            {
+                static int s_timgLogCount = 0;
+                if (s_timgLogCount < 80) {
+                    char lb[140];
+                    snprintf(lb, sizeof(lb),
+                             "G_SETTIMG: token=0x%x siz=%u width=%u -> %p",
+                             (unsigned)cmd->words.w1, (unsigned)C0(cmd, 19, 2),
+                             (unsigned)(C0(cmd, 0, 12) + 1), (const void *)rdp.to_load.addr);
+                    mdkr_vita_boot_log(lb);
+                    s_timgLogCount++;
+                }
+            }
+#endif
             break;
 
         /* ---- RDP: tiles / texture load ---- */
