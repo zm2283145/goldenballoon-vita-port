@@ -49,12 +49,16 @@ function seat(endpointId, overrides = {}) {
 
 function snapshot(overrides = {}) {
   const {lobby: lobbyOverrides = {}, ...rootOverrides} = overrides;
+  // Mirrors the room service's v2 lobby, including the session-configuration
+  // group; see tests/test_online_room_live_state.mjs for the same note.
   const lobby = {protocolVersion: 1, revision: 1, matchEpoch: 0,
     leaderGeneration: 1, roomId: "42", leaderEndpointId: "100",
     phase: "lobby", compatibility: structuredClone(compatibility),
     members: [member("100")], seats: [seat("100")], selectedTrack: null,
-    selectedVehicleMask: 0, ...lobbyOverrides};
-  return {type: "match_state", schemaVersion: 1,
+    selectedVehicleMask: 0, mode: 0, cupId: 255, raceIndex: 0,
+    points: [0, 0, 0, 0], lastPlacements: [255, 255, 255, 255],
+    configuredTrack: 65535, ...lobbyOverrides};
+  return {type: "match_state", schemaVersion: 2,
     expiresAt: 2_000_000_000_000, inviteExpiresAt: 1_999_999_000_000,
     inviteGeneration: 1, closedReason: null, lobby, controlTail: [],
     ...rootOverrides};
