@@ -261,6 +261,7 @@ duration row; wasm/platform p99 remains.
 | Raw ROM backing bytes | Immutable/excluded | Manifest binds revision; bytes are never copied into each snapshot. |
 | Save, EEPROM/IDBFS and Controller Pak sync | Forbidden side effect | Real save emissions are confirmed-only journal rows. The lowest EEPROM and shared Pak-store boundaries reject online rollback progression before filesystem/IDBFS work; Pak callers publish candidate memory only after durable success. Achievements and durable diagnostics still need an equivalent product boundary if/when present. |
 | Audio/rumble/particles caused by predicted gameplay events | Reversible event | Sound and rumble emissions have stable journal ids. Audio uses versioned handle custody, deferred corrected previews and a coalesced post-replay command buffer; vanished rumble reaches a production host-only motor stop and corrected state returns through normal service. Physical-device acceptance remains open. |
+| `s_bonus_roster_allowed` (`taj_mod.c`), the Content.BonusRacers gate | Presentation-local | Written once from the restart-scoped key beside `taj_mod_boot()` and never inside a race, so its value at any tick is its value at tick zero and a restore of it is a no-op by construction. Its readers gate roster VISIBILITY -- select tiles, unlocked count, cheat rows, the announcement queue -- while gameplay and rollback authority keep the retail donor identity a bonus racer resolves to, so no authoritative reader depends on it. Distinct from the Taj sidecar row below, which is per-racer state and remains an open audit item. |
 | Playable-Taj sidecars currently excluded by v3 | Open audit item | Existing v3 rationale proves downstream detection, but restore identity must independently classify/register or deterministically rebuild them before `GO`. |
 
 ## Source-change gate
@@ -279,7 +280,9 @@ reader and writer. It prevents a declaration from silently bypassing that
 decision. Local automatic variables and heap fields remain covered by the v3
 family audit and the engine range registry.
 
-The reviewed baseline is now 1,823 declarations. Its seventy-six-row delta (no
+The reviewed baseline is now 1,824 declarations. The row added since 1,823 is
+`s_bonus_roster_allowed` in `taj_mod.c`, classified presentation-local in the
+exclusions table above. Its seventy-six-row delta (no
 removals) is classified: zero rows are simulation authority, twenty-six are
 test/seam-gated and fifty are presentation or host bookkeeping. Sixty-four rows
 belong to the Character Workshop / custom-character pipeline: thirty-three
