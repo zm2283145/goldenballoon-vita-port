@@ -2229,6 +2229,18 @@ static bool gfx_opengl_upload_texture(const uint8_t *rgba32_buf, int width, int 
     if (err != GL_NO_ERROR) {
         fprintf(stderr, "[GL-TEX-UPLOAD-ERR] width=%d height=%d err=0x%x\n", width, height, err);
         texDebugDumpRecentFireEvents(stderr);
+#if defined(__vita__)
+        {
+            static int s_texUploadErrLogCount = 0;
+            if (s_texUploadErrLogCount < 20) {
+                char lb[128];
+                snprintf(lb, sizeof(lb), "GL-TEX-UPLOAD-ERR: width=%d height=%d err=0x%x",
+                         width, height, (unsigned)err);
+                mdkr_vita_boot_log(lb);
+                s_texUploadErrLogCount++;
+            }
+        }
+#endif
         return false;
     }
 #if defined(__vita__)
@@ -2249,8 +2261,32 @@ static bool gfx_opengl_upload_texture(const uint8_t *rgba32_buf, int width, int 
                 "[GL-TEX-UPLOAD-BAD] width=%d height=%d actual=%d,%d err=0x%x\n",
                 width, height, actual_width, actual_height, err);
         texDebugDumpRecentFireEvents(stderr);
+#if defined(__vita__)
+        {
+            static int s_texUploadBadLogCount = 0;
+            if (s_texUploadBadLogCount < 20) {
+                char lb[160];
+                snprintf(lb, sizeof(lb),
+                         "GL-TEX-UPLOAD-BAD: width=%d height=%d actual=%d,%d err=0x%x",
+                         width, height, (int)actual_width, (int)actual_height, (unsigned)err);
+                mdkr_vita_boot_log(lb);
+                s_texUploadBadLogCount++;
+            }
+        }
+#endif
         return false;
     }
+#if defined(__vita__)
+    {
+        static int s_texUploadOkLogCount = 0;
+        if (s_texUploadOkLogCount < 15) {
+            char lb[96];
+            snprintf(lb, sizeof(lb), "GL-TEX-UPLOAD-OK: width=%d height=%d", width, height);
+            mdkr_vita_boot_log(lb);
+            s_texUploadOkLogCount++;
+        }
+    }
+#endif
     return true;
 }
 
