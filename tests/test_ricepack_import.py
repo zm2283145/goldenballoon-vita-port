@@ -349,6 +349,45 @@ class Caps(RicepackTestCase):
             sorted(entry["path"] for entry in manifest["files"])[:2])
 
 
+class DecompressionBomb(RicepackTestCase):
+    """A PNG must not inflate past the image its own header describes.
+
+    Every cap in the importer is computed from the DECLARED dimensions, so a
+    file can declare a tiny image, satisfy check_caps and require_decodable, and
+    then carry an IDAT that expands without limit. png_probe's own docstring
+    promises the opposite -- "a decompression bomb has to be refused BEFORE
+    anything expands it, which is only possible from the header" -- but
+    decode_rgba() called zlib.decompress() with no bound, and _unfilter()'s
+    length test is a MINIMUM, so it could only complain after the expansion.
+    """
+
+    def bomb(self, width: int, height: int, inflated: int) -> bytes:
+        def chunk(kind: bytes, payload: bytes) -> bytes:
+            return (struct.pack(">I", len(payload)) + kind + payload +
+                    struct.pack(">I", zlib.crc32(kind + payload) & 0xffffffff))
+        ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+        return (b"\x89PNG\r\n\x1a\n"
+                + chunk(b"IHDR", ihdr)
+                + chunk(b"IDAT", zlib.compress(b"\x00" * inflated, 9))
+                + chunk(b"IEND", b""))
+
+    def test_an_idat_that_inflates_past_its_header_is_refused(self):
+        data = self.bomb(2, 1, 64 * 1024 * 1024)
+        self.assertLess(len(data), 1024 * 1024,
+                        "the fixture must be small on disk to be a bomb")
+        with self.assertRaises(png_probe.PngError) as caught:
+            png_probe.decode_rgba(data)
+        self.assertEqual(caught.exception.reason, png_probe.REASON_DATA_UNREADABLE)
+        self.assertIn("inflates past", caught.exception.detail)
+
+    def test_an_honest_image_of_the_same_shape_still_decodes(self):
+        """The bound must be the image size, not a guess that clips real files."""
+        payload = png_probe.encode_rgba(2, 1, bytes([1, 2, 3, 4, 5, 6, 7, 8]))
+        header, pixels = png_probe.decode_rgba(payload)
+        self.assertEqual((header.width, header.height), (2, 1))
+        self.assertEqual(bytes(pixels), bytes([1, 2, 3, 4, 5, 6, 7, 8]))
+
+
 class Manifest(RicepackTestCase):
     def populated_pack(self) -> None:
         self.fixture.add("World/" + name_for("AABBCCDD", 0, 2, "all"), solid_png())

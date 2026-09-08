@@ -187,8 +187,24 @@ def decode_rgba(data: bytes) -> tuple[PngHeader, bytearray]:
         payload for kind, payload in _iter_chunks(data) if kind == b"IDAT")
     if not compressed:
         raise PngError(REASON_DATA_UNREADABLE, "the file carries no IDAT data")
+    # Bounded inflate. The header tells us exactly how many bytes a correct
+    # image expands to -- one filter byte per row plus the row itself -- so
+    # anything beyond that is not data we would ever read. zlib.decompress()
+    # took no limit, and every cap upstream is computed from the DECLARED
+    # dimensions, so a file could declare a 2x1 image, pass every check, and
+    # then inflate gigabytes out of its IDAT. _unfilter()'s length test is a
+    # minimum, so it only ever complained after the expansion had happened.
+    stride = header.width * header.channels
+    expected = (stride + 1) * header.height
+    limit = expected + 1  # one byte over is enough to prove "too long"
     try:
-        raw = zlib.decompress(compressed)
+        engine = zlib.decompressobj()
+        raw = engine.decompress(compressed, limit)
+        if engine.unconsumed_tail:
+            raise PngError(
+                REASON_DATA_UNREADABLE,
+                f"the image data inflates past the {expected}-byte image its "
+                "own header describes")
     except zlib.error as error:
         raise PngError(REASON_DATA_UNREADABLE,
                        f"the image data would not inflate: {error}") from error
