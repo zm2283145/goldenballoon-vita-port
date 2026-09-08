@@ -466,8 +466,6 @@ u32 dkr_k0_to_physical(const void *x) {
  * registration, a global DL pointer whose low 32 bits carry a live segment
  * nibble can false-resolve into unrelated arena memory. */
 void dkr_dl_register_host_ptr(const void *x) {
-    /* LP64-only (see dkr_k0_to_physical): ILP32 recovers host pointers directly
-     * in dkr_resolve, so no registration is needed there. */
     uintptr_t p = (uintptr_t)x;
     uintptr_t base = (uintptr_t)g_dkrArenaBase;
     int in_arena = p >= base && p < base + (uintptr_t)g_dkrArenaSize;
@@ -476,7 +474,31 @@ void dkr_dl_register_host_ptr(const void *x) {
         gfx_ptr_store_persistent(x);
     }
 #else
-    (void)in_arena;
+    /* This used to be a no-op on ILP32 (see the old comment this replaces:
+     * "ILP32 recovers host pointers directly in dkr_resolve, so no
+     * registration is needed there"). That assumption is contradicted by
+     * gfx_ptr.h's OWN header comment on the registry: "On a 32-bit target
+     * [host pointer and segment token] are both 32-bit and that test
+     * collapses, so every host pointer that is written into a DL word must
+     * be recorded in the pointer registry" -- i.e. registration was always
+     * meant to be required on ILP32 too, not just LP64.
+     *
+     * Confirmed on real Vita hardware via targeted boot-log tracing: a
+     * static/global display-list pointer passed through gSPDisplayList
+     * (e.g. 0x814041f0, well below the arena) never appeared in the
+     * registry, so dkr_resolve's registry lookups always missed and fell
+     * through to the segment-token heuristic. Its low 24 bits (0x4041f0)
+     * happened to look like a live segment-1 offset, so it silently
+     * resolved to gfx_segment_table[1] + 0x4041f0 -- 4+ MB past the end of
+     * segment 1's real (~150 KB) object -- instead of the actual pointer.
+     * The result reads as zeroed memory with no G_ENDDL, so the display-list
+     * walker runs to its safety cap every frame: this was the "white
+     * texture" / severe slowdown after the title logo. Registering here,
+     * exactly like the LP64 path (skipping arena-resident pointers, which
+     * already have their own working reconstruction path), is the fix. */
+    if (p != 0 && !in_arena) {
+        gfx_ptr_store_persistent(x);
+    }
 #endif
 }
 
