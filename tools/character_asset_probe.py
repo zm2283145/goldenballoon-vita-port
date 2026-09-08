@@ -765,7 +765,12 @@ def _safe_archive_name(raw_name: str) -> str:
     path = PurePosixPath(name)
     if not name or name.startswith("/") or path.is_absolute() or ".." in path.parts:
         raise ProbeError(f"unsafe archive member path: {raw_name!r}")
-    if path.parts and ":" in path.parts[0]:
+    # EVERY component, not just the first. Windows path joining discards
+    # everything before a drive-qualified segment, so "x/D:/Windows/Temp/evil"
+    # passed a parts[0]-only check and then resolved to "D:Windows\Temp\evil"
+    # -- outside the extraction root, on another volume. The extractor builds
+    # its target with joinpath(*parts), so a colon anywhere is an escape.
+    if any(":" in part for part in path.parts):
         raise ProbeError(f"drive-qualified archive member path: {raw_name!r}")
     return path.as_posix()
 

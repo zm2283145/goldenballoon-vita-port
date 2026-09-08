@@ -1708,6 +1708,26 @@ class CharacterAssetProbeTests(unittest.TestCase):
         with self.assertRaises(probe.ProbeError):
             probe.inspect_archive_bytes(archive_file.getvalue(), "bad.zip")
 
+    def test_a_drive_letter_anywhere_in_a_member_path_is_refused(self) -> None:
+        """Windows path joining discards everything before a drive-qualified
+        segment, so the escape does not need to be the FIRST component. The
+        check inspected parts[0] only, and the extractor builds its target with
+        joinpath(*parts): "x/D:/Windows/Temp/evil.dll" therefore resolved to
+        "D:Windows\\Temp\\evil.dll" -- outside the extraction root and on
+        another volume.
+        """
+        for name in ("D:/x", "x/D:/Windows/Temp/evil.dll", "a/b/C:/z"):
+            with self.subTest(name=name):
+                with self.assertRaises(probe.ProbeError) as caught:
+                    probe._safe_archive_name(name)
+                self.assertIn("drive-qualified", str(caught.exception))
+
+    def test_ordinary_nested_member_paths_still_pass(self) -> None:
+        """The refusal must key on the colon, not on nesting."""
+        for name in ("model.dae", "ok/model.dae", "deep/nested/ok.png"):
+            with self.subTest(name=name):
+                self.assertEqual(probe._safe_archive_name(name), name)
+
     def test_archive_member_compression_bomb_is_rejected_before_read(self) -> None:
         archive_file = io.BytesIO()
         with zipfile.ZipFile(
