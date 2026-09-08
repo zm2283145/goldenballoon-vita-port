@@ -145,6 +145,21 @@ static void mdkr_crash_handler(int sig) {
     signal(sig, SIG_DFL);
     raise(sig);
 }
+
+#if defined(__vita__)
+/* sigaction(SA_SIGINFO) captures the faulting address (si_addr) that a
+ * plain signal(2) handler cannot see. Logged to the boot log -- the only
+ * durable diagnostic channel here, since stderr goes nowhere on Vita --
+ * then falls through to the handler above for the existing [CRASH]
+ * marker / crash-screen-hook / re-raise behavior. */
+extern void mdkr_vita_boot_log(const char *msg);
+static void mdkr_crash_handler_vita(int sig) {
+    char line[112];
+    snprintf(line, sizeof(line), "CRASH: signal=%d (fault addr unavailable -- vitasdk signal.h lacks SA_SIGINFO)", sig);
+    mdkr_vita_boot_log(line);
+    mdkr_crash_handler(sig);
+}
+#endif
 #endif
 
 /* Game boot chain (declared here to avoid pulling the full game headers). */
@@ -284,11 +299,18 @@ int main(int argc, char **argv) {
     setvbuf(stderr, NULL, _IOLBF, 0);
 #ifndef __EMSCRIPTEN__
     if (!getenv("MDKR_NO_CRASH_HANDLER")) {
+#if defined(__vita__)
+        signal(SIGSEGV, mdkr_crash_handler_vita);
+#ifdef SIGBUS
+        signal(SIGBUS, mdkr_crash_handler_vita);
+#endif
+#else
         signal(SIGSEGV, mdkr_crash_handler);
 #ifdef SIGBUS
         /* Not defined by the Windows CRT: Win32 reports misaligned/bad-object
          * access as an access violation, i.e. SIGSEGV, which is hooked above. */
         signal(SIGBUS, mdkr_crash_handler);
+#endif
 #endif
     }
 #endif
