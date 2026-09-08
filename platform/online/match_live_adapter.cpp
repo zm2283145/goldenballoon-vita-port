@@ -2588,7 +2588,15 @@ private:
         logPreflightGate(0, "all gates open; running consensus");
 
         if (!preflightInit_) {
-            buildGraph();
+            if (!buildGraph()) {
+                /* Every peer this endpoint speaks for must be one it has seen
+                 * ready AND whose service-assigned generation it knows. The
+                 * graph is built once and latched, so a value a peer cannot
+                 * reproduce is a permanent disagreement; wait instead. */
+                logPreflightGate(7, "waiting for every peer's connection "
+                                    "generation");
+                return;
+            }
             uint8_t transcriptDigest[MDKR_MATCH_PREFLIGHT_DIGEST_BYTES];
             if (!mesh_ || !mesh_->transcriptDigest(transcriptDigest)) {
                 logPreflightGate(5, "waiting for transcript digest");
@@ -2675,46 +2683,94 @@ private:
             descriptorBuilt_ ? 1u : 0u);
     }
 
-    void buildGraph() {
+    /* The COMPLETE graph over the roster: every pair mutually reachable.
+     *
+     * That is an assertion about the whole room made from one endpoint's
+     * evidence, and it is sound only because of what has to be true on both
+     * sides of it. Below: this endpoint may only speak for a peer whose
+     * STATE+control channels it has actually seen open, so it never asserts
+     * an edge it has no evidence for at its own end. Above: preflight only
+     * reaches READY once EVERY endpoint in the graph has attested
+     * (WAITING_FOR_PEERS otherwise, match_preflight.c's absent-endpoint
+     * check), and an endpoint that cannot see one peer refuses here, never
+     * attests, and leaves the room waiting. A pair that is genuinely broken
+     * therefore stalls the room instead of agreeing a topology that does not
+     * exist -- the refusal direction, not the admitting one.
+     *
+     * The previous shape set only local<->peer edges. At two endpoints that
+     * star IS the complete graph, so the digest there is unchanged. At three
+     * or four it is not: each endpoint hashed a different star centred on
+     * itself, mdkr_match_preflight_evaluate found a graph disagreement before
+     * it ever reached the admissibility check, and the room could never
+     * reach READY.
+     *
+     * `generations` carries the REMOTE endpoints' service-assigned
+     * generations exactly as the mesh learned them; the local endpoint's is
+     * passed separately. A missing one is a refusal, never a substitution:
+     * standing the local generation in for an unknown peer's produces a
+     * value that peer cannot reproduce, and because the graph is built once
+     * and latched, that is a permanent disagreement rather than a retry.
+     *
+     * Endpoint order is not load-bearing -- mdkr_match_preflight_graph_digest
+     * sorts by endpoint id and remaps the reachability bits into that order
+     * before hashing -- but the roster arrives in ascending id order anyway.
+     *
+     * A refusal leaves *out zeroed, which is not a valid graph, so
+     * mdkr_match_preflight_init refuses in turn and the caller retries. */
+    static bool buildCompleteGraph(
+        const std::vector<MdkrMatchPeerSlotOwner> &roster,
+        const std::set<uint64_t> &channelsReady,
+        const std::map<uint64_t, uint32_t> &generations,
+        uint64_t localEndpointId, uint32_t localGeneration,
+        uint32_t matchEpoch, MdkrMatchPeerGraph *out) {
+        if (out == nullptr) return false;
+        std::memset(out, 0, sizeof(*out));
+        const unsigned count = static_cast<unsigned>(roster.size());
+        if (count < 2u || count > MDKR_MATCH_PEER_GRAPH_MAX_ENDPOINTS ||
+            localEndpointId == 0u || localGeneration == 0u) return false;
+        const unsigned full = (1u << count) - 1u;
         std::vector<MdkrMatchPeerEndpoint> eps;
-        std::map<uint64_t, unsigned> index;
-        for (const MdkrMatchPeerSlotOwner &o : meshRoster_) {
+        eps.reserve(count);
+        bool sawSelf = false;
+        for (const MdkrMatchPeerSlotOwner &o : roster) {
             MdkrMatchPeerEndpoint e;
             std::memset(&e, 0, sizeof(e));
             e.endpoint_id = o.endpointId;
-            /* Each endpoint's own service-assigned generation, so both peers
-             * hash a byte-identical graph. Local uses the adopted generation;
-             * peers use the value the mesh learned from the welcome. */
-            if (o.endpointId == localEndpointId_) {
-                e.generation = meshGeneration_;
-            } else if (uint32_t g = 0u; mesh_ && mesh_->peerGeneration(
-                                            o.endpointId, &g)) {
-                e.generation = g;
+            if (o.endpointId == localEndpointId) {
+                if (sawSelf) return false; /* one local endpoint, not two */
+                sawSelf = true;
+                e.generation = localGeneration;
             } else {
-                e.generation = meshGeneration_;
+                /* Re-checked here rather than inherited from runPreflight's
+                 * gate: what licenses the assertion belongs beside it. */
+                if (channelsReady.count(o.endpointId) == 0u) return false;
+                const auto found = generations.find(o.endpointId);
+                if (found == generations.end() || found->second == 0u)
+                    return false;
+                e.generation = found->second;
             }
-            e.reachable_mask = 0u;
-            index[o.endpointId] = static_cast<unsigned>(eps.size());
+            e.reachable_mask =
+                static_cast<uint8_t>(full & ~(1u << eps.size()));
             eps.push_back(e);
         }
-        /* Mutual edges: local <-> every peer whose channels are ready. Both
-         * peers derive the same topology, and the digest is order-independent. */
-        const unsigned self = index.count(localEndpointId_)
-                                  ? index[localEndpointId_]
-                                  : 0u;
-        for (uint64_t peer : channelsReady_) {
-            const auto it = index.find(peer);
-            if (it == index.end()) continue;
-            eps[self].reachable_mask |=
-                static_cast<uint8_t>(1u << it->second);
-            eps[it->second].reachable_mask |=
-                static_cast<uint8_t>(1u << self);
+        if (!sawSelf) return false;
+        return mdkr_match_peer_graph_init(out, matchEpoch, eps.data(), count);
+    }
+
+    /* Harvest what the mesh knows and assert the graph. False means the graph
+     * was NOT built and nothing may be attested from it yet. */
+    bool buildGraph() {
+        std::map<uint64_t, uint32_t> generations;
+        for (const MdkrMatchPeerSlotOwner &o : meshRoster_) {
+            if (o.endpointId == localEndpointId_) continue;
+            uint32_t g = 0u;
+            if (mesh_ && mesh_->peerGeneration(o.endpointId, &g)) {
+                generations[o.endpointId] = g;
+            }
         }
-        std::memset(&graph_, 0, sizeof(graph_));
-        (void)mdkr_match_peer_graph_init(&graph_,
-                                         descriptor_.manifest.match_epoch,
-                                         eps.data(),
-                                         static_cast<unsigned>(eps.size()));
+        return buildCompleteGraph(meshRoster_, channelsReady_, generations,
+                                  localEndpointId_, meshGeneration_,
+                                  descriptor_.manifest.match_epoch, &graph_);
     }
 
     void buildOwnAttestation(MdkrMatchPreflightAttestationV1 *att) const {
@@ -3862,6 +3918,96 @@ public:
         return a.racePeerLost();
     }
 
+    /* Synthetic roster identities for the graph-assertion seam below. Ids
+     * ascend with the index so a roster built in either direction is a
+     * meaningful ordering test. */
+    static uint64_t testGraphEndpointId(unsigned index) {
+        return 100u * static_cast<uint64_t>(index + 1u);
+    }
+    static uint32_t testGraphGeneration(unsigned index) { return 11u + index; }
+    static constexpr uint32_t kTestGraphMatchEpoch = 9u;
+
+    /* Test-only (beta): drive buildCompleteGraph over a synthetic roster with
+     * no mesh and no transport, and report the graph digest each endpoint
+     * would attest. `count` endpoints, `localIndex` is which of them is this
+     * one; `readyMask` and `genMask` are bitmasks over roster index saying
+     * which peers this endpoint has seen ready and whose generation it knows
+     * (the local index's bits are ignored). `descending` builds the roster in
+     * reverse endpoint-id order. Returns false -- leaving `digest` zeroed --
+     * when the graph is refused. Never called by the launcher. */
+    static bool testPreflightGraphDigest(
+        unsigned count, unsigned localIndex, unsigned readyMask,
+        unsigned genMask, bool descending,
+        uint8_t digest[MDKR_MATCH_PREFLIGHT_DIGEST_BYTES]) {
+        if (digest == nullptr) return false;
+        std::memset(digest, 0, MDKR_MATCH_PREFLIGHT_DIGEST_BYTES);
+        if (count < 2u || count > MDKR_MATCH_PEER_GRAPH_MAX_ENDPOINTS ||
+            localIndex >= count) return false;
+        std::vector<MdkrMatchPeerSlotOwner> roster;
+        std::set<uint64_t> channelsReady;
+        std::map<uint64_t, uint32_t> generations;
+        for (unsigned step = 0u; step < count; ++step) {
+            const unsigned index = descending ? (count - 1u - step) : step;
+            MdkrMatchPeerSlotOwner owner;
+            owner.endpointId = testGraphEndpointId(index);
+            owner.slotMask = static_cast<uint8_t>(1u << index);
+            roster.push_back(owner);
+        }
+        for (unsigned index = 0u; index < count; ++index) {
+            if (index == localIndex) continue;
+            if ((readyMask & (1u << index)) != 0u)
+                channelsReady.insert(testGraphEndpointId(index));
+            if ((genMask & (1u << index)) != 0u) {
+                generations[testGraphEndpointId(index)] =
+                    testGraphGeneration(index);
+            }
+        }
+        MdkrMatchPeerGraph graph;
+        if (!buildCompleteGraph(roster, channelsReady, generations,
+                                testGraphEndpointId(localIndex),
+                                testGraphGeneration(localIndex),
+                                kTestGraphMatchEpoch, &graph)) {
+            return false;
+        }
+        return mdkr_match_preflight_graph_digest(&graph, digest);
+    }
+
+    /* Test-only (beta): the digest of the PRE-FIX shape -- edges only between
+     * `localIndex` and every other endpoint -- over the same synthetic
+     * identities, so a test can show what the assertion replaced. At two
+     * endpoints that star is the complete graph and the two digests match; at
+     * three or more each local index yields a different one, which is the
+     * disagreement that stopped the room. Never called by the launcher. */
+    static bool testPreflightStarDigest(
+        unsigned count, unsigned localIndex,
+        uint8_t digest[MDKR_MATCH_PREFLIGHT_DIGEST_BYTES]) {
+        if (digest == nullptr) return false;
+        std::memset(digest, 0, MDKR_MATCH_PREFLIGHT_DIGEST_BYTES);
+        if (count < 2u || count > MDKR_MATCH_PEER_GRAPH_MAX_ENDPOINTS ||
+            localIndex >= count) return false;
+        std::vector<MdkrMatchPeerEndpoint> eps;
+        eps.reserve(count);
+        for (unsigned index = 0u; index < count; ++index) {
+            MdkrMatchPeerEndpoint e;
+            std::memset(&e, 0, sizeof(e));
+            e.endpoint_id = testGraphEndpointId(index);
+            e.generation = testGraphGeneration(index);
+            e.reachable_mask =
+                index == localIndex
+                    ? static_cast<uint8_t>(((1u << count) - 1u) &
+                                           ~(1u << localIndex))
+                    : static_cast<uint8_t>(1u << localIndex);
+            eps.push_back(e);
+        }
+        MdkrMatchPeerGraph graph;
+        std::memset(&graph, 0, sizeof(graph));
+        if (!mdkr_match_peer_graph_init(&graph, kTestGraphMatchEpoch,
+                                        eps.data(), count)) {
+            return false;
+        }
+        return mdkr_match_preflight_graph_digest(&graph, digest);
+    }
+
     /* Test-only (beta): pin the RETRY tiers on a mesh-free, transport-free
      * adapter (see the kMdkrOnlineLiveStepRetryRebuild contract in the
      * header). Drives the SAME private apply() the panel's dispatch reaches
@@ -4912,6 +5058,20 @@ unsigned mdkr_online_live_adapter_test_departure_grace(unsigned grace_ticks,
 
 unsigned mdkr_online_live_adapter_test_drop_refusal_records(unsigned rounds) {
     return LiveAdapter::testDropRefusalRecords(rounds);
+}
+
+bool mdkr_online_live_adapter_test_preflight_graph_digest(
+    unsigned count, unsigned local_index, unsigned ready_mask,
+    unsigned gen_mask, bool descending,
+    uint8_t digest[MDKR_MATCH_PREFLIGHT_DIGEST_BYTES]) {
+    return LiveAdapter::testPreflightGraphDigest(count, local_index, ready_mask,
+                                                 gen_mask, descending, digest);
+}
+
+bool mdkr_online_live_adapter_test_preflight_star_digest(
+    unsigned count, unsigned local_index,
+    uint8_t digest[MDKR_MATCH_PREFLIGHT_DIGEST_BYTES]) {
+    return LiveAdapter::testPreflightStarDigest(count, local_index, digest);
 }
 
 bool mdkr_online_live_adapter_test_reverify_clears_peer_loss(bool via_abort) {

@@ -642,6 +642,25 @@ unsigned mdkr_online_live_adapter_test_departure_grace(unsigned grace_ticks,
  * DEPARTURE_REFUSED records the ring holds afterwards. Resets the ring.
  * Never called by the launcher. */
 unsigned mdkr_online_live_adapter_test_drop_refusal_records(unsigned rounds);
+/* Pin the preflight graph assertion on a mesh-free adapter: `count` synthetic
+ * endpoints with ascending ids, `local_index` which of them is this endpoint,
+ * `ready_mask` and `gen_mask` bitmasks over roster index for the peers this
+ * endpoint has seen ready and whose service-assigned generation it knows (the
+ * local index's bits are ignored), and `descending` to build the roster in
+ * reverse id order. Writes the digest this endpoint would attest and returns
+ * false -- leaving it zeroed -- when the graph is refused. Never called by the
+ * launcher. */
+bool mdkr_online_live_adapter_test_preflight_graph_digest(
+    unsigned count, unsigned local_index, unsigned ready_mask,
+    unsigned gen_mask, bool descending,
+    uint8_t digest[MDKR_MATCH_PREFLIGHT_DIGEST_BYTES]);
+/* The digest of the pre-fix shape -- edges only between `local_index` and each
+ * other endpoint -- over the same synthetic identities, so a test can show what
+ * the assertion replaced and that it is what makes the room agree. Never called
+ * by the launcher. */
+bool mdkr_online_live_adapter_test_preflight_star_digest(
+    unsigned count, unsigned local_index,
+    uint8_t digest[MDKR_MATCH_PREFLIGHT_DIGEST_BYTES]);
 #endif
 
 /* Seal + fan out the race's OPENING input window (firstTick..firstTick+
