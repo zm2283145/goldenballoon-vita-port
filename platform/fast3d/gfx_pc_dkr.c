@@ -1736,6 +1736,33 @@ static inline void *dkr_resolve(uint32_t addr) {
                 mdkr_vita_boot_log(lb);
                 s_resolveSegLogCount++;
             }
+#if defined(__vita__)
+            /* DIAGNOSTIC ONLY -- testing whether `addr` is actually a raw,
+             * untransformed host pointer that gDma1p's NATIVE_PORT macro
+             * stored as-is (dkr_dl_register_host_ptr is a documented no-op
+             * on ILP32, so nothing here has ever gone through the registry).
+             * If so, `addr` itself -- NOT flip -- points at real content, and
+             * this whole branch is resolving the wrong value. Only peek when
+             * addr is comfortably below the arena, i.e. plausibly inside this
+             * module's own loaded/static memory rather than unmapped space,
+             * to keep this from crashing on a value that guess is wrong for. */
+            {
+                static int s_rawPeekLogCount = 0;
+                uintptr_t arenaBaseForPeek = (uintptr_t)g_dkrArenaBase;
+                if (s_rawPeekLogCount < 20 && addr >= 0x80000000u &&
+                    (uintptr_t)addr < arenaBaseForPeek) {
+                    const uint32_t *rawp = (const uint32_t *)(uintptr_t)addr;
+                    char lb2[160];
+                    snprintf(lb2, sizeof(lb2),
+                             "resolve: raw-addr-peek addr=0x%x (below arenaBase=0x%lx) "
+                             "words=%08x/%08x",
+                             (unsigned)addr, (unsigned long)arenaBaseForPeek,
+                             (unsigned)rawp[0], (unsigned)rawp[1]);
+                    mdkr_vita_boot_log(lb2);
+                    s_rawPeekLogCount++;
+                }
+            }
+#endif
             if (dkr_ptr_plausible(seg)) {
                 return dkr_retain_resolved_pointer(seg);
             }
