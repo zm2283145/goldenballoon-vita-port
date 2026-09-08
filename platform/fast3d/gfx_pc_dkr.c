@@ -106,6 +106,25 @@
 #define DKR_MAX_BUFFERED   2048        /* triangles buffered before a flush   */
 #define DKR_VBO_STRIDE_MAX 32          /* floats per vertex (generous)        */
 #define DKR_DL_MAX_DEPTH   16          /* nested G_DL / G_DMADL recursion cap */
+/* Per-list command-count safety ceiling for dkr_scan_overlay_order(),
+ * dkr_scan_future_deformations(), and dkr_run_dl(). This used to be a
+ * 4,000,000-iteration cap, sized to comfortably out-run any real, finite
+ * DKR display list (which are at most a few thousand commands even fully
+ * unrolled) and only ever meant to be a last-resort backstop against a
+ * truly unterminated list. On Vita it turned out to double as an
+ * accidental worst-case amplifier: a mis-resolved sub-DL pointer (fixed
+ * data being read as if it were a display list) doesn't reliably contain
+ * a G_ENDDL opcode, so the walk ran all the way to the cap -- confirmed
+ * on-device via the dl-safety heartbeat log, which showed a single
+ * top-level walk advancing tens of megabytes through memory before the
+ * (previous) cap finally cut it off, once per frame. With
+ * DKR_DL_MAX_DEPTH-deep recursion each carrying its own budget, the
+ * worst case was effectively DKR_DL_MAX_DEPTH times this number of
+ * wasted iterations in a single frame -- the direct cause of the "very
+ * slow fps" regression. Lowered by 40x: still far above any legitimate
+ * DKR list length, but bounds a runaway walk into non-DL memory to a
+ * cost that can't visibly matter next to a real frame budget. */
+#define DKR_DL_SAFETY_MAX  100000L
 #define DKR_FONT_UPSCALE   4
 
 enum { DKR_PRESENTATION_PARTICLE_KIND_POINT = 4 };
@@ -5118,6 +5137,21 @@ static void dkr_dl_fault(const char *reason, const Gfx *cmd, int depth) {
             cmd != NULL ? cmd->words.w1 : 0,
             strict ? " (strict: aborting)" : " (recovered: list stopped/skipped)");
     fflush(stderr);
+#if defined(__vita__)
+    {
+        static int s_dlFaultLogCount = 0;
+        if (s_dlFaultLogCount < 20) {
+            char lb[160];
+            snprintf(lb, sizeof(lb),
+                     "dl-fault: %s depth=%d cmd=%p words=%08x/%08x",
+                     reason, depth, (const void *)cmd,
+                     cmd != NULL ? cmd->words.w0 : 0,
+                     cmd != NULL ? cmd->words.w1 : 0);
+            mdkr_vita_boot_log(lb);
+            s_dlFaultLogCount++;
+        }
+    }
+#endif
     if (strict) {
         abort();
     }
@@ -5209,12 +5243,12 @@ static void dkr_scan_overlay_order(Gfx *cmd, int depth, int limit,
         if (limit > 0 && (cmd - start) >= limit) {
             return;
         }
-        if (++safety > 4000000L) {
+        if (++safety > DKR_DL_SAFETY_MAX) {
 #if defined(__vita__)
             {
                 char lb[96];
                 snprintf(lb, sizeof(lb),
-                         "dl-safety: dkr_scan_overlay_order hit 4M safety cap, depth=%d",
+                         "dl-safety: dkr_scan_overlay_order hit safety cap, depth=%d",
                          depth);
                 mdkr_vita_boot_log(lb);
             }
@@ -5224,7 +5258,7 @@ static void dkr_scan_overlay_order(Gfx *cmd, int depth, int limit,
 #if defined(__vita__)
         {
             static int s_heartbeatLogCount = 0;
-            if ((safety % 200000L) == 0 && s_heartbeatLogCount < 20) {
+            if ((safety % 5000L) == 0 && s_heartbeatLogCount < 20) {
                 char lb[96];
                 snprintf(lb, sizeof(lb),
                          "dl-safety: heartbeat safety=%ld depth=%d cmd=%p",
@@ -5727,7 +5761,7 @@ static bool dkr_scan_future_deformations(Gfx *cmd, int depth, int limit) {
         if (limit > 0 && (cmd - start) >= limit) {
             return true;
         }
-        if (++safety > 4000000L || dkr_arena_room(cmd) < sizeof(Gfx)) {
+        if (++safety > DKR_DL_SAFETY_MAX || dkr_arena_room(cmd) < sizeof(Gfx)) {
             return false;
         }
         switch ((uint8_t)C0(cmd, 24, 8)) {
@@ -6629,7 +6663,7 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
 
     for (;;) {
         if (limit > 0 && (cmd - start) >= limit) return;
-        if (++safety > 4000000L) {
+        if (++safety > DKR_DL_SAFETY_MAX) {
             dkr_dl_fault("unterminated display list", cmd, depth);
             return;
         }

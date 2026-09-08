@@ -946,8 +946,21 @@ static int sdl_init_gl(Uint32 base_flags) {
      * the first thing to tune against real hardware once the game boots --
      * the DKR HUD/minimap draw calls in gfx_pc_dkr.c were never profiled
      * against a PowerVR SGX543MP4+. */
-    GLboolean vglOk = vglInitExtended(0, s_initialWindowWidth, s_initialWindowHeight, 0x1800000,
+    GLboolean vglOk = vglInitExtended(0, s_initialWindowWidth, s_initialWindowHeight, 0x20000,
                      SCE_GXM_MULTISAMPLE_NONE);
+    if (!vglOk) {
+        fprintf(stderr, "[SDL] vglInitExtended FAILED\n");
+        /* This used to be stderr-only, which is invisible on Vita (nothing
+         * captures it there) -- every prior "platform_sdl_init FAILED"
+         * boot-log line told us THAT init failed but never WHY, since this
+         * is the only call inside it that can actually fail. vglInitExtended
+         * failing outright (as opposed to crashing/aborting later) is a
+         * known vitaGL/sceGxm symptom of a previous process's GPU context
+         * not being released cleanly -- exactly what repeated abort()s /
+         * force-closes during bring-up leave behind -- so log it plainly. */
+        mdkr_vita_boot_log("vitaGL: vglInitExtended FAILED (returned 0)");
+        return -1;
+    }
     s_window = NULL;
     g_sdlWindow = NULL;
     s_glReady = 1;
