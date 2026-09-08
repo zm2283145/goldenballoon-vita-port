@@ -6862,6 +6862,21 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
              * while retaining strict faults for non-null invalid streams.
              */
             if (sub != NULL) {
+#if defined(__vita__)
+                {
+                    static int s_dlJumpLogCount = 0;
+                    if (s_dlJumpLogCount < 40) {
+                        char lb[192];
+                        snprintf(lb, sizeof(lb),
+                                 "dl-jump: G_DL depth=%d->%d rawAddr=0x%x sub=%p "
+                                 "firstWords=%08x/%08x",
+                                 depth, depth + 1, (unsigned)cmd->words.w1, (void *)sub,
+                                 (unsigned)sub->words.w0, (unsigned)sub->words.w1);
+                        mdkr_vita_boot_log(lb);
+                        s_dlJumpLogCount++;
+                    }
+                }
+#endif
                 dkr_run_dl(sub, depth + 1, 0);
             }
             break;
@@ -6875,6 +6890,21 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             if (count <= 0) {
                 dkr_dl_fault("G_DMADL has a zero command count", cmd, depth);
             } else if (sub != NULL) {
+#if defined(__vita__)
+                {
+                    static int s_dmadlJumpLogCount = 0;
+                    if (s_dmadlJumpLogCount < 40) {
+                        char lb[192];
+                        snprintf(lb, sizeof(lb),
+                                 "dl-jump: G_DMADL depth=%d->%d rawAddr=0x%x count=%d sub=%p "
+                                 "firstWords=%08x/%08x",
+                                 depth, depth + 1, (unsigned)cmd->words.w1, count, (void *)sub,
+                                 (unsigned)sub->words.w0, (unsigned)sub->words.w1);
+                        mdkr_vita_boot_log(lb);
+                        s_dmadlJumpLogCount++;
+                    }
+                }
+#endif
                 /* A null optional DMA child is absent, as for pushed G_DL. */
                 dkr_run_dl(sub, depth + 1, count);
             }
