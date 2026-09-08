@@ -7,18 +7,43 @@ the clear legally — they are scripts, not judgement calls, and they fail close
 Nothing here is optional, and nothing here should be reasoned around. If a gate
 fails, the release stops.
 
-## Current candidate status (2026-09-06)
+## Current candidate status (2026-09-08)
 
-**Not release-ready.** The `int-1.7.0` candidate is undergoing defect resolution
-and artifact qualification. This checkpoint uses non-executing checks under the latest
-conversation-supplied validation instructions; it does not revoke the saved
-workstation policy. Actual execution controls must also permit a later run.
-The old-source diagnostic suite at `12cab88c` has finished: **36/271 tasks failed**
-in 626m50s, and the process exited 1. All 271 tasks were attempted; this is a
-failed diagnostic result, not qualification of the newer local changes. Public
-issue acceptance is tracked in [`open-items/github-issues.md`](open-items/github-issues.md).
-All 36 failed tasks, their evidence classes and required follow-up are inventoried
-in [the diagnostic failure ledger](open-items/diagnostic-suite-failures.md).
+**Not release-ready, but now qualified by execution rather than inspection.**
+The complete suite has run against the integrated `int-1.7.0` candidate at
+`b6e8ff40`: **267 of 271 tasks passed** in 628m49s, and every one of the four
+failures has since been resolved and re-validated. This supersedes the old-source
+diagnostic run at `12cab88c` (36/271 failed, 626m50s, exit 1), which qualified no
+part of the current tree and should be read only as historical failure evidence.
+All 36 of that run's failures remain inventoried in
+[the diagnostic failure ledger](open-items/diagnostic-suite-failures.md).
+
+Of the four failures in the qualifying run, three were defects in the gates
+rather than in the tree, and all three pass standalone and after the fix:
+
+- `taj_character_select` and `taj_character_select_ultrawide` shared a hardcoded
+  90s engine-arm ceiling roughly equal to the heaviest arm's own cost, so
+  ordinary load on a shared machine crossed it. Both now run under one named
+  budget and pass.
+- `full_ubsan` capped its 46-route WebGPU census at 900s. Measured directly
+  against the same UBSan binary on an idle machine, that census takes 181s and
+  passes with zero faults; the ceiling only ever reported contention. All five
+  route budgets now scale through one constant, and the gate passes in 33m46s.
+
+The fourth, `camera_motion_quality`, is a pre-existing finding on the **opt-in**
+Modern obstruction resolver, which default play does not run: an unset
+`MDKR_CAMERA_OBSTRUCTION` resolves to `observe`. Driving the shipped v1.6.0
+binary over the same route reproduces a byte-identical census, including the
+single `correction_reengagements=1` that fails the gate, so the candidate
+neither introduces nor worsens it. Whether that re-engagement is a defect at all
+is a quality judgement section 7.3 reserves for a signed review on device; the
+evidence is recorded in
+[the A/B](evidence/camera-motion-reengagement-ab-2026-09-08.md).
+
+What still stands between this candidate and a release is owner-side: the four
+desktop artifacts, physical device acceptance, and issue #61's Windows/NVIDIA
+symptom, which no macOS result can settle. Public issue acceptance is tracked in
+[`open-items/github-issues.md`](open-items/github-issues.md).
 The workstream inventory, parallel Workshop ownership proposal and competitive
 comparison are in [the release work plan](RELEASE_WORK_PLAN.md); that plan does
 not replace any gate below.

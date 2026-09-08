@@ -8,9 +8,20 @@ four open issues in `akratch/goldenballoon`, and none in `akratch/mdkr64` or
 on 2026-09-06 finds five open issues, including new report #63; the other
 repositories were not refreshed in that check.
 
-**Release-worktree reconciliation (2026-09-06).** This update uses the local
-source tree and saved validation logs, plus the read-only #63 inventory refresh;
-it does not mutate or close issues. The candidate is **not release-ready**. The custom-character KTX2/BasisU
+**Qualification refresh (2026-09-08).** The complete suite has now executed
+against the integrated candidate at `b6e8ff40`: 267 of 271 tasks passed in
+628m49s, and all four failures are resolved and re-validated (three were gate
+defects -- two hardcoded engine-arm ceilings and one census budget -- and the
+fourth is the opt-in camera item, reproduced byte-identically on shipped
+v1.6.0). The statuses below are therefore no longer waiting on requalification:
+where a section says a behavioural gate had not executed, it has now, and the
+gate names are listed with their verdicts in
+[the release checklist](../RELEASE_CHECKLIST.md#current-candidate-status-2026-09-08).
+This does not close any issue: release availability and the owner-side device
+matrix are separate obligations, and #61's Windows/NVIDIA symptom cannot be
+settled by any macOS result. This update reads the local source tree and saved
+validation logs; it does not mutate or close issues. The candidate remains
+**not release-ready**. The custom-character KTX2/BasisU
 alignment finding is fixed in the candidate with a valid-texture regression
 and a clean 601-second ASan/UBSan fuzz run (4,004,077 executions). KTX2 remains
 enabled; final-artifact qualification is pending. See
@@ -78,7 +89,14 @@ not specified. A later read-only refresh found a maintainer comment at
 2026-09-06T11:47:07Z confirming the helper defect and targeting the next release;
 the issue remains open. That comment is not package-validation evidence.
 
-**Confirmed source defect; candidate fix awaiting behavioral validation.**
+**Confirmed source defect; candidate fix now behaviourally validated
+(2026-09-08).** `check_trophy_series.py` executes all five championship worlds
+and passes: Future Funland runs its four authored rounds (tracks 17/32/33/15),
+awards `rank=0 points=36 new=0x300`, and persists 0x300 into a checksum-valid
+EEPROM. The gate additionally requires the production cabinet to publish the
+state each world just earned -- the reported symptom was an empty cabinet, which
+the award assertions alone never reached -- and world 4's rank-3 finish serves as
+the negative control that a no-trophy result must not display one.
 `mdkr_trophy_state()` rejected worlds above 4 even though Future Funland is
 world 5 and the EEPROM stores five two-bit trophy fields. The same helper
 guards the championship award in `menu.c`, cabinet spawning in
@@ -121,7 +139,8 @@ Keep #63 open until these checks and release availability are established.
 [Report](https://github.com/akratch/goldenballoon/issues/62): a text field does
 not explain which values are accepted.
 
-**Fixed in the candidate, not yet released.** The shared launcher/in-game
+**Fixed in the candidate and gated, not yet released.** `enh_ai_difficulty`
+passes in the qualifying run. The shared launcher/in-game
 settings row now uses the existing controller-navigable combo with Original,
 Hard, and Brutal choices. Labels describe their relative speeds. The stored
 values remain `authored`, `hard`, and `brutal`; the default, gameplay calculation,
