@@ -3127,6 +3127,28 @@ int gfx_opengl_max_offscreen_dim(void) {
 }
 
 static float gfx_opengl_effective_render_scale(void) {
+#if defined(__vita__)
+    /* Restored/Remastered seed Video.RenderScale=2.0 by default (see
+     * video_config.c's preset table), which is exactly what
+     * gfx_opengl_scene_target_enabled() below treats as "supersample -- route
+     * 3D through the offscreen scene FBO and the output-filter compositing
+     * blit" instead of drawing straight to the default framebuffer. That
+     * FBO+blit path is new, PC-authored infrastructure (packed depth-stencil,
+     * multisample resolve, the post-process filter chain) that has the same
+     * kind of vitaGL gaps already carved out one function down in
+     * gfx_opengl_effective_msaa_samples() -- and unlike MSAA, RenderScale's
+     * FBO path is NOT gated off here, so it silently runs on every Vita boot.
+     * Observed on real hardware: the DKR-logo-to-menu 3D scene renders solid
+     * black, and the main menu's 3D background renders solid blue, while 2D
+     * UI (drawn directly to the default framebuffer, never touching this
+     * path) renders correctly -- consistent with the scene-target blit
+     * landing nothing in the backbuffer rather than a game-logic bug. Force
+     * 1:1 rendering on this initial Vita port, same as the MSAA carve-out,
+     * so 3D content takes the simpler direct-to-backbuffer path that 2D
+     * already proves works; supersampling can come back once the FBO/output
+     * chain is verified against vitaGL. */
+    return 1.0f;
+#else
     /* Same NaN hole as gfx_clamped_render_scale() in gfx_pc.c: NaN compares
      * false against both bounds below and would otherwise pass through
      * untouched into scene-target sizing math. Clamp to the floor. */
@@ -3140,6 +3162,7 @@ static float gfx_opengl_effective_render_scale(void) {
         return 4.0f;
     }
     return g_pcRenderScale;
+#endif
 }
 
 static int gfx_opengl_effective_msaa_samples(void) {
@@ -3230,7 +3253,7 @@ static bool gfx_opengl_output_ssao_active(void) {
 
 static bool gfx_opengl_scene_target_enabled(void) {
     float render_scale = gfx_opengl_effective_render_scale();
-    return g_pcRemasterFX ||
+    bool enabled = g_pcRemasterFX ||
            render_scale > 1.001f ||
            gfx_opengl_effective_msaa_samples() > 0 ||
            gfx_opengl_output_ssao_active() ||   /* force scene FBO so depth is sampleable */
@@ -3238,6 +3261,21 @@ static bool gfx_opengl_scene_target_enabled(void) {
            gfx_diag_xlu_rdp_memory_blend_enabled() ||
            gfx_diag_xlu_rdp_cvg_memory_blend_enabled() ||
            gfx_opengl_room_xlu_cvg_memory_enabled();
+#if defined(__vita__)
+    {
+        static int s_sceneTargetLogged = 0;
+        if (!s_sceneTargetLogged) {
+            char lb[160];
+            snprintf(lb, sizeof(lb),
+                     "scene-target: enabled=%d remasterFX=%d scale=%.2f msaa=%d",
+                     (int)enabled, g_pcRemasterFX, (double)render_scale,
+                     gfx_opengl_effective_msaa_samples());
+            mdkr_vita_boot_log(lb);
+            s_sceneTargetLogged = 1;
+        }
+    }
+#endif
+    return enabled;
 }
 
 static bool gfx_opengl_ensure_scene_target(int width, int height) {
