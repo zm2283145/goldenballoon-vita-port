@@ -319,7 +319,12 @@ void despawn_player_racer(Object *obj, s32 vehicleID);
  * deferred rebuild) instead of despawn_player_racer, and transform_player_vehicle
  * runs the deferred commit when _pending() is set. Both live in objects.c beside
  * the retail machinery they mirror; the retail path is byte-identical off/omit. */
-void adventure_party_taj_transform_begin(s32 vehicle);
+/* TRUE when the party transform was armed. FALSE means the caller must fall
+ * back to the retail single-racer despawn: this refuses whenever the live world
+ * does not match the roster it would rebuild from, and arming nothing while the
+ * caller also skipped despawn_player_racer() would drop the player's vehicle
+ * change on the floor. */
+s32 adventure_party_taj_transform_begin(s32 vehicle);
 s32 adventure_party_taj_transform_pending(void);
 /* AP-14 team-shared silver coins. One team tally (a file-scope counter in
  * objects.c — NOT a racer/settings field, so the save layout is untouched) is

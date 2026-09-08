@@ -3612,7 +3612,16 @@ void obj_loop_parkwarden(Object *obj, s32 updateRate) {
                                 ADVENTURE_PARTY_ACTION_DIALOGUE_CHOICE,
                                 ADVENTURE_PARTY_ARBITRATE_LATCHED);
                         }
-                        adventure_party_taj_transform_begin(gTajDialogueChoice & 0xF);
+                        /* Falls back when the party transform refuses -- a
+                         * roster that does not match the live world, or a
+                         * missing seat. Without this the party arm would skip
+                         * despawn_player_racer() AND arm nothing, and the
+                         * player's vehicle choice would vanish silently. */
+                        if (!adventure_party_taj_transform_begin(
+                                gTajDialogueChoice & 0xF)) {
+                            despawn_player_racer(racerObj,
+                                                 gTajDialogueChoice & 0xF);
+                        }
                     } else
 #endif
                     {

@@ -2250,6 +2250,10 @@ void decrypt_magic_codes(s32 *data, s32 length) {
  * Set all object counters and headers to zero, effectively telling the game there are no objects currently in the
  * scene.
  */
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+static void adventure_party_taj_transform_forget(void);
+#endif
+
 void clear_object_pointers(void) {
     s32 i;
 
@@ -2287,6 +2291,16 @@ void clear_object_pointers(void) {
     D_8011AE7E = TRUE;
     gFirstActiveObjectId = 0;
     gTransformTimer = 0;
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    /* Paired with gTransformTimer above, and for the same reason. The party
+     * transform arms a deferred rebuild and clears it only in commit(); if the
+     * level unloads inside that four-frame window the commit never runs, and
+     * the flag used to survive teardown, session DESTROY and quit-to-title. The
+     * next transform of ANY kind -- including an ordinary one-player Adventure
+     * vehicle change -- then rebuilt the dead party's roster, spawning phantom
+     * karts at its coordinates and switching the hub to split screen. */
+    adventure_party_taj_transform_forget();
+#endif
     gIsTajChallenge = FALSE;
     gTajRaceInit = 0;
     D_8011AF60 = NULL;
@@ -4836,7 +4850,17 @@ s32 adventure_party_taj_transform_pending(void) {
     return sApTajTransformPending;
 }
 
-void adventure_party_taj_transform_begin(s32 vehicle) {
+/* Drop a deferred party transform that will never be committed. Safe to call
+ * when nothing is armed. The seat plan is left alone deliberately: it is only
+ * ever read under sApTajTransformPending, and clearing the flag is what makes
+ * it unreachable. */
+static void adventure_party_taj_transform_forget(void) {
+    sApTajTransformPending = FALSE;
+    sApTajTransformCount = 0;
+    sApTajTransformVehicle = 0;
+}
+
+s32 adventure_party_taj_transform_begin(s32 vehicle) {
     AdventurePartySession *session = adventure_party_runtime_session();
     s32 count;
     s32 i;
@@ -4844,24 +4868,47 @@ void adventure_party_taj_transform_begin(s32 vehicle) {
     if (session == NULL) {
         /* Should be unreachable (the caller checks a live party session first),
          * but never free racers without a roster to rebuild them from. */
-        return;
+        return FALSE;
     }
     count = adventure_party_participant_count(session);
     if (count < ADVENTURE_PARTY_MIN_PARTICIPANTS ||
         count > ADVENTURE_PARTY_MAX_PARTICIPANTS) {
-        return;
+        return FALSE;
+    }
+    /*
+     * The roster says N seats; the world may not have them. hub_formation()
+     * fails closed and the caller then loads stock 1P (gNumRacers == 1) without
+     * tearing the session down, so a party can legitimately reach here claiming
+     * three participants over a one-racer world.
+     *
+     * Bounding the loop below by `count` alone then reads and frees
+     * (*gRacers)[1..2], and those slots are NOT null: clear_object_pointers()
+     * zeroes gNumRacers and nulls gAINodes but never nulls gRacers, so they hold
+     * recycled pointers into the live object pool. The NULL guard below cannot
+     * fire for the case it was written for, and free_object() would destroy two
+     * unrelated hub objects the object list still references.
+     *
+     * Refuse instead, and let the caller do the retail single-racer transform.
+     */
+    if (gNumRacers != count) {
+        MDKR_TRACE("adventure_party_taj_transform: refused roster=%d live=%d",
+                   (int) count, (int) gNumRacers);
+        return FALSE;
     }
     taj_physics_reset();
     for (i = 0; i < count; i++) {
         Object *racerObj = (*gRacers)[i];
         Object_Racer *racer;
         if (racerObj == NULL || racerObj->racer == NULL) {
-            /* A missing seat before a transform means the roster was already
-             * broken; abort loudly rather than rebuild a partial party. */
-            fprintf(stderr,
-                    "[FATAL] adventure_party_taj_transform_begin: seat %d missing before transform\n",
-                    (int) i);
-            abort();
+            /* Reachable from ordinary play: race_transition_adventure() nulls
+             * these slots, so a party returning from a finished race into a
+             * degraded hub arrives here with a hole. This used to abort(), which
+             * turned a recoverable state into a hard crash in a shipped build.
+             * Nothing has been freed yet at this point, so refusing is clean and
+             * the caller falls back to the retail transform. */
+            MDKR_TRACE("adventure_party_taj_transform: refused seat=%d missing",
+                       (int) i);
+            return FALSE;
         }
         racer = racerObj->racer;
         sApTajPlan[i].x = (s16) racerObj->trans.x_position;
@@ -4881,6 +4928,7 @@ void adventure_party_taj_transform_begin(s32 vehicle) {
      * same end-of-obj_update seam transform_player_vehicle already runs at. */
     gTransformTimer = 4;
     gOverworldVehicle = (s8) vehicle;
+    return TRUE;
 }
 
 /* Deferred whole-party rebuild, run from transform_player_vehicle() when the
