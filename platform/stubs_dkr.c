@@ -166,6 +166,7 @@ EM_ASYNC_JS(int, mdkr_persist_save_async, (int kind), {
 #include "audi_port_dkr.h"
 #include "mdkr_bounds.h"
 #include "gfx_ptr.h"     /* gfx_ptr_store — register non-arena DL pointers */
+#include "memory.h"    /* mdkr_mempool_allocation_span -- bounds-check a segment-token guess below */
 #include "fast3d/gfx_shadow_frame.h"
 #include "fast3d/gfx_pc_dkr.h"
 #include "fast3d/gfx_presentation_packet.h" /* F9 capture per-frame rows */
@@ -516,10 +517,53 @@ void dkr_dl_register_host_ptr(const void *x) {
          * whole range from registration; anything in it must resolve
          * through the segment table, never the pointer registry. */
         int is_segment_token_range = p >= 0x01000000u && p < 0x10000000u;
+        if (is_segment_token_range) {
+            /*
+             * That range test alone is ambiguous on Vita. OS_K0_TO_PHYSICAL
+             * only toggles bit 31, and this platform's static .data/.bss
+             * loads around 0x81400000+, so a perfectly real, already-
+             * flipped host pointer such as OS_K0_TO_PHYSICAL(&gViewportStack[n])
+             * (-> 0x014000d0) lands numerically inside this same reserved
+             * window purely by coincidence of where the linker placed it --
+             * indistinguishable from a genuine segment token by value alone.
+             *
+             * Confirmed on real Vita hardware via targeted boot-log tracing:
+             * this exact collision skipped registering gSPViewport's world-
+             * pass pointer, so dkr_resolve fell through to the segment
+             * table and read it as "segment 1, offset 0x4000d0" -- 4+ MB
+             * past segment 1's real (~150 KB) allocation. That lands on
+             * zeroed/unrelated memory, handing back an all-zero Vp_t
+             * (vscale=vtrans=0), which collapses the mapped viewport to
+             * zero width and height every frame: the flat black/blue
+             * screen with no 3D geometry at all (logo scene, main menu).
+             *
+             * A genuine segment token's offset always lands inside that
+             * segment's real, currently-assigned allocation (G_SETCIMG/
+             * G_SETTIMG/G_SETZIMG address real image buffers, not memory
+             * 4+ MB beyond them). A collision like the one above does not.
+             * So only keep excluding p from registration when the segment
+             * it names is actually assigned AND the offset fits inside
+             * that segment's real allocated span; otherwise this is far
+             * more likely a real pointer that collided with the token
+             * window than a segment token pointing past its own buffer,
+             * so fall through and register it like any other pointer.
+             */
+            uint32_t seg = (uint32_t)(p >> 24) & 0x0Fu;
+            uintptr_t segBase = gfx_segment_table[seg];
+            uint32_t offset = (uint32_t)p & 0x00FFFFFFu;
+            int plausible_token = 0;
+            if (segBase != 0) {
+                void *allocBase = NULL;
+                size_t allocSize = 0;
+                if (mdkr_mempool_allocation_span((const void *)segBase, &allocBase, &allocSize)) {
+                    plausible_token = offset < allocSize;
+                }
+            }
+            is_segment_token_range = plausible_token;
+        }
         if (p != 0 && !in_arena && !is_segment_token_range) {
             gfx_ptr_store_persistent(x);
-        }
-    }
+        }    }
 #endif
 }
 
