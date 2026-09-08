@@ -41,6 +41,7 @@
 
 #include "mod_registry.h"
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /* Generated first-party artwork can change without invalidating existing
@@ -106,6 +107,48 @@ uint32_t mdkr_mod_texture_generation(void);
  * must not flip that answer. */
 bool mdkr_mod_texture_dump_active(void);
 
+/* Version of the `<digest>.txt` sidecar, written as its first line.
+ *
+ *   1 -- width, height, fmt, siz, first_seen. No version line: a record with
+ *        no `dump_format` IS version 1, which is how corpora dumped before
+ *        this field existed stay readable.
+ *   2 -- adds source_width, source_height, source_line_bytes,
+ *        source_size_bytes and source_texel_bytes, plus the
+ *        `<digest>.texels` companion file holding the span itself.
+ *
+ * Version 1 is not a mode this code can still write; it is a shape a reader
+ * must still accept. */
+#define MDKR_MOD_TEXTURE_DUMP_FORMAT 2u
+
+/* The raw N64 texel bytes behind one dumped texture, and how to address them.
+ *
+ * This exists for one caller that does not live in this repository: an offline
+ * tool that has to recompute somebody else's hash -- a Rice pack's CRC-32, say
+ * -- over the same bytes mdkr_mod_texture_digest() hashed. The decoded PNG
+ * cannot serve that, because the decode is lossy in the direction that matters
+ * (a 16-bit texel becomes eight-bit channels and its one coverage bit becomes
+ * 0 or 255), so the source span has to be carried across separately or the
+ * comparison cannot be made at all.
+ *
+ * `texels`/`texel_bytes` are the span EXACTLY as it was hashed, including the
+ * caller's clamp against the end of the arena. `size_bytes` is what the tile
+ * declared before that clamp, so a reader can tell a truncated span from a
+ * whole one by comparing the two rather than having to guess.
+ *
+ * `width`/`height` are the SOURCE tile's logical geometry -- never the dumped
+ * buffer's, which for an installed override is the replacement's own size and
+ * has nothing to do with these bytes. `line_bytes` is the distance between
+ * successive rows within the span, which is not `width` scaled by the size
+ * code whenever the tile is padded. */
+typedef struct MdkrModTextureSource {
+    const uint8_t *texels;      /* the span the digest was taken over */
+    size_t         texel_bytes; /* its length, after the arena clamp */
+    uint32_t       line_bytes;  /* DkrTexCacheKey.source_line_bytes */
+    uint32_t       size_bytes;  /* DkrTexCacheKey.source_size_bytes */
+    int            width;       /* logical tile width, in texels */
+    int            height;      /* logical tile height, in rows */
+} MdkrModTextureSource;
+
 /* Records the texture the renderer just resolved for `digest_hex`, for
  * tools/mod_texture_dump.py. `rgba` (tightly packed, `width * height * 4`
  * bytes) must be the pixels the renderer is about to upload for this bind --
@@ -123,14 +166,26 @@ bool mdkr_mod_texture_dump_active(void);
  * than the pixels written; they are the one pair here that is deliberately
  * not about `rgba`.
  *
- * Writes <dir>/<digest_hex>.png and
- * <digest_hex>.txt (width, height, fmt, siz, first_seen) the first time this
- * digest is observed in the process, and is a no-op on every call after.
+ * `source` is the same divergence handled honestly rather than by a second
+ * pair of int parameters nobody could keep straight: it is entirely about the
+ * ROM bytes and never about `rgba`. NULL is legal and writes a record with no
+ * source fields and no `.texels` -- a v2 record that a reader treats the way
+ * it treats a v1 one, which is the only reason a null is worth accepting.
+ *
+ * Writes <dir>/<digest_hex>.png, <digest_hex>.txt (the key=value record
+ * described at MDKR_MOD_TEXTURE_DUMP_FORMAT) and, when `source` carries a
+ * span, <digest_hex>.texels (that span, raw) the first time this digest is
+ * observed in the process; a no-op on every call after.
+ *
  * Unconditionally a no-op unless MDKR_MOD_TEXTURE_DUMP is set: that is the
- * only cost this feature may impose when the variable is absent. */
+ * only cost this feature may impose when the variable is absent. Callers are
+ * still expected to test mdkr_mod_texture_dump_active() before assembling the
+ * arguments, because assembling them is not free even though the call is. */
 void mdkr_mod_texture_dump_observe(const char *digest_hex, const uint8_t *rgba,
                                    int width, int height, uint8_t fmt,
-                                   uint8_t siz, const char *first_seen);
+                                   uint8_t siz,
+                                   const MdkrModTextureSource *source,
+                                   const char *first_seen);
 
 #ifdef __cplusplus
 }

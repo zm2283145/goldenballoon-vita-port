@@ -2850,6 +2850,11 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
         bool over_used = false;
         char digest[33];
         bool digest_known = false;
+        /* The span the digest was actually taken over, kept for the dump
+         * below rather than recomputed there: an offline tool can only
+         * reproduce somebody else's hash of these bytes if it is handed the
+         * same clamp, not a second guess at it. */
+        uint32_t digest_bytes = 0;
         /* Dumping (tools/mod_texture_dump.py, MDKR_MOD_TEXTURE_DUMP) has to see
          * every digest even with no pack installed, which is exactly the case
          * an author dumping a fresh corpus is in -- mdkr_mod_texture_store_active()
@@ -2860,7 +2865,7 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
          * runs unchanged. */
         if (mdkr_mod_texture_store_active() || mdkr_mod_texture_dump_active()) {
             size_t digest_room = dkr_arena_room(addr);
-            uint32_t digest_bytes = source_size_bytes;
+            digest_bytes = source_size_bytes;
             if (digest_room != (size_t)-1 && digest_bytes > digest_room) {
                 digest_bytes = (uint32_t)digest_room;
             }
@@ -2918,7 +2923,14 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
             achieved.font_outline = (derived == DKR_FONT_DERIVED_OUTLINE);
             achieved.font_remastered = (derived == DKR_FONT_DERIVED_SDF);
         }
-        if (digest_known) {
+        /* The dump-active test is on the CALL SITE, not just inside the
+         * observer, because assembling the arguments is no longer free: a
+         * source geometry has to be resolved and a first_seen string
+         * formatted. With a pack installed and the dump off -- every ordinary
+         * player with a pack -- digest_known is true on every texture-cache
+         * miss, so leaving that work to be thrown away inside a no-op would
+         * charge the whole feature to people not using it. */
+        if (digest_known && mdkr_mod_texture_dump_active()) {
             /* over.rgba when an override applied, tex_decode_buf (this file's
              * decode scratch buffer, still holding the plain base-level RGBA8
              * dkr_upload_tile_texture() just produced) otherwise -- whichever
@@ -2937,12 +2949,32 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
              * silently sheared, and wrong. The two sizes only coincide when no
              * pack answered, which is why it survived. */
             char origin[64];
+            MdkrModTextureSource source;
+            uint32_t src_w = 0, src_h = 0;
             snprintf(origin, sizeof origin, "frame %d, texture unit %d",
                      dkr_frame_index, unit);
+            /* The SOURCE tile's geometry, resolved here rather than reused
+             * from uw/uh. Those hold the logical tile only because the
+             * override branch above deliberately put it back; the ROM path
+             * leaves them as whatever the decode achieved, which the arena
+             * clamp may have shortened. The span written alongside is the
+             * hashed one, and source_size_bytes says what the tile declared,
+             * so a reader comparing the two can see a truncated span for
+             * itself instead of hashing short rows without knowing it. */
+            if (!dkr_tile_logical_dims(td, source_size_bytes, &src_w, &src_h)) {
+                src_w = 0;
+                src_h = 0;
+            }
+            source.texels = addr;
+            source.texel_bytes = digest_bytes;
+            source.line_bytes = source_line_bytes;
+            source.size_bytes = source_size_bytes;
+            source.width = (int)src_w;
+            source.height = (int)src_h;
             mdkr_mod_texture_dump_observe(
                 digest, over_used ? over.rgba : tex_decode_buf,
                 over_used ? over.width : (int)uw,
-                over_used ? over.height : (int)uh, fmt, siz, origin);
+                over_used ? over.height : (int)uh, fmt, siz, &source, origin);
         }
         tex_cache[slot] = (struct DkrTexCacheEntry){
             .key = achieved,

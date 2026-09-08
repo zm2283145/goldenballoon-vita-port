@@ -161,10 +161,18 @@ fi
 # dump into the source tree was invisible to every arm of this script, one
 # `git add -A` away from being committed.
 #
-# `<32 hex chars>.png` and its `.txt` sidecar are the exact names
-# mdkr_mod_texture_dump_observe() writes (platform/mod_texture_store.c). Nothing
-# authored is named that way; the shape itself is the evidence, wherever it sits.
-dump_shape='(^|/)[0-9a-f]{32}\.(png|txt)$'
+# `<32 hex chars>.png`, its `.txt` sidecar and the `.texels` companion are the
+# exact names mdkr_mod_texture_dump_observe() writes
+# (platform/mod_texture_store.c). Nothing authored is named that way; the shape
+# itself is the evidence, wherever it sits.
+#
+# `.texels` is the worst of the three to leak and the easiest to miss. It is not
+# decoded pixels but the ROM's own bytes, verbatim, under an extension no
+# scanner recognises -- so it is the one file here that is literally a slice of
+# the cartridge. It must be added to this pattern in the same commit that
+# teaches the engine to write it, which is why it is called out rather than
+# quietly appended.
+dump_shape='(^|/)[0-9a-f]{32}\.(png|txt|texels)$'
 # Collect into variables rather than testing `git ls-files | grep -q` directly.
 # This script runs under `set -o pipefail`, and `grep -q` exits the moment it
 # matches, which SIGPIPEs the producer; the pipeline then reports 141 and the

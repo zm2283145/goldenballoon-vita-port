@@ -94,6 +94,13 @@ recording its width, height, format and the frame it was first seen on. Each
 digest is written once, however many times it is drawn. Drive whatever route
 covers the textures you want; the menus, a track, a particular character.
 
+A third file, `<digest>.texels`, holds the raw game texel bytes that texture's
+name was computed from. Nothing a pack author does needs it — it is there so
+tooling can recompute a *different* naming scheme's hash over the same bytes,
+which is how a pack written for another emulator can be converted. Ignore it,
+and never publish it: unlike the PNG it is not a picture, it is a slice of the
+cartridge.
+
 **Never point `--out` inside this repository.** The output is decoded game data;
 `mod-texture-dump/` is git-ignored for that reason, and the clean-room guard
 fails closed if any of it is ever tracked.
@@ -731,3 +738,46 @@ Their gates are `mod_manifest`, `mod_registry`, `mod_source_zip`,
 that keeps this feature legitimate is section 8 of
 `tools/check_clean_room.sh`: no pack content may be tracked in this repository
 or appear anywhere in its history.
+
+### Importing a Rice pack
+
+`tools/ricepack/import_rice_pack.py` reads a Rice/GLideN64 high-resolution
+pack — the `<ROM name>#<CRC>#<fmt>#<siz>_{all,rgb,a}.png` convention — and
+writes a content pack plus an auditable record of what it decided about every
+single file it saw.
+
+```sh
+# Decide and record. Maps nothing; writes no pixels.
+python3 tools/ricepack/import_rice_pack.py plan /path/to/rice-pack \
+    --manifest ~/ricepack-plan.json --rom-name "Diddy Kong Racing"
+```
+
+One thing it cannot do on its own. A Rice pack names a texture by a CRC over
+the raw texel bytes; this port names one by the content digest above. Both name
+the same picture and neither can be computed from the other without the bytes,
+which means without a ROM. So `plan` deliberately maps zero textures and says
+so; `build` needs a crosswalk from Rice key to content digest, and building one
+needs a texture dump taken from a running game. The tool reports partial
+coverage as partial, always, rather than presenting a decision record as a
+finished import.
+
+```sh
+# Build the crosswalk from a dumped corpus, then import against it.
+python3 tools/ricepack/import_rice_pack.py crosswalk ~/dkr-textures     --out ~/crosswalk.json
+python3 tools/ricepack/import_rice_pack.py build /path/to/rice-pack     --crosswalk ~/crosswalk.json --manifest ~/ricepack-import.json     --out ~/my-pack --name "Imported pack"
+```
+
+The CRC itself, in `tools/ricepack/rice_crc.py`, is **unvalidated** — it has
+never been compared against an emulator's output, and four candidate readings
+of it are implemented side by side. Which one is right is a measurement, not an
+argument, and it is one command:
+
+```sh
+python3 tools/ricepack/measure_crc_variants.py     --build build --rom baserom.us.v80.z64     --pack /path/to/rice-pack --out ~/dkr-crc-experiment
+```
+
+That drives several routes, computes all four candidates over every dumped
+span, and prints how many of the pack's keys each one matched. A wrong variant
+is expected to score exactly zero, so the table is read directly rather than
+interpreted. Until it has been run, treat any coverage number this importer
+prints as conditional on a CRC nobody has checked.
