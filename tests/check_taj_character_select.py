@@ -27,6 +27,22 @@ ROOT = Path(__file__).resolve().parent.parent
 ROM_WIDTH = 320
 ROM_HEIGHT = 240
 FRAMES = 2250
+
+# Wall-clock ceiling for one engine arm. This bounds a HANG; it is not a
+# performance assertion. Every claim this gate makes is a marker read out of the
+# arm's output, so a slow arm that finishes still proves exactly what a fast one
+# does, and the only thing a tight ceiling buys is a red on a busy machine.
+#
+# It was 90s, roughly the cost of the heaviest arm, and ordinary shared-machine
+# load pushed two of the four arms past it in one suite run -- the retry-budget
+# arm (100 forced spawn failures) and the 1840-frame placard arm (frame dumps to
+# disk) -- while the run's median task duration was unchanged at 0.99x. Both
+# passed standalone at 3m45s and 2m10s, unchanged from the previous release's
+# timings, so nothing about the arms themselves had regressed.
+#
+# 300s clears every measured arm several times over and still catches a genuine
+# hang inside the time the gate already spends.
+ARM_TIMEOUT_SECONDS = 300
 UNSELECTED_FRAME = 1520
 SELECTED_FRAME = 1980
 SELECTED_MOTION_FRAME = 2040
@@ -472,7 +488,7 @@ def main() -> int:
             process = subprocess.run(
                 command, cwd=run_dir, env=env, text=True,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                timeout=90, check=False,
+                timeout=ARM_TIMEOUT_SECONDS, check=False,
             )
             output = process.stdout or ""
             if args.evidence_dir is not None:
@@ -639,7 +655,7 @@ def main() -> int:
                      str(control_frames), "--rom", str(rom)],
                     cwd=control_dir, env=control_env, text=True,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    timeout=90, check=False,
+                    timeout=ARM_TIMEOUT_SECONDS, check=False,
                 )
                 control_output = control_process.stdout or ""
                 if args.evidence_dir is not None:
@@ -728,7 +744,7 @@ def main() -> int:
                      str(player_frames), "--rom", str(rom)],
                     cwd=player_dir, env=player_env, text=True,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    timeout=90, check=False,
+                    timeout=ARM_TIMEOUT_SECONDS, check=False,
                 )
                 player_output = player_process.stdout or ""
                 if args.evidence_dir is not None:
@@ -816,7 +832,7 @@ def main() -> int:
                  "--input-script", str(failure_script), "--rom", str(rom)],
                 cwd=failure_dir, env=failure_env, text=True,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                timeout=90, check=False,
+                timeout=ARM_TIMEOUT_SECONDS, check=False,
             )
             failure_output = failure_process.stdout or ""
             if args.evidence_dir is not None:
