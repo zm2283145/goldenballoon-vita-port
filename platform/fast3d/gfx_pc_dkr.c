@@ -4401,9 +4401,12 @@ static void dkr_sp_moveword(uint8_t index, uint16_t offset, uint32_t data) {
             void *resolved = dkr_resolve(data);
             gfx_segment_table[seg] = (uintptr_t)resolved;
 #if defined(__vita__)
-            if (seg == 1) {
-                static int s_seg1AssignLogCount = 0;
-                if (s_seg1AssignLogCount < 30) {
+            {
+                /* Was gated to seg==1 only; broadened to every segment after
+                 * a crash traced to G_SETZIMG using segment 2's table entry,
+                 * which nothing here had ever logged an assignment for. */
+                static int s_segAssignLogCount = 0;
+                if (s_segAssignLogCount < 80) {
                     void *allocBase = NULL;
                     size_t allocSize = 0;
                     s32 allocOk = resolved != NULL
@@ -4411,12 +4414,12 @@ static void dkr_sp_moveword(uint8_t index, uint16_t offset, uint32_t data) {
                         : 0;
                     char lb[192];
                     snprintf(lb, sizeof(lb),
-                             "seg1-assign: data=0x%x -> resolved=%p allocOk=%d allocBase=%p "
+                             "seg%u-assign: data=0x%x -> resolved=%p allocOk=%d allocBase=%p "
                              "allocSize=0x%lx",
-                             (unsigned)data, resolved, (int)allocOk, allocBase,
+                             (unsigned)seg, (unsigned)data, resolved, (int)allocOk, allocBase,
                              (unsigned long)allocSize);
                     mdkr_vita_boot_log(lb);
-                    s_seg1AssignLogCount++;
+                    s_segAssignLogCount++;
                 }
             }
 #endif
@@ -7975,11 +7978,35 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             rdp.color_image_address = dkr_resolve(cmd->words.w1);
             rdp.color_image_token   = cmd->words.w1;
             DTRACE("G_SETCIMG addr=%08x->%p", cmd->words.w1, rdp.color_image_address);
+#if defined(__vita__)
+            {
+                static int s_cimgLogCount = 0;
+                if (s_cimgLogCount < 40) {
+                    char lb[128];
+                    snprintf(lb, sizeof(lb), "G_SETCIMG: token=0x%x -> %p",
+                             (unsigned)cmd->words.w1, rdp.color_image_address);
+                    mdkr_vita_boot_log(lb);
+                    s_cimgLogCount++;
+                }
+            }
+#endif
             break;
         case G_SETZIMG:
             rdp.z_buf_address = dkr_resolve(cmd->words.w1);
             rdp.z_buf_token   = cmd->words.w1;
             DTRACE("G_SETZIMG addr=%08x->%p", cmd->words.w1, rdp.z_buf_address);
+#if defined(__vita__)
+            {
+                static int s_zimgLogCount = 0;
+                if (s_zimgLogCount < 40) {
+                    char lb[128];
+                    snprintf(lb, sizeof(lb), "G_SETZIMG: token=0x%x -> %p",
+                             (unsigned)cmd->words.w1, rdp.z_buf_address);
+                    mdkr_vita_boot_log(lb);
+                    s_zimgLogCount++;
+                }
+            }
+#endif
             break;
         case G_SETTIMG:
             dkr_dp_set_texture_image(C0(cmd, 19, 2), C0(cmd, 0, 12) + 1,
