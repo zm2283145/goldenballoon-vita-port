@@ -951,3 +951,90 @@ Two further items, recorded but not costed:
   control** (§4.4), because that control is guarded on `args.aspect is None`.
   That is a coverage gap surfaced by a cost analysis, and closing it will make
   the suite slightly slower.
+
+## 8. Re-measurement, 2026-09-08: where the time went after 1.7.0
+
+Measured from the complete run at `b6e8ff40` (629 min wall, `--jobs 3`, 271
+tasks, per-task durations parsed from the run log). The numbers in §2 and §6
+predate the online, Adventure Party and Workshop work and no longer describe
+this suite.
+
+### 8.1 The job count is not the lever; the serial set is
+
+Summing every task gives **881 min of work in 629 min of wall clock — a 1.40x
+speedup**, not the ~3x `--jobs 3` suggests. Splitting by the scheduler's own
+classes:
+
+| class | tasks | min | share |
+|---|---|---|---|
+| pooled | 134 | 384 | 43.7% |
+| `GPU_SERIAL` | 92 | 313 | 35.6% |
+| `SERIAL_ROLE:layout` | 1 | 67 | 7.6% |
+| `SERIAL_ROLE:instrumented` | 2 | 56 | 6.4% |
+| `SERIAL_MEASURE` | 15 | 34 | 3.9% |
+| browser/ctest/wasm roles | 27 | 27 | 3.1% |
+
+**56% of the work is serialised.** Amdahl over that split puts the floor at
+about 566 min for `--jobs 6` and 534 min for `--jobs 12`: raising the job count
+buys minutes, not hours, and past runs show it also buys OOM kills. Anyone
+asking why a release run takes ten hours is asking about `GPU_SERIAL` and the
+two build-tree roles, not about parallelism.
+
+### 8.2 `native_layout` is a cost multiplier, and §6.1's number is stale
+
+§6.1 records `native_layout` landing at **9m40s** on 2026-08-08 and "no longer
+the suite's long pole". It now measures **66m55s** and is again the single most
+expensive task in the suite. Nothing was reverted -- the `RelWithDebInfo` build
+that bought that win is still there.
+
+The cause is structural. `native_layout` re-runs fourteen whole checks under
+alignment UBSan, and **all fourteen are also top-level tasks in the same run**:
+
+    nav_fixtures 1m16s   attract_demo 1m26s   track_sweep 6m41s
+    vehicle_sweep 14m15s   adventure_hub 0m29s   adventure_race_loop 1m24s
+    trophy_series 6m08s   adventure_two 6m57s   collision_gridmask 3m35s
+    race_2p_split 0m31s   race_multiplayer 1m08s   challenge_modes 4m48s
+    taj_challenges 9m21s   widescreen_proportions 3m03s
+
+    standalone sum 61m02s   native_layout 66m55s   ratio 1.10x
+
+The suite therefore spends about **128 min -- 14.5% of all task time -- running
+this content twice**, and the second pass is serialised, so it lands whole on
+the wall clock. Every minute 1.7.0 added to `vehicle_sweep`, `taj_challenges`,
+`adventure_two` or `trophy_series` was charged twice, and the second charge is
+invisible in that task's own timing. That is why §6.1's figure decayed without
+anyone reverting anything.
+
+### 8.3 The proposal, and why it is not just "delete a gate"
+
+The alignment arm is worth keeping: its three legacy controls must be *rejected*
+by the sanitizer, and that is real evidence. What is questionable is bundling
+fourteen re-runs into one serial task.
+
+The suite already has the pattern this wants -- `widescreen_shadow_asan`,
+`presentation_lifecycle_asan`, `door_blocks_asan` and
+`fast3d_dl_hardening_asan` are sanitizer variants that live as their own
+top-level tasks and pool. `native_layout` is the odd one out.
+
+Proposal: keep the build and the three legacy controls as a small serial gate,
+and express the fourteen runtime arms as pooled `*_align` tasks against the
+already-built `build-align` binary. The serialisation reason for the `layout`
+role is that the tree is *compiled* in place; it is not a reason the *runs* must
+be serial, and each already takes its own save directory. That converts ~67
+serial minutes into ~61 poolable ones, about 20 min of wall clock at
+`--jobs 3` -- roughly 45 min off a complete run -- and makes each arm's cost
+visible in its own row instead of hidden inside one task.
+
+Not attempted here: this is a scheduler change, and validating it means proving
+a pooled run reproduces the sequential verdict, which is the same equivalence
+bar §4 sets for every other pooling decision. It should not land on reasoning
+alone.
+
+### 8.4 Nothing gates suite cost, which is why this drifted
+
+§6.1's win decayed 7x with no signal. Costs are measured when someone looks, and
+nothing fails when a task grows. A cheap ratchet -- record each task's duration
+and refuse a change that moves the total beyond a reviewed ceiling, the way
+`check_rollback_authority` refuses an unclassified declaration -- would have
+caught `native_layout` drifting back into the long-pole position months ago. The
+measurement is already in the run log; only the ceiling is missing.
