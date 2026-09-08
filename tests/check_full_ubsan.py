@@ -33,6 +33,21 @@ DEFAULT_BUILD = ROOT / "build-ubsan-full"
 # GCC's ``undefined`` group does not include float-to-integer overflow, while
 # Clang's does. Name it explicitly so the gate has the same coverage on both
 # compiler families.
+# The per-route ceilings below bound a RUNAWAY, not performance. Every route is
+# another check_*.py that already enforces its own per-engine-run timeout -- the
+# WebGPU census allows 300s per route, and catches a genuinely hung run long
+# before the wrapper here would -- so this value only stops a sub-check that
+# never returns at all.
+#
+# They are scaled well past measured cost on purpose. The 46-route WebGPU census
+# measures 181s end to end on an idle machine against the 900s it was declared
+# with, five times the headroom, and it still exceeded that budget twice on a
+# machine shared with a peer project's 4-job permuter. Contention stretches a
+# GPU-bound census far past any margin that looks generous in isolation, and a
+# ceiling close enough to real cost for load to cross it reports the machine
+# rather than the tree.
+ROUTE_BUDGET_SCALE = 4
+
 SANITIZER_FLAGS = (
     "-fsanitize=undefined,float-cast-overflow -fno-omit-frame-pointer"
 )
@@ -364,7 +379,7 @@ def run_check() -> int:
         )
         for label, command, timeout in routes:
             if not checked_route(label, command, route_environment,
-                                 timeout=timeout):
+                                 timeout=timeout * ROUTE_BUDGET_SCALE):
                 return 1
 
     with tempfile.TemporaryDirectory(prefix="mdkr_full_ubsan_race_") as save_dir:
