@@ -6858,6 +6858,23 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
         s_dlRing[s_dlRingPos % DKR_DL_RING_SIZE].w1 = cmd->words.w1;
         s_dlRingPos++;
         s_dlRingTotal++;
+        {
+            /* Periodic, unconditional ring flush -- NOT gated on a detected
+             * fault. The crash we're chasing is a raw hardware fault that the
+             * custom firmware's coredumper intercepts before our own
+             * SIGSEGV/SIGBUS handler ever runs (confirmed: that handler's own
+             * boot-log line never appears in the log from a crashed run), so
+             * nothing inside dkr_dl_fault or the crash handler can ever see
+             * it. Flushing every 16 commands during ordinary execution means
+             * whatever is on disk when the fault freezes the file is at most
+             * ~16 commands stale -- close enough to show the actual crash
+             * site instead of just the last successfully-entered sub-DL. */
+            static long s_periodicDumpBudget = 250;
+            if (s_periodicDumpBudget > 0 && (s_dlRingTotal % 16) == 0) {
+                dkr_dl_ring_dump();
+                s_periodicDumpBudget--;
+            }
+        }
 #endif
         switch (op) {
 
