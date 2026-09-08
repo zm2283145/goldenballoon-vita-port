@@ -807,6 +807,17 @@ struct MdkrMatchPeerMesh::State
          * (keysDerived drops until the exchange completes again). */
         for (auto &entry : peers) {
             PeerRuntime &peer = entry.second;
+            /* Not for a peer already declared lost -- the same rule rosterPeer
+             * states at its own rekey: past the dwell's expiry the verdict
+             * stands, and only a real presence bump re-admits. rekeyPeer()
+             * clears `lost`, so calling it here resurrected every finalised
+             * departure -- PeerEnded, PeerVanished, and the PeerDeparted the A3
+             * drop path sets -- on nothing more than OUR socket being replaced,
+             * without emitting a new verdict. The launcher had already stopped
+             * consuming that endpoint while the mesh quietly resumed hellos,
+             * key derivation and input fan-out to it. It also reset
+             * restartEpisodes, which is the budget handlePeerEnd now spends. */
+            if (peer.lost) continue;
             rekeyPeer(peer, peer.generation);
             peer.present = false; /* the welcome's peer list re-asserts */
         }
@@ -1010,8 +1021,31 @@ struct MdkrMatchPeerMesh::State
             peerLost(*peer, MdkrMatchPeerLostReason::PeerEnded);
             return;
         }
-        /* "restart": retire this generation's connection quietly; the
-         * offerer rebuilds, the answerer awaits the fresh offer. */
+        /*
+         * "restart": retire this generation's connection quietly; the offerer
+         * rebuilds, the answerer awaits the fresh offer.
+         *
+         * Bounded by the same budget connectionDown() spends, and for the same
+         * reason. silentTeardown() disarms every ladder that could later
+         * produce a verdict -- it clears channelsReady, so the control-ping
+         * ladder stops; it zeroes setupStartedMs, so the answerer deadline
+         * re-arms from scratch; and the vanish dwell needs !channelsReady while
+         * the signal socket is still up. Unbounded, a peer sending one of these
+         * every few seconds kept its own loss detection permanently disarmed,
+         * and mid-race the teardown stripped a live connection so sealAndSend()
+         * failed forever -- input delivery to that peer stopped silently while
+         * the mesh reported everything healthy. On the offerer path it also
+         * reset offerAttempts and gaveUp, making the retry ladder's give-up
+         * unreachable and buying a full PeerConnection rebuild each time.
+         *
+         * A remote-driven restart is still a restart episode, so it is charged
+         * to the same counter a local one is.
+         */
+        if (peer->restartEpisodes >= kMdkrMatchMaxRestartEpisodes) {
+            peerLost(*peer, MdkrMatchPeerLostReason::ConnectTimeout);
+            return;
+        }
+        peer->restartEpisodes++;
         silentTeardown(*peer);
         if (peer->offerer) {
             peer->offerAttempts = 0u;
