@@ -1590,7 +1590,8 @@ private:
          * delivered; anything bound to the finished epoch is stale. */
         for (auto it = pendingPeerAtts_.begin();
              it != pendingPeerAtts_.end();) {
-            it = (!haveLobby_ || it->second.match_epoch <= lobby_.match_epoch)
+            it = (!haveLobby_ ||
+                  it->second.attestation.match_epoch <= lobby_.match_epoch)
                      ? pendingPeerAtts_.erase(it)
                      : ++it;
         }
@@ -2619,8 +2620,9 @@ private:
             }
             /* Any peer attestations that arrived before init are now applied. */
             for (const auto &kv : pendingPeerAtts_) {
-                (void)mdkr_match_preflight_submit(&preflight_, kv.first,
-                                                  meshGeneration_, &kv.second);
+                (void)mdkr_match_preflight_submit(
+                    &preflight_, kv.first, kv.second.authenticatedGeneration,
+                    &kv.second.attestation);
             }
             pendingPeerAtts_.clear();
         }
@@ -2905,8 +2907,11 @@ private:
                 &preflight_, peer, ev.context.key.source_generation, &att);
         } else {
             /* Not for the current preflight instance (or none yet): queue it.
-             * init drains the queue; resetRaceLatches prunes stale epochs. */
-            pendingPeerAtts_[peer] = att;
+             * init drains the queue; resetRaceLatches prunes stale epochs. The
+             * authenticated generation is stored beside it because the drain
+             * cannot recover it later. */
+            pendingPeerAtts_[peer] = PendingPeerAttestation{
+                ev.context.key.source_generation, att};
         }
     }
 
@@ -4902,7 +4907,20 @@ private:
     bool installed_ = false;
     MdkrMatchPeerGraph graph_{};
     std::map<uint64_t, MdkrMatchPreflightFragmentState> fragStates_;
-    std::map<uint64_t, MdkrMatchPreflightAttestationV1> pendingPeerAtts_;
+    /* An attestation queued before preflight init, together with the
+     * connection generation the TRANSPORT authenticated it under. The
+     * generation has to travel with it: mdkr_match_preflight_submit() proves a
+     * peer owns its attestation by comparing the body's connection_generation
+     * against an authenticated one supplied by the caller, so re-deriving it at
+     * drain time from anything the body carries would make that check compare a
+     * value against itself. The drain used meshGeneration_ -- this endpoint's
+     * generation, not the sender's -- so every queued attestation was refused
+     * as AUTHENTICATED_SOURCE_MISMATCH the moment the two diverged. */
+    struct PendingPeerAttestation {
+        uint32_t authenticatedGeneration;
+        MdkrMatchPreflightAttestationV1 attestation;
+    };
+    std::map<uint64_t, PendingPeerAttestation> pendingPeerAtts_;
 
     /* Diagnostics + non-silent view timeout (see logPhaseAndTimeoutAnchor /
      * timeoutExpired). lastPhaseKey_ de-dups the [ROOM-PHASE] spine;
