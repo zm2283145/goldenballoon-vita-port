@@ -51,8 +51,11 @@ static int dkr_host_errno(void) {
 
 #if defined(__vita__)
 extern void mdkr_vita_boot_log(const char *msg);
+extern void mdkr_vita_boot_log_flush(void);
+extern uint64_t g_surfaceFrameCounter;
 #else
 #define mdkr_vita_boot_log(msg) ((void)0)
+#define mdkr_vita_boot_log_flush() ((void)0)
 #endif
 
 /* ======================================================================== *
@@ -1169,8 +1172,32 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
              * MDKR_INPUT_JIT=0 opt-out is the only path that skips it.
              */
             platform_input_sample_late();
+#if defined(__vita__)
+            {
+                static int s_vitaCrumbTickA = 0;
+                if (s_vitaCrumbTickA < 24) {
+                    char tcA[96];
+                    snprintf(tcA, sizeof(tcA), "crumb: frame=%u after-platform_input_sample_late", (unsigned)g_surfaceFrameCounter);
+                    mdkr_vita_boot_log(tcA);
+                    mdkr_vita_boot_log_flush();
+                    s_vitaCrumbTickA++;
+                }
+            }
+#endif
 
             const bool exit_requested = platform_exit_requested();
+#if defined(__vita__)
+            {
+                static int s_vitaCrumbTickB = 0;
+                if (s_vitaCrumbTickB < 24) {
+                    char tcB[96];
+                    snprintf(tcB, sizeof(tcB), "crumb: frame=%u after-platform_exit_requested exit=%d", (unsigned)g_surfaceFrameCounter, (int)exit_requested);
+                    mdkr_vita_boot_log(tcB);
+                    mdkr_vita_boot_log_flush();
+                    s_vitaCrumbTickB++;
+                }
+            }
+#endif
             bool ticket_issued = false;
             if (!exit_requested && oracle_variable_ticket) {
                 platform_input_commit_tick((uint64_t)g_simTickCounter + 1u);
@@ -1179,6 +1206,18 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
                 platform_input_commit_tick(present_sched_issued_ticks());
                 ticket_issued = true;
             }
+#if defined(__vita__)
+            {
+                static int s_vitaCrumbTickC = 0;
+                if (s_vitaCrumbTickC < 24) {
+                    char tcC[96];
+                    snprintf(tcC, sizeof(tcC), "crumb: frame=%u after-commit-tick ticket_issued=%d", (unsigned)g_surfaceFrameCounter, (int)ticket_issued);
+                    mdkr_vita_boot_log(tcC);
+                    mdkr_vita_boot_log_flush();
+                    s_vitaCrumbTickC++;
+                }
+            }
+#endif
             if (!mdkr_next_tick_dispatch_allowed(exit_requested,
                                                  ticket_issued)) {
                 if (!exit_requested) {
@@ -1202,6 +1241,18 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
             s_viFieldsPending = mdkr_pacing_queue_refill(
                 s_viFieldsPending, 1, 8);
             present_perf_add(PRESENT_PERF_TICKWALL, perf_entry);
+#if defined(__vita__)
+            {
+                static int s_vitaCrumbTickD = 0;
+                if (s_vitaCrumbTickD < 24) {
+                    char tcD[96];
+                    snprintf(tcD, sizeof(tcD), "crumb: frame=%u end-of-tick-subloop-iter", (unsigned)g_surfaceFrameCounter);
+                    mdkr_vita_boot_log(tcD);
+                    mdkr_vita_boot_log_flush();
+                    s_vitaCrumbTickD++;
+                }
+            }
+#endif
         }
         s_viFieldsPending--;
         if (msg) *msg = (OSMesg)(intptr_t)OS_SC_RETRACE_MSG;
