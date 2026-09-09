@@ -715,10 +715,28 @@ def coverage_report(keys: list[KeyRecord], files: list[FileRecord],
     complete = (discovered > 0 and mapped == discovered
                 and mappable == discovered and refused_files == 0)
     percent = (100.0 * mapped / mappable) if mappable else 0.0
+    # A key carrying a palette CRC cannot be mapped by construction, not by
+    # circumstance: build_crosswalk() emits `CRC#fmt#siz#` with the palette
+    # component always empty, while RiceName.key fills it in whenever the
+    # filename has one, so the two can never meet. Counting those inside the
+    # ordinary "no content digest in the crosswalk" line would tell an author
+    # their dump route never visited the texture, and they would widen the
+    # route forever chasing coverage that is unreachable. Say which it is.
+    palette_keyed = sum(1 for key in keys
+                        if key.verdict == VERDICT_SELECTED
+                        and key.key.rsplit("#", 1)[-1] != "")
     reasons = []
     if mapped < mappable:
-        reasons.append(f"{mappable - mapped} mappable key(s) have no content "
-                       "digest in the crosswalk")
+        unmapped = mappable - mapped
+        if palette_keyed:
+            reasons.append(
+                f"{unmapped} mappable key(s) have no content digest in the "
+                f"crosswalk, of which {palette_keyed} carry a palette CRC and "
+                "are unmappable by construction (the crosswalk emits no "
+                "palette component; widening the dump route cannot reach them)")
+        else:
+            reasons.append(f"{unmapped} mappable key(s) have no content "
+                           "digest in the crosswalk")
     if mappable < discovered:
         reasons.append(f"{discovered - mappable} key(s) were refused")
     if refused_files:
@@ -732,6 +750,7 @@ def coverage_report(keys: list[KeyRecord], files: list[FileRecord],
         "keysMappable": mappable,
         "keysMapped": mapped,
         "keysUnmapped": mappable - mapped,
+        "keysPaletteKeyedUnmappable": palette_keyed,
         "filesRefused": refused_files,
         "percentOfMappable": round(percent, 4),
         "complete": complete,
