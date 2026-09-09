@@ -3314,6 +3314,29 @@ static void input_dispatch_events(uint64_t target_tick) {
             }
         }
 #endif
+#if defined(__vita__)
+        {
+            static int s_vitaCrumbRawPumpA = 0;
+            if (s_vitaCrumbRawPumpA < 24) {
+                char cbI[96];
+                snprintf(cbI, sizeof(cbI), "crumb: frame=%u before-raw-SDL_PumpEvents", (unsigned)g_surfaceFrameCounter);
+                mdkr_vita_boot_log(cbI);
+                mdkr_vita_boot_log_flush();
+                s_vitaCrumbRawPumpA++;
+            }
+        }
+        SDL_PumpEvents();
+        {
+            static int s_vitaCrumbRawPumpB = 0;
+            if (s_vitaCrumbRawPumpB < 24) {
+                char cbJ[96];
+                snprintf(cbJ, sizeof(cbJ), "crumb: frame=%u after-raw-SDL_PumpEvents", (unsigned)g_surfaceFrameCounter);
+                mdkr_vita_boot_log(cbJ);
+                mdkr_vita_boot_log_flush();
+                s_vitaCrumbRawPumpB++;
+            }
+        }
+#endif
         while (SDL_PollEvent(&e)) {
 #if defined(__vita__)
             {
@@ -3529,6 +3552,18 @@ void platform_input_pump(void) {
     overlay_capture_sync(target_tick);
 #endif
     input_dispatch_events(target_tick);
+#if defined(__vita__)
+    {
+        static int s_vitaCrumbCallerA = 0;
+        if (s_vitaCrumbCallerA < 24) {
+            char cbK[96];
+            snprintf(cbK, sizeof(cbK), "crumb: frame=%u after-input_dispatch_events-A", (unsigned)g_surfaceFrameCounter);
+            mdkr_vita_boot_log(cbK);
+            mdkr_vita_boot_log_flush();
+            s_vitaCrumbCallerA++;
+        }
+    }
+#endif
     platform_surface_visibility_update();
 #ifdef __EMSCRIPTEN__
     /* JS pointer callbacks append bounded snapshots without re-entering wasm.
@@ -3588,6 +3623,18 @@ void platform_input_sample_late(void) {
     overlay_capture_sync(target_tick);
 #endif
     input_dispatch_events(target_tick);
+#if defined(__vita__)
+    {
+        static int s_vitaCrumbCallerB = 0;
+        if (s_vitaCrumbCallerB < 24) {
+            char cbL[96];
+            snprintf(cbL, sizeof(cbL), "crumb: frame=%u after-input_dispatch_events-B", (unsigned)g_surfaceFrameCounter);
+            mdkr_vita_boot_log(cbL);
+            mdkr_vita_boot_log_flush();
+            s_vitaCrumbCallerB++;
+        }
+    }
+#endif
 #ifdef __EMSCRIPTEN__
     while (browser_touch_pop(&s_browserTouchSource)) {
         input_capture_live(target_tick);
