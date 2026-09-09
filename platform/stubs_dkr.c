@@ -443,17 +443,58 @@ u32 dkr_k0_to_physical(const void *x) {
      *     (void*)token as if it were a host pointer makes dkr_resolve hand that
      *     bogus low value back (registry beats arena reconstruction), so the
      *     texture command list never executes and the sprite renders untextured. */
-    /* Register genuine 64-bit non-arena host pointers (LP64 globals/rodata). On
-     * ILP32 pointers are 32-bit and globals also reach DLs via `(s32)ptr+K0BASE`
-     * / raw casts that never pass through here, so registration can't cover them;
-     * dkr_resolve recovers ILP32 host pointers DIRECTLY from the token instead.
-     * This registration stays LP64-only. */
+    /* Register genuine non-arena host pointers (globals/rodata) BEFORE they are
+     * truncated below. On LP64 this is the only place that still has the full
+     * pointer once OS_K0_TO_PHYSICAL returns. On ILP32 (Vita/wasm32) the value
+     * is already the final 32-bit result, so 'registering' it here means
+     * storing that untruncated pointer under its own low bits, exactly like
+     * the LP64 case, so dkr_resolve's registry lookups (which run before the
+     * segment-table fallback) can find it. Without this, globals reached via
+     * the pre-converted gSPFoo(pkt, OS_K0_TO_PHYSICAL(&global)) calling
+     * convention (gSPViewport chief among them) were never registered on
+     * ILP32 and always fell through to the segment-table heuristic instead --
+     * see the ILP32 branch below for the full story and hardware evidence. */
 #if UINTPTR_MAX > UINT32_MAX
     if (p > 0xFFFFFFFFu && !in_arena) {
         gfx_ptr_store_persistent(x);
     }
 #else
-    (void)in_arena;
+    /* ILP32 (Vita/wasm32): callers of THIS function (gSPViewport, gSPMatrix,
+     * etc. via `gSPFoo(pkt, OS_K0_TO_PHYSICAL(&global))`) pre-convert their
+     * pointer before it ever reaches gDma1p, unlike gSPDisplayList/gSPBranchList
+     * (whose raw pointer flows straight into gDma1p, which registers it itself
+     * via dkr_dl_register_host_ptr -- see gbi.h). By the time gDma1p sees the
+     * value returned from here, it has already been reduced to the small
+     * token below and the true pointer is gone -- dkr_dl_register_host_ptr
+     * cannot recover it, and worse, the token frequently falls inside its
+     * 0x01000000..0x0FFFFFFF segment-token exclusion range and gets silently
+     * skipped. Nothing else registers globals reached this way, so
+     * dkr_resolve's registry lookups always miss for them and fall through
+     * to the segment-table heuristic, which can collide with a legitimately
+     * assigned segment slot and hand back a wrong pointer into unrelated
+     * memory. Confirmed on real Vita hardware: gViewportStack (whose address
+     * always flows through this exact pre-converted path) resolved this way,
+     * landing in an unrelated small transient pool and reading back as an
+     * all-zero Vp_t -- collapsing the 3D viewport to nothing. Register the
+     * ORIGINAL pointer here, before truncation, exactly like the LP64 path
+     * above -- this is the one place that still has it.
+     *
+     * GUARD: unlike LP64 (where genuine pointers are trivially distinguished
+     * from already-truncated dkrptr32 TOKENS by simply exceeding 32 bits --
+     * see the p > 0xFFFFFFFFu check above), on ILP32 both kinds of value
+     * fit in 32 bits and look alike. DKR frequently feeds OS_K0_TO_PHYSICAL
+     * an already-converted token too (e.g. TextureHeader.cmd); registering
+     * one of those as if it were a host pointer would poison the registry
+     * exactly like the LP64 comment above warns -- dkr_resolve would hand
+     * the bogus low token back as a 'resolved pointer' and the texture
+     * command list would never execute. Vita user-process pointers are
+     * always mapped at a fixed high load address (observed ~0x81000000+ in
+     * practice -- see dkr_arena_init above), while every token/segment-
+     * relative value this codebase produces stays below 0x80000000. Gate
+     * registration on that floor so only genuine host pointers qualify. */
+    if (p >= 0x80000000u && !in_arena) {
+        gfx_ptr_store_persistent(x);
+    }
 #endif
     return (u32)(p - 0x80000000u);
 }
