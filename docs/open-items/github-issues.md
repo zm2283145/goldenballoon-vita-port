@@ -25,7 +25,7 @@ validation logs; it does not mutate or close issues. The candidate remains
 alignment finding is fixed in the candidate with a valid-texture regression
 and a clean 601-second ASan/UBSan fuzz run (4,004,077 executions). KTX2 remains
 enabled; final-artifact qualification is pending. See
-[the release blockers](../RELEASE_CHECKLIST.md#current-candidate-status-2026-09-06).
+[the release blockers](../RELEASE_CHECKLIST.md#current-candidate-status-2026-09-08).
 The passes below remain historical evidence until explicitly requalified.
 This checkpoint uses non-executing checks under the latest conversation-supplied
 instructions; the saved workstation policy is unchanged. Earlier execution-control

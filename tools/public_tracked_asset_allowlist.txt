@@ -53,6 +53,7 @@ tests/fuzz_corpus/match_signal_wire/raw_welcome_json
 tests/fuzz_corpus/match_signal_wire/rsv_violation
 tests/fuzz_corpus/match_signal_wire/welcome_frame
 tests/fuzz_corpus/modern_character_asset/hostile-section-offset.mdkc
+tests/fuzz_corpus/modern_character_asset/sixtyfive-animations.mdkc
 tests/fuzz_corpus/modern_character_asset/truncated-character.mdkc
 tests/fuzz_corpus/modern_character_asset/truncated-level-table.ktx2
 tests/fuzz_corpus/modern_character_asset/truncated-portrait.png
