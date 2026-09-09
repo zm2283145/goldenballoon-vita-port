@@ -1139,6 +1139,18 @@ a day rather than in front of a release.
 - **The preconditions still apply to tier 3.** `--require-fresh`,
   `--require-shipping-sdl`, `--roms` and a web stage stamped at HEAD, all four of
   which were silently wrong before 2026-09-08. See §8.4 and the release checklist.
+- **A parallel red is a question, not a verdict.** Re-run it standalone before
+  believing it. On 2026-09-09 this happened to eight gates in one session --
+  `taj_theme`, both Taj engine arms, `full_ubsan`, `pacing_quality`,
+  `character_raw_intake_ui`, `character_workshop_history_ui`,
+  `bonus_results_portraits` and `bonus_portrait_pack` -- every one of which
+  passed alone on the same binary. Two were genuine gate defects worth fixing
+  (ceilings sized beside their measured cost rather than clear of it); the rest
+  were the machine. `pacing_quality` is the sharpest case: it failed twice under
+  load, and the SHIPPED v1.6.0 binary failed it worse on the same host at the
+  same moment. A red that cannot be reproduced on a quiet machine is evidence
+  about the host, and recording it as a candidate defect wastes the next
+  reader's time.
 - **Cost has no ratchet.** Nothing fails when a task grows, which is how a landed
   27-minute win decayed 7x unnoticed. Until that exists, re-measure from the run
   log rather than trusting the numbers above.
