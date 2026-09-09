@@ -4422,6 +4422,37 @@ static void dkr_sp_moveword(uint8_t index, uint16_t offset, uint32_t data) {
                     s_segAssignLogCount++;
                 }
             }
+            if (seg == 1) {
+                /* Segment 1 is being reassigned to several different small
+                 * (~0x25830-byte) transient pool buffers over the course of
+                 * a frame (confirmed via seg-assign logging above), while at
+                 * least one gSPViewport command resolves a segment-1-relative
+                 * offset of 0x400110 -- ~4 MB past the end of any of those
+                 * pools. That is consistent with the viewport read landing
+                 * on unallocated (zero-filled) memory: the wrong "segment 1"
+                 * is live at read time, not a pointer-resolution failure.
+                 * This dedicated, higher-cap log (independent of the shared
+                 * s_segAssignLogCount cap above, which every segment shares
+                 * and exhausts within a couple of frames) exists to capture
+                 * the full sequence of segment-1 reassignments across enough
+                 * frames to see one leading up to a zero-vp event. */
+                static int s_seg1AssignLogCount = 0;
+                if (s_seg1AssignLogCount < 80) {
+                    void *allocBase1 = NULL;
+                    size_t allocSize1 = 0;
+                    s32 allocOk1 = resolved != NULL
+                        ? mdkr_mempool_allocation_span(resolved, &allocBase1, &allocSize1)
+                        : 0;
+                    char lb1[192];
+                    snprintf(lb1, sizeof(lb1),
+                             "seg1-track: data=0x%x -> resolved=%p allocOk=%d allocBase=%p "
+                             "allocSize=0x%lx frame=%d",
+                             (unsigned)data, resolved, (int)allocOk1, allocBase1,
+                             (unsigned long)allocSize1, (int)dkr_frame_index);
+                    mdkr_vita_boot_log(lb1);
+                    s_seg1AssignLogCount++;
+                }
+            }
 #endif
             break;
         }
@@ -7914,7 +7945,7 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                 if (vp->vscale[0] == 0 && vp->vscale[1] == 0) {
                     extern void mdkr_vita_boot_log(const char *msg);
                     static int s_zeroVpLogCount = 0;
-                    if (s_zeroVpLogCount < 10) {
+                    if (s_zeroVpLogCount < 30) {
                         char lb[220];
                         snprintf(lb, sizeof(lb),
                                  "zero-vp: rawAddr=0x%08x resolved=%p vscale=[%d %d %d] vtrans=[%d %d %d] drawspace=%d replay=%d",
@@ -7923,6 +7954,30 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                                  (int)vp->vtrans[0], (int)vp->vtrans[1], (int)vp->vtrans[2],
                                  (int)rsp.draw_space, (int)dkr_replay_pass);
                         mdkr_vita_boot_log(lb);
+                        /* Directly test the "segment 1 points at the wrong
+                         * (too-small) buffer" theory from the seg1-track log:
+                         * find the real allocation data (the resolved
+                         * viewport pointer) actually lives in, and how far
+                         * that is from wherever gfx_segment_table[1] itself
+                         * currently points -- rather than reconstructing this
+                         * by hand across separate log lines. */
+                        {
+                            void *allocBaseVp = NULL;
+                            size_t allocSizeVp = 0;
+                            s32 allocOkVp = mdkr_mempool_allocation_span(
+                                (void *)data, &allocBaseVp, &allocSizeVp);
+                            uintptr_t seg1base = gfx_segment_table[1];
+                            char lb2[220];
+                            snprintf(lb2, sizeof(lb2),
+                                     "zero-vp: data-allocOk=%d allocBase=%p allocSize=0x%lx "
+                                     "seg1base=0x%lx offsetFromSeg1=0x%lx frame=%d",
+                                     (int)allocOkVp, allocBaseVp,
+                                     (unsigned long)allocSizeVp,
+                                     (unsigned long)seg1base,
+                                     (unsigned long)((uintptr_t)data - seg1base),
+                                     (int)dkr_frame_index);
+                            mdkr_vita_boot_log(lb2);
+                        }
                         s_zeroVpLogCount++;
                     }
                 }
