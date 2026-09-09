@@ -1892,6 +1892,26 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
         }
     }
 #endif
+#if defined(__vita__)
+    {
+        size_t vs_strlen = strlen(vs_buf);
+        size_t fs_strlen = strlen(fs_buf);
+        char lb[220];
+        snprintf(lb, sizeof(lb),
+                 "shader: buf check vs_len=%u vs_strlen=%u fs_len=%u fs_strlen=%u "
+                 "vs_tail=%02x,%02x,%02x,%02x fs_tail=%02x,%02x,%02x,%02x",
+                 (unsigned)vs_len, (unsigned)vs_strlen, (unsigned)fs_len, (unsigned)fs_strlen,
+                 (unsigned char)vs_buf[vs_len >= 4 ? vs_len - 4 : 0],
+                 (unsigned char)vs_buf[vs_len >= 3 ? vs_len - 3 : 0],
+                 (unsigned char)vs_buf[vs_len >= 2 ? vs_len - 2 : 0],
+                 (unsigned char)vs_buf[vs_len >= 1 ? vs_len - 1 : 0],
+                 (unsigned char)fs_buf[fs_len >= 4 ? fs_len - 4 : 0],
+                 (unsigned char)fs_buf[fs_len >= 3 ? fs_len - 3 : 0],
+                 (unsigned char)fs_buf[fs_len >= 2 ? fs_len - 2 : 0],
+                 (unsigned char)fs_buf[fs_len >= 1 ? fs_len - 1 : 0]);
+        mdkr_vita_boot_log(lb);
+    }
+#endif
     const GLchar *sources[2] = { vs_buf, fs_buf };
     const GLint lengths[2] = { (GLint)vs_len, (GLint)fs_len };
     GLint success;
