@@ -38,6 +38,10 @@ extern "C" {
  * stats.animations must be declared with this, and any code that walks that
  * count must bound itself by it. */
 #define MDKR_MODERN_ANIMATIONS_MAX 256u
+
+/* The node ceiling validate_references() admits, published for the same reason
+ * as the animation one: a consumer sizes a fixed structure by it. */
+#define MDKR_MODERN_NODES_MAX 16384u
 #define MDKR_MODERN_HUMANOID_ROLE_COUNT 16u
 
 typedef enum MdkrModernSectionType {

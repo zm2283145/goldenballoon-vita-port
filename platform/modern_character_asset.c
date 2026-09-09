@@ -373,22 +373,45 @@ int mdkr_modern_character_asset_joint_parent_node(
         joint_index >= joints->count ||
         !mdkr_modern_character_asset_joint(asset, joint_index, &joint) ||
         !mdkr_modern_character_asset_node(asset, joint.node, &node)) return 0;
-    parent = node.parent;
-    for (depth = 0u; parent >= 0 && depth < nodes->count; depth++) {
+    /*
+     * The chain walk below used to re-scan every joint at every level, decoding
+     * a 68-byte record each time: O(depth * joints), and the validator admits
+     * 16384 nodes against 65536 joints. The Workshop's Rig tab calls this once
+     * per skin joint, so a package shaped as a deep chain with the joints on
+     * leaves cost on the order of 4e12 decodes -- an unbounded freeze on the
+     * ImGui thread from a file under a megabyte.
+     *
+     * The inner loop only ever asked "is this node a joint?". Answer it once
+     * into a bitmap and the walk becomes O(joints + depth). The bitmap is 2 KiB
+     * of stack at the published node ceiling, which the validator has already
+     * enforced by the time any asset reaches here.
+     */
+    if (nodes->count > MDKR_MODERN_NODES_MAX) return 0;
+    {
+        unsigned char is_joint[MDKR_MODERN_NODES_MAX / 8u];
         uint32_t candidate;
-        if ((uint32_t)parent >= nodes->count) return 0;
+        memset(is_joint, 0, sizeof(is_joint));
         for (candidate = 0u; candidate < joints->count; candidate++) {
             MdkrModernJoint possible;
             if (!mdkr_modern_character_asset_joint(asset, candidate,
                                                     &possible)) return 0;
-            if (possible.node == (uint32_t)parent) {
+            if (possible.node < nodes->count) {
+                is_joint[possible.node >> 3u] |=
+                    (unsigned char)(1u << (possible.node & 7u));
+            }
+        }
+        parent = node.parent;
+        for (depth = 0u; parent >= 0 && depth < nodes->count; depth++) {
+            if ((uint32_t)parent >= nodes->count) return 0;
+            if ((is_joint[(uint32_t)parent >> 3u] &
+                 (1u << ((uint32_t)parent & 7u))) != 0u) {
                 *parent_node = parent;
                 return 1;
             }
+            if (!mdkr_modern_character_asset_node(asset, (uint32_t)parent,
+                                                  &node)) return 0;
+            parent = node.parent;
         }
-        if (!mdkr_modern_character_asset_node(asset, (uint32_t)parent,
-                                              &node)) return 0;
-        parent = node.parent;
     }
     if (parent >= 0) return 0;
     *parent_node = -1;
@@ -756,7 +779,7 @@ static int validate_references(const MdkrModernCharacterAsset *asset,
         primitives->count > 512u || materials->count > 256u ||
         textures->count > 1024u ||
         texture_data->count > MDKR_MODERN_TEXTURE_DATA_BYTES_MAX ||
-        nodes->count > 16384u || skins->count > 256u || joints->count > 65536u ||
+        nodes->count > MDKR_MODERN_NODES_MAX || skins->count > 256u || joints->count > 65536u ||
         animations->count > MDKR_MODERN_ANIMATIONS_MAX ||
         channels->count > 16384u ||
         keys->count > 4000000u ||

@@ -445,8 +445,22 @@ bool revealInFileManager(const std::string &path) {
      * cannot be split into another explorer argument. The file is selected,
      * never opened through its association. */
     const std::wstring arguments = L"/select,\"" + wide + L"\"";
+    /* Fully qualified, because unqualified executable resolution consults the
+     * CWD -- and this file already treats the CWD as untrusted, setting
+     * OFN_NOCHANGEDIR on every dialog for exactly that reason. A bare
+     * "explorer.exe" meant that a planted binary in the working directory ran
+     * with the user's token the first time they picked "Show in folder" on a
+     * downloaded character package. GetWindowsDirectoryW is used rather than
+     * expanding %SystemRoot%, so the path cannot be redirected by an
+     * environment variable either. */
+    wchar_t windows_dir[MAX_PATH];
+    const UINT length = GetWindowsDirectoryW(windows_dir, MAX_PATH);
+    if (length == 0u || length >= MAX_PATH) return false;
+    std::wstring explorer(windows_dir, length);
+    if (!explorer.empty() && explorer.back() != L'\\') explorer.push_back(L'\\');
+    explorer += L"explorer.exe";
     const HINSTANCE launched = ShellExecuteW(
-        nullptr, L"open", L"explorer.exe", arguments.c_str(), nullptr,
+        nullptr, L"open", explorer.c_str(), arguments.c_str(), nullptr,
         SW_SHOWNORMAL);
     return reinterpret_cast<INT_PTR>(launched) > 32;
 }
