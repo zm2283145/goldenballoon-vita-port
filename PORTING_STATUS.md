@@ -8,11 +8,14 @@ same libultraship/vitaGL pattern as
 (a Banjo-Kazooie Vita port used as the concrete reference for library
 choices, link flags, and the VPK packaging recipe).
 
-**Status: boots on real hardware, reaches the main menu with audio and
-textured rendering, actively being debugged past there.** This moved past
-"builds and links clean" through hands-on, on-device bring-up: real
-crashes, pulled via a boot-time file logger and coredumps, root-caused one
-at a time. Fixed so far, in the order they were hit:
+**Status: 0.02 — boots on real hardware and plays through races on the
+default (Restored) visual preset, with audio, input, and textured
+rendering all working.** This moved past "builds and links clean" through
+hands-on, on-device bring-up: real crashes, pulled via a boot-time file
+logger and coredumps, root-caused one at a time. **The Remastered visual
+preset currently crashes on startup and must not be used — see
+[Known issues](#known-issues) below.** Fixed so far, in the order they
+were hit:
 
 1. **Black screen, audio/input alive.** `platform_sdl_surface_presentable()`
    treated vitaGL's intentionally-always-NULL `s_window` as "not
@@ -30,10 +33,33 @@ at a time. Fixed so far, in the order they were hit:
    Vita-only source rewrite (`dkr_vita_rewrite_glsl_to_legacy()` in
    `gfx_opengl.c`) run on the generated shader text right before it's
    compiled.
+4. **Video settings failed to persist across restarts.** The Vita save
+   path for video/preset settings was being written somewhere that didn't
+   survive a relaunch; fixed so settings (including which visual preset is
+   active) now save and load correctly.
+5. **Stack-overflow crash during normal play.** A code path allocated a
+   large buffer on the stack where the desktop build's much larger default
+   stack absorbed it silently; fixed by moving it off the stack for the
+   Vita target.
+6. **Crash from World Shadows / `SHADER_OPT_SUN_SHADOW`.** This
+   Remastered-only effect depends on GL features vitaGL doesn't implement
+   (see the disabled-features table below) and wasn't fully excluded on
+   Vita; it's now force-disabled with an explicit `__vita__` check in
+   `gfx_pc_dkr.c`, confirmed inert via boot-log instrumentation.
+7. **Wrong GLSL version header on every fragment shader.** The vertex
+   shader's version-header selection correctly checked `__vita__` first,
+   but the fragment shader's only checked `MGB64_PORTMASTER_GLES` (also
+   defined for Vita), so every fragment shader got a `#version 320 es`
+   header on a body that had already been rewritten to legacy GLSL ES
+   1.00. Fixed by adding the same `__vita__` branch to the fragment header
+   selection. Independently confirmed correct, but did **not** fix the
+   Remastered-preset crash below — that turned out to be a separate,
+   still-open issue.
 
-Currently being debugged past the main menu — see "What needs
-hardware verification" at the end for what's still open, and the git log
-on this branch for the blow-by-blow.
+Currently: the Restored preset is stable enough for normal play; the
+Remastered preset crashes on startup every time (see
+[Known issues](#known-issues)). See the git log on this branch for the
+blow-by-blow of everything ruled out chasing it.
 
 **vitaGL / vitaShaRK versions:** built from
 [Rinnegatamante/vitaGL](https://github.com/Rinnegatamante/vitaGL) commit
@@ -44,10 +70,10 @@ toolchain's host machine, so both are compiled via one-off scripts that
 replicate their Makefiles). Splash screen enabled (NO_SPLASHSCREEN unset)
 so the vitaGL boot logo shows on real hardware as a visual "did vitaGL
 initialize" signal. Earlier in bring-up, vitaGL HEAD alone (without
-updating vitaShaRK to match) failed to link -- HEAD's
+updating vitaShaRK to match) failed to link — HEAD's
 glSetShaderAssociationPath calls shark_set_shader_association_path,
 introduced in vitaShaRK the same day but absent from the vitaShaRK version
-originally paired with this toolchain -- so the two must be updated
+originally paired with this toolchain — so the two must be updated
 together, not independently.
 
 ## How to build
@@ -74,17 +100,17 @@ run `tools/package_vita.ps1` after every rebuild rather than reproducing
 the individual strip/elf-create/fself/pack-vpk commands by hand. Two things
 that script gets right that a naive hand-rolled version will not:
 
-- `vita-make-fself -c -pm 0x2000000 ...` -- the `-pm 0x2000000` (32MB
+- `vita-make-fself -c -pm 0x2000000 ...` — the `-pm 0x2000000` (32MB
   physically-contiguous memory budget) flag is required. Without it,
   vitaGL's `vglInitExtended` silently fails (returns `GL_FALSE`) even
-  though free-memory-pool numbers look healthy afterward -- the game boots
+  though free-memory-pool numbers look healthy afterward — the game boots
   and audio/input/game logic all run fine, but nothing ever renders.
   Diagnosed via `mdkr_vita_boot_log` instrumentation around
   `vglInitExtended`.
 - No `-a vita/livearea/...=sce_sys/...` LiveArea-asset arguments to
   `vita-pack-vpk` by default (`-IncludeIcons` opts back in for a
   deliberate one-off test). Bundling them currently breaks VitaShell's
-  install on the real hardware this project is tested against -- confirmed
+  install on the real hardware this project is tested against — confirmed
   twice, including once after ruling out `-Wl,-q` as the cause. The
   placeholder `icon0.png`/`bg.png`/`startup.png` are individually
   valid PNGs at the expected LiveArea dimensions, so this looks like a
@@ -162,6 +188,63 @@ launch.
 - **`platform/online/compatibility_identity.c`**: added the `"vita"`
   platform tag to satisfy the file's compile-time OS-tag fence.
 
+## Known issues
+
+### Remastered visual preset crashes on startup (unresolved)
+
+With the Remastered preset active (`g_pcRemasterFX=1`), the very first
+shader compiled every session reliably fails `glCompileShader` with
+`GL_COMPILE_STATUS=0` and an empty info log (`GL_INFO_LOG_LENGTH=0`) —
+no diagnostic text at all. The failing shader is the simplest possible
+combiner (a flat vertex-color pass-through, no texture/lighting/shadow).
+A byte-for-byte comparison against a successful Restored-preset boot log
+proved the shader source, buffer lengths, and surrounding boot-time memory
+state are identical between the failing and succeeding runs — the only
+difference is the raw value of `g_pcRemasterFX`. **Workaround: use the
+Restored (default) preset. Do not enable Remastered.**
+
+Ruled out so far, each with direct on-device evidence, so this isn't
+re-investigated from scratch next time:
+
+- The fragment-shader GLSL version-header bug above (real bug, fixed,
+  but unrelated — the version header is correct in the failing run too).
+- World Shadows / `SHADER_OPT_SUN_SHADOW` (force-disabled on Vita,
+  confirmed inert via boot log before this shader is ever reached).
+- RL-5 / `SHADER_OPT_DFDX_LIGHT` (the failing shader is provably the
+  first one compiled all session, so nothing could have poisoned it).
+- A pending/stale GL error carried into the compile call (drained and
+  logged at function entry; comes back clean).
+- The shader compiler not being "warmed up" yet (a 5x retry with a delay
+  between attempts failed identically every time).
+- Buffer/length corruption handed to `glShaderSource` (logged `strlen()`
+  vs. the tracked length and the raw tail bytes; both clean and correctly
+  terminated in both the failing and succeeding runs).
+- Thread affinity between shader setup and the compile call (this
+  codebase is single-threaded end to end on Vita — confirmed by tracing
+  every thread-creation call to a no-op stub).
+- Deleting and recreating the shader object on retry, in case the first
+  failed compile left the object internally poisoned in vitaGL's own
+  bookkeeping — this did not fix the compile failure, and on at least one
+  run produced a separate, harder crash (a Data Abort deep inside SceGxm
+  on a background rendering thread), so this retry-with-fresh-objects
+  approach has been removed again rather than kept as a partial mitigation.
+
+Root cause is still unknown. The next concrete step is probably to compare
+what `g_pcRemasterFX` actually changes upstream of this shader (uniform
+layout, a `#define` that changes generated shader text length/content in a
+way not caught by the current comparison, etc.) rather than further
+retry/defensive-coding attempts at the compile call itself.
+
+### Verbose shader-compile diagnostics are off by default
+
+The logging added while chasing the issue above is gated behind a marker
+file: drop an empty file named exactly `debug` at
+`ux0:data/goldenballoon/debug` before launching to re-enable the verbose
+per-shader boot-log lines (checked once at first use, so it must be in
+place before, not during, a session). Failure-path diagnostics (the actual
+compile/link error dump right before a crash) always log regardless of
+this file.
+
 ## What needs real-hardware verification
 
 Nothing below could be checked without a device, and none of it was
@@ -205,12 +288,14 @@ starting point — but all of it is unverified:
 
 ## Next steps
 
-1. Boot `mdkr64.vpk` on real hardware with a ROM at
-   `ux0:data/goldenballoon/baserom.us.v80.z64` and see what happens.
-2. Work the "needs hardware verification" list above in whatever order the
-   first boot's actual symptoms suggest.
-3. Replace the placeholder LiveArea art in `vita/livearea/` with real art.
-4. If a native ROM-picker/launcher UI is wanted eventually (rather than the
+1. Root-cause the Remastered-preset shader-compile crash (see
+   [Known issues](#known-issues)) — the biggest remaining blocker to
+   calling this port stable.
+2. Add a native "Controls" entry to the Options menu for on-device button
+   remapping (currently DualShock-layout-only, no remapping UI).
+3. Work the "needs hardware verification" list above.
+4. Replace the placeholder LiveArea art in `vita/livearea/` with real art.
+5. If a native ROM-picker/launcher UI is wanted eventually (rather than the
    fixed-path `--rom`/`DEFAULT_ROM` convention used for this first cut), it
    would need to be built from scratch against `vita2d`/`SceCommonDialog`
    rather than reusing `MDKR_APP`'s ImGui launcher, which is desktop-only.

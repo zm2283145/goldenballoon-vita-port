@@ -52,9 +52,13 @@
 4. **Play.** A DualShock-style control layout is assumed; there is no
    in-game remapping UI on Vita yet.
 
-**This is pre-release, actively-debugged software.** Expect crashes. If the
-game doesn't start, check [PORTING_STATUS.md](PORTING_STATUS.md) first — it
-tracks exactly what's currently broken and what's already been ruled out.
+**This is a 0.02 release: unstable but playable.** The default (Restored)
+visual preset boots, plays through races, and saves/loads settings
+correctly on real hardware. **Do not enable the Remastered visual preset --
+it crashes on startup every time; this is a known, still-unresolved issue,
+not something you did wrong.** If the game doesn't start on the Restored
+preset, check [PORTING_STATUS.md](PORTING_STATUS.md) — it tracks exactly
+what's currently broken and what's already been ruled out.
 
 ## What Golden Balloon is (from the upstream project)
 
@@ -80,7 +84,7 @@ the shared game/engine code — is in the
 | macOS (Apple silicon) | Upstream, stable |
 | Linux (x86-64) | Upstream, best effort |
 | Browser (WebGPU) | Upstream, stable |
-| **PS Vita** | **This fork. Experimental — boots, reaches the main menu with audio and textured rendering, under active debugging past there. See [PORTING_STATUS.md](PORTING_STATUS.md) for the exact current state.** |
+| **PS Vita** | **This fork, 0.02 — boots and plays on the Restored visual preset with audio, input, and textured rendering. The Remastered preset crashes on startup and should not be used yet. See [PORTING_STATUS.md](PORTING_STATUS.md) for the exact current state.** |
 
 ## PS Vita: known limitations
 
@@ -89,6 +93,10 @@ apply too where they overlap. See [PORTING_STATUS.md](PORTING_STATUS.md) for
 the full, continuously-updated table (it also tracks every crash bug found
 and fixed so far, with root causes).
 
+- **Remastered visual preset crashes on startup — use Restored (default).**
+  This is a known, actively-investigated issue with no fix yet; see
+  [PORTING_STATUS.md's Known issues section](PORTING_STATUS.md#known-issues)
+  for what's been ruled out so far.
 - **No ROM picker.** The ROM must sit at the fixed path
   `ux0:data/goldenballoon/baserom.us.v80.z64`; only US v1.0 has been tried.
 - **No in-game control remapping UI.**
