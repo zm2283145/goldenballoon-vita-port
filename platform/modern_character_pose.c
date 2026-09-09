@@ -848,76 +848,104 @@ static int apply_secondary_motion(MdkrModernPose *pose, float seconds,
 }
 
 /*
- * Parent-before-child ordering in one pass.
+ * Parent-before-child ordering in one pass, in the ORIGINAL order.
  *
  * This used to restart a full node scan on every round, emitting whatever had
  * become ready. Correct, and quadratic in the worst case the file itself
  * admits: a reverse-ordered parent chain (node[i].parent == i + 1) resolves
  * exactly one node per round, so at the 16384-node ceiling it performed on the
- * order of 2.7e8 node decodes -- tens of seconds of main-thread CPU the moment
- * a character was assigned to a player or opened in the Workshop preview, from
- * a package of well under a megabyte. The validator bounds its OWN work
- * linearly; that is not the same as bounding a consumer's.
+ * order of 2.7e8 node decodes -- tens of seconds of main-thread CPU from a
+ * package well under a megabyte.
  *
- * Now: decode each node once into a parent array, build child lists as an
- * intrusive head/next pair, and walk roots outward. Every node is emitted
- * exactly once and every edge is followed exactly once, so the cost is linear
- * in nodes regardless of the order they are declared in.
+ * The order that produced is exactly (depth, then node index): round k emits
+ * every node at depth k, ascending. That ordering is load-bearing beyond the
+ * parent-before-child invariant, which a first attempt at this got wrong. Any
+ * consumer that accumulates across nodes in this order -- the fitted-camera
+ * bounds the Workshop preview compares between a donor and a custom half --
+ * sums the same values in a different sequence and lands a rounding step away,
+ * so `identical` stops being identical. check_custom_character_workshop_preview
+ * caught precisely that.
  *
- * The cycle check survives in a stronger form. Before, a round that made no
- * progress proved a cycle; now, a node inside one is never reachable from any
- * root, so it is simply never emitted -- and emitting fewer nodes than exist is
- * the same proof, made once at the end instead of every round.
+ * So: memoise each node's depth by walking to a root once, then place nodes by
+ * (depth, index) with a counting sort. Linear, and byte-for-byte the order the
+ * sweeps produced.
+ *
+ * The cycle check survives: a node inside one never terminates its walk to a
+ * root, so it is marked unresolved and the count comes up short -- the same
+ * proof the no-progress round made, taken once at the end.
  */
 static int build_evaluation_order(MdkrModernPose *pose,
                                   char *error, size_t error_size) {
     int32_t *parents;
-    uint32_t *head;
-    uint32_t *next;
+    uint32_t *depth;
+    uint32_t *offset;
     uint32_t node_index;
-    uint32_t count = 0u;
-    uint32_t cursor;
+    uint32_t max_depth = 0u;
+    uint32_t placed = 0u;
+    uint32_t d;
+    int ok = 1;
 
     parents = (int32_t *)malloc((size_t)pose->node_count * sizeof(*parents));
-    head = (uint32_t *)malloc((size_t)pose->node_count * sizeof(*head));
-    next = (uint32_t *)malloc((size_t)pose->node_count * sizeof(*next));
-    if (parents == NULL || head == NULL || next == NULL) {
-        free(parents); free(head); free(next);
+    depth = (uint32_t *)malloc((size_t)pose->node_count * sizeof(*depth));
+    if (parents == NULL || depth == NULL) {
+        free(parents); free(depth);
         set_error(error, error_size, "could not allocate pose hierarchy validation state");
         return 0;
     }
     for (node_index = 0u; node_index < pose->node_count; node_index++) {
-        head[node_index] = UINT32_MAX;
-        next[node_index] = UINT32_MAX;
-    }
-    /* One decode per node, and the roots seeded in the same sweep. */
-    for (node_index = 0u; node_index < pose->node_count; node_index++) {
         MdkrModernNode node;
         (void)mdkr_modern_character_asset_node(pose->asset, node_index, &node);
         parents[node_index] = node.parent;
-        if (node.parent < 0 || (uint32_t)node.parent >= pose->node_count) {
-            pose->evaluation_order[count++] = node_index;
+        depth[node_index] = UINT32_MAX;      /* unresolved */
+    }
+    /* Depth by walking to a root, memoised. Every node is walked once and every
+     * later visit stops at the first resolved ancestor, so the total work is
+     * linear even for one long chain. The step bound is the cycle guard. */
+    for (node_index = 0u; node_index < pose->node_count; node_index++) {
+        uint32_t steps = 0u;
+        int32_t cursor = (int32_t)node_index;
+        while (cursor >= 0 && (uint32_t)cursor < pose->node_count &&
+               depth[cursor] == UINT32_MAX && steps <= pose->node_count) {
+            cursor = parents[cursor];
+            steps++;
+        }
+        if (steps > pose->node_count) { ok = 0; break; }
+        {
+            uint32_t base = (cursor >= 0 && (uint32_t)cursor < pose->node_count)
+                                ? depth[cursor] + 1u : 0u;
+            int32_t walk = (int32_t)node_index;
+            uint32_t remaining = steps;
+            while (remaining-- > 0u) {
+                depth[walk] = base + remaining;
+                if (depth[walk] > max_depth) max_depth = depth[walk];
+                walk = parents[walk];
+            }
         }
     }
-    /* Child lists, built by prepending so the walk stays allocation-free. */
-    for (node_index = pose->node_count; node_index-- > 0u;) {
-        int32_t parent = parents[node_index];
-        if (parent >= 0 && (uint32_t)parent < pose->node_count) {
-            next[node_index] = head[(uint32_t)parent];
-            head[(uint32_t)parent] = node_index;
-        }
+    if (!ok) {
+        free(parents); free(depth);
+        set_error(error, error_size, "pose node hierarchy contains a cycle");
+        return 0;
     }
-    /* Roots outward. evaluation_order doubles as the queue: everything already
-     * emitted is exactly what still needs its children visited. */
-    for (cursor = 0u; cursor < count; cursor++) {
-        uint32_t child = head[pose->evaluation_order[cursor]];
-        while (child != UINT32_MAX) {
-            pose->evaluation_order[count++] = child;
-            child = next[child];
-        }
+    /* Counting sort by depth; ascending index falls out of the second sweep. */
+    offset = (uint32_t *)calloc((size_t)max_depth + 2u, sizeof(*offset));
+    if (offset == NULL) {
+        free(parents); free(depth);
+        set_error(error, error_size, "could not allocate pose hierarchy validation state");
+        return 0;
     }
-    free(parents); free(head); free(next);
-    if (count != pose->node_count) {
+    for (node_index = 0u; node_index < pose->node_count; node_index++) {
+        if (depth[node_index] == UINT32_MAX) continue;
+        offset[depth[node_index] + 1u]++;
+    }
+    for (d = 1u; d <= max_depth + 1u; d++) offset[d] += offset[d - 1u];
+    for (node_index = 0u; node_index < pose->node_count; node_index++) {
+        if (depth[node_index] == UINT32_MAX) continue;
+        pose->evaluation_order[offset[depth[node_index]]++] = node_index;
+        placed++;
+    }
+    free(parents); free(depth); free(offset);
+    if (placed != pose->node_count) {
         set_error(error, error_size, "pose node hierarchy contains a cycle");
         return 0;
     }
