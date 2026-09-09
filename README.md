@@ -60,14 +60,17 @@
 4. **Play.** A DualShock-style control layout is assumed; there is no
    in-game remapping UI on Vita yet.
 
-**This is pre-release, actively-debugged software.** The game boots and
-plays with working 3D rendering, but this is a from-scratch hardware
-bring-up — expect bugs, including crashes, in code paths that haven't been
-exercised yet (most non-time-trial game modes, most tracks, extended play
-sessions). If something breaks, check [PORTING_STATUS.md](PORTING_STATUS.md)
-first — it tracks exactly what's currently broken and what's already been
-ruled out — and consider opening an issue with what you were doing when it
-happened.
+**This is a 0.02 release: unstable but playable.** The game boots and
+plays through races with working 3D rendering on the default (Restored)
+visual preset, with audio and input working; this is still a
+from-scratch hardware bring-up, so bugs are expected in code paths that
+haven't been exercised yet (most non-time-trial modes, most tracks,
+extended play sessions). **Do not enable the Remastered visual preset —
+it crashes on startup every time; this is a known, still-unresolved
+issue, not something you did wrong.** If something else breaks, check
+[PORTING_STATUS.md](PORTING_STATUS.md) first — it tracks exactly what's
+currently broken and what's already been ruled out, and consider opening
+an issue with what you were doing when it happened.
 
 ## What Golden Balloon is (from the upstream project)
 
@@ -93,7 +96,7 @@ the shared game/engine code — is in the
 | macOS (Apple silicon) | Upstream, stable |
 | Linux (x86-64) | Upstream, best effort |
 | Browser (WebGPU) | Upstream, stable |
-| **PS Vita** | **This fork. Playable — boots, reaches the main menu, and now renders 3D gameplay correctly (the last major rendering bug was root-caused and fixed). Still a fresh hardware bring-up: bugs are expected. See [PORTING_STATUS.md](PORTING_STATUS.md) for the exact current state.** |
+| **PS Vita** | **This fork, 0.02 — boots and plays through races with correctly-rendered 3D gameplay, audio, input, and textured rendering on the Restored visual preset. The Remastered preset crashes on startup and should not be used yet. See [PORTING_STATUS.md](PORTING_STATUS.md) for the exact current state.** |
 
 ## PS Vita: known limitations
 
@@ -102,6 +105,10 @@ apply too where they overlap. See [PORTING_STATUS.md](PORTING_STATUS.md) for
 the full, continuously-updated table (it also tracks every crash bug found
 and fixed so far, with root causes).
 
+- **Remastered visual preset crashes on startup — use Restored (default).**
+  This is a known, actively-investigated issue with no fix yet; see
+  [PORTING_STATUS.md's Known issues section](PORTING_STATUS.md#known-issues)
+  for what's been ruled out so far.
 - **No ROM picker.** The ROM must sit at the fixed path
   `ux0:data/goldenballoon/baserom.us.v80.z64`; only US v1.0 has been tried.
 - **No in-game control remapping UI.**

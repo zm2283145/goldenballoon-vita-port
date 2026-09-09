@@ -992,6 +992,23 @@ int mdkr_user_paths_is_packaged(void) {
 int mdkr_user_video_config_path(char *output, size_t output_size) {
 #ifdef __EMSCRIPTEN__
     return path_copy(output, output_size, "/save/mdkr64.ini");
+#elif defined(__vita__)
+    /* This module's other branches assume a desktop bundle marker, a
+     * portable.txt beside the executable, or SDL_GetPrefPath() -- none of
+     * which exist on Vita, so every one of them fell through silently to the
+     * last-resort bare "mdkr64.ini" below. That is a relative path with no
+     * ux0: device prefix; opening/locking it does not throw, it just never
+     * lands anywhere usable, which is why every runtime settings save on Vita
+     * was failing with a bare errno=0 lock failure. ux0:data/goldenballoon/
+     * is this app's one already-established writable location (see
+     * DEFAULT_ROM and the boot log path in main_pc.c). */
+    {
+        const char *override = getenv("MDKR_VIDEO_CONFIG_PATH");
+        if (override != NULL && override[0] != '\0') {
+            return path_copy(output, output_size, override);
+        }
+    }
+    return path_copy(output, output_size, "ux0:data/goldenballoon/mdkr64.ini");
 #else
     char relocation[MDKR_USER_PATH_MAX];
     const char *override = getenv("MDKR_VIDEO_CONFIG_PATH");
@@ -1012,6 +1029,17 @@ int mdkr_user_video_config_path(char *output, size_t output_size) {
 int mdkr_user_save_directory(char *output, size_t output_size) {
 #ifdef __EMSCRIPTEN__
     return path_copy(output, output_size, "/save");
+#elif defined(__vita__)
+    /* Same gap as mdkr_user_video_config_path() above: nothing in the other
+     * branches applies on Vita, so this fell through to a bare relative
+     * "save" directory that cannot be created/opened anywhere useful. */
+    {
+        const char *override = getenv("MDKR_SAVE_DIR");
+        if (override != NULL && override[0] != '\0') {
+            return path_copy(output, output_size, override);
+        }
+    }
+    return path_copy(output, output_size, "ux0:data/goldenballoon/save");
 #else
     char relocation[MDKR_USER_PATH_MAX];
     const char *override = getenv("MDKR_SAVE_DIR");
@@ -1048,6 +1076,9 @@ int mdkr_user_save_directory(char *output, size_t output_size) {
 const char *mdkr_user_paths_save_origin_label(void) {
 #ifdef __EMSCRIPTEN__
     return "browser";
+#elif defined(__vita__)
+    return getenv("MDKR_SAVE_DIR") != NULL && getenv("MDKR_SAVE_DIR")[0] != '\0'
+               ? "env" : "fixed";
 #else
     const char *override = getenv("MDKR_SAVE_DIR");
     if (override != NULL && override[0] != '\0') {

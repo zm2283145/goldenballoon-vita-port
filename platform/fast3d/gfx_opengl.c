@@ -31,6 +31,7 @@
  * targets. */
 #if defined(__vita__)
 #include <vitaGL.h>
+#include <psp2/kernel/threadmgr.h>
 #elif defined(MGB64_PORTMASTER_GLES)
 #include <GLES3/gl32.h>
 #elif defined(__APPLE__)
@@ -52,8 +53,12 @@
  * can reach it). See main_pc.c for why this exists: no visible console on
  * Vita, so a silent early exit needs breadcrumbs written to a file instead. */
 extern void mdkr_vita_boot_log(const char *msg);
+extern void mdkr_vita_boot_log_flush(void);
+extern int mdkr_vita_debug_enabled(void);
 #else
 #define mdkr_vita_boot_log(msg) ((void)0)
+#define mdkr_vita_boot_log_flush() ((void)0)
+#define mdkr_vita_debug_enabled() (0)
 #endif
 #include "gfx_shadow_cascade.h"
 #include "gfx_shadow_frame.h"
@@ -1214,6 +1219,28 @@ static void dkr_vita_rewrite_glsl_to_legacy(char *buf, size_t *len, int is_fragm
 static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shader_id0, uint32_t shader_id1) {
     struct CCFeatures cc_features;
     gfx_cc_get_features(shader_id0, shader_id1, &cc_features);
+#if defined(__vita__)
+    /* Diagnostic: a shader-compile failure with GL_COMPILE_STATUS=0 but
+     * GL_INFO_LOG_LENGTH=0 (no error text at all) has been observed on Vita for
+     * shaders whose generated GLSL is verified correct. One theory is a GL error
+     * left pending by something earlier in this frame setup is being picked up
+     * by vitaShaRK compile call. Log (and drain, since glGetError() clears as it
+     * reads) any pending error(s) here so a repro tells us for certain, and so
+     * that IF this is the cause, draining it here also fixes it. */
+    {
+        GLenum e;
+        int drained = 0;
+        while ((e = glGetError()) != GL_NO_ERROR) {
+            if (mdkr_vita_debug_enabled()) {
+                char lb[96];
+                snprintf(lb, sizeof(lb), "shader: pending GL error 0x%x drained before compile (id0=%llx id1=%x)", (unsigned)e, (unsigned long long)shader_id0, (unsigned)shader_id1);
+                mdkr_vita_boot_log(lb);
+            }
+            drained++;
+            if (drained > 8) break;
+        }
+    }
+#endif
 
     char vs_buf[12288];
     char fs_buf[18000];
@@ -1382,7 +1409,10 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
     append_line(vs_buf, sizeof(vs_buf), &vs_len, "}");
 
     /* Fragment shader */
-#ifdef MGB64_PORTMASTER_GLES
+#if defined(__vita__)
+    append_line(fs_buf, sizeof(fs_buf), &fs_len, "#version 100");
+    append_line(fs_buf, sizeof(fs_buf), &fs_len, "precision mediump float;");
+#elif defined(MGB64_PORTMASTER_GLES)
     append_line(fs_buf, sizeof(fs_buf), &fs_len, "#version 320 es");
     append_line(fs_buf, sizeof(fs_buf), &fs_len, "precision mediump float;");
     append_line(fs_buf, sizeof(fs_buf), &fs_len, "out vec4 fragColor;");
@@ -1836,7 +1866,7 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
 #if defined(__vita__)
     {
         static int s_shaderLogCount = 0;
-        if (s_shaderLogCount < 20) {
+        if (mdkr_vita_debug_enabled() && s_shaderLogCount < 20) {
             char lb[192];
             snprintf(lb, sizeof(lb),
                      "shader: about to compile+link id0=0x%llx id1=0x%x tex=%d,%d fog=%d "
@@ -1854,7 +1884,7 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
     dkr_vita_rewrite_glsl_to_legacy(fs_buf, &fs_len, 1);
     {
         static int s_shaderSrcLogCount = 0;
-        if (s_shaderSrcLogCount < 5) {
+        if (mdkr_vita_debug_enabled() && s_shaderSrcLogCount < 5) {
             char lb[1700];
             snprintf(lb, sizeof(lb), "shader: rewritten VS (len=%u):\n%.*s",
                      (unsigned)vs_len, (int)(vs_len < 1600 ? vs_len : 1600), vs_buf);
@@ -1864,6 +1894,26 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
             mdkr_vita_boot_log(lb);
             s_shaderSrcLogCount++;
         }
+    }
+#endif
+#if defined(__vita__)
+    if (mdkr_vita_debug_enabled()) {
+        size_t vs_strlen = strlen(vs_buf);
+        size_t fs_strlen = strlen(fs_buf);
+        char lb[220];
+        snprintf(lb, sizeof(lb),
+                 "shader: buf check vs_len=%u vs_strlen=%u fs_len=%u fs_strlen=%u "
+                 "vs_tail=%02x,%02x,%02x,%02x fs_tail=%02x,%02x,%02x,%02x",
+                 (unsigned)vs_len, (unsigned)vs_strlen, (unsigned)fs_len, (unsigned)fs_strlen,
+                 (unsigned char)vs_buf[vs_len >= 4 ? vs_len - 4 : 0],
+                 (unsigned char)vs_buf[vs_len >= 3 ? vs_len - 3 : 0],
+                 (unsigned char)vs_buf[vs_len >= 2 ? vs_len - 2 : 0],
+                 (unsigned char)vs_buf[vs_len >= 1 ? vs_len - 1 : 0],
+                 (unsigned char)fs_buf[fs_len >= 4 ? fs_len - 4 : 0],
+                 (unsigned char)fs_buf[fs_len >= 3 ? fs_len - 3 : 0],
+                 (unsigned char)fs_buf[fs_len >= 2 ? fs_len - 2 : 0],
+                 (unsigned char)fs_buf[fs_len >= 1 ? fs_len - 1 : 0]);
+        mdkr_vita_boot_log(lb);
     }
 #endif
     const GLchar *sources[2] = { vs_buf, fs_buf };
@@ -1876,11 +1926,28 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
     glGetShaderiv(vertex_shader, GL_COMPILE_STATUS, &success);
     if (!success) {
         char error_log[1024];
+        error_log[0] = '\0';
         GLint max_length = 0;
         glGetShaderiv(vertex_shader, GL_INFO_LOG_LENGTH, &max_length);
+        GLint raw_max_length = max_length;
         if (max_length > (GLint)sizeof(error_log)) max_length = sizeof(error_log) - 1;
-        glGetShaderInfoLog(vertex_shader, max_length, &max_length, error_log);
+        if (max_length > 0) {
+            glGetShaderInfoLog(vertex_shader, max_length, &max_length, error_log);
+            error_log[(max_length >= 0 && max_length < (GLint)sizeof(error_log)) ? max_length : 0] = '\0';
+        }
         fprintf(stderr, "[fast3d] Vertex shader compilation failed:\n%s\nSource:\n%s\n", error_log, vs_buf);
+#if defined(__vita__)
+        /* stderr goes nowhere on Vita -- the fprintf above is silently lost. Route
+         * the real compiler error through the boot-log mechanism too, and force it
+         * to disk before we abort, so the next crash dump has the actual reason. */
+        {
+            char lb[1200];
+            snprintf(lb, sizeof(lb), "[fast3d] Vertex shader compilation failed (success=%d infoLogLen=%d):\n%s", (int)success, (int)raw_max_length, error_log);
+            mdkr_vita_boot_log(lb);
+            mdkr_vita_boot_log(vs_buf);
+            mdkr_vita_boot_log_flush();
+        }
+#endif
         abort();
     }
 
@@ -1890,11 +1957,25 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
     glGetShaderiv(fragment_shader, GL_COMPILE_STATUS, &success);
     if (!success) {
         char error_log[1024];
+        error_log[0] = '\0';
         GLint max_length = 0;
         glGetShaderiv(fragment_shader, GL_INFO_LOG_LENGTH, &max_length);
+        GLint raw_max_length = max_length;
         if (max_length > (GLint)sizeof(error_log)) max_length = sizeof(error_log) - 1;
-        glGetShaderInfoLog(fragment_shader, max_length, &max_length, error_log);
+        if (max_length > 0) {
+            glGetShaderInfoLog(fragment_shader, max_length, &max_length, error_log);
+            error_log[(max_length >= 0 && max_length < (GLint)sizeof(error_log)) ? max_length : 0] = '\0';
+        }
         fprintf(stderr, "[fast3d] Fragment shader compilation failed:\n%s\nSource:\n%s\n", error_log, fs_buf);
+#if defined(__vita__)
+        {
+            char lb[1200];
+            snprintf(lb, sizeof(lb), "[fast3d] Fragment shader compilation failed (success=%d infoLogLen=%d):\n%s", (int)success, (int)raw_max_length, error_log);
+            mdkr_vita_boot_log(lb);
+            mdkr_vita_boot_log(fs_buf);
+            mdkr_vita_boot_log_flush();
+        }
+#endif
         abort();
     }
 
@@ -1902,11 +1983,15 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
     glAttachShader(shader_program, vertex_shader);
     glAttachShader(shader_program, fragment_shader);
 #if defined(__vita__)
-    mdkr_vita_boot_log("shader: both stages compiled OK, calling glLinkProgram");
+    if (mdkr_vita_debug_enabled()) {
+        mdkr_vita_boot_log("shader: both stages compiled OK, calling glLinkProgram");
+    }
 #endif
     glLinkProgram(shader_program);
 #if defined(__vita__)
-    mdkr_vita_boot_log("shader: glLinkProgram returned (survived)");
+    if (mdkr_vita_debug_enabled()) {
+        mdkr_vita_boot_log("shader: glLinkProgram returned (survived)");
+    }
 #endif
 
     glDeleteShader(vertex_shader);
@@ -1922,6 +2007,14 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
         glGetProgramInfoLog(shader_program, sizeof(error_log), &length, error_log);
         fprintf(stderr, "[fast3d] Shader program link failed:\n%.*s\n",
                 (int)length, error_log);
+#if defined(__vita__)
+        {
+            char lb[1200];
+            snprintf(lb, sizeof(lb), "[fast3d] Shader program link failed:\n%.*s", (int)length, error_log);
+            mdkr_vita_boot_log(lb);
+            mdkr_vita_boot_log_flush();
+        }
+#endif
         glDeleteProgram(shader_program);
         abort();
     }
