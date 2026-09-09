@@ -1924,30 +1924,6 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
     glShaderSource(vertex_shader, 1, &sources[0], &lengths[0]);
     glCompileShader(vertex_shader);
     glGetShaderiv(vertex_shader, GL_COMPILE_STATUS, &success);
-#if defined(__vita__)
-    {
-        int vs_retries = 0;
-        while (!success && vs_retries < 5) {
-            GLint probe_len = 0;
-            glGetShaderiv(vertex_shader, GL_INFO_LOG_LENGTH, &probe_len);
-            if (probe_len > 0) break;
-            /* Fresh object this time, not a recompile of the same (possibly
-             * now-poisoned) one -- see comment above this block. */
-            glDeleteShader(vertex_shader);
-            sceKernelDelayThread(20000);
-            vertex_shader = glCreateShader(GL_VERTEX_SHADER);
-            glShaderSource(vertex_shader, 1, &sources[0], &lengths[0]);
-            glCompileShader(vertex_shader);
-            glGetShaderiv(vertex_shader, GL_COMPILE_STATUS, &success);
-            vs_retries++;
-        }
-        if (vs_retries > 0) {
-            char lb[128];
-            snprintf(lb, sizeof(lb), "shader: vertex compile retried %d time(s) (fresh objects), success=%d", vs_retries, (int)success);
-            mdkr_vita_boot_log(lb);
-        }
-    }
-#endif
     if (!success) {
         char error_log[1024];
         error_log[0] = '\0';
@@ -1979,28 +1955,6 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
     glShaderSource(fragment_shader, 1, &sources[1], &lengths[1]);
     glCompileShader(fragment_shader);
     glGetShaderiv(fragment_shader, GL_COMPILE_STATUS, &success);
-#if defined(__vita__)
-    {
-        int fs_retries = 0;
-        while (!success && fs_retries < 5) {
-            GLint probe_len = 0;
-            glGetShaderiv(fragment_shader, GL_INFO_LOG_LENGTH, &probe_len);
-            if (probe_len > 0) break;
-            glDeleteShader(fragment_shader);
-            sceKernelDelayThread(20000);
-            fragment_shader = glCreateShader(GL_FRAGMENT_SHADER);
-            glShaderSource(fragment_shader, 1, &sources[1], &lengths[1]);
-            glCompileShader(fragment_shader);
-            glGetShaderiv(fragment_shader, GL_COMPILE_STATUS, &success);
-            fs_retries++;
-        }
-        if (fs_retries > 0) {
-            char lb[128];
-            snprintf(lb, sizeof(lb), "shader: fragment compile retried %d time(s) (fresh objects), success=%d", fs_retries, (int)success);
-            mdkr_vita_boot_log(lb);
-        }
-    }
-#endif
     if (!success) {
         char error_log[1024];
         error_log[0] = '\0';
