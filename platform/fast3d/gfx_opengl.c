@@ -1216,6 +1216,26 @@ static void dkr_vita_rewrite_glsl_to_legacy(char *buf, size_t *len, int is_fragm
 static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shader_id0, uint32_t shader_id1) {
     struct CCFeatures cc_features;
     gfx_cc_get_features(shader_id0, shader_id1, &cc_features);
+#if defined(__vita__)
+    /* Diagnostic: a shader-compile failure with GL_COMPILE_STATUS=0 but
+     * GL_INFO_LOG_LENGTH=0 (no error text at all) has been observed on Vita for
+     * shaders whose generated GLSL is verified correct. One theory is a GL error
+     * left pending by something earlier in this frame setup is being picked up
+     * by vitaShaRK compile call. Log (and drain, since glGetError() clears as it
+     * reads) any pending error(s) here so a repro tells us for certain, and so
+     * that IF this is the cause, draining it here also fixes it. */
+    {
+        GLenum e;
+        int drained = 0;
+        while ((e = glGetError()) != GL_NO_ERROR) {
+            char lb[96];
+            snprintf(lb, sizeof(lb), "shader: pending GL error 0x%x drained before compile (id0=%llx id1=%x)", (unsigned)e, (unsigned long long)shader_id0, (unsigned)shader_id1);
+            mdkr_vita_boot_log(lb);
+            drained++;
+            if (drained > 8) break;
+        }
+    }
+#endif
 
     char vs_buf[12288];
     char fs_buf[18000];
