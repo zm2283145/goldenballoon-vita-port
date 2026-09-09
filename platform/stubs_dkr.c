@@ -1147,13 +1147,49 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
              * a real hitch does. Inert unless MDKR_TEST_MAINLOOP_STALL_NS is
              * set; it moves host wall time only, never simulation state. */
             dkr_audio_test_mainloop_stall();
+#if defined(__vita__)
+            {
+                static int s_vitaCrumbAudA = 0;
+                if (s_vitaCrumbAudA < 24) {
+                    char taA[96];
+                    snprintf(taA, sizeof(taA), "crumb: frame=%u before-dkr_audio_advance_fields", (unsigned)g_surfaceFrameCounter);
+                    mdkr_vita_boot_log(taA);
+                    mdkr_vita_boot_log_flush();
+                    s_vitaCrumbAudA++;
+                }
+            }
+#endif
             dkr_audio_advance_fields(
                 oracle_variable_ticket
                     ? (unsigned)oracle_update_fields
                     : present_sched_tick_fields(),
                 s_audioRebasePending);
             s_audioRebasePending = false;
+#if defined(__vita__)
+            {
+                static int s_vitaCrumbAudB = 0;
+                if (s_vitaCrumbAudB < 24) {
+                    char taB[96];
+                    snprintf(taB, sizeof(taB), "crumb: frame=%u before-dkr_audio_service_tick", (unsigned)g_surfaceFrameCounter);
+                    mdkr_vita_boot_log(taB);
+                    mdkr_vita_boot_log_flush();
+                    s_vitaCrumbAudB++;
+                }
+            }
+#endif
             dkr_audio_service_tick();
+#if defined(__vita__)
+            {
+                static int s_vitaCrumbAudC = 0;
+                if (s_vitaCrumbAudC < 24) {
+                    char taC[96];
+                    snprintf(taC, sizeof(taC), "crumb: frame=%u after-dkr_audio_service_tick", (unsigned)g_surfaceFrameCounter);
+                    mdkr_vita_boot_log(taC);
+                    mdkr_vita_boot_log_flush();
+                    s_vitaCrumbAudC++;
+                }
+            }
+#endif
 
             /* THE LAST MOMENT INPUT CAN STILL REACH THIS TICK.
              *
