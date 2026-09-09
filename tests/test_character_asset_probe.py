@@ -1728,6 +1728,40 @@ class CharacterAssetProbeTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(probe._safe_archive_name(name), name)
 
+    def test_a_member_that_outruns_its_declared_size_is_refused(self) -> None:
+        """The ratio gate is computed from the DECLARED size, so it cannot see
+        this: a member claiming 2 MB while carrying 200 MB of deflated zeros has
+        a ratio near 10 and passes. CPython also truncates to the declared size
+        only after handing the decompressor a 2 GiB read window, so the
+        allocation happens before anything notices. Reading one byte past the
+        declaration proves the stream lies and costs nothing on an honest member.
+        """
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("model.dae", b"\x00" * (8 * 1024 * 1024))
+        raw = bytearray(buffer.getvalue())
+        lie = 64 * 1024
+        struct.pack_into("<I", raw, raw.find(b"PK\x01\x02") + 24, lie)
+        struct.pack_into("<I", raw, raw.find(b"PK\x03\x04") + 22, lie)
+        with zipfile.ZipFile(io.BytesIO(bytes(raw))) as archive:
+            info = archive.infolist()[0]
+            self.assertLess(info.file_size,
+                            info.compress_size * probe.MAX_ARCHIVE_EXPANSION_RATIO,
+                            "the fixture must pass the declared-size ratio gate")
+            with self.assertRaises(probe.ProbeError):
+                probe._read_member_bounded(archive, info, "model.dae")
+
+    def test_an_honest_member_reads_back_whole(self) -> None:
+        """The bound must be the declaration, not a guess that truncates."""
+        payload = b"A" * 4096
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("model.dae", payload)
+        with zipfile.ZipFile(io.BytesIO(buffer.getvalue())) as archive:
+            got = probe._read_member_bounded(
+                archive, archive.infolist()[0], "model.dae")
+        self.assertEqual(got, payload)
+
     def test_archive_member_compression_bomb_is_rejected_before_read(self) -> None:
         archive_file = io.BytesIO()
         with zipfile.ZipFile(

@@ -793,6 +793,42 @@ def _archive_report_has_model(report: dict[str, Any]) -> bool:
     )
 
 
+def _read_member_bounded(
+    archive: zipfile.ZipFile, info: zipfile.ZipInfo, safe_name: str
+) -> bytes:
+    """Read one member, refusing a stream that outruns its own declaration.
+
+    _validate_general_archive_budget() derives the expansion ratio entirely from
+    `info.file_size`, a central-directory field with no relation to what the
+    deflate stream produces. A member declaring 2 MB and carrying 2 GB of
+    deflated zeros has a ratio of 1.0 and passes every check above -- and
+    CPython's ZipExtFile truncates to the declared size only AFTER handing the
+    decompressor a 2 GiB read window, so the allocation happens first.
+
+    Reading one byte past the declaration is enough to prove the stream lies,
+    and costs nothing on an honest member.
+    """
+    limit = info.file_size + 1
+    try:
+        with archive.open(info) as handle:
+            payload = handle.read(limit)
+    except zipfile.BadZipFile as error:
+        # Reading only as far as the declaration allows leaves the member's CRC
+        # unsatisfied, which is exactly what a lying declaration looks like from
+        # here. Report it as a refusal rather than letting BadZipFile escape
+        # past the ProbeError handlers every caller of this module installs.
+        raise ProbeError(
+            "archive member does not match its own directory entry "
+            f"({error}): {safe_name}"
+        ) from error
+    if len(payload) > info.file_size:
+        raise ProbeError(
+            "archive member expands beyond the size its own directory entry "
+            f"declares: {safe_name}"
+        )
+    return payload
+
+
 def _validate_general_archive_budget(
     infos: list[zipfile.ZipInfo], name: str
 ) -> tuple[int, int]:
@@ -921,12 +957,15 @@ def inspect_archive_bytes(data: bytes, name: str, depth: int = 0) -> dict[str, A
         if suffix in MODEL_SUFFIXES:
             entry: dict[str, Any] = {"path": safe_name, "format": suffix[1:]}
             if suffix == ".dae":
-                entry["inspection"] = inspect_dae(archive.read(info), safe_name)
+                entry["inspection"] = inspect_dae(
+                    _read_member_bounded(archive, info, safe_name), safe_name)
             models.append(entry)
         if suffix == ".zip":
             if info.file_size > MAX_NESTED_ARCHIVE_BYTES:
                 raise ProbeError(f"nested archive is too large: {safe_name}")
-            nested.append(inspect_archive_bytes(archive.read(info), safe_name, depth + 1))
+            nested.append(inspect_archive_bytes(
+                _read_member_bounded(archive, info, safe_name),
+                safe_name, depth + 1))
 
     blockers: list[str] = []
     if not licenses and not any(
