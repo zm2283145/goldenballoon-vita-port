@@ -8,11 +8,13 @@ same libultraship/vitaGL pattern as
 (a Banjo-Kazooie Vita port used as the concrete reference for library
 choices, link flags, and the VPK packaging recipe).
 
-**Status: boots on real hardware, reaches the main menu with audio and
-textured rendering, actively being debugged past there.** This moved past
-"builds and links clean" through hands-on, on-device bring-up: real
-crashes, pulled via a boot-time file logger and coredumps, root-caused one
-at a time. Fixed so far, in the order they were hit:
+**Status: functionally in-game on real hardware.** It boots, loads a ROM,
+reaches the main menu with audio and textured rendering, and now renders
+actual 3D race/menu scenes correctly. This moved past "builds and links
+clean" through hands-on, on-device bring-up: real crashes and rendering
+bugs, pulled via a boot-time file logger, coredumps, and targeted
+diagnostic logging, root-caused one at a time. Fixed so far, in the order
+they were hit:
 
 1. **Black screen, audio/input alive.** `platform_sdl_surface_presentable()`
    treated vitaGL's intentionally-always-NULL `s_window` as "not
@@ -30,10 +32,45 @@ at a time. Fixed so far, in the order they were hit:
    Vita-only source rewrite (`dkr_vita_rewrite_glsl_to_legacy()` in
    `gfx_opengl.c`) run on the generated shader text right before it's
    compiled.
+4. **3D scene never rendering past the main menu, plus corrupted intro
+   logo copyright text.** Root cause: `dkr_k0_to_physical()` (what
+   `OS_K0_TO_PHYSICAL()` calls on native ports) registers a converted
+   pointer into the renderer's lookup table so `dkr_resolve()` can find it
+   again later — but only on 64-bit (LP64) targets; the 32-bit (ILP32)
+   branch was a no-op. That only mattered for call sites that convert
+   their pointer *before* handing it to the display-list macros (chiefly
+   `gSPViewport(pkt, OS_K0_TO_PHYSICAL(&gViewportStack[...]))` in
+   `camera.c`); by the time anything downstream could register it, the
+   real pointer was already gone. Unregistered, the viewport address fell
+   back to the segment-table heuristic, where it collided by coincidence
+   with an unrelated small transient pool (Vita processes load around
+   `0x81000000+`, and the flipped/converted address happened to decode
+   with a top nibble of 1 — "segment 1"). That handed back a
+   "successfully resolved" pointer into unowned, zeroed memory: an
+   all-zero `Vp_t` (viewport scale/translate both zero), which collapses
+   all 3D geometry, and the same misresolution corrupted the logo text.
+   Fixed in `platform/stubs_dkr.c` by registering the original pointer on
+   ILP32 too, gated to the real Vita host-pointer range so it can't be
+   confused with the already-truncated 32-bit tokens (e.g.
+   `TextureHeader.cmd`) that also pass through the same conversion
+   function. **Note:** an earlier attempt at this exact fix
+   (`4c0fee6`, "gViewportStack pointers colliding with the segment-token
+   window") took a different approach — loosening the segment-token
+   exclusion check that a *different*, previously-fixed bug relies on —
+   and that broke something else, causing an unrooted crash a few frames
+   in; it was reverted (`f423e4f`) before this fix replaced it. If a
+   similar-looking bug resurfaces, that revert's commit message and the
+   diagnostic-logging commits around it (`4614e570`, `9df8fb6c`) are the
+   place to start, not another loosen-the-exclusion attempt.
 
-Currently being debugged past the main menu — see "What needs
-hardware verification" at the end for what's still open, and the git log
-on this branch for the blow-by-blow.
+Confirmed on real hardware: the boot log shows zero viewport-resolution
+failures and clean frames well past where the previous crash chain died
+(frame 9), with shaders compiling and textures uploading normally through
+frame 80+. Still a fresh fix on a from-scratch bring-up — not yet exercised
+across every track, mode, or render path, so further rendering bugs in
+less-common cases are plausible. See "What needs hardware verification" at
+the end for everything still open, and the git log on this branch for the
+blow-by-blow.
 
 **vitaGL / vitaShaRK versions:** built from
 [Rinnegatamante/vitaGL](https://github.com/Rinnegatamante/vitaGL) commit
@@ -52,6 +89,12 @@ together, not independently.
 
 ## How to build
 
+Needs VitaSDK with these packages installed via `vdpm` first: `SDL2`,
+`vitaGL`, `vitashark`, `libmathneon`, `taihen` (this project's own
+environment builds vitaGL/vitaShaRK from source instead — see the versions
+note above — but `vdpm`'s prebuilt packages work too if source builds
+aren't needed).
+
 ```powershell
 # One-time setup (VitaSDK, cmake, ninja already installed under
 # C:\vitasdk and C:\vitasdk-tools in this environment):
@@ -60,6 +103,12 @@ cmake -S . -B build-vita -G Ninja `
     -DCMAKE_BUILD_TYPE=Release
 cmake --build build-vita --target mdkr64
 ```
+
+Rebuilding an existing `build-vita` directory after pulling changes is just
+`ninja -C build-vita` (or `cmake --build build-vita --target mdkr64` again)
+— re-running the `cmake -S ...` configure step is only needed after a
+`CMakeLists.txt` change or a fresh checkout. Either way, **packaging is a
+separate step** (see below) — neither of these produces `mdkr64.vpk`.
 
 `CMakeLists.txt` detects `VITA` (set by `vita.toolchain.cmake`) and forces
 `MDKR_WEBGPU_BACKEND`, `MDKR_APP`, and `MDKR_NATIVE_PHONE_PARTY` off before
@@ -92,10 +141,10 @@ that script gets right that a naive hand-rolled version will not:
   not yet isolated. Until it is, ship without LiveArea assets (Vita falls
   back to a default icon/background).
 
-`powershell
+```powershell
 vita-mksfoex -s TITLE_ID=GBLN00001 -d ATTRIBUTE2=12 "GoldenBalloon DKR" build-vita/param.sfo   # one-time / only if param.sfo is missing
 pwsh -File tools/package_vita.ps1 -BuildDir build-vita
-`
+```
 
 `vita/livearea/*.png` are **programmatically generated placeholders**
 (solid background + wordmark text), not final art, and are currently
@@ -172,13 +221,23 @@ starting point — but all of it is unverified:
   passed conservative-but-arbitrary values; may need tuning if the game
   runs out of GPU memory or the ring buffer stalls under DKR's heavier
   particle/HUD draws.
-- **Input mapping** — SDL2's GameController API should map the Vita's
-  physical buttons/sticks automatically via vita-sdl2's built-in mapping,
-  but this has not been exercised at all; button layout (especially
-  L/R vs. L1/R1/L2/R2 conventions and the D-pad) needs a hands-on pass.
-- **Audio path** — untested; SDL2's audio backend on Vita goes through
-  `sceAudio`, and this engine's mixer/sequence-player pipeline has not been
-  run against it.
+- **Input mapping — partially confirmed.** SDL2's GameController API does
+  map the Vita's physical buttons/sticks automatically via vita-sdl2's
+  built-in mapping, and the game is now playable end to end (steering,
+  menu navigation, and 3D gameplay all confirmed on hardware). One concrete
+  gap found and fixed: the Vita's L/R are plain shoulder buttons with no
+  analog travel, but the engine's default item-fire (Z) binding lives only
+  on the analog L2/R2 trigger axes (`MDKR_INPUT_CONTROLLER_LEFT_TRIGGER`/
+  `RIGHT_TRIGGER`), which never fire on Vita — so Z had no reachable
+  default at all. Fixed in `platform/video_config.c` by defaulting Z to
+  Triangle on Vita instead (its usual camera-up binding is redundant with
+  the right stick, which already covers all four C-directions). This one
+  fix is shipped but not yet hands-on confirmed in an actual race; a full
+  button-by-button pass (D-pad, start, C-buttons via right stick) is still
+  open.
+- **Audio path** — untested in gameplay; SDL2's audio backend on Vita goes
+  through `sceAudio`, and this engine's mixer/sequence-player pipeline has
+  not been run against it beyond whatever plays at the main menu.
 - **Performance** — DKR's HUD, minimap, and particle-heavy track sections
   on the PowerVR SGX543MP4+ are an open question; `Video.RenderScale` is
   the only scaling knob available (MSAA is off — see table above).
@@ -205,12 +264,18 @@ starting point — but all of it is unverified:
 
 ## Next steps
 
-1. Boot `mdkr64.vpk` on real hardware with a ROM at
-   `ux0:data/goldenballoon/baserom.us.v80.z64` and see what happens.
-2. Work the "needs hardware verification" list above in whatever order the
-   first boot's actual symptoms suggest.
-3. Replace the placeholder LiveArea art in `vita/livearea/` with real art.
-4. If a native ROM-picker/launcher UI is wanted eventually (rather than the
+1. Play through more of the game on real hardware — more tracks, more game
+   modes (not just time trial), longer sessions — and root-cause whatever
+   that surfaces the same way every bug above was: boot-time file logging
+   and coredumps first, fix second, never guess without data.
+2. Confirm the item-fire (Z → Triangle) remap in an actual race, then do a
+   full pass on the rest of the button/stick mapping (D-pad, start,
+   C-buttons via right stick).
+3. Work the rest of the "needs hardware verification" list above —
+   audio in gameplay and performance under DKR's heavier particle/HUD
+   draws are the two biggest unknowns left.
+4. Replace the placeholder LiveArea art in `vita/livearea/` with real art.
+5. If a native ROM-picker/launcher UI is wanted eventually (rather than the
    fixed-path `--rom`/`DEFAULT_ROM` convention used for this first cut), it
    would need to be built from scratch against `vita2d`/`SceCommonDialog`
    rather than reusing `MDKR_APP`'s ImGui launcher, which is desktop-only.
