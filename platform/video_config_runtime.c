@@ -387,7 +387,11 @@ static int mdkr_video_lock_acquire(MdkrFileLock *lock) {
  * previously valid file on the way to main()'s exit-2 error.
  */
 static int mdkr_video_launcher_args_valid(int argc, char *const *argv) {
-    MdkrVideoConfig validation;
+    /* static: ~57KB (MDKR_VIDEO_KEY_COUNT MdkrVideoValue entries) is safe on a
+     * process's global BSS but was blowing well past the whole thread stack on
+     * Vita when this and the buffers below stacked additively across nested
+     * calls -- see the two matching comments further down this file. */
+    static MdkrVideoConfig validation;
 
     mdkr_video_config_defaults(&validation);
     for (int i = 1; i < argc && argv != NULL; i++) {
@@ -530,8 +534,12 @@ void mdkr_video_config_init(int argc, char *const *argv) {
 }
 
 int mdkr_video_config_handoff_to_engine(int argc, char *const *argv) {
-    MdkrVideoConfig resolved;
-    ConfigIniEntry fresh_entries[MDKR_VIDEO_INI_MAX];
+    /* static: see the stack-overflow note on mdkr_video_config_runtime_set_many
+     * below. This pair alone is already ~200KB; only a boot-time, single-call
+     * function (guarded by s_engine_handoff_completed) may still afford it, but
+     * there is no reason to keep taking the risk. */
+    static MdkrVideoConfig resolved;
+    static ConfigIniEntry fresh_entries[MDKR_VIDEO_INI_MAX];
     int fresh_entry_count = 0;
 
     if (!s_video_initialized || s_engine_handoff_completed) {
@@ -924,8 +932,15 @@ static int mdkr_video_build_persisted_entries(
 
 static MdkrVideoWriteResult mdkr_video_write_config_unlocked(
     const MdkrVideoConfig *config, int persist_launcher) {
-    ConfigIniEntry entries[MDKR_VIDEO_INI_MAX];
-    char text[MDKR_VIDEO_INI_TEXT_MAX];
+    /* static: entries[] alone is ~147KB (MDKR_VIDEO_INI_MAX * sizeof(ConfigIniEntry)).
+     * On desktop/web that is a rounding error against a multi-MB thread stack;
+     * on Vita, stacked on top of a caller's own oversized locals (see
+     * mdkr_video_config_runtime_set_many), it was enough by itself to overrun
+     * the default ~256KB thread stack and take a data-abort crash. This
+     * function only ever runs with mdkr_video_lock_acquire() held, so there is
+     * already no more than one live call at a time; static costs nothing extra. */
+    static ConfigIniEntry entries[MDKR_VIDEO_INI_MAX];
+    static char text[MDKR_VIDEO_INI_TEXT_MAX];
     char temporary[MDKR_VIDEO_PATH_MAX];
     int count = 0;
     FILE *f;
@@ -985,8 +1000,12 @@ static MdkrVideoWriteResult mdkr_video_write_config_unlocked(
 static MdkrVideoWriteResult mdkr_video_write_config_attempt(
     const MdkrVideoConfig *config) {
     MdkrFileLock lock = {(intptr_t)-1};
-    ConfigIniEntry fresh_entries[MDKR_VIDEO_INI_MAX];
-    MdkrVideoConfig merged;
+    /* static: same ~200KB stack-overflow risk as mdkr_video_config_runtime_set_many
+     * (see the note there). This function also holds the write lock for its
+     * entire body, so a static scratch buffer here is exactly as safe as the
+     * stack-local it replaces and no more. */
+    static ConfigIniEntry fresh_entries[MDKR_VIDEO_INI_MAX];
+    static MdkrVideoConfig merged;
     int fresh_entry_count = 0;
     MdkrVideoWriteResult written;
     if (config == NULL || !mdkr_video_lock_acquire(&lock)) {
@@ -1071,8 +1090,18 @@ int mdkr_video_config_runtime_locked(MdkrVideoKey key) {
 MdkrVideoRuntimeResult mdkr_video_config_runtime_set_many(
     const MdkrVideoRuntimeChange *changes,
     int change_count) {
-    MdkrVideoConfig candidate;
-    ConfigIniEntry fresh_entries[MDKR_VIDEO_INI_MAX];
+    /* static, not stack: candidate (~57KB) + fresh_entries (~147KB) is ~200KB in
+     * one frame. Confirmed via a symbolized Vita crash dump (data abort right at
+     * this function's prologue, sub sp, sp, #205824) to overrun the Vita's
+     * default thread stack the moment this function is entered from the game's
+     * options menu (Presentation / Audio / Texture Filtering all reach this
+     * same call). Desktop and web platforms have multi-MB thread stacks and
+     * never noticed. This function runs to completion behind
+     * mdkr_video_lock_acquire() and is only ever invoked from the single UI/menu
+     * call site, so static storage is safe and removes the dependency on
+     * thread stack size entirely. */
+    static MdkrVideoConfig candidate;
+    static ConfigIniEntry fresh_entries[MDKR_VIDEO_INI_MAX];
     MdkrFileLock lock = {(intptr_t)-1};
     MdkrVideoWriteResult write;
     int includes_mode = 0;
