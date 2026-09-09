@@ -54,9 +54,11 @@
  * Vita, so a silent early exit needs breadcrumbs written to a file instead. */
 extern void mdkr_vita_boot_log(const char *msg);
 extern void mdkr_vita_boot_log_flush(void);
+extern int mdkr_vita_debug_enabled(void);
 #else
 #define mdkr_vita_boot_log(msg) ((void)0)
 #define mdkr_vita_boot_log_flush() ((void)0)
+#define mdkr_vita_debug_enabled() (0)
 #endif
 #include "gfx_shadow_cascade.h"
 #include "gfx_shadow_frame.h"
@@ -1229,9 +1231,11 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
         GLenum e;
         int drained = 0;
         while ((e = glGetError()) != GL_NO_ERROR) {
-            char lb[96];
-            snprintf(lb, sizeof(lb), "shader: pending GL error 0x%x drained before compile (id0=%llx id1=%x)", (unsigned)e, (unsigned long long)shader_id0, (unsigned)shader_id1);
-            mdkr_vita_boot_log(lb);
+            if (mdkr_vita_debug_enabled()) {
+                char lb[96];
+                snprintf(lb, sizeof(lb), "shader: pending GL error 0x%x drained before compile (id0=%llx id1=%x)", (unsigned)e, (unsigned long long)shader_id0, (unsigned)shader_id1);
+                mdkr_vita_boot_log(lb);
+            }
             drained++;
             if (drained > 8) break;
         }
@@ -1862,7 +1866,7 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
 #if defined(__vita__)
     {
         static int s_shaderLogCount = 0;
-        if (s_shaderLogCount < 20) {
+        if (mdkr_vita_debug_enabled() && s_shaderLogCount < 20) {
             char lb[192];
             snprintf(lb, sizeof(lb),
                      "shader: about to compile+link id0=0x%llx id1=0x%x tex=%d,%d fog=%d "
@@ -1880,7 +1884,7 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
     dkr_vita_rewrite_glsl_to_legacy(fs_buf, &fs_len, 1);
     {
         static int s_shaderSrcLogCount = 0;
-        if (s_shaderSrcLogCount < 5) {
+        if (mdkr_vita_debug_enabled() && s_shaderSrcLogCount < 5) {
             char lb[1700];
             snprintf(lb, sizeof(lb), "shader: rewritten VS (len=%u):\n%.*s",
                      (unsigned)vs_len, (int)(vs_len < 1600 ? vs_len : 1600), vs_buf);
@@ -1893,7 +1897,7 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
     }
 #endif
 #if defined(__vita__)
-    {
+    if (mdkr_vita_debug_enabled()) {
         size_t vs_strlen = strlen(vs_buf);
         size_t fs_strlen = strlen(fs_buf);
         char lb[220];
@@ -2025,11 +2029,15 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
     glAttachShader(shader_program, vertex_shader);
     glAttachShader(shader_program, fragment_shader);
 #if defined(__vita__)
-    mdkr_vita_boot_log("shader: both stages compiled OK, calling glLinkProgram");
+    if (mdkr_vita_debug_enabled()) {
+        mdkr_vita_boot_log("shader: both stages compiled OK, calling glLinkProgram");
+    }
 #endif
     glLinkProgram(shader_program);
 #if defined(__vita__)
-    mdkr_vita_boot_log("shader: glLinkProgram returned (survived)");
+    if (mdkr_vita_debug_enabled()) {
+        mdkr_vita_boot_log("shader: glLinkProgram returned (survived)");
+    }
 #endif
 
     glDeleteShader(vertex_shader);

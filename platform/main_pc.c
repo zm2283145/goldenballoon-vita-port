@@ -265,8 +265,31 @@ void mdkr_vita_boot_log(const char *msg) {
     s_mdkrBootLogBufLen += len;
     s_mdkrBootLogBuf[s_mdkrBootLogBufLen++] = '\n';
 }
+
+/* Verbose shader-compile diagnostics (added while chasing a Remastered-preset
+ * crash) are useful on demand but too chatty to leave on for every player on
+ * every boot -- they run once per shader, every boot, forever. Gate them
+ * behind the presence of a plain marker file so they stay silent by default
+ * and can be turned back on by dropping an empty file named exactly "debug"
+ * into the save folder before launching, no rebuild needed. Checked once and
+ * cached: the file is meant to be placed before launch, not toggled
+ * mid-session. */
+int mdkr_vita_debug_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        FILE *f = fopen("ux0:data/goldenballoon/debug", "r");
+        if (f != NULL) {
+            fclose(f);
+            cached = 1;
+        } else {
+            cached = 0;
+        }
+    }
+    return cached;
+}
 #else
 #define mdkr_vita_boot_log(msg) ((void)0)
+#define mdkr_vita_debug_enabled() (0)
 #endif
 
 /* Set by CMake (see CMakeLists.txt's "Version stamping" block) to the
