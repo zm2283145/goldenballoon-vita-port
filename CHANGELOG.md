@@ -12,7 +12,7 @@ save formats). Everything below 1.0.0 predates that commitment.
 
 No changes yet.
 
-## [1.7.0] — 2026-09-08
+## [1.7.0] — 2026-09-09
 
 ### Added
 
