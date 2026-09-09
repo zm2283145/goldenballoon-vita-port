@@ -3422,7 +3422,24 @@ static bool dkr_setup_draw_state(bool poly_tex_enabled) {
     if (use_noise)     cc_options |= SHADER_OPT_NOISE;
     if (is_2cyc)       cc_options |= SHADER_OPT_2CYC;
     if (shadow_receiver) {
+#if defined(__vita__)
+        /* Sun-shadow mapping needs GL_TEXTURE_2D_ARRAY / sampler2DArrayShadow /
+         * the 4-argument shadow texture() call, none of which GLSL ES 1.00 (what
+         * vitaShaRK compiles) supports. gfx_opengl_render_shadow_map() already
+         * compiles out to a no-op on Vita for exactly this reason (see its
+         * #else stub and PORTING_STATUS.md), so the shadow map itself is never ready
+         * -- but this generator was still asking for shadow-receiver GLSL on
+         * every qualifying object regardless, which vitaShaRK cannot compile
+         * and aborts on (confirmed via a symbolized crash dump: Remastered
+         * preset enables World Shadows, and the resulting shader failed
+         * glCompileShader, hitting this file's own
+         * glGetShaderiv/glGetShaderInfoLog/abort() diagnostic path). Match the
+         * shadow-map side: the whole feature is off on Vita. opt_world_pos has
+         * no other consumer than the shadow-cascade sampling this feeds, so it
+         * is skipped too rather than emit an unused varying. */
+#else
         cc_options |= SHADER_OPT_WORLD_POS | SHADER_OPT_SUN_SHADOW;
+#endif
     }
     if (g_pcRemasterFX && g_pcPerPixelLight &&
         dkr_rl5_lighting_enabled() &&

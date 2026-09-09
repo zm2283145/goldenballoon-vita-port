@@ -1215,20 +1215,8 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
     struct CCFeatures cc_features;
     gfx_cc_get_features(shader_id0, shader_id1, &cc_features);
 
-    /* static + enlarged: a confirmed crash (Vita, Remastered preset) showed
-     * this generator hitting append_overflow()'s deliberate abort() -- the
-     * combination of world shadows (sun-shadow cascade sampling function),
-     * N64 3-point filtering, tile masking, and the full combiner formula can
-     * add up past the previous 12288/18000-byte budgets for some shader_id
-     * combinations that plain Restored/Pure presets never reach. This
-     * function only ever runs on the thread that owns the GL context
-     * (glLinkProgram et al. are not safe to call from elsewhere), so there is
-     * never more than one live call; static removes ~30KB of per-call stack
-     * and buys headroom to grow these without touching stack budget. The
-     * append_overflow() abort() stays as the backstop if a future shader
-     * permutation ever needs more than this. */
-    static char vs_buf[32768];
-    static char fs_buf[49152];
+    char vs_buf[12288];
+    char fs_buf[18000];
     size_t vs_len = 0;
     size_t fs_len = 0;
     size_t num_floats = 4;
