@@ -2349,6 +2349,16 @@ static bool dkr_tile_logical_dims(uint8_t td, uint32_t source_size_bytes,
     return true;
 }
 
+#if defined(__vita__)
+/* True when both dimensions are an exact power of two. See the vitaGL
+ * issue #24 comment at this function's mip-upload call site below for why
+ * Vita gates CPU-mipped uploads on this. */
+static bool dkr_dims_are_pot(uint32_t width, uint32_t height) {
+    return width != 0 && height != 0 &&
+           (width & (width - 1u)) == 0 && (height & (height - 1u)) == 0;
+}
+#endif
+
 static bool dkr_upload_tile_texture(uint8_t td, bool cutout,
                                     uint32_t *out_w, uint32_t *out_h,
                                     DkrFontDerivation *out_derived) {
@@ -2557,8 +2567,26 @@ static bool dkr_upload_tile_texture(uint8_t td, bool cutout,
      * this fill: alpha-tested materials get coverage-preserving reduction so
      * fences and foliage do not erode with distance.
      */
+#if defined(__vita__)
+    /* vitaGL issue #24 (open upstream, unfixed as of this writing): mip levels
+     * above 0 for an NPOT-dimensioned texture come back corrupted -- content
+     * from OTHER, unrelated textures bleeding in -- while level 0 (no
+     * distance) uploads and samples fine. N64 textures are almost always
+     * NPOT (32x48 and similar; see gfx_mipgen.h's header comment), so this
+     * hits nearly every sprite/billboard and shows up exactly as reported:
+     * a solid, wrong-colored box around trees and item pickups at a
+     * distance, which vanishes up close where the renderer has switched to
+     * level 0. Until upstream fixes it, only take the CPU-mipped path on
+     * Vita when both dimensions are already a power of two; everything
+     * else falls through to the plain single-level upload below, trading a
+     * little distant shimmer for not being wrong. */
+    if (g_pcMipmaps && gfx_rapi->upload_texture_mipped != NULL &&
+        gfx_mip_level_count(width, height) > 1 &&
+        dkr_dims_are_pot(width, height)) {
+#else
     if (g_pcMipmaps && gfx_rapi->upload_texture_mipped != NULL &&
         gfx_mip_level_count(width, height) > 1) {
+#endif
         size_t need = gfx_mip_chain_bytes(width, height);
         if (ensure_mip_buf(need)) {
             GfxMipChain chain;
