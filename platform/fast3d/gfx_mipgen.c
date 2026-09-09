@@ -83,6 +83,13 @@ size_t gfx_mip_chain_bytes(int width, int height) {
  * [i*src/dst, (i+1)*src/dst), which is always within [0, src) — so no sample
  * ever leaves the texture and no wrap/clamp rule is required. Partial source
  * texels at each end contribute their fractional overlap.
+ *
+ * Colour is accumulated premultiplied by each source texel's own alpha, then
+ * un-premultiplied once at the end. Without that, a fully transparent
+ * texel's arbitrary leftover RGB is weighted equally with its opaque
+ * neighbours and bleeds into them once the level is reduced, producing a
+ * tinted box/halo around alpha-cutout sprites at distance (fixed level,
+ * gone at mip 0). Alpha stays a plain, unweighted coverage average.
  */
 static void reduce_level(const uint8_t *src, int sw, int sh,
                          uint8_t *dst, int dw, int dh) {
@@ -103,6 +110,7 @@ static void reduce_level(const uint8_t *src, int sw, int sh,
 
             float acc_r = 0.0f, acc_g = 0.0f, acc_b = 0.0f, acc_a = 0.0f;
             float acc_w = 0.0f;
+            float acc_aw = 0.0f; /* sum of w * this texel's own alpha fraction */
 
             for (int sy = iy0; sy < iy1 && sy < sh; sy++) {
                 /* Overlap of this source row with the destination interval. */
@@ -117,18 +125,31 @@ static void reduce_level(const uint8_t *src, int sw, int sh,
                     const float rx1 = (float) (sx + 1) < x1 ? (float) (sx + 1) : x1;
                     const float wx = rx1 - rx0;
                     const uint8_t *p;
-                    float w;
+                    float w, a01, aw;
                     if (wx <= 0.0f) {
                         continue;
                     }
                     w = wx * wy;
                     p = src + ((size_t) sy * (size_t) sw + (size_t) sx) * 4u;
-                    /* Colour in linear light; alpha is coverage, so linear as-is. */
-                    acc_r += s_srgb_to_linear[p[0]] * w;
-                    acc_g += s_srgb_to_linear[p[1]] * w;
-                    acc_b += s_srgb_to_linear[p[2]] * w;
+                    /* Colour in linear light, premultiplied by this texel's own
+                     * alpha before averaging. A fully (or mostly) transparent
+                     * texel's stored RGB is 'don't care' and never displays on
+                     * its own, so weighting the colour average by coverage
+                     * (not just geometric overlap) stops that don't-care RGB
+                     * from bleeding into neighbouring opaque texels once this
+                     * level is reduced again -- the tinted halo/box seen around
+                     * cutout sprites (trees, item pickups) at distance, which
+                     * is absent at mip level 0 where nothing is averaged.
+                     * Alpha itself is still a plain coverage average,
+                     * unchanged. */
+                    a01 = (float) p[3] * (1.0f / 255.0f);
+                    aw = w * a01;
+                    acc_r += s_srgb_to_linear[p[0]] * aw;
+                    acc_g += s_srgb_to_linear[p[1]] * aw;
+                    acc_b += s_srgb_to_linear[p[2]] * aw;
                     acc_a += (float) p[3] * w;
                     acc_w += w;
+                    acc_aw += aw;
                 }
             }
 
@@ -136,9 +157,17 @@ static void reduce_level(const uint8_t *src, int sw, int sh,
                 uint8_t *o = dst + ((size_t) y * (size_t) dw + (size_t) x) * 4u;
                 if (acc_w > 0.0f) {
                     const float inv = 1.0f / acc_w;
-                    o[0] = linear_to_srgb_u8(acc_r * inv);
-                    o[1] = linear_to_srgb_u8(acc_g * inv);
-                    o[2] = linear_to_srgb_u8(acc_b * inv);
+                    if (acc_aw > 0.0f) {
+                        const float inv_aw = 1.0f / acc_aw;
+                        o[0] = linear_to_srgb_u8(acc_r * inv_aw);
+                        o[1] = linear_to_srgb_u8(acc_g * inv_aw);
+                        o[2] = linear_to_srgb_u8(acc_b * inv_aw);
+                    } else {
+                        /* Every contributing texel was fully transparent: the
+                         * colour is unobservable either way, so just avoid
+                         * dividing by zero rather than infer one. */
+                        o[0] = o[1] = o[2] = 0;
+                    }
                     o[3] = (uint8_t) (acc_a * inv + 0.5f);
                 } else {
                     o[0] = o[1] = o[2] = o[3] = 0;
