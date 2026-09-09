@@ -464,6 +464,29 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/run_modern_character_asset_test.py
                 --loader $<TARGET_FILE:mdkr_modern_character_asset_test>)
+
+    # The registry's per-asset scan over a real installed-cache directory. It
+    # gets its own target rather than joining the loader test above because the
+    # defect it pins is in the SCAN, not in the loader: a fixed local indexed by
+    # a validated count. Under the sanitizer arm the pre-fix code reports a
+    # stack-buffer-overflow write; nothing else in the tree reached it.
+    add_executable(mdkr_modern_character_registry_test
+        ${CMAKE_SOURCE_DIR}/tests/test_modern_character_registry.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_registry.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_asset.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_text.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_identity.c
+        ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
+        ${CMAKE_SOURCE_DIR}/lib/stb/stb_image_impl.c)
+    target_include_directories(mdkr_modern_character_registry_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/lib/stb)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_modern_character_registry_test PRIVATE m)
+    endif()
+    add_test(NAME modern_character_registry
+        COMMAND mdkr_modern_character_registry_test
+                ${CMAKE_SOURCE_DIR}/tests/fuzz_corpus/modern_character_asset/sixtyfive-animations.mdkc)
     add_test(NAME character_package_manager
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_character_package_manager.py)
