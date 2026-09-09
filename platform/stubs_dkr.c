@@ -51,11 +51,8 @@ static int dkr_host_errno(void) {
 
 #if defined(__vita__)
 extern void mdkr_vita_boot_log(const char *msg);
-extern void mdkr_vita_boot_log_flush(void);
-extern uint64_t g_surfaceFrameCounter;
 #else
 #define mdkr_vita_boot_log(msg) ((void)0)
-#define mdkr_vita_boot_log_flush() ((void)0)
 #endif
 
 /* ======================================================================== *
@@ -169,7 +166,6 @@ EM_ASYNC_JS(int, mdkr_persist_save_async, (int kind), {
 #include "audi_port_dkr.h"
 #include "mdkr_bounds.h"
 #include "gfx_ptr.h"     /* gfx_ptr_store — register non-arena DL pointers */
-#include "memory.h"    /* mdkr_mempool_allocation_span -- bounds-check a segment-token guess below */
 #include "fast3d/gfx_shadow_frame.h"
 #include "fast3d/gfx_pc_dkr.h"
 #include "fast3d/gfx_presentation_packet.h" /* F9 capture per-frame rows */
@@ -520,78 +516,10 @@ void dkr_dl_register_host_ptr(const void *x) {
          * whole range from registration; anything in it must resolve
          * through the segment table, never the pointer registry. */
         int is_segment_token_range = p >= 0x01000000u && p < 0x10000000u;
-        if (is_segment_token_range) {
-            /*
-             * That range test alone is ambiguous on Vita. OS_K0_TO_PHYSICAL
-             * only toggles bit 31, and this platform's static .data/.bss
-             * loads around 0x81400000+, so a perfectly real, already-
-             * flipped host pointer such as OS_K0_TO_PHYSICAL(&gViewportStack[n])
-             * (-> 0x014000d0) lands numerically inside this same reserved
-             * window purely by coincidence of where the linker placed it --
-             * indistinguishable from a genuine segment token by value alone.
-             *
-             * Confirmed on real Vita hardware via targeted boot-log tracing:
-             * this exact collision skipped registering gSPViewport's world-
-             * pass pointer, so dkr_resolve fell through to the segment
-             * table and read it as "segment 1, offset 0x4000d0" -- 4+ MB
-             * past segment 1's real (~150 KB) allocation. That lands on
-             * zeroed/unrelated memory, handing back an all-zero Vp_t
-             * (vscale=vtrans=0), which collapses the mapped viewport to
-             * zero width and height every frame: the flat black/blue
-             * screen with no 3D geometry at all (logo scene, main menu).
-             *
-             * A genuine segment token's offset always lands inside that
-             * segment's real, currently-assigned allocation (G_SETCIMG/
-             * G_SETTIMG/G_SETZIMG address real image buffers, not memory
-             * 4+ MB beyond them). A collision like the one above does not.
-             * So only keep excluding p from registration when the segment
-             * it names is actually assigned AND the offset fits inside
-             * that segment's real allocated span; otherwise this is far
-             * more likely a real pointer that collided with the token
-             * window than a segment token pointing past its own buffer,
-             * so fall through and register it like any other pointer.
-             */
-            uint32_t seg = (uint32_t)(p >> 24) & 0x0Fu;
-            uintptr_t segBase = gfx_segment_table[seg];
-            uint32_t offset = (uint32_t)p & 0x00FFFFFFu;
-            /*
-             * Default to the ORIGINAL, safe behavior: assume it is a
-             * genuine segment token (excluded from registration) unless
-             * proven otherwise. This matters because G_SETTIMG/G_SETCIMG/
-             * G_SETZIMG (gSetImage, also routed through this same function)
-             * routinely carry a raw segment token for a segment that is
-             * simply not assigned YET at the moment this DL word is built --
-             * gfx_segment_table[seg] == 0 here is completely normal for
-             * those commands and must NOT be read as "this can't really be
-             * a segment token." Registering it anyway is exactly the
-             * registry-poisoning bug the is_segment_token_range exclusion
-             * was originally added to prevent (see the comment above), and
-             * confirmed again on real Vita hardware: this exact regression
-             * broke the very first thing the game draws (the 2D DKR logo
-             * texture, set up via G_SETTIMG with a not-yet-assigned segment
-             * token) into a reproducible crash.
-             *
-             * Only override that default -- and register the pointer -- when
-             * the segment it names IS currently assigned AND the offset
-             * demonstrably falls outside that segment's real allocated span.
-             * That positive-evidence case is what actually identifies a
-             * collision like gViewportStack's (segment 1 assigned, offset
-             * 4+ MB past its ~150 KB buffer): a real segment token's offset
-             * always lands inside its segment's real, currently-assigned
-             * allocation, by construction.
-             */
-            int plausible_token = 1;
-            if (segBase != 0) {
-                void *allocBase = NULL;
-                size_t allocSize = 0;
-                if (mdkr_mempool_allocation_span((const void *)segBase, &allocBase, &allocSize)) {
-                    plausible_token = offset < allocSize;
-                }
-            }
-            is_segment_token_range = plausible_token;        }
         if (p != 0 && !in_arena && !is_segment_token_range) {
             gfx_ptr_store_persistent(x);
-        }    }
+        }
+    }
 #endif
 }
 
@@ -1147,49 +1075,13 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
              * a real hitch does. Inert unless MDKR_TEST_MAINLOOP_STALL_NS is
              * set; it moves host wall time only, never simulation state. */
             dkr_audio_test_mainloop_stall();
-#if defined(__vita__)
-            {
-                static int s_vitaCrumbAudA = 0;
-                if (s_vitaCrumbAudA < 24) {
-                    char taA[96];
-                    snprintf(taA, sizeof(taA), "crumb: frame=%u before-dkr_audio_advance_fields", (unsigned)g_surfaceFrameCounter);
-                    mdkr_vita_boot_log(taA);
-                    mdkr_vita_boot_log_flush();
-                    s_vitaCrumbAudA++;
-                }
-            }
-#endif
             dkr_audio_advance_fields(
                 oracle_variable_ticket
                     ? (unsigned)oracle_update_fields
                     : present_sched_tick_fields(),
                 s_audioRebasePending);
             s_audioRebasePending = false;
-#if defined(__vita__)
-            {
-                static int s_vitaCrumbAudB = 0;
-                if (s_vitaCrumbAudB < 24) {
-                    char taB[96];
-                    snprintf(taB, sizeof(taB), "crumb: frame=%u before-dkr_audio_service_tick", (unsigned)g_surfaceFrameCounter);
-                    mdkr_vita_boot_log(taB);
-                    mdkr_vita_boot_log_flush();
-                    s_vitaCrumbAudB++;
-                }
-            }
-#endif
             dkr_audio_service_tick();
-#if defined(__vita__)
-            {
-                static int s_vitaCrumbAudC = 0;
-                if (s_vitaCrumbAudC < 24) {
-                    char taC[96];
-                    snprintf(taC, sizeof(taC), "crumb: frame=%u after-dkr_audio_service_tick", (unsigned)g_surfaceFrameCounter);
-                    mdkr_vita_boot_log(taC);
-                    mdkr_vita_boot_log_flush();
-                    s_vitaCrumbAudC++;
-                }
-            }
-#endif
 
             /* THE LAST MOMENT INPUT CAN STILL REACH THIS TICK.
              *
@@ -1208,32 +1100,8 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
              * MDKR_INPUT_JIT=0 opt-out is the only path that skips it.
              */
             platform_input_sample_late();
-#if defined(__vita__)
-            {
-                static int s_vitaCrumbTickA = 0;
-                if (s_vitaCrumbTickA < 24) {
-                    char tcA[96];
-                    snprintf(tcA, sizeof(tcA), "crumb: frame=%u after-platform_input_sample_late", (unsigned)g_surfaceFrameCounter);
-                    mdkr_vita_boot_log(tcA);
-                    mdkr_vita_boot_log_flush();
-                    s_vitaCrumbTickA++;
-                }
-            }
-#endif
 
             const bool exit_requested = platform_exit_requested();
-#if defined(__vita__)
-            {
-                static int s_vitaCrumbTickB = 0;
-                if (s_vitaCrumbTickB < 24) {
-                    char tcB[96];
-                    snprintf(tcB, sizeof(tcB), "crumb: frame=%u after-platform_exit_requested exit=%d", (unsigned)g_surfaceFrameCounter, (int)exit_requested);
-                    mdkr_vita_boot_log(tcB);
-                    mdkr_vita_boot_log_flush();
-                    s_vitaCrumbTickB++;
-                }
-            }
-#endif
             bool ticket_issued = false;
             if (!exit_requested && oracle_variable_ticket) {
                 platform_input_commit_tick((uint64_t)g_simTickCounter + 1u);
@@ -1242,18 +1110,6 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
                 platform_input_commit_tick(present_sched_issued_ticks());
                 ticket_issued = true;
             }
-#if defined(__vita__)
-            {
-                static int s_vitaCrumbTickC = 0;
-                if (s_vitaCrumbTickC < 24) {
-                    char tcC[96];
-                    snprintf(tcC, sizeof(tcC), "crumb: frame=%u after-commit-tick ticket_issued=%d", (unsigned)g_surfaceFrameCounter, (int)ticket_issued);
-                    mdkr_vita_boot_log(tcC);
-                    mdkr_vita_boot_log_flush();
-                    s_vitaCrumbTickC++;
-                }
-            }
-#endif
             if (!mdkr_next_tick_dispatch_allowed(exit_requested,
                                                  ticket_issued)) {
                 if (!exit_requested) {
@@ -1277,18 +1133,6 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
             s_viFieldsPending = mdkr_pacing_queue_refill(
                 s_viFieldsPending, 1, 8);
             present_perf_add(PRESENT_PERF_TICKWALL, perf_entry);
-#if defined(__vita__)
-            {
-                static int s_vitaCrumbTickD = 0;
-                if (s_vitaCrumbTickD < 24) {
-                    char tcD[96];
-                    snprintf(tcD, sizeof(tcD), "crumb: frame=%u end-of-tick-subloop-iter", (unsigned)g_surfaceFrameCounter);
-                    mdkr_vita_boot_log(tcD);
-                    mdkr_vita_boot_log_flush();
-                    s_vitaCrumbTickD++;
-                }
-            }
-#endif
         }
         s_viFieldsPending--;
         if (msg) *msg = (OSMesg)(intptr_t)OS_SC_RETRACE_MSG;

@@ -688,20 +688,6 @@ void main_game_loop(void) {
 #else
     tempLogicUpdateRate = fb_update(gScreenStatus);
 #endif
-#if defined(__vita__)
-    {
-        extern void mdkr_vita_boot_log(const char *msg);
-        extern void mdkr_vita_boot_log_flush(void);
-        static int s_vitaCrumbFbUpd = 0;
-        if (s_vitaCrumbFbUpd < 24) {
-            char fbc[64];
-            snprintf(fbc, sizeof(fbc), "crumb: after-fb_update rate=%d", (int)tempLogicUpdateRate);
-            mdkr_vita_boot_log(fbc);
-            mdkr_vita_boot_log_flush();
-            s_vitaCrumbFbUpd++;
-        }
-    }
-#endif
     sLogicUpdateRate = tempLogicUpdateRate;
     tempLogicUpdateRateMax = LOGIC_10FPS;
     if (tempLogicUpdateRate > tempLogicUpdateRateMax) {
