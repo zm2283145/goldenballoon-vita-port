@@ -71,6 +71,50 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
                 &asset, &identity, &portrait) != 0 && portrait != nullptr) {
             exercisePng(portrait, identity.portrait_size);
         }
+        /* Walk the animation graph the way the character registry does.
+         *
+         * This section was entirely unvisited, which is how a consumer came to
+         * index a fixed 64-entry local with a count validate_references()
+         * admits up to 256 -- a 192-byte stack overflow that an ordinary
+         * 65-clip character triggers at every boot. The accessors below are the
+         * ones that scan reaches, so exercising them over the full validated
+         * range is what makes an out-of-bounds read in any of them reachable
+         * from a corpus rather than only from play.
+         *
+         * NOT the whole class: the overflow itself lived in a local array
+         * inside registry_init(), which is directory-driven and so is still
+         * outside this harness. Covering that needs either a filesystem
+         * fixture here or a seam that builds one entry from one asset.
+         */
+        for (uint32_t index = 0u; index < stats.animations; ++index) {
+            MdkrModernAnimation animation{};
+            if (!mdkr_modern_character_asset_animation(&asset, index,
+                                                       &animation)) {
+                continue;
+            }
+            for (uint32_t offset = 0u; offset < animation.channel_count;
+                 ++offset) {
+                MdkrModernChannel channel{};
+                if (!mdkr_modern_character_asset_channel(
+                        &asset, animation.first_channel + offset, &channel)) {
+                    continue;
+                }
+                for (uint32_t key = 0u; key < channel.key_count; ++key) {
+                    MdkrModernKey record{};
+                    (void)mdkr_modern_character_asset_key(
+                        &asset, channel.first_key + key, &record);
+                }
+            }
+        }
+        for (uint32_t index = 0u; index < stats.sockets; ++index) {
+            MdkrModernSocket socket{};
+            (void)mdkr_modern_character_asset_socket(&asset, index, &socket);
+        }
+        for (uint32_t index = 0u; index < stats.semantics; ++index) {
+            MdkrModernSemantic semantic{};
+            (void)mdkr_modern_character_asset_semantic(&asset, index,
+                                                       &semantic);
+        }
         for (uint32_t index = 0u; index < stats.textures; ++index) {
             MdkrModernTexture texture{};
             if (!mdkr_modern_character_asset_texture(
