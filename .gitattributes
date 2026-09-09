@@ -1,2 +1,43 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# Normalize text files across platforms.
+* text=auto eol=lf
+
+# Common ROM/media/build artifacts should stay binary if they ever appear
+# locally; the release guards still forbid committing them.
+*.z64 binary
+*.n64 binary
+*.v64 binary
+*.rom binary
+*.bin binary
+*.bmp binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.raw binary
+*.wav binary
+*.mp3 binary
+*.ogg binary
+*.flac binary
+*.dmg binary
+*.zip binary
+*.7z binary
+*.tar binary
+*.tgz binary
+*.gz binary
+
+# Keep GitHub language statistics focused on mdkr64-owned code. These are the
+# build-time vendored dependencies documented in NOTICE.md (retained for build
+# compatibility, each under its own upstream license). MGB64's equivalent list
+# (tools/armips.cpp, tools/asm-processor/**, tools/extractor/*, tools/gzipsrc/**,
+# tools/smaa/*, tools/ido5.3_recomp/**, tools/mktex/**) has no counterpart here —
+# mdkr64 vendors only these two.
+lib/glad/** linguist-vendored
+lib/sdl_gamecontrollerdb/** linguist-vendored
+
+# The repository is public and keeps normal history. `export-ignore` is not a
+# privacy mechanism; private working material belongs outside tracked paths and
+# is rejected by tools/check_public_surface.py before commit, push, and in CI.
+# Fuzz seed corpora are byte-exact wire vectors (HTTP CRLF framing, raw
+# WebSocket frames): never text-normalize them.
+tests/fuzz_corpus/** binary

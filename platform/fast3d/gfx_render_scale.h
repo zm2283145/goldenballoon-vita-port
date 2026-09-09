@@ -51,6 +51,28 @@ extern "C" {
 #endif
 
 static inline float gfx_effective_render_scale(void) {
+#if defined(__vita__)
+    /* This is the SHARED, cross-backend clamp (this header's own comment
+     * block explains why it exists): gfx_pc_dkr.c calls
+     * gfx_render_scaled_dimensions(), which calls this, to compute
+     * gfx_current_dimensions -- the RENDER resolution every viewport in
+     * gfx_opengl.c is sized from. That is a completely different code path
+     * from gfx_opengl_effective_render_scale() in gfx_opengl.c, which was
+     * already forced to 1.0 on Vita but only feeds the (separately
+     * disabled) scene-target FBO decision -- it never touches this one.
+     *
+     * With Video.RenderScale defaulting to 2.0 (Restored preset) and this
+     * clamp left unpatched, gfx_current_dimensions came out as 1920x1088 on
+     * a 960x544 Vita screen -- confirmed on real hardware via
+     * gfx_opengl_draw_triangles() logging: "viewport=0,0,1920,1088" for the
+     * main pass, and a degenerate "viewport=0,1088,0,0" for a second pass
+     * apparently sized off the same stale 2x math. The game was rendering
+     * into a viewport twice the size of the actual backbuffer -- exactly
+     * the kind of mismatch that leaves nothing visible (geometry projected
+     * for one surface size, rasterized against another). Force 1:1 here too
+     * so gfx_current_dimensions matches the real screen. */
+    return GFX_RENDER_SCALE_MIN;
+#else
     if (g_pcRenderScale != g_pcRenderScale) {   /* NaN */
         return GFX_RENDER_SCALE_MIN;
     }
@@ -61,6 +83,7 @@ static inline float gfx_effective_render_scale(void) {
         return GFX_RENDER_SCALE_MAX;
     }
     return g_pcRenderScale;
+#endif
 }
 
 /*

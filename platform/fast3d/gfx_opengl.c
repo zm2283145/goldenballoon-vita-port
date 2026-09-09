@@ -108,6 +108,9 @@ struct ShaderProgram {
     bool diag_rdp_cvg_memory_blend;
     GLint diag_framebuffer_origin_location;
     GLint diag_viewport_location;
+    GLint uTex0Size_location;
+    GLint uTex1Size_location;
+    GLint uDiagFramebufferSize_location;
     /* RL-5 smooth-normal, linear-light directional sun uniforms. */
     bool opt_dfdx_light;
     GLint sun_color_location;
@@ -159,6 +162,18 @@ static struct ShaderProgram *current_shader_program;
 
 static uint32_t frame_count;
 static uint32_t current_height;
+
+/* Texture tracking for ES1 compatible sampling. */
+#define GFX_GL_MAX_TRACKED_TEX 8192
+static uint8_t s_gl_tex_has_mips[GFX_GL_MAX_TRACKED_TEX];
+static int s_gl_tex_width[GFX_GL_MAX_TRACKED_TEX];
+static int s_gl_tex_height[GFX_GL_MAX_TRACKED_TEX];
+static GLuint  s_gl_bound_tex[2];
+
+/* Scene target dimensions. */
+static int g_scene_w;
+static int g_scene_h;
+
 static int g_diag_noperspective_inputs = -1; /* GE007_DIAG_NOPERSPECTIVE_INPUTS=1 */
 static int g_diag_noperspective_texcoords = -1; /* GE007_DIAG_NOPERSPECTIVE_TEXCOORDS=1 */
 static int g_diag_quantize_combiner = -1; /* GE007_DIAG_QUANTIZE_COMBINER=1 */
@@ -653,6 +668,32 @@ static float gfx_opengl_axis_filter_scale(uint32_t drawable_size,
     return scale;
 }
 
+static void gfx_gl_set_has_mips(GLuint id, int has) {
+    if (id < GFX_GL_MAX_TRACKED_TEX) {
+        s_gl_tex_has_mips[id] = (uint8_t) (has ? 1 : 0);
+    }
+}
+
+static void gfx_gl_set_dims(GLuint id, int w, int h) {
+    if (id < GFX_GL_MAX_TRACKED_TEX) {
+        s_gl_tex_width[id] = w;
+        s_gl_tex_height[id] = h;
+    }
+}
+
+static void gfx_gl_get_dims(GLuint id, int *w, int *h) {
+    if (id < GFX_GL_MAX_TRACKED_TEX) {
+        *w = s_gl_tex_width[id];
+        *h = s_gl_tex_height[id];
+    } else {
+        *w = *h = 0;
+    }
+}
+
+static int gfx_gl_has_mips(GLuint id) {
+    return (id < GFX_GL_MAX_TRACKED_TEX) ? s_gl_tex_has_mips[id] : 0;
+}
+
 static void gfx_opengl_set_uniforms(struct ShaderProgram *prg) {
     if (prg->used_noise) {
         glUniform1i(prg->frame_count_location, frame_count);
@@ -773,6 +814,22 @@ static void gfx_opengl_set_uniforms(struct ShaderProgram *prg) {
             glUniform1f(prg->sun_strength_location,
                         g_pcSunStrength);
     }
+
+    /* upload texture sizes for ES1 compatible sampling (uTexSize) */
+    for (int i = 0; i < 2; i++) {
+        if (i == 0 && prg->uTex0Size_location >= 0) {
+            int w, h;
+            gfx_gl_get_dims(s_gl_bound_tex[0], &w, &h);
+            glUniform2f(prg->uTex0Size_location, (float)(w < 1 ? 1 : w), (float)(h < 1 ? 1 : h));
+        } else if (i == 1 && prg->uTex1Size_location >= 0) {
+            int w, h;
+            gfx_gl_get_dims(s_gl_bound_tex[1], &w, &h);
+            glUniform2f(prg->uTex1Size_location, (float)(w < 1 ? 1 : w), (float)(h < 1 ? 1 : h));
+        }
+    }
+    if (prg->uDiagFramebufferSize_location >= 0) {
+        glUniform2f(prg->uDiagFramebufferSize_location, (float)(g_scene_w < 1 ? 1 : g_scene_w), (float)(g_scene_h < 1 ? 1 : g_scene_h));
+    }
 }
 
 static void gfx_opengl_unload_shader(struct ShaderProgram *old_prg) {
@@ -794,8 +851,6 @@ static GLuint g_scene_depth_tex;   /* sampleable single-sample depth (for SSAO/T
 static GLuint g_scene_msaa_fbo;
 static GLuint g_scene_msaa_color_rb;
 static GLuint g_scene_msaa_depth_rb;
-static int g_scene_w;
-static int g_scene_h;
 static bool g_scene_has_stencil;
 static int g_scene_msaa_w;
 static int g_scene_msaa_h;
@@ -929,8 +984,8 @@ static const char *shader_item_to_str(uint32_t item, bool with_alpha, bool only_
             case SHADER_COMBINED:
                 return with_alpha ? "texel" : "texel.rgb";
             case SHADER_NOISE:
-                return with_alpha ? "vec4(random(vec3(floor(gl_FragCoord.xy * (240.0 / float(window_height))), float(frame_count))))" :
-                    "vec3(random(vec3(floor(gl_FragCoord.xy * (240.0 / float(window_height))), float(frame_count))))";
+                return with_alpha ? "vec4(random(vec3(floor(gl_FragCoord.xy * (240.0 / max(float(window_height), 1.0))), float(frame_count))))" :
+                    "vec3(random(vec3(floor(gl_FragCoord.xy * (240.0 / max(float(window_height), 1.0))), float(frame_count))))";
         }
     } else {
         switch (item) {
@@ -950,7 +1005,7 @@ static const char *shader_item_to_str(uint32_t item, bool with_alpha, bool only_
             case SHADER_1: return "1.0";
             case SHADER_COMBINED: return "texel.a";
             case SHADER_NOISE:
-                return "random(vec3(floor(gl_FragCoord.xy * (240.0 / float(window_height))), float(frame_count)))";
+                return "random(vec3(floor(gl_FragCoord.xy * (240.0 / max(float(window_height), 1.0))), float(frame_count)))";
         }
     }
     return "0.0";
@@ -1196,7 +1251,10 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
         cc_features.tile_mask[1][0] || cc_features.tile_mask[1][1];
 
     /* Use GLSL 150 for macOS Core Profile, 320 es for GLES3, 330 elsewhere */
-#ifdef MGB64_PORTMASTER_GLES
+#if defined(__vita__)
+    append_line(vs_buf, sizeof(vs_buf), &vs_len, "#version 100");
+    append_line(vs_buf, sizeof(vs_buf), &vs_len, "precision mediump float;");
+#elif defined(MGB64_PORTMASTER_GLES)
     append_line(vs_buf, sizeof(vs_buf), &vs_len, "#version 320 es");
     append_line(vs_buf, sizeof(vs_buf), &vs_len, "precision mediump float;");
 #elif defined(__APPLE__)
@@ -1385,14 +1443,17 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
     }
     if (cc_features.used_textures[0]) {
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "uniform sampler2D uTex0;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "uniform vec2 uTex0Size;");
     }
     if (cc_features.used_textures[1]) {
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "uniform sampler2D uTex1;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "uniform vec2 uTex1Size;");
     }
     if (cc_features.opt_alpha &&
         (cc_features.diag_rdp_memory_blend || cc_features.diag_rdp_cvg_memory_blend)) {
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "uniform sampler2D uDiagFramebuffer;");
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "uniform vec2 uDiagFramebufferOrigin;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "uniform vec2 uDiagFramebufferSize;");
     }
     if (cc_features.opt_alpha && cc_features.diag_rdp_cvg_memory_blend) {
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "uniform vec4 uDiagViewport;");
@@ -1405,7 +1466,7 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "uniform vec4 uShadowSplitsLayers;");
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "float mdkrShadowCascade(int cascade, float layer) {");
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "  vec4 sc = uShadowMat[cascade] * vec4(vWorldPos, 1.0);");
-        append_line(fs_buf, sizeof(fs_buf), &fs_len, "  vec3 suv = sc.xyz / sc.w * 0.5 + 0.5;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "  vec3 suv = (sc.xyz / max(sc.w, 0.001)) * 0.5 + 0.5;");
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "  if (any(greaterThan(abs(suv - 0.5), vec3(0.5)))) return 1.0;");
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "  float sh = 0.0;");
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "  for (int dy = -1; dy <= 1; ++dy)");
@@ -1432,7 +1493,7 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "    vec2 texelCoord = uv * texSize;");
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "    texelCoord.s = n64TileMaskAxis(texelCoord.s, maskS);");
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "    texelCoord.t = n64TileMaskAxis(texelCoord.t, maskT);");
-        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    return texelCoord / texSize;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    return texelCoord / max(texSize, vec2(1.0));");
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "}");
     }
 
@@ -1447,8 +1508,8 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
                                                   clamped,
                                                   1.0f);
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "uniform vec2 uN64FilterScale;");
-        append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec4 n64TextureFilter(sampler2D tex, vec2 uv, float maskS, float maskT) {");
-        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    vec2 texSize = vec2(textureSize(tex, 0));");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec4 n64TextureFilter(sampler2D tex, vec2 texSize, vec2 uv, float maskS, float maskT) {");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    // texSize is now passed as a parameter");
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "    vec2 texelCoord = uv * texSize;");
         if (!always_3point) {
             append_line(fs_buf, sizeof(fs_buf), &fs_len, "    vec2 dx = dFdx(texelCoord) * uN64FilterScale.x;");
@@ -1457,15 +1518,15 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
             fs_len += ge007_sprintf(fs_buf + fs_len,
                                      "    if (max(footprint.x, footprint.y) < %.9f) {\n",
                                      nearest_threshold);
-            append_line(fs_buf, sizeof(fs_buf), &fs_len, "        return textureLod(tex, n64TileMaskUv((floor(texelCoord) + vec2(0.5)) / texSize, texSize, maskS, maskT), 0.0);");
+            append_line(fs_buf, sizeof(fs_buf), &fs_len, "        return textureLod(tex, n64TileMaskUv((floor(texelCoord) + vec2(0.5)) / max(texSize, vec2(1.0)), texSize, maskS, maskT), 0.0);");
             append_line(fs_buf, sizeof(fs_buf), &fs_len, "    }");
         }
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "    vec2 offset = fract(uv * texSize - vec2(0.5));");
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "    offset -= step(1.0, offset.x + offset.y);");
-        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    vec2 baseUv = uv - offset / texSize;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    vec2 baseUv = uv - offset / max(texSize, vec2(1.0));");
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "    vec4 c0 = textureLod(tex, n64TileMaskUv(baseUv, texSize, maskS, maskT), 0.0);");
-        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    vec4 c1 = textureLod(tex, n64TileMaskUv(baseUv + vec2(sign(offset.x), 0.0) / texSize, texSize, maskS, maskT), 0.0);");
-        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    vec4 c2 = textureLod(tex, n64TileMaskUv(baseUv + vec2(0.0, sign(offset.y)) / texSize, texSize, maskS, maskT), 0.0);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    vec4 c1 = textureLod(tex, n64TileMaskUv(baseUv + vec2(sign(offset.x), 0.0) / max(texSize, vec2(1.0)), texSize, maskS, maskT), 0.0);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    vec4 c2 = textureLod(tex, n64TileMaskUv(baseUv + vec2(0.0, sign(offset.y)) / max(texSize, vec2(1.0)), texSize, maskS, maskT), 0.0);");
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "    return c0 + abs(offset.x) * (c1 - c0) + abs(offset.y) * (c2 - c0);");
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "}");
     }
@@ -1500,7 +1561,7 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "    return (hasNeg && hasPos) ? 0.0 : 1.0;");
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "}");
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "float diagCoverageSample(vec2 pixelOffset, vec2 a, vec2 b, vec2 c) {");
-        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    vec2 p = ((gl_FragCoord.xy + pixelOffset - uDiagViewport.xy) / uDiagViewport.zw) * 2.0 - 1.0;");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "    vec2 p = ((gl_FragCoord.xy + pixelOffset - uDiagViewport.xy) / max(uDiagViewport.zw, 1.0)) * 2.0 - 1.0;");
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "    return diagInsideTri(p, a, b, c);");
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "}");
     }
@@ -1517,21 +1578,21 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
         if (cc_features.clamp[i][0] || cc_features.clamp[i][1] ||
             cc_features.tile_mask[i][0] || cc_features.tile_mask[i][1]) {
             fs_len += ge007_sprintf(fs_buf + fs_len,
-                                     "vec2 texSize%d = vec2(textureSize(uTex%d, 0));\n",
+                                     "vec2 texSize%d = uTex%dSize;\n",
                                      i, i);
         }
         if (cc_features.clamp[i][0] || cc_features.clamp[i][1]) {
             if (cc_features.clamp[i][0] && cc_features.clamp[i][1]) {
                 fs_len += ge007_sprintf(fs_buf + fs_len,
-                                         "sampleTexCoord%d = clamp(vTexCoord%d, 0.5 / texSize%d, vec2(vTexClampS%d, vTexClampT%d));\n",
+                                         "sampleTexCoord%d = clamp(vTexCoord%d, 0.5 / max(texSize%d, 1.0), vec2(vTexClampS%d, vTexClampT%d));\n",
                                          i, i, i, i, i);
             } else if (cc_features.clamp[i][0]) {
                 fs_len += ge007_sprintf(fs_buf + fs_len,
-                                         "sampleTexCoord%d.s = clamp(vTexCoord%d.s, 0.5 / texSize%d.s, vTexClampS%d);\n",
+                                         "sampleTexCoord%d.s = clamp(vTexCoord%d.s, 0.5 / max(texSize%d.s, 1.0), vTexClampS%d);\n",
                                          i, i, i, i);
             } else {
                 fs_len += ge007_sprintf(fs_buf + fs_len,
-                                         "sampleTexCoord%d.t = clamp(vTexCoord%d.t, 0.5 / texSize%d.t, vTexClampT%d);\n",
+                                         "sampleTexCoord%d.t = clamp(vTexCoord%d.t, 0.5 / max(texSize%d.t, 1.0), vTexClampT%d);\n",
                                          i, i, i, i);
             }
         }
@@ -1542,7 +1603,7 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
         const char *mask_t = cc_features.tile_mask[0][1] ? "vTexMaskT0" : "0.0";
         if (cc_features.n64_filter[0]) {
             fs_len += ge007_sprintf(fs_buf + fs_len,
-                                    "vec4 texVal0 = n64TextureFilter(uTex0, sampleTexCoord0, %s, %s);\n",
+                                    "vec4 texVal0 = n64TextureFilter(uTex0, uTex0Size, sampleTexCoord0, %s, %s);\n",
                                     mask_s, mask_t);
         } else if (cc_features.tile_mask[0][0] || cc_features.tile_mask[0][1]) {
             fs_len += ge007_sprintf(fs_buf + fs_len,
@@ -1557,7 +1618,7 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
         const char *mask_t = cc_features.tile_mask[1][1] ? "vTexMaskT1" : "0.0";
         if (cc_features.n64_filter[1]) {
             fs_len += ge007_sprintf(fs_buf + fs_len,
-                                    "vec4 texVal1 = n64TextureFilter(uTex1, sampleTexCoord1, %s, %s);\n",
+                                    "vec4 texVal1 = n64TextureFilter(uTex1, uTex1Size, sampleTexCoord1, %s, %s);\n",
                                     mask_s, mask_t);
         } else if (cc_features.tile_mask[1][0] || cc_features.tile_mask[1][1]) {
             fs_len += ge007_sprintf(fs_buf + fs_len,
@@ -1669,7 +1730,7 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
     }
 
     if (cc_features.opt_alpha && cc_features.opt_noise) {
-        append_line(fs_buf, sizeof(fs_buf), &fs_len, "texel.a *= floor(random(vec3(floor(gl_FragCoord.xy * (240.0 / float(window_height))), float(frame_count))) + 0.5);");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "texel.a *= floor(random(vec3(floor(gl_FragCoord.xy * (240.0 / max(float(window_height), 1.0))), float(frame_count))) + 0.5);");
     }
 
     if (cc_features.diag_color_scale) {
@@ -1704,7 +1765,7 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
     }
 
     if (cc_features.opt_alpha && cc_features.diag_rdp_cvg_memory_blend) {
-        append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec2 memoryUv = (gl_FragCoord.xy - uDiagFramebufferOrigin) / vec2(textureSize(uDiagFramebuffer, 0));");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec2 memoryUv = (gl_FragCoord.xy - uDiagFramebufferOrigin) / max(uDiagFramebufferSize, vec2(1.0));");
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec4 memoryColor = texture(uDiagFramebuffer, clamp(memoryUv, vec2(0.0), vec2(1.0)));");
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec2 diagTri0 = vDiagTri01.xy;");
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec2 diagTri1 = vDiagTri01.zw;");
@@ -1733,7 +1794,7 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec3 outByte = mix(memoryByte, blendedByte, coverageWrap);");
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "texel = vec4(clamp(outByte / 255.0, 0.0, 1.0), newCoverageAlpha);");
     } else if (cc_features.opt_alpha && cc_features.diag_rdp_memory_blend) {
-        append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec2 memoryUv = (gl_FragCoord.xy - uDiagFramebufferOrigin) / vec2(textureSize(uDiagFramebuffer, 0));");
+        append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec2 memoryUv = (gl_FragCoord.xy - uDiagFramebufferOrigin) / max(uDiagFramebufferSize, vec2(1.0));");
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "vec4 memoryColor = texture(uDiagFramebuffer, clamp(memoryUv, vec2(0.0), vec2(1.0)));");
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "float pixelAlphaByte = floor(clamp(texel.a, 0.0, 1.0) * 255.0 + 0.5);");
         append_line(fs_buf, sizeof(fs_buf), &fs_len, "float a0 = floor(pixelAlphaByte / 8.0);");
@@ -2032,15 +2093,18 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
     if (cc_features.used_textures[0]) {
         GLint sampler_location = glGetUniformLocation(shader_program, "uTex0");
         glUniform1i(sampler_location, 0);
+        prg->uTex0Size_location = glGetUniformLocation(shader_program, "uTex0Size");
     }
     if (cc_features.used_textures[1]) {
         GLint sampler_location = glGetUniformLocation(shader_program, "uTex1");
         glUniform1i(sampler_location, 1);
+        prg->uTex1Size_location = glGetUniformLocation(shader_program, "uTex1Size");
     }
     if (cc_features.opt_alpha &&
         (cc_features.diag_rdp_memory_blend || cc_features.diag_rdp_cvg_memory_blend)) {
         GLint sampler_location = glGetUniformLocation(shader_program, "uDiagFramebuffer");
         glUniform1i(sampler_location, 2);
+        prg->uDiagFramebufferSize_location = glGetUniformLocation(shader_program, "uDiagFramebufferSize");
     }
     if (cc_features.opt_sun_shadow) {
         GLint sampler_location = glGetUniformLocation(shader_program, "uShadowMap");
@@ -2088,20 +2152,6 @@ static int   s_max_msaa_samples = -1;
 /* NATIVE_PORT (mdkr64): which texture ids carry a full mip chain, and which
  * texture is bound per tile. set_sampler_parameters runs per draw and would
  * otherwise reset MIN_FILTER to a non-mipmap value on every bind. */
-#define GFX_GL_MAX_TRACKED_TEX 8192
-static uint8_t s_gl_tex_has_mips[GFX_GL_MAX_TRACKED_TEX];
-static GLuint  s_gl_bound_tex[2];
-
-static void gfx_gl_set_has_mips(GLuint id, int has) {
-    if (id < GFX_GL_MAX_TRACKED_TEX) {
-        s_gl_tex_has_mips[id] = (uint8_t) (has ? 1 : 0);
-    }
-}
-
-static int gfx_gl_has_mips(GLuint id) {
-    return (id < GFX_GL_MAX_TRACKED_TEX) ? s_gl_tex_has_mips[id] : 0;
-}
-
 static void gfx_opengl_select_texture(int tile, GLuint texture_id) {
     glActiveTexture(GL_TEXTURE0 + tile);
     glBindTexture(GL_TEXTURE_2D, texture_id);
@@ -2142,6 +2192,7 @@ static bool gfx_opengl_upload_texture_mipped(const uint8_t *const *level_rgba,
     }
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
     gfx_gl_set_has_mips((GLuint) bound, 1);
+    gfx_gl_set_dims((GLuint) bound, level_w[0], level_h[0]);
     return true;
 }
 
@@ -2164,6 +2215,7 @@ static bool gfx_opengl_upload_texture(const uint8_t *rgba32_buf, int width, int 
         GLint bound_single = 0;
         glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound_single);
         gfx_gl_set_has_mips((GLuint) bound_single, 0);
+        gfx_gl_set_dims((GLuint) bound_single, width, height);
     }
     /* Treat every uploaded texture as a single-level image. Metal-backed GL is
      * particularly sensitive to incomplete mip state on frontend NPOT uploads
@@ -2177,6 +2229,18 @@ static bool gfx_opengl_upload_texture(const uint8_t *rgba32_buf, int width, int 
     if (err != GL_NO_ERROR) {
         fprintf(stderr, "[GL-TEX-UPLOAD-ERR] width=%d height=%d err=0x%x\n", width, height, err);
         texDebugDumpRecentFireEvents(stderr);
+#if defined(__vita__)
+        {
+            static int s_texUploadErrLogCount = 0;
+            if (s_texUploadErrLogCount < 20) {
+                char lb[128];
+                snprintf(lb, sizeof(lb), "GL-TEX-UPLOAD-ERR: width=%d height=%d err=0x%x",
+                         width, height, (unsigned)err);
+                mdkr_vita_boot_log(lb);
+                s_texUploadErrLogCount++;
+            }
+        }
+#endif
         return false;
     }
 #if defined(__vita__)
@@ -2197,8 +2261,32 @@ static bool gfx_opengl_upload_texture(const uint8_t *rgba32_buf, int width, int 
                 "[GL-TEX-UPLOAD-BAD] width=%d height=%d actual=%d,%d err=0x%x\n",
                 width, height, actual_width, actual_height, err);
         texDebugDumpRecentFireEvents(stderr);
+#if defined(__vita__)
+        {
+            static int s_texUploadBadLogCount = 0;
+            if (s_texUploadBadLogCount < 20) {
+                char lb[160];
+                snprintf(lb, sizeof(lb),
+                         "GL-TEX-UPLOAD-BAD: width=%d height=%d actual=%d,%d err=0x%x",
+                         width, height, (int)actual_width, (int)actual_height, (unsigned)err);
+                mdkr_vita_boot_log(lb);
+                s_texUploadBadLogCount++;
+            }
+        }
+#endif
         return false;
     }
+#if defined(__vita__)
+    {
+        static int s_texUploadOkLogCount = 0;
+        if (s_texUploadOkLogCount < 15) {
+            char lb[96];
+            snprintf(lb, sizeof(lb), "GL-TEX-UPLOAD-OK: width=%d height=%d", width, height);
+            mdkr_vita_boot_log(lb);
+            s_texUploadOkLogCount++;
+        }
+    }
+#endif
     return true;
 }
 
@@ -2769,6 +2857,23 @@ static void gfx_opengl_draw_triangles_cvg_wrap_stencil(size_t buf_vbo_num_tris) 
 }
 
 static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_vbo_num_tris) {
+#if defined(__vita__)
+    {
+        static int s_drawTriLogCount = 0;
+        if (s_drawTriLogCount < 40) {
+            GLint vp[4] = {0, 0, 0, 0};
+            glGetIntegerv(GL_VIEWPORT, vp);
+            char lb[160];
+            snprintf(lb, sizeof(lb),
+                     "draw-tris: tris=%u vbolen=%u viewport=%d,%d,%d,%d prog=%p",
+                     (unsigned)buf_vbo_num_tris, (unsigned)buf_vbo_len,
+                     (int)vp[0], (int)vp[1], (int)vp[2], (int)vp[3],
+                     (void*)current_shader_program);
+            mdkr_vita_boot_log(lb);
+            s_drawTriLogCount++;
+        }
+    }
+#endif
     if (current_shader_program != NULL) {
         gfx_opengl_set_uniforms(current_shader_program);
     }
@@ -3075,6 +3180,28 @@ int gfx_opengl_max_offscreen_dim(void) {
 }
 
 static float gfx_opengl_effective_render_scale(void) {
+#if defined(__vita__)
+    /* Restored/Remastered seed Video.RenderScale=2.0 by default (see
+     * video_config.c's preset table), which is exactly what
+     * gfx_opengl_scene_target_enabled() below treats as "supersample -- route
+     * 3D through the offscreen scene FBO and the output-filter compositing
+     * blit" instead of drawing straight to the default framebuffer. That
+     * FBO+blit path is new, PC-authored infrastructure (packed depth-stencil,
+     * multisample resolve, the post-process filter chain) that has the same
+     * kind of vitaGL gaps already carved out one function down in
+     * gfx_opengl_effective_msaa_samples() -- and unlike MSAA, RenderScale's
+     * FBO path is NOT gated off here, so it silently runs on every Vita boot.
+     * Observed on real hardware: the DKR-logo-to-menu 3D scene renders solid
+     * black, and the main menu's 3D background renders solid blue, while 2D
+     * UI (drawn directly to the default framebuffer, never touching this
+     * path) renders correctly -- consistent with the scene-target blit
+     * landing nothing in the backbuffer rather than a game-logic bug. Force
+     * 1:1 rendering on this initial Vita port, same as the MSAA carve-out,
+     * so 3D content takes the simpler direct-to-backbuffer path that 2D
+     * already proves works; supersampling can come back once the FBO/output
+     * chain is verified against vitaGL. */
+    return 1.0f;
+#else
     /* Same NaN hole as gfx_clamped_render_scale() in gfx_pc.c: NaN compares
      * false against both bounds below and would otherwise pass through
      * untouched into scene-target sizing math. Clamp to the floor. */
@@ -3088,6 +3215,7 @@ static float gfx_opengl_effective_render_scale(void) {
         return 4.0f;
     }
     return g_pcRenderScale;
+#endif
 }
 
 static int gfx_opengl_effective_msaa_samples(void) {
@@ -3178,7 +3306,7 @@ static bool gfx_opengl_output_ssao_active(void) {
 
 static bool gfx_opengl_scene_target_enabled(void) {
     float render_scale = gfx_opengl_effective_render_scale();
-    return g_pcRemasterFX ||
+    bool enabled = g_pcRemasterFX ||
            render_scale > 1.001f ||
            gfx_opengl_effective_msaa_samples() > 0 ||
            gfx_opengl_output_ssao_active() ||   /* force scene FBO so depth is sampleable */
@@ -3186,6 +3314,41 @@ static bool gfx_opengl_scene_target_enabled(void) {
            gfx_diag_xlu_rdp_memory_blend_enabled() ||
            gfx_diag_xlu_rdp_cvg_memory_blend_enabled() ||
            gfx_opengl_room_xlu_cvg_memory_enabled();
+#if defined(__vita__)
+    {
+        static int s_sceneTargetLogged = 0;
+        if (!s_sceneTargetLogged) {
+            char lb[160];
+            snprintf(lb, sizeof(lb),
+                     "scene-target: wouldEnable=%d remasterFX=%d scale=%.2f msaa=%d roomXluCvg=%d -- forced off on vita",
+                     (int)enabled, g_pcRemasterFX, (double)render_scale,
+                     gfx_opengl_effective_msaa_samples(),
+                     (int)gfx_opengl_room_xlu_cvg_memory_enabled());
+            mdkr_vita_boot_log(lb);
+            s_sceneTargetLogged = 1;
+        }
+    }
+    /* gfx_opengl_room_xlu_cvg_memory_enabled() defaults to 1 (a real
+     * blending feature for room translucency, not a diagnostic toggle --
+     * see its "g_room_xlu_cvg_memory_enabled = 1;" default a few lines up),
+     * so it alone forces `enabled` true above regardless of RemasterFX,
+     * render scale, or MSAA. That means the scene-FBO + output-filter
+     * compositing chain runs unconditionally on every Vita boot, not just
+     * under Remastered/Restored presets as the MSAA/render-scale carve-outs
+     * assumed. Confirmed on real hardware after those carve-outs alone:
+     * "scene-target: enabled=1 ... scale=1.00 msaa=0" still logged, and the
+     * screen was still solid black/blue with UI text rendering as blank
+     * white blocks (a texture that never got the compositing pass's content,
+     * per gfx_opengl_ensure_scene_target()'s vitaGL-only depth/stencil
+     * fallback comments a few functions down). Rather than keep chasing
+     * which OR'd condition is live, take the whole offscreen path out of
+     * the picture for this initial Vita port: render straight to the
+     * default framebuffer unconditionally, the same direct path 2D-only
+     * content already uses successfully. */
+    return false;
+#else
+    return enabled;
+#endif
 }
 
 static bool gfx_opengl_ensure_scene_target(int width, int height) {
@@ -3837,39 +4000,39 @@ static bool gfx_opengl_ensure_output_filter_program(void) {
         "in vec2 vTexCoord;\n"
         "out vec4 outColor;\n"
         "vec4 sampleNearest(vec2 dstCoord) {\n"
-        "    ivec2 p = ivec2(floor(dstCoord * uSrcSize / uDstSize));\n"
+        "    ivec2 p = ivec2(floor(dstCoord * uSrcSize / max(uDstSize, 1.0)));\n"
         "    p = clamp(p, ivec2(0), ivec2(uSrcSize) - ivec2(1));\n"
-        "    return texelFetch(uTex, p, 0);\n"
+        "    return texture2D(uTex, (vec2(p) + 0.5) / max(uSrcSize, vec2(1.0)));\n"
         "}\n"
         "vec2 fitSizeForAspect(vec2 boundsSize, float aspect) {\n"
-        "    float boundsAspect = boundsSize.x / boundsSize.y;\n"
+        "    float boundsAspect = boundsSize.x / max(boundsSize.y, 1.0);\n"
         "    if (boundsAspect > aspect) {\n"
         "        return vec2(boundsSize.y * aspect, boundsSize.y);\n"
         "    }\n"
-        "    return vec2(boundsSize.x, boundsSize.x / aspect);\n"
+        "    return vec2(boundsSize.x, boundsSize.x / max(aspect, 0.001));\n"
         "}\n"
         "vec4 sampleFitSrcToDstNearest(vec2 dstCoord) {\n"
-        "    float srcAspect = uSrcSize.x / uSrcSize.y;\n"
+        "    float srcAspect = uSrcSize.x / max(uSrcSize.y, 1.0);\n"
         "    vec2 fitSize = fitSizeForAspect(uDstSize, srcAspect);\n"
         "    vec2 offset = floor((uDstSize - fitSize) * 0.5);\n"
         "    if (dstCoord.x < offset.x || dstCoord.y < offset.y ||\n"
         "        dstCoord.x >= offset.x + fitSize.x || dstCoord.y >= offset.y + fitSize.y) {\n"
         "        return vec4(0.0, 0.0, 0.0, 1.0);\n"
         "    }\n"
-        "    ivec2 p = ivec2(floor((dstCoord - offset) * uSrcSize / fitSize));\n"
+        "    ivec2 p = ivec2(floor((dstCoord - offset) * uSrcSize / max(fitSize, 0.001)));\n"
         "    p = clamp(p, ivec2(0), ivec2(uSrcSize) - ivec2(1));\n"
-        "    return texelFetch(uTex, p, 0);\n"
+        "    return texture2D(uTex, (vec2(p) + 0.5) / max(uSrcSize, vec2(1.0)));\n"
         "}\n"
         "vec4 sampleFitLogicalToDstNearest(vec2 dstCoord) {\n"
-        "    float dstAspect = uDstSize.x / uDstSize.y;\n"
+        "    float dstAspect = uDstSize.x / max(uDstSize.y, 1.0);\n"
         "    vec2 fitSize = fitSizeForAspect(uSrcSize, dstAspect);\n"
         "    vec2 offset = floor((uSrcSize - fitSize) * 0.5);\n"
-        "    ivec2 p = ivec2(floor(offset + dstCoord * fitSize / uDstSize));\n"
+        "    ivec2 p = ivec2(floor(offset + dstCoord * fitSize / max(uDstSize, 1.0)));\n"
         "    p = clamp(p, ivec2(0), ivec2(uSrcSize) - ivec2(1));\n"
-        "    return texelFetch(uTex, p, 0);\n"
+        "    return texture2D(uTex, (vec2(p) + 0.5) / max(uSrcSize, vec2(1.0)));\n"
         "}\n"
         "vec4 sampleCpuBilinear(vec2 dstCoord) {\n"
-        "    vec2 srcCoord = dstCoord * uSrcSize / uDstSize - vec2(0.5);\n"
+        "    vec2 srcCoord = dstCoord * uSrcSize / max(uDstSize, 1.0) - vec2(0.5);\n"
         "    ivec2 p0 = ivec2(floor(srcCoord));\n"
         "    vec2 f = srcCoord - vec2(p0);\n"
         "    if (p0.x < 0) { p0.x = 0; f.x = 0.0; }\n"
@@ -3877,10 +4040,10 @@ static bool gfx_opengl_ensure_output_filter_program(void) {
         "    if (p0.y < 0) { p0.y = 0; f.y = 0.0; }\n"
         "    else if (p0.y >= int(uSrcSize.y) - 1) { p0.y = int(uSrcSize.y) - 1; f.y = 0.0; }\n"
         "    ivec2 p1 = min(p0 + ivec2(1), ivec2(uSrcSize) - ivec2(1));\n"
-        "    vec4 c00 = texelFetch(uTex, p0, 0);\n"
-        "    vec4 c10 = texelFetch(uTex, ivec2(p1.x, p0.y), 0);\n"
-        "    vec4 c01 = texelFetch(uTex, ivec2(p0.x, p1.y), 0);\n"
-        "    vec4 c11 = texelFetch(uTex, p1, 0);\n"
+        "    vec4 c00 = texture2D(uTex, (vec2(p0) + 0.5) / max(uSrcSize, vec2(1.0)));\n"
+        "    vec4 c10 = texture2D(uTex, (vec2(ivec2(p1.x, p0.y)) + 0.5) / max(uSrcSize, vec2(1.0)));\n"
+        "    vec4 c01 = texture2D(uTex, (vec2(ivec2(p0.x, p1.y)) + 0.5) / max(uSrcSize, vec2(1.0)));\n"
+        "    vec4 c11 = texture2D(uTex, (vec2(p1) + 0.5) / max(uSrcSize, vec2(1.0)));\n"
         "    return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);\n"
         "}\n"
         "vec4 sampleDst(vec2 dstCoord) {\n"
@@ -3963,7 +4126,7 @@ static bool gfx_opengl_ensure_output_filter_program(void) {
         "    vec2(-1.0, 0.0), vec2(-0.7071,-0.7071), vec2(0.0,-1.0), vec2( 0.7071,-0.7071));\n"
         /* view-space distance (positive) from window depth d */
         "float ssaoLinZ(float d) {\n"
-        "    return uSsaoProjB / (uSsaoProjA + 2.0 * d - 1.0);\n"
+        "    return uSsaoProjB / max(uSsaoProjA + 2.0 * d - 1.0, 0.001);\n"
         "}\n"
         "float ssaoAO(vec2 uv) {\n"
         "    float cd = texture(uDepthTex, uv).r;\n"
@@ -3982,7 +4145,7 @@ static bool gfx_opengl_ensure_output_filter_program(void) {
          * normals to reject self-occlusion), so the effect reads as contact
          * darkening in creases/corners rather than a flat wash; the ceiling (12%)
          * ignores silhouette gaps that would halo. */
-        "            if (diff > cz * 0.015 && diff < cz * 0.12) occ += 1.0 / float(s);\n"
+        "            if (diff > cz * 0.015 && diff < cz * 0.12) occ += 1.0 / max(float(s), 1.0);\n"
         "        }\n"
         "    }\n"
         "    return occ / 12.0;\n"
@@ -4000,7 +4163,7 @@ static bool gfx_opengl_ensure_output_filter_program(void) {
         "            rgb *= clamp(ao, 0.0, 1.0);\n"
         "        }\n"
         "        if (uBloom == 1) {\n"
-        "            vec2 texel = 1.0 / uSrcSize;\n"
+        "            vec2 texel = 1.0 / max(uSrcSize, vec2(1.0));\n"
         "            vec3 bloom = vec3(0.0);\n"
         "            float wsum = 0.0;\n"
         "            const int R = 3;\n"
@@ -4138,9 +4301,9 @@ static void gfx_opengl_draw_output_filter_texture(GLuint texture_id,
     glUseProgram(g_output_filter_program);
     glUniform1i(glGetUniformLocation(g_output_filter_program, "uTex"), 0);
     glUniform2f(glGetUniformLocation(g_output_filter_program, "uSrcSize"),
-                (float)src_w, (float)src_h);
+                (float)(src_w < 1 ? 1 : src_w), (float)(src_h < 1 ? 1 : src_h));
     glUniform2f(glGetUniformLocation(g_output_filter_program, "uDstSize"),
-                (float)dst_w, (float)dst_h);
+                (float)(dst_w < 1 ? 1 : dst_w), (float)(dst_h < 1 ? 1 : dst_h));
     glUniform1f(glGetUniformLocation(g_output_filter_program, "uColorScale"),
                 g_diag_output_filter_color_scale);
     glUniform1f(glGetUniformLocation(g_output_filter_program, "uColorBias"),

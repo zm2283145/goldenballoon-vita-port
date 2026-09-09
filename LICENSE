@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 Zach Minton
+Copyright (c) 2026 Golden Balloon contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -19,3 +19,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+This MIT license covers the FIRST-PARTY work in this repository only: the native
+platform/port layer, the build system, the test and oracle tooling, and the
+documentation. It does NOT and cannot grant rights in the original game, its
+assets, or its trademarks.
+
+See NOTICE.md for per-component provenance and DISCLAIMER.md for the project's
+legal position. This repository contains no game ROM and no bulk game assets.

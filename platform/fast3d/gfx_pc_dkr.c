@@ -92,6 +92,7 @@
 #include "mod_texture_store.h"   /* the override layer in front of the ROM path */
 #include "gfx_uniforms.h"
 #include "gfx_pc_dkr.h"
+#include "memory.h"       /* mdkr_mempool_allocation_span -- diagnostic-only allocator introspection */
 #ifdef MDKR_WEBGPU_BACKEND
 #include "gfx_webgpu.h"
 #endif
@@ -106,6 +107,25 @@
 #define DKR_MAX_BUFFERED   2048        /* triangles buffered before a flush   */
 #define DKR_VBO_STRIDE_MAX 32          /* floats per vertex (generous)        */
 #define DKR_DL_MAX_DEPTH   16          /* nested G_DL / G_DMADL recursion cap */
+/* Per-list command-count safety ceiling for dkr_scan_overlay_order(),
+ * dkr_scan_future_deformations(), and dkr_run_dl(). This used to be a
+ * 4,000,000-iteration cap, sized to comfortably out-run any real, finite
+ * DKR display list (which are at most a few thousand commands even fully
+ * unrolled) and only ever meant to be a last-resort backstop against a
+ * truly unterminated list. On Vita it turned out to double as an
+ * accidental worst-case amplifier: a mis-resolved sub-DL pointer (fixed
+ * data being read as if it were a display list) doesn't reliably contain
+ * a G_ENDDL opcode, so the walk ran all the way to the cap -- confirmed
+ * on-device via the dl-safety heartbeat log, which showed a single
+ * top-level walk advancing tens of megabytes through memory before the
+ * (previous) cap finally cut it off, once per frame. With
+ * DKR_DL_MAX_DEPTH-deep recursion each carrying its own budget, the
+ * worst case was effectively DKR_DL_MAX_DEPTH times this number of
+ * wasted iterations in a single frame -- the direct cause of the "very
+ * slow fps" regression. Lowered by 40x: still far above any legitimate
+ * DKR list length, but bounds a runaway walk into non-DL memory to a
+ * cost that can't visibly matter next to a real frame budget. */
+#define DKR_DL_SAFETY_MAX  100000L
 #define DKR_FONT_UPSCALE   4
 
 enum { DKR_PRESENTATION_PARTICLE_KIND_POINT = 4 };
@@ -1687,14 +1707,64 @@ static inline void *dkr_resolve(uint32_t addr) {
          * which is not a valid Vita host address, and got dereferenced
          * anyway. Reject it here instead of one call site at a time. */
         if (flip != 0 && flip < 0x10000000u) {
-            static int s_resolveRejectLogCount = 0;
-            if (s_resolveRejectLogCount < 20) {
-                char lb[128];
+            /* flip lands in this codebase's own documented "genuine N64
+             * segment token" range (0x01000000..0x0FFFFFFF, see the
+             * ILP32 DIRECT RECOVERY comment above and the addr<0x01000000
+             * handling below) -- it is NOT a real host pointer at all, so
+             * treating it as one (the bug that caused the original
+             * wild-jump crash) was wrong. But returning NULL outright was
+             * ALSO wrong: a value in exactly this range is a legitimate,
+             * still-unresolved segment-relative token that just needs the
+             * same gfx_resolve_addr() segment-table lookup used for the
+             * non-flipped `addr` case a few lines below -- not a direct
+             * pointer cast, and not a hard reject either. Blanket-
+             * rejecting instead of resolving silently discarded
+             * legitimate display-list data: observed on device as menu
+             * background art and other textures never appearing (boxes/
+             * flat colors instead) while content resolved through a
+             * different path rendered fine. gfx_resolve_addr() is
+             * documented to never return a wild pointer -- worst case is
+             * NULL -- so this keeps the original crash fixed while no
+             * longer dropping real data. */
+            void *seg = gfx_resolve_addr(flip);
+            static int s_resolveSegLogCount = 0;
+            if (s_resolveSegLogCount < 20) {
+                char lb[160];
                 snprintf(lb, sizeof(lb),
-                         "resolve: REJECTING implausible flip addr=0x%x -> flip=0x%x (below 256MB floor)",
-                         (unsigned)addr, (unsigned)flip);
+                         "resolve: flip=0x%x is a segment token, gfx_resolve_addr -> %p",
+                         (unsigned)flip, seg);
                 mdkr_vita_boot_log(lb);
-                s_resolveRejectLogCount++;
+                s_resolveSegLogCount++;
+            }
+#if defined(__vita__)
+            /* DIAGNOSTIC ONLY -- testing whether `addr` is actually a raw,
+             * untransformed host pointer that gDma1p's NATIVE_PORT macro
+             * stored as-is (dkr_dl_register_host_ptr is a documented no-op
+             * on ILP32, so nothing here has ever gone through the registry).
+             * If so, `addr` itself -- NOT flip -- points at real content, and
+             * this whole branch is resolving the wrong value. Only peek when
+             * addr is comfortably below the arena, i.e. plausibly inside this
+             * module's own loaded/static memory rather than unmapped space,
+             * to keep this from crashing on a value that guess is wrong for. */
+            {
+                static int s_rawPeekLogCount = 0;
+                uintptr_t arenaBaseForPeek = (uintptr_t)g_dkrArenaBase;
+                if (s_rawPeekLogCount < 20 && addr >= 0x80000000u &&
+                    (uintptr_t)addr < arenaBaseForPeek) {
+                    const uint32_t *rawp = (const uint32_t *)(uintptr_t)addr;
+                    char lb2[160];
+                    snprintf(lb2, sizeof(lb2),
+                             "resolve: raw-addr-peek addr=0x%x (below arenaBase=0x%lx) "
+                             "words=%08x/%08x",
+                             (unsigned)addr, (unsigned long)arenaBaseForPeek,
+                             (unsigned)rawp[0], (unsigned)rawp[1]);
+                    mdkr_vita_boot_log(lb2);
+                    s_rawPeekLogCount++;
+                }
+            }
+#endif
+            if (dkr_ptr_plausible(seg)) {
+                return dkr_retain_resolved_pointer(seg);
             }
             return NULL;
         }
@@ -4271,6 +4341,16 @@ static void dkr_load_matrix(int slot, const void *addr) {
     dkr_decode_matrix(slot, (const int32_t *)addr);
 }
 
+#if defined(__vita__)
+/* Forward decl: dkr_dl_ring_dump() is defined next to dkr_run_dl() further
+ * down this file (it dumps the last 16 raw DL command words), but the
+ * seg1-track/zero-vp diagnostics below -- inside dkr_sp_moveword(), which is
+ * defined earlier in the file -- need to call it to see what commands
+ * immediately preceded a suspicious segment-1 reassignment or a zero-scale
+ * viewport, without threading depth/cmd context through an extra parameter. */
+static void dkr_dl_ring_dump(void);
+#endif
+
 static void dkr_sp_moveword(uint8_t index, uint16_t offset, uint32_t data) {
     (void)offset;
     switch (index) {
@@ -4328,7 +4408,63 @@ static void dkr_sp_moveword(uint8_t index, uint16_t offset, uint32_t data) {
             break;
         case G_MW_SEGMENT: {    /* 0x06 — set an RSP segment base */
             uint32_t seg = (offset / 4) & 0xf;
-            gfx_segment_table[seg] = (uintptr_t)dkr_resolve(data);
+            void *resolved = dkr_resolve(data);
+            gfx_segment_table[seg] = (uintptr_t)resolved;
+#if defined(__vita__)
+            {
+                /* Was gated to seg==1 only; broadened to every segment after
+                 * a crash traced to G_SETZIMG using segment 2's table entry,
+                 * which nothing here had ever logged an assignment for. */
+                static int s_segAssignLogCount = 0;
+                if (s_segAssignLogCount < 20) {
+                    void *allocBase = NULL;
+                    size_t allocSize = 0;
+                    s32 allocOk = resolved != NULL
+                        ? mdkr_mempool_allocation_span(resolved, &allocBase, &allocSize)
+                        : 0;
+                    char lb[192];
+                    snprintf(lb, sizeof(lb),
+                             "seg%u-assign: data=0x%x -> resolved=%p allocOk=%d allocBase=%p "
+                             "allocSize=0x%lx",
+                             (unsigned)seg, (unsigned)data, resolved, (int)allocOk, allocBase,
+                             (unsigned long)allocSize);
+                    mdkr_vita_boot_log(lb);
+                    s_segAssignLogCount++;
+                }
+            }
+            if (seg == 1) {
+                /* Segment 1 is being reassigned to several different small
+                 * (~0x25830-byte) transient pool buffers over the course of
+                 * a frame (confirmed via seg-assign logging above), while at
+                 * least one gSPViewport command resolves a segment-1-relative
+                 * offset of 0x400110 -- ~4 MB past the end of any of those
+                 * pools. That is consistent with the viewport read landing
+                 * on unallocated (zero-filled) memory: the wrong "segment 1"
+                 * is live at read time, not a pointer-resolution failure.
+                 * This dedicated, higher-cap log (independent of the shared
+                 * s_segAssignLogCount cap above, which every segment shares
+                 * and exhausts within a couple of frames) exists to capture
+                 * the full sequence of segment-1 reassignments across enough
+                 * frames to see one leading up to a zero-vp event. */
+                static int s_seg1AssignLogCount = 0;
+                if (s_seg1AssignLogCount < 80) {
+                    void *allocBase1 = NULL;
+                    size_t allocSize1 = 0;
+                    s32 allocOk1 = resolved != NULL
+                        ? mdkr_mempool_allocation_span(resolved, &allocBase1, &allocSize1)
+                        : 0;
+                    char lb1[192];
+                    snprintf(lb1, sizeof(lb1),
+                             "seg1-track: data=0x%x -> resolved=%p allocOk=%d allocBase=%p "
+                             "allocSize=0x%lx frame=%d",
+                             (unsigned)data, resolved, (int)allocOk1, allocBase1,
+                             (unsigned long)allocSize1, (int)dkr_frame_index);
+                    mdkr_vita_boot_log(lb1);
+                    dkr_dl_ring_dump();
+                    s_seg1AssignLogCount++;
+                }
+            }
+#endif
             break;
         }
         default:
@@ -4466,12 +4602,28 @@ static void dkr_map_logical_rect(const struct FloatXYWidthHeight *logical,
         if (iy1 < iy0) iy1 = iy0;
     }
 
+#if defined(__vita__)
+    if ((ix1 - ix0) <= 0 || (iy1 - iy0) <= 0) {
+        extern void mdkr_vita_boot_log(const char *msg);
+        static int s_degenViewportLogCount = 0;
+        if (s_degenViewportLogCount < 15) {
+            char lb[220];
+            snprintf(lb, sizeof(lb),
+                     "map-rect-degen: space=%d clamp=%d region=%.1f,%.1f,%.1fx%.1f logical=%.1f,%.1f,%.1fx%.1f mapped=%d,%d,%dx%d",
+                     (int)draw_space, (int)clamp_to_drawable,
+                     (double)region.x, (double)region.y, (double)region.width, (double)region.height,
+                     (double)logical->x, (double)logical->y, (double)logical->width, (double)logical->height,
+                     (int)ix0, (int)iy0, (int)(ix1 - ix0), (int)(iy1 - iy0));
+            mdkr_vita_boot_log(lb);
+            s_degenViewportLogCount++;
+        }
+    }
+#endif
     mapped->x = ix0;
     mapped->y = iy0;
     mapped->width = ix1 - ix0;
     mapped->height = iy1 - iy0;
 }
-
 static void dkr_remap_viewport_and_scissor(void) {
     if (rdp.view.logical_viewport_valid) {
         dkr_map_logical_rect(&rdp.view.logical_viewport, rsp.draw_space, false, &rdp.view.viewport);
@@ -5076,6 +5228,9 @@ static bool dkr_dl_census_enabled(void) {
 /* Interpret a display list. `limit` bounds the number of 64-bit command slots
  * processed (used by G_DMADL, whose DMA sub-lists carry a command count and may
  * lack a G_ENDDL terminator); limit == 0 runs until G_ENDDL / list end. */
+#if defined(__vita__)
+static void dkr_dl_ring_dump(void); /* forward decl -- defined next to dkr_run_dl below, which the ring buffer belongs to */
+#endif
 static void dkr_dl_fault(const char *reason, const Gfx *cmd, int depth) {
     static int strict = -1;
     if (strict < 0) {
@@ -5095,6 +5250,96 @@ static void dkr_dl_fault(const char *reason, const Gfx *cmd, int depth) {
             cmd != NULL ? cmd->words.w1 : 0,
             strict ? " (strict: aborting)" : " (recovered: list stopped/skipped)");
     fflush(stderr);
+#if defined(__vita__)
+    {
+        static int s_dlFaultLogCount = 0;
+        if (s_dlFaultLogCount < 20) {
+            char lb[160];
+            snprintf(lb, sizeof(lb),
+                     "dl-fault: %s depth=%d cmd=%p words=%08x/%08x",
+                     reason, depth, (const void *)cmd,
+                     cmd != NULL ? cmd->words.w0 : 0,
+                     cmd != NULL ? cmd->words.w1 : 0);
+            mdkr_vita_boot_log(lb);
+            s_dlFaultLogCount++;
+        }
+    }
+    /* Address resolution for the "unterminated display list" case has
+     * already been verified correct: every segment-token address seen for
+     * this fault resolves as gfx_segment_table[seg] + (addr & 0xFFFFFF)
+     * with byte-for-byte matching deltas between tokens and their hosts.
+     * The open question is whether the ARENA MEMORY at the fault point was
+     * ever actually written, or is genuinely untouched/zeroed -- i.e. a
+     * missing/short content write upstream of rendering, not a pointer-math
+     * bug here. Walk backward from the fault to find where real (non-zero)
+     * content stops, bounded by the arena's own base so this can never read
+     * before the arena's allocation. */
+    if (strcmp(reason, "unterminated display list") == 0) {
+        static int s_dlZeroScanLogCount = 0;
+        if (s_dlZeroScanLogCount < 5 && cmd != NULL) {
+            dkr_dl_ring_dump();
+            const uint32_t *w = (const uint32_t *)((uintptr_t)cmd & ~(uintptr_t)3);
+            uintptr_t arenaBase = (uintptr_t)g_dkrArenaBase;
+            uintptr_t arenaEnd = arenaBase + (uintptr_t)g_dkrArenaSize;
+            int cmdInArena = g_dkrArenaSize != 0 &&
+                             (uintptr_t)cmd >= arenaBase && (uintptr_t)cmd < arenaEnd;
+            /* This diagnostic previously crashed the game (closed at the
+             * splash logo): it trusted g_dkrArenaBase alone as the walk's
+             * floor, but this fault can fire before the arena exists (base
+             * 0/stale) or for a cmd that isn't arena-backed at all, so the
+             * walk went unbounded toward address 0 across unmapped pages.
+             * cmd itself is known-readable -- dkr_run_dl already walked to
+             * it one command at a time -- but nothing further back is
+             * known-safe. Cap the walk to a small fixed distance no matter
+             * what the arena globals say, and only relax that floor up to
+             * the arena's real base when cmd is verifiably inside it. */
+            long maxBackWords = 4096; /* 16 KB: enough to find a nearby boundary */
+            uintptr_t hardFloor = (uintptr_t)w > (uintptr_t)(maxBackWords * 4)
+                                       ? (uintptr_t)w - (uintptr_t)(maxBackWords * 4)
+                                       : 0;
+            uintptr_t scanFloor = hardFloor;
+            if (cmdInArena && arenaBase > scanFloor) {
+                scanFloor = arenaBase;
+            }
+            long backWords = 0;
+            int foundNonZero = 0;
+            while ((uintptr_t)w > scanFloor && backWords < maxBackWords) {
+                if (*w != 0) { foundNonZero = 1; break; }
+                w--;
+                backWords++;
+            }
+            char lb2[224];
+            snprintf(lb2, sizeof(lb2),
+                     "dl-zero-scan: cmd=%p inArena=%d zeroRunBytes=%ld foundNonZero=%d at=%p "
+                     "val=0x%08x seg1base=0x%lx arenaBase=0x%lx arenaSize=0x%lx",
+                     (const void *)cmd, cmdInArena, backWords * 4L, foundNonZero,
+                     (const void *)w, (unsigned)*w,
+                     (unsigned long)gfx_segment_table[1],
+                     (unsigned long)arenaBase,
+                     (unsigned long)(uintptr_t)g_dkrArenaSize);
+            mdkr_vita_boot_log(lb2);
+            /* Ask the allocator itself how big the block backing segment 1
+             * actually is. If that real allocation size is smaller than the
+             * offset from seg1base to this fault, the zero region is simply
+             * unallocated memory past the end of an undersized buffer -- not
+             * missing/truncated content, and not a resolve bug. */
+            {
+                void *seg1ptr = (void *)gfx_segment_table[1];
+                void *allocBase = NULL;
+                size_t allocSize = 0;
+                s32 allocOk = mdkr_mempool_allocation_span(seg1ptr, &allocBase, &allocSize);
+                char lb3[192];
+                snprintf(lb3, sizeof(lb3),
+                         "dl-zero-scan: seg1 span ok=%d base=%p size=0x%lx seg1ptr=%p "
+                         "faultOffsetFromSeg1=0x%lx",
+                         (int)allocOk, allocBase, (unsigned long)allocSize, seg1ptr,
+                         (unsigned long)((uintptr_t)cmd - (uintptr_t)seg1ptr));
+                mdkr_vita_boot_log(lb3);
+            }
+            s_dlZeroScanLogCount++;
+        }
+    }
+#endif
     if (strict) {
         abort();
     }
@@ -5186,12 +5431,12 @@ static void dkr_scan_overlay_order(Gfx *cmd, int depth, int limit,
         if (limit > 0 && (cmd - start) >= limit) {
             return;
         }
-        if (++safety > 4000000L) {
+        if (++safety > DKR_DL_SAFETY_MAX) {
 #if defined(__vita__)
             {
                 char lb[96];
                 snprintf(lb, sizeof(lb),
-                         "dl-safety: dkr_scan_overlay_order hit 4M safety cap, depth=%d",
+                         "dl-safety: dkr_scan_overlay_order hit safety cap, depth=%d",
                          depth);
                 mdkr_vita_boot_log(lb);
             }
@@ -5201,7 +5446,7 @@ static void dkr_scan_overlay_order(Gfx *cmd, int depth, int limit,
 #if defined(__vita__)
         {
             static int s_heartbeatLogCount = 0;
-            if ((safety % 200000L) == 0 && s_heartbeatLogCount < 20) {
+            if ((safety % 5000L) == 0 && s_heartbeatLogCount < 20) {
                 char lb[96];
                 snprintf(lb, sizeof(lb),
                          "dl-safety: heartbeat safety=%ld depth=%d cmd=%p",
@@ -5704,7 +5949,7 @@ static bool dkr_scan_future_deformations(Gfx *cmd, int depth, int limit) {
         if (limit > 0 && (cmd - start) >= limit) {
             return true;
         }
-        if (++safety > 4000000L || dkr_arena_room(cmd) < sizeof(Gfx)) {
+        if (++safety > DKR_DL_SAFETY_MAX || dkr_arena_room(cmd) < sizeof(Gfx)) {
             return false;
         }
         switch ((uint8_t)C0(cmd, 24, 8)) {
@@ -6585,6 +6830,38 @@ static void dkr_capture_nonarena_list(const Gfx *sub, int count) {
         sub, sub, commands * sizeof(Gfx));
 }
 
+#if defined(__vita__)
+/* Ring buffer of the most recent commands dkr_run_dl actually walked,
+ * dumped by dkr_dl_fault() on an "unterminated display list" fault. The
+ * previous diagnostics ruled out a mis-resolved/undersized segment-1
+ * target (segment 1 only ever points at one of two correctly-sized real
+ * objects) -- so the remaining question is whether the interpreter itself
+ * desyncs on some opcode shortly before the fault (misreads its length or
+ * fields, then keeps reading garbage as if it were still aligned to real
+ * commands). This makes the actual command stream leading up to a fault
+ * visible instead of inferred. */
+#define DKR_DL_RING_SIZE 16
+typedef struct { uint32_t w0; uint32_t w1; } DkrDlRingEntry;
+static DkrDlRingEntry s_dlRing[DKR_DL_RING_SIZE];
+static int s_dlRingPos = 0;
+static long s_dlRingTotal = 0;
+
+static void dkr_dl_ring_dump(void) {
+    char buf[600];
+    int n = 0;
+    long count = s_dlRingTotal < DKR_DL_RING_SIZE ? s_dlRingTotal : DKR_DL_RING_SIZE;
+    long start = s_dlRingTotal < DKR_DL_RING_SIZE ? 0 : s_dlRingPos;
+    long i;
+    n += snprintf(buf + n, sizeof(buf) - n, "dl-ring(%ld):", s_dlRingTotal);
+    for (i = 0; i < count && n < (int)sizeof(buf) - 24; i++) {
+        long idx = (start + i) % DKR_DL_RING_SIZE;
+        n += snprintf(buf + n, sizeof(buf) - n, " %08x/%08x",
+                      (unsigned)s_dlRing[idx].w0, (unsigned)s_dlRing[idx].w1);
+    }
+    mdkr_vita_boot_log(buf);
+}
+#endif
+
 static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
     const bool census = dkr_dl_census_enabled();
     if (cmd == NULL) {
@@ -6606,7 +6883,7 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
 
     for (;;) {
         if (limit > 0 && (cmd - start) >= limit) return;
-        if (++safety > 4000000L) {
+        if (++safety > DKR_DL_SAFETY_MAX) {
             dkr_dl_fault("unterminated display list", cmd, depth);
             return;
         }
@@ -6637,6 +6914,29 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             s_dl_census_commands++;
             s_dl_census_opcodes[op]++;
         }
+#if defined(__vita__)
+        s_dlRing[s_dlRingPos % DKR_DL_RING_SIZE].w0 = cmd->words.w0;
+        s_dlRing[s_dlRingPos % DKR_DL_RING_SIZE].w1 = cmd->words.w1;
+        s_dlRingPos++;
+        s_dlRingTotal++;
+        {
+            /* Periodic, unconditional ring flush -- NOT gated on a detected
+             * fault. The crash we're chasing is a raw hardware fault that the
+             * custom firmware's coredumper intercepts before our own
+             * SIGSEGV/SIGBUS handler ever runs (confirmed: that handler's own
+             * boot-log line never appears in the log from a crashed run), so
+             * nothing inside dkr_dl_fault or the crash handler can ever see
+             * it. Flushing every 16 commands during ordinary execution means
+             * whatever is on disk when the fault freezes the file is at most
+             * ~16 commands stale -- close enough to show the actual crash
+             * site instead of just the last successfully-entered sub-DL. */
+            static long s_periodicDumpBudget = 0; /* disabled -- per-line fopen/fclose was costing real frame time */
+            if (s_periodicDumpBudget > 0 && (s_dlRingTotal % 64) == 0) {
+                dkr_dl_ring_dump();
+                s_periodicDumpBudget--;
+            }
+        }
+#endif
         switch (op) {
 
         /* ---- SP: flow control ---- */
@@ -6667,6 +6967,21 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
              * while retaining strict faults for non-null invalid streams.
              */
             if (sub != NULL) {
+#if defined(__vita__)
+                {
+                    static int s_dlJumpLogCount = 0;
+                    if (s_dlJumpLogCount < 40) {
+                        char lb[192];
+                        snprintf(lb, sizeof(lb),
+                                 "dl-jump: G_DL depth=%d->%d rawAddr=0x%x sub=%p "
+                                 "firstWords=%08x/%08x",
+                                 depth, depth + 1, (unsigned)cmd->words.w1, (void *)sub,
+                                 (unsigned)sub->words.w0, (unsigned)sub->words.w1);
+                        mdkr_vita_boot_log(lb);
+                        s_dlJumpLogCount++;
+                    }
+                }
+#endif
                 dkr_run_dl(sub, depth + 1, 0);
             }
             break;
@@ -6680,6 +6995,21 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             if (count <= 0) {
                 dkr_dl_fault("G_DMADL has a zero command count", cmd, depth);
             } else if (sub != NULL) {
+#if defined(__vita__)
+                {
+                    static int s_dmadlJumpLogCount = 0;
+                    if (s_dmadlJumpLogCount < 40) {
+                        char lb[192];
+                        snprintf(lb, sizeof(lb),
+                                 "dl-jump: G_DMADL depth=%d->%d rawAddr=0x%x count=%d sub=%p "
+                                 "firstWords=%08x/%08x",
+                                 depth, depth + 1, (unsigned)cmd->words.w1, count, (void *)sub,
+                                 (unsigned)sub->words.w0, (unsigned)sub->words.w1);
+                        mdkr_vita_boot_log(lb);
+                        s_dmadlJumpLogCount++;
+                    }
+                }
+#endif
                 /* A null optional DMA child is absent, as for pushed G_DL. */
                 dkr_run_dl(sub, depth + 1, count);
             }
@@ -7622,12 +7952,53 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                         data, data, sizeof(Vp_t));
                 }
                 const Vp_t *vp = (const Vp_t *)data;
+#if defined(__vita__)
+                if (vp->vscale[0] == 0 && vp->vscale[1] == 0) {
+                    extern void mdkr_vita_boot_log(const char *msg);
+                    static int s_zeroVpLogCount = 0;
+                    if (s_zeroVpLogCount < 30) {
+                        char lb[220];
+                        snprintf(lb, sizeof(lb),
+                                 "zero-vp: rawAddr=0x%08x resolved=%p vscale=[%d %d %d] vtrans=[%d %d %d] drawspace=%d replay=%d",
+                                 (unsigned)cmd->words.w1, data,
+                                 (int)vp->vscale[0], (int)vp->vscale[1], (int)vp->vscale[2],
+                                 (int)vp->vtrans[0], (int)vp->vtrans[1], (int)vp->vtrans[2],
+                                 (int)rsp.draw_space, (int)dkr_replay_pass);
+                        mdkr_vita_boot_log(lb);
+                        /* Directly test the "segment 1 points at the wrong
+                         * (too-small) buffer" theory from the seg1-track log:
+                         * find the real allocation data (the resolved
+                         * viewport pointer) actually lives in, and how far
+                         * that is from wherever gfx_segment_table[1] itself
+                         * currently points -- rather than reconstructing this
+                         * by hand across separate log lines. */
+                        {
+                            void *allocBaseVp = NULL;
+                            size_t allocSizeVp = 0;
+                            s32 allocOkVp = mdkr_mempool_allocation_span(
+                                (void *)data, &allocBaseVp, &allocSizeVp);
+                            uintptr_t seg1base = gfx_segment_table[1];
+                            char lb2[220];
+                            snprintf(lb2, sizeof(lb2),
+                                     "zero-vp: data-allocOk=%d allocBase=%p allocSize=0x%lx "
+                                     "seg1base=0x%lx offsetFromSeg1=0x%lx frame=%d",
+                                     (int)allocOkVp, allocBaseVp,
+                                     (unsigned long)allocSizeVp,
+                                     (unsigned long)seg1base,
+                                     (unsigned long)((uintptr_t)data - seg1base),
+                                     (int)dkr_frame_index);
+                            mdkr_vita_boot_log(lb2);
+                            dkr_dl_ring_dump();
+                        }
+                        s_zeroVpLogCount++;
+                    }
+                }
+#endif
                 dkr_calc_viewport(vp);
                 DTRACE("G_MOVEMEM VIEWPORT scale=[%d %d %d] trans=[%d %d %d] -> vp{x=%d y=%d w=%d h=%d}",
                        vp->vscale[0], vp->vscale[1], vp->vscale[2],
                        vp->vtrans[0], vp->vtrans[1], vp->vtrans[2],
-                       rdp.view.viewport.x, rdp.view.viewport.y, rdp.view.viewport.width, rdp.view.viewport.height);
-            } else {
+                       rdp.view.viewport.x, rdp.view.viewport.y, rdp.view.viewport.width, rdp.view.viewport.height);            } else {
                 dkr_dl_fault("unsupported or unresolved G_MOVEMEM", cmd,
                              depth);
             }
@@ -7706,17 +8077,55 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             rdp.color_image_address = dkr_resolve(cmd->words.w1);
             rdp.color_image_token   = cmd->words.w1;
             DTRACE("G_SETCIMG addr=%08x->%p", cmd->words.w1, rdp.color_image_address);
+#if defined(__vita__)
+            {
+                static int s_cimgLogCount = 0;
+                if (s_cimgLogCount < 20) {
+                    char lb[128];
+                    snprintf(lb, sizeof(lb), "G_SETCIMG: token=0x%x -> %p",
+                             (unsigned)cmd->words.w1, rdp.color_image_address);
+                    mdkr_vita_boot_log(lb);
+                    s_cimgLogCount++;
+                }
+            }
+#endif
             break;
         case G_SETZIMG:
             rdp.z_buf_address = dkr_resolve(cmd->words.w1);
             rdp.z_buf_token   = cmd->words.w1;
             DTRACE("G_SETZIMG addr=%08x->%p", cmd->words.w1, rdp.z_buf_address);
+#if defined(__vita__)
+            {
+                static int s_zimgLogCount = 0;
+                if (s_zimgLogCount < 20) {
+                    char lb[128];
+                    snprintf(lb, sizeof(lb), "G_SETZIMG: token=0x%x -> %p",
+                             (unsigned)cmd->words.w1, rdp.z_buf_address);
+                    mdkr_vita_boot_log(lb);
+                    s_zimgLogCount++;
+                }
+            }
+#endif
             break;
         case G_SETTIMG:
             dkr_dp_set_texture_image(C0(cmd, 19, 2), C0(cmd, 0, 12) + 1,
                                      dkr_resolve(cmd->words.w1));
             DTRACE("G_SETTIMG siz=%u width=%u addr=%08x->%p", (unsigned)C0(cmd,19,2),
                    (unsigned)(C0(cmd,0,12)+1), cmd->words.w1, (const void *)rdp.to_load.addr);
+#if defined(__vita__)
+            {
+                static int s_timgLogCount = 0;
+                if (s_timgLogCount < 20) {
+                    char lb[140];
+                    snprintf(lb, sizeof(lb),
+                             "G_SETTIMG: token=0x%x siz=%u width=%u -> %p",
+                             (unsigned)cmd->words.w1, (unsigned)C0(cmd, 19, 2),
+                             (unsigned)(C0(cmd, 0, 12) + 1), (const void *)rdp.to_load.addr);
+                    mdkr_vita_boot_log(lb);
+                    s_timgLogCount++;
+                }
+            }
+#endif
             break;
 
         /* ---- RDP: tiles / texture load ---- */

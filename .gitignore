@@ -120,3 +120,9 @@ dist/web/mdkr-online-tools.js
 dist/web/mdkr-online-tools.wasm
 dist/web/mdkr-online-tools.js.symbols
 mdkr64.ini.lock
+
+# On-device debug artifacts pulled from the Vita during bring-up (boot
+# logger output + crash coredumps) -- never build inputs, never wanted in
+# history.
+*.psp2dmp
+mdkr_boot*.log

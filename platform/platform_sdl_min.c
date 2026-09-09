@@ -928,6 +928,7 @@ static void sdl_apply_gl_present_policy(void) {
 
 #if defined(__vita__)
 extern void mdkr_vita_boot_log(const char *msg);
+extern void mdkr_vita_boot_log_flush(void);
 #endif
 
 #if defined(__vita__)
@@ -946,14 +947,26 @@ static int sdl_init_gl(Uint32 base_flags) {
      * the first thing to tune against real hardware once the game boots --
      * the DKR HUD/minimap draw calls in gfx_pc_dkr.c were never profiled
      * against a PowerVR SGX543MP4+. */
-    GLboolean vglOk = vglInitExtended(0, s_initialWindowWidth, s_initialWindowHeight, 0x1800000,
+    /* This return value is vitaGL's "did we fall back to a smaller
+     * resolution" flag, NOT a success/failure flag (see
+     * vglInitWithCustomSizes's res_fallback in vitaGL's own vgl.c).
+     * GL_FALSE (the common case) means the requested resolution fit and
+     * was used as-is -- a fully successful init. Treating GL_FALSE as
+     * "FAILED" (as this code used to) made the game abort immediately
+     * after every completely successful vitaGL init, every time --
+     * confirmed by instrumenting vitaGL's own gxm.c directly: 
+     * sceGxmCreateContext succeeded (valid context) on every run this
+     * code nonetheless reported as "vglInitExtended FAILED". Do not
+     * treat it as an error; a real init failure would crash inside
+     * vitaGL/sceGxm, not return through this flag. */
+    GLboolean vglOk = vglInitExtended(0, s_initialWindowWidth, s_initialWindowHeight, 0x20000,
                      SCE_GXM_MULTISAMPLE_NONE);
     s_window = NULL;
     g_sdlWindow = NULL;
     s_glReady = 1;
     {
         char glb[192];
-        snprintf(glb, sizeof(glb), "vitaGL: vglInitExtended returned %d (1=ok,0=FAILED)", (int)vglOk);
+        snprintf(glb, sizeof(glb), "vitaGL: vglInitExtended OK, fallback-resolution-used=%d", (int)vglOk);
         mdkr_vita_boot_log(glb);
         snprintf(glb, sizeof(glb), "vitaGL: GL_VERSION=%s", (const char *)glGetString(GL_VERSION));
         mdkr_vita_boot_log(glb);
@@ -3652,6 +3665,7 @@ void platform_sdl_present(void) {
                 mdkr_vita_boot_log(plb);
                 s_vitaPresentLogCount++;
             }
+            mdkr_vita_boot_log_flush();
         }
         vglSwapBuffers(GL_FALSE);
 #else

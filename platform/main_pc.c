@@ -145,6 +145,21 @@ static void mdkr_crash_handler(int sig) {
     signal(sig, SIG_DFL);
     raise(sig);
 }
+
+#if defined(__vita__)
+/* sigaction(SA_SIGINFO) captures the faulting address (si_addr) that a
+ * plain signal(2) handler cannot see. Logged to the boot log -- the only
+ * durable diagnostic channel here, since stderr goes nowhere on Vita --
+ * then falls through to the handler above for the existing [CRASH]
+ * marker / crash-screen-hook / re-raise behavior. */
+extern void mdkr_vita_boot_log(const char *msg);
+static void mdkr_crash_handler_vita(int sig) {
+    char line[112];
+    snprintf(line, sizeof(line), "CRASH: signal=%d (fault addr unavailable -- vitasdk signal.h lacks SA_SIGINFO)", sig);
+    mdkr_vita_boot_log(line);
+    mdkr_crash_handler(sig);
+}
+#endif
 #endif
 
 /* Game boot chain (declared here to avoid pulling the full game headers). */
@@ -206,12 +221,49 @@ int _newlib_heap_size_user = 256 * 1024 * 1024;
  * it back by pulling the SD/SD2Vita card or over VitaShell's FTP server --
  * so a silent early exit can be diagnosed after the fact. Diagnostic-only;
  * not wired into any other platform. */
-void mdkr_vita_boot_log(const char *msg) {
+/* Buffered: each mdkr_vita_boot_log() call used to fopen+fprintf+fclose
+ * on every single line, which is real uncached filesystem I/O on Vita.
+ * At the call volumes the display-list diagnostics reach, that measurably
+ * tanked the frame rate on real hardware (confirmed on-device: a build
+ * with heavier logging became too slow to even reach the main menu).
+ * Accumulate lines in memory and write them out in one fopen/fwrite/fclose
+ * either when the buffer is close to full or when explicitly flushed (see
+ * mdkr_vita_boot_log_flush(), called once per presented frame from
+ * platform_sdl_min.c) so a crash still loses at most about one frame's
+ * worth of lines instead of nothing. */
+#define MDKR_BOOT_LOG_BUFSZ 4096
+static char s_mdkrBootLogBuf[MDKR_BOOT_LOG_BUFSZ];
+static size_t s_mdkrBootLogBufLen = 0;
+
+void mdkr_vita_boot_log_flush(void) {
+    if (s_mdkrBootLogBufLen == 0) {
+        return;
+    }
     FILE *f = fopen("ux0:data/goldenballoon/mdkr_boot.log", "a");
     if (f) {
-        fprintf(f, "%s\n", msg);
+        fwrite(s_mdkrBootLogBuf, 1, s_mdkrBootLogBufLen, f);
         fclose(f);
     }
+    s_mdkrBootLogBufLen = 0;
+}
+
+void mdkr_vita_boot_log(const char *msg) {
+    size_t len = strlen(msg);
+    if (len + 1 >= MDKR_BOOT_LOG_BUFSZ) {
+        mdkr_vita_boot_log_flush();
+        FILE *f = fopen("ux0:data/goldenballoon/mdkr_boot.log", "a");
+        if (f) {
+            fprintf(f, "%s\n", msg);
+            fclose(f);
+        }
+        return;
+    }
+    if (s_mdkrBootLogBufLen + len + 1 >= MDKR_BOOT_LOG_BUFSZ) {
+        mdkr_vita_boot_log_flush();
+    }
+    memcpy(s_mdkrBootLogBuf + s_mdkrBootLogBufLen, msg, len);
+    s_mdkrBootLogBufLen += len;
+    s_mdkrBootLogBuf[s_mdkrBootLogBufLen++] = '\n';
 }
 #else
 #define mdkr_vita_boot_log(msg) ((void)0)
@@ -284,11 +336,18 @@ int main(int argc, char **argv) {
     setvbuf(stderr, NULL, _IOLBF, 0);
 #ifndef __EMSCRIPTEN__
     if (!getenv("MDKR_NO_CRASH_HANDLER")) {
+#if defined(__vita__)
+        signal(SIGSEGV, mdkr_crash_handler_vita);
+#ifdef SIGBUS
+        signal(SIGBUS, mdkr_crash_handler_vita);
+#endif
+#else
         signal(SIGSEGV, mdkr_crash_handler);
 #ifdef SIGBUS
         /* Not defined by the Windows CRT: Win32 reports misaligned/bad-object
          * access as an access violation, i.e. SIGSEGV, which is hooked above. */
         signal(SIGBUS, mdkr_crash_handler);
+#endif
 #endif
     }
 #endif

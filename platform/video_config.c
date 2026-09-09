@@ -1063,7 +1063,18 @@ void mdkr_video_config_defaults(MdkrVideoConfig *config) {
     SET_DEFAULT_TEXT(MDKR_INPUT_CONTROLLER_A, "a");
     SET_DEFAULT_TEXT(MDKR_INPUT_CONTROLLER_B, "b");
     SET_DEFAULT_TEXT(MDKR_INPUT_CONTROLLER_X, "b");
+#if defined(__vita__)
+    /* Vita has no analog L2/R2 axes -- MDKR_INPUT_CONTROLLER_LEFT_TRIGGER and
+     * MDKR_INPUT_CONTROLLER_RIGHT_TRIGGER (both defaulted to "z" below) never
+     * fire on this platform, so without a face-button binding Z (fire item)
+     * has no default control at all. Triangle (SDL_CONTROLLER_BUTTON_Y) is
+     * free to take it: its usual "c_up" default is fully redundant here,
+     * since the right stick already covers all four C-directions
+     * (MDKR_INPUT_CONTROLLER_RIGHT_STICK_UP/DOWN/LEFT/RIGHT below). */
+    SET_DEFAULT_TEXT(MDKR_INPUT_CONTROLLER_Y, "z");
+#else
     SET_DEFAULT_TEXT(MDKR_INPUT_CONTROLLER_Y, "c_up");
+#endif
     SET_DEFAULT_TEXT(MDKR_INPUT_CONTROLLER_START, "start");
     SET_DEFAULT_TEXT(MDKR_INPUT_CONTROLLER_LEFT_STICK, "none");
     SET_DEFAULT_TEXT(MDKR_INPUT_CONTROLLER_RIGHT_STICK, "none");

@@ -443,17 +443,58 @@ u32 dkr_k0_to_physical(const void *x) {
      *     (void*)token as if it were a host pointer makes dkr_resolve hand that
      *     bogus low value back (registry beats arena reconstruction), so the
      *     texture command list never executes and the sprite renders untextured. */
-    /* Register genuine 64-bit non-arena host pointers (LP64 globals/rodata). On
-     * ILP32 pointers are 32-bit and globals also reach DLs via `(s32)ptr+K0BASE`
-     * / raw casts that never pass through here, so registration can't cover them;
-     * dkr_resolve recovers ILP32 host pointers DIRECTLY from the token instead.
-     * This registration stays LP64-only. */
+    /* Register genuine non-arena host pointers (globals/rodata) BEFORE they are
+     * truncated below. On LP64 this is the only place that still has the full
+     * pointer once OS_K0_TO_PHYSICAL returns. On ILP32 (Vita/wasm32) the value
+     * is already the final 32-bit result, so 'registering' it here means
+     * storing that untruncated pointer under its own low bits, exactly like
+     * the LP64 case, so dkr_resolve's registry lookups (which run before the
+     * segment-table fallback) can find it. Without this, globals reached via
+     * the pre-converted gSPFoo(pkt, OS_K0_TO_PHYSICAL(&global)) calling
+     * convention (gSPViewport chief among them) were never registered on
+     * ILP32 and always fell through to the segment-table heuristic instead --
+     * see the ILP32 branch below for the full story and hardware evidence. */
 #if UINTPTR_MAX > UINT32_MAX
     if (p > 0xFFFFFFFFu && !in_arena) {
         gfx_ptr_store_persistent(x);
     }
 #else
-    (void)in_arena;
+    /* ILP32 (Vita/wasm32): callers of THIS function (gSPViewport, gSPMatrix,
+     * etc. via `gSPFoo(pkt, OS_K0_TO_PHYSICAL(&global))`) pre-convert their
+     * pointer before it ever reaches gDma1p, unlike gSPDisplayList/gSPBranchList
+     * (whose raw pointer flows straight into gDma1p, which registers it itself
+     * via dkr_dl_register_host_ptr -- see gbi.h). By the time gDma1p sees the
+     * value returned from here, it has already been reduced to the small
+     * token below and the true pointer is gone -- dkr_dl_register_host_ptr
+     * cannot recover it, and worse, the token frequently falls inside its
+     * 0x01000000..0x0FFFFFFF segment-token exclusion range and gets silently
+     * skipped. Nothing else registers globals reached this way, so
+     * dkr_resolve's registry lookups always miss for them and fall through
+     * to the segment-table heuristic, which can collide with a legitimately
+     * assigned segment slot and hand back a wrong pointer into unrelated
+     * memory. Confirmed on real Vita hardware: gViewportStack (whose address
+     * always flows through this exact pre-converted path) resolved this way,
+     * landing in an unrelated small transient pool and reading back as an
+     * all-zero Vp_t -- collapsing the 3D viewport to nothing. Register the
+     * ORIGINAL pointer here, before truncation, exactly like the LP64 path
+     * above -- this is the one place that still has it.
+     *
+     * GUARD: unlike LP64 (where genuine pointers are trivially distinguished
+     * from already-truncated dkrptr32 TOKENS by simply exceeding 32 bits --
+     * see the p > 0xFFFFFFFFu check above), on ILP32 both kinds of value
+     * fit in 32 bits and look alike. DKR frequently feeds OS_K0_TO_PHYSICAL
+     * an already-converted token too (e.g. TextureHeader.cmd); registering
+     * one of those as if it were a host pointer would poison the registry
+     * exactly like the LP64 comment above warns -- dkr_resolve would hand
+     * the bogus low token back as a 'resolved pointer' and the texture
+     * command list would never execute. Vita user-process pointers are
+     * always mapped at a fixed high load address (observed ~0x81000000+ in
+     * practice -- see dkr_arena_init above), while every token/segment-
+     * relative value this codebase produces stays below 0x80000000. Gate
+     * registration on that floor so only genuine host pointers qualify. */
+    if (p >= 0x80000000u && !in_arena) {
+        gfx_ptr_store_persistent(x);
+    }
 #endif
     return (u32)(p - 0x80000000u);
 }
@@ -466,8 +507,6 @@ u32 dkr_k0_to_physical(const void *x) {
  * registration, a global DL pointer whose low 32 bits carry a live segment
  * nibble can false-resolve into unrelated arena memory. */
 void dkr_dl_register_host_ptr(const void *x) {
-    /* LP64-only (see dkr_k0_to_physical): ILP32 recovers host pointers directly
-     * in dkr_resolve, so no registration is needed there. */
     uintptr_t p = (uintptr_t)x;
     uintptr_t base = (uintptr_t)g_dkrArenaBase;
     int in_arena = p >= base && p < base + (uintptr_t)g_dkrArenaSize;
@@ -476,7 +515,52 @@ void dkr_dl_register_host_ptr(const void *x) {
         gfx_ptr_store_persistent(x);
     }
 #else
-    (void)in_arena;
+    /* This used to be a no-op on ILP32 (see the old comment this replaces:
+     * "ILP32 recovers host pointers directly in dkr_resolve, so no
+     * registration is needed there"). That assumption is contradicted by
+     * gfx_ptr.h's OWN header comment on the registry: "On a 32-bit target
+     * [host pointer and segment token] are both 32-bit and that test
+     * collapses, so every host pointer that is written into a DL word must
+     * be recorded in the pointer registry" -- i.e. registration was always
+     * meant to be required on ILP32 too, not just LP64.
+     *
+     * Confirmed on real Vita hardware via targeted boot-log tracing: a
+     * static/global display-list pointer passed through gSPDisplayList
+     * (e.g. 0x814041f0, well below the arena) never appeared in the
+     * registry, so dkr_resolve's registry lookups always missed and fell
+     * through to the segment-token heuristic. Its low 24 bits (0x4041f0)
+     * happened to look like a live segment-1 offset, so it silently
+     * resolved to gfx_segment_table[1] + 0x4041f0 -- 4+ MB past the end of
+     * segment 1's real (~150 KB) object -- instead of the actual pointer.
+     * The result reads as zeroed memory with no G_ENDDL, so the display-list
+     * walker runs to its safety cap every frame: this was the "white
+     * texture" / severe slowdown after the title logo. Registering here,
+     * exactly like the LP64 path (skipping arena-resident pointers, which
+     * already have their own working reconstruction path), is the fix. */
+    {
+        /* Segment tokens (0x01000000..0x0FFFFFFF) are reserved by this
+         * codebase's own addressing convention (see dkr_resolve's ILP32
+         * DIRECT RECOVERY comment) and are never real host pointers --
+         * gDPSetColorImage/gDPSetTextureImage/gDPSetDepthImage in particular
+         * are legitimately called with a raw segment-relative token (e.g.
+         * 0x01000000 for "segment 1, offset 0") instead of a host pointer,
+         * exactly like gSPDisplayList could in principle carry one. 
+         * Registering one of these here poisons the registry: dkr_resolve's
+         * raw-registry lookup (attempt 2) then matches it and hands back the
+         * token unchanged, BEFORE the correct segment-table lookup
+         * (gfx_resolve_addr) ever runs. Confirmed on real Vita hardware: a
+         * material-setup list's G_SETCIMG/G_SETZIMG tokens (0x01000000 /
+         * 0x02000000) resolved to themselves instead of the segment
+         * addresses assigned moments earlier, leaving color_image_address /
+         * z_buf_address pointing at low, unmapped memory -- a crash a few
+         * commands later once something dereferenced them. Exclude the
+         * whole range from registration; anything in it must resolve
+         * through the segment table, never the pointer registry. */
+        int is_segment_token_range = p >= 0x01000000u && p < 0x10000000u;
+        if (p != 0 && !in_arena && !is_segment_token_range) {
+            gfx_ptr_store_persistent(x);
+        }
+    }
 #endif
 }
 
