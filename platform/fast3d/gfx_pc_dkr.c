@@ -4341,6 +4341,16 @@ static void dkr_load_matrix(int slot, const void *addr) {
     dkr_decode_matrix(slot, (const int32_t *)addr);
 }
 
+#if defined(__vita__)
+/* Forward decl: dkr_dl_ring_dump() is defined next to dkr_run_dl() further
+ * down this file (it dumps the last 16 raw DL command words), but the
+ * seg1-track/zero-vp diagnostics below -- inside dkr_sp_moveword(), which is
+ * defined earlier in the file -- need to call it to see what commands
+ * immediately preceded a suspicious segment-1 reassignment or a zero-scale
+ * viewport, without threading depth/cmd context through an extra parameter. */
+static void dkr_dl_ring_dump(void);
+#endif
+
 static void dkr_sp_moveword(uint8_t index, uint16_t offset, uint32_t data) {
     (void)offset;
     switch (index) {
@@ -4450,6 +4460,7 @@ static void dkr_sp_moveword(uint8_t index, uint16_t offset, uint32_t data) {
                              (unsigned)data, resolved, (int)allocOk1, allocBase1,
                              (unsigned long)allocSize1, (int)dkr_frame_index);
                     mdkr_vita_boot_log(lb1);
+                    dkr_dl_ring_dump();
                     s_seg1AssignLogCount++;
                 }
             }
@@ -7977,6 +7988,7 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                                      (unsigned long)((uintptr_t)data - seg1base),
                                      (int)dkr_frame_index);
                             mdkr_vita_boot_log(lb2);
+                            dkr_dl_ring_dump();
                         }
                         s_zeroVpLogCount++;
                     }
