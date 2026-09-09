@@ -43,6 +43,15 @@ MAX_JOINTS = 256
 MAX_VERTICES = 1_000_000
 MAX_TRIANGLES = 2_000_000
 MAX_MATERIALS = 256
+# Both mirror validate_references() in platform/modern_character_asset.c, which
+# refuses animations->count > MDKR_MODERN_ANIMATIONS_MAX (256) and
+# textures->count > 1024. Intake did not carry them, so a package with more
+# could be compiled and only refused at load -- and while it was uncapped here,
+# the compiler materialised one record per animation and re-sliced the image
+# payload per texture with no ceiling on either. A count the runtime will refuse
+# is a count worth refusing before the allocation, not after.
+MAX_ANIMATIONS = 256
+MAX_TEXTURES = 1024
 MAX_TEXTURE_DIMENSION = 4096
 MAX_DECODED_TEXTURE_BYTES = 512 * 1024 * 1024
 MAX_GLTF_DIAGNOSTICS = 256
@@ -2483,6 +2492,14 @@ def inspect_glb_bytes(data: bytes, require_character: bool = False) -> dict[str,
         errors.append(f"triangle count {triangle_count} exceeds the runtime ceiling {MAX_TRIANGLES}")
     if len(_array(document, "materials")) > MAX_MATERIALS:
         errors.append(f"material count exceeds the runtime ceiling {MAX_MATERIALS}")
+    if len(_array(document, "animations")) > MAX_ANIMATIONS:
+        errors.append(
+            f"animation count {len(_array(document, 'animations'))} exceeds the "
+            f"runtime ceiling {MAX_ANIMATIONS}")
+    if len(_array(document, "textures")) > MAX_TEXTURES:
+        errors.append(
+            f"texture count {len(_array(document, 'textures'))} exceeds the "
+            f"runtime ceiling {MAX_TEXTURES}")
     if max_joints > MAX_JOINTS:
         errors.append(f"joint count {max_joints} exceeds the renderer ceiling {MAX_JOINTS}")
     if world_bbox_min is not None and world_bbox_max is not None:
