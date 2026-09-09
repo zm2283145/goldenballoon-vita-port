@@ -1038,3 +1038,117 @@ and refuse a change that moves the total beyond a reviewed ceiling, the way
 `check_rollback_authority` refuses an unclassified declaration -- would have
 caught `native_layout` drifting back into the long-pole position months ago. The
 measurement is already in the run log; only the ceiling is missing.
+
+## 9. Tiering: what to run, when, and what it costs
+
+§8 measured where the time goes. This section is what to do about it. The
+numbers below are from the 2026-09-09 complete run at `3688e993` (747 min of
+task time, 270/271).
+
+### 9.1 The evidence this is built on
+
+Three complete runs in one night, roughly 29 hours of machine time, produced
+**one** finding about the tree: `rollback_authority` refusing an unclassified
+mutable declaration. Every other failure was the pre-existing camera item, a
+timeout under contention, a stale artifact, or a missing flag. In the same
+night, four parallel reviews of the newer code found **thirteen** real defects,
+including a 192-byte stack overflow that fires on an ordinary 65-clip character
+at every boot and that no gate in the suite could see.
+
+The one thing the suite did catch cost **five seconds** and needed no ROM, no
+engine and no GPU.
+
+That is not an argument that the suite is worthless -- it is insurance, and a
+quiet stretch is not proof that the premium is zero. It is an argument that the
+premium is mispriced, and that on a mature tree the marginal defect is far more
+likely to be found by reading new code than by re-running old assertions.
+
+### 9.2 Cost by role
+
+| role | tasks | min | share |
+|---|---|---|---|
+| native | 167 | 409 | 54.8% |
+| release | 36 | 130 | 17.4% |
+| asan | 8 | 64 | 8.6% |
+| layout | 1 | 62 | 8.3% |
+| instrumented | 2 | 53 | 7.0% |
+| browser | 8 | 16 | 2.1% |
+| ctest | 1 | 7 | 0.9% |
+| browser_local | 16 | 4 | 0.5% |
+| **source** | **28** | **2** | **0.3%** |
+
+**Everything that needs no ROM and no engine is 29 tasks and about 9 minutes of
+747.** That is where the class-level gates live: the authority census, the CI
+contract, the public-surface and clean-room guards.
+
+### 9.3 The three tiers
+
+**Tier 1 -- every commit, ~9 minutes.**
+
+    python3 tools/run_checks.py --role source
+    ctest --test-dir build-rel
+
+No ROM, no engine, no GPU, no display. These are the gates that catch a *class*
+of mistake rather than an instance: a new mutable file-scope declaration that
+nobody classified, a public surface that grew, a workflow that drifted from its
+contract, a ROM-derived byte in the tree. This tier is what caught the only real
+finding in 29 hours of running.
+
+**Tier 2 -- change-scoped, minutes to an hour.**
+
+    python3 tools/run_checks.py --only '<glob>,<glob>'
+
+Run the gates that exercise what the diff touched. `--only` takes
+comma-separated globs and **fails closed when a glob matches nothing**, so a
+typo cannot silently shrink the run -- check the `SUBSET n/N` line it prints.
+
+Worked example, from the change this section was written beside: the product-code
+delta was `modern_character_pose.c`, `modern_character_asset.c/h` and
+`file_dialog_win.cpp`. Tracing callers gave `mdkr_modern_pose_init` <- one caller
+in `modern_character_runtime.c`; `joint_parent_node` <- one caller in
+`ui_settings.cpp`; and `file_dialog_win.cpp` is inside `elseif(WIN32)` in
+CMakeLists.txt, so it is not in the macOS binary at all. Nothing reached racing,
+camera, audio, save, online, adventure, trophies or retail rendering. The
+proportionate set was `'*character*,*portrait*,taj_*'` -- tens of minutes against
+nine hours, and the nine hours could not have tested the Windows file dialog even
+in principle.
+
+The discipline that makes this safe is the caller trace, not the glob. Do it
+before choosing the set, and write it down in the commit.
+
+**Tier 3 -- the full suite, nightly and NOT release-blocking.**
+
+    tools/web/build_web.sh
+    python3 tools/run_checks.py --jobs 6 --require-shipping-sdl --require-fresh \
+      --build build-rel --release-build build-rel --asan-build build-asan \
+      --wasm build-web/mdkr64_web.wasm --roms /path/to/rom-revisions
+
+This is the change that stops releases waiting days. The soak still happens; it
+stops being the thing a cut blocks on. Ship on **tier 1 green + tier 2 green +
+the most recent green nightly**. A cross-cutting regression is then caught within
+a day rather than in front of a release.
+
+### 9.4 What makes this safe rather than merely fast
+
+- **Tier 3 is not optional.** The failure mode of tiering is that the scoped run
+  becomes the only run. The nightly is the thing that catches what a caller trace
+  missed, and it has to be scheduled rather than remembered.
+- **A subset run says so.** Any restriction makes the runner label its verdict
+  `SUBSET n/N`; only `complete suite, N/N tasks` is a full run. Never record a
+  subset as a qualification.
+- **The preconditions still apply to tier 3.** `--require-fresh`,
+  `--require-shipping-sdl`, `--roms` and a web stage stamped at HEAD, all four of
+  which were silently wrong before 2026-09-08. See §8.4 and the release checklist.
+- **Cost has no ratchet.** Nothing fails when a task grows, which is how a landed
+  27-minute win decayed 7x unnoticed. Until that exists, re-measure from the run
+  log rather than trusting the numbers above.
+
+### 9.5 Where the budget should actually go
+
+The thirteen-to-one ratio in §9.1 is the finding, not the timings. On a tree this
+mature, an hour of reading newer code has been worth many hours of re-running
+gates over old code. The suite's job is to stop a *regression* in what already
+worked; it was never going to find a stack overflow in code written last week,
+because no assertion existed to describe it. Budget accordingly: keep tier 1 on
+every commit, scope tier 2 honestly, let tier 3 run overnight, and spend the
+recovered hours on review of what changed.
