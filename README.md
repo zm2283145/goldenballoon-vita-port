@@ -27,6 +27,14 @@
 > most of the game hasn't changed. See [PORTING_STATUS.md](PORTING_STATUS.md)
 > for the day-to-day truth about what currently works, what doesn't, and what
 > is actively being debugged.
+>
+> **Status update:** the game is now functionally in-game on real Vita
+> hardware — it boots, loads a ROM, and renders the actual 3D race/menu
+> scenes correctly. The last blocking bug (the 3D scene failing to render,
+> plus corrupted intro logo text) was root-caused to a pointer-registration
+> gap on 32-bit targets and has been fixed. This is still early, actively-
+> debugged hardware bring-up, though — expect further bugs, rough edges, and
+> untested code paths (see "PS Vita: known limitations" below).
 
 ## Quick start (PS Vita)
 
@@ -52,9 +60,14 @@
 4. **Play.** A DualShock-style control layout is assumed; there is no
    in-game remapping UI on Vita yet.
 
-**This is pre-release, actively-debugged software.** Expect crashes. If the
-game doesn't start, check [PORTING_STATUS.md](PORTING_STATUS.md) first — it
-tracks exactly what's currently broken and what's already been ruled out.
+**This is pre-release, actively-debugged software.** The game boots and
+plays with working 3D rendering, but this is a from-scratch hardware
+bring-up — expect bugs, including crashes, in code paths that haven't been
+exercised yet (most non-time-trial game modes, most tracks, extended play
+sessions). If something breaks, check [PORTING_STATUS.md](PORTING_STATUS.md)
+first — it tracks exactly what's currently broken and what's already been
+ruled out — and consider opening an issue with what you were doing when it
+happened.
 
 ## What Golden Balloon is (from the upstream project)
 
@@ -80,7 +93,7 @@ the shared game/engine code — is in the
 | macOS (Apple silicon) | Upstream, stable |
 | Linux (x86-64) | Upstream, best effort |
 | Browser (WebGPU) | Upstream, stable |
-| **PS Vita** | **This fork. Experimental — boots, reaches the main menu with audio and textured rendering, under active debugging past there. See [PORTING_STATUS.md](PORTING_STATUS.md) for the exact current state.** |
+| **PS Vita** | **This fork. Playable — boots, reaches the main menu, and now renders 3D gameplay correctly (the last major rendering bug was root-caused and fixed). Still a fresh hardware bring-up: bugs are expected. See [PORTING_STATUS.md](PORTING_STATUS.md) for the exact current state.** |
 
 ## PS Vita: known limitations
 
@@ -97,10 +110,19 @@ and fixed so far, with root causes).
   features these need; see the "What's disabled or stubbed on Vita" table in
   [PORTING_STATUS.md](PORTING_STATUS.md) for the full list and the reason
   for each.
-- **Performance, audio, and input mapping are unverified/in progress.**
-  This is a from-scratch hardware bring-up; those are exactly the class of
-  issue that only shows up on real hardware and is worked through one bug
-  report at a time.
+- **3D rendering now works, but is freshly fixed and lightly tested.** The
+  root cause (a pointer-registration gap that made certain global addresses,
+  including the camera viewport, misresolve through the renderer's segment
+  table) is fixed, confirmed on real hardware through the intro and into
+  gameplay. It has not yet been exercised across every track, mode, and
+  render path, so rendering glitches in less-common cases are plausible.
+- **Item-fire (Z) defaults to Triangle**, since the Vita has no analog L2/R2
+  triggers for the upstream default binding to land on. The right stick
+  still covers all four C-button camera directions.
+- **Performance, audio, and the rest of input mapping are unverified/in
+  progress.** This is a from-scratch hardware bring-up; those are exactly
+  the class of issue that only shows up on real hardware and is worked
+  through one bug report at a time.
 
 ## Custom content
 
@@ -130,8 +152,28 @@ for prerequisites and the browser build.
 
 ### PS Vita
 
-Requires [VitaSDK](https://vitasdk.org/) with **vitaGL** and **vitashark**
-installed via `vdpm`, plus `cmake` and `ninja`.
+**Prerequisites:**
+
+- [VitaSDK](https://vitasdk.org/) installed and `$VITASDK`/`%VITASDK%`
+  pointing at it (e.g. `C:\vitasdk` on Windows).
+- `cmake` and `ninja` on your PATH.
+- These packages installed via VitaSDK's package manager, `vdpm`:
+
+  ```bash
+  vdpm SDL2
+  vdpm vitaGL
+  vdpm vitashark
+  vdpm libmathneon
+  vdpm taihen
+  ```
+
+  (`vitaGL` is the GL-over-sceGxm layer the renderer targets since the Vita
+  has no real OpenGL; `vitashark` is its runtime GLSL→GXP shader compiler
+  and provides `SceShaccCgExt`; `libmathneon` and `taihen` are linked in
+  directly. The full link line is in `CMakeLists.txt` under `if(VITA)` if
+  something is still missing.)
+
+**Configure and build:**
 
 ```powershell
 $env:VITASDK = "C:\vitasdk"   # wherever VitaSDK lives
@@ -140,10 +182,30 @@ cmake -S . -B build-vita -G Ninja `
     -DCMAKE_TOOLCHAIN_FILE=$env:VITASDK/share/vita.toolchain.cmake `
     -DCMAKE_BUILD_TYPE=Release
 cmake --build build-vita --target mdkr64
+```
 
-# Package into a VPK:
+**Package into a VPK:**
+
+```powershell
+# One-time only, or if build-vita/param.sfo is ever missing/deleted:
+vita-mksfoex -s TITLE_ID=GBLN00001 -d ATTRIBUTE2=12 "GoldenBalloon DKR" build-vita/param.sfo
+
+# Every time you rebuild (ninja/cmake --build only produces the raw ELF —
+# this step is what actually produces build-vita/mdkr64.vpk):
 tools/package_vita.ps1 -BuildDir build-vita
 ```
+
+**Get it running:**
+
+1. Follow the [Quick start](#quick-start-ps-vita) steps above: homebrew
+   firmware + VitaShell + `libshacccg.suprx`, and the ROM at
+   `ux0:data/goldenballoon/baserom.us.v80.z64`.
+2. Copy `build-vita/mdkr64.vpk` to the Vita (VitaShell's FTP server is the
+   easiest way — `curl -T mdkr64.vpk ftp://<vita-ip>:1337/ux0:/data/` from a
+   PC on the same network) and install it from VitaShell.
+3. If it doesn't start, VitaShell can't show a crash log — the engine writes
+   its own boot log to `ux0:data/goldenballoon/mdkr_boot.log` on Vita, which
+   is the first thing to pull off and read after a failed run.
 
 `CMakeLists.txt` detects the Vita toolchain and turns off desktop-only
 subsystems (WebGPU, the ImGui launcher, Phone Party) automatically — no
