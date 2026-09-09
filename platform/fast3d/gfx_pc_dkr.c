@@ -2594,6 +2594,28 @@ static bool dkr_upload_tile_texture(uint8_t td, bool cutout,
                 ? gfx_mip_build_cutout(dst, width, height, tex_mip_buf, need,
                                        GFX_TEXTURE_EDGE_ALPHA_THRESHOLD_U8, &chain)
                 : gfx_mip_build(dst, width, height, tex_mip_buf, need, &chain);
+#if defined(__vita__)
+            /* vitaGL exposes no GL_EXT_texture_filter_anisotropic (the probe
+             * in gfx_opengl_set_sampler_parameters silently reads back an
+             * error and falls back to aniso=1), so a ground/track surface
+             * seen at a grazing angle -- the exact case this mip chain exists
+             * for, see gfx_mipgen.h -- gets only isotropic trilinear
+             * filtering. Without anisotropy to keep the long axis sharp, the
+             * driver's automatic LOD has to jump to a much blurrier level
+             * than PC/web pick for the same on-screen footprint, which reads
+             * as thin authored detail (e.g. a painted finish-line stripe)
+             * washing out into the surrounding ground colour far sooner than
+             * on every other platform -- reported, and confirmed identical
+             * on real N64 hardware, an emulator, and this project's own web
+             * build. Capping how deep (blurry) a level Vita ever uploads
+             * bounds how far that wrong-early wash-out can go, at the cost
+             * of a little of the shimmer reduction mipmapping exists for.
+             * A tunable knob, not a proven-optimal number yet. */
+            enum { DKR_VITA_MAX_MIP_LEVELS = 4 };
+            if (chain.level_count > DKR_VITA_MAX_MIP_LEVELS) {
+                chain.level_count = DKR_VITA_MAX_MIP_LEVELS;
+            }
+#endif
             if (built &&
                 gfx_rapi->upload_texture_mipped(chain.level, chain.width,
                                                 chain.height, chain.level_count)) {
