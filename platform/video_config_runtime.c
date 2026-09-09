@@ -23,18 +23,6 @@
 #include "present_sched.h"
 #include "user_paths.h"
 
-#ifdef __vita__
-/* Defined in main_pc.c (no visible console on Vita -- see main_pc.c). This is
- * temporary diagnostic instrumentation for a Save Failed report from the
- * in-game Options menu: every fprintf(stderr, "[video] ..."); in this file is
- * invisible on-device, so mirror the write-path failure points to the boot
- * log until the real cause is confirmed from a pulled log. */
-extern void mdkr_vita_boot_log(const char *msg);
-#define MDKR_VIDEO_VLOG(...) do { char mdkr_vlog_buf[8320]; snprintf(mdkr_vlog_buf, sizeof(mdkr_vlog_buf), __VA_ARGS__); mdkr_vita_boot_log(mdkr_vlog_buf); } while (0)
-#else
-#define MDKR_VIDEO_VLOG(...) ((void)0)
-#endif
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -359,7 +347,6 @@ static int mdkr_video_open_unique_temp(char output[MDKR_VIDEO_PATH_MAX],
                                ++s_video_tmp_serial);
         if (written < 0 || (size_t)written >= MDKR_VIDEO_PATH_MAX) {
             fprintf(stderr, "[video] temporary config path is too long\n");
-            MDKR_VIDEO_VLOG("video: temp path too long (base=%s)", s_video_ini_path);
             return 0;
         }
         *file = mdkr_fopen_utf8(output, "wbx");
@@ -368,7 +355,6 @@ static int mdkr_video_open_unique_temp(char output[MDKR_VIDEO_PATH_MAX],
     }
     fprintf(stderr, "[video] could not create an exclusive staging file beside %s: %s\n",
             s_video_ini_path, strerror(errno));
-    MDKR_VIDEO_VLOG("video: open_unique_temp FAILED errno=%d (%s) base=%s", errno, strerror(errno), s_video_ini_path);
     return 0;
 }
 
@@ -382,16 +368,12 @@ static int mdkr_video_lock_acquire(MdkrFileLock *lock) {
 #else
     char lock_path[MDKR_VIDEO_PATH_MAX];
     int written;
-    if (!mdkr_video_resolve_paths()) {
-        MDKR_VIDEO_VLOG("video: resolve_paths FAILED in lock_acquire");
-        return 0;
-    }
+    if (!mdkr_video_resolve_paths()) return 0;
     written = snprintf(lock_path, sizeof(lock_path), "%s.lock", s_video_ini_path);
     if (written < 0 || (size_t)written >= sizeof(lock_path) ||
         mdkr_file_lock_acquire_utf8(lock_path, lock) != 0) {
         fprintf(stderr, "[video] could not lock %s: %s\n",
                 s_video_ini_path, strerror(errno));
-        MDKR_VIDEO_VLOG("video: lock_acquire FAILED errno=%d (%s) lock_path=%s", errno, strerror(errno), lock_path);
         return 0;
     }
     return 1;
@@ -967,7 +949,6 @@ static MdkrVideoWriteResult mdkr_video_write_config_unlocked(
                                             entries, &count) ||
         !config_ini_serialize(entries, count, text, sizeof(text))) {
         fprintf(stderr, "[video] config is too large to save safely\n");
-        MDKR_VIDEO_VLOG("video: write_config_unlocked: build/serialize FAILED count=%d", count);
         return MDKR_VIDEO_WRITE_FAILED;
     }
 #ifdef __EMSCRIPTEN__
@@ -983,7 +964,6 @@ static MdkrVideoWriteResult mdkr_video_write_config_unlocked(
         mdkr_file_sync(f) != 0) {
         fprintf(stderr, "[video] could not write %s: %s\n",
                 temporary, strerror(errno));
-        MDKR_VIDEO_VLOG("video: write_config_unlocked: fwrite/sync FAILED errno=%d (%s) tmp=%s", errno, strerror(errno), temporary);
         fclose(f);
         mdkr_remove_utf8(temporary);
         return MDKR_VIDEO_WRITE_FAILED;
@@ -991,14 +971,12 @@ static MdkrVideoWriteResult mdkr_video_write_config_unlocked(
     if (fclose(f) != 0) {
         fprintf(stderr, "[video] could not close %s: %s\n",
                 temporary, strerror(errno));
-        MDKR_VIDEO_VLOG("video: write_config_unlocked: fclose FAILED errno=%d (%s) tmp=%s", errno, strerror(errno), temporary);
         mdkr_remove_utf8(temporary);
         return MDKR_VIDEO_WRITE_FAILED;
     }
     if (mdkr_move_utf8(temporary, s_video_ini_path, 1, 1) != 0) {
         fprintf(stderr, "[video] could not replace %s: %s\n",
                 s_video_ini_path, strerror(errno));
-        MDKR_VIDEO_VLOG("video: write_config_unlocked: move FAILED errno=%d (%s) from=%s to=%s", errno, strerror(errno), temporary, s_video_ini_path);
         mdkr_remove_utf8(temporary);
         return MDKR_VIDEO_WRITE_FAILED;
     }
@@ -1154,11 +1132,9 @@ MdkrVideoRuntimeResult mdkr_video_config_runtime_set_many(
      * stale startup snapshot, so independent settings edits merge instead of
      * silently erasing one another. */
     if (!mdkr_video_lock_acquire(&lock)) {
-        MDKR_VIDEO_VLOG("video: runtime_set_many: lock_acquire FAILED");
         return MDKR_VIDEO_RUNTIME_SAVE_FAILED;
     }
     if (!mdkr_video_read_config(fresh_entries, &s_file_entry_count)) {
-        MDKR_VIDEO_VLOG("video: runtime_set_many: read_config FAILED errno=%d (%s)", errno, strerror(errno));
         mdkr_file_lock_release(&lock);
         return MDKR_VIDEO_RUNTIME_SAVE_FAILED;
     }
