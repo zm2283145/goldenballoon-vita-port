@@ -1384,7 +1384,10 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
     append_line(vs_buf, sizeof(vs_buf), &vs_len, "}");
 
     /* Fragment shader */
-#ifdef MGB64_PORTMASTER_GLES
+#if defined(__vita__)
+    append_line(fs_buf, sizeof(fs_buf), &fs_len, "#version 100");
+    append_line(fs_buf, sizeof(fs_buf), &fs_len, "precision mediump float;");
+#elif defined(MGB64_PORTMASTER_GLES)
     append_line(fs_buf, sizeof(fs_buf), &fs_len, "#version 320 es");
     append_line(fs_buf, sizeof(fs_buf), &fs_len, "precision mediump float;");
     append_line(fs_buf, sizeof(fs_buf), &fs_len, "out vec4 fragColor;");
@@ -1878,10 +1881,15 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
     glGetShaderiv(vertex_shader, GL_COMPILE_STATUS, &success);
     if (!success) {
         char error_log[1024];
+        error_log[0] = '\0';
         GLint max_length = 0;
         glGetShaderiv(vertex_shader, GL_INFO_LOG_LENGTH, &max_length);
+        GLint raw_max_length = max_length;
         if (max_length > (GLint)sizeof(error_log)) max_length = sizeof(error_log) - 1;
-        glGetShaderInfoLog(vertex_shader, max_length, &max_length, error_log);
+        if (max_length > 0) {
+            glGetShaderInfoLog(vertex_shader, max_length, &max_length, error_log);
+            error_log[(max_length >= 0 && max_length < (GLint)sizeof(error_log)) ? max_length : 0] = '\0';
+        }
         fprintf(stderr, "[fast3d] Vertex shader compilation failed:\n%s\nSource:\n%s\n", error_log, vs_buf);
 #if defined(__vita__)
         /* stderr goes nowhere on Vita -- the fprintf above is silently lost. Route
@@ -1889,7 +1897,7 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
          * to disk before we abort, so the next crash dump has the actual reason. */
         {
             char lb[1200];
-            snprintf(lb, sizeof(lb), "[fast3d] Vertex shader compilation failed:\n%s", error_log);
+            snprintf(lb, sizeof(lb), "[fast3d] Vertex shader compilation failed (success=%d infoLogLen=%d):\n%s", (int)success, (int)raw_max_length, error_log);
             mdkr_vita_boot_log(lb);
             mdkr_vita_boot_log(vs_buf);
             mdkr_vita_boot_log_flush();
@@ -1904,15 +1912,20 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
     glGetShaderiv(fragment_shader, GL_COMPILE_STATUS, &success);
     if (!success) {
         char error_log[1024];
+        error_log[0] = '\0';
         GLint max_length = 0;
         glGetShaderiv(fragment_shader, GL_INFO_LOG_LENGTH, &max_length);
+        GLint raw_max_length = max_length;
         if (max_length > (GLint)sizeof(error_log)) max_length = sizeof(error_log) - 1;
-        glGetShaderInfoLog(fragment_shader, max_length, &max_length, error_log);
+        if (max_length > 0) {
+            glGetShaderInfoLog(fragment_shader, max_length, &max_length, error_log);
+            error_log[(max_length >= 0 && max_length < (GLint)sizeof(error_log)) ? max_length : 0] = '\0';
+        }
         fprintf(stderr, "[fast3d] Fragment shader compilation failed:\n%s\nSource:\n%s\n", error_log, fs_buf);
 #if defined(__vita__)
         {
             char lb[1200];
-            snprintf(lb, sizeof(lb), "[fast3d] Fragment shader compilation failed:\n%s", error_log);
+            snprintf(lb, sizeof(lb), "[fast3d] Fragment shader compilation failed (success=%d infoLogLen=%d):\n%s", (int)success, (int)raw_max_length, error_log);
             mdkr_vita_boot_log(lb);
             mdkr_vita_boot_log(fs_buf);
             mdkr_vita_boot_log_flush();
