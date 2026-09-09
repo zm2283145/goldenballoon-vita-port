@@ -39,7 +39,17 @@ def main() -> int:
     parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", required=True)
     parser.add_argument("--frames", type=int, default=7200)
-    parser.add_argument("--timeout", type=int, default=90)
+    # 7200 frames against a 90s ceiling asked for 80 fps sustained -- more than
+    # twice as tight as any comparable gate (terry_flight_audio needs 36,
+    # rdp_interpolation 24, the font gates 13). It measured 1m06s and 1m09s in
+    # the last two complete runs, so ordinary contention crossed the remaining
+    # ~30% and turned a passing gate red on a tree nothing about it had changed.
+    #
+    # This ceiling bounds a HANG, not the machine: every claim this gate makes
+    # is read out of the run's output afterwards, so a slow run that finishes
+    # proves exactly what a fast one does. Sized clear of the measured cost
+    # rather than beside it.
+    parser.add_argument("--timeout", type=int, default=300)
     args = parser.parse_args()
 
     binary = Path(resolve_binary(args.build))
