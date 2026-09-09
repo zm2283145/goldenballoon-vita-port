@@ -52,8 +52,10 @@
  * can reach it). See main_pc.c for why this exists: no visible console on
  * Vita, so a silent early exit needs breadcrumbs written to a file instead. */
 extern void mdkr_vita_boot_log(const char *msg);
+extern void mdkr_vita_boot_log_flush(void);
 #else
 #define mdkr_vita_boot_log(msg) ((void)0)
+#define mdkr_vita_boot_log_flush() ((void)0)
 #endif
 #include "gfx_shadow_cascade.h"
 #include "gfx_shadow_frame.h"
@@ -1881,6 +1883,18 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
         if (max_length > (GLint)sizeof(error_log)) max_length = sizeof(error_log) - 1;
         glGetShaderInfoLog(vertex_shader, max_length, &max_length, error_log);
         fprintf(stderr, "[fast3d] Vertex shader compilation failed:\n%s\nSource:\n%s\n", error_log, vs_buf);
+#if defined(__vita__)
+        /* stderr goes nowhere on Vita -- the fprintf above is silently lost. Route
+         * the real compiler error through the boot-log mechanism too, and force it
+         * to disk before we abort, so the next crash dump has the actual reason. */
+        {
+            char lb[1200];
+            snprintf(lb, sizeof(lb), "[fast3d] Vertex shader compilation failed:\n%s", error_log);
+            mdkr_vita_boot_log(lb);
+            mdkr_vita_boot_log(vs_buf);
+            mdkr_vita_boot_log_flush();
+        }
+#endif
         abort();
     }
 
@@ -1895,6 +1909,15 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
         if (max_length > (GLint)sizeof(error_log)) max_length = sizeof(error_log) - 1;
         glGetShaderInfoLog(fragment_shader, max_length, &max_length, error_log);
         fprintf(stderr, "[fast3d] Fragment shader compilation failed:\n%s\nSource:\n%s\n", error_log, fs_buf);
+#if defined(__vita__)
+        {
+            char lb[1200];
+            snprintf(lb, sizeof(lb), "[fast3d] Fragment shader compilation failed:\n%s", error_log);
+            mdkr_vita_boot_log(lb);
+            mdkr_vita_boot_log(fs_buf);
+            mdkr_vita_boot_log_flush();
+        }
+#endif
         abort();
     }
 
@@ -1922,6 +1945,14 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
         glGetProgramInfoLog(shader_program, sizeof(error_log), &length, error_log);
         fprintf(stderr, "[fast3d] Shader program link failed:\n%.*s\n",
                 (int)length, error_log);
+#if defined(__vita__)
+        {
+            char lb[1200];
+            snprintf(lb, sizeof(lb), "[fast3d] Shader program link failed:\n%.*s", (int)length, error_log);
+            mdkr_vita_boot_log(lb);
+            mdkr_vita_boot_log_flush();
+        }
+#endif
         glDeleteProgram(shader_program);
         abort();
     }
