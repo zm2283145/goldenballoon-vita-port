@@ -45,6 +45,67 @@ def png(width: int, height: int, pixels: bytes) -> bytes:
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b"")
 
 
+def decode_png_rgba(path: Path) -> tuple[int, int, bytes]:
+    """Decode the small non-interlaced 8-bit PNGs used by the Vita assets."""
+    data = path.read_bytes()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError(f"not a PNG: {path}")
+    pos, payloads = 8, {}
+    while pos < len(data):
+        length = struct.unpack_from(">I", data, pos)[0]
+        kind = data[pos + 4:pos + 8]
+        payload = data[pos + 8:pos + 8 + length]
+        payloads[kind] = payloads.get(kind, b"") + payload
+        pos += 12 + length
+    width, height, depth, color, compression, filtering, interlace = struct.unpack(">IIBBBBB", payloads[b"IHDR"])
+    if depth != 8 or compression or filtering or interlace or color not in (3, 6):
+        raise ValueError(f"unsupported PNG format in {path}")
+    bpp = 1 if color == 3 else 4
+    packed = zlib.decompress(payloads[b"IDAT"])
+    rows, cursor, previous = [], 0, bytearray(width * bpp)
+    for _ in range(height):
+        filter_type, scanline = packed[cursor], bytearray(packed[cursor + 1:cursor + 1 + width * bpp])
+        cursor += 1 + width * bpp
+        for i, value in enumerate(scanline):
+            left = scanline[i - bpp] if i >= bpp else 0
+            up = previous[i]
+            upper_left = previous[i - bpp] if i >= bpp else 0
+            if filter_type == 1:
+                scanline[i] = (value + left) & 0xff
+            elif filter_type == 2:
+                scanline[i] = (value + up) & 0xff
+            elif filter_type == 3:
+                scanline[i] = (value + ((left + up) >> 1)) & 0xff
+            elif filter_type == 4:
+                p, pa, pb, pc = left + up - upper_left, abs(up - upper_left), abs(left - upper_left), abs(left + up - 2 * upper_left)
+                scanline[i] = (value + (left if pa <= pb and pa <= pc else up if pb <= pc else upper_left)) & 0xff
+            elif filter_type != 0:
+                raise ValueError(f"unsupported PNG filter in {path}")
+        rows.append(scanline)
+        previous = scanline
+    if color == 6:
+        return width, height, bytes().join(rows)
+    palette, alpha = payloads[b"PLTE"], payloads.get(b"tRNS", b"")
+    pixels = bytearray(width * height * 4)
+    for pixel_index, palette_index in enumerate(bytes().join(rows)):
+        source, target = palette_index * 3, pixel_index * 4
+        pixels[target:target + 4] = palette[source:source + 3] + bytes((alpha[palette_index] if palette_index < len(alpha) else 255,))
+    return width, height, bytes(pixels)
+
+
+def resize_png(path: Path, width: int, height: int) -> bytes:
+    source_width, source_height, source = decode_png_rgba(path)
+    output = bytearray(width * height * 4)
+    for y in range(height):
+        source_y = y * source_height // height
+        for x in range(width):
+            source_x = x * source_width // width
+            target = (y * width + x) * 4
+            start = (source_y * source_width + source_x) * 4
+            output[target:target + 4] = source[start:start + 4]
+    return png(width, height, bytes(output))
+
+
 def platinum_icon(path: Path) -> None:
     size = 240
     data = bytearray(size * size * 4)
@@ -133,11 +194,14 @@ def main() -> None:
     files = {
         'TROPCONF.SFM': xml(configuration_only=True),
         'TROP.SFM': xml(),
-        'ICON0.PNG': args.livearea_icon.read_bytes(),
-        'GR001.PNG': args.livearea_icon.read_bytes(),
+        # Trophy assets have fixed Vita dimensions: title/group images are
+        # 320x176 and individual trophy images are 240x240. LiveArea's icon
+        # is only 128x128, so never insert it into the archive verbatim.
+        'ICON0.PNG': resize_png(args.livearea_icon, 320, 176),
+        'GR001.PNG': resize_png(args.livearea_icon, 320, 176),
     }
     for tid, *_ in TROPHIES:
-        files[f'TROP{tid:03d}.PNG'] = platinum.read_bytes() if tid == 0 else args.livearea_icon.read_bytes()
+        files[f'TROP{tid:03d}.PNG'] = platinum.read_bytes() if tid == 0 else resize_png(args.livearea_icon, 240, 240)
     args.out.write_bytes(trp(files))
     shutil.rmtree(work)
     print(f'wrote {args.out} ({args.out.stat().st_size} bytes, {len(TROPHIES)} trophies)')
