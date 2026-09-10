@@ -1,4 +1,4 @@
-# Golden Balloon 1.6.8
+# Golden Balloon 1.6.9
 
 *Unreleased ImGui Save Editor build.*
 
@@ -10,7 +10,7 @@ and save-slot operations. The classic editor remains available from the ImGui
 Tools page, and can reopen the overlay with L+R.
 
 The VPK is versioned from the same `MDKR_VERSION` value as the compiled port;
-this build produces Vita metadata version `01.68`.
+this build produces Vita metadata version `01.69`.
 
 # Golden Balloon 1.6.4
 

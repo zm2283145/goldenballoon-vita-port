@@ -163,6 +163,12 @@ static GfxShadowPlan g_shadow_plan;
 static int g_shadow_receiver_view = -1;
 static GLuint opengl_vbo;
 static GLuint opengl_vao;
+
+#if defined(__vita__)
+void mdkr_vita_restore_primary_vao(void) {
+    glBindVertexArray(opengl_vao);
+}
+#endif
 static struct ShaderProgram *current_shader_program;
 
 static uint32_t frame_count;

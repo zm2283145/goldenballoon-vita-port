@@ -30,6 +30,8 @@ static float *gTexCoordBuffer = nullptr;
 static uint8_t *gColorBuffer = nullptr;
 static uint16_t *gIndexBuffer = nullptr;
 static uint32_t gCounter = 0;
+static GLuint gShaderVao = 0;
+static GLuint gShaderBuffers[3] = { 0, 0, 0 };
 
 static bool touch_usage = false;
 static bool mousestick_usage = true;
@@ -73,6 +75,18 @@ void ImGui_ImplVitaGL_RenderDrawData(ImDrawData* draw_data)
 	// Setup render state: alpha-blending enabled, no face culling, no depth testing, scissor enabled, vertex/texcoord/color pointers, polygon fill.
 	GLint last_texture; glGetIntegerv(GL_TEXTURE_BINDING_2D, &last_texture);
 	GLint last_program; glGetIntegerv(GL_CURRENT_PROGRAM, &last_program);
+	GLint last_array_buffer = 0;
+	if (shaders_usage) {
+		glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &last_array_buffer);
+		if (!gShaderVao) {
+			glGenVertexArrays(1, &gShaderVao);
+			glGenBuffers(3, gShaderBuffers);
+		}
+		glBindVertexArray(gShaderVao);
+		glEnableVertexAttribArray(0);
+		glEnableVertexAttribArray(1);
+		glEnableVertexAttribArray(2);
+	}
 	GLint last_polygon_mode[2]; glGetIntegerv(GL_POLYGON_MODE, last_polygon_mode);
 	GLint last_viewport[4]; glGetIntegerv(GL_VIEWPORT, last_viewport);
 	GLint last_scissor_box[4]; glGetIntegerv(GL_SCISSOR_BOX, last_scissor_box); 
@@ -86,24 +100,28 @@ void ImGui_ImplVitaGL_RenderDrawData(ImDrawData* draw_data)
 	glDisable(GL_CULL_FACE);
 	glDisable(GL_DEPTH_TEST);
 	glEnable(GL_SCISSOR_TEST);
-	glEnableClientState(GL_VERTEX_ARRAY);
-	glEnableClientState(GL_TEXTURE_COORD_ARRAY);
-	glEnableClientState(GL_COLOR_ARRAY);
+	if (!shaders_usage) {
+		glEnableClientState(GL_VERTEX_ARRAY);
+		glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+		glEnableClientState(GL_COLOR_ARRAY);
+	}
 	glEnable(GL_TEXTURE_2D);
-	glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+	if (!shaders_usage) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 	/* The host selects a dedicated ImGui shader before calling this renderer.
 	 * Leave that program bound: in shader mode the legacy VitaGL draw helpers
 	 * feed attributes 0/1/2 to the host program. */
 
 	// Setup viewport, orthographic projection matrix
 	glViewport(0, 0, (GLsizei)fb_width, (GLsizei)fb_height);
-	glMatrixMode(GL_PROJECTION);
-	glPushMatrix();
-	glLoadIdentity();
-	glOrtho(0.0f, io.DisplaySize.x, io.DisplaySize.y, 0.0f, 0, 1);
-	glMatrixMode(GL_MODELVIEW);
-	glPushMatrix();
-	glLoadIdentity();
+	if (!shaders_usage) {
+		glMatrixMode(GL_PROJECTION);
+		glPushMatrix();
+		glLoadIdentity();
+		glOrtho(0.0f, io.DisplaySize.x, io.DisplaySize.y, 0.0f, 0, 1);
+		glMatrixMode(GL_MODELVIEW);
+		glPushMatrix();
+		glLoadIdentity();
+	}
 
 	// Render command lists
 	for (int n = 0; n < draw_data->CmdListsCount; n++)
@@ -169,15 +187,22 @@ void ImGui_ImplVitaGL_RenderDrawData(ImDrawData* draw_data)
 				}
 
 				if (shaders_usage){
-					vglVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, pcmd->ElemCount, vp);
-					vglVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, pcmd->ElemCount, tp);
-					vglVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, 0, pcmd->ElemCount, cp);
+					glBindBuffer(GL_ARRAY_BUFFER, gShaderBuffers[0]);
+					glBufferData(GL_ARRAY_BUFFER, pcmd->ElemCount * 3 * sizeof(float), vp, GL_STREAM_DRAW);
+					glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, (const void *)0);
+					glBindBuffer(GL_ARRAY_BUFFER, gShaderBuffers[1]);
+					glBufferData(GL_ARRAY_BUFFER, pcmd->ElemCount * 2 * sizeof(float), tp, GL_STREAM_DRAW);
+					glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, (const void *)0);
+					glBindBuffer(GL_ARRAY_BUFFER, gShaderBuffers[2]);
+					glBufferData(GL_ARRAY_BUFFER, pcmd->ElemCount * 4 * sizeof(uint8_t), cp, GL_STREAM_DRAW);
+					glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, 0, (const void *)0);
+					glDrawArrays(GL_TRIANGLES, 0, pcmd->ElemCount);
 				}else{
 					vglVertexPointerMapped(3, vp);
 					vglTexCoordPointerMapped(tp);
 					vglColorPointerMapped(GL_UNSIGNED_BYTE, cp);
+					vglDrawObjects(GL_TRIANGLES, pcmd->ElemCount);
 				}
-				vglDrawObjects(GL_TRIANGLES, pcmd->ElemCount);
 			}
 			idx_buffer += pcmd->ElemCount;
 			gCounter += pcmd->ElemCount;
@@ -191,17 +216,29 @@ void ImGui_ImplVitaGL_RenderDrawData(ImDrawData* draw_data)
 	}
 
 	// Restore modified state
-	glDisableClientState(GL_COLOR_ARRAY);
-	glDisableClientState(GL_TEXTURE_COORD_ARRAY);
-	glDisableClientState(GL_VERTEX_ARRAY);
+	if (shaders_usage) {
+		glDisableVertexAttribArray(2);
+		glDisableVertexAttribArray(1);
+		glDisableVertexAttribArray(0);
+		glBindBuffer(GL_ARRAY_BUFFER, (GLuint)last_array_buffer);
+	} else {
+		glDisableClientState(GL_COLOR_ARRAY);
+		glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+		glDisableClientState(GL_VERTEX_ARRAY);
+	}
 	glBindTexture(GL_TEXTURE_2D, (GLuint)last_texture);
 	glUseProgram((GLuint)last_program);
-	glMatrixMode(GL_MODELVIEW);
-	glPopMatrix();
-	glMatrixMode(GL_PROJECTION);
-	glPopMatrix();
+	if (!shaders_usage) {
+		glMatrixMode(GL_MODELVIEW);
+		glPopMatrix();
+		glMatrixMode(GL_PROJECTION);
+		glPopMatrix();
+	}
 	//glPopAttrib();
-	glPolygonMode(GL_FRONT, (GLenum)last_polygon_mode[0]); glPolygonMode(GL_BACK, (GLenum)last_polygon_mode[1]);
+	if (!shaders_usage) {
+		glPolygonMode(GL_FRONT, (GLenum)last_polygon_mode[0]);
+		glPolygonMode(GL_BACK, (GLenum)last_polygon_mode[1]);
+	}
 	glViewport(last_viewport[0], last_viewport[1], (GLsizei)last_viewport[2], (GLsizei)last_viewport[3]);
 	glScissor(last_scissor_box[0], last_scissor_box[1], (GLsizei)last_scissor_box[2], (GLsizei)last_scissor_box[3]);
 	if (last_blend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
@@ -369,6 +406,14 @@ void ImGui_ImplVitaGL_Shutdown()
 	free(gVertexBuffer);
 	free(gTexCoordBuffer);
 	free(gColorBuffer);
+	if (gShaderBuffers[0]) {
+		glDeleteBuffers(3, gShaderBuffers);
+		gShaderBuffers[0] = gShaderBuffers[1] = gShaderBuffers[2] = 0;
+	}
+	if (gShaderVao) {
+		glDeleteVertexArrays(1, &gShaderVao);
+		gShaderVao = 0;
+	}
 	
 	// Destroy OpenGL objects
 	ImGui_ImplVitaGL_InvalidateDeviceObjects();

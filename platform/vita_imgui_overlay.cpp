@@ -11,6 +11,7 @@
 namespace {
 extern "C" void mdkr_vita_boot_log(const char *msg);
 extern "C" void mdkr_vita_boot_log_flush(void);
+extern "C" void mdkr_vita_restore_primary_vao(void);
 
 bool s_initialized = false;
 bool s_open = false;
@@ -303,6 +304,10 @@ extern "C" int mdkr_vita_imgui_overlay_render(void) {
     glUseProgram(s_program);
     glUniform1i(s_texture_uniform, 0);
     ImGui_ImplVitaGL_RenderDrawData(ImGui::GetDrawData());
+    /* vitaGL does not expose GL_VERTEX_ARRAY_BINDING on Vita. The backend
+     * therefore uses a private VAO and explicitly returns Fast3D to the
+     * primary VAO that owns the game's attribute layout. */
+    mdkr_vita_restore_primary_vao();
     if (diagnostic_frames < 8) {
         char log_line[96];
         snprintf(log_line, sizeof(log_line), "imgui: draw complete glError=0x%x", (unsigned)glGetError());
