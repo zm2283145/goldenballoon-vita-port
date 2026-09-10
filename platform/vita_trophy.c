@@ -286,7 +286,11 @@ static void unlock(unsigned trophyId) {
     if (trophyId >= 98) return;
     word = trophyId / 32;
     bit = 1u << (trophyId % 32);
-    if ((sSubmitted[word] & bit) != 0) return;
+    /* The initial service query is authoritative. Do not re-submit trophies
+     * already present in the Vita database every time a completed save is
+     * loaded; that was unnecessary service traffic and another source of
+     * launch-time stalls. */
+    if (((sSubmitted[word] | sUnlocked[word]) & bit) != 0) return;
     if (sTrophyWorkerReady) {
         /* Publish the request before waking the worker. There are at most 98
          * unique submissions per process, so this queue never fills or makes
