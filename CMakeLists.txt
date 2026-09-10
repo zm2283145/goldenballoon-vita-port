@@ -1019,7 +1019,27 @@ if(NOT EMSCRIPTEN)
         # instead of silently changing every desktop build through a glob.
         # The CI contract compares it with platform/app/ so omissions and
         # unreviewed additions fail closed at review time.
+        find_package(Python3 COMPONENTS Interpreter REQUIRED)
+        # The brand hero is generated into the build tree rather than tracked as
+        # a byte array: the repo keeps the source art (brand/hero.png) and never
+        # a multi-megabyte generated blob, the same split the embedded fonts use.
+        set(MDKR_HERO_HEADER ${CMAKE_CURRENT_BINARY_DIR}/generated/hero_png.h)
+        add_custom_command(
+            OUTPUT ${MDKR_HERO_HEADER}
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                    ${CMAKE_CURRENT_BINARY_DIR}/generated
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tools/gen_image_header.py
+                    ${CMAKE_SOURCE_DIR}/brand/hero.png
+                    ${MDKR_HERO_HEADER}
+                    --symbol kAppHeroPng
+            DEPENDS ${CMAKE_SOURCE_DIR}/brand/hero.png
+                    ${CMAKE_SOURCE_DIR}/tools/gen_image_header.py
+            COMMENT "Embedding brand/hero.png for the launcher home"
+            VERBATIM)
+
         set(APP_SOURCES
+            ${MDKR_HERO_HEADER}
             ${CMAKE_SOURCE_DIR}/platform/app/app_config.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/app_config_escape.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/app_host.cpp
@@ -1063,6 +1083,7 @@ if(NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/platform/app/session_runtime.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/ui_common.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/ui_diag.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/ui_hero.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/ui_launcher.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/ui_online_room.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/ui_overlay.cpp
@@ -1808,6 +1829,11 @@ if(NOT EMSCRIPTEN)
 
         add_library(mdkr64_app STATIC ${IMGUI_SOURCES} ${APP_SOURCES})
         target_compile_features(mdkr64_app PRIVATE cxx_std_17)
+        # generated/ carries the embedded brand hero; lib/stb is the decoder it
+        # is handed to (declarations only -- the implementation TU is elsewhere).
+        target_include_directories(mdkr64_app PRIVATE
+            ${CMAKE_CURRENT_BINARY_DIR}/generated
+            ${CMAKE_SOURCE_DIR}/lib/stb)
         if(MDKR_NATIVE_PHONE_PARTY)
             target_include_directories(mdkr64_app PRIVATE
                 ${MDKR_LIBDATACHANNEL_JSON_INCLUDE}

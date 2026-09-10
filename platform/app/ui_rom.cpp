@@ -41,6 +41,7 @@
 #include "app_ui_policy.h"
 #include "file_dialog.h"
 #include "ui_common.h"
+#include "ui_hero.h"
 #include "ui_phone_party.h"
 #include "ui_settings.h"
 #include "video_config.h"
@@ -657,6 +658,15 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
      * heading names the state the player is actually in: choosing a game before
      * they have one, and ready to play once they do. */
     const bool headingReady = !s.romPath.empty() && s.romInfo.valid;
+
+    /* The brand art leads the home. It is the one place in the launcher that
+     * says "game" before it says "settings", and it costs the heading nothing:
+     * ui::HeroBanner returns false on any build where the art did not decode,
+     * and the SectionHeader below carries the screen on its own. */
+    ui::Gap(ui::kGapS);
+    const bool heroDrawn = ui::HeroBanner(150.0f);
+    if (heroDrawn) ui::Gap(ui::kGapM);
+
     ui::SectionHeader(
         headingReady ? "Ready to Play" : "Choose Your Game",
         headingReady
