@@ -26,6 +26,7 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $build = Join-Path $repoRoot $BuildDir
 $livearea = Join-Path $repoRoot "vita\livearea"
+$trophyPack = Join-Path $build "TROPHY.TRP"
 
 $env:Path = "$env:VITASDK\bin;" + $env:Path
 
@@ -34,6 +35,10 @@ try {
     if (-not (Test-Path "mdkr64")) {
         throw "mdkr64 (raw linked ELF) not found in $build -- run the CMake/ninja build first."
     }
+
+    & python (Join-Path $repoRoot "tools\build_vita_trophy_pack.py") `
+        --out $trophyPack --livearea-icon (Join-Path $livearea "icon0.png")
+    if ($LASTEXITCODE -ne 0) { throw "Vita trophy-pack generation failed" }
 
     Copy-Item mdkr64 mdkr64.elf.unstripped -Force
     Copy-Item mdkr64 mdkr64.elf -Force
@@ -63,6 +68,7 @@ try {
             -a "$livearea\bg.png=sce_sys/livearea/contents/bg.png" `
             -a "$livearea\startup.png=sce_sys/livearea/contents/startup.png" `
             -a "$livearea\template.xml=sce_sys/livearea/contents/template.xml" `
+            -a "$trophyPack=sce_sys/trophy/GBLN00001_01/TROPHY.TRP" `
             mdkr64.vpk
     }
     if ($LASTEXITCODE -ne 0) { throw "vita-pack-vpk failed" }

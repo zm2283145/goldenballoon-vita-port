@@ -483,6 +483,7 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/mdkr_adventure.c   # P3.5b: Adventure route test hooks (no-op unless set)
     ${CMAKE_SOURCE_DIR}/platform/mdkr_challenge.c   # Challenge/battle terminal-event test driver
     ${CMAKE_SOURCE_DIR}/platform/mdkr_taj.c         # Taj challenge lifecycle/outcome test driver
+    ${CMAKE_SOURCE_DIR}/platform/vita_trophy.c      # Vita homebrew trophy bridge (no-op elsewhere)
 )
 # GL-only support TUs — the browser build is WebGPU-only, so they'd only pull in
 # glad/GL symbols that don't exist under wasm. Keep them native-only.
@@ -884,6 +885,7 @@ if(NOT EMSCRIPTEN)
             vitaGL vitashark SceShaccCgExt taihen_stub mathneon
             SceGxm_stub SceDisplay_stub SceCtrl_stub SceTouch_stub SceHid_stub
             SceAudio_stub SceAudioIn_stub SceCommonDialog_stub
+            SceNpTrophy_stub
             SceSysmodule_stub SceMotion_stub SceAppUtil_stub SceAppMgr_stub
             SceShaccCg_stub ScePower_stub SceKernelDmacMgr_stub SceIme_stub
             # libvitaGL.a's runtime GLSL preprocessor (expression.cpp) is C++
