@@ -5269,12 +5269,17 @@ static void save_editor_refresh_slot_cache(s32 slot) {
                         MAX_INITIALS_LENGTH);
 }
 
-static void save_editor_create_empty_slot(void) {
+static void save_editor_create_empty_slot(s32 adventureTwo) {
     static char defaultName[] = "NEW";
     Settings *settings = gSavefileData[sSaveEditorSlot];
 
     clear_game_progress(settings);
     settings->newGame = FALSE;
+    if (adventureTwo) {
+        settings->cutsceneFlags |= CUTSCENE_ADVENTURE_TWO;
+    } else {
+        settings->cutsceneFlags &= (u16)~CUTSCENE_ADVENTURE_TWO;
+    }
     settings->filename = filename_compress(defaultName, MAX_INITIALS_LENGTH);
     if (write_save_data(sSaveEditorSlot, settings) != 0) {
         sSaveEditorStatus = "EMPTY SAVE CREATION FAILED";
@@ -5284,7 +5289,9 @@ static void save_editor_create_empty_slot(void) {
     save_editor_refresh_slot_cache(sSaveEditorSlot);
     mark_read_all_save_files();
     save_editor_load_slot(sSaveEditorSlot);
-    sSaveEditorStatus = "EMPTY SAVE CREATED - RENAME IF WANTED";
+    sSaveEditorStatus = adventureTwo
+        ? "EMPTY ADVENTURE 2 SAVE CREATED - RENAME IF WANTED"
+        : "EMPTY SAVE CREATED - RENAME IF WANTED";
 }
 
 static void save_editor_erase_slot(void) {
@@ -5380,7 +5387,7 @@ static void save_editor_load_slot(s32 slot) {
 static s32 save_editor_track_progress(s32 flags);
 static void save_editor_set_track_progress(s32 world, s32 track, s32 progress);
 static void save_editor_apply(void);
-static void save_editor_create_empty_slot(void);
+static void save_editor_create_empty_slot(s32 adventureTwo);
 static void save_editor_erase_slot(void);
 static void save_editor_complete_first_boss(s32 world);
 static void save_editor_complete_second_boss(s32 world);
@@ -5534,15 +5541,83 @@ int mdkr_vita_save_editor_slot_is_empty(int slot) {
 }
 
 void mdkr_vita_save_editor_create_slot(void) {
+    mdkr_vita_save_editor_create_slot_mode(FALSE);
+}
+
+void mdkr_vita_save_editor_create_slot_mode(int adventureTwo) {
     if (!gSavefileData[sSaveEditorSlot]->newGame) {
         sSaveEditorStatus = "SLOT ALREADY CONTAINS A SAVE";
         return;
     }
-    save_editor_create_empty_slot();
+    save_editor_create_empty_slot(adventureTwo != 0);
 }
 
 void mdkr_vita_save_editor_erase_slot(void) {
     save_editor_erase_slot();
+}
+
+const char *mdkr_vita_save_editor_global_unlock_name(int unlock) {
+    static const char *const names[] = {
+        "Adventure 2", "T.T.", "Drumstick", "Taj", "Wizpig", "Terry"
+    };
+    return unlock >= 0 && unlock < 6 ? names[unlock] : "Unknown";
+}
+
+int mdkr_vita_save_editor_global_unlock_enabled(int unlock) {
+    switch (unlock) {
+        case 0: return sSaveEditorAdventure2Unlocked != FALSE;
+        case 1: return sSaveEditorTtUnlocked != FALSE;
+        case 2: return sSaveEditorDrumstickUnlocked != FALSE;
+        case 3: return mod_racer_is_enabled(MOD_RACER_TAJ);
+        case 4: return mod_racer_is_enabled(MOD_RACER_WIZPIG);
+        case 5: return mod_racer_is_enabled(MOD_RACER_TERRY);
+        default: return FALSE;
+    }
+}
+
+void mdkr_vita_save_editor_set_global_unlock_enabled(int unlock, int enabled) {
+    s32 track;
+    ModRacerIdentity identity = MOD_RACER_RETAIL;
+    enabled = enabled != 0;
+    switch (unlock) {
+        case 0:
+            sSaveEditorAdventure2Unlocked = enabled;
+            sSaveEditorUnlockDirty = TRUE;
+            break;
+        case 1:
+            sSaveEditorTtUnlocked = enabled;
+            for (track = 0; track < SAVE_EDITOR_TIME_TRIAL_COUNT; track++) {
+                sSaveEditorTimeTrialBeaten[track] = enabled;
+                if (!enabled) sSaveEditorDeveloperTimeBeaten[track] = FALSE;
+            }
+            sSaveEditorTimeTrialDirty = TRUE;
+            sSaveEditorUnlockDirty = TRUE;
+            break;
+        case 2:
+            sSaveEditorDrumstickUnlocked = enabled;
+            sSaveEditorUnlockDirty = TRUE;
+            break;
+        case 3:
+            identity = MOD_RACER_TAJ;
+            break;
+        case 4:
+            identity = MOD_RACER_WIZPIG;
+            break;
+        case 5:
+            identity = MOD_RACER_TERRY;
+            break;
+        default:
+            return;
+    }
+    if (identity != MOD_RACER_RETAIL) {
+        if (!mod_racer_set_unlocked(identity, enabled)) {
+            sSaveEditorStatus = "CHARACTER UNLOCK UPDATE FAILED - RETRY";
+            return;
+        }
+        mod_racer_set_enabled(identity, enabled);
+    }
+    sSaveEditorApplyArmed = FALSE;
+    sSaveEditorStatus = enabled ? "GLOBAL UNLOCK ENABLED" : "GLOBAL UNLOCK DISABLED";
 }
 
 void mdkr_vita_save_editor_complete_first_boss(int world) {
@@ -6570,6 +6645,14 @@ s32 menu_save_editor_loop(s32 updateRate) {
 
     gOptionBlinkTimer = (gOptionBlinkTimer + updateRate) & 0x3F;
     save_editor_render();
+#ifdef MDKR_VITA_IMGUI_OVERLAY
+    /* The classic editor remains the scene behind the overlay, but it must not
+     * consume the same buttons that Dear ImGui is using. */
+    if (mdkr_vita_imgui_overlay_is_open()) {
+        gIgnorePlayerInputTime = 0;
+        return MENU_RESULT_CONTINUE;
+    }
+#endif
     if (gIgnorePlayerInputTime == 0) {
         for (controller = 0; controller < MAXCONTROLLERS; controller++) {
             buttonsPressed |= input_pressed(controller);
@@ -6899,7 +6982,7 @@ s32 menu_save_editor_loop(s32 updateRate) {
                 if (settings->newGame) {
                     if (sSaveEditorSlotActionArmed == SAVE_EDITOR_TRACK) {
                         sSaveEditorSlotActionArmed = FALSE;
-                        save_editor_create_empty_slot();
+                        save_editor_create_empty_slot(FALSE);
                     } else {
                         sSaveEditorSlotActionArmed = SAVE_EDITOR_TRACK;
                         sSaveEditorStatus = "PRESS LEFT/RIGHT AGAIN TO CREATE";

@@ -251,6 +251,10 @@ static void test_magic_code_and_lifecycle(void) {
     CHECK(taj_mod_is_enabled());
     taj_mod_on_adventure_file_deleted();
     CHECK(taj_mod_is_unlocked());
+    CHECK(mod_racer_set_unlocked(MOD_RACER_TAJ, 0));
+    CHECK(!taj_mod_is_unlocked() && !taj_mod_is_enabled());
+    CHECK(mod_racer_set_unlocked(MOD_RACER_TAJ, 1));
+    CHECK(taj_mod_is_unlocked() && taj_mod_is_enabled());
     CHECK(taj_mod_erase_all_bonuses());
     CHECK(!taj_mod_is_unlocked() && !taj_mod_is_enabled());
 }

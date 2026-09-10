@@ -479,6 +479,26 @@ int mod_racer_is_enabled(ModRacerIdentity identity) {
             mod_racer_test_identity_active(identity));
 }
 
+int mod_racer_set_unlocked(ModRacerIdentity identity, int unlocked) {
+    TajModPersistentState candidate;
+    unsigned int bit;
+    if (!mod_racer_valid_identity(identity)) return 0;
+    if (unlocked) {
+        (void)mod_racer_unlock(identity);
+        return mod_racer_is_unlocked(identity);
+    }
+    candidate = s_roster.persisted;
+    mod_racer_set_persisted_unlock(&candidate, identity, 0, 1);
+    if (!mod_racer_store_candidate(&candidate, TAJ_MOD_PERSISTENCE_ERASE)) {
+        return 0;
+    }
+    s_roster.persisted = candidate;
+    bit = mod_racer_identity_bit(identity);
+    s_roster.unlock_announcement_mask &= ~bit;
+    mod_racer_set_enabled(identity, 0);
+    return 1;
+}
+
 void mod_racer_set_enabled(ModRacerIdentity identity, int enabled) {
     int player;
     unsigned int bit = mod_racer_identity_bit(identity);

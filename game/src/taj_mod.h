@@ -78,6 +78,7 @@ int taj_mod_retry_persistence(void);
 int taj_mod_persistence_pending(void);
 int mod_racer_is_unlocked(ModRacerIdentity identity);
 int mod_racer_is_enabled(ModRacerIdentity identity);
+int mod_racer_set_unlocked(ModRacerIdentity identity, int unlocked);
 void mod_racer_set_enabled(ModRacerIdentity identity, int enabled);
 int mod_racer_consume_unlock_announcement(ModRacerIdentity identity);
 ModRacerIdentity mod_racer_submit_magic_code(const char *input);

@@ -27,6 +27,7 @@ int s_powerup_trophy = 0;
 bool s_erase_armed = false;
 bool s_hundred_percent_armed = false;
 bool s_apply_armed = false;
+bool s_create_adventure_two = false;
 int s_name_cursor = 0;
 char s_name[4] = "NEW";
 GLuint s_program = 0;
@@ -187,10 +188,10 @@ extern "C" int mdkr_vita_imgui_overlay_render(void) {
                  ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize);
     ImGui::TextUnformatted("SAVE EDITOR");
     ImGui::Separator();
-    const char *pages[] = { "Saves", "Worlds", "Items", "Time Trials", "Trophies", "Tools" };
-    for (int page = 0; page < 6; ++page) {
+    const char *pages[] = { "Saves", "Worlds", "Items", "Unlocks", "Time Trials", "Trophies", "Tools" };
+    for (int page = 0; page < 7; ++page) {
         if (page != 0) ImGui::SameLine();
-        if (ImGui::Selectable(pages[page], s_page == page, 0, ImVec2(142.0f, 34.0f))) {
+        if (ImGui::Selectable(pages[page], s_page == page, 0, ImVec2(122.0f, 34.0f))) {
             s_page = page;
         }
     }
@@ -283,6 +284,22 @@ extern "C" int mdkr_vita_imgui_overlay_render(void) {
             if ((arena & 1) == 0) ImGui::SameLine(460.0f);
         }
     } else if (s_page == 3) {
+        ImGui::TextUnformatted("Global unlocks");
+        ImGui::TextWrapped("These switches update the game's real persistent unlock state. T.T. also updates all twenty T.T. records.");
+        ImGui::Separator();
+        for (int unlock = 0; unlock < 6; ++unlock) {
+            bool enabled = mdkr_vita_save_editor_global_unlock_enabled(unlock) != 0;
+            ImGui::PushID(400 + unlock);
+            if (ImGui::Checkbox(mdkr_vita_save_editor_global_unlock_name(unlock), &enabled)) {
+                mdkr_vita_save_editor_set_global_unlock_enabled(unlock, enabled ? 1 : 0);
+                s_apply_armed = false;
+            }
+            ImGui::PopID();
+            if ((unlock & 1) == 0) ImGui::SameLine(460.0f);
+        }
+        ImGui::Separator();
+        ImGui::TextWrapped("Use Apply Changes after editing Adventure 2, T.T., or Drumstick. Bonus-character changes are saved immediately to their roster file.");
+    } else if (s_page == 4) {
         ImGui::TextUnformatted("Global Time Trials");
         ImGui::Text("%s", mdkr_vita_save_editor_time_trial_name(s_time_trial));
         if (ImGui::Button("Previous", ImVec2(150.0f, 36.0f))) {
@@ -301,7 +318,7 @@ extern "C" int mdkr_vita_imgui_overlay_render(void) {
             mdkr_vita_save_editor_set_developer_beaten(s_time_trial, developer ? 1 : 0);
         }
         ImGui::TextWrapped("Developer records use the canonical credits/RetroAchievements order, not the editor's world order.");
-    } else if (s_page == 4) {
+    } else if (s_page == 5) {
         ImGui::TextUnformatted("Trophy conditions");
         const char *groups[] = { "Main", "Adventure 2", "Characters", "Power-ups" };
         for (int group = 0; group < 4; ++group) {
@@ -387,9 +404,11 @@ extern "C" int mdkr_vita_imgui_overlay_render(void) {
         ImGui::TextWrapped("Save-slot management lives here. Use L+R in the classic editor to return to this overlay.");
         if (mdkr_vita_save_editor_slot_is_empty(mdkr_vita_save_editor_selected_slot())) {
             if (ImGui::Button("Create Empty Save", ImVec2(310.0f, 42.0f))) {
-                mdkr_vita_save_editor_create_slot();
+                mdkr_vita_save_editor_create_slot_mode(s_create_adventure_two ? 1 : 0);
                 sync_slot_name();
             }
+            ImGui::SameLine();
+            ImGui::Checkbox("Adventure 2 save", &s_create_adventure_two);
         } else if (ImGui::Button(s_erase_armed ? "Confirm Erase Save" : "Erase Save", ImVec2(310.0f, 42.0f))) {
             if (s_erase_armed) {
                 mdkr_vita_save_editor_erase_slot();
