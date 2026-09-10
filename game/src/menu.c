@@ -8507,8 +8507,11 @@ s32 menu_magic_codes_loop(s32 updateRate) {
                 if (foundCheat == FALSE) {
                     gNewCheatID = -1;
 #ifdef NATIVE_PORT
-                } else if (gNewCheatID == -2) {
-                    /* Taj owns state, not a retail magic-code bit. */
+                } else if (gNewCheatID == -2 || gNewCheatID == -3) {
+                    /* Native-only codes own state, not a retail magic-code
+                     * bit. In particular, never let GOLDENEDIT fall through
+                     * to `1 << -3` or transform its result sentinel before
+                     * cheatmenu_render() can show the unlock message. */
 #endif
                 } else {
 #if VERSION >= VERSION_79
