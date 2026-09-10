@@ -4804,6 +4804,15 @@ s32 menu_options_loop(s32 updateRate) {
     if (gMenuDelay > -20 && gMenuDelay < 35) {
         optionscreen_render(updateRate);
     }
+#ifdef MDKR_VITA_IMGUI_OVERLAY
+    /* Keep the options screen as the overlay background, but do not let its
+     * delayed activation or controller handling continue underneath ImGui. */
+    if (mdkr_vita_imgui_overlay_is_open()) {
+        gMenuDelay = 0;
+        gIgnorePlayerInputTime = 0;
+        return MENU_RESULT_CONTINUE;
+    }
+#endif
     buttonsPressed = 0;
     analogueX = 0;
     analogueY = 0;
@@ -5383,17 +5392,66 @@ void mdkr_vita_save_editor_open_classic(void) {
     menu_init(MENU_SAVE_EDITOR);
 }
 
+void mdkr_vita_save_editor_prepare(void) {
+    s32 slot;
+
+    if (sSaveEditorSlot < 0 || sSaveEditorSlot >= NUMBER_OF_SAVE_FILES) {
+        sSaveEditorSlot = 0;
+    }
+    save_editor_load_time_trials();
+    save_editor_load_unlocks();
+    for (slot = 0; slot < NUMBER_OF_SAVE_FILES; slot++) {
+        save_editor_load_slot(slot);
+        save_editor_refresh_slot_cache(slot);
+    }
+    save_editor_load_slot(sSaveEditorSlot);
+    sSaveEditorApplyArmed = FALSE;
+    sSaveEditorSlotActionArmed = FALSE;
+    sSaveEditorStatus = "SAVE DATA LOADED";
+}
+
 int mdkr_vita_save_editor_selected_slot(void) {
     return sSaveEditorSlot;
 }
 
 void mdkr_vita_save_editor_select_slot(int slot) {
-    if (slot < 0 || slot >= NUMBER_OF_SAVE_FILES || slot == sSaveEditorSlot) return;
+    if (slot < 0 || slot >= NUMBER_OF_SAVE_FILES) return;
     sSaveEditorSlot = slot;
     save_editor_load_slot(sSaveEditorSlot);
     sSaveEditorApplyArmed = FALSE;
     sSaveEditorSlotActionArmed = FALSE;
     sSaveEditorStatus = "SLOT SELECTED";
+}
+
+const char *mdkr_vita_save_editor_slot_name(int slot) {
+    if (slot < 0 || slot >= NUMBER_OF_SAVE_FILES || gSavefileData[slot]->newGame) {
+        return "EMPTY";
+    }
+    return gSavefileInfo[slot].name;
+}
+
+int mdkr_vita_save_editor_slot_balloons(int slot) {
+    if (slot < 0 || slot >= NUMBER_OF_SAVE_FILES || gSavefileData[slot]->newGame) {
+        return 0;
+    }
+    return gSavefileInfo[slot].balloonCount;
+}
+
+void mdkr_vita_save_editor_rename_slot(const char *name) {
+    size_t length;
+
+    if (name == NULL || gSavefileData[sSaveEditorSlot]->newGame) {
+        sSaveEditorStatus = "CREATE THE SAVE BEFORE RENAMING IT";
+        return;
+    }
+    length = strlen(name);
+    if (length == 0) {
+        sSaveEditorStatus = "NAME NOT CHANGED";
+        return;
+    }
+    strncpy(sSaveEditorName, name, MAX_INITIALS_LENGTH);
+    sSaveEditorName[MAX_INITIALS_LENGTH] = '\0';
+    save_editor_commit_name_entry();
 }
 
 int mdkr_vita_save_editor_track_progress(int world, int track) {

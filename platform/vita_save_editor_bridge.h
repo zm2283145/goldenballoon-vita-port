@@ -8,8 +8,12 @@ extern "C" {
 /* Enters the original controller-first editor. This stays the authoritative
  * save mutation path while the Vita ImGui presentation is built out. */
 void mdkr_vita_save_editor_open_classic(void);
+void mdkr_vita_save_editor_prepare(void);
 int mdkr_vita_save_editor_selected_slot(void);
 void mdkr_vita_save_editor_select_slot(int slot);
+const char *mdkr_vita_save_editor_slot_name(int slot);
+int mdkr_vita_save_editor_slot_balloons(int slot);
+void mdkr_vita_save_editor_rename_slot(const char *name);
 int mdkr_vita_save_editor_track_progress(int world, int track);
 const char *mdkr_vita_save_editor_track_name(int world, int track);
 void mdkr_vita_save_editor_set_track_progress(int world, int track, int progress);

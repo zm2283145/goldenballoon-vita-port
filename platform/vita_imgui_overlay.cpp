@@ -21,6 +21,9 @@ int s_world = 0;
 int s_time_trial = 0;
 bool s_erase_armed = false;
 bool s_hundred_percent_armed = false;
+bool s_apply_armed = false;
+int s_name_cursor = 0;
+char s_name[4] = "NEW";
 GLuint s_program = 0;
 GLint s_texture_uniform = -1;
 
@@ -111,6 +114,7 @@ bool initialize() {
     mdkr_vita_boot_log("imgui: initialization starting");
     ImGui::CreateContext();
     ImGui::GetIO().IniFilename = nullptr;
+    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
     if (!ImGui_ImplVitaGL_Init_Extended()) {
         mdkr_vita_boot_log("imgui: VitaGL backend initialization failed");
         mdkr_vita_boot_log_flush();
@@ -135,11 +139,25 @@ bool initialize() {
     mdkr_vita_boot_log_flush();
     return true;
 }
+
+void sync_slot_name() {
+    const char *name = mdkr_vita_save_editor_slot_name(
+        mdkr_vita_save_editor_selected_slot());
+    for (int i = 0; i < 3; ++i) {
+        const char c = name != nullptr ? name[i] : '\0';
+        s_name[i] = (c >= 'A' && c <= 'Z') ? c : 'A';
+    }
+    s_name[3] = '\0';
+}
 }
 
 extern "C" void mdkr_vita_imgui_overlay_open(void) {
+    if (s_open) return;
     mdkr_vita_boot_log("imgui: overlay requested");
     mdkr_vita_boot_log_flush();
+    mdkr_vita_save_editor_prepare();
+    sync_slot_name();
+    s_apply_armed = false;
     s_open = true;
 }
 extern "C" void mdkr_vita_imgui_overlay_close(void) { s_open = false; }
@@ -178,10 +196,14 @@ extern "C" int mdkr_vita_imgui_overlay_render(void) {
         ImGui::Text("Selected save slot: %d", slot + 1);
         for (int candidate = 0; candidate < 3; ++candidate) {
             if (candidate != 0) ImGui::SameLine();
-            char label[16];
-            snprintf(label, sizeof(label), "Slot %d", candidate + 1);
-            if (ImGui::Selectable(label, slot == candidate, 0, ImVec2(150.0f, 38.0f))) {
+            char label[48];
+            snprintf(label, sizeof(label), "Slot %d: %s (%d balloons)", candidate + 1,
+                     mdkr_vita_save_editor_slot_name(candidate),
+                     mdkr_vita_save_editor_slot_balloons(candidate));
+            if (ImGui::Selectable(label, slot == candidate, 0, ImVec2(285.0f, 38.0f))) {
                 mdkr_vita_save_editor_select_slot(candidate);
+                sync_slot_name();
+                s_apply_armed = false;
             }
         }
         ImGui::TextWrapped("Slot selection already shares the classic editor's loaded cache. Progress controls are being connected to that same validated state.");
@@ -254,13 +276,41 @@ extern "C" int mdkr_vita_imgui_overlay_render(void) {
         if (mdkr_vita_save_editor_slot_is_empty(mdkr_vita_save_editor_selected_slot())) {
             if (ImGui::Button("Create Empty Save", ImVec2(310.0f, 42.0f))) {
                 mdkr_vita_save_editor_create_slot();
+                sync_slot_name();
             }
         } else if (ImGui::Button(s_erase_armed ? "Confirm Erase Save" : "Erase Save", ImVec2(310.0f, 42.0f))) {
             if (s_erase_armed) {
                 mdkr_vita_save_editor_erase_slot();
                 s_erase_armed = false;
+                sync_slot_name();
             } else {
                 s_erase_armed = true;
+            }
+        }
+        if (!mdkr_vita_save_editor_slot_is_empty(mdkr_vita_save_editor_selected_slot())) {
+            ImGui::Text("Save name: %s", s_name);
+            for (int i = 0; i < 3; ++i) {
+                if (i != 0) ImGui::SameLine();
+                char label[16];
+                snprintf(label, sizeof(label), "%c##name%d", s_name[i], i);
+                if (ImGui::Selectable(label, s_name_cursor == i, 0, ImVec2(64.0f, 34.0f))) {
+                    s_name_cursor = i;
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Previous Letter", ImVec2(150.0f, 34.0f))) {
+                s_name[s_name_cursor] = s_name[s_name_cursor] == 'A'
+                                              ? 'Z' : (char)(s_name[s_name_cursor] - 1);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Next Letter", ImVec2(130.0f, 34.0f))) {
+                s_name[s_name_cursor] = s_name[s_name_cursor] == 'Z'
+                                              ? 'A' : (char)(s_name[s_name_cursor] + 1);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Save Name", ImVec2(120.0f, 34.0f))) {
+                mdkr_vita_save_editor_rename_slot(s_name);
+                sync_slot_name();
             }
         }
         if (ImGui::Button(s_hundred_percent_armed ? "Confirm 100% Progress" : "Complete 100% Progress", ImVec2(310.0f, 42.0f))) {
@@ -278,8 +328,14 @@ extern "C" int mdkr_vita_imgui_overlay_render(void) {
     ImGui::SetCursorPosY(430.0f);
     ImGui::Text("%s", mdkr_vita_save_editor_status());
     ImGui::SetCursorPosY(465.0f);
-    if (ImGui::Button("Apply Changes", ImVec2(250.0f, 42.0f))) {
-        mdkr_vita_save_editor_apply_changes();
+    if (ImGui::Button(s_apply_armed ? "Confirm Apply Changes" : "Apply Changes",
+                      ImVec2(250.0f, 42.0f))) {
+        if (s_apply_armed) {
+            mdkr_vita_save_editor_apply_changes();
+            s_apply_armed = false;
+        } else {
+            s_apply_armed = true;
+        }
     }
     ImGui::SameLine();
     if (ImGui::Button("Close", ImVec2(180.0f, 42.0f))) s_open = false;

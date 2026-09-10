@@ -31,7 +31,7 @@ static uint8_t *gColorBuffer = nullptr;
 static uint16_t *gIndexBuffer = nullptr;
 static uint32_t gCounter = 0;
 static GLuint gShaderVao = 0;
-static GLuint gShaderBuffers[3] = { 0, 0, 0 };
+static GLuint gShaderBuffers[2] = { 0, 0 };
 
 static bool touch_usage = false;
 static bool mousestick_usage = true;
@@ -80,7 +80,7 @@ void ImGui_ImplVitaGL_RenderDrawData(ImDrawData* draw_data)
 		glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &last_array_buffer);
 		if (!gShaderVao) {
 			glGenVertexArrays(1, &gShaderVao);
-			glGenBuffers(3, gShaderBuffers);
+			glGenBuffers(2, gShaderBuffers);
 		}
 		glBindVertexArray(gShaderVao);
 		glEnableVertexAttribArray(0);
@@ -129,6 +129,42 @@ void ImGui_ImplVitaGL_RenderDrawData(ImDrawData* draw_data)
 		const ImDrawList* cmd_list = draw_data->CmdLists[n];
 		const ImDrawVert* vtx_buffer = cmd_list->VtxBuffer.Data;
 		const ImDrawIdx* idx_buffer = cmd_list->IdxBuffer.Data;
+
+		if (shaders_usage) {
+			glBindBuffer(GL_ARRAY_BUFFER, gShaderBuffers[0]);
+			glBufferData(GL_ARRAY_BUFFER,
+				cmd_list->VtxBuffer.Size * sizeof(ImDrawVert), vtx_buffer,
+				GL_STREAM_DRAW);
+			glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(ImDrawVert),
+				(const void *)IM_OFFSETOF(ImDrawVert, pos));
+			glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(ImDrawVert),
+				(const void *)IM_OFFSETOF(ImDrawVert, uv));
+			glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(ImDrawVert),
+				(const void *)IM_OFFSETOF(ImDrawVert, col));
+			glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gShaderBuffers[1]);
+			glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+				cmd_list->IdxBuffer.Size * sizeof(ImDrawIdx), idx_buffer,
+				GL_STREAM_DRAW);
+
+			size_t index_offset = 0;
+			for (int cmd_i = 0; cmd_i < cmd_list->CmdBuffer.Size; cmd_i++) {
+				const ImDrawCmd* pcmd = &cmd_list->CmdBuffer[cmd_i];
+				if (pcmd->UserCallback) {
+					pcmd->UserCallback(cmd_list, pcmd);
+				} else {
+					glBindTexture(GL_TEXTURE_2D, (GLuint)(intptr_t)pcmd->TextureId);
+					glScissor((int)pcmd->ClipRect.x,
+						(int)(fb_height - pcmd->ClipRect.w),
+						(int)(pcmd->ClipRect.z - pcmd->ClipRect.x),
+						(int)(pcmd->ClipRect.w - pcmd->ClipRect.y));
+					glDrawElements(GL_TRIANGLES, pcmd->ElemCount,
+						sizeof(ImDrawIdx) == 2 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT,
+						(const void *)(index_offset * sizeof(ImDrawIdx)));
+				}
+				index_offset += pcmd->ElemCount;
+			}
+			continue;
+		}
 		
 		for (int cmd_i = 0; cmd_i < cmd_list->CmdBuffer.Size; cmd_i++)
 		{
@@ -186,23 +222,10 @@ void ImGui_ImplVitaGL_RenderDrawData(ImDrawData* draw_data)
 					}
 				}
 
-				if (shaders_usage){
-					glBindBuffer(GL_ARRAY_BUFFER, gShaderBuffers[0]);
-					glBufferData(GL_ARRAY_BUFFER, pcmd->ElemCount * 3 * sizeof(float), vp, GL_STREAM_DRAW);
-					glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, (const void *)0);
-					glBindBuffer(GL_ARRAY_BUFFER, gShaderBuffers[1]);
-					glBufferData(GL_ARRAY_BUFFER, pcmd->ElemCount * 2 * sizeof(float), tp, GL_STREAM_DRAW);
-					glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, (const void *)0);
-					glBindBuffer(GL_ARRAY_BUFFER, gShaderBuffers[2]);
-					glBufferData(GL_ARRAY_BUFFER, pcmd->ElemCount * 4 * sizeof(uint8_t), cp, GL_STREAM_DRAW);
-					glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, 0, (const void *)0);
-					glDrawArrays(GL_TRIANGLES, 0, pcmd->ElemCount);
-				}else{
-					vglVertexPointerMapped(3, vp);
-					vglTexCoordPointerMapped(tp);
-					vglColorPointerMapped(GL_UNSIGNED_BYTE, cp);
-					vglDrawObjects(GL_TRIANGLES, pcmd->ElemCount);
-				}
+				vglVertexPointerMapped(3, vp);
+				vglTexCoordPointerMapped(tp);
+				vglColorPointerMapped(GL_UNSIGNED_BYTE, cp);
+				vglDrawObjects(GL_TRIANGLES, pcmd->ElemCount);
 			}
 			idx_buffer += pcmd->ElemCount;
 			gCounter += pcmd->ElemCount;
@@ -407,8 +430,8 @@ void ImGui_ImplVitaGL_Shutdown()
 	free(gTexCoordBuffer);
 	free(gColorBuffer);
 	if (gShaderBuffers[0]) {
-		glDeleteBuffers(3, gShaderBuffers);
-		gShaderBuffers[0] = gShaderBuffers[1] = gShaderBuffers[2] = 0;
+		glDeleteBuffers(2, gShaderBuffers);
+		gShaderBuffers[0] = gShaderBuffers[1] = 0;
 	}
 	if (gShaderVao) {
 		glDeleteVertexArrays(1, &gShaderVao);
@@ -492,8 +515,12 @@ void ImGui_ImplVitaGL_NewFrame()
 	// Keypad navigation
 	if (gamepad_usage){
 		SceCtrlData pad;
-		int lstick_x, lstick_y = 0;
-		ImGui_ImplVitaGL_PollLeftStick(&pad, &lstick_x, &lstick_y);
+		int lstick_x = 0, lstick_y = 0;
+		if (mousestick_usage) {
+			sceCtrlPeekBufferPositive(0, &pad, 1);
+		} else {
+			ImGui_ImplVitaGL_PollLeftStick(&pad, &lstick_x, &lstick_y);
+		}
 		io.NavInputs[ImGuiNavInput_Activate]  = (pad.buttons & SCE_CTRL_CONFIRM)  ? 1.0f : 0.0f;
 		io.NavInputs[ImGuiNavInput_Cancel]    = (pad.buttons & SCE_CTRL_CANCEL)   ? 1.0f : 0.0f;
 		io.NavInputs[ImGuiNavInput_Input]     = (pad.buttons & SCE_CTRL_TRIANGLE) ? 1.0f : 0.0f;
@@ -517,8 +544,14 @@ void ImGui_ImplVitaGL_NewFrame()
 	if (mousestick_usage && !(io.NavInputs[ImGuiNavInput_Menu] == 1.0f)){
 		SceCtrlData pad;
 		ImGui_ImplVitaGL_PollLeftStick(&pad, &mx, &my);
-		if ((pad.buttons & SCE_CTRL_LTRIGGER) != (g_OldPad.buttons & SCE_CTRL_LTRIGGER))
-			g_MousePressed[0] = pad.buttons & SCE_CTRL_LTRIGGER;
+		/* Cross activates the D-pad-focused item while navigation is visible.
+		 * Once the left stick has moved the pointer and hidden that focus, Cross
+		 * acts as the mouse button instead. This prevents one press from
+		 * activating both a focused item and an unrelated hovered item. */
+		const unsigned int primary_buttons = SCE_CTRL_LTRIGGER |
+			(io.NavVisible ? 0u : (unsigned int)SCE_CTRL_CONFIRM);
+		if ((pad.buttons & primary_buttons) != (g_OldPad.buttons & primary_buttons))
+			g_MousePressed[0] = (pad.buttons & primary_buttons) != 0;
 		if ((pad.buttons & SCE_CTRL_RTRIGGER) != (g_OldPad.buttons & SCE_CTRL_RTRIGGER))
 			g_MousePressed[1] = pad.buttons & SCE_CTRL_RTRIGGER;
 		g_OldPad = pad;
@@ -561,6 +594,11 @@ void ImGui_ImplVitaGL_MouseStickUsage(bool val){
 
 void ImGui_ImplVitaGL_GamepadUsage(bool val){
 	gamepad_usage = val;
+	if (val) {
+		ImGui::GetIO().BackendFlags |= ImGuiBackendFlags_HasGamepad;
+	} else {
+		ImGui::GetIO().BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
+	}
 }
 
 void ImGui_ImplVitaGL_UseCustomShader(bool val){
