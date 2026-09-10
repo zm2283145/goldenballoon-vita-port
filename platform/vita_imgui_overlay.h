@@ -8,6 +8,7 @@
 extern "C" {
 #endif
 void mdkr_vita_imgui_overlay_open(void);
+void mdkr_vita_imgui_overlay_open_controls(void);
 void mdkr_vita_imgui_overlay_close(void);
 int mdkr_vita_imgui_overlay_is_open(void);
 int mdkr_vita_imgui_overlay_render(void);

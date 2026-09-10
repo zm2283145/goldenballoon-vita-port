@@ -1,9 +1,13 @@
 #include "vita_imgui_overlay.h"
 #include "vita_save_editor_bridge.h"
 #include "vita_trophy.h"
+#include "video_config.h"
 
 #if defined(__vita__) && defined(MDKR_VITA_IMGUI_OVERLAY)
 #include <cstdio>
+#include <cstring>
+#include <psp2/ctrl.h>
+#include <psp2/kernel/processmgr.h>
 #include <vitaGL.h>
 #include "imgui.h"
 #include "imgui_impl_vitagl.h"
@@ -16,6 +20,7 @@ extern "C" void mdkr_vita_restore_primary_vao(void);
 bool s_initialized = false;
 bool s_open = false;
 bool s_initialization_failed = false;
+bool s_controls_mode = false;
 int s_page = 0;
 int s_world = 0;
 int s_time_trial = 0;
@@ -32,6 +37,81 @@ int s_name_cursor = 0;
 char s_name[4] = "NEW";
 GLuint s_program = 0;
 GLint s_texture_uniform = -1;
+int s_capture_action = -1;
+bool s_capture_wait_release = false;
+uint64_t s_capture_deadline = 0;
+char s_controls_status[128] = "Select an action to change its Vita button.";
+
+enum VitaIconKind {
+    VITA_ICON_CROSS,
+    VITA_ICON_CIRCLE,
+    VITA_ICON_SQUARE,
+    VITA_ICON_TRIANGLE,
+    VITA_ICON_STICK,
+    VITA_ICON_TEXT
+};
+
+struct VitaControlSource {
+    const char *label;
+    const char *short_label;
+    MdkrVideoKey key;
+    unsigned buttons;
+    int axis;
+    VitaIconKind icon;
+    ImU32 colour;
+};
+
+struct GameControlAction {
+    const char *label;
+    const char *value;
+};
+
+const VitaControlSource k_vita_sources[] = {
+    {"Cross", "X", MDKR_INPUT_CONTROLLER_A, SCE_CTRL_CROSS, 0, VITA_ICON_CROSS, IM_COL32(80, 160, 255, 255)},
+    {"Circle", "O", MDKR_INPUT_CONTROLLER_B, SCE_CTRL_CIRCLE, 0, VITA_ICON_CIRCLE, IM_COL32(255, 100, 120, 255)},
+    {"Square", "SQ", MDKR_INPUT_CONTROLLER_X, SCE_CTRL_SQUARE, 0, VITA_ICON_SQUARE, IM_COL32(255, 120, 210, 255)},
+    {"Triangle", "TR", MDKR_INPUT_CONTROLLER_Y, SCE_CTRL_TRIANGLE, 0, VITA_ICON_TRIANGLE, IM_COL32(100, 230, 170, 255)},
+    {"Start", "START", MDKR_INPUT_CONTROLLER_START, SCE_CTRL_START, 0, VITA_ICON_TEXT, IM_COL32(230, 230, 230, 255)},
+    {"L", "L", MDKR_INPUT_CONTROLLER_LEFT_SHOULDER, SCE_CTRL_LTRIGGER, 0, VITA_ICON_TEXT, IM_COL32(230, 230, 230, 255)},
+    {"R", "R", MDKR_INPUT_CONTROLLER_RIGHT_SHOULDER, SCE_CTRL_RTRIGGER, 0, VITA_ICON_TEXT, IM_COL32(230, 230, 230, 255)},
+    {"D-pad Up", "D-UP", MDKR_INPUT_CONTROLLER_DPAD_UP, SCE_CTRL_UP, 0, VITA_ICON_TEXT, IM_COL32(210, 210, 210, 255)},
+    {"D-pad Down", "D-DN", MDKR_INPUT_CONTROLLER_DPAD_DOWN, SCE_CTRL_DOWN, 0, VITA_ICON_TEXT, IM_COL32(210, 210, 210, 255)},
+    {"D-pad Left", "D-LT", MDKR_INPUT_CONTROLLER_DPAD_LEFT, SCE_CTRL_LEFT, 0, VITA_ICON_TEXT, IM_COL32(210, 210, 210, 255)},
+    {"D-pad Right", "D-RT", MDKR_INPUT_CONTROLLER_DPAD_RIGHT, SCE_CTRL_RIGHT, 0, VITA_ICON_TEXT, IM_COL32(210, 210, 210, 255)},
+    {"Right Stick Up", "RS", MDKR_INPUT_CONTROLLER_RIGHT_STICK_UP, 0, 1, VITA_ICON_STICK, IM_COL32(245, 205, 90, 255)},
+    {"Right Stick Down", "RS", MDKR_INPUT_CONTROLLER_RIGHT_STICK_DOWN, 0, 2, VITA_ICON_STICK, IM_COL32(245, 205, 90, 255)},
+    {"Right Stick Left", "RS", MDKR_INPUT_CONTROLLER_RIGHT_STICK_LEFT, 0, 3, VITA_ICON_STICK, IM_COL32(245, 205, 90, 255)},
+    {"Right Stick Right", "RS", MDKR_INPUT_CONTROLLER_RIGHT_STICK_RIGHT, 0, 4, VITA_ICON_STICK, IM_COL32(245, 205, 90, 255)},
+};
+
+const VitaControlSource k_left_stick_directions[] = {
+    {"Left Stick Up", "LS", MDKR_VIDEO_KEY_COUNT, 0, 1, VITA_ICON_STICK, IM_COL32(130, 220, 255, 255)},
+    {"Left Stick Down", "LS", MDKR_VIDEO_KEY_COUNT, 0, 2, VITA_ICON_STICK, IM_COL32(130, 220, 255, 255)},
+    {"Left Stick Left", "LS", MDKR_VIDEO_KEY_COUNT, 0, 3, VITA_ICON_STICK, IM_COL32(130, 220, 255, 255)},
+    {"Left Stick Right", "LS", MDKR_VIDEO_KEY_COUNT, 0, 4, VITA_ICON_STICK, IM_COL32(130, 220, 255, 255)},
+};
+
+const GameControlAction k_game_actions[] = {
+    {"Gas / Accept", "a"},
+    {"Brake / Back", "b"},
+    {"Horn / Use Item", "z"},
+    {"Pause / Start", "start"},
+    {"Camera Modifier", "l"},
+    {"Drift / Powerslide", "r"},
+    {"Up", "dpad_up"},
+    {"Down", "dpad_down"},
+    {"Left", "dpad_left"},
+    {"Right", "dpad_right"},
+    {"Camera Up", "c_up"},
+    {"Camera Down", "c_down"},
+    {"Camera Left", "c_left"},
+    {"Camera Right", "c_right"},
+};
+
+const int k_vita_source_count =
+    (int)(sizeof(k_vita_sources) / sizeof(k_vita_sources[0]));
+const int k_game_action_count =
+    (int)(sizeof(k_game_actions) / sizeof(k_game_actions[0]));
 
 const char *k_vertex_shader =
     "#version 100\n"
@@ -155,6 +235,224 @@ void sync_slot_name() {
     }
     s_name[3] = '\0';
 }
+
+bool runtime_result_applied(MdkrVideoRuntimeResult result) {
+    return mdkr_video_runtime_result_applied(result) != 0;
+}
+
+bool source_is_active(const VitaControlSource &source, const SceCtrlData &pad) {
+    if (source.buttons != 0) return (pad.buttons & source.buttons) != 0;
+    switch (source.axis) {
+        case 1: return pad.ry < 72;
+        case 2: return pad.ry > 182;
+        case 3: return pad.rx < 72;
+        case 4: return pad.rx > 182;
+        default: return false;
+    }
+}
+
+bool any_mappable_input(const SceCtrlData &pad) {
+    for (int i = 0; i < k_vita_source_count; ++i) {
+        if (source_is_active(k_vita_sources[i], pad)) return true;
+    }
+    return false;
+}
+
+void set_control_status(MdkrVideoRuntimeResult result, const char *success) {
+    if (runtime_result_applied(result)) {
+        snprintf(s_controls_status, sizeof(s_controls_status), "%s", success);
+    } else if (result == MDKR_VIDEO_RUNTIME_LOCKED) {
+        snprintf(s_controls_status, sizeof(s_controls_status),
+                 "That mapping is locked by a startup override.");
+    } else {
+        snprintf(s_controls_status, sizeof(s_controls_status),
+                 "The mapping could not be saved. Please try again.");
+    }
+}
+
+void assign_control_source(int action_index, int source_index) {
+    MdkrVideoRuntimeChange changes[sizeof(k_vita_sources) /
+                                   sizeof(k_vita_sources[0])];
+    int count = 0;
+    const MdkrVideoConfig *config = mdkr_video_config_current();
+    if (action_index < 0 || action_index >= k_game_action_count ||
+        source_index < 0 || source_index >= k_vita_source_count ||
+        config == nullptr) {
+        return;
+    }
+    for (int i = 0; i < k_vita_source_count; ++i) {
+        const char *current = config->values[k_vita_sources[i].key].text;
+        if (i == source_index) {
+            changes[count++] = {k_vita_sources[i].key,
+                                k_game_actions[action_index].value};
+        } else if (!strcmp(current, k_game_actions[action_index].value)) {
+            changes[count++] = {k_vita_sources[i].key, "none"};
+        }
+    }
+    const MdkrVideoRuntimeResult result =
+        mdkr_video_config_runtime_set_many(changes, count);
+    char success[128];
+    snprintf(success, sizeof(success), "%s mapped to %s.",
+             k_game_actions[action_index].label,
+             k_vita_sources[source_index].label);
+    set_control_status(result, success);
+}
+
+void reset_control_defaults() {
+    enum {
+        MAPPING_COUNT = MDKR_INPUT_CONTROLLER_RIGHT_STICK_RIGHT -
+                        MDKR_INPUT_CONTROLLER_A + 1
+    };
+    MdkrVideoConfig defaults;
+    MdkrVideoRuntimeChange changes[MAPPING_COUNT];
+    mdkr_video_config_defaults(&defaults);
+    for (int i = 0; i < MAPPING_COUNT; ++i) {
+        const MdkrVideoKey key =
+            (MdkrVideoKey)(MDKR_INPUT_CONTROLLER_A + i);
+        changes[i] = {key, defaults.values[key].text};
+    }
+    set_control_status(mdkr_video_config_runtime_set_many(changes, MAPPING_COUNT),
+                       "Vita controls restored to their defaults.");
+}
+
+void poll_control_capture() {
+    if (s_capture_action < 0) return;
+    const uint64_t now = sceKernelGetProcessTimeWide();
+    if (now >= s_capture_deadline) {
+        s_capture_action = -1;
+        snprintf(s_controls_status, sizeof(s_controls_status),
+                 "No input received. Mapping was not changed.");
+        return;
+    }
+    SceCtrlData pad = {};
+    sceCtrlPeekBufferPositive(0, &pad, 1);
+    if (s_capture_wait_release) {
+        if (!any_mappable_input(pad)) s_capture_wait_release = false;
+        return;
+    }
+    for (int source = 0; source < k_vita_source_count; ++source) {
+        if (!source_is_active(k_vita_sources[source], pad)) continue;
+        assign_control_source(s_capture_action, source);
+        s_capture_action = -1;
+        return;
+    }
+}
+
+void draw_source_badge(const VitaControlSource &source) {
+    const ImVec2 pos = ImGui::GetCursorScreenPos();
+    const ImVec2 size(74.0f, 25.0f);
+    ImGui::Dummy(size);
+    ImDrawList *draw = ImGui::GetWindowDrawList();
+    draw->AddRectFilled(pos, ImVec2(pos.x + size.x, pos.y + size.y),
+                        IM_COL32(38, 42, 51, 255), 5.0f);
+    draw->AddRect(pos, ImVec2(pos.x + size.x, pos.y + size.y),
+                  source.colour, 5.0f, 0, 1.5f);
+    const ImVec2 center(pos.x + 13.0f, pos.y + 12.5f);
+    if (source.icon == VITA_ICON_CROSS) {
+        draw->AddLine(ImVec2(center.x - 5, center.y - 5),
+                      ImVec2(center.x + 5, center.y + 5), source.colour, 2.0f);
+        draw->AddLine(ImVec2(center.x + 5, center.y - 5),
+                      ImVec2(center.x - 5, center.y + 5), source.colour, 2.0f);
+    } else if (source.icon == VITA_ICON_CIRCLE) {
+        draw->AddCircle(center, 6.0f, source.colour, 16, 2.0f);
+    } else if (source.icon == VITA_ICON_SQUARE) {
+        draw->AddRect(ImVec2(center.x - 5, center.y - 5),
+                      ImVec2(center.x + 5, center.y + 5), source.colour,
+                      0.0f, 0, 2.0f);
+    } else if (source.icon == VITA_ICON_TRIANGLE) {
+        draw->AddTriangle(ImVec2(center.x, center.y - 6),
+                          ImVec2(center.x - 6, center.y + 5),
+                          ImVec2(center.x + 6, center.y + 5), source.colour,
+                          2.0f);
+    } else if (source.icon == VITA_ICON_STICK) {
+        draw->AddCircle(center, 7.0f, source.colour, 16, 1.5f);
+        ImVec2 tip = center;
+        if (source.axis == 1) tip.y -= 8.0f;
+        if (source.axis == 2) tip.y += 8.0f;
+        if (source.axis == 3) tip.x -= 8.0f;
+        if (source.axis == 4) tip.x += 8.0f;
+        draw->AddLine(center, tip, source.colour, 2.0f);
+        if (source.axis == 1 || source.axis == 2) {
+            const float sign = source.axis == 1 ? 1.0f : -1.0f;
+            draw->AddLine(tip, ImVec2(tip.x - 3, tip.y + 4 * sign), source.colour, 2.0f);
+            draw->AddLine(tip, ImVec2(tip.x + 3, tip.y + 4 * sign), source.colour, 2.0f);
+        } else {
+            const float sign = source.axis == 3 ? 1.0f : -1.0f;
+            draw->AddLine(tip, ImVec2(tip.x + 4 * sign, tip.y - 3), source.colour, 2.0f);
+            draw->AddLine(tip, ImVec2(tip.x + 4 * sign, tip.y + 3), source.colour, 2.0f);
+        }
+    }
+    const char *badge_text = (source.icon == VITA_ICON_TEXT ||
+                              source.icon == VITA_ICON_STICK)
+                                 ? source.short_label : source.label;
+    draw->AddText(ImVec2(pos.x + (source.icon == VITA_ICON_TEXT ? 8.0f : 24.0f),
+                             pos.y + 5.0f), source.colour, badge_text);
+}
+
+void begin_control_capture(int action) {
+    s_capture_action = action;
+    s_capture_wait_release = true;
+    s_capture_deadline = sceKernelGetProcessTimeWide() + UINT64_C(5000000);
+    snprintf(s_controls_status, sizeof(s_controls_status),
+             "Waiting 5 seconds for a Vita input...");
+}
+
+void render_controls_screen() {
+    poll_control_capture();
+    ImGui::TextUnformatted("CONTROLS");
+    ImGui::SameLine(300.0f);
+    ImGui::TextUnformatted("Left Stick (fixed steering / pitch / menu):");
+    for (int direction = 0; direction < 4; ++direction) {
+        ImGui::SameLine();
+        draw_source_badge(k_left_stick_directions[direction]);
+    }
+    ImGui::Separator();
+    if (s_capture_action >= 0) {
+        const uint64_t now = sceKernelGetProcessTimeWide();
+        const unsigned seconds = now < s_capture_deadline
+            ? (unsigned)((s_capture_deadline - now + UINT64_C(999999)) /
+                         UINT64_C(1000000)) : 0;
+        ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.25f, 1.0f),
+                           "Press a button or move the right stick for %s (%us)",
+                           k_game_actions[s_capture_action].label, seconds);
+    } else {
+        ImGui::TextUnformatted("Choose an action, then press the desired Vita input within 5 seconds.");
+    }
+    ImGui::BeginChild("##controlMappings", ImVec2(0.0f, 350.0f), true);
+    const MdkrVideoConfig *config = mdkr_video_config_current();
+    for (int action = 0; action < k_game_action_count; ++action) {
+        ImGui::PushID(action);
+        if (ImGui::Button(k_game_actions[action].label, ImVec2(270.0f, 30.0f))) {
+            begin_control_capture(action);
+        }
+        ImGui::SameLine(290.0f);
+        bool found = false;
+        if (config != nullptr) {
+            for (int source = 0; source < k_vita_source_count; ++source) {
+                if (strcmp(config->values[k_vita_sources[source].key].text,
+                           k_game_actions[action].value) != 0) {
+                    continue;
+                }
+                if (found) ImGui::SameLine();
+                draw_source_badge(k_vita_sources[source]);
+                found = true;
+            }
+        }
+        if (!found) ImGui::TextDisabled("Not mapped");
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+    ImGui::Text("%s", s_controls_status);
+    if (ImGui::Button("Reset to Default Controls", ImVec2(290.0f, 40.0f))) {
+        s_capture_action = -1;
+        reset_control_defaults();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Close", ImVec2(180.0f, 40.0f))) {
+        s_capture_action = -1;
+        s_open = false;
+    }
+}
 }
 
 extern "C" void mdkr_vita_imgui_overlay_open(void) {
@@ -164,18 +462,32 @@ extern "C" void mdkr_vita_imgui_overlay_open(void) {
     mdkr_vita_save_editor_prepare();
     sync_slot_name();
     s_apply_armed = false;
+    s_controls_mode = false;
     s_open = true;
 }
-extern "C" void mdkr_vita_imgui_overlay_close(void) { s_open = false; }
+extern "C" void mdkr_vita_imgui_overlay_open_controls(void) {
+    if (s_open) return;
+    mdkr_vita_boot_log("imgui: controls overlay requested");
+    mdkr_vita_boot_log_flush();
+    s_capture_action = -1;
+    s_controls_mode = true;
+    s_open = true;
+}
+extern "C" void mdkr_vita_imgui_overlay_close(void) {
+    s_capture_action = -1;
+    s_open = false;
+}
 extern "C" int mdkr_vita_imgui_overlay_is_open(void) { return s_open ? 1 : 0; }
 
 extern "C" int mdkr_vita_imgui_overlay_render(void) {
     if (!s_open) return 0;
     if (!initialize()) {
-        mdkr_vita_boot_log("imgui: initialization failed; returning to classic editor");
+        mdkr_vita_boot_log(s_controls_mode
+            ? "imgui: initialization failed; returning to options"
+            : "imgui: initialization failed; returning to classic editor");
         mdkr_vita_boot_log_flush();
         s_open = false;
-        mdkr_vita_save_editor_open_classic();
+        if (!s_controls_mode) mdkr_vita_save_editor_open_classic();
         return 0;
     }
     ImGui_ImplVitaGL_NewFrame();
@@ -184,8 +496,12 @@ extern "C" int mdkr_vita_imgui_overlay_render(void) {
      * old Vita backend and was one source of the corrupted overlay. */
     ImGui::SetNextWindowPos(ImVec2(12.0f, 12.0f), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(936.0f, 520.0f), ImGuiCond_Always);
-    ImGui::Begin("Golden Balloon Save Editor", &s_open,
+    ImGui::Begin(s_controls_mode ? "Golden Balloon Controls"
+                                 : "Golden Balloon Save Editor", &s_open,
                  ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize);
+    if (s_controls_mode) {
+        render_controls_screen();
+    } else {
     ImGui::TextUnformatted("SAVE EDITOR");
     ImGui::Separator();
     const char *pages[] = { "Saves", "Worlds", "Items", "Unlocks", "Time Trials", "Trophies", "Tools" };
@@ -472,6 +788,7 @@ extern "C" int mdkr_vita_imgui_overlay_render(void) {
     if (ImGui::Button("Close", ImVec2(180.0f, 42.0f))) s_open = false;
     ImGui::SameLine();
     ImGui::TextUnformatted(mdkr_vita_save_editor_has_unsaved_changes() ? "UNSAVED CHANGES" : "SAVED");
+    }
     ImGui::End();
     ImGui::Render();
     static int diagnostic_frames = 0;
@@ -508,6 +825,7 @@ extern "C" int mdkr_vita_imgui_overlay_render(void) {
 
 #else
 extern "C" void mdkr_vita_imgui_overlay_open(void) {}
+extern "C" void mdkr_vita_imgui_overlay_open_controls(void) {}
 extern "C" void mdkr_vita_imgui_overlay_close(void) {}
 extern "C" int mdkr_vita_imgui_overlay_is_open(void) { return 0; }
 extern "C" int mdkr_vita_imgui_overlay_render(void) { return 0; }

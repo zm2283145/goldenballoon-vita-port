@@ -853,7 +853,7 @@ UNUSED u8 unused_800DFA0C[] = { 0, 0, 15, 120 };
 
 #ifdef NATIVE_PORT
 char *gOptionMenuStrings[] = {
-    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
 };
 static char *video_options_title(void);
 #else
@@ -4672,6 +4672,18 @@ static void menu_options_refresh_native_entries(void) {
     const s32 saveEditorUnlocked =
         ((u32)gUnlockedMagicCodes & MAGIC_CODES_SAVE_EDITOR_UNLOCKED) != 0;
 
+#ifdef __vita__
+    gOptionMenuStrings[6] = "CONTROLS";
+    if (saveEditorUnlocked) {
+        gOptionMenuStrings[7] = "SAVE EDITOR";
+        gOptionMenuStrings[8] = gMenuText[ASSET_MENU_TEXT_RETURN];
+        gOptionMenuStrings[9] = NULL;
+    } else {
+        gOptionMenuStrings[7] = gMenuText[ASSET_MENU_TEXT_RETURN];
+        gOptionMenuStrings[8] = NULL;
+        gOptionMenuStrings[9] = NULL;
+    }
+#else
     if (saveEditorUnlocked) {
         gOptionMenuStrings[6] = "SAVE EDITOR";
         gOptionMenuStrings[7] = gMenuText[ASSET_MENU_TEXT_RETURN];
@@ -4681,6 +4693,7 @@ static void menu_options_refresh_native_entries(void) {
         gOptionMenuStrings[7] = NULL;
         gOptionMenuStrings[8] = NULL;
     }
+#endif
 }
 #endif
 
@@ -4824,9 +4837,15 @@ s32 menu_options_loop(s32 updateRate) {
         }
     }
 #ifdef NATIVE_PORT
+#ifdef __vita__
+    nativeOptionsReturnIndex =
+        ((u32)gUnlockedMagicCodes & MAGIC_CODES_SAVE_EDITOR_UNLOCKED) != 0
+            ? 8 : 7;
+#else
     nativeOptionsReturnIndex =
         ((u32)gUnlockedMagicCodes & MAGIC_CODES_SAVE_EDITOR_UNLOCKED) != 0
             ? 7 : 6;
+#endif
 #endif
     if ((buttonsPressed & B_BUTTON) ||
         ((buttonsPressed & (A_BUTTON | START_BUTTON)) &&
@@ -4946,6 +4965,25 @@ s32 menu_options_loop(s32 updateRate) {
             return MENU_RESULT_CONTINUE;
         }
 #ifdef NATIVE_PORT
+#ifdef __vita__
+        if (gMenuCurIndex == 6) {
+#ifdef MDKR_VITA_IMGUI_OVERLAY
+            mdkr_vita_imgui_overlay_open_controls();
+            return MENU_RESULT_CONTINUE;
+#endif
+        }
+        if (gMenuCurIndex == 7 &&
+            ((u32)gUnlockedMagicCodes & MAGIC_CODES_SAVE_EDITOR_UNLOCKED) != 0) {
+#ifdef MDKR_VITA_IMGUI_OVERLAY
+            mdkr_vita_imgui_overlay_open();
+            return MENU_RESULT_CONTINUE;
+#else
+            optionscreen_free();
+            menu_init(MENU_SAVE_EDITOR);
+            return MENU_RESULT_CONTINUE;
+#endif
+        }
+#else
         if (gMenuCurIndex == 6 &&
             ((u32)gUnlockedMagicCodes & MAGIC_CODES_SAVE_EDITOR_UNLOCKED) != 0) {
 #ifdef MDKR_VITA_IMGUI_OVERLAY
@@ -4959,6 +4997,7 @@ s32 menu_options_loop(s32 updateRate) {
             return MENU_RESULT_CONTINUE;
 #endif
         }
+#endif
 #endif
         optionscreen_free();
         menu_init(MENU_MAGIC_CODES);
