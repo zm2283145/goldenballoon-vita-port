@@ -5256,10 +5256,8 @@ static void save_editor_rollback_world_after_track_downgrade(s32 world, s32 edit
     save_editor_recompute_wizpig_amulet();
 }
 
-/* Boss one represents the first complete world pass. Boss two and a first
- * place trophy both represent the later, fully-completed pass. Keeping these
- * helpers together prevents the editor from ever creating an impossible
- * shortcut through Adventure mode. */
+/* Boss one represents the first complete world pass. Boss two represents the
+ * silver-coin pass; the trophy race remains a distinct, later result. */
 static void save_editor_complete_first_boss(s32 world) {
     save_editor_set_all_track_progress(world, 1);
     sSaveEditorBosses[sSaveEditorSlot] |= save_editor_first_boss_bit(world);
@@ -5272,8 +5270,15 @@ static void save_editor_complete_second_boss(s32 world) {
     save_editor_set_all_track_progress(world, 2);
     sSaveEditorBosses[sSaveEditorSlot] |=
         save_editor_first_boss_bit(world) | save_editor_second_boss_bit(world);
-    save_editor_set_trophy_rank(world, 3);
     save_editor_recompute_wizpig_amulet();
+}
+
+static void save_editor_complete_trophy_world(s32 world) {
+    /* A trophy win completes every non-key part of this world. Keys are
+     * intentionally excluded: they are either edited independently or are
+     * awarded by the final Wizpig-two completion state. */
+    save_editor_complete_second_boss(world);
+    save_editor_set_trophy_rank(world, 3);
 }
 
 static void save_editor_complete_wizpig_one(void) {
@@ -5283,7 +5288,7 @@ static void save_editor_complete_wizpig_one(void) {
      * trophy, and rematch chain in each of the four regular worlds. Future
      * Fun Land itself is deliberately left alone at this milestone. */
     for (world = 0; world < 4; world++) {
-        save_editor_complete_second_boss(world);
+        save_editor_complete_trophy_world(world);
     }
     sSaveEditorBosses[sSaveEditorSlot] |= save_editor_first_boss_bit(4);
     save_editor_recompute_wizpig_amulet();
@@ -5295,10 +5300,21 @@ static void save_editor_complete_wizpig_two(void) {
     /* The second Wizpig race is the end state: every race chain, both
      * bosses, every trophy, all T.T. pieces, and all four world keys. */
     for (world = 0; world < SAVE_EDITOR_ADVENTURE_WORLD_COUNT; world++) {
-        save_editor_complete_second_boss(world);
+        save_editor_complete_trophy_world(world);
     }
     sSaveEditorTtAmulet[sSaveEditorSlot] = 4;
     sSaveEditorKeys[sSaveEditorSlot] |= 0x1Eu;
+    save_editor_recompute_wizpig_amulet();
+}
+
+static void save_editor_reset_future_fun_land(void) {
+    /* Undoing Wizpig one never rewrites the first four worlds. It only
+     * returns the newly-unlocked Future Fun Land branch (and Wizpig two) to
+     * its unopened state. Keys and T.T. pieces have their own editor fields. */
+    save_editor_set_all_track_progress(4, 0);
+    sSaveEditorBosses[sSaveEditorSlot] &=
+        (u16)~(save_editor_first_boss_bit(4) | save_editor_second_boss_bit(4));
+    save_editor_set_trophy_rank(4, 0);
     save_editor_recompute_wizpig_amulet();
 }
 
@@ -5544,7 +5560,7 @@ s32 menu_save_editor_loop(s32 updateRate) {
             if (after == 3) {
                 /* A trophy win is only possible after every coin challenge
                  * and the second boss for this world. */
-                save_editor_complete_second_boss(sSaveEditorWorld);
+                save_editor_complete_trophy_world(sSaveEditorWorld);
             } else {
                 save_editor_set_trophy_rank(sSaveEditorWorld, after);
                 if (sSaveEditorBosses[sSaveEditorSlot] &
@@ -5570,7 +5586,11 @@ s32 menu_save_editor_loop(s32 updateRate) {
             if (bit == firstBit) {
                 if (*bosses & firstBit) {
                     /* Removing boss one invalidates the entire later branch. */
-                    save_editor_rollback_world_after_track_downgrade(sSaveEditorWorld, -1);
+                    if (sSaveEditorWorld == 4) {
+                        save_editor_reset_future_fun_land();
+                    } else {
+                        save_editor_rollback_world_after_track_downgrade(sSaveEditorWorld, -1);
+                    }
                 } else {
                     /* First boss complete requires the four normal races. */
                     if (sSaveEditorWorld == 4) {
@@ -5589,7 +5609,8 @@ s32 menu_save_editor_loop(s32 updateRate) {
                     }
                     save_editor_recompute_wizpig_amulet();
                 } else {
-                    /* Second boss complete fills the coin and trophy chain. */
+                    /* Second boss complete fills the silver-coin race chain.
+                     * The trophy remains a separate player choice. */
                     if (sSaveEditorWorld == 4) {
                         save_editor_complete_wizpig_two();
                     } else {
