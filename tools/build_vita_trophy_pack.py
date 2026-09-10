@@ -62,10 +62,11 @@ def platinum_icon(path: Path) -> None:
 
 
 def xml(configuration_only: bool = False) -> bytes:
-    # The parser requires a 160-byte Sce-Np-Trophy-Signature record before
-    # trophyconf even when NoTrpDrm is installed to bypass its verification.
-    # Keep a structurally valid development placeholder; do not omit it.
-    signature = (bytes.fromhex("4c39b98c0100000000000000") + bytes(148)).hex()
+    # NoTrpDrm recognizes the conventional 160-byte development placeholder
+    # (encoded here as 320 literal `x` characters). This exact representation
+    # is used by working unsigned Vita trophy packs; a fabricated hex record
+    # is still parsed as a real signature and is rejected by the setup dialog.
+    signature = "x" * 320
     lines = [
         f'<!--Sce-Np-Trophy-Signature: {signature}-->',
         '<trophyconf version="1.1" platform="psp2" policy="large">',
