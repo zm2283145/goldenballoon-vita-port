@@ -182,6 +182,9 @@ uint64_t platform_perf_monotonic_ns(void) {
 #if defined(MDKR_APP) || defined(__EMSCRIPTEN__)
 #include "app_overlay_hooks.h"    /* in-game overlay event/render hooks */
 #endif
+#ifdef MDKR_VITA_IMGUI_OVERLAY
+#include "vita_imgui_overlay.h"
+#endif
 #include "presentation_snapshot.h" /* live policy apply retires the staged pair */
 #include "fast3d/gfx_pc_dkr.h"   /* gfx_dkr_texload_line_swapped (headless report) */
 #include "fast3d/gfx_font_outline.h" /* gfx_font_outline_clipped_texels */
@@ -3652,6 +3655,9 @@ void platform_sdl_present(void) {
          * wgpu_end_frame (gfx_webgpu.c); GL has no such seam, so this is it.
          * No-op when no overlay hooks are registered. */
         (void)platformOverlayRender();
+#endif
+#ifdef MDKR_VITA_IMGUI_OVERLAY
+        (void)mdkr_vita_imgui_overlay_render();
 #endif
         sdl_gl_resource_heartbeat("before-swap", 0);
 #if defined(__vita__)

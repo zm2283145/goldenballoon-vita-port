@@ -232,6 +232,13 @@ if(VITA)
     set(MDKR_WEBGPU_BACKEND OFF CACHE BOOL "" FORCE)
     set(MDKR_APP OFF CACHE BOOL "" FORCE)
     set(MDKR_NATIVE_PHONE_PARTY OFF CACHE BOOL "" FORCE)
+    option(MDKR_VITA_IMGUI_OVERLAY
+        "Build the VitaGL ImGui Save Editor overlay" ON)
+    if(MDKR_VITA_IMGUI_OVERLAY)
+        enable_language(CXX)
+        set(CMAKE_CXX_STANDARD 17)
+        set(CMAKE_CXX_STANDARD_REQUIRED ON)
+    endif()
 endif()
 include(cmake/webgpu.cmake)
 
@@ -485,6 +492,20 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/mdkr_taj.c         # Taj challenge lifecycle/outcome test driver
     ${CMAKE_SOURCE_DIR}/platform/vita_trophy.c      # Vita homebrew trophy bridge (no-op elsewhere)
 )
+if(VITA AND MDKR_VITA_IMGUI_OVERLAY)
+    list(APPEND PLATFORM_SOURCES
+        ${CMAKE_SOURCE_DIR}/platform/vita_imgui_overlay.cpp
+        ${CMAKE_SOURCE_DIR}/third_party/imgui-vita/imgui.cpp
+        ${CMAKE_SOURCE_DIR}/third_party/imgui-vita/imgui_draw.cpp
+        ${CMAKE_SOURCE_DIR}/third_party/imgui-vita/imgui_impl_vitagl.cpp
+        ${CMAKE_SOURCE_DIR}/third_party/imgui-vita/imgui_vita_touch.cpp)
+    set_source_files_properties(
+        ${CMAKE_SOURCE_DIR}/third_party/imgui-vita/imgui.cpp
+        ${CMAKE_SOURCE_DIR}/third_party/imgui-vita/imgui_draw.cpp
+        ${CMAKE_SOURCE_DIR}/third_party/imgui-vita/imgui_impl_vitagl.cpp
+        ${CMAKE_SOURCE_DIR}/third_party/imgui-vita/imgui_vita_touch.cpp
+        PROPERTIES COMPILE_OPTIONS "-w;-fpermissive")
+endif()
 # GL-only support TUs — the browser build is WebGPU-only, so they'd only pull in
 # glad/GL symbols that don't exist under wasm. Keep them native-only.
 if(NOT EMSCRIPTEN)
@@ -645,6 +666,11 @@ target_include_directories(${MDKR_TARGET} PRIVATE
     ${CMAKE_SOURCE_DIR}/lib/dr_libs      # dr_wav.h, taken by mod_music.c
     ${SDL2_INCLUDE_DIRS}
 )
+if(VITA AND MDKR_VITA_IMGUI_OVERLAY)
+    target_include_directories(${MDKR_TARGET} PRIVATE
+        ${CMAKE_SOURCE_DIR}/third_party/imgui-vita)
+    target_compile_definitions(${MDKR_TARGET} PRIVATE MDKR_VITA_IMGUI_OVERLAY=1)
+endif()
 
 # --- Compile definitions (PLAN §8) ---------------------------------------
 target_compile_definitions(${MDKR_TARGET} PRIVATE
@@ -783,6 +809,16 @@ if(VITA)
     # below that limit without affecting the renderer or game simulation.
     set_source_files_properties(${CMAKE_SOURCE_DIR}/game/src/menu.c
         PROPERTIES COMPILE_OPTIONS "-Os")
+    if(MDKR_VITA_IMGUI_OVERLAY)
+        # This backend is third-party code written for older Dear ImGui and
+        # VitaSDK revisions. Keep the port's strict warnings everywhere else.
+        set_source_files_properties(
+            ${CMAKE_SOURCE_DIR}/third_party/imgui-vita/imgui.cpp
+            ${CMAKE_SOURCE_DIR}/third_party/imgui-vita/imgui_draw.cpp
+            ${CMAKE_SOURCE_DIR}/third_party/imgui-vita/imgui_impl_vitagl.cpp
+            ${CMAKE_SOURCE_DIR}/third_party/imgui-vita/imgui_vita_touch.cpp
+            PROPERTIES COMPILE_OPTIONS "-w;-fpermissive")
+    endif()
     # ARM EABI default: a plain `enum` uses the smallest integer type that
     # fits its enumerator values (can end up unsigned), and `char` defaults
     # unsigned -- both differ from the x86/x64 GCC defaults this codebase

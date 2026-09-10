@@ -6,6 +6,9 @@
 #include "platform_os.h"
 #include "mdkr_adventure.h"
 #include "vita_trophy.h"
+#ifdef MDKR_VITA_IMGUI_OVERLAY
+#include "vita_imgui_overlay.h"
+#endif
 #include "taj_mod.h"
 #include "taj_physics.h"
 #include "taj_select_layout.h"
@@ -4935,9 +4938,16 @@ s32 menu_options_loop(s32 updateRate) {
 #ifdef NATIVE_PORT
         if (gMenuCurIndex == 6 &&
             ((u32)gUnlockedMagicCodes & MAGIC_CODES_SAVE_EDITOR_UNLOCKED) != 0) {
+#ifdef MDKR_VITA_IMGUI_OVERLAY
+            /* Vita can choose the touch/controller ImGui presentation without
+             * changing any save data path. Closing the overlay returns here. */
+            mdkr_vita_imgui_overlay_open();
+            return MENU_RESULT_CONTINUE;
+#else
             optionscreen_free();
             menu_init(MENU_SAVE_EDITOR);
             return MENU_RESULT_CONTINUE;
+#endif
         }
 #endif
         optionscreen_free();
