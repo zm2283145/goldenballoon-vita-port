@@ -868,7 +868,20 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
                 ImGui::TextWrapped("%s", s.romInfo.message);
                 ui::Gap(ui::kGapXS);
             }
-            ui::TextSubtleUnformattedWrapped(s.romPath.c_str());
+            /*
+             * Several refusal messages open with the full path, and the line
+             * below repeated it verbatim -- a long absolute path twice in one
+             * card, which reads as a rendering fault rather than as emphasis.
+             * The test is on the message rather than on `ready` so a refusal
+             * whose sentence does NOT name the file still shows which file it
+             * means.
+             */
+            const bool pathAlreadyNamed =
+                !ready && s.romInfo.message[0] != '\0' &&
+                std::strstr(s.romInfo.message, s.romPath.c_str()) != nullptr;
+            if (!pathAlreadyNamed) {
+                ui::TextSubtleUnformattedWrapped(s.romPath.c_str());
+            }
             if (ready && s.romPersistenceWarning[0] != '\0') {
                 ui::Gap(ui::kGapS);
                 ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
