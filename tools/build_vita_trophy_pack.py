@@ -156,7 +156,11 @@ def trp(files: dict[str, bytes]) -> bytes:
     # The final 16 bytes of the packed header above are reserved; they are part
     # of the header, not a prefix before the table of contents.
     header_size, entry_size = 0x40, 0x40
-    entries = sorted(files.items())
+    # Keep the conventional Vita order: the compact configuration manifest
+    # must lead the archive, immediately followed by its localized metadata.
+    # Working NoTrpDrm packs use this order; alphabetical sorting would put
+    # TROPCONF.SFM last after the image assets.
+    entries = list(files.items())
     offset = header_size + len(entries) * entry_size
     table, bodies = [], []
     for name, payload in entries:
