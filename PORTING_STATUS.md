@@ -8,16 +8,16 @@ same libultraship/vitaGL pattern as
 (a Banjo-Kazooie Vita port used as the concrete reference for library
 choices, link flags, and the VPK packaging recipe).
 
-**Status: 0.02 — functionally in-game on real hardware.** It boots, loads
-a ROM, and plays through races on the default (Restored) visual preset,
-with audio, input, textured rendering, and correctly rendered 3D
-race/menu scenes all working. This moved past "builds and links clean"
-through hands-on, on-device bring-up: real crashes and rendering bugs,
-pulled via a boot-time file logger, coredumps, and targeted diagnostic
-logging, root-caused one at a time. **The Remastered visual preset
+**Status: 1.6.1 — stable for normal play on tested real hardware.** It
+boots, loads a ROM, saves progress, and plays through races on the default
+(Restored) visual preset, with audio, input, textured rendering, correctly
+rendered 3D race/menu scenes, and a 95-trophy pack. This moved past "builds
+and links clean" through hands-on, on-device bring-up: real crashes and
+rendering bugs, pulled via a boot-time file logger, coredumps, and targeted
+diagnostic logging, root-caused one at a time. **The Remastered visual preset
 currently crashes on startup and must not be used — see
-[Known issues](#known-issues) below.** Fixed so far, in the order they
-were hit:
+[Known issues](#known-issues) below.** Fixed so far, in the order they were
+hit:
 
 1. **Black screen, audio/input alive.** `platform_sdl_surface_presentable()`
    treated vitaGL's intentionally-always-NULL `s_window` as "not
@@ -118,7 +118,7 @@ blow-by-blow.
    fresh and display both the background and startup/gate art correctly.
    LiveArea assets are bundled by default now (see Packaging below).
 
-Currently: the Restored preset is stable enough for normal play; the
+Currently: the Restored preset is stable for normal play; the
 Remastered preset crashes on startup every time (see
 [Known issues](#known-issues)). See the git log on this branch for the
 blow-by-blow of everything ruled out chasing it.
@@ -169,8 +169,8 @@ the toolchain file itself.
 
 ## Packaging (VPK)
 
-The one-time `vita-mksfoex` step (below) aside, packaging is scripted --
-run `tools/package_vita.ps1` after every rebuild rather than reproducing
+Packaging is scripted -- run `tools/package_vita.ps1` after every rebuild
+rather than reproducing
 the individual strip/elf-create/fself/pack-vpk commands by hand. Two things
 that script gets right that a naive hand-rolled version will not:
 
@@ -192,7 +192,7 @@ that script gets right that a naive hand-rolled version will not:
   gate art display correctly.
 
 ```powershell
-vita-mksfoex -s TITLE_ID=GBLN00001 -d ATTRIBUTE2=12 "GoldenBalloon DKR" build-vita/param.sfo   # one-time / only if param.sfo is missing
+# Regenerates param.sfo from CMakeLists.txt's MDKR_VERSION, then packages.
 pwsh -File tools/package_vita.ps1 -BuildDir build-vita   # bundles LiveArea assets by default; add -NoIcons to omit them
 ```
 
@@ -205,6 +205,65 @@ treatment — no Nintendo/Rare IP), committed alongside `template.xml`.
 ROM-picker UI on this platform yet (see "What's disabled" below). Copy a
 legally-obtained US v1.0 (v80) Diddy Kong Racing ROM there before first
 launch.
+
+## Adding trophies to a PS Vita project
+
+This port is a working reference for unsigned homebrew trophies on a Vita.
+The console's trophy service expects a title-specific archive and normally
+verifies Sony's signature; homebrew cannot produce that signature. Install
+and enable [NoTrpDrm](https://github.com/TheOfficialFloW/NoTrpDrm) in
+taiHEN on the target Vita to permit the archive. Treat that plugin as an
+optional runtime dependency: initialize trophies defensively and keep the
+game fully playable if the module, plugin, archive, or service is absent.
+
+1. **Choose a stable communication ID and title ID.** This project uses Vita
+   title ID `GBLN00001` and trophy communication ID `GBLN00001_00`. The
+   title ID must be used in `param.sfo` and the VPK path
+   `sce_sys/trophy/GBLN00001_00/TROPHY.TRP`; the communication ID goes in
+   the trophy XML. Do not change either after release, or the Vita sees a
+   different trophy set.
+2. **Define the trophy data and groups.**
+   [`tools/build_vita_trophy_pack.py`](tools/build_vita_trophy_pack.py)
+   is the source of truth here. `MAIN_TROPHIES` contains the base set and
+   platinum; its entries use group `0`. `ADVENTURE_TWO` uses `gid="001"` and
+   `TIME_TRIALS` uses `gid="002"`. The groups are declared in both the
+   compact `TROPCONF.SFM` manifest and the localized `TROP.SFM` metadata.
+   Give optional/DLC-style challenges a non-zero group ID and set their
+   parent to `-1`; only trophies in group 0 should be parents/children of
+   the platinum. Supply a title image, one 320×176 image per group, and a
+   240×240 image per trophy.
+3. **Build a valid TRP.** Vita reads `TROPCONF.SFM` before the localized
+   `TROP.SFM`; omitting the configuration manifest can cause `NP-6182-7`.
+   The archive also needs the expected NoTrpDrm development signature
+   placeholder and conventional file ordering. Reuse or adapt the packer
+   rather than zipping files by hand.
+4. **Bundle the archive in the VPK.** The packaging script creates
+   `build-vita/TROPHY.TRP` and adds it at
+   `sce_sys/trophy/GBLN00001_00/TROPHY.TRP`. Keep `param.sfo` current on
+   every build. This script derives Vita's `APP_VER` from `MDKR_VERSION` in
+   `CMakeLists.txt` (semantic `1.6.1` becomes Vita `01.61`), keeping the
+   compiled version, VPK metadata, and release version aligned.
+5. **Register at a safe early point.** Load `SCE_SYSMODULE_NP_TROPHY`, call
+   `sceNpTrophyInit`, create the context, run the setup dialog to completion,
+   then create a handle. This port does it from `platform/vita_trophy.c`
+   during startup after vitaGL is available, before gameplay, and swaps
+   frames while the dialog runs. The first successful setup makes the pack
+   appear in the Trophy app; a trophy does not need to unlock first.
+6. **Wire triggers to persistent game state.** Call a small trophy bridge
+   whenever a reliable event happens (for example a balloon collection),
+   and poll saved progress after loading or on a regular safe update path
+   for achievements that may already be satisfied. Always let
+   `sceNpTrophyUnlockTrophy` remain the persistence authority; keep only an
+   in-session retry guard to avoid submitting the same ID every frame.
+7. **Ship changes safely.** Once a set has been installed, a new group,
+   trophy, title, or image requires raising `<trophyset-version>` (this port
+   currently uses `01.02`) so the Vita imports the update. Test from a clean
+   install or remove the title's local trophy entry between compatibility
+   tests. Never renumber shipped trophies: add new IDs instead.
+
+For troubleshooting, create `ux0:data/goldenballoon/debug` before launch;
+the existing boot log then records trophy-module, context, setup, handle,
+and unlock results in `ux0:data/goldenballoon/mdkr_boot.log`.
 
 ## What's disabled or stubbed on Vita, and why
 

@@ -1,3 +1,22 @@
+# Golden Balloon 1.6.1
+
+*Released 2026-09-10.*
+
+## PS Vita
+
+The PS Vita port is now stable for normal play on tested hardware using the
+default Restored visual preset. This release adds an unsigned-homebrew,
+NoTrpDrm-compatible 95-trophy pack: the main set includes a custom platinum,
+while Adventure 2 and every T.T./developer time-trial challenge are optional
+groups and are not required for the platinum.
+
+The VPK is versioned from the same `MDKR_VERSION` value as the compiled port;
+release 1.6.1 produces Vita metadata version `01.61`. Trophies require the
+[NoTrpDrm](https://github.com/TheOfficialFloW/NoTrpDrm) taiHEN plugin. Without
+it, the game remains playable and safely skips trophy setup.
+
+The Remastered visual preset still crashes on startup on Vita. Use Restored.
+
 # Golden Balloon 1.6.0
 
 *Released 2026-09-01. Online multiplayer is a beta — see below.*

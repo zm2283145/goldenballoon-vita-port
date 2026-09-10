@@ -19,7 +19,7 @@
   <a href="PORTING_STATUS.md"><b>📋 Full Vita port status &amp; known issues</b></a>
 </p>
 
-> **This is an unofficial, work-in-progress hardware port.** It is a fork of
+> **This is an unofficial PS Vita hardware port.** It is a fork of
 > [akratch/goldenballoon](https://github.com/akratch/goldenballoon) that adds
 > a PS Vita target on top of everything the upstream project already does.
 > Everything in this document that isn't about the Vita applies equally to
@@ -28,13 +28,10 @@
 > for the day-to-day truth about what currently works, what doesn't, and what
 > is actively being debugged.
 >
-> **Status update:** the game is now functionally in-game on real Vita
-> hardware — it boots, loads a ROM, and renders the actual 3D race/menu
-> scenes correctly. The last blocking bug (the 3D scene failing to render,
-> plus corrupted intro logo text) was root-caused to a pointer-registration
-> gap on 32-bit targets and has been fixed. This is still early, actively-
-> debugged hardware bring-up, though — expect further bugs, rough edges, and
-> untested code paths (see "PS Vita: known limitations" below).
+> **Status update (1.6.1):** the Restored visual preset is stable for normal
+> play on tested real Vita hardware. The port boots, loads a ROM, renders 3D
+> races and menus, saves progress, and includes a 95-trophy pack. The optional
+> Remastered visual preset remains unsupported; use Restored (the default).
 
 ## Quick start (PS Vita)
 
@@ -43,7 +40,10 @@
    installed, and **`libshacccg.suprx`** present at `ur0:data/libshacccg.suprx`
    (Sony's proprietary runtime shader compiler — VitaShell can fetch it for
    you from its own menus, or use [shacccg-installer](https://github.com/Electry/shacccg.suprx-installer)).
-   This port will not run without it.
+   This port will not run without it. To use trophies, also install and enable
+   [NoTrpDrm](https://github.com/TheOfficialFloW/NoTrpDrm), which permits the
+   unsigned homebrew trophy archive included with this VPK. Without NoTrpDrm,
+   the game remains playable but trophies are safely unavailable.
 2. **Get the ROM.** You need a legally acquired dump of the original game —
    US v1.0 (`v80`), as `.z64`. Copy it onto your Vita's memory card at
    exactly this path:
@@ -60,17 +60,12 @@
 4. **Play.** A DualShock-style control layout is assumed; there is no
    in-game remapping UI on Vita yet.
 
-**This is a 0.02 release: unstable but playable.** The game boots and
-plays through races with working 3D rendering on the default (Restored)
-visual preset, with audio and input working; this is still a
-from-scratch hardware bring-up, so bugs are expected in code paths that
-haven't been exercised yet (most non-time-trial modes, most tracks,
-extended play sessions). **Do not enable the Remastered visual preset —
-it crashes on startup every time; this is a known, still-unresolved
-issue, not something you did wrong.** If something else breaks, check
-[PORTING_STATUS.md](PORTING_STATUS.md) first — it tracks exactly what's
-currently broken and what's already been ruled out, and consider opening
-an issue with what you were doing when it happened.
+**This is the 1.6.1 Vita release.** The default Restored visual preset is
+stable for normal play on tested hardware. **Do not enable the Remastered
+visual preset — it crashes on startup every time; this is a known,
+still-unresolved issue, not something you did wrong.** If something else
+breaks, check [PORTING_STATUS.md](PORTING_STATUS.md) first and consider
+opening an issue with what you were doing when it happened.
 
 ## What Golden Balloon is (from the upstream project)
 
@@ -96,7 +91,7 @@ the shared game/engine code — is in the
 | macOS (Apple silicon) | Upstream, stable |
 | Linux (x86-64) | Upstream, best effort |
 | Browser (WebGPU) | Upstream, stable |
-| **PS Vita** | **This fork, 0.02 — boots and plays through races with correctly-rendered 3D gameplay, audio, input, and textured rendering on the Restored visual preset. The Remastered preset crashes on startup and should not be used yet. See [PORTING_STATUS.md](PORTING_STATUS.md) for the exact current state.** |
+| **PS Vita** | **This fork, 1.6.1 — stable for normal play on the Restored visual preset, with 95 homebrew trophies. The Remastered preset crashes on startup and should not be used. See [PORTING_STATUS.md](PORTING_STATUS.md) for the exact current state.** |
 
 ## PS Vita: known limitations
 
@@ -117,19 +112,25 @@ and fixed so far, with root causes).
   features these need; see the "What's disabled or stubbed on Vita" table in
   [PORTING_STATUS.md](PORTING_STATUS.md) for the full list and the reason
   for each.
-- **3D rendering now works, but is freshly fixed and lightly tested.** The
-  root cause (a pointer-registration gap that made certain global addresses,
-  including the camera viewport, misresolve through the renderer's segment
-  table) is fixed, confirmed on real hardware through the intro and into
-  gameplay. It has not yet been exercised across every track, mode, and
-  render path, so rendering glitches in less-common cases are plausible.
 - **Item-fire (Z) defaults to Triangle**, since the Vita has no analog L2/R2
   triggers for the upstream default binding to land on. The right stick
   still covers all four C-button camera directions.
-- **Performance, audio, and the rest of input mapping are unverified/in
-  progress.** This is a from-scratch hardware bring-up; those are exactly
-  the class of issue that only shows up on real hardware and is worked
-  through one bug report at a time.
+- **Broader hardware coverage is still welcome.** Less-common game modes,
+  extended play sessions, performance-heavy scenes, and alternate controls
+  benefit from additional reports.
+
+## PS Vita trophies
+
+The VPK includes 95 trophies. The main set includes a custom platinum and
+the core Adventure goals. Adventure 2 and all T.T./developer time-trial
+challenges are separate optional groups, so they do not count toward the
+platinum.
+
+Trophies require [NoTrpDrm](https://github.com/TheOfficialFloW/NoTrpDrm) to
+be installed and enabled in taiHEN. The port registers the pack during
+startup; when the plugin is absent or the trophy service is unavailable, it
+keeps playing normally and skips trophy operations. See the reusable setup
+guide in [PORTING_STATUS.md](PORTING_STATUS.md#adding-trophies-to-a-ps-vita-project).
 
 ## Custom content
 
@@ -194,11 +195,8 @@ cmake --build build-vita --target mdkr64
 **Package into a VPK:**
 
 ```powershell
-# One-time only, or if build-vita/param.sfo is ever missing/deleted:
-vita-mksfoex -s TITLE_ID=GBLN00001 -d ATTRIBUTE2=12 "GoldenBalloon DKR" build-vita/param.sfo
-
 # Every time you rebuild (ninja/cmake --build only produces the raw ELF —
-# this step is what actually produces build-vita/mdkr64.vpk):
+# this step regenerates versioned metadata and produces build-vita/mdkr64.vpk):
 tools/package_vita.ps1 -BuildDir build-vita
 ```
 

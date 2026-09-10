@@ -27,6 +27,21 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $build = Join-Path $repoRoot $BuildDir
 $livearea = Join-Path $repoRoot "vita\livearea"
 $trophyPack = Join-Path $build "TROPHY.TRP"
+$cmakeLists = Join-Path $repoRoot "CMakeLists.txt"
+
+# Keep Vita package metadata aligned with the semantic version compiled into
+# the port. APP_VER is XX.YZ, so semantic X.Y.Z becomes XX.YZ (1.6.1 -> 01.61).
+$versionMatch = Select-String -Path $cmakeLists -Pattern 'set\(MDKR_VERSION "([0-9]+)\.([0-9]+)\.([0-9]+)"' | Select-Object -First 1
+if ($null -eq $versionMatch) {
+    throw "Could not read MDKR_VERSION from $cmakeLists"
+}
+$major = [int]$versionMatch.Matches[0].Groups[1].Value
+$minor = [int]$versionMatch.Matches[0].Groups[2].Value
+$patch = [int]$versionMatch.Matches[0].Groups[3].Value
+if ($major -gt 99 -or $minor -gt 9 -or $patch -gt 9) {
+    throw "MDKR_VERSION cannot be represented by Vita APP_VER"
+}
+$vitaAppVersion = ('{0:D2}.{1}{2}' -f $major, $minor, $patch)
 
 $env:Path = "$env:VITASDK\bin;" + $env:Path
 
@@ -35,6 +50,9 @@ try {
     if (-not (Test-Path "mdkr64")) {
         throw "mdkr64 (raw linked ELF) not found in $build -- run the CMake/ninja build first."
     }
+
+    & vita-mksfoex -s TITLE_ID=GBLN00001 -s APP_VER=$vitaAppVersion -d ATTRIBUTE2=12 "GoldenBalloon DKR" param.sfo
+    if ($LASTEXITCODE -ne 0) { throw "vita-mksfoex failed" }
 
     & python (Join-Path $repoRoot "tools\build_vita_trophy_pack.py") `
         --out $trophyPack --livearea-icon (Join-Path $livearea "icon0.png")
