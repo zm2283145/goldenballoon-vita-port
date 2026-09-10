@@ -72,9 +72,14 @@ void ImGui_ImplVitaGL_RenderDrawData(ImDrawData* draw_data)
 	// We are using the OpenGL fixed pipeline to make the example code simpler to read!
 	// Setup render state: alpha-blending enabled, no face culling, no depth testing, scissor enabled, vertex/texcoord/color pointers, polygon fill.
 	GLint last_texture; glGetIntegerv(GL_TEXTURE_BINDING_2D, &last_texture);
+	GLint last_program; glGetIntegerv(GL_CURRENT_PROGRAM, &last_program);
 	GLint last_polygon_mode[2]; glGetIntegerv(GL_POLYGON_MODE, last_polygon_mode);
 	GLint last_viewport[4]; glGetIntegerv(GL_VIEWPORT, last_viewport);
 	GLint last_scissor_box[4]; glGetIntegerv(GL_SCISSOR_BOX, last_scissor_box); 
+	GLboolean last_blend = glIsEnabled(GL_BLEND);
+	GLboolean last_cull = glIsEnabled(GL_CULL_FACE);
+	GLboolean last_depth = glIsEnabled(GL_DEPTH_TEST);
+	GLboolean last_scissor = glIsEnabled(GL_SCISSOR_TEST);
 	//glPushAttrib(GL_ENABLE_BIT | GL_COLOR_BUFFER_BIT | GL_TRANSFORM_BIT);
 	glEnable(GL_BLEND);
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -86,7 +91,11 @@ void ImGui_ImplVitaGL_RenderDrawData(ImDrawData* draw_data)
 	glEnableClientState(GL_COLOR_ARRAY);
 	glEnable(GL_TEXTURE_2D);
 	glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-	//glUseProgram(0); // You may want this if using this code in an OpenGL 3+ context where shaders may be bound
+	/* Golden Balloon leaves one of its Fast3D shader-pair programs bound at the
+	 * end of the game pass. The fixed-pipeline ImGui backend must explicitly
+	 * detach it; otherwise the Fast3D attributes treat ImGui vertices as game
+	 * geometry/textures and corrupt the whole frame. */
+	glUseProgram(0);
 
 	// Setup viewport, orthographic projection matrix
 	glViewport(0, 0, (GLsizei)fb_width, (GLsizei)fb_height);
@@ -188,6 +197,7 @@ void ImGui_ImplVitaGL_RenderDrawData(ImDrawData* draw_data)
 	glDisableClientState(GL_TEXTURE_COORD_ARRAY);
 	glDisableClientState(GL_VERTEX_ARRAY);
 	glBindTexture(GL_TEXTURE_2D, (GLuint)last_texture);
+	glUseProgram((GLuint)last_program);
 	glMatrixMode(GL_MODELVIEW);
 	glPopMatrix();
 	glMatrixMode(GL_PROJECTION);
@@ -196,6 +206,10 @@ void ImGui_ImplVitaGL_RenderDrawData(ImDrawData* draw_data)
 	glPolygonMode(GL_FRONT, (GLenum)last_polygon_mode[0]); glPolygonMode(GL_BACK, (GLenum)last_polygon_mode[1]);
 	glViewport(last_viewport[0], last_viewport[1], (GLsizei)last_viewport[2], (GLsizei)last_viewport[3]);
 	glScissor(last_scissor_box[0], last_scissor_box[1], (GLsizei)last_scissor_box[2], (GLsizei)last_scissor_box[3]);
+	if (last_blend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
+	if (last_cull) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
+	if (last_depth) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
+	if (last_scissor) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
 }
 
 // You can read the io.WantCaptureMouse, io.WantCaptureKeyboard flags to tell if dear imgui wants to use your inputs.

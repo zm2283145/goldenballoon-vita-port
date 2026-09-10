@@ -38,7 +38,9 @@ extern "C" int mdkr_vita_imgui_overlay_is_open(void) { return s_open ? 1 : 0; }
 extern "C" int mdkr_vita_imgui_overlay_render(void) {
     if (!s_open || !initialize()) return 0;
     ImGui_ImplVitaGL_NewFrame();
-    ImGui::NewFrame();
+    /* The VitaGL backend starts the Dear ImGui frame itself. Calling
+     * ImGui::NewFrame again here leaves the draw list half-initialised on the
+     * old Vita backend and was one source of the corrupted overlay. */
     ImGui::SetNextWindowPos(ImVec2(12.0f, 12.0f), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(936.0f, 520.0f), ImGuiCond_Always);
     ImGui::Begin("Golden Balloon Save Editor", &s_open,
