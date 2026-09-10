@@ -584,12 +584,52 @@ void drawNavigation(int &activePanel, LauncherState &state) {
     ui::BrandRule();
     ui::Gap(ui::kGapM);
 
-    const int selectedPanel = activePanel;
-    for (int i = 0; i < kPanelCount; ++i) {
-        if (!panelVisible(i)) continue;
-        if (drawRailPanelItem(kPanels[i].label, selectedPanel == i)) {
-            Launcher_requestTab(state, i, kLauncherTabPlayer);
+    // Destinations, not panels. The panel indices stay exactly where they were
+    // (they are a public smoke contract); this list is the layer above them, so
+    // the rail can say what a player wants -- Play, Content, Settings -- while
+    // six surfaces keep their numbers underneath.
+    const AppUiDestination kMainDestinations[] = {AppUiDestination::Play,
+                                                  AppUiDestination::Content,
+                                                  AppUiDestination::Settings};
+    for (AppUiDestination destination : kMainDestinations) {
+        if (drawRailPanelItem(
+                AppUi_destinationLabel(destination),
+                AppUi_destinationSelected(destination, activePanel))) {
+            Launcher_requestTab(state,
+                                AppUi_defaultPanelForDestination(destination),
+                                kLauncherTabPlayer);
         }
+        /*
+         * Online Room is a way to play, so it is nested under Play rather than
+         * standing beside it -- but it must stay REACHABLE while it is nested,
+         * which is why it is drawn here and not merely routed. Its three build
+         * states are unchanged: panelVisible() still decides whether a build
+         * has the surface at all.
+         */
+        if (destination == AppUiDestination::Play &&
+            panelVisible(kLauncherPanelOnlineRoom)) {
+            ImGui::Indent(ui::kGapM);
+            if (drawRailPanelItem(kPanels[kLauncherPanelOnlineRoom].label,
+                                  activePanel == kLauncherPanelOnlineRoom)) {
+                Launcher_requestTab(state, kLauncherPanelOnlineRoom,
+                                    kLauncherTabPlayer);
+            }
+            ImGui::Unindent(ui::kGapM);
+        }
+    }
+
+    // About & support sits under a rule: one click away, never competing with
+    // the three destinations a player opened the launcher for.
+    ui::Gap(ui::kGapS);
+    ui::BrandRule();
+    ui::Gap(ui::kGapS);
+    if (drawRailPanelItem(
+            AppUi_destinationLabel(AppUiDestination::Support),
+            AppUi_destinationSelected(AppUiDestination::Support,
+                                      activePanel))) {
+        Launcher_requestTab(
+            state, AppUi_defaultPanelForDestination(AppUiDestination::Support),
+            kLauncherTabPlayer);
     }
 
     ImGui::EndChild();

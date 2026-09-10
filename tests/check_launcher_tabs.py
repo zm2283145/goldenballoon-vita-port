@@ -127,11 +127,23 @@ def selected_components(path: Path) -> tuple[int, int, int, int, int, int, int]:
             classified[x] != classified[x - 1]
             for x in range(1, width)
         )
-        if colored >= int(width * 0.70) and transitions >= 50:
+        # The motif is now an ACCENT, not a band: a short checkered flag at the
+        # leading edge anchoring a hairline that spans the rule. A full-width
+        # alternating row was the old shape -- at 4px tiles it read as a
+        # barcode, so this gate asks for the flag it was really there to prove.
+        leading = classified[:int(width * 0.25)]
+        flag_pixels = sum(value != 0 for value in leading)
+        transitions = sum(
+            leading[x] != 0 and leading[x - 1] != 0 and
+            leading[x] != leading[x - 1]
+            for x in range(1, len(leading))
+        )
+        if flag_pixels >= 16 and transitions >= 4:
             rule_found = True
             break
     if not rule_found:
-        raise CaptureError("alternating gold/cobalt brand rule is missing")
+        raise CaptureError(
+            "checkered gold/cobalt brand flag is missing from the rule")
 
     # Ratios make the gate independent of Retina capture scale. The crop owns
     # only the four navigation destinations: it excludes the brand, Quit,
