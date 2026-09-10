@@ -61,27 +61,34 @@ def platinum_icon(path: Path) -> None:
     path.write_bytes(png(size, size, bytes(data)))
 
 
-def xml() -> bytes:
+def xml(configuration_only: bool = False) -> bytes:
     # The parser requires a 160-byte Sce-Np-Trophy-Signature record before
     # trophyconf even when NoTrpDrm is installed to bypass its verification.
     # Keep a structurally valid development placeholder; do not omit it.
     signature = (bytes.fromhex("4c39b98c0100000000000000") + bytes(148)).hex()
     lines = [
         f'<!--Sce-Np-Trophy-Signature: {signature}-->',
-        '<trophyconf version="1.1">', f' <npcommid>{COMM_ID}</npcommid>',
+        '<trophyconf version="1.1" platform="psp2" policy="large">',
+        f' <npcommid>{COMM_ID}</npcommid>',
         ' <trophyset-version>01.00</trophyset-version>',
         ' <parental-level license-area="default">0</parental-level>',
-        ' <title-name>Golden Balloon DKR</title-name>',
-        ' <title-detail>Diddy Kong Racing Vita trophy set</title-detail>',
-        ' <group id="001"><name>Time Trial Challenges</name><detail>Optional T.T. and developer time trials.</detail></group>',
     ]
+    if not configuration_only:
+        lines.extend((
+            ' <title-name>Golden Balloon DKR</title-name>',
+            ' <title-detail>Diddy Kong Racing Vita trophy set</title-detail>',
+            ' <group id="001"><name>Time Trial Challenges</name><detail>Optional T.T. and developer time trials.</detail></group>',
+        ))
     for tid, grade, parent, group, name, detail in TROPHIES:
         attrs = f'id="{tid:03d}" hidden="no" ttype="{grade}" pid="{parent:03d}"'
         if parent < 0:
             attrs = f'id="{tid:03d}" hidden="no" ttype="{grade}" pid="-1"'
         if group is not None:
             attrs += f' gid="{group:03d}"'
-        lines.extend((f' <trophy {attrs}>', f'  <name>{escape(name)}</name>', f'  <detail>{escape(detail)}</detail>', ' </trophy>'))
+        if configuration_only:
+            lines.append(f' <trophy {attrs}/>')
+        else:
+            lines.extend((f' <trophy {attrs}>', f'  <name>{escape(name)}</name>', f'  <detail>{escape(detail)}</detail>', ' </trophy>'))
     lines.append('</trophyconf>')
     return ('\n'.join(lines) + '\n').encode('utf-8')
 
@@ -98,7 +105,7 @@ def trp(files: dict[str, bytes]) -> bytes:
         table.append(name.encode('ascii').ljust(32, b'\0') + struct.pack('>QQI12x', offset, len(payload), 0))
         offset += len(payload)
     image = bytearray(offset)
-    image[:header_size] = struct.pack('>IIQIII20s16x', 0xDCA24D00, 2, offset, len(entries), entry_size, 1, b'\0' * 20)
+    image[:header_size] = struct.pack('>IIQIII20s16x', 0xDCA24D00, 2, offset, len(entries), entry_size, 0, b'\0' * 20)
     image[header_size:header_size + len(entries) * entry_size] = b''.join(table)
     for position, payload in bodies:
         image[position:position + len(payload)] = payload
@@ -117,7 +124,15 @@ def main() -> None:
     work.mkdir(exist_ok=True)
     platinum = work / 'TROP000.PNG'
     platinum_icon(platinum)
-    files = {'TROP.SFM': xml(), 'ICON0.PNG': args.livearea_icon.read_bytes(), 'GR001.PNG': args.livearea_icon.read_bytes()}
+    # Vita's setup dialog first consumes the compact configuration manifest,
+    # then reads the localized trophy metadata. Without TROPCONF.SFM it reports
+    # NP-6182-7 even when the archive itself is present at the correct path.
+    files = {
+        'TROPCONF.SFM': xml(configuration_only=True),
+        'TROP.SFM': xml(),
+        'ICON0.PNG': args.livearea_icon.read_bytes(),
+        'GR001.PNG': args.livearea_icon.read_bytes(),
+    }
     for tid, *_ in TROPHIES:
         files[f'TROP{tid:03d}.PNG'] = platinum.read_bytes() if tid == 0 else args.livearea_icon.read_bytes()
     args.out.write_bytes(trp(files))
