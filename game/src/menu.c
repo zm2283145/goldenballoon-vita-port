@@ -15273,7 +15273,9 @@ s32 menu_trophy_race_rankings_loop(s32 updateRate) {
                                 // `worldId - 1` doubled is a negative/UB shift
                                 // count whenever worldId <= 0 (WORLD_NONE=-1,
                                 // WORLD_CENTRAL_AREA=0). mdkr_trophy_state()
-                                // already exists and bounds worldId to 1..4 for
+                                // already exists and bounds worldId to each of
+                                // the five Trophy Race worlds (including Future
+                                // Fun Land) for
                                 // the two READ sites of this same trophies
                                 // field (object_functions.c, objects.c); this
                                 // WRITE site was left doing the raw shift.

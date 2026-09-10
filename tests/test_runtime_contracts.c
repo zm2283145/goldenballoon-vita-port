@@ -116,8 +116,9 @@ static int test_safety_domains(void) {
     REQUIRE(mdkr_trophy_state(UINT32_C(0xE4), 2, &value) && value == 1);
     REQUIRE(mdkr_trophy_state(UINT32_C(0xE4), 3, &value) && value == 2);
     REQUIRE(mdkr_trophy_state(UINT32_C(0xE4), 4, &value) && value == 3);
+    REQUIRE(mdkr_trophy_state(UINT32_C(0x3E4), 5, &value) && value == 3);
     REQUIRE(!mdkr_trophy_state(UINT32_MAX, 0, &value));
-    REQUIRE(!mdkr_trophy_state(UINT32_MAX, 5, &value));
+    REQUIRE(!mdkr_trophy_state(UINT32_MAX, 6, &value));
 
     REQUIRE(mdkr_extension_bit('A', &value) && value == 1);
     REQUIRE(mdkr_extension_bit('Z', &value) && value == (UINT32_C(1) << 25));

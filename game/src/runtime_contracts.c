@@ -116,7 +116,12 @@ s32 mdkr_course_flag(s32 index, u32 *flag) {
 }
 
 s32 mdkr_trophy_state(u32 trophies, s32 worldId, u32 *state) {
-    if (state == NULL || worldId < 1 || worldId > 4) {
+    /* The packed field has two bits for every Trophy Race world, including
+     * Future Fun Land. Keeping that final world in the shared read/write
+     * contract prevents a completed Future Fun Land series from being silently
+     * discarded and its Wizpig statue from being omitted. */
+    if (state == NULL || worldId < WORLD_DINO_DOMAIN ||
+        worldId > WORLD_FUTURE_FUN_LAND) {
         return FALSE;
     }
     *state = (trophies >> ((u32) (worldId - 1) * 2U)) & 3U;
