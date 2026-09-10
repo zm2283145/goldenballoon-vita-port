@@ -13,9 +13,10 @@ import zlib
 from pathlib import Path
 from xml.sax.saxutils import escape
 
-COMM_ID = "GBLN00001_00"
+MAIN_COMM_ID = "GBLN00001_00"
+BONUS_COMM_ID = "GBLN00001_01"
 
-TROPHIES = [
+MAIN_TROPHIES = [
     (0, "P", -1, None, "Golden Balloon", "Earn every main-game trophy."),
     (1, "B", 0, None, "Collectibles, In a Racing Game", "Obtain your first Balloon."),
     (2, "G", 0, None, "Race Against a Giant Pig", "Collect all four pieces of the Wizpig Amulet."),
@@ -32,6 +33,14 @@ TROPHIES = [
     (13, "S", 0, None, "Future Funland Trophy", "Complete the Trophy Race in Future Funland."),
     (14, "G", 0, None, "Race Against a Running Pig", "Defeat Wizpig in a race."),
     (15, "G", 0, None, "Race Against an Angry Pig. In Space!", "Win against Wizpig again."),
+]
+
+# This is a distinct Vita trophy set, so it deliberately has neither a
+# platinum nor a parent trophy. The time-trial triggers are added separately;
+# this archive/registering pass makes the set visible to the Trophy app first.
+BONUS_TROPHIES = [
+    (0, "S", -1, None, "T.T. Time Trial Champion", "Defeat T.T.'s time on every course."),
+    (1, "G", -1, None, "Developer Time Trial Champion", "Defeat every developer time trial."),
 ]
 
 
@@ -119,7 +128,8 @@ def platinum_icon(path: Path) -> None:
     path.write_bytes(png(size, size, bytes(data)))
 
 
-def xml(configuration_only: bool = False) -> bytes:
+def xml(trophies: list[tuple], comm_id: str, version: str,
+        configuration_only: bool = False) -> bytes:
     # NoTrpDrm recognizes the conventional 160-byte development placeholder
     # (encoded here as 320 literal `x` characters). This exact representation
     # is used by working unsigned Vita trophy packs; a fabricated hex record
@@ -128,8 +138,8 @@ def xml(configuration_only: bool = False) -> bytes:
     lines = [
         f'<!--Sce-Np-Trophy-Signature: {signature}-->',
         '<trophyconf version="1.1" platform="psp2" policy="large">',
-        f' <npcommid>{COMM_ID}</npcommid>',
-        ' <trophyset-version>01.00</trophyset-version>',
+        f' <npcommid>{comm_id}</npcommid>',
+        f' <trophyset-version>{version}</trophyset-version>',
         ' <parental-level license-area="default">0</parental-level>',
     ]
     if not configuration_only:
@@ -137,7 +147,7 @@ def xml(configuration_only: bool = False) -> bytes:
             ' <title-name>Golden Balloon DKR</title-name>',
             ' <title-detail>Diddy Kong Racing Vita trophy set</title-detail>',
         ))
-    for tid, grade, parent, group, name, detail in TROPHIES:
+    for tid, grade, parent, group, name, detail in trophies:
         attrs = f'id="{tid:03d}" hidden="no" ttype="{grade}" pid="{parent:03d}"'
         if parent < 0:
             attrs = f'id="{tid:03d}" hidden="no" ttype="{grade}" pid="-1"'
@@ -182,7 +192,12 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--livearea-icon', type=Path, required=True)
+    parser.add_argument('--set', choices=('main', 'bonus'), default='main')
+    parser.add_argument('--version')
     args = parser.parse_args()
+    trophies = MAIN_TROPHIES if args.set == 'main' else BONUS_TROPHIES
+    comm_id = MAIN_COMM_ID if args.set == 'main' else BONUS_COMM_ID
+    version = args.version or '01.00'
     args.out.parent.mkdir(parents=True, exist_ok=True)
     work = args.out.parent / 'generated_trophy_assets'
     work.mkdir(exist_ok=True)
@@ -192,18 +207,20 @@ def main() -> None:
     # then reads the localized trophy metadata. Without TROPCONF.SFM it reports
     # NP-6182-7 even when the archive itself is present at the correct path.
     files = {
-        'TROPCONF.SFM': xml(configuration_only=True),
-        'TROP.SFM': xml(),
+        'TROPCONF.SFM': xml(trophies, comm_id, version, configuration_only=True),
+        'TROP.SFM': xml(trophies, comm_id, version),
         # Trophy assets have fixed Vita dimensions: title/group images are
         # 320x176 and individual trophy images are 240x240. LiveArea's icon
         # is only 128x128, so never insert it into the archive verbatim.
         'ICON0.PNG': resize_png(args.livearea_icon, 320, 176),
     }
-    for tid, *_ in TROPHIES:
-        files[f'TROP{tid:03d}.PNG'] = platinum.read_bytes() if tid == 0 else resize_png(args.livearea_icon, 240, 240)
+    for tid, *_ in trophies:
+        files[f'TROP{tid:03d}.PNG'] = (platinum.read_bytes()
+                                       if args.set == 'main' and tid == 0
+                                       else resize_png(args.livearea_icon, 240, 240))
     args.out.write_bytes(trp(files))
     shutil.rmtree(work)
-    print(f'wrote {args.out} ({args.out.stat().st_size} bytes, {len(TROPHIES)} trophies)')
+    print(f'wrote {args.out} ({args.out.stat().st_size} bytes, {len(trophies)} trophies, {comm_id})')
 
 
 if __name__ == '__main__':

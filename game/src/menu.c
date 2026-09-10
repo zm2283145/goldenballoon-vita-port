@@ -4110,6 +4110,9 @@ void menu_missing_controller(Gfx **dList, s32 updateRate) {
  * It then sets a 16 second timer that will count down.
  */
 void menu_logos_screen_init(void) {
+#ifdef NATIVE_PORT
+    mdkr_vita_trophy_register();
+#endif
     gMenuDelay = 0;
     sBootScreenTimer = 16.0f;
     bgdraw_fillcolour(0, 0, 0);
@@ -4577,12 +4580,6 @@ s32 menu_title_screen_loop(s32 updateRate) {
 #endif
         }
         if (gMenuButtons[PLAYER_MENU] & (A_BUTTON | START_BUTTON)) {
-#ifdef NATIVE_PORT
-            /* The registration dialog is deliberately tied to the confirmed
-             * Press Start action: vitaGL is initialized, no save has to be
-             * loaded yet, and the Trophy app can list this title immediately. */
-            mdkr_vita_trophy_register();
-#endif
             for (contrIndex = 3; contrIndex > 0 && !(gMenuButtons[contrIndex] & (A_BUTTON | START_BUTTON));
                  contrIndex--) {}
             titlescreen_controller_assign(contrIndex);
