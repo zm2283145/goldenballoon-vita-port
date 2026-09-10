@@ -87,7 +87,11 @@ static int trophy_ready(void) {
      * manifest's <npcommid> retains its distinct 12-character _00/_01
      * suffix, but passing that suffix to this API causes setup to reject the
      * otherwise valid archive. */
-    static const char communicationId[] = "GBLN00001";
+    /* sceNpTrophy's undocumented ABI reads the fixed 12-byte communication
+     * identifier buffer. Keep the trailing three bytes zeroed, as in the
+     * established FF4A and Ghostship integrations, rather than passing a
+     * shorter C string with unspecified bytes beyond its terminator. */
+    static const char communicationId[12] = "GBLN00001";
     /* NoTrpDrm bypasses the per-title signature verification, but the trophy
      * service still expects the normal signature header to be present. */
     static const unsigned char signature[160] = { 0xb9, 0xdd, 0xe1, 0x3b, 0x01, 0x00 };
