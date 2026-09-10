@@ -5774,7 +5774,9 @@ static void save_editor_render(void) {
             value[0] = '\0';
         }
         if (value[0] != '\0') {
-            draw_text(&sMenuCurrDisplayList, 250, yPos, value, ALIGN_TOP_LEFT);
+            /* Keep the value column inside the 320px Vita viewport. Some
+             * track/world labels are too wide when they start at x=250. */
+            draw_text(&sMenuCurrDisplayList, 304, yPos, value, ALIGN_TOP_RIGHT);
         }
     }
     set_text_colour(255, 255, 128, 0, 255);

@@ -246,6 +246,17 @@ def main() -> None:
     work.mkdir(exist_ok=True)
     platinum = work / 'TROP000.PNG'
     platinum_icon(platinum)
+    trophy_assets = Path(__file__).parent.parent / 'vita' / 'trophy' / 'achievements'
+    missing_assets = [
+        trophy_assets / f'{tid:03d}.png'
+        for tid, *_ in TROPHIES
+        if tid != 0 and not (trophy_assets / f'{tid:03d}.png').is_file()
+    ]
+    if missing_assets:
+        names = ', '.join(path.name for path in missing_assets)
+        raise FileNotFoundError(
+            f'missing trophy artwork in {trophy_assets}: {names}'
+        )
     # Vita's setup dialog first consumes the compact configuration manifest,
     # then reads the localized trophy metadata. Without TROPCONF.SFM it reports
     # NP-6182-7 even when the archive itself is present at the correct path.
@@ -261,7 +272,14 @@ def main() -> None:
         'GR002.PNG': resize_png(Path(__file__).parent.parent / 'vita' / 'trophy' / 'time_trials.png', 320, 176),
     }
     for tid, *_ in TROPHIES:
-        files[f'TROP{tid:03d}.PNG'] = platinum.read_bytes() if tid == 0 else resize_png(args.livearea_icon, 240, 240)
+        # IDs 001-094 are the authorized unlocked RetroAchievements badges.
+        # IDs 095-097 are original badges for the port-exclusive racers. Do not
+        # fall back to the LiveArea icon: that makes a missing asset invisible
+        # until it reaches the Vita Trophy app.
+        asset = trophy_assets / f'{tid:03d}.png'
+        files[f'TROP{tid:03d}.PNG'] = (
+            platinum.read_bytes() if tid == 0 else resize_png(asset, 240, 240)
+        )
     args.out.write_bytes(trp(files))
     shutil.rmtree(work)
     print(f'wrote {args.out} ({args.out.stat().st_size} bytes, {len(TROPHIES)} trophies, {COMM_ID})')
