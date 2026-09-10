@@ -162,6 +162,13 @@ static void unlock(unsigned trophyId) {
     sSubmitted |= bit;
 }
 
+void mdkr_vita_trophy_register(void) {
+    /* Trophy setup owns the system-side title entry. Do it as the player
+     * leaves Press Start, rather than making a first unlock create it as a
+     * side effect. trophy_ready() is idempotent after setup succeeds. */
+    (void) trophy_ready();
+}
+
 void mdkr_vita_trophy_pump(const struct Settings *settings) {
     unsigned trophyState;
     if (!sLoggedPump) {
@@ -200,6 +207,8 @@ void mdkr_vita_trophy_pump(const struct Settings *settings) {
 }
 
 #else
+
+void mdkr_vita_trophy_register(void) {}
 
 void mdkr_vita_trophy_pump(const struct Settings *settings) {
     (void)settings;

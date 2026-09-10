@@ -8,4 +8,8 @@ struct Settings;
 // It is safe to call once per game tick.
 void mdkr_vita_trophy_pump(const struct Settings *settings);
 
+// Starts the Vita trophy setup/registration flow once graphics are live. This
+// is independent of save data and is intended for the title screen's Start.
+void mdkr_vita_trophy_register(void);
+
 #endif
