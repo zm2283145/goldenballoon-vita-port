@@ -32,6 +32,7 @@
 #if defined(__vita__)
 #include <vitaGL.h>
 #include <psp2/kernel/threadmgr.h>
+#include <sys/stat.h>
 #elif defined(MGB64_PORTMASTER_GLES)
 #include <GLES3/gl32.h>
 #elif defined(__APPLE__)
@@ -55,6 +56,154 @@
 extern void mdkr_vita_boot_log(const char *msg);
 extern void mdkr_vita_boot_log_flush(void);
 extern int mdkr_vita_debug_enabled(void);
+
+#define MDKR_VITA_SHADER_CACHE_MAGIC UINT32_C(0x47425343)
+#define MDKR_VITA_SHADER_CACHE_VERSION UINT32_C(1)
+#define MDKR_VITA_SHADER_CACHE_MAX_BINARY (1024u * 1024u)
+
+struct MdkrVitaShaderCacheHeader {
+    uint32_t magic;
+    uint32_t version;
+    uint64_t source_hash;
+    uint32_t binary_format;
+    uint32_t binary_size;
+};
+
+static uint64_t mdkr_vita_shader_hash_bytes(uint64_t hash, const void *data,
+                                            size_t size) {
+    const unsigned char *bytes = (const unsigned char *)data;
+    size_t i;
+    for (i = 0; i < size; i++) {
+        hash ^= bytes[i];
+        hash *= UINT64_C(1099511628211);
+    }
+    return hash;
+}
+
+static uint64_t mdkr_vita_shader_source_hash(const char *vs, size_t vs_len,
+                                             const char *fs, size_t fs_len) {
+    uint64_t hash = UINT64_C(1469598103934665603);
+    hash = mdkr_vita_shader_hash_bytes(hash, vs, vs_len);
+    hash = mdkr_vita_shader_hash_bytes(hash, fs, fs_len);
+    return hash;
+}
+
+static void mdkr_vita_shader_cache_path(char *path, size_t path_size,
+                                        uint64_t shader_id0, uint32_t shader_id1,
+                                        uint64_t source_hash) {
+    snprintf(path, path_size,
+             "ux0:data/goldenballoon/shader_cache/%016llx_%08x_%016llx.bin",
+             (unsigned long long)shader_id0, (unsigned)shader_id1,
+             (unsigned long long)source_hash);
+}
+
+static void mdkr_vita_shader_cache_ensure_dir(void) {
+    static int attempted;
+    if (attempted) return;
+    attempted = 1;
+    (void)mkdir("ux0:data/goldenballoon/shader_cache", 0700);
+}
+
+static int mdkr_vita_shader_cache_load(uint64_t shader_id0, uint32_t shader_id1,
+                                       uint64_t source_hash, GLuint *program_out) {
+    struct MdkrVitaShaderCacheHeader header;
+    char path[192];
+    void *binary = NULL;
+    FILE *file;
+    GLuint program;
+    GLint linked = GL_FALSE;
+
+    mdkr_vita_shader_cache_ensure_dir();
+    mdkr_vita_shader_cache_path(path, sizeof(path), shader_id0, shader_id1,
+                                source_hash);
+    file = fopen(path, "rb");
+    if (file == NULL) return 0;
+    if (fread(&header, 1, sizeof(header), file) != sizeof(header) ||
+        header.magic != MDKR_VITA_SHADER_CACHE_MAGIC ||
+        header.version != MDKR_VITA_SHADER_CACHE_VERSION ||
+        header.source_hash != source_hash || header.binary_size == 0 ||
+        header.binary_size > MDKR_VITA_SHADER_CACHE_MAX_BINARY) {
+        fclose(file);
+        remove(path);
+        return 0;
+    }
+    binary = malloc(header.binary_size);
+    if (binary == NULL ||
+        fread(binary, 1, header.binary_size, file) != header.binary_size) {
+        free(binary);
+        fclose(file);
+        remove(path);
+        return 0;
+    }
+    fclose(file);
+    program = glCreateProgram();
+    glProgramBinary(program, header.binary_format, binary,
+                    (GLsizei)header.binary_size);
+    free(binary);
+    glGetProgramiv(program, GL_LINK_STATUS, &linked);
+    if (linked != GL_TRUE) {
+        GLenum error;
+        glDeleteProgram(program);
+        remove(path);
+        while ((error = glGetError()) != GL_NO_ERROR) {
+            (void)error;
+        }
+        return 0;
+    }
+    *program_out = program;
+    return 1;
+}
+
+static void mdkr_vita_shader_cache_store(uint64_t shader_id0,
+                                         uint32_t shader_id1,
+                                         uint64_t source_hash,
+                                         GLuint program) {
+    struct MdkrVitaShaderCacheHeader header;
+    GLint requested_size = 0;
+    GLsizei actual_size = 0;
+    GLenum format = 0;
+    void *binary;
+    char path[192];
+    char temp_path[200];
+    FILE *file;
+
+    glGetProgramiv(program, GL_PROGRAM_BINARY_LENGTH, &requested_size);
+    if (requested_size <= 0 ||
+        (unsigned)requested_size > MDKR_VITA_SHADER_CACHE_MAX_BINARY) return;
+    binary = malloc((size_t)requested_size);
+    if (binary == NULL) return;
+    glGetProgramBinary(program, requested_size, &actual_size, &format, binary);
+    if (actual_size <= 0 || actual_size > requested_size) {
+        free(binary);
+        return;
+    }
+    header.magic = MDKR_VITA_SHADER_CACHE_MAGIC;
+    header.version = MDKR_VITA_SHADER_CACHE_VERSION;
+    header.source_hash = source_hash;
+    header.binary_format = (uint32_t)format;
+    header.binary_size = (uint32_t)actual_size;
+    mdkr_vita_shader_cache_ensure_dir();
+    mdkr_vita_shader_cache_path(path, sizeof(path), shader_id0, shader_id1,
+                                source_hash);
+    snprintf(temp_path, sizeof(temp_path), "%s.tmp", path);
+    file = fopen(temp_path, "wb");
+    if (file != NULL) {
+        int write_ok =
+            fwrite(&header, 1, sizeof(header), file) == sizeof(header) &&
+            fwrite(binary, 1, (size_t)actual_size, file) == (size_t)actual_size;
+        if (fclose(file) != 0) write_ok = 0;
+        file = NULL;
+        if (write_ok) {
+            remove(path);
+            rename(temp_path, path);
+        } else {
+            remove(temp_path);
+        }
+    } else {
+        remove(temp_path);
+    }
+    free(binary);
+}
 #else
 #define mdkr_vita_boot_log(msg) ((void)0)
 #define mdkr_vita_boot_log_flush() ((void)0)
@@ -1925,6 +2074,23 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
     const GLchar *sources[2] = { vs_buf, fs_buf };
     const GLint lengths[2] = { (GLint)vs_len, (GLint)fs_len };
     GLint success;
+    GLuint shader_program = 0;
+#if defined(__vita__)
+    const uint64_t source_hash =
+        mdkr_vita_shader_source_hash(vs_buf, vs_len, fs_buf, fs_len);
+    if (mdkr_vita_shader_cache_load(shader_id0, shader_id1, source_hash,
+                                    &shader_program)) {
+        if (mdkr_vita_debug_enabled()) {
+            char lb[160];
+            snprintf(lb, sizeof(lb),
+                     "shader: disk cache hit id0=0x%llx id1=0x%x hash=0x%llx",
+                     (unsigned long long)shader_id0, (unsigned)shader_id1,
+                     (unsigned long long)source_hash);
+            mdkr_vita_boot_log(lb);
+        }
+        goto shader_program_ready;
+    }
+#endif
 
     GLuint vertex_shader = glCreateShader(GL_VERTEX_SHADER);
     glShaderSource(vertex_shader, 1, &sources[0], &lengths[0]);
@@ -1985,7 +2151,7 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
         abort();
     }
 
-    GLuint shader_program = glCreateProgram();
+    shader_program = glCreateProgram();
     glAttachShader(shader_program, vertex_shader);
     glAttachShader(shader_program, fragment_shader);
 #if defined(__vita__)
@@ -2024,6 +2190,11 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
         glDeleteProgram(shader_program);
         abort();
     }
+#if defined(__vita__)
+    mdkr_vita_shader_cache_store(shader_id0, shader_id1, source_hash,
+                                 shader_program);
+shader_program_ready:
+#endif
 
     size_t cnt = 0;
     if (shader_program_pool_size >= shader_program_pool_cap) {

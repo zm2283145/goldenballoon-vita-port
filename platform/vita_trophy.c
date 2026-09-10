@@ -9,6 +9,7 @@
 #ifdef __vita__
 
 #include <psp2/common_dialog.h>
+#include <psp2/kernel/threadmgr.h>
 #include <psp2/sysmodule.h>
 #include <vitaGL.h>
 #include <stdarg.h>
@@ -22,6 +23,7 @@ extern int sceNpTrophyInit(void *options);
 extern int sceNpTrophyCreateContext(int *context, const void *commId,
                                     const void *commSignature, uint64_t options);
 extern int sceNpTrophyCreateHandle(int *handle);
+extern int sceNpTrophyDestroyHandle(int handle);
 extern int sceNpTrophySetupDialogInit(void *param);
 extern SceCommonDialogStatus sceNpTrophySetupDialogGetStatus(void);
 extern int sceNpTrophySetupDialogTerm(void);
@@ -65,6 +67,21 @@ static int sTrophyHandle = -1;
  * enough for every ID; the Vita service remains the persistence authority. */
 static uint32_t sSubmitted[(98 + 31) / 32];
 static uint32_t sUnlocked[(98 + 31) / 32];
+/* sceNpTrophyUnlockTrophy can take seconds while the shell writes its database
+ * and presents the notification. Never make the game/render thread wait for
+ * that work. Unlike Ghostship's one-request hand-off, this queue can absorb a
+ * full save reconciliation without blocking between adjacent trophies. */
+static unsigned char sPendingTrophies[98];
+static volatile unsigned sPendingRead;
+static volatile unsigned sPendingWrite;
+static SceUID sTrophyRequestSema = -1;
+static SceUID sTrophyWorkerThread = -1;
+static int sTrophyWorkerReady;
+static volatile unsigned sTrophyCompletionSerial;
+static volatile unsigned sTrophyCompletionId;
+static volatile int sTrophyCompletionResult;
+static volatile int sTrophyCompletionPlatinum;
+static unsigned sLoggedCompletionSerial;
 static int sUnavailable;
 static int sLoggedSettings;
 static int sLoggedPump;
@@ -113,6 +130,75 @@ static void trophy_log(const char *format, ...) {
      * producer during a short test run. Persist each line immediately so an
      * app exit or a crash cannot hide the actual trophy-service return code. */
     mdkr_vita_boot_log_flush();
+}
+
+static int trophy_unlock_worker(SceSize args, void *argp) {
+    (void)args;
+    (void)argp;
+    for (;;) {
+        unsigned trophyId;
+        unsigned word;
+        uint32_t bit;
+        int handle = -1;
+        int platinumId = -1;
+        int result;
+
+        if (sceKernelWaitSema(sTrophyRequestSema, 1, NULL) < 0) continue;
+        /* Signal/wait on the kernel semaphore supplies the publication barrier
+         * between this single producer and single consumer. The submitted bit
+         * makes the lifetime total no larger than this 98-entry queue. */
+        trophyId = sPendingTrophies[sPendingRead % 98];
+        sPendingRead++;
+        result = sceNpTrophyCreateHandle(&handle);
+        if (result >= 0) {
+            result = sceNpTrophyUnlockTrophy(sTrophyContext, handle,
+                                             (int)trophyId, &platinumId);
+            sceNpTrophyDestroyHandle(handle);
+        }
+        if (result >= 0) {
+            word = trophyId / 32;
+            bit = UINT32_C(1) << (trophyId % 32);
+            __sync_fetch_and_or(&sUnlocked[word], bit);
+        }
+        sTrophyCompletionId = trophyId;
+        sTrophyCompletionResult = result;
+        sTrophyCompletionPlatinum = platinumId;
+        __sync_synchronize();
+        sTrophyCompletionSerial++;
+    }
+    return 0;
+}
+
+static void trophy_start_unlock_worker(void) {
+    int result;
+    if (sTrophyWorkerReady) return;
+    sTrophyRequestSema = sceKernelCreateSema("mdkr trophy requests", 0, 0, 98,
+                                             NULL);
+    if (sTrophyRequestSema < 0) {
+        trophy_log("trophy worker semaphore=0x%08X", sTrophyRequestSema);
+        return;
+    }
+    sTrophyWorkerThread = sceKernelCreateThread(
+        "mdkr trophy unlocker", trophy_unlock_worker, 0x10000100, 0x40000,
+        0, 0, NULL);
+    if (sTrophyWorkerThread < 0) {
+        trophy_log("trophy worker thread=0x%08X", sTrophyWorkerThread);
+        return;
+    }
+    result = sceKernelStartThread(sTrophyWorkerThread, 0, NULL);
+    trophy_log("trophy worker start=0x%08X thread=0x%08X", result,
+               sTrophyWorkerThread);
+    if (result >= 0) sTrophyWorkerReady = 1;
+}
+
+static void trophy_poll_worker_completion(void) {
+    unsigned serial = sTrophyCompletionSerial;
+    if (serial == sLoggedCompletionSerial) return;
+    __sync_synchronize();
+    trophy_log("unlock async id=%u result=0x%08X platinum=%d",
+               sTrophyCompletionId, sTrophyCompletionResult,
+               sTrophyCompletionPlatinum);
+    sLoggedCompletionSerial = serial;
 }
 
 static int trophy_service_ready(void) {
@@ -188,6 +274,7 @@ unavailable:
         trophy_log("unlock state=0x%08X count=%u", result, count);
         if (result < 0) memset(sUnlocked, 0, sizeof(sUnlocked));
     }
+    trophy_start_unlock_worker();
     return 1;
 }
 
@@ -200,6 +287,19 @@ static void unlock(unsigned trophyId) {
     word = trophyId / 32;
     bit = 1u << (trophyId % 32);
     if ((sSubmitted[word] & bit) != 0) return;
+    if (sTrophyWorkerReady) {
+        /* Publish the request before waking the worker. There are at most 98
+         * unique submissions per process, so this queue never fills or makes
+         * the frame wait for an earlier system notification. */
+        sSubmitted[word] |= bit;
+        sPendingTrophies[sPendingWrite % 98] = (unsigned char)trophyId;
+        sPendingWrite++;
+        __sync_synchronize();
+        if (sceKernelSignalSema(sTrophyRequestSema, 1) >= 0) return;
+        /* A failed signal is extremely unusual. Fall through to the original
+         * synchronous path so an achievement is not silently discarded. */
+        sPendingWrite--;
+    }
     /* An already-unlocked result is intentionally treated as submitted: the
      * system owns persistence, while this guard prevents an every-frame retry. */
     result = sceNpTrophyUnlockTrophy(sTrophyContext, sTrophyHandle, (int)trophyId,
@@ -211,6 +311,7 @@ static void unlock(unsigned trophyId) {
 }
 
 int mdkr_vita_trophy_is_unlocked(unsigned trophyId) {
+    trophy_poll_worker_completion();
     if (trophyId >= 98 || !trophy_ready()) return 0;
     return (sUnlocked[trophyId / 32] & (UINT32_C(1) << (trophyId % 32))) != 0;
 }
@@ -346,6 +447,7 @@ void mdkr_vita_trophy_pump(const struct Settings *settings) {
     unsigned trophyState;
     int adventureTwo;
     unsigned track;
+    trophy_poll_worker_completion();
     if (!sLoggedPump) {
         trophy_log("trophy pump settings=%p balloons=%p newGame=%d", (void *) settings,
                    settings != NULL ? (void *) settings->balloonsPtr : NULL,
