@@ -62,7 +62,12 @@ def platinum_icon(path: Path) -> None:
 
 
 def xml() -> bytes:
+    # The parser requires a 160-byte Sce-Np-Trophy-Signature record before
+    # trophyconf even when NoTrpDrm is installed to bypass its verification.
+    # Keep a structurally valid development placeholder; do not omit it.
+    signature = (bytes.fromhex("4c39b98c0100000000000000") + bytes(148)).hex()
     lines = [
+        f'<!--Sce-Np-Trophy-Signature: {signature}-->',
         '<trophyconf version="1.1">', f' <npcommid>{COMM_ID}</npcommid>',
         ' <trophyset-version>01.00</trophyset-version>',
         ' <parental-level license-area="default">0</parental-level>',
