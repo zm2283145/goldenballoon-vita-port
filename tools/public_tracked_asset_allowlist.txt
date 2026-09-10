@@ -2,6 +2,7 @@
 # The release guard rejects any new binary or dist/ path until it is reviewed
 # and added here. Keep this list sorted.
 brand/appicon-source.png
+brand/hero.png
 dist/web/_headers
 dist/web/assets/apple-touch-icon.png
 dist/web/assets/favicon-32.png
