@@ -81,6 +81,12 @@ bool Settings_drawCharacterWorkshop(SDL_Window *window,
 
 // One-shot request raised by the Settings shortcut. The launcher owns panel
 // routing, so the shared settings module never reaches into LauncherState.
+// Draw the installed-pack accounting -- every pack the scan found, and every
+// one it skipped with the reason. Owned by the settings module because that is
+// where the registry plumbing lives; drawn by the Content destination, which is
+// where a player looks for it.
+bool Settings_drawContentPacks(SDL_Window *window, bool compact);
+
 bool Settings_takeCharacterWorkshopOpenRequest();
 
 // Publish the immutable numeric donor summary extracted while the launcher

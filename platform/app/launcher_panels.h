@@ -21,6 +21,10 @@ constexpr int kLauncherPanelDiagnostics = 3;
 constexpr int kLauncherPanelAbout = 4;
 // Appended so every existing numeric panel contract remains stable.
 constexpr int kLauncherPanelCharacterWorkshop = 5;
-constexpr int kLauncherPanelCount = 6;
+// Appended, not inserted: the Content hub is where packs and characters are
+// reached from, and the Workshop keeps index 5 so every existing caller and
+// smoke target still lands where it always did.
+constexpr int kLauncherPanelContent = 6;
+constexpr int kLauncherPanelCount = 7;
 
 #endif  // MDKR64_LAUNCHER_PANELS_H

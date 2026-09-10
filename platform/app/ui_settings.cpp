@@ -2004,7 +2004,7 @@ bool drawContentSection(SDL_Window *window, bool compact,
     ui::Gap(ui::kGapS);
     if (!compact) {
         ui::TextSubtleWrapped(
-            "Put a pack's folder in the mods folder beside your saves. "
+            
             "Everything found there is listed below, installed or skipped "
             "with the reason.");
     }
@@ -28707,6 +28707,15 @@ bool Settings_drawCharacterWorkshop(SDL_Window *window, bool compact) {
     (void)window;
     drawWorkshopStatusHistory();
     return drawCustomCharactersSection(compact);
+}
+
+bool Settings_drawContentPacks(SDL_Window *window, bool compact) {
+    const MdkrModRegistry *packs = platform_content_packs_registry();
+    const MdkrVideoConfig *liveConfig = mdkr_video_config_current();
+    const char *disabledList = liveConfig != nullptr
+        ? liveConfig->values[MDKR_CONTENT_PACK_DISABLED].text : "";
+    traceContentPacks(packs, disabledList);
+    return drawContentSection(window, compact, packs, disabledList);
 }
 
 bool Settings_takeCharacterWorkshopOpenRequest() {

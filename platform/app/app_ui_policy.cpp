@@ -9,6 +9,7 @@ AppUiDestination AppUi_destinationForPanel(int panel) {
     switch (panel) {
         case kLauncherPanelOnlineRoom:        return AppUiDestination::Play;
         case kLauncherPanelCharacterWorkshop: return AppUiDestination::Content;
+        case kLauncherPanelContent:           return AppUiDestination::Content;
         case kLauncherPanelSettings:          return AppUiDestination::Settings;
         case kLauncherPanelDiagnostics:       return AppUiDestination::Support;
         case kLauncherPanelAbout:             return AppUiDestination::Support;
@@ -18,7 +19,7 @@ AppUiDestination AppUi_destinationForPanel(int panel) {
 
 int AppUi_defaultPanelForDestination(AppUiDestination destination) {
     switch (destination) {
-        case AppUiDestination::Content:  return kLauncherPanelCharacterWorkshop;
+        case AppUiDestination::Content:  return kLauncherPanelContent;
         case AppUiDestination::Settings: return kLauncherPanelSettings;
         // About, not Diagnostics: the support surface opens on what the build
         // IS, and carries the diagnostics report below it.

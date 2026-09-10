@@ -7,6 +7,13 @@
 #include "online/async_work_budget.h"
 #include "net/network_lifetime.h"
 #include "app_ui_policy.h"
+#include "file_dialog.h"
+
+extern "C" {
+#include "../user_paths.h"
+}
+#include <filesystem>
+#include <system_error>
 #include "app_theme.h"
 #include "app_brand.h"
 #include "ui_common.h"
@@ -41,6 +48,7 @@ struct Panel {
 
 void drawSettingsPanel(LauncherState &s, LauncherAction &out);
 void drawCharacterWorkshopPanel(LauncherState &s, LauncherAction &out);
+void drawContentPanel(LauncherState &s, LauncherAction &out);
 void drawAboutPanel(LauncherState &s, LauncherAction &out);
 
 const Panel kPanels[] = {
@@ -56,6 +64,9 @@ const Panel kPanels[] = {
     {"Diagnostics", DiagPanel_draw},
     {"About",       drawAboutPanel},
     {"Character Workshop", drawCharacterWorkshopPanel},
+    // The Content hub: what a player adds to the game, in one place. Appended
+    // so the Workshop keeps index 5.
+    {"Content",     drawContentPanel},
 };
 constexpr int kPanelCount = (int)(sizeof(kPanels) / sizeof(kPanels[0]));
 static_assert(kPanelCount == kLauncherPanelCount,
@@ -1448,6 +1459,74 @@ void acceptCharacterPreviewRequest(
         preview.representativeMotionReview;
     state.characterPreviewDonorReference = preview.donorReference;
     Launcher_requestTab(state, kLauncherPanelPlay, kLauncherTabPlayer);
+}
+
+void drawContentPanel(LauncherState &s, LauncherAction &out) {
+    (void)out;
+    /*
+     * Packs and characters are the same intent -- change what is in the game --
+     * and they were two unrelated places: a read-only list buried in Settings,
+     * and a panel named after a tool. This is the one destination that answers
+     * "what have I added, and how do I add more?".
+     */
+    ui::SectionHeader(
+        "Content",
+        "Artwork, music and characters you add yourself. Everything here is "
+        "optional, and nothing here changes how the game plays.");
+
+    ui::Gap(ui::kGapM);
+    ui::GroupHeader("Packs",
+                    "Replacement artwork and music, loaded from your mods "
+                    "folder at launch.");
+
+    /*
+     * The folder was the whole barrier. A player was told to "put a pack in the
+     * mods folder beside your saves" and then had to find a directory that,
+     * on macOS, lives inside ~/Library -- a folder Finder hides by default.
+     * The folder is created on demand here rather than at startup, so a player
+     * who never installs a pack still gets no directory they did not ask for.
+     */
+    char modsDirectory[1024] = {0};
+    const bool haveModsDirectory =
+        mdkr_user_mods_directory(modsDirectory, sizeof modsDirectory) != 0;
+    if (haveModsDirectory && filedialog::isAvailable()) {
+        if (ImGui::Button("Open mods folder", ui::kBtnWide())) {
+            std::error_code created;
+            std::filesystem::create_directories(modsDirectory, created);
+            (void)filedialog::revealInFileManager(modsDirectory);
+        }
+        ui::SpeakFocusedItem(
+            "Open mods folder", nullptr,
+            "Opens the folder packs are installed into, creating it if it "
+            "does not exist yet.");
+        ImGui::SameLine();
+        ui::TextSubtle("Drop a pack folder in here, then relaunch.");
+        ui::Gap(ui::kGapS);
+    }
+    if (haveModsDirectory) {
+        ImGui::PushFont(AppTheme::fonts().small);
+        // A packaged build resolves this beside the save directory; a
+        // command-line build stays CWD-relative and prints "mods", which is
+        // true but reads as a stray word without the label.
+        ui::TextSubtle("Folder");
+        ImGui::SameLine();
+        ui::TextSubtleUnformattedWrapped(modsDirectory);
+        ImGui::PopFont();
+        ui::Gap(ui::kGapS);
+    }
+
+    (void)Settings_drawContentPacks(s.hostWindow, /*compact=*/false);
+
+    ui::Gap(ui::kGapL);
+    ui::GroupHeader("Characters",
+                    "Racers you import or author yourself. Appearance only -- "
+                    "a built-in racer still controls handling and results.");
+    if (ImGui::Button("Open Character Workshop", ui::kBtnWide())) {
+        Launcher_requestTab(s, kLauncherPanelCharacterWorkshop,
+                            kLauncherTabPlayer);
+    }
+    ui::SpeakFocusedItem("Open Character Workshop", nullptr,
+                         "Opens the tool for importing and authoring racers.");
 }
 
 void drawSettingsPanel(LauncherState &s, LauncherAction &out) {
