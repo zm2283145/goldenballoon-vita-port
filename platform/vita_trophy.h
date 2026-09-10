@@ -2,7 +2,25 @@
 #ifndef MDKR64_VITA_TROPHY_H
 #define MDKR64_VITA_TROPHY_H
 
+#include <stdint.h>
+
 struct Settings;
+
+/* DKR's original EEPROM has no persisted completion state for Horseshoe
+ * Gulch, and consequently cannot faithfully record a four-arena set.  The
+ * native port owns these high, otherwise-unused cutscene bits.  They are
+ * per-save-slot, survive a reload, and are deliberately ignored by original
+ * cutscene/gameplay logic. */
+#define MDKR_VITA_ARENA_HORSESHOE_COMPLETE UINT32_C(0x10000000)
+#define MDKR_VITA_ARENA_DARKWATER_COMPLETE UINT32_C(0x20000000)
+#define MDKR_VITA_ARENA_ICICLE_COMPLETE    UINT32_C(0x40000000)
+#define MDKR_VITA_ARENA_SMOKEY_COMPLETE    UINT32_C(0x80000000)
+#define MDKR_VITA_ARENA_COMPLETE_MASK      \
+    (MDKR_VITA_ARENA_HORSESHOE_COMPLETE |  \
+     MDKR_VITA_ARENA_DARKWATER_COMPLETE |  \
+     MDKR_VITA_ARENA_ICICLE_COMPLETE |     \
+     MDKR_VITA_ARENA_SMOKEY_COMPLETE)
+
 
 // Reconciles the currently loaded save with the installed Vita trophy pack.
 // It is safe to call once per game tick.

@@ -333,16 +333,8 @@ void mdkr_vita_trophy_register(void) {
 }
 
 void mdkr_vita_trophy_pump(const struct Settings *settings) {
-    static const unsigned char challengeLevels[4] = {
-        ASSET_LEVEL_HORSESHOEGULCH,
-        ASSET_LEVEL_DARKWATERBEACH,
-        ASSET_LEVEL_ICICLEPYRAMID,
-        ASSET_LEVEL_SMOKEYCASTLE
-    };
     unsigned trophyState;
     int adventureTwo;
-    unsigned i;
-    int allChallengesComplete = 1;
     if (!sLoggedPump) {
         trophy_log("trophy pump settings=%p balloons=%p newGame=%d", (void *) settings,
                    settings != NULL ? (void *) settings->balloonsPtr : NULL,
@@ -361,17 +353,11 @@ void mdkr_vita_trophy_pump(const struct Settings *settings) {
         sLoggedSettings = 1;
     }
 
-    /* Key-arena completion is valid in either Adventure. In particular, a
-     * 100% editor save can already have Adventure Two unlocked before the
-     * player first opens the edited file. Do not let that mode bit suppress a
-     * legitimate four-arena trophy forever. */
-    for (i = 0; i < ARRAY_COUNT(challengeLevels); i++) {
-        if (!(settings->courseFlagsPtr[challengeLevels[i]] & RACE_CLEARED)) {
-            allChallengesComplete = 0;
-            break;
-        }
-    }
-    if (allChallengesComplete) unlock(17);
+    /* The native editor persists the four arena results in dedicated per-slot
+     * flags: stock DKR omits Horseshoe Gulch from its serialized course list,
+     * so map flags alone disappear after loading a save. */
+    if (((u32) settings->cutsceneFlags & MDKR_VITA_ARENA_COMPLETE_MASK) ==
+        MDKR_VITA_ARENA_COMPLETE_MASK) unlock(17);
 
     if (!adventureTwo) {
         if (settings->balloonsPtr[0] >= 1) unlock(TROPHY_FIRST_BALLOON);

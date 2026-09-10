@@ -5093,11 +5093,15 @@ static char *sSaveEditorStatus;
 static void save_editor_recompute_total_balloons(void);
 static void save_editor_load_slot(s32 slot);
 
-/* These four battle/key arenas are the completion flags consumed by the
- * Battle Mode trophy. They live outside the five Adventure-world track grids. */
-static const u8 sSaveEditorArenaLevelIds[] = {
-    ASSET_LEVEL_HORSESHOEGULCH, ASSET_LEVEL_DARKWATERBEACH,
-    ASSET_LEVEL_ICICLEPYRAMID, ASSET_LEVEL_SMOKEYCASTLE
+/* The original EEPROM does not serialize a completion bit for Horseshoe
+ * Gulch.  Keep all four editor-visible arena states in the Vita-specific,
+ * per-slot flags declared by vita_trophy.h instead of pretending the transient
+ * map flags survive a save/load cycle. */
+static const u32 sSaveEditorArenaSaveFlags[] = {
+    MDKR_VITA_ARENA_HORSESHOE_COMPLETE,
+    MDKR_VITA_ARENA_DARKWATER_COMPLETE,
+    MDKR_VITA_ARENA_ICICLE_COMPLETE,
+    MDKR_VITA_ARENA_SMOKEY_COMPLETE
 };
 static char *const sSaveEditorArenaNames[] = {
     "HORSESHOE GULCH", "DARKWATER BEACH", "ICICLE PYRAMID", "SMOKEY CASTLE"
@@ -5236,9 +5240,10 @@ static void save_editor_load_slot(s32 slot) {
                 settings->courseFlagsPtr[sSaveEditorTrackIds[world][track]];
         }
     }
-    for (track = 0; track < ARRAY_COUNT(sSaveEditorArenaLevelIds); track++) {
+    for (track = 0; track < ARRAY_COUNT(sSaveEditorArenaSaveFlags); track++) {
         sSaveEditorArenaFlags[slot][track] =
-            settings->courseFlagsPtr[sSaveEditorArenaLevelIds[track]];
+            ((u32) settings->cutsceneFlags & sSaveEditorArenaSaveFlags[track])
+                ? RACE_CLEARED : RACE_UNATTEMPTED;
     }
     sSaveEditorTrophies[slot] = settings->trophies;
     sSaveEditorBosses[slot] = settings->bosses;
@@ -5280,9 +5285,12 @@ static void save_editor_apply(void) {
                     sSaveEditorTrackFlags[sSaveEditorSlot][world][track];
             }
         }
-        for (track = 0; track < ARRAY_COUNT(sSaveEditorArenaLevelIds); track++) {
-            settings->courseFlagsPtr[sSaveEditorArenaLevelIds[track]] =
-                sSaveEditorArenaFlags[sSaveEditorSlot][track];
+        settings->cutsceneFlags &= (s32) ~MDKR_VITA_ARENA_COMPLETE_MASK;
+        for (track = 0; track < ARRAY_COUNT(sSaveEditorArenaSaveFlags); track++) {
+            if (sSaveEditorArenaFlags[sSaveEditorSlot][track] & RACE_CLEARED) {
+                settings->cutsceneFlags |=
+                    (s32) sSaveEditorArenaSaveFlags[track];
+            }
         }
         settings->courseFlagsPtr[level_world_id(WORLD_CENTRAL_AREA)] =
             (settings->courseFlagsPtr[level_world_id(WORLD_CENTRAL_AREA)] & 0xFFFF) |
@@ -5589,7 +5597,7 @@ static void save_editor_complete_wizpig_two(void) {
      * is already complete; claim the full field so no remaining free-roam
      * balloon can spawn and incorrectly raise a 47-balloon save to 48. */
     sSaveEditorHubFlags[sSaveEditorSlot] = UINT16_MAX;
-    for (hubBalloon = 0; hubBalloon < ARRAY_COUNT(sSaveEditorArenaLevelIds);
+    for (hubBalloon = 0; hubBalloon < ARRAY_COUNT(sSaveEditorArenaSaveFlags);
          hubBalloon++) {
         sSaveEditorArenaFlags[sSaveEditorSlot][hubBalloon] |=
             RACE_VISITED | RACE_CLEARED;
@@ -5991,9 +5999,9 @@ s32 menu_save_editor_loop(s32 updateRate) {
                    sSaveEditorOption == SAVE_EDITOR_WORLD) {
             sSaveEditorArena += xAxis < 0 ? -1 : 1;
             if (sSaveEditorArena < 0) {
-                sSaveEditorArena = ARRAY_COUNT(sSaveEditorArenaLevelIds) - 1;
+                sSaveEditorArena = ARRAY_COUNT(sSaveEditorArenaSaveFlags) - 1;
             }
-            if (sSaveEditorArena >= ARRAY_COUNT(sSaveEditorArenaLevelIds)) {
+            if (sSaveEditorArena >= ARRAY_COUNT(sSaveEditorArenaSaveFlags)) {
                 sSaveEditorArena = 0;
             }
             sSaveEditorApplyArmed = FALSE;
