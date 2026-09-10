@@ -32,11 +32,40 @@ MAIN_TROPHIES = [
     (13, "S", 0, None, "Future Funland Trophy", "Complete the Trophy Race in Future Funland."),
     (14, "G", 0, None, "Race Against a Running Pig", "Defeat Wizpig in a race."),
     (15, "G", 0, None, "Race Against an Angry Pig. In Space!", "Win against Wizpig again."),
-    # Official Vita DLC/bonus trophies are a group within the same trophy
-    # archive. A group never carries a platinum or contributes to it.
-    (16, "S", -1, 1, "T.T. Time Trial Champion", "Defeat T.T.'s time on every course."),
-    (17, "G", -1, 1, "Developer Time Trial Champion", "Defeat every developer time trial."),
+    (16, "B", 0, None, "Extra Speed", "Collect 10 Bananas on any track."),
+    (17, "S", 0, None, "Battle Mode, Activate", "Complete the four battle challenges in each area."),
 ]
+
+TRACKS = [
+    ("Ancient Lake", "Car"), ("Fossil Canyon", "Car"), ("Jungle Falls", "Car"),
+    ("Hot Top Volcano", "Plane"), ("Everfrost Peak", "Plane"), ("Walrus Cove", "Car"),
+    ("Snowball Valley", "Car"), ("Frosty Village", "Car"), ("Whale Bay", "Hovercraft"),
+    ("Crescent Island", "Car"), ("Pirate Lagoon", "Hovercraft"), ("Treasure Caves", "Car"),
+    ("Windmill Plains", "Plane"), ("Greenwood Village", "Car"), ("Boulder Canyon", "Hovercraft"),
+    ("Haunted Woods", "Car"), ("Spacedust Alley", "Plane"), ("Darkmoon Caverns", "Car"),
+    ("Spaceport Alpha", "Plane"), ("Star City", "Car"),
+]
+ADVENTURE_TWO = [(18 + i, "B", -1, 1, f"Silver Coins in Mirrored {track}",
+                  f"Collect all 8 Silver Coins in {track} Adventure 2, and finish first.")
+                 for i, (track, _) in enumerate(TRACKS)] + [
+    (38, "G", -1, 1, "Mirrored Mode", "Collect all 47 Balloons in Adventure 2."),
+    (39, "S", -1, 1, "In Space AND It's Mirrored", "Win against Wizpig the second time in Adventure 2."),
+]
+TIME_TRIALS = [(40 + i, "S", -1, 2, f"{track} T.T.'s Challenge",
+                f"Beat T.T.'s time for {track}, {vehicle} only.")
+               for i, (track, vehicle) in enumerate(TRACKS)] + [
+    (60 + i, "G", -1, 2, f"{track} Rare Challenge",
+     f"Beat the developer's time for {track}, {vehicle} only.")
+    for i, (track, vehicle) in enumerate(TRACKS)
+]
+CHARACTERS = ["Krunch the Kremling", "The Star of the Game", "Bumper the Badger", "Banjo the Bear",
+              "Conker the Squirrel", "Tiptup the Turtle", "Pipsy the Mouse", "Timber the Tiger",
+              "Drumstick the Chicken", "TT the Clock"]
+MAIN_TROPHIES += [(80 + i, "B", 0, None, name, "Collect any 5 Balloons with this character in one Adventure session.")
+                  for i, name in enumerate(CHARACTERS)]
+MAIN_TROPHIES += [(90 + i, "B", 0, None, f"Max Power-up {name}", f"Obtain the highest leveled {name} power-up.")
+                  for i, name in enumerate(("Rocket", "Boost", "Mine", "Shield", "Magnet"))]
+TROPHIES = MAIN_TROPHIES + ADVENTURE_TWO + TIME_TRIALS
 
 
 def png(width: int, height: int, pixels: bytes) -> bytes:
@@ -59,9 +88,9 @@ def decode_png_rgba(path: Path) -> tuple[int, int, bytes]:
         payloads[kind] = payloads.get(kind, b"") + payload
         pos += 12 + length
     width, height, depth, color, compression, filtering, interlace = struct.unpack(">IIBBBBB", payloads[b"IHDR"])
-    if depth != 8 or compression or filtering or interlace or color not in (3, 6):
+    if depth != 8 or compression or filtering or interlace or color not in (2, 3, 6):
         raise ValueError(f"unsupported PNG format in {path}")
-    bpp = 1 if color == 3 else 4
+    bpp = 1 if color == 3 else 3 if color == 2 else 4
     packed = zlib.decompress(payloads[b"IDAT"])
     rows, cursor, previous = [], 0, bytearray(width * bpp)
     for _ in range(height):
@@ -86,6 +115,13 @@ def decode_png_rgba(path: Path) -> tuple[int, int, bytes]:
         previous = scanline
     if color == 6:
         return width, height, bytes().join(rows)
+    if color == 2:
+        rgb = bytes().join(rows)
+        pixels = bytearray(width * height * 4)
+        for i in range(width * height):
+            pixels[i * 4:i * 4 + 3] = rgb[i * 3:i * 3 + 3]
+            pixels[i * 4 + 3] = 255
+        return width, height, bytes(pixels)
     palette, alpha = payloads[b"PLTE"], payloads.get(b"tRNS", b"")
     pixels = bytearray(width * height * 4)
     for pixel_index, palette_index in enumerate(bytes().join(rows)):
@@ -133,24 +169,28 @@ def xml(configuration_only: bool = False) -> bytes:
         f'<!--Sce-Np-Trophy-Signature: {signature}-->',
         '<trophyconf version="1.1" platform="psp2" policy="large">',
         f' <npcommid>{COMM_ID}</npcommid>',
-        ' <trophyset-version>01.01</trophyset-version>',
+        ' <trophyset-version>01.02</trophyset-version>',
         ' <parental-level license-area="default">0</parental-level>',
     ]
     if not configuration_only:
         lines.extend((
-            ' <title-name>Golden Balloon DKR</title-name>',
-            ' <title-detail>Diddy Kong Racing Vita trophy set</title-detail>',
+            ' <title-name>Diddy Kong Racing</title-name>',
+            ' <title-detail>Diddy Kong Racing is a kart racing adventure game developed by Rare and released for the Nintendo 64 in 1997.</title-detail>',
         ))
     if configuration_only:
-        lines.append(' <group id="001"/>')
+        lines.extend((' <group id="001"/>', ' <group id="002"/>'))
     else:
         lines.extend((
             ' <group id="001">',
+            '  <name>Adventure 2</name>',
+            '  <detail>Optional mirrored Adventure 2 challenges. These trophies are not required for the platinum.</detail>',
+            ' </group>',
+            ' <group id="002">',
             '  <name>Time Trial Challenges</name>',
-            '  <detail>Optional time-trial challenges. These trophies are not required for the platinum.</detail>',
+            '  <detail>Optional T.T. and developer time-trial challenges. These trophies are not required for the platinum.</detail>',
             ' </group>',
         ))
-    for tid, grade, parent, group, name, detail in MAIN_TROPHIES:
+    for tid, grade, parent, group, name, detail in TROPHIES:
         attrs = f'id="{tid:03d}" hidden="no" ttype="{grade}" pid="{parent:03d}"'
         if parent < 0:
             attrs = f'id="{tid:03d}" hidden="no" ttype="{grade}" pid="-1"'
@@ -211,12 +251,15 @@ def main() -> None:
         # 320x176 and individual trophy images are 240x240. LiveArea's icon
         # is only 128x128, so never insert it into the archive verbatim.
         'ICON0.PNG': resize_png(args.livearea_icon, 320, 176),
+        # Group art is sourced from the authorized RetroAchievements badges.
+        'GR001.PNG': resize_png(Path(__file__).parent.parent / 'vita' / 'trophy' / 'adventure2.png', 320, 176),
+        'GR002.PNG': resize_png(Path(__file__).parent.parent / 'vita' / 'trophy' / 'time_trials.png', 320, 176),
     }
-    for tid, *_ in MAIN_TROPHIES:
+    for tid, *_ in TROPHIES:
         files[f'TROP{tid:03d}.PNG'] = platinum.read_bytes() if tid == 0 else resize_png(args.livearea_icon, 240, 240)
     args.out.write_bytes(trp(files))
     shutil.rmtree(work)
-    print(f'wrote {args.out} ({args.out.stat().st_size} bytes, {len(MAIN_TROPHIES)} trophies, {COMM_ID})')
+    print(f'wrote {args.out} ({args.out.stat().st_size} bytes, {len(TROPHIES)} trophies, {COMM_ID})')
 
 
 if __name__ == '__main__':

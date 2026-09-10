@@ -1,6 +1,8 @@
 #include "vita_trophy.h"
 
 #include "structs.h"
+#include "asset_enums.h"
+#include "menu.h"
 
 #ifdef __vita__
 
@@ -55,12 +57,15 @@ enum {
 
 static int sTrophyContext = -1;
 static int sTrophyHandle = -1;
-static uint32_t sSubmitted;
+/* The completed set contains 95 trophies. Keep the local retry guard wide
+ * enough for every ID; the Vita service remains the persistence authority. */
+static uint32_t sSubmitted[(95 + 31) / 32];
 static int sUnavailable;
 static int sLoggedSettings;
 static int sLoggedPump;
 static int sSetupComplete;
 static int sTrophyServiceReady;
+static unsigned char sAdventureBalloonCount[10];
 
 /* Use the port's existing, file-gated boot log. An empty
  * ux0:data/goldenballoon/debug file enables these diagnostics, and all output
@@ -155,15 +160,109 @@ unavailable:
 static void unlock(unsigned trophyId) {
     int platinumId = -1;
     int result;
-    uint32_t bit = 1u << trophyId;
-    if ((sSubmitted & bit) != 0) return;
+    unsigned word;
+    uint32_t bit;
+    if (trophyId >= 95) return;
+    word = trophyId / 32;
+    bit = 1u << (trophyId % 32);
+    if ((sSubmitted[word] & bit) != 0) return;
     /* An already-unlocked result is intentionally treated as submitted: the
      * system owns persistence, while this guard prevents an every-frame retry. */
     result = sceNpTrophyUnlockTrophy(sTrophyContext, sTrophyHandle, (int)trophyId,
                                      &platinumId);
     trophy_log("unlock id=%u result=0x%08X platinum=%d", trophyId, result,
                platinumId);
-    sSubmitted |= bit;
+    sSubmitted[word] |= bit;
+}
+
+/* RetroAchievements' display and the credits both use this exact canonical
+ * order. The game gives us level IDs, so centralising the map keeps the
+ * trophy IDs stable even though the level-header table is not ordered that
+ * way. */
+static int trophy_track_index(int levelId) {
+    switch (levelId) {
+        case ASSET_LEVEL_ANCIENTLAKE: return 0;
+        case ASSET_LEVEL_FOSSILCANYON: return 1;
+        case ASSET_LEVEL_JUNGLEFALLS: return 2;
+        case ASSET_LEVEL_HOTTOPVOLCANO: return 3;
+        case ASSET_LEVEL_EVERFROSTPEAK: return 4;
+        case ASSET_LEVEL_WALRUSCOVE: return 5;
+        case ASSET_LEVEL_SNOWBALLVALLEY: return 6;
+        case ASSET_LEVEL_FROSTYVILLAGE: return 7;
+        case ASSET_LEVEL_WHALEBAY: return 8;
+        case ASSET_LEVEL_CRESCENTISLAND: return 9;
+        case ASSET_LEVEL_PIRATELAGOON: return 10;
+        case ASSET_LEVEL_TREASURECAVES: return 11;
+        case ASSET_LEVEL_WINDMILLPLAINS: return 12;
+        case ASSET_LEVEL_GREENWOODVILLAGE: return 13;
+        case ASSET_LEVEL_BOULDERCANYON: return 14;
+        case ASSET_LEVEL_HAUNTEDWOODS: return 15;
+        case ASSET_LEVEL_SPACEDUSTALLEY: return 16;
+        case ASSET_LEVEL_DARKMOONCAVERNS: return 17;
+        case ASSET_LEVEL_SPACEPORTALPHA: return 18;
+        case ASSET_LEVEL_STARCITY: return 19;
+        default: return -1;
+    }
+}
+
+void mdkr_vita_trophy_silver_coin_race(int levelId) {
+    int track = trophy_track_index(levelId);
+    if (track >= 0 && trophy_ready()) unlock(18 + (unsigned)track);
+}
+
+void mdkr_vita_trophy_tt_ghost_beaten(int levelId) {
+    int track = trophy_track_index(levelId);
+    if (track >= 0 && trophy_ready()) unlock(40 + (unsigned)track);
+}
+
+void mdkr_vita_trophy_developer_time(int levelId, int courseTime) {
+    /* Credits' developer records in hundredths, in the same canonical order
+     * as trophy_track_index(). Compare without rounding between the game's
+     * 60 Hz race clock and the printed centisecond values. */
+    static const unsigned short developerCentiseconds[20] = {
+        5343, 8155, 5413, 8248, 6411, 7351, 8501, 5505,
+        9763, 11660, 5781, 8801, 11115, 9180, 12316, 5825,
+        12038, 12568, 11296, 11500
+    };
+    int track = trophy_track_index(levelId);
+    if (track < 0 || courseTime < 0) return;
+    if ((unsigned long)courseTime * 100UL <
+        (unsigned long)developerCentiseconds[track] * 60UL && trophy_ready()) {
+        unlock(60 + (unsigned)track);
+    }
+}
+
+void mdkr_vita_trophy_banana_collected(int bananaCount) {
+    if (bananaCount >= 10 && trophy_ready()) unlock(16);
+}
+
+void mdkr_vita_trophy_max_powerup(int balloonType, int balloonLevel) {
+    /* Trophy IDs follow the displayed order Rocket, Boost, Mine, Shield,
+     * Magnet, while the engine's BalloonType starts with Boost. */
+    static const unsigned char trophyForBalloon[5] = { 91, 90, 92, 93, 94 };
+    if ((unsigned)balloonType < 5 && balloonLevel >= 2 && trophy_ready()) {
+        unlock(trophyForBalloon[balloonType]);
+    }
+}
+
+void mdkr_vita_trophy_golden_balloon_collected(int characterId) {
+    static const unsigned char trophyForCharacter[10] = {
+        80, 82, 85, 84, 87, 83, 88, 86, 89, 81
+    };
+    if ((unsigned)characterId >= 10) return;
+    if (sAdventureBalloonCount[characterId] < 5) {
+        sAdventureBalloonCount[characterId]++;
+    }
+    if (sAdventureBalloonCount[characterId] >= 5 && trophy_ready()) {
+        unlock(trophyForCharacter[characterId]);
+    }
+}
+
+void mdkr_vita_trophy_set_adventure_active(int active) {
+    /* These achievements require five balloons in one uninterrupted Adventure
+     * session. Reset on the game's own Tracks-mode boundary, not on loading a
+     * hub or a race within Adventure. */
+    if (!active) memset(sAdventureBalloonCount, 0, sizeof(sAdventureBalloonCount));
 }
 
 void mdkr_vita_trophy_register(void) {
@@ -176,6 +275,7 @@ void mdkr_vita_trophy_register(void) {
 
 void mdkr_vita_trophy_pump(const struct Settings *settings) {
     unsigned trophyState;
+    int adventureTwo;
     if (!sLoggedPump) {
         trophy_log("trophy pump settings=%p balloons=%p newGame=%d", (void *) settings,
                    settings != NULL ? (void *) settings->balloonsPtr : NULL,
@@ -185,6 +285,8 @@ void mdkr_vita_trophy_pump(const struct Settings *settings) {
     if (settings == NULL || settings->balloonsPtr == NULL || settings->newGame ||
         !trophy_ready()) return;
 
+    adventureTwo = (settings->cutsceneFlags & CUTSCENE_ADVENTURE_TWO) != 0;
+
     if (!sLoggedSettings) {
         trophy_log("settings balloons=%d keys=0x%04X bosses=0x%04X cups=0x%04X amulet=%d",
                    settings->balloonsPtr[0], settings->keys, settings->bosses,
@@ -192,14 +294,37 @@ void mdkr_vita_trophy_pump(const struct Settings *settings) {
         sLoggedSettings = 1;
     }
 
-    if (settings->balloonsPtr[0] >= 1) unlock(TROPHY_FIRST_BALLOON);
-    if (settings->wizpigAmulet >= 4) unlock(TROPHY_WIZPIG_AMULET);
-    if (settings->keys & 0x02) unlock(TROPHY_KEY_DINO);
-    if (settings->keys & 0x04) unlock(TROPHY_KEY_SHERBET);
-    if (settings->keys & 0x08) unlock(TROPHY_KEY_SNOWFLAKE);
-    if (settings->keys & 0x10) unlock(TROPHY_KEY_DRAGON);
-    if (settings->balloonsPtr[0] >= 39) unlock(TROPHY_BALLOONS_39);
-    if (settings->balloonsPtr[0] >= 47) unlock(TROPHY_BALLOONS_47);
+    if (!adventureTwo) {
+        static const unsigned char challengeLevels[4] = {
+            ASSET_LEVEL_HORSESHOEGULCH,
+            ASSET_LEVEL_DARKWATERBEACH,
+            ASSET_LEVEL_ICICLEPYRAMID,
+            ASSET_LEVEL_SMOKEYCASTLE
+        };
+        unsigned i;
+        int allChallengesComplete = 1;
+        if (settings->balloonsPtr[0] >= 1) unlock(TROPHY_FIRST_BALLOON);
+        if (settings->wizpigAmulet >= 4) unlock(TROPHY_WIZPIG_AMULET);
+        if (settings->keys & 0x02) unlock(TROPHY_KEY_DINO);
+        if (settings->keys & 0x04) unlock(TROPHY_KEY_SHERBET);
+        if (settings->keys & 0x08) unlock(TROPHY_KEY_SNOWFLAKE);
+        if (settings->keys & 0x10) unlock(TROPHY_KEY_DRAGON);
+        if (settings->balloonsPtr[0] >= 39) unlock(TROPHY_BALLOONS_39);
+        if (settings->balloonsPtr[0] >= 47) unlock(TROPHY_BALLOONS_47);
+        /* The four Adventure challenge arenas write RACE_CLEARED into their
+         * own level slots. Reading those completed flags avoids treating a
+         * one-off battle result as the full four-area achievement. */
+        for (i = 0; i < 4; i++) {
+            if (!(settings->courseFlagsPtr[challengeLevels[i]] & RACE_CLEARED)) {
+                allChallengesComplete = 0;
+                break;
+            }
+        }
+        if (allChallengesComplete) unlock(17);
+    } else {
+        if (settings->balloonsPtr[0] >= 47) unlock(38);
+        if (settings->bosses & 0x020) unlock(39);
+    }
 
     trophyState = settings->trophies;
     if (((trophyState >> 0) & 3u) == 3u) unlock(TROPHY_CUP_DINO);
@@ -218,5 +343,19 @@ void mdkr_vita_trophy_register(void) {}
 void mdkr_vita_trophy_pump(const struct Settings *settings) {
     (void)settings;
 }
+
+void mdkr_vita_trophy_silver_coin_race(int levelId) { (void)levelId; }
+void mdkr_vita_trophy_tt_ghost_beaten(int levelId) { (void)levelId; }
+void mdkr_vita_trophy_developer_time(int levelId, int courseTime) {
+    (void)levelId;
+    (void)courseTime;
+}
+void mdkr_vita_trophy_banana_collected(int bananaCount) { (void)bananaCount; }
+void mdkr_vita_trophy_max_powerup(int balloonType, int balloonLevel) {
+    (void)balloonType;
+    (void)balloonLevel;
+}
+void mdkr_vita_trophy_golden_balloon_collected(int characterId) { (void)characterId; }
+void mdkr_vita_trophy_set_adventure_active(int active) { (void)active; }
 
 #endif

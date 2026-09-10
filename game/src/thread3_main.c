@@ -445,6 +445,7 @@ void main_game_loop(void) {
     /* The trophy bridge observes the native progression model after the save
      * input boundary. On non-Vita builds it is a no-op, so this adds no game
      * behaviour outside the intended platform. */
+    mdkr_vita_trophy_set_adventure_active(!is_in_tracks_mode());
     mdkr_vita_trophy_pump(get_settings());
 #endif
 #ifdef NATIVE_PORT
