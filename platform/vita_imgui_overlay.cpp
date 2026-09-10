@@ -1,5 +1,6 @@
 #include "vita_imgui_overlay.h"
 #include "vita_save_editor_bridge.h"
+#include "vita_trophy.h"
 
 #if defined(__vita__) && defined(MDKR_VITA_IMGUI_OVERLAY)
 #include <cstdio>
@@ -12,6 +13,7 @@ bool s_open = false;
 int s_page = 0;
 int s_world = 0;
 int s_time_trial = 0;
+bool s_erase_armed = false;
 
 bool initialize() {
     if (s_initialized) return true;
@@ -100,10 +102,35 @@ extern "C" int mdkr_vita_imgui_overlay_render(void) {
         ImGui::TextWrapped("Developer records use the canonical credits/RetroAchievements order, not the editor's world order.");
     } else if (s_page == 3) {
         ImGui::TextUnformatted("Trophy conditions");
-        ImGui::TextWrapped("Main, Adventure 2, Time Trial, character, and power-up conditions will remain state-driven rather than directly unlocking trophies.");
+        int main_unlocked = 0;
+        int adventure_two_unlocked = 0;
+        int time_trial_unlocked = 0;
+        for (unsigned id = 0; id < 98; ++id) {
+            if (!mdkr_vita_trophy_is_unlocked(id)) continue;
+            if (id < 18 || id >= 80) ++main_unlocked;
+            else if (id < 40) ++adventure_two_unlocked;
+            else ++time_trial_unlocked;
+        }
+        ImGui::Text("Main set: %d / 36", main_unlocked);
+        ImGui::Text("Adventure 2 bonus set: %d / 22", adventure_two_unlocked);
+        ImGui::Text("Time Trial bonus set: %d / 40", time_trial_unlocked);
+        ImGui::Separator();
+        ImGui::TextWrapped("Status is read from the Vita trophy service. Condition editing remains state-driven through the Save Editor; this page never unlocks trophies directly.");
     } else {
         ImGui::TextUnformatted("Editor tools");
         ImGui::TextWrapped("Save-slot management lives here. Use L+R in the classic editor to return to this overlay.");
+        if (mdkr_vita_save_editor_slot_is_empty(mdkr_vita_save_editor_selected_slot())) {
+            if (ImGui::Button("Create Empty Save", ImVec2(310.0f, 42.0f))) {
+                mdkr_vita_save_editor_create_slot();
+            }
+        } else if (ImGui::Button(s_erase_armed ? "Confirm Erase Save" : "Erase Save", ImVec2(310.0f, 42.0f))) {
+            if (s_erase_armed) {
+                mdkr_vita_save_editor_erase_slot();
+                s_erase_armed = false;
+            } else {
+                s_erase_armed = true;
+            }
+        }
         if (ImGui::Button("Use Classic Save Editor", ImVec2(310.0f, 42.0f))) {
             mdkr_vita_save_editor_open_classic();
         }

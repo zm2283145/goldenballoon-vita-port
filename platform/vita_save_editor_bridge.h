@@ -21,6 +21,9 @@ int mdkr_vita_save_editor_tt_beaten(int track);
 int mdkr_vita_save_editor_developer_beaten(int track);
 void mdkr_vita_save_editor_set_tt_beaten(int track, int beaten);
 void mdkr_vita_save_editor_set_developer_beaten(int track, int beaten);
+int mdkr_vita_save_editor_slot_is_empty(int slot);
+void mdkr_vita_save_editor_create_slot(void);
+void mdkr_vita_save_editor_erase_slot(void);
 
 #ifdef __cplusplus
 }

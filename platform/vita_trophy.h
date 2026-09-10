@@ -4,6 +4,10 @@
 
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 struct Settings;
 
 /* DKR's original EEPROM has no persisted completion state for Horseshoe
@@ -58,5 +62,9 @@ int mdkr_vita_trophy_developer_time_beaten(unsigned track_index,
  * order. The save editor presents tracks in world order, which differs for
  * Sherbet and Snowflake worlds, so it must not use its menu index here. */
 int mdkr_vita_trophy_track_index(int level_id);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

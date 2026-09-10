@@ -5371,6 +5371,8 @@ static void save_editor_load_slot(s32 slot) {
 static s32 save_editor_track_progress(s32 flags);
 static void save_editor_set_track_progress(s32 world, s32 track, s32 progress);
 static void save_editor_apply(void);
+static void save_editor_create_empty_slot(void);
+static void save_editor_erase_slot(void);
 void mdkr_vita_save_editor_open_classic(void) {
     mdkr_vita_imgui_overlay_close();
     optionscreen_free();
@@ -5461,6 +5463,22 @@ void mdkr_vita_save_editor_set_developer_beaten(int track, int beaten) {
     sSaveEditorTimeTrialDirty = TRUE;
     sSaveEditorApplyArmed = FALSE;
     sSaveEditorStatus = "DEVELOPER TIME CONDITION UPDATED";
+}
+
+int mdkr_vita_save_editor_slot_is_empty(int slot) {
+    return slot < 0 || slot >= NUMBER_OF_SAVE_FILES || gSavefileData[slot]->newGame;
+}
+
+void mdkr_vita_save_editor_create_slot(void) {
+    if (!gSavefileData[sSaveEditorSlot]->newGame) {
+        sSaveEditorStatus = "SLOT ALREADY CONTAINS A SAVE";
+        return;
+    }
+    save_editor_create_empty_slot();
+}
+
+void mdkr_vita_save_editor_erase_slot(void) {
+    save_editor_erase_slot();
 }
 #endif
 
