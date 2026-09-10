@@ -26,8 +26,7 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $build = Join-Path $repoRoot $BuildDir
 $livearea = Join-Path $repoRoot "vita\livearea"
-$mainTrophyPack = Join-Path $build "TROPHY_MAIN.TRP"
-$bonusTrophyPack = Join-Path $build "TROPHY_BONUS.TRP"
+$trophyPack = Join-Path $build "TROPHY.TRP"
 
 $env:Path = "$env:VITASDK\bin;" + $env:Path
 
@@ -38,13 +37,8 @@ try {
     }
 
     & python (Join-Path $repoRoot "tools\build_vita_trophy_pack.py") `
-        --out $mainTrophyPack --livearea-icon (Join-Path $livearea "icon0.png") `
-        --set main --version 01.01
+        --out $trophyPack --livearea-icon (Join-Path $livearea "icon0.png")
     if ($LASTEXITCODE -ne 0) { throw "Vita trophy-pack generation failed" }
-    & python (Join-Path $repoRoot "tools\build_vita_trophy_pack.py") `
-        --out $bonusTrophyPack --livearea-icon (Join-Path $livearea "icon0.png") `
-        --set bonus --version 01.00
-    if ($LASTEXITCODE -ne 0) { throw "Vita bonus trophy-pack generation failed" }
 
     Copy-Item mdkr64 mdkr64.elf.unstripped -Force
     Copy-Item mdkr64 mdkr64.elf -Force
@@ -74,8 +68,7 @@ try {
             -a "$livearea\bg.png=sce_sys/livearea/contents/bg.png" `
             -a "$livearea\startup.png=sce_sys/livearea/contents/startup.png" `
             -a "$livearea\template.xml=sce_sys/livearea/contents/template.xml" `
-            -a "$mainTrophyPack=sce_sys/trophy/GBLN00001_00/TROPHY.TRP" `
-            -a "$bonusTrophyPack=sce_sys/trophy/GBLN00001_01/TROPHY.TRP" `
+            -a "$trophyPack=sce_sys/trophy/GBLN00001_00/TROPHY.TRP" `
             mdkr64.vpk
     }
     if ($LASTEXITCODE -ne 0) { throw "vita-pack-vpk failed" }

@@ -55,15 +55,11 @@ enum {
 
 static int sTrophyContext = -1;
 static int sTrophyHandle = -1;
-static int sBonusTrophyContext = -1;
-static int sBonusTrophyHandle = -1;
 static uint32_t sSubmitted;
 static int sUnavailable;
-static int sBonusUnavailable;
 static int sLoggedSettings;
 static int sLoggedPump;
 static int sSetupComplete;
-static int sBonusSetupComplete;
 static int sTrophyServiceReady;
 
 /* Use the port's existing, file-gated boot log. An empty
@@ -156,49 +152,6 @@ unavailable:
     return 1;
 }
 
-static int trophy_bonus_ready(void) {
-    /* The main archive must use its nine-character title ID for the context.
-     * Add-on sets retain the complete _01 identifier, which selects the
-     * second archive packaged under sce_sys/trophy. */
-    static const char communicationId[16] = "GBLN00001_01";
-    static const unsigned char signature[160] = { 0xb9, 0xdd, 0xe1, 0x3b, 0x01, 0x00 };
-    int result;
-    if (sBonusUnavailable) return 0;
-    if (sBonusTrophyContext >= 0 && sBonusTrophyHandle >= 0) return 1;
-    trophy_log("bonus communication id=%s", communicationId);
-    if (!trophy_service_ready()) goto unavailable;
-    result = sceNpTrophyCreateContext(&sBonusTrophyContext, communicationId, signature, 0);
-    trophy_log("bonus create context=0x%08X context=%d", result, sBonusTrophyContext);
-    if (result < 0) goto unavailable;
-    if (!sBonusSetupComplete) {
-        SceNpTrophySetupDialogParam setupParam;
-        SceCommonDialogStatus setupStatus;
-        memset(&setupParam, 0, sizeof(setupParam));
-        _sceCommonDialogSetMagicNumber(&setupParam.commonParam);
-        setupParam.sdkVersion = PSP2_SDK_VERSION;
-        setupParam.context = sBonusTrophyContext;
-        result = sceNpTrophySetupDialogInit(&setupParam);
-        trophy_log("bonus setup dialog init=0x%08X", result);
-        if (result < 0) goto unavailable;
-        do {
-            setupStatus = sceNpTrophySetupDialogGetStatus();
-            if (setupStatus == SCE_COMMON_DIALOG_STATUS_RUNNING) vglSwapBuffers(GL_TRUE);
-        } while (setupStatus == SCE_COMMON_DIALOG_STATUS_RUNNING);
-        trophy_log("bonus setup dialog status=%d", (int) setupStatus);
-        result = sceNpTrophySetupDialogTerm();
-        trophy_log("bonus setup dialog term=0x%08X", result);
-        if (result < 0 || setupStatus != SCE_COMMON_DIALOG_STATUS_FINISHED) goto unavailable;
-        sBonusSetupComplete = 1;
-    }
-    result = sceNpTrophyCreateHandle(&sBonusTrophyHandle);
-    trophy_log("bonus create handle=0x%08X handle=%d", result, sBonusTrophyHandle);
-    if (result >= 0) return 1;
-unavailable:
-    trophy_log("bonus trophy service unavailable");
-    sBonusUnavailable = 1;
-    return 0;
-}
-
 static void unlock(unsigned trophyId) {
     int platinumId = -1;
     int result;
@@ -216,8 +169,9 @@ static void unlock(unsigned trophyId) {
 void mdkr_vita_trophy_register(void) {
     /* Trophy setup owns the system-side title entry. Do it as the player
      * leaves Press Start, rather than making a first unlock create it as a
-     * side effect. trophy_ready() is idempotent after setup succeeds. */
-    if (trophy_ready()) (void) trophy_bonus_ready();
+     * side effect. trophy_ready() is idempotent after setup succeeds. The
+     * manifest's gid=001 bonus group is installed by this same dialog. */
+    (void) trophy_ready();
 }
 
 void mdkr_vita_trophy_pump(const struct Settings *settings) {
