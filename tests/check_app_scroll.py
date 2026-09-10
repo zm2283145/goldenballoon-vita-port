@@ -93,6 +93,15 @@ def check_wheel(executable: Path, root: Path) -> None:
 def check_wheel_flipped(executable: Path, root: Path) -> None:
     """A macOS natural-scroll (FLIPPED) wheel scrolls the RIGHT way.
 
+    The flag is INFORMATION, not an instruction to negate. SDL2's
+    src/video/cocoa/SDL_cocoamouse.m sets SDL_MOUSEWHEEL_FLIPPED from
+    -[NSEvent isDirectionInvertedFromDevice] and passes `[event deltaY]`
+    through untouched, because macOS has already applied the player's
+    natural-scrolling preference to that delta. Dear ImGui's SDL2 backend
+    ignores `direction` for the same reason. So this run injects the SAME sign
+    as the normal-wheel run and requires the SAME downward result: a bridge that
+    negates on the flag scrolls up, clamps at the top, and stays red.
+
     With natural scrolling on -- the macOS default -- SDL negates the deltas and
     sets SDL_MOUSEWHEEL_FLIPPED. This run injects that exact event (positive
     preciseY, FLIPPED) from the top of the panel: only if the flag is honored is

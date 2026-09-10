@@ -3293,14 +3293,16 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         shutdownLauncherHost(host, launcher);
         return 2;
     }
-    // In flipped mode the injected notches are marked SDL_MOUSEWHEEL_FLIPPED
-    // (macOS natural scrolling) and their preciseY sign is inverted, so the
-    // panel only scrolls DOWN -- clearing the same scroll=1 verdict -- if the
-    // FLIPPED flag is honored. A bridge that ignores it scrolls up, clamps at
-    // the top, and the run stays red.
-    const bool smokeWheelFlipped =
-        smokeWheel && std::getenv("MDKR_APP_SMOKE_WHEEL_FLIPPED") != nullptr;
-    const float smokeWheelDelta = smokeWheelFlipped ? 0.6f : -0.6f;
+    // In flipped mode the injected notches carry SDL_MOUSEWHEEL_FLIPPED with
+    // the SAME preciseY sign as the normal case, because that is what SDL
+    // delivers: macOS has already applied the natural-scrolling preference to
+    // deltaY and SDL passes it through, setting the flag purely as information
+    // (SDL_cocoamouse.m). The panel must therefore scroll DOWN in both runs.
+    // Injecting an inverted sign here modelled a negation the platform does not
+    // perform, and it agreed with a bridge that negated to match -- two wrongs
+    // that kept each other green while the app scrolled backwards on every Mac
+    // with the default setting.
+    const float smokeWheelDelta = -0.6f;
     float smokeUiScaleTarget = 1.0f;
     const bool smokeUiScaleDrag = smokeUiScale && smokeUiScale[0];
     if (smokeUiScaleDrag &&
@@ -3794,8 +3796,10 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
                     // 0), and summed it clears the scroll threshold -- so a
                     // handler that reads the integer field instead of preciseY
                     // scrolls nothing here and fails, which is the whole point.
-                    // In flipped mode the sign is inverted and the FLIPPED flag
-                    // is set, so only a bridge that honors the flag scrolls down.
+                    // In flipped mode the FLIPPED flag is set and the sign is
+                    // UNCHANGED, because that is what SDL delivers on macOS: a
+                    // bridge that negates on the flag scrolls up, clamps at the
+                    // top, and fails here.
                     wheelQueued = host.queueWheelStepForSmoke(
                                       wheelPointerX, wheelPointerY,
                                       smokeWheelDelta) &&
