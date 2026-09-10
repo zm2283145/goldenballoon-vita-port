@@ -13,7 +13,7 @@ import zlib
 from pathlib import Path
 from xml.sax.saxutils import escape
 
-COMM_ID = "GBLN00001_01"
+COMM_ID = "GBLN00001_00"
 
 TROPHIES = [
     (0, "P", -1, None, "Golden Balloon", "Earn every main-game trophy."),

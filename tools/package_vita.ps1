@@ -68,7 +68,7 @@ try {
             -a "$livearea\bg.png=sce_sys/livearea/contents/bg.png" `
             -a "$livearea\startup.png=sce_sys/livearea/contents/startup.png" `
             -a "$livearea\template.xml=sce_sys/livearea/contents/template.xml" `
-            -a "$trophyPack=sce_sys/trophy/GBLN00001_01/TROPHY.TRP" `
+            -a "$trophyPack=sce_sys/trophy/GBLN00001_00/TROPHY.TRP" `
             mdkr64.vpk
     }
     if ($LASTEXITCODE -ne 0) { throw "vita-pack-vpk failed" }
