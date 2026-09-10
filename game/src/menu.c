@@ -4975,14 +4975,6 @@ void optionscreen_free(void) {
 #endif
 }
 
-#ifdef MDKR_VITA_IMGUI_OVERLAY
-void mdkr_vita_save_editor_open_classic(void) {
-    mdkr_vita_imgui_overlay_close();
-    optionscreen_free();
-    menu_init(MENU_SAVE_EDITOR);
-}
-#endif
-
 #ifdef NATIVE_PORT
 /*
  * Controller-first Adventure save editor.
@@ -5374,6 +5366,103 @@ static void save_editor_load_slot(s32 slot) {
                              ? "EMPTY SAVE - START A GAME FIRST"
                              : "LEFT/RIGHT CHANGES A VALUE";
 }
+
+#ifdef MDKR_VITA_IMGUI_OVERLAY
+static s32 save_editor_track_progress(s32 flags);
+static void save_editor_set_track_progress(s32 world, s32 track, s32 progress);
+static void save_editor_apply(void);
+void mdkr_vita_save_editor_open_classic(void) {
+    mdkr_vita_imgui_overlay_close();
+    optionscreen_free();
+    menu_init(MENU_SAVE_EDITOR);
+}
+
+int mdkr_vita_save_editor_selected_slot(void) {
+    return sSaveEditorSlot;
+}
+
+void mdkr_vita_save_editor_select_slot(int slot) {
+    if (slot < 0 || slot >= NUMBER_OF_SAVE_FILES || slot == sSaveEditorSlot) return;
+    sSaveEditorSlot = slot;
+    save_editor_load_slot(sSaveEditorSlot);
+    sSaveEditorApplyArmed = FALSE;
+    sSaveEditorSlotActionArmed = FALSE;
+    sSaveEditorStatus = "SLOT SELECTED";
+}
+
+int mdkr_vita_save_editor_track_progress(int world, int track) {
+    if (world < 0 || world >= SAVE_EDITOR_ADVENTURE_WORLD_COUNT ||
+        track < 0 || track >= SAVE_EDITOR_TRACKS_PER_WORLD) return 0;
+    return save_editor_track_progress(sSaveEditorTrackFlags[sSaveEditorSlot][world][track]);
+}
+
+const char *mdkr_vita_save_editor_track_name(int world, int track) {
+    if (world < 0 || world >= SAVE_EDITOR_ADVENTURE_WORLD_COUNT ||
+        track < 0 || track >= SAVE_EDITOR_TRACKS_PER_WORLD) return "";
+    return sSaveEditorTrackNames[world][track];
+}
+
+void mdkr_vita_save_editor_set_track_progress(int world, int track, int progress) {
+    if (world < 0 || world >= SAVE_EDITOR_ADVENTURE_WORLD_COUNT ||
+        track < 0 || track >= SAVE_EDITOR_TRACKS_PER_WORLD) return;
+    if (progress < 0) progress = 0;
+    if (progress > 2) progress = 2;
+    save_editor_set_track_progress(world, track, progress);
+    sSaveEditorDirty = TRUE;
+    sSaveEditorApplyArmed = FALSE;
+    sSaveEditorStatus = "TRACK PROGRESS UPDATED";
+}
+
+int mdkr_vita_save_editor_has_unsaved_changes(void) {
+    return sSaveEditorDirty || sSaveEditorTimeTrialDirty || sSaveEditorUnlockDirty;
+}
+
+const char *mdkr_vita_save_editor_status(void) {
+    return sSaveEditorStatus != NULL ? sSaveEditorStatus : "";
+}
+
+void mdkr_vita_save_editor_apply_changes(void) {
+    if (!mdkr_vita_save_editor_has_unsaved_changes()) {
+        sSaveEditorStatus = "NO CHANGES TO SAVE";
+        return;
+    }
+    save_editor_apply();
+}
+
+const char *mdkr_vita_save_editor_time_trial_name(int track) {
+    u8 *trackIds = (u8 *)get_misc_asset(ASSET_MISC_MAIN_TRACKS_IDS);
+    if (track < 0 || track >= SAVE_EDITOR_TIME_TRIAL_COUNT) return "";
+    return level_name(trackIds[track]);
+}
+
+int mdkr_vita_save_editor_tt_beaten(int track) {
+    return track >= 0 && track < SAVE_EDITOR_TIME_TRIAL_COUNT &&
+        sSaveEditorTimeTrialBeaten[track] != FALSE;
+}
+
+int mdkr_vita_save_editor_developer_beaten(int track) {
+    return track >= 0 && track < SAVE_EDITOR_TIME_TRIAL_COUNT &&
+        sSaveEditorDeveloperTimeBeaten[track] != FALSE;
+}
+
+void mdkr_vita_save_editor_set_tt_beaten(int track, int beaten) {
+    if (track < 0 || track >= SAVE_EDITOR_TIME_TRIAL_COUNT) return;
+    sSaveEditorTimeTrialBeaten[track] = beaten != 0;
+    if (!beaten) sSaveEditorDeveloperTimeBeaten[track] = FALSE;
+    sSaveEditorTimeTrialDirty = TRUE;
+    sSaveEditorApplyArmed = FALSE;
+    sSaveEditorStatus = "T.T. CONDITION UPDATED";
+}
+
+void mdkr_vita_save_editor_set_developer_beaten(int track, int beaten) {
+    if (track < 0 || track >= SAVE_EDITOR_TIME_TRIAL_COUNT) return;
+    sSaveEditorDeveloperTimeBeaten[track] = beaten != 0;
+    if (beaten) sSaveEditorTimeTrialBeaten[track] = TRUE;
+    sSaveEditorTimeTrialDirty = TRUE;
+    sSaveEditorApplyArmed = FALSE;
+    sSaveEditorStatus = "DEVELOPER TIME CONDITION UPDATED";
+}
+#endif
 
 static void save_editor_apply(void) {
     Settings *settings = gSavefileData[sSaveEditorSlot];

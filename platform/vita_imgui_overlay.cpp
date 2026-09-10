@@ -2,6 +2,7 @@
 #include "vita_save_editor_bridge.h"
 
 #if defined(__vita__) && defined(MDKR_VITA_IMGUI_OVERLAY)
+#include <cstdio>
 #include "imgui.h"
 #include "imgui_impl_vitagl.h"
 
@@ -9,6 +10,8 @@ namespace {
 bool s_initialized = false;
 bool s_open = false;
 int s_page = 0;
+int s_world = 0;
+int s_time_trial = 0;
 
 bool initialize() {
     if (s_initialized) return true;
@@ -49,13 +52,52 @@ extern "C" int mdkr_vita_imgui_overlay_render(void) {
     ImGui::Separator();
     if (s_page == 0) {
         ImGui::TextUnformatted("Adventure progress");
-        ImGui::TextWrapped("Slot, balloon, track, boss, Taj, hub, and arena controls are being connected to the existing save validation layer.");
+        int slot = mdkr_vita_save_editor_selected_slot();
+        ImGui::Text("Selected save slot: %d", slot + 1);
+        for (int candidate = 0; candidate < 3; ++candidate) {
+            if (candidate != 0) ImGui::SameLine();
+            char label[16];
+            snprintf(label, sizeof(label), "Slot %d", candidate + 1);
+            if (ImGui::Selectable(label, slot == candidate, 0, ImVec2(150.0f, 38.0f))) {
+                mdkr_vita_save_editor_select_slot(candidate);
+            }
+        }
+        ImGui::TextWrapped("Slot selection already shares the classic editor's loaded cache. Progress controls are being connected to that same validated state.");
     } else if (s_page == 1) {
         ImGui::TextUnformatted("World progression");
-        ImGui::TextWrapped("Track results will preserve the same prerequisite and balloon-count rules as the classic editor.");
+        const char *worlds[] = { "Dino Domain", "Sherbet Island", "Snowflake Mountain", "Dragon Forest", "Future Fun Land" };
+        for (int world = 0; world < 5; ++world) {
+            if (world != 0) ImGui::SameLine();
+            if (ImGui::Selectable(worlds[world], s_world == world, 0, ImVec2(175.0f, 32.0f))) s_world = world;
+        }
+        ImGui::Separator();
+        for (int track = 0; track < 4; ++track) {
+            int progress = mdkr_vita_save_editor_track_progress(s_world, track);
+            ImGui::Text("%s", mdkr_vita_save_editor_track_name(s_world, track));
+            ImGui::SameLine(390.0f);
+            if (ImGui::Button(progress == 0 ? "Not visited" : progress == 1 ? "Cleared" : "Coin complete", ImVec2(220.0f, 34.0f))) {
+                mdkr_vita_save_editor_set_track_progress(s_world, track, (progress + 1) % 3);
+            }
+        }
     } else if (s_page == 2) {
         ImGui::TextUnformatted("Global Time Trials");
-        ImGui::TextWrapped("T.T. and developer records will use the corrected canonical track mapping from 1.6.4.");
+        ImGui::Text("%s", mdkr_vita_save_editor_time_trial_name(s_time_trial));
+        if (ImGui::Button("Previous", ImVec2(150.0f, 36.0f))) {
+            s_time_trial = (s_time_trial + 19) % 20;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Next", ImVec2(150.0f, 36.0f))) {
+            s_time_trial = (s_time_trial + 1) % 20;
+        }
+        bool tt = mdkr_vita_save_editor_tt_beaten(s_time_trial) != 0;
+        bool developer = mdkr_vita_save_editor_developer_beaten(s_time_trial) != 0;
+        if (ImGui::Checkbox("T.T. defeated", &tt)) {
+            mdkr_vita_save_editor_set_tt_beaten(s_time_trial, tt ? 1 : 0);
+        }
+        if (ImGui::Checkbox("Developer time beaten", &developer)) {
+            mdkr_vita_save_editor_set_developer_beaten(s_time_trial, developer ? 1 : 0);
+        }
+        ImGui::TextWrapped("Developer records use the canonical credits/RetroAchievements order, not the editor's world order.");
     } else if (s_page == 3) {
         ImGui::TextUnformatted("Trophy conditions");
         ImGui::TextWrapped("Main, Adventure 2, Time Trial, character, and power-up conditions will remain state-driven rather than directly unlocking trophies.");
@@ -66,8 +108,16 @@ extern "C" int mdkr_vita_imgui_overlay_render(void) {
             mdkr_vita_save_editor_open_classic();
         }
     }
-    ImGui::SetCursorPosY(455.0f);
+    ImGui::SetCursorPosY(430.0f);
+    ImGui::Text("%s", mdkr_vita_save_editor_status());
+    ImGui::SetCursorPosY(465.0f);
+    if (ImGui::Button("Apply Changes", ImVec2(250.0f, 42.0f))) {
+        mdkr_vita_save_editor_apply_changes();
+    }
+    ImGui::SameLine();
     if (ImGui::Button("Close", ImVec2(180.0f, 42.0f))) s_open = false;
+    ImGui::SameLine();
+    ImGui::TextUnformatted(mdkr_vita_save_editor_has_unsaved_changes() ? "UNSAVED CHANGES" : "SAVED");
     ImGui::End();
     ImGui::Render();
     ImGui_ImplVitaGL_RenderDrawData(ImGui::GetDrawData());
