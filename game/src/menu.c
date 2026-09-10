@@ -4993,14 +4993,18 @@ enum {
 #define SAVE_EDITOR_ADVENTURE_WORLD_COUNT 5
 #define SAVE_EDITOR_TRACKS_PER_WORLD 4
 #define SAVE_EDITOR_TIME_TRIAL_COUNT 20
-#define SAVE_EDITOR_PAGE_COUNT 10
+#define SAVE_EDITOR_PAGE_COUNT 14
 
 enum {
     SAVE_EDITOR_PAGE_TRACKS,
     SAVE_EDITOR_PAGE_WORLD_PROGRESS,
     SAVE_EDITOR_PAGE_ADVANCEMENT,
     SAVE_EDITOR_PAGE_ARENAS,
-    SAVE_EDITOR_PAGE_TROPHIES,
+    SAVE_EDITOR_PAGE_MAIN_TROPHIES,
+    SAVE_EDITOR_PAGE_ADVENTURE_TWO_TROPHIES,
+    SAVE_EDITOR_PAGE_TIME_TRIAL_TROPHIES,
+    SAVE_EDITOR_PAGE_CHARACTER_TROPHIES,
+    SAVE_EDITOR_PAGE_POWERUP_TROPHIES,
     SAVE_EDITOR_PAGE_TAJ,
     SAVE_EDITOR_PAGE_HUB_BALLOONS,
     SAVE_EDITOR_PAGE_TIME_TRIALS,
@@ -5067,6 +5071,7 @@ static u8 sSaveEditorWizpigAmulet[NUMBER_OF_SAVE_FILES];
 static u16 sSaveEditorHubFlags[NUMBER_OF_SAVE_FILES];
 static s32 sSaveEditorArenaFlags[NUMBER_OF_SAVE_FILES][4];
 static u8 sSaveEditorTimeTrialBeaten[SAVE_EDITOR_TIME_TRIAL_COUNT];
+static u8 sSaveEditorDeveloperTimeBeaten[SAVE_EDITOR_TIME_TRIAL_COUNT];
 static s32 sSaveEditorAdventure2Unlocked;
 static s32 sSaveEditorTtUnlocked;
 static s32 sSaveEditorDrumstickUnlocked;
@@ -5076,7 +5081,12 @@ static s32 sSaveEditorPage;
 static s32 sSaveEditorWorld;
 static s32 sSaveEditorTrack;
 static s32 sSaveEditorArena;
+static s32 sSaveEditorMainTrophy;
+static s32 sSaveEditorTrophyTrack;
 static s32 sSaveEditorTrophyCharacter;
+static s32 sSaveEditorPowerup;
+static s32 sSaveEditorBananaCondition;
+static s32 sSaveEditorPowerupCondition[5];
 static s32 sSaveEditorTajChallenge;
 static s32 sSaveEditorHubBalloon;
 static s32 sSaveEditorTimeTrialTrack;
@@ -5092,6 +5102,82 @@ static char *sSaveEditorStatus;
 
 static void save_editor_recompute_total_balloons(void);
 static void save_editor_load_slot(s32 slot);
+
+/* Only rendered rows can receive focus. The previous menu advanced through
+ * blank spacer rows, making selection look as if it had disappeared before
+ * it eventually reached Apply. */
+static s32 save_editor_option_visible(s32 page, s32 option) {
+    if (option == SAVE_EDITOR_SLOT || option == SAVE_EDITOR_PAGE ||
+        option == SAVE_EDITOR_APPLY || option == SAVE_EDITOR_RETURN) {
+        return TRUE;
+    }
+    switch (page) {
+        case SAVE_EDITOR_PAGE_TRACKS:
+            return option >= SAVE_EDITOR_WORLD &&
+                   option <= SAVE_EDITOR_WORLD_PROGRESS_TWO;
+        case SAVE_EDITOR_PAGE_WORLD_PROGRESS:
+            return option >= SAVE_EDITOR_WORLD &&
+                   option <= SAVE_EDITOR_WORLD_PROGRESS_ONE;
+        case SAVE_EDITOR_PAGE_ADVANCEMENT:
+            return option >= SAVE_EDITOR_WORLD &&
+                   option <= SAVE_EDITOR_WORLD_PROGRESS_THREE;
+        case SAVE_EDITOR_PAGE_ARENAS:
+        case SAVE_EDITOR_PAGE_MAIN_TROPHIES:
+        case SAVE_EDITOR_PAGE_TIME_TRIAL_TROPHIES:
+        case SAVE_EDITOR_PAGE_CHARACTER_TROPHIES:
+        case SAVE_EDITOR_PAGE_POWERUP_TROPHIES:
+        case SAVE_EDITOR_PAGE_TAJ:
+        case SAVE_EDITOR_PAGE_HUB_BALLOONS:
+        case SAVE_EDITOR_PAGE_UNLOCKS:
+            return option >= SAVE_EDITOR_WORLD &&
+                   option <= SAVE_EDITOR_TRACK_PROGRESS;
+        case SAVE_EDITOR_PAGE_ADVENTURE_TWO_TROPHIES:
+            return option >= SAVE_EDITOR_WORLD &&
+                   option <= SAVE_EDITOR_WORLD_PROGRESS_TWO;
+        case SAVE_EDITOR_PAGE_TIME_TRIALS:
+            return option >= SAVE_EDITOR_WORLD &&
+                   option <= SAVE_EDITOR_WORLD_PROGRESS_ONE;
+        case SAVE_EDITOR_PAGE_SLOT_MANAGEMENT:
+            return option >= SAVE_EDITOR_WORLD &&
+                   option <= SAVE_EDITOR_WORLD_PROGRESS_ONE;
+        default:
+            return FALSE;
+    }
+}
+
+static void save_editor_move_option(s32 direction) {
+    s32 attempts;
+    for (attempts = 0; attempts < SAVE_EDITOR_OPTION_COUNT; attempts++) {
+        sSaveEditorOption += direction;
+        if (sSaveEditorOption < 0) {
+            sSaveEditorOption = SAVE_EDITOR_OPTION_COUNT - 1;
+        } else if (sSaveEditorOption >= SAVE_EDITOR_OPTION_COUNT) {
+            sSaveEditorOption = 0;
+        }
+        if (save_editor_option_visible(sSaveEditorPage, sSaveEditorOption)) {
+            return;
+        }
+    }
+}
+
+static const char *save_editor_page_status(s32 page) {
+    switch (page) {
+        case SAVE_EDITOR_PAGE_TRACKS: return "TRACK PROGRESS";
+        case SAVE_EDITOR_PAGE_WORLD_PROGRESS: return "WORLD PROGRESS";
+        case SAVE_EDITOR_PAGE_ADVANCEMENT: return "ADVANCEMENT PROGRESS";
+        case SAVE_EDITOR_PAGE_ARENAS: return "KEY ARENA COMPLETION";
+        case SAVE_EDITOR_PAGE_MAIN_TROPHIES: return "MAIN TROPHY CONDITIONS";
+        case SAVE_EDITOR_PAGE_ADVENTURE_TWO_TROPHIES: return "ADVENTURE 2 TROPHIES";
+        case SAVE_EDITOR_PAGE_TIME_TRIAL_TROPHIES: return "TIME TRIAL TROPHIES";
+        case SAVE_EDITOR_PAGE_CHARACTER_TROPHIES: return "CHARACTER TROPHIES";
+        case SAVE_EDITOR_PAGE_POWERUP_TROPHIES: return "POWER-UP TROPHIES";
+        case SAVE_EDITOR_PAGE_TAJ: return "TAJ CHALLENGES";
+        case SAVE_EDITOR_PAGE_HUB_BALLOONS: return "HUB BALLOONS";
+        case SAVE_EDITOR_PAGE_TIME_TRIALS: return "GLOBAL TIME RECORDS";
+        case SAVE_EDITOR_PAGE_UNLOCKS: return "GLOBAL UNLOCKS";
+        default: return "SLOT MANAGEMENT";
+    }
+}
 
 /* The original EEPROM does not serialize a completion bit for Horseshoe
  * Gulch.  Keep all four editor-visible arena states in the Vita-specific,
@@ -5125,10 +5211,18 @@ static void save_editor_set_hub_balloon_collected(s32 slot, s32 balloonIndex,
 static void save_editor_load_time_trials(void) {
     s32 track;
     const u64 beatenFlags = get_eeprom_settings();
+    Settings *settings = get_settings();
+    u8 *mainTrackIds = (u8 *)get_misc_asset(ASSET_MISC_MAIN_TRACKS_IDS);
 
     for (track = 0; track < SAVE_EDITOR_TIME_TRIAL_COUNT; track++) {
+        const s32 trackId = mainTrackIds[track];
+        const Vehicle vehicle = leveltable_vehicle_default(trackId);
         sSaveEditorTimeTrialBeaten[track] =
             (beatenFlags & ((u64)16 << track)) != 0;
+        sSaveEditorDeveloperTimeBeaten[track] =
+            settings != NULL && settings->courseTimesPtr[vehicle] != NULL &&
+            mdkr_vita_trophy_developer_time_beaten(
+                (unsigned)track, settings->courseTimesPtr[vehicle][trackId]);
     }
     sSaveEditorTimeTrialDirty = FALSE;
 }
@@ -5323,18 +5417,24 @@ static void save_editor_apply(void) {
             const Vehicle vehicle = leveltable_vehicle_default(trackId);
             const u64 bit = (u64)16 << track;
             const s32 liveBeaten = (get_eeprom_settings() & bit) != 0;
+            const s32 liveDeveloper = mdkr_vita_trophy_developer_time_beaten(
+                (unsigned)track, liveSettings->courseTimesPtr[vehicle][trackId]);
+            const s32 target = mdkr_vita_trophy_developer_time_target((unsigned)track);
+            const s32 desiredTime = sSaveEditorDeveloperTimeBeaten[track]
+                                        ? target - 1
+                                        : sSaveEditorTimeTrialBeaten[track]
+                                              ? staffTimes[track] : 0;
 
-            if (liveBeaten == sSaveEditorTimeTrialBeaten[track]) {
+            if (liveBeaten == sSaveEditorTimeTrialBeaten[track] &&
+                liveDeveloper == sSaveEditorDeveloperTimeBeaten[track]) {
                 continue;
             }
+            liveSettings->courseTimesPtr[vehicle][trackId] = desiredTime;
+            liveSettings->courseInitialsPtr[vehicle][trackId] = desiredTime != 0
+                ? filename_compress("GBL", MAX_INITIALS_LENGTH) : 0;
             if (sSaveEditorTimeTrialBeaten[track]) {
-                liveSettings->courseTimesPtr[vehicle][trackId] = staffTimes[track];
-                liveSettings->courseInitialsPtr[vehicle][trackId] =
-                    filename_compress("GBL", MAX_INITIALS_LENGTH);
                 set_eeprom_settings_value(bit);
             } else {
-                liveSettings->courseTimesPtr[vehicle][trackId] = 0;
-                liveSettings->courseInitialsPtr[vehicle][trackId] = 0;
                 unset_eeprom_settings_value(bit);
             }
             timeTrialChanged = TRUE;
@@ -5352,6 +5452,7 @@ static void save_editor_apply(void) {
             gActiveMagicCodes &= ~CHEAT_CONTROL_TT;
             gUnlockedMagicCodes &= ~CHEAT_CONTROL_TT;
         }
+        if (timeTrialChanged) mdkr_vita_trophy_pump(liveSettings);
     }
 
     if (sSaveEditorUnlockDirty) {
@@ -5641,8 +5742,25 @@ static void save_editor_render(void) {
         "SAVE FILE", "EDIT MODE", "ARENA", "ARENA RESULT", "", "", "", "",
         "APPLY CHANGES", "RETURN"
     };
+    static char *const mainTrophyLabels[] = {
+        "TROPHY GROUP", "EDIT MODE", "TROPHY", "UNLOCK STATUS",
+        "CONDITION", "", "", "", "APPLY CHANGES", "RETURN"
+    };
+    static char *const adventureTwoTrophyLabels[] = {
+        "SAVE FILE", "EDIT MODE", "TRACK", "SILVER-COIN RESULT",
+        "TRACK TROPHY", "47 BALLOONS", "WIZPIG TWO", "",
+        "APPLY CHANGES", "RETURN"
+    };
+    static char *const timeTrialTrophyLabels[] = {
+        "TIME RECORDS", "EDIT MODE", "TRACK", "T.T. TROPHY",
+        "DEVELOPER TROPHY", "", "", "", "APPLY CHANGES", "RETURN"
+    };
     static char *const trophyLabels[] = {
-        "TROPHY CONDITIONS", "EDIT MODE", "CHARACTER", "BALLOON CONDITION",
+        "TROPHY GROUP", "EDIT MODE", "CHARACTER", "BALLOON CONDITION",
+        "TROPHY STATUS", "", "", "", "APPLY CHANGES", "RETURN"
+    };
+    static char *const powerupTrophyLabels[] = {
+        "TROPHY GROUP", "EDIT MODE", "POWER-UP", "MAX CONDITION",
         "TROPHY STATUS", "", "", "", "APPLY CHANGES", "RETURN"
     };
     static char *const tajLabels[] = {
@@ -5655,7 +5773,7 @@ static void save_editor_render(void) {
     };
     static char *const timeTrialLabels[] = {
         "TIME RECORDS", "EDIT MODE", "TRACK", "T.T. RESULT", "STAFF TIME",
-        "", "", "", "APPLY CHANGES", "RETURN"
+        "DEVELOPER RESULT", "", "", "APPLY CHANGES", "RETURN"
     };
     static char *const unlockLabels[] = {
         "GLOBAL UNLOCKS", "EDIT MODE", "ADVENTURE TWO", "T.T.", "DRUMSTICK",
@@ -5666,9 +5784,10 @@ static void save_editor_render(void) {
         "ERASE SAVE", "", "", "APPLY CHANGES", "RETURN"
     };
     static char *const pageNames[] = {
-        "TRACKS", "WORLD PROGRESS", "ADVANCEMENT", "KEY ARENAS", "TROPHIES",
-        "TAJ CHALLENGES", "HUB BALLOONS", "TIME TRIALS", "UNLOCKS",
-        "SLOT MANAGEMENT"
+        "TRACKS", "WORLD PROGRESS", "ADVANCEMENT", "KEY ARENAS",
+        "MAIN TROPHIES", "ADVENTURE 2", "TIME TRIALS", "CHARACTERS",
+        "POWER-UPS", "TAJ CHALLENGES", "HUB BALLOONS", "T.T. RECORDS",
+        "UNLOCKS", "SLOT MANAGEMENT"
     };
     static char *const worldNames[] = {
         "DINO DOMAIN", "SHERBET ISLAND", "SNOWFLAKE MOUNTAIN",
@@ -5682,6 +5801,17 @@ static void save_editor_render(void) {
     };
     static const u8 trophyCharacterIds[] = {
         80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 95, 96, 97
+    };
+    static char *const mainTrophyNames[] = {
+        "GOLDEN BALLOON", "FIRST BALLOON", "WIZPIG AMULET", "DINO KEY",
+        "SHERBET KEY", "SNOWFLAKE KEY", "DRAGON KEY", "39 BALLOONS",
+        "47 BALLOONS", "DINO CUP", "SHERBET CUP", "SNOWFLAKE CUP",
+        "DRAGON CUP", "FUTURE CUP", "WIZPIG ONE", "WIZPIG TWO",
+        "TEN BANANAS", "BATTLE ARENAS"
+    };
+    static const u8 powerupTrophyIds[] = { 90, 91, 92, 93, 94 };
+    static char *const powerupNames[] = {
+        "ROCKET", "BOOST", "MINE", "SHIELD", "MAGNET"
     };
     char *const *labels;
     char value[48];
@@ -5702,7 +5832,9 @@ static void save_editor_render(void) {
 
     highlight = gOptionBlinkTimer * 8;
     if (highlight >= 256) highlight = 511 - highlight;
-    if (sSaveEditorPage == SAVE_EDITOR_PAGE_TIME_TRIALS) {
+    if (sSaveEditorPage == SAVE_EDITOR_PAGE_TIME_TRIALS ||
+        sSaveEditorPage == SAVE_EDITOR_PAGE_ADVENTURE_TWO_TROPHIES ||
+        sSaveEditorPage == SAVE_EDITOR_PAGE_TIME_TRIAL_TROPHIES) {
         mainTrackIds = (u8 *)get_misc_asset(ASSET_MISC_MAIN_TRACKS_IDS);
         staffTimes = (u16 *)get_misc_asset(ASSET_MISC_GHOST_UNLOCK_TIMES);
     }
@@ -5710,14 +5842,19 @@ static void save_editor_render(void) {
              sSaveEditorPage == SAVE_EDITOR_PAGE_WORLD_PROGRESS ? progressLabels :
              sSaveEditorPage == SAVE_EDITOR_PAGE_ADVANCEMENT ? advancementLabels :
              sSaveEditorPage == SAVE_EDITOR_PAGE_ARENAS ? arenaLabels :
-             sSaveEditorPage == SAVE_EDITOR_PAGE_TROPHIES ? trophyLabels :
+             sSaveEditorPage == SAVE_EDITOR_PAGE_MAIN_TROPHIES ? mainTrophyLabels :
+             sSaveEditorPage == SAVE_EDITOR_PAGE_ADVENTURE_TWO_TROPHIES ? adventureTwoTrophyLabels :
+             sSaveEditorPage == SAVE_EDITOR_PAGE_TIME_TRIAL_TROPHIES ? timeTrialTrophyLabels :
+             sSaveEditorPage == SAVE_EDITOR_PAGE_CHARACTER_TROPHIES ? trophyLabels :
+             sSaveEditorPage == SAVE_EDITOR_PAGE_POWERUP_TROPHIES ? powerupTrophyLabels :
              sSaveEditorPage == SAVE_EDITOR_PAGE_TAJ ? tajLabels :
              sSaveEditorPage == SAVE_EDITOR_PAGE_HUB_BALLOONS ? hubLabels :
              sSaveEditorPage == SAVE_EDITOR_PAGE_TIME_TRIALS ? timeTrialLabels :
              sSaveEditorPage == SAVE_EDITOR_PAGE_UNLOCKS ? unlockLabels :
              slotLabels;
     set_text_font(ASSET_FONTS_FUNFONT);
-    for (option = 0; option < SAVE_EDITOR_OPTION_COUNT; option++, yPos += 16) {
+    for (option = 0; option < SAVE_EDITOR_OPTION_COUNT; option++) {
+        if (!save_editor_option_visible(sSaveEditorPage, option)) continue;
         if (option == sSaveEditorOption) {
             set_text_colour(255, 255, 255, highlight, 255);
         } else {
@@ -5726,6 +5863,8 @@ static void save_editor_render(void) {
         draw_text(&sMenuCurrDisplayList, 32, yPos, labels[option], ALIGN_TOP_LEFT);
         if (option == SAVE_EDITOR_SLOT) {
             if (sSaveEditorPage == SAVE_EDITOR_PAGE_TIME_TRIALS ||
+                sSaveEditorPage == SAVE_EDITOR_PAGE_TIME_TRIAL_TROPHIES ||
+                sSaveEditorPage == SAVE_EDITOR_PAGE_POWERUP_TROPHIES ||
                 sSaveEditorPage == SAVE_EDITOR_PAGE_UNLOCKS) {
                 snprintf(value, sizeof(value), "GLOBAL");
             } else {
@@ -5747,12 +5886,75 @@ static void save_editor_render(void) {
             snprintf(value, sizeof(value), "%s",
                      (sSaveEditorArenaFlags[sSaveEditorSlot][sSaveEditorArena] & RACE_CLEARED)
                          ? "COMPLETE" : "NOT DONE");
-        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_TROPHIES && option == SAVE_EDITOR_WORLD) {
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_MAIN_TROPHIES &&
+                   option == SAVE_EDITOR_WORLD) {
+            snprintf(value, sizeof(value), "%s", mainTrophyNames[sSaveEditorMainTrophy]);
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_MAIN_TROPHIES &&
+                   option == SAVE_EDITOR_TRACK) {
+            snprintf(value, sizeof(value), "%s", mdkr_vita_trophy_is_unlocked(
+                (unsigned)sSaveEditorMainTrophy) ? "EARNED" : "NOT EARNED");
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_MAIN_TROPHIES &&
+                   option == SAVE_EDITOR_TRACK_PROGRESS) {
+            snprintf(value, sizeof(value), "%s",
+                     sSaveEditorMainTrophy == 16 ?
+                         (sSaveEditorBananaCondition ? "10 BANANAS" : "NOT MET") :
+                         "USE RELATED SAVE PAGE");
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_ADVENTURE_TWO_TROPHIES &&
+                   option == SAVE_EDITOR_WORLD) {
+            snprintf(value, sizeof(value), "%s", level_name(mainTrackIds[sSaveEditorTrophyTrack]));
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_ADVENTURE_TWO_TROPHIES &&
+                   option == SAVE_EDITOR_TRACK) {
+            s32 world, track;
+            s32 progress = 0;
+            for (world = 0; world < SAVE_EDITOR_ADVENTURE_WORLD_COUNT; world++) {
+                for (track = 0; track < SAVE_EDITOR_TRACKS_PER_WORLD; track++) {
+                    if (sSaveEditorTrackIds[world][track] == mainTrackIds[sSaveEditorTrophyTrack]) {
+                        progress = save_editor_track_progress(
+                            sSaveEditorTrackFlags[sSaveEditorSlot][world][track]);
+                    }
+                }
+            }
+            snprintf(value, sizeof(value), "%s", progress >= 2 ? "COMPLETE" : "NOT DONE");
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_ADVENTURE_TWO_TROPHIES &&
+                   option == SAVE_EDITOR_TRACK_PROGRESS) {
+            snprintf(value, sizeof(value), "%s", mdkr_vita_trophy_is_unlocked(
+                18u + (unsigned)sSaveEditorTrophyTrack) ? "EARNED" : "NOT EARNED");
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_ADVENTURE_TWO_TROPHIES &&
+                   option == SAVE_EDITOR_WORLD_PROGRESS_ONE) {
+            snprintf(value, sizeof(value), "%s", mdkr_vita_trophy_is_unlocked(38)
+                ? "EARNED" : "NOT EARNED");
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_ADVENTURE_TWO_TROPHIES &&
+                   option == SAVE_EDITOR_WORLD_PROGRESS_TWO) {
+            snprintf(value, sizeof(value), "%s", mdkr_vita_trophy_is_unlocked(39)
+                ? "EARNED" : "NOT EARNED");
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_TIME_TRIAL_TROPHIES &&
+                   option == SAVE_EDITOR_WORLD) {
+            snprintf(value, sizeof(value), "%s", level_name(mainTrackIds[sSaveEditorTrophyTrack]));
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_TIME_TRIAL_TROPHIES &&
+                   option == SAVE_EDITOR_TRACK) {
+            snprintf(value, sizeof(value), "%s", mdkr_vita_trophy_is_unlocked(
+                40u + (unsigned)sSaveEditorTrophyTrack) ? "EARNED" : "NOT EARNED");
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_TIME_TRIAL_TROPHIES &&
+                   option == SAVE_EDITOR_TRACK_PROGRESS) {
+            snprintf(value, sizeof(value), "%s", mdkr_vita_trophy_is_unlocked(
+                60u + (unsigned)sSaveEditorTrophyTrack) ? "EARNED" : "NOT EARNED");
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_POWERUP_TROPHIES &&
+                   option == SAVE_EDITOR_WORLD) {
+            snprintf(value, sizeof(value), "%s", powerupNames[sSaveEditorPowerup]);
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_POWERUP_TROPHIES &&
+                   option == SAVE_EDITOR_TRACK) {
+            snprintf(value, sizeof(value), "%s", sSaveEditorPowerupCondition[sSaveEditorPowerup]
+                ? "MAX LEVEL" : "NOT MET");
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_POWERUP_TROPHIES &&
+                   option == SAVE_EDITOR_TRACK_PROGRESS) {
+            snprintf(value, sizeof(value), "%s", mdkr_vita_trophy_is_unlocked(
+                powerupTrophyIds[sSaveEditorPowerup]) ? "EARNED" : "NOT EARNED");
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_CHARACTER_TROPHIES && option == SAVE_EDITOR_WORLD) {
             snprintf(value, sizeof(value), "%s", trophyCharacterNames[sSaveEditorTrophyCharacter]);
-        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_TROPHIES && option == SAVE_EDITOR_TRACK) {
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_CHARACTER_TROPHIES && option == SAVE_EDITOR_TRACK) {
             snprintf(value, sizeof(value), "%d/5", mdkr_vita_trophy_character_balloon_progress(
                 sSaveEditorTrophyCharacter));
-        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_TROPHIES && option == SAVE_EDITOR_TRACK_PROGRESS) {
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_CHARACTER_TROPHIES && option == SAVE_EDITOR_TRACK_PROGRESS) {
             snprintf(value, sizeof(value), "%s", mdkr_vita_trophy_is_unlocked(
                 trophyCharacterIds[sSaveEditorTrophyCharacter]) ? "EARNED" : "NOT EARNED");
         } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_ADVANCEMENT &&
@@ -5798,6 +6000,11 @@ static void save_editor_render(void) {
             get_timestamp_from_frames(staffTimes[sSaveEditorTimeTrialTrack],
                                       &minutes, &seconds, &hundredths);
             snprintf(value, sizeof(value), "%d:%02d.%02d", minutes, seconds, hundredths);
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_TIME_TRIALS &&
+                   option == SAVE_EDITOR_WORLD_PROGRESS_ONE) {
+            snprintf(value, sizeof(value), "%s",
+                     sSaveEditorDeveloperTimeBeaten[sSaveEditorTimeTrialTrack]
+                         ? "BEATEN" : "UNBEATEN");
         } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_UNLOCKS &&
                    option >= SAVE_EDITOR_WORLD && option <= SAVE_EDITOR_TRACK_PROGRESS) {
             const s32 unlocked = option == SAVE_EDITOR_WORLD
@@ -5859,6 +6066,7 @@ static void save_editor_render(void) {
              * track/world labels are too wide when they start at x=250. */
             draw_text(&sMenuCurrDisplayList, 304, yPos, value, ALIGN_TOP_RIGHT);
         }
+        yPos += 16;
     }
     set_text_colour(255, 255, 128, 0, 255);
     draw_text(&sMenuCurrDisplayList, POS_CENTRED, 206,
@@ -5882,7 +6090,12 @@ void menu_save_editor_init(void) {
     sSaveEditorWorld = 0;
     sSaveEditorTrack = 0;
     sSaveEditorArena = 0;
+    sSaveEditorMainTrophy = 0;
+    sSaveEditorTrophyTrack = 0;
     sSaveEditorTrophyCharacter = 0;
+    sSaveEditorPowerup = 0;
+    sSaveEditorBananaCondition = FALSE;
+    memset(sSaveEditorPowerupCondition, 0, sizeof(sSaveEditorPowerupCondition));
     sSaveEditorTajChallenge = 0;
     sSaveEditorHubBalloon = 0;
     sSaveEditorTimeTrialTrack = 0;
@@ -5957,32 +6170,109 @@ s32 menu_save_editor_loop(s32 updateRate) {
             if (sSaveEditorPage >= SAVE_EDITOR_PAGE_COUNT) sSaveEditorPage = 0;
             sSaveEditorApplyArmed = FALSE;
             sSaveEditorSlotActionArmed = FALSE;
-            sSaveEditorStatus = sSaveEditorPage == SAVE_EDITOR_PAGE_TRACKS
-                                    ? "TRACK PROGRESS"
-                                    : sSaveEditorPage == SAVE_EDITOR_PAGE_WORLD_PROGRESS
-                                          ? "WORLD PROGRESS"
-                                          : sSaveEditorPage == SAVE_EDITOR_PAGE_ADVANCEMENT
-                                                ? "ADVANCEMENT PROGRESS"
-                                                : sSaveEditorPage == SAVE_EDITOR_PAGE_ARENAS
-                                                      ? "KEY ARENA COMPLETION"
-                                                : sSaveEditorPage == SAVE_EDITOR_PAGE_TROPHIES
-                                                      ? "TROPHY CONDITIONS"
-                                                : sSaveEditorPage == SAVE_EDITOR_PAGE_TAJ
-                                                      ? "TAJ CHALLENGES"
-                                                      : sSaveEditorPage == SAVE_EDITOR_PAGE_HUB_BALLOONS
-                                                            ? "HUB BALLOONS"
-                                                            : sSaveEditorPage == SAVE_EDITOR_PAGE_TIME_TRIALS
-                                                                  ? "GLOBAL TIME RECORDS"
-                                                                  : "GLOBAL UNLOCKS";
+            sSaveEditorOption = SAVE_EDITOR_SLOT;
+            sSaveEditorStatus = (char *)save_editor_page_status(sSaveEditorPage);
             sound_play(SOUND_MENU_PICK2, NULL);
-        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_TROPHIES &&
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_MAIN_TROPHIES &&
+                   sSaveEditorOption == SAVE_EDITOR_WORLD) {
+            sSaveEditorMainTrophy += xAxis < 0 ? -1 : 1;
+            if (sSaveEditorMainTrophy < 0) sSaveEditorMainTrophy = 17;
+            if (sSaveEditorMainTrophy > 17) sSaveEditorMainTrophy = 0;
+            sSaveEditorStatus = "SELECT A MAIN TROPHY";
+            sound_play(SOUND_MENU_PICK2, NULL);
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_MAIN_TROPHIES &&
+                   sSaveEditorOption == SAVE_EDITOR_TRACK_PROGRESS &&
+                   sSaveEditorMainTrophy == 16) {
+            sSaveEditorBananaCondition = !sSaveEditorBananaCondition;
+            if (sSaveEditorBananaCondition) {
+                mdkr_vita_trophy_banana_collected(10);
+            }
+            sSaveEditorStatus = sSaveEditorBananaCondition
+                                    ? "TEN-BANANA CONDITION MET"
+                                    : "BANANA CONDITION RESET";
+            sound_play(SOUND_MENU_PICK2, NULL);
+        } else if ((sSaveEditorPage == SAVE_EDITOR_PAGE_ADVENTURE_TWO_TROPHIES ||
+                    sSaveEditorPage == SAVE_EDITOR_PAGE_TIME_TRIAL_TROPHIES) &&
+                   sSaveEditorOption == SAVE_EDITOR_WORLD) {
+            sSaveEditorTrophyTrack += xAxis < 0 ? -1 : 1;
+            if (sSaveEditorTrophyTrack < 0) sSaveEditorTrophyTrack = 19;
+            if (sSaveEditorTrophyTrack >= SAVE_EDITOR_TIME_TRIAL_COUNT) {
+                sSaveEditorTrophyTrack = 0;
+            }
+            sSaveEditorStatus = "SELECT A TRACK";
+            sound_play(SOUND_MENU_PICK2, NULL);
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_POWERUP_TROPHIES &&
+                   sSaveEditorOption == SAVE_EDITOR_WORLD) {
+            sSaveEditorPowerup += xAxis < 0 ? -1 : 1;
+            if (sSaveEditorPowerup < 0) sSaveEditorPowerup = 4;
+            if (sSaveEditorPowerup > 4) sSaveEditorPowerup = 0;
+            sSaveEditorStatus = "SELECT A POWER-UP";
+            sound_play(SOUND_MENU_PICK2, NULL);
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_POWERUP_TROPHIES &&
+                   sSaveEditorOption == SAVE_EDITOR_TRACK) {
+            sSaveEditorPowerupCondition[sSaveEditorPowerup] =
+                !sSaveEditorPowerupCondition[sSaveEditorPowerup];
+            if (sSaveEditorPowerupCondition[sSaveEditorPowerup]) {
+                /* Engine BalloonType order starts at Boost; the bridge owns
+                 * the trophy-ID translation, so this is a true condition seam. */
+                mdkr_vita_trophy_max_powerup(
+                    sSaveEditorPowerup == 0 ? 1 :
+                    sSaveEditorPowerup == 1 ? 0 : sSaveEditorPowerup, 2);
+            }
+            sSaveEditorStatus = sSaveEditorPowerupCondition[sSaveEditorPowerup]
+                                    ? "MAX POWER-UP CONDITION MET"
+                                    : "POWER-UP CONDITION RESET";
+            sound_play(SOUND_MENU_PICK2, NULL);
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_ADVENTURE_TWO_TROPHIES &&
+                   sSaveEditorOption == SAVE_EDITOR_TRACK) {
+            s32 world;
+            s32 track;
+            for (world = 0; world < SAVE_EDITOR_ADVENTURE_WORLD_COUNT; world++) {
+                for (track = 0; track < SAVE_EDITOR_TRACKS_PER_WORLD; track++) {
+                    if (sSaveEditorTrackIds[world][track] ==
+                        ((u8 *)get_misc_asset(ASSET_MISC_MAIN_TRACKS_IDS))[sSaveEditorTrophyTrack]) {
+                        const s32 current = save_editor_track_progress(
+                            sSaveEditorTrackFlags[sSaveEditorSlot][world][track]);
+                        save_editor_set_track_progress(world, track,
+                                                       current >= 2 ? 0 : 2);
+                    }
+                }
+            }
+            save_editor_recompute_total_balloons();
+            sSaveEditorDirty = TRUE;
+            sSaveEditorApplyArmed = FALSE;
+            sSaveEditorStatus = "ADVENTURE 2 COIN RESULT UPDATED";
+            sound_play(SOUND_MENU_PICK2, NULL);
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_TIME_TRIAL_TROPHIES &&
+                   sSaveEditorOption == SAVE_EDITOR_TRACK) {
+            sSaveEditorTimeTrialBeaten[sSaveEditorTrophyTrack] =
+                !sSaveEditorTimeTrialBeaten[sSaveEditorTrophyTrack];
+            if (!sSaveEditorTimeTrialBeaten[sSaveEditorTrophyTrack]) {
+                sSaveEditorDeveloperTimeBeaten[sSaveEditorTrophyTrack] = FALSE;
+            }
+            sSaveEditorTimeTrialDirty = TRUE;
+            sSaveEditorApplyArmed = FALSE;
+            sSaveEditorStatus = "T.T. CONDITION UPDATED";
+            sound_play(SOUND_MENU_PICK2, NULL);
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_TIME_TRIAL_TROPHIES &&
+                   sSaveEditorOption == SAVE_EDITOR_TRACK_PROGRESS) {
+            sSaveEditorDeveloperTimeBeaten[sSaveEditorTrophyTrack] =
+                !sSaveEditorDeveloperTimeBeaten[sSaveEditorTrophyTrack];
+            if (sSaveEditorDeveloperTimeBeaten[sSaveEditorTrophyTrack]) {
+                sSaveEditorTimeTrialBeaten[sSaveEditorTrophyTrack] = TRUE;
+            }
+            sSaveEditorTimeTrialDirty = TRUE;
+            sSaveEditorApplyArmed = FALSE;
+            sSaveEditorStatus = "DEVELOPER TIME CONDITION UPDATED";
+            sound_play(SOUND_MENU_PICK2, NULL);
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_CHARACTER_TROPHIES &&
                    sSaveEditorOption == SAVE_EDITOR_WORLD) {
             sSaveEditorTrophyCharacter += xAxis < 0 ? -1 : 1;
             if (sSaveEditorTrophyCharacter < 0) sSaveEditorTrophyCharacter = 12;
             if (sSaveEditorTrophyCharacter > 12) sSaveEditorTrophyCharacter = 0;
             sSaveEditorStatus = "SELECT A CHARACTER";
             sound_play(SOUND_MENU_PICK2, NULL);
-        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_TROPHIES &&
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_CHARACTER_TROPHIES &&
                    sSaveEditorOption == SAVE_EDITOR_TRACK) {
             s32 progress = mdkr_vita_trophy_character_balloon_progress(
                 sSaveEditorTrophyCharacter);
@@ -6101,9 +6391,23 @@ s32 menu_save_editor_loop(s32 updateRate) {
                    sSaveEditorOption == SAVE_EDITOR_TRACK) {
             sSaveEditorTimeTrialBeaten[sSaveEditorTimeTrialTrack] =
                 !sSaveEditorTimeTrialBeaten[sSaveEditorTimeTrialTrack];
+            if (!sSaveEditorTimeTrialBeaten[sSaveEditorTimeTrialTrack]) {
+                sSaveEditorDeveloperTimeBeaten[sSaveEditorTimeTrialTrack] = FALSE;
+            }
             sSaveEditorTimeTrialDirty = TRUE;
             sSaveEditorApplyArmed = FALSE;
             sSaveEditorStatus = "T.T. RECORD UPDATED";
+            sound_play(SOUND_MENU_PICK2, NULL);
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_TIME_TRIALS &&
+                   sSaveEditorOption == SAVE_EDITOR_WORLD_PROGRESS_ONE) {
+            sSaveEditorDeveloperTimeBeaten[sSaveEditorTimeTrialTrack] =
+                !sSaveEditorDeveloperTimeBeaten[sSaveEditorTimeTrialTrack];
+            if (sSaveEditorDeveloperTimeBeaten[sSaveEditorTimeTrialTrack]) {
+                sSaveEditorTimeTrialBeaten[sSaveEditorTimeTrialTrack] = TRUE;
+            }
+            sSaveEditorTimeTrialDirty = TRUE;
+            sSaveEditorApplyArmed = FALSE;
+            sSaveEditorStatus = "DEVELOPER RECORD UPDATED";
             sound_play(SOUND_MENU_PICK2, NULL);
         } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_UNLOCKS &&
                    sSaveEditorOption >= SAVE_EDITOR_WORLD &&
@@ -6294,9 +6598,7 @@ s32 menu_save_editor_loop(s32 updateRate) {
         }
     }
     if (yAxis != 0) {
-        sSaveEditorOption += yAxis < 0 ? 1 : -1;
-        if (sSaveEditorOption < 0) sSaveEditorOption = SAVE_EDITOR_OPTION_COUNT - 1;
-        if (sSaveEditorOption >= SAVE_EDITOR_OPTION_COUNT) sSaveEditorOption = 0;
+        save_editor_move_option(yAxis < 0 ? 1 : -1);
         sSaveEditorSlotActionArmed = FALSE;
         sound_play(SOUND_MENU_PICK2, NULL);
     }

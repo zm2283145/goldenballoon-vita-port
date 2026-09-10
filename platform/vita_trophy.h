@@ -48,4 +48,11 @@ int mdkr_vita_trophy_character_balloon_progress(unsigned character_index);
 void mdkr_vita_trophy_set_character_balloon_progress(unsigned character_index,
                                                       unsigned balloon_count);
 
+/* The Time Trial editor stores genuine course records. These helpers expose
+ * the exact developer-time threshold used by the trophy condition without
+ * duplicating that conversion in the menu. */
+int mdkr_vita_trophy_developer_time_target(unsigned track_index);
+int mdkr_vita_trophy_developer_time_beaten(unsigned track_index,
+                                           int course_time);
+
 #endif
