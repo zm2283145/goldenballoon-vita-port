@@ -724,12 +724,12 @@ const Copy *copyFor(MdkrVideoKey key) {
         nullptr, false, false};
     static const Copy kFovCopy = {
         "Field of view",
-        "authored keeps each track's original lens. Or type a number from 20 "
+        "Authored keeps each track's original lens. Or type a number from 20 "
         "to 140.",
         nullptr, false, false};
     static const Copy kAspectCopy = {
         "Aspect ratio",
-        "auto fills the window. 4:3 pillarboxes the original framing.",
+        "Auto fills the window. 4:3 pillarboxes the original framing.",
         nullptr, false, false};
     static const Copy kWidescreenCopy = {
         "Widescreen",
@@ -867,21 +867,22 @@ std::array<std::string, MDKR_VIDEO_KEY_COUNT> g_enhancementHelp;
  * gains a sentence, and it is generated from the schema scope rather than
  * written per row, so a key added tomorrow cannot be the one that forgets.
  */
-std::array<std::string, MDKR_VIDEO_KEY_COUNT> g_rowDescription;
-
-const char *describeRow(MdkrVideoKey key, const MdkrVideoSchema *schema,
-                        const char *base) {
-    if (schema->scope == MDKR_VIDEO_SCOPE_RESTART ||
-        schema->scope == MDKR_VIDEO_SCOPE_LEVEL) {
-        return base;   // the chip on the label line already said it
-    }
-    std::string &text = g_rowDescription[static_cast<size_t>(key)];
-    if (!text.empty()) return text.c_str();
-    text = base != nullptr ? base : "";
-    if (!text.empty()) text += ' ';
-    text += "Applies straight away.";
-    return text.c_str();
-}
+/*
+ * Nothing is appended to a row's description any more.
+ *
+ * Every LIVE setting used to gain the sentence "Applies straight away." It was
+ * generated rather than written per row, which was the right instinct, but LIVE
+ * is the COMMON case: the result was the same sentence repeated down a column
+ * of rows, and a column of identical sentences is read as texture rather than
+ * as information.
+ *
+ * The chips already carry this fact the other way round, which is the way this
+ * product states facts everywhere else -- "Next launch" and "Next race" mark
+ * the exceptions, and an unmarked row applies now. That is the same "one fact,
+ * one chip" rule the restart badge was collapsed into; a sentence saying what
+ * the absence of a chip already says is the second spelling that rule exists to
+ * refuse.
+ */
 
 const char *enhancementHelp(MdkrVideoKey key,
                             const MdkrEnhancement *enhancement,
@@ -980,7 +981,7 @@ bool drawKey(SDL_Window *window, MdkrVideoKey k, bool compact) {
         copy != nullptr ? copy->description : helpFor(k, s);
     const bool describable = !compact && !controllerBinding;
     ui::SettingLabel(rowLabel,
-                     describable ? describeRow(k, s, description) : nullptr,
+                     describable ? description : nullptr,
                      rowStyle);
 
     ImGui::SetNextItemWidth(ui::kControlWidth());
@@ -1373,7 +1374,7 @@ bool drawFrameRate(SDL_Window *window, bool compact, bool selectingFrameLimit) {
         "Frame rate",
         compact ? nullptr
                 : "How often the app draws to your screen. It never changes "
-                  "how fast the game runs. Applies straight away.",
+                  "how fast the game runs.",
         paceStyle);
 
     for (int i = 0; i < static_cast<int>(std::size(kPaceChoices)); ++i) {
