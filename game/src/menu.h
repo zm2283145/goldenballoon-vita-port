@@ -256,8 +256,9 @@ typedef enum MENU_ID {
     MENU_BOOT,
     MENU_UNUSED_27,
     MENU_CAUTION,
-    /* Native-only extension appended so every original menu ID stays stable. */
-    MENU_VIDEO_OPTIONS
+    /* Native-only extensions are appended so every original menu ID stays stable. */
+    MENU_VIDEO_OPTIONS,
+    MENU_SAVE_EDITOR
 } MENU_ID;
 
 enum MenuResult {
@@ -548,6 +549,8 @@ void optionscreen_free(void);
 void menu_video_options_init(void);
 s32 menu_video_options_loop(s32 updateRate);
 void video_options_free(void);
+void menu_save_editor_init(void);
+s32 menu_save_editor_loop(s32 updateRate);
 #endif
 void menu_audio_options_init(void);
 void soundoptions_free(void);

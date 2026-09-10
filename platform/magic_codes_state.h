@@ -13,8 +13,16 @@ enum {
 };
 
 /* Progression/debug/one-shot codes are deliberately absent. The sidecar owns
- * only ordinary player-selected modifiers; TT and Drumstick remain save data. */
-#define MAGIC_CODES_PERSISTED_MASK UINT32_C(0x03FFFBFC)
+ * only ordinary player-selected modifiers; TT and Drumstick remain save data.
+ *
+ * Bit 29 is deliberately outside the 29-row retail Magic Code asset. It is a
+ * native-only, permanent entitlement used to expose the controller-friendly
+ * save editor after the player enters GOLDENEDIT. It is persisted but never
+ * applied as a gameplay modifier. */
+#define MAGIC_CODES_SAVE_EDITOR_UNLOCKED UINT32_C(0x20000000)
+#define MAGIC_CODES_SAVE_EDITOR_CODE "GOLDENEDIT"
+#define MAGIC_CODES_PERSISTED_MASK \
+    (UINT32_C(0x03FFFBFC) | MAGIC_CODES_SAVE_EDITOR_UNLOCKED)
 
 typedef struct MagicCodesPersistentState {
     uint32_t version;

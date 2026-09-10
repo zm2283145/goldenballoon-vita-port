@@ -78,6 +78,9 @@ extern int g_frameCounter;
  */
 
 static void cheatlist_apply_exclusivity(s32 code);
+#ifdef NATIVE_PORT
+static void menu_options_refresh_native_entries(void);
+#endif
 
 /************ .bss ************/
 
@@ -846,7 +849,7 @@ UNUSED u8 unused_800DFA0C[] = { 0, 0, 15, 120 };
 
 #ifdef NATIVE_PORT
 char *gOptionMenuStrings[] = {
-    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
 };
 static char *video_options_title(void);
 #else
@@ -1081,6 +1084,7 @@ static s32 sTajUnlockBannerTimer;
 static s32 sWizpigUnlockBannerTimer;
 static s32 sTerryUnlockBannerTimer;
 static ModRacerIdentity sLastSyntheticUnlock = MOD_RACER_RETAIL;
+static s32 sLastSaveEditorUnlock;
 static s32 sTajPersistenceWarningTimer;
 static s32 sTajPersistenceWarningShown;
 static s8 sTajTraceCharacter[MAXCONTROLLERS];
@@ -2845,8 +2849,7 @@ void load_menu_text(s32 language) {
     gOptionMenuStrings[3] = video_options_title();
     gOptionMenuStrings[4] = menuText[ASSET_MENU_TEXT_SAVEOPTIONS];                           // "SAVE OPTIONS"
     gOptionMenuStrings[5] = menuText[ASSET_MENU_TEXT_MAGICCODES];                            // "MAGIC CODES"
-    gOptionMenuStrings[6] = menuText[ASSET_MENU_TEXT_RETURN];                                // "RETURN"
-    gOptionMenuStrings[7] = NULL;
+    menu_options_refresh_native_entries();
 #else
     gOptionMenuStrings[3] = menuText[ASSET_MENU_TEXT_SAVEOPTIONS];                           // "SAVE OPTIONS"
     gOptionMenuStrings[4] = menuText[ASSET_MENU_TEXT_MAGICCODES];                            // "MAGIC CODES"
@@ -3439,6 +3442,9 @@ void menu_init(u32 menuId) {
         case MENU_VIDEO_OPTIONS:
             menu_video_options_init();
             break;
+        case MENU_SAVE_EDITOR:
+            menu_save_editor_init();
+            break;
 #endif
         case MENU_AUDIO_OPTIONS:
             menu_audio_options_init();
@@ -3520,6 +3526,9 @@ s32 menu_loop(Gfx **currDisplayList, Mtx **currHudMat, Vertex **currHudVerts, Tr
 #ifdef NATIVE_PORT
         case MENU_VIDEO_OPTIONS:
             ret = menu_video_options_loop(updateRate);
+            break;
+        case MENU_SAVE_EDITOR:
+            ret = menu_save_editor_loop(updateRate);
             break;
 #endif
         case MENU_AUDIO_OPTIONS:
@@ -4646,7 +4655,30 @@ void menu_options_init(void) {
     music_voicelimit_set(24);
     music_play(SEQUENCE_MAIN_MENU);
     music_change_off();
+#ifdef NATIVE_PORT
+    menu_options_refresh_native_entries();
+#endif
 }
+
+#ifdef NATIVE_PORT
+/* The save editor is deliberately absent until GOLDENEDIT has been accepted.
+ * Keep the insertion at the menu boundary so entering the code and returning
+ * to Options in the same session immediately exposes it. */
+static void menu_options_refresh_native_entries(void) {
+    const s32 saveEditorUnlocked =
+        ((u32)gUnlockedMagicCodes & MAGIC_CODES_SAVE_EDITOR_UNLOCKED) != 0;
+
+    if (saveEditorUnlocked) {
+        gOptionMenuStrings[6] = "SAVE EDITOR";
+        gOptionMenuStrings[7] = gMenuText[ASSET_MENU_TEXT_RETURN];
+        gOptionMenuStrings[8] = NULL;
+    } else {
+        gOptionMenuStrings[6] = gMenuText[ASSET_MENU_TEXT_RETURN];
+        gOptionMenuStrings[7] = NULL;
+        gOptionMenuStrings[8] = NULL;
+    }
+}
+#endif
 
 /**
  * Render the text entries for the options menu.
@@ -4752,6 +4784,9 @@ s32 menu_options_loop(s32 updateRate) {
 #if REGION == REGION_JP
     UNUSED s32 langVal;
 #endif
+#ifdef NATIVE_PORT
+    s32 nativeOptionsReturnIndex;
+#endif
 
     gOptionBlinkTimer = (gOptionBlinkTimer + updateRate) & 0x3F;
     if (gMenuDelay != 0) {
@@ -4775,10 +4810,15 @@ s32 menu_options_loop(s32 updateRate) {
             analogueY += gControllersYAxisDirection[i];
         }
     }
+#ifdef NATIVE_PORT
+    nativeOptionsReturnIndex =
+        ((u32)gUnlockedMagicCodes & MAGIC_CODES_SAVE_EDITOR_UNLOCKED) != 0
+            ? 7 : 6;
+#endif
     if ((buttonsPressed & B_BUTTON) ||
         ((buttonsPressed & (A_BUTTON | START_BUTTON)) &&
 #ifdef NATIVE_PORT
-         gMenuCurIndex == 6
+         gMenuCurIndex == nativeOptionsReturnIndex
 #else
          gMenuCurIndex == 5
 #endif
@@ -4848,8 +4888,8 @@ s32 menu_options_loop(s32 updateRate) {
         if (analogueY < 0) {
             gMenuCurIndex++;
 #ifdef NATIVE_PORT
-            if (gMenuCurIndex >= 7) {
-                gMenuCurIndex = 6;
+            if (gMenuCurIndex > nativeOptionsReturnIndex) {
+                gMenuCurIndex = nativeOptionsReturnIndex;
             }
 #else
             if (gMenuCurIndex >= 6) {
@@ -4892,6 +4932,14 @@ s32 menu_options_loop(s32 updateRate) {
             menu_init(MENU_SAVE_OPTIONS);
             return MENU_RESULT_CONTINUE;
         }
+#ifdef NATIVE_PORT
+        if (gMenuCurIndex == 6 &&
+            ((u32)gUnlockedMagicCodes & MAGIC_CODES_SAVE_EDITOR_UNLOCKED) != 0) {
+            optionscreen_free();
+            menu_init(MENU_SAVE_EDITOR);
+            return MENU_RESULT_CONTINUE;
+        }
+#endif
         optionscreen_free();
         menu_init(MENU_MAGIC_CODES);
         return MENU_RESULT_CONTINUE;
@@ -4917,6 +4965,223 @@ void optionscreen_free(void) {
 }
 
 #ifdef NATIVE_PORT
+/*
+ * Controller-first Adventure save editor.
+ *
+ * This first native screen intentionally exposes the most common safe edit:
+ * the five world balloon counters. It edits a private set of menu values and
+ * only writes when the player selects APPLY CHANGES. The real save codec and
+ * checksum writer remain authoritative through write_save_data(); no raw
+ * EEPROM bytes or host paths are touched here.
+ */
+enum {
+    SAVE_EDITOR_SLOT = 0,
+    SAVE_EDITOR_DINO_DOMAIN,
+    SAVE_EDITOR_SHERBET_ISLAND,
+    SAVE_EDITOR_SNOWFLAKE_MOUNTAIN,
+    SAVE_EDITOR_DRAGON_FOREST,
+    SAVE_EDITOR_FUTURE_FUN_LAND,
+    SAVE_EDITOR_APPLY,
+    SAVE_EDITOR_RETURN,
+    SAVE_EDITOR_OPTION_COUNT
+};
+
+#define SAVE_EDITOR_WORLD_COUNT 6
+#define SAVE_EDITOR_BALLOON_LIMIT 99
+
+static s16 sSaveEditorBalloons[NUMBER_OF_SAVE_FILES][SAVE_EDITOR_WORLD_COUNT];
+static s32 sSaveEditorSlot;
+static s32 sSaveEditorOption;
+static s32 sSaveEditorDirty;
+static s32 sSaveEditorApplyArmed;
+static char *sSaveEditorStatus;
+
+static void save_editor_load_slot(s32 slot) {
+    Settings *settings;
+    s32 world;
+
+    if (slot < 0 || slot >= NUMBER_OF_SAVE_FILES) return;
+    settings = gSavefileData[slot];
+    (void)read_save_file(slot, settings);
+    for (world = 0; world < SAVE_EDITOR_WORLD_COUNT; world++) {
+        sSaveEditorBalloons[slot][world] = settings->balloonsPtr[world];
+    }
+    sSaveEditorDirty = FALSE;
+    sSaveEditorApplyArmed = FALSE;
+    sSaveEditorStatus = settings->newGame
+                             ? "EMPTY SAVE - START A GAME FIRST"
+                             : "LEFT/RIGHT CHANGES A VALUE";
+}
+
+static void save_editor_apply(void) {
+    Settings *settings = gSavefileData[sSaveEditorSlot];
+    s32 world;
+    s32 total = 0;
+
+    if (settings->newGame) {
+        sSaveEditorStatus = "START A GAME BEFORE EDITING THIS SLOT";
+        return;
+    }
+    for (world = 1; world < SAVE_EDITOR_WORLD_COUNT; world++) {
+        total += sSaveEditorBalloons[sSaveEditorSlot][world];
+    }
+    sSaveEditorBalloons[sSaveEditorSlot][0] = (s16)total;
+    for (world = 0; world < SAVE_EDITOR_WORLD_COUNT; world++) {
+        settings->balloonsPtr[world] = sSaveEditorBalloons[sSaveEditorSlot][world];
+    }
+    if (write_save_data(sSaveEditorSlot, settings) != 0) {
+        /* The slot writer did not commit. Restore the cache so a later menu
+         * screen cannot observe a draft as though it had been saved. */
+        (void)read_save_file(sSaveEditorSlot, settings);
+        for (world = 0; world < SAVE_EDITOR_WORLD_COUNT; world++) {
+            sSaveEditorBalloons[sSaveEditorSlot][world] = settings->balloonsPtr[world];
+        }
+        sSaveEditorDirty = FALSE;
+        sSaveEditorApplyArmed = FALSE;
+        sSaveEditorStatus = "SAVE FAILED - NO CHANGES APPLIED";
+        return;
+    }
+    /* Refresh the file-select cache from the canonical, checksummed slot. */
+    (void)read_save_file(sSaveEditorSlot, settings);
+    mark_read_all_save_files();
+    sSaveEditorDirty = FALSE;
+    sSaveEditorApplyArmed = FALSE;
+    sSaveEditorStatus = "SAVE UPDATED";
+}
+
+static void save_editor_render(void) {
+    static char *const labels[] = {
+        "SAVE FILE", "DINO DOMAIN", "SHERBET ISLAND", "SNOWFLAKE MOUNTAIN",
+        "DRAGON FOREST", "FUTURE FUN LAND", "APPLY CHANGES", "RETURN"
+    };
+    char value[48];
+    s32 option;
+    s32 highlight;
+    s32 yPos = 54;
+
+    set_text_font(ASSET_FONTS_BIGFONT);
+    set_text_background_colour(0, 0, 0, 0);
+    set_text_colour(0, 0, 0, 255, 128);
+    draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF + 1, 35, "SAVE EDITOR",
+              ALIGN_MIDDLE_CENTER);
+    set_text_colour(255, 255, 255, 0, 255);
+    draw_text(&sMenuCurrDisplayList, SCREEN_WIDTH_HALF, 32, "SAVE EDITOR",
+              ALIGN_MIDDLE_CENTER);
+
+    highlight = gOptionBlinkTimer * 8;
+    if (highlight >= 256) highlight = 511 - highlight;
+    set_text_font(ASSET_FONTS_FUNFONT);
+    for (option = 0; option < SAVE_EDITOR_OPTION_COUNT; option++, yPos += 18) {
+        if (option == sSaveEditorOption) {
+            set_text_colour(255, 255, 255, highlight, 255);
+        } else {
+            set_text_colour(255, 255, 255, 0, 255);
+        }
+        draw_text(&sMenuCurrDisplayList, 32, yPos, labels[option], ALIGN_TOP_LEFT);
+        if (option == SAVE_EDITOR_SLOT) {
+            snprintf(value, sizeof(value), "%d", sSaveEditorSlot + 1);
+        } else if (option >= SAVE_EDITOR_DINO_DOMAIN &&
+                   option <= SAVE_EDITOR_FUTURE_FUN_LAND) {
+            snprintf(value, sizeof(value), "%d",
+                     sSaveEditorBalloons[sSaveEditorSlot][option]);
+        } else {
+            value[0] = '\0';
+        }
+        if (value[0] != '\0') {
+            draw_text(&sMenuCurrDisplayList, 250, yPos, value, ALIGN_TOP_LEFT);
+        }
+    }
+    set_text_colour(255, 255, 128, 0, 255);
+    draw_text(&sMenuCurrDisplayList, POS_CENTRED, 210,
+              sSaveEditorStatus != NULL ? sSaveEditorStatus : "",
+              ALIGN_MIDDLE_CENTER);
+    set_text_colour(200, 220, 255, 0, 255);
+    draw_text(&sMenuCurrDisplayList, POS_CENTRED, 226,
+              sSaveEditorDirty ? "UNSAVED CHANGES" : "",
+              ALIGN_MIDDLE_CENTER);
+}
+
+void menu_save_editor_init(void) {
+    s32 slot;
+
+    gOptionBlinkTimer = 0;
+    gMenuDelay = 0;
+    sSaveEditorSlot = 0;
+    sSaveEditorOption = SAVE_EDITOR_SLOT;
+    sSaveEditorApplyArmed = FALSE;
+    for (slot = 0; slot < NUMBER_OF_SAVE_FILES; slot++) {
+        save_editor_load_slot(slot);
+    }
+    save_editor_load_slot(sSaveEditorSlot);
+    transition_begin(&sMenuTransitionFadeOut);
+#if REGION != REGION_JP
+    load_font(ASSET_FONTS_BIGFONT);
+#endif
+}
+
+s32 menu_save_editor_loop(s32 updateRate) {
+    s32 buttonsPressed = 0;
+    s32 xAxis = 0;
+    s32 yAxis = 0;
+    s32 controller;
+
+    gOptionBlinkTimer = (gOptionBlinkTimer + updateRate) & 0x3F;
+    save_editor_render();
+    if (gIgnorePlayerInputTime == 0) {
+        for (controller = 0; controller < MAXCONTROLLERS; controller++) {
+            buttonsPressed |= input_pressed(controller);
+            xAxis += gControllersXAxisDirection[controller];
+            yAxis += gControllersYAxisDirection[controller];
+        }
+    }
+    if (buttonsPressed & B_BUTTON ||
+        ((buttonsPressed & (A_BUTTON | START_BUTTON)) &&
+         sSaveEditorOption == SAVE_EDITOR_RETURN)) {
+        optionscreen_free();
+        menu_init(MENU_OPTIONS);
+        return MENU_RESULT_CONTINUE;
+    }
+    if ((buttonsPressed & (A_BUTTON | START_BUTTON)) &&
+        sSaveEditorOption == SAVE_EDITOR_APPLY) {
+        if (!sSaveEditorDirty) {
+            sSaveEditorApplyArmed = FALSE;
+            sSaveEditorStatus = "NO CHANGES TO SAVE";
+        } else if (sSaveEditorApplyArmed) {
+            save_editor_apply();
+        } else {
+            sSaveEditorApplyArmed = TRUE;
+            sSaveEditorStatus = "PRESS A AGAIN TO SAVE";
+        }
+        sound_play(SOUND_SELECT2, NULL);
+    } else if (xAxis != 0) {
+        if (sSaveEditorOption == SAVE_EDITOR_SLOT) {
+            sSaveEditorSlot += xAxis < 0 ? -1 : 1;
+            if (sSaveEditorSlot < 0) sSaveEditorSlot = NUMBER_OF_SAVE_FILES - 1;
+            if (sSaveEditorSlot >= NUMBER_OF_SAVE_FILES) sSaveEditorSlot = 0;
+            save_editor_load_slot(sSaveEditorSlot);
+            sound_play(SOUND_MENU_PICK2, NULL);
+        } else if (sSaveEditorOption >= SAVE_EDITOR_DINO_DOMAIN &&
+                   sSaveEditorOption <= SAVE_EDITOR_FUTURE_FUN_LAND) {
+            s16 *value = &sSaveEditorBalloons[sSaveEditorSlot][sSaveEditorOption];
+            *value += xAxis < 0 ? -1 : 1;
+            if (*value < 0) *value = 0;
+            if (*value > SAVE_EDITOR_BALLOON_LIMIT) *value = SAVE_EDITOR_BALLOON_LIMIT;
+            sSaveEditorDirty = TRUE;
+            sSaveEditorApplyArmed = FALSE;
+            sSaveEditorStatus = "LEFT/RIGHT CHANGES A VALUE";
+            sound_play(SOUND_MENU_PICK2, NULL);
+        }
+    }
+    if (yAxis != 0) {
+        sSaveEditorOption += yAxis < 0 ? 1 : -1;
+        if (sSaveEditorOption < 0) sSaveEditorOption = SAVE_EDITOR_OPTION_COUNT - 1;
+        if (sSaveEditorOption >= SAVE_EDITOR_OPTION_COUNT) sSaveEditorOption = 0;
+        sound_play(SOUND_MENU_PICK2, NULL);
+    }
+    gIgnorePlayerInputTime = 0;
+    return MENU_RESULT_CONTINUE;
+}
+
 enum {
     VIDEO_OPTION_MODE = 0,
     VIDEO_OPTION_SCALE,
@@ -7957,6 +8222,15 @@ void cheatmenu_render(UNUSED s32 updateRate) {
             draw_text(&sMenuCurrDisplayList, POS_CENTRED, 144, gMenuText[ASSET_MENU_TEXT_BADCODE],
                       ALIGN_MIDDLE_CENTER); //"Sorry, the code was incorrect"
 #ifdef NATIVE_PORT
+        } else if (gNewCheatID == -3) {
+            draw_text(&sMenuCurrDisplayList, POS_CENTRED, 144,
+                      "SAVE EDITOR UNLOCKED!", ALIGN_MIDDLE_CENTER);
+            if (magic_codes_persistence_failed()) {
+                set_text_colour(255, 96, 64, 0, 255);
+                draw_text(&sMenuCurrDisplayList, POS_CENTRED, 160,
+                          "SAVE EDITOR UNLOCK NOT SAVED",
+                          ALIGN_MIDDLE_CENTER);
+            }
         } else if (gNewCheatID == -2) {
             /* This synthetic success must never index the 29-row asset. */
             draw_text(&sMenuCurrDisplayList, POS_CENTRED, 144,
@@ -8163,13 +8437,27 @@ s32 menu_magic_codes_loop(s32 updateRate) {
                 gOptionsMenuItemIndex = 0;
             } else {
 #ifdef NATIVE_PORT
-                sLastSyntheticUnlock =
-                    mod_racer_submit_magic_code(gCheatInput);
-                if (sLastSyntheticUnlock != MOD_RACER_RETAIL) {
+                sLastSaveEditorUnlock =
+                    strcmp(gCheatInput, MAGIC_CODES_SAVE_EDITOR_CODE) == 0;
+                if (sLastSaveEditorUnlock) {
+                    /* This native-only entitlement is deliberately not an
+                     * active gameplay cheat. It is restored from the same
+                     * durable Magic Code sidecar at the next boot. */
+                    gUnlockedMagicCodes |= (s32)MAGIC_CODES_SAVE_EDITOR_UNLOCKED;
+                    (void)magic_codes_persistence_update(
+                        (u32)gUnlockedMagicCodes, (u32)gActiveMagicCodes);
+                    foundCheat = TRUE;
+                    gNewCheatID = -3;
+                } else {
+                    sLastSyntheticUnlock =
+                        mod_racer_submit_magic_code(gCheatInput);
+                }
+                if (!sLastSaveEditorUnlock &&
+                    sLastSyntheticUnlock != MOD_RACER_RETAIL) {
                     /* Synthetic success: do not enter the retail magic table. */
                     foundCheat = TRUE;
                     gNewCheatID = -2;
-                } else {
+                } else if (!sLastSaveEditorUnlock) {
 #endif
                 cheatDataEntries = &(*gCheatsAssetData)[1];
                 gNewCheatID = 0; // Index into the gCheatsAssetData cheatsTable
@@ -8392,6 +8680,8 @@ void cheatlist_render(UNUSED s32 updateRate) {
     s32 numOfUnlockedCheats;
 #ifdef NATIVE_PORT
     s32 numOfRetailUnlockedCheats;
+    s32 numOfBonusRacerCodes;
+    s32 saveEditorUnlocked;
 #endif
     /* Unsigned: the walk below shifts this across all 32 cheat bits, and a
      * signed 1 << 31 is undefined. */
@@ -8428,7 +8718,10 @@ void cheatlist_render(UNUSED s32 updateRate) {
 #ifdef NATIVE_PORT
     numOfRetailUnlockedCheats = numOfUnlockedCheats;
     /* Must stay in lockstep with mod_racer_identity_for_cheat_row(). */
-    numOfUnlockedCheats += mod_racer_unlocked_count();
+    numOfBonusRacerCodes = mod_racer_unlocked_count();
+    saveEditorUnlocked =
+        ((u32)gUnlockedMagicCodes & MAGIC_CODES_SAVE_EDITOR_UNLOCKED) != 0;
+    numOfUnlockedCheats += numOfBonusRacerCodes + saveEditorUnlocked;
 #endif
     yPos = 54;
     alpha = gOptionBlinkTimer * 8;
@@ -8443,7 +8736,8 @@ void cheatlist_render(UNUSED s32 updateRate) {
             set_text_colour(255, 255, 255, alpha, 255);
         }
 #ifdef NATIVE_PORT
-        if (i >= numOfRetailUnlockedCheats) {
+        if (i >= numOfRetailUnlockedCheats &&
+            i < numOfRetailUnlockedCheats + numOfBonusRacerCodes) {
             ModRacerIdentity identity =
                 mod_racer_identity_for_cheat_row(i - numOfRetailUnlockedCheats);
             if (identity == MOD_RACER_RETAIL) {
@@ -8460,6 +8754,17 @@ void cheatlist_render(UNUSED s32 updateRate) {
                       mod_racer_is_enabled(identity)
                           ? gMenuText[ASSET_MENU_TEXT_ON]
                           : gMenuText[ASSET_MENU_TEXT_OFF],
+                      ALIGN_TOP_LEFT);
+            if (i == gOptionsMenuItemIndex) {
+                set_text_colour(255, 255, 255, 0, 255);
+            }
+            continue;
+        }
+        if (i >= numOfRetailUnlockedCheats + numOfBonusRacerCodes &&
+            saveEditorUnlocked) {
+            draw_text(&sMenuCurrDisplayList, 48, yPos, "SAVE EDITOR",
+                      ALIGN_TOP_LEFT);
+            draw_text(&sMenuCurrDisplayList, 256, yPos, "UNLOCKED",
                       ALIGN_TOP_LEFT);
             if (i == gOptionsMenuItemIndex) {
                 set_text_colour(255, 255, 255, 0, 255);
@@ -8557,6 +8862,8 @@ s32 menu_magic_codes_list_loop(s32 updateRate) {
     s32 numUnlockedCodes;
 #ifdef NATIVE_PORT
     s32 numRetailUnlockedCodes;
+    s32 numBonusRacerCodes;
+    s32 saveEditorUnlocked;
 #endif
     /* Unsigned: the walk below shifts this across all 32 cheat bits, and a
      * signed 1 << 31 is undefined. */
@@ -8607,17 +8914,24 @@ s32 menu_magic_codes_list_loop(s32 updateRate) {
 #ifdef NATIVE_PORT
     numRetailUnlockedCodes = numUnlockedCodes;
     /* Must stay in lockstep with mod_racer_identity_for_cheat_row(). */
-    numUnlockedCodes += mod_racer_unlocked_count();
+    numBonusRacerCodes = mod_racer_unlocked_count();
+    saveEditorUnlocked =
+        ((u32)gUnlockedMagicCodes & MAGIC_CODES_SAVE_EDITOR_UNLOCKED) != 0;
+    numUnlockedCodes += numBonusRacerCodes + saveEditorUnlocked;
 #endif
 
     if ((xAxis < 0 || xAxis > 0) && numUnlockedCodes != gOptionsMenuItemIndex) {
         sound_play(SOUND_SELECT2, NULL);
 #ifdef NATIVE_PORT
         if (gOptionsMenuItemIndex >= numRetailUnlockedCodes) {
-            ModRacerIdentity identity = mod_racer_identity_for_cheat_row(
-                gOptionsMenuItemIndex - numRetailUnlockedCodes);
-            mod_racer_set_enabled(identity,
-                                  !mod_racer_is_enabled(identity));
+            if (gOptionsMenuItemIndex < numRetailUnlockedCodes +
+                                            numBonusRacerCodes) {
+                ModRacerIdentity identity = mod_racer_identity_for_cheat_row(
+                    gOptionsMenuItemIndex - numRetailUnlockedCodes);
+                mod_racer_set_enabled(identity,
+                                      !mod_racer_is_enabled(identity));
+            }
+            /* SAVE EDITOR is an entitlement row, not an active cheat. */
         } else {
 #endif
         code = 1U << gUnlockedCheatIDs[gOptionsMenuItemIndex];
