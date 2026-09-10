@@ -240,7 +240,11 @@ int magic_codes_persistence_update(uint32_t unlocked, uint32_t active) {
     MagicCodesPersistentState candidate;
     candidate.version = MAGIC_CODES_STATE_VERSION;
     candidate.unlocked = unlocked & MAGIC_CODES_PERSISTED_MASK;
-    candidate.active = active & candidate.unlocked & MAGIC_CODES_PERSISTED_MASK;
+    /* GOLDENEDIT grants access to a menu; it must never be restored as a
+     * gameplay modifier even if a malformed state file marks it active. */
+    candidate.active = active & candidate.unlocked &
+                       (MAGIC_CODES_PERSISTED_MASK &
+                        ~MAGIC_CODES_SAVE_EDITOR_UNLOCKED);
     if (!magic_codes_state_is_valid(&candidate)) {
         /* Corrupt/conflicting runtime state must never be resurrected at boot. */
         candidate.active = 0;

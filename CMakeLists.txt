@@ -677,7 +677,7 @@ endif()
 # CFBundleShortVersionString, which macos/Scripts/build_app_bundle.sh stamps
 # from this same value via PlistBuddy. Kept as its own standalone statement
 # (not folded into the block above) so it stays a one-line, low-conflict diff.
-set(MDKR_VERSION "1.6.2" CACHE STRING "mdkr64 release version (semver)")
+set(MDKR_VERSION "1.6.3" CACHE STRING "mdkr64 release version (semver)")
 target_compile_definitions(${MDKR_TARGET} PRIVATE MDKR_VERSION_STRING="${MDKR_VERSION}")
 if(VITA)
     # Activates the GLES-safe branches gfx_opengl.c already carries for the
@@ -777,6 +777,12 @@ if(NOT EMSCRIPTEN)
     target_compile_options(${MDKR_TARGET} PRIVATE -fcommon)
 endif()
 if(VITA)
+    # vita-elf-create has a practical relocation-table limit on the Windows
+    # SDK build. The menu is not performance-sensitive, so size-optimize this
+    # one unusually large translation unit and keep the final Vita converter
+    # below that limit without affecting the renderer or game simulation.
+    set_source_files_properties(${CMAKE_SOURCE_DIR}/game/src/menu.c
+        PROPERTIES COMPILE_OPTIONS "-Os")
     # ARM EABI default: a plain `enum` uses the smallest integer type that
     # fits its enumerator values (can end up unsigned), and `char` defaults
     # unsigned -- both differ from the x86/x64 GCC defaults this codebase

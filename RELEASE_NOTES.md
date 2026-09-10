@@ -1,3 +1,30 @@
+# Golden Balloon 1.6.3
+
+*Released 2026-09-10.*
+
+## PS Vita
+
+Adds the magic-code-gated Save Editor. Enter **`GOLDENEDIT`** in Magic Codes
+once to keep it unlocked between boots. The editor can create, rename, and
+erase save slots; adjust course, world, boss, arena, Taj race, hub-balloon,
+time-trial, racer, and Adventure 2 progress; and present every trophy
+condition in separate Main, Adventure 2, Time Trial, Character, and Power-Up
+pages. It applies coherent prerequisite progression rather than directly
+unlocking trophies, so the normal game-side checks remain the unlock path.
+
+Key-arena completion is now persisted per save slot, including Horseshoe
+Gulch, which makes arena-related trophy checking reliable after loading a
+save. The editor's navigation also skips unused entries so **Apply** follows
+the last visible option.
+
+The 98-trophy pack now uses the individual unlocked artwork from
+[RetroAchievements](https://retroachievements.org/) by permission, rather
+than repeating the game background. Custom Golden Balloon artwork is included
+for the platinum and the Taj, Wizpig, and Terry challenges.
+
+The VPK is versioned from the same `MDKR_VERSION` value as the compiled port;
+release 1.6.3 produces Vita metadata version `01.63`.
+
 # Golden Balloon 1.6.2
 
 *Released 2026-09-10.*

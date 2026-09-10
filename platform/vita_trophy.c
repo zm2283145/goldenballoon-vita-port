@@ -2,6 +2,7 @@
 
 #include "structs.h"
 #include "asset_enums.h"
+#include "game.h"
 #include "menu.h"
 #include "taj_mod.h"
 
@@ -26,6 +27,8 @@ extern SceCommonDialogStatus sceNpTrophySetupDialogGetStatus(void);
 extern int sceNpTrophySetupDialogTerm(void);
 extern int sceNpTrophyUnlockTrophy(int context, int handle, int trophyId,
                                    int *platinumId);
+extern int sceNpTrophyGetTrophyUnlockState(int context, int handle, void *state,
+                                           uint32_t *count);
 
 /* VitaSDK does not currently expose SceNpTrophy's dialog definitions. This
  * layout is the one used by established vitaGL homebrew trophy integrations. */
@@ -61,6 +64,7 @@ static int sTrophyHandle = -1;
 /* The completed set contains 98 trophies. Keep the local retry guard wide
  * enough for every ID; the Vita service remains the persistence authority. */
 static uint32_t sSubmitted[(98 + 31) / 32];
+static uint32_t sUnlocked[(98 + 31) / 32];
 static int sUnavailable;
 static int sLoggedSettings;
 static int sLoggedPump;
@@ -68,6 +72,27 @@ static int sSetupComplete;
 static int sTrophyServiceReady;
 static unsigned char sAdventureBalloonCount[10];
 static unsigned char sBonusAdventureBalloonCount[MOD_RACER_IDENTITY_COUNT];
+static unsigned char sEditorCharacterBalloonCount[13];
+static const unsigned char sEditorCharacterTrophyIds[13] = {
+    80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 95, 96, 97
+};
+static const unsigned short sDeveloperCentiseconds[20] = {
+    5343, 8155, 5413, 8248, 6411, 7351, 8501, 5505,
+    9763, 11660, 5781, 8801, 11115, 9180, 12316, 5825,
+    12038, 12568, 11296, 11500
+};
+static const unsigned char sTrophyTrackIds[20] = {
+    ASSET_LEVEL_ANCIENTLAKE, ASSET_LEVEL_FOSSILCANYON,
+    ASSET_LEVEL_JUNGLEFALLS, ASSET_LEVEL_HOTTOPVOLCANO,
+    ASSET_LEVEL_EVERFROSTPEAK, ASSET_LEVEL_WALRUSCOVE,
+    ASSET_LEVEL_SNOWBALLVALLEY, ASSET_LEVEL_FROSTYVILLAGE,
+    ASSET_LEVEL_WHALEBAY, ASSET_LEVEL_CRESCENTISLAND,
+    ASSET_LEVEL_PIRATELAGOON, ASSET_LEVEL_TREASURECAVES,
+    ASSET_LEVEL_WINDMILLPLAINS, ASSET_LEVEL_GREENWOODVILLAGE,
+    ASSET_LEVEL_BOULDERCANYON, ASSET_LEVEL_HAUNTEDWOODS,
+    ASSET_LEVEL_SPACEDUSTALLEY, ASSET_LEVEL_DARKMOONCAVERNS,
+    ASSET_LEVEL_SPACEPORTALPHA, ASSET_LEVEL_STARCITY
+};
 
 /* Use the port's existing, file-gated boot log. An empty
  * ux0:data/goldenballoon/debug file enables these diagnostics, and all output
@@ -156,6 +181,13 @@ unavailable:
         sUnavailable = 1;
         return 0;
     }
+    {
+        uint32_t count = 0;
+        result = sceNpTrophyGetTrophyUnlockState(sTrophyContext, sTrophyHandle,
+                                                  sUnlocked, &count);
+        trophy_log("unlock state=0x%08X count=%u", result, count);
+        if (result < 0) memset(sUnlocked, 0, sizeof(sUnlocked));
+    }
     return 1;
 }
 
@@ -174,7 +206,30 @@ static void unlock(unsigned trophyId) {
                                      &platinumId);
     trophy_log("unlock id=%u result=0x%08X platinum=%d", trophyId, result,
                platinumId);
+    if (result >= 0) sUnlocked[word] |= bit;
     sSubmitted[word] |= bit;
+}
+
+int mdkr_vita_trophy_is_unlocked(unsigned trophyId) {
+    if (trophyId >= 98 || !trophy_ready()) return 0;
+    return (sUnlocked[trophyId / 32] & (UINT32_C(1) << (trophyId % 32))) != 0;
+}
+
+int mdkr_vita_trophy_character_balloon_progress(unsigned characterIndex) {
+    return characterIndex < ARRAY_COUNT(sEditorCharacterBalloonCount)
+               ? sEditorCharacterBalloonCount[characterIndex] : 0;
+}
+
+void mdkr_vita_trophy_set_character_balloon_progress(unsigned characterIndex,
+                                                      unsigned balloonCount) {
+    if (characterIndex >= ARRAY_COUNT(sEditorCharacterBalloonCount)) return;
+    if (balloonCount > 5) balloonCount = 5;
+    sEditorCharacterBalloonCount[characterIndex] = (unsigned char)balloonCount;
+    /* This mirrors the gameplay counter: reaching five is the condition, and
+     * unlock() remains the sole service boundary. */
+    if (balloonCount >= 5 && trophy_ready()) {
+        unlock(sEditorCharacterTrophyIds[characterIndex]);
+    }
 }
 
 /* RetroAchievements' display and the credits both use this exact canonical
@@ -182,29 +237,11 @@ static void unlock(unsigned trophyId) {
  * trophy IDs stable even though the level-header table is not ordered that
  * way. */
 static int trophy_track_index(int levelId) {
-    switch (levelId) {
-        case ASSET_LEVEL_ANCIENTLAKE: return 0;
-        case ASSET_LEVEL_FOSSILCANYON: return 1;
-        case ASSET_LEVEL_JUNGLEFALLS: return 2;
-        case ASSET_LEVEL_HOTTOPVOLCANO: return 3;
-        case ASSET_LEVEL_EVERFROSTPEAK: return 4;
-        case ASSET_LEVEL_WALRUSCOVE: return 5;
-        case ASSET_LEVEL_SNOWBALLVALLEY: return 6;
-        case ASSET_LEVEL_FROSTYVILLAGE: return 7;
-        case ASSET_LEVEL_WHALEBAY: return 8;
-        case ASSET_LEVEL_CRESCENTISLAND: return 9;
-        case ASSET_LEVEL_PIRATELAGOON: return 10;
-        case ASSET_LEVEL_TREASURECAVES: return 11;
-        case ASSET_LEVEL_WINDMILLPLAINS: return 12;
-        case ASSET_LEVEL_GREENWOODVILLAGE: return 13;
-        case ASSET_LEVEL_BOULDERCANYON: return 14;
-        case ASSET_LEVEL_HAUNTEDWOODS: return 15;
-        case ASSET_LEVEL_SPACEDUSTALLEY: return 16;
-        case ASSET_LEVEL_DARKMOONCAVERNS: return 17;
-        case ASSET_LEVEL_SPACEPORTALPHA: return 18;
-        case ASSET_LEVEL_STARCITY: return 19;
-        default: return -1;
+    unsigned track;
+    for (track = 0; track < ARRAY_COUNT(sTrophyTrackIds); track++) {
+        if (levelId == sTrophyTrackIds[track]) return (int)track;
     }
+    return -1;
 }
 
 void mdkr_vita_trophy_silver_coin_race(int levelId) {
@@ -221,17 +258,27 @@ void mdkr_vita_trophy_developer_time(int levelId, int courseTime) {
     /* Credits' developer records in hundredths, in the same canonical order
      * as trophy_track_index(). Compare without rounding between the game's
      * 60 Hz race clock and the printed centisecond values. */
-    static const unsigned short developerCentiseconds[20] = {
-        5343, 8155, 5413, 8248, 6411, 7351, 8501, 5505,
-        9763, 11660, 5781, 8801, 11115, 9180, 12316, 5825,
-        12038, 12568, 11296, 11500
-    };
     int track = trophy_track_index(levelId);
     if (track < 0 || courseTime < 0) return;
-    if ((unsigned long)courseTime * 100UL <
-        (unsigned long)developerCentiseconds[track] * 60UL && trophy_ready()) {
+    if (mdkr_vita_trophy_developer_time_beaten((unsigned)track, courseTime) &&
+        trophy_ready()) {
         unlock(60 + (unsigned)track);
     }
+}
+
+int mdkr_vita_trophy_developer_time_target(unsigned trackIndex) {
+    if (trackIndex >= ARRAY_COUNT(sDeveloperCentiseconds)) return 0;
+    /* The race clock is at 60 Hz. The strict achievement comparison is below
+     * the developer time, so the editor writes one frame faster than this. */
+    return ((int)sDeveloperCentiseconds[trackIndex] * 60) / 100;
+}
+
+int mdkr_vita_trophy_developer_time_beaten(unsigned trackIndex, int courseTime) {
+    if (trackIndex >= ARRAY_COUNT(sDeveloperCentiseconds) || courseTime <= 0) {
+        return 0;
+    }
+    return (unsigned long)courseTime * 100UL <
+           (unsigned long)sDeveloperCentiseconds[trackIndex] * 60UL;
 }
 
 void mdkr_vita_trophy_banana_collected(int bananaCount) {
@@ -298,6 +345,7 @@ void mdkr_vita_trophy_register(void) {
 void mdkr_vita_trophy_pump(const struct Settings *settings) {
     unsigned trophyState;
     int adventureTwo;
+    unsigned track;
     if (!sLoggedPump) {
         trophy_log("trophy pump settings=%p balloons=%p newGame=%d", (void *) settings,
                    settings != NULL ? (void *) settings->balloonsPtr : NULL,
@@ -316,15 +364,13 @@ void mdkr_vita_trophy_pump(const struct Settings *settings) {
         sLoggedSettings = 1;
     }
 
+    /* The native editor persists the four arena results in dedicated per-slot
+     * flags: stock DKR omits Horseshoe Gulch from its serialized course list,
+     * so map flags alone disappear after loading a save. */
+    if (((u32) settings->cutsceneFlags & MDKR_VITA_ARENA_COMPLETE_MASK) ==
+        MDKR_VITA_ARENA_COMPLETE_MASK) unlock(17);
+
     if (!adventureTwo) {
-        static const unsigned char challengeLevels[4] = {
-            ASSET_LEVEL_HORSESHOEGULCH,
-            ASSET_LEVEL_DARKWATERBEACH,
-            ASSET_LEVEL_ICICLEPYRAMID,
-            ASSET_LEVEL_SMOKEYCASTLE
-        };
-        unsigned i;
-        int allChallengesComplete = 1;
         if (settings->balloonsPtr[0] >= 1) unlock(TROPHY_FIRST_BALLOON);
         if (settings->wizpigAmulet >= 4) unlock(TROPHY_WIZPIG_AMULET);
         if (settings->keys & 0x02) unlock(TROPHY_KEY_DINO);
@@ -333,19 +379,28 @@ void mdkr_vita_trophy_pump(const struct Settings *settings) {
         if (settings->keys & 0x10) unlock(TROPHY_KEY_DRAGON);
         if (settings->balloonsPtr[0] >= 39) unlock(TROPHY_BALLOONS_39);
         if (settings->balloonsPtr[0] >= 47) unlock(TROPHY_BALLOONS_47);
-        /* The four Adventure challenge arenas write RACE_CLEARED into their
-         * own level slots. Reading those completed flags avoids treating a
-         * one-off battle result as the full four-area achievement. */
-        for (i = 0; i < 4; i++) {
-            if (!(settings->courseFlagsPtr[challengeLevels[i]] & RACE_CLEARED)) {
-                allChallengesComplete = 0;
-                break;
+    } else {
+        for (track = 0; track < ARRAY_COUNT(sTrophyTrackIds); track++) {
+            if (settings->courseFlagsPtr[sTrophyTrackIds[track]] &
+                RACE_CLEARED_SILVER_COINS) {
+                unlock(18 + track);
             }
         }
-        if (allChallengesComplete) unlock(17);
-    } else {
         if (settings->balloonsPtr[0] >= 47) unlock(38);
         if (settings->bosses & 0x020) unlock(39);
+    }
+
+    /* Time Trial state is global rather than bound to an Adventure slot.
+     * Reconcile its real EEPROM flags and record times on load so edits made
+     * through the save editor have exactly the same unlock path as a race. */
+    for (track = 0; track < ARRAY_COUNT(sTrophyTrackIds); track++) {
+        const int levelId = sTrophyTrackIds[track];
+        const Vehicle vehicle = leveltable_vehicle_default(levelId);
+        const int courseTime = settings->courseTimesPtr[vehicle][levelId];
+        if (get_eeprom_settings() & ((u64)16 << track)) unlock(40 + track);
+        if (mdkr_vita_trophy_developer_time_beaten(track, courseTime)) {
+            unlock(60 + track);
+        }
     }
 
     trophyState = settings->trophies;
@@ -382,5 +437,22 @@ void mdkr_vita_trophy_golden_balloon_collected(int characterId, int playerIndex)
     (void)playerIndex;
 }
 void mdkr_vita_trophy_set_adventure_active(int active) { (void)active; }
+int mdkr_vita_trophy_is_unlocked(unsigned trophy_id) { (void)trophy_id; return 0; }
+int mdkr_vita_trophy_character_balloon_progress(unsigned character_index) {
+    (void)character_index; return 0;
+}
+void mdkr_vita_trophy_set_character_balloon_progress(unsigned character_index,
+                                                      unsigned balloon_count) {
+    (void)character_index; (void)balloon_count;
+}
+int mdkr_vita_trophy_developer_time_target(unsigned track_index) {
+    (void)track_index;
+    return 0;
+}
+int mdkr_vita_trophy_developer_time_beaten(unsigned track_index, int course_time) {
+    (void)track_index;
+    (void)course_time;
+    return 0;
+}
 
 #endif

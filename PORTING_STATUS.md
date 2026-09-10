@@ -8,10 +8,11 @@ same libultraship/vitaGL pattern as
 (a Banjo-Kazooie Vita port used as the concrete reference for library
 choices, link flags, and the VPK packaging recipe).
 
-**Status: 1.6.2 — stable for normal play on tested real hardware.** It
+**Status: 1.6.3 — stable for normal play on tested real hardware.** It
 boots, loads a ROM, saves progress, and plays through races on the default
 (Restored) visual preset, with audio, input, textured rendering, correctly
-rendered 3D race/menu scenes, and a 98-trophy pack. This moved past "builds
+rendered 3D race/menu scenes, a 98-trophy pack, and a magic-code-gated Save
+Editor for supported progression repair and test setup. This moved past "builds
 and links clean" through hands-on, on-device bring-up: real crashes and
 rendering bugs, pulled via a boot-time file logger, coredumps, and targeted
 diagnostic logging, root-caused one at a time. **The Remastered visual preset
@@ -259,7 +260,27 @@ game fully playable if the module, plugin, archive, or service is absent.
    trophy, title, or image requires raising `<trophyset-version>` (this port
    currently uses `01.03`) so the Vita imports the update. Test from a clean
    install or remove the title's local trophy entry between compatibility
-   tests. Never renumber shipped trophies: add new IDs instead.
+tests. Never renumber shipped trophies: add new IDs instead.
+
+The included 98-trophy pack uses distinct unlocked Achievement artwork from
+[RetroAchievements](https://retroachievements.org/) by permission, plus
+custom Golden Balloon artwork for the platinum and the port-exclusive Taj,
+Wizpig, and Terry challenges. Use only artwork you are licensed or otherwise
+authorized to distribute; trophy art is packaged inside the TRP and must be
+included when testing an updated trophy set.
+
+## Save Editor (Vita)
+
+`GOLDENEDIT`, entered through the Magic Codes screen, persistently unlocks
+the in-game Save Editor. It deliberately works through real save structures
+and trophy conditions instead of calling the trophy API directly: changing a
+condition makes the normal runtime trophy check see the condition. Its pages
+cover track and world state, bosses and advancement, key arenas, Main /
+Adventure 2 / Time Trial / Character / Power-Up trophy conditions, Taj races,
+hub balloons, time-trial records, unlocks, and save-slot creation, rename,
+and erase. Progression edits normalize prerequisite flags and balloon totals;
+the four key-arena completion flags are persisted per slot using unused
+cutscene-flag bits so completion survives a reload.
 
 For troubleshooting, create `ux0:data/goldenballoon/debug` before launch;
 the existing boot log then records trophy-module, context, setup, handle,
