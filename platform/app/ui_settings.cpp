@@ -27937,8 +27937,12 @@ bool drawCustomCharactersSection(bool compact) {
                 "[app-ui] character-import-focus shortcut=1 mutation=0\n");
         }
     }
+    // The marker sits on the same line as the sentence it explains. After a
+    // WRAPPED paragraph it starts a line of its own, which is how a bare "(?)"
+    // ended up floating in the middle of the panel with nothing beside it.
     ui::TextSubtleWrapped(
         "Custom characters change appearance only. A built-in racer still controls handling, voice, records, and online play.");
+    ImGui::SameLine();
     ui::HelpMarker(
         "The selected fingerprint-qualified built-in donor remains authoritative for simulation, collision, audio, ghosts, records, and network/rollback identity. The package is local presentation and requires no second ROM.");
     ui::TextSubtleWrapped(
@@ -27973,7 +27977,10 @@ bool drawCustomCharactersSection(bool compact) {
         ImGui::PopStyleColor();
     }
     if (!g_characterImportCandidate.ready && !characterWorkBusy) {
-        ui::TextSubtleWrapped(
+        // A keyboard/controller reference is something you look up once, not a
+        // paragraph every visitor reads past on the way to the controls.
+        ImGui::SameLine();
+        ui::HelpMarker(
             "Shortcuts: Ctrl/Cmd+I or controller Back/View focuses Import. Esc or controller B focuses launcher actions. Confirm separately.");
     }
     if (characterWorkBusy) {

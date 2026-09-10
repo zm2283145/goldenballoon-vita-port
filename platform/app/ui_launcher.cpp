@@ -362,16 +362,17 @@ void drawPrimaryLauncherAction(LauncherState &state, const ImVec2 &size,
     }
     if (busy) ImGui::BeginDisabled();
     /*
-     * Gold means "this starts the game". Choosing a file is preparation, and
-     * while it wore the same gold as Play it competed with the Play home's own
-     * gold action for the identical job -- two primary actions on one screen,
-     * which is one more than a screen can have. Preparation states draw as a
-     * secondary button; Play, Play with Changes and the Workshop's own action
-     * keep the gold.
+     * One gold action per screen. The rail's action is gold when it is the only
+     * primary on screen, and yields to secondary when the destination's own
+     * page owns one: the Play home draws a gold "Choose your game file" in its
+     * first-run state, and a second gold "Choose ROM" beside it in the rail was
+     * two primary actions competing for the identical job. The Workshop's page
+     * has no gold of its own, so the rail keeps it there.
      */
-    const bool startsTheGame = workshopActive || ready;
-    const bool pressed = startsTheGame ? ui::BrandPrimaryButton(label, size)
-                                       : ImGui::Button(label, size);
+    const bool railOwnsThePrimary = workshopActive || ready;
+    const bool pressed = railOwnsThePrimary
+                             ? ui::BrandPrimaryButton(label, size)
+                             : ImGui::Button(label, size);
     if (busy) ImGui::EndDisabled();
     if (g_characterWorkshopReturnFocusRequested && workshopActive && !busy) {
         g_characterWorkshopReturnFocusRequested = false;
