@@ -1,6 +1,6 @@
 # Golden Balloon 1.6.4
 
-*Unreleased.*
+*Released 2026-09-10.*
 
 ## PS Vita
 
