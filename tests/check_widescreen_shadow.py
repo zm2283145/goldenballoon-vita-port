@@ -393,7 +393,16 @@ def main() -> int:
     parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--frames", type=int, default=4000)
-    parser.add_argument("--timeout", type=int, default=180, help="seconds per arm")
+    # 180s per arm was sized against the NATIVE build. The same script is also
+    # driven with the ASan binary (the widescreen_shadow_asan task), where the
+    # sanitizer's instrumentation makes 4000 frames cost several times more --
+    # and the arms landed at 3944 and 3965 of 4000, 98.6% and 99.1% of the way
+    # through, before the wall. A ceiling that stops a route one frame from its
+    # teardown is measuring the build's speed, not its correctness; every claim
+    # this gate makes is read out of the [SHADOW] and [DEPTH] reports the run
+    # emits at the end, so an arm that finishes slowly proves what a fast one
+    # does. Sized clear of the sanitizer arm rather than beside the native one.
+    parser.add_argument("--timeout", type=int, default=600, help="seconds per arm")
     parser.add_argument("--renderer", choices=("gl", "webgpu"), default=None)
     parser.add_argument("--keep-evidence", action="store_true",
                         help="retain full per-arm output/process metadata in a fresh "

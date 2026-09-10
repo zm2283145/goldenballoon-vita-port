@@ -980,6 +980,21 @@ SHAPE_INFO_MAX = {
     # siblings already counted in this population, on a uint16_t with a
     # literal count of 8.
     #
+    # 542 -> 546, RE-MEASURED 2026-09-10. Four new entries, none removed, all in
+    # one function: the joint-membership bitmap added to
+    # mdkr_modern_character_asset_joint_parent_node
+    # (platform/modern_character_asset.c) when that walk stopped re-scanning
+    # every joint at every level of the parent chain.
+    #     is_joint[possible.node >> 3u] |= (unsigned char)(1u << (possible.node & 7u));
+    #     if ((is_joint[(uint32_t)parent >> 3u] & (1u << ((uint32_t)parent & 7u))) != 0u)
+    # Both shift COUNTS are `& 7u`, so they take 0..7 on an unsigned int and
+    # cannot approach its width -- the undefined case this class exists to find
+    # is unreachable by construction rather than by argument. Both byte INDICES
+    # are `>> 3u` of a value already refused above unless it is below
+    # nodes->count, and the function returns 0 when nodes->count exceeds
+    # MDKR_MODERN_NODES_MAX (16384), so the index stays under 2048 -- exactly
+    # sizeof(is_joint). Ceiling moves by four.
+    #
     # 539 -> 542, RE-MEASURED 2026-09-08 after the 1.7.0 candidate delta was
     # committed. The ceiling had been measured on a tree where that work was
     # still uncommitted, so committing it put the population over a ceiling
@@ -1078,7 +1093,7 @@ SHAPE_INFO_MAX = {
     # index over its own domain constant or already past its guard; 1614 was
     # the only one whose guard stood behind it.
     # Measured with tools/sweep_bug_shapes.py, not summed.
-    "shift-count": 542,
+    "shift-count": 546,
 }
 
 # Only array-bounds is load-bearing for this class. pointer-overflow is kept
