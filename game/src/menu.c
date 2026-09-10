@@ -4993,12 +4993,13 @@ enum {
 #define SAVE_EDITOR_ADVENTURE_WORLD_COUNT 5
 #define SAVE_EDITOR_TRACKS_PER_WORLD 4
 #define SAVE_EDITOR_TIME_TRIAL_COUNT 20
-#define SAVE_EDITOR_PAGE_COUNT 8
+#define SAVE_EDITOR_PAGE_COUNT 9
 
 enum {
     SAVE_EDITOR_PAGE_TRACKS,
     SAVE_EDITOR_PAGE_WORLD_PROGRESS,
     SAVE_EDITOR_PAGE_ADVANCEMENT,
+    SAVE_EDITOR_PAGE_ARENAS,
     SAVE_EDITOR_PAGE_TAJ,
     SAVE_EDITOR_PAGE_HUB_BALLOONS,
     SAVE_EDITOR_PAGE_TIME_TRIALS,
@@ -5063,6 +5064,7 @@ static u8 sSaveEditorKeys[NUMBER_OF_SAVE_FILES];
 static u8 sSaveEditorTtAmulet[NUMBER_OF_SAVE_FILES];
 static u8 sSaveEditorWizpigAmulet[NUMBER_OF_SAVE_FILES];
 static u16 sSaveEditorHubFlags[NUMBER_OF_SAVE_FILES];
+static s32 sSaveEditorArenaFlags[NUMBER_OF_SAVE_FILES][4];
 static u8 sSaveEditorTimeTrialBeaten[SAVE_EDITOR_TIME_TRIAL_COUNT];
 static s32 sSaveEditorAdventure2Unlocked;
 static s32 sSaveEditorTtUnlocked;
@@ -5072,6 +5074,7 @@ static s32 sSaveEditorOption;
 static s32 sSaveEditorPage;
 static s32 sSaveEditorWorld;
 static s32 sSaveEditorTrack;
+static s32 sSaveEditorArena;
 static s32 sSaveEditorTajChallenge;
 static s32 sSaveEditorHubBalloon;
 static s32 sSaveEditorTimeTrialTrack;
@@ -5087,6 +5090,16 @@ static char *sSaveEditorStatus;
 
 static void save_editor_recompute_total_balloons(void);
 static void save_editor_load_slot(s32 slot);
+
+/* These four battle/key arenas are the completion flags consumed by the
+ * Battle Mode trophy. They live outside the five Adventure-world track grids. */
+static const u8 sSaveEditorArenaLevelIds[] = {
+    ASSET_LEVEL_HORSESHOEGULCH, ASSET_LEVEL_DARKWATERBEACH,
+    ASSET_LEVEL_ICICLEPYRAMID, ASSET_LEVEL_SMOKEYCASTLE
+};
+static char *const sSaveEditorArenaNames[] = {
+    "HORSESHOE GULCH", "DARKWATER BEACH", "ICICLE PYRAMID", "SMOKEY CASTLE"
+};
 
 static s32 save_editor_hub_balloon_collected(s32 slot, s32 balloonIndex) {
     return (sSaveEditorHubFlags[slot] &
@@ -5221,6 +5234,10 @@ static void save_editor_load_slot(s32 slot) {
                 settings->courseFlagsPtr[sSaveEditorTrackIds[world][track]];
         }
     }
+    for (track = 0; track < ARRAY_COUNT(sSaveEditorArenaLevelIds); track++) {
+        sSaveEditorArenaFlags[slot][track] =
+            settings->courseFlagsPtr[sSaveEditorArenaLevelIds[track]];
+    }
     sSaveEditorTrophies[slot] = settings->trophies;
     sSaveEditorBosses[slot] = settings->bosses;
     sSaveEditorTajFlags[slot] = settings->tajFlags;
@@ -5260,6 +5277,10 @@ static void save_editor_apply(void) {
                 settings->courseFlagsPtr[sSaveEditorTrackIds[world][track]] =
                     sSaveEditorTrackFlags[sSaveEditorSlot][world][track];
             }
+        }
+        for (track = 0; track < ARRAY_COUNT(sSaveEditorArenaLevelIds); track++) {
+            settings->courseFlagsPtr[sSaveEditorArenaLevelIds[track]] =
+                sSaveEditorArenaFlags[sSaveEditorSlot][track];
         }
         settings->courseFlagsPtr[level_world_id(WORLD_CENTRAL_AREA)] =
             (settings->courseFlagsPtr[level_world_id(WORLD_CENTRAL_AREA)] & 0xFFFF) |
@@ -5553,6 +5574,11 @@ static void save_editor_complete_wizpig_two(void) {
          hubBalloon++) {
         save_editor_set_hub_balloon_collected(sSaveEditorSlot, hubBalloon, TRUE);
     }
+    for (hubBalloon = 0; hubBalloon < ARRAY_COUNT(sSaveEditorArenaLevelIds);
+         hubBalloon++) {
+        sSaveEditorArenaFlags[sSaveEditorSlot][hubBalloon] |=
+            RACE_VISITED | RACE_CLEARED;
+    }
     sSaveEditorTajFlags[sSaveEditorSlot] |=
         TAJ_FLAGS_CAR_CHAL_UNLOCKED | TAJ_FLAGS_HOVER_CHAL_UNLOCKED |
         TAJ_FLAGS_PLANE_CHAL_UNLOCKED | TAJ_FLAGS_CAR_CHAL_COMPLETED |
@@ -5588,6 +5614,10 @@ static void save_editor_render(void) {
         "DINO KEY", "SHERBET KEY", "SNOWFLAKE KEY", "DRAGON KEY",
         "APPLY CHANGES", "RETURN"
     };
+    static char *const arenaLabels[] = {
+        "SAVE FILE", "EDIT MODE", "ARENA", "ARENA RESULT", "", "", "", "",
+        "APPLY CHANGES", "RETURN"
+    };
     static char *const tajLabels[] = {
         "SAVE FILE", "EDIT MODE", "TAJ CHALLENGE", "CHALLENGE RESULT",
         "REWARD BALLOON", "", "", "", "APPLY CHANGES", "RETURN"
@@ -5609,8 +5639,9 @@ static void save_editor_render(void) {
         "ERASE SAVE", "", "", "APPLY CHANGES", "RETURN"
     };
     static char *const pageNames[] = {
-        "TRACKS", "WORLD PROGRESS", "ADVANCEMENT", "TAJ CHALLENGES",
-        "HUB BALLOONS", "TIME TRIALS", "UNLOCKS", "SLOT MANAGEMENT"
+        "TRACKS", "WORLD PROGRESS", "ADVANCEMENT", "KEY ARENAS",
+        "TAJ CHALLENGES", "HUB BALLOONS", "TIME TRIALS", "UNLOCKS",
+        "SLOT MANAGEMENT"
     };
     static char *const worldNames[] = {
         "DINO DOMAIN", "SHERBET ISLAND", "SNOWFLAKE MOUNTAIN",
@@ -5644,6 +5675,7 @@ static void save_editor_render(void) {
     labels = sSaveEditorPage == SAVE_EDITOR_PAGE_TRACKS ? trackLabels :
              sSaveEditorPage == SAVE_EDITOR_PAGE_WORLD_PROGRESS ? progressLabels :
              sSaveEditorPage == SAVE_EDITOR_PAGE_ADVANCEMENT ? advancementLabels :
+             sSaveEditorPage == SAVE_EDITOR_PAGE_ARENAS ? arenaLabels :
              sSaveEditorPage == SAVE_EDITOR_PAGE_TAJ ? tajLabels :
              sSaveEditorPage == SAVE_EDITOR_PAGE_HUB_BALLOONS ? hubLabels :
              sSaveEditorPage == SAVE_EDITOR_PAGE_TIME_TRIALS ? timeTrialLabels :
@@ -5674,6 +5706,12 @@ static void save_editor_render(void) {
             snprintf(value, sizeof(value), "%d/4", sSaveEditorTtAmulet[sSaveEditorSlot]);
         } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_ADVANCEMENT && option == SAVE_EDITOR_TRACK) {
             snprintf(value, sizeof(value), "%d/4", sSaveEditorWizpigAmulet[sSaveEditorSlot]);
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_ARENAS && option == SAVE_EDITOR_WORLD) {
+            snprintf(value, sizeof(value), "%s", sSaveEditorArenaNames[sSaveEditorArena]);
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_ARENAS && option == SAVE_EDITOR_TRACK) {
+            snprintf(value, sizeof(value), "%s",
+                     (sSaveEditorArenaFlags[sSaveEditorSlot][sSaveEditorArena] & RACE_CLEARED)
+                         ? "COMPLETE" : "NOT DONE");
         } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_ADVANCEMENT &&
                    option >= SAVE_EDITOR_TRACK_PROGRESS &&
                    option <= SAVE_EDITOR_WORLD_PROGRESS_THREE) {
@@ -5800,6 +5838,7 @@ void menu_save_editor_init(void) {
     sSaveEditorPage = 0;
     sSaveEditorWorld = 0;
     sSaveEditorTrack = 0;
+    sSaveEditorArena = 0;
     sSaveEditorTajChallenge = 0;
     sSaveEditorHubBalloon = 0;
     sSaveEditorTimeTrialTrack = 0;
@@ -5880,6 +5919,8 @@ s32 menu_save_editor_loop(s32 updateRate) {
                                           ? "WORLD PROGRESS"
                                           : sSaveEditorPage == SAVE_EDITOR_PAGE_ADVANCEMENT
                                                 ? "ADVANCEMENT PROGRESS"
+                                                : sSaveEditorPage == SAVE_EDITOR_PAGE_ARENAS
+                                                      ? "KEY ARENA COMPLETION"
                                                 : sSaveEditorPage == SAVE_EDITOR_PAGE_TAJ
                                                       ? "TAJ CHALLENGES"
                                                       : sSaveEditorPage == SAVE_EDITOR_PAGE_HUB_BALLOONS
@@ -5887,6 +5928,30 @@ s32 menu_save_editor_loop(s32 updateRate) {
                                                             : sSaveEditorPage == SAVE_EDITOR_PAGE_TIME_TRIALS
                                                                   ? "GLOBAL TIME RECORDS"
                                                                   : "GLOBAL UNLOCKS";
+            sound_play(SOUND_MENU_PICK2, NULL);
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_ARENAS &&
+                   sSaveEditorOption == SAVE_EDITOR_WORLD) {
+            sSaveEditorArena += xAxis < 0 ? -1 : 1;
+            if (sSaveEditorArena < 0) {
+                sSaveEditorArena = ARRAY_COUNT(sSaveEditorArenaLevelIds) - 1;
+            }
+            if (sSaveEditorArena >= ARRAY_COUNT(sSaveEditorArenaLevelIds)) {
+                sSaveEditorArena = 0;
+            }
+            sSaveEditorApplyArmed = FALSE;
+            sSaveEditorStatus = "SELECT A KEY ARENA";
+            sound_play(SOUND_MENU_PICK2, NULL);
+        } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_ARENAS &&
+                   sSaveEditorOption == SAVE_EDITOR_TRACK) {
+            s32 *flags = &sSaveEditorArenaFlags[sSaveEditorSlot][sSaveEditorArena];
+
+            *flags ^= RACE_CLEARED;
+            if (*flags & RACE_CLEARED) *flags |= RACE_VISITED;
+            sSaveEditorDirty = TRUE;
+            sSaveEditorApplyArmed = FALSE;
+            sSaveEditorStatus = (*flags & RACE_CLEARED)
+                                    ? "ARENA MARKED COMPLETE"
+                                    : "ARENA MARKED NOT DONE";
             sound_play(SOUND_MENU_PICK2, NULL);
         } else if (sSaveEditorPage == SAVE_EDITOR_PAGE_TAJ &&
                    sSaveEditorOption == SAVE_EDITOR_WORLD) {
