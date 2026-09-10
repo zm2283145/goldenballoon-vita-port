@@ -6394,10 +6394,22 @@ void platform_pad_rumble_preferences_changed(void) {
 }
 unsigned int platform_pad_buttons(int port) {
     if (port < 0 || port >= DKR_MAXPADS) return 0;
+#ifdef MDKR_VITA_IMGUI_OVERLAY
+    /* ImGui reads the Vita controller directly. Do not publish the same input
+     * to the game/menu beneath it while either Vita overlay is visible. */
+    if (mdkr_vita_imgui_overlay_is_open()) return 0;
+#endif
     return s_pads[port].buttons;
 }
 void platform_pad_stick(int port, int *sx, int *sy) {
     if (port < 0 || port >= DKR_MAXPADS) { if (sx) *sx = 0; if (sy) *sy = 0; return; }
+#ifdef MDKR_VITA_IMGUI_OVERLAY
+    if (mdkr_vita_imgui_overlay_is_open()) {
+        if (sx) *sx = 0;
+        if (sy) *sy = 0;
+        return;
+    }
+#endif
     if (sx) *sx = s_pads[port].stick_x;
     if (sy) *sy = s_pads[port].stick_y;
 }

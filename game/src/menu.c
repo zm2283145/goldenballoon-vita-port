@@ -4724,7 +4724,11 @@ void optionscreen_render(UNUSED s32 updateRate) {
 #else
     optionMenuTextIndex = 0;
 #ifdef NATIVE_PORT
+#ifdef __vita__
+    yPos = 48;
+#else
     yPos = 54;
+#endif
 #else
     yPos = 76;
 #endif
@@ -4747,7 +4751,11 @@ void optionscreen_render(UNUSED s32 updateRate) {
 
         optionMenuTextIndex++;
 #ifdef NATIVE_PORT
+#ifdef __vita__
+        yPos += 20;
+#else
         yPos += 24;
+#endif
 #else
         yPos += 28;
 #endif

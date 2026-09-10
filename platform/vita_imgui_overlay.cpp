@@ -40,6 +40,9 @@ GLint s_texture_uniform = -1;
 int s_capture_action = -1;
 bool s_capture_wait_release = false;
 uint64_t s_capture_deadline = 0;
+unsigned s_capture_down_mask = 0;
+int s_capture_sources[2] = {-1, -1};
+int s_capture_source_count = 0;
 char s_controls_status[128] = "Select an action to change its Vita button.";
 
 enum VitaIconKind {
@@ -270,19 +273,24 @@ void set_control_status(MdkrVideoRuntimeResult result, const char *success) {
     }
 }
 
-void assign_control_source(int action_index, int source_index) {
+void assign_control_sources(int action_index, const int *source_indices,
+                            int source_count) {
     MdkrVideoRuntimeChange changes[sizeof(k_vita_sources) /
                                    sizeof(k_vita_sources[0])];
     int count = 0;
     const MdkrVideoConfig *config = mdkr_video_config_current();
     if (action_index < 0 || action_index >= k_game_action_count ||
-        source_index < 0 || source_index >= k_vita_source_count ||
+        source_indices == nullptr || source_count < 1 || source_count > 2 ||
         config == nullptr) {
         return;
     }
     for (int i = 0; i < k_vita_source_count; ++i) {
         const char *current = config->values[k_vita_sources[i].key].text;
-        if (i == source_index) {
+        bool selected = false;
+        for (int slot = 0; slot < source_count; ++slot) {
+            if (source_indices[slot] == i) selected = true;
+        }
+        if (selected) {
             changes[count++] = {k_vita_sources[i].key,
                                 k_game_actions[action_index].value};
         } else if (!strcmp(current, k_game_actions[action_index].value)) {
@@ -292,9 +300,28 @@ void assign_control_source(int action_index, int source_index) {
     const MdkrVideoRuntimeResult result =
         mdkr_video_config_runtime_set_many(changes, count);
     char success[128];
-    snprintf(success, sizeof(success), "%s mapped to %s.",
-             k_game_actions[action_index].label,
-             k_vita_sources[source_index].label);
+    if (source_count == 2) {
+        snprintf(success, sizeof(success), "%s mapped to %s and %s.",
+                 k_game_actions[action_index].label,
+                 k_vita_sources[source_indices[0]].label,
+                 k_vita_sources[source_indices[1]].label);
+    } else {
+        snprintf(success, sizeof(success), "%s mapped to %s.",
+                 k_game_actions[action_index].label,
+                 k_vita_sources[source_indices[0]].label);
+    }
+    set_control_status(result, success);
+}
+
+void clear_control_source(int action_index, int source_index) {
+    if (action_index < 0 || action_index >= k_game_action_count ||
+        source_index < 0 || source_index >= k_vita_source_count) return;
+    const MdkrVideoRuntimeResult result = mdkr_video_config_runtime_set(
+        k_vita_sources[source_index].key, "none");
+    char success[128];
+    snprintf(success, sizeof(success), "Cleared %s from %s.",
+             k_vita_sources[source_index].label,
+             k_game_actions[action_index].label);
     set_control_status(result, success);
 }
 
@@ -319,22 +346,47 @@ void poll_control_capture() {
     if (s_capture_action < 0) return;
     const uint64_t now = sceKernelGetProcessTimeWide();
     if (now >= s_capture_deadline) {
+        const int completed_action = s_capture_action;
         s_capture_action = -1;
-        snprintf(s_controls_status, sizeof(s_controls_status),
-                 "No input received. Mapping was not changed.");
+        if (s_capture_source_count == 0) {
+            snprintf(s_controls_status, sizeof(s_controls_status),
+                     "No input received. Mapping was not changed.");
+        } else {
+            assign_control_sources(completed_action, s_capture_sources,
+                                   s_capture_source_count);
+        }
         return;
     }
     SceCtrlData pad = {};
     sceCtrlPeekBufferPositive(0, &pad, 1);
     if (s_capture_wait_release) {
-        if (!any_mappable_input(pad)) s_capture_wait_release = false;
+        if (!any_mappable_input(pad)) {
+            s_capture_wait_release = false;
+            s_capture_down_mask = 0;
+        }
         return;
     }
+    unsigned active_mask = 0;
     for (int source = 0; source < k_vita_source_count; ++source) {
-        if (!source_is_active(k_vita_sources[source], pad)) continue;
-        assign_control_source(s_capture_action, source);
-        s_capture_action = -1;
-        return;
+        if (source_is_active(k_vita_sources[source], pad)) {
+            active_mask |= 1u << source;
+        }
+    }
+    const unsigned pressed_mask = active_mask & ~s_capture_down_mask;
+    s_capture_down_mask = active_mask;
+    for (int source = 0; source < k_vita_source_count; ++source) {
+        if ((pressed_mask & (1u << source)) == 0) continue;
+        bool already_present = false;
+        for (int slot = 0; slot < s_capture_source_count; ++slot) {
+            if (s_capture_sources[slot] == source) already_present = true;
+        }
+        if (already_present) continue;
+        if (s_capture_source_count < 2) {
+            s_capture_sources[s_capture_source_count++] = source;
+        } else {
+            s_capture_sources[0] = s_capture_sources[1];
+            s_capture_sources[1] = source;
+        }
     }
 }
 
@@ -392,9 +444,12 @@ void draw_source_badge(const VitaControlSource &source) {
 void begin_control_capture(int action) {
     s_capture_action = action;
     s_capture_wait_release = true;
+    s_capture_down_mask = 0;
+    s_capture_sources[0] = s_capture_sources[1] = -1;
+    s_capture_source_count = 0;
     s_capture_deadline = sceKernelGetProcessTimeWide() + UINT64_C(5000000);
     snprintf(s_controls_status, sizeof(s_controls_status),
-             "Waiting 5 seconds for a Vita input...");
+             "Waiting 5 seconds for up to two Vita inputs...");
 }
 
 void render_controls_screen() {
@@ -408,13 +463,23 @@ void render_controls_screen() {
     }
     ImGui::Separator();
     if (s_capture_action >= 0) {
+        for (int nav = 0; nav < ImGuiNavInput_COUNT; ++nav) {
+            ImGui::GetIO().NavInputs[nav] = 0.0f;
+        }
         const uint64_t now = sceKernelGetProcessTimeWide();
         const unsigned seconds = now < s_capture_deadline
             ? (unsigned)((s_capture_deadline - now + UINT64_C(999999)) /
                          UINT64_C(1000000)) : 0;
         ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.25f, 1.0f),
-                           "Press a button or move the right stick for %s (%us)",
+                           "Enter up to 2 inputs for %s (%us) - saves when time expires",
                            k_game_actions[s_capture_action].label, seconds);
+        if (s_capture_source_count > 0) {
+            ImGui::SameLine();
+            for (int slot = 0; slot < s_capture_source_count; ++slot) {
+                if (slot != 0) ImGui::SameLine();
+                draw_source_badge(k_vita_sources[s_capture_sources[slot]]);
+            }
+        }
     } else {
         ImGui::TextUnformatted("Choose an action, then press the desired Vita input within 5 seconds.");
     }
@@ -427,6 +492,7 @@ void render_controls_screen() {
         }
         ImGui::SameLine(290.0f);
         bool found = false;
+        int mapped_slot = 0;
         if (config != nullptr) {
             for (int source = 0; source < k_vita_source_count; ++source) {
                 if (strcmp(config->values[k_vita_sources[source].key].text,
@@ -435,7 +501,15 @@ void render_controls_screen() {
                 }
                 if (found) ImGui::SameLine();
                 draw_source_badge(k_vita_sources[source]);
+                ImGui::SameLine();
+                ImGui::PushID(100 + mapped_slot);
+                if (ImGui::SmallButton("Clear")) {
+                    clear_control_source(action, source);
+                }
+                ImGui::PopID();
                 found = true;
+                ++mapped_slot;
+                if (mapped_slot >= 2) break;
             }
         }
         if (!found) ImGui::TextDisabled("Not mapped");
