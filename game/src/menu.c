@@ -5298,6 +5298,11 @@ static void save_editor_apply(void) {
         }
         (void)read_save_file(sSaveEditorSlot, settings);
         mark_read_all_save_files();
+        /* The editor has just committed a complete, validated Settings image.
+         * Let the Vita trophy bridge reconcile it now, rather than requiring
+         * the player to enter a race (or even reload the hub) before progress
+         * such as all four key arenas is recognized. */
+        mdkr_vita_trophy_pump(settings);
     }
 
     if (sSaveEditorTimeTrialDirty) {

@@ -296,8 +296,16 @@ void mdkr_vita_trophy_register(void) {
 }
 
 void mdkr_vita_trophy_pump(const struct Settings *settings) {
+    static const unsigned char challengeLevels[4] = {
+        ASSET_LEVEL_HORSESHOEGULCH,
+        ASSET_LEVEL_DARKWATERBEACH,
+        ASSET_LEVEL_ICICLEPYRAMID,
+        ASSET_LEVEL_SMOKEYCASTLE
+    };
     unsigned trophyState;
     int adventureTwo;
+    unsigned i;
+    int allChallengesComplete = 1;
     if (!sLoggedPump) {
         trophy_log("trophy pump settings=%p balloons=%p newGame=%d", (void *) settings,
                    settings != NULL ? (void *) settings->balloonsPtr : NULL,
@@ -316,15 +324,19 @@ void mdkr_vita_trophy_pump(const struct Settings *settings) {
         sLoggedSettings = 1;
     }
 
+    /* Key-arena completion is valid in either Adventure. In particular, a
+     * 100% editor save can already have Adventure Two unlocked before the
+     * player first opens the edited file. Do not let that mode bit suppress a
+     * legitimate four-arena trophy forever. */
+    for (i = 0; i < ARRAY_COUNT(challengeLevels); i++) {
+        if (!(settings->courseFlagsPtr[challengeLevels[i]] & RACE_CLEARED)) {
+            allChallengesComplete = 0;
+            break;
+        }
+    }
+    if (allChallengesComplete) unlock(17);
+
     if (!adventureTwo) {
-        static const unsigned char challengeLevels[4] = {
-            ASSET_LEVEL_HORSESHOEGULCH,
-            ASSET_LEVEL_DARKWATERBEACH,
-            ASSET_LEVEL_ICICLEPYRAMID,
-            ASSET_LEVEL_SMOKEYCASTLE
-        };
-        unsigned i;
-        int allChallengesComplete = 1;
         if (settings->balloonsPtr[0] >= 1) unlock(TROPHY_FIRST_BALLOON);
         if (settings->wizpigAmulet >= 4) unlock(TROPHY_WIZPIG_AMULET);
         if (settings->keys & 0x02) unlock(TROPHY_KEY_DINO);
@@ -333,16 +345,6 @@ void mdkr_vita_trophy_pump(const struct Settings *settings) {
         if (settings->keys & 0x10) unlock(TROPHY_KEY_DRAGON);
         if (settings->balloonsPtr[0] >= 39) unlock(TROPHY_BALLOONS_39);
         if (settings->balloonsPtr[0] >= 47) unlock(TROPHY_BALLOONS_47);
-        /* The four Adventure challenge arenas write RACE_CLEARED into their
-         * own level slots. Reading those completed flags avoids treating a
-         * one-off battle result as the full four-area achievement. */
-        for (i = 0; i < 4; i++) {
-            if (!(settings->courseFlagsPtr[challengeLevels[i]] & RACE_CLEARED)) {
-                allChallengesComplete = 0;
-                break;
-            }
-        }
-        if (allChallengesComplete) unlock(17);
     } else {
         if (settings->balloonsPtr[0] >= 47) unlock(38);
         if (settings->bosses & 0x020) unlock(39);
