@@ -5574,6 +5574,14 @@ static void save_editor_complete_wizpig_two(void) {
          hubBalloon++) {
         save_editor_set_hub_balloon_collected(sSaveEditorSlot, hubBalloon, TRUE);
     }
+    /* The Central Area stores both its door latches and golden-balloon state in
+     * the high 16 bits of its course flags.  Object maps are permitted to use
+     * dynamically assigned IDs, so the seven named entries in the editor are
+     * useful for ordinary editing but must not be treated as the exhaustive
+     * list for the 100% shortcut.  Completing Wizpig 2 means every hub object
+     * is already complete; claim the full field so no remaining free-roam
+     * balloon can spawn and incorrectly raise a 47-balloon save to 48. */
+    sSaveEditorHubFlags[sSaveEditorSlot] = UINT16_MAX;
     for (hubBalloon = 0; hubBalloon < ARRAY_COUNT(sSaveEditorArenaLevelIds);
          hubBalloon++) {
         sSaveEditorArenaFlags[sSaveEditorSlot][hubBalloon] |=
