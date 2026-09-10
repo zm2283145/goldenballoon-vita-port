@@ -83,6 +83,7 @@
 #include "presentation_snapshot.h"
 #include "rollback/rollback_game_runtime.h"
 #include "taj_mod.h"
+#include "vita_trophy.h"
 #endif
 
 /************ .rodata ************/
@@ -440,6 +441,13 @@ void main_game_loop(void) {
     rdp_init(&gCurrDisplayList);
     bgdraw_render(&gCurrDisplayList, &gGameCurrMatrix, TRUE);
     gSaveDataFlags = input_update(gSaveDataFlags, logicUpdateRate);
+#ifdef NATIVE_PORT
+    /* The trophy bridge observes the native progression model after the save
+     * input boundary. On non-Vita builds it is a no-op, so this adds no game
+     * behaviour outside the intended platform. */
+    mdkr_vita_trophy_set_adventure_active(!is_in_tracks_mode());
+    mdkr_vita_trophy_pump(get_settings());
+#endif
 #ifdef NATIVE_PORT
     /* The application overlay is a real pause boundary, not merely input
      * capture. Keep polling input and rendering the held scene, but advance

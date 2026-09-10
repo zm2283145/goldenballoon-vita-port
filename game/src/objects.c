@@ -1,5 +1,6 @@
 #include "objects.h"
 #include "memory.h"
+#include "vita_trophy.h"
 
 #include "asset_enums.h"
 #include "asset_loading.h"
@@ -10914,6 +10915,11 @@ s8 set_course_finish_flags(Settings *settings) {
     } else if (gIsSilverCoinRace && racer->silverCoinCount >= 8 && gIsTimeTrial == FALSE) {
         gFirstTimeFinish = TRUE;
         settings->courseFlagsPtr[settings->courseId] |= RACE_CLEARED_SILVER_COINS;
+        /* Adventure 1 has its own silver-coin progression. Only this
+         * mirrored Adventure 2 completion belongs to the optional set. */
+        if (is_in_adventure_two()) {
+            mdkr_vita_trophy_silver_coin_race(settings->courseId);
+        }
     }
     return gFirstTimeFinish;
 }
@@ -11209,12 +11215,22 @@ void race_finish_time_trial(void) {
 #else
                 if (gTimeTrialStaffGhost) {
 #endif
+                    /* The game has confirmed that the active, unbeaten T.T.
+                     * ghost lost. This is stricter than merely setting a new
+                     * local course record. */
+                    mdkr_vita_trophy_tt_ghost_beaten(level_id());
                     tt_ghost_beaten(level_id(), &bestRacer->playerIndex);
                 } else {
                     hud_time_trial_message(&bestRacer->playerIndex);
                 }
             } else {
                 hud_time_trial_message(&bestRacer->playerIndex);
+            }
+            /* These are the 20 developer records presented in the credits;
+             * compare after PAL normalisation, exactly where the game has a
+             * completed player course time. */
+            if (gPrevTimeTrialVehicle == leveltable_vehicle_default(level_id())) {
+                mdkr_vita_trophy_developer_time(level_id(), bestCourseTime);
             }
         }
 #ifdef NATIVE_PORT

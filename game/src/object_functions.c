@@ -1,4 +1,5 @@
 #include "object_functions.h"
+#include "vita_trophy.h"
 
 #include "libultra/src/libc/rmonPrintf.h"
 
@@ -3839,6 +3840,7 @@ void obj_loop_goldenballoon(Object *obj, s32 updateRate) {
                         if (settings->worldId != WORLD_CENTRAL_AREA) {
                             settings->balloonsPtr[0]++;
                         }
+                        mdkr_vita_trophy_golden_balloon_collected(racer->characterId);
                         settings->courseFlagsPtr[settings->courseId] |= flag;
                         if (1) {} // Fakematch
                         sound_play_spatial(SOUND_COLLECT_BALLOON, obj->trans.x_position, obj->trans.y_position,
@@ -4889,6 +4891,9 @@ void obj_loop_banana(Object *obj, s32 updateRate) {
                                            racerObj->trans.y_position, racerObj->trans.z_position, NULL);
                     }
                     racer->bananas++;
+                    if (racer->playerIndex != PLAYER_COMPUTER) {
+                        mdkr_vita_trophy_banana_collected(racer->bananas);
+                    }
                     if (banana->spawner != NULL) {
                         banana->spawner->properties.bananaSpawner.spawn = TRUE;
                     }
@@ -5194,6 +5199,10 @@ void obj_loop_weaponballoon(Object *weaponBalloonObj, s32 updateRate) {
                     if (racer->balloon_level > 2) {
                         racer->balloon_level = 2;
                         levelMask = 2;
+                    }
+                    if (racer->playerIndex != PLAYER_COMPUTER &&
+                        !(get_filtered_cheats() & CHEAT_MAXIMUM_POWER_UP)) {
+                        mdkr_vita_trophy_max_powerup(racer->balloon_type, racer->balloon_level);
                     }
                     powerupTable = (s8 *) get_misc_asset(ASSET_MISC_BALLOON_DATA);
                     prevBalloonQuantity = racer->balloon_quantity;
