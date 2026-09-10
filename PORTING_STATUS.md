@@ -8,7 +8,7 @@ same libultraship/vitaGL pattern as
 (a Banjo-Kazooie Vita port used as the concrete reference for library
 choices, link flags, and the VPK packaging recipe).
 
-**Status: 1.6.3 — stable for normal play on tested real hardware.** It
+**Status: 1.6.4 — stable for normal play on tested real hardware.** It
 boots, loads a ROM, saves progress, and plays through races on the default
 (Restored) visual preset, with audio, input, textured rendering, correctly
 rendered 3D race/menu scenes, a 98-trophy pack, and a magic-code-gated Save

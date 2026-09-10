@@ -236,7 +236,7 @@ void mdkr_vita_trophy_set_character_balloon_progress(unsigned characterIndex,
  * order. The game gives us level IDs, so centralising the map keeps the
  * trophy IDs stable even though the level-header table is not ordered that
  * way. */
-static int trophy_track_index(int levelId) {
+int mdkr_vita_trophy_track_index(int levelId) {
     unsigned track;
     for (track = 0; track < ARRAY_COUNT(sTrophyTrackIds); track++) {
         if (levelId == sTrophyTrackIds[track]) return (int)track;
@@ -245,20 +245,20 @@ static int trophy_track_index(int levelId) {
 }
 
 void mdkr_vita_trophy_silver_coin_race(int levelId) {
-    int track = trophy_track_index(levelId);
+    int track = mdkr_vita_trophy_track_index(levelId);
     if (track >= 0 && trophy_ready()) unlock(18 + (unsigned)track);
 }
 
 void mdkr_vita_trophy_tt_ghost_beaten(int levelId) {
-    int track = trophy_track_index(levelId);
+    int track = mdkr_vita_trophy_track_index(levelId);
     if (track >= 0 && trophy_ready()) unlock(40 + (unsigned)track);
 }
 
 void mdkr_vita_trophy_developer_time(int levelId, int courseTime) {
     /* Credits' developer records in hundredths, in the same canonical order
-     * as trophy_track_index(). Compare without rounding between the game's
+     * as mdkr_vita_trophy_track_index(). Compare without rounding between the game's
      * 60 Hz race clock and the printed centisecond values. */
-    int track = trophy_track_index(levelId);
+    int track = mdkr_vita_trophy_track_index(levelId);
     if (track < 0 || courseTime < 0) return;
     if (mdkr_vita_trophy_developer_time_beaten((unsigned)track, courseTime) &&
         trophy_ready()) {
@@ -453,6 +453,10 @@ int mdkr_vita_trophy_developer_time_beaten(unsigned track_index, int course_time
     (void)track_index;
     (void)course_time;
     return 0;
+}
+int mdkr_vita_trophy_track_index(int level_id) {
+    (void)level_id;
+    return -1;
 }
 
 #endif

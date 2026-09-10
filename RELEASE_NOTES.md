@@ -1,3 +1,22 @@
+# Golden Balloon 1.6.4
+
+*Unreleased.*
+
+## PS Vita
+
+Fixes Save Editor developer-time records so each selected track uses its own
+canonical developer target, rather than the editor's different world-order
+position. This restores correct developer-time trophy conditions for tracks
+including Everfrost Peak, Walrus Cove, Frosty Village, Pirate Lagoon, Windmill
+Plains, and Spaceport Alpha.
+
+The trophy-pack revision is now `01.04`. Installing and launching this build
+updates an existing `01.03` pack, allowing the Vita to import the individual
+RetroAchievements artwork without manually purging the title's trophy data.
+
+The VPK is versioned from the same `MDKR_VERSION` value as the compiled port;
+release 1.6.4 produces Vita metadata version `01.64`.
+
 # Golden Balloon 1.6.3
 
 *Released 2026-09-10.*
