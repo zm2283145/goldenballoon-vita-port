@@ -11229,7 +11229,9 @@ void race_finish_time_trial(void) {
             /* These are the 20 developer records presented in the credits;
              * compare after PAL normalisation, exactly where the game has a
              * completed player course time. */
-            mdkr_vita_trophy_developer_time(level_id(), bestCourseTime);
+            if (gPrevTimeTrialVehicle == leveltable_vehicle_default(level_id())) {
+                mdkr_vita_trophy_developer_time(level_id(), bestCourseTime);
+            }
         }
 #ifdef NATIVE_PORT
         if (tajTimeTrial) {
