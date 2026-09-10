@@ -44,11 +44,13 @@ static int sTrophyHandle = -1;
 static uint32_t sSubmitted;
 static int sUnavailable;
 static int sLoggedSettings;
+static int sLoggedPump;
 
 /* Use the port's existing, file-gated boot log. An empty
  * ux0:data/goldenballoon/debug file enables these diagnostics, and all output
  * joins the normal mdkr_boot.log rather than creating a second log. */
 extern void mdkr_vita_boot_log(const char *msg);
+extern void mdkr_vita_boot_log_flush(void);
 extern int mdkr_vita_debug_enabled(void);
 
 static void trophy_log(const char *format, ...) {
@@ -59,6 +61,10 @@ static void trophy_log(const char *format, ...) {
     vsnprintf(line, sizeof(line), format, args);
     va_end(args);
     mdkr_vita_boot_log(line);
+    /* Unlike the renderer diagnostics, this bridge may be the only debug
+     * producer during a short test run. Persist each line immediately so an
+     * app exit or a crash cannot hide the actual trophy-service return code. */
+    mdkr_vita_boot_log_flush();
 }
 
 static int trophy_ready(void) {
@@ -118,6 +124,12 @@ static void unlock(unsigned trophyId) {
 
 void mdkr_vita_trophy_pump(const struct Settings *settings) {
     unsigned trophyState;
+    if (!sLoggedPump) {
+        trophy_log("trophy pump settings=%p balloons=%p newGame=%d", (void *) settings,
+                   settings != NULL ? (void *) settings->balloonsPtr : NULL,
+                   settings != NULL ? settings->newGame : -1);
+        sLoggedPump = 1;
+    }
     if (settings == NULL || settings->balloonsPtr == NULL || settings->newGame ||
         !trophy_ready()) return;
 
