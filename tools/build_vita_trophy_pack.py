@@ -94,8 +94,10 @@ def xml(configuration_only: bool = False) -> bytes:
 
 
 def trp(files: dict[str, bytes]) -> bytes:
-    # PS Vita uses the big-endian v2 header, 0x60 bytes, with 0x40-byte TOC rows.
-    header_size, entry_size = 0x60, 0x40
+    # PS Vita uses the big-endian v2 header, 0x40 bytes, with 0x40-byte TOC rows.
+    # The final 16 bytes of the packed header above are reserved; they are part
+    # of the header, not a prefix before the table of contents.
+    header_size, entry_size = 0x40, 0x40
     entries = sorted(files.items())
     offset = header_size + len(entries) * entry_size
     table, bodies = [], []
