@@ -3,6 +3,7 @@
 #define MDKR64_APP_UI_POLICY_H
 
 #include "../video_config.h"
+#include "launcher_panels.h"
 
 // Issue #54: the one player-facing sentence shown when a durable save write
 // could not be completed and no relocation rescued it. Shared by the in-game
@@ -11,6 +12,36 @@
 inline constexpr char kSavePersistFailedNotice[] =
     "Your progress could not be saved. The save folder is not writable. "
     "See mdkr64.log for the folder it tried.";
+
+
+// --- Destinations -----------------------------------------------------------
+//
+// The player-facing sections the navigation draws. Panels (kLauncherPanel*) are
+// a numeric contract the smoke gates and the Online Room address by number and
+// are NOT renumbered; destinations are the layer above them, so the interface
+// can be reorganised without breaking that contract.
+//
+// Routing lives here, as pure functions, for the same reason
+// AppUi_settingsSection does: "drawn in exactly one place" becomes a property a
+// test can read rather than one that holds until somebody adds a second call
+// site. All three responsive navigation modes -- the wide rail, the
+// intermediate tab strip, and the narrow dropdown -- read this same list, which
+// is what stops them drifting apart.
+enum class AppUiDestination { Play, Content, Settings, Support };
+
+AppUiDestination AppUi_destinationForPanel(int panel);
+int              AppUi_defaultPanelForDestination(AppUiDestination destination);
+const char      *AppUi_destinationLabel(AppUiDestination destination);
+// True for the destination drawn beneath the navigation's separator.
+// Diagnostics and About are needed rarely, by few; they stay one click away
+// without competing with Play for the eye.
+bool             AppUi_destinationIsFooter(AppUiDestination destination);
+// True when `destination` owns the currently active panel. Each navigation
+// item asks this, so "exactly one destination is lit" is testable rather than
+// an accident of drawing order -- which is also the invariant
+// tests/check_launcher_tabs.py measures in pixels.
+bool             AppUi_destinationSelected(AppUiDestination destination,
+                                           int activePanel);
 
 enum class OverlayBackInput { Escape, ControllerB };
 

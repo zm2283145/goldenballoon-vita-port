@@ -1,6 +1,8 @@
 #include "app_ui_policy.h"
+#include "launcher_panels.h"
 
 #include <cmath>
+#include <cstring>
 #include <cstdio>
 #include <initializer_list>
 #include <iterator>
@@ -509,6 +511,81 @@ int main() {
            "Skip the launcher is drawn beside the other shell settings");
     expect(!AppUi_enhancementResetIncludes(MDKR_APP_SKIP_LAUNCHER),
            "Reset enhancements leaves Skip the launcher alone");
+
+
+    // --- Destinations -------------------------------------------------------
+    // Six panels are a numeric smoke contract and do not move. Destinations are
+    // the layer above them, so the interface can be reorganised without
+    // renumbering anything the Online Room or the nav gates depend on.
+    expect(AppUi_destinationForPanel(kLauncherPanelPlay) ==
+               AppUiDestination::Play,
+           "Play panel is the Play destination");
+    expect(AppUi_destinationForPanel(kLauncherPanelOnlineRoom) ==
+               AppUiDestination::Play,
+           "Online Room is a way to play, not its own destination");
+    expect(AppUi_destinationForPanel(kLauncherPanelCharacterWorkshop) ==
+               AppUiDestination::Content,
+           "Character Workshop lives under Content");
+    expect(AppUi_destinationForPanel(kLauncherPanelSettings) ==
+               AppUiDestination::Settings,
+           "Settings keeps its own destination");
+    expect(AppUi_destinationForPanel(kLauncherPanelDiagnostics) ==
+               AppUiDestination::Support,
+           "Diagnostics moves to About & support");
+    expect(AppUi_destinationForPanel(kLauncherPanelAbout) ==
+               AppUiDestination::Support,
+           "About merges into About & support");
+
+    for (AppUiDestination destination :
+         {AppUiDestination::Play, AppUiDestination::Content,
+          AppUiDestination::Settings, AppUiDestination::Support}) {
+        const int panel = AppUi_defaultPanelForDestination(destination);
+        expect(panel >= 0 && panel < kLauncherPanelCount,
+               "default panel is inside the panel contract");
+        expect(AppUi_destinationForPanel(panel) == destination,
+               "default panel round-trips to its destination");
+        expect(AppUi_destinationLabel(destination) != nullptr &&
+                   AppUi_destinationLabel(destination)[0] != '\0',
+               "every destination has a label");
+    }
+
+    // Out of range fails closed to Play rather than indexing a table.
+    expect(AppUi_destinationForPanel(-1) == AppUiDestination::Play,
+           "negative panel falls back to Play");
+    expect(AppUi_destinationForPanel(kLauncherPanelCount) ==
+               AppUiDestination::Play,
+           "past-the-end panel falls back to Play");
+
+    expect(std::strcmp(AppUi_destinationLabel(AppUiDestination::Support),
+                       "About & support") == 0,
+           "the footer destination is named for what a player wants from it");
+    {
+        int footers = 0;
+        for (AppUiDestination destination :
+             {AppUiDestination::Play, AppUiDestination::Content,
+              AppUiDestination::Settings, AppUiDestination::Support}) {
+            footers += AppUi_destinationIsFooter(destination) ? 1 : 0;
+        }
+        expect(footers == 1, "exactly one destination is drawn in the footer");
+    }
+
+    // The rail lights the destination that OWNS the active panel, so opening
+    // the Online Room from Play does not extinguish the rail's only lit item.
+    expect(AppUi_destinationSelected(AppUiDestination::Play,
+                                     kLauncherPanelOnlineRoom),
+           "Play stays lit while the Online Room panel is active");
+    expect(!AppUi_destinationSelected(AppUiDestination::Settings,
+                                      kLauncherPanelOnlineRoom),
+           "only the owning destination is lit");
+    for (int panel = 0; panel < kLauncherPanelCount; ++panel) {
+        int lit = 0;
+        for (AppUiDestination destination :
+             {AppUiDestination::Play, AppUiDestination::Content,
+              AppUiDestination::Settings, AppUiDestination::Support}) {
+            lit += AppUi_destinationSelected(destination, panel) ? 1 : 0;
+        }
+        expect(lit == 1, "exactly one destination is lit for every panel");
+    }
 
     if (failures) {
         std::printf("%d app UI policy failure(s)\n", failures);

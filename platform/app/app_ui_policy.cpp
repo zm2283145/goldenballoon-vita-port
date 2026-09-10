@@ -4,6 +4,48 @@
 #include <cstdlib>
 #include <cstring>
 
+
+AppUiDestination AppUi_destinationForPanel(int panel) {
+    switch (panel) {
+        case kLauncherPanelOnlineRoom:        return AppUiDestination::Play;
+        case kLauncherPanelCharacterWorkshop: return AppUiDestination::Content;
+        case kLauncherPanelSettings:          return AppUiDestination::Settings;
+        case kLauncherPanelDiagnostics:       return AppUiDestination::Support;
+        case kLauncherPanelAbout:             return AppUiDestination::Support;
+        default:                              return AppUiDestination::Play;
+    }
+}
+
+int AppUi_defaultPanelForDestination(AppUiDestination destination) {
+    switch (destination) {
+        case AppUiDestination::Content:  return kLauncherPanelCharacterWorkshop;
+        case AppUiDestination::Settings: return kLauncherPanelSettings;
+        // About, not Diagnostics: the support surface opens on what the build
+        // IS, and carries the diagnostics report below it.
+        case AppUiDestination::Support:  return kLauncherPanelAbout;
+        case AppUiDestination::Play:     break;
+    }
+    return kLauncherPanelPlay;
+}
+
+const char *AppUi_destinationLabel(AppUiDestination destination) {
+    switch (destination) {
+        case AppUiDestination::Content:  return "Content";
+        case AppUiDestination::Settings: return "Settings";
+        case AppUiDestination::Support:  return "About & support";
+        case AppUiDestination::Play:     break;
+    }
+    return "Play";
+}
+
+bool AppUi_destinationIsFooter(AppUiDestination destination) {
+    return destination == AppUiDestination::Support;
+}
+
+bool AppUi_destinationSelected(AppUiDestination destination, int activePanel) {
+    return AppUi_destinationForPanel(activePanel) == destination;
+}
+
 OverlayBackState AppUi_overlayBackTransition(
     OverlayBackState current, OverlayBackInput input,
     bool popupOpen, bool keyRepeat) {

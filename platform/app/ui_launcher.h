@@ -20,6 +20,7 @@
 #ifndef MDKR64_UI_LAUNCHER_H
 #define MDKR64_UI_LAUNCHER_H
 
+#include "launcher_panels.h" // kLauncherPanel* (public smoke contract)
 #include "engine_entry.h"   // MdkrBootConfig
 #include "rom_validate.h"   // RomInfo
 #include "ui_phone_party.h" // PhonePartyLanControls
@@ -33,14 +34,6 @@
  * four bytes per unit. Keep a finite UI/input contract below that OS boundary.
  * The preference writer reserves enough escaped-line capacity for this value. */
 constexpr size_t kLauncherRomPathMaxBytes = 32767u * 4u;
-constexpr int kLauncherPanelPlay = 0;
-constexpr int kLauncherPanelOnlineRoom = 1;
-constexpr int kLauncherPanelSettings = 2;
-constexpr int kLauncherPanelDiagnostics = 3;
-constexpr int kLauncherPanelAbout = 4;
-// Appended so every existing numeric panel contract remains stable.
-constexpr int kLauncherPanelCharacterWorkshop = 5;
-constexpr int kLauncherPanelCount = 6;
 
 struct SDL_Window;
 class AppHost;
