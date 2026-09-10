@@ -26,6 +26,8 @@ extern SceCommonDialogStatus sceNpTrophySetupDialogGetStatus(void);
 extern int sceNpTrophySetupDialogTerm(void);
 extern int sceNpTrophyUnlockTrophy(int context, int handle, int trophyId,
                                    int *platinumId);
+extern int sceNpTrophyGetTrophyUnlockState(int context, int handle, void *state,
+                                           uint32_t *count);
 
 /* VitaSDK does not currently expose SceNpTrophy's dialog definitions. This
  * layout is the one used by established vitaGL homebrew trophy integrations. */
@@ -61,6 +63,7 @@ static int sTrophyHandle = -1;
 /* The completed set contains 98 trophies. Keep the local retry guard wide
  * enough for every ID; the Vita service remains the persistence authority. */
 static uint32_t sSubmitted[(98 + 31) / 32];
+static uint32_t sUnlocked[(98 + 31) / 32];
 static int sUnavailable;
 static int sLoggedSettings;
 static int sLoggedPump;
@@ -68,6 +71,10 @@ static int sSetupComplete;
 static int sTrophyServiceReady;
 static unsigned char sAdventureBalloonCount[10];
 static unsigned char sBonusAdventureBalloonCount[MOD_RACER_IDENTITY_COUNT];
+static unsigned char sEditorCharacterBalloonCount[13];
+static const unsigned char sEditorCharacterTrophyIds[13] = {
+    80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 95, 96, 97
+};
 
 /* Use the port's existing, file-gated boot log. An empty
  * ux0:data/goldenballoon/debug file enables these diagnostics, and all output
@@ -156,6 +163,13 @@ unavailable:
         sUnavailable = 1;
         return 0;
     }
+    {
+        uint32_t count = 0;
+        result = sceNpTrophyGetTrophyUnlockState(sTrophyContext, sTrophyHandle,
+                                                  sUnlocked, &count);
+        trophy_log("unlock state=0x%08X count=%u", result, count);
+        if (result < 0) memset(sUnlocked, 0, sizeof(sUnlocked));
+    }
     return 1;
 }
 
@@ -174,7 +188,30 @@ static void unlock(unsigned trophyId) {
                                      &platinumId);
     trophy_log("unlock id=%u result=0x%08X platinum=%d", trophyId, result,
                platinumId);
+    if (result >= 0) sUnlocked[word] |= bit;
     sSubmitted[word] |= bit;
+}
+
+int mdkr_vita_trophy_is_unlocked(unsigned trophyId) {
+    if (trophyId >= 98 || !trophy_ready()) return 0;
+    return (sUnlocked[trophyId / 32] & (UINT32_C(1) << (trophyId % 32))) != 0;
+}
+
+int mdkr_vita_trophy_character_balloon_progress(unsigned characterIndex) {
+    return characterIndex < ARRAY_COUNT(sEditorCharacterBalloonCount)
+               ? sEditorCharacterBalloonCount[characterIndex] : 0;
+}
+
+void mdkr_vita_trophy_set_character_balloon_progress(unsigned characterIndex,
+                                                      unsigned balloonCount) {
+    if (characterIndex >= ARRAY_COUNT(sEditorCharacterBalloonCount)) return;
+    if (balloonCount > 5) balloonCount = 5;
+    sEditorCharacterBalloonCount[characterIndex] = (unsigned char)balloonCount;
+    /* This mirrors the gameplay counter: reaching five is the condition, and
+     * unlock() remains the sole service boundary. */
+    if (balloonCount >= 5 && trophy_ready()) {
+        unlock(sEditorCharacterTrophyIds[characterIndex]);
+    }
 }
 
 /* RetroAchievements' display and the credits both use this exact canonical
@@ -384,5 +421,13 @@ void mdkr_vita_trophy_golden_balloon_collected(int characterId, int playerIndex)
     (void)playerIndex;
 }
 void mdkr_vita_trophy_set_adventure_active(int active) { (void)active; }
+int mdkr_vita_trophy_is_unlocked(unsigned trophy_id) { (void)trophy_id; return 0; }
+int mdkr_vita_trophy_character_balloon_progress(unsigned character_index) {
+    (void)character_index; return 0;
+}
+void mdkr_vita_trophy_set_character_balloon_progress(unsigned character_index,
+                                                      unsigned balloon_count) {
+    (void)character_index; (void)balloon_count;
+}
 
 #endif

@@ -23,4 +23,11 @@ void mdkr_vita_trophy_max_powerup(int balloonType, int balloonLevel);
 void mdkr_vita_trophy_golden_balloon_collected(int characterId, int playerIndex);
 void mdkr_vita_trophy_set_adventure_active(int active);
 
+/* Save-editor support: these change and evaluate the same five-balloon
+ * condition used by gameplay; they never target a trophy ID from the UI. */
+int mdkr_vita_trophy_is_unlocked(unsigned trophy_id);
+int mdkr_vita_trophy_character_balloon_progress(unsigned character_index);
+void mdkr_vita_trophy_set_character_balloon_progress(unsigned character_index,
+                                                      unsigned balloon_count);
+
 #endif
