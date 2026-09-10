@@ -105,10 +105,6 @@ static bool panelVisible(int index) {
 #endif
 }
 
-const char *compactPanelLabel(int index) {
-    return index == kLauncherPanelCharacterWorkshop
-        ? "Workshop" : kPanels[index].label;
-}
 
 ImVec2 g_smokeTopTabMin[kPanelCount];
 ImVec2 g_smokeTopTabMax[kPanelCount];
@@ -521,21 +517,41 @@ void drawTopPanelTabs(int activePanel, LauncherState &state) {
     ImGui::PushStyleVar(
         ImGuiStyleVar_ItemSpacing,
         ImVec2(8.0f * AppTheme::uiScale(), ImGui::GetStyle().ItemSpacing.y));
+    /*
+     * Destinations, in the same order and with the same names the rail uses.
+     * This strip is the intermediate-width responsive mode, not a second
+     * navigation: drawing panels here while the rail drew destinations left the
+     * launcher with two different information architectures depending on how
+     * wide the window happened to be.
+     *
+     * The smoke rects stay indexed by PANEL, and every panel resolves to the
+     * rect of the destination that OWNS it -- so MDKR_APP_SMOKE_NAV_TARGET=3
+     * (Diagnostics) still finds a target, and clicking it lands on About &
+     * support, which is where Diagnostics now lives.
+     */
+    for (int i = 0; i < kPanelCount; ++i) g_smokeTopTabValid[i] = false;
+    const AppUiDestination kAll[] = {
+        AppUiDestination::Play, AppUiDestination::Content,
+        AppUiDestination::Settings, AppUiDestination::Support};
     bool firstTab = true;
-    for (int i = 0; i < kPanelCount; ++i) {
-        if (!panelVisible(i)) {
-            g_smokeTopTabValid[i] = false;
-            continue;
-        }
+    for (AppUiDestination destination : kAll) {
         if (!firstTab) ImGui::SameLine();
         firstTab = false;
-        ImGui::PushID(i);
-        if (drawTopPanelTab(kPanels[i].label, selectedPanel == i)) {
-            requestedPanel = i;
+        ImGui::PushID(static_cast<int>(destination));
+        if (drawTopPanelTab(
+                AppUi_destinationLabel(destination),
+                AppUi_destinationSelected(destination, selectedPanel))) {
+            requestedPanel = AppUi_defaultPanelForDestination(destination);
         }
-        g_smokeTopTabMin[i] = ImGui::GetItemRectMin();
-        g_smokeTopTabMax[i] = ImGui::GetItemRectMax();
-        g_smokeTopTabValid[i] = true;
+        const ImVec2 tabMin = ImGui::GetItemRectMin();
+        const ImVec2 tabMax = ImGui::GetItemRectMax();
+        for (int i = 0; i < kPanelCount; ++i) {
+            if (AppUi_destinationForPanel(i) != destination) continue;
+            if (i == kLauncherPanelOnlineRoom && !panelVisible(i)) continue;
+            g_smokeTopTabMin[i] = tabMin;
+            g_smokeTopTabMax[i] = tabMax;
+            g_smokeTopTabValid[i] = true;
+        }
         ImGui::PopID();
     }
     ImGui::PopStyleVar();
@@ -775,17 +791,23 @@ void drawTopNavigation(int &activePanel, LauncherState &state) {
         // drawActivePanel range-checks the same index before dispatching; this
         // preview label is the only other place it is dereferenced, so it
         // carries the identical guard rather than trusting the caller.
+        // Name the destination, so the closed combo and the list agree.
         const char *activeLabel =
-            (activePanel >= 0 && activePanel < kPanelCount)
-                ? compactPanelLabel(activePanel) : "";
+            AppUi_destinationLabel(AppUi_destinationForPanel(activePanel));
         if (ImGui::BeginCombo("##compact-section", activeLabel)) {
-            for (int i = 0; i < kPanelCount; ++i) {
-                if (!panelVisible(i)) continue;
-                const bool selected = activePanel == i;
+            // The same four destinations the rail and the tab strip offer. A
+            // narrow window is a smaller screen, not a different product.
+            for (AppUiDestination destination :
+                 {AppUiDestination::Play, AppUiDestination::Content,
+                  AppUiDestination::Settings, AppUiDestination::Support}) {
+                const bool selected =
+                    AppUi_destinationSelected(destination, activePanel);
                 if (ImGui::Selectable(
-                        compactPanelLabel(i), selected, 0,
+                        AppUi_destinationLabel(destination), selected, 0,
                         ImVec2(0.0f, ui::kTouchRowHeight()))) {
-                    Launcher_requestTab(state, i, kLauncherTabPlayer);
+                    Launcher_requestTab(
+                        state, AppUi_defaultPanelForDestination(destination),
+                        kLauncherTabPlayer);
                 }
                 if (selected) ImGui::SetItemDefaultFocus();
             }
@@ -794,8 +816,7 @@ void drawTopNavigation(int &activePanel, LauncherState &state) {
         sectionMin = ImGui::GetItemRectMin();
         sectionMax = ImGui::GetItemRectMax();
         const char *spokenLabel =
-            (activePanel >= 0 && activePanel < kPanelCount)
-                ? kPanels[activePanel].label : "";
+            AppUi_destinationLabel(AppUi_destinationForPanel(activePanel));
         ui::SpeakFocusedItem("Section", spokenLabel,
                              "Choose which launcher section to view.");
         ImGui::SameLine();
@@ -1527,7 +1548,8 @@ void drawContentPanel(LauncherState &s, LauncherAction &out) {
         "Artwork, music and characters you add yourself. Everything here is "
         "optional, and nothing here changes how the game plays.");
 
-    ui::Gap(ui::kGapM);
+    // No gap: SectionHeader already closes with its own rule and spacing, and
+    // adding one here left a band of dead space above the first group.
     ui::GroupHeader("Packs",
                     "Replacement artwork and music, loaded from your mods "
                     "folder at launch.");
@@ -1720,10 +1742,16 @@ void drawCharacterWorkshopPanel(LauncherState &s, LauncherAction &out) {
 }
 
 void drawAboutPanel(LauncherState &s, LauncherAction &out) {
-    (void)s;
-    (void)out;
-
-    ui::SectionHeader("About",
+    /*
+     * The support surface: what this build IS, and the report you copy into a
+     * bug. Diagnostics used to be a top-level destination of its own, which put
+     * a developer's readout beside Play for every player who never needs it.
+     * Merging it here is what let the navigation collapse to three -- and it
+     * has to be drawn, not merely routed: panel 3 has no navigation entry of
+     * its own any more, so if this function did not call DiagPanel_draw the
+     * diagnostics report would be unreachable from the interface.
+     */
+    ui::SectionHeader("About & support",
                       "An unofficial fan project: a decompilation-based native "
                       "source port, for research, preservation and education.");
 
@@ -1743,6 +1771,11 @@ void drawAboutPanel(LauncherState &s, LauncherAction &out) {
     ui::TextSubtleWrapped(
         "F1 opens in-game settings. F10 toggles the FPS readout. F11 or "
         "Alt+Enter toggles fullscreen.");
+
+    ui::Gap(ui::kGapL);
+    // No heading here: DiagPanel_draw carries its own, and its subtitle already
+    // says the thing a player needs (attach this to a bug report).
+    DiagPanel_draw(s, out);
 }
 
 }  // namespace
