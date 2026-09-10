@@ -30430,7 +30430,11 @@ bool Settings_draw(SDL_Window *window, bool compact) {
             ui::Gap(ui::kGapS);
         }
         if (webGpuRenderer) {
-            ui::TextSubtle("Graphics backend: WebGPU (recommended)");
+            // A chip, not a loose sentence. The unhealthy case already answers
+            // this question with a card; the healthy one answered it with an
+            // unanchored line of prose between two labelled rows. This is the
+            // vocabulary the page already uses for a short fact about state.
+            ui::Chip("Renderer: WebGPU", AppTheme::good());
             ui::Gap(ui::kGapS);
         } else if (!compact) {
             if (ui::CardBegin("##renderer-warning", AppTheme::accent(), 0.0f)) {
