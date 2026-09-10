@@ -5153,11 +5153,41 @@ static void save_editor_adjust_world_balloons(s32 world, s32 delta) {
 }
 
 static void save_editor_recompute_total_balloons(void) {
-    s32 world;
+    s32 world, track;
     s32 total = 0;
 
-    for (world = 1; world < SAVE_EDITOR_WORLD_COUNT; world++) {
-        total += sSaveEditorBalloons[sSaveEditorSlot][world];
+    /* Balloons are a consequence of the actual staged completion flags, not
+     * a separate free-form value. Rebuilding every world here means a direct
+     * edit (including a whole-world boss/Wizpig action) always awards exactly
+     * the same balloons the game would have awarded naturally. */
+    for (world = 0; world < SAVE_EDITOR_ADVENTURE_WORLD_COUNT; world++) {
+        s32 worldTotal = 0;
+
+        for (track = 0; track < SAVE_EDITOR_TRACKS_PER_WORLD; track++) {
+            const s32 flags = sSaveEditorTrackFlags[sSaveEditorSlot][world][track];
+            if (flags & RACE_CLEARED_SILVER_COINS) {
+                worldTotal += 2;
+            } else if (flags & RACE_CLEARED) {
+                worldTotal++;
+            }
+        }
+        if (((sSaveEditorTrophies[sSaveEditorSlot] >> (world * 2)) & 3) == 3) {
+            worldTotal++;
+        }
+        /* Future Fun Land's two Wizpig races each award a balloon. */
+        if (world == 4) {
+            if (sSaveEditorBosses[sSaveEditorSlot] & save_editor_first_boss_bit(4)) {
+                worldTotal++;
+            }
+            if (sSaveEditorBosses[sSaveEditorSlot] & save_editor_second_boss_bit(4)) {
+                worldTotal++;
+            }
+        }
+        if (worldTotal > sSaveEditorBalloonLimits[world + 1]) {
+            worldTotal = sSaveEditorBalloonLimits[world + 1];
+        }
+        sSaveEditorBalloons[sSaveEditorSlot][world + 1] = (s16)worldTotal;
+        total += worldTotal;
     }
     if (total > sSaveEditorBalloonLimits[0]) total = sSaveEditorBalloonLimits[0];
     sSaveEditorBalloons[sSaveEditorSlot][0] = (s16)total;
