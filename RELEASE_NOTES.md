@@ -1,13 +1,29 @@
 # Golden Balloon 1.6.9
 
-*Unreleased ImGui Save Editor build.*
+*Released 2026-09-10.*
 
 ## PS Vita
 
+This is the first Vita release confirmed through a complete Adventure
+playthrough on real hardware using the default Restored visual preset.
+
 Adds a VitaGL ImGui Save Editor presentation. It shares the classic editor's
-selected slot, progression validation, Time Trial record handling, apply path,
-and save-slot operations. The classic editor remains available from the ImGui
-Tools page, and can reopen the overlay with L+R.
+validated save path and can create Adventure or Adventure 2 files; rename or
+erase slots; edit worlds, bosses, balloons, keys, arenas, amulets, Taj races,
+Time Trials, and global character unlocks; and satisfy the real save conditions
+for every trophy without directly forcing trophy IDs. The classic editor
+remains available from the ImGui Tools page.
+
+Adds **Options → Controls**, a persistent Vita control-mapping screen with
+vector icons for face buttons, shoulders, D-pad, Start, and both stick
+directions. It is fully D-pad navigable, accepts the last two distinct inputs
+during a five-second capture window, supports clearing either binding, and can
+restore the complete default layout atomically. Overlay input is isolated from
+the original menu beneath it.
+
+The included 98-trophy pack retains its custom platinum, main set, Adventure 2
+bonus group, and Time Trial bonus group, with authorized RetroAchievements
+artwork and custom icons for Golden Balloon's added racers.
 
 The VPK is versioned from the same `MDKR_VERSION` value as the compiled port;
 this build produces Vita metadata version `01.69`.

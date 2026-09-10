@@ -28,9 +28,10 @@
 > for the day-to-day truth about what currently works, what doesn't, and what
 > is actively being debugged.
 >
-> **Status update (1.6.4):** the Restored visual preset is stable for normal
-> play on tested real Vita hardware. The port boots, loads a ROM, renders 3D
-> races and menus, saves progress, and includes a 98-trophy pack. The optional
+> **Status update (1.6.9):** the Restored visual preset is stable and a complete
+> Adventure playthrough has been confirmed on real Vita hardware. The port
+> boots, loads a ROM, renders 3D races and menus, saves progress, and includes
+> a 98-trophy pack. The optional
 > Remastered visual preset remains unsupported; use Restored (the default).
 > The magic-code-gated Save Editor provides a supported way to test and repair
 > Vita save progression.
@@ -42,10 +43,23 @@
    installed, and **`libshacccg.suprx`** present at `ur0:data/libshacccg.suprx`
    (Sony's proprietary runtime shader compiler — VitaShell can fetch it for
    you from its own menus, or use [shacccg-installer](https://github.com/Electry/shacccg.suprx-installer)).
-   This port will not run without it. To use trophies, also install and enable
-   [NoTrpDrm](https://github.com/Rinnegatamante/NoTrpDrm), which permits the
-   unsigned homebrew trophy archive included with this VPK. Without NoTrpDrm,
-   the game remains playable but trophies are safely unavailable.
+   This port will not run without it. To use trophies, download
+   [`NoTrpDrm.suprx`](https://github.com/Rinnegatamante/NoTrpDrm/releases/download/v.1.1/NoTrpDrm.suprx) from
+   the official v1.1 release (source and documentation:
+   [Rinnegatamante/NoTrpDrm](https://github.com/Rinnegatamante/NoTrpDrm)), copy
+   it to the `tai` directory used by your active configuration—normally
+   `ur0:tai/`—and add the matching path beneath **`*main`** in that
+   `config.txt`:
+
+   ```text
+   *main
+   ur0:tai/NoTrpDrm.suprx
+   ```
+
+   Reboot the Vita after editing the configuration. Use `ux0:tai/` in both
+   places instead if that is where your active taiHEN configuration lives.
+   Without NoTrpDrm, the game remains playable but trophies are safely
+   unavailable.
 2. **Get the ROM.** You need a legally acquired dump of the original game —
    US v1.0 (`v80`), as `.z64`. Copy it onto your Vita's memory card at
    exactly this path:
@@ -59,11 +73,12 @@
    that fixed path only.
 3. **Install.** Copy `mdkr64.vpk` to your Vita (FTP via VitaShell, or a USB
    cable) and install it from VitaShell like any other VPK.
-4. **Play.** A DualShock-style control layout is assumed; there is no
-   in-game remapping UI on Vita yet.
+4. **Play.** The default Vita controls work out of the box. Open **Options →
+   Controls** to view or remap every digital action, assign up to two inputs
+   per action, clear individual bindings, or restore the defaults.
 
-**This is the 1.6.4 Vita release.** The default Restored visual preset is
-stable for normal play on tested hardware. **Do not enable the Remastered
+**This is the 1.6.9 Vita release.** The default Restored visual preset has
+completed a full Adventure playthrough on tested hardware. **Do not enable the Remastered
 visual preset — it crashes on startup every time; this is a known,
 still-unresolved issue, not something you did wrong.** If something else
 breaks, check [PORTING_STATUS.md](PORTING_STATUS.md) first and consider
@@ -93,7 +108,7 @@ the shared game/engine code — is in the
 | macOS (Apple silicon) | Upstream, stable |
 | Linux (x86-64) | Upstream, best effort |
 | Browser (WebGPU) | Upstream, stable |
-| **PS Vita** | **This fork, 1.6.4 — stable for normal play on the Restored visual preset, with 98 homebrew trophies and a built-in Save Editor. The Remastered preset crashes on startup and should not be used. See [PORTING_STATUS.md](PORTING_STATUS.md) for the exact current state.** |
+| **PS Vita** | **This fork, 1.6.9 — complete Adventure playthrough confirmed on the Restored visual preset, with 98 homebrew trophies, persistent control remapping, and a built-in Save Editor. The Remastered preset crashes on startup and should not be used. See [PORTING_STATUS.md](PORTING_STATUS.md) for the exact current state.** |
 
 ## PS Vita: known limitations
 
@@ -108,7 +123,6 @@ and fixed so far, with root causes).
   for what's been ruled out so far.
 - **No ROM picker.** The ROM must sit at the fixed path
   `ux0:data/goldenballoon/baserom.us.v80.z64`; only US v1.0 has been tried.
-- **No in-game control remapping UI.**
 - **No WebGPU, no online play, no Phone Party, no sun-shadow mapping, no
   MSAA.** vitaGL (the Vita's OpenGL-over-sceGxm layer) doesn't expose the GL
   features these need; see the "What's disabled or stubbed on Vita" table in
@@ -117,9 +131,9 @@ and fixed so far, with root causes).
 - **Item-fire (Z) defaults to Triangle**, since the Vita has no analog L2/R2
   triggers for the upstream default binding to land on. The right stick
   still covers all four C-button camera directions.
-- **Broader hardware coverage is still welcome.** Less-common game modes,
-  extended play sessions, performance-heavy scenes, and alternate controls
-  benefit from additional reports.
+- **Broader hardware coverage is still welcome.** The full Adventure has been
+  completed on real hardware, while unusual multiplayer combinations and
+  third-party controllers still benefit from additional reports.
 
 ## PS Vita trophies
 
@@ -134,7 +148,7 @@ The package also includes custom badges for the three Golden Balloon-exclusive
 racer trophies and a custom platinum icon.
 
 Trophies require [NoTrpDrm](https://github.com/Rinnegatamante/NoTrpDrm) to
-be installed and enabled in taiHEN. The port registers the pack during
+be installed and enabled beneath **`*main`** in taiHEN. The port registers the pack during
 startup; when the plugin is absent or the trophy service is unavailable, it
 keeps playing normally and skips trophy operations. See the reusable setup
 guide in [PORTING_STATUS.md](PORTING_STATUS.md#adding-trophies-to-a-ps-vita-project).
@@ -149,6 +163,16 @@ It also presents all trophy conditions in separate Main, Adventure 2, Time
 Trial, Character, and Power-Up pages. Changes are normalized so dependent
 story and balloon progress stays consistent; use it thoughtfully, as it
 intentionally changes the selected save.
+
+## PS Vita Controls
+
+Open **Options → Controls** for a Vita-native mapping screen. It displays the
+current Gas/Accept, Brake/Back, Horn/Use Item, Pause/Start, drift, D-pad, and
+camera bindings with vector Vita button and stick-direction icons. Select an
+action and the editor waits five seconds for up to two distinct inputs, then
+saves the last two. Each binding can be cleared separately, and **Reset to
+Default Controls** atomically restores the shipped layout. The screen supports
+D-pad navigation and blocks its input from reaching the menu or game behind it.
 
 ## Custom content
 

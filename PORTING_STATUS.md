@@ -8,11 +8,11 @@ same libultraship/vitaGL pattern as
 (a Banjo-Kazooie Vita port used as the concrete reference for library
 choices, link flags, and the VPK packaging recipe).
 
-**Status: 1.6.4 — stable for normal play on tested real hardware.** It
-boots, loads a ROM, saves progress, and plays through races on the default
+**Status: 1.6.9 — complete Adventure playthrough confirmed on real hardware.** It
+boots, loads a ROM, saves progress, and plays through the full game on the default
 (Restored) visual preset, with audio, input, textured rendering, correctly
 rendered 3D race/menu scenes, a 98-trophy pack, and a magic-code-gated Save
-Editor for supported progression repair and test setup. This moved past "builds
+Editor plus persistent Vita control remapping. This moved past "builds
 and links clean" through hands-on, on-device bring-up: real crashes and
 rendering bugs, pulled via a boot-time file logger, coredumps, and targeted
 diagnostic logging, root-caused one at a time. **The Remastered visual preset
@@ -68,13 +68,10 @@ hit:
    place to start, not another loosen-the-exclusion attempt.
 
 Confirmed on real hardware: the boot log shows zero viewport-resolution
-failures and clean frames well past where the previous crash chain died
-(frame 9), with shaders compiling and textures uploading normally through
-frame 80+. Still a fresh fix on a from-scratch bring-up — not yet exercised
-across every track, mode, or render path, so further rendering bugs in
-less-common cases are plausible. See "What needs hardware verification" at
-the end for everything still open, and the git log on this branch for the
-blow-by-blow.
+failures, shaders compile and textures upload normally, and a complete
+Adventure playthrough reaches the ending with working audio, controls, saves,
+trophies, menus, bosses, and every world on the default Restored preset. See
+the git log on this branch for the bring-up history.
 
 5. **Video settings failed to persist across restarts.** The Vita save
    path for video/preset settings was being written somewhere that didn't
@@ -212,9 +209,11 @@ launch.
 This port is a working reference for unsigned homebrew trophies on a Vita.
 The console's trophy service expects a title-specific archive and normally
 verifies Sony's signature; homebrew cannot produce that signature. Install
-and enable [NoTrpDrm](https://github.com/Rinnegatamante/NoTrpDrm) in
-taiHEN on the target Vita to permit the archive. Treat that plugin as an
-optional runtime dependency: initialize trophies defensively and keep the
+and enable [NoTrpDrm](https://github.com/Rinnegatamante/NoTrpDrm) beneath
+`*main` in the active taiHEN `config.txt` on the target Vita to permit the
+archive. Copy `NoTrpDrm.suprx` to the matching `ur0:tai/` or `ux0:tai/`
+directory, add that exact path below `*main`, and reboot. Treat the plugin as
+an optional runtime dependency: initialize trophies defensively and keep the
 game fully playable if the module, plugin, archive, or service is absent.
 
 1. **Choose a stable communication ID and title ID.** This project uses Vita
@@ -242,7 +241,7 @@ game fully playable if the module, plugin, archive, or service is absent.
    `build-vita/TROPHY.TRP` and adds it at
    `sce_sys/trophy/GBLN00001_00/TROPHY.TRP`. Keep `param.sfo` current on
    every build. This script derives Vita's `APP_VER` from `MDKR_VERSION` in
-   `CMakeLists.txt` (semantic `1.6.1` becomes Vita `01.61`), keeping the
+   `CMakeLists.txt` (semantic `1.6.9` becomes Vita `01.69`), keeping the
    compiled version, VPK metadata, and release version aligned.
 5. **Register at a safe early point.** Load `SCE_SYSMODULE_NP_TROPHY`, call
    `sceNpTrophyInit`, create the context, run the setup dialog to completion,
@@ -258,7 +257,7 @@ game fully playable if the module, plugin, archive, or service is absent.
    in-session retry guard to avoid submitting the same ID every frame.
 7. **Ship changes safely.** Once a set has been installed, a new group,
    trophy, title, or image requires raising `<trophyset-version>` (this port
-   currently uses `01.03`) so the Vita imports the update. Test from a clean
+   currently uses `01.04`) so the Vita imports the update. Test from a clean
    install or remove the title's local trophy entry between compatibility
 tests. Never renumber shipped trophies: add new IDs instead.
 
@@ -286,12 +285,24 @@ For troubleshooting, create `ux0:data/goldenballoon/debug` before launch;
 the existing boot log then records trophy-module, context, setup, handle,
 and unlock results in `ux0:data/goldenballoon/mdkr_boot.log`.
 
+## Controls (Vita)
+
+**Options → Controls** opens a VitaGL ImGui mapping screen with vector icons
+for the Vita face buttons, shoulders, Start, D-pad, and both stick directions.
+Every digital game action can store up to two inputs. Selecting an action opens
+a five-second capture window; the final two distinct inputs are saved when it
+expires, while receiving no input cancels the change. Either binding can be
+cleared separately and the complete shipped mapping can be restored in one
+step. Bindings persist in the normal settings file. D-pad navigation is
+supported, and input consumed by this overlay is blocked from simultaneously
+operating the original menu behind it.
+
 ## What's disabled or stubbed on Vita, and why
 
 | Feature | Status | Reason |
 |---|---|---|
 | WebGPU renderer (`MDKR_WEBGPU_BACKEND`) | Off | No WebGPU driver exists for the Vita's PowerVR SGX543MP4+; vitaGL (GL-over-sceGxm) is the only viable graphics path, same choice Lighthouse made. |
-| ImGui launcher/overlay (`MDKR_APP`) | Off | Pulls in desktop file dialogs, DPI/multi-monitor queries, and other desktop-only surface. The plain CLI entry point (`platform/main_pc.c`) is used instead, with the ROM at a fixed path (see above) rather than a picker UI. |
+| Desktop ImGui launcher (`MDKR_APP`) | Off | Pulls in desktop file dialogs, DPI/multi-monitor queries, and other desktop-only surface. The plain CLI entry point (`platform/main_pc.c`) is used instead, with the ROM at a fixed path (see above). The Vita-native Save Editor and Controls overlays use a small, independently integrated ImGui renderer and remain available. |
 | Phone Party (`MDKR_NATIVE_PHONE_PARTY`) | Off | Needs the datachannel/WebRTC stack, which isn't ported. |
 | Online play | Off (compiles, doesn't run) | `MDKR_ENABLE_ONLINE_BETA` defaults off; a `"vita"` tag was added to `compatibility_identity.c`'s platform fence only so the file compiles — this makes Vita its own determinism domain if online is ever enabled here later, rather than silently colliding with another platform's replay data. |
 | Sun-shadow mapping | Off | Needs `GL_TEXTURE_2D_ARRAY` / `glTexImage3D` / `glFramebufferTextureLayer`, none of which vitaGL implements. The whole feature (`gfx_opengl_ensure_shadow_resources` / `gfx_opengl_render_shadow_map` and friends in `gfx_opengl.c`) is compiled out; the shader-uniform receiver side already treats "shadow map not ready" as a normal, handled state, so there's no special-casing needed elsewhere. |
@@ -396,75 +407,19 @@ place before, not during, a session). Failure-path diagnostics (the actual
 compile/link error dump right before a crash) always log regardless of
 this file.
 
-## What needs real-hardware verification
+## Remaining work
 
-Nothing below could be checked without a device, and none of it was
-guessed at without a documented reason to believe it's a reasonable
-starting point — but all of it is unverified:
+A complete Adventure playthrough on real Vita hardware has now validated
+installation and boot, ROM loading, menus and races, all five worlds and their
+bosses, controls, audio, save persistence, trophy registration and unlocking,
+the Save Editor, and the Controls overlay. The former bring-up verification
+checklist was removed because it no longer described the state of the port.
 
-- **`vglInitExtended` parameters** (ring buffer / mempool sizes) — currently
-  passed conservative-but-arbitrary values; may need tuning if the game
-  runs out of GPU memory or the ring buffer stalls under DKR's heavier
-  particle/HUD draws.
-- **Input mapping — partially confirmed.** SDL2's GameController API does
-  map the Vita's physical buttons/sticks automatically via vita-sdl2's
-  built-in mapping, and the game is now playable end to end (steering,
-  menu navigation, and 3D gameplay all confirmed on hardware). One concrete
-  gap found and fixed: the Vita's L/R are plain shoulder buttons with no
-  analog travel, but the engine's default item-fire (Z) binding lives only
-  on the analog L2/R2 trigger axes (`MDKR_INPUT_CONTROLLER_LEFT_TRIGGER`/
-  `RIGHT_TRIGGER`), which never fire on Vita — so Z had no reachable
-  default at all. Fixed in `platform/video_config.c` by defaulting Z to
-  Triangle on Vita instead (its usual camera-up binding is redundant with
-  the right stick, which already covers all four C-directions). This one
-  fix is shipped but not yet hands-on confirmed in an actual race; a full
-  button-by-button pass (D-pad, start, C-buttons via right stick) is still
-  open.
-- **Audio path** — untested in gameplay; SDL2's audio backend on Vita goes
-  through `sceAudio`, and this engine's mixer/sequence-player pipeline has
-  not been run against it beyond whatever plays at the main menu.
-- **Performance** — DKR's HUD, minimap, and particle-heavy track sections
-  on the PowerVR SGX543MP4+ are an open question; `Video.RenderScale` is
-  the only scaling knob available (MSAA is off — see table above).
-- **Mip-level-clamp removal** — skipping `GL_TEXTURE_BASE_LEVEL`/
-  `MAX_LEVEL` entirely (rather than emulating it) could theoretically
-  produce visual artifacts on textures where the frontend re-uses a texture
-  ID across mip-chain-length changes; the existing `gfx_gl_set_has_mips`
-  bookkeeping should prevent this in practice, but it hasn't been eyeballed
-  in-game.
-- **`textureSize()`/`texelFetch()` in the texture clamp/tile-mask,
-  SSAO, and framebuffer-diagnostic code paths** — unlike plain
-  `texture()`/`textureLod()` (fixed by renaming to `texture2D()`, see the
-  git log), these ES3 functions have no equivalent at all in the legacy
-  GLSL ES 1.00 dialect vitaGL's runtime translator understands, so a
-  shader that reaches one of these paths on Vita will need an actual
-  logic rewrite (e.g. passing texture size as a uniform), not just a
-  syntax translation. Not yet hit by any shader reached so far; flagged
-  here so the next occurrence is recognized immediately instead of
-  requiring a fresh round of coredump archaeology.
-- **Coverage-stencil / framebuffer-snapshot degradations** — both are
-  opt-in diagnostics off by default; if a future contributor enables them
-  on Vita, verify the degraded (depth-only / no-read-buffer-select)
-  behavior actually looks acceptable rather than just "doesn't crash."
-
-## Next steps
-
-1. Root-cause the Remastered-preset shader-compile crash (see
-   [Known issues](#known-issues)) — the biggest remaining blocker to
-   calling this port stable.
-2. Play through more of the game on real hardware — more tracks, more
-   game modes (not just time trial), longer sessions — and root-cause
-   whatever that surfaces the same way every bug above was: boot-time
-   file logging and coredumps first, fix second, never guess without
-   data.
-3. Confirm the item-fire (Z → Triangle) remap in an actual race, then do
-   a full pass on the rest of the button/stick mapping (D-pad, start,
-   C-buttons via right stick), and add a native "Controls" entry to the
-   Options menu for in-game remapping.
-4. Work the rest of the "needs hardware verification" list above —
-   audio in gameplay and performance under DKR's heavier particle/HUD
-   draws are the two biggest unknowns left.
-5. If a native ROM-picker/launcher UI is wanted eventually (rather than the
+1. Root-cause the optional Remastered-preset shader-compile crash (see
+   [Known issues](#known-issues)). The supported Restored preset is stable.
+2. Additional multiplayer, third-party controller, and long-session reports
+   remain useful for broad hardware coverage, but are not release blockers.
+3. If a native ROM-picker/launcher UI is wanted eventually (rather than the
    fixed-path `--rom`/`DEFAULT_ROM` convention used for this first cut), it
    would need to be built from scratch against `vita2d`/`SceCommonDialog`
    rather than reusing `MDKR_APP`'s ImGui launcher, which is desktop-only.
