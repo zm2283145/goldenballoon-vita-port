@@ -30445,7 +30445,11 @@ bool Settings_draw(SDL_Window *window, bool compact) {
             // this question with a card; the healthy one answered it with an
             // unanchored line of prose between two labelled rows. This is the
             // vocabulary the page already uses for a short fact about state.
-            ui::Chip("Renderer: WebGPU", AppTheme::good());
+            // The exact sentence tests/test_product_claim_boundaries.py pins:
+            // this is a product CLAIM (WebGPU is the qualified path), not copy
+            // to trim for shape. The chip carries it verbatim.
+            ui::Chip("Graphics backend: WebGPU (recommended)",
+                     AppTheme::good());
             ui::Gap(ui::kGapS);
         } else if (!compact) {
             if (ui::CardBegin("##renderer-warning", AppTheme::accent(), 0.0f)) {
