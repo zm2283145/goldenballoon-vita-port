@@ -16,6 +16,27 @@ No changes yet.
 
 ### Added
 
+- **The launcher has been rebuilt around what you came to do.** It opens on a
+  home screen carrying the game's own artwork, and everything now lives in three
+  places instead of six: **Play**, **Content** and **Settings**, with About &
+  support tucked underneath. Playing online is inside Play, because it is a way
+  to play. The home tells you what pressing Play will actually do — the
+  presentation you chose, your frame rate, and how many content packs are about
+  to apply — before you press it.
+- **Content is a place now, and installing a pack is a button.** Packs and
+  custom characters share one screen that lists everything found in your mods
+  folder, installed or skipped with the reason. **Install pack…** takes a `.zip`
+  or a folder and copies it in for you, and **Open mods folder** opens the
+  folder itself — on macOS it lives inside a Library folder the Finder hides, so
+  finding it by hand was the hard part. A pack you installed but switched off is
+  named on the home screen, so it can no longer look like a pack that simply did
+  not work.
+- Choosing your game asks for one thing. The three ways to name a file — a drop
+  box, a browse button and a typed path — became one action, a line telling you
+  that you can drag the file anywhere in the window, and a place to paste a path
+  if you already have one.
+
+
 - **Adventure Party** (`Enhancements.AdventureParty` / `MDKR_ENH_ADVENTURE_PARTY`,
   off by default): two to four local players explore and race Adventure
   together. A separate native session policy owns the roster rather than
@@ -129,6 +150,16 @@ No changes yet.
   `tests/test_product_claim_boundaries.py`.
 
 ### Fixed
+
+- Scrolling the launcher went the wrong way for anyone using natural scrolling,
+  which is how macOS comes out of the box. The launcher now scrolls the way
+  every other application on your machine does.
+- The diagnostics report is reachable again, on the About & support screen,
+  where its Copy Log to Clipboard button sits beside what the build is running.
+- A file the launcher cannot use no longer prints its path twice, and messages
+  that used to be written and never shown — a dropped file with too long a path,
+  a cancelled ROM check, forgetting a remembered ROM — are visible where they
+  happen.
 
 - Native Linux, Windows, and macOS release builds now explicitly compile the
   Online Room beta that the release notes advertise. The release workflows had
