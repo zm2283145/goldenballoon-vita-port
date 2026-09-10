@@ -227,73 +227,78 @@ int resizePathInput(ImGuiInputTextCallbackData *data) {
     return 0;
 }
 
-void drawDropZone(bool haveRom) {
-    // The drop target is the whole window (SDL_DROPFILE is window-wide), so this
-    // is an invitation, not a hit-box. Mirrors the web shell's drop-zone
-    // language so the two front-ends read the same.
-    const ImVec4 accent = AppTheme::accent();
-    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(accent.x, accent.y, accent.z, 0.45f));
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.5f);
-    ImGui::BeginChild("##dropzone", ImVec2(0, ui::kDropZoneHeight()), true);
-    {
-        ImGui::PushFont(AppTheme::fonts().title);
-        ImGui::PushStyleColor(ImGuiCol_Text, accent);
-        ImGui::TextUnformatted(haveRom ? "Drop a different ROM here"
-                                       : "Drag your ROM file here");
-        ImGui::PopStyleColor();
-        ImGui::PopFont();
-        ui::TextSubtle(
-            "…or use the controls below. Accepts .z64, .v64, and .n64 files.");
-    }
-    ImGui::EndChild();
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor();
+// The drop invitation. SDL_DROPFILE is window-wide, so this was never a
+// hit-box -- it was an 86px bordered box saying so, which competed with the
+// action that actually does the job. One line says the same thing.
+void drawDropHint(bool haveRom) {
+    ui::TextSubtle(haveRom
+        ? "…or drag a different file anywhere in this window."
+        : "…or drag it anywhere in this window. Accepts .z64, .v64 and .n64.");
 }
 
 // The acquisition controls: native panel (where one exists), and a typed path.
-void drawAcquisition(LauncherState &s) {
+void drawAcquisition(LauncherState &s, bool haveRom) {
+    /*
+     * One primary action. Three ways to name the same file -- a drop box, a
+     * Browse button and a typed path -- all at the same visual weight is what
+     * made this screen read as a form. The picker is the action, the drop is a
+     * line under it, and the path field is behind a disclosure for the player
+     * who already has a path on the clipboard.
+     */
     if (filedialog::isAvailable()) {
-        const bool browsePressed = ImGui::Button("Browse…", ui::kBtnWide());
-        ui::SpeakFocusedItem("Browse", nullptr,
-                             "Opens your system file picker to choose a ROM.");
-        if (browsePressed) {
-            RomPanel_chooseRom(s);
-        }
-        ImGui::SameLine();
-        ui::TextSubtle("Opens your system's file picker.");
+        const ImVec2 size(ui::kControlWidth(1.1f), ui::kBtnPrimary().y);
+        const bool pressed = ui::BrandPrimaryButton(
+            haveRom ? "Choose a different file…" : "Choose your game file…",
+            size);
+        ui::SpeakFocusedItem(
+            haveRom ? "Choose a different file" : "Choose your game file",
+            nullptr, "Opens your system file picker to choose a ROM.");
+        if (pressed) RomPanel_chooseRom(s);
+        ui::Gap(ui::kGapS);
+        drawDropHint(haveRom);
+        ui::Gap(ui::kGapM);
+    } else {
+        drawDropHint(haveRom);
         ui::Gap(ui::kGapM);
     }
 
-    ui::TextSubtle(filedialog::isAvailable()
-                       ? "Or paste the full path to your ROM:"
-                       : "Drag the file onto this window, or paste its full path:");
-    if (g_pathInput.capacity() < 256u) g_pathInput.reserve(256u);
-    const float rowWidth = ImGui::GetContentRegionAvail().x;
-    const float pathWidth = ui::kControlWidth(1.6f);
-    const bool stackAction = rowWidth < pathWidth +
-        ImGui::GetStyle().ItemSpacing.x + ui::kBtnSecondary().x;
-    ImGui::SetNextItemWidth(pathWidth);
-    const bool entered = ImGui::InputTextWithHint(
-        "##rompath", "/path/to/your/game.z64", g_pathInput.data(),
-        g_pathInput.capacity() + 1u,
-        ImGuiInputTextFlags_EnterReturnsTrue |
-            ImGuiInputTextFlags_CallbackResize |
-            ImGuiInputTextFlags_CallbackCharFilter,
-        resizePathInput, &g_pathInput);
-    if (!stackAction) ImGui::SameLine();
-    const bool pressed = ImGui::Button("Use This Path", ui::kBtnSecondary());
-    if (entered || pressed) {
-        if (g_pathInput.empty()) {
-            g_note = "Type a path first, or use the file picker.";
-        } else {
-            g_note.clear();
-            RomPanel_setRom(s, g_pathInput.c_str());
+    // Closed by default: a player who needs it knows they need it, and a player
+    // who does not should never have to read past it to reach Play.
+    const bool openByDefault = !filedialog::isAvailable();
+    if (openByDefault) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+    if (ImGui::TreeNode("Paste a path instead")) {
+        ui::SpeakFocusedItem("Paste a path instead", nullptr,
+                             "Type or paste the full path to your game file.");
+        if (g_pathInput.capacity() < 256u) g_pathInput.reserve(256u);
+        const float rowWidth = ImGui::GetContentRegionAvail().x;
+        const float pathWidth = ui::kControlWidth(1.6f);
+        const bool stackAction = rowWidth < pathWidth +
+            ImGui::GetStyle().ItemSpacing.x + ui::kBtnSecondary().x;
+        ImGui::SetNextItemWidth(pathWidth);
+        const bool entered = ImGui::InputTextWithHint(
+            "##rompath", "/path/to/your/game.z64", g_pathInput.data(),
+            g_pathInput.capacity() + 1u,
+            ImGuiInputTextFlags_EnterReturnsTrue |
+                ImGuiInputTextFlags_CallbackResize |
+                ImGuiInputTextFlags_CallbackCharFilter,
+            resizePathInput, &g_pathInput);
+        if (!stackAction) ImGui::SameLine();
+        const bool pressed = ImGui::Button("Use this path", ui::kBtnSecondary());
+        ui::SpeakFocusedItem("Use this path", nullptr,
+                             "Loads the game file at the path you typed.");
+        if (entered || pressed) {
+            if (g_pathInput.empty()) {
+                g_note = "Type a path first, or use the file picker.";
+            } else {
+                g_note.clear();
+                RomPanel_setRom(s, g_pathInput.c_str());
+            }
         }
-    }
-
-    if (!g_note.empty()) {
-        ui::Gap(ui::kGapS);
-        ui::TextSubtle("%s", g_note.c_str());
+        if (!g_note.empty()) {
+            ui::Gap(ui::kGapS);
+            ui::TextSubtle("%s", g_note.c_str());
+        }
+        ImGui::TreePop();
     }
 }
 
@@ -929,9 +934,7 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
             ImGui::Separator();
             ui::Gap(ui::kGapM);
         }
-        drawDropZone(haveRom);
-        ui::Gap(ui::kGapM);
-        drawAcquisition(s);
+        drawAcquisition(s, haveRom);
     }
 
     bool keepPopupOpen = true;

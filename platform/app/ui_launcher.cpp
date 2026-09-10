@@ -350,7 +350,17 @@ void drawPrimaryLauncherAction(LauncherState &state, const ImVec2 &size,
         ImGui::SetKeyboardFocusHere();
     }
     if (busy) ImGui::BeginDisabled();
-    const bool pressed = ui::BrandPrimaryButton(label, size);
+    /*
+     * Gold means "this starts the game". Choosing a file is preparation, and
+     * while it wore the same gold as Play it competed with the Play home's own
+     * gold action for the identical job -- two primary actions on one screen,
+     * which is one more than a screen can have. Preparation states draw as a
+     * secondary button; Play, Play with Changes and the Workshop's own action
+     * keep the gold.
+     */
+    const bool startsTheGame = workshopActive || ready;
+    const bool pressed = startsTheGame ? ui::BrandPrimaryButton(label, size)
+                                       : ImGui::Button(label, size);
     if (busy) ImGui::EndDisabled();
     if (g_characterWorkshopReturnFocusRequested && workshopActive && !busy) {
         g_characterWorkshopReturnFocusRequested = false;
