@@ -3,6 +3,7 @@
 #include "structs.h"
 #include "asset_enums.h"
 #include "menu.h"
+#include "taj_mod.h"
 
 #ifdef __vita__
 
@@ -57,15 +58,16 @@ enum {
 
 static int sTrophyContext = -1;
 static int sTrophyHandle = -1;
-/* The completed set contains 95 trophies. Keep the local retry guard wide
+/* The completed set contains 98 trophies. Keep the local retry guard wide
  * enough for every ID; the Vita service remains the persistence authority. */
-static uint32_t sSubmitted[(95 + 31) / 32];
+static uint32_t sSubmitted[(98 + 31) / 32];
 static int sUnavailable;
 static int sLoggedSettings;
 static int sLoggedPump;
 static int sSetupComplete;
 static int sTrophyServiceReady;
 static unsigned char sAdventureBalloonCount[10];
+static unsigned char sBonusAdventureBalloonCount[MOD_RACER_IDENTITY_COUNT];
 
 /* Use the port's existing, file-gated boot log. An empty
  * ux0:data/goldenballoon/debug file enables these diagnostics, and all output
@@ -162,7 +164,7 @@ static void unlock(unsigned trophyId) {
     int result;
     unsigned word;
     uint32_t bit;
-    if (trophyId >= 95) return;
+    if (trophyId >= 98) return;
     word = trophyId / 32;
     bit = 1u << (trophyId % 32);
     if ((sSubmitted[word] & bit) != 0) return;
@@ -245,10 +247,27 @@ void mdkr_vita_trophy_max_powerup(int balloonType, int balloonLevel) {
     }
 }
 
-void mdkr_vita_trophy_golden_balloon_collected(int characterId) {
+void mdkr_vita_trophy_golden_balloon_collected(int characterId, int playerIndex) {
     static const unsigned char trophyForCharacter[10] = {
         80, 82, 85, 84, 87, 83, 88, 86, 89, 81
     };
+    static const unsigned char trophyForBonusCharacter[MOD_RACER_IDENTITY_COUNT] = {
+        0, 95, 96, 97
+    };
+    ModRacerIdentity identity = mod_racer_live_identity(playerIndex);
+
+    /* Bonus racers use retail donor character IDs while racing. Consult the
+     * live roster identity first so their balloon collection cannot unlock a
+     * donor-character trophy instead of the Taj, Wizpig, or Terry trophy. */
+    if (identity > MOD_RACER_RETAIL && identity < MOD_RACER_IDENTITY_COUNT) {
+        if (sBonusAdventureBalloonCount[identity] < 5) {
+            sBonusAdventureBalloonCount[identity]++;
+        }
+        if (sBonusAdventureBalloonCount[identity] >= 5 && trophy_ready()) {
+            unlock(trophyForBonusCharacter[identity]);
+        }
+        return;
+    }
     if ((unsigned)characterId >= 10) return;
     if (sAdventureBalloonCount[characterId] < 5) {
         sAdventureBalloonCount[characterId]++;
@@ -262,7 +281,10 @@ void mdkr_vita_trophy_set_adventure_active(int active) {
     /* These achievements require five balloons in one uninterrupted Adventure
      * session. Reset on the game's own Tracks-mode boundary, not on loading a
      * hub or a race within Adventure. */
-    if (!active) memset(sAdventureBalloonCount, 0, sizeof(sAdventureBalloonCount));
+    if (!active) {
+        memset(sAdventureBalloonCount, 0, sizeof(sAdventureBalloonCount));
+        memset(sBonusAdventureBalloonCount, 0, sizeof(sBonusAdventureBalloonCount));
+    }
 }
 
 void mdkr_vita_trophy_register(void) {
@@ -355,7 +377,10 @@ void mdkr_vita_trophy_max_powerup(int balloonType, int balloonLevel) {
     (void)balloonType;
     (void)balloonLevel;
 }
-void mdkr_vita_trophy_golden_balloon_collected(int characterId) { (void)characterId; }
+void mdkr_vita_trophy_golden_balloon_collected(int characterId, int playerIndex) {
+    (void)characterId;
+    (void)playerIndex;
+}
 void mdkr_vita_trophy_set_adventure_active(int active) { (void)active; }
 
 #endif

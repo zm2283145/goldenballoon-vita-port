@@ -1,3 +1,17 @@
+# Golden Balloon 1.6.2
+
+*Released 2026-09-10.*
+
+## PS Vita
+
+Adds three main-set trophies for the port's added racers: collect five
+Balloons in one Adventure session as Taj, Wizpig, or Terry. These additions
+are required for the platinum. The trophy-set version is now `01.03`, so Vita
+installations with the prior pack can import the new trophies.
+
+The VPK is versioned from the same `MDKR_VERSION` value as the compiled port;
+release 1.6.2 produces Vita metadata version `01.62`.
+
 # Golden Balloon 1.6.1
 
 *Released 2026-09-10.*
@@ -12,7 +26,7 @@ groups and are not required for the platinum.
 
 The VPK is versioned from the same `MDKR_VERSION` value as the compiled port;
 release 1.6.1 produces Vita metadata version `01.61`. Trophies require the
-[NoTrpDrm](https://github.com/TheOfficialFloW/NoTrpDrm) taiHEN plugin. Without
+[NoTrpDrm](https://github.com/Rinnegatamante/NoTrpDrm) taiHEN plugin. Without
 it, the game remains playable and safely skips trophy setup.
 
 The Remastered visual preset still crashes on startup on Vita. Use Restored.

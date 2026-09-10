@@ -28,9 +28,9 @@
 > for the day-to-day truth about what currently works, what doesn't, and what
 > is actively being debugged.
 >
-> **Status update (1.6.1):** the Restored visual preset is stable for normal
+> **Status update (1.6.2):** the Restored visual preset is stable for normal
 > play on tested real Vita hardware. The port boots, loads a ROM, renders 3D
-> races and menus, saves progress, and includes a 95-trophy pack. The optional
+> races and menus, saves progress, and includes a 98-trophy pack. The optional
 > Remastered visual preset remains unsupported; use Restored (the default).
 
 ## Quick start (PS Vita)
@@ -41,7 +41,7 @@
    (Sony's proprietary runtime shader compiler — VitaShell can fetch it for
    you from its own menus, or use [shacccg-installer](https://github.com/Electry/shacccg.suprx-installer)).
    This port will not run without it. To use trophies, also install and enable
-   [NoTrpDrm](https://github.com/TheOfficialFloW/NoTrpDrm), which permits the
+   [NoTrpDrm](https://github.com/Rinnegatamante/NoTrpDrm), which permits the
    unsigned homebrew trophy archive included with this VPK. Without NoTrpDrm,
    the game remains playable but trophies are safely unavailable.
 2. **Get the ROM.** You need a legally acquired dump of the original game —
@@ -60,7 +60,7 @@
 4. **Play.** A DualShock-style control layout is assumed; there is no
    in-game remapping UI on Vita yet.
 
-**This is the 1.6.1 Vita release.** The default Restored visual preset is
+**This is the 1.6.2 Vita release.** The default Restored visual preset is
 stable for normal play on tested hardware. **Do not enable the Remastered
 visual preset — it crashes on startup every time; this is a known,
 still-unresolved issue, not something you did wrong.** If something else
@@ -91,7 +91,7 @@ the shared game/engine code — is in the
 | macOS (Apple silicon) | Upstream, stable |
 | Linux (x86-64) | Upstream, best effort |
 | Browser (WebGPU) | Upstream, stable |
-| **PS Vita** | **This fork, 1.6.1 — stable for normal play on the Restored visual preset, with 95 homebrew trophies. The Remastered preset crashes on startup and should not be used. See [PORTING_STATUS.md](PORTING_STATUS.md) for the exact current state.** |
+| **PS Vita** | **This fork, 1.6.2 — stable for normal play on the Restored visual preset, with 98 homebrew trophies. The Remastered preset crashes on startup and should not be used. See [PORTING_STATUS.md](PORTING_STATUS.md) for the exact current state.** |
 
 ## PS Vita: known limitations
 
@@ -121,12 +121,12 @@ and fixed so far, with root causes).
 
 ## PS Vita trophies
 
-The VPK includes 95 trophies. The main set includes a custom platinum and
-the core Adventure goals. Adventure 2 and all T.T./developer time-trial
-challenges are separate optional groups, so they do not count toward the
-platinum.
+The VPK includes 98 trophies. The main set includes a custom platinum, core
+Adventure goals, and five-balloon challenges for every racer, including Taj,
+Wizpig, and Terry. Adventure 2 and all T.T./developer time-trial challenges
+are separate optional groups, so they do not count toward the platinum.
 
-Trophies require [NoTrpDrm](https://github.com/TheOfficialFloW/NoTrpDrm) to
+Trophies require [NoTrpDrm](https://github.com/Rinnegatamante/NoTrpDrm) to
 be installed and enabled in taiHEN. The port registers the pack during
 startup; when the plugin is absent or the trophy service is unavailable, it
 keeps playing normally and skips trophy operations. See the reusable setup

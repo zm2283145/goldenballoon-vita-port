@@ -3840,7 +3840,7 @@ void obj_loop_goldenballoon(Object *obj, s32 updateRate) {
                         if (settings->worldId != WORLD_CENTRAL_AREA) {
                             settings->balloonsPtr[0]++;
                         }
-                        mdkr_vita_trophy_golden_balloon_collected(racer->characterId);
+                        mdkr_vita_trophy_golden_balloon_collected(racer->characterId, racer->playerIndex);
                         settings->courseFlagsPtr[settings->courseId] |= flag;
                         if (1) {} // Fakematch
                         sound_play_spatial(SOUND_COLLECT_BALLOON, obj->trans.x_position, obj->trans.y_position,

@@ -65,6 +65,11 @@ MAIN_TROPHIES += [(80 + i, "B", 0, None, name, "Collect any 5 Balloons with this
                   for i, name in enumerate(CHARACTERS)]
 MAIN_TROPHIES += [(90 + i, "B", 0, None, f"Max Power-up {name}", f"Obtain the highest leveled {name} power-up.")
                   for i, name in enumerate(("Rocket", "Boost", "Mine", "Shield", "Magnet"))]
+MAIN_TROPHIES += [
+    (95, "B", 0, None, "Taj the Genie", "Collect any 5 Balloons with Taj in one Adventure session."),
+    (96, "B", 0, None, "Wizpig the Space Pig", "Collect any 5 Balloons with Wizpig in one Adventure session."),
+    (97, "B", 0, None, "Terry the Tiger", "Collect any 5 Balloons with Terry in one Adventure session."),
+]
 TROPHIES = MAIN_TROPHIES + ADVENTURE_TWO + TIME_TRIALS
 
 
@@ -169,7 +174,7 @@ def xml(configuration_only: bool = False) -> bytes:
         f'<!--Sce-Np-Trophy-Signature: {signature}-->',
         '<trophyconf version="1.1" platform="psp2" policy="large">',
         f' <npcommid>{COMM_ID}</npcommid>',
-        ' <trophyset-version>01.02</trophyset-version>',
+        ' <trophyset-version>01.03</trophyset-version>',
         ' <parental-level license-area="default">0</parental-level>',
     ]
     if not configuration_only:

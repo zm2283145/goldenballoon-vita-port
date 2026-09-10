@@ -8,10 +8,10 @@ same libultraship/vitaGL pattern as
 (a Banjo-Kazooie Vita port used as the concrete reference for library
 choices, link flags, and the VPK packaging recipe).
 
-**Status: 1.6.1 — stable for normal play on tested real hardware.** It
+**Status: 1.6.2 — stable for normal play on tested real hardware.** It
 boots, loads a ROM, saves progress, and plays through races on the default
 (Restored) visual preset, with audio, input, textured rendering, correctly
-rendered 3D race/menu scenes, and a 95-trophy pack. This moved past "builds
+rendered 3D race/menu scenes, and a 98-trophy pack. This moved past "builds
 and links clean" through hands-on, on-device bring-up: real crashes and
 rendering bugs, pulled via a boot-time file logger, coredumps, and targeted
 diagnostic logging, root-caused one at a time. **The Remastered visual preset
@@ -211,7 +211,7 @@ launch.
 This port is a working reference for unsigned homebrew trophies on a Vita.
 The console's trophy service expects a title-specific archive and normally
 verifies Sony's signature; homebrew cannot produce that signature. Install
-and enable [NoTrpDrm](https://github.com/TheOfficialFloW/NoTrpDrm) in
+and enable [NoTrpDrm](https://github.com/Rinnegatamante/NoTrpDrm) in
 taiHEN on the target Vita to permit the archive. Treat that plugin as an
 optional runtime dependency: initialize trophies defensively and keep the
 game fully playable if the module, plugin, archive, or service is absent.
@@ -257,7 +257,7 @@ game fully playable if the module, plugin, archive, or service is absent.
    in-session retry guard to avoid submitting the same ID every frame.
 7. **Ship changes safely.** Once a set has been installed, a new group,
    trophy, title, or image requires raising `<trophyset-version>` (this port
-   currently uses `01.02`) so the Vita imports the update. Test from a clean
+   currently uses `01.03`) so the Vita imports the update. Test from a clean
    install or remove the title's local trophy entry between compatibility
    tests. Never renumber shipped trophies: add new IDs instead.
 

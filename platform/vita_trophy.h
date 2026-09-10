@@ -20,7 +20,7 @@ void mdkr_vita_trophy_tt_ghost_beaten(int levelId);
 void mdkr_vita_trophy_developer_time(int levelId, int courseTime);
 void mdkr_vita_trophy_banana_collected(int bananaCount);
 void mdkr_vita_trophy_max_powerup(int balloonType, int balloonLevel);
-void mdkr_vita_trophy_golden_balloon_collected(int characterId);
+void mdkr_vita_trophy_golden_balloon_collected(int characterId, int playerIndex);
 void mdkr_vita_trophy_set_adventure_active(int active);
 
 #endif
