@@ -5,7 +5,9 @@
 #ifdef __vita__
 
 #include <psp2/appmgr.h>
+#include <psp2/common_dialog.h>
 #include <psp2/sysmodule.h>
+#include <vitaGL.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -17,8 +19,21 @@ extern int sceNpTrophyInit(void *options);
 extern int sceNpTrophyCreateContext(int *context, const void *commId,
                                     const void *commSignature, uint64_t options);
 extern int sceNpTrophyCreateHandle(int *handle);
+extern int sceNpTrophySetupDialogInit(void *param);
+extern SceCommonDialogStatus sceNpTrophySetupDialogGetStatus(void);
+extern int sceNpTrophySetupDialogTerm(void);
 extern int sceNpTrophyUnlockTrophy(int context, int handle, int trophyId,
                                    int *platinumId);
+
+/* VitaSDK does not currently expose SceNpTrophy's dialog definitions. This
+ * layout is the one used by established vitaGL homebrew trophy integrations. */
+typedef struct SceNpTrophySetupDialogParam {
+    int sdkVersion;
+    SceCommonDialogParam commonParam;
+    int context;
+    int options;
+    uint8_t reserved[128];
+} SceNpTrophySetupDialogParam;
 
 enum {
     TROPHY_PLATINUM = 0,
@@ -45,6 +60,7 @@ static uint32_t sSubmitted;
 static int sUnavailable;
 static int sLoggedSettings;
 static int sLoggedPump;
+static int sSetupComplete;
 
 /* Use the port's existing, file-gated boot log. An empty
  * ux0:data/goldenballoon/debug file enables these diagnostics, and all output
@@ -97,6 +113,30 @@ static int trophy_ready(void) {
     result = sceNpTrophyCreateContext(&sTrophyContext, communicationId, signature, 0);
     trophy_log("create context=0x%08X context=%d", result, sTrophyContext);
     if (result < 0) goto unavailable;
+    if (!sSetupComplete) {
+        SceNpTrophySetupDialogParam setupParam;
+        SceCommonDialogStatus setupStatus;
+        memset(&setupParam, 0, sizeof(setupParam));
+        _sceCommonDialogSetMagicNumber(&setupParam.commonParam);
+        setupParam.sdkVersion = PSP2_SDK_VERSION;
+        setupParam.context = sTrophyContext;
+        result = sceNpTrophySetupDialogInit(&setupParam);
+        trophy_log("setup dialog init=0x%08X", result);
+        if (result < 0) goto unavailable;
+        do {
+            setupStatus = sceNpTrophySetupDialogGetStatus();
+            if (setupStatus == SCE_COMMON_DIALOG_STATUS_RUNNING) {
+                vglSwapBuffers(GL_TRUE);
+            }
+        } while (setupStatus == SCE_COMMON_DIALOG_STATUS_RUNNING);
+        trophy_log("setup dialog status=%d", (int) setupStatus);
+        result = sceNpTrophySetupDialogTerm();
+        trophy_log("setup dialog term=0x%08X", result);
+        if (result < 0 || setupStatus != SCE_COMMON_DIALOG_STATUS_FINISHED) {
+            goto unavailable;
+        }
+        sSetupComplete = 1;
+    }
     result = sceNpTrophyCreateHandle(&sTrophyHandle);
     trophy_log("create handle=0x%08X handle=%d", result, sTrophyHandle);
     if (result < 0) {
