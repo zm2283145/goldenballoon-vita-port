@@ -28,7 +28,7 @@
 > for the day-to-day truth about what currently works, what doesn't, and what
 > is actively being debugged.
 >
-> **Status update (1.6.9):** the Restored visual preset is stable and a complete
+> **Status update (1.7.0):** the Restored visual preset is stable and a complete
 > Adventure playthrough has been confirmed on real Vita hardware. The port
 > boots, loads a ROM, renders 3D races and menus, saves progress, and includes
 > a 98-trophy pack. The optional
@@ -77,7 +77,7 @@
    Controls** to view or remap every digital action, assign up to two inputs
    per action, clear individual bindings, or restore the defaults.
 
-**This is the 1.6.9 Vita release.** The default Restored visual preset has
+**This is the 1.7.0 Vita release.** The default Restored visual preset has
 completed a full Adventure playthrough on tested hardware. **Do not enable the Remastered
 visual preset — it crashes on startup every time; this is a known,
 still-unresolved issue, not something you did wrong.** If something else
@@ -108,7 +108,7 @@ the shared game/engine code — is in the
 | macOS (Apple silicon) | Upstream, stable |
 | Linux (x86-64) | Upstream, best effort |
 | Browser (WebGPU) | Upstream, stable |
-| **PS Vita** | **This fork, 1.6.9 — complete Adventure playthrough confirmed on the Restored visual preset, with 98 homebrew trophies, persistent control remapping, and a built-in Save Editor. The Remastered preset crashes on startup and should not be used. See [PORTING_STATUS.md](PORTING_STATUS.md) for the exact current state.** |
+| **PS Vita** | **This fork, 1.7.0 — complete Adventure playthrough confirmed on the Restored visual preset, with persistent shader caching, non-blocking trophy unlocks, 98 homebrew trophies, persistent control remapping, and a built-in Save Editor. The Remastered preset crashes on startup and should not be used. See [PORTING_STATUS.md](PORTING_STATUS.md) for the exact current state.** |
 
 ## PS Vita: known limitations
 
@@ -153,6 +153,11 @@ startup; when the plugin is absent or the trophy service is unavailable, it
 keeps playing normally and skips trophy operations. See the reusable setup
 guide in [PORTING_STATUS.md](PORTING_STATUS.md#adding-trophies-to-a-ps-vita-project).
 
+Trophy unlock requests run on a dedicated Vita worker thread, so waiting for
+the system notification and trophy database no longer freezes gameplay.
+Trophies already present in the Vita database are not submitted again when a
+completed save is loaded.
+
 ## PS Vita Save Editor
 
 Enter the Magic Codes screen and enter **`GOLDENEDIT`** once to unlock the
@@ -173,6 +178,18 @@ action and the editor waits five seconds for up to two distinct inputs, then
 saves the last two. Each binding can be cleared separately, and **Reset to
 Default Controls** atomically restores the shipped layout. The screen supports
 D-pad navigation and blocks its input from reaching the menu or game behind it.
+
+## PS Vita shader cache and performance
+
+The Vita renderer stores validated compiled shader binaries in
+`ux0:data/goldenballoon/shader_cache`. The first run still has to compile each
+shader as it is encountered and creates the cache, so an occasional first-run
+hitch is possible. Later runs load those binaries directly and avoid the
+repeated runtime compilation that previously caused visible pauses, including
+at the opening animated scene. Cache filenames include a hash of the generated
+shader source; after a renderer update, incompatible entries are ignored and
+replaced automatically. The directory may be deleted safely if troubleshooting
+is needed—the game will rebuild it during subsequent play.
 
 ## Custom content
 

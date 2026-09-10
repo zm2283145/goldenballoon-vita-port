@@ -1,3 +1,26 @@
+# Golden Balloon 1.7.0
+
+*Released 2026-09-10.*
+
+## PS Vita
+
+Adds a persistent compiled-shader cache at
+`ux0:data/goldenballoon/shader_cache`. The first run populates the cache as
+shaders are encountered; later runs load validated VitaGL program binaries and
+avoid the repeated runtime compilation that caused visible stutter, including
+the pause at the first animated scene. Cache entries are keyed by the final
+generated shader source and automatically regenerate after incompatible
+renderer changes. The cache can be deleted safely for troubleshooting.
+
+Moves trophy unlock service calls to a dedicated Vita worker thread. Trophy
+database writes and notifications no longer freeze the game thread, multiple
+new unlocks can queue without blocking frames, and trophies already present in
+the Vita database are no longer resubmitted after loading a completed save.
+Both improvements were confirmed on real Vita hardware.
+
+The compiled version and Vita package metadata are derived from the same
+`MDKR_VERSION`; this build reports `1.7.0` and Vita `APP_VER` `01.70`.
+
 # Golden Balloon 1.6.9
 
 *Released 2026-09-10.*

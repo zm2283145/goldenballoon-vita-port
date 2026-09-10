@@ -8,11 +8,12 @@ same libultraship/vitaGL pattern as
 (a Banjo-Kazooie Vita port used as the concrete reference for library
 choices, link flags, and the VPK packaging recipe).
 
-**Status: 1.6.9 — complete Adventure playthrough confirmed on real hardware.** It
+**Status: 1.7.0 — complete Adventure playthrough confirmed on real hardware.** It
 boots, loads a ROM, saves progress, and plays through the full game on the default
 (Restored) visual preset, with audio, input, textured rendering, correctly
 rendered 3D race/menu scenes, a 98-trophy pack, and a magic-code-gated Save
-Editor plus persistent Vita control remapping. This moved past "builds
+Editor, persistent Vita control remapping, a validated on-disk shader cache,
+and asynchronous trophy unlocking. This moved past "builds
 and links clean" through hands-on, on-device bring-up: real crashes and
 rendering bugs, pulled via a boot-time file logger, coredumps, and targeted
 diagnostic logging, root-caused one at a time. **The Remastered visual preset
@@ -241,7 +242,7 @@ game fully playable if the module, plugin, archive, or service is absent.
    `build-vita/TROPHY.TRP` and adds it at
    `sce_sys/trophy/GBLN00001_00/TROPHY.TRP`. Keep `param.sfo` current on
    every build. This script derives Vita's `APP_VER` from `MDKR_VERSION` in
-   `CMakeLists.txt` (semantic `1.6.9` becomes Vita `01.69`), keeping the
+   `CMakeLists.txt` (semantic `1.7.0` becomes Vita `01.70`), keeping the
    compiled version, VPK metadata, and release version aligned.
 5. **Register at a safe early point.** Load `SCE_SYSMODULE_NP_TROPHY`, call
    `sceNpTrophyInit`, create the context, run the setup dialog to completion,
@@ -255,6 +256,14 @@ game fully playable if the module, plugin, archive, or service is absent.
    for achievements that may already be satisfied. Always let
    `sceNpTrophyUnlockTrophy` remain the persistence authority; keep only an
    in-session retry guard to avoid submitting the same ID every frame.
+   The Vita service call itself may take seconds while updating the system
+   database and presenting a notification. Queue it to a dedicated worker
+   thread rather than invoking it from the render/game thread. This port uses
+   a 98-entry single-producer queue and creates the service handle on the
+   worker, following the proven Ghostship design while allowing multiple
+   newly-satisfied trophies to queue without blocking each other. Seed the
+   local unlocked bitset from `sceNpTrophyGetTrophyUnlockState` and skip those
+   IDs so loading a completed save does not resubmit them.
 7. **Ship changes safely.** Once a set has been installed, a new group,
    trophy, title, or image requires raising `<trophyset-version>` (this port
    currently uses `01.04`) so the Vita imports the update. Test from a clean
@@ -296,6 +305,28 @@ cleared separately and the complete shipped mapping can be restored in one
 step. Bindings persist in the normal settings file. D-pad navigation is
 supported, and input consumed by this overlay is blocked from simultaneously
 operating the original menu behind it.
+
+## Shader cache and frame pacing (Vita)
+
+Fast3D creates combiner shaders lazily when a scene first needs them. Before
+1.7.0 those programs lived only in RAM, so vitaShaRK compiled and linked the
+same shaders on every launch. The work runs on the graphics thread and caused
+visible hitches, most notably when the first animated scene began.
+
+The Vita backend now saves each successfully linked program binary under
+`ux0:data/goldenballoon/shader_cache`. Its cache key includes both Fast3D
+shader IDs and a 64-bit hash of the final rewritten vertex and fragment source.
+Each file also carries a magic value, cache-format version, binary format, and
+bounded binary length. On later launches, valid binaries are loaded with
+`glProgramBinary`; corrupt, incompatible, or source-mismatched entries are
+discarded and compiled normally. Files are written through a temporary path so
+an interrupted write cannot replace a valid entry.
+
+The first run remains the cache-building pass and can hitch when a genuinely
+new shader appears. Later runs reuse everything encountered previously. This
+behavior and the removal of trophy-notification stalls were both confirmed on
+real Vita hardware before the 1.7.0 release. Deleting the cache directory is
+safe and simply causes it to be rebuilt.
 
 ## What's disabled or stubbed on Vita, and why
 
