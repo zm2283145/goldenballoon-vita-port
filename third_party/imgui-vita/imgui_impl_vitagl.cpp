@@ -91,11 +91,9 @@ void ImGui_ImplVitaGL_RenderDrawData(ImDrawData* draw_data)
 	glEnableClientState(GL_COLOR_ARRAY);
 	glEnable(GL_TEXTURE_2D);
 	glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-	/* Golden Balloon leaves one of its Fast3D shader-pair programs bound at the
-	 * end of the game pass. The fixed-pipeline ImGui backend must explicitly
-	 * detach it; otherwise the Fast3D attributes treat ImGui vertices as game
-	 * geometry/textures and corrupt the whole frame. */
-	glUseProgram(0);
+	/* The host selects a dedicated ImGui shader before calling this renderer.
+	 * Leave that program bound: in shader mode the legacy VitaGL draw helpers
+	 * feed attributes 0/1/2 to the host program. */
 
 	// Setup viewport, orthographic projection matrix
 	glViewport(0, 0, (GLsizei)fb_width, (GLsizei)fb_height);
@@ -171,9 +169,9 @@ void ImGui_ImplVitaGL_RenderDrawData(ImDrawData* draw_data)
 				}
 
 				if (shaders_usage){
-					vglVertexAttribPointerMapped(0, vp);
-					vglVertexAttribPointerMapped(1, tp);
-					vglVertexAttribPointerMapped(2, cp);
+					vglVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, pcmd->ElemCount, vp);
+					vglVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, pcmd->ElemCount, tp);
+					vglVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, 0, pcmd->ElemCount, cp);
 				}else{
 					vglVertexPointerMapped(3, vp);
 					vglTexCoordPointerMapped(tp);

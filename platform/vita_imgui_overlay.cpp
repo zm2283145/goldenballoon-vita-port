@@ -4,6 +4,7 @@
 
 #if defined(__vita__) && defined(MDKR_VITA_IMGUI_OVERLAY)
 #include <cstdio>
+#include <vitaGL.h>
 #include "imgui.h"
 #include "imgui_impl_vitagl.h"
 
@@ -15,6 +16,69 @@ int s_world = 0;
 int s_time_trial = 0;
 bool s_erase_armed = false;
 bool s_hundred_percent_armed = false;
+GLuint s_program = 0;
+GLint s_texture_uniform = -1;
+
+const char *k_vertex_shader =
+    "#version 100\n"
+    "precision mediump float;\n"
+    "attribute vec3 aPosition;\n"
+    "attribute vec2 aTexCoord;\n"
+    "attribute vec4 aColor;\n"
+    "varying vec2 vTexCoord;\n"
+    "varying vec4 vColor;\n"
+    "void main() {\n"
+    "  gl_Position = vec4(aPosition.x / 480.0 - 1.0, 1.0 - aPosition.y / 272.0, 0.0, 1.0);\n"
+    "  vTexCoord = aTexCoord;\n"
+    "  vColor = aColor;\n"
+    "}\n";
+
+const char *k_fragment_shader =
+    "#version 100\n"
+    "precision mediump float;\n"
+    "varying vec2 vTexCoord;\n"
+    "varying vec4 vColor;\n"
+    "uniform sampler2D uTexture;\n"
+    "void main() { gl_FragColor = vColor * texture2D(uTexture, vTexCoord); }\n";
+
+GLuint compile_shader(GLenum type, const char *source) {
+    GLuint shader = glCreateShader(type);
+    glShaderSource(shader, 1, &source, nullptr);
+    glCompileShader(shader);
+    GLint compiled = GL_FALSE;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
+    if (compiled == GL_TRUE) return shader;
+    glDeleteShader(shader);
+    return 0;
+}
+
+bool create_renderer_program() {
+    const GLuint vertex = compile_shader(GL_VERTEX_SHADER, k_vertex_shader);
+    const GLuint fragment = compile_shader(GL_FRAGMENT_SHADER, k_fragment_shader);
+    if (!vertex || !fragment) {
+        if (vertex) glDeleteShader(vertex);
+        if (fragment) glDeleteShader(fragment);
+        return false;
+    }
+    s_program = glCreateProgram();
+    glAttachShader(s_program, vertex);
+    glAttachShader(s_program, fragment);
+    glBindAttribLocation(s_program, 0, "aPosition");
+    glBindAttribLocation(s_program, 1, "aTexCoord");
+    glBindAttribLocation(s_program, 2, "aColor");
+    glLinkProgram(s_program);
+    glDeleteShader(vertex);
+    glDeleteShader(fragment);
+    GLint linked = GL_FALSE;
+    glGetProgramiv(s_program, GL_LINK_STATUS, &linked);
+    if (linked != GL_TRUE) {
+        glDeleteProgram(s_program);
+        s_program = 0;
+        return false;
+    }
+    s_texture_uniform = glGetUniformLocation(s_program, "uTexture");
+    return true;
+}
 
 bool initialize() {
     if (s_initialized) return true;
@@ -26,6 +90,15 @@ bool initialize() {
     }
     ImGui_ImplVitaGL_GamepadUsage(true);
     ImGui_ImplVitaGL_TouchUsage(true);
+    /* The bundled Vita backend supplies Vita-native input and vertex storage,
+     * but its default renderer is fixed pipeline. Golden Balloon is shader
+     * based, so render those vertices with our own tiny GLES 2 program. */
+    ImGui_ImplVitaGL_UseCustomShader(true);
+    if (!create_renderer_program()) {
+        ImGui_ImplVitaGL_Shutdown();
+        ImGui::DestroyContext();
+        return false;
+    }
     s_initialized = true;
     return true;
 }
@@ -170,7 +243,12 @@ extern "C" int mdkr_vita_imgui_overlay_render(void) {
     ImGui::TextUnformatted(mdkr_vita_save_editor_has_unsaved_changes() ? "UNSAVED CHANGES" : "SAVED");
     ImGui::End();
     ImGui::Render();
+    GLint game_program = 0;
+    glGetIntegerv(GL_CURRENT_PROGRAM, &game_program);
+    glUseProgram(s_program);
+    glUniform1i(s_texture_uniform, 0);
     ImGui_ImplVitaGL_RenderDrawData(ImGui::GetDrawData());
+    glUseProgram((GLuint)game_program);
     return 1;
 }
 
