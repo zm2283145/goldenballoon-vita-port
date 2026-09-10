@@ -5385,7 +5385,9 @@ static void save_editor_erase_slot(void);
 static void save_editor_complete_first_boss(s32 world);
 static void save_editor_complete_second_boss(s32 world);
 static void save_editor_complete_trophy_world(s32 world);
+static void save_editor_complete_wizpig_one(void);
 static void save_editor_complete_wizpig_two(void);
+static u16 save_editor_trophy_rank(s32 world);
 void mdkr_vita_save_editor_open_classic(void) {
     mdkr_vita_imgui_overlay_close();
     optionscreen_free();
@@ -5568,6 +5570,233 @@ void mdkr_vita_save_editor_complete_wizpig_two(void) {
     save_editor_complete_wizpig_two();
     sSaveEditorDirty = TRUE;
     sSaveEditorStatus = "100 PERCENT PROGRESS COMPLETED";
+}
+
+int mdkr_vita_save_editor_amulet_pieces(int amulet) {
+    return amulet == 0 ? sSaveEditorTtAmulet[sSaveEditorSlot]
+                       : sSaveEditorWizpigAmulet[sSaveEditorSlot];
+}
+
+void mdkr_vita_save_editor_set_amulet_pieces(int amulet, int pieces) {
+    if (pieces < 0) pieces = 0;
+    if (pieces > 4) pieces = 4;
+    if (amulet == 0) {
+        sSaveEditorTtAmulet[sSaveEditorSlot] = (u8)pieces;
+        sSaveEditorStatus = "T.T. AMULET UPDATED";
+    } else {
+        sSaveEditorWizpigAmulet[sSaveEditorSlot] = (u8)pieces;
+        sSaveEditorStatus = "WIZPIG AMULET UPDATED";
+    }
+    sSaveEditorDirty = TRUE;
+    sSaveEditorApplyArmed = FALSE;
+}
+
+int mdkr_vita_save_editor_key_collected(int key) {
+    if (key < 0 || key >= 4) return FALSE;
+    return (sSaveEditorKeys[sSaveEditorSlot] & (1u << (key + 1))) != 0;
+}
+
+void mdkr_vita_save_editor_set_key_collected(int key, int collected) {
+    u8 bit;
+    if (key < 0 || key >= 4) return;
+    bit = (u8)(1u << (key + 1));
+    if (collected) sSaveEditorKeys[sSaveEditorSlot] |= bit;
+    else sSaveEditorKeys[sSaveEditorSlot] &= (u8)~bit;
+    sSaveEditorDirty = TRUE;
+    sSaveEditorApplyArmed = FALSE;
+    sSaveEditorStatus = "WORLD KEY UPDATED";
+}
+
+const char *mdkr_vita_save_editor_arena_name(int arena) {
+    if (arena < 0 || arena >= ARRAY_COUNT(sSaveEditorArenaNames)) return "";
+    return sSaveEditorArenaNames[arena];
+}
+
+int mdkr_vita_save_editor_arena_complete(int arena) {
+    if (arena < 0 || arena >= ARRAY_COUNT(sSaveEditorArenaNames)) return FALSE;
+    return (sSaveEditorArenaFlags[sSaveEditorSlot][arena] & RACE_CLEARED) != 0;
+}
+
+void mdkr_vita_save_editor_set_arena_complete(int arena, int complete) {
+    s32 *flags;
+    if (arena < 0 || arena >= ARRAY_COUNT(sSaveEditorArenaNames)) return;
+    flags = &sSaveEditorArenaFlags[sSaveEditorSlot][arena];
+    if (complete) *flags |= RACE_VISITED | RACE_CLEARED;
+    else *flags &= ~RACE_CLEARED;
+    sSaveEditorDirty = TRUE;
+    sSaveEditorApplyArmed = FALSE;
+    sSaveEditorStatus = complete ? "ARENA MARKED COMPLETE"
+                                 : "ARENA MARKED NOT DONE";
+}
+
+const char *mdkr_vita_save_editor_main_trophy_name(int trophy) {
+    static const char *const names[] = {
+        "Golden Balloon", "First Balloon", "Wizpig Amulet", "Dino Key",
+        "Sherbet Key", "Snowflake Key", "Dragon Key", "39 Balloons",
+        "47 Balloons", "Dino Cup", "Sherbet Cup", "Snowflake Cup",
+        "Dragon Cup", "Future Cup", "Wizpig One", "Wizpig Two",
+        "Ten Bananas", "Battle Arenas"
+    };
+    return trophy >= 0 && trophy < ARRAY_COUNT(names) ? names[trophy] : "";
+}
+
+int mdkr_vita_save_editor_main_condition_met(int trophy) {
+    s32 arena;
+    if (trophy < 0 || trophy >= 18) return FALSE;
+    if (trophy == 0) return mdkr_vita_trophy_is_unlocked(0);
+    if (trophy == 1) return sSaveEditorBalloons[sSaveEditorSlot][0] >= 1;
+    if (trophy == 2) return sSaveEditorWizpigAmulet[sSaveEditorSlot] >= 4;
+    if (trophy >= 3 && trophy <= 6) {
+        return mdkr_vita_save_editor_key_collected(trophy - 3);
+    }
+    if (trophy == 7) return sSaveEditorBalloons[sSaveEditorSlot][0] >= 39;
+    if (trophy == 8) return sSaveEditorBalloons[sSaveEditorSlot][0] >= 47;
+    if (trophy >= 9 && trophy <= 13) {
+        return save_editor_trophy_rank(trophy - 9) == 3;
+    }
+    if (trophy == 14) return (sSaveEditorBosses[sSaveEditorSlot] & 0x001) != 0;
+    if (trophy == 15) return (sSaveEditorBosses[sSaveEditorSlot] & 0x020) != 0;
+    if (trophy == 16) return sSaveEditorBananaCondition != FALSE;
+    for (arena = 0; arena < ARRAY_COUNT(sSaveEditorArenaNames); arena++) {
+        if (!mdkr_vita_save_editor_arena_complete(arena)) return FALSE;
+    }
+    return TRUE;
+}
+
+void mdkr_vita_save_editor_meet_main_condition(int trophy) {
+    s32 world;
+    s32 balloon;
+    if (trophy <= 0 || trophy >= 18) {
+        sSaveEditorStatus = "PLATINUM FOLLOWS THE MAIN TROPHIES";
+        return;
+    }
+    if (trophy == 1) {
+        save_editor_set_hub_balloon_collected(sSaveEditorSlot, 0, TRUE);
+    } else if (trophy == 2) {
+        sSaveEditorWizpigAmulet[sSaveEditorSlot] = 4;
+    } else if (trophy >= 3 && trophy <= 6) {
+        sSaveEditorKeys[sSaveEditorSlot] |= (u8)(1u << (trophy - 2));
+    } else if (trophy == 7) {
+        for (world = 0; world < 4; world++) save_editor_complete_trophy_world(world);
+        for (balloon = 0; balloon < ARRAY_COUNT(sSaveEditorHubBalloonIds); balloon++) {
+            save_editor_set_hub_balloon_collected(sSaveEditorSlot, balloon, TRUE);
+        }
+        sSaveEditorTajFlags[sSaveEditorSlot] |=
+            TAJ_FLAGS_CAR_CHAL_UNLOCKED | TAJ_FLAGS_HOVER_CHAL_UNLOCKED |
+            TAJ_FLAGS_PLANE_CHAL_UNLOCKED | TAJ_FLAGS_CAR_CHAL_COMPLETED |
+            TAJ_FLAGS_HOVER_CHAL_COMPLETED | TAJ_FLAGS_PLANE_CHAL_COMPLETED;
+    } else if (trophy == 8 || trophy == 15) {
+        save_editor_complete_wizpig_two();
+    } else if (trophy >= 9 && trophy <= 13) {
+        save_editor_complete_trophy_world(trophy - 9);
+    } else if (trophy == 14) {
+        save_editor_complete_wizpig_one();
+    } else if (trophy == 16) {
+        sSaveEditorBananaCondition = TRUE;
+        mdkr_vita_trophy_banana_collected(10);
+        sSaveEditorStatus = "TEN-BANANA CONDITION MET";
+        return;
+    } else {
+        for (world = 0; world < ARRAY_COUNT(sSaveEditorArenaNames); world++) {
+            mdkr_vita_save_editor_set_arena_complete(world, TRUE);
+        }
+    }
+    save_editor_recompute_total_balloons();
+    sSaveEditorDirty = TRUE;
+    sSaveEditorApplyArmed = FALSE;
+    sSaveEditorStatus = "MAIN TROPHY CONDITION MET";
+}
+
+const char *mdkr_vita_save_editor_adventure_two_trophy_name(int trophy) {
+    u8 *trackIds = (u8 *)get_misc_asset(ASSET_MISC_MAIN_TRACKS_IDS);
+    if (trophy < 0 || trophy >= 22) return "";
+    if (trophy < 20) return level_name(trackIds[trophy]);
+    return trophy == 20 ? "47 Balloons" : "Wizpig Two";
+}
+
+int mdkr_vita_save_editor_adventure_two_condition_met(int trophy) {
+    s32 world;
+    s32 track;
+    u8 *trackIds = (u8 *)get_misc_asset(ASSET_MISC_MAIN_TRACKS_IDS);
+    if (trophy < 0 || trophy >= 22) return FALSE;
+    if (trophy == 20) return sSaveEditorBalloons[sSaveEditorSlot][0] >= 47;
+    if (trophy == 21) return (sSaveEditorBosses[sSaveEditorSlot] & 0x020) != 0;
+    for (world = 0; world < SAVE_EDITOR_ADVENTURE_WORLD_COUNT; world++) {
+        for (track = 0; track < SAVE_EDITOR_TRACKS_PER_WORLD; track++) {
+            if (sSaveEditorTrackIds[world][track] == trackIds[trophy]) {
+                return save_editor_track_progress(
+                    sSaveEditorTrackFlags[sSaveEditorSlot][world][track]) >= 2;
+            }
+        }
+    }
+    return FALSE;
+}
+
+void mdkr_vita_save_editor_meet_adventure_two_condition(int trophy) {
+    s32 world;
+    s32 track;
+    u8 *trackIds = (u8 *)get_misc_asset(ASSET_MISC_MAIN_TRACKS_IDS);
+    if (trophy < 0 || trophy >= 22) return;
+    if (trophy >= 20) {
+        save_editor_complete_wizpig_two();
+    } else {
+        for (world = 0; world < SAVE_EDITOR_ADVENTURE_WORLD_COUNT; world++) {
+            for (track = 0; track < SAVE_EDITOR_TRACKS_PER_WORLD; track++) {
+                if (sSaveEditorTrackIds[world][track] == trackIds[trophy]) {
+                    save_editor_set_track_progress(world, track, 2);
+                }
+            }
+        }
+    }
+    save_editor_recompute_total_balloons();
+    sSaveEditorDirty = TRUE;
+    sSaveEditorApplyArmed = FALSE;
+    sSaveEditorStatus = "ADVENTURE 2 CONDITION MET";
+}
+
+const char *mdkr_vita_save_editor_character_trophy_name(int character) {
+    static const char *const names[] = {
+        "Krunch", "Diddy", "Bumper", "Banjo", "Conker", "Tiptup", "Pipsy",
+        "Timber", "Drumstick", "T.T.", "Taj", "Wizpig", "Terry"
+    };
+    return character >= 0 && character < ARRAY_COUNT(names) ? names[character] : "";
+}
+
+unsigned mdkr_vita_save_editor_character_trophy_id(int character) {
+    static const u8 ids[] = { 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 95, 96, 97 };
+    return character >= 0 && character < ARRAY_COUNT(ids) ? ids[character] : 0;
+}
+
+int mdkr_vita_save_editor_character_condition(int character) {
+    if (character < 0 || character >= 13) return 0;
+    return mdkr_vita_trophy_character_balloon_progress((unsigned)character);
+}
+
+void mdkr_vita_save_editor_meet_character_condition(int character) {
+    if (character < 0 || character >= 13) return;
+    mdkr_vita_trophy_set_character_balloon_progress((unsigned)character, 5);
+    sSaveEditorStatus = "FIVE-BALLOON CONDITION MET";
+}
+
+const char *mdkr_vita_save_editor_powerup_trophy_name(int powerup) {
+    static const char *const names[] = { "Rocket", "Boost", "Mine", "Shield", "Magnet" };
+    return powerup >= 0 && powerup < ARRAY_COUNT(names) ? names[powerup] : "";
+}
+
+unsigned mdkr_vita_save_editor_powerup_trophy_id(int powerup) {
+    static const u8 ids[] = { 90, 91, 92, 93, 94 };
+    return powerup >= 0 && powerup < ARRAY_COUNT(ids) ? ids[powerup] : 0;
+}
+
+int mdkr_vita_save_editor_powerup_condition(int powerup) {
+    return powerup >= 0 && powerup < 5 && sSaveEditorPowerupCondition[powerup];
+}
+
+void mdkr_vita_save_editor_meet_powerup_condition(int powerup) {
+    if (powerup < 0 || powerup >= 5) return;
+    sSaveEditorPowerupCondition[powerup] = TRUE;
+    mdkr_vita_trophy_max_powerup(powerup == 0 ? 1 : powerup == 1 ? 0 : powerup, 2);
+    sSaveEditorStatus = "MAX POWER-UP CONDITION MET";
 }
 #endif
 

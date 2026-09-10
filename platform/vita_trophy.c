@@ -396,9 +396,20 @@ void mdkr_vita_trophy_pump(const struct Settings *settings) {
     for (track = 0; track < ARRAY_COUNT(sTrophyTrackIds); track++) {
         const int levelId = sTrophyTrackIds[track];
         const Vehicle vehicle = leveltable_vehicle_default(levelId);
-        const int courseTime = settings->courseTimesPtr[vehicle][levelId];
+        int courseTime = 0;
+
+        /* Save-slot Settings images contain Adventure data, but their global
+         * time-table pointers are intentionally null. Only the live Settings
+         * image owns those tables. Progress trophies must still reconcile
+         * when an edited slot is applied from Options, so skip only the time
+         * lookup instead of dereferencing the absent table. */
+        if ((unsigned)vehicle < ARRAY_COUNT(settings->courseTimesPtr) &&
+            settings->courseTimesPtr[vehicle] != NULL) {
+            courseTime = settings->courseTimesPtr[vehicle][levelId];
+        }
         if (get_eeprom_settings() & ((u64)16 << track)) unlock(40 + track);
-        if (mdkr_vita_trophy_developer_time_beaten(track, courseTime)) {
+        if (courseTime != 0 &&
+            mdkr_vita_trophy_developer_time_beaten(track, courseTime)) {
             unlock(60 + track);
         }
     }

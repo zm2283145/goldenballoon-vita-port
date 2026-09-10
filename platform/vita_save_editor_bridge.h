@@ -32,6 +32,27 @@ void mdkr_vita_save_editor_complete_first_boss(int world);
 void mdkr_vita_save_editor_complete_second_boss(int world);
 void mdkr_vita_save_editor_complete_trophy_race(int world);
 void mdkr_vita_save_editor_complete_wizpig_two(void);
+int mdkr_vita_save_editor_amulet_pieces(int amulet);
+void mdkr_vita_save_editor_set_amulet_pieces(int amulet, int pieces);
+int mdkr_vita_save_editor_key_collected(int key);
+void mdkr_vita_save_editor_set_key_collected(int key, int collected);
+const char *mdkr_vita_save_editor_arena_name(int arena);
+int mdkr_vita_save_editor_arena_complete(int arena);
+void mdkr_vita_save_editor_set_arena_complete(int arena, int complete);
+const char *mdkr_vita_save_editor_main_trophy_name(int trophy);
+int mdkr_vita_save_editor_main_condition_met(int trophy);
+void mdkr_vita_save_editor_meet_main_condition(int trophy);
+const char *mdkr_vita_save_editor_adventure_two_trophy_name(int trophy);
+int mdkr_vita_save_editor_adventure_two_condition_met(int trophy);
+void mdkr_vita_save_editor_meet_adventure_two_condition(int trophy);
+const char *mdkr_vita_save_editor_character_trophy_name(int character);
+unsigned mdkr_vita_save_editor_character_trophy_id(int character);
+int mdkr_vita_save_editor_character_condition(int character);
+void mdkr_vita_save_editor_meet_character_condition(int character);
+const char *mdkr_vita_save_editor_powerup_trophy_name(int powerup);
+unsigned mdkr_vita_save_editor_powerup_trophy_id(int powerup);
+int mdkr_vita_save_editor_powerup_condition(int powerup);
+void mdkr_vita_save_editor_meet_powerup_condition(int powerup);
 
 #ifdef __cplusplus
 }

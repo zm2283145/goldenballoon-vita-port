@@ -19,6 +19,11 @@ bool s_initialization_failed = false;
 int s_page = 0;
 int s_world = 0;
 int s_time_trial = 0;
+int s_trophy_group = 0;
+int s_main_trophy = 0;
+int s_adventure_two_trophy = 0;
+int s_character_trophy = 0;
+int s_powerup_trophy = 0;
 bool s_erase_armed = false;
 bool s_hundred_percent_armed = false;
 bool s_apply_armed = false;
@@ -182,10 +187,10 @@ extern "C" int mdkr_vita_imgui_overlay_render(void) {
                  ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize);
     ImGui::TextUnformatted("SAVE EDITOR");
     ImGui::Separator();
-    const char *pages[] = { "Progress", "Worlds", "Time Trials", "Trophies", "Tools" };
-    for (int page = 0; page < 5; ++page) {
+    const char *pages[] = { "Saves", "Worlds", "Items", "Time Trials", "Trophies", "Tools" };
+    for (int page = 0; page < 6; ++page) {
         if (page != 0) ImGui::SameLine();
-        if (ImGui::Selectable(pages[page], s_page == page, 0, ImVec2(165.0f, 34.0f))) {
+        if (ImGui::Selectable(pages[page], s_page == page, 0, ImVec2(142.0f, 34.0f))) {
             s_page = page;
         }
     }
@@ -216,12 +221,14 @@ extern "C" int mdkr_vita_imgui_overlay_render(void) {
         }
         ImGui::Separator();
         for (int track = 0; track < 4; ++track) {
+            ImGui::PushID(track);
             int progress = mdkr_vita_save_editor_track_progress(s_world, track);
             ImGui::Text("%s", mdkr_vita_save_editor_track_name(s_world, track));
             ImGui::SameLine(390.0f);
             if (ImGui::Button(progress == 0 ? "Not visited" : progress == 1 ? "Cleared" : "Coin complete", ImVec2(220.0f, 34.0f))) {
                 mdkr_vita_save_editor_set_track_progress(s_world, track, (progress + 1) % 3);
             }
+            ImGui::PopID();
         }
         ImGui::Separator();
         if (ImGui::Button("Complete Boss 1", ImVec2(210.0f, 38.0f))) {
@@ -236,6 +243,46 @@ extern "C" int mdkr_vita_imgui_overlay_render(void) {
             mdkr_vita_save_editor_complete_trophy_race(s_world);
         }
     } else if (s_page == 2) {
+        static const char *const key_names[] = {
+            "Dino Domain key", "Sherbet Island key", "Snowflake Mountain key",
+            "Dragon Forest key"
+        };
+        ImGui::TextUnformatted("Keys, amulets, and key arenas");
+        for (int amulet = 0; amulet < 2; ++amulet) {
+            const int pieces = mdkr_vita_save_editor_amulet_pieces(amulet);
+            ImGui::PushID(100 + amulet);
+            ImGui::Text("%s Amulet: %d / 4", amulet == 0 ? "T.T." : "Wizpig", pieces);
+            ImGui::SameLine(300.0f);
+            if (ImGui::Button("Previous", ImVec2(120.0f, 32.0f))) {
+                mdkr_vita_save_editor_set_amulet_pieces(amulet, (pieces + 4) % 5);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Next", ImVec2(120.0f, 32.0f))) {
+                mdkr_vita_save_editor_set_amulet_pieces(amulet, (pieces + 1) % 5);
+            }
+            ImGui::PopID();
+        }
+        ImGui::Separator();
+        for (int key = 0; key < 4; ++key) {
+            bool collected = mdkr_vita_save_editor_key_collected(key) != 0;
+            ImGui::PushID(200 + key);
+            if (ImGui::Checkbox(key_names[key], &collected)) {
+                mdkr_vita_save_editor_set_key_collected(key, collected ? 1 : 0);
+            }
+            ImGui::PopID();
+            if ((key & 1) == 0) ImGui::SameLine(460.0f);
+        }
+        ImGui::Separator();
+        for (int arena = 0; arena < 4; ++arena) {
+            bool complete = mdkr_vita_save_editor_arena_complete(arena) != 0;
+            ImGui::PushID(300 + arena);
+            if (ImGui::Checkbox(mdkr_vita_save_editor_arena_name(arena), &complete)) {
+                mdkr_vita_save_editor_set_arena_complete(arena, complete ? 1 : 0);
+            }
+            ImGui::PopID();
+            if ((arena & 1) == 0) ImGui::SameLine(460.0f);
+        }
+    } else if (s_page == 3) {
         ImGui::TextUnformatted("Global Time Trials");
         ImGui::Text("%s", mdkr_vita_save_editor_time_trial_name(s_time_trial));
         if (ImGui::Button("Previous", ImVec2(150.0f, 36.0f))) {
@@ -254,8 +301,74 @@ extern "C" int mdkr_vita_imgui_overlay_render(void) {
             mdkr_vita_save_editor_set_developer_beaten(s_time_trial, developer ? 1 : 0);
         }
         ImGui::TextWrapped("Developer records use the canonical credits/RetroAchievements order, not the editor's world order.");
-    } else if (s_page == 3) {
+    } else if (s_page == 4) {
         ImGui::TextUnformatted("Trophy conditions");
+        const char *groups[] = { "Main", "Adventure 2", "Characters", "Power-ups" };
+        for (int group = 0; group < 4; ++group) {
+            if (group != 0) ImGui::SameLine();
+            if (ImGui::Selectable(groups[group], s_trophy_group == group, 0,
+                                  ImVec2(205.0f, 32.0f))) {
+                s_trophy_group = group;
+            }
+        }
+        ImGui::Separator();
+        const char *name = "";
+        unsigned trophy_id = 0;
+        int condition = 0;
+        int *selection = &s_main_trophy;
+        int count = 18;
+        if (s_trophy_group == 0) {
+            name = mdkr_vita_save_editor_main_trophy_name(s_main_trophy);
+            trophy_id = (unsigned)s_main_trophy;
+            condition = mdkr_vita_save_editor_main_condition_met(s_main_trophy);
+        } else if (s_trophy_group == 1) {
+            selection = &s_adventure_two_trophy;
+            count = 22;
+            name = mdkr_vita_save_editor_adventure_two_trophy_name(*selection);
+            trophy_id = 18u + (unsigned)*selection;
+            condition = mdkr_vita_save_editor_adventure_two_condition_met(*selection);
+        } else if (s_trophy_group == 2) {
+            selection = &s_character_trophy;
+            count = 13;
+            name = mdkr_vita_save_editor_character_trophy_name(*selection);
+            trophy_id = mdkr_vita_save_editor_character_trophy_id(*selection);
+            condition = mdkr_vita_save_editor_character_condition(*selection) >= 5;
+        } else {
+            selection = &s_powerup_trophy;
+            count = 5;
+            name = mdkr_vita_save_editor_powerup_trophy_name(*selection);
+            trophy_id = mdkr_vita_save_editor_powerup_trophy_id(*selection);
+            condition = mdkr_vita_save_editor_powerup_condition(*selection);
+        }
+        ImGui::Text("%s trophy %d / %d", groups[s_trophy_group], *selection + 1, count);
+        ImGui::Text("%s", name);
+        if (ImGui::Button("Previous Trophy", ImVec2(180.0f, 36.0f))) {
+            *selection = (*selection + count - 1) % count;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Next Trophy", ImVec2(180.0f, 36.0f))) {
+            *selection = (*selection + 1) % count;
+        }
+        ImGui::Text("Condition: %s", condition ? "MET" : "NOT MET");
+        ImGui::SameLine(310.0f);
+        ImGui::Text("Trophy: %s", mdkr_vita_trophy_is_unlocked(trophy_id)
+                                           ? "EARNED" : "NOT EARNED");
+        if (ImGui::Button(condition ? "Reapply Unlock Condition" : "Meet Unlock Condition",
+                          ImVec2(300.0f, 38.0f))) {
+            if (s_trophy_group == 0) {
+                mdkr_vita_save_editor_meet_main_condition(*selection);
+            } else if (s_trophy_group == 1) {
+                mdkr_vita_save_editor_meet_adventure_two_condition(*selection);
+            } else if (s_trophy_group == 2) {
+                mdkr_vita_save_editor_meet_character_condition(*selection);
+            } else {
+                mdkr_vita_save_editor_meet_powerup_condition(*selection);
+            }
+        }
+        if (s_trophy_group == 1) {
+            ImGui::TextWrapped("Adventure 2 trophies require an Adventure 2 save; this control changes the real track, balloon, or boss condition.");
+        }
+        ImGui::Separator();
         int main_unlocked = 0;
         int adventure_two_unlocked = 0;
         int time_trial_unlocked = 0;
@@ -268,8 +381,7 @@ extern "C" int mdkr_vita_imgui_overlay_render(void) {
         ImGui::Text("Main set: %d / 36", main_unlocked);
         ImGui::Text("Adventure 2 bonus set: %d / 22", adventure_two_unlocked);
         ImGui::Text("Time Trial bonus set: %d / 40", time_trial_unlocked);
-        ImGui::Separator();
-        ImGui::TextWrapped("Status is read from the Vita trophy service. Condition editing remains state-driven through the Save Editor; this page never unlocks trophies directly.");
+        ImGui::TextWrapped("Status comes from the Vita trophy service. Controls satisfy gameplay/save conditions; they do not write trophy IDs directly.");
     } else {
         ImGui::TextUnformatted("Editor tools");
         ImGui::TextWrapped("Save-slot management lives here. Use L+R in the classic editor to return to this overlay.");
