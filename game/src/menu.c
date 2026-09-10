@@ -4983,6 +4983,7 @@ enum {
     SAVE_EDITOR_TRACK_PROGRESS,
     SAVE_EDITOR_WORLD_PROGRESS_ONE,
     SAVE_EDITOR_WORLD_PROGRESS_TWO,
+    SAVE_EDITOR_WORLD_PROGRESS_THREE,
     SAVE_EDITOR_APPLY,
     SAVE_EDITOR_RETURN,
     SAVE_EDITOR_OPTION_COUNT
@@ -5027,6 +5028,9 @@ static s32 sSaveEditorTrackFlags[NUMBER_OF_SAVE_FILES]
                                  [SAVE_EDITOR_TRACKS_PER_WORLD];
 static u16 sSaveEditorTrophies[NUMBER_OF_SAVE_FILES];
 static u16 sSaveEditorBosses[NUMBER_OF_SAVE_FILES];
+static u8 sSaveEditorKeys[NUMBER_OF_SAVE_FILES];
+static u8 sSaveEditorTtAmulet[NUMBER_OF_SAVE_FILES];
+static u8 sSaveEditorWizpigAmulet[NUMBER_OF_SAVE_FILES];
 static s32 sSaveEditorSlot;
 static s32 sSaveEditorOption;
 static s32 sSaveEditorPage;
@@ -5057,6 +5061,9 @@ static void save_editor_load_slot(s32 slot) {
     }
     sSaveEditorTrophies[slot] = settings->trophies;
     sSaveEditorBosses[slot] = settings->bosses;
+    sSaveEditorKeys[slot] = settings->keys;
+    sSaveEditorTtAmulet[slot] = settings->ttAmulet;
+    sSaveEditorWizpigAmulet[slot] = settings->wizpigAmulet;
     sSaveEditorDirty = FALSE;
     sSaveEditorApplyArmed = FALSE;
     sSaveEditorStatus = settings->newGame
@@ -5085,6 +5092,9 @@ static void save_editor_apply(void) {
     }
     settings->trophies = sSaveEditorTrophies[sSaveEditorSlot];
     settings->bosses = sSaveEditorBosses[sSaveEditorSlot];
+    settings->keys = sSaveEditorKeys[sSaveEditorSlot];
+    settings->ttAmulet = sSaveEditorTtAmulet[sSaveEditorSlot];
+    settings->wizpigAmulet = sSaveEditorWizpigAmulet[sSaveEditorSlot];
     if (write_save_data(sSaveEditorSlot, settings) != 0) {
         /* The slot writer did not commit. Restore the cache so a later menu
          * screen cannot observe a draft as though it had been saved. */
@@ -5100,6 +5110,9 @@ static void save_editor_apply(void) {
         }
         sSaveEditorTrophies[sSaveEditorSlot] = settings->trophies;
         sSaveEditorBosses[sSaveEditorSlot] = settings->bosses;
+        sSaveEditorKeys[sSaveEditorSlot] = settings->keys;
+        sSaveEditorTtAmulet[sSaveEditorSlot] = settings->ttAmulet;
+        sSaveEditorWizpigAmulet[sSaveEditorSlot] = settings->wizpigAmulet;
         sSaveEditorDirty = FALSE;
         sSaveEditorApplyArmed = FALSE;
         sSaveEditorStatus = "SAVE FAILED - NO CHANGES APPLIED";
@@ -5122,6 +5135,14 @@ static s32 save_editor_track_progress(s32 flags) {
     return 0;
 }
 
+static u16 save_editor_first_boss_bit(s32 world) {
+    return (u16)(world == 4 ? 1u : (1u << (world + 1)));
+}
+
+static u16 save_editor_second_boss_bit(s32 world) {
+    return (u16)(world == 4 ? (1u << 5) : (1u << (world + 7)));
+}
+
 static void save_editor_adjust_world_balloons(s32 world, s32 delta) {
     s16 *value = &sSaveEditorBalloons[sSaveEditorSlot][world + 1];
     *value = (s16)(*value + delta);
@@ -5142,14 +5163,158 @@ static void save_editor_recompute_total_balloons(void) {
     sSaveEditorBalloons[sSaveEditorSlot][0] = (s16)total;
 }
 
+static void save_editor_set_track_progress(s32 world, s32 track, s32 progress) {
+    s32 *flags = &sSaveEditorTrackFlags[sSaveEditorSlot][world][track];
+    const s32 before = save_editor_track_progress(*flags);
+
+    *flags &= ~(RACE_VISITED | RACE_CLEARED | RACE_CLEARED_SILVER_COINS);
+    if (progress >= 1) *flags |= RACE_VISITED | RACE_CLEARED;
+    if (progress >= 2) *flags |= RACE_CLEARED_SILVER_COINS;
+    save_editor_adjust_world_balloons(world, progress - before);
+}
+
+static void save_editor_set_all_track_progress(s32 world, s32 progress) {
+    s32 track;
+
+    for (track = 0; track < SAVE_EDITOR_TRACKS_PER_WORLD; track++) {
+        save_editor_set_track_progress(world, track, progress);
+    }
+}
+
+static u16 save_editor_trophy_rank(s32 world) {
+    return (sSaveEditorTrophies[sSaveEditorSlot] >> (world * 2)) & 3;
+}
+
+static void save_editor_set_trophy_rank(s32 world, u16 rank) {
+    const u16 shift = (u16)(world * 2);
+    const u16 before = save_editor_trophy_rank(world);
+
+    sSaveEditorTrophies[sSaveEditorSlot] =
+        (u16)((sSaveEditorTrophies[sSaveEditorSlot] & ~(3u << shift)) |
+              ((rank & 3u) << shift));
+    save_editor_adjust_world_balloons(world, (rank == 3) - (before == 3));
+}
+
+static s32 save_editor_world_has_silver_coins(s32 world) {
+    s32 track;
+
+    for (track = 0; track < SAVE_EDITOR_TRACKS_PER_WORLD; track++) {
+        if (save_editor_track_progress(
+                sSaveEditorTrackFlags[sSaveEditorSlot][world][track]) == 2) {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+/* A silver-coin challenge is not normally reachable until the four regular
+ * races are cleared and the first boss has been beaten. Preserve that real
+ * dependency whenever an edit adds, removes, or otherwise revisits a track. */
+static void save_editor_enforce_silver_prerequisites(s32 world) {
+    s32 track;
+
+    if (!save_editor_world_has_silver_coins(world)) return;
+    for (track = 0; track < SAVE_EDITOR_TRACKS_PER_WORLD; track++) {
+        if (save_editor_track_progress(
+                sSaveEditorTrackFlags[sSaveEditorSlot][world][track]) == 0) {
+            save_editor_set_track_progress(world, track, 1);
+        }
+    }
+    sSaveEditorBosses[sSaveEditorSlot] |= save_editor_first_boss_bit(world);
+}
+
+static void save_editor_recompute_wizpig_amulet(void) {
+    s32 world;
+    u8 pieces = 0;
+
+    for (world = 0; world < 4; world++) {
+        if (sSaveEditorBosses[sSaveEditorSlot] & save_editor_second_boss_bit(world)) {
+            pieces++;
+        }
+    }
+    sSaveEditorWizpigAmulet[sSaveEditorSlot] = pieces;
+}
+
+/* Undoing a silver-coin result cannot leave a later cup/boss branch intact.
+ * Return the other tracks in this world to their first-balloon state, erase
+ * its trophy and both boss records, then rebuild the global amulet count from
+ * the remaining real rematches. */
+static void save_editor_rollback_world_after_track_downgrade(s32 world, s32 editedTrack) {
+    s32 track;
+
+    for (track = 0; track < SAVE_EDITOR_TRACKS_PER_WORLD; track++) {
+        /* Preserve the track the player explicitly lowered. Every other
+         * course returns to its first-balloon state, which is the highest
+         * state still valid after this world's later progression is erased. */
+        if (track != editedTrack) {
+            save_editor_set_track_progress(world, track, 1);
+        }
+    }
+    sSaveEditorBosses[sSaveEditorSlot] &=
+        (u16)~(save_editor_first_boss_bit(world) | save_editor_second_boss_bit(world));
+    save_editor_set_trophy_rank(world, 0);
+    save_editor_recompute_wizpig_amulet();
+}
+
+/* Boss one represents the first complete world pass. Boss two and a first
+ * place trophy both represent the later, fully-completed pass. Keeping these
+ * helpers together prevents the editor from ever creating an impossible
+ * shortcut through Adventure mode. */
+static void save_editor_complete_first_boss(s32 world) {
+    save_editor_set_all_track_progress(world, 1);
+    sSaveEditorBosses[sSaveEditorSlot] |= save_editor_first_boss_bit(world);
+    sSaveEditorBosses[sSaveEditorSlot] &= (u16)~save_editor_second_boss_bit(world);
+    save_editor_set_trophy_rank(world, 0);
+    save_editor_recompute_wizpig_amulet();
+}
+
+static void save_editor_complete_second_boss(s32 world) {
+    save_editor_set_all_track_progress(world, 2);
+    sSaveEditorBosses[sSaveEditorSlot] |=
+        save_editor_first_boss_bit(world) | save_editor_second_boss_bit(world);
+    save_editor_set_trophy_rank(world, 3);
+    save_editor_recompute_wizpig_amulet();
+}
+
+static void save_editor_complete_wizpig_one(void) {
+    s32 world;
+
+    /* Beating Wizpig the first time comes after the complete silver-coin,
+     * trophy, and rematch chain in each of the four regular worlds. Future
+     * Fun Land itself is deliberately left alone at this milestone. */
+    for (world = 0; world < 4; world++) {
+        save_editor_complete_second_boss(world);
+    }
+    sSaveEditorBosses[sSaveEditorSlot] |= save_editor_first_boss_bit(4);
+    save_editor_recompute_wizpig_amulet();
+}
+
+static void save_editor_complete_wizpig_two(void) {
+    s32 world;
+
+    /* The second Wizpig race is the end state: every race chain, both
+     * bosses, every trophy, all T.T. pieces, and all four world keys. */
+    for (world = 0; world < SAVE_EDITOR_ADVENTURE_WORLD_COUNT; world++) {
+        save_editor_complete_second_boss(world);
+    }
+    sSaveEditorTtAmulet[sSaveEditorSlot] = 4;
+    sSaveEditorKeys[sSaveEditorSlot] |= 0x1Eu;
+    save_editor_recompute_wizpig_amulet();
+}
+
 static void save_editor_render(void) {
     static char *const trackLabels[] = {
         "SAVE FILE", "EDIT MODE", "WORLD", "TRACK", "TRACK RESULT",
-        "WORLD BALLOONS", "TOTAL BALLOONS", "APPLY CHANGES", "RETURN"
+        "WORLD BALLOONS", "TOTAL BALLOONS", "", "APPLY CHANGES", "RETURN"
     };
     static char *const progressLabels[] = {
         "SAVE FILE", "EDIT MODE", "WORLD", "CUP RESULT", "BOSS ONE",
-        "BOSS REMATCH", "", "APPLY CHANGES", "RETURN"
+        "BOSS REMATCH", "", "", "APPLY CHANGES", "RETURN"
+    };
+    static char *const advancementLabels[] = {
+        "SAVE FILE", "EDIT MODE", "T.T. AMULET", "WIZPIG AMULET",
+        "DINO KEY", "SHERBET KEY", "SNOWFLAKE KEY", "DRAGON KEY",
+        "APPLY CHANGES", "RETURN"
     };
     static char *const worldNames[] = {
         "DINO DOMAIN", "SHERBET ISLAND", "SNOWFLAKE MOUNTAIN",
@@ -5181,15 +5346,27 @@ static void save_editor_render(void) {
             set_text_colour(255, 255, 255, 0, 255);
         }
         draw_text(&sMenuCurrDisplayList, 32, yPos,
-                  sSaveEditorPage == 0 ? trackLabels[option]
-                                       : progressLabels[option], ALIGN_TOP_LEFT);
+                  sSaveEditorPage == 0 ? trackLabels[option] :
+                  sSaveEditorPage == 1 ? progressLabels[option] :
+                                         advancementLabels[option], ALIGN_TOP_LEFT);
         if (option == SAVE_EDITOR_SLOT) {
             snprintf(value, sizeof(value), "%d", sSaveEditorSlot + 1);
         } else if (option == SAVE_EDITOR_PAGE) {
             snprintf(value, sizeof(value), "%s",
-                     sSaveEditorPage == 0 ? "TRACKS" : "WORLD PROGRESS");
-        } else if (option == SAVE_EDITOR_WORLD) {
+                     sSaveEditorPage == 0 ? "TRACKS" :
+                     sSaveEditorPage == 1 ? "WORLD PROGRESS" : "ADVANCEMENT");
+        } else if (sSaveEditorPage != 2 && option == SAVE_EDITOR_WORLD) {
             snprintf(value, sizeof(value), "%s", worldNames[sSaveEditorWorld]);
+        } else if (sSaveEditorPage == 2 && option == SAVE_EDITOR_WORLD) {
+            snprintf(value, sizeof(value), "%d/4", sSaveEditorTtAmulet[sSaveEditorSlot]);
+        } else if (sSaveEditorPage == 2 && option == SAVE_EDITOR_TRACK) {
+            snprintf(value, sizeof(value), "%d/4", sSaveEditorWizpigAmulet[sSaveEditorSlot]);
+        } else if (sSaveEditorPage == 2 &&
+                   option >= SAVE_EDITOR_TRACK_PROGRESS &&
+                   option <= SAVE_EDITOR_WORLD_PROGRESS_THREE) {
+            const u8 bit = (u8)(1u << (option - SAVE_EDITOR_TRACK_PROGRESS + 1));
+            snprintf(value, sizeof(value), "%s",
+                     (sSaveEditorKeys[sSaveEditorSlot] & bit) ? "COLLECTED" : "MISSING");
         } else if (sSaveEditorPage == 0 && option == SAVE_EDITOR_TRACK) {
             snprintf(value, sizeof(value), "%s",
                      sSaveEditorTrackNames[sSaveEditorWorld][sSaveEditorTrack]);
@@ -5204,16 +5381,14 @@ static void save_editor_render(void) {
             snprintf(value, sizeof(value), "%d/%d",
                      sSaveEditorBalloons[sSaveEditorSlot][0],
                      sSaveEditorBalloonLimits[0]);
-        } else if (sSaveEditorPage != 0 && option == SAVE_EDITOR_TRACK) {
+        } else if (sSaveEditorPage == 1 && option == SAVE_EDITOR_TRACK) {
             snprintf(value, sizeof(value), "%s", trophyRanks[
                 (sSaveEditorTrophies[sSaveEditorSlot] >> (sSaveEditorWorld * 2)) & 3]);
-        } else if (sSaveEditorPage != 0 &&
+        } else if (sSaveEditorPage == 1 &&
                    (option == SAVE_EDITOR_TRACK_PROGRESS ||
                     option == SAVE_EDITOR_WORLD_PROGRESS_ONE)) {
-            const u16 firstBit = (u16)(sSaveEditorWorld == 4 ? 1u :
-                                        (1u << (sSaveEditorWorld + 1)));
-            const u16 secondBit = (u16)(sSaveEditorWorld == 4 ? (1u << 5) :
-                                         (1u << (sSaveEditorWorld + 7)));
+            const u16 firstBit = save_editor_first_boss_bit(sSaveEditorWorld);
+            const u16 secondBit = save_editor_second_boss_bit(sSaveEditorWorld);
             const u16 bit = option == SAVE_EDITOR_TRACK_PROGRESS ? firstBit : secondBit;
             snprintf(value, sizeof(value), "%s",
                      (sSaveEditorBosses[sSaveEditorSlot] & bit) ? "COMPLETE" : "NOT DONE");
@@ -5297,11 +5472,37 @@ s32 menu_save_editor_loop(s32 updateRate) {
             save_editor_load_slot(sSaveEditorSlot);
             sound_play(SOUND_MENU_PICK2, NULL);
         } else if (sSaveEditorOption == SAVE_EDITOR_PAGE) {
-            sSaveEditorPage ^= 1;
+            sSaveEditorPage += xAxis < 0 ? -1 : 1;
+            if (sSaveEditorPage < 0) sSaveEditorPage = 2;
+            if (sSaveEditorPage > 2) sSaveEditorPage = 0;
             sSaveEditorApplyArmed = FALSE;
             sSaveEditorStatus = sSaveEditorPage == 0
                                     ? "TRACK PROGRESS"
-                                    : "WORLD PROGRESS";
+                                    : sSaveEditorPage == 1 ? "WORLD PROGRESS"
+                                                           : "ADVANCEMENT PROGRESS";
+            sound_play(SOUND_MENU_PICK2, NULL);
+        } else if (sSaveEditorPage == 2 && sSaveEditorOption == SAVE_EDITOR_WORLD) {
+            sSaveEditorTtAmulet[sSaveEditorSlot] =
+                (u8)((sSaveEditorTtAmulet[sSaveEditorSlot] + (xAxis < 0 ? 4 : 1)) % 5);
+            sSaveEditorDirty = TRUE;
+            sSaveEditorApplyArmed = FALSE;
+            sSaveEditorStatus = "T.T. AMULET UPDATED";
+            sound_play(SOUND_MENU_PICK2, NULL);
+        } else if (sSaveEditorPage == 2 && sSaveEditorOption == SAVE_EDITOR_TRACK) {
+            sSaveEditorWizpigAmulet[sSaveEditorSlot] =
+                (u8)((sSaveEditorWizpigAmulet[sSaveEditorSlot] + (xAxis < 0 ? 4 : 1)) % 5);
+            sSaveEditorDirty = TRUE;
+            sSaveEditorApplyArmed = FALSE;
+            sSaveEditorStatus = "WIZPIG AMULET UPDATED";
+            sound_play(SOUND_MENU_PICK2, NULL);
+        } else if (sSaveEditorPage == 2 &&
+                   sSaveEditorOption >= SAVE_EDITOR_TRACK_PROGRESS &&
+                   sSaveEditorOption <= SAVE_EDITOR_WORLD_PROGRESS_THREE) {
+            const u8 bit = (u8)(1u << (sSaveEditorOption - SAVE_EDITOR_TRACK_PROGRESS + 1));
+            sSaveEditorKeys[sSaveEditorSlot] ^= bit;
+            sSaveEditorDirty = TRUE;
+            sSaveEditorApplyArmed = FALSE;
+            sSaveEditorStatus = "WORLD KEY UPDATED";
             sound_play(SOUND_MENU_PICK2, NULL);
         } else if (sSaveEditorOption == SAVE_EDITOR_WORLD) {
             sSaveEditorWorld += xAxis < 0 ? -1 : 1;
@@ -5318,52 +5519,85 @@ s32 menu_save_editor_loop(s32 updateRate) {
             sSaveEditorStatus = "SELECT A TRACK";
             sound_play(SOUND_MENU_PICK2, NULL);
         } else if (sSaveEditorPage == 0 && sSaveEditorOption == SAVE_EDITOR_TRACK_PROGRESS) {
-            s32 *flags = &sSaveEditorTrackFlags[sSaveEditorSlot]
-                                                 [sSaveEditorWorld][sSaveEditorTrack];
-            const s32 before = save_editor_track_progress(*flags);
+            const s32 before = save_editor_track_progress(
+                sSaveEditorTrackFlags[sSaveEditorSlot][sSaveEditorWorld][sSaveEditorTrack]);
             const s32 after = (before + (xAxis < 0 ? 2 : 1)) % 3;
 
-            *flags &= ~(RACE_VISITED | RACE_CLEARED | RACE_CLEARED_SILVER_COINS);
-            if (after >= 1) *flags |= RACE_VISITED | RACE_CLEARED;
-            if (after >= 2) *flags |= RACE_CLEARED_SILVER_COINS;
-            save_editor_adjust_world_balloons(sSaveEditorWorld, after - before);
+            save_editor_set_track_progress(sSaveEditorWorld, sSaveEditorTrack, after);
+            if ((before == 2 && after < 2) ||
+                (after == 0 && (sSaveEditorBosses[sSaveEditorSlot] &
+                                save_editor_first_boss_bit(sSaveEditorWorld)))) {
+                save_editor_rollback_world_after_track_downgrade(sSaveEditorWorld,
+                                                                  sSaveEditorTrack);
+            } else {
+                save_editor_enforce_silver_prerequisites(sSaveEditorWorld);
+            }
             save_editor_recompute_total_balloons();
             sSaveEditorDirty = TRUE;
             sSaveEditorApplyArmed = FALSE;
             sSaveEditorStatus = "TRACK STATE UPDATED";
             sound_play(SOUND_MENU_PICK2, NULL);
-        } else if (sSaveEditorPage != 0 && sSaveEditorOption == SAVE_EDITOR_TRACK) {
-            const u16 shift = (u16)(sSaveEditorWorld * 2);
-            const u16 before = (sSaveEditorTrophies[sSaveEditorSlot] >> shift) & 3;
+        } else if (sSaveEditorPage == 1 && sSaveEditorOption == SAVE_EDITOR_TRACK) {
+            const u16 before = save_editor_trophy_rank(sSaveEditorWorld);
             const u16 after = (u16)((before + (xAxis < 0 ? 3 : 1)) & 3);
 
-            sSaveEditorTrophies[sSaveEditorSlot] =
-                (u16)((sSaveEditorTrophies[sSaveEditorSlot] & ~(3u << shift)) |
-                      (after << shift));
-            save_editor_adjust_world_balloons(sSaveEditorWorld,
-                                               (after == 3) - (before == 3));
+            if (after == 3) {
+                /* A trophy win is only possible after every coin challenge
+                 * and the second boss for this world. */
+                save_editor_complete_second_boss(sSaveEditorWorld);
+            } else {
+                save_editor_set_trophy_rank(sSaveEditorWorld, after);
+                if (sSaveEditorBosses[sSaveEditorSlot] &
+                    save_editor_second_boss_bit(sSaveEditorWorld)) {
+                    sSaveEditorBosses[sSaveEditorSlot] &=
+                        (u16)~save_editor_second_boss_bit(sSaveEditorWorld);
+                    save_editor_recompute_wizpig_amulet();
+                }
+            }
             save_editor_recompute_total_balloons();
             sSaveEditorDirty = TRUE;
             sSaveEditorApplyArmed = FALSE;
             sSaveEditorStatus = "CUP RESULT UPDATED";
             sound_play(SOUND_MENU_PICK2, NULL);
-        } else if (sSaveEditorPage != 0 &&
+        } else if (sSaveEditorPage == 1 &&
                    (sSaveEditorOption == SAVE_EDITOR_TRACK_PROGRESS ||
                     sSaveEditorOption == SAVE_EDITOR_WORLD_PROGRESS_ONE)) {
-            const u16 firstBit = (u16)(sSaveEditorWorld == 4 ? 1u :
-                                        (1u << (sSaveEditorWorld + 1)));
-            const u16 secondBit = (u16)(sSaveEditorWorld == 4 ? (1u << 5) :
-                                         (1u << (sSaveEditorWorld + 7)));
+            const u16 firstBit = save_editor_first_boss_bit(sSaveEditorWorld);
+            const u16 secondBit = save_editor_second_boss_bit(sSaveEditorWorld);
             const u16 bit = sSaveEditorOption == SAVE_EDITOR_TRACK_PROGRESS ? firstBit : secondBit;
             u16 *bosses = &sSaveEditorBosses[sSaveEditorSlot];
 
-            if (*bosses & bit) {
-                *bosses &= (u16)~bit;
-                if (bit == firstBit) *bosses &= (u16)~secondBit;
+            if (bit == firstBit) {
+                if (*bosses & firstBit) {
+                    /* Removing boss one invalidates the entire later branch. */
+                    save_editor_rollback_world_after_track_downgrade(sSaveEditorWorld, -1);
+                } else {
+                    /* First boss complete requires the four normal races. */
+                    if (sSaveEditorWorld == 4) {
+                        save_editor_complete_wizpig_one();
+                    } else {
+                        save_editor_complete_first_boss(sSaveEditorWorld);
+                    }
+                }
             } else {
-                *bosses |= bit;
-                if (bit == secondBit) *bosses |= firstBit;
+                if (*bosses & secondBit) {
+                    *bosses &= (u16)~secondBit;
+                    /* First place is also a later-world state, so retain the
+                     * best cup result that remains valid without boss two. */
+                    if (save_editor_trophy_rank(sSaveEditorWorld) == 3) {
+                        save_editor_set_trophy_rank(sSaveEditorWorld, 2);
+                    }
+                    save_editor_recompute_wizpig_amulet();
+                } else {
+                    /* Second boss complete fills the coin and trophy chain. */
+                    if (sSaveEditorWorld == 4) {
+                        save_editor_complete_wizpig_two();
+                    } else {
+                        save_editor_complete_second_boss(sSaveEditorWorld);
+                    }
+                }
             }
+            save_editor_recompute_total_balloons();
             sSaveEditorDirty = TRUE;
             sSaveEditorApplyArmed = FALSE;
             sSaveEditorStatus = "BOSS PROGRESS UPDATED";
