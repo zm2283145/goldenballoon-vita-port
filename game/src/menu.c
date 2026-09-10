@@ -5373,6 +5373,10 @@ static void save_editor_set_track_progress(s32 world, s32 track, s32 progress);
 static void save_editor_apply(void);
 static void save_editor_create_empty_slot(void);
 static void save_editor_erase_slot(void);
+static void save_editor_complete_first_boss(s32 world);
+static void save_editor_complete_second_boss(s32 world);
+static void save_editor_complete_trophy_world(s32 world);
+static void save_editor_complete_wizpig_two(void);
 void mdkr_vita_save_editor_open_classic(void) {
     mdkr_vita_imgui_overlay_close();
     optionscreen_free();
@@ -5479,6 +5483,33 @@ void mdkr_vita_save_editor_create_slot(void) {
 
 void mdkr_vita_save_editor_erase_slot(void) {
     save_editor_erase_slot();
+}
+
+void mdkr_vita_save_editor_complete_first_boss(int world) {
+    if (world < 0 || world >= SAVE_EDITOR_ADVENTURE_WORLD_COUNT) return;
+    save_editor_complete_first_boss(world);
+    sSaveEditorDirty = TRUE;
+    sSaveEditorStatus = "FIRST BOSS COMPLETED";
+}
+
+void mdkr_vita_save_editor_complete_second_boss(int world) {
+    if (world < 0 || world >= SAVE_EDITOR_ADVENTURE_WORLD_COUNT) return;
+    save_editor_complete_second_boss(world);
+    sSaveEditorDirty = TRUE;
+    sSaveEditorStatus = "SECOND BOSS COMPLETED";
+}
+
+void mdkr_vita_save_editor_complete_trophy_race(int world) {
+    if (world < 0 || world >= SAVE_EDITOR_ADVENTURE_WORLD_COUNT) return;
+    save_editor_complete_trophy_world(world);
+    sSaveEditorDirty = TRUE;
+    sSaveEditorStatus = "TROPHY RACE COMPLETED";
+}
+
+void mdkr_vita_save_editor_complete_wizpig_two(void) {
+    save_editor_complete_wizpig_two();
+    sSaveEditorDirty = TRUE;
+    sSaveEditorStatus = "100 PERCENT PROGRESS COMPLETED";
 }
 #endif
 

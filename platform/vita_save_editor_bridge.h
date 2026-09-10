@@ -24,6 +24,10 @@ void mdkr_vita_save_editor_set_developer_beaten(int track, int beaten);
 int mdkr_vita_save_editor_slot_is_empty(int slot);
 void mdkr_vita_save_editor_create_slot(void);
 void mdkr_vita_save_editor_erase_slot(void);
+void mdkr_vita_save_editor_complete_first_boss(int world);
+void mdkr_vita_save_editor_complete_second_boss(int world);
+void mdkr_vita_save_editor_complete_trophy_race(int world);
+void mdkr_vita_save_editor_complete_wizpig_two(void);
 
 #ifdef __cplusplus
 }

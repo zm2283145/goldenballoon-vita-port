@@ -14,6 +14,7 @@ int s_page = 0;
 int s_world = 0;
 int s_time_trial = 0;
 bool s_erase_armed = false;
+bool s_hundred_percent_armed = false;
 
 bool initialize() {
     if (s_initialized) return true;
@@ -81,6 +82,18 @@ extern "C" int mdkr_vita_imgui_overlay_render(void) {
                 mdkr_vita_save_editor_set_track_progress(s_world, track, (progress + 1) % 3);
             }
         }
+        ImGui::Separator();
+        if (ImGui::Button("Complete Boss 1", ImVec2(210.0f, 38.0f))) {
+            mdkr_vita_save_editor_complete_first_boss(s_world);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Complete Boss 2", ImVec2(210.0f, 38.0f))) {
+            mdkr_vita_save_editor_complete_second_boss(s_world);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Complete Trophy Race", ImVec2(250.0f, 38.0f))) {
+            mdkr_vita_save_editor_complete_trophy_race(s_world);
+        }
     } else if (s_page == 2) {
         ImGui::TextUnformatted("Global Time Trials");
         ImGui::Text("%s", mdkr_vita_save_editor_time_trial_name(s_time_trial));
@@ -129,6 +142,14 @@ extern "C" int mdkr_vita_imgui_overlay_render(void) {
                 s_erase_armed = false;
             } else {
                 s_erase_armed = true;
+            }
+        }
+        if (ImGui::Button(s_hundred_percent_armed ? "Confirm 100% Progress" : "Complete 100% Progress", ImVec2(310.0f, 42.0f))) {
+            if (s_hundred_percent_armed) {
+                mdkr_vita_save_editor_complete_wizpig_two();
+                s_hundred_percent_armed = false;
+            } else {
+                s_hundred_percent_armed = true;
             }
         }
         if (ImGui::Button("Use Classic Save Editor", ImVec2(310.0f, 42.0f))) {
