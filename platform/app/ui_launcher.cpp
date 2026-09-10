@@ -1462,6 +1462,58 @@ void acceptCharacterPreviewRequest(
     Launcher_requestTab(state, kLauncherPanelPlay, kLauncherTabPlayer);
 }
 
+/*
+ * Install a content pack by COPYING what the player picked into the mods
+ * folder. Nothing is unpacked: the reader takes a `.zip` through the same path
+ * validation as a directory, which is a property a gate asserts, so unzipping
+ * here would add a second, weaker intake for no gain.
+ *
+ * Every outcome ends in one sentence the player can act on. "It did nothing and
+ * did not say why" is the failure this whole destination exists to end.
+ */
+std::string g_packInstallNote;
+
+void installContentPack(const char *modsDirectory) {
+    std::string picked;
+    if (!filedialog::openContentPack(picked)) return;   // cancelled
+
+    namespace fs = std::filesystem;
+    std::error_code failure;
+    fs::create_directories(modsDirectory, failure);
+
+    const fs::path source(picked);
+    const fs::path destination = fs::path(modsDirectory) / source.filename();
+
+    if (fs::equivalent(source, destination, failure)) {
+        g_packInstallNote = source.filename().string() +
+            " is already in your mods folder.";
+        return;
+    }
+    failure.clear();
+
+    const bool directory = fs::is_directory(source, failure);
+    failure.clear();
+    if (directory) {
+        fs::copy(source, destination,
+                 fs::copy_options::recursive |
+                     fs::copy_options::overwrite_existing,
+                 failure);
+    } else {
+        fs::copy_file(source, destination,
+                      fs::copy_options::overwrite_existing, failure);
+    }
+
+    if (failure) {
+        g_packInstallNote = "Could not install " +
+            source.filename().string() + ": " + failure.message();
+        return;
+    }
+    // The scan runs once at startup, so this is the honest instruction rather
+    // than a claim that the pack is live.
+    g_packInstallNote = source.filename().string() +
+        " installed. Restart Golden Balloon to load it.";
+}
+
 void drawContentPanel(LauncherState &s, LauncherAction &out) {
     (void)out;
     /*
@@ -1491,6 +1543,13 @@ void drawContentPanel(LauncherState &s, LauncherAction &out) {
     const bool haveModsDirectory =
         mdkr_user_mods_directory(modsDirectory, sizeof modsDirectory) != 0;
     if (haveModsDirectory && filedialog::isAvailable()) {
+        if (ui::BrandPrimaryButton("Install pack…", ui::kBtnWide())) {
+            installContentPack(modsDirectory);
+        }
+        ui::SpeakFocusedItem(
+            "Install pack", nullptr,
+            "Choose a pack to copy into your mods folder.");
+        ImGui::SameLine();
         if (ImGui::Button("Open mods folder", ui::kBtnWide())) {
             std::error_code created;
             std::filesystem::create_directories(modsDirectory, created);
@@ -1500,9 +1559,11 @@ void drawContentPanel(LauncherState &s, LauncherAction &out) {
             "Open mods folder", nullptr,
             "Opens the folder packs are installed into, creating it if it "
             "does not exist yet.");
-        ImGui::SameLine();
-        ui::TextSubtle("Drop a pack folder in here, then relaunch.");
         ui::Gap(ui::kGapS);
+        if (!g_packInstallNote.empty()) {
+            ui::TextSubtleUnformattedWrapped(g_packInstallNote.c_str());
+            ui::Gap(ui::kGapS);
+        }
     }
     if (haveModsDirectory) {
         ImGui::PushFont(AppTheme::fonts().small);

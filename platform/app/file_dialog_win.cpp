@@ -93,6 +93,46 @@ bool openRom(std::string &out) {
     return true;
 }
 
+bool openContentPack(std::string &out) {
+    // A zipped pack goes through the same reader and the same path validation
+    // as an unzipped one, so the archive is what this offers. A pack FOLDER is
+    // installed by dropping it in the mods folder -- the common-item dialog
+    // cannot pick a file or a directory in one pass, and offering two buttons
+    // for one job is what the launcher just stopped doing elsewhere.
+    static const wchar_t kFilter[] =
+        L"Content packs (*.zip)\0*.zip\0"
+        L"All files\0*.*\0"
+        L"\0";
+
+    std::vector<wchar_t> file(32768, L'\0');
+
+    OPENFILENAMEW ofn;
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    SDL_Window *window = SDL_GetKeyboardFocus();
+    if (window == nullptr) window = SDL_GetMouseFocus();
+    SDL_SysWMinfo windowInfo;
+    SDL_VERSION(&windowInfo.version);
+    if (window != nullptr && SDL_GetWindowWMInfo(window, &windowInfo) == SDL_TRUE &&
+        windowInfo.subsystem == SDL_SYSWM_WINDOWS) {
+        ofn.hwndOwner = windowInfo.info.win.window;
+    }
+    ofn.lpstrFilter = kFilter;
+    ofn.nFilterIndex = 1;
+    ofn.lpstrFile   = file.data();
+    ofn.nMaxFile    = (DWORD)file.size();
+    ofn.lpstrTitle  = L"Install a content pack";
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR |
+                OFN_EXPLORER | OFN_HIDEREADONLY;
+
+    if (!GetOpenFileNameW(&ofn)) return false;
+
+    std::string picked = toUtf8(file.data());
+    if (picked.empty()) return false;
+    out = picked;
+    return true;
+}
+
 bool openCharacterSource(std::string &out) {
     static const wchar_t kFilter[] =
         L"Character sources (*.mdkrchar;*.mdkrsource;*.glb;*.dae;*.zip;*.gltf;*.fbx;*.obj;*.blend;*.usd;*.usda;*.usdc;*.usdz;*.ma;*.mb;*.max;*.c4d;*.3ds)\0*.mdkrchar;*.mdkrsource;*.glb;*.dae;*.zip;*.gltf;*.fbx;*.obj;*.blend;*.usd;*.usda;*.usdc;*.usdz;*.ma;*.mb;*.max;*.c4d;*.3ds\0"

@@ -44,6 +44,12 @@ bool isAvailable();
 // which is fine because ImGui state is retained across the modal.
 bool openRom(std::string &out);
 
+// Choose a content pack to install: a `.zip`, or a folder holding a pack.ini.
+// The reader treats both identically -- a zipped pack goes through the same
+// path validation as an unzipped one -- so the installer copies whichever the
+// player picked and never unpacks anything itself.
+bool openContentPack(std::string &out);
+
 // Choose a reviewable package, canonical data-only adapter result,
 // runtime/conversion input, or common DCC source.
 // The launcher inspects the suffix and never installs bytes merely because the

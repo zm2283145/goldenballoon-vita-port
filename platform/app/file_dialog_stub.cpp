@@ -21,6 +21,11 @@ bool openRom(std::string &out) {
     return false;
 }
 
+bool openContentPack(std::string &out) {
+    (void)out;   // never written: callers must gate on isAvailable()
+    return false;
+}
+
 bool openCharacterSource(std::string &out) {
     (void)out;
     return false;

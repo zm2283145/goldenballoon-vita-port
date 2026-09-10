@@ -70,6 +70,38 @@ bool openRom(std::string &out) {
     }
 }
 
+bool openContentPack(std::string &out) {
+    @autoreleasepool {
+        if (![NSThread isMainThread]) return false;
+        NSOpenPanel *panel = [NSOpenPanel openPanel];
+        panel.title = @"Install a content pack";
+        panel.message = @"Choose a pack .zip, or a folder containing pack.ini.";
+        panel.prompt = @"Install";
+        panel.allowsMultipleSelection = NO;
+        // Both shapes are legal packs, so both are selectable.
+        panel.canChooseDirectories = YES;
+        panel.canChooseFiles = YES;
+        panel.resolvesAliases = YES;
+        // A pack folder is an ordinary directory; treating file packages as
+        // directories would let the player descend into a .app by mistake.
+        panel.treatsFilePackagesAsDirectories = NO;
+        panel.showsHiddenFiles = NO;
+        UTType *zip = [UTType typeWithFilenameExtension:@"zip"];
+        if (zip != nil) {
+            panel.allowedContentTypes = @[ zip, UTTypeFolder ];
+        }
+        panel.allowsOtherFileTypes = NO;
+        [NSApp activateIgnoringOtherApps:YES];
+        if ([panel runModal] != NSModalResponseOK) return false;
+        NSURL *url = panel.URLs.firstObject;
+        if (url == nil || !url.isFileURL) return false;
+        const char *path = url.fileSystemRepresentation;
+        if (path == nullptr || path[0] == '\0') return false;
+        out = path;
+        return true;
+    }
+}
+
 bool openCharacterSource(std::string &out) {
     @autoreleasepool {
         if (![NSThread isMainThread]) return false;
