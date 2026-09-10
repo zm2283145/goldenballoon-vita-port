@@ -32,9 +32,6 @@ TROPHIES = [
     (13, "S", 0, None, "Future Funland Trophy", "Complete the Trophy Race in Future Funland."),
     (14, "G", 0, None, "Race Against a Running Pig", "Defeat Wizpig in a race."),
     (15, "G", 0, None, "Race Against an Angry Pig. In Space!", "Win against Wizpig again."),
-    # Bonus group: these deliberately have no platinum parent.
-    (16, "S", -1, 1, "T.T. Time Trial Champion", "Complete every T.T. time-trial challenge."),
-    (17, "G", -1, 1, "Developer Time Trial Champion", "Beat every developer time trial."),
 ]
 
 
@@ -139,7 +136,6 @@ def xml(configuration_only: bool = False) -> bytes:
         lines.extend((
             ' <title-name>Golden Balloon DKR</title-name>',
             ' <title-detail>Diddy Kong Racing Vita trophy set</title-detail>',
-            ' <group id="001"><name>Time Trial Challenges</name><detail>Optional T.T. and developer time trials.</detail></group>',
         ))
     for tid, grade, parent, group, name, detail in TROPHIES:
         attrs = f'id="{tid:03d}" hidden="no" ttype="{grade}" pid="{parent:03d}"'
@@ -198,7 +194,6 @@ def main() -> None:
         # 320x176 and individual trophy images are 240x240. LiveArea's icon
         # is only 128x128, so never insert it into the archive verbatim.
         'ICON0.PNG': resize_png(args.livearea_icon, 320, 176),
-        'GR001.PNG': resize_png(args.livearea_icon, 320, 176),
     }
     for tid, *_ in TROPHIES:
         files[f'TROP{tid:03d}.PNG'] = platinum.read_bytes() if tid == 0 else resize_png(args.livearea_icon, 240, 240)
