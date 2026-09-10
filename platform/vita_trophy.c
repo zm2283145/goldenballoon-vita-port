@@ -4,7 +4,6 @@
 
 #ifdef __vita__
 
-#include <psp2/appmgr.h>
 #include <psp2/common_dialog.h>
 #include <psp2/sysmodule.h>
 #include <vitaGL.h>
@@ -84,7 +83,11 @@ static void trophy_log(const char *format, ...) {
 }
 
 static int trophy_ready(void) {
-    char communicationId[16] = "GBLN00001_01";
+    /* sceNpTrophyCreateContext takes the nine-character title ID. The
+     * manifest's <npcommid> retains its distinct 12-character _00/_01
+     * suffix, but passing that suffix to this API causes setup to reject the
+     * otherwise valid archive. */
+    static const char communicationId[] = "GBLN00001";
     /* NoTrpDrm bypasses the per-title signature verification, but the trophy
      * service still expects the normal signature header to be present. */
     static const unsigned char signature[160] = { 0xb9, 0xdd, 0xe1, 0x3b, 0x01, 0x00 };
@@ -96,16 +99,6 @@ static int trophy_ready(void) {
      * an unresolved service was the cause of the first test build's crash. */
     result = sceSysmoduleLoadModule(SCE_SYSMODULE_NP_TROPHY);
     trophy_log("module np_trophy=0x%08X", result);
-    {
-        char appParamCommunicationId[16] = { 0 };
-        if (sceAppMgrAppParamGetString(0, 12, appParamCommunicationId,
-                                       sizeof(appParamCommunicationId)) >= 0 &&
-            strlen(appParamCommunicationId) == 12 &&
-            appParamCommunicationId[9] == '_') {
-            memcpy(communicationId, appParamCommunicationId,
-                   sizeof(communicationId));
-        }
-    }
     trophy_log("communication id=%s", communicationId);
     result = sceNpTrophyInit(NULL);
     trophy_log("init=0x%08X", result);
