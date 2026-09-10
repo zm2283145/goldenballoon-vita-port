@@ -87,6 +87,11 @@ bool Settings_drawCharacterWorkshop(SDL_Window *window,
 // where a player looks for it.
 bool Settings_drawContentPacks(SDL_Window *window, bool compact);
 
+// The installed-character accounting: how many are installed, how many enabled,
+// and every one the scan skipped with its reason. Same split as the packs list
+// above -- owned here, drawn by the Content destination.
+bool Settings_drawCustomCharacters(bool compact);
+
 bool Settings_takeCharacterWorkshopOpenRequest();
 
 // Publish the immutable numeric donor summary extracted while the launcher

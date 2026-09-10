@@ -1522,6 +1522,8 @@ void drawContentPanel(LauncherState &s, LauncherAction &out) {
     ui::GroupHeader("Characters",
                     "Racers you import or author yourself. Appearance only -- "
                     "a built-in racer still controls handling and results.");
+    (void)Settings_drawCustomCharacters(/*compact=*/false);
+    ui::Gap(ui::kGapS);
     if (ImGui::Button("Open Character Workshop", ui::kBtnWide())) {
         Launcher_requestTab(s, kLauncherPanelCharacterWorkshop,
                             kLauncherTabPlayer);

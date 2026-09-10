@@ -28716,6 +28716,10 @@ bool Settings_drawCharacterWorkshop(SDL_Window *window, bool compact) {
     return drawCustomCharactersSection(compact);
 }
 
+bool Settings_drawCustomCharacters(bool compact) {
+    return drawCustomCharactersSettingsSummary(compact);
+}
+
 bool Settings_drawContentPacks(SDL_Window *window, bool compact) {
     const MdkrModRegistry *packs = platform_content_packs_registry();
     const MdkrVideoConfig *liveConfig = mdkr_video_config_current();
@@ -30614,39 +30618,39 @@ bool Settings_draw(SDL_Window *window, bool compact) {
                                            legacyStretchActive);
     }
 
-    const MdkrModRegistry *packs = platform_content_packs_registry();
-    const MdkrVideoConfig *liveConfig = mdkr_video_config_current();
-    const char *disabledList = liveConfig != nullptr
-        ? liveConfig->values[MDKR_CONTENT_PACK_DISABLED].text : "";
-    traceContentPacks(packs, disabledList);
-    // Open when the scan found anything at all, including something it could
-    // not read. A player who installed a pack has a question this section
-    // answers; a player who has never installed one does not, and a collapsed
-    // header keeps the panel that player's size.
-    const bool anyPacks = mdkr_mod_registry_count(packs) > 0 ||
-                          mdkr_mod_registry_skipped(packs) > 0;
-    if (drawSettingsSectionHeader(
-            "Content packs",
-            "Packs that replace artwork or music, from the mods folder.",
-            anyPacks ? ImGuiTreeNodeFlags_DefaultOpen
-                     : ImGuiTreeNodeFlags_None,
-            compact)) {
-        ImGui::Unindent(ui::kGapM);  // the section helper manages its own indent
-        changed |= drawContentSection(window, compact, packs, disabledList);
-    }
-
-    if (!g_characterRegistryLoaded) refreshCharacterRegistry();
-    const bool anyCharacters =
-        mdkr_modern_character_registry_count(&g_characterRegistry) > 0 ||
-        mdkr_modern_character_registry_skipped(&g_characterRegistry) > 0;
-    if (drawSettingsSectionHeader(
-            "Custom characters",
-            "Locally authored high-fidelity character presentation.",
-            anyCharacters ? ImGuiTreeNodeFlags_DefaultOpen
-                          : ImGuiTreeNodeFlags_None,
-            compact)) {
-        ImGui::Unindent(ui::kGapM);
-        changed |= drawCustomCharactersSettingsSummary(compact);
+    /*
+     * Packs and characters moved to the Content destination, so the launcher
+     * page points at their new address rather than drawing them twice.
+     *
+     * The IN-GAME overlay keeps them. It draws this same page with compact=1,
+     * and there is no Content destination behind a paused race -- removing the
+     * rows there would have taken the durable pack switch away from the one
+     * place a player is actually looking at a pack while deciding about it.
+     * Tab is a momentary A/B, not a substitute for the setting.
+     */
+    if (compact) {
+        const MdkrModRegistry *packs = platform_content_packs_registry();
+        const MdkrVideoConfig *liveConfig = mdkr_video_config_current();
+        const char *disabledList = liveConfig != nullptr
+            ? liveConfig->values[MDKR_CONTENT_PACK_DISABLED].text : "";
+        traceContentPacks(packs, disabledList);
+        const bool anyPacks = mdkr_mod_registry_count(packs) > 0 ||
+                              mdkr_mod_registry_skipped(packs) > 0;
+        if (drawSettingsSectionHeader(
+                "Content packs",
+                "Packs that replace artwork or music, from the mods folder.",
+                anyPacks ? ImGuiTreeNodeFlags_DefaultOpen
+                         : ImGuiTreeNodeFlags_None,
+                compact)) {
+            ImGui::Unindent(ui::kGapM);
+            changed |= drawContentSection(window, compact, packs, disabledList);
+        }
+    } else {
+        ui::Gap(ui::kGapM);
+        ui::TextSubtleWrapped(
+            "Content packs and custom characters moved to Content, in the "
+            "navigation on the left.");
+        ui::Gap(ui::kGapM);
     }
 
     // --- Advanced -----------------------------------------------------------

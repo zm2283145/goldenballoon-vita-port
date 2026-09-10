@@ -156,6 +156,27 @@ def walk_launcher(executable: Path, root: Path, timeout: int) -> str:
     return run(executable, env, "launcher keyboard walk", timeout)
 
 
+def walk_content(executable: Path, root: Path, timeout: int) -> str:
+    """Full keyboard walk of the Content destination.
+
+    Content.PacksEnabled and Content.PackDisabled are schema keys like any
+    other, but they are drawn in Content rather than in Settings, so the
+    Settings walk alone cannot prove they speak. This walk covers them, and the
+    coverage check below unions the two -- a key that moves between
+    destinations must keep announcing, wherever it lands.
+    """
+    _home, env = session(root, "walk-content")
+    env.update({
+        "MDKR_APP_PANEL": "Content",
+        "MDKR_APP_SMOKE_FRAMES": str(WALK_FRAMES),
+        "MDKR_ONLINE_ROOM_PREVIEW": "1",
+        "MDKR_APP_SMOKE_A11Y_WALK": "1",
+        "MDKR_APP_SMOKE_INPUT": "keyboard",
+        "MDKR_APP_SMOKE_INPUT_TOKEN": INPUT_TOKEN,
+    })
+    return run(executable, env, "Content keyboard walk", timeout)
+
+
 def walk_panel(executable: Path, root: Path, panel: str, timeout: int) -> str:
     _home, env = session(root, f"panel-{panel}")
     env.update({
@@ -270,7 +291,8 @@ def walk_overlay(executable: Path, root: Path, rom: Path, timeout: int) -> str:
     return run(executable, env, "in-game overlay walk", timeout)
 
 
-def check_launcher(output: str, controls: list[tuple[str, str, str]]) -> str:
+def check_launcher(output: str, controls: list[tuple[str, str, str]],
+                   also: str = "") -> str:
     spoken = utterances(output)
     if not spoken:
         raise GateFailure(
@@ -281,6 +303,11 @@ def check_launcher(output: str, controls: list[tuple[str, str, str]]) -> str:
     focus = [text for category, _priority, text in spoken if category == "focus"]
     sections = [text for category, _priority, text in spoken
                 if category == "section"]
+    # Coverage spans every destination that draws schema rows; the structural
+    # assertions below stay on the launcher walk, which is the one that has an
+    # arrow-key phase and section transitions to assert about.
+    coverage = focus + [text for category, _priority, text in utterances(also)
+                        if category == "focus"]
 
     # Every control, by name AND by the value it is currently on. A row that
     # announces its name but not its setting tells a player where they are and
@@ -288,7 +315,7 @@ def check_launcher(output: str, controls: list[tuple[str, str, str]]) -> str:
     silent: list[str] = []
     valueless: list[str] = []
     for key, label, value in controls:
-        named = [text for text in focus if text.startswith(label)]
+        named = [text for text in coverage if text.startswith(label)]
         if not named:
             silent.append(f"{key} (\"{label}\")")
         elif value and not any(value in text for text in named):
@@ -403,7 +430,8 @@ def main() -> int:
             selftest_online_room_detection(root)
             controls = inventory(executable, root, args.timeout)
             launcher = check_launcher(
-                walk_launcher(executable, root, args.timeout), controls)
+                walk_launcher(executable, root, args.timeout), controls,
+                also=walk_content(executable, root, args.timeout))
             panels = check_panels(executable, root, args.timeout)
             overlay = check_overlay(
                 walk_overlay(executable, root, rom, args.timeout), controls)
