@@ -97,6 +97,26 @@ blow-by-blow.
    selection. Independently confirmed correct, but did **not** fix the
    Remastered-preset crash below — that turned out to be a separate,
    still-open issue.
+9. **Bundling LiveArea assets (icon0/bg/startup/`template.xml`) broke a
+   fresh VitaShell install every time**, with a generic `0x80104004` error
+   — confirmed via a hardware binary search to have nothing to do with the
+   image files themselves (every combination of icon0/bg/startup, with
+   plain-RGB and palette-indexed PNGs, was tested and ruled out) and
+   nothing to do with `template.xml`'s `content-id` value or its XML
+   content in general — even a maximally trivial `template.xml` still
+   broke the install. Root cause: `template.xml` used the newer
+   "frame-based" LiveArea schema (`<frame>`/`<pos>`/`<bg><img>`, with a
+   `content-id` attribute), which this project's target hardware/VitaShell
+   apparently can't register during a fresh install, even though it's
+   valid enough to not be rejected outright (the app still installs, just
+   without the background). Found by comparing against a sibling project's
+   (Render96Ex-Vita) working `template.xml`, which uses the older, simpler
+   schema instead (`<livearea-background><image>...</image></livearea-background>`,
+   `<gate><startup-image>...</startup-image></gate>`, `format-ver`/
+   `content-rev` attributes instead of `content-id`). Switching to that
+   schema fixed it — confirmed on real hardware to install cleanly from
+   fresh and display both the background and startup/gate art correctly.
+   LiveArea assets are bundled by default now (see Packaging below).
 
 Currently: the Restored preset is stable enough for normal play; the
 Remastered preset crashes on startup every time (see
@@ -107,13 +127,13 @@ blow-by-blow of everything ruled out chasing it.
 [Rinnegatamante/vitaGL](https://github.com/Rinnegatamante/vitaGL) commit
 `cd3791e` and [Rinnegatamante/vitaShaRK](https://github.com/Rinnegatamante/vitaShaRK)
 commit `df24065` (both HEAD as of 2026-08-30/2026-08-22 respectively),
-built from source rather than dpm's prebuilt packages (no make on this
+built from source rather than dpm's prebuilt packages (no make on this
 toolchain's host machine, so both are compiled via one-off scripts that
 replicate their Makefiles). Splash screen enabled (NO_SPLASHSCREEN unset)
 so the vitaGL boot logo shows on real hardware as a visual "did vitaGL
 initialize" signal. Earlier in bring-up, vitaGL HEAD alone (without
 updating vitaShaRK to match) failed to link — HEAD's
-glSetShaderAssociationPath calls shark_set_shader_association_path,
+glSetShaderAssociationPath calls shark_set_shader_association_path,
 introduced in vitaShaRK the same day but absent from the vitaShaRK version
 originally paired with this toolchain — so the two must be updated
 together, not independently.
@@ -161,27 +181,24 @@ that script gets right that a naive hand-rolled version will not:
   and audio/input/game logic all run fine, but nothing ever renders.
   Diagnosed via `mdkr_vita_boot_log` instrumentation around
   `vglInitExtended`.
-- No `-a vita/livearea/...=sce_sys/...` LiveArea-asset arguments to
-  `vita-pack-vpk` by default (`-IncludeIcons` opts back in for a
-  deliberate one-off test). Bundling them currently breaks VitaShell's
-  install on the real hardware this project is tested against — confirmed
-  twice, including once after ruling out `-Wl,-q` as the cause. The
-  placeholder `icon0.png`/`bg.png`/`startup.png` are individually
-  valid PNGs at the expected LiveArea dimensions, so this looks like a
-  `vita-pack-vpk`/VitaShell interaction rather than bad art; root cause
-  not yet isolated. Until it is, ship without LiveArea assets (Vita falls
-  back to a default icon/background).
+- LiveArea assets (`icon0.png`/`bg.png`/`startup.png`/`template.xml`) are
+  bundled into the VPK by default (pass `-NoIcons` to opt out and ship a
+  bare eboot + param.sfo VPK instead). This used to break a fresh
+  VitaShell install every time with a generic `0x80104004` error —
+  root-caused (see "Fixed so far" item 9 above) to `template.xml`'s XML
+  schema, not the image assets, and fixed by switching to the
+  `<livearea-background>`/`<gate><startup-image>` schema. Confirmed on
+  real hardware: fresh installs now succeed and both the background and
+  gate art display correctly.
 
 ```powershell
 vita-mksfoex -s TITLE_ID=GBLN00001 -d ATTRIBUTE2=12 "GoldenBalloon DKR" build-vita/param.sfo   # one-time / only if param.sfo is missing
-pwsh -File tools/package_vita.ps1 -BuildDir build-vita
+pwsh -File tools/package_vita.ps1 -BuildDir build-vita   # bundles LiveArea assets by default; add -NoIcons to omit them
 ```
 
-`vita/livearea/*.png` are **programmatically generated placeholders**
-(solid background + wordmark text), not final art, and are currently
-unused in packaging for the reason above. `vita/livearea/gen_livearea_assets.py`
-(not committed; available on request) regenerates them if needed once the
-install-failure cause is found and fixed.
+`vita/livearea/*.png` are original "Golden Balloon" themed art (a hot-air
+balloon, checkered-finish-line motif, and an original character/logo
+treatment — no Nintendo/Rare IP), committed alongside `template.xml`.
 
 **ROM placement:** the engine looks for the ROM at a fixed path on Vita —
 `ux0:data/goldenballoon/baserom.us.v80.z64` — since there is no in-app
@@ -367,8 +384,7 @@ starting point — but all of it is unverified:
 4. Work the rest of the "needs hardware verification" list above —
    audio in gameplay and performance under DKR's heavier particle/HUD
    draws are the two biggest unknowns left.
-5. Replace the placeholder LiveArea art in `vita/livearea/` with real art.
-6. If a native ROM-picker/launcher UI is wanted eventually (rather than the
+5. If a native ROM-picker/launcher UI is wanted eventually (rather than the
    fixed-path `--rom`/`DEFAULT_ROM` convention used for this first cut), it
    would need to be built from scratch against `vita2d`/`SceCommonDialog`
    rather than reusing `MDKR_APP`'s ImGui launcher, which is desktop-only.
