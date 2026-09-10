@@ -8,6 +8,7 @@
 #include "vita_trophy.h"
 #ifdef MDKR_VITA_IMGUI_OVERLAY
 #include "vita_imgui_overlay.h"
+#include "vita_save_editor_bridge.h"
 #endif
 #include "taj_mod.h"
 #include "taj_physics.h"
@@ -4974,6 +4975,14 @@ void optionscreen_free(void) {
 #endif
 }
 
+#ifdef MDKR_VITA_IMGUI_OVERLAY
+void mdkr_vita_save_editor_open_classic(void) {
+    mdkr_vita_imgui_overlay_close();
+    optionscreen_free();
+    menu_init(MENU_SAVE_EDITOR);
+}
+#endif
+
 #ifdef NATIVE_PORT
 /*
  * Controller-first Adventure save editor.
@@ -6153,6 +6162,14 @@ s32 menu_save_editor_loop(s32 updateRate) {
         gIgnorePlayerInputTime = 0;
         return MENU_RESULT_CONTINUE;
     }
+#ifdef MDKR_VITA_IMGUI_OVERLAY
+    /* L+R is otherwise unused by this editor. It is an intentional chord so
+     * normal cursor navigation cannot accidentally swap presentations. */
+    if ((buttonsPressed & (L_TRIG | R_TRIG)) == (L_TRIG | R_TRIG)) {
+        mdkr_vita_imgui_overlay_open();
+        return MENU_RESULT_CONTINUE;
+    }
+#endif
     if (buttonsPressed & B_BUTTON ||
         ((buttonsPressed & (A_BUTTON | START_BUTTON)) &&
          sSaveEditorOption == SAVE_EDITOR_RETURN)) {
