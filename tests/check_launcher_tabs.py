@@ -110,23 +110,26 @@ def selected_components(path: Path) -> tuple[int, int, int, int, int, int, int]:
     # both blended colors across most of the window, then require many direct
     # color transitions so two solid half-lines cannot impersonate the quiet
     # checkered gantry motif.
+    #
+    # These are BLENDED constants, not the palette: BrandRule draws its tiles at
+    # alpha over AppTheme::raised() (0x1E1E22). At the current 0.85 that is
+    #   gold   = 0.85*(212,168,67) + 0.15*(30,30,34) = (185, 147, 62)
+    #   cobalt = 0.85*( 49, 92,152) + 0.15*(30,30,34) = ( 46,  83, 134)
+    # A change to that alpha moves every channel and MUST update these two
+    # tuples with it -- the previous 0.72 pair was (161,129,58)/(44,75,119),
+    # more than the 8-unit tolerance away, so the mismatch reads as "the motif
+    # is missing" rather than as "the colour moved".
     rule_found = False
     for y in range(int(height * 0.07), int(height * 0.15)):
         classified: list[int] = []
         for x in range(width):
             color = bitmap.pixels[y * width + x]
-            if near(color, (161, 129, 57)):
+            if near(color, (185, 147, 62)):
                 classified.append(1)
-            elif near(color, (43, 74, 118)):
+            elif near(color, (46, 83, 134)):
                 classified.append(2)
             else:
                 classified.append(0)
-        colored = sum(value != 0 for value in classified)
-        transitions = sum(
-            classified[x] != 0 and classified[x - 1] != 0 and
-            classified[x] != classified[x - 1]
-            for x in range(1, width)
-        )
         # The motif is now an ACCENT, not a band: a short checkered flag at the
         # leading edge anchoring a hairline that spans the rule. A full-width
         # alternating row was the old shape -- at 4px tiles it read as a

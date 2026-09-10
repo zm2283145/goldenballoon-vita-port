@@ -358,17 +358,22 @@ void drawPrimaryLauncherAction(LauncherState &state, const ImVec2 &size,
     }
     if (busy) ImGui::BeginDisabled();
     /*
-     * One gold action per screen. The rail's action is gold when it is the only
-     * primary on screen, and yields to secondary when the destination's own
-     * page owns one: the Play home draws a gold "Choose your game file" in its
-     * first-run state, and a second gold "Choose ROM" beside it in the rail was
-     * two primary actions competing for the identical job. The Workshop's page
-     * has no gold of its own, so the rail keeps it there.
+     * Always gold. This is the launcher's persistent primary action -- the one
+     * control present on every destination, in the same place, whatever state
+     * the app is in.
+     *
+     * An earlier revision made it secondary whenever the Play home drew its own
+     * gold "Choose your game file", reasoning that one screen should hold one
+     * primary. That reasoning was right about the Play home and wrong about
+     * everywhere else: Settings, Content and About & support draw no gold of
+     * their own, so the rule left those destinations with no primary action at
+     * all. It also silently disarmed tests/check_launcher_tabs.py, whose
+     * primary_action_taper exists to prove THIS control is not clipped by its
+     * container and finds it by being the largest gold component in the header.
+     * Two golds offering the same action is a much smaller cost than a screen
+     * with none and a gate that no longer measures what it was written for.
      */
-    const bool railOwnsThePrimary = workshopActive || ready;
-    const bool pressed = railOwnsThePrimary
-                             ? ui::BrandPrimaryButton(label, size)
-                             : ImGui::Button(label, size);
+    const bool pressed = ui::BrandPrimaryButton(label, size);
     if (busy) ImGui::EndDisabled();
     if (g_characterWorkshopReturnFocusRequested && workshopActive && !busy) {
         g_characterWorkshopReturnFocusRequested = false;
@@ -1511,6 +1516,37 @@ void installContentPack(const char *modsDirectory) {
         return;
     }
     failure.clear();
+
+    /*
+     * Refuse a source that CONTAINS the destination. "Open mods folder" sits
+     * beside this button, so picking the mods folder itself is one slip away,
+     * and std::filesystem::copy does not guard the case: a recursive copy of a
+     * directory into itself walks mods/mods/mods/... until the path limit or
+     * the disk gives out, with the launcher frozen on the render thread for
+     * every second of it.
+     */
+    {
+        std::error_code resolving;
+        const fs::path sourceReal = fs::weakly_canonical(source, resolving);
+        const fs::path modsReal =
+            fs::weakly_canonical(fs::path(modsDirectory), resolving);
+        if (!resolving) {
+            auto within = [](const fs::path &child, const fs::path &parent) {
+                auto c = child.begin(), cend = child.end();
+                for (auto p = parent.begin(), pend = parent.end(); p != pend;
+                     ++p, ++c) {
+                    if (c == cend || *c != *p) return false;
+                }
+                return true;
+            };
+            if (within(modsReal, sourceReal)) {
+                g_packInstallNote =
+                    "That folder contains your mods folder, so copying it into "
+                    "itself would never finish. Choose the pack itself.";
+                return;
+            }
+        }
+    }
 
     const bool directory = fs::is_directory(source, failure);
     failure.clear();

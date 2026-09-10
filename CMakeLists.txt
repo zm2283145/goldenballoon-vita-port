@@ -2593,8 +2593,8 @@ if(NOT EMSCRIPTEN)
                 add_test(NAME app_top_tabs_smoke COMMAND ${MDKR_TARGET})
                 set_tests_properties(app_top_tabs_smoke PROPERTIES
                     FIXTURES_SETUP app_top_tabs_capture
-                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_top_tabs.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=800x600;MDKR_APP_PANEL=Play;MDKR_ONLINE_ROOM_PREVIEW=1;MDKR_APP_SMOKE_NAV_TARGET=1;MDKR_APP_SMOKE_NAV_TOKEN=mdkr64-app-nav-v1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/top-tabs/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/top-tabs/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/top-tabs/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
-                    PASS_REGULAR_EXPRESSION "top navigation target=1 actual=1 queued=1"
+                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_top_tabs.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=800x600;MDKR_APP_PANEL=Play;MDKR_ONLINE_ROOM_PREVIEW=1;MDKR_APP_SMOKE_NAV_TARGET=2;MDKR_APP_SMOKE_NAV_TOKEN=mdkr64-app-nav-v1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/top-tabs/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/top-tabs/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/top-tabs/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    PASS_REGULAR_EXPRESSION "top navigation target=2 actual=2 queued=1"
                     LABELS gpu
                     TIMEOUT 180)
                 add_test(NAME app_top_tabs_content
@@ -2610,8 +2610,8 @@ if(NOT EMSCRIPTEN)
                 add_test(NAME app_top_tabs_scale075_smoke COMMAND ${MDKR_TARGET})
                 set_tests_properties(app_top_tabs_scale075_smoke PROPERTIES
                     FIXTURES_SETUP app_top_tabs_scale075_capture
-                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_top_tabs_scale075.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=640x480;MDKR_APP_PANEL=Play;MDKR_ONLINE_ROOM_PREVIEW=1;MDKR_APP_SMOKE_NAV_TARGET=1;MDKR_APP_SMOKE_NAV_TOKEN=mdkr64-app-nav-v1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/top-tabs-small/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/top-tabs-small/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/top-tabs-small/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
-                    PASS_REGULAR_EXPRESSION "top navigation target=1 actual=1 queued=1"
+                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_top_tabs_scale075.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=640x480;MDKR_APP_PANEL=Play;MDKR_ONLINE_ROOM_PREVIEW=1;MDKR_APP_SMOKE_NAV_TARGET=2;MDKR_APP_SMOKE_NAV_TOKEN=mdkr64-app-nav-v1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/top-tabs-small/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/top-tabs-small/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/top-tabs-small/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    PASS_REGULAR_EXPRESSION "top navigation target=2 actual=2 queued=1"
                     LABELS gpu
                     TIMEOUT 180)
                 add_test(NAME app_top_tabs_scale075_content

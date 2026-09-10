@@ -2003,9 +2003,11 @@ bool drawContentSection(SDL_Window *window, bool compact,
 
     ui::Gap(ui::kGapS);
     if (!compact) {
+        // "there" used to refer to a preceding sentence naming the mods folder.
+        // The Content destination names the folder directly above this, with a
+        // button that opens it, so the reference had nothing left to point at.
         ui::TextSubtleWrapped(
-            
-            "Everything found there is listed below, installed or skipped "
+            "Everything in that folder is listed below, installed or skipped "
             "with the reason.");
     }
     ui::Gap(ui::kGapS);
@@ -27937,14 +27939,19 @@ bool drawCustomCharactersSection(bool compact) {
                 "[app-ui] character-import-focus shortcut=1 mutation=0\n");
         }
     }
-    // The marker sits on the same line as the sentence it explains. After a
-    // WRAPPED paragraph it starts a line of its own, which is how a bare "(?)"
-    // ended up floating in the middle of the panel with nothing beside it.
-    ui::TextSubtleWrapped(
-        "Custom characters change appearance only. A built-in racer still controls handling, voice, records, and online play.");
-    ImGui::SameLine();
+    /*
+     * The marker LEADS the sentence it explains. Trailing it with SameLine()
+     * looks right until the paragraph wraps: ImGui sizes a wrapped text item by
+     * its widest line, so the next item lands at the wrap boundary rather than
+     * after the last word, and at narrow widths the marker is pushed off the
+     * content region entirely. Leading it is width-independent, and it still
+     * cannot become the bare "(?)" on an empty line that it was before.
+     */
     ui::HelpMarker(
         "The selected fingerprint-qualified built-in donor remains authoritative for simulation, collision, audio, ghosts, records, and network/rollback identity. The package is local presentation and requires no second ROM.");
+    ImGui::SameLine();
+    ui::TextSubtleWrapped(
+        "Custom characters change appearance only. A built-in racer still controls handling, voice, records, and online play.");
     ui::TextSubtleWrapped(
         "A keyboard is required to enter source paths, names, and license details. Assigning, enabling, and testing an installed character is fully navigable with a controller.");
     if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
@@ -27978,10 +27985,14 @@ bool drawCustomCharactersSection(bool compact) {
     }
     if (!g_characterImportCandidate.ready && !characterWorkBusy) {
         // A keyboard/controller reference is something you look up once, not a
-        // paragraph every visitor reads past on the way to the controls.
-        ImGui::SameLine();
+        // paragraph every visitor reads past on the way to the controls. It
+        // gets its own line rather than a SameLine() onto whichever wrapped
+        // paragraph happened to draw last -- which differed depending on the
+        // renderer-warning branch above.
         ui::HelpMarker(
             "Shortcuts: Ctrl/Cmd+I or controller Back/View focuses Import. Esc or controller B focuses launcher actions. Confirm separately.");
+        ImGui::SameLine();
+        ui::TextSubtle("Keyboard and controller shortcuts");
     }
     if (characterWorkBusy) {
         if (ui::CardBegin("##character-manager-running", AppTheme::accent(),

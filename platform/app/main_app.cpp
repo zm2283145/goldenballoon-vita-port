@@ -4484,11 +4484,26 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
     }
     if (smokeNavigation) {
         const int actualPanel = launcher.activePanelForSmoke();
+        /*
+         * The top navigation offers DESTINATIONS, so a panel target means "go
+         * to the destination that owns this panel". Comparing panel indices
+         * asserted something the interface no longer promises: Online Room is
+         * reached from inside Play, and no width of window gives it a tab of
+         * its own.
+         *
+         * Choose a target whose destination differs from the starting panel's,
+         * or this proves nothing -- landing where you already were satisfies
+         * any destination comparison. The registered gates target Settings from
+         * Play for exactly that reason.
+         */
+        const AppUiDestination wanted =
+            AppUi_destinationForPanel(static_cast<int>(smokeNavigationPanel));
+        const AppUiDestination reached = AppUi_destinationForPanel(actualPanel);
         std::printf(
             "[app-ui-test] top navigation target=%ld actual=%d queued=%d\n",
             smokeNavigationPanel, actualPanel,
             smokeNavigationQueued ? 1 : 0);
-        if (!smokeNavigationQueued || actualPanel != smokeNavigationPanel) {
+        if (!smokeNavigationQueued || reached != wanted) {
             renderOk = false;
         }
     }

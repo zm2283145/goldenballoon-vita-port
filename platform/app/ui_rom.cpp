@@ -264,6 +264,19 @@ void drawAcquisition(LauncherState &s, bool haveRom) {
         ui::Gap(ui::kGapM);
     }
 
+    /*
+     * g_note is drawn HERE, outside the disclosure. It is written from three
+     * places that have nothing to do with typing a path -- a dropped file whose
+     * path is longer than the platform can open, a cancelled ROM check, and the
+     * forget-remembered-ROM confirmation -- and while its only render site sat
+     * inside a TreeNode that is collapsed by default, every one of those wrote
+     * a sentence the player never saw.
+     */
+    if (!g_note.empty()) {
+        ui::TextSubtleUnformattedWrapped(g_note.c_str());
+        ui::Gap(ui::kGapS);
+    }
+
     // Closed by default: a player who needs it knows they need it, and a player
     // who does not should never have to read past it to reach Play.
     const bool openByDefault = !filedialog::isAvailable();
@@ -295,10 +308,6 @@ void drawAcquisition(LauncherState &s, bool haveRom) {
                 g_note.clear();
                 RomPanel_setRom(s, g_pathInput.c_str());
             }
-        }
-        if (!g_note.empty()) {
-            ui::Gap(ui::kGapS);
-            ui::TextSubtle("%s", g_note.c_str());
         }
         ImGui::TreePop();
     }
@@ -772,16 +781,46 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
          * is not told they have none; that is noise, not information.
          */
         const MdkrModRegistry *packs = platform_content_packs_registry();
-        const int packCount = mdkr_mod_registry_count(packs);
         const MdkrVideoConfig *live = mdkr_video_config_current();
         const bool packsOn = live == nullptr ||
             live->values[MDKR_CONTENT_PACKS_ENABLED].number != 0.0f;
-        char packText[64] = {0};
-        if (packCount > 0) {
-            std::snprintf(packText, sizeof packText,
-                          packsOn ? "%d pack%s" : "%d pack%s, switched off",
-                          packCount, packCount == 1 ? "" : "s");
+        const char *disabledList = live != nullptr
+            ? live->values[MDKR_CONTENT_PACK_DISABLED].text : "";
+        /*
+         * Count what will actually be APPLIED, not what was found. There are
+         * two independent off switches -- the global Custom content toggle and
+         * the per-pack Skipped packs list -- and counting only installations
+         * told a player with three individually skipped packs that three packs
+         * were about to apply. That is precisely the state this line exists to
+         * end, so it has to consult the same list drawContentSection does.
+         */
+        const int installed = mdkr_mod_registry_count(packs);
+        int active = 0;
+        for (int i = 0; i < installed; ++i) {
+            const MdkrModEntry *entry = mdkr_mod_registry_entry(packs, i);
+            if (entry == nullptr) continue;
+            if (platform_content_pack_name_disabled(disabledList,
+                                                    entry->manifest.name)) {
+                continue;
+            }
+            ++active;
         }
+        char packText[80] = {0};
+        if (installed > 0) {
+            if (!packsOn) {
+                std::snprintf(packText, sizeof packText,
+                              "%d pack%s, switched off", installed,
+                              installed == 1 ? "" : "s");
+            } else if (active == 0) {
+                std::snprintf(packText, sizeof packText,
+                              "%d pack%s, all skipped", installed,
+                              installed == 1 ? "" : "s");
+            } else {
+                std::snprintf(packText, sizeof packText, "%d pack%s",
+                              active, active == 1 ? "" : "s");
+            }
+        }
+        const bool packsApplying = packsOn && active > 0;
 
         if (ui::CardBegin("##willlaunch", AppTheme::surface(), 0.0f)) {
             ui::TextSubtle("This launch");
@@ -794,7 +833,7 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
                 ImGui::SameLine();
                 ui::TextSubtle("  \xE2\x80\xA2  ");
                 ImGui::SameLine();
-                if (packsOn) {
+                if (packsApplying) {
                     ImGui::TextUnformatted(packText);
                 } else {
                     ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::warn());
