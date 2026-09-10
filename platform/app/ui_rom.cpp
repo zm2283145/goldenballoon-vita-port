@@ -42,6 +42,8 @@
 #include "file_dialog.h"
 #include "ui_common.h"
 #include "ui_hero.h"
+#include "../mod_registry.h"
+#include "../platform_os.h"
 #include "ui_phone_party.h"
 #include "ui_settings.h"
 #include "video_config.h"
@@ -759,6 +761,28 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
         // carries no self-voicing of its own -- both values are announced where
         // they are set, under Settings > Display -- and voicing a non-focusable
         // line here only ever produced dead code that could not fire.
+        /*
+         * Installed packs belong on this line for the same reason the other two
+         * do: they change what the player is about to see, and a pack that is
+         * installed but switched OFF is the single most confusing state this
+         * product has -- the folder has it, the game does not show it. Named
+         * here, before Play, that state can no longer be a surprise.
+         *
+         * Silent when nothing is installed. A player who has never added a pack
+         * is not told they have none; that is noise, not information.
+         */
+        const MdkrModRegistry *packs = platform_content_packs_registry();
+        const int packCount = mdkr_mod_registry_count(packs);
+        const MdkrVideoConfig *live = mdkr_video_config_current();
+        const bool packsOn = live == nullptr ||
+            live->values[MDKR_CONTENT_PACKS_ENABLED].number != 0.0f;
+        char packText[64] = {0};
+        if (packCount > 0) {
+            std::snprintf(packText, sizeof packText,
+                          packsOn ? "%d pack%s" : "%d pack%s, switched off",
+                          packCount, packCount == 1 ? "" : "s");
+        }
+
         if (ui::CardBegin("##willlaunch", AppTheme::surface(), 0.0f)) {
             ui::TextSubtle("This launch");
             ImGui::TextUnformatted(mode);
@@ -766,6 +790,18 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
             ui::TextSubtle("  \xE2\x80\xA2  ");
             ImGui::SameLine();
             ImGui::TextUnformatted(rate);
+            if (packText[0] != '\0') {
+                ImGui::SameLine();
+                ui::TextSubtle("  \xE2\x80\xA2  ");
+                ImGui::SameLine();
+                if (packsOn) {
+                    ImGui::TextUnformatted(packText);
+                } else {
+                    ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::warn());
+                    ImGui::TextUnformatted(packText);
+                    ImGui::PopStyleColor();
+                }
+            }
             ui::CardEnd();
         }
         ui::Gap(ui::kGapS);
