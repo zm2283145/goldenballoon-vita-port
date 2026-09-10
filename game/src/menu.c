@@ -4968,37 +4968,80 @@ void optionscreen_free(void) {
 /*
  * Controller-first Adventure save editor.
  *
- * This first native screen intentionally exposes the most common safe edit:
- * the five world balloon counters. It edits a private set of menu values and
- * only writes when the player selects APPLY CHANGES. The real save codec and
- * checksum writer remain authoritative through write_save_data(); no raw
- * EEPROM bytes or host paths are touched here.
+ * The editor changes the same saved track and world-progress flags used by
+ * Adventure mode. Balloon totals follow completed track/cup rewards instead
+ * of accepting arbitrary numbers. It edits private menu values and only writes
+ * when the player selects APPLY CHANGES. The real save codec and checksum
+ * writer remain authoritative through write_save_data(); no raw EEPROM bytes
+ * or host paths are touched here.
  */
 enum {
     SAVE_EDITOR_SLOT = 0,
-    SAVE_EDITOR_DINO_DOMAIN,
-    SAVE_EDITOR_SHERBET_ISLAND,
-    SAVE_EDITOR_SNOWFLAKE_MOUNTAIN,
-    SAVE_EDITOR_DRAGON_FOREST,
-    SAVE_EDITOR_FUTURE_FUN_LAND,
+    SAVE_EDITOR_PAGE,
+    SAVE_EDITOR_WORLD,
+    SAVE_EDITOR_TRACK,
+    SAVE_EDITOR_TRACK_PROGRESS,
+    SAVE_EDITOR_WORLD_PROGRESS_ONE,
+    SAVE_EDITOR_WORLD_PROGRESS_TWO,
     SAVE_EDITOR_APPLY,
     SAVE_EDITOR_RETURN,
     SAVE_EDITOR_OPTION_COUNT
 };
 
 #define SAVE_EDITOR_WORLD_COUNT 6
-#define SAVE_EDITOR_BALLOON_LIMIT 99
+#define SAVE_EDITOR_ADVENTURE_WORLD_COUNT 5
+#define SAVE_EDITOR_TRACKS_PER_WORLD 4
+
+/* Four adventure worlds contain four race balloons, four silver-coin
+ * balloons, and one trophy balloon. Future Fun Land has those nine plus the
+ * two Wizpig race balloons. Keeping the editor within these limits also keeps
+ * the recomputed overall count at the game's real maximum of 47. */
+static const s16 sSaveEditorBalloonLimits[SAVE_EDITOR_WORLD_COUNT] = {
+    47, 9, 9, 9, 9, 11
+};
+
+/* These are the authored Adventure track IDs, in the game world's own order
+ * (Dino, Sherbet, Snowflake, Dragon, Future Fun Land). Keeping this small
+ * table here avoids guessing from a UI order or mutating unrelated levels. */
+static const u8 sSaveEditorTrackIds[SAVE_EDITOR_ADVENTURE_WORLD_COUNT]
+                                    [SAVE_EDITOR_TRACKS_PER_WORLD] = {
+    { 5, 3, 29, 7 },
+    { 8, 4, 10, 30 },
+    { 13, 6, 9, 28 },
+    { 19, 18, 20, 31 },
+    { 17, 32, 33, 15 }
+};
+
+static char *const sSaveEditorTrackNames[SAVE_EDITOR_ADVENTURE_WORLD_COUNT]
+                                         [SAVE_EDITOR_TRACKS_PER_WORLD] = {
+    { "ANCIENT LAKE", "FOSSIL CANYON", "JUNGLE FALLS", "HOT TOP VOLCANO" },
+    { "WHALE BAY", "PIRATE LAGOON", "CRESCENT ISLAND", "TREASURE CAVES" },
+    { "EVERFROST PEAK", "WALRUS COVE", "SNOWBALL VALLEY", "FROSTY VILLAGE" },
+    { "BOULDER CANYON", "GREENWOOD VILLAGE", "WINDMILL PLAINS", "HAUNTED WOODS" },
+    { "SPACEDUST ALLEY", "DARKMOON CAVERNS", "STAR CITY", "SPACEPORT ALPHA" }
+};
 
 static s16 sSaveEditorBalloons[NUMBER_OF_SAVE_FILES][SAVE_EDITOR_WORLD_COUNT];
+static s32 sSaveEditorTrackFlags[NUMBER_OF_SAVE_FILES]
+                                 [SAVE_EDITOR_ADVENTURE_WORLD_COUNT]
+                                 [SAVE_EDITOR_TRACKS_PER_WORLD];
+static u16 sSaveEditorTrophies[NUMBER_OF_SAVE_FILES];
+static u16 sSaveEditorBosses[NUMBER_OF_SAVE_FILES];
 static s32 sSaveEditorSlot;
 static s32 sSaveEditorOption;
+static s32 sSaveEditorPage;
+static s32 sSaveEditorWorld;
+static s32 sSaveEditorTrack;
 static s32 sSaveEditorDirty;
 static s32 sSaveEditorApplyArmed;
 static char *sSaveEditorStatus;
 
+static void save_editor_recompute_total_balloons(void);
+
 static void save_editor_load_slot(s32 slot) {
     Settings *settings;
     s32 world;
+    s32 track;
 
     if (slot < 0 || slot >= NUMBER_OF_SAVE_FILES) return;
     settings = gSavefileData[slot];
@@ -5006,6 +5049,14 @@ static void save_editor_load_slot(s32 slot) {
     for (world = 0; world < SAVE_EDITOR_WORLD_COUNT; world++) {
         sSaveEditorBalloons[slot][world] = settings->balloonsPtr[world];
     }
+    for (world = 0; world < SAVE_EDITOR_ADVENTURE_WORLD_COUNT; world++) {
+        for (track = 0; track < SAVE_EDITOR_TRACKS_PER_WORLD; track++) {
+            sSaveEditorTrackFlags[slot][world][track] =
+                settings->courseFlagsPtr[sSaveEditorTrackIds[world][track]];
+        }
+    }
+    sSaveEditorTrophies[slot] = settings->trophies;
+    sSaveEditorBosses[slot] = settings->bosses;
     sSaveEditorDirty = FALSE;
     sSaveEditorApplyArmed = FALSE;
     sSaveEditorStatus = settings->newGame
@@ -5016,19 +5067,24 @@ static void save_editor_load_slot(s32 slot) {
 static void save_editor_apply(void) {
     Settings *settings = gSavefileData[sSaveEditorSlot];
     s32 world;
-    s32 total = 0;
+    s32 track;
 
     if (settings->newGame) {
         sSaveEditorStatus = "START A GAME BEFORE EDITING THIS SLOT";
         return;
     }
-    for (world = 1; world < SAVE_EDITOR_WORLD_COUNT; world++) {
-        total += sSaveEditorBalloons[sSaveEditorSlot][world];
-    }
-    sSaveEditorBalloons[sSaveEditorSlot][0] = (s16)total;
+    save_editor_recompute_total_balloons();
     for (world = 0; world < SAVE_EDITOR_WORLD_COUNT; world++) {
         settings->balloonsPtr[world] = sSaveEditorBalloons[sSaveEditorSlot][world];
     }
+    for (world = 0; world < SAVE_EDITOR_ADVENTURE_WORLD_COUNT; world++) {
+        for (track = 0; track < SAVE_EDITOR_TRACKS_PER_WORLD; track++) {
+            settings->courseFlagsPtr[sSaveEditorTrackIds[world][track]] =
+                sSaveEditorTrackFlags[sSaveEditorSlot][world][track];
+        }
+    }
+    settings->trophies = sSaveEditorTrophies[sSaveEditorSlot];
+    settings->bosses = sSaveEditorBosses[sSaveEditorSlot];
     if (write_save_data(sSaveEditorSlot, settings) != 0) {
         /* The slot writer did not commit. Restore the cache so a later menu
          * screen cannot observe a draft as though it had been saved. */
@@ -5036,6 +5092,14 @@ static void save_editor_apply(void) {
         for (world = 0; world < SAVE_EDITOR_WORLD_COUNT; world++) {
             sSaveEditorBalloons[sSaveEditorSlot][world] = settings->balloonsPtr[world];
         }
+        for (world = 0; world < SAVE_EDITOR_ADVENTURE_WORLD_COUNT; world++) {
+            for (track = 0; track < SAVE_EDITOR_TRACKS_PER_WORLD; track++) {
+                sSaveEditorTrackFlags[sSaveEditorSlot][world][track] =
+                    settings->courseFlagsPtr[sSaveEditorTrackIds[world][track]];
+            }
+        }
+        sSaveEditorTrophies[sSaveEditorSlot] = settings->trophies;
+        sSaveEditorBosses[sSaveEditorSlot] = settings->bosses;
         sSaveEditorDirty = FALSE;
         sSaveEditorApplyArmed = FALSE;
         sSaveEditorStatus = "SAVE FAILED - NO CHANGES APPLIED";
@@ -5049,15 +5113,54 @@ static void save_editor_apply(void) {
     sSaveEditorStatus = "SAVE UPDATED";
 }
 
+/* One finished track awards its gold balloon; its completed coin challenge
+ * awards the second. The status is deliberately a single legal progression
+ * ladder so a save can never contain coins without a prior race win. */
+static s32 save_editor_track_progress(s32 flags) {
+    if (flags & RACE_CLEARED_SILVER_COINS) return 2;
+    if (flags & RACE_CLEARED) return 1;
+    return 0;
+}
+
+static void save_editor_adjust_world_balloons(s32 world, s32 delta) {
+    s16 *value = &sSaveEditorBalloons[sSaveEditorSlot][world + 1];
+    *value = (s16)(*value + delta);
+    if (*value < 0) *value = 0;
+    if (*value > sSaveEditorBalloonLimits[world + 1]) {
+        *value = sSaveEditorBalloonLimits[world + 1];
+    }
+}
+
+static void save_editor_recompute_total_balloons(void) {
+    s32 world;
+    s32 total = 0;
+
+    for (world = 1; world < SAVE_EDITOR_WORLD_COUNT; world++) {
+        total += sSaveEditorBalloons[sSaveEditorSlot][world];
+    }
+    if (total > sSaveEditorBalloonLimits[0]) total = sSaveEditorBalloonLimits[0];
+    sSaveEditorBalloons[sSaveEditorSlot][0] = (s16)total;
+}
+
 static void save_editor_render(void) {
-    static char *const labels[] = {
-        "SAVE FILE", "DINO DOMAIN", "SHERBET ISLAND", "SNOWFLAKE MOUNTAIN",
-        "DRAGON FOREST", "FUTURE FUN LAND", "APPLY CHANGES", "RETURN"
+    static char *const trackLabels[] = {
+        "SAVE FILE", "EDIT MODE", "WORLD", "TRACK", "TRACK RESULT",
+        "WORLD BALLOONS", "TOTAL BALLOONS", "APPLY CHANGES", "RETURN"
     };
+    static char *const progressLabels[] = {
+        "SAVE FILE", "EDIT MODE", "WORLD", "CUP RESULT", "BOSS ONE",
+        "BOSS REMATCH", "", "APPLY CHANGES", "RETURN"
+    };
+    static char *const worldNames[] = {
+        "DINO DOMAIN", "SHERBET ISLAND", "SNOWFLAKE MOUNTAIN",
+        "DRAGON FOREST", "FUTURE FUN LAND"
+    };
+    static char *const trackProgress[] = { "NOT STARTED", "RACE WON", "SILVER COINS" };
+    static char *const trophyRanks[] = { "NONE", "3RD", "2ND", "1ST" };
     char value[48];
     s32 option;
     s32 highlight;
-    s32 yPos = 54;
+    s32 yPos = 48;
 
     set_text_font(ASSET_FONTS_BIGFONT);
     set_text_background_colour(0, 0, 0, 0);
@@ -5071,19 +5174,49 @@ static void save_editor_render(void) {
     highlight = gOptionBlinkTimer * 8;
     if (highlight >= 256) highlight = 511 - highlight;
     set_text_font(ASSET_FONTS_FUNFONT);
-    for (option = 0; option < SAVE_EDITOR_OPTION_COUNT; option++, yPos += 18) {
+    for (option = 0; option < SAVE_EDITOR_OPTION_COUNT; option++, yPos += 16) {
         if (option == sSaveEditorOption) {
             set_text_colour(255, 255, 255, highlight, 255);
         } else {
             set_text_colour(255, 255, 255, 0, 255);
         }
-        draw_text(&sMenuCurrDisplayList, 32, yPos, labels[option], ALIGN_TOP_LEFT);
+        draw_text(&sMenuCurrDisplayList, 32, yPos,
+                  sSaveEditorPage == 0 ? trackLabels[option]
+                                       : progressLabels[option], ALIGN_TOP_LEFT);
         if (option == SAVE_EDITOR_SLOT) {
             snprintf(value, sizeof(value), "%d", sSaveEditorSlot + 1);
-        } else if (option >= SAVE_EDITOR_DINO_DOMAIN &&
-                   option <= SAVE_EDITOR_FUTURE_FUN_LAND) {
-            snprintf(value, sizeof(value), "%d",
-                     sSaveEditorBalloons[sSaveEditorSlot][option]);
+        } else if (option == SAVE_EDITOR_PAGE) {
+            snprintf(value, sizeof(value), "%s",
+                     sSaveEditorPage == 0 ? "TRACKS" : "WORLD PROGRESS");
+        } else if (option == SAVE_EDITOR_WORLD) {
+            snprintf(value, sizeof(value), "%s", worldNames[sSaveEditorWorld]);
+        } else if (sSaveEditorPage == 0 && option == SAVE_EDITOR_TRACK) {
+            snprintf(value, sizeof(value), "%s",
+                     sSaveEditorTrackNames[sSaveEditorWorld][sSaveEditorTrack]);
+        } else if (sSaveEditorPage == 0 && option == SAVE_EDITOR_TRACK_PROGRESS) {
+            snprintf(value, sizeof(value), "%s", trackProgress[save_editor_track_progress(
+                sSaveEditorTrackFlags[sSaveEditorSlot][sSaveEditorWorld][sSaveEditorTrack])]);
+        } else if (sSaveEditorPage == 0 && option == SAVE_EDITOR_WORLD_PROGRESS_ONE) {
+            snprintf(value, sizeof(value), "%d/%d",
+                     sSaveEditorBalloons[sSaveEditorSlot][sSaveEditorWorld + 1],
+                     sSaveEditorBalloonLimits[sSaveEditorWorld + 1]);
+        } else if (sSaveEditorPage == 0 && option == SAVE_EDITOR_WORLD_PROGRESS_TWO) {
+            snprintf(value, sizeof(value), "%d/%d",
+                     sSaveEditorBalloons[sSaveEditorSlot][0],
+                     sSaveEditorBalloonLimits[0]);
+        } else if (sSaveEditorPage != 0 && option == SAVE_EDITOR_TRACK) {
+            snprintf(value, sizeof(value), "%s", trophyRanks[
+                (sSaveEditorTrophies[sSaveEditorSlot] >> (sSaveEditorWorld * 2)) & 3]);
+        } else if (sSaveEditorPage != 0 &&
+                   (option == SAVE_EDITOR_TRACK_PROGRESS ||
+                    option == SAVE_EDITOR_WORLD_PROGRESS_ONE)) {
+            const u16 firstBit = (u16)(sSaveEditorWorld == 4 ? 1u :
+                                        (1u << (sSaveEditorWorld + 1)));
+            const u16 secondBit = (u16)(sSaveEditorWorld == 4 ? (1u << 5) :
+                                         (1u << (sSaveEditorWorld + 7)));
+            const u16 bit = option == SAVE_EDITOR_TRACK_PROGRESS ? firstBit : secondBit;
+            snprintf(value, sizeof(value), "%s",
+                     (sSaveEditorBosses[sSaveEditorSlot] & bit) ? "COMPLETE" : "NOT DONE");
         } else {
             value[0] = '\0';
         }
@@ -5092,11 +5225,11 @@ static void save_editor_render(void) {
         }
     }
     set_text_colour(255, 255, 128, 0, 255);
-    draw_text(&sMenuCurrDisplayList, POS_CENTRED, 210,
+    draw_text(&sMenuCurrDisplayList, POS_CENTRED, 206,
               sSaveEditorStatus != NULL ? sSaveEditorStatus : "",
               ALIGN_MIDDLE_CENTER);
     set_text_colour(200, 220, 255, 0, 255);
-    draw_text(&sMenuCurrDisplayList, POS_CENTRED, 226,
+    draw_text(&sMenuCurrDisplayList, POS_CENTRED, 222,
               sSaveEditorDirty ? "UNSAVED CHANGES" : "",
               ALIGN_MIDDLE_CENTER);
 }
@@ -5108,6 +5241,9 @@ void menu_save_editor_init(void) {
     gMenuDelay = 0;
     sSaveEditorSlot = 0;
     sSaveEditorOption = SAVE_EDITOR_SLOT;
+    sSaveEditorPage = 0;
+    sSaveEditorWorld = 0;
+    sSaveEditorTrack = 0;
     sSaveEditorApplyArmed = FALSE;
     for (slot = 0; slot < NUMBER_OF_SAVE_FILES; slot++) {
         save_editor_load_slot(slot);
@@ -5160,15 +5296,77 @@ s32 menu_save_editor_loop(s32 updateRate) {
             if (sSaveEditorSlot >= NUMBER_OF_SAVE_FILES) sSaveEditorSlot = 0;
             save_editor_load_slot(sSaveEditorSlot);
             sound_play(SOUND_MENU_PICK2, NULL);
-        } else if (sSaveEditorOption >= SAVE_EDITOR_DINO_DOMAIN &&
-                   sSaveEditorOption <= SAVE_EDITOR_FUTURE_FUN_LAND) {
-            s16 *value = &sSaveEditorBalloons[sSaveEditorSlot][sSaveEditorOption];
-            *value += xAxis < 0 ? -1 : 1;
-            if (*value < 0) *value = 0;
-            if (*value > SAVE_EDITOR_BALLOON_LIMIT) *value = SAVE_EDITOR_BALLOON_LIMIT;
+        } else if (sSaveEditorOption == SAVE_EDITOR_PAGE) {
+            sSaveEditorPage ^= 1;
+            sSaveEditorApplyArmed = FALSE;
+            sSaveEditorStatus = sSaveEditorPage == 0
+                                    ? "TRACK PROGRESS"
+                                    : "WORLD PROGRESS";
+            sound_play(SOUND_MENU_PICK2, NULL);
+        } else if (sSaveEditorOption == SAVE_EDITOR_WORLD) {
+            sSaveEditorWorld += xAxis < 0 ? -1 : 1;
+            if (sSaveEditorWorld < 0) sSaveEditorWorld = SAVE_EDITOR_ADVENTURE_WORLD_COUNT - 1;
+            if (sSaveEditorWorld >= SAVE_EDITOR_ADVENTURE_WORLD_COUNT) sSaveEditorWorld = 0;
+            sSaveEditorApplyArmed = FALSE;
+            sSaveEditorStatus = "SELECT A WORLD";
+            sound_play(SOUND_MENU_PICK2, NULL);
+        } else if (sSaveEditorPage == 0 && sSaveEditorOption == SAVE_EDITOR_TRACK) {
+            sSaveEditorTrack += xAxis < 0 ? -1 : 1;
+            if (sSaveEditorTrack < 0) sSaveEditorTrack = SAVE_EDITOR_TRACKS_PER_WORLD - 1;
+            if (sSaveEditorTrack >= SAVE_EDITOR_TRACKS_PER_WORLD) sSaveEditorTrack = 0;
+            sSaveEditorApplyArmed = FALSE;
+            sSaveEditorStatus = "SELECT A TRACK";
+            sound_play(SOUND_MENU_PICK2, NULL);
+        } else if (sSaveEditorPage == 0 && sSaveEditorOption == SAVE_EDITOR_TRACK_PROGRESS) {
+            s32 *flags = &sSaveEditorTrackFlags[sSaveEditorSlot]
+                                                 [sSaveEditorWorld][sSaveEditorTrack];
+            const s32 before = save_editor_track_progress(*flags);
+            const s32 after = (before + (xAxis < 0 ? 2 : 1)) % 3;
+
+            *flags &= ~(RACE_VISITED | RACE_CLEARED | RACE_CLEARED_SILVER_COINS);
+            if (after >= 1) *flags |= RACE_VISITED | RACE_CLEARED;
+            if (after >= 2) *flags |= RACE_CLEARED_SILVER_COINS;
+            save_editor_adjust_world_balloons(sSaveEditorWorld, after - before);
+            save_editor_recompute_total_balloons();
             sSaveEditorDirty = TRUE;
             sSaveEditorApplyArmed = FALSE;
-            sSaveEditorStatus = "LEFT/RIGHT CHANGES A VALUE";
+            sSaveEditorStatus = "TRACK STATE UPDATED";
+            sound_play(SOUND_MENU_PICK2, NULL);
+        } else if (sSaveEditorPage != 0 && sSaveEditorOption == SAVE_EDITOR_TRACK) {
+            const u16 shift = (u16)(sSaveEditorWorld * 2);
+            const u16 before = (sSaveEditorTrophies[sSaveEditorSlot] >> shift) & 3;
+            const u16 after = (u16)((before + (xAxis < 0 ? 3 : 1)) & 3);
+
+            sSaveEditorTrophies[sSaveEditorSlot] =
+                (u16)((sSaveEditorTrophies[sSaveEditorSlot] & ~(3u << shift)) |
+                      (after << shift));
+            save_editor_adjust_world_balloons(sSaveEditorWorld,
+                                               (after == 3) - (before == 3));
+            save_editor_recompute_total_balloons();
+            sSaveEditorDirty = TRUE;
+            sSaveEditorApplyArmed = FALSE;
+            sSaveEditorStatus = "CUP RESULT UPDATED";
+            sound_play(SOUND_MENU_PICK2, NULL);
+        } else if (sSaveEditorPage != 0 &&
+                   (sSaveEditorOption == SAVE_EDITOR_TRACK_PROGRESS ||
+                    sSaveEditorOption == SAVE_EDITOR_WORLD_PROGRESS_ONE)) {
+            const u16 firstBit = (u16)(sSaveEditorWorld == 4 ? 1u :
+                                        (1u << (sSaveEditorWorld + 1)));
+            const u16 secondBit = (u16)(sSaveEditorWorld == 4 ? (1u << 5) :
+                                         (1u << (sSaveEditorWorld + 7)));
+            const u16 bit = sSaveEditorOption == SAVE_EDITOR_TRACK_PROGRESS ? firstBit : secondBit;
+            u16 *bosses = &sSaveEditorBosses[sSaveEditorSlot];
+
+            if (*bosses & bit) {
+                *bosses &= (u16)~bit;
+                if (bit == firstBit) *bosses &= (u16)~secondBit;
+            } else {
+                *bosses |= bit;
+                if (bit == secondBit) *bosses |= firstBit;
+            }
+            sSaveEditorDirty = TRUE;
+            sSaveEditorApplyArmed = FALSE;
+            sSaveEditorStatus = "BOSS PROGRESS UPDATED";
             sound_play(SOUND_MENU_PICK2, NULL);
         }
     }
