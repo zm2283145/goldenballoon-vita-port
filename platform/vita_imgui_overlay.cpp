@@ -9,8 +9,12 @@
 #include "imgui_impl_vitagl.h"
 
 namespace {
+extern "C" void mdkr_vita_boot_log(const char *msg);
+extern "C" void mdkr_vita_boot_log_flush(void);
+
 bool s_initialized = false;
 bool s_open = false;
+bool s_initialization_failed = false;
 int s_page = 0;
 int s_world = 0;
 int s_time_trial = 0;
@@ -48,6 +52,14 @@ GLuint compile_shader(GLenum type, const char *source) {
     GLint compiled = GL_FALSE;
     glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
     if (compiled == GL_TRUE) return shader;
+    char message[1024] = {};
+    GLsizei length = 0;
+    glGetShaderInfoLog(shader, sizeof(message) - 1, &length, message);
+    char log_line[1200];
+    snprintf(log_line, sizeof(log_line), "imgui: %s shader compile failed: %s",
+             type == GL_VERTEX_SHADER ? "vertex" : "fragment", message);
+    mdkr_vita_boot_log(log_line);
+    mdkr_vita_boot_log_flush();
     glDeleteShader(shader);
     return 0;
 }
@@ -72,20 +84,37 @@ bool create_renderer_program() {
     GLint linked = GL_FALSE;
     glGetProgramiv(s_program, GL_LINK_STATUS, &linked);
     if (linked != GL_TRUE) {
+        char message[1024] = {};
+        GLsizei length = 0;
+        glGetProgramInfoLog(s_program, sizeof(message) - 1, &length, message);
+        char log_line[1200];
+        snprintf(log_line, sizeof(log_line), "imgui: program link failed: %s", message);
+        mdkr_vita_boot_log(log_line);
+        mdkr_vita_boot_log_flush();
         glDeleteProgram(s_program);
         s_program = 0;
         return false;
     }
     s_texture_uniform = glGetUniformLocation(s_program, "uTexture");
+    char log_line[160];
+    snprintf(log_line, sizeof(log_line), "imgui: program ready id=%u textureUniform=%d glError=0x%x",
+             (unsigned)s_program, (int)s_texture_uniform, (unsigned)glGetError());
+    mdkr_vita_boot_log(log_line);
+    mdkr_vita_boot_log_flush();
     return true;
 }
 
 bool initialize() {
     if (s_initialized) return true;
+    if (s_initialization_failed) return false;
+    mdkr_vita_boot_log("imgui: initialization starting");
     ImGui::CreateContext();
     ImGui::GetIO().IniFilename = nullptr;
     if (!ImGui_ImplVitaGL_Init_Extended()) {
+        mdkr_vita_boot_log("imgui: VitaGL backend initialization failed");
+        mdkr_vita_boot_log_flush();
         ImGui::DestroyContext();
+        s_initialization_failed = true;
         return false;
     }
     ImGui_ImplVitaGL_GamepadUsage(true);
@@ -97,19 +126,33 @@ bool initialize() {
     if (!create_renderer_program()) {
         ImGui_ImplVitaGL_Shutdown();
         ImGui::DestroyContext();
+        s_initialization_failed = true;
         return false;
     }
     s_initialized = true;
+    mdkr_vita_boot_log("imgui: initialization complete");
+    mdkr_vita_boot_log_flush();
     return true;
 }
 }
 
-extern "C" void mdkr_vita_imgui_overlay_open(void) { s_open = true; }
+extern "C" void mdkr_vita_imgui_overlay_open(void) {
+    mdkr_vita_boot_log("imgui: overlay requested");
+    mdkr_vita_boot_log_flush();
+    s_open = true;
+}
 extern "C" void mdkr_vita_imgui_overlay_close(void) { s_open = false; }
 extern "C" int mdkr_vita_imgui_overlay_is_open(void) { return s_open ? 1 : 0; }
 
 extern "C" int mdkr_vita_imgui_overlay_render(void) {
-    if (!s_open || !initialize()) return 0;
+    if (!s_open) return 0;
+    if (!initialize()) {
+        mdkr_vita_boot_log("imgui: initialization failed; returning to classic editor");
+        mdkr_vita_boot_log_flush();
+        s_open = false;
+        mdkr_vita_save_editor_open_classic();
+        return 0;
+    }
     ImGui_ImplVitaGL_NewFrame();
     /* The VitaGL backend starts the Dear ImGui frame itself. Calling
      * ImGui::NewFrame again here leaves the draw list half-initialised on the
@@ -243,11 +286,30 @@ extern "C" int mdkr_vita_imgui_overlay_render(void) {
     ImGui::TextUnformatted(mdkr_vita_save_editor_has_unsaved_changes() ? "UNSAVED CHANGES" : "SAVED");
     ImGui::End();
     ImGui::Render();
+    static int diagnostic_frames = 0;
+    if (diagnostic_frames < 8) {
+        ImDrawData *draw_data = ImGui::GetDrawData();
+        char log_line[192];
+        snprintf(log_line, sizeof(log_line),
+                 "imgui: frame=%d lists=%d vertices=%d indices=%d display=%.0fx%.0f",
+                 diagnostic_frames, draw_data ? draw_data->CmdListsCount : -1,
+                 draw_data ? draw_data->TotalVtxCount : -1,
+                 draw_data ? draw_data->TotalIdxCount : -1,
+                 ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
+        mdkr_vita_boot_log(log_line);
+    }
     GLint game_program = 0;
     glGetIntegerv(GL_CURRENT_PROGRAM, &game_program);
     glUseProgram(s_program);
     glUniform1i(s_texture_uniform, 0);
     ImGui_ImplVitaGL_RenderDrawData(ImGui::GetDrawData());
+    if (diagnostic_frames < 8) {
+        char log_line[96];
+        snprintf(log_line, sizeof(log_line), "imgui: draw complete glError=0x%x", (unsigned)glGetError());
+        mdkr_vita_boot_log(log_line);
+        mdkr_vita_boot_log_flush();
+        ++diagnostic_frames;
+    }
     glUseProgram((GLuint)game_program);
     return 1;
 }
