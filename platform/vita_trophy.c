@@ -6,6 +6,8 @@
 
 #include <psp2/appmgr.h>
 #include <psp2/sysmodule.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -41,6 +43,23 @@ static int sTrophyContext = -1;
 static int sTrophyHandle = -1;
 static uint32_t sSubmitted;
 static int sUnavailable;
+static int sLoggedSettings;
+
+/* Use the port's existing, file-gated boot log. An empty
+ * ux0:data/goldenballoon/debug file enables these diagnostics, and all output
+ * joins the normal mdkr_boot.log rather than creating a second log. */
+extern void mdkr_vita_boot_log(const char *msg);
+extern int mdkr_vita_debug_enabled(void);
+
+static void trophy_log(const char *format, ...) {
+    char line[256];
+    va_list args;
+    if (!mdkr_vita_debug_enabled()) return;
+    va_start(args, format);
+    vsnprintf(line, sizeof(line), format, args);
+    va_end(args);
+    mdkr_vita_boot_log(line);
+}
 
 static int trophy_ready(void) {
     char communicationId[16] = "GBLN00001_01";
@@ -48,11 +67,13 @@ static int trophy_ready(void) {
      * service still expects the normal signature header to be present. */
     static const unsigned char signature[160] = { 0xb9, 0xdd, 0xe1, 0x3b, 0x01, 0x00 };
 
+    int result;
     if (sUnavailable) return 0;
     if (sTrophyContext >= 0 && sTrophyHandle >= 0) return 1;
     /* sceNpTrophy is not automatically resident in a Vita homebrew. Calling
      * an unresolved service was the cause of the first test build's crash. */
-    (void)sceSysmoduleLoadModule(SCE_SYSMODULE_NP_TROPHY);
+    result = sceSysmoduleLoadModule(SCE_SYSMODULE_NP_TROPHY);
+    trophy_log("module np_trophy=0x%08X", result);
     {
         char appParamCommunicationId[16] = { 0 };
         if (sceAppMgrAppParamGetString(0, 12, appParamCommunicationId,
@@ -63,9 +84,18 @@ static int trophy_ready(void) {
                    sizeof(communicationId));
         }
     }
-    if (sceNpTrophyInit(NULL) < 0 ||
-        sceNpTrophyCreateContext(&sTrophyContext, communicationId, signature, 0) < 0 ||
-        sceNpTrophyCreateHandle(&sTrophyHandle) < 0) {
+    trophy_log("communication id=%s", communicationId);
+    result = sceNpTrophyInit(NULL);
+    trophy_log("init=0x%08X", result);
+    if (result < 0) goto unavailable;
+    result = sceNpTrophyCreateContext(&sTrophyContext, communicationId, signature, 0);
+    trophy_log("create context=0x%08X context=%d", result, sTrophyContext);
+    if (result < 0) goto unavailable;
+    result = sceNpTrophyCreateHandle(&sTrophyHandle);
+    trophy_log("create handle=0x%08X handle=%d", result, sTrophyHandle);
+    if (result < 0) {
+unavailable:
+        trophy_log("trophy service unavailable");
         sUnavailable = 1;
         return 0;
     }
@@ -74,12 +104,15 @@ static int trophy_ready(void) {
 
 static void unlock(unsigned trophyId) {
     int platinumId = -1;
+    int result;
     uint32_t bit = 1u << trophyId;
     if ((sSubmitted & bit) != 0) return;
     /* An already-unlocked result is intentionally treated as submitted: the
      * system owns persistence, while this guard prevents an every-frame retry. */
-    (void)sceNpTrophyUnlockTrophy(sTrophyContext, sTrophyHandle, (int)trophyId,
-                                  &platinumId);
+    result = sceNpTrophyUnlockTrophy(sTrophyContext, sTrophyHandle, (int)trophyId,
+                                     &platinumId);
+    trophy_log("unlock id=%u result=0x%08X platinum=%d", trophyId, result,
+               platinumId);
     sSubmitted |= bit;
 }
 
@@ -87,6 +120,13 @@ void mdkr_vita_trophy_pump(const struct Settings *settings) {
     unsigned trophyState;
     if (settings == NULL || settings->balloonsPtr == NULL || settings->newGame ||
         !trophy_ready()) return;
+
+    if (!sLoggedSettings) {
+        trophy_log("settings balloons=%d keys=0x%04X bosses=0x%04X cups=0x%04X amulet=%d",
+                   settings->balloonsPtr[0], settings->keys, settings->bosses,
+                   settings->trophies, settings->wizpigAmulet);
+        sLoggedSettings = 1;
+    }
 
     if (settings->balloonsPtr[0] >= 1) unlock(TROPHY_FIRST_BALLOON);
     if (settings->wizpigAmulet >= 4) unlock(TROPHY_WIZPIG_AMULET);
