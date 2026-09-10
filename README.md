@@ -28,7 +28,7 @@
 > for the day-to-day truth about what currently works, what doesn't, and what
 > is actively being debugged.
 >
-> **Status update (1.6.3):** the Restored visual preset is stable for normal
+> **Status update (1.6.4):** the Restored visual preset is stable for normal
 > play on tested real Vita hardware. The port boots, loads a ROM, renders 3D
 > races and menus, saves progress, and includes a 98-trophy pack. The optional
 > Remastered visual preset remains unsupported; use Restored (the default).
@@ -62,7 +62,7 @@
 4. **Play.** A DualShock-style control layout is assumed; there is no
    in-game remapping UI on Vita yet.
 
-**This is the 1.6.3 Vita release.** The default Restored visual preset is
+**This is the 1.6.4 Vita release.** The default Restored visual preset is
 stable for normal play on tested hardware. **Do not enable the Remastered
 visual preset — it crashes on startup every time; this is a known,
 still-unresolved issue, not something you did wrong.** If something else
@@ -93,7 +93,7 @@ the shared game/engine code — is in the
 | macOS (Apple silicon) | Upstream, stable |
 | Linux (x86-64) | Upstream, best effort |
 | Browser (WebGPU) | Upstream, stable |
-| **PS Vita** | **This fork, 1.6.3 — stable for normal play on the Restored visual preset, with 98 homebrew trophies and a built-in Save Editor. The Remastered preset crashes on startup and should not be used. See [PORTING_STATUS.md](PORTING_STATUS.md) for the exact current state.** |
+| **PS Vita** | **This fork, 1.6.4 — stable for normal play on the Restored visual preset, with 98 homebrew trophies and a built-in Save Editor. The Remastered preset crashes on startup and should not be used. See [PORTING_STATUS.md](PORTING_STATUS.md) for the exact current state.** |
 
 ## PS Vita: known limitations
 

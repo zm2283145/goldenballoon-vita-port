@@ -174,7 +174,7 @@ def xml(configuration_only: bool = False) -> bytes:
         f'<!--Sce-Np-Trophy-Signature: {signature}-->',
         '<trophyconf version="1.1" platform="psp2" policy="large">',
         f' <npcommid>{COMM_ID}</npcommid>',
-        ' <trophyset-version>01.03</trophyset-version>',
+        ' <trophyset-version>01.04</trophyset-version>',
         ' <parental-level license-area="default">0</parental-level>',
     ]
     if not configuration_only:

@@ -54,5 +54,9 @@ void mdkr_vita_trophy_set_character_balloon_progress(unsigned character_index,
 int mdkr_vita_trophy_developer_time_target(unsigned track_index);
 int mdkr_vita_trophy_developer_time_beaten(unsigned track_index,
                                            int course_time);
+/* Maps a game level ID to the canonical RetroAchievements/credits time-trial
+ * order. The save editor presents tracks in world order, which differs for
+ * Sherbet and Snowflake worlds, so it must not use its menu index here. */
+int mdkr_vita_trophy_track_index(int level_id);
 
 #endif

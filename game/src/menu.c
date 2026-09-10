@@ -5217,12 +5217,14 @@ static void save_editor_load_time_trials(void) {
     for (track = 0; track < SAVE_EDITOR_TIME_TRIAL_COUNT; track++) {
         const s32 trackId = mainTrackIds[track];
         const Vehicle vehicle = leveltable_vehicle_default(trackId);
+        const s32 trophyTrack = mdkr_vita_trophy_track_index(trackId);
         sSaveEditorTimeTrialBeaten[track] =
             (beatenFlags & ((u64)16 << track)) != 0;
         sSaveEditorDeveloperTimeBeaten[track] =
-            settings != NULL && settings->courseTimesPtr[vehicle] != NULL &&
+            trophyTrack >= 0 && settings != NULL &&
+            settings->courseTimesPtr[vehicle] != NULL &&
             mdkr_vita_trophy_developer_time_beaten(
-                (unsigned)track, settings->courseTimesPtr[vehicle][trackId]);
+                (unsigned)trophyTrack, settings->courseTimesPtr[vehicle][trackId]);
     }
     sSaveEditorTimeTrialDirty = FALSE;
 }
@@ -5415,14 +5417,18 @@ static void save_editor_apply(void) {
         for (track = 0; track < SAVE_EDITOR_TIME_TRIAL_COUNT; track++) {
             const s32 trackId = mainTrackIds[track];
             const Vehicle vehicle = leveltable_vehicle_default(trackId);
+            const s32 trophyTrack = mdkr_vita_trophy_track_index(trackId);
             const u64 bit = (u64)16 << track;
             const s32 liveBeaten = (get_eeprom_settings() & bit) != 0;
-            const s32 liveDeveloper = mdkr_vita_trophy_developer_time_beaten(
-                (unsigned)track, liveSettings->courseTimesPtr[vehicle][trackId]);
-            const s32 target = mdkr_vita_trophy_developer_time_target((unsigned)track);
+            const s32 liveDeveloper = trophyTrack >= 0 &&
+                mdkr_vita_trophy_developer_time_beaten(
+                    (unsigned)trophyTrack,
+                    liveSettings->courseTimesPtr[vehicle][trackId]);
+            const s32 target = trophyTrack >= 0
+                ? mdkr_vita_trophy_developer_time_target((unsigned)trophyTrack) : 0;
             const s32 desiredTime = sSaveEditorDeveloperTimeBeaten[track]
-                                        ? target - 1
-                                        : sSaveEditorTimeTrialBeaten[track]
+                ? target - 1
+                : sSaveEditorTimeTrialBeaten[track]
                                               ? staffTimes[track] : 0;
 
             if (liveBeaten == sSaveEditorTimeTrialBeaten[track] &&
