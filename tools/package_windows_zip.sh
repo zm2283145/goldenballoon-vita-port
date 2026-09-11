@@ -313,8 +313,10 @@ python3 tools/verify_gltf_validator.py \
 # a link regression and recreate the Explorer zip-preview failure this layout
 # is designed to prevent.
 ./tools/check_windows_imports.sh "$binary"
-./tools/check_windows_imports.sh "$character_importer"
-./tools/check_windows_imports.sh "$gltf_validator"
+# The frozen importer's CRT is inside it; see --static-crt in that script.
+./tools/check_windows_imports.sh --static-crt "$character_importer"
+# Dart AOT, CRT linked in; same reasoning as the importer above.
+./tools/check_windows_imports.sh --static-crt "$gltf_validator"
 ./tools/check_windows_imports.sh "$character_lod_tool"
 
 dist="$(pwd)/dist"; mkdir -p "$dist"

@@ -14,6 +14,9 @@ filter_bad_imports() {
   system_dlls+='ole32|OLEAUT32|COMBASE|RPCRT4|PROPSYS|COMDLG32|COMCTL32|SHLWAPI|'
   system_dlls+='WS2_32|IPHLPAPI|BCRYPTPRIMITIVES|BCRYPT|CRYPT32|'
   system_dlls+='IMM32|SETUPAPI|VERSION|WINMM|CFGMGR32|HID|POWRPROF|DWMAPI|UXTHEME|DWRITE|'
+  # Both ship in System32 on every Windows install. The pinned Khronos glTF
+  # validator (Dart AOT) imports them, which is why they are here.
+  system_dlls+='PSAPI|DBGHELP|'
   system_dlls+='OPENGL32|DINPUT8|d3dcompiler_47|dxgi|D3D12|MSVCRT|UCRTBASE'
   system_dlls+=')\.dll$|^api-ms-win-.*\.dll$'
   grep -viE "${system_dlls}" || true
@@ -61,11 +64,31 @@ if [[ "${1:-}" == "--self-test" ]]; then
     die "msvcrt-linked broken control was accepted"
   ( check_crt $'KERNEL32.dll' 2>/dev/null ) &&
     die "CRT-less broken control was accepted"
+  # --static-crt must still refuse a DYNAMIC legacy CRT, or the flag is a way
+  # to smuggle the v1.2.1 defect past the check that exists for it.
+  [[ -z "$(printf '%s\n' $'KERNEL32.dll\nPSAPI.DLL\ndbghelp.dll' | filter_bad_imports)" ]] ||
+    die "stock PSAPI/DBGHELP positive control was rejected"
   printf 'check_windows_imports: self-test PASS\n'
   exit 0
 fi
 
-[[ $# -eq 1 ]] || die "usage: $0 WINDOWS.exe"
+# --static-crt: this binary links the CRT statically, so it imports none, and
+# the assertion below would reject it for the one thing that is not a defect.
+# The frozen Character Workshop importer is the case: its bootloader comes from
+# the hash-pinned PyInstaller wheel, which is built /MT, and so imports exactly
+# USER32, KERNEL32 and ADVAPI32 on every machine that has ever built it -- CI
+# included. Asserting a CRT import there is unpassable by construction, not a
+# finding. What the assertion exists to catch is v1.2.1: the GAME binary linked
+# against the legacy msvcrt, where exclusive fopen("wbx") returns EINVAL and
+# every save fails silently. That binary still gets the full check, and the
+# stock-DLL allowlist above still applies to everything.
+static_crt=0
+if [[ "${1:-}" == "--static-crt" ]]; then
+  static_crt=1
+  shift
+fi
+
+[[ $# -eq 1 ]] || die "usage: $0 [--static-crt] WINDOWS.exe"
 binary="$1"
 [[ -f "${binary}" ]] || die "binary not found: ${binary}"
 objdump_bin="${OBJDUMP:-objdump}"
@@ -82,6 +105,17 @@ bad_imports="$(printf '%s\n' "${imports}" | filter_bad_imports)"
 if [[ -n "${bad_imports}" ]]; then
   printf '%s\n' "${bad_imports}" >&2
   die "non-system DLL import found; the portable package must be one executable"
+fi
+
+if (( static_crt )); then
+  # Still refuse a DYNAMIC legacy CRT here: --static-crt says "expect no CRT
+  # import", not "accept any CRT". A binary that claims a static CRT and then
+  # imports msvcrt.dll is the v1.2.1 defect wearing a flag.
+  if printf '%s\n' "${imports}" | grep -qiE '^MSVCRT\.dll$'; then
+    die "binary was declared --static-crt but imports MSVCRT.dll"
+  fi
+  printf 'check_windows_imports: PASS — stock Windows DLLs only, CRT linked statically\n'
+  exit 0
 fi
 
 check_crt "${imports}"

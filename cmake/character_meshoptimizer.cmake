@@ -75,5 +75,22 @@ else()
     target_compile_options(mdkr-character-lod PRIVATE
         -Wall -Wextra -Wpedantic -Werror)
 endif()
+# The same static runtime the main target takes, and for the same reason: this
+# is a C++ tool, so a MinGW link imports libgcc_s_seh-1.dll and libstdc++-6.dll,
+# neither of which exists on a player's machine. The portable package ships one
+# executable per tool and no DLLs beside them, so the tool would simply fail to
+# start. tools/check_windows_imports.sh names libgcc_s_seh-1.dll as a broken
+# control in its own self-test -- the rule was always here, this target just
+# never took it.
+if(MINGW)
+    target_link_options(mdkr-character-lod PRIVATE
+        -static-libgcc -static-libstdc++)
+    # -static outright, not the main target's selective -Bstatic winpthread:
+    # this tool links no SDL and no system C++ library that needs to stay
+    # shared, and the selective form still left libwinpthread-1.dll in the
+    # import table because -static-libstdc++ pulls it back in on its own.
+    target_link_options(mdkr-character-lod PRIVATE -static)
+endif()
+
 set_target_properties(mdkr-character-lod PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tools")
