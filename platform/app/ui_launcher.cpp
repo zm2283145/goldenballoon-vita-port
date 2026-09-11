@@ -1565,10 +1565,17 @@ void installContentPack(const char *modsDirectory) {
             source.filename().string() + ": " + failure.message();
         return;
     }
-    // The scan runs once at startup, so this is the honest instruction rather
-    // than a claim that the pack is live.
+    /*
+     * Press Play -- not "restart Golden Balloon", which is what this used to
+     * say and is more work than the game asks for.
+     * platform_engine_session_begin() clears the scanned flag on every
+     * launcher -> engine handoff, so the engine rescans mods/ each time the
+     * player presses Play. Overstating the cost is not the safe direction
+     * here: it makes installing a pack feel like a chore the moment a player
+     * has finally got one installed.
+     */
     g_packInstallNote = source.filename().string() +
-        " installed. Restart Golden Balloon to load it.";
+        " installed. Press Play to load it.";
 }
 
 void drawContentPanel(LauncherState &s, LauncherAction &out) {
