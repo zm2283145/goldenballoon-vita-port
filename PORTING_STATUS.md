@@ -8,7 +8,7 @@ same libultraship/vitaGL pattern as
 (a Banjo-Kazooie Vita port used as the concrete reference for library
 choices, link flags, and the VPK packaging recipe).
 
-**Status: 1.7.0 — complete Adventure playthrough confirmed on real hardware.** It
+**Status: 1.7.1 — complete Adventure playthrough confirmed on real hardware.** It
 boots, loads a ROM, saves progress, and plays through the full game on the default
 (Restored) visual preset, with audio, input, textured rendering, correctly
 rendered 3D race/menu scenes, a 98-trophy pack, and a magic-code-gated Save
@@ -276,6 +276,14 @@ custom Golden Balloon artwork for the platinum and the port-exclusive Taj,
 Wizpig, and Terry challenges. Use only artwork you are licensed or otherwise
 authorized to distribute; trophy art is packaged inside the TRP and must be
 included when testing an updated trophy set.
+
+The character-specific five-balloon tracker has two award hooks: free-roaming
+balloon objects in `object_functions.c`, and first-clear/silver-coin race
+rewards in `objects.c`. Both call the same session counter before save/scene
+transition and preserve the live bonus-racer identity sidecar. Omitting the
+race-reward hook caused normal play with TT—or any other racer—to miss the
+trophy even though the Save Editor's direct condition test worked; this is
+fixed in 1.7.1.
 
 ## Save Editor (Vita)
 

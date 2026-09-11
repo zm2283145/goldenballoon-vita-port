@@ -1,3 +1,19 @@
+# Golden Balloon 1.7.1
+
+*Released 2026-09-10.*
+
+## PS Vita
+
+Fixes every character-specific “collect five balloons in one Adventure
+session” trophy. Normal race victories and silver-coin clears award balloons
+through a different engine path than free-roaming overworld balloons; only the
+overworld path previously advanced the session counter. Both award paths now
+feed the same identity-aware tracker for all ten original racers plus Taj,
+Wizpig, and Terry.
+
+The compiled version and Vita package metadata are derived from the same
+`MDKR_VERSION`; this build reports `1.7.1` and Vita `APP_VER` `01.71`.
+
 # Golden Balloon 1.7.0
 
 *Released 2026-09-10.*

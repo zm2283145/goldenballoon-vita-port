@@ -415,6 +415,9 @@ void mdkr_vita_trophy_golden_balloon_collected(int characterId, int playerIndex)
         if (sBonusAdventureBalloonCount[identity] < 5) {
             sBonusAdventureBalloonCount[identity]++;
         }
+        trophy_log("character balloon identity=%d count=%u trophy=%u",
+                   (int)identity, sBonusAdventureBalloonCount[identity],
+                   trophyForBonusCharacter[identity]);
         if (sBonusAdventureBalloonCount[identity] >= 5 && trophy_ready()) {
             unlock(trophyForBonusCharacter[identity]);
         }
@@ -424,6 +427,9 @@ void mdkr_vita_trophy_golden_balloon_collected(int characterId, int playerIndex)
     if (sAdventureBalloonCount[characterId] < 5) {
         sAdventureBalloonCount[characterId]++;
     }
+    trophy_log("character balloon character=%d count=%u trophy=%u", characterId,
+               sAdventureBalloonCount[characterId],
+               trophyForCharacter[characterId]);
     if (sAdventureBalloonCount[characterId] >= 5 && trophy_ready()) {
         unlock(trophyForCharacter[characterId]);
     }

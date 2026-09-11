@@ -28,7 +28,7 @@
 > for the day-to-day truth about what currently works, what doesn't, and what
 > is actively being debugged.
 >
-> **Status update (1.7.0):** the Restored visual preset is stable and a complete
+> **Status update (1.7.1):** the Restored visual preset is stable and a complete
 > Adventure playthrough has been confirmed on real Vita hardware. The port
 > boots, loads a ROM, renders 3D races and menus, saves progress, and includes
 > a 98-trophy pack. The optional
@@ -77,7 +77,7 @@
    Controls** to view or remap every digital action, assign up to two inputs
    per action, clear individual bindings, or restore the defaults.
 
-**This is the 1.7.0 Vita release.** The default Restored visual preset has
+**This is the 1.7.1 Vita release.** The default Restored visual preset has
 completed a full Adventure playthrough on tested hardware. **Do not enable the Remastered
 visual preset — it crashes on startup every time; this is a known,
 still-unresolved issue, not something you did wrong.** If something else
@@ -108,7 +108,7 @@ the shared game/engine code — is in the
 | macOS (Apple silicon) | Upstream, stable |
 | Linux (x86-64) | Upstream, best effort |
 | Browser (WebGPU) | Upstream, stable |
-| **PS Vita** | **This fork, 1.7.0 — complete Adventure playthrough confirmed on the Restored visual preset, with persistent shader caching, non-blocking trophy unlocks, 98 homebrew trophies, persistent control remapping, and a built-in Save Editor. The Remastered preset crashes on startup and should not be used. See [PORTING_STATUS.md](PORTING_STATUS.md) for the exact current state.** |
+| **PS Vita** | **This fork, 1.7.1 — complete Adventure playthrough confirmed on the Restored visual preset, with persistent shader caching, non-blocking trophy unlocks, 98 homebrew trophies, persistent control remapping, and a built-in Save Editor. The Remastered preset crashes on startup and should not be used. See [PORTING_STATUS.md](PORTING_STATUS.md) for the exact current state.** |
 
 ## PS Vita: known limitations
 
@@ -141,6 +141,11 @@ The VPK includes 98 trophies. The main set includes a custom platinum, core
 Adventure goals, and five-balloon challenges for every racer, including Taj,
 Wizpig, and Terry. Adventure 2 and all T.T./developer time-trial challenges
 are separate optional groups, so they do not count toward the platinum.
+
+The five-balloon racer challenges count both free-roaming overworld balloons
+and balloons awarded for first race or silver-coin clears during the current
+Adventure session. This applies to all ten original racers and the three added
+racers.
 
 Each trophy now has its own unlocked artwork, with the Achievement artwork
 used by permission from [RetroAchievements](https://retroachievements.org/).

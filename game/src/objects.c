@@ -10869,6 +10869,13 @@ void race_check_finish(s32 updateRate) {
                 if (settings->worldId != 0) {
                     settings->balloonsPtr[0]++;
                 }
+                /* A first-place Adventure race awards a real golden balloon
+                 * here, separately from the free-roaming balloon object hook.
+                 * Feed both award paths into the same session counter so the
+                 * five-balloon character trophies work for normal progression
+                 * and retain the live Taj/Wizpig/Terry sidecar identity. */
+                mdkr_vita_trophy_golden_balloon_collected(
+                    curRacer->characterId, curRacer->playerIndex);
                 race_finish_adventure(TRUE);
             }
             gRaceFinishTriggered = -1; // -1 doesn't do anything different.
