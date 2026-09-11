@@ -1593,9 +1593,12 @@ void drawContentPanel(LauncherState &s, LauncherAction &out) {
 
     // No gap: SectionHeader already closes with its own rule and spacing, and
     // adding one here left a band of dead space above the first group.
+    // "textures" named explicitly: a high-resolution texture pack is the
+    // commonest pack there is, and a player holding one should see it in the
+    // heading rather than have to infer it from "artwork".
     ui::GroupHeader("Packs",
-                    "Replacement artwork and music, loaded from your mods "
-                    "folder at launch.");
+                    "Replacement textures, artwork and music, loaded from your "
+                    "mods folder at launch.");
 
     /*
      * The folder was the whole barrier. A player was told to "put a pack in the

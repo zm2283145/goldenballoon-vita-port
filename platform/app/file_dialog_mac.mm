@@ -75,7 +75,10 @@ bool openContentPack(std::string &out) {
         if (![NSThread isMainThread]) return false;
         NSOpenPanel *panel = [NSOpenPanel openPanel];
         panel.title = @"Install a content pack";
-        panel.message = @"Choose a pack .zip, or a folder containing pack.ini.";
+        // Not "a folder containing pack.ini": the commonest pack by far is a
+        // high-resolution texture pack, which has no pack.ini at all. Naming
+        // the file a player does not have tells them their pack is wrong.
+        panel.message = @"Choose a pack — a .zip or a folder, just as it downloaded.";
         panel.prompt = @"Install";
         panel.allowsMultipleSelection = NO;
         // Both shapes are legal packs, so both are selectable.
