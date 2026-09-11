@@ -8826,27 +8826,32 @@ the suites' wire-level test vectors (valid welcome/hello/ICE frames,
 fragmentation, masked/RSV violations, oversize declarations, a full 201
 create response, chunked state, 4000-class closes).
 
-## Rice pack importer — `ricepack_import`, `rice_crc`
+## Rice packs — `rice_crc_parity`, `ricepack_import`, `rice_crc`
 
 ```bash
-ctest --test-dir build --output-on-failure -R '^(ricepack_import|rice_crc)$'
+ctest --test-dir build --output-on-failure \
+    -R '^(rice_crc_parity|ricepack_import|rice_crc)$'
 ```
 
-Two ROM-free Python units over `tools/ricepack/`, which converts a
-Rice/GLideN64 high-resolution texture pack into a content pack. Both run in
-under a tenth of a second, read no pack content, and build every fixture they
-need — a handful of four-pixel PNGs, plus deliberately dishonest headers for
-the cap tests.
+A Rice/GLideN64 high-resolution pack now loads at runtime, as downloaded: the
+renderer computes the pack's own texture identity while it draws and asks the
+registry for a replacement. `tools/ricepack/` still exists and still converts a
+pack into a digest-keyed content pack, but nothing requires it any more — these
+three gates cover the runtime path and the tool respectively. All three are
+ROM-free, run in under a tenth of a second, and build every fixture they need —
+a handful of four-pixel PNGs, plus deliberately dishonest headers for the cap
+tests.
 
 | Unit | What it owns | The assertion that would otherwise rot |
 |---|---|---|
+| `rice_crc_parity` | `platform/rice_crc.c`, the C port the renderer calls | Nine vectors generated from `tools/ricepack/rice_crc.py` at its default variant, covering every RDP size code, an odd width, a pitch wider than a row, and the smallest geometry the key is defined over; plus five refusals (an undefined `siz`, a zero width, a pitch narrower than a row, a span too short for the walk, and a row shorter than one accumulator read). If the two implementations drift, shipped packs stop resolving while the offline importer keeps working — a split neither side can see alone, and each refusal is a *silently wrong key* rather than a crash if its guard goes |
 | `ricepack_import` | The filename allowlist, the `_all`-over-split precedence, the orphan-half rules, the caps and the manifest | The junk files fall out of the *pattern* — the allowlist is asserted to contain no `Thumbs`/`DS_Store` literal, so a special case cannot creep in; the same pack decides identically with its `_all` sorting before or after the halves it shadows; a re-run is byte-identical; and `complete` coverage is false whenever any input was refused |
-| `rice_crc` | The candidate Rice CRC | The CRC-32 primitive is checked against `zlib.crc32` rather than a remembered constant; row padding is proven to be outside the hash; and the four accumulation variants are proven distinct, so a hit-rate sweep across them measures something |
+| `rice_crc` | The Python side of the same arithmetic, used by the measurement tool below | The CRC-32 primitive is checked against `zlib.crc32` rather than a remembered constant; row padding is proven to be outside the hash; and the four accumulation variants are proven distinct, so a hit-rate sweep across them measures something |
 
-`rice_crc` cannot show that the algorithm is the one Rice uses — that needs a
-ROM. Its pinned vectors are change detectors and say nothing about correctness;
-a commit that establishes the real algorithm is expected to replace them with
-emulator-derived ones.
+What no unit here can show is that the arithmetic is the arithmetic Rice uses:
+these gates prove the C and the Python agree with each other and with their own
+vectors. That question was settled by measurement against a real pack, and the
+discriminator is below.
 
 The measurement that settles it is a real-ROM experiment, not a test, and runs
 as one command:
