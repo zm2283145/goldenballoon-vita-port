@@ -3,16 +3,15 @@
 *Online multiplayer is still a beta; Adventure Party and custom characters are
 new — see below.*
 
-The launcher has been rebuilt. It opens on a home screen carrying the game's own
-artwork and tells you what pressing Play will actually do, and everything lives
-in three places now — Play, Content and Settings — instead of six.
+The launcher has been rebuilt around a home screen with the game's artwork, and
+everything lives under Play, Content and Settings.
 
 Adventure is no longer a one-player game. Two to four people on the same couch
 can now pick their own racers, explore the worlds together and race through the
-campaign as one party. High-resolution texture packs load as they come
-downloaded. There is also a Character Workshop in the launcher for
-bringing your own racers into the game, an option to skip the launcher and go
-straight back to the game you played last, and a round of online improvements:
+campaign as one party. High-resolution texture packs load straight from the zip.
+There is also a Character Workshop for bringing your own racers into the game,
+an option to skip the launcher and go straight back to the game you played last,
+and a round of online improvements:
 the room now shows you what your connection looks like before a race starts,
 rides out a short network wobble instead of ending the race, and says so
 straight away when the other player leaves.
@@ -104,16 +103,13 @@ walks through it.
 
 ## The launcher
 
-It opens on a home screen with the game's artwork and one thing to press. Before
-you press it, the home tells you what you are about to get: the presentation you
-chose, your frame rate, and how many content packs are about to apply.
+The home screen shows the presentation, frame rate and content packs you are
+about to play with, and one button to start.
 
-Everything else is in three places instead of six. **Play** holds the game and
-the ways to play it, online included, because playing online is a way to play.
-**Content** holds everything you add yourself. **Settings** holds the rest, with
-About & support underneath. Choosing your game file asks for one thing now
-rather than three: drag the file anywhere in the window, or paste a path if you
-already have one.
+**Play** holds the game and every way to play it, online included. **Content**
+holds the packs and characters you add yourself. **Settings** holds the rest,
+with About & support underneath. To pick your game file, drag it anywhere in the
+window or paste a path.
 
 ## Skip the launcher
 
@@ -127,30 +123,24 @@ in the launcher with the reason.
 
 ## Content packs
 
-**High-resolution texture packs work as they come.** A Rice/GLideN64 pack — the
-format the Nintendo 64 scene has used for twenty years — needs no unpacking, no
-converting and no renaming. Put the zip or the folder in your mods folder, or
-press **Install pack…** in Content and pick it, then press Play. Content tells
-you how many textures the pack supplies, and the log says how many the game
-actually drew, so a pack that loaded and a pack that did nothing no longer look
-the same.
+**High-resolution texture packs work as they come.** Put the zip or the folder
+in your mods folder, or press **Install pack…** in Content and pick it, then
+press Play. Nothing to unpack, convert or rename. Content lists the pack and how
+many textures it supplies.
 
-We ship no packs and host none. The one this release was tested against is the
-**DKR-R HDR Texture Pack** — a community project led by `sr.gu` that redraws the
-original artwork in HD while staying faithful to the game — and it is shared
-through the [DKR-R Discord](https://discord.com/invite/AMWfXdBjNP), linked from
-the [DKR-R project](https://github.com/ThatGuyMcd/DKR-R). The exact build tested
-here was `DKR REMASTERED (Almost Complete V0.1.6).zip`, which supplies 1663
-textures. Any other pack in the same format should work just as well.
+We ship no packs and host none. If you want one, the **DKR-R HDR Texture Pack**
+is a community project led by `sr.gu` that redraws the original artwork in HD,
+shared through the [DKR-R Discord](https://discord.com/invite/AMWfXdBjNP) and
+linked from the [DKR-R project](https://github.com/ThatGuyMcd/DKR-R). Any pack
+in the same Rice/GLideN64 format works.
 
-No pack covers every texture in the game, so some of the original artwork always
-stays — that is the pack, not a fault here.
+No pack covers every texture, so some of the original artwork stays.
 
-Content packs can also now replace Taj's, Wizpig's and Terry's portraits. Those
+Content packs can also replace Taj's, Wizpig's and Terry's portraits. Those
 three racers have no portrait in the original game, so the port draws its own; a
-pack can put your picture in its place, at whatever size you draw it.
+pack can put your picture in its place.
 The [modding guide](https://github.com/akratch/goldenballoon/blob/v1.7.0/docs/MODDING.md)
-has the three filenames, and step-by-step instructions for texture packs.
+has the filenames and the steps.
 
 ## Online multiplayer (beta)
 
