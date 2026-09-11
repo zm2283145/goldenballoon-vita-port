@@ -70,6 +70,83 @@ enabled  = 1                 ; optional, default 1
 At most **64** packs load. Beyond that the rest are skipped with a reason
 rather than silently dropped.
 
+## High-resolution texture packs
+
+There is a second kind of pack, and it is the commonest one: a
+**Rice/GLideN64 high-resolution texture pack**, the format the Nintendo 64
+emulator scene has used for twenty years. It carries no `pack.ini`. Each image
+is named after the texture it replaces, like this:
+
+```
+Diddy Kong Racing#51F45E32#0#3_all.png
+```
+
+Golden Balloon reads that name directly and recognises the texture while it
+draws, so **there is nothing to unpack, convert, rename or build**. Drop the
+pack in as it downloaded — the `.zip`, or the folder — and press Play.
+
+### Getting one
+
+This project ships no pack and hosts none; the link below is a pointer to
+somebody else's community, not a download from us.
+
+The pack this release was tested against is the **DKR-R HDR Texture Pack**, a
+community project led by `sr.gu` that re-imagines the original artwork in HD
+while staying faithful to the game. It is distributed through the
+[DKR-R Discord](https://discord.com/invite/AMWfXdBjNP), linked from the
+[DKR-R project on GitHub](https://github.com/ThatGuyMcd/DKR-R). The build
+verified here was `DKR REMASTERED (Almost Complete V0.1.6).zip`.
+
+Any other pack in the same format should work; nothing about the reader is
+specific to that one.
+
+### Installing one
+
+Either way works, and they do the same thing:
+
+- **Content → Install pack…** — pick the `.zip` or the folder and the launcher
+  copies it in for you. On macOS the mods folder lives inside a `Library`
+  folder the Finder hides, so this is the easier route.
+- **Content → Open mods folder**, then drag the pack in yourself.
+
+Then press **Play**. The mods folder is rescanned on every launch, so you do
+not need to restart Golden Balloon.
+
+### Confirming it worked
+
+**Content** names the pack and how many textures it supplies:
+
+```
+DKR REMASTERED (Almost Complete V0.1.6).zip — high-resolution textures (1663)
+```
+
+and the log says the same thing at startup, plus — on quit — how many of them
+the game actually drew:
+
+```
+[MODS] 1663 high-resolution texture identities indexed (Rice/GLideN64 pack)
+[MODS] 1 pack(s) active, 0 skipped
+[MODS] 169 high-resolution textures used this run
+```
+
+Those are two different claims and both are worth reading. The first says the
+pack was *understood*; the second says it was *used*. A pack that indexes
+thousands of identities and then draws none is installed but not matching, and
+that is a different problem from one that never loaded.
+
+### What it will not do
+
+- **A pack only replaces what it contains.** No pack covers every texture in
+  the game, so some original artwork always remains — that is the pack's
+  coverage, not a failure here.
+- **Colour-index textures with several palettes collapse.** Where a pack
+  supplies more than one palette variant of the same picture, the last one it
+  lists wins for all of them. Keying them apart needs the palette hashed at
+  draw time, which this port does not do yet. No pack measured so far uses
+  this: the tested pack carries a palette field on none of its 1663 textures.
+- **One mip level.** As with any pack texture, a replacement for a mipmapped
+  original will alias into the distance.
+
 ## Replacing a texture
 
 Texture files live in `textures/` and are named by a **content digest** — 32
@@ -244,6 +321,11 @@ The same summary is logged at startup when any pack is present:
 
 Every skip carries a reason. A pack that does not appear at all is a pack the
 game never saw — check the directory location above.
+
+A high-resolution pack adds the two lines shown under
+[High-resolution texture packs](#high-resolution-texture-packs): how many
+texture identities it indexed at startup, and how many were actually drawn by
+the time you quit.
 
 ## Limits
 
@@ -739,45 +821,50 @@ that keeps this feature legitimate is section 8 of
 `tools/check_clean_room.sh`: no pack content may be tracked in this repository
 or appear anywhere in its history.
 
-### Importing a Rice pack
+### Rice packs, for contributors
 
-`tools/ricepack/import_rice_pack.py` reads a Rice/GLideN64 high-resolution
-pack — the `<ROM name>#<CRC>#<fmt>#<siz>_{all,rgb,a}.png` convention — and
-writes a content pack plus an auditable record of what it decided about every
-single file it saw.
+A Rice pack loads at runtime and needs no tooling — see
+[High-resolution texture packs](#high-resolution-texture-packs) for the player
+route. What follows is how that works and what is still offline.
 
-```sh
-# Decide and record. Maps nothing; writes no pixels.
-python3 tools/ricepack/import_rice_pack.py plan /path/to/rice-pack \
-    --manifest ~/ricepack-plan.json --rom-name "Diddy Kong Racing"
-```
+`platform/rice_crc.c` computes the pack's own texture identity from the texel
+span the renderer is about to upload, and `mod_registry.c` indexes a pack's
+filenames into `<crc, fmt, siz>` keys. The renderer asks for a replacement only
+when an enabled Rice pack is installed, so a player without one pays nothing
+per texture.
 
-One thing it cannot do on its own. A Rice pack names a texture by a CRC over
-the raw texel bytes; this port names one by the content digest above. Both name
-the same picture and neither can be computed from the other without the bytes,
-which means without a ROM. So `plan` deliberately maps zero textures and says
-so; `build` needs a crosswalk from Rice key to content digest, and building one
-needs a texture dump taken from a running game. The tool reports partial
-coverage as partial, always, rather than presenting a decision record as a
-finished import.
+**The CRC is validated**, which it was not when this port was written. Two
+independent lines of evidence, both against a real ROM and a real pack:
 
-```sh
-# Build the crosswalk from a dumped corpus, then import against it.
-python3 tools/ricepack/import_rice_pack.py crosswalk ~/dkr-textures     --out ~/crosswalk.json
-python3 tools/ricepack/import_rice_pack.py build /path/to/rice-pack     --crosswalk ~/crosswalk.json --manifest ~/ricepack-import.json     --out ~/my-pack --name "Imported pack"
-```
+- Every format class shows a *partial* miss rate (0/2: 332 hit, 97 miss; 0/3:
+  264/23; 3/1: 54/28). A wrong reading for a class scores exactly zero in it,
+  so a partial rate in every class cannot come from a wrong CRC.
+- Not one unmatched texture matches any pack key under any of the eight
+  computed variants. A sibling variant would rescue them if ours were wrong.
 
-The CRC itself, in `tools/ricepack/rice_crc.py`, is **unvalidated** — it has
-never been compared against an emulator's output, and four candidate readings
-of it are implemented side by side. Which one is right is a measurement, not an
-argument, and it is one command:
+`rice_crc_parity` holds `platform/rice_crc.c` to vectors generated from
+`tools/ricepack/rice_crc.py`, so the C and the Python cannot drift apart — a
+drift that would otherwise stop shipped packs resolving while the offline tool
+kept working, which is very hard to see from either side alone.
+
+To re-run the measurement that settled it:
 
 ```sh
-python3 tools/ricepack/measure_crc_variants.py     --build build --rom baserom.us.v80.z64     --pack /path/to/rice-pack --out ~/dkr-crc-experiment
+python3 tools/ricepack/measure_crc_variants.py \
+    --build build --rom baserom.us.v80.z64 \
+    --pack /path/to/rice-pack --out ~/dkr-crc-experiment
 ```
 
-That drives several routes, computes all four candidates over every dumped
-span, and prints how many of the pack's keys each one matched. A wrong variant
-is expected to score exactly zero, so the table is read directly rather than
-interpreted. Until it has been run, treat any coverage number this importer
-prints as conditional on a CRC nobody has checked.
+It drives several routes, computes every candidate over each dumped span, and
+prints how many of the pack's keys each one matched. A wrong variant scores
+zero, so the table is read directly rather than interpreted. This is also the
+right tool for the opposite question: if a pack's coverage is ever disputed, a
+variant that rescues the unmatched textures means our CRC is wrong, and no
+variant rescuing them means the pack lacks them.
+
+**`tools/ricepack/import_rice_pack.py` still exists but is no longer required.**
+It converts a Rice pack into a digest-keyed content pack, which needs a
+crosswalk built from a texture dump taken from a running game. That was the only
+route before the runtime path existed. Keep it for building a pack that mixes
+Rice art with digest-keyed replacements; reach for nothing at all to simply play
+with a Rice pack.

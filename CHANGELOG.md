@@ -31,6 +31,14 @@ No changes yet.
   and the game recognises those names while it draws. Content tells you how many
   textures the pack supplies, and the startup log says how many were actually
   used, so a pack that loaded and a pack that did nothing no longer look alike.
+
+  This release was tested against the **DKR-R HDR Texture Pack**
+  (`DKR REMASTERED (Almost Complete V0.1.6).zip`, 1663 textures), a community
+  project led by `sr.gu` that is distributed through the
+  [DKR-R Discord](https://discord.com/invite/AMWfXdBjNP) — linked from the
+  [DKR-R project](https://github.com/ThatGuyMcd/DKR-R). We ship no pack and host
+  none; any pack in the same format should work. Step-by-step instructions are
+  in [Content packs](docs/MODDING.md#high-resolution-texture-packs).
 - **Content is a place now, and installing a pack is a button.** Packs and
   custom characters share one screen that lists everything found in your mods
   folder, installed or skipped with the reason. **Install pack…** takes a `.zip`
