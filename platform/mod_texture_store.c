@@ -437,7 +437,11 @@ static unsigned char *load_pack_png(const char *relative, const char *key,
     }
     if (declared_width > MDKR_MOD_TEXTURE_DIMENSION_MAX ||
         declared_height > MDKR_MOD_TEXTURE_DIMENSION_MAX) {
-        char too_wide[128];
+        /* Sized for the worst case the compiler can prove, not the typical
+         * one: three %d are up to 11 characters each, and mingw's gcc refuses
+         * the truncation this literal would suffer at 128. A rejection reason
+         * cut off mid-sentence is exactly the log line nobody can act on. */
+        char too_wide[192];
         snprintf(too_wide, sizeof too_wide,
                  "the image declares %dx%d; no backend uploads a side over %d, "
                  "so this would silently skip every draw that binds it",
@@ -451,7 +455,7 @@ static unsigned char *load_pack_png(const char *relative, const char *key,
         uint64_t declared = (uint64_t)declared_width *
                             (uint64_t)declared_height * 4u;
         if (declared > (uint64_t)MDKR_MOD_TEXTURE_CACHE_BYTES_MAX) {
-            char too_big[128];
+            char too_big[192];
             snprintf(too_big, sizeof too_big,
                      "the image declares %dx%d, larger than the whole texture "
                      "cache", declared_width, declared_height);
