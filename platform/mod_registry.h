@@ -32,6 +32,8 @@
 extern "C" {
 #endif
 
+#include <stdint.h>
+
 #define MDKR_MOD_MAX_PACKS 64
 #define MDKR_MOD_PATH_MAX  1024
 
@@ -44,12 +46,38 @@ typedef struct MdkrModEntry {
     int  is_zip;
 } MdkrModEntry;
 
+/* One texture in a Rice/GLideN64 high-resolution pack.
+ *
+ * A Rice pack has no manifest and no content digests: it names each texture by
+ * an identity the RUNNING GAME computes -- `<rom>#<crc>#<fmt>#<siz>` -- and
+ * nests the files in whatever folders its author chose. So the pack has to be
+ * indexed before any of it can be found, which is what this array is.
+ *
+ * The three variants are the format's own, not an invention here: `_all` is a
+ * complete image; `_rgb` carries colour with `_a` carrying alpha in its RED
+ * channel; and an `_rgb` with no partner is opaque. `_all` wins when a pack
+ * supplies both, because it is the one the author exported last. */
+typedef struct MdkrModRiceTexture {
+    uint32_t crc;
+    int      fmt;
+    int      siz;
+    int      pack;            /* index into entries[] */
+    char    *all;             /* NULL when the pack supplies no _all */
+    char    *rgb;             /* NULL when the pack supplies no _rgb */
+    char    *alpha;           /* NULL when the pack supplies no _a */
+} MdkrModRiceTexture;
+
 typedef struct MdkrModRegistry {
     MdkrModEntry entries[MDKR_MOD_MAX_PACKS];
     int          count;
     char         skip_name[MDKR_MOD_MAX_PACKS][MDKR_MOD_NAME_MAX];
     char         skip_reason[MDKR_MOD_MAX_PACKS][128];
     int          skipped;
+    /* Owned here and freed by shutdown(). Empty unless a Rice pack is
+     * installed, so a player with only digest-keyed packs pays nothing. */
+    MdkrModRiceTexture *rice;
+    int                 rice_count;
+    int                 rice_capacity;
 } MdkrModRegistry;
 
 /* Scans `mods_dir`. Returns 0 on success including "directory absent".
@@ -72,6 +100,20 @@ int mdkr_mod_registry_init(MdkrModRegistry *reg, const char *mods_dir);
 void mdkr_mod_registry_shutdown(MdkrModRegistry *reg);
 
 int  mdkr_mod_registry_count(const MdkrModRegistry *reg);
+
+/* Rice/GLideN64 lookup: the texture a pack supplies for the identity the game
+ * just computed, or NULL when no installed pack has it.
+ *
+ * `fmt`/`siz` are the RDP format and size codes of the tile being uploaded,
+ * and they are part of the identity -- the same CRC under a different format
+ * is a different texture, and matching on the CRC alone would hand the
+ * renderer somebody else's picture. */
+const MdkrModRiceTexture *mdkr_mod_registry_rice_lookup(
+    const MdkrModRegistry *reg, uint32_t crc, int fmt, int siz);
+
+/* How many Rice identities are indexed. Zero when no Rice pack is installed,
+ * which is what the texture store tests before it computes a key at all. */
+int  mdkr_mod_registry_rice_count(const MdkrModRegistry *reg);
 const MdkrModEntry *mdkr_mod_registry_entry(const MdkrModRegistry *reg, int i);
 int  mdkr_mod_registry_skipped(const MdkrModRegistry *reg);
 const char *mdkr_mod_registry_skip_reason(const MdkrModRegistry *reg, int i);

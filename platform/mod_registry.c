@@ -5,6 +5,8 @@
 #include "mod_manifest.h"
 #include "mod_source.h"
 
+#include <ctype.h>
+#include <stdlib.h>
 #include <dirent.h>
 #include <stdio.h>
 #include <string.h>
@@ -169,6 +171,147 @@ static MdkrModSource *open_pack_root(const char *root, const char *name,
  * in the one place this text is ever seen. A pack directory could in principle
  * be named that too, but then the row still says something true about the
  * overflow, which a stale name does not. */
+
+/* ------------------------------------------------------- Rice/GLideN64 */
+
+/* Parse `<rom name>#<8 hex>#<fmt>#<siz>_<variant>.png` out of one relative
+ * path. The leading directories and the ROM-name field are ignored on purpose:
+ * every pack in the wild nests its files differently, and the ROM name is the
+ * author's spelling of a game we already know we are.
+ *
+ * Returns 1 and fills the outputs only for a name that is entirely this shape.
+ * Anything else -- a readme, a stray export, the author's own screenshot -- is
+ * simply not a texture, and is skipped without comment. */
+static int rice_parse_name(const char *rel, uint32_t *out_crc, int *out_fmt,
+                           int *out_siz, int *out_variant) {
+    const char *base = rel;
+    const char *hash1, *hash2, *hash3, *dot, *underscore;
+    const char *p;
+    char number[8];
+    size_t length;
+
+    for (p = rel; *p != '\0'; ++p) {
+        if (*p == '/' || *p == '\\') base = p + 1;
+    }
+    /* Three '#' separate four fields; find them from the RIGHT, so a ROM name
+     * that itself contains a '#' cannot shift the fields that matter. */
+    dot = strrchr(base, '.');
+    if (dot == NULL || ascii_casecmp(dot, ".png") != 0) return 0;
+    hash3 = NULL; hash2 = NULL; hash1 = NULL;
+    for (p = base; p < dot; ++p) {
+        if (*p != '#') continue;
+        hash1 = hash2; hash2 = hash3; hash3 = p;
+    }
+    if (hash1 == NULL || hash2 == NULL || hash3 == NULL) return 0;
+
+    /* CRC: exactly eight hex digits between the first two hashes. */
+    if (hash2 - hash1 != 9) return 0;
+    {
+        char hex[9];
+        char *end = NULL;
+        unsigned long value;
+        memcpy(hex, hash1 + 1, 8);
+        hex[8] = '\0';
+        for (p = hex; *p != '\0'; ++p) {
+            if (!isxdigit((unsigned char)*p)) return 0;
+        }
+        value = strtoul(hex, &end, 16);
+        if (end == NULL || *end != '\0') return 0;
+        *out_crc = (uint32_t)value;
+    }
+
+    /* Format code between the second and third hashes. */
+    length = (size_t)(hash3 - hash2 - 1);
+    if (length == 0 || length >= sizeof number) return 0;
+    memcpy(number, hash2 + 1, length);
+    number[length] = '\0';
+    for (p = number; *p != '\0'; ++p) {
+        if (!isdigit((unsigned char)*p)) return 0;
+    }
+    *out_fmt = atoi(number);
+
+    /* Size code, then the variant suffix, between the third hash and ".png". */
+    underscore = NULL;
+    for (p = hash3 + 1; p < dot; ++p) {
+        if (*p == '_') { underscore = p; break; }
+    }
+    if (underscore == NULL) return 0;
+    length = (size_t)(underscore - hash3 - 1);
+    if (length == 0 || length >= sizeof number) return 0;
+    memcpy(number, hash3 + 1, length);
+    number[length] = '\0';
+    for (p = number; *p != '\0'; ++p) {
+        if (!isdigit((unsigned char)*p)) return 0;
+    }
+    *out_siz = atoi(number);
+
+    {
+        size_t suffix = (size_t)(dot - underscore);
+        if (suffix == 4 && strncmp(underscore, "_all", 4) == 0) *out_variant = 0;
+        else if (suffix == 4 && strncmp(underscore, "_rgb", 4) == 0) *out_variant = 1;
+        else if (suffix == 2 && strncmp(underscore, "_a", 2) == 0) *out_variant = 2;
+        else return 0;
+    }
+    return 1;
+}
+
+static MdkrModRiceTexture *rice_slot(MdkrModRegistry *reg, uint32_t crc,
+                                     int fmt, int siz, int pack) {
+    int i;
+    for (i = 0; i < reg->rice_count; ++i) {
+        MdkrModRiceTexture *found = &reg->rice[i];
+        if (found->crc == crc && found->fmt == fmt && found->siz == siz) {
+            return found;
+        }
+    }
+    if (reg->rice_count == reg->rice_capacity) {
+        int capacity = reg->rice_capacity == 0 ? 256 : reg->rice_capacity * 2;
+        MdkrModRiceTexture *grown =
+            (MdkrModRiceTexture *)realloc(reg->rice,
+                                          (size_t)capacity * sizeof *grown);
+        if (grown == NULL) return NULL;
+        reg->rice = grown;
+        reg->rice_capacity = capacity;
+    }
+    {
+        MdkrModRiceTexture *fresh = &reg->rice[reg->rice_count++];
+        memset(fresh, 0, sizeof *fresh);
+        fresh->crc = crc; fresh->fmt = fmt; fresh->siz = siz; fresh->pack = pack;
+        return fresh;
+    }
+}
+
+typedef struct RiceScan {
+    MdkrModRegistry *reg;
+    int   pack;
+    int   textures;
+    int   probe_only;
+} RiceScan;
+
+static int rice_visit(const char *rel, void *user) {
+    RiceScan *scan = (RiceScan *)user;
+    uint32_t crc = 0;
+    int fmt = 0, siz = 0, variant = 0;
+    MdkrModRiceTexture *slot;
+    char **field;
+    size_t length;
+
+    if (!rice_parse_name(rel, &crc, &fmt, &siz, &variant)) return 0;
+    ++scan->textures;
+    /* The probe stops at the first texture: deciding whether a manifest-less
+     * folder is a Rice pack does not require reading two thousand names. */
+    if (scan->probe_only) return 1;
+
+    slot = rice_slot(scan->reg, crc, fmt, siz, scan->pack);
+    if (slot == NULL) return 1;   /* out of memory: stop, keep what we have */
+    field = variant == 0 ? &slot->all : (variant == 1 ? &slot->rgb : &slot->alpha);
+    if (*field != NULL) return 0;  /* first one wins; packs do duplicate */
+    length = strlen(rel) + 1;
+    *field = (char *)malloc(length);
+    if (*field != NULL) memcpy(*field, rel, length);
+    return 0;
+}
+
 static void registry_add_skip(MdkrModRegistry *reg, const char *name,
                               const char *reason) {
     if (reg->skipped >= MDKR_MOD_MAX_PACKS) {
@@ -273,7 +416,51 @@ int mdkr_mod_registry_init(MdkrModRegistry *reg, const char *mods_dir) {
                                            sizeof text, &length);
         mdkr_mod_source_close(source);
         if (read_result == MDKR_MOD_SOURCE_ABSENT) {
-            registry_add_skip(reg, name, "this pack has no pack.ini");
+            /* A Rice/GLideN64 high-resolution pack has no pack.ini and never
+             * will: it is a different format, not a broken one, and saying
+             * "this pack has no pack.ini" told the player their pack was
+             * malformed when it was perfectly well formed. Admit it when its
+             * contents actually look like one. */
+            RiceScan probe;
+            MdkrModSource *again = open_pack_root(pack_root, name, &is_zip);
+            int is_rice = 0;
+            memset(&probe, 0, sizeof probe);
+            probe.reg = reg;
+            probe.probe_only = 1;
+            if (again != NULL) {
+                mdkr_mod_source_enumerate(again, rice_visit, &probe);
+                mdkr_mod_source_close(again);
+                is_rice = probe.textures > 0;
+            }
+            if (!is_rice) {
+                registry_add_skip(reg, name, "this pack has no pack.ini");
+                continue;
+            }
+            if (reg->count >= MDKR_MOD_MAX_PACKS) {
+                registry_add_skip(reg, name, "too many packs are installed");
+                continue;
+            }
+            memset(&manifest, 0, sizeof manifest);
+            copy_bounded(manifest.name, sizeof manifest.name, name);
+            /* The same default a pack.ini omitting priority would get. */
+            manifest.priority = 100;
+            manifest.enabled = 1;
+            reg->entries[reg->count].manifest = manifest;
+            memcpy(reg->entries[reg->count].root, pack_root,
+                   strlen(pack_root) + 1);
+            reg->entries[reg->count].is_zip = is_zip;
+            {
+                RiceScan index;
+                MdkrModSource *full = open_pack_root(pack_root, name, &is_zip);
+                memset(&index, 0, sizeof index);
+                index.reg = reg;
+                index.pack = reg->count;
+                if (full != NULL) {
+                    mdkr_mod_source_enumerate(full, rice_visit, &index);
+                    mdkr_mod_source_close(full);
+                }
+            }
+            reg->count++;
             continue;
         }
         if (read_result == MDKR_MOD_SOURCE_BUFFER_TOO_SMALL ||
@@ -323,6 +510,39 @@ void mdkr_mod_registry_shutdown(MdkrModRegistry *reg) {
      * instead of pointing at directories nobody rescanned. */
     if (reg == NULL) return;
     memset(reg, 0, sizeof(*reg));
+    {
+        int i;
+        for (i = 0; i < reg->rice_count; ++i) {
+            free(reg->rice[i].all);
+            free(reg->rice[i].rgb);
+            free(reg->rice[i].alpha);
+        }
+        free(reg->rice);
+        reg->rice = NULL;
+        reg->rice_count = 0;
+        reg->rice_capacity = 0;
+    }
+}
+
+const MdkrModRiceTexture *mdkr_mod_registry_rice_lookup(
+    const MdkrModRegistry *reg, uint32_t crc, int fmt, int siz) {
+    int i;
+    if (reg == NULL) return NULL;
+    for (i = 0; i < reg->rice_count; ++i) {
+        const MdkrModRiceTexture *found = &reg->rice[i];
+        if (found->crc != crc || found->fmt != fmt || found->siz != siz) continue;
+        /* A pack the player switched off is still indexed -- they installed it
+         * and should see it listed -- but it never wins a lookup, exactly as a
+         * disabled digest-keyed pack does not. */
+        if (found->pack < 0 || found->pack >= reg->count) return NULL;
+        if (!reg->entries[found->pack].manifest.enabled) return NULL;
+        return found;
+    }
+    return NULL;
+}
+
+int mdkr_mod_registry_rice_count(const MdkrModRegistry *reg) {
+    return reg == NULL ? 0 : reg->rice_count;
 }
 
 int mdkr_mod_registry_count(const MdkrModRegistry *reg) {

@@ -79,6 +79,25 @@ void mdkr_mod_texture_store_shutdown(void);
  * reads a null pointer rather than a stale texture. */
 int  mdkr_mod_texture_lookup(const char *digest_hex, MdkrModTexture *out);
 
+/* The same question for a Rice/GLideN64 pack, which names textures by an
+ * identity the running game computes rather than by a content digest.
+ *
+ * `crc` comes from mdkr_rice_crc32() over the raw source texels; `fmt` and
+ * `siz` are the RDP codes of the tile being uploaded and are part of the
+ * identity, not decoration -- the same CRC under a different format is a
+ * different texture.
+ *
+ * Returns 0 without touching the filesystem when no Rice pack is installed, so
+ * a player with only digest-keyed packs never pays for this path. */
+int  mdkr_mod_texture_lookup_rice(uint32_t crc, int fmt, int siz,
+                                  MdkrModTexture *out);
+
+/* How many Rice identities this run actually resolved to pixels. Zero with no
+ * Rice pack installed, and zero if a pack is installed whose identities the
+ * game never asks for -- which is the difference between "the pack loaded" and
+ * "the pack is being used", and worth being able to state separately. */
+int  mdkr_mod_texture_rice_resident(void);
+
 /* True when a lookup could possibly succeed: overrides on, a registry bound,
  * and at least one enabled pack in it. The renderer tests this before hashing
  * a texture, because computing a digest for a store that cannot answer is the

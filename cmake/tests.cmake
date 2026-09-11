@@ -1209,7 +1209,9 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform/rice_crc.c)
     target_include_directories(mdkr_rice_crc_test PRIVATE
         ${CMAKE_SOURCE_DIR}/platform)
-    add_test(NAME rice_crc COMMAND mdkr_rice_crc_test)
+    # `rice_crc` is already taken by the Python implementation's own test.
+    # This one exists to hold the two together.
+    add_test(NAME rice_crc_parity COMMAND mdkr_rice_crc_test)
 
     # Issue #33: portable.txt marker + home-write fallback resolve config/save/
     # mods next to the executable. Two processes because portable detection
