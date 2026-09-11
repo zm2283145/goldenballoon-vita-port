@@ -23,6 +23,14 @@ No changes yet.
   to play. The home tells you what pressing Play will actually do — the
   presentation you chose, your frame rate, and how many content packs are about
   to apply — before you press it.
+- **High-resolution texture packs load as they come.** A Rice/GLideN64 texture
+  pack — the kind circulated for Diddy Kong Racing for twenty years — works as
+  downloaded: drop the zip or the folder into your mods folder, or use **Install
+  pack…**, and press Play. There is nothing to unpack, convert or rename, and no
+  pack file to write. The pack names each image after the texture it replaces,
+  and the game recognises those names while it draws. Content tells you how many
+  textures the pack supplies, and the startup log says how many were actually
+  used, so a pack that loaded and a pack that did nothing no longer look alike.
 - **Content is a place now, and installing a pack is a button.** Packs and
   custom characters share one screen that lists everything found in your mods
   folder, installed or skipped with the reason. **Install pack…** takes a `.zip`
