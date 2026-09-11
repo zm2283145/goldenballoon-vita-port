@@ -1199,6 +1199,20 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     add_test(NAME user_paths_pref_failure
         COMMAND mdkr_user_paths_test --pref-fail)
 
+    # The Rice/GLideN64 texture key, held to the reference implementation in
+    # tools/ricepack/rice_crc.py. The two must agree exactly: the runtime uses
+    # this to resolve a pack's textures while the offline importer uses the
+    # Python, so a divergence would stop shipped packs resolving while every
+    # authoring tool kept working.
+    add_executable(mdkr_rice_crc_test
+        ${CMAKE_SOURCE_DIR}/tests/test_rice_crc.c
+        ${CMAKE_SOURCE_DIR}/platform/rice_crc.c)
+    target_include_directories(mdkr_rice_crc_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    # `rice_crc` is already taken by the Python implementation's own test.
+    # This one exists to hold the two together.
+    add_test(NAME rice_crc_parity COMMAND mdkr_rice_crc_test)
+
     # Issue #33: portable.txt marker + home-write fallback resolve config/save/
     # mods next to the executable. Two processes because portable detection
     # caches once per run; they share no on-disk state (see the test header).

@@ -92,7 +92,8 @@
 #include "presentation_snapshot.h"
 #include "present_sched.h"   /* presentation-replay arming seam */
 #include "mod_texture_key.h"     /* the digest a pack author names a texture by */
-#include "mod_texture_store.h"   /* the override layer in front of the ROM path */
+#include "mod_texture_store.h"
+#include "rice_crc.h"   /* Rice/GLideN64 texture identity */
 #include "gfx_uniforms.h"
 #include "gfx_pc_dkr.h"
 #include "modern_character_render.h"
@@ -2872,6 +2873,21 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
             mdkr_mod_texture_digest(&key, addr, digest_bytes, digest);
             digest_known = true;
             over_used = mdkr_mod_texture_lookup(digest, &over) != 0;
+            /* A Rice/GLideN64 pack names this texture by an identity computed
+             * over the very bytes in hand, so it is asked here and only on a
+             * miss: a digest-keyed replacement is the player's more specific
+             * choice and keeps winning. The key needs the tile's geometry and
+             * its ROW PITCH -- the measured variant hashes the span as it sits
+             * in RDRAM, padding included, not as a tightly packed image. */
+            if (!over_used && mdkr_mod_texture_rice_active()) {
+                uint32_t rice_key = 0;
+                if (mdkr_rice_crc32(addr, digest_bytes, (int)tw, (int)th,
+                                    (int)siz, (int)source_line_bytes,
+                                    &rice_key)) {
+                    over_used = mdkr_mod_texture_lookup_rice(
+                        rice_key, (int)fmt, (int)siz, &over) != 0;
+                }
+            }
         }
         const bool uploaded =
             over_used ? gfx_rapi->upload_texture(over.rgba, over.width,

@@ -451,6 +451,7 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/mod_registry.c     # ordered set of installed packs
     ${CMAKE_SOURCE_DIR}/platform/mod_texture_key.c  # published texture content digest
     ${CMAKE_SOURCE_DIR}/platform/mod_texture_store.c # decoded override textures (stb PNG)
+    ${CMAKE_SOURCE_DIR}/platform/rice_crc.c        # Rice/GLideN64 texture identity
     ${CMAKE_SOURCE_DIR}/platform/mod_music.c        # decoded override music (dr_wav)
     ${CMAKE_SOURCE_DIR}/platform/modern_character_asset.c # validated private .mdkc character cache
     ${CMAKE_SOURCE_DIR}/platform/modern_character_install.c # transactional portable .mdkrchar import/removal

@@ -2129,6 +2129,13 @@ void platform_content_packs_init(void) {
         mdkr_mod_texture_set_enabled(packs_enabled);
         return;
     }
+    /* Release the previous scan first. mdkr_mod_registry_init() documents that
+     * an UNINITIALISED registry is safe to pass -- it overwrites the struct
+     * wholesale -- which is exactly why it cannot free anything itself, and why
+     * a second init here would otherwise drop a live Rice index and every path
+     * string in it. s_contentPacks is a file static, so this is a no-op the
+     * first time through. */
+    mdkr_mod_registry_shutdown(&s_contentPacks);
     (void)mdkr_mod_registry_init(&s_contentPacks, mods_dir);
 
     /*
@@ -2175,6 +2182,19 @@ void platform_content_packs_init(void) {
      * lines below, with a reason a player can act on. On stderr, which is where
      * mod_texture_store.c already reports an unusable pack texture: all of a
      * player's [MODS] evidence has to survive the same redirection.  */
+    {
+        /* A Rice pack carries no manifest, so "1 pack active" is all the line
+         * below can say about it. Naming how many texture identities it
+         * actually indexed is what tells the player the pack was UNDERSTOOD,
+         * not merely accepted. */
+        const int rice = mdkr_mod_registry_rice_count(&s_contentPacks);
+        if (rice > 0) {
+            fprintf(stderr,
+                    "[MODS] %d high-resolution texture identit%s indexed "
+                    "(Rice/GLideN64 pack)\n",
+                    rice, rice == 1 ? "y" : "ies");
+        }
+    }
     fprintf(stderr, "[MODS] %d pack(s) active, %d skipped%s\n",
             s_contentPacksActive,
             registry_skipped + player_disabled + authored_off,
