@@ -200,6 +200,21 @@ static void rice_index_release(MdkrModRegistry *reg) {
     reg->rice_capacity = 0;
 }
 
+/* Bounded ASCII case-insensitive compare. The registry already has
+ * ascii_casecmp for whole strings; this is the fixed-length form the variant
+ * suffixes need, and neither one touches the C locale. */
+static int ascii_ncasecmp(const char *a, const char *b, size_t count) {
+    size_t i;
+    for (i = 0; i < count; ++i) {
+        unsigned char ca = (unsigned char)a[i];
+        unsigned char cb = (unsigned char)b[i];
+        if (ca >= 'A' && ca <= 'Z') ca = (unsigned char)(ca + ('a' - 'A'));
+        if (cb >= 'A' && cb <= 'Z') cb = (unsigned char)(cb + ('a' - 'A'));
+        if (ca != cb) return (int)ca - (int)cb;
+    }
+    return 0;
+}
+
 /* True when `count` characters starting at `text` are all hex digits. */
 static int is_hex_run(const char *text, size_t count) {
     size_t i;
@@ -230,9 +245,24 @@ static int rice_parse_name(const char *rel, uint32_t *out_crc, int *out_fmt,
      *
      * A ROM name may itself contain '#', so the CRC is found as the first
      * eight-hex-digit field that is followed by the rest of a well-formed
-     * identity -- not by position. The palette CRC is parsed and ignored: this
-     * port keys a texture by <crc,fmt,siz>, and a palette-specific variant is a
-     * refinement of the same picture. */
+     * identity -- not by position.
+     *
+     * The palette CRC is parsed and DISCARDED, and that is a real limitation
+     * rather than a simplification. A colour-index texture's palette hash
+     * distinguishes two pictures that share pixel indices but not colours; key
+     * on it and they stay apart. We cannot, because mdkr_rice_crc32() hashes
+     * the texel span and nothing else -- the TLUT is never hashed, so a
+     * palette-keyed name has nothing to match against at draw time. Keeping the
+     * field in the key would make those entries permanently unmatchable, which
+     * is strictly worse than collapsing them. So they collapse: where a pack
+     * supplies several palette variants of one texture, the last one it lists
+     * wins for all of them.
+     *
+     * DKR-R (ThatGuyMcd/DKR-R, runtime-recomp/src/game/rice_texture_pack_policy.hpp)
+     * keys on the palette and can, because its RT64 patch computes the palette
+     * hash alongside the texel hash. Hashing the TLUT here is the work that
+     * would close this; it is not needed by any pack measured so far -- the
+     * V0.1.6 pack carries a palette field on none of its 1663 identities. */
     for (cursor = base; cursor < dot; ++cursor) {
         const char *field;
         const char *end_of_field;
@@ -295,12 +325,18 @@ static int rice_parse_name(const char *rel, uint32_t *out_crc, int *out_fmt,
         }
         if (*end_of_field != '_') continue;
         {
+            /* Case-insensitive, like the `.png` test above. Rice packs are two
+             * decades of assets from many authors and many tools, and a pack
+             * that shouts _ALL is the same pack. Refusing it would look to the
+             * player exactly like a pack that simply did not work. */
             size_t suffix = (size_t)(dot - end_of_field);
-            if (suffix == 4 && strncmp(end_of_field, "_all", 4) == 0) {
+            if (suffix == 4 && ascii_ncasecmp(end_of_field, "_all", 4) == 0) {
                 *out_variant = 0;
-            } else if (suffix == 4 && strncmp(end_of_field, "_rgb", 4) == 0) {
+            } else if (suffix == 4 &&
+                       ascii_ncasecmp(end_of_field, "_rgb", 4) == 0) {
                 *out_variant = 1;
-            } else if (suffix == 2 && strncmp(end_of_field, "_a", 2) == 0) {
+            } else if (suffix == 2 &&
+                       ascii_ncasecmp(end_of_field, "_a", 2) == 0) {
                 *out_variant = 2;
             } else {
                 continue;
