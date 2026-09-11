@@ -601,9 +601,9 @@ void mdkr_mod_registry_shutdown(MdkrModRegistry *reg) {
 
 const MdkrModRiceTexture *mdkr_mod_registry_rice_lookup(
     const MdkrModRegistry *reg, uint32_t crc, int fmt, int siz) {
+    const MdkrModRiceTexture *best = NULL;
     int i;
     if (reg == NULL) return NULL;
-    const MdkrModRiceTexture *best = NULL;
     for (i = 0; i < reg->rice_count; ++i) {
         const MdkrModRiceTexture *found = &reg->rice[i];
         if (found->crc != crc || found->fmt != fmt || found->siz != siz) continue;
@@ -635,6 +635,16 @@ int mdkr_mod_registry_rice_count(const MdkrModRegistry *reg) {
         ++usable;
     }
     return usable;
+}
+
+int mdkr_mod_registry_pack_rice_count(const MdkrModRegistry *reg, int index) {
+    int i;
+    int owned = 0;
+    if (reg == NULL || index < 0 || index >= reg->count) return 0;
+    for (i = 0; i < reg->rice_count; ++i) {
+        if (reg->rice[i].pack == index) ++owned;
+    }
+    return owned;
 }
 
 int mdkr_mod_registry_count(const MdkrModRegistry *reg) {

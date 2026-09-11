@@ -131,6 +131,11 @@ typedef struct StoreSlot {
 
 static const MdkrModRegistry *s_registry;
 static int       s_enabled_packs;
+/* Rice identities an enabled pack supplies, counted once at bind. The registry
+ * has to walk its whole index to answer that -- 1663 entries for the pack this
+ * was built against -- and the renderer asks on every texture upload, so the
+ * answer is cached here the same way the enabled-pack count is. */
+static int       s_rice_identities;
 static bool      s_enabled = true;
 static uint32_t  s_generation;
 
@@ -347,6 +352,18 @@ static unsigned char *read_pack_entry(MdkrModFile *file, size_t *out_size,
 
 /* ------------------------------------------------------------- resolution */
 
+/* Load one pack PNG into RGBA.
+ *
+ * Every admission rule a replacement texture has to pass lives here and only
+ * here: the cap on the file, the header inspection that establishes the decode
+ * budget BEFORE the pixels are allocated, the dimension ceiling, and the
+ * requirement that the decoded size match the admitted header. Rice textures go
+ * through the identical checks -- a pack from a stranger is a pack from a
+ * stranger whichever convention names its files.
+ *
+ * Returns stbi-owned pixels and their size, or NULL. `out_absent`, when given,
+ * separates the ordinary "no pack holds this path" from a rejection whose
+ * reason has already been reported against `key`. */
 static unsigned char *load_pack_png(const char *relative, const char *key,
                                     int *out_width, int *out_height,
                                     int *out_absent) {
@@ -471,7 +488,8 @@ static unsigned char *load_pack_png(const char *relative, const char *key,
     return pixels;
 }
 
-
+/* The digest-keyed resolution the store has always done: one file, named by
+ * the content digest the renderer just computed. */
 static void slot_resolve(StoreSlot *slot) {
     char           relative[MDKR_MOD_TEXTURE_DIGEST_CHARS + 32];
     unsigned char *pixels;
@@ -614,6 +632,7 @@ void mdkr_mod_texture_store_init(const MdkrModRegistry *registry) {
         const MdkrModEntry *entry = mdkr_mod_registry_entry(registry, index);
         if (entry != NULL && entry->manifest.enabled) s_enabled_packs++;
     }
+    s_rice_identities = mdkr_mod_registry_rice_count(registry);
 }
 
 void mdkr_mod_texture_store_shutdown(void) {
@@ -641,6 +660,7 @@ void mdkr_mod_texture_store_shutdown(void) {
     s_reports = 0;
     s_registry = NULL;
     s_enabled_packs = 0;
+    s_rice_identities = 0;
     /* s_enabled and s_generation deliberately survive: the toggle is the
      * player's, not the registry's, and a generation that went backwards would
      * let a stale cache entry from before the reload look current. */
@@ -693,8 +713,7 @@ int mdkr_mod_texture_lookup(const char *digest_hex, MdkrModTexture *out) {
 int mdkr_mod_texture_rice_resident(void) { return s_rice_resident; }
 
 int mdkr_mod_texture_rice_active(void) {
-    return mdkr_mod_texture_store_active() &&
-           mdkr_mod_registry_rice_count(s_registry) > 0;
+    return mdkr_mod_texture_store_active() && s_rice_identities > 0;
 }
 
 int mdkr_mod_texture_lookup_rice(uint32_t crc, int fmt, int siz,
@@ -704,7 +723,7 @@ int mdkr_mod_texture_lookup_rice(uint32_t crc, int fmt, int siz,
 
     if (out != NULL) { out->rgba = NULL; out->width = 0; out->height = 0; }
     if (!mdkr_mod_texture_store_active()) return 0;
-    if (mdkr_mod_registry_rice_count(s_registry) == 0) return 0;
+    if (s_rice_identities == 0) return 0;
 
     /* The slot table is keyed by string, so a Rice identity gets one that
      * cannot collide with a 32-character content digest. */

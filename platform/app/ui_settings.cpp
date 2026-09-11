@@ -1934,7 +1934,14 @@ bool drawAccessibilitySection(SDL_Window *window, bool compact,
 // Only `name` is mandatory in a pack.ini, so the optional parts are appended
 // rather than formatted in: a pack that declared neither must not read as
 // "Name  by  (priority 100)".
-std::string packSummary(const MdkrModEntry *entry) {
+//
+// A high-resolution texture pack declares NONE of them -- it has no pack.ini at
+// all, and its name is the folder or zip the player dropped in. Left alone it
+// rendered as a bare name and a priority nobody set, which is precisely the row
+// a player stares at wondering whether their 146 MB download did anything. It
+// gets the one fact it can offer instead: how many textures it supplies.
+std::string packSummary(const MdkrModRegistry *packs, int index,
+                        const MdkrModEntry *entry) {
     std::string text = entry->manifest.name;
     if (entry->manifest.version[0] != '\0') {
         text += "  ";
@@ -1944,10 +1951,16 @@ std::string packSummary(const MdkrModEntry *entry) {
         text += "  by ";
         text += entry->manifest.author;
     }
-    char priority[48];
-    std::snprintf(priority, sizeof(priority), "  (priority %d)",
-                  entry->manifest.priority);
-    text += priority;
+    char detail[96];
+    if (entry->is_rice) {
+        const int textures = mdkr_mod_registry_pack_rice_count(packs, index);
+        std::snprintf(detail, sizeof(detail),
+                      "  — high-resolution textures (%d)", textures);
+    } else {
+        std::snprintf(detail, sizeof(detail), "  (priority %d)",
+                      entry->manifest.priority);
+    }
+    text += detail;
     return text;
 }
 
@@ -1956,10 +1969,15 @@ std::string packSummary(const MdkrModEntry *entry) {
 // the scan's own matcher rather than a second one that could disagree with it.
 const char *packSkipReason(const MdkrModEntry *entry,
                            const char *disabledList) {
-    return platform_content_pack_name_disabled(disabledList,
-                                               entry->manifest.name)
-        ? "you listed it under Skipped packs"
-        : "its own pack.ini switches it off";
+    if (platform_content_pack_name_disabled(disabledList,
+                                            entry->manifest.name)) {
+        return "you listed it under Skipped packs";
+    }
+    // A high-resolution pack has no pack.ini to switch anything off, so the
+    // only way it reaches here is the list above. Saying otherwise would send
+    // the player looking inside a zip for a file that is not in it.
+    return entry->is_rice ? "you listed it under Skipped packs"
+                          : "its own pack.ini switches it off";
 }
 
 // One row per pack, once per process, so a gate can read what the panel drew
@@ -2021,13 +2039,15 @@ bool drawContentSection(SDL_Window *window, bool compact,
     for (int i = 0; i < count; ++i) {
         const MdkrModEntry *entry = mdkr_mod_registry_entry(packs, i);
         if (entry == nullptr || !entry->manifest.enabled) continue;
-        ImGui::BulletText("%s", packSummary(entry).c_str());
+        ImGui::BulletText("%s", packSummary(packs, i, entry).c_str());
         ++installed;
     }
     if (installed == 0) {
         ui::TextSubtleWrapped(
             count == 0 && unreadable == 0
-                ? "Nothing yet. A pack is a folder with a pack.ini file in it."
+                ? "Nothing yet. Install a high-resolution texture pack just "
+                  "as it downloaded — a zip or a folder of images. A pack that "
+                  "replaces music or other artwork carries a pack.ini."
                 : "None of the packs found are in use. Every one of them is "
                   "listed below with the reason.");
     } else if (!compact) {

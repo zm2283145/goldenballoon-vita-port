@@ -120,6 +120,12 @@ const MdkrModRiceTexture *mdkr_mod_registry_rice_lookup(
  * tests before it computes a key at all -- so a disabled pack costs nothing
  * per texture upload rather than a hash and a failed lookup. */
 int  mdkr_mod_registry_rice_count(const MdkrModRegistry *reg);
+
+/* How many identities the pack at `index` supplies, enabled or not. The panel
+ * shows this per row: a high-resolution pack carries no pack.ini to name a
+ * version or an author, so the texture count is the only thing that
+ * distinguishes "it loaded" from "it loaded and is empty". */
+int  mdkr_mod_registry_pack_rice_count(const MdkrModRegistry *reg, int index);
 const MdkrModEntry *mdkr_mod_registry_entry(const MdkrModRegistry *reg, int i);
 int  mdkr_mod_registry_skipped(const MdkrModRegistry *reg);
 const char *mdkr_mod_registry_skip_reason(const MdkrModRegistry *reg, int i);
