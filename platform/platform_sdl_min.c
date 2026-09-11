@@ -2129,6 +2129,13 @@ void platform_content_packs_init(void) {
         mdkr_mod_texture_set_enabled(packs_enabled);
         return;
     }
+    /* Release the previous scan first. mdkr_mod_registry_init() documents that
+     * an UNINITIALISED registry is safe to pass -- it overwrites the struct
+     * wholesale -- which is exactly why it cannot free anything itself, and why
+     * a second init here would otherwise drop a live Rice index and every path
+     * string in it. s_contentPacks is a file static, so this is a no-op the
+     * first time through. */
+    mdkr_mod_registry_shutdown(&s_contentPacks);
     (void)mdkr_mod_registry_init(&s_contentPacks, mods_dir);
 
     /*

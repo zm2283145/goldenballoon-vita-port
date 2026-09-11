@@ -98,6 +98,13 @@ int  mdkr_mod_texture_lookup_rice(uint32_t crc, int fmt, int siz,
  * "the pack is being used", and worth being able to state separately. */
 int  mdkr_mod_texture_rice_resident(void);
 
+/* 1 when an ENABLED Rice pack is installed. The renderer tests this before
+ * computing a Rice key, because that key is a full pass over the texture's
+ * source bytes: without the test, every player with only digest-keyed packs
+ * (or only a dump running) pays a second hash of every new texture for a
+ * lookup that cannot succeed. */
+int  mdkr_mod_texture_rice_active(void);
+
 /* True when a lookup could possibly succeed: overrides on, a registry bound,
  * and at least one enabled pack in it. The renderer tests this before hashing
  * a texture, because computing a digest for a store that cannot answer is the

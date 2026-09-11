@@ -44,6 +44,10 @@ typedef struct MdkrModEntry {
      * it is the same flag that function's parameter is. */
     char root[MDKR_MOD_PATH_MAX];
     int  is_zip;
+    /* A Rice/GLideN64 pack: no manifest, textures named by the identity the
+     * running game computes. Its index is built after the entries are sorted,
+     * so this flag is how the second pass knows which roots to walk. */
+    int  is_rice;
 } MdkrModEntry;
 
 /* One texture in a Rice/GLideN64 high-resolution pack.
@@ -111,8 +115,10 @@ int  mdkr_mod_registry_count(const MdkrModRegistry *reg);
 const MdkrModRiceTexture *mdkr_mod_registry_rice_lookup(
     const MdkrModRegistry *reg, uint32_t crc, int fmt, int siz);
 
-/* How many Rice identities are indexed. Zero when no Rice pack is installed,
- * which is what the texture store tests before it computes a key at all. */
+/* How many Rice identities an ENABLED pack supplies. Zero when none is
+ * installed or the player switched it off, which is what the texture store
+ * tests before it computes a key at all -- so a disabled pack costs nothing
+ * per texture upload rather than a hash and a failed lookup. */
 int  mdkr_mod_registry_rice_count(const MdkrModRegistry *reg);
 const MdkrModEntry *mdkr_mod_registry_entry(const MdkrModRegistry *reg, int i);
 int  mdkr_mod_registry_skipped(const MdkrModRegistry *reg);

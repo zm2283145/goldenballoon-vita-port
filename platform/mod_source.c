@@ -292,12 +292,33 @@ void mdkr_mod_source_close(MdkrModSource *src) {
  * mingw-w64 ships <dirent.h> and the registry already enumerates the mods
  * directory with it (see the note at the top of mod_registry.c), so both pack
  * kinds keep answering identically wherever the game runs. */
-static int directory_enumerate(const char *root, const char *prefix,
+/* Depth-first walk of a directory pack. `prefix` is the path relative to the
+ * pack root, so the callback sees exactly the string read()/has() would take.
+ *
+ * Returns 0 for a complete walk, 1 for "could not open", and 2 for "the
+ * visitor asked to stop". Those are three different answers and the caller
+ * needs them apart: folding "stopped" into "finished" made the early-stop
+ * contract silently untrue for nested packs -- which is every Rice pack -- so
+ * the cheap "is this a Rice pack?" probe walked and stat()ed every file in it.
+ *
+ * mingw-w64 ships <dirent.h> and the registry already enumerates the mods
+ * directory with it, so both pack kinds answer identically wherever the game
+ * runs. */
+#define MDKR_MOD_SOURCE_WALK_DEPTH_MAX 24
+
+static int directory_enumerate(const char *root, const char *prefix, int depth,
                                MdkrModSourceVisit visit, void *user) {
     char here[MDKR_MOD_PATH_MAX];
     DIR *directory;
     struct dirent *entry;
-    int stopped = 0;
+    int result = 0;
+
+    /* A pack containing a link to its own parent would otherwise recurse until
+     * the relative path overflowed, and each frame holds three 1 KiB buffers --
+     * roughly 1.5 MiB before that happens, past the default main-thread stack
+     * on Windows. A pack is a file downloaded from a stranger; it does not get
+     * to choose how deep this goes. */
+    if (depth > MDKR_MOD_SOURCE_WALK_DEPTH_MAX) return 0;
 
     if (prefix[0] == '\0') {
         if (snprintf(here, sizeof here, "%s", root) >= (int)sizeof here) return 1;
@@ -307,10 +328,10 @@ static int directory_enumerate(const char *root, const char *prefix,
     directory = opendir(here);
     if (directory == NULL) return 1;
 
-    while (!stopped && (entry = readdir(directory)) != NULL) {
+    while (result == 0 && (entry = readdir(directory)) != NULL) {
         char rel[MDKR_MOD_PATH_MAX];
         const char *name = entry->d_name;
-        int is_dir = 0, is_regular = 0;
+        int is_dir = 0, is_regular = 0, is_link = 0;
         char full[MDKR_MOD_PATH_MAX];
 
         if (name[0] == '.') continue;   /* '.', '..', and editor bookkeeping */
@@ -323,28 +344,42 @@ static int directory_enumerate(const char *root, const char *prefix,
         /* Asked of the joined path rather than trusted from d_type, which is
          * DT_UNKNOWN on several filesystems. */
         if (!path_join(full, sizeof full, root, rel)) continue;
-        if (mdkr_path_query_utf8(full, &is_dir, &is_regular, NULL) != 0) continue;
+        /* The parameter order is (path, exists, is_regular, is_directory).
+         * Reading the existence flag into is_dir made every ordinary file look
+         * like a directory, so a directory pack indexed nothing at all -- only
+         * the archive arm worked, which is exactly the shape of pack that was
+         * tested first. */
+        if (mdkr_path_query_utf8(full, NULL, &is_regular, &is_dir) != 0) {
+            continue;
+        }
+        /* Links are not followed at all. The depth cap above bounds what a loop
+         * could do; refusing the link removes the loop. */
+        is_link = mdkr_path_is_link_or_reparse_utf8(full);
+        if (is_link != 0) continue;
 
         if (is_dir) {
-            if (directory_enumerate(root, rel, visit, user) != 0) {
-                /* A subdirectory that cannot be opened is not the whole walk
-                 * failing: the rest of the pack is still indexable. */
-                continue;
-            }
+            const int nested =
+                directory_enumerate(root, rel, depth + 1, visit, user);
+            if (nested == 2) result = 2;   /* the visitor stopped: propagate */
+            /* A subdirectory that will not open is not the whole walk failing;
+             * the rest of the pack is still indexable. */
             continue;
         }
         if (!is_regular) continue;
         if (!mdkr_mod_source_path_is_safe(rel)) continue;
-        if (visit(rel, user) != 0) stopped = 1;
+        if (visit(rel, user) != 0) result = 2;
     }
     closedir(directory);
-    return 0;
+    return result;
 }
 
 int mdkr_mod_source_enumerate(MdkrModSource *src, MdkrModSourceVisit visit,
                               void *user) {
     if (src == NULL || visit == NULL) return 1;
-    if (!src->is_zip) return directory_enumerate(src->root, "", visit, user);
+    if (!src->is_zip) {
+        const int walked = directory_enumerate(src->root, "", 0, visit, user);
+        return walked == 1 ? 1 : 0;   /* a stop is a completed request */
+    }
 
     {
         const mz_uint count = mz_zip_reader_get_num_files(&src->zip);

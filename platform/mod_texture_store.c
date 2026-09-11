@@ -124,6 +124,9 @@ typedef struct StoreSlot {
     size_t    bytes;
     uint64_t  last_use;
     int       state;
+    /* This identity has been counted as used at least once. Slots are never
+     * released, so eviction and a later re-resolve cannot count it twice. */
+    unsigned char counted;
 } StoreSlot;
 
 static const MdkrModRegistry *s_registry;
@@ -344,30 +347,9 @@ static unsigned char *read_pack_entry(MdkrModFile *file, size_t *out_size,
 
 /* ------------------------------------------------------------- resolution */
 
-/* Does any enabled pack hold this path? Absence is not a defect -- most
- * textures have no replacement -- so it is asked before the loader runs and
- * reported as ABSENT rather than through a rejection. */
-static int registry_has_entry(const char *relative) {
-    MdkrModFile file;
-    if (!mdkr_mod_registry_open_file(s_registry, relative, &file)) return 0;
-    mdkr_mod_registry_close_file(&file);
-    return 1;
-}
-
-
-/* Load one pack PNG into RGBA.
- *
- * Every admission rule a replacement texture has to pass lives here and only
- * here: the cap on the file, the header inspection that establishes the decode
- * budget BEFORE the pixels are allocated, the dimension ceiling, and the
- * requirement that the decoded size match the admitted header. Rice textures go
- * through the identical checks -- a pack from a stranger is a pack from a
- * stranger whichever convention names its files.
- *
- * Returns stbi-owned pixels and their size, or NULL having already reported the
- * reason against `key`. */
 static unsigned char *load_pack_png(const char *relative, const char *key,
-                                    int *out_width, int *out_height) {
+                                    int *out_width, int *out_height,
+                                    int *out_absent) {
     MdkrModFile    file;
     const char    *reason = NULL;
     unsigned char *file_bytes;
@@ -380,8 +362,13 @@ static unsigned char *load_pack_png(const char *relative, const char *key,
     int            height = 0;
     int            channels = 0;
 
-    /* Directory pack or zip pack — the store cannot tell and must not care. */
+    /* Directory pack or zip pack — the store cannot tell and must not care.
+     * Absence is reported through `out_absent` rather than by asking a second
+     * time: most textures have no replacement, and probing first meant opening
+     * (and for a zip, re-parsing the central directory) twice per resolve. */
+    if (out_absent != NULL) *out_absent = 0;
     if (!mdkr_mod_registry_open_file(s_registry, relative, &file)) {
+        if (out_absent != NULL) *out_absent = 1;
         return NULL;
     }
 
@@ -484,23 +471,21 @@ static unsigned char *load_pack_png(const char *relative, const char *key,
     return pixels;
 }
 
-/* The digest-keyed resolution the store has always done: one file, named by
- * the content digest the renderer just computed. */
+
 static void slot_resolve(StoreSlot *slot) {
     char           relative[MDKR_MOD_TEXTURE_DIGEST_CHARS + 32];
     unsigned char *pixels;
     int            width = 0;
     int            height = 0;
+    int            absent = 0;
     size_t         decoded;
 
     snprintf(relative, sizeof relative, "textures/%s.png", slot->digest);
-    if (!registry_has_entry(relative)) {
-        slot->state = SLOT_ABSENT;
-        return;
-    }
-    pixels = load_pack_png(relative, slot->digest, &width, &height);
+    pixels = load_pack_png(relative, slot->digest, &width, &height, &absent);
     if (pixels == NULL) {
-        slot->state = SLOT_REJECTED;
+        /* Absent is the ordinary case and not a defect; anything else already
+         * reported its reason inside the loader. */
+        slot->state = absent ? SLOT_ABSENT : SLOT_REJECTED;
         return;
     }
     decoded = (size_t)width * (size_t)height * 4u;
@@ -545,15 +530,17 @@ static void slot_resolve_rice(StoreSlot *slot, uint32_t crc, int fmt, int siz) {
     }
 
     if (found->all != NULL) {
-        pixels = load_pack_png(found->all, slot->digest, &width, &height);
+        pixels = load_pack_png(found->all, slot->digest, &width, &height,
+                               NULL);
     } else if (found->rgb != NULL) {
-        pixels = load_pack_png(found->rgb, slot->digest, &width, &height);
+        pixels = load_pack_png(found->rgb, slot->digest, &width, &height,
+                               NULL);
         if (pixels != NULL) {
             int alpha_width = 0;
             int alpha_height = 0;
             unsigned char *alpha = found->alpha == NULL ? NULL :
                 load_pack_png(found->alpha, slot->digest, &alpha_width,
-                              &alpha_height);
+                              &alpha_height, NULL);
             const size_t count = (size_t)width * (size_t)height;
             size_t i;
             if (alpha != NULL && alpha_width == width &&
@@ -577,6 +564,18 @@ static void slot_resolve_rice(StoreSlot *slot, uint32_t crc, int fmt, int siz) {
     }
 
     if (pixels == NULL) {
+        /* An entry that indexes ONLY an _a half has no colour to show, and a
+         * file that vanished between indexing and use reports nothing from the
+         * loader. Both used to fail in silence -- the pack said it supplied the
+         * texture, nothing appeared, and the log was empty. */
+        if (found->all == NULL && found->rgb == NULL) {
+            report_rejection(slot->digest,
+                             "this pack supplies only an _a half for that "
+                             "texture, with no colour to apply it to");
+        } else {
+            report_rejection(slot->digest,
+                             "the pack file it names could not be opened");
+        }
         slot->state = SLOT_REJECTED;
         return;
     }
@@ -594,7 +593,10 @@ static void slot_resolve_rice(StoreSlot *slot, uint32_t crc, int fmt, int siz) {
     slot->bytes = decoded;
     slot->state = SLOT_RESIDENT;
     s_resident_bytes += decoded;
-    s_rice_resident++;
+    /* Counted once per identity, not once per resolve: under cache pressure a
+     * texture is evicted and re-resolved, and reporting that as more textures
+     * than the pack supplies would overstate the evidence. */
+    if (!slot->counted) { slot->counted = 1; s_rice_resident++; }
 }
 
 /* ------------------------------------------------------------------- API */
@@ -689,6 +691,11 @@ int mdkr_mod_texture_lookup(const char *digest_hex, MdkrModTexture *out) {
 }
 
 int mdkr_mod_texture_rice_resident(void) { return s_rice_resident; }
+
+int mdkr_mod_texture_rice_active(void) {
+    return mdkr_mod_texture_store_active() &&
+           mdkr_mod_registry_rice_count(s_registry) > 0;
+}
 
 int mdkr_mod_texture_lookup_rice(uint32_t crc, int fmt, int siz,
                                  MdkrModTexture *out) {
