@@ -61,7 +61,7 @@
    Without NoTrpDrm, the game remains playable but trophies are safely
    unavailable.
 2. **Get the ROM.** You need a legally acquired dump of the original game —
-   US v1.0 (`v80`), as `.z64`. Copy it onto your Vita's memory card at
+   US v1.1 REV1 (`v80`), as `.z64`. Copy it onto your Vita's memory card at
    exactly this path:
 
    ```text
