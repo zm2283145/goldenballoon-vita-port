@@ -117,18 +117,22 @@ the git log on this branch for the bring-up history.
    fresh and display both the background and startup/gate art correctly.
    LiveArea assets are bundled by default now (see Packaging below).
 
-Currently: the Restored preset is stable for normal play; the
-Remastered preset crashes on startup every time (see
-[Known issues](#known-issues)). See the git log on this branch for the
-blow-by-blow of everything ruled out chasing it.
+Currently: the Restored preset is stable for normal play. Live debugging
+isolated the former Remastered startup abort to the RL-5 per-pixel-light vertex
+variant (`SHADER_OPT_DFDX_LIGHT`, observed shader ID `0x8090`) being rejected by
+VitaGL/vitaShaRK. The Vita build now retains Remastered grading, tonemapping,
+SDF text and supported effects while disabling only that incompatible RL-5
+path before shader-key and vertex-layout derivation. Hardware validation of
+that fallback is still pending.
 
-**vitaGL / vitaShaRK versions:** built from
+**vitaGL / vitaShaRK versions:** the current integration branch builds against
 [Rinnegatamante/vitaGL](https://github.com/Rinnegatamante/vitaGL) commit
-`cd3791e` and [Rinnegatamante/vitaShaRK](https://github.com/Rinnegatamante/vitaShaRK)
-commit `df24065` (both HEAD as of 2026-08-30/2026-08-22 respectively),
-built from source rather than dpm's prebuilt packages (no make on this
-toolchain's host machine, so both are compiled via one-off scripts that
-replicate their Makefiles). Splash screen enabled (NO_SPLASHSCREEN unset)
+`1ffcb99e65d979722c37eedd7298e9487f8eedb1` (2026-09-15) and
+[Rinnegatamante/vitaShaRK](https://github.com/Rinnegatamante/vitaShaRK)
+commit `df24065`. VitaGL is built from source with its release Makefile flags;
+the CMake cache variable `MDKR_VITAGL_ROOT` selects an isolated directory
+containing `libvitaGL.a` and `vitaGL.h`, so testing a new driver does not
+overwrite VitaSDK's global package. Splash screen enabled (NO_SPLASHSCREEN unset)
 so the vitaGL boot logo shows on real hardware as a visual "did vitaGL
 initialize" signal. Earlier in bring-up, vitaGL HEAD alone (without
 updating vitaShaRK to match) failed to link — HEAD's

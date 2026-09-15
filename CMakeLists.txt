@@ -123,6 +123,21 @@ if(VITA)
         "$ENV{VITASDK}/arm-vita-eabi/include")
     set(SDL2_LIBRARY_DIRS "$ENV{VITASDK}/arm-vita-eabi/lib")
     set(SDL2_LIBRARIES SDL2)
+    set(MDKR_VITAGL_ROOT "" CACHE PATH
+        "Optional vitaGL build root containing libvitaGL.a and vitaGL.h")
+    if(MDKR_VITAGL_ROOT)
+        foreach(MDKR_VITAGL_FILE IN ITEMS
+                "${MDKR_VITAGL_ROOT}/libvitaGL.a"
+                "${MDKR_VITAGL_ROOT}/vitaGL.h")
+            if(NOT EXISTS "${MDKR_VITAGL_FILE}")
+                message(FATAL_ERROR
+                    "MDKR_VITAGL_ROOT requires ${MDKR_VITAGL_FILE}")
+            endif()
+        endforeach()
+        set(MDKR_VITAGL_LIBRARY "${MDKR_VITAGL_ROOT}/libvitaGL.a")
+    else()
+        set(MDKR_VITAGL_LIBRARY vitaGL)
+    endif()
     option(MDKR_VITA_DEBUGGER
         "Link VitaDebugger and stop for GDB on TCP port 1234 during startup" OFF)
     set(MDKR_VITADEBUGGER_DIR "${CMAKE_SOURCE_DIR}/../../VitaDebugger" CACHE PATH
@@ -1121,8 +1136,12 @@ if(NOT EMSCRIPTEN)
         # Makefile.vita; trimmed of the Sce*_stub libs that project needs only
         # for its Randomizer/network features, which this engine build does
         # not compile (MDKR_ENABLE_ONLINE_BETA and friends default OFF).
+        if(MDKR_VITAGL_ROOT)
+            target_include_directories(${MDKR_TARGET} BEFORE PRIVATE
+                "${MDKR_VITAGL_ROOT}")
+        endif()
         target_link_libraries(${MDKR_TARGET} PRIVATE
-            vitaGL vitashark SceShaccCgExt taihen_stub mathneon
+            "${MDKR_VITAGL_LIBRARY}" vitashark SceShaccCgExt taihen_stub mathneon
             SceGxm_stub SceDisplay_stub SceCtrl_stub SceTouch_stub SceHid_stub
             SceAudio_stub SceAudioIn_stub SceCommonDialog_stub
             SceNpTrophy_stub
@@ -1148,6 +1167,7 @@ if(NOT EMSCRIPTEN)
             endforeach()
             target_include_directories(${MDKR_TARGET} PRIVATE
                 "${MDKR_VITADEBUGGER_DIR}"
+                "${MDKR_VITADEBUGGER_DIR}/kernel/include"
                 "${MDKR_VITADEBUGGER_KUBRIDGE_DIR}")
             target_compile_definitions(${MDKR_TARGET} PRIVATE
                 MDKR_VITA_DEBUGGER=1 VITA_GDB_DEBUGGER=1)

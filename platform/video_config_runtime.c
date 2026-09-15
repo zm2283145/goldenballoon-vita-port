@@ -685,8 +685,21 @@ void mdkr_video_config_publish(void) {
     g_pcGradePresets      = world_finish;
     g_pcTonemap           = world_finish;
     /* RL-5 is part of the Remastered art pass, not an independent fidelity
-     * knob. Pure/Restored therefore cannot accidentally enable its shader IDs. */
+     * knob. Pure/Restored therefore cannot accidentally enable its shader IDs.
+     *
+     * VitaGL/vitaShaRK deterministically rejects the RL-5 vertex variant
+     * (SHADER_OPT_DFDX_LIGHT, observed shader id 0x8090) before the fragment
+     * stage, even though the rest of Remastered boots and renders. Keep the
+     * preset's grading, tonemap, SDF text and other supported effects, but do
+     * not generate a shader whose vertex layout the Vita backend cannot
+     * compile. This must be disabled here, before both the shader key and
+     * caller-side vertex packing are derived; clearing the option later would
+     * leave those two layouts inconsistent. */
+#if defined(__vita__)
+    g_pcPerPixelLight     = 0;
+#else
     g_pcPerPixelLight     = g_pcRemasterFX;
+#endif
     /*
      * WD-6 production policy: real maps are part of Remastered, so the world
      * shadow pass still cannot outlive RemasterFX. Within Remastered the player

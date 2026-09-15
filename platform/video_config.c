@@ -338,7 +338,12 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "Presentation",
         "Pure is the 4:3 reference. Restored is the default original art direction "
         "at modern fidelity. Remastered is an opt-in, work-in-progress presentation "
-        "with SDF text, restrained lighting, world shadows, and a bounded finish.",
+        "with SDF text, restrained lighting, world shadows, and a bounded finish."
+#if defined(__vita__)
+        " On PS Vita, Remastered currently omits per-pixel lighting because its "
+        "RL-5 vertex shader is not supported by VitaGL/vitaShaRK."
+#endif
+        ,
         MDKR_VIDEO_CAT_PRESENTATION
     },
     /*

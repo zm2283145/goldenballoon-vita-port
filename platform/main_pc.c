@@ -18,7 +18,13 @@
 #include <string.h>
 
 #if defined(__vita__) && defined(MDKR_VITA_DEBUGGER)
+#include <psp2/net/net.h>
+#include <psp2/sysmodule.h>
 #include <uvdb.h>
+#include <vitadebug_kernel.h>
+
+static unsigned char s_mdkrDebuggerNetMemory[1024 * 1024]
+    __attribute__((aligned(64)));
 #endif
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
@@ -356,10 +362,68 @@ int main(int argc, char **argv) {
         .port = 1234,
         .max_packet_buffer = 256 * 1024,
     };
-    if (uvdb_configure(&debuggerConfig) == 0) {
+    const int debuggerNetModuleResult =
+        sceSysmoduleLoadModule(SCE_SYSMODULE_NET);
+    SceNetInitParam debuggerNetInit = {
+        .memory = s_mdkrDebuggerNetMemory,
+        .size = sizeof(s_mdkrDebuggerNetMemory),
+        .flags = 0,
+    };
+    const int debuggerNetInitResult =
+        debuggerNetModuleResult >= 0 ? sceNetInit(&debuggerNetInit)
+                                     : debuggerNetModuleResult;
+    {
+        char debuggerLog[128];
+        snprintf(debuggerLog, sizeof(debuggerLog),
+                 "debugger: net module result=0x%08X init result=0x%08X",
+                 (unsigned int)debuggerNetModuleResult,
+                 (unsigned int)debuggerNetInitResult);
+        mdkr_vita_boot_log(debuggerLog);
+        mdkr_vita_boot_log_flush();
+    }
+    const int debuggerConfigureResult = uvdb_configure(&debuggerConfig);
+    {
+        char debuggerLog[128];
+        snprintf(debuggerLog, sizeof(debuggerLog),
+                 "debugger: configure result=%d state=%d",
+                 debuggerConfigureResult, (int)uvdb_get_state());
+        mdkr_vita_boot_log(debuggerLog);
+        mdkr_vita_boot_log_flush();
+    }
+    if (debuggerConfigureResult == 0) {
+        struct vd_kernel_status kernelStatus = {0};
+        const int kernelStatusResult = vdKernelGetStatus(&kernelStatus);
+        {
+            char debuggerLog[192];
+            snprintf(debuggerLog, sizeof(debuggerLog),
+                     "debugger: kernel status result=%d ABI=0x%08X expected=0x%08X caps=0x%08X required=0x%08X threads=%u expected=%u",
+                     kernelStatusResult, kernelStatus.abi_version,
+                     VD_KERNEL_ABI_VERSION, kernelStatus.capabilities,
+                     VD_KERNEL_REQUIRED_THREAD_CONTROL_CAPABILITIES,
+                     kernelStatus.max_threads, VD_KERNEL_MAX_THREADS);
+            mdkr_vita_boot_log(debuggerLog);
+            mdkr_vita_boot_log_flush();
+        }
         atexit(uvdb_shutdown);
-        uvdb_register_thread("Golden Balloon main");
+        const int debuggerRegisterResult =
+            uvdb_register_thread("Golden Balloon main");
+        {
+            char debuggerLog[128];
+            snprintf(debuggerLog, sizeof(debuggerLog),
+                     "debugger: register result=%d; entering on TCP 1234",
+                     debuggerRegisterResult);
+            mdkr_vita_boot_log(debuggerLog);
+            mdkr_vita_boot_log_flush();
+        }
         uvdb_enter();
+        {
+            char debuggerLog[128];
+            snprintf(debuggerLog, sizeof(debuggerLog),
+                     "debugger: enter returned state=%d",
+                     (int)uvdb_get_state());
+            mdkr_vita_boot_log(debuggerLog);
+            mdkr_vita_boot_log_flush();
+        }
     }
 #endif
 #endif
