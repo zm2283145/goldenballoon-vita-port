@@ -68,12 +68,60 @@ static int checkWindowsQuoting() {
     return 0;
 }
 
+static int checkEnvironmentTransaction() {
+    const char *existing = "MDKR_TEST_TRANSACTION_EXISTING";
+    const char *absent = "MDKR_TEST_TRANSACTION_ABSENT";
+    if (!AppRestart_setEnv(existing, "caller-value") ||
+        !AppRestart_setEnv(absent, "")) {
+        std::fprintf(stderr, "FAIL: could not seed environment transaction\n");
+        return 1;
+    }
+    {
+        AppEnvironmentTransaction transaction;
+        if (!transaction.set(existing, "preview-value") ||
+            !transaction.set(absent, "temporary-value") ||
+            !transaction.set(existing, "latest-preview-value")) {
+            std::fprintf(stderr, "FAIL: environment transaction write failed\n");
+            return 1;
+        }
+        std::string value;
+        if (!AppRestart_getEnv(existing, value) ||
+            value != "latest-preview-value" ||
+            !AppRestart_getEnv(absent, value) ||
+            value != "temporary-value") {
+            std::fprintf(stderr,
+                         "FAIL: environment transaction did not publish exact overrides\n");
+            return 1;
+        }
+    }
+    std::string restored;
+    if (!AppRestart_getEnv(existing, restored) || restored != "caller-value" ||
+        AppRestart_getEnv(absent, restored)) {
+        std::fprintf(stderr,
+                     "FAIL: environment transaction did not restore presence and value\n");
+        return 1;
+    }
+    {
+        AppEnvironmentTransaction transaction;
+        if (!transaction.set(existing, "one-shot")) return 1;
+        if (!transaction.restore() || !transaction.restore()) return 1;
+    }
+    if (!AppRestart_getEnv(existing, restored) || restored != "caller-value" ||
+        !AppRestart_setEnv(existing, "")) {
+        std::fprintf(stderr,
+                     "FAIL: explicit environment restore was not idempotent\n");
+        return 1;
+    }
+    return 0;
+}
+
 int main() {
     const char *prefs = std::getenv("MDKR_APP_PREFS_DIR");
     if (!prefs || !prefs[0]) {
         std::fprintf(stderr, "FAIL: lifecycle test needs isolated prefs\n");
         return 1;
     }
+    if (checkEnvironmentTransaction() != 0) return 1;
     const std::string separator =
         (prefs[std::char_traits<char>::length(prefs) - 1] == '/' ||
          prefs[std::char_traits<char>::length(prefs) - 1] == '\\') ? "" : "/";

@@ -1,0 +1,77 @@
+/* CPU ownership bridge from a validated MDKC asset to immutable renderer data. */
+#ifndef MDKR64_MODERN_CHARACTER_RENDER_H
+#define MDKR64_MODERN_CHARACTER_RENDER_H
+
+#include "modern_character_asset.h"
+#include "fast3d/gfx_rendering_api.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct MdkrModernDecodedTexture {
+    uint8_t *rgba;
+    uint8_t *mip_scratch;
+} MdkrModernDecodedTexture;
+
+typedef struct MdkrModernPrimitiveSortData {
+    uint32_t first_moment;
+    uint32_t moment_count;
+    float rigid_center[3];
+    float inverse_vertex_count;
+} MdkrModernPrimitiveSortData;
+
+typedef struct MdkrModernRenderAsset {
+    struct GfxModernSkinnedAsset gpu;
+    struct GfxModernSkinnedVertex *vertices;
+    uint32_t *indices;
+    struct GfxModernPrimitive *primitives;
+    struct GfxModernMaterial *materials;
+    struct GfxModernTexture *textures;
+    MdkrModernDecodedTexture *decoded;
+    MdkrModernPrimitiveSortData *primitive_sort;
+    /* Four floats per joint: sum(weight * xyz), then sum(weight). */
+    float *sort_moments;
+    size_t sort_moment_count;
+    size_t decoded_texture_bytes;
+    int valid;
+} MdkrModernRenderAsset;
+
+int mdkr_modern_render_asset_init(MdkrModernRenderAsset *render,
+                                  const MdkrModernCharacterAsset *asset,
+                                  char *error, size_t error_size);
+void mdkr_modern_render_asset_shutdown(MdkrModernRenderAsset *render);
+
+/* Exact linear-skinning centroid used for per-view transparent ordering. The
+ * activation-time moments make this O(joints), independent of polygon count. */
+int mdkr_modern_render_primitive_sort_center(
+    const MdkrModernRenderAsset *render, uint32_t primitive,
+    const float *bone_matrices, size_t bone_count, float output[3]);
+
+/* Transform a calibrated target-local AABB through the donor target frame and
+ * donor-object world binding. Produces all eight world-space corners for the
+ * shared cascade planner without walking or skinning mesh vertices. */
+int mdkr_modern_render_shadow_bounds(
+    const float world[16], const float target_frame[16],
+    const float bounds_min[3], const float bounds_max[3],
+    float output[8u * 3u]);
+
+/* Convert the exact presentation-camera eye from world space into the same
+ * donor-object space as the shader's post-model vertex. Fails closed for a
+ * singular/non-finite binding and leaves output untouched. */
+int mdkr_modern_render_camera_object_position(
+    const float world[16], const float camera_world[3], float output[3]);
+
+/* Resolve one immutable retained draw at an exact presentation alpha. The
+ * caller supplies bounded palette scratch; endpoints remain bit-exact. */
+int mdkr_modern_render_resolve_draw(
+    const struct GfxModernSkinnedDraw *retained,
+    uint64_t numerator, uint64_t denominator,
+    struct GfxModernSkinnedDraw *resolved,
+    float *palette_scratch, size_t palette_matrices);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* MDKR64_MODERN_CHARACTER_RENDER_H */

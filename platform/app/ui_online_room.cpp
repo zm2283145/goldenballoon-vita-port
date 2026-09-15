@@ -17,9 +17,12 @@
 
 #if MDKR_ENABLE_ONLINE_BETA
 // Native online beta only: the create/join chooser, invite QR and live status
-// UX. None of this compiles into a shipping (OFF) build, so the OFF object stays
+// UX. None of this compiles into a beta-OFF build, so that object stays
 // byte-identical.
 #include "online/online_track_table.h"
+#include "online_join_code_input.h"
+#include "online_room_takeover_policy.h"
+#include "online_teardown_tracker.h"
 
 #include <algorithm>
 #include <chrono>
@@ -35,6 +38,9 @@
 // here so handleAction's ENTER_ANOTHER_CODE contract can retire the live
 // adapter without reordering the whole translation unit.
 static void teardownAdapterAsync(std::unique_ptr<IMdkrOnlineAdapter> adapter);
+#if MDKR_ENABLE_ONLINE_BETA
+static bool sOnlineAppClosing = false; // launcher-thread only, irreversible
+#endif
 
 // Beta live-adapter provenance seams, defined in online_live_wiring.cpp (the
 // beta-only wiring TU; match_live_adapter.h stays the audited public seam).
@@ -199,10 +205,12 @@ MdkrOnlineCompatibilityV1 fakeCompatibility() {
     return value;
 }
 
-// Constructs the launcher-owned adapter behind the seam. The default path is
-// the deterministic fake (the view-model oracle); the live adapter is swapped
-// in only behind the internal-test-token gate AND the compile-time Online Room
-// preview gate below -- never in a normal build.
+// Constructs the legacy/fake adapter behind the shared panel seam. In a native
+// beta the interactive create/join path builds its live adapter later in
+// drawBetaOnlinePanel; this helper honors only an explicit fake smoke. In a
+// beta-OFF preview, the token-gated live-factory call below resolves to the
+// header's inline null stub, so the panel remains fail-closed unless its
+// deterministic fake oracle was explicitly requested.
 std::unique_ptr<IMdkrOnlineAdapter> makeAdapter(
     const MdkrOnlineCompatibilityV1 &compatibility) {
 #if MDKR_ENABLE_ONLINE_ROOM_PREVIEW
@@ -461,9 +469,9 @@ void handleAction(MdkrOnlineViewAction action, LauncherState &state) {
         // (drawBetaSelectingHandoff) and produces START_RACE via the party-link
         // TRACKSELECT intent instead, never this path. Every curated preview
         // track permits all base vehicles, so the full base mask is exact for the
-        // oracle. Gated (PREVIEW || BETA) so the OFF/release build -- which has no
-        // START_RACE branch and falls through to the generic dispatch below --
-        // stays byte-identical.
+        // oracle. Gated (PREVIEW || BETA) so a build with both gates OFF --
+        // which has no START_RACE branch and falls through to the generic
+        // dispatch below -- stays byte-identical.
         dispatch(action, 0u, MDKR_ONLINE_PLAYER_VEHICLE_MASK);
 #endif
     } else if (action == MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS) {
@@ -595,6 +603,9 @@ void drawRoomPanel(LauncherState &state) {
                                                        : "Private Room Preview");
         ui::TextSubtle("%u members • %u racer seats • %u ready",
                        model.member_count, model.seat_count, model.ready_count);
+        /* One chip for the measured route, beside the room's own counts. */
+        if (model.route_quality[0] != '\0')
+            ui::TextSubtle("%s", model.route_quality);
         if (!g_online.adapter->raceAdmissionEnabled()) {
             ui::TextSubtleWrapped(
                 "Interaction preview only. Start Race is held by the local "
@@ -671,7 +682,7 @@ void drawRoomPanel(LauncherState &state) {
 // `active` is set, which happens exclusively while a synthetic fake stage is
 // being rendered for a headless screenshot. The live/production beta path never
 // sets it, so its behaviour (OnlineRoom_liveInvite) is unchanged; the whole
-// struct is compiled only under MDKR_ENABLE_ONLINE_BETA, so the OFF/release
+// struct is compiled only under MDKR_ENABLE_ONLINE_BETA, so the beta-OFF
 // build never sees it.
 struct BetaFakeInviteOverride {
     bool active = false;
@@ -761,17 +772,6 @@ const char *g_betaCardTitle = nullptr;
 void betaDrawCardTitle(const char *title) {
     g_betaCardTitle = title;
     ImGui::TextUnformatted(title);
-}
-
-// Restrict the join-code field to the 6 digits the fallback code uses. This
-// same filter also sanitizes PASTE: ImGui runs every clipboard character
-// through the CallbackCharFilter (imgui_widgets.cpp InputTextFilterCharacter,
-// input_source_is_clipboard=true), so pasting "123-456" or "code 123456" keeps
-// only the digits, and the 7-byte betaJoinCode buffer (6 digits + NUL) clamps
-// the result to the first 6 -- exactly the "strip non-digits, take first 6"
-// contract, with no extra buffer bookkeeping.
-int betaDigitsOnlyFilter(ImGuiInputTextCallbackData *data) {
-    return (data->EventChar < '0' || data->EventChar > '9') ? 1 : 0;
 }
 
 // A time-based cycling ellipsis (".", "..", "..."), so every "waiting" status
@@ -979,82 +979,19 @@ void drawBetaChooser(LauncherState &state) {
         if (ui::CardBegin("##beta-join", AppTheme::accent(), 0.0f)) {
             ImGui::TextUnformatted("Enter the six-digit code from your host");
             ui::Gap(ui::kGapS);
-            // ONE grouped code field: the big "123 4··" grouping IS the input,
-            // not a separate echo above a plain box. The editable buffer stays
-            // the RAW digits on purpose -- inserting the group space into the
-            // buffer would fight ImGui's cursor bookkeeping (the space sits at a
-            // fixed index, so a mid-string edit or a backspace desyncs it) and
-            // break the "value is exactly 6 digits" contract the Join path
-            // relies on. So the InputText draws its own text TRANSPARENTLY and a
-            // grouped overlay is painted over it in the same title font the
-            // host's invite card uses, so both sides read the code the same way.
-            // Filled slots draw in the normal color; the remaining "·"
-            // placeholders are dimmed so the code shape reads without competing
-            // with the digits already entered. The overlay is drawn AFTER the
-            // field applies this frame's edit, so it is never a frame stale.
+            // Use the native editor's text, caret, selection and scrolling as
+            // one coordinate system. A grouped overlay used to hide the caret
+            // and move glyphs away from their click/selection positions. Keep
+            // grouping on the read-only host invite; never paint over editable
+            // text. Leading zeroes remain text, not a numeric conversion.
             ImGui::PushFont(AppTheme::fonts().title);
             ImGui::SetNextItemWidth(ui::kControlWidth());
-            // CallbackCharFilter sanitizes both typing AND paste (see
-            // betaDigitsOnlyFilter); the 7-byte buffer keeps the first 6 digits.
-            // TWO style pushes make the field visually empty so only the grouped
-            // overlay shows. Transparent ImGuiCol_Text hides the raw digits.
-            // Transparent ImGuiCol_InputTextCursor hides the caret: in this ImGui
-            // (1.92) the caret is a SEPARATE color slot -- imgui_widgets.cpp
-            // draws it with ImGuiCol_InputTextCursor, NOT ImGuiCol_Text -- and
-            // the app theme never sets that slot, so it would otherwise default
-            // to opaque white and blink against the field's UNGROUPED raw text,
-            // one group-space left of the overlay boundary after the third digit.
-            // The grouped overlay's dot placeholders already communicate the
-            // entry position, so the caret adds nothing.
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
-            ImGui::PushStyleColor(ImGuiCol_InputTextCursor,
-                                  ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
-            ImGui::InputText("##beta-join-code", g_online.betaJoinCode,
-                             sizeof(g_online.betaJoinCode),
-                             ImGuiInputTextFlags_CallbackCharFilter,
-                             betaDigitsOnlyFilter);
-            ImGui::PopStyleColor(2);
-            // Paint the grouped code over the (transparent) field text. AddText
-            // and CalcTextSize both read the pushed title font. Bounded-by-design
-            // divergence: a click hit-tests against the field's UNGROUPED raw
-            // text (the group space is overlay-only, absent from the buffer), and
-            // this overlay does not track the field's horizontal scroll. Both are
-            // harmless here because six digits in the title font never overflow
-            // the fixed-width field -- it never scrolls, and the caret column and
-            // each drawn glyph stay within a group-space of where a click lands.
-            {
-                const std::size_t shown = std::strlen(g_online.betaJoinCode);
-                ImDrawList *draw = ImGui::GetWindowDrawList();
-                const ImVec2 fieldMin = ImGui::GetItemRectMin();
-                const ImVec2 pad = ImGui::GetStyle().FramePadding;
-                const ImU32 filledCol = ImGui::GetColorU32(ImGuiCol_Text);
-                const ImU32 restCol = ImGui::GetColorU32(AppTheme::subtle());
-                const float spaceW = ImGui::CalcTextSize(" ").x;
-                float x = fieldMin.x + pad.x;
-                const float y = fieldMin.y + pad.y;
-                for (unsigned i = 0u; i < 6u; ++i) {
-                    if (i == 3u) x += spaceW;  // visual grouping only
-                    const bool isFilled = i < shown;
-                    char glyph[4];
-                    if (isFilled) {
-                        glyph[0] = g_online.betaJoinCode[i];
-                        glyph[1] = '\0';
-                    } else {
-                        glyph[0] = '\xC2';  // U+00B7 MIDDLE DOT placeholder
-                        glyph[1] = '\xB7';
-                        glyph[2] = '\0';
-                    }
-                    draw->AddText(ImVec2(x, y), isFilled ? filledCol : restCol,
-                                  glyph);
-                    x += ImGui::CalcTextSize(glyph).x;
-                }
-            }
+            const std::size_t typed = OnlineRoom_drawJoinCodeInput(g_online.betaJoinCode);
             ImGui::PopFont();
             // Recompute AFTER the field applied this frame's edit: the spoken
             // string, the "N of 6" hint and Join enablement must all read the
             // SAME post-edit count, or the a11y announcer speaks a stale count
             // this frame and re-utters the corrected one the next.
-            const std::size_t typed = std::strlen(g_online.betaJoinCode);
             const bool ready = typed == 6u;
             char spoken[64];
             if (typed == 0u) {
@@ -1647,7 +1584,10 @@ bool betaCenteredCardBegin(const char *id, const ImVec4 &border,
 // the capability and shows a "not enabled in this build" notice. The 6-digit
 // code the friend types into their own copy of the game is the one thing that
 // works, so it is the only thing shared.
-void drawBetaInviteCard(LauncherState &state, bool isHost) {
+// True means the caller's adapter/view snapshot was invalidated. Finish this
+// card's scopes, then stop the parent frame even if reconstruction succeeded.
+bool drawBetaInviteCard(LauncherState &state, bool isHost) {
+    bool rebuilt = false;
     std::string code;
     bool ready;
     if (g_betaFakeInvite.active) {
@@ -1673,7 +1613,7 @@ void drawBetaInviteCard(LauncherState &state, bool isHost) {
     // real card use the SAME cap so the swap-in never shifts sideways.
     const float kInviteMaxWidth = 480.0f * AppTheme::uiScale();
     if (ready && expired) {
-        if (!isHost) return;
+        if (!isHost) return false;
         // The code is past the service's redemption TTL and nobody joined:
         // showing it with a live Copy button would send a dead code to the
         // friend. Tell the truth and offer the working regenerate -- a fresh
@@ -1691,6 +1631,7 @@ void drawBetaInviteCard(LauncherState &state, bool isHost) {
                 !g_betaFakeInvite.active) {
                 betaRebuildLiveAdapter(state, MDKR_ONLINE_JOURNEY_CREATE,
                                        std::string());
+                rebuilt = true;
             }
             ui::SpeakFocusedItem(
                 "Host a New Race", "Fresh code",
@@ -1702,10 +1643,10 @@ void drawBetaInviteCard(LauncherState &state, bool isHost) {
                 "instead.");
         }
         ui::CardEnd();
-        return;
+        return rebuilt;
     }
     if (!ready) {
-        if (!isHost) return;  // a joiner has no room of its own to share
+        if (!isHost) return false;  // a joiner has no room of its own to share
         ui::Gap(ui::kGapM);
         if (betaCenteredCardBegin("##beta-invite", AppTheme::accent(),
                                   kInviteMaxWidth)) {
@@ -1735,7 +1676,7 @@ void drawBetaInviteCard(LauncherState &state, bool isHost) {
                 "this window open; your room code appears here in a moment.");
         }
         ui::CardEnd();
-        return;
+        return false;
     }
     ui::Gap(ui::kGapM);
     if (betaCenteredCardBegin("##beta-invite", AppTheme::accent(),
@@ -1772,13 +1713,17 @@ void drawBetaInviteCard(LauncherState &state, bool isHost) {
             "here.");
     }
     ui::CardEnd();
+    return false;
 }
 
 // The secure-phrase barrier as a prominent, side-by-side decision. The two
 // buttons dispatch the SAME CONFIRM_PHRASE / REPORT_PHRASE_MISMATCH actions the
 // view model already exposes; the SAS logic behind them is untouched.
-void drawBetaPhraseDecision(const MdkrOnlineViewModel &model,
+bool drawBetaPhraseDecision(const MdkrOnlineViewModel &model,
                             LauncherState &state) {
+    // Draw against one snapshot, then dispatch at most one decision after all
+    // card/disabled scopes close. The caller must recompose after any action.
+    MdkrOnlineViewAction decision = MDKR_ONLINE_VIEW_ACTION_NONE;
     ui::Gap(ui::kGapM);
     if (ui::CardBegin("##beta-phrase", AppTheme::accent(), 0.0f)) {
         // The "Compare These Words" title is the SectionHeader above this card;
@@ -1797,20 +1742,28 @@ void drawBetaPhraseDecision(const MdkrOnlineViewModel &model,
         const float half = (full - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
         const float height = ui::kBtnPrimary().y;
         if (model.primary.visible && model.primary.label != nullptr) {
+            ImGui::BeginDisabled(!model.primary.enabled);
             if (ui::BrandPrimaryButton(model.primary.label,
-                                       ImVec2(half, height))) {
-                handleAction(model.primary.action, state);
+                                       ImVec2(half, height)) &&
+                model.primary.enabled) {
+                decision = model.primary.action;
             }
-            ui::SpeakFocusedItem(model.primary.label, "Confirm",
-                                 "Confirms every word matches on both screens.");
+            speakFocused(model.primary,
+                         "Confirms every word matches on both screens.");
+            ImGui::EndDisabled();
         }
         if (model.secondary.visible && model.secondary.label != nullptr) {
             ImGui::SameLine();
-            if (ImGui::Button(model.secondary.label, ImVec2(half, height))) {
-                handleAction(model.secondary.action, state);
+            const bool enabled = model.secondary.enabled &&
+                decision == MDKR_ONLINE_VIEW_ACTION_NONE;
+            ImGui::BeginDisabled(!enabled);
+            if (ImGui::Button(model.secondary.label, ImVec2(half, height)) &&
+                enabled) {
+                decision = model.secondary.action;
             }
-            ui::SpeakFocusedItem(model.secondary.label, "Stop",
-                                 "Use this if even one word is different.");
+            speakFocused(model.secondary,
+                         "Use this if even one word is different.");
+            ImGui::EndDisabled();
         }
         ui::Gap(ui::kGapS);
         ui::TextSubtleWrapped(
@@ -1825,16 +1778,20 @@ void drawBetaPhraseDecision(const MdkrOnlineViewModel &model,
     // Words Match / Words Differ decision.
     if (model.cancel.visible && model.cancel.label != nullptr) {
         ui::Gap(ui::kGapS);
-        if (!model.cancel.enabled) ImGui::BeginDisabled();
+        const bool enabled = model.cancel.enabled &&
+            decision == MDKR_ONLINE_VIEW_ACTION_NONE;
+        ImGui::BeginDisabled(!enabled);
         if (ImGui::Button(model.cancel.label,
                           ImVec2(ui::kControlWidth(), 0.0f)) &&
-            model.cancel.enabled) {
-            handleAction(model.cancel.action, state);
+            enabled) {
+            decision = model.cancel.action;
         }
-        ui::SpeakFocusedItem(model.cancel.label, "Leave",
-                             "Leaves the room without comparing the words.");
-        if (!model.cancel.enabled) ImGui::EndDisabled();
+        speakFocused(model.cancel, "Leaves the room without comparing the words.");
+        ImGui::EndDisabled();
     }
+    if (decision == MDKR_ONLINE_VIEW_ACTION_NONE) return false;
+    handleAction(decision, state);
+    return true;
 }
 
 // A purely decorative per-racer accent -- a color standing in for a portrait.
@@ -2122,7 +2079,8 @@ void drawBetaNativeResultsHandoffCard() {
 // left is named from the construction-fixed journey (betaHostJourney), not the
 // lobby's leader bit -- the reducer promotes the survivor to leader of the
 // 1-member room, so the leader bit would misname the departed side.
-void drawBetaStrandedRoomCard(LauncherState &state) {
+bool drawBetaStrandedRoomCard(LauncherState &state) {
+    bool changed = false;
     if (ui::CardBegin("##beta-stranded-room", AppTheme::accent(), 0.0f)) {
         const bool hosted = g_online.betaHostJourney;
         betaDrawCardTitle(hosted ? "Your Friend Left" : "The Host Left");
@@ -2141,20 +2099,25 @@ void drawBetaStrandedRoomCard(LauncherState &state) {
                 !g_betaFakeInvite.active) {
                 betaRebuildLiveAdapter(state, MDKR_ONLINE_JOURNEY_CREATE,
                                        std::string());
+                changed = true;
             }
             ui::SpeakFocusedItem(
                 "Host a New Race", "Fresh code",
                 "Makes a fresh private room with a new code to share.");
             ui::Gap(ui::kGapS);
+            ImGui::BeginDisabled(changed);
             if (ImGui::Button("Play Offline Instead", ui::kBtnFullWidth())) {
                 OnlineRoom_requestLeave();
+                changed = true;
             }
+            ImGui::EndDisabled();
         } else {
             // The joiner has no room of its own to regenerate, so the ordinary
             // leave stays the primary, gold affordance.
             if (ui::BrandPrimaryButton("Play Offline Instead",
                                        ui::kBtnFullWidth())) {
                 OnlineRoom_requestLeave();
+                changed = true;
             }
         }
         ui::SpeakFocusedItem(
@@ -2162,6 +2125,7 @@ void drawBetaStrandedRoomCard(LauncherState &state) {
             "Closes the empty online room and returns to local play.");
     }
     ui::CardEnd();
+    return changed;
 }
 
 // ---- Post-pairing SELECTING surface (roster + native hand-off card) --------
@@ -2176,7 +2140,7 @@ void drawBetaStrandedRoomCard(LauncherState &state) {
 // never start; the re-entry gold button could never fire). Consumes the view
 // model's PRIMARY slot (no Ready/Start button); the shared code below still draws
 // secondary (Connection Details) and cancel (Leave Room).
-void drawBetaSelectingHandoff(LauncherState &state,
+bool drawBetaSelectingHandoff(LauncherState &state,
                               const MdkrOnlineViewModel &model,
                               const MdkrOnlineLobby &lobby) {
     drawBetaRosterStrip(lobby,
@@ -2184,8 +2148,7 @@ void drawBetaSelectingHandoff(LauncherState &state,
     ui::Gap(ui::kGapM);
     if (lobby.member_count < 2u) {
         g_betaSelectingRender = BetaSelectingRender::Stranded;
-        drawBetaStrandedRoomCard(state);
-        return;
+        return drawBetaStrandedRoomCard(state);
     }
     const bool tournament = lobby.mode == MDKR_ONLINE_MODE_TOURNAMENT;
     const MdkrPartyLinkSessionEndReason reentryReason =
@@ -2195,11 +2158,13 @@ void drawBetaSelectingHandoff(LauncherState &state,
         g_betaSelectingRender = BetaSelectingRender::Reentry;
         if (drawBetaNativeHandoffCard(tournament, reentryReason)) {
             OnlineRoom_requestRoomReadyReentry();
+            return true;
         }
     } else {
         g_betaSelectingRender = BetaSelectingRender::Handoff;
         drawBetaNativeHandoffCard(tournament, MDKR_PARTY_LINK_SESSION_END_NONE);
     }
+    return false;
 }
 
 // ---- Post-pairing RESULTS surface (roster + native results hand-off card) ---
@@ -2411,13 +2376,26 @@ void drawBetaSectionHeader(const MdkrOnlineViewModel &model) {
                                         : model.explanation);
 }
 
+void drawBetaUnavailableRoom() {
+    ui::CautionBox("Online Room Unavailable",
+                   "The room status could not be read. Leave this room, then "
+                   "host or join again.");
+    ui::Gap(ui::kGapS);
+    if (ImGui::Button("Leave Room##unavailable", ui::kBtnFullWidth())) {
+        // Do not dispatch through a rejected view/reducer. The shell consumes
+        // this request after drawing and uses the existing registry-retracting
+        // background teardown, just like its persistent Leave Room control.
+        OnlineRoom_requestLeave();
+    }
+    ui::SpeakFocusedItem("Leave Room", "Exit online",
+                         "Closes this room and returns to the launcher home.");
+}
+
 void drawBetaRoom(LauncherState &state) {
     g_online.adapter->service();
     MdkrOnlineViewModel model{};
     if (!g_online.adapter->view(&model)) {
-        ui::CautionBox("Online Room Unavailable",
-                       "The online session produced an invalid state. Leave the "
-                       "room and try again.");
+        drawBetaUnavailableRoom();
         return;
     }
 
@@ -2443,13 +2421,13 @@ void drawBetaRoom(LauncherState &state) {
     // a lobby snapshot exists, so the launcher-side betaHostJourney flag is the
     // host source for the pre-room state.
     if (model.kind == MDKR_ONLINE_VIEW_CONNECTING) {
-        drawBetaInviteCard(state, g_online.betaHostJourney);
+        if (drawBetaInviteCard(state, g_online.betaHostJourney)) return;
     } else if (model.kind == MDKR_ONLINE_VIEW_ROOM) {
         // Once the friend has joined, the invite step is done -- the invite card
         // yields to the roster + the Check Setup step below it.
         if (model.member_count < 2u) {
-            drawBetaInviteCard(state, g_online.betaHostJourney ||
-                                          model.local_member_is_leader);
+            if (drawBetaInviteCard(state, g_online.betaHostJourney ||
+                                          model.local_member_is_leader)) return;
         }
         if (haveLobby) {
             ui::Gap(ui::kGapM);
@@ -2458,12 +2436,9 @@ void drawBetaRoom(LauncherState &state) {
         }
     }
 
-    // The invite card's expired-code "Host a New Race" tears this adapter down
-    // and re-runs the CREATE journey (betaRebuildLiveAdapter). A REFUSED rebuild
-    // leaves g_online.adapter null, so the model computed above is stale and the
-    // g_online.adapter->timeoutExpired() deref below would fault -- end the panel
-    // draw for this frame; the next frame redraws against the fresh (or absent)
-    // adapter.
+    // Rebuild attempts already stop this frame above, including successful
+    // replacements. Retain the absence guard as defense in depth; a non-null
+    // replacement alone does not make the old model/lobby snapshot current.
     if (!g_online.adapter || !g_online.initialized) {
         return;
     }
@@ -2472,7 +2447,7 @@ void drawBetaRoom(LauncherState &state) {
     // it replaces the generic stacked buttons at this step only.
     if (model.kind == MDKR_ONLINE_VIEW_PREFLIGHT &&
         model.verification_phrase[0] != '\0') {
-        drawBetaPhraseDecision(model, state);
+        if (drawBetaPhraseDecision(model, state)) return;
         drawLeaveRaceConfirmation(state);
         drawConnectionDetails(model, true);
         return;
@@ -2513,6 +2488,7 @@ void drawBetaRoom(LauncherState &state) {
         ui::Gap(ui::kGapS);
         if (drawActionButton(model.timeout.primary, true)) {
             handleAction(model.timeout.primary.action, state);
+            return; // Recompose after the action, never reuse its old snapshot.
         }
         ui::Gap(ui::kGapM);
     }
@@ -2527,8 +2503,9 @@ void drawBetaRoom(LauncherState &state) {
      * so it can never re-boot-loop. */
     OnlineRoom_observeRoomReadyRearm(g_online.adapter.get());
 
-    /* PRODUCTION ROOM-READY takeover, polled UNCONDITIONALLY every panel frame
-     * (immediately after the re-arm observer, BEFORE the body branches below). The
+    /* PRODUCTION ROOM-READY takeover, polled on each unchanged panel frame
+     * (immediately after the re-arm observer, BEFORE the body branches below).
+     * A rebuild/action above defers polling until the next fresh snapshot. The
      * poll is self-guarded (a one-shot latch + the room-ready condition check inside,
      * online_live_wiring.cpp), so calling it every frame is idempotent: it fires
      * EXACTLY ONCE on the first frame a room reaches SELECTING with 2 members in
@@ -2550,7 +2527,7 @@ void drawBetaRoom(LauncherState &state) {
     bool primaryDrawn = false;
     if (haveLobby && model.kind == MDKR_ONLINE_VIEW_SELECTING &&
         lobby.phase == MDKR_ONLINE_LOBBY) {
-        drawBetaSelectingHandoff(state, model, lobby);
+        if (drawBetaSelectingHandoff(state, model, lobby)) return;
         primaryDrawn = true;
     } else if (haveLobby && model.kind == MDKR_ONLINE_VIEW_RESULTS &&
                lobby.phase == MDKR_ONLINE_RESULTS) {
@@ -2563,18 +2540,21 @@ void drawBetaRoom(LauncherState &state) {
             betaPrimaryControl(model.primary, &gold);
         if (drawActionButton(primary, gold)) {
             handleAction(primary.action, state);
+            return;
         }
     }
     if (model.secondary.visible && model.secondary.action != timeoutAction) {
         ui::Gap(ui::kGapS);
         if (drawActionButton(model.secondary, false)) {
             handleAction(model.secondary.action, state);
+            return;
         }
     }
     if (model.cancel.visible) {
         ui::Gap(ui::kGapS);
         if (drawActionButton(model.cancel, false)) {
             handleAction(model.cancel.action, state);
+            return;
         }
     }
 
@@ -2597,7 +2577,7 @@ void drawBetaRoom(LauncherState &state) {
 // This seam synthesizes a faithful MdkrOnlineViewModel (+ lobby snapshot) for a
 // chosen stage and drives the SAME drawBeta* widget family drawBetaRoom uses, so
 // each surface renders standalone for MDKR_APP_SMOKE_SHOT. It is STRICTLY beta +
-// test-only: compiled only under MDKR_ENABLE_ONLINE_BETA (a release/OFF build
+// test-only: compiled only under MDKR_ENABLE_ONLINE_BETA (a beta-OFF build
 // never sees it) and reached only when MDKR_APP_ONLINE_BETA_FAKE is set --
 // mirroring the MDKR_APP_ONLINE_FAKE gate. No live adapter is ever built
 // (g_online.adapter stays null), so the real (non-fake) path is unchanged.
@@ -3037,7 +3017,7 @@ void drawBetaRoomFake(LauncherState &state) {
 
     if (model.kind == MDKR_ONLINE_VIEW_PREFLIGHT &&
         model.verification_phrase[0] != '\0') {
-        drawBetaPhraseDecision(model, state);
+        if (drawBetaPhraseDecision(model, state)) return;
         drawConnectionDetails(model, true);
         return;
     }
@@ -3122,8 +3102,12 @@ void drawBetaRoomFake(LauncherState &state) {
 }
 
 void drawBetaOnlinePanel(LauncherState &state) {
-    if (!g_online.adapter || !g_online.initialized) {
+    if (!g_online.adapter) {
         drawBetaChooser(state);
+        return;
+    }
+    if (!g_online.initialized) {
+        drawBetaUnavailableRoom();
         return;
     }
     drawBetaRoom(state);
@@ -3134,13 +3118,16 @@ void drawBetaOnlinePanel(LauncherState &state) {
 
 void OnlineRoomPanel_draw(LauncherState &state, LauncherAction &action) {
     (void)action;
+#if MDKR_ENABLE_ONLINE_BETA
+    if (sOnlineAppClosing) return; // Never recreate or service a retiring room.
+#endif
     ensureInitialized();
 #if MDKR_ENABLE_ONLINE_BETA
     // TEST-ONLY: MDKR_APP_ONLINE_BETA_FAKE renders a synthetic beta lobby stage
     // (MDKR_APP_ONLINE_BETA_STAGE) through the real drawBeta* widgets so each
     // shipping lobby surface can be screenshotted headlessly. No adapter is
     // built (ensureInitialized deferred it: MDKR_APP_ONLINE_FAKE is unset here),
-    // and a release/OFF build never compiles this branch. Mirrors the
+    // and a beta-OFF build never compiles this branch. Mirrors the
     // fakeEnabled() gate below.
     if (betaFakeStageEnabled()) {
         drawBetaRoomFake(state);
@@ -3243,30 +3230,22 @@ bool OnlineRoom_smokeActionResult(unsigned action, bool *accepted) {
 // The launcher shell renders ONLY the full-screen lobby -- suppressing the nav
 // rail, the top tabs, the panel router and the generic offline Play button --
 // whenever a live online session has progressed past the entry/chooser. The
-// decision is driven by the current view kind, so the one rule covers both the
-// beta live adapter and the deterministic fake used by the headless proof.
+// decision combines adapter ownership with the current view kind. A failed
+// presentation must not expose offline Play over a still-owned online session.
 // ===========================================================================
 
 // Read-only peek at the current view kind. Returns 0 before an adapter exists
-// or when it produces an invalid composition, so a half-built or torn-down
-// session never engages the takeover.
+// or when it produces an invalid composition. This diagnostic sentinel does
+// not establish that an adapter has been released.
 static MdkrOnlineViewKind onlineCurrentViewKind() {
-    if (!g_online.initialized || !g_online.adapter) {
-        return static_cast<MdkrOnlineViewKind>(0);
-    }
-    MdkrOnlineViewModel model{};
-    if (!g_online.adapter->view(&model)) {
-        return static_cast<MdkrOnlineViewKind>(0);
-    }
-    return model.kind;
+    return OnlineRoom_readViewKind(g_online.adapter.get(), g_online.initialized);
 }
 
 bool OnlineRoom_isLobbyTakeoverActive() {
     const MdkrOnlineViewKind kind = onlineCurrentViewKind();
-    // ENTRY is the create/join chooser: the shell stays so a player can still
-    // reach it. Every later kind is a live session and takes over the window.
-    return kind != static_cast<MdkrOnlineViewKind>(0) &&
-           kind != MDKR_ONLINE_VIEW_ENTRY;
+    // An owned adapter with no usable view still needs the takeover's safe
+    // exit. Only a known ENTRY or actual release restores the ordinary shell.
+    return OnlineRoom_takeoverRequired(g_online.adapter != nullptr, kind);
 }
 
 int OnlineRoom_lobbyProbeViewKind() {
@@ -3281,30 +3260,26 @@ int OnlineRoom_lobbyProbeViewKind() {
 // destructor (mesh/WebSocket close, worker joins) races destroyed globals
 // after main returns -- the same uncaught "mutex lock failed" SIGABRT class,
 // via the other path. The threads are now kept JOINABLE here, counted with a
-// condition variable, and OnlineRoom_shutdownForAppExit waits (bounded) for
-// the count to drain before joining them -- so every teardown destructor
+// condition variable, and OnlineRoom_shutdownForAppExit warns if draining is
+// slow but always joins them -- so every teardown destructor
 // finishes before static destruction begins. Launcher-thread only (spawn and
 // join both happen on the UI thread); the mutex guards against the worker
 // threads' own decrements.
 namespace {
-struct AdapterTeardownTracker {
-    std::mutex mutex;
-    std::condition_variable done;
-    unsigned live = 0u;            // teardown destructors still running
-    std::vector<std::thread> threads;  // joinable handles (joined at app exit)
-};
-AdapterTeardownTracker sAdapterTeardowns;
+OnlineRoomTeardownTracker sAdapterTeardowns;
 }  // namespace
 
-// Non-blocking teardown of the live adapter. Its destructor joins the room /
+// Normally asynchronous teardown of the live adapter. Its destructor joins the room /
 // mesh / signal-client worker threads and closes the WebRTC data channels and
 // WebSocket -- any of which can stall for seconds. Doing that on the ImGui/main
 // thread is the observed beach-ball, so the live adapter is handed to a
-// TRACKED background thread (joined, bounded, at app exit -- see
-// AdapterTeardownTracker) and destroyed there while the UI returns home
+// TRACKED background thread (joined at app exit -- see
+// OnlineRoomTeardownTracker) and destroyed there while the UI returns home
 // immediately. The launcher thread never touches the adapter again after the
 // hand-off, so single-owner off-thread destruction is safe. The deterministic
-// fake owns no worker threads, so it is destroyed inline.
+// fake owns no worker threads, so it is destroyed inline. If scheduling fails,
+// safe synchronous cleanup takes precedence over responsiveness; no worker is
+// abandoned and no joinable handle is lost during allocation failure.
 static void teardownAdapterAsync(std::unique_ptr<IMdkrOnlineAdapter> adapter) {
     if (!adapter) return;
     if (adapter->fakeAdapter() != nullptr) {
@@ -3312,7 +3287,7 @@ static void teardownAdapterAsync(std::unique_ptr<IMdkrOnlineAdapter> adapter) {
         return;
     }
     // Retract any pending engine-race-boot handoff ON THE LAUNCHER THREAD
-    // before the adapter crosses to the teardown thread: a detached-thread
+    // before the adapter crosses to the teardown thread: a background-thread
     // destruction would race OnlineRoom_pollEngineRaceBoot() against a dying
     // adapter. race-boot is PUBLISHED with the RESOLVED RAW inner LiveAdapter
     // (setUpRace -> OnlineRoom_publishEngineRaceBoot(this)), so it must be
@@ -3327,25 +3302,14 @@ static void teardownAdapterAsync(std::unique_ptr<IMdkrOnlineAdapter> adapter) {
     // "Leave Race" click on the very frame the room first hits SELECTING+2members+
     // LOBBY (any mode) could hand runInteractiveLauncher a dying adapter (UAF on
     // visible->service() + engine boot on freed memory). Retract it here, on the
-    // launcher thread, BEFORE the detached destruction -- using the SAME wrapper->raw
+    // launcher thread, BEFORE background destruction -- using the SAME wrapper->raw
     // resolution the publish used (a retract-by-wrapper-pointer would not match).
     OnlineRoom_retractEngineRoomReady(
         OnlineRoom_resolveRawLiveAdapter(adapter.get()));
-    {
-        std::lock_guard<std::mutex> lock(sAdapterTeardowns.mutex);
-        ++sAdapterTeardowns.live;
-    }
-    std::thread worker([owned = std::move(adapter)]() mutable {
-        owned.reset();
-        {
-            std::lock_guard<std::mutex> lock(sAdapterTeardowns.mutex);
-            --sAdapterTeardowns.live;
-        }
-        sAdapterTeardowns.done.notify_all();
-    });
-    {
-        std::lock_guard<std::mutex> lock(sAdapterTeardowns.mutex);
-        sAdapterTeardowns.threads.push_back(std::move(worker));
+    if (!sAdapterTeardowns.retire(std::move(adapter))) {
+        std::fprintf(stderr,
+                     "[online-room] could not schedule background teardown; "
+                     "completed cleanup synchronously\n");
     }
 }
 
@@ -3377,10 +3341,22 @@ static void leaveOnlineSession(LauncherState &state) {
 
 void OnlineRoom_requestLeave() { g_online.leavePending = true; }
 
+void OnlineRoom_beginAppExit() {
+    if (sOnlineAppClosing) return;
+    sOnlineAppClosing = true;
+    teardownAdapterAsync(std::move(g_online.adapter));
+    g_online.initialized = false;
+    g_online.leavePending = false;
+}
+
+bool OnlineRoom_pollAppExit() {
+    return sOnlineAppClosing && sAdapterTeardowns.pollReady();
+}
+
 void OnlineRoom_shutdownForAppExit() {
-    // ORDERED app-exit teardown (see the header). Unlike the in-session leave
-    // (teardownAdapterAsync, which backgrounds destruction so the UI never
-    // beach-balls), the app is exiting: destroy the live adapter INLINE on this
+    // ORDERED final backstop (see the header). Normal Quit begins background
+    // retirement and polls while drawing progress. Other exits, including a
+    // failed renderer, can still own an adapter here: destroy it INLINE on this
     // thread so its mesh / signal-client worker threads are joined BEFORE main
     // returns and static destruction begins. Without this, quitting the app
     // with a live room up let an ICE-state callback race destroyed globals --
@@ -3388,6 +3364,7 @@ void OnlineRoom_shutdownForAppExit() {
     // scripted quit right after the FINISHED re-take put both endpoints back in
     // a live session). The registries are retracted with the same resolved-raw
     // pointers the async path uses.
+    sOnlineAppClosing = true;
     if (g_online.adapter) {
         (void)mdkr_online_live_adapter_retract_race_boot(
             OnlineRoom_resolveRawLiveAdapter(g_online.adapter.get()));
@@ -3398,32 +3375,16 @@ void OnlineRoom_shutdownForAppExit() {
     }
     // SECOND DOOR into the same race: an adapter handed to
     // teardownAdapterAsync moments before quit (an in-session Leave) is still
-    // being destroyed on its background thread. Wait -- BOUNDED -- for every
-    // in-flight teardown destructor to finish, then join the (now-returning)
-    // handles, so no teardown thread can outlive main. The bound is generous
-    // for a mesh/WebSocket close; if a pathological close exceeds it, detach
-    // the stragglers with a loud diagnostic (the pre-fix behavior, now
-    // impossible to hit silently) rather than hanging exit forever.
-    std::vector<std::thread> teardowns;
-    bool drained = true;
-    {
-        std::unique_lock<std::mutex> lock(sAdapterTeardowns.mutex);
-        drained = sAdapterTeardowns.done.wait_for(
-            lock, std::chrono::seconds(10),
-            [] { return sAdapterTeardowns.live == 0u; });
-        teardowns.swap(sAdapterTeardowns.threads);
-    }
-    for (std::thread &worker : teardowns) {
-        if (!worker.joinable()) continue;
-        if (drained) {
-            worker.join(); // destructor finished; join returns promptly
-        } else {
-            std::fprintf(stderr,
-                         "[online-room] app-exit: an adapter teardown exceeded "
-                         "the 10s drain bound; detaching it (exit proceeds)\n");
-            worker.detach();
-        }
-    }
+    // being destroyed on its background thread. Ten seconds is a diagnostic
+    // deadline, not a safe abandonment point: detached workers would still use
+    // this tracker AND network-library globals during static destruction.
+    // Always join before returning. Responsive bounded shutdown for a stalled
+    // transport needs cancellation in that transport; detaching is not that.
+    (void)sAdapterTeardowns.drain(std::chrono::seconds(10), []() noexcept {
+        std::fprintf(stderr,
+                     "[online-room] app-exit: adapter teardown exceeded 10s; "
+                     "waiting for safe completion before shutdown\n");
+    });
 }
 
 void OnlineRoom_serviceLobbyLeave(LauncherState &state) {

@@ -16,6 +16,8 @@ guards executed as subprocesses, and the tests/README coverage sweep.
 
 from __future__ import annotations
 
+import ast
+import os
 import plistlib
 import re
 import subprocess
@@ -56,6 +58,9 @@ WINDOWS_IMPORT_GUARD = ROOT / "tools" / "check_windows_imports.sh"
 LINUX_PACKAGER = ROOT / "tools" / "package_linux_appimage.sh"
 PROVENANCE_STAMP = ROOT / "tools" / "release" / "stamp_provenance.sh"
 PROVENANCE_VERIFY = ROOT / "tools" / "release" / "verify_provenance.sh"
+GITHUB_LAUNCH_READY = ROOT / "tools" / "manual" / "check_github_launch_ready.sh"
+PUBLIC_RETAINED_REFS = ROOT / "tools" / "public_retained_ref_allowlist.tsv"
+GITHUB_PUBLIC_COMMIT_REFS = ROOT / "tools" / "check_github_public_commit_refs.py"
 MACOS_BUILDER = ROOT / "macos" / "Scripts" / "build_app_bundle.sh"
 MACOS_SIGNER = ROOT / "macos" / "Scripts" / "sign_and_notarize.sh"
 MACOS_NOTARY = ROOT / "macos" / "Scripts" / "notarize_artifact.sh"
@@ -76,9 +81,15 @@ MACOS_INFO_PLIST = ROOT / "macos" / "Resources" / "Info.plist"
 MACOS_README = ROOT / "macos" / "README.md"
 APP_PACING_CHECK = ROOT / "tests" / "check_app_adopted_pacing.py"
 CMAKE_PROJECT = ROOT / "CMakeLists.txt"
+GITIGNORE = ROOT / ".gitignore"
 UI_SETTINGS = ROOT / "platform" / "app" / "ui_settings.cpp"
 APP_SOURCE_DIR = ROOT / "platform" / "app"
 RELEASE_CHECKLIST = ROOT / "docs" / "RELEASE_CHECKLIST.md"
+RELEASE_CANDIDATE_GUIDE = ROOT / "docs" / "RELEASE_CANDIDATE_TEST_GUIDE.md"
+CHARACTER_RELEASE_EVIDENCE = ROOT / "tools" / "check_character_release_evidence.py"
+CHARACTER_RELEASE_SCHEMA = (
+    ROOT / "docs" / "ref" / "mdkr-character-release-acceptance-v1.schema.json"
+)
 RELEASE_NOTES = ROOT / "RELEASE_NOTES.md"
 TESTS = ROOT / "tests"
 TESTS_README = TESTS / "README.md"
@@ -104,6 +115,9 @@ SOURCES = {
     "linux_packager": LINUX_PACKAGER,
     "provenance_stamp": PROVENANCE_STAMP,
     "provenance_verify": PROVENANCE_VERIFY,
+    "github_launch_ready": GITHUB_LAUNCH_READY,
+    "public_retained_refs": PUBLIC_RETAINED_REFS,
+    "github_public_commit_refs": GITHUB_PUBLIC_COMMIT_REFS,
     "builder": MACOS_BUILDER,
     "signer": MACOS_SIGNER,
     "notary": MACOS_NOTARY,
@@ -121,9 +135,14 @@ SOURCES = {
     "info_plist": MACOS_INFO_PLIST,
     "macos_readme": MACOS_README,
     "app_pacing": APP_PACING_CHECK,
+    "lobby_takeover": TESTS / "check_online_lobby_takeover.py",
     "cmake": CMAKE_PROJECT,
+    "gitignore": GITIGNORE,
     "ui_settings": UI_SETTINGS,
     "checklist": RELEASE_CHECKLIST,
+    "candidate_guide": RELEASE_CANDIDATE_GUIDE,
+    "character_release_evidence": CHARACTER_RELEASE_EVIDENCE,
+    "character_release_schema": CHARACTER_RELEASE_SCHEMA,
     "release_notes": RELEASE_NOTES,
     "tests_readme": TESTS_README,
 }
@@ -412,9 +431,42 @@ def validate_frame_limit_help_pins(sources: dict[str, str]) -> list[str]:
     return failures
 
 
+def validate_lobby_takeover_count(sources: dict[str, str]) -> list[str]:
+    """Keep CTest's success predicate in sync with the actual active-view arms."""
+    try:
+        tree = ast.parse(sources["lobby_takeover"])
+        assignments = [
+            node.value for node in tree.body if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "ACTIVE_SLUGS"
+                    for target in node.targets)
+        ]
+        if len(assignments) != 1:
+            raise ValueError("expected one active-view inventory")
+        slugs = ast.literal_eval(assignments[0])
+        if (not isinstance(slugs, tuple) or not slugs
+                or any(not isinstance(slug, str) or not slug for slug in slugs)
+                or len(set(slugs)) != len(slugs)):
+            raise ValueError("expected unique nonempty active-view slugs")
+    except (SyntaxError, ValueError, TypeError) as error:
+        return [f"lobby takeover inventory is invalid: {error}"]
+    properties = re.search(
+        r"set_tests_properties\(app_online_lobby_takeover PROPERTIES(?P<body>.*?)\)",
+        active_shell_source(sources["cmake"]), re.DOTALL,
+    )
+    expected = (
+        f'"PASS online lobby takeover: active-cases={len(slugs)} '
+        'entry-shell=1 offline-play-suppressed=1"'
+    )
+    if properties is None or re.search(
+            r"\bPASS_REGULAR_EXPRESSION\s+" + re.escape(expected),
+            properties.group("body")) is None:
+        return ["lobby takeover CTest success predicate disagrees with its active-view inventory"]
+    return []
+
+
 def validate_gpu_test_routing(sources: dict[str, str]) -> list[str]:
     """Keep real-GPU smoke out of headless CTest without losing release proof."""
-    failures: list[str] = []
+    failures = validate_lobby_takeover_count(sources)
     cmake = sources["cmake"]
     smoke = re.search(
         r"set_tests_properties\(app_shell_smoke PROPERTIES(?P<body>.*?)\)",
@@ -495,9 +547,8 @@ def validate_gpu_test_routing(sources: dict[str, str]) -> list[str]:
             "run_checks CTest route must not exclude labels; GPU-labelled "
             "tests run inside rom_free_units again"
         )
-    # The --with-* flags survive only as accepted no-ops: a bare run covers
-    # every class, because desktop safety is a window-layer property rather
-    # than a refusal to execute.
+    # The --with-* class selectors are accepted no-ops, but every execution
+    # still requires the caller's independently inherited desktop attestation.
     for flag in ("--with-gpu-tests", "--with-browser-tests", "--with-app-tests",
                  "--with-compiled-tests"):
         if flag not in sources["run_checks"]:
@@ -506,13 +557,28 @@ def validate_gpu_test_routing(sources: dict[str, str]) -> list[str]:
         failures.append(
             "run_checks must document that the --with-* flags no longer gate"
         )
-    for removed in ('MDKR_DEDICATED_TEST_DESKTOP',
-                    'environment["MDKR_APP_TESTS_ALLOWED"] = "1"',
+    for removed in ('environment["MDKR_APP_TESTS_ALLOWED"] = "1"',
                     'environment["MDKR_BROWSER_TESTS_ALLOWED"] = "1"',
                     'if app_checks and not args.with_app_tests:',
                     'command += ["-LE", "gpu|app_process|browser"]'):
         if removed in sources["run_checks"]:
             failures.append(f"run_checks must no longer gate on {removed}")
+    runner = run_checks_manifest()
+    if "MDKR_DEDICATED_TEST_DESKTOP" not in runner.MDKR_ENV_ALLOWLIST:
+        failures.append("run_checks must preserve the caller's desktop attestation")
+    guard = 'if os.environ.get("MDKR_DEDICATED_TEST_DESKTOP") != "1":'
+    source = sources["run_checks"]
+    list_position = source.find("if args.list:")
+    guard_position = source.find(guard)
+    preflight_position = source.find("preflight(checks,")
+    if not 0 <= list_position < guard_position < preflight_position:
+        failures.append("run_checks must refuse before preflight, but keep --list non-executing")
+    if '"MDKR_DEDICATED_TEST_DESKTOP": "1"' in source:
+        failures.append("run_checks must not manufacture a desktop attestation")
+    local_source = sources["ci_local"]
+    local_guard = 'if [ "${MDKR_DEDICATED_TEST_DESKTOP:-}" != "1" ]; then'
+    if not 0 <= local_source.find(local_guard) < local_source.find('step "Release hygiene'):
+        failures.append("local CI must refuse before executing any validation lane")
     if '-DMDKR_ENABLE_GPU_TESTS="$RUN_GPU_TESTS"' not in sources["ci_local"]:
         failures.append("local CI configure does not honor its GPU opt-in")
     if 'JOBS="${MDKR_CI_JOBS:-2}"' not in sources["ci_local"]:
@@ -578,9 +644,10 @@ def validate_gpu_test_routing(sources: dict[str, str]) -> list[str]:
     if "GPU_SERIAL_NAMES = frozenset({" not in sources["run_checks"]:
         failures.append(
             "run_checks must curate GPU_SERIAL_NAMES for render/GPU checks")
-    for representative in ('"framed_world_views"', '"world_shadows"',
-                           '"render_purity"', '"taj_character_select"'):
-        if representative not in sources["run_checks"]:
+    for representative in ("framed_world_views", "world_shadows", "render_purity",
+                           "taj_character_select", "split_screen_pause_resolution",
+                           "split_screen_void_coverage"):
+        if representative not in runner.GPU_SERIAL_NAMES:
             failures.append(
                 f"GPU_SERIAL_NAMES must serialize render gate {representative}")
     if "GPU_VERDICT_MARKERS" not in sources["run_checks"]:
@@ -654,7 +721,16 @@ def validate_macos_release(sources: dict[str, str]) -> list[str]:
         failures.append("both macOS checksum sidecars must record only the DMG basename")
     if active_source.count('cd "$DMG_DIR"') < 3:
         failures.append("macOS checksum generation/verification is not artifact-local")
-    if active_source.count('--repo "$GITHUB_REPOSITORY"') < 2:
+    # Read-only release lookups use repository-qualified `gh api` endpoints.
+    # Check each remaining release command, not a historical command count:
+    # adding a second unqualified command must fail even when upload is safe.
+    release_commands = re.findall(
+        r'\bgh[ \t]+release[ \t]+[^;\n&|]+',
+        active_source.replace('\\\n', ' '))
+    if not release_commands or any(
+        '--repo "$GITHUB_REPOSITORY"' not in command
+        for command in release_commands
+    ):
         failures.append("macOS publish commands do not name the release repository")
     trusted_order = [
         source.find('notarize_artifact.sh "$DMG_PATH"'),
@@ -794,6 +870,12 @@ def validate_desktop_release(sources: dict[str, str]) -> list[str]:
     provenance_verify = sources["provenance_verify"]
     failures = pinned("desktop_release", sources)
     failures.extend(validate_windows_manifest_version(workflow))
+    checklist = sources["checklist"]
+    readiness_at = checklist.find(
+        "tools/manual/check_github_launch_ready.sh --repo akratch/goldenballoon")
+    tag_at = checklist.find(f"git tag -s v{VERSION}")
+    if readiness_at < 0 or tag_at < 0 or readiness_at > tag_at:
+        failures.append("public GitHub readiness must precede release tagging")
     windows_manifest = re.search(
         r"expected=\"\$\(printf '%s\\n'(?P<body>.*?)\| LC_ALL=C sort\)\"",
         windows_packager,
@@ -803,10 +885,28 @@ def validate_desktop_release(sources: dict[str, str]) -> list[str]:
         "GoldenBalloon/",
         "GoldenBalloon/GoldenBalloon.exe",
         "GoldenBalloon/LICENSE",
+        "GoldenBalloon/BasisU-LICENSE.txt",
+        "GoldenBalloon/BasisU-Zstd-LICENSE.txt",
+        "GoldenBalloon/BasisU-README.md",
+        "GoldenBalloon/CharacterText-HarfBuzz-COPYING.txt",
+        "GoldenBalloon/CharacterText-SheenBidi-LICENSE.txt",
+        "GoldenBalloon/Meshoptimizer-LICENSE.md",
+        "GoldenBalloon/Meshoptimizer-README.md",
         "GoldenBalloon/NativePhoneParty-NOTICES.txt",
         "GoldenBalloon/README.md",
         "GoldenBalloon/RUN_ME.txt",
         "GoldenBalloon/gamecontrollerdb.txt",
+        "GoldenBalloon/tools/",
+        "GoldenBalloon/tools/character_importer.exe",
+        "GoldenBalloon/tools/character_importer.exe.manifest.json",
+        "GoldenBalloon/tools/mdkr-character-lod.exe",
+        "GoldenBalloon/tools/CPython-LICENSE.txt",
+        "GoldenBalloon/tools/PyInstaller-COPYING.txt",
+        "GoldenBalloon/tools/validators/",
+        "GoldenBalloon/tools/validators/gltf_validator.exe",
+        "GoldenBalloon/tools/validators/gltf_validator.exe.manifest.json",
+        "GoldenBalloon/tools/validators/LICENSE.txt",
+        "GoldenBalloon/tools/validators/NOTICES.txt",
     }
     actual_windows_entries = (
         set(
@@ -831,6 +931,13 @@ def validate_desktop_release(sources: dict[str, str]) -> list[str]:
     expected_linux_entries = {
         "Golden-Balloon.AppDir/AppRun",
         "Golden-Balloon.AppDir/LICENSE",
+        "Golden-Balloon.AppDir/BasisU-LICENSE.txt",
+        "Golden-Balloon.AppDir/BasisU-Zstd-LICENSE.txt",
+        "Golden-Balloon.AppDir/BasisU-README.md",
+        "Golden-Balloon.AppDir/CharacterText-HarfBuzz-COPYING.txt",
+        "Golden-Balloon.AppDir/CharacterText-SheenBidi-LICENSE.txt",
+        "Golden-Balloon.AppDir/Meshoptimizer-LICENSE.md",
+        "Golden-Balloon.AppDir/Meshoptimizer-README.md",
         "Golden-Balloon.AppDir/NativePhoneParty-NOTICES.txt",
         "Golden-Balloon.AppDir/README.md",
         "Golden-Balloon.AppDir/RUN_ME.txt",
@@ -838,6 +945,15 @@ def validate_desktop_release(sources: dict[str, str]) -> list[str]:
         "Golden-Balloon.AppDir/mdkr64.png",
         "Golden-Balloon.AppDir/usr/bin/gamecontrollerdb.txt",
         "Golden-Balloon.AppDir/usr/bin/mdkr64",
+        "Golden-Balloon.AppDir/usr/bin/tools/character_importer",
+        "Golden-Balloon.AppDir/usr/bin/tools/character_importer.manifest.json",
+        "Golden-Balloon.AppDir/usr/bin/tools/mdkr-character-lod",
+        "Golden-Balloon.AppDir/usr/bin/tools/CPython-LICENSE.txt",
+        "Golden-Balloon.AppDir/usr/bin/tools/PyInstaller-COPYING.txt",
+        "Golden-Balloon.AppDir/usr/bin/tools/validators/gltf_validator",
+        "Golden-Balloon.AppDir/usr/bin/tools/validators/gltf_validator.manifest.json",
+        "Golden-Balloon.AppDir/usr/bin/tools/validators/LICENSE.txt",
+        "Golden-Balloon.AppDir/usr/bin/tools/validators/NOTICES.txt",
     }
     actual_linux_entries = (
         set(
@@ -862,6 +978,18 @@ def validate_desktop_release(sources: dict[str, str]) -> list[str]:
         failures.append("both portable release binaries must assert their exact version")
     if workflow.count("needs.validate.outputs.version") < 8:
         failures.append("portable artifact naming/stamping is not bound to validated version")
+    if workflow.count('python-version: "3.13.13"') != 2:
+        failures.append(
+            "Linux and Windows releases must use the exact importer Python runtime"
+        )
+    if workflow.count("--require-hashes --only-binary=:all:") != 2:
+        failures.append(
+            "Linux and Windows releases must install only hashed importer wheels"
+        )
+    if workflow.count('"$importer" tool-info') != 2:
+        failures.append(
+            "Linux and Windows extracted packages must execute the frozen importer"
+        )
     if workflow.count(
         'python3 tests/check_app_capture.py "$work/launcher.bmp" --self-test'
     ) != 2:
@@ -964,8 +1092,9 @@ def validate_web_demo(sources: dict[str, str]) -> list[str]:
     ]
     if any(index < 0 for index in ordered) or ordered != sorted(ordered):
         failures.append(
-            "web-demo no longer builds, validates linked layout, ROM-scans, "
-            "and uploads the exact artifact in that order"
+            "web-demo no longer binds a published release, builds, validates "
+            "linked layout, ROM-scans, uploads the exact artifact, rechecks "
+            "release state, and deploys in that order"
         )
     return failures
 
@@ -1419,12 +1548,66 @@ def validate_release_checklist(sources: dict[str, str]) -> list[str]:
             "release checklist must bind both portable and macOS publication "
             f"to {RELEASE_TAG}"
         )
-    if source.count(f"--ref {RELEASE_TAG}") < 2:
+    if source.count(f"--ref {RELEASE_TAG}") < 3:
         failures.append(
-            "release checklist must dispatch both portable and macOS publication "
+            "release checklist must dispatch portable, macOS, and web publication "
             f"from the exact {RELEASE_TAG} ref"
         )
+    if source.count('gh run download "$PORTABLE_RUN_ID"') < 2:
+        failures.append(
+            "release checklist must download Linux and Windows artifacts from "
+            "one explicitly recorded portable workflow run"
+        )
+    if source.count(
+        f"gh release upload {RELEASE_TAG} --repo akratch/goldenballoon"
+    ) < 2:
+        failures.append(
+            "release checklist must upload the independently verified Linux and "
+            "accepted Windows artifact sets to the draft"
+        )
+    if source.count(
+        "tools/manual/check_github_launch_ready.sh --repo akratch/goldenballoon"
+    ) < 2:
+        failures.append(
+            "release checklist must run public GitHub readiness both before the "
+            "tag and after draft artifact assembly"
+        )
+    if source.count('--json isDraft --jq .isDraft)" = true') < 3:
+        failures.append(
+            "release checklist must prove the target is still a draft before "
+            "both manual uploads and before final publication"
+        )
     failures.extend(pinned("release_checklist", sources))
+    return failures
+
+
+def validate_selected_artifacts(check, command: list[str], native: Path,
+                                release: Path, asan: Path,
+                                roms: Path) -> list[str]:
+    """Optional CLI flags must not silently fall back to another build/tree."""
+    if check.role not in {"rom", "native", "release", "asan"}:
+        return []
+    source = ast.parse((ROOT / "tests" / check.script).read_text(encoding="utf-8"))
+    options = {
+        argument.value
+        for node in ast.walk(source)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "add_argument"
+        for argument in node.args
+        if isinstance(argument, ast.Constant) and isinstance(argument.value, str)
+    }
+    expected = {
+        "--build": {"release": release, "asan": asan}.get(check.role, native),
+        "--roms": roms,
+    }
+    failures = []
+    for option, value in expected.items():
+        if option not in options:
+            continue
+        positions = [i for i, word in enumerate(command) if word == option]
+        if (len(positions) != 1
+                or command[positions[0] + 1:positions[0] + 2] != [str(value)]):
+            failures.append(f"{check.name}: suite must forward {option} {value}")
     return failures
 
 
@@ -1453,6 +1636,11 @@ def validate_invocation_shapes() -> list[str]:
             check, missing / "native", missing / "release", missing / "asan",
             missing / "rom.z64", missing / "roms", missing / "web.wasm",
             True)
+        routing = validate_selected_artifacts(
+            check, cmd, missing / "native", missing / "release",
+            missing / "asan", missing / "roms")
+        if routing:
+            return "; ".join(routing)
         try:
             proc = sp.run(cmd, stdout=sp.PIPE, stderr=sp.STDOUT,
                           timeout=30, check=False)
@@ -1475,6 +1663,44 @@ def validate_invocation_shapes() -> list[str]:
         for verdict in pool.map(probe, shaped):
             if verdict:
                 failures.append(verdict)
+    # Missing paths alone used to pass this shape probe even when a ROM task
+    # silently ignored --build. Prove both omitted and wrong-artifact controls
+    # are rejected without executing any product code.
+    check = next(item for item in manifest.CHECKS if item.name == "rom_checker_page")
+    for command in (
+        ["probe", "--roms", str(missing / "roms")],
+        ["probe", "--build", str(missing / "release"),
+         "--roms", str(missing / "roms")],
+        ["probe", "--build", str(missing / "native")],
+    ):
+        if not validate_selected_artifacts(
+                check, command, missing / "native", missing / "release",
+                missing / "asan", missing / "roms"):
+            failures.append("selected-artifact routing control unexpectedly passed")
+    return failures
+
+
+def validate_runner_desktop_refusal() -> list[str]:
+    """Probe refusal before even nonexistent-artifact preflight; never launch a game."""
+    failures = []
+    with tempfile.TemporaryDirectory(prefix="mdkr-runner-refusal-") as directory:
+        command = [sys.executable, str(RUN_CHECKS), "--only",
+                   "split_screen_void_coverage", "--build",
+                   str(Path(directory) / "missing-build")]
+        for value in (None, "", "0", "11"):
+            env = dict(os.environ)
+            env.pop("MDKR_DEDICATED_TEST_DESKTOP", None)
+            if value is not None:
+                env["MDKR_DEDICATED_TEST_DESKTOP"] = value
+            result = subprocess.run(command, env=env, text=True, capture_output=True,
+                                    timeout=30, check=False)
+            if result.returncode != 2 or "run_checks: REFUSED" not in result.stderr:
+                failures.append(f"runner did not refuse desktop attestation {value!r}")
+        env.pop("MDKR_DEDICATED_TEST_DESKTOP", None)
+        result = subprocess.run(command + ["--list"], env=env, text=True,
+                                capture_output=True, timeout=30, check=False)
+        if result.returncode or "split_screen_void_coverage" not in result.stdout:
+            failures.append("runner --list requires an execution attestation")
     return failures
 
 
@@ -1488,6 +1714,7 @@ def main() -> int:
     failures.extend(validate_web_demo(sources))
     failures.extend(validate_macos_release(sources))
     failures.extend(validate_gpu_test_routing(sources))
+    failures.extend(validate_runner_desktop_refusal())
     failures.extend(validate_macos_packaging(sources))
     failures.extend(validate_output_guard(MACOS_BUILDER))
     failures.extend(validate_dmg_output_guard(MACOS_DMG))

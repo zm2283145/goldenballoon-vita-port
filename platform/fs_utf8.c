@@ -389,6 +389,30 @@ static wchar_t *quoted_wide_argument(const char *argument) {
     return wide;
 }
 
+static wchar_t *plain_wide_argument(const char *argument) {
+    wchar_t *wide;
+    int count;
+    if (argument == NULL || argument[0] == '\0') {
+        errno = EINVAL;
+        return NULL;
+    }
+    count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                argument, -1, NULL, 0);
+    if (count <= 0) {
+        errno = EINVAL;
+        return NULL;
+    }
+    wide = (wchar_t *)calloc((size_t)count, sizeof(*wide));
+    if (wide == NULL) return NULL;
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                            argument, -1, wide, count) <= 0) {
+        free(wide);
+        errno = EINVAL;
+        return NULL;
+    }
+    return wide;
+}
+
 int mdkr_exec_replace_utf8(const char *path, const char *const *arguments) {
     /* The image itself is addressed through the extended-length form so a
      * package extracted into a deep or non-ASCII directory still starts. The
@@ -432,6 +456,43 @@ int mdkr_exec_replace_utf8(const char *path, const char *const *arguments) {
 
     _wexecv(image, (const wchar_t *const *)vector);
     saved = errno ? errno : EIO;
+    for (index = 0u; index <= count; ++index) free(vector[index]);
+    free(vector);
+    free(image);
+    return saved;
+}
+
+int mdkr_spawn_wait_utf8(const char *path, const char *const *arguments,
+                         int *exit_code) {
+    wchar_t *image = plain_wide_argument(path);
+    wchar_t **vector = NULL;
+    size_t count = 0u;
+    size_t index;
+    intptr_t status;
+    int saved;
+    if (exit_code != NULL) *exit_code = -1;
+    if (image == NULL) return errno ? errno : EINVAL;
+    if (arguments != NULL) while (arguments[count] != NULL) ++count;
+    vector = (wchar_t **)calloc(count + 2u, sizeof(*vector));
+    if (vector == NULL) {
+        saved = errno ? errno : ENOMEM;
+        free(image);
+        return saved;
+    }
+    vector[0] = quoted_wide_argument(path);
+    for (index = 0u; index < count && vector[index] != NULL; ++index) {
+        vector[index + 1u] = quoted_wide_argument(arguments[index]);
+    }
+    if (vector[count] == NULL) {
+        saved = errno ? errno : EINVAL;
+        for (index = 0u; index <= count; ++index) free(vector[index]);
+        free(vector);
+        free(image);
+        return saved;
+    }
+    status = _wspawnvp(_P_WAIT, image, (const wchar_t *const *)vector);
+    saved = status < 0 ? (errno ? errno : EIO) : 0;
+    if (status >= 0 && exit_code != NULL) *exit_code = (int)status;
     for (index = 0u; index <= count; ++index) free(vector[index]);
     free(vector);
     free(image);
@@ -538,7 +599,11 @@ int mdkr_running_executable_path_utf8(char **output) {
 #include <sys/stat.h>
 #include <sys/file.h>
 #include <fcntl.h>
+#include <spawn.h>
+#include <sys/wait.h>
 #include <unistd.h>
+
+extern char **environ;
 
 #if defined(__APPLE__)
 #include <limits.h>
@@ -615,6 +680,42 @@ int mdkr_exec_replace_utf8(const char *path, const char *const *arguments) {
     saved = errno ? errno : EIO;
     free(vector);
     return saved;
+#endif
+}
+int mdkr_spawn_wait_utf8(const char *path, const char *const *arguments,
+                         int *exit_code) {
+#if defined(__EMSCRIPTEN__) || defined(__vita__)
+    (void)path;
+    (void)arguments;
+    if (exit_code != NULL) *exit_code = -1;
+    return ENOSYS;
+#else
+    char **vector;
+    size_t count = 0u;
+    size_t index;
+    pid_t process;
+    int status;
+    int result;
+    if (exit_code != NULL) *exit_code = -1;
+    if (path == NULL || path[0] == '\0') return EINVAL;
+    if (arguments != NULL) while (arguments[count] != NULL) ++count;
+    vector = (char **)calloc(count + 2u, sizeof(*vector));
+    if (vector == NULL) return errno ? errno : ENOMEM;
+    vector[0] = (char *)path;
+    for (index = 0u; index < count; ++index) {
+        vector[index + 1u] = (char *)arguments[index];
+    }
+    result = posix_spawnp(&process, path, NULL, NULL, vector, environ);
+    free(vector);
+    if (result != 0) return result;
+    do {
+        result = waitpid(process, &status, 0) < 0 ? errno : 0;
+    } while (result == EINTR);
+    if (result != 0) return result;
+    if (exit_code != NULL) {
+        *exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : 128;
+    }
+    return 0;
 #endif
 }
 int mdkr_file_sync(FILE *file) {

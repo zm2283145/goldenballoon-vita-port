@@ -1,15 +1,15 @@
 name: web-demo
 
 # GUARDED PUBLISH. workflow_dispatch only -- this never fires on push, tag, or
-# schedule. Publishing a playable build is an owner decision made deliberately,
-# not a side effect of committing. (Same doctrine as mgb64's web-demo workflow.)
+# schedule. The dispatch must select the exact tag named by MDKR_VERSION;
+# branches, raw commits, stale tags and moving main are refused before build.
+# Publishing a playable build is an owner decision made deliberately, not a
+# side effect of committing. (Same doctrine as mgb64's web-demo workflow.)
 on:
   workflow_dispatch: {}
 
 permissions:
   contents: read
-  pages: write        # scoped to the Pages deployment only
-  id-token: write     # required by deploy-pages OIDC; grants nothing else
 
 # Cancelling is safe for the BUILD (a superseded build produces nothing anyone
 # is waiting on) and is not safe for the Pages DEPLOYMENT: cancelling one
@@ -20,12 +20,59 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     concurrency:
       group: web-demo-build-${{ github.ref }}
       cancel-in-progress: true
     steps:
       # Actions pinned to commit SHAs, not tags: a tag can be moved, a SHA cannot.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Bind deployment to exact project-version tag
+        run: |
+          set -euo pipefail
+          release_version="$(sed -nE 's/^set\(MDKR_VERSION "([^"]+)".*/\1/p' CMakeLists.txt)"
+          [[ "$release_version" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]] || {
+            echo "CMakeLists.txt does not declare a release semver" >&2
+            exit 1
+          }
+          release_tag="v${release_version}"
+          expected_ref="refs/tags/${release_tag}"
+          [[ "$GITHUB_REF" == "$expected_ref" ]] || {
+            echo "web deployment must be dispatched from $expected_ref, not $GITHUB_REF" >&2
+            exit 1
+          }
+          tag_commit="$(git rev-parse --verify "${release_tag}^{commit}")"
+          [[ "$tag_commit" == "$GITHUB_SHA" ]] || {
+            echo "$release_tag resolves to $tag_commit, not $GITHUB_SHA" >&2
+            exit 1
+          }
+          echo "RELEASE_TAG=${release_tag}" >> "$GITHUB_ENV"
+          echo "web deployment bound to ${release_tag} at ${tag_commit}"
+
+      - name: Require a published non-prerelease release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release_state="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" \
+            --jq '"\(.draft):\(.prerelease)"')"
+          [[ "$release_state" == "false:false" ]] || {
+            echo "$RELEASE_TAG is not a published, non-prerelease GitHub Release (state $release_state)" >&2
+            exit 1
+          }
+          latest_tag="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name')"
+          [[ "$latest_tag" == "$RELEASE_TAG" ]] || {
+            echo "web deployment tag $RELEASE_TAG is not the latest release $latest_tag" >&2
+            exit 1
+          }
+          echo "web deployment release gate passed for ${RELEASE_TAG}"
+
       - uses: mymindstorm/setup-emsdk@6ab9eb1bda2574c4ddb79809fc9247783eaf9021 # v14
         with: { version: "4.0.10" }
 
@@ -114,11 +161,41 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    # Only the job that calls deploy-pages receives Pages/OIDC authority. The
+    # build and its third-party toolchain remain read-only.
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     # A queued deployment must replace the site completely or not at all.
     concurrency:
       group: pages
       cancel-in-progress: false
     environment: { name: github-pages, url: "${{ steps.deployment.outputs.page_url }}" }
     steps:
+      - name: Reconfirm published release immediately before deployment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release_tag="${GITHUB_REF#refs/tags/}"
+          [[ "refs/tags/${release_tag}" == "$GITHUB_REF" ]] || {
+            echo "Pages deployment source is not a tag: $GITHUB_REF" >&2
+            exit 1
+          }
+          deploy_release_state="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/releases/tags/${release_tag}" \
+            --jq '"\(.draft):\(.prerelease)"')"
+          [[ "$deploy_release_state" == "false:false" ]] || {
+            echo "$release_tag stopped being a published, non-prerelease release (state $deploy_release_state)" >&2
+            exit 1
+          }
+          deploy_latest_tag="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name')"
+          [[ "$deploy_latest_tag" == "$release_tag" ]] || {
+            echo "Pages deployment tag $release_tag is no longer latest (latest is $deploy_latest_tag)" >&2
+            exit 1
+          }
+
       - id: deployment
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

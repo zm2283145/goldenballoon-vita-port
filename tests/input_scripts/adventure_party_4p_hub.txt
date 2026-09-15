@@ -1,0 +1,43 @@
+# Adventure Party hub roster (AP-08) — FOUR local players into the Adventure
+# lobby, then a per-seat binding witness.
+#
+# Admission prologue is byte-identical to adventure_party_4p_admit.txt: with
+# Enhancements.AdventureParty on, four players resume the started slot-0 save via
+# the ordinary Adventure route and land in the central hub. AP-08 spawns four
+# human racers, the four-quadrant split, and a per-viewport hub HUD. After the
+# hub settles, each pad drives its own racer in isolation (A = accelerate) so the
+# gate can prove seat->port->racer binding.
+
+# --- Title -> Character Select ---
+1250 START 4
+1330 START 4
+
+# --- PLAYER SELECT: players two, three and four join on their own controllers ---
+1430 A 4 P2
+1470 A 4 P3
+1510 A 4 P4
+
+# --- Confirm characters ---
+1600 A 4 P1
+1660 A 4 P2
+1720 A 4 P3
+1780 A 4 P4
+
+# --- "OK?" accept -> GAME_SELECT ---
+1880 A 4 P1
+
+# --- GAME_SELECT -> FILE_SELECT ---
+2100 A 4 P1
+
+# --- FILE_SELECT: host resumes slot 0 ---
+2350 A 4 P1
+
+# --- In the hub: per-seat binding witness ---
+# Round 1: only P1 accelerates.
+2700 A 90 P1
+# Round 2: only P2 accelerates.
+2880 A 90 P2
+# Round 3: only P3 accelerates.
+3060 A 90 P3
+# Round 4: only P4 accelerates.
+3240 A 90 P4

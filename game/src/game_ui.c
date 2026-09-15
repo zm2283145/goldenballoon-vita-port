@@ -16,6 +16,11 @@
 #include "objects.h"
 #ifdef NATIVE_PORT
 #include "asset_swap.h"
+#ifndef MDKR_ADVENTURE_PARTY_OMIT
+/* AP-08 hub HUD adapter: behind NATIVE_PORT && !MDKR_ADVENTURE_PARTY_OMIT so
+ * the OMIT build and the N64 path compile the party HUD path out entirely. */
+#include "adventure_party/adventure_party_runtime.h"
+#endif
 #include "display_config.h"
 #include "enh_speedometer.h"
 #include "hud_layout.h"
@@ -24,6 +29,7 @@
 #include "taj_physics.h"
 #include "taj_visual.h"
 #include "net/net_roster_runtime.h"
+#include "modern_character_runtime.h"
 #include "video_config.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,6 +49,7 @@
 #define hud_rand_range cadence_compat_rand_range
 static s32 sTajMinimapIdentityTraced;
 static u32 sTajMinimapTracedEpoch;
+static u64 sCustomMinimapRevisions[MDKR_MODERN_CHARACTER_PLAYERS];
 #else
 #define hud_rand_range rand_range
 #define hud_presentation_viewport_layout() gHUDNumPlayers
@@ -1245,7 +1252,9 @@ u8 race_starting(void) {
 static void hud_render_taj_identity(const Object_Racer *racer) {
     s32 x = SCREEN_WIDTH_HALF;
     s32 y = 9;
-    const char *label;
+    /* The legacy text renderer accepts mutable character pointers even though
+     * it only reads them. Keep this local type aligned with that ABI. */
+    char *label;
 
     if (taj_physics_is_taj(racer)) {
         label = is_in_time_trial() ? "TAJ - NO RECORD" : "TAJ MAGIC";
@@ -1290,20 +1299,27 @@ static void hud_render_identity_portrait(HudElement *portrait, s32 character,
     static DrawTexture sHudBonusPortrait[2];
     static u32 tracedPlayers[MOD_RACER_IDENTITY_COUNT];
     static u32 tracedEpoch;
+    static u64 tracedCustomRevisions[MDKR_MODERN_CHARACTER_PLAYERS];
+    MdkrModernCharacterIdentityView customIdentity;
     u32 playerBit;
     DrawTexture *bonusPortrait;
+    s32 customPortrait;
 
     if (tracedEpoch != taj_visual_trace_epoch()) {
         tracedEpoch = taj_visual_trace_epoch();
         memset(tracedPlayers, 0, sizeof(tracedPlayers));
     }
-    if (identity <= MOD_RACER_RETAIL ||
-        identity >= MOD_RACER_IDENTITY_COUNT) {
+    bonusPortrait = menu_custom_character_portrait(playerIndex);
+    customPortrait = bonusPortrait != NULL &&
+                     bonusPortrait[0].texture != NULL;
+    if (!customPortrait &&
+        (identity <= MOD_RACER_RETAIL ||
+         identity >= MOD_RACER_IDENTITY_COUNT)) {
         portrait->spriteID = character + HUD_SPRITE_PORTRAIT;
         hud_element_render(&gHudDL, &gHudMtx, &gHudVtx, portrait);
         return;
     }
-    bonusPortrait = menu_mod_portrait(identity);
+    if (!customPortrait) bonusPortrait = menu_mod_portrait(identity);
     if (bonusPortrait != NULL && bonusPortrait[0].texture != NULL) {
         /* The same conventions hud_element_render() gives every retail
          * portrait at this anchor: pos is the top-left corner, the anchor's
@@ -1334,6 +1350,20 @@ static void hud_render_identity_portrait(HudElement *portrait, s32 character,
                                 hud_slide_draw_offset(),
                             y, portrait->scale, yScale,
                             gHudColour, TEXRECT_POINT);
+    }
+    if (customPortrait) {
+        if (playerIndex >= 0 &&
+            playerIndex < MDKR_MODERN_CHARACTER_PLAYERS &&
+            mdkr_modern_character_player_identity(
+                playerIndex, &customIdentity) &&
+            tracedCustomRevisions[playerIndex] != customIdentity.revision) {
+            tracedCustomRevisions[playerIndex] = customIdentity.revision;
+            MDKR_TRACE(
+                "custom_character_hud_portrait: player=%d name=%s revision=%llu",
+                playerIndex, customIdentity.display_name,
+                (unsigned long long)customIdentity.revision);
+        }
+        return;
     }
     playerBit = taj_mod_player_bit(playerIndex);
     if (playerBit != 0 && !(tracedPlayers[identity] & playerBit)) {
@@ -2790,6 +2820,23 @@ void hud_main_hub(Object *obj, s32 updateRate) {
     Object_Racer *racer;
     HudElement *portrait;
 
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    /* AP-08 adapter 6 (hub HUD): the retail hub HUD (below) draws only for the
+     * single-player layout. A party lobby uses the 2/3/4-player layout, so draw
+     * the SAME hub HUD (balloons + speedometer) for THIS viewport — once per
+     * human seat, via the existing per-viewport dispatch (hud_render_player).
+     * No sitting-out portrait: that is the retail 2P-adventure presentation and
+     * a party never engages it (AP-01). Reuses existing draw calls, no new HUD
+     * art (native-feel item 8). */
+    if (adventure_party_runtime_is_active() && cam_get_viewport_layout() != PLAYER_ONE) {
+        racer = obj->racer;
+        cam_set_sprite_anim_mode(SPRITE_ANIM_FRAME_INDEX);
+        hud_balloons(racer);
+        hud_speedometre(obj, updateRate);
+        cam_set_sprite_anim_mode(SPRITE_ANIM_NORMALIZED);
+        return;
+    }
+#endif
     if (cam_get_viewport_layout() == PLAYER_ONE) {
         racer = obj->racer;
         cam_set_sprite_anim_mode(SPRITE_ANIM_FRAME_INDEX);
@@ -3532,19 +3579,43 @@ void hud_treasure(Object_Racer *racer) {
 void hud_silver_coins(Object_Racer *racer, s32 updateRate) {
     s32 i;
     s32 prevY;
+    s32 silverCoins = racer->silverCoinCount;
 
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    /* AP-14: every viewport's HUD shows the ONE team tally in a party silver race,
+     * so all humans read the same total (the coins are team-shared). This function
+     * runs once per viewport with that viewport's own racer; reading the team
+     * counter here makes all N of them agree. Not a party silver race -> the retail
+     * per-racer count, byte-identical. */
+    if (adventure_party_silver_race_active()) {
+        silverCoins = adventure_party_silver_team_coins();
+        /* Per-viewport witness: this viewport (racer->playerIndex) is drawing the
+         * ONE team total. Change-detected per viewport so a gate can prove all N
+         * viewports display the same running total without per-frame spam. */
+        {
+            extern int g_frameCounter;
+            static s32 sHudLastTeam[4] = {-1, -1, -1, -1};
+            s32 pidx = racer->playerIndex;
+            if (pidx >= 0 && pidx < 4 && sHudLastTeam[pidx] != silverCoins) {
+                sHudLastTeam[pidx] = silverCoins;
+                MDKR_TRACE("silverhud: viewport=%d teamCoins=%d @frame~%d",
+                           (int) pidx, (int) silverCoins, g_frameCounter);
+            }
+        }
+    }
+#endif
     gCurrentHud->entry[HUD_SILVER_COIN_TALLY].pos.y =
         (s32) gCurrentHud->entry[HUD_SILVER_COIN_TALLY].pos.y; // Rounds float down to it's int value.
     prevY = gCurrentHud->entry[HUD_SILVER_COIN_TALLY].pos.y;
     for (i = 0; i < 8; i++) {
-        if (i >= racer->silverCoinCount) {
+        if (i >= silverCoins) {
             gHudColour = COLOUR_RGBA32(128, 128, 128, 128);
         }
         hud_element_render(&gHudDL, &gHudMtx, &gHudVtx, &gCurrentHud->entry[HUD_SILVER_COIN_TALLY]);
         gCurrentHud->entry[HUD_SILVER_COIN_TALLY].pos.y -=
             gCurrentHud->entry[HUD_SILVER_COIN_TALLY].silverCoinTally.offsetY;
     }
-    if (racer->silverCoinCount == 8) {
+    if (silverCoins == 8) {
         if (gCurrentHud->entry[HUD_SILVER_COIN_TALLY].silverCoinTally.soundTimer < 30) {
             gCurrentHud->entry[HUD_SILVER_COIN_TALLY].silverCoinTally.soundTimer += updateRate;
         }
@@ -5290,7 +5361,30 @@ void hud_render_general(Gfx **dList, Mtx **mtx, Vertex **vtx, s32 updateRate) {
             {
                 ModRacerIdentity identity =
                     (ModRacerIdentity)mod_racer_physics_identity(someRacer);
-                if (identity != MOD_RACER_RETAIL) {
+                MdkrModernCharacterIdentityView customIdentity;
+                if (mdkr_modern_character_player_identity(
+                        someRacer->playerIndex, &customIdentity)) {
+                    gDPSetPrimColor(gHudDL++, 0, 0,
+                                    customIdentity.minimap_rgba[0],
+                                    customIdentity.minimap_rgba[1],
+                                    customIdentity.minimap_rgba[2], opacity);
+                    if (someRacer->playerIndex >= 0 &&
+                        someRacer->playerIndex <
+                            MDKR_MODERN_CHARACTER_PLAYERS &&
+                        sCustomMinimapRevisions[someRacer->playerIndex] !=
+                            customIdentity.revision) {
+                        sCustomMinimapRevisions[someRacer->playerIndex] =
+                            customIdentity.revision;
+                        MDKR_TRACE(
+                            "custom_character_minimap: player=%d name=%s revision=%llu rgb=%u,%u,%u",
+                            someRacer->playerIndex,
+                            customIdentity.display_name,
+                            (unsigned long long)customIdentity.revision,
+                            customIdentity.minimap_rgba[0],
+                            customIdentity.minimap_rgba[1],
+                            customIdentity.minimap_rgba[2]);
+                    }
+                } else if (identity != MOD_RACER_RETAIL) {
                     s32 red = 255;
                     s32 green = 0;
                     s32 blue = 255;

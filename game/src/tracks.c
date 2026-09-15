@@ -14,6 +14,7 @@
 #include "fast3d/gfx_presentation_packet.h"
 #include "gfx_shadow_frame.h"
 #include "mdkr_bounds.h"
+#include "mdkr_trace.h"
 #include "platform_os.h"
 #include "net/net_roster_runtime.h"
 #include "present_sched.h"
@@ -22,6 +23,7 @@
 #include "wizpig_visual.h"
 #include "terry_visual.h"
 #include "viewport_route_cache.h"
+#include "video_config.h"
 #endif
 #include "camera.h"
 #include "collision.h"
@@ -53,6 +55,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+/* Keep libc-backed helpers after the legacy libultra declarations above. */
+#include "void_render_policy.h"
 #endif
 
 // Maximum size for a level model is 522.5 KiB
@@ -1634,6 +1638,16 @@ void void_free(void) {
     }
 }
 
+#ifdef NATIVE_PORT
+static MdkrVoidRenderPolicy void_native_policy(void) {
+    const MdkrVideoConfig *config = mdkr_video_config_current();
+    return mdkr_void_render_policy(
+        config == NULL || config->mode == MDKR_VIDEO_MODE_PURE,
+        getenv("MDKR_TEST_VOID_POLICY"), getenv("MDKR_TEST_VOID_TOKEN"),
+        getenv("MDKR_DEDICATED_TEST_DESKTOP"));
+}
+#endif
+
 // root func for the out of bounds void rendering
 void void_check(u8 *segmentIds, s32 numberOfSegments, s32 viewportIndex) {
     s16 i;
@@ -1651,6 +1665,7 @@ void void_check(u8 *segmentIds, s32 numberOfSegments, s32 viewportIndex) {
     LevelModelSegmentBoundingBox *bbox;
     s16 sum;
 #ifdef NATIVE_PORT
+    const MdkrVoidRenderPolicy policy = void_native_policy();
     // Triage sweep (BUG_CLASS_SWEEP_REPORT.md #14, tracks.c void_check): the
     // ROM-era array is sized as a guess at the N64 frame layout ("real size is
     // unknown"), with no bound on the push below. D_8011D49E can hold up to
@@ -1671,7 +1686,17 @@ void void_check(u8 *segmentIds, s32 numberOfSegments, s32 viewportIndex) {
     gVoidTris[1] = gVoidMesh[viewportIndex].tris[1];
     gVoidVerts[0] = gVoidMesh[viewportIndex].verts[0];
     gVoidVerts[1] = gVoidMesh[viewportIndex].verts[1];
+#ifdef NATIVE_PORT
+    /* The background curtain must not write its artificial 250-unit depth:
+     * otherwise it still rejects the later scenery it is meant to sit behind.
+     * The solid-colour translucent table preserves the same colour/alpha
+     * combiner and fog policy, but removes Z_UPD. Its vertices remain opaque.
+     * Use material_set so subsequent materials invalidate this state normally. */
+    material_set_no_tex_offset(&gTrackDL, NULL, RENDER_ANTI_ALIASING | RENDER_Z_COMPARE |
+        (policy == MDKR_VOID_BACKGROUND ? RENDER_SEMI_TRANSPARENT : 0));
+#else
     material_set_no_tex_offset(&gTrackDL, NULL, RENDER_ANTI_ALIASING | RENDER_Z_COMPARE);
+#endif
     D_8011D49C = 0;
     D_8011D49E = 0;
 
@@ -1816,6 +1841,13 @@ void void_check(u8 *segmentIds, s32 numberOfSegments, s32 viewportIndex) {
     }
     gTrackVtxPtr = vtx;
     gTrackTriPtr = tri;
+#ifdef NATIVE_PORT
+    if (getenv("MDKR_VOID_COVERAGE_TRACE") != NULL) {
+        fprintf(stderr, "[VOID-COVERAGE] viewport=%d policy=%d primitives=%d colour=%u,%u,%u\n",
+                viewportIndex, (int)policy, gVoidPrimCount,
+                (unsigned)gVoidColourR, (unsigned)gVoidColourG, (unsigned)gVoidColourB);
+    }
+#endif
 }
 
 void func_80026070(LevelModelSegmentBoundingBox *arg0, f32 arg1, f32 arg2, f32 arg3) {
@@ -2901,6 +2933,11 @@ void trackbg_render_gradient(void) {
     u8 headerBlue1;
     Vertex *verts;
     Triangle *tris;
+#ifdef NATIVE_PORT
+    /* The ROM's authored half-width, kept as the floor for the derived one. */
+    const s16 x_left_rom = -200;
+    s16 xExtent = 200;
+#endif
 
     verts = (Vertex *) gTrackVtxPtr;
     tris = (Triangle *) gTrackTriPtr;
@@ -2924,11 +2961,88 @@ void trackbg_render_gradient(void) {
         y0 = -150;
         y1 = 150;
     }
+#ifdef NATIVE_PORT
+    /*
+     * issue #61(B): "black lines on each side of the skybox in several levels
+     * during multiplayer, e.g. Fossil Canyon".
+     *
+     * This flat gradient quad is the ONLY sky the >=2-viewport path draws
+     * (render_scene takes skydome_render() only when numViewports < 2), and its
+     * x extent is the ROM's hard-coded +/-200. That is not an arbitrary number:
+     * the quad sits at z = 20 behind D_800DD288's z = -281 eye offset, i.e. 261
+     * units out, and 261 * tanf(60/2 deg) * (4/3) = 200.9 -- it is tuned to
+     * exactly fill a 4:3, 60-degree-vertical-FOV frustum, and +/-150 fills it
+     * vertically by the same identity (261 * tanf(30 deg) = 150.7).
+     *
+     * The port's widescreen projection is Hor+ (display_config.c keeps the
+     * vertical FOV and derives the horizontal from the live aspect), so at any
+     * aspect wider than 4:3 the frustum is wider than the quad and the strips
+     * the quad no longer reaches keep the colour the frame was cleared to --
+     * black on every level whose voidColour is 0,0,0 (Fossil Canyon, Ancient
+     * Lake, Whale Bay, ...). Measured at 1280x720 on Fossil Canyon: the quad's
+     * right edge landed at x = 2232 of a 2560-wide dump, against the predicted
+     * 1280 + 0.75 * 1280 = 2240 -- 12.5% of each side unpainted.
+     *
+     * Re-derive the extents from the projection actually in the matrix instead
+     * of the 4:3 constants. At the authored 60-degree vertical FOV and a 4:3
+     * aspect this reproduces 200/150 exactly, so 4:3 output -- and every
+     * one-player frame, which never reaches this function -- is unchanged.
+     * The vertical term follows the same identity so the gameplay-FOV slider
+     * cannot open a gap at the top and bottom either.
+     */
+    {
+        f32 aspect = cam_get_effective_aspect();
+        f32 vfov = cam_get_effective_vertical_fov();
+        f32 halfH = (f32) y1;
+        f32 halfW;
+
+        if (vfov > 1.0f && vfov < 179.0f) {
+            halfH *= tanf(vfov * (0.5f * 3.14159265358979323846f / 180.0f)) /
+                     tanf(CAMERA_DEFAULT_FOV * (0.5f * 3.14159265358979323846f / 180.0f));
+        }
+        if (!(aspect > 0.1f) || !(aspect < 16.0f)) {
+            aspect = SCREEN_WIDTH_FLOAT / SCREEN_HEIGHT_FLOAT;
+        }
+        halfW = halfH * aspect;
+
+        /* Never shrink below the authored coverage: a narrower-than-4:3
+         * presentation still gets the full ROM backdrop. */
+        if (halfH < (f32) y1) {
+            halfH = (f32) y1;
+        }
+        if (halfW < (f32) -x_left_rom) {
+            halfW = (f32) -x_left_rom;
+        }
+        y1 = (s16) lroundf(halfH);
+        y0 = (s16) -y1;
+        xExtent = (s16) lroundf(halfW);
+
+        /* The gate's deterministic arm: the derived extent IS the quantity that
+         * decides whether the backdrop reaches the frustum edge, so publish it
+         * rather than making a test infer it from pixels alone. Rate-limited to
+         * one row per distinct value so a race prints a handful of lines. */
+        if (mdkr_trace_enabled()) {
+            static s16 lastX = -1;
+            static s16 lastY = -1;
+
+            if (xExtent != lastX || y1 != lastY) {
+                lastX = xExtent;
+                lastY = y1;
+                fprintf(stderr, "[TRACE] bg_backdrop: aspect=%.4f vfov=%.2f x=%d y=%d\n",
+                        (double) aspect, (double) vfov, (int) xExtent, (int) y1);
+            }
+        }
+    }
+#endif
     if (cam_get_viewport_layout() == TWO_PLAYERS) {
         y0 >>= 1;
         y1 >>= 1;
     }
+#ifdef NATIVE_PORT
+    verts->x = -xExtent;
+#else
     verts->x = -200;
+#endif
     verts->y = y0;
     verts->z = z;
     verts->r = headerRed0;
@@ -2937,7 +3051,11 @@ void trackbg_render_gradient(void) {
     verts->a = 255;
     verts++;
 
+#ifdef NATIVE_PORT
+    verts->x = xExtent;
+#else
     verts->x = 200;
+#endif
     verts->y = y0;
     verts->z = z;
     verts->r = headerRed0;
@@ -2946,7 +3064,11 @@ void trackbg_render_gradient(void) {
     verts->a = 255;
     verts++;
 
+#ifdef NATIVE_PORT
+    verts->x = -xExtent;
+#else
     verts->x = -200;
+#endif
     verts->y = y1;
     verts->z = z;
     verts->r = headerRed1;
@@ -2955,7 +3077,11 @@ void trackbg_render_gradient(void) {
     verts->a = 255;
     verts++;
 
+#ifdef NATIVE_PORT
+    verts->x = xExtent;
+#else
     verts->x = 200;
+#endif
     verts->y = y1;
     verts->z = z;
     verts->r = headerRed1;
@@ -4118,6 +4244,18 @@ void render_level_geometry_and_objects(void) {
 
     objectsVisible[0] = TRUE;
 
+#ifdef NATIVE_PORT
+    /* A curtain masks holes, not real scenery. The authored final pass sits
+     * 250 units from the camera and can obscure an entire valid bridge when
+     * the camera/racer line crosses a collision plane (Walrus Cove, #61).
+     * Draw the same mesh as non-depth-writing background coverage before
+     * opaque scenery and actors. Pure keeps the authored final pass below. */
+    if (mdkr_void_before_scenery(void_native_policy()) &&
+        gVoidData != NULL && func_80027568()) {
+        void_check(segmentIds, numberOfSegments, get_current_viewport());
+    }
+#endif
+
     if (gDrawLevelSegments) {
         for (i = 0; i < numberOfSegments; i++) {
             render_level_segment(segmentIds[i], FALSE); // Render opaque segments
@@ -4393,7 +4531,11 @@ void render_level_geometry_and_objects(void) {
     gSceneDrawDistanceValid = FALSE;
 #endif
 
-    if (gVoidData != NULL && func_80027568()) {
+    if (
+#ifdef NATIVE_PORT
+        void_native_policy() == MDKR_VOID_AUTHORED &&
+#endif
+        gVoidData != NULL && func_80027568()) {
         void_check(segmentIds, numberOfSegments, get_current_viewport());
     }
     gAntiAliasing = FALSE;

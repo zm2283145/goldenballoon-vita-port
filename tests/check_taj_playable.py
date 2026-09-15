@@ -37,6 +37,11 @@ TIME_TRIAL_FRAMES = 12500
 CANONICAL_TT_FRAMES = 13000
 SPLIT_FRAMES = 3600
 VEHICLE_FRAMES = 6200
+# Render-backed headless runs on supported but slower GPUs can legitimately
+# need more than the old 90-second allowance for 8,000 authored frames. Keep a
+# bounded per-process watchdog while leaving enough headroom for the gate to
+# report its behavioural verdict instead of a host-speed false red.
+PROCESS_TIMEOUT_SECONDS = 240
 PACE_RE = re.compile(
     r"\[PACE\] frame=(\d+).*clock=(\d+) cp=(-?\d+) lap=(-?\d+)"
 )
@@ -279,7 +284,7 @@ def main() -> int:
         process = subprocess.run(
             command, cwd=run_dir, env=env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            timeout=90, check=False,
+            timeout=PROCESS_TIMEOUT_SECONDS, check=False,
         )
         output = process.stdout or ""
         if process.returncode != 0:
@@ -389,7 +394,7 @@ def main() -> int:
              str(SCRIPT), "--rom", str(rom)],
             cwd=control_dir, env=control_env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            timeout=90, check=False,
+            timeout=PROCESS_TIMEOUT_SECONDS, check=False,
         )
         control_output = control_process.stdout or ""
         control_failures = carpet_witness_failures(control_output)
@@ -435,7 +440,7 @@ def main() -> int:
              str(SCRIPT), "--rom", str(rom)],
             cwd=horn_dir, env=horn_env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            timeout=90, check=False,
+            timeout=PROCESS_TIMEOUT_SECONDS, check=False,
         )
         horn_output = horn_process.stdout or ""
         if horn_process.returncode != 0:
@@ -465,7 +470,7 @@ def main() -> int:
         imported_process = subprocess.run(
             imported_command, cwd=imported_dir, env=imported_env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            timeout=90, check=False,
+            timeout=PROCESS_TIMEOUT_SECONDS, check=False,
         )
         imported_output = imported_process.stdout or ""
         imported_state = imported_save / "taj_mod_state.ini"
@@ -503,7 +508,7 @@ def main() -> int:
         split_process = subprocess.run(
             split_command, cwd=split_dir, env=split_env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            timeout=90, check=False,
+            timeout=PROCESS_TIMEOUT_SECONDS, check=False,
         )
         split_output = split_process.stdout or ""
         if split_process.returncode != 0:
@@ -549,7 +554,7 @@ def main() -> int:
              str(no_shadow_frames), "--rom", str(rom)],
             cwd=no_shadow_dir, env=no_shadow_env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            timeout=90, check=False,
+            timeout=PROCESS_TIMEOUT_SECONDS, check=False,
         )
         no_shadow_output = no_shadow_process.stdout or ""
         if no_shadow_process.returncode != 0:
@@ -607,7 +612,7 @@ def main() -> int:
                  str(multiplayer_script), "--rom", str(rom)],
                 cwd=multiplayer_dir, env=multiplayer_env, text=True,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                timeout=90, check=False,
+                timeout=PROCESS_TIMEOUT_SECONDS, check=False,
             )
             multiplayer_output = multiplayer_process.stdout or ""
             multiplayer_outputs.append(multiplayer_output)
@@ -676,7 +681,7 @@ def main() -> int:
             vehicle_process = subprocess.run(
                 vehicle_command, cwd=vehicle_dir, env=vehicle_env, text=True,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                timeout=90, check=False,
+                timeout=PROCESS_TIMEOUT_SECONDS, check=False,
             )
             vehicle_output = vehicle_process.stdout or ""
             vehicle_outputs.append(vehicle_output)
@@ -720,7 +725,7 @@ def main() -> int:
         canonical_process = subprocess.run(
             canonical_command, cwd=tt_dir, env=canonical_env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            timeout=90, check=False,
+            timeout=PROCESS_TIMEOUT_SECONDS, check=False,
         )
         canonical_output = canonical_process.stdout or ""
         if canonical_process.returncode != 0:
@@ -770,7 +775,7 @@ def main() -> int:
         tt_process = subprocess.run(
             tt_command, cwd=tt_dir, env=tt_env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            timeout=90, check=False,
+            timeout=PROCESS_TIMEOUT_SECONDS, check=False,
         )
         tt_output = tt_process.stdout or ""
         if tt_process.returncode != 0:

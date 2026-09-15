@@ -238,11 +238,13 @@ s16 gArcTanTable[1026];
  *     EXPORT(gPrevRNGSeed)
  *         .word 0x5141564D   / 'QAVM' /
  *
- * Those are the LIVE starting seeds, not placeholders: set_rng_seed() has exactly
- * one caller in the whole game (game/src/waves.c:364, `set_rng_seed('WAVF')`,
- * bracketed by save_rng_seed()/load_rng_seed()), so nothing re-seeds the
- * generator at boot and every one of a run's rand_range() draws descends from it
- * -- 98 call sites, including racer.c and particles.c.
+ * Those are the LIVE starting seeds, not placeholders. set_rng_seed() has two
+ * callers: game/src/waves.c:745 (`set_rng_seed('WAVF')`, bracketed by
+ * save_rng_seed()/load_rng_seed(), so it leaves the stream where it found it),
+ * and game/src/online/online_race_boot.c:75, which reseeds from the online
+ * launch descriptor's manifest seed and so governs only an online epoch.
+ * Offline, nothing re-seeds the generator at boot and every one of a run's
+ * rand_range() draws descends from these words.
  *
  * This file shipped 0x00051234 / 0 from the first platform commit until the
  * "closedloop" wave, invented only to make the link succeed. That put the port on
@@ -264,6 +266,7 @@ s16 gArcTanTable[1026];
 s32 gCurrentRNGSeed = DKR_RNG_SEED_ROM;
 s32 gPrevRNGSeed    = DKR_RNG_SEED_ROM;
 static u32 gPresentationRNGSeed = DKR_RNG_SEED_ROM ^ 0x50524553u;
+static u64 gPresentationRNGDraws;
 u8  gIntDisFlag     = 0; /* EXPORT(gIntDisFlag) .byte 0x00 -- matches */
 
 /* Renderer/HUD-only randomness. It intentionally uses the ROM generator's
@@ -279,6 +282,7 @@ s32 presentation_rand_range(s32 min, s32 max) {
     temp ^= ((u64)(seed & 0xFFFFFu) << 12);
     seed = (u32)(temp ^ ((temp >> 20) & 0xFFFu));
     gPresentationRNGSeed = seed;
+    gPresentationRNGDraws++;
     if (max < min) {
         s32 swap = min;
         min = max;
@@ -300,6 +304,22 @@ s32 cadence_compat_rand_range(s32 min, s32 max) {
         return rand_range(min, max);
     }
     return presentation_rand_range(min, max);
+}
+
+/* Observation seam for tests/check_presentation_rng_split.py. The presentation
+ * stream lives outside the rollback snapshot registry, so a lane cannot read it
+ * back out of a state hash the way it reads gCurrentRNGSeed; these accessors are
+ * the only way to witness that it advanced. */
+u32 mdkr_presentation_rng_seed(void) {
+    return gPresentationRNGSeed;
+}
+
+u64 mdkr_presentation_rng_draws(void) {
+    return gPresentationRNGDraws;
+}
+
+u64 mdkr_authoritative_rng_draws(void) {
+    return gAuthoritativeRNGDraws;
 }
 
 static unsigned int mdkr_fnv1a32_u16(const s16 *vals, int n) {

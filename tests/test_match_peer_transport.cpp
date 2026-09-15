@@ -412,6 +412,12 @@ struct RawPeer {
     FakeHub *hub;
     bool sendHellos = true;
     bool answerPings = true;
+    /* Offerer mode: this peer builds the connection and chooses which channels
+     * it carries, so a lane can present the two-channel set an endpoint that
+     * predates the authority channel would offer. Unset, the peer answers. */
+    bool offerer = false;
+    bool offerAuthorityChannel = true;
+    bool offerSent = false;
 
     MdkrMatchPeerIdentity *identity = nullptr;
     std::array<uint8_t, MDKR_MATCH_PEER_PUBLIC_KEY_BYTES> publicKey{};
@@ -426,13 +432,13 @@ struct RawPeer {
     bool sentCommit = false;
 
     std::shared_ptr<rtc::PeerConnection> pc;
-    std::shared_ptr<rtc::DataChannel> state;
-    std::shared_ptr<rtc::DataChannel> control;
+    /* Indexed by MDKR_MATCH_PEER_LANE_*, like the mesh's own runtime. */
+    std::shared_ptr<rtc::DataChannel> channels[MDKR_MATCH_PEER_LANE_COUNT];
     std::mutex mutex;
     std::deque<std::string> controlText;
 
     MdkrMatchPeerKeyring ring{};
-    MdkrMatchPeerSealingKey *sealKey = nullptr;
+    MdkrMatchPeerSealingKey *sealKeys[MDKR_MATCH_PEER_LANE_COUNT] = {};
     bool keysDerived = false;
 
     RawPeer(uint64_t self, uint32_t generation, uint64_t mesh,
@@ -516,6 +522,11 @@ struct RawPeer {
             try {
                 pc->setRemoteDescription(rtc::Description(event.sdp, "offer"));
             } catch (...) { assert(false && "offer rejected"); }
+        } else if (event.type == MdkrMatchSignalEventType::WebrtcAnswer) {
+            if (!pc) return;
+            try {
+                pc->setRemoteDescription(rtc::Description(event.sdp, "answer"));
+            } catch (...) { assert(false && "answer rejected"); }
         } else if (event.type == MdkrMatchSignalEventType::WebrtcIce) {
             if (!pc) return;
             try {
@@ -525,12 +536,40 @@ struct RawPeer {
         }
     }
 
+    /* Build the connection and offer a chosen channel set. The mesh peers the
+     * numerically HIGHER id, so a harness that wants the mesh to answer gives
+     * this peer the lower one. */
+    void startOffer() {
+        if (pc || offerSent) return;
+        offerer = true;
+        startPeer();
+        rtc::DataChannelInit stateConfiguration;
+        stateConfiguration.reliability.unordered = true;
+        stateConfiguration.reliability.maxRetransmits = 0u;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            channels[MDKR_MATCH_PEER_LANE_STATE] = pc->createDataChannel(
+                kMdkrMatchStateChannelLabel, stateConfiguration);
+            channels[MDKR_MATCH_PEER_LANE_CONTROL] =
+                pc->createDataChannel(kMdkrMatchControlChannelLabel);
+            if (offerAuthorityChannel) {
+                rtc::DataChannelInit authorityConfiguration;
+                authorityConfiguration.reliability.unordered = true;
+                channels[MDKR_MATCH_PEER_LANE_AUTHORITY] =
+                    pc->createDataChannel(kMdkrMatchAuthorityChannelLabel,
+                                          authorityConfiguration);
+            }
+        }
+        offerSent = true;
+    }
+
     void startPeer() {
         if (pc) return;
         rtc::Configuration configuration; /* loopback: no ICE servers */
         pc = std::make_shared<rtc::PeerConnection>(configuration);
         pc->onLocalDescription([this](rtc::Description description) {
-            sendSignal("webrtc_answer", [&](MdkrMatchSignalOutbound &m) {
+            sendSignal(offerer ? "webrtc_offer" : "webrtc_answer",
+                       [&](MdkrMatchSignalOutbound &m) {
                 m.sdp = std::string(description);
             });
         });
@@ -545,21 +584,31 @@ struct RawPeer {
             const std::string label = channel->label();
             std::lock_guard<std::mutex> lock(mutex);
             if (label == kMdkrMatchControlChannelLabel) {
-                control = channel;
+                channels[MDKR_MATCH_PEER_LANE_CONTROL] = channel;
                 channel->onMessage([this](rtc::message_variant message) {
                     if (!std::holds_alternative<std::string>(message)) return;
                     std::lock_guard<std::mutex> inner(mutex);
                     controlText.push_back(std::get<std::string>(message));
                 });
             } else if (label == kMdkrMatchStateChannelLabel) {
-                state = channel;
+                channels[MDKR_MATCH_PEER_LANE_STATE] = channel;
+            } else if (label == kMdkrMatchAuthorityChannelLabel) {
+                channels[MDKR_MATCH_PEER_LANE_AUTHORITY] = channel;
             }
         });
     }
 
-    bool channelsOpen() {
+    unsigned openChannelCount() {
         std::lock_guard<std::mutex> lock(mutex);
-        return state && state->isOpen() && control && control->isOpen();
+        unsigned open = 0u;
+        for (unsigned lane = 0u; lane < MDKR_MATCH_PEER_LANE_COUNT; ++lane) {
+            if (channels[lane] && channels[lane]->isOpen()) open++;
+        }
+        return open;
+    }
+
+    bool channelsOpen() {
+        return openChannelCount() == MDKR_MATCH_PEER_LANE_COUNT;
     }
 
     /* Answer mesh pings so the stale ladder stays quiet where wanted. */
@@ -569,7 +618,7 @@ struct RawPeer {
         {
             std::lock_guard<std::mutex> lock(mutex);
             pending.swap(controlText);
-            channel = control;
+            channel = channels[MDKR_MATCH_PEER_LANE_CONTROL];
         }
         for (const std::string &text : pending) {
             Json value = Json::parse(text, nullptr, false);
@@ -619,17 +668,20 @@ struct RawPeer {
         outbound.source_generation = selfGeneration;
         outbound.destination_endpoint_id = meshId;
         outbound.destination_generation = meshGeneration;
-        sealKey = mdkr_match_peer_identity_derive_key(
-            &ring, identity, meshKey.data(), digest, &outbound);
-        assert(sealKey != nullptr);
+        for (unsigned lane = 0u; lane < MDKR_MATCH_PEER_LANE_COUNT; ++lane) {
+            outbound.lane = static_cast<uint8_t>(lane);
+            sealKeys[lane] = mdkr_match_peer_identity_derive_key(
+                &ring, identity, meshKey.data(), digest, &outbound);
+            assert(sealKeys[lane] != nullptr);
+        }
         keysDerived = true;
     }
 
-    bool sendStateBytes(const std::vector<uint8_t> &bytes) {
+    bool sendLaneBytes(uint8_t lane, const std::vector<uint8_t> &bytes) {
         std::shared_ptr<rtc::DataChannel> channel;
         {
             std::lock_guard<std::mutex> lock(mutex);
-            channel = state;
+            channel = channels[lane];
         }
         if (!channel || !channel->isOpen()) return false;
         std::vector<std::byte> raw(bytes.size());
@@ -638,24 +690,23 @@ struct RawPeer {
         catch (...) { return false; }
     }
 
+    bool sendStateBytes(const std::vector<uint8_t> &bytes) {
+        return sendLaneBytes(MDKR_MATCH_PEER_LANE_STATE, bytes);
+    }
+
     bool sendControlBytes(const std::vector<uint8_t> &bytes) {
-        std::shared_ptr<rtc::DataChannel> channel;
-        {
-            std::lock_guard<std::mutex> lock(mutex);
-            channel = control;
-        }
-        if (!channel || !channel->isOpen()) return false;
-        std::vector<std::byte> raw(bytes.size());
-        std::memcpy(raw.data(), bytes.data(), bytes.size());
-        try { return channel->send(raw.data(), raw.size()); }
-        catch (...) { return false; }
+        return sendLaneBytes(MDKR_MATCH_PEER_LANE_CONTROL, bytes);
+    }
+
+    bool sendAuthorityBytes(const std::vector<uint8_t> &bytes) {
+        return sendLaneBytes(MDKR_MATCH_PEER_LANE_AUTHORITY, bytes);
     }
 
     bool sendControlText(const std::string &text) {
         std::shared_ptr<rtc::DataChannel> channel;
         {
             std::lock_guard<std::mutex> lock(mutex);
-            channel = control;
+            channel = channels[MDKR_MATCH_PEER_LANE_CONTROL];
         }
         if (!channel || !channel->isOpen()) return false;
         try { return channel->send(text); }
@@ -664,26 +715,34 @@ struct RawPeer {
 
     std::vector<uint8_t> sealed(
         const std::array<uint8_t, MDKR_MATCH_PEER_PAYLOAD_BYTES> &payload,
-        uint8_t payloadType) {
+        uint8_t lane, uint8_t payloadType) {
         assert(keysDerived);
         MdkrMatchPeerSendContext context{};
-        context.key = sealKey->direction;
+        context.key = sealKeys[lane]->direction;
         context.intermediate_endpoint_id = 0u;
         context.payload_type = payloadType;
         std::vector<uint8_t> envelope(MDKR_MATCH_PEER_ENVELOPE_BYTES);
-        assert(mdkr_match_peer_seal(sealKey, &context, payload.data(),
+        assert(mdkr_match_peer_seal(sealKeys[lane], &context, payload.data(),
                                     envelope.data()));
         return envelope;
     }
 
     std::vector<uint8_t> sealedInput(
         const std::array<uint8_t, MDKR_MATCH_PEER_PAYLOAD_BYTES> &payload) {
-        return sealed(payload, MDKR_MATCH_PEER_PAYLOAD_INPUT);
+        return sealed(payload, MDKR_MATCH_PEER_LANE_STATE,
+                      MDKR_MATCH_PEER_PAYLOAD_INPUT);
     }
 
     std::vector<uint8_t> sealedFragment(
         const std::array<uint8_t, MDKR_MATCH_PEER_PAYLOAD_BYTES> &payload) {
-        return sealed(payload, MDKR_MATCH_PEER_PAYLOAD_PREFLIGHT_FRAGMENT);
+        return sealed(payload, MDKR_MATCH_PEER_LANE_CONTROL,
+                      MDKR_MATCH_PEER_PAYLOAD_PREFLIGHT_FRAGMENT);
+    }
+
+    std::vector<uint8_t> sealedRepairAnswer(
+        const std::array<uint8_t, MDKR_MATCH_PEER_PAYLOAD_BYTES> &payload) {
+        return sealed(payload, MDKR_MATCH_PEER_LANE_AUTHORITY,
+                      MDKR_MATCH_PEER_PAYLOAD_INPUT_REPAIR_ANSWER);
     }
 };
 
@@ -940,6 +999,78 @@ struct RawHarness {
     }
 };
 
+/* D1: the room-departure grace asks one question of the transport -- has
+ * ANYTHING authenticated arrived from this endpoint since the verdict? -- and
+ * a wrong answer either drops a peer that is still racing or keeps a survivor
+ * racing a ghost. So the counter moves for exactly the traffic that proves a
+ * peer is still there: an envelope that OPENED under its own derived lane key.
+ * Garbage does not move it (anyone can send garbage), and neither does the
+ * control channel's plaintext JSON, which is authenticated by DTLS alone and
+ * says only that a socket is alive. */
+void authenticatedPacketCountTracksOpenedEnvelopesOnly() {
+    RawHarness rig;
+    const std::vector<MdkrMatchPeerSlotOwner> roster = rosterOf({100u, 200u});
+    rig.mesh = rig.harness.add(100u, 1u, roster);
+    rig.rawFeed = rig.harness.hub.addEndpoint(200u, 2u);
+    rig.raw = std::make_unique<RawPeer>(200u, 2u, 100u, 1u, &rig.harness.hub);
+    rig.harness.hub.welcome(100u);
+    assert(rig.harness.pumpUntil([&]() {
+        rig.drainRawInbox();
+        rig.raw->serviceControl();
+        return rig.harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::PeerChannelsReady, 200u) >= 1u &&
+               rig.raw->channelsOpen() && rig.raw->meshHellos >= 3u;
+    }));
+    rig.raw->deriveKeys();
+
+    uint64_t count = 1u;
+    assert(rig.mesh->authenticatedPacketCount(200u, &count) && count == 0u);
+    /* An endpoint outside the roster has no count to read. */
+    uint64_t stranger = 7u;
+    assert(!rig.mesh->authenticatedPacketCount(999u, &stranger) &&
+           stranger == 7u);
+
+    /* Garbage on the lossy lane: rejected, and no evidence of anything. */
+    const std::vector<uint8_t> junk(MDKR_MATCH_PEER_ENVELOPE_BYTES, 0xEEu);
+    assert(rig.raw->sendStateBytes(junk));
+    assert(rig.harness.pumpUntil([&]() {
+        rig.raw->serviceControl();
+        return rig.mesh->stats().rejectedStateEnvelopes >= 1u;
+    }, 5000u));
+    assert(rig.mesh->authenticatedPacketCount(200u, &count) && count == 0u);
+
+    /* A sealed input bundle -- the traffic a peer that is still racing
+     * produces every tick -- counts. */
+    assert(rig.raw->sendStateBytes(
+        rig.raw->sealedInput(payloadFixture(0x33u))));
+    assert(rig.harness.pumpUntil([&]() {
+        rig.raw->serviceControl();
+        return rig.harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::InputEnvelope, 200u) >= 1u;
+    }, 5000u));
+    assert(rig.mesh->authenticatedPacketCount(200u, &count) && count == 1u);
+
+    /* So does a sealed reliable-lane envelope -- and the plaintext control
+     * message sent AHEAD of it on that same ordered lane does not. The order
+     * is what makes this exact: the ping is delivered and answered first, so a
+     * count of 2 rather than 3 is proof it was not evidence of anything. */
+    assert(rig.raw->sendControlText(
+        Json{{"type", "ping"}, {"protocol", 2u}, {"nonce", 7u}}.dump()));
+    assert(rig.raw->sendControlBytes(
+        rig.raw->sealedFragment(payloadFixture(0x44u))));
+    assert(rig.harness.pumpUntil([&]() {
+        rig.raw->serviceControl();
+        return rig.harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::PreflightFragment, 200u) >= 1u;
+    }, 5000u));
+    assert(rig.mesh->authenticatedPacketCount(200u, &count) && count == 2u);
+    /* The ping was WELL FORMED -- a malformed control message is terminal for
+     * the peer -- so its exclusion is a rule about what counts as evidence,
+     * not a message the mesh refused. */
+    assert(rig.harness.countEvents(100u,
+               MdkrMatchPeerMeshEventType::PeerLost, 200u) == 0u);
+}
+
 void badStateEnvelopeDroppedAndCounted() {
     RawHarness rig;
     const std::vector<MdkrMatchPeerSlotOwner> roster = rosterOf({100u, 200u});
@@ -1040,6 +1171,67 @@ void controlPingTimeoutIsTypedPeerLoss() {
     assert(lost != nullptr &&
            lost->lostReason == MdkrMatchPeerLostReason::PingTimeout);
     std::printf("controlPingTimeoutIsTypedPeerLoss: ok\n");
+}
+
+/* A7: linkStats()'s consecutivePingMisses counts full ping intervals
+ * elapsed with an outstanding, unanswered ping -- 1 after exactly one
+ * interval, still short of the mesh's own hard PingTimeout verdict -- and
+ * the peer is still very much alive from the mesh's own point of view at
+ * that point (channelsReady, not lost). Once the full timeout elapses the
+ * mesh's normal PingTimeout path fires, unaffected by this diagnostics
+ * field having been read along the way. */
+void controlPingMissCountsBeforeTimeout() {
+    RawHarness rig;
+    const std::vector<MdkrMatchPeerSlotOwner> roster = rosterOf({100u, 200u});
+    rig.mesh = rig.harness.add(100u, 1u, roster);
+    rig.rawFeed = rig.harness.hub.addEndpoint(200u, 2u);
+    rig.raw = std::make_unique<RawPeer>(200u, 2u, 100u, 1u, &rig.harness.hub);
+    rig.raw->sendHellos = false;
+    rig.raw->answerPings = false;
+    rig.harness.hub.welcome(100u);
+    assert(rig.harness.pumpUntil([&]() {
+        rig.drainRawInbox();
+        return rig.harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::PeerChannelsReady, 200u) >= 1u &&
+               rig.raw->channelsOpen();
+    }));
+
+    MdkrMatchPeerLinkStats links[MDKR_ONLINE_MAX_ENDPOINTS];
+    unsigned count = rig.mesh->linkStats(links, MDKR_ONLINE_MAX_ENDPOINTS);
+    assert(count == 1u);
+    assert(links[0].consecutivePingMisses == 0u);
+
+    /* First ping goes out (nextPingAtMs was armed on channels-ready): still
+     * within its first interval, 0 misses. */
+    rig.harness.clock.nowMs += kMdkrMatchControlPingIntervalMs + 1u;
+    rig.harness.pumpOnce();
+    count = rig.mesh->linkStats(links, MDKR_ONLINE_MAX_ENDPOINTS);
+    assert(count == 1u);
+    assert(links[0].consecutivePingMisses == 0u);
+
+    /* One full interval past THAT ping with no pong: exactly one miss,
+     * peer still up (well short of the timeout=3-interval budget). */
+    rig.harness.clock.nowMs += kMdkrMatchControlPingIntervalMs + 1u;
+    rig.harness.pumpOnce();
+    count = rig.mesh->linkStats(links, MDKR_ONLINE_MAX_ENDPOINTS);
+    assert(count == 1u);
+    assert(links[0].consecutivePingMisses == 1u);
+    assert(rig.mesh->peerChannelsReady(200u));
+    assert(rig.harness.countEvents(
+               100u, MdkrMatchPeerMeshEventType::PeerLost, 200u) == 0u);
+
+    /* Past the full stale deadline: the mesh's own hard verdict fires,
+     * unaffected by having read the diagnostics field above. */
+    rig.harness.clock.nowMs += kMdkrMatchControlPingTimeoutMs + 1u;
+    assert(rig.harness.pumpUntil([&]() {
+        return rig.harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::PeerLost, 200u) >= 1u;
+    }, 5000u));
+    const MdkrMatchPeerMeshEvent *lost = rig.harness.lastEvent(
+        100u, MdkrMatchPeerMeshEventType::PeerLost, 200u);
+    assert(lost != nullptr &&
+           lost->lostReason == MdkrMatchPeerLostReason::PingTimeout);
+    std::printf("controlPingMissCountsBeforeTimeout: ok\n");
 }
 
 void iceRestartRecoversAfterChannelDeath() {
@@ -1208,6 +1400,169 @@ void delayedControlFragmentSurvivesInputBurst() {
     assert(rig.harness.countEvents(100u,
                MdkrMatchPeerMeshEventType::PeerLost) == 0u);
     std::printf("delayedControlFragmentSurvivesInputBurst: ok\n");
+}
+
+/* N7: the authority channel is a third independent stream. Its key, and
+ * therefore its sequence space and replay window, is its own: a burst on the
+ * lossy state channel cannot age out a valid authority packet, and an envelope
+ * sealed for one lane is refused on another rather than opened. */
+void authorityLaneKeepsItsOwnReplayWindow() {
+    RawHarness rig;
+    const std::vector<MdkrMatchPeerSlotOwner> roster = rosterOf({100u, 200u});
+    rig.mesh = rig.harness.add(100u, 1u, roster);
+    rig.rawFeed = rig.harness.hub.addEndpoint(200u, 2u);
+    rig.raw = std::make_unique<RawPeer>(200u, 2u, 100u, 1u, &rig.harness.hub);
+    rig.harness.hub.welcome(100u);
+    assert(rig.harness.pumpUntil([&]() {
+        rig.drainRawInbox();
+        rig.raw->serviceControl();
+        return rig.harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::PeerChannelsReady, 200u) >= 1u &&
+               rig.raw->channelsOpen() && rig.raw->meshHellos >= 3u;
+    }));
+    rig.raw->deriveKeys();
+
+    /* The repair answer is sealed FIRST (authority sequence 1), then delayed
+     * while 70 inputs advance the STATE lane through sequences 1..70. Under
+     * one shared key that burst would carry the shared window past the
+     * delayed message's sequence and retire it as a replay. */
+    const auto answer = payloadFixture(0x77u);
+    const std::vector<uint8_t> delayed = rig.raw->sealedRepairAnswer(answer);
+    for (unsigned index = 0u; index < 70u; index++) {
+        assert(rig.raw->sendStateBytes(rig.raw->sealedInput(
+            payloadFixture(static_cast<uint8_t>(index)))));
+    }
+    assert(rig.harness.pumpUntil([&]() {
+        rig.raw->serviceControl();
+        return rig.harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::InputEnvelope, 200u) >= 65u;
+    }));
+    assert(rig.raw->sendAuthorityBytes(delayed));
+    assert(rig.harness.pumpUntil([&]() {
+        rig.raw->serviceControl();
+        return rig.harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::InputRepairMessage, 200u) >= 1u;
+    }, 5000u));
+    const MdkrMatchPeerMeshEvent *repair = rig.harness.lastEvent(
+        100u, MdkrMatchPeerMeshEventType::InputRepairMessage, 200u);
+    assert(repair != nullptr && repair->payload == answer);
+    assert(repair->context.payload_type ==
+           MDKR_MATCH_PEER_PAYLOAD_INPUT_REPAIR_ANSWER);
+    assert(repair->context.key.lane == MDKR_MATCH_PEER_LANE_AUTHORITY);
+
+    /* A message sealed for the STATE lane and replayed onto the authority
+     * channel cannot open under the authority key: a counted drop, not a
+     * terminal verdict and never a delivered repair. */
+    const uint64_t rejectedBefore =
+        rig.mesh->stats().rejectedAuthorityEnvelopes;
+    assert(rig.raw->sendAuthorityBytes(
+        rig.raw->sealedInput(payloadFixture(0x5au))));
+    assert(rig.harness.pumpUntil([&]() {
+        rig.raw->serviceControl();
+        return rig.mesh->stats().rejectedAuthorityEnvelopes > rejectedBefore;
+    }, 5000u));
+    assert(rig.harness.countEvents(100u,
+               MdkrMatchPeerMeshEventType::InputRepairMessage, 200u) == 1u);
+    assert(rig.harness.countEvents(100u,
+               MdkrMatchPeerMeshEventType::PeerLost) == 0u);
+    std::printf("authorityLaneKeepsItsOwnReplayWindow: ok\n");
+}
+
+/* An envelope authenticated under the peer's own authority key but carrying a
+ * payload type that channel does not serve is proven misbehavior on a
+ * reliable channel, exactly as on the control channel. */
+void authorityWrongPayloadTypeIsTypedLoss() {
+    RawHarness rig;
+    const std::vector<MdkrMatchPeerSlotOwner> roster = rosterOf({100u, 200u});
+    rig.mesh = rig.harness.add(100u, 1u, roster);
+    rig.rawFeed = rig.harness.hub.addEndpoint(200u, 2u);
+    rig.raw = std::make_unique<RawPeer>(200u, 2u, 100u, 1u, &rig.harness.hub);
+    rig.harness.hub.welcome(100u);
+    assert(rig.harness.pumpUntil([&]() {
+        rig.drainRawInbox();
+        rig.raw->serviceControl();
+        return rig.harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::PeerChannelsReady, 200u) >= 1u &&
+               rig.raw->channelsOpen() && rig.raw->meshHellos >= 3u;
+    }));
+    rig.raw->deriveKeys();
+    assert(rig.raw->sendAuthorityBytes(rig.raw->sealed(
+        payloadFixture(0x31u), MDKR_MATCH_PEER_LANE_AUTHORITY,
+        MDKR_MATCH_PEER_PAYLOAD_INPUT)));
+    assert(rig.harness.pumpUntil([&]() {
+        rig.raw->serviceControl();
+        return rig.harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::PeerLost, 200u) >= 1u;
+    }, 5000u));
+    const MdkrMatchPeerMeshEvent *lost = rig.harness.lastEvent(
+        100u, MdkrMatchPeerMeshEventType::PeerLost, 200u);
+    assert(lost != nullptr &&
+           lost->lostReason ==
+               MdkrMatchPeerLostReason::ControlChannelViolation);
+    std::printf("authorityWrongPayloadTypeIsTypedLoss: ok\n");
+}
+
+/* N7: an endpoint that predates the authority channel offers only the two
+ * older ones. Its connection comes up and its channels open, so it looks
+ * exactly like a peer whose ICE never completed -- the answerer must name the
+ * channel-set difference instead of reporting a connect timeout. */
+void shortChannelSetOfferIsNamedAtTheSetupDeadline() {
+    RawHarness rig;
+    /* The mesh takes the HIGHER id so it answers and the raw peer offers. */
+    const std::vector<MdkrMatchPeerSlotOwner> roster = rosterOf({100u, 200u});
+    rig.mesh = rig.harness.add(200u, 2u, roster);
+    rig.rawFeed = rig.harness.hub.addEndpoint(100u, 1u);
+    rig.raw = std::make_unique<RawPeer>(100u, 1u, 200u, 2u, &rig.harness.hub);
+    rig.raw->offerAuthorityChannel = false;
+    rig.harness.hub.welcome(200u);
+    /* Both older channels open on the mesh side, and the third never does. */
+    assert(rig.harness.pumpUntil([&]() {
+        rig.drainRawInbox();
+        rig.raw->startOffer();
+        rig.raw->serviceControl();
+        return rig.raw->openChannelCount() >= 2u;
+    }));
+    assert(rig.harness.countEvents(
+               200u, MdkrMatchPeerMeshEventType::PeerChannelsReady, 100u) == 0u);
+    /* The answerer's setup deadline is the bounded verdict. */
+    rig.harness.clock.nowMs += kMdkrMatchAnswererSetupDeadlineMs + 1u;
+    assert(rig.harness.pumpUntil([&]() {
+        rig.drainRawInbox();
+        rig.raw->serviceControl();
+        return rig.harness.countEvents(
+                   200u, MdkrMatchPeerMeshEventType::PeerLost, 100u) >= 1u;
+    }, 5000u));
+    const MdkrMatchPeerMeshEvent *lost = rig.harness.lastEvent(
+        200u, MdkrMatchPeerMeshEventType::PeerLost, 100u);
+    assert(lost != nullptr &&
+           lost->lostReason == MdkrMatchPeerLostReason::ChannelSetMismatch);
+    /* The reason reaches the forensics ring by NAME, not as an ordinal. */
+    assert(std::strcmp(mdkr_match_peer_lost_reason_name(lost->lostReason),
+                       "channel_set_mismatch") == 0);
+    std::printf("shortChannelSetOfferIsNamedAtTheSetupDeadline: ok\n");
+}
+
+/* Control: the SAME offerer carrying the full channel set reaches
+ * PeerChannelsReady and is never lost, so the verdict above reads the missing
+ * channel and not merely "this peer offered". */
+void fullChannelSetOfferReachesReady() {
+    RawHarness rig;
+    const std::vector<MdkrMatchPeerSlotOwner> roster = rosterOf({100u, 200u});
+    rig.mesh = rig.harness.add(200u, 2u, roster);
+    rig.rawFeed = rig.harness.hub.addEndpoint(100u, 1u);
+    rig.raw = std::make_unique<RawPeer>(100u, 1u, 200u, 2u, &rig.harness.hub);
+    rig.harness.hub.welcome(200u);
+    assert(rig.harness.pumpUntil([&]() {
+        rig.drainRawInbox();
+        rig.raw->startOffer();
+        rig.raw->serviceControl();
+        return rig.harness.countEvents(
+                   200u, MdkrMatchPeerMeshEventType::PeerChannelsReady,
+                   100u) >= 1u;
+    }));
+    assert(rig.harness.countEvents(
+               200u, MdkrMatchPeerMeshEventType::PeerLost, 100u) == 0u);
+    std::printf("fullChannelSetOfferReachesReady: ok\n");
 }
 
 /* Hello-only stand-in for a reconnected endpoint: one identity, the
@@ -2223,6 +2578,201 @@ void deliberateCloseIsImmediateTypedPeerEnd() {
 
 }  // namespace
 
+/* A3: the room's own membership verdict, surfaced the pump it arrives on.
+ * PeerDeparted is an OBSERVATION, not a verdict: it changes nothing about this
+ * peer's connection, so the loss ladders and the presence-blip invariant below
+ * stay exactly as they were and the launcher -- which alone knows whether a
+ * race is running -- decides what a departure means. */
+void roomDepartureIsSurfacedOnTheArrivingPump() {
+    PairHarness pair;
+    assert(pair.connect());
+    const uint64_t atMs = pair.harness.clock.nowMs;
+    pair.harness.hub.inject(100u, presenceEvent(200u, 2u, false));
+    pair.harness.pumpOnce();
+    assert(pair.harness.countEvents(
+               100u, MdkrMatchPeerMeshEventType::PeerDeparted, 200u) == 1u);
+    /* No fake time passed, so nothing timed out: this came from the room. */
+    assert(pair.harness.clock.nowMs == atMs);
+    assert(pair.harness.countEvents(
+               100u, MdkrMatchPeerMeshEventType::PeerLost, 200u) == 0u);
+    /* Departure is edge-triggered: a repeated absence is not a second leave. */
+    pair.harness.hub.inject(100u, presenceEvent(200u, 2u, false));
+    pair.harness.pumpOnce();
+    assert(pair.harness.countEvents(
+               100u, MdkrMatchPeerMeshEventType::PeerDeparted, 200u) == 1u);
+    /* A returning peer can depart again. */
+    pair.harness.hub.inject(100u, presenceEvent(200u, 2u, true));
+    pair.harness.pumpOnce();
+    pair.harness.hub.inject(100u, presenceEvent(200u, 2u, false));
+    pair.harness.pumpOnce();
+    assert(pair.harness.countEvents(
+               100u, MdkrMatchPeerMeshEventType::PeerDeparted, 200u) == 2u);
+    /* A generation the relay has already superseded says nothing about the
+     * peer the mesh is talking to. */
+    pair.harness.hub.inject(100u, presenceEvent(200u, 1u, false));
+    pair.harness.pumpOnce();
+    assert(pair.harness.countEvents(
+               100u, MdkrMatchPeerMeshEventType::PeerDeparted, 200u) == 2u);
+    std::printf("roomDepartureIsSurfacedOnTheArrivingPump: ok\n");
+}
+
+/* A3: the launcher's half of the departure. The mesh reports the room's
+ * verdict; the launcher, which alone knows a race is running, retires the peer
+ * -- and gets the ordinary typed loss, ring record and teardown for it, with
+ * no second path beside the transport ladders' own. */
+void retiringADepartedPeerIsTypedPeerDeparted() {
+    PairHarness pair;
+    assert(pair.connect());
+    pair.harness.hub.inject(100u, presenceEvent(200u, 2u, false));
+    pair.harness.pumpOnce();
+    assert(pair.harness.countEvents(
+               100u, MdkrMatchPeerMeshEventType::PeerDeparted, 200u) == 1u);
+    const uint64_t atMs = pair.harness.clock.nowMs;
+    assert(pair.harness.mesh(100u)->retireDepartedPeer(200u));
+    pair.harness.pumpOnce();
+    /* The launcher asked for the retirement, so the mesh does not tell it
+     * back -- that round trip would cost the very pump this exists to save. */
+    assert(pair.harness.countEvents(
+               100u, MdkrMatchPeerMeshEventType::PeerLost, 200u) == 0u);
+    /* No ladder ran: the verdict came from the room, not from waiting. */
+    assert(pair.harness.clock.nowMs == atMs);
+    /* The peer really is retired: idempotent, and nothing reaches it. */
+    assert(!pair.harness.mesh(100u)->retireDepartedPeer(200u));
+    assert(!pair.harness.mesh(100u)->retireDepartedPeer(999u));
+    assert(pair.harness.mesh(100u)->sendInput(
+               payloadFixture(0x11u).data()) == 0u);
+    assert(std::strcmp(mdkr_match_peer_lost_reason_name(
+               MdkrMatchPeerLostReason::PeerDeparted), "peer_departed") == 0);
+    std::printf("retiringADepartedPeerIsTypedPeerDeparted: ok\n");
+}
+
+/* A3: the proposer's finalisation tick reaches the other survivors on the
+ * reliable ordered control channel, where ordering is what makes the first
+ * proposal for a seat the one everyone commits to. The mesh carries the claim
+ * -- sender, epoch and tick -- and leaves entitlement to the launcher, which
+ * is the only layer that knows who has already departed. */
+void raceDropCarriesTheAgreedTickToEverySurvivor() {
+    MeshHarness harness;
+    const std::vector<MdkrMatchPeerSlotOwner> roster =
+        rosterOf({100u, 200u, 300u});
+    harness.add(100u, 1u, roster);
+    harness.add(200u, 2u, roster);
+    harness.add(300u, 3u, roster);
+    harness.hub.welcome(100u);
+    harness.hub.welcome(200u);
+    harness.hub.welcome(300u);
+    assert(harness.pumpUntil([&]() {
+        return harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::PeerChannelsReady, 200u) >= 1u &&
+               harness.countEvents(100u,
+                   MdkrMatchPeerMeshEventType::PeerChannelsReady, 300u) >= 1u &&
+               harness.countEvents(200u,
+                   MdkrMatchPeerMeshEventType::PeerChannelsReady, 100u) >= 1u &&
+               harness.countEvents(300u,
+                   MdkrMatchPeerMeshEventType::PeerChannelsReady, 100u) >= 1u;
+    }, 30000u));
+
+    uint64_t sender = 0u;
+    uint64_t departed = 0u;
+    uint32_t epoch = 0u;
+    uint32_t tick = 0u;
+    /* Nothing to consume before a proposal lands. */
+    assert(!harness.mesh(200u)->consumeRaceDrop(&sender, &departed, &epoch,
+                                                &tick));
+    /* 100 proposes 300's finalisation. The departed endpoint is not one of
+     * the recipients. */
+    assert(harness.mesh(100u)->sendRaceDrop(300u, 9u, 4242u) == 1u);
+    /* An endpoint this room never had is refused before it reaches the wire. */
+    assert(harness.mesh(100u)->sendRaceDrop(999u, 9u, 4242u) == 0u);
+    assert(harness.pumpUntil([&]() {
+        return harness.mesh(200u)->peekRaceDrop();
+    }, 5000u));
+    assert(harness.mesh(200u)->consumeRaceDrop(&sender, &departed, &epoch,
+                                               &tick));
+    /* The whole claim survives the trip: who said it, about which race. */
+    assert(sender == 100u && departed == 300u && epoch == 9u && tick == 4242u);
+    /* Read-and-clear, like the abort latch beside it. */
+    assert(!harness.mesh(200u)->consumeRaceDrop(&sender, &departed, &epoch,
+                                                &tick));
+    assert(!harness.mesh(300u)->peekRaceDrop());
+
+    /* First proposal for an endpoint wins: a later one cannot move a tick a
+     * survivor may already have committed to. Proving that needs to know both
+     * proposals ARRIVED, which a sleep can only guess at -- so a race_abort is
+     * sent behind them on the SAME reliable ordered channel and used as the
+     * arrival marker. Once 300 sees the abort, both proposals have certainly
+     * landed and the map's contents are final. */
+    assert(harness.mesh(100u)->sendRaceDrop(200u, 9u, 90u) == 1u);
+    assert(harness.mesh(100u)->sendRaceDrop(200u, 9u, 91u) == 1u);
+    assert(harness.mesh(100u)->sendRaceAbort() == 2u);
+    assert(harness.pumpUntil([&]() {
+        return harness.mesh(300u)->consumeRaceAbort();
+    }, 5000u));
+    assert(harness.mesh(300u)->consumeRaceDrop(&sender, &departed, &epoch,
+                                               &tick));
+    assert(sender == 100u && departed == 200u && epoch == 9u && tick == 90u);
+    /* Exactly one entry for that endpoint: 91 was refused, not queued. */
+    assert(!harness.mesh(300u)->consumeRaceDrop(&sender, &departed, &epoch,
+                                                &tick));
+
+    /* A proposal names one race; clearRaceDrops is what the launcher runs when
+     * its race state resets, so a late one cannot reach the next race. */
+    assert(harness.mesh(100u)->sendRaceDrop(300u, 9u, 55u) == 1u);
+    assert(harness.pumpUntil([&]() {
+        return harness.mesh(200u)->peekRaceDrop();
+    }, 5000u));
+    harness.mesh(200u)->clearRaceDrops();
+    assert(!harness.mesh(200u)->peekRaceDrop());
+    assert(!harness.mesh(200u)->consumeRaceDrop(&sender, &departed, &epoch,
+                                                &tick));
+
+    /* The proposal is not a verdict on the sender either: 200 keeps talking
+     * to 100 exactly as before. */
+    assert(harness.countEvents(
+               200u, MdkrMatchPeerMeshEventType::PeerLost, 100u) == 0u);
+    std::printf("raceDropCarriesTheAgreedTickToEverySurvivor: ok\n");
+}
+
+/* A drop naming an endpoint outside this room's fixed roster, or naming the
+ * recipient itself, is garbage on the reliable channel -- the same verdict
+ * every other malformed control message gets. */
+void raceDropNamingANonRosterEndpointIsTypedLoss() {
+    PairHarness pair;
+    assert(pair.connect());
+    assert(mdkr_match_peer_mesh_send_raw_race_drop_for_test(
+        *pair.harness.mesh(200u), 999u, 9u, 7u));
+    assert(pair.harness.pumpUntil([&]() {
+        return pair.harness.countEvents(
+                   100u, MdkrMatchPeerMeshEventType::PeerLost, 200u) >= 1u;
+    }, 5000u));
+    const MdkrMatchPeerMeshEvent *event = pair.harness.lastEvent(
+        100u, MdkrMatchPeerMeshEventType::PeerLost, 200u);
+    assert(event != nullptr &&
+           event->lostReason ==
+               MdkrMatchPeerLostReason::ControlChannelViolation);
+    std::printf("raceDropNamingANonRosterEndpointIsTypedLoss: ok\n");
+}
+
+/* A sender cannot name ITSELF as the departed endpoint: an endpoint that is
+ * talking on this channel has plainly not left, so the claim is structurally
+ * false and terminal, like any other garbage on a reliable channel. */
+void raceDropNamingTheSenderIsTypedLoss() {
+    PairHarness pair;
+    assert(pair.connect());
+    assert(mdkr_match_peer_mesh_send_raw_race_drop_for_test(
+        *pair.harness.mesh(200u), 200u, 9u, 7u));
+    assert(pair.harness.pumpUntil([&]() {
+        return pair.harness.countEvents(
+                   100u, MdkrMatchPeerMeshEventType::PeerLost, 200u) >= 1u;
+    }, 5000u));
+    const MdkrMatchPeerMeshEvent *self = pair.harness.lastEvent(
+        100u, MdkrMatchPeerMeshEventType::PeerLost, 200u);
+    assert(self != nullptr &&
+           self->lostReason ==
+               MdkrMatchPeerLostReason::ControlChannelViolation);
+    std::printf("raceDropNamingTheSenderIsTypedLoss: ok\n");
+}
+
 int main() {
     twoPeerHappyPath();
     threePeerMeshEveryoneReachesEveryone();
@@ -2230,13 +2780,19 @@ int main() {
     phraseRefusedBeforeCommitmentCompletes();
     sealWindowExhaustionIsTypedPeerLoss();
     badStateEnvelopeDroppedAndCounted();
+    authenticatedPacketCountTracksOpenedEnvelopesOnly();
     controlPingTimeoutIsTypedPeerLoss();
+    controlPingMissCountsBeforeTimeout();
     iceRestartRecoversAfterChannelDeath();
     offerLadderGivesUpBounded();
     closeTearsDownBounded();
     /* Fix round 1: C1, I1, I2, I3, M1, M3, M4. */
     malformedControlJsonIsTypedLossNotCrash();
     delayedControlFragmentSurvivesInputBurst();
+    authorityLaneKeepsItsOwnReplayWindow();
+    authorityWrongPayloadTypeIsTypedLoss();
+    fullChannelSetOfferReachesReady();
+    shortChannelSetOfferIsNamedAtTheSetupDeadline();
     rekeyGenerationBumpKeepsHonestPeers();
     helloProtocolPinning();
     offCurveRevealIsPerPeerLoss();
@@ -2258,6 +2814,13 @@ int main() {
     reconnectTrafficDuringDwellCancelsVanish();
     /* Deliberate end: the teardown goodbye reaches the survivor typed. */
     deliberateCloseIsImmediateTypedPeerEnd();
+    /* A3 lobby-authoritative drop: the room's membership verdict and the
+     * finalisation tick the survivors agree on. */
+    roomDepartureIsSurfacedOnTheArrivingPump();
+    retiringADepartedPeerIsTypedPeerDeparted();
+    raceDropCarriesTheAgreedTickToEverySurvivor();
+    raceDropNamingANonRosterEndpointIsTypedLoss();
+    raceDropNamingTheSenderIsTypedLoss();
     std::printf("all match_peer_transport cases passed\n");
     return 0;
 }

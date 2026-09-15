@@ -133,6 +133,7 @@ STATE_MIN_PROGRESS_AGREEMENT="$(field state_min_progress_agreement)"
 STATE_MIN_RNG_AGREEMENT="$(field state_min_rng_agreement)"
 STATE_MAX_VELOCITY_RATIO_DEVIATION="$(field state_max_velocity_ratio_deviation)"
 STATE_ALLOW_LEGACY_PACE_PROBE="$(field state_allow_legacy_pace_probe)"
+STATE_CLASSIFICATION="$(field state_classification)"
 NATIVE_ALLOW_NONZERO_EXIT="$(field native_allow_nonzero_exit)"
 NATIVE_SYNTH_FIELDS="$(field native_synth_fields)"
 NATIVE_CADENCE="$(field native_cadence)"
@@ -474,6 +475,9 @@ if [[ "$STATE_TRACE" -eq 1 && -z "$VEHICLE_RNG_TRACE" &&
     fi
     if [[ "$STATE_REQUIRE_FINISH" -eq 1 ]]; then
         STATE_COMPARE_ARGS+=(--require-finish)
+    fi
+    if [[ "$STATE_CLASSIFICATION" == "diagnostic" ]]; then
+        STATE_COMPARE_ARGS+=(--classification diagnostic)
     fi
     python3 tools/compare_oracle_state.py \
         "${STATE_COMPARE_ARGS[@]}"

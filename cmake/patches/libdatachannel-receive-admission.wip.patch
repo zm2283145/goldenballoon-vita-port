@@ -1,0 +1,655 @@
+diff --git a/src/impl/dtlstransport.cpp b/src/impl/dtlstransport.cpp
+--- a/src/impl/dtlstransport.cpp
++++ b/src/impl/dtlstransport.cpp
+@@ -29,6 +29,33 @@
+ 
+ namespace rtc::impl {
+ 
++#if USE_MBEDTLS
++void DtlsTransport::enqueueRecv(uint64_t timerGeneration) noexcept {
++	auto owner = weak_from_this().lock();
++	if (!owner) return;
++	try {
++		auto reservation = mRecvAdmission.reserve(timerGeneration);
++		if (!reservation) return;
++		// Retain a separate caller owner across preparation/rollback: destroying
++		// a refused node must not invalidate the embedded reservation latch.
++		auto task = ThreadPool::prepare([owner]() { owner->doRecv(false); });
++		if (reservation.commit())
++			ThreadPool::Instance().enqueuePrepared(std::move(task));
++	} catch (...) {
++		// Reservation unwinding restores accounting before terminal handoff.
++		requestRecvTerminal(RecvTerminalMode::Abort);
++	}
++}
++
++void DtlsTransport::requestRecvTerminal(RecvTerminalMode mode) noexcept {
++	mIncomingQueue.stop();
++	mRecvAdmission.seal(mode);
++	// Expired ownership (including destruction) does not publish a weak-only
++	// job. The unpublished reserved record simply retires with its transport.
++	if (auto owner = weak_from_this().lock())
++		mRecvTerminal.request(std::move(owner));
++}
++#else
+ void DtlsTransport::enqueueRecv() {
+ 	if (mPendingRecvCount > 0)
+ 		return;
+@@ -40,6 +67,7 @@
+ 			locked->doRecv();
+ 	});
+ }
++#endif
+ 
+ #if USE_GNUTLS
+ 
+@@ -435,9 +463,10 @@
+ }
+ 
+ DtlsTransport::~DtlsTransport() {
+-	stop();
+-
+-	PLOG_DEBUG << "Destroying DTLS transport";
++	// No strong owner remains: do not schedule weak-only or fresh receive work.
++	mIncomingQueue.stop();
++	mRecvAdmission.seal(RecvTerminalMode::Abort);
++	unregisterIncoming();
+ 	mbedtls_entropy_free(&mEntropy);
+ 	mbedtls_ctr_drbg_free(&mDrbg);
+ 	mbedtls_ssl_free(&mSsl);
+@@ -455,7 +484,13 @@
+ void DtlsTransport::start() {
+ 	PLOG_DEBUG << "Starting DTLS transport";
+ 	registerIncoming();
+-	changeState(State::Connecting);
++	{
++		std::lock_guard lock(mRecvMutex);
++		// Buffered lower EOF can arrive synchronously during registration.
++		if (mRecvFinalized || mRecvAdmission.terminalMode() != RecvTerminalMode::None)
++			return;
++		changeState(State::Connecting);
++	}
+ 
+ 	{
+ 		std::lock_guard lock(mSslMutex);
+@@ -468,10 +503,8 @@
+ }
+ 
+ void DtlsTransport::stop() {
+-	PLOG_DEBUG << "Stopping DTLS transport";
++	requestRecvTerminal(RecvTerminalMode::Abort);
+ 	unregisterIncoming();
+-	mIncomingQueue.stop();
+-	enqueueRecv();
+ }
+ 
+ bool DtlsTransport::send(message_ptr message) {
+@@ -496,13 +529,18 @@
+ 
+ void DtlsTransport::incoming(message_ptr message) {
+ 	if (!message) {
+-		mIncomingQueue.stop();
++		requestRecvTerminal(RecvTerminalMode::GracefulEof);
+ 		return;
+ 	}
+-
+-	PLOG_VERBOSE << "Incoming size=" << message->size();
+-	mIncomingQueue.push(message);
+-	enqueueRecv();
++	if (mRecvAdmission.terminalMode() != RecvTerminalMode::None) return;
++	try {
++		// Queue::push keeps its existing bounded behavior and refuses insertion
++		// after stop under the queue mutex. Admission failure aborts, never strands.
++		mIncomingQueue.push(std::move(message));
++		enqueueRecv();
++	} catch (...) {
++		requestRecvTerminal(RecvTerminalMode::Abort);
++	}
+ }
+ 
+ bool DtlsTransport::outgoing(message_ptr message) {
+@@ -522,9 +560,15 @@
+ 	// Dummy
+ }
+ 
+-void DtlsTransport::doRecv() {
++void DtlsTransport::doRecv(bool terminal) {
+ 	std::lock_guard lock(mRecvMutex);
+-	--mPendingRecvCount;
++	if (!terminal) mRecvAdmission.beginQueued();
++	MdkrNoAllocScopeExit finishTerminal([&]() noexcept {
++		if (terminal || mRecvAdmission.terminalMode() != RecvTerminalMode::None)
++			finishRecvLocked();
++	});
++	if (mRecvFinalized) return;
++	if (mRecvAdmission.terminalMode() == RecvTerminalMode::Abort) return;
+ 
+ 	if (state() != State::Connecting && state() != State::Connected)
+ 		return;
+@@ -536,6 +580,7 @@
+ 		// Handle handshake if connecting
+ 		if (state() == State::Connecting) {
+ 			while (true) {
++				if (mRecvAdmission.terminalMode() == RecvTerminalMode::Abort) return;
+ 				int ret;
+ 				{
+ 					std::lock_guard lock(mSslMutex);
+@@ -543,11 +588,7 @@
+ 				}
+ 
+ 				if (ret == MBEDTLS_ERR_SSL_WANT_READ) {
+-					ThreadPool::Instance().schedule(mTimerSetAt + milliseconds(mFinMs),
+-					                                [weak_this = weak_from_this()]() {
+-						                                if (auto locked = weak_this.lock())
+-							                                locked->doRecv();
+-					                                });
++					scheduleRecvTimer();
+ 					return;
+ 				}
+ 
+@@ -559,6 +600,7 @@
+ 						mbedtls_ssl_set_mtu(&mSsl, static_cast<unsigned int>(bufferSize + 1));
+ 					}
+ 
++					mRecvAdmission.nextTimerGeneration(); // invalidate old handshake timers
+ 					PLOG_INFO << "DTLS handshake finished";
+ 					changeState(State::Connected);
+ 					postHandshake();
+@@ -569,6 +611,7 @@
+ 
+ 		if (state() == State::Connected) {
+ 			while (true) {
++				if (mRecvAdmission.terminalMode() == RecvTerminalMode::Abort) return;
+ 				int ret;
+ 				{
+ 					std::lock_guard lock(mSslMutex);
+@@ -596,16 +639,31 @@
+ 			}
+ 		}
+ 	} catch (const std::exception &e) {
+-		PLOG_ERROR << "DTLS recv: " << e.what();
++		mRecvAdmission.seal(RecvTerminalMode::Abort);
++		finishRecvLocked();
++		try { PLOG_ERROR << "DTLS recv: " << e.what(); } catch (...) {}
++		return;
++	} catch (...) {
++		mRecvAdmission.seal(RecvTerminalMode::Abort);
++		finishRecvLocked();
++		return;
+ 	}
++	finishRecvLocked();
++}
+ 
+-	if (state() == State::Connected) {
+-		PLOG_INFO << "DTLS closed";
+-		changeState(State::Disconnected);
+-		recv(nullptr);
+-	} else {
+-		PLOG_ERROR << "DTLS handshake failed";
+-		changeState(State::Failed);
++void DtlsTransport::finishRecvLocked() noexcept {
++	if (mRecvFinalized) return;
++	mRecvFinalized = true;
++	mIncomingQueue.stop();
++	mRecvAdmission.seal(RecvTerminalMode::GracefulEof);
++	// Publish mandatory state before optional diagnostics. Callback allocation
++	// hazards in parent PeerConnection/WebSocket remain a separate amendment.
++	const auto previous = state();
++	if (previous == State::Connected) {
++		try { changeState(State::Disconnected); } catch (...) {}
++		try { recv(nullptr); } catch (...) {}
++	} else if (previous == State::Connecting) {
++		try { changeState(State::Failed); } catch (...) {}
+ 	}
+ }
+ 
+@@ -670,11 +728,32 @@
+ 		PLOG_WARNING << e.what();
+ 		return MBEDTLS_ERR_SSL_INTERNAL_ERROR;
+ 		;
++	}
++}
++
++void DtlsTransport::scheduleRecvTimer() {
++	ThreadPool::clock::time_point deadline;
++	uint64_t generation;
++	{
++		std::lock_guard lock(mSslMutex);
++		if (!mFinMs || state() != State::Connecting ||
++		    mRecvAdmission.terminalMode() != RecvTerminalMode::None) return;
++		generation = mRecvAdmission.timerGeneration();
++		if (generation == mScheduledTimerGeneration) return;
++		deadline = mTimerSetAt + milliseconds(mFinMs);
+ 	}
++	// Timed work remains weak. Future timers cannot retain the transport/RTC
++	// epoch, and both normal claim and commit validate this timer generation.
++	ThreadPool::Instance().scheduleChecked(deadline,
++	    [weak_this = weak_from_this(), generation]() {
++		    if (auto owner = weak_this.lock()) owner->enqueueRecv(generation);
++	    });
++	mScheduledTimerGeneration = generation;
+ }
+ 
+ void DtlsTransport::SetTimerCallback(void *ctx, uint32_t int_ms, uint32_t fin_ms) {
+ 	auto dtlsTransport = static_cast<DtlsTransport *>(ctx);
++	dtlsTransport->mRecvAdmission.nextTimerGeneration();
+ 	dtlsTransport->mIntMs = int_ms;
+ 	dtlsTransport->mFinMs = fin_ms;
+ 
+diff --git a/src/impl/dtlstransport.hpp b/src/impl/dtlstransport.hpp
+--- a/src/impl/dtlstransport.hpp
++++ b/src/impl/dtlstransport.hpp
+@@ -14,6 +14,9 @@
+ #include "queue.hpp"
+ #include "tls.hpp"
+ #include "transport.hpp"
++#if USE_MBEDTLS
++#include "receive_work.h"
++#endif
+ 
+ #include <atomic>
+ #include <functional>
+@@ -48,8 +51,18 @@
+ 	virtual bool demuxMessage(message_ptr message);
+ 	virtual void postHandshake();
+ 
++#if USE_MBEDTLS
++	using RecvTerminalMode = MdkrReceiveAdmission::TerminalMode;
++	void enqueueRecv(uint64_t timerGeneration = 0) noexcept;
++	void requestRecvTerminal(RecvTerminalMode mode) noexcept;
++	void doRecv(bool terminal);
++	void finishRecvLocked() noexcept;
++	void scheduleRecvTimer();
++	static void completeRecvTerminal(DtlsTransport &owner) { owner.doRecv(true); }
++#else
+ 	void enqueueRecv();
+ 	void doRecv();
++#endif
+ 
+ 	const optional<size_t> mMtu;
+ 	const certificate_ptr mCertificate;
+@@ -58,7 +71,14 @@
+ 	const bool mIsClient;
+ 
+ 	Queue<message_ptr> mIncomingQueue;
++#if USE_MBEDTLS
++	MdkrReceiveAdmission mRecvAdmission;
++	MdkrReservedTerminal<ThreadPool, DtlsTransport> mRecvTerminal{
++	    ThreadPool::Instance(), &DtlsTransport::completeRecvTerminal};
++	bool mRecvFinalized = false; // guarded by mRecvMutex
++#else
+ 	std::atomic<int> mPendingRecvCount = 0;
++#endif
+ 	std::mutex mRecvMutex;
+ 	std::atomic<unsigned int> mCurrentDscp = 0;
+ 	std::atomic<bool> mOutgoingResult = true;
+@@ -82,6 +102,7 @@
+ 
+ 	uint32_t mFinMs = 0, mIntMs = 0;
+ 	std::chrono::time_point<std::chrono::steady_clock> mTimerSetAt;
++	uint64_t mScheduledTimerGeneration = 0; // guarded by mRecvMutex
+ 
+ 	char mMasterSecret[48];
+ 	char mRandBytes[64];
+diff --git a/src/impl/tlstransport.cpp b/src/impl/tlstransport.cpp
+--- a/src/impl/tlstransport.cpp
++++ b/src/impl/tlstransport.cpp
+@@ -22,6 +22,33 @@
+ 
+ namespace rtc::impl {
+ 
++#if USE_MBEDTLS
++void TlsTransport::enqueueRecv(uint64_t timerGeneration) noexcept {
++	auto owner = weak_from_this().lock();
++	if (!owner) return;
++	try {
++		auto reservation = mRecvAdmission.reserve(timerGeneration);
++		if (!reservation) return;
++		// Retain a separate caller owner across preparation/rollback: destroying
++		// a refused node must not invalidate the embedded reservation latch.
++		auto task = ThreadPool::prepare([owner]() { owner->doRecv(false); });
++		if (reservation.commit())
++			ThreadPool::Instance().enqueuePrepared(std::move(task));
++	} catch (...) {
++		// Reservation unwinding restores accounting before terminal handoff.
++		requestRecvTerminal(RecvTerminalMode::Abort);
++	}
++}
++
++void TlsTransport::requestRecvTerminal(RecvTerminalMode mode) noexcept {
++	mIncomingQueue.stop();
++	mRecvAdmission.seal(mode);
++	// Expired ownership (including destruction) does not publish a weak-only
++	// job. The unpublished reserved record simply retires with its transport.
++	if (auto owner = weak_from_this().lock())
++		mRecvTerminal.request(std::move(owner));
++}
++#else
+ void TlsTransport::enqueueRecv() {
+ 	if (mPendingRecvCount > 0)
+ 		return;
+@@ -31,6 +58,7 @@
+ 		ThreadPool::Instance().enqueue(&TlsTransport::doRecv, std::move(shared_this));
+ 	}
+ }
++#endif
+ 
+ #if USE_GNUTLS
+ 
+@@ -365,9 +393,10 @@
+ }
+ 
+ TlsTransport::~TlsTransport() {
+-	stop();
+-
+-	PLOG_DEBUG << "Destroying TLS transport";
++	// No strong owner remains: do not schedule weak-only or fresh receive work.
++	mIncomingQueue.stop();
++	mRecvAdmission.seal(RecvTerminalMode::Abort);
++	unregisterIncoming();
+ 	mbedtls_entropy_free(&mEntropy);
+ 	mbedtls_ctr_drbg_free(&mDrbg);
+ 	mbedtls_ssl_free(&mSsl);
+@@ -377,15 +406,19 @@
+ void TlsTransport::start() {
+ 	PLOG_DEBUG << "Starting TLS transport";
+ 	registerIncoming();
+-	changeState(State::Connecting);
++	{
++		std::lock_guard lock(mRecvMutex);
++		// Buffered lower EOF can arrive synchronously during registration.
++		if (mRecvFinalized || mRecvAdmission.terminalMode() != RecvTerminalMode::None)
++			return;
++		changeState(State::Connecting);
++	}
+ 	enqueueRecv(); // to initiate the handshake
+ }
+ 
+ void TlsTransport::stop() {
+-	PLOG_DEBUG << "Stopping TLS transport";
++	requestRecvTerminal(RecvTerminalMode::Abort);
+ 	unregisterIncoming();
+-	mIncomingQueue.stop();
+-	enqueueRecv();
+ }
+ 
+ bool TlsTransport::send(message_ptr message) {
+@@ -412,14 +445,18 @@
+ 
+ void TlsTransport::incoming(message_ptr message) {
+ 	if (!message) {
+-		mIncomingQueue.stop();
+-		enqueueRecv();
++		requestRecvTerminal(RecvTerminalMode::GracefulEof);
+ 		return;
+ 	}
+-
+-	PLOG_VERBOSE << "Incoming size=" << message->size();
+-	mIncomingQueue.push(message);
+-	enqueueRecv();
++	if (mRecvAdmission.terminalMode() != RecvTerminalMode::None) return;
++	try {
++		// Queue::push keeps its existing bounded behavior and refuses insertion
++		// after stop under the queue mutex. Admission failure aborts, never strands.
++		mIncomingQueue.push(std::move(message));
++		enqueueRecv();
++	} catch (...) {
++		requestRecvTerminal(RecvTerminalMode::Abort);
++	}
+ }
+ 
+ bool TlsTransport::outgoing(message_ptr message) {
+@@ -432,9 +469,15 @@
+ 	// Dummy
+ }
+ 
+-void TlsTransport::doRecv() {
++void TlsTransport::doRecv(bool terminal) {
+ 	std::lock_guard lock(mRecvMutex);
+-	--mPendingRecvCount;
++	if (!terminal) mRecvAdmission.beginQueued();
++	MdkrNoAllocScopeExit finishTerminal([&]() noexcept {
++		if (terminal || mRecvAdmission.terminalMode() != RecvTerminalMode::None)
++			finishRecvLocked();
++	});
++	if (mRecvFinalized) return;
++	if (mRecvAdmission.terminalMode() == RecvTerminalMode::Abort) return;
+ 
+ 	if (state() != State::Connecting && state() != State::Connected)
+ 		return;
+@@ -446,6 +489,7 @@
+ 		// Handle handshake if connecting
+ 		if (state() == State::Connecting) {
+ 			while (true) {
++				if (mRecvAdmission.terminalMode() == RecvTerminalMode::Abort) return;
+ 				int ret;
+ 				{
+ 					std::lock_guard lock(mSslMutex);
+@@ -467,6 +511,7 @@
+ 
+ 		if (state() == State::Connected) {
+ 			while (true) {
++				if (mRecvAdmission.terminalMode() == RecvTerminalMode::Abort) return;
+ 				int ret;
+ 				{
+ 					std::lock_guard lock(mSslMutex);
+@@ -494,16 +539,31 @@
+ 			}
+ 		}
+ 	} catch (const std::exception &e) {
+-		PLOG_ERROR << "TLS recv: " << e.what();
++		mRecvAdmission.seal(RecvTerminalMode::Abort);
++		finishRecvLocked();
++		try { PLOG_ERROR << "TLS recv: " << e.what(); } catch (...) {}
++		return;
++	} catch (...) {
++		mRecvAdmission.seal(RecvTerminalMode::Abort);
++		finishRecvLocked();
++		return;
+ 	}
++	finishRecvLocked();
++}
+ 
+-	if (state() == State::Connected) {
+-		PLOG_INFO << "TLS closed";
+-		changeState(State::Disconnected);
+-		recv(nullptr);
+-	} else {
+-		PLOG_ERROR << "TLS handshake failed";
+-		changeState(State::Failed);
++void TlsTransport::finishRecvLocked() noexcept {
++	if (mRecvFinalized) return;
++	mRecvFinalized = true;
++	mIncomingQueue.stop();
++	mRecvAdmission.seal(RecvTerminalMode::GracefulEof);
++	// Publish mandatory state before optional diagnostics. Callback allocation
++	// hazards in parent PeerConnection/WebSocket remain a separate amendment.
++	const auto previous = state();
++	if (previous == State::Connected) {
++		try { changeState(State::Disconnected); } catch (...) {}
++		try { recv(nullptr); } catch (...) {}
++	} else if (previous == State::Connecting) {
++		try { changeState(State::Failed); } catch (...) {}
+ 	}
+ }
+ 
+diff --git a/src/impl/tlstransport.hpp b/src/impl/tlstransport.hpp
+--- a/src/impl/tlstransport.hpp
++++ b/src/impl/tlstransport.hpp
+@@ -14,6 +14,9 @@
+ #include "queue.hpp"
+ #include "tls.hpp"
+ #include "transport.hpp"
++#if USE_MBEDTLS
++#include "receive_work.h"
++#endif
+ 
+ #if RTC_ENABLE_WEBSOCKET
+ 
+@@ -45,14 +48,30 @@
+ 	virtual bool outgoing(message_ptr message) override;
+ 	virtual void postHandshake();
+ 
++#if USE_MBEDTLS
++	using RecvTerminalMode = MdkrReceiveAdmission::TerminalMode;
++	void enqueueRecv(uint64_t timerGeneration = 0) noexcept;
++	void requestRecvTerminal(RecvTerminalMode mode) noexcept;
++	void doRecv(bool terminal);
++	void finishRecvLocked() noexcept;
++	static void completeRecvTerminal(TlsTransport &owner) { owner.doRecv(true); }
++#else
+ 	void enqueueRecv();
+ 	void doRecv();
++#endif
+ 
+ 	const optional<string> mHost;
+ 	const bool mIsClient;
+ 
+ 	Queue<message_ptr> mIncomingQueue;
++#if USE_MBEDTLS
++	MdkrReceiveAdmission mRecvAdmission;
++	MdkrReservedTerminal<ThreadPool, TlsTransport> mRecvTerminal{
++	    ThreadPool::Instance(), &TlsTransport::completeRecvTerminal};
++	bool mRecvFinalized = false; // guarded by mRecvMutex
++#else
+ 	std::atomic<int> mPendingRecvCount = 0;
++#endif
+ 	std::mutex mRecvMutex;
+ 
+ #if USE_GNUTLS
+diff --git a/src/impl/threadpool.hpp b/src/impl/threadpool.hpp
+--- a/src/impl/threadpool.hpp
++++ b/src/impl/threadpool.hpp
+@@ -71,6 +71,12 @@
+ 	auto schedule(clock::time_point time, F &&f, Args &&...args) noexcept
+ 	    -> invoke_future_t<F, Args...>;
+ 
++	// Explicitly fallible admission for callers with reserved failure cleanup.
++	// Legacy generic noexcept entrypoints are deliberately unchanged.
++	template <class F, class... Args>
++	auto scheduleChecked(clock::time_point time, F &&f, Args &&...args)
++	    -> invoke_future_t<F, Args...>;
++
+ private:
+ 	ThreadPool();
+ 	~ThreadPool();
+@@ -105,6 +111,12 @@
+ template <class F, class... Args>
+ auto ThreadPool::schedule(clock::time_point time, F &&f, Args &&...args) noexcept
+     -> invoke_future_t<F, Args...> {
++	return scheduleChecked(time, std::forward<F>(f), std::forward<Args>(args)...);
++}
++
++template <class F, class... Args>
++auto ThreadPool::scheduleChecked(clock::time_point time, F &&f, Args &&...args)
++    -> invoke_future_t<F, Args...> {
+ 	std::unique_lock lock(mMutex);
+ 	using R = std::invoke_result_t<std::decay_t<F>, std::decay_t<Args>...>;
+ 	auto bound = std::bind(std::forward<F>(f), std::forward<Args>(args)...);
+diff --git a/src/impl/transport.cpp b/src/impl/transport.cpp
+--- a/src/impl/transport.cpp
++++ b/src/impl/transport.cpp
+@@ -36,8 +36,10 @@
+ 
+ void Transport::unregisterIncoming() {
+ 	if (mLower) {
+-		PLOG_VERBOSE << "Unregistering incoming callback";
+ 		mLower->removeIncoming(this);
++		// Logging is optional; it must not prevent mandatory raw-callback
++		// removal when called from a destructor or allocation-refusal path.
++		try { PLOG_VERBOSE << "Unregistering incoming callback"; } catch (...) {}
+ 	}
+ }
+ 
+@@ -59,6 +61,8 @@
+ 			return;
+ 		retired = mRecvCallback.exchange(nullptr);
+ 		dropped.swap(mPendingRecv);
++		mPendingRecvEof = false;
++		++mRecvGeneration;
+ 		mIncomingOwner = nullptr;
+ 		// Retain chain-stop authority until destruction or a new registration.
+ 	}
+@@ -80,22 +84,29 @@
+ 
+ void Transport::replaceRecv(Transport *owner, message_callback callback) {
+ 	std::vector<message_ptr> pending;
++	bool pendingEof = false;
++	uint64_t replayGeneration = 0;
+ 	auto callbackLock = mRecvCallback.acquire();
+ 	message_callback retired;
+ 	std::vector<message_ptr> dropped;
+ 	{
+ 		std::lock_guard lock(mPendingMutex);
+-		if (owner && (mIncomingRetiring || (mIncomingOwner && mIncomingOwner != owner)))
++		if (owner && (mIncomingRetiring || (mRecvEof && !mPendingRecvEof) ||
++		              (mIncomingOwner && mIncomingOwner != owner)))
+ 			throw std::logic_error("Incoming transport edge is already owned or retiring");
+ 		retired = mRecvCallback.exchange(std::move(callback));
++		replayGeneration = ++mRecvGeneration;
+ 		// onRecv is an explicit external replacement, not implicit chain
+ 		// admission. Neither replacement nor clearing reopens a retired edge.
+ 		mIncomingOwner = owner;
+ 		mChainOwner = owner;
+-		if (mRecvCallback)
++		if (mRecvCallback) {
+ 			pending = std::move(mPendingRecv);
+-		else
++			pendingEof = std::exchange(mPendingRecvEof, false);
++		} else {
+ 			dropped.swap(mPendingRecv);
++			mPendingRecvEof = false;
++		}
+ 	}
+ 	for (auto &msg : pending) {
+ 		try {
+@@ -104,6 +115,19 @@
+ 			PLOG_WARNING << e.what();
+ 		}
+ 	}
++	if (pendingEof) {
++		bool replay;
++		{
++			std::lock_guard lock(mPendingMutex);
++			// Same-thread callbacks may replace/clear themselves while replaying
++			// buffered data. Do not deliver this old EOF into their new callback.
++			replay = mRecvGeneration == replayGeneration;
++		}
++		if (replay) {
++			try { mRecvCallback(nullptr); }
++			catch (const std::exception &e) { PLOG_WARNING << e.what(); }
++		}
++	}
+ }
+ 
+ void Transport::onStateChange(state_callback callback) {
+@@ -120,6 +144,14 @@
+ 	try {
+ 		auto callbackLock = mRecvCallback.acquire();
+ 		std::unique_lock lock(mPendingMutex);
++		if (mRecvEof) return; // duplicate EOF and post-EOF data cannot reopen intake
++		if (!message) {
++			mRecvEof = true;
++			if (!mRecvCallback) {
++				mPendingRecvEof = true;
++				return;
++			}
++		}
+ 		if (!mRecvCallback) {
+ 			// No callback registered yet; buffer the message for replay when
+ 			// onRecv() is called.  Bounded to avoid unbounded growth.
+diff --git a/src/impl/transport.hpp b/src/impl/transport.hpp
+--- a/src/impl/transport.hpp
++++ b/src/impl/transport.hpp
+@@ -88,6 +88,11 @@
+ 	Transport *mIncomingOwner = nullptr;
+ 	Transport *mChainOwner = nullptr;
+ 	bool mIncomingRetiring = false;
++	// EOF needs no vector insertion. Callback clearing drops pending replay but
++	// never reopens the ended stream to new data or an unrelated upper owner.
++	bool mRecvEof = false;
++	bool mPendingRecvEof = false;
++	uint64_t mRecvGeneration = 0;
+ };
+ 
+ static_assert(MIN_THREADPOOL_SIZE >= 2,

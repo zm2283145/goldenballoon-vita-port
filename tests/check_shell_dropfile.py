@@ -70,7 +70,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, resolve_binary, save_env
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -215,11 +215,20 @@ def run_drop(binary: Path, drop_path: Path, prefs_dir: Path, timeout: int,
     command = [str(binary)]
     if verbose:
         print(f"$ MDKR_APP_SMOKE_DROP={drop_path} {' '.join(command)}", flush=True)
-    process = subprocess.run(
-        command, env=env, text=True,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        timeout=timeout, check=False,
-    )
+    # The scrub above also drops the MDKR_SAVE_DIR the suite exports per task.
+    # The final-play arms boot the ROM for real, and since issue #54 an
+    # unpinned save resolves to the SHARED per-user directory rather than
+    # $CWD/save -- so this smoke would read, and could write, a developer's own
+    # save. A directory of its own, deliberately not under prefs_dir: the
+    # unremembered arm's prefs path has a missing parent on purpose, and
+    # creating a save beside it would make that parent exist.
+    with tempfile.TemporaryDirectory(prefix="mdkr-shell-dropfile-save-") as save:
+        save_env(env, save)
+        process = subprocess.run(
+            command, env=env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=timeout, check=False,
+        )
     return DropResult(process.returncode, process.stdout or "")
 
 

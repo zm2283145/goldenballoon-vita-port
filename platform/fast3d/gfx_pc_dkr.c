@@ -67,10 +67,12 @@
 #include "structs.h"     /* Vertex (10B), Triangle (0x10), TexCoords */
 
 #include "gfx_rendering_api.h"
+#include "web_startup_diagnostics.h"
 #include "gfx_cc.h"
 #include "gfx_palette.h"
 #include "gfx_screen_config.h"
 #include "gfx_ptr.h"
+#include "gfx_dkr_dl_guards.h"
 #include "platform_os.h"   /* dkr_lo32_to_ptr + arena bounds (address resolution) */
 #include "display_config.h"
 
@@ -79,6 +81,7 @@
 #include "gfx_texture_edge.h"
 #include "gfx_font_sdf.h"
 #include "gfx_font_outline.h"
+#include "gfx_character_text.h"
 #include "gfx_level_lighting.h"
 #include "gfx_rl1_experiment.h"
 #include "gfx_render_scale.h"
@@ -89,10 +92,14 @@
 #include "presentation_snapshot.h"
 #include "present_sched.h"   /* presentation-replay arming seam */
 #include "mod_texture_key.h"     /* the digest a pack author names a texture by */
-#include "mod_texture_store.h"   /* the override layer in front of the ROM path */
+#include "mod_texture_store.h"
+#include "rice_crc.h"   /* Rice/GLideN64 texture identity */
 #include "gfx_uniforms.h"
 #include "gfx_pc_dkr.h"
 #include "memory.h"       /* mdkr_mempool_allocation_span -- diagnostic-only allocator introspection */
+#include "modern_character_render.h"
+#include "modern_character_draw_store.h"
+#include "modern_character_limits.h"
 #ifdef MDKR_WEBGPU_BACKEND
 #include "gfx_webgpu.h"
 #endif
@@ -136,6 +143,71 @@ enum { DKR_PRESENTATION_PARTICLE_KIND_POINT = 4 };
 #define SCALE_3_8(v_) ((v_) * 0x24)
 
 static GfxFontRegistry dkr_font_registry;
+static struct GfxRenderingAPI *gfx_rapi;
+static void gfx_flush(void);
+
+/*
+ * A bounded immutable command payload ring. Display-list construction may run
+ * ahead of a presentation replay, so the command stores a generation-bearing
+ * token rather than an address. Bone palettes are retained at their exact
+ * validated size in lazy store-owned allocations, avoiding a permanent 64 MB
+ * zero-fill reservation for characters that use far fewer than 256 joints.
+ * An exceptionally delayed/overfull replay fails visible by dropping the
+ * custom draw, never by reading a newer pose.
+ */
+static uint64_t dkr_modern_camera_missing_matrix;
+static uint64_t dkr_modern_camera_missing_eye;
+static uint64_t dkr_modern_camera_singular_world;
+static uint64_t dkr_modern_camera_resolved;
+
+bool gfx_modern_character_supported(void) {
+    return gfx_rapi != NULL && gfx_rapi->draw_modern_skinned != NULL;
+}
+
+uint32_t gfx_modern_character_register_draw(
+    const struct GfxModernSkinnedDraw *draw) {
+    uint32_t component;
+    if (!gfx_modern_character_supported() || draw == NULL || draw->asset == NULL ||
+        draw->primitive >= draw->asset->primitive_count ||
+        draw->player >= MDKR_MODERN_CHARACTER_PLAYERS ||
+        draw->view >= MDKR_MODERN_CHARACTER_VIEWS ||
+        draw->reference_only > 1u ||
+        draw->bone_count > MDKR_MODERN_DRAW_STORE_MAX_BONES ||
+        (draw->bone_count != 0u &&
+         (draw->bone_matrices == NULL ||
+          draw->previous_bone_matrices == NULL))) {
+        return 0u;
+    }
+    for (component = 0u; component < 16u; ++component) {
+        if (!isfinite(draw->target_frame_matrix[component])) return 0u;
+    }
+    if (draw->capture_bounds_valid > 1u) return 0u;
+    if (draw->capture_bounds_valid != 0u) {
+        for (component = 0u; component < 3u; ++component) {
+            if (!isfinite(draw->capture_bounds_min[component]) ||
+                !isfinite(draw->capture_bounds_max[component]) ||
+                draw->capture_bounds_min[component] >
+                    draw->capture_bounds_max[component]) return 0u;
+        }
+    }
+    /* Caster ownership is assigned only by the HLE walk after resolving the
+     * exact matrix/view binding; callers cannot smuggle one through the ring. */
+    if (draw->shadow_binding_valid != 0u ||
+        draw->shadow_cast_valid != 0u ||
+        draw->shadow_cast_view != 0u) return 0u;
+    for (component = 0u; component < 16u; ++component) {
+        if (draw->shadow_world_matrix[component] != 0.0f) return 0u;
+    }
+    return mdkr_modern_draw_store_register(draw);
+}
+
+void gfx_modern_character_release_asset(uint64_t asset_id) {
+    mdkr_modern_draw_store_release_asset(asset_id);
+    if (gfx_rapi != NULL && gfx_rapi->release_modern_asset != NULL) {
+        gfx_flush();
+        gfx_rapi->release_modern_asset(asset_id);
+    }
+}
 
 uint32_t gfx_dkr_font_sdf_uploads;
 uint32_t gfx_dkr_font_outline_uploads;
@@ -1135,7 +1207,6 @@ struct GfxDimensions gfx_output_dimensions = { DESIRED_SCREEN_WIDTH, DESIRED_SCR
 struct GfxDimensions gfx_current_dimensions = { DESIRED_SCREEN_WIDTH, DESIRED_SCREEN_HEIGHT,
                                                 (float)DESIRED_SCREEN_WIDTH / DESIRED_SCREEN_HEIGHT };
 
-static struct GfxRenderingAPI *gfx_rapi;
 static bool dkr_output_overlay_active;
 static bool dkr_output_overlay_suppressed;
 static uint32_t dkr_output_overlay_frame_draws;
@@ -1541,21 +1612,6 @@ static size_t buf_vbo_num_tris;
  * gfx_resolve_addr() for segment tokens (gSPSegment / G_MW_SEGMENT sets, whose
  * bases live in gfx_segment_table) and any non-arena host pointer parked in the
  * gfx_ptr registry. Never returns a wild pointer — worst case is NULL. */
-/* A pointer is host-plausible if it is non-null and not a sign-extended 32-bit
- * token (high 32 bits all ones). User-space host mappings never live at
- * 0xffffffff........, and the arena's high bits are 0x4-0x7, so an all-ones high
- * half is unambiguously a truncated-then-sign-extended pointer. dkr_resolve
- * refuses to hand such a value to any DL consumer — the belt-and-suspenders side
- * of the char-select SIGSEGV fix (the truncation itself is fixed at its source
- * in tracks.c render_level_segment). */
-static inline bool dkr_ptr_plausible(const void *p) {
-    uintptr_t up = (uintptr_t) p;
-    if (up == 0) return false;
-#if UINTPTR_MAX > UINT32_MAX
-    if ((up >> 32) == UINT32_MAX) return false;
-#endif
-    return true;
-}
 
 /*
  * Map a resolved NON-ARENA pointer onto the bytes the real walk copied.
@@ -1799,7 +1855,8 @@ static inline void *dkr_resolve(uint32_t addr) {
         return dkr_retain_resolved_pointer((void *)(uintptr_t)addr);
     }
 #endif
-    r = gfx_resolve_addr(addr);   /* genuine N64 segment tokens */
+    r = gfx_resolve_segment_addr_bounded(
+        addr, (uintptr_t)g_dkrArenaBase, (size_t)g_dkrArenaSize);
     return dkr_retain_resolved_pointer(r);
 }
 
@@ -1807,7 +1864,18 @@ static inline void *dkr_resolve(uint32_t addr) {
  * external span. Returns SIZE_MAX for ordinary non-arena host pointers
  * (globals/rodata — trusted, their extent is unknown here). Used to bound bulk
  * struct/array reads so a resolved edge-of-arena or retained dependency can
- * never read beyond its owned image. */
+ * never read beyond its owned image.
+ *
+ * The guard band immediately ABOVE the arena answers 0 rather than SIZE_MAX. An
+ * address there is arena arithmetic that ran off the end — a sub-list without a
+ * G_ENDDL, or a base-plus-offset decode — not a global: the arena is aligned to
+ * its own 16 MB size and the binary's static storage sits far below it. Both
+ * walkers used to open-code that band next to their own room test, which left
+ * every other reader (matrices, vertices, triangles, texture rows) taking
+ * SIZE_MAX for the arena's own overrun. It belongs to the answer, not to the
+ * caller. */
+#define DKR_ARENA_OVERRUN_BAND 0x00010000u
+
 static inline size_t dkr_arena_room(const void *p) {
     uintptr_t up = (uintptr_t) p;
     uintptr_t base = (uintptr_t) g_dkrArenaBase;
@@ -1820,7 +1888,17 @@ static inline size_t dkr_arena_room(const void *p) {
         gfx_retained_task_dependency_room(p, &retained_room)) {
         return retained_room;
     }
+    if (g_dkrArenaSize != 0 && up >= end && up < end + DKR_ARENA_OVERRUN_BAND) {
+        return 0;            /* the arena's own overrun, not a global */
+    }
     return (size_t)-1;   /* not arena-backed: trust it */
+}
+
+/* Does a read of `need` bytes at `p` stay inside what dkr_arena_room() can
+ * account for? See dkr_room_admits() in gfx_dkr_dl_guards.h for why the
+ * SIZE_MAX case cannot be folded into a plain `room >= need`. */
+static inline bool dkr_room_for(const void *p, size_t need) {
+    return dkr_room_admits(dkr_arena_room(p), p, need);
 }
 
 /*
@@ -1891,7 +1969,7 @@ static bool dkr_shadow_lookup_live(
         return true;
     }
     if (!out->key_bytes_valid || ma == NULL ||
-        dkr_arena_room(ma) < sizeof(Mtx)) {
+        !dkr_room_for(ma, sizeof(Mtx))) {
         if (dkr_replay_pass && stale != NULL) {
             *stale = true;
         }
@@ -2945,6 +3023,11 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
         bool over_used = false;
         char digest[33];
         bool digest_known = false;
+        /* The span the digest was actually taken over, kept for the dump
+         * below rather than recomputed there: an offline tool can only
+         * reproduce somebody else's hash of these bytes if it is handed the
+         * same clamp, not a second guess at it. */
+        uint32_t digest_bytes = 0;
         /* Dumping (tools/mod_texture_dump.py, MDKR_MOD_TEXTURE_DUMP) has to see
          * every digest even with no pack installed, which is exactly the case
          * an author dumping a fresh corpus is in -- mdkr_mod_texture_store_active()
@@ -2955,13 +3038,28 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
          * runs unchanged. */
         if (mdkr_mod_texture_store_active() || mdkr_mod_texture_dump_active()) {
             size_t digest_room = dkr_arena_room(addr);
-            uint32_t digest_bytes = source_size_bytes;
+            digest_bytes = source_size_bytes;
             if (digest_room != (size_t)-1 && digest_bytes > digest_room) {
                 digest_bytes = (uint32_t)digest_room;
             }
             mdkr_mod_texture_digest(&key, addr, digest_bytes, digest);
             digest_known = true;
             over_used = mdkr_mod_texture_lookup(digest, &over) != 0;
+            /* A Rice/GLideN64 pack names this texture by an identity computed
+             * over the very bytes in hand, so it is asked here and only on a
+             * miss: a digest-keyed replacement is the player's more specific
+             * choice and keeps winning. The key needs the tile's geometry and
+             * its ROW PITCH -- the measured variant hashes the span as it sits
+             * in RDRAM, padding included, not as a tightly packed image. */
+            if (!over_used && mdkr_mod_texture_rice_active()) {
+                uint32_t rice_key = 0;
+                if (mdkr_rice_crc32(addr, digest_bytes, (int)tw, (int)th,
+                                    (int)siz, (int)source_line_bytes,
+                                    &rice_key)) {
+                    over_used = mdkr_mod_texture_lookup_rice(
+                        rice_key, (int)fmt, (int)siz, &over) != 0;
+                }
+            }
         }
         const bool uploaded =
             over_used ? gfx_rapi->upload_texture(over.rgba, over.width,
@@ -3013,19 +3111,58 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
             achieved.font_outline = (derived == DKR_FONT_DERIVED_OUTLINE);
             achieved.font_remastered = (derived == DKR_FONT_DERIVED_SDF);
         }
-        if (digest_known) {
+        /* The dump-active test is on the CALL SITE, not just inside the
+         * observer, because assembling the arguments is no longer free: a
+         * source geometry has to be resolved and a first_seen string
+         * formatted. With a pack installed and the dump off -- every ordinary
+         * player with a pack -- digest_known is true on every texture-cache
+         * miss, so leaving that work to be thrown away inside a no-op would
+         * charge the whole feature to people not using it. */
+        if (digest_known && mdkr_mod_texture_dump_active()) {
             /* over.rgba when an override applied, tex_decode_buf (this file's
              * decode scratch buffer, still holding the plain base-level RGBA8
              * dkr_upload_tile_texture() just produced) otherwise -- whichever
              * pixels actually reached gfx_rapi->upload_texture() above, so the
              * dumped PNG is what the game displays rather than a re-decode this
-             * module would otherwise have to invent and keep in sync by hand. */
+             * module would otherwise have to invent and keep in sync by hand.
+             *
+             * The dimensions are the PIXEL BUFFER's, which for an override is
+             * NOT uw/uh. Those two answer a different question by this point:
+             * the block above deliberately reset them to the tile's LOGICAL
+             * size so the texcoords normalise against the authored tile
+             * (issue #34), while mod_texture_store.h defines these parameters
+             * as describing `rgba` itself -- "tightly packed, width * height *
+             * 4 bytes". Passing the logical size with a replacement's buffer
+             * encoded a 64x64 image as 40x40 at a 160-byte stride: in bounds,
+             * silently sheared, and wrong. The two sizes only coincide when no
+             * pack answered, which is why it survived. */
             char origin[64];
+            MdkrModTextureSource source;
+            uint32_t src_w = 0, src_h = 0;
             snprintf(origin, sizeof origin, "frame %d, texture unit %d",
                      dkr_frame_index, unit);
+            /* The SOURCE tile's geometry, resolved here rather than reused
+             * from uw/uh. Those hold the logical tile only because the
+             * override branch above deliberately put it back; the ROM path
+             * leaves them as whatever the decode achieved, which the arena
+             * clamp may have shortened. The span written alongside is the
+             * hashed one, and source_size_bytes says what the tile declared,
+             * so a reader comparing the two can see a truncated span for
+             * itself instead of hashing short rows without knowing it. */
+            if (!dkr_tile_logical_dims(td, source_size_bytes, &src_w, &src_h)) {
+                src_w = 0;
+                src_h = 0;
+            }
+            source.texels = addr;
+            source.texel_bytes = digest_bytes;
+            source.line_bytes = source_line_bytes;
+            source.size_bytes = source_size_bytes;
+            source.width = (int)src_w;
+            source.height = (int)src_h;
             mdkr_mod_texture_dump_observe(
                 digest, over_used ? over.rgba : tex_decode_buf,
-                (int)uw, (int)uh, fmt, siz, origin);
+                over_used ? over.width : (int)uw,
+                over_used ? over.height : (int)uh, fmt, siz, &source, origin);
         }
         tex_cache[slot] = (struct DkrTexCacheEntry){
             .key = achieved,
@@ -3580,6 +3717,138 @@ static bool dkr_setup_draw_state(bool poly_tex_enabled) {
     return bind_ok[0] && bind_ok[1];
 }
 
+static void dkr_draw_modern_character(uint32_t token) {
+    const struct GfxModernSkinnedDraw *retained;
+    struct GfxModernSkinnedDraw resolved;
+    float interpolated_bones[MDKR_MODERN_DRAW_STORE_MAX_BONES * 16u];
+    float fog_color[3];
+    bool fog_enabled;
+    if (token == 0u || !gfx_modern_character_supported() ||
+        rsp.active_slot < 0 || rsp.active_slot >= 3) {
+        return;
+    }
+    retained = mdkr_modern_draw_store_resolve(token);
+    if (retained == NULL || retained->asset == NULL) {
+        /* The bounded ring was overtaken. Dropping the custom command leaves
+         * memory and replay ownership safe; callers keep the donor visible
+         * unless every command registration succeeded. */
+        return;
+    }
+    resolved = *retained;
+    if (dkr_replay_pass && dkr_replay_object_alpha_valid &&
+        !mdkr_modern_render_resolve_draw(
+            retained, dkr_replay_object_alpha_numerator,
+            dkr_replay_object_alpha_denominator, &resolved,
+            interpolated_bones, MDKR_MODERN_DRAW_STORE_MAX_BONES)) {
+        /* A pathological midpoint (for example an exact half-turn matrix
+         * lerp) is not a safe normal transform. Hold the authored endpoint
+         * rather than publish NaNs to the GPU. */
+        resolved = *retained;
+    }
+    resolved.shadow_binding_valid = 0u;
+    resolved.shadow_cast_valid = 0u;
+    resolved.shadow_cast_view = 0u;
+    resolved.camera_position_valid = 0u;
+    memset(resolved.camera_position, 0, sizeof(resolved.camera_position));
+    memset(resolved.shadow_world_matrix, 0,
+           sizeof(resolved.shadow_world_matrix));
+
+    /* Resolve specular view response from the exact camera eye that owns the
+     * retained task. This is deliberately independent of the optional shadow
+     * feature: a character still needs a truthful eye vector when shadows are
+     * disabled. The world binding is the same proven donor-object transform
+     * used by the shadow path, while the eye is captured with its authored VP
+     * and replaced atomically during presentation replay. Any unavailable or
+     * singular input leaves the shader's explicit bounded fallback active. */
+    if (rsp.shadow_matrix_valid[rsp.active_slot]) {
+        float donor_world[16];
+        memcpy(donor_world, rsp.shadow_matrix[rsp.active_slot].world,
+               sizeof(donor_world));
+        if (!rsp.shadow_matrix[rsp.active_slot].view_eye_valid) {
+            dkr_modern_camera_missing_eye++;
+        } else if (!mdkr_modern_render_camera_object_position(
+                       donor_world,
+                       rsp.shadow_matrix[rsp.active_slot].view_eye_position,
+                       resolved.camera_position)) {
+            dkr_modern_camera_singular_world++;
+        } else {
+            resolved.camera_position_valid = 1u;
+            dkr_modern_camera_resolved++;
+        }
+    } else {
+        dkr_modern_camera_missing_matrix++;
+    }
+
+    /* Modern geometry stays GPU-owned. The HLE walk contributes its exact
+     * donor-object -> world binding for receivers and, for opaque/masked
+     * materials, transforms eight calibrated corners into the shared cascade
+     * fit. Presentation replay resolves the already-published view instead of
+     * capturing it twice. */
+    if (!resolved.reference_only &&
+        (gfx_world_fx_trace_enabled() ||
+         (g_pcRemasterFX && g_pcSunShadow)) &&
+        rsp.draw_space == G_MTX_DKR_SPACE_WORLD && !rsp.billboard &&
+        rsp.shadow_matrix_valid[rsp.active_slot] &&
+        resolved.asset != NULL &&
+        resolved.primitive < resolved.asset->primitive_count) {
+        const struct GfxModernPrimitive *primitive =
+            &resolved.asset->primitives[resolved.primitive];
+        float shadow_world_matrix[16];
+        float viewport[4] = {
+            rdp.view.logical_viewport.x,
+            rdp.view.logical_viewport.y,
+            rdp.view.logical_viewport.width,
+            rdp.view.logical_viewport.height,
+        };
+        /* Snapshot the typed 4x4 source into the flat matrix contract. Besides
+         * making replay ownership explicit, this avoids GCC treating `world[0]`
+         * as only one four-float row at the helper boundary. */
+        memcpy(shadow_world_matrix,
+               rsp.shadow_matrix[rsp.active_slot].world,
+               sizeof(shadow_world_matrix));
+        int view_index = gfx_shadow_capture_view(
+            viewport,
+            rsp.shadow_matrix[rsp.active_slot].view_projection);
+        if (view_index < 0 && dkr_replay_pass) {
+            view_index = gfx_shadow_previous_view_index(viewport);
+        }
+        if (view_index >= 0 && view_index < GFX_SHADOW_MAX_VIEWS) {
+            resolved.shadow_binding_valid = 1u;
+            resolved.shadow_cast_view = (uint32_t)view_index;
+            memcpy(resolved.shadow_world_matrix,
+                   shadow_world_matrix,
+                   sizeof(resolved.shadow_world_matrix));
+        }
+        if (resolved.shadow_binding_valid == 1u &&
+            resolved.capture_bounds_valid == 1u &&
+            primitive->material < resolved.asset->material_count &&
+            (resolved.asset->materials[primitive->material].flags & 3u) <= 1u) {
+            float world_bounds[8u * 3u];
+            if (mdkr_modern_render_shadow_bounds(
+                    shadow_world_matrix,
+                    resolved.target_frame_matrix,
+                    resolved.capture_bounds_min,
+                    resolved.capture_bounds_max,
+                    world_bounds) &&
+                gfx_shadow_capture_caster_bounds(
+                    view_index, world_bounds, 8u)) {
+                resolved.shadow_cast_valid = 1u;
+            }
+        }
+    }
+    (void)dkr_setup_draw_state(false);
+    gfx_flush();
+    fog_color[0] = (float)rdp.fog_color.r / 255.0f;
+    fog_color[1] = (float)rdp.fog_color.g / 255.0f;
+    fog_color[2] = (float)rdp.fog_color.b / 255.0f;
+    fog_enabled = (rdp.other_mode_l >> 30) == G_BL_CLR_FOG;
+    dkr_begin_primitive(rsp.draw_space != G_MTX_DKR_SPACE_WORLD);
+    gfx_rapi->draw_modern_skinned(
+        &resolved, rsp.mtx[rsp.active_slot], fog_color,
+        (float)rsp.fog_mul, (float)rsp.fog_offset,
+        fog_enabled ? 1 : 0);
+}
+
 /* ------------------------------------------------------------------------- */
 /* Triangle emission                                                         */
 /* ------------------------------------------------------------------------- */
@@ -3945,12 +4214,17 @@ static void dkr_sp_vertex(const Vertex *verts, int n, bool append,
     /* Never read a vertex batch past the arena (edge/mis-decoded pointer), and
      * never dereference a non-arena pointer that isn't a plausible registered
      * global (a sign-extended wild pointer from an upstream LP64 truncation). */
+    if (((uintptr_t)verts & (_Alignof(Vertex) - 1u)) != 0u) return;
     size_t room = dkr_arena_room(verts);
     if (room == (size_t)-1 && !dkr_ptr_plausible(verts)) return;
     if ((size_t)n * sizeof(Vertex) > room) n = (int)(room / sizeof(Vertex));
     if (n <= 0) return;
 
     const Vec3s *normal_stream = rsp.smooth_normals;
+    if (((uintptr_t)normal_stream & (_Alignof(Vec3s) - 1u)) != 0u) {
+        normal_stream = NULL;
+        gfx_dkr_remaster_missing_normal_batches++;
+    }
     size_t normal_room =
         normal_stream != NULL ? dkr_arena_room(normal_stream) : 0;
     if (normal_stream != NULL &&
@@ -4100,6 +4374,7 @@ static void dkr_sp_polygon(const Triangle *tris, int num_tris, bool tex_enabled,
     /* Never read a triangle batch past the arena (edge/mis-decoded pointer), and
      * never dereference a non-arena pointer that isn't a plausible registered
      * global (a sign-extended wild pointer from an upstream LP64 truncation). */
+    if (((uintptr_t)tris & (_Alignof(Triangle) - 1u)) != 0u) return;
     size_t room = dkr_arena_room(tris);
     if (room == (size_t)-1 && !dkr_ptr_plausible(tris)) return;
     if ((size_t)num_tris * sizeof(Triangle) > room)
@@ -4397,11 +4672,10 @@ static void dkr_decode_matrix(int slot, const int32_t *a) {
 
 static void dkr_load_matrix(int slot, const void *addr) {
     if (slot < 0 || slot > 2) return;
-    if (!addr || dkr_arena_room(addr) < sizeof(Mtx)) { dkr_load_identity(slot); return; }
-    /* Belt-and-suspenders: a non-arena matrix pointer (room == SIZE_MAX) must be
-     * a plausible registered global; never deref a sign-extended wild pointer. */
-    if (dkr_arena_room(addr) == (size_t)-1 && !dkr_ptr_plausible(addr)) {
-        dkr_load_identity(slot); return;
+    if (!dkr_room_for(addr, sizeof(Mtx)) ||
+        ((uintptr_t)addr & (_Alignof(int32_t) - 1u)) != 0u) {
+        dkr_load_identity(slot);
+        return;
     }
     /* Standard N64 s15.16 split-format Mtx: 8 int words then 8 frac words, each
      * packing two elements' halves (ported from mgb64 gfx_sp_matrix). */
@@ -4469,6 +4743,22 @@ static void dkr_sp_moveword(uint8_t index, uint16_t offset, uint32_t data) {
             }
             break;
         }
+        case G_MW_DKR_MODERN_CHARACTER:
+            dkr_draw_modern_character(data);
+            break;
+        case G_MW_DKR_CHARACTER_OCCLUDER:
+            /* The buffered ordinary triangle stream belongs wholly to the old
+             * scope. Preserve that boundary before publishing the next one to
+             * an optional diagnostic backend. Invalid native commands fail
+             * closed to NONE instead of misattributing following objects. */
+            gfx_flush();
+            if (gfx_rapi != NULL &&
+                gfx_rapi->set_modern_character_occluder != NULL) {
+                gfx_rapi->set_modern_character_occluder(
+                    data < GFX_MODERN_CHARACTER_OCCLUDER_COUNT
+                        ? data : GFX_MODERN_CHARACTER_OCCLUDER_NONE);
+            }
+            break;
         case G_MW_FOG:          /* 0x08 — fog_mul (hi 16) / fog_offset (lo 16) */
             rsp.fog_mul = (int16_t)(data >> 16);
             rsp.fog_offset = (int16_t)(data & 0xffff);
@@ -5298,6 +5588,10 @@ static bool dkr_dl_census_enabled(void) {
 #if defined(__vita__)
 static void dkr_dl_ring_dump(void); /* forward decl -- defined next to dkr_run_dl below, which the ring buffer belongs to */
 #endif
+static bool dkr_dl_command_aligned(const Gfx *cmd) {
+    return ((uintptr_t)cmd & (_Alignof(Gfx) - 1u)) == 0u;
+}
+
 static void dkr_dl_fault(const char *reason, const Gfx *cmd, int depth) {
     static int strict = -1;
     if (strict < 0) {
@@ -5310,11 +5604,18 @@ static void dkr_dl_fault(const char *reason, const Gfx *cmd, int depth) {
     if (dkr_dl_census_enabled()) {
         s_dl_census_faults++;
     }
+    /* The commonest reason to fault is that this address cannot be read, so the
+     * diagnostic asks the same question the walk did before quoting the words.
+     * Printing them unconditionally makes the report itself the out-of-bounds
+     * read the fault was raised to prevent. */
+    const bool readable = dkr_dl_command_aligned(cmd) &&
+                          dkr_room_for(cmd, sizeof(Gfx));
     fprintf(stderr,
-            "[DL] %s at depth=%d cmd=%p words=%08x/%08x%s\n",
+            "[DL] %s at depth=%d cmd=%p words=%08x/%08x%s%s\n",
             reason, depth, (const void *) cmd,
-            cmd != NULL ? cmd->words.w0 : 0,
-            cmd != NULL ? cmd->words.w1 : 0,
+            readable ? cmd->words.w0 : 0,
+            readable ? cmd->words.w1 : 0,
+            readable ? "" : " (unreadable or unaligned)",
             strict ? " (strict: aborting)" : " (recovered: list stopped/skipped)");
     fflush(stderr);
 #if defined(__vita__)
@@ -5523,30 +5824,29 @@ static void dkr_scan_overlay_order(Gfx *cmd, int depth, int limit,
             }
         }
 #endif
-        {
-            uintptr_t uc = (uintptr_t)cmd;
-            uintptr_t ab = (uintptr_t)g_dkrArenaBase;
-            uintptr_t ae = ab + (uintptr_t)g_dkrArenaSize;
-            if ((uc >= ae && uc < ae + 0x00010000u) ||
-                dkr_arena_room(cmd) < sizeof(Gfx)) {
-#if defined(__vita__)
-                if (depth == 0) {
-                    static int s_arenaBoundLogCount = 0;
-                    if (s_arenaBoundLogCount < 20) {
-                        char lb[96];
-                        snprintf(lb, sizeof(lb),
-                                 "dl-safety: arena-bound return cmd=%p depth=%d",
-                                 (void *)cmd, depth);
-                        mdkr_vita_boot_log(lb);
-                        s_arenaBoundLogCount++;
-                    }
-                }
-#endif
-                return;
-            }
+        if (!dkr_room_for(cmd, sizeof(Gfx))) {
+            return;
+        }
+        if (!dkr_dl_command_aligned(cmd)) {
+            dkr_dl_fault("overlay prepass reached an unaligned display-list command",
+                         cmd, depth);
+            return;
         }
 
         uint8_t op = (uint8_t)C0(cmd, 24, 8);
+        /* Stop where the interpreter stops. This switch reads only the commands
+         * that decide draw-space ordering and ignores every other opcode, so
+         * without this test it cannot tell a command it does not care about from
+         * a byte that is not a command at all: it steps one Gfx and keeps
+         * walking where dkr_run_dl reports the same word and abandons the list.
+         * That is how the prepass walked kilobytes deeper into a misauthored
+         * stream than the interpreter ever reached and faulted first, on a
+         * resolved global one command past its end. */
+        if (!dkr_dl_opcode_implemented(op)) {
+            dkr_dl_fault("overlay prepass reached an unknown display-list "
+                         "opcode", cmd, depth);
+            return;
+        }
         switch (op) {
             case G_DL: {
                 uint8_t nopush = (uint8_t)C0(cmd, 16, 8);
@@ -5574,13 +5874,16 @@ static void dkr_scan_overlay_order(Gfx *cmd, int depth, int limit,
             case G_DMADL: {
                 int count = (int)C0(cmd, 16, 8);
                 Gfx *sub = (Gfx *)dkr_resolve(cmd->words.w1);
+                if (count <= 0) {
+                    return;
+                }
 #if defined(__vita__)
                 if (sub != NULL &&
                     !dkr_vita_sub_ptr_safe(sub, cmd->words.w1, "G_DMADL")) {
                     sub = NULL;
                 }
 #endif
-                if (sub != NULL && count > 0) {
+                if (sub != NULL) {
                     dkr_scan_overlay_order(sub, depth + 1, count, scan);
                 }
                 break;
@@ -5647,7 +5950,13 @@ static void dkr_scan_overlay_order(Gfx *cmd, int depth, int limit,
             case G_TEXRECTFLIP:
                 scan->primitive++;
                 if ((limit > 0 && (cmd - start) + 2 >= limit) ||
-                    dkr_arena_room(cmd) < sizeof(Gfx) * 3) {
+                    !dkr_room_for(cmd, sizeof(Gfx) * 3)) {
+                    return;
+                }
+                if ((uint8_t)C0(cmd + 1, 24, 8) !=
+                        (uint8_t)G_RDPHALF_1 ||
+                    (uint8_t)C0(cmd + 2, 24, 8) !=
+                        (uint8_t)G_RDPHALF_2) {
                     return;
                 }
                 cmd += 2;
@@ -5897,11 +6206,8 @@ static void dkr_capture_uv_scroll_endpoints(const Triangle *next,
         return;
     }
     byte_size = (size_t)num_tris * sizeof(*next);
-    {
-        size_t room = dkr_arena_room(next);
-        if (room == (size_t)-1 ? !dkr_ptr_plausible(next) : room < byte_size) {
-            return;
-        }
+    if (!dkr_room_for(next, byte_size)) {
+        return;
     }
     /*
      * AUTHORED RATE FIRST. A texscroll-driven batch does not need to be
@@ -6016,7 +6322,12 @@ static bool dkr_scan_future_deformations(Gfx *cmd, int depth, int limit) {
         if (limit > 0 && (cmd - start) >= limit) {
             return true;
         }
-        if (++safety > DKR_DL_SAFETY_MAX || dkr_arena_room(cmd) < sizeof(Gfx)) {
+        if (++safety > DKR_DL_SAFETY_MAX || !dkr_room_for(cmd, sizeof(Gfx))) {
+            return false;
+        }
+        if (!dkr_dl_command_aligned(cmd)) {
+            dkr_dl_fault("future-deformation scan reached an unaligned display-list command",
+                         cmd, depth);
             return false;
         }
         switch ((uint8_t)C0(cmd, 24, 8)) {
@@ -6142,8 +6453,8 @@ static bool dkr_scan_future_deformations(Gfx *cmd, int depth, int limit) {
                 bool packet_vertex = false;
 
                 if (vertices == NULL || count <= 0 || count > DKR_MAX_VERTICES ||
-                    dkr_arena_room(vertices) <
-                        (size_t)count * sizeof(*vertices)) {
+                    !dkr_room_for(vertices,
+                                  (size_t)count * sizeof(*vertices))) {
                     break;
                 }
                 memset(&packet_binding, 0, sizeof(packet_binding));
@@ -6864,7 +7175,8 @@ static void dkr_capture_nonarena_list(const Gfx *sub, int count) {
     /* Not armed means no capture is staged, so the scan below would be pure
      * cost on the default path -- Original pacing with smoothing off never
      * replays anything. */
-    if (dkr_replay_pass || sub == NULL || !present_sched_replay_armed() ||
+    if (dkr_replay_pass || sub == NULL || !dkr_dl_command_aligned(sub) ||
+        !present_sched_replay_armed() ||
         dkr_arena_room(sub) != (size_t)-1) {
         return;   /* replay pass, unarmed, or arena-backed and already copied */
     }
@@ -6887,6 +7199,13 @@ static void dkr_capture_nonarena_list(const Gfx *sub, int count) {
                 (uint8_t)C0(&sub[scan], 16, 8) == (uint8_t)G_DL_NOPUSH) {
                 commands = scan + 1;   /* branch is the span's last command */
                 break;
+            }
+            /* An opcode the interpreter does not implement is the same
+             * evidence: these bytes are not this list, so the storage after
+             * them is not either. Without it the scan runs to the command cap
+             * over whatever follows a list the walk reached by a mis-decode. */
+            if (!dkr_dl_opcode_implemented(opcode)) {
+                break;   /* commands stays 0: capture nothing */
             }
         }
         if (commands == 0) {
@@ -6954,26 +7273,20 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             dkr_dl_fault("unterminated display list", cmd, depth);
             return;
         }
-        /* Never fetch a command past the arena: an arena-backed sub-list that
-         * lacks a G_ENDDL terminator (or a mis-resolved DL pointer) would walk
-         * off the 16 MB arena into an unmapped page. Non-arena DLs (rodata init
-         * lists) return SIZE_MAX room and are trusted to self-terminate. */
-        /* Stop if this list has walked off the top of the arena — a mis-decoded
-         * or unterminated arena sub-list would otherwise fetch from the unmapped
-         * page immediately after the 16 MB block. dkr_arena_room() returns
-         * SIZE_MAX exactly AT arena_end (== is not < end), so guard the adjacent
-         * band explicitly; genuine non-arena globals live far away and pass. */
-        {
-            uintptr_t uc = (uintptr_t)cmd;
-            uintptr_t ab = (uintptr_t)g_dkrArenaBase;
-            uintptr_t ae = ab + (uintptr_t)g_dkrArenaSize;
-            if (uc >= ae && uc < ae + 0x00010000u) {
-                dkr_dl_fault("display list walked beyond RDRAM", cmd, depth);
-                return;
-            }
+        /* Never fetch a command the arena does not back: an arena-backed
+         * sub-list that lacks a G_ENDDL terminator, or a mis-resolved DL
+         * pointer, walks off the 16 MB block into the unmapped page after it.
+         * dkr_arena_room() accounts for the overrun band above the arena as
+         * well as the last bytes inside it. Non-arena DLs (rodata init lists)
+         * have no extent to check and are trusted to self-terminate. */
+        if (!dkr_room_for(cmd, sizeof(Gfx))) {
+            dkr_dl_fault("display list walked past its backing memory", cmd,
+                         depth);
+            return;
         }
-        if (dkr_arena_room(cmd) < sizeof(Gfx)) {
-            dkr_dl_fault("truncated display-list command", cmd, depth);
+        if (!dkr_dl_command_aligned(cmd)) {
+            dkr_dl_fault("display list reached an unaligned command", cmd,
+                         depth);
             return;
         }
         uint8_t op = (uint8_t)C0(cmd, 24, 8);
@@ -7004,6 +7317,26 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             }
         }
 #endif
+        /* Refuse before dispatching, from the list the prepass reads too
+         * (DKR_DL_IMPLEMENTED_OPCODES). Abandoning the list rather than
+         * stepping over the word is the point: an opcode this walk does not
+         * implement is proof that these bytes are not commands, and the walk
+         * has no other bound to fall back on — a non-arena list answers
+         * SIZE_MAX room, which is not "room available" but "no extent recorded
+         * here, trusted to self-terminate", trust this word has just
+         * disproved. Stepping on is how the walk read past the end of an
+         * 80-byte global it had reached by a mis-decode. The fault line has
+         * always said the list was stopped; now it is.
+         *
+         * Taking the decision here rather than in the switch's default arm is
+         * also what keeps the two walkers from drifting apart: a case label
+         * added below and not added to the list is unreachable, so it fails
+         * loudly on the first frame that uses it instead of leaving the
+         * prepass to stop on legal content by itself. */
+        if (!dkr_dl_opcode_implemented(op)) {
+            dkr_dl_fault("unknown display-list opcode", cmd, depth);
+            return;
+        }
         switch (op) {
 
         /* ---- SP: flow control ---- */
@@ -7131,7 +7464,7 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                 dkr_shadow_lookup_live(
                     ma, &rsp.shadow_matrix[slot], &shadow_matrix_stale);
             if (!dkr_replay_pass && ma != NULL &&
-                dkr_arena_room(ma) >= sizeof(Mtx)) {
+                dkr_room_for(ma, sizeof(Mtx))) {
                 (void)gfx_retained_task_capture_dependency(
                     ma, ma, sizeof(Mtx));
                 (void)gfx_shadow_matrix_note_walked_key(
@@ -7436,7 +7769,7 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                 bool faithful = false;
                 bool tolerated = false;
                 int64_t worst = -1;
-                if (ma != NULL && dkr_arena_room(ma) >= sizeof(Mtx)) {
+                if (ma != NULL && dkr_room_for(ma, sizeof(Mtx))) {
                     mdkr_camera_replay_mvp(
                         rsp.shadow_matrix[slot].world,
                         rsp.shadow_matrix[slot].captured_view_projection,
@@ -7589,7 +7922,7 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             if (draw_space != G_MTX_DKR_SPACE_INHERIT) {
                 dkr_set_draw_space(draw_space);
             }
-            if (dkr_trace_this_frame && ma && dkr_arena_room(ma) >= sizeof(Mtx)) {
+            if (dkr_trace_this_frame && ma && dkr_room_for(ma, sizeof(Mtx))) {
                 const uint32_t *w = (const uint32_t *)ma;
                 DTRACE("  mtx raw w[0..7]=%08x %08x %08x %08x %08x %08x %08x %08x",
                        w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
@@ -8312,7 +8645,7 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             int32_t uly = (int32_t)C1(cmd, 0, 12);
             /* Two trailing RDPHALF words carry s/t and dsdx/dtdy. */
             if ((limit > 0 && (cmd - start) + 2 >= limit) ||
-                dkr_arena_room(cmd) < sizeof(Gfx) * 3) {
+                !dkr_room_for(cmd, sizeof(Gfx) * 3)) {
                 dkr_dl_fault("truncated texture rectangle", cmd, depth);
                 return;
             }
@@ -8350,8 +8683,12 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             break;
 
         default:
-            dkr_dl_fault("unknown display-list opcode", cmd, depth);
-            break;
+            /* Reachable only for an opcode DKR_DL_IMPLEMENTED_OPCODES names
+             * and this switch does not dispatch — the harmless half of a drift
+             * between the two, and the half that would otherwise be silent. */
+            dkr_dl_fault("display-list opcode listed but not dispatched", cmd,
+                         depth);
+            return;
         }
         cmd++;
     }
@@ -8412,6 +8749,7 @@ void gfx_shutdown(void) {
     struct GfxRenderingAPI *rapi = gfx_rapi;
 
     if (rapi == NULL) {
+        mdkr_modern_draw_store_shutdown();
         return;
     }
 
@@ -8455,12 +8793,14 @@ void gfx_shutdown(void) {
     font_sdf_buf = NULL;
     font_sdf_cap = 0;
     gfx_font_outline_shutdown();
+    gfx_character_text_shutdown();
     free(tex_row_buf);
     tex_row_buf = NULL;
     tex_row_cap = 0;
     free(tex_mip_buf);
     tex_mip_buf = NULL;
     tex_mip_cap = 0;
+    mdkr_modern_draw_store_shutdown();
     gfx_presentation_packet_shutdown();
     gfx_retained_task_shutdown();
     gfx_shadow_frame_shutdown();
@@ -8518,6 +8858,24 @@ static void dkr_rect_skip_report(void) {
     if (trace != NULL && trace[0] != '\0' && trace[0] != '0') {
         fprintf(stderr, "[RECT-SKIP] skipped=%llu\n",
                 (unsigned long long)dkr_inverted_rects_skipped);
+    }
+}
+
+__attribute__((destructor))
+static void dkr_modern_camera_report(void) {
+    const char *trace = getenv("MDKR_TRACE");
+    if (trace != NULL && trace[0] != '\0' && trace[0] != '0' &&
+        (dkr_modern_camera_missing_matrix != 0u ||
+         dkr_modern_camera_missing_eye != 0u ||
+         dkr_modern_camera_singular_world != 0u ||
+         dkr_modern_camera_resolved != 0u)) {
+        fprintf(stderr,
+                "[MODERN-CAMERA] resolved=%llu missingMatrix=%llu "
+                "missingEye=%llu singularWorld=%llu\n",
+                (unsigned long long)dkr_modern_camera_resolved,
+                (unsigned long long)dkr_modern_camera_missing_matrix,
+                (unsigned long long)dkr_modern_camera_missing_eye,
+                (unsigned long long)dkr_modern_camera_singular_world);
     }
 }
 
@@ -8695,14 +9053,67 @@ bool gfx_get_capture_dimensions(uint32_t *width, uint32_t *height) {
     return true;
 }
 
-bool gfx_start_frame(uint64_t authored_tick) {
-    if (gfx_rapi == NULL || gfx_rapi->start_frame == NULL ||
-        !gfx_rapi->start_frame()) {
+bool gfx_get_modern_character_capture_dimensions(uint32_t *width,
+                                                  uint32_t *height) {
+    if (width == NULL || height == NULL || gfx_rapi == NULL ||
+        gfx_rapi->get_modern_character_capture_dimensions == NULL) {
         return false;
     }
+    return gfx_rapi->get_modern_character_capture_dimensions(width, height);
+}
+
+bool gfx_get_modern_character_capture_projection(
+    MdkrModernCharacterCaptureProjection *projection) {
+    if (projection == NULL || gfx_rapi == NULL ||
+        gfx_rapi->get_modern_character_capture_projection == NULL) {
+        return false;
+    }
+    return gfx_rapi->get_modern_character_capture_projection(projection);
+}
+
+bool gfx_get_modern_character_scene_projection(
+    MdkrModernCharacterCaptureProjection *projection) {
+    if (projection == NULL || gfx_rapi == NULL ||
+        gfx_rapi->get_modern_character_scene_projection == NULL) {
+        return false;
+    }
+    return gfx_rapi->get_modern_character_scene_projection(projection);
+}
+
+void gfx_begin_modern_character_gpu_timing(void) {
+    if (gfx_rapi != NULL &&
+        gfx_rapi->begin_modern_character_gpu_timing != NULL) {
+        gfx_rapi->begin_modern_character_gpu_timing();
+    }
+}
+
+void gfx_finish_modern_character_gpu_timing(
+    MdkrModernCharacterGpuTimingMetrics *out) {
+    if (out == NULL) return;
+    mdkr_modern_character_gpu_timing_snapshot(
+        NULL, MDKR_MODERN_CHARACTER_GPU_TIMING_UNSUPPORTED, 0u, out);
+    if (gfx_rapi != NULL &&
+        gfx_rapi->finish_modern_character_gpu_timing != NULL) {
+        gfx_rapi->finish_modern_character_gpu_timing(out);
+    }
+}
+
+bool gfx_start_frame(uint64_t authored_tick) {
+    mdkr_web_startup_phase("gfx-backend-before");
+    if (gfx_rapi == NULL || gfx_rapi->start_frame == NULL ||
+        !gfx_rapi->start_frame()) {
+        mdkr_web_startup_phase("gfx-backend-refused");
+        return false;
+    }
+    mdkr_web_startup_phase("gfx-backend-after");
+    mdkr_web_startup_phase("gfx-shadow-before");
     gfx_shadow_capture_begin();
+    mdkr_web_startup_phase("gfx-shadow-after");
+    mdkr_web_startup_phase("gfx-interpreter-before");
     gfx_dkr_reset_interpreter_state();
+    mdkr_web_startup_phase("gfx-interpreter-after");
     dkr_last_walked_authored_tick = authored_tick;
+    mdkr_web_startup_phase("gfx-retained-before");
     if (present_sched_replay_armed()) {
         (void)gfx_retained_task_capture_begin(
             authored_tick, g_dkrArenaBase, g_dkrArenaSize);
@@ -8719,6 +9130,7 @@ bool gfx_start_frame(uint64_t authored_tick) {
         dkr_walk_entry_texrect = dkr_in_texrect;
         dkr_walk_entry_valid = true;
     }
+    mdkr_web_startup_phase("gfx-retained-after");
     return true;
 }
 
@@ -9224,6 +9636,16 @@ void gfx_dkr_replay_get_reject_stats(
 int gfx_read_framebuffer_rgb(int x, int y, int width, int height, uint8_t *rgb_out) {
     if (gfx_rapi && gfx_rapi->read_framebuffer_rgb) {
         return gfx_rapi->read_framebuffer_rgb(x, y, width, height, rgb_out) ? 1 : 0;
+    }
+    return 0;
+}
+
+int gfx_read_modern_character_capture_rgba(int width, int height,
+                                            uint8_t *rgba_out) {
+    if (gfx_rapi != NULL &&
+        gfx_rapi->read_modern_character_capture_rgba != NULL) {
+        return gfx_rapi->read_modern_character_capture_rgba(
+            width, height, rgba_out) ? 1 : 0;
     }
     return 0;
 }

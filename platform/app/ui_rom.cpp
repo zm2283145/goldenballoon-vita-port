@@ -41,6 +41,9 @@
 #include "app_ui_policy.h"
 #include "file_dialog.h"
 #include "ui_common.h"
+#include "ui_hero.h"
+#include "../mod_registry.h"
+#include "../platform_os.h"
 #include "ui_phone_party.h"
 #include "ui_settings.h"
 #include "video_config.h"
@@ -226,73 +229,87 @@ int resizePathInput(ImGuiInputTextCallbackData *data) {
     return 0;
 }
 
-void drawDropZone(bool haveRom) {
-    // The drop target is the whole window (SDL_DROPFILE is window-wide), so this
-    // is an invitation, not a hit-box. Mirrors the web shell's drop-zone
-    // language so the two front-ends read the same.
-    const ImVec4 accent = AppTheme::accent();
-    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(accent.x, accent.y, accent.z, 0.45f));
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.5f);
-    ImGui::BeginChild("##dropzone", ImVec2(0, ui::kDropZoneHeight()), true);
-    {
-        ImGui::PushFont(AppTheme::fonts().title);
-        ImGui::PushStyleColor(ImGuiCol_Text, accent);
-        ImGui::TextUnformatted(haveRom ? "Drop a different ROM here"
-                                       : "Drag your ROM file here");
-        ImGui::PopStyleColor();
-        ImGui::PopFont();
-        ui::TextSubtle(
-            "…or use the controls below. Accepts .z64, .v64, and .n64 files.");
-    }
-    ImGui::EndChild();
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor();
+// The drop invitation. SDL_DROPFILE is window-wide, so this was never a
+// hit-box -- it was an 86px bordered box saying so, which competed with the
+// action that actually does the job. One line says the same thing.
+void drawDropHint(bool haveRom) {
+    ui::TextSubtle(haveRom
+        ? "…or drag a different file anywhere in this window."
+        : "…or drag it anywhere in this window. Accepts .z64, .v64 and .n64.");
 }
 
 // The acquisition controls: native panel (where one exists), and a typed path.
-void drawAcquisition(LauncherState &s) {
+void drawAcquisition(LauncherState &s, bool haveRom) {
+    /*
+     * One primary action. Three ways to name the same file -- a drop box, a
+     * Browse button and a typed path -- all at the same visual weight is what
+     * made this screen read as a form. The picker is the action, the drop is a
+     * line under it, and the path field is behind a disclosure for the player
+     * who already has a path on the clipboard.
+     */
     if (filedialog::isAvailable()) {
-        const bool browsePressed = ImGui::Button("Browse…", ui::kBtnWide());
-        ui::SpeakFocusedItem("Browse", nullptr,
-                             "Opens your system file picker to choose a ROM.");
-        if (browsePressed) {
-            RomPanel_chooseRom(s);
-        }
-        ImGui::SameLine();
-        ui::TextSubtle("Opens your system's file picker.");
+        const ImVec2 size(ui::kControlWidth(1.1f), ui::kBtnPrimary().y);
+        const bool pressed = ui::BrandPrimaryButton(
+            haveRom ? "Choose a different file…" : "Choose your game file…",
+            size);
+        ui::SpeakFocusedItem(
+            haveRom ? "Choose a different file" : "Choose your game file",
+            nullptr, "Opens your system file picker to choose a ROM.");
+        if (pressed) RomPanel_chooseRom(s);
+        ui::Gap(ui::kGapS);
+        drawDropHint(haveRom);
+        ui::Gap(ui::kGapM);
+    } else {
+        drawDropHint(haveRom);
         ui::Gap(ui::kGapM);
     }
 
-    ui::TextSubtle(filedialog::isAvailable()
-                       ? "Or paste the full path to your ROM:"
-                       : "Drag the file onto this window, or paste its full path:");
-    if (g_pathInput.capacity() < 256u) g_pathInput.reserve(256u);
-    const float rowWidth = ImGui::GetContentRegionAvail().x;
-    const float pathWidth = ui::kControlWidth(1.6f);
-    const bool stackAction = rowWidth < pathWidth +
-        ImGui::GetStyle().ItemSpacing.x + ui::kBtnSecondary().x;
-    ImGui::SetNextItemWidth(pathWidth);
-    const bool entered = ImGui::InputTextWithHint(
-        "##rompath", "/path/to/your/game.z64", g_pathInput.data(),
-        g_pathInput.capacity() + 1u,
-        ImGuiInputTextFlags_EnterReturnsTrue |
-            ImGuiInputTextFlags_CallbackResize |
-            ImGuiInputTextFlags_CallbackCharFilter,
-        resizePathInput, &g_pathInput);
-    if (!stackAction) ImGui::SameLine();
-    const bool pressed = ImGui::Button("Use This Path", ui::kBtnSecondary());
-    if (entered || pressed) {
-        if (g_pathInput.empty()) {
-            g_note = "Type a path first, or use the file picker.";
-        } else {
-            g_note.clear();
-            RomPanel_setRom(s, g_pathInput.c_str());
-        }
+    /*
+     * g_note is drawn HERE, outside the disclosure. It is written from three
+     * places that have nothing to do with typing a path -- a dropped file whose
+     * path is longer than the platform can open, a cancelled ROM check, and the
+     * forget-remembered-ROM confirmation -- and while its only render site sat
+     * inside a TreeNode that is collapsed by default, every one of those wrote
+     * a sentence the player never saw.
+     */
+    if (!g_note.empty()) {
+        ui::TextSubtleUnformattedWrapped(g_note.c_str());
+        ui::Gap(ui::kGapS);
     }
 
-    if (!g_note.empty()) {
-        ui::Gap(ui::kGapS);
-        ui::TextSubtle("%s", g_note.c_str());
+    // Closed by default: a player who needs it knows they need it, and a player
+    // who does not should never have to read past it to reach Play.
+    const bool openByDefault = !filedialog::isAvailable();
+    if (openByDefault) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+    if (ImGui::TreeNode("Paste a path instead")) {
+        ui::SpeakFocusedItem("Paste a path instead", nullptr,
+                             "Type or paste the full path to your game file.");
+        if (g_pathInput.capacity() < 256u) g_pathInput.reserve(256u);
+        const float rowWidth = ImGui::GetContentRegionAvail().x;
+        const float pathWidth = ui::kControlWidth(1.6f);
+        const bool stackAction = rowWidth < pathWidth +
+            ImGui::GetStyle().ItemSpacing.x + ui::kBtnSecondary().x;
+        ImGui::SetNextItemWidth(pathWidth);
+        const bool entered = ImGui::InputTextWithHint(
+            "##rompath", "/path/to/your/game.z64", g_pathInput.data(),
+            g_pathInput.capacity() + 1u,
+            ImGuiInputTextFlags_EnterReturnsTrue |
+                ImGuiInputTextFlags_CallbackResize |
+                ImGuiInputTextFlags_CallbackCharFilter,
+            resizePathInput, &g_pathInput);
+        if (!stackAction) ImGui::SameLine();
+        const bool pressed = ImGui::Button("Use this path", ui::kBtnSecondary());
+        ui::SpeakFocusedItem("Use this path", nullptr,
+                             "Loads the game file at the path you typed.");
+        if (entered || pressed) {
+            if (g_pathInput.empty()) {
+                g_note = "Type a path first, or use the file picker.";
+            } else {
+                g_note.clear();
+                RomPanel_setRom(s, g_pathInput.c_str());
+            }
+        }
+        ImGui::TreePop();
     }
 }
 
@@ -438,11 +455,41 @@ static void requestValidation(LauncherState &s, ValidationPurpose purpose,
     validationWorker().request(purpose, path);
 }
 
+static void clearCharacterPreviewRequest(LauncherState &s) {
+    s.characterPreviewPackage.clear();
+    s.characterPreviewSourceSha256.clear();
+    s.characterPreviewFitSha256.clear();
+    s.characterPreviewPresentationSha256.clear();
+    s.characterPreviewContext = MDKR_CHARACTER_PREVIEW_NONE;
+    s.characterPreviewScene = MDKR_CHARACTER_PREVIEW_SCENE_BASELINE;
+    s.characterPreviewPlayers = 0;
+    s.characterPreviewPose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+    s.characterPreviewPosePhaseMilli = 0u;
+    s.characterPreviewTransitionFromPose =
+        MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+    s.characterPreviewTransitionFromPhaseMilli = 0u;
+    s.characterPreviewViewYawDegrees = 0;
+    s.characterPreviewViewPitchDegrees = 0;
+    s.characterPreviewLighting =
+        MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
+    s.characterPreviewCapturePng.clear();
+    s.characterPreviewCaptureKind =
+        MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
+    s.characterPreviewAutoReturn = false;
+    s.characterPreviewCaptureLauncherOwned = false;
+    s.characterPreviewPortraitSourceHandoff = false;
+    s.characterPreviewInteractiveStudio = false;
+    s.characterPreviewRepresentativeMotionReview = false;
+    s.characterPreviewDonorReference = false;
+    s.characterPreviewDispatched = false;
+}
+
 /* A cancellation is a user-visible decision, not merely a progress-bar change.
  * Invalidate the worker's generation before restoring the current selection so
  * a completed replacement/remembered result cannot publish after Cancel Change
  * or Forget Saved Path has returned the launcher to its previous state. */
 static void cancelValidation(LauncherState &s, bool clearUnusableSelection) {
+    const bool cancelledPlay = s.romPlayValidationPending;
     const std::string checkingPath = s.romValidationPath;
     if (s.romValidationPending) {
         validationWorker().cancel();
@@ -458,10 +505,42 @@ static void cancelValidation(LauncherState &s, bool clearUnusableSelection) {
     s.romValidationPending = false;
     s.romPlayValidationPending = false;
     s.romPlayValidationPassed = false;
+    if (cancelledPlay) {
+        clearCharacterPreviewRequest(s);
+    }
     s.romPlayAwaitingReplacement = false;
     s.romValidationPath.clear();
     s.romValidationBytes = 0u;
     s.romValidationTotal = 0u;
+}
+
+static const char *characterPreviewContextLabel(
+    MdkrCharacterPreviewContext context) {
+    switch (context) {
+        case MDKR_CHARACTER_PREVIEW_SELECT: return "character select";
+        case MDKR_CHARACTER_PREVIEW_CAR: return "a car race";
+        case MDKR_CHARACTER_PREVIEW_HOVERCRAFT: return "a hovercraft race";
+        case MDKR_CHARACTER_PREVIEW_PLANE: return "a plane race";
+        default: return "the game";
+    }
+}
+
+static const char *characterPreviewPoseLabel(MdkrCharacterPreviewPose pose) {
+    switch (pose) {
+#define MDKR_CHARACTER_PREVIEW_LABEL(suffix, semantic, label) \
+        case MDKR_CHARACTER_PREVIEW_POSE_##suffix: return label;
+        MDKR_MODERN_CHARACTER_INSPECTION_SEMANTICS(
+            MDKR_CHARACTER_PREVIEW_LABEL)
+#undef MDKR_CHARACTER_PREVIEW_LABEL
+        default: return nullptr;
+    }
+}
+
+static void cancelCharacterPreview(LauncherState &s) {
+    if (s.romPlayValidationPending) {
+        cancelValidation(s, /*clearUnusableSelection=*/false);
+    }
+    clearCharacterPreviewRequest(s);
 }
 
 void RomPanel_setRom(LauncherState &s, const char *path) {
@@ -507,6 +586,7 @@ void RomPanel_serviceValidation(LauncherState &s) {
                 "reconnect the drive or choose another file.",
                 result.info.message);
             s.bootErrorVisible = true;
+            clearCharacterPreviewRequest(s);
             /* Service priority: this pass can run after the navigation controls
              * have already drawn, so a plain assignment here would erase a tab
              * the player pressed during the in-flight Play check. The recovery
@@ -594,6 +674,15 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
      * heading names the state the player is actually in: choosing a game before
      * they have one, and ready to play once they do. */
     const bool headingReady = !s.romPath.empty() && s.romInfo.valid;
+
+    /* The brand art leads the home. It is the one place in the launcher that
+     * says "game" before it says "settings", and it costs the heading nothing:
+     * ui::HeroBanner returns false on any build where the art did not decode,
+     * and the SectionHeader below carries the screen on its own. */
+    ui::Gap(ui::kGapS);
+    const bool heroDrawn = ui::HeroBanner(150.0f);
+    if (heroDrawn) ui::Gap(ui::kGapM);
+
     ui::SectionHeader(
         headingReady ? "Ready to Play" : "Choose Your Game",
         headingReady
@@ -605,6 +694,63 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
 
     const bool haveRom = !s.romPath.empty();
     const bool ready   = haveRom && s.romInfo.valid;
+
+    if (!s.characterPreviewPackage.empty() &&
+        s.characterPreviewContext != MDKR_CHARACTER_PREVIEW_NONE) {
+        ui::Gap(ui::kGapS);
+        if (ui::CardBegin("##character-preview-request", AppTheme::accent(),
+                          0.0f)) {
+            ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
+            ImGui::PushFont(AppTheme::fonts().title);
+            ImGui::TextUnformatted(
+                s.characterPreviewPose == MDKR_CHARACTER_PREVIEW_POSE_LIVE
+                    ? "Custom Character Test"
+                    : s.characterPreviewTransitionFromPose !=
+                              MDKR_CHARACTER_PREVIEW_POSE_LIVE
+                        ? "Custom Character Transition Review"
+                    : "Custom Character Pose Inspection");
+            ImGui::PopFont();
+            ImGui::PopStyleColor();
+            ImGui::TextWrapped(
+                "Opening %s with %d local %s after the final ROM check.",
+                characterPreviewContextLabel(s.characterPreviewContext),
+                s.characterPreviewPlayers,
+                s.characterPreviewPlayers == 1 ? "player" : "players");
+            ui::TextSubtleUnformattedWrapped(
+                s.characterPreviewPackage.c_str());
+            if (s.characterPreviewTransitionFromPose !=
+                    MDKR_CHARACTER_PREVIEW_POSE_LIVE) {
+                const char *from = characterPreviewPoseLabel(
+                    s.characterPreviewTransitionFromPose);
+                const char *to = characterPreviewPoseLabel(
+                    s.characterPreviewPose);
+                ImGui::Text(
+                    "A %s %.1f%% to B %s %.1f%%",
+                    from != nullptr ? from : "Unknown",
+                    s.characterPreviewTransitionFromPhaseMilli / 10.0,
+                    to != nullptr ? to : "Unknown",
+                    s.characterPreviewPosePhaseMilli / 10.0);
+            }
+            ui::TextSubtleWrapped(
+                s.characterPreviewPose == MDKR_CHARACTER_PREVIEW_POSE_LIVE
+                    ? "The first 120 authored ticks warm the scene. Stay at least three seconds longer for a useful real-time sample; opening F1 freezes it."
+                    : s.characterPreviewTransitionFromPose !=
+                              MDKR_CHARACTER_PREVIEW_POSE_LIVE
+                        ? "The exact pose player alternates A and B once per second and uses each destination mapping's real blend duration. Return with F1 after several changes; the result identifies authored, reviewed-reference, or package-fallback motion for both states."
+                    : "The requested semantic is held at an exact phase when authored or supplied by a reviewed humanoid map. The result reports source fallback explicitly; inspection is session-only and cannot replace performance evidence.");
+            const char *cancelLabel =
+                s.characterPreviewPose == MDKR_CHARACTER_PREVIEW_POSE_LIVE
+                    ? "Cancel Test" : "Cancel Inspection";
+            if (ImGui::Button(cancelLabel, ui::kBtnSecondary())) {
+                cancelCharacterPreview(s);
+            }
+            ui::SpeakFocusedItem(
+                cancelLabel, nullptr,
+                "Cancels this custom character preview without changing saved player assignments.");
+        }
+        ui::CardEnd();
+        ui::Gap(ui::kGapS);
+    }
 
     /* What pressing Play will actually do, named on the home screen so the
      * player never has to open Settings to find out. Reads the EFFECTIVE
@@ -624,6 +770,58 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
         // carries no self-voicing of its own -- both values are announced where
         // they are set, under Settings > Display -- and voicing a non-focusable
         // line here only ever produced dead code that could not fire.
+        /*
+         * Installed packs belong on this line for the same reason the other two
+         * do: they change what the player is about to see, and a pack that is
+         * installed but switched OFF is the single most confusing state this
+         * product has -- the folder has it, the game does not show it. Named
+         * here, before Play, that state can no longer be a surprise.
+         *
+         * Silent when nothing is installed. A player who has never added a pack
+         * is not told they have none; that is noise, not information.
+         */
+        const MdkrModRegistry *packs = platform_content_packs_registry();
+        const MdkrVideoConfig *live = mdkr_video_config_current();
+        const bool packsOn = live == nullptr ||
+            live->values[MDKR_CONTENT_PACKS_ENABLED].number != 0.0f;
+        const char *disabledList = live != nullptr
+            ? live->values[MDKR_CONTENT_PACK_DISABLED].text : "";
+        /*
+         * Count what will actually be APPLIED, not what was found. There are
+         * two independent off switches -- the global Custom content toggle and
+         * the per-pack Skipped packs list -- and counting only installations
+         * told a player with three individually skipped packs that three packs
+         * were about to apply. That is precisely the state this line exists to
+         * end, so it has to consult the same list drawContentSection does.
+         */
+        const int installed = mdkr_mod_registry_count(packs);
+        int active = 0;
+        for (int i = 0; i < installed; ++i) {
+            const MdkrModEntry *entry = mdkr_mod_registry_entry(packs, i);
+            if (entry == nullptr) continue;
+            if (platform_content_pack_name_disabled(disabledList,
+                                                    entry->manifest.name)) {
+                continue;
+            }
+            ++active;
+        }
+        char packText[80] = {0};
+        if (installed > 0) {
+            if (!packsOn) {
+                std::snprintf(packText, sizeof packText,
+                              "%d pack%s, switched off", installed,
+                              installed == 1 ? "" : "s");
+            } else if (active == 0) {
+                std::snprintf(packText, sizeof packText,
+                              "%d pack%s, all skipped", installed,
+                              installed == 1 ? "" : "s");
+            } else {
+                std::snprintf(packText, sizeof packText, "%d pack%s",
+                              active, active == 1 ? "" : "s");
+            }
+        }
+        const bool packsApplying = packsOn && active > 0;
+
         if (ui::CardBegin("##willlaunch", AppTheme::surface(), 0.0f)) {
             ui::TextSubtle("This launch");
             ImGui::TextUnformatted(mode);
@@ -631,6 +829,18 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
             ui::TextSubtle("  \xE2\x80\xA2  ");
             ImGui::SameLine();
             ImGui::TextUnformatted(rate);
+            if (packText[0] != '\0') {
+                ImGui::SameLine();
+                ui::TextSubtle("  \xE2\x80\xA2  ");
+                ImGui::SameLine();
+                if (packsApplying) {
+                    ImGui::TextUnformatted(packText);
+                } else {
+                    ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::warn());
+                    ImGui::TextUnformatted(packText);
+                    ImGui::PopStyleColor();
+                }
+            }
             ui::CardEnd();
         }
         ui::Gap(ui::kGapS);
@@ -697,7 +907,20 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
                 ImGui::TextWrapped("%s", s.romInfo.message);
                 ui::Gap(ui::kGapXS);
             }
-            ui::TextSubtleUnformattedWrapped(s.romPath.c_str());
+            /*
+             * Several refusal messages open with the full path, and the line
+             * below repeated it verbatim -- a long absolute path twice in one
+             * card, which reads as a rendering fault rather than as emphasis.
+             * The test is on the message rather than on `ready` so a refusal
+             * whose sentence does NOT name the file still shows which file it
+             * means.
+             */
+            const bool pathAlreadyNamed =
+                !ready && s.romInfo.message[0] != '\0' &&
+                std::strstr(s.romInfo.message, s.romPath.c_str()) != nullptr;
+            if (!pathAlreadyNamed) {
+                ui::TextSubtleUnformattedWrapped(s.romPath.c_str());
+            }
             if (ready && s.romPersistenceWarning[0] != '\0') {
                 ui::Gap(ui::kGapS);
                 ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
@@ -799,9 +1022,7 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
             ImGui::Separator();
             ui::Gap(ui::kGapM);
         }
-        drawDropZone(haveRom);
-        ui::Gap(ui::kGapM);
-        drawAcquisition(s);
+        drawAcquisition(s, haveRom);
     }
 
     bool keepPopupOpen = true;

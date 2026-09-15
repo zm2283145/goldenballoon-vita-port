@@ -248,7 +248,8 @@ COIN_RACE_RE = re.compile(
 )
 COIN_FINISH_RE = re.compile(
     r"silvercoinfinish: courseId=(?P<course>\d+) leadPlayerIndex=(?P<lead>-?\d+) "
-    r"coins=(?P<coins>-?\d+) silverRace=(?P<silver>-?\d+) timeTrial=(?P<tt>-?\d+) "
+    r"coins=(?P<coins>-?\d+) teamCoins=(?P<team>-?\d+) "
+    r"silverRace=(?P<silver>-?\d+) timeTrial=(?P<tt>-?\d+) "
     r"courseFlags=0x(?P<flags>[0-9a-f]+)"
 )
 WATCH_RE = re.compile(

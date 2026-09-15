@@ -44,13 +44,16 @@ def main() -> int:
         "README.md",
         "not advertised as screen-reader compatible",
     )
+    # The 2026-09-01 README pass reworded the platform limits. Linux still has
+    # no native file picker (platform/app/file_dialog_stub.cpp), and the README
+    # now says so where the player looks for it -- in the getting-started steps
+    # -- rather than in a limitations bullet. The former "campaign is not
+    # automated or claimed complete" disclaimer is gone on purpose: the campaign
+    # has been gated since 2026-08-07 (docs/open-items/README.md), so the
+    # disclaimer had become the false claim.
     require_contains(
         "README.md",
-        "The complete start-to-credits campaign is not automated or claimed complete.",
-    )
-    require_contains(
-        "README.md",
-        "Linux does not yet have a native **Choose ROM File** dialog.",
+        "on Linux, drag the ROM onto the launcher or paste its",
     )
     require_contains(
         "docs/APP_SHELL.md",
@@ -135,6 +138,154 @@ def main() -> int:
         "docs/APP_SHELL.md",
         "Drag-and-drop and the typed path are the documented\npaths on Linux",
     )
+    # Online boundaries: the same six facts pinned in both places a player
+    # reads them (RELEASE_NOTES.md's current release section, README.md's
+    # online section), so a future rewrite cannot drop one from either.
+    # D-WIRE: envelope v3, the MPF2 report and control protocol 2 all changed
+    # in 1.6.0, nothing negotiates and nothing downgrades, so a mixed pair is
+    # refused at room join. One sentence of release copy makes that refusal
+    # read as expected rather than as a bug -- and it belongs in the CURRENT
+    # release section, not merely somewhere in the file's history.
+    if "Both players need the same version of the game." not in release_notes_words:
+        raise AssertionError(
+            "the current release notes must say both players need the same version"
+        )
+    require_contains("README.md", "Both players need the same version of the game.")
+    native_only_claim = (
+        "Online Room ships in native desktop packages. The published browser "
+        "build remains local-only."
+    )
+    if native_only_claim not in release_notes_words:
+        raise AssertionError(
+            "the current release notes must identify Online Room as native-only"
+        )
+    require_contains("README.md", native_only_claim)
+    for known_camera_claim in (
+        "Keep the camera out of walls",
+        "remains an optional, experimental camera mode.",
+        "the default camera, is unaffected.",
+        "check also fails in 1.6.0 on brief correction re-engagements",
+        "class is not new to 1.7.0",
+    ):
+        if known_camera_claim not in release_notes_words:
+            raise AssertionError(
+                "the current release notes must disclose the optional-camera "
+                f"motion residual: {known_camera_claim!r}"
+            )
+    for path in ("RELEASE_NOTES.md", "README.md"):
+        require_contains(path, "Both players must be on the same platform.")
+        require_contains(path, "A race is two players, not more.")
+        require_contains(path, "You can't join a race after it starts.")
+        require_contains(path, "If the host leaves, the race ends.")
+        require_contains(
+            path,
+            "Some networks can't connect two players directly. There is no "
+            "relay yet, so those pairs can't race online for now.",
+        )
+        require_contains(
+            path, "The service that pairs you can see that you're both connected."
+        )
+    # Custom characters are presentation identities. Keep the Workshop's save
+    # review precise: ghosts/network retain a retail character ID, but course
+    # records and adventure saves do not become donor-owned data, and peer
+    # package negotiation is still future work.
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "Course records and adventure saves remain ordinary game data; they ",
+    )
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "do not embed the custom package.",
+    )
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "Package negotiation for online peers ",
+    )
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "is not implemented, so the donor is always the safe authoritative ",
+    )
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "Ghost and network/rollback character ID",
+    )
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "Acceleration curve by vehicle",
+    )
+    if "records, ghosts, saves, and ordinary online authority remain" in settings:
+        raise AssertionError(
+            "the Workshop must not describe ordinary record/save data as "
+            "donor-owned"
+        )
+    # Package selection is a review, not an install side effect. Both native
+    # portable and source-only compiler routes bind the bytes and installed
+    # base that were actually shown before the final action is enabled.
+    for claim in (
+        "Validate and review",
+        "Install reviewed character",
+        "Install reviewed update",
+        "I confirm I have the right to use this package locally",
+        "the importer cannot verify copyright, trademark, attribution, or redistribution rights",
+        "The package or installed character may have changed; validate and review it again.",
+        "License (SPDX)",
+        "Creator / attribution",
+        "Unavailable (legacy cache)",
+        "These declarations and the exact LICENSE.txt bytes are authenticated by the active source digest.",
+    ):
+        require_contains("platform/app/ui_settings.cpp", claim)
+    require_contains(
+        "platform/modern_character_install.c",
+        "the package file changed after review; validate the new bytes before installing",
+    )
+    require_contains(
+        "tools/character_package_manager.py",
+        '"the installed character changed after review; review the "',
+    )
+    require_contains(
+        "docs/MODDING.md",
+        "Drag-and-drop stages the same review instead of bypassing it.",
+    )
+    require_contains(
+        "docs/architecture/custom-character-pipeline.md",
+        "describing those as “owned by the donor” would be incorrect.",
+    )
+    # Disable and delete have intentionally different recoverability. A later
+    # Workshop-authored revision may exist only in the managed directory, so a
+    # generic "remove cache" confirmation would materially understate loss.
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "Disable is reversible and retains every Workshop revision, fit setting, review, and player assignment.",
+    )
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "A revision created only inside the Workshop may have no other copy.",
+    )
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "The external .mdkrchar file you originally chose is not touched.",
+    )
+    require_contains(
+        "docs/MODDING.md",
+        "Importing an update or saving a Portrait, Rig, or Profile Studio revision preserves that state.",
+    )
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "It will be fully revalidated and compiled before becoming current. The present source stays retained",
+    )
+    require_contains(
+        "platform/app/ui_settings.cpp",
+        "Writes the exact authenticated mdkrchar source and refuses to overwrite an existing file.",
+    )
+    registry = (ROOT / "platform/modern_character_registry.c").read_text(
+        encoding="utf-8"
+    )
+    if "registry_init(registry, directory, 0)" not in registry or \
+            "registry_init(registry, directory, 1)" not in registry:
+        raise AssertionError(
+            "runtime discovery and Workshop inventory must retain distinct "
+            "disabled-cache policies"
+        )
     print("product claim boundaries passed")
     return 0
 

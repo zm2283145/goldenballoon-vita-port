@@ -1,6 +1,8 @@
 #include "app_ui_policy.h"
+#include "launcher_panels.h"
 
 #include <cmath>
+#include <cstring>
 #include <cstdio>
 #include <initializer_list>
 #include <iterator>
@@ -178,7 +180,7 @@ int main() {
     // setting away from the player instead of moving it.
     const MdkrVideoKey enhancementKeys[] = {
         MDKR_ENH_SPEEDOMETER, MDKR_ENH_DRAW_DISTANCE, MDKR_ENH_LOD_BIAS,
-        MDKR_ENH_AI_DIFFICULTY,
+        MDKR_ENH_AI_DIFFICULTY, MDKR_ENH_ADVENTURE_PARTY,
     };
     for (MdkrVideoKey key : enhancementKeys) {
         expect(AppUi_settingsSection(key) == AppUiSettingsSection::Enhancements,
@@ -428,6 +430,162 @@ int main() {
                                     "mdkr64-app-ui-input-v1", "smooth") ==
                SmokeMode::Invalid,
            "a pace selection without an input mode is rejected");
+
+    // --- Skip the launcher (issue #60) --------------------------------------
+    // The hold is the way back in, so it is tested first and hardest: if this
+    // is wrong, a player who turned the setting on and has no other machine
+    // has no way to reach their own launcher again.
+    expect(AppUi_launcherHoldOpensLauncher({true, false, false}),
+           "Shift on its own opens the launcher");
+    expect(AppUi_launcherHoldOpensLauncher({false, true, true}),
+           "both shoulders open the launcher");
+    expect(AppUi_launcherHoldOpensLauncher({true, true, true}),
+           "a keyboard and a pad held together still open the launcher");
+    expect(!AppUi_launcherHoldOpensLauncher({false, false, false}),
+           "holding nothing is not a request");
+    // One shoulder is what a pad in a bag holds down. Accepting it would turn
+    // the setting off for anyone who owns a controller and never touches it.
+    expect(!AppUi_launcherHoldOpensLauncher({false, true, false}),
+           "L on its own is not a request");
+    expect(!AppUi_launcherHoldOpensLauncher({false, false, true}),
+           "R on its own is not a request");
+
+    expect(!AppUi_launcherSkipArmed(false, false),
+           "the setting is off by default and the launcher opens");
+    expect(AppUi_launcherSkipArmed(true, false),
+           "the setting on with nothing held boots the game");
+    expect(!AppUi_launcherSkipArmed(true, true),
+           "the hold beats the setting");
+    expect(!AppUi_launcherSkipArmed(false, true),
+           "holding it with the setting off changes nothing");
+
+    // The readiness gate. Start from the one state that must boot, then take
+    // away one fact at a time: every removal has to stop it.
+    const AppUiLauncherSkipReadiness ready = {
+        /*armed=*/true, /*dispatched=*/false, /*romRemembered=*/true,
+        /*romValid=*/true, /*validationPending=*/false,
+        /*playValidationPending=*/false, /*bootErrorVisible=*/false,
+        /*otherWorkPending=*/false};
+    expect(AppUi_launcherSkipShouldBoot(ready),
+           "an armed launch with a settled, valid remembered ROM boots");
+    {
+        AppUiLauncherSkipReadiness state = ready;
+        state.armed = false;
+        expect(!AppUi_launcherSkipShouldBoot(state),
+               "an unarmed launch never boots itself");
+        state = ready;
+        state.dispatched = true;
+        expect(!AppUi_launcherSkipShouldBoot(state),
+               "the direct boot is asked for once per launch");
+        state = ready;
+        state.romRemembered = false;
+        expect(!AppUi_launcherSkipShouldBoot(state),
+               "a first run has no ROM to boot and shows the launcher");
+        state = ready;
+        state.romValid = false;
+        expect(!AppUi_launcherSkipShouldBoot(state),
+               "a remembered ROM that no longer verifies shows the launcher");
+        state = ready;
+        state.validationPending = true;
+        expect(!AppUi_launcherSkipShouldBoot(state),
+               "nothing is decided while the remembered ROM is still being read");
+        state = ready;
+        state.playValidationPending = true;
+        expect(!AppUi_launcherSkipShouldBoot(state),
+               "the final check is not started twice");
+        state = ready;
+        state.bootErrorVisible = true;
+        expect(!AppUi_launcherSkipShouldBoot(state),
+               "a card the player has not read is not booted past");
+        state = ready;
+        state.otherWorkPending = true;
+        expect(!AppUi_launcherSkipShouldBoot(state),
+               "a Workshop preview keeps Play for itself");
+    }
+    // Where the setting is drawn. It is a launcher behaviour, not an access
+    // need and not one of the extras, so it belongs with the other shell rows
+    // (the update check, the developer tools) rather than in a section a reset
+    // action or the accessibility grouping would sweep up.
+    expect(AppUi_settingsSection(MDKR_APP_SKIP_LAUNCHER) ==
+               AppUiSettingsSection::Category,
+           "Skip the launcher is drawn beside the other shell settings");
+    expect(!AppUi_enhancementResetIncludes(MDKR_APP_SKIP_LAUNCHER),
+           "Reset enhancements leaves Skip the launcher alone");
+
+
+    // --- Destinations -------------------------------------------------------
+    // Six panels are a numeric smoke contract and do not move. Destinations are
+    // the layer above them, so the interface can be reorganised without
+    // renumbering anything the Online Room or the nav gates depend on.
+    expect(AppUi_destinationForPanel(kLauncherPanelPlay) ==
+               AppUiDestination::Play,
+           "Play panel is the Play destination");
+    expect(AppUi_destinationForPanel(kLauncherPanelOnlineRoom) ==
+               AppUiDestination::Play,
+           "Online Room is a way to play, not its own destination");
+    expect(AppUi_destinationForPanel(kLauncherPanelCharacterWorkshop) ==
+               AppUiDestination::Content,
+           "Character Workshop lives under Content");
+    expect(AppUi_destinationForPanel(kLauncherPanelSettings) ==
+               AppUiDestination::Settings,
+           "Settings keeps its own destination");
+    expect(AppUi_destinationForPanel(kLauncherPanelDiagnostics) ==
+               AppUiDestination::Support,
+           "Diagnostics moves to About & support");
+    expect(AppUi_destinationForPanel(kLauncherPanelAbout) ==
+               AppUiDestination::Support,
+           "About merges into About & support");
+
+    for (AppUiDestination destination :
+         {AppUiDestination::Play, AppUiDestination::Content,
+          AppUiDestination::Settings, AppUiDestination::Support}) {
+        const int panel = AppUi_defaultPanelForDestination(destination);
+        expect(panel >= 0 && panel < kLauncherPanelCount,
+               "default panel is inside the panel contract");
+        expect(AppUi_destinationForPanel(panel) == destination,
+               "default panel round-trips to its destination");
+        expect(AppUi_destinationLabel(destination) != nullptr &&
+                   AppUi_destinationLabel(destination)[0] != '\0',
+               "every destination has a label");
+    }
+
+    // Out of range fails closed to Play rather than indexing a table.
+    expect(AppUi_destinationForPanel(-1) == AppUiDestination::Play,
+           "negative panel falls back to Play");
+    expect(AppUi_destinationForPanel(kLauncherPanelCount) ==
+               AppUiDestination::Play,
+           "past-the-end panel falls back to Play");
+
+    expect(std::strcmp(AppUi_destinationLabel(AppUiDestination::Support),
+                       "About & support") == 0,
+           "the footer destination is named for what a player wants from it");
+    {
+        int footers = 0;
+        for (AppUiDestination destination :
+             {AppUiDestination::Play, AppUiDestination::Content,
+              AppUiDestination::Settings, AppUiDestination::Support}) {
+            footers += AppUi_destinationIsFooter(destination) ? 1 : 0;
+        }
+        expect(footers == 1, "exactly one destination is drawn in the footer");
+    }
+
+    // The rail lights the destination that OWNS the active panel, so opening
+    // the Online Room from Play does not extinguish the rail's only lit item.
+    expect(AppUi_destinationSelected(AppUiDestination::Play,
+                                     kLauncherPanelOnlineRoom),
+           "Play stays lit while the Online Room panel is active");
+    expect(!AppUi_destinationSelected(AppUiDestination::Settings,
+                                      kLauncherPanelOnlineRoom),
+           "only the owning destination is lit");
+    for (int panel = 0; panel < kLauncherPanelCount; ++panel) {
+        int lit = 0;
+        for (AppUiDestination destination :
+             {AppUiDestination::Play, AppUiDestination::Content,
+              AppUiDestination::Settings, AppUiDestination::Support}) {
+            lit += AppUi_destinationSelected(destination, panel) ? 1 : 0;
+        }
+        expect(lit == 1, "exactly one destination is lit for every panel");
+    }
 
     if (failures) {
         std::printf("%d app UI policy failure(s)\n", failures);

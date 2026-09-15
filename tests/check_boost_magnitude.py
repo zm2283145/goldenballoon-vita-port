@@ -26,12 +26,33 @@ relied on to keep crossing one particular pad, and a check calibrated on one
 would be measuring the AI, not the boost.
 
 So `MDKR_ZIPPAD_BOOST=<frame>[:<ticks>]` (game/src/objects.c) arms the human
-racer in exactly the state `racer.c:5727` arms it in for `SURFACE_ZIP_PAD` on a
+racer in exactly the state `racer.c:6554` arms it in for `SURFACE_ZIP_PAD` on a
 car — `boostTimer = normalise_time(45)`, `boostType = BOOST_LARGE` — once, at a
 fixed frame.  Everything downstream is untouched decomp code: all 310
 boost/velocity statements in `game/src/racer.c` are byte-identical to the decomp
 baseline in `.decomp-baseline`, so what is measured here IS the shipping boost,
 with a deterministic trigger substituted for a chaotic one.
+
+AND THE THROTTLE IS HELD, WHICH IS PART OF THE TRIGGER.  A pad boost is authored
+to be ridden with the accelerator down; the 22.36 plateau below is the
+equilibrium of exactly that state, sqrt(2.0 / gSurfaceTractionTable[0]) =
+sqrt(2.0 / 0.004).  The fixture drives with DKR's own AI, and that AI decides per
+boost, on `roll_percent_chance()` (`racer.c:1036`), whether to LIFT OFF while
+boosting — `unk209 |= 4`, which clears A_BUTTON.  With A released the authored
+velocity update takes the other side of the `velSquare < 1.0f` split
+(`racer.c:6564`), and velSquare is negated while driving forward, so that side is
+taken at ANY speed: the quadratic drag `v*v*traction` is replaced by the linear
+`v*traction*8`, the same 2.0/tick thrust runs toward 2.0 / (8 * 0.004) = 62.5,
+and 45 ticks cannot reach it — so the peak stops being the boost's terminal speed
+and becomes "wherever the racing line cut the ramp off".  The roll's own chance
+is interpolated from the number of CPU racers AHEAD of the racer (`racer.c:987`),
+so an uncontrolled roll makes this measurement racer-count dependent, which is
+the very question the check asks.  The seam therefore holds the accelerator for
+the armed racer for as long as its boost runs
+(`mdkr_zippad_boost_hold_throttle`), leaving the AI's own election untouched and
+reporting it in the trace as `lift=`.  Measured 2026-09-03: the split flipped
+that roll to "lift" and the two arms read 50.401 and 45.519 against a 22.36
+ceiling — the boost was never wrong, the fixture was measuring a coin flip.
 
 THE BROKEN DIRECTION (a check that cannot fail is not a check).  The `<ticks>`
 field is the perturbed boost constant.  Two control arms run every time:
@@ -45,17 +66,17 @@ Both must FAIL the baseline assertions.  If either one passes, this check fails
 with POSITIVE CONTROL BROKEN, because that means the assertions below no longer
 constrain the boost constant at all.
 
-MEASURED (2026-08-03, arming frame 4000, cadence enhanced / 1 field, Ancient Lake,
+MEASURED (2026-09-03, arming frame 4000, cadence enhanced / 1 field, Ancient Lake,
 default car, `MDKR_AUTOPILOT`; every number reproduced run to run):
 
   arm                       cruise   boost frames   peak |velocity|   peak/cruise
-  8-racer Tracks            12.542        45           22.241            1.97x
-  solo Time Trial           12.769        45           22.323            1.95x
-  control :15               12.571        15           21.667            1.90x
-  control :120              12.494       120           22.361            1.98x
+  8-racer Tracks            12.245        45           22.359            1.98x
+  solo Time Trial           12.840        45           22.359            1.90x
+  control :15               12.271        15           21.689            1.82x
+  control :120              12.190       120           22.362            2.02x
 
-The eight-racer and the solo Time Trial peaks differ by 0.082 velocity units —
-0.37% — with the boost armed identically.  There is no racer-count coupling in
+The eight-racer and the solo Time Trial peaks differ by 0.0004 velocity units —
+0.002% — with the boost armed identically.  There is no racer-count coupling in
 the mechanism, and `normalise_time()` (objects.c:1341) has no framerate term
 either: it is a PAL 5/6 rescale of the constant and nothing else.
 
@@ -93,7 +114,7 @@ FRAMES = 4200          # ARM_FRAME + the 90-frame observation window + slack
 SPAN = 90              # observation window, in frames, from the arming frame
 STRIDE = 3             # trace sample stride -> 30 samples per arm
 
-BOOST_TICKS = 45       # the authored constant: racer.c:5727 normalise_time(45)
+BOOST_TICKS = 45       # the authored constant: racer.c:6555 normalise_time(45)
 
 # --- thresholds (provenance: the measured table in the module docstring) -------
 #
@@ -111,20 +132,21 @@ BOOST_TICKS = 45       # the authored constant: racer.c:5727 normalise_time(45)
 ENTRY_VEL_MIN, ENTRY_VEL_MAX = 9.0, 16.0
 # Cruise sanity: the median non-boost in-race position step.  Measured 12.23..12.77.
 CRUISE_MIN, CRUISE_MAX = 10.0, 16.0
-# Peak |velocity| in the window: the boost's terminal speed.  Measured 22.357
-# (race) and 22.336 (time trial) -- and 22.358 when the timer is held 2.7x
-# longer, which is the saturation result the docstring describes.
+# Peak |velocity| in the window: the boost's terminal speed.  Measured 22.359
+# (race) and 22.359 (time trial) -- and 22.362 when the timer is held 2.7x
+# longer, which is the saturation result the docstring describes.  It is
+# sqrt(2.0 / 0.004) = 22.36: the 2.0/tick boost thrust in equilibrium with the
+# authored default-surface drag.
 PEAK_VEL_MIN, PEAK_VEL_MAX = 21.5, 23.0
 #
 # TAIL -- samples 18..29 (frames +55 .. +88), well after a 45-tick boost has
-# decayed, as a fraction of the run's own plateau.  Measured 0.556 on the race
-# fixture and 0.337 solo (the AI is braking into a corner there); the :120
-# control sits at 0.960.  This is the assertion that catches a boost constant
+# decayed, as a fraction of the run's own plateau.  Measured 0.605 on the race
+# fixture and 0.612 solo; the :120 control sits at 0.944.  This is the assertion that catches a boost constant
 # perturbed UPWARD, which the peak cannot see because the boost saturates.
 TAIL_FROM, TAIL_TO = 18, 30
 TAIL_FRACTION_MAX = 0.75
 #
-# Cross-mode: the G1 question itself.  Measured difference 0.021 velocity units.
+# Cross-mode: the G1 question itself.  Measured difference 0.0004 velocity units.
 CROSS_MODE_VEL_TOL = 0.5
 
 BOOST_RE = re.compile(
@@ -192,12 +214,17 @@ def run_arm(binary: str, rom: str, arm: Arm, verbose: bool) -> Arm:
         arm.errors.append(f"exit code {proc.returncode}")
     for marker in ("[CRASH]", "[FATAL]"):
         if marker in out:
-            line = next((l for l in out.splitlines() if marker in l), marker)
+            line = next(
+                (output_line for output_line in out.splitlines()
+                 if marker in output_line),
+                marker)
             arm.errors.append(f"{marker} in output: {line.strip()}")
     m = SANITIZER_RE.search(out)
     if m is not None:
-        line = next((l for l in out.splitlines() if SANITIZER_RE.search(l)),
-                    m.group(0))
+        line = next(
+            (output_line for output_line in out.splitlines()
+             if SANITIZER_RE.search(output_line)),
+            m.group(0))
         arm.errors.append(f"sanitizer diagnostic: {line.strip()}")
 
     if not ARM_RE.search(out):

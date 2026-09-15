@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lock the native and browser local-only release boundary.
+"""Lock the native cloud-origin and browser local-only release boundaries.
 
 Phase 3 split the old "an origin-less build shows zero party surface" rule into
 the two properties it was really protecting:
@@ -103,6 +103,9 @@ def main() -> int:
             encoding="utf-8")
         mac = (ROOT / "macos/Scripts/build_app_bundle.sh").read_text(
             encoding="utf-8")
+        mac_release = (ROOT / ".github/workflows/macos-release.yml").read_text(
+            encoding="utf-8")
+        mac_readme = (ROOT / "macos/README.md").read_text(encoding="utf-8")
         prepare = (ROOT / "tools/web/prepare_local_only_release.py").read_text(
             encoding="utf-8")
 
@@ -117,15 +120,25 @@ def main() -> int:
         # appear without an origin.
         for failure in party_surface_failures(rom, phone):
             require(False, failure)
-        require(release.count("-DMDKR_ENABLE_ONLINE_ROOM_PREVIEW=OFF") == 2,
-                "Linux and Windows release builds must compile out Online Room")
+        require(release.count("-DMDKR_ENABLE_ONLINE_BETA=ON") == 2 and
+                release.count("-DMDKR_ENABLE_ONLINE_ROOM_PREVIEW=OFF") == 2,
+                "Linux and Windows release builds must explicitly enable the "
+                "native online beta without enabling the bare preview path")
         require(release.count("MDKR_ONLINE_ROOM_PREVIEW=1") == 2 and
-                release.count('"Online Room" Play') == 2 and
+                release.count('"Online Room" "Online Room"') == 2 and
                 release.count("active-panel=$expected_panel") == 2,
-                "built and packaged launchers do not prove the preview stays absent")
-        require("-DMDKR_ENABLE_ONLINE_ROOM_PREVIEW=OFF" in mac and
-                "unexpectedly includes the deferred Online Room preview" in mac,
-                "macOS release bundle does not compile and verify the preview out")
+                "built and packaged launchers do not prove the native online "
+                "panel is present")
+        require("ONLINE_BETA_CMAKE_ARGS=(-DMDKR_ENABLE_ONLINE_BETA=OFF)" in mac and
+                "Build cache unexpectedly enables the online beta" in mac and
+                "Build cache does not enable the requested online beta" in mac and
+                "Online beta build cache does not enable its required native "
+                "transport" in mac,
+                "macOS bundle does not force and verify both online-beta cache states")
+        require("--allow-online-beta" in mac_release and
+                "--allow-online-beta" in mac_readme,
+                "macOS workflow and local release reconstruction do not both "
+                "opt into the native online beta")
 
         require("prepare_local_only_release.py" in web and
                 "check_browser_local_only_release.py" in web and
@@ -143,8 +156,8 @@ def main() -> int:
               file=sys.stderr)
         return 1
     print("check_release_local_only_surface: PASS -- cloud surface stays "
-          "origin-gated, local play is origin-independent, previews compiled "
-          "out and Pages cloud routes removed")
+          "origin-gated, native release workflows opt into the online beta, "
+          "local play is origin-independent and Pages cloud routes are removed")
     return 0
 
 

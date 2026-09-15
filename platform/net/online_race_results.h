@@ -44,7 +44,7 @@ bool mdkr_online_race_results_poll(
  * post-race fork uses it (via mdkr_online_session_resume_results) to gate
  * re-entering the session's RESULTS phase on a genuinely captured finish while
  * leaving the placements for the RESULTS screen to poll. Beta-only (its callers
- * are beta-gated), so the release online_race_results.c.o stays byte-identical. */
+ * are beta-gated), so the beta-OFF online_race_results.c.o stays byte-identical. */
 #if MDKR_ENABLE_ONLINE_BETA
 bool mdkr_online_race_results_available(void);
 #endif

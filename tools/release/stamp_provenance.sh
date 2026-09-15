@@ -9,21 +9,49 @@
 # `Golden-Balloon-<version>-<platform>-<arch>`; filenames are checked exactly
 # before a sidecar is written.
 #
-# Usage: tools/release/stamp_provenance.sh <asset-path> <version>
+# Usage: tools/release/stamp_provenance.sh \
+#          --phone-party partyless|cloud-enabled <asset-path> <version>
 #
-# Emits "<asset-path>.provenance.json" recording the asset's sha256 and the
-# source commit + builder/run identity it was produced from. In GitHub Actions
-# the commit + run identity come from the GITHUB_* env; locally they fall back to
-# the current git HEAD and a "local-<os>" builder. verify_provenance.sh consumes
-# these sidecars and fails a release CLOSED on any missing/stale/mismatched one.
+# Emits "<asset-path>.sha256" with a basename-only checksum plus
+# "<asset-path>.provenance.json" recording that digest and the source commit +
+# builder/run identity. In GitHub Actions the commit + run identity come from
+# the GITHUB_* env; locally they fall back to the current git HEAD and a
+# "local-<os>" builder. verify_provenance.sh consumes both sidecars and fails a
+# release CLOSED on any missing/stale/mismatched one.
 #
 # python-free by design: the sidecar is a flat JSON of controlled values (hex
 # digests, a version/commit string, numeric run ids, a workflow name) written
 # with printf so this can run under the MINGW64 msys2 shell (no python there).
 set -euo pipefail
 
-asset="${1:?usage: stamp_provenance.sh <asset-path> <version>}"
-version="${2:?usage: stamp_provenance.sh <asset-path> <version>}"
+usage() {
+  echo "Usage: $0 --phone-party partyless|cloud-enabled <asset-path> <version>"
+}
+
+phone_party=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --phone-party)
+      [[ $# -ge 2 ]] || { usage >&2; exit 2; }
+      phone_party="$2"
+      shift 2
+      ;;
+    -h|--help) usage; exit 0 ;;
+    --) shift; break ;;
+    -*) echo "ERROR: unknown option: $1" >&2; usage >&2; exit 2 ;;
+    *) break ;;
+  esac
+done
+[[ $# -eq 2 ]] || { usage >&2; exit 2; }
+asset="$1"
+version="$2"
+case "$phone_party" in
+  partyless|cloud-enabled) ;;
+  *)
+    echo "ERROR: --phone-party must be partyless or cloud-enabled." >&2
+    exit 2
+    ;;
+esac
 [[ -f "$asset" ]] || { echo "ERROR: asset not found: $asset" >&2; exit 1; }
 if [[ "$version" != "dev" && ! "$version" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]; then
   echo "ERROR: version must be dev or bare semver (for example the current release version)." >&2
@@ -84,12 +112,15 @@ case "$base" in
 esac
 
 out="${asset}.provenance.json"
+checksum="${asset}.sha256"
+printf '%s  %s\n' "$digest" "$base" > "$checksum"
 cat > "$out" <<EOF
 {
   "schema": "mdkr64-provenance/1",
   "artifact": "$(json_str "$base")",
   "builder": "$(json_str "$builder")",
   "commit": "$(json_str "$commit")",
+  "phone_party": "$(json_str "$phone_party")",
   "platform": "$(json_str "$platform")",
   "run_id": "$(json_str "$run_id")",
   "run_number": "$(json_str "$run_number")",
@@ -99,4 +130,4 @@ cat > "$out" <<EOF
   "workflow": "$(json_str "$workflow")"
 }
 EOF
-echo "stamped $out (commit ${commit:0:12}, sha256 ${digest:0:12}...)"
+echo "stamped $checksum + $out (commit ${commit:0:12}, sha256 ${digest:0:12}...)"

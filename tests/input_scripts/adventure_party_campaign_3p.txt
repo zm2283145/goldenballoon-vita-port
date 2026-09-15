@@ -1,0 +1,93 @@
+# AP-18 campaign-sweep frontend: form a three-seat Adventure Party on a
+# checksum-valid started slot, then supply sparse confirmation edges for
+# production door/cabinet dialogue, post-race screens, and cutscene returns.
+
+1250 START 4
+1330 START 4
+1450 A 4 P2
+1490 A 4 P3
+1580 A 4 P1
+1640 A 4 P2
+1700 A 4 P3
+1800 A 4 P1
+2050 A 4 P1
+2300 A 4 P1
+
+# Sparse host confirmation edges. MDKR_DRIVE_ROUTE/MDKR_AUTOPILOT own movement;
+# these are deliberately edges, not a hold, so input_pressed() menus see them.
+3000 A 4 P1
+3250 A 4 P1
+3500 A 4 P1
+3750 A 4 P1
+4000 A 4 P1
+4250 A 4 P1
+4500 A 4 P1
+4750 A 4 P1
+5000 A 4 P1
+5250 A 4 P1
+5500 A 4 P1
+5750 A 4 P1
+6000 A 4 P1
+6250 A 4 P1
+6500 A 4 P1
+6750 A 4 P1
+7000 A 4 P1
+7250 A 4 P1
+7500 A 4 P1
+7750 A 4 P1
+8000 A 4 P1
+8250 A 4 P1
+8500 A 4 P1
+8750 A 4 P1
+9000 A 4 P1
+9250 A 4 P1
+9500 A 4 P1
+9750 A 4 P1
+10000 A 4 P1
+10250 A 4 P1
+10500 A 4 P1
+10750 A 4 P1
+11000 A 4 P1
+11250 A 4 P1
+11500 A 4 P1
+11750 A 4 P1
+12000 A 4 P1
+12250 A 4 P1
+12500 A 4 P1
+12750 A 4 P1
+13000 A 4 P1
+13250 A 4 P1
+13500 A 4 P1
+13750 A 4 P1
+14000 A 4 P1
+14250 A 4 P1
+14500 A 4 P1
+14750 A 4 P1
+15000 A 4 P1
+15250 A 4 P1
+15500 A 4 P1
+15750 A 4 P1
+16000 A 4 P1
+16250 A 4 P1
+16500 A 4 P1
+16750 A 4 P1
+17000 A 4 P1
+17250 A 4 P1
+17500 A 4 P1
+17750 A 4 P1
+18000 A 4 P1
+18250 A 4 P1
+18500 A 4 P1
+18750 A 4 P1
+19000 A 4 P1
+19250 A 4 P1
+19500 A 4 P1
+19750 A 4 P1
+20000 A 4 P1
+20250 A 4 P1
+20500 A 4 P1
+20750 A 4 P1
+21000 A 4 P1
+21250 A 4 P1
+21500 A 4 P1
+21750 A 4 P1

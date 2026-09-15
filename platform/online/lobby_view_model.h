@@ -58,7 +58,7 @@ typedef enum MdkrOnlineViewFailure {
     /* Race-scoped recovery reasons owned by the beta online-live engine
      * session (platform/app/main_app.cpp), routed to the post-race panel
      * after the visible engine ends. Gated behind the beta macro so the
-     * OFF/release build's MdkrOnlineViewFailure layout -- and every switch /
+     * beta-OFF build's MdkrOnlineViewFailure layout -- and every switch /
      * range check keyed on _COUNT -- stays byte-identical. OPPONENT_LEFT: a
      * roster peer vanished mid-race. OPPONENT_NEVER_STARTED: the race-start
      * barrier aborted before the first authored tick (peer never delivered
@@ -122,6 +122,19 @@ typedef enum MdkrOnlineInviteState {
 } MdkrOnlineInviteState;
 
 enum { MDKR_ONLINE_VERIFICATION_PHRASE_BYTES = 64 };
+enum { MDKR_ONLINE_ROUTE_QUALITY_BYTES = 32 };
+enum { MDKR_ONLINE_ROUTE_BAND_BYTES = 12 };
+
+/* Already-scored pre-flight route quality, reduced to what the chip states.
+ * The projection deliberately takes the band's NAME rather than the wire
+ * record, so the browser build of this reducer does not link the preflight
+ * unit; the score/band agreement is enforced where the record is decoded
+ * (platform/net/match_preflight.c). */
+typedef struct MdkrOnlineViewRouteQuality {
+    uint16_t    p95_rtt_ms;
+    uint8_t     score; /* 1-10 */
+    const char *band;  /* borrowed; "steady" / "uneven" / "rough" */
+} MdkrOnlineViewRouteQuality;
 
 typedef struct MdkrOnlineViewInput {
     const MdkrSessionState *session;
@@ -134,6 +147,14 @@ typedef struct MdkrOnlineViewInput {
      * from room/service state. NULL means the secure check is still running.
      * The projection validates and copies at most 63 display bytes. */
     const char *verification_phrase;
+    /* This endpoint's settled pre-flight route quality, or NULL while the
+     * measurement is still running. Locally measured; never accepted from
+     * room/service state. */
+    const MdkrOnlineViewRouteQuality *route_quality;
+    /* True while the measurement is running and has not settled. Start is
+     * never held for it, so the chip has to be able to say the check is still
+     * happening rather than show nothing at all. */
+    bool route_measuring;
     /* Local release configuration only. Never derive this from room/service
      * data. It remains false until the separately reviewed rollback GO. */
     bool race_admission_enabled;
@@ -160,6 +181,9 @@ typedef struct MdkrOnlineViewModel {
     const char *status;
     /* Non-empty only in the explicit human-confirmation preflight state. */
     char verification_phrase[MDKR_ONLINE_VERIFICATION_PHRASE_BYTES];
+    /* One room chip, "~45 ms · steady", or "Checking connection…" while
+     * the measurement is still running. Empty when neither applies. */
+    char route_quality[MDKR_ONLINE_ROUTE_QUALITY_BYTES];
     MdkrOnlineViewControl primary;
     MdkrOnlineViewControl secondary;
     MdkrOnlineViewControl cancel;

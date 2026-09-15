@@ -1,9 +1,10 @@
 /*
  * Native online BETA: launcher-side live-adapter wiring.
  *
- * Compiled ONLY under MDKR_ENABLE_ONLINE_BETA (the CMake beta gate; never in a
- * shipping build -- the option defaults OFF and release.yml/build_app_bundle.sh
- * never set it). Provides the real OnlineRoom_makeGatedLiveAdapter the Online
+ * Compiled ONLY under MDKR_ENABLE_ONLINE_BETA (defaults OFF for ordinary
+ * development builds; native release profiles explicitly enable the beta).
+ * The published browser remains local-only. Provides the real
+ * OnlineRoom_makeGatedLiveAdapter the Online
  * Room panel calls: it composes the production MatchRoom HTTP transport, the
  * real signal-client mesh backend and the live match adapter EXACTLY as the
  * end-to-end transport driver does
@@ -27,12 +28,14 @@
 #include "online/match_live_adapter.h"
 #include "online/match_live_transport.h"
 #include "online/online_track_table.h"
+#include "net/net_failure_ring.h"
 #include "net/net_roster_runtime.h"
 #include "net/party_link.h"
 
 #include "app_version.h"
 #include "online/compatibility_identity.h"
 #include "platform_os.h"  /* platform_source_is_european(): loopback ROM region */
+#include "user_paths.h"
 
 #include <algorithm>
 #include <cctype>
@@ -315,6 +318,15 @@ std::unique_ptr<IMdkrOnlineAdapter> OnlineRoom_makeGatedLiveAdapter(
                      "[online-live] refused: compatibility is not this "
                      "build's provenance identity (canned fixture?)\n");
         return nullptr;
+    }
+
+    /* Give the failure ring somewhere to land a dump. A shipped build sets no
+     * state-hash artifact, so without this a peer loss would record a tail
+     * nobody can read. The directory is the one diag_log names mdkr64.log in,
+     * which is the file support asks a player for. */
+    char logDirectory[1024];
+    if (mdkr_user_log_directory(logDirectory, sizeof(logDirectory))) {
+        mdkr_net_failure_ring_set_log_directory(logDirectory);
     }
 
     /* Construction never touches the network: the room transport begins on the
@@ -772,8 +784,8 @@ ConsumeOnceHandoff sRaceBoot;
  * beta-only wiring TU, rather than in platform/net/net_roster_runtime.c: that
  * file is compiled into every build without the MDKR_ENABLE_ONLINE_BETA macro,
  * so state or state-mutating functions added there would leak into the
- * OFF/release binary. Only online boots install a roster, so the token belongs
- * with the online code and the release build stays byte-identical. */
+ * beta-OFF binary. Only online boots install a roster, so the token belongs
+ * with the online code and the beta-OFF build stays byte-identical. */
 uint64_t sRosterOwnerToken = 0u;
 }  // namespace
 

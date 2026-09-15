@@ -455,10 +455,21 @@ the Save Editor, and the Controls overlay. The former bring-up verification
 checklist was removed because it no longer described the state of the port.
 
 1. Root-cause the optional Remastered-preset shader-compile crash (see
-   [Known issues](#known-issues)). The supported Restored preset is stable.
-2. Additional multiplayer, third-party controller, and long-session reports
-   remain useful for broad hardware coverage, but are not release blockers.
-3. If a native ROM-picker/launcher UI is wanted eventually (rather than the
+   [Known issues](#known-issues)). The supported Restored preset is stable. A
+   VitaDebugger build is now available with `-DMDKR_VITA_DEBUGGER=ON`; it links
+   the local `libuvdb.a` plus matching kuBridge/kernel stubs and stops on TCP
+   port 1234 before renderer startup, allowing the crash to be reproduced under
+   `arm-vita-eabi-gdb` with the unstripped `mdkr64` ELF.
+2. Port upstream multiplayer to Vita in stages. First validate deterministic
+   two-instance races between a physical Vita and Vita3K, then choose between
+   direct Vita-to-Vita ad hoc/LAN transport and the upstream internet room
+   transport. A relay server remains a planned fallback for peer pairs that
+   cannot establish a direct route. This requires a Vita-native lobby surface,
+   network lifecycle/SSL integration, matching-version enforcement, and real
+   two-device testing; it is a roadmap item, not a current release claim.
+3. Additional third-party controller and long-session reports remain useful
+   for broad hardware coverage, but are not release blockers.
+4. If a native ROM-picker/launcher UI is wanted eventually (rather than the
    fixed-path `--rom`/`DEFAULT_ROM` convention used for this first cut), it
    would need to be built from scratch against `vita2d`/`SceCommonDialog`
    rather than reusing `MDKR_APP`'s ImGui launcher, which is desktop-only.

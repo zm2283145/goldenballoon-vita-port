@@ -11,7 +11,57 @@
 #ifndef MDKR64_UI_SETTINGS_H
 #define MDKR64_UI_SETTINGS_H
 
+#include <string>
+
+#include "engine_entry.h"
+#include "modern_character_gameplay_profile.h"
+
 struct SDL_Window;
+
+struct SettingsCharacterPreviewRequest {
+    std::string packageId;
+    std::string sourceSha256;
+    std::string fitSha256;
+    std::string presentationSha256;
+    MdkrCharacterPreviewContext context = MDKR_CHARACTER_PREVIEW_SELECT;
+    MdkrCharacterPreviewScene scene =
+        MDKR_CHARACTER_PREVIEW_SCENE_BASELINE;
+    int players = 1;
+    MdkrCharacterPreviewPose pose = MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+    unsigned posePhaseMilli = 0u;
+    MdkrCharacterPreviewPose transitionFromPose =
+        MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+    unsigned transitionFromPhaseMilli = 0u;
+    int viewYawDegrees = 0;
+    int viewPitchDegrees = 0;
+    MdkrWorkshopPreviewLighting lighting =
+        MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
+    std::string capturePng;
+    MdkrCharacterPreviewCaptureKind captureKind =
+        MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
+    bool autoReturnAfterCapture = false;
+    bool launcherOwnedCapture = false;
+    bool portraitSourceHandoff = false;
+    bool interactiveStudio = false;
+    bool representativeMotionReview = false;
+    bool donorReference = false;
+};
+
+struct SettingsCharacterPreviewDisposition {
+    bool launcherOwnedCapture = false;
+    bool portraitSourceHandoff = false;
+    bool interactiveStudio = false;
+    bool representativeMotionReview = false;
+    bool donorReference = false;
+    MdkrCharacterPreviewScene scene =
+        MDKR_CHARACTER_PREVIEW_SCENE_BASELINE;
+};
+
+struct SettingsCharacterStudioFrame {
+    bool fitReady = false;
+    bool measurementReady = false;
+    bool returnRequested = false;
+};
 
 // Draw the settings sections (one per MdkrVideoCategory) inside the current
 // content region. Shared verbatim by the launcher and the in-game F1 overlay;
@@ -21,6 +71,94 @@ struct SDL_Window;
 // Returns true when any setting was changed this frame (the caller may want to
 // re-read live state).
 bool Settings_draw(SDL_Window *window, bool compact = false);
+
+// Draw the complete Character Workshop in its launcher-owned destination.
+// General Settings intentionally exposes only a shortcut and assignment
+// summary; keeping authoring here prevents a growing inspector from consuming
+// the ordinary settings hierarchy. The in-game overlay must not call this.
+bool Settings_drawCharacterWorkshop(SDL_Window *window,
+                                    bool compact = false);
+
+// One-shot request raised by the Settings shortcut. The launcher owns panel
+// routing, so the shared settings module never reaches into LauncherState.
+// Draw the installed-pack accounting -- every pack the scan found, and every
+// one it skipped with the reason. Owned by the settings module because that is
+// where the registry plumbing lives; drawn by the Content destination, which is
+// where a player looks for it.
+bool Settings_drawContentPacks(SDL_Window *window, bool compact);
+
+// The installed-character accounting: how many are installed, how many enabled,
+// and every one the scan skipped with its reason. Same split as the packs list
+// above -- owned here, drawn by the Content destination.
+bool Settings_drawCustomCharacters(bool compact);
+
+bool Settings_takeCharacterWorkshopOpenRequest();
+
+// Publish the immutable numeric donor summary extracted while the launcher
+// validates the player's ROM. The settings UI never owns or re-reads ROM bytes.
+// Passing null or an invalid/version-mismatched summary clears the comparison.
+void Settings_setDonorGameplayProfiles(
+    const MdkrDonorGameplayProfiles *profiles,
+    const char *unavailableReason = nullptr);
+
+// Validate a package or begin a resumable raw-GLB authoring draft. This is also
+// the window-wide drag-and-drop entry point, so platforms without a native
+// picker retain both flows. GLB intake creates a source package first; every
+// resulting package still enters the ordinary mutation-free comparison and
+// explicit commit boundary.
+bool Settings_importCharacterPackage(const char *path);
+
+// Open the same bounded native source picker used by the Workshop import
+// rail and retain the selected path for ordinary explicit validation/review.
+// This lets the launcher's contextual primary action lead directly into the
+// ROM-free authoring journey without duplicating picker filters or bypassing
+// any import gate. False means unavailable or cancelled.
+bool Settings_chooseCharacterSource();
+
+// Resolve and activate the Workshop-owned persistent primary action. The
+// launcher renders this result but deliberately knows nothing about candidate,
+// raw-draft, installed-package, or readiness state.
+struct SettingsCharacterWorkshopPrimaryAction {
+    const char *id = "import-source";
+    const char *label = "Browse character source…";
+    const char *compactLabel = "Import character…";
+    const char *description =
+        "Choose a local character package, model, adapter result, or authoring source. This does not require a ROM and nothing installs before validation and review.";
+    const char *destination = "overview";
+};
+
+SettingsCharacterWorkshopPrimaryAction
+Settings_characterWorkshopPrimaryAction();
+bool Settings_activateCharacterWorkshopPrimaryAction();
+
+// Consume the one-shot exact-game preview requested by the launcher Workshop.
+// The in-game compact Settings view never produces one: starting another engine
+// inside a running engine would violate the host/session lifetime contract.
+bool Settings_takeCharacterPreviewRequest(
+    SettingsCharacterPreviewRequest &request);
+// Focused editor drawn by the launcher-owned exact-preview overlay. It edits
+// the same persisted profile as Offset Studio and live-publishes validated
+// presentation tuning to player one; it never starts a nested engine session.
+SettingsCharacterStudioFrame Settings_drawCharacterOffsetStudio(
+    SDL_Window *window, const char *packageId,
+    MdkrCharacterPreviewContext context, bool initializeRuntime);
+// Final save gate shared by the visible button and Escape/controller-back
+// confirmation. Returns false after restoring the last durable fit.
+bool Settings_commitCharacterOffsetStudio(
+    const char *packageId, MdkrCharacterPreviewContext context);
+// Rebind an interactive studio result to the profile that actually left the
+// exact renderer. Empty means the package/context is no longer available.
+std::string Settings_characterPreviewCurrentFitSignature(
+    const std::string &packageId, MdkrCharacterPreviewContext context);
+void Settings_publishCharacterPreviewResult(
+    const std::string &packageId,
+    const std::string &sourceSha256,
+    const std::string &fitSha256,
+    const std::string &presentationSha256,
+    const std::string &capturePng,
+    const SettingsCharacterPreviewDisposition &disposition,
+    const MdkrCharacterPreviewResult &result,
+    const MdkrCharacterMotionReviewResult *motionReview = nullptr);
 
 // Discard any in-progress audible Audio slider preview. Used when navigation
 // removes the settings panel before ImGui can emit a normal deactivation.
@@ -60,6 +198,20 @@ bool Settings_smokePresentationPaceCenter(const char *pace, int *x, int *y);
 // Smoke-only observation used to drive a real held-pointer drag and prove the
 // widget does not move underneath that pointer before the edit is committed.
 bool Settings_smokeUiScaleRect(int *minX, int *minY, int *maxX, int *maxY);
+
+// Publish completed Character Workshop jobs on the UI thread. The launcher
+// calls this on every destination, not only while the Workshop is visible, so
+// navigation cannot strand a ready result or make safe shutdown wait in a
+// static destructor with no visible progress.
+void Settings_serviceCharacterWork();
+
+// True while any Character Workshop compiler, validation, or install result
+// still needs to finish or publish on the UI thread. This is product lifecycle
+// state; Play and shutdown use it as well as the shell smoke.
+bool Settings_characterWorkPending();
+
+// Backward-compatible name for the existing smoke harness.
+bool Settings_smokeCharacterWorkPending();
 
 // Collect the settings the player has staged but that the running/next engine
 // has not picked up yet, as "Key=Value" strings, so the launcher can pass them

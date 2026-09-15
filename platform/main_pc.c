@@ -16,6 +16,10 @@
 #include <stdbool.h>
 #include <limits.h>
 #include <string.h>
+
+#if defined(__vita__) && defined(MDKR_VITA_DEBUGGER)
+#include <uvdb.h>
+#endif
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
 #endif
@@ -53,6 +57,12 @@
 #include "audi_port_dkr.h"
 #include "camera_dynamic_occlusion.h"
 #include "camera_obstruction_runtime.h"
+#include "modern_character_runtime.h"
+#include "user_paths.h"
+#include "app/engine_entry.h"
+
+MdkrCharacterPreviewResult *g_mdkrCharacterPreviewResult = NULL;
+MdkrCharacterMotionReviewResult *g_mdkrCharacterMotionReviewResult = NULL;
 
 /* Game audio owns this teardown; keep the platform TU out of PR/os_libc.h,
  * whose N64 libc declarations intentionally conflict with host fortified libc. */
@@ -338,6 +348,20 @@ int mdkr64_headless_main(int argc, char **argv);
 int mdkr64_headless_main(int argc, char **argv) {
 #else
 int main(int argc, char **argv) {
+#if defined(__vita__) && defined(MDKR_VITA_DEBUGGER)
+    /* Debug builds deliberately stop before ROM, renderer, or shader startup.
+     * Continue from GDB to reproduce the Remastered crash with the exception
+     * bridge and unstripped mdkr64 ELF still available on the host. */
+    const struct uvdb_config debuggerConfig = {
+        .port = 1234,
+        .max_packet_buffer = 256 * 1024,
+    };
+    if (uvdb_configure(&debuggerConfig) == 0) {
+        atexit(uvdb_shutdown);
+        uvdb_register_thread("Golden Balloon main");
+        uvdb_enter();
+    }
+#endif
 #endif
     const char *romPath = NULL;
     const char *inputScript = NULL;
@@ -720,6 +744,15 @@ int main(int argc, char **argv) {
     mdkr_vita_boot_log("boot: gfx_init OK");
     MDKR_TRACE("gfx_init(%s) done; dimensions %dx%d",
                mdkr_render_backend_name(), renderer_width, renderer_height);
+    {
+        char characterDirectory[4096];
+        if (mdkr_user_characters_directory(
+                characterDirectory, sizeof(characterDirectory))) {
+            (void)mdkr_modern_characters_init(characterDirectory);
+        } else {
+            (void)mdkr_modern_characters_init(NULL);
+        }
+    }
 
     if (g_headlessTicks >= 0) {
         printf("[mdkr64] headless: will run %d simulation tick(s) then exit.\n",
@@ -795,6 +828,9 @@ shutdown:
      * host-memory census below, so a retained side table shows up as a leak
      * rather than as noise. */
     mdkr_camera_dynamic_occlusion_shutdown();
+    /* Custom characters own backend uploads borrowed from immutable CPU
+     * assets. Release those uploads while the renderer is still alive. */
+    mdkr_modern_characters_shutdown();
     gfx_shutdown();
     /* After the renderer, because the renderer is the only thing that ever asks
      * the store for pixels. Safe on the early-failure paths above, where the

@@ -8,6 +8,308 @@ From 1.0.0 onward this project follows semantic versioning for the platform
 layer's public seams (config keys, environment variables, command-line flags and
 save formats). Everything below 1.0.0 predates that commitment.
 
+## [Unreleased]
+
+No changes yet.
+
+## [1.7.0] — 2026-09-11
+
+### Added
+
+- **The launcher has been rebuilt around what you came to do.** It opens on a
+  home screen carrying the game's own artwork, and everything now lives in three
+  places instead of six: **Play**, **Content** and **Settings**, with About &
+  support tucked underneath. Playing online is inside Play, because it is a way
+  to play. The home tells you what pressing Play will actually do — the
+  presentation you chose, your frame rate, and how many content packs are about
+  to apply — before you press it.
+- **High-resolution texture packs load as they come.** A Rice/GLideN64 texture
+  pack — the kind circulated for Diddy Kong Racing for twenty years — works as
+  downloaded: drop the zip or the folder into your mods folder, or use **Install
+  pack…**, and press Play. There is nothing to unpack, convert or rename, and no
+  pack file to write. The pack names each image after the texture it replaces,
+  and the game recognises those names while it draws. Content tells you how many
+  textures the pack supplies, and the startup log says how many were actually
+  used, so a pack that loaded and a pack that did nothing no longer look alike.
+
+  This release was tested against the **DKR-R HDR Texture Pack**
+  (`DKR REMASTERED (Almost Complete V0.1.6).zip`, 1663 textures), a community
+  project led by `sr.gu` that is distributed through the
+  [DKR-R Discord](https://discord.com/invite/AMWfXdBjNP) — linked from the
+  [DKR-R project](https://github.com/ThatGuyMcd/DKR-R). We ship no pack and host
+  none; any pack in the same format should work. Step-by-step instructions are
+  in [Content packs](docs/MODDING.md#high-resolution-texture-packs).
+- **Content is a place now, and installing a pack is a button.** Packs and
+  custom characters share one screen that lists everything found in your mods
+  folder, installed or skipped with the reason. **Install pack…** takes a `.zip`
+  or a folder and copies it in for you, and **Open mods folder** opens the
+  folder itself — on macOS it lives inside a Library folder the Finder hides, so
+  finding it by hand was the hard part. A pack you installed but switched off is
+  named on the home screen, so it can no longer look like a pack that simply did
+  not work.
+- Choosing your game asks for one thing. The three ways to name a file — a drop
+  box, a browse button and a typed path — became one action, a line telling you
+  that you can drag the file anywhere in the window, and a place to paste a path
+  if you already have one.
+
+
+- **Adventure Party** (`Enhancements.AdventureParty` / `MDKR_ENH_ADVENTURE_PARTY`,
+  off by default): two to four local players explore and race Adventure
+  together. A separate native session policy owns the roster rather than
+  stretching the retail two-player Adventure globals, so controller seat,
+  character identity and racer identity never swap and `JOINTVENTURE` is
+  untouched — with the setting on, it owns Adventure admission for those players
+  and the magic code adds no lead swapping on top. Covers hub roster, formation
+  planning and per-viewport hub HUD; a transition arbiter that reduces
+  simultaneous doors/exits to one whole-party transition; shared balloon and
+  hidden-key collection with one exact-once retail award; shared pause and
+  controller-disconnect authority; team-shared silver coins (any human collects,
+  one party tally, eight plus a human win); whole-party Taj vehicle transforms as
+  an in-place roster transaction; six-racer default party races (2/3/4 humans
+  plus 4/3/2 CPUs); a split trophy series on the retail eight-racer field keyed
+  to the host's rank; and a host-solo suspend/restore envelope for bosses and the
+  four-racer special challenges. Per-frame display-list, matrix, vertex and
+  triangle heaps are sized by the party roster count. No party state enters
+  EEPROM or the retail `Settings` layout; native save-state capture refuses while
+  a party session is live. Design and the v1 contract are in
+  [`docs/architecture/adventure-party.md`](docs/architecture/adventure-party.md).
+- **Character Workshop / custom characters** (experimental, WebGPU-only vertical
+  slice). A `.mdkrchar` package — self-contained GLB 2.0 plus a data-only
+  manifest and licence text — is imported through the launcher's Character
+  Workshop into a versioned local compiled cache. The Workshop browses,
+  drag-and-drops or takes a typed path, validates without touching installed
+  files, diffs identity/portrait/donor/rig/LOD/animation/texture facts against
+  the installed revision, and requires an explicit local-use rights confirmation
+  and a reviewed install. Offline adapters convert DAE and ZIP to GLB and pass
+  the same validator. Includes portrait capture and editing, authored LODs,
+  camera-aware LOD selection, KTX2 (`KHR_texture_basisu`) texture delivery,
+  per-context fit studios for character select/car/hovercraft/plane, per-player
+  P1–P4 assignment, disable/re-enable/delete with retained Workshop revisions,
+  and deterministic Unicode name shaping. A custom character is a presentation
+  identity only: gameplay comes from one of the ten fingerprint-qualified retail
+  donors, and course records, adventure saves and ghosts remain ordinary game
+  data. Ghosts and network/rollback authority retain a retail character ID, so
+  online peers see the donor — the native select screen now discloses local-only
+  appearances. Author documentation is in
+  [`docs/MODDING.md`](docs/MODDING.md#experimental-custom-characters).
+- **Online (beta): pre-flight route measurement.** Once every roster peer's
+  channels are open and before the race transport exists, the adapter probes the
+  real lanes (64-byte probes on the state channel at the authored tick cadence,
+  addressed probes on the reliable control channel at 200 ms) and publishes the
+  settled record as a second attestation at the round's higher sequence, so
+  consensus timing is unchanged and a bad route is reported, never refused. A
+  window is only adopted with at least 30 answered samples spanning at least 2 s.
+  `lobby_view_model` projects one room chip (`~45 ms · steady`, or
+  `Checking connection…` while it runs) and refuses a record whose band
+  disagrees with its score; `setUpRace` resolves the operative input lead through
+  `mdkr_match_route_input_delay`, with the manifest's `input_delay` as an
+  admission-compared floor that is never lowered and a local widen of up to four
+  authored ticks. Pressing Start never blocks on the measurement.
+- **Online (beta): input-gap repair channel.** A third per-peer data channel,
+  `gb-match-authority-v1` (reliable, unordered), carries repair requests and
+  answers for contiguous runs of authored ticks lost past the input bundle's
+  three ticks of redundancy. The receiver names the run once its first tick is
+  more than three authored ticks behind the drain frontier, one request per
+  remote slot per gap; the author answers from already-committed local input.
+  Replaces the in-race resend sweep's blind re-fan on the same lossy channel.
+- **Online (beta): room-authoritative mid-race drop.** A peer's presence
+  crossing now surfaces as `PeerDeparted`; the adapter finalises the departed
+  endpoint's seats at an agreed tick and hands that tick to survivors over the
+  reliable ordered control channel as `race_drop`, reaching the existing typed
+  loss handling and `OPPONENT_LEFT` card in about four ticks instead of the
+  transport ladders' 20–30 s. A two-authored-tick grace corroborates the room's
+  verdict against the peer link: an authenticated packet from that endpoint
+  inside the grace drops the verdict and returns the loss to the ladders, so a
+  room-service wobble cannot produce a false "opponent left". The grace is
+  measured in authored ticks, never wall-clock.
+- **Online (beta): per-channel encryption keys.** `MdkrMatchPeerKeyContext`
+  gains a lane (state/control/authority) used as HKDF info, so each data channel
+  derives distinct key bytes, holds its own monotonic sequence space and its own
+  replay window. The lane occupies header byte 7, so a datagram spliced from one
+  channel onto another is refused with `MDKR_MATCH_PEER_CRYPTO_WRONG_LANE`
+  before decryption. Peer envelope version 2 → 3; the browser mirror in
+  `dist/web/online` moves with it. Keyring grows to 18 slots.
+- **Online (beta): soft-fail liveness.** `match_peer_liveness` adds a pure
+  Good/Transient/Unreachable policy over hit/miss ping observations, retaining
+  the last real RTT through a miss streak. `linkStats()` reports
+  `consecutivePingMisses`; the live adapter reflects the worst peer state onto
+  the session's DEGRADED/LOST codes, which the RACING status line renders as
+  `Connection hiccup — retrying` / `Connection lost`. The escalation threshold
+  N=3 is derived from `kMdkrMatchControlPingTimeoutMs` /
+  `kMdkrMatchControlPingIntervalMs`, so the hard-fail text can never precede the
+  real `peerLost(PingTimeout)` verdict.
+- **Bonus racers can be switched off** (`Content.BonusRacers` /
+  `MDKR_CONTENT_BONUS_RACERS`, on by default). Turning it off gives the roster
+  the original game shipped with: Taj, Terry and Wizpig stop appearing on the
+  character select, their magic codes read as unrecognised, and a player already
+  seated as one is returned to the retail racer. It gates visibility, not
+  storage -- unlocks already earned stay in the save file and come back intact
+  when the setting is turned on again. Restart-scoped.
+- **Skip the launcher** (issue #60), off by default. With it on, the app opens
+  the game you played last instead of the launcher. Holding Shift, or both
+  shoulder buttons on a controller, while it opens shows the launcher anyway,
+  and the setting itself is in the in-game settings under Advanced, so turning
+  it back off never needs the launcher. The game file is verified before it
+  opens, exactly as pressing Play verifies it: a file that has moved or changed
+  lands you in the launcher with the reason. The hold is sampled every frame
+  across the launch window rather than once at startup, and its pads are
+  released before SDL shuts down.
+- Content packs can replace Taj's, Wizpig's and Terry's portraits. Those three
+  racers have no portrait in the original game, so the port draws its own; a
+  pack can now put your picture in its place, at whatever size you author it.
+  [`docs/MODDING.md`](docs/MODDING.md) has the three filenames. The generated
+  cards are ordinary texture binds, so the published digest contract in
+  `mod_texture_key.h` already names them with no second scheme and no version
+  bump; an overridden texture is also dumped at the replacement's own size.
+- `README.md` and `RELEASE_NOTES.md` now carry a single list of what online
+  multiplayer does not do yet, pinned sentence by sentence in
+  `tests/test_product_claim_boundaries.py`.
+
+### Fixed
+
+- Scrolling the launcher went the wrong way for anyone using natural scrolling,
+  which is how macOS comes out of the box. The launcher now scrolls the way
+  every other application on your machine does.
+- The diagnostics report is reachable again, on the About & support screen,
+  where its Copy Log to Clipboard button sits beside what the build is running.
+- A file the launcher cannot use no longer prints its path twice, and messages
+  that used to be written and never shown — a dropped file with too long a path,
+  a cancelled ROM check, forgetting a remembered ROM — are visible where they
+  happen.
+
+- Native Linux, Windows, and macOS release builds now explicitly compile the
+  Online Room beta that the release notes advertise. The release workflows had
+  kept the bare preview switch off without applying the separate beta opt-in,
+  so their packaged launchers could omit Online Room even though development
+  and qualification builds included it. The native match-signaling
+  `User-Agent` now receives its version from `MDKR_VERSION` as well, removing a
+  second release literal that had remained at 1.6.0. The macOS bundle builder
+  also forces and verifies both beta states, so reusing a beta-configured build
+  directory cannot silently opt a later ordinary package back in.
+- A racer wearing a custom appearance could drop back to its retail character at
+  any **Model Detail** setting. The 1.6.0 never-posed fence re-applied the
+  Wizpig and Terry donor caps to its candidates but not the custom-character
+  donor cap the selection chain also carries, so the fence could hand the
+  replacement the committed far band (lod 5) that
+  `mdkr_modern_donor_model_ready` rejects. Measured in the Adventure Party hub
+  on every seat, the first time the two features met.
+- Modern (custom) characters use the exact sRGB transfer and bind their specular
+  response to the exact camera, so they no longer read washed out or lit from
+  the wrong position beside the retail racers.
+- Twenty-four launcher strings used U+2192, U+2194, U+2713 and U+25CB, which the
+  embedded character-text face is subset without — every one drew as a tofu box
+  on every machine. The affected Workshop copy is rewritten in words the packaged
+  atlas can draw, the inert glyph range is dropped, and
+  `AppTheme::canDrawGlyph` plus `MDKR_APP_SMOKE_FONT_COVERAGE` answer the atlas
+  for a codepoint.
+- Presentation effects no longer consume the race's authoritative random
+  sequence: engine-note jitter (`racer_sound_car`), the boss voice-clip pick,
+  the menu-image fields and the credits cheat pick now draw through
+  `cadence_compat_rand_range()`, which routes to `rand_range()` at the shipping
+  two-field cadence for byte-exact ROM ordering and to the presentation stream
+  only at the opt-in enhanced cadence. Two peers presenting at different rates
+  could otherwise consume different amounts of the shared stream and diverge.
+  Every `rand_range` caller is censused in
+  [`docs/ref/presentation-rng-census.md`](docs/ref/presentation-rng-census.md).
+- Four-player Adventure Party hub display-list overflow. The central hub loads
+  through retail one-player paths, so `alloc_displaylist_heap` sized
+  `gDisplayLists`/`gMatrixHeap`/`gVertexHeap`/`gTriangleHeap` from the 1-player
+  row (4500 Gfx) while the party hub authors ~7900–8800 Gfx per frame;
+  `gCurrDisplayList` overflowed into `gMatrixHeap[]` of the same allocation and
+  both walkers parsed float bytes as commands until a decoded `G_DL` faulted.
+  The heaps are now sized by the party roster count, both display-list walkers
+  derive their opcode set from one list and stop at an opcode the interpreter
+  refuses, and reads are bounded by provenance rather than by the `SIZE_MAX`
+  sentinel.
+- Custom-character KTX2 hardening: a header index region the payload cannot
+  hold, a Zstandard level whose declared uncompressed size exceeds its payload,
+  and a level count the payload cannot index are all refused; the stbi length
+  contract is compiler-enforced.
+- Four custom-character identity labels (`display_name`, `narration_name`,
+  `sort_label` and the glTF node name) reached fixed buffers through
+  `snprintf("%s", ...)`, which cuts on a byte. They now use
+  `mdkr_modern_character_copy_bounded_name`, which walks back over UTF-8
+  continuation bytes before appending a visible ellipsis.
+- The sky in split-screen races no longer has black bars down each side on
+  widescreen displays. The two-player backdrop was drawn at the original 4:3
+  width, so the edges of the screen were left unpainted — most obvious on
+  Fossil Canyon and the other tracks with a black horizon.
+
+## [1.6.0] — 2026-09-01
+
+### Added
+
+- Native online multiplayer entered beta: two players on the same platform can
+  create or join a private six-digit-code room, compare a three-part
+  verification phrase, choose racers and tracks, and run a single race or a
+  tournament. US 1.1 and European 1.1 copies interoperate at the common online
+  cadence. Different application versions, platforms, ROM revisions, or rules
+  fail closed before the race; direct connectivity remains STUN-only with no
+  relay.
+- Added-character Time Trial ghosts are stored separately from the ten original
+  racers while retaining ordinary compatible save identities.
+
+### Fixed
+
+- Racers no longer briefly appear unanimated at race start at any **Model
+  Detail** setting (issue #48).
+- Best-time and best-lap digits no longer rock during track-preview flybys
+  (issue #59).
+- The Widescreen HUD no longer overlaps the banana counter with a portrait in
+  the banana challenge, and minimap markers align with the resized map
+  (issue #57).
+
+## [1.5.2] — 2026-08-25
+
+### Fixed
+
+- Completed the reported Widescreen HUD layout fixes: Time Trial lap rows,
+  centered TAJ MAGIC text, battle HUD placement, and race-start slide position
+  now follow their intended anchors (issue #51).
+- Rectangles whose corners arrive reversed are discarded like the original
+  hardware, removing stretched flashes from Game Pak switching, name entry,
+  and the credits (issues #52 and #56).
+- PAL menu text no longer creeps upward after returning to the launcher and
+  starting the game again.
+- Time Trial records and ghosts save reliably on Linux and other non-macOS
+  native builds. Per-user storage, existing folder-local saves, explicit
+  `portable.txt`, and visible write failures replace silent loss (issue #54).
+- Hot Top Volcano's out-of-bounds trophy-storage exit returns to the hub instead
+  of hanging on black (issue #55).
+- Nintendo Switch Online N64 controllers map their C and Z buttons correctly
+  over Bluetooth, and the overlay button is configurable (issue #55).
+
+## [1.5.1] — 2026-08-21
+
+### Fixed
+
+- Treasure Caves and other tunnel sound effects use the intended room reverb
+  again while music retains its separate reverb (issue #49).
+- The Widescreen HUD no longer pushes the pause menu and Taj dialogue off
+  center or overlaps the banana and lap counters (issue #50).
+- Source builds work with stock Ubuntu 22.04 again.
+
+## [1.5.0] — 2026-08-19
+
+### Added
+
+- Time Trial ghosts are banked per track and vehicle outside the virtual
+  Controller Pak, removing the handful-of-ghosts capacity limit while keeping
+  the Pak format and the ghost bytes themselves compatible (issue #46).
+
+### Changed
+
+- The visual-only draw-distance setting reaches 1600%, up from 400%, so distant
+  pickups remain visible when planning challenge routes (issue #47).
+
+### Fixed
+
+- Finish-camera/results ownership no longer flickers after the line, and the
+  post-race track preview follows the same smoothing handoff (issue #44).
+- The mouse pointer hides during play and returns for launcher menus and the
+  overlay (issue #45).
+- Source builds work with stock Ubuntu 22.04 again.
+
 ## [1.4.0] — 2026-08-18
 
 The interpolation stack was rebuilt with closed-loop pacing, and the world-

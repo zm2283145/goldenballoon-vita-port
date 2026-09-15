@@ -43,6 +43,10 @@ BASE_SCRIPT = ROOT / "tests/input_scripts/adventure_resume_race.txt"
 FRAMES = 12000
 ABORT_FRAMES = 4200
 RELOAD_FRAMES = 2300
+# Full first-win arms render 12,000 frames and may exceed five minutes on a
+# lower-throughput supported GPU. This remains bounded, but lets the challenge
+# assertions—not machine speed—decide the result.
+PROCESS_TIMEOUT_SECONDS = 600
 
 # Progress floors for the race-row assertion (ship review, G5). MEASURED on
 # this branch, not guessed -- MDKR_TAJ_REPORT_LAPS=1 reprints the per-arm
@@ -234,7 +238,7 @@ def run_arm(
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            timeout=300,
+            timeout=PROCESS_TIMEOUT_SECONDS,
             check=False,
         )
         persisted = (run_dir / "save/eeprom.bin").read_bytes()
@@ -269,7 +273,7 @@ def run_arm(
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            timeout=300,
+            timeout=PROCESS_TIMEOUT_SECONDS,
             check=False,
         )
         metrics = [

@@ -39,6 +39,7 @@ from typing import Any, Callable
 from check_browser_online_two_person import free_port
 from check_browser_runtime import CheckFailure, require
 from check_party_capacity import OPS_READ_TOKEN, request, start_worker, stop_worker
+from party_worker_reporting import private_worker_failure, safe_failure_summary
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -827,6 +828,20 @@ def exhaustion_proof(origin: str, boot: Callable[[int], None],
 
 # ------------------------------------------------------------------------ main
 
+def require_clean_worker_log(log_path: Path) -> None:
+    # Preserve the whole-log ERROR gate without loading/copying raw output into
+    # an aggregate failure. Carry the boundary bytes so split tokens still fail.
+    with log_path.open("rb") as log:
+        previous = b""
+        while chunk := log.read(64 * 1024):
+            window = previous + chunk.upper()
+            if b"ERROR" in window:
+                raise private_worker_failure(
+                    CheckFailure("Worker log error"), log,
+                    reason="worker_log_error") from None
+            previous = window[-4:]
+
+
 def run(args: argparse.Namespace) -> None:
     shell = (ROOT / args.shell_dir).resolve()
     require((shell / "index.html").is_file(), "missing web shell")
@@ -867,12 +882,11 @@ def run(args: argparse.Namespace) -> None:
                 stage("kill switch proof")
                 exhausted = exhaustion_proof(origin, boot, halt, shell, session)
                 stage("exhaustion proof")
+            except Exception as error:
+                raise private_worker_failure(error, log) from None
             finally:
                 halt()
-        details = log_path.read_text(encoding="utf-8", errors="replace")
-        require("ERROR" not in details.upper(),
-                "Wrangler reported an error during the chaos test:\n"
-                + details[-4000:])
+        require_clean_worker_log(log_path)
     control_growth = (killed["after"]["admitted"]["controlUnits"] -
                       killed["before"]["admitted"]["controlUnits"])
     print("check_party_service_chaos: PASS — restart rebound both leases onto "
@@ -901,9 +915,9 @@ def main() -> int:
     try:
         run(args)
         return 0
-    except (CheckFailure, OSError, ValueError, KeyError, StopIteration,
-            subprocess.SubprocessError, json.JSONDecodeError) as error:
-        print(f"check_party_service_chaos: FAIL — {error}", file=sys.stderr)
+    except Exception as error:
+        print("check_party_service_chaos: FAIL — " + safe_failure_summary(error),
+              file=sys.stderr)
         return 1
 
 

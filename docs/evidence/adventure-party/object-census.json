@@ -1,0 +1,2709 @@
+{
+  "generated": "2026-08-28",
+  "method": "static ROM asset parse (independent re-implementation of the engine spawn resolution chain)",
+  "rom": {
+    "path": "baserom.us.v80.z64",
+    "md5": "b31f8cca50f31acc9b999ed5b779d6ed",
+    "size": 12582912
+  },
+  "flag": {
+    "name": "OBJECT_HEADER_NO_MULTIPLATER",
+    "bit": 6,
+    "value": 64,
+    "freed_by": "objects.c:2970-2978 when numPlayers >= 2"
+  },
+  "counts": {
+    "object_headers": 304,
+    "flagged_headers": 23,
+    "translation_table_capacity": 512,
+    "levels": 65,
+    "object_maps": 138
+  },
+  "flagged_object_headers": [
+    {
+      "index": 42,
+      "name": "SmartieTree",
+      "behavior": "BHV_SCENERY",
+      "flags": "0x0040",
+      "no_multiplayer": true,
+      "no_time_trial": false,
+      "classification": "cosmetic/benign"
+    },
+    {
+      "index": 43,
+      "name": "BlueBerryBush",
+      "behavior": "BHV_SCENERY",
+      "flags": "0x0040",
+      "no_multiplayer": true,
+      "no_time_trial": false,
+      "classification": "cosmetic/benign"
+    },
+    {
+      "index": 44,
+      "name": "RubberSnowTree",
+      "behavior": "BHV_SCENERY",
+      "flags": "0x0040",
+      "no_multiplayer": true,
+      "no_time_trial": false,
+      "classification": "cosmetic/benign"
+    },
+    {
+      "index": 45,
+      "name": "SkinnySnowTree",
+      "behavior": "BHV_SCENERY",
+      "flags": "0x0040",
+      "no_multiplayer": true,
+      "no_time_trial": false,
+      "classification": "cosmetic/benign"
+    },
+    {
+      "index": 46,
+      "name": "XmasTree",
+      "behavior": "BHV_SCENERY",
+      "flags": "0x0040",
+      "no_multiplayer": true,
+      "no_time_trial": false,
+      "classification": "cosmetic/benign"
+    },
+    {
+      "index": 47,
+      "name": "AlpineSnowTree",
+      "behavior": "BHV_SCENERY",
+      "flags": "0x0040",
+      "no_multiplayer": true,
+      "no_time_trial": false,
+      "classification": "cosmetic/benign"
+    },
+    {
+      "index": 48,
+      "name": "RubberTree",
+      "behavior": "BHV_SCENERY",
+      "flags": "0x0040",
+      "no_multiplayer": true,
+      "no_time_trial": false,
+      "classification": "cosmetic/benign"
+    },
+    {
+      "index": 49,
+      "name": "Beachtree",
+      "behavior": "BHV_SCENERY",
+      "flags": "0x0040",
+      "no_multiplayer": true,
+      "no_time_trial": false,
+      "classification": "cosmetic/benign"
+    },
+    {
+      "index": 50,
+      "name": "PalmTreeTop",
+      "behavior": "BHV_SCENERY",
+      "flags": "0x0040",
+      "no_multiplayer": true,
+      "no_time_trial": false,
+      "classification": "cosmetic/benign"
+    },
+    {
+      "index": 51,
+      "name": "PalmPlant",
+      "behavior": "BHV_SCENERY",
+      "flags": "0x0040",
+      "no_multiplayer": true,
+      "no_time_trial": false,
+      "classification": "cosmetic/benign"
+    },
+    {
+      "index": 52,
+      "name": "PalmTreeTopChea",
+      "behavior": "BHV_SCENERY",
+      "flags": "0x0040",
+      "no_multiplayer": true,
+      "no_time_trial": false,
+      "classification": "cosmetic/benign"
+    },
+    {
+      "index": 53,
+      "name": "FirTree",
+      "behavior": "BHV_SCENERY",
+      "flags": "0x0040",
+      "no_multiplayer": true,
+      "no_time_trial": false,
+      "classification": "cosmetic/benign"
+    },
+    {
+      "index": 54,
+      "name": "SpaceTree",
+      "behavior": "BHV_SCENERY",
+      "flags": "0x0040",
+      "no_multiplayer": true,
+      "no_time_trial": false,
+      "classification": "cosmetic/benign"
+    },
+    {
+      "index": 55,
+      "name": "Lamppost",
+      "behavior": "BHV_SCENERY",
+      "flags": "0x00c0",
+      "no_multiplayer": true,
+      "no_time_trial": false,
+      "classification": "cosmetic/benign"
+    },
+    {
+      "index": 56,
+      "name": "Flowers",
+      "behavior": "BHV_SCENERY",
+      "flags": "0x0040",
+      "no_multiplayer": true,
+      "no_time_trial": false,
+      "classification": "cosmetic/benign"
+    },
+    {
+      "index": 59,
+      "name": "Dinosaur1",
+      "behavior": "BHV_DINO_WHALE",
+      "flags": "0x004c",
+      "no_multiplayer": true,
+      "no_time_trial": false,
+      "classification": "cosmetic/benign"
+    },
+    {
+      "index": 60,
+      "name": "Dinosaur2",
+      "behavior": "BHV_DINO_WHALE",
+      "flags": "0x004c",
+      "no_multiplayer": true,
+      "no_time_trial": false,
+      "classification": "cosmetic/benign"
+    },
+    {
+      "index": 61,
+      "name": "Dinosaur3",
+      "behavior": "BHV_DINO_WHALE",
+      "flags": "0x004c",
+      "no_multiplayer": true,
+      "no_time_trial": false,
+      "classification": "cosmetic/benign"
+    },
+    {
+      "index": 62,
+      "name": "Whale",
+      "behavior": "BHV_DINO_WHALE",
+      "flags": "0x004c",
+      "no_multiplayer": true,
+      "no_time_trial": false,
+      "classification": "cosmetic/benign"
+    },
+    {
+      "index": 63,
+      "name": "Snowmen",
+      "behavior": "BHV_SCENERY",
+      "flags": "0x0040",
+      "no_multiplayer": true,
+      "no_time_trial": false,
+      "classification": "cosmetic/benign"
+    },
+    {
+      "index": 65,
+      "name": "FlamingTorch",
+      "behavior": "BHV_TORCH_MIST",
+      "flags": "0x00c0",
+      "no_multiplayer": true,
+      "no_time_trial": false,
+      "classification": "cosmetic/benign"
+    },
+    {
+      "index": 219,
+      "name": "AnimDinosaur2",
+      "behavior": "BHV_ANIMATED_OBJECT",
+      "flags": "0x006c",
+      "no_multiplayer": true,
+      "no_time_trial": true,
+      "classification": "cosmetic/benign"
+    },
+    {
+      "index": 222,
+      "name": "AnimDinosaur1",
+      "behavior": "BHV_ANIMATED_OBJECT",
+      "flags": "0x004c",
+      "no_multiplayer": true,
+      "no_time_trial": false,
+      "classification": "cosmetic/benign"
+    }
+  ],
+  "levels": [
+    {
+      "id": 0,
+      "enum": "ASSET_LEVEL_CENTRALAREAHUB",
+      "world": 0,
+      "world_name": "CENTRAL_AREA",
+      "race_type": 5,
+      "race_type_name": "HUBWORLD",
+      "main_map": 0,
+      "collectables_map": 68,
+      "maps": {
+        "main": {
+          "map_id": 0,
+          "total_objects": 209,
+          "unresolved": 0,
+          "flagged_objects": 56
+        },
+        "collectables": {
+          "map_id": 68,
+          "total_objects": 88,
+          "unresolved": 0,
+          "flagged_objects": 12
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 56,
+          "name": "Flowers",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 19
+        },
+        {
+          "header_index": 49,
+          "name": "Beachtree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 12
+        },
+        {
+          "header_index": 44,
+          "name": "RubberSnowTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 10
+        },
+        {
+          "header_index": 52,
+          "name": "PalmTreeTopChea",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 8
+        },
+        {
+          "header_index": 65,
+          "name": "FlamingTorch",
+          "behavior": "BHV_TORCH_MIST",
+          "classification": "cosmetic/benign",
+          "count": 8
+        },
+        {
+          "header_index": 48,
+          "name": "RubberTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 5
+        },
+        {
+          "header_index": 43,
+          "name": "BlueBerryBush",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 4
+        },
+        {
+          "header_index": 53,
+          "name": "FirTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 2
+        }
+      ],
+      "flagged_total": 68,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 1,
+      "enum": "ASSET_LEVEL_BLUEY1",
+      "world": 3,
+      "world_name": "SNOWFLAKE_MOUNTAIN",
+      "race_type": 8,
+      "race_type_name": "BOSS",
+      "main_map": 1,
+      "collectables_map": 113,
+      "maps": {
+        "main": {
+          "map_id": 1,
+          "total_objects": 67,
+          "unresolved": 0,
+          "flagged_objects": 47
+        },
+        "collectables": {
+          "map_id": 113,
+          "total_objects": 76,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 44,
+          "name": "RubberSnowTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 33
+        },
+        {
+          "header_index": 45,
+          "name": "SkinnySnowTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 14
+        }
+      ],
+      "flagged_total": 47,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 2,
+      "enum": "ASSET_LEVEL_DRAGONFORESTHUB",
+      "world": 4,
+      "world_name": "DRAGON_FOREST",
+      "race_type": 5,
+      "race_type_name": "HUBWORLD",
+      "main_map": 2,
+      "collectables_map": 70,
+      "maps": {
+        "main": {
+          "map_id": 2,
+          "total_objects": 42,
+          "unresolved": 0,
+          "flagged_objects": 2
+        },
+        "collectables": {
+          "map_id": 70,
+          "total_objects": 23,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 42,
+          "name": "SmartieTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 2
+        }
+      ],
+      "flagged_total": 2,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 3,
+      "enum": "ASSET_LEVEL_FOSSILCANYON",
+      "world": 1,
+      "world_name": "DINO_DOMAIN",
+      "race_type": 0,
+      "race_type_name": "DEFAULT",
+      "main_map": 3,
+      "collectables_map": 71,
+      "maps": {
+        "main": {
+          "map_id": 3,
+          "total_objects": 160,
+          "unresolved": 0,
+          "flagged_objects": 25
+        },
+        "collectables": {
+          "map_id": 71,
+          "total_objects": 103,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 49,
+          "name": "Beachtree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 14
+        },
+        {
+          "header_index": 43,
+          "name": "BlueBerryBush",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 6
+        },
+        {
+          "header_index": 65,
+          "name": "FlamingTorch",
+          "behavior": "BHV_TORCH_MIST",
+          "classification": "cosmetic/benign",
+          "count": 5
+        }
+      ],
+      "flagged_total": 25,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 4,
+      "enum": "ASSET_LEVEL_PIRATELAGOON",
+      "world": 2,
+      "world_name": "SHERBET_ISLAND",
+      "race_type": 0,
+      "race_type_name": "DEFAULT",
+      "main_map": 4,
+      "collectables_map": 72,
+      "maps": {
+        "main": {
+          "map_id": 4,
+          "total_objects": 95,
+          "unresolved": 0,
+          "flagged_objects": 11
+        },
+        "collectables": {
+          "map_id": 72,
+          "total_objects": 82,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 49,
+          "name": "Beachtree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 11
+        }
+      ],
+      "flagged_total": 11,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 5,
+      "enum": "ASSET_LEVEL_ANCIENTLAKE",
+      "world": 1,
+      "world_name": "DINO_DOMAIN",
+      "race_type": 0,
+      "race_type_name": "DEFAULT",
+      "main_map": 5,
+      "collectables_map": 73,
+      "maps": {
+        "main": {
+          "map_id": 5,
+          "total_objects": 98,
+          "unresolved": 0,
+          "flagged_objects": 22
+        },
+        "collectables": {
+          "map_id": 73,
+          "total_objects": 86,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 49,
+          "name": "Beachtree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 13
+        },
+        {
+          "header_index": 48,
+          "name": "RubberTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 7
+        },
+        {
+          "header_index": 43,
+          "name": "BlueBerryBush",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 2
+        }
+      ],
+      "flagged_total": 22,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 6,
+      "enum": "ASSET_LEVEL_WALRUSCOVE",
+      "world": 3,
+      "world_name": "SNOWFLAKE_MOUNTAIN",
+      "race_type": 0,
+      "race_type_name": "DEFAULT",
+      "main_map": 6,
+      "collectables_map": 74,
+      "maps": {
+        "main": {
+          "map_id": 6,
+          "total_objects": 155,
+          "unresolved": 0,
+          "flagged_objects": 25
+        },
+        "collectables": {
+          "map_id": 74,
+          "total_objects": 78,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 44,
+          "name": "RubberSnowTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 20
+        },
+        {
+          "header_index": 47,
+          "name": "AlpineSnowTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 3
+        },
+        {
+          "header_index": 45,
+          "name": "SkinnySnowTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 2
+        }
+      ],
+      "flagged_total": 25,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 7,
+      "enum": "ASSET_LEVEL_HOTTOPVOLCANO",
+      "world": 1,
+      "world_name": "DINO_DOMAIN",
+      "race_type": 0,
+      "race_type_name": "DEFAULT",
+      "main_map": 7,
+      "collectables_map": 75,
+      "maps": {
+        "main": {
+          "map_id": 7,
+          "total_objects": 90,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 75,
+          "total_objects": 138,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [],
+      "flagged_total": 0,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 8,
+      "enum": "ASSET_LEVEL_WHALEBAY",
+      "world": 2,
+      "world_name": "SHERBET_ISLAND",
+      "race_type": 0,
+      "race_type_name": "DEFAULT",
+      "main_map": 8,
+      "collectables_map": 76,
+      "maps": {
+        "main": {
+          "map_id": 8,
+          "total_objects": 80,
+          "unresolved": 0,
+          "flagged_objects": 12
+        },
+        "collectables": {
+          "map_id": 76,
+          "total_objects": 118,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 52,
+          "name": "PalmTreeTopChea",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 12
+        }
+      ],
+      "flagged_total": 12,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 9,
+      "enum": "ASSET_LEVEL_SNOWBALLVALLEY",
+      "world": 3,
+      "world_name": "SNOWFLAKE_MOUNTAIN",
+      "race_type": 0,
+      "race_type_name": "DEFAULT",
+      "main_map": 9,
+      "collectables_map": 77,
+      "maps": {
+        "main": {
+          "map_id": 9,
+          "total_objects": 114,
+          "unresolved": 0,
+          "flagged_objects": 18
+        },
+        "collectables": {
+          "map_id": 77,
+          "total_objects": 110,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 44,
+          "name": "RubberSnowTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 8
+        },
+        {
+          "header_index": 45,
+          "name": "SkinnySnowTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 5
+        },
+        {
+          "header_index": 46,
+          "name": "XmasTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 3
+        },
+        {
+          "header_index": 47,
+          "name": "AlpineSnowTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 2
+        }
+      ],
+      "flagged_total": 18,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 10,
+      "enum": "ASSET_LEVEL_CRESCENTISLAND",
+      "world": 2,
+      "world_name": "SHERBET_ISLAND",
+      "race_type": 0,
+      "race_type_name": "DEFAULT",
+      "main_map": 11,
+      "collectables_map": 79,
+      "maps": {
+        "main": {
+          "map_id": 11,
+          "total_objects": 125,
+          "unresolved": 0,
+          "flagged_objects": 21
+        },
+        "collectables": {
+          "map_id": 79,
+          "total_objects": 83,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 49,
+          "name": "Beachtree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 12
+        },
+        {
+          "header_index": 52,
+          "name": "PalmTreeTopChea",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 7
+        },
+        {
+          "header_index": 50,
+          "name": "PalmTreeTop",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 2
+        }
+      ],
+      "flagged_total": 21,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 11,
+      "enum": "ASSET_LEVEL_FIREMOUNTAIN",
+      "world": 1,
+      "world_name": "DINO_DOMAIN",
+      "race_type": 66,
+      "race_type_name": "CHALLENGE_EGGS",
+      "main_map": 12,
+      "collectables_map": 80,
+      "maps": {
+        "main": {
+          "map_id": 12,
+          "total_objects": 27,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 80,
+          "total_objects": 67,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [],
+      "flagged_total": 0,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 12,
+      "enum": "ASSET_LEVEL_DINODOMAINHUB",
+      "world": 1,
+      "world_name": "DINO_DOMAIN",
+      "race_type": 5,
+      "race_type_name": "HUBWORLD",
+      "main_map": 13,
+      "collectables_map": 82,
+      "maps": {
+        "main": {
+          "map_id": 13,
+          "total_objects": 40,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 82,
+          "total_objects": 23,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [],
+      "flagged_total": 0,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 13,
+      "enum": "ASSET_LEVEL_EVERFROSTPEAK",
+      "world": 3,
+      "world_name": "SNOWFLAKE_MOUNTAIN",
+      "race_type": 0,
+      "race_type_name": "DEFAULT",
+      "main_map": 14,
+      "collectables_map": 83,
+      "maps": {
+        "main": {
+          "map_id": 14,
+          "total_objects": 152,
+          "unresolved": 0,
+          "flagged_objects": 16
+        },
+        "collectables": {
+          "map_id": 83,
+          "total_objects": 85,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 45,
+          "name": "SkinnySnowTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 7
+        },
+        {
+          "header_index": 46,
+          "name": "XmasTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 5
+        },
+        {
+          "header_index": 63,
+          "name": "Snowmen",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 4
+        }
+      ],
+      "flagged_total": 16,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 14,
+      "enum": "ASSET_LEVEL_SHERBETISLANDHUB",
+      "world": 2,
+      "world_name": "SHERBET_ISLAND",
+      "race_type": 5,
+      "race_type_name": "HUBWORLD",
+      "main_map": 15,
+      "collectables_map": 84,
+      "maps": {
+        "main": {
+          "map_id": 15,
+          "total_objects": 49,
+          "unresolved": 0,
+          "flagged_objects": 4
+        },
+        "collectables": {
+          "map_id": 84,
+          "total_objects": 22,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 52,
+          "name": "PalmTreeTopChea",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 4
+        }
+      ],
+      "flagged_total": 4,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 15,
+      "enum": "ASSET_LEVEL_SPACEPORTALPHA",
+      "world": 5,
+      "world_name": "FUTURE_FUN_LAND",
+      "race_type": 0,
+      "race_type_name": "DEFAULT",
+      "main_map": 18,
+      "collectables_map": 87,
+      "maps": {
+        "main": {
+          "map_id": 18,
+          "total_objects": 95,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 87,
+          "total_objects": 108,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [],
+      "flagged_total": 0,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 16,
+      "enum": "ASSET_LEVEL_HORSESHOEGULCH",
+      "world": -1,
+      "world_name": "NONE",
+      "race_type": 3,
+      "race_type_name": "HORSESHOE_GULCH",
+      "main_map": 19,
+      "collectables_map": 88,
+      "maps": {
+        "main": {
+          "map_id": 19,
+          "total_objects": 8,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 88,
+          "total_objects": 0,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [],
+      "flagged_total": 0,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 17,
+      "enum": "ASSET_LEVEL_SPACEDUSTALLEY",
+      "world": 5,
+      "world_name": "FUTURE_FUN_LAND",
+      "race_type": 0,
+      "race_type_name": "DEFAULT",
+      "main_map": 21,
+      "collectables_map": 90,
+      "maps": {
+        "main": {
+          "map_id": 21,
+          "total_objects": 131,
+          "unresolved": 0,
+          "flagged_objects": 20
+        },
+        "collectables": {
+          "map_id": 90,
+          "total_objects": 124,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 49,
+          "name": "Beachtree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 20
+        }
+      ],
+      "flagged_total": 20,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 18,
+      "enum": "ASSET_LEVEL_GREENWOODVILLAGE",
+      "world": 4,
+      "world_name": "DRAGON_FOREST",
+      "race_type": 0,
+      "race_type_name": "DEFAULT",
+      "main_map": 20,
+      "collectables_map": 89,
+      "maps": {
+        "main": {
+          "map_id": 20,
+          "total_objects": 143,
+          "unresolved": 0,
+          "flagged_objects": 7
+        },
+        "collectables": {
+          "map_id": 89,
+          "total_objects": 95,
+          "unresolved": 0,
+          "flagged_objects": 2
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 42,
+          "name": "SmartieTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 9
+        }
+      ],
+      "flagged_total": 9,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 19,
+      "enum": "ASSET_LEVEL_BOULDERCANYON",
+      "world": 4,
+      "world_name": "DRAGON_FOREST",
+      "race_type": 0,
+      "race_type_name": "DEFAULT",
+      "main_map": 23,
+      "collectables_map": 92,
+      "maps": {
+        "main": {
+          "map_id": 23,
+          "total_objects": 146,
+          "unresolved": 0,
+          "flagged_objects": 8
+        },
+        "collectables": {
+          "map_id": 92,
+          "total_objects": 108,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 53,
+          "name": "FirTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 8
+        }
+      ],
+      "flagged_total": 8,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 20,
+      "enum": "ASSET_LEVEL_WINDMILLPLAINS",
+      "world": 4,
+      "world_name": "DRAGON_FOREST",
+      "race_type": 0,
+      "race_type_name": "DEFAULT",
+      "main_map": 24,
+      "collectables_map": 93,
+      "maps": {
+        "main": {
+          "map_id": 24,
+          "total_objects": 176,
+          "unresolved": 0,
+          "flagged_objects": 18
+        },
+        "collectables": {
+          "map_id": 93,
+          "total_objects": 125,
+          "unresolved": 0,
+          "flagged_objects": 7
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 42,
+          "name": "SmartieTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 25
+        }
+      ],
+      "flagged_total": 25,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 21,
+      "enum": "ASSET_LEVEL_FRONTEND",
+      "world": -1,
+      "world_name": "NONE",
+      "race_type": 7,
+      "race_type_name": "CUTSCENE_2",
+      "main_map": 16,
+      "collectables_map": 85,
+      "maps": {
+        "main": {
+          "map_id": 16,
+          "total_objects": 0,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 85,
+          "total_objects": 33,
+          "unresolved": 0,
+          "flagged_objects": 1
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 42,
+          "name": "SmartieTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 1
+        }
+      ],
+      "flagged_total": 1,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 22,
+      "enum": "ASSET_LEVEL_CHARACTERSELECT",
+      "world": -1,
+      "world_name": "NONE",
+      "race_type": 6,
+      "race_type_name": "CUTSCENE_1",
+      "main_map": 17,
+      "collectables_map": 86,
+      "maps": {
+        "main": {
+          "map_id": 17,
+          "total_objects": 0,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 86,
+          "total_objects": 75,
+          "unresolved": 0,
+          "flagged_objects": 9
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 56,
+          "name": "Flowers",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 5
+        },
+        {
+          "header_index": 53,
+          "name": "FirTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 2
+        },
+        {
+          "header_index": 43,
+          "name": "BlueBerryBush",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 2
+        }
+      ],
+      "flagged_total": 9,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 23,
+      "enum": "ASSET_LEVEL_TITLESCREENSEQUENCE",
+      "world": -1,
+      "world_name": "NONE",
+      "race_type": 6,
+      "race_type_name": "CUTSCENE_1",
+      "main_map": 22,
+      "collectables_map": 91,
+      "maps": {
+        "main": {
+          "map_id": 22,
+          "total_objects": 0,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 91,
+          "total_objects": 243,
+          "unresolved": 0,
+          "flagged_objects": 38
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 43,
+          "name": "BlueBerryBush",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 15
+        },
+        {
+          "header_index": 51,
+          "name": "PalmPlant",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 8
+        },
+        {
+          "header_index": 49,
+          "name": "Beachtree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 7
+        },
+        {
+          "header_index": 50,
+          "name": "PalmTreeTop",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 4
+        },
+        {
+          "header_index": 47,
+          "name": "AlpineSnowTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 4
+        }
+      ],
+      "flagged_total": 38,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 24,
+      "enum": "ASSET_LEVEL_SNOWFLAKEMOUNTAINHUB",
+      "world": 3,
+      "world_name": "SNOWFLAKE_MOUNTAIN",
+      "race_type": 5,
+      "race_type_name": "HUBWORLD",
+      "main_map": 25,
+      "collectables_map": 94,
+      "maps": {
+        "main": {
+          "map_id": 25,
+          "total_objects": 50,
+          "unresolved": 0,
+          "flagged_objects": 7
+        },
+        "collectables": {
+          "map_id": 94,
+          "total_objects": 23,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 44,
+          "name": "RubberSnowTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 3
+        },
+        {
+          "header_index": 47,
+          "name": "AlpineSnowTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 3
+        },
+        {
+          "header_index": 45,
+          "name": "SkinnySnowTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 1
+        }
+      ],
+      "flagged_total": 7,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 25,
+      "enum": "ASSET_LEVEL_SMOKEYCASTLE",
+      "world": 4,
+      "world_name": "DRAGON_FOREST",
+      "race_type": 65,
+      "race_type_name": "CHALLENGE_BANANAS",
+      "main_map": 26,
+      "collectables_map": 95,
+      "maps": {
+        "main": {
+          "map_id": 26,
+          "total_objects": 34,
+          "unresolved": 0,
+          "flagged_objects": 9
+        },
+        "collectables": {
+          "map_id": 95,
+          "total_objects": 109,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 42,
+          "name": "SmartieTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 9
+        }
+      ],
+      "flagged_total": 9,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 26,
+      "enum": "ASSET_LEVEL_DARKWATERBEACH",
+      "world": 2,
+      "world_name": "SHERBET_ISLAND",
+      "race_type": 64,
+      "race_type_name": "CHALLENGE_BATTLE",
+      "main_map": 27,
+      "collectables_map": 96,
+      "maps": {
+        "main": {
+          "map_id": 27,
+          "total_objects": 13,
+          "unresolved": 0,
+          "flagged_objects": 10
+        },
+        "collectables": {
+          "map_id": 96,
+          "total_objects": 103,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 49,
+          "name": "Beachtree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 10
+        }
+      ],
+      "flagged_total": 10,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 27,
+      "enum": "ASSET_LEVEL_ICICLEPYRAMID",
+      "world": 3,
+      "world_name": "SNOWFLAKE_MOUNTAIN",
+      "race_type": 64,
+      "race_type_name": "CHALLENGE_BATTLE",
+      "main_map": 28,
+      "collectables_map": 97,
+      "maps": {
+        "main": {
+          "map_id": 28,
+          "total_objects": 20,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 97,
+          "total_objects": 86,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [],
+      "flagged_total": 0,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 28,
+      "enum": "ASSET_LEVEL_FROSTYVILLAGE",
+      "world": 3,
+      "world_name": "SNOWFLAKE_MOUNTAIN",
+      "race_type": 0,
+      "race_type_name": "DEFAULT",
+      "main_map": 29,
+      "collectables_map": 98,
+      "maps": {
+        "main": {
+          "map_id": 29,
+          "total_objects": 142,
+          "unresolved": 0,
+          "flagged_objects": 22
+        },
+        "collectables": {
+          "map_id": 98,
+          "total_objects": 117,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 46,
+          "name": "XmasTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 13
+        },
+        {
+          "header_index": 55,
+          "name": "Lamppost",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 9
+        }
+      ],
+      "flagged_total": 22,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 29,
+      "enum": "ASSET_LEVEL_JUNGLEFALLS",
+      "world": 1,
+      "world_name": "DINO_DOMAIN",
+      "race_type": 0,
+      "race_type_name": "DEFAULT",
+      "main_map": 30,
+      "collectables_map": 78,
+      "maps": {
+        "main": {
+          "map_id": 30,
+          "total_objects": 77,
+          "unresolved": 0,
+          "flagged_objects": 14
+        },
+        "collectables": {
+          "map_id": 78,
+          "total_objects": 124,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 49,
+          "name": "Beachtree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 14
+        }
+      ],
+      "flagged_total": 14,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 30,
+      "enum": "ASSET_LEVEL_TREASURECAVES",
+      "world": 2,
+      "world_name": "SHERBET_ISLAND",
+      "race_type": 0,
+      "race_type_name": "DEFAULT",
+      "main_map": 31,
+      "collectables_map": 100,
+      "maps": {
+        "main": {
+          "map_id": 31,
+          "total_objects": 109,
+          "unresolved": 0,
+          "flagged_objects": 12
+        },
+        "collectables": {
+          "map_id": 100,
+          "total_objects": 101,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 65,
+          "name": "FlamingTorch",
+          "behavior": "BHV_TORCH_MIST",
+          "classification": "cosmetic/benign",
+          "count": 5
+        },
+        {
+          "header_index": 49,
+          "name": "Beachtree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 5
+        },
+        {
+          "header_index": 42,
+          "name": "SmartieTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 2
+        }
+      ],
+      "flagged_total": 12,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 31,
+      "enum": "ASSET_LEVEL_HAUNTEDWOODS",
+      "world": 4,
+      "world_name": "DRAGON_FOREST",
+      "race_type": 0,
+      "race_type_name": "DEFAULT",
+      "main_map": 32,
+      "collectables_map": 101,
+      "maps": {
+        "main": {
+          "map_id": 32,
+          "total_objects": 76,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 101,
+          "total_objects": 157,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [],
+      "flagged_total": 0,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 32,
+      "enum": "ASSET_LEVEL_DARKMOONCAVERNS",
+      "world": 5,
+      "world_name": "FUTURE_FUN_LAND",
+      "race_type": 0,
+      "race_type_name": "DEFAULT",
+      "main_map": 33,
+      "collectables_map": 102,
+      "maps": {
+        "main": {
+          "map_id": 33,
+          "total_objects": 155,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 102,
+          "total_objects": 110,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [],
+      "flagged_total": 0,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 33,
+      "enum": "ASSET_LEVEL_STARCITY",
+      "world": 5,
+      "world_name": "FUTURE_FUN_LAND",
+      "race_type": 0,
+      "race_type_name": "DEFAULT",
+      "main_map": 34,
+      "collectables_map": 103,
+      "maps": {
+        "main": {
+          "map_id": 34,
+          "total_objects": 159,
+          "unresolved": 0,
+          "flagged_objects": 15
+        },
+        "collectables": {
+          "map_id": 103,
+          "total_objects": 91,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 55,
+          "name": "Lamppost",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 15
+        }
+      ],
+      "flagged_total": 15,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 34,
+      "enum": "ASSET_LEVEL_TROPHYRACE",
+      "world": -1,
+      "world_name": "NONE",
+      "race_type": 6,
+      "race_type_name": "CUTSCENE_1",
+      "main_map": 35,
+      "collectables_map": 104,
+      "maps": {
+        "main": {
+          "map_id": 35,
+          "total_objects": 0,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 104,
+          "total_objects": 12,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [],
+      "flagged_total": 0,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 35,
+      "enum": "ASSET_LEVEL_FUTUREFUNLANDHUB",
+      "world": 5,
+      "world_name": "FUTURE_FUN_LAND",
+      "race_type": 5,
+      "race_type_name": "HUBWORLD",
+      "main_map": 36,
+      "collectables_map": 105,
+      "maps": {
+        "main": {
+          "map_id": 36,
+          "total_objects": 37,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 105,
+          "total_objects": 26,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [],
+      "flagged_total": 0,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 36,
+      "enum": "ASSET_LEVEL_OPENINGSEQUENCE",
+      "world": -1,
+      "world_name": "NONE",
+      "race_type": 5,
+      "race_type_name": "HUBWORLD",
+      "main_map": 37,
+      "collectables_map": 106,
+      "maps": {
+        "main": {
+          "map_id": 37,
+          "total_objects": 26,
+          "unresolved": 0,
+          "flagged_objects": 5
+        },
+        "collectables": {
+          "map_id": 106,
+          "total_objects": 119,
+          "unresolved": 0,
+          "flagged_objects": 8
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 43,
+          "name": "BlueBerryBush",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 4
+        },
+        {
+          "header_index": 52,
+          "name": "PalmTreeTopChea",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 2
+        },
+        {
+          "header_index": 65,
+          "name": "FlamingTorch",
+          "behavior": "BHV_TORCH_MIST",
+          "classification": "cosmetic/benign",
+          "count": 2
+        },
+        {
+          "header_index": 49,
+          "name": "Beachtree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 2
+        },
+        {
+          "header_index": 56,
+          "name": "Flowers",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 2
+        },
+        {
+          "header_index": 53,
+          "name": "FirTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 1
+        }
+      ],
+      "flagged_total": 13,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 37,
+      "enum": "ASSET_LEVEL_WIZPIG1",
+      "world": 0,
+      "world_name": "CENTRAL_AREA",
+      "race_type": 8,
+      "race_type_name": "BOSS",
+      "main_map": 38,
+      "collectables_map": 107,
+      "maps": {
+        "main": {
+          "map_id": 38,
+          "total_objects": 67,
+          "unresolved": 0,
+          "flagged_objects": 16
+        },
+        "collectables": {
+          "map_id": 107,
+          "total_objects": 15,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 53,
+          "name": "FirTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 16
+        }
+      ],
+      "flagged_total": 16,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 38,
+      "enum": "ASSET_LEVEL_TRICKYTOPS1",
+      "world": 1,
+      "world_name": "DINO_DOMAIN",
+      "race_type": 8,
+      "race_type_name": "BOSS",
+      "main_map": 39,
+      "collectables_map": 108,
+      "maps": {
+        "main": {
+          "map_id": 39,
+          "total_objects": 122,
+          "unresolved": 0,
+          "flagged_objects": 61
+        },
+        "collectables": {
+          "map_id": 108,
+          "total_objects": 55,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 49,
+          "name": "Beachtree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 48
+        },
+        {
+          "header_index": 43,
+          "name": "BlueBerryBush",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 11
+        },
+        {
+          "header_index": 65,
+          "name": "FlamingTorch",
+          "behavior": "BHV_TORCH_MIST",
+          "classification": "cosmetic/benign",
+          "count": 2
+        }
+      ],
+      "flagged_total": 61,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 39,
+      "enum": "ASSET_LEVEL_OPTIONSBACKGROUND",
+      "world": -1,
+      "world_name": "NONE",
+      "race_type": 7,
+      "race_type_name": "CUTSCENE_2",
+      "main_map": 40,
+      "collectables_map": 109,
+      "maps": {
+        "main": {
+          "map_id": 40,
+          "total_objects": 0,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 109,
+          "total_objects": 11,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [],
+      "flagged_total": 0,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 40,
+      "enum": "ASSET_LEVEL_BUBBLER1",
+      "world": 2,
+      "world_name": "SHERBET_ISLAND",
+      "race_type": 8,
+      "race_type_name": "BOSS",
+      "main_map": 43,
+      "collectables_map": 110,
+      "maps": {
+        "main": {
+          "map_id": 43,
+          "total_objects": 60,
+          "unresolved": 0,
+          "flagged_objects": 3
+        },
+        "collectables": {
+          "map_id": 110,
+          "total_objects": 50,
+          "unresolved": 0,
+          "flagged_objects": 15
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 50,
+          "name": "PalmTreeTop",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 11
+        },
+        {
+          "header_index": 49,
+          "name": "Beachtree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 7
+        }
+      ],
+      "flagged_total": 18,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 41,
+      "enum": "ASSET_LEVEL_SMOKEY1",
+      "world": 4,
+      "world_name": "DRAGON_FOREST",
+      "race_type": 8,
+      "race_type_name": "BOSS",
+      "main_map": 44,
+      "collectables_map": 111,
+      "maps": {
+        "main": {
+          "map_id": 44,
+          "total_objects": 22,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 111,
+          "total_objects": 89,
+          "unresolved": 0,
+          "flagged_objects": 19
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 53,
+          "name": "FirTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 19
+        }
+      ],
+      "flagged_total": 19,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 42,
+      "enum": "ASSET_LEVEL_WIZPIGMOUTHSEQUENCE",
+      "world": -1,
+      "world_name": "NONE",
+      "race_type": 5,
+      "race_type_name": "HUBWORLD",
+      "main_map": 41,
+      "collectables_map": 112,
+      "maps": {
+        "main": {
+          "map_id": 41,
+          "total_objects": 1,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 112,
+          "total_objects": 16,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [],
+      "flagged_total": 0,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 43,
+      "enum": "ASSET_LEVEL_WIZPIGAMULETSEQUENCE",
+      "world": -1,
+      "world_name": "NONE",
+      "race_type": 7,
+      "race_type_name": "CUTSCENE_2",
+      "main_map": 42,
+      "collectables_map": 114,
+      "maps": {
+        "main": {
+          "map_id": 42,
+          "total_objects": 0,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 114,
+          "total_objects": 58,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [],
+      "flagged_total": 0,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 44,
+      "enum": "ASSET_LEVEL_TTAMULETSEQUENCE",
+      "world": -1,
+      "world_name": "NONE",
+      "race_type": 7,
+      "race_type_name": "CUTSCENE_2",
+      "main_map": 45,
+      "collectables_map": 115,
+      "maps": {
+        "main": {
+          "map_id": 45,
+          "total_objects": 0,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 115,
+          "total_objects": 47,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [],
+      "flagged_total": 0,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 45,
+      "enum": "ASSET_LEVEL_ROCKETSEQUENCE",
+      "world": -1,
+      "world_name": "NONE",
+      "race_type": 5,
+      "race_type_name": "HUBWORLD",
+      "main_map": 46,
+      "collectables_map": 116,
+      "maps": {
+        "main": {
+          "map_id": 46,
+          "total_objects": 0,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 116,
+          "total_objects": 87,
+          "unresolved": 0,
+          "flagged_objects": 3
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 50,
+          "name": "PalmTreeTop",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 3
+        }
+      ],
+      "flagged_total": 3,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 46,
+      "enum": "ASSET_LEVEL_TRICKYTOPS2",
+      "world": 1,
+      "world_name": "DINO_DOMAIN",
+      "race_type": 8,
+      "race_type_name": "BOSS",
+      "main_map": 47,
+      "collectables_map": 117,
+      "maps": {
+        "main": {
+          "map_id": 47,
+          "total_objects": 132,
+          "unresolved": 0,
+          "flagged_objects": 67
+        },
+        "collectables": {
+          "map_id": 117,
+          "total_objects": 90,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 49,
+          "name": "Beachtree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 54
+        },
+        {
+          "header_index": 43,
+          "name": "BlueBerryBush",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 11
+        },
+        {
+          "header_index": 65,
+          "name": "FlamingTorch",
+          "behavior": "BHV_TORCH_MIST",
+          "classification": "cosmetic/benign",
+          "count": 2
+        }
+      ],
+      "flagged_total": 67,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 47,
+      "enum": "ASSET_LEVEL_DINODOMAINTROPHYANIM",
+      "world": -1,
+      "world_name": "NONE",
+      "race_type": 6,
+      "race_type_name": "CUTSCENE_1",
+      "main_map": 48,
+      "collectables_map": 118,
+      "maps": {
+        "main": {
+          "map_id": 48,
+          "total_objects": 1,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 118,
+          "total_objects": 53,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [],
+      "flagged_total": 0,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 48,
+      "enum": "ASSET_LEVEL_SNOWFLAKEMOUNTAINTROPHYANIM",
+      "world": -1,
+      "world_name": "NONE",
+      "race_type": 6,
+      "race_type_name": "CUTSCENE_1",
+      "main_map": 49,
+      "collectables_map": 119,
+      "maps": {
+        "main": {
+          "map_id": 49,
+          "total_objects": 1,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 119,
+          "total_objects": 53,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [],
+      "flagged_total": 0,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 49,
+      "enum": "ASSET_LEVEL_SHERBETISLANDTROPHYANIM",
+      "world": -1,
+      "world_name": "NONE",
+      "race_type": 6,
+      "race_type_name": "CUTSCENE_1",
+      "main_map": 50,
+      "collectables_map": 120,
+      "maps": {
+        "main": {
+          "map_id": 50,
+          "total_objects": 1,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 120,
+          "total_objects": 53,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [],
+      "flagged_total": 0,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 50,
+      "enum": "ASSET_LEVEL_DRAGONFORESTTROPHYANIM",
+      "world": -1,
+      "world_name": "NONE",
+      "race_type": 6,
+      "race_type_name": "CUTSCENE_1",
+      "main_map": 51,
+      "collectables_map": 121,
+      "maps": {
+        "main": {
+          "map_id": 51,
+          "total_objects": 1,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 121,
+          "total_objects": 53,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [],
+      "flagged_total": 0,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 51,
+      "enum": "ASSET_LEVEL_FUTUREFUNLANDTROPHYANIM",
+      "world": -1,
+      "world_name": "NONE",
+      "race_type": 5,
+      "race_type_name": "HUBWORLD",
+      "main_map": 52,
+      "collectables_map": 122,
+      "maps": {
+        "main": {
+          "map_id": 52,
+          "total_objects": 1,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 122,
+          "total_objects": 31,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [],
+      "flagged_total": 0,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 52,
+      "enum": "ASSET_LEVEL_BLUEY2",
+      "world": 3,
+      "world_name": "SNOWFLAKE_MOUNTAIN",
+      "race_type": 8,
+      "race_type_name": "BOSS",
+      "main_map": 53,
+      "collectables_map": 123,
+      "maps": {
+        "main": {
+          "map_id": 53,
+          "total_objects": 64,
+          "unresolved": 0,
+          "flagged_objects": 47
+        },
+        "collectables": {
+          "map_id": 123,
+          "total_objects": 97,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 44,
+          "name": "RubberSnowTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 33
+        },
+        {
+          "header_index": 45,
+          "name": "SkinnySnowTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 14
+        }
+      ],
+      "flagged_total": 47,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 53,
+      "enum": "ASSET_LEVEL_BUBBLER2",
+      "world": 2,
+      "world_name": "SHERBET_ISLAND",
+      "race_type": 8,
+      "race_type_name": "BOSS",
+      "main_map": 54,
+      "collectables_map": 124,
+      "maps": {
+        "main": {
+          "map_id": 54,
+          "total_objects": 63,
+          "unresolved": 0,
+          "flagged_objects": 3
+        },
+        "collectables": {
+          "map_id": 124,
+          "total_objects": 46,
+          "unresolved": 0,
+          "flagged_objects": 15
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 50,
+          "name": "PalmTreeTop",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 11
+        },
+        {
+          "header_index": 49,
+          "name": "Beachtree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 7
+        }
+      ],
+      "flagged_total": 18,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 54,
+      "enum": "ASSET_LEVEL_SMOKEY2",
+      "world": 4,
+      "world_name": "DRAGON_FOREST",
+      "race_type": 8,
+      "race_type_name": "BOSS",
+      "main_map": 55,
+      "collectables_map": 125,
+      "maps": {
+        "main": {
+          "map_id": 55,
+          "total_objects": 22,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 125,
+          "total_objects": 107,
+          "unresolved": 0,
+          "flagged_objects": 19
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 53,
+          "name": "FirTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 19
+        }
+      ],
+      "flagged_total": 19,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 55,
+      "enum": "ASSET_LEVEL_WIZPIG2",
+      "world": 5,
+      "world_name": "FUTURE_FUN_LAND",
+      "race_type": 8,
+      "race_type_name": "BOSS",
+      "main_map": 56,
+      "collectables_map": 126,
+      "maps": {
+        "main": {
+          "map_id": 56,
+          "total_objects": 50,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 126,
+          "total_objects": 115,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [],
+      "flagged_total": 0,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 56,
+      "enum": "ASSET_LEVEL_PARTYSEQUENCE",
+      "world": -1,
+      "world_name": "NONE",
+      "race_type": 6,
+      "race_type_name": "CUTSCENE_1",
+      "main_map": 58,
+      "collectables_map": 128,
+      "maps": {
+        "main": {
+          "map_id": 58,
+          "total_objects": 0,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 128,
+          "total_objects": 166,
+          "unresolved": 0,
+          "flagged_objects": 6
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 50,
+          "name": "PalmTreeTop",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 6
+        }
+      ],
+      "flagged_total": 6,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 57,
+      "enum": "ASSET_LEVEL_TRICKTOPSANIM",
+      "world": -1,
+      "world_name": "NONE",
+      "race_type": 5,
+      "race_type_name": "HUBWORLD",
+      "main_map": 59,
+      "collectables_map": 129,
+      "maps": {
+        "main": {
+          "map_id": 59,
+          "total_objects": 2,
+          "unresolved": 0,
+          "flagged_objects": 2
+        },
+        "collectables": {
+          "map_id": 129,
+          "total_objects": 145,
+          "unresolved": 0,
+          "flagged_objects": 4
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 43,
+          "name": "BlueBerryBush",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 4
+        },
+        {
+          "header_index": 49,
+          "name": "Beachtree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 2
+        }
+      ],
+      "flagged_total": 6,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 58,
+      "enum": "ASSET_LEVEL_SMOKEYANIM",
+      "world": -1,
+      "world_name": "NONE",
+      "race_type": 5,
+      "race_type_name": "HUBWORLD",
+      "main_map": 60,
+      "collectables_map": 130,
+      "maps": {
+        "main": {
+          "map_id": 60,
+          "total_objects": 3,
+          "unresolved": 0,
+          "flagged_objects": 3
+        },
+        "collectables": {
+          "map_id": 130,
+          "total_objects": 118,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 53,
+          "name": "FirTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 3
+        }
+      ],
+      "flagged_total": 3,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 59,
+      "enum": "ASSET_LEVEL_BLUEYANIM",
+      "world": -1,
+      "world_name": "NONE",
+      "race_type": 5,
+      "race_type_name": "HUBWORLD",
+      "main_map": 61,
+      "collectables_map": 131,
+      "maps": {
+        "main": {
+          "map_id": 61,
+          "total_objects": 6,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 131,
+          "total_objects": 121,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [],
+      "flagged_total": 0,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 60,
+      "enum": "ASSET_LEVEL_WIZPIG1ANIM",
+      "world": -1,
+      "world_name": "NONE",
+      "race_type": 5,
+      "race_type_name": "HUBWORLD",
+      "main_map": 62,
+      "collectables_map": 132,
+      "maps": {
+        "main": {
+          "map_id": 62,
+          "total_objects": 1,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 132,
+          "total_objects": 130,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [],
+      "flagged_total": 0,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 61,
+      "enum": "ASSET_LEVEL_BUBBLERANIM",
+      "world": -1,
+      "world_name": "NONE",
+      "race_type": 5,
+      "race_type_name": "HUBWORLD",
+      "main_map": 64,
+      "collectables_map": 134,
+      "maps": {
+        "main": {
+          "map_id": 64,
+          "total_objects": 7,
+          "unresolved": 0,
+          "flagged_objects": 2
+        },
+        "collectables": {
+          "map_id": 134,
+          "total_objects": 139,
+          "unresolved": 0,
+          "flagged_objects": 2
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 50,
+          "name": "PalmTreeTop",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 2
+        },
+        {
+          "header_index": 49,
+          "name": "Beachtree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 2
+        }
+      ],
+      "flagged_total": 4,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 62,
+      "enum": "ASSET_LEVEL_WIZPIG2ANIM",
+      "world": -1,
+      "world_name": "NONE",
+      "race_type": 5,
+      "race_type_name": "HUBWORLD",
+      "main_map": 65,
+      "collectables_map": 135,
+      "maps": {
+        "main": {
+          "map_id": 65,
+          "total_objects": 0,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 135,
+          "total_objects": 164,
+          "unresolved": 0,
+          "flagged_objects": 0
+        }
+      },
+      "flagged_objects": [],
+      "flagged_total": 0,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 63,
+      "enum": "ASSET_LEVEL_LASTBIT",
+      "world": -1,
+      "world_name": "NONE",
+      "race_type": 6,
+      "race_type_name": "CUTSCENE_1",
+      "main_map": 66,
+      "collectables_map": 136,
+      "maps": {
+        "main": {
+          "map_id": 66,
+          "total_objects": 0,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 136,
+          "total_objects": 100,
+          "unresolved": 0,
+          "flagged_objects": 10
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 56,
+          "name": "Flowers",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 3
+        },
+        {
+          "header_index": 50,
+          "name": "PalmTreeTop",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 2
+        },
+        {
+          "header_index": 43,
+          "name": "BlueBerryBush",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 2
+        },
+        {
+          "header_index": 49,
+          "name": "Beachtree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 1
+        },
+        {
+          "header_index": 48,
+          "name": "RubberTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 1
+        },
+        {
+          "header_index": 44,
+          "name": "RubberSnowTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 1
+        }
+      ],
+      "flagged_total": 10,
+      "flagged_party_critical": 0
+    },
+    {
+      "id": 64,
+      "enum": "ASSET_LEVEL_LASTBITB",
+      "world": -1,
+      "world_name": "NONE",
+      "race_type": 6,
+      "race_type_name": "CUTSCENE_1",
+      "main_map": 67,
+      "collectables_map": 137,
+      "maps": {
+        "main": {
+          "map_id": 67,
+          "total_objects": 0,
+          "unresolved": 0,
+          "flagged_objects": 0
+        },
+        "collectables": {
+          "map_id": 137,
+          "total_objects": 134,
+          "unresolved": 0,
+          "flagged_objects": 10
+        }
+      },
+      "flagged_objects": [
+        {
+          "header_index": 43,
+          "name": "BlueBerryBush",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 4
+        },
+        {
+          "header_index": 50,
+          "name": "PalmTreeTop",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 2
+        },
+        {
+          "header_index": 49,
+          "name": "Beachtree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 2
+        },
+        {
+          "header_index": 48,
+          "name": "RubberTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 1
+        },
+        {
+          "header_index": 44,
+          "name": "RubberSnowTree",
+          "behavior": "BHV_SCENERY",
+          "classification": "cosmetic/benign",
+          "count": 1
+        }
+      ],
+      "flagged_total": 10,
+      "flagged_party_critical": 0
+    }
+  ]
+}

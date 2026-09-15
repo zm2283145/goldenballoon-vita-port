@@ -12,14 +12,15 @@
 //
 // Panel 0 is Play: the home, which carries the ROM onboarding as a STATE
 // rather than as a separate destination named after a file format. Online Room
-// is compiled for development only with MDKR_ENABLE_ONLINE_ROOM_PREVIEW=ON and
-// then drawn under MDKR_ONLINE_ROOM_PREVIEW=1 (see panelVisible in
-// ui_launcher.cpp), so a shipped build offers exactly what the release offers;
-// its INDEX is unconditional either way, because the constants below are a
-// public smoke contract.
+// is always visible in MDKR_ENABLE_ONLINE_BETA builds (including the 1.7 native
+// release packages), visible under MDKR_ONLINE_ROOM_PREVIEW=1 in a beta-OFF
+// development-preview build, and absent when both compile-time gates are off
+// (see panelVisible in ui_launcher.cpp). Its INDEX is unconditional in every
+// state because the constants below are a public smoke contract.
 #ifndef MDKR64_UI_LAUNCHER_H
 #define MDKR64_UI_LAUNCHER_H
 
+#include "launcher_panels.h" // kLauncherPanel* (public smoke contract)
 #include "engine_entry.h"   // MdkrBootConfig
 #include "rom_validate.h"   // RomInfo
 #include "ui_phone_party.h" // PhonePartyLanControls
@@ -33,12 +34,6 @@
  * four bytes per unit. Keep a finite UI/input contract below that OS boundary.
  * The preference writer reserves enough escaped-line capacity for this value. */
 constexpr size_t kLauncherRomPathMaxBytes = 32767u * 4u;
-constexpr int kLauncherPanelPlay = 0;
-constexpr int kLauncherPanelOnlineRoom = 1;
-constexpr int kLauncherPanelSettings = 2;
-constexpr int kLauncherPanelDiagnostics = 3;
-constexpr int kLauncherPanelAbout = 4;
-constexpr int kLauncherPanelCount = 5;
 
 struct SDL_Window;
 class AppHost;
@@ -89,6 +84,40 @@ struct LauncherState {
     bool romValidationPending = false;
     bool romPlayValidationPending = false;
     bool romPlayValidationPassed = false;
+    // A Workshop preview uses the same mandatory final ROM check as Play. It
+    // remains pending only for that asynchronous check, then is copied into the
+    // one-shot boot config or cleared on cancellation/failure.
+    std::string characterPreviewPackage;
+    std::string characterPreviewSourceSha256;
+    std::string characterPreviewFitSha256;
+    std::string characterPreviewPresentationSha256;
+    MdkrCharacterPreviewContext characterPreviewContext =
+        MDKR_CHARACTER_PREVIEW_NONE;
+    MdkrCharacterPreviewScene characterPreviewScene =
+        MDKR_CHARACTER_PREVIEW_SCENE_BASELINE;
+    int characterPreviewPlayers = 0;
+    MdkrCharacterPreviewPose characterPreviewPose =
+        MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+    unsigned characterPreviewPosePhaseMilli = 0u;
+    MdkrCharacterPreviewPose characterPreviewTransitionFromPose =
+        MDKR_CHARACTER_PREVIEW_POSE_LIVE;
+    unsigned characterPreviewTransitionFromPhaseMilli = 0u;
+    int characterPreviewViewYawDegrees = 0;
+    int characterPreviewViewPitchDegrees = 0;
+    MdkrWorkshopPreviewLighting characterPreviewLighting =
+        MDKR_WORKSHOP_PREVIEW_LIGHTING_NEUTRAL;
+    std::string characterPreviewCapturePng;
+    MdkrCharacterPreviewCaptureKind characterPreviewCaptureKind =
+        MDKR_CHARACTER_PREVIEW_CAPTURE_SCENE;
+    bool characterPreviewAutoReturn = false;
+    bool characterPreviewCaptureLauncherOwned = false;
+    bool characterPreviewPortraitSourceHandoff = false;
+    bool characterPreviewInteractiveStudio = false;
+    bool characterPreviewRepresentativeMotionReview = false;
+    bool characterPreviewDonorReference = false;
+    bool characterPreviewDispatched = false;
+    MdkrCharacterPreviewResult characterPreviewResult{};
+    MdkrCharacterMotionReviewResult characterMotionReviewResult{};
     // Play was pressed while a replacement Selection check was still running.
     // The check keeps running on the candidate file; once it resolves, the
     // mandatory final Play check runs against whatever ROM that resolution
@@ -121,6 +150,10 @@ struct LauncherState {
      * re-truncates what the verdict buffers were widened to carry. */
     char    bootError[1280] = {0};
     bool    bootErrorVisible = false;
+    // A normal Quit/window-close request waits for the current transactional
+    // character operation to publish while the launcher remains visible and
+    // responsive. The player can cancel this request from the progress card.
+    bool    quitRequested = false;
 };
 
 // Deferred navigation. `priority` orders the frame's competing writers; use
@@ -143,17 +176,51 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out);
 void RomPanel_setRom(LauncherState &s, const char *path);    // drag-and-drop entry (validates)
 void DiagPanel_draw(LauncherState &s, LauncherAction &out);
 
+struct LauncherNetworkShutdown;
+
 class Launcher {
 public:
     Launcher();
     ~Launcher();
     LauncherAction draw(AppHost &host);
     void setBootError(const char *message);
+    void requestQuit();
+    bool quitRequested() const;
+    bool quitReady() const;
+    // Non-rendering completion publication, including returned preview results.
+    // Called even while minimized, before deciding whether Quit can proceed.
+    void serviceCharacterWork();
+    // Exceptional exits cannot draw progress but still publish completed work
+    // before launcher/global owners are destroyed. Does not abandon workers.
+    void finishCharacterWorkForExit();
+    // Irreversible app-exit phase, after Workshop/engine work has settled.
+    // Retires room and phone owners before observing process-wide RTC cleanup.
+    void beginNetworkShutdown();
+    // Terminal includes failure; inspect networkShutdownFailed() before success.
+    bool pollNetworkShutdown();
+    bool networkShutdownFailed() const;
+    // Exceptional/non-renderable exit backstop; waits, returning success only
+    // after every owner and the global cleanup have completed successfully.
+    bool finishNetworkShutdownForExit();
+    // Closing-only surface: no panel service, drop intake, Play or room actions.
+    void drawOnlineClosing(bool delayed);
 
     // Test-only entry point for the shell smoke.  It uses the exact same
     // asynchronous final recheck as the Play widget, while leaving the smoke
     // in the launcher instead of booting a game session.
     void requestPlayValidationForSmoke();
+
+    // "Skip the launcher" (Launcher.SkipWhenReady, issue #60). main() makes
+    // the launch decision -- the setting, and what was being held when the app
+    // opened -- and arms this before the first frame. Once armed, the first
+    // frame on which the remembered ROM has settled and verified presses the
+    // SAME Play the player would have pressed: the mandatory final ROM check
+    // still runs, and only its verdict publishes a boot. Nothing is skipped
+    // except the waiting.
+    void armSkipWhenReady();
+    // Read-only witnesses for tests/check_launcher_skip.py.
+    bool skipArmedForSmoke() const { return skipArmed_; }
+    bool skipDispatchedForSmoke() const { return skipDispatched_; }
 
     // Read-only view of the shared panel state (ROM path/verdict). Exists for
     // the headless shell smoke (MDKR_APP_SMOKE_DROP) to observe the outcome of
@@ -185,6 +252,7 @@ private:
     // Refresh lanParty.available/active/note for the card (cheap; throttled).
     void refreshLanControls();
 
+    std::unique_ptr<LauncherNetworkShutdown> networkShutdown_;
     std::unique_ptr<MdkrPartyTransport> partyTransport_;
     std::unique_ptr<MdkrNativePartyHost> phoneParty_;
     PartyTransportKind partyKind_ = PartyTransportKind::Cloud;
@@ -195,6 +263,15 @@ private:
     bool lanChecked_ = false;
     uint64_t lanCheckedMs_ = 0u;     // last availability check (SDL ticks)
     LauncherState state_;
+    // The launch decision, and whether this launch has already asked to boot.
+    // Once per launch: a boot that fails its final check leaves the player in
+    // the launcher looking at the reason, and must not be retried behind them.
+    bool skipArmed_ = false;
+    bool skipDispatched_ = false;
+    // Samples of the launch hold taken by this launcher. main()'s pre-frame
+    // sample is 0, so these continue from 1; the count is what lets the test
+    // seam make a hold appear partway through the window.
+    unsigned holdSamples_ = 0u;
     int  active_ = 0;               // index into the panel table
     bool panelEnvChecked_ = false;  // MDKR_APP_PANEL design-review/CI hook
 };

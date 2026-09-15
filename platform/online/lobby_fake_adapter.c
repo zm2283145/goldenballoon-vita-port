@@ -595,7 +595,7 @@ MdkrOnlineFakeStep mdkr_online_fake_expire_timeout(
  * around the MDKR_ROOM_SELECTING branch). Keep this storybook spec honest to the
  * gated view model: every select-* case must declare the timeout present exactly
  * when the shipped app would render it and absent otherwise. Compile-time, using
- * the same gate as the view model itself, so an OFF/release build (and the
+ * the same gate as the view model itself, so a beta-OFF build (and the
  * beta-blind unit test, which compiles these TUs without the define) keeps the
  * spec false and stays byte-identical. */
 #if MDKR_ENABLE_ONLINE_BETA

@@ -21,7 +21,21 @@ extern "C" {
 
 #define MDKR_MATCH_PEER_PAYLOAD_INPUT              0u
 #define MDKR_MATCH_PEER_PAYLOAD_PREFLIGHT_FRAGMENT 1u
-#define MDKR_MATCH_PEER_PAYLOAD_TYPE_MAX           1u
+#define MDKR_MATCH_PEER_PAYLOAD_INPUT_REPAIR_REQUEST 2u
+#define MDKR_MATCH_PEER_PAYLOAD_INPUT_REPAIR_ANSWER  3u
+#define MDKR_MATCH_PEER_PAYLOAD_TYPE_MAX           3u
+
+/* The three data channels one peer connection carries, named exactly as the
+ * transport labels them (gb-match-{state,control,authority}-v1). A lane is
+ * key-derivation input, so each channel owns a separate key and therefore a
+ * separate monotonic sequence space: nothing sealed for one channel can be
+ * spliced onto another, and one channel's traffic can never advance another's
+ * nonce. */
+#define MDKR_MATCH_PEER_LANE_STATE     0u
+#define MDKR_MATCH_PEER_LANE_CONTROL   1u
+#define MDKR_MATCH_PEER_LANE_AUTHORITY 2u
+#define MDKR_MATCH_PEER_LANE_MAX       2u
+#define MDKR_MATCH_PEER_LANE_COUNT     (MDKR_MATCH_PEER_LANE_MAX + 1u)
 
 #if defined(__cplusplus)
 static_assert(MDKR_MATCH_PEER_ENVELOPE_BYTES ==
@@ -41,6 +55,10 @@ typedef struct MdkrMatchPeerKeyContext {
     uint32_t source_generation;
     uint64_t destination_endpoint_id;
     uint32_t destination_generation;
+    /* MDKR_MATCH_PEER_LANE_*: which of the peer connection's channels this
+     * key serves. Trails the endpoint fields so existing aggregate
+     * initializers keep naming the state lane. */
+    uint8_t lane;
 } MdkrMatchPeerKeyContext;
 
 typedef struct MdkrMatchPeerEnvelopeContext {
@@ -74,7 +92,8 @@ typedef struct MdkrMatchPeerReplayWindow {
     bool initialized;
 } MdkrMatchPeerReplayWindow;
 
-#define MDKR_MATCH_PEER_KEYRING_SLOTS 8u
+/* Three lanes in each direction toward each of up to three remote peers. */
+#define MDKR_MATCH_PEER_KEYRING_SLOTS 18u
 #define MDKR_MATCH_PEER_FINGERPRINT_BYTES 32u
 
 /* A derived directional key and the one seal window that owns its nonce
@@ -104,7 +123,10 @@ typedef enum MdkrMatchPeerCryptoResult {
     MDKR_MATCH_PEER_CRYPTO_WRONG_RECIPIENT,
     MDKR_MATCH_PEER_CRYPTO_STALE_GENERATION,
     MDKR_MATCH_PEER_CRYPTO_AUTHENTICATION,
-    MDKR_MATCH_PEER_CRYPTO_REPLAY
+    MDKR_MATCH_PEER_CRYPTO_REPLAY,
+    /* The authenticated header names a different channel than the key the
+     * caller selected. Appended so the prior codes' values never shift. */
+    MDKR_MATCH_PEER_CRYPTO_WRONG_LANE
 } MdkrMatchPeerCryptoResult;
 
 typedef struct MdkrMatchPeerIdentity MdkrMatchPeerIdentity;
@@ -160,8 +182,8 @@ bool mdkr_match_peer_seal(
     uint8_t envelope[MDKR_MATCH_PEER_ENVELOPE_BYTES]);
 
 /* The caller supplies the complete direction expected for the selected key;
- * the authenticated header must match its source, recipient, epoch and both
- * generations before decryption. Authentication happens before replay state
+ * the authenticated header must match its source, recipient, epoch, lane and
+ * both generations before decryption. Authentication happens before replay state
  * or output changes. Each replay window belongs to exactly one direction. */
 MdkrMatchPeerCryptoResult mdkr_match_peer_open(
     const MdkrMatchPeerSealingKey *opening,

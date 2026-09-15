@@ -206,3 +206,143 @@ scoring only what it did. Until then, read a green overlay count as evidence
 about the rows named in that run and nothing more.
 
 Noticed while verifying the barge-in fix, not caused by it.
+
+## CLOSED: 17 checks scrubbed MDKR_SAVE_DIR out of their engine environment and then launched — wave "savehermetic"
+
+**Mechanism.** A check that wants a hermetic engine builds its environment by
+dropping every inherited `MDKR*` variable. That scrub also drops the
+`MDKR_SAVE_DIR` and `MDKR_VIDEO_CONFIG_PATH` `tools/run_checks.py` exports per
+task. Before issue #54 the loss was survivable: a non-packaged build resolved an
+unpinned save to `$CWD/save`, and a check that ran the engine in a temporary
+working directory was isolated by accident. Issue #54 unified save resolution
+under the per-user directory, and the accident stopped working — an unpinned
+save now resolves to the *shared* `~/Library/Application Support/mdkr64/mdkr64/save`
+(`$XDG_DATA_HOME/mdkr64/save` on Linux). Any adventure-in-progress EEPROM
+sitting there, left by a developer playing or by an earlier suite task,
+re-routes the boot flow of every such check: FILE SELECT resumes instead of
+starting a new game, the intro cutscene is skipped, levels load thousands of
+frames early, frame-timed track-select inputs miss, and a seeded unlock the
+check wrote is never read. The reds read like product regressions — "level
+never loaded … no `[PVEH]`", "0 flap cues", "trophies 0x0", "capture-window
+positions=0" — and are entirely an artefact of the host.
+
+The 1.6.0 fixture-remints wave repaired 22 lanes of this by hand and recorded
+that the rest of the corpus had not been swept. It also named the worst shape:
+`check_full_ubsan` and `check_native_layout` scrub **once** and then hand that
+environment to a dozen further `check_*.py` scripts. Those sub-checks
+(`check_vehicle_sweep`, `check_track_sweep`, `check_challenge_modes`, …) inherit
+`os.environ` faithfully and are individually correct, so one contaminated host
+directory reds the entire matrix at once while the same scripts stay green in
+clean CI.
+
+**Measurement.** `tests/test_check_save_dir_hermeticity.py` parses every
+`tests/check_*.py` and follows each environment value from where it is built to
+where it is handed to a process. Against the shipped v1.6.0 tree it named
+**17 files, 29 sites**: check_app_adopted_pacing (4), check_native_layout (3),
+check_shadow_visual_ab (3), check_widescreen_shadow (5),
+check_simulation_cadence (2), and one each in check_charselect_motion,
+check_enhancement_authority, check_filename_entry, check_font_outline,
+check_font_sdf, check_full_ubsan, check_online_process_convergence,
+check_rdp_interpolation, check_shell_dropfile, check_texture_edge_classification,
+check_widescreen_hud_layers, check_widescreen_proportions. Two of those were
+already writing into the shared directory rather than merely reading it:
+check_filename_entry drives a route that *creates* a new save file, and
+check_shell_dropfile's final-play arms boot the ROM for real.
+
+**Fix.** Env-only, no threshold or assertion touched. Each site pins a
+directory it already owns through `harness_utils.save_env()`, which pins the
+video config in the same breath (`check_harness_isolation.py`). The two
+aggregates pin one temporary directory for the whole task and export it as both
+`MDKR_SAVE_DIR` and `MDKR_TEST_SAVE_DIR`, the pair the suite exports, so a
+sub-check reading either agrees with the engine. `check_widescreen_hud_layers`
+had pinned only its seeded battle arm; the pin moved into its environment
+factory so every arm carries it. Nothing deletes or cleans the shared per-user
+directory: that is a developer's real save, and the fix is to stop reaching it,
+not to empty it.
+
+**Regression check.** `tests/test_check_save_dir_hermeticity.py`, ROM-free,
+registered as the `check_save_dir_hermeticity` CTest. It recognises the scrub in
+every shape the corpus uses — an `os.environ` comprehension filtering `MDKR`
+keys, `pop("MDKR_SAVE_DIR")`, `del env["MDKR_SAVE_DIR"]`, an environment written
+out inline at the launch that inherits nothing, and a factory function whose
+scrubbed return value the caller launches with — and it accepts a pin only on
+the environment that actually reaches the process, so a pin elsewhere in the
+same function does not satisfy it. Nine synthetic control fixtures (five
+offending shapes it must reject, four pinned shapes it must accept) run ahead of
+the corpus sweep on every invocation, so a scanner that stopped matching fails
+loudly instead of reporting an empty sweep. One documented exemption:
+`check_portable_paths.py`, whose subject *is* unpinned save resolution and which
+supplies its own `HOME`/`XDG` roots so the fallback lands inside its own
+temporary tree.
+
+Verified by re-running eight of the formerly-offending gates against a Release
+build: check_enhancement_authority, check_texture_edge_classification,
+check_font_sdf, check_font_outline, check_rdp_interpolation,
+check_charselect_motion, check_filename_entry and check_shell_dropfile all pass
+with the pin, and the host's real `eeprom.bin` was byte-identical before and
+after (md5 b7df10e6 both times).
+
+## FIXED: a KTX2 header index pair whose sum wraps sized a 4 GiB allocation from past the end of the file — wave "ktx2index"
+
+`tests/fuzz_modern_character_asset.cpp` found it: a 672-byte KTX2 texture ran
+the target out of memory on `malloc(4247762212)`, reached through
+`mdkr_ktx2_inspect` → `basist::ktx2_transcoder::init` →
+`read_key_values` → `basisu::vector<uint8_t>::try_resize`. Minimised, the
+reproducer is the tracked `valid-uastc-zstd.ktx2` fixture with one header field
+changed.
+
+**Mechanism.** A KTX2 header indexes four kinds of byte range as offset/length
+pairs: the data-format descriptor and the key/value data (32-bit pairs at bytes
+48 and 56), the supercompression global data (64-bit pair at byte 64), and one
+24-byte offset/length/uncompressed triple per level in the index starting at
+byte 80. The pinned transcoder bounds each pair by *adding* offset and length in
+the pair's own width and comparing the sum against the file size. That addition
+wraps. The reproducer sets `kvdByteLength` to `0xFFFFFF74` at offset `0xDC`:
+the sum is `0x1_00000050`, which truncates to 80 and compares as a region that
+easily fits a 484-byte file. `read_key_values` then walked with `src_left` near
+4 GiB, ran off the end of the payload after the file's three real key/value
+entries, read a length out of the bytes beyond it, and resized a value vector to
+it. The same wrap reaches the other three pairs: a `dfdByteOffset` of
+`0xFFFFFFF0` passes the check and then memcpys 44 bytes from 4 GiB past the
+file, and a 64-bit `sgdByteOffset` or level `byteOffset` of
+`0xFFFFFFFFFFFFFFF0` passes it and is accepted by inspection outright.
+
+**Fix.** `platform/modern_character_ktx2.cpp` validates the header index in
+`index_within_payload` before the transcoder sees the file, in the same
+fail-closed shape as the `MDKR_KTX2_LEVEL_MAX` bound in
+`mdkr_modern_character_asset_stats`: each region is compared by *subtraction*
+(`length <= payload - offset`, with `offset` first shown to be inside the
+payload and behind the 80-byte header), so no sum exists to wrap, and the level
+index itself must fit the payload at 24 bytes per level with one entry present
+even at `levelCount` zero. A file too short to hold a header, or without the
+KTX2 identifier, has no index to check and keeps the transcoder's own verdict.
+Both bridge entry points are covered because `mdkr_ktx2_transcode` inspects
+first. No threshold moved and no valid texture changed: the two tracked valid
+fixtures still inspect and transcode to the same byte counts.
+
+**Regression check.** `tests/test_modern_character_ktx2.cpp` (CTest
+`modern_character_ktx2`) patches each of the four wrapping pairs into the valid
+UASTC/Zstandard fixture and requires both `mdkr_ktx2_inspect` and
+`mdkr_ktx2_transcode` to refuse it naming the index. Positive control, measured
+with the bound removed: the key/value arm takes a bus error, the data-format arm
+is refused for the wrong reason after performing the out-of-bounds read, and the
+supercompression and level arms are *accepted* (`inspect=1`). The minimised
+reproducer is also seeded as
+`tests/fuzz_corpus/modern_character_asset/wrapping-key-value-length.ktx2`,
+regenerated by `tests/generate_modern_character_fuzz_corpus.py` from the same
+license-clean fixture, so the fuzzer keeps a permanent entry into this boundary.
+
+**Found by the same run, fixed in the same wave: a Zstandard level's declared
+uncompressed size was allocated before anything read the file.** Fuzzing the
+fixed target for 300 seconds produced a second out-of-memory, a 688 MiB
+`realloc` in `decompress_level_data` reached from `mdkr_ktx2_transcode`. A
+Zstandard-supercompressed level is decompressed whole into a buffer sized from
+the level index's `uncompressedByteLength`, and the transcoder accepts any
+declaration below its 2 GiB sanity cap — from a file of any size, because
+nothing compares the declaration to the geometry it claims to cover. The bridge
+now rejects a Zstandard level declaring more than its own mip spans: one face of
+a 4x4-block level is exactly `ceil(w/4) * ceil(h/4) * 16` bytes, which is what
+the tracked UASTC fixture declares at every level and what the transcoder itself
+requires to be present before it transcodes a block. The fifth arm of
+`modern_character_ktx2` patches the 688 MiB declaration into the fixture's 8x8
+level 0; without the bound, inspection accepts it.

@@ -16,6 +16,7 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 
@@ -35,6 +36,11 @@ def parse_args() -> argparse.Namespace:
         description="Scan GitHub-visible text for commit refs outside current history."
     )
     parser.add_argument("--repo", required=True, help="GitHub repository, OWNER/REPO")
+    parser.add_argument(
+        "--reviewed-refs",
+        default="tools/public_retained_ref_allowlist.tsv",
+        help="exact retained pull-ref/SHA allowlist whose full histories were reviewed",
+    )
     parser.add_argument(
         "--max-candidates",
         type=int,
@@ -62,6 +68,27 @@ def run_json_lines(args: list[str]) -> list[dict[str, Any]]:
 
 def reachable_shas() -> set[str]:
     return set(run_text(["git", "rev-list", "HEAD"]).splitlines())
+
+
+def reviewed_ref_shas(path: Path) -> set[str]:
+    """Load exact immutable pull refs whose complete histories were reviewed."""
+    rows: dict[str, str] = {}
+    for line_number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        fields = raw.split("\t")
+        if len(fields) != 2:
+            raise ValueError(f"{path}:{line_number}: expected ref<TAB>full-sha")
+        ref, sha = fields
+        if not re.fullmatch(r"refs/pull/[0-9]+/(?:head|merge)", ref):
+            raise ValueError(f"{path}:{line_number}: invalid retained pull ref {ref!r}")
+        if not re.fullmatch(r"[0-9a-f]{40}", sha):
+            raise ValueError(f"{path}:{line_number}: invalid full commit SHA {sha!r}")
+        if ref in rows:
+            raise ValueError(f"{path}:{line_number}: duplicate retained pull ref {ref}")
+        rows[ref] = sha
+    return set(rows.values())
 
 
 def plausible_commit_token(token: str) -> bool:
@@ -435,8 +462,9 @@ def main() -> int:
     args = parse_args()
     try:
         reachable = reachable_shas()
+        reviewed = reviewed_ref_shas(Path(args.reviewed_refs))
         items, incomplete = fetch_items(args.repo)
-    except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+    except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
         print(f"FAIL: could not scan GitHub-visible text: {exc}", file=sys.stderr)
         return 1
 
@@ -459,10 +487,14 @@ def main() -> int:
         return 1
 
     stale: list[tuple[str, str, list[TextItem]]] = []
+    reviewed_hits: set[str] = set()
     for token, sources in sorted(token_sources.items()):
         resolved = resolve_commit(args.repo, token)
         if resolved and resolved not in reachable:
-            stale.append((token, resolved, sources))
+            if resolved in reviewed:
+                reviewed_hits.add(resolved)
+            else:
+                stale.append((token, resolved, sources))
 
     if incomplete:
         print("FAIL: discussion comment scan was incomplete.", file=sys.stderr)
@@ -482,7 +514,8 @@ def main() -> int:
 
     print(
         f"PASS: scanned {len(items)} GitHub text item(s); "
-        "no resolvable stale commit references found"
+        f"no unreviewed stale commit references found "
+        f"({len(reviewed_hits)} reviewed retained commit reference(s))"
     )
     return 0
 

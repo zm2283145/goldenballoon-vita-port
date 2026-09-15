@@ -305,6 +305,43 @@ static inline void *gfx_resolve_addr(uint32_t addr) {
     return NULL;
 }
 
+/* Resolve only a genuine N64 segment token while keeping an arena-backed
+ * segment inside the allocation that supplied its base.  The generic helper
+ * above cannot know the lifetime or extent of a segment base; the DKR display
+ * list walker can, because all DMA-backed assets share one explicit arena.
+ *
+ * A malformed command can otherwise turn an in-arena base plus a 24-bit
+ * offset into an arbitrary non-arena host pointer.  Callers would then lose
+ * the provenance needed to distinguish that pointer from a registered global.
+ * Non-arena bases remain valid (frame buffers and registered static data use
+ * them), but integer wrap and non-token high nibbles always fail closed. */
+static inline void *gfx_resolve_segment_addr_bounded(
+        uint32_t addr, uintptr_t bounded_base, size_t bounded_size) {
+    uint32_t seg;
+    uintptr_t segment_base;
+    uintptr_t target;
+    uintptr_t bounded_end;
+    uint32_t offset;
+
+    if (addr == 0 || (addr & 0xf0000000u) != 0) return NULL;
+    seg = (addr >> 24) & 0x0fu;
+    if (seg == 0 || gfx_segment_table[seg] == 0) return NULL;
+    segment_base = gfx_segment_table[seg];
+    offset = addr & 0x00ffffffu;
+    if ((uintptr_t)offset > UINTPTR_MAX - segment_base) return NULL;
+    target = segment_base + (uintptr_t)offset;
+
+    if (bounded_size != 0) {
+        if (bounded_base > UINTPTR_MAX - bounded_size) return NULL;
+        bounded_end = bounded_base + bounded_size;
+        if (segment_base >= bounded_base && segment_base < bounded_end &&
+            target >= bounded_end) {
+            return NULL;
+        }
+    }
+    return (void *)target;
+}
+
 /* ILP32 (wasm32) display-list pointer registration.
  *
  * On LP64 the GBI translator distinguishes a runtime host pointer from an N64

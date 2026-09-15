@@ -21,6 +21,24 @@ extern void mdkr_rotpy_observe(float x, float y, float z);
 
 extern u8 gIntDisFlag;
 extern s32 gCurrentRNGSeed; // Official Name: rngSeed
+
+#ifdef NATIVE_PORT
+/* Every step of the AUTHORITATIVE generator, counted at the generator itself so
+ * no caller can be missed.
+ *
+ * It exists because the stream digests cannot see a change in how many times
+ * this generator is stepped. From the boot seed it enters a cycle of period 20
+ * after 11 draws, so two builds whose authoritative draw counts differ by a
+ * multiple of 20 reach the identical seed and record an identical stream. A
+ * count has no such blind spot: it moves one for one.
+ * tests/check_authored_rng_compat.py pins it beside each arm's digest.
+ *
+ * Deliberately NOT in the rollback snapshot registry
+ * (platform/rollback/rollback_game_authority.c): it is an observation counter,
+ * nothing branches on it, and two peers that have presented a different number
+ * of times must not be made to disagree about it. */
+u64 gAuthoritativeRNGDraws;
+#endif
 extern s32 gPrevRNGSeed;
 extern s16 gSineTable[];
 extern s16 gArcTanTable[];
@@ -261,6 +279,12 @@ s32 rand_range(s32 min, s32 max) {
     temp ^= ((u64)(seed & 0xFFFFFu) << 12);
     seed = (u32)(temp ^ ((temp >> 20) & 0xFFFu));
     gCurrentRNGSeed = (s32)seed;
+#ifdef NATIVE_PORT
+    /* Observation only -- outside the rollback snapshot, read by nothing the
+     * simulation branches on. The seed alone cannot witness a change in the
+     * NUMBER of draws, because this generator cycles with period 20. */
+    gAuthoritativeRNGDraws++;
+#endif
 
     if (max < min) {
         s32 swap = min;

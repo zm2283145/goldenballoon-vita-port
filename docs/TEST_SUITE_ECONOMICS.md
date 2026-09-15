@@ -951,3 +951,216 @@ Two further items, recorded but not costed:
   control** (§4.4), because that control is guarded on `args.aspect is None`.
   That is a coverage gap surfaced by a cost analysis, and closing it will make
   the suite slightly slower.
+
+## 8. Re-measurement, 2026-09-08: where the time went after 1.7.0
+
+Measured from the complete run at `b6e8ff40` (629 min wall, `--jobs 3`, 271
+tasks, per-task durations parsed from the run log). The numbers in §2 and §6
+predate the online, Adventure Party and Workshop work and no longer describe
+this suite.
+
+### 8.1 The job count is not the lever; the serial set is
+
+Summing every task gives **881 min of work in 629 min of wall clock — a 1.40x
+speedup**, not the ~3x `--jobs 3` suggests. Splitting by the scheduler's own
+classes:
+
+| class | tasks | min | share |
+|---|---|---|---|
+| pooled | 134 | 384 | 43.7% |
+| `GPU_SERIAL` | 92 | 313 | 35.6% |
+| `SERIAL_ROLE:layout` | 1 | 67 | 7.6% |
+| `SERIAL_ROLE:instrumented` | 2 | 56 | 6.4% |
+| `SERIAL_MEASURE` | 15 | 34 | 3.9% |
+| browser/ctest/wasm roles | 27 | 27 | 3.1% |
+
+**56% of the work is serialised.** Amdahl over that split puts the floor at
+about 566 min for `--jobs 6` and 534 min for `--jobs 12`: raising the job count
+buys minutes, not hours, and past runs show it also buys OOM kills. Anyone
+asking why a release run takes ten hours is asking about `GPU_SERIAL` and the
+two build-tree roles, not about parallelism.
+
+### 8.2 `native_layout` is a cost multiplier, and §6.1's number is stale
+
+§6.1 records `native_layout` landing at **9m40s** on 2026-08-08 and "no longer
+the suite's long pole". It now measures **66m55s** and is again the single most
+expensive task in the suite. Nothing was reverted -- the `RelWithDebInfo` build
+that bought that win is still there.
+
+The cause is structural. `native_layout` re-runs fourteen whole checks under
+alignment UBSan, and **all fourteen are also top-level tasks in the same run**:
+
+    nav_fixtures 1m16s   attract_demo 1m26s   track_sweep 6m41s
+    vehicle_sweep 14m15s   adventure_hub 0m29s   adventure_race_loop 1m24s
+    trophy_series 6m08s   adventure_two 6m57s   collision_gridmask 3m35s
+    race_2p_split 0m31s   race_multiplayer 1m08s   challenge_modes 4m48s
+    taj_challenges 9m21s   widescreen_proportions 3m03s
+
+    standalone sum 61m02s   native_layout 66m55s   ratio 1.10x
+
+The suite therefore spends about **128 min -- 14.5% of all task time -- running
+this content twice**, and the second pass is serialised, so it lands whole on
+the wall clock. Every minute 1.7.0 added to `vehicle_sweep`, `taj_challenges`,
+`adventure_two` or `trophy_series` was charged twice, and the second charge is
+invisible in that task's own timing. That is why §6.1's figure decayed without
+anyone reverting anything.
+
+### 8.3 The proposal, and why it is not just "delete a gate"
+
+The alignment arm is worth keeping: its three legacy controls must be *rejected*
+by the sanitizer, and that is real evidence. What is questionable is bundling
+fourteen re-runs into one serial task.
+
+The suite already has the pattern this wants -- `widescreen_shadow_asan`,
+`presentation_lifecycle_asan`, `door_blocks_asan` and
+`fast3d_dl_hardening_asan` are sanitizer variants that live as their own
+top-level tasks and pool. `native_layout` is the odd one out.
+
+Proposal: keep the build and the three legacy controls as a small serial gate,
+and express the fourteen runtime arms as pooled `*_align` tasks against the
+already-built `build-align` binary. The serialisation reason for the `layout`
+role is that the tree is *compiled* in place; it is not a reason the *runs* must
+be serial, and each already takes its own save directory. That converts ~67
+serial minutes into ~61 poolable ones, about 20 min of wall clock at
+`--jobs 3` -- roughly 45 min off a complete run -- and makes each arm's cost
+visible in its own row instead of hidden inside one task.
+
+Not attempted here: this is a scheduler change, and validating it means proving
+a pooled run reproduces the sequential verdict, which is the same equivalence
+bar §4 sets for every other pooling decision. It should not land on reasoning
+alone.
+
+### 8.4 Nothing gates suite cost, which is why this drifted
+
+§6.1's win decayed 7x with no signal. Costs are measured when someone looks, and
+nothing fails when a task grows. A cheap ratchet -- record each task's duration
+and refuse a change that moves the total beyond a reviewed ceiling, the way
+`check_rollback_authority` refuses an unclassified declaration -- would have
+caught `native_layout` drifting back into the long-pole position months ago. The
+measurement is already in the run log; only the ceiling is missing.
+
+## 9. Tiering: what to run, when, and what it costs
+
+§8 measured where the time goes. This section is what to do about it. The
+numbers below are from the 2026-09-09 complete run at `3688e993` (747 min of
+task time, 270/271).
+
+### 9.1 The evidence this is built on
+
+Three complete runs in one night, roughly 29 hours of machine time, produced
+**one** finding about the tree: `rollback_authority` refusing an unclassified
+mutable declaration. Every other failure was the pre-existing camera item, a
+timeout under contention, a stale artifact, or a missing flag. In the same
+night, four parallel reviews of the newer code found **thirteen** real defects,
+including a 192-byte stack overflow that fires on an ordinary 65-clip character
+at every boot and that no gate in the suite could see.
+
+The one thing the suite did catch cost **five seconds** and needed no ROM, no
+engine and no GPU.
+
+That is not an argument that the suite is worthless -- it is insurance, and a
+quiet stretch is not proof that the premium is zero. It is an argument that the
+premium is mispriced, and that on a mature tree the marginal defect is far more
+likely to be found by reading new code than by re-running old assertions.
+
+### 9.2 Cost by role
+
+| role | tasks | min | share |
+|---|---|---|---|
+| native | 167 | 409 | 54.8% |
+| release | 36 | 130 | 17.4% |
+| asan | 8 | 64 | 8.6% |
+| layout | 1 | 62 | 8.3% |
+| instrumented | 2 | 53 | 7.0% |
+| browser | 8 | 16 | 2.1% |
+| ctest | 1 | 7 | 0.9% |
+| browser_local | 16 | 4 | 0.5% |
+| **source** | **28** | **2** | **0.3%** |
+
+**Everything that needs no ROM and no engine is 29 tasks and about 9 minutes of
+747.** That is where the class-level gates live: the authority census, the CI
+contract, the public-surface and clean-room guards.
+
+### 9.3 The three tiers
+
+**Tier 1 -- every commit, ~9 minutes.**
+
+    python3 tools/run_checks.py --role source
+    ctest --test-dir build-rel
+
+No ROM, no engine, no GPU, no display. These are the gates that catch a *class*
+of mistake rather than an instance: a new mutable file-scope declaration that
+nobody classified, a public surface that grew, a workflow that drifted from its
+contract, a ROM-derived byte in the tree. This tier is what caught the only real
+finding in 29 hours of running.
+
+**Tier 2 -- change-scoped, minutes to an hour.**
+
+    python3 tools/run_checks.py --only '<glob>,<glob>'
+
+Run the gates that exercise what the diff touched. `--only` takes
+comma-separated globs and **fails closed when a glob matches nothing**, so a
+typo cannot silently shrink the run -- check the `SUBSET n/N` line it prints.
+
+Worked example, from the change this section was written beside: the product-code
+delta was `modern_character_pose.c`, `modern_character_asset.c/h` and
+`file_dialog_win.cpp`. Tracing callers gave `mdkr_modern_pose_init` <- one caller
+in `modern_character_runtime.c`; `joint_parent_node` <- one caller in
+`ui_settings.cpp`; and `file_dialog_win.cpp` is inside `elseif(WIN32)` in
+CMakeLists.txt, so it is not in the macOS binary at all. Nothing reached racing,
+camera, audio, save, online, adventure, trophies or retail rendering. The
+proportionate set was `'*character*,*portrait*,taj_*'` -- tens of minutes against
+nine hours, and the nine hours could not have tested the Windows file dialog even
+in principle.
+
+The discipline that makes this safe is the caller trace, not the glob. Do it
+before choosing the set, and write it down in the commit.
+
+**Tier 3 -- the full suite, nightly and NOT release-blocking.**
+
+    tools/web/build_web.sh
+    python3 tools/run_checks.py --jobs 6 --require-shipping-sdl --require-fresh \
+      --build build-rel --release-build build-rel --asan-build build-asan \
+      --wasm build-web/mdkr64_web.wasm --roms /path/to/rom-revisions
+
+This is the change that stops releases waiting days. The soak still happens; it
+stops being the thing a cut blocks on. Ship on **tier 1 green + tier 2 green +
+the most recent green nightly**. A cross-cutting regression is then caught within
+a day rather than in front of a release.
+
+### 9.4 What makes this safe rather than merely fast
+
+- **Tier 3 is not optional.** The failure mode of tiering is that the scoped run
+  becomes the only run. The nightly is the thing that catches what a caller trace
+  missed, and it has to be scheduled rather than remembered.
+- **A subset run says so.** Any restriction makes the runner label its verdict
+  `SUBSET n/N`; only `complete suite, N/N tasks` is a full run. Never record a
+  subset as a qualification.
+- **The preconditions still apply to tier 3.** `--require-fresh`,
+  `--require-shipping-sdl`, `--roms` and a web stage stamped at HEAD, all four of
+  which were silently wrong before 2026-09-08. See §8.4 and the release checklist.
+- **A parallel red is a question, not a verdict.** Re-run it standalone before
+  believing it. On 2026-09-09 this happened to eight gates in one session --
+  `taj_theme`, both Taj engine arms, `full_ubsan`, `pacing_quality`,
+  `character_raw_intake_ui`, `character_workshop_history_ui`,
+  `bonus_results_portraits` and `bonus_portrait_pack` -- every one of which
+  passed alone on the same binary. Two were genuine gate defects worth fixing
+  (ceilings sized beside their measured cost rather than clear of it); the rest
+  were the machine. `pacing_quality` is the sharpest case: it failed twice under
+  load, and the SHIPPED v1.6.0 binary failed it worse on the same host at the
+  same moment. A red that cannot be reproduced on a quiet machine is evidence
+  about the host, and recording it as a candidate defect wastes the next
+  reader's time.
+- **Cost has no ratchet.** Nothing fails when a task grows, which is how a landed
+  27-minute win decayed 7x unnoticed. Until that exists, re-measure from the run
+  log rather than trusting the numbers above.
+
+### 9.5 Where the budget should actually go
+
+The thirteen-to-one ratio in §9.1 is the finding, not the timings. On a tree this
+mature, an hour of reading newer code has been worth many hours of re-running
+gates over old code. The suite's job is to stop a *regression* in what already
+worked; it was never going to find a stack overflow in code written last week,
+because no assertion existed to describe it. Budget accordingly: keep tier 1 on
+every commit, scope tier 2 honestly, let tier 3 run overnight, and spend the
+recovered hours on review of what changed.

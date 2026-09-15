@@ -50,6 +50,39 @@ measured), and the sim_hash.c file sink (b624b584/b1064204) is I/O-only: it
 mirrors the identical [SIMHASH] line to MDKR_STATE_HASH_FILE, which this lane
 never sets, and never touches the hash or the sim. Measured on a fresh Release
 build at 21b0519d carrying the pin (-ffp-contract=off in 225 TUs).
+
+ENHANCED ARM, first pin 2026-09-03. Until this arm existed, every gate in the
+tree that recorded an RNG stream recorded the ORIGINAL cadence only (this
+oracle, tests/check_weather_rng_order.py's EXPECTED_ORIGINAL_SHA256,
+tests/check_state_hash.py's cadence default), so the second compatibility
+target named at platform/math_util_native.c -- "the pre-FPS native gameplay
+stream at opt-in enhanced cadence" -- was held by nothing and could move
+silently. docs/ref/presentation-rng-census.md states that gap as the reason it
+declined to redirect its eight latent presentation-output callers. This arm
+closes it: the same all-racer row schema and raw digest, recorded on the
+route's own `enhanced` arm (9500 frames, one synthetic field, event divisor 1).
+
+That move has now happened -- once, as planned; see the ENHANCED_SHA256
+rebaseline note below. From here the enhanced arm is a pin like any other, and
+a change to it is a regression until argued otherwise.
+
+DRAW COUNTS, added 2026-09-03 after review. A stream digest is a weaker
+instrument than it looks for the question this file exists to answer. The ROM
+generator (game/src/hasm/math_util.c) is not injective: from the boot seed
+0x5141564D it enters a cycle of period 20 after 11 draws, and thereafter
+gCurrentRNGSeed only ever takes 20 values. Two builds whose AUTHORITATIVE draw
+counts differ by k therefore record byte-identical streams whenever
+k == 0 (mod 20), and differ only in phase otherwise. Measured directly on this
+tree with the MDKR_TEST_AUTH_RNG_BURN seam: 20 extra authoritative draws leave
+BOTH arms' digests exactly as pinned here, and every other stream oracle in the
+tree green.
+
+So each arm also pins how many times each generator was stepped, read from the
+run's own [RNGDRAWS] line. That is the observable with no blind spot -- it moves
+one for one -- and it is what actually holds the redirects this campaign made,
+because what a cadence-conditional redirect changes IS a draw count. The burn
+seam is driven as the control: it must leave the digest identical and fail the
+count, or the count golden has stopped being independent.
 """
 
 from __future__ import annotations
@@ -58,19 +91,69 @@ import argparse
 import hashlib
 import math
 import os
+import re
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
 
 ROOT = Path(__file__).resolve().parent.parent
 ROUTE_TOOL = ROOT / "tools" / "dkr_oracle_route.py"
+ROUTE = "race_state_oracle"
 FRAMES = 4800
 REFERENCE_COMMIT = "670c984837ce21a9bd5ff54f0a2d4339267fb872"
 EXPECTED_ROWS = 27_840
 EXPECTED_SHA256 = "191bee35a973b2bde6133cc6ae2c2c41961a97ec72a9b034a08574d53aacba5b"
+ENHANCED_FRAMES = 9500
+ENHANCED_ROWS = 54_880
+# Authoritative and presentation DRAW COUNTS over each arm, from the run's own
+# [RNGDRAWS] line. See the DRAW COUNTS note in the module docstring: these are
+# what the digests cannot supply. The original arm never touches the
+# presentation stream, because cadence_compat_rand_range() routes back to
+# rand_range() at two fields; that zero is itself an assertion.
+EXPECTED_AUTH_DRAWS = 27_699
+EXPECTED_PRES_DRAWS = 0
+ENHANCED_AUTH_DRAWS = 16_556
+ENHANCED_PRES_DRAWS = 25_510
+# Positive control for the draw-count goldens: burn this many extra
+# authoritative draws on the first presented frame. It is a multiple of the
+# generator's cycle length, so every recorded stream stays byte-identical and
+# every digest in the tree still passes -- only the count moves.
+AUTH_BURN_CONTROL = 20
+RNG_CYCLE_PERIOD = 20
+# REBASELINE 2026-09-03 (64bf3d28 -> c2ac09ae), the one move this arm was
+# pinned in order to measure. The eight callers docs/ref/presentation-rng-
+# census.md listed as latent presentation-output now draw through
+# cadence_compat_rand_range(): engine jitter (audio_vehicle.c), the boss voice
+# pick (vehicle_tricky.c), the menu-image fields and the credits cheat pick
+# (menu.c). At the shipping two-field cadence that helper still calls
+# rand_range(), so the ORIGINAL arm is byte-identical -- 191bee35, unchanged
+# across all four redirects, which is the whole classification argument. At the
+# enhanced cadence the draws move to the presentation stream, so the
+# authoritative stream this arm records is exactly 989-odd engine-jitter draws
+# shorter and reaches a different, still fully deterministic sequence.
+#
+# Only the engine jitter moved this digest; the other three classes moved it
+# not at all. That is a statement about what a digest can see, not about what
+# the redirects did. The boss sound and the credits are genuinely not reached on
+# this route. The menu-image class IS reached -- 10 menu_image_load() calls, 3
+# draws each -- and its net effect on the route is exactly -20 authoritative
+# draws (16576 -> 16556, measured), which is one full turn of the generator's
+# 20-draw cycle and therefore invisible to any digest by construction. The
+# engine jitter registering here was phase, not sensitivity: its diverted count
+# is not a multiple of 20, so it shifted the cycle and every consumer with it.
+#
+# This is why the arms carry draw-count goldens as well. Do not read an unmoved
+# digest as an unmoved stream.
+ENHANCED_SHA256 = "c2ac09ae9928a67c89551284b97bee874913bcfeee5b3192de59c12dc4194dcd"
+# The pre-redirect stream, kept named so a bisect landing on it reports which
+# pin it matched rather than an unexplained mismatch.
+ENHANCED_SUPERSEDED_SHA256 = (
+    "64bf3d28463664f716eb348d16c7fa2b36806cc32c89c1bb171a7b0a1f960767"
+)
 # Superseded by the racing-line rebaseline documented above. Kept named so a
 # bisect that lands on the old stream reports which pin it matched.
 SUPERSEDED_SHA256 = "d74efe02aec07aa59710ce457e54180c28a22022f3d35e7087096d5130dba49b"
@@ -83,6 +166,40 @@ FIELDS = (
     "pidx", "vehicle", "grounded", "clock", "start", "delta", "rate", "rng",
 )
 FLOAT_FIELDS = {"x", "y", "z", "xv", "yv", "zv", "fvel", "vel"}
+
+
+@dataclass(frozen=True)
+class Arm:
+    """One cadence of the route, with the stream it is pinned to.
+
+    ``frames``/``cadence``/``synth_fields`` are also declared in the route
+    (tools/oracle_routes/race_state_oracle.json). They are repeated here so the
+    pin says out loud what it recorded, and checked against the route on every
+    run by :func:`check_route_agreement`, so an edit to either side that
+    silently re-aims a digest at a different route fails instead of passing.
+    """
+
+    name: str
+    cadence: str
+    synth_fields: int
+    frames: int
+    rows: int
+    digest: str
+    auth_draws: int
+    pres_draws: int
+
+
+ORIGINAL_ARM = Arm(
+    name="original", cadence="original", synth_fields=2, frames=FRAMES,
+    rows=EXPECTED_ROWS, digest=EXPECTED_SHA256,
+    auth_draws=EXPECTED_AUTH_DRAWS, pres_draws=EXPECTED_PRES_DRAWS,
+)
+ENHANCED_ARM = Arm(
+    name="enhanced", cadence="enhanced", synth_fields=1, frames=ENHANCED_FRAMES,
+    rows=ENHANCED_ROWS, digest=ENHANCED_SHA256,
+    auth_draws=ENHANCED_AUTH_DRAWS, pres_draws=ENHANCED_PRES_DRAWS,
+)
+ARMS = (ORIGINAL_ARM, ENHANCED_ARM)
 
 
 # game/src/racer.c's three consecutive s8 tables, by content. The AI balloon
@@ -138,9 +255,61 @@ def check_racing_line_overrun_witness(image: bytes) -> int:
     return table
 
 
-def validate(rows: list[str]) -> str:
-    if len(rows) != EXPECTED_ROWS:
-        raise ValueError(f"expected {EXPECTED_ROWS} [ORACLE] rows, got {len(rows)}")
+def check_route_agreement(arm: Arm) -> None:
+    """Fail when the arm this file pins is not the arm the route defines."""
+    for field, expected in (("cadence", arm.cadence),
+                            ("synth_fields", arm.synth_fields),
+                            ("frames", arm.frames)):
+        query = subprocess.run(
+            [sys.executable, str(ROUTE_TOOL), "arm-field", ROUTE, arm.name, field],
+            cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=30, check=False,
+        )
+        if query.returncode != 0:
+            raise RuntimeError(
+                f"route arm-field {arm.name}.{field} exited "
+                f"{query.returncode}:\n{query.stdout}")
+        actual = (query.stdout or "").strip()
+        if actual != str(expected):
+            raise ValueError(
+                f"{arm.name} arm: route says {field}={actual!r}, this pin was "
+                f"recorded with {field}={expected!r} -- the digest below does "
+                "not describe the route that would run")
+
+
+class DrawCountError(ValueError):
+    """A draw-count golden moved. Distinct so the control can require it."""
+
+
+def validate_draw_counts(result: Run, arm: Arm) -> None:
+    """Pin how many times each generator was stepped over the arm.
+
+    This is not a restatement of the digest. The ROM generator enters a cycle
+    of period 20 eleven draws after boot, so any change to the authoritative
+    draw count that is a multiple of 20 leaves the seed -- and therefore every
+    recorded row, and therefore the digest -- byte-identical. Measured on this
+    tree: burning 20 extra authoritative draws leaves BOTH arms' digests exactly
+    as pinned above. The count is the observable with no such blind spot.
+    """
+    for label, actual, expected in (
+            ("authoritative", result.auth_draws, arm.auth_draws),
+            ("presentation", result.pres_draws, arm.pres_draws)):
+        if actual != expected:
+            delta = actual - expected
+            note = ""
+            if label == "authoritative" and delta % RNG_CYCLE_PERIOD == 0:
+                note = (f" -- and {delta:+d} is a multiple of the generator's "
+                        f"{RNG_CYCLE_PERIOD}-draw cycle, so the stream digest "
+                        "cannot see this at all")
+            raise DrawCountError(
+                f"{arm.name} arm: {label} draw count {actual}, expected "
+                f"{expected} ({delta:+d}){note}")
+
+
+def validate(rows: list[str], arm: Arm) -> str:
+    if len(rows) != arm.rows:
+        raise ValueError(
+            f"{arm.name} arm: expected {arm.rows} [ORACLE] rows, got {len(rows)}")
     for row_index, row in enumerate(rows):
         tokens = row.split()
         if tokens[:2] != ["[TRACE]", "[ORACLE]"] or len(tokens) != len(FIELDS) + 2:
@@ -164,18 +333,50 @@ def validate(rows: list[str]) -> str:
             "still clamps 8th place's racing-line selector to D_800DCDA0[7] "
             "instead of taking the adjacent table's first byte -- see the "
             "rebaseline note at the top of this file")
-    if digest != EXPECTED_SHA256:
-        raise ValueError(f"raw stream SHA-256 {digest}, expected {EXPECTED_SHA256}")
+    if arm is ENHANCED_ARM and digest == ENHANCED_SUPERSEDED_SHA256:
+        raise ValueError(
+            f"enhanced arm: raw stream SHA-256 {digest} is the SUPERSEDED "
+            "pre-redirect pin: this build still draws the eight presentation "
+            "callers from the authoritative stream at enhanced cadence -- see "
+            "the rebaseline note at the top of this file")
+    if digest != arm.digest:
+        raise ValueError(
+            f"{arm.name} arm: raw stream SHA-256 {digest}, expected {arm.digest}")
     return digest
 
 
-def run(binary: Path, rom: Path, timeout: int, verbose: bool) -> list[str]:
+@dataclass(frozen=True)
+class Run:
+    rows: list[str]
+    auth_draws: int
+    pres_draws: int
+
+
+def parse_draw_counts(output: str) -> tuple[int, int]:
+    """Read the run's own [RNGDRAWS] summary line.
+
+    Missing or duplicated is an error rather than a default: a silently absent
+    counter would make the draw-count goldens below pass on nothing.
+    """
+    lines = [line for line in output.splitlines() if "[RNGDRAWS]" in line]
+    if len(lines) != 1:
+        raise ValueError(
+            f"expected exactly one [RNGDRAWS] line, got {len(lines)} -- the "
+            "draw-count goldens have nothing to compare against")
+    match = re.search(r"\[RNGDRAWS\] auth=(\d+) pres=(\d+)\s*$", lines[0])
+    if match is None:
+        raise ValueError(f"malformed [RNGDRAWS] line: {lines[0]!r}")
+    return int(match.group(1)), int(match.group(2))
+
+
+def run(binary: Path, rom: Path, arm: Arm, timeout: int, verbose: bool,
+        auth_burn: int = 0) -> Run:
     with tempfile.TemporaryDirectory(prefix="mdkr-authored-rng-") as tmp:
         run_dir = Path(tmp)
-        script = run_dir / "race_state_oracle_original.txt"
+        script = run_dir / f"race_state_oracle_{arm.name}.txt"
         route = subprocess.run(
-            [sys.executable, str(ROUTE_TOOL), "native-script", "race_state_oracle",
-             "--arm", "original"],
+            [sys.executable, str(ROUTE_TOOL), "native-script", ROUTE,
+             "--arm", arm.name],
             cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             timeout=30, check=False,
         )
@@ -186,13 +387,16 @@ def run(binary: Path, rom: Path, timeout: int, verbose: bool) -> list[str]:
         env = {key: value for key, value in os.environ.items()
                if not key.startswith(("MDKR", "GE007_"))}
         env.update(
-            LC_ALL="C", MDKR_AUDIO="0", MDKR_SIMULATION_CADENCE="original",
-            MDKR_SYNTH_FIELDS="2", MDKR_TRACE="1", MDKR_ORACLE_STATE="1",
+            LC_ALL="C", MDKR_AUDIO="0", MDKR_SIMULATION_CADENCE=arm.cadence,
+            MDKR_SYNTH_FIELDS=str(arm.synth_fields), MDKR_TRACE="1",
+            MDKR_ORACLE_STATE="1",
             MDKR_RENDERER="gl", MDKR_SAVE_DIR=str(run_dir / "save"),
             # Isolate the video config with the save (see check_door_blocks.py).
             MDKR_VIDEO_CONFIG_PATH=str(run_dir / "save" / "video.ini"),
         )
-        command = [str(binary), "--headless-frames", str(FRAMES),
+        if auth_burn:
+            env["MDKR_TEST_AUTH_RNG_BURN"] = str(auth_burn)
+        command = [str(binary), "--headless-frames", str(arm.frames),
                    "--input-script", str(script), "--rom", str(rom)]
         if verbose:
             print("$ " + " ".join(command), flush=True)
@@ -203,8 +407,10 @@ def run(binary: Path, rom: Path, timeout: int, verbose: bool) -> list[str]:
         if process.returncode != 0:
             raise RuntimeError(
                 f"mdkr64 exited {process.returncode}:\n{(process.stdout or '')[-4000:]}")
-        return [line for line in (process.stdout or "").splitlines()
-                if "[ORACLE]" in line]
+        output = process.stdout or ""
+        auth, pres = parse_draw_counts(output)
+        return Run(rows=[line for line in output.splitlines() if "[ORACLE]" in line],
+                   auth_draws=auth, pres_draws=pres)
 
 
 def main() -> int:
@@ -212,8 +418,12 @@ def main() -> int:
     parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--timeout", type=int, default=600)
+    parser.add_argument("--arm", choices=[arm.name for arm in ARMS], action="append",
+                        help="run only this cadence arm (repeatable; default both)")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
+    arms = ARMS if not args.arm else tuple(
+        arm for arm in ARMS if arm.name in set(args.arm))
 
     binary = Path(os.path.abspath(resolve_binary(args.build)))
     rom = Path(os.path.abspath(args.rom))
@@ -236,26 +446,86 @@ def main() -> int:
             raise RuntimeError("racing-line witness accepted a mutated ROM")
         del image, mutated
 
-        rows = run(binary, rom, args.timeout, args.verbose)
-        digest = validate(rows)
-
-        # Broken-oracle control: prove a one-field change is rejected.
-        mutated = list(rows)
-        old_rng = mutated[0].rsplit("rng=", 1)[1]
-        mutated[0] = mutated[0].rsplit("rng=", 1)[0] + f"rng={int(old_rng) ^ 1}"
+        # In-process control for check_route_agreement, so a route query that
+        # silently stopped answering cannot leave the pins unguarded.
+        skewed = replace(ORIGINAL_ARM, synth_fields=ORIGINAL_ARM.synth_fields + 1)
         try:
-            validate(mutated)
+            check_route_agreement(skewed)
         except ValueError:
             pass
         else:
-            raise RuntimeError("mutated-row positive control was not rejected")
+            raise RuntimeError(
+                "route-agreement control was not rejected: an arm declaring a "
+                "synth_fields the route does not define was accepted")
+
+        digests: dict[str, str] = {}
+        for arm in arms:
+            check_route_agreement(arm)
+            result = run(binary, rom, arm, args.timeout, args.verbose)
+            digests[arm.name] = validate(result.rows, arm)
+            validate_draw_counts(result, arm)
+
+            # Broken-oracle control: prove a one-field change is rejected.
+            broken = list(result.rows)
+            old_rng = broken[0].rsplit("rng=", 1)[1]
+            broken[0] = broken[0].rsplit("rng=", 1)[0] + f"rng={int(old_rng) ^ 1}"
+            try:
+                validate(broken, arm)
+            except ValueError:
+                pass
+            else:
+                raise RuntimeError(
+                    f"{arm.name} arm: mutated-row positive control was not rejected")
+
+        # Positive control for the draw-count golden, and the demonstration of
+        # why it exists. Burning AUTH_BURN_CONTROL extra authoritative draws --
+        # one full cycle of the generator -- returns the seed to where it
+        # started, so this arm's DIGEST is byte-identical to the pin above and
+        # every stream oracle in the tree still passes. The count must catch it
+        # anyway. If this control ever stops failing, the count golden has
+        # stopped being an independent observable and the arm is back to being
+        # blind to any draw-count change that is a multiple of the cycle.
+        if ENHANCED_ARM in arms:
+            burned = run(binary, rom, ENHANCED_ARM, args.timeout, args.verbose,
+                         auth_burn=AUTH_BURN_CONTROL)
+            burned_digest = hashlib.sha256(
+                ("\n".join(burned.rows) + "\n").encode("utf-8")).hexdigest()
+            if burned_digest != ENHANCED_ARM.digest:
+                raise RuntimeError(
+                    "draw-count control: burning one full generator cycle "
+                    f"changed the stream digest to {burned_digest} -- the "
+                    f"cycle period is not {RNG_CYCLE_PERIOD}, so this control "
+                    "no longer isolates what the digest cannot see")
+            try:
+                validate_draw_counts(burned, ENHANCED_ARM)
+            except DrawCountError:
+                pass
+            else:
+                raise RuntimeError(
+                    "draw-count control: burning "
+                    f"{AUTH_BURN_CONTROL} authoritative draws moved neither "
+                    "the digest nor the count -- the count golden is vacuous")
+
+        # The two arms must not collapse onto one stream. Either arm could be
+        # made to pass on the wrong cadence -- by a pasted constant, but also by
+        # a cadence selector that ignored MDKR_SIMULATION_CADENCE, or a route
+        # arm edited to duplicate the other -- and this catches all of them
+        # without caring which happened.
+        if len(digests) == 2 and len(set(digests.values())) != 2:
+            raise RuntimeError(
+                "the original and enhanced arms produced the same digest -- "
+                "one of them did not take the cadence it asked for")
     except (OSError, RuntimeError, subprocess.TimeoutExpired, ValueError) as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         return 1
 
+    summary = ", ".join(
+        f"{arm.name} {arm.rows} rows {digests[arm.name][:12]} "
+        f"{arm.auth_draws} auth draws"
+        for arm in arms if arm.name in digests)
     print(
         "check_authored_rng_compat: PASS "
-        f"({EXPECTED_ROWS} rows, {digest}, reference {REFERENCE_COMMIT[:12]}, "
+        f"({summary}, reference {REFERENCE_COMMIT[:12]}, "
         f"ares car-RNG witness {ARES_VEHICLE_RNG_PREFIX_SHA256[:12]}, "
         f"racing-line overrun witness ROM {table:#x}+8 == "
         f"{RACING_LINE_OVERRUN_VALUE})"

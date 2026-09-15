@@ -1535,11 +1535,20 @@ void func_800BA288(s32 arg0, s32 arg1) {
  * Loads a texture into texture memory.
  * Can offset the texture address in bytes, since waves use multi-texturing.
  */
+static s32 wave_texture_header_aligned(const TextureHeader *tex) {
+    return tex != NULL &&
+           (((uintptr_t) tex & (_Alignof(TextureHeader) - 1u)) == 0u);
+}
+
 void wave_load_material(TextureHeader *tex, s32 rtile) {
     s32 txmask;
     s32 tmem;
     u32 texWidth;
 
+    if (!wave_texture_header_aligned(tex)) {
+        stubbed_printf("WAVE Error: unaligned texture header\n");
+        return;
+    }
     texWidth = tex->width;
     tmem = 0;
     if (texWidth == 16) {
@@ -1605,6 +1614,14 @@ void waves_render(Gfx **dList, Mtx **mtx, s32 viewportID) {
     }
 
     if (gVisibleWaveTiles > 0) {
+        /* Level batches hold serialized texture tokens. A malformed/stale
+         * batch must not turn that token into an unaligned host struct access
+         * while presentation is rendering; skip this wave pass instead. */
+        if (gWaveBatch == NULL || !wave_texture_header_aligned(gWaveTexture) ||
+            (gWaveController.xlu &&
+             !wave_texture_header_aligned(gWaveTextureHeader))) {
+            return;
+        }
         gWaveDL = *dList;
         gWaveMtx = *mtx;
         i = 0;
@@ -1615,6 +1632,10 @@ void waves_render(Gfx **dList, Mtx **mtx, s32 viewportID) {
             gSPClearGeometryMode(gWaveDL++, G_FOG);
             tex1 = set_animated_texture_header(gWaveTextureHeader, gWaveTexAnimFrame * (16 * 16));
             tex2 = set_animated_texture_header(gWaveTexture, gWaveBatch->texOffset * (128 * 128));
+            if (!wave_texture_header_aligned(tex1) ||
+                !wave_texture_header_aligned(tex2)) {
+                return;
+            }
             wave_load_material(tex1, 1);
             wave_load_material(tex2, 0);
             gDPSetCombineMode(gWaveDL++, G_CC_BLENDTEX_MODULATEA_1_PRIM, G_CC_BLENDI_ENV_ALPHA_MODULATEA2);
@@ -1634,6 +1655,9 @@ void waves_render(Gfx **dList, Mtx **mtx, s32 viewportID) {
         } else {
             gSPSetGeometryMode(gWaveDL++, G_FOG);
             tex1 = set_animated_texture_header(gWaveTexture, gWaveBatch->texOffset * (128 * 128));
+            if (!wave_texture_header_aligned(tex1)) {
+                return;
+            }
             gDkrDmaDisplayList(gWaveDL++, OS_K0_TOKEN_TO_PHYSICAL(tex1->cmd),
                                tex1->numberOfCommands);
             gDPSetCombineMode(gWaveDL++, G_CC_BLENDT_ENV_ALPHA_A_PRIM, G_CC_MODULATEIDECALA2);

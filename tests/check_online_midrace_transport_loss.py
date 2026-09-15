@@ -18,7 +18,12 @@ its pump is frozen (a corpse: no pongs, no drains -- what a SIGKILLed remote
 looks like to the transport) and the loopback signal hub broadcasts its
 presence=false (byte-for-byte what the real service's webSocketClose does).
 NOTHING is refused: unlike the DROP_* input seams, every detection here must
-come from the transport's own liveness ladders.
+come from the transport's own liveness ladders. The room-authoritative drop is
+switched OFF (MDKR_ONLINE_LOBBY_DROP=0) for the same reason: it would resolve
+the same presence drop in a tick or two, and the ladders under test here are
+what remains when the room says nothing at all -- arm 3's lingering presence,
+a service slow to drop a member, or the Worker itself down. The fast path over
+this same signature is check_online_lobby_drop.py.
 
 Post-fix assertions (the ruled behavior):
   * detection is TRANSPORT-STATE-KEYED and bounded: `[MESH] peer LOST
@@ -247,6 +252,13 @@ def main() -> int:
         # The sever seam itself: freeze the peer's pump + drop its presence
         # at this authored tick. Refuses NOTHING.
         "MDKR_APP_TEST_ONLINE_SEVER_PEER_AT_TICK": str(SEVER_TICK),
+        # This lane is about the TRANSPORT's own ladders, which are the
+        # backstop whenever the room says nothing (arm 3's lingering presence,
+        # a room that is itself down, a service slow to drop a member). The
+        # room-authoritative fast path over the same presence drop belongs to
+        # check_online_lobby_drop.py; turning it off here keeps each lane
+        # pinning one detection path instead of whichever wins the race.
+        "MDKR_ONLINE_LOBBY_DROP": "0",
     }
     try:
         returncode, output = run_engine(

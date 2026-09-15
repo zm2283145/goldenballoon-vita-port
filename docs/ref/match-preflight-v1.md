@@ -1,4 +1,4 @@
-# Match preflight consensus v1
+# Match preflight consensus v1 and v2
 
 Status: pure local foundation; live binding and online-race admission remain
 gated by the written A3 decision.
@@ -43,15 +43,17 @@ the canonical graph digest, then states three local checks:
 2. the room's three-compound-word phrase was confirmed by the people playing;
 3. gameplay channels for the frozen graph are ready.
 
-Native and browser share the fixed 124-byte `MPF1` encoding below. It is carried
+Native and browser share the fixed 136-byte `MPF2` encoding below; `MPF1` was
+the same report without the trailing route-quality record, and the two refuse
+each other (see "Route quality (v2)"). It is carried
 only over a pairwise channel that already authenticated the endpoint id; it is
 not a service command and has no unauthenticated fallback. All integers are
 big-endian.
 
 | Offset | Bytes | Field |
 |---:|---:|---|
-| 0 | 4 | `MPF1` |
-| 4 | 1 | version `1` |
+| 0 | 4 | `MPF2` |
+| 4 | 1 | version `2` |
 | 5 | 1 | ROM verified / phrase confirmed / channels ready bits |
 | 6 | 2 | zero reserved |
 | 8 | 4 | match epoch |
@@ -61,8 +63,13 @@ big-endian.
 | 28 | 32 | launch-descriptor SHA-256 |
 | 60 | 32 | peer-key transcript SHA-256 |
 | 92 | 32 | canonical directed graph SHA-256 |
+| 124 | 12 | route-quality record (v2; see below) |
 
-Decode requires exactly 124 bytes and rejects malformed control bytes, reserved
+`MPF1` carried `MPF1`/version `1` in those same two fields and stopped at byte
+124. Bit `0x08` of byte 5 is the route-measured flag; the three readiness bits
+are unchanged and `READY` still requires exactly those three.
+
+Decode requires exactly 136 bytes and rejects malformed control bytes, reserved
 bits and zero identity/generation/sequence atomically. Digest mutations remain
 well-formed reports so consensus can classify them as race-settings or secure-
 connection/topology disagreement. The service cannot write reports or declare
@@ -104,6 +111,196 @@ The embedded report sequence must also match every fragment header. A one-hop
 forwarder still sees only three opaque fixed envelopes; the signaling service
 has no preflight route.
 
+## Route quality (v2)
+
+Before admission completes, each launcher measures the route it is about to
+race over. The measurement owns no socket and reads no clock: the launcher
+hands it the host milliseconds it already samples for its own ladders, so
+nothing on the simulation side of the authority boundary is involved. It runs
+only while the race transport does not exist, and it touches no simulation
+state.
+
+### When it runs
+
+The window opens at the **first** peer channel-open, not the last, and Start is
+never held for it. Probes only ever flow over channels that are actually open:
+the transport's unit of readiness is the peer — its state and control
+DataChannels open together as one `PeerChannelsReady` — so per-lane gating is
+per-peer gating here. The addressed control lane fans out to ready peers only,
+and the broadcast bundle lane is the mesh's own input send, which skips a peer
+whose channel is not open. A peer that opens mid-window simply joins the lanes
+late; every endpoint measures and reports its own route.
+
+What first-open actually buys, and where: **at 3-4P** it removes the wait for
+the slowest peer, which used to push the whole 7 s window past the moment
+everyone else was ready. **At 2P — the only shape any lane in this tree runs —
+it changes nothing**: there is one peer, so its `PeerChannelsReady` is both the
+first and the last open, and the 7 s wall stands exactly where it did. What
+2P gets from this rule is the other half: a race that starts inside the window
+is no longer a race with no measurement at all. Whether the window is normally
+settled before Start at 2P rests on the human time in front of the phrase
+comparison, not on when the window opens.
+
+If a race starts before the window settles, entry timing resolves from whatever
+record exists at that moment — the manifest floor if there is none — and the
+room chip says “Checking connection…” instead of a measured one. The window is
+then **cut**, not discarded: the trailing probes younger than the cut margin —
+max(`MDKR_MATCH_ROUTE_CUT_MARGIN_MS` = 500 ms, twice the p95 answered so far) —
+are dropped from the sample set rather than scored as loss (they were lost to
+the player's own Start, and the drain that would have answered them never runs,
+because the race owns the lanes now). The margin follows the route because a
+fixed one charges a slow route for its own round trip: at 240 ms RTT a 100 ms
+margin scores half a second of healthy probes as loss.
+
+A cut window is only **adopted** with evidence behind it: at least
+`MDKR_MATCH_ROUTE_CUT_MIN_SAMPLES` (30, one second of the 30 Hz state lane)
+answered samples, spanning at least `MDKR_MATCH_ROUTE_CUT_MIN_SPAN_MS` (2000
+ms) of window. Below either floor the window is discarded, the race runs on the
+manifest floor with the checking chip, and the next round measures fresh —
+two lucky echoes must not band a route as “steady”.
+
+An adopted record is published as the round's second attestation even though
+the race has started. A **full** window's record then survives the race-latch
+reset between the races of one tournament — the mesh, its keys and its channels
+all survive that boundary — so the next race resolves its widen and its chip
+from it. A **cut** record does not: it saw part of the route, the lanes are idle
+in the lobby between rounds, and a whole window there costs nobody a wait, so it
+is retired and measured again. A rekey or a re-verify retires either, because
+those samples were sealed under keys that no longer exist.
+
+### Replay
+
+Both real lanes are replayed at their real cadence and payload size for 6000
+ms, then drained for 1000 ms:
+
+| Lane | Channel | Cadence | Payload |
+|---|---|---|---|
+| bundle | unreliable state (`gb-match-state-v1`), sealed payload type `0` | one authored tick (33 ms at 30 Hz) | 64 B — one input bundle |
+| control | reliable ordered control (`gb-match-control-v1`), sealed payload type `1` | 200 ms | 64 B — one sealed fragment |
+
+Neither lane needs a new sealed payload type: the envelope's type space is
+unchanged at `0`/`1`. The bundle lane is where real datagram loss is visible;
+on the reliable control lane SCTP retransmission turns loss into latency
+instead, which is exactly what that lane does in a race.
+
+Each probe is one fixed 64-byte payload:
+
+| Offset | Bytes | Field |
+|---:|---:|---|
+| 0 | 4 | `MRQ1` |
+| 4 | 1 | lane (`0` bundle, `1` control) |
+| 5 | 1 | kind (`0` probe, `1` echo) |
+| 6 | 4 | nonzero probe sequence |
+| 10 | 8 | originating endpoint id |
+| 18 | 46 | zero filler to the lane's real payload size |
+
+The recipient returns the identical probe with kind `1`. The bundle lane's echo
+is broadcast like race input, so only the endpoint named in the origin field
+times it. First echo wins, so with three or four racers a probe's round trip is
+the fastest peer's rather than the worst pair's — a 2P-era limitation, matching
+the two-racer online contract this ships under; worst-pair reduction belongs
+with the 3-4P work. Non-zero filler, an unknown lane and a zero sequence or origin all
+refuse to decode, and a probe can only be decoded before the race transport
+exists.
+
+### Metrics and the score ladder
+
+`p95` is the 95th percentile of the answered round trips; `jitter` is the mean
+absolute difference between consecutive answered round trips in send order;
+`loss` counts probes never echoed, over probes sent; `late` counts answered
+probes slower than 100 ms — the depth past which a 30 Hz authored tick can no
+longer absorb the arrival — over probes answered; `undrained` is the carrier's
+inbound pump-drain drop count across the window — its bounded callback-to-pump
+and pump-to-drainEvents queues overflowed, so the local pump did not keep up.
+The launcher samples both counters at begin and at finish and scores the delta;
+the mesh holds no outbound queue, since a send either reaches the data channel
+or fails on the spot.
+
+Under that same pressure an echo the mesh drops on its way in never reaches the
+measurement, so it also counts toward `loss`: a saturated pump is partially
+double-counted, once as the queue overflow that caused it and once as the
+sample it cost. Both rungs deduct, which is the intended reading — a pump that
+cannot keep up is a worse route to race over than either metric alone says.
+
+The score starts at 10 and takes, per metric, the deduction of the first rung
+the value does not exceed, or the row's worst:
+
+| Metric | Rungs (threshold → deduction) | Past every rung |
+|---|---|---|
+| p95 RTT (ms) | 40 → 0, 70 → 1, 110 → 2, 160 → 3, 220 → 4 | 5 |
+| jitter (ms) | 5 → 0, 12 → 1, 25 → 2, 45 → 3 | 4 |
+| loss (‰) | 5 → 0, 20 → 2, 50 → 4 | 6 |
+| late (‰) | 10 → 0, 50 → 1, 150 → 2 | 3 |
+| undrained (inbound pump-drain drops) | zero → 0 | 3 |
+
+The result is clamped to 1-10 and named:
+
+| Score | Band | Room chip |
+|---:|---|---|
+| 8-10 | `steady` | “~45 ms · steady” |
+| 5-7 | `uneven` | “~120 ms · uneven” |
+| 1-4 | `rough` | “~260 ms · rough” |
+
+The launcher shows exactly one chip: the round trip a player can feel, then the
+band's name — or “Checking connection…” while the measurement is still running,
+since a player can reach the room chip before it settles. The outcome also
+joins the mesh bring-up boundary in the online forensics ring as the code
+`route-<band>-<score>`, so a dump reads the route a session started on beside
+every later stall.
+
+### Record
+
+| Offset | Bytes | Field |
+|---:|---:|---|
+| 124 | 2 | p95 RTT, ms |
+| 126 | 2 | jitter, ms |
+| 128 | 2 | loss, per thousand |
+| 130 | 2 | late samples, per thousand |
+| 132 | 2 | undrained: inbound pump-drain drops (saturating) |
+| 134 | 1 | score, 1-10 |
+| 135 | 1 | band (`1` rough, `2` uneven, `3` steady) |
+
+A report either sets the route-measured flag and carries a record whose score
+and band are exactly what the ladder above produces from its five metric
+fields, or carries an all-zero record with the flag clear. A band that
+disagrees with its own score, a rate above 100%, and a record without its flag
+each refuse the whole report atomically, so a peer cannot show one number and
+band it as another.
+
+The measurement is reported, not required. `READY` still turns on the three
+readiness checks alone: a route that measures badly informs the players and
+widens the measuring endpoint's entry timing, it never refuses the launch. The
+measured report is published as a second attestation for the round, at the
+round's higher sequence, after the compatibility report; a round's two
+sequences are `2·epoch` and `2·epoch + 1`, so both stay strictly below the next
+round's pair.
+
+### Entry timing
+
+The manifest's `input_delay` is the agreed floor: it is compared at admission,
+it is inside the launch descriptor whose SHA-256 every report binds, and it is
+never lowered. Each endpoint may lead by further whole authored ticks resolved
+from its **own** measured p95 RTT — `ceil(p95 / tick_ms)`, minus the floor
+already covered, clamped to `[0, 4 − floor]` — up to a hard cap of 4 authored
+ticks. Leading further is local: bundles carry their own tick numbers, so two
+endpoints leading by different amounts still commit the identical canonical
+timeline. The loopback lane proves this directly: one endpoint is given a
+measured route slow enough to widen while the other stays on the floor, the two
+race with different operative leads over the same descriptor, and the two
+independent endpoints fold the identical canonical state hash.
+
+### Version refusal
+
+`MPF1` and `MPF2` refuse each other by name, in both directions, and neither
+downgrades silently:
+
+- the v2 parser reads the format tag before the length, so a 124-byte `MPF1`
+  report is refused as `legacy_mpf1` rather than as a short buffer;
+- a tag that is neither is `unknown_format`; a well-tagged report of the wrong
+  length is `length`;
+- the frozen `MPF1` header rule (exactly 124 bytes, tag `MPF1`, version `1`)
+  refuses a 136-byte `MPF2` report on all three counts.
+
 ## Deterministic status and UX
 
 Evaluation always returns one typed state, the lowest opaque endpoint id that
@@ -143,7 +340,7 @@ immediate escape hatch.
 - Consensus cannot bypass the publisher admission policy, A3 decision, engine
   manifest validation, rollback transport, or loaded-ROM validation.
 
-Strict native/browser tests share one exact `MPF1` vector and cover three-
+Strict native/browser tests share one exact `MPF2` vector and cover three-
 fragment reorder/duplicate/conflict/stale/padding/replacement behavior,
 cross-source splicing and forged-attribution rejection, staged
 success, progress, deterministic issue ownership, disconnected topology,

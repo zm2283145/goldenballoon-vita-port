@@ -34,6 +34,12 @@ NUL_ALLOWED_BINARY_SUFFIXES = frozenset(
         ".woff2",
     }
 )
+NUL_ALLOWED_BINARY_PREFIXES = (
+    # Protocol fuzz seeds intentionally preserve exact wire bytes and are
+    # conventionally extensionless. They still take the printable-run
+    # denylist scan below; this exemption covers only the NUL-as-text verdict.
+    "tests/fuzz_corpus/",
+)
 
 # Minimum run length for treating bytes in a binary blob as readable text.
 PRINTABLE_RUN_RE = re.compile(rb"[\t\x20-\x7e]{4,}")
@@ -309,7 +315,10 @@ def blob_hits(
     hits: list[str] = []
     if b"\0" in data:
         suffix = PurePosixPath(path).suffix.lower()
-        if suffix not in NUL_ALLOWED_BINARY_SUFFIXES:
+        binary_path = suffix in NUL_ALLOWED_BINARY_SUFFIXES or any(
+            path.startswith(prefix) for prefix in NUL_ALLOWED_BINARY_PREFIXES
+        )
+        if not binary_path:
             return [f"{path}: NUL byte in text/source-like public blob"]
         # The suffix exempts the blob from the NUL-in-text rule only. Its bytes
         # are still read: a file named .png that actually carries text or a

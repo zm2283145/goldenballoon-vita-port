@@ -2,6 +2,8 @@
 
 #include <string.h>
 
+#include "net_failure_ring.h"
+
 static bool sample_valid(const MdkrPadSample *sample) {
     return sample != NULL && sample->present <= 1u &&
         sample->stick_x >= -80 && sample->stick_x <= 80 &&
@@ -36,6 +38,11 @@ static void latch_recovery(
     MdkrMatchTransport *transport, MdkrMatchRecoveryReason reason,
     unsigned slot, uint32_t first_tick, uint32_t observed_tick) {
     if (transport->recovery.reason != MDKR_MATCH_RECOVERY_NONE) return;
+    /* Sticky: this fires exactly once per match, at the moment the timeline
+     * became unreconcilable, which is the record forensics needs. */
+    mdkr_net_failure_ring_record_tick(
+        MDKR_NET_FAILURE_RECOVERY, observed_tick, slot, (unsigned)reason,
+        first_tick, 0u);
     transport->recovery.reason = reason;
     transport->recovery.canonical_slot = (uint8_t)slot;
     transport->recovery.first_unrecoverable_tick = first_tick;
@@ -81,6 +88,42 @@ static void detect_unrecoverable_gaps(MdkrMatchTransport *transport) {
             return;
         }
     }
+}
+
+bool mdkr_match_transport_input_gap(
+    const MdkrMatchTransport *transport, unsigned slot,
+    uint32_t *first_tick, uint32_t *count) {
+    uint32_t first;
+    uint32_t run;
+    uint32_t tick;
+    if (transport == NULL || !transport->ready || first_tick == NULL ||
+        count == NULL || slot >= MDKR_NET_INPUT_SLOTS ||
+        (transport->remote_slot_mask & (uint8_t)(1u << slot)) == 0u)
+        return false;
+    /* The confirmation frontier is advanced by the drain, so this reads the
+     * value the last drain left rather than moving it. */
+    first = transport->remote_have_confirmed[slot]
+        ? transport->remote_confirmed_through[slot] + 1u
+        : transport->history.first_tick;
+    if (transport->history.current_tick != first &&
+        !mdkr_net_tick_after(transport->history.current_tick, first))
+        return false;
+    run = 0u;
+    tick = first;
+    while (run < MDKR_MATCH_TRANSPORT_ROLLBACK_TICKS &&
+           (tick == transport->history.current_tick ||
+            tick_before(tick, transport->history.current_tick))) {
+        const MdkrNetInputCell *cell =
+            &transport->history.cells[tick % MDKR_NET_INPUT_CAPACITY];
+        if (cell->occupied && cell->tick == tick &&
+            cell->status[slot] == MDKR_NET_INPUT_RECEIVED) break;
+        run++;
+        tick++;
+    }
+    if (run == 0u) return false;
+    *first_tick = first;
+    *count = run;
+    return true;
 }
 
 bool mdkr_match_transport_init(
@@ -162,6 +205,12 @@ MdkrMatchTransportIngressResult mdkr_match_transport_receive(
         transport->history.current_tick - tick >
             MDKR_MATCH_TRANSPORT_ROLLBACK_TICKS) {
         transport->stats.out_of_window++;
+        /* The one rejection that costs the peer a committed frame: the packet
+         * arrived past what the authored window can still replay. */
+        mdkr_net_failure_ring_record_tick(
+            MDKR_NET_FAILURE_LATE_INPUT_DISCARDED, tick, slot,
+            (unsigned)MDKR_MATCH_INGRESS_OUT_OF_WINDOW,
+            transport->history.current_tick, 0u);
         latch_recovery(
             transport, MDKR_MATCH_RECOVERY_LATE_INPUT, slot, tick,
             transport->history.current_tick);
@@ -188,6 +237,10 @@ MdkrMatchTransportIngressResult mdkr_match_transport_receive(
         case MDKR_NET_SUBMIT_TOO_OLD:
         case MDKR_NET_SUBMIT_TOO_FAR_FUTURE:
             transport->stats.out_of_window++;
+            mdkr_net_failure_ring_record_tick(
+                MDKR_NET_FAILURE_LATE_INPUT_DISCARDED, tick, slot,
+                (unsigned)MDKR_MATCH_INGRESS_OUT_OF_WINDOW,
+                transport->history.current_tick, (uint32_t)result);
             return MDKR_MATCH_INGRESS_OUT_OF_WINDOW;
         default:
             transport->stats.invalid++;
@@ -324,6 +377,32 @@ bool mdkr_match_transport_drain_tick(
     }
     next.stats.drained++;
     detect_unrecoverable_gaps(&next);
+    /* Both records fire on a CHANGE only, carrying how long the state they
+     * replace had held, so a quiet race costs the ring nothing and its tail
+     * spans the whole session instead of the last minute of it. */
+    next.commit_trace.confirmed_mask = base.confirmed_mask;
+    next.commit_trace.present_mask = base.present_mask;
+    next.commit_trace.predicted_slot_mask = (uint8_t)(
+        next.remote_slot_mask & (uint8_t)~base.confirmed_mask);
+    if (!transport->commit_trace.started ||
+        base.confirmed_mask != transport->commit_trace.confirmed_mask ||
+        base.present_mask != transport->commit_trace.present_mask) {
+        mdkr_net_failure_ring_record_tick(
+            MDKR_NET_FAILURE_FRAME_COMMIT, tick, MDKR_NET_FAILURE_NO_SLOT, 0u,
+            (uint32_t)base.confirmed_mask | ((uint32_t)base.present_mask << 8),
+            transport->commit_trace.run_ticks);
+        next.commit_trace.run_ticks = 1u;
+    } else {
+        next.commit_trace.run_ticks = transport->commit_trace.run_ticks + 1u;
+    }
+    next.commit_trace.started = true;
+    if (next.commit_trace.predicted_slot_mask !=
+        transport->commit_trace.predicted_slot_mask) {
+        mdkr_net_failure_ring_record_tick(
+            MDKR_NET_FAILURE_INPUT_PREDICTED, tick, MDKR_NET_FAILURE_NO_SLOT,
+            0u, next.commit_trace.predicted_slot_mask,
+            transport->commit_trace.predicted_slot_mask);
+    }
     next.bridge = transport->bridge;
     *transport->bridge = next_bridge;
     *transport = next;
@@ -438,4 +517,49 @@ bool mdkr_match_transport_recovery(
         transport->recovery.reason == MDKR_MATCH_RECOVERY_NONE) return false;
     *recovery = transport->recovery;
     return true;
+}
+
+bool mdkr_match_drop_finalisation_tick(
+    const MdkrMatchTransport *transport, unsigned slot, uint8_t lead_ticks,
+    uint32_t *tick) {
+    uint32_t floor;
+    unsigned index;
+    if (transport == NULL || !transport->ready || tick == NULL ||
+        slot >= MDKR_NET_INPUT_SLOTS) {
+        return false;
+    }
+    floor = transport->history.current_tick + 1u;
+    if (transport->history.have_confirmed &&
+        mdkr_net_tick_after(transport->history.confirmed_through + 1u,
+                            floor)) {
+        floor = transport->history.confirmed_through + 1u;
+    }
+    for (index = 0u; index < MDKR_NET_INPUT_CAPACITY; index++) {
+        const MdkrNetInputCell *cell = &transport->history.cells[index];
+        if (!cell->occupied ||
+            cell->status[slot] != MDKR_NET_INPUT_RECEIVED) {
+            continue;
+        }
+        /* Half-range ordering excludes the ring's stale cells for free: a
+         * retired tick is behind the head, so it can never raise a floor that
+         * already starts one past it. Nothing can be too far ahead either --
+         * submit refuses a tick outside the window before it lands. */
+        if (mdkr_net_tick_after(cell->tick + 1u, floor)) {
+            floor = cell->tick + 1u;
+        }
+    }
+    *tick = floor + lead_ticks;
+    return true;
+}
+
+bool mdkr_match_drop_is_proposer(
+    uint64_t local_endpoint_id, const uint64_t *surviving, unsigned count) {
+    unsigned index;
+    bool named = false;
+    if (surviving == NULL || count == 0u) return false;
+    for (index = 0u; index < count; index++) {
+        if (surviving[index] < local_endpoint_id) return false;
+        if (surviving[index] == local_endpoint_id) named = true;
+    }
+    return named;
 }

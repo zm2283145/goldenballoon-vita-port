@@ -1,3 +1,6 @@
+/* Assert-driven test: release builds must not compile its checks away. */
+#undef NDEBUG
+
 #include "types.h"
 #include "objects.h"
 #include "object_layout.h"

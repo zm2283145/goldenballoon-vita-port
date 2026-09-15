@@ -17,7 +17,10 @@ s32 mdkr_model_index_resolve(s32 requested, s32 modelCount, s32 *resolved);
 s32 mdkr_model_load_selection(s32 requested, s32 modelCount, s32 *resolved,
                               s32 *loadCount);
 s32 mdkr_course_flag(s32 index, u32 *flag);
+/* Read any of the five championship fields; reject non-championship worlds. */
 s32 mdkr_trophy_state(u32 trophies, s32 worldId, u32 *state);
+/* Furthest medal per world, not bitwise union of encoded medal ranks. */
+u32 mdkr_trophy_records_merge(u32 left, u32 right);
 s32 mdkr_extension_bit(char extension, u32 *bit);
 s32 mdkr_texture_allocation_size(size_t dataBytes, size_t frameCount,
                                  size_t textureCommandBytes,

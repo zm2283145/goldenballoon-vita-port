@@ -1,0 +1,46 @@
+{
+  "attribution": "Creator Name",
+  "disabled_semantics": [
+    "select.idle"
+  ],
+  "display_name": "Character Name",
+  "donor": "diddy",
+  "id": "org.example.character-name",
+  "license_spdx": "CC-BY-4.0",
+  "minimap_rgb": [
+    220,
+    72,
+    144
+  ],
+  "rig_roles": {
+    "chest": "Chest",
+    "foot.left": "Foot.L",
+    "foot.right": "Foot.R",
+    "hand.left": "Hand.L",
+    "hand.right": "Hand.R",
+    "head": "Head",
+    "hips": "Root",
+    "lower_arm.left": "LowerArm.L",
+    "lower_arm.right": "LowerArm.R",
+    "lower_leg.left": "LowerLeg.L",
+    "lower_leg.right": "LowerLeg.R",
+    "spine": "Spine",
+    "upper_arm.left": "UpperArm.L",
+    "upper_arm.right": "UpperArm.R",
+    "upper_leg.left": "UpperLeg.L",
+    "upper_leg.right": "UpperLeg.R"
+  },
+  "schema": "mdkr-character-spike-decisions-v1",
+  "sockets": {
+    "head": "Head",
+    "seat": "Root"
+  },
+  "source_forward": "+z",
+  "source_url": "https://example.invalid/character-source",
+  "target_height_m": 1.25,
+  "vehicles": [
+    "car",
+    "hovercraft",
+    "plane"
+  ]
+}

@@ -7,6 +7,9 @@
  * string-for-string in the failure codes.
  */
 #include "online/match_signal_client.h"
+#include "async_work_budget.h"
+#include "scoped_string_wipe.h"
+#include "net/native_socket_lifetime.h"
 
 #include "mozilla_ca_bundle.h"
 #include "party/native_party_host.h"      /* mdkr_party_loopback_test_url_allowed */
@@ -33,10 +36,20 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <new>
+#include <stdexcept>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
+
+/* CMake binds this to MDKR_VERSION for every target that compiles this shared
+ * transport source. The fallback keeps non-CMake analysis builds usable
+ * without letting a release carry a second hand-maintained version literal. */
+#ifndef MDKR_MATCH_USER_AGENT_VERSION
+#define MDKR_MATCH_USER_AGENT_VERSION "dev"
+#endif
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -621,6 +634,19 @@ std::mutex &resolverSeamMutex() {
 std::string g_prependAddressForTest;      /* guarded by resolverSeamMutex() */
 uint16_t g_prependPortForTest = 0u;       /* guarded by resolverSeamMutex() */
 std::atomic<unsigned> g_resolverStallMsForTest{0u};
+std::atomic<bool> g_refuseNextThreadStartForTest{false};
+std::atomic<bool> g_refuseNextCloseEventForTest{false};
+std::atomic<unsigned> g_refuseNextSendStageForTest{0u};
+std::atomic<bool> g_refuseNextWorkerEventForTest{false};
+std::atomic<bool> g_refuseNextFailureEventForTest{false};
+std::atomic<bool> g_refuseNextEventDrainForTest{false};
+std::atomic<bool> g_refuseNextCreateForTest{false};
+
+void assignSignalError(std::string *destination, const char *code) noexcept {
+    if (!destination) return;
+    try { *destination = code; }
+    catch (...) { destination->clear(); } // Refusal must not require diagnostics storage.
+}
 
 /* getaddrinfo -> flat copies, so the caller owns plain values with no
  * addrinfo lifetime to thread through the connect loop. */
@@ -664,101 +690,144 @@ bool prependTestAddress(uint16_t port, std::vector<ResolvedAddress> &out) {
     return true;
 }
 
-/* Resolve `host` into flat address copies, bounded by `deadlineMs` and by
- * `stopping` even though getaddrinfo itself is uninterruptible: the actual
- * resolve runs on a detached helper thread and this waiter polls it in
- * kPollSliceMs slices. On a give-up (deadline or close()) the helper is
- * ABANDONED, never joined -- it frees its own result when it eventually
- * returns -- so a DNS outage can no longer freeze close()/join() on the
- * launcher (review N6c/B5). Chosen over pre-resolve-before-thread-start
- * because the socket thread is also created per connect() and the launcher
- * thread would then take the identical getaddrinfo hit synchronously; this
- * bounds EVERY caller with one mechanism. The honored test stall models the
- * outage. Returns false with *timedOut clear on a plain resolution failure,
- * *timedOut set when the deadline expired first. */
+using AddrinfoOwner = std::unique_ptr<struct addrinfo, decltype(&::freeaddrinfo)>;
+
+/* Room and signal clients share a bounded resolver permit pool. getaddrinfo
+ * remains uncancellable; abandoned workers retain permits through cleanup.
+ * Capacity wait and result wait honor the same deadline/stop flag, without an
+ * unbounded queue. *timedOut distinguishes deadline from other failures. */
 struct ResolveTask {
+    ResolveTask(AsyncWorkBudget::Permit ownedPermit, const MdkrNativeSocketLease &network)
+        : permit(std::move(ownedPermit)), networkLease(network) {}
+    // First member dies last, after results and all synchronization state.
+    AsyncWorkBudget::Permit permit;
+    MdkrNativeSocketLease networkLease; // Results retire before Winsock and its permit.
     std::mutex mutex;
     std::condition_variable cv;
     bool done = false;
     bool abandoned = false;
     int rc = -1;
-    struct addrinfo *results = nullptr;
+    AddrinfoOwner results{nullptr, ::freeaddrinfo};
 };
-/* Abandoned helpers accumulate only until their getaddrinfo returns (the
- * resolver timeout, worst case ~30 s), and new ones are minted only by
- * connect attempts, which the reconnect ladders bound (<= 6 per outage per
- * socket) -- so the in-principle-unbounded detached threads are ladder-
- * bounded in practice and each self-frees its result. */
 
-bool resolveAddresses(const std::string &host, uint16_t port,
-                      uint64_t deadlineMs, const std::atomic<bool> &stopping,
-                      std::vector<ResolvedAddress> &out, bool *timedOut) {
+bool resolveAddresses(const std::string &host, uint16_t port, uint64_t deadlineMs,
+                      const std::atomic<bool> &stopping, std::vector<ResolvedAddress> &out,
+                      bool *timedOut, const MdkrNativeSocketLease &network) {
     out.clear();
     *timedOut = false;
-    (void)prependTestAddress(port, out);
-    auto task = std::make_shared<ResolveTask>();
-    const unsigned stallMs = g_resolverStallMsForTest.load();
-    std::thread helper([task, host, port, stallMs]() {
-        if (stallMs != 0u) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(stallMs));
-        }
-        struct addrinfo hints;
-        std::memset(&hints, 0, sizeof(hints));
-        hints.ai_family = AF_UNSPEC;
-        hints.ai_socktype = SOCK_STREAM;
-        hints.ai_protocol = IPPROTO_TCP;
-        struct addrinfo *results = nullptr;
-        const int rc = ::getaddrinfo(host.c_str(),
-                                     std::to_string(port).c_str(), &hints,
-                                     &results);
-        std::lock_guard<std::mutex> lock(task->mutex);
-        if (task->abandoned) {
-            /* Nobody is waiting anymore: this thread owns the cleanup. */
-            if (results != nullptr) ::freeaddrinfo(results);
-        } else {
-            task->rc = rc;
-            task->results = results;
-        }
-        task->done = true;
-        task->cv.notify_all();
-    });
-    helper.detach();
-
-    struct addrinfo *results = nullptr;
-    int rc = -1;
-    {
-        std::unique_lock<std::mutex> lock(task->mutex);
-        while (!task->done) {
-            if (stopping || steadyNowMs() >= deadlineMs) {
-                task->abandoned = true;
-                if (!stopping) *timedOut = true;
-                return !out.empty(); /* only a test prepend, if any */
+    try {
+        AsyncWorkBudget::Permit permit;
+        for (;;) {
+            const uint64_t now = steadyNowMs();
+            if (stopping || now >= deadlineMs) {
+                if (!stopping)
+                    *timedOut = true;
+                return false;
             }
-            task->cv.wait_for(lock, std::chrono::milliseconds(kPollSliceMs));
+            permit = onlineResolverWorkBudget().tryAcquire();
+            if (permit)
+                break;
+            const uint64_t remaining = deadlineMs - now;
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(remaining < kPollSliceMs ? remaining : kPollSliceMs));
         }
-        rc = task->rc;
-        results = task->results;
-        task->results = nullptr;
+        (void)prependTestAddress(port, out);
+        std::string ownedHost = host;
+        std::string ownedPort = std::to_string(port);
+        auto task = std::make_shared<ResolveTask>(std::move(permit), network);
+        const unsigned stallMs = g_resolverStallMsForTest.load();
+        if (stopping || steadyNowMs() >= deadlineMs) {
+            if (!stopping)
+                *timedOut = true;
+            return false;
+        }
+        std::thread helper;
+        try {
+            helper = std::thread(
+                [task, host = std::move(ownedHost), port = std::move(ownedPort), stallMs]() {
+                    if (stallMs != 0u) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(stallMs));
+                    }
+                    {
+                        std::lock_guard<std::mutex> lock(task->mutex);
+                        if (task->abandoned) {
+                            task->done = true;
+                            task->cv.notify_all();
+                            return;
+                        }
+                    }
+                    struct addrinfo hints;
+                    std::memset(&hints, 0, sizeof(hints));
+                    hints.ai_family = AF_UNSPEC;
+                    hints.ai_socktype = SOCK_STREAM;
+                    hints.ai_protocol = IPPROTO_TCP;
+                    struct addrinfo *rawResults = nullptr;
+                    const int rc = ::getaddrinfo(host.c_str(), port.c_str(), &hints, &rawResults);
+                    AddrinfoOwner results(rawResults, ::freeaddrinfo);
+                    std::lock_guard<std::mutex> lock(task->mutex);
+                    if (!task->abandoned) {
+                        task->rc = rc;
+                        task->results = std::move(results);
+                    }
+                    task->done = true;
+                    task->cv.notify_all();
+                });
+            helper.detach();
+        } catch (...) {
+            if (helper.joinable()) {
+                {
+                    std::lock_guard<std::mutex> lock(task->mutex);
+                    task->abandoned = true;
+                }
+                // Detach failure retains a joinable handle. This exceptional
+                // ownership-safe fallback may wait for an already-running OS lookup.
+                helper.join();
+            }
+            return false;
+        }
+
+        AddrinfoOwner results(nullptr, ::freeaddrinfo);
+        int rc = -1;
+        {
+            std::unique_lock<std::mutex> lock(task->mutex);
+            while (!task->done) {
+                if (stopping || steadyNowMs() >= deadlineMs) {
+                    task->abandoned = true;
+                    if (!stopping)
+                        *timedOut = true;
+                    return !out.empty(); /* only a test prepend, if any */
+                }
+                task->cv.wait_for(lock, std::chrono::milliseconds(kPollSliceMs));
+            }
+            if (stopping || steadyNowMs() >= deadlineMs) {
+                if (!stopping)
+                    *timedOut = true;
+                return false;
+            }
+            rc = task->rc;
+            results = std::move(task->results);
+        }
+        if (rc != 0 || results == nullptr) {
+            return !out.empty(); /* the test prepend still supplies an address */
+        }
+        appendAddrinfo(results.get(), out);
+        return !out.empty();
+    } catch (...) {
+        out.clear();
+        return false;
     }
-    if (rc != 0 || results == nullptr) {
-        if (results != nullptr) ::freeaddrinfo(results);
-        return !out.empty(); /* the test prepend still supplies an address */
-    }
-    appendAddrinfo(results, out);
-    ::freeaddrinfo(results);
-    return !out.empty();
 }
 
 /* Deadline- and stop-aware TCP connect. Returns kBadNativeSocket on any
  * failure; *timedOut distinguishes the deadline from a refusal. */
 NativeSocket connectTcp(const std::string &host, uint16_t port,
                         uint64_t deadlineMs, const std::atomic<bool> &stopping,
-                        bool *timedOut) {
+                        bool *timedOut, const MdkrNativeSocketLease &network) {
     *timedOut = false;
     std::vector<ResolvedAddress> addresses;
     bool resolveTimedOut = false;
     if (!resolveAddresses(host, port, deadlineMs, stopping, addresses,
-                          &resolveTimedOut) ||
+                          &resolveTimedOut, network) ||
         addresses.empty()) {
         *timedOut = resolveTimedOut;
         return kBadNativeSocket;
@@ -1073,9 +1142,38 @@ void mdkr_match_signal_client_stall_resolver_for_test(unsigned ms) {
     g_resolverStallMsForTest.store(ms);
 }
 
+void mdkr_match_signal_client_refuse_next_thread_start_for_test() {
+    g_refuseNextThreadStartForTest.store(true);
+}
+
+void mdkr_match_signal_client_refuse_next_close_event_for_test() {
+    g_refuseNextCloseEventForTest.store(true);
+}
+
+void mdkr_match_signal_client_refuse_next_send_stage_for_test(unsigned stage) {
+    g_refuseNextSendStageForTest.store(stage);
+}
+
+void mdkr_match_signal_client_refuse_next_worker_event_for_test() {
+    g_refuseNextWorkerEventForTest.store(true);
+}
+
+void mdkr_match_signal_client_refuse_next_failure_event_for_test() {
+    g_refuseNextFailureEventForTest.store(true);
+}
+
+void mdkr_match_signal_client_refuse_next_event_drain_for_test() {
+    g_refuseNextEventDrainForTest.store(true);
+}
+
+void mdkr_match_signal_client_refuse_next_create_for_test() {
+    g_refuseNextCreateForTest.store(true);
+}
+
 /* ---- State ---------------------------------------------------------------- */
 
 struct MdkrMatchSignalClient::State {
+    MdkrNativeSocketLease networkLease;
     /* Immutable after create(). */
     ParsedOrigin origin;
     std::string path;
@@ -1099,6 +1197,7 @@ struct MdkrMatchSignalClient::State {
 
     std::deque<MdkrMatchSignalEvent> events;
     uint64_t droppedEvents = 0u;
+    const char *pendingFailureCode = nullptr; // Static code; allocation-free fallback.
 
     std::deque<std::string> outbound; /* serialized payloads, FIFO */
 
@@ -1107,6 +1206,20 @@ struct MdkrMatchSignalClient::State {
     std::atomic<bool> closeRequested{false};
     bool wantCloseFrame1000 = false; /* set by close() while upgraded */
     bool socketOpen = false;         /* 101 completed (socket thread) */
+
+    ~State() {
+        // Also cover factory failure after the credential has been copied but
+        // before a client exists whose close() can wipe it.
+        if (!credential.empty()) mbedtls_platform_zeroize(&credential[0], credential.size());
+    }
+
+    void retainFailureLocked(const char *code) noexcept {
+        pendingFailureCode = code;
+        if (events.size() >= kMaxQueuedEvents) {
+            events.pop_front(); // No earlier terminal event exists at this boundary.
+            ++droppedEvents;
+        }
+    }
 
     /* ---- Event queue (bounded; Failure events are never evicted) ---- */
     void enqueueLocked(MdkrMatchSignalEvent &&event) {
@@ -1126,16 +1239,21 @@ struct MdkrMatchSignalClient::State {
 
     /* Latch the terminal failure (JS fail()): once failed or closed,
      * nothing further is recorded. */
-    bool latchFailureLocked(const char *code) {
+    bool latchFailureLocked(const char *code) noexcept {
         if (phase == MdkrMatchSignalPhase::Failed ||
             phase == MdkrMatchSignalPhase::Closed) {
             return false;
         }
         phase = MdkrMatchSignalPhase::Failed;
-        MdkrMatchSignalEvent event;
-        event.type = MdkrMatchSignalEventType::Failure;
-        event.failureCode = code;
-        enqueueLocked(std::move(event));
+        try {
+            if (g_refuseNextFailureEventForTest.exchange(false)) throw std::bad_alloc();
+            MdkrMatchSignalEvent event;
+            event.type = MdkrMatchSignalEventType::Failure;
+            event.failureCode = code;
+            enqueueLocked(std::move(event));
+        } catch (...) {
+            retainFailureLocked(code);
+        }
         return true;
     }
 
@@ -1233,6 +1351,7 @@ struct MdkrMatchSignalClient::State {
             break;
         }
         }
+        if (g_refuseNextWorkerEventForTest.exchange(false)) throw std::bad_alloc();
         enqueueLocked(std::move(event));
         return nullptr;
     }
@@ -1476,7 +1595,7 @@ struct Transport {
 
 } // namespace
 
-void MdkrMatchSignalClient::State::run() {
+void MdkrMatchSignalClient::State::run() try {
     const uint64_t deadlineMs = steadyNowMs() + timeoutMs;
     Transport transport;
     transport.tls = origin.tls;
@@ -1518,7 +1637,7 @@ void MdkrMatchSignalClient::State::run() {
     /* ---- TCP ---- */
     bool timedOut = false;
     const NativeSocket fd =
-        connectTcp(origin.host, origin.port, deadlineMs, stopping, &timedOut);
+        connectTcp(origin.host, origin.port, deadlineMs, stopping, &timedOut, networkLease);
     if (stopping || closeRequested) {
         closeNativeSocket(fd);
         finishClose();
@@ -1558,9 +1677,12 @@ void MdkrMatchSignalClient::State::run() {
     }
     const std::string key = standardBase64(nonce, sizeof(nonce));
     std::string credentialOffer;
+    MdkrScopedStringWipe<mbedtls_platform_zeroize> wipeCredentialOffer(credentialOffer);
     {
         std::lock_guard<std::mutex> lock(mutex);
-        credentialOffer = "gb-match." + credential;
+        credentialOffer.reserve(9u + credential.size());
+        credentialOffer.append("gb-match.");
+        credentialOffer.append(credential);
     }
     /* Native is originless: no Origin header, and the credential rides ONLY
      * in the subprotocol offer. A plain, benign User-Agent is sent as
@@ -1571,17 +1693,26 @@ void MdkrMatchSignalClient::State::run() {
      * parsed by the MatchRoom worker. */
     std::string request = "GET " + path + " HTTP/1.1\r\n" +
                           "Host: " + origin.hostHeader + "\r\n" +
-                          "User-Agent: GoldenBalloon/1.6.0\r\n" +
+                          "User-Agent: GoldenBalloon/" MDKR_MATCH_USER_AGENT_VERSION
+                          "\r\n" +
                           "Upgrade: websocket\r\n" +
                           "Connection: Upgrade\r\n" +
                           "Sec-WebSocket-Key: " + key + "\r\n" +
                           "Sec-WebSocket-Version: 13\r\n" +
                           "Sec-WebSocket-Protocol: " +
-                          kMdkrMatchSignalSubprotocol + ", " +
-                          credentialOffer + "\r\n\r\n";
+                          kMdkrMatchSignalSubprotocol + ", ";
+    MdkrScopedStringWipe<mbedtls_platform_zeroize> wipeRequest(request);
+    // Allocate the complete suffix before copying credential bytes. Neither
+    // the credential append nor the trailing CRLF may grow/release that buffer.
+    if (request.max_size() - request.size() < credentialOffer.size() + 4u) {
+        throw std::length_error("signal request too large");
+    }
+    request.reserve(request.size() + credentialOffer.size() + 4u);
+    request.append(credentialOffer);
+    request.append("\r\n\r\n");
     const bool requestSent = transport.writeAll(request, kDataWriteBudgetMs);
-    mbedtls_platform_zeroize(&request[0], request.size());
-    mbedtls_platform_zeroize(&credentialOffer[0], credentialOffer.size());
+    wipeRequest.wipe();
+    wipeCredentialOffer.wipe();
     if (!requestSent) {
         terminate(kMdkrMatchSignalTransportLost, false);
         return;
@@ -1647,13 +1778,16 @@ void MdkrMatchSignalClient::State::run() {
         responseHeader(head, "sec-websocket-protocol", selected);
     if (selected != kMdkrMatchSignalSubprotocol) {
         std::string storedOffer;
+        MdkrScopedStringWipe<mbedtls_platform_zeroize> wipeStoredOffer(storedOffer);
         {
             std::lock_guard<std::mutex> lock(mutex);
-            storedOffer = "gb-match." + credential;
+            storedOffer.reserve(9u + credential.size());
+            storedOffer.append("gb-match.");
+            storedOffer.append(credential);
         }
         const bool offeredButWrong =
             hasSelection && selected == storedOffer;
-        mbedtls_platform_zeroize(&storedOffer[0], storedOffer.size());
+        wipeStoredOffer.wipe();
         if (offeredButWrong) {
             /* The JS open-handler check: the socket opened, but with the
              * credential subprotocol selected instead of the public
@@ -1857,6 +1991,14 @@ void MdkrMatchSignalClient::State::run() {
                            static_cast<size_t>(got));
         }
     }
+} catch (...) {
+    // Transport and scoped locks have unwound before this handler. A local
+    // allocation/reporting refusal is a failed connection, not an exception
+    // escaping a native thread. Terminal reporting has a nonallocating fallback.
+    std::lock_guard<std::mutex> lock(mutex);
+    stopping = true;
+    socketOpen = false;
+    latchFailureLocked(kMdkrMatchSignalTransportLost);
 }
 
 /* ---- Public API ------------------------------------------------------------ */
@@ -1867,10 +2009,10 @@ MdkrMatchSignalClient::MdkrMatchSignalClient(std::shared_ptr<State> state)
 MdkrMatchSignalClient::~MdkrMatchSignalClient() { close(); }
 
 std::unique_ptr<MdkrMatchSignalClient> MdkrMatchSignalClient::create(
-    const MdkrMatchSignalClientOptions &options, std::string *errorMessage) {
+    const MdkrMatchSignalClientOptions &options, std::string *errorMessage) try {
     const auto refuse = [&](const char *message)
         -> std::unique_ptr<MdkrMatchSignalClient> {
-        if (errorMessage != nullptr) *errorMessage = message;
+        assignSignalError(errorMessage, message);
         return nullptr;
     };
     if (options.roomId.size() != 22u || !base64UrlChars(options.roomId) ||
@@ -1883,15 +2025,13 @@ std::unique_ptr<MdkrMatchSignalClient> MdkrMatchSignalClient::create(
     if (!parseOrigin(options.serviceOrigin, origin)) {
         return refuse(kMdkrMatchSignalCrossOriginRefused);
     }
-#ifdef _WIN32
-    WSADATA data;
-    WSAStartup(MAKEWORD(2, 2), &data);
-#endif
     auto state = std::make_shared<State>();
+    if (!state->networkLease.acquire()) return refuse(kMdkrMatchSignalTransportLost);
     state->origin = origin;
     state->path = "/api/match/" + options.roomId + "/signal";
     state->endpointId = options.endpointId;
     state->credential = options.credential;
+    if (g_refuseNextCreateForTest.exchange(false)) throw std::bad_alloc();
     const unsigned requested = options.timeoutMs == 0u ? 10000u : options.timeoutMs;
     state->timeoutMs = requested < 2000u    ? 2000u
                        : requested > 30000u ? 30000u
@@ -1904,6 +2044,9 @@ std::unique_ptr<MdkrMatchSignalClient> MdkrMatchSignalClient::create(
                                    : options.livenessTimeoutMs;
     return std::unique_ptr<MdkrMatchSignalClient>(
         new MdkrMatchSignalClient(std::move(state)));
+} catch (...) {
+    assignSignalError(errorMessage, kMdkrMatchSignalTransportLost);
+    return nullptr;
 }
 
 bool MdkrMatchSignalClient::connect(std::string *errorCode) {
@@ -1914,7 +2057,7 @@ bool MdkrMatchSignalClient::connect(std::string *errorCode) {
         return true;
     }
     if (state.phase != MdkrMatchSignalPhase::Idle) {
-        if (errorCode != nullptr) *errorCode = kMdkrMatchSignalClientClosed;
+        assignSignalError(errorCode, kMdkrMatchSignalClientClosed);
         return false;
     }
     state.phase = MdkrMatchSignalPhase::Connecting;
@@ -1927,7 +2070,20 @@ bool MdkrMatchSignalClient::connect(std::string *errorCode) {
     state.stopping = false;
     state.closeRequested = false;
     std::shared_ptr<State> shared = state_;
-    state.thread = std::thread([shared]() { shared->run(); });
+    try {
+        if (g_refuseNextThreadStartForTest.exchange(false)) throw std::bad_alloc();
+        state.thread = std::thread([shared]() { shared->run(); });
+    } catch (...) {
+        // No worker exists when std::thread construction fails. Restore the
+        // retryable pre-start phase before publishing the ordinary refusal;
+        // leaving Connecting would make the next call report false success.
+        state.phase = MdkrMatchSignalPhase::Idle;
+        if (errorCode != nullptr) {
+            try { *errorCode = kMdkrMatchSignalTransportLost; }
+            catch (...) { errorCode->clear(); } // Diagnostics are best effort.
+        }
+        return false;
+    }
     return true;
 }
 
@@ -1938,41 +2094,57 @@ MdkrMatchSignalSendResult MdkrMatchSignalClient::send(
     std::lock_guard<std::mutex> lock(state.mutex);
     if (state.phase != MdkrMatchSignalPhase::Open ||
         state.nextSequence > kU32Max) {
-        result.error = kMdkrMatchSignalNotConnected;
+        assignSignalError(&result.error, kMdkrMatchSignalNotConnected);
         return result;
     }
-    Json wire;
-    if (!buildClientMessage(message, state.endpointId, state.nextSequence,
-                            wire)) {
-        result.error = kMdkrMatchSignalInvalidClientMessage;
-        return result;
-    }
-    const auto tracked = state.peerGenerations.find(message.toEndpointId);
-    if (tracked == state.peerGenerations.end() ||
-        tracked->second != message.toConnectionGeneration) {
-        result.error = kMdkrMatchSignalPeerUnavailable;
-        return result;
-    }
-    const uint32_t sequence = static_cast<uint32_t>(state.nextSequence);
-    /* Belt and suspenders for the throws-as-values contract: every string
-     * reaching `wire` is validated above (validUtf8 for text fields,
-     * charset/literal checks for the rest), so dump() cannot throw -- but
-     * if that invariant is ever broken, the refusal stays a value. */
-    std::string payload;
     try {
-        payload = wire.dump();
+        const auto refuseStage = [](unsigned stage) {
+            unsigned expected = stage;
+            if (g_refuseNextSendStageForTest.compare_exchange_strong(expected, 0u)) {
+                throw std::bad_alloc();
+            }
+        };
+        refuseStage(1u);
+        Json wire;
+        if (!buildClientMessage(message, state.endpointId, state.nextSequence, wire)) {
+            assignSignalError(&result.error, kMdkrMatchSignalInvalidClientMessage);
+            return result;
+        }
+        const auto tracked = state.peerGenerations.find(message.toEndpointId);
+        if (tracked == state.peerGenerations.end() ||
+            tracked->second != message.toConnectionGeneration) {
+            assignSignalError(&result.error, kMdkrMatchSignalPeerUnavailable);
+            return result;
+        }
+        const uint32_t sequence = static_cast<uint32_t>(state.nextSequence);
+        std::string payload = wire.dump();
+        MdkrMatchSignalPeerRef target;
+        target.endpointId = message.toEndpointId;
+        target.connectionGeneration = message.toConnectionGeneration;
+        refuseStage(2u);
+        const auto inserted = state.sentTargets.emplace(sequence, std::move(target));
+        if (!inserted.second) {
+            assignSignalError(&result.error, kMdkrMatchSignalTransportLost);
+            return result;
+        }
+        try {
+            refuseStage(3u);
+            state.outbound.push_back(std::move(payload));
+        } catch (...) {
+            state.sentTargets.erase(inserted.first);
+            throw;
+        }
+        // Both allocations commit under the worker's queue mutex. Nothing
+        // can reach the wire without its correlation record, and refusal
+        // neither consumes a sequence nor leaves a record blocking retry.
+        state.nextSequence++;
+        result.ok = true;
+        result.sequence = sequence;
+    } catch (const std::bad_alloc &) {
+        assignSignalError(&result.error, kMdkrMatchSignalTransportLost);
     } catch (...) {
-        result.error = kMdkrMatchSignalInvalidClientMessage;
-        return result;
+        assignSignalError(&result.error, kMdkrMatchSignalInvalidClientMessage);
     }
-    state.outbound.push_back(std::move(payload));
-    MdkrMatchSignalPeerRef target;
-    target.endpointId = message.toEndpointId;
-    target.connectionGeneration = message.toConnectionGeneration;
-    state.sentTargets[sequence] = std::move(target);
-    state.nextSequence++;
-    result.ok = true;
-    result.sequence = sequence;
     return result;
 }
 
@@ -1996,17 +2168,24 @@ void MdkrMatchSignalClient::close() {
                                      state.credential.size());
             state.credential.clear();
         }
-        if (wasConnecting) {
-            /* The JS pending-connect rejection. */
-            MdkrMatchSignalEvent event;
-            event.type = MdkrMatchSignalEventType::Failure;
-            event.failureCode = kMdkrMatchSignalClientClosed;
-            state.enqueueLocked(std::move(event));
-        }
         state.wantCloseFrame1000 = state.socketOpen;
         state.closeRequested = true;
         state.stopping = true;
         toJoin = std::move(state.thread);
+        if (wasConnecting) {
+            // Mandatory retirement precedes the optional pending-connect
+            // rejection. Reporting refusal must not strand a joinable worker
+            // behind Closed (whose next close call deliberately does nothing).
+            try {
+                if (g_refuseNextCloseEventForTest.exchange(false)) throw std::bad_alloc();
+                MdkrMatchSignalEvent event;
+                event.type = MdkrMatchSignalEventType::Failure;
+                event.failureCode = kMdkrMatchSignalClientClosed;
+                state.enqueueLocked(std::move(event));
+            } catch (...) { /* Closed/stopping and the joining owner are committed. */
+                state.retainFailureLocked(kMdkrMatchSignalClientClosed);
+            }
+        }
     }
     /* The join is bounded by construction: every socket-thread wait is a
      * kPollSliceMs slice, and every write is interruptible (closeRequested
@@ -2014,6 +2193,7 @@ void MdkrMatchSignalClient::close() {
      * its own short deadline), so a peer with a stalled receive window
      * cannot hold this join. */
     if (toJoin.joinable()) toJoin.join();
+    state.networkLease.reset(); // Outstanding resolver jobs retain their own copy.
 }
 
 MdkrMatchSignalSnapshot MdkrMatchSignalClient::snapshot() const {
@@ -2033,10 +2213,22 @@ void MdkrMatchSignalClient::drainEvents(
     out.clear();
     State &state = *state_;
     std::lock_guard<std::mutex> lock(state.mutex);
-    out.reserve(state.events.size());
+    static_assert(std::is_nothrow_move_constructible_v<MdkrMatchSignalEvent>);
+    MdkrMatchSignalEvent failure;
+    try {
+        if (g_refuseNextEventDrainForTest.exchange(false)) throw std::bad_alloc();
+        if (state.pendingFailureCode) failure.failureCode = state.pendingFailureCode;
+        out.reserve(state.events.size() + (state.pendingFailureCode ? 1u : 0u));
+    } catch (...) {
+        return; // Preserve every queued event and terminal code for a later drain.
+    }
     while (!state.events.empty()) {
         out.push_back(std::move(state.events.front()));
         state.events.pop_front();
+    }
+    if (state.pendingFailureCode) {
+        out.push_back(std::move(failure));
+        state.pendingFailureCode = nullptr;
     }
 }
 

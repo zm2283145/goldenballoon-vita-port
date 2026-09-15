@@ -23,6 +23,8 @@ static void reset_registry(void) {
 }
 
 int main(void) {
+    unsigned char arena[64];
+    unsigned char external[16];
 #if UINTPTR_MAX > UINT32_MAX
     const uintptr_t first = UINT64_C(0x0000000112345678);
     const uintptr_t ambiguous = UINT64_C(0x0000000212345678);
@@ -35,6 +37,32 @@ int main(void) {
 
     reset_registry();
     REQUIRE(gfx_ptr_live == 0);
+
+    /* Segment arithmetic retains its provenance.  An arena-backed base may
+     * resolve within that arena but never manufacture a pointer at/past its
+     * end; external registered storage remains a supported segment base. */
+    gfx_segment_table[1] = (uintptr_t)&arena[8];
+    REQUIRE(gfx_resolve_segment_addr_bounded(
+                UINT32_C(0x01000010), (uintptr_t)arena, sizeof(arena)) ==
+            (void *)&arena[24]);
+    REQUIRE(gfx_resolve_segment_addr_bounded(
+                UINT32_C(0x01000038), (uintptr_t)arena, sizeof(arena)) ==
+            NULL);
+    gfx_segment_table[2] = (uintptr_t)external;
+    REQUIRE(gfx_resolve_segment_addr_bounded(
+                UINT32_C(0x02000004), (uintptr_t)arena, sizeof(arena)) ==
+            (void *)&external[4]);
+    REQUIRE(gfx_resolve_segment_addr_bounded(
+                UINT32_C(0x81000004), (uintptr_t)arena, sizeof(arena)) ==
+            NULL);
+    gfx_segment_table[3] = UINTPTR_MAX - 3u;
+    REQUIRE(gfx_resolve_segment_addr_bounded(
+                UINT32_C(0x03000004), (uintptr_t)arena, sizeof(arena)) ==
+            NULL);
+    gfx_segment_table[3] = (uintptr_t)arena;
+    REQUIRE(gfx_resolve_segment_addr_bounded(
+                UINT32_C(0x03000004), UINTPTR_MAX - 3u, 8u) == NULL);
+    memset(gfx_segment_table, 0, sizeof(gfx_segment_table));
 
 #if UINTPTR_MAX > UINT32_MAX
     /* A sign-extended 32-bit token is never a host pointer. The LP64-only

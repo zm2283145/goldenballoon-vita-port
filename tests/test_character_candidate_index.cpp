@@ -1,0 +1,225 @@
+#include "character_candidate_index.h"
+
+#include <cstdio>
+#include <string>
+
+namespace {
+int failures;
+void expect(bool condition, const char *message) {
+    if (!condition) {
+        std::fprintf(stderr, "FAIL: %s\n", message);
+        ++failures;
+    }
+}
+
+std::string zeroFields(unsigned count) {
+    std::string fields;
+    while (count-- != 0u) fields += "\t0";
+    return fields;
+}
+}  // namespace
+
+int main() {
+    const std::string digest(64u, 'a');
+    const std::string v4Fields =
+        "org.example.hero\t4865726fc2ae"
+        "\t4865726f"
+        "\t4865726f20636861726163746572"
+        "\t4865726f2c20546865\t" + digest + "\t" + digest +
+        "\t9\t7\t1000\t500\t3\t2\t2\t4\t20\t1\t16\t8\t30\t400"
+        "\t1\t2\t1\t16\t4096\t16384"
+        "\t700\t300\t0\t0\t350\t150\t0\t0\t2\t1\t0\t0"
+        "\t1\t0"
+        "\t1\t43432d42592d342e30"
+        "\t416e6120c2a9204578616d706c65"
+        "\t68747470733a2f2f6578616d706c652e696e76616c69642f6865726f";
+    std::string v5Fields = v4Fields;
+    const size_t v5Insertion = v5Fields.find("\t16\t4096\t16384");
+    expect(v5Insertion != std::string::npos,
+           "version-five authoring insertion point is present");
+    v5Fields.insert(v5Insertion + 3u, "\t2\t1\t3");
+    std::string fields = v5Fields;
+    const size_t v6Insertion =
+        fields.rfind("\t1\t43432d42592d342e30");
+    expect(v6Insertion != std::string::npos,
+           "version-six tangent insertion point is present");
+    fields.insert(v6Insertion, "\t2\t1\t5\t7\t11\t3");
+    const std::string v6Fields = fields;
+    fields.insert(fields.rfind("\t1\t43432d42592d342e30"),
+                  "\t1\t512\t1\t0\t4\t4");
+    const std::string valid = "mdkr-character-candidate-v7\n" + fields + "\n";
+    CharacterCandidateIndex::Candidate candidate;
+    expect(CharacterCandidateIndex::parse(valid, candidate),
+           "valid candidate index parses");
+    expect(candidate.id == "org.example.hero" &&
+               candidate.displayName == "Hero®" && candidate.donor == 9u &&
+               candidate.shortName == "Hero" &&
+               candidate.narrationName == "Hero character" &&
+               candidate.sortLabel == "Hero, The" &&
+               candidate.vehicleMask == 7u && candidate.vertices == 1000u &&
+               candidate.identityPresent && candidate.rigMode == 2u &&
+               candidate.rigReviewed && candidate.rigRoles == 16u &&
+               candidate.jointConstraints == 2u &&
+               candidate.secondaryChains == 1u &&
+               candidate.secondaryJoints == 3u &&
+               candidate.tangentDiagnosticsPresent &&
+               candidate.authoredTangentPrimitives == 2u &&
+               candidate.generatedTangentPrimitives == 1u &&
+               candidate.authoredTangentRepairedVertices == 5u &&
+               candidate.generatedTangentDegenerateUvTriangles == 7u &&
+               candidate.tangentFallbackVertices == 11u &&
+               candidate.normalMapTangentFallbackVertices == 3u &&
+               candidate.textureFormatDiagnosticsPresent &&
+               candidate.ktx2Textures == 1u &&
+               candidate.ktx2SourceBytes == 512u &&
+               candidate.ktx2Etc1sTextures == 1u &&
+               candidate.ktx2UastcTextures == 0u &&
+               candidate.ktx2MipLevelsMin == 4u &&
+               candidate.ktx2MipLevelsMax == 4u &&
+               candidate.animationChannels == 30u &&
+               candidate.animationKeys == 400u &&
+               candidate.semanticIntentPresent &&
+               candidate.semanticMask == 1u &&
+               candidate.disabledSemanticMask == 0u &&
+               candidate.decodedTextureBytes == 16384u &&
+               candidate.lodVertices[0] == 700u &&
+               candidate.lodTriangles[1] == 150u &&
+               candidate.lodPrimitives[1] == 1u &&
+               candidate.provenancePresent &&
+               candidate.licenseSpdx == "CC-BY-4.0" &&
+               candidate.attribution == "Ana \xC2\xA9 Example" &&
+               candidate.sourceUrl == "https://example.invalid/hero",
+           "candidate index retains exact comparison fields");
+    const CharacterCandidateIndex::Candidate before = candidate;
+    expect(!CharacterCandidateIndex::parse(
+        "mdkr-character-candidate-v4\n" +
+                   std::string("org.example.hero\tff\t4865726f\t"
+                               "4865726f\t4865726f\t") + digest + "\t" +
+                   digest + "\t9\t7" + zeroFields(32u) + "\t0\t\t\t\n",
+               candidate) && candidate.displayName == before.displayName,
+           "invalid UTF-8 fails without changing output");
+    expect(!CharacterCandidateIndex::parse(valid + "trailing", candidate),
+           "trailing candidate data is rejected");
+    expect(!CharacterCandidateIndex::parse(
+        "mdkr-character-candidate-v4\n" +
+                   std::string("org.example.hero\t4865726f\t4865726f\t"
+                               "4865726f\t4865726f\t") + digest + "\t" +
+                   digest + "\t10\t7" + zeroFields(32u) + "\t0\t\t\t\n",
+               candidate),
+           "out-of-range donor is rejected");
+    expect(!CharacterCandidateIndex::parse(
+               valid.substr(0u, valid.find("\t1000\t") + 1u) +
+                   "01000" + valid.substr(valid.find("\t1000\t") + 5u),
+               candidate),
+           "non-canonical leading-zero numbers are rejected");
+    {
+        std::string inconsistent = valid;
+        const size_t rig = inconsistent.find("\t1\t2\t1\t16\t2");
+        expect(rig != std::string::npos, "rig fixture is present");
+        inconsistent.replace(rig, 10u, "\t1\t0\t1\t16");
+        expect(!CharacterCandidateIndex::parse(inconsistent, candidate),
+               "inconsistent absent-rig review data is rejected");
+    }
+    {
+        std::string overlappingIntent = valid;
+        const size_t intent =
+            overlappingIntent.rfind("\t1\t0\t2\t1\t5\t7\t11\t3\t1\t512\t1\t0\t4\t4\t1\t43432d42592d342e30");
+        expect(intent != std::string::npos,
+               "candidate animation-intent fixture is present");
+        overlappingIntent.replace(intent, 4u, "\t1\t1");
+        expect(!CharacterCandidateIndex::parse(
+                   overlappingIntent, candidate),
+               "candidate summary rejects active and disabled overlap");
+    }
+    {
+        CharacterCandidateIndex::Candidate v5Candidate;
+        expect(CharacterCandidateIndex::parse(
+                   "mdkr-character-candidate-v5\n" + v5Fields + "\n",
+                   v5Candidate) &&
+                   !v5Candidate.tangentDiagnosticsPresent &&
+                   v5Candidate.jointConstraints == 2u,
+               "version-five candidate summaries migrate with explicit unavailable tangent diagnostics");
+    }
+    {
+        CharacterCandidateIndex::Candidate v6Candidate;
+        expect(CharacterCandidateIndex::parse(
+                   "mdkr-character-candidate-v6\n" + v6Fields + "\n",
+                   v6Candidate) &&
+                   v6Candidate.tangentDiagnosticsPresent &&
+                   !v6Candidate.textureFormatDiagnosticsPresent,
+               "version-six candidate summaries migrate with explicit unavailable texture diagnostics");
+    }
+    {
+        std::string invalidTangent = valid;
+        const size_t tangent =
+            invalidTangent.rfind("\t2\t1\t5\t7\t11\t3\t1\t512\t1\t0\t4\t4\t1\t43432d42592d342e30");
+        expect(tangent != std::string::npos,
+               "tangent diagnostic fixture is present");
+        const std::string validCounts = "\t2\t1\t5\t7\t11\t3";
+        invalidTangent.replace(tangent, validCounts.size(),
+                               "\t2\t1\t5\t7\t2\t3");
+        expect(!CharacterCandidateIndex::parse(invalidTangent, candidate),
+               "normal-map tangent fallback cannot exceed all fallback vertices");
+    }
+    {
+        std::string inconsistentTextures = valid;
+        const std::string textureFields = "\t1\t512\t1\t0\t4\t4";
+        const size_t texture = inconsistentTextures.rfind(textureFields);
+        expect(texture != std::string::npos,
+               "texture diagnostic fixture is present");
+        inconsistentTextures.replace(
+            texture, textureFields.size(), "\t1\t512\t1\t1\t4\t4");
+        expect(!CharacterCandidateIndex::parse(
+                   inconsistentTextures, candidate),
+               "KTX2 codec counts must equal the texture count");
+    }
+    {
+        std::string impossibleTextureMips = valid;
+        const std::string textureFields = "\t1\t512\t1\t0\t4\t4";
+        const size_t texture = impossibleTextureMips.rfind(textureFields);
+        expect(texture != std::string::npos,
+               "texture mip diagnostic fixture is present");
+        impossibleTextureMips.replace(
+            texture, textureFields.size(), "\t1\t512\t1\t0\t4\t14");
+        expect(!CharacterCandidateIndex::parse(
+                   impossibleTextureMips, candidate),
+               "KTX2 summary mip bounds respect the runtime ceiling");
+    }
+    {
+        const size_t provenance = valid.rfind("\t1\t43432d42592d342e30");
+        expect(provenance != std::string::npos,
+               "provenance fixture is present");
+        const std::string legacy = valid.substr(0u, provenance) +
+            "\t0\t\t\t\n";
+        CharacterCandidateIndex::Candidate legacyCandidate;
+        expect(CharacterCandidateIndex::parse(legacy, legacyCandidate) &&
+                   !legacyCandidate.provenancePresent &&
+                   legacyCandidate.licenseSpdx.empty(),
+               "legacy cache metadata absence is represented explicitly");
+        expect(!CharacterCandidateIndex::parse(
+                   valid.substr(0u, provenance) +
+                       "\t0\t4343302d312e30\t\t\n", candidate),
+               "absent provenance cannot carry hidden text");
+        expect(!CharacterCandidateIndex::parse(
+                   valid.substr(0u, provenance) +
+                       "\t1\t4343300a\t41\t42\n", candidate),
+               "control characters in provenance are rejected");
+    }
+    {
+        std::string legacyFields = v4Fields;
+        const size_t semanticIntent =
+            legacyFields.rfind("\t1\t0\t1\t43432d42592d342e30");
+        expect(semanticIntent != std::string::npos,
+               "semantic-intent fixture is present");
+        legacyFields.erase(semanticIntent, 4u);
+        CharacterCandidateIndex::Candidate legacyCandidate;
+        expect(CharacterCandidateIndex::parse(
+                   "mdkr-character-candidate-v3\n" + legacyFields + "\n",
+                   legacyCandidate) &&
+                   !legacyCandidate.semanticIntentPresent,
+               "version-three candidate summaries migrate with explicit unavailable intent");
+    }
+    if (failures != 0) return 1;
+    std::puts("character candidate index passed");
+    return 0;
+}

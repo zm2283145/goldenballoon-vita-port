@@ -78,7 +78,8 @@ ROUTE_KEYS = frozenset({
     "state_min_lap", "state_min_checkpoint",
     "state_max_position_p95", "state_max_position_error",
     "state_min_progress_agreement", "state_min_rng_agreement",
-    "state_max_velocity_ratio_deviation", "threshold_basis",
+    "state_max_velocity_ratio_deviation", "state_classification",
+    "threshold_basis",
     "native_cadence", "native_synth_fields", "native_event_divisor",
     "native_arms", "sync", "ares_phase_offsets",
     "native", "ares", "marks", "events",
@@ -311,6 +312,7 @@ def route_field(route: dict[str, Any], field: str) -> Any:
         "state_allow_legacy_pace_probe": int(
             bool(route.get("state_allow_legacy_pace_probe", False))
         ),
+        "state_classification": str(route.get("state_classification", "gate")),
         "native_allow_nonzero_exit": int(
             bool(route.get("native_allow_nonzero_exit", False))
         ),
@@ -373,6 +375,10 @@ def validate_route(route: dict[str, Any]) -> None:
     ):
         if field in route and not isinstance(route[field], bool):
             errors.append(f"{field} must be a boolean")
+    if "state_classification" in route and route["state_classification"] not in (
+        "gate", "diagnostic",
+    ):
+        errors.append('state_classification must be "gate" or "diagnostic"')
     if (
         "native_synth_fields" not in route
         or not is_integer(route["native_synth_fields"])
@@ -489,7 +495,11 @@ def validate_route(route: dict[str, Any]) -> None:
     if not isinstance(basis, dict):
         errors.append("threshold_basis must be an object")
         basis = {}
-    for key in sorted(set(basis) - set(numeric_thresholds)):
+    # state_classification is not a numeric threshold, but reclassifying a
+    # lane changes what its numbers mean, so it carries the same reviewable-
+    # basis requirement.
+    based_fields = set(numeric_thresholds) | {"state_classification"}
+    for key in sorted(set(basis) - based_fields):
         errors.append(f"threshold_basis[{key!r}] names no threshold")
     for field in numeric_thresholds:
         if field not in route:
@@ -497,6 +507,10 @@ def validate_route(route: dict[str, Any]) -> None:
         text = basis.get(field)
         if not isinstance(text, str) or not text.strip():
             errors.append(f"threshold_basis must explain {field}")
+    if "state_classification" in route:
+        text = basis.get("state_classification")
+        if not isinstance(text, str) or not text.strip():
+            errors.append("threshold_basis must explain state_classification")
     if is_integer(route.get("native_synth_fields")) and not (
         1 <= route["native_synth_fields"] <= 6
     ):

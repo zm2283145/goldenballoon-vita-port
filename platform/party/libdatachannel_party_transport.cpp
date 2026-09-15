@@ -1,6 +1,8 @@
 #include "libdatachannel_party_transport.h"
 #include "mozilla_ca_bundle.h"
 #include "party_event_queue.h"
+#include "party_callback_identity.h"
+#include "party_peer_setup_retry.h"
 #include "party_retry_policy.h"
 #include "party_webrtc_signaling.h"
 
@@ -229,6 +231,8 @@ struct Peer {
     uint32_t leaseGeneration = 0u;
     uint32_t connectionSequence = 0u;
     uint32_t peerGeneration = 0u;
+    bool initializing = true;
+    uint64_t admissionGeneration = 0u;
     bool failed = false;
     bool authenticated = false;
     /* F1 flood guard state, one per peer (native_party_host.h). */
@@ -257,6 +261,12 @@ struct Peer {
     std::shared_ptr<rtc::DataChannel> control;
 };
 
+struct ControllerAdmission {
+    MdkrNativePartyController controller;
+    MdkrPartyPeerSetupRetry setup;
+    uint64_t setupGeneration = 0u;
+};
+
 class TransportState final : public std::enable_shared_from_this<TransportState> {
 public:
     bool initialize(const std::string &serviceOrigin) {
@@ -273,11 +283,13 @@ public:
         return connect(true);
     }
 
-    bool command(const Json &message) {
+    bool command(const Json &message, uint64_t generation = 0u,
+                 const std::shared_ptr<Peer> &peer = {}) {
         std::shared_ptr<rtc::WebSocket> socket;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            if (shuttingDown_ || !socket_ || !socket_->isOpen()) return false;
+            if (!callbackCurrentLocked(generation, peer) ||
+                (peer && peer->failed) || !socket_ || !socket_->isOpen()) return false;
             socket = socket_;
         }
         const std::string encoded = message.dump();
@@ -439,59 +451,188 @@ public:
     }
 
 private:
-    void enqueue(MdkrPartyTransportEvent event) {
+    // State/event admission shares mutex_ with retirement. Check at the actual
+    // commit, not just callback entry before parsing or other out-of-lock work.
+    bool callbackCurrentLocked(uint64_t generation = 0u,
+                               const std::shared_ptr<Peer> &peer = {}) const {
+        bool peerMatches = true;
+        if (peer) {
+            const auto found = peers_.find(peer->id);
+            peerMatches = found != peers_.end() && found->second == peer;
+            peerMatches = peerMatches && mdkr_party_peer_initialization_current(
+                peer->initializing, generation_, peer->admissionGeneration);
+        }
+        return mdkr_party_callback_current(shuttingDown_, generation_, generation, peerMatches);
+    }
+
+    bool controllerCurrentLocked(const MdkrNativePartyController &controller) const {
+        const auto found = controllers_.find(controller.id);
+        return found != controllers_.end() &&
+            sameControllerLifecycle(found->second.controller, controller);
+    }
+
+    static bool sameControllerLifecycle(const MdkrNativePartyController &current,
+                                        const MdkrNativePartyController &observed) {
+        return current.phase != MdkrNativePartyControllerPhase::Pending &&
+            observed.phase != MdkrNativePartyControllerPhase::Pending &&
+            current.id == observed.id && current.seat == observed.seat &&
+            current.leaseGeneration == observed.leaseGeneration &&
+            current.connectionSequence == observed.connectionSequence &&
+            current.publicKey == observed.publicKey;
+    }
+
+    bool setupCurrentLocked(const MdkrNativePartyController &controller,
+                            uint64_t setupGeneration, uint64_t revision) const {
+        const auto found = controllers_.find(controller.id);
+        return !roomGone_ && callbackCurrentLocked(setupGeneration) &&
+            found != controllers_.end() &&
+            sameControllerLifecycle(found->second.controller, controller) &&
+            found->second.setupGeneration == setupGeneration &&
+            mdkr_party_setup_owned(found->second.setup, revision);
+    }
+
+    void reportSetupExhaustedLocked(ControllerAdmission &admission) noexcept {
+        if (!admission.setup.exhausted || admission.setup.exhaustionReported) return;
+        try {
+            MdkrPartyTransportEvent event;
+            event.type = MdkrPartyTransportEventType::CommandRejected;
+            event.controllerId = admission.controller.id;
+            event.message = kMdkrPartySetupExhaustedCopy;
+            queue_.push(std::move(event));
+            admission.setup.exhaustionReported = true;
+        } catch (...) { /* Keep the report pending if allocation failed. */ }
+    }
+
+    void enqueue(MdkrPartyTransportEvent event, uint64_t generation = 0u,
+                 const std::shared_ptr<Peer> &peer = {}) {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (shuttingDown_) return;
+        if (!callbackCurrentLocked(generation, peer) || (peer && peer->failed)) return;
         queue_.push(std::move(event));
     }
 
-    bool connect(bool create) {
-        rtc::WebSocket::Configuration configuration;
-        configuration.disableTlsVerification = false;
-        configuration.caCertificatePemFile = std::string(
-            reinterpret_cast<const char *>(kMdkrMozillaCaBundle),
-            static_cast<size_t>(kMdkrMozillaCaBundleLength));
-        configuration.connectionTimeout = std::chrono::seconds(10);
-        configuration.pingInterval = std::chrono::seconds(15);
-        configuration.maxOutstandingPings = 2;
-        configuration.maxMessageSize = kMaxSignalBytes;
-        configuration.protocols = {"gb-native-host-v1", "gb-control-v1",
-            create ? "gb-key." + identity_.publicKey() : "gb-host." + credential_};
-        auto socket = std::make_shared<rtc::WebSocket>(configuration);
-        uint64_t generation = 0u;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (shuttingDown_) return false;
-            generation = ++generation_;
-            socket_ = socket;
-            creating_ = create;
-            /* M7: the Worker's 512-message lifetime cap is per socket, so
-             * the replacement starts a fresh count -- which is also what
-             * re-arms the edge-shaped cycle trigger. */
-            socketSentMessages_ = 0u;
-            socketCyclePending_ = false;
-        }
-        const std::weak_ptr<TransportState> weak = shared_from_this();
-        socket->onOpen([weak, generation]() {
-            if (auto state = weak.lock()) state->socketOpened(generation);
-        });
-        socket->onError([weak, generation](const std::string &reason) {
-            if (auto state = weak.lock()) state->socketError(generation, reason);
-        });
-        socket->onClosed([weak, generation]() {
-            if (auto state = weak.lock()) state->socketClosed(generation);
-        });
-        socket->onMessage([weak, generation](rtc::message_variant message) {
-            if (auto state = weak.lock()) state->socketMessage(generation, message);
-        });
-        const std::string url = signalingUrl(
-            origin_, create ? "/api/party/native-create"
-                            : "/api/party/" + roomId_ + "/connect");
+    // Called on the connect caller, never from a socket callback. Retire only
+    // this attempt and invalidate its callbacks before closing outside mutex_.
+    // Error reporting is best effort: allocation failure must not hide the
+    // false return or strand the existing resume ladder.
+    void connectionAttemptFailed(uint64_t generation,
+                                 const std::shared_ptr<rtc::WebSocket> &socket,
+                                 bool published) noexcept {
+        std::shared_ptr<rtc::WebSocket> retired;
+        bool report = false;
+        bool recover = false;
+        uint64_t reportGeneration = 0u;
         try {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (generation != 0u && generation == generation_ && !shuttingDown_) {
+                    // open() can synchronously close before throwing. Preserve
+                    // that callback's verdict rather than advancing twice.
+                    const bool alreadyClosed = published && socket_ != socket;
+                    ++generation_;
+                    reportGeneration = generation_;
+                    if (!alreadyClosed) {
+                        retired = std::move(socket_);
+                        creating_ = false;
+                        socketSentMessages_ = 0u;
+                        socketCyclePending_ = false;
+                        resumeRejected_ = false;
+                        report = !roomGone_;
+                        if (!roomGone_ && !credential_.empty()) {
+                            reconnectAttempt_ = std::min(reconnectAttempt_ + 1u, 6u);
+                            const auto decision = mdkr_party_resume_decide(
+                                reconnectAttempt_, false, resumeRejections_,
+                                steadyNowMs(), firstResumeRejectedMs_);
+                            reconnectAt_ = Clock::now() +
+                                std::chrono::milliseconds(decision.delayMs);
+                            recover = true;
+                        }
+                    }
+                }
+            }
+            if (report) {
+                MdkrPartyTransportEvent event;
+                event.type = recover ? MdkrPartyTransportEventType::Recovering
+                                     : MdkrPartyTransportEventType::Error;
+                event.message = recover ? "Controller room reconnecting."
+                    : "Could not create a secure phone controller room.";
+                enqueue(std::move(event), reportGeneration);
+            }
+        } catch (...) { /* Recovery state precedes optional event allocation. */ }
+        // Callback registration itself may have failed halfway. Generation
+        // invalidation rejects callbacks that enter after this retirement.
+        if (socket) {
+            try { socket->close(); } catch (...) { /* destructor also retires */ }
+        }
+        retired.reset();
+    }
+
+    bool connect(bool create) noexcept {
+        std::shared_ptr<rtc::WebSocket> socket;
+        uint64_t generation = 0u;
+        bool published = false;
+        try {
+            rtc::WebSocket::Configuration configuration;
+            std::string url;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (shuttingDown_ || roomGone_ || socket_) return false;
+                generation = ++generation_;
+                // Snapshot callback-owned credentials/room data under the lock.
+                configuration.protocols = {"gb-native-host-v1", "gb-control-v1",
+                    create ? "gb-key." + identity_.publicKey() : "gb-host." + credential_};
+                url = signalingUrl(origin_, create ? "/api/party/native-create"
+                                                  : "/api/party/" + roomId_ + "/connect");
+            }
+            configuration.disableTlsVerification = false;
+            configuration.caCertificatePemFile = std::string(
+                reinterpret_cast<const char *>(kMdkrMozillaCaBundle),
+                static_cast<size_t>(kMdkrMozillaCaBundleLength));
+            configuration.connectionTimeout = std::chrono::seconds(10);
+            configuration.pingInterval = std::chrono::seconds(15);
+            configuration.maxOutstandingPings = 2;
+            configuration.maxMessageSize = kMaxSignalBytes;
+            socket = std::make_shared<rtc::WebSocket>(configuration);
+            const std::weak_ptr<TransportState> weak = shared_from_this();
+            socket->onOpen([weak, generation]() {
+                if (auto state = weak.lock()) state->socketOpened(generation);
+            });
+            socket->onError([weak, generation](const std::string &reason) {
+                if (auto state = weak.lock()) state->socketError(generation, reason);
+            });
+            socket->onClosed([weak, generation]() {
+                if (auto state = weak.lock()) state->socketClosed(generation);
+            });
+            socket->onMessage([weak, generation](rtc::message_variant message) {
+                if (auto state = weak.lock()) state->socketMessage(generation, message);
+            });
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (shuttingDown_ || roomGone_ || generation != generation_ || socket_) return false;
+                socket_ = socket;
+                published = true;
+                creating_ = create;
+                // M7 headroom belongs to the newly published socket only.
+                socketSentMessages_ = 0u;
+                socketCyclePending_ = false;
+            }
             socket->open(url);
+            bool stillOwned = false;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                stillOwned = !shuttingDown_ && !roomGone_ &&
+                    generation == generation_ && socket_ == socket;
+            }
+            if (!stillOwned) {
+                // Public callers serialize open/shutdown. Keep this lower-level
+                // transaction defensive too: a pre-open close of a Closed RTC
+                // socket does not prevent its subsequent open() from starting.
+                // Preserve any onClosed verdict and retire outside the lock.
+                connectionAttemptFailed(generation, socket, published);
+                return false;
+            }
             return true;
         } catch (...) {
-            socketError(generation, "secure_socket_open_failed");
+            connectionAttemptFailed(generation, socket, published);
             return false;
         }
     }
@@ -518,7 +659,7 @@ private:
              * onOpen callback, never once per tick. */
             for (const auto &entry : peers_) {
                 const std::shared_ptr<Peer> &peer = entry.second;
-                if (peer->failed || peer->gaveUp) continue;
+                if (!callbackCurrentLocked(generation, peer) || peer->failed || peer->gaveUp) continue;
                 const MdkrPartyRetryDecision decision = mdkr_party_retry_decide(
                     steadyNowMs(), peer->offerSentMs, peer->offerAttempts,
                     peer->authenticated, peer->protocolMismatch,
@@ -526,7 +667,7 @@ private:
                 if (decision.resendOffer) pendingOffers.push_back(peer);
             }
         }
-        for (const auto &peer : pendingOffers) resendOffer(peer);
+        for (const auto &peer : pendingOffers) resendOffer(peer, generation);
     }
 
     void socketError(uint64_t generation, const std::string &reason) {
@@ -563,17 +704,19 @@ private:
             MdkrPartyTransportEvent event;
             event.type = MdkrPartyTransportEventType::Error;
             event.message = "Could not create a secure phone controller room.";
-            enqueue(std::move(event));
+            enqueue(std::move(event), generation);
         }
     }
 
     void socketClosed(uint64_t generation) {
         bool recover = false;
         bool gone = false;
+        std::shared_ptr<rtc::WebSocket> retired;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (generation != generation_ || shuttingDown_) return;
-            socket_.reset();
+            retired = std::move(socket_);
+            ++generation_; // also revokes callbacks already parsing this socket
             /* I4: once the terminal verdict is in, later stray closes have
              * nothing to add -- and must not enqueue a Recovering/Error
              * that would overwrite the host's RoomEnded surface. */
@@ -613,19 +756,20 @@ private:
                     recover = true;
                 }
             }
+            MdkrPartyTransportEvent event;
+            if (gone) {
+                event.type = MdkrPartyTransportEventType::RoomGone;
+                event.message = kMdkrPartyRoomEndedCopy;
+            } else {
+                event.type = recover ? MdkrPartyTransportEventType::Recovering
+                                     : MdkrPartyTransportEventType::Error;
+                event.message = recover
+                    ? "Controller room reconnecting."
+                    : "Phone controller room closed before it was ready.";
+            }
+            // Already locked: do not call enqueue(), which acquires mutex_.
+            queue_.push(std::move(event));
         }
-        MdkrPartyTransportEvent event;
-        if (gone) {
-            event.type = MdkrPartyTransportEventType::RoomGone;
-            event.message = kMdkrPartyRoomEndedCopy;
-        } else {
-            event.type = recover ? MdkrPartyTransportEventType::Recovering
-                                 : MdkrPartyTransportEventType::Error;
-            event.message = recover
-                ? "Controller room reconnecting."
-                : "Phone controller room closed before it was ready.";
-        }
-        enqueue(std::move(event));
     }
 
     void tick() {
@@ -637,9 +781,25 @@ private:
         bool giveUpSocketHealthy = false;
         std::shared_ptr<rtc::WebSocket> cycleSocket;
         std::vector<std::shared_ptr<Peer>> ping;
-        std::vector<std::shared_ptr<Peer>> expired;
-        std::vector<std::shared_ptr<Peer>> timedOut;
-        std::vector<std::pair<MdkrNativePartyController, unsigned>> recreations;
+        struct ExpiredPing {
+            std::shared_ptr<Peer> peer;
+            Clock::time_point sentAt;
+            uint32_t nonce;
+        };
+        std::vector<ExpiredPing> expired;
+        struct PeerRecreation {
+            MdkrNativePartyController controller;
+            unsigned attempts;
+            uint64_t offerSentMs;
+            std::shared_ptr<Peer> expectedPeer;
+        };
+        std::vector<PeerRecreation> recreations;
+        struct SetupRetry {
+            MdkrNativePartyController controller;
+            uint64_t generation;
+            uint64_t revision;
+        };
+        std::vector<SetupRetry> setupRetries;
         const Clock::time_point now = Clock::now();
         const uint64_t nowMs = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -665,7 +825,7 @@ private:
             }
             for (const auto &entry : peers_) {
                 const std::shared_ptr<Peer> &peer = entry.second;
-                if (peer->failed) continue;
+                if (!callbackCurrentLocked(0u, peer) || peer->failed) continue;
                 if (!peer->authenticated) {
                     /* C3: an unanswered offer never makes the PeerConnection
                      * reach Failed (no ICE start without a remote
@@ -680,17 +840,25 @@ private:
                             /*socketOpen=*/false);
                         if (decision.giveUp) {
                             peer->gaveUp = true;
-                            timedOut.push_back(peer);
                             try {
                                 giveUpSocketHealthy =
                                     socket_ && socket_->isOpen();
                             } catch (...) {
                                 giveUpSocketHealthy = false;
                             }
+                            // The verdict and publication are one locked commit:
+                            // a ready callback cannot authenticate this same peer
+                            // between the decision and an obsolete timeout event.
+                            MdkrPartyTransportEvent event;
+                            event.type = MdkrPartyTransportEventType::CommandRejected;
+                            event.controllerId = peer->id;
+                            event.message = mdkr_party_give_up_copy(giveUpSocketHealthy);
+                            queue_.push(std::move(event));
                         } else if (decision.recreatePeer) {
                             const auto known = controllers_.find(peer->id);
                             if (known != controllers_.end()) {
-                                recreations.emplace_back(known->second, peer->offerAttempts);
+                                recreations.push_back({known->second.controller, peer->offerAttempts,
+                                                       peer->offerSentMs, peer});
                             }
                         }
                     }
@@ -699,7 +867,7 @@ private:
                 if (!peer->control) continue;
                 if (peer->pingOutstandingAt != Clock::time_point{} &&
                     now - peer->pingOutstandingAt >= std::chrono::seconds(15)) {
-                    expired.push_back(peer);
+                    expired.push_back({peer, peer->pingOutstandingAt, peer->pingNonce});
                 } else if (peer->pingOutstandingAt == Clock::time_point{} &&
                            peer->nextPingAt != Clock::time_point{} &&
                            now >= peer->nextPingAt) {
@@ -707,6 +875,16 @@ private:
                     peer->pingOutstandingAt = now;
                     peer->nextPingAt = now + std::chrono::seconds(5);
                     ping.push_back(peer);
+                }
+            }
+            for (auto &entry : controllers_) {
+                auto &admission = entry.second;
+                if (roomGone_ || !callbackCurrentLocked(admission.setupGeneration) ||
+                    admission.setupGeneration != generation_) continue;
+                reportSetupExhaustedLocked(admission);
+                if (mdkr_party_setup_due(admission.setup, nowMs)) {
+                    setupRetries.push_back({admission.controller, admission.setupGeneration,
+                                            admission.setup.revision});
                 }
             }
         }
@@ -721,26 +899,16 @@ private:
             try { cycleSocket->close(); } catch (...) {}
         }
         if (reconnect) (void)connect(false);
-        for (const auto &peer : timedOut) {
-            /* Fail-closed but scoped: this is an explicit per-controller
-             * error, not a room-wide one -- other peers and the room itself
-             * are untouched. Reused CommandRejected shape (reason:
-             * connect_timeout) rather than a new event type, since the host
-             * already renders CommandRejected.message without needing to
-             * know the controller it came from. F4: with the room socket
-             * healthy through the whole ladder, the specific diagnosis --
-             * the network blocks phone-to-display connections -- replaces
-             * the generic remedy (mdkr_party_give_up_copy). */
-            MdkrPartyTransportEvent event;
-            event.type = MdkrPartyTransportEventType::CommandRejected;
-            event.controllerId = peer->id;
-            event.message = mdkr_party_give_up_copy(giveUpSocketHealthy);
-            enqueue(std::move(event));
-        }
         for (const auto &recreation : recreations) {
-            createPeer(recreation.first, /*forceRecreate=*/true, recreation.second);
+            createPeer(recreation.controller, /*forceRecreate=*/true, recreation.attempts,
+                       0u, recreation.expectedPeer, recreation.offerSentMs);
         }
-        for (const auto &peer : expired) peerDisconnected(peer, true);
+        for (const auto &retry : setupRetries) {
+            createPeer(retry.controller, false, 0u, retry.generation, {}, 0u, retry.revision);
+        }
+        for (const auto &expiration : expired) {
+            peerDisconnected(expiration.peer, true, 0u, expiration.sentAt, expiration.nonce);
+        }
         for (const auto &peer : ping) {
             try {
                 if (!peer->control->isOpen() || !peer->control->send(
@@ -764,26 +932,26 @@ private:
         if (value.is_discarded() || !value.is_object()) return;
         try {
             const std::string type = value.value("type", std::string{});
-            if (type == "native_bootstrap") handleBootstrap(value);
-            else if (type == "room_state") handleRoomState(value);
-            else if (type == "controller_hello") handleHello(value);
-            else if (type == "webrtc_answer") handleAnswer(value);
-            else if (type == "webrtc_ice") handleIce(value);
+            if (type == "native_bootstrap") handleBootstrap(value, generation);
+            else if (type == "room_state") handleRoomState(value, generation);
+            else if (type == "controller_hello") handleHello(value, generation);
+            else if (type == "webrtc_answer") handleAnswer(value, generation);
+            else if (type == "webrtc_ice") handleIce(value, generation);
             else if (type == "host_command_result") {
                 MdkrPartyTransportEvent event;
                 if (commandRejectionFromSignal(value, event)) {
-                    enqueue(std::move(event));
+                    enqueue(std::move(event), generation);
                 }
             }
         } catch (...) {
             MdkrPartyTransportEvent event;
             event.type = MdkrPartyTransportEventType::Error;
             event.message = "Controller service sent an invalid room update.";
-            enqueue(std::move(event));
+            enqueue(std::move(event), generation);
         }
     }
 
-    void handleBootstrap(const Json &value) {
+    void handleBootstrap(const Json &value, uint64_t signalGeneration) {
         std::string room;
         std::string credential;
         std::string url;
@@ -802,7 +970,7 @@ private:
             MdkrPartyTransportEvent event;
             event.type = MdkrPartyTransportEventType::Error;
             event.message = "Controller room bootstrap was invalid.";
-            enqueue(std::move(event));
+            enqueue(std::move(event), signalGeneration);
             return;
         }
         /* Optional field, validated separately: a missing or malformed list
@@ -810,7 +978,7 @@ private:
          * bootstrap (the service's own TURN degradation contract). */
         std::vector<MdkrPartyIceServer> iceServers = iceServersFromSignal(value);
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!credential_.empty()) return;
+        if (!callbackCurrentLocked(signalGeneration) || !credential_.empty()) return;
         roomId_ = std::move(room);
         credential_ = std::move(credential);
         inviteUrl_ = std::move(url);
@@ -820,7 +988,15 @@ private:
         iceServers_ = std::move(iceServers);
     }
 
-    bool parseRoom(const Json &value, MdkrPartyTransportRoomState &room) {
+    struct ParsedInviteCache {
+        bool replace = false;
+        std::string url;
+        std::string code;
+        uint64_t expiresAtMs = 0u;
+    };
+
+    bool parseRoom(const Json &value, MdkrPartyTransportRoomState &room,
+                   ParsedInviteCache &cache, uint64_t signalGeneration) {
         uint64_t transition = 0u;
         uint64_t generation = 0u;
         uint64_t wallExpiry = 0u;
@@ -842,6 +1018,7 @@ private:
             expiresAtSteadyMs > steadyNowMs();
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            if (!callbackCurrentLocked(signalGeneration)) return false;
             if (room.inviteGeneration == inviteGeneration_) {
                 room.controllerUrl = inviteUrl_;
                 room.fallbackCode = fallbackCode_;
@@ -851,11 +1028,10 @@ private:
         if (safeString(value, "controllerUrl", room.controllerUrl, 2048u, false) &&
             safeString(value, "fallbackCode", room.fallbackCode, 6u, false)) {
             if (value.contains("controllerUrl") && value.contains("fallbackCode")) {
-                std::lock_guard<std::mutex> lock(mutex_);
-                inviteUrl_ = room.controllerUrl;
-                fallbackCode_ = room.fallbackCode;
-                inviteGeneration_ = room.inviteGeneration;
-                inviteExpiresAtMs_ = expiresAtSteadyMs;
+                cache.replace = true;
+                cache.url = room.controllerUrl;
+                cache.code = room.fallbackCode;
+                cache.expiresAtMs = expiresAtSteadyMs;
             }
         } else return false;
         for (const Json &item : value["controllers"]) {
@@ -905,26 +1081,57 @@ private:
         return true;
     }
 
-    void handleRoomState(const Json &value) {
+    void handleRoomState(const Json &value, uint64_t signalGeneration) {
         MdkrPartyTransportEvent event;
         event.type = MdkrPartyTransportEventType::RoomState;
-        if (!parseRoom(value, event.room)) {
+        ParsedInviteCache cache;
+        if (!parseRoom(value, event.room, cache, signalGeneration)) {
             event.type = MdkrPartyTransportEventType::Error;
             event.message = "Controller service sent an invalid signed room update.";
-            enqueue(std::move(event));
+            enqueue(std::move(event), signalGeneration);
             return;
         }
         std::vector<std::shared_ptr<Peer>> retired;
+        const std::vector<MdkrNativePartyController> controllers = event.room.controllers;
+        std::map<std::string, ControllerAdmission> roster;
+        std::map<std::string, MdkrNativePartyController> rosterControllers;
+        for (const auto &controller : controllers) {
+            roster[controller.id].controller = controller;
+            rosterControllers[controller.id] = controller;
+        }
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            controllers_.clear();
+            if (!callbackCurrentLocked(signalGeneration)) return;
+            if (cache.replace) {
+                inviteUrl_.swap(cache.url);
+                fallbackCode_.swap(cache.code);
+                inviteGeneration_ = event.room.inviteGeneration;
+                inviteExpiresAtMs_ = cache.expiresAtMs;
+            }
+            for (auto &entry : roster) {
+                auto &admission = entry.second;
+                const auto old = controllers_.find(entry.first);
+                if (old != controllers_.end() &&
+                    sameControllerLifecycle(old->second.controller, admission.controller)) {
+                    admission.setup = old->second.setup;
+                    if (old->second.setupGeneration != signalGeneration) {
+                        mdkr_party_setup_reauthorize(admission.setup, steadyNowMs());
+                    }
+                }
+                admission.setupGeneration = signalGeneration;
+            }
+            controllers_.swap(roster);
             for (const auto &controller : event.room.controllers) {
-                controllers_[controller.id] = controller;
                 const auto found = peers_.find(controller.id);
+                const auto previous = roster.find(controller.id);
+                const bool freshLifecycle = previous == roster.end() ||
+                    !sameControllerLifecycle(previous->second.controller, controller);
                 if (found != peers_.end()) {
-                    if (found->second->seat != controller.seat ||
+                    if (freshLifecycle || found->second->seat != controller.seat ||
                         found->second->leaseGeneration != controller.leaseGeneration ||
-                        found->second->connectionSequence != controller.connectionSequence) {
+                        found->second->connectionSequence != controller.connectionSequence ||
+                        !mdkr_party_peer_initialization_current(found->second->initializing,
+                            generation_, found->second->admissionGeneration)) {
                         retired.push_back(found->second);
                         peers_.erase(found);
                     }
@@ -943,44 +1150,51 @@ private:
              * whole life (it was cleared only at shutdown). An id outside
              * the roster has nothing left to vouch for: a phone that
              * returns says controller_hello again. */
-            (void)mdkr_party_prune_signaled_ids(signaled_, controllers_);
+            (void)mdkr_party_prune_signaled_ids(signaled_, rosterControllers);
             /* P2.1: a confirmation is scoped to a live seat; an id that left
              * the roster has nothing left to trust, so drop it the same way. */
-            (void)mdkr_party_prune_signaled_ids(confirmed_, controllers_);
+            (void)mdkr_party_prune_signaled_ids(confirmed_, rosterControllers);
+            // Publish the roster with its state commit, before another socket
+            // epoch or peer callback can interleave an event from newer state.
+            queue_.push(std::move(event));
         }
         for (const auto &peer : retired) {
             if (peer->connection) peer->connection->close();
         }
-        const std::vector<MdkrNativePartyController> controllers = event.room.controllers;
-        enqueue(std::move(event));
         for (const auto &controller : controllers) {
             bool shouldCreate = false;
             {
                 std::lock_guard<std::mutex> lock(mutex_);
+                if (!callbackCurrentLocked(signalGeneration)) return;
                 shouldCreate = signaled_.count(controller.id) != 0u &&
                     controller.phase != MdkrNativePartyControllerPhase::Pending &&
                     peers_.count(controller.id) == 0u;
             }
-            if (shouldCreate) createPeer(controller);
+            if (shouldCreate) createPeer(controller, false, 0u, signalGeneration);
         }
     }
 
-    void handleHello(const Json &value) {
+    void handleHello(const Json &value, uint64_t signalGeneration) {
         std::string id;
         if (!safeString(value, "controllerId", id, 64u) || id.empty()) return;
         MdkrNativePartyController controller;
         bool foundController = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            if (!callbackCurrentLocked(signalGeneration)) return;
             signaled_.insert(id);
             const auto found = controllers_.find(id);
             if (found != controllers_.end()) {
-                controller = found->second;
+                controller = found->second.controller;
+                if (found->second.setupGeneration != signalGeneration) {
+                    mdkr_party_setup_reauthorize(found->second.setup, steadyNowMs());
+                    found->second.setupGeneration = signalGeneration;
+                }
                 foundController = true;
             }
         }
         if (foundController && controller.phase != MdkrNativePartyControllerPhase::Pending) {
-            createPeer(controller);
+            createPeer(controller, false, 0u, signalGeneration);
         }
     }
 
@@ -992,185 +1206,293 @@ private:
      * new Peer object. Every other call site (handleRoomState, handleHello,
      * peerDisconnected's existing reconnect-after-drop path) leaves both at
      * their defaults, exactly as before this policy existed. */
-    void createPeer(const MdkrNativePartyController &controller,
-                    bool forceRecreate = false, unsigned carriedOfferAttempts = 0u) {
-        uint32_t peerGeneration = 0u;
-        std::vector<MdkrPartyIceServer> iceServers;
-        std::shared_ptr<rtc::PeerConnection> stale;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            iceServers = iceServers_;
-            const auto found = peers_.find(controller.id);
-            if (found != peers_.end() && !found->second->failed && !forceRecreate) return;
-            if (found != peers_.end()) {
-                /* A retry-driven recreation targets a peer that never
-                 * reached Failed -- that is the defect: an unanswered offer
-                 * leaves the PeerConnection sitting healthy forever, unlike
-                 * the already-failed path this early-return also serves,
-                 * whose connection is already closed at the RTC layer by
-                 * the time onStateChange got here. Close it explicitly
-                 * before the fresh one takes its place. */
-                if (!found->second->failed) stale = found->second->connection;
-                peers_.erase(found);
-            }
-            peerGeneration = ++peerGeneration_;
-            if (peerGeneration == 0u) peerGeneration = ++peerGeneration_;
-        }
-        if (stale) stale->close();
-        rtc::Configuration configuration;
-        for (const MdkrPartyIceServer &server : resolvedIceServers(iceServers)) {
-            try {
-                /* Credentials are TURN-scoped even here at the last hop: a
-                 * non-turn/turns url carrying them is skipped, never handed
-                 * to the ICE agent (iceServersFromSignal already refuses
-                 * such lists, matching the page validators). */
-                const bool relay = server.url.rfind("turn:", 0u) == 0u ||
-                    server.url.rfind("turns:", 0u) == 0u;
-                if (!server.username.empty() && !relay) continue;
-                rtc::IceServer resolved(server.url);
-                if (!server.username.empty()) {
-                    resolved.username = server.username;
-                    resolved.password = server.credential;
-                }
-                configuration.iceServers.push_back(std::move(resolved));
-            } catch (...) {
-                /* One URL libdatachannel refuses must not cost the rest. */
-            }
-        }
-        if (configuration.iceServers.empty()) {
-            configuration.iceServers.emplace_back(kFallbackStunUrl);
-        }
-        configuration.maxMessageSize = kMaxSignalBytes;
-        auto peer = std::make_shared<Peer>();
-        peer->id = controller.id;
-        peer->seat = controller.seat;
-        peer->leaseGeneration = controller.leaseGeneration;
-        peer->connectionSequence = controller.connectionSequence;
-        peer->peerGeneration = peerGeneration;
-        peer->offerAttempts = carriedOfferAttempts;
+    void retirePeerCandidate(const std::shared_ptr<Peer> &peer,
+                             const std::shared_ptr<rtc::PeerConnection> &connection) noexcept {
         try {
-            peer->connection = std::make_shared<rtc::PeerConnection>(configuration);
-        } catch (...) { return; }
-        const std::weak_ptr<TransportState> weak = shared_from_this();
-        const std::weak_ptr<Peer> weakPeer = peer;
-        peer->connection->onLocalDescription([weak, weakPeer](rtc::Description description) {
-            if (auto state = weak.lock()) {
-                if (auto current = weakPeer.lock()) {
-                    /* This is the offer going out for real (the first one,
-                     * or a fresh one from a retry-driven recreation) -- a
-                     * new attempt, so mark it as one. Resends of this same
-                     * description on socket reopen go through resendOffer()
-                     * instead and do not call onLocalDescription again. */
-                    state->markOfferSent(current, /*freshAttempt=*/true);
-                    state->sendPeerSignal(current,
-                        Json{{"type", "webrtc_offer"}, {"to", current->id},
-                            {"peerGeneration", current->peerGeneration},
-                            {"sdp", {{"type", description.typeString()},
-                                {"sdp", std::string(description)}}}});
-                }
-            }
-        });
-        peer->connection->onLocalCandidate([weak, weakPeer](rtc::Candidate candidate) {
-            if (auto state = weak.lock()) {
-                if (auto current = weakPeer.lock()) state->sendPeerSignal(current,
-                    Json{{"type", "webrtc_ice"}, {"to", current->id},
-                        {"peerGeneration", current->peerGeneration},
-                        {"candidate", {{"candidate", std::string(candidate)},
-                            {"sdpMid", candidate.mid()}}}});
-            }
-        });
-        peer->connection->onStateChange([weak, weakPeer](rtc::PeerConnection::State state) {
-            if (state == rtc::PeerConnection::State::Disconnected ||
-                state == rtc::PeerConnection::State::Failed ||
-                state == rtc::PeerConnection::State::Closed) {
-                if (auto owner = weak.lock()) {
-                    if (auto current = weakPeer.lock()) owner->peerDisconnected(current,
-                        state == rtc::PeerConnection::State::Failed);
-                }
-            }
-        });
-        /* The peer must be registered BEFORE the first createDataChannel:
-         * creating the channel is what makes libdatachannel set the local
-         * description, and onLocalDescription fires as soon as it does.
-         * markOfferSent and sendPeerSignal both look this peer up in peers_
-         * and silently return when it is absent, so registering only after
-         * the channels exist (as this function originally did) raced the
-         * callback -- the first offer was discarded unsent, offerSentMs
-         * stayed 0, and the retry ladder (which reads offerSentMs == 0 as
-         * "no offer to retry yet") could never rescue the stranded phone. */
-        {
             std::lock_guard<std::mutex> lock(mutex_);
-            if (shuttingDown_) {
-                peer->connection->close();
-                return;
-            }
-            peers_[peer->id] = peer;
-        }
-        rtc::DataChannelInit stateConfiguration;
-        stateConfiguration.reliability.unordered = true;
-        stateConfiguration.reliability.maxRetransmits = 0u;
-        try {
-            peer->state = peer->connection->createDataChannel(
-                "mdkr-pad-state-v1", stateConfiguration);
-            peer->control = peer->connection->createDataChannel("mdkr-pad-control-v1");
+            const auto                  found = peer ? peers_.find(peer->id) : peers_.end();
+            if (found != peers_.end() && found->second == peer) peers_.erase(found);
         } catch (...) {
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                const auto found = peers_.find(peer->id);
-                if (found != peers_.end() && found->second == peer) {
-                    peers_.erase(found);
-                }
-            }
-            peer->connection->close();
-            return;
         }
-        peer->state->onMessage([weak, weakPeer](rtc::message_variant message) {
-            if (auto owner = weak.lock()) {
-                if (auto current = weakPeer.lock()) owner->stateMessage(current, message);
+        if (connection) {
+            try {
+                connection->close();
+            } catch (...) {
             }
-        });
-        peer->state->onClosed([weak, weakPeer]() {
-            if (auto owner = weak.lock()) {
-                if (auto current = weakPeer.lock()) owner->peerDisconnected(current, true);
-            }
-        });
-        peer->control->onOpen([weak, weakPeer]() {
-            if (auto owner = weak.lock()) {
-                if (auto current = weakPeer.lock()) owner->controlOpened(current);
-            }
-        });
-        peer->control->onMessage([weak, weakPeer](rtc::message_variant message) {
-            if (auto owner = weak.lock()) {
-                if (auto current = weakPeer.lock()) owner->controlMessage(current, message);
-            }
-        });
-        peer->control->onClosed([weak, weakPeer]() {
-            if (auto owner = weak.lock()) {
-                if (auto current = weakPeer.lock()) owner->peerDisconnected(current, true);
-            }
-        });
+        }
     }
 
-    void peerDisconnected(const std::shared_ptr<Peer> &peer, bool failed) {
-        MdkrNativePartyController controller;
-        bool recover = false;
-        {
+    void peerSetupFailed(const MdkrNativePartyController &controller,
+                         uint64_t setupGeneration, uint64_t revision,
+                         const std::shared_ptr<Peer> &peer,
+                         const std::shared_ptr<rtc::PeerConnection> &connection) noexcept {
+        try {
             std::lock_guard<std::mutex> lock(mutex_);
-            const auto found = peers_.find(peer->id);
-            if (found == peers_.end() || found->second != peer) return;
-            peer->failed = peer->failed || failed;
-            const auto known = controllers_.find(peer->id);
-            if (failed && known != controllers_.end() &&
-                known->second.phase != MdkrNativePartyControllerPhase::Pending) {
-                controller = known->second;
-                recover = true;
+            if (setupCurrentLocked(controller, setupGeneration, revision)) {
+                auto &admission = controllers_.find(controller.id)->second;
+                if (peer) {
+                    peer->failed = true;
+                    admission.setup.offerAttempts = std::max(admission.setup.offerAttempts,
+                                                              peer->offerAttempts);
+                }
+                mdkr_party_setup_failed(admission.setup, revision, steadyNowMs());
+                reportSetupExhaustedLocked(admission);
+            }
+        } catch (...) { /* Retirement still runs if optional reporting fails. */ }
+        // No RTC close/destruction while holding the state mutex.
+        retirePeerCandidate(peer, connection);
+    }
+
+    void createPeer(const MdkrNativePartyController &controller,
+                    bool                             forceRecreate        = false,
+                    unsigned                         carriedOfferAttempts = 0u,
+                    uint64_t                         signalGeneration     = 0u,
+                    const std::shared_ptr<Peer>     &expectedPeer         = {},
+                    uint64_t                         expectedOfferSentMs  = 0u,
+                    uint64_t                         expectedSetupRevision = 0u) noexcept {
+        std::shared_ptr<Peer>                peer;
+        std::shared_ptr<rtc::PeerConnection> connection;
+        std::shared_ptr<Peer>                retired;
+        std::shared_ptr<Peer>                priorPeer;
+        uint64_t setupGeneration = 0u;
+        uint64_t setupRevision = 0u;
+        try {
+            std::vector<MdkrPartyIceServer> iceServers;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (!callbackCurrentLocked(signalGeneration) || roomGone_ ||
+                    !controllerCurrentLocked(controller)) return;
+                const auto found = peers_.find(controller.id);
+                if (!mdkr_party_retry_owner_current(forceRecreate,
+                                                    expectedPeer && found != peers_.end() && found->second == expectedPeer,
+                                                    expectedPeer && !expectedPeer->authenticated && !expectedPeer->failed &&
+                                                        !expectedPeer->protocolMismatch && !expectedPeer->gaveUp,
+                                                    expectedPeer && expectedPeer->offerAttempts == carriedOfferAttempts &&
+                                                        expectedPeer->offerSentMs == expectedOfferSentMs)) return;
+                if (found != peers_.end() && !found->second->failed && !forceRecreate &&
+                    mdkr_party_peer_initialization_current(found->second->initializing,
+                                                           generation_,
+                                                           found->second->admissionGeneration)) return;
+                auto &admission = controllers_.find(controller.id)->second;
+                if (expectedSetupRevision != 0u &&
+                    (admission.setup.revision != expectedSetupRevision ||
+                     !mdkr_party_setup_due(admission.setup, steadyNowMs()))) return;
+                if (admission.setupGeneration != generation_) {
+                    mdkr_party_setup_reauthorize(admission.setup, steadyNowMs());
+                    admission.setupGeneration = generation_;
+                }
+                if (found != peers_.end()) priorPeer = found->second;
+                if (priorPeer && priorPeer->authenticated) admission.setup.offerAttempts = 0u;
+                carriedOfferAttempts = std::max(carriedOfferAttempts, admission.setup.offerAttempts);
+                if (priorPeer && !priorPeer->authenticated) {
+                    carriedOfferAttempts = std::max(carriedOfferAttempts, priorPeer->offerAttempts);
+                }
+                admission.setup.offerAttempts = carriedOfferAttempts;
+                if (++setupRevision_ == 0u) ++setupRevision_;
+                setupRevision = mdkr_party_setup_begin(admission.setup, steadyNowMs(), setupRevision_);
+                if (setupRevision == 0u) {
+                    reportSetupExhaustedLocked(admission);
+                    return;
+                }
+                setupGeneration = generation_;
+                if (found != peers_.end()) {
+                    // Retire the retry's exact owner in its admission lock.
+                    // It cannot authenticate between that decision and later
+                    // replacement; its RTC object remains owned outside lock.
+                    retired = found->second;
+                    peers_.erase(found);
+                }
+                // Reservation precedes even the first fallible Peer/config copy.
+                iceServers = iceServers_;
+            }
+            if (retired && retired->connection) {
+                try { retired->connection->close(); } catch (...) {}
+            }
+            peer = std::make_shared<Peer>();
+            peer->id = controller.id;
+            peer->seat = controller.seat;
+            peer->leaseGeneration = controller.leaseGeneration;
+            peer->connectionSequence = controller.connectionSequence;
+            peer->offerAttempts = carriedOfferAttempts;
+            peer->admissionGeneration = setupGeneration;
+            bool reservationCurrent = false;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                const auto found = peers_.find(controller.id);
+                reservationCurrent = setupCurrentLocked(controller, setupGeneration, setupRevision) &&
+                    found == peers_.end();
+                if (reservationCurrent) {
+                    peers_.emplace(peer->id, peer);
+                    peer->peerGeneration = ++peerGeneration_;
+                    if (peer->peerGeneration == 0u) peer->peerGeneration = ++peerGeneration_;
+                }
+            }
+            if (!reservationCurrent) {
+                peerSetupFailed(controller, setupGeneration, setupRevision, peer, connection);
+                return;
+            }
+            rtc::Configuration configuration;
+            for (const MdkrPartyIceServer &server : resolvedIceServers(iceServers)) {
+                try {
+                    /* Credentials are TURN-scoped even here at the last hop: a
+                     * non-turn/turns url carrying them is skipped, never handed
+                     * to the ICE agent (iceServersFromSignal already refuses
+                     * such lists, matching the page validators). */
+                    const bool relay = server.url.rfind("turn:", 0u) == 0u ||
+                                       server.url.rfind("turns:", 0u) == 0u;
+                    if (!server.username.empty() && !relay) continue;
+                    rtc::IceServer resolved(server.url);
+                    if (!server.username.empty()) {
+                        resolved.username = server.username;
+                        resolved.password = server.credential;
+                    }
+                    configuration.iceServers.push_back(std::move(resolved));
+                } catch (...) {
+                    /* One URL libdatachannel refuses must not cost the rest. */
+                }
+            }
+            if (configuration.iceServers.empty()) {
+                configuration.iceServers.emplace_back(kFallbackStunUrl);
+            }
+            configuration.maxMessageSize = kMaxSignalBytes;
+            connection                   = std::make_shared<rtc::PeerConnection>(configuration);
+            bool admitted                = false;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                admitted = callbackCurrentLocked(signalGeneration, peer) &&
+                           setupCurrentLocked(controller, setupGeneration, setupRevision) && !peer->failed;
+                if (admitted) peer->connection = connection;
+            }
+            if (!admitted) {
+                peerSetupFailed(controller, setupGeneration, setupRevision, peer, connection);
+                return;
+            }
+            const std::weak_ptr<TransportState> weak     = shared_from_this();
+            const std::weak_ptr<Peer>           weakPeer = peer;
+            peer->connection->onLocalDescription([weak, weakPeer](rtc::Description description) {
+                if (auto state = weak.lock()) {
+                    if (auto current = weakPeer.lock()) {
+                        /* This is the offer going out for real (the first one,
+                         * or a fresh one from a retry-driven recreation) -- a
+                         * new attempt, so mark it as one. Resends of this same
+                         * description on socket reopen go through resendOffer()
+                         * instead and do not call onLocalDescription again. */
+                        state->markOfferSent(current, /*freshAttempt=*/true);
+                        state->sendPeerSignal(current,
+                                              Json{{"type", "webrtc_offer"}, {"to", current->id}, {"peerGeneration", current->peerGeneration}, {"sdp", {{"type", description.typeString()}, {"sdp", std::string(description)}}}});
+                    }
+                }
+            });
+            peer->connection->onLocalCandidate([weak, weakPeer](rtc::Candidate candidate) {
+                if (auto state = weak.lock()) {
+                    if (auto current = weakPeer.lock()) state->sendPeerSignal(current,
+                                                                              Json{{"type", "webrtc_ice"}, {"to", current->id}, {"peerGeneration", current->peerGeneration}, {"candidate", {{"candidate", std::string(candidate)}, {"sdpMid", candidate.mid()}}}});
+                }
+            });
+            peer->connection->onStateChange([weak, weakPeer](rtc::PeerConnection::State state) {
+                if (state == rtc::PeerConnection::State::Disconnected ||
+                    state == rtc::PeerConnection::State::Failed ||
+                    state == rtc::PeerConnection::State::Closed) {
+                    if (auto owner = weak.lock()) {
+                        if (auto current = weakPeer.lock()) owner->peerDisconnected(current,
+                                                                                    state == rtc::PeerConnection::State::Failed);
+                    }
+                }
+            });
+            /* The peer must be registered BEFORE the first createDataChannel:
+             * creating the channel is what makes libdatachannel set the local
+             * description, and onLocalDescription fires as soon as it does.
+             * markOfferSent and sendPeerSignal both look this peer up in peers_
+             * and silently return when it is absent, so registering only after
+             * the channels exist (as this function originally did) raced the
+             * callback -- the first offer was discarded unsent, offerSentMs
+             * stayed 0, and the retry ladder (which reads offerSentMs == 0 as
+             * "no offer to retry yet") could never rescue the stranded phone. */
+            rtc::DataChannelInit stateConfiguration;
+            stateConfiguration.reliability.unordered      = true;
+            stateConfiguration.reliability.maxRetransmits = 0u;
+            auto stateChannel                             = connection->createDataChannel("mdkr-pad-state-v1", stateConfiguration);
+            auto controlChannel                           = connection->createDataChannel("mdkr-pad-control-v1");
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                admitted = callbackCurrentLocked(signalGeneration, peer) &&
+                           setupCurrentLocked(controller, setupGeneration, setupRevision) && !peer->failed;
+                if (admitted) {
+                    peer->state   = stateChannel;
+                    peer->control = controlChannel;
+                }
+            }
+            if (!admitted) {
+                peerSetupFailed(controller, setupGeneration, setupRevision, peer, connection);
+                return;
+            }
+            peer->state->onMessage([weak, weakPeer](rtc::message_variant message) {
+                if (auto owner = weak.lock()) {
+                    if (auto current = weakPeer.lock()) owner->stateMessage(current, message);
+                }
+            });
+            peer->state->onClosed([weak, weakPeer]() {
+                if (auto owner = weak.lock()) {
+                    if (auto current = weakPeer.lock()) owner->peerDisconnected(current, true);
+                }
+            });
+            peer->control->onOpen([weak, weakPeer]() {
+                if (auto owner = weak.lock()) {
+                    if (auto current = weakPeer.lock()) owner->controlOpened(current);
+                }
+            });
+            peer->control->onMessage([weak, weakPeer](rtc::message_variant message) {
+                if (auto owner = weak.lock()) {
+                    if (auto current = weakPeer.lock()) owner->controlMessage(current, message);
+                }
+            });
+            peer->control->onClosed([weak, weakPeer]() {
+                if (auto owner = weak.lock()) {
+                    if (auto current = weakPeer.lock()) owner->peerDisconnected(current, true);
+                }
+            });
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                admitted = callbackCurrentLocked(signalGeneration, peer) &&
+                           setupCurrentLocked(controller, setupGeneration, setupRevision) && !peer->failed;
+                if (admitted) {
+                    peer->initializing = false;
+                    mdkr_party_setup_succeeded(controllers_.find(controller.id)->second.setup, setupRevision);
+                }
+            }
+            if (!admitted) peerSetupFailed(controller, setupGeneration, setupRevision, peer, connection);
+        } catch (...) {
+            peerSetupFailed(controller, setupGeneration, setupRevision, peer, connection);
+            if (retired && retired->connection) {
+                try { retired->connection->close(); } catch (...) {}
             }
         }
+    }
+
+    void peerDisconnected(const std::shared_ptr<Peer> &peer, bool failed,
+                          uint64_t signalGeneration = 0u,
+                          Clock::time_point expectedPingAt = {}, uint32_t expectedPingNonce = 0u) {
+        MdkrNativePartyController controller;
+        bool recover = false;
         MdkrPartyTransportEvent event;
         event.type = MdkrPartyTransportEventType::ControllerDisconnected;
         event.controllerId = peer->id;
-        enqueue(std::move(event));
-        if (recover) createPeer(controller);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!callbackCurrentLocked(signalGeneration, peer) || peer->failed) return;
+            if (!mdkr_party_ping_timeout_current(expectedPingAt != Clock::time_point{},
+                    peer->pingOutstandingAt == expectedPingAt &&
+                        peer->pingNonce == expectedPingNonce)) return;
+            peer->failed = peer->failed || failed;
+            const auto known = controllers_.find(peer->id);
+            if (failed && !peer->initializing && known != controllers_.end() &&
+                known->second.controller.phase != MdkrNativePartyControllerPhase::Pending) {
+                controller = known->second.controller;
+                recover = true;
+            }
+            queue_.push(std::move(event));
+        }
+        if (recover) createPeer(controller, false, 0u, signalGeneration);
     }
 
     void stateMessage(const std::shared_ptr<Peer> &peer,
@@ -1183,25 +1505,28 @@ private:
         event.controllerId = peer->id;
         const auto *first = reinterpret_cast<const uint8_t *>(bytes.data());
         event.packet.assign(first, first + bytes.size());
-        enqueue(std::move(event));
+        enqueue(std::move(event), 0u, peer);
     }
 
     void controlOpened(const std::shared_ptr<Peer> &peer) {
         try {
-            peer->control->send(Json{{"type", "host_ready"}, {"protocol", kProtocol},
+            std::shared_ptr<rtc::DataChannel> control;
+            bool trusted;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (!callbackCurrentLocked(0u, peer) || peer->failed || !peer->control) return;
+                control = peer->control;
+                trusted = confirmed_.count(peer->id) != 0u;
+            }
+            control->send(Json{{"type", "host_ready"}, {"protocol", kProtocol},
                 {"seat", peer->seat}, {"leaseGeneration", peer->leaseGeneration},
                 {"connectionSequence", peer->connectionSequence}}.dump());
             /* P2.1: a phone reconnecting to an already-confirmed seat is told
              * it is trusted the moment its control channel is back, so it
              * resumes without a second human step (confirm() also sends this
              * the instant the human presses Words Match on a live channel). */
-            bool trusted;
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                trusted = confirmed_.count(peer->id) != 0u;
-            }
             if (trusted) {
-                peer->control->send(Json{{"type", "seat_confirmed"},
+                control->send(Json{{"type", "seat_confirmed"},
                     {"protocol", kProtocol}}.dump());
             }
         } catch (...) { peerDisconnected(peer, true); }
@@ -1220,22 +1545,21 @@ private:
                     value, peer->id, peer->connectionSequence, ready)) {
                 const bool matched = ready.type ==
                     MdkrPartyTransportEventType::ControllerConnected;
-                enqueue(std::move(ready));
+                std::shared_ptr<rtc::DataChannel> control;
                 {
                     std::lock_guard<std::mutex> lock(mutex_);
-                    const auto found = peers_.find(peer->id);
-                    if (found != peers_.end() && found->second == peer) {
-                        peer->protocolMismatch = !matched;
-                        if (matched) {
-                            peer->authenticated = true;
-                            peer->pingOutstandingAt = Clock::time_point{};
-                            peer->nextPingAt =
-                                Clock::now() + std::chrono::seconds(5);
-                        }
+                    if (!callbackCurrentLocked(0u, peer) || peer->failed) return;
+                    peer->protocolMismatch = !matched;
+                    if (matched) {
+                        peer->authenticated = true;
+                        peer->pingOutstandingAt = Clock::time_point{};
+                        peer->nextPingAt = Clock::now() + std::chrono::seconds(5);
                     }
+                    control = peer->control;
+                    queue_.push(std::move(ready));
                 }
-                if (matched) {
-                    peer->control->send(Json{{"type", "controller_ready_ack"}}.dump());
+                if (matched && control) {
+                    control->send(Json{{"type", "controller_ready_ack"}}.dump());
                 }
                 /* I2 mismatch: no ack and no authentication, but the peer is
                  * left standing for the mismatch's whole lifetime -- the
@@ -1255,12 +1579,15 @@ private:
                  * advance past the compare screen; the auto test the phone
                  * runs on seat_confirmed then completes at once. */
                 bool trusted;
+                std::shared_ptr<rtc::DataChannel> control;
                 {
                     std::lock_guard<std::mutex> lock(mutex_);
+                    if (!callbackCurrentLocked(0u, peer) || peer->failed) return;
                     trusted = confirmed_.count(peer->id) != 0u;
+                    control = peer->control;
                 }
-                if (trusted) {
-                    peer->control->send(Json{{"type", "input_test_ack"},
+                if (trusted && control) {
+                    control->send(Json{{"type", "input_test_ack"},
                         {"nonce", value["nonce"]}}.dump());
                 }
             } else if (value.value("type", std::string{}) == "controller_rename" &&
@@ -1280,9 +1607,8 @@ private:
                         std::chrono::duration_cast<std::chrono::milliseconds>(
                             Clock::now().time_since_epoch()).count());
                     std::lock_guard<std::mutex> lock(mutex_);
-                    const auto found = peers_.find(peer->id);
-                    admitted = found != peers_.end() &&
-                        found->second == peer && peer->authenticated &&
+                    admitted = callbackCurrentLocked(0u, peer) &&
+                        !peer->failed && peer->authenticated &&
                         mdkr_party_rename_admit(peer->renameGate, name, nowMs);
                 }
                 if (admitted) {
@@ -1290,7 +1616,7 @@ private:
                     renamed.type = MdkrPartyTransportEventType::ControllerRenamed;
                     renamed.controllerId = peer->id;
                     renamed.message = std::move(name);
-                    enqueue(std::move(renamed));
+                    enqueue(std::move(renamed), 0u, peer);
                 }
             } else if (value.value("type", std::string{}) == "pong" &&
                        value.value("protocol", 0u) == kProtocol &&
@@ -1300,9 +1626,8 @@ private:
                 unsigned rttMs = 0u;
                 {
                     std::lock_guard<std::mutex> lock(mutex_);
-                    const auto found = peers_.find(peer->id);
                     if (nonce <= std::numeric_limits<uint32_t>::max() &&
-                        found != peers_.end() && found->second == peer &&
+                        callbackCurrentLocked(0u, peer) && !peer->failed &&
                         peer->pingOutstandingAt != Clock::time_point{} &&
                         static_cast<uint32_t>(nonce) == peer->pingNonce) {
                         /* RTT: this pong closes the outstanding ping.
@@ -1322,13 +1647,13 @@ private:
                     sample.type = MdkrPartyTransportEventType::ControllerRtt;
                     sample.controllerId = peer->id;
                     sample.rttMs = rttMs;
-                    enqueue(std::move(sample));
+                    enqueue(std::move(sample), 0u, peer);
                 }
             }
         } catch (...) { /* Malformed peer control cannot escape its callback. */ }
     }
 
-    void handleAnswer(const Json &value) {
+    void handleAnswer(const Json &value, uint64_t signalGeneration) {
         std::string id;
         uint64_t peerGeneration = 0u;
         if (!safeString(value, "controllerId", id, 64u) ||
@@ -1340,19 +1665,24 @@ private:
         if (!safeString(value["sdp"], "sdp", sdp, 60u * 1024u) ||
             !safeString(value["sdp"], "type", type, 16u) || type != "answer") return;
         std::shared_ptr<Peer> peer;
+        std::shared_ptr<rtc::PeerConnection> connection;
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            if (!callbackCurrentLocked(signalGeneration)) return;
             const auto found = peers_.find(id);
             if (found == peers_.end() ||
-                found->second->peerGeneration != static_cast<uint32_t>(peerGeneration)) return;
+                found->second->peerGeneration != static_cast<uint32_t>(peerGeneration) ||
+                !callbackCurrentLocked(signalGeneration, found->second) ||
+                found->second->failed || !found->second->connection) return;
             peer = found->second;
+            connection = peer->connection;
         }
-        try { peer->connection->setRemoteDescription(rtc::Description(sdp, type)); }
+        try { connection->setRemoteDescription(rtc::Description(sdp, type)); }
         catch (...) {
-            peerDisconnected(peer, true);
+            peerDisconnected(peer, true, signalGeneration);
             return;
         }
-        emitPhrase(peer, sdp);
+        emitPhrase(peer, sdp, signalGeneration);
     }
 
     /*
@@ -1370,13 +1700,20 @@ private:
      * channel's fingerprints.
      */
     void emitPhrase(const std::shared_ptr<Peer> &peer,
-                    const std::string &answerSdp) {
+                    const std::string &answerSdp, uint64_t signalGeneration) {
         const std::string controllerFingerprint =
             canonicalSdpFingerprint(answerSdp);
+        std::shared_ptr<rtc::PeerConnection> connection;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!callbackCurrentLocked(signalGeneration, peer) || peer->failed) return;
+            connection = peer->connection;
+        }
+        if (!connection) return;
         std::string hostSdp;
         try {
             const std::optional<rtc::Description> description =
-                peer->connection->localDescription();
+                connection->localDescription();
             if (description) hostSdp = std::string(*description);
         } catch (...) {
             return;
@@ -1386,9 +1723,10 @@ private:
         std::string room;
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            if (!callbackCurrentLocked(signalGeneration, peer) || peer->failed) return;
             const auto found = controllers_.find(peer->id);
             if (found != controllers_.end()) {
-                controllerKey = found->second.publicKey;
+                controllerKey = found->second.controller.publicKey;
             }
             room = roomId_;
         }
@@ -1406,10 +1744,10 @@ private:
         event.type = MdkrPartyTransportEventType::ControllerPhrase;
         event.controllerId = peer->id;
         event.message = std::move(phrase);
-        enqueue(std::move(event));
+        enqueue(std::move(event), signalGeneration, peer);
     }
 
-    void handleIce(const Json &value) {
+    void handleIce(const Json &value, uint64_t signalGeneration) {
         std::string id;
         uint64_t peerGeneration = 0u;
         if (!safeString(value, "controllerId", id, 64u) ||
@@ -1420,25 +1758,26 @@ private:
         std::string mid;
         if (!safeString(value["candidate"], "candidate", candidate, 4096u) ||
             !safeString(value["candidate"], "sdpMid", mid, 64u)) return;
-        std::shared_ptr<Peer> peer;
+        std::shared_ptr<rtc::PeerConnection> connection;
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            if (!callbackCurrentLocked(signalGeneration)) return;
             const auto found = peers_.find(id);
             if (found == peers_.end() ||
-                found->second->peerGeneration != static_cast<uint32_t>(peerGeneration)) return;
-            peer = found->second;
+                found->second->peerGeneration != static_cast<uint32_t>(peerGeneration) ||
+                !callbackCurrentLocked(signalGeneration, found->second) ||
+                found->second->failed || !found->second->connection) return;
+            connection = found->second->connection;
         }
-        try { peer->connection->addRemoteCandidate(rtc::Candidate(candidate, mid)); }
+        try { connection->addRemoteCandidate(rtc::Candidate(candidate, mid)); }
         catch (...) { /* One malformed candidate cannot tear down a healthy peer. */ }
     }
 
-    void sendPeerSignal(const std::shared_ptr<Peer> &peer, const Json &value) {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            const auto found = peers_.find(peer->id);
-            if (found == peers_.end() || found->second != peer || peer->failed) return;
-        }
-        (void)command(value);
+    void sendPeerSignal(const std::shared_ptr<Peer> &peer, const Json &value,
+                        uint64_t signalGeneration = 0u) {
+        // Capture the socket and admit this peer in command's SAME lock. A
+        // separate precheck could otherwise forward an old peer to a new room.
+        (void)command(value, signalGeneration, peer);
     }
 
     /* C3 retry bookkeeping. freshAttempt=true is a genuinely new offer (the
@@ -1450,27 +1789,39 @@ private:
      * socket happens to be down right now -- that is exactly the case
      * resendOffer() exists to recover from once the socket comes back, so
      * the record must survive a send that never reached the wire. */
-    void markOfferSent(const std::shared_ptr<Peer> &peer, bool freshAttempt) {
+    void markOfferSent(const std::shared_ptr<Peer> &peer, bool freshAttempt,
+                       uint64_t signalGeneration = 0u) {
         std::lock_guard<std::mutex> lock(mutex_);
-        const auto found = peers_.find(peer->id);
-        if (found == peers_.end() || found->second != peer) return;
+        if (!callbackCurrentLocked(signalGeneration, peer) || peer->failed) return;
         peer->offerSentMs = steadyNowMs();
         if (freshAttempt) peer->offerAttempts++;
+        const auto admission = controllers_.find(peer->id);
+        if (admission != controllers_.end()) {
+            admission->second.setup.offerAttempts = std::max(
+                admission->second.setup.offerAttempts, peer->offerAttempts);
+        }
     }
 
     /* Resends the peer's existing local description verbatim -- no
      * createOffer(), no renegotiation, same peerGeneration -- because
      * C3 is a Worker-relay drop, not anything wrong with the offer. */
-    void resendOffer(const std::shared_ptr<Peer> &peer) {
+    void resendOffer(const std::shared_ptr<Peer> &peer, uint64_t signalGeneration) {
+        std::shared_ptr<rtc::PeerConnection> connection;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!callbackCurrentLocked(signalGeneration, peer) || peer->failed) return;
+            connection = peer->connection;
+        }
+        if (!connection) return;
         std::optional<rtc::Description> description;
-        try { description = peer->connection->localDescription(); }
+        try { description = connection->localDescription(); }
         catch (...) { return; }
         if (!description) return;
-        markOfferSent(peer, /*freshAttempt=*/false);
+        markOfferSent(peer, /*freshAttempt=*/false, signalGeneration);
         sendPeerSignal(peer, Json{{"type", "webrtc_offer"}, {"to", peer->id},
             {"peerGeneration", peer->peerGeneration},
             {"sdp", {{"type", description->typeString()},
-                {"sdp", std::string(*description)}}}});
+                {"sdp", std::string(*description)}}}}, signalGeneration);
     }
 
     std::mutex mutex_;
@@ -1480,7 +1831,7 @@ private:
     uint64_t loggedDroppedPadPackets_ = 0u;
     std::shared_ptr<rtc::WebSocket> socket_;
     std::map<std::string, std::shared_ptr<Peer>> peers_;
-    std::map<std::string, MdkrNativePartyController> controllers_;
+    std::map<std::string, ControllerAdmission> controllers_;
     std::set<std::string> signaled_;
     /* P2.1 compare-then-trust: controllerIds the host has confirmed (Words
      * Match). Only a confirmed controller is told seat_confirmed and has its
@@ -1501,6 +1852,7 @@ private:
     uint64_t inviteExpiresAtMs_ = 0u;
     uint64_t generation_ = 0u;
     uint32_t peerGeneration_ = 0u;
+    uint64_t setupRevision_ = 0u;
     unsigned reconnectAttempt_ = 0u;
     Clock::time_point reconnectAt_{};
     /* I4 resume classification (mdkr_party_resume_decide): the per-attempt
@@ -1530,15 +1882,23 @@ public:
     bool available() const override { return true; }
     const char *unavailableReason() const override { return ""; }
 
-    bool open(const std::string &serviceOrigin) override {
+    bool open(const std::string &serviceOrigin) noexcept override {
         if (state_) return false;
-        state_ = std::make_shared<TransportState>();
-        if (!state_->initialize(serviceOrigin)) {
-            state_->shutdown();
-            state_.reset();
-            return false;
+        std::shared_ptr<TransportState> candidate;
+        try {
+            candidate = std::make_shared<TransportState>();
+            if (candidate->initialize(serviceOrigin)) {
+                state_ = std::move(candidate);
+                return true;
+            }
+        } catch (...) {
+            // Construction, identity/config allocation and callback setup are
+            // fallible. The UI receives the same ordinary unavailable result.
         }
-        return true;
+        if (candidate) {
+            try { candidate->shutdown(); } catch (...) { /* release local owner */ }
+        }
+        return false;
     }
 
     bool approve(const std::string &id, unsigned seat) override {
@@ -1601,6 +1961,10 @@ private:
 
 std::unique_ptr<MdkrPartyTransport> mdkr_create_native_party_transport() {
     return std::make_unique<LibDatachannelPartyTransport>();
+}
+
+std::shared_future<void> mdkr_native_party_cleanup() {
+    return rtc::Cleanup();
 }
 
 std::string mdkr_party_signaling_url_for_test(

@@ -10,21 +10,26 @@
 #
 # Usage:
 #   tools/release/verify_provenance.sh --dist DIR --version VER --commit SHA \
-#       [--require KEY=VALUE]... [--out-checksums FILE] [--out-manifest FILE]
+#       [--require KEY=VALUE]... [--require-asset BASENAME]... \
+#       [--out-checksums FILE] [--out-manifest FILE]
 #
 # For every Golden-Balloon-* entry in DIR (excluding generated SHA256SUMS/
-# manifest and the .provenance.json sidecars) requires a sidecar
-# "<asset>.provenance.json" whose recorded sha256 == the file on disk, version ==
-# VER, and commit == SHA. Enumeration is deliberately NOT version-scoped: a
-# stray artifact from another version sitting in the same directory is a
-# publication hazard, not something to glob past. Rejects (nonzero) any missing
-# sidecar, extra/renamed asset with no sidecar, orphan sidecar naming an absent
-# asset, cross-version artifact, or any digest / version / commit mismatch.
+# manifest and sidecars) requires "<asset>.sha256" with the exact digest and
+# basename plus "<asset>.provenance.json" whose recorded sha256 == the file on
+# disk, version == VER, and commit == SHA. Enumeration is deliberately NOT
+# version-scoped: a stray artifact from another version sitting in the same
+# directory is a publication hazard, not something to glob past. Rejects
+# (nonzero) any missing
+# sidecar, extra/renamed asset with no sidecars, orphan sidecar naming an absent
+# asset, cross-version artifact, or any checksum / digest / version / commit
+# mismatch.
 # --require adds further exact sidecar field assertions (for example
-# --require platform=macos --require macos_signing=ad-hoc-unsigned) so a
-# platform lane asserts its own fields through this one implementation instead
-# of an inline copy. On success emits SHA256SUMS + a consolidated manifest.json
-# for publication.
+# --require platform=macos --require macos_signing=ad-hoc-unsigned and
+# --require phone_party=partyless) so a platform lane asserts its own fields
+# through this one implementation instead of an inline copy. On success emits
+# SHA256SUMS + a consolidated manifest.json for publication. --require-asset
+# makes platform-set completeness explicit: validating the artifacts that happen
+# to be present is not evidence that every artifact the lane must ship exists.
 #
 # Runs where python3 is available (maintainer macOS + the ctest host); the
 # producer (stamp_provenance.sh) is python-free so it can run in the msys2 CI job.
@@ -32,6 +37,7 @@ set -euo pipefail
 
 dist=""; version=""; commit=""; out_checksums=""; out_manifest=""
 required_fields=()
+required_assets=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dist) dist="$2"; shift 2 ;;
@@ -40,9 +46,15 @@ while [[ $# -gt 0 ]]; do
     --require)
       [[ "$2" == *=* ]] || { echo "ERROR: --require expects KEY=VALUE (got '$2')." >&2; exit 2; }
       required_fields+=("$2"); shift 2 ;;
+    --require-asset)
+      [[ $# -ge 2 && -n "$2" && "$2" != */* ]] || {
+        echo "ERROR: --require-asset expects one artifact basename (got '${2:-}')." >&2
+        exit 2
+      }
+      required_assets+=("$2"); shift 2 ;;
     --out-checksums) out_checksums="$2"; shift 2 ;;
     --out-manifest) out_manifest="$2"; shift 2 ;;
-    -h|--help) echo "Usage: $0 --dist DIR --version VER --commit SHA [--require KEY=VALUE]... [--out-checksums FILE] [--out-manifest FILE]"; exit 0 ;;
+    -h|--help) echo "Usage: $0 --dist DIR --version VER --commit SHA [--require KEY=VALUE]... [--require-asset BASENAME]... [--out-checksums FILE] [--out-manifest FILE]"; exit 0 ;;
     *) echo "ERROR: unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -91,8 +103,19 @@ for f in "$dist"/Golden-Balloon-*; do
       ;;
   esac
 done
-orphans=("$dist"/Golden-Balloon-*.provenance.json)
+provenance_sidecars=("$dist"/Golden-Balloon-*.provenance.json)
+checksum_sidecars=("$dist"/Golden-Balloon-*.sha256)
 shopt -u nullglob
+
+# A verifier that sees one valid Linux artifact must not silently bless a lane
+# whose second promised artifact disappeared. Check the caller's exact required
+# basenames before the generic zero-assets error so the missing identity is
+# named directly.
+for required_asset in "${required_assets[@]}"; do
+  if [[ ! -f "$dist/$required_asset" ]]; then
+    err "required release artifact is missing: $required_asset"
+  fi
+done
 
 if [[ ${#assets[@]} -eq 0 ]]; then
   # Report what was actually found first: a directory holding only stale or
@@ -106,10 +129,16 @@ if [[ ${#assets[@]} -eq 0 ]]; then
 fi
 
 # Every sidecar must name an existing asset (catch orphan/stale sidecars).
-if [[ ${#orphans[@]} -gt 0 ]]; then
-  for s in "${orphans[@]}"; do
+if [[ ${#provenance_sidecars[@]} -gt 0 ]]; then
+  for s in "${provenance_sidecars[@]}"; do
     named="${s%.provenance.json}"
     [[ -f "$named" ]] || err "orphan provenance sidecar names a missing asset: $(basename "$s")"
+  done
+fi
+if [[ ${#checksum_sidecars[@]} -gt 0 ]]; then
+  for s in "${checksum_sidecars[@]}"; do
+    named="${s%.sha256}"
+    [[ -f "$named" ]] || err "orphan checksum sidecar names a missing asset: $(basename "$s")"
   done
 fi
 
@@ -117,12 +146,22 @@ verified=()
 for a in "${assets[@]}"; do
   base="$(basename "$a")"
   sidecar="${a}.provenance.json"
+  checksum_sidecar="${a}.sha256"
+  actual="$(sha256_of "$a")"
+  [[ -n "$actual" ]] || { echo "ERROR: no sha256 tool (sha256sum/shasum) available." >&2; exit 2; }
+  if [[ ! -f "$checksum_sidecar" ]]; then
+    err "asset has no checksum sidecar (missing/renamed/substituted): $base"
+  else
+    checksum_record="$(<"$checksum_sidecar")"
+    expected_checksum="$actual  $base"
+    if [[ "$checksum_record" != "$expected_checksum" ]]; then
+      err "checksum sidecar mismatch for $base"
+    fi
+  fi
   if [[ ! -f "$sidecar" ]]; then
     err "asset has no provenance sidecar (missing/renamed/substituted): $base"
     continue
   fi
-  actual="$(sha256_of "$a")"
-  [[ -n "$actual" ]] || { echo "ERROR: no sha256 tool (sha256sum/shasum) available." >&2; exit 2; }
   if ASSET="$base" ACTUAL="$actual" WANT_VERSION="$version" WANT_COMMIT="$commit" \
      python3 - "$sidecar" ${required_fields[@]+"${required_fields[@]}"} <<'PY'
 import json, os, sys

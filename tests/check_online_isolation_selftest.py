@@ -22,7 +22,7 @@ For EACH gate it asserts BOTH directions:
   * CLEAN inputs are ACCEPTED -- and, when a real build-off/ tree is present, the
     ACTUAL OFF artifacts (anchor object hashes, the mdkr64 nm symbol table, the
     absence of every beta TU object) are fed through the real predicates and must
-    read clean, so the positive path is proven on the true release build, not a
+    read clean, so the positive path is proven on the true OFF build, not a
     mock.
   * DELIBERATELY-BROKEN inputs are DETECTED -- a flipped anchor pin, a present
     beta TU object, an nm line naming each beta LEAK_SYMBOL, and a failed/empty
@@ -102,7 +102,7 @@ def _check_tu_gate(notes: list[str]) -> int | None:
     benign = guard.leaked_tu_objects({"menu.c.o", "main_app.cpp.o", "thread3_main.c.o"})
     if benign:
         return fail(f"TU gate false-positived on legitimate OFF objects {benign} "
-                    f"-- it would block every clean release build")
+                    f"-- it would block every clean OFF build")
     # Positive on the REAL tree, when available. Scoped to the ENGINE object dir
     # (via the guard's own present_beta_tu_basenames) so a FULLY-built build-off
     # -- which legitimately compiles party_link.c into mdkr_party_link_test's own
@@ -143,7 +143,7 @@ def _check_symbol_gate(notes: list[str]) -> int | None:
         return fail("symbol gate false-positived on a benign OFF symbol table "
                     "(incl. the pre-existing unconditional mdkr_online_race_results_"
                     "* / roster infra that legitimately links into OFF) -- it would "
-                    "block every clean release build")
+                    "block every clean OFF build")
     # M4 anti-vacuity guard: failed/empty nm must be rejected; a real table ok.
     if guard.nm_vacuity_error(0, benign) is not None:
         return fail("nm_vacuity_error rejected a healthy nm table (exit 0, symbols "
@@ -169,7 +169,7 @@ def _check_symbol_gate(notes: list[str]) -> int | None:
         if real:
             return fail(f"the REAL build-off/mdkr64 links {len(real)} beta online "
                         f"symbol(s): {real[:8]} -- an isolation leak into the "
-                        f"release engine")
+                        f"beta-OFF engine")
         notes.append("symbol gate: real build-off/mdkr64 nm table links zero beta "
                      "online symbols")
     else:
@@ -204,7 +204,7 @@ def main() -> int:
         "present) and DETECTED deliberately-broken inputs: a flipped anchor pin, a "
         "present beta engine TU object, an nm line naming every beta LEAK_SYMBOL, "
         "and a failed/empty nm. A silently-dead or inverted gate would fail this "
-        "lane; the release-engine offline-isolation gate is proven to actually fire."
+        "lane; the beta-OFF isolation gate is proven to actually fire."
     )
     return 0
 

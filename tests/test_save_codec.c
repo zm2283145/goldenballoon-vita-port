@@ -144,6 +144,32 @@ static void test_slot_patch_and_preservation(void) {
                  MDKR_SAVE_IMAGE_SIZE - MDKR_SAVE_SLOT_SIZE) == 0);
 }
 
+static void test_all_trophy_fields_round_trip(void) {
+    MdkrSaveDocument base = blank_document();
+    MdkrSaveDocument changed;
+    MdkrSaveDocument decoded;
+    MdkrSavePatch patch;
+    uint8_t encoded[MDKR_SAVE_IMAGE_SIZE];
+    unsigned trophies;
+
+    memset(&patch, 0, sizeof(patch));
+    patch.slot_mask = 1;
+    patch.slots[0].fields = MDKR_SLOT_PATCH_CREATE | MDKR_SLOT_PATCH_TROPHIES;
+    /* Exercise both bits of Future Funland, not only the four-world unlock
+     * mask. Every representable medal combination survives the real codec. */
+    for (trophies = 0; trophies < 1024; trophies++) {
+        patch.slots[0].values.trophies = (uint16_t) trophies;
+        CHECK(mdkr_save_apply(&base, &patch, &changed) == MDKR_SAVE_OK);
+        CHECK(mdkr_save_encode(&changed, encoded, sizeof(encoded)) == MDKR_SAVE_OK);
+        CHECK(mdkr_save_decode(encoded, sizeof(encoded), &decoded) == MDKR_SAVE_OK);
+        CHECK(decoded.block_status[0] == MDKR_SAVE_BLOCK_VALID);
+        CHECK(decoded.slots[0].trophies == trophies);
+        CHECK(memcmp(encoded + MDKR_SAVE_SLOT_SIZE,
+                     base.bytes + MDKR_SAVE_SLOT_SIZE,
+                     MDKR_SAVE_IMAGE_SIZE - MDKR_SAVE_SLOT_SIZE) == 0);
+    }
+}
+
 static void test_course_status_contract(void) {
     static const uint8_t expected_status[8] = {
         0, /* none */
@@ -429,6 +455,7 @@ int main(void) {
     test_course_status_contract();
     test_exact_size_and_empty();
     test_slot_patch_and_preservation();
+    test_all_trophy_fields_round_trip();
     test_noncanonical_and_invalid_slot();
     test_config_canonical_byte_order();
     test_atomic_failure_and_recovery();

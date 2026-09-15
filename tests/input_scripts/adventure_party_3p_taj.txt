@@ -1,0 +1,49 @@
+# Adventure Party Taj vehicle transform (AP-11) -- THREE players.
+#
+# Admission prologue is byte-identical to adventure_party_3p_admit.txt (routes to
+# the central hub with a 3-seat session). Then a NON-HOST (seat 1 / player two)
+# summons Taj by driving into him (MDKR_AP_SEAT_ROUTE="1=-197,193", his hub
+# position), and the HOST (player one) navigates Taj's menu to change the whole
+# party's vehicle: CHANGE VEHICLE -> HOVERCRAFT. taj_menu_loop reads
+# input_pressed(PLAYER_ONE), so the menu is host-owned regardless of who summoned.
+# After the transform the host backs out of the reopened menu (B) so Taj teleports
+# away and the shared dialogue is released (R10).
+
+# --- Title: reveal Start/Options, then Character Select ---
+1250 START 4
+1330 START 4
+
+# --- PLAYER SELECT: players two and three join on their own controllers ---
+1450 A 4 P2
+1490 A 4 P3
+
+# --- Each player confirms their own character ---
+1580 A 4 P1
+1640 A 4 P2
+1700 A 4 P3
+
+# --- "OK?" accept -> GAME_SELECT ---
+1800 A 4 P1
+
+# --- GAME_SELECT: Adventure One is option 0 -> FILE_SELECT ---
+2050 A 4 P1
+
+# --- FILE_SELECT: host (player one) resumes the started slot 0 ---
+2300 A 4 P1
+
+# --- In the hub (loaded ~2319): seat 1 drives into Taj (~tick 2356) and the
+#     shared dialogue latches. Host navigates the reopened Taj menu. Wide,
+#     patient spacing: each press only registers once the menu reaches the next
+#     state (the menu waits for input), so the exact greet/approach frame does
+#     not have to be pinned. ---
+
+# ROOT menu: A selects CHANGE VEHICLE (option 0) -> VEHICLE SELECT
+2600 A 6 P1
+# VEHICLE SELECT: default highlight is CAR(0); DOWN -> HOVERCRAFT(1)
+2720 DOWN 6 P1
+# A confirms HOVERCRAFT -> whole-party transform
+2840 A 6 P1
+# After the transform the menu reopens; B backs out -> Taj teleports away ->
+# dialogue released.
+3200 B 6 P1
+3320 B 6 P1

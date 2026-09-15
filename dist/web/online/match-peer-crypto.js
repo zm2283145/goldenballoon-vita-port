@@ -5,9 +5,19 @@ export const MATCH_PEER_HEADER_BYTES = 52;
 export const MATCH_PEER_ENVELOPE_BYTES = 132;
 export const MATCH_PEER_PAYLOAD_INPUT = 0;
 export const MATCH_PEER_PAYLOAD_PREFLIGHT_FRAGMENT = 1;
+export const MATCH_PEER_PAYLOAD_INPUT_REPAIR_REQUEST = 2;
+export const MATCH_PEER_PAYLOAD_INPUT_REPAIR_ANSWER = 3;
+export const MATCH_PEER_PAYLOAD_TYPE_MAX = MATCH_PEER_PAYLOAD_INPUT_REPAIR_ANSWER;
+// The three data channels one peer connection carries. A lane is key-derivation
+// input, so each channel owns a separate key and therefore a separate monotonic
+// sequence space.
+export const MATCH_PEER_LANE_STATE = 0;
+export const MATCH_PEER_LANE_CONTROL = 1;
+export const MATCH_PEER_LANE_AUTHORITY = 2;
+export const MATCH_PEER_LANE_MAX = MATCH_PEER_LANE_AUTHORITY;
 
 const MAGIC = new Uint8Array([0x4d, 0x50, 0x45, 0x31]);
-const KEY_DOMAIN = new TextEncoder().encode("golden-balloon-match-input-key-v2");
+const KEY_DOMAIN = new TextEncoder().encode("golden-balloon-match-lane-key-v3");
 // v2 is the committed-transcript protocol: round 1 publishes a hiding
 // commitment to each endpoint's public key, round 2 opens it. A v1 peer derives
 // a different digest and therefore a different key, so the versions cannot
@@ -16,9 +26,11 @@ const TRANSCRIPT_DOMAIN = new TextEncoder().encode(
   "golden-balloon-match-peer-transcript-v2");
 const COMMIT_DOMAIN = new TextEncoder().encode(
   "golden-balloon-match-peer-commit-v1");
-// Envelope protocol version. v1 predates the key-commitment round; a v1
-// envelope is rejected before decryption rather than negotiated down.
-export const MATCH_PEER_VERSION = 2;
+// Envelope protocol version. v3 carries the channel lane in the authenticated
+// header; v2 shared one key between the state and control channels and v1
+// predates the key-commitment round. Either is rejected before decryption
+// rather than negotiated down.
+export const MATCH_PEER_VERSION = 3;
 export const MATCH_PEER_COMMIT_NONCE_BYTES = 32;
 export const MATCH_PEER_COMMIT_BYTES = 32;
 const LEFT = ["Amber", "Brave", "Bright", "Calm", "Coral", "Cosmic", "Daring",
@@ -34,7 +46,7 @@ const U32_MAX = 0xffff_ffff;
 const U64_MAX = (1n << 64n) - 1n;
 const SEND_CONTEXT_FIELDS = new Set(["matchEpoch", "sourceEndpointId",
   "sourceGeneration", "destinationEndpointId", "destinationGeneration",
-  "intermediateEndpointId", "payloadType"]);
+  "lane", "intermediateEndpointId", "payloadType"]);
 const SEAL_WINDOWS = new WeakMap();
 // Belt and braces under the registry below: even reached directly, a key can
 // only ever be given one window.
@@ -82,6 +94,8 @@ function keyContextValid(value) {
   return value && u32(value.matchEpoch, true) && u64(value.sourceEndpointId, true) &&
     u32(value.sourceGeneration, true) && u64(value.destinationEndpointId, true) &&
     u32(value.destinationGeneration, true) &&
+    Number.isInteger(value.lane) && value.lane >= MATCH_PEER_LANE_STATE &&
+    value.lane <= MATCH_PEER_LANE_MAX &&
     value.sourceEndpointId !== value.destinationEndpointId;
 }
 
@@ -89,7 +103,7 @@ function envelopeContextValid(value) {
   return value && keyContextValid(value) && u64(value.intermediateEndpointId) &&
     u64(value.sequence, true) && Number.isInteger(value.payloadType) &&
     value.payloadType >= MATCH_PEER_PAYLOAD_INPUT &&
-    value.payloadType <= MATCH_PEER_PAYLOAD_PREFLIGHT_FRAGMENT &&
+    value.payloadType <= MATCH_PEER_PAYLOAD_TYPE_MAX &&
     (value.intermediateEndpointId === 0n ||
       (value.intermediateEndpointId !== value.sourceEndpointId &&
        value.intermediateEndpointId !== value.destinationEndpointId));
@@ -102,7 +116,7 @@ function sendContextValid(value) {
     keyContextValid(value) && u64(value.intermediateEndpointId) &&
     Number.isInteger(value.payloadType) &&
     value.payloadType >= MATCH_PEER_PAYLOAD_INPUT &&
-    value.payloadType <= MATCH_PEER_PAYLOAD_PREFLIGHT_FRAGMENT &&
+    value.payloadType <= MATCH_PEER_PAYLOAD_TYPE_MAX &&
     (value.intermediateEndpointId === 0n ||
       (value.intermediateEndpointId !== value.sourceEndpointId &&
        value.intermediateEndpointId !== value.destinationEndpointId));
@@ -113,14 +127,15 @@ function directionEqual(left, right) {
     left.sourceEndpointId === right.sourceEndpointId &&
     left.sourceGeneration === right.sourceGeneration &&
     left.destinationEndpointId === right.destinationEndpointId &&
-    left.destinationGeneration === right.destinationGeneration;
+    left.destinationGeneration === right.destinationGeneration &&
+    left.lane === right.lane;
 }
 
 function put32(view, offset, value) { view.setUint32(offset, value, false); }
 function put64(view, offset, value) { view.setBigUint64(offset, value, false); }
 
 function keyInfo(context) {
-  const output = new Uint8Array(KEY_DOMAIN.length + 28);
+  const output = new Uint8Array(KEY_DOMAIN.length + 29);
   output.set(KEY_DOMAIN);
   const view = new DataView(output.buffer);
   let offset = KEY_DOMAIN.length;
@@ -128,7 +143,8 @@ function keyInfo(context) {
   put64(view, offset, context.sourceEndpointId); offset += 8;
   put32(view, offset, context.sourceGeneration); offset += 4;
   put64(view, offset, context.destinationEndpointId); offset += 8;
-  put32(view, offset, context.destinationGeneration);
+  put32(view, offset, context.destinationGeneration); offset += 4;
+  output[offset] = context.lane;
   return output;
 }
 
@@ -246,6 +262,7 @@ function header(context) {
   output[4] = MATCH_PEER_VERSION;
   output[5] = context.intermediateEndpointId === 0n ? 0 : 1;
   output[6] = context.payloadType;
+  output[7] = context.lane;
   const view = new DataView(output.buffer);
   put32(view, 8, context.matchEpoch);
   put64(view, 12, context.sourceEndpointId);
@@ -260,14 +277,15 @@ function header(context) {
 function parseHeader(envelope) {
   if (!bytes(envelope, MATCH_PEER_ENVELOPE_BYTES) ||
       MAGIC.some((byte, index) => envelope[index] !== byte) || envelope[4] !== MATCH_PEER_VERSION ||
-      envelope[5] > 1 || envelope[6] > MATCH_PEER_PAYLOAD_PREFLIGHT_FRAGMENT ||
-      envelope[7] !== 0) return null;
+      envelope[5] > 1 || envelope[6] > MATCH_PEER_PAYLOAD_TYPE_MAX ||
+      envelope[7] > MATCH_PEER_LANE_MAX) return null;
   const view = new DataView(envelope.buffer, envelope.byteOffset, MATCH_PEER_HEADER_BYTES);
   const context = {matchEpoch: view.getUint32(8, false),
     sourceEndpointId: view.getBigUint64(12, false),
     sourceGeneration: view.getUint32(20, false),
     destinationEndpointId: view.getBigUint64(24, false),
     destinationGeneration: view.getUint32(32, false),
+    lane: envelope[7],
     intermediateEndpointId: view.getBigUint64(36, false),
     sequence: view.getBigUint64(44, false), payloadType: envelope[6]};
   return envelopeContextValid(context) &&
@@ -306,7 +324,8 @@ export async function deriveMatchPeerKey(sharedSecret, transcriptDigest, context
     sourceEndpointId: context.sourceEndpointId,
     sourceGeneration: context.sourceGeneration,
     destinationEndpointId: context.destinationEndpointId,
-    destinationGeneration: context.destinationGeneration});
+    destinationGeneration: context.destinationGeneration,
+    lane: context.lane});
   const key = {handle, direction, destroyed: false, fingerprint};
   const record = Object.freeze({key, sealWindow: mintSealWindow(key, direction)});
   KEY_REGISTRY.set(fingerprint, record);
@@ -368,7 +387,8 @@ function mintSealWindow(key, direction) {
     sourceEndpointId: direction.sourceEndpointId,
     sourceGeneration: direction.sourceGeneration,
     destinationEndpointId: direction.destinationEndpointId,
-    destinationGeneration: direction.destinationGeneration});
+    destinationGeneration: direction.destinationGeneration,
+    lane: direction.lane});
   const token = {};
   const state = {key, direction: copy, nextSequence: 1n, ready: true, busy: false};
   Object.defineProperties(token, {
@@ -472,6 +492,9 @@ export async function openMatchPeerEnvelope(opening, expected, replay, envelope,
   if (context.sourceGeneration !== expected.sourceGeneration ||
       context.destinationGeneration !== expected.destinationGeneration)
     return {result: "stale_generation"};
+  // Each lane holds a different key, so a spliced datagram would already fail
+  // the tag; checking the header first makes it a typed cross-channel verdict.
+  if (context.lane !== expected.lane) return {result: "wrong_lane"};
   if (!replayWindowValid(replay)) return {result: "invalid"};
   let payload;
   try {

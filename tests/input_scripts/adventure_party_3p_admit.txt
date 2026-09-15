@@ -1,0 +1,32 @@
+# Adventure Party admission — THREE local players from the title.
+#
+# Char-select join/confirm timing mirrors race_3p_split.txt. Retail routes three
+# Adventure players to TRACK_SELECT(15); the retail JOINTVENTURE offset can admit
+# at most two, so three players can NEVER reach GAME_SELECT on the stock path.
+# With Enhancements.AdventureParty on, the AP-06 admission adapter routes them to
+# GAME_SELECT(19) -> Adventure -> FILE_SELECT(6) and forms a 3-seat session.
+#
+# Save fixture: see tests/check_adventure_party_admission.py (started Adventure
+# One save in slot 0, so the host's FILE_SELECT confirm resumes it).
+
+# --- Title: reveal Start/Options, then Character Select ---
+1250 START 4
+1330 START 4
+
+# --- PLAYER SELECT: players two and three join on their own controllers ---
+1450 A 4 P2
+1490 A 4 P3
+
+# --- Each player confirms their own character ---
+1580 A 4 P1
+1640 A 4 P2
+1700 A 4 P3
+
+# --- "OK?" accept -> GAME_SELECT (on) / TRACK_SELECT (off) ---
+1800 A 4 P1
+
+# --- GAME_SELECT: Adventure One is option 0 -> FILE_SELECT ---
+2050 A 4 P1
+
+# --- FILE_SELECT: host (player one) resumes the started slot 0 ---
+2300 A 4 P1

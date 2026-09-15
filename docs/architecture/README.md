@@ -15,9 +15,12 @@ identity is kept in each file's title — it is how the commit log, `docs/STATUS
 | [web.md](web.md) | `M8_WEB_SPEC.md` | The browser (wasm) build: why the architecture was already web-ready, the wasm32-specific defects found and fixed, ROM + saves in the browser |
 | [online-multiplayer.md](online-multiplayer.md) | proposed online architecture | Launcher-owned deterministic rollback, private-room UX, local/online seat model, asset-blind room service and zero-cost reliability constraints |
 | [camera-obstruction.md](camera-obstruction.md) | Native camera modernization plan | Desired-versus-resolved camera authority, projection-derived lens collision, terrain/object occluders, mode policy, rollout, and release gates |
+| [adventure-party.md](adventure-party.md) | proposed local co-op campaign architecture | Native split-screen Adventure lobbies and 2–4-player campaign play: stable party authority, shared progression, parallel workstreams, compatibility boundaries, and release gates |
+| [custom-character-pipeline.md](custom-character-pipeline.md) | proposed ROM-free custom-character pipeline | GLB source contract, deterministic local package, import validation, modern skeletal renderer boundary, fixture evidence, and phased acceptance gates |
 | [taj-playable-mod.md](taj-playable-mod.md) | proposed mod architecture | A virtual playable Taj: easter-egg unlocks, carpet presentation, OP handling, persistence, compatibility boundaries, and execution gates |
 | [playable-wizpig-terry-campaign.md](playable-wizpig-terry-campaign.md) | bonus-racer implementation campaign | Playable Wizpig and Terry: virtual identity, balance, vehicle policy, assets, persistence migration, regression controls, and release gates |
 | [playable-wizpig-terry-integration.md](playable-wizpig-terry-integration.md) | bonus-racer integration guide | Exact implementation commit, product contract, subsystem ownership, conflict hotspots, completed qualification, known caveats, and post-merge checklist |
+| [cross-architecture-determinism.md](cross-architecture-determinism.md) | cross-architecture determinism gate | Why the online compatibility identity omits the CPU architecture, the arm64-versus-x86_64 authoritative-hash gate, how to build the x86_64 tree on Apple Silicon, and what the gate does and does not prove |
 
 ## Reading order
 

@@ -1,0 +1,110 @@
+#ifndef MDKR_APP_CHARACTER_VISUAL_REPORT_H
+#define MDKR_APP_CHARACTER_VISUAL_REPORT_H
+
+#include <array>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace CharacterVisualReport {
+
+/* A misuse guard rather than a workflow limit. The byte budget below normally
+ * binds first, while 1024 still accommodates exhaustive context/pose/light
+ * matrices without silently truncating an author's qualification set. */
+constexpr size_t kMaximumCaptures = 1024u;
+
+enum class RenderProduct : uint8_t {
+    Scene = 0,
+    ModelAlpha,
+};
+
+enum class Subject : uint8_t {
+    CustomCharacter = 0,
+    RetailDonor,
+};
+
+constexpr size_t kFitProjectionPoints = 10u;
+
+struct FitProjection {
+    bool valid = false;
+    uint32_t width = 0u;
+    uint32_t height = 0u;
+    uint32_t primitiveDraws = 0u;
+    std::array<int32_t, 4> viewport{};
+    std::array<int32_t, 4> scissor{};
+    std::array<std::array<int32_t, 2>, kFitProjectionPoints> pixelMilli{};
+    std::array<int32_t, kFitProjectionPoints> depthMillionths{};
+    std::array<uint32_t, kFitProjectionPoints> clipFlags{};
+};
+
+struct Capture {
+    std::string pngPath;
+    std::string pngSha256;
+    std::string sourceSha256;
+    std::string fitSha256;
+    std::string presentationSha256;
+    /* Digest of the exact fitted custom volume, held pose, target frame,
+     * camera projection, viewport, and scissor used for a composed frame. */
+    std::string sceneRegistrationSha256;
+    std::string context;
+    std::string pose;
+    std::string lighting;
+    RenderProduct renderProduct = RenderProduct::Scene;
+    Subject subject = Subject::CustomCharacter;
+    std::string referenceDonor;
+    uint32_t scene = 0u;
+    uint32_t players = 1u;
+    uint32_t phaseMilli = 0u;
+    int32_t viewYawDegrees = 0;
+    int32_t viewPitchDegrees = 0;
+    uint32_t width = 0u;
+    uint32_t height = 0u;
+    uint64_t stableFrames = 0u;
+    bool exactPose = false;
+    FitProjection fitProjection;
+};
+
+enum class StoreResult : uint8_t {
+    Added = 0,
+    Replaced,
+    Full,
+    Invalid,
+};
+
+/* Validate an unbound exact typed PNG at capture-publication time and bind its
+ * digest into session metadata. Export and preview later refuse changed bytes.
+ * The capture changes only on complete success; rebinding is refused. */
+bool bindPng(Capture &capture, std::string &error);
+bool validateBoundPng(const Capture &capture, std::string &error);
+
+/* Bind and retain a create-only capture by path. Reusing a launcher-owned slot
+ * replaces its prior digest record instead of duplicating it. If the recreated
+ * file is invalid, the stale same-path record is removed because it can no
+ * longer describe the bytes on disk. */
+StoreResult bindAndStore(
+    std::vector<Capture> &captures, Capture &capture, std::string &error);
+
+/* Bind first, then transactionally replace one caller-qualified tray entry.
+ * Invalid bytes or an invalid index leave the retained entry unchanged. The
+ * caller owns the semantic policy that selected replacementIndex. */
+StoreResult bindAndReplace(
+    std::vector<Capture> &captures, size_t replacementIndex,
+    Capture &capture, std::string &error);
+
+/* True only when a custom composed still and retail donor reference can be
+ * overlaid in the same pixel coordinate system without UI-side guessing. */
+bool registeredComparison(const Capture &custom, const Capture &donor);
+
+/* Writes one self-contained, responsive HTML contact sheet. PNG bytes are
+ * embedded as data URIs and a JSON record is embedded beside them, so the
+ * report can be moved or shared without the model, package, ROM, or original
+ * capture paths. The destination is exclusive-create and never overwritten. */
+bool exportHtml(const std::string &outputPath,
+                const std::string &packageId,
+                const std::string &displayName,
+                const std::vector<Capture> &captures,
+                std::string &error);
+
+} // namespace CharacterVisualReport
+
+#endif // MDKR_APP_CHARACTER_VISUAL_REPORT_H

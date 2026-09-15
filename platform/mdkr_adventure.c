@@ -243,6 +243,7 @@ extern int g_frameCounter;
 extern s32 gTrophyRaceRound;
 extern s32 gRaceStartTimer;
 extern s8 gRacerInputBlocked;
+extern s32 gNumFinishedRacers; /* next 1-based finish place; see race_check_finish */
 
 /* Object list + the input globals update_player_racer feeds to the physics. */
 extern Object **gObjPtrList;
@@ -453,6 +454,134 @@ void mdkr_adventure_force_verdict(Object *humanObj, Object **racers, s32 numRace
     }
 }
 
+/**
+ * Test-only party-race winner control used by check_adventure_party_race_loop.py.
+ *
+ * A party default race fields all its humans plus CPUs to six; the AI-driven
+ * field's natural winner is deterministic but not the one an arm wants to
+ * exercise. MDKR_AP_RACE_WINNER names the racer to place first:
+ *   "0".."3"  the human on that controller port (host is 0)
+ *   "cpu"     the first computer racer that has finished
+ * Like mdkr_adventure_force_verdict it acts only AFTER the port-1 human has
+ * genuinely finished all laps, so the race is already legitimately decided.
+ * From there it either reorders the target to first among racers that have
+ * already finished, or, if the target has not yet crossed, marks it finished
+ * and gives it first place directly — the manufactured-finish path this hook
+ * exists for. Either way it edits finish bookkeeping only: no kart position,
+ * velocity, or lap count is touched. It fires once. No-op with the variable
+ * unset.
+ */
+void mdkr_ap_force_race_winner(Object **racers, s32 numRacers, s32 humanCount) {
+    static s32 initialized;
+    static s32 mode;       /* 0 = off, 1 = seat, 2 = cpu */
+    static s32 targetSeat;
+    static s32 done;
+    static s32 reported;
+    Object_Racer *host;
+    Object_Racer *target;
+    s32 oldPosition;
+    s32 i;
+
+    if (!initialized) {
+        const char *value = getenv("MDKR_AP_RACE_WINNER");
+        initialized = TRUE;
+        if (value != NULL && value[0] != '\0') {
+            if (value[0] == 'c' || value[0] == 'C') {
+                mode = 2;
+            } else {
+                mode = 1;
+                targetSeat = (s32) strtol(value, NULL, 10);
+            }
+        }
+    }
+    if (mode == 0 || done || racers == NULL || numRacers <= 0 ||
+        humanCount < 2 || is_in_tracks_mode()) {
+        return;
+    }
+
+    /* The port-1 human (racerIndex 0) must have finished — the same guard the
+     * verdict hook uses, so this can never force a place before the race is
+     * genuinely won. Match by racerIndex, not playerIndex: update_player_racer
+     * flips a finished human to PLAYER_COMPUTER. */
+    host = NULL;
+    for (i = 0; i < numRacers; i++) {
+        if (racers[i] != NULL && racers[i]->racer != NULL &&
+            racers[i]->racer->racerIndex == PLAYER_ONE) {
+            host = racers[i]->racer;
+            break;
+        }
+    }
+    if (host == NULL || !host->raceFinished || host->finishPosition < 1) {
+        return;
+    }
+
+    /* Pick the winner by the STABLE racerIndex: a human seat is
+     * 0..humanCount-1; any racerIndex >= humanCount is a CPU. For "cpu", prefer
+     * one that has already finished. */
+    target = NULL;
+    for (i = 0; i < numRacers; i++) {
+        Object_Racer *r = racers[i] != NULL ? racers[i]->racer : NULL;
+        if (r == NULL) {
+            continue;
+        }
+        if (mode == 2) {
+            if (r->racerIndex >= humanCount &&
+                (target == NULL || (r->raceFinished && !target->raceFinished))) {
+                target = r;
+            }
+        } else if (r->racerIndex == targetSeat && targetSeat < humanCount) {
+            target = r;
+            break;
+        }
+    }
+    if (target == NULL) {
+        return;
+    }
+
+    if (target->raceFinished && target->finishPosition >= 1) {
+        /* The winner already finished: just move it to first and push everyone
+         * it passed back one place. */
+        oldPosition = target->finishPosition;
+        if (oldPosition != 1) {
+            for (i = 0; i < numRacers; i++) {
+                Object_Racer *r = racers[i] != NULL ? racers[i]->racer : NULL;
+                if (r != NULL && r != target && r->raceFinished &&
+                    r->finishPosition >= 1 && r->finishPosition < oldPosition) {
+                    r->finishPosition++;
+                }
+            }
+            target->finishPosition = 1;
+        }
+    } else {
+        /* The desired winner (typically a non-host human the CPU field would
+         * have force-finished last) has not crossed yet. The port-1 human has
+         * genuinely finished, so the race is legitimately decided; give the
+         * winner first place and shift every already-finished racer back one,
+         * keeping gNumFinishedRacers consistent so later natural finishers do
+         * not collide. Manufacturing the winner's finish is the documented
+         * force-hook path the brief sanctions. */
+        for (i = 0; i < numRacers; i++) {
+            Object_Racer *r = racers[i] != NULL ? racers[i]->racer : NULL;
+            if (r != NULL && r != target && r->raceFinished &&
+                r->finishPosition >= 1) {
+                r->finishPosition++;
+            }
+        }
+        target->raceFinished = TRUE;
+        target->finishPosition = 1;
+        gNumFinishedRacers++;
+        oldPosition = 0; /* manufactured */
+    }
+    done = TRUE;
+    if (!reported && mdkr_trace_enabled()) {
+        reported = TRUE;
+        mdkr_trace("apracewinner: mode=%d seat=%d winnerPlayer=%d winnerRacer=%d "
+                   "natural=%d @frame~%d",
+                   (int) mode, (int) targetSeat, (int) target->playerIndex,
+                   (int) target->racerIndex, (int) oldPosition, g_frameCounter);
+    }
+}
+
 /* ------------------------------------------------------------------ config */
 
 #define MDKR_ADV_MAX_LEVELS 6
@@ -540,6 +669,224 @@ static f32 sAdvExitDist = 1.0e30f; /* live distance to the active EXIT step's do
 static s32 sAdvStall = 0;
 static s32 sAdvReverse = 0;
 static s32 sAdvHalt = 0; /* update-rate units the active H<frames> step has held */
+
+/* ------------------------------------------------------------------ AP-10 --
+ *
+ * Two test-only injectors the Adventure Party lobby-interaction gate needs and
+ * the input-script layer cannot provide.  Both are no-ops unless their env var
+ * is set, same contract as every hook above; neither carries production party
+ * state (that lives in platform/adventure_party and the game adapters).
+ *
+ *   MDKR_AP_SEAT_ROUTE="<seat>=<step>[|<step>...][;<seat>=...]"
+ *       Steer ONE named seat along its OWN ordered route, overriding the shared
+ *       MDKR_DRIVE_ROUTE for that seat only (seats with no route fall through to
+ *       the shared route, or idle). This is the only way to send different seats
+ *       to different doors, or exactly one seat at a door while the rest idle --
+ *       the shared route drives every human racer at one target. Steps:
+ *         <x>,<z>   a waypoint, retired within MDKR_DRIVE_WPR units
+ *         E<id>     the BHV_EXIT to destinationMapId <id> (terminal: racer_enter_door takes over once obj_loop_exit latches)
+ *         B<id>     the BHV_GOLDEN_BALLOON <id>, retired when its collected flag is set
+ *
+ *   MDKR_AP_DROP_PAD="<seat>@<tick>[,<seat>@<tick>]"
+ *       Report a bound seat's controller as ABSENT from g_simTickCounter >=
+ *       <tick> onward.  The input-script presence mask is whole-route (a scripted
+ *       pad looks plugged in from boot to shutdown), so a headless run cannot
+ *       otherwise simulate a mid-session disconnect; this reports absence to the
+ *       game's disconnect adapter without touching any real pad state. */
+enum { MDKR_AP_STEP_POINT = 0, MDKR_AP_STEP_EXIT, MDKR_AP_STEP_BALLOON };
+#define MDKR_AP_SEAT_STEPS 16
+static s32 sApTestInited = 0;
+static s32 sApSeatStepKind[4][MDKR_AP_SEAT_STEPS];
+static f32 sApSeatStepX[4][MDKR_AP_SEAT_STEPS];
+static f32 sApSeatStepZ[4][MDKR_AP_SEAT_STEPS];
+static s32 sApSeatStepId[4][MDKR_AP_SEAT_STEPS];
+static s32 sApSeatStepCount[4];
+static s32 sApSeatStepIdx[4];
+static s32 sApDropTick[4]; /* -1 = never dropped */
+
+extern int g_simTickCounter;
+
+static void mdkr_ap_parse_seat_routes(const char *s) {
+    while (*s != '\0') {
+        s32 seat, n = 0;
+        while (*s == ';' || *s == ' ') {
+            s++;
+        }
+        if (*s == '\0') {
+            break;
+        }
+        seat = (s32) strtol(s, (char **) &s, 10);
+        if (*s != '=' || seat < 0 || seat >= 4) {
+            break; /* malformed -- stop rather than guess */
+        }
+        s++;
+        while (*s != '\0' && *s != ';' && n < MDKR_AP_SEAT_STEPS) {
+            if (*s == 'E' || *s == 'e') {
+                s++;
+                sApSeatStepKind[seat][n] = MDKR_AP_STEP_EXIT;
+                sApSeatStepId[seat][n] = (s32) strtol(s, (char **) &s, 10);
+            } else if (*s == 'B' || *s == 'b') {
+                s++;
+                sApSeatStepKind[seat][n] = MDKR_AP_STEP_BALLOON;
+                sApSeatStepId[seat][n] = (s32) strtol(s, (char **) &s, 10);
+            } else {
+                sApSeatStepKind[seat][n] = MDKR_AP_STEP_POINT;
+                sApSeatStepX[seat][n] = (f32) strtod(s, (char **) &s);
+                if (*s != ',') {
+                    break;
+                }
+                s++;
+                sApSeatStepZ[seat][n] = (f32) strtod(s, (char **) &s);
+            }
+            n++;
+            if (*s == '|') {
+                s++;
+            }
+        }
+        sApSeatStepCount[seat] = n;
+    }
+}
+
+static void mdkr_ap_test_init(void) {
+    const char *e;
+    s32 i;
+    if (sApTestInited) {
+        return;
+    }
+    sApTestInited = 1;
+    for (i = 0; i < 4; i++) {
+        sApSeatStepCount[i] = 0;
+        sApSeatStepIdx[i] = 0;
+        sApDropTick[i] = -1;
+    }
+    e = getenv("MDKR_AP_SEAT_ROUTE");
+    if (e != NULL && e[0] != '\0') {
+        mdkr_ap_parse_seat_routes(e);
+    }
+    e = getenv("MDKR_AP_DROP_PAD");
+    if (e != NULL && e[0] != '\0') {
+        while (*e != '\0') {
+            s32 seat = (s32) strtol(e, (char **) &e, 10);
+            if (*e == '@') {
+                e++;
+                if (seat >= 0 && seat < 4) {
+                    sApDropTick[seat] = (s32) strtol(e, (char **) &e, 10);
+                }
+            }
+            while (*e == ',' || *e == ' ') {
+                e++;
+            }
+            if (*e != '\0' && (*e < '0' || *e > '9')) {
+                break;
+            }
+        }
+    }
+}
+
+static Object *mdkr_adv_find(s32 behaviorId, s32 wantId);
+static s32 mdkr_adv_balloon_collected(Settings *settings, s32 balloonID);
+static void mdkr_adv_steer(Object_Racer *racer, f32 dx, f32 dz, s32 reverse);
+
+/* 1 if this seat's own route drove the racer this tick (caller returns). */
+static s32 mdkr_ap_seat_route_drive(Object *obj, Object_Racer *racer) {
+    Settings *settings;
+    s32 seat = racer->playerIndex;
+    if (seat < 0 || seat >= 4 || sApSeatStepCount[seat] == 0) {
+        return 0;
+    }
+    settings = get_settings();
+    while (sApSeatStepIdx[seat] < sApSeatStepCount[seat]) {
+        s32 idx = sApSeatStepIdx[seat];
+        s32 kind = sApSeatStepKind[seat][idx];
+        Object *tgt;
+        f32 dx, dz;
+        if (kind == MDKR_AP_STEP_BALLOON) {
+            if (settings != NULL && mdkr_adv_balloon_collected(settings, sApSeatStepId[seat][idx])) {
+                sApSeatStepIdx[seat]++;
+                continue;
+            }
+            tgt = mdkr_adv_find(BHV_GOLDEN_BALLOON, sApSeatStepId[seat][idx]);
+            if (tgt == NULL) {
+                sApSeatStepIdx[seat]++;
+                continue;
+            }
+            mdkr_adv_steer(racer, tgt->trans.x_position - obj->trans.x_position,
+                           tgt->trans.z_position - obj->trans.z_position, 0);
+            return 1;
+        } else if (kind == MDKR_AP_STEP_EXIT) {
+            tgt = mdkr_adv_find(BHV_EXIT, sApSeatStepId[seat][idx]);
+            if (tgt == NULL) {
+                return 1; /* hold position until the exit spawns */
+            }
+            mdkr_adv_steer(racer, tgt->trans.x_position - obj->trans.x_position,
+                           tgt->trans.z_position - obj->trans.z_position, 0);
+            return 1; /* terminal: racer_enter_door takes over once latched */
+        } else {
+            dx = sApSeatStepX[seat][idx] - obj->trans.x_position;
+            dz = sApSeatStepZ[seat][idx] - obj->trans.z_position;
+            if ((dx * dx + dz * dz) < (sAdvWpRadius * sAdvWpRadius)) {
+                sApSeatStepIdx[seat]++;
+                continue;
+            }
+            mdkr_adv_steer(racer, dx, dz, 0);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* 1 if this bound seat's controller should read as ABSENT now (test injector).
+ * Always defined (both build arms); returns 0 with no env set. */
+int mdkr_test_pad_absent(int seat) {
+    mdkr_ap_test_init();
+    if (seat < 0 || seat >= 4) {
+        return 0;
+    }
+    return sApDropTick[seat] >= 0 && g_simTickCounter >= sApDropTick[seat];
+}
+
+/* TRUE only on the LAST cycle of a REPEATING route: some level leg orders two
+ * or more door entries (so the route drives a cycle more than once and its
+ * cycles are meant to be comparable), AND every leg has retired its last step
+ * (so there is no ordered move left to make).
+ *
+ * Both halves are load-bearing. Exhaustion alone would also be true of a
+ * single-entry route -- "1:E5" -- from the moment its one door was taken,
+ * i.e. for the whole of its only post-race, which is not a terminal cycle in
+ * any sense a repeated-cycle census cares about; it would then be a property
+ * of where a route happens to put its last waypoint rather than of the route
+ * repeating. Requiring two ordered entries keeps this to the case it exists
+ * for: the run that races the same loop N times and whose last lap has no
+ * scripted input left.
+ *
+ * FALSE with no route configured and FALSE before the route is parsed, so a
+ * caller cannot read "exhausted" out of an unarmed driver. Loads only: this
+ * never advances the cursor, and the driver's own retirement rules
+ * (mdkr_adventure_drive) remain the only writer. */
+int mdkr_adventure_route_cycles_exhausted(void) {
+    s32 i;
+    s32 j;
+    s32 repeats = 0;
+
+    if (sAdvLevelCount <= 0) {
+        return 0;
+    }
+    for (i = 0; i < sAdvLevelCount; i++) {
+        s32 entries = 0;
+        if (sAdvStepIdx[i] < sAdvLevels[i].count) {
+            return 0;
+        }
+        for (j = 0; j < sAdvLevels[i].count; j++) {
+            if (sAdvLevels[i].step[j].kind == MDKR_ADV_EXIT) {
+                entries++;
+            }
+        }
+        if (entries > repeats) {
+            repeats = entries;
+        }
+    }
+    return repeats >= 2;
+}
 
 static f32 mdkr_adv_num(const char **p) {
     char *end = NULL;
@@ -729,6 +1076,15 @@ static void mdkr_adv_dump_level(s32 levelId) {
                        (int) entry->balloonID, (int) entry->challengeID,
                        (int) obj->properties.goldenBalloon.action);
             nBalloon++;
+        } else if (obj->behaviorId == BHV_WORLD_KEY) {
+            /* The hidden course key. obj_loop_worldkey collects it for ANY live
+             * human (playerIndex != PLAYER_COMPUTER), so a party's non-host seat
+             * can grab it; a route needs its world position, which no other dump
+             * prints. keyID is read from the live spawned object. */
+            mdkr_trace("objdump:   WORLDKEY i=%d pos=(%.1f, %.1f, %.1f) keyID=%d",
+                       (int) i, obj->trans.x_position, obj->trans.y_position,
+                       obj->trans.z_position, (int) obj->properties.worldKey.keyID);
+            nNpc++;
         } else if (obj->behaviorId == BHV_STOPWATCH_MAN || obj->behaviorId == BHV_PARK_WARDEN ||
                    obj->behaviorId == BHV_PARK_WARDEN_2 || obj->behaviorId == BHV_TROPHY_CABINET) {
             /* T.T., Taj and the trophy cabinet all call disable_racer_input()
@@ -938,6 +1294,13 @@ void mdkr_adventure_drive(Object *obj, Object_Racer *racer, s32 updateRate) {
             mdkr_force_exit_latch(racer, latchSettings->courseId);
         }
     }
+    mdkr_ap_test_init();
+    /* AP-10 per-seat routes preempt the shared route for the seats they name and
+     * work with no MDKR_DRIVE_ROUTE set, so they run before the shared-route
+     * early-out. A seat still latched into an exit is left to racer_enter_door. */
+    if (racer->exitObj == NULL && mdkr_ap_seat_route_drive(obj, racer)) {
+        return;
+    }
     if (sAdvLevelCount == 0 && !sAdvObjdump && !sAdvBossRoute && !sAdvSilverRoute) {
         return;
     }
@@ -1054,7 +1417,6 @@ void mdkr_adventure_drive(Object *obj, Object_Racer *racer, s32 updateRate) {
     if (sAdvSilverRoute && !racer->raceFinished) {
         Object *coin = NULL;
         f32 best = sAdvSilverRadius * sAdvSilverRadius;
-        s32 collectedBit = 1 << racer->playerIndex; /* SILVER_COIN_COLLECTED << playerIndex */
         s32 i;
         for (i = 0; i < gObjectCount; i++) {
             Object *cand = gObjPtrList[i];
@@ -1065,9 +1427,15 @@ void mdkr_adventure_drive(Object *obj, Object_Racer *racer, s32 updateRate) {
             if (cand->behaviorId != BHV_SILVER_COIN && cand->behaviorId != BHV_SILVER_COIN_2) {
                 continue;
             }
-            /* INACTIVE coins free themselves at init, so anything still in the
-             * list is live; skip only the ones this player already has. */
-            if (cand->properties.silverCoin.action & collectedBit) {
+            /* Skip a coin that is no longer collectable. Retail marks a collected
+             * coin with the per-player bit (action & (1 << playerIndex)); AP-14's
+             * team-shared collect retires it for EVERYONE (action set out of
+             * SILVER_COIN_ACTIVE). Testing "not ACTIVE" covers both: in 1P the only
+             * collector is player 0, so action is 0 (seek) or 1 (skip) -- identical
+             * to the old per-player bit -- while for a party it skips any coin the
+             * team already banked, so seats 2/3 (whose per-player bit a team collect
+             * never sets) do not fixate on an already-invisible coin. */
+            if (cand->properties.silverCoin.action != SILVER_COIN_ACTIVE) {
                 continue;
             }
             cx = cand->trans.x_position - obj->trans.x_position;
@@ -1713,7 +2081,7 @@ void mdkr_trophy_control_world(Settings *settings) {
         return;
     }
     world = atoi(value);
-    if (world >= 1 && world <= 4) {
+    if (world >= WORLD_DINO_DOMAIN && world <= WORLD_FUTURE_FUN_LAND) {
         settings->worldId = world;
     }
 }

@@ -33,9 +33,12 @@ EXEMPT = {
     # Spawns its children through check_ghost_matrix.run_child(), which
     # pins via harness_utils.save_env(); has no env site of its own.
     "check_ghost_bank_capacity.py",
-    # Never sets MDKR_SAVE_DIR (docstring mention only); isolates app
-    # prefs via MDKR_APP_PREFS_DIR, and mdkr64_app.ini prefs persistence
-    # is its subject, distinct from the video config.
+    # Isolates app prefs via MDKR_APP_PREFS_DIR, and mdkr64_app.ini prefs
+    # persistence is its subject, distinct from the video config. Its save
+    # isolation now goes through harness_utils.save_env(), which pins the
+    # video config too, so the exemption is historical rather than load-
+    # bearing; it is kept so a future edit that drops save_env() here still
+    # has to think about the config rather than silently satisfying a grep.
     "check_shell_dropfile.py",
 }
 

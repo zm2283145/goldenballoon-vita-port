@@ -6,7 +6,7 @@
  *
  * The ENTIRE TU is #if MDKR_ENABLE_ONLINE_BETA and it is added to the build only
  * inside the beta CMake gate (game/src/online/ is not globbed), so a normal (beta
- * OFF) build never compiles a byte of it and the release engine object is untouched.
+ * OFF) build never compiles a byte of it and the beta-OFF engine object is untouched.
  */
 #include "online/online_screen_util.h"
 
@@ -507,7 +507,7 @@ void mdkr_online_screen_fade_cancel_to_reveal(void) {
  * the cost is ONE dropped frame per screen transition (invisible behind the
  * entry fades / the intra-screen stage flip). Beta-only borrow: these globals
  * all have external linkage in thread3_main.c; the OFF build never compiles
- * this TU, so the release engine object is untouched. */
+ * this TU, so the beta-OFF engine object is untouched. */
 extern s8 gSkipGfxTask;      /* thread3_main.c */
 extern s8 gDrawFrameTimer;   /* thread3_main.c */
 extern Gfx *gDisplayLists[2];/* thread3_main.c */

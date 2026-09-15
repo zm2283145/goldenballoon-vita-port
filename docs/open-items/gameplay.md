@@ -231,6 +231,85 @@ shipping launch path does. An opt-in `--restored`-tier unstick (labeled, never
 default in `--pure`) is noted as a possible future enhancement, not
 implemented.
 
+## NOT A DEFECT: the one-ULP attract-simulation move across the v1.6.0 merge is the FP-contraction pin (84b89c7d)
+
+The AP-19 race-renderer soak investigation ([`renderer.md` § FIXED
+(instrument): AP-19's race renderer census](renderer.md#fixed-instrument-ap-19s-race-renderer-census-read-a-terminal-only-ownership-high))
+found that the offline simulation of the 1.6.0-merged adventure-party tree
+(`95b3016d`) diverges from the pre-merge tip (`a223eb78`) from the attract
+sequence onward: the first divergent authoritative field is a
+one-ULP `trans.scale` on a smoke emitter (`objectID=0x0095`, `[HASHOBJ]
+tick=171`, `3e840bca` vs `3e840bc9`), and the first `[GRND]` difference is
+racer 2's pitch at frame 2832 (`xrot=1290` vs `1280`). It left the move
+unattributed, and it explicitly ruled FMA formation *out* on the grounds that
+`-ffp-contract=off` is set tree-wide.
+
+That reasoning was inverted, and the flag is the whole answer. The pin does not
+exist on both sides of the merge: `a223eb78` has no `-ffp-contract` anywhere,
+and 1.6.0 introduces it in **`84b89c7d` — "build: pin FP contraction off across
+every engine lane"**. Unpinned, AppleClang on arm64 fuses `a*b+c` into a single
+`fmadd` at `-O2`, rounding once; pinned, the same expression rounds twice per
+strict IEEE evaluation. One ULP in an emitter scale is exactly that
+signature, and from there a chaotic simulation diverges on its own.
+
+### How it was attributed
+
+Not by bisecting 472 commits — by isolating the flag and re-running the whole
+v1.6.0 range's endpoints against it. Three Release builds of the same
+worktree, same toolchain, same deps, run on the minimal probe route
+(`check_state_hash`'s `nav_to_time_trial_race.txt` arm, `MDKR_LOAD_TRACK=5`,
+`MDKR_STATE_HASH=3`, `MDKR_AUTOPILOT=1`, headless, muted, 3000 ticks, with
+`MDKR_HASH_DUMP_TICK=160 MDKR_HASH_DUMP_UNTIL=180 MDKR_HASH_DUMP_IDS=1` for the
+per-object rows). Smoke emitter `objectID=0x0095` is live at tick 171 on this
+route too, so it probes the same actor those dumps named.
+
+| build | `[SIMHASH]`/`[HASHOBJ]` stream |
+|---|---|
+| `cbe389b3` (pre-1.6.0, no flag) | reference |
+| `83a847cc` (1.6.0 tip, pinned) | diverges from the reference at **tick 90** |
+| `83a847cc` with only the `-ffp-contract=off` line deleted | **byte-identical to the reference for all 3000 ticks**, per-object dumps included |
+
+Deleting one line from one `target_compile_options` block at the 1.6.0 tip
+reproduces the pre-1.6.0 stream exactly. No other commit in `cbe389b3..83a847cc`
+— 472 of them — contributes anything to the offline simulation. `sim_hash.c`'s
+own 1.6.0 changes (`b624b584`, `b1064204`) are the `MDKR_STATE_HASH_FILE` sink
+and are I/O-only, which this measurement confirms rather than assumes: the
+unpinned 1.6.0 build carrying them reproduces the pre-merge stream bit for bit.
+
+### Why it stays
+
+`84b89c7d` is a deliberate correctness fix and reverting it would be a
+regression. Gameplay float state has to be bit-reproducible across the native,
+wasm and mingw lanes — lockstep peers and every golden float hash rest on it —
+and with no flag set each toolchain chose its own fusion. The pin cost one
+trajectory, once, and 1.6.0 paid it on purpose: `check_authored_rng_compat` and
+the online direct-boot golden were re-minted in that campaign, and
+`check_weather_rng_order` re-froze both its oracles for the same reason, each
+with the re-freeze rationale recorded beside the digest.
+
+The attract-phase consequence for the adventure-party fixture is separately
+handled and is not a simulation defect either — see [`renderer.md` § FIXED
+(instrument): AP-19's race renderer census](renderer.md#fixed-instrument-ap-19s-race-renderer-census-read-a-terminal-only-ownership-high).
+
+### The recurrence is already gated, with a positive control
+
+No new golden pin was added, because two gates the suite already runs —
+`tests/check_authored_rng_compat.py` and `tests/check_weather_rng_order.py`,
+registered in `tools/run_checks.py` as `authored_rng_compat` and
+`weather_rng_order` — already fail if the pin is removed, and that was measured
+rather than assumed. On a `83a847cc` build with only the `-ffp-contract=off`
+line deleted:
+
+- `check_weather_rng_order`: **FAIL** — `Original weather oracle digest
+  changed: 253847b6… != 54e42a67…`, and the one-ticket-late control digest
+  moved with it. The same build with the line restored: **PASS**.
+- `check_authored_rng_compat`: **FAIL** — `raw stream SHA-256 53c8ca2c… ,
+  expected 191bee35…`.
+
+Both goldens are whole-stream SHA-256 digests of authoritative state, so they
+cannot be satisfied by a differently-rounded simulation. Removing the pin is
+caught on the next suite run.
+
 ## FIXED: the app overlay crashed attract races and dropped race-intro cameras — issues #28/#29, wave "overlaypause"
 
 Two 1.2.0 reports reached zero-rate paths that the original title/new-game
@@ -688,6 +767,20 @@ built instrumented emulator, and a green threshold would either be arbitrary
 or would silently mask a real regression. It is a developer instrument, not a
 player-facing property; nothing a player does is affected by where an
 open-loop replay diverges at clock 767.
+
+**Update 2026-08-25 — reclassified, not weakened.** The lane now carries
+`"state_classification": "diagnostic"` in its route JSON:
+`compare_oracle_state.py` records threshold shortfalls as observations,
+headlines the divergence-onset clock, and exits 0, while instrument-integrity
+failures (vacuous rng seeds, missing probes, short traces) still fail closed
+(`tests/test_oracle_route_classification.py` holds both properties, plus
+gate-mode equivalence for real gates like Bluey 2). The thresholds are
+unchanged and before/after report pairs remain the differential evidence for
+gameplay-math changes. The open-loop agreement percentage is deprecated as a
+figure of merit: a same-clock phase comparison under compounding drift
+measures divergence onset and route length, not mechanic correctness, and it
+was being read as a failing parity score. The divergence-onset clock is the
+signal.
 
 ### None of the three is `#ifdef NATIVE_PORT`-gated, and none needs to be
 

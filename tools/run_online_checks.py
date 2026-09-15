@@ -69,6 +69,9 @@ LANES = (
                                             #  (default arms need no PAL ROM)
     "check_online_session_boot.py",
     "check_online_charselect.py",
+    "check_match_launch_direct_load.py",    # the descriptor's online-catalog ids
+                                            #  must seat the TRANSLATED engine
+                                            #  Characters (source-derived pin)
     "check_online_vehicleselect.py",
     "check_online_trackselect.py",
     "check_online_session_results.py",
@@ -268,7 +271,7 @@ def main() -> int:
     for name, ok, elapsed in results:
         print(f"  [{'PASS' if ok else 'FAIL'}] {name} ({elapsed:.1f}s)")
     # M1(a): surface any isolation warning/degradation in the summary so it cannot
-    # hide behind a GREEN result (e.g. an --allow-hash-drift toolchain bump).
+    # hide behind a GREEN result (e.g. an --allow-hash-drift build-input change).
     for warning in isolation_warnings:
         print(f"  [WARN] isolation: {warning}")
     all_ok = passed == total and isolation_ok

@@ -23,6 +23,12 @@
  * to a few bytes of image data, which is precisely the file an attacker sends
  * and precisely the file an encoder cannot be asked to produce.
  *
+ * The last case is about a different file the same module writes: the author
+ * dump's `<digest>.txt` record and its `<digest>.texels` companion. Those are
+ * parsed by tools/ricepack/, so a field that is absent, misnamed or truncated
+ * turns into a confident wrong CRC offline rather than a visible failure here
+ * -- which is the only reason a text file is worth asserting field by field.
+ *
  * Every byte written lands beneath the scratch root given by argv[1], which is
  * removed before the first case and after the last.
  */
@@ -43,16 +49,19 @@
 #include <direct.h>
 #define TEST_MKDIR(path) _mkdir(path)
 #define TEST_RMDIR(path) _rmdir(path)
+#define TEST_SETENV(name, value) _putenv_s((name), (value))
 #else
 #include <unistd.h>
 #define TEST_MKDIR(path) mkdir((path), 0777)
 #define TEST_RMDIR(path) rmdir(path)
+#define TEST_SETENV(name, value) setenv((name), (value), 1)
 #endif
 
 /* The digests the cases address. Only the length is load-bearing (the store
  * refuses anything that is not exactly its digest length), and main() checks
  * it rather than trusting a hand count. */
 #define DIGEST_GIANT "a1111111111111111111111111111111"
+#define DIGEST_WIDE  "a2222222222222222222222222222222"
 #define DIGEST_SOUND "b2222222222222222222222222222222"
 #define DIGEST_NOTPNG "c3333333333333333333333333333333"
 
@@ -303,7 +312,7 @@ static void write_giant_declared_png(const char *root, const char *pack,
  * allowed to be asked for. Pixel (x, y) is (x * 16, y * 16, 0x40, 0xFF), so a
  * lookup that returned some other picture would not match. */
 static void write_small_rgba_png(const char *root, const char *pack,
-                                 const char *digest) {
+                                 const char *digest, unsigned char blue) {
     unsigned char raw[8 * (1 + 8 * 4)];
     unsigned char idat[5 + sizeof raw + 6];
     PngBuffer     png;
@@ -318,7 +327,7 @@ static void write_small_rgba_png(const char *root, const char *pack,
         for (x = 0; x < 8; x++) {
             raw[cursor++] = (unsigned char)(x * 16);
             raw[cursor++] = (unsigned char)(y * 16);
-            raw[cursor++] = 0x40u;
+            raw[cursor++] = blue;
             raw[cursor++] = 0xFFu;
         }
     }
@@ -370,6 +379,30 @@ static void test_declared_size_is_refused_before_the_decode(void) {
            "and the caller is handed nothing to read");
 }
 
+/* 1b. Under the byte ceiling, over the per-side one.
+ *
+ * The byte cap admits ~11585 per side, and no shipping backend uploads a side
+ * over 4096 -- gfx_opengl_upload_texture refuses outright. A failed bind SKIPS
+ * the draw rather than falling back to the ROM texture, so an admitted
+ * oversized replacement made its object invisible for the whole session while
+ * its pixels held cache the store believed were in use, and the only clue was a
+ * generic bind-failed line naming neither the pack nor the digest. The importer
+ * capped here already; a pack built by any other tool did not. */
+static void test_a_side_no_backend_can_upload_is_refused(void) {
+    MdkrModTexture texture;
+    int            found;
+
+    mdkr_texture_probe_reset(PROBE_REFUSE_ABOVE);
+    found = mdkr_mod_texture_lookup(DIGEST_WIDE, &texture);
+
+    expect(found == 0, "a texture wider than any backend uploads is refused "
+                       "even though it fits the cache");
+    expect(mdkr_texture_probe_decode_calls() == 0,
+           "and it is refused from the header, before the decode");
+    expect(texture.rgba == NULL && texture.width == 0 && texture.height == 0,
+           "and the caller is handed nothing to read");
+}
+
 /* 2. The gate must not cost a legitimate pack its textures. */
 static void test_a_texture_that_fits_still_loads(void) {
     MdkrModTexture texture;
@@ -394,11 +427,9 @@ static void test_a_texture_that_fits_still_loads(void) {
     }
 }
 
-/* 3. A header the size check cannot read is not a header the size check gets
- * to reject. Reading the declared size first must not become a second, blinder
- * rejection path: a file stbi_info() cannot parse still goes to the decoder,
- * which is what puts the decoder's own account of the defect in the log. */
-static void test_an_unreadable_header_still_reaches_the_decoder(void) {
+/* 3. No bounded header means no pixel-decode admission. The header inspector
+ * already supplies the decoder library's own error message. */
+static void test_an_unreadable_header_is_refused_before_decode(void) {
     MdkrModTexture texture;
     int            found;
 
@@ -406,8 +437,198 @@ static void test_an_unreadable_header_still_reaches_the_decoder(void) {
     found = mdkr_mod_texture_lookup(DIGEST_NOTPNG, &texture);
 
     expect(found == 0, "a pack texture that is not a PNG at all is refused");
-    expect(mdkr_texture_probe_decode_calls() == 1,
-           "by the decoder, which was still given the chance to name the defect");
+    expect(mdkr_texture_probe_decode_calls() == 0,
+           "and unreadable dimensions never reach the pixel decoder");
+    expect(texture.rgba == NULL && texture.width == 0 && texture.height == 0,
+           "and rejected header admission leaves no readable pixels");
+    found = mdkr_mod_texture_lookup(DIGEST_NOTPNG, &texture);
+    expect(found == 0 && mdkr_texture_probe_decode_calls() == 0,
+           "and a repeated lookup keeps the rejection without decoding");
+}
+
+/* 4. The decoder's successful result must agree with the admitted dimensions.
+ * Reuse the ordinary 8x8 fixture; only the wrapper's reported metadata changes,
+ * never the PNG bytes or the decoder implementation. */
+static void test_decode_matches_admitted_dimensions(MdkrModRegistry *registry) {
+    const int dimensions[][2] = {{7, 8}, {8, 7}};
+    size_t index;
+    for (index = 0; index < sizeof dimensions / sizeof dimensions[0]; ++index) {
+        MdkrModTexture texture;
+        int found;
+        mdkr_mod_texture_store_init(registry);
+        mdkr_texture_probe_reset(PROBE_REFUSE_ABOVE);
+        mdkr_texture_probe_override_decoded_dimensions(
+            dimensions[index][0], dimensions[index][1]);
+        found = mdkr_mod_texture_lookup(DIGEST_SOUND, &texture);
+        expect(mdkr_texture_probe_decode_calls() == 1,
+               "dimension agreement is checked after a real ordinary decode");
+        expect(found == 0 && texture.rgba == NULL &&
+               texture.width == 0 && texture.height == 0,
+               "a decoded dimension mismatch cannot publish a texture");
+    }
+    mdkr_mod_texture_store_init(registry);
+    mdkr_texture_probe_reset(PROBE_REFUSE_ABOVE);
+    test_a_texture_that_fits_still_loads();
+}
+
+static void test_generated_portrait_alias(const char *mods,
+                                          MdkrModRegistry *registry) {
+    MdkrModTexture texture;
+    int found = mdkr_mod_texture_lookup(MDKR_MOD_TAJ_PORTRAIT_DIGEST, &texture);
+    expect(found && texture.width == 8 && texture.height == 8 &&
+           texture.rgba[2] == 0x40u,
+           "a pre-1.7 Taj pack still replaces the recoloured card");
+
+    mdkr_mod_texture_set_enabled(false);
+    found = mdkr_mod_texture_lookup(MDKR_MOD_TAJ_PORTRAIT_DIGEST, &texture);
+    expect(!found && texture.rgba == NULL,
+           "turning packs off also disables generated-portrait aliases");
+    mdkr_mod_texture_set_enabled(true);
+
+    found = mdkr_mod_texture_lookup("dcd45f4f32c9e1da4abeb3c1c1f8011a", &texture);
+    expect(!found, "a different digest cannot inherit Taj's legacy override");
+
+    write_small_rgba_png(mods, "probe", MDKR_MOD_TAJ_PORTRAIT_DIGEST, 0xE0u);
+    mdkr_mod_texture_store_init(registry);
+    found = mdkr_mod_texture_lookup(MDKR_MOD_TAJ_PORTRAIT_DIGEST, &texture);
+    expect(found && texture.rgba[2] == 0xE0u,
+           "a current-name replacement takes precedence over the legacy name");
+    found = mdkr_mod_texture_lookup(MDKR_MOD_TAJ_PORTRAIT_LEGACY_DIGEST, &texture);
+    expect(found && texture.rgba[2] == 0x40u,
+           "direct legacy lookup still returns the legacy file");
+}
+
+/* ------------------------------------------------------- the author dump */
+
+/* Reads a whole scratch file into `out`, returning its length, or -1 when the
+ * file does not exist. "Does not exist" is a result the cases below assert,
+ * not a fatal condition. */
+static long read_scratch_file(const char *path, char *out, size_t size) {
+    FILE  *file = fopen(path, "rb");
+    size_t length;
+
+    if (file == NULL) return -1;
+    length = fread(out, 1, size - 1, file);
+    fclose(file);
+    out[length] = '\0';
+    return (long)length;
+}
+
+static int record_has(const char *record, const char *line) {
+    return strstr(record, line) != NULL;
+}
+
+/* 5. The dump record carries the raw source span and its addressing.
+ *
+ * The reason this is worth a case of its own: the sidecar is no longer read
+ * only by a human looking for a filename. An offline importer parses it and
+ * hashes the `.texels` bytes with somebody else's algorithm, so a field that
+ * is absent, misnamed or -- worst -- silently truncated produces a confident
+ * wrong answer rather than a visible failure. Nothing about the decoded PNG
+ * would show any of that.
+ *
+ * The span here is deliberately PADDED: line_bytes (12) is larger than a
+ * four-texel 16-bit row (8), so the four bytes between rows are addressing and
+ * not picture. A dump that wrote a tightly packed span, or that reported the
+ * packed pitch, would pass a test built on an unpadded fixture and mis-hash
+ * every real padded tile. */
+static void test_dump_record_carries_the_source_span(const char *scratch) {
+    /* Six texels of RGBA8 for the picture, and a 24-byte source span holding
+     * two 8-byte rows twelve bytes apart. Neither is derived from the other:
+     * the point of the record is that they are different pictures of the same
+     * texture. */
+    static const unsigned char rgba[4 * 2 * 4] = {
+        0x10, 0x11, 0x12, 0xff, 0x20, 0x21, 0x22, 0xff,
+        0x30, 0x31, 0x32, 0xff, 0x40, 0x41, 0x42, 0xff,
+        0x50, 0x51, 0x52, 0xff, 0x60, 0x61, 0x62, 0xff,
+        0x70, 0x71, 0x72, 0xff, 0x80, 0x81, 0x82, 0xff,
+    };
+    static const unsigned char span[24] = {
+        0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, /* row 0 picture */
+        0xde, 0xad, 0xbe, 0xef,                         /* row 0 padding  */
+        0xb0, 0xb1, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, /* row 1 picture */
+        0xde, 0xad, 0xbe, 0xef,                         /* row 1 padding  */
+    };
+    const char *with_span = "d4444444444444444444444444444444";
+    const char *no_span   = "e5555555555555555555555555555555";
+    MdkrModTextureSource source;
+    char dump_dir[1024];
+    char path[1024];
+    char record[1024];
+    char bytes[128];
+    long length;
+
+    path2(dump_dir, sizeof dump_dir, scratch, "dump");
+    if (TEST_MKDIR(dump_dir) != 0 && !is_directory(dump_dir)) {
+        fatal("cannot create the dump scratch directory", dump_dir);
+    }
+    /* The store resolves MDKR_MOD_TEXTURE_DUMP once and caches it, so this
+     * must land before the first call into the dump path. It does: nothing
+     * above this line touches it, and main() runs this case last. */
+    TEST_SETENV("MDKR_MOD_TEXTURE_DUMP", dump_dir);
+    expect(mdkr_mod_texture_dump_active(),
+           "a dump directory in the environment arms the author dump");
+
+    source.texels = span;
+    source.texel_bytes = sizeof span;
+    source.line_bytes = 12u;
+    source.size_bytes = 24u;
+    source.width = 4;
+    source.height = 2;
+    mdkr_mod_texture_dump_observe(with_span, rgba, 4, 2, 0u, 2u, &source,
+                                  "frame 7, texture unit 0");
+
+    path3(path, sizeof path, scratch, "dump", "d4444444444444444444444444444444.txt");
+    length = read_scratch_file(path, record, sizeof record);
+    expect(length > 0, "an observed texture writes its record");
+    expect(record_has(record, "dump_format=2\n"),
+           "the record declares the widened dump format");
+    expect(record_has(record, "source_line_bytes=12\n") &&
+           record_has(record, "source_size_bytes=24\n"),
+           "the record carries the source row pitch and declared span length");
+    expect(record_has(record, "source_width=4\n") &&
+           record_has(record, "source_height=2\n"),
+           "the record carries the SOURCE tile's geometry, not the buffer's");
+    expect(record_has(record, "source_texel_bytes=24\n"),
+           "the record says how many bytes of span actually reached disk");
+    expect(record_has(record, "width=4\n") && record_has(record, "height=2\n") &&
+           record_has(record, "fmt=0\n") && record_has(record, "siz=2\n") &&
+           record_has(record, "first_seen=frame 7, texture unit 0\n"),
+           "and every field the pre-widening record carried is still there");
+
+    path3(path, sizeof path, scratch, "dump",
+          "d4444444444444444444444444444444.texels");
+    length = read_scratch_file(path, bytes, sizeof bytes);
+    expect(length == (long)sizeof span &&
+           memcmp(bytes, span, sizeof span) == 0,
+           "the raw source span is written beside it, byte for byte, padding "
+           "included");
+
+    /* Once per process, for the span as much as for the PNG: the second
+     * observation carries different bytes, so a re-write would be visible. */
+    source.texels = rgba;
+    source.texel_bytes = 16u;
+    mdkr_mod_texture_dump_observe(with_span, rgba, 4, 2, 0u, 2u, &source,
+                                  "frame 900, texture unit 1");
+    length = read_scratch_file(path, bytes, sizeof bytes);
+    expect(length == (long)sizeof span &&
+           memcmp(bytes, span, sizeof span) == 0,
+           "a repeat observation of the same digest rewrites neither file");
+
+    /* A caller with no span writes a record and no companion, rather than an
+     * empty companion a reader would try to hash. */
+    mdkr_mod_texture_dump_observe(no_span, rgba, 4, 2, 0u, 2u, NULL,
+                                  "frame 12, texture unit 0");
+    path3(path, sizeof path, scratch, "dump",
+          "e5555555555555555555555555555555.texels");
+    expect(read_scratch_file(path, bytes, sizeof bytes) == -1,
+           "a texture observed without a source span writes no .texels file");
+    path3(path, sizeof path, scratch, "dump",
+          "e5555555555555555555555555555555.txt");
+    length = read_scratch_file(path, record, sizeof record);
+    expect(length > 0 && record_has(record, "width=4\n") &&
+           !record_has(record, "source_line_bytes="),
+           "and its record omits the source fields instead of inventing them");
 }
 
 int main(int argc, char **argv) {
@@ -427,7 +648,11 @@ int main(int argc, char **argv) {
 
     write_pack_text(mods, "probe", "pack.ini", "[pack]\nname=Probe\n");
     write_giant_declared_png(mods, "probe", DIGEST_GIANT, 32768u, 32768u);
-    write_small_rgba_png(mods, "probe", DIGEST_SOUND);
+    /* Under the cache-bytes ceiling (8192*2048*4 = 64 MiB of 512) and over
+     * the per-side one. This is the shape the byte cap alone admitted. */
+    write_giant_declared_png(mods, "probe", DIGEST_WIDE, 8192u, 2048u);
+    write_small_rgba_png(mods, "probe", DIGEST_SOUND, 0x40u);
+    write_small_rgba_png(mods, "probe", MDKR_MOD_TAJ_PORTRAIT_LEGACY_DIGEST, 0x40u);
     write_pack_bytes(mods, "probe", "textures/" DIGEST_NOTPNG ".png",
                      (const unsigned char *)notpng, strlen(notpng));
 
@@ -440,8 +665,12 @@ int main(int argc, char **argv) {
     }
 
     test_declared_size_is_refused_before_the_decode();
+    test_a_side_no_backend_can_upload_is_refused();
     test_a_texture_that_fits_still_loads();
-    test_an_unreadable_header_still_reaches_the_decoder();
+    test_an_unreadable_header_is_refused_before_decode();
+    test_decode_matches_admitted_dimensions(&registry);
+    test_generated_portrait_alias(mods, &registry);
+    test_dump_record_carries_the_source_span(scratch);
 
     mdkr_mod_texture_store_shutdown();
     mdkr_mod_registry_shutdown(&registry);

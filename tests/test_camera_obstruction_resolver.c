@@ -414,6 +414,76 @@ static void test_release_hold_absorbs_a_transient_clear_corridor(void) {
                 result.resolved_eye.x > retracted_x);
 }
 
+static void test_zero_time_does_not_serve_release_hold(void) {
+    const MdkrCameraVec3 vertices[] = {
+        { 5.0f, -10.0f, -10.0f }, { 5.0f, 10.0f, -10.0f }, { 5.0f, 0.0f, 10.0f },
+    };
+    const uint32_t indices[] = { 0U, 1U, 2U };
+    const MdkrCameraOcclusionTriangle triangles[] = { { 10U, 1U, 1U, 0U } };
+    const MdkrCameraOcclusionWorld world = one_wall_world(vertices, indices, triangles);
+    const MdkrCameraOcclusionWorld empty_world = { 0 };
+    MdkrCameraProjection projection = test_projection(1U);
+    MdkrCameraObstructionResolverConfig config =
+        test_config(MDKR_CAMERA_OBSTRUCTION_POLICY_MODERN);
+    MdkrCameraObstructionResolverInput input = resolver_input(
+        &world, &projection, (MdkrCameraVec3){ 0.0f, 0.0f, 0.0f },
+        (MdkrCameraVec3){ 10.0f, 0.0f, 0.0f });
+    MdkrCameraObstructionResolverState state;
+    MdkrCameraObstructionResolverResult result;
+    float retracted_x;
+    int tick;
+
+    config.release_hold_ticks = 4U;
+    mdkr_camera_obstruction_resolver_reset(&state);
+    expect_true("paused hold: establish real contact",
+                mdkr_camera_obstruction_resolve(&config, &input, &state, &result) ==
+                    MDKR_CAMERA_OBSTRUCTION_RESOLVER_RETRACTED);
+    retracted_x = result.resolved_eye.x;
+    input.start_safe_eye = result.resolved_eye;
+    input.query.context = &empty_world;
+
+    /* Pause at every point in the hold, including one tick before release. */
+    for (tick = 0; tick < 4; tick++) {
+        int revalidation;
+        input.fixed_delta_seconds = 0.0f;
+        for (revalidation = 0; revalidation < 16; revalidation++) {
+            projection.generation++;
+            expect_true("paused hold: clear revalidation remains held",
+                        mdkr_camera_obstruction_resolve(&config, &input, &state, &result) ==
+                            MDKR_CAMERA_OBSTRUCTION_RESOLVER_RETRACTED);
+            expect_true("paused hold: projection is still revalidated",
+                        result.accepted && result.projection_revalidated &&
+                        state.projection_generation == projection.generation);
+            expect_true("paused hold: no authored time was spent",
+                        state.retraction_latched &&
+                        state.clear_run_ticks == (uint32_t)tick);
+            expect_true("paused hold: no contact is fabricated",
+                        result.release_held && !result.path_was_blocked &&
+                        result.blocker_stable_id == 0U);
+            expect_near("paused hold: eye stays retracted",
+                        result.resolved_eye.x, retracted_x, TEST_EPSILON);
+            input.start_safe_eye = result.resolved_eye;
+        }
+
+        input.fixed_delta_seconds = 0.1f;
+        (void)mdkr_camera_obstruction_resolve(&config, &input, &state, &result);
+        if (tick < 3) {
+            expect_true("paused hold: resume serves exactly one tick",
+                        result.accepted && result.release_held &&
+                        state.retraction_latched &&
+                        state.clear_run_ticks == (uint32_t)(tick + 1));
+        } else {
+            expect_true("paused hold: fourth authored tick releases",
+                        result.accepted && !result.release_held &&
+                        result.status == MDKR_CAMERA_OBSTRUCTION_RESOLVER_RECOVERING &&
+                        !state.retraction_latched && state.clear_run_ticks == 0U);
+            expect_near("paused hold: resumed expansion keeps its speed bound",
+                        result.resolved_eye.x - retracted_x, 0.4f, TEST_EPSILON);
+        }
+        input.start_safe_eye = result.resolved_eye;
+    }
+}
+
 static void test_release_hold_reengages_without_latency_and_resets(void) {
     const MdkrCameraVec3 vertices[] = {
         { 5.0f, -10.0f, -10.0f }, { 5.0f, 10.0f, -10.0f }, { 5.0f, 0.0f, 10.0f },
@@ -441,8 +511,10 @@ static void test_release_hold_reengages_without_latency_and_resets(void) {
     input.start_safe_eye = result.resolved_eye;
     expect_true("hold: partial run is held", result.release_held);
 
-    /* A contact inside the window restarts the whole window. */
+    /* A contact inside the window restarts it even during paused revalidation:
+     * zero elapsed time freezes recovery, never collision safety. */
     input.query.context = &world;
+    input.fixed_delta_seconds = 0.0f;
     expect_true("hold: contact inside the window retracts immediately",
                 mdkr_camera_obstruction_resolve(&config, &input, &state, &result) ==
                     MDKR_CAMERA_OBSTRUCTION_RESOLVER_RETRACTED);
@@ -453,6 +525,7 @@ static void test_release_hold_reengages_without_latency_and_resets(void) {
 
     /* A published cut must not carry a latch from an unrelated shot. */
     input.query.context = &empty_world;
+    input.fixed_delta_seconds = 0.1f;
     input.discontinuity = 1U;
     expect_true("hold: a cut drops the latch instead of holding through it",
                 mdkr_camera_obstruction_resolve(&config, &input, &state, &result) !=
@@ -500,6 +573,7 @@ int main(void) {
     test_repeat_is_deterministic();
     test_center_ray_is_the_expected_near_plane_control();
     test_release_hold_absorbs_a_transient_clear_corridor();
+    test_zero_time_does_not_serve_release_hold();
     test_release_hold_reengages_without_latency_and_resets();
     test_zero_release_hold_is_the_pre_hysteresis_control();
 

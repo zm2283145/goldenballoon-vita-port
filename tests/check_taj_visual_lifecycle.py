@@ -24,6 +24,9 @@ from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
 ROOT = Path(__file__).resolve().parent.parent
 RACE_SCRIPT = ROOT / "tests/input_scripts/taj_unlock_select.txt"
 FATAL_MARKERS = ("[CRASH]", "[FATAL]", "AddressSanitizer", "runtime error:")
+# A race-domain arm renders 6,300 frames. Preserve a finite watchdog without
+# misclassifying a slower supported GPU as a lifecycle failure.
+PROCESS_TIMEOUT_SECONDS = 180
 
 
 def run_case(
@@ -91,7 +94,8 @@ def run_case(
         print("$ " + " ".join(command), flush=True)
     process = subprocess.run(
         command, cwd=run_dir, env=env, text=True,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=90,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        timeout=PROCESS_TIMEOUT_SECONDS,
         check=False,
     )
     output = process.stdout or ""
@@ -215,7 +219,7 @@ def run_sign_only_fault_case(binary: Path, rom: Path, root: Path,
         print("$ " + " ".join(command), flush=True)
     process = subprocess.run(
         command, cwd=run_dir, env=env, text=True, stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT, timeout=90, check=False,
+        stderr=subprocess.STDOUT, timeout=PROCESS_TIMEOUT_SECONDS, check=False,
     )
     output = process.stdout or ""
     if process.returncode != 0:

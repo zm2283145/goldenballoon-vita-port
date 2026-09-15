@@ -143,6 +143,24 @@ static void test_reverify_paths_clear_stale_peer_loss() {
     CHECK(!mdkr_online_live_adapter_test_reverify_clears_peer_loss(true));
 }
 
+/* N5: a rekey or a re-verify retires every peer key, so a route measurement in
+ * flight is measuring sequences sealed under keys that no longer exist and a
+ * SETTLED record describes a connection that is gone. Both entry points must
+ * clear the whole route state -- the open window, the record, the publication
+ * latch and the queue-drop baseline -- so the next connection measures itself
+ * instead of inheriting the old one's numbers. */
+static void test_reverify_paths_restart_route_measurement() {
+    CHECK(mdkr_online_live_adapter_test_rekey_restarts_route_measurement(false));
+    CHECK(mdkr_online_live_adapter_test_rekey_restarts_route_measurement(true));
+    /* The other half of the rule (D-N5): the boundary BETWEEN two races of one
+     * tournament retires the epoch, not the mesh, so a FULL window's record
+     * survives and is exchanged again for the new round -- while a record
+     * whose window a race start cut short is retired there, because the lanes
+     * are idle between rounds and a whole window costs nobody a wait. */
+    CHECK(mdkr_online_live_adapter_test_race_latch_reset_keeps_route(false));
+    CHECK(mdkr_online_live_adapter_test_race_latch_reset_keeps_route(true));
+}
+
 /* RETRY must genuinely retry (audit story gap #2). Pre-Ready -- the create/
  * join round trip failed or stalled, the transport worker is gone -- a RETRY
  * must hand the panel the rebuild sentinel (kMdkrOnlineLiveStepRetryRebuild)
@@ -490,13 +508,314 @@ static void test_owning_wrapper_accessors_resolve_through_wrapper() {
     CHECK(wrapSetMode);
 }
 
+/* N8: the room owns membership, so a mid-race departure it reports finalises
+ * the departed seat instead of waiting out a transport ladder. Every gate on
+ * that decision, and the proposer rule that keeps two survivors from
+ * finalising the same seat at different ticks.
+ *
+ * Bit 0 of the seam is "this departure finalises a seat now"; bit 1 is "this
+ * endpoint proposes the tick" (the other survivors adopt what it sends). */
+static void test_room_departure_gates_and_proposer() {
+    enum { kFinalises = 1u, kProposes = 2u };
+    /* 2P mid-race: the sole survivor finalises and proposes in one step --
+     * there is nobody left to agree with and the room already confirmed the
+     * leave. */
+    CHECK(mdkr_online_live_adapter_test_room_departure(
+              /*raceUp=*/true, /*enabled=*/true, /*known=*/true,
+              /*thirdPeer=*/false) == (kFinalises | kProposes));
+    /* A third survivor with a lower endpoint id owns the proposal; this one
+     * still fronts the card, but adopts the tick it is sent. */
+    CHECK(mdkr_online_live_adapter_test_room_departure(
+              true, true, true, true) == kFinalises);
+    /* No race is running: a departure is the lobby's business, and the
+     * pre-race ladders are untouched by design. */
+    CHECK(mdkr_online_live_adapter_test_room_departure(
+              false, true, true, false) == 0u);
+    /* The positive control the kill-drop lane arms: with the plumbing off the
+     * departure decides nothing and the transport ladders resolve the loss at
+     * their own pace. */
+    CHECK(mdkr_online_live_adapter_test_room_departure(
+              true, false, true, false) == 0u);
+    /* An endpoint that owns no seat in this race cannot finalise one. */
+    CHECK(mdkr_online_live_adapter_test_room_departure(
+              true, true, false, false) == 0u);
+}
+
+/* N8 fix round 1 -- the critical one. A race_drop is a CLAIM by another
+ * player, not a verdict. Adopting one unchecked let any peer name a third
+ * party, finalise its seats and end this endpoint's race with no room
+ * departure at all. Three independent things must hold before a proposal
+ * means anything, and each is checked here on its own. */
+static void test_drop_proposal_is_checked_before_it_counts() {
+    /* The honest case: the lowest surviving id proposes, for this race, about
+     * an endpoint the room has told US is gone. 400 is departing, so the
+     * surviving roster is 100/200/300 and 100 owns the proposal. */
+    CHECK(mdkr_online_live_adapter_test_drop_proposal_accepted(
+        /*sender=*/100u, /*epoch=*/5u, /*room_verdict=*/true));
+    /* THE ATTACK: a peer that is not the proposer tries to finalise a third
+     * party. 300 is a survivor but not the lowest, so it has no standing. */
+    CHECK(!mdkr_online_live_adapter_test_drop_proposal_accepted(
+        300u, 5u, true));
+    /* The departing endpoint proposing its own removal is equally unentitled. */
+    CHECK(!mdkr_online_live_adapter_test_drop_proposal_accepted(
+        400u, 5u, true));
+    /* An endpoint outside the room cannot propose at all. */
+    CHECK(!mdkr_online_live_adapter_test_drop_proposal_accepted(
+        999u, 5u, true));
+    /* Another race's proposal, arriving late, must not finalise a seat in
+     * this one. */
+    CHECK(!mdkr_online_live_adapter_test_drop_proposal_accepted(
+        100u, 4u, true));
+    CHECK(!mdkr_online_live_adapter_test_drop_proposal_accepted(
+        100u, 6u, true));
+
+    /* The intersection itself: a well-formed proposal from the right sender
+     * is ACCEPTED as an agreed tick but must not finalise anything until this
+     * endpoint has heard the room's own verdict -- otherwise the peer, not the
+     * room, is deciding who is still racing. */
+    CHECK(mdkr_online_live_adapter_test_drop_proposal_accepted(
+        100u, 5u, /*room_verdict=*/false));
+    CHECK(!mdkr_online_live_adapter_test_drop_proposal_applied(
+        /*order=*/2u));
+    /* Once both halves are present it applies, in either arrival order. */
+    CHECK(mdkr_online_live_adapter_test_drop_proposal_applied(0u));
+    CHECK(mdkr_online_live_adapter_test_drop_proposal_applied(1u));
+}
+
+/* D1: the peer-silence grace on the room's departure verdict. The room owns
+ * membership, but a room-service wobble closes a member's socket exactly like
+ * a quit does -- and only one of the two stops the peer racing. So the verdict
+ * waits out a grace measured in AUTHORED ticks, and an authenticated packet
+ * from the departed endpoint inside it drops the verdict for the race.
+ *
+ * Seam bits: 1 the grace is still open, 2 the verdict was held, 4 the seats
+ * were finalised, 8 a finalisation tick was proposed, 16 the race ended. */
+static void test_departure_grace_holds_a_live_peers_verdict() {
+    enum {
+        kOpen = 1u, kHeld = 2u, kFinalised = 4u, kProposed = 8u, kEnded = 16u
+    };
+    /* Silence, and the grace has not run out: nothing has happened yet -- and
+     * in particular nothing has been PROPOSED. A proposal is a claim that a
+     * peer stopped racing, and this endpoint has not finished listening. */
+    CHECK(mdkr_online_live_adapter_test_departure_grace(
+              /*grace_ticks=*/2u, /*ticks_elapsed=*/0u,
+              /*peer_spoke=*/false) == kOpen);
+    CHECK(mdkr_online_live_adapter_test_departure_grace(2u, 1u, false) ==
+          kOpen);
+    /* Silence for the whole grace: the room's verdict stands, and the sole
+     * survivor proposes the tick, finalises the seat and ends its race. */
+    CHECK(mdkr_online_live_adapter_test_departure_grace(2u, 2u, false) ==
+          (kFinalised | kProposed | kEnded));
+    /* THE DEFECT D1 REMOVES: the peer is still sending. The verdict is held,
+     * no seat is finalised, no tick is proposed and the race carries on for
+     * the transport's ladders to end. */
+    CHECK(mdkr_online_live_adapter_test_departure_grace(2u, 2u, true) == kHeld);
+    /* A hold does not wait out the grace: the first authenticated packet
+     * settles it, whatever the authored head has reached. */
+    CHECK(mdkr_online_live_adapter_test_departure_grace(2u, 0u, true) == kHeld);
+    /* The lane's positive control (MDKR_ONLINE_LOBBY_DROP_GRACE=0) is the
+     * pre-D1 code: it acts on the verdict in the pump it arrives in, and it
+     * drops a peer that is still sending. */
+    CHECK(mdkr_online_live_adapter_test_departure_grace(0u, 0u, false) ==
+          (kFinalised | kProposed | kEnded));
+    CHECK(mdkr_online_live_adapter_test_departure_grace(0u, 0u, true) ==
+          (kFinalised | kProposed | kEnded));
+}
+
+/* N7-shaped bound on the route-probe echo. Every decoded probe used to be
+ * echoed unconditionally, and in a 3-4P room one broadcast probe yields N-1
+ * sealed echoes -- so a peer replaying probes at pump rate could make every
+ * survivor seal for it. The budget is per SENDER and per PUMP: it must bound a
+ * flood without touching the honest rate the measurement actually emits. */
+static void test_route_echo_budget_bounds_a_flood() {
+    /* Honest: one probe per pump from one peer, over a whole measurement's
+     * worth of pumps, is echoed in full. */
+    CHECK(mdkr_online_live_adapter_test_route_echoes_allowed(1u, 1u, 200u) ==
+          200u);
+    /* Still honest: a burst inside the budget echoes in full. */
+    CHECK(mdkr_online_live_adapter_test_route_echoes_allowed(1u, 16u, 3u) ==
+          48u);
+    /* THE FLOOD: 1,000 probes inside one pump cost 16 echoes, not 1,000. */
+    CHECK(mdkr_online_live_adapter_test_route_echoes_allowed(1u, 1000u, 1u) ==
+          16u);
+    /* And it does not refill inside the pump: the same flood over ten pumps
+     * costs ten budgets, not ten thousand echoes. */
+    CHECK(mdkr_online_live_adapter_test_route_echoes_allowed(1u, 1000u, 10u) ==
+          160u);
+    /* Per sender, so one flooding peer cannot starve an honest one: three
+     * peers flooding cost three budgets per pump, and an honest peer among
+     * them still gets its own. */
+    CHECK(mdkr_online_live_adapter_test_route_echoes_allowed(3u, 1000u, 1u) ==
+          48u);
+}
+
+/* The forensics ring is 2048 fixed-width slots and it is the only record of
+ * what a lost race did. A peer sending a wrong-epoch race_drop every pump used
+ * to write one record per message, evicting the whole ring in about ten
+ * seconds. The refusal is a property of the sender's view, so it is recorded
+ * once per (sender, reason) per race however long the flood runs. */
+static void test_drop_refusal_flood_leaves_a_bounded_mark() {
+    /* Three distinct (sender, reason) pairs: 100/epoch, 100/unknown,
+     * 300/not-proposer. One round writes all three. */
+    CHECK(mdkr_online_live_adapter_test_drop_refusal_records(1u) == 3u);
+    /* 700 rounds is 2,100 refusals -- past the ring's 2048 slots, so if every
+     * refusal were recorded the ring would now hold nothing else. It holds
+     * exactly the same three. */
+    CHECK(mdkr_online_live_adapter_test_drop_refusal_records(700u) == 3u);
+    /* Not vacuous: the refusals themselves are still happening. Zero rounds
+     * leave nothing, so the three above came from the flood, not from the
+     * staging. */
+    CHECK(mdkr_online_live_adapter_test_drop_refusal_records(0u) == 0u);
+}
+
+/* ---- S1: the preflight graph at three and four endpoints ---------------- *
+ *
+ * mdkr_match_preflight_evaluate compares every peer's attested graph digest
+ * against the local one and reports a disagreement BEFORE it ever reaches the
+ * admissibility check, so a room whose endpoints hash different graphs can
+ * never reach READY however healthy its mesh is. The adapter used to set only
+ * local<->peer edges: at two endpoints that star IS the complete graph and
+ * everyone agrees, but at three each endpoint hashed a different star centred
+ * on itself and the room stalled unconditionally. The consensus reducer itself
+ * already reaches READY at three endpoints (tests/test_match_preflight.c), so
+ * the graph the adapter built was the whole blocker. */
+
+static const unsigned kEveryPeer = 0xfu; /* the local index's bit is ignored */
+
+static bool sameDigest(const uint8_t *left, const uint8_t *right) {
+    return std::memcmp(left, right, MDKR_MATCH_PREFLIGHT_DIGEST_BYTES) == 0;
+}
+
+static bool zeroDigest(const uint8_t *digest) {
+    for (unsigned index = 0u; index < MDKR_MATCH_PREFLIGHT_DIGEST_BYTES;
+         ++index) {
+        if (digest[index] != 0u) return false;
+    }
+    return true;
+}
+
+/* Every endpoint in the room attests the same graph, at two, three and four --
+ * and the star it replaced is shown disagreeing at three and four, so this is
+ * not a fixture that would pass either way. */
+static void test_preflight_graph_agrees_at_three_and_four() {
+    uint8_t complete[MDKR_MATCH_PEER_GRAPH_MAX_ENDPOINTS]
+                    [MDKR_MATCH_PREFLIGHT_DIGEST_BYTES];
+    uint8_t star[MDKR_MATCH_PEER_GRAPH_MAX_ENDPOINTS]
+                [MDKR_MATCH_PREFLIGHT_DIGEST_BYTES];
+    uint8_t byCount[MDKR_MATCH_PEER_GRAPH_MAX_ENDPOINTS + 1u]
+                   [MDKR_MATCH_PREFLIGHT_DIGEST_BYTES];
+    std::memset(byCount, 0, sizeof(byCount));
+
+    for (unsigned count = 2u; count <= MDKR_MATCH_PEER_GRAPH_MAX_ENDPOINTS;
+         ++count) {
+        for (unsigned local = 0u; local < count; ++local) {
+            CHECK(mdkr_online_live_adapter_test_preflight_graph_digest(
+                count, local, kEveryPeer, kEveryPeer, false, complete[local]));
+            CHECK(mdkr_online_live_adapter_test_preflight_star_digest(
+                count, local, star[local]));
+            CHECK(!zeroDigest(complete[local]));
+        }
+        /* THE FIX. Whichever endpoint you stand on, the attested graph is the
+         * same one, so the digests can agree at all. */
+        for (unsigned local = 1u; local < count; ++local) {
+            CHECK(sameDigest(complete[0], complete[local]));
+        }
+        /* Roster order is not load-bearing: the digest sorts endpoints by id
+         * and remaps the reachability bits into that order before hashing, so
+         * a roster built the other way round hashes the same. */
+        for (unsigned local = 0u; local < count; ++local) {
+            uint8_t reversed[MDKR_MATCH_PREFLIGHT_DIGEST_BYTES];
+            CHECK(mdkr_online_live_adapter_test_preflight_graph_digest(
+                count, local, kEveryPeer, kEveryPeer, true, reversed));
+            CHECK(sameDigest(complete[0], reversed));
+        }
+        if (count == 2u) {
+            /* Two endpoints are UNCHANGED. The old star was already the
+             * complete graph there, so both endpoints attest the identical
+             * digest they attested before -- this change moves nothing that a
+             * two-player room can observe. */
+            CHECK(sameDigest(complete[0], star[0]));
+            CHECK(sameDigest(complete[1], star[1]));
+        } else {
+            /* THE BUG, reproduced. At three and four the star gave every
+             * endpoint a different digest, and none of them is the graph now
+             * attested. */
+            for (unsigned local = 0u; local < count; ++local) {
+                CHECK(!sameDigest(complete[0], star[local]));
+                for (unsigned other = local + 1u; other < count; ++other) {
+                    CHECK(!sameDigest(star[local], star[other]));
+                }
+            }
+        }
+        std::memcpy(byCount[count], complete[0],
+                    MDKR_MATCH_PREFLIGHT_DIGEST_BYTES);
+    }
+    /* Not vacuous: a room of a different size is a different graph. */
+    CHECK(!sameDigest(byCount[2], byCount[3]));
+    CHECK(!sameDigest(byCount[3], byCount[4]));
+    CHECK(!sameDigest(byCount[2], byCount[4]));
+}
+
+/* The assertion's other half, and the only reason it is sound: an endpoint
+ * that cannot speak for the whole roster declines to build a graph at all. It
+ * then never attests, and preflight leaves the room at WAITING_FOR_PEERS
+ * rather than agreeing a topology nobody can route -- the refusal direction. */
+static void test_preflight_graph_refuses_what_it_cannot_speak_for() {
+    uint8_t digest[MDKR_MATCH_PREFLIGHT_DIGEST_BYTES];
+    /* Control: the whole star seen, every generation known, three endpoints
+     * build. Local is index 0, so its peers are bits 1 and 2. */
+    CHECK(mdkr_online_live_adapter_test_preflight_graph_digest(
+        3u, 0u, 0x6u, 0x6u, false, digest));
+    CHECK(!zeroDigest(digest));
+
+    /* One peer's channels are not open here, so this endpoint has no evidence
+     * for the pair and refuses. Both endpoints of a broken pair refuse, so a
+     * genuinely incomplete mesh stalls the room instead of reaching READY. */
+    CHECK(!mdkr_online_live_adapter_test_preflight_graph_digest(
+        3u, 0u, 0x2u, 0x6u, false, digest));
+    CHECK(zeroDigest(digest));
+    CHECK(!mdkr_online_live_adapter_test_preflight_graph_digest(
+        4u, 1u, 0x5u, 0xdu, false, digest));
+    CHECK(zeroDigest(digest));
+
+    /* One peer's service-assigned generation is unknown. Standing the local
+     * generation in for it -- what the adapter used to do -- hashes a graph
+     * that peer cannot reproduce, and the graph is built once and latched, so
+     * that is a PERMANENT disagreement rather than something a later service()
+     * repairs. Refuse and wait instead. */
+    CHECK(!mdkr_online_live_adapter_test_preflight_graph_digest(
+        3u, 0u, 0x6u, 0x4u, false, digest));
+    CHECK(zeroDigest(digest));
+    CHECK(!mdkr_online_live_adapter_test_preflight_graph_digest(
+        4u, 3u, 0x7u, 0x3u, false, digest));
+    CHECK(zeroDigest(digest));
+    /* Including at two endpoints, where the substitute was equally wrong and
+     * equally permanent. */
+    CHECK(!mdkr_online_live_adapter_test_preflight_graph_digest(
+        2u, 0u, 0x2u, 0x0u, false, digest));
+    CHECK(zeroDigest(digest));
+
+    /* A room this seam cannot describe is refused rather than half-built. */
+    CHECK(!mdkr_online_live_adapter_test_preflight_graph_digest(
+        1u, 0u, kEveryPeer, kEveryPeer, false, digest));
+    CHECK(zeroDigest(digest));
+}
+
 int main() {
     test_map_lost_reason_in_race_branches();
     test_race_end_no_demotion_rule();
     test_reverify_paths_clear_stale_peer_loss();
+    test_reverify_paths_restart_route_measurement();
     test_retry_genuinely_retries();
     test_signal_lost_during_preflight_fronts_service_card();
     test_owning_wrapper_accessors_resolve_through_wrapper();
+    test_room_departure_gates_and_proposer();
+    test_drop_proposal_is_checked_before_it_counts();
+    test_departure_grace_holds_a_live_peers_verdict();
+    test_route_echo_budget_bounds_a_flood();
+    test_drop_refusal_flood_leaves_a_bounded_mark();
+    test_preflight_graph_agrees_at_three_and_four();
+    test_preflight_graph_refuses_what_it_cannot_speak_for();
     std::fprintf(stderr, "online_live_adapter_beta: %d checks, %d failures\n",
                  g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

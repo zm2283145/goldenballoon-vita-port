@@ -7,7 +7,7 @@
  */
 
 #include <PR/os.h>
-#include <libaudio.h>
+#include <PR/libaudio.h>
 #include <PR/abi.h>
 
 enum {

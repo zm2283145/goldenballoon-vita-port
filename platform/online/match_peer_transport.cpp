@@ -1,6 +1,7 @@
 #include "online/match_peer_transport.h"
 
 #include "net/match_peer_transcript.h"
+#include "net/net_failure_ring.h"
 #include "party/party_retry_policy.h"
 #include "party/party_webrtc_signaling.h"
 
@@ -57,8 +58,10 @@ constexpr size_t kMaxPublicEvents = 256u;
 constexpr size_t kMaxControlTextBytes = 4096u;
 constexpr size_t kMaxSdpBytes = 60u * 1024u;
 constexpr size_t kMaxCandidateBytes = 4096u;
-/* Channel-message protocol version for ping/pong (the party discipline). */
-constexpr unsigned kChannelProtocol = 1u;
+/* Channel-message protocol version for the plaintext control-channel messages
+ * (the party discipline). v2 adds race_drop; the set does not negotiate, so a
+ * v1 peer's ping is refused rather than half-understood. */
+constexpr unsigned kChannelProtocol = 2u;
 constexpr size_t kMaxPeerMessageBytes = 4096u;
 
 uint64_t steadyNowMs() {
@@ -133,6 +136,22 @@ std::string encodeHelloBody(const uint8_t body[32]) {
     return mdkr_party::base64Url(raw, sizeof(raw));
 }
 
+/* The three channel labels, in lane order, so a lane indexes its own label
+ * and nothing has to keep two orderings in step. */
+const char *const kMdkrMatchChannelLabels[MDKR_MATCH_PEER_LANE_COUNT] = {
+    kMdkrMatchStateChannelLabel, kMdkrMatchControlChannelLabel,
+    kMdkrMatchAuthorityChannelLabel};
+
+bool laneForLabel(const std::string &label, uint8_t &lane) {
+    for (unsigned index = 0u; index < MDKR_MATCH_PEER_LANE_COUNT; ++index) {
+        if (label == kMdkrMatchChannelLabels[index]) {
+            lane = static_cast<uint8_t>(index);
+            return true;
+        }
+    }
+    return false;
+}
+
 struct InternalEvent {
     enum class Kind {
         LocalDescription,
@@ -140,14 +159,14 @@ struct InternalEvent {
         ConnectionDown,
         ChannelAdopted,
         ChannelOpen,
-        StateData,
-        ControlBinary,
-        ControlText,
+        ChannelBinary,
+        ChannelText,
     };
     Kind kind = Kind::ConnectionDown;
     uint64_t peer = 0u;
     uint32_t attempt = 0u;
-    bool isState = false;
+    /* Which of the peer connection's channels the event came from. */
+    uint8_t lane = MDKR_MATCH_PEER_LANE_STATE;
     std::string text; /* sdp / candidate / control text */
     std::string extra; /* description type / candidate mid */
     std::vector<uint8_t> bytes;
@@ -157,6 +176,9 @@ struct InternalEvent {
 struct PeerRuntime {
     uint64_t endpointId = 0u;
     uint8_t slotMask = 0u;
+    /* Fixed position among the remote roster peers; the forensics ring indexes
+     * its per-peer stall snapshot by it. */
+    unsigned rosterIndex = 0u;
     uint32_t generation = 0u; /* 0 until welcome/presence names it */
     bool present = false;
     bool offerer = false;
@@ -173,10 +195,9 @@ struct PeerRuntime {
      * callbacks and stale answers can never touch a fresh connection. */
     uint32_t attempt = 0u;
     std::shared_ptr<rtc::PeerConnection> connection;
-    std::shared_ptr<rtc::DataChannel> state;
-    std::shared_ptr<rtc::DataChannel> control;
-    bool stateOpen = false;
-    bool controlOpen = false;
+    /* Indexed by MDKR_MATCH_PEER_LANE_*. */
+    std::shared_ptr<rtc::DataChannel> channels[MDKR_MATCH_PEER_LANE_COUNT];
+    bool channelOpen[MDKR_MATCH_PEER_LANE_COUNT] = {};
     bool channelsReady = false;
     bool answerApplied = false;
     uint64_t offerSentMs = 0u;
@@ -195,6 +216,24 @@ struct PeerRuntime {
     uint64_t nextPingAtMs = 0u;
     uint64_t pingOutstandingSinceMs = 0u;
 
+    /* Link health for the forensics ring. One RTT sample per answered ping;
+     * jitter is the RFC 3550 smoothing of its absolute change, so a single
+     * late pong cannot dominate the figure. Bytes cover both channels. */
+    uint32_t rttMs = 0u;
+    uint32_t jitterMs = 0u;
+    bool haveRtt = false;
+    uint64_t bytesSent = 0u;
+    uint64_t bytesReceived = 0u;
+
+    /* Envelopes from this peer that OPENED under its own derived lane key --
+     * an input bundle, a preflight fragment or an input repair. Monotonic
+     * across the mesh's lifetime and never reset, so a caller can compare two
+     * readings and know whether anything authenticated arrived between them
+     * (D1's peer-silence grace does exactly that). Bytes and rejected
+     * counters cannot answer that question: they also move for garbage, and
+     * garbage is not evidence that the peer is still racing. */
+    uint64_t authenticatedPackets = 0u;
+
     /* Vanish dwell (0 = disarmed): first tick at which this peer was BOTH
      * absent from signaling AND without ready channels. Armed/disarmed by
      * tick() from those two live facts each pump, so a presence re-assert or
@@ -203,16 +242,14 @@ struct PeerRuntime {
      * the state the dwell bounds. */
     uint64_t vanishedSinceMs = 0u;
 
-    /* Derived directional keys (slots in the mesh keyring) + replay. The
-     * two channels are independent streams over one sender sequence space:
-     * a reliable control fragment delayed behind >64 lossy state envelopes
-     * is honest traffic, so each channel keeps its own 64-deep window (its
-     * own subsequence stays monotonic-enough) instead of one shared window
-     * retiring the laggard as REPLAY. */
-    MdkrMatchPeerSealingKey *sealKey = nullptr;
-    MdkrMatchPeerSealingKey *openKey = nullptr;
-    MdkrMatchPeerReplayWindow replayState{};
-    MdkrMatchPeerReplayWindow replayControl{};
+    /* Derived directional keys (slots in the mesh keyring) + replay, one set
+     * per lane. Each channel owns a separate key and therefore a separate
+     * sequence space, so a reliable fragment delayed behind a burst of lossy
+     * state envelopes cannot be retired as a REPLAY of them, and one
+     * channel's traffic can never advance another channel's nonce. */
+    MdkrMatchPeerSealingKey *sealKeys[MDKR_MATCH_PEER_LANE_COUNT] = {};
+    MdkrMatchPeerSealingKey *openKeys[MDKR_MATCH_PEER_LANE_COUNT] = {};
+    MdkrMatchPeerReplayWindow replay[MDKR_MATCH_PEER_LANE_COUNT] = {};
 };
 
 }  // namespace
@@ -252,6 +289,19 @@ struct MdkrMatchPeerMesh::State
      * (read-and-cleared) by the launcher through consumeRaceAbort(), so a fresh
      * abort in a later race is observed independently. */
     bool raceAbortReceived = false;
+    /* A3: finalisation ticks peers proposed, one per departed endpoint, held
+     * the same read-and-clear way as the abort latch. Keyed by endpoint rather
+     * than held one at a time so a second departure's proposal cannot be lost
+     * behind an unconsumed first; first proposal for an endpoint wins. The
+     * SENDER rides along because only the launcher can tell whether that
+     * endpoint was entitled to propose, and the epoch because a proposal is
+     * about one race and must not be applied to the next one. */
+    struct RaceDropProposal {
+        uint64_t senderEndpointId = 0u;
+        uint32_t matchEpoch = 0u;
+        uint32_t tick = 0u;
+    };
+    std::map<uint64_t, RaceDropProposal> raceDrops;
     std::deque<MdkrMatchPeerMeshEvent> events;
     MdkrMatchPeerMeshStats counters;
 
@@ -259,6 +309,9 @@ struct MdkrMatchPeerMesh::State
     std::mutex queueMutex;
     std::deque<InternalEvent> internalQueue;
     uint64_t droppedInternal = 0u;
+    /* Edge detection for the ring: one record per crossing, not per pump. */
+    bool queuePressured = false;
+    uint64_t queueDroppedSeen = 0u;
 
     ~State() { teardown(/*announcePeerEnd=*/false); }
 
@@ -282,6 +335,12 @@ struct MdkrMatchPeerMesh::State
         event.type = MdkrMatchPeerMeshEventType::Failure;
         event.failure = failure;
         event.failureCode = std::move(failureCode);
+        /* The feed hands its failure code through verbatim and it can name a
+         * relay host, so it reaches the ring through the redaction filter. */
+        mdkr_net_failure_ring_record_host(
+            MDKR_NET_FAILURE_SESSION_FAILURE, static_cast<uint32_t>(now()),
+            MDKR_NET_FAILURE_NO_SLOT, static_cast<unsigned>(failure),
+            event.failureCode.c_str());
         emit(std::move(event));
     }
 
@@ -321,10 +380,10 @@ struct MdkrMatchPeerMesh::State
         peer.attempt++;
         std::shared_ptr<rtc::PeerConnection> stale = std::move(peer.connection);
         peer.connection.reset();
-        peer.state.reset();
-        peer.control.reset();
-        peer.stateOpen = false;
-        peer.controlOpen = false;
+        for (unsigned lane = 0u; lane < MDKR_MATCH_PEER_LANE_COUNT; ++lane) {
+            peer.channels[lane].reset();
+            peer.channelOpen[lane] = false;
+        }
         peer.channelsReady = false;
         peer.answerApplied = false;
         peer.offerSentMs = 0u;
@@ -336,14 +395,41 @@ struct MdkrMatchPeerMesh::State
         }
     }
 
-    void peerLost(PeerRuntime &peer, MdkrMatchPeerLostReason reason) {
+    /* One RTT sample from an answered ping. Jitter follows RFC 3550's
+     * smoothing (a sixteenth of each deviation), so one late pong moves the
+     * figure without owning it. */
+    static void noteRoundTrip(PeerRuntime &peer, uint64_t elapsedMs) {
+        const uint32_t sample = elapsedMs > UINT32_MAX
+                                    ? UINT32_MAX
+                                    : static_cast<uint32_t>(elapsedMs);
+        if (peer.haveRtt) {
+            const uint32_t deviation = sample > peer.rttMs
+                                           ? sample - peer.rttMs
+                                           : peer.rttMs - sample;
+            peer.jitterMs += (deviation - peer.jitterMs) / 16u;
+        }
+        peer.rttMs = sample;
+        peer.haveRtt = true;
+    }
+
+    /* `announce` false retires the peer silently: the ring record, the typed
+     * log line and the teardown all still happen, but no PeerLost event is
+     * queued. Used when the LAUNCHER asked for the retirement and already
+     * knows -- telling it back would only cost a pump. */
+    void peerLost(PeerRuntime &peer, MdkrMatchPeerLostReason reason,
+                  bool announce = true) {
         if (peer.lost) return;
         MDKR_MESH_LOG(
             "[MESH] peer LOST ep=%llu reason=%d channelsReady=%u offerer=%u\n",
             (unsigned long long)peer.endpointId, static_cast<int>(reason),
             peer.channelsReady ? 1u : 0u, peer.offerer ? 1u : 0u);
+        mdkr_net_failure_ring_record_host(
+            MDKR_NET_FAILURE_PEER_LOST, static_cast<uint32_t>(now()),
+            peer.rosterIndex, static_cast<unsigned>(reason),
+            mdkr_match_peer_lost_reason_name(reason));
         peer.lost = true;
         silentTeardown(peer);
+        if (!announce) return;
         MdkrMatchPeerMeshEvent event;
         event.type = MdkrMatchPeerMeshEventType::PeerLost;
         event.endpointId = peer.endpointId;
@@ -420,10 +506,7 @@ struct MdkrMatchPeerMesh::State
             mdkr_match_peer_keyring_forget(&keyring);
             if (soleOtherPeer) refreshOwnCommitment(); /* fresh local entropy */
             for (auto &entry : peers) {
-                entry.second.sealKey = nullptr;
-                entry.second.openKey = nullptr;
-                entry.second.replayState = MdkrMatchPeerReplayWindow{};
-                entry.second.replayControl = MdkrMatchPeerReplayWindow{};
+                forgetLaneKeys(entry.second);
             }
         }
     }
@@ -506,18 +589,17 @@ struct MdkrMatchPeerMesh::State
             [weak, endpointId, attempt](
                 std::shared_ptr<rtc::DataChannel> channel) {
                 if (auto state = weak.lock()) {
-                    const std::string label = channel->label();
-                    const bool isState = label == kMdkrMatchStateChannelLabel;
-                    if (!isState && label != kMdkrMatchControlChannelLabel) {
+                    uint8_t lane = MDKR_MATCH_PEER_LANE_STATE;
+                    if (!laneForLabel(channel->label(), lane)) {
                         return; /* unknown labels are ignored */
                     }
                     state->attachChannelCallbacks(channel, endpointId, attempt,
-                                                  isState);
+                                                  lane);
                     InternalEvent event;
                     event.kind = InternalEvent::Kind::ChannelAdopted;
                     event.peer = endpointId;
                     event.attempt = attempt;
-                    event.isState = isState;
+                    event.lane = lane;
                     event.channel = std::move(channel);
                     state->enqueueInternal(std::move(event));
                 }
@@ -526,15 +608,15 @@ struct MdkrMatchPeerMesh::State
 
     void attachChannelCallbacks(const std::shared_ptr<rtc::DataChannel> &channel,
                                 uint64_t endpointId, uint32_t attempt,
-                                bool isState) {
+                                uint8_t lane) {
         const std::weak_ptr<State> weak = weak_from_this();
-        channel->onOpen([weak, endpointId, attempt, isState]() {
+        channel->onOpen([weak, endpointId, attempt, lane]() {
             if (auto state = weak.lock()) {
                 InternalEvent event;
                 event.kind = InternalEvent::Kind::ChannelOpen;
                 event.peer = endpointId;
                 event.attempt = attempt;
-                event.isState = isState;
+                event.lane = lane;
                 state->enqueueInternal(std::move(event));
             }
         });
@@ -548,34 +630,35 @@ struct MdkrMatchPeerMesh::State
             }
         });
         channel->onMessage(
-            [weak, endpointId, attempt, isState](rtc::message_variant message) {
+            [weak, endpointId, attempt, lane](rtc::message_variant message) {
                 auto state = weak.lock();
                 if (!state) return;
                 InternalEvent event;
                 event.peer = endpointId;
                 event.attempt = attempt;
-                event.isState = isState;
+                event.lane = lane;
                 if (std::holds_alternative<rtc::binary>(message)) {
                     const rtc::binary &raw = std::get<rtc::binary>(message);
                     if (raw.size() > kMaxPeerMessageBytes) return;
-                    event.kind = isState ? InternalEvent::Kind::StateData
-                                         : InternalEvent::Kind::ControlBinary;
+                    event.kind = InternalEvent::Kind::ChannelBinary;
                     event.bytes.resize(raw.size());
                     if (!raw.empty()) {
                         std::memcpy(event.bytes.data(), raw.data(), raw.size());
                     }
                 } else {
                     const std::string &text = std::get<std::string>(message);
-                    if (isState) {
+                    if (lane == MDKR_MATCH_PEER_LANE_STATE) {
                         /* Text on the lossy state channel is just another
                          * bad datagram: counted and dropped in stateData. */
-                        event.kind = InternalEvent::Kind::StateData;
+                        event.kind = InternalEvent::Kind::ChannelBinary;
                         event.bytes.assign(text.begin(), text.end());
                     } else {
                         /* Oversize control text is garbage on the reliable
                          * channel; the empty-text event fails JSON parsing
-                         * in controlText and retires the peer, terminal. */
-                        event.kind = InternalEvent::Kind::ControlText;
+                         * in controlText and retires the peer, terminal.
+                         * Text on the authority channel is structural
+                         * garbage outright -- see the pump's dispatch. */
+                        event.kind = InternalEvent::Kind::ChannelText;
                         if (text.size() <= kMaxControlTextBytes) {
                             event.text = text;
                         }
@@ -616,15 +699,27 @@ struct MdkrMatchPeerMesh::State
         rtc::DataChannelInit stateConfiguration;
         stateConfiguration.reliability.unordered = true;
         stateConfiguration.reliability.maxRetransmits = 0u;
+        /* Retransmitted until delivered, but never head-of-line blocked: a
+         * repair answer is useful the moment it lands, and holding it behind
+         * an older message would spend the very ticks it exists to save. */
+        rtc::DataChannelInit authorityConfiguration;
+        authorityConfiguration.reliability.unordered = true;
         try {
-            peer.state = peer.connection->createDataChannel(
-                kMdkrMatchStateChannelLabel, stateConfiguration);
-            attachChannelCallbacks(peer.state, peer.endpointId, peer.attempt,
-                                   /*isState=*/true);
-            peer.control = peer.connection->createDataChannel(
-                kMdkrMatchControlChannelLabel);
-            attachChannelCallbacks(peer.control, peer.endpointId, peer.attempt,
-                                   /*isState=*/false);
+            peer.channels[MDKR_MATCH_PEER_LANE_STATE] =
+                peer.connection->createDataChannel(
+                    kMdkrMatchStateChannelLabel, stateConfiguration);
+            peer.channels[MDKR_MATCH_PEER_LANE_CONTROL] =
+                peer.connection->createDataChannel(
+                    kMdkrMatchControlChannelLabel);
+            peer.channels[MDKR_MATCH_PEER_LANE_AUTHORITY] =
+                peer.connection->createDataChannel(
+                    kMdkrMatchAuthorityChannelLabel, authorityConfiguration);
+            for (unsigned lane = 0u; lane < MDKR_MATCH_PEER_LANE_COUNT;
+                 ++lane) {
+                attachChannelCallbacks(peer.channels[lane], peer.endpointId,
+                                       peer.attempt,
+                                       static_cast<uint8_t>(lane));
+            }
         } catch (...) {
             silentTeardown(peer);
             buildFailed();
@@ -712,6 +807,17 @@ struct MdkrMatchPeerMesh::State
          * (keysDerived drops until the exchange completes again). */
         for (auto &entry : peers) {
             PeerRuntime &peer = entry.second;
+            /* Not for a peer already declared lost -- the same rule rosterPeer
+             * states at its own rekey: past the dwell's expiry the verdict
+             * stands, and only a real presence bump re-admits. rekeyPeer()
+             * clears `lost`, so calling it here resurrected every finalised
+             * departure -- PeerEnded, PeerVanished, and the PeerDeparted the A3
+             * drop path sets -- on nothing more than OUR socket being replaced,
+             * without emitting a new verdict. The launcher had already stopped
+             * consuming that endpoint while the mesh quietly resumed hellos,
+             * key derivation and input fan-out to it. It also reset
+             * restartEpisodes, which is the budget handlePeerEnd now spends. */
+            if (peer.lost) continue;
             rekeyPeer(peer, peer.generation);
             peer.present = false; /* the welcome's peer list re-asserts */
         }
@@ -763,7 +869,16 @@ struct MdkrMatchPeerMesh::State
         }
         PeerRuntime &peer = found->second;
         if (!present) {
-            if (peer.generation == generation) peer.present = false;
+            /* Edge-triggered: the room reports absence repeatedly while a
+             * member stays gone, and only the crossing is a departure. A
+             * generation the relay has already superseded says nothing about
+             * the peer this mesh is talking to. */
+            if (peer.generation != generation || !peer.present) return;
+            peer.present = false;
+            MdkrMatchPeerMeshEvent event;
+            event.type = MdkrMatchPeerMeshEventType::PeerDeparted;
+            event.endpointId = peer.endpointId;
+            emit(std::move(event));
             return;
         }
         if (peer.generation == 0u) {
@@ -906,8 +1021,31 @@ struct MdkrMatchPeerMesh::State
             peerLost(*peer, MdkrMatchPeerLostReason::PeerEnded);
             return;
         }
-        /* "restart": retire this generation's connection quietly; the
-         * offerer rebuilds, the answerer awaits the fresh offer. */
+        /*
+         * "restart": retire this generation's connection quietly; the offerer
+         * rebuilds, the answerer awaits the fresh offer.
+         *
+         * Bounded by the same budget connectionDown() spends, and for the same
+         * reason. silentTeardown() disarms every ladder that could later
+         * produce a verdict -- it clears channelsReady, so the control-ping
+         * ladder stops; it zeroes setupStartedMs, so the answerer deadline
+         * re-arms from scratch; and the vanish dwell needs !channelsReady while
+         * the signal socket is still up. Unbounded, a peer sending one of these
+         * every few seconds kept its own loss detection permanently disarmed,
+         * and mid-race the teardown stripped a live connection so sealAndSend()
+         * failed forever -- input delivery to that peer stopped silently while
+         * the mesh reported everything healthy. On the offerer path it also
+         * reset offerAttempts and gaveUp, making the retry ladder's give-up
+         * unreachable and buying a full PeerConnection rebuild each time.
+         *
+         * A remote-driven restart is still a restart episode, so it is charged
+         * to the same counter a local one is.
+         */
+        if (peer->restartEpisodes >= kMdkrMatchMaxRestartEpisodes) {
+            peerLost(*peer, MdkrMatchPeerLostReason::ConnectTimeout);
+            return;
+        }
+        peer->restartEpisodes++;
         silentTeardown(*peer);
         if (peer->offerer) {
             peer->offerAttempts = 0u;
@@ -984,41 +1122,48 @@ struct MdkrMatchPeerMesh::State
             connectionDown(peer);
             break;
         case InternalEvent::Kind::ChannelAdopted:
-            if (event.isState) peer.state = event.channel;
-            else peer.control = event.channel;
+            peer.channels[event.lane] = event.channel;
             if (event.channel && event.channel->isOpen()) {
-                channelOpened(peer, event.isState);
+                channelOpened(peer, event.lane);
             }
             break;
         case InternalEvent::Kind::ChannelOpen:
-            channelOpened(peer, event.isState);
+            channelOpened(peer, event.lane);
             break;
-        case InternalEvent::Kind::StateData:
-            stateData(peer, event.bytes);
+        case InternalEvent::Kind::ChannelBinary:
+            if (event.lane == MDKR_MATCH_PEER_LANE_STATE) {
+                stateData(peer, event.bytes);
+            } else {
+                reliableBinary(peer, event.lane, event.bytes);
+            }
             break;
-        case InternalEvent::Kind::ControlBinary:
-            controlBinary(peer, event.bytes);
-            break;
-        case InternalEvent::Kind::ControlText:
-            controlText(peer, event.text);
+        case InternalEvent::Kind::ChannelText:
+            /* Only the control channel speaks text (the ping ladder). Text on
+             * the authority channel is structural garbage on a reliable
+             * channel, exactly like a wrong-size frame, and terminal. */
+            if (event.lane == MDKR_MATCH_PEER_LANE_CONTROL) {
+                controlText(peer, event.text);
+            } else {
+                peerLost(peer,
+                         MdkrMatchPeerLostReason::ControlChannelViolation);
+            }
             break;
         }
     }
 
-    void channelOpened(PeerRuntime &peer, bool isState) {
-        if (isState) peer.stateOpen = true;
-        else peer.controlOpen = true;
+    void channelOpened(PeerRuntime &peer, uint8_t lane) {
+        peer.channelOpen[lane] = true;
         MDKR_MESH_LOG(
-            "[MESH] DataChannel open ep=%llu channel=%s stateOpen=%u "
-            "controlOpen=%u\n",
-            (unsigned long long)peer.endpointId, isState ? "STATE" : "control",
-            peer.stateOpen ? 1u : 0u, peer.controlOpen ? 1u : 0u);
-        if (!peer.channelsReady && peer.stateOpen && peer.controlOpen) {
+            "[MESH] DataChannel open ep=%llu channel=%s open=%u/%u\n",
+            (unsigned long long)peer.endpointId, kMdkrMatchChannelLabels[lane],
+            openChannelCount(peer), MDKR_MATCH_PEER_LANE_COUNT);
+        if (!peer.channelsReady && openChannelCount(peer) ==
+                                       MDKR_MATCH_PEER_LANE_COUNT) {
             peer.channelsReady = true;
             peer.pingOutstandingSinceMs = 0u;
             peer.nextPingAtMs = now() + kMdkrMatchControlPingIntervalMs;
             MDKR_MESH_LOG(
-                "[MESH] channels ready ep=%llu (STATE+control both open)\n",
+                "[MESH] channels ready ep=%llu (all three channels open)\n",
                 (unsigned long long)peer.endpointId);
             MdkrMatchPeerMeshEvent event;
             event.type = MdkrMatchPeerMeshEventType::PeerChannelsReady;
@@ -1063,6 +1208,7 @@ struct MdkrMatchPeerMesh::State
     }
 
     void stateData(PeerRuntime &peer, const std::vector<uint8_t> &bytes) {
+        peer.bytesReceived += bytes.size();
         /* Lossy by design: any rejection here is a counted drop, never
          * terminal -- a single bad datagram cannot end a race.
          *
@@ -1070,62 +1216,82 @@ struct MdkrMatchPeerMesh::State
          * mdkr_match_peer_inspect() the envelope and, when the header names
          * this endpoint as intermediate, run mdkr_match_peer_forwarder_admit
          * against the current graph route and relay the unchanged bytes. */
+        MdkrMatchPeerSealingKey *opening =
+            peer.openKeys[MDKR_MATCH_PEER_LANE_STATE];
         if (bytes.size() != MDKR_MATCH_PEER_ENVELOPE_BYTES || !keysDerived ||
-            peer.openKey == nullptr) {
+            opening == nullptr) {
             counters.rejectedStateEnvelopes++;
             return;
         }
         MdkrMatchPeerEnvelopeContext context{};
         MdkrMatchPeerMeshEvent event;
-        if (mdkr_match_peer_open(peer.openKey, &peer.openKey->direction,
-                                 &peer.replayState, bytes.data(), &context,
-                                 event.payload.data()) !=
-                MDKR_MATCH_PEER_CRYPTO_OK ||
+        if (mdkr_match_peer_open(
+                opening, &opening->direction,
+                &peer.replay[MDKR_MATCH_PEER_LANE_STATE], bytes.data(),
+                &context, event.payload.data()) != MDKR_MATCH_PEER_CRYPTO_OK ||
             context.payload_type != MDKR_MATCH_PEER_PAYLOAD_INPUT) {
             counters.rejectedStateEnvelopes++;
             return;
         }
+        peer.authenticatedPackets++;
         event.type = MdkrMatchPeerMeshEventType::InputEnvelope;
         event.endpointId = peer.endpointId;
         event.context = context;
         emit(std::move(event));
     }
 
-    void controlBinary(PeerRuntime &peer, const std::vector<uint8_t> &bytes) {
-        /* The reliable ordered channel never delivers STRUCTURAL garbage:
-         * a conforming peer only ever sends 132-byte envelopes here, so a
-         * wrong-size frame is terminal. An envelope that fails to OPEN is
-         * not: any roster peer's generation bump retires every
-         * transcript-salted key mesh-wide, and an honest third peer's
-         * in-flight fragment sealed under the old digest -- or one that
-         * lands before this side finished (re-)deriving -- authenticates
-         * as garbage while being nothing of the sort. Those are counted
-         * drops; the preflight layer's own retry discipline re-carries
-         * fragments once both sides re-derive. */
+    /* Both RELIABLE channels: control (preflight fragments) and authority
+     * (input repair). Neither ever delivers STRUCTURAL garbage -- a
+     * conforming peer only ever sends 132-byte envelopes here -- so a
+     * wrong-size frame, or an envelope authenticated under the peer's own
+     * key carrying a payload type the channel does not serve, is terminal.
+     * An envelope that merely fails to OPEN is not: any roster peer's
+     * generation bump retires every transcript-salted key mesh-wide, and an
+     * honest third peer's in-flight message sealed under the old digest --
+     * or one that lands before this side finished (re-)deriving --
+     * authenticates as garbage while being nothing of the sort. Those are
+     * counted drops; each layer's own retry discipline re-carries the
+     * message once both sides re-derive. */
+    void reliableBinary(PeerRuntime &peer, uint8_t lane,
+                        const std::vector<uint8_t> &bytes) {
+        const bool authority = lane == MDKR_MATCH_PEER_LANE_AUTHORITY;
+        uint64_t &rejected = authority ? counters.rejectedAuthorityEnvelopes
+                                       : counters.rejectedControlEnvelopes;
+        peer.bytesReceived += bytes.size();
         if (bytes.size() != MDKR_MATCH_PEER_ENVELOPE_BYTES) {
             peerLost(peer, MdkrMatchPeerLostReason::ControlChannelViolation);
             return;
         }
-        if (!keysDerived || peer.openKey == nullptr) {
-            counters.rejectedControlEnvelopes++;
+        MdkrMatchPeerSealingKey *opening = peer.openKeys[lane];
+        if (!keysDerived || opening == nullptr) {
+            rejected++;
             return;
         }
         MdkrMatchPeerEnvelopeContext context{};
         MdkrMatchPeerMeshEvent event;
-        if (mdkr_match_peer_open(peer.openKey, &peer.openKey->direction,
-                                 &peer.replayControl, bytes.data(), &context,
+        if (mdkr_match_peer_open(opening, &opening->direction,
+                                 &peer.replay[lane], bytes.data(), &context,
                                  event.payload.data()) !=
                 MDKR_MATCH_PEER_CRYPTO_OK) {
-            counters.rejectedControlEnvelopes++;
+            rejected++;
             return;
         }
-        if (context.payload_type != MDKR_MATCH_PEER_PAYLOAD_PREFLIGHT_FRAGMENT) {
+        const bool typed = authority
+            ? (context.payload_type ==
+                   MDKR_MATCH_PEER_PAYLOAD_INPUT_REPAIR_REQUEST ||
+               context.payload_type ==
+                   MDKR_MATCH_PEER_PAYLOAD_INPUT_REPAIR_ANSWER)
+            : context.payload_type == MDKR_MATCH_PEER_PAYLOAD_PREFLIGHT_FRAGMENT;
+        if (!typed) {
             /* Authenticated under the peer's own key with the wrong type:
              * proven misbehavior, not a race. */
             peerLost(peer, MdkrMatchPeerLostReason::ControlChannelViolation);
             return;
         }
-        event.type = MdkrMatchPeerMeshEventType::PreflightFragment;
+        peer.authenticatedPackets++;
+        event.type = authority
+            ? MdkrMatchPeerMeshEventType::InputRepairMessage
+            : MdkrMatchPeerMeshEventType::PreflightFragment;
         event.endpointId = peer.endpointId;
         event.context = context;
         emit(std::move(event));
@@ -1157,9 +1323,11 @@ struct MdkrMatchPeerMesh::State
             const uint32_t nonce =
                 static_cast<uint32_t>(value["nonce"].get<uint64_t>());
             if (type == "ping") {
-                if (peer.control && peer.control->isOpen()) {
+                const std::shared_ptr<rtc::DataChannel> &controlChannel =
+                    peer.channels[MDKR_MATCH_PEER_LANE_CONTROL];
+                if (controlChannel && controlChannel->isOpen()) {
                     try {
-                        peer.control->send(Json{{"type", "pong"},
+                        controlChannel->send(Json{{"type", "pong"},
                             {"protocol", kChannelProtocol},
                             {"nonce", nonce}}.dump());
                     } catch (...) {
@@ -1171,10 +1339,52 @@ struct MdkrMatchPeerMesh::State
             if (type == "pong") {
                 if (peer.pingOutstandingSinceMs != 0u &&
                     nonce == peer.pingNonce) {
+                    noteRoundTrip(peer, now() - peer.pingOutstandingSinceMs);
                     peer.pingOutstandingSinceMs = 0u;
                     peer.nextPingAtMs =
                         now() + kMdkrMatchControlPingIntervalMs;
                 }
+                return;
+            }
+            if (type == "race_drop") {
+                /* A3: the proposer names the departed endpoint, the race it is
+                 * talking about, and the tick every survivor finalises that
+                 * endpoint's seats at. The roster is fixed for the room, so a
+                 * name outside it -- the recipient's own, or the SENDER's own,
+                 * neither of which can have departed if it is talking -- is
+                 * garbage on the reliable channel, like any other malformed
+                 * control message. Whether the sender was ENTITLED to propose
+                 * is not decidable here: it depends on which endpoints have
+                 * already departed, which only the launcher tracks. */
+                if (!value.contains("endpoint") ||
+                    !value["endpoint"].is_number_unsigned() ||
+                    !value.contains("epoch") ||
+                    !value["epoch"].is_number_unsigned() ||
+                    value["epoch"].get<uint64_t>() > UINT32_MAX ||
+                    !value.contains("tick") ||
+                    !value["tick"].is_number_unsigned() ||
+                    value["tick"].get<uint64_t>() > UINT32_MAX) {
+                    peerLost(peer,
+                             MdkrMatchPeerLostReason::ControlChannelViolation);
+                    return;
+                }
+                const uint64_t departed = value["endpoint"].get<uint64_t>();
+                if (departed == localEndpointId ||
+                    departed == peer.endpointId ||
+                    peers.find(departed) == peers.end()) {
+                    peerLost(peer,
+                             MdkrMatchPeerLostReason::ControlChannelViolation);
+                    return;
+                }
+                RaceDropProposal proposal;
+                proposal.senderEndpointId = peer.endpointId;
+                proposal.matchEpoch =
+                    static_cast<uint32_t>(value["epoch"].get<uint64_t>());
+                proposal.tick =
+                    static_cast<uint32_t>(value["tick"].get<uint64_t>());
+                /* First proposal for an endpoint wins; the channel is
+                 * ordered, so every recipient sees the same first one. */
+                (void)raceDrops.emplace(departed, proposal);
                 return;
             }
             if (type == "race_abort") {
@@ -1237,13 +1447,20 @@ struct MdkrMatchPeerMesh::State
             inbound.source_generation = peer.generation;
             inbound.destination_endpoint_id = localEndpointId;
             inbound.destination_generation = localGeneration;
-            peer.sealKey = mdkr_match_peer_identity_derive_key(
-                &keyring, identity, peer.publicKey, digest, &outbound);
-            peer.openKey = mdkr_match_peer_identity_derive_key(
-                &keyring, identity, peer.publicKey, digest, &inbound);
-            peer.replayState = MdkrMatchPeerReplayWindow{};
-            peer.replayControl = MdkrMatchPeerReplayWindow{};
-            if (peer.sealKey == nullptr || peer.openKey == nullptr) {
+            bool derived = true;
+            for (unsigned lane = 0u; lane < MDKR_MATCH_PEER_LANE_COUNT;
+                 ++lane) {
+                outbound.lane = static_cast<uint8_t>(lane);
+                inbound.lane = static_cast<uint8_t>(lane);
+                peer.sealKeys[lane] = mdkr_match_peer_identity_derive_key(
+                    &keyring, identity, peer.publicKey, digest, &outbound);
+                peer.openKeys[lane] = mdkr_match_peer_identity_derive_key(
+                    &keyring, identity, peer.publicKey, digest, &inbound);
+                peer.replay[lane] = MdkrMatchPeerReplayWindow{};
+                derived = derived && peer.sealKeys[lane] != nullptr &&
+                    peer.openKeys[lane] != nullptr;
+            }
+            if (!derived) {
                 /* An invalid revealed key surfaces here (derive validates
                  * the curve point): that is THIS peer's typed loss, not a
                  * mesh failure -- the commitment round passed over bytes
@@ -1252,10 +1469,7 @@ struct MdkrMatchPeerMesh::State
                  * while the mesh itself stays alive and typed. */
                 peerLost(peer, MdkrMatchPeerLostReason::HelloViolation);
                 mdkr_match_peer_keyring_forget(&keyring);
-                for (auto &reset : peers) {
-                    reset.second.sealKey = nullptr;
-                    reset.second.openKey = nullptr;
-                }
+                for (auto &reset : peers) forgetLaneKeys(reset.second);
                 return;
             }
         }
@@ -1352,7 +1566,14 @@ struct MdkrMatchPeerMesh::State
                 } else if (nowMs - peer.setupStartedMs >=
                            kMdkrMatchAnswererSetupDeadlineMs) {
                     peer.gaveUp = true;
-                    peerLost(peer, MdkrMatchPeerLostReason::ConnectTimeout);
+                    /* Channels DID open, just not all of them: the offer's
+                     * channel set is short, which is what an endpoint that
+                     * predates a channel looks like. Name it instead of
+                     * reporting the ICE-never-completed verdict. */
+                    peerLost(peer, missingChannel(peer) ?
+                                       MdkrMatchPeerLostReason::
+                                           ChannelSetMismatch
+                                     : MdkrMatchPeerLostReason::ConnectTimeout);
                     continue;
                 }
             }
@@ -1372,7 +1593,14 @@ struct MdkrMatchPeerMesh::State
                             kMdkrMatchOfferRetryDeadlineMs);
                     if (decision.giveUp) {
                         peer.gaveUp = true;
-                        peerLost(peer, MdkrMatchPeerLostReason::ConnectTimeout);
+                        /* Same diagnosis as the answerer's deadline: channels
+                         * opened but not the whole set, so the peer's protocol
+                         * is short a channel rather than unreachable. */
+                        peerLost(peer, missingChannel(peer) ?
+                                           MdkrMatchPeerLostReason::
+                                               ChannelSetMismatch
+                                         : MdkrMatchPeerLostReason::
+                                               ConnectTimeout);
                         continue;
                     }
                     if (decision.recreatePeer) {
@@ -1399,12 +1627,14 @@ struct MdkrMatchPeerMesh::State
                 }
                 if (peer.pingOutstandingSinceMs == 0u &&
                     peer.nextPingAtMs != 0u && nowMs >= peer.nextPingAtMs &&
-                    peer.control && peer.control->isOpen()) {
+                    peer.channels[MDKR_MATCH_PEER_LANE_CONTROL] &&
+                    peer.channels[MDKR_MATCH_PEER_LANE_CONTROL]->isOpen()) {
                     peer.pingNonce++;
                     peer.pingOutstandingSinceMs = nowMs;
                     peer.nextPingAtMs = nowMs + kMdkrMatchControlPingIntervalMs;
                     try {
-                        peer.control->send(Json{{"type", "ping"},
+                        peer.channels[MDKR_MATCH_PEER_LANE_CONTROL]->send(
+                            Json{{"type", "ping"},
                             {"protocol", kChannelProtocol},
                             {"nonce", peer.pingNonce}}.dump());
                     } catch (...) {
@@ -1437,51 +1667,129 @@ struct MdkrMatchPeerMesh::State
             handleFeedEvent(event);
         }
         std::deque<InternalEvent> pending;
+        uint64_t dropped;
         {
             std::lock_guard<std::mutex> lock(queueMutex);
             pending.swap(internalQueue);
+            dropped = droppedInternal;
         }
+        /* The callback threads fill the internal queue, so the drop counters
+         * are read (never recorded) off-thread and only compared here, where
+         * the ring has its single writer. */
+        noteQueueDepth(pending.size(), dropped + counters.droppedEvents);
         for (const InternalEvent &event : pending) {
             handleInternal(event);
         }
         tick();
     }
 
+    /* Pressure crosses at three quarters of the callback queue's bound, which
+     * is the last pump before a burst starts costing events. */
+    void noteQueueDepth(size_t depth, uint64_t dropped) {
+        const size_t pressureAt = kMaxInternalEvents - kMaxInternalEvents / 4u;
+        const bool pressured = depth >= pressureAt;
+        if (pressured && !queuePressured) {
+            mdkr_net_failure_ring_record_host(
+                MDKR_NET_FAILURE_QUEUE_PRESSURE, static_cast<uint32_t>(now()),
+                MDKR_NET_FAILURE_NO_SLOT,
+                static_cast<unsigned>(depth * 100u / kMaxInternalEvents),
+                nullptr);
+        }
+        queuePressured = pressured;
+        if (dropped != queueDroppedSeen) {
+            queueDroppedSeen = dropped;
+            mdkr_net_failure_ring_record_host(
+                MDKR_NET_FAILURE_QUEUE_OVERFLOW, static_cast<uint32_t>(now()),
+                MDKR_NET_FAILURE_NO_SLOT, 0u, nullptr);
+        }
+    }
+
     /* ---- Data plane ---------------------------------------------------------*/
+
+    /* True when the peer's connection produced SOME channels but never the
+     * whole set: at the setup deadline that is a protocol-version mismatch,
+     * not an unreachable endpoint. Logs the labels that never arrived, so a
+     * stderr capture names the missing channel even where the reason code
+     * alone would not. */
+    static bool missingChannel(const PeerRuntime &peer) {
+        const unsigned open = openChannelCount(peer);
+        if (open == 0u || open == MDKR_MATCH_PEER_LANE_COUNT) return false;
+        for (unsigned lane = 0u; lane < MDKR_MATCH_PEER_LANE_COUNT; ++lane) {
+            if (!peer.channelOpen[lane]) {
+                MDKR_MESH_LOG(
+                    "[MESH] peer ep=%llu never opened channel=%s\n",
+                    (unsigned long long)peer.endpointId,
+                    kMdkrMatchChannelLabels[lane]);
+            }
+        }
+        return true;
+    }
+
+    static unsigned openChannelCount(const PeerRuntime &peer) {
+        unsigned open = 0u;
+        for (unsigned lane = 0u; lane < MDKR_MATCH_PEER_LANE_COUNT; ++lane) {
+            if (peer.channelOpen[lane]) open++;
+        }
+        return open;
+    }
+
+    static void forgetLaneKeys(PeerRuntime &peer) {
+        for (unsigned lane = 0u; lane < MDKR_MATCH_PEER_LANE_COUNT; ++lane) {
+            peer.sealKeys[lane] = nullptr;
+            peer.openKeys[lane] = nullptr;
+            peer.replay[lane] = MdkrMatchPeerReplayWindow{};
+        }
+    }
+
+    /* Seal one 64-byte payload under `lane`'s own key and send it on that
+     * lane's channel. Each lane's window owns its own nonce sequence, so a
+     * send here can never advance another channel's. An exhausted window is
+     * this direction's typed, terminal loss whichever lane spends the last
+     * sequence. */
+    bool sealAndSend(PeerRuntime &peer, uint8_t lane, uint8_t payloadType,
+                     const uint8_t payload[MDKR_MATCH_PEER_PAYLOAD_BYTES]) {
+        MdkrMatchPeerSealingKey *sealing = peer.sealKeys[lane];
+        const std::shared_ptr<rtc::DataChannel> &channel = peer.channels[lane];
+        if (peer.lost || !peer.channelsReady || sealing == nullptr ||
+            !channel || !channel->isOpen()) {
+            return false;
+        }
+        MdkrMatchPeerSendContext context{};
+        context.key = sealing->direction;
+        context.intermediate_endpoint_id = 0u; /* direct mesh only */
+        context.payload_type = payloadType;
+        uint8_t envelope[MDKR_MATCH_PEER_ENVELOPE_BYTES];
+        if (!mdkr_match_peer_seal(sealing, &context, payload, envelope)) {
+            if (!sealing->window.ready) {
+                /* Nonce space spent: this direction requires a reconnect and
+                 * a fresh generation-bound key. Typed and terminal. */
+                peerLost(peer, MdkrMatchPeerLostReason::SealWindowExhausted);
+            }
+            return false;
+        }
+        try {
+            if (!channel->send(reinterpret_cast<const std::byte *>(envelope),
+                               sizeof(envelope))) {
+                return false;
+            }
+        } catch (...) {
+            /* The channel-down event will drive recovery. */
+            return false;
+        }
+        peer.bytesSent += sizeof(envelope);
+        return true;
+    }
 
     unsigned sendInput(const uint8_t bundle[MDKR_MATCH_PEER_PAYLOAD_BYTES]) {
         if (closed || failed || !keysDerived) return 0u;
         unsigned reached = 0u;
         for (auto &entry : peers) {
             PeerRuntime &peer = entry.second;
-            if (peer.lost || !peer.channelsReady || peer.sealKey == nullptr ||
-                !peer.state || !peer.state->isOpen()) {
+            if (!sealAndSend(peer, MDKR_MATCH_PEER_LANE_STATE,
+                             MDKR_MATCH_PEER_PAYLOAD_INPUT, bundle)) {
                 continue;
             }
-            MdkrMatchPeerSendContext context{};
-            context.key = peer.sealKey->direction;
-            context.intermediate_endpoint_id = 0u; /* direct mesh only */
-            context.payload_type = MDKR_MATCH_PEER_PAYLOAD_INPUT;
-            uint8_t envelope[MDKR_MATCH_PEER_ENVELOPE_BYTES];
-            if (!mdkr_match_peer_seal(peer.sealKey, &context, bundle,
-                                      envelope)) {
-                if (!peer.sealKey->window.ready) {
-                    /* Nonce space spent: this direction requires a reconnect
-                     * and a fresh generation-bound key. Typed and terminal. */
-                    peerLost(peer,
-                             MdkrMatchPeerLostReason::SealWindowExhausted);
-                }
-                continue;
-            }
-            try {
-                if (peer.state->send(
-                        reinterpret_cast<const std::byte *>(envelope),
-                        sizeof(envelope))) {
-                    reached++;
-                }
-            } catch (...) {
-                /* The channel-down event will drive recovery. */
-            }
+            reached++;
         }
         return reached;
     }
@@ -1494,11 +1802,49 @@ struct MdkrMatchPeerMesh::State
         unsigned reached = 0u;
         for (auto &entry : peers) {
             PeerRuntime &peer = entry.second;
-            if (peer.lost || !peer.control || !peer.control->isOpen()) continue;
+            const std::shared_ptr<rtc::DataChannel> &controlChannel =
+                peer.channels[MDKR_MATCH_PEER_LANE_CONTROL];
+            if (peer.lost || !controlChannel || !controlChannel->isOpen())
+                continue;
             try {
-                if (peer.control->send(Json{{"type", "race_abort"},
+                if (controlChannel->send(Json{{"type", "race_abort"},
                         {"protocol", kChannelProtocol},
                         {"nonce", 0u}}.dump())) {
+                    reached++;
+                }
+            } catch (...) {
+                connectionDown(peer);
+            }
+        }
+        return reached;
+    }
+
+    /* A3: fan the agreed finalisation tick out on the reliable control
+     * channel. `checkRoster` is the production path's refusal of an endpoint
+     * this room never had; the test seam sends without it so the RECIPIENT's
+     * validation is what a test observes. */
+    unsigned sendRaceDrop(uint64_t departedEndpointId, uint32_t matchEpoch,
+                          uint32_t tick, bool checkRoster) {
+        if (closed || failed || departedEndpointId == 0u) return 0u;
+        if (checkRoster && peers.find(departedEndpointId) == peers.end()) {
+            return 0u;
+        }
+        unsigned reached = 0u;
+        for (auto &entry : peers) {
+            PeerRuntime &peer = entry.second;
+            const std::shared_ptr<rtc::DataChannel> &controlChannel =
+                peer.channels[MDKR_MATCH_PEER_LANE_CONTROL];
+            if (peer.lost || peer.endpointId == departedEndpointId ||
+                !controlChannel || !controlChannel->isOpen()) {
+                continue;
+            }
+            try {
+                if (controlChannel->send(Json{{"type", "race_drop"},
+                        {"protocol", kChannelProtocol},
+                        {"nonce", 0u},
+                        {"endpoint", departedEndpointId},
+                        {"epoch", matchEpoch},
+                        {"tick", tick}}.dump())) {
                     reached++;
                 }
             } catch (...) {
@@ -1514,29 +1860,23 @@ struct MdkrMatchPeerMesh::State
         if (closed || failed || !keysDerived) return false;
         const auto found = peers.find(peerEndpointId);
         if (found == peers.end()) return false;
-        PeerRuntime &peer = found->second;
-        if (peer.lost || !peer.channelsReady || peer.sealKey == nullptr ||
-            !peer.control || !peer.control->isOpen()) {
+        return sealAndSend(found->second, MDKR_MATCH_PEER_LANE_CONTROL,
+                           MDKR_MATCH_PEER_PAYLOAD_PREFLIGHT_FRAGMENT,
+                           fragment);
+    }
+
+    bool sendInputRepair(
+        uint64_t peerEndpointId, uint8_t payloadType,
+        const uint8_t message[MDKR_MATCH_PEER_PAYLOAD_BYTES]) {
+        if (closed || failed || !keysDerived ||
+            (payloadType != MDKR_MATCH_PEER_PAYLOAD_INPUT_REPAIR_REQUEST &&
+             payloadType != MDKR_MATCH_PEER_PAYLOAD_INPUT_REPAIR_ANSWER)) {
             return false;
         }
-        MdkrMatchPeerSendContext context{};
-        context.key = peer.sealKey->direction;
-        context.intermediate_endpoint_id = 0u;
-        context.payload_type = MDKR_MATCH_PEER_PAYLOAD_PREFLIGHT_FRAGMENT;
-        uint8_t envelope[MDKR_MATCH_PEER_ENVELOPE_BYTES];
-        if (!mdkr_match_peer_seal(peer.sealKey, &context, fragment, envelope)) {
-            if (!peer.sealKey->window.ready) {
-                peerLost(peer, MdkrMatchPeerLostReason::SealWindowExhausted);
-            }
-            return false;
-        }
-        try {
-            return peer.control->send(
-                reinterpret_cast<const std::byte *>(envelope),
-                sizeof(envelope));
-        } catch (...) {
-            return false;
-        }
+        const auto found = peers.find(peerEndpointId);
+        if (found == peers.end()) return false;
+        return sealAndSend(found->second, MDKR_MATCH_PEER_LANE_AUTHORITY,
+                           payloadType, message);
     }
 
     /* ---- Teardown ------------------------------------------------------------*/
@@ -1572,10 +1912,11 @@ struct MdkrMatchPeerMesh::State
                 connections.push_back(std::move(peer.connection));
             }
             peer.connection.reset();
-            peer.state.reset();
-            peer.control.reset();
-            peer.sealKey = nullptr;
-            peer.openKey = nullptr;
+            for (unsigned lane = 0u; lane < MDKR_MATCH_PEER_LANE_COUNT;
+                 ++lane) {
+                peer.channels[lane].reset();
+            }
+            forgetLaneKeys(peer);
         }
         for (const auto &connection : connections) {
             try { connection->close(); } catch (...) {}
@@ -1653,6 +1994,7 @@ std::unique_ptr<MdkrMatchPeerMesh> MdkrMatchPeerMesh::create(
         PeerRuntime peer;
         peer.endpointId = owner.endpointId;
         peer.slotMask = owner.slotMask;
+        peer.rosterIndex = static_cast<unsigned>(state->peers.size());
         /* Glare-free by construction: the lower id offers. */
         peer.offerer = options.localEndpointId < owner.endpointId;
         state->peers.emplace(owner.endpointId, std::move(peer));
@@ -1687,10 +2029,58 @@ bool MdkrMatchPeerMesh::consumeRaceAbort() {
     return true;
 }
 
+bool MdkrMatchPeerMesh::retireDepartedPeer(uint64_t endpointId) {
+    if (!state_) return false;
+    const auto found = state_->peers.find(endpointId);
+    if (found == state_->peers.end() || found->second.lost) return false;
+    state_->peerLost(found->second, MdkrMatchPeerLostReason::PeerDeparted,
+                     /*announce=*/false);
+    return true;
+}
+
+unsigned MdkrMatchPeerMesh::sendRaceDrop(uint64_t departedEndpointId,
+                                         uint32_t matchEpoch, uint32_t tick) {
+    return state_ ? state_->sendRaceDrop(departedEndpointId, matchEpoch, tick,
+                                         /*checkRoster=*/true)
+                  : 0u;
+}
+
+bool MdkrMatchPeerMesh::peekRaceDrop() const {
+    return state_ && !state_->raceDrops.empty();
+}
+
+bool MdkrMatchPeerMesh::consumeRaceDrop(uint64_t *senderEndpointId,
+                                        uint64_t *departedEndpointId,
+                                        uint32_t *matchEpoch, uint32_t *tick) {
+    if (!state_ || state_->raceDrops.empty() ||
+        senderEndpointId == nullptr || departedEndpointId == nullptr ||
+        matchEpoch == nullptr || tick == nullptr) {
+        return false;
+    }
+    const auto oldest = state_->raceDrops.begin();
+    *senderEndpointId = oldest->second.senderEndpointId;
+    *departedEndpointId = oldest->first;
+    *matchEpoch = oldest->second.matchEpoch;
+    *tick = oldest->second.tick;
+    state_->raceDrops.erase(oldest);
+    return true;
+}
+
+void MdkrMatchPeerMesh::clearRaceDrops() {
+    if (state_) state_->raceDrops.clear();
+}
+
 bool MdkrMatchPeerMesh::sendPreflightFragment(
     uint64_t peerEndpointId,
     const uint8_t fragment[MDKR_MATCH_PEER_PAYLOAD_BYTES]) {
     return state_->sendPreflightFragment(peerEndpointId, fragment);
+}
+
+bool MdkrMatchPeerMesh::sendInputRepair(
+    uint64_t peerEndpointId, uint8_t payloadType,
+    const uint8_t message[MDKR_MATCH_PEER_PAYLOAD_BYTES]) {
+    if (message == nullptr) return false;
+    return state_->sendInputRepair(peerEndpointId, payloadType, message);
 }
 
 bool MdkrMatchPeerMesh::phrase(std::string &out) const {
@@ -1725,11 +2115,45 @@ bool MdkrMatchPeerMesh::peerGeneration(uint64_t peerEndpointId,
     return true;
 }
 
+bool MdkrMatchPeerMesh::authenticatedPacketCount(uint64_t peerEndpointId,
+                                                 uint64_t *out) const {
+    if (out == nullptr || !state_) return false;
+    const auto found = state_->peers.find(peerEndpointId);
+    if (found == state_->peers.end()) return false;
+    *out = found->second.authenticatedPackets;
+    return true;
+}
+
 bool MdkrMatchPeerMesh::peerChannelsReady(uint64_t peerEndpointId) const {
     if (!state_) return false;
     const auto found = state_->peers.find(peerEndpointId);
     return found != state_->peers.end() && !found->second.lost &&
            found->second.channelsReady;
+}
+
+unsigned MdkrMatchPeerMesh::linkStats(
+    MdkrMatchPeerLinkStats *out, unsigned max) const {
+    unsigned written = 0u;
+    if (out == nullptr || !state_) return 0u;
+    for (const auto &entry : state_->peers) {
+        const PeerRuntime &peer = entry.second;
+        if (written >= max) break;
+        out[written].endpointId = peer.endpointId;
+        out[written].rosterIndex = peer.rosterIndex;
+        out[written].rttMs = peer.rttMs;
+        out[written].jitterMs = peer.jitterMs;
+        out[written].bytesSent = peer.bytesSent;
+        out[written].bytesReceived = peer.bytesReceived;
+        out[written].consecutivePingMisses = 0u;
+        if (peer.channelsReady && !peer.lost &&
+            peer.pingOutstandingSinceMs != 0u) {
+            const uint64_t elapsed = state_->now() - peer.pingOutstandingSinceMs;
+            out[written].consecutivePingMisses =
+                (uint32_t)(elapsed / kMdkrMatchControlPingIntervalMs);
+        }
+        written++;
+    }
+    return written;
 }
 
 MdkrMatchPeerMeshStats MdkrMatchPeerMesh::stats() const {
@@ -1749,14 +2173,23 @@ bool mdkr_match_peer_mesh_exhaust_seal_for_test(MdkrMatchPeerMesh &mesh,
                                                 uint64_t peerEndpointId) {
     const auto found = mesh.state_->peers.find(peerEndpointId);
     if (found == mesh.state_->peers.end() ||
-        found->second.sealKey == nullptr) {
+        found->second.sealKeys[MDKR_MATCH_PEER_LANE_STATE] == nullptr) {
         return false;
     }
     /* Exactly the state one UINT64_MAX seal leaves behind
      * (test_match_peer_crypto.cpp pins it): not ready, sequence zeroed. */
-    found->second.sealKey->window.ready = false;
-    found->second.sealKey->window.next_sequence = 0u;
+    MdkrMatchPeerSealingKey *sealing =
+        found->second.sealKeys[MDKR_MATCH_PEER_LANE_STATE];
+    sealing->window.ready = false;
+    sealing->window.next_sequence = 0u;
     return true;
+}
+
+bool mdkr_match_peer_mesh_send_raw_race_drop_for_test(
+    MdkrMatchPeerMesh &mesh, uint64_t departedEndpointId, uint32_t matchEpoch,
+    uint32_t tick) {
+    return mesh.state_ && mesh.state_->sendRaceDrop(
+        departedEndpointId, matchEpoch, tick, /*checkRoster=*/false) > 0u;
 }
 
 bool mdkr_match_peer_mesh_kill_channels_for_test(MdkrMatchPeerMesh &mesh,

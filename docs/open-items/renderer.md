@@ -813,6 +813,155 @@ and the browser-visible-table check still passes.
 The transferable scalar-byte-as-string defect shape is recorded in
 [`MGB64_BACKFLOW.md`](../MGB64_BACKFLOW.md).
 
+## FIXED (instrument): AP-19's race renderer census read a terminal-only ownership high
+
+`check_adventure_party_performance.py` failed on the 1.6.0 merge with
+
+```
+race renderer: terminal generations established a new ownership high in
+counter 1: [(6, 310, 0), (6, 310, 0), (6, 310, 0), (6, 310, 0), (6, 313, 0)]
+```
+
+Counter 1 is `texPeak` from the `renderer_generation:` line
+(`platform/fast3d/gfx_pc_dkr.c:2676`): the high-water number of GPU texture
+handles the fast3d texture cache held **at once** inside one generation. It is
+not a retained count. Every race generation in every run — failing and passing
+— reports `texCreated == texDeleted` and returns to `texLive=6`, so nothing was
+retained across cycles and nothing leaked. Only the last of the twenty
+generations peaked 3 handles higher, and it did so deterministically.
+
+The mechanism is the fixture's own clock, not the renderer. The route's sparse
+`A` advances (one every 300 frames,
+`tests/input_scripts/adventure_party_4p_performance.txt`) do double duty: they
+are the kart's throttle **and** the thing that clears the post-race panels
+early. Those panels are not open-ended — every one of them is opened with
+`postrace_offsets(..., 0.5f, 15.0f, 0.5f, ...)` (`game/src/menu.c:14944` and
+its four siblings), so `gPostraceScaleMiddle` is 900 and `POSTRACE_HOLD`
+(`game/src/menu.c:4375-4396`) runs a **timed** 900-unit hold that an A/START
+press short-circuits. Measured, portrait draw to option list: **146 frames** in
+every cycle whose advance lands inside the panels, **999 frames** in a cycle
+with no advance left — and the same 999 in two independent runs at different
+phases, so the terminal window is bounded and deterministic rather than
+uncharacterised. That short-circuit is also the fixture's quantizer: race
+durations vary by ±150 frames, and rounding each cycle up to the next advance
+is what makes all twenty exactly 3000 frames long and therefore comparable.
+
+`bounded_input_text()` truncated those advances at the last admission, so the
+**last** cycle alone had none left. On the failing tip its panels held from
+frame 21486 to 22485 — 999 frames against the 146 of cycle 5 — over a
+still-resident race level. The acquisition diff of race 6 against race 5 shows
+that window acquiring nine texture keys race 5 never did while missing five
+race 5 had: a net **+4 created** (`texCreated` 313 -> 317) and **+3
+concurrent** (`texPeak` 310 -> 313), which is exactly the census delta. The
+nine include five results-panel textures the shorter window never reaches
+(`72x12` RGBA32 x3, `64x12` RGBA32 x2) plus `64x32`, `32x30` and `32x32`
+companions.
+
+Three measurements pin terminal-ness, not cycle count, as the variable, all on
+the same binary:
+
+- A 6-cycle development arm reproduces the same `310,310,310,310,313` with 313
+  on cycle 6.
+- Extending the advance horizon by 1200 frames moved the elevation to the
+  newly terminal seventh cycle (`318`) and let cycle 6 plateau at 310.
+- Giving the terminal cycle the advance it lacked — first by keeping one past
+  the horizon (the attempt below, rejected on other grounds), then by the
+  shipped seam — returns every race generation to the plateau.
+
+Positive control: with the fix reverted, the same binary reproduces
+`[(6,310,0) x4, (6,313,0)]` three times over — the 20-cycle qualification run
+and two 6-cycle arms, the second with texture-acquire instrumentation compiled
+in, which changed no census value.
+
+**The fix is a terminal-only seam, not more advances.** The obvious repair —
+keep one advance past the horizon — was implemented and measured green on the
+merged tip (twenty generations at `texPeak=310`), then run at the pre-merge
+`a223eb78` phase, where those advances land differently: the terminal panels
+open at 21148, the horizon advance at 21300 already clears them, the return is
+at 21364, and the kept advance at 21600 falls 236 frames into the terminal
+lobby with the kart parked at the return entrance facing the door. That arm
+passed with exactly 6 cycles, and the door entry it was suspected of causing
+(`level_load: levelId=5 ... cutscene=1 @frame~21673`) happens at the *same
+frame* in the pre-fix run at that phase, so the entry is the autopilot's, not
+the advance's, and the shape was not falsified.
+
+It was replaced anyway, because it leaves the terminal cycle's correctness
+resting on one advance landing inside a window whose position moves with phase
+— the exact fragility that produced this defect. What shipped instead is
+terminal by construction: `mdkr_adventure_route_cycles_exhausted()`
+(`platform/mdkr_adventure.c`) reports when `MDKR_DRIVE_ROUTE` **orders two or
+more door entries** and has retired its last step on every level leg — read-only,
+false with no route and before the route is parsed — and `postrace_render()`
+(`game/src/menu.c`) ORs in one `A_BUTTON` when that is true **and**
+`MDKR_TEST_POSTRACE_OPTION` is set, i.e. only for a fixture that already opted
+into a closed-loop hand on this screen, inside the existing
+`gIgnorePlayerInputTime == 0` window. While any route step remains the predicate
+is false and every earlier cycle keeps its exact present behaviour, so the
+quantizer is untouched; and unlike an advance it can never hand the kart
+throttle in the lobby. Measured, the terminal panels clear in **42 frames at
+both phases** (tip 21486 -> 21528, pre-merge 21148 -> 21190) instead of 999,
+against the 146 an advance-driven cycle takes — a shorter window than an
+ordinary one, so it cannot upload more.
+
+The two-entry half of the predicate is what keeps this to the case it exists
+for. Exhaustion alone is also true of a single-entry route (`...;12:E5`) for
+the whole of its only post-race, and the party fixtures that share that route
+— `check_adventure_party_progress`, `check_adventure_party_adventure_two`,
+`check_adventure_party_race_loop`, `check_fast3d_dl_hardening` — all set
+`MDKR_TEST_POSTRACE_OPTION`. They measured green against the exhaustion-only
+predicate, but only incidentally: their hub leg carries three waypoints AFTER
+its `E12`, so it is never exhausted while the kart is in the race, and a route
+edit that dropped those waypoints would have armed the seam under them
+silently. Requiring two ordered entries makes "terminal cycle of a repeated
+route" a property of the predicate rather than of where a route happens to put
+its last waypoint. A one-cycle `--development-cycles 1` run is likewise not
+armed, which is correct: it has no earlier cycle to be comparable with.
+
+One consequence to know about. A stray extra door ENTRY after the last ordered
+one is pre-existing and unrelated to any of this: the autopilot re-enters ~309
+frames after the terminal return on both builds, before and after the fix
+(pre-merge 21673, tip 22826), and it never completes a cycle. The seam does
+now clear that entry's post-race panels too, so it could in principle finish
+where it previously stalled. Measured, it does not: the 20-cycle qualification
+reports exactly 20 cycles and both 6-cycle arms exactly 6.
+
+What must **not** be done is to make the seam clear the panels
+unconditionally. That was tried and measured: it removes the quantizer, cycle
+lengths spread to 2954-3146 frames, and the race census then genuinely varies
+(`314, 303, 312, 313, 313`, a rising-suffix failure).
+
+What the 1.6.0 merge contributed was phase, not objects. Its offline simulation
+differs from the pre-merge tip from the attract sequence onward — the first
+divergent authoritative field is a **one-ULP `trans.scale`** on a smoke emitter
+(`objectID=0x0095`, `[HASHOBJ] tick=171`, `3e840bca` vs `3e840bc9`), from which
+everything diverges chaotically; the first `[GRND]` difference is racer 2's
+pitch at frame 2832 (`xrot=1290` vs `1280`). By the first race the route runs
+~300 frames later, and that drift moved the terminal cycle's panels past the
+last scripted advance; the pre-merge tip cleared them with 152 frames to spare,
+which was the whole margin the fixture had.
+
+**ATTRIBUTED, and not a defect.** That one-ULP divergence is commit
+`84b89c7d`, "build: pin FP contraction off across every engine lane" — a
+deliberate 1.6.0 determinism fix. The paragraph that used to stand here ruled
+FMA formation out because `-ffp-contract=off` is set tree-wide; that was
+inverted. The pin is set on the merged side only — `a223eb78` has no
+`-ffp-contract` at all — so the merge is precisely where FMA fusion stops.
+Unpinned, AppleClang on arm64 fuses `a*b+c` into one `fmadd` at `-O2` and
+rounds once; pinned, the expression rounds twice, which is a one-ULP move in an
+emitter scale.
+
+Measured, not inferred: at the 1.6.0 tip (`83a847cc`), deleting only the
+`-ffp-contract=off` line reproduces `cbe389b3`'s `[SIMHASH]` stream and its
+per-object `[HASHOBJ]` dumps **byte-identically for 3000 ticks**, while the
+shipped tip diverges from that reference at tick 90 — so no other commit in the
+472-commit range touches the offline simulation, and `sim_hash.c`'s own 1.6.0
+change is confirmed I/O-only rather than assumed to be. It stays as it is:
+lockstep peers and every golden float hash need float state to be
+bit-reproducible across the native, wasm and mingw lanes. Removing the pin
+fails `check_weather_rng_order` and `check_authored_rng_compat` on their frozen
+whole-stream digests (both measured). Full record:
+[`gameplay.md` § NOT A DEFECT: the one-ULP attract-simulation move](gameplay.md#not-a-defect-the-one-ulp-attract-simulation-move-across-the-v160-merge-is-the-fp-contraction-pin-84b89c7d).
+
 ## FIXED: banana sparkle sprite overran its own vertex region
 
 The banana-counter sparkle was not a blending or widescreen artifact. Sprite
@@ -2668,3 +2817,61 @@ byte-exactness to the console picture no longer holds. Installing a pack is
 arguably itself the opt-in, and that is a defensible answer -- but it has to be
 a stated decision in `docs/MODDING.md` and the notes, not an omission nobody
 wrote down.
+
+## FIXED: the split-screen sky quad is a 4:3 object in a widescreen frustum — issue #61
+
+**Symptom (reported against 1.5.2).** "The skybox in several levels during
+multiplayer has black lines on each side, e.g. Fossil Canyon." One player never
+shows it.
+
+**Mechanism.** `render_scene()` takes `skydome_render()` only when
+`numViewports < 2`. Every split-screen viewport instead gets
+`trackbg_render_gradient()`: a single flat quad at `x = -200..+200`,
+`y = -150..+150` (PAL 180, halved for `TWO_PLAYERS`), `z = 20`, drawn under
+`mtx_perspective()` behind `D_800DD288`'s `z = -281` eye offset. Those numbers
+are the frustum, not a guess — at 261 units out,
+`261 * tanf(30 deg) = 150.7` and `* 4/3 = 200.9`. The quad is machined to fill
+a 4:3, 60-degree-vertical-FOV view, the only view an N64 had.
+
+The port's widescreen is Hor+: `mdkr_display_calculate_projection()` keeps the
+vertical FOV and derives `horizontal_fov` from the live presentation aspect
+(`display_config.c`), and the two-player projection deliberately reuses the
+full-screen aspect rather than doubling it for the half-height rectangle. So at
+any aspect wider than 4:3 the frustum outgrows the quad by exactly
+`aspect / (4/3)`, and the strips the quad no longer reaches keep the colour the
+frame was cleared to. `voidColour` is `0,0,0` on Fossil Canyon, Ancient Lake,
+Whale Bay, Pirate Lagoon and Treasure Caves — hence *black* lines, and hence
+"several levels".
+
+**Measurement.** Instrumenting the quad's own vertices magenta and dumping the
+two-player fixture on Fossil Canyon: at `1280x960` (4:3) the quad reached
+`x = 2552` of a 2560-wide dump; at `1280x720` it stopped at `x = 2232`, against
+the predicted `1280 + 0.75 * 1280 = 2240`. 12.5% of each side unpainted, matching
+`(4/3) / (16/9) = 0.75` to within the sampling step.
+
+**Fix** (`trackbg_render_gradient`, `game/src/tracks.c`, under `NATIVE_PORT`
+with a byte-identical stock `#else`): re-derive the extents from the projection
+that is actually in the matrix — `halfH = 150 * tan(vfov/2) / tan(30 deg)`,
+`halfW = halfH * aspect`, via `cam_get_effective_vertical_fov()` /
+`cam_get_effective_aspect()` — floored at the authored values so a
+narrower-than-4:3 presentation can never lose coverage. At the authored 60
+degrees and 4:3 this reproduces `200`/`150` exactly, so 4:3 output is unchanged
+and one-player output cannot change at all (it never calls this function). The
+vertical term follows the same identity, so the gameplay-FOV slider cannot open
+a gap at the top and bottom either; when the `maximum_horizontal_fov` guard
+lowers the vertical FOV on ultrawide, both terms track it (measured at aspect
+3.5556: `vfov 39.60`, `x = 333`).
+
+**Regression check.** `check_split_screen_backdrop.py` (registered), two arms:
+the derived extent published by `[TRACE] bg_backdrop:` (4:3 must be the ROM's
+`200`/`150` — the retail-parity rail; 16:9 must be `267`), and the worst-frame
+pure-black fraction of each viewport's sky band. Positive control, with only the
+widening neutered: extent arm fails (`x=200` at 16:9), viewport 0 goes
+`0.2% -> 12.7%`, viewport 1 `4.3% -> 10.7%`; the 4:3 arm still passes, proving
+the rail is inert where it should be.
+
+**Recorded, not fixed.** `trackbg_render_flashy()` (Wizpig 2) builds a cylinder
+around the camera rather than a flat quad, so it has no equivalent shortfall.
+The authored constants are themselves ~0.45% short of the exact frustum
+(`200` vs `200.9`); the widening is proportional to them, so that authored
+margin is preserved rather than "corrected" — changing it would move 4:3 output.

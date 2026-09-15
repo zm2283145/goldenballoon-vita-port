@@ -2,8 +2,8 @@
 
 Status: shipped in 1.0.4 (2026-08-04); the Preview label was removed once
 authored UV scroll gained retained endpoints. The Presentation pace quick
-choice, `display-margin` and the 40 Hz cap are unreleased. The qualification
-measurements below were taken 2026-08-02.
+choice, `display-margin` and the 40 Hz cap shipped in 1.1.0 (2026-08-07). The
+qualification measurements below were taken 2026-08-02.
 
 ## Decision
 

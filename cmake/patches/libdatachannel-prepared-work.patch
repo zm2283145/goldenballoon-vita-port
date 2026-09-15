@@ -1,0 +1,224 @@
+diff --git a/src/impl/processor.cpp b/src/impl/processor.cpp
+--- a/src/impl/processor.cpp
++++ b/src/impl/processor.cpp
+@@ -10,7 +10,7 @@
+ 
+ namespace rtc::impl {
+ 
+-Processor::Processor(size_t limit) : mTasks(limit) {}
++Processor::Processor(size_t limit) : mLimit(limit) {}
+ 
+ Processor::~Processor() { join(); }
+ 
+@@ -19,12 +19,14 @@
+ 	mCondition.wait(lock, [this]() { return !mPending && mTasks.empty(); });
+ }
+ 
+-void Processor::schedule() {
++void Processor::schedule() noexcept {
+ 	std::unique_lock lock(mMutex);
+ 	if (auto next = mTasks.pop()) {
+-		ThreadPool::Instance().enqueue(std::move(*next));
++		ThreadPool::Instance().enqueuePrepared(std::move(next));
++		mCondition.notify_all(); // release bounded admission waiters
+ 	} else {
+-		// No more tasks
++		// Settle pending before the final callable releases its retained owner.
++		// That owner may destroy this Processor and call join() on this worker.
+ 		mPending = false;
+ 		mCondition.notify_all();
+ 	}
+diff --git a/src/impl/processor.hpp b/src/impl/processor.hpp
+--- a/src/impl/processor.hpp
++++ b/src/impl/processor.hpp
+@@ -37,9 +37,10 @@
+ 	template <class F, class... Args> void enqueue(F &&f, Args &&...args) noexcept;
+ 
+ private:
+-	void schedule();
++	void schedule() noexcept;
+ 
+-	Queue<std::function<void()>> mTasks;
++	ThreadPool::PreparedQueue mTasks;
++	const size_t mLimit;
+ 	bool mPending = false; // true iff a task is pending in the thread pool
+ 
+ 	mutable std::mutex mMutex;
+@@ -56,18 +57,26 @@
+ };
+ 
+ template <class F, class... Args> void Processor::enqueue(F &&f, Args &&...args) noexcept {
+-	std::unique_lock lock(mMutex);
++	// Preparation may still fail under this legacy noexcept API. SCTP upcall
++	// and terminal teardown refusal ownership must be fixed before changing it.
++	// Every shipped peer/SCTP task retains its owner; teardown's Processor is
++	// immortal. Do not enqueue ownerless raw pointers into a retiring Processor.
+ 	auto bound = std::bind(std::forward<F>(f), std::forward<Args>(args)...);
+-	auto task = [this, bound = std::move(bound)]() mutable {
+-		scope_guard guard(std::bind(&Processor::schedule, this)); // chain the next task
++	auto task = ThreadPool::prepare([this, bound = std::move(bound)]() mutable {
++		MdkrNoAllocScopeExit continuation([this]() noexcept { schedule(); });
+ 		return bound();
+-	};
+-
++	});
++	auto &pool = ThreadPool::Instance();
++	std::unique_lock lock(mMutex);
++	// Backpressure must release this mutex: schedule() needs it to make space.
++	mCondition.wait(lock, [this]() {
++		return !mPending || mLimit == 0 || mTasks.size() < mLimit;
++	});
+ 	if (!mPending) {
+-		ThreadPool::Instance().enqueue(std::move(task));
+ 		mPending = true;
++		pool.enqueuePrepared(std::move(task));
+ 	} else {
+-		mTasks.push(std::move(task));
++		mTasks.push(std::move(task), ThreadPool::clock::now());
+ 	}
+ }
+ 
+diff --git a/src/impl/threadpool.cpp b/src/impl/threadpool.cpp
+--- a/src/impl/threadpool.cpp
++++ b/src/impl/threadpool.cpp
+@@ -34,7 +34,7 @@
+ void ThreadPool::join() {
+ 	{
+ 		std::unique_lock lock(mMutex);
+-		mWaitingCondition.wait(lock, [&]() { return mBusyWorkers == 0; });
++		mWaitingCondition.wait(lock, [&]() { return mBusyWorkers == 0 && mPrepared.empty(); });
+ 		mJoining = true;
+ 		mTasksCondition.notify_all();
+ 	}
+@@ -49,49 +49,70 @@
+ }
+ 
+ void ThreadPool::clear() {
++	// Only cancellable timed work is cleared. Accepted Processor work drains
++	// through join(); discarding it would strand the Processor pending state.
++	for (;;) {
++		std::function<void()> retired;
++		{
++			std::unique_lock lock(mMutex);
++			if (mTasks.empty())
++				return;
++			retired = mTasks.top().takeCallable();
++			mTasks.pop();
++		}
++		// Captured owner destruction may join a Processor or enqueue teardown.
++		// It must happen with neither scheduler nor Processor mutex held.
++	}
++}
++
++void ThreadPool::enqueuePrepared(PreparedWork work) noexcept {
+ 	std::unique_lock lock(mMutex);
+-	while (!mTasks.empty())
+-		mTasks.pop();
++	mPrepared.push(std::move(work), clock::now());
++	mTasksCondition.notify_one();
+ }
+ 
+ void ThreadPool::run() {
+-	utils::this_thread::set_name("RTC worker");
++	try { utils::this_thread::set_name("RTC worker"); } catch (...) { /* optional */ }
+ 	++mBusyWorkers;
+-	scope_guard guard([&]() { --mBusyWorkers; });
++	MdkrNoAllocScopeExit guard([&]() noexcept { --mBusyWorkers; });
+ 	while (runOne()) {
+ 	}
+ }
+ 
+ bool ThreadPool::runOne() {
+ 	if (auto task = dequeue()) {
+-		task();
++		try { task(); }
++		catch (...) { ++mPreparedTaskFailures; } // progress before optional diagnostics
+ 		return true;
+ 	}
+ 	return false;
+ }
+ 
+-std::function<void()> ThreadPool::dequeue() {
++ThreadPool::Dispatch ThreadPool::dequeue() {
+ 	std::unique_lock lock(mMutex);
+ 	while (!mJoining) {
+ 		std::optional<clock::time_point> time;
+-		if (!mTasks.empty()) {
++		if (!mTasks.empty())
+ 			time = mTasks.top().time;
+-			if (*time <= clock::now()) {
+-				auto func = mTasks.top().takeCallable();
+-				mTasks.pop();
+-				return func;
+-			}
++		// Immediate FIFO publication timestamps compete with timed priorities.
++		// A continuous prepared stream cannot starve an already-due timer.
++		if (!mPrepared.empty() && (!time || mPrepared.front().time < *time))
++			return {mPrepared.pop(), {}};
++		if (time && *time <= clock::now()) {
++			auto func = mTasks.top().takeCallable();
++			mTasks.pop();
++			return {{}, std::move(func)};
+ 		}
+ 
+ 		--mBusyWorkers;
+-		scope_guard guard([&]() { ++mBusyWorkers; });
++		MdkrNoAllocScopeExit guard([&]() noexcept { ++mBusyWorkers; });
+ 		mWaitingCondition.notify_all();
+ 		if (time)
+ 			mTasksCondition.wait_until(lock, *time);
+ 		else
+ 			mTasksCondition.wait(lock);
+ 	}
+-	return nullptr;
++	return {};
+ }
+ 
+ } // namespace rtc::impl
+diff --git a/src/impl/threadpool.hpp b/src/impl/threadpool.hpp
+--- a/src/impl/threadpool.hpp
++++ b/src/impl/threadpool.hpp
+@@ -13,6 +13,7 @@
+ #include "init.hpp"
+ #include "internals.hpp"
+ #include "queued_work_admission.h"
++#include "prepared_work_queue.h"
+ 
+ #include <chrono>
+ #include <condition_variable>
+@@ -49,6 +50,16 @@
+ 	void run();
+ 	bool runOne();
+ 
++	using PreparedQueue = MdkrPreparedWorkQueue<clock::time_point>;
++	using PreparedWork = PreparedQueue::Pointer;
++	template <class F> static PreparedWork prepare(F &&function) {
++		return PreparedQueue::prepare(std::forward<F>(function));
++	}
++	// Prepared publication needs a live epoch, like existing scheduler callers.
++	// Continuations run on a busy worker, so join cannot retire their lane.
++	void enqueuePrepared(PreparedWork work) noexcept;
++	uint64_t preparedTaskFailures() const noexcept { return mPreparedTaskFailures.load(); }
++
+ 	template <class F, class... Args>
+ 	auto enqueue(F &&f, Args &&...args) noexcept -> invoke_future_t<F, Args...>;
+ 
+@@ -64,14 +75,17 @@
+ 	ThreadPool();
+ 	~ThreadPool();
+ 
+-	std::function<void()> dequeue(); // returns null function if joining
++	using Dispatch = MdkrPreparedDispatch<clock::time_point>;
++	Dispatch dequeue(); // returns empty dispatch if joining
+ 
+ 	std::vector<std::thread> mWorkers;
+ 	std::atomic<int> mBusyWorkers = 0;
+ 	std::atomic<bool> mJoining = false;
++	std::atomic<uint64_t> mPreparedTaskFailures = 0;
+ 
+ 	using Task = MdkrScheduledWork<clock::time_point>;
+ 	std::priority_queue<Task, std::deque<Task>, std::greater<Task>> mTasks;
++	PreparedQueue mPrepared;
+ 
+ 	std::condition_variable mTasksCondition, mWaitingCondition;
+ 	mutable std::mutex mMutex, mWorkersMutex;

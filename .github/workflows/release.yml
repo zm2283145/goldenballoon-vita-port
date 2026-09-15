@@ -61,6 +61,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       party_origin: ${{ steps.party.outputs.party_origin }}
+      party_mode: ${{ steps.party.outputs.party_mode }}
     steps:
       - name: Checkout full tag history
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -83,6 +84,13 @@ jobs:
               exit 1
             }
           else
+            SOURCE_RELEASE_VERSION="$(sed -nE \
+              's/^[[:space:]]*set\(MDKR_VERSION "([^"]+)" CACHE STRING.*$/\1/p' \
+              CMakeLists.txt)"
+            [[ "$SOURCE_RELEASE_VERSION" == "$RELEASE_VERSION" ]] || {
+              echo "release version $RELEASE_VERSION does not match CMakeLists.txt ($SOURCE_RELEASE_VERSION)" >&2
+              exit 1
+            }
             EXPECTED_RELEASE_TAG="v${RELEASE_VERSION}"
             [[ "$RELEASE_TAG" == "$EXPECTED_RELEASE_TAG" ]] || {
               echo "release_tag must exactly equal $EXPECTED_RELEASE_TAG" >&2
@@ -103,7 +111,9 @@ jobs:
       # partyless for three releases. Fail closed here, before anything
       # is built: either a valid deployed origin is configured, or a partyless
       # release is declared on purpose and said out loud in the log. The build
-      # jobs consume the resolved value as this job's `party_origin` output.
+      # jobs consume the resolved origin as `party_origin`; provenance consumes
+      # the independently explicit `party_mode` output so an origin-less build
+      # cannot later be described as cloud-enabled.
       - id: party
         name: Resolve and gate the compiled Phone Party origin
         env:
@@ -113,6 +123,7 @@ jobs:
           set -euo pipefail
           origin="${PARTY_ORIGIN:-}"
           allow="${ALLOW_PARTYLESS:-}"
+          mode=""
           if [[ -n "$origin" ]]; then
             # Exactly https://HOST[:PORT]. A trailing slash, path, query,
             # fragment or embedded credentials all change the URL the phone
@@ -130,6 +141,7 @@ jobs:
                 ;;
             esac
             echo "Phone Party origin compiled into this release: $origin"
+            mode="cloud-enabled"
           elif [[ "$allow" == "1" ]]; then
             echo "::warning::PARTYLESS RELEASE: these artifacts ship with Phone Party absent"
             echo "=============================================================="
@@ -140,11 +152,13 @@ jobs:
             echo "To ship a working Phone Party, set the repository variable"
             echo "MDKR_PARTY_ORIGIN to the deployed https:// origin and re-run."
             echo "=============================================================="
+            mode="partyless"
           else
             echo "::error::No Phone Party origin for this release: these artifacts would ship with Phone Party absent (an origin-less build shows no Phone Party surface at all). Set the repository variable MDKR_PARTY_ORIGIN to the deployed https:// origin, or set MDKR_ALLOW_PARTYLESS_RELEASE=1 to ship deliberately without Phone Party."
             exit 1
           fi
           echo "party_origin=$origin" >> "$GITHUB_OUTPUT"
+          echo "party_mode=$mode" >> "$GITHUB_OUTPUT"
       # A dispatch can name any ref. Run the same clean-room / public-surface
       # policy gates correctness.yml runs, before anything is built or
       # published, so an unvetted ref cannot ship.
@@ -165,6 +179,11 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13.13"
+          cache: pip
+          cache-dependency-path: tools/character_importer_build_requirements.txt
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -182,9 +201,25 @@ jobs:
         run: |
           cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
             -DMDKR_VERSION="$RELEASE_VERSION" \
+            -DMDKR_ENABLE_ONLINE_BETA=ON \
             -DMDKR_ENABLE_ONLINE_ROOM_PREVIEW=OFF \
             -DMDKR_PARTY_ORIGIN="$PARTY_ORIGIN"
           cmake --build build -j
+      - name: Build and attest the self-contained Character Workshop toolchain
+        run: |
+          python -m pip install --disable-pip-version-check \
+            --require-hashes --only-binary=:all: \
+            -r tools/character_importer_build_requirements.txt
+          mkdir -p build-tools/validators
+          curl -fsSL -o "$RUNNER_TEMP/gltf-validator-linux.tar.xz" \
+            https://github.com/KhronosGroup/glTF-Validator/releases/download/2.0.0-dev.3.10/gltf_validator-2.0.0-dev.3.10-linux64.tar.xz
+          python tools/build_gltf_validator.py \
+            --release-archive "$RUNNER_TEMP/gltf-validator-linux.tar.xz" \
+            --output build-tools/validators/gltf_validator
+          python tools/build_character_importer.py \
+            --output build-tools/character_importer
+          python tests/check_frozen_character_importer.py \
+            build-tools/character_importer
       - name: ROM-free unit tests (GPU tests routed separately)
         env:
           SDL_VIDEODRIVER: dummy
@@ -274,8 +309,8 @@ jobs:
 
           qualify_launcher webgpu "" "$GITHUB_WORKSPACE/build/mdkr64"
           qualify_launcher gl gl "$GITHUB_WORKSPACE/build/mdkr64"
-          qualify_launcher deferred-preview "" "$GITHUB_WORKSPACE/build/mdkr64" \
-            "Online Room" Play
+          qualify_launcher online-beta "" "$GITHUB_WORKSPACE/build/mdkr64" \
+            "Online Room" "Online Room"
 
           # Phone Party surface witness (direct, not a proxy). The party
           # section lives on the launcher's Play panel, so this run opens that
@@ -367,7 +402,15 @@ jobs:
           qualify_party_surface built "$GITHUB_WORKSPACE/build/mdkr64" \
             "$GITHUB_WORKSPACE"
       - name: Package AppImage + tar.gz
-        run: ./tools/package_linux_appimage.sh --binary build/mdkr64 --version "${{ needs.validate.outputs.version }}"
+        run: |
+          ./tools/package_linux_appimage.sh \
+            --binary build/mdkr64 \
+            --character-importer build-tools/character_importer \
+            --character-importer-manifest build-tools/character_importer.manifest.json \
+            --gltf-validator build-tools/validators/gltf_validator \
+            --gltf-validator-manifest build-tools/validators/gltf_validator.manifest.json \
+            --character-lod-tool build/tools/mdkr-character-lod \
+            --version "${{ needs.validate.outputs.version }}"
       - name: Qualify extracted tar/AppRun from an unrelated directory
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
@@ -385,8 +428,17 @@ jobs:
             -C "$extract"
           app_run="$extract/Golden-Balloon.AppDir/AppRun"
           binary="$extract/Golden-Balloon.AppDir/usr/bin/mdkr64"
+          importer="$extract/Golden-Balloon.AppDir/usr/bin/tools/character_importer"
+          validator="$extract/Golden-Balloon.AppDir/usr/bin/tools/validators/gltf_validator"
+          validator_manifest="$validator.manifest.json"
           lib_dir="$extract/Golden-Balloon.AppDir/usr/lib"
-          test -x "$app_run"
+          test -x "$app_run" && test -x "$importer" && test -x "$validator"
+          (cd "$unrelated" && "$importer" tool-info) | \
+            grep -Fq '"frozen": true'
+          python tests/check_frozen_character_importer.py "$importer"
+          python tools/verify_gltf_validator.py \
+            --executable "$validator" --manifest "$validator_manifest" \
+            --target linux-x86_64
           LD_LIBRARY_PATH="$lib_dir" ldd "$binary" | \
             grep -E "libSDL2[^ ]* => $lib_dir/libSDL2[^ ]*"
 
@@ -441,7 +493,7 @@ jobs:
 
           qualify_package webgpu ""
           qualify_package gl gl
-          qualify_package deferred-preview "" "Online Room" Play
+          qualify_package online-beta "" "Online Room" "Online Room"
 
           # Phone Party surface witness for the artifact players actually get.
           # Same seam and same honest limits as the built-tree step above. A
@@ -500,23 +552,32 @@ jobs:
             echo "package: party surface drew, $party_line"
           fi
       - name: Stamp provenance (bind assets to this commit)
+        env:
+          PHONE_PARTY_MODE: ${{ needs.validate.outputs.party_mode }}
         run: |
           for f in dist/Golden-Balloon-*-linux-x86_64.*; do
-            case "$f" in *.provenance.json) continue ;; esac
-            ./tools/release/stamp_provenance.sh "$f" "${{ needs.validate.outputs.version }}"
+            case "$f" in *.provenance.json|*.sha256) continue ;; esac
+            ./tools/release/stamp_provenance.sh \
+              --phone-party "$PHONE_PARTY_MODE" \
+              "$f" "${{ needs.validate.outputs.version }}"
           done
-      # Fail closed between stamping and upload: every artifact about to leave
-      # this job must carry a sidecar binding it to this exact commit, and no
-      # unrecognised or cross-version artifact may be sitting in dist/.
+      # Fail closed between stamping and upload: both promised Linux artifacts
+      # must exist, every artifact about to leave this job must carry checksum +
+      # provenance sidecars binding it to this exact commit, and no unrecognised
+      # or cross-version artifact may be sitting in dist/.
       - name: Verify provenance of every artifact before upload
         env:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          PHONE_PARTY_MODE: ${{ needs.validate.outputs.party_mode }}
         run: |
           ./tools/release/verify_provenance.sh \
             --dist dist \
             --version "$RELEASE_VERSION" \
             --commit "$GITHUB_SHA" \
+            --require-asset "Golden-Balloon-${RELEASE_VERSION}-linux-x86_64.AppImage" \
+            --require-asset "Golden-Balloon-${RELEASE_VERSION}-linux-x86_64.tar.gz" \
             --require platform=linux \
+            --require "phone_party=$PHONE_PARTY_MODE" \
             --out-checksums "$RUNNER_TEMP/linux-SHA256SUMS.txt" \
             --out-manifest "$RUNNER_TEMP/linux-manifest.json"
           cat "$RUNNER_TEMP/linux-SHA256SUMS.txt"
@@ -524,6 +585,7 @@ jobs:
         with:
           name: Golden-Balloon-${{ needs.validate.outputs.version }}-linux-x86_64
           path: dist/Golden-Balloon-${{ needs.validate.outputs.version }}-linux-x86_64.*
+          if-no-files-found: error
 
   windows:
     # No automatic publishing by design. A windows-latest VM is useful for ABI, import,
@@ -559,8 +621,13 @@ jobs:
             mingw-w64-ucrt-x86_64-SDL2 mingw-w64-ucrt-x86_64-pkg-config
             mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-python zip unzip
             diffutils
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13.13"
+          cache: pip
+          cache-dependency-path: tools/character_importer_build_requirements.txt
       - name: Verify declared Python toolchain
-        run: python3 --version
+        run: python --version
       - name: Build the app (Release)
         env:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
@@ -571,6 +638,7 @@ jobs:
         run: |
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
             -DMDKR_VERSION="$RELEASE_VERSION" \
+            -DMDKR_ENABLE_ONLINE_BETA=ON \
             -DMDKR_ENABLE_ONLINE_ROOM_PREVIEW=OFF \
             -DMDKR_PARTY_ORIGIN="$PARTY_ORIGIN"
           # The full ROM-free suite runs in the cross-platform correctness
@@ -580,8 +648,23 @@ jobs:
           # GPU, window or network, so the documented GPU limitation that
           # keeps a launcher gate off this runner does not apply to them.
           cmake --build build --target mdkr64 mdkr_memory_allocator_test \
-            mdkr_native_party_bringup_test mdkr_native_party_host_test \
+            mdkr-character-lod mdkr_native_party_bringup_test mdkr_native_party_host_test \
             mdkr_native_party_qr_test mdkr_native_party_sas_test -j
+      - name: Build and attest the self-contained Character Workshop toolchain
+        run: |
+          python -m pip install --disable-pip-version-check \
+            --require-hashes --only-binary=:all: \
+            -r tools/character_importer_build_requirements.txt
+          mkdir -p build-tools/validators
+          curl -fsSL -o "$RUNNER_TEMP/gltf-validator-windows.zip" \
+            https://github.com/KhronosGroup/glTF-Validator/releases/download/2.0.0-dev.3.10/gltf_validator-2.0.0-dev.3.10-win64.zip
+          python tools/build_gltf_validator.py \
+            --release-archive "$RUNNER_TEMP/gltf-validator-windows.zip" \
+            --output build-tools/validators/gltf_validator.exe
+          python tools/build_character_importer.py \
+            --output build-tools/character_importer.exe
+          python tests/check_frozen_character_importer.py \
+            build-tools/character_importer.exe
       - name: Verify portable executable
         run: |
           version_output="$(./build/mdkr64.exe --version | tr -d '\r')"
@@ -665,7 +748,15 @@ jobs:
           ./build/mdkr64.exe --video-list > "$video_file"
           grep -qE '^\[video\] mode=' "$video_file"
       - name: Package portable .zip (GoldenBalloon.exe (static SDL2, no DLLs))
-        run: ./tools/package_windows_zip.sh --binary build/mdkr64.exe --version "${{ needs.validate.outputs.version }}"
+        run: |
+          ./tools/package_windows_zip.sh \
+            --binary build/mdkr64.exe \
+            --character-importer build-tools/character_importer.exe \
+            --character-importer-manifest build-tools/character_importer.exe.manifest.json \
+            --gltf-validator build-tools/validators/gltf_validator.exe \
+            --gltf-validator-manifest build-tools/validators/gltf_validator.exe.manifest.json \
+            --character-lod-tool build/tools/mdkr-character-lod.exe \
+            --version "${{ needs.validate.outputs.version }}"
       - name: Verify extracted package startup from an unrelated directory
         env:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
@@ -686,19 +777,26 @@ jobs:
               archive.extractall(sys.argv[2])
           PY
           executable="$package_root/GoldenBalloon/GoldenBalloon.exe"
+          importer="$package_root/GoldenBalloon/tools/character_importer.exe"
+          validator="$package_root/GoldenBalloon/tools/validators/gltf_validator.exe"
           test "$(sha256sum build/mdkr64.exe | awk '{print $1}')" = \
             "$(sha256sum "$executable" | awk '{print $1}')"
           # Info-ZIP on MSYS does not preserve an executable mode from a ZIP
           # created on Windows. Restore it only for this Bash launch check;
           # Explorer uses the PE extension and does not depend on POSIX mode.
-          chmod +x "$executable"
+          chmod +x "$executable" "$importer" "$validator"
           (
             cd "$unrelated"
+            "$importer" tool-info | grep -Fq '"frozen": true'
             version_output="$("$executable" --version | tr -d '\r')"
             test "$version_output" = "mdkr64 $RELEASE_VERSION"
             "$executable" --help > help.txt
             grep -q '^Usage: ' help.txt
           )
+          python tests/check_frozen_character_importer.py "$importer"
+          python tools/verify_gltf_validator.py \
+            --executable "$validator" --manifest "$validator.manifest.json" \
+            --target windows-x86_64
           # Partyful builds must prove that the packaged .exe carries the
           # configured cloud surface. Partyless builds deliberately omit it.
           if [[ -n "${PARTY_ORIGIN:-}" ]]; then
@@ -721,19 +819,25 @@ jobs:
       # artifact (not a release attachment); manual acceptance then attaches
       # exactly what was validated, provenance sidecar and all.
       - name: Stamp provenance (bind the validated zip to this commit)
+        env:
+          PHONE_PARTY_MODE: ${{ needs.validate.outputs.party_mode }}
         run: |
           ./tools/release/stamp_provenance.sh \
+            --phone-party "$PHONE_PARTY_MODE" \
             "dist/Golden-Balloon-${{ needs.validate.outputs.version }}-windows-x64.zip" \
             "${{ needs.validate.outputs.version }}"
       - name: Verify provenance of every artifact before upload
         env:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          PHONE_PARTY_MODE: ${{ needs.validate.outputs.party_mode }}
         run: |
           ./tools/release/verify_provenance.sh \
             --dist dist \
             --version "$RELEASE_VERSION" \
             --commit "$GITHUB_SHA" \
+            --require-asset "Golden-Balloon-${RELEASE_VERSION}-windows-x64.zip" \
             --require platform=windows \
+            --require "phone_party=$PHONE_PARTY_MODE" \
             --out-checksums "$RUNNER_TEMP/windows-SHA256SUMS.txt" \
             --out-manifest "$RUNNER_TEMP/windows-manifest.json"
           cat "$RUNNER_TEMP/windows-SHA256SUMS.txt"
@@ -742,6 +846,7 @@ jobs:
           name: Golden-Balloon-${{ needs.validate.outputs.version }}-windows-x64
           path: |
             dist/Golden-Balloon-*-windows-x64.zip
+            dist/Golden-Balloon-*-windows-x64.zip.sha256
             dist/Golden-Balloon-*-windows-x64.zip.provenance.json
           if-no-files-found: error
       - name: Confirm Windows publication remains manual

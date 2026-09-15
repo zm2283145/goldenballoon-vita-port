@@ -95,6 +95,17 @@
    * Browser surfaces are render attachments by contract; zero means the mask
    * is unavailable, not that RenderAttachment is unsupported. */
   #define WGPU_COMPAT_SURFACE_USAGES_REPORTED 0
+  /* Web WebGPU exposes pass-boundary timestamps in nanoseconds but not
+   * wgpu-native's optional in-pass extension. */
+  #define WGPU_COMPAT_TIMESTAMP_PERIOD(queue) ((void)(queue), 1.0f)
+  #define WGPU_COMPAT_TIMESTAMP_INSIDE_PASS_SUPPORTED(adapter) \
+      ((void)(adapter), false)
+  #define WGPU_COMPAT_DEVICE_TIMESTAMP_INSIDE_PASS_SUPPORTED(device) \
+      ((void)(device), false)
+  #define WGPU_COMPAT_TIMESTAMP_INSIDE_PASS_FEATURE \
+      ((WGPUFeatureName)0)
+  #define WGPU_COMPAT_WRITE_PASS_TIMESTAMP(pass, query_set, index) \
+      do { (void)(pass); (void)(query_set); (void)(index); } while (0)
 #else
   #include <webgpu/webgpu.h>
   #include <webgpu/wgpu.h>            /* wgpu-native extensions             */
@@ -148,6 +159,24 @@
       ((status) == (WGPUSurfaceGetCurrentTextureStatus)                     \
                        WGPUSurfaceGetCurrentTextureStatus_Occluded)
   #define WGPU_COMPAT_SURFACE_USAGES_REPORTED 1
+  /* wgpu-native returns raw timestamp ticks and publishes their nanosecond
+   * period. Its native-only extension permits exact ranges inside a render
+   * pass; ordinary TimestampQuery alone remains sufficient for scene-pass
+   * beginning/end writes. */
+  #define WGPU_COMPAT_TIMESTAMP_PERIOD(queue) \
+      wgpuQueueGetTimestampPeriod((queue))
+  #define WGPU_COMPAT_TIMESTAMP_INSIDE_PASS_SUPPORTED(adapter) \
+      (wgpuAdapterHasFeature(                                           \
+           (adapter), (WGPUFeatureName)                                 \
+               WGPUNativeFeature_TimestampQueryInsidePasses) != 0)
+  #define WGPU_COMPAT_DEVICE_TIMESTAMP_INSIDE_PASS_SUPPORTED(device) \
+      (wgpuDeviceHasFeature(                                            \
+           (device), (WGPUFeatureName)                                  \
+               WGPUNativeFeature_TimestampQueryInsidePasses) != 0)
+  #define WGPU_COMPAT_TIMESTAMP_INSIDE_PASS_FEATURE \
+      ((WGPUFeatureName)WGPUNativeFeature_TimestampQueryInsidePasses)
+  #define WGPU_COMPAT_WRITE_PASS_TIMESTAMP(pass, query_set, index) \
+      wgpuRenderPassEncoderWriteTimestamp((pass), (query_set), (index))
 #endif
 
 /* WEB-003 / WEB-010 / WEB-025: hand a human-readable bring-up/device-lost

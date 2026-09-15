@@ -34,6 +34,12 @@ prove that the drop detector fails in the intended direction.
 The shell's regression bridge is inert for normal visitors. CDP installs its
 configuration before page JavaScript runs; fixture text exists only in the test
 process and the module's private MEMFS.
+
+Startup phase/independent-rAF diagnostics are also OFF for ordinary test runs.
+Opt in with ``startupDiagnostics: true`` in the preload configuration or
+``MDKR_TEST_BROWSER_STARTUP_DIAGNOSTICS=1``; an explicit configuration value
+overrides the environment. Instrumented observations help locate stalls but do
+not qualify uninstrumented performance or presentation timing.
 """
 
 from __future__ import annotations
@@ -821,6 +827,12 @@ def page_websocket(port: int, timeout: float = 15.0) -> str:
 def add_config_script(cdp: CDPClient, config: dict[str, Any]) -> str:
     document_token = os.urandom(16).hex()
     config = dict(config)
+    # Preserve timing-gate fidelity: observation adds work and an independent
+    # rAF, so ordinary acceptance remains uninstrumented. Explicit false wins.
+    config.setdefault(
+        "startupDiagnostics",
+        os.environ.get("MDKR_TEST_BROWSER_STARTUP_DIAGNOSTICS") == "1",
+    )
     config["documentToken"] = document_token
     source = (
         "globalThis.__mdkrTestConfig = "
@@ -858,7 +870,21 @@ def wait_value(
             # Navigation briefly destroys the old execution context.
             pass
         time.sleep(0.08)
-    raise CheckFailure(f"timed out waiting for {description}; last value={last!r}")
+    diagnostic: Any = None
+    try:
+        # Do not include the full test snapshot here: that contains save bytes.
+        # A stuck renderer/closed target must not replace the original timeout.
+        diagnostic = cdp.evaluate(
+            "typeof globalThis.__mdkrStartupDiagnosticsSnapshot === 'function'"
+            " ? globalThis.__mdkrStartupDiagnosticsSnapshot() : null",
+            timeout=2.0,
+        )
+    except (CheckFailure, OSError):
+        pass
+    raise CheckFailure(
+        f"timed out waiting for {description}; last value={last!r}; "
+        f"startup diagnostics={diagnostic!r}"
+    )
 
 
 def wait_launcher(cdp: CDPClient, timeout: float) -> dict[str, Any]:

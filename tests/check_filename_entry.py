@@ -34,7 +34,7 @@ import tempfile
 from pathlib import Path
 
 from harness_utils import (ASSERT_MARKERS, DEFAULT_BUILD_DIR, fatal_re,
-                           resolve_binary)
+                           resolve_binary, save_env)
 
 
 DEFAULT_SCRIPT = Path("tests/input_scripts/adventure_hub_drive.txt")
@@ -96,11 +96,16 @@ def main() -> int:
         print("$ " + " ".join(cmd))
 
     with tempfile.TemporaryDirectory(prefix="mdkr_filename_") as run_dir:
-        # A save/ folder beside the working directory keeps the new-file save
-        # this route creates inside the sandbox: a non-packaged build otherwise
-        # resolves an unpinned save under the per-user directory (issue #54),
-        # which is exactly the developer's real save this check must never touch.
+        # This route CREATES a new save file, so where the save lands is not a
+        # detail. A save/ folder beside the working directory is not enough:
+        # since issue #54 a non-packaged build resolves an unpinned save under
+        # the per-user directory, not $CWD/save, and that is exactly the
+        # developer's real save this check must never touch -- and the shared
+        # EEPROM there is also what would re-route the file-select flow this
+        # check reads. Pin the sandbox directory explicitly; save_env() pins
+        # the video config with it (check_harness_isolation.py).
         (Path(run_dir) / "save").mkdir()
+        save_env(env, str(Path(run_dir) / "save"))
         try:
             proc = subprocess.run(
                 cmd,

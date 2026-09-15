@@ -131,6 +131,8 @@ Exit 0 = pass.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import json
 import os
 import subprocess
 import sys
@@ -313,6 +315,21 @@ def alpha_quantum_row(output: str) -> dict[str, str]:
     return {}
 
 
+def write_arm_evidence(run_dir: Path, label: str, output: str,
+                       returncode: int | None, timed_out: bool) -> None:
+    """Write before interpretation, exclusively, under this attempt's directory.
+
+    The private outer temporary directory is removed unless --keep-evidence was
+    requested. Never copy ROM bytes or the caller's environment into evidence.
+    """
+    with (run_dir / "process.log").open("x", encoding="utf-8") as stream:
+        stream.write(output)
+    with (run_dir / "process.json").open("x", encoding="utf-8") as stream:
+        json.dump({"schema": "mdkr-pacing-process/1", "label": label,
+                   "returncode": returncode, "timed_out": timed_out}, stream)
+        stream.write("\n")
+
+
 def run_arm(binary: Path, rom: Path, root: Path, label: str, policy: str,
             smoothing: str, ticks: int, timeout: int, verbose: bool,
             *, realtime: bool = False,
@@ -360,12 +377,23 @@ def run_arm(binary: Path, rom: Path, root: Path, label: str, policy: str,
         print(f"$ ({label}) MDKR_PRESENT_RATE={policy} "
               f"MDKR_PRESENT_SMOOTHING={smoothing} "
               f"realtime={int(realtime)} {' '.join(command)}", flush=True)
-    process = subprocess.run(
-        command, cwd=run_dir, env=env, text=True,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        timeout=timeout, check=False,
-    )
+    try:
+        process = subprocess.run(
+            command, cwd=run_dir, env=env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=timeout, check=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        partial = error.stdout or ""
+        if isinstance(partial, bytes):
+            partial = partial.decode("utf-8", errors="replace")
+        write_arm_evidence(run_dir, label, partial, None, True)
+        raise RuntimeError(f"{label}: timed out after {timeout}s\n{partial[-3000:]}") from error
+    except OSError as error:
+        write_arm_evidence(run_dir, label, str(error), None, False)
+        raise RuntimeError(f"{label}: process could not start: {error}") from error
     output = process.stdout or ""
+    write_arm_evidence(run_dir, label, output, process.returncode, False)
     if process.returncode != 0:
         raise RuntimeError(f"{label}: exit {process.returncode}\n{output[-3000:]}")
     fatal = find_fatal(output, *ABORT_MARKERS)
@@ -609,6 +637,22 @@ def check_audio(result: Run) -> list[str]:
         return [f"{result.label}: audio sink starved {underruns} times "
                 "(underruns must be 0)"]
     return []
+
+
+def check_realtime_integrity(result: Run) -> list[str]:
+    """Mandatory for every realtime attempt, even without a paced baseline."""
+    failures: list[str] = []
+    if not result.arm.endswith("/realtime"):
+        failures.append(
+            f"{result.label}: census arm={result.arm!r} is not a "
+            "realtime run; MDKR_PACE_REALTIME did not take effect")
+    failures.extend(tear_free_presentation(result.output, result.label))
+    failures.extend(check_audio(result))
+    if result.hist["alpha-delta"].get("regressions", -1) != 0:
+        failures.append(
+            f"{result.label}: interpolation phase ran backwards "
+            "or its regression counter is missing")
+    return failures
 
 
 def check_alpha_quantum_strict(result: Run) -> list[str]:
@@ -960,12 +1004,29 @@ def baseline_note(result: Run) -> str:
         f"p95={displayed.get('p95')}us p99={displayed.get('p99')}us "
         f"max={displayed.get('max')}us var={displayed.get('var')}us^2 "
         f"n={displayed.get('n')}; alpha-delta p50={alpha.get('p50')}ppm "
-        f"p99={alpha.get('p99')}ppm var={alpha.get('var')}ppm^2; "
+        f"p95={alpha.get('p95')}ppm p99={alpha.get('p99')}ppm "
+        f"var={alpha.get('var')}ppm^2 grid={alpha.get('gridppm')}ppm "
+        f"displayed={alpha.get('displayed')} stalls={alpha.get('stalls')} "
+        f"regressions={alpha.get('regressions')} "
+        f"slotanchors={result.summary.get('slotanchors')}; "
         f"queue-depth mean={latency.get('meandepthmilli', 0) / 1000:.3f} "
         f"max={latency.get('maxdepth')} frames -> "
         f"latency mean={latency.get('meanlatencyus')}us "
         f"max={latency.get('maxlatencyus')}us "
         f"at {latency.get('refreshhz')}Hz")
+
+
+def report_failure(failures: list[str], baselines: list[str],
+                   notes: list[str]) -> int:
+    """Keep each retry's evidence attached to its own arm, including failures."""
+    print("check_pacing_quality: FAIL")
+    for failure in failures:
+        print(f"  - {failure}")
+    for baseline in baselines:
+        print(f"  - measured: {baseline}")
+    for note in notes:
+        print(f"  - {note}")
+    return 1
 
 
 def main() -> int:
@@ -979,6 +1040,10 @@ def main() -> int:
                              "half was not measured")
     parser.add_argument("--skip-realtime", action="store_true",
                         help="synthetic plumbing arms only")
+    parser.add_argument("--keep-evidence", action="store_true",
+                        help="retain a private temporary directory containing "
+                             "every attempt's output and isolated save/config; "
+                             "never commit or publish this evidence")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -993,8 +1058,18 @@ def main() -> int:
     notes: list[str] = []
     baselines: list[str] = []
 
-    with tempfile.TemporaryDirectory(prefix="mdkr-pacing-quality-") as temp:
+    workspace: contextlib.AbstractContextManager[str]
+    if args.keep_evidence:
+        workspace = contextlib.nullcontext(
+            tempfile.mkdtemp(prefix="mdkr-pacing-quality-private-"))
+    else:
+        workspace = tempfile.TemporaryDirectory(prefix="mdkr-pacing-quality-")
+    with workspace as temp:
         root = Path(temp)
+        if args.keep_evidence:
+            print(f"Private pacing evidence retained at: {root}", flush=True)
+            notes.append("private attempt output, saves and config retained; "
+                         "do not commit or publish")
         try:
             for policy_name, policy, kind in POLICIES:
                 for smoothing_name, smoothing in SMOOTHINGS:
@@ -1078,19 +1153,9 @@ def main() -> int:
                         # module docstring's "TASK 5 MADE AN ASSUMPTION HERE
                         # EXPLICIT" section).
                         extra_env={"MDKR_PRESENT_QUANTUM_STRICT": "1"})
-                    if not result.arm.endswith("/realtime"):
-                        failures.append(
-                            f"{label}: census arm={result.arm!r} is not a "
-                            "realtime run; MDKR_PACE_REALTIME did not take "
-                            "effect")
-                    # Gated regardless of how well the session paced: neither
-                    # of these can be excused by the environment.
-                    failures.extend(
-                        tear_free_presentation(result.output, label))
-                    failures.extend(check_audio(result))
-                    if result.hist["alpha-delta"].get("regressions", -1) != 0:
-                        failures.append(
-                            f"{label}: interpolation phase ran backwards")
+                    # Structural failures survive retries and cannot be
+                    # excused by a missing paced baseline.
+                    failures.extend(check_realtime_integrity(result))
                     cause = (explain_no_display_session(result)
                              or explain_unthrottled_presentation(result))
                     if cause:
@@ -1161,8 +1226,7 @@ def main() -> int:
                         binary, rom, root, label, "display", "interpolate",
                         REALTIME_TICKS, args.timeout, args.verbose,
                         realtime=True)
-                    failures.extend(
-                        tear_free_presentation(honest_result.output, label))
+                    failures.extend(check_realtime_integrity(honest_result))
                     honest_cause = (
                         explain_no_display_session(honest_result)
                         or explain_unthrottled_presentation(honest_result))
@@ -1171,6 +1235,11 @@ def main() -> int:
                             f"{label}: no valid measurement — {honest_cause}")
                         continue
                     honest_paced = True
+                    # This attempt owns the slot-quality measurements. Keep
+                    # them separate from the strict baseline so a companion
+                    # pass cannot imply that the strict arm obtained one.
+                    notes.append(
+                        f"slot measurement: {baseline_note(honest_result)}")
                     # mode-vs-state consistency is structural and never
                     # excused by a busy host; the slot-quality tails are
                     # bimodal for the same reason the strict arm's are, so
@@ -1198,18 +1267,11 @@ def main() -> int:
                                      " (allowed by --allow-no-baseline)")
                     else:
                         failures.append(honest_message)
-        except RuntimeError as error:
+        except (RuntimeError, OSError) as error:
             failures.append(str(error))
 
     if failures:
-        print("check_pacing_quality: FAIL")
-        for failure in failures:
-            print(f"  - {failure}")
-        # The distributions the failure is about, so the numbers do not have to
-        # be reproduced by hand before anyone can read the result.
-        for baseline in baselines:
-            print(f"  - measured: {baseline}")
-        return 1
+        return report_failure(failures, baselines, notes)
     if not baselines:
         print("check_pacing_quality: PASS (REALTIME QUALITY NOT MEASURED) -- "
               "the synthetic arms, no-tearing and no-underrun assertions "

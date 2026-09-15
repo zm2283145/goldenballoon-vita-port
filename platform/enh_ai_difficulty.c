@@ -6,6 +6,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "racer.h" /* PLAYER_COMPUTER */
 
@@ -51,28 +52,6 @@ static const char *s_arm = MDKR_AI_DIFFICULTY_AUTHORED;
 static f32 s_scale = 1.0f;
 static int s_resolved;
 
-static int ai_difficulty_ci_equal(const char *a, const char *b) {
-    if (a == NULL || b == NULL) {
-        return 0;
-    }
-    while (*a != '\0' && *b != '\0') {
-        char ca = *a;
-        char cb = *b;
-        if (ca >= 'A' && ca <= 'Z') {
-            ca = (char) (ca - 'A' + 'a');
-        }
-        if (cb >= 'A' && cb <= 'Z') {
-            cb = (char) (cb - 'A' + 'a');
-        }
-        if (ca != cb) {
-            return 0;
-        }
-        a++;
-        b++;
-    }
-    return *a == '\0' && *b == '\0';
-}
-
 /* One line when the arm resolves and one when the scale first reaches a racer,
  * so a test can tell "the setting was read" from "the setting had an effect"
  * without inferring either from the race result. Silent unless
@@ -97,16 +76,14 @@ static void ai_difficulty_resolve(void) {
     s_resolved = 1;
     config = mdkr_video_config_current();
     value = config->values[MDKR_ENH_AI_DIFFICULTY].text;
-    if (ai_difficulty_ci_equal(value, MDKR_AI_DIFFICULTY_HARD)) {
-        s_arm = MDKR_AI_DIFFICULTY_HARD;
+    s_arm = mdkr_ai_difficulty_effective_value(value);
+    if (strcmp(s_arm, MDKR_AI_DIFFICULTY_HARD) == 0) {
         s_scale = MDKR_AI_DIFFICULTY_HARD_SCALE;
-    } else if (ai_difficulty_ci_equal(value, MDKR_AI_DIFFICULTY_BRUTAL)) {
-        s_arm = MDKR_AI_DIFFICULTY_BRUTAL;
+    } else if (strcmp(s_arm, MDKR_AI_DIFFICULTY_BRUTAL) == 0) {
         s_scale = MDKR_AI_DIFFICULTY_BRUTAL_SCALE;
     } else {
         /* Includes the empty string and anything misspelled. The authored game
          * is the only safe reading of a value nobody recognises. */
-        s_arm = MDKR_AI_DIFFICULTY_AUTHORED;
         s_scale = 1.0f;
     }
     if (ai_difficulty_trace_armed()) {

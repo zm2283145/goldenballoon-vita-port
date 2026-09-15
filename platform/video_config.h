@@ -107,6 +107,15 @@ typedef enum MdkrVideoKey {
     MDKR_CONTENT_PACKS_ENABLED,
     MDKR_CONTENT_PACK_DISABLED,
     /*
+     * The bonus roster (Taj, Terry, Wizpig). Sits with the content keys
+     * rather than the enhancements because turning it off ADDS nothing
+     * and removes something: it is the fidelity switch for a player who
+     * wants the roster the cartridge shipped with. It gates visibility,
+     * never storage -- an unlock already earned stays in the save and
+     * returns intact when the key goes back on.
+     */
+    MDKR_CONTENT_BONUS_RACERS,
+    /*
      * Enhancements. Each one also carries an AUTHORITY CLASS in
      * platform/enhancement_registry.c, and that class — not this enum — is what
      * decides whether the key is allowed to move authoritative state. Adding a
@@ -135,6 +144,21 @@ typedef enum MdkrVideoKey {
     MDKR_A11Y_SPEECH_RACE,
     /* Presentation-only HUD anchoring; appended to preserve every prior key. */
     MDKR_VIDEO_WIDESCREEN_HUD,
+    /*
+     * Adventure Party admission. An enhancement like the four above, appended
+     * here for the same "never renumber a prior key" reason; it carries a
+     * GAMEPLAY authority class in platform/enhancement_registry.c. Off by
+     * default and inert until the menu-admission adapter reads it.
+     */
+    MDKR_ENH_ADVENTURE_PARTY,
+    /*
+     * Shell behaviour, appended for the "never renumber a prior key" reason
+     * above. Off by default. Whether the launcher opens at all when a
+     * remembered game file is already known and verified; the launch-time hold
+     * (Shift, or both shoulders on a pad) opens it regardless, so this can
+     * never be the reason a player cannot reach their own launcher.
+     */
+    MDKR_APP_SKIP_LAUNCHER,
     MDKR_VIDEO_KEY_COUNT
 } MdkrVideoKey;
 

@@ -11,7 +11,7 @@ on:
       version:
         description: "Bundle version, without a v prefix (for example 1.0.5)"
         required: true
-        default: "1.6.0"
+        default: "1.7.0"
       trusted_signing:
         description: "Developer ID sign and notarize (requires protected credentials)"
         required: false
@@ -35,12 +35,21 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 45
     environment: macos-release
+    outputs:
+      phone_party_mode: ${{ steps.party.outputs.party_mode }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
+
+      - name: Set up the pinned Character Workshop importer runtime
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13.13"
+          cache: pip
+          cache-dependency-path: tools/character_importer_build_requirements.txt
 
       - name: Validate release inputs
         env:
@@ -51,6 +60,13 @@ jobs:
           set -euo pipefail
           [[ "$RELEASE_VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]] || {
             echo "version must look like 1.0 or 1.0.4 (no v prefix)" >&2
+            exit 1
+          }
+          SOURCE_RELEASE_VERSION="$(sed -nE \
+            's/^[[:space:]]*set\(MDKR_VERSION "([^"]+)" CACHE STRING.*$/\1/p' \
+            CMakeLists.txt)"
+          [[ "$SOURCE_RELEASE_VERSION" == "$RELEASE_VERSION" ]] || {
+            echo "release version $RELEASE_VERSION does not match CMakeLists.txt ($SOURCE_RELEASE_VERSION)" >&2
             exit 1
           }
           if [[ "$TRUSTED_SIGNING" == "true" && -n "$RELEASE_TAG" ]]; then
@@ -86,6 +102,7 @@ jobs:
           set -euo pipefail
           origin="${PARTY_ORIGIN:-}"
           allow="${ALLOW_PARTYLESS:-}"
+          mode=""
           if [[ -n "$origin" ]]; then
             # Exactly https://HOST[:PORT]. A trailing slash, path, query,
             # fragment or embedded credentials all change the URL the phone
@@ -103,6 +120,7 @@ jobs:
                 ;;
             esac
             echo "Phone Party origin compiled into this release: $origin"
+            mode="cloud-enabled"
           elif [[ "$allow" == "1" ]]; then
             echo "::warning::PARTYLESS RELEASE: this bundle ships with Phone Party absent"
             echo "=============================================================="
@@ -113,11 +131,13 @@ jobs:
             echo "To ship a working Phone Party, set the repository variable"
             echo "MDKR_PARTY_ORIGIN to the deployed https:// origin and re-run."
             echo "=============================================================="
+            mode="partyless"
           else
             echo "::error::No Phone Party origin for this release: this bundle would ship with Phone Party absent (an origin-less build shows no Phone Party surface at all). Set the repository variable MDKR_PARTY_ORIGIN to the deployed https:// origin, or set MDKR_ALLOW_PARTYLESS_RELEASE=1 to ship deliberately without Phone Party."
             exit 1
           fi
           echo "party_origin=$origin" >> "$GITHUB_OUTPUT"
+          echo "party_mode=$mode" >> "$GITHUB_OUTPUT"
 
       - name: Install build tools
         run: brew install cmake pkg-config
@@ -134,6 +154,27 @@ jobs:
           printf 'MDKR_RELEASE_SDL2_PREFIX=%s\n' \
             "$SDL_WORK_DIR/install" >> "$GITHUB_ENV"
 
+      - name: Build and attest the arm64 Character Workshop toolchain
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          python -m pip install --disable-pip-version-check \
+            --require-hashes --only-binary=:all: \
+            -r tools/character_importer_build_requirements.txt
+          mkdir -p build-tools/validators
+          curl -fsSL -o "$RUNNER_TEMP/gltf-validator-source.tar.gz" \
+            https://github.com/KhronosGroup/glTF-Validator/archive/bcd52cc4ba5f333b2999a58f67cc05ddf28b4fb1.tar.gz
+          curl -fsSL -o "$RUNNER_TEMP/dart-sdk-macos-arm64.zip" \
+            https://storage.googleapis.com/dart-archive/channels/stable/release/2.19.6/sdk/dartsdk-macos-arm64-release.zip
+          python tools/build_gltf_validator.py \
+            --source-archive "$RUNNER_TEMP/gltf-validator-source.tar.gz" \
+            --dart-sdk-archive "$RUNNER_TEMP/dart-sdk-macos-arm64.zip" \
+            --output build-tools/validators/gltf_validator
+          python tools/build_character_importer.py \
+            --output build-tools/character_importer
+          python tests/check_frozen_character_importer.py \
+            build-tools/character_importer
+
       - name: Build self-contained ad-hoc integrity bundle
         env:
           RELEASE_VERSION: ${{ inputs.version }}
@@ -146,6 +187,7 @@ jobs:
           export PKG_CONFIG_PATH="${MDKR_RELEASE_SDL2_PREFIX}/lib/pkgconfig"
           ./macos/Scripts/build_app_bundle.sh \
             --release \
+            --allow-online-beta \
             --party-origin "$PARTY_ORIGIN" \
             --build-dir build-macos-release \
             --output "dist/Golden Balloon.app" \
@@ -154,12 +196,23 @@ jobs:
             --build-stamp "$GITHUB_SHA" \
             --deployment-target 13.0 \
             --strict-deployment-target \
-            --bundle-sdl2
+            --bundle-sdl2 \
+            --character-importer build-tools/character_importer \
+            --character-importer-manifest build-tools/character_importer.manifest.json \
+            --gltf-validator build-tools/validators/gltf_validator \
+            --gltf-validator-manifest build-tools/validators/gltf_validator.manifest.json \
+            --character-lod-tool build-macos-release/tools/mdkr-character-lod
           ./macos/Scripts/verify_asset_free.sh "dist/Golden Balloon.app"
           ./macos/Scripts/verify_gatekeeper_bundle.sh "dist/Golden Balloon.app"
           ./macos/Scripts/verify_unsigned_release.sh \
             --version "$RELEASE_VERSION" --commit "$GITHUB_SHA" \
             "dist/Golden Balloon.app"
+          python tests/check_frozen_character_importer.py \
+            "dist/Golden Balloon.app"/Contents/MacOS/tools/character_importer
+          python tools/verify_gltf_validator.py \
+            --executable "dist/Golden Balloon.app"/Contents/MacOS/tools/validators/gltf_validator \
+            --manifest "dist/Golden Balloon.app"/Contents/MacOS/tools/validators/gltf_validator.manifest.json \
+            --target darwin-arm64
 
       # Qualify the packaged app's Phone Party host without a GPU, a window, a
       # network or a ROM. The smoke executable is built from build-macos-release
@@ -224,6 +277,7 @@ jobs:
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
           RELEASE_VERSION: ${{ inputs.version }}
+          PHONE_PARTY_MODE: ${{ steps.party.outputs.party_mode }}
         run: |
           set -euo pipefail
           : "${MACOS_CERTIFICATE_P12_BASE64:?missing repository secret}"
@@ -282,7 +336,9 @@ jobs:
           hdiutil verify "$DMG_PATH"
 
           ./macos/Scripts/stamp_macos_provenance.sh \
-            --signing developer-id-notarized "$DMG_PATH" "$RELEASE_VERSION"
+            --signing developer-id-notarized \
+            --phone-party "$PHONE_PARTY_MODE" \
+            "$DMG_PATH" "$RELEASE_VERSION"
           DMG_DIR="$(dirname "$DMG_PATH")"
           DMG_NAME="$(basename "$DMG_PATH")"
           (
@@ -294,6 +350,7 @@ jobs:
         if: ${{ !inputs.trusted_signing }}
         env:
           RELEASE_VERSION: ${{ inputs.version }}
+          PHONE_PARTY_MODE: ${{ steps.party.outputs.party_mode }}
         run: |
           set -euo pipefail
           DMG_PATH="dist/Golden-Balloon-${RELEASE_VERSION}-macos-arm64-unsigned.dmg"
@@ -301,7 +358,9 @@ jobs:
           ./macos/Scripts/verify_unsigned_dmg.sh \
             --version "$RELEASE_VERSION" --commit "$GITHUB_SHA" "$DMG_PATH"
           ./macos/Scripts/stamp_macos_provenance.sh \
-            --signing ad-hoc-unsigned "$DMG_PATH" "$RELEASE_VERSION"
+            --signing ad-hoc-unsigned \
+            --phone-party "$PHONE_PARTY_MODE" \
+            "$DMG_PATH" "$RELEASE_VERSION"
           DMG_DIR="$(dirname "$DMG_PATH")"
           DMG_NAME="$(basename "$DMG_PATH")"
           (
@@ -316,14 +375,29 @@ jobs:
         env:
           RELEASE_VERSION: ${{ inputs.version }}
           EXPECTED_SIGNING: ${{ inputs.trusted_signing && 'developer-id-notarized' || 'ad-hoc-unsigned' }}
+          PHONE_PARTY_MODE: ${{ steps.party.outputs.party_mode }}
         run: |
           set -euo pipefail
+          case "$EXPECTED_SIGNING" in
+            developer-id-notarized)
+              EXPECTED_ASSET="Golden-Balloon-${RELEASE_VERSION}-macos-arm64-signed-notarized.dmg"
+              ;;
+            ad-hoc-unsigned)
+              EXPECTED_ASSET="Golden-Balloon-${RELEASE_VERSION}-macos-arm64-unsigned.dmg"
+              ;;
+            *)
+              echo "unexpected macOS signing mode: $EXPECTED_SIGNING" >&2
+              exit 1
+              ;;
+          esac
           ./tools/release/verify_provenance.sh \
             --dist dist \
             --version "$RELEASE_VERSION" \
             --commit "$GITHUB_SHA" \
+            --require-asset "$EXPECTED_ASSET" \
             --require platform=macos \
-            --require "macos_signing=$EXPECTED_SIGNING"
+            --require "macos_signing=$EXPECTED_SIGNING" \
+            --require "phone_party=$PHONE_PARTY_MODE"
 
       - name: Upload macOS workflow artifact
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4
@@ -369,6 +443,7 @@ jobs:
           RELEASE_VERSION: ${{ inputs.version }}
           SOURCE_COMMIT: ${{ github.sha }}
           TRUSTED_SIGNING: ${{ inputs.trusted_signing }}
+          PHONE_PARTY_MODE: ${{ needs.package.outputs.phone_party_mode }}
         run: |
           set -euo pipefail
           EXPECTED_RELEASE_TAG="v${RELEASE_VERSION}"
@@ -386,9 +461,29 @@ jobs:
             echo "trusted macOS publication is disabled until post-sign runtime qualification is automated" >&2
             exit 1
           }
+          RELEASE_STATE="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" \
+            --jq '"\(.draft):\(.prerelease)"')"
+          [[ "$RELEASE_STATE" == "true:false" ]] || {
+            echo "$RELEASE_TAG must be an existing draft, non-prerelease release before macOS upload (state $RELEASE_STATE)" >&2
+            exit 1
+          }
           DMG_PATH="dist/Golden-Balloon-${RELEASE_VERSION}-macos-arm64-unsigned.dmg"
           DMG_DIR="$(dirname "$DMG_PATH")"
           DMG_NAME="$(basename "$DMG_PATH")"
+          UPLOAD_PATHS=("$DMG_PATH" "${DMG_PATH}.sha256" "${DMG_PATH}.provenance.json")
+          RELEASE_ID="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq '.id')"
+          EXISTING_ASSETS="$(gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?per_page=100" \
+            --jq '.[].name')"
+          for upload_path in "${UPLOAD_PATHS[@]}"; do
+            upload_name="$(basename "$upload_path")"
+            if printf '%s\n' "$EXISTING_ASSETS" | grep -Fqx "$upload_name"; then
+              echo "release asset already exists; refusing a partial or clobbering upload: $upload_name" >&2
+              exit 1
+            fi
+          done
           (
             cd "$DMG_DIR"
             shasum -a 256 -c "$DMG_NAME.sha256"
@@ -400,10 +495,9 @@ jobs:
             --dist "$DMG_DIR" \
             --version "$RELEASE_VERSION" \
             --commit "$SOURCE_COMMIT" \
+            --require-asset "$DMG_NAME" \
             --require platform=macos \
-            --require macos_signing=ad-hoc-unsigned
-          gh release view "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" >/dev/null
+            --require macos_signing=ad-hoc-unsigned \
+            --require "phone_party=$PHONE_PARTY_MODE"
           gh release upload "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            "$DMG_PATH" "${DMG_PATH}.sha256" "${DMG_PATH}.provenance.json"
+            --repo "$GITHUB_REPOSITORY" "${UPLOAD_PATHS[@]}"

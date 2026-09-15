@@ -30,6 +30,7 @@
  * Single-threaded; see the header. No lock, by standing decision.
  */
 #include "mod_texture_store.h"
+#include "png_write_layout.h"
 
 #include <limits.h>
 #include <stdio.h>
@@ -73,6 +74,23 @@
  * and a hard stop for one that replaces everything at 4K. */
 #define MDKR_MOD_TEXTURE_CACHE_BYTES_MAX ((size_t)512u * 1024u * 1024u)
 
+/* The largest side any shipping backend will upload. The store's only size
+ * ceiling used to be the cache-bytes one above, which admits ~11585 per side,
+ * while gfx_opengl_upload_texture() refuses anything over 4096. An oversized
+ * replacement was therefore accepted, cached, and then refused by the renderer
+ * every bind -- and a failed bind SKIPS the draw rather than falling back to
+ * the ROM texture, so the object was invisible for the whole session while its
+ * pixels held cache the store believed were in use. The importer already caps
+ * here (tools/ricepack MAX_TEXTURE_DIMENSION); a pack assembled by any other
+ * tool did not. Refusing at admission makes it a reported rejection instead. */
+#define MDKR_MOD_TEXTURE_DIMENSION_MAX 4096
+
+/* PNG decoding can use 16-bit RGBA intermediates even when we request 8-bit
+ * output. Keep the admitted pixel budget inside the pinned decoder's integer
+ * conversion bounds; increasing it requires a fresh decoder-boundary review. */
+_Static_assert(MDKR_MOD_TEXTURE_CACHE_BYTES_MAX <= (size_t)INT_MAX / 2u,
+               "PNG decode intermediates must fit signed integer sizes");
+
 /* Largest PNG file this will read into memory before handing it to the decoder.
  * A legitimate 4K RGBA PNG compresses to a few tens of megabytes; anything past
  * this is either not a texture or is not one this store is willing to hold. */
@@ -106,10 +124,18 @@ typedef struct StoreSlot {
     size_t    bytes;
     uint64_t  last_use;
     int       state;
+    /* This identity has been counted as used at least once. Slots are never
+     * released, so eviction and a later re-resolve cannot count it twice. */
+    unsigned char counted;
 } StoreSlot;
 
 static const MdkrModRegistry *s_registry;
 static int       s_enabled_packs;
+/* Rice identities an enabled pack supplies, counted once at bind. The registry
+ * has to walk its whole index to answer that -- 1663 entries for the pack this
+ * was built against -- and the renderer asks on every texture upload, so the
+ * answer is cached here the same way the enabled-pack count is. */
+static int       s_rice_identities;
 static bool      s_enabled = true;
 static uint32_t  s_generation;
 
@@ -117,6 +143,9 @@ static StoreSlot *s_slots;
 static size_t     s_slot_capacity;   /* always a power of two, or 0 */
 static size_t     s_slot_count;      /* slots not in SLOT_FREE */
 static size_t     s_resident_bytes;
+/* Rice identities this run resolved to pixels: the difference between a pack
+ * that loaded and a pack that is being used. */
+static int         s_rice_resident;
 static uint64_t   s_use_clock;
 static int        s_reports;
 
@@ -323,8 +352,21 @@ static unsigned char *read_pack_entry(MdkrModFile *file, size_t *out_size,
 
 /* ------------------------------------------------------------- resolution */
 
-static void slot_resolve(StoreSlot *slot) {
-    char           relative[MDKR_MOD_TEXTURE_DIGEST_CHARS + 32];
+/* Load one pack PNG into RGBA.
+ *
+ * Every admission rule a replacement texture has to pass lives here and only
+ * here: the cap on the file, the header inspection that establishes the decode
+ * budget BEFORE the pixels are allocated, the dimension ceiling, and the
+ * requirement that the decoded size match the admitted header. Rice textures go
+ * through the identical checks -- a pack from a stranger is a pack from a
+ * stranger whichever convention names its files.
+ *
+ * Returns stbi-owned pixels and their size, or NULL. `out_absent`, when given,
+ * separates the ordinary "no pack holds this path" from a rejection whose
+ * reason has already been reported against `key`. */
+static unsigned char *load_pack_png(const char *relative, const char *key,
+                                    int *out_width, int *out_height,
+                                    int *out_absent) {
     MdkrModFile    file;
     const char    *reason = NULL;
     unsigned char *file_bytes;
@@ -336,30 +378,29 @@ static void slot_resolve(StoreSlot *slot) {
     int            width = 0;
     int            height = 0;
     int            channels = 0;
-    size_t         decoded;
 
-    snprintf(relative, sizeof relative, "textures/%s.png", slot->digest);
     /* Directory pack or zip pack — the store cannot tell and must not care.
-     * One open per newly resolved digest, and a slot resolves once. */
+     * Absence is reported through `out_absent` rather than by asking a second
+     * time: most textures have no replacement, and probing first meant opening
+     * (and for a zip, re-parsing the central directory) twice per resolve. */
+    if (out_absent != NULL) *out_absent = 0;
     if (!mdkr_mod_registry_open_file(s_registry, relative, &file)) {
-        slot->state = SLOT_ABSENT;
-        return;
+        if (out_absent != NULL) *out_absent = 1;
+        return NULL;
     }
 
     file_bytes = read_pack_entry(&file, &file_size, &reason);
     mdkr_mod_registry_close_file(&file);
     if (file_bytes == NULL) {
-        slot->state = SLOT_REJECTED;
-        report_rejection(slot->digest, reason);
-        return;
+        report_rejection(key, reason);
+        return NULL;
     }
     /* The cap above is far below INT_MAX, so this only documents the bound the
      * decoder's int-typed length depends on. */
     if (file_size > (size_t)INT_MAX) {
         free(file_bytes);
-        slot->state = SLOT_REJECTED;
-        report_rejection(slot->digest, "the file is too large to decode");
-        return;
+        report_rejection(key, "the file is too large to decode");
+        return NULL;
     }
 
     /* The header before the pixels. stbi_info_from_memory() parses the PNG
@@ -378,26 +419,49 @@ static void slot_resolve(StoreSlot *slot) {
      * stores -- and a one-channel image is precisely the case where the two
      * differ by four.
      *
-     * A header that cannot be parsed at all falls through to the decode on
-     * purpose. The decoder parses the same header and will fail on it with
-     * stb's own wording, which names the defect better than this module could
-     * about a header it could not read; and every check after the decode still
-     * runs regardless, because stbi_info() reports what the header claims and
-     * a header that lies has to be caught by the decode itself. */
+     * Header inspection is admission, not an optional optimization: without
+     * dimensions we cannot establish the decode budget. stbi_info() already
+     * supplies stb's own failure reason, so reporting it does not require a
+     * second parse through the pixel decoder. Retain the post-decode checks
+     * and require the decoded dimensions to match the admitted header. */
     if (stbi_info_from_memory(file_bytes, (int)file_size, &declared_width,
-                              &declared_height, &declared_channels) != 0 &&
-        declared_width > 0 && declared_height > 0) {
+                              &declared_height, &declared_channels) == 0) {
+        free(file_bytes);
+        report_rejection(key, stbi_failure_reason());
+        return NULL;
+    }
+    if (declared_width <= 0 || declared_height <= 0) {
+        free(file_bytes);
+        report_rejection(key, "the image has no pixels");
+        return NULL;
+    }
+    if (declared_width > MDKR_MOD_TEXTURE_DIMENSION_MAX ||
+        declared_height > MDKR_MOD_TEXTURE_DIMENSION_MAX) {
+        /* Sized for the worst case the compiler can prove, not the typical
+         * one: three %d are up to 11 characters each, and mingw's gcc refuses
+         * the truncation this literal would suffer at 128. A rejection reason
+         * cut off mid-sentence is exactly the log line nobody can act on. */
+        char too_wide[192];
+        snprintf(too_wide, sizeof too_wide,
+                 "the image declares %dx%d; no backend uploads a side over %d, "
+                 "so this would silently skip every draw that binds it",
+                 declared_width, declared_height,
+                 MDKR_MOD_TEXTURE_DIMENSION_MAX);
+        free(file_bytes);
+        report_rejection(key, too_wide);
+        return NULL;
+    }
+    {
         uint64_t declared = (uint64_t)declared_width *
                             (uint64_t)declared_height * 4u;
         if (declared > (uint64_t)MDKR_MOD_TEXTURE_CACHE_BYTES_MAX) {
-            char too_big[128];
+            char too_big[192];
             snprintf(too_big, sizeof too_big,
                      "the image declares %dx%d, larger than the whole texture "
                      "cache", declared_width, declared_height);
             free(file_bytes);
-            slot->state = SLOT_REJECTED;
-            report_rejection(slot->digest, too_big);
-            return;
+            report_rejection(key, too_big);
+            return NULL;
         }
     }
 
@@ -407,17 +471,45 @@ static void slot_resolve(StoreSlot *slot) {
     if (pixels == NULL) {
         /* stb's own wording, so the log names the actual defect in the PNG
          * rather than this module's guess at it. */
-        slot->state = SLOT_REJECTED;
-        report_rejection(slot->digest, stbi_failure_reason());
-        return;
+        report_rejection(key, stbi_failure_reason());
+        return NULL;
     }
     if (width <= 0 || height <= 0) {
         stbi_image_free(pixels);
-        slot->state = SLOT_REJECTED;
-        report_rejection(slot->digest, "the image has no pixels");
-        return;
+        report_rejection(key, "the image has no pixels");
+        return NULL;
     }
 
+    if (width != declared_width || height != declared_height) {
+        stbi_image_free(pixels);
+        report_rejection(key,
+                         "the image changed dimensions during bounded decode");
+        return NULL;
+    }
+
+    *out_width = width;
+    *out_height = height;
+    return pixels;
+}
+
+/* The digest-keyed resolution the store has always done: one file, named by
+ * the content digest the renderer just computed. */
+static void slot_resolve(StoreSlot *slot) {
+    char           relative[MDKR_MOD_TEXTURE_DIGEST_CHARS + 32];
+    unsigned char *pixels;
+    int            width = 0;
+    int            height = 0;
+    int            absent = 0;
+    size_t         decoded;
+
+    snprintf(relative, sizeof relative, "textures/%s.png", slot->digest);
+    pixels = load_pack_png(relative, slot->digest, &width, &height, &absent);
+    if (pixels == NULL) {
+        /* Absent is the ordinary case and not a defect; anything else already
+         * reported its reason inside the loader. */
+        slot->state = absent ? SLOT_ABSENT : SLOT_REJECTED;
+        return;
+    }
     decoded = (size_t)width * (size_t)height * 4u;
     if (!evict_for(decoded)) {
         stbi_image_free(pixels);
@@ -426,13 +518,107 @@ static void slot_resolve(StoreSlot *slot) {
                          "the image is larger than the whole texture cache");
         return;
     }
-
     slot->rgba = (uint8_t *)pixels;
     slot->width = width;
     slot->height = height;
     slot->bytes = decoded;
     slot->state = SLOT_RESIDENT;
     s_resident_bytes += decoded;
+}
+
+/* ------------------------------------------------------------ Rice packs */
+
+/* Resolve one Rice identity into RGBA.
+ *
+ * The variants are the format's own. `_all` is a complete image and wins when
+ * a pack supplies it. Otherwise `_rgb` carries colour and `_a` carries alpha in
+ * its RED channel -- an author exports the two halves from tools that cannot
+ * write a single RGBA file. An `_rgb` with no partner is OPAQUE, deliberately:
+ * treating a missing alpha half as transparent turns every unpaired texture
+ * invisible, which is the failure this project already recorded when three
+ * orphan halves were refused during the offline import.
+ */
+static void slot_resolve_rice(StoreSlot *slot, uint32_t crc, int fmt, int siz) {
+    const MdkrModRiceTexture *found =
+        mdkr_mod_registry_rice_lookup(s_registry, crc, fmt, siz);
+    unsigned char *pixels = NULL;
+    int            width = 0;
+    int            height = 0;
+    size_t         decoded;
+
+    if (found == NULL) {
+        slot->state = SLOT_ABSENT;
+        return;
+    }
+
+    if (found->all != NULL) {
+        pixels = load_pack_png(found->all, slot->digest, &width, &height,
+                               NULL);
+    } else if (found->rgb != NULL) {
+        pixels = load_pack_png(found->rgb, slot->digest, &width, &height,
+                               NULL);
+        if (pixels != NULL) {
+            int alpha_width = 0;
+            int alpha_height = 0;
+            unsigned char *alpha = found->alpha == NULL ? NULL :
+                load_pack_png(found->alpha, slot->digest, &alpha_width,
+                              &alpha_height, NULL);
+            const size_t count = (size_t)width * (size_t)height;
+            size_t i;
+            if (alpha != NULL && alpha_width == width &&
+                alpha_height == height) {
+                for (i = 0; i < count; ++i) {
+                    pixels[i * 4u + 3u] = alpha[i * 4u];   /* RED is the alpha */
+                }
+            } else {
+                /* No partner, or one that does not line up pixel for pixel.
+                 * Opaque is the honest reading; a mismatched half is not
+                 * alpha for THIS image and guessing would be worse. */
+                for (i = 0; i < count; ++i) pixels[i * 4u + 3u] = 255u;
+                if (alpha != NULL) {
+                    report_rejection(slot->digest,
+                                     "its _a half is a different size from its "
+                                     "_rgb half; the texture is opaque");
+                }
+            }
+            if (alpha != NULL) stbi_image_free(alpha);
+        }
+    }
+
+    if (pixels == NULL) {
+        /* An entry that indexes ONLY an _a half has no colour to show, and a
+         * file that vanished between indexing and use reports nothing from the
+         * loader. Both used to fail in silence -- the pack said it supplied the
+         * texture, nothing appeared, and the log was empty. */
+        if (found->all == NULL && found->rgb == NULL) {
+            report_rejection(slot->digest,
+                             "this pack supplies only an _a half for that "
+                             "texture, with no colour to apply it to");
+        } else {
+            report_rejection(slot->digest,
+                             "the pack file it names could not be opened");
+        }
+        slot->state = SLOT_REJECTED;
+        return;
+    }
+    decoded = (size_t)width * (size_t)height * 4u;
+    if (!evict_for(decoded)) {
+        stbi_image_free(pixels);
+        slot->state = SLOT_REJECTED;
+        report_rejection(slot->digest,
+                         "the image is larger than the whole texture cache");
+        return;
+    }
+    slot->rgba = (uint8_t *)pixels;
+    slot->width = width;
+    slot->height = height;
+    slot->bytes = decoded;
+    slot->state = SLOT_RESIDENT;
+    s_resident_bytes += decoded;
+    /* Counted once per identity, not once per resolve: under cache pressure a
+     * texture is evicted and re-resolved, and reporting that as more textures
+     * than the pack supplies would overstate the evidence. */
+    if (!slot->counted) { slot->counted = 1; s_rice_resident++; }
 }
 
 /* ------------------------------------------------------------------- API */
@@ -450,10 +636,21 @@ void mdkr_mod_texture_store_init(const MdkrModRegistry *registry) {
         const MdkrModEntry *entry = mdkr_mod_registry_entry(registry, index);
         if (entry != NULL && entry->manifest.enabled) s_enabled_packs++;
     }
+    s_rice_identities = mdkr_mod_registry_rice_count(registry);
 }
 
 void mdkr_mod_texture_store_shutdown(void) {
     size_t index;
+
+    /* Indexing a pack and USING it are different claims. This is the second
+     * one, and it is the only number that proves a texture actually reached
+     * the GPU through the override path this run. */
+    if (s_rice_resident > 0) {
+        fprintf(stderr,
+                "[MODS] %d high-resolution texture%s used this run\n",
+                s_rice_resident, s_rice_resident == 1 ? "" : "s");
+    }
+    s_rice_resident = 0;
 
     for (index = 0; index < s_slot_capacity; index++) {
         stbi_image_free(s_slots[index].rgba);
@@ -467,6 +664,7 @@ void mdkr_mod_texture_store_shutdown(void) {
     s_reports = 0;
     s_registry = NULL;
     s_enabled_packs = 0;
+    s_rice_identities = 0;
     /* s_enabled and s_generation deliberately survive: the toggle is the
      * player's, not the registry's, and a generation that went backwards would
      * let a stale cache entry from before the reload look current. */
@@ -476,7 +674,7 @@ bool mdkr_mod_texture_store_active(void) {
     return s_enabled && s_registry != NULL && s_enabled_packs > 0;
 }
 
-int mdkr_mod_texture_lookup(const char *digest_hex, MdkrModTexture *out) {
+static int texture_lookup_exact(const char *digest_hex, MdkrModTexture *out) {
     StoreSlot *slot;
 
     if (out != NULL) {
@@ -499,6 +697,52 @@ int mdkr_mod_texture_lookup(const char *digest_hex, MdkrModTexture *out) {
     out->rgba = slot->rgba;
     out->width = slot->width;
     out->height = slot->height;
+    return 1;
+}
+
+int mdkr_mod_texture_lookup(const char *digest_hex, MdkrModTexture *out) {
+    if (texture_lookup_exact(digest_hex, out)) return 1;
+    /* Issue #58 retouches only our generated Taj card. A valid current-name
+     * replacement wins; otherwise retain the published pre-1.7 pack name.
+     * Both paths use the same enable, validation, caching, and size limits.
+     * Never rewrite the content digest itself: author dumps must still name
+     * the pixels they actually saw, and unrelated textures remain unchanged. */
+    if (digest_hex != NULL &&
+        strcmp(digest_hex, MDKR_MOD_TAJ_PORTRAIT_DIGEST) == 0) {
+        return texture_lookup_exact(MDKR_MOD_TAJ_PORTRAIT_LEGACY_DIGEST, out);
+    }
+    return 0;
+}
+
+int mdkr_mod_texture_rice_resident(void) { return s_rice_resident; }
+
+int mdkr_mod_texture_rice_active(void) {
+    return mdkr_mod_texture_store_active() && s_rice_identities > 0;
+}
+
+int mdkr_mod_texture_lookup_rice(uint32_t crc, int fmt, int siz,
+                                 MdkrModTexture *out) {
+    char       key[MDKR_MOD_TEXTURE_DIGEST_CHARS];
+    StoreSlot *slot;
+
+    if (out != NULL) { out->rgba = NULL; out->width = 0; out->height = 0; }
+    if (!mdkr_mod_texture_store_active()) return 0;
+    if (s_rice_identities == 0) return 0;
+
+    /* The slot table is keyed by string, so a Rice identity gets one that
+     * cannot collide with a 32-character content digest. */
+    snprintf(key, sizeof key, "rice:%08x:%d:%d", (unsigned)crc, fmt, siz);
+    slot = slot_for(key);
+    if (slot == NULL) return 0;
+    if (slot->state == SLOT_UNRESOLVED) slot_resolve_rice(slot, crc, fmt, siz);
+    if (slot->state != SLOT_RESIDENT) return 0;
+
+    slot->last_use = ++s_use_clock;
+    if (out != NULL) {
+        out->rgba = slot->rgba;
+        out->width = slot->width;
+        out->height = slot->height;
+    }
     return 1;
 }
 
@@ -623,11 +867,21 @@ static void dump_png_write_cb(void *context, void *chunk, int size) {
     size_t         needed;
 
     if (buffer->failed || size <= 0) return;
+    if ((size_t)size > SIZE_MAX - buffer->size) {
+        buffer->failed = true;
+        return;
+    }
     needed = buffer->size + (size_t)size;
     if (needed > buffer->capacity) {
         size_t   next = buffer->capacity == 0 ? 65536u : buffer->capacity;
         uint8_t *grown;
-        while (next < needed) next *= 2u;
+        while (next < needed) {
+            if (next > SIZE_MAX / 2u) {
+                next = needed;
+                break;
+            }
+            next *= 2u;
+        }
         grown = (uint8_t *)realloc(buffer->data, next);
         if (grown == NULL) {
             buffer->failed = true;
@@ -640,32 +894,54 @@ static void dump_png_write_cb(void *context, void *chunk, int size) {
     buffer->size += (size_t)size;
 }
 
+/* True when `source` carries a span worth writing. A source with no bytes is
+ * not an error -- a caller that had none to offer says so with a null, and a
+ * zero-length span is the same statement -- so both write the record without
+ * its source fields and no `.texels` beside it. A reader keys on that file
+ * existing, so the pair is refused as unusable rather than half-read. */
+static bool dump_source_has_span(const MdkrModTextureSource *source) {
+    return source != NULL && source->texels != NULL && source->texel_bytes > 0;
+}
+
 void mdkr_mod_texture_dump_observe(const char *digest_hex, const uint8_t *rgba,
                                    int width, int height, uint8_t fmt,
-                                   uint8_t siz, const char *first_seen) {
+                                   uint8_t siz,
+                                   const MdkrModTextureSource *source,
+                                   const char *first_seen) {
     const char   *dir = dump_directory();
     char          png_path[MDKR_MOD_PATH_MAX];
     char          txt_path[MDKR_MOD_PATH_MAX];
-    char          txt_body[256];
+    char          texels_path[MDKR_MOD_PATH_MAX];
+    /* Eleven fields, of which first_seen is the only unbounded one and its
+     * one caller writes about forty characters. Sized so the record cannot be
+     * truncated in practice, and checked below so it cannot be truncated
+     * silently if it ever is. */
+    char          txt_body[512];
     int           txt_length;
     DumpPngBuffer png = { NULL, 0, 0, false };
+    MdkrPngWriteLayout layout;
 
     if (dir == NULL) return;
     if (digest_hex == NULL || rgba == NULL) return;
-    if (width <= 0 || height <= 0) return;
     if (strlen(digest_hex) != MDKR_MOD_TEXTURE_DIGEST_CHARS) return;
+    if (!mdkr_png_write_layout(width, height, 4, &layout)) {
+        report_dump_failure(digest_hex, dir, "the image exceeds PNG encoder limits");
+        return;
+    }
     if (!dump_mark_seen(digest_hex)) return; /* already written this run */
 
     if (snprintf(png_path, sizeof png_path, "%s/%s.png", dir, digest_hex) >=
             (int)sizeof png_path ||
         snprintf(txt_path, sizeof txt_path, "%s/%s.txt", dir, digest_hex) >=
-            (int)sizeof txt_path) {
+            (int)sizeof txt_path ||
+        snprintf(texels_path, sizeof texels_path, "%s/%s.texels", dir,
+                 digest_hex) >= (int)sizeof texels_path) {
         report_dump_failure(digest_hex, dir, "the dump path is too long");
         return;
     }
 
     if (!stbi_write_png_to_func(dump_png_write_cb, &png, width, height, 4,
-                                rgba, width * 4) ||
+                                rgba, (int)layout.row_bytes) ||
         png.failed || png.data == NULL) {
         free(png.data);
         report_dump_failure(digest_hex, png_path, "the PNG could not be encoded");
@@ -678,12 +954,45 @@ void mdkr_mod_texture_dump_observe(const char *digest_hex, const uint8_t *rgba,
     }
     free(png.data);
 
-    txt_length = snprintf(txt_body, sizeof txt_body,
-                          "width=%d\nheight=%d\nfmt=%u\nsiz=%u\nfirst_seen=%s\n",
-                          width, height, (unsigned)fmt, (unsigned)siz,
-                          first_seen != NULL ? first_seen : "");
+    /* The raw span goes down before the record that describes it. A reader
+     * keys on the `.texels` file existing, so writing the record first would
+     * leave a window -- and, if the span write then failed, a permanent
+     * record -- claiming bytes that are not there. */
+    if (dump_source_has_span(source) &&
+        !dump_write_bytes(texels_path, source->texels, source->texel_bytes)) {
+        report_dump_failure(digest_hex, texels_path,
+                            "the texel span could not be written");
+        return;
+    }
+
+    if (dump_source_has_span(source)) {
+        txt_length = snprintf(
+            txt_body, sizeof txt_body,
+            "dump_format=%u\nwidth=%d\nheight=%d\nfmt=%u\nsiz=%u\n"
+            "source_width=%d\nsource_height=%d\nsource_line_bytes=%u\n"
+            "source_size_bytes=%u\nsource_texel_bytes=%zu\nfirst_seen=%s\n",
+            MDKR_MOD_TEXTURE_DUMP_FORMAT, width, height, (unsigned)fmt,
+            (unsigned)siz, source->width, source->height,
+            (unsigned)source->line_bytes, (unsigned)source->size_bytes,
+            source->texel_bytes, first_seen != NULL ? first_seen : "");
+    } else {
+        txt_length = snprintf(
+            txt_body, sizeof txt_body,
+            "dump_format=%u\nwidth=%d\nheight=%d\nfmt=%u\nsiz=%u\n"
+            "first_seen=%s\n",
+            MDKR_MOD_TEXTURE_DUMP_FORMAT, width, height, (unsigned)fmt,
+            (unsigned)siz, first_seen != NULL ? first_seen : "");
+    }
     if (txt_length < 0) return;
-    if ((size_t)txt_length >= sizeof txt_body) txt_length = (int)sizeof(txt_body) - 1;
+    /* Refused rather than truncated. This record is parsed by a tool, and a
+     * cut-off `key=value` line is not a shorter record -- it is a wrong one
+     * (`source_line_bytes=12` where the value was 128), which is exactly the
+     * failure this whole path exists to avoid. */
+    if ((size_t)txt_length >= sizeof txt_body) {
+        report_dump_failure(digest_hex, txt_path,
+                            "the record does not fit its buffer");
+        return;
+    }
     if (!dump_write_bytes(txt_path, txt_body, (size_t)txt_length)) {
         report_dump_failure(digest_hex, txt_path, "the file could not be written");
     }

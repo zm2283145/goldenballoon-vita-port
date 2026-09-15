@@ -37,7 +37,9 @@ Checks GitHub-side public repository state that local CI cannot prove:
   - repository metadata, topics, and contributor workflow settings
   - repository visibility and collaboration features
   - GitHub Actions enabled with a minimal default token, SHA-pinned actions,
-    short artifact retention, and no untracked hosted workflow
+    short artifact retention, and no unreviewed hosted workflow
+  - release deployment environments exist with the required reviewer and
+    exact main/tag branch policies
   - local reachable git history does not expose public-blocking provenance paths
   - GitHub branch and tag refs do not expose commits outside public git history
   - GitHub pull request refs do not expose commits outside public git history
@@ -45,8 +47,11 @@ Checks GitHub-side public repository state that local CI cannot prove:
   - public repository metadata/label/milestone/release/issue/comment/discussion text has no high-risk leaks
   - public repository metadata/label/milestone/release/issue/comment/discussion text has no stale commit references
   - contributor-facing GitHub labels needed for triage are present
-  - GitHub release assets expose no ROM/media/save payload, and every
-    Golden-Balloon-<version>-<platform> artifact carries its provenance sidecars
+  - GitHub release assets expose no ROM/media/save payload; every 1.7+ release
+    has its complete desktop platform set with one consistent Phone Party mode;
+    and every Golden-Balloon-<version>-<platform> artifact carries
+    checksum/provenance sidecars whose contents match GitHub's artifact digest
+    and release tag
   - GitHub Actions artifacts do not expose ROM, media, archive, app, or binary payloads
   - branch protection is readable and does not depend on hosted status checks
   - vulnerability-alert/private-reporting endpoints are available
@@ -65,6 +70,7 @@ allow_private=0
 # a leak. Each non-comment line is one regex alternative; they are joined with
 # `|` into a single alternation for jq's test().
 public_text_denylist='tools/public_text_denylist.txt'
+retained_ref_allowlist='tools/public_retained_ref_allowlist.tsv'
 
 public_surface_pattern() {
   local pattern
@@ -253,11 +259,18 @@ scan_github_public_text_surface() {
 
 scan_github_release_assets() {
   local repo_name="$1"
+  local release_records
+  local release_index
   local release_asset_lines
   local asset_index=""
   local blocked_assets=""
   local expected_assets=""
+  local missing_release_assets=""
   local missing_sidecars=""
+  local invalid_sidecars=""
+  local orphan_sidecars=""
+  local inconsistent_party_modes=""
+  local release_party_modes=""
   local review_assets=""
   local forbidden_asset_pattern
   local release_artifact_pattern
@@ -267,21 +280,61 @@ scan_github_release_assets() {
   local url
   local asset_name
   local asset_size
+  local _asset_id
+  local asset_api_digest
+  local artifact_digest
+  local artifact_version
+  local artifact_platform
+  local expected_signing
+  local release_version
+  local required_asset
+  local missing_for_release
+  local macos_present
+  local party_mode
+  local party_modes
+  local party_mode_count
+  local tag_commit
+  local sidecar_line
+  local _sidecar_tag
+  local sidecar_url
+  local sidecar_name
+  local sidecar_size
+  local sidecar_id
+  local _sidecar_digest
+  local metadata_tmp
+  local named_asset
+  local provenance_errors
 
   echo
   echo "== GitHub release asset surface =="
 
-  if ! release_asset_lines="$(gh api \
+  if ! release_records="$(gh api \
     --paginate "repos/${repo_name}/releases?per_page=100" \
-    --jq '.[] as $release | ($release.assets // [])[]? | [($release.tag_name // ""), ($release.html_url // ""), (.name // ""), ((.size // 0) | tostring)] | @tsv' 2>/dev/null)"; then
+    --jq '
+      .[] as $release
+      | (["release", ($release.tag_name // ""),
+          ($release.html_url // ""), "", "", "", ""] | @tsv),
+        (($release.assets // [])[]?
+         | ["asset", ($release.tag_name // ""),
+            ($release.html_url // ""), (.name // ""),
+            ((.size // 0) | tostring), ((.id // 0) | tostring),
+            (.digest // "")] | @tsv)' 2>/dev/null)"; then
     note "could not scan GitHub release assets"
     return
   fi
 
-  if [ -z "$release_asset_lines" ]; then
-    ok "no GitHub release assets are published"
+  if [ -z "$release_records" ]; then
+    ok "no GitHub releases are published"
     return
   fi
+
+  # Keep one row for every release, including an empty draft, separately from
+  # the asset rows. The v1.7+ completeness check must be able to name a release
+  # whose first producer never uploaded anything at all.
+  release_index="$(printf '%s\n' "$release_records" | awk -F '\t' \
+    '$1 == "release" { print $2 "\t" $3 }')"
+  release_asset_lines="$(printf '%s\n' "$release_records" | awk -F '\t' \
+    '$1 == "asset" { sub(/^asset\t/, ""); print }')"
 
   # A release ships packaged binaries: flagging .dmg/.zip/.tar.gz/.AppImage as
   # such would flag exactly what this project publishes. What must never appear
@@ -294,37 +347,236 @@ scan_github_release_assets() {
   release_artifact_pattern='^Golden-Balloon-([0-9]+(\.[0-9]+){1,2}|dev)-(macos-arm64-(unsigned|signed-notarized)\.dmg|windows-x64\.zip|linux-x86_64\.AppImage|linux-x86_64\.tar\.gz)$'
   sidecar_pattern='^Golden-Balloon-.*(\.sha256|\.provenance\.json)$'
 
-  while IFS=$'\t' read -r tag url asset_name asset_size; do
+  while IFS=$'\t' read -r tag url asset_name asset_size _asset_id asset_api_digest; do
     [ -n "$asset_name" ] || continue
     asset_index="$(append_findings "$asset_index" "${tag}"$'\t'"${asset_name}")"
   done <<< "$release_asset_lines"
 
-  while IFS=$'\t' read -r tag url asset_name asset_size; do
+  # From 1.7 onward, a release is a platform set rather than an arbitrary
+  # collection of individually valid files. Require both Linux formats,
+  # Windows, and at least one of the policy-recognised macOS formats. Sidecar
+  # completeness for every present primary is checked in the main loop below.
+  while IFS=$'\t' read -r tag url; do
+    [ -n "$tag" ] || continue
+    release_version="${tag#v}"
+    if [[ ! "$tag" =~ ^v[0-9]+(\.[0-9]+){1,2}$ ]] || \
+       ! awk -F. 'BEGIN { exit ! ($1 + 0 > 1 || ($1 + 0 == 1 && $2 + 0 >= 7)) }' \
+         <<< "$release_version"; then
+      continue
+    fi
+
+    missing_for_release=""
+    for required_asset in \
+      "Golden-Balloon-${release_version}-linux-x86_64.AppImage" \
+      "Golden-Balloon-${release_version}-linux-x86_64.tar.gz" \
+      "Golden-Balloon-${release_version}-windows-x64.zip"; do
+      if ! grep -Fqx "${tag}"$'\t'"${required_asset}" <<< "$asset_index"; then
+        missing_for_release="$(append_findings "$missing_for_release" "$required_asset")"
+      fi
+    done
+    macos_present=0
+    for required_asset in \
+      "Golden-Balloon-${release_version}-macos-arm64-unsigned.dmg" \
+      "Golden-Balloon-${release_version}-macos-arm64-signed-notarized.dmg"; do
+      if grep -Fqx "${tag}"$'\t'"${required_asset}" <<< "$asset_index"; then
+        macos_present=1
+      fi
+    done
+    if [ "$macos_present" -eq 0 ]; then
+      missing_for_release="$(append_findings "$missing_for_release" \
+        "Golden-Balloon-${release_version}-macos-arm64-{unsigned,signed-notarized}.dmg (one required)")"
+    fi
+    while IFS= read -r required_asset; do
+      [ -n "$required_asset" ] || continue
+      missing_release_assets="$(append_findings "$missing_release_assets" \
+        "${tag}"$'\t'"${required_asset}"$'\t'"${url}")"
+    done <<< "$missing_for_release"
+  done <<< "$release_index"
+
+  while IFS=$'\t' read -r tag url asset_name asset_size _asset_id asset_api_digest; do
     [ -n "$asset_name" ] || continue
     if printf '%s\n' "$asset_name" | grep -Eiq "$forbidden_asset_pattern"; then
       blocked_assets="$(append_findings "$blocked_assets" "${tag}"$'\t'"${asset_name}"$'\t'"${asset_size} bytes"$'\t'"${url}")"
     elif printf '%s\n' "$asset_name" | grep -Eq "$release_artifact_pattern"; then
       expected_assets="$(append_findings "$expected_assets" "${tag}"$'\t'"${asset_name}"$'\t'"${asset_size} bytes")"
+
+      artifact_version="$(printf '%s\n' "$asset_name" | sed -E 's/^Golden-Balloon-([0-9]+(\.[0-9]+){1,2}|dev)-.*/\1/')"
+      case "$asset_name" in
+        *-macos-arm64-unsigned.dmg)
+          artifact_platform="macos"
+          expected_signing="ad-hoc-unsigned"
+          ;;
+        *-macos-arm64-signed-notarized.dmg)
+          artifact_platform="macos"
+          expected_signing="developer-id-notarized"
+          ;;
+        *-windows-x64.zip)
+          artifact_platform="windows"
+          expected_signing=""
+          ;;
+        *-linux-x86_64.AppImage|*-linux-x86_64.tar.gz)
+          artifact_platform="linux"
+          expected_signing=""
+          ;;
+      esac
+
+      if [ "$artifact_version" = "dev" ] || [ "$tag" != "v${artifact_version}" ]; then
+        invalid_sidecars="$(append_findings "$invalid_sidecars" "${tag}"$'\t'"${asset_name}"$'\t'"release tag does not match artifact version"$'\t'"${url}")"
+      fi
+      tag_commit="$(gh api "repos/${repo_name}/commits/${tag}" --jq '.sha // ""' 2>/dev/null || true)"
+      if ! printf '%s\n' "$tag_commit" | grep -Eq '^[0-9a-f]{40}$'; then
+        invalid_sidecars="$(append_findings "$invalid_sidecars" "${tag}"$'\t'"${asset_name}"$'\t'"release tag does not resolve to a commit"$'\t'"${url}")"
+      fi
+      if ! printf '%s\n' "$asset_api_digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+        invalid_sidecars="$(append_findings "$invalid_sidecars" "${tag}"$'\t'"${asset_name}"$'\t'"GitHub API exposes no authoritative SHA-256 digest"$'\t'"${url}")"
+        artifact_digest=""
+      else
+        artifact_digest="${asset_api_digest#sha256:}"
+      fi
+
       for suffix in .sha256 .provenance.json; do
-        if ! printf '%s\n' "$asset_index" | grep -Fqx "${tag}"$'\t'"${asset_name}${suffix}"; then
+        sidecar_line="$(awk -F '\t' -v tag="$tag" -v name="${asset_name}${suffix}" \
+          '$1 == tag && $3 == name && !found { print; found = 1 }' \
+          <<< "$release_asset_lines")"
+        if [ -z "$sidecar_line" ]; then
           missing_sidecars="$(append_findings "$missing_sidecars" "${tag}"$'\t'"${asset_name}"$'\t'"no ${suffix} sidecar"$'\t'"${url}")"
+          continue
         fi
+
+        IFS=$'\t' read -r _sidecar_tag sidecar_url sidecar_name sidecar_size sidecar_id _sidecar_digest <<< "$sidecar_line"
+        case "$suffix" in
+          .sha256)
+            if [ "$sidecar_size" -gt 512 ]; then
+              invalid_sidecars="$(append_findings "$invalid_sidecars" "${tag}"$'\t'"${sidecar_name}"$'\t'"checksum sidecar exceeds 512 bytes"$'\t'"${sidecar_url}")"
+              continue
+            fi
+            ;;
+          .provenance.json)
+            if [ "$sidecar_size" -gt 16384 ]; then
+              invalid_sidecars="$(append_findings "$invalid_sidecars" "${tag}"$'\t'"${sidecar_name}"$'\t'"provenance sidecar exceeds 16384 bytes"$'\t'"${sidecar_url}")"
+              continue
+            fi
+            ;;
+        esac
+
+        metadata_tmp="$(mktemp "${TMPDIR:-/tmp}/mdkr64-release-metadata.XXXXXX")"
+        if ! gh api -H 'Accept: application/octet-stream' \
+          "repos/${repo_name}/releases/assets/${sidecar_id}" > "$metadata_tmp" 2>/dev/null; then
+          invalid_sidecars="$(append_findings "$invalid_sidecars" "${tag}"$'\t'"${sidecar_name}"$'\t'"could not download sidecar"$'\t'"${sidecar_url}")"
+          rm -f "$metadata_tmp"
+          continue
+        fi
+
+        if [ "$suffix" = ".sha256" ]; then
+          if [ -z "$artifact_digest" ] || ! printf '%s  %s\n' "$artifact_digest" "$asset_name" | cmp -s - "$metadata_tmp"; then
+            invalid_sidecars="$(append_findings "$invalid_sidecars" "${tag}"$'\t'"${sidecar_name}"$'\t'"checksum content does not exactly match GitHub's artifact digest and basename"$'\t'"${sidecar_url}")"
+          fi
+        else
+          if [ -z "$artifact_digest" ]; then
+            provenance_errors="artifact has no authoritative GitHub digest"
+          elif ! provenance_errors="$(jq -r \
+            --arg artifact "$asset_name" \
+            --arg commit "$tag_commit" \
+            --arg platform "$artifact_platform" \
+            --arg sha256 "$artifact_digest" \
+            --arg version "$artifact_version" \
+            'if type != "object" then
+               "JSON root is not an object"
+             else
+               [if .schema == "mdkr64-provenance/1" then empty else "schema" end,
+                if .artifact == $artifact then empty else "artifact name" end,
+                if .commit == $commit then empty else "release tag commit" end,
+                if .platform == $platform then empty else "platform" end,
+                if .sha256 == $sha256 then empty else "artifact digest" end,
+                if .source_dirty == false then empty else "clean-source flag" end,
+                if .version == $version then empty else "version" end]
+               | join(", ")
+             end' "$metadata_tmp" 2>/dev/null)"; then
+            provenance_errors="unparseable JSON"
+          fi
+          if [ -n "$provenance_errors" ]; then
+            invalid_sidecars="$(append_findings "$invalid_sidecars" "${tag}"$'\t'"${sidecar_name}"$'\t'"provenance mismatch: ${provenance_errors}"$'\t'"${sidecar_url}")"
+          fi
+          if awk -F. 'BEGIN { exit ! ($1 + 0 > 1 || ($1 + 0 == 1 && $2 + 0 >= 7)) }' <<< "$artifact_version"; then
+            if ! jq -e '.phone_party == "partyless" or .phone_party == "cloud-enabled"' \
+              "$metadata_tmp" >/dev/null 2>&1; then
+              invalid_sidecars="$(append_findings "$invalid_sidecars" "${tag}"$'\t'"${sidecar_name}"$'\t'"1.7+ provenance has no valid Phone Party mode"$'\t'"${sidecar_url}")"
+            else
+              party_mode="$(jq -r '.phone_party' "$metadata_tmp")"
+              release_party_modes="$(append_findings "$release_party_modes" \
+                "${tag}"$'\t'"${party_mode}"$'\t'"${asset_name}")"
+            fi
+            if [ -n "$expected_signing" ] && \
+               ! jq -e --arg signing "$expected_signing" '.macos_signing == $signing' \
+                 "$metadata_tmp" >/dev/null 2>&1; then
+              invalid_sidecars="$(append_findings "$invalid_sidecars" "${tag}"$'\t'"${sidecar_name}"$'\t'"1.7+ macOS provenance has the wrong signing mode"$'\t'"${sidecar_url}")"
+            fi
+          fi
+        fi
+        rm -f "$metadata_tmp"
       done
     elif printf '%s\n' "$asset_name" | grep -Eq "$sidecar_pattern"; then
-      :
+      named_asset="${asset_name%.provenance.json}"
+      named_asset="${named_asset%.sha256}"
+      if ! grep -Fqx "${tag}"$'\t'"${named_asset}" <<< "$asset_index"; then
+        orphan_sidecars="$(append_findings "$orphan_sidecars" "${tag}"$'\t'"${asset_name}"$'\t'"sidecar names no artifact in this release"$'\t'"${url}")"
+      fi
     else
       review_assets="$(append_findings "$review_assets" "${tag}"$'\t'"${asset_name}"$'\t'"${asset_size} bytes"$'\t'"${url}")"
     fi
   done <<< "$release_asset_lines"
+
+  # The portable workflow and the separately dispatched macOS workflow read a
+  # mutable repository variable at different times. Individually valid
+  # sidecars are therefore insufficient: every artifact attached to one 1.7+
+  # release must disclose the same Phone Party capability.
+  while IFS=$'\t' read -r tag url; do
+    [ -n "$tag" ] || continue
+    release_version="${tag#v}"
+    if [[ ! "$tag" =~ ^v[0-9]+(\.[0-9]+){1,2}$ ]] || \
+       ! awk -F. 'BEGIN { exit ! ($1 + 0 > 1 || ($1 + 0 == 1 && $2 + 0 >= 7)) }' \
+         <<< "$release_version"; then
+      continue
+    fi
+    party_modes="$(awk -F '\t' -v release_tag="$tag" \
+      '$1 == release_tag { print $2 }' <<< "$release_party_modes" | \
+      awk 'NF' | LC_ALL=C sort -u)"
+    party_mode_count="$(awk 'NF { count++ } END { print count + 0 }' \
+      <<< "$party_modes")"
+    if [ "$party_mode_count" -gt 1 ]; then
+      inconsistent_party_modes="$(append_findings "$inconsistent_party_modes" \
+        "${tag}"$'\t'"$(paste -sd, <<< "$party_modes")"$'\t'"${url}")"
+    fi
+  done <<< "$release_index"
 
   if [ -n "$blocked_assets" ]; then
     note "GitHub release assets include ROM/media/save-shaped payloads"
     printf '%s\n' "$blocked_assets" | sed 's/^/  - /'
   fi
 
+  if [ -n "$missing_release_assets" ]; then
+    note "1.7+ releases are missing required platform artifacts"
+    printf '%s\n' "$missing_release_assets" | sed 's/^/  - /'
+  fi
+
   if [ -n "$missing_sidecars" ]; then
-    note "published release artifacts are not bound to a source commit by a provenance sidecar"
+    note "published release artifacts are missing checksum/provenance sidecars"
     printf '%s\n' "$missing_sidecars" | sed 's/^/  - /'
+  fi
+
+  if [ -n "$invalid_sidecars" ]; then
+    note "published release checksum/provenance sidecars do not match authoritative GitHub artifact and tag metadata"
+    printf '%s\n' "$invalid_sidecars" | sed 's/^/  - /'
+  fi
+
+  if [ -n "$orphan_sidecars" ]; then
+    note "published release sidecars name artifacts that are not present in the same release"
+    printf '%s\n' "$orphan_sidecars" | sed 's/^/  - /'
+  fi
+
+  if [ -n "$inconsistent_party_modes" ]; then
+    note "1.7+ release artifacts disagree on Phone Party mode"
+    printf '%s\n' "$inconsistent_party_modes" | sed 's/^/  - /'
   fi
 
   if [ -n "$review_assets" ]; then
@@ -332,10 +584,16 @@ scan_github_release_assets() {
     printf '%s\n' "$review_assets" | sed 's/^/  - /'
   fi
 
-  if [ -n "$expected_assets" ] && [ -z "$missing_sidecars" ]; then
-    ok "published release artifacts match the project's release naming and each carries its checksum and provenance sidecars"
+  if [ -n "$expected_assets" ] && [ -z "$missing_sidecars" ] && \
+     [ -z "$invalid_sidecars" ] && [ -z "$orphan_sidecars" ] && \
+     [ -z "$missing_release_assets" ] && \
+     [ -z "$inconsistent_party_modes" ]; then
+    ok "published release artifacts match the project's naming and each checksum/provenance sidecar is content-valid"
     printf '%s\n' "$expected_assets" | sed 's/^/  - /'
-  elif [ -z "$blocked_assets" ] && [ -z "$review_assets" ] && [ -z "$missing_sidecars" ]; then
+  elif [ -z "$blocked_assets" ] && [ -z "$review_assets" ] && \
+       [ -z "$missing_sidecars" ] && [ -z "$invalid_sidecars" ] && \
+       [ -z "$orphan_sidecars" ] && [ -z "$missing_release_assets" ] && \
+       [ -z "$inconsistent_party_modes" ]; then
     ok "GitHub release assets do not need review"
   fi
 }
@@ -434,6 +692,79 @@ scan_github_launch_labels() {
   fi
 }
 
+scan_github_deployment_environments() {
+  local repo_name="$1"
+  local environment_json
+  local reviewer_count
+  local custom_policies
+  local actual_policies
+  local expected_policies
+
+  echo
+  echo "== Deployment environments =="
+
+  if environment_json="$(gh api \
+      "repos/${repo_name}/environments/macos-release" 2>/dev/null)"; then
+    reviewer_count="$(printf '%s' "$environment_json" | jq \
+      '[.protection_rules[]? | select(.type == "required_reviewers") | .reviewers[]?] | length')"
+    if [ "$reviewer_count" -gt 0 ]; then
+      ok "macos-release requires ${reviewer_count} environment reviewer(s)"
+    else
+      note "macos-release has no required-reviewer protection rule"
+    fi
+    custom_policies="$(printf '%s' "$environment_json" | jq -r \
+      '.deployment_branch_policy.custom_branch_policies // false')"
+    if [ "$custom_policies" = "true" ]; then
+      ok "macos-release uses custom deployment branch/tag policies"
+    else
+      note "macos-release does not use custom deployment branch/tag policies"
+    fi
+    if actual_policies="$(gh api --paginate \
+        "repos/${repo_name}/environments/macos-release/deployment-branch-policies?per_page=100" \
+        --jq '.branch_policies[]? | [.type, .name] | @tsv' 2>/dev/null)"; then
+      actual_policies="$(printf '%s\n' "$actual_policies" | awk 'NF' | LC_ALL=C sort)"
+      expected_policies="$(printf 'branch\tmain\ntag\tv*\n' | LC_ALL=C sort)"
+      if [ "$actual_policies" = "$expected_policies" ]; then
+        ok "macos-release permits only public main candidates and v* tags"
+      else
+        note "macos-release deployment policies must be exactly branch main and tag v*"
+        printf '%s\n' "$actual_policies" | sed 's/^/  - actual: /'
+      fi
+    else
+      note "could not read macos-release deployment branch/tag policies"
+    fi
+  else
+    note "macos-release deployment environment is missing or unreadable"
+  fi
+
+  if environment_json="$(gh api \
+      "repos/${repo_name}/environments/github-pages" 2>/dev/null)"; then
+    custom_policies="$(printf '%s' "$environment_json" | jq -r \
+      '.deployment_branch_policy.custom_branch_policies // false')"
+    if [ "$custom_policies" = "true" ]; then
+      ok "github-pages uses custom deployment tag policies"
+    else
+      note "github-pages does not use custom deployment tag policies"
+    fi
+    if actual_policies="$(gh api --paginate \
+        "repos/${repo_name}/environments/github-pages/deployment-branch-policies?per_page=100" \
+        --jq '.branch_policies[]? | [.type, .name] | @tsv' 2>/dev/null)"; then
+      actual_policies="$(printf '%s\n' "$actual_policies" | awk 'NF' | LC_ALL=C sort)"
+      expected_policies=$'tag\tv*'
+      if [ "$actual_policies" = "$expected_policies" ]; then
+        ok "github-pages permits only v* tags"
+      else
+        note "github-pages deployment policy must be exactly tag v*"
+        printf '%s\n' "$actual_policies" | sed 's/^/  - actual: /'
+      fi
+    else
+      note "could not read github-pages deployment tag policies"
+    fi
+  else
+    note "github-pages deployment environment is missing or unreadable"
+  fi
+}
+
 scan_github_workflow_run_history() {
   local repo_name="$1"
   local reachable_shas
@@ -486,7 +817,8 @@ scan_github_public_commit_refs() {
   echo
   echo "== Public GitHub commit-reference surface =="
 
-  if scan_output="$(python3 tools/check_github_public_commit_refs.py --repo "$repo_name" 2>&1)"; then
+  if scan_output="$(python3 tools/check_github_public_commit_refs.py \
+      --repo "$repo_name" --reviewed-refs "$retained_ref_allowlist" 2>&1)"; then
     ok "$scan_output"
   else
     note "public GitHub text references stale or unverified commits"
@@ -589,6 +921,13 @@ scan_github_pull_refs() {
   local reachable_shas
   local ref_lines
   local stale_refs=""
+  local reviewed_refs=""
+  local allowlist_lines
+  local invalid_allowlist
+  local duplicate_allowlist_refs
+  local missing_allowlist=""
+  local allow_ref
+  local allow_sha
   local ref_count=0
   local sha
   local ref
@@ -607,23 +946,66 @@ scan_github_pull_refs() {
     return
   fi
 
+  if [ ! -f "$retained_ref_allowlist" ]; then
+    note "retained pull-ref allowlist is missing: $retained_ref_allowlist"
+    return
+  fi
+  allowlist_lines="$(awk 'NF && $0 !~ /^[[:space:]]*#/' "$retained_ref_allowlist")"
+  invalid_allowlist="$(printf '%s\n' "$allowlist_lines" | awk -F '\t' '
+    NF != 2 ||
+    $1 !~ /^refs\/pull\/[0-9][0-9]*\/(head|merge)$/ ||
+    length($2) != 40 || $2 !~ /^[0-9a-f]+$/ { print }
+  ')"
+  if [ -n "$invalid_allowlist" ]; then
+    note "retained pull-ref allowlist has malformed rows"
+    printf '%s\n' "$invalid_allowlist" | sed 's/^/  - /'
+    return
+  fi
+  duplicate_allowlist_refs="$(printf '%s\n' "$allowlist_lines" | \
+    awk -F '\t' 'NF { print $1 }' | LC_ALL=C sort | uniq -d)"
+  if [ -n "$duplicate_allowlist_refs" ]; then
+    note "retained pull-ref allowlist repeats refs"
+    printf '%s\n' "$duplicate_allowlist_refs" | sed 's/^/  - /'
+    return
+  fi
+
   while IFS=$'\t' read -r sha ref; do
     [ -n "$sha" ] || continue
     ref_count=$((ref_count + 1))
     if ! printf '%s\n' "$reachable_shas" | grep -Fqx "$sha"; then
-      stale_refs="$(append_findings "$stale_refs" "${ref} ${sha:0:12}")"
+      if printf '%s\n' "$allowlist_lines" | grep -Fqx "${ref}"$'\t'"${sha}"; then
+        reviewed_refs="$(append_findings "$reviewed_refs" "${ref} ${sha:0:12}")"
+      else
+        stale_refs="$(append_findings "$stale_refs" "${ref} ${sha:0:12}")"
+      fi
     fi
   done <<< "$ref_lines"
 
+  while IFS=$'\t' read -r allow_ref allow_sha; do
+    [ -n "$allow_ref" ] || continue
+    if ! printf '%s\n' "$ref_lines" | grep -Fqx "${allow_sha}"$'\t'"${allow_ref}"; then
+      missing_allowlist="$(append_findings "$missing_allowlist" "${allow_ref} ${allow_sha:0:12}")"
+    fi
+  done <<< "$allowlist_lines"
+
   if [ -n "$stale_refs" ]; then
-    note "pull request refs expose commits outside current public git history"
+    note "unreviewed pull request refs expose commits outside current public git history"
     printf '%s\n' "$stale_refs" | sed 's/^/  - /'
-    echo "  GitHub keeps closed PR refs read-only; do not assume deleting local branches removes this surface."
-  elif [ "$ref_count" -eq 0 ]; then
-    ok "no pull request refs are advertised"
-  else
-    ok "all advertised pull request refs are reachable from current git history"
   fi
+  if [ -n "$missing_allowlist" ]; then
+    note "retained pull-ref allowlist does not match GitHub's advertised refs"
+    printf '%s\n' "$missing_allowlist" | sed 's/^/  - /'
+  fi
+  if [ -n "$reviewed_refs" ]; then
+    ok "retained pull request refs match exact full-history-reviewed commits"
+    printf '%s\n' "$reviewed_refs" | sed 's/^/  - /'
+  fi
+  if [ -z "$stale_refs" ] && [ -z "$missing_allowlist" ] && [ "$ref_count" -eq 0 ]; then
+    ok "no pull request refs are advertised"
+  elif [ -z "$stale_refs" ] && [ -z "$missing_allowlist" ]; then
+    ok "all advertised pull request refs are reachable or exact reviewed retained refs"
+  fi
+  echo "  GitHub keeps closed PR refs read-only; every unreachable entry must match the exact reviewed allowlist."
 }
 
 while [ "$#" -gt 0 ]; do
@@ -650,6 +1032,10 @@ done
 
 if ! command -v gh >/dev/null 2>&1; then
   echo "GitHub public readiness FAILED: gh CLI is not installed." >&2
+  exit 1
+fi
+if ! command -v jq >/dev/null 2>&1; then
+  echo "GitHub public readiness FAILED: jq is not installed." >&2
   exit 1
 fi
 
@@ -769,8 +1155,8 @@ if [ -n "$repo" ]; then
   # macos-release.yml are workflow_dispatch lanes a maintainer runs. What
   # matters is not whether the feature is on, but that the token it hands those
   # lanes is minimal, that third-party actions are SHA-pinned, that artifacts
-  # expire quickly, and that no workflow exists on GitHub that this repository
-  # does not track.
+  # expire quickly, and that no workflow exists on GitHub outside the tracked
+  # set plus the exact GitHub-managed Dependabot surface below.
   case "$actions_enabled" in
     true)
       ok "GitHub Actions are enabled, as the hosted correctness lane and the dispatch release lanes require"
@@ -803,21 +1189,36 @@ if [ -n "$repo" ]; then
   esac
 
   # A workflow GitHub knows about that the tracked tree does not define is an
-  # unreviewed automation surface on a public repository.
+  # unreviewed automation surface on a public repository. Compare complete
+  # paths, not basenames: a nested/moved remote workflow with the same filename
+  # as a reviewed one is still a different automation surface. GitHub's one
+  # synthetic Dependabot workflow is the narrow exception; it is generated from
+  # the tracked dependabot.yml and cannot itself exist under .github/workflows.
   tracked_workflows="$(
     find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/null \
-      | sed 's#^.*/##' | sort -u
+      | LC_ALL=C sort -u
+  )"
+  managed_workflows=""
+  if git ls-files --error-unmatch -- .github/dependabot.yml >/dev/null 2>&1; then
+    managed_workflows="dynamic/dependabot/dependabot-updates"
+  fi
+  reviewed_workflows="$(
+    printf '%s\n%s\n' "$tracked_workflows" "$managed_workflows" \
+      | awk 'NF' | LC_ALL=C sort -u
   )"
   if remote_workflows="$(gh api --paginate "repos/${repo}/actions/workflows" \
     --jq '.workflows[]? | select(.state != "deleted") | .path' 2>/dev/null)"; then
     unexpected_workflows="$(
       printf '%s\n' "$remote_workflows" \
-        | sed 's#^.*/##' | sort -u \
-        | grep -Fxv -f <(printf '%s\n' "$tracked_workflows") || true
+        | LC_ALL=C sort -u \
+        | grep -Fxv -f <(printf '%s\n' "$reviewed_workflows") || true
     )"
     if [ -n "$unexpected_workflows" ]; then
       note "GitHub hosts workflow(s) this repository does not track"
       printf '%s\n' "$unexpected_workflows" | sed 's/^/  - /'
+    elif [ -n "$managed_workflows" ] && \
+        printf '%s\n' "$remote_workflows" | grep -Fxq "$managed_workflows"; then
+      ok "every GitHub-hosted workflow is tracked or the exact GitHub-managed Dependabot workflow"
     else
       ok "every workflow GitHub hosts is tracked in .github/workflows"
     fi
@@ -878,6 +1279,7 @@ if [ -n "$repo" ]; then
   scan_github_launch_labels "$repo"
   scan_github_release_assets "$repo"
   scan_github_actions_artifacts "$repo"
+  scan_github_deployment_environments "$repo"
 
   echo
   echo "== Protection and security settings =="

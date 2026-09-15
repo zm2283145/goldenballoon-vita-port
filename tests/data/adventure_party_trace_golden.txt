@@ -1,0 +1,9 @@
+aparty_schema: v=1
+aparty_session: state=ACTIVE_LOBBY sgen=1 lgen=3 host=0
+aparty_roster: n=3 mask=0x7 c0=10 c1=11 c2=12
+aparty_binding: seat=2 port=3
+aparty_transition: seat=1 tick=42 trigger=7 dest=9 lgen=3
+aparty_interaction: seat=0 action=2 verdict=0
+aparty_award: op=consume sgen=1 lgen=3 course=5 activity=2 kind=0 result=0
+aparty_layout: viewports=3 layout=1
+aparty_restore: suspend_lgen=2 restore_lgen=4 match=1

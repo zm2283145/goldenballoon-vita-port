@@ -34,9 +34,9 @@ bool mdkr_net_roster_runtime_active(void);
  * install/clear live in the beta online-wiring layer (platform/app/
  * online_live_wiring.cpp), NOT here, because this translation unit is compiled
  * into every build WITHOUT the MDKR_ENABLE_ONLINE_BETA macro -- so keeping state
- * or callable state-mutating functions here would leak code into the OFF/release
+ * or callable state-mutating functions here would leak code into the beta-OFF
  * binary. As a `static inline` that a non-beta build never calls, this emits no
- * code there and the release object stays byte-identical, while remaining
+ * code there and the beta-OFF object stays byte-identical, while remaining
  * directly unit-testable.
  *
  * Returns true when a boot that presents `boot_owner` must force-clear the

@@ -613,20 +613,30 @@ see the payoff of the very fixes it was blocking. Also: `race_karts` scores **0.
 thirty points below the menus, by far our worst route and the least investigated.
 `race_state_oracle` now drives both the US 1.1 ROM and the native port through a
 full Ancient Lake lap and compares intermediate racer state on the race's own
-clock. Its strict production arms remain intentionally red: the authored
-two-field arm currently measures 39.241% checkpoint/lap agreement and
-2,103.419 world-unit position p95; enhanced one-field simulation measures
+clock. Its production arms are classified `diagnostic` (2026-08-25): they
+report the divergence-onset clock and record threshold shortfalls as
+observations rather than presenting as red parity gates, because a same-clock
+agreement percentage under compounding open-loop drift is a phase metric, not
+a mechanic-correctness score. At the 2026-08-01 measurement (pre-dating the
+2026-08-04/05 authored-trace rebaselines) the authored
+two-field arm measured 39.241% checkpoint/lap agreement and
+2,103.419 world-unit position p95; enhanced one-field simulation measured
 2.988% and 6,230.618. A local-only `reference_replay` arm now compiles the
 real-ROM VI trace into exact observed update widths and input states. That arm
 makes the first four checkpoint clocks exact and moves the first five-unit
 position separation from clock 18 to 767, proving that timestep partitioning
 caused the early mismatch. Sub-unit floating-point drift still compounds into
-a different open-loop line, so the diagnostic remains red rather than
-manufacturing parity with a permissive tolerance.
+a different open-loop line; the thresholds are unchanged rather than
+manufacturing parity with a permissive tolerance, and the diagnostic
+classification keeps that drift visible as dated observations instead of a
+failing verdict.
 
 The later all-racer Bluey 2 lane closes the cadence choice. Retail and Original
 two-field Bluey finish at ticks 3,459 and 3,458 with a 1.00065× mean-speed
-ratio; the Enhanced one-field arm finishes at 3,022 with a 1.13982× ratio.
+ratio; the Enhanced one-field arm finished at 3,022 with a 1.13982× ratio
+(pre-governor; since 2026-08-09's boss-cadence governor, issue #26, the
+Enhanced arm lands in the Original band and the runaway reproduces only under
+`MDKR_BOSS_CADENCE_COMPAT=0`).
 Interactive gameplay now defaults to persisted Original cadence, with the old
 one-field simulation retained explicitly as Enhanced compatibility. The
 progression/audio regression and release-bound evidence are recorded in

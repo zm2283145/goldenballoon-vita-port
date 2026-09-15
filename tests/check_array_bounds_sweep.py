@@ -343,6 +343,86 @@ SHAPE_TRIAGE = {
         "RECORDED, NOT TOUCHED: same call, third output array.",
     ("bare-pointer", "game/src/save_data.c", "func_800756D4:checksumIDs"):
         "RECORDED, NOT TOUCHED: same call, fourth output array.",
+    # -- The Adventure Party co-op and Character Workshop / custom-character
+    #    campaigns (2026-09-03, int-1.7.0 line, first sweep since v1.6.0
+    #    merged both). Eleven output pointers arrived at once; every one was
+    #    read end to end, and each is bounded by something the callee can see.
+    ("bare-pointer", "game/src/objects.c",
+     "adventure_party_hub_formation:spawnX"):
+        "BOUNDED BY THE PLANNER'S CONTRACT: the only writes are "
+        "spawn*[seat] with seat = plan.seats[j].seat, and "
+        "adventure_party_plan_formation fills 1..participant_count-1 over "
+        "seat_count == participant_count-1 slots "
+        "(platform/adventure_party/adventure_party_spawn.h), with "
+        "participant_count refused outside 2..4 by the check immediately "
+        "above the plan call. The sole caller's arrays are s32 spawnX[8] "
+        "(objects.c:3889), so the highest index written is 3 of 8.",
+    ("bare-pointer", "game/src/objects.c",
+     "adventure_party_hub_formation:spawnY"):
+        "BOUNDED BY THE PLANNER'S CONTRACT: same loop, same seat index, same "
+        "8-slot caller array.",
+    ("bare-pointer", "game/src/objects.c",
+     "adventure_party_hub_formation:spawnZ"):
+        "BOUNDED BY THE PLANNER'S CONTRACT: same loop, same seat index, same "
+        "8-slot caller array.",
+    ("bare-pointer", "game/src/objects.c",
+     "adventure_party_hub_formation:spawnAngle"):
+        "BOUNDED BY THE PLANNER'S CONTRACT: same loop, same seat index, same "
+        "8-slot caller array.",
+    ("bare-pointer", "game/src/menu.c",
+     "charselect_custom_fit_text:output"):
+        "BOUNDED BY PARAMETER: outputSize. Every write is inside it -- "
+        "output[0] after the outputSize == 0 refusal; the shortening loop "
+        "only ever writes output[--used] with used starting at "
+        "projection.output_bytes, which "
+        "mdkr_modern_character_text_project caps at outputSize - 1; and the "
+        "ellipsis memcpy of 4 bytes is fenced by `used + 3u < outputSize`.",
+    ("bare-pointer", "platform/modern_character_text.c",
+     "mdkr_modern_character_text_project:output"):
+        "BOUNDED BY PARAMETER: output_capacity. Every byte goes through "
+        "emit(), whose sole write is guarded by `*used + 1u < "
+        "output_capacity` and which otherwise only sets the truncated flag, "
+        "so used <= output_capacity - 1 and the closing output[used] = 0 is "
+        "the last in-range byte. NULL output or zero capacity returns 0.",
+    ("bare-pointer", "platform/fast3d/gfx_character_text.c",
+     "assign_context_faces:faces"):
+        "BOUNDED BY PARAMETER: writes faces[index] for index < count in each "
+        "of its three passes, and count IS the parameter. Both call sites "
+        "(build_layout) pass a local uint8_t "
+        "faces[GFX_CHARACTER_TEXT_MAX_CODEPOINTS + 1u] with a count that the "
+        "codepoint decoder already fenced at "
+        "`count >= GFX_CHARACTER_TEXT_MAX_CODEPOINTS` -> fallback.",
+    ("bare-pointer", "platform/fast3d/gfx_character_text.c",
+     "assign_context_scripts:scripts"):
+        "BOUNDED BY PARAMETER: same shape, same two call sites, same "
+        "capacity -- hb_script_t scripts[GFX_CHARACTER_TEXT_MAX_CODEPOINTS + "
+        "1u] under the same codepoint cap.",
+    ("bare-pointer", "platform/modern_character_gameplay_profile.c",
+     "read_float_array:output"):
+        "BOUNDED BY PARAMETER: `for (element = 0; element < count; "
+        "element++) output[element] = ...`, and the function additionally "
+        "refuses when the ROM subasset holds fewer than count * 4 bytes, so "
+        "it cannot read past its source either. All three call sites pass an "
+        "array and its own element count "
+        "(MDKR_DONOR_GAMEPLAY_PROFILE_COUNT, MDKR_DONOR_ACCELERATION_SAMPLES).",
+    ("bare-pointer", "platform/modern_character_install.c",
+     "json_escape:output"):
+        "BOUNDED BY PARAMETER: capacity. Each of the three emit arms is "
+        "preceded by its own `write + N >= capacity` refusal for exactly the "
+        "N bytes it is about to store (2 for the escaped pair, 6 for the "
+        "\\u00xx form, 1 for a literal byte), which leaves at least one "
+        "byte for the closing output[write] = 0.",
+    ("bare-pointer", "platform/modern_character_render.c",
+     "mdkr_modern_render_resolve_draw:palette_scratch"):
+        "BOUNDED BY PARAMETER, in MATRICES not floats: the entry check "
+        "refuses `palette_matrices < retained->bone_count` whenever "
+        "bone_count is nonzero, and the loop writes "
+        "palette_scratch[component] for component < bone_count * 16, i.e. 16 "
+        "floats per matrix. The game caller (gfx_pc_dkr.c) passes a local "
+        "float interpolated_bones[MDKR_MODERN_DRAW_STORE_MAX_BONES * 16u] "
+        "with palette_matrices = MDKR_MODERN_DRAW_STORE_MAX_BONES, so the "
+        "two units agree; the draw store separately refuses any draw whose "
+        "bone_count exceeds that same maximum.",
 
     # ---------------------------------------------------------------------
     # equality-cap: `i == CAP` guarding a write indexed by i, where a second
@@ -706,7 +786,62 @@ SHAPE_INFO_MAX = {
     # == 0`), which is why the enumerator files it INFO not TRIAGE; runtime
     # array-bounds UBSan over the 8 routes reports no overflow. Measured with
     # tools/sweep_bug_shapes.py, not summed.
-    "equality-cap": 49,
+    #
+    # 49 -> 50, RE-MEASURED 2026-09-02 for the pre-flight route measurement
+    # (task N5). The one added entry is match_preflight.c
+    # `mdkr_match_route_measure_finish:answered != 0`, and it is an empty-set
+    # early-out, not a saturation cap: `answered` counts answered probes into
+    # `uint16_t sorted[MDKR_MATCH_ROUTE_MAX_PROBES]` from a
+    # `for (index = 0; index < sent; index++)` loop with a single `answered++`
+    # per iteration, where `sent` is `next_sequence - 1` and `_due` refuses to
+    # emit past MDKR_MATCH_ROUTE_MAX_PROBES, so `answered <= sent <= capacity`.
+    # The guarded read is `sorted[rank - 1]` with
+    # `rank = ceil(0.95 * answered)`, which is in [1, answered] for every
+    # nonzero `answered`; the comparison exists so the percentile is not taken
+    # over an empty set.
+    #
+    # 50 -> 60, RE-MEASURED 2026-09-03 on the int-1.7.0 line (fix/m3-reds-3),
+    # the first sweep since v1.6.0 merged the Adventure Party co-op code, the
+    # Character Workshop / custom-character pipeline and the netplay changes.
+    # Eleven keys are new against the v1.6.0 population and one of them
+    # (match_preflight.c mdkr_match_route_measure_finish:answered != 0) is
+    # already named in the 49 -> 50 note above, so the ceiling moves by ten.
+    # Every one was read; not one is a saturation cap on a shared counter, and
+    # the growth is entirely the two new subsystems arriving in the sweep's
+    # field of view:
+    #   * 3 in fast3d/gfx_character_text.c, the Workshop text shaper --
+    #     `segment_count != 0` is the reverse-order pop guard on a run split
+    #     whose segments each consume at least one codepoint from a buffer the
+    #     caller already fenced with `count >= GFX_CHARACTER_TEXT_MAX_CODEPOINTS`;
+    #     `index != 0` is a "there is no previous glyph" test in the contextual
+    #     face pass; `count == 0` is the empty-input early-out under that same
+    #     fence.
+    #   * 2 in modern_character_install.c's coordinated removal -- the
+    #     `candidate_count == 0` empty-set early-out and the
+    #     `candidate_count != 0` guard in front of a `candidates[count - 1u]`
+    #     read. The array is realloc-grown and its capacity test is a SEPARATE
+    #     site (`candidate_count == candidate_capacity`), so neither of these
+    #     two is what bounds the fill.
+    #   * 2 in modern_character_runtime.c -- `index == 0` is "is this player
+    #     one", used to fall back to MDKR_CUSTOM_CHARACTER in the per-player
+    #     env scan; `assembly_count == 0` is an empty-set early-out AFTER an
+    #     explicit `assembly_count >= MDKR_MODERN_CHARACTER_MAX_PRIMITIVES`
+    #     fence on the fill.
+    #   * 1 in modern_character_surface_intersection.c -- `stack_size != 0` is
+    #     the BVH node-stack pop underflow guard, with every two-slot push
+    #     fenced by `stack_size + 2u > MDKR_SURFACE_BVH_STACK` immediately
+    #     beforehand. Byte for byte the shape already triaged above for
+    #     camera_object_occlusion.c.
+    #   * 1 in fast3d/gfx_webgpu.c -- `required_feature_count != 0` decides
+    #     whether to attach a requiredFeatures array at all. The fill is six
+    #     conditional pushes into a `WGPUFeatureName required_features[6]`:
+    #     at the bound with zero slack, never past it.
+    #   * 1 in net/match_preflight.c -- `answered == 0` in route_measure_p95,
+    #     the percentile-over-an-empty-set guard, factored out of the finish()
+    #     site the 49 -> 50 note already reads. Same `answered <= sent <=
+    #     MDKR_MATCH_ROUTE_MAX_PROBES` bound.
+    # Measured with tools/sweep_bug_shapes.py, not summed.
+    "equality-cap": 60,
     # +116 from platform/. Overwhelmingly `1u << port` / `1u << slot` bit masks
     # over small fixed domains and `value >> (i * 8)` byte extractions -- the
     # var-count flavour the enumerator reports without an added constant. The
@@ -837,7 +972,128 @@ SHAPE_INFO_MAX = {
     # are the shift-count TRIAGE entries), and every one is covered at runtime by
     # -fsanitize=shift-exponent, which reported nothing across the 8 routes.
     # Measured with tools/sweep_bug_shapes.py, not summed.
-    "shift-count": 386,
+    #
+    # 386 -> 388, RE-MEASURED 2026-09-02 for the pre-flight route measurement
+    # (task N5). Both added entries are match_preflight.c's new big-endian
+    # 16-bit helpers, `put16` (`value >> 8u`) and `get16` (`input[0] << 8u`) --
+    # the same var-count byte-extraction flavour as the put32/get32/put64/get64
+    # siblings already counted in this population, on a uint16_t with a
+    # literal count of 8.
+    #
+    # 542 -> 546, RE-MEASURED 2026-09-10. Four new entries, none removed, all in
+    # one function: the joint-membership bitmap added to
+    # mdkr_modern_character_asset_joint_parent_node
+    # (platform/modern_character_asset.c) when that walk stopped re-scanning
+    # every joint at every level of the parent chain.
+    #     is_joint[possible.node >> 3u] |= (unsigned char)(1u << (possible.node & 7u));
+    #     if ((is_joint[(uint32_t)parent >> 3u] & (1u << ((uint32_t)parent & 7u))) != 0u)
+    # Both shift COUNTS are `& 7u`, so they take 0..7 on an unsigned int and
+    # cannot approach its width -- the undefined case this class exists to find
+    # is unreachable by construction rather than by argument. Both byte INDICES
+    # are `>> 3u` of a value already refused above unless it is below
+    # nodes->count, and the function returns 0 when nodes->count exceeds
+    # MDKR_MODERN_NODES_MAX (16384), so the index stays under 2048 -- exactly
+    # sizeof(is_joint). Ceiling moves by four.
+    #
+    # 539 -> 542, RE-MEASURED 2026-09-08 after the 1.7.0 candidate delta was
+    # committed. The ceiling had been measured on a tree where that work was
+    # still uncommitted, so committing it put the population over a ceiling
+    # that had never seen it. Diffing the class against c657fa62 by content
+    # rather than by line number gives exactly three new entries and none
+    # removed, all in one function, mdkr_trophy_records_merge
+    # (game/src/runtime_contracts.c) from the issue #63 per-world best-medal
+    # merge:
+    #     u32 leftState  = (left  >> shift) & 3U;
+    #     u32 rightState = (right >> shift) & 3U;
+    #     merged |= (leftState > rightState ? leftState : rightState) << shift;
+    # `shift` is loop-local: (world - WORLD_DINO_DOMAIN) * 2 over
+    # WORLD_DINO_DOMAIN..WORLD_FUTURE_FUN_LAND, which enums.h fixes at 1..5, so
+    # it takes exactly {0, 2, 4, 6, 8} on a u32. The count cannot reach 32 and
+    # the shift cannot be undefined; these are the ordinary two-bit-per-world
+    # pack/unpack this class already counts elsewhere. Ceiling moves by three.
+    #
+    # 388 -> 539, RE-MEASURED 2026-09-03 on the int-1.7.0 line
+    # (fix/m3-reds-3), the first sweep since v1.6.0 merged the Adventure Party
+    # co-op code, the Character Workshop / custom-character pipeline
+    # (game/src/menu.c, thread3_main.c, objects.c, game_ui.c and the
+    # platform/modern_character_*.c family) and the netplay changes. 154
+    # instances are new against the v1.6.0 population and one left it; two of
+    # the new ones (match_preflight.c put16/get16) are already named in the
+    # 386 -> 388 note above, so the ceiling moves by 151. Every one of the 154
+    # was read. One was a DEFECT and is fixed (below) -- its shift is still
+    # present and still counted, only its ordering changed. The population
+    # falls into four groups, none of which can reach the width:
+    #
+    #   * 53 are CONSTANT counts that the enumerator files as var-count only
+    #     because its LITERAL regex is digits-only and these literals carry a
+    #     `u` suffix: big-endian byte packing and extraction (`<< 24u`,
+    #     `<< 16u`, `>> 8u`), hex-nibble emission (`>> 4u`), UTF-8
+    #     continuation accumulation (`<< 6u`), popcount drains (`>>= 1u`),
+    #     the packed 16.16 texture-dimension unpack (`>> 16u`) and one
+    #     `>> 32u` of a uint64_t premultiplied-alpha accumulator in the
+    #     portrait resampler. Widest count 32, and its value is 64-bit.
+    #
+    #   * 95 are single-bit masks over a small FIXED domain, every one either
+    #     a loop index over that domain's own constant or range-checked before
+    #     the shift: seats (ADVENTURE_PARTY_MAX_SEATS 4, and participant_count
+    #     validated 2..4 before `(1u << participant_count) - 1u`), controller
+    #     ports (MAXCONTROLLERS 4), player slots
+    #     (MDKR_MODERN_CHARACTER_PLAYERS 4), vehicle contexts
+    #     (MDKR_CHARACTER_CONTEXT_COUNT 4), humanoid rig roles
+    #     (MDKR_MODERN_HUMANOID_ROLE_COUNT 16), vehicle contacts
+    #     (MDKR_MODERN_CHARACTER_CONTACTS 4), preview landmarks (3), preview
+    #     joints (16), motion-review samples (11), LOD levels (4), occluder
+    #     classes (3), net input slots (MDKR_NET_INPUT_SLOTS), bounding-box
+    #     corner axes (3), and worlds (`settings->worldId` fenced
+    #     `>= 0 && < 16` at its own site). Widest of the family is
+    #     modern_character_runtime.c's LOD state bit,
+    #     `context * MDKR_MODERN_CHARACTER_VIEWS + view` with context < 4 and
+    #     view < 8, i.e. 0..31 into a uint32_t -- at the width boundary with
+    #     zero slack, both factors checked at the function's entry; objects.c
+    #     `1u << (player * 8 + reason)` is the same 0..31 shape with
+    #     player < 4 and reason < 8 checked immediately above it. The two
+    #     `while ((bit >> slot) != 1u) slot++` scans in the rig-role mapping
+    #     terminate at slot <= 15 because `bit` is a single set bit produced
+    #     by `1u << index` with index < 16, and both are guarded on
+    #     `bit != 0`. The compiled-asset fields in this group
+    #     (`attachment.context`, `constraint.role`) are bounded by the .mdkc
+    #     validator, not locally: validate_references() refuses the package
+    #     unless every attachment context is < MDKR_CHARACTER_CONTEXT_COUNT,
+    #     and it runs inside load_file() before any consumer sees the asset.
+    #
+    #   * 3 are the 8x8 visibility-tile masks in the skinned-character
+    #     occlusion path (gfx_webgpu.c): `UINT64_C(1) << tile` with
+    #     tile < WGPU_SKINNED_VISIBILITY_TILES (GRID 8 squared == 64), so
+    #     0..63 into a uint64_t. At the boundary, defined; the drains beside
+    #     them are the `>>= 1u` popcounts already counted in the first group.
+    #
+    #   * 3 are byte-index shifts `(byte * 8u)` / `(index * 8u)` over exactly
+    #     eight bytes into a 64-bit value -- the install archive's
+    #     little-endian size field (mz_uint64), the catalog revision folded
+    #     from source_sha256, and render.c's digest_id. Count 0..56.
+    #
+    # THE DEFECT, fixed in this commit: modern_character_runtime.c
+    # mdkr_modern_character_request_surface_diagnostics() computed
+    # `const uint32_t bit = 1u << (unsigned)context;` in its declaration list,
+    # i.e. BEFORE the `context < MDKR_CHARACTER_CONTEXT_CAR || context >
+    # MDKR_CHARACTER_CONTEXT_PLANE` guard that exists precisely because
+    # `context` is a caller's value. A declaration initialiser runs first, so
+    # a negative or wide context shifted by a count at or past 32 on the very
+    # path the function refuses. The initialisation now happens after the
+    # guard. The record of the reading is here rather than in SHAPE_TRIAGE
+    # because a triage entry for an INFO-severity key would match nothing and
+    # fail as stale.
+    #
+    # Swept the class, not just the instance (CONTRIBUTING.md rule 6): every
+    # other `<type> x = 1u << ...` initialiser in game/ and platform/ was read
+    # (presentation_snapshot.c:964, audio_sequence.c:73,
+    # camera_dynamic_occlusion.c:137, platform_sdl_min.c:1945,
+    # gfx_webgpu.c:12211, thread3_main.c:811, modern_character_asset.c:1253,
+    # modern_character_runtime.c:2506, save_tools_core.c:453). Each is a loop
+    # index over its own domain constant or already past its guard; 1614 was
+    # the only one whose guard stood behind it.
+    # Measured with tools/sweep_bug_shapes.py, not summed.
+    "shift-count": 546,
 }
 
 # Only array-bounds is load-bearing for this class. pointer-overflow is kept

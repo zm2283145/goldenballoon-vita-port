@@ -166,8 +166,89 @@ const testState = testConfig ? {
 } : null;
 if (testState) globalThis.__mdkrTestState = testState;
 
-// The engine's sole browser frame boundary calls this instead of reaching rAF
-// directly. Normal visitors receive the real DOMHighResTimeStamp. The browser
+// BEGIN bounded startup diagnostics (also exercised with a fake clock in Node).
+// This independent heartbeat observes browser opportunities, not engine waits.
+// Never replace rAF or call into wasm here: observing a stalled engine must not
+// resume it, alter its scheduling, or create a second Asyncify entry point.
+const startupDiagnostics = testConfig && testConfig.startupDiagnostics === true
+  ? (() => {
+    const state = {
+      generation: 0, active: false, stoppedReason: null,
+      heartbeatCallbacks: 0, heartbeatTimestamp: null,
+      engineRafRequested: 0, engineRafResolved: 0,
+      lastPhase: null, lastPhaseTimestamp: null, events: [],
+    };
+    let heartbeatId = null;
+    let deadline = 0;
+    const increment = (value) => Math.min(Number.MAX_SAFE_INTEGER, value + 1);
+    const trace = (phase) => {
+      if (typeof phase !== "string" || !phase || phase.length > 64) return;
+      const now = performance.now();
+      state.lastPhase = phase;
+      state.lastPhaseTimestamp = now;
+      if (phase === "raf-requested") {
+        state.engineRafRequested = increment(state.engineRafRequested);
+      } else if (phase === "raf-resolved") {
+        state.engineRafResolved = increment(state.engineRafResolved);
+      }
+      state.events.push({ phase, timestamp: now });
+      if (state.events.length > 32) state.events.shift();
+    };
+    const stop = (reason) => {
+      if (!state.active) return;
+      state.active = false;
+      state.stoppedReason = reason;
+      if (heartbeatId !== null) cancelAnimationFrame(heartbeatId);
+      heartbeatId = null;
+    };
+    const heartbeat = (timestamp) => {
+      heartbeatId = null;
+      if (!state.active) return;
+      state.heartbeatCallbacks = increment(state.heartbeatCallbacks);
+      state.heartbeatTimestamp = timestamp;
+      if (performance.now() >= deadline || state.heartbeatCallbacks >= 120000) {
+        stop("observation-limit");
+        return;
+      }
+      heartbeatId = requestAnimationFrame(heartbeat);
+    };
+    const start = () => {
+      stop("new-engine-run");
+      state.generation = increment(state.generation);
+      state.active = true;
+      state.stoppedReason = null;
+      state.heartbeatCallbacks = 0;
+      state.heartbeatTimestamp = null;
+      state.engineRafRequested = 0;
+      state.engineRafResolved = 0;
+      state.lastPhase = null;
+      state.lastPhaseTimestamp = null;
+      state.events.length = 0;
+      deadline = performance.now() + 600000;
+      heartbeatId = requestAnimationFrame(heartbeat);
+    };
+    const snapshot = () => {
+      const now = performance.now();
+      return {
+        ...state,
+        events: state.events.map((event) => ({ ...event })),
+        millisecondsSinceHeartbeat: state.heartbeatTimestamp === null
+          ? null : now - state.heartbeatTimestamp,
+        millisecondsSincePhase: state.lastPhaseTimestamp === null
+          ? null : now - state.lastPhaseTimestamp,
+        visibilityState: document.visibilityState,
+        hasFocus: document.hasFocus(),
+      };
+    };
+    globalThis.__mdkrStartupTrace = trace;
+    globalThis.__mdkrStartupDiagnosticsSnapshot = snapshot;
+    addEventListener("pagehide", () => stop("pagehide"));
+    return { start, stop, trace, snapshot };
+  })() : null;
+// END bounded startup diagnostics.
+
+// The synthetic clock's browser frame boundary calls this helper; the ordinary
+// clock awaits rAF directly in platformWaitAnimationFrame. The browser
 // schedule gate may supply bounded synthetic deltas while still yielding once
 // to the real event loop per opportunity. Hidden documents wait for visibility
 // instead of doing expensive 1 Hz background replays; the C clock rebases the
@@ -190,11 +271,14 @@ let testRafIndex = 0;
 let testRafNow = null;
 let testActualRafLast = null;
 globalThis.__mdkrActualRafDeltas = testConfig ? [] : null;
+globalThis.__mdkrActualRafCallbacks = testConfig ? 0 : null;
+globalThis.__mdkrActualRafTimestamp = testConfig ? null : undefined;
 globalThis.__mdkrLastAnimationFrameDeltaNs = 0;
 globalThis.__mdkrSyntheticAnimationFrameClock =
   testRafDeltas !== null || testRafDeltasNs !== null;
 globalThis.__mdkrWaitAnimationFrame = async function () {
   while (document.visibilityState === "hidden") {
+    if (startupDiagnostics) startupDiagnostics.trace("raf-visibility-wait");
     await new Promise((resolve) => {
       const visible = () => {
         if (document.visibilityState !== "hidden") {
@@ -205,8 +289,13 @@ globalThis.__mdkrWaitAnimationFrame = async function () {
       document.addEventListener("visibilitychange", visible);
     });
   }
+  if (startupDiagnostics) startupDiagnostics.trace("raf-requested");
   const actual = await new Promise((resolve) => requestAnimationFrame(resolve));
+  if (startupDiagnostics) startupDiagnostics.trace("raf-resolved");
   if (globalThis.__mdkrActualRafDeltas) {
+    globalThis.__mdkrActualRafCallbacks =
+      (Number(globalThis.__mdkrActualRafCallbacks) || 0) + 1;
+    globalThis.__mdkrActualRafTimestamp = actual;
     if (testActualRafLast !== null) {
       globalThis.__mdkrActualRafDeltas.push(actual - testActualRafLast);
       if (globalThis.__mdkrActualRafDeltas.length > 12000) {
@@ -228,6 +317,12 @@ globalThis.__mdkrWaitAnimationFrame = async function () {
 
 function testMark(phase) {
   if (testState) testState.phase = phase;
+  if (startupDiagnostics) {
+    if (phase === "main-started") startupDiagnostics.start();
+    startupDiagnostics.trace("shell:" + phase);
+    if (phase === "exited" || phase === "aborted" || phase === "main-threw" ||
+        phase.endsWith("-failed")) startupDiagnostics.stop(phase);
+  }
 }
 
 function testError(value) {
@@ -487,6 +582,20 @@ if (testState) {
       persistenceWait: testState.persistenceWait
         ? { ...testState.persistenceWait } : null,
       audio: testAudioInfo(),
+      browserScheduling: {
+        startupDiagnostics: startupDiagnostics ? startupDiagnostics.snapshot() : null,
+        visibilityState: document.visibilityState,
+        hasFocus: document.hasFocus(),
+        actualRafCallbacks:
+          Number(globalThis.__mdkrActualRafCallbacks) || 0,
+        actualRafDeltaCount: Array.isArray(globalThis.__mdkrActualRafDeltas)
+          ? globalThis.__mdkrActualRafDeltas.length : 0,
+        millisecondsSinceLastRaf:
+          Number(globalThis.__mdkrActualRafCallbacks) > 0 &&
+          Number.isFinite(Number(globalThis.__mdkrActualRafTimestamp))
+            ? performance.now() - Number(globalThis.__mdkrActualRafTimestamp)
+            : null,
+      },
       engineRuns: testState.runs.slice(),
       wasmModuleCreations,
     };

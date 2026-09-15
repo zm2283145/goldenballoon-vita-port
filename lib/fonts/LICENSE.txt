@@ -9,6 +9,11 @@ Roboto
                                    (Roboto SemiBold: the upstream variable
                                    font instanced at wght=600 wdth=100,
                                    then subsetted to printable ASCII)
+  platform/fast3d/gfx_character_text_face.h custom-character display/short
+                                   names (Roboto SemiBold: the Google Fonts
+                                   variable font instanced at wght=600
+                                   wdth=100, then subsetted to the bounded LTR
+                                   repertoire documented in that header)
   Roboto reserves no font name, so the modified versions above keep the
   Roboto name.
 ==============================================================================

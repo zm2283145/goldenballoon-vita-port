@@ -1,0 +1,18 @@
+# Adventure Party with two orthogonal presentation identities: P1 receives a
+# launcher-assigned Banjo custom package; P2 joins on Krunch, then walks through
+# Diddy and Tiptup to the persisted playable Taj row. The party reducer must see
+# only the authoritative donors {Banjo,Diddy} while both presentation sidecars
+# remain independent.
+1250 START 4 P1
+1330 START 4 P1
+1450 A 4 P2
+1510 RIGHT 4 P2
+1570 DOWN 4 P2
+1630 RIGHT 4 P2
+1710 A 4 P1
+1780 A 4 P2
+1900 A 4 P1
+
+# Adventure Party routes 2P to Game Select rather than retail Track Select.
+2150 A 4 P1
+2400 A 4 P1

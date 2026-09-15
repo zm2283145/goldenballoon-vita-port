@@ -43,6 +43,7 @@
 #define MDKR64_ENH_AI_DIFFICULTY_H
 
 #include "structs.h"
+#include "enh_ai_difficulty_value.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -52,9 +53,8 @@ extern "C" {
  * Anything else — including an empty or misspelled value — resolves to
  * `authored`, because the failure mode of a typo in a config file must be the
  * authored game and not an unannounced difficulty change. */
-#define MDKR_AI_DIFFICULTY_AUTHORED "authored"
-#define MDKR_AI_DIFFICULTY_HARD     "hard"
-#define MDKR_AI_DIFFICULTY_BRUTAL   "brutal"
+/* Constants and the pure, non-latching interpretation shared with the launcher
+ * live in enh_ai_difficulty_value.h; the runtime accessors below still latch. */
 
 /* The arm actually in force, as one of the three strings above. Latched on
  * first use: the schema declares this key MDKR_VIDEO_SCOPE_RESTART, so a race

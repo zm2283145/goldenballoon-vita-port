@@ -220,9 +220,15 @@ struct MdkrPartyTransportEvent {
 };
 
 /*
- * Implementations own HTTPS/WSS/WebRTC and their callback queue. Every method
- * below is called on the launcher thread. poll() copies one bounded event out;
- * no implementation callback may call the host model directly.
+ * Implementations own HTTPS/WSS/WebRTC and their callback queue. Normal service
+ * and commands run on the launcher thread. At terminal app exit, after all UI
+ * and engine aliases are retracted and service has stopped, the host AND its
+ * transport may transfer exclusively to a retirement worker. That worker may
+ * call closeRoom()/shutdown() through host destruction, then destroy the
+ * transport. No concurrent host/model calls are permitted during that transfer.
+ * poll() copies one bounded event out; no implementation callback may call the
+ * host model directly. Transport callbacks must retain their own synchronized
+ * state until shutdown completes, independent of launcher/SDL lifetimes.
  */
 class MdkrPartyTransport {
 public:

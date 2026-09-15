@@ -65,8 +65,112 @@ SDL2_LICENSE_SHA256="$(shasum -a 256 "${SDL2_LICENSE}" | awk '{print $1}')"
 PHONE_PARTY_NOTICE="${APP_PATH}/Contents/Resources/ThirdParty/NativePhoneParty-NOTICES.txt"
 [[ -f "${PHONE_PARTY_NOTICE}" ]] || die "bundled native Phone Party notices are missing"
 PHONE_PARTY_NOTICE_SHA256="$(shasum -a 256 "${PHONE_PARTY_NOTICE}" | awk '{print $1}')"
-[[ "${PHONE_PARTY_NOTICE_SHA256}" == "dc48863706380100072297911937267b5eaee28a40a972516e07b285cc7635dd" ]] ||
+[[ "${PHONE_PARTY_NOTICE_SHA256}" == "09dc99293dc43b80a49049e9ad91d0e14fc1010da770ad1b13fe766b6f9f3fee" ]] ||
     die "bundled native Phone Party notices do not match the reviewed manifest"
+BASISU_NOTICE_DIR="${APP_PATH}/Contents/Resources/ThirdParty"
+for BASISU_NOTICE_SPEC in \
+    "BasisU-LICENSE.txt:c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4" \
+    "BasisU-Zstd-LICENSE.txt:2c1a7fa704df8f3a606f6fc010b8b5aaebf403f3aeec339a12048f1ba7331a0b" \
+    "BasisU-README.md:5336f7e852dcc067ffaa0a12c3d36892d7fe7c09ddf74a035da6a2811d0d4cbf"; do
+    BASISU_NOTICE_NAME="${BASISU_NOTICE_SPEC%%:*}"
+    BASISU_NOTICE_HASH="${BASISU_NOTICE_SPEC#*:}"
+    BASISU_NOTICE_PATH="${BASISU_NOTICE_DIR}/${BASISU_NOTICE_NAME}"
+    [[ -f "${BASISU_NOTICE_PATH}" && ! -L "${BASISU_NOTICE_PATH}" ]] ||
+        die "bundled Basis Universal notice is missing or linked: ${BASISU_NOTICE_NAME}"
+    [[ "$(shasum -a 256 "${BASISU_NOTICE_PATH}" | awk '{print $1}')" == \
+       "${BASISU_NOTICE_HASH}" ]] ||
+        die "bundled Basis Universal notice changed: ${BASISU_NOTICE_NAME}"
+done
+for CHARACTER_TEXT_NOTICE_SPEC in \
+    "CharacterText-HarfBuzz-COPYING.txt:ba8f810f2455c2f08e2d56bb49b72f37fcf68f1f4fade38977cfd7372050ad64" \
+    "CharacterText-SheenBidi-LICENSE.txt:cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"; do
+    CHARACTER_TEXT_NOTICE_NAME="${CHARACTER_TEXT_NOTICE_SPEC%%:*}"
+    CHARACTER_TEXT_NOTICE_HASH="${CHARACTER_TEXT_NOTICE_SPEC#*:}"
+    CHARACTER_TEXT_NOTICE_PATH="${BASISU_NOTICE_DIR}/${CHARACTER_TEXT_NOTICE_NAME}"
+    [[ -f "${CHARACTER_TEXT_NOTICE_PATH}" && ! -L "${CHARACTER_TEXT_NOTICE_PATH}" ]] ||
+        die "bundled character-text notice is missing or linked: ${CHARACTER_TEXT_NOTICE_NAME}"
+    [[ "$(shasum -a 256 "${CHARACTER_TEXT_NOTICE_PATH}" | awk '{print $1}')" == \
+       "${CHARACTER_TEXT_NOTICE_HASH}" ]] ||
+        die "bundled character-text notice changed: ${CHARACTER_TEXT_NOTICE_NAME}"
+done
+CHARACTER_IMPORTER="${APP_PATH}/Contents/MacOS/tools/character_importer"
+CHARACTER_IMPORTER_MANIFEST="${APP_PATH}/Contents/Resources/ThirdParty/CharacterImporter-MANIFEST.json"
+CHARACTER_CPYTHON_LICENSE="${APP_PATH}/Contents/Resources/ThirdParty/CharacterImporter-CPython-LICENSE.txt"
+CHARACTER_PYINSTALLER_LICENSE="${APP_PATH}/Contents/Resources/ThirdParty/CharacterImporter-PyInstaller-COPYING.txt"
+GLTF_VALIDATOR="${APP_PATH}/Contents/MacOS/tools/validators/gltf_validator"
+GLTF_VALIDATOR_MANIFEST="${APP_PATH}/Contents/Resources/ThirdParty/GltfValidator-MANIFEST.json"
+GLTF_VALIDATOR_LICENSE="${APP_PATH}/Contents/Resources/ThirdParty/GltfValidator-LICENSE.txt"
+GLTF_VALIDATOR_NOTICES="${APP_PATH}/Contents/Resources/ThirdParty/GltfValidator-NOTICES.txt"
+CHARACTER_LOD_TOOL="${APP_PATH}/Contents/MacOS/tools/mdkr-character-lod"
+MESHOPTIMIZER_LICENSE="${APP_PATH}/Contents/Resources/ThirdParty/Meshoptimizer-LICENSE.md"
+MESHOPTIMIZER_README="${APP_PATH}/Contents/Resources/ThirdParty/Meshoptimizer-README.md"
+[[ -x "${CHARACTER_LOD_TOOL}" && ! -L "${CHARACTER_LOD_TOOL}" ]] ||
+    die "bundled Character Workshop LOD helper is missing, linked, or not executable"
+[[ -f "${MESHOPTIMIZER_LICENSE}" && ! -L "${MESHOPTIMIZER_LICENSE}" ]] ||
+    die "bundled meshoptimizer license is missing or linked"
+[[ "$(shasum -a 256 "${MESHOPTIMIZER_LICENSE}" | awk '{print $1}')" == \
+   "f03037ca7bad1e3eb7f4a63fa6084a8baabd5ba30d3c239a9a7f35705d873e26" ]] ||
+    die "bundled meshoptimizer license changed"
+[[ -f "${MESHOPTIMIZER_README}" && ! -L "${MESHOPTIMIZER_README}" ]] ||
+    die "bundled meshoptimizer provenance notice is missing or linked"
+CHARACTER_LOD_SIGNATURE="$(codesign -dvvv "${CHARACTER_LOD_TOOL}" 2>&1)"
+printf '%s\n' "${CHARACTER_LOD_SIGNATURE}" | grep -Fq 'Signature=adhoc' ||
+    die "bundled Character Workshop LOD helper is not ad-hoc integrity signed"
+if printf '%s\n' "${CHARACTER_LOD_SIGNATURE}" | grep -Fq 'Authority='; then
+    die "bundled Character Workshop LOD helper unexpectedly carries a trusted signing authority"
+fi
+[[ -x "${CHARACTER_IMPORTER}" ]] ||
+    die "bundled Character Workshop importer is missing or not executable"
+[[ -f "${CHARACTER_IMPORTER_MANIFEST}" ]] ||
+    die "bundled Character Workshop importer manifest is missing"
+[[ -f "${CHARACTER_CPYTHON_LICENSE}" && ! -L "${CHARACTER_CPYTHON_LICENSE}" ]] ||
+    die "bundled Character Workshop CPython license is missing or linked"
+[[ -f "${CHARACTER_PYINSTALLER_LICENSE}" && ! -L "${CHARACTER_PYINSTALLER_LICENSE}" ]] ||
+    die "bundled Character Workshop PyInstaller terms are missing or linked"
+[[ "$(shasum -a 256 "${CHARACTER_CPYTHON_LICENSE}" | awk '{print $1}')" == \
+   "78b12c3a81360b357002334f0e70ea0e92eebf7a9b358805c03c48484945f3bb" ]] ||
+    die "bundled Character Workshop CPython license changed"
+[[ "$(shasum -a 256 "${CHARACTER_PYINSTALLER_LICENSE}" | awk '{print $1}')" == \
+   "dcf75fdb959db1e3b41c0f8505069d2ece781b5ec6b3d0a4d30975cfc6580245" ]] ||
+    die "bundled Character Workshop PyInstaller terms changed"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+python3 "${PROJECT_ROOT}/tools/verify_character_importer.py" \
+    --repo-root "${PROJECT_ROOT}" \
+    --executable "${CHARACTER_IMPORTER}" \
+    --manifest "${CHARACTER_IMPORTER_MANIFEST}" \
+    --target darwin-arm64 \
+    --allow-signed || die "bundled Character Workshop importer attestation failed"
+CHARACTER_IMPORTER_SIGNATURE="$(codesign -dvvv "${CHARACTER_IMPORTER}" 2>&1)"
+printf '%s\n' "${CHARACTER_IMPORTER_SIGNATURE}" | grep -Fq 'Signature=adhoc' ||
+    die "bundled Character Workshop importer is not ad-hoc integrity signed"
+if printf '%s\n' "${CHARACTER_IMPORTER_SIGNATURE}" | grep -Fq 'Authority='; then
+    die "bundled Character Workshop importer unexpectedly carries a trusted signing authority"
+fi
+[[ -x "${GLTF_VALIDATOR}" ]] ||
+    die "bundled Khronos glTF Validator is missing or not executable"
+[[ -f "${GLTF_VALIDATOR_MANIFEST}" && ! -L "${GLTF_VALIDATOR_MANIFEST}" ]] ||
+    die "bundled Khronos glTF Validator manifest is missing or linked"
+[[ -f "${GLTF_VALIDATOR_LICENSE}" && ! -L "${GLTF_VALIDATOR_LICENSE}" ]] ||
+    die "bundled Khronos glTF Validator license is missing or linked"
+[[ -f "${GLTF_VALIDATOR_NOTICES}" && ! -L "${GLTF_VALIDATOR_NOTICES}" ]] ||
+    die "bundled Khronos glTF Validator notices are missing or linked"
+[[ "$(shasum -a 256 "${GLTF_VALIDATOR_LICENSE}" | awk '{print $1}')" == \
+   "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30" ]] ||
+    die "bundled Khronos glTF Validator license changed"
+[[ "$(shasum -a 256 "${GLTF_VALIDATOR_NOTICES}" | awk '{print $1}')" == \
+   "d7a1cefe85110c1308632d0384b7a67a18c125193e54175c50d1982d8c81a2f4" ]] ||
+    die "bundled Khronos glTF Validator notices changed"
+python3 "${PROJECT_ROOT}/tools/verify_gltf_validator.py" \
+    --executable "${GLTF_VALIDATOR}" \
+    --manifest "${GLTF_VALIDATOR_MANIFEST}" \
+    --target darwin-arm64 ||
+    die "bundled Khronos glTF Validator attestation failed"
+GLTF_VALIDATOR_SIGNATURE="$(codesign -dvvv "${GLTF_VALIDATOR}" 2>&1)"
+printf '%s\n' "${GLTF_VALIDATOR_SIGNATURE}" | grep -Fq 'Signature=adhoc' ||
+    die "bundled Khronos glTF Validator is not ad-hoc integrity signed"
+if printf '%s\n' "${GLTF_VALIDATOR_SIGNATURE}" | grep -Fq 'Authority='; then
+    die "bundled Khronos glTF Validator unexpectedly carries a trusted signing authority"
+fi
 SDL2_MANIFEST="${APP_PATH}/Contents/Resources/ThirdParty/SDL2-MANIFEST.txt"
 [[ -f "${SDL2_MANIFEST}" ]] || die "bundled SDL2 provenance manifest is missing"
 [[ "$(wc -l <"${SDL2_MANIFEST}" | tr -d '[:space:]')" == "4" ]] ||

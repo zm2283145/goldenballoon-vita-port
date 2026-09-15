@@ -35,6 +35,7 @@ static bool contextEquals(const MdkrMatchPeerEnvelopeContext &left,
         left.key.source_generation == right.key.source_generation &&
         left.key.destination_endpoint_id == right.key.destination_endpoint_id &&
         left.key.destination_generation == right.key.destination_generation &&
+        left.key.lane == right.key.lane &&
         left.intermediate_endpoint_id == right.intermediate_endpoint_id &&
         left.sequence == right.sequence &&
         left.payload_type == right.payload_type;
@@ -46,7 +47,8 @@ static bool keyContextEquals(const MdkrMatchPeerKeyContext &left,
         left.source_endpoint_id == right.source_endpoint_id &&
         left.source_generation == right.source_generation &&
         left.destination_endpoint_id == right.destination_endpoint_id &&
-        left.destination_generation == right.destination_generation;
+        left.destination_generation == right.destination_generation &&
+        left.lane == right.lane;
 }
 
 static bool sealWindowEquals(const MdkrMatchPeerSealWindow &left,
@@ -84,7 +86,8 @@ int main() {
     std::array<uint8_t, MDKR_MATCH_PEER_PAYLOAD_BYTES> payload{};
     std::array<uint8_t, MDKR_MATCH_PEER_PAYLOAD_BYTES> opened{};
     std::array<uint8_t, MDKR_MATCH_PEER_ENVELOPE_BYTES> envelope{};
-    MdkrMatchPeerKeyContext direction{7u, 100u, 2u, 400u, 9u};
+    MdkrMatchPeerKeyContext direction{7u,   100u, 2u,
+                                     400u, 9u,   MDKR_MATCH_PEER_LANE_STATE};
     MdkrMatchPeerSendContext sendContext{
         direction, 200u, MDKR_MATCH_PEER_PAYLOAD_INPUT};
     MdkrMatchPeerEnvelopeContext expected{
@@ -172,14 +175,17 @@ int main() {
     assert(mdkr_match_peer_seal(
         key, &sendContext, payload.data(), envelope.data()));
     assert(sealWindow.ready && sealWindow.next_sequence == 2u);
+    /* Key-schedule and envelope vectors for v3: the lane byte joined the HKDF
+     * info and the authenticated header, so both differ from the v2 pins by
+     * construction rather than by drift. */
     assert(equalsHex(key->key, sizeof(key->key),
-        "4569b1edaec1b95100404c552fa93b885c280074eac696624f3313c3081bdd1e"));
+        "3b60aeab15f419f938c17b3a57959848d01e8d5bbe90a97b39779fce089fe1ac"));
     assert(equalsHex(envelope.data(), envelope.size(),
-        "4d50453102010000000000070000000000000064000000020000000000000190"
-        "0000000900000000000000c80000000000000001f51c2e8a849b8a8e48aba590"
-        "238f4b4a42ad2017043dc723841ce6955caad4ecea6dddd15df2e07494afc0d9"
-        "3024366db9095a0a4219bda447fa73d765b1b9dbf5db7ea7551bfa70d48b88e2"
-        "0d6b4386"));
+        "4d50453103010000000000070000000000000064000000020000000000000190"
+        "0000000900000000000000c800000000000000015c683234ec69750130b498cf"
+        "3c618694ed9af12fa3bb8ab136d34f674dc0aa748dd616515e2ecb34cf7c9e04"
+        "fca1f1e7d12bd10aff80170df565622465aa0bfc29fed8440c1297081393c05c"
+        "9b03956c"));
     assert(mdkr_match_peer_inspect(envelope.data(), &decoded));
     assert(contextEquals(decoded, expected));
     std::memset(opened.data(), 0xa5, opened.size());
@@ -313,7 +319,7 @@ int main() {
         key, &direction, &replay, envelope4.data(), &decoded,
         opened.data()) == MDKR_MATCH_PEER_CRYPTO_REPLAY);
 
-    /* The authenticated type byte carries one complete 124-byte report in
+    /* The authenticated type byte carries one complete 136-byte report in
      * three reliable fixed payloads without exposing it to a one-hop
      * forwarder. Fragment order may differ from transport sequence order. */
     {
@@ -436,6 +442,80 @@ int main() {
             nullptr);
         mdkr_match_peer_keyring_forget(&small);
         assert(!small.slots[0].occupied);
+    }
+
+    /* Three lanes, one direction: the realtime, control and authority
+     * channels each derive their OWN key and therefore their own nonce
+     * sequence. A shared key with three senders advancing one window is the
+     * GHASH-subkey leak the keyring exists to prevent, so this pins that no
+     * two lanes can ever produce the same (key, sequence) pair. */
+    {
+        MdkrMatchPeerKeyring lanes{};
+        const uint8_t laneNames[3] = {MDKR_MATCH_PEER_LANE_STATE,
+                                      MDKR_MATCH_PEER_LANE_CONTROL,
+                                      MDKR_MATCH_PEER_LANE_AUTHORITY};
+        MdkrMatchPeerSealingKey *laneKeys[3] = {nullptr, nullptr, nullptr};
+        for (unsigned index = 0u; index < 3u; ++index) {
+            MdkrMatchPeerKeyContext laneDirection = direction;
+            laneDirection.lane = laneNames[index];
+            laneKeys[index] = mdkr_match_peer_derive_key(
+                &lanes, secret.data(), transcript.data(), &laneDirection);
+            assert(laneKeys[index] != nullptr);
+            assert(laneKeys[index]->window.next_sequence == 1u);
+        }
+        /* Distinct slots, distinct key bytes: the lane is HKDF info, not a
+         * label the derivation ignores. */
+        for (unsigned index = 0u; index < 3u; ++index) {
+            for (unsigned other = index + 1u; other < 3u; ++other) {
+                assert(laneKeys[index] != laneKeys[other]);
+                assert(std::memcmp(laneKeys[index]->key, laneKeys[other]->key,
+                                   MDKR_MATCH_PEER_KEY_BYTES) != 0);
+            }
+        }
+        /* Sealing on one lane advances only that lane's window. */
+        for (unsigned index = 0u; index < 3u; ++index) {
+            MdkrMatchPeerSendContext laneSend{};
+            laneSend.key = laneKeys[index]->direction;
+            laneSend.intermediate_endpoint_id = 200u;
+            laneSend.payload_type = MDKR_MATCH_PEER_PAYLOAD_INPUT;
+            std::array<uint8_t, MDKR_MATCH_PEER_ENVELOPE_BYTES> laneEnvelope{};
+            assert(mdkr_match_peer_seal(laneKeys[index], &laneSend,
+                                        payload.data(), laneEnvelope.data()));
+            for (unsigned other = 0u; other < 3u; ++other) {
+                assert(laneKeys[other]->window.next_sequence ==
+                       (other <= index ? 2u : 1u));
+            }
+            /* The lane is authenticated header material: the envelope opens
+             * under its own lane and is refused by every other lane's key,
+             * so a datagram cannot be spliced from one channel to another. */
+            MdkrMatchPeerEnvelopeContext laneDecoded{};
+            std::array<uint8_t, MDKR_MATCH_PEER_PAYLOAD_BYTES> laneOpened{};
+            assert(mdkr_match_peer_inspect(laneEnvelope.data(), &laneDecoded));
+            assert(laneDecoded.key.lane == laneNames[index]);
+            for (unsigned other = 0u; other < 3u; ++other) {
+                MdkrMatchPeerReplayWindow laneReplay{};
+                std::memset(laneOpened.data(), 0xa5, laneOpened.size());
+                const MdkrMatchPeerCryptoResult result = mdkr_match_peer_open(
+                    laneKeys[other], &laneKeys[other]->direction, &laneReplay,
+                    laneEnvelope.data(), &laneDecoded, laneOpened.data());
+                if (other == index) {
+                    assert(result == MDKR_MATCH_PEER_CRYPTO_OK);
+                    assert(std::memcmp(laneOpened.data(), payload.data(),
+                                       payload.size()) == 0);
+                } else {
+                    assert(result == MDKR_MATCH_PEER_CRYPTO_WRONG_LANE);
+                    unchanged(laneOpened.data(), laneOpened.size());
+                }
+            }
+        }
+        /* A lane outside the defined set is not a key at all. */
+        {
+            MdkrMatchPeerKeyContext bogus = direction;
+            bogus.lane = MDKR_MATCH_PEER_LANE_MAX + 1u;
+            assert(mdkr_match_peer_derive_key(
+                &lanes, secret.data(), transcript.data(), &bogus) == nullptr);
+        }
+        mdkr_match_peer_keyring_forget(&lanes);
     }
 
     /* Cross-version confusion fails closed: a v1 envelope, the protocol that

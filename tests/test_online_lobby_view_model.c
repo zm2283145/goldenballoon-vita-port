@@ -266,7 +266,7 @@ static void test_room_selection_and_release_gate(void) {
 #if MDKR_ENABLE_ONLINE_BETA
     /* never-silent hole: selection arms the same 30 s view-timeout card
      * the other lobby surfaces carry, so an endless wait always offers a working
-     * escape rather than a dead spinner. Beta-gated (OFF/release view model is
+     * escape rather than a dead spinner. Beta-gated (beta-OFF view model is
      * byte-identical). */
     expect(model.timeout.present &&
            model.timeout.title != NULL &&
@@ -365,6 +365,33 @@ static void test_loading_racing_and_results(void) {
            model.cancel.action == MDKR_ONLINE_VIEW_ACTION_LEAVE_RACE &&
            strstr(model.explanation, "non-pausing") != NULL,
            "race chrome states non-pausing behavior and deliberate leave");
+
+    session.state.connectivity = MDKR_CONNECTIVITY_DIRECT;
+    expect(mdkr_session_state_valid(&session.state) &&
+           mdkr_online_view_model_build(&input, &model) &&
+           model.kind == MDKR_ONLINE_VIEW_RACING &&
+           strcmp(model.status, "Direct Connection") == 0,
+           "a healthy direct link keeps the pre-A7 status copy");
+
+    /* A7: the live control-ping liveness tracker (match_live_adapter.cpp)
+     * drives these two connectivity codes during racing without ever
+     * touching the scene (session_core.c's SET_CONNECTIVITY only forces
+     * MDKR_SCENE_RECOVERY when the engine is NOT racing) -- pin their
+     * player-facing status text here so a status/copy drift is caught at
+     * the same projection the room panel reads. */
+    session.state.connectivity = MDKR_CONNECTIVITY_DEGRADED;
+    expect(mdkr_session_state_valid(&session.state) &&
+           mdkr_online_view_model_build(&input, &model) &&
+           model.kind == MDKR_ONLINE_VIEW_RACING &&
+           strcmp(model.status, "Connection hiccup — retrying") == 0,
+           "a soft-fail liveness miss keeps racing and shows the hiccup copy");
+    session.state.connectivity = MDKR_CONNECTIVITY_LOST;
+    expect(mdkr_session_state_valid(&session.state) &&
+           mdkr_online_view_model_build(&input, &model) &&
+           model.kind == MDKR_ONLINE_VIEW_RACING &&
+           strcmp(model.status, "Connection lost") == 0,
+           "a hard-fail liveness escalation keeps racing and shows the lost copy");
+    session.state.connectivity = MDKR_CONNECTIVITY_DIRECT;
 
     /* Packed placements: seat 0 first, seat 1 second, seats 2/3 unoccupied. */
     lobby_command(&lobby, 8u, MDKR_ONLINE_PUBLISH_RESULTS, 0u, 0xFFFF0100u);
@@ -793,6 +820,67 @@ static void test_race_scoped_recovery_cards(void) {
 }
 #endif
 
+/* N5: the one pre-flight route-quality chip. It states a round trip a player
+ * can feel and the band's name; while the measurement is still running it says
+ * so instead, because Start is never held for it. The projection takes an
+ * already-scored quality, not the wire record, so the browser build of this
+ * reducer links no preflight code. */
+static void test_route_quality_chip(void) {
+    MdkrSessionCore session;
+    MdkrOnlineViewInput input;
+    MdkrOnlineViewModel model;
+    MdkrOnlineViewRouteQuality quality;
+
+    memset(&quality, 0, sizeof(quality));
+    quality.p95_rtt_ms = 45u;
+    quality.score = 9u;
+    quality.band = "steady";
+
+    mdkr_session_core_init(&session, 1u);
+    input = input_for(&session, NULL);
+    expect(mdkr_online_view_model_build(&input, &model) &&
+           model.route_quality[0] == '\0',
+           "no chip is shown when no route measurement is running");
+
+    input.route_measuring = true;
+    expect(mdkr_online_view_model_build(&input, &model) &&
+           strcmp(model.route_quality, "Checking connection\xe2\x80\xa6") == 0,
+           "a running measurement says it is checking rather than nothing");
+    expect(strstr(model.route_quality, "measur") == NULL &&
+           strstr(model.route_quality, "probe") == NULL,
+           "the checking chip carries no process vocabulary");
+
+    input.route_quality = &quality;
+    expect(mdkr_online_view_model_build(&input, &model) &&
+           strcmp(model.route_quality, "~45 ms \xc2\xb7 steady") == 0,
+           "a settled measurement replaces the checking chip");
+    input.route_measuring = false;
+    expect(mdkr_online_view_model_build(&input, &model) &&
+           strcmp(model.route_quality, "~45 ms \xc2\xb7 steady") == 0,
+           "the chip states the round trip and the band");
+    expect(strstr(model.route_quality, "qualified") == NULL &&
+           strstr(model.route_quality, "gate") == NULL &&
+           strstr(model.route_quality, "certified") == NULL,
+           "the chip carries no process vocabulary");
+
+    quality.score = 0u;
+    expect(!mdkr_online_view_model_build(&input, &model),
+           "a score outside the ladder is refused");
+    quality.score = 11u;
+    expect(!mdkr_online_view_model_build(&input, &model),
+           "a score past the ladder is refused");
+    quality.score = 9u;
+    quality.band = "";
+    expect(!mdkr_online_view_model_build(&input, &model),
+           "an empty band name is refused");
+    quality.band = "steadfastly-uneven";
+    expect(!mdkr_online_view_model_build(&input, &model),
+           "an over-long band name is refused");
+    quality.band = NULL;
+    expect(!mdkr_online_view_model_build(&input, &model),
+           "a missing band name is refused");
+}
+
 int main(void) {
     test_entry_connecting_and_timeouts();
     test_room_selection_and_release_gate();
@@ -800,6 +888,7 @@ int main(void) {
     test_host_config_and_tournament();
     test_failure_primary_actions_reachable();
     test_failure_catalog_and_atomicity();
+    test_route_quality_chip();
 #if MDKR_ENABLE_ONLINE_BETA
     test_race_scoped_recovery_cards();
 #endif

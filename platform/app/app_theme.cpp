@@ -2,6 +2,7 @@
 #include "app_theme.h"
 #include "app_font.h"
 #include "app_ui_policy.h"
+#include "fast3d/gfx_character_text.h"
 
 namespace AppTheme {
 
@@ -15,23 +16,68 @@ static float      g_pendingScale = 1.0f;
 static unsigned   g_scaleApplicationCount = 0;
 static AppUiDpiState g_dpiState;
 
+/* ImGui's editor remains codepoint-oriented, while the exact game-name preview
+ * below it is HarfBuzz/SheenBidi shaped. Merging the same pinned script faces
+ * here prevents tofu in editable fields, library rows, narration and recovery
+ * copy without consulting a host font. Keep neutral punctuation in Roboto so
+ * the application's ordinary metrics do not change.
+ *
+ * A range selects from the embedded subset face; it cannot conjure a glyph the
+ * face was subset without. That repertoire is recorded in
+ * gfx_character_text_face.h -- arrows, dingbats and geometric shapes are
+ * outside it, so UI copy stays inside what canDrawGlyph() reports. The list
+ * below mirrors that header's subset list; a range upstream Roboto does not
+ * carry (arrows, Cyrillic Extended-A/B, fullwidth forms) is not listed here,
+ * because a selector over an absent glyph reads as coverage and is not. */
+static const ImWchar kCharacterNameGlyphRanges[] = {
+    0x0100, 0x024F, 0x0300, 0x052F, 0x1E00, 0x1FFF,
+    0x2000, 0x206F, 0x20A0, 0x20CF, 0x2100, 0x214F,
+    0xFFFD, 0xFFFD, 0,
+};
+static const ImWchar kArabicGlyphRanges[] = {
+    0x0600, 0x06FF, 0x0750, 0x077F, 0x0870, 0x089F,
+    0x08A0, 0x08FF, 0xFB50, 0xFDFF, 0xFE70, 0xFEFF, 0,
+};
+static const ImWchar kHebrewGlyphRanges[] = {
+    0x0590, 0x05FF, 0xFB1D, 0xFB4F, 0,
+};
+
+static ImFont *addUiFont(ImFontAtlas *atlas, float sizePixels) {
+    ImFont *font = atlas->AddFontFromMemoryCompressedBase85TTF(
+        RobotoMedium_compressed_data_base85, sizePixels);
+    if (font == nullptr) return nullptr;
+    ImFontConfig merge;
+    merge.MergeMode = true;
+    merge.OversampleH = 1;
+    merge.OversampleV = 1;
+    if (atlas->AddFontFromMemoryCompressedBase85TTF(
+            gfx_character_text_latin_face_base85(), sizePixels, &merge,
+            kCharacterNameGlyphRanges) == nullptr ||
+        atlas->AddFontFromMemoryCompressedBase85TTF(
+            gfx_character_text_arabic_face_base85(), sizePixels, &merge,
+            kArabicGlyphRanges) == nullptr ||
+        atlas->AddFontFromMemoryCompressedBase85TTF(
+            gfx_character_text_hebrew_face_base85(), sizePixels, &merge,
+            kHebrewGlyphRanges) == nullptr) {
+        return nullptr;
+    }
+    return font;
+}
+
 static void buildFonts(float fbScale) {
     ImGuiIO &io = ImGui::GetIO();
     io.Fonts->Clear();
-    // Roboto Medium is the sole redistributable family currently embedded in
-    // the application. Size and color provide the hierarchy without reaching
-    // into a platform font path that would make release output non-reproducible.
-    g_fonts.body = io.Fonts->AddFontFromMemoryCompressedBase85TTF(
-        RobotoMedium_compressed_data_base85, 17.0f * fbScale);
-    g_fonts.title = io.Fonts->AddFontFromMemoryCompressedBase85TTF(
-        RobotoMedium_compressed_data_base85, 24.0f * fbScale);
+    // Roboto plus the reviewed custom-name Roboto/Noto script faces are the
+    // complete redistributable UI stack. Size and color provide hierarchy
+    // without a host font path that would make release output
+    // non-reproducible.
+    g_fonts.body = addUiFont(io.Fonts, 17.0f * fbScale);
+    g_fonts.title = addUiFont(io.Fonts, 24.0f * fbScale);
     // One step between title and body. A settings page has three levels of
     // heading — page, group, setting — and two font sizes could only spell two
     // of them, which is why every group used to look like another page title.
-    g_fonts.section = io.Fonts->AddFontFromMemoryCompressedBase85TTF(
-        RobotoMedium_compressed_data_base85, 19.0f * fbScale);
-    g_fonts.small = io.Fonts->AddFontFromMemoryCompressedBase85TTF(
-        RobotoMedium_compressed_data_base85, 13.0f * fbScale);
+    g_fonts.section = addUiFont(io.Fonts, 19.0f * fbScale);
+    g_fonts.small = addUiFont(io.Fonts, 13.0f * fbScale);
     io.FontDefault = g_fonts.body;
     io.FontGlobalScale = g_uiScale / fbScale;
 }
@@ -248,6 +294,12 @@ void refreshFramebufferScale(float fbScale) {
     if (!AppUi_applyDpiTransition(&g_dpiState, fbScale)) return;
     g_fbScale = g_dpiState.framebufferScale;
     buildFonts(g_fbScale);
+}
+
+bool canDrawGlyph(unsigned codepoint) {
+    return g_fonts.body != nullptr &&
+           codepoint <= static_cast<unsigned>(IM_UNICODE_CODEPOINT_MAX) &&
+           g_fonts.body->IsGlyphInFont(static_cast<ImWchar>(codepoint));
 }
 
 }  // namespace AppTheme

@@ -1,0 +1,49 @@
+diff --git a/src/impl/init.cpp b/src/impl/init.cpp
+--- a/src/impl/init.cpp
++++ b/src/impl/init.cpp
+@@ -32,31 +32,26 @@
+ #include <thread>
+ 
++// MDKR local amendment: reserve cleanup execution before resource admission.
++#include "reserved_cleanup_worker.h"
++
+ namespace rtc::impl {
+ 
+ struct Init::TokenPayload {
+-	TokenPayload(std::shared_future<void> *cleanupFuture) {
++	TokenPayload(std::shared_future<void> *cleanupFuture)
++	    : cleanupWorker([] { Init::Instance().doCleanup(); }) {
++		// All job, future, thread creation and detach work precedes doInit.
++		// Failure here is catchable construction failure, not an exception
++		// escaping this token's noexcept destructor while holding mMutex.
++		auto reservedFuture = cleanupWorker.future();
+ 		Init::Instance().doInit();
+ 		if (cleanupFuture)
+-			*cleanupFuture = cleanupPromise.get_future().share();
++			*cleanupFuture = std::move(reservedFuture);
++		cleanupWorker.arm();
+ 	}
+ 
+-	~TokenPayload() {
+-		std::thread t(
+-		    [](std::promise<void> promise) {
+-			    utils::this_thread::set_name("RTC cleanup");
+-			    try {
+-				    Init::Instance().doCleanup();
+-				    promise.set_value();
+-			    } catch (const std::exception &e) {
+-				    PLOG_WARNING << e.what();
+-				    promise.set_exception(std::make_exception_ptr(e));
+-			    }
+-		    },
+-		    std::move(cleanupPromise));
+-		t.detach();
+-	}
+-
+-	std::promise<void> cleanupPromise;
++	// Last-token destruction only signals the reserved worker. doCleanup
++	// can join RTC workers and reacquire mMutex after this destructor returns.
++	MdkrReservedCleanupWorker cleanupWorker;
+ };
+ 
+ Init &Init::Instance() {

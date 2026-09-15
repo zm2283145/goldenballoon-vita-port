@@ -116,9 +116,48 @@ static int test_safety_domains(void) {
     REQUIRE(mdkr_trophy_state(UINT32_C(0xE4), 2, &value) && value == 1);
     REQUIRE(mdkr_trophy_state(UINT32_C(0xE4), 3, &value) && value == 2);
     REQUIRE(mdkr_trophy_state(UINT32_C(0xE4), 4, &value) && value == 3);
-    REQUIRE(mdkr_trophy_state(UINT32_C(0x3E4), 5, &value) && value == 3);
+    /* Exhaust every persisted trophy combination, not just the mainland
+     * unlock mask. Issue #63 was incorrectly encoded as rejecting world 5. */
+    for (u32 trophies = 0; trophies < 1024; trophies++) {
+        u32 fields = trophies;
+        for (s32 world = WORLD_DINO_DOMAIN; world <= WORLD_FUTURE_FUN_LAND; world++) {
+            REQUIRE(mdkr_trophy_state(trophies, world, &value));
+            REQUIRE(value == (fields & 3U));
+            fields >>= 2;
+        }
+        REQUIRE(fields == 0);
+    }
+    REQUIRE(mdkr_trophy_state(UINT32_C(0x300), WORLD_FUTURE_FUN_LAND, &value) && value == 3);
+    REQUIRE(mdkr_trophy_state(UINT32_C(0xFF), WORLD_FUTURE_FUN_LAND, &value) && value == 0);
+    value = UINT32_C(0x12345678);
+    REQUIRE(!mdkr_trophy_state(UINT32_MAX, WORLD_NONE, &value));
     REQUIRE(!mdkr_trophy_state(UINT32_MAX, 0, &value));
-    REQUIRE(!mdkr_trophy_state(UINT32_MAX, 6, &value));
+    REQUIRE(!mdkr_trophy_state(UINT32_MAX, WORLD_FUTURE_FUN_LAND + 1, &value));
+    REQUIRE(!mdkr_trophy_state(UINT32_MAX, INT32_MIN, &value));
+    REQUIRE(!mdkr_trophy_state(UINT32_MAX, INT32_MAX, &value));
+    REQUIRE(value == UINT32_C(0x12345678));
+    REQUIRE(!mdkr_trophy_state(UINT32_MAX, WORLD_FUTURE_FUN_LAND, NULL));
+    /* Bronze and silver from different files must not synthesize a gold.
+     * Check every pair of ranks in every field, with neighboring golds kept. */
+    for (s32 world = WORLD_DINO_DOMAIN; world <= WORLD_FUTURE_FUN_LAND; world++) {
+        u32 shift = (u32) (world - WORLD_DINO_DOMAIN) * 2U;
+        u32 neighbors = UINT32_C(0x3FF) & ~(3U << shift);
+        for (u32 left = 0; left < 4; left++) {
+            for (u32 right = 0; right < 4; right++) {
+                u32 expected = (left > right ? left : right) << shift;
+                REQUIRE(mdkr_trophy_records_merge(left << shift, right << shift) == expected);
+                REQUIRE(mdkr_trophy_records_merge(right << shift, left << shift) == expected);
+                REQUIRE(mdkr_trophy_records_merge(neighbors | (left << shift), right << shift) ==
+                        (neighbors | expected));
+            }
+        }
+    }
+    for (u32 trophies = 0; trophies < 1024; trophies++) {
+        REQUIRE(mdkr_trophy_records_merge(trophies, 0) == trophies);
+        REQUIRE(mdkr_trophy_records_merge(trophies, trophies) == trophies);
+        REQUIRE(mdkr_trophy_records_merge(trophies, UINT32_C(0x3FF)) == UINT32_C(0x3FF));
+    }
+    REQUIRE(mdkr_trophy_records_merge(UINT32_MAX, 0) == UINT32_C(0x3FF));
 
     REQUIRE(mdkr_extension_bit('A', &value) && value == 1);
     REQUIRE(mdkr_extension_bit('Z', &value) && value == (UINT32_C(1) << 25));

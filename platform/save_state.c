@@ -9,6 +9,8 @@
  */
 #include "save_state.h"
 
+#include "adventure_party/adventure_party_runtime.h"
+
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -123,6 +125,20 @@ int mdkr_save_state_validate(const MdkrSaveStateHeader *header,
     if (header == NULL) {
         set_error(err, err_size, "no save state header supplied");
         return MDKR_SAVE_STATE_ERR_ARGUMENT;
+    }
+
+    /* Session refusal, decided before anything the file claims: while an
+     * Adventure Party is live, no save state may be captured or restored,
+     * because this container omits the native roster/generation state and would
+     * silently lose the party. read() routes through here, so restore fails
+     * closed too. With no session active — or the module compiled out — the
+     * runtime query is a flat 0 (a header-level inline on the OMIT arm) and this
+     * never fires, leaving every other refusal below unchanged. */
+    if (adventure_party_runtime_is_active()) {
+        set_error(err, err_size,
+                  "save states are unavailable while an Adventure Party is "
+                  "active; leave the party to save or load a state");
+        return MDKR_SAVE_STATE_ERR_PARTY_ACTIVE;
     }
 
     if (header->magic != MDKR_SAVE_STATE_MAGIC) {

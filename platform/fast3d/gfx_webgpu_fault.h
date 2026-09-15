@@ -127,7 +127,30 @@ extern "C" {
     X(MODERN_VIEW,                "modern.view") \
     X(MODERN_UNIFORM,             "modern.uniform") \
     X(MODERN_SAMPLER,             "modern.sampler") \
-    X(MODERN_BIND_GROUP,          "modern.bind-group")
+    X(MODERN_BIND_GROUP,          "modern.bind-group") \
+    X(SKINNED_MODULE,             "skinned.module") \
+    X(SKINNED_BGL,                "skinned.bind-group-layout") \
+    X(SKINNED_LAYOUT,             "skinned.pipeline-layout") \
+    X(SKINNED_PIPELINE,           "skinned.pipeline") \
+    X(SKINNED_VERTEX_BUFFER,      "skinned.vertex-buffer") \
+    X(SKINNED_INDEX_BUFFER,       "skinned.index-buffer") \
+    X(SKINNED_TEXTURE,            "skinned.texture") \
+    X(SKINNED_VIEW,               "skinned.view") \
+    X(SKINNED_UNIFORM,            "skinned.uniform") \
+    X(SKINNED_SAMPLER,            "skinned.sampler") \
+    X(SKINNED_BIND_GROUP,         "skinned.bind-group") \
+    X(SKINNED_VISIBILITY_QUERY,   "skinned.visibility-query") \
+    X(SKINNED_VISIBILITY_RESOLVE, "skinned.visibility-resolve") \
+    X(SKINNED_VISIBILITY_READBACK,"skinned.visibility-readback") \
+    X(SKINNED_VISIBILITY_TEXTURE, "skinned.visibility-texture") \
+    X(SKINNED_VISIBILITY_VIEW,    "skinned.visibility-view") \
+    X(SKINNED_VISIBILITY_SEED_PIPELINE, \
+      "skinned.visibility-seed-pipeline") \
+    X(SKINNED_VISIBILITY_EQUAL_PIPELINE, \
+      "skinned.visibility-equal-pipeline") \
+    X(SKINNED_VISIBILITY_OCCLUDED_PIPELINE, \
+      "skinned.visibility-occluded-pipeline") \
+    X(SKINNED_VISIBILITY_PASS,    "skinned.visibility-pass")
 
 enum GfxWebgpuFaultPoint {
 #define GFX_WEBGPU_FAULT_ENUM(symbol, name) GFX_WEBGPU_FAULT_##symbol,

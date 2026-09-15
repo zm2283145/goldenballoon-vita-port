@@ -81,27 +81,45 @@ void BrandWordmark() {
 }
 
 void BrandRule() {
-    // The website uses a checkered start/finish gantry as structure. A quiet,
-    // two-row rule carries that identity into the native shell without motion
-    // or decorative imagery competing with the launcher task.
+    // The website uses a checkered start/finish gantry as structure. Carrying
+    // that in as a FULL-WIDTH alternating band turned it into a barcode: at
+    // 4px tiles it reads as a corrupted texture rather than a flag, and it
+    // competed with the destinations it was supposed to separate.
+    //
+    // The motif survives as an ACCENT instead -- a short flag at the leading
+    // edge, anchoring a quiet hairline that does the actual separating. Same
+    // identity, same reserved height, none of the noise.
     const float scale = AppTheme::uiScale();
+    // Two rows of this tile fill kBrandRuleHeight() exactly (8 * scale).
     const float tile = 4.0f * scale;
     const float width = ImGui::GetContentRegionAvail().x;
     const ImVec2 min = ImGui::GetCursorScreenPos();
     ImGui::Dummy(ImVec2(width, kBrandRuleHeight()));
     ImDrawList *draw = ImGui::GetWindowDrawList();
+
+    // The hairline: full width, one logical pixel, the same value the rest of
+    // the system separates with.
+    // The hairline sits on the seam between the flag's two rows, so it reads
+    // as one line emerging from the flag rather than two separate marks.
+    const float lineY = min.y + tile;
+    draw->AddLine(ImVec2(min.x, lineY), ImVec2(min.x + width, lineY),
+                  ImGui::GetColorU32(AppTheme::line()),
+                  (std::max)(1.0f, scale));
+
+    // The flag: eight tiles, two rows, at the leading edge only.
     ImVec4 gold = AppTheme::accent();
     ImVec4 blue = AppTheme::primary();
-    gold.w = 0.72f;
-    blue.w = 0.72f;
+    gold.w = 0.85f;
+    blue.w = 0.85f;
     const ImU32 colors[] = {
         ImGui::GetColorU32(gold), ImGui::GetColorU32(blue),
     };
+    const float flagWidth = (std::min)(width, tile * 8.0f);
     for (int row = 0; row < 2; ++row) {
-        for (float x = 0.0f; x < width; x += tile) {
+        for (float x = 0.0f; x < flagWidth; x += tile) {
             draw->AddRectFilled(
                 ImVec2(min.x + x, min.y + row * tile),
-                ImVec2(min.x + (std::min)(x + tile, width),
+                ImVec2(min.x + (std::min)(x + tile, flagWidth),
                        min.y + (row + 1) * tile),
                 colors[(static_cast<int>(x / tile) + row) & 1]);
         }
@@ -318,8 +336,9 @@ void CautionBox(const char *title, const char *body) {
 bool CardBegin(const char *id, const ImVec4 &borderColor, float height) {
     ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(borderColor.x, borderColor.y, borderColor.z, 0.55f));
     const ImGuiChildFlags flags = height > 0.0f
-        ? ImGuiChildFlags_Borders
-        : ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY;
+        ? ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened
+        : ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY |
+              ImGuiChildFlags_NavFlattened;
     bool open = ImGui::BeginChild(id, ImVec2(0, height), flags);
     return open;
 }

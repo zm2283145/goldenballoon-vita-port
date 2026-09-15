@@ -5,7 +5,7 @@
  *
  * The direct online race-boot body lives here rather than in the shared, vendored
  * game/src/thread3_main.c, so that battle-tested OFFLINE file carries no online
- * code at all -- a net isolation win. thread3_main.c's release object is
+ * code at all -- a net isolation win. thread3_main.c's beta-OFF object is
  * unaffected: none of this boot body is present there in any build.
  *
  * The ENTIRE header is #if MDKR_ENABLE_ONLINE_BETA so a normal (beta OFF) build

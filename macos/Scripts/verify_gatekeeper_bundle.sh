@@ -20,7 +20,8 @@ Options:
   --distribution          Require Developer ID and notarization.
   --expected-arch ARCH    Require exactly this architecture in every Mach-O.
   --expected-min-os VER   Require this minimum macOS version in the plist and
-                          every Mach-O (numeric versions compare equivalently).
+                          main executable. Nested code may target an older OS,
+                          but never a newer one.
 EOF
 }
 
@@ -125,12 +126,16 @@ mach_o_minos() {
 }
 
 verify_mach_o_contract() {
-    local code_path="$1" label="$2" code_minos code_archs arch install_name dependency resolved
+    local code_path="$1" label="$2" exact_minos="${3:-false}"
+    local code_minos code_archs arch install_name dependency resolved
     code_minos="$(mach_o_minos "${code_path}")"
     [[ -n "${code_minos}" ]] || die "could not read minimum macOS version: ${label}"
-    if [[ -n "${EXPECTED_MINOS}" ]] &&
+    if [[ -n "${EXPECTED_MINOS}" && "${exact_minos}" == true ]] &&
             ! version_eq "${code_minos}" "${EXPECTED_MINOS}"; then
         die "${label} targets macOS ${code_minos}, expected ${EXPECTED_MINOS}"
+    elif [[ -n "${EXPECTED_MINOS}" ]] &&
+            version_gt "${code_minos}" "${EXPECTED_MINOS}"; then
+        die "${label} requires macOS ${code_minos}, newer than expected ${EXPECTED_MINOS}"
     elif version_gt "${code_minos}" "${DECLARED_MINOS}"; then
         die "${label} requires macOS ${code_minos}, newer than declared ${DECLARED_MINOS}"
     fi
@@ -209,7 +214,7 @@ while IFS= read -r nested; do
     fi
 done < <(nested_framework_bundles; nested_mach_o_files)
 
-verify_mach_o_contract "${EXECUTABLE}" "main executable"
+verify_mach_o_contract "${EXECUTABLE}" "main executable" true
 while IFS= read -r nested; do
     [[ -n "${nested}" ]] || continue
     verify_mach_o_contract "${nested}" "nested code $(basename "${nested}")"

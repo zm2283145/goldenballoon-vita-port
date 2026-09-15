@@ -212,6 +212,7 @@ typedef struct GfxShadowFrame {
     GfxShadowRange *ranges;
     size_t range_count;
     size_t range_capacity;
+    size_t external_caster_count;
     GfxShadowView views[GFX_SHADOW_MAX_VIEWS];
     size_t view_count;
 } GfxShadowFrame;
@@ -252,6 +253,12 @@ typedef struct GfxShadowMatrixBinding {
      * behaviour (see gfx_shadow_replay_restore).
      */
     float camera_position[3];
+    /* Exact eye that authored view_projection, including camera shake. Unlike
+     * camera_position (the unshaken camera-follow translation), this is
+     * meaningful for every gameplay matrix whose registration supplied it.
+     * Replay replaces it atomically with an interpolated VP. */
+    bool view_eye_valid;
+    float view_eye_position[3];
     /*
      * The view-projection AS CAPTURED, never overridden. The replay recomposes
      * with this first and compares the result against the display list's own
@@ -313,6 +320,11 @@ typedef struct GfxWorldFxStats {
     uint64_t triangles_captured;
     uint64_t opaque_triangles;
     uint64_t masked_triangles;
+    /* Non-triangle GPU casters (for example modern skinned characters) fold
+     * their already-calibrated world bounds into the same cascade planner.
+     * They deliberately do not enter the CPU triangle replay buffers. */
+    uint64_t external_caster_bounds;
+    uint64_t external_caster_rejections;
     uint64_t static_cache_hits;
     uint64_t static_cache_misses;
     uint64_t matrix_registrations;
@@ -320,7 +332,9 @@ typedef struct GfxWorldFxStats {
     uint64_t matrix_lookup_misses;
     uint64_t allocation_failures;
     /* Finite but not world-plausible vertices (|coord| beyond the stage
-     * limit): rejected before they can poison the stage caster AABB. */
+     * limit): rejected before they can poison the stage caster AABB. This
+     * counter is for captured CPU triangles; external GPU bounds have their
+     * own rejection census above. */
     uint64_t implausible_triangles;
     /* Triangle batches dropped by the DL-build-time caster exclusion seam. */
     uint64_t excluded_triangles;
@@ -402,6 +416,11 @@ typedef struct GfxShadowReplayViewProjection {
      * the tick-T translation baked into its captured world -- see
      * GfxShadowMatrixBinding.camera_locked. */
     float camera_position[3];
+    /* Effective view eye, including the same shake used to build the matrix.
+     * This differs deliberately from camera_position, which remains the raw
+     * camera-follow translation consumed by the skydome. */
+    bool view_eye_valid;
+    float view_eye_position[3];
     /* The exact target endpoint derived from the same immutable snapshot pair.
      * The replay observer carries it to the following task, where that target
      * must become the next alpha-zero authored VP byte-for-byte. */
@@ -434,6 +453,9 @@ void gfx_shadow_matrix_set_site(int site);
  * (see GfxShadowMatrixBinding.camera_locked). Consumed the same way `site`
  * is: cleared on every register attempt whether or not it was read. */
 void gfx_shadow_matrix_set_camera_locked(bool camera_locked);
+/* Attaches the exact effective eye to the NEXT registration. NULL or a
+ * non-finite vector clears it. Consumed on every registration attempt. */
+void gfx_shadow_matrix_set_view_eye(const float position[3]);
 /* Copied into the NEXT registration and consumed on every register attempt,
  * like the site tag. NULL explicitly clears the pending owner. */
 void gfx_shadow_matrix_set_presentation_owner(
@@ -482,6 +504,11 @@ bool gfx_shadow_capture_triangle(
     const float positions[9],
     const float uv[6],
     const GfxShadowMaterial *material);
+/* Extend one captured view's caster AABB with a bounded set of world-space
+ * points without adding CPU replay geometry. Fails closed on replay capture,
+ * invalid views, non-finite coordinates, or implausible world positions. */
+bool gfx_shadow_capture_caster_bounds(
+    int view_index, const float *positions, size_t point_count);
 void gfx_shadow_capture_commit(void);
 const GfxShadowFrame *gfx_shadow_frame_previous(void);
 int gfx_shadow_previous_view_index(const float viewport[4]);

@@ -33,6 +33,21 @@ DEFAULT_BUILD = ROOT / "build-ubsan-full"
 # GCC's ``undefined`` group does not include float-to-integer overflow, while
 # Clang's does. Name it explicitly so the gate has the same coverage on both
 # compiler families.
+# The per-route ceilings below bound a RUNAWAY, not performance. Every route is
+# another check_*.py that already enforces its own per-engine-run timeout -- the
+# WebGPU census allows 300s per route, and catches a genuinely hung run long
+# before the wrapper here would -- so this value only stops a sub-check that
+# never returns at all.
+#
+# They are scaled well past measured cost on purpose. The 46-route WebGPU census
+# measures 181s end to end on an idle machine against the 900s it was declared
+# with, five times the headroom, and it still exceeded that budget twice on a
+# machine shared with a peer project's 4-job permuter. Contention stretches a
+# GPU-bound census far past any margin that looks generous in isolation, and a
+# ceiling close enough to real cost for load to cross it reports the machine
+# rather than the tree.
+ROUTE_BUDGET_SCALE = 4
+
 SANITIZER_FLAGS = (
     "-fsanitize=undefined,float-cast-overflow -fno-omit-frame-pointer"
 )
@@ -346,9 +361,26 @@ def run_check() -> int:
                 900,
             ),
         )
-    for label, command, timeout in routes:
-        if not checked_route(label, command, environment, timeout=timeout):
-            return 1
+    # Every route above is another check_*.py, and each of those builds its
+    # own engine environment out of os.environ. The scrub that produced
+    # `environment` dropped the MDKR_SAVE_DIR tools/run_checks.py exports per
+    # task, so without a replacement each sub-check inherits nothing and --
+    # since issue #54 -- resolves its save to the SHARED per-user directory
+    # instead of $CWD/save. An unrelated adventure-in-progress EEPROM there
+    # re-routes every one of them (the "level never loaded ... no [PVEH]"
+    # shape check_vehicle_sweep shows on all 47 combinations). Hand the whole
+    # batch one directory of its own, under both names the suite exports so a
+    # sub-check reading either agrees with the engine.
+    with tempfile.TemporaryDirectory(prefix="mdkr_full_ubsan_routes_") as saves:
+        route_environment = dict(
+            environment,
+            MDKR_SAVE_DIR=saves,
+            MDKR_TEST_SAVE_DIR=saves,
+        )
+        for label, command, timeout in routes:
+            if not checked_route(label, command, route_environment,
+                                 timeout=timeout * ROUTE_BUDGET_SCALE):
+                return 1
 
     with tempfile.TemporaryDirectory(prefix="mdkr_full_ubsan_race_") as save_dir:
         race_env = dict(

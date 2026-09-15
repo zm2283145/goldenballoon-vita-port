@@ -42,8 +42,8 @@ require(source.count("wgpu_pipeline_callback_owner_poll();") >= 2,
         "all queue event polls must enter the owner boundary")
 require(source.count("wgpu_pipeline_callback_owner_drain();") >= 2,
         "frame and shutdown drains must enter the owner boundary")
-require(source.count("WGPU_PIPELINE_CALLBACK_OWNER_WAIT(") == 5,
-        "all four yielding waits must use the owner-boundary wrapper")
+require(source.count("WGPU_PIPELINE_CALLBACK_OWNER_WAIT(") == 7,
+        "all six yielding waits must use the owner-boundary wrapper")
 require("WGPU_COMPAT_WAIT(" not in source,
         "raw compatibility waits must not bypass pipeline callback ownership")
 wrapper_end = source.index("/* PERF-005b:")

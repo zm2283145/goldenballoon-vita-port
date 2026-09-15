@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goldenballoon.example/schema/mdkr-character-source-v2.schema.json",
+  "title": "Golden Balloon calibrated custom character source manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "id", "display_name", "renderer_profile", "license",
+    "animations", "gameplay", "presentation", "sockets"
+  ],
+  "properties": {
+    "schema": { "const": "mdkr-character-source-v2" },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{1,63}$"
+    },
+    "display_name": { "type": "string", "minLength": 1, "maxLength": 96 },
+    "renderer_profile": { "const": "modern-skeletal-v1" },
+    "license": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["spdx", "attribution", "source_url"],
+      "properties": {
+        "spdx": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "SPDX expression; the package validator applies the authoritative expression grammar."
+        },
+        "attribution": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "source_url": { "type": "string", "format": "uri", "maxLength": 2048 }
+      }
+    },
+    "animations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fallback", "states"],
+      "properties": {
+        "fallback": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "states": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[a-z][a-z0-9_.-]{0,63}$" },
+          "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "maxProperties": 64
+        }
+      }
+    },
+    "gameplay": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["donor", "vehicles"],
+      "properties": {
+        "donor": {
+          "enum": [
+            "banjo", "bumper", "conker", "diddy", "drumstick",
+            "krunch", "pipsy", "timber", "tiptup", "tt"
+          ]
+        },
+        "vehicles": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": { "enum": ["car", "hovercraft", "plane"] }
+        }
+      }
+    },
+    "presentation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_forward", "target_height_m", "contexts"],
+      "properties": {
+        "source_forward": { "enum": ["+z", "-z", "+x", "-x"] },
+        "target_height_m": {
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 10
+        },
+        "lod_bias": { "type": "number", "minimum": -4, "maximum": 4 },
+        "contexts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["select"],
+          "properties": {
+            "select": { "$ref": "#/$defs/groundContext" },
+            "car": { "$ref": "#/$defs/seatContext" },
+            "hovercraft": { "$ref": "#/$defs/seatContext" },
+            "plane": { "$ref": "#/$defs/seatContext" }
+          }
+        }
+      }
+    },
+    "sockets": {
+      "type": "object",
+      "required": ["seat", "head"],
+      "propertyNames": { "pattern": "^[a-z][a-z0-9_.-]{0,63}$" },
+      "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 128 },
+      "maxProperties": 32
+    },
+    "model": { "const": "model.glb" },
+    "model_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "license_file": { "const": "LICENSE.txt" }
+  },
+  "$defs": {
+    "translationVec3": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "prefixItems": [
+        { "type": "number", "minimum": -10, "maximum": 10 },
+        { "type": "number", "minimum": -10, "maximum": 10 },
+        { "type": "number", "minimum": -10, "maximum": 10 }
+      ]
+    },
+    "quaternion": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "prefixItems": [
+        { "type": "number", "minimum": -1, "maximum": 1 },
+        { "type": "number", "minimum": -1, "maximum": 1 },
+        { "type": "number", "minimum": -1, "maximum": 1 },
+        { "type": "number", "minimum": -1, "maximum": 1 }
+      ],
+      "$comment": "The importer additionally requires a unit-length quaternion."
+    },
+    "groundContext": {
+      "allOf": [
+        { "$ref": "#/$defs/context" },
+        { "properties": { "anchor": { "const": "ground" } } }
+      ]
+    },
+    "seatContext": {
+      "allOf": [
+        { "$ref": "#/$defs/context" },
+        { "properties": { "anchor": { "const": "seat" } } }
+      ]
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["anchor", "translation_m", "rotation_xyzw", "scale"],
+      "properties": {
+        "anchor": { "enum": ["ground", "seat"] },
+        "translation_m": { "$ref": "#/$defs/translationVec3" },
+        "rotation_xyzw": { "$ref": "#/$defs/quaternion" },
+        "scale": { "type": "number", "minimum": 0.1, "maximum": 5 }
+      }
+    }
+  }
+}

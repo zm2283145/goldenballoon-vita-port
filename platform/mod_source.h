@@ -79,6 +79,25 @@ MdkrModSource *mdkr_mod_source_open(const char *path, int is_zip);
  * itself through read(). */
 int mdkr_mod_source_has(MdkrModSource *src, const char *rel);
 
+/* Walk every file the source can serve, calling `visit` with each relative
+ * path. Returns 0 on a complete walk and non-zero if it could not be finished.
+ *
+ * This exists for one caller: admitting a Rice/GLideN64 high-resolution pack,
+ * which has no manifest naming its contents and nests its textures in whatever
+ * folders its author chose. A pack keyed by content digest is looked up by
+ * exact path and needs no walk; a Rice pack has to be INDEXED before any of its
+ * textures can be found at all.
+ *
+ * `visit` returns 0 to continue and non-zero to stop early, which is what makes
+ * "does this look like a Rice pack?" cheap -- the answer is yes at the first
+ * matching name, not after enumerating two thousand of them. Directory entries
+ * are never visited, only files, and names that fail
+ * mdkr_mod_source_path_is_safe() are skipped rather than reported: an archive
+ * carrying a traversal path is not something to hand a caller even once. */
+typedef int (*MdkrModSourceVisit)(const char *rel, void *user);
+int mdkr_mod_source_enumerate(MdkrModSource *src, MdkrModSourceVisit visit,
+                              void *user);
+
 /* Reads `rel` into `buf`. `rel` always uses '/' separators, on every platform.
  * Returns an MdkrModSourceResult.
  *

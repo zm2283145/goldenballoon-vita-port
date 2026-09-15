@@ -55,8 +55,25 @@ else()
     set(_wgpu_os "${CMAKE_SYSTEM_NAME}")
     set(_wgpu_abi "${CMAKE_C_COMPILER_ID}")
 endif()
+# The CPU to fetch for is the CPU we are BUILDING for, which on Apple is
+# CMAKE_OSX_ARCHITECTURES when it names exactly one. CMAKE_SYSTEM_PROCESSOR is
+# not that: project() re-derives it from the host's uname unless the configure
+# is in cross-compiling mode, so `-DCMAKE_OSX_ARCHITECTURES=x86_64` on an Apple
+# Silicon host selected the aarch64 archive and every wgpu symbol went
+# undefined at link. Passing -DCMAKE_SYSTEM_PROCESSOR on the command line does
+# not fix it either, for the same reason. A universal build (more than one
+# architecture listed) has no single tuple to pick, so it keeps the old
+# behaviour and fails later with a clearer message than a silent mismatch.
+set(_wgpu_cpu "${CMAKE_SYSTEM_PROCESSOR}")
+if(APPLE AND CMAKE_OSX_ARCHITECTURES)
+    list(LENGTH CMAKE_OSX_ARCHITECTURES _wgpu_osx_arch_count)
+    if(_wgpu_osx_arch_count EQUAL 1)
+        list(GET CMAKE_OSX_ARCHITECTURES 0 _wgpu_cpu)
+    endif()
+endif()
+
 mdkr_select_wgpu_artifact(
-    "${_wgpu_os}" "${CMAKE_SYSTEM_PROCESSOR}" "${_wgpu_abi}"
+    "${_wgpu_os}" "${_wgpu_cpu}" "${_wgpu_abi}"
     _wgpu_supported _wgpu_asset _wgpu_sha _wgpu_reason)
 if(NOT _wgpu_supported)
     message(FATAL_ERROR

@@ -3,7 +3,7 @@
 
 This is deliberately ROM-backed and therefore is not registered with CTest.
 It complements the millisecond, ROM-free display_config unit test with five
-real-game runs:
+real-game arms plus an untraced shipping arm:
 
   * 4:3, 16:9 and 21:9 must emit identical normalized [PACE] state streams.
     That catches the subtle DKR failure where widening object visibility changes
@@ -30,16 +30,18 @@ allocator:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shlex
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, resolve_binary, save_env
 
 
 REPO = Path(__file__).resolve().parent.parent
@@ -53,6 +55,9 @@ SHADOW_RE = re.compile(
 )
 DEPTH_RE = re.compile(
     r"\[DEPTH\] decalTriangles=(\d+) comparedTriangles=(\d+)"
+)
+COMPLETION_RE = re.compile(
+    r"\[SDL\] headless: reached (\d+) frames, exiting cleanly\."
 )
 
 
@@ -86,6 +91,53 @@ class RunResult:
     pace: list[str]
     shadow: ShadowStats | None
     depth: DepthStats | None
+    requested_frames: int
+    timed_out: bool = False
+    timeout: int = 0
+    elapsed_seconds: float = 0.0
+
+
+def completed_route(result: RunResult) -> bool:
+    """Exit success alone is insufficient: every arm must finish its route."""
+    completions = COMPLETION_RE.findall(result.output)
+    return (not result.timed_out and result.returncode == 0
+            and completions == [str(result.requested_frames)])
+
+
+def complete_pace(result: RunResult) -> bool:
+    # The producer emits exactly one row per present, starting at frame 1.
+    # Matching truncated, duplicated or reordered traces cannot prove parity.
+    if len(result.pace) != result.requested_frames:
+        return False
+    for index, row in enumerate(result.pace, 1):
+        match = re.match(r"\[PACE\] frame=(\d+) ", row)
+        if match is None or int(match.group(1)) != index:
+            return False
+    return True
+
+
+def write_evidence(root: Path, result: RunResult) -> None:
+    # The caller creates a fresh private directory; never overwrite an arm.
+    # Logs can contain ROM-derived state and belong outside public artifacts.
+    arm = root / re.sub(r"[^A-Za-z0-9_-]", "_", result.label)
+    arm.mkdir()
+    with (arm / "process.log").open("x", encoding="utf-8") as stream:
+        stream.write(result.output)
+    record = {
+        "schema": "mdkr-widescreen-shadow-process/1",
+        "label": result.label,
+        "command": result.command,
+        "returncode": result.returncode,
+        "timed_out": result.timed_out,
+        "timeout_seconds": result.timeout,
+        "elapsed_seconds": result.elapsed_seconds,
+        "requested_frames": result.requested_frames,
+        "completion_frames": COMPLETION_RE.findall(result.output),
+        "pace_rows": len(result.pace),
+    }
+    with (arm / "process.json").open("x", encoding="utf-8") as stream:
+        json.dump(record, stream, indent=2)
+        stream.write("\n")
 
 
 def normalized_pace(output: str) -> list[str]:
@@ -160,6 +212,7 @@ def run_case(
     overrides: dict[str, str] | None,
     timeout: int,
     verbose: bool,
+    evidence: Path | None = None,
 ) -> RunResult:
     env = dict(base_env)
     if overrides:
@@ -177,15 +230,23 @@ def run_case(
     ]
     if verbose:
         print(f"$ ({label}) " + shlex.join(command), flush=True)
+    started = time.monotonic()
     try:
-        # A fresh cwd gives each arm an independent save/ directory. This keeps
-        # the trajectory reproducible and lets GL/WebGPU/ASan harnesses run in
-        # parallel without racing one EEPROM file.
+        # A fresh directory gives each arm an independent save. This keeps the
+        # trajectory reproducible and lets GL/WebGPU/ASan harnesses run in
+        # parallel without racing one EEPROM file. It has to be pinned, not
+        # merely used as the cwd: clean_environment() drops the MDKR_SAVE_DIR
+        # the suite exports per task, and since issue #54 an unpinned save
+        # resolves to the SHARED per-user directory instead of $CWD/save, where
+        # an unrelated adventure-in-progress EEPROM re-routes the boot flow and
+        # the [PACE]/[SHADOW]/[DEPTH] rows this gate compares come from a
+        # different route on each arm. save_env() pins the video config with it
+        # (check_harness_isolation.py).
         with tempfile.TemporaryDirectory(prefix=f"mdkr_{label.replace(':', '_')}_") as run_dir:
             proc = subprocess.run(
                 command,
                 cwd=run_dir,
-                env=env,
+                env=save_env(dict(env), run_dir),
                 text=True,
                 capture_output=True,
                 timeout=timeout,
@@ -200,12 +261,27 @@ def run_case(
             normalized_pace(output),
             parse_shadow(output),
             parse_depth(output),
+            frames,
         )
     except subprocess.TimeoutExpired as exc:
-        captured = (exc.stdout or "") + (exc.stderr or "")
-        result = RunResult(
-            label, command, 124, captured, normalized_pace(captured), None, None
+        # TimeoutExpired carries the raw bytes even under text=True; decode
+        # them so the timed-out arm reports a timeout, not a TypeError.
+        captured = "".join(
+            part.decode("utf-8", "replace") if isinstance(part, bytes)
+            else (part or "")
+            for part in (exc.stdout, exc.stderr)
         )
+        result = RunResult(
+            label, command, 124, captured, normalized_pace(captured),
+            parse_shadow(captured), parse_depth(captured), frames, timed_out=True
+        )
+    except OSError as exc:
+        result = RunResult(label, command, 127, f"Arm process/setup failed: {exc}\n",
+                           [], None, None, frames)
+    result.timeout = timeout
+    result.elapsed_seconds = time.monotonic() - started
+    if evidence is not None:
+        write_evidence(evidence, result)
     if verbose and result.shadow:
         print(f"  {result.shadow}")
     if verbose and result.depth:
@@ -215,9 +291,21 @@ def run_case(
 
 def run_failures(result: RunResult, traced: bool = True) -> list[str]:
     failures: list[str] = []
-    if result.returncode != 0:
+    if result.timed_out:
+        failures.append(
+            f"{result.label}: timed out after {result.timeout}s "
+            f"({len(result.pace)} partial [PACE] rows); route/teardown incomplete"
+        )
+    elif result.returncode != 0:
         failures.append(f"{result.label}: exit code {result.returncode}")
-    for marker in ("[CRASH]", "[FATAL]", "AddressSanitizer"):
+    if not completed_route(result):
+        failures.append(
+            f"{result.label}: incomplete run; requires exit 0 and exactly one "
+            f"clean completion at {result.requested_frames} frames "
+            f"(completion reports: {COMPLETION_RE.findall(result.output)})"
+        )
+    for marker in ("[CRASH]", "[FATAL]", "AddressSanitizer",
+                   "UndefinedBehaviorSanitizer", "runtime error:"):
         if marker in result.output:
             failures.append(f"{result.label}: output contains {marker}")
     # [PACE] is trace-gated: an untraced arm must have none, and an arm that
@@ -226,11 +314,16 @@ def run_failures(result: RunResult, traced: bool = True) -> list[str]:
         failures.append(
             f"{result.label}: {len(result.pace)} [PACE] rows with MDKR_TRACE "
             f"{'set' if traced else 'unset'}")
+    if traced and completed_route(result) and not complete_pace(result):
+        failures.append(
+            f"{result.label}: incomplete or out-of-order [PACE] trace; "
+            f"requires frames 1..{result.requested_frames} exactly once"
+        )
     if result.shadow is None:
         failures.append(f"{result.label}: no parseable [SHADOW] report")
-        return failures
     if result.depth is None:
         failures.append(f"{result.label}: no parseable [DEPTH] report")
+    if result.shadow is None or result.depth is None:
         return failures
 
     stats = result.shadow
@@ -271,6 +364,24 @@ def first_pace_difference(reference: RunResult, candidate: RunResult) -> str:
     )
 
 
+def pace_comparison_failures(reference: RunResult, candidate: RunResult) -> list[str]:
+    if (not completed_route(reference) or not completed_route(candidate)
+            or not complete_pace(reference) or not complete_pace(candidate)):
+        # A stopped process has a shorter trace, not proof of altered simulation.
+        # This remains a gate failure, including when the partial prefixes match.
+        return [
+            f"{candidate.label}: simulation comparison unavailable against "
+            f"{reference.label}: incomplete run(s) or trace(s); partial streams are not "
+            "evidence of simulation equivalence or divergence"
+        ]
+    if candidate.pace != reference.pace:
+        return [
+            f"{candidate.label}: simulation stream changed from {reference.label}; "
+            + first_pace_difference(reference, candidate)
+        ]
+    return []
+
+
 def print_failure_context(result: RunResult) -> None:
     print(f"\n--- {result.label}: last 50 output lines ---", file=sys.stderr)
     for line in result.output.splitlines()[-50:]:
@@ -282,8 +393,20 @@ def main() -> int:
     parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--frames", type=int, default=4000)
-    parser.add_argument("--timeout", type=int, default=180, help="seconds per arm")
+    # 180s per arm was sized against the NATIVE build. The same script is also
+    # driven with the ASan binary (the widescreen_shadow_asan task), where the
+    # sanitizer's instrumentation makes 4000 frames cost several times more --
+    # and the arms landed at 3944 and 3965 of 4000, 98.6% and 99.1% of the way
+    # through, before the wall. A ceiling that stops a route one frame from its
+    # teardown is measuring the build's speed, not its correctness; every claim
+    # this gate makes is read out of the [SHADOW] and [DEPTH] reports the run
+    # emits at the end, so an arm that finishes slowly proves what a fast one
+    # does. Sized clear of the sanitizer arm rather than beside the native one.
+    parser.add_argument("--timeout", type=int, default=600, help="seconds per arm")
     parser.add_argument("--renderer", choices=("gl", "webgpu"), default=None)
+    parser.add_argument("--keep-evidence", action="store_true",
+                        help="retain full per-arm output/process metadata in a fresh "
+                             "private temporary directory; never publish these logs")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -302,15 +425,23 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+    if args.timeout <= 0:
+        print("FAIL: --timeout must be positive", file=sys.stderr)
+        return 1
+
+    evidence = None
+    if args.keep_evidence:
+        evidence = Path(tempfile.mkdtemp(prefix="mdkr-widescreen-shadow-evidence-"))
+        print(f"Private evidence (do not publish): {evidence}", flush=True)
 
     env = clean_environment(args.renderer)
     cases = [
         run_case(binary, rom, args.frames, "4:3", "640x480", env, None,
-                 args.timeout, args.verbose),
+                 args.timeout, args.verbose, evidence),
         run_case(binary, rom, args.frames, "16:9", "960x540", env, None,
-                 args.timeout, args.verbose),
+                 args.timeout, args.verbose, evidence),
         run_case(binary, rom, args.frames, "21:9", "1260x540", env, None,
-                 args.timeout, args.verbose),
+                 args.timeout, args.verbose, evidence),
         run_case(
             binary,
             rom,
@@ -321,6 +452,7 @@ def main() -> int:
             {"MDKR_SHADOW_CAPS": "2,8,16"},
             args.timeout,
             args.verbose,
+            evidence,
         ),
         run_case(
             binary,
@@ -332,6 +464,7 @@ def main() -> int:
             {"MDKR_SHADOW_DECAL": "0"},
             args.timeout,
             args.verbose,
+            evidence,
         ),
     ]
     # Shipping configuration: the production 4:3 arm again with MDKR_TRACE
@@ -339,7 +472,7 @@ def main() -> int:
     shipping = run_case(
         binary, rom, args.frames, "4:3 shipping",
         "640x480", clean_environment(args.renderer, traced=False), None,
-        args.timeout, args.verbose,
+        args.timeout, args.verbose, evidence,
     )
 
     failures: list[str] = []
@@ -348,7 +481,8 @@ def main() -> int:
     failures.extend(run_failures(shipping, traced=False))
 
     reference = cases[0]
-    if shipping.shadow and reference.shadow:
+    if (completed_route(shipping) and completed_route(reference)
+            and shipping.shadow and reference.shadow):
         for field in ("decal", "data_cap", "tri_cap", "vtx_cap",
                       "overflow_drops", "non_decal"):
             traced_value = getattr(reference.shadow, field)
@@ -362,19 +496,11 @@ def main() -> int:
                     f"nobody ships (see wave 'shadowdeep' R1)"
                 )
     for candidate in cases[1:3]:
-        if candidate.pace != reference.pace:
-            failures.append(
-                f"{candidate.label}: simulation stream changed from 4:3; "
-                + first_pace_difference(reference, candidate)
-            )
+        failures.extend(pace_comparison_failures(reference, candidate))
 
     # The diagnostic changes only the shadow render mode. It must not feed back
     # into race state, which also makes the visual A/B frames directly comparable.
-    if cases[4].pace != reference.pace:
-        failures.append(
-            "decal positive control: simulation stream changed from production; "
-            + first_pace_difference(reference, cases[4])
-        )
+    failures.extend(pace_comparison_failures(reference, cases[4]))
 
     for result in cases[:3]:
         if result.shadow:
@@ -409,8 +535,9 @@ def main() -> int:
                 "the test is not sensitive to the old bug"
             )
         production_depth = reference.depth
-        assert production_depth is not None
-        if production_depth.decal_triangles <= disabled_depth.decal_triangles:
+        if (production_depth is not None and completed_route(reference)
+                and completed_route(cases[4])
+                and production_depth.decal_triangles <= disabled_depth.decal_triangles):
             failures.append(
                 "decal positive control: final decoded ZMODE_DEC triangle count "
                 f"did not decrease ({production_depth.decal_triangles} -> "
@@ -421,11 +548,9 @@ def main() -> int:
         print("FAIL: widescreen/shadow regression", file=sys.stderr)
         for failure in failures:
             print(f"  - {failure}", file=sys.stderr)
-        failed_labels = {
-            failure.split(":", 1)[0] for failure in failures if ":" in failure
-        }
-        for result in cases:
-            if result.label in failed_labels or result.returncode != 0:
+        for result in [*cases, shipping]:
+            if (any(failure.startswith(result.label + ":") for failure in failures)
+                    or result.returncode != 0):
                 print_failure_context(result)
         return 1
 

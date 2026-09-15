@@ -22,6 +22,19 @@
 #include "gameplay_event_trace.h"
 #include "rollback/rollback_game_runtime.h"
 #include "fast3d/gfx_level_lighting.h"
+#ifndef MDKR_ADVENTURE_PARTY_OMIT
+/* AP-08 hub roster/formation adapters. Headers and every call to them live
+ * behind NATIVE_PORT && !MDKR_ADVENTURE_PARTY_OMIT so the OMIT build and the
+ * matching N64 path compile the feature out entirely (Task 6 precedent). */
+#include "adventure_party/adventure_party_policy.h"
+#include "adventure_party/adventure_party_runtime.h"
+#include "adventure_party/adventure_party_spawn.h"
+#include "adventure_party/adventure_party_state.h"
+#include "adventure_party/adventure_party_trace.h"
+#endif
+#include "modern_character_donor.h"
+#include "modern_character_runtime.h"
+#include "workshop_preview_runtime.h"
 #endif
 /* The level-object-map header is 16 bytes; gObjectMap[] is s32*, so the entries
  * begin 4 s32-elements in. The original code wrote this as sizeof(uintptr_t),
@@ -31,6 +44,7 @@
 #include "audio_vehicle.h"
 #include "audiosfx.h"
 #include "camera.h"
+#include "collision.h"
 #include "fade_transition.h"
 #include "game.h"
 #include "game_text.h"
@@ -68,6 +82,12 @@
 #include "thread3_main.h"
 #include "tracks.h"
 #include "types.h"
+#ifdef NATIVE_PORT
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#endif
 #include "vehicle_misc.h"
 #include "video.h"
 #include "waves.h"
@@ -87,6 +107,376 @@ static s32 bonus_visual_is_presentation_actor(const Object *obj) {
 }
 
 #ifdef NATIVE_PORT
+/* Synchronous draw-local transaction. This is armed only after the exact
+ * donor model passes its schema and every modern primitive has registered a
+ * retained command. render_mesh() can then carve this object and no other. */
+static const Object *sModernCharacterReplacementObject;
+static const ObjectModel *sModernCharacterReplacementModel;
+static s32 sModernCharacterReplacementDonor;
+static s32 sModernCharacterReplacementVehicle;
+static s32 sModernCharacterReplacementLod;
+static s32 sModernCharacterReplacementSelect;
+static u32 sModernCharacterWarningBits;
+static const Object *sModernCharacterSelectObjects[MDKR_MODERN_CHARACTER_PLAYERS];
+static u8 sModernCharacterWasAirborne[MDKR_MODERN_CHARACTER_PLAYERS];
+static s16 sModernCharacterLandTicks[MDKR_MODERN_CHARACTER_PLAYERS];
+/* Workshop surface evidence is requested for one draw at a time on the game
+ * thread. The qualified retail corpus contains at most 273 triangles per
+ * racer model; the shared 512-triangle contract leaves room without allocating
+ * in ordinary rendering. */
+static MdkrModernSurfaceTriangle
+    sModernCharacterVehicleShell[MDKR_MODERN_CHARACTER_SHELL_TRIANGLE_MAX];
+
+static s32 modern_character_select_player_for_object(const Object *obj) {
+    s32 player;
+    if (obj == NULL) return -1;
+    for (player = 0; player < MDKR_MODERN_CHARACTER_PLAYERS; player++) {
+        if (sModernCharacterSelectObjects[player] == obj) return player;
+    }
+    return -1;
+}
+
+static void modern_character_warn_once(s32 player, u32 reason,
+                                       const char *message) {
+    u32 bit;
+    if (player < 0 || player >= MDKR_MODERN_CHARACTER_PLAYERS ||
+        reason >= 8) {
+        return;
+    }
+    bit = 1u << (player * 8 + reason);
+    if ((sModernCharacterWarningBits & bit) != 0) {
+        return;
+    }
+    sModernCharacterWarningBits |= bit;
+    fprintf(stderr, "[modern-character] P%d %s\n", player + 1, message);
+}
+
+static s32 modern_character_select_model_ready(
+    s32 donor, s32 modelId, const ObjectModel *model) {
+    const TriangleBatchInfo *batches;
+    s32 index;
+    if (model == NULL || model->batches == 0 ||
+        !mdkr_modern_donor_select_model_ready(
+            donor, modelId, model->numberOfVertices,
+            model->numberOfTriangles, model->numberOfBatches)) return FALSE;
+    batches = DKR_PTR(const TriangleBatchInfo, model->batches);
+    /* Every qualified shared US/PAL actor has exactly one four-vertex,
+     * two-triangle numbered placard at batch zero. All subsequent batches are
+     * the retail body. Validate that topology before a profile mask is used. */
+    if (batches[0].textureIndex >= 4 ||
+        batches[0].verticesOffset != 0 || batches[0].facesOffset != 0 ||
+        batches[1].verticesOffset != 4 || batches[1].facesOffset != 2) {
+        return FALSE;
+    }
+    for (index = 1; index < model->numberOfBatches; index++) {
+        if (batches[index].textureIndex < 4) return FALSE;
+    }
+    return TRUE;
+}
+
+static s32 modern_character_donor_target_frame(
+    const ObjectModel *model, const Object *object, s32 player, s32 donor,
+    s32 vehicle, s32 lod, MdkrModernCharacterContext context, f32 output[16]) {
+    const TriangleBatchInfo *batches;
+    const Vertex *vertices;
+    f32 minimum[3] = {32767.0f, 32767.0f, 32767.0f};
+    f32 maximum[3] = {-32768.0f, -32768.0f, -32768.0f};
+    s32 batch;
+    s32 found = FALSE;
+    MdkrModernCalibration calibration;
+    static u32 tracedContexts;
+    if (model == NULL || object == NULL || object->curVertData == NULL ||
+        output == NULL || model->numberOfBatches <= 0) return FALSE;
+    batches = DKR_PTR(const TriangleBatchInfo, model->batches);
+    vertices = object->curVertData;
+    for (batch = 0; batch < model->numberOfBatches; batch++) {
+        const s32 driver = context == MDKR_CHARACTER_CONTEXT_SELECT
+            ? !mdkr_modern_donor_select_batch_visible(donor, batch)
+            : !mdkr_modern_donor_batch_visible(donor, vehicle, lod, batch);
+        s32 vertex;
+        if (!driver) continue;
+        for (vertex = batches[batch].verticesOffset;
+             vertex < batches[batch + 1].verticesOffset; vertex++) {
+            if (vertices[vertex].x < minimum[0]) minimum[0] = vertices[vertex].x;
+            if (vertices[vertex].y < minimum[1]) minimum[1] = vertices[vertex].y;
+            if (vertices[vertex].z < minimum[2]) minimum[2] = vertices[vertex].z;
+            if (vertices[vertex].x > maximum[0]) maximum[0] = vertices[vertex].x;
+            if (vertices[vertex].y > maximum[1]) maximum[1] = vertices[vertex].y;
+            if (vertices[vertex].z > maximum[2]) maximum[2] = vertices[vertex].z;
+            found = TRUE;
+        }
+    }
+    if (!found ||
+        !mdkr_modern_character_player_calibration(player, &calibration, NULL) ||
+        !mdkr_modern_donor_fit_frame(
+            donor, context, minimum, maximum,
+            calibration.normalized_height, calibration.target_height,
+            output)) return FALSE;
+    if (getenv("MDKR_CUSTOM_CHARACTER_TRACE_ANCHORS") != NULL &&
+        (tracedContexts & (1u << context)) == 0u) {
+        tracedContexts |= 1u << context;
+        fprintf(stderr,
+                "[modern-character-anchor] context=%d min=%.3f,%.3f,%.3f "
+                "max=%.3f,%.3f,%.3f target=%.3f,%.3f,%.3f scale=%.3f\n",
+                context, minimum[0], minimum[1], minimum[2],
+                maximum[0], maximum[1], maximum[2],
+                output[12], output[13], output[14], output[0]);
+    }
+    return TRUE;
+}
+
+static s32 modern_character_lod_view(
+    s32 viewport, MdkrModernCharacterLodView *output) {
+    MdkrCameraProjection projection;
+    MtxF *objectMvp;
+    if (output == NULL ||
+        !cam_get_latched_effective_projection_for_viewport(
+            viewport, &projection) ||
+        !isfinite(projection.logical_viewport_height) ||
+        projection.logical_viewport_height <= 0.0f ||
+        projection.generation == 0u ||
+        (objectMvp = mtx_get_modelmtx_s16()) == NULL) return FALSE;
+    memset(output, 0, sizeof(*output));
+    memcpy(output->object_mvp, objectMvp, sizeof(output->object_mvp));
+    output->logical_viewport_height = projection.logical_viewport_height;
+    output->projection_generation = projection.generation;
+    return TRUE;
+}
+
+static s32 modern_character_affine_inverse(
+    const f32 input[16], f32 output[16]) {
+    const f32 a00 = input[0], a01 = input[4], a02 = input[8];
+    const f32 a10 = input[1], a11 = input[5], a12 = input[9];
+    const f32 a20 = input[2], a21 = input[6], a22 = input[10];
+    const f32 tx = input[12], ty = input[13], tz = input[14];
+    const f32 determinant = a00 * (a11 * a22 - a12 * a21) -
+        a01 * (a10 * a22 - a12 * a20) +
+        a02 * (a10 * a21 - a11 * a20);
+    f32 inverse;
+    if (!isfinite(determinant) || fabsf(determinant) < 1.0e-12f ||
+        output == NULL) return FALSE;
+    inverse = 1.0f / determinant;
+    memset(output, 0, sizeof(f32) * 16u);
+    output[0] = (a11 * a22 - a12 * a21) * inverse;
+    output[4] = (a02 * a21 - a01 * a22) * inverse;
+    output[8] = (a01 * a12 - a02 * a11) * inverse;
+    output[1] = (a12 * a20 - a10 * a22) * inverse;
+    output[5] = (a00 * a22 - a02 * a20) * inverse;
+    output[9] = (a02 * a10 - a00 * a12) * inverse;
+    output[2] = (a10 * a21 - a11 * a20) * inverse;
+    output[6] = (a01 * a20 - a00 * a21) * inverse;
+    output[10] = (a00 * a11 - a01 * a10) * inverse;
+    output[12] = -(output[0] * tx + output[4] * ty + output[8] * tz);
+    output[13] = -(output[1] * tx + output[5] * ty + output[9] * tz);
+    output[14] = -(output[2] * tx + output[6] * ty + output[10] * tz);
+    output[15] = 1.0f;
+    return TRUE;
+}
+
+static s32 modern_character_head_local_matrix(
+    const ModelInstance *model_instance, s16 head_angle, f32 output[16]) {
+    f32 cosine_head;
+    f32 sine_head;
+    f32 cosine_tilt;
+    f32 sine_tilt;
+    f32 offset_x;
+    f32 offset_y;
+    f32 offset_z;
+    if (model_instance == NULL || output == NULL) return FALSE;
+    offset_x = model_instance->offsetX;
+    offset_y = model_instance->offsetY;
+    offset_z = model_instance->offsetZ;
+    cosine_tilt = coss_f(model_instance->headTilt);
+    sine_tilt = sins_f(model_instance->headTilt);
+    cosine_head = coss_f(head_angle);
+    sine_head = sins_f(head_angle);
+    output[0] = cosine_head * cosine_tilt;
+    output[1] = cosine_head * sine_tilt;
+    output[2] = -sine_head;
+    output[3] = 0.0f;
+    output[4] = -sine_tilt;
+    output[5] = cosine_tilt;
+    output[6] = 0.0f;
+    output[7] = 0.0f;
+    output[8] = sine_head * cosine_tilt;
+    output[9] = sine_head * sine_tilt;
+    output[10] = cosine_head;
+    output[11] = 0.0f;
+    output[12] =
+        (-offset_x * (cosine_head * cosine_tilt)) +
+        (-offset_y * -sine_tilt) +
+        (-offset_z * (sine_head * cosine_tilt)) + offset_x;
+    output[13] =
+        (-offset_x * (cosine_head * sine_tilt)) +
+        (-offset_y * cosine_tilt) +
+        (-offset_z * (sine_head * sine_tilt)) + offset_y;
+    output[14] =
+        (-offset_x * -sine_head) +
+        (-offset_z * cosine_head) + offset_z;
+    output[15] = 1.0f;
+    return TRUE;
+}
+
+static s32 modern_character_vehicle_shell(
+    const ObjectModel *model, const Object *object, s32 donor, s32 vehicle,
+    s32 lod, const f32 target_frame[16],
+    const ModelInstance *model_instance, s16 head_angle,
+    MdkrModernCharacterVehicleShell *out) {
+    const TriangleBatchInfo *batches;
+    const Triangle *triangles;
+    const Vertex *vertices;
+    f32 inverse_target[16];
+    f32 secondary_matrix[16];
+    const s32 secondary_matrix_active = model_instance != NULL;
+    u32 output_count = 0u;
+    s32 batch;
+    if (out == NULL) return FALSE;
+    out->triangles = NULL;
+    out->triangle_count = 0u;
+    if (model == NULL || object == NULL || object->curVertData == NULL ||
+        target_frame == NULL || model->numberOfBatches <= 0 ||
+        model->numberOfVertices <= 0 || model->numberOfTriangles <= 0 ||
+        !modern_character_affine_inverse(target_frame, inverse_target)) {
+        return FALSE;
+    }
+    if (secondary_matrix_active &&
+        !modern_character_head_local_matrix(
+            model_instance, head_angle, secondary_matrix)) return FALSE;
+    batches = DKR_PTR(const TriangleBatchInfo, model->batches);
+    triangles = DKR_PTR(const Triangle, model->triangles);
+    vertices = object->curVertData;
+    for (batch = 0; batch < model->numberOfBatches; ++batch) {
+        const TriangleBatchInfo *current = &batches[batch];
+        const TriangleBatchInfo *next = &batches[batch + 1];
+        const s32 vertex_count = next->verticesOffset -
+            current->verticesOffset;
+        const s32 triangle_count = next->facesOffset - current->facesOffset;
+        s32 triangle_index;
+        if (!mdkr_modern_donor_batch_visible(
+                donor, vehicle, lod, batch) ||
+            (current->flags & RENDER_HIDDEN) != 0u) continue;
+        if (current->verticesOffset < 0 || current->facesOffset < 0 ||
+            vertex_count <= 0 || triangle_count < 0 ||
+            next->verticesOffset > model->numberOfVertices ||
+            next->facesOffset > model->numberOfTriangles ||
+            (secondary_matrix_active &&
+             current->vertOverride > vertex_count)) {
+            return FALSE;
+        }
+        if ((u32)triangle_count >
+            MDKR_MODERN_CHARACTER_SHELL_TRIANGLE_MAX - output_count) {
+            return FALSE;
+        }
+        for (triangle_index = current->facesOffset;
+             triangle_index < next->facesOffset; ++triangle_index) {
+            const Triangle *source = &triangles[triangle_index];
+            const u8 indices[3] = {source->vi0, source->vi1, source->vi2};
+            MdkrModernSurfaceTriangle *destination =
+                &sModernCharacterVehicleShell[output_count];
+            u32 point;
+            for (point = 0u; point < 3u; ++point) {
+                const Vertex *vertex;
+                f32 local[3];
+                u32 axis;
+                if (indices[point] >= vertex_count) return FALSE;
+                vertex = &vertices[
+                    current->verticesOffset + indices[point]];
+                local[0] = vertex->x;
+                local[1] = vertex->y;
+                local[2] = vertex->z;
+                if (secondary_matrix_active &&
+                    indices[point] >= current->vertOverride) {
+                    f32 transformed_local[3];
+                    for (axis = 0u; axis < 3u; ++axis) {
+                        transformed_local[axis] =
+                            secondary_matrix[axis] * local[0] +
+                            secondary_matrix[4u + axis] * local[1] +
+                            secondary_matrix[8u + axis] * local[2] +
+                            secondary_matrix[12u + axis];
+                    }
+                    memcpy(local, transformed_local, sizeof(local));
+                }
+                for (axis = 0u; axis < 3u; ++axis) {
+                    const double transformed =
+                        (double)inverse_target[axis] * local[0] +
+                        (double)inverse_target[4u + axis] * local[1] +
+                        (double)inverse_target[8u + axis] * local[2] +
+                        inverse_target[12u + axis];
+                    if (!isfinite(transformed) || transformed < -1000.0 ||
+                        transformed > 1000.0) return FALSE;
+                    destination->point[point][axis] = (f32)transformed;
+                }
+            }
+            ++output_count;
+        }
+    }
+    if (output_count == 0u) return FALSE;
+    out->triangles = sModernCharacterVehicleShell;
+    out->triangle_count = output_count;
+    return TRUE;
+}
+
+void obj_modern_character_select_update(Object *obj, s32 donor,
+                                        u32 hoverMask, u32 confirmedMask,
+                                        f32 seconds) {
+    s32 player;
+    s32 selected = -1;
+    const char *semantic;
+    char error[192];
+    if (obj == NULL || !mdkr_modern_donor_qualified(donor) ||
+        !isfinite(seconds) || seconds < 0.0f) return;
+    /* Prefer the matching package whose player is actually pointing at this
+     * donor actor. With no cursor on it, show the first configured package for
+     * that donor so every installed roster family still has an idle preview. */
+    for (player = 0; player < MDKR_MODERN_CHARACTER_PLAYERS; player++) {
+        if (mdkr_modern_character_player_package(player) == NULL ||
+            mdkr_modern_character_player_donor(player) != donor) {
+            continue;
+        }
+        if (selected < 0) selected = player;
+        if ((hoverMask & (1u << player)) != 0u) {
+            selected = player;
+            break;
+        }
+    }
+    if (selected < 0) {
+        for (player = 0; player < MDKR_MODERN_CHARACTER_PLAYERS; player++) {
+            if (sModernCharacterSelectObjects[player] == obj) {
+                sModernCharacterSelectObjects[player] = NULL;
+            }
+        }
+        return;
+    }
+    /* One authored actor can present one package. Disarm its previous owner
+     * before ticking so any animation error fails visible this frame. Other
+     * donor actors remain mapped to their own players. */
+    for (player = 0; player < MDKR_MODERN_CHARACTER_PLAYERS; player++) {
+        if (sModernCharacterSelectObjects[player] == obj) {
+            sModernCharacterSelectObjects[player] = NULL;
+        }
+    }
+    semantic = (confirmedMask & (1u << selected)) != 0u
+        ? "select.confirm"
+        : (hoverMask & (1u << selected)) != 0u
+            ? "select.hover" : "select.idle";
+    if (!mdkr_modern_character_tick(selected, semantic, seconds,
+                                    error, sizeof(error))) {
+        modern_character_warn_once(selected, 4, error);
+        return;
+    }
+    sModernCharacterSelectObjects[selected] = obj;
+}
+
+void obj_modern_character_select_forget(const Object *obj) {
+    s32 player;
+    if (obj == NULL) return;
+    for (player = 0; player < MDKR_MODERN_CHARACTER_PLAYERS; player++) {
+        if (sModernCharacterSelectObjects[player] == obj) {
+            sModernCharacterSelectObjects[player] = NULL;
+        }
+    }
+}
+
 static void bonus_visual_trace_transform_bypass(const Object *obj) {
     static u32 sTracedIdentities;
     const char *identity = NULL;
@@ -1088,8 +1478,11 @@ static void dkr_force_effect_shell_hook(Object_Racer *racer) {
  *
  *   MDKR_ZIPPAD_BOOST=<frame>[:<ticks>]
  *       On the first update at or after <frame>, arm the HUMAN racer exactly as
- *       `racer.c:5727` arms it for `SURFACE_ZIP_PAD` on a car:
- *       `boostTimer = normalise_time(ticks)`, `boostType = BOOST_LARGE`.
+ *       `racer.c:6554` arms it for `SURFACE_ZIP_PAD` on a car:
+ *       `boostTimer = normalise_time(ticks)`, `boostType = BOOST_LARGE`, and
+ *       hold that racer's accelerator for as long as that boost runs, because a
+ *       pad boost is authored to be ridden with the throttle down and the
+ *       autopilot AI lifts off on a roll (see mdkr_zippad_boost_hold_throttle).
  *       <ticks> defaults to 45, the authored constant. Armed once per run.
  *       Passing any other <ticks> is the perturbed-constant BROKEN DIRECTION
  *       arm: it must move the speed trace out of the baseline envelope.
@@ -1104,6 +1497,10 @@ static void dkr_force_effect_shell_hook(Object_Racer *racer) {
  * once, so the boost decays on its own schedule and the magnitude that comes out
  * is the authored one. Both are zero cost when unset.
  */
+/* Seam state shared with mdkr_zippad_boost_hold_throttle() below. */
+static s32 sZipPadHolding = FALSE;  /* the seam's own boost is still running */
+static s32 sZipPadLift = FALSE;     /* the AI elected to lift off this tick */
+
 void mdkr_zippad_boost_hook(Object *obj, Object_Racer *racer) {
     /* AUTHORED TICKS — see dkr_force_boost_hook. */
     extern int g_simTickCounter;
@@ -1136,8 +1533,62 @@ void mdkr_zippad_boost_hook(Object *obj, Object_Racer *racer) {
     sArmed = TRUE;
     racer->boostTimer = normalise_time(sTicks);
     racer->boostType = BOOST_LARGE;
+    sZipPadHolding = TRUE;
     mdkr_trace("[BOOSTARM] tick=%d ticks=%d timer=%d", g_simTickCounter, sTicks,
                racer->boostTimer);
+}
+
+/*
+ * THE SEAM'S THIRD ASSIGNMENT: hold the accelerator for the armed racer, for
+ * exactly as long as the seam's own boost runs.
+ *
+ * A pad boost is authored to be ridden with the accelerator DOWN. That is the
+ * state a player is in when they cross a pad, and it is the state whose
+ * equilibrium is the authored terminal speed:
+ * sqrt(2.0 / gSurfaceTractionTable[SURFACE_DEFAULT]) = sqrt(2.0 / 0.004)
+ * = 22.36, the same constant mdkr_boss_cadence_clamp() calls the boost
+ * allowance.
+ *
+ * The magnitude fixture drives with DKR'S OWN AI (MDKR_AUTOPILOT), and that AI
+ * decides per boost, on a `roll_percent_chance()` (racer.c:1036), whether to
+ * lift off while boosting: it sets `unk209 |= 4`, which clears A_BUTTON. With A
+ * released the authored velocity update takes the OTHER side of the
+ * `velSquare < 1.0f` split (racer.c:6564) — and velSquare is negated while
+ * driving forward, so that side is taken at any speed — swapping the quadratic
+ * drag `v*v*traction` for the linear `v*traction*8`. The same 2.0/tick boost
+ * thrust then runs toward 2.0 / (8 * 0.004) = 62.5 instead of 22.36, and 45
+ * ticks is nowhere near enough to reach it, so the measured peak stops being
+ * the boost's terminal speed and becomes "wherever the racing line cut the ramp
+ * off". Worse for this fixture in particular, the roll's own chance is
+ * interpolated from the number of CPU racers AHEAD of the racer (sp3A,
+ * racer.c:987), so an uncontrolled roll makes the measurement racer-count
+ * dependent — which is precisely the question the fixture exists to answer.
+ *
+ * All of that is authored decomp behaviour and stays untouched: the AI's
+ * election is left exactly as it made it (unk209 is never written here), and
+ * mdkr_boost_trace reports it as lift=1 so a contaminated arm is visible rather
+ * than silent. Only the input the fixture is entitled to control — the human
+ * racer's accelerator — is asserted, after the AI has written its inputs.
+ *
+ * No-op unless MDKR_ZIPPAD_BOOST armed a boost, so no ordinary run, and no
+ * other fixture, can reach it.
+ */
+void mdkr_zippad_boost_hold_throttle(Object_Racer *racer) {
+    extern u32 gCurrentRacerInput;
+
+    if (!sZipPadHolding || racer == NULL) {
+        return;
+    }
+    if (racer->playerIndex == PLAYER_COMPUTER || racer->racerIndex != 0) {
+        return;
+    }
+    if (racer->boostTimer <= 0) {
+        sZipPadHolding = FALSE;
+        sZipPadLift = FALSE;
+        return;
+    }
+    sZipPadLift = (racer->unk209 & 4) ? TRUE : FALSE;
+    gCurrentRacerInput |= A_BUTTON;
 }
 
 void mdkr_boost_trace(Object *obj, Object_Racer *racer) {
@@ -1155,11 +1606,11 @@ void mdkr_boost_trace(Object *obj, Object_Racer *racer) {
         return;
     }
     mdkr_trace("[BOOST] frame=%d timer=%d type=%d vel=%.9g x=%.9g y=%.9g z=%.9g "
-               "surf=%d grounded=%d start=%d",
+               "surf=%d grounded=%d start=%d lift=%d",
                g_frameCounter, racer->boostTimer, racer->boostType,
                racer->velocity, obj->trans.x_position, obj->trans.y_position,
                obj->trans.z_position, racer->wheel_surfaces[0],
-               racer->groundedWheels, get_race_start_timer());
+               racer->groundedWheels, get_race_start_timer(), sZipPadLift);
 }
 #endif
 
@@ -1437,7 +1888,7 @@ s32 mdkr_object_assets_pin_rollback(void) {
     }
     fprintf(stderr,
             "[ROLLBACK] assets pinned: objectTypes=%zu leases=%d\n",
-            ARRAY_COUNT(kItemSpawnTypes), sRollbackAssetLeaseCount);
+            (size_t)ARRAY_COUNT(kItemSpawnTypes), sRollbackAssetLeaseCount);
     return TRUE;
 }
 
@@ -1800,6 +2251,10 @@ void decrypt_magic_codes(s32 *data, s32 length) {
  * Set all object counters and headers to zero, effectively telling the game there are no objects currently in the
  * scene.
  */
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+static void adventure_party_taj_transform_forget(void);
+#endif
+
 void clear_object_pointers(void) {
     s32 i;
 
@@ -1837,6 +2292,16 @@ void clear_object_pointers(void) {
     D_8011AE7E = TRUE;
     gFirstActiveObjectId = 0;
     gTransformTimer = 0;
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    /* Paired with gTransformTimer above, and for the same reason. The party
+     * transform arms a deferred rebuild and clears it only in commit(); if the
+     * level unloads inside that four-frame window the commit never runs, and
+     * the flag used to survive teardown, session DESTROY and quit-to-title. The
+     * next transform of ANY kind -- including an ordinary one-player Adventure
+     * vehicle change -- then rebuilt the dead party's roster, spawning phantom
+     * karts at its coordinates and switching the hub to split screen. */
+    adventure_party_taj_transform_forget();
+#endif
     gIsTajChallenge = FALSE;
     gTajRaceInit = 0;
     D_8011AF60 = NULL;
@@ -1844,6 +2309,14 @@ void clear_object_pointers(void) {
     D_8011AE01 = TRUE;
     D_8011AD53 = 0;
     gOverrideDoors = FALSE;
+#ifdef NATIVE_PORT
+    memset(sModernCharacterSelectObjects, 0,
+           sizeof(sModernCharacterSelectObjects));
+    memset(sModernCharacterWasAirborne, 0,
+           sizeof(sModernCharacterWasAirborne));
+    memset(sModernCharacterLandTicks, 0,
+           sizeof(sModernCharacterLandTicks));
+#endif
 }
 
 /**
@@ -2728,6 +3201,687 @@ s32 func_8000CC20(Object *obj) {
     return NextFreeIndex;
 }
 
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+/* AP-13: the winning party seat of the just-finished default race, captured at
+ * the finish/award seam (race_check_finish) and read once by the arrival adapter
+ * to populate RACE_RESULT_COMMITTED.winner_seat. ADVENTURE_PARTY_NO_SEAT means no
+ * party human won (CPU first, loss, quit, retry): reset on every RACE_START. It
+ * is informational to the session (the reducer never remaps a seat), so a stale
+ * value can only be observed as a wrong trace, never as a moved kart. */
+static u8 sApRaceWinnerSeat = ADVENTURE_PARTY_NO_SEAT;
+
+/* AP-14: the ONE team-shared silver-coin tally for a party silver-coin race.
+ * The retail per-racer counter is racer->silverCoinCount (game/src/racer struct);
+ * the party design is team-shared precisely because the engine exposes only two
+ * object-invisibility bits (viewports 3/4 alias them via viewport & 1), so
+ * per-player coin copies are unrepresentable. Storing the team total in a
+ * FILE-SCOPE counter — not a new racer/settings field — keeps the racer struct
+ * layout (and therefore the save/state serialisation) byte-identical: this is
+ * the storage choice the STOP condition guards. Reset on every silver-race
+ * (re)start in the arrival adapter; incremented once per coin by the collect
+ * adapter (object_functions.c obj_loop_silvercoin); read by the finish permit,
+ * set_course_finish_flags and every viewport's HUD so the whole party sees one
+ * total. */
+static s32 sApSilverTeamCoins;
+
+/* AP-08 formation spacing, in world units, anchored on player one's authored
+ * setup point. Deliberately modest: a lobby is not a start grid, so the humans
+ * appear abreast of the host with enough gap to read as distinct karts (the
+ * multiplayer gate requires >= 30u median separation). */
+#define ADVENTURE_PARTY_HUB_SIDE_GAP 55.0f
+#define ADVENTURE_PARTY_HUB_REAR_STAGGER 45.0f
+#define ADVENTURE_PARTY_HUB_RING_STEP 35.0f
+/* Vertical ground probe about the host's y: cast down from a little above to
+ * well below so a candidate on gently rolling hub terrain still finds a floor. */
+#define ADVENTURE_PARTY_HUB_PROBE_UP 160.0f
+#define ADVENTURE_PARTY_HUB_PROBE_DOWN 520.0f
+#define ADVENTURE_PARTY_HUB_PROBE_RADIUS 9.0f
+
+/* A candidate is spawnable on solid, walkable ground: reject open water and the
+ * invisible boundary wall, and reject "no floor found" (SURFACE_NONE). Frozen
+ * water (walkable ice) and every land surface pass. */
+static s32 adventure_party_surface_spawnable(s8 surface) {
+    /* SurfaceType is stored as one byte; preserve SURFACE_NONE's 0xFF value
+     * when the collision API hands that byte to us through its signed s8 ABI. */
+    switch ((u8) surface) {
+    case SURFACE_WATER_CALM:
+    case SURFACE_WATER_WAVY:
+    case SURFACE_WATER_UNK_F:
+    case SURFACE_INVIS_WALL:
+    case SURFACE_NONE:
+        return FALSE;
+    default:
+        return TRUE;
+    }
+}
+
+/*
+ * The collision-validating half of the pure formation planner
+ * (platform/adventure_party/adventure_party_spawn.h). Player one keeps its
+ * authored setup point (spawn*[0]); each additional seat takes the FIRST
+ * planner candidate that projects to solid, non-water ground with the game's
+ * own vertical collision probe — generate_collision_candidates +
+ * resolve_collisions, the exact query racers run every frame (object_functions.c
+ * / racer.c). On success spawn*[seat] is filled and the ground y is written
+ * from the probe (resolve_collisions writes `target` in place; see objects.c
+ * embedded-point note).
+ *
+ * Transactional (plan: "Transactional roster"): if ANY seat exhausts its
+ * candidates this returns 0 and the caller loads stock 1P (host-only) — never a
+ * partial roster. A stacked-offset fallback onto the authored point is
+ * FORBIDDEN by the brief, so an unspawnable seat fails the whole party spawn,
+ * with one aparty_ diagnostic line.
+ *
+ * Returns the participant count (2..4) to spawn, or 0 for "not a party lobby
+ * load" and for fail-closed.
+ */
+static s32 adventure_party_hub_formation(u8 raceType, s32 *spawnX, s32 *spawnY,
+                                         s32 *spawnZ, s32 *spawnAngle) {
+    AdventurePartySession *session;
+    AdventurePartyFormationParams params;
+    AdventurePartyFormationPlan plan;
+    s32 count;
+    s32 j;
+    s32 cand;
+
+    /* Only a representative Adventure LOBBY, and only while the session is
+     * bound to a lobby for this load. Races/challenges/cutscenes are later
+     * tasks and take the stock path here. */
+    if (raceType != RACETYPE_HUBWORLD) {
+        return 0;
+    }
+    session = adventure_party_runtime_session();
+    if (session == NULL || session->state != ADVENTURE_PARTY_STATE_ACTIVE_LOBBY) {
+        return 0;
+    }
+    count = adventure_party_participant_count(session);
+    if (count < ADVENTURE_PARTY_MIN_PARTICIPANTS ||
+        count > ADVENTURE_PARTY_MAX_PARTICIPANTS) {
+        return 0;
+    }
+
+    /* Player one's authored point + heading anchor the formation. The game's
+     * y_rotation is a u16 turn (0..0x10000 == 0..2*pi); the pure planner wants
+     * radians. spawn*[] are s32 (positions truncated on write), matching the
+     * setup-point capture above. */
+    params.setup.x = (float) spawnX[0];
+    params.setup.y = (float) spawnY[0];
+    params.setup.z = (float) spawnZ[0];
+    params.heading = (float) spawnAngle[0] * (6.28318530717958647692f / 65536.0f);
+    params.participant_count = (uint8_t) count;
+    params.side_gap = ADVENTURE_PARTY_HUB_SIDE_GAP;
+    params.rear_stagger = ADVENTURE_PARTY_HUB_REAR_STAGGER;
+    params.ring_step = ADVENTURE_PARTY_HUB_RING_STEP;
+    params.max_candidates_per_seat = ADVENTURE_PARTY_MAX_CANDIDATES;
+    if (adventure_party_plan_formation(&params, &plan) != ADVENTURE_PARTY_FORMATION_OK) {
+        if (mdkr_trace_enabled()) {
+            mdkr_trace("aparty_spawn_abort: seat=0 reason=planner n=%d", (int) count);
+        }
+        return 0;
+    }
+
+    for (j = 0; j < plan.seat_count; j++) {
+        const AdventurePartySeatPlan *seatPlan = &plan.seats[j];
+        s32 seat = seatPlan->seat; /* game racer index 1..count-1 */
+        s32 placed = FALSE;
+
+        for (cand = 0; cand < seatPlan->candidate_count; cand++) {
+            Vec3f origin;
+            Vec3f target;
+            f32 radius = ADVENTURE_PARTY_HUB_PROBE_RADIUS;
+            s8 surface = SURFACE_NONE;
+            s32 hasCollision = FALSE;
+
+            origin.x = seatPlan->candidates[cand].point.x;
+            origin.z = seatPlan->candidates[cand].point.z;
+            origin.y = (f32) spawnY[0] + ADVENTURE_PARTY_HUB_PROBE_UP;
+            target.x = origin.x;
+            target.z = origin.z;
+            target.y = (f32) spawnY[0] - ADVENTURE_PARTY_HUB_PROBE_DOWN;
+
+            generate_collision_candidates(1, &origin, &target, VEHICLE_NO_OVERRIDE);
+            resolve_collisions(&origin, &target, &radius, &surface, 1, &hasCollision);
+            if (hasCollision && adventure_party_surface_spawnable(surface)) {
+                spawnX[seat] = (s32) origin.x;
+                spawnZ[seat] = (s32) origin.z;
+                spawnY[seat] = (s32) target.y; /* projected ground */
+                spawnAngle[seat] = spawnAngle[0];
+                placed = TRUE;
+                break;
+            }
+        }
+        if (!placed) {
+            /* Fail closed: abort the whole party spawn for this load. */
+            if (mdkr_trace_enabled()) {
+                mdkr_trace("aparty_spawn_abort: seat=%d reason=nofloor cands=%d",
+                           (int) seat, (int) seatPlan->candidate_count);
+            }
+            return 0;
+        }
+    }
+    return count;
+}
+
+/*
+ * AP-15/AP-17: rebuild the RosterRequest (the (seat,character) LIST the reducer
+ * validates) from the live session roster, so RESTORE_COMMIT can hand back
+ * EXACTLY the party a solo activity borrowed. Session seats are dense 0..N-1, so
+ * this is the identity mapping the state module re-validates and then compares
+ * field-for-field against suspended_roster (refusing ROSTER_MISMATCH on any diff).
+ */
+static void adventure_party_roster_request_from_roster(
+    const AdventurePartyRoster *roster, AdventurePartyRosterRequest *req) {
+    s32 i;
+    memset(req, 0, sizeof *req);
+    if (roster == NULL) {
+        return;
+    }
+    req->participant_count = roster->participant_count;
+    for (i = 0; i < roster->participant_count && i < ADVENTURE_PARTY_MAX_SEATS;
+         i++) {
+        req->seat[i] = (u8) i;
+        req->character[i] = roster->character_by_seat[i];
+    }
+}
+
+/* Presentation identity never enters the Adventure Party reducer or save
+ * state: the party stores only each custom character's retail donor id.  This
+ * trace joins those two independently-owned views at the point where live
+ * racer objects exist, so integration gates can prove that a hub/race/restore
+ * rebuilt the same package-facing seats without making package ids
+ * authoritative. */
+static void adventure_party_trace_custom_identities(const char *phase,
+                                                     s32 count) {
+    s32 seat;
+    if (!mdkr_trace_enabled() || phase == NULL) {
+        return;
+    }
+    for (seat = 0; seat < count; seat++) {
+        Object *racerObj = gRacersByPort[seat];
+        Object_Racer *racer = racerObj != NULL ? racerObj->racer : NULL;
+        const char *package = mdkr_modern_character_player_package(seat);
+        s32 donor = mdkr_modern_character_player_donor(seat);
+        if (package == NULL || racer == NULL) {
+            continue;
+        }
+        mdkr_trace(
+            "aparty_custom_identity: phase=%s seat=%d package=%s donor=%d racer=%d vehicle=%d matches=%d",
+            phase, (int) seat, package, (int) donor,
+            (int) racer->characterId, (int) racer->vehicleIDPrev,
+            mdkr_modern_character_matches(
+                seat, racer->characterId, racer->vehicleIDPrev));
+    }
+}
+
+/*
+ * AP-12 / R16 arrival adapter. When a level finishes loading, advance the party
+ * session to match the level just entered. This is the arrival half of Task 8's
+ * door transition: the departure latched a winner in obj_loop_exit and
+ * racer_enter_door ran the one func_8006D968 load; here the destination bumps
+ * the generation (the ONE enter_level site), which clears the departing lobby's
+ * latched door so the next door can latch again. Keyed off the state being left
+ * and the kind of level that loaded:
+ *
+ *   ACTIVE_LOBBY   + a lobby (latch set) -> LOBBY_TRANSITION      (lobby->lobby, R16)
+ *   ACTIVE_LOBBY   + a default race      -> RACE_START            (lobby->race)
+ *   ACTIVE_RACE    + a lobby             -> RACE_RESULT_COMMITTED  (race->lobby: finish/return/quit-to-lobby)
+ *   ACTIVE_LOBBY   + a challenge/boss    -> SOLO_START            (AP-15/AP-17: suspend to host-solo)
+ *   SOLO_ACTIVITY  + a lobby             -> SOLO_EXIT + RESTORE_COMMIT (restore the exact party)
+ *
+ * The first lobby entry after RESUME_SAVE has no latch set (no door was
+ * pressed), so it is NOT a lobby->lobby hop; a default-race retry
+ * (ACTIVE_RACE + default race) applies nothing and stays in the race, and a
+ * challenge/boss retry (SOLO_ACTIVITY + challenge/boss) likewise stays in the
+ * host-solo activity. SOLO_START suspends the party's roster as the facts the
+ * later RESTORE_COMMIT must reproduce EXACTLY; the activity itself runs as retail
+ * host-solo (numPlayers=1, retail challenge=4/boss=2 field) because no count
+ * adapter fires for a non-lobby, non-default load. The destination-lobby return
+ * runs SOLO_EXIT then RESTORE_COMMIT, and the lobby's Task 7 roster machinery
+ * re-forms the identical party from the restored ACTIVE_LOBBY state.
+ *
+ * winner_seat is left NO_SEAT: it is informational to the state module (it never
+ * remaps a seat), and the exact team-condition winner AP-13 will record is out
+ * of this task's scope. The retail finish code's interim save writes are
+ * untouched here and documented for AP-13.
+ */
+static void adventure_party_apply_arrival(u8 raceType) {
+    AdventurePartySession *session = adventure_party_runtime_session();
+    AdventurePartyEvent ev;
+
+    if (!adventure_party_runtime_is_active() || session == NULL) {
+        return;
+    }
+    memset(&ev, 0, sizeof ev);
+    ev.winner_seat = ADVENTURE_PARTY_NO_SEAT;
+    if (raceType == RACETYPE_HUBWORLD) {
+        if (session->state == ADVENTURE_PARTY_STATE_ACTIVE_RACE) {
+            ev.kind = ADVENTURE_PARTY_EVENT_RACE_RESULT_COMMITTED;
+            /* AP-13: the authoritative winner captured at the finish seam. NO_SEAT
+             * for a CPU win / loss / quit. The reducer only validates it; it never
+             * remaps a seat, so a finish, return or quit-to-lobby all land here. */
+            ev.winner_seat = sApRaceWinnerSeat;
+        } else if (session->state == ADVENTURE_PARTY_STATE_SOLO_ACTIVITY) {
+            /* AP-15/AP-17: return to the destination lobby from a host-solo
+             * challenge/boss (finish, defeat, cutscene-then-lobby all land here).
+             * Two reducer steps: SOLO_EXIT (SOLO_ACTIVITY -> RESTORING_PARTY) then
+             * RESTORE_COMMIT, which re-validates the live roster and refuses
+             * ROSTER_MISMATCH on any difference from the suspended facts. The
+             * aparty_restore trace records the match; the lobby's hub formation /
+             * HUD / binding then re-form the identical party below. */
+            AdventurePartyEvent exitEv;
+            AdventurePartyResult restoreResult;
+            u32 suspendLgen = session->level_generation;
+            memset(&exitEv, 0, sizeof exitEv);
+            exitEv.kind = ADVENTURE_PARTY_EVENT_SOLO_EXIT;
+            if (adventure_party_session_apply(session, &exitEv) !=
+                ADVENTURE_PARTY_OK) {
+                return;
+            }
+            adventure_party_trace_emit_session(session); /* RESTORING_PARTY */
+            ev.kind = ADVENTURE_PARTY_EVENT_RESTORE_COMMIT;
+            adventure_party_roster_request_from_roster(&session->roster,
+                                                       &ev.roster);
+            restoreResult = adventure_party_session_apply(session, &ev);
+            adventure_party_trace_emit_restore(suspendLgen,
+                                               session->level_generation,
+                                               restoreResult ==
+                                                   ADVENTURE_PARTY_OK);
+            if (restoreResult == ADVENTURE_PARTY_OK) {
+                adventure_party_trace_emit_session(session); /* ACTIVE_LOBBY */
+            }
+            return;
+        } else if (session->state == ADVENTURE_PARTY_STATE_ACTIVE_LOBBY &&
+                   session->transition_latch.latched) {
+            ev.kind = ADVENTURE_PARTY_EVENT_LOBBY_TRANSITION;
+        } else {
+            return; /* first lobby after RESUME_SAVE, or nothing pending */
+        }
+    } else if (raceType == RACETYPE_DEFAULT) {
+        if (session->state != ADVENTURE_PARTY_STATE_ACTIVE_LOBBY) {
+            /* Retry: the same race reloads with no RACE_START (no lgen bump).
+             * Clear the recorded winner here too, so a retried race that is QUIT —
+             * which never reaches the finish seam's unconditional capture — cannot
+             * report a prior finish's stale seat in RACE_RESULT_COMMITTED. AP-14:
+             * a retry re-spawns the coin objects (active again), so the team tally
+             * must restart at zero alongside the winner reset. */
+            sApRaceWinnerSeat = ADVENTURE_PARTY_NO_SEAT;
+            sApSilverTeamCoins = 0;
+            return; /* retry: already ACTIVE_RACE, stay in the race */
+        }
+        ev.kind = ADVENTURE_PARTY_EVENT_RACE_START;
+        /* AP-13: a fresh race starts with no recorded winner; the finish seam sets
+         * it only when a party human actually finishes first. AP-14: and no team
+         * silver coins yet — the collect adapter counts them during the race. */
+        sApRaceWinnerSeat = ADVENTURE_PARTY_NO_SEAT;
+        sApSilverTeamCoins = 0;
+    } else if (raceType == RACETYPE_BOSS || (raceType & RACETYPE_CHALLENGE)) {
+        /* AP-15/AP-17: enter a host-solo special challenge or boss from a party
+         * lobby. Only from ACTIVE_LOBBY: a challenge/boss retry that reloads while
+         * already SOLO_ACTIVITY applies nothing and stays in the activity (mirrors
+         * the default-race retry above). SOLO_START suspends the roster facts the
+         * restore transaction must reproduce and bumps the generation. */
+        if (session->state != ADVENTURE_PARTY_STATE_ACTIVE_LOBBY) {
+            return;
+        }
+        ev.kind = ADVENTURE_PARTY_EVENT_SOLO_START;
+    } else {
+        return; /* horseshoe gulch / other: not this task's envelope */
+    }
+    if (adventure_party_session_apply(session, &ev) == ADVENTURE_PARTY_OK) {
+        adventure_party_trace_emit_session(session);
+        if (ev.kind == ADVENTURE_PARTY_EVENT_SOLO_START) {
+            /* Publish the suspended facts alongside the SOLO_ACTIVITY entry so a
+             * gate can prove the EXACT party was captured for the later restore. */
+            adventure_party_trace_emit_roster(&session->suspended_roster);
+        }
+    }
+}
+
+/*
+ * AP-12/AP-16 race field. Resolve the party split field for a RACETYPE_DEFAULT
+ * track load from the pure capability table (consume the row; never hardcode the
+ * total): the six-racer default/silver field, OR — inside a trophy series — the
+ * retail EIGHT-racer trophy field (Part A decision). Returns the human count to
+ * spawn (2..4) and fills *humans / *total / *viewports, or 0 when this is not a
+ * party track race — challenge/boss/lobby/cutscene, no session, the session is
+ * not ACTIVE_RACE (the arrival adapter above must have accepted RACE_START
+ * first), or the capability failed closed. */
+static s32 adventure_party_race_field(u8 raceType, s32 *humans, s32 *total,
+                                      s32 *viewports) {
+    AdventurePartySession *session = adventure_party_runtime_session();
+    AdventurePartyActivityDescriptor desc;
+    AdventurePartyCapability cap;
+    s32 count;
+
+    if (raceType != RACETYPE_DEFAULT) {
+        return 0;
+    }
+    if (session == NULL ||
+        session->state != ADVENTURE_PARTY_STATE_ACTIVE_RACE) {
+        return 0;
+    }
+    count = adventure_party_participant_count(session);
+    /* Deliverable 0: record the REAL activity kind, not a hardcoded default. A
+     * replay of an already-cleared course is a silver-coin race — decided once at
+     * object-map spawn (gIsSilverCoinRace, objects.c track_spawn_objects, which
+     * runs before this). The v1 capability table resolves both DEFAULT and
+     * SILVER_COIN to the same six-racer split, so the field is unchanged; the
+     * point is that the classification, the token key, and later AP-14 policy see
+     * the truth rather than an assumption. */
+    /* AP-16: a trophy-series round loads as a RACETYPE_DEFAULT track race but is
+     * distinguished by the live trophy world id (set in trophyround_adventure /
+     * cleared at series exit). It classifies as TROPHY so the capability table
+     * gives the RETAIL EIGHT-racer split (Part A decision), not the six-racer
+     * default field. gIsSilverCoinRace is false inside a trophy series (the round
+     * courses are not silver replays), so trophy is tested first. */
+    if (get_trophy_race_world_id() != 0) {
+        desc.race_kind = ADVENTURE_PARTY_RACE_KIND_TROPHY;
+    } else {
+        desc.race_kind = gIsSilverCoinRace
+                             ? ADVENTURE_PARTY_RACE_KIND_SILVER_COIN
+                             : ADVENTURE_PARTY_RACE_KIND_DEFAULT;
+    }
+    desc.course_class = ADVENTURE_PARTY_COURSE_TRACK;
+    cap = adventure_party_classify_activity(&desc, count);
+    if (!cap.policy_active || cap.fail_closed ||
+        cap.presentation != ADVENTURE_PARTY_PRESENT_SPLIT ||
+        cap.human_count < ADVENTURE_PARTY_MIN_PARTICIPANTS ||
+        cap.total_racer_count < cap.human_count) {
+        return 0;
+    }
+    *humans = cap.human_count;
+    *total = cap.total_racer_count;
+    *viewports = cap.viewport_count;
+    return cap.human_count;
+}
+
+/*
+ * AP-13: is a party default race the thing being finished right now? True only
+ * while a live party session is in ACTIVE_RACE — which the arrival adapter enters
+ * exclusively for a RACETYPE_DEFAULT party race (RACE_START), never for a
+ * challenge/boss/lobby — so this is precisely "a party default race is on". When
+ * true, the party award arm decides the campaign commit and the retail arm is
+ * bypassed; when false, the stock retail path runs unchanged.
+ */
+static s32 adventure_party_race_award_active(void) {
+    AdventurePartySession *session = adventure_party_runtime_session();
+    return adventure_party_runtime_is_active() && session != NULL &&
+           session->state == ADVENTURE_PARTY_STATE_ACTIVE_RACE;
+}
+
+/*
+ * AP-14: is a party SILVER-COIN race the thing being run right now? True only
+ * when a party default-race session is live (award_active) AND this course is a
+ * silver-coin replay (gIsSilverCoinRace, decided once at object-map spawn). This
+ * one predicate gates every team-shared silver arm — the coin collect adapter,
+ * the HUD team total and the finish permit — so they engage together or not at
+ * all, and are byte-inert for a 1P/2P silver race (no party session) and for a
+ * party's first, non-silver clear (gIsSilverCoinRace FALSE). Non-static: the
+ * collect adapter (object_functions.c) and HUD (game_ui.c) call it.
+ */
+s32 adventure_party_silver_race_active(void) {
+    return adventure_party_race_award_active() && gIsSilverCoinRace;
+}
+
+/* AP-14: the team-shared silver-coin total, read by the collect adapter (jingle
+ * pitch), the finish permit / set_course_finish_flags (the >= 8 win test) and
+ * every viewport's HUD. */
+s32 adventure_party_silver_team_coins(void) {
+    return sApSilverTeamCoins;
+}
+
+/* AP-14: one coin collected by ANY party human. The collect adapter has already
+ * proven the collector is a human and retired the coin for all viewports; this
+ * only advances the single team tally. */
+void adventure_party_silver_team_collect(void) {
+    sApSilverTeamCoins++;
+}
+
+/*
+ * AP-13 winner identity. Returns the winning PARTY SEAT (0..N-1) when a party
+ * default race is active and the first-place racer is one of the party's humans,
+ * else ADVENTURE_PARTY_NO_SEAT (a CPU won, or this is not a party race).
+ *
+ * The team condition is read from the STABLE racer identity, gRacersByPosition[0]
+ * ->racer->racerIndex, NOT its playerIndex: the finish/door hand-off relabels a
+ * finished human PLAYER_COMPUTER (racer.c racer_enter_door), so an early-finishing
+ * human winner can read as a CPU by playerIndex at the "5 of 6 finished" finalize.
+ * racerIndex is assigned once at spawn and never changed, and the AP-12 field
+ * binds session seat i -> racerIndex i (proven per-seat by the race-loop gate's
+ * independent racer.c input-dispatch witness: player==racer==port), so
+ * racerIndex < participant_count is exactly "a party human finished first".
+ */
+static s32 adventure_party_race_winner_seat(void) {
+    AdventurePartySession *session = adventure_party_runtime_session();
+    Object_Racer *leader;
+    s32 seat;
+    s32 count;
+
+    if (!adventure_party_runtime_is_active() || session == NULL ||
+        session->state != ADVENTURE_PARTY_STATE_ACTIVE_RACE) {
+        return ADVENTURE_PARTY_NO_SEAT;
+    }
+    if (gNumRacers <= 0 || gRacersByPosition[0] == NULL ||
+        gRacersByPosition[0]->racer == NULL) {
+        return ADVENTURE_PARTY_NO_SEAT;
+    }
+    leader = gRacersByPosition[0]->racer;
+    seat = leader->racerIndex;
+    count = adventure_party_participant_count(session);
+    if (seat < 0 || seat >= count) {
+        return ADVENTURE_PARTY_NO_SEAT; /* a CPU finished first */
+    }
+    return seat;
+}
+
+/*
+ * AP-13 exact-once award gate for a party default race. Returns 1 exactly once
+ * per first-clear: when a party human won (team condition), this is a fresh clear
+ * (mirrors set_course_finish_flags's own RACE_CLEARED-first test so a consumed
+ * token always corresponds to a real write — one-to-one), and the completion
+ * token both mints (TEAM_WIN) and consumes successfully. A second invocation in
+ * the same level generation (cutscene re-entry, results re-run, a simultaneous
+ * finish path) finds the token already consumed and returns 0. Loss/quit/retry
+ * never reach here with a team win, so the policy module never issues them a
+ * token: the guarantee is structural, not a flag check.
+ *
+ * `seat` is the winner seat the caller already resolved (never NO_SEAT here).
+ */
+static s32 adventure_party_race_award_permit(Settings *settings, s32 seat) {
+    AdventurePartySession *session = adventure_party_runtime_session();
+    AdventurePartyCompletionToken token;
+    AdventurePartyRaceKind kind;
+    AdventurePartyResult consumed;
+    int issued;
+
+    (void) seat;
+    if (session == NULL || settings == NULL) {
+        return 0;
+    }
+    /* An already-cleared course being finished again is a REPLAY. Two outcomes:
+     *
+     *   AP-14 team-silver win: a party silver-coin race (gIsSilverCoinRace) whose
+     *     classified progress row is TEAM_COINS_ANY_HUMAN_FIRST and whose ONE team
+     *     tally reached eight coins — the caller already verified any-human-first
+     *     (seat != NO_SEAT). This mints the SILVER completion token below (kind
+     *     resolves to SILVER because gIsSilverCoinRace), exactly once per level
+     *     generation, and set_course_finish_flags then writes
+     *     RACE_CLEARED_SILVER_COINS. Consuming the pure policy verdict here keeps
+     *     the finish rule in the policy module rather than an ad-hoc test.
+     *
+     *   Every other replay — a cleared non-silver course re-entered, or a silver
+     *     replay with fewer than eight team coins — fails closed with one refused
+     *     ISSUE diagnostic (result=0), unchanged AP-13 behaviour, so the deferred
+     *     no-op / retail loss stays observable rather than silent. */
+    if (settings->courseFlagsPtr[settings->courseId] & RACE_CLEARED) {
+        AdventurePartyActivityDescriptor desc;
+        AdventurePartyCapability cap;
+        int silverTeamWin;
+        desc.race_kind = ADVENTURE_PARTY_RACE_KIND_SILVER_COIN;
+        desc.course_class = ADVENTURE_PARTY_COURSE_TRACK;
+        cap = adventure_party_classify_activity(
+            &desc, adventure_party_participant_count(session));
+        /* The literal 8 mirrors set_course_finish_flags's own silver >= 8 test,
+         * which reads this same team tally for a party (Adapter D). */
+        silverTeamWin =
+            gIsSilverCoinRace &&
+            cap.progress ==
+                ADVENTURE_PARTY_PROGRESS_TEAM_COINS_ANY_HUMAN_FIRST &&
+            adventure_party_silver_team_coins() >= 8;
+        if (!silverTeamWin) {
+            AdventurePartyCompletionToken skip;
+            memset(&skip, 0, sizeof skip);
+            skip.session_generation = session->session_generation;
+            skip.level_generation = session->level_generation;
+            skip.course = (uint16_t) settings->courseId;
+            skip.activity = (uint8_t)(gIsSilverCoinRace
+                                          ? ADVENTURE_PARTY_RACE_KIND_SILVER_COIN
+                                          : ADVENTURE_PARTY_RACE_KIND_DEFAULT);
+            skip.completion_kind = (uint8_t) ADVENTURE_PARTY_COMPLETION_COURSE;
+            adventure_party_trace_emit_award(ADVENTURE_PARTY_TRACE_AWARD_ISSUE,
+                                             &skip, 0);
+            return 0;
+        }
+        /* else: fall through to mint the SILVER team-win token. */
+    }
+    /* Deliverable 0: the token key carries the real activity kind. */
+    kind = gIsSilverCoinRace ? ADVENTURE_PARTY_RACE_KIND_SILVER_COIN
+                             : ADVENTURE_PARTY_RACE_KIND_DEFAULT;
+    issued = adventure_party_completion_token_issue(
+        ADVENTURE_PARTY_OUTCOME_TEAM_WIN, session->session_generation,
+        session->level_generation, (uint16_t) settings->courseId, kind,
+        ADVENTURE_PARTY_COMPLETION_COURSE, &token);
+    adventure_party_trace_emit_award(ADVENTURE_PARTY_TRACE_AWARD_ISSUE, &token,
+                                     issued);
+    if (!issued) {
+        return 0;
+    }
+    consumed = adventure_party_consume_completion_token(session, &token);
+    adventure_party_trace_emit_award(ADVENTURE_PARTY_TRACE_AWARD_CONSUME, &token,
+                                     (int) consumed);
+    return consumed == ADVENTURE_PARTY_OK;
+}
+
+/*
+ * AP-15/AP-17: is a party host-solo activity (special challenge or boss) the thing
+ * being finished right now? True only while a live party session is in
+ * SOLO_ACTIVITY — which the arrival adapter enters exclusively for a challenge/boss
+ * load. When true the party host-solo award arm decides the campaign commit and
+ * the retail arm is bypassed; when false the stock retail path runs unchanged.
+ */
+static s32 adventure_party_solo_award_active(void) {
+    AdventurePartySession *session = adventure_party_runtime_session();
+    return adventure_party_runtime_is_active() && session != NULL &&
+           session->state == ADVENTURE_PARTY_STATE_SOLO_ACTIVITY;
+}
+
+/* Map a challenge race_type to its capability race kind (the token key's activity
+ * component). Any RACETYPE_CHALLENGE-flagged type resolves to a challenge kind;
+ * the exact sub-kind keeps the key faithful. */
+static AdventurePartyRaceKind adventure_party_challenge_race_kind(u8 raceType) {
+    switch (raceType) {
+    case RACETYPE_CHALLENGE_BATTLE:
+        return ADVENTURE_PARTY_RACE_KIND_BATTLE_CHALLENGE;
+    case RACETYPE_CHALLENGE_EGGS:
+        return ADVENTURE_PARTY_RACE_KIND_EGG_CHALLENGE;
+    case RACETYPE_CHALLENGE_BANANAS:
+    default:
+        return ADVENTURE_PARTY_RACE_KIND_BANANA_CHALLENGE;
+    }
+}
+
+/*
+ * AP-15 exact-once award gate for a party host-solo special challenge (the
+ * four-racer amulet challenges). Mirrors adventure_party_race_award_permit: fails
+ * closed if the course already carries RACE_CLEARED (so a consumed token always
+ * corresponds to a real amulet write — one-to-one, and a re-race mints nothing);
+ * otherwise mints (TEAM_WIN, activity=challenge kind, kind=COMPLETION_CHALLENGE)
+ * and consumes the token, emitting the aparty_award issue/consume traces. Returns
+ * 1 only on a successful fresh consume. The host is racer[0] in the host-solo
+ * field, so the caller's finishPosition==1 is exactly a host win.
+ */
+static s32 adventure_party_challenge_award_permit(Settings *settings,
+                                                  u8 raceType) {
+    AdventurePartySession *session = adventure_party_runtime_session();
+    AdventurePartyCompletionToken token;
+    AdventurePartyRaceKind kind;
+    AdventurePartyResult consumed;
+    int issued;
+
+    if (session == NULL || settings == NULL) {
+        return 0;
+    }
+    kind = adventure_party_challenge_race_kind(raceType);
+    if (settings->courseFlagsPtr[settings->courseId] & RACE_CLEARED) {
+        AdventurePartyCompletionToken skip;
+        memset(&skip, 0, sizeof skip);
+        skip.session_generation = session->session_generation;
+        skip.level_generation = session->level_generation;
+        skip.course = (uint16_t) settings->courseId;
+        skip.activity = (uint8_t) kind;
+        skip.completion_kind = (uint8_t) ADVENTURE_PARTY_COMPLETION_CHALLENGE;
+        adventure_party_trace_emit_award(ADVENTURE_PARTY_TRACE_AWARD_ISSUE, &skip,
+                                         0);
+        return 0;
+    }
+    issued = adventure_party_completion_token_issue(
+        ADVENTURE_PARTY_OUTCOME_TEAM_WIN, session->session_generation,
+        session->level_generation, (uint16_t) settings->courseId, kind,
+        ADVENTURE_PARTY_COMPLETION_CHALLENGE, &token);
+    adventure_party_trace_emit_award(ADVENTURE_PARTY_TRACE_AWARD_ISSUE, &token,
+                                     issued);
+    if (!issued) {
+        return 0;
+    }
+    consumed = adventure_party_consume_completion_token(session, &token);
+    adventure_party_trace_emit_award(ADVENTURE_PARTY_TRACE_AWARD_CONSUME, &token,
+                                     (int) consumed);
+    return consumed == ADVENTURE_PARTY_OK;
+}
+
+/*
+ * AP-16 trophy-series award token WITNESS. The retail trophy-championship award
+ * (game/src/menu.c rankings_update, RANKINGS_EXIT after round four) upgrades
+ * settings->trophies only when the new podium rank beats the stored one
+ * (temp6 < prevOption), so it is already exact-once across re-runs by that
+ * upgrade-only guard; and a party collapses to gNumberOfActivePlayers==1, so the
+ * shared-result human the ceremony reads is the host (racer 0), exactly as retail
+ * 1P. This mints+consumes ONE COMPLETION_TROPHY token beside that exact-once
+ * write to make the party's ONE shared series result OBSERVABLE and
+ * generation-keyed (the boss first-win witness pattern, Task 12 section 3): a
+ * re-run of the series in a fresh generation that upgrades no trophy writes
+ * nothing and mints nothing, and a duplicate call within one generation cannot
+ * re-consume. The retail write is UNTOUCHED. Course key = worldId (the trophy is
+ * per-world). Called only for a live party session; a 1P/off trophy award never
+ * reaches it (adventure_party_runtime_is_active() is false) and it is compiled
+ * out with the feature.
+ */
+void adventure_party_trophy_award_note(Settings *settings) {
+    AdventurePartySession *session = adventure_party_runtime_session();
+    AdventurePartyCompletionToken token;
+    AdventurePartyResult consumed;
+    int issued;
+
+    if (!adventure_party_runtime_is_active() || session == NULL ||
+        settings == NULL) {
+        return;
+    }
+    issued = adventure_party_completion_token_issue(
+        ADVENTURE_PARTY_OUTCOME_TEAM_WIN, session->session_generation,
+        session->level_generation, (uint16_t) settings->worldId,
+        ADVENTURE_PARTY_RACE_KIND_TROPHY, ADVENTURE_PARTY_COMPLETION_TROPHY,
+        &token);
+    adventure_party_trace_emit_award(ADVENTURE_PARTY_TRACE_AWARD_ISSUE, &token,
+                                     issued);
+    if (!issued) {
+        return;
+    }
+    consumed = adventure_party_consume_completion_token(session, &token);
+    adventure_party_trace_emit_award(ADVENTURE_PARTY_TRACE_AWARD_CONSUME, &token,
+                                     (int) consumed);
+}
+#endif
+
 /**
  * Takes the level header and decides which race type to activate.
  * Sets up the racer spawning. Initialising vehicle types, racer count, then
@@ -2760,9 +3914,20 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
     s32 k;
     u8 raceType;
     LevelHeader *levelHeader;
-    Camera *cutsceneCameraSegment;
+    Camera *cutsceneCameraSegment = NULL;
 #ifdef NATIVE_PORT
     Vehicle requestedVehicle = vehicle;
+#endif
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    /* AP-08: 0 = stock (non-party) load; 2..4 = spawn that many humans as a
+     * party lobby roster. Decided once, below, after player one's authored
+     * setup point is known and BEFORE numPlayers/viewports are committed, so a
+     * fail-closed formation never yields a partial roster. */
+    s32 apPartySeats = 0;
+    /* AP-12: 0 = not a party default race; 2..4 = that many humans race with
+     * CPUs filling to the capability's six-racer total. Decided after the retail
+     * count branches so it replaces the 1P-adventure default field. */
+    s32 apRaceSeats = 0;
 #endif
 
 #ifdef NATIVE_PORT
@@ -2781,6 +3946,13 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
     if (raceType == RACETYPE_CUTSCENE_1 || raceType == RACETYPE_CUTSCENE_2) {
         return;
     }
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    /* AP-12 / R16: advance the party session to the level that just loaded
+     * (lobby<->lobby, lobby->race, race->lobby) before anything reads its state.
+     * The AP-08 hub formation below and the race field adapter both gate on the
+     * post-arrival state, so this must run first. */
+    adventure_party_apply_arrival(raceType);
+#endif
     if (raceType == RACETYPE_BOSS || raceType & RACETYPE_CHALLENGE) {
         gIsTimeTrial = FALSE;
         gTimeTrialEnabled = FALSE;
@@ -2859,6 +4031,13 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
     }
     D_8011ADC5 = vehicle; // UB if all setup points don't have an assigned vehicle ID.
     gPrevTimeTrialVehicle = D_8011ADC5;
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    /* AP-08 adapter 2 (formation): place the additional party seats around
+     * player one's authored setup point (spawn*[0], captured by the loop above)
+     * with collision-validated candidates. Decided here, before numPlayers is
+     * committed, so a fail-closed formation cleanly falls back to stock 1P. */
+    apPartySeats = adventure_party_hub_formation(raceType, spawnX, spawnY, spawnZ, spawnAngle);
+#endif
     numPlayers = playerCount + 1;
     gNumRacers = 8;
     gTwoActivePlayersInAdventure = FALSE;
@@ -2867,6 +4046,23 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
         gTwoActivePlayersInAdventure = TRUE;
         set_scene_viewport_num(VIEWPORT_LAYOUT_2_PLAYERS);
     }
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    /* AP-08 adapters 1 (racer count) + 4 (viewport layout): a party lobby fields
+     * N humans through N viewports — the SAME machinery the retail 2P-adventure
+     * block above uses, but WITHOUT gTwoActivePlayersInAdventure and
+     * race_is_adventure_2P (a party never engages the retail two-player protocol
+     * — AP-01). set_scene_viewport_num sets gScenePlayerViewports, which
+     * init_track's cam_set_layout(gScenePlayerViewports) installs (3P keeps the
+     * fourth-quadrant minimap, exactly as Tracks 3P). gNumRacers follows from
+     * numPlayers via the RACETYPE_HUBWORLD branch below, so the field is all
+     * humans, no CPUs. The numPlayers>=2 NO_MULTIPLAYER object filter then runs
+     * untouched: the AP-04 census proved every flagged hub object is cosmetic
+     * (docs/evidence/adventure-party/object-census-2026-08-28.md). */
+    if (apPartySeats >= ADVENTURE_PARTY_MIN_PARTICIPANTS) {
+        numPlayers = apPartySeats;
+        set_scene_viewport_num(apPartySeats - 1); /* VIEWPORT_LAYOUT_<N>_PLAYERS */
+    }
+#endif
     if (raceType == RACETYPE_HUBWORLD) {
         gTimeTrialEnabled = 0;
     }
@@ -2905,6 +4101,41 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
         mdkr_trace("demo_vehicle: level=%d requested=%d path=%d racer=%d",
                    (int) settings->courseId, (int) requestedVehicle,
                    (int) D_8011ADC5, (int) levelHeader->vehicle);
+    }
+#endif
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    /* AP-12 adapters 1 (racer count) + 4 (viewport): a party DEFAULT race fields
+     * ALL its humans plus CPUs to the capability's SIX-racer total. Overridden
+     * HERE, after the retail count branches above, so the party field replaces
+     * the 1P-adventure default (gNumRacers) WITHOUT engaging
+     * get_multiplayer_racer_count or gTwoActivePlayersInAdventure — a party is
+     * not a retail 2P adventure (AP-01). numPlayers = the human count, gNumRacers
+     * = the six-racer total, so the CPU-fill loop below spawns racer indices
+     * humans..total-1 as computer players through the existing race spawn policy,
+     * exactly as a Tracks-mode N-player race fills its field. set_scene_viewport_num
+     * installs the N-way race split (init_track's cam_set_layout reads it). */
+    {
+        s32 apRaceHumans = 0;
+        s32 apRaceTotal = 0;
+        s32 apRaceViewports = 0;
+        apRaceSeats = adventure_party_race_field(raceType, &apRaceHumans,
+                                                 &apRaceTotal, &apRaceViewports);
+        if (apRaceSeats >= ADVENTURE_PARTY_MIN_PARTICIPANTS) {
+            numPlayers = apRaceHumans;
+            gNumRacers = apRaceTotal;
+            set_scene_viewport_num(apRaceViewports - 1);
+            /* Adapter diagnostic (ad-hoc, like demo_vehicle/bosswarp — NOT part
+             * of the aparty_ AP-05 schema): the committed six-racer party field,
+             * so the race-loop gate can assert humans=N, cpus=6-N, total=6 from
+             * the running binary. gNumRacers/numPlayers are final here (no later
+             * branch rewrites them before the spawn loop). */
+            if (mdkr_trace_enabled()) {
+                mdkr_trace("racefield: level=%d humans=%d cpus=%d total=%d viewports=%d",
+                           (int) settings->courseId, (int) numPlayers,
+                           (int) (gNumRacers - numPlayers), (int) gNumRacers,
+                           (int) apRaceViewports);
+            }
+        }
     }
 #endif
 
@@ -2988,7 +4219,20 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
             } else {
                 if (racerEntry->playerIndex == 4 || race_is_adventure_2P()) {
                     vehicle = get_player_selected_vehicle(PLAYER_ONE);
-                } else if (numPlayers >= 2) {
+                } else if (numPlayers >= 2
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+                           /* AP-08/AP-12 adapter 3 (vehicle): a party lobby OR a
+                            * party default race fields the authored vehicle, not
+                            * the per-seat menu selection — the lobby's shared
+                            * setup-point vehicle, or (AP-12) the course vehicle
+                            * exactly as retail 1P gets it. Skip the per-seat
+                            * selection so every seat keeps `vehicle`, and never
+                            * route through the 2P branch above (a party is not a
+                            * retail 2P adventure). */
+                           && apPartySeats < ADVENTURE_PARTY_MIN_PARTICIPANTS
+                           && apRaceSeats < ADVENTURE_PARTY_MIN_PARTICIPANTS
+#endif
+                          ) {
                     vehicle = get_player_selected_vehicle(racerEntry->playerIndex);
                 }
             }
@@ -3125,6 +4369,42 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
             }
         }
     }
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    /* AP-08 adapter 7 (trace): the party roster is now published — gRacers /
+     * gRacersByPort hold N humans, gScenePlayerViewports is N, and the object
+     * filter has run. Emit the read-only roster / layout / per-seat binding
+     * facts (Task 3 emitters; MDKR_TRACE-gated). Seat i drives controller port i
+     * (gRacersByPort[i] carries the racer whose playerIndex is i), the stable
+     * seat->port->racer binding with no input_swap engagement. */
+    if (apPartySeats >= ADVENTURE_PARTY_MIN_PARTICIPANTS) {
+        AdventurePartySession *apSession = adventure_party_runtime_session();
+        if (apSession != NULL) {
+            s32 apSeat;
+            adventure_party_trace_emit_roster(&apSession->roster);
+            adventure_party_trace_emit_layout(apPartySeats, apPartySeats - 1);
+            for (apSeat = 0; apSeat < apPartySeats; apSeat++) {
+                adventure_party_trace_emit_binding((uint8_t) apSeat, (uint8_t) apSeat);
+            }
+            adventure_party_trace_custom_identities("hub", apPartySeats);
+        }
+    }
+    /* AP-12 adapter (trace): a party DEFAULT race published its roster too — N
+     * humans in gRacers/gRacersByPort (indices 0..N-1), CPUs beyond, N viewports.
+     * Same read-only roster/layout/binding facts as the hub, so the race-loop
+     * gate can prove the whole party entered the race with per-seat binding. */
+    if (apRaceSeats >= ADVENTURE_PARTY_MIN_PARTICIPANTS) {
+        AdventurePartySession *apSession = adventure_party_runtime_session();
+        if (apSession != NULL) {
+            s32 apSeat;
+            adventure_party_trace_emit_roster(&apSession->roster);
+            adventure_party_trace_emit_layout(apRaceSeats, apRaceSeats - 1);
+            for (apSeat = 0; apSeat < apRaceSeats; apSeat++) {
+                adventure_party_trace_emit_binding((uint8_t) apSeat, (uint8_t) apSeat);
+            }
+            adventure_party_trace_custom_identities("race", apRaceSeats);
+        }
+    }
+#endif
     gGhostObjStaff = NULL;
     timetrial_free_staff_ghost();
     gTimeTrialContPak = -1;
@@ -3309,7 +4589,8 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
         }
     }
     D_8011AD24[0] = TRUE;
-    if (cutsceneID >= 0) {
+    /* Restore only the camera captured by the time-trial setup above. */
+    if (cutsceneCameraSegment != NULL && cutsceneID >= 0) {
         cutsceneCameraSegment->zoom = cutsceneID;
     }
     // Menu demos will skip straight to the action.
@@ -3434,6 +4715,10 @@ void despawn_player_racer(Object *obj, s32 vehicleID) {
     gNumRacers = 0;
 }
 
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+static void adventure_party_taj_transform_commit(void);
+#endif
+
 /**
  * Spawn a new racer object and set the initial position and rotation to what was set
  * before the old one was freed.
@@ -3452,6 +4737,15 @@ void transform_player_vehicle(void) {
     if (gTransformTimer) {
         return;
     }
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    /* AP-11: a party transform rebuilds the WHOLE roster here instead of the one
+     * racer below. Armed by adventure_party_taj_transform_begin(); this is the
+     * deferred, out-of-object-loop commit seam the retail transform already uses. */
+    if (adventure_party_taj_transform_pending()) {
+        adventure_party_taj_transform_commit();
+        return;
+    }
+#endif
     settings = get_settings();
     spawnObj.unkE = 0;
     spawnObj.common.size = 16;
@@ -3492,7 +4786,244 @@ void transform_player_vehicle(void) {
     player->level_entry = NULL;
     player->trans.rotation.y_rotation = gTransformAngleY;
     player->trans.y_position = gTransformPosY;
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    /* A live party session that reached this RETAIL single-racer transform is the
+     * party-destroying collapse AP-11 exists to prevent: gNumRacers is now 1 and
+     * seats 1..N-1 have been orphaned. It must be unreachable while the party
+     * transform path is engaged (adventure_party_taj_transform_begin arms the
+     * deferred whole-party rebuild above). Report the live roster unconditionally
+     * for a party so the gate can catch a regression that bypasses the party
+     * transform -- the "post-transform roster collapses to 1" central scene. */
+    if (adventure_party_runtime_is_active() && mdkr_trace_enabled()) {
+        mdkr_trace("aparty_transform: path=retail vehicle=%d n=%d live=%d",
+                   (int) gOverworldVehicle,
+                   adventure_party_participant_count(adventure_party_runtime_session()),
+                   (int) gNumRacers);
+    }
+#endif
 }
+
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+/* ------------------------------------------------------------------ AP-11 ----
+ * Taj party vehicle-transform transaction.
+ *
+ * Retail Taj transforms exactly one racer: despawn_player_racer() frees player
+ * one and sets gNumRacers = 0, then transform_player_vehicle() (deferred to the
+ * end of obj_update, out of the object-iteration loop) spawns a single new racer
+ * and sets gNumRacers = 1. Run that for a party and seats 1..N-1 vanish.
+ *
+ * The party path keeps the SAME two-phase lifecycle -- free inside the Taj loop,
+ * rebuild deferred -- but over the WHOLE roster and transactionally:
+ *
+ *   begin()  captures every seat's stable identity (character) and CURRENT
+ *            position/heading, frees all N racer objects, sets gNumRacers = 0,
+ *            and arms the deferred rebuild (reusing gTransformTimer's countdown).
+ *   commit() (deferred) rebuilds all N with the new shared vehicle at their
+ *            captured seats, republishes the racer arrays / viewport count, sets
+ *            gNumRacers = N, and emits the roster/layout/binding facts.
+ *
+ * Object-lifecycle safety (why this needs no change to retail free/spawn order):
+ * between begin() and commit() gNumRacers == 0, exactly as in the retail single
+ * transform, so every gNumRacers-bounded access (get_racer_object[s],
+ * audspat_update_all, the finish loop, the Taj loop's own racerObj==NULL early
+ * return) skips the freed pointers -- the same guard the stock transform relies
+ * on. Freeing N objects mid-loop is the stock free_object() path used one racer
+ * at a time here and many objects at a time in the object filter above. Positions
+ * are the racers' own current, already-validated ground, and freeing then
+ * respawning the same count is object-slot neutral, so the only rebuild failure
+ * is a NULL spawn (a corrupt header / exhausted sub-pool) -- a port bug handled
+ * by the same abort() convention track_setup_racers uses, never a recoverable
+ * partial roster. */
+typedef struct AdventurePartyTajSeatPlan {
+    s16 x;
+    s16 y;
+    s16 z;
+    u16 angleY;
+    u8 character;
+} AdventurePartyTajSeatPlan;
+
+static AdventurePartyTajSeatPlan sApTajPlan[ADVENTURE_PARTY_MAX_SEATS];
+static s32 sApTajTransformPending;
+static s32 sApTajTransformCount;
+static s32 sApTajTransformVehicle;
+
+s32 adventure_party_taj_transform_pending(void) {
+    return sApTajTransformPending;
+}
+
+/* Drop a deferred party transform that will never be committed. Safe to call
+ * when nothing is armed. The seat plan is left alone deliberately: it is only
+ * ever read under sApTajTransformPending, and clearing the flag is what makes
+ * it unreachable. */
+static void adventure_party_taj_transform_forget(void) {
+    sApTajTransformPending = FALSE;
+    sApTajTransformCount = 0;
+    sApTajTransformVehicle = 0;
+}
+
+s32 adventure_party_taj_transform_begin(s32 vehicle) {
+    AdventurePartySession *session = adventure_party_runtime_session();
+    s32 count;
+    s32 i;
+
+    if (session == NULL) {
+        /* Should be unreachable (the caller checks a live party session first),
+         * but never free racers without a roster to rebuild them from. */
+        return FALSE;
+    }
+    count = adventure_party_participant_count(session);
+    if (count < ADVENTURE_PARTY_MIN_PARTICIPANTS ||
+        count > ADVENTURE_PARTY_MAX_PARTICIPANTS) {
+        return FALSE;
+    }
+    /*
+     * The roster says N seats; the world may not have them. hub_formation()
+     * fails closed and the caller then loads stock 1P (gNumRacers == 1) without
+     * tearing the session down, so a party can legitimately reach here claiming
+     * three participants over a one-racer world.
+     *
+     * Bounding the loop below by `count` alone then reads and frees
+     * (*gRacers)[1..2], and those slots are NOT null: clear_object_pointers()
+     * zeroes gNumRacers and nulls gAINodes but never nulls gRacers, so they hold
+     * recycled pointers into the live object pool. The NULL guard below cannot
+     * fire for the case it was written for, and free_object() would destroy two
+     * unrelated hub objects the object list still references.
+     *
+     * Refuse instead, and let the caller do the retail single-racer transform.
+     */
+    if (gNumRacers != count) {
+        MDKR_TRACE("adventure_party_taj_transform: refused roster=%d live=%d",
+                   (int) count, (int) gNumRacers);
+        return FALSE;
+    }
+    taj_physics_reset();
+    for (i = 0; i < count; i++) {
+        Object *racerObj = (*gRacers)[i];
+        Object_Racer *racer;
+        if (racerObj == NULL || racerObj->racer == NULL) {
+            /* Reachable from ordinary play: race_transition_adventure() nulls
+             * these slots, so a party returning from a finished race into a
+             * degraded hub arrives here with a hole. This used to abort(), which
+             * turned a recoverable state into a hard crash in a shipped build.
+             * Nothing has been freed yet at this point, so refusing is clean and
+             * the caller falls back to the retail transform. */
+            MDKR_TRACE("adventure_party_taj_transform: refused seat=%d missing",
+                       (int) i);
+            return FALSE;
+        }
+        racer = racerObj->racer;
+        sApTajPlan[i].x = (s16) racerObj->trans.x_position;
+        sApTajPlan[i].y = (s16) racerObj->trans.y_position;
+        sApTajPlan[i].z = (s16) racerObj->trans.z_position;
+        sApTajPlan[i].angleY = (u16) racerObj->trans.rotation.y_rotation;
+        sApTajPlan[i].character = (u8) racer->characterId;
+    }
+    for (i = 0; i < count; i++) {
+        free_object((*gRacers)[i]);
+    }
+    gNumRacers = 0;
+    sApTajTransformVehicle = vehicle;
+    sApTajTransformCount = count;
+    sApTajTransformPending = TRUE;
+    /* Reuse the retail deferred-transform countdown so the rebuild lands at the
+     * same end-of-obj_update seam transform_player_vehicle already runs at. */
+    gTransformTimer = 4;
+    gOverworldVehicle = (s8) vehicle;
+    return TRUE;
+}
+
+/* Deferred whole-party rebuild, run from transform_player_vehicle() when the
+ * countdown reaches zero and a party transform is pending. Mirrors the retail
+ * single-racer respawn per seat. */
+static void adventure_party_taj_transform_commit(void) {
+    AdventurePartySession *session = adventure_party_runtime_session();
+    LevelObjectEntry8000E2B4 spawnObj;
+    s32 count = sApTajTransformCount;
+    s32 vehicle = sApTajTransformVehicle;
+    s32 i;
+    s16 objectID;
+
+    sApTajTransformPending = FALSE;
+    set_level_default_vehicle(vehicle);
+    set_taj_status(TAJ_DIALOGUE);
+    for (i = 0; i < count; i++) {
+        Object *player;
+        Object_Racer *racer;
+        u8 character = sApTajPlan[i].character;
+
+        spawnObj.unkE = 0;
+        spawnObj.common.size = 16;
+        if (vehicle < VEHICLE_BOSSES) {
+            objectID = ((s16 *) gRacerObjectTable)[character + vehicle * NUM_CHARACTERS];
+        } else {
+            objectID = gRacerObjectTable[vehicle + 45];
+        }
+        spawnObj.common.size |= (objectID & 0x100) >> 1;
+        spawnObj.unkA = 0;
+        spawnObj.unk8 = 0;
+        spawnObj.common.objectID = objectID;
+        spawnObj.common.x = sApTajPlan[i].x;
+        spawnObj.common.y = sApTajPlan[i].y;
+        spawnObj.common.z = sApTajPlan[i].z;
+        spawnObj.unkC = sApTajPlan[i].angleY;
+        player = spawn_object(&spawnObj.common, OBJECT_SPAWN_NO_LODS | OBJECT_SPAWN_UNK01);
+        if (player == NULL) {
+            fprintf(stderr,
+                    "[FATAL] adventure_party_taj_transform_commit: spawn_object failed for seat %d\n",
+                    (int) i);
+            abort();
+        }
+        (*gRacers)[i] = player;
+        gRacersByPort[i] = player;
+        gRacersByPosition[i] = player;
+        racer = player->racer;
+        racer->vehicleID = vehicle;
+        racer->vehicleIDPrev = vehicle;
+        racer->racerIndex = i;
+        racer->characterId = character;
+        racer->playerIndex = i;
+        racer->vehicleSound = 0;
+        if (get_filtered_cheats() & CHEAT_BIG_CHARACTERS) {
+            player->trans.scale *= 1.4f;
+        }
+        if (get_filtered_cheats() & CHEAT_SMALL_CHARACTERS) {
+            player->trans.scale *= 0.714f;
+        }
+        player->level_entry = NULL;
+        player->trans.rotation.y_rotation = sApTajPlan[i].angleY;
+        player->trans.y_position = sApTajPlan[i].y;
+    }
+    gNumRacers = count;
+    /* Republish the split layout with the roster and HUD count (v1 presentation
+     * keeps the split, so the viewport count is unchanged; re-assert it so a
+     * regression that shipped a collapsed layout is caught).
+     *
+     * Controller ruling R18: this in-lobby transform deliberately does NOT bump
+     * the session's level generation. "Roster generation" maps to the level-entry
+     * generation semantics of Task 7 (bumped on level entry, which clears that
+     * generation's one-latched-action and consumed-token space); a Taj transform
+     * happens WITHIN a single lobby visit, so bumping here would wrongly wipe the
+     * lobby's latch/token space mid-visit. The transaction instead republishes the
+     * roster once (the aparty_transform/roster/layout below) at the SAME level
+     * generation -- that single republish is the "rebuilt exactly once" property. */
+    set_scene_viewport_num(count - 1);
+    if (mdkr_trace_enabled()) {
+        s32 seat;
+        /* live == n is the transaction's success oracle: the whole party was
+         * rebuilt, not collapsed. */
+        mdkr_trace("aparty_transform: path=party vehicle=%d n=%d live=%d",
+                   (int) vehicle, (int) count, (int) gNumRacers);
+        if (session != NULL) {
+            adventure_party_trace_emit_roster(&session->roster);
+        }
+        adventure_party_trace_emit_layout(count, count - 1);
+        for (seat = 0; seat < count; seat++) {
+            adventure_party_trace_emit_binding((uint8_t) seat, (uint8_t) seat);
+        }
+        adventure_party_trace_custom_identities("taj-transform", count);
+    }
+}
+#endif
 
 /**
  * Enables or Disables time trial mode.
@@ -4833,6 +6364,7 @@ Object *obj_spawn_attachment(s32 objID) {
  */
 void free_object(Object *object) {
 #ifdef NATIVE_PORT
+    obj_modern_character_select_forget(object);
     taj_visual_on_object_free(object);
     wizpig_visual_on_object_free(object);
     terry_visual_on_object_free(object);
@@ -4937,6 +6469,7 @@ void obj_destroy(Object *obj, s32 arg1) {
     s32 modelType;
 
 #ifdef NATIVE_PORT
+    obj_modern_character_select_forget(obj);
     taj_visual_on_object_destroy(obj);
     wizpig_visual_on_object_destroy(obj);
     terry_visual_on_object_destroy(obj);
@@ -5263,6 +6796,76 @@ void obj_update(s32 updateRate) {
     taj_visual_tick(updateRate);
     wizpig_visual_tick(updateRate);
     terry_visual_tick(updateRate);
+    /* Presentation-only semantic animation. The built-in donor remains the
+     * sole physics/audio/save identity; this sidecar consumes its finished
+     * state once per authoritative tick and never writes Object_Racer. */
+    for (i = 0; i < gNumRacers; i++) {
+        Object *modernOwner = (*gRacers)[i];
+        Object_Racer *modernRacer = modernOwner != NULL ? modernOwner->racer : NULL;
+        const char *semantic = "race.steer";
+        s32 modernPlayer;
+        s32 airborne;
+        s32 landing;
+        f32 steerPhase;
+        char modernError[192];
+        if (modernRacer == NULL || modernRacer->playerIndex < 0 ||
+            modernRacer->playerIndex >= MDKR_MODERN_CHARACTER_PLAYERS) {
+            continue;
+        }
+        modernPlayer = modernRacer->playerIndex;
+        if (!mdkr_modern_character_matches(
+                modernPlayer, modernRacer->characterId,
+                modernRacer->vehicleIDPrev)) {
+            sModernCharacterWasAirborne[modernPlayer] = FALSE;
+            sModernCharacterLandTicks[modernPlayer] = 0;
+            continue;
+        }
+        airborne = modernRacer->vehicleIDPrev == VEHICLE_CAR &&
+                   modernRacer->groundedWheels == 0 &&
+                   modernRacer->buoyancy == 0.0f;
+        if (sModernCharacterWasAirborne[modernPlayer] && !airborne) {
+            /* A bounded 0.2-second reaction window. An exact race.land clip
+             * plays once; a package without it safely uses fallback. */
+            sModernCharacterLandTicks[modernPlayer] = 12;
+        }
+        sModernCharacterWasAirborne[modernPlayer] = airborne;
+        landing = sModernCharacterLandTicks[modernPlayer] > 0;
+        if (landing) {
+            sModernCharacterLandTicks[modernPlayer] -= updateRate;
+            if (sModernCharacterLandTicks[modernPlayer] < 0) {
+                sModernCharacterLandTicks[modernPlayer] = 0;
+            }
+        }
+        if (modernRacer->raceFinished) {
+            semantic = modernRacer->finishPosition == 1
+                ? "race.finish_win" : "race.finish_lose";
+        } else if (modernRacer->spinout_timer ||
+                   modernRacer->attackType == ATTACK_SPIN) {
+            semantic = "race.spin";
+        } else if (modernRacer->squish_timer ||
+                   modernRacer->attackType != ATTACK_NONE) {
+            semantic = "race.damage";
+        } else if (modernRacer->boostTimer) semantic = "race.boost";
+        else if (modernRacer->held_obj != NULL) semantic = "race.item";
+        else if (landing) semantic = "race.land";
+        else if (airborne) semantic = "race.airborne";
+        else if (modernRacer->velocity > 2.0f) semantic = "race.reverse";
+        steerPhase = ((f32)modernRacer->steerAngle + 127.0f) / 254.0f;
+        if (steerPhase < 0.0f) steerPhase = 0.0f;
+        if (steerPhase > 1.0f) steerPhase = 1.0f;
+        if (strcmp(semantic, "race.steer") == 0) {
+            if (!mdkr_modern_character_tick_phase(
+                    modernPlayer, semantic, (f32)updateRate / 60.0f,
+                    steerPhase, modernError, sizeof(modernError))) {
+                modern_character_warn_once(modernPlayer, 7, modernError);
+            }
+        } else if (!mdkr_modern_character_tick(
+                       modernPlayer, semantic,
+                       (f32)updateRate / 60.0f,
+                       modernError, sizeof(modernError))) {
+            modern_character_warn_once(modernPlayer, 7, modernError);
+        }
+    }
 #endif
     if (level_type() == RACETYPE_DEFAULT) {
         for (i = 0; i < gNumRacers; i++) {
@@ -6166,9 +7769,18 @@ void render_3d_model(Object *obj) {
     Object_Racer *racerObj;
     ObjectModel *objModel;
     Sprite *something;
+#ifdef NATIVE_PORT
+    s32 modernModelIndex;
+    s32 workshopOccluderTarget;
+#endif
 
 #ifdef NATIVE_PORT
-    modInst = obj->modelInstances[object_render_model_index(obj)];
+    sModernCharacterReplacementObject = NULL;
+    sModernCharacterReplacementModel = NULL;
+    sModernCharacterReplacementSelect = FALSE;
+    workshopOccluderTarget = FALSE;
+    modernModelIndex = object_render_model_index(obj);
+    modInst = obj->modelInstances[modernModelIndex];
     mdkr_anim_lod_witness(obj);
 #else
     modInst = obj->modelInstances[obj->modelIndex];
@@ -6265,6 +7877,150 @@ void render_3d_model(Object *obj) {
         }
 #endif
         mtx_cam_push(&gObjectCurrDisplayList, &gObjectCurrMatrix, &obj->trans, gObjectModelScaleY, 0.0f);
+#ifdef NATIVE_PORT
+        {
+            const s32 player = modern_character_select_player_for_object(obj);
+            if (player >= 0) {
+                const s32 donor = mdkr_modern_character_player_donor(player);
+                const s32 modelId =
+                    DKR_PTR(s32, obj->header->modelIds)[modernModelIndex];
+                if (!modern_character_select_model_ready(
+                        donor, modelId, objModel)) {
+                    modern_character_warn_once(
+                        player, 5,
+                        "select fallback: retail actor fingerprint is unqualified");
+                } else {
+                    char modernError[192];
+                    f32 targetFrame[16];
+                    MdkrModernCharacterLodView lodView;
+                    const MdkrModernCharacterLodView *lodViewPtr =
+                        modern_character_lod_view(
+                            get_current_viewport(), &lodView)
+                            ? &lodView : NULL;
+                    if (!modern_character_donor_target_frame(
+                            objModel, obj, player, donor, -1, 0,
+                            MDKR_CHARACTER_CONTEXT_SELECT, targetFrame)) {
+                        modern_character_warn_once(
+                            player, 6,
+                            "select fallback: donor ground frame is unavailable");
+                        goto modern_select_done;
+                    }
+                    if (mdkr_modern_character_emit(
+                            player, get_current_viewport(),
+                            MDKR_CHARACTER_CONTEXT_SELECT,
+                            targetFrame, NULL,
+                            lodViewPtr,
+                            obj->distanceToCamera,
+                            &gObjectCurrDisplayList,
+                            modernError, sizeof(modernError))) {
+                        sModernCharacterReplacementObject = obj;
+                        sModernCharacterReplacementModel = objModel;
+                        sModernCharacterReplacementDonor = donor;
+                        sModernCharacterReplacementVehicle = -1;
+                        sModernCharacterReplacementLod = 0;
+                        sModernCharacterReplacementSelect = TRUE;
+                    } else {
+                        modern_character_warn_once(player, 6, modernError);
+                    }
+modern_select_done:;
+                }
+            }
+        }
+        if (racerObj != NULL && racerObj->playerIndex >= 0 &&
+            racerObj->playerIndex < MDKR_MODERN_CHARACTER_PLAYERS &&
+            mdkr_modern_character_player_package(racerObj->playerIndex) != NULL) {
+            s32 player = racerObj->playerIndex;
+            if (!mdkr_modern_character_matches(
+                    player, racerObj->characterId,
+                    racerObj->vehicleIDPrev)) {
+                char message[160];
+                snprintf(message, sizeof(message),
+                         "fallback: selected donor=%d but racer identity=%d vehicle=%d",
+                         mdkr_modern_character_player_donor(player),
+                         racerObj->characterId, racerObj->vehicleIDPrev);
+                modern_character_warn_once(player, 0, message);
+            } else if (modernModelIndex < 0 ||
+                       modernModelIndex >= obj->header->numberOfModelIds) {
+                modern_character_warn_once(
+                    player, 1, "fallback: retail donor model index is invalid");
+            } else if (!mdkr_modern_donor_model_ready(
+                           racerObj->characterId, racerObj->vehicleIDPrev,
+                           DKR_PTR(s32, obj->header->modelIds)[modernModelIndex],
+                           modernModelIndex, objModel->numberOfVertices,
+                           objModel->numberOfTriangles,
+                           objModel->numberOfBatches)) {
+                char message[192];
+                snprintf(message, sizeof(message),
+                         "fallback: unqualified donor model id=%d lod=%d "
+                         "vertices=%d triangles=%d batches=%d",
+                         DKR_PTR(s32, obj->header->modelIds)[modernModelIndex],
+                         modernModelIndex, objModel->numberOfVertices,
+                         objModel->numberOfTriangles,
+                         objModel->numberOfBatches);
+                modern_character_warn_once(player, 2, message);
+            } else {
+                char modernError[192];
+                f32 targetFrame[16];
+                MdkrModernCharacterLodView lodView;
+                const MdkrModernCharacterLodView *lodViewPtr =
+                    modern_character_lod_view(
+                        get_current_viewport(), &lodView)
+                        ? &lodView : NULL;
+                MdkrModernCharacterVehicleShell vehicleShell;
+                const MdkrModernCharacterVehicleShell *vehicleShellPtr = NULL;
+                const MdkrModernCharacterContext context =
+                    (MdkrModernCharacterContext)(
+                        MDKR_CHARACTER_CONTEXT_CAR +
+                        racerObj->vehicleIDPrev);
+                if (!modern_character_donor_target_frame(
+                        objModel, obj, player, racerObj->characterId,
+                        racerObj->vehicleIDPrev, modernModelIndex,
+                        context, targetFrame)) {
+                    modern_character_warn_once(
+                        player, 3,
+                        "fallback: donor seat frame is unavailable");
+                    goto modern_racer_done;
+                }
+                if (!mdkr_workshop_preview_reference_enabled() &&
+                    mdkr_modern_character_surface_diagnostics_requested(
+                        player, context)) {
+                    /* A failed shell build deliberately passes an empty shell:
+                     * emit consumes the one-shot request and leaves evidence
+                     * unavailable instead of retaining stale geometry. */
+                    memset(&vehicleShell, 0, sizeof(vehicleShell));
+                    (void)modern_character_vehicle_shell(
+                        objModel, obj, racerObj->characterId,
+                        racerObj->vehicleIDPrev, modernModelIndex,
+                        targetFrame,
+                        obj->animationID == 0 ? modInst : NULL,
+                        racerObj->headAngle, &vehicleShell);
+                    vehicleShellPtr = &vehicleShell;
+                }
+                if (mdkr_modern_character_emit(
+                        player, get_current_viewport(),
+                        context, targetFrame, vehicleShellPtr,
+                        lodViewPtr,
+                        gSceneDrawDistanceValid ? gSceneDrawDistance
+                                                : obj->distanceToCamera,
+                        &gObjectCurrDisplayList,
+                        modernError, sizeof(modernError))) {
+                    sModernCharacterReplacementObject = obj;
+                    sModernCharacterReplacementModel = objModel;
+                    sModernCharacterReplacementDonor = racerObj->characterId;
+                    sModernCharacterReplacementVehicle = racerObj->vehicleIDPrev;
+                    sModernCharacterReplacementLod = modernModelIndex;
+                    sModernCharacterReplacementSelect = FALSE;
+                } else {
+                    modern_character_warn_once(player, 3, modernError);
+                }
+modern_racer_done:;
+            }
+        }
+        workshopOccluderTarget =
+            obj == sModernCharacterReplacementObject &&
+            !sModernCharacterReplacementSelect && racerObj != NULL &&
+            racerObj->playerIndex == PLAYER_ONE;
+#endif
         vertOffset = FALSE;
         if (racerObj != NULL) {
             object_undo_player_tumble(obj);
@@ -6312,11 +8068,24 @@ void render_3d_model(Object *obj) {
         } else {
             gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, 255, 255, 255, 255);
         }
+#ifdef NATIVE_PORT
+        if (workshopOccluderTarget) {
+            gDkrSetCharacterOccluder(
+                gObjectCurrDisplayList++,
+                G_DKR_CHARACTER_OCCLUDER_VEHICLE_BODY);
+        }
+#endif
         if (opacity < 255) {
             meshBatch = render_mesh(objModel, obj, 0, RENDER_SEMI_TRANSPARENT, vertOffset);
         } else {
             meshBatch = render_mesh(objModel, obj, 0, RENDER_NONE, vertOffset);
         }
+#ifdef NATIVE_PORT
+        if (workshopOccluderTarget) {
+            gDkrSetCharacterOccluder(
+                gObjectCurrDisplayList++, G_DKR_CHARACTER_OCCLUDER_NONE);
+        }
+#endif
         if (obj->header->directionalPointLighting) {
             if (hasOpacity) {
                 gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, intensity, intensity, intensity, opacity);
@@ -6352,6 +8121,13 @@ void render_3d_model(Object *obj) {
                         if (opacity < 255) {
                             flags |= RENDER_SEMI_TRANSPARENT;
                         }
+#ifdef NATIVE_PORT
+                        if (workshopOccluderTarget) {
+                            gDkrSetCharacterOccluder(
+                                gObjectCurrDisplayList++,
+                                G_DKR_CHARACTER_OCCLUDER_VEHICLE_PARTS);
+                        }
+#endif
 #ifdef ANTI_TAMPER
                         cicFailed = FALSE;
                         // Anti-Piracy check
@@ -6413,6 +8189,13 @@ void render_3d_model(Object *obj) {
                     }
                 }
             }
+#ifdef NATIVE_PORT
+            if (workshopOccluderTarget) {
+                gDkrSetCharacterOccluder(
+                    gObjectCurrDisplayList++,
+                    G_DKR_CHARACTER_OCCLUDER_NONE);
+            }
+#endif
         }
         // This section draws the egg sprite being held by a racer.
         if (racerObj != NULL) {
@@ -6422,6 +8205,13 @@ void render_3d_model(Object *obj) {
                 if (index >= 0 && index < objModel->numberOfAttachPoints) {
                     flags = (RENDER_Z_COMPARE | RENDER_FOG_ACTIVE | RENDER_Z_UPDATE);
                     something = loopObj->sprites[loopObj->modelIndex];
+#ifdef NATIVE_PORT
+                    if (workshopOccluderTarget) {
+                        gDkrSetCharacterOccluder(
+                            gObjectCurrDisplayList++,
+                            G_DKR_CHARACTER_OCCLUDER_HELD_OBJECT);
+                    }
+#endif
 #ifndef NATIVE_PORT
                     /* NATIVE_PORT: the convergence lerp moved to
                      * racer_held_object_lerp(), called once per tick from
@@ -6439,6 +8229,13 @@ void render_3d_model(Object *obj) {
                         render_sprite_billboard(&gObjectCurrDisplayList, &gObjectCurrMatrix, &gObjectCurrVertexList,
                                                 loopObj, something, flags);
                     }
+#ifdef NATIVE_PORT
+                    if (workshopOccluderTarget) {
+                        gDkrSetCharacterOccluder(
+                            gObjectCurrDisplayList++,
+                            G_DKR_CHARACTER_OCCLUDER_NONE);
+                    }
+#endif
                 }
             }
         }
@@ -6448,11 +8245,39 @@ void render_3d_model(Object *obj) {
                                 obj->shading->shadowB, opacity);
                 directional_lighting_on();
             }
+#ifdef NATIVE_PORT
+            if (workshopOccluderTarget) {
+                gDkrSetCharacterOccluder(
+                    gObjectCurrDisplayList++,
+                    G_DKR_CHARACTER_OCCLUDER_VEHICLE_BODY);
+            }
+#endif
             render_mesh(objModel, obj, meshBatch, RENDER_SEMI_TRANSPARENT, vertOffset);
+#ifdef NATIVE_PORT
+            if (workshopOccluderTarget) {
+                gDkrSetCharacterOccluder(
+                    gObjectCurrDisplayList++,
+                    G_DKR_CHARACTER_OCCLUDER_NONE);
+            }
+#endif
             if (obj->header->directionalPointLighting) {
                 directional_lighting_off();
             }
         }
+#ifdef NATIVE_PORT
+        if (workshopOccluderTarget) {
+            /* Scope is redundantly reset at the inspected racer boundary so a
+             * malformed or unexpectedly empty attachment display list can
+             * never name a later object. Do not emit this diagnostic boundary
+             * for ordinary objects: the interpreter flushes at every scope
+             * command. */
+            gDkrSetCharacterOccluder(
+                gObjectCurrDisplayList++, G_DKR_CHARACTER_OCCLUDER_NONE);
+        }
+        sModernCharacterReplacementObject = NULL;
+        sModernCharacterReplacementModel = NULL;
+        sModernCharacterReplacementSelect = FALSE;
+#endif
         if (hasOpacity || obj->header->directionalPointLighting) {
             gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, 255, 255, 255, 255);
         }
@@ -6866,6 +8691,14 @@ static s32 racer_model_index_for_view(Object *obj, Object_Racer *racer,
     if (allowLodBias) {
         modelIndex = wizpig_visual_cap_donor_lod(obj, modelIndex);
         modelIndex = terry_visual_cap_donor_lod(obj, modelIndex);
+        if (racer->playerIndex >= 0 &&
+            racer->playerIndex < MDKR_MODERN_CHARACTER_PLAYERS &&
+            mdkr_modern_character_matches(
+                racer->playerIndex, racer->characterId,
+                racer->vehicleIDPrev)) {
+            modelIndex = mdkr_modern_donor_cap_lod(
+                racer->characterId, racer->vehicleIDPrev, modelIndex);
+        }
     }
     if (modelIndex < firstModel) {
         modelIndex = firstModel;
@@ -6908,8 +8741,26 @@ static s32 racer_model_index_for_view(Object *obj, Object_Racer *racer,
         gObjectRenderRequestedFor = obj;
         gObjectRenderRequestedIndex = modelIndex;
         if (racer_model_never_posed(obj, modelIndex)) {
+            /* The candidates pass every donor cap the selection did. The
+             * custom-character cap is one of them: a Workshop appearance draws
+             * its own posed mesh from the committed instance's frame and only
+             * needs the donor index to be a QUALIFIED level, so a candidate
+             * that skipped this cap could hand the replacement the committed
+             * far band (lod 5, the eight-vertex model) and make it fall back to
+             * the retail racer -- measured in the Adventure Party hub on every
+             * seat once the fence and the cap first met. */
+            const s32 modernSeat =
+                racer->playerIndex >= 0 &&
+                racer->playerIndex < MDKR_MODERN_CHARACTER_PLAYERS &&
+                mdkr_modern_character_matches(
+                    racer->playerIndex, racer->characterId,
+                    racer->vehicleIDPrev);
             s32 candidate = wizpig_visual_cap_donor_lod(obj, ladderChoice);
             candidate = terry_visual_cap_donor_lod(obj, candidate);
+            if (modernSeat) {
+                candidate = mdkr_modern_donor_cap_lod(
+                    racer->characterId, racer->vehicleIDPrev, candidate);
+            }
             if (candidate < firstModel) {
                 candidate = firstModel;
             }
@@ -6919,6 +8770,10 @@ static s32 racer_model_index_for_view(Object *obj, Object_Racer *racer,
             if (racer_model_never_posed(obj, candidate)) {
                 candidate = wizpig_visual_cap_donor_lod(obj, obj->modelIndex);
                 candidate = terry_visual_cap_donor_lod(obj, candidate);
+                if (modernSeat) {
+                    candidate = mdkr_modern_donor_cap_lod(
+                        racer->characterId, racer->vehicleIDPrev, candidate);
+                }
                 if (candidate < firstModel) {
                     candidate = firstModel;
                 }
@@ -7709,6 +9564,26 @@ s32 render_mesh(ObjectModel *objModel, Object *obj, s32 startIndex, s32 flags, s
         if (!terry_visual_batch_visible(objModel, obj, i)) {
             i++;
             continue;
+        }
+        if (obj == sModernCharacterReplacementObject &&
+            objModel == sModernCharacterReplacementModel) {
+            const s32 retainedVehicleBatch =
+                sModernCharacterReplacementSelect
+                    ? mdkr_modern_donor_select_batch_visible(
+                          sModernCharacterReplacementDonor, i)
+                    : mdkr_modern_donor_batch_visible(
+                          sModernCharacterReplacementDonor,
+                          sModernCharacterReplacementVehicle,
+                          sModernCharacterReplacementLod, i);
+            if (!retainedVehicleBatch) {
+                if (mdkr_workshop_preview_reference_enabled()) {
+                    mdkr_workshop_preview_note_donor_reference_batch();
+                } else {
+                    mdkr_modern_character_note_hidden_donor_batch();
+                    i++;
+                    continue;
+                }
+            }
         }
 #endif
         if (!(DKR_PTR(TriangleBatchInfo, objModel->batches)[i].flags & RENDER_SEMI_TRANSPARENT) || flags & RENDER_SEMI_TRANSPARENT) {
@@ -10446,6 +12321,29 @@ void race_check_finish(s32 updateRate) {
 
                     gSwapLeadPlayer = FALSE;
                     // Award the winner a TT amulet if not in tracks mode.
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+                    /* AP-15: a host-solo party special challenge gates the SAME
+                     * retail amulet commit on an exact-once token. The host is
+                     * racer[0] in the host-solo field (a party never engages
+                     * is_in_two_player_adventure — AP-01), so racer[0]->
+                     * finishPosition == 1 is exactly a host win; the permit fails
+                     * closed on the RACE_CLEARED bit (one-to-one with the write).
+                     * The retail arm below is preserved verbatim as the stock
+                     * else, so 1P/off/OMIT is byte-identical. */
+                    if (adventure_party_solo_award_active()) {
+                        if (!is_in_tracks_mode() && racer[0]->finishPosition == 1 &&
+                            adventure_party_challenge_award_permit(
+                                settings, (u8) someBool2)) {
+                            settings->courseFlagsPtr[settings->courseId] |=
+                                RACE_CLEARED;
+                            i = settings->ttAmulet + 1;
+                            if (i > 4) {
+                                i = 4;
+                            }
+                            settings->ttAmulet = i;
+                        }
+                    } else
+#endif
                     if (!is_in_tracks_mode() &&
                         (racer[0]->finishPosition == 1 ||
                          (is_in_two_player_adventure() && racer[1]->finishPosition == 1)) &&
@@ -10653,6 +12551,25 @@ void race_check_finish(s32 updateRate) {
         mdkr_adventure_force_verdict(
             gRacersByPort[PLAYER_ONE], *gRacers, gNumRacers);
     }
+    /*
+     * AP-12 test hook: force the party-race winner (host / non-host human / CPU)
+     * so the race-loop gate can drive each through the same return machinery.
+     * Same placement rationale as the verdict hook above; a constant-time no-op
+     * with no MDKR_AP_RACE_WINNER set. See platform/mdkr_adventure.c.
+     */
+    if (gNumRacers > 0 && gRacers != NULL) {
+        s32 apRaceHumanCount = 0;
+#if !defined(MDKR_ADVENTURE_PARTY_OMIT)
+        {
+            AdventurePartySession *apWinS = adventure_party_runtime_session();
+            if (apWinS != NULL &&
+                apWinS->state == ADVENTURE_PARTY_STATE_ACTIVE_RACE) {
+                apRaceHumanCount = adventure_party_participant_count(apWinS);
+            }
+        }
+#endif
+        mdkr_ap_force_race_winner(*gRacers, gNumRacers, apRaceHumanCount);
+    }
 
     /*
      * Publish the exact post-assignment state consumed below. This cannot live
@@ -10831,6 +12748,46 @@ void race_check_finish(s32 updateRate) {
             }
             curRacer = (*gRacersByPosition)->racer;
             gFirstTimeFinish = FALSE;
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+            /* AP-13: a party default race decides its campaign commit from the
+             * PARTY team condition and an exact-once token, not from the retail
+             * arm's reading of settings->gNumRacers (which is 1 for a party — the
+             * shared 1P Adventure save — so the retail arm would fire by accident
+             * and could never enforce exactly-once or survive the finish/door
+             * hand-off relabelling the winner PLAYER_COMPUTER). This is the
+             * "NATIVE_PORT + !OMIT arm, stock retail path as the else" pattern:
+             * the retail condition line below is preserved verbatim for every
+             * non-party race. A party human first-place (by stable racerIndex)
+             * mints and consumes the token; only a successful consume permits the
+             * unchanged set_course_finish_flags + balloon commit to run, exactly
+             * once. Loss / quit / retry / CPU-first reach here with no team win, so
+             * no token is issued and gFirstTimeFinish stays FALSE.
+             *
+             * AP-16: a party trophy-series ROUND is also a RACETYPE_DEFAULT race
+             * in ACTIVE_RACE, so it reaches here — but a trophy round must NOT
+             * award the balloon/RACE_CLEARED (retail gates that on
+             * get_trophy_race_world_id()==0 on the else arm below; the trophy's
+             * own championship award is committed separately in the rankings menu,
+             * gated by a COMPLETION_TROPHY token). Excluding a trophy round here
+             * keeps gFirstTimeFinish FALSE so the round finish flows to the
+             * rankings postrace exactly as retail 1P, and the party balloon award
+             * stays default-race-only. */
+            if (adventure_party_race_award_active() &&
+                get_trophy_race_world_id() == 0) {
+                s32 apWinnerSeat = adventure_party_race_winner_seat();
+                /* Record the winner seat UNCONDITIONALLY (NO_SEAT for a CPU-first
+                 * or lost finish), so RACE_RESULT_COMMITTED never reports a stale
+                 * human seat left by a PRIOR finish: a retry reload skips the
+                 * RACE_START reset (the arrival adapter early-returns for a DEFAULT
+                 * race already in ACTIVE_RACE), so this finish is the sole
+                 * authority on who won it. */
+                sApRaceWinnerSeat = (u8) apWinnerSeat;
+                if (apWinnerSeat != ADVENTURE_PARTY_NO_SEAT &&
+                    adventure_party_race_award_permit(settings, apWinnerSeat)) {
+                    gFirstTimeFinish = TRUE;
+                }
+            } else
+#endif
             if ((settings->gNumRacers == 1 || is_in_two_player_adventure()) &&
                 curRacer->playerIndex != PLAYER_COMPUTER && !is_in_tracks_mode() && get_trophy_race_world_id() == 0) {
                 gFirstTimeFinish = TRUE;
@@ -10894,8 +12851,26 @@ void race_check_finish(s32 updateRate) {
  */
 s8 set_course_finish_flags(Settings *settings) {
     Object_Racer *racer;
+#ifdef NATIVE_PORT
+    s32 silverCoins;
+#endif
 
     racer = gRacersByPosition[PLAYER_ONE]->racer;
+#ifdef NATIVE_PORT
+    silverCoins = racer->silverCoinCount;
+#endif
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+    /* AP-14: a party silver-coin race banks ONE team tally — any human collects a
+     * coin and it vanishes for every viewport — so the >= 8 clear test below reads
+     * that team total, not the leading racer's own count (a non-host winner may
+     * have personally collected fewer than the eight the party banked together).
+     * The permit above gates the exact-once token on this same team total, so the
+     * token and this write stay one-to-one. Not a party silver race (1P/2P silver,
+     * a non-silver clear, off/omit) -> the retail per-racer count, byte-identical. */
+    if (adventure_party_silver_race_active()) {
+        silverCoins = adventure_party_silver_team_coins();
+    }
+#endif
 #ifdef NATIVE_PORT
     /* NATIVE_PORT, read-only: the whole silver-coin seam converges on this one
      * function, and every branch it can take is invisible from outside. The
@@ -10904,13 +12879,24 @@ s8 set_course_finish_flags(Settings *settings) {
      * so RACE_CLEARED is written and the coins are irrelevant, and (c) it was a
      * silver-coin replay, in which case the coin count decides. Printed before
      * the branch so the inputs are the pre-write values. One line per race. */
-    MDKR_TRACE("silvercoinfinish: courseId=%d leadPlayerIndex=%d coins=%d silverRace=%d "
+    MDKR_TRACE("silvercoinfinish: courseId=%d leadPlayerIndex=%d coins=%d teamCoins=%d silverRace=%d "
                "timeTrial=%d courseFlags=0x%x",
                (int) settings->courseId, (int) racer->playerIndex, (int) racer->silverCoinCount,
-               (int) gIsSilverCoinRace, (int) gIsTimeTrial,
+               (int) silverCoins, (int) gIsSilverCoinRace, (int) gIsTimeTrial,
                (unsigned) settings->courseFlagsPtr[settings->courseId]);
 #endif
-    if (racer->playerIndex == PLAYER_COMPUTER) {
+    if (racer->playerIndex == PLAYER_COMPUTER
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+        /* AP-13: the retail guard reads playerIndex to mean "a CPU led, write
+         * nothing". In a party race the finish/door hand-off can already have
+         * relabelled the leading HUMAN winner PLAYER_COMPUTER (racer.c
+         * racer_enter_door), so this arm keeps the retail meaning for a genuine
+         * CPU winner (winner seat NO_SEAT) while letting a party human winner
+         * through. NO_SEAT for every non-party race, so retail behaviour is
+         * byte-identical. */
+        && adventure_party_race_winner_seat() == ADVENTURE_PARTY_NO_SEAT
+#endif
+    ) {
         return FALSE;
     }
     gFirstTimeFinish = FALSE;
@@ -10919,7 +12905,13 @@ s8 set_course_finish_flags(Settings *settings) {
             gFirstTimeFinish = TRUE;
             settings->courseFlagsPtr[settings->courseId] |= RACE_CLEARED;
         }
-    } else if (gIsSilverCoinRace && racer->silverCoinCount >= 8 && gIsTimeTrial == FALSE) {
+    } else if (gIsSilverCoinRace &&
+#ifdef NATIVE_PORT
+               silverCoins >= 8 &&
+#else
+               racer->silverCoinCount >= 8 &&
+#endif
+               gIsTimeTrial == FALSE) {
         gFirstTimeFinish = TRUE;
         settings->courseFlagsPtr[settings->courseId] |= RACE_CLEARED_SILVER_COINS;
         /* Adventure 1 has its own silver-coin progression. Only this
@@ -11000,6 +12992,24 @@ void race_transition_adventure(s32 updateRate) {
                 racer->playerIndex = 0;
             }
         }
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+        /* R21: collapse the party's N split-screen viewports to the single
+         * balloon-cutscene viewport BEFORE the per-racer teardown below frees the
+         * non-winner humans -- exactly as retail 2P does just above (a party is
+         * never is_in_two_player_adventure, AP-01). Otherwise the per-viewport HUD
+         * and audio passes (hud_render_general in mode_game, audspat_update_all in
+         * obj_update) keep reading gRacersByPort slots for humans this loop frees
+         * and SIGSEGV on the dangling entries. After the collapse only the winner
+         * ((*gRacers)[0], swapped in above) is addressable, in port 0, and
+         * numCameras==1 so no freed slot is ever read. Retail is untouched (only a
+         * party reaches here with >1 live viewport). The lobby the party returns
+         * to re-forms N viewports via the AP-08 hub formation. */
+        else if (adventure_party_runtime_is_active()) {
+            set_scene_viewport_num(0);
+            cam_set_layout(VIEWPORT_LAYOUT_1_PLAYER);
+            gRacersByPort[0] = (*gRacers)[0];
+        }
+#endif
         gNumRacersSaved = gNumRacers;
         gRaceEndStage = 1;
     }

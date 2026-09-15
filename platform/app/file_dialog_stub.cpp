@@ -21,4 +21,69 @@ bool openRom(std::string &out) {
     return false;
 }
 
+bool openContentPack(std::string &out) {
+    (void)out;   // never written: callers must gate on isAvailable()
+    return false;
+}
+
+bool openCharacterSource(std::string &out) {
+    (void)out;
+    return false;
+}
+
+bool openCharacterLicense(std::string &out) {
+    (void)out;
+    return false;
+}
+
+bool openPortraitImage(std::string &out) {
+    (void)out;
+    return false;
+}
+
+bool openCharacterDraftBundle(std::string &out) {
+    (void)out;
+    return false;
+}
+
+bool saveCharacterConvertedGlb(std::string &out) {
+    (void)out;
+    return false;
+}
+
+bool saveCharacterCapture(std::string &out) {
+    (void)out;
+    return false;
+}
+
+bool saveCharacterReport(std::string &out) {
+    (void)out;
+    return false;
+}
+
+bool saveCharacterDeviceProfile(std::string &out) {
+    (void)out;
+    return false;
+}
+
+bool saveCharacterPackage(std::string &out) {
+    (void)out;
+    return false;
+}
+
+bool saveCharacterDraftBundle(std::string &out) {
+    (void)out;
+    return false;
+}
+
+bool saveCharacterDiagnostic(std::string &out) {
+    (void)out;
+    return false;
+}
+
+bool revealInFileManager(const std::string &path) {
+    (void)path;
+    return false;
+}
+
 }  // namespace filedialog

@@ -19,6 +19,7 @@ from check_browser_runtime import (
     CDPClient, ChromeProcess, CheckFailure, find_chrome, page_websocket,
     require, wait_value,
 )
+from party_worker_reporting import private_worker_failure, safe_failure_summary
 
 ROOT = Path(__file__).resolve().parent.parent
 SERVICE = ROOT / "services/party"
@@ -146,7 +147,7 @@ def click_action(cdp: CDPClient, action: int, value: int | None = None) -> None:
       button.click(); return {{clicked:true}};
     }})()""")
     require(result.get("clicked") is True,
-            f"Online Room action {action} unavailable: {result}")
+            f"Online Room action {action} unavailable (state omitted)")
 
 
 def select_racer(cdp: CDPClient, character: int, track: int) -> None:
@@ -438,11 +439,8 @@ def run(args: argparse.Namespace) -> None:
                   f"real Worker create {create_seconds:.2f}s, "
                   f"join {join_seconds:.2f}s, {journey}")
         except Exception as error:
-            log.flush()
-            details = log_path.read_text(encoding="utf-8", errors="replace")[-8000:]
-            if isinstance(error, CheckFailure):
-                raise CheckFailure(f"{error}\nWrangler log:\n{details}") from error
-            raise
+            raise private_worker_failure(
+                error, log, worker.returncode if worker is not None else None) from None
         finally:
             for cdp in (host, guest):
                 if cdp is not None:
@@ -476,8 +474,9 @@ def main() -> int:
     try:
         run(args)
         return 0
-    except (CheckFailure, OSError, ValueError, subprocess.SubprocessError) as error:
-        print(f"check_browser_online_two_person: FAIL — {error}", file=sys.stderr)
+    except Exception as error:
+        print("check_browser_online_two_person: FAIL — " + safe_failure_summary(error),
+              file=sys.stderr)
         return 1
 
 

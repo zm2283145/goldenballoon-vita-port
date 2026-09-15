@@ -467,7 +467,36 @@ int taj_mod_retry_persistence(void) {
     return 1;
 }
 
+/* Default allowed: every release before Content.BonusRacers behaved this way,
+ * and a caller that never sets it must keep behaving that way. */
+static int s_bonus_roster_allowed = 1;
+
+int mod_racer_bonus_roster_allowed(void) { return s_bonus_roster_allowed; }
+
+void mod_racer_set_bonus_roster_allowed(int allowed) {
+    int player;
+
+    s_bonus_roster_allowed = allowed ? 1 : 0;
+    if (s_bonus_roster_allowed) return;
+    /* Drop anything the roster is currently holding. Clearing the enabled mask
+     * alone would leave a player still seated as Taj from before the key
+     * changed, and the announcement queue still owing a banner for a racer the
+     * player has asked not to see. The persisted unlock is untouched. */
+    s_roster.enabled_mask = 0;
+    s_roster.pending_enabled_mask = 0;
+    s_roster.unlock_announcement_mask = 0;
+    for (player = 0; player < TAJ_MOD_MAX_PLAYERS; player++) {
+        s_roster.player_identity[player] = MOD_RACER_RETAIL;
+        s_roster.racer_identity[player] = MOD_RACER_RETAIL;
+    }
+}
+
 int mod_racer_is_unlocked(ModRacerIdentity identity) {
+    /* Ahead of the test-player escape on purpose: MDKR_TAJ_TEST_PLAYER and its
+     * siblings force an identity active for harnesses, and a player who asked
+     * for the authored roster should not get one back because a stray variable
+     * is set in their environment. */
+    if (!s_bonus_roster_allowed) return 0;
     return mod_racer_valid_identity(identity) &&
            (mod_racer_persisted_unlocked(&s_roster.persisted, identity) ||
             mod_racer_test_identity_active(identity));
@@ -520,13 +549,36 @@ void mod_racer_set_enabled(ModRacerIdentity identity, int enabled) {
 
 int mod_racer_consume_unlock_announcement(ModRacerIdentity identity) {
     unsigned int bit = mod_racer_identity_bit(identity);
-    int result = (s_roster.unlock_announcement_mask & bit) != 0;
+    int result;
+
+    /* Adventure progress still banks an unlock while the bonus roster is off --
+     * that is the point of gating visibility rather than storage, so a player
+     * who turns the key back on keeps what they earned. But mod_racer_unlock()
+     * queues a banner alongside that write, and announcing "Taj unlocked" to a
+     * player who asked not to see Taj, for a racer who will not be on the
+     * select screen when they look, is the one thing this key exists to
+     * prevent. Drop the bit rather than hold it: the banner marks a moment, and
+     * replaying it whenever the key next goes on would surface it with no
+     * context at all. The unlock itself is untouched and the roster shows it. */
+    if (!s_bonus_roster_allowed) {
+        s_roster.unlock_announcement_mask &= ~bit;
+        return 0;
+    }
+    result = (s_roster.unlock_announcement_mask & bit) != 0;
     s_roster.unlock_announcement_mask &= ~bit;
     return result;
 }
 
 ModRacerIdentity mod_racer_submit_magic_code(const char *input) {
     if (input == NULL) return MOD_RACER_RETAIL;
+    /* With the bonus roster switched off these three codes do not exist, which
+     * is the authored behaviour a player asking for the original roster wants:
+     * the entry reads as an unrecognised code rather than silently banking an
+     * unlock they would then have to notice and undo. Refusing BEFORE
+     * mod_racer_unlock() also keeps the sidecar free of a write the player
+     * never sees the result of; entering the code again after turning the key
+     * back on unlocks normally. */
+    if (!s_bonus_roster_allowed) return MOD_RACER_RETAIL;
     if (strcmp(input, "ABRACADABRA") == 0) {
         mod_racer_unlock(MOD_RACER_TAJ);
         return MOD_RACER_TAJ;
@@ -844,7 +896,14 @@ TAJ_MOD_KEEPALIVE void taj_mod_report_persistence_success(
 }
 
 #ifdef TAJ_MOD_TESTING
-void taj_mod_reset_for_test(void) { memset(&s_roster, 0, sizeof(s_roster)); }
+void taj_mod_reset_for_test(void) {
+    memset(&s_roster, 0, sizeof(s_roster));
+    /* s_bonus_roster_allowed is its own static and survives that memset, so a
+     * case that switched the roster off would otherwise hand an empty roster to
+     * every case after it -- failing them for a reason none of them is about.
+     * The reset owns the default. */
+    s_bonus_roster_allowed = 1;
+}
 void taj_mod_set_async_persistence_for_test(int enabled) {
     s_roster.test_async_persistence = enabled != 0;
 }

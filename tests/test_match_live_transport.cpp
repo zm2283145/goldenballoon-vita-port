@@ -22,6 +22,7 @@
 #include "online/match_live_transport.h"
 
 #include "match_signal_test_server.h"
+#include "online/async_work_budget.h"
 
 /* Assert-driven test: NDEBUG would compile every check away. */
 #undef NDEBUG
@@ -29,6 +30,7 @@
 #include <nlohmann/json.hpp>
 
 #include <mbedtls/base64.h>
+#include <mbedtls/net_sockets.h>
 #include <mbedtls/sha1.h>
 
 #include <atomic>
@@ -46,6 +48,15 @@
 #include <thread>
 #include <vector>
 
+// Calls the production socket path with a short connect budget; it retains
+// ordinary TLS verification and performs no application request.
+bool mdkr_online_room_transport_connect_for_test(const std::string &origin,
+                                                unsigned budgetMs);
+int mdkr_online_room_transport_send_for_test(int fd, const uint8_t *data,
+                                            size_t length);
+void mdkr_online_room_transport_resolver_activity_for_test(
+    uint64_t *started, uint64_t *capacityWaits);
+
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -55,8 +66,11 @@ static const RoomSocket kBadRoomSocket = INVALID_SOCKET;
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <signal.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 #include <unistd.h>
+#include <cerrno>
 using RoomSocket = int;
 static const RoomSocket kBadRoomSocket = -1;
 #endif
@@ -64,6 +78,14 @@ static const RoomSocket kBadRoomSocket = -1;
 namespace {
 
 using Json = nlohmann::json;
+
+int roomSendFlags() {
+#ifdef MSG_NOSIGNAL
+    return MSG_NOSIGNAL;
+#else
+    return 0;
+#endif
+}
 
 uint64_t nowMs() {
     return static_cast<uint64_t>(
@@ -105,7 +127,7 @@ bool sendAllRoom(RoomSocket fd, const std::string &bytes) {
 #else
             bytes.size() - sent,
 #endif
-            0));
+            roomSendFlags()));
         if (wrote <= 0) return false;
         sent += static_cast<size_t>(wrote);
     }
@@ -264,6 +286,8 @@ struct MiniRoomState {
     uint16_t port = 0u;
     std::thread acceptThread;
     std::vector<std::thread> workers;
+    unsigned silentConnectionMs = 0u; // set before starting the server
+    std::atomic<bool> receivedConnectionBytes{false};
 
     MdkrOnlineLobby lobby{};
 
@@ -292,6 +316,15 @@ public:
 
     uint16_t port() const { return state_->port; }
     uint32_t baseRevision() const { return state_->lobby.revision; }
+
+    void holdResponsesFor(unsigned ms) { state_->silentConnectionMs = ms; }
+    bool waitForConnectionBytes(unsigned budgetMs = 3000u) {
+        const uint64_t deadline = nowMs() + budgetMs;
+        while (!state_->receivedConnectionBytes && nowMs() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return state_->receivedConnectionBytes.load();
+    }
 
     bool start() {
         auto state = state_;
@@ -386,6 +419,11 @@ public:
         return state_->upgradeCount;
     }
 
+    std::string lastWebSocketKey() const {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        return headerValueOf(state_->lastWsHead, "sec-websocket-key");
+    }
+
     bool sendStateRevision(uint32_t revision) {
         Json root;
         {
@@ -433,6 +471,25 @@ private:
     }
 
     static void serveOne(std::shared_ptr<MiniRoomState> state, RoomSocket fd) {
+        if (state->silentConnectionMs != 0u) {
+            // A normal unresponsive endpoint: consume incoming bytes without
+            // interpreting them or replying. The finite hold also releases a
+            // regressed blocking client so the fixture reports a failed bound.
+            const uint64_t deadline = nowMs() + state->silentConnectionMs;
+            while (!state->stopping && nowMs() < deadline) {
+                char ignored[4096];
+                const int got = static_cast<int>(::recv(fd, ignored, sizeof(ignored), 0));
+                if (got > 0) state->receivedConnectionBytes = true;
+                else if (got == 0) break;
+#ifdef _WIN32
+                else if (WSAGetLastError() != WSAETIMEDOUT) break;
+#else
+                else if (errno != EAGAIN && errno != EWOULDBLOCK) break;
+#endif
+            }
+            closeRoomSocket(fd);
+            return;
+        }
         std::string head;
         while (!state->stopping &&
                head.find("\r\n\r\n") == std::string::npos &&
@@ -669,6 +726,13 @@ void wsDropReconnectsResubscribesAndDedupes() {
     RoomRig rig;
     assert(rig.bringUp());
     assert(rig.server.waitForUpgrades(1u));
+    const std::string firstKey = rig.server.lastWebSocketKey();
+    unsigned char nonce[16];
+    size_t nonceBytes = 0u;
+    assert(mbedtls_base64_decode(nonce, sizeof(nonce), &nonceBytes,
+        reinterpret_cast<const unsigned char *>(firstKey.data()),
+        firstKey.size()) == 0);
+    assert(nonceBytes == sizeof(nonce));
     const uint32_t base = rig.server.baseRevision();
     assert(rig.server.sendStateRevision(base + 1u));
     assert(rig.pumpUntil(
@@ -685,6 +749,15 @@ void wsDropReconnectsResubscribesAndDedupes() {
     assert(rig.count(MdkrOnlineRoomEvent::Type::Failure) == 0u);
     /* ...and the ladder must produce a fresh authenticated subscription. */
     assert(rig.server.waitForUpgrades(2u, 5000u));
+    /* Ordinary loopback connections must seed the WebSocket generator too.
+     * Reconnecting must not repeat a deterministic unseeded nonce. This is
+     * a lifecycle regression check, not a statistical randomness audit. */
+    const std::string secondKey = rig.server.lastWebSocketKey();
+    assert(mbedtls_base64_decode(nonce, sizeof(nonce), &nonceBytes,
+        reinterpret_cast<const unsigned char *>(secondKey.data()),
+        secondKey.size()) == 0);
+    assert(nonceBytes == sizeof(nonce));
+    assert(firstKey != secondKey);
 
     /* Redelivery of the revision we already hold is idempotent. */
     const unsigned statesBefore = rig.count(MdkrOnlineRoomEvent::Type::State);
@@ -745,6 +818,175 @@ void blackholedFirstAddressCreatesWithinBudget() {
                      static_cast<unsigned long long>(elapsed));
     }
     mdkr_online_room_transport_prepend_address_for_test(nullptr, 0u);
+}
+
+void closeDuringSilentResponseReturnsPromptly(bool tls) {
+    MiniRoomServer server;
+    server.holdResponsesFor(2500u);
+    assert(server.start());
+    const std::string origin = std::string(tls ? "https://" : "http://") +
+                               "127.0.0.1:" + std::to_string(server.port());
+    std::string error;
+    auto transport = mdkr_online_room_http_transport_create(origin, &error);
+    assert(transport);
+    assert(transport->beginCreate(compatibilityFixture(), 1u));
+    assert(server.waitForConnectionBytes());
+    const uint64_t before = nowMs();
+    transport->close();
+    const uint64_t elapsed = nowMs() - before;
+    // Allow scheduler overhead, but reject the old 1s HTTP read / indefinitely
+    // blocked TLS receive (released by this server only after 2.5 seconds).
+    assert(elapsed < 750u);
+    transport->close(); // idempotent after the worker has joined
+    std::fprintf(stderr, "closeDuringSilentResponseReturnsPromptly(%s): ok (%llu ms)\n",
+                 tls ? "TLS" : "HTTP", static_cast<unsigned long long>(elapsed));
+}
+
+void sendToClosedPeerDoesNotRaiseSigpipe() {
+#if defined(MSG_NOSIGNAL) && !defined(_WIN32)
+    int sockets[2];
+    assert(::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0);
+    ::close(sockets[1]);
+    const pid_t child = ::fork();
+    assert(child >= 0);
+    if (child == 0) {
+        // The runner or another library may ignore SIGPIPE. Restore default
+        // only in this isolated child, so that cannot hide a missing send flag.
+        struct sigaction action{};
+        action.sa_handler = SIG_DFL;
+        sigemptyset(&action.sa_mask);
+        if (::sigaction(SIGPIPE, &action, nullptr) != 0) ::_exit(2);
+        ::alarm(5u);
+        const uint8_t byte = 1u;
+        const int result = mdkr_online_room_transport_send_for_test(
+            sockets[0], &byte, sizeof(byte));
+        ::close(sockets[0]);
+        ::_exit(result == MBEDTLS_ERR_NET_CONN_RESET ? 0 : 3);
+    }
+    ::close(sockets[0]);
+    int status = 0;
+    pid_t waited;
+    do {
+        waited = ::waitpid(child, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    assert(waited == child);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    std::fprintf(stderr, "sendToClosedPeerDoesNotRaiseSigpipe: ok\n");
+#else
+    std::fprintf(stderr,
+                 "sendToClosedPeerDoesNotRaiseSigpipe: per-send flag not applicable on this platform\n");
+#endif
+}
+
+bool waitForResolverState(const std::function<bool()> &ready, uint64_t budgetMs) {
+    const uint64_t deadline = nowMs() + budgetMs;
+    while (!ready()) {
+        if (nowMs() >= deadline) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return true;
+}
+
+void resolverCapacityWaitCancelsAndRecovers() {
+    auto &budget = onlineResolverWorkBudget();
+    assert(waitForResolverState([&]() { return budget.inUse() == 0u; }, 5000u));
+    std::vector<AsyncWorkBudget::Permit> held;
+    for (size_t index = 0u; index < budget.limit(); ++index) {
+        held.push_back(budget.tryAcquire());
+        assert(held.back());
+    }
+    assert(budget.inUse() == 8u);
+    uint64_t startsBefore = 0u, waitsBefore = 0u;
+    mdkr_online_room_transport_resolver_activity_for_test(&startsBefore, &waitsBefore);
+    MiniRoomServer server;
+    assert(server.start());
+    const std::string origin = "https://127.0.0.1:" + std::to_string(server.port());
+    std::string error;
+    auto transport = mdkr_online_room_http_transport_create(origin, &error);
+    assert(transport);
+    assert(transport->beginCreate(compatibilityFixture(), 1u));
+    assert(waitForResolverState([&]() {
+        uint64_t waits = 0u;
+        mdkr_online_room_transport_resolver_activity_for_test(nullptr, &waits);
+        return waits > waitsBefore;
+    }, 2000u));
+    const uint64_t beforeClose = nowMs();
+    transport->close();
+    assert(nowMs() - beforeClose < 750u);
+    uint64_t startsAfter = 0u;
+    mdkr_online_room_transport_resolver_activity_for_test(&startsAfter, nullptr);
+    assert(startsAfter == startsBefore);
+    assert(budget.inUse() == 8u);
+
+    // A fresh real connection attempt must also honor its deadline while all
+    // slots are occupied, without creating a resolver thread or opening TCP.
+    const uint64_t beforeDeadline = nowMs();
+    assert(!mdkr_online_room_transport_connect_for_test(origin, 200u));
+    const uint64_t elapsed = nowMs() - beforeDeadline;
+    assert(elapsed >= 150u && elapsed < 750u);
+    mdkr_online_room_transport_resolver_activity_for_test(&startsAfter, nullptr);
+    assert(startsAfter == startsBefore);
+    assert(budget.inUse() == 8u);
+    held.clear();
+    assert(budget.inUse() == 0u);
+    server.stop();
+    {
+        RoomRig recovered;
+        assert(recovered.bringUp());
+    }
+    assert(waitForResolverState([&]() { return budget.inUse() == 0u; }, 5000u));
+    std::fprintf(stderr, "resolverCapacityWaitCancelsAndRecovers: ok\n");
+}
+
+void abandonedResolverRetainsPermitUntilWorkerExit() {
+    auto &budget = onlineResolverWorkBudget();
+    assert(waitForResolverState([&]() { return budget.inUse() == 0u; }, 5000u));
+    uint64_t startsBefore = 0u;
+    mdkr_online_room_transport_resolver_activity_for_test(&startsBefore, nullptr);
+    mdkr_online_room_transport_stall_resolver_for_test(2500u);
+    MiniRoomServer server;
+    assert(server.start());
+    const std::string origin = "https://127.0.0.1:" + std::to_string(server.port());
+    std::string error;
+    auto transport = mdkr_online_room_http_transport_create(origin, &error);
+    assert(transport);
+    assert(transport->beginCreate(compatibilityFixture(), 1u));
+    assert(waitForResolverState([&]() {
+        uint64_t starts = 0u;
+        mdkr_online_room_transport_resolver_activity_for_test(&starts, nullptr);
+        return starts > startsBefore;
+    }, 2000u));
+    const uint64_t beforeClose = nowMs();
+    transport->close();
+    assert(nowMs() - beforeClose < 750u);
+    assert(budget.inUse() == 1u); // Caller is gone, actual worker still owns its slot.
+    mdkr_online_room_transport_stall_resolver_for_test(0u);
+    assert(waitForResolverState([&]() { return budget.inUse() == 0u; }, 5000u));
+    auto recovered = budget.tryAcquire();
+    assert(recovered);
+    std::fprintf(stderr, "abandonedResolverRetainsPermitUntilWorkerExit: ok\n");
+}
+
+void closeDuringTlsHandshakeReturnsPromptly() {
+    closeDuringSilentResponseReturnsPromptly(true);
+}
+
+void closeDuringHttpResponseReturnsPromptly() {
+    closeDuringSilentResponseReturnsPromptly(false);
+}
+
+void silentTlsHandshakeHonorsDeadline() {
+    MiniRoomServer server;
+    server.holdResponsesFor(2500u);
+    assert(server.start());
+    const std::string origin = "https://127.0.0.1:" + std::to_string(server.port());
+    const uint64_t before = nowMs();
+    assert(!mdkr_online_room_transport_connect_for_test(origin, 200u));
+    const uint64_t elapsed = nowMs() - before;
+    assert(server.waitForConnectionBytes());
+    assert(elapsed >= 150u && elapsed < 750u);
+    std::fprintf(stderr, "silentTlsHandshakeHonorsDeadline: ok (%llu ms)\n",
+                 static_cast<unsigned long long>(elapsed));
 }
 
 /* W3 N6c: close() joins the worker thread; a resolver stalled by a DNS
@@ -939,6 +1181,10 @@ void joinRefusalDetailDistinguishesMistypeFromExpiry() {
 }  // namespace
 
 int main(int argc, char **argv) {
+    if (argc > 2) {
+        std::fprintf(stderr, "usage: test_match_live_transport [case]\n");
+        return 2;
+    }
 #ifdef _WIN32
     _putenv_s("MDKR_INTERNAL_TEST_TOKEN", "mdkr64-party-e2e-v1");
 #else
@@ -948,19 +1194,31 @@ int main(int argc, char **argv) {
         const char *name;
         void (*run)();
     } cases[] = {
+        {"resolvercapacity", resolverCapacityWaitCancelsAndRecovers},
+        {"resolverownership", abandonedResolverRetainsPermitUntilWorkerExit},
+        {"sigpipe", sendToClosedPeerDoesNotRaiseSigpipe},
         {"happy", createHappyPathDeliversReadyAndState},
         {"reconnect", wsDropReconnectsResubscribesAndDedupes},
         {"terminal4000", applicationCloseCodeStaysTerminal},
         {"blackhole", blackholedFirstAddressCreatesWithinBudget},
         {"stall", closeDuringResolverStallReturnsPromptly},
+        {"tlsclose", closeDuringTlsHandshakeReturnsPromptly},
+        {"httpclose", closeDuringHttpResponseReturnsPromptly},
+        {"tlsdeadline", silentTlsHandshakeHonorsDeadline},
         {"badcommand", malformedCommandResultIsTypedProtocolError},
         {"backend", meshBackendReplacesADeadSignalSocket},
         {"refusaldetail", joinRefusalDetailDistinguishesMistypeFromExpiry},
     };
+    unsigned executed = 0u;
     for (const auto &c : cases) {
         if (argc > 1 && std::strcmp(argv[1], c.name) != 0) continue;
         c.run();
+        ++executed;
     }
-    std::fprintf(stderr, "test_match_live_transport: all cases passed\n");
+    if (executed == 0u) {
+        std::fprintf(stderr, "test_match_live_transport: unknown case: %s\n", argv[1]);
+        return 2;
+    }
+    std::fprintf(stderr, "test_match_live_transport: all selected cases passed (%u)\n", executed);
     return 0;
 }

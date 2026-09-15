@@ -12,9 +12,12 @@
  * mesh and advances the state machine).
  *
  * The live adapter itself (declaration at the bottom, definition in
- * match_live_adapter.cpp) is reachable ONLY behind an internal-test-token gate
- * (mdkr_online_live_lobby_gate_open, mirroring the party loopback gate) AND the
- * pre-existing online release locks. A normal build never constructs it.
+ * match_live_adapter.cpp) is reachable only in a native-online-beta build,
+ * where the compile-time gate replaces the older internal-test-token decision.
+ * A beta-OFF build keeps the owning factory as an inline null stub, even if a
+ * development preview reveals the fail-closed panel. The endpoint/identity/
+ * STUN-only and release-provenance locks remain independent of that
+ * reachability decision.
  */
 #ifndef MDKR_MATCH_LIVE_ADAPTER_H
 #define MDKR_MATCH_LIVE_ADAPTER_H
@@ -25,6 +28,7 @@
 #include "online/match_launch_builder.h"
 #include "online/match_peer_transport.h"
 #include "net/party_link.h"  /* MdkrPartyLinkSessionEndReason (session-end / re-entry) */
+#include "net/match_preflight.h"  /* MdkrMatchRouteMeasurement (route quality) */
 #include "session/session_bridge.h"
 #include "session/session_types.h"
 
@@ -214,7 +218,7 @@ struct MdkrOnlineRoomEvent {
      * in-flight command_id->type map on this so a refusal is attributed to the
      * command it actually answered, not merely the most recently SENT one (two
      * commands can be in flight). Lives on the event rather than MdkrOnlineStep
-     * so the shared lobby_core.h struct -- compiled into the OFF/release build
+     * so the shared lobby_core.h struct -- compiled into the beta-OFF build
      * -- stays byte-identical. */
     uint64_t commandId = 0u;
     /* Failure: a pre-mapped stable launcher failure -- never a raw wire code. */
@@ -272,7 +276,9 @@ struct MdkrOnlineLiveAdapterOptions {
     /* Launcher-local ROM verification result (the ROM_VERIFIED preflight flag).
      * Never sourced from room/service data. */
     bool romVerified = false;
-    uint8_t inputDelay = 2u; /* manifest input delay, <= 8 */
+    /* Manifest input delay, <= 8: the agreed floor, never the operative lead
+     * (the route measurement may widen this endpoint's own lead above it). */
+    uint8_t inputDelay = 2u;
     std::function<uint64_t()> nowMs; /* clock seam; empty -> steady clock */
     /* Borrowed; both must outlive the adapter. */
     MdkrOnlineRoomTransport *room = nullptr;
@@ -296,9 +302,24 @@ struct MdkrOnlineLiveLaunchProbe {
     bool phraseConfirmed = false;
     bool preflightReady = false;
     MdkrMatchLaunchDescriptorV1 descriptor{};
+    /* This endpoint's own settled route measurement (zero until it settles),
+     * whether it came from a window a race start cut short, and the record
+     * every peer published in its MPF2 report. */
+    bool routeMeasured = false;
+    bool routeCutShort = false;
+    MdkrMatchRouteMeasurement routeMeasurement{};
+    unsigned peerRouteMeasurements = 0u;
+    MdkrMatchRouteMeasurement peerRouteMeasurement{};
 };
 bool mdkr_online_live_adapter_probe(const IMdkrOnlineAdapter *adapter,
                                     MdkrOnlineLiveLaunchProbe *out);
+
+/* Test-only: install a settled route measurement carrying `p95_rtt_ms` on ONE
+ * endpoint, so a lane can prove that endpoints leading by different amounts
+ * still commit one canonical timeline. Refused once the race transport exists.
+ * Never called by the launcher. */
+bool mdkr_online_live_adapter_test_set_route_measurement(
+    IMdkrOnlineAdapter *adapter, unsigned p95_rtt_ms);
 
 /* ---- post-install per-tick race feed ------------------------------- *
  *
@@ -336,7 +357,11 @@ struct MdkrOnlineLiveRaceInfo {
     uint8_t activeSlotMask = 0u; /* every canonical slot in the manifest */
     uint8_t localSlotMask = 0u;  /* this endpoint's owned canonical slots */
     uint8_t remoteSlotMask = 0u; /* peers' canonical slots (fed from the mesh) */
-    uint8_t inputDelay = 0u;     /* ticks the sealed input leads the drain */
+    /* Ticks the sealed input leads the drain. The manifest's input_delay is
+     * the admission-compared FLOOR; this endpoint may lead by further whole
+     * authored ticks resolved from its own measured p95 RTT, capped at
+     * MDKR_MATCH_ROUTE_INPUT_DELAY_CAP (docs/ref/match-preflight-v1.md, v2). */
+    uint8_t inputDelay = 0u;
     /* A roster peer was lost (typed PeerLost from the mesh) since the race
      * transport came up. The launcher's engine-session loop polls this to end
      * the visible race instead of predicting against a dead peer forever; the
@@ -397,6 +422,9 @@ bool mdkr_online_live_adapter_race_inputs_for_tick(
 struct MdkrOnlineLiveRaceStats {
     uint64_t inputEnvelopesReceived = 0u; /* opened INPUT envelopes from peers */
     uint64_t meshRejectedState = 0u;
+    /* Authority-lane envelopes dropped non-terminally (no key yet, or a
+     * rekey-window open failure) -- never a delivered repair. */
+    uint64_t meshRejectedAuthority = 0u;
     uint64_t meshIgnoredStaleSignals = 0u;
     uint64_t meshDroppedEvents = 0u;
     uint32_t transportAccepted = 0u;
@@ -423,9 +451,34 @@ struct MdkrOnlineLiveRaceStats {
      * transmission is routed through the driver's own (impairment) carrier. */
     uint32_t resendSweeps = 0u;
     uint32_t resendBundles = 0u;
+    /* Input-gap repair on the reliable authority lane
+     * (docs/ref/match-input-repair-v1.md). requestsSent counts gaps this
+     * endpoint asked its peer to fill, answersSent the messages it filled for
+     * a peer, answersReceived the messages it opened, and ticksRestored the
+     * authored ticks those answers actually admitted (a duplicate a late
+     * bundle already carried is not counted). */
+    uint32_t repairRequestsSent = 0u;
+    uint32_t repairAnswersSent = 0u;
+    /* Answers a peer's requests asked for beyond its per-tick budget and did
+     * not get (match_input_repair.h). Nonzero means a peer asked faster than
+     * an honest requester can. */
+    uint32_t repairAnswersRefused = 0u;
+    uint32_t repairAnswersReceived = 0u;
+    uint32_t repairTicksRestored = 0u;
 };
 bool mdkr_online_live_adapter_race_stats(const IMdkrOnlineAdapter *adapter,
                                          MdkrOnlineLiveRaceStats *out);
+
+/* Test-only. `on` false turns input-gap repair off for this endpoint, so a
+ * lane can prove what repair is worth by running the identical loss burst
+ * without it and observing the rollback exhaustion or divergence it otherwise
+ * prevents. `reask_ticks` overrides the authored-tick wait before a gap that
+ * still stands is asked for again: 0 keeps the shipped bound, and a value
+ * larger than the race replays the single-shot latch that bound replaced.
+ * Never called by the launcher; repair is on, at its own bound, for every
+ * shipped race. */
+bool mdkr_online_live_adapter_race_set_repair(IMdkrOnlineAdapter *adapter,
+                                              bool on, uint32_t reask_ticks);
 
 /* ---- race lifecycle + session-config C APIs (launcher/UI seams) ----- *
  *
@@ -511,6 +564,18 @@ bool mdkr_online_live_adapter_test_race_end_demotes(
  * received-abort latch instead of the peer-lost one (both fold into the same
  * signal). Never called by the launcher. */
 bool mdkr_online_live_adapter_test_rekey_clears_peer_loss(bool via_abort);
+/* Pin that a rekey (false) or a re-verify (true) mid-measurement restarts the
+ * route window instead of settling on samples sealed under retired keys.
+ * Never called by the launcher. */
+bool mdkr_online_live_adapter_test_rekey_restarts_route_measurement(
+    bool via_reverify);
+/* Pin the other half of that rule at the race-latch reset BETWEEN the races of
+ * one tournament: a FULL window's record is kept (the mesh, its keys and its
+ * channels all survive it) and only its exchange is re-armed, so the next round
+ * publishes it again and races on the widen it earned; a record whose window a
+ * race start CUT short (`cut_short`) is retired instead, so the next round
+ * measures a whole one. Never called by the launcher. */
+bool mdkr_online_live_adapter_test_race_latch_reset_keeps_route(bool cut_short);
 bool mdkr_online_live_adapter_test_reverify_clears_peer_loss(bool via_abort);
 /* Force an ICE-down on every REMOTE peer connection of a LIVE mesh (via the
  * transport's existing kill-channels seam) WITHOUT touching signal presence --
@@ -535,6 +600,67 @@ bool mdkr_online_live_adapter_signal_lost_card(const IMdkrOnlineAdapter *adapter
  * called by the launcher. */
 bool mdkr_online_live_adapter_test_signal_lost_card(bool preflight,
                                                     bool race_up);
+/* Pin the room-departure decision's gates on a mesh-free adapter. Returns a
+ * bitfield: bit 0 -- the departure finalises the departed seat now; bit 1 --
+ * this endpoint is the one that proposes the finalisation tick (every other
+ * survivor adopts what it sends). `race_up` stages a ready race transport,
+ * `enabled` the lobby-drop plumbing, `known` whether the departed endpoint
+ * owns a seat in this race, and `third_peer` a second survivor with a lower
+ * endpoint id. Never called by the launcher. */
+unsigned mdkr_online_live_adapter_test_room_departure(
+    bool race_up, bool enabled, bool known, bool third_peer);
+/* Pin the guard on a PEER's finalisation proposal: true when the claim is
+ * allowed to reach the finalisation schedule. Staged on a mesh-free adapter
+ * with roster 100/200/300/400, local 200, departing 400 at race epoch 5.
+ * Never called by the launcher. */
+bool mdkr_online_live_adapter_test_drop_proposal_accepted(
+    uint64_t sender, uint32_t epoch, bool room_verdict);
+/* Pin that a proposal is APPLIED only where the room's own verdict and an
+ * agreed tick meet: `order` 0 the verdict first, 1 the proposal first, 2 the
+ * proposal with no room verdict at all. Never called by the launcher. */
+bool mdkr_online_live_adapter_test_drop_proposal_applied(unsigned order);
+/* Pin the per-peer route-echo budget: `peers` senders each deliver
+ * `probes_per_pump` probes in every one of `pumps` mesh pumps, and the result
+ * is how many echoes go out. A flood inside one pump is bounded per sender; a
+ * legitimate rate spread across pumps echoes in full. Never called by the
+ * launcher. */
+unsigned mdkr_online_live_adapter_test_route_echoes_allowed(
+    unsigned peers, unsigned probes_per_pump, unsigned pumps);
+/* Pin the peer-silence grace on a room departure (D1), staged on a mesh-free
+ * adapter with local 200 and departing 300. `grace_ticks` is the grace length
+ * in authored ticks, `ticks_elapsed` where the authored head has reached when
+ * the grace is next judged, and `peer_spoke` whether an authenticated packet
+ * arrived from the departed endpoint meanwhile. Returns a bitfield: 1 the
+ * grace is still open, 2 the verdict was held, 4 the seats were finalised,
+ * 8 a finalisation tick was proposed, 16 the race ended. Never called by the
+ * launcher. */
+unsigned mdkr_online_live_adapter_test_departure_grace(unsigned grace_ticks,
+                                                       unsigned ticks_elapsed,
+                                                       bool peer_spoke);
+/* Pin that a race_drop refusal flood leaves a bounded mark on the forensics
+ * ring: `rounds` refusals of each of the three reasons, and the count of
+ * DEPARTURE_REFUSED records the ring holds afterwards. Resets the ring.
+ * Never called by the launcher. */
+unsigned mdkr_online_live_adapter_test_drop_refusal_records(unsigned rounds);
+/* Pin the preflight graph assertion on a mesh-free adapter: `count` synthetic
+ * endpoints with ascending ids, `local_index` which of them is this endpoint,
+ * `ready_mask` and `gen_mask` bitmasks over roster index for the peers this
+ * endpoint has seen ready and whose service-assigned generation it knows (the
+ * local index's bits are ignored), and `descending` to build the roster in
+ * reverse id order. Writes the digest this endpoint would attest and returns
+ * false -- leaving it zeroed -- when the graph is refused. Never called by the
+ * launcher. */
+bool mdkr_online_live_adapter_test_preflight_graph_digest(
+    unsigned count, unsigned local_index, unsigned ready_mask,
+    unsigned gen_mask, bool descending,
+    uint8_t digest[MDKR_MATCH_PREFLIGHT_DIGEST_BYTES]);
+/* The digest of the pre-fix shape -- edges only between `local_index` and each
+ * other endpoint -- over the same synthetic identities, so a test can show what
+ * the assertion replaced and that it is what makes the room agree. Never called
+ * by the launcher. */
+bool mdkr_online_live_adapter_test_preflight_star_digest(
+    unsigned count, unsigned local_index,
+    uint8_t digest[MDKR_MATCH_PREFLIGHT_DIGEST_BYTES]);
 #endif
 
 /* Seal + fan out the race's OPENING input window (firstTick..firstTick+
@@ -660,17 +786,16 @@ bool mdkr_online_live_adapter_walk_engine_out_of_race(
  * adapter. */
 bool mdkr_online_live_adapter_race_send_abort(IMdkrOnlineAdapter *adapter);
 
-/* ---- Internal-test-token gate for the live adapter ---------------------- *
+/* ---- Compile-time beta / internal-test-token live-adapter gate ---------- *
  *
- * Fail-closed, mirroring platform/party/native_party_host.h's loopback gate:
- * the live adapter is reachable only when MDKR_INTERNAL_TEST_TOKEN holds this
- * adapter's own versioned value. This is an ADDITIONAL required condition on
- * top of the compile-time Online Room preview gate and the shipped online
- * release locks (publisher config, presenter fixture check) -- never a
- * replacement for any of them. A production build leaves the token unset, so
- * the launcher keeps instantiating the fake adapter and the fail-closed "not
- * enabled" surface. `inline` because the launcher and the tests link it into
- * different binaries and each must evaluate it independently.
+ * A native-online-beta build opens this gate directly, so packaged beta users
+ * need no environment variable. In a beta-OFF build the older versioned token
+ * can open this predicate for isolated seam tests, but the owning live factory
+ * remains an inline null stub: no token can add the omitted transport objects
+ * or start a network race. The endpoint/identity/STUN-only and release-
+ * provenance locks are independent and remain mandatory downstream. `inline`
+ * because the launcher and tests link it into different binaries and each must
+ * evaluate it independently.
  */
 inline constexpr char kMdkrOnlineLiveLobbyTestToken[] = "mdkr64-online-live-v1";
 
@@ -702,7 +827,7 @@ inline bool mdkr_online_live_lobby_gate_open() {
  * In every other build it stays a header-inline stub returning nullptr, so the
  * app never links the heavy live-adapter/transport translation units and the
  * launcher -- even with the token gate open -- keeps constructing the
- * fail-closed fake adapter; no shipping configuration can start an online race
+ * fail-closed fake adapter; no beta-OFF configuration can start an online race
  * from the panel. */
 #if MDKR_ENABLE_ONLINE_BETA
 std::unique_ptr<IMdkrOnlineAdapter> OnlineRoom_makeGatedLiveAdapter(
@@ -891,7 +1016,7 @@ void OnlineRoom_requestRoomReadyReentry(void);
  * by an online boot and must never be inherited by a later local-Play boot, which
  * would flip the engine into online-race mode and stall on network input a local
  * race never sends. The owner token lives in the beta wiring layer (not in the
- * always-compiled net_roster TU) so the OFF/release build stays byte-identical;
+ * always-compiled net_roster TU) so the beta-OFF build stays byte-identical;
  * the pure decision is mdkr_net_roster_guard_decides_clear() in
  * net_roster_runtime.h. Defined in platform/app/online_live_wiring.cpp. */
 void OnlineRoom_setRosterOwner(uint64_t token);

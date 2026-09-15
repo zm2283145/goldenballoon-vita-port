@@ -104,6 +104,15 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "while you play, so you can compare against the original.",
         MDKR_VIDEO_CAT_FIDELITY
     },
+    [MDKR_CONTENT_BONUS_RACERS] = {
+        "Content.BonusRacers", "MDKR_CONTENT_BONUS_RACERS",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 1.0f,
+        "Bonus racers",
+        "Let Taj, Terry and Wizpig be unlocked and raced. Turn this off for "
+        "the roster the original game shipped with. Racers you have already "
+        "unlocked are remembered, and come back if you turn this on again.",
+        MDKR_VIDEO_CAT_FIDELITY
+    },
     [MDKR_CONTENT_PACK_DISABLED] = {
         "Content.PackDisabled", "MDKR_CONTENT_PACK_DISABLED",
         MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
@@ -161,13 +170,39 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "or installed.",
         MDKR_VIDEO_CAT_INTERFACE
     },
+    [MDKR_APP_SKIP_LAUNCHER] = {
+        "Launcher.SkipWhenReady", "MDKR_SKIP_LAUNCHER",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 1.0f,
+        "Skip the launcher",
+        /* Second sentence is the way back, and it is deliberately part of the
+         * setting's own line rather than a note somewhere else on the page: a
+         * player reading this is deciding whether to give up the launcher, and
+         * the answer to "how do I get it back" has to be in front of them
+         * while they decide. The game file is still checked before it opens,
+         * exactly as pressing Play checks it. */
+        "Open the game straight away, using the game file you played last. "
+        "Hold Shift, or both shoulder buttons on a controller, while it "
+        "opens to see the launcher instead.",
+        MDKR_VIDEO_CAT_INTERFACE
+    },
     [MDKR_ENH_AI_DIFFICULTY] = {
         "Enhancements.AIDifficulty", "MDKR_ENH_AI_DIFFICULTY",
         MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
         "Opponent skill",
-        "authored races the opponents as they were written. hard and brutal "
-        "make them faster. Changes how the game plays.",
+        "Original keeps the game's original opponent speeds. Hard makes "
+        "computer racers faster; Brutal is the fastest setting. "
+        "Changes how the game plays.",
         MDKR_VIDEO_CAT_PACING
+    },
+    [MDKR_ENH_ADVENTURE_PARTY] = {
+        "Enhancements.AdventureParty", "MDKR_ENH_ADVENTURE_PARTY",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 1.0f,
+        "Adventure Party",
+        "Lets two to four local players explore and race together in Adventure. "
+        "With it on, this setting owns Adventure admission for those players; "
+        "the JOINTVENTURE magic code does not add lead swapping on top. Changes "
+        "how the game plays.",
+        MDKR_VIDEO_CAT_INTERFACE
     },
     [MDKR_VIDEO_GAMEPLAY_FOV] = {
         "Video.GameplayFOV", "MDKR_FOV",
@@ -715,13 +750,21 @@ int mdkr_video_key_is_input(MdkrVideoKey key) {
 }
 
 int mdkr_video_key_is_content(MdkrVideoKey key) {
+    /* Content.BonusRacers belongs here for the reason the two pack keys do,
+     * and the cost of leaving it out was not theoretical: this predicate feeds
+     * mdkr_video_key_is_player_comfort(), so a key missing from it is re-pinned
+     * to the preset table on every Pure/Restored/Remastered switch -- and with
+     * no row of its own that pin reads 0. A player comparing two looks would
+     * have lost Taj, Terry and Wizpig to a presentation preset. */
     return key == MDKR_CONTENT_PACKS_ENABLED ||
-           key == MDKR_CONTENT_PACK_DISABLED;
+           key == MDKR_CONTENT_PACK_DISABLED ||
+           key == MDKR_CONTENT_BONUS_RACERS;
 }
 
 int mdkr_video_key_is_enhancement(MdkrVideoKey key) {
     return key == MDKR_ENH_SPEEDOMETER || key == MDKR_ENH_DRAW_DISTANCE ||
-           key == MDKR_ENH_LOD_BIAS || key == MDKR_ENH_AI_DIFFICULTY;
+           key == MDKR_ENH_LOD_BIAS || key == MDKR_ENH_AI_DIFFICULTY ||
+           key == MDKR_ENH_ADVENTURE_PARTY;
 }
 
 int mdkr_video_key_is_accessibility(MdkrVideoKey key) {
@@ -749,7 +792,11 @@ int mdkr_video_key_is_player_comfort(MdkrVideoKey key) {
            mdkr_video_key_is_content(key) ||
            mdkr_video_key_is_enhancement(key) ||
            mdkr_video_key_is_accessibility(key) ||
-           key == MDKR_WINDOW_MODE;
+           key == MDKR_WINDOW_MODE ||
+           /* Skip the launcher is a shell choice, not art direction. A player
+            * comparing two looks must not silently get their launcher back --
+            * or, worse, lose it -- because they switched preset. */
+           key == MDKR_APP_SKIP_LAUNCHER;
 }
 
 static int mdkr_video_ci_equal(const char *a, const char *b) {
@@ -861,6 +908,15 @@ static const float s_preset[MDKR_VIDEO_KEY_COUNT][3] = {
     [MDKR_A11Y_SPEECH_VOLUME] = {    100.0f,   100.0f,     100.0f },
     [MDKR_A11Y_SPEECH_RACE]   = {      1.0f,     1.0f,       1.0f },
     [MDKR_VIDEO_WIDESCREEN_HUD] = {    0.0f,     0.0f,       0.0f },
+    /*
+     * Skip the launcher. Three identical columns for the same reason the
+     * speech rows have them: no art-direction preset has an opinion about
+     * whether a player wants to see their launcher. The row exists so
+     * mdkr_video_config_defaults() seeds the shipped OFF, and
+     * mdkr_video_key_is_player_comfort() keeps a preset switch from writing
+     * it back.
+     */
+    [MDKR_APP_SKIP_LAUNCHER]  = {      0.0f,     0.0f,       0.0f },
 };
 
 /*
@@ -1026,6 +1082,14 @@ void mdkr_video_config_defaults(MdkrVideoConfig *config) {
      * never heard of packs.
      */
     config->values[MDKR_CONTENT_PACKS_ENABLED].number = 1.0f;
+
+    /*
+     * The bonus roster is on by default: it is what the last four
+     * releases shipped, and a player who has unlocked Taj should not
+     * lose him to an upgrade. Turning it off is an explicit choice for
+     * an original-roster run.
+     */
+    config->values[MDKR_CONTENT_BONUS_RACERS].number = 1.0f;
 
     /*
      * Looking for a newer release defaults to ON, but the notice it produces

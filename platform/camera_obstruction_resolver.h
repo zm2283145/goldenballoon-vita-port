@@ -41,9 +41,9 @@ typedef struct MdkrCameraObstructionResolverConfig {
      * Retraction ENGAGES on contact with zero latency and this field cannot
      * delay it. It RELEASES -- that is, the boom is allowed to start expanding
      * again -- only once the anchor->desired path has been reported clear for
-     * this many consecutive accepted ticks. A shorter clear run holds the boom
-     * at its retracted length instead of expanding into a contact that has not
-     * actually gone away.
+     * this many consecutive accepted positive-time ticks. A shorter clear run
+     * holds the boom at its retracted length instead of expanding into a
+     * contact that has not actually gone away.
      *
      * The band this closes is a false negative, not a tuning preference: a
      * swept lens volume grazing a wall reports CLEAR for a few ticks at facet
@@ -58,7 +58,7 @@ typedef struct MdkrCameraObstructionResolverConfig {
 typedef struct MdkrCameraObstructionResolverState {
     MdkrCameraVec3 last_safe_eye;
     uint64_t projection_generation;
-    /* Consecutive accepted clear ticks since the latched contact. */
+    /* Consecutive accepted positive-time clear ticks since the latched contact. */
     uint32_t clear_run_ticks;
     uint8_t last_safe_valid;
     /* A retraction is engaged and has not served its release hold yet. */
@@ -93,6 +93,7 @@ typedef struct MdkrCameraObstructionResolverInput {
     /* A caller-provided candidate known safe in the previous authored step. */
     MdkrCameraVec3 start_safe_eye;
     MdkrCameraVec3 desired_eye;
+    /* Zero revalidates geometry without advancing recovery or its release hold. */
     float fixed_delta_seconds;
     uint32_t mask;
     uint32_t ignored_object_generation;

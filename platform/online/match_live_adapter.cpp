@@ -46,14 +46,18 @@
 #include "match_live_adapter.h"
 
 #include "online_track_table.h"
+#include "online/match_peer_liveness.h"
 #include "net/match_input_bundle.h"
+#include "net/match_input_repair.h"
 #include "net/match_preflight.h"
 #include "net/match_transport.h"
 #include "net/net_roster.h"
 #include "net/net_roster_runtime.h"
 #include "session/session_bridge.h"
+#include "net/net_failure_ring.h"
 #include "session/session_core.h"
 
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -82,6 +86,21 @@
 #endif
 
 namespace {
+
+/* A7 (soft-fail vs hard-fail liveness): the mesh's own control-ping ladder
+ * declares a peer lost after kMdkrMatchControlPingTimeoutMs with no pong,
+ * checked every kMdkrMatchControlPingIntervalMs. Deriving the presenter's
+ * escalation threshold as their ratio means the live status line's
+ * "Connection lost" lands at the SAME wall-clock boundary peerLost
+ * (PingTimeout) does -- never earlier, and never a separate budget to keep
+ * in sync by hand. Currently 15000 / 5000 = 3 consecutive missed probe
+ * intervals. Contractual: keep the static_assert true if either ladder
+ * constant changes. */
+static_assert(kMdkrMatchControlPingTimeoutMs % kMdkrMatchControlPingIntervalMs ==
+                  0u,
+              "A7 liveness escalation assumes a whole number of ping intervals");
+constexpr unsigned kMdkrPeerLivenessMissesToUnreachable =
+    kMdkrMatchControlPingTimeoutMs / kMdkrMatchControlPingIntervalMs;
 
 const char *roomPhaseName(MdkrRoomPhase room) {
     switch (room) {
@@ -350,6 +369,24 @@ public:
                 viewTimeoutMs_ = static_cast<uint64_t>(v);
             }
         }
+        /* The kill-drop lane's positive control: with the room's membership
+         * verdict off, a departure decides nothing and the transport ladders
+         * resolve the loss at their own pace (the pre-N8 stall). */
+        if (const char *t = std::getenv("MDKR_ONLINE_LOBBY_DROP")) {
+            lobbyDropEnabled_ = std::strtoul(t, nullptr, 10) != 0u;
+        }
+        /* The grace's own control (D1): 0 acts on the room's verdict the
+         * moment it arrives, as the plumbing did before the grace existed.
+         * Bounded so the switch can only shorten the ladders' work, never
+         * turn the drop off by the back door -- MDKR_ONLINE_LOBBY_DROP is
+         * what does that. */
+        if (const char *t = std::getenv("MDKR_ONLINE_LOBBY_DROP_GRACE")) {
+            char *end = nullptr;
+            const unsigned long v = std::strtoul(t, &end, 10);
+            if (end != t && *end == '\0' && v <= kLobbyDropGraceMaxTicks) {
+                lobbyDropGraceTicks_ = static_cast<uint32_t>(v);
+            }
+        }
     }
 
     ~LiveAdapter() override {
@@ -378,7 +415,13 @@ public:
          * so the announcing close lets each survivor resolve this endpoint as
          * the immediate typed PeerLost(PeerEnded) instead of its loss ladders.
          * Internal mesh rebuilds (forcePhraseRekey) stay silent. */
-        if (mesh_) mesh_->close(/*announcePeerEnd=*/true);
+        if (mesh_) {
+            mesh_->close(/*announcePeerEnd=*/true);
+            mdkr_net_failure_ring_record_host(
+                MDKR_NET_FAILURE_LIFECYCLE, (uint32_t)nowMs_(),
+                MDKR_NET_FAILURE_NO_SLOT, MDKR_NET_LIFECYCLE_MESH_CLOSED,
+                nullptr);
+        }
         mesh_.reset(); /* mesh borrows the backend's feed: kill it first */
         if (opts_.meshBackend) opts_.meshBackend->reset();
     }
@@ -466,6 +509,19 @@ public:
                 ? phrase_
                 : nullptr;
         in.race_admission_enabled = opts_.raceAdmissionEnabled;
+        /* The projection takes an already-scored, already-named quality so the
+         * browser build of that reducer need not link the preflight unit. */
+        MdkrOnlineViewRouteQuality quality{};
+        if (routeMeasured_) {
+            quality.p95_rtt_ms = routeMeasurement_.p95_rtt_ms;
+            quality.score = routeMeasurement_.score;
+            quality.band = mdkr_match_route_band_name(
+                static_cast<MdkrMatchRouteBand>(routeMeasurement_.band));
+            if (quality.band != nullptr) in.route_quality = &quality;
+        }
+        /* Never both: finishRouteMeasurement clears the flag before it
+         * publishes a record. */
+        in.route_measuring = routeMeasureRunning_;
         return mdkr_online_view_model_build(&in, out);
     }
 
@@ -504,6 +560,23 @@ public:
     }
 
     /* ---- Test probe --------------------------------------------------- */
+    /* Test-only: install a settled measurement carrying `p95RttMs`, so a lane
+     * can give ONE endpoint a slower route and prove that endpoints leading by
+     * different amounts still commit one canonical timeline. Refused once the
+     * race transport exists, which is where the lead is resolved. */
+    bool setRouteMeasurementForTest(unsigned p95RttMs) {
+        if (raceReady_ || p95RttMs > UINT16_MAX) return false;
+        MdkrMatchRouteMeasurement measurement{};
+        measurement.p95_rtt_ms = static_cast<uint16_t>(p95RttMs);
+        if (!mdkr_match_route_measurement_score(&measurement)) return false;
+        routeMeasurement_ = measurement;
+        routeMeasureRunning_ = false;
+        routeMeasured_ = true;
+        routeReportSent_ = false;
+        bump();
+        return true;
+    }
+
     void fillProbe(MdkrOnlineLiveLaunchProbe *p) const {
         p->descriptorBuilt = descriptorBuilt_;
         p->refusal = refusal_;
@@ -511,6 +584,21 @@ public:
         p->phraseConfirmed = phraseConfirmed_;
         p->preflightReady = preflightReady_;
         p->descriptor = descriptor_;
+        p->routeMeasured = routeMeasured_;
+        p->routeCutShort = routeCutShort_;
+        p->routeMeasurement = routeMeasurement_;
+        p->peerRouteMeasurements = 0u;
+        if (!preflightInit_) return;
+        for (unsigned index = 0u; index < graph_.endpoint_count; ++index) {
+            const MdkrMatchPreflightAttestationV1 &att =
+                preflight_.attestations[index];
+            if ((preflight_.present_mask & (1u << index)) == 0u ||
+                att.endpoint_id == localEndpointId_ ||
+                (att.flags & MDKR_MATCH_PREFLIGHT_ROUTE_MEASURED) == 0u)
+                continue;
+            p->peerRouteMeasurement = att.measurement;
+            ++p->peerRouteMeasurements;
+        }
     }
 
 private:
@@ -1493,6 +1581,7 @@ private:
         descriptorBuilt_ = false;
         refusal_ = MDKR_MATCH_LAUNCH_ADMITTED;
         preflightInit_ = false;
+        rearmRouteReportForNextRace();
         preflightInitLogged_ = false;
         ownSubmitted_ = false;
         preflightReady_ = false;
@@ -1501,7 +1590,8 @@ private:
          * delivered; anything bound to the finished epoch is stale. */
         for (auto it = pendingPeerAtts_.begin();
              it != pendingPeerAtts_.end();) {
-            it = (!haveLobby_ || it->second.match_epoch <= lobby_.match_epoch)
+            it = (!haveLobby_ ||
+                  it->second.attestation.match_epoch <= lobby_.match_epoch)
                      ? pendingPeerAtts_.erase(it)
                      : ++it;
         }
@@ -1514,11 +1604,32 @@ private:
         resultsReported_ = false;
         raceSendOwned_ = false;
         raceSweepServiceCalls_ = 0u;
+        resetInputRepair();
         racePeerLost_ = false;
+        roomDeparted_.clear();
+        pendingDropTicks_.clear();
+        departureFinalised_.clear();
+        departureGrace_.clear();
+        departureHeld_.clear();
+        dropRefusalsRecorded_.clear();
+        dropRefusalsSeen_ = 0u;
+        /* A proposal names one race. Drop any still queued in the mesh, so a
+         * late race-N proposal cannot be consumed against race N+1 -- the
+         * epoch check refuses it too, and these are the belt and braces. */
+        if (mesh_) mesh_->clearRaceDrops();
         raceAbortReceived_ = false;
         raceLossFailureLatched_ = false;
         raceEndFailureLatched_ = false;
         raceDegraded_ = false;
+        peerLiveness_.fill(MdkrPeerLivenessTracker{});
+        /* Undo only OUR OWN prior liveness dispatch -- never a
+         * legitimately different connectivity code (e.g. still
+         * CONNECTING) some other path set. */
+        if (session_.state.connectivity == MDKR_CONNECTIVITY_DEGRADED ||
+            session_.state.connectivity == MDKR_CONNECTIVITY_LOST) {
+            (void)sessionDispatch(MDKR_SESSION_COMMAND_SET_CONNECTIVITY,
+                                  MDKR_CONNECTIVITY_DIRECT);
+        }
         lastPreflightGate_ = -1;
         if (failure_ == MDKR_ONLINE_VIEW_FAILURE_ENGINE_FAILED
 #if MDKR_ENABLE_ONLINE_BETA
@@ -1581,6 +1692,9 @@ private:
             MdkrMatchRecovery rec;
             if (mdkr_match_transport_recovery(&raceTransport_, &rec)) {
                 raceDegraded_ = true;
+                /* The gap can no longer be replayed: terminal for this race,
+                 * so the tail is worth as much here as at a peer loss. */
+                (void)mdkr_net_failure_ring_dump_beside_evidence();
                 MDKR_ONLINE_LOG(
                     "[ONLINE] race connection degraded: recovery reason=%d "
                     "firstTick=%u observed=%u slot=%u\n",
@@ -1589,10 +1703,16 @@ private:
                 bump();
             }
         }
+        /* Input-gap repair runs in BOTH loop shapes. race_drain_local's
+         * carrier contract covers the STATE lane's bundles, which is what an
+         * impairment profile models; the authority lane is reliable by
+         * construction and is exactly the channel a repair must not be
+         * impaired on. */
+        raceSweepInputGaps();
         /* Resend sweep: only while race_advance owns the send side (the
          * production loop shape). race_drain_local's contract routes EVERY
-         * transmission through the driver's own carrier (the impairment
-         * matrix), so the sweep stays out of its way there. */
+         * bundle transmission through the driver's own carrier (the
+         * impairment matrix), so the sweep stays out of its way there. */
         if (!raceSendOwned_ || !mesh_) return;
         if (++raceSweepServiceCalls_ % kRaceSweepServicePeriod != 0u) return;
         if (raceNextTick_ <= raceFirstTick_) return; /* nothing sealed yet */
@@ -1629,6 +1749,7 @@ private:
         haveConfirmedDigest_ = false;
         channelsReady_.clear();
         preflightInit_ = false;
+        resetRouteMeasurement();
         preflightInitLogged_ = false;
         ownSubmitted_ = false;
         preflightReady_ = false;
@@ -1692,6 +1813,11 @@ private:
         o.nowMs = nowMs_;
         std::string err;
         mesh_ = MdkrMatchPeerMesh::create(o, &err);
+        if (mesh_) {
+            mdkr_net_failure_ring_record_host(
+                MDKR_NET_FAILURE_LIFECYCLE, (uint32_t)nowMs_(),
+                MDKR_NET_FAILURE_NO_SLOT, MDKR_NET_LIFECYCLE_MESH_UP, nullptr);
+        }
         if (!mesh_) {
             MDKR_ONLINE_LOG("[MESH] mesh create FAILED err=%s -> CONNECTION_CHECK\n",
                             err.c_str());
@@ -1762,6 +1888,7 @@ private:
         phraseConfirmed_ = false; /* never reuse Ready */
         haveConfirmedDigest_ = false; /* the confirmed transcript is retired */
         preflightInit_ = false;
+        resetRouteMeasurement();
         ownSubmitted_ = false;
         preflightReady_ = false;
         fragStates_.clear();
@@ -1835,6 +1962,7 @@ private:
 
     void pumpMesh() {
         if (!meshUp_ || !mesh_) return;
+        meshPumpSequence_++;
         mesh_->pump();
         mesh_->drainEvents(meshEvents_);
         for (const MdkrMatchPeerMeshEvent &ev : meshEvents_) {
@@ -1886,42 +2014,11 @@ private:
                 case MdkrMatchPeerMeshEventType::PreflightFragment:
                     onPreflightFragment(ev);
                     break;
+                case MdkrMatchPeerMeshEventType::PeerDeparted:
+                    onRoomDeparture(ev.endpointId);
+                    break;
                 case MdkrMatchPeerMeshEventType::PeerLost:
-                    /* Expose the mid-race condition on the race info
-                     * feed too -- during the race nobody renders the lobby
-                     * failure surface, so the launcher's engine loop polls
-                     * peerLost to end the session; the failure below then
-                     * fronts the post-race recovery copy. */
-                    racePeerLost_ = true;
-                    if (phraseMismatchActive_ || phraseRekeyCountdown_ > 0u) {
-                        /* The deliberate mismatch teardown races both sides'
-                         * channel closes; keep the VERIFICATION_MISMATCH
-                         * surface instead of a misleading network failure. */
-                        MDKR_ONLINE_LOG(
-                            "[MESH] peer lost during SAS-mismatch rekey "
-                            "ep=%llu (suppressed)\n",
-                            (unsigned long long)ev.endpointId);
-                        break;
-                    }
-                    failure_ = mapLostReason(ev.lostReason, raceReady_);
-                    /* Mark this as the IN-RACE loss-mapped failure so the
-                     * capture path can clear exactly it (and nothing else, e.g.
-                     * a genuine VERIFICATION_MISMATCH) when a finish order was
-                     * committed before the peer dropped. */
-                    raceLossFailureLatched_ = true;
-                    /* While a race-END card (OPPONENT_LEFT /
-                     * CONNECTION_UNPLAYABLE, or the beta-OFF CONNECTION_CHECK
-                     * fallback) is latched, view() must front it even if a late
-                     * State snapshot re-latches a lobby whose phase disagrees
-                     * with the walked session. Only in-race losses arm this;
-                     * pre-connection losses keep the ordinary lobby input. */
-                    if (raceReady_) raceEndFailureLatched_ = true;
-                    MDKR_ONLINE_LOG(
-                        "[MESH] peer LOST ep=%llu reason=%d -> failure=%u\n",
-                        (unsigned long long)ev.endpointId,
-                        static_cast<int>(ev.lostReason),
-                        static_cast<unsigned>(failure_));
-                    bump();
+                    onPeerLost(ev.endpointId, ev.lostReason);
                     break;
                 case MdkrMatchPeerMeshEventType::Failure:
                     /* SignalLost with healthy channels is a status, not a
@@ -1933,6 +2030,7 @@ private:
                             "[MESH] mesh failure=%d -> VERIFICATION_MISMATCH\n",
                             static_cast<int>(ev.failure));
                         failure_ = MDKR_ONLINE_VIEW_FAILURE_VERIFICATION_MISMATCH;
+                        (void)mdkr_net_failure_ring_dump_beside_evidence();
                         bump();
                     } else {
                         MDKR_ONLINE_LOG(
@@ -1940,7 +2038,11 @@ private:
                         frontPreflightSignalLostCard();
                     }
                     break;
+                case MdkrMatchPeerMeshEventType::InputRepairMessage:
+                    onInputRepair(ev);
+                    break;
                 case MdkrMatchPeerMeshEventType::InputEnvelope:
+                    if (consumeRouteProbe(ev)) break;
                     if (inputEnvelopes_ == 0u) {
                         MDKR_ONLINE_LOG(
                             "[MESH] first race input envelope received\n");
@@ -1955,8 +2057,33 @@ private:
          * mesh and latch it locally; the drain's barrier AND mid-race polls both
          * key on racePeerLost(), which folds this in, so a received abort ends
          * our race exactly like a lost peer. */
+        if (mesh_) {
+            uint64_t proposedBy = 0u;
+            uint64_t proposedFor = 0u;
+            uint32_t proposedEpoch = 0u;
+            uint32_t proposedTick = 0u;
+            while (mesh_->consumeRaceDrop(&proposedBy, &proposedFor,
+                                          &proposedEpoch, &proposedTick)) {
+                onRaceDropProposal(proposedBy, proposedFor, proposedEpoch,
+                                   proposedTick);
+            }
+        }
+        /* Any open peer-silence grace, judged against this pump's authored
+         * head. After the drains above, so a proposal drained this pump is
+         * part of the judgement. Packets are not: a grace opened in this same
+         * pump snapshotted the count AFTER the event drain, so everything that
+         * arrived alongside the verdict is already inside packetsAtOpen and
+         * only SUBSEQUENT pumps can find the peer speaking. That is the
+         * intended reading -- the grace asks what the peer did after the room
+         * gave up on it, not before. */
+        serviceDepartureGraces();
         if (mesh_ && mesh_->consumeRaceAbort() && !raceAbortReceived_) {
             raceAbortReceived_ = true;
+            mdkr_net_failure_ring_record_host(
+                MDKR_NET_FAILURE_LIFECYCLE, (uint32_t)nowMs_(),
+                MDKR_NET_FAILURE_NO_SLOT, MDKR_NET_LIFECYCLE_RACE_ENDED,
+                nullptr);
+            (void)mdkr_net_failure_ring_dump_beside_evidence();
             MDKR_ONLINE_LOG(
                 "[MESH] race-abort received from peer -> ending local race\n");
             bump();
@@ -1970,6 +2097,68 @@ private:
         if (havePhrase_) {
             std::string current;
             if (!mesh_->phrase(current)) beginReVerify();
+        }
+        serviceRouteMeasurement();
+        publishRouteMeasurement();
+        updateLiveness();
+    }
+
+    /* A7: fold each remote peer's control-ping observations into its
+     * soft-fail/hard-fail liveness tracker and reflect the worst one onto
+     * the RACING status line via the session's connectivity code -- the
+     * same field ON-03A's view builder already reads at MDKR_SCENE_RACE_CHROME
+     * (lobby_view_model.c). Gated to engine == RACING (not just raceReady_,
+     * which flips true while the transport is merely armed for the start
+     * barrier): a LOST dispatch outside racing would hit session_core.c's
+     * SET_CONNECTIVITY handler's OTHER branch, which forces MDKR_SCENE_RECOVERY
+     * and CONNECTION_LOST -- pre-empting the truthful mapLostReason() card a
+     * real mid-race peerLost produces. A peer still in its setup ladder is
+     * not "previously good" yet regardless; this function's own trackers
+     * stay untouched (see mdkr_peer_liveness_on_miss) until their first hit. */
+    void updateLiveness() {
+        if (!mesh_ || session_.state.engine != MDKR_ENGINE_RACING) return;
+        MdkrMatchPeerLinkStats links[MDKR_NET_FAILURE_PEERS];
+        const unsigned count = mesh_->linkStats(links, MDKR_NET_FAILURE_PEERS);
+        MdkrPeerLivenessState worst = MdkrPeerLivenessState::Good;
+        for (unsigned index = 0u; index < count; ++index) {
+            const unsigned peer = links[index].rosterIndex;
+            if (peer >= MDKR_NET_FAILURE_PEERS) continue;
+            /* A lost (or not-yet-ready) peer must never count as a hit: its
+             * frozen rttMs/consecutivePingMisses=0 snapshot would otherwise
+             * read as "answered", resetting the tracker to Good and
+             * re-dispatching DIRECT over a peer that is actually gone. */
+            if (!mesh_->peerChannelsReady(links[index].endpointId)) continue;
+            MdkrPeerLivenessTracker &tracker = peerLiveness_[peer];
+            if (links[index].consecutivePingMisses == 0u) {
+                tracker = mdkr_peer_liveness_on_hit(tracker);
+            } else {
+                /* Bounded by kMdkrPeerLivenessMissesToUnreachable regardless
+                 * of how large consecutivePingMisses reads: linkStats()
+                 * derives it from wall-clock elapsed time, which can exceed
+                 * the mesh's own ping-timeout budget for a tick or two (the
+                 * hard peerLost(PingTimeout) verdict that would retire it
+                 * runs on tick()'s cadence, not this pump's), and the
+                 * tracker itself saturates at that same bound -- so looping
+                 * to the raw (unbounded) reading would spin forever. */
+                const unsigned target =
+                    links[index].consecutivePingMisses <
+                            kMdkrPeerLivenessMissesToUnreachable
+                        ? links[index].consecutivePingMisses
+                        : kMdkrPeerLivenessMissesToUnreachable;
+                while (tracker.consecutiveMisses < target) {
+                    tracker = mdkr_peer_liveness_on_miss(
+                        tracker, kMdkrPeerLivenessMissesToUnreachable);
+                }
+            }
+            if (tracker.state > worst) worst = tracker.state;
+        }
+        const MdkrConnectivity mapped =
+            worst == MdkrPeerLivenessState::Unreachable ? MDKR_CONNECTIVITY_LOST
+            : worst == MdkrPeerLivenessState::Transient
+                ? MDKR_CONNECTIVITY_DEGRADED
+                : MDKR_CONNECTIVITY_DIRECT;
+        if (mapped != session_.state.connectivity) {
+            (void)sessionDispatch(MDKR_SESSION_COMMAND_SET_CONNECTIVITY, mapped);
         }
     }
 
@@ -1990,6 +2179,13 @@ public:
             case MdkrMatchPeerLostReason::HelloViolation:
             case MdkrMatchPeerLostReason::ControlChannelViolation:
                 return MDKR_ONLINE_VIEW_FAILURE_VERIFICATION_MISMATCH;
+            case MdkrMatchPeerLostReason::ChannelSetMismatch:
+                /* The peer's connection arrived but its channel set is short:
+                 * a protocol-version difference, not a route this endpoint
+                 * could retry into. The card is the symmetric one -- either
+                 * side may be the older build, and the local player is not
+                 * necessarily the one who has to move. */
+                return MDKR_ONLINE_VIEW_FAILURE_DIFFERENT_BUILD;
             case MdkrMatchPeerLostReason::ConnectTimeout:
             case MdkrMatchPeerLostReason::TransportFailed:
                 /* Pre-race these ARE handshake-time failures. Mid-race they
@@ -2014,6 +2210,11 @@ public:
                 return MDKR_ONLINE_VIEW_FAILURE_CONNECTION_CHECK;
             case MdkrMatchPeerLostReason::PingTimeout:
             case MdkrMatchPeerLostReason::PeerEnded:
+            /* PeerDeparted: the ROOM said this member left, and the launcher
+             * finalised it at the agreed tick. The most direct departure there
+             * is -- membership itself -- so it maps where every other
+             * departure does. */
+            case MdkrMatchPeerLostReason::PeerDeparted:
             /* PeerVanished: the signal service saw the peer's socket die AND
              * its transport went down (the mid-race kill/quit signature) --
              * the peer DEPARTED. Same truthful attribution as a ping-out:
@@ -2077,6 +2278,290 @@ private:
         bump();
     }
 
+    /* ---- Pre-flight route quality ------------------------------------- *
+     *
+     * From the FIRST peer whose channels open, and before the race transport
+     * exists, replay both real lanes at their real cadence and payload size
+     * for MDKR_MATCH_ROUTE_MEASURE_MS, drain for MDKR_MATCH_ROUTE_DRAIN_MS,
+     * then score what came back. The bundle lane rides the unreliable state
+     * channel (sealed INPUT payloads, where a lost datagram stays lost); the
+     * control lane rides the reliable ordered control channel (sealed
+     * PREFLIGHT payloads). Neither lane needs a new sealed payload type, and a
+     * probe can only be decoded in this window because raceReady_ closes it.
+     *
+     * First open, not last: waiting for every roster peer put the whole 7 s
+     * window after the slowest peer's bring-up, which in a 3-4P room is
+     * routinely after a human has pressed Start. Probes only ever flow over
+     * channels that ARE open -- the transport's unit of readiness is the peer
+     * (its state and control DataChannels open together, one
+     * PeerChannelsReady), so per-lane gating is per-peer gating here: the
+     * addressed control lane fans out to ready peers only, and the broadcast
+     * bundle lane is the mesh's own sendInput, which skips a peer whose
+     * channel is not open. A peer that opens mid-window simply joins the
+     * lanes late; the record describes the route this endpoint measured, and
+     * every endpoint measures its own. */
+    void serviceRouteMeasurement() {
+        if (routeMeasured_ || !meshUp_ || !mesh_) return;
+        if (meshRoster_.empty() || channelsReady_.empty()) return;
+        const uint32_t now = static_cast<uint32_t>(nowMs_());
+        if (!routeMeasureRunning_) {
+            /* The race owns both lanes; a window cannot be opened under it. */
+            if (raceReady_) return;
+            if (!mdkr_match_route_measure_begin(
+                    &routeMeasure_, now, 1000u / opts_.compatibility.cadence_hz,
+                    localEndpointId_))
+                return;
+            routeMeasureRunning_ = true;
+            routeQueueDropsAtBegin_ = meshQueueDrops();
+            MDKR_ONLINE_LOG("[PREFLIGHT] route measurement begun\n");
+        }
+        if (raceReady_) {
+            /* Start arrived before the window settled. Start is never held for
+             * a route check, so this race already resolved its entry timing
+             * from the manifest floor; the window is cut here rather than
+             * abandoned, and a record it can still stand behind is published
+             * as this round's second attestation and carried into the NEXT
+             * race of a tournament. Probes still in flight at the cut are
+             * dropped rather than scored as loss -- they were lost to our own
+             * Start. A window without the evidence behind it (the two floors
+             * in match_preflight.h) is discarded instead of banded: this
+             * session then simply has no record, races on the manifest floor
+             * with the checking chip, and measures again next round. */
+            const unsigned cut =
+                mdkr_match_route_measure_cut(&routeMeasure_, now);
+            if (!mdkr_match_route_measure_adoptable(&routeMeasure_)) {
+                routeMeasureRunning_ = false;
+                MDKR_ONLINE_LOG(
+                    "[PREFLIGHT] route window cut too early to band "
+                    "(%u in flight); racing on the floor\n",
+                    cut);
+                bump();
+                return;
+            }
+            MDKR_ONLINE_LOG(
+                "[PREFLIGHT] route window cut by race start (%u in flight)\n",
+                cut);
+            finishRouteMeasurement(now, /*cutShort=*/true);
+            return;
+        }
+        MdkrMatchRouteProbe probe;
+        while (mdkr_match_route_measure_due(&routeMeasure_, now, &probe)) {
+            uint8_t payload[MDKR_MATCH_PEER_PAYLOAD_BYTES];
+            if (!mdkr_match_route_probe_encode(&probe, payload)) continue;
+            sendRouteProbe(probe.lane, payload, 0u);
+        }
+        if (!mdkr_match_route_measure_settled(&routeMeasure_, now)) return;
+        finishRouteMeasurement(now, /*cutShort=*/false);
+    }
+
+    /* Score the window that just closed -- settled, or cut by a race start.
+     * `cutShort` is remembered because a cut record, however honest, saw less
+     * of the route than a full window: it is held only for the race it was
+     * cut by, and the next round measures again. */
+    void finishRouteMeasurement(uint32_t now, bool cutShort) {
+        routeMeasureRunning_ = false;
+        /* The mesh's bounded INBOUND queues are what must have drained across
+         * the window: an overflow between callback and pump, or between pump
+         * and drainEvents, means the local pump did not keep up, which is
+         * exactly the pressure the ladder deducts for. Saturating: the
+         * record's field is 16-bit. */
+        const uint64_t drops = meshQueueDrops() - routeQueueDropsAtBegin_;
+        if (!mdkr_match_route_measure_finish(
+                &routeMeasure_,
+                drops > UINT16_MAX ? UINT16_MAX
+                                   : static_cast<uint32_t>(drops),
+                &routeMeasurement_))
+            return; /* nothing came back to score; a later window may. */
+        routeMeasured_ = true;
+        routeCutShort_ = cutShort;
+        recordRouteMeasurement(now);
+        bump();
+    }
+
+    /* Both bounded INBOUND queues the mesh can overflow while the launcher
+     * pumps: callback->pump and pump->drainEvents. The mesh holds no outbound
+     * queue -- a send reaches the data channel or fails on the spot. */
+    uint64_t meshQueueDrops() const {
+        if (mesh_ == nullptr) return 0u;
+        const MdkrMatchPeerMeshStats stats = mesh_->stats();
+        return stats.droppedInternalEvents + stats.droppedEvents;
+    }
+
+    /* Between the races of one tournament the mesh, its keys and its channels
+     * all survive (see resetRaceLatches), so a FULL window's record is still
+     * the truth about the route the next race will run over. Keep it and
+     * re-arm only its exchange, so the new epoch's preflight publishes it
+     * again as that round's second attestation and the next setUpRace resolves
+     * the widen from it.
+     *
+     * A record whose window a race start cut short is different: it saw part
+     * of the route, and between rounds the lanes are idle, so a fresh full
+     * window costs nothing anyone is waiting on. Retire it and measure again.
+     * A window still in flight is left running either way; if nothing was ever
+     * scored, serviceRouteMeasurement opens a fresh one for the new round. */
+    void rearmRouteReportForNextRace() {
+        if (routeCutShort_) {
+            resetRouteMeasurement();
+            return;
+        }
+        routeReportSent_ = false;
+    }
+
+    /* A retired mesh or a rekey invalidates a window in flight AND anything it
+     * already scored: those samples belong to keys that no longer exist, so
+     * the measurement restarts rather than carrying the old connection's
+     * record into the new one. */
+    void resetRouteMeasurement() {
+        routeMeasure_ = MdkrMatchRouteMeasureState{};
+        routeMeasurement_ = MdkrMatchRouteMeasurement{};
+        routeMeasureRunning_ = false;
+        routeMeasured_ = false;
+        routeReportSent_ = false;
+        routeCutShort_ = false;
+        routeQueueDropsAtBegin_ = 0u;
+        routeEchoBudget_.clear();
+    }
+
+    /* The bundle lane fans out to every reachable peer exactly as race input
+     * does; the control lane is addressed, so an echo goes back only to the
+     * endpoint that asked. `only` is zero for an outbound probe.
+     *
+     * A probe never goes to a peer whose channels are not open yet: the
+     * window can now begin on the FIRST peer, so the roster may still hold
+     * endpoints that have nothing to send over. (sendInput refuses the same
+     * peer inside the mesh; the control lane is filtered here, where the
+     * launcher holds the readiness set.) */
+    void sendRouteProbe(uint8_t lane,
+                        const uint8_t payload[MDKR_MATCH_PEER_PAYLOAD_BYTES],
+                        uint64_t only) {
+        if (lane == MDKR_MATCH_ROUTE_LANE_BUNDLE) {
+            (void)mesh_->sendInput(payload);
+            return;
+        }
+        for (const MdkrMatchPeerSlotOwner &o : meshRoster_) {
+            if (o.endpointId == localEndpointId_) continue;
+            if (only != 0u && o.endpointId != only) continue;
+            if (channelsReady_.count(o.endpointId) == 0u) continue;
+            (void)mesh_->sendPreflightFragment(o.endpointId, payload);
+        }
+    }
+
+    /* Echoing is the one thing a peer can make this endpoint do repeatedly
+     * before the race latch closes the window, and in a 3-4P room one
+     * broadcast probe already yields N-1 sealed echoes. Charge each echo
+     * against the pump it is answered in, exactly as the input-repair answer
+     * budget charges against the authored tick (match_input_repair.h): a peer
+     * cannot choose this endpoint's pump cadence, so no flood can refill the
+     * budget early. Sized above the honest rate it imitates -- the measurement
+     * emits 182 bundle-lane probes and 30 control-lane ones over
+     * MDKR_MATCH_ROUTE_MEASURE_MS, one probe per ~28 ms, so this budget still
+     * answers every honest probe across a pump gap of nearly 450 ms. Sixteen
+     * rather than eight because the window now opens at the FIRST channel
+     * (D-N5), which is the launcher's busiest stretch -- bring-up, phrase and
+     * descriptor work all land inside it, and a pump gap there must not move
+     * anyone's chip. Beyond the budget the probe is dropped, not the sender:
+     * an honest peer on a stalled launcher loses a sample and widens its own
+     * measured loss, which is the truth about this route. */
+    static constexpr uint32_t kRouteEchoBudgetPerPump = 16u;
+    /* Authored ticks a room departure listens to the peer link before it is
+     * acted on (D1). Two: one full authored tick of silence plus the tick the
+     * verdict landed in, which is ~66 ms at 30 Hz -- long enough that a peer
+     * still feeding the race at its own send cadence is certain to be heard,
+     * short enough that a real quit still cards inside four ticks. The
+     * ceiling bounds MDKR_ONLINE_LOBBY_DROP_GRACE so that switch can shorten
+     * the ladders' work but never quietly disable the drop. */
+    static constexpr uint32_t kLobbyDropGraceTicks = 2u;
+    static constexpr uint32_t kLobbyDropGraceMaxTicks = 30u;
+    struct RouteEchoBudget {
+        uint64_t pump;
+        uint32_t spent;
+    };
+
+    /* Charge one echo to `senderEndpointId` for the pump now draining.
+     * Refills whenever the pump differs from the charged one. */
+    bool chargeRouteEcho(uint64_t senderEndpointId) {
+        RouteEchoBudget &budget = routeEchoBudget_[senderEndpointId];
+        if (budget.pump != meshPumpSequence_) {
+            budget.pump = meshPumpSequence_;
+            budget.spent = 0u;
+        }
+        if (budget.spent >= kRouteEchoBudgetPerPump) return false;
+        budget.spent++;
+        return true;
+    }
+
+    /* True when the payload was a route probe and this pump consumed it. */
+    bool consumeRouteProbe(const MdkrMatchPeerMeshEvent &ev) {
+        MdkrMatchRouteProbe probe;
+        if (raceReady_ || !mesh_ ||
+            !mdkr_match_route_probe_decode(ev.payload.data(), &probe))
+            return false;
+        if (probe.kind == MDKR_MATCH_ROUTE_ECHO) {
+            /* A bundle-lane echo is broadcast, so only the endpoint that
+             * originated the probe may time it. */
+            if (routeMeasureRunning_ &&
+                probe.origin_endpoint_id == localEndpointId_) {
+                mdkr_match_route_measure_echo(
+                    &routeMeasure_, probe.sequence,
+                    static_cast<uint32_t>(nowMs_()));
+            }
+            return true;
+        }
+        /* Consumed either way: an over-budget probe is still a probe, and
+         * must not fall through to the race ingress below. */
+        if (!chargeRouteEcho(ev.context.key.source_endpoint_id)) return true;
+        uint8_t payload[MDKR_MATCH_PEER_PAYLOAD_BYTES];
+        MdkrMatchRouteProbe echo = probe;
+        echo.kind = static_cast<uint8_t>(MDKR_MATCH_ROUTE_ECHO);
+        if (mdkr_match_route_probe_encode(&echo, payload))
+            sendRouteProbe(probe.lane, payload,
+                           ev.context.key.source_endpoint_id);
+        return true;
+    }
+
+    /* The measurement's outcome joins the mesh bring-up boundary already in
+     * the forensics ring, so a dump reads "the route this session started on"
+     * beside every later stall. The code carries the band and the score. */
+    void recordRouteMeasurement(uint32_t hostMs) {
+        const char *band = mdkr_match_route_band_name(
+            static_cast<MdkrMatchRouteBand>(routeMeasurement_.band));
+        char code[MDKR_NET_FAILURE_CODE_BYTES];
+        std::snprintf(code, sizeof(code), "route-%s-%u",
+                      band != nullptr ? band : "none",
+                      static_cast<unsigned>(routeMeasurement_.score));
+        mdkr_net_failure_ring_record_host(
+            MDKR_NET_FAILURE_LIFECYCLE, hostMs, MDKR_NET_FAILURE_NO_SLOT,
+            MDKR_NET_LIFECYCLE_MESH_UP, code);
+        MDKR_ONLINE_LOG(
+            "[PREFLIGHT] route measured p95=%ums jitter=%ums loss=%u/1000 "
+            "late=%u/1000 score=%u band=%s\n",
+            static_cast<unsigned>(routeMeasurement_.p95_rtt_ms),
+            static_cast<unsigned>(routeMeasurement_.jitter_ms),
+            static_cast<unsigned>(routeMeasurement_.loss_per_thousand),
+            static_cast<unsigned>(routeMeasurement_.late_per_thousand),
+            static_cast<unsigned>(routeMeasurement_.score),
+            band != nullptr ? band : "none");
+    }
+
+    /* The measured report is a second, higher-sequence attestation rather than
+     * a precondition for READY: a route that measures badly informs the player
+     * and widens this endpoint's entry timing, it never refuses the launch. */
+    void publishRouteMeasurement() {
+        if (!routeMeasured_ || routeReportSent_ || !preflightInit_ ||
+            !mesh_ || !descriptorBuilt_)
+            return;
+        MdkrMatchPreflightAttestationV1 att;
+        buildOwnAttestation(&att);
+        if (mdkr_match_preflight_submit(&preflight_, localEndpointId_,
+                                        meshGeneration_, &att) !=
+            MDKR_MATCH_PREFLIGHT_SUBMIT_ACCEPTED)
+            return;
+        sendOwnFragments(att);
+        routeReportSent_ = true;
+        MDKR_ONLINE_LOG("[PREFLIGHT] measured report published (seq=%u)\n",
+                        att.sequence);
+    }
+
     /* ---- Preflight consensus + install -------------------------------- */
 
     void runPreflight() {
@@ -2104,7 +2589,15 @@ private:
         logPreflightGate(0, "all gates open; running consensus");
 
         if (!preflightInit_) {
-            buildGraph();
+            if (!buildGraph()) {
+                /* Every peer this endpoint speaks for must be one it has seen
+                 * ready AND whose service-assigned generation it knows. The
+                 * graph is built once and latched, so a value a peer cannot
+                 * reproduce is a permanent disagreement; wait instead. */
+                logPreflightGate(7, "waiting for every peer's connection "
+                                    "generation");
+                return;
+            }
             uint8_t transcriptDigest[MDKR_MATCH_PREFLIGHT_DIGEST_BYTES];
             if (!mesh_ || !mesh_->transcriptDigest(transcriptDigest)) {
                 logPreflightGate(5, "waiting for transcript digest");
@@ -2127,8 +2620,9 @@ private:
             }
             /* Any peer attestations that arrived before init are now applied. */
             for (const auto &kv : pendingPeerAtts_) {
-                (void)mdkr_match_preflight_submit(&preflight_, kv.first,
-                                                  meshGeneration_, &kv.second);
+                (void)mdkr_match_preflight_submit(
+                    &preflight_, kv.first, kv.second.authenticatedGeneration,
+                    &kv.second.attestation);
             }
             pendingPeerAtts_.clear();
         }
@@ -2141,6 +2635,11 @@ private:
                 MDKR_MATCH_PREFLIGHT_SUBMIT_ACCEPTED) {
                 sendOwnFragments(att);
                 ownSubmitted_ = true;
+                /* A round that inits with a record already in hand published
+                 * it in this very report (buildOwnAttestation carries it at
+                 * the round's second sequence); there is no later one to
+                 * send. */
+                if (routeMeasured_) routeReportSent_ = true;
                 lastFragmentSendMs_ = nowMs_();
                 MDKR_ONLINE_LOG(
                     "[PREFLIGHT] own attestation submitted "
@@ -2186,46 +2685,94 @@ private:
             descriptorBuilt_ ? 1u : 0u);
     }
 
-    void buildGraph() {
+    /* The COMPLETE graph over the roster: every pair mutually reachable.
+     *
+     * That is an assertion about the whole room made from one endpoint's
+     * evidence, and it is sound only because of what has to be true on both
+     * sides of it. Below: this endpoint may only speak for a peer whose
+     * STATE+control channels it has actually seen open, so it never asserts
+     * an edge it has no evidence for at its own end. Above: preflight only
+     * reaches READY once EVERY endpoint in the graph has attested
+     * (WAITING_FOR_PEERS otherwise, match_preflight.c's absent-endpoint
+     * check), and an endpoint that cannot see one peer refuses here, never
+     * attests, and leaves the room waiting. A pair that is genuinely broken
+     * therefore stalls the room instead of agreeing a topology that does not
+     * exist -- the refusal direction, not the admitting one.
+     *
+     * The previous shape set only local<->peer edges. At two endpoints that
+     * star IS the complete graph, so the digest there is unchanged. At three
+     * or four it is not: each endpoint hashed a different star centred on
+     * itself, mdkr_match_preflight_evaluate found a graph disagreement before
+     * it ever reached the admissibility check, and the room could never
+     * reach READY.
+     *
+     * `generations` carries the REMOTE endpoints' service-assigned
+     * generations exactly as the mesh learned them; the local endpoint's is
+     * passed separately. A missing one is a refusal, never a substitution:
+     * standing the local generation in for an unknown peer's produces a
+     * value that peer cannot reproduce, and because the graph is built once
+     * and latched, that is a permanent disagreement rather than a retry.
+     *
+     * Endpoint order is not load-bearing -- mdkr_match_preflight_graph_digest
+     * sorts by endpoint id and remaps the reachability bits into that order
+     * before hashing -- but the roster arrives in ascending id order anyway.
+     *
+     * A refusal leaves *out zeroed, which is not a valid graph, so
+     * mdkr_match_preflight_init refuses in turn and the caller retries. */
+    static bool buildCompleteGraph(
+        const std::vector<MdkrMatchPeerSlotOwner> &roster,
+        const std::set<uint64_t> &channelsReady,
+        const std::map<uint64_t, uint32_t> &generations,
+        uint64_t localEndpointId, uint32_t localGeneration,
+        uint32_t matchEpoch, MdkrMatchPeerGraph *out) {
+        if (out == nullptr) return false;
+        std::memset(out, 0, sizeof(*out));
+        const unsigned count = static_cast<unsigned>(roster.size());
+        if (count < 2u || count > MDKR_MATCH_PEER_GRAPH_MAX_ENDPOINTS ||
+            localEndpointId == 0u || localGeneration == 0u) return false;
+        const unsigned full = (1u << count) - 1u;
         std::vector<MdkrMatchPeerEndpoint> eps;
-        std::map<uint64_t, unsigned> index;
-        for (const MdkrMatchPeerSlotOwner &o : meshRoster_) {
+        eps.reserve(count);
+        bool sawSelf = false;
+        for (const MdkrMatchPeerSlotOwner &o : roster) {
             MdkrMatchPeerEndpoint e;
             std::memset(&e, 0, sizeof(e));
             e.endpoint_id = o.endpointId;
-            /* Each endpoint's own service-assigned generation, so both peers
-             * hash a byte-identical graph. Local uses the adopted generation;
-             * peers use the value the mesh learned from the welcome. */
-            if (o.endpointId == localEndpointId_) {
-                e.generation = meshGeneration_;
-            } else if (uint32_t g = 0u; mesh_ && mesh_->peerGeneration(
-                                            o.endpointId, &g)) {
-                e.generation = g;
+            if (o.endpointId == localEndpointId) {
+                if (sawSelf) return false; /* one local endpoint, not two */
+                sawSelf = true;
+                e.generation = localGeneration;
             } else {
-                e.generation = meshGeneration_;
+                /* Re-checked here rather than inherited from runPreflight's
+                 * gate: what licenses the assertion belongs beside it. */
+                if (channelsReady.count(o.endpointId) == 0u) return false;
+                const auto found = generations.find(o.endpointId);
+                if (found == generations.end() || found->second == 0u)
+                    return false;
+                e.generation = found->second;
             }
-            e.reachable_mask = 0u;
-            index[o.endpointId] = static_cast<unsigned>(eps.size());
+            e.reachable_mask =
+                static_cast<uint8_t>(full & ~(1u << eps.size()));
             eps.push_back(e);
         }
-        /* Mutual edges: local <-> every peer whose channels are ready. Both
-         * peers derive the same topology, and the digest is order-independent. */
-        const unsigned self = index.count(localEndpointId_)
-                                  ? index[localEndpointId_]
-                                  : 0u;
-        for (uint64_t peer : channelsReady_) {
-            const auto it = index.find(peer);
-            if (it == index.end()) continue;
-            eps[self].reachable_mask |=
-                static_cast<uint8_t>(1u << it->second);
-            eps[it->second].reachable_mask |=
-                static_cast<uint8_t>(1u << self);
+        if (!sawSelf) return false;
+        return mdkr_match_peer_graph_init(out, matchEpoch, eps.data(), count);
+    }
+
+    /* Harvest what the mesh knows and assert the graph. False means the graph
+     * was NOT built and nothing may be attested from it yet. */
+    bool buildGraph() {
+        std::map<uint64_t, uint32_t> generations;
+        for (const MdkrMatchPeerSlotOwner &o : meshRoster_) {
+            if (o.endpointId == localEndpointId_) continue;
+            uint32_t g = 0u;
+            if (mesh_ && mesh_->peerGeneration(o.endpointId, &g)) {
+                generations[o.endpointId] = g;
+            }
         }
-        std::memset(&graph_, 0, sizeof(graph_));
-        (void)mdkr_match_peer_graph_init(&graph_,
-                                         descriptor_.manifest.match_epoch,
-                                         eps.data(),
-                                         static_cast<unsigned>(eps.size()));
+        return buildCompleteGraph(meshRoster_, channelsReady_, generations,
+                                  localEndpointId_, meshGeneration_,
+                                  descriptor_.manifest.match_epoch, &graph_);
     }
 
     void buildOwnAttestation(MdkrMatchPreflightAttestationV1 *att) const {
@@ -2237,7 +2784,11 @@ private:
          * strictly grows), so a round-2 fragment reaching a peer whose
          * reassembly still holds round 1 replaces it through the codec's own
          * newer-sequence path instead of colliding on a constant 1. */
-        att->sequence = descriptor_.manifest.match_epoch;
+        /* Two report generations per round: the compatibility report, then the
+         * same report once the route measurement has settled. Doubling keeps
+         * both strictly below round N+1's pair. */
+        att->sequence = descriptor_.manifest.match_epoch * 2u +
+                        (routeMeasured_ ? 1u : 0u);
         att->endpoint_id = localEndpointId_;
         (void)mdkr_match_preflight_descriptor_digest(&descriptor_,
                                                      att->descriptor_digest);
@@ -2247,6 +2798,10 @@ private:
         if (opts_.romVerified) att->flags |= MDKR_MATCH_PREFLIGHT_ROM_VERIFIED;
         if (phraseConfirmed_) att->flags |= MDKR_MATCH_PREFLIGHT_PHRASE_CONFIRMED;
         att->flags |= MDKR_MATCH_PREFLIGHT_CHANNELS_READY;
+        if (routeMeasured_) {
+            att->flags |= MDKR_MATCH_PREFLIGHT_ROUTE_MEASURED;
+            att->measurement = routeMeasurement_;
+        }
     }
 
     void sendOwnFragments(const MdkrMatchPreflightAttestationV1 &att) {
@@ -2289,6 +2844,7 @@ private:
 
     void onPreflightFragment(const MdkrMatchPeerMeshEvent &ev) {
         const uint64_t peer = ev.context.key.source_endpoint_id;
+        if (consumeRouteProbe(ev)) return;
         if (isPhraseMismatchNotice(ev.payload.data())) {
             /* A human on the peer display reported "Words Differ": leave the
              * confirm surface, present the mismatch recovery, and retire the
@@ -2351,8 +2907,11 @@ private:
                 &preflight_, peer, ev.context.key.source_generation, &att);
         } else {
             /* Not for the current preflight instance (or none yet): queue it.
-             * init drains the queue; resetRaceLatches prunes stale epochs. */
-            pendingPeerAtts_[peer] = att;
+             * init drains the queue; resetRaceLatches prunes stale epochs. The
+             * authenticated generation is stored beside it because the drain
+             * cannot recover it later. */
+            pendingPeerAtts_[peer] = PendingPeerAttestation{
+                ev.context.key.source_generation, att};
         }
     }
 
@@ -2443,13 +3002,52 @@ private:
             if (o.endpointId == localEndpointId_) continue;
             peerSlotMask_[o.endpointId] = o.slotMask;
         }
-        raceInputDelay_ = opts_.inputDelay != 0u ? opts_.inputDelay : 2u;
+        /* The manifest's input_delay is the admission-compared FLOOR every
+         * endpoint agreed on; this endpoint may lead by further whole authored
+         * ticks resolved from its OWN measured p95 RTT, up to the documented
+         * cap. Leading further is local: bundles carry their own tick numbers,
+         * so two endpoints leading by different amounts still commit the same
+         * canonical timeline. */
+        const uint8_t inputDelayFloor =
+            opts_.inputDelay != 0u ? opts_.inputDelay : 2u;
+        raceInputDelay_ =
+            routeMeasured_
+                ? mdkr_match_route_input_delay(
+                      routeMeasurement_.p95_rtt_ms,
+                      1000u / opts_.compatibility.cadence_hz, inputDelayFloor)
+                : inputDelayFloor;
+        if (raceInputDelay_ != inputDelayFloor) {
+            MDKR_ONLINE_LOG(
+                "[START] entry timing widened %u -> %u ticks (p95=%ums)\n",
+                static_cast<unsigned>(inputDelayFloor),
+                static_cast<unsigned>(raceInputDelay_),
+                static_cast<unsigned>(routeMeasurement_.p95_rtt_ms));
+        }
         raceSendOwned_ = false;
         raceDegraded_ = false;
+        peerLiveness_.fill(MdkrPeerLivenessTracker{});
+        /* Undo only OUR OWN prior liveness dispatch -- never a
+         * legitimately different connectivity code (e.g. still
+         * CONNECTING) some other path set. */
+        if (session_.state.connectivity == MDKR_CONNECTIVITY_DEGRADED ||
+            session_.state.connectivity == MDKR_CONNECTIVITY_LOST) {
+            (void)sessionDispatch(MDKR_SESSION_COMMAND_SET_CONNECTIVITY,
+                                  MDKR_CONNECTIVITY_DIRECT);
+        }
         raceSweepServiceCalls_ = 0u;
+        resetInputRepair();
         raceReady_ = true;
         if (!raceReadyLogged_) {
             raceReadyLogged_ = true;
+            /* One ring per RACE, not per mesh: a tournament runs several races
+             * over one mesh and a SAS rekey rebuilds the mesh mid-session, so
+             * mesh-up is ambiguous. raceReadyLogged_ is cleared on every race
+             * teardown, making this the one unambiguous per-race edge. */
+            mdkr_net_failure_ring_reset();
+            mdkr_net_failure_ring_record_host(
+                MDKR_NET_FAILURE_LIFECYCLE, (uint32_t)nowMs_(),
+                MDKR_NET_FAILURE_NO_SLOT, MDKR_NET_LIFECYCLE_RACE_ARMED,
+                nullptr);
             MDKR_ONLINE_LOG(
                 "[START] race transport READY epoch=%u firstTick=%u local=0x%02x "
                 "remote=0x%02x -> publishing engine race-boot handoff\n",
@@ -2468,6 +3066,649 @@ private:
     /* One opened INPUT envelope -> the launcher transport. The authenticated
      * slot mask is the SENDER's owned canonical slots (from the roster, never
      * the packet bytes); only covered ticks/slots are admitted. */
+    /* Per-race repair state. Cleared on both race edges so a later race in a
+     * tournament, or a race after a rekey, never inherits an outstanding
+     * request for a tick that means something else now. */
+    void resetInputRepair() {
+        for (unsigned slot = 0u; slot < MDKR_NET_INPUT_SLOTS; ++slot) {
+            repairRequested_[slot] = false;
+            repairRequestedTick_[slot] = 0u;
+            repairRequestedAtTick_[slot] = 0u;
+        }
+        repairAnswerBudget_.clear();
+        repairRequestsSent_ = 0u;
+        repairAnswersSent_ = 0u;
+        repairAnswersRefused_ = 0u;
+        repairAnswersReceived_ = 0u;
+        repairTicksRestored_ = 0u;
+    }
+
+    /* ---- input-gap repair (docs/ref/match-input-repair-v1.md) ---------- *
+     *
+     * The realtime state channel is lossy by design and each bundle carries
+     * three ticks of redundancy, so a burst shorter than that heals itself on
+     * the next send. A longer burst leaves a contiguous hole no later bundle
+     * will ever cover, and the drain then predicts through it until the run
+     * outlives the retained rollback depth and the race is unrecoverable.
+     * These three functions close that hole explicitly on the reliable
+     * authority lane. */
+
+    /* Which peer authors a canonical slot, from the AUTHENTICATED roster map
+     * -- never from packet bytes. Zero when no peer owns it. */
+    uint64_t authorOfSlot(unsigned slot) const {
+        const uint8_t bit = static_cast<uint8_t>(1u << slot);
+        for (const auto &entry : peerSlotMask_) {
+            if ((entry.second & bit) != 0u) return entry.first;
+        }
+        return 0u;
+    }
+
+    /* True once this endpoint has committed its local input for `tick`, which
+     * is the only input it may answer with: handing a peer a frame this
+     * endpoint has not itself committed to would part the two histories on
+     * the author's next seal. The synthetic fixture is a pure function of the
+     * tick, so it is answerable up to the same sealed frontier. */
+    bool localInputSealed(uint32_t tick) const {
+        if (mdkr_net_tick_after(tick, raceNextTick_ + raceInputDelay_))
+            return false;
+        if (raceSyntheticInput_) return true;
+        return localHistTick_[tick % kLocalInputRing] == tick;
+    }
+
+    /* One request per remote slot per gap. The authority lane is reliable, so
+     * a sent request is delivered; re-asking for a first tick already asked
+     * for would only duplicate the answer. A gap whose first tick moves is a
+     * different gap and is asked for again. */
+    void raceSweepInputGaps() {
+        if (!raceReady_ || !raceRepairEnabled_ || mesh_ == nullptr) return;
+        for (unsigned slot = 0u; slot < MDKR_NET_INPUT_SLOTS; ++slot) {
+            uint32_t first = 0u;
+            uint32_t count = 0u;
+            if (!mdkr_match_transport_input_gap(&raceTransport_, slot, &first,
+                                                &count)) {
+                repairRequested_[slot] = false;
+                continue;
+            }
+            /* Still inside the carrier's redundancy: a later bundle covers
+             * it, and asking now would spend a round trip on nothing. */
+            if (raceTransport_.history.current_tick - first <=
+                MDKR_MATCH_INPUT_BUNDLE_FRAMES) {
+                continue;
+            }
+            /* One request per gap, then one more per re-ask window. The lane
+             * is reliable, so an answered request needs no retry -- but an
+             * author whose own sealed frontier was still behind the gap when
+             * it was asked has nothing to answer with, and a single-shot latch
+             * would strand that gap until it aged into INPUT_GAP. */
+            if (repairRequested_[slot] && repairRequestedTick_[slot] == first &&
+                raceTransport_.history.current_tick -
+                        repairRequestedAtTick_[slot] <
+                    repairReaskTicks_) {
+                continue;
+            }
+            const uint64_t author = authorOfSlot(slot);
+            if (author == 0u) continue;
+            MdkrMatchInputRepair request;
+            std::memset(&request, 0, sizeof(request));
+            request.kind = MDKR_MATCH_INPUT_REPAIR_REQUEST;
+            request.match_epoch = raceEpoch_;
+            request.first_tick = first;
+            request.count = static_cast<uint8_t>(count);
+            uint8_t bytes[MDKR_MATCH_INPUT_REPAIR_BYTES];
+            if (!mdkr_match_input_repair_encode(&request, bytes,
+                                                sizeof(bytes)) ||
+                !mesh_->sendInputRepair(
+                    author, MDKR_MATCH_PEER_PAYLOAD_INPUT_REPAIR_REQUEST,
+                    bytes)) {
+                continue;
+            }
+            repairRequested_[slot] = true;
+            repairRequestedTick_[slot] = first;
+            repairRequestedAtTick_[slot] = raceTransport_.history.current_tick;
+            ++repairRequestsSent_;
+            /* The gap is exactly the run the drain is predicting through, so
+             * it belongs in the ring under the prediction record. A repair
+             * record names a canonical SLOT, detail is the repair kind and
+             * value_a/value_b are the run; the transport's own prediction
+             * record carries NO_SLOT and the committed masks, so a dump reads
+             * the two apart without a kind of its own. */
+            mdkr_net_failure_ring_record_tick(
+                MDKR_NET_FAILURE_INPUT_PREDICTED,
+                raceTransport_.history.current_tick, slot,
+                MDKR_MATCH_INPUT_REPAIR_REQUEST, first, count);
+        }
+    }
+
+    /* One opened repair message from the authority lane. */
+    void onInputRepair(const MdkrMatchPeerMeshEvent &ev) {
+        MdkrMatchInputRepair message;
+        if (!raceReady_ ||
+            !mdkr_match_input_repair_decode(ev.payload.data(),
+                                            ev.payload.size(), &message)) {
+            return;
+        }
+        /* Epoch-scoped: a repair minted during a retired epoch names ticks
+         * that mean something else in this one, so it is dropped rather than
+         * carried across the boundary. */
+        if (message.match_epoch != raceEpoch_) return;
+        if (message.kind == MDKR_MATCH_INPUT_REPAIR_REQUEST) {
+            answerInputRepair(ev.context.key.source_endpoint_id, message);
+        } else {
+            applyInputRepair(ev.context.key.source_endpoint_id, message);
+        }
+    }
+
+    /* Answer a peer's request from the local input this endpoint has already
+     * committed, one message per owned slot per twelve ticks. A repaired
+     * input is the same input: every frame comes from localInputForTick, the
+     * same function this endpoint's own drain and every bundle retransmit
+     * read, so the peer commits byte-identical canonical input. */
+    void answerInputRepair(uint64_t peerEndpointId,
+                           const MdkrMatchInputRepair &request) {
+        const uint8_t localMask = raceTransport_.local_slot_mask;
+        if (mesh_ == nullptr) return;
+        /* Answering is the one thing a peer can make this endpoint do
+         * repeatedly, and every answer is a retransmitting send. Charge each
+         * one against this endpoint's own authored tick, so a flood costs no
+         * more than the honest request it imitates. */
+        MdkrMatchInputRepairBudget &budget =
+            repairAnswerBudget_[peerEndpointId];
+        for (unsigned slot = 0u; slot < MDKR_SESSION_MAX_PLAYERS; ++slot) {
+            if ((localMask & (1u << slot)) == 0u) continue;
+            /* A request is capped at MDKR_MATCH_INPUT_REPAIR_MAX_TICKS, so one
+             * slot's run never needs more messages than the cost the budget is
+             * sized on. */
+            static_assert(
+                MDKR_MATCH_INPUT_REPAIR_MAX_ANSWERS *
+                        MDKR_MATCH_INPUT_REPAIR_ANSWER_TICKS >=
+                    MDKR_MATCH_INPUT_REPAIR_MAX_TICKS,
+                "one slot's repair run must fit the documented answer count");
+            for (uint32_t sent = 0u; sent < request.count;
+                 sent += MDKR_MATCH_INPUT_REPAIR_ANSWER_TICKS) {
+                MdkrMatchInputRepair answer;
+                std::memset(&answer, 0, sizeof(answer));
+                answer.kind = MDKR_MATCH_INPUT_REPAIR_ANSWER;
+                answer.match_epoch = raceEpoch_;
+                answer.first_tick = request.first_tick + sent;
+                answer.slot = static_cast<uint8_t>(slot);
+                const uint32_t remaining = request.count - sent;
+                const uint32_t span =
+                    remaining < MDKR_MATCH_INPUT_REPAIR_ANSWER_TICKS
+                        ? remaining
+                        : MDKR_MATCH_INPUT_REPAIR_ANSWER_TICKS;
+                uint32_t filled = 0u;
+                while (filled < span &&
+                       localInputSealed(answer.first_tick + filled)) {
+                    answer.samples[filled] = localInputForTick(
+                        static_cast<uint8_t>(slot), answer.first_tick + filled);
+                    ++filled;
+                }
+                if (filled == 0u) break; /* nothing sealed from here on */
+                if (!mdkr_match_input_repair_budget_charge(
+                        &budget, raceTransport_.history.current_tick)) {
+                    ++repairAnswersRefused_;
+                    return;
+                }
+                answer.count = static_cast<uint8_t>(filled);
+                uint8_t bytes[MDKR_MATCH_INPUT_REPAIR_BYTES];
+                if (mdkr_match_input_repair_encode(&answer, bytes,
+                                                   sizeof(bytes)) &&
+                    mesh_->sendInputRepair(
+                        peerEndpointId,
+                        MDKR_MATCH_PEER_PAYLOAD_INPUT_REPAIR_ANSWER, bytes)) {
+                    ++repairAnswersSent_;
+                }
+                if (filled < span) break; /* the sealed run ended here */
+            }
+        }
+    }
+
+    /* A roster peer is gone for this mesh, with a typed reason: end the race,
+     * front the truthful card and land the forensics tail. Reached from the
+     * mesh's own PeerLost event and, without the round trip through that
+     * queue, from the room-departure path below -- one handler either way, so
+     * the two can never word the same loss differently. */
+    void onPeerLost(uint64_t endpointId, MdkrMatchPeerLostReason reason) {
+        /* Expose the mid-race condition on the race info feed too -- during
+         * the race nobody renders the lobby failure surface, so the launcher's
+         * engine loop polls peerLost to end the session; the failure below
+         * then fronts the post-race recovery copy. */
+        racePeerLost_ = true;
+        if (phraseMismatchActive_ || phraseRekeyCountdown_ > 0u) {
+            /* The deliberate mismatch teardown races both sides' channel
+             * closes; keep the VERIFICATION_MISMATCH surface instead of a
+             * misleading network failure. */
+            MDKR_ONLINE_LOG(
+                "[MESH] peer lost during SAS-mismatch rekey ep=%llu "
+                "(suppressed)\n",
+                (unsigned long long)endpointId);
+            return;
+        }
+        failure_ = mapLostReason(reason, raceReady_);
+        /* Mark this as the IN-RACE loss-mapped failure so the capture path can
+         * clear exactly it (and nothing else, e.g. a genuine
+         * VERIFICATION_MISMATCH) when a finish order was committed before the
+         * peer dropped. */
+        raceLossFailureLatched_ = true;
+        /* While a race-END card (OPPONENT_LEFT / CONNECTION_UNPLAYABLE, or the
+         * beta-OFF CONNECTION_CHECK fallback) is latched, view() must front it
+         * even if a late State snapshot re-latches a lobby whose phase
+         * disagrees with the walked session. Only in-race losses arm this;
+         * pre-connection losses keep the ordinary lobby input. */
+        if (raceReady_) raceEndFailureLatched_ = true;
+        /* The mesh already recorded the typed loss; this is the one place that
+         * knows the session is over, so the tail lands here beside the
+         * evidence artifact. */
+        (void)mdkr_net_failure_ring_dump_beside_evidence();
+        MDKR_ONLINE_LOG(
+            "[MESH] peer LOST ep=%llu reason=%d -> failure=%u\n",
+            (unsigned long long)endpointId, static_cast<int>(reason),
+            static_cast<unsigned>(failure_));
+        bump();
+    }
+
+    /* ---- Lobby-authoritative peer drop (N8) ----------------------------- *
+     *
+     * The room owns membership. Mid-race, a member whose room socket closed is
+     * gone, and the transport's own ladders need up to
+     * kMdkrMatchMidRaceLossDetectBoundMs to reach the same verdict -- every
+     * one of those ticks spent racing an opponent that is not there. Acting on
+     * the room's verdict costs the survivor one service iteration instead.
+     *
+     * The departure event is itself the evidence that this endpoint's
+     * signaling is trustworthy: presence updates arrive only over a live
+     * socket, and a dead one surfaces as SignalLost rather than as a
+     * departure. The deliberate consequence is that a member who loses the
+     * room while keeping its peer connection is treated as gone -- the room,
+     * not the peer-to-peer path, is what membership is measured against.
+     */
+
+    /* Whether the ROOM's own verdict about `endpointId` can open a grace on
+     * this endpoint now: a race is running, the plumbing is armed, the
+     * endpoint owns seats in this race, and this is the first report for it --
+     * whether that report is still inside its grace, was already acted on, or
+     * was held.
+     *
+     * A held endpoint is terminal for the race by design: the verdict was
+     * dropped, so a later one about the same member cannot re-arm the grace,
+     * and a member that wobbles and then genuinely quits pays the transport
+     * ladders. The alternative -- re-arming on every fresh verdict -- would
+     * hand a flapping room the power to retry the drop until one grace
+     * happened to fall in a gap between the peer's bundles, which is the
+     * false drop wearing a different hat. Recorded in the N8-D residual and
+     * in STATUS.md's switch row. */
+    bool roomDepartureFinalises(uint64_t endpointId) const {
+        return raceReady_ && lobbyDropEnabled_ &&
+               peerSlotMask_.count(endpointId) != 0u &&
+               roomDeparted_.count(endpointId) == 0u &&
+               departureGrace_.count(endpointId) == 0u &&
+               departureHeld_.count(endpointId) == 0u;
+    }
+
+    /* Every endpoint still in this race, this one included, in roster order.
+     * `departing` is excluded on top of the endpoints already known to have
+     * left, so the caller can ask about a departure it has not recorded yet. */
+    std::vector<uint64_t> survivingEndpoints(uint64_t departing) const {
+        std::vector<uint64_t> alive;
+        for (const MdkrMatchPeerSlotOwner &owner : meshRoster_) {
+            if (owner.endpointId == departing ||
+                roomDeparted_.count(owner.endpointId) != 0u) {
+                continue;
+            }
+            alive.push_back(owner.endpointId);
+        }
+        return alive;
+    }
+
+    /* Stop the departed endpoint's seats consuming its input at `tick` and
+     * author neutral frames for them from there. The takeover schedule IS the
+     * commitment: it refuses a second, different tick for the same seat, so
+     * whichever agreement lands first stands for the rest of the race.
+     *
+     * The outcome is recorded per seat, not merely logged: a CONFLICT or
+     * TOO_LATE here means this endpoint did NOT finalise where its peers did,
+     * which is exactly the divergence a dump has to be able to show. */
+    void finaliseDepartedSeats(uint64_t endpointId, uint32_t tick) {
+        const auto owned = peerSlotMask_.find(endpointId);
+        if (owned == peerSlotMask_.end()) return;
+        for (unsigned slot = 0u; slot < MDKR_NET_INPUT_SLOTS; slot++) {
+            if ((owned->second & static_cast<uint8_t>(1u << slot)) == 0u) {
+                continue;
+            }
+            const MdkrMatchTakeoverResult result =
+                mdkr_match_transport_schedule_ai_takeover(
+                    &raceTransport_, raceEpoch_, slot, tick);
+            mdkr_net_failure_ring_record_tick(
+                MDKR_NET_FAILURE_LIFECYCLE, tick, slot,
+                MDKR_NET_LIFECYCLE_DEPARTURE_FINALISED,
+                static_cast<uint32_t>(result), raceTransport_.history.current_tick);
+            MDKR_ONLINE_LOG(
+                "[MESH] room departure ep=%llu slot=%u finalised at tick=%u "
+                "result=%d\n",
+                (unsigned long long)endpointId, slot, tick,
+                static_cast<int>(result));
+        }
+    }
+
+    /* Why a peer's race_drop proposal was refused. Bounded and enumerated so
+     * the ring can hold one record per (sender, reason) per race. */
+    enum class DropRefusal : uint8_t { Epoch = 0, Unknown, NotProposer };
+    static const char *dropRefusalName(DropRefusal reason) {
+        switch (reason) {
+            case DropRefusal::Epoch: return "epoch";
+            case DropRefusal::Unknown: return "unknown";
+            case DropRefusal::NotProposer: return "not-proposer";
+        }
+        return "?";
+    }
+
+    /* One refused proposal, in the ring as well as the log: a peer trying to
+     * finalise a seat it has no standing to finalise is the shape an attack
+     * would take, and it must not be invisible.
+     *
+     * Once per (sender, reason) per race, though. The refusal is a property of
+     * the sender's view, not of the individual message, so the second identical
+     * refusal carries no information the first did not -- while a peer sending
+     * a wrong-epoch race_drop every pump would evict the whole 2048-slot ring
+     * in about ten seconds and take every other record of the race with it.
+     * The log still carries every one, with the running total beside it, so a
+     * capture shows the flood the ring only has to name once. */
+    void recordRefusedProposal(uint64_t senderEndpointId, DropRefusal reason) {
+        const char *why = dropRefusalName(reason);
+        dropRefusalsSeen_++;
+        MDKR_ONLINE_LOG(
+            "[MESH] race_drop REFUSED from ep=%llu (%s) refusals=%u\n",
+            (unsigned long long)senderEndpointId, why, dropRefusalsSeen_);
+        const uint8_t bit =
+            static_cast<uint8_t>(1u << static_cast<unsigned>(reason));
+        uint8_t &recorded = dropRefusalsRecorded_[senderEndpointId];
+        if ((recorded & bit) != 0u) return;
+        recorded = static_cast<uint8_t>(recorded | bit);
+        char code[MDKR_NET_FAILURE_CODE_BYTES];
+        std::snprintf(code, sizeof(code), "drop-%s", why);
+        mdkr_net_failure_ring_record_host(
+            MDKR_NET_FAILURE_LIFECYCLE, static_cast<uint32_t>(nowMs_()),
+            MDKR_NET_FAILURE_NO_SLOT, MDKR_NET_LIFECYCLE_DEPARTURE_REFUSED,
+            code);
+    }
+
+    /* The tick this endpoint proposes for a departing peer's seats: the latest
+     * any one of them can still be finalised at, so a single agreed tick
+     * satisfies every seat the peer owned. */
+    bool proposedDepartureTick(uint64_t endpointId, uint32_t *tick) const {
+        const auto owned = peerSlotMask_.find(endpointId);
+        if (owned == peerSlotMask_.end()) return false;
+        bool any = false;
+        for (unsigned slot = 0u; slot < MDKR_NET_INPUT_SLOTS; slot++) {
+            uint32_t candidate = 0u;
+            if ((owned->second & static_cast<uint8_t>(1u << slot)) == 0u) {
+                continue;
+            }
+            if (!mdkr_match_drop_finalisation_tick(
+                    &raceTransport_, slot, raceInputDelay_, &candidate)) {
+                continue;
+            }
+            if (!any || mdkr_net_tick_after(candidate, *tick)) {
+                *tick = candidate;
+                any = true;
+            }
+        }
+        return any;
+    }
+
+    /* Finalise `endpointId`'s seats at `tick`, once. Both inputs to the
+     * decision must be present: THIS endpoint must have seen the room's own
+     * verdict about that endpoint, and a tick must have been agreed. A peer's
+     * proposal alone is never enough -- it is a claim by another player, and
+     * acting on it unilaterally would let any peer finalise any third party
+     * and end this race. */
+    void applyDepartureIfAgreed(uint64_t endpointId) {
+        if (roomDeparted_.count(endpointId) == 0u ||
+            departureFinalised_.count(endpointId) != 0u) {
+            return;
+        }
+        /* The room's verdict is in, but this endpoint's own grace has not run
+         * out yet: a peer's proposal must not finalise a seat this endpoint is
+         * still listening to the peer on. A held verdict never reaches here at
+         * all -- holding erases the room verdict itself. */
+        if (departureGrace_.count(endpointId) != 0u) return;
+        const auto agreed = pendingDropTicks_.find(endpointId);
+        if (agreed == pendingDropTicks_.end()) return;
+        departureFinalised_.insert(endpointId);
+        finaliseDepartedSeats(endpointId, agreed->second);
+    }
+
+    /* The room reported this endpoint gone. The verdict is recorded and a
+     * peer-silence grace opens on it; nothing is proposed, finalised or shown
+     * until that grace runs out (see the grace's own comment). */
+    void onRoomDeparture(uint64_t endpointId) {
+        if (!roomDepartureFinalises(endpointId)) return;
+        roomDeparted_.insert(endpointId);
+        const uint64_t packets = peerAuthenticatedPackets(endpointId);
+        const uint32_t opened = authoredTick();
+        departureGrace_.emplace(endpointId, DepartureGrace{opened, packets});
+        MDKR_ONLINE_LOG(
+            "[MESH] room departure ep=%llu grace opened at tick=%u for %u "
+            "ticks (packets=%llu)\n",
+            (unsigned long long)endpointId, opened, lobbyDropGraceTicks_,
+            (unsigned long long)packets);
+        /* A zero grace resolves in this same pump, which is what the grace's
+         * positive control measures against. */
+        resolveDepartureGrace(endpointId, packets, opened);
+    }
+
+    /* ---- The peer-silence grace (D1) ------------------------------------ *
+     *
+     * A false "opponent left" mid-race is the worst thing this plumbing can
+     * do to a player, and the room's verdict alone cannot tell a real quit
+     * from a room-service wobble: both close a member's socket, and only one
+     * of them stops the peer racing. So the room stays the trigger, and the
+     * peer link is the corroboration. For kLobbyDropGraceTicks authored ticks
+     * after the verdict arrives, an authenticated packet from that endpoint --
+     * an input bundle, a preflight fragment, an input repair -- is proof the
+     * peer is still there, and the verdict is dropped for this race: the
+     * transport's own ladders go back to owning the loss, exactly as they do
+     * when the room says nothing at all.
+     *
+     * The grace is measured in AUTHORED TICKS, never in wall-clock: this
+     * decision changes what the simulation commits, so it may only depend on
+     * the input history every endpoint shares. A real quit closes the peer's
+     * channels too, so the common case stays silent through the grace and
+     * pays it in full -- two ticks, ~66 ms at 30 Hz, against the 20-30 s the
+     * ladders would have taken.
+     *
+     * The proposer waits out its OWN grace before it proposes anything: a
+     * proposal is a claim that a peer has stopped racing, and an endpoint that
+     * has not yet finished listening has no business making it. A proposer
+     * that holds therefore proposes nothing, and with no agreed tick no
+     * survivor finalises anything -- so a hold by the one endpoint entitled to
+     * propose is unanimous by construction. The asymmetry that remains needs
+     * three or more endpoints: a survivor that holds while the PROPOSER heard
+     * silence refuses a proposal it has no room verdict left to intersect, and
+     * carries on racing where the proposer ended. Agreeing on a hold, rather
+     * than only on a tick, needs a round trip this layer does not have; 2P
+     * (the only shape any end-to-end lane runs) cannot reach it, because the
+     * sole survivor is always the proposer. Recorded as the N8-D residual in
+     * docs/multiplayer/OPERATIONAL_BACKLOG.md, with the fix shape. */
+
+    struct DepartureGrace {
+        /* Authored head when the room's verdict arrived. */
+        uint32_t openedAtTick;
+        /* Authenticated packets seen from the endpoint at that moment. */
+        uint64_t packetsAtOpen;
+    };
+
+    uint32_t authoredTick() const {
+        return raceTransport_.history.current_tick;
+    }
+
+    uint64_t peerAuthenticatedPackets(uint64_t endpointId) const {
+        uint64_t packets = 0u;
+        if (mesh_) (void)mesh_->authenticatedPacketCount(endpointId, &packets);
+        return packets;
+    }
+
+    /* One grace's decision, given what the peer has sent and where the
+     * authored head is now. Silent and elapsed: act on the verdict. Spoke:
+     * hold it for the rest of the race. Neither: keep waiting. Split from its
+     * inputs so the decision can be pinned without a mesh or a live race. */
+    void resolveDepartureGrace(uint64_t endpointId, uint64_t packetsNow,
+                               uint32_t tickNow) {
+        const auto grace = departureGrace_.find(endpointId);
+        if (grace == departureGrace_.end()) return;
+        if (packetsNow != grace->second.packetsAtOpen) {
+            holdDeparture(endpointId, packetsNow - grace->second.packetsAtOpen,
+                          grace->second.openedAtTick);
+            return;
+        }
+        if (tickNow - grace->second.openedAtTick < lobbyDropGraceTicks_) return;
+        departureGrace_.erase(grace);
+        actOnDeparture(endpointId);
+    }
+
+    /* Every open grace, against the live mesh and the live authored head. */
+    void serviceDepartureGraces() {
+        if (departureGrace_.empty()) return;
+        const uint32_t tickNow = authoredTick();
+        std::vector<uint64_t> pending;
+        pending.reserve(departureGrace_.size());
+        for (const auto &entry : departureGrace_) {
+            pending.push_back(entry.first);
+        }
+        for (uint64_t endpointId : pending) {
+            resolveDepartureGrace(endpointId,
+                                  peerAuthenticatedPackets(endpointId),
+                                  tickNow);
+        }
+    }
+
+    /* The peer spoke inside its grace, so the room's verdict is wrong about
+     * this race and is discarded: the endpoint leaves roomDeparted_ (it is
+     * still a survivor, and the proposer rule must keep counting it) and is
+     * remembered as held, so a repeat of the same verdict cannot re-arm the
+     * grace and a peer's proposal for it can never find a room verdict to
+     * intersect. Recorded in the forensics ring, not only in the log: a card
+     * the player did NOT see is invisible in a capture otherwise. */
+    void holdDeparture(uint64_t endpointId, uint64_t packets,
+                       uint32_t openedAtTick) {
+        departureGrace_.erase(endpointId);
+        roomDeparted_.erase(endpointId);
+        pendingDropTicks_.erase(endpointId);
+        departureHeld_.insert(endpointId);
+        mdkr_net_failure_ring_record_tick(
+            MDKR_NET_FAILURE_LIFECYCLE, authoredTick(),
+            MDKR_NET_FAILURE_NO_SLOT, MDKR_NET_LIFECYCLE_DEPARTURE_HELD,
+            static_cast<uint32_t>(packets), openedAtTick);
+        MDKR_ONLINE_LOG(
+            "[MESH] room departure ep=%llu HELD: %llu authenticated packets "
+            "inside the grace opened at tick=%u; transport ladders decide\n",
+            (unsigned long long)endpointId, (unsigned long long)packets,
+            openedAtTick);
+    }
+
+    /* The grace ran out in silence: the room's verdict stands. */
+    void actOnDeparture(uint64_t endpointId) {
+        const std::vector<uint64_t> alive = survivingEndpoints(endpointId);
+        uint32_t tick = 0u;
+        if (mdkr_match_drop_is_proposer(
+                localEndpointId_, alive.data(),
+                static_cast<unsigned>(alive.size())) &&
+            proposedDepartureTick(endpointId, &tick)) {
+            /* This endpoint owns the proposal, so its own tick is the agreed
+             * one; a peer's later proposal for the same seat cannot move it,
+             * because the takeover schedule refuses a second tick. */
+            (void)pendingDropTicks_.emplace(endpointId, tick);
+            if (mesh_) {
+                (void)mesh_->sendRaceDrop(endpointId, raceEpoch_, tick);
+            }
+        }
+        /* A proposal may already be waiting for this verdict. */
+        applyDepartureIfAgreed(endpointId);
+        endDepartedRace(endpointId);
+    }
+
+    /* A peer's proposal for a departed endpoint's finalisation tick. It is a
+     * claim, checked against three things this endpoint knows independently
+     * before it is allowed to mean anything:
+     *
+     *  - the epoch: a proposal is about ONE race, and a late one must not
+     *    finalise a seat in the next;
+     *  - the sender: only the lowest surviving endpoint id proposes, so a
+     *    proposal from anyone else is either a stale roster view or a peer
+     *    reaching for a decision that is not its own;
+     *  - the room: the tick is only ever applied once THIS endpoint has heard
+     *    the room's own departure verdict for that id (applyDepartureIfAgreed).
+     *
+     * Refusals drop the proposal rather than retiring the sender: two honest
+     * survivors can briefly disagree about who has already left, and a
+     * momentary disagreement must not cost an honest connection. The attack
+     * fails either way -- an unentitled proposal simply never applies. */
+    void onRaceDropProposal(uint64_t senderEndpointId, uint64_t endpointId,
+                            uint32_t matchEpoch, uint32_t tick) {
+        if (!raceReady_ || !lobbyDropEnabled_) return;
+        if (matchEpoch != raceEpoch_) {
+            recordRefusedProposal(senderEndpointId, DropRefusal::Epoch);
+            return;
+        }
+        if (peerSlotMask_.count(endpointId) == 0u) {
+            recordRefusedProposal(senderEndpointId, DropRefusal::Unknown);
+            return;
+        }
+        const std::vector<uint64_t> alive = survivingEndpoints(endpointId);
+        if (!mdkr_match_drop_is_proposer(
+                senderEndpointId, alive.data(),
+                static_cast<unsigned>(alive.size()))) {
+            recordRefusedProposal(senderEndpointId, DropRefusal::NotProposer);
+            return;
+        }
+        /* First agreed tick for a seat wins, exactly like the schedule it
+         * feeds; a second proposal cannot move a commitment already made. */
+        (void)pendingDropTicks_.emplace(endpointId, tick);
+        applyDepartureIfAgreed(endpointId);
+    }
+
+    /* Retire the peer and end this endpoint's race. A survivor that does not
+     * own the proposal ends its race just as promptly -- the card is
+     * presentation, and only the tick the simulation finalises at has to be
+     * agreed. The retirement records the typed loss and tears the connection
+     * down without announcing it -- this endpoint asked for it, so routing the
+     * answer back through the mesh's event queue would only cost a service
+     * iteration. */
+    void endDepartedRace(uint64_t endpointId) {
+        if (mesh_) (void)mesh_->retireDepartedPeer(endpointId);
+        onPeerLost(endpointId, MdkrMatchPeerLostReason::PeerDeparted);
+    }
+
+    /* Admit a repaired run through the SAME ingress the bundle carrier uses,
+     * under the sender's authenticated slot mask, so a repair can authorize
+     * nothing a bundle could not. */
+    void applyInputRepair(uint64_t peerEndpointId,
+                          const MdkrMatchInputRepair &answer) {
+        const auto it = peerSlotMask_.find(peerEndpointId);
+        if (it == peerSlotMask_.end()) return;
+        const uint8_t authMask = it->second;
+        if (answer.slot >= MDKR_SESSION_MAX_PLAYERS ||
+            (authMask & (uint8_t)(1u << answer.slot)) == 0u) {
+            return;
+        }
+        ++repairAnswersReceived_;
+        for (unsigned index = 0u; index < answer.count; ++index) {
+            const MdkrMatchTransportIngressResult result =
+                mdkr_match_transport_receive(
+                    &raceTransport_, answer.match_epoch, authMask, answer.slot,
+                    answer.first_tick + index, &answer.samples[index]);
+            if (result == MDKR_MATCH_INGRESS_ACCEPTED ||
+                result == MDKR_MATCH_INGRESS_CORRECTED) {
+                ++repairTicksRestored_;
+            }
+        }
+        /* Same slot/detail/run shape as the request record above. */
+        mdkr_net_failure_ring_record_tick(
+            MDKR_NET_FAILURE_INPUT_PREDICTED,
+            raceTransport_.history.current_tick, answer.slot,
+            MDKR_MATCH_INPUT_REPAIR_ANSWER, answer.first_tick, answer.count);
+    }
+
     void feedInputEnvelope(const MdkrMatchPeerMeshEvent &ev) {
         if (!raceReady_) return;
         const auto it = peerSlotMask_.find(ev.context.key.source_endpoint_id);
@@ -2559,6 +3800,118 @@ public:
         a.forcePhraseRekey();
         return a.racePeerLost();
     }
+    /* Pin that a rekey or a re-verify mid-measurement restarts the window
+     * rather than settling on samples sealed under keys that no longer exist.
+     * Arms a running measurement AND a settled record on a mesh-free adapter,
+     * runs the entry point, and reports whether every route field was
+     * cleared. Never called by the launcher. */
+    static bool testRekeyRestartsRouteMeasurement(bool viaReVerify) {
+        MdkrOnlineLiveAdapterOptions o;
+        o.sessionId = 1u;
+        LiveAdapter a(o);
+        if (viaReVerify) a.phraseConfirmed_ = true;
+        a.routeMeasureRunning_ = true;
+        a.routeMeasured_ = true;
+        a.routeReportSent_ = true;
+        a.routeQueueDropsAtBegin_ = 7u;
+        a.routeMeasure_.next_sequence = 40u;
+        a.routeMeasure_.origin_endpoint_id = 11u;
+        a.routeMeasurement_.p95_rtt_ms = 240u;
+        if (viaReVerify) a.beginReVerify(); else a.forcePhraseRekey();
+        return !a.routeMeasureRunning_ && !a.routeMeasured_ &&
+               !a.routeReportSent_ && a.routeQueueDropsAtBegin_ == 0u &&
+               a.routeMeasure_.next_sequence == 0u &&
+               a.routeMeasure_.origin_endpoint_id == 0u &&
+               a.routeMeasurement_.p95_rtt_ms == 0u;
+    }
+
+    /* Test-only (beta): a race-latch reset (the boundary between two races of
+     * one tournament) keeps this session's settled record and re-arms only its
+     * exchange, so the next round publishes it again and resolves the widen
+     * from it. Never called by the launcher. */
+    static bool testRaceLatchResetKeepsRoute(bool cutShort) {
+        MdkrOnlineLiveAdapterOptions o;
+        o.sessionId = 1u;
+        LiveAdapter a(o);
+        a.routeMeasured_ = true;
+        a.routeReportSent_ = true;
+        a.routeCutShort_ = cutShort;
+        a.routeMeasurement_.p95_rtt_ms = 240u;
+        a.raceReady_ = true;
+        a.resetRaceLatches("test");
+        if (a.raceReady_ || a.routeReportSent_) return false;
+        /* A full window's record is held for the tournament and re-exchanged;
+         * a cut one is retired so the next round measures fresh. */
+        return cutShort ? (!a.routeMeasured_ && !a.routeCutShort_ &&
+                           a.routeMeasurement_.p95_rtt_ms == 0u)
+                        : (a.routeMeasured_ &&
+                           a.routeMeasurement_.p95_rtt_ms == 240u);
+    }
+
+    /* Test-only (beta): the per-peer echo budget consumeRouteProbe charges
+     * before it answers a probe (N7 shape). Drives `probesPerPump` arrivals
+     * from each of `peers` senders across `pumps` mesh pumps on a mesh-free
+     * adapter and reports how many echoes would have gone out. A flood inside
+     * one pump is bounded at kRouteEchoBudgetPerPump PER SENDER; the honest
+     * rate spread across pumps is never touched. Never called by the
+     * launcher. */
+    static unsigned testRouteEchoesAllowed(unsigned peers,
+                                           unsigned probesPerPump,
+                                           unsigned pumps) {
+        MdkrOnlineLiveAdapterOptions o;
+        o.sessionId = 1u;
+        LiveAdapter a(o);
+        unsigned echoed = 0u;
+        for (unsigned pump = 0u; pump < pumps; ++pump) {
+            a.meshPumpSequence_++;
+            for (unsigned probe = 0u; probe < probesPerPump; ++probe) {
+                for (unsigned peer = 0u; peer < peers; ++peer) {
+                    if (a.chargeRouteEcho(700u + peer)) echoed++;
+                }
+            }
+        }
+        return echoed;
+    }
+
+    /* Test-only (beta): forensics records left behind by a race_drop refusal
+     * flood. Stages the same mesh-free 100/200/300/400 roster the proposal
+     * guard uses (local 200, departing 400, race epoch 5), resets the ring and
+     * replays `rounds` of one refusal of each reason, then counts the
+     * DEPARTURE_REFUSED records in the ring. Bounded at one per
+     * (sender, reason) however long the flood runs. Never called by the
+     * launcher. */
+    static unsigned testDropRefusalRecords(unsigned rounds) {
+        MdkrOnlineLiveAdapterOptions o;
+        o.sessionId = 1u;
+        LiveAdapter a(o);
+        a.localEndpointId_ = 200u;
+        a.raceReady_ = true;
+        a.raceEpoch_ = 5u;
+        a.peerSlotMask_[400u] = 0x8u;
+        for (uint64_t id : {100u, 200u, 300u, 400u}) {
+            a.meshRoster_.push_back(MdkrMatchPeerSlotOwner{id, 0x1u});
+        }
+        mdkr_net_failure_ring_reset();
+        for (unsigned round = 0u; round < rounds; ++round) {
+            a.onRaceDropProposal(100u, 400u, 6u, 4242u);  /* wrong epoch */
+            a.onRaceDropProposal(100u, 999u, 5u, 4242u);  /* unknown seat */
+            a.onRaceDropProposal(300u, 400u, 5u, 4242u);  /* not proposer */
+        }
+        unsigned records = 0u;
+        const unsigned retained = mdkr_net_failure_ring_retained();
+        for (unsigned index = 0u; index < retained; ++index) {
+            MdkrNetFailureRecord record;
+            if (!mdkr_net_failure_ring_at(index, &record)) break;
+            if (record.kind ==
+                    static_cast<uint16_t>(MDKR_NET_FAILURE_LIFECYCLE) &&
+                record.detail == static_cast<uint8_t>(
+                                     MDKR_NET_LIFECYCLE_DEPARTURE_REFUSED)) {
+                records++;
+            }
+        }
+        return records;
+    }
+
     static bool testReVerifyClearsPeerLoss(bool viaAbort) {
         MdkrOnlineLiveAdapterOptions o;
         o.sessionId = 1u;
@@ -2568,6 +3921,96 @@ public:
         if (viaAbort) a.raceAbortReceived_ = true; else a.racePeerLost_ = true;
         a.beginReVerify();
         return a.racePeerLost();
+    }
+
+    /* Synthetic roster identities for the graph-assertion seam below. Ids
+     * ascend with the index so a roster built in either direction is a
+     * meaningful ordering test. */
+    static uint64_t testGraphEndpointId(unsigned index) {
+        return 100u * static_cast<uint64_t>(index + 1u);
+    }
+    static uint32_t testGraphGeneration(unsigned index) { return 11u + index; }
+    static constexpr uint32_t kTestGraphMatchEpoch = 9u;
+
+    /* Test-only (beta): drive buildCompleteGraph over a synthetic roster with
+     * no mesh and no transport, and report the graph digest each endpoint
+     * would attest. `count` endpoints, `localIndex` is which of them is this
+     * one; `readyMask` and `genMask` are bitmasks over roster index saying
+     * which peers this endpoint has seen ready and whose generation it knows
+     * (the local index's bits are ignored). `descending` builds the roster in
+     * reverse endpoint-id order. Returns false -- leaving `digest` zeroed --
+     * when the graph is refused. Never called by the launcher. */
+    static bool testPreflightGraphDigest(
+        unsigned count, unsigned localIndex, unsigned readyMask,
+        unsigned genMask, bool descending,
+        uint8_t digest[MDKR_MATCH_PREFLIGHT_DIGEST_BYTES]) {
+        if (digest == nullptr) return false;
+        std::memset(digest, 0, MDKR_MATCH_PREFLIGHT_DIGEST_BYTES);
+        if (count < 2u || count > MDKR_MATCH_PEER_GRAPH_MAX_ENDPOINTS ||
+            localIndex >= count) return false;
+        std::vector<MdkrMatchPeerSlotOwner> roster;
+        std::set<uint64_t> channelsReady;
+        std::map<uint64_t, uint32_t> generations;
+        for (unsigned step = 0u; step < count; ++step) {
+            const unsigned index = descending ? (count - 1u - step) : step;
+            MdkrMatchPeerSlotOwner owner;
+            owner.endpointId = testGraphEndpointId(index);
+            owner.slotMask = static_cast<uint8_t>(1u << index);
+            roster.push_back(owner);
+        }
+        for (unsigned index = 0u; index < count; ++index) {
+            if (index == localIndex) continue;
+            if ((readyMask & (1u << index)) != 0u)
+                channelsReady.insert(testGraphEndpointId(index));
+            if ((genMask & (1u << index)) != 0u) {
+                generations[testGraphEndpointId(index)] =
+                    testGraphGeneration(index);
+            }
+        }
+        MdkrMatchPeerGraph graph;
+        if (!buildCompleteGraph(roster, channelsReady, generations,
+                                testGraphEndpointId(localIndex),
+                                testGraphGeneration(localIndex),
+                                kTestGraphMatchEpoch, &graph)) {
+            return false;
+        }
+        return mdkr_match_preflight_graph_digest(&graph, digest);
+    }
+
+    /* Test-only (beta): the digest of the PRE-FIX shape -- edges only between
+     * `localIndex` and every other endpoint -- over the same synthetic
+     * identities, so a test can show what the assertion replaced. At two
+     * endpoints that star is the complete graph and the two digests match; at
+     * three or more each local index yields a different one, which is the
+     * disagreement that stopped the room. Never called by the launcher. */
+    static bool testPreflightStarDigest(
+        unsigned count, unsigned localIndex,
+        uint8_t digest[MDKR_MATCH_PREFLIGHT_DIGEST_BYTES]) {
+        if (digest == nullptr) return false;
+        std::memset(digest, 0, MDKR_MATCH_PREFLIGHT_DIGEST_BYTES);
+        if (count < 2u || count > MDKR_MATCH_PEER_GRAPH_MAX_ENDPOINTS ||
+            localIndex >= count) return false;
+        std::vector<MdkrMatchPeerEndpoint> eps;
+        eps.reserve(count);
+        for (unsigned index = 0u; index < count; ++index) {
+            MdkrMatchPeerEndpoint e;
+            std::memset(&e, 0, sizeof(e));
+            e.endpoint_id = testGraphEndpointId(index);
+            e.generation = testGraphGeneration(index);
+            e.reachable_mask =
+                index == localIndex
+                    ? static_cast<uint8_t>(((1u << count) - 1u) &
+                                           ~(1u << localIndex))
+                    : static_cast<uint8_t>(1u << localIndex);
+            eps.push_back(e);
+        }
+        MdkrMatchPeerGraph graph;
+        std::memset(&graph, 0, sizeof(graph));
+        if (!mdkr_match_peer_graph_init(&graph, kTestGraphMatchEpoch,
+                                        eps.data(), count)) {
+            return false;
+        }
+        return mdkr_match_preflight_graph_digest(&graph, digest);
     }
 
     /* Test-only (beta): pin the RETRY tiers on a mesh-free, transport-free
@@ -2637,6 +4080,123 @@ public:
         a.raceReady_ = raceUp;
         a.frontPreflightSignalLostCard();
         return a.preflightSignalLostCard();
+    }
+
+    /* Test-only (beta): the room-departure decision on a mesh-free adapter.
+     * Bit 0 says the departure finalises the departed seat now; bit 1 says
+     * this endpoint proposes the tick. Staged directly rather than through a
+     * race bring-up, because every gate here reads adapter state, not the
+     * transport (which pins the tick arithmetic itself). */
+    static unsigned testRoomDeparture(bool raceUp, bool enabled, bool known,
+                                      bool thirdPeer) {
+        MdkrOnlineLiveAdapterOptions o;
+        o.sessionId = 1u;
+        LiveAdapter a(o);
+        a.localEndpointId_ = 200u;
+        a.raceReady_ = raceUp;
+        a.lobbyDropEnabled_ = enabled;
+        if (known) a.peerSlotMask_[300u] = 0x2u;
+        a.meshRoster_.push_back(MdkrMatchPeerSlotOwner{200u, 0x1u});
+        a.meshRoster_.push_back(MdkrMatchPeerSlotOwner{300u, 0x2u});
+        if (thirdPeer) {
+            a.meshRoster_.push_back(MdkrMatchPeerSlotOwner{100u, 0x4u});
+        }
+        if (!a.roomDepartureFinalises(300u)) return 0u;
+        const std::vector<uint64_t> alive = a.survivingEndpoints(300u);
+        return 1u | (mdkr_match_drop_is_proposer(
+                         a.localEndpointId_, alive.data(),
+                         static_cast<unsigned>(alive.size()))
+                         ? 2u
+                         : 0u);
+    }
+
+    /* Test-only (beta): the peer-silence grace on a room departure, staged on
+     * a mesh-free adapter (local 200, departing 300, race epoch 5) so the
+     * decision can be driven without a live peer to fall silent. The room's
+     * verdict opens the grace; `ticksElapsed` is where the authored head has
+     * reached when it is next judged, and `peerSpoke` whether an
+     * authenticated packet arrived from the departed endpoint meanwhile.
+     * Returns a bitfield: 1 the grace is still open, 2 the verdict was held,
+     * 4 the seats were finalised, 8 a finalisation tick was proposed, 16 the
+     * race ended. Never called by the launcher. */
+    static unsigned testDepartureGrace(unsigned graceTicks,
+                                       unsigned ticksElapsed, bool peerSpoke) {
+        MdkrOnlineLiveAdapterOptions o;
+        o.sessionId = 1u;
+        LiveAdapter a(o);
+        a.localEndpointId_ = 200u;
+        a.raceReady_ = true;
+        a.raceEpoch_ = 5u;
+        a.lobbyDropGraceTicks_ = static_cast<uint32_t>(graceTicks);
+        /* Enough of a transport for the tick rule to answer at all: the
+         * arithmetic itself is pinned in test_match_transport.c, and what is
+         * being read here is only WHETHER the grace let it run. */
+        a.raceTransport_.ready = true;
+        a.peerSlotMask_[300u] = 0x2u;
+        a.meshRoster_.push_back(MdkrMatchPeerSlotOwner{200u, 0x1u});
+        a.meshRoster_.push_back(MdkrMatchPeerSlotOwner{300u, 0x2u});
+        a.onRoomDeparture(300u);
+        a.resolveDepartureGrace(300u, peerSpoke ? 1u : 0u,
+                                static_cast<uint32_t>(ticksElapsed));
+        return (a.departureGrace_.count(300u) != 0u ? 1u : 0u) |
+               (a.departureHeld_.count(300u) != 0u ? 2u : 0u) |
+               (a.departureFinalised_.count(300u) != 0u ? 4u : 0u) |
+               (a.pendingDropTicks_.count(300u) != 0u ? 8u : 0u) |
+               (a.racePeerLost_ ? 16u : 0u);
+    }
+
+    /* Test-only (beta): the guard on a PEER's finalisation proposal, on a
+     * mesh-free adapter staged with a 4-endpoint roster (100/200/300/400,
+     * local 200, departing 400 at race epoch 5). Returns true when the
+     * proposal is allowed to reach the finalisation schedule. `sender` is who
+     * claims it, `epoch` the race it names, and `roomVerdict` whether THIS
+     * endpoint has heard the room report 400 gone -- the intersection that
+     * stops a peer ending a race the room never ended. */
+    static bool testDropProposalAccepted(uint64_t sender, uint32_t epoch,
+                                         bool roomVerdict) {
+        MdkrOnlineLiveAdapterOptions o;
+        o.sessionId = 1u;
+        LiveAdapter a(o);
+        a.localEndpointId_ = 200u;
+        a.raceReady_ = true;
+        a.raceEpoch_ = 5u;
+        a.peerSlotMask_[400u] = 0x8u;
+        for (uint64_t id : {100u, 200u, 300u, 400u}) {
+            a.meshRoster_.push_back(MdkrMatchPeerSlotOwner{id, 0x1u});
+        }
+        if (roomVerdict) a.roomDeparted_.insert(400u);
+        a.onRaceDropProposal(sender, 400u, epoch, 4242u);
+        /* Reaching the schedule is what matters; the mesh-free transport
+         * cannot actually take a seat over, so read the recorded agreement. */
+        return a.pendingDropTicks_.count(400u) != 0u;
+    }
+
+    /* Test-only (beta): whether the proposal was not merely accepted but
+     * APPLIED -- the room verdict and an agreed tick both present. `order` 0
+     * is the verdict first, 1 the proposal first, 2 the proposal with no room
+     * verdict at all (which must never apply). */
+    static bool testDropProposalApplied(unsigned order) {
+        MdkrOnlineLiveAdapterOptions o;
+        o.sessionId = 1u;
+        LiveAdapter a(o);
+        a.localEndpointId_ = 200u;
+        a.raceReady_ = true;
+        a.raceEpoch_ = 5u;
+        a.peerSlotMask_[400u] = 0x8u;
+        for (uint64_t id : {100u, 200u, 300u, 400u}) {
+            a.meshRoster_.push_back(MdkrMatchPeerSlotOwner{id, 0x1u});
+        }
+        if (order == 0u) {
+            a.roomDeparted_.insert(400u);
+            a.onRaceDropProposal(100u, 400u, 5u, 4242u);
+        } else if (order == 1u) {
+            a.onRaceDropProposal(100u, 400u, 5u, 4242u);
+            a.roomDeparted_.insert(400u);
+            a.applyDepartureIfAgreed(400u);
+        } else {
+            a.onRaceDropProposal(100u, 400u, 5u, 4242u);
+        }
+        return a.departureFinalised_.count(400u) != 0u;
     }
 
     /* Test-only (beta): force an ICE-down on every REMOTE peer connection of
@@ -2709,6 +4269,10 @@ public:
      * peer that is already gone simply is not reached. */
     void raceSendAbort() {
         if (mesh_) (void)mesh_->sendRaceAbort();
+        mdkr_net_failure_ring_record_host(
+            MDKR_NET_FAILURE_LIFECYCLE, (uint32_t)nowMs_(),
+            MDKR_NET_FAILURE_NO_SLOT, MDKR_NET_LIFECYCLE_RACE_ENDED, nullptr);
+        (void)mdkr_net_failure_ring_dump_beside_evidence();
     }
 
     /* Seal + fan out this endpoint's local input for `newestTick` and the two
@@ -2764,6 +4328,58 @@ public:
         return true;
     }
 
+    /* The transport's own view of forward progress: the oldest tick every
+     * remote slot has confirmed. A stall is this figure standing still while
+     * the authored tick keeps moving. */
+    uint32_t raceConfirmedThrough() const {
+        uint32_t oldest = 0u;
+        bool have = false;
+        for (unsigned slot = 0u; slot < MDKR_NET_INPUT_SLOTS; ++slot) {
+            if ((raceTransport_.remote_slot_mask & (1u << slot)) == 0u) continue;
+            const uint32_t confirmed =
+                raceTransport_.remote_have_confirmed[slot]
+                    ? raceTransport_.remote_confirmed_through[slot]
+                    : 0u;
+            if (!have || confirmed < oldest) {
+                oldest = confirmed;
+                have = true;
+            }
+        }
+        return oldest;
+    }
+
+    /* Hand the forensics ring one progress observation per authored tick,
+     * stamped with the clock the mesh already samples for its ladders. */
+    void raceNoteProgress(uint32_t tick) {
+        MdkrNetFailureStall snapshot;
+        MdkrMatchPeerLinkStats links[MDKR_NET_FAILURE_PEERS];
+        std::memset(&snapshot, 0, sizeof(snapshot));
+        const unsigned count =
+            mesh_ ? mesh_->linkStats(links, MDKR_NET_FAILURE_PEERS) : 0u;
+        for (unsigned index = 0u; index < count; ++index) {
+            const unsigned peer = links[index].rosterIndex;
+            if (peer >= MDKR_NET_FAILURE_PEERS) continue;
+            snapshot.peers[peer].rtt_ms = links[index].rttMs > UINT16_MAX
+                                              ? UINT16_MAX
+                                              : (uint16_t)links[index].rttMs;
+            snapshot.peers[peer].jitter_ms =
+                links[index].jitterMs > UINT16_MAX
+                    ? UINT16_MAX
+                    : (uint16_t)links[index].jitterMs;
+            snapshot.peers[peer].bytes_sent =
+                (uint32_t)links[index].bytesSent;
+            snapshot.peers[peer].bytes_received =
+                (uint32_t)links[index].bytesReceived;
+        }
+        if (tick == raceFirstTick_) {
+            mdkr_net_failure_ring_record_tick(
+                MDKR_NET_FAILURE_LIFECYCLE, tick, MDKR_NET_FAILURE_NO_SLOT,
+                MDKR_NET_LIFECYCLE_RACE_FIRST_TICK, 0u, 0u);
+        }
+        mdkr_net_failure_ring_progress(
+            tick, (uint32_t)nowMs_(), raceConfirmedThrough(), &snapshot);
+    }
+
     bool raceAdvance() {
         if (!raceReady_ || !mesh_) return false;
         raceSendOwned_ = true; /* production loop shape: sweep may assist */
@@ -2787,6 +4403,7 @@ public:
                                              raceNextTick_, local, localCount)) {
             return false;
         }
+        raceNoteProgress(raceNextTick_);
         ++raceNextTick_;
         return true;
     }
@@ -2815,6 +4432,7 @@ public:
                                              raceNextTick_, local, localCount)) {
             return false;
         }
+        raceNoteProgress(raceNextTick_);
         ++raceNextTick_;
         return true;
     }
@@ -2834,6 +4452,10 @@ public:
      * deterministic raceLocalSample fixture (per-tick variation that forces real
      * corrections). The shipped interactive boot never enables it. */
     void raceSetSyntheticInput(bool on) { raceSyntheticInput_ = on; }
+    void raceSetRepair(bool on, uint32_t reaskTicks) {
+        raceRepairEnabled_ = on;
+        repairReaskTicks_ = reaskTicks == 0u ? kRepairReaskTicks : reaskTicks;
+    }
 
     /* Stage the real local pads for the next seal. `local` is in local-seat
      * order (seat i reads controller port i), matching the physical[] the engine
@@ -2931,6 +4553,7 @@ public:
         if (mesh_) {
             const MdkrMatchPeerMeshStats m = mesh_->stats();
             out->meshRejectedState = m.rejectedStateEnvelopes;
+            out->meshRejectedAuthority = m.rejectedAuthorityEnvelopes;
             out->meshIgnoredStaleSignals = m.ignoredStaleSignals;
             out->meshDroppedEvents = m.droppedEvents;
         }
@@ -2952,6 +4575,11 @@ public:
         }
         out->resendSweeps = raceResendSweeps_;
         out->resendBundles = raceResendBundles_;
+        out->repairRequestsSent = repairRequestsSent_;
+        out->repairAnswersSent = repairAnswersSent_;
+        out->repairAnswersRefused = repairAnswersRefused_;
+        out->repairAnswersReceived = repairAnswersReceived_;
+        out->repairTicksRestored = repairTicksRestored_;
     }
 
     /* ---- Race-results handoff from the launcher --------------------------- */
@@ -3153,6 +4781,22 @@ private:
     uint32_t raceFirstTick_ = 1u;
     uint32_t raceNextTick_ = 1u;
     uint8_t raceInputDelay_ = 2u;
+    /* Pre-flight route quality: the caller-clocked measurement phase, the
+     * record it produced, and whether the measured report has been published. */
+    MdkrMatchRouteMeasureState routeMeasure_{};
+    MdkrMatchRouteMeasurement routeMeasurement_{};
+    bool routeMeasureRunning_ = false;
+    bool routeMeasured_ = false;
+    bool routeReportSent_ = false;
+    /* The held record came from a window a race start cut short, so it is
+     * retired at the next race-latch reset instead of held for the round. */
+    bool routeCutShort_ = false;
+    uint64_t routeQueueDropsAtBegin_ = 0u;
+    /* One echo budget per peer, charged against the mesh pump now draining
+     * (see chargeRouteEcho). meshPumpSequence_ is the launcher's own pump
+     * count, so it is the one clock a peer cannot influence. */
+    std::map<uint64_t, RouteEchoBudget> routeEchoBudget_;
+    uint64_t meshPumpSequence_ = 0u;
     std::map<uint64_t, uint8_t> peerSlotMask_;
     /* Once-per-epoch lobby loading handshake latches. */
     bool ackLoadedSent_ = false;
@@ -3161,7 +4805,37 @@ private:
     /* Resend sweep + connection quality; peer-lost flag. */
     bool raceSendOwned_ = false;   /* true while race_advance drives the send */
     bool raceDegraded_ = false;
+    /* A7 live liveness: one soft-fail/hard-fail tracker per remote roster
+     * slot, indexed like linkStats()'s rosterIndex. Reset alongside
+     * raceDegraded_ so a rekeyed/rematched race never inherits a prior
+     * race's miss streak. */
+    std::array<MdkrPeerLivenessTracker, MDKR_NET_FAILURE_PEERS> peerLiveness_{};
     bool racePeerLost_ = false;
+    /* N8. `roomDeparted_` is the endpoints THIS endpoint heard the ROOM
+     * report as gone -- the only thing that entitles anything to finalise
+     * their seats, and the roster the proposer rule reads.
+     * `pendingDropTicks_` holds agreed finalisation ticks, whether this
+     * endpoint proposed them or accepted a peer's proposal; a tick may arrive
+     * before the room's verdict does, so the two are intersected rather than
+     * ordered. `departureFinalised_` is the seats already committed, so a
+     * repeated verdict or proposal cannot re-latch or re-dump. All three are
+     * race-scoped and cleared with the other race latches. */
+    std::set<uint64_t> roomDeparted_;
+    std::map<uint64_t, uint32_t> pendingDropTicks_;
+    std::set<uint64_t> departureFinalised_;
+    /* D1. `departureGrace_` is the verdicts still listening for the peer, and
+     * `departureHeld_` the ones the peer talked its way out of -- dropped for
+     * the rest of this race, and remembered so the same verdict cannot re-arm
+     * the grace. Race-scoped like the three above. */
+    std::map<uint64_t, DepartureGrace> departureGrace_;
+    std::set<uint64_t> departureHeld_;
+    /* Which (sender, DropRefusal) pairs already reached the forensics ring
+     * this race, one bit per reason, and the total refusals behind them.
+     * Race-scoped like the three above. */
+    std::map<uint64_t, uint8_t> dropRefusalsRecorded_;
+    uint32_t dropRefusalsSeen_ = 0u;
+    bool lobbyDropEnabled_ = true;
+    uint32_t lobbyDropGraceTicks_ = kLobbyDropGraceTicks;
     bool raceAbortReceived_ = false; /* peer told us it aborted the race */
     bool raceLossFailureLatched_ = false; /* failure_ came from mapLostReason */
     bool raceEndFailureLatched_ = false;  /* suppress stale lobby under a
@@ -3175,6 +4849,33 @@ private:
     unsigned raceSweepServiceCalls_ = 0u;
     uint32_t raceResendSweeps_ = 0u;
     uint32_t raceResendBundles_ = 0u;
+    /* Input-gap repair on the authority lane. One outstanding request per
+     * remote canonical slot, keyed on the gap's first tick so a gap that
+     * moves is asked for again and one that stands is not re-asked. */
+    bool raceRepairEnabled_ = true;
+    bool repairRequested_[MDKR_NET_INPUT_SLOTS] = {};
+    uint32_t repairRequestedTick_[MDKR_NET_INPUT_SLOTS] = {};
+    /* The drain frontier when each request went out, so a gap that still
+     * stands after the re-ask window is asked for again. */
+    uint32_t repairRequestedAtTick_[MDKR_NET_INPUT_SLOTS] = {};
+    /* One answer budget per peer, charged against this endpoint's own
+     * authored tick (see match_input_repair.h). */
+    std::map<uint64_t, MdkrMatchInputRepairBudget> repairAnswerBudget_;
+    uint32_t repairRequestsSent_ = 0u;
+    uint32_t repairAnswersSent_ = 0u;
+    uint32_t repairAnswersRefused_ = 0u;
+    uint32_t repairAnswersReceived_ = 0u;
+    uint32_t repairTicksRestored_ = 0u;
+    /* Authored ticks a requester waits before asking again for a gap that
+     * still stands. A repair round trip is the request, the author's next
+     * service and the answer's arrival -- three authored ticks at 30 Hz on a
+     * 100 ms route -- so this leaves room for roughly three attempts before
+     * the run ages past MDKR_ROLLBACK_MAX_INPUT_AGE_TICKS and the timeline is
+     * unreconcilable however it is asked. Counted in authored ticks rather
+     * than service calls, so the policy does not move with the frame rate.
+     * The test seam overrides it to replay the single-shot latch. */
+    static constexpr uint32_t kRepairReaskTicks = 8u;
+    uint32_t repairReaskTicks_ = kRepairReaskTicks;
     static constexpr unsigned kRaceSweepServicePeriod = 30u;
     static constexpr uint32_t kRaceSweepWindow = 60u;
 
@@ -3206,7 +4907,20 @@ private:
     bool installed_ = false;
     MdkrMatchPeerGraph graph_{};
     std::map<uint64_t, MdkrMatchPreflightFragmentState> fragStates_;
-    std::map<uint64_t, MdkrMatchPreflightAttestationV1> pendingPeerAtts_;
+    /* An attestation queued before preflight init, together with the
+     * connection generation the TRANSPORT authenticated it under. The
+     * generation has to travel with it: mdkr_match_preflight_submit() proves a
+     * peer owns its attestation by comparing the body's connection_generation
+     * against an authenticated one supplied by the caller, so re-deriving it at
+     * drain time from anything the body carries would make that check compare a
+     * value against itself. The drain used meshGeneration_ -- this endpoint's
+     * generation, not the sender's -- so every queued attestation was refused
+     * as AUTHENTICATED_SOURCE_MISMATCH the moment the two diverged. */
+    struct PendingPeerAttestation {
+        uint32_t authenticatedGeneration;
+        MdkrMatchPreflightAttestationV1 attestation;
+    };
+    std::map<uint64_t, PendingPeerAttestation> pendingPeerAtts_;
 
     /* Diagnostics + non-silent view timeout (see logPhaseAndTimeoutAnchor /
      * timeoutExpired). lastPhaseKey_ de-dups the [ROOM-PHASE] spine;
@@ -3255,6 +4969,13 @@ std::unique_ptr<IMdkrOnlineAdapter> mdkr_online_live_adapter_create(
         return nullptr;
     }
     return std::unique_ptr<IMdkrOnlineAdapter>(new LiveAdapter(options));
+}
+
+bool mdkr_online_live_adapter_test_set_route_measurement(
+    IMdkrOnlineAdapter *adapter, unsigned p95_rtt_ms) {
+    if (adapter == nullptr) return false;
+    LiveAdapter *live = adapter->mdkrResolveLive();
+    return live != nullptr && live->setRouteMeasurementForTest(p95_rtt_ms);
 }
 
 bool mdkr_online_live_adapter_probe(const IMdkrOnlineAdapter *adapter,
@@ -3314,8 +5035,61 @@ bool mdkr_online_live_adapter_test_race_end_demotes(
     return LiveAdapter::raceEndFailureDemotes(incoming, current);
 }
 
+bool mdkr_online_live_adapter_test_rekey_restarts_route_measurement(
+    bool via_reverify) {
+    return LiveAdapter::testRekeyRestartsRouteMeasurement(via_reverify);
+}
+
+bool mdkr_online_live_adapter_test_race_latch_reset_keeps_route(bool cut_short) {
+    return LiveAdapter::testRaceLatchResetKeepsRoute(cut_short);
+}
+
 bool mdkr_online_live_adapter_test_rekey_clears_peer_loss(bool via_abort) {
     return LiveAdapter::testRekeyClearsPeerLoss(via_abort);
+}
+
+unsigned mdkr_online_live_adapter_test_room_departure(
+    bool race_up, bool enabled, bool known, bool third_peer) {
+    return LiveAdapter::testRoomDeparture(race_up, enabled, known, third_peer);
+}
+
+bool mdkr_online_live_adapter_test_drop_proposal_accepted(
+    uint64_t sender, uint32_t epoch, bool room_verdict) {
+    return LiveAdapter::testDropProposalAccepted(sender, epoch, room_verdict);
+}
+
+bool mdkr_online_live_adapter_test_drop_proposal_applied(unsigned order) {
+    return LiveAdapter::testDropProposalApplied(order);
+}
+
+unsigned mdkr_online_live_adapter_test_route_echoes_allowed(
+    unsigned peers, unsigned probes_per_pump, unsigned pumps) {
+    return LiveAdapter::testRouteEchoesAllowed(peers, probes_per_pump, pumps);
+}
+
+unsigned mdkr_online_live_adapter_test_departure_grace(unsigned grace_ticks,
+                                                       unsigned ticks_elapsed,
+                                                       bool peer_spoke) {
+    return LiveAdapter::testDepartureGrace(grace_ticks, ticks_elapsed,
+                                           peer_spoke);
+}
+
+unsigned mdkr_online_live_adapter_test_drop_refusal_records(unsigned rounds) {
+    return LiveAdapter::testDropRefusalRecords(rounds);
+}
+
+bool mdkr_online_live_adapter_test_preflight_graph_digest(
+    unsigned count, unsigned local_index, unsigned ready_mask,
+    unsigned gen_mask, bool descending,
+    uint8_t digest[MDKR_MATCH_PREFLIGHT_DIGEST_BYTES]) {
+    return LiveAdapter::testPreflightGraphDigest(count, local_index, ready_mask,
+                                                 gen_mask, descending, digest);
+}
+
+bool mdkr_online_live_adapter_test_preflight_star_digest(
+    unsigned count, unsigned local_index,
+    uint8_t digest[MDKR_MATCH_PREFLIGHT_DIGEST_BYTES]) {
+    return LiveAdapter::testPreflightStarDigest(count, local_index, digest);
 }
 
 bool mdkr_online_live_adapter_test_reverify_clears_peer_loss(bool via_abort) {
@@ -3368,6 +5142,15 @@ bool mdkr_online_live_adapter_race_advance(IMdkrOnlineAdapter *adapter) {
     if (adapter == nullptr) return false;
     LiveAdapter *live = adapter->mdkrResolveLive();
     return live != nullptr && live->raceAdvance();
+}
+
+bool mdkr_online_live_adapter_race_set_repair(
+    IMdkrOnlineAdapter *adapter, bool on, uint32_t reask_ticks) {
+    if (adapter == nullptr) return false;
+    LiveAdapter *live = adapter->mdkrResolveLive();
+    if (live == nullptr) return false;
+    live->raceSetRepair(on, reask_ticks);
+    return true;
 }
 
 bool mdkr_online_live_adapter_race_set_synthetic_input(

@@ -1,0 +1,71 @@
+diff --git a/src/impl/queue.hpp b/src/impl/queue.hpp
+index dde9134..3f6c9f8 100644
+--- a/src/impl/queue.hpp
++++ b/src/impl/queue.hpp
+@@ -10,6 +10,7 @@
+ #define RTC_IMPL_QUEUE_H
+ 
+ #include "common.hpp"
++#include "queued_work_admission.h"
+ 
+ #include <atomic>
+ #include <chrono>
+@@ -94,8 +95,7 @@ template <typename T> void Queue<T>::push(T element) {
+ 	if (mStopping)
+ 		return;
+ 
+-	mAmount += mAmountFunction(element);
+-	mQueue.emplace(std::move(element));
++	mdkrCommitQueueInsertion(mQueue, mAmount, std::move(element), mAmountFunction);
+ }
+ 
+ template <typename T> bool Queue<T>::tryPush(T element) {
+@@ -103,8 +103,7 @@ template <typename T> bool Queue<T>::tryPush(T element) {
+ 	if ((mLimit > 0 && mQueue.size() >= mLimit) || mStopping)
+ 		return false;
+ 
+-	mAmount += mAmountFunction(element);
+-	mQueue.emplace(std::move(element));
++	mdkrCommitQueueInsertion(mQueue, mAmount, std::move(element), mAmountFunction);
+ 	return true;
+ }
+ 
+diff --git a/src/impl/threadpool.cpp b/src/impl/threadpool.cpp
+index 1fda4e2..fe1aa77 100644
+--- a/src/impl/threadpool.cpp
++++ b/src/impl/threadpool.cpp
+@@ -77,7 +77,7 @@ std::function<void()> ThreadPool::dequeue() {
+ 		if (!mTasks.empty()) {
+ 			time = mTasks.top().time;
+ 			if (*time <= clock::now()) {
+-				auto func = std::move(mTasks.top().func);
++				auto func = mTasks.top().takeCallable();
+ 				mTasks.pop();
+ 				return func;
+ 			}
+diff --git a/src/impl/threadpool.hpp b/src/impl/threadpool.hpp
+index 1cc2073..ae18c25 100644
+--- a/src/impl/threadpool.hpp
++++ b/src/impl/threadpool.hpp
+@@ -12,6 +12,7 @@
+ #include "common.hpp"
+ #include "init.hpp"
+ #include "internals.hpp"
++#include "queued_work_admission.h"
+ 
+ #include <chrono>
+ #include <condition_variable>
+@@ -69,12 +70,7 @@ private:
+ 	std::atomic<int> mBusyWorkers = 0;
+ 	std::atomic<bool> mJoining = false;
+ 
+-	struct Task {
+-		clock::time_point time;
+-		std::function<void()> func;
+-		bool operator>(const Task &other) const { return time > other.time; }
+-		bool operator<(const Task &other) const { return time < other.time; }
+-	};
++	using Task = MdkrScheduledWork<clock::time_point>;
+ 	std::priority_queue<Task, std::deque<Task>, std::greater<Task>> mTasks;
+ 
+ 	std::condition_variable mTasksCondition, mWaitingCondition;

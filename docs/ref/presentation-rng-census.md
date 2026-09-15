@@ -1,0 +1,291 @@
+# Presentation RNG census
+
+Status: **census complete; all eight latent callers redirected
+cadence-conditionally (2026-09-03).** The census originally found nothing
+redirectable, because the one route it could take spent an ungated
+compatibility target. That target is gated now — `check_authored_rng_compat.py`
+carries an enhanced-cadence arm — so the redirect was taken, measured, and the
+enhanced digest rebaselined once. This document records what every
+`rand_range()` caller does, which stream it draws from, and the measurements
+that decide it.
+
+## The two streams
+
+`rand_range()` (`game/src/hasm/math_util.c:246`) steps `gCurrentRNGSeed`. That
+word and `gPrevRNGSeed` are registered in the rollback snapshot as
+`TAG_RNG_CURRENT` / `TAG_RNG_PREVIOUS`
+(`platform/rollback/rollback_game_authority.c:121-122,491-492`) and the
+`[SIMHASH]` v3 state hash covers the seed directly (`platform/sim_hash.c:26`).
+Everything that draws from it is authoritative by construction.
+
+`presentation_rand_range()` (`platform/math_util_native.c:272`) steps
+`gPresentationRNGSeed`, a file-static word in the platform translation unit. It
+is deliberately outside the snapshot registry, so nothing it produces can steer
+a rollback or a peer. It uses the ROM generator's exact step and inclusive-range
+semantics and is seeded from a constant derived from the ROM seed — **not** from
+host state, because lanes that compare pixels between two arms of one route
+require the presentation stream to be reproducible run to run.
+
+`cadence_compat_rand_range()` (`platform/math_util_native.c:298`) is the bridge:
+at the shipping two-field cadence it routes back to `rand_range()` for
+byte-exact ROM ordering, and only at the opt-in enhanced cadence does it use the
+presentation stream.
+
+## The generator cycles, and that limits what a digest can prove
+
+`rand_range()` is not injective. From the boot seed `0x5141564D` it enters a
+cycle of **period 20** after 11 draws, so `gCurrentRNGSeed` thereafter only ever
+takes 20 values. Two builds whose authoritative draw counts differ by *k*
+produce byte-identical streams whenever *k* ≡ 0 (mod 20), and phase-shifted
+streams otherwise.
+
+Every "the digest did not move" statement in this document is therefore a
+statement about *k* mod 20, not about the draw. Measured on this tree with the
+`MDKR_TEST_AUTH_RNG_BURN` seam: 20 extra authoritative draws leave both arms of
+`check_authored_rng_compat.py` byte-identical (`191bee35`, `c2ac09ae`) and every
+other stream oracle green. That is why each arm now also pins the authoritative
+and presentation **draw counts**, read from the run's own `[RNGDRAWS]` line;
+those move one for one and have no blind spot.
+
+## The rule the census applies
+
+A caller is redirectable only if **both** hold:
+
+1. Its *output* never reaches authoritative state, and
+2. Its *draw* is not a shared-sequence event that an ordering-sensitive gate
+   pins.
+
+Condition 2 is the one that decides this census, and it is easy to miss. The
+two streams are linear sequences. Removing any draw from the authoritative
+stream shifts every subsequent value for every downstream consumer, so a
+redirect changes the race even when the redirected value itself is only ever
+turned into a pitch or a palette index. Verdicts below therefore separate "what
+the value does" from "what the draw does".
+
+**This argument applies only to an UNCONDITIONAL redirect** — one that moves a
+caller onto the presentation stream at every cadence. A cadence-conditional
+redirect, the pattern the tree already uses for the 24 sites below, does not
+shift the stream any oracle records; what it spends is something else. See
+"What would change the answer".
+
+## Measurements
+
+Two callers were redirected, measured, and reverted. Both are cases where
+condition 1 holds and condition 2 does not.
+
+**Engine audio jitter** — `game/src/audio_vehicle.c:517-518`. `engineJitter` is
+read only at `audio_vehicle.c:525-526`, where it becomes a pitch and volume
+delta; the value never leaves audio. A probe build counted **989 draws** on the
+3600-frame determinism route with `MDKR_AUDIO=0`, so the caller runs whether or
+not anything is listening. Redirected to the presentation stream,
+`python3 tests/check_state_hash.py --build build` fails:
+
+```
+check_state_hash: FAIL
+  - v3 particle field-set control changed ticks NONE — expected exactly [2710].
+```
+
+Retail ownership of this draw is independently pinned: the header of
+`tests/check_authored_rng_compat.py` records that the ROM's `racer_sound_car`
+consumes the shared RNG stream, proved against hardware with the ares
+PC/return-address witness.
+
+**Menu image fields** — `game/src/menu.c:16916-16918` (now `:16936-16938`). `unk1A`/`unk1B`/`unk1C`
+on `gMenuImages` are written here and read nowhere in the tree. A probe counted
+**10 draws** on the same route, all of them before the race starts. Redirected,
+`check_state_hash.py` still passes. That is not a hole in it: its arms compare
+the binary against itself, which is the invariance it exists to state, and a
+uniform stream shift is not that question. RNG-stream shifts are adjudicated by
+`check_authored_rng_compat.py` at original cadence, and by nothing at enhanced
+cadence. Here the oracle fails:
+
+```
+$ python3 tests/check_authored_rng_compat.py --build build
+FAIL: raw stream SHA-256 bb1e7c49b94d1a067ab9922520205d432bcb5e7daae3baef2b64f7cde2072d98,
+      expected 191bee35a973b2bde6133cc6ae2c2c41961a97ec72a9b034a08574d53aacba5b
+```
+
+Ten draws of a value nothing reads, taken before the green light, move the whole
+recorded race. That is condition 2 stated as a number.
+
+## Census
+
+113 logical call sites across `game/src`. `game/src/game_ui.c` reaches the
+generator through the `hud_rand_range` macro (`game_ui.c:43/47`) and
+`game/src/textures_sprites.c:2010` through an explicit branch; both are counted
+once per source line.
+
+| Verdict | Sites |
+|---|---|
+| Simulation | 80 |
+| Already split (cadence-conditional) | 32 |
+| Not compiled | 1 |
+| **Redirectable unconditionally** | **0** |
+
+The 8 "presentation output, stream-owning draw" sites of the first edition are
+now part of the 32 already-split ones: they were redirected
+cadence-conditionally on 2026-09-03, one class per commit, with the
+original-cadence digest unmoved after each. **Redirectable unconditionally** is
+still zero, and for the unchanged reason — an unconditional redirect moves the
+ROM-ordering stream, which the original arm exists to hold.
+
+### Simulation — 80 sites
+
+| Caller | File:line | Path | Evidence |
+|---|---|---|---|
+| `setup_particle_velocity`, `setup_particle_position`, `create_general_particle` | `particles.c:1200-1940` (25) | particle spawn | Particle pools and counts are snapshot-registered (`TAG_ALLOC_PARTICLE_*`, `gParticleCount`); `check_state_hash.py` carries a v3 particle field-family control. |
+| `weather_reset`, `rain_render_splashes`, `rain_splash_tick`, `rain_lightning` | `weather.c:452-1538` (14) | weather integrator | `weather.c:1455` documents these rolls as authoritative and deliberately unbracketed: racer AI consumes the seed they leave (`racer.c:338/4335/4539/5219/5223/5415/5872/9019`). |
+| `obj_loop_scenery`, `obj_init_fish`, `obj_loop_fish`, `obj_loop_lavaspurt`, `obj_init_bombexplosion`, `obj_loop_parkwarden`, `obj_loop_butterfly`, `obj_loop_bubbler`, `obj_loop_frog` | `object_functions.c:196-7067` (17) | object behaviour | Writes object state (`modelIndex`, timers, velocities) that the object list carries and the state hash covers. |
+| `func_80042D20`, `roll_percent_chance`, `racer_ai_challenge`, `update_player_racer`, `func_8004F7F4`, `func_80050A28`, `handle_racer_head_turning`, `play_random_character_voice`, `update_AI_racer` | `racer.c:750-9969` (15) | racer AI and physics | AI skill, steering jitter (`RACER_STEER_JITTER_OFFSET` feeds `gCurrentStickX`), head angle and voice selection all sit inside the authoritative racer update. |
+| `racerfx_alloc` | `objects.c:748-765` (4) | racer FX allocation | Seeds shield/boost object fields at allocation time, inside the object list. |
+| `charselect_assign_ai` | `menu.c:9335` | AI roster | Chooses which characters the AI races; a race input, not a drawing. |
+| `func_80092188` | `menu.c:12125` | menu behaviour | Unidentified menu branch. Classified simulation on doubt, per the conservative rule. |
+| `waves_init` | `waves.c:750-751` (2) | wave field | `gWaveHeightIndices` is snapshot-registered (`TAG_ALLOC_WAVE_HEIGHT_INDICES`). |
+| `spawn_boss_hazard` | `vehicle_smokey.c:323` | object spawn | Sets `animFrame` on a spawned object, a hashed object field. |
+
+### Presentation output, stream-owning draw — 8 sites, all redirected
+
+Condition 1 holds for all eight: the value never reaches authoritative state.
+Condition 2 fails for an *unconditional* redirect, which is why the first
+edition of this census left them in place. All eight now draw through
+`cadence_compat_rand_range()`: authoritative stream at the shipping two-field
+cadence, presentation stream at the opt-in enhanced cadence.
+
+**What the classification rests on, and what it does not.** It rests on reading
+each consumer: `engineJitter` is read only where it becomes a pitch and volume
+delta; `gMenuImages[].unk1A/1B/1C` are written and read nowhere in the tree;
+the boss `randomOffset` only indexes `gBossSoundIDOffset[]`; the credits pick
+only selects a `gCreditsArray` string. None of the four appears in
+`platform/sim_hash.c`, and none is snapshot-registered.
+
+It does **not** rest on the original-cadence digest staying at `191bee35` after
+each redirect. That result is structural, not evidential:
+`cadence_compat_rand_range()` branches on `platform_sim_tick_fields()`, which is
+a per-run constant, so under `MDKR_SYNTH_FIELDS=2` every redirected site calls
+`rand_range()` down the identical path it called before. The original arm could
+not have moved. It is a guard against writing the redirect wrongly — putting a
+site on the presentation stream unconditionally, say — and nothing more. It is
+recorded below because a guard that held is worth recording, not because it
+proves anything about the consumers.
+
+Each class was redirected in its own commit and measured with both arms of
+`check_authored_rng_compat.py`, `check_state_hash.py`, `check_render_purity.py`
+and `check_presentation_rng_split.py`.
+
+| Caller | File:line | Path | Verdict | Evidence |
+|---|---|---|---|---|
+| `racer_sound_car` | `audio_vehicle.c:517-518` (2) | engine audio | **Redirected** | 989 draws on the determinism route with `MDKR_AUDIO=0`. Enhanced digest `64bf3d28` → `c2ac09ae` — this class is the entire enhanced rebaseline, and it registered because its diverted count is not a multiple of 20, so it shifted the cycle's phase and every consumer with it. `check_state_hash.py` passes, unlike the unconditional redirect the first edition measured, because the shipping cadence still calls `rand_range()`. The ares PC/return-address witness that pins retail ownership of these draws still describes the shipping build. |
+| `racer_boss_sound_spatial`, `play_random_boss_sound` | `vehicle_tricky.c:249,261` (2) | boss sound choice | **Redirected** | Neither arm of the oracle moves, and here that genuinely is the route: `race_state_oracle` is Ancient Lake and never fights a boss, so the draw count does not move either. `check_weather_rng_order.py` does reach this code — Wizpig 1, level 37 — and stayed at `54e42a67`, but at original cadence, where the redirect is a no-op by construction. No gate in the tree exercises these two sites at enhanced cadence; see Gaps. |
+| `menu_image_load` | `menu.c:16936-16938` (3) | menu image fields | **Redirected** | The enhanced digest does not move, and the reason is the generator, not the route: this class's net effect is exactly **−20 authoritative draws** (16576 → 16556, from `[RNGDRAWS]`), one full turn of the 20-draw cycle, which no digest can see. The route makes 10 `menu_image_load()` calls of 3 draws each; 30 leave the authoritative stream at the call sites and the pre-race path returns 10, for the −20 net. An **unconditional** redirect of these three still moves the original arm to `bb1e7c49`, reproduced exactly as the first edition recorded it; that difference is what the cadence switch buys. |
+| `menu_credits_init` | `menu.c:15981` | credits cheat pick | **Redirected** | No recorded route reaches the credits, so neither the digest nor the draw count moves. Redirected on the same argument as the rest: the draw precedes a return to racing. Unexercised; see Gaps. |
+
+No caller in this class was reverted.
+
+### Gaps
+
+Two of the four classes are exercised by no gate at enhanced cadence — the boss
+sound because no recorded route fights a boss, the credits pick because no
+recorded route reaches the credits. Their redirects are correct by inspection
+and identical in shape to the two that are measured, but "no gate moved" is not
+evidence about them; it is the absence of evidence. A boss route recorded at
+enhanced cadence would close the first.
+
+### Already split before this census — 24 sites
+
+On the presentation stream at enhanced cadence, back on the authoritative
+stream at the shipping cadence, via `cadence_compat_rand_range()`. This is the
+existing redirect and the reason the census finds nothing new to move: the only
+callers whose draws can leave the authoritative sequence are ones already
+carrying a compatibility switch to put them back.
+
+| Caller | File:line | Path |
+|---|---|---|
+| `hud_init_element`, `hud_time_trial_authored_rng_tick`, `hud_wrong_way_authoritative_tick`, `hud_race_start_authoritative_tick`, `hud_main_time_trial`, `hud_race_start`, `hud_wrong_way` | `game_ui.c:1002-3936` (23) | HUD voices and nag timers |
+| `tex_animate_texture_impl` | `textures_sprites.c:2010` | animated palette pick |
+
+### Not compiled — 1 site
+
+| Caller | File:line | Evidence |
+|---|---|---|
+| `__amHandleFrameMsg` | `audiomgr.c:479` | Inside `#ifdef ANTI_TAMPER`, which this build never defines. The anti-piracy output-frequency dither is not in the binary. |
+
+## The gate
+
+`tests/check_presentation_rng_split.py` pins the split that exists.
+`MDKR_RNG_SPLIT_TRACE=1` emits one `[RNGSPLIT]` row per **presented** frame.
+Be precise about the route: at enhanced cadence with `MDKR_SYNTH_FIELDS=1` the
+simulation ticks on every presented frame and the `[SIMHASH]` hash changes on
+every one of them, so these are not frames that present without advancing the
+simulation. They are authoritative ticks whose settled menu-idle logic draws no
+random numbers, while texture animation keeps drawing from the presentation
+stream — two streams running side by side over the same frames, one of them
+required to stand still.
+
+Both halves are asserted, because either alone passes for the wrong reason — a
+run drawing no randomness at all would satisfy "the seeds did not move". Over
+251 settled frames the lane requires `gCurrentRNGSeed`/`gPrevRNGSeed`
+byte-identical while the presentation counter advances 235 draws across 30
+distinct seeds, requires the authoritative seed to have moved *before* the
+window (so a trace printing a constant cannot pass), and requires two runs to
+be byte-identical. `MDKR_TEST_RENDER_IMPURITY=1` is the positive control: the
+existing render-purity seam performs one authoritative RNG write inside every
+render, which must break the pin while leaving the presentation draw counts
+untouched.
+
+At the shipping two-field cadence the presentation stream never advances on
+this route — every HUD roll routes back through
+`cadence_compat_rand_range()` — so the lane pins the enhanced cadence, where the
+split is live and the assertion has something to see.
+
+## What would change the answer
+
+A caller becomes redirectable when its draw stops being shared, or when the
+redirect is arranged so that no recorded stream ever sees it. Three routes, none
+taken here:
+
+- **Cadence-conditional redirect — the cheapest route, and the one this census
+  first declined and has since taken (2026-09-03).** Route the 8 latent callers
+  through
+  `cadence_compat_rand_range()` (`platform/math_util_native.c:300-305`) exactly
+  as the existing 24 are: authoritative stream at the shipping cadence,
+  presentation stream only at the opt-in enhanced cadence. No oracle rebaseline
+  is needed and every existing gate stays green, because every gate that records
+  an RNG stream records the original arm — `check_authored_rng_compat.py:189`
+  runs `MDKR_SIMULATION_CADENCE="original"` with `MDKR_SYNTH_FIELDS="2"`,
+  `check_state_hash.py` sets no cadence and takes that same default, and
+  `check_weather_rng_order.py:69` pins `EXPECTED_ORIGINAL_SHA256`, the original
+  arm alone.
+
+  What it spends is the second compatibility target named in the comment at
+  `platform/math_util_native.c:296-299`: "the pre-FPS native gameplay stream at
+  opt-in enhanced cadence". No gate held that target when this census was
+  written, so a redirect would have moved the enhanced-cadence authoritative
+  stream silently and nothing in the tree would have reported it. Spending an
+  ungated compatibility target is an owner decision, not a test change — which
+  is why the redirect stopped here and the eight callers were listed instead of
+  moved.
+
+  **That gap is now closed.** `tests/check_authored_rng_compat.py` carries an
+  `enhanced` arm: the route's own enhanced arm (9,500 frames, one synthetic
+  field), 54,880 all-racer rows, pinned by raw SHA-256 exactly as the original
+  arm is. It is the first pin of that stream, so it records what the stream is
+  today rather than what it should be, and it is expected to move exactly once
+  — in the commit that performs the redirect, where the original-cadence
+  digest must not move at all. With both arms recorded, a cadence-conditional
+  redirect is no longer an ungated spend: it is a measured one.
+
+  **Done.** All eight were redirected, one class per commit, and the enhanced
+  arm was rebaselined exactly once, `64bf3d28` → `c2ac09ae`. Only the
+  engine-jitter class moved that digest — not because the others did nothing,
+  but because a digest sees a draw-count change only when it is not a multiple
+  of the generator's 20-draw cycle. The arms now carry draw-count goldens for
+  exactly that reason. Per-class evidence is in the verdict table above.
+
+- Give a subsystem its own authoritative sub-stream seeded from the match seed,
+  so removing its draws cannot shift anyone else's. That is a wire-format and
+  snapshot change, and rebaselines `check_authored_rng_compat.py`.
+
+- Accept a rebaseline of the authored oracle for an unconditional redirect of a
+  caller proved presentation-only. That trades away the ROM-ordering
+  compatibility the oracle exists to hold, and is an owner decision, not a test
+  change.

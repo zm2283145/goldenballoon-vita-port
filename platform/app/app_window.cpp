@@ -172,17 +172,27 @@ bool AppWindow_consumeCompleted(MdkrVideoRuntimeResult *result, bool *fresh) {
 void AppWindow_normalizeWheel(SDL_Event &event) {
     if (event.type != SDL_MOUSEWHEEL) return;
     if (event.wheel.direction != SDL_MOUSEWHEEL_FLIPPED) return;
-    /* SDL already negated the deltas to the traditional-wheel sense; undo that so
-     * ImGui scrolls in the direction the OS (and the rest of the desktop) does.
-     * Both the integer and the precise deltas carry the gesture depending on the
-     * device, so flip both, then re-tag NORMAL so nothing downstream flips it a
-     * second time. */
-    event.wheel.x = -event.wheel.x;
-    event.wheel.y = -event.wheel.y;
-#if SDL_VERSION_ATLEAST(2, 0, 18)
-    event.wheel.preciseX = -event.wheel.preciseX;
-    event.wheel.preciseY = -event.wheel.preciseY;
-#endif
+    /*
+     * This used to negate the deltas, on the premise that "SDL already negated
+     * them to the traditional-wheel sense". SDL does not.
+     *
+     * SDL2 2.32.10, src/video/cocoa/SDL_cocoamouse.m: `y = [event deltaY]`, and
+     * SDL_MOUSEWHEEL_FLIPPED is set from -[NSEvent isDirectionInvertedFromDevice]
+     * WITHOUT touching the value. macOS has already applied the player's
+     * natural-scrolling preference to deltaY, so the number SDL hands over is
+     * the one the gesture asked for in either mode -- which is why almost no
+     * Mac application reads that flag. Dear ImGui's own SDL2 backend does not:
+     * imgui_impl_sdl2.cpp takes `wheel_y = event->wheel.preciseY` and ignores
+     * `direction` entirely.
+     *
+     * Negating here was therefore the only inversion in the chain, and it is
+     * the reason the launcher scrolled backwards for anyone with natural
+     * scrolling turned on -- which is the macOS default.
+     *
+     * The flag is still cleared. Nothing downstream reads it today, and leaving
+     * a FLIPPED tag on an event whose values are already correct is an
+     * invitation for the next bridge to "fix" it a second time.
+     */
     event.wheel.direction = SDL_MOUSEWHEEL_NORMAL;
 }
 

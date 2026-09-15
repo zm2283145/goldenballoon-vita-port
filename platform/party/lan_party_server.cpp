@@ -1,4 +1,5 @@
 #include "lan_party_server.h"
+#include "net/native_socket_lifetime.h"
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -7,6 +8,7 @@ using SocketHandle = SOCKET;
 #else
 #include <arpa/inet.h>
 #include <cerrno>
+#include <fcntl.h>
 #include <ifaddrs.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -21,7 +23,9 @@ using SocketHandle = int;
 #include <chrono>
 #include <cstring>
 #include <mutex>
+#include <new>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -30,11 +34,33 @@ using SocketHandle = int;
 void (*mdkr_lan_party_test_send_hook)() = nullptr;
 unsigned mdkr_lan_party_test_http_deadline_ms = 0u;
 unsigned mdkr_lan_party_test_ws_idle_deadline_ms = 0u;
+std::atomic<MdkrLanPartyTestFailure> mdkr_lan_party_test_failure{MdkrLanPartyTestFailure::None};
+std::atomic<unsigned> mdkr_lan_party_test_failures_observed{0u};
+std::atomic<unsigned> mdkr_lan_party_test_live_connections{0u};
 #endif
 
 namespace {
 
 using Clock = std::chrono::steady_clock;
+
+#ifdef MDKR_LAN_PARTY_TESTING
+bool takeFailure(MdkrLanPartyTestFailure stage) {
+    if (mdkr_lan_party_test_failure.compare_exchange_strong(stage, MdkrLanPartyTestFailure::None)) {
+        ++mdkr_lan_party_test_failures_observed;
+        return true;
+    }
+    return false;
+}
+
+void failAt(MdkrLanPartyTestFailure stage) {
+    if (takeFailure(stage)) {
+        if (stage == MdkrLanPartyTestFailure::StartThread || stage == MdkrLanPartyTestFailure::AcceptThread) {
+            throw std::system_error(std::make_error_code(std::errc::resource_unavailable_try_again));
+        }
+        throw std::bad_alloc();
+    }
+}
+#endif
 
 #ifdef _WIN32
 constexpr SocketHandle kInvalidSocket = INVALID_SOCKET;
@@ -139,16 +165,6 @@ constexpr ResponseHeader kResponseHeaders[] = {
 
 /* ---- Socket shims -------------------------------------------------------- */
 
-void ensureSocketsInitialized() {
-#ifdef _WIN32
-    static const int initialized = []() {
-        WSADATA data;
-        return WSAStartup(MAKEWORD(2, 2), &data);
-    }();
-    (void)initialized;
-#endif
-}
-
 void closeSocket(SocketHandle fd) {
 #ifdef _WIN32
     ::closesocket(fd);
@@ -156,6 +172,15 @@ void closeSocket(SocketHandle fd) {
     ::close(fd);
 #endif
 }
+
+struct SocketOwner {
+    SocketHandle fd;
+    explicit SocketOwner(SocketHandle value) noexcept : fd(value) {}
+    SocketOwner(const SocketOwner &) = delete;
+    SocketOwner &operator=(const SocketOwner &) = delete;
+    ~SocketOwner() { if (fd != kInvalidSocket) closeSocket(fd); }
+    SocketHandle release() noexcept { return std::exchange(fd, kInvalidSocket); }
+};
 
 void shutdownBoth(SocketHandle fd) {
 #ifdef _WIN32
@@ -173,35 +198,50 @@ void shutdownWrite(SocketHandle fd) {
 #endif
 }
 
-void setSocketTimeouts(SocketHandle fd) {
+bool setSocketBlocking(SocketHandle fd, bool blocking) {
+#ifdef _WIN32
+    u_long nonblocking = blocking ? 0u : 1u;
+    return ::ioctlsocket(fd, FIONBIO, &nonblocking) == 0;
+#else
+    const int flags = ::fcntl(fd, F_GETFL, 0);
+    return flags >= 0 && ::fcntl(fd, F_SETFL,
+        blocking ? (flags & ~O_NONBLOCK) : (flags | O_NONBLOCK)) == 0;
+#endif
+}
+
+bool setSocketTimeouts(SocketHandle fd) {
+#ifdef MDKR_LAN_PARTY_TESTING
+    if (takeFailure(MdkrLanPartyTestFailure::AcceptTimeout)) return false;
+#endif
 #ifdef _WIN32
     DWORD receiveTimeout = kRecvPollMs;
-    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO,
+    if (::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO,
                  reinterpret_cast<const char *>(&receiveTimeout),
-                 sizeof(receiveTimeout));
+                 sizeof(receiveTimeout)) != 0) return false;
     DWORD sendTimeout = kSendTimeoutMs;
-    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO,
+    if (::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO,
                  reinterpret_cast<const char *>(&sendTimeout),
-                 sizeof(sendTimeout));
+                 sizeof(sendTimeout)) != 0) return false;
 #else
     struct timeval receiveTimeout;
     receiveTimeout.tv_sec = 0;
     receiveTimeout.tv_usec = static_cast<suseconds_t>(kRecvPollMs) * 1000;
-    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO,
+    if (::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO,
                  reinterpret_cast<const char *>(&receiveTimeout),
-                 sizeof(receiveTimeout));
+                 sizeof(receiveTimeout)) != 0) return false;
     struct timeval sendTimeout;
     sendTimeout.tv_sec = kSendTimeoutMs / 1000u;
     sendTimeout.tv_usec = 0;
-    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO,
+    if (::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO,
                  reinterpret_cast<const char *>(&sendTimeout),
-                 sizeof(sendTimeout));
+                 sizeof(sendTimeout)) != 0) return false;
 #endif
 #ifdef SO_NOSIGPIPE
     int one = 1;
-    ::setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE,
-                 reinterpret_cast<const char *>(&one), sizeof(one));
+    if (::setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE,
+                 reinterpret_cast<const char *>(&one), sizeof(one)) != 0) return false;
 #endif
+    return true;
 }
 
 bool lastErrorWasTimeout() {
@@ -522,6 +562,8 @@ bool send404(SocketHandle fd, bool keepAlive) {
 std::vector<std::string> mdkr_lan_party_machine_ipv4_addresses() {
     std::vector<std::string> result;
 #ifdef _WIN32
+    MdkrNativeSocketLease network;
+    if (!network.acquire()) return result;
     char name[256] = {0};
     if (::gethostname(name, sizeof(name) - 1) == 0) {
         struct addrinfo hints;
@@ -529,6 +571,7 @@ std::vector<std::string> mdkr_lan_party_machine_ipv4_addresses() {
         hints.ai_family = AF_INET;
         struct addrinfo *list = nullptr;
         if (::getaddrinfo(name, nullptr, &hints, &list) == 0) {
+            std::unique_ptr<struct addrinfo, decltype(&::freeaddrinfo)> owner(list, ::freeaddrinfo);
             for (const struct addrinfo *entry = list; entry != nullptr;
                  entry = entry->ai_next) {
                 char text[INET_ADDRSTRLEN] = {0};
@@ -540,12 +583,12 @@ std::vector<std::string> mdkr_lan_party_machine_ipv4_addresses() {
                     result.emplace_back(text);
                 }
             }
-            ::freeaddrinfo(list);
         }
     }
 #else
     struct ifaddrs *interfaces = nullptr;
     if (::getifaddrs(&interfaces) == 0) {
+        std::unique_ptr<struct ifaddrs, decltype(&::freeifaddrs)> owner(interfaces, ::freeifaddrs);
         for (const struct ifaddrs *entry = interfaces; entry != nullptr;
              entry = entry->ifa_next) {
             if (entry->ifa_addr == nullptr ||
@@ -560,7 +603,6 @@ std::vector<std::string> mdkr_lan_party_machine_ipv4_addresses() {
                 result.emplace_back(text);
             }
         }
-        ::freeifaddrs(interfaces);
     }
 #endif
     return result;
@@ -605,6 +647,7 @@ bool hostAllowed(const Request &request,
 /* ---- WebSocket connection state ------------------------------------------ */
 
 struct MdkrLanPartyWsState {
+    MdkrNativeSocketLease networkLease;
     SocketHandle fd = kInvalidSocket;
     /* Serializes every frame write; sendText() may race the reader thread's
      * pong or close. closeSent is guarded by it: after a close frame goes
@@ -657,8 +700,10 @@ void wsSendClose(MdkrLanPartyWsState &socket, const char *payload,
     if (socket.closeSent) return;
     socket.closeSent = true;
     socket.open = false;
-    const std::string header = wsFrameHeader(0x8u, size);
-    if (sendAll(socket.fd, header.data(), header.size()) && size != 0u) {
+    // Close frames always fit the control-frame budget: their two-byte header
+    // needs no allocation after closeSent is latched.
+    const char header[2] = {static_cast<char>(0x88u), static_cast<char>(size)};
+    if (sendAll(socket.fd, header, sizeof(header)) && size != 0u) {
         sendAll(socket.fd, payload, size);
     }
     shutdownWrite(socket.fd);
@@ -694,7 +739,7 @@ void wsNotifyClosed(MdkrLanPartyWsState &socket) {
         std::lock_guard<std::mutex> lock(socket.callbackMutex);
         if (socket.closedNotified) return;
         socket.closedNotified = true;
-        callback = socket.closedCallback;
+        callback = std::move(socket.closedCallback);
     }
     if (callback) callback();
 }
@@ -740,11 +785,13 @@ void MdkrLanPartyWebSocket::onClosed(std::function<void()> callback) {
 bool MdkrLanPartyWebSocket::sendText(const std::string &payload) {
     if (payload.size() > kMdkrLanPartyMaxWsPayloadBytes) return false;
     if (!state_->open) return false;
-    return wsSendFrame(*state_, 0x1u, payload.data(), payload.size());
+    try { return wsSendFrame(*state_, 0x1u, payload.data(), payload.size()); }
+    catch (...) { return false; }
 }
 
 void MdkrLanPartyWebSocket::close(uint16_t code, const std::string &reason) {
-    wsSendCloseReason(*state_, code, reason);
+    try { wsSendCloseReason(*state_, code, reason); }
+    catch (...) { wsSendCloseCode(*state_, code); }
     /* The connection's reader thread completes the handshake and fires
      * onClosed; it owns the socket's lifetime end to end. */
 }
@@ -757,6 +804,9 @@ namespace {
 
 struct Connection {
     SocketHandle fd = kInvalidSocket;
+    // The serving thread alone retires fd. stop() only requests shutdown while
+    // holding this mutex, so it cannot act on an already-recycled descriptor.
+    std::mutex socketMutex;
     std::thread thread;
     std::atomic<bool> done{false};
 };
@@ -764,6 +814,7 @@ struct Connection {
 } /* namespace */
 
 struct MdkrLanPartyServerState {
+    MdkrNativeSocketLease networkLease;
     std::mutex mutex;
     bool running = false;
     std::atomic<bool> stopping{false};
@@ -778,9 +829,49 @@ struct MdkrLanPartyServerState {
     std::function<void(std::shared_ptr<MdkrLanPartyWebSocket>)> wsCallback;
     std::thread acceptThread;
     std::vector<std::shared_ptr<Connection>> connections; /* guarded */
+    // Only terminal destruction-time join failure uses this nonallocating
+    // quarantine. It preserves live thread/socket/lease ownership and the
+    // sticky failure flag prevents claiming complete network cleanup.
+    std::shared_ptr<MdkrLanPartyServerState> failedRetirementOwner;
 };
 
 namespace {
+
+thread_local MdkrLanPartyServerState *servingServer = nullptr;
+
+struct ConnectionCompletion {
+    std::shared_ptr<Connection> connection;
+    std::shared_ptr<MdkrLanPartyWsState> webSocket;
+    ~ConnectionCompletion() noexcept {
+        if (webSocket) {
+            // Seal every send BEFORE close, including when request parsing,
+            // upgrade allocation, or a consumer callback throws.
+            std::lock_guard<std::mutex> lock(webSocket->sendMutex);
+            webSocket->closeSent = true;
+            webSocket->open = false;
+        }
+        {
+            std::lock_guard<std::mutex> lock(connection->socketMutex);
+            const auto fd = std::exchange(connection->fd, kInvalidSocket);
+            if (fd != kInvalidSocket) {
+                shutdownBoth(fd);
+                closeSocket(fd);
+            }
+        }
+        if (webSocket) {
+            try { wsNotifyClosed(*webSocket); } catch (...) { /* Consumer failure cannot skip retirement. */ }
+            // Destruction of onMessage/callback captures is user code too.
+            // Keep the server-thread marker through that final release so a
+            // capture destructor's stop() remains a request, never a self-join.
+            webSocket.reset();
+        }
+#ifdef MDKR_LAN_PARTY_TESTING
+        --mdkr_lan_party_test_live_connections;
+#endif
+        servingServer = nullptr;
+        connection->done = true;
+    }
+};
 
 /* ---- The WebSocket frame loop --------------------------------------------- */
 
@@ -904,23 +995,8 @@ void runWebSocket(const std::shared_ptr<MdkrLanPartyServerState> &state,
         }
     }
     if (drainBeforeTeardown) drainBriefly(socket->fd);
-    /* SEAL before the fd can die: serveConnection closes it the moment we
-     * return, and on POSIX the kernel recycles the lowest free fd
-     * immediately -- an unsealed late sendText()/close() could write a
-     * frame meant for this phone into whichever connection inherits the
-     * number. Latching closeSent UNDER sendMutex serializes teardown
-     * against any sender already inside the critical section (waiting out
-     * even one wedged in sendAll, bounded by SO_SNDTIMEO), and every send
-     * path refuses on closeSent under this same lock, so no write can
-     * start after the latch. This is the thread-safety promise the header
-     * makes for sendText()/close(); the ordering is pinned by the parked-
-     * sender test. */
-    {
-        std::lock_guard<std::mutex> lock(socket->sendMutex);
-        socket->closeSent = true;
-    }
-    shutdownBoth(socket->fd);
-    wsNotifyClosed(*socket);
+    // ConnectionCompletion performs the same sealed retirement on normal
+    // return and exceptional exits, including callback/allocator failures.
 }
 
 /* ---- The per-connection HTTP loop ------------------------------------------ */
@@ -955,8 +1031,16 @@ UpgradeCheck validateUpgrade(const Request &request, std::string &key) {
 }
 
 void serveConnection(std::shared_ptr<MdkrLanPartyServerState> state,
-                     std::shared_ptr<Connection> connection) {
-    setSocketTimeouts(connection->fd);
+                     std::shared_ptr<Connection> connection) noexcept {
+    servingServer = state.get();
+#ifdef MDKR_LAN_PARTY_TESTING
+    ++mdkr_lan_party_test_live_connections;
+#endif
+    ConnectionCompletion completion{connection, {}};
+    try {
+#ifdef MDKR_LAN_PARTY_TESTING
+    failAt(MdkrLanPartyTestFailure::ServeBuffer);
+#endif
     std::string buffer;
     size_t served = 0u;
     Clock::time_point deadline =
@@ -1079,12 +1163,20 @@ void serveConnection(std::shared_ptr<MdkrLanPartyServerState> state,
             if (!sendAll(connection->fd, response.data(), response.size())) {
                 break;
             }
+#ifdef MDKR_LAN_PARTY_TESTING
+            failAt(MdkrLanPartyTestFailure::WebSocketState);
+#endif
             auto wsState = std::make_shared<MdkrLanPartyWsState>();
+            completion.webSocket = wsState;
+            wsState->networkLease = state->networkLease;
             wsState->fd = connection->fd;
             /* The consumer gets the socket BEFORE any frame is parsed, on
              * this thread, so callbacks it attaches inside the callback
              * can never miss a message. Any pipelined bytes after the
              * upgrade head are the first frames -- they ride along. */
+#ifdef MDKR_LAN_PARTY_TESTING
+            failAt(MdkrLanPartyTestFailure::WebSocketWrapper);
+#endif
             callback(std::make_shared<MdkrLanPartyWebSocket>(wsState));
             runWebSocket(state, wsState, std::move(buffer));
             break;
@@ -1104,34 +1196,36 @@ void serveConnection(std::shared_ptr<MdkrLanPartyServerState> state,
         if (!sent || !keepAlive) break;
         deadline = Clock::now() + std::chrono::milliseconds(httpDeadlineMs());
     }
-    closeSocket(connection->fd);
-    connection->done = true;
+    } catch (...) { /* Fail only this connection; completion owns mandatory cleanup. */ }
 }
 
 /* ---- Accept thread ----------------------------------------------------------- */
 
 void reapFinishedConnections(
     const std::shared_ptr<MdkrLanPartyServerState> &state) {
-    std::vector<std::shared_ptr<Connection>> finished;
-    {
-        std::lock_guard<std::mutex> lock(state->mutex);
-        for (auto iterator = state->connections.begin();
-             iterator != state->connections.end();) {
-            if ((*iterator)->done) {
-                finished.push_back(*iterator);
-                iterator = state->connections.erase(iterator);
-            } else {
-                ++iterator;
+    for (;;) {
+        std::shared_ptr<Connection> finished;
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            for (const auto &connection : state->connections) {
+                if (connection->done) {
+                    finished = connection;
+                    break;
+                }
             }
         }
-    }
-    for (const auto &connection : finished) {
-        if (connection->thread.joinable()) connection->thread.join();
+        if (!finished) return;
+        // No temporary allocating vector and no lost join owner on exception.
+        // stop() joins the accept thread before it can touch these handles.
+        if (finished->thread.joinable()) finished->thread.join();
+        std::lock_guard<std::mutex> lock(state->mutex);
+        const auto found = std::find(state->connections.begin(), state->connections.end(), finished);
+        if (found != state->connections.end()) state->connections.erase(found);
     }
 }
 
-void acceptLoop(std::shared_ptr<MdkrLanPartyServerState> state) {
-    const SocketHandle listenFd = state->listenFd;
+void acceptLoop(std::shared_ptr<MdkrLanPartyServerState> state, SocketHandle listenFd) noexcept {
+    try {
     while (!state->stopping) {
         fd_set readable;
         FD_ZERO(&readable);
@@ -1151,35 +1245,52 @@ void acceptLoop(std::shared_ptr<MdkrLanPartyServerState> state) {
         if (ready <= 0) continue;
         const SocketHandle client = ::accept(listenFd, nullptr, nullptr);
         if (client == kInvalidSocket) continue;
+        SocketOwner socket{client};
+        // Explicitly restore bounded blocking I/O on platforms that inherit
+        // the listener's nonblocking mode for accepted sockets.
+        if (!setSocketBlocking(client, true) || !setSocketTimeouts(client)) continue;
         {
             /* Disable Nagle immediately post-accept: every frame this server
              * writes is small (control JSON, WS frames), and Nagle + the
              * phone's delayed ACK adds tens of ms per exchange during
              * pairing. Set-failure is non-fatal -- coalescing merely stays
-             * on (the SO_NOSIGPIPE discipline in setSocketTimeouts). */
+             * on. Mandatory timeouts and signal safety were admitted above. */
             int noDelay = 1;
             (void)::setsockopt(client, IPPROTO_TCP, TCP_NODELAY,
                                reinterpret_cast<const char *>(&noDelay),
                                sizeof(noDelay));
         }
-        auto connection = std::make_shared<Connection>();
-        connection->fd = client;
-        bool admitted = false;
-        {
+        try {
+#ifdef MDKR_LAN_PARTY_TESTING
+            failAt(MdkrLanPartyTestFailure::AcceptAllocation);
+#endif
+            auto connection = std::make_shared<Connection>();
+            connection->fd = client;
             std::lock_guard<std::mutex> lock(state->mutex);
             if (!state->stopping &&
                 state->connections.size() < kMaxConnections) {
+#ifdef MDKR_LAN_PARTY_TESTING
+                failAt(MdkrLanPartyTestFailure::AcceptRegistry);
+#endif
                 state->connections.push_back(connection);
-                admitted = true;
+                try {
+#ifdef MDKR_LAN_PARTY_TESTING
+                    failAt(MdkrLanPartyTestFailure::AcceptThread);
+#endif
+                    connection->thread = std::thread(serveConnection, state, connection);
+                    (void)socket.release(); // worker owns retirement from here
+                } catch (...) {
+                    // No worker exists when thread construction throws. Undo
+                    // its registry admission before the accepted-fd owner exits.
+                    state->connections.pop_back();
+                    throw;
+                }
             }
-        }
-        if (!admitted) {
-            /* Full house: a LAN party is four phones and a page load or
-             * two; anything past the cap is cut rather than queued. */
-            closeSocket(client);
-            continue;
-        }
-        connection->thread = std::thread(serveConnection, state, connection);
+        } catch (...) { /* Refuse this admission; listener and existing clients remain live. */ }
+    }
+    } catch (...) {
+        // Keep any joinable records in state for the launcher-owned stop().
+        state->stopping = true;
     }
 }
 
@@ -1190,7 +1301,23 @@ void acceptLoop(std::shared_ptr<MdkrLanPartyServerState> state) {
 MdkrLanPartyServer::MdkrLanPartyServer()
     : state_(std::make_shared<MdkrLanPartyServerState>()) {}
 
-MdkrLanPartyServer::~MdkrLanPartyServer() { stop(); }
+MdkrLanPartyServer::~MdkrLanPartyServer() {
+    if (servingServer == state_.get()) {
+        // Destruction is launcher-owned by contract. If a callback violates
+        // that contract, joining itself is impossible; retain rather than let
+        // the final worker destroy its own still-joinable thread handle.
+        state_->stopping = true;
+        state_->failedRetirementOwner = state_;
+        mdkrFirstPartyNetworkCleanupFailed.store(true);
+        return;
+    }
+    try {
+        stop();
+    } catch (const std::system_error &) {
+        state_->failedRetirementOwner = state_;
+        mdkrFirstPartyNetworkCleanupFailed.store(true);
+    }
+}
 
 void MdkrLanPartyServer::onWebSocket(
     std::function<void(std::shared_ptr<MdkrLanPartyWebSocket>)> callback) {
@@ -1199,11 +1326,19 @@ void MdkrLanPartyServer::onWebSocket(
 }
 
 bool MdkrLanPartyServer::start(uint16_t port, MdkrLanPartyManifest manifest) {
-    ensureSocketsInitialized();
+    MdkrNativeSocketLease network;
+    if (!network.acquire()) return false;
     std::lock_guard<std::mutex> lock(state_->mutex);
-    if (state_->running) return false;
+    if (state_->running || state_->stopping) return false;
     const SocketHandle fd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (fd == kInvalidSocket) return false;
+    SocketOwner socket{fd};
+#ifndef _WIN32
+    if (fd >= FD_SETSIZE) return false; // select's fixed fd_set cannot represent it
+#endif
+    // Readiness can vanish between select and accept. A nonblocking listener
+    // prevents that ordinary disconnect race from stranding stop() in join.
+    if (!setSocketBlocking(fd, false)) return false;
     int one = 1;
     ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR,
                  reinterpret_cast<const char *>(&one), sizeof(one));
@@ -1217,7 +1352,6 @@ bool MdkrLanPartyServer::start(uint16_t port, MdkrLanPartyManifest manifest) {
     if (::bind(fd, reinterpret_cast<struct sockaddr *>(&address),
                sizeof(address)) != 0 ||
         ::listen(fd, 16) != 0) {
-        closeSocket(fd);
         return false;
     }
     struct sockaddr_in bound;
@@ -1225,56 +1359,79 @@ bool MdkrLanPartyServer::start(uint16_t port, MdkrLanPartyManifest manifest) {
     socklen_t boundSize = sizeof(bound);
     if (::getsockname(fd, reinterpret_cast<struct sockaddr *>(&bound),
                       &boundSize) != 0) {
-        closeSocket(fd);
         return false;
     }
-    state_->listenFd = fd;
-    state_->boundPort = ntohs(bound.sin_port);
-    state_->manifest = std::move(manifest);
-    state_->allowedHosts = {"localhost", "127.0.0.1"};
-    for (std::string &address : mdkr_lan_party_machine_ipv4_addresses()) {
-        state_->allowedHosts.push_back(std::move(address));
+    try {
+#ifdef MDKR_LAN_PARTY_TESTING
+        failAt(MdkrLanPartyTestFailure::StartHosts);
+#endif
+        std::vector<std::string> hosts{"localhost", "127.0.0.1"};
+        for (std::string &address : mdkr_lan_party_machine_ipv4_addresses()) {
+            hosts.push_back(std::move(address));
+        }
+        state_->manifest = std::move(manifest);
+        state_->allowedHosts = std::move(hosts);
+        state_->networkLease = network;
+        state_->listenFd = fd;
+        state_->boundPort = ntohs(bound.sin_port);
+        state_->stopping = false;
+#ifdef MDKR_LAN_PARTY_TESTING
+        failAt(MdkrLanPartyTestFailure::StartThread);
+#endif
+        state_->acceptThread = std::thread(acceptLoop, state_, fd);
+        state_->running = true;
+        (void)socket.release();
+    } catch (...) {
+        // A refused thread start owns no worker. The local socket/lease retire
+        // in order, and another start must not see a phantom running listener.
+        state_->listenFd = kInvalidSocket;
+        state_->boundPort = 0u;
+        state_->manifest.clear();
+        state_->allowedHosts.clear();
+        state_->networkLease.reset();
+        return false;
     }
-    state_->stopping = false;
-    state_->running = true;
-    state_->acceptThread = std::thread(acceptLoop, state_);
     return true;
 }
 
 void MdkrLanPartyServer::stop() {
-    std::thread acceptThread;
-    SocketHandle listenFd = kInvalidSocket;
+    if (servingServer == state_.get()) {
+        // Callbacks are not join owners. Request stop without waiting on this
+        // very thread or on the accept reaper that could already be joining it.
+        state_->stopping = true;
+        return;
+    }
     {
         std::lock_guard<std::mutex> lock(state_->mutex);
-        if (!state_->running) return;
+        if (!state_->running && !state_->stopping) return;
         state_->running = false;
         state_->stopping = true;
-        listenFd = state_->listenFd;
-        state_->listenFd = kInvalidSocket;
         state_->boundPort = 0u;
-        acceptThread = std::move(state_->acceptThread);
     }
     /* Join the accept thread FIRST (it wakes within its poll interval): once
-     * it is gone, no new connection can join the vector we drain next. */
-    if (acceptThread.joinable()) acceptThread.join();
-    if (listenFd != kInvalidSocket) closeSocket(listenFd);
-    std::vector<std::shared_ptr<Connection>> connections;
+     * it is gone, no new connection can join or leave the registry. Handles
+     * stay in state until joined, including if the OS rejects a join. */
+    if (state_->acceptThread.joinable()) state_->acceptThread.join();
     {
         std::lock_guard<std::mutex> lock(state_->mutex);
-        connections.swap(state_->connections);
+        const auto listenFd = std::exchange(state_->listenFd, kInvalidSocket);
+        if (listenFd != kInvalidSocket) closeSocket(listenFd);
     }
-    for (const auto &connection : connections) {
+    for (const auto &connection : state_->connections) {
         /* Wakes any blocking read; each thread then tears itself down and
          * fires its socket's onClosed on the way out. */
-        shutdownBoth(connection->fd);
+        std::lock_guard<std::mutex> lock(connection->socketMutex);
+        if (connection->fd != kInvalidSocket) shutdownBoth(connection->fd);
     }
-    for (const auto &connection : connections) {
+    for (const auto &connection : state_->connections) {
         if (connection->thread.joinable()) connection->thread.join();
     }
     std::lock_guard<std::mutex> lock(state_->mutex);
+    state_->connections.clear();
     state_->manifest.clear();
     state_->allowedHosts.clear();
     state_->stopping = false;
+    state_->networkLease.reset(); // Joined handlers; retained WS aliases own copies.
 }
 
 uint16_t MdkrLanPartyServer::port() const {

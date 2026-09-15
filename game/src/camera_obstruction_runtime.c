@@ -27,6 +27,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "camera_motion_shoulder.h"
+
 #define MDKR_CAMERA_OBSTRUCTION_RUNTIME_SLOT_COUNT 8
 #define MDKR_CAMERA_OBSTRUCTION_DEG_TO_RAD 0.01745329251994329576923690768489f
 #define MDKR_CAMERA_OBSTRUCTION_ANCHOR_STEPS 32
@@ -268,11 +270,18 @@ typedef struct MdkrCameraMotionSlot {
     uint8_t emergency;
     uint32_t emergency_run;
     uint8_t alternate;
-    int8_t shoulder_side;
+    MdkrCameraShoulderHistory shoulder;
     uint8_t blocker_valid;
     uint8_t block_span_degenerate;
     uint8_t retract_pending;
     uint8_t release_held;
+    /* Diagnostic contact history survives clear/held ticks. Unlike the churn
+     * history above, it is never used to classify a hard motion verdict. */
+    uint64_t last_contact_tick;
+    uint32_t last_contact_kind;
+    uint32_t last_contact_id;
+    MdkrCameraVec3 last_contact_normal;
+    uint8_t last_contact_normal_valid;
 } MdkrCameraMotionSlot;
 
 typedef enum MdkrCameraMotionPhase {
@@ -2547,9 +2556,6 @@ static int camera_obstruction_select_alternate_shot(
  * cannot answer "same wall?"; the normal can.
  */
 #define MDKR_CAMERA_MOTION_CONTINUOUS_SURFACE_DOT 0.985f
-/* Lateral offset below this is not a shoulder choice, it is numerical noise. */
-#define MDKR_CAMERA_MOTION_SHOULDER_EPSILON 1.0f
-
 typedef enum MdkrCameraMotionStatId {
     MDKR_CAMERA_MOTION_STAT_RETRACT_LATENCY = 0,
     MDKR_CAMERA_MOTION_STAT_RECOVERY_DURATION,
@@ -2629,6 +2635,7 @@ typedef struct MdkrCameraMotionCensus {
     uint64_t shoulder_flips;
     uint64_t shoulder_flips_continuous_surface;
     uint64_t shoulder_flips_new_surface;
+    uint64_t shoulder_basis_crossings;
     /* clear -> blocked -> clear inside the chatter window. */
     uint64_t oscillation_cycles;
     uint64_t oscillation_cycles_excused;
@@ -3365,6 +3372,7 @@ static void camera_obstruction_motion_sample(
     int churn = 0;
     int churn_same_surface = 0;
     int flipped = 0;
+    int basis_crossing = 0;
 
     if (observe == NULL || physical_slot < 0 ||
         physical_slot >= MDKR_CAMERA_OBSTRUCTION_RUNTIME_SLOT_COUNT) {
@@ -3518,6 +3526,35 @@ static void camera_obstruction_motion_sample(
                  * came straight back. This is the chatter a player sees as the
                  * camera "pumping" against one wall. */
                 sCameraMotion.correction_reengagements++;
+                if (trace_level >= 1) {
+                    /* Keep the actual offending event in the ordinary gate's
+                     * trace, without requiring a second level-2 ROM run.
+                     * Last contact is not necessarily the same wall; normal
+                     * agreement or a different face ID cannot excuse chatter. */
+                    fprintf(stderr,
+                            "camera_motion reengagement tick=%llu viewport=%d "
+                            "normal_slot=%d physical_slot=%d release_tick=%llu gap=%llu "
+                            "last_contact={tick=%llu kind=%u id=%u normal_valid=%d "
+                            "normal=(%.5f,%.5f,%.5f)} "
+                            "contact={kind=%u id=%u normal_valid=%d normal=(%.5f,%.5f,%.5f)} "
+                            "state={prior_recovering=%d recovering=%d held=%d "
+                            "alternate=%d emergency=%d degenerate=%d}\n",
+                            (unsigned long long)tick, observe->viewport,
+                            normal_slot, physical_slot,
+                            (unsigned long long)motion->clear_onset_tick,
+                            (unsigned long long)(tick - motion->clear_onset_tick),
+                            (unsigned long long)motion->last_contact_tick,
+                            motion->last_contact_kind, motion->last_contact_id,
+                            motion->last_contact_normal_valid,
+                            motion->last_contact_normal.x, motion->last_contact_normal.y,
+                            motion->last_contact_normal.z,
+                            observe->blocker_kind, observe->blocker_stable_id,
+                            observe->blocker_normal_valid,
+                            observe->blocker_normal.x, observe->blocker_normal.y,
+                            observe->blocker_normal.z,
+                            motion->recovering, recovering, held, alternate, emergency,
+                            degenerate);
+                }
             }
             motion->block_onset_tick = tick;
             motion->block_span_degenerate = (uint8_t)(degenerate != 0);
@@ -3598,6 +3635,13 @@ static void camera_obstruction_motion_sample(
      * recovery -- this metric measures how noisy the reported identity is, and
      * gives the shoulder-flip gate its continuous-surface test.
      */
+    if (observe->blocker_stable_id != 0U) {
+        motion->last_contact_tick = tick;
+        motion->last_contact_kind = observe->blocker_kind;
+        motion->last_contact_id = observe->blocker_stable_id;
+        motion->last_contact_normal = observe->blocker_normal;
+        motion->last_contact_normal_valid = observe->blocker_normal_valid;
+    }
     if (blocked && observe->blocker_stable_id != 0U) {
         if (motion->blocker_valid &&
             motion->blocker_stable_id != observe->blocker_stable_id) {
@@ -3653,10 +3697,13 @@ static void camera_obstruction_motion_sample(
         sCameraMotion.alternate_entries++;
     } else if (!alternate && motion->alternate) {
         sCameraMotion.alternate_exits++;
-        motion->shoulder_side = 0;
     }
-    if (alternate && motion->alternate && side != 0 &&
-        motion->shoulder_side != 0 && side != motion->shoulder_side) {
+    const MdkrCameraShoulderChange shoulder_change = mdkr_camera_shoulder_sample(
+        &motion->shoulder, eye, observe->intent.pivot, side, alternate && pose_valid);
+    if (shoulder_change == MDKR_CAMERA_SHOULDER_BASIS_CROSSING) {
+        basis_crossing = TRUE;
+        sCameraMotion.shoulder_basis_crossings++;
+    } else if (shoulder_change == MDKR_CAMERA_SHOULDER_FLIP) {
         flipped = TRUE;
         sCameraMotion.shoulder_flips++;
         if (churn_same_surface || (!churn && motion->blocker_valid)) {
@@ -3667,9 +3714,6 @@ static void camera_obstruction_motion_sample(
         } else {
             sCameraMotion.shoulder_flips_new_surface++;
         }
-    }
-    if (side != 0) {
-        motion->shoulder_side = (int8_t)side;
     }
     motion->alternate = (uint8_t)(alternate != 0);
 
@@ -3690,7 +3734,7 @@ static void camera_obstruction_motion_sample(
                 "state={blocked=%u retracted=%u recovering=%u held=%u alternate=%u "
                 "emergency=%u degenerate=%u discontinuity=%u} "
                 "blocker={id=%u kind=%u churn=%u same_surface=%u} "
-                "shoulder={side=%d flip=%u} "
+                "shoulder={side=%d flip=%u basis_crossing=%u} "
                 "span={blocked=%llu emergency=%u}\n",
                 (unsigned long long)tick, observe->viewport, normal_slot,
                 observe->physical_slot, (int)observe->intent.family,
@@ -3714,7 +3758,7 @@ static void camera_obstruction_motion_sample(
                 (unsigned)(cut != 0),
                 observe->blocker_stable_id, observe->blocker_kind,
                 (unsigned)(churn != 0), (unsigned)(churn_same_surface != 0),
-                side, (unsigned)(flipped != 0),
+                side, (unsigned)(flipped != 0), (unsigned)(basis_crossing != 0),
                 (unsigned long long)(
                     phase == (int)MDKR_CAMERA_MOTION_PHASE_BLOCKED ?
                         tick - motion->block_onset_tick : 0U),
@@ -4176,7 +4220,8 @@ void camera_obstruction_runtime_apply_config(void) {
         sCameraObstructionAppliedPolicy[0] = '\0';
     } else {
         snprintf(sCameraObstructionAppliedPolicy,
-                 sizeof(sCameraObstructionAppliedPolicy), "%s", value);
+                 sizeof(sCameraObstructionAppliedPolicy), "%.*s",
+                 (int)sizeof(sCameraObstructionAppliedPolicy) - 1, value);
         /* A previously-reported typo belongs to the value that was replaced. */
         sCameraObstructionPolicyFallbackReported = FALSE;
     }
@@ -4189,7 +4234,8 @@ void camera_obstruction_runtime_apply_config(void) {
         sCameraComfortApplied[0] = '\0';
         return;
     }
-    snprintf(sCameraComfortApplied, sizeof(sCameraComfortApplied), "%s", value);
+    snprintf(sCameraComfortApplied, sizeof(sCameraComfortApplied), "%.*s",
+             (int)sizeof(sCameraComfortApplied) - 1, value);
     sCameraComfortFallbackReported = FALSE;
 }
 
@@ -4421,7 +4467,7 @@ void camera_obstruction_motion_summary(void) {
             "release_hold={held_ticks=%llu spans=%llu window=%u} "
             "chatter={oscillation_cycles=%llu oscillation_cycles_excused=%llu "
             "correction_reengagements=%llu} "
-            "shoulder={flips=%llu continuous_surface=%llu new_surface=%llu} "
+            "shoulder={flips=%llu continuous_surface=%llu new_surface=%llu basis_crossings=%llu} "
             "churn={blocker_changes=%llu same_surface=%llu new_surface=%llu} "
             "emergency={max_dwell=%llu} "
             "discontinuity_per_1000_ticks=%.4f\n",
@@ -4450,6 +4496,7 @@ void camera_obstruction_motion_summary(void) {
             (unsigned long long)sCameraMotion.shoulder_flips,
             (unsigned long long)sCameraMotion.shoulder_flips_continuous_surface,
             (unsigned long long)sCameraMotion.shoulder_flips_new_surface,
+            (unsigned long long)sCameraMotion.shoulder_basis_crossings,
             (unsigned long long)sCameraMotion.blocker_changes,
             (unsigned long long)sCameraMotion.blocker_changes_same_surface,
             (unsigned long long)sCameraMotion.blocker_changes_new_surface,

@@ -7,7 +7,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 include(CTest)
 option(MDKR_BUILD_FUZZERS "Build coverage-guided save-format fuzzers" OFF)
 option(MDKR_ENABLE_FUZZERS
-    "Build coverage-guided online wire-parser fuzzers (Clang/libFuzzer)" OFF)
+    "Build coverage-guided untrusted-input fuzzers (Clang/libFuzzer)" OFF)
 option(MDKR_ENABLE_GPU_TESTS
     "Register native GPU/window tests (dedicated test desktop only)" OFF)
 set(MDKR_ONLINE_ROOM_PREVIEW_DEFAULT OFF)
@@ -22,13 +22,15 @@ option(MDKR_ENABLE_ONLINE_ROOM_PREVIEW
 # online transport into the launcher's Online Room panel and opens the build gate
 # that lets two native instances pair + race over the live MatchRoom service,
 # fenced to 2 endpoints / STUN-only / retail identities. Modeled on the
-# MDKR_NATIVE_PHONE_PARTY option below. It defaults OFF and is NEVER set by
-# .github/workflows/release.yml or macos/Scripts/build_app_bundle.sh, so every
-# shipping build stays byte-identical -- the two release guardrails
-# (check_release_local_only_surface.py, check_release_party_origin.py) key on the
-# unchanged -DMDKR_ENABLE_ONLINE_ROOM_PREVIEW=OFF lines, which this leaves alone.
+# MDKR_NATIVE_PHONE_PARTY option below. It defaults OFF for a developer build
+# and is set by .github/workflows/release.yml only for its explicit release
+# builds; macos/Scripts/build_app_bundle.sh passes it only when a release
+# explicitly opts in with --allow-online-beta. The release guardrails
+# (check_release_local_only_surface.py, check_release_party_origin.py) require
+# that explicit beta opt-in, keep the bare preview switch off, and independently
+# preserve the browser publication's local-only boundary.
 option(MDKR_ENABLE_ONLINE_BETA
-    "Compose the live online transport into the launcher behind the native beta gate (never shipped)"
+    "Compose the live online transport into the launcher behind the native beta gate; OFF by default, release bundles pass this explicitly"
     OFF)
 if(MDKR_ENABLE_ONLINE_BETA)
     # The Online Room panel and its live-adapter seam only compile under the
@@ -54,6 +56,25 @@ function(mdkr_serialize_gpu_ctests)
                 RESOURCE_LOCK mdkr_native_gpu)
         endif()
     endforeach()
+endfunction()
+
+# The translated game includes its legacy PR headers by basename (for example
+# "sched.h"), while host SDK headers include POSIX headers with the same names
+# using angle brackets. Keep those two namespaces distinct on compilers that
+# support quote-only search paths. In particular, glibc's <spawn.h> includes
+# <sched.h>; resolving that to game/include/PR/sched.h leaves struct
+# sched_param incomplete and breaks a clean Ubuntu build. MSVC has no -iquote
+# equivalent and its SDK does not have this collision.
+function(mdkr_add_legacy_game_quote_includes target_name)
+    if(MSVC)
+        target_include_directories(${target_name} PRIVATE
+            ${CMAKE_SOURCE_DIR}/game/include/PR
+            ${CMAKE_SOURCE_DIR}/game/include/sys)
+    else()
+        target_compile_options(${target_name} PRIVATE
+            -iquote${CMAKE_SOURCE_DIR}/game/include/PR
+            -iquote${CMAKE_SOURCE_DIR}/game/include/sys)
+    endif()
 endfunction()
 
 set(CMAKE_C_STANDARD 11)
@@ -102,6 +123,15 @@ if(VITA)
         "$ENV{VITASDK}/arm-vita-eabi/include")
     set(SDL2_LIBRARY_DIRS "$ENV{VITASDK}/arm-vita-eabi/lib")
     set(SDL2_LIBRARIES SDL2)
+    option(MDKR_VITA_DEBUGGER
+        "Link VitaDebugger and stop for GDB on TCP port 1234 during startup" OFF)
+    set(MDKR_VITADEBUGGER_DIR "${CMAKE_SOURCE_DIR}/../../VitaDebugger" CACHE PATH
+        "Path containing VitaDebugger's uvdb.h and libuvdb.a")
+    set(MDKR_VITADEBUGGER_KUBRIDGE_DIR "${CMAKE_SOURCE_DIR}/../../kuBridge" CACHE PATH
+        "Path containing kuBridge's kubridge.h and build-local/libkubridge_stub.a")
+    set(MDKR_VITADEBUGGER_KERNEL_DIR
+        "${MDKR_VITADEBUGGER_DIR}/kernel/build-vfp" CACHE PATH
+        "Path containing the matching VitaDebugger kernel import library")
 elseif(NOT EMSCRIPTEN)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(SDL2 REQUIRED sdl2)
@@ -117,12 +147,91 @@ endif()
 # Python contract checks -- extracted to keep the build definition below from
 # being buried under a thousand lines of test registration. See that file's
 # header for why it is included at this exact point.
+option(MDKR_CHARACTER_KTX2
+       "Enable bounded Basis Universal transcoding for custom-character KTX2" ON)
+if(VITA)
+    set(MDKR_CHARACTER_KTX2 OFF CACHE BOOL
+        "Enable bounded Basis Universal transcoding for custom-character KTX2" FORCE)
+endif()
+if(MDKR_CHARACTER_KTX2)
+    enable_language(CXX)
+    include(${CMAKE_SOURCE_DIR}/cmake/character_basisu.cmake)
+endif()
+option(MDKR_CHARACTER_LOD_TOOLS
+       "Build the bounded offline custom-character LOD simplifier" ON)
+if(VITA)
+    set(MDKR_CHARACTER_LOD_TOOLS OFF CACHE BOOL
+        "Build the bounded offline custom-character LOD simplifier" FORCE)
+endif()
+if(MDKR_CHARACTER_LOD_TOOLS AND NOT EMSCRIPTEN)
+    enable_language(CXX)
+    include(${CMAKE_SOURCE_DIR}/cmake/character_meshoptimizer.cmake)
+endif()
+if(NOT VITA)
+    enable_language(CXX)
+    include(${CMAKE_SOURCE_DIR}/cmake/character_text_shaping.cmake)
+endif()
+# FP contraction is pinned OFF for EVERY target in this project, not just the
+# engine. The per-target block below states the requirement -- gameplay float
+# state must be bit-reproducible, "lockstep peers and every golden float hash
+# depend on it" -- but applying it PRIVATE to ${MDKR_TARGET} left two gaps:
+# mdkr64_app, and every fixture in cmake/tests.cmake (which mentions this flag
+# zero times while compiling game/src/hasm/math_util.c and game/src/tracks.c in
+# eight targets). A fixture that fuses a*b+c into an FMA while the engine does
+# not is computing different floats from the thing it is asserting about, so a
+# golden-hash gate can agree by luck and mask a real difference -- or disagree
+# for a reason that has nothing to do with the code under test.
 #
-# Skipped entirely on VITA: this is a desktop unit-test suite (threads,
-# loopback sockets, a Python-driven contract harness) with no bearing on the
-# shipped Vita game binary, and no reason to make cross-compile cleanly.
+# Directory scope is the fix rather than a per-target repeat: it cannot be
+# forgotten by the next target somebody adds. AppleClang on arm64 fuses at -O2
+# by default, so this is exactly the flag that keeps an arm64 host and an
+# x86_64 peer computing the same float.
+add_compile_options(-ffp-contract=off)
+
+# The desktop tests require host threads, sockets, and Python and do not belong
+# in the Vita cross-compile.
 if(NOT VITA)
     include(${CMAKE_SOURCE_DIR}/cmake/tests.cmake)
+endif()
+
+# The custom-character cache and its embedded texture payloads are both
+# untrusted local inputs. Keep one libFuzzer process crossing the exact shipped
+# memory loader, PNG decoder configuration, and KTX2 bridge so mutations can
+# move between the container and decoder boundaries. This is additive and never
+# enters ordinary builds.
+if(MDKR_ENABLE_FUZZERS AND NOT EMSCRIPTEN)
+    if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang" OR
+       NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR
+            "MDKR_ENABLE_FUZZERS requires Clang/libFuzzer")
+    endif()
+    if(NOT MDKR_CHARACTER_KTX2 OR NOT TARGET mdkr_basisu_transcoder)
+        message(FATAL_ERROR
+            "MDKR_ENABLE_FUZZERS requires MDKR_CHARACTER_KTX2=ON")
+    endif()
+    add_executable(mdkr_modern_character_asset_fuzzer
+        ${CMAKE_SOURCE_DIR}/tests/fuzz_modern_character_asset.cpp
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_asset.c
+        ${CMAKE_SOURCE_DIR}/platform/modern_character_ktx2.cpp
+        ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
+        ${CMAKE_SOURCE_DIR}/lib/stb/stb_image_impl.c)
+    target_include_directories(mdkr_modern_character_asset_fuzzer PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/lib/stb)
+    target_compile_features(mdkr_modern_character_asset_fuzzer PRIVATE
+        cxx_std_17)
+    target_link_libraries(mdkr_modern_character_asset_fuzzer PRIVATE
+        mdkr_basisu_transcoder)
+    target_compile_options(mdkr_modern_character_asset_fuzzer PRIVATE
+        -fsanitize=fuzzer,address,undefined
+        -fno-omit-frame-pointer)
+    target_link_options(mdkr_modern_character_asset_fuzzer PRIVATE
+        -fsanitize=fuzzer,address,undefined)
+    # Instrument the third-party decoder as well as the first-party bridge in
+    # this dedicated build tree; otherwise only calls around it would be seen.
+    target_compile_options(mdkr_basisu_transcoder PRIVATE
+        -fsanitize=fuzzer-no-link,address,undefined
+        -fno-omit-frame-pointer)
 endif()
 
 if(NOT EMSCRIPTEN)
@@ -315,6 +424,25 @@ if(MDKR_NATIVE_PHONE_PARTY)
 endif()
 if(MDKR_APP AND MDKR_NATIVE_PHONE_PARTY)
     include(cmake/datachannel.cmake)
+    if(BUILD_TESTING AND NOT EMSCRIPTEN)
+        # Actual amended vendor dispatch/transport code, not duplicate models.
+        # Edge coverage starts RTC global services but no app or peer session.
+        foreach(MDKR_RTC_FIXTURE datachannel_prepared_dispatch
+                datachannel_transport_retirement datachannel_transport_edges)
+            add_executable(mdkr_${MDKR_RTC_FIXTURE}_test
+                ${CMAKE_SOURCE_DIR}/tests/test_${MDKR_RTC_FIXTURE}.cpp)
+            target_include_directories(mdkr_${MDKR_RTC_FIXTURE}_test PRIVATE
+                ${mdkr_libdatachannel_SOURCE_DIR}/src
+                ${mdkr_libdatachannel_SOURCE_DIR}/include/rtc
+                ${mdkr_libdatachannel_SOURCE_DIR}/deps/plog/include
+                ${CMAKE_SOURCE_DIR}/platform/online)
+            target_compile_features(mdkr_${MDKR_RTC_FIXTURE}_test PRIVATE cxx_std_17)
+            target_link_libraries(mdkr_${MDKR_RTC_FIXTURE}_test PRIVATE
+                datachannel Threads::Threads)
+            add_test(NAME ${MDKR_RTC_FIXTURE} COMMAND mdkr_${MDKR_RTC_FIXTURE}_test)
+            set_tests_properties(${MDKR_RTC_FIXTURE} PROPERTIES TIMEOUT 60)
+        endforeach()
+    endif()
 endif()
 
 # --- Sources --------------------------------------------------------------
@@ -330,7 +458,7 @@ file(GLOB GAME_SOURCES CONFIGURE_DEPENDS
 # Separated online BETA boot path (game/src/online/). Deliberately NOT part of
 # the game/src/*.c glob above (that glob is non-recursive), and added ONLY inside
 # this beta gate -- exactly like party_link.c below -- so a normal (beta OFF)
-# build never compiles a byte of it and the release engine object is untouched.
+# build never compiles a byte of it and the beta-OFF engine object is untouched.
 # It joins GAME_SOURCES (not PLATFORM_SOURCES) because it is engine/game code
 # that includes the decomp game headers, so it inherits the same warning regime
 # every other game/src TU does. Every TU here is itself #if MDKR_ENABLE_ONLINE_BETA.
@@ -381,7 +509,24 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/mod_registry.c     # ordered set of installed packs
     ${CMAKE_SOURCE_DIR}/platform/mod_texture_key.c  # published texture content digest
     ${CMAKE_SOURCE_DIR}/platform/mod_texture_store.c # decoded override textures (stb PNG)
+    ${CMAKE_SOURCE_DIR}/platform/rice_crc.c        # Rice/GLideN64 texture identity
     ${CMAKE_SOURCE_DIR}/platform/mod_music.c        # decoded override music (dr_wav)
+    ${CMAKE_SOURCE_DIR}/platform/modern_character_asset.c # validated private .mdkc character cache
+    ${CMAKE_SOURCE_DIR}/platform/modern_character_install.c # transactional portable .mdkrchar import/removal
+    ${CMAKE_SOURCE_DIR}/platform/modern_character_registry.c # bounded local generic-character discovery
+    ${CMAKE_SOURCE_DIR}/platform/modern_character_pose.c # semantic clips, cross-fades, sockets, skin palettes
+    ${CMAKE_SOURCE_DIR}/platform/modern_character_render.c # bounded PNG decode and immutable GPU resources
+    ${CMAKE_SOURCE_DIR}/platform/modern_character_draw_store.c # exact-size immutable retained palettes
+    ${CMAKE_SOURCE_DIR}/platform/modern_character_identity.c # bounded identity decode and game-ready portrait resampling
+    ${CMAKE_SOURCE_DIR}/platform/modern_character_text.c # shared bounded UTF-8 to retail-font identity projection
+    ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_character_text.c # project-owned bounded LTR custom-name glyph renderer
+    ${CMAKE_SOURCE_DIR}/platform/modern_character_runtime.c # assignments, animation instances, retained draw commands
+    ${CMAKE_SOURCE_DIR}/platform/modern_character_gpu_timing.c # bounded exact Workshop GPU timestamp distributions
+    ${CMAKE_SOURCE_DIR}/platform/modern_character_capture_projection.c # subject-scoped exact capture-space fit witness
+    ${CMAKE_SOURCE_DIR}/platform/modern_character_surface_intersection.c # bounded posed-character/vehicle surface crossing evidence
+    ${CMAKE_SOURCE_DIR}/platform/workshop_preview_runtime.c # presentation-only exact inspection view/light state
+    ${CMAKE_SOURCE_DIR}/platform/modern_character_donor.c # fail-visible retail driver/vehicle separation
+    ${CMAKE_SOURCE_DIR}/platform/modern_character_gameplay_profile.c # exact bounded ROM donor summaries
     ${CMAKE_SOURCE_DIR}/platform/enhancement_registry.c # enhancements + authority class
     ${CMAKE_SOURCE_DIR}/platform/enh_speedometer.c  # speed readout (presentation only)
     ${CMAKE_SOURCE_DIR}/platform/enh_draw_distance.c # draw distance + LOD bias (presentation only)
@@ -418,6 +563,7 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/present_sched.c    # its retrace-branch wiring (Phase 3 Wave B)
     ${CMAKE_SOURCE_DIR}/platform/sim_hash.c         # authoritative-state hash (Phase 1)
     ${CMAKE_SOURCE_DIR}/platform/gameplay_event_trace.c # ordered transient authority events
+    ${CMAKE_SOURCE_DIR}/platform/gpu_diagnostics.c # exact Workshop comparison device identity
     ${CMAKE_SOURCE_DIR}/platform/input_consumption_trace.c # tick-consumed pad trace
     ${CMAKE_SOURCE_DIR}/platform/input_latency_census.c # input -> commit -> present budget (M4)
     ${CMAKE_SOURCE_DIR}/platform/session/session_core.c # shared launcher/session reducer
@@ -433,6 +579,7 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/net/match_input_runtime.c # copy-out launcher-to-engine input provider
     ${CMAKE_SOURCE_DIR}/platform/net/match_input_packet.c # fixed hostile-input-safe carrier codec
     ${CMAKE_SOURCE_DIR}/platform/net/match_input_bundle.c # redundant three-frame carrier bundle
+    ${CMAKE_SOURCE_DIR}/platform/net/match_input_repair.c # explicit input-gap repair codec
     ${CMAKE_SOURCE_DIR}/platform/net/match_peer_graph.c # bounded direct/one-hop peer topology
     ${CMAKE_SOURCE_DIR}/platform/net/match_peer_forward.c # bounded opaque one-hop forwarding
     ${CMAKE_SOURCE_DIR}/platform/net/match_peer_transcript.c # canonical peer keys + phrase
@@ -444,6 +591,7 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/net/online_race_results.c # finished-race placements engine->launcher handoff
     ${CMAKE_SOURCE_DIR}/platform/net/local_listener_mix.c # endpoint-only physical audio listener policy
     ${CMAKE_SOURCE_DIR}/platform/net/net_impairment.c  # named deterministic carrier fault profiles
+    ${CMAKE_SOURCE_DIR}/platform/net/net_failure_ring.c # allocation-free online failure/stall forensics
     ${CMAKE_SOURCE_DIR}/platform/net/net_clock.c       # named endpoint clock/opportunity profiles
     ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_snapshot.c # bounded in-process authority snapshots
     ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_ring.c     # preallocated snapshot history
@@ -492,6 +640,14 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/mdkr_taj.c         # Taj challenge lifecycle/outcome test driver
     ${CMAKE_SOURCE_DIR}/platform/vita_trophy.c      # Vita homebrew trophy bridge (no-op elsewhere)
 )
+if(VITA)
+    # HarfBuzz and SheenBidi are desktop-only dependencies. Imported character
+    # names fall back to the retail game font on Vita.
+    list(REMOVE_ITEM PLATFORM_SOURCES
+        ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_character_text.c)
+    list(APPEND PLATFORM_SOURCES
+        ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_character_text_vita.c)
+endif()
 if(VITA AND MDKR_VITA_IMGUI_OVERLAY)
     list(APPEND PLATFORM_SOURCES
         ${CMAKE_SOURCE_DIR}/platform/vita_imgui_overlay.cpp
@@ -505,6 +661,26 @@ if(VITA AND MDKR_VITA_IMGUI_OVERLAY)
         ${CMAKE_SOURCE_DIR}/third_party/imgui-vita/imgui_impl_vitagl.cpp
         ${CMAKE_SOURCE_DIR}/third_party/imgui-vita/imgui_vita_touch.cpp
         PROPERTIES COMPILE_OPTIONS "-w;-fpermissive")
+endif()
+
+# Adventure Party (AP-02/AP-03): pure native session state machine + policy
+# core, own directory, adventure_party_ prefix (never party_ — that is Phone
+# Party — and never mdkr_adventure_ — those are the test hooks above). The
+# OMIT arm exists from the first module commit: when ON the sources leave the
+# game binary and MDKR_ADVENTURE_PARTY_OMIT=1 (set beside the other compile
+# definitions below) lets future adapter call sites compile out. The unit
+# tests in cmake/tests.cmake compile these sources directly and never consult
+# this option, so ctest is identical on both arms.
+option(MDKR_ADVENTURE_PARTY_OMIT
+       "Exclude the Adventure Party modules from the game binary" OFF)
+if(NOT MDKR_ADVENTURE_PARTY_OMIT)
+    list(APPEND PLATFORM_SOURCES
+        ${CMAKE_SOURCE_DIR}/platform/adventure_party/adventure_party_state.c  # session states/generations/exact-once
+        ${CMAKE_SOURCE_DIR}/platform/adventure_party/adventure_party_policy.c # capability table + arbitration + authority
+        ${CMAKE_SOURCE_DIR}/platform/adventure_party/adventure_party_trace.c  # AP-05 read-only trace formatters + emit wrappers
+        ${CMAKE_SOURCE_DIR}/platform/adventure_party/adventure_party_spawn.c  # AP-07 deterministic formation candidate planner (pure)
+        ${CMAKE_SOURCE_DIR}/platform/adventure_party/adventure_party_runtime.c # AP-06a process-wide session singleton (R12); save_state consumes its is_active query
+    )
 endif()
 # GL-only support TUs — the browser build is WebGPU-only, so they'd only pull in
 # glad/GL symbols that don't exist under wasm. Keep them native-only.
@@ -556,6 +732,11 @@ endif()
 # — the wasm binary renders exclusively through WebGPU.
 file(GLOB FAST3D_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/platform/fast3d/*.c)
 list(REMOVE_ITEM FAST3D_SOURCES ${CMAKE_SOURCE_DIR}/platform/fast3d/screenshot_series.c)
+if(VITA)
+    list(REMOVE_ITEM FAST3D_SOURCES
+        ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_character_text.c
+        ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_character_text_vita.c)
+endif()
 list(REMOVE_ITEM FAST3D_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_webgpu.c
     ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_webgpu_async_request.c
@@ -595,7 +776,7 @@ endif()
 # net_roster_runtime/online_race_results so BOTH the engine-side readers
 # (game/src, beta-gated) and the launcher-side writer/poller
 # (online_live_wiring.cpp in mdkr64_app) link ONE copy, but -- unlike those two,
-# which every build compiles -- it is gated so the release engine object never
+# which every build compiles -- it is gated so the beta-OFF engine object never
 # carries it. In PLATFORM_SOURCES it inherits the strict warning baseline below.
 if(MDKR_ENABLE_ONLINE_BETA)
     list(APPEND PLATFORM_SOURCES
@@ -645,6 +826,9 @@ add_executable(${MDKR_TARGET}
     ${MINIZ_SOURCES}
     ${DR_LIBS_SOURCES}
 )
+if(TARGET mdkr_character_text_shaping)
+    target_link_libraries(${MDKR_TARGET} PRIVATE mdkr_character_text_shaping)
+endif()
 
 # Include layout mirrors the DKR Makefile (-I . -I include -I include/libc
 # -I include/PR -I include/sys -I src -I libultra), rooted at game/ so paths like
@@ -653,8 +837,6 @@ target_include_directories(${MDKR_TARGET} PRIVATE
     ${CMAKE_SOURCE_DIR}/game
     ${CMAKE_SOURCE_DIR}/game/src
     ${CMAKE_SOURCE_DIR}/game/include
-    ${CMAKE_SOURCE_DIR}/game/include/PR
-    ${CMAKE_SOURCE_DIR}/game/include/sys
     ${CMAKE_SOURCE_DIR}/game/libultra
     ${CMAKE_SOURCE_DIR}/game/libultra/src/audio
     ${CMAKE_SOURCE_DIR}/platform
@@ -671,6 +853,7 @@ if(VITA AND MDKR_VITA_IMGUI_OVERLAY)
         ${CMAKE_SOURCE_DIR}/third_party/imgui-vita)
     target_compile_definitions(${MDKR_TARGET} PRIVATE MDKR_VITA_IMGUI_OVERLAY=1)
 endif()
+mdkr_add_legacy_game_quote_includes(${MDKR_TARGET})
 
 # --- Compile definitions (PLAN §8) ---------------------------------------
 target_compile_definitions(${MDKR_TARGET} PRIVATE
@@ -684,11 +867,19 @@ target_compile_definitions(${MDKR_TARGET} PRIVATE
     _FINALROM
     SDL_MAIN_HANDLED
 )
+# Adventure Party OMIT arm (option declared beside PLATFORM_SOURCES above):
+# with the module sources excluded, this definition is what future adapter
+# call sites #if out on, so an OMIT build cannot half-link the feature.
+if(MDKR_ADVENTURE_PARTY_OMIT)
+    target_compile_definitions(${MDKR_TARGET} PRIVATE
+        MDKR_ADVENTURE_PARTY_OMIT=1)
+endif()
 
 # The online-beta direct-boot seam (mode_intro -> straight into the online race)
 # lives in the game/decomp translation units that compile into ${MDKR_TARGET}.
 # It is entirely #if MDKR_ENABLE_ONLINE_BETA, so a normal (beta OFF) build never
-# sees the macro and the engine object stays byte-identical to the release build.
+# sees the macro and the engine object stays byte-identical to the pinned OFF
+# configuration.
 # Beta-only, matching the mdkr64_app definition below. The only PLATFORM_SOURCES
 # addition this macro makes is the beta live selection bridge (party_link.c,
 # gated above); every decomp TU that keys on the macro is entirely #if-guarded,
@@ -716,6 +907,13 @@ if(VITA)
     # needs just as much as real GLES3 does.
     target_compile_definitions(${MDKR_TARGET} PRIVATE MGB64_PORTMASTER_GLES=1)
 endif()
+# The hand-written native WebSocket client is compiled into the app and into
+# several standalone transport/test targets. Give every one of those
+# compilations the same product-version token, instead of maintaining a second
+# release literal in match_signal_client.cpp.
+set_source_files_properties(
+    ${CMAKE_SOURCE_DIR}/platform/online/match_signal_client.cpp PROPERTIES
+    COMPILE_DEFINITIONS "MDKR_MATCH_USER_AGENT_VERSION=\"${MDKR_VERSION}\"")
 # The save CLI stamps app_version into every container it writes, so it must
 # carry the same release value the engine and app shell do. Its target is
 # declared above this statement, hence the guarded definition here rather than
@@ -935,7 +1133,35 @@ if(NOT EMSCRIPTEN)
             # with the plain C driver (arm-vita-eabi-gcc), which doesn't pull
             # in libstdc++ automatically the way g++ would. Matches
             # Lighthouse's Makefile.vita (LIBS += -lstdc++).
-            stdc++)
+             stdc++)
+        if(MDKR_VITA_DEBUGGER)
+            foreach(MDKR_DEBUGGER_FILE IN ITEMS
+                    "${MDKR_VITADEBUGGER_DIR}/uvdb.h"
+                    "${MDKR_VITADEBUGGER_DIR}/libuvdb.a"
+                    "${MDKR_VITADEBUGGER_KUBRIDGE_DIR}/kubridge.h"
+                    "${MDKR_VITADEBUGGER_KUBRIDGE_DIR}/build-local/libkubridge_stub.a"
+                    "${MDKR_VITADEBUGGER_KERNEL_DIR}/libvitadebug_kernel_stub.a")
+                if(NOT EXISTS "${MDKR_DEBUGGER_FILE}")
+                    message(FATAL_ERROR
+                        "MDKR_VITA_DEBUGGER requires ${MDKR_DEBUGGER_FILE}")
+                endif()
+            endforeach()
+            target_include_directories(${MDKR_TARGET} PRIVATE
+                "${MDKR_VITADEBUGGER_DIR}"
+                "${MDKR_VITADEBUGGER_KUBRIDGE_DIR}")
+            target_compile_definitions(${MDKR_TARGET} PRIVATE
+                MDKR_VITA_DEBUGGER=1 VITA_GDB_DEBUGGER=1)
+            target_compile_options(${MDKR_TARGET} PRIVATE
+                -Og -g3 -fno-omit-frame-pointer
+                -Wno-error
+                -Wno-error=maybe-uninitialized
+                -Wno-error=format-truncation)
+            target_link_libraries(${MDKR_TARGET} PRIVATE
+                "${MDKR_VITADEBUGGER_DIR}/libuvdb.a"
+                "${MDKR_VITADEBUGGER_KERNEL_DIR}/libvitadebug_kernel_stub.a"
+                "${MDKR_VITADEBUGGER_KUBRIDGE_DIR}/build-local/libkubridge_stub.a"
+                SceNet_stub SceNetPs_stub pthread)
+        endif()
     else()
         # CMAKE_DL_LIBS also carries the dlopen that platform/a11y_speech_linux.c
         # loads speech-dispatcher through — deliberately at runtime, so a tarball
@@ -953,6 +1179,12 @@ if(NOT EMSCRIPTEN)
     if(MDKR_WEBGPU_BACKEND)
         target_compile_definitions(${MDKR_TARGET} PRIVATE MDKR_WEBGPU_BACKEND)
         target_link_libraries(${MDKR_TARGET} PRIVATE webgpu)
+        if(MDKR_CHARACTER_KTX2)
+            target_compile_definitions(${MDKR_TARGET} PRIVATE
+                MDKR_CHARACTER_KTX2=1)
+            target_link_libraries(${MDKR_TARGET} PRIVATE
+                mdkr_character_ktx2_bridge)
+        endif()
     endif()
 
     # =======================================================================
@@ -985,16 +1217,55 @@ if(NOT EMSCRIPTEN)
         # instead of silently changing every desktop build through a glob.
         # The CI contract compares it with platform/app/ so omissions and
         # unreviewed additions fail closed at review time.
+        find_package(Python3 COMPONENTS Interpreter REQUIRED)
+        # The brand hero is generated into the build tree rather than tracked as
+        # a byte array: the repo keeps the source art (brand/hero.png) and never
+        # a multi-megabyte generated blob, the same split the embedded fonts use.
+        set(MDKR_HERO_HEADER ${CMAKE_CURRENT_BINARY_DIR}/generated/hero_png.h)
+        add_custom_command(
+            OUTPUT ${MDKR_HERO_HEADER}
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                    ${CMAKE_CURRENT_BINARY_DIR}/generated
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tools/gen_image_header.py
+                    ${CMAKE_SOURCE_DIR}/brand/hero.png
+                    ${MDKR_HERO_HEADER}
+                    --symbol kAppHeroPng
+            DEPENDS ${CMAKE_SOURCE_DIR}/brand/hero.png
+                    ${CMAKE_SOURCE_DIR}/tools/gen_image_header.py
+            COMMENT "Embedding brand/hero.png for the launcher home"
+            VERBATIM)
+
         set(APP_SOURCES
+            ${MDKR_HERO_HEADER}
             ${CMAKE_SOURCE_DIR}/platform/app/app_config.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/app_config_escape.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/app_host.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/app_relaunch.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/app_restart.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/app_theme.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/app_launch_hold.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/app_ui_policy.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/app_window.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/arg_triage.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/character_adapter_output_index.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/character_candidate_index.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/character_edit_history.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/character_failure_index.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/character_portrait_import.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/character_portrait_studio.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/character_preview_cache.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/character_raw_draft_store.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/character_raw_intake_index.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/character_revision_index.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/character_spdx_expression.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/character_test_evidence_store.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/character_draft_store.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/character_draft_snapshot.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/character_draft_transfer.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/character_png_validation.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/character_visual_report.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/character_workshop_model.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/crash_screen.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/dev_tools.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/tool_collision.cpp
@@ -1010,6 +1281,7 @@ if(NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/platform/app/session_runtime.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/ui_common.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/ui_diag.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/ui_hero.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/ui_launcher.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/ui_online_room.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/ui_overlay.cpp
@@ -1033,7 +1305,8 @@ if(NOT EMSCRIPTEN)
                 ${CMAKE_SOURCE_DIR}/platform/net/match_peer_crypto.cpp)
         else()
             list(APPEND APP_SOURCES
-                ${CMAKE_SOURCE_DIR}/platform/party/libdatachannel_party_transport_stub.cpp)
+                ${CMAKE_SOURCE_DIR}/platform/party/libdatachannel_party_transport_stub.cpp
+                ${CMAKE_SOURCE_DIR}/platform/party/lan_party_stub.cpp)
         endif()
 
         if(MDKR_ENABLE_ONLINE_BETA)
@@ -1053,9 +1326,11 @@ if(NOT EMSCRIPTEN)
             endif()
             list(APPEND APP_SOURCES
                 ${CMAKE_SOURCE_DIR}/platform/online/match_live_adapter.cpp
+                ${CMAKE_SOURCE_DIR}/platform/online/match_peer_liveness.cpp
                 ${CMAKE_SOURCE_DIR}/platform/online/match_live_transport.cpp
                 ${CMAKE_SOURCE_DIR}/platform/online/match_signal_client.cpp
                 ${CMAKE_SOURCE_DIR}/platform/online/match_peer_transport.cpp
+                ${CMAKE_SOURCE_DIR}/platform/online/match_peer_lost_reason.cpp
                 ${CMAKE_SOURCE_DIR}/platform/online/online_track_table.c
                 ${CMAKE_SOURCE_DIR}/platform/app/online_live_wiring.cpp)
 
@@ -1244,6 +1519,10 @@ if(NOT EMSCRIPTEN)
                 add_executable(mdkr_match_peer_transport_test
                     ${CMAKE_SOURCE_DIR}/tests/test_match_peer_transport.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_peer_transport.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/match_peer_lost_reason.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/net/net_failure_ring.c
+                    ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
+                    ${CMAKE_SOURCE_DIR}/platform/online/match_signal_client.cpp
                     ${CMAKE_SOURCE_DIR}/platform/net/match_peer_crypto.cpp
                     ${CMAKE_SOURCE_DIR}/platform/net/match_peer_transcript.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_peer_graph.c
@@ -1335,15 +1614,18 @@ if(NOT EMSCRIPTEN)
                 # double running the real reducer; the transport side rides the
                 # loopback signal hub feeding real libdatachannel DTLS on
                 # 127.0.0.1. ROM-, GPU- and network-free.
-                add_executable(mdkr_online_live_adapter_test
+                set(MDKR_ONLINE_LIVE_ADAPTER_SOURCES
                     ${CMAKE_SOURCE_DIR}/tests/test_online_live_adapter.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_live_adapter.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/match_peer_liveness.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/online_track_table.c
                     ${CMAKE_SOURCE_DIR}/platform/online/match_peer_transport.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/match_peer_lost_reason.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_signal_client.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_launch_builder.c
                     ${CMAKE_SOURCE_DIR}/platform/online/lobby_view_model.c
                     ${CMAKE_SOURCE_DIR}/platform/online/lobby_core.c
+                    ${CMAKE_SOURCE_DIR}/platform/online/lobby_fake_adapter.c
                     ${CMAKE_SOURCE_DIR}/platform/net/party_link.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_preflight.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_roster_runtime.c
@@ -1354,7 +1636,10 @@ if(NOT EMSCRIPTEN)
                     ${CMAKE_SOURCE_DIR}/platform/net/match_peer_transcript.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_peer_graph.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_transport.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/net_failure_ring.c
+                    ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_input_bundle.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/match_input_repair.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_impairment.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_input.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_local_input.c
@@ -1364,6 +1649,8 @@ if(NOT EMSCRIPTEN)
                     ${CMAKE_SOURCE_DIR}/platform/sha256.c
                     ${CMAKE_SOURCE_DIR}/platform/party/party_retry_policy.cpp
                     ${CMAKE_SOURCE_DIR}/platform/party/party_webrtc_signaling.cpp)
+                add_executable(mdkr_online_live_adapter_test
+                    ${MDKR_ONLINE_LIVE_ADAPTER_SOURCES})
                 target_include_directories(mdkr_online_live_adapter_test PRIVATE
                     ${CMAKE_SOURCE_DIR}
                     ${CMAKE_SOURCE_DIR}/platform
@@ -1394,6 +1681,52 @@ if(NOT EMSCRIPTEN)
                 # internal waits are bounded, so this timeout backstops a hang.
                 set_tests_properties(online_live_adapter PROPERTIES TIMEOUT 180)
 
+                # B4/A4 positive control: the SAME adapter, mesh and transport
+                # with the failure ring compiled out. It runs the identical
+                # --forensics scenario to the identical peer loss and writes no
+                # dump, so the forensics lane's assertions are proven to read
+                # the PRODUCTION recorder rather than the scenario.
+                add_executable(mdkr_online_live_adapter_norecord
+                    ${MDKR_ONLINE_LIVE_ADAPTER_SOURCES})
+                target_compile_definitions(mdkr_online_live_adapter_norecord
+                    PRIVATE MDKR_NET_FAILURE_RING_DISABLED=1)
+                target_include_directories(mdkr_online_live_adapter_norecord
+                    PRIVATE
+                    ${CMAKE_SOURCE_DIR}
+                    ${CMAKE_SOURCE_DIR}/platform
+                    ${MDKR_LIBDATACHANNEL_JSON_INCLUDE}
+                    ${MDKR_PARTY_GENERATED_INCLUDE})
+                target_include_directories(mdkr_online_live_adapter_norecord
+                    SYSTEM PRIVATE
+                    ${mdkr_libdatachannel_SOURCE_DIR}/include)
+                target_compile_features(mdkr_online_live_adapter_norecord
+                    PRIVATE cxx_std_17)
+                target_link_libraries(mdkr_online_live_adapter_norecord PRIVATE
+                    LibDataChannel::LibDataChannel MbedTLS::MbedTLS
+                    Threads::Threads)
+                if(WIN32)
+                    target_link_libraries(
+                        mdkr_online_live_adapter_norecord PRIVATE ws2_32)
+                endif()
+                if(MSVC)
+                    target_compile_options(
+                        mdkr_online_live_adapter_norecord PRIVATE /W4 /WX)
+                else()
+                    target_compile_options(
+                        mdkr_online_live_adapter_norecord PRIVATE
+                        -Wall -Wextra -Wpedantic -Werror)
+                endif()
+                find_package(Python3 COMPONENTS Interpreter REQUIRED)
+                add_test(
+                    NAME net_failure_ring_impairment
+                    COMMAND ${Python3_EXECUTABLE}
+                            ${CMAKE_SOURCE_DIR}/tests/check_net_failure_ring_impairment.py
+                            --record $<TARGET_FILE:mdkr_online_live_adapter_test>
+                            --norecord
+                            $<TARGET_FILE:mdkr_online_live_adapter_norecord>)
+                set_tests_properties(net_failure_ring_impairment
+                    PROPERTIES TIMEOUT 300)
+
                 # F4: the SAME adapter TU, compiled WITH
                 # MDKR_ENABLE_ONLINE_BETA (the target above deliberately does not
                 # -- the define breaks its token-gate test), so the beta-only
@@ -1407,8 +1740,10 @@ if(NOT EMSCRIPTEN)
                 add_executable(mdkr_online_live_adapter_beta_test
                     ${CMAKE_SOURCE_DIR}/tests/test_online_live_adapter_beta.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_live_adapter.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/match_peer_liveness.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/online_track_table.c
                     ${CMAKE_SOURCE_DIR}/platform/online/match_peer_transport.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/match_peer_lost_reason.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_signal_client.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_launch_builder.c
                     ${CMAKE_SOURCE_DIR}/platform/online/lobby_view_model.c
@@ -1422,7 +1757,10 @@ if(NOT EMSCRIPTEN)
                     ${CMAKE_SOURCE_DIR}/platform/net/match_peer_transcript.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_peer_graph.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_transport.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/net_failure_ring.c
+                    ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_input_bundle.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/match_input_repair.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_impairment.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_input.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_local_input.c
@@ -1570,6 +1908,32 @@ if(NOT EMSCRIPTEN)
                 # Six full bring-up + 240-tick impaired races over real DTLS.
                 set_tests_properties(online_live_matrix PROPERTIES TIMEOUT 360)
 
+                # N5 A5/B1: the pre-flight route-quality measurement over the
+                # same two real loopback DTLS meshes. Both endpoints replay
+                # both lanes at their real cadence and payload size, exchange
+                # the record in their MPF2 reports and must agree on the band;
+                # a second run with a round trip a single authored tick cannot
+                # absorb must widen BOTH endpoints' entry timing above the
+                # manifest floor while the two still converge byte for byte.
+                # The probe/echo round trip is timed against the adapter's
+                # injected clock, so no external network is involved.
+                add_test(NAME online_live_route
+                    COMMAND mdkr_online_live_adapter_test --route)
+                set_tests_properties(online_live_route PROPERTIES TIMEOUT 300)
+
+                # N7 B3/B5: explicit input-gap repair on the reliable
+                # unordered authority channel, over the same two real loopback
+                # DTLS meshes. Twenty-five consecutive bundle sends in one
+                # direction are suppressed -- far past the carrier's three
+                # ticks of redundancy -- and the run that costs must be closed
+                # by repair alone, with both endpoints committing the identical
+                # canonical timeline. Two positive controls: the identical
+                # burst with repair off must reach typed rollback exhaustion,
+                # and the burst must not age out a valid authority packet.
+                add_test(NAME online_live_repair
+                    COMMAND mdkr_online_live_adapter_test --repair)
+                set_tests_properties(online_live_repair PROPERTIES TIMEOUT 300)
+
                 # online multiplayer CAPSTONE end-to-end race driver: the
                 # REAL online stack (production MatchRoom HTTP + /connect WS
                 # client, the signal-client mesh backend, the peer
@@ -1583,12 +1947,15 @@ if(NOT EMSCRIPTEN)
                     ${CMAKE_SOURCE_DIR}/tests/test_online_live_transport_e2e_driver.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_live_transport.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_live_adapter.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/match_peer_liveness.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/online_track_table.c
                     ${CMAKE_SOURCE_DIR}/platform/online/match_peer_transport.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/online/match_peer_lost_reason.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_signal_client.cpp
                     ${CMAKE_SOURCE_DIR}/platform/online/match_launch_builder.c
                     ${CMAKE_SOURCE_DIR}/platform/online/lobby_view_model.c
                     ${CMAKE_SOURCE_DIR}/platform/online/lobby_core.c
+                    ${CMAKE_SOURCE_DIR}/platform/online/lobby_fake_adapter.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_preflight.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_roster_runtime.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_roster.c
@@ -1598,7 +1965,10 @@ if(NOT EMSCRIPTEN)
                     ${CMAKE_SOURCE_DIR}/platform/net/match_peer_transcript.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_peer_graph.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_transport.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/net_failure_ring.c
+                    ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
                     ${CMAKE_SOURCE_DIR}/platform/net/match_input_bundle.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/match_input_repair.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_input.c
                     ${CMAKE_SOURCE_DIR}/platform/net/net_local_input.c
                     ${CMAKE_SOURCE_DIR}/platform/session/session_bridge.c
@@ -1657,6 +2027,11 @@ if(NOT EMSCRIPTEN)
 
         add_library(mdkr64_app STATIC ${IMGUI_SOURCES} ${APP_SOURCES})
         target_compile_features(mdkr64_app PRIVATE cxx_std_17)
+        # generated/ carries the embedded brand hero; lib/stb is the decoder it
+        # is handed to (declarations only -- the implementation TU is elsewhere).
+        target_include_directories(mdkr64_app PRIVATE
+            ${CMAKE_CURRENT_BINARY_DIR}/generated
+            ${CMAKE_SOURCE_DIR}/lib/stb)
         if(MDKR_NATIVE_PHONE_PARTY)
             target_include_directories(mdkr64_app PRIVATE
                 ${MDKR_LIBDATACHANNEL_JSON_INCLUDE}
@@ -1718,6 +2093,7 @@ if(NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/platform
             ${CMAKE_SOURCE_DIR}/platform/app
             ${CMAKE_SOURCE_DIR}/lib/glad/include
+            ${CMAKE_SOURCE_DIR}/lib/stb
             ${SDL2_INCLUDE_DIRS})
         target_link_directories(mdkr64_app PRIVATE ${SDL2_LIBRARY_DIRS})
         target_link_libraries(mdkr64_app PRIVATE mdkr_qrcodegen)
@@ -1741,10 +2117,12 @@ if(NOT EMSCRIPTEN)
                 "-framework AppKit"
                 "-framework UniformTypeIdentifiers")
         elseif(WIN32)
-            # comdlg32: GetOpenFileNameW. A stock Windows system DLL — it is a
-            # deliberate, documented addition to the import allowlist in
+            # comdlg32: GetOpenFileNameW. shell32: reveal a retained package in
+            # Explorer without opening it. Both are stock Windows system DLLs
+            # and deliberate, documented additions to the import allowlist in
             # .github/workflows/windows-validate.yml and tools/mingw_cross_check.sh.
-            target_link_libraries(mdkr64_app PUBLIC OpenGL::GL comdlg32)
+            target_link_libraries(mdkr64_app PUBLIC
+                OpenGL::GL comdlg32 shell32)
         else()
             target_link_libraries(mdkr64_app PUBLIC OpenGL::GL)
         endif()
@@ -1771,11 +2149,13 @@ if(NOT EMSCRIPTEN)
                 ${CMAKE_SOURCE_DIR}/tests/test_app_shell.cpp
                 ${CMAKE_SOURCE_DIR}/platform/app/arg_triage.cpp
                 ${CMAKE_SOURCE_DIR}/platform/app/rom_validate.cpp
+                ${CMAKE_SOURCE_DIR}/platform/modern_character_gameplay_profile.c
                 ${CMAKE_SOURCE_DIR}/platform/rom_id.c
                 ${CMAKE_SOURCE_DIR}/platform/rom_validation.c
                 ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
                 ${CMAKE_SOURCE_DIR}/platform/sha256.c)
             target_include_directories(mdkr_app_shell_test PRIVATE
+                ${CMAKE_SOURCE_DIR}/game/include
                 ${CMAKE_SOURCE_DIR}/platform
                 ${CMAKE_SOURCE_DIR}/platform/app)
             target_compile_features(mdkr_app_shell_test PRIVATE cxx_std_17)
@@ -1791,7 +2171,9 @@ if(NOT EMSCRIPTEN)
                 ${CMAKE_SOURCE_DIR}/platform/net/net_roster.c
                 ${CMAKE_SOURCE_DIR}/platform/net/net_local_input.c
                 ${CMAKE_SOURCE_DIR}/platform/net/net_input.c
-                ${CMAKE_SOURCE_DIR}/platform/net/match_transport.c)
+                ${CMAKE_SOURCE_DIR}/platform/net/match_transport.c
+                ${CMAKE_SOURCE_DIR}/platform/net/net_failure_ring.c
+                ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c)
             target_include_directories(mdkr_session_runtime_test PRIVATE
                 ${CMAKE_SOURCE_DIR}/platform
                 ${CMAKE_SOURCE_DIR}/platform/app)
@@ -1805,6 +2187,176 @@ if(NOT EMSCRIPTEN)
                 ${CMAKE_SOURCE_DIR}/platform/app)
             target_compile_features(mdkr_app_ui_policy_test PRIVATE cxx_std_17)
             add_test(NAME app_ui_policy COMMAND mdkr_app_ui_policy_test)
+
+            add_executable(mdkr_character_revision_index_test
+                ${CMAKE_SOURCE_DIR}/tests/test_character_revision_index.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_revision_index.cpp)
+            target_include_directories(mdkr_character_revision_index_test PRIVATE
+                ${CMAKE_SOURCE_DIR}/platform/app)
+            target_compile_features(mdkr_character_revision_index_test PRIVATE cxx_std_17)
+            add_test(NAME character_revision_index
+                COMMAND mdkr_character_revision_index_test)
+
+            add_executable(mdkr_character_failure_index_test
+                ${CMAKE_SOURCE_DIR}/tests/test_character_failure_index.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_failure_index.cpp)
+            target_include_directories(mdkr_character_failure_index_test PRIVATE
+                ${CMAKE_SOURCE_DIR}/platform/app)
+            target_compile_features(mdkr_character_failure_index_test PRIVATE cxx_std_17)
+            add_test(NAME character_failure_index
+                COMMAND mdkr_character_failure_index_test)
+
+            add_executable(mdkr_character_candidate_index_test
+                ${CMAKE_SOURCE_DIR}/tests/test_character_candidate_index.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_candidate_index.cpp)
+            target_include_directories(mdkr_character_candidate_index_test PRIVATE
+                ${CMAKE_SOURCE_DIR}/platform/app)
+            target_compile_features(mdkr_character_candidate_index_test PRIVATE cxx_std_17)
+            add_test(NAME character_candidate_index
+                COMMAND mdkr_character_candidate_index_test)
+
+            add_executable(mdkr_character_edit_history_test
+                ${CMAKE_SOURCE_DIR}/tests/test_character_edit_history.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_edit_history.cpp)
+            target_include_directories(mdkr_character_edit_history_test PRIVATE
+                ${CMAKE_SOURCE_DIR}/platform/app)
+            target_compile_features(mdkr_character_edit_history_test PRIVATE cxx_std_17)
+            add_test(NAME character_edit_history
+                COMMAND mdkr_character_edit_history_test)
+
+            add_executable(mdkr_character_raw_intake_index_test
+                ${CMAKE_SOURCE_DIR}/tests/test_character_raw_intake_index.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_raw_intake_index.cpp)
+            target_include_directories(mdkr_character_raw_intake_index_test PRIVATE
+                ${CMAKE_SOURCE_DIR}/platform/app)
+            target_compile_features(mdkr_character_raw_intake_index_test PRIVATE cxx_std_17)
+            add_test(NAME character_raw_intake_index
+                COMMAND mdkr_character_raw_intake_index_test)
+
+            add_executable(mdkr_character_adapter_output_index_test
+                ${CMAKE_SOURCE_DIR}/tests/test_character_adapter_output_index.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_adapter_output_index.cpp)
+            target_include_directories(mdkr_character_adapter_output_index_test PRIVATE
+                ${CMAKE_SOURCE_DIR}/platform/app)
+            target_compile_features(mdkr_character_adapter_output_index_test PRIVATE cxx_std_17)
+            add_test(NAME character_adapter_output_index
+                COMMAND mdkr_character_adapter_output_index_test)
+
+            add_executable(mdkr_character_raw_draft_store_test
+                ${CMAKE_SOURCE_DIR}/tests/test_character_raw_draft_store.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_raw_draft_store.cpp
+                ${CMAKE_SOURCE_DIR}/platform/sha256.c)
+            target_include_directories(mdkr_character_raw_draft_store_test PRIVATE
+                ${CMAKE_SOURCE_DIR}/platform
+                ${CMAKE_SOURCE_DIR}/platform/app)
+            target_compile_features(mdkr_character_raw_draft_store_test PRIVATE cxx_std_17)
+            add_test(NAME character_raw_draft_store
+                COMMAND mdkr_character_raw_draft_store_test)
+
+            add_executable(mdkr_character_spdx_expression_test
+                ${CMAKE_SOURCE_DIR}/tests/test_character_spdx_expression.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_spdx_expression.cpp)
+            target_include_directories(mdkr_character_spdx_expression_test PRIVATE
+                ${CMAKE_SOURCE_DIR}/platform/app)
+            target_compile_features(mdkr_character_spdx_expression_test PRIVATE cxx_std_17)
+            add_test(NAME character_spdx_expression
+                COMMAND mdkr_character_spdx_expression_test)
+
+            add_executable(mdkr_character_test_evidence_store_test
+                ${CMAKE_SOURCE_DIR}/tests/test_character_test_evidence_store.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_test_evidence_store.cpp
+                ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
+                ${CMAKE_SOURCE_DIR}/platform/modern_character_gpu_timing.c
+                ${CMAKE_SOURCE_DIR}/platform/sha256.c)
+            target_include_directories(mdkr_character_test_evidence_store_test PRIVATE
+                ${CMAKE_SOURCE_DIR}/platform
+                ${CMAKE_SOURCE_DIR}/platform/app)
+            target_compile_features(mdkr_character_test_evidence_store_test PRIVATE cxx_std_17)
+            add_test(NAME character_test_evidence_store
+                COMMAND mdkr_character_test_evidence_store_test)
+
+            add_executable(mdkr_character_draft_store_test
+                ${CMAKE_SOURCE_DIR}/tests/test_character_draft_store.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_draft_store.cpp
+                ${CMAKE_SOURCE_DIR}/platform/sha256.c)
+            target_include_directories(mdkr_character_draft_store_test PRIVATE
+                ${CMAKE_SOURCE_DIR}/platform
+                ${CMAKE_SOURCE_DIR}/platform/app)
+            target_compile_features(mdkr_character_draft_store_test PRIVATE cxx_std_17)
+            add_test(NAME character_draft_store
+                COMMAND mdkr_character_draft_store_test)
+
+            add_executable(mdkr_character_draft_snapshot_test
+                ${CMAKE_SOURCE_DIR}/tests/test_character_draft_snapshot.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_draft_snapshot.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_png_validation.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_portrait_import.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_portrait_studio.cpp
+                ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
+                ${CMAKE_SOURCE_DIR}/platform/sha256.c
+                ${CMAKE_SOURCE_DIR}/lib/stb/stb_image_impl.c)
+            target_include_directories(mdkr_character_draft_snapshot_test PRIVATE
+                ${CMAKE_SOURCE_DIR}/platform
+                ${CMAKE_SOURCE_DIR}/platform/app
+                ${CMAKE_SOURCE_DIR}/lib/stb)
+            target_compile_features(mdkr_character_draft_snapshot_test PRIVATE cxx_std_17)
+            add_test(NAME character_draft_snapshot
+                COMMAND mdkr_character_draft_snapshot_test)
+
+            add_executable(mdkr_character_draft_transfer_test
+                ${CMAKE_SOURCE_DIR}/tests/test_character_draft_transfer.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_draft_transfer.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_draft_store.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_draft_snapshot.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_png_validation.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_portrait_import.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_portrait_studio.cpp
+                ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
+                ${CMAKE_SOURCE_DIR}/platform/sha256.c
+                ${CMAKE_SOURCE_DIR}/lib/stb/stb_image_impl.c)
+            target_include_directories(mdkr_character_draft_transfer_test PRIVATE
+                ${CMAKE_SOURCE_DIR}/platform
+                ${CMAKE_SOURCE_DIR}/platform/app
+                ${CMAKE_SOURCE_DIR}/lib/stb)
+            target_compile_features(mdkr_character_draft_transfer_test PRIVATE
+                cxx_std_17)
+            add_test(NAME character_draft_transfer
+                COMMAND mdkr_character_draft_transfer_test)
+
+            add_executable(mdkr_workshop_preview_runtime_test
+                ${CMAKE_SOURCE_DIR}/tests/test_workshop_preview_runtime.c
+                ${CMAKE_SOURCE_DIR}/platform/workshop_preview_runtime.c)
+            target_include_directories(mdkr_workshop_preview_runtime_test PRIVATE
+                ${CMAKE_SOURCE_DIR}/platform)
+            add_test(NAME workshop_preview_runtime
+                COMMAND mdkr_workshop_preview_runtime_test)
+
+            add_executable(mdkr_character_visual_report_test
+                ${CMAKE_SOURCE_DIR}/tests/test_character_visual_report.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_png_validation.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_visual_report.cpp
+                ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
+                ${CMAKE_SOURCE_DIR}/platform/sha256.c)
+            target_include_directories(mdkr_character_visual_report_test PRIVATE
+                ${CMAKE_SOURCE_DIR}/platform
+                ${CMAKE_SOURCE_DIR}/platform/app)
+            target_compile_features(mdkr_character_visual_report_test PRIVATE
+                cxx_std_17)
+            add_test(NAME character_visual_report
+                COMMAND mdkr_character_visual_report_test)
+
+            add_executable(mdkr_character_preview_cache_test
+                ${CMAKE_SOURCE_DIR}/tests/test_character_preview_cache.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/character_preview_cache.cpp
+                ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
+                ${CMAKE_SOURCE_DIR}/platform/sha256.c)
+            target_include_directories(mdkr_character_preview_cache_test PRIVATE
+                ${CMAKE_SOURCE_DIR}/platform
+                ${CMAKE_SOURCE_DIR}/platform/app)
+            target_compile_features(mdkr_character_preview_cache_test PRIVATE
+                cxx_std_17)
+            add_test(NAME character_preview_cache
+                COMMAND mdkr_character_preview_cache_test)
 
             add_executable(mdkr_app_config_test
                 ${CMAKE_SOURCE_DIR}/tests/test_app_config.cpp
@@ -1833,6 +2385,9 @@ if(NOT EMSCRIPTEN)
                 ${CMAKE_SOURCE_DIR}/platform/app
                 ${SDL2_INCLUDE_DIRS})
             target_compile_features(mdkr_app_window_test PRIVATE cxx_std_17)
+            # This unit supplies SDL stubs and its own console entry point;
+            # SDL's Windows main remapping must not require an SDL2main shim.
+            target_compile_definitions(mdkr_app_window_test PRIVATE SDL_MAIN_HANDLED)
             add_test(NAME app_window COMMAND mdkr_app_window_test)
 
             add_test(NAME app_background_activation_contract
@@ -1887,6 +2442,15 @@ if(NOT EMSCRIPTEN)
                 LABELS app_process
                 PASS_REGULAR_EXPRESSION "${MDKR_FRAME_LIMIT_UI_CONTRACT_REGEX}")
 
+            # Issue #62: the actual widget's option routing must expose all
+            # three choices, with readable labels, instead of a text field.
+            add_test(NAME app_opponent_skill_choices COMMAND ${MDKR_TARGET})
+            set_tests_properties(app_opponent_skill_choices PROPERTIES
+                ENVIRONMENT "MDKR_APP_DUMP_SCHEMA=1;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                LABELS app_process
+                PASS_REGULAR_EXPRESSION
+                    "choices key=Enhancements.AIDifficulty count=3 authored=\"Original — as released\" hard=\"Hard — faster opponents\" brutal=\"Brutal — fastest opponents\"")
+
             # Shell render smoke: drive the launcher for a few frames and require
             # a real captured frame. This is what makes the gate honest — it
             # proves pixels reached a framebuffer, not merely that main() returned
@@ -1904,6 +2468,10 @@ if(NOT EMSCRIPTEN)
                     "${MDKR_APP_TEST_ROOT}/shell/saves"
                     "${MDKR_APP_TEST_ROOT}/settings/prefs"
                     "${MDKR_APP_TEST_ROOT}/settings/saves"
+                    "${MDKR_APP_TEST_ROOT}/workshop/prefs"
+                    "${MDKR_APP_TEST_ROOT}/workshop/saves"
+                    "${MDKR_APP_TEST_ROOT}/workshop-min/prefs"
+                    "${MDKR_APP_TEST_ROOT}/workshop-min/saves"
                     "${MDKR_APP_TEST_ROOT}/online/prefs"
                     "${MDKR_APP_TEST_ROOT}/online/saves"
                     "${MDKR_APP_TEST_ROOT}/online-min/prefs"
@@ -1931,6 +2499,8 @@ if(NOT EMSCRIPTEN)
                 file(REMOVE
                     "${MDKR_APP_TEST_ROOT}/shell/video.ini"
                     "${MDKR_APP_TEST_ROOT}/settings/video.ini"
+                    "${MDKR_APP_TEST_ROOT}/workshop/video.ini"
+                    "${MDKR_APP_TEST_ROOT}/workshop-min/video.ini"
                     "${MDKR_APP_TEST_ROOT}/online/video.ini"
                     "${MDKR_APP_TEST_ROOT}/online-min/video.ini"
                     "${MDKR_APP_TEST_ROOT}/top-tabs/video.ini"
@@ -1947,6 +2517,10 @@ if(NOT EMSCRIPTEN)
                     "# isolated first-run shell\n")
                 file(WRITE "${MDKR_APP_TEST_ROOT}/settings/prefs/mdkr64_app.ini"
                     "# isolated first-run settings\n")
+                file(WRITE "${MDKR_APP_TEST_ROOT}/workshop/prefs/mdkr64_app.ini"
+                    "# isolated empty Character Workshop\n")
+                file(WRITE "${MDKR_APP_TEST_ROOT}/workshop-min/prefs/mdkr64_app.ini"
+                    "# minimum Character Workshop\nui_scale=2.00\n")
                 file(WRITE "${MDKR_APP_TEST_ROOT}/online/prefs/mdkr64_app.ini"
                     "# isolated launcher-owned online preview\n")
                 file(WRITE "${MDKR_APP_TEST_ROOT}/online-min/prefs/mdkr64_app.ini"
@@ -2007,6 +2581,104 @@ if(NOT EMSCRIPTEN)
                     DEPENDS app_settings_smoke
                     LABELS gpu
                     TIMEOUT 60)
+
+                # Character authoring is a dedicated launcher destination, not
+                # a settings accordion. This empty-library route proves the
+                # named panel, responsive shell, importer onboarding, and
+                # render/present path without a ROM or third-party asset.
+                add_test(NAME app_character_workshop_smoke COMMAND ${MDKR_TARGET})
+                set_tests_properties(app_character_workshop_smoke PROPERTIES
+                    FIXTURES_SETUP app_character_workshop_capture
+                    WORKING_DIRECTORY "${MDKR_APP_TEST_ROOT}/workshop"
+                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=6;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_character_workshop.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=1280x720;MDKR_APP_PANEL=Character Workshop;MDKR_APP_UI_TRACE=1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/workshop/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/workshop/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/workshop/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    LABELS gpu
+                    PASS_REGULAR_EXPRESSION "active-panel=Character Workshop workshop-primary=contextual rom=optional"
+                    TIMEOUT 180)
+                add_test(NAME app_character_workshop_content
+                    COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_SOURCE_DIR}/tests/check_app_capture.py
+                        ${CMAKE_CURRENT_BINARY_DIR}/app_character_workshop.bmp
+                        --self-test)
+                set_tests_properties(app_character_workshop_content PROPERTIES
+                    FIXTURES_REQUIRED app_character_workshop_capture
+                    DEPENDS app_character_workshop_smoke
+                    LABELS gpu
+                    TIMEOUT 60)
+
+                add_test(NAME app_character_workshop_minimum_smoke
+                    COMMAND ${MDKR_TARGET})
+                set_tests_properties(app_character_workshop_minimum_smoke PROPERTIES
+                    FIXTURES_SETUP app_character_workshop_minimum_capture
+                    WORKING_DIRECTORY "${MDKR_APP_TEST_ROOT}/workshop-min"
+                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=10;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_character_workshop_minimum.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=640x480;MDKR_APP_PANEL=Character Workshop;MDKR_APP_UI_TRACE=1;MDKR_APP_SMOKE_TOUCH_SCROLL=1;MDKR_APP_SMOKE_TOUCH_TOKEN=mdkr64-app-touch-v1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/workshop-min/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/workshop-min/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/workshop-min/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    LABELS gpu
+                    PASS_REGULAR_EXPRESSION "compact-layout dense=1 contained=1 overlap=0 contentSeparated=1 primaryLabelContained=1;character-workshop-layout compact=1"
+                    TIMEOUT 180)
+                add_test(NAME app_character_workshop_minimum_content
+                    COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_SOURCE_DIR}/tests/check_app_capture.py
+                        ${CMAKE_CURRENT_BINARY_DIR}/app_character_workshop_minimum.bmp
+                        --compact-palette
+                        --self-test)
+                set_tests_properties(app_character_workshop_minimum_content PROPERTIES
+                    FIXTURES_REQUIRED app_character_workshop_minimum_capture
+                    DEPENDS app_character_workshop_minimum_smoke
+                    LABELS gpu
+                    TIMEOUT 60)
+
+                add_test(NAME app_character_raw_intake
+                    COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_SOURCE_DIR}/tests/check_character_raw_intake_ui.py
+                        --build ${CMAKE_CURRENT_BINARY_DIR})
+                set_tests_properties(app_character_raw_intake PROPERTIES
+                    DEPENDS app_character_workshop_smoke
+                    LABELS gpu
+                    TIMEOUT 180)
+
+                add_test(NAME app_character_quit_lifecycle
+                    COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_SOURCE_DIR}/tests/check_character_quit_lifecycle_ui.py
+                        --build ${CMAKE_CURRENT_BINARY_DIR})
+                set_tests_properties(app_character_quit_lifecycle PROPERTIES
+                    DEPENDS app_character_workshop_smoke
+                    LABELS gpu
+                    TIMEOUT 90)
+
+                add_test(NAME app_character_workshop_history
+                    COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_SOURCE_DIR}/tests/check_character_workshop_history_ui.py
+                        --build ${CMAKE_CURRENT_BINARY_DIR})
+                set_tests_properties(app_character_workshop_history PROPERTIES
+                    DEPENDS app_character_workshop_smoke
+                    LABELS gpu
+                    TIMEOUT 180)
+
+                add_test(NAME app_character_draft_transfer
+                    COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_SOURCE_DIR}/tests/check_character_draft_transfer_ui.py
+                        --build ${CMAKE_CURRENT_BINARY_DIR})
+                set_tests_properties(app_character_draft_transfer PROPERTIES
+                    DEPENDS app_character_workshop_smoke
+                    LABELS gpu
+                    TIMEOUT 300)
+
+                add_test(NAME app_character_test_evidence
+                    COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_SOURCE_DIR}/tests/check_character_test_evidence_ui.py
+                        --build ${CMAKE_CURRENT_BINARY_DIR})
+                set_tests_properties(app_character_test_evidence PROPERTIES
+                    DEPENDS app_character_workshop_smoke
+                    LABELS gpu
+                    TIMEOUT 300)
+
+                add_test(NAME app_character_portrait_studio
+                    COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_SOURCE_DIR}/tests/check_character_portrait_studio_ui.py
+                        --build ${CMAKE_CURRENT_BINARY_DIR})
+                set_tests_properties(app_character_portrait_studio PROPERTIES
+                    DEPENDS app_character_workshop_smoke
+                    LABELS gpu
+                    TIMEOUT 180)
 
                 # The launcher-owned Online Room is a real UI surface even
                 # while public online racing remains release-gated. Exercise
@@ -2108,7 +2780,7 @@ if(NOT EMSCRIPTEN)
                     set_tests_properties(app_online_lobby_takeover PROPERTIES
                         LABELS gpu
                         PASS_REGULAR_EXPRESSION
-                            "PASS online lobby takeover: active-cases=9 entry-shell=1 offline-play-suppressed=1"
+                            "PASS online lobby takeover: active-cases=7 entry-shell=1 offline-play-suppressed=1"
                         TIMEOUT 300)
                 endif()
 
@@ -2119,8 +2791,8 @@ if(NOT EMSCRIPTEN)
                 add_test(NAME app_top_tabs_smoke COMMAND ${MDKR_TARGET})
                 set_tests_properties(app_top_tabs_smoke PROPERTIES
                     FIXTURES_SETUP app_top_tabs_capture
-                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_top_tabs.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=800x600;MDKR_APP_PANEL=Play;MDKR_ONLINE_ROOM_PREVIEW=1;MDKR_APP_SMOKE_NAV_TARGET=1;MDKR_APP_SMOKE_NAV_TOKEN=mdkr64-app-nav-v1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/top-tabs/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/top-tabs/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/top-tabs/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
-                    PASS_REGULAR_EXPRESSION "top navigation target=1 actual=1 queued=1"
+                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_top_tabs.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=800x600;MDKR_APP_PANEL=Play;MDKR_ONLINE_ROOM_PREVIEW=1;MDKR_APP_SMOKE_NAV_TARGET=2;MDKR_APP_SMOKE_NAV_TOKEN=mdkr64-app-nav-v1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/top-tabs/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/top-tabs/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/top-tabs/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    PASS_REGULAR_EXPRESSION "top navigation target=2 actual=2 queued=1"
                     LABELS gpu
                     TIMEOUT 180)
                 add_test(NAME app_top_tabs_content
@@ -2136,8 +2808,8 @@ if(NOT EMSCRIPTEN)
                 add_test(NAME app_top_tabs_scale075_smoke COMMAND ${MDKR_TARGET})
                 set_tests_properties(app_top_tabs_scale075_smoke PROPERTIES
                     FIXTURES_SETUP app_top_tabs_scale075_capture
-                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_top_tabs_scale075.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=640x480;MDKR_APP_PANEL=Play;MDKR_ONLINE_ROOM_PREVIEW=1;MDKR_APP_SMOKE_NAV_TARGET=1;MDKR_APP_SMOKE_NAV_TOKEN=mdkr64-app-nav-v1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/top-tabs-small/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/top-tabs-small/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/top-tabs-small/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
-                    PASS_REGULAR_EXPRESSION "top navigation target=1 actual=1 queued=1"
+                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_top_tabs_scale075.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=640x480;MDKR_APP_PANEL=Play;MDKR_ONLINE_ROOM_PREVIEW=1;MDKR_APP_SMOKE_NAV_TARGET=2;MDKR_APP_SMOKE_NAV_TOKEN=mdkr64-app-nav-v1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/top-tabs-small/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/top-tabs-small/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/top-tabs-small/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    PASS_REGULAR_EXPRESSION "top navigation target=2 actual=2 queued=1"
                     LABELS gpu
                     TIMEOUT 180)
                 add_test(NAME app_top_tabs_scale075_content
@@ -2322,6 +2994,11 @@ else()
     # ======================================================================
     target_compile_definitions(${MDKR_TARGET} PRIVATE MDKR_WEBGPU_BACKEND)
     target_link_libraries(${MDKR_TARGET} PRIVATE webgpu)   # --use-port=emdawnwebgpu
+    if(MDKR_CHARACTER_KTX2)
+        target_compile_definitions(${MDKR_TARGET} PRIVATE MDKR_CHARACTER_KTX2=1)
+        target_link_libraries(${MDKR_TARGET} PRIVATE
+            mdkr_character_ktx2_bridge)
+    endif()
     target_compile_options(${MDKR_TARGET} PRIVATE "-sUSE_SDL=2")
     target_link_options(${MDKR_TARGET} PRIVATE
         "-sUSE_SDL=2"

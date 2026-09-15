@@ -45,28 +45,38 @@
  * mirrors the house lowest-id tie-break already pinned in
  * match_peer_graph.h route selection. Glare is impossible by construction.
  *
- * Channels per peer:
- *   gb-match-state-v1   -- unordered, maxRetransmits 0 (lossy by design);
- *                          carries ONLY sealed INPUT envelopes. A datagram
- *                          that fails to open is counted and dropped, never
- *                          terminal.
- *   gb-match-control-v1 -- reliable ordered; sealed PREFLIGHT fragments +
- *                          the bounded ping. A reliable channel never
- *                          delivers STRUCTURAL garbage, so a wrong-size
- *                          binary frame, malformed ping JSON, or an
- *                          authenticated envelope of the wrong payload
- *                          type IS terminal for the peer. An envelope
- *                          that merely fails to open is NOT: during a
- *                          roster rekey (any peer's generation bump
- *                          retires every transcript-salted key) an honest
- *                          peer's in-flight old-digest fragment is
- *                          indistinguishable from garbage, so it is
- *                          counted and dropped instead of killing the
- *                          peer. Each channel keeps its own replay window
- *                          over the shared sender sequence space, so a
- *                          control fragment delayed behind a burst of
- *                          state envelopes can never be retired as a
- *                          replay.
+ * Channels per peer, one per MDKR_MATCH_PEER_LANE_*:
+ *   gb-match-state-v1     -- unordered, maxRetransmits 0 (lossy by design);
+ *                            carries ONLY sealed INPUT envelopes. A datagram
+ *                            that fails to open is counted and dropped, never
+ *                            terminal.
+ *   gb-match-control-v1   -- reliable ordered; sealed PREFLIGHT fragments +
+ *                            the bounded ping.
+ *   gb-match-authority-v1 -- reliable UNORDERED; sealed input-repair requests
+ *                            and answers (docs/ref/match-input-repair-v1.md).
+ *                            Retransmitted until delivered, because a repair
+ *                            that is itself lost leaves the gap it names
+ *                            unfilled; unordered, because every repair
+ *                            message carries the tick run it covers and is
+ *                            useful the moment it lands, so head-of-line
+ *                            blocking behind an older message would spend
+ *                            exactly the ticks the repair exists to save.
+ *
+ * Neither RELIABLE channel ever delivers STRUCTURAL garbage, so a wrong-size
+ * binary frame, malformed ping JSON, text on the authority channel, or an
+ * authenticated envelope carrying a payload type that channel does not serve
+ * IS terminal for the peer. An envelope that merely fails to open is NOT:
+ * during a roster rekey (any peer's generation bump retires every
+ * transcript-salted key) an honest peer's in-flight old-digest message is
+ * indistinguishable from garbage, so it is counted and dropped instead of
+ * killing the peer.
+ *
+ * Each channel derives its OWN key (match_peer_crypto.h: the lane is HKDF
+ * info and authenticated header material) and therefore owns its own
+ * monotonic sequence space and its own replay window. One channel's traffic
+ * can never advance another's nonce, a message cannot be spliced from one
+ * channel onto another, and a reliable message delayed behind a burst of
+ * state envelopes can never be retired as a replay of them.
  *
  * One-hop forwarding (match_peer_graph.h / match_peer_forward.h) is OUT of
  * scope for this transport revision: only the direct mesh is wired. The
@@ -74,7 +84,8 @@
  * consult the graph and the forwarder admission window.
  *
  * Threading: create()/pump()/drainEvents()/sendInput()/
- * sendPreflightFragment()/phrase()/stats()/close() are launcher-thread
+ * sendPreflightFragment()/sendInputRepair()/sendRaceDrop()/
+ * retireDepartedPeer()/phrase()/stats()/close() are launcher-thread
  * calls. libdatachannel callbacks only copy into the bounded internal
  * queue; every signal-feed send happens inside pump() on the launcher
  * thread (the real client's send() is launcher-thread-only). No lock is
@@ -98,6 +109,8 @@
 /* Channel labels (versioned, mirror mdkr-pad-*-v1's naming discipline). */
 inline constexpr char kMdkrMatchStateChannelLabel[] = "gb-match-state-v1";
 inline constexpr char kMdkrMatchControlChannelLabel[] = "gb-match-control-v1";
+inline constexpr char kMdkrMatchAuthorityChannelLabel[] =
+    "gb-match-authority-v1";
 
 /* Control ping ladder, contractual like the party transport's: one ping
  * every 5 s of quiet, a peer is stale after 15 s without its pong. */
@@ -233,7 +246,7 @@ struct MdkrMatchPeerSlotOwner {
 };
 
 enum class MdkrMatchPeerMeshEventType {
-    /* Both channels to this endpoint are open. */
+    /* Every channel to this endpoint is open. */
     PeerChannelsReady,
     /* This endpoint is gone for this mesh, with a typed reason. */
     PeerLost,
@@ -242,10 +255,20 @@ enum class MdkrMatchPeerMeshEventType {
     /* One opened PREFLIGHT fragment + its authenticated envelope context
      * (mdkr_match_preflight_fragment_submit consumes both). */
     PreflightFragment,
+    /* One opened input-repair request or answer (64 bytes) from this
+     * endpoint; context.payload_type says which. */
+    InputRepairMessage,
     /* Every peer's key is committed, opened and derived; phrase() answers. */
     PhraseReady,
     /* Mesh-level failure with a typed reason. */
     Failure,
+    /* The ROOM reports this endpoint left: its signal presence crossed from
+     * asserted to absent at the generation this mesh is connected on. An
+     * OBSERVATION, not a verdict -- this peer's connection, ladders and dwells
+     * are untouched, because only the launcher knows whether a race is running
+     * and therefore what a departure means. Appended so the prior types'
+     * logged values never shift. */
+    PeerDeparted,
 };
 
 enum class MdkrMatchPeerLostReason {
@@ -276,7 +299,23 @@ enum class MdkrMatchPeerLostReason {
      * No restart can complete against an endpoint signaling cannot reach.
      * Appended so the prior reasons' logged values never shift. */
     PeerVanished,
+    /* The peer's connection reached this endpoint but its offer never carried
+     * every channel this protocol version requires -- the shape of an endpoint
+     * that predates a channel, which is otherwise indistinguishable from ICE
+     * that never completed. Resolved at the answerer's setup deadline, and
+     * only when at least one channel DID open, so a genuinely unreachable peer
+     * still resolves as ConnectTimeout. Appended for the same reason. */
+    ChannelSetMismatch,
+    /* The ROOM said this member left, and the launcher finalised it at the
+     * agreed tick instead of waiting for a transport ladder to notice. The
+     * room owns membership, so this is the promptest truthful departure the
+     * launcher can have. Appended for the same reason. */
+    PeerDeparted,
 };
+
+/* Stable typed name for a peer-loss reason: the forensics ring stores it as a
+ * fixed-width code so a dump reads without the enum's ordinals. */
+const char *mdkr_match_peer_lost_reason_name(MdkrMatchPeerLostReason reason);
 
 enum class MdkrMatchPeerMeshFailure {
     /* The signal feed reported its terminal failure. Healthy direct
@@ -310,6 +349,8 @@ struct MdkrMatchPeerMeshStats {
     /* Control-channel envelopes dropped non-terminally: correctly sized
      * but no key yet or failed to open -- the rekey-window race shape. */
     uint64_t rejectedControlEnvelopes = 0u;
+    /* The same non-terminal drop on the authority channel. */
+    uint64_t rejectedAuthorityEnvelopes = 0u;
     /* Signaling messages ignored for stale generation / wrong role /
      * unknown endpoint / unexpected timing. */
     uint64_t ignoredStaleSignals = 0u;
@@ -317,6 +358,35 @@ struct MdkrMatchPeerMeshStats {
     uint64_t droppedInternalEvents = 0u;
     /* Public event-queue overflow drops (pump -> drainEvents). */
     uint64_t droppedEvents = 0u;
+};
+
+/* Per-peer link health, diagnosability only. RTT comes from the control ping
+ * ladder (one sample per ping interval) and jitter is its smoothed absolute
+ * change; the byte counters cover every data channel's envelope traffic. */
+struct MdkrMatchPeerLinkStats {
+    uint64_t endpointId = 0u;
+    /* Fixed roster position among the REMOTE peers, in roster order. */
+    unsigned rosterIndex = 0u;
+    uint32_t rttMs = 0u;
+    uint32_t jitterMs = 0u;
+    uint64_t bytesSent = 0u;
+    uint64_t bytesReceived = 0u;
+    /* Full kMdkrMatchControlPingIntervalMs windows elapsed since an
+     * outstanding ping went unanswered, on channels that are ready and not
+     * yet lost: 0 while a ping is in flight within its first interval
+     * (ordinary latency) or none is outstanding, rising by one per interval
+     * the peer stays silent. The hard ladder in tick() fires
+     * peerLost(PingTimeout) at kMdkrMatchControlPingTimeoutMs, so this
+     * figure ordinarily reaches exactly kMdkrMatchControlPingTimeoutMs /
+     * kMdkrMatchControlPingIntervalMs before that verdict retires the peer
+     * -- but tick() can be a call or two late to do so (it returns before
+     * the ping ladder for a peer that is not yet welcomed, generationless,
+     * or already failed), so a caller MUST NOT assume this is bounded by
+     * that ratio and should clamp its own use of it. Diagnosability only,
+     * like every other field here; feeds A7's soft-fail/hard-fail liveness
+     * policy (match_peer_liveness.h) rather than any connection decision of
+     * the mesh's own. */
+    uint32_t consecutivePingMisses = 0u;
 };
 
 struct MdkrMatchPeerMeshOptions {
@@ -375,6 +445,14 @@ public:
         uint64_t peerEndpointId,
         const uint8_t fragment[MDKR_MATCH_PEER_PAYLOAD_BYTES]);
 
+    /* Seal one 64-byte input-repair message to one peer on its reliable
+     * unordered authority channel. `payloadType` must be
+     * MDKR_MATCH_PEER_PAYLOAD_INPUT_REPAIR_REQUEST or _ANSWER; the transport
+     * carries the bytes and never reads them. */
+    bool sendInputRepair(
+        uint64_t peerEndpointId, uint8_t payloadType,
+        const uint8_t message[MDKR_MATCH_PEER_PAYLOAD_BYTES]);
+
     /* F3: broadcast a plaintext race-abort (typed/versioned like ping) to every
      * reachable peer on the reliable control channel. Returns the number of
      * peers reached. Does not change any peer's connection state -- the local
@@ -385,6 +463,47 @@ public:
      * launcher polls this each pump and latches it into its own race state; a
      * later race observes a fresh abort independently. */
     bool consumeRaceAbort();
+
+    /* A3: fan the agreed finalisation tick for a departed endpoint out to
+     * every reachable peer on the reliable control channel (typed/versioned
+     * like race_abort; ordered delivery is what makes the first proposal for a
+     * seat the one every recipient commits to). `matchEpoch` scopes the
+     * proposal to one race. Returns the number of peers reached; refuses an
+     * endpoint outside this room's fixed roster. Changes no peer's connection
+     * state. */
+    unsigned sendRaceDrop(uint64_t departedEndpointId, uint32_t matchEpoch,
+                          uint32_t tick);
+
+    /* A3: retire a peer the ROOM reported as gone, once the launcher has
+     * decided the departure ends its race -- the mesh alone cannot, because
+     * only the launcher knows a race is running. Records the ordinary typed
+     * PeerLost(PeerDeparted) in the failure ring and tears the connection
+     * down, but queues no event: the launcher asked for this and already
+     * knows, so telling it back would only cost it a pump. False when the
+     * endpoint is not a roster peer or was already lost. */
+    bool retireDepartedPeer(uint64_t endpointId);
+
+    /* Whether a peer's race_drop is waiting, without consuming it. */
+    bool peekRaceDrop() const;
+
+    /* A3: read-and-clear one pending proposal, like the abort latch above.
+     * Call until it returns false. False, outputs untouched, when nothing is
+     * pending.
+     *
+     * The SENDER comes back with the proposal because a race_drop is only a
+     * CLAIM: this layer can tell that the named endpoint is on the room's
+     * fixed roster and is neither the recipient nor the sender, but not
+     * whether the sender was ENTITLED to propose for it, which depends on
+     * which endpoints have already departed. The launcher owns that and must
+     * check it -- an unchecked proposal is one peer ending another's race. */
+    bool consumeRaceDrop(uint64_t *senderEndpointId,
+                         uint64_t *departedEndpointId, uint32_t *matchEpoch,
+                         uint32_t *tick);
+
+    /* Discard every pending proposal. A proposal is about one race; the
+     * launcher drops them when its race state resets, so a late one cannot be
+     * consumed against the next race. */
+    void clearRaceDrops();
 
     /* The transcript verification phrase. Available ONLY once every roster
      * peer's key is committed, opened and derived (mirrors the transcript
@@ -416,7 +535,22 @@ public:
      * build a byte-identical graph. */
     bool peerGeneration(uint64_t peerEndpointId, uint32_t *out) const;
 
-    /* Live truth for "both channels to this peer are open right now"
+    /* How many envelopes from this peer have OPENED under its own derived
+     * lane key since the mesh was built -- input bundles on the state lane,
+     * preflight fragments on the control lane, input repairs on the authority
+     * lane. Monotonic and never reset, so two readings around a window answer
+     * "did anything authenticated arrive from this peer in it": the question
+     * the room-departure grace (D1) has to answer before it believes a
+     * membership verdict about a peer that may still be racing. False, output
+     * untouched, for an endpoint outside the roster.
+     *
+     * Only SEALED traffic counts. The control channel's plaintext JSON
+     * (ping/pong/race_abort/race_drop) is authenticated by DTLS alone and is
+     * excluded: it says the peer's socket is alive, not that the peer is
+     * still feeding the race. Launcher thread only, like every accessor. */
+    bool authenticatedPacketCount(uint64_t peerEndpointId, uint64_t *out) const;
+
+    /* Live truth for "every channel to this peer is open right now"
      * (launcher thread only, like every accessor). The adapter's re-verify
      * barrier (W3 fix round) rebuilds its channels-ready bookkeeping from
      * this instead of event replay, so it can never wipe a fresh
@@ -424,6 +558,10 @@ public:
     bool peerChannelsReady(uint64_t peerEndpointId) const;
 
     MdkrMatchPeerMeshStats stats() const;
+
+    /* Copy up to `max` per-peer link snapshots in roster order; returns how
+     * many were written. Launcher thread only, like every accessor. */
+    unsigned linkStats(MdkrMatchPeerLinkStats *out, unsigned max) const;
 
     /* Terminal, idempotent, bounded: closes every peer connection and
      * zeroizes the keyring. Never blocks on a remote peer.
@@ -447,6 +585,9 @@ private:
         MdkrMatchPeerMesh &mesh, uint64_t peerEndpointId);
     friend bool mdkr_match_peer_mesh_kill_channels_for_test(
         MdkrMatchPeerMesh &mesh, uint64_t peerEndpointId);
+    friend bool mdkr_match_peer_mesh_send_raw_race_drop_for_test(
+        MdkrMatchPeerMesh &mesh, uint64_t departedEndpointId,
+        uint32_t matchEpoch, uint32_t tick);
 };
 
 /* ---- Test seams (the *_for_test convention of the party transport) ------ */
@@ -462,5 +603,12 @@ bool mdkr_match_peer_mesh_exhaust_seal_for_test(
  * ICE-restart path. */
 bool mdkr_match_peer_mesh_kill_channels_for_test(
     MdkrMatchPeerMesh &mesh, uint64_t peerEndpointId);
+
+/* Sends a race_drop naming `departedEndpointId` WITHOUT the roster check
+ * sendRaceDrop applies, so the recipient's own validation is what the test
+ * observes. Returns the number of peers reached. */
+bool mdkr_match_peer_mesh_send_raw_race_drop_for_test(
+    MdkrMatchPeerMesh &mesh, uint64_t departedEndpointId, uint32_t matchEpoch,
+    uint32_t tick);
 
 #endif /* MDKR_MATCH_PEER_TRANSPORT_H */

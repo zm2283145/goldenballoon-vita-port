@@ -12,7 +12,9 @@ import tempfile
 from pathlib import Path
 
 from check_taj_character_select import read_ppm
-from check_taj_results_portrait import colour_count, portrait_samples
+from check_taj_results_portrait import (
+    GOLD_MIN_COVERAGE, colour_count, portrait_samples,
+)
 from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
 
 
@@ -31,6 +33,7 @@ def main() -> int:
     parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--frames", type=int, default=FRAMES)
+    parser.add_argument("--renderer", choices=("webgpu", "gl"), default="webgpu")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -60,7 +63,7 @@ def main() -> int:
             LC_ALL="C",
             MDKR_AUDIO="0",
             MDKR_TRACE="1",
-            MDKR_RENDERER="gl",
+            MDKR_RENDERER=args.renderer,
             MDKR_SAVE_DIR=str(save_dir),
             # Isolate the video config with the save (see check_door_blocks.py).
             MDKR_VIDEO_CONFIG_PATH=str(save_dir / "video.ini"),
@@ -90,6 +93,8 @@ def main() -> int:
             if marker in output:
                 failures.append(f"fatal marker in output: {marker}")
         required = {
+            "requested evidence renderer":
+                f"[mdkr64] renderer backend: {args.renderer}",
             "real P2 Taj selection":
                 "taj_select: player=1 controller=1 selected=1 donor=9",
             "real Adventure hub":
@@ -112,12 +117,12 @@ def main() -> int:
                 width, height, pixels, (0.8125, 0.0667, 0.9375, 0.2333))
             total = len(samples)
             counts = {name: colour_count(samples, name) for name in
-                      ("purple", "skin", "blue", "gold")}
+                      ("purple", "cyan", "blue", "gold")}
             minimums = {
                 "purple": 0.15,
-                "skin": 0.08,
+                "cyan": 0.08,
                 "blue": 0.25,
-                "gold": 0.025,
+                "gold": GOLD_MIN_COVERAGE,
             }
             for name, minimum in minimums.items():
                 if counts[name] < total * minimum:

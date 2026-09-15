@@ -2,6 +2,7 @@
 
 #include "session/session_core.h"
 
+#include <stdio.h>
 #include <string.h>
 
 static bool title_word(const char *begin, const char *end) {
@@ -12,6 +13,46 @@ static bool title_word(const char *begin, const char *end) {
         if (*cursor < 'a' || *cursor > 'z') return false;
     }
     return true;
+}
+
+/* A score outside the 1-10 ladder, or a missing/over-long band name, is a
+ * caller error rather than something to render. */
+static bool route_quality_valid(const MdkrOnlineViewRouteQuality *quality) {
+    size_t index;
+    if (quality == NULL || quality->score == 0u || quality->score > 10u ||
+        quality->band == NULL)
+        return false;
+    for (index = 0u; index < MDKR_ONLINE_ROUTE_BAND_BYTES; index++)
+        if (quality->band[index] == '\0') return index != 0u;
+    return false;
+}
+
+/* The one room chip for pre-flight route quality: the round trip a player can
+ * feel, then the band's name. Composed here rather than in match_preflight,
+ * which owns no copy. Pressing Start never waits for the measurement, so a
+ * player can reach the chip while it is still running: say the check is
+ * happening rather than show an empty space that reads as a missing feature.
+ * False leaves the chip empty. */
+static bool route_quality_chip(const MdkrOnlineViewRouteQuality *quality,
+                               bool measuring,
+                               char out[MDKR_ONLINE_ROUTE_QUALITY_BYTES]) {
+    int written;
+    out[0] = '\0';
+    if (!route_quality_valid(quality)) {
+        if (!measuring) return false;
+        written = snprintf(out, MDKR_ONLINE_ROUTE_QUALITY_BYTES,
+                           "Checking connection…");
+        if (written > 0 && written < MDKR_ONLINE_ROUTE_QUALITY_BYTES)
+            return true;
+        out[0] = '\0';
+        return false;
+    }
+    written = snprintf(out, MDKR_ONLINE_ROUTE_QUALITY_BYTES,
+                       "~%u ms \xc2\xb7 %s",
+                       (unsigned)quality->p95_rtt_ms, quality->band);
+    if (written > 0 && written < MDKR_ONLINE_ROUTE_QUALITY_BYTES) return true;
+    out[0] = '\0';
+    return false;
 }
 
 /* The peer transcript generator emits exactly 3 Title-Case compounds. Keep
@@ -402,6 +443,10 @@ bool mdkr_online_view_model_build(const MdkrOnlineViewInput *input,
         return false;
     }
     if (input->failure < MDKR_ONLINE_VIEW_FAILURE_NONE) return false;
+    if (input->route_quality != NULL &&
+        !route_quality_valid(input->route_quality)) {
+        return false;
+    }
     if (input->verification_phrase != NULL &&
         (input->session->scene != MDKR_SCENE_LOBBY ||
          input->session->room != MDKR_ROOM_PREFLIGHT ||
@@ -452,6 +497,8 @@ bool mdkr_online_view_model_build(const MdkrOnlineViewInput *input,
         return true;
     }
 
+    (void)route_quality_chip(input->route_quality, input->route_measuring,
+                             next.route_quality);
     next.announcement = MDKR_ONLINE_ANNOUNCE_POLITE;
     switch (input->session->scene) {
         case MDKR_SCENE_HOME:
@@ -631,7 +678,7 @@ bool mdkr_online_view_model_build(const MdkrOnlineViewInput *input,
                  * done and only "Waiting for Friends". Arm the same 30 s
                  * view-timeout card the other lobby surfaces carry so an endless
                  * wait always offers a working escape (Leave Room), instead of a
-                 * spinner. Beta-gated to keep the OFF/release view model
+                 * spinner. Beta-gated to keep the beta-OFF view model
                  * byte-identical. */
                 next.timeout = timeout_view(
                     "Selection Took Too Long",
@@ -684,8 +731,20 @@ bool mdkr_online_view_model_build(const MdkrOnlineViewInput *input,
             next.title = "Online Race";
             next.explanation =
                 "The race keeps running while this non-pausing panel is open.";
+            /* A7: DEGRADED/LOST are the live soft-fail/hard-fail liveness
+             * codes match_live_adapter's control-ping tracker drives during
+             * racing (never a scene change -- see session_core.c's
+             * SET_CONNECTIVITY handler, which only forces MDKR_SCENE_RECOVERY
+             * when the engine is NOT racing). Every other code (CONNECTING /
+             * FORWARDED / RELAYED / OFFLINE) keeps the prior fallback text;
+             * none of them is reachable from this scene today. */
             next.status = input->session->connectivity == MDKR_CONNECTIVITY_DIRECT
-                ? "Direct Connection" : "Limited Connection";
+                ? "Direct Connection"
+                : input->session->connectivity == MDKR_CONNECTIVITY_DEGRADED
+                ? "Connection hiccup — retrying"
+                : input->session->connectivity == MDKR_CONNECTIVITY_LOST
+                ? "Connection lost"
+                : "Limited Connection";
             next.primary = control(
                 MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS,
                 "Connection Details", true);

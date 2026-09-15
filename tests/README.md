@@ -1,5 +1,12 @@
 # Regression fixtures
 
+Follow the maintainer's current local validation authorization in `AGENTS.md`.
+The maintainer authorized this workstation for behavioral validation on
+2026-09-06, including native, GPU, browser, ROM, and compiled tests. That
+standing authorization permits the existing test-environment flags without
+another confirmation each turn. Other workstations need their own authorization;
+hidden-window settings alone do not establish it.
+
 Input scripts for `--input-script` headless verification of menu navigation.
 Run e.g.:
 ```
@@ -10,10 +17,392 @@ MDKR_TRACE=1 ./build/mdkr64 --headless-frames 1700 \
 Expected: `menuId=3` (character select). The options script yields `menuId=12`.
 Both prove real input reaches the game and menus advance/diverge on navigation.
 
+## Character release acceptance receipt
+
+`character_release_evidence` runs
+`tests/test_character_release_evidence.py`. It keeps the public
+`mdkr-character-release-acceptance/1` schema and verifier in lockstep, proves
+that incomplete human/device observations fail closed, and exercises exact
+artifact plus provenance hashing. The release operator creates the deliberately
+red template with `tools/check_character_release_evidence.py --write-template`
+and validates it against the packaged artifact directory only after all three
+platforms and low/mid/high physical-device tiers have been observed. The
+receipt stores normalized descriptions and digests only; ROMs, character
+assets, captures, paths, and operator identity remain private.
+
+`modern_character_draw_store` protects the renderer's retained custom-character
+commands. It proves current and previous skin palettes are copied immutably into
+demand-driven exact-size storage, rigid and invalid draws behave safely, released
+assets and overtaken generations fail closed, shutdown frees every palette, and
+renderer restart cannot revive a stale token. This preserves the 256-joint and
+2,048-command ceilings without permanently reserving the worst-case 68 MB bone
+palette in every build.
+
 **Always run muted and headless** — `MDKR_AUDIO=0` plus `--headless-frames N`.
 Omitting `--headless-frames` opens a window *and* the SDL audio device.
 
+## PNG allocation and layout contracts
+
+`png_write_layout` also exercises the first-party PNG decoder allocation
+helpers: empty request refusal, retained ownership after refused resize, small
+positive allocation/growth/shrink, and ordinary RGB/RGBA PNG roundtrips through
+the production implementation. The texture-store probe delegates to the same
+helpers. These additions compile but still need behavioral and sanitizer
+execution on the current candidate; they do not clear the broader advisory
+review. See [decoder boundaries](../docs/security/image-decoder-boundaries.md).
+
+`stb_conversion_ownership` covers the decoder's local conversion-failure
+amendment. Small ordinary pixel buffers exercise both bit-depth conversions
+for 1–4 components, successful sample values and destination-allocation refusal.
+An ordinary encoded 8-bit 2x2 RGBA PNG exercises the product's 8-bit RGBA entry
+point and optional 16-bit output API, with deterministic allocation refusal and
+optional flip on/off. Allocation counters must return
+to zero; assertions are not disabled by optimized builds. The fixture compiles
+the actual amended header with the production allocation policy plus counters,
+not a replacement converter. Only the vendored PNG-only header's unused-helper
+warning is locally exempted; first-party warnings remain errors. Runtime,
+sanitizer and old-code-control execution are pending. No malformed image or
+external reproducer is used, and this does not clear the advisory review.
+The narrowing helper uses ordinary 16-bit buffers directly; encoded 16-bit PNG
+and caller-admission coverage are separate, not implied by this fixture.
+
+## Native unit build portability
+
+`run_checks_artifact_routing` covers selected native drivers/game executables
+and early dependency admission for the seven local Worker consumers. Missing
+Wrangler must fail before stage inspection or subprocesses; embedded-LAN must
+not acquire a Worker dependency. `party_worker_startup_reporting` covers
+readiness ownership, launch refusal, unexpected failure/interruption cleanup,
+and bounded metadata without raw output. `party_worker_reporting` covers the
+two-person/chaos aggregate error boundaries and whole-log error scanning across
+chunk boundaries. Process/browser/network boundaries are mocked in these
+fixtures. They are registered but remain unexecuted; none replaces real local
+service or multiplayer qualification.
+
+`online_teardown_tracker` covers the shared native room shutdown drain. The
+warning deadline must not authorize detached workers outliving their tracker or
+network globals. Empty/already-complete and deliberately held two-worker cases
+check warning delivery outside the lock, completion before return and repeated
+drain behavior. The fixture uses ordinary threads and condition variables, not
+networking, sleeps or app startup. CTest's 30-second fixture timeout detects a
+deadlocked regression; it is not a claimed product shutdown deadline. Strict
+C++17 syntax passes; behavioral execution remains pending. The fixture also
+uses the production retirement helper for background destruction, injected
+thread-launch refusal/inline cleanup and recovery, and sixteen completed
+retirements reaped while another destructor is deliberately held. These are
+unexecuted assertions, not evidence of actual transport responsiveness.
+Polling coverage additionally requires held workers to return not-ready without
+waiting, independent completed-handle reclamation and idempotent ready results.
+Storage allocation refusal is handled before launch by source construction;
+allocation-failure injection and real transport cancellation/closing UI still
+need separate qualification.
+
+`app_cleanup_completion` covers the dependency-free asynchronous cleanup observer:
+no startup before owner retirement, exactly one startup across pending polls,
+successful and exceptional futures, throwing startup, and explicit rejection of
+invalid/deferred futures. A deferred callback must never execute on the polling
+thread. Completion can mean failure; callers must inspect `failed()` before
+claiming successful cleanup. The fixture uses promises, not RTC or networking,
+and does not qualify actual library shutdown. Behavioral execution remains pending.
+
+`datachannel_cleanup_worker` compiles the same helper used by the reviewed RTC
+final-token amendment. It covers refusal of either reserved thread, detach
+refusal, cancellation before arming, destruction under an initialization mutex,
+cleanup that joins the final owner's thread, and exception/TLS completion before
+the result. Both workers are reserved before initialization; the publisher joins
+the cleanup worker before settling the ordinary promise, without a late
+thread-exit registration. The fixture does not execute RTC or prove rollback of
+partially initialized RTC subsystems. Strict syntax and optimized/ASan+UBSan compilation
+pass; its assertions and actual library startup/shutdown remain unexecuted.
+
+`datachannel_startup_stages` exercises the production polling/registry ownership
+helpers used by the dependency amendment. Allocation and worker-start refusal
+must leave empty stopped polling ownership; a successful retry must own exactly
+one worker. Registry allocation precedes C startup, and publication follows its
+return. These fixtures do not inject failures into the actual RTC subsystems or
+establish recovery from internal C startup failures.
+
+`rtc_initialization_transaction` combines the real state and reserved-worker
+helpers with subsystem counters. It covers seven partial-start failure points,
+pending rollback, original exception preservation, successful retry, and cleanup
+failure at each of Pool, Poll, SCTP and Sockets. Deferred/invalid completion,
+duplicate initialization, omitted retirement and repeated failed retirement
+must never admit another epoch or discard ownership. Real token/preload weak-owner
+reuse, dependency fault injection and Windows socket behavior still require
+separate qualification. These added assertions remain unexecuted.
+Stage-call counters distinguish zero started pool workers from no acquired pool;
+the sockets-only failure also proves no unacquired pool cleanup is requested.
+Pending admission checks use the same thread with the owner mutex held; they do
+not establish responsive concurrent API calls while real RTC cleanup holds that
+mutex through subsystem retirement.
+
+`datachannel_work_admission` uses the actual `MdkrScheduledWork` record and
+production priority-queue container/comparator to extract large callables with
+allocation/copy refusal, unchanged deadline ordering and owner destruction after
+the scheduler lock. Its shared insertion helper uses real deque allocator
+refusal, measurement/move refusal and successful retry to check size/amount
+consistency. CMake binds the helper through the independent dependency patch;
+the optimized fixture compiles but has not executed. It does not cover allocating
+submission, Processor continuation, off-thread teardown or receive counters
+(RTC-ALLOC-01a/c/d/e).
+
+`datachannel_prepared_work` uses the production prepared-node FIFO and typed
+scope guard for move-only owners, preparation refusal/retry, allocation-free
+accepted publication/extraction/continuation, standard/non-standard task throws,
+settled-pending owner release and iterative queue destruction. It is a helper
+fixture, not a substitute for actual scheduler concurrency.
+`datachannel_prepared_dispatch` separately links the patched vendor ThreadPool
+and Processor. Its seven groups cover timer/ready order in both directions,
+accepted continuation under allocation refusal and task exceptions, bounded
+admission wakeup, final-owner join, active-worker timed cancellation outside locks
+and repeated idle-pool joins. Publication assumes a live epoch and the inspected
+strong-owner Processor callers; the clear case does not prove arbitrary
+post-join publishers safe. Both CTests are registered (helper 30 seconds, actual
+dispatcher 60 seconds). Final optimized, ASan/UBSan and Windows cross-builds
+compile/link the game plus both prepared fixtures, the existing work fixture
+and Workshop model after correcting the new vendor fixture's private include
+paths. Generated registration is present for all four fixtures in each profile;
+all new assertions remain unexecuted. These builds include settled Workshop
+mapping/detail focus, reinspection and invalid-height guidance. Windows retains
+its historical cloud origin, not final partyless artifact provenance.
+The refusal seam intercepts ordinary throwing `new`/`new[]`, not `malloc`,
+over-aligned allocation or exception-runtime allocation. Explicit `bad_alloc`
+throws cover exception continuation, not actual body-allocation refusal. The
+bounded-admission case's 100 ms no-return window is a black-box observation,
+not deterministic condition-wait entry proof.
+Generic allocating `noexcept` admission, SCTP refusal ownership, mandatory
+transport retirement and user task-body allocation remain separate requirements.
+
+`datachannel_transport_retirement` links the actual serial teardown Processor
+with the production reservation helper. Ten groups cover preparation and shared
+control-block refusal, weak-controlblock/epoch lifetime, one-shot stop, throwing
+stop, post-ownership initialization unwind, start/stop ordering and serialized
+blocking deletion with continued pool progress. Its ordinary-new interception
+does not cover C allocators or real ICE/SCTP initialization failure.
+
+`datachannel_transport_edges` separately exercises the actual vendor Transport
+base implementation and production chain-retirement helper. Eleven groups cover
+unstarted losers, occupied-edge rejection, constructor unwind, same-owner and
+replacement registration, permanent sealing before deferred stop, external
+callback replacement, reserved and foreign-owner cascades, callback removal
+reentry and reentrant destruction of a retired callback capture. The concurrent
+removal case is bounded interleaving stress, not a
+deterministic old-code deadlock control. It initializes RTC global services but
+opens no peer/app/ROM session. This does not exercise the private peer/WebSocket
+publication CAS or qualify actual network/platform shutdown. Both fixtures are
+registered with 60-second limits; assertions remain unexecuted.
+Optimized, ASan/UBSan and Windows cross-builds compile/link the game, both new
+fixtures, prepared dispatcher and Workshop model including the latest field-focus
+interruption correction. Generated registration is present in all three profiles.
+Windows retains its historical cloud origin, not final partyless artifact
+provenance; existing BasisU GCC warnings remain. No new tests or apps executed.
+
+`party_open_transaction` is a production-source contract for connection setup,
+callback registration, publication and failed-open retirement ordering. It is
+not a runtime WebSocket fault-injection fixture or rendered recovery result.
+The source assertions remain unexecuted; constructor/registration/open failures,
+callback interleavings and actual reconnect/shutdown require behavioral evidence.
+
+`party_callback_identity` compiles the same predicates used at Phone Party's
+locked commits. Its deterministic capture/change/commit model rejects a retired
+socket, replaced peer, stale initializing placeholder and revoked retry/ping
+decision, while allowing completed direct peers to survive signaling reconnect.
+Always-on expectations remain enabled in optimized builds. This is not the actual
+TransportState or RTC callback scheduler; source bindings in
+`party_open_transaction` tie predicates to production publication/retirement,
+but neither fixture substitutes for real concurrent callback acceptance. The
+new assertions are unexecuted.
+
+`party_peer_setup_retry` uses the production bounded early-setup policy: three
+lifecycle setup failures, 300ms/600ms backoff, no duplicate-hello bypass, stale
+generation/revision completion refusal and preserved unanswered-offer budget.
+Exhaustion cannot authorize a fourth fresh unanswered offer. Production may
+begin a new unanswered-offer episode after a previously authenticated peer fails;
+that does not replenish its lifecycle setup-failure counter. Source bindings in
+`party_open_transaction` require reservation before allocation, current-token
+failure/success commits, due retry checks and pending exhaustion reporting.
+The optimized fixture compiles; its assertions and real callback/allocation
+recovery journeys remain unexecuted.
+
+The existing `match_signal_client` fixture now includes a one-shot refused
+socket-worker start through the actual `connect()` exception boundary. It asserts
+Idle rollback, the ordinary refusal code, empty events, repeated refusal without
+a diagnostic destination, then a real same-client loopback welcome and repeated
+close. This coverage is added, not executed; it does not simulate all allocation
+failures in the running socket worker or establish Windows socket ownership.
+An added actual-client close-event refusal seam verifies that mandatory stopping
+and worker transfer precede optional reporting, with joining still required.
+This assertion is compiled, not executed.
+
+The same fixture now includes factory refusal/retry, three transactional send
+admission stages with unchanged sequence/correlation on refusal, and worker
+publication plus terminal-event/drain allocation refusal. It drives the actual
+client, not a second signaling implementation. `match_signal_admission_source`
+has six production bindings for ordering, rollback, worker unwind, nonallocating
+terminal fallback, storage-before-consumption drain semantics and local secret
+buffer guards. The actual fixture also uses `scoped_string_wipe.h` to assert
+synthetic-buffer erasure during early unwind and idempotent explicit erasure.
+Production reserves final capacity before copying secrets and guards the local
+offer/request/comparison buffers with `mbedtls_platform_zeroize`; this does not
+promise to erase previously released growth copies or all process memory.
+Final integrated optimized, ASan/UBSan and Windows cross-compilation passes;
+all new behavioral/source assertions
+remain unexecuted, and do not qualify caller-wide allocation or backpressure.
+
+`network_lifetime` exercises the production shared lease and Winsock reference
+policy with fake OS calls: allocation-before-start, refused-start/version retry,
+last-owner cleanup failure and sticky refusal, copied/moved ownership without
+allocation, result-before-release ordering, concurrent independent copies,
+repeated sessions and non-Windows no-op behavior. `network_lifetime_source`
+has eight source methods binding the policy to actual OS calls, resolver member
+order, socket close order, LAN lookup/listener/retained aliases, mandatory timeout
+admission, callback-capture retirement and launcher failure reporting. These are
+added, unexecuted assertions, not Windows OS injection or a LAN lifecycle run.
+The separate `lan_party_server` fixture now adds six actual-server groups for
+listener admission refusal/restart, accepted allocation/registry/thread refusal,
+upgrade allocation failure, consumer exceptions, callback stop requests and
+callback-capture destruction. Accepted timeout/required socket-option refusal
+is covered before worker admission; the worker marker remains active while
+callback captures are explicitly released.
+The source candidate stages fd ownership, preserves registry join ownership,
+uses a sealed common finalizer and lets only the launcher finish joins. Strict
+source/fixture syntax passed; these new loopback assertions remain unexecuted.
+Exceptional destructor join failure deliberately retains state and records
+failed cleanup; neither the fixture nor lease model establishes successful
+retirement on that exceptional branch. Final optimized, ASan/UBSan and Windows
+cross-builds compile/link the game and all five network/peer/queue/signal/LAN
+fixtures after the latest timeout/capture changes. This is not Windows execution
+or final-package proof; that cross-build retains a historical cloud origin rather
+than final partyless provenance. Existing dependency compiler warnings remain.
+
+`native_party_notice_pins` exercises recipe-to-notice consistency: matching
+multiline pins, independently or consistently stale notices, ambiguous/missing
+recipe definitions, missing consumers and false prefix matches. Its pure helper
+is shared with the real third-party notice gate, which additionally pins the
+combined manifest and each amendment's source bytes and checks all desktop
+notice-hash validators. The fixture is registered but unexecuted; source checks
+do not prove that a packaged artifact actually contains the required notices.
+
+`async_work_budget` covers move-only work permits, fixed capacity, refused
+acquisitions, destruction/reassignment and scheduling-failure release, permit
+state surviving its budget object's lifetime, and 24 contending workers sharing
+eight slots. A second translation unit checks that the inline resolver accessor
+shares one eight-slot process budget instead of creating a pool per source file.
+Eight bounds outstanding first-party DNS work, not active connections or players.
+Held workers retain capacity through their owned lookup/result cleanup even
+after a caller abandons the result.
+The fixture uses no resolver or network; it cannot prove OS lookup cancellation
+or bound libdatachannel/libjuice's independently owned work. Its behavioral
+assertions remain unexecuted; the 30-second timeout is a fixture deadlock bound,
+not a product shutdown promise.
+
+`online_resolver_budget` binds both production clients to that shared budget:
+admission precedes lookup allocation/start, cancellation and deadlines apply to
+capacity waits, worker captures own their strings and task, and a task-held
+permit survives through address-result and synchronization cleanup. It also
+checks that a failed detach retains and joins the handle. This source contract
+launches no resolver; concurrency and actual shutdown behavior require separate
+executed qualification. `online_lobby_takeover_source` additionally requires
+zero outstanding first-party resolver work before global RTC cleanup begins.
+
+`app_launch_hold` compiles the actual launcher sampler against deterministic SDL
+functions, without linking SDL or opening devices. It covers same-controller
+shoulder pairing, late attachment, index/identity races, detachment and balanced
+borrow release. `ai_difficulty_value` checks the shared pure gameplay/UI
+interpretation across all canonical case variants and legacy fallbacks;
+`ai_difficulty_ui` binds it to independent current/desired display, speech,
+selection and unchanged source locks. These fixtures still require execution.
+
+`match_live_transport` includes silent TLS-handshake and HTTP-response close
+cases plus a short connect-deadline case. They use ordinary loopback sockets
+with finite server holds, not a public service or certificate bypass. They
+qualify socket cancellation only when executed; no OS DNS cancellation or
+libdatachannel global-cleanup verdict follows. Unknown case selectors now fail
+instead of reporting success after running no cases.
+Its `sigpipe` case additionally exercises the production send helper against an
+ordinarily disconnected local peer in an isolated child with default SIGPIPE
+handling. This prevents incidental process-wide signal configuration from hiding
+the regression; platforms without per-send suppression explicitly mark this case
+not applicable. Compilation is not proof that the assertion passed.
+
+`match_transport_tls_io` is a source contract for the HTTP transport's
+nonblocking TLS BIO, cancellation/deadline checks, retryable polling, bounded
+readiness waits, SIGPIPE-safe plaintext/TLS sends, and retained certificate/hostname
+verification. It launches no
+endpoint and cannot substitute for the loopback TLS behavioral cases above.
+
+`online_room_takeover_policy` compiles static assertions against the native
+launcher's shared ownership/view policy. An owned session with an unavailable
+view must retain takeover; only an actual release or known entry view permits
+the normal shell. `check_online_lobby_takeover.py` also checks production wiring
+and deferred leave ordering before its existing rendered scenarios. The new
+policy assertions pass compilation, not an actual window/transport test. A
+failed view before/after service, actionable exit, registry cleanup and a fresh
+room after recovery still need behavioral qualification; a successful static
+assertion must not be reported as that broader result.
+
+The same fixture also implements `IMdkrOnlineAdapter` and calls the production
+`OnlineRoom_readViewKind` boundary: null/uninitialized admission, exact view
+forwarding, failure before/after service, read-only observation, ownership
+release and fresh-entry recovery. These are runtime assertions, unlike the
+truth-table static assertions above, and have not yet executed. The stub owns
+no transport; its destruction counter does not qualify production registry or
+worker teardown. A rendered invalid-view/Leave Room fixture is still required.
+The target links the existing ROM-free fake-adapter/view/lobby/session sources:
+GCC can emit a virtual-call candidate for the interface header's inline fake
+seam even though the fixture owns its own deterministic adapter. This resolves
+the Windows link dependency without a substitute function or optimization waiver.
+The takeover source contract also pins end-of-frame barriers after invite and
+stranded-room rebuild attempts and live timeout/primary/secondary/cancel
+actions. Actual successful/refused retries and focus/scope checks remain part
+of native acceptance; the source guard is not a rendered result.
+
+`online_join_code_input` compiles the same `OnlineRoom_drawJoinCodeInput`
+helper used by the native beta launcher against ImGui's CPU-only core. It
+exercises typed/pasted digit filtering and leading zeroes, middle click/arrow
+editing, deletion, selection replacement, undo/redo, visible text/caret/selection
+geometry and narrow-field horizontal scrolling at two widget scales. It uses
+a private in-memory clipboard; no platform/render backend, SDL, GPU, ROM or
+native window is initialized. The test is still executable validation and
+does not create an exception to an execution-tool refusal. It is registered
+and compiles, but its new assertions have not run. Real launcher fonts/themes,
+OS clipboard/input, controller entry and packaged 200% layouts still require
+the acceptance guide's native-online journey.
+
+The Windows validation build includes every registered unit target, not just
+the game. `ghost_bank` includes the Windows process-ID declaration explicitly;
+the SDL-stubbed `app_window` unit owns its console entry point and does not link
+an SDL application startup shim. The non-MSVC `void_pairs` target links the
+production `tracks.c` walker. MinGW additionally requires supported
+link-time optimization to discard unrelated engine references before linking;
+configuration fails if that capability is unavailable rather than omitting the
+test. GNU link-time work for this target is limited to one compiler worker.
+
+The CI contract also pins Windows portable-settings read-back to a literal,
+whole-line match against the fresh process's read log. Its controls cover the
+old bracket-as-regex mistake, a weakened partial-line match, and accidentally
+checking the write log instead. Native Windows execution remains necessary to
+prove persistence; these source-contract checks are not a runtime substitute.
+
 ## Complete suite runner and `--build` contract
+
+### Retaining pacing diagnosis evidence
+
+For an authorized diagnostic invocation of `check_pacing_quality.py`, add
+`--keep-evidence` to retain its uniquely created private temporary directory.
+The checker prints that location before launching any arm. Each attempt keeps
+`process.log` and labelled `process.json` before parsing or checking the result,
+including nonzero exits, startup failures and partial timeout output. The
+directory also contains the isolated saves/configs used by the run; treat the
+whole directory as private, potentially ROM-derived evidence and never commit
+or publish it. No ROM file or environment dump is copied into evidence.
+
+Without the flag, the temporary directory is removed as before. The flag changes
+retention only: it neither authorizes app execution nor changes pacing policy,
+retry counts, quality thresholds or baseline exemptions. Parser checks pass;
+the new evidence-file and mocked-process regression assertions still need
+execution. Use this retention mode on the next approved investigation of the
+43-re-anchor companion failure, whose original full trace was not retained.
 
 Every behavioural script accepts the same `--build` value: either a directory
 (`--build build-rel`) or the executable inside it
@@ -25,10 +414,11 @@ python3 tools/run_checks.py --jobs 6 \
   --wasm build-web/mdkr64_web.wasm
 ```
 
-Automation windows render hidden or ordered behind the desktop by design (set
-`MDKR_TEST_VISIBLE_HEADLESS=1` to watch one), and the release gate is the
-complete suite wherever it runs. All application-launching roles stay
-serialized.
+The runner and `tools/ci/ci_local.sh` require the caller's human-attested
+`MDKR_DEDICATED_TEST_DESKTOP=1` before execution. The runner's `--list` is a
+non-executing inventory exception. Hidden windows and background scheduling
+are defense in depth. The release gate is the complete suite on an authorized
+test desktop; GPU and timing-sensitive tasks remain serialized.
 
 The manifest registers the `tests/check_*.py` scripts as parallel tasks, apart
 from a set of CTest companions that `rom_free_units` owns and runs through the
@@ -42,13 +432,13 @@ safety, and widescreen/shadow safety run in their specialized
 primary/Release/ASan/alignment configurations. Startup fails if a new check
 script is not
 registered, or if a `tests/test_*.py` has no CMake `add_test()` to carry it into
-the ctest task. The run owns one temporary save directory and exports it as both
-`MDKR_SAVE_DIR` and `MDKR_TEST_SAVE_DIR`, so no suite run writes the
-repository's playable `save/`; tasks run sequentially because they share that one
-directory and several fixtures intentionally replace its `eeprom.bin`. A
+the ctest task. Each task receives its own temporary save directory, exported as
+both `MDKR_SAVE_DIR` and `MDKR_TEST_SAVE_DIR`, so parallel tasks cannot overwrite
+one another's EEPROM fixtures or the repository's playable `save/`. A
 standalone check still defaults to `save/` and restores the EEPROM images it
-found there. Inherited `MDKR*` hooks are cleared except for those two and
-`MDKR_TEXCACHE_VERIFY`, `MDKR_VIDEO_CONFIG_PATH` is pointed at the null device,
+found there. Inherited `MDKR*` hooks are cleared except for those two,
+`MDKR_TEXCACHE_VERIFY`, and the caller's `MDKR_DEDICATED_TEST_DESKTOP`
+attestation. `MDKR_VIDEO_CONFIG_PATH` is pointed at the null device,
 and audio is forced off. `--only NAME`, `--role ROLE`, `--primary-only`,
 `--skip-instrumented`, and `--skip-wasm` are iteration/configuration tools; a
 default run is the complete gate.
@@ -149,6 +539,10 @@ recovery, last-safe revalidation after projection changes, discontinuity reset,
 invalid-world fail-safe behavior, deterministic repeatability, and the diagnostic
 center-ray near-plane false-clear control. It intentionally owns no DKR state or
 environment parsing; the fixed-tick integration supplies those inputs.
+Release-hold cases include repeated zero-time projection revalidation at every
+point before release: the eye and clear-tick counter stay held, positive-time
+resume serves exactly one tick, and contact still retracts immediately at zero
+time. The zero-duration hold remains the no-hysteresis control.
 
 `camera_object_bvh` is a ROM-free white-box test of the production immutable
 object-model index. It compares indexed sphere and exact rounded-lens results
@@ -256,6 +650,14 @@ The remaining registered camera runtime gates are deliberately orthogonal:
   cuts, blocker churn) on the lake, hub, and 3P T.T. spectate routes under
   Modern. Chatter and shoulder-flip invariants gate hard; the analog
   distributions print as the labelled baseline for threshold-setting.
+  Level-1 re-engagement events retain release/gap, per-slot contact history and
+  recovery state in each arm's optional `--baseline-out` JSON. Console context
+  is bounded to 16 events per arm; missing event rows from older binaries are
+  disclosed without weakening the aggregate failure. The ROM-free
+  `camera_motion_reporting` CTest entry (`test_camera_motion_reporting.py`)
+  checks extraction, bounded reporting and failed authored/high-rate arm
+  isolation without launching a game. These additions still need execution on
+  the current candidate; they do not resolve Ancient Lake's hard motion failure.
 - `check_camera_obstruction_performance_runtime.py` runs one optimized binary in
   Observe, Modern, and Modern + reduced motion over a long 4P route, requiring
   at least 5,000 active four-viewport fixed ticks (more than 83 seconds at 60 Hz).
@@ -314,6 +716,59 @@ alongside `MDKR_SAVE_DIR`) at a private temporary directory, so this is the one
 check that can reach a successful `AppConfig::save()` without ever touching the
 real machine-shared `SDL_GetPrefPath("mdkr64","mdkr64")` prefs file.
 
+### Skip the launcher — `tests/check_launcher_skip.py`
+
+```bash
+python3 tests/check_launcher_skip.py --build build \
+  --rom baserom.us.v80.z64
+```
+
+Issue #60. `Launcher.SkipWhenReady` (off by default) trades the launcher for a
+faster start; the gate spends five of its seven arms on the way back, because
+that is the part whose failure strands a player. `main()` takes one decision
+before the first frame and logs it in full (`[app] skip-launcher setting=…
+shift=… shoulderL=… shoulderR=… holdOpensLauncher=… armed=…`); when it arms,
+`Launcher::draw()` calls the same `RomPanel_requestPlayValidation()` the Play
+button calls, so the mandatory final ROM check still runs and only its verdict
+publishes a boot. `MDKR_APP_SMOKE_SKIP_LAUNCHER=1` adds no behaviour — it keeps
+the headless launcher smoke rendering until a Play action arrives or a deadline
+passes (hashing a 32 MiB image outlasts four frames) and prints one parseable
+report.
+
+The hold is sampled **every launcher frame until the boot dispatches**, not
+once at startup, and the first sighting disarms the skip one-way. SDL folds
+keyboard state from events, so a Shift already down before the window existed
+is invisible to a single sample taken at window creation — on macOS the first
+thing SDL learns about that key is its release. Re-sampling makes the window a
+player has to aim at "while the launcher is on screen", which is at least as
+long as hashing the ROM takes, rather than one unhittable instant.
+
+Arms: the setting on and nothing held **boots**, carrying the remembered ROM;
+Shift held, or both shoulders held, opens the launcher instead; the shipped
+default (setting absent) does not boot, which is the positive control proving
+arm 1's boot came from the setting; **one shoulder alone still boots**, the
+positive control proving the two hold arms were stopped by the hold policy and
+not by the mere presence of `MDKR_APP_TEST_LAUNCH_HOLD` (which injects the raw
+hold, never the decision — `@<sample>` makes it appear only from that sample
+onward — so `AppUi_launcherHoldOpensLauncher()` runs for real in every arm); a
+hold that appears only from launcher frame 3 **arms and then disarms without
+dispatching**, which is the arm a one-shot sample fails and the reason the
+per-frame sampling exists; a remembered file that is not a ROM arms but never
+dispatches; an inherited `MDKR_APP_BOOT_RECOVERY` message arms but never
+dispatches — that one is the infinite-relaunch guard, since a failed boot
+relaunches the app carrying exactly that message; and a **teardown** arm holds
+a real controller (attached by the virtual-gamepad smoke contract) through a
+launch that never dispatches, then requires every release carrying handles to
+have happened while `SDL_INIT_GAMECONTROLLER` was still up. `main()` owns
+`AppHost` by value and calls `host.shutdown()` — reaching `SDL_Quit()` — before
+its scope ends, so `~Launcher`'s release backstop runs after SDL freed the
+devices. That is asserted as an ordering rather than by a sanitizer on purpose:
+**ASan does not catch it on SDL 2.x**, because `SDL_GameControllerClose`
+validates its argument against an internal list `SDL_Quit` has already emptied
+and drops a stale handle without dereferencing it. Confirmed by building it and
+looking, not assumed. The pure policy, including
+every readiness field, is unit-tested in `tests/test_app_ui_policy.cpp`.
+
 `user_paths` is the ROM/SDL-window-free packaged-data contract. It supplies a
 deterministic preference provider to a synthetic `.app`, verifies that video
 config and the complete known save set migrate outside the bundle, checks
@@ -358,8 +813,8 @@ last-complete-frame hold. It reports the raw maximum and frame number without
 using that scheduler/menu-transition
 outlier as a pipeline proxy.
 
-`check_webgpu_fault_matrix.py` cross-checks the public 113-point registry
-against the executable runtime matrices. All 83 native-required points must be
+`check_webgpu_fault_matrix.py` cross-checks the public 133-point registry
+against the executable runtime matrices. All 103 native-required points must be
 named by `check_webgpu_recovery.py` or `check_app_adopted_pacing.py`; all three
 browser-required points (one browser-only and two with intentionally different
 native/browser policies) must be named by `check_browser_runtime.py`; and none
@@ -463,6 +918,62 @@ production coverage:
   versioned broken-direction controls; production uses the same retained HLE
   replay machinery only after the complete task/dependency transaction and
   adjacent-state publication succeed.
+- `check_dl_high_water.py` covers the authoring side of the same overflow.
+  `gDisplayLists[]` is one allocation whose Gfx region is immediately followed
+  by `gMatrixHeap[]`, so writing past `gCurrNumF3dCmdsPerPlayer` commands does
+  not fault — it overwrites matrices, and the walkers above then parse matrix
+  words as commands. Nothing measured that margin before. `gfxtask_run_xbus`
+  now compares the authored length against the row the buffer was allocated to
+  at the one point both are known, reports every new high as
+  `[TRACE] dl_high_water: bytes=.. limit=..`, and aborts with
+  `[FATAL] display list overflowed its heap row (bytes=.. limit=.. commands=..)`
+  past it. Submission is also the only consistent sample: the row and the write
+  cursor change together, in `alloc_displaylist_heap`. The gate runs a retail 1P
+  time trial twice. Unmodified it must emit the witness, report a limit that is
+  a real `gNumF3dCmdsPerPlayer[]` row, and stay under it — measured 12,496 of
+  36,000 bytes. With `MDKR_TEST_DL_HIGH_WATER_LIMIT=64` the same route must exit
+  nonzero having printed the `[FATAL]` line and a witness for the length that
+  tripped it, which is the control that the assertion is fail-closed rather than
+  a print. `MDKR_TEST_UNDERSIZED_DL_HEAP` authors its overflow on purpose, so
+  that route reports through the witness and runs on into the walkers instead of
+  aborting; `check_fast3d_dl_hardening.py` stays green and its injected arm now
+  measures 74,088 bytes against a 36,000-byte row. The four-player soak evidence
+  lives with the rest of AP-19 below.
+- `check_fast3d_dl_hardening.py` covers the renderer's side of the 4P party-hub
+  crash settled under AddressSanitizer.
+  The authoring defect (a four-viewport party sized against the retail 1P
+  display-list budget) is fixed at its cause; this gate proves the two walkers
+  survive such a stream instead of parsing the bytes after the buffer as
+  commands. `MDKR_TEST_UNDERSIZED_DL_HEAP=1` restores the 1P sizing so the
+  overflowing stream is authored on purpose: the run must still reach hub,
+  lobby and race, and both the overlay prepass and the interpreter must report
+  that they stopped at an opcode the interpreter does not implement. The same
+  party route without the injector, and a retail 1P time-trial route under
+  `MDKR_DL_CENSUS=1`, must report zero `[DL]` lines and zero censused faults —
+  the refusals never fire on properly authored content, which is also the
+  control on the opcode set itself. Two positive controls bound the injection:
+  the misauthored run's peak submitted display list must exceed the 4500-Gfx
+  1P budget it was held to, and the well-authored run's must exceed it too, so
+  the arms differ only in the heap the game wrote into. The pure rules both
+  walkers share (`platform/fast3d/gfx_dkr_dl_guards.h`) are unit-tested by
+  ctest `fast3d_dl_guards`, which carries its own control: the rule it replaced
+  — `room >= need` against `dkr_arena_room`'s SIZE_MAX "extent unknown" answer
+  — admitted every non-arena pointer at every read length. The opcode set is
+  one X-macro list, `DKR_DL_IMPLEMENTED_OPCODES`, that both the predicate and
+  the interpreter's dispatch gate read, so the two walkers cannot come to
+  disagree about which opcodes are commands; `check_webgpu_content_census.py`
+  binds that list to real content (46 routes under `MDKR_DL_STRICT=1`, zero
+  faults).
+- `fast3d_dl_hardening_asan` runs the same script with `--injected-only`
+  against the ASan build. The release arm proves the walkers stop and the route
+  survives; it cannot prove what the reads were. A command fetched one past the
+  end of an 80-byte global, and a fault printer quoting the words of an address
+  the walk had just refused, both land in mapped memory in a release build and
+  report success — measured: with the printer fix reverted the release arm
+  still passes and this lane aborts under
+  `ASAN_OPTIONS=abort_on_error=1`. Same relationship as
+  `live_toggle_settings_asan` and `widescreen_shadow_asan` to their release
+  arms.
 - `check_camera_snapshot_coverage.py` closes the non-sequential camera-ID
   boundary with real content. A two-player race must capture/interpolate camera
   1 in the lower half, and the production 3P HUD toggle must replace the minimap
@@ -524,6 +1035,57 @@ production coverage:
   gutter during the race-start pre-slide hold -- plus a 4:3 rail where the
   widescreen-ON frame must stay byte-identical to OFF. Detector self-tests
   run against synthetic rasters on every invocation.
+- `check_split_screen_backdrop.py` pins issue #61's split-screen sky. Two or
+  more viewports never reach `skydome_render()`; they get
+  `trackbg_render_gradient()`, one flat quad whose authored `+/-200` by
+  `+/-150` extent is exactly a 4:3, 60-degree-vertical-FOV frustum at its
+  261-unit depth (`261 * tan(30 deg) = 150.7`, times `4/3` = `200.9`). Under
+  the port's Hor+ widescreen projection the frustum is wider than the quad, so
+  the sides of the sky kept the clear colour -- black on every level whose
+  `voidColour` is `0,0,0`, which is the reported "black lines on each side of
+  the skybox ... e.g. Fossil Canyon". The check drives the two-player fixture
+  on Fossil Canyon (bright orange-to-yellow backdrop over a black clear) and
+  asserts both the derived extent published by `[TRACE] bg_backdrop:` -- 4:3
+  must reproduce the ROM's exact `200`/`150`, 16:9 must be `267` -- and the
+  pixels: the worst-frame pure-black fraction of each viewport's sky band
+  (rows 3%..10% of its own half, clearing the split separator). Measured
+  without the widening: viewport 0 12.7%, viewport 1 10.7%; with it 0.2% and
+  4.3% (viewport 1's floor is a real shadowed canyon wall). Detector
+  self-tests run on synthetic rasters first.
+- `check_split_screen_pause_resolution.py` covers issue #61's pause-owner
+  distinction. On both WebGPU and GL it pauses the same real two-player
+  Ancient Lake race with P1 or P2, in Restored and Remastered. Different panel
+  colours prove the requested owner; the shared RESTART RACE glyph contour
+  must agree across owners. Each owner's output-resolution UI must gain at
+  least 15% edge detail over its own disabled-UI control. Substituting the
+  original-bitmap Restored capture for Remastered P2 must fail the font
+  comparison, so equal resolution cannot conceal the wrong font path.
+  Both racers' simulation streams remain identical across all arms; overlay
+  telemetry rejects late world draws and failed output passes. Run with
+  `--renderer webgpu` or `--renderer gl` for a subset, or omit the option for
+  both. `--keep-frames DIR` retains local-only captures and logs. Acceptance
+  only covers the hardware and renderer actually run, not the entire #61
+  report or untested Windows drivers.
+- `check_split_screen_void_coverage.py` drives the real two-player Walrus
+  Cove loop/tunnel route on GL and WebGPU in Restored, Remastered, and Pure.
+  Separate P1/P2 witnesses compare production pixels to both the authored
+  foreground curtain and a no-curtain control: valid scenery must reappear,
+  but coverage over actual holes must remain. The same verdict must reject
+  the authored, deleted-curtain, and early-but-depth-writing controls. Pure
+  retains byte-identical authored frames; SIMHASH v3 and both racer streams
+  must agree within each preset. ROM header metadata selects fixed US 1.1
+  witnesses (P1 frame 3061, P2 frame 3100) or European 1.1 witnesses (P1 frame
+  2980, P2 frame 3058), and every arm verifies the engine's revision identity.
+  US uses ten captures through frame 3412; Europe uses twelve through 3409.
+  All byte orders supported by the engine select the same regional plan.
+  `--renderer` and `--mode` select diagnostic subsets; the registered serial
+  GPU task runs every group. `--keep-frames DIR` retains private ROM-derived
+  evidence. This gate requires a human-attested dedicated test desktop and
+  does not establish acceptance on hardware where it has not been run.
+- `test_void_render_policy.c` is the ROM-free `void_render_policy` CTest
+  companion. It covers preset defaults, invalid overrides, both required
+  override gates, and which policies draw before scenery. It does not certify
+  rendered pixels and requires dedicated-desktop authorization to execute.
 - `check_widescreen_minimap_alignment.py` pins the second half of issue #57:
   under the widescreen HUD, billboard-mode ortho sprites bypassed the WIDE_HUD
   matrix's horizontal compression and rendered 4/3 wider than authored, so the
@@ -1169,16 +1731,21 @@ The crypto gates mutate every 132-byte envelope position and require
 the complete caller-expected source-to-recipient direction, then authentication,
 before plaintext or replay state changes. A valid peer key cannot authenticate
 a header claiming another source endpoint or generation. Callers cannot choose
-the GCM sequence: a direction-bound seal window allocates it monotonically
-across input and preflight payloads. The gates cover network reordering, stale
+the GCM sequence: a direction-bound seal window allocates it monotonically.
+Each of the peer connection's three channels — state, control and authority —
+is a LANE with its own derived key, so both gates seal on all three and
+require distinct key records, that a seal advances only its own lane's window,
+and that every other lane's key refuses the envelope as `WRONG_LANE`. Dropping
+the lane from the HKDF info collapses the three derivations onto one keyring
+slot and fails that first assertion. The gates cover network reordering, stale
 receive-window rejection, corrupt/exhausted sender state, provider failure and
 two concurrent browser seals. Native used/exhausted window initialization and a
 second browser window for one derived key object refuse; browser state is
 read-only. The wire contract is documented in
 `docs/ref/match-peer-carrier-v1.md`.
 
-`match_preflight` and `match_preflight_js` share one exact fixed 124-byte report
-vector and cover the pure launcher consensus gate over the frozen
+`match_preflight` and `match_preflight_js` share one exact fixed 136-byte `MPF2`
+report vector and cover the pure launcher consensus gate over the frozen
 launch-descriptor SHA-256, peer-key transcript, order-independent canonical
 directed-graph SHA-256, exact epoch/generations, local supported-ROM
 verification, phrase confirmation and ready channel graph. It
@@ -1192,8 +1759,108 @@ completed report to one carrier-authenticated peer direction, and covers
 reorder, exact duplicate, conflict, stale replacement, final-padding,
 cross-source splicing and forged-attribution negatives. `READY`
 has no engine or network authority.
+The two halves also pin the appended twelve-byte route-quality record: the
+score/band consistency rule, the refusal of a band that disagrees with its own
+score, and the two-way version refusal (an `MPF1` report is named
+`legacy_mpf1` rather than downgraded into, and the frozen `MPF1` header rule
+refuses an `MPF2` report).
 The UX, wire and security contract is documented in
 `docs/ref/match-preflight-v1.md`.
+
+`match_route_quality` covers the pre-flight route measurement itself: every rung
+of the score ladder at its own boundary and one unit past it, the named bands
+over the 1-10 score, degenerate records (a rate above 100% rejects without
+mutating the caller's record; a route that lost everything still floors at one),
+the entry-timing widen from measured p95 RTT against the manifest floor and its
+four-tick cap, the fixed 64-byte probe payload codec, and the caller-clocked
+measurement phase replaying both lanes for 6 s with a 1 s drain, and the
+queue-drain term (the carrier's own count of inbound pump-drain drops from its
+bounded queues, which only the caller can see) reaching the record and its
+rung. Its cut arms pin what a race start does to a window still in flight: the
+trailing probes younger than the cut margin are dropped rather than scored as
+loss, an echo genuinely lost before the cut still is, and a cut window emits no
+further probe. A second arm holds the margin to the route — a 240 ms carrier
+that lost nothing must measure no loss when the cut lands, where a fixed 100 ms
+margin would charge it a third of a second of healthy probes — and a third pins
+both adoption floors at their boundaries: 29 answered samples are refused, 30
+over a two-second span are adopted, and samples that clear the count but not the
+span are refused on span alone. Positive controls, both real mutations: return
+`0` from `mdkr_match_route_measure_cut` before it scans and the cut assertions
+fail; drop the sample floor to `1` in `mdkr_match_route_measure_adoptable` and
+the 29-sample refusal fails. Its impairment lane injects 8% loss on the unreliable bundle lane
+through `net_impairment` and requires the `rough` band; the positive control
+for that lane is a real mutation of the production ladder — set
+`route_steady_floor` in `platform/net/match_preflight.c` to `1`, so every score
+bands steady, and "8% injected loss scores in the rough band" fails.
+
+`online_live_route` (`mdkr_online_live_adapter_test --route`) runs the whole
+thing over two real loopback DTLS meshes, in three arms. Both endpoints exchange
+the record in their `MPF2` reports and must agree on the band, and a LAN-shaped
+route must leave the agreed lead alone. A route with a round trip a single
+authored tick cannot absorb must widen BOTH endpoints' operative lead above the
+manifest floor; returning the floor unconditionally from `setUpRace` fails
+exactly those two delay assertions while convergence still passes. The third arm
+gives ONE endpoint a slower measured route
+(`mdkr_online_live_adapter_test_set_route_measurement`), so the two race with
+DIFFERENT operative leads over the same descriptor and must still fold the
+identical canonical state hash — the determinism claim the widen rests on.
+The fourth arm presses Start into a window that is still open (D-N5): the race
+must run on the manifest floor with the room chip reading
+"Checking connection…", and the cut window must still be adopted on both
+endpoints and still cross the wire as the round's second attestation. Two
+positive controls, each failing a different half: make the projection fall back
+to an empty chip while the measurement runs and only the chip assertion fails;
+restore the old `raceReady_` early return in `serviceRouteMeasurement` and only
+the settle/exchange assertions fail. The fifth arm runs TWO races through one
+live room on the lifecycle rig: race 1 starts into an open window and both
+endpoints adopt a CUT record, the rematch boundary retires it, and race 2 runs
+on a FULL one whose chip is a measured round trip rather than the checking copy.
+Its positive control is `rearmRouteReportForNextRace` holding a cut record like
+a full one — race 2 then still reports a cut record and never measures again.
+Which record survives which boundary is pinned at the unit level too, in
+`online_live_adapter_beta`
+(`mdkr_online_live_adapter_test_race_latch_reset_keeps_route(cut_short)`), whose
+control is calling `resetRouteMeasurement()` from `resetRaceLatches` again.
+`online_live_adapter_beta` pins that a rekey or a re-verify mid-measurement
+restarts the whole route window rather than settling on samples sealed under
+retired keys; clearing only the publication latch (the pre-fix shape) fails it.
+
+`online_live_repair` (`mdkr_online_live_adapter_test --repair`) pins explicit
+input-gap repair on the reliable unordered authority channel over the same two
+real loopback DTLS meshes. The driver suppresses twenty-five consecutive bundle
+sends in one direction — far past the carrier's three ticks of redundancy — so
+the run of authored ticks it costs can never be covered by a later bundle. That
+run must be closed by repair alone and both endpoints must fold the identical
+canonical state hash: a repaired input is the same input. That hash is a fold of
+the CONFIRMED CANONICAL INPUT timeline read back through
+`race_inputs_for_tick`, not engine or simulation state — this lane is ROM-free
+and proves the two endpoints commit the same inputs, which the rollback and
+SIMHASH lanes then turn into the same simulation. Two positive
+controls. Turning repair off with
+`mdkr_online_live_adapter_race_set_repair(adapter, false)` and replaying the
+identical burst must reach typed `INPUT_GAP` rollback exhaustion and never
+converge. And the burst must not age out a valid authority packet: more than
+one replay window of state envelopes crosses the mesh while repair answers are
+in flight, and every answer sent must be received. `match_peer_transport` pins
+that second property at the transport boundary with its own control — pointing
+the authority lane's replay window at the state lane's drops the delayed repair
+outright. The impairment matrix (`--matrix`) carries the same pairing: its
+two-second-outage profile is a loss run far past the bundle's redundancy, so it
+now converges with repair (and must show repair restoring ticks) and runs a
+second time on the identical seed with repair off, where it must still latch
+`INPUT_GAP` at the 31-tick replay boundary.
+
+Two further arms cover the request policy itself. The author's drain is frozen
+for the first half of a burst, so the requester's first ask names ticks the
+author has not committed and cannot answer, and its sends stay suppressed for
+the second half, so the ticks it then commits never arrive as bundles: only a
+re-ask can close that run. With the shipped eight-authored-tick re-ask window
+the race converges; with the window pushed past the whole race — the single-shot
+latch it replaced — the stranded gap ages into `INPUT_GAP`. `match_input_repair`
+pins the responder's side: one honest request's worth of answers is always
+charged successfully, a flood past the per-tick budget is refused however many
+different runs it names, and the budget refills only when the responder's own
+authored tick advances.
 
 `check_rollback_authority_wrapper.py` is the suite-facing entry for the frozen
 mutable-authority census and its omitted-state positive control.
@@ -1207,6 +1874,12 @@ keeps raw provider/transport terms out of player copy, maps unknown reasons to
 one actionable fallback, preserves **Play Here**, rejects mismatched snapshots
 fail-atomically, and proves room data cannot expose **Start Race** before the
 local release gate (which also requires leader, 2+ members and everyone Ready).
+It also pins the one route chip in all three of its states: a measured record
+reads "~45 ms · steady", a measurement still running reads
+"Checking connection…" (Start is never held for it, so a player reaches the chip
+before it settles), and neither reads as nothing at all. Its positive control is
+a real mutation — make the projection return an empty chip while the
+measurement runs and the checking assertion fails on its own.
 
 `check_app_background_activation.py` (registered as
 `app_background_activation_contract`) and `app_window` enforce desktop-safe
@@ -1379,6 +2052,29 @@ keeps forged/refused floods at zero observations. The second environment proves 
 while static/local paths remain available and its health aggregate remains
 empty/complete.
 
+`tests/check_online_wire_schema_parity.py` extracts the match wire vocabulary
+from `services/party/src/match/protocol.ts`, `match-room.ts` and `signaling.ts`
+-- the public state projection and its nested lobby/member/seat/control-step key
+sets, the command types and request body, the lobby phases, the `MatchError`
+and typed error tokens, the socket close code/reason pairs, both signaling
+envelopes and the `/api/ops/health` reservation buckets -- and compares each one
+against the key set `dist/web/online/*.js` actually reads or writes. It fails
+when either side gains, loses or renames a member the other does not follow,
+when a response envelope no longer matches a combination `validWireKeys()`
+admits, when the browser issues a command the schema does not define, when a
+4000-class close reason is not in `terminalLiveCloseCode`, or when the capacity
+gate's exact `/api/ops/health` pin diverges from `BUDGET_OPERATIONS`. The
+members the browser deliberately does not speak -- the six v2 lobby fields,
+top-level `iceServers`, the `schemaVersion` 1 pin (ruling R36, still open) and
+the thirteen commands no browser path issues -- are listed with their reason,
+and a listed member that stops disagreeing fails the gate too, so the gap
+cannot change size in either direction unrecorded. Fifteen positive controls run
+on every invocation: each feeds a synthetic one-line drift (renamed lobby field,
+added or removed key, moved `schemaVersion`, renamed close reason, extra budget
+operation, renamed command) through the same comparison and requires the
+matching failure, and a blanked source must fail closed rather than find zero
+keys and pass. Source-only: no ROM, build, network or service.
+
 `tests/check_party_internal_api.py` freezes the 17-call Worker→Durable Object
 census and requires every call to use the internal v1 envelope. It also requires
 PartyBudget, PartyRoom, PartyCodeDirectory and MatchRoom to reject an unknown
@@ -1422,9 +2118,10 @@ resolved origin into every CMake configure it runs; without it a release lane
 can silently ship a launcher whose Phone Party surface is compiled out.
 `--self-test` proves each assertion still rejects the lane it names.
 
-`tests/check_release_local_only_surface.py` freezes the deferred-feature
-boundary for local-only desktop and Pages releases: native launchers compile
-Online Room out, and the web publisher removes every cloud route and runtime.
+`tests/check_release_local_only_surface.py` freezes the two release boundaries:
+native desktop workflows explicitly opt into the online beta while keeping the
+bare preview switch off and every cloud surface origin-gated, while the Pages
+publisher removes every cloud route and runtime.
 The adjacent `check_browser_local_only_release.py` gate then exercises that
 stripped `publish-web` artifact in Chromium inside the Pages workflow; it is
 workflow-owned because the general suite does not produce that release stage.
@@ -1518,6 +2215,11 @@ SIGSTOPs the driver for three seconds mid-stream and requires a Connected
 controller with fresh input within five seconds of resuming, which drives the
 bounded transport queue and the host's custody self-heal through the true
 stack.
+
+`tests/check_online_live_transport_e2e.py` joins two production live-transport
+drivers through the real service protocol and proves creator/joiner convergence,
+bounded recovery, and fail-neutral teardown without relying on launcher UI or
+an in-process transport stub.
 
 `tests/check_party_lan_e2e.py` is the no-internet crown gate: it runs the same
 `mdkr_native_party_e2e_driver` under `--lan`, where the embedded
@@ -1939,6 +2641,116 @@ peer-loss teardown at the transport layer; it does NOT boot the visible engine,
 and it is NOT the shipping cloud route (that is
 `check_online_native_flow_cloud.py`).
 
+`match_peer_liveness` (A7) is the pure soft-fail/hard-fail policy the live
+status line runs during racing, isolated from the WebRTC transport so a
+scripted miss/hit sequence is exercised as plain arithmetic. Pre-A7 the
+status line only ever said "Direct Connection" until the mesh's own
+control-ping ladder declared the peer lost outright, so a network wobble that
+recovered on its own carried no warning at all, and one that did not read as
+a sudden, unexplained loss. The gate drives a previously-good peer through a
+first missed probe (stays Transient, a soft-fail rather than an announced
+loss), a second miss (still Transient), recovery mid-streak, and the Nth
+consecutive miss (Unreachable, saturating rather than overflowing on further
+misses). N is derived from the mesh's own ladder
+(`kMdkrMatchControlPingTimeoutMs / kMdkrMatchControlPingIntervalMs` = 3,
+pinned by a `static_assert` in `match_live_adapter.cpp`), so the presenter's
+escalation lands at the same wall-clock boundary `peerLost(PingTimeout)` does
+and never earlier -- that loss detection itself is unchanged. Positive
+control: a small reference implementation of the pre-A7 immediate-escalation
+shape (any miss -> Unreachable at once) is applied to the exact same
+first-miss observation and lands Unreachable where the fixed policy's
+assertion requires Transient, so the test provably discriminates the two
+shapes rather than passing regardless. The retained "last known measurement"
+the brief calls for needs no bookkeeping of its own here: the transport's
+peer.rttMs is untouched by a miss (only an answered pong updates it), so it
+is already the last measurement for free -- the tracker only needs to know
+THAT a peer was previously good, not what its RTT was.
+
+`match_peer_transport`'s `authorityLaneKeepsItsOwnReplayWindow` and
+`authorityWrongPayloadTypeIsTypedLoss` pin the third channel at the transport
+boundary: a repair answer sealed before seventy state envelopes and delivered
+after them is opened rather than retired as a replay of them, an envelope
+sealed for another lane and replayed onto the authority channel is a counted
+drop and never a delivered repair, and an envelope authenticated under the
+peer's own authority key carrying a payload type that channel does not serve
+is the typed `ControlChannelViolation`. Positive control: pointing the
+authority lane's replay window at the state lane's makes the delayed repair
+disappear and only that arm goes red. Two more arms cover the protocol-version
+edge: an offerer that carries only the two older channels comes up, opens them
+and never reaches ready, so at the answerer's setup deadline it must resolve as
+the named `ChannelSetMismatch` (recorded in the failure ring by that name, with
+the missing label logged) rather than as the ICE-never-completed
+`ConnectTimeout`; the same offerer carrying the full set reaches
+`PeerChannelsReady` and is never lost.
+
+The pure policy alone does not prove `LiveAdapter` actually calls it, so two
+more gates cover the wiring. `match_peer_transport`'s
+`controlPingMissCountsBeforeTimeout` drives a silent peer through a real fake-
+clock ping ladder and asserts `linkStats()`'s `consecutivePingMisses` reads 1
+after exactly one missed interval, with the peer still `channelsReady` and
+no `PeerLost` yet, then that the mesh's own hard verdict still fires
+correctly past the full timeout. `online_live_adapter`'s
+`test_soft_fail_liveness_precedes_hard_fail_status` runs a real two-endpoint
+race over the loopback mesh, silences one peer, and requires the RACING
+status line to soften to "Connection hiccup — retrying" on the first missed
+interval (never "Connection lost" ahead of it, never ending the race), before
+the mesh's real `PingTimeout` eventually ends it for real. Positive control:
+commenting out `updateLiveness()`'s call site in `pumpMesh()` (verified by
+hand) leaves every other CTest green and only this arm goes red, since it is
+the only one that ever reads the status string mid-race before a loss.
+`online_lobby_view_model` pins the player-facing copy at its single source of
+truth, `lobby_view_model.c`'s RACING status switch -- "Connection hiccup —
+retrying" (`MDKR_CONNECTIVITY_DEGRADED`) and "Connection lost"
+(`MDKR_CONNECTIVITY_LOST`), alongside the pre-existing "Direct Connection"
+for a healthy peer -- so the pure module itself carries no player-copy
+lookup of its own to drift out of sync with it.
+
+`check_online_lobby_drop.py` (registered) pins the LOBBY-AUTHORITATIVE drop:
+the room knows a member left the moment its socket closes and broadcasts
+presence=false, so the survivor no longer waits out a transport ladder to
+learn it. Same in-process kill signature as the transport-loss lane below
+(`MDKR_APP_TEST_ONLINE_SEVER_PEER_AT_TICK`), opposite regime. Arm 1 (the
+shipped default) asserts the departed endpoint's seats are finalised at an
+agreed tick ahead of the authored head (`[MESH] room departure ... finalised
+at tick=T result=0`), the loss is typed as the room's own `PeerDeparted`
+(parsed from the header, never hard-coded), the attribution is still
+OPPONENT_LEFT, the mid-race latch reaches the card within FOUR authored ticks
+of the presence drop (two for the peer-silence grace below, two to card), and
+the clean LEFT return holds with no watchdog and no leaks. Arm 2 is the
+positive control: the identical run with `MDKR_ONLINE_LOBBY_DROP=0` must NOT
+resolve inside those four ticks, must finalise no seat, and must fall back to
+`PingTimeout` inside the named ping bound -- so arm 1's number is attributable
+to the room's verdict rather than to a fast machine.
+
+Arms B and C pin the PEER-SILENCE GRACE the verdict now waits out. Arm B is
+the room-service wobble: `MDKR_APP_TEST_ONLINE_ROOM_DEPARTURE_AT_TICK` drops
+only the peer's loopback presence and leaves the peer pumping, sealing and
+ponging, so the room says a member left while that member is plainly still
+racing. The survivor must hold the verdict (`[MESH] room departure ... HELD`,
+on a nonzero count of authenticated packets), finalise no seat, and carry on
+until the peer is really severed 90 ticks later -- at which point the ping
+ladder ends it, as it does whenever the room says nothing. Arm C is arm B's
+positive control: the identical wobble with `MDKR_ONLINE_LOBBY_DROP_GRACE=0`
+is the pre-grace code, and it finalises the seat and cards inside those four
+ticks -- the false "opponent left" the grace removes.
+
+The determinism half is adjudicated exactly, and
+separately, by `test_match_transport.c`: a finalised transport and a reference
+transport whose departed peer simply sends neutral input from the same tick
+commit byte-identical canonical frames for 30 ticks, with a run that never
+finalises diverging at the first tick past T as the in-test positive control.
+The canonical frame stream is the simulation's only input, so identical frames
+under an identical seed are an identical run. The mesh half --
+edge-triggered departure, silent retirement, the proposal reaching every
+survivor but the departed one, and a drop naming a non-roster endpoint as a
+control-channel violation -- is pinned by `test_match_peer_transport.cpp`; the
+decision's gates, the lowest-surviving-id proposer rule and the grace's own
+decision table by `test_online_live_adapter_beta.cpp`; and what counts as an
+authenticated packet -- an envelope that opened under the peer's own lane key,
+never garbage and never the control channel's plaintext JSON -- again by
+`test_match_peer_transport.cpp`. **Scope class:** engine flow (loopback
+transport).
+
 `check_online_midrace_transport_loss.py` (registered) pins prompt, truthful
 mid-race peer loss ON THE TRANSPORT ITSELF -- the real-cloud kill signature: a
 SIGKILLed opponent's signal socket dies (the service broadcasts
@@ -1947,6 +2759,10 @@ lane's sever seam (`MDKR_APP_TEST_ONLINE_SEVER_PEER_AT_TICK`) reproduces that
 in-process on the descriptor-less lobby-start tournament session: it freezes
 the in-process peer's pump and drops its loopback signal presence, refusing
 NOTHING -- detection must come from the transport's own liveness ladders. The
+room-authoritative drop is switched OFF here (`MDKR_ONLINE_LOBBY_DROP=0`):
+these ladders are what remains when the room says nothing at all (arm 3's
+lingering presence, a service slow to drop a member, the Worker itself down),
+and leaving the fast path on would resolve the same presence drop first. The
 severed race runs at the authored 30 Hz (the seam arms `paceAdvanceHz`),
 because detection is wall-clock (ping interval + stale bound =
 `kMdkrMatchMidRaceLossPingBoundMs`, parsed from the header, never a magic
@@ -2084,6 +2900,20 @@ Its exhaustive one-byte mutation loop rejects every corrupt byte. Peer
 ownership is deliberately absent from both codecs; the launcher supplies an
 authenticated slot mask, and a decoded bundle may only narrow that mask.
 
+`match_input_repair` pins the gap-repair codec that answers a loss burst the
+bundle's three-tick redundancy has outlived: one 64-byte `MR` v1 message is
+either a request naming `{epoch, first_tick, count}` or an answer carrying one
+canonical slot's contiguous run of up to twelve pad samples. A request may not
+exceed the rollback budget (`MDKR_ROLLBACK_MAX_INPUT_AGE_TICKS`), may not name
+a slot and may not carry samples; an answer's cells past `count` must be zero
+on the wire, so two encodings of one run are byte-identical. Carried samples
+are held to the bundle carrier's own shape (present, sticks within +/-80). The
+exhaustive one-byte mutation loop rejects every corrupt byte, and an unknown
+version or kind is refused rather than parsed on its byte layout. Its answer
+fixture builder asserts its storage bound; rejection cases change metadata
+only after constructing bounded sample storage, so the test harness does not
+violate the condition it is checking in the codec.
+
 `net_impairment` and `net_clock` own deterministic hostile-environment
 schedules. The named LAN/regional/poor/outage/adversarial packet profiles cover
 latency, jitter, loss, duplication, reorder, corruption, a cadence-derived
@@ -2093,6 +2923,42 @@ opportunities and sleep/wake; only `tick_offered` increments authored work, so
 host recovery can never disguise a changed simulation timestep. Same-profile,
 same-seed schedules are byte-identical and forced controls prove each branch is
 observable.
+
+`net_failure_ring` owns the allocation-free in-process forensics ring: 2048
+fixed-width typed records (rollback save/load, desync, recovery, queue
+pressure/overflow, frame commit, input predicted, late input discarded, peer
+loss, lifecycle boundary, progress watchdog, stall begin/ongoing/end with a per-peer RTT/jitter/byte snapshot, session failure).
+The unit test pins wrap retiring the oldest records, the typed field
+round-trips, the redaction filter that refuses any code source outside
+`[A-Za-z0-9_-]` whole (so no URL, host:port pair, ICE candidate line or spaced
+SAS phrase can reach a dump), stall/watchdog emission, and oldest-first dump
+ordering. Recording reads no clock of its own: the simulation side stamps its
+authored tick and the transport side the host clock it already samples.
+
+The unit test also pins where a dump lands. With `MDKR_STATE_HASH_FILE` set it
+sits beside that artifact as `<artifact>.netfail`; with none set -- every
+shipped build -- it falls back to `mdkr64-online-failure.txt` in the directory
+the app shell keeps `mdkr64.log` in, resolved by `mdkr_user_log_directory()`
+and handed to the ring once at live-adapter construction. The test links the
+real `platform/user_paths.c` with a link-time preference provider, so that
+fallback is proven end to end without SDL.
+
+`net_failure_ring_impairment` is the lane over it, and it drives the PRODUCTION
+path only. Its scenario is the live adapter's own `--forensics` test
+(`test_forensics_dump_on_midrace_peer_loss`): two real adapters over a real
+loopback DTLS mesh with every mesh transmission gated by a seeded
+`net_impairment` two-second-outage carrier, then the opponent goes silent until
+the survivor's control-ping ladder resolves the typed `PeerLost`. The test
+writes no ring record and calls no dump -- every record comes from
+`platform/net` and `platform/online`, and the dump is the one the adapter's own
+peer-loss handler writes. `check_net_failure_ring_impairment.py` (registered as
+a CTest, given both arms) requires that dump to name the loss reason by name
+and to carry the last stall record with a per-peer snapshot showing real mesh
+traffic, and refuses any code field that escaped redaction. Its positive
+control is the identical adapter, mesh and transport built with
+`MDKR_NET_FAILURE_RING_DISABLED`: it runs the same race to the same peer loss
+and must FAIL those assertions, so deleting the mesh recorder or the adapter's
+dump cannot leave the lane green.
 
 `check_persistent_app_session.py` is the fast native ownership proof (three
 five-tick epochs). `check_persistent_rollback_rematch.py` is its ROM-backed
@@ -2355,6 +3221,19 @@ phase advanced between displayed frames — as fixed-bucket
 flight at present, times the refresh period) that quantifies the cost of a FIFO
 present mode.
 
+Failure reports retain each paced companion attempt's own distributions,
+displayed-frame count, slot quantum, stalls, phase regressions, re-anchor count,
+and retry/classifier notes. A strict-arm baseline is not evidence about a
+different failing companion arm. The ROM-free `pacing_quality_reporting` CTest
+checks that attribution and keeps a failed slot budget red; it also verifies
+that companion evidence cannot populate the strict-baseline success list.
+Both realtime retry loops call the same mandatory integrity check before any
+no-display/unthrottled exemption: realtime identity, present-mode evidence,
+no tearing, no live-sink underruns and no backward phase movement. The contract
+covers missing counters and each broken invariant, and checks the integration
+order in both loops. These additional cases await execution; quality thresholds
+and retry budgets are unchanged.
+
 Synthetic arms cover every presentation policy — including the battery-friendly
 `40` cap and `display-margin` — crossed with both smoothing
 settings and assert only structural identities: the census must count the same
@@ -2452,11 +3331,20 @@ python3 tests/check_webgpu_recovery.py \
   --build build --rom baserom.us.v80.z64
 ```
 
-This integration matrix injects 76 failures across instance, surface, adapter,
+This integration matrix runs 97 cases: 96 injected failures across instance, surface, adapter,
 device, queue, and configure bring-up; every surface-status repair class;
 featureless depth clipping; both native device-loss outcomes; and all
 Pure/Remastered scene-target, shader, texture, draw, post, resolve, mip, capture,
-and readback constructors reached by DKR. Required resources may rebuild the
+and readback constructors reached by DKR, plus one un-injected baseline. The
+last 21 arms install a generated custom character into a private catalog and
+drive the direct Workshop preview context, the only route that reaches the
+skinned renderer and its optional occlusion-evidence pass. The baseline first
+shows that route accepting every custom draw and publishing visibility
+evidence; each of the 20 injections then proves the failure stays local — the
+custom draw is refused or the evidence is withheld while the frame still
+completes. These 21 runs of 180 frames each add several minutes to this
+GPU-serial lane.
+Required resources may rebuild the
 WebGPU device once, then must terminate cleanly without switching renderers;
 mip and diagnostic failures must stay local. Every
 case uses a private save directory and rejects driver validation errors,
@@ -2469,7 +3357,10 @@ every public fault name to be wired to a real backend site and classifies every
 site by product route, dialect, and failure policy. It deliberately identifies
 the inherited MGB64 minimap, modern-mesh, and prewarm paths — and GE007's
 uncalled mid-draw readback probes — as dormant in DKR; those names are not
-counted as runtime coverage.
+counted as runtime coverage. The custom-character skinned points are the
+opposite case: shipped-conditional, reachable only with an installed and
+selected Workshop package, and therefore covered by real arms rather than
+excused.
 
 ## Real browser runtime — `tests/check_browser_runtime.py`
 
@@ -2822,6 +3713,28 @@ traced arm, and the arm must carry no `[PACE]` rows at all. This gate dumps no
 frames, so the pixel half of the same question is carried by
 `check_world_shadows.py`, `check_shadow_visual_ab.py`,
 `check_shadow_plausibility.py` and `check_presentation_shadows.py`.
+
+Each arm must exit successfully and emit exactly one clean completion for the
+requested frame count. Traced arms must contain every `[PACE]` frame in order,
+exactly once. A timeout or incomplete trace still fails the gate, but unequal
+partial trace lengths are reported as an **unavailable comparison**, not a
+simulation divergence. Missing shadow and depth summaries are reported
+independently, and failure context includes the untraced shipping arm. The
+180-second per-arm timeout and 4,000-frame default route are unchanged.
+
+Use `--keep-evidence` when diagnosing a failure to retain full per-arm output
+and process metadata (command, timeout status, elapsed time, requested/completed
+frames) in a fresh private temporary directory. These logs may contain
+ROM-derived state: do not commit or distribute them. The normal mode retains no
+new artifacts; both modes continue to use isolated disposable saves.
+
+`test_widescreen_shadow_reporting.py` exercises reporting with synthetic output
+and mocked process boundaries: completed controls, actual stream differences,
+partial/time-limited runs, missing or reordered trace rows, completion markers,
+missing summaries, sanitizer diagnostics, launch failures, private evidence,
+and all six failure contexts. It launches no game. The reporting correction
+does **not** fix or explain an underlying application timeout; complete real
+renderer/sanitizer arms remain required for qualification.
 
 For the multiplayer projection path, `check_race_2p_split.py` also accepts
 `--window-size WIDTHxHEIGHT`; use `--window-size 1260x540` to exercise both
@@ -3319,13 +4232,74 @@ and every visual comparison quietly meaningless.
 ## Authored state/RNG compatibility — `tests/check_authored_rng_compat.py`
 
 This gate is intentionally narrower and stricter than the general determinism
-suite: it covers only the original/authored two-field cadence on the 4,800-frame
-`race_state_oracle` route. All 27,840 all-racer rows—including positions,
-velocities, race progress, logical delta, and the shared authored RNG—must have
-the raw SHA-256
-`d74efe02aec07aa59710ce457e54180c28a22022f3d35e7087096d5130dba49b`.
-The check also flips one RNG bit in the first row and fails unless its own
-validator rejects that mutation.
+suite: it records the raw all-racer stream of the `race_state_oracle` route,
+one arm per cadence. The **original** arm is the ROM-compatibility pin — the
+authored two-field cadence, 4,800 frames, 27,840 rows; the **enhanced** arm
+(added 2026-09-03, below) is the route's own enhanced arm at 9,500 frames and
+54,880 rows. Each arm's rows — positions, velocities, race progress, logical
+delta, and the shared authored RNG — must have the raw SHA-256 pinned for that
+arm in `tests/check_authored_rng_compat.py`; the digests live only there, with
+their rebaseline history, so this page cannot drift out of step with them. Run
+one arm with `--arm original` / `--arm enhanced`, both by default.
+
+Each arm also pins **how many times each generator was stepped** — the
+authoritative and presentation draw counts, read from the run's own
+`[RNGDRAWS]` line. That is not a restatement of the digest, and the reason is
+worth stating plainly:
+
+> `rand_range()` is not injective. From the boot seed `0x5141564D` it enters a
+> cycle of **period 20** after 11 draws, and `gCurrentRNGSeed` thereafter only
+> ever takes 20 values. Two builds whose authoritative draw counts differ by a
+> multiple of 20 record byte-identical streams. Measured on this tree: burning
+> 20 extra authoritative draws leaves **both** arms' digests exactly as pinned
+> and every other stream oracle in the tree green.
+
+So a digest that did not move is not evidence that a stream did not move — it
+is evidence about the draw-count delta modulo 20. The counts have no such blind
+spot; they move one for one, and they are what actually holds the
+cadence-conditional redirects, because a draw count is precisely what those
+change.
+
+Four controls keep the gate from passing for the wrong reason:
+
+1. it flips one RNG bit in the first row of each arm and fails unless its own
+   validator rejects that mutation;
+2. it re-reads `frames`, `cadence` and `synth_fields` for each arm out of
+   `tools/oracle_routes/race_state_oracle.json` and fails when the pin and the
+   route disagree, so a digest cannot quietly come to describe a different
+   route — with an in-process control that feeds it a deliberately wrong
+   `synth_fields` and requires the rejection;
+3. it drives `MDKR_TEST_AUTH_RNG_BURN=20` — one full turn of the cycle — and
+   requires the digest to be **unchanged** and the draw-count golden to
+   **fail**. If that control ever stops failing, the counts have stopped being
+   an independent observable;
+4. it fails when the two arms produce the *same* digest, which would mean one
+   of them did not take the cadence it asked for.
+
+### The enhanced arm is the first pin of that stream
+
+Until this arm landed, every gate that recorded an RNG stream recorded the
+original cadence: this oracle, `check_weather_rng_order.py`'s
+`EXPECTED_ORIGINAL_SHA256`, and `check_state_hash.py`, which sets no cadence and
+takes the original default. The second compatibility target named at
+`platform/math_util_native.c` — "the pre-FPS native gameplay stream at opt-in
+enhanced cadence" — was therefore held by nothing, and any change to it would
+have moved silently. `docs/ref/presentation-rng-census.md` names that gap as the
+reason it declined to redirect its eight latent presentation-output callers.
+
+The enhanced digest was expected to move **exactly once**: in the commit that
+redirects those eight callers through `cadence_compat_rand_range()`. That
+happened on 2026-09-03 (`64bf3d28` → `c2ac09ae`), and the superseded
+pre-redirect value is kept named in the file so a bisect that lands on it says
+so. From here a change to the enhanced digest is a regression.
+
+The original-cadence digest did not move, and that is worth being precise
+about: it *could not have*. `cadence_compat_rand_range()` branches on
+`platform_sim_tick_fields()`, a per-run constant, so at two fields every
+redirected site calls `rand_range()` down the identical path. The original arm
+is a guard against writing a redirect unconditionally by mistake, not evidence
+that a redirected value is presentation-only — that classification rests on
+reading each consumer, and is recorded in the census.
 
 The reference is clean commit
 `64936e36b4c9ef7ecdce5beb93cd662d4318548d`. This deliberately replaces the
@@ -4457,6 +5431,22 @@ The positive control has two arms: removing the emission entirely fails naming
 all 52 controls, and skipping a single key fails naming that one — so the gate
 isolates rather than only detecting all-or-nothing.
 
+The Online Room panel is resolved per BUILD rather than assumed OFF: it reads
+`MDKR_ENABLE_ONLINE_BETA` and `MDKR_ENABLE_ONLINE_ROOM_PREVIEW` out of the
+build's own `CMakeCache.txt` (`harness_utils.cmake_cache_bool`, mirroring
+`tools/run_checks.py`'s helper of the same name) and asserts accordingly: with
+either flag ON, opening the panel must announce "Online Room" like any other
+panel; with both OFF, the launcher must refuse the request and announce the
+Play home it lands on instead. Checking only the PREVIEW cache entry used to
+be wrong for a `--allow-online-beta` release bundle
+(`macos/Scripts/build_app_bundle.sh`): `MDKR_ENABLE_ONLINE_BETA=ON` forces the
+panel in through a non-cache `set()` in `CMakeLists.txt`, so its own
+CMakeCache.txt keeps reporting `MDKR_ENABLE_ONLINE_ROOM_PREVIEW=OFF` even
+though the panel is compiled in — the gate demanded a refusal from a build
+that could not produce one. A self-test (a stub `CMakeCache.txt` reporting
+each configuration, including the BETA-on/PREVIEW-off shipping case) runs at
+the top of every invocation as the positive control for that detection.
+
 ## Race announcements — `tests/check_a11y_race.py`
 
 ```bash
@@ -5263,16 +6253,23 @@ sidecar store creates a missing save directory and leaves no temporary file.
 `tests/check_taj_results_portrait.py` carries the same identity through a real
 two-player race into Rankings. It captures Taj beside an ordinary Diddy,
 requires the project-owned Taj card to match the retail portrait's 40x40
-contract, and checks its authored purple, blue, face, and jewel regions against
-the unchanged Diddy negative control. The route then returns to Track Select,
+contract, and checks its purple turban, blue elephant face/trunk, and gold
+detail against the unchanged Diddy negative control. The old tan portrait
+fails the face checks; a pixel control removes the gold detail and must fail
+that specific assertion. `--keep-frames DIR` retains captures and the log for
+visual review. The route then returns to Track Select,
 starts the race again, and repeats the capture after a full stage/menu teardown;
 this protects both the portrait identity and its native display-list/texture
 lifetime.
 
+Both Taj portrait gates default to the shipping WebGPU backend; `--renderer gl`
+retains the diagnostic comparison. They require the requested backend's runtime
+witness rather than accepting a silent renderer fallback.
+
 `tests/check_taj_hud_portrait.py` proves the same card in the retail P2
 Adventure HUD slot. It selects Taj as P2, reaches the real hub without changing
 lead state, and joins the exact HUD identity trace to visible purple, blue,
-face, and jewel pixels at the authored portrait anchor.
+elephant face, and jewel pixels at the authored portrait anchor.
 
 `tests/check_taj_p2_adventure.py` covers the lead-player seam ordinary Tracks
 multiplayer cannot reach. It enters `JOINTVENTURE` through the retail Magic
@@ -5367,6 +6364,524 @@ playability journeys. It specifically protects the shared expandable-roster
 layout and the two new ROM-authored presentation assets. It is registered as
 `bonus_character_select` in `tools/run_checks.py`.
 
+## Independent custom-character browser — `tests/check_custom_character_roster.py`
+
+This real WebGPU gate generates a tiny license-clean GLB and portrait, packages
+and transactionally installs them into a temporary isolated character catalog,
+then enters the actual custom-racer browser through its controller route. It
+requires the runtime catalog trace, opaque modal coverage, centered portrait
+pixels, a clean exit, and no fatal/sanitizer marker. It never reads or changes
+the player's normal character library.
+
+```bash
+python3 tests/check_custom_character_roster.py \
+  --build build-character-tests --rom baserom.us.v80.z64
+```
+
+The gate is registered as `custom_character_roster` in `tools/run_checks.py`
+and is serialized with the other native GPU/pixel checks. Its generated package
+uses a Greek display name and Cyrillic short name, and the runtime trace must
+prove both entered the ROM-independent native path. The dedicated pure C glyph
+test covers deterministic RGBA output, kerning/fitting, transparent-edge
+hygiene, supported LTR scripts, explicit shaping/missing/invalid fallbacks, and
+shutdown/reinitialization. The roster companion also proves the shared retail-
+font projection: printable ASCII survives exactly;
+common Latin diacritics, ligatures, attached combining marks, typographic
+punctuation, and full-width ASCII fold predictably; each remaining valid
+unsupported codepoint becomes one fallback cell; malformed UTF-8 and
+unterminated input fail boundedly; controls become spaces; and output truncation
+is explicit. The rendered Portrait Studio gate requires the same shared engine
+path to report display/short mode, reason, folded, and fallback counts before
+Build, including an emoji case that must not masquerade as native text.
+
+## Custom-character identity surfaces — `tests/check_custom_character_identity_surfaces.py`
+
+This real WebGPU gate generates a CC0 package with a Bumper gameplay donor,
+four unmistakable portrait quadrants, authored display/short/narration/sort
+names, and a distinctive minimap colour. It carries the launcher's engine
+handoff contract through the production character-select transaction and a
+complete Ancient Lake Time Trial. Runtime witnesses must retain Bumper as
+gameplay authority while resolving the package's minimap colour and 40x40 card
+for the exact player. Pixel checks then require the authored marker colour in
+the real race minimap region and all four portrait quadrants on the real
+race-times page.
+
+```bash
+python3 tests/check_custom_character_identity_surfaces.py \
+  --build build-character-tests --rom baserom.us.v80.z64
+```
+
+The gate is registered as `custom_character_identity_surfaces` and serialized
+with every native GPU/pixel check. Its temporary package, catalog, save, input
+script, and captures never touch the player's normal library.
+
+## Collection-arena custom portrait — `tests/check_custom_character_flag_portrait.py`
+
+This real-ROM WebGPU gate generates and installs a CC0 package with a Bumper
+donor and an unmistakable package-owned 40x40 card, then enters Fire Mountain's
+actual egg challenge. The lazy `BHV_CHARACTER_FLAG` binding for player one must
+name the exact package card rather than Bumper's retail portrait. Two otherwise
+identical runs differ only by the production portrait-draw suppression control;
+matched framebuffer samples must differ by a full portrait-shaped region. This
+isolates real painted flag pixels from the custom model, HUD, course, and race
+simulation. The installed package inventory is hashed before and after both
+arms.
+
+```bash
+python3 tests/check_custom_character_flag_portrait.py \
+  --build build-character-tests --rom baserom.us.v80.z64
+```
+
+The gate is registered as `custom_character_flag_portrait` and GPU-serialized
+in `tools/run_checks.py`. Its source, catalog, save, logs, and captures are
+temporary unless `--evidence-dir` is supplied.
+
+## Raw source Workshop intake — `tests/check_character_raw_intake_ui.py`
+
+This ROM-free WebGPU gate first creates and drops a canonical `.mdkrsource`
+artifact with a self-contained GLB, exact original-source and conversion-
+settings bindings, external adapter identity claim, and exact license bytes.
+It requires mutation-free review, explicit unsigned-adapter disclosure,
+separate acceptance, exact reviewed-digest revalidation, collision-free
+exclusive GLB/license/provenance extraction, rights prefill without approval,
+and the ordinary resumable draft/inspection handoff. A second process
+keyboard/speech-walks that review at 200% in a 640x480 window and proves review
+alone extracts nothing. Hostile unit fixtures reject unknown/duplicate/symlink
+members, duplicate JSON keys, digest changes, review races, and every sibling
+destination collision without partial output. The reference adapter packer is
+also proved deterministic and explicitly does not report an authenticated
+converter.
+
+The same ROM-free WebGPU gate then drops a nested authoring ZIP containing one
+generated license-clean DAE, requires bounded conversion to an exclusively
+created self-contained GLB, confirms the missing embedded-license disclosure,
+and verifies the ZIP stays byte-identical and no package/cache is published. It
+also keyboard-walks the explicit converted-destination workflow. Before
+conversion, it drops uppercase FBX, OBJ, Blender, JSON glTF, USDZ and native
+DCC fixtures and requires each to route to its format-specific GLB export lane
+instead of ROM/package validation. One lane is keyboard/speech walked through
+the copyable checklist; every lane must leave the source byte-identical and
+create no draft, candidate, output, or installed state. The gate then
+drops two distinct generated, license-clean, self-contained GLBs onto one real
+launcher profile. It requires Workshop routing,
+bounded model inspection, two independently authenticated source drafts, durable
+selection, an independently identified same-source branch, source-fingerprint-
+bound fallback/seat/head mapping restoration, explicit switching and exact
+deletion, durable close/resume navigation that does not monopolize installed
+editing, legacy singleton migration, and rendered captures without publishing a
+package candidate or runtime cache. A fresh
+process and every switch require reinspection, so stale model bytes never inherit
+an in-memory fingerprint. A checksum-corrupt inventory is rendered read-only and
+must remain byte-for-byte untouched. Hostile unit fixtures prove per-member and
+aggregate ZIP expansion-ratio rejection before reads and unsupported-compression
+rejection. The rendered lifecycle supplies an otherwise complete draft with a
+malformed SPDX expression, requires the exact inline parser refusal, and proves
+that neither a review candidate nor an installed cache appears. The ROM-free
+probe corpus also mutates buffer lengths, view bounds/stride/targets, accessor
+types/counts/offsets/sparse flags, POSITION metadata and floats, indices,
+animation inputs/outputs, inverse binds, and shared/image views. Every case must
+return an actionable policy error without an exception. Scene cycles, affine
+shear, hostile material/name/texture fields, misleading required extensions,
+bad PNG checksums, and compressed pixels inconsistent with IHDR dimensions are
+also covered, alongside zero normals, invalid tangent handedness, unusable
+weights, non-finite exponent syntax, and oversized JSON integers; direct
+compiler controls independently recheck storage and input types. A many-error
+fixture proves diagnostics stop at 256 exact items plus a
+suppression count. The rendered intake drops a zero-count accessor, requires its exact
+manager diagnostic, and proves that no candidate or cache appears. The gate
+also drives reviewed installation,
+requires exact completed-draft/candidate cleanup while preserving a sibling
+same-ID source draft, then proves the installed one-LOD Performance workspace
+opens the sole candidate without changing source or installed bytes and refuses
+to guess after a second same-ID draft is added. It hashes both external GLBs
+and the license before and after the lifecycle, keyboard-walks the spoken draft
+controls, and renders at 640x480 with 200% UI scale and touch scrolling.
+
+```bash
+python3 tests/check_character_raw_intake_ui.py \
+  --build build-character-tests
+```
+
+The rendered pass also keyboard-walks and speaks the optional LOD profile,
+exclusive-create destination, and “Create LOD copy and continue” action; native
+geometry generation and four-level compilation are independently exercised by
+`character_lod_builder`.
+
+The gate is registered as the `app_character_raw_intake` CTest and the
+`character_raw_intake_ui` run-check; it needs neither a ROM nor a community
+model.
+
+The underlying data-only format and extraction lifecycle are independently
+registered as the `character_source_adapter` Python CTest and the native
+`character_adapter_output_index` CTest. The public frozen contract and
+reference pack/inspect commands are documented in
+`docs/architecture/character-source-adapter-contract.md`.
+
+## Character-work shutdown lifecycle — `tests/check_character_quit_lifecycle_ui.py`
+
+This ROM-free rendered gate drops a generated, license-clean GLB into the real
+launcher and deliberately holds the real background manager long enough to
+request window shutdown while work is active. It requires a visible,
+cancellable finishing card, disables Play/import, services the result after
+navigation, and permits Quit only after no worker result remains unpublished.
+It also proves that the external GLB stays byte-identical and no private
+launcher result file is stranded in the isolated catalog. The native
+`character_async_job` test independently proves single-operation exclusion,
+result publication, exception transfer without `std::terminate`, and the final
+destructor join.
+
+```bash
+python3 tests/check_character_quit_lifecycle_ui.py \
+  --build build-character-tests
+```
+
+The rendered gate is registered as `app_character_quit_lifecycle`; it needs no
+ROM, network, or community model.
+
+## Workshop tool history — `tests/check_character_workshop_history_ui.py`
+
+This WebGPU gate generates and installs an isolated CC0 fixture, then opens the
+exact saved Overview, Package, Identity, Rig & Motion, Gameplay, Offset Studio,
+Performance, and Test tabs. The 200% Overview route requires each unfinished
+readiness area and the header next step to announce the workspace they open,
+a real Workshop operation to leave an acknowledgeable message in the recent-
+status stack, and the Package route requires the vehicle echo to name Offset
+Studio; no tab may render another tab's undo/redo controls. The
+`character-workshop-ux` line reports only what it computes -- layout, the
+tab-bar popup flag read from the helper the tab bar uses, and the depth the
+status stack keeps -- plus four route names for the un-gated P1/P4/P5 polish
+items. Static Workshop copy no speech walk can report -- the recent-status
+separator, the focused-route undo chords, the plain-language fit status, the
+keyboard/controller expectation, and the player-to-controller-port line -- is
+pinned against ui_settings.cpp, literally for the player-facing strings and by
+whitespace-insensitive pattern for the two structural ones. Positive control:
+renaming any of them, dropping a readiness button, or lowering the status
+depth fails the gate.
+It requires source-digest-bound history controls for Identity, Profile,
+Rig, Fit/review, Performance assembly, and Test setup, and verifies that merely
+rendering every route leaves the installed source and cache byte-for-byte
+unchanged. The 200% keyboard/speech Gameplay route additionally requires all
+ten project-owned, colour-independent donor-profile metric badges with no
+retail portrait art. The distinct 200% Offset Studio route requires the linked-
+ROM exact-preview, disabled-package preview, measured vertical/facing/contact
+starting points and honest package-anchor reset contracts plus the
+front/side/top placement and contact planes, context yaw, vehicle-only copy
+boundary, and Fit undo contract to render. The contact proposal must expose its
+exact-state sample counts and XYZ deltas, remain inside the existing safety
+envelope, require explicit acceptance, and invalidate stale evidence for a new
+exact test. The 200% keyboard/speech Performance route requires
+all four named targets, the exact authored-LOD control, runtime-equivalent
+source/local-bias selection, merged distance intervals, session-only distance
+scrubbing, selected-LOD structural accounting, transition quality warnings,
+keyboard/speech access to the plot, and independent Performance history to
+render. The Test route also requires all 13 semantic inspection choices,
+the safe midpoint phase default, neutral camera/light defaults, exclusive-
+capture disclosure, and the explicit session-only/no-performance-evidence
+contract to render. `character_edit_history` separately proves discrete edits,
+continuous-gesture coalescing, deferred commit, divergent redo invalidation,
+and bounded eviction.
+
+```bash
+python3 tests/check_character_workshop_history_ui.py \
+  --build build-character-tests
+```
+
+The rendered gate is registered as the `app_character_workshop_history` CTest
+and `character_workshop_history_ui` run-check. It needs neither a ROM nor a
+community model. Passing `--rom` additionally requires the rendered donor cards
+to transition from their honest no-ROM treatment to exact ROM-derived metric
+bars and acceleration signatures; this uses only the game's ordinary verified
+base ROM.
+
+## Named-draft transfer — `tests/check_character_draft_transfer_ui.py`
+
+This ROM-free two-catalog gate drives the real Package workspace to save and
+exclusively export an exact-source `.mdkrdrafts` bundle, then reviews and imports
+it in an independently installed copy of the same generated CC0 character. It
+requires the transfer to strip local portrait paths, omit model/package/ROM
+bytes, retain exact portrait/editor state, refuse overwrite, expose source and
+add/duplicate/collision outcomes before consent, and remain mutation-free at
+review. The recipient review is rendered at 200% in the compact 640x480 layout;
+a keyboard/speech traversal must reach the compatibility summary before the
+rights-gated action. Confirmed import must re-read the reviewed file and add all
+new snapshots atomically without resuming, building, activating, assigning, or
+changing installed character bytes. A second review must be idempotent, and a
+same-id package with a different source digest must fail compatibility without
+publishing a hidden draft.
+
+The pure `character_draft_transfer` test independently proves complete-payload
+integrity detection, bounded parsing, privacy normalization, exact-base
+selection, fail-atomic capacity refusal, deterministic non-overwriting id
+renaming, and semantic duplicate suppression.
+
+```bash
+python3 tests/check_character_draft_transfer_ui.py \
+  --build build-character-tests
+```
+
+The rendered gate is registered as `app_character_draft_transfer`; neither arm
+requires a ROM, a network, or a community asset.
+
+## Portrait Studio authoring — `tests/check_character_portrait_studio_ui.py`
+
+This ROM-free gate installs a generated CC0 package into an isolated catalog,
+generates a non-square local RGBA PNG, and opens the real Identity workspace. It
+requires strict source loading, digest/dimension disclosure, square crop,
+premultiplied-area or crisp reduction, edge-connected matte removal, background
+frames, a non-destructive target-space subject mask with pointer and numeric
+coordinate routes, bounded framing/mask undo/redo, deterministic styling,
+quality reporting, and an exact-byte-derived native/light/dark/grayscale/
+protanopia/deuteranopia/tritanopia readability proof, plus six exact-output
+clean/classic/bold/crisp/dithered/soft comparison variants and
+selection and palette-replacement surfaces to render at 200% UI scale in the
+compact launcher. Each variant preserves framing and cleanup, changes only the
+draft style recipe, and remains installed-byte-pure. A keyboard-only
+speech walk must announce the consequential controls, and both arms must leave
+installed source/cache bytes unchanged. The same arm collects every non-ASCII
+codepoint written in a `platform/app` string literal and requires the live
+atlas to draw all of them: the app never consults a host font, so a codepoint
+outside the embedded subset is a tofu box on every machine. The scan decodes
+the literal rather than reading its source characters, so a codepoint written
+as `\u2192`, `\U00002192` or as the UTF-8 byte run `\xE2\x86\x92` counts the
+same as a pasted arrow -- the byte form is already used in the tree for the
+bullet in `ui_overlay.cpp`. It is deliberately naive about context: a literal
+on a commented-out line still counts, because one extra probe is cheaper than
+a tokenizer whose bugs would be silent passes. Positive control: an arrow put
+back into any launcher string in any of those four spellings reports
+`missing=2192` and fails the gate. Pure `character_portrait_studio` and
+`character_draft_snapshot` tests prove CRC and APNG refusal, mutation-free decode
+failure, image operations, bounded provenance recipes, deterministic output,
+analysis, opaque background compositing and deterministic screening transforms,
+preset invariants, selection semantics, v1-v7 migration, and v8
+source-record/mask/top-camera round trips independently of rendering. The shared
+`character_edit_history` and rendered history gates retain the existing
+source-bound, byte-capped undo/redo contract around those draft fields.
+
+```bash
+python3 tests/check_character_portrait_studio_ui.py \
+  --build build-character-tests
+```
+
+The gate is registered as `app_character_portrait_studio` and
+`character_portrait_studio_ui`; it needs neither a ROM nor a community model.
+
+## Exact Character Workshop contexts — `tests/check_custom_character_workshop_preview.py`
+
+This gate generates and transactionally installs a license-clean package with
+a Bumper donor into a temporary isolated catalog. It directly starts the real
+character-select scene plus baseline Ancient Lake car, Whale Bay hovercraft,
+and Windmill Plains plane races without an input script. It also directly
+qualifies the dense and alternate routes for every vehicle: Greenwood Village
+and Snowball Valley for car, Crescent Island and Hot Top Volcano for
+hovercraft, and Spaceport Alpha and Everfrost Peak for plane. The matrix
+includes one-, three-, and four-player layouts and
+requires the package's non-Diddy donor, one shared WebGPU asset upload, nonzero
+modern draws and triangles, zero refused draws, nonempty captures, and real
+four-player viewport dividers. Four-player rendering must materially multiply
+the one-player character work. Negative arms require invalid context/player
+values, a missing package assignment, and an unsupported vehicle to fail closed
+with the precise refusal. One positive arm holds `select.idle` at phase
+`250/1000` in the exact car scene and requires nonzero runtime held-pose ticks
+with zero fallback ticks. A paired authored-only
+`race.finish_win` arm requires every inspected tick to report source fallback,
+proving the result distinguishes an unavailable semantic from exact phase
+control.
+Additional negative arms reject an unknown semantic, an out-of-range phase,
+and a semantic/phase pair with one member missing. A further positive arm holds
+`select.idle` at phase `500/1000`, applies a 180-degree yaw/15-degree pitch
+absolute racer-relative fitted-bounds orbit and bright character-only light,
+suppresses the scripted camera bank, requires nonzero warmed camera/light
+application counts plus 12 consecutive eligible rendered frames, and proves
+both exclusive output-sized PNG products. The gameplay product is canonical RGB
+and contains the composed world, vehicle, character, and HUD. The model-only
+product is canonical RGBA from the isolated WebGPU replay; it contains a
+nonempty centered character over real transparency, excludes scene matte
+colors, and has zero RGB in every zero-alpha pixel. The gate decodes every PNG
+filter and requires the generated character's contiguous material component to
+be large, unclipped, and inside a central safe frame. Negative visual arms reject unpaired fields, out-of-range
+yaw, unknown lighting, a select-camera orbit, visual fields or capture in live
+mode, uppercase capture suffixes, and an existing destination; the last must
+remain byte-identical.
+
+Paired model-only arms also drive exact +90-degree top and -90-degree underside
+pole cameras against a closed, skinned tetrahedral fixture. Both must retain a
+stable yaw-defined screen orientation and a nonempty centered 3D subject; this
+prevents an edge-on planar fixture from being mistaken for a camera failure or
+an oblique 89-degree approximation from passing as a true top view.
+
+Every valid arm also enables the production presentation census. It must begin
+only after the 120-authored-tick warm-up and emit a bounded structured result
+with at least 40 post-warm-up intervals and nonzero modern-character
+replacements. The headless arm must identify its synthetic pacing so those fast
+harness intervals can never be presented as a player/device performance result.
+It must also report a stable WebGPU backend, adapter, driver, vendor/device ID,
+physical output size and actual scene-render size. With RenderScale 1, output
+and render dimensions must agree across every arm and with the captured PPM;
+the gate intentionally accepts the host's real HiDPI drawable rather than
+mistaking logical window pixels for the comparison environment. Every valid
+arm must also publish a normalized target-frame forward direction, an ordered
+calibrated vertical volume, and a ground/seat anchor at automatic zero from the
+actual replacement transform. The select volume may not penetrate the roster
+floor beyond the five-millimetre numerical tolerance.
+The one-player and four-player model captures must replay the same complete
+player-0/view-0 primitive set. Each retains one exact target-to-clip witness,
+aspect-fits that selected viewport into the full output without distortion, and
+publishes bounded fixed-point projections for eight calibrated bounds corners,
+the fitted anchor, and the forward endpoint. The gate installs a second
+reviewed-humanoid package and drives a real car arm through automatic contact
+solving. The current result-v23 contract must publish all four bounded
+contact witnesses; the gate independently recomputes the left-hand
+target-to-endpoint distance from quantized coordinates and rejects partial,
+detached, or fabricated select-context evidence. Authored-clips-only arms must
+publish an explicit zero mask when no automatic solve owns the pose.
+
+The bounded semantic-review arms require the exact three-state selection-room
+battery and all eleven race semantics on each of the car's open, dense, and
+alternate-environment courses. Every sample waits for the engine-owned settled
+pose witness plus 60 complete replacement draws, publishes framing, contact,
+retained-vehicle, and visibility evidence, and then returns automatically.
+Unknown scenes and vehicle-only scenes requested for character select fail
+closed. ROM-free rendered and pure-policy tests independently pin the launcher's
+one-action progression, resume, full-refresh, retry, stop, and approval rules.
+
+Every valid arm must additionally publish a completed asynchronous opaque-depth
+witness. The renderer replays player 0's exact current primitive set into an
+isolated depth target and against the final scene depth over the same 8 x 8
+screen grid. The gate verifies exact boolean masks, popcounts, scene-subset
+semantics, and material draw classification without claiming pixel precision.
+A successful all-zero query remains valid failing visual evidence: it
+distinguishes a fully clipped, back-facing, or alpha-rejected subject from an
+unavailable GPU readback. Alpha-blended materials are structurally valid but
+unqualified because they do not have one portable opaque-depth meaning.
+Two fault-injection arms own the optional-allocation boundary. A one-shot
+isolated-depth failure must be released, retried, and end with qualified exact
+visibility. A persistent diagnostic-pipeline failure must make exactly the
+Workshop's three bounded attempts, publish explicit unavailable visibility, and
+still complete the playable session without a device or renderer fatal error.
+The renderer creates those query, buffer, texture/view, and diagnostic-pipeline
+resources inside asynchronous validation and out-of-memory scopes and encodes
+the replay only after both callbacks succeed.
+
+Every arm must also publish the versioned GPU timing contract. One arm
+force-disables it and must remain explicitly unsupported with no values. A
+device without timestamp queries must do the same naturally. A supporting
+device must return exact scene-pass timestamps with monotonic nonzero
+percentiles and at least two-thirds usable post-warm-up frames. At most the six
+readback slots may remain pending; usable, pending, and ring-full counts may
+never exceed the wall sample, and every remaining scene frame must be covered
+by the reported invalid-readback count. A device without in-pass timing must
+balance that partition exactly. Character-draw values are required only when the device exposes
+native in-pass timestamps and are forbidden otherwise; wall cadence is never
+accepted as a substitute.
+
+The pose arm is intentionally not performance qualification. The Workshop
+keeps it as session fit evidence and displays replacement/contact observations,
+but the production publish boundary refuses to write it into the durable 4x4
+latest/baseline matrix. Live game-driven animation remains the only evidence
+eligible for timing comparison.
+
+```bash
+python3 tests/check_custom_character_workshop_preview.py \
+  --build build-character-tests --rom baserom.us.v80.z64
+```
+
+The gate is registered as `custom_character_workshop_preview` and GPU-serialized
+in `tools/run_checks.py`. The ROM-free `app_lifecycle` CTest separately proves
+that its scoped launcher environment handoff restores both absent variables and
+exact caller-supplied values after repeated writes.
+
+## Durable Character Workshop test evidence — `tests/check_character_test_evidence_ui.py`
+
+This ROM-free rendered gate installs a generated CC0 animated package and
+exercises the Test workspace's durable 4-context by 4-player-layout matrix. It
+publishes a qualified Car 4P result through the production result boundary,
+checks exact source/fit/LOD/presentation fingerprints plus timing, device and
+physical-dimension fields on disk, and checks the v3 signed target-frame bounds,
+ground/seat anchor, normalized facing, and four hand/foot chain witnesses from
+that replacement draw. It
+restarts the launcher, requires the same fit diagnosis to remain available, and
+pins the result as an explicit comparison baseline. A 200% compact keyboard
+speech walk must announce the qualified cell and both baseline controls. A
+separate 200% virtual-controller D-pad walk renders transition mode and must
+reach all four responsive player-layout choices, both review-mode choices, both
+named semantic endpoints and numeric phases, camera values, character light,
+and every enabled inspection action through SDL and the production ImGui input
+backend. Capture controls must stay outside that focus graph while transition
+review disables deterministic stills.
+
+The second half clears only that baseline while preserving latest evidence,
+then clears the package's complete local evidence inventory. Finally it corrupts
+the authenticated store and requires the Workshop to become read-only without
+rewriting one byte. Every arm hashes the installed package before and after so
+test bookkeeping cannot mutate character source or compiled cache bytes. The
+generated package has multiple authored LODs; one rendered arm publishes a
+valid result, changes only the persisted local LOD policy, and requires the
+result to become visibly stale. The older fake-fit-digest arm remains as an
+independent rejection case. The
+empty-inventory arm also publishes a fully rendered held-pose inspection
+through the production result boundary and requires its session result to stay
+available for fit review while the durable evidence file remains byte-exact.
+Its paired fallback arm proves that unavailable semantic motion is reported but
+cannot unlock fit approval, while still leaving durable evidence byte-exact.
+The rendered keyboard/speech arm publishes a successful transparent model-only
+camera/light/capture inspection into the session report tray, decodes and draws
+its bounded digest-bound thumbnail, announces descriptive preview text, and
+requires both render-product choices, portrait handoff, removal, report path,
+exclusive export, and list-clear controls to remain reachable at 200% scale.
+Another rendered arm publishes two distinct bounded RGB scene fixtures as a
+digest-bound registered donor/custom pair, opens the actual report-tray blend
+control, and requires its exact-grid accessibility trace. The pure report unit
+and linked-ROM gate separately prove refusal on witness drift and production
+renderer agreement, so this UI smoke does not manufacture renderer authority.
+The complete over-budget arm also accepts the explicit test-only sharing token,
+exports a real schema-v1 device profile through the production UI, parses all
+16 honest warning rows, and proves the output retains host/GPU/driver/build,
+resolution, cost, wall, and optional GPU timing while excluding package ID,
+display name, character directory, and every raw source/fit/presentation
+digest. Production users must separately check the visible identity disclosure;
+the exporter never uploads or overwrites a file.
+The pure `character_visual_report` test independently proves embedded PNG/JSON
+output, capture-time digest binding, same-size/same-product file-replacement
+refusal, rebinding refusal, HTML/script escaping, source-path privacy, PNG
+completeness/dimension/product checks, schema-v5 scene/model-alpha plus
+custom/retail-donor subject identity and fixed
+projection metadata, integer-space registered SVG overlay, checkerboard
+transparency presentation, and overwrite refusal;
+`character_preview_cache` proves the Offset Studio no-filename path derives
+distinct bounded two-slot custom-scene, model-alpha, and retail-donor products
+per package/context, preserves the last published product until its replacement
+binds, preserves unrelated files, cleans only
+regular non-link owned files, rejects cross-package ownership and hostile links,
+and leaves the renderer destination absent for exclusive PNG creation;
+`workshop_preview_runtime` proves visual bounds, donor-reference enable/reset
+and qualified-batch counting, failure-without-mutation, and measurement epochs.
+The linked-ROM gate separately requires the donor route to preserve the
+package's selected donor, produce zero modern replacements and nonzero qualified
+donor-character batches, capture a nonempty composed RGB frame, and auto-return
+after 12 stable frames. It then captures the custom half at the same held pose
+and camera, requiring identical fitted anchor/bounds/forward/head and camera
+bounds/viewport/head witnesses plus the same RGB pixel grid; this exercises
+both renderer halves of the launcher's registered overlay contract.
+The pure `character_test_evidence_store` unit separately covers canonical parsing,
+whole-inventory and row authentication, strict unsigned/signed numeric and UTF-8
+bounds, renderer-fit/contact-witness invariants, exact key replacement,
+authenticated v1 through v8 loading and next-write v9 migration, the
+64-package/2048-record limits, transaction
+failures, honest baseline comparability, and complete-matrix device-profile
+summary/export refusal for partial, stale, mixed-device, invalid-cost,
+wrong-suffix, and existing-destination inputs. The durable filename intentionally
+remains `character_test_evidence-v1.tsv`: its authenticated header selects the
+schema, allowing existing v1 stores to be discovered and migrated rather than
+silently orphaned.
+
+```bash
+python3 tests/check_character_test_evidence_ui.py \
+  --build build-character-tests
+```
+
+The rendered gate is registered as `app_character_test_evidence` in CTest and
+`character_test_evidence_ui` in `tools/run_checks.py`; it requires no ROM.
+
 ## Bonus results portraits — `tests/check_bonus_results_portraits.py`
 
 This real-ROM gate completes a time-trial post-race flow once as Wizpig and
@@ -5383,6 +6898,76 @@ python3 tests/check_bonus_results_portraits.py --build build-wizpig \
 
 The gate is registered as `bonus_results_portraits` in
 `tools/run_checks.py`.
+
+## Bonus portrait packs — `tests/check_bonus_portrait_pack.py`
+
+This real-ROM gate proves the three generated bonus-racer portraits are
+replaceable through the ordinary Content Packs texture path, and that their
+published digests do not drift. Nine runs of the same post-race flow
+`check_bonus_results_portraits.py` uses: a no-pack baseline with
+`MDKR_MOD_TEXTURE_DUMP` on, one pack arm per racer overriding that racer's
+pinned digest, the identical pack switched off by its own `pack.ini`, and the
+baseline and Taj pack arms again on WebGPU — the renderer that ships, so a
+digest published from GL alone would be a name most players never produce.
+Two further arms use the pre-1.7 Taj filename on GL and WebGPU, proving that
+retouching the generated card does not silently invalidate existing packs.
+The ROM-free `mod_texture_store` test pins current-name precedence, disabling
+aliases with the pack toggle, and isolation from unrelated texture digests.
+It also requires bounded PNG header admission before pixel decoding, rejects
+unreadable headers without entering the decoder, and verifies that returned
+dimensions agree with admission. The dimension-mismatch controls change only
+the test wrapper's metadata after decoding an ordinary small PNG; a matching
+image must still load with its exact pixels.
+Its last case is about the author dump's `<digest>.txt` record and the
+`<digest>.texels` companion beside it, field by field: those are parsed by
+`tools/ricepack/`, so a field that is absent, misnamed or truncated becomes a
+confident wrong CRC offline rather than a visible failure. The fixture's source
+span is deliberately padded — a 24-byte pitch over 16-byte rows — so a dump that
+wrote a tightly packed span, or reported the packed pitch, fails here instead of
+passing on an unpadded fixture and mis-hashing every real tile. The record is
+versioned (`dump_format`), and a record with no version line is version 1, which
+is how a corpus dumped before the field existed stays readable.
+The four first-party PNG callers also carry compile-time bounds for 16-bit
+intermediate storage, including callers that request 8-bit output. Raising
+their dimension/cache limits beyond those bounds must fail compilation until
+the decoder-size contract is reviewed; this is independent of test execution.
+Every arm proves it got the backend it asked for, so a silent adapter fallback
+cannot pass as WebGPU evidence. Frames are not compared across backends: two
+rasterizers need not agree byte-for-byte and nothing here claims they do, while
+the digest is fixed before either backend sees the texels.
+
+The pack image is the synthetic magenta-corner-on-green quadrant PNG imported
+from `check_mod_texture_override.py`, at 64x64 — not a solid colour, so the
+arms witness texture addressing rather than only presence, and not derived from
+any game art. Under a pack the card region is entirely the pack's two colours,
+green-dominant three to one; beside the card, zero pack pixels; with the pack
+switched off, the frame is byte-identical to the no-pack baseline.
+
+The Taj pack arm additionally runs with the dump on — a pack installed *and*
+`MDKR_MOD_TEXTURE_DUMP` set is the one combination that reaches the dump's
+encode path for an override, and no other arm or gate produces it. The written
+PNG must be 64x64 and pixel-identical to the pack's own image. It pins a fixed
+defect: the renderer passed the pack's 64x64 buffer with the tile's logical
+40x40 size, so stb encoded 40x40 at a 160-byte stride out of a 256-byte-stride
+image — in bounds, no crash, no sanitizer report, just a sheared picture handed
+to the author who asked what the game drew.
+
+The digest assertion is the point of the file. A ROM texture's digest is frozen
+because the ROM is; these three are a function of `game/src/menu.c`, so
+retouching the artwork renames them and silently breaks every pack in the wild.
+The baseline arm reads the dumped corpus and fails — naming the digest the art
+now produces — when the pinned name is no longer the one a pack author would
+find. A one-channel change to a single pixel of Taj's card is enough to trip it;
+nothing else in the suite notices.
+
+```bash
+python3 tests/check_bonus_portrait_pack.py --build build \
+  --rom baserom.us.v80.z64
+```
+
+The published digests also appear in [`docs/MODDING.md`](../docs/MODDING.md);
+the two must be changed together. The gate is registered as
+`bonus_portrait_pack` in `tools/run_checks.py`.
 
 ## Terry flight audio — `tests/check_terry_flight_audio.py`
 
@@ -5424,11 +7009,31 @@ python3 tests/check_trophy_series.py -v
 
 This starts from a checksum-valid checkpoint with the Dino Domain cabinet
 legitimately unlocked, enters it through production collision/dialogue code, and
-drives all four championship rounds. Additional arms select the other three
-world schedules at the same production entry boundary. Assertions cover all 16
+drives all four championship rounds. Additional arms select the other four
+world schedules at the same production entry boundary. Assertions cover all 20
 tracks, per-round point accumulation, a stable 32-point tie, gold/silver/bronze
 and no-award finals, the trophy cinematic, the rankings QUIT path, post-quit
 retry, checksum-valid EEPROM, and a fresh-process cabinet display from reload.
+
+The Future Funland arm added for issue #63 requires a 36-point gold across
+Spacedust Alley, Darkmoon Caverns, Star City and Spaceport Alpha, persisting
+`0x300` in the existing ten-bit trophy field. Its world selector changes only
+the series world at the existing entry boundary; it is not evidence of driving
+to Future Funland's own cabinet. The existing fresh-process display check is
+for Dino Domain. Future Funland cabinet/Tracks display after restart, existing
+saved trophies, Adventure Two and no-downgrade behavior remain required release
+acceptance. The extended arm is pending execution.
+
+The ROM-free `runtime_contracts` unit exhausts all 1,024 ten-bit trophy values
+across the five championship worlds and retains invalid-world/null-output
+rejection. This replaces an incorrect expectation that world 5 was invalid;
+it does not change the four-mainland-trophy rocket unlock requirement.
+The same unit checks medal merging as per-world maximum (bronze plus silver
+must not become gold), including all rank pairs, neighbors, identity and gold
+dominance. `save_codec` additionally round-trips every ten-bit trophy value
+while preserving the other save blocks. `runtime_safety` checks that the
+production Tracks merge and five-world status counter retain these helpers,
+with its existing removed-fragment controls. These additions await execution.
 
 `MDKR_TROPHY_COMPLETE_AFTER` advances lap state only after a real race has run;
 `race_check_finish()` still creates the finish order. `MDKR_TROPHY_ORDER` accepts
@@ -6101,6 +7706,51 @@ final one; the production arm must consume the retained object x viewport route,
 and the broken-direction arm substitutes the final viewport's route everywhere,
 reproducing MP-001 exactly.
 
+### Presentation RNG split — `tests/check_presentation_rng_split.py`
+
+```bash
+python3 tests/check_presentation_rng_split.py --build build \
+  --rom baserom.us.v80.z64
+```
+
+The port carries two random streams. `rand_range()` steps
+`gCurrentRNGSeed`/`gPrevRNGSeed`, the retail pair registered in the rollback
+snapshot (`rollback_game_authority.c:121-122`) and covered by the `[SIMHASH]`
+hash. `presentation_rand_range()` steps a platform-private word that is
+deliberately outside that registry. This gate asserts the split's whole point:
+presentation randomness must not advance the authoritative pair.
+
+`MDKR_RNG_SPLIT_TRACE=1` emits one `[RNGSPLIT]` row per *presented* frame. Be
+precise about what the route is: at `MDKR_SIMULATION_CADENCE=enhanced` with
+`MDKR_SYNTH_FIELDS=1` the simulation ticks on **every** presented frame and the
+`[SIMHASH]` hash changes on every one of them, so these are *not* frames that
+present without advancing the simulation. They are authoritative ticks whose
+settled menu-idle logic draws no random numbers, while texture animation keeps
+drawing from the presentation stream — two streams running side by side over the
+same frames, one required to stand still. At the shipping two-field cadence
+`cadence_compat_rand_range()` routes every HUD roll back onto the authoritative
+stream for byte-exact ROM ordering and the presentation stream never advances at
+all, so the assertion would hold vacuously; the lane pins the cadence where the
+split is live.
+
+Both halves are asserted, because either one alone passes for the wrong reason.
+Over the settled window the seeds must be byte-identical, the presentation draw
+counter must strictly increase by at least 100 across at least 16 distinct
+seeds, and the authoritative seed must have moved *before* the window — that
+last one is what keeps a trace printing a constant from passing. Arm B is the
+positive control: `MDKR_TEST_RENDER_IMPURITY=1`, the existing render-purity
+seam, performs one authoritative RNG write inside every render and must break
+the pin while leaving the presentation draw counts identical. Arm C requires two
+runs to be byte-identical, because the presentation stream is seeded from a
+constant, not host state, and the pixel-comparison lanes depend on that.
+
+The census behind the redirect decisions — every `rand_range()` caller in
+`game/src`, its verdict, and the measurements that decide it — is
+`docs/ref/presentation-rng-census.md`. As of 2026-09-03 it carries 32
+cadence-conditional sites, not 24: the eight it had listed as latent
+presentation output were redirected once the enhanced-cadence arm of
+`check_authored_rng_compat.py` existed to measure what that spends.
+
 ### Weather RNG order — `tests/check_weather_rng_order.py`
 
 ```bash
@@ -6207,6 +7857,693 @@ about most. `mdkr_boss_cadence_clamp` (`game/src/racer.c`) and
 ordinary arithmetic uses of `updateRate` as a scale factor are unaffected.
 Positive control: a seeded `updateRate == 2` mode test must be rejected.
 
+### Adventure Party boundaries — `tests/check_adventure_party_boundaries.py`
+
+```bash
+python3 tests/check_adventure_party_boundaries.py
+python3 tests/check_adventure_party_boundaries.py --self-test
+```
+
+The AP-01 static source-boundary gate for Adventure Party (see
+`docs/architecture/adventure-party.md`). Its central invariant is that a party
+session never sets the retail two-player-adventure globals, so every retail
+exact-two / lead-swap branch stays inert without an edit. The gate:
+
+1. Requires every use of `is_in_two_player_adventure`, `race_is_adventure_2P`,
+   `swap_lead_player`, `input_swap_id`, `gIsInTwoPlayerAdventure`,
+   `gTwoPlayerAdvRace`, or an exact player-count comparison of
+   `gNumberOfActivePlayers` / `gNumActivePlayers` against an integer literal
+   under `game/src` to be declared, with a classification and a treatment
+   (`bypass` / `adapter-seam` / `inert-by-globals` / `unrelated`), in
+   `tests/adventure_party_boundary_inventory.json`. A new undeclared branch
+   fails closed; a stale entry a later ticket removed also fails. Entries are
+   keyed by file plus the comment-stripped, whitespace-normalized source line
+   (counted), so they survive line-number drift.
+2. Rejects any write to `gIsInTwoPlayerAdventure` / `gTwoPlayerAdvRace` or set
+   of `CHEAT_TWO_PLAYER_ADVENTURE` from adventure-party code (`platform/
+   adventure_party/**` or a `#ifdef NATIVE_PORT` adapter region naming an
+   `adventure_party` identifier nearby).
+3. Rejects `mdkr_authoritative_player_count` referenced from
+   `platform/adventure_party/**` (the online-authority boundary).
+4. Rejects a new ambiguous `g...Party...Count` global under `game/src` or
+   `platform/`.
+5. Rejects `adventure_party` identifiers inside the test-hook file
+   `platform/mdkr_adventure.c`/`.h` or Phone Party infrastructure
+   `platform/party/**`.
+
+ROM-free, no build. `platform/adventure_party/` does not exist yet; a missing
+directory contributes no violations. `--self-test` feeds every rule a synthetic
+in-memory violation (never touching the repo on disk) and asserts the rule
+fires while a matching clean control stays silent.
+
+### Adventure Party admission — `tests/check_adventure_party_admission.py`
+
+```bash
+python3 tests/check_adventure_party_admission.py            # ~2-3 min, muted + headless
+python3 tests/check_adventure_party_admission.py -v
+```
+
+The AP-06 focused route: the FIRST game-source integration of Adventure Party
+(`docs/architecture/adventure-party.md`). It drives two, three, and four
+controllers through Character Select with `Enhancements.AdventureParty` on and
+proves each reaches the ordinary Adventure route the retail game denies them —
+`CHARACTER_SELECT(3) -> GAME_SELECT(19) -> Adventure -> FILE_SELECT(6) ->`
+campaign load — and that a session is formed at file entry (`aparty_session`
+FORMING then ACTIVE_LOBBY with the joined seat/character roster). Reaching Game
+Select with three or four seats *is* the party path: retail stops a 3/4-player
+Adventure selection at `TRACK_SELECT(15)` because the JOINTVENTURE offset admits
+at most two, so the run also asserts no JOINTVENTURE magic code was submitted.
+With the enhancement off, three/four players route to Tracks exactly as stock and
+no `aparty_` line appears; one player is unchanged in both arms and never forms a
+party.
+
+The gate also proves two file-authority facts. **R26 new-game refusal:** a party
+cannot begin a NEW campaign yet (the new-game shared-scene envelope is AP-11), so
+a party host confirming an UN-STARTED file is fail-closed refused
+(`aparty_file_refused: reason=newgame`, the cursor stays, no session, no campaign
+load) instead of silently collapsing to a 1P new game; the started fixture file
+then confirms and forms the session normally. **FIX 1 copy/erase host-only
+authority:** `fileselect_input_copy` / `fileselect_input_erase` skip player-two
+aggregation in a party exactly as `fileselect_input_root` does — a source-level
+guard-presence assertion (`check_copy_erase_guard`), because that guard is
+token-identical to the ROOT guard the ON arm already exercises behaviourally, and
+a headless copy/erase confirm drive with a null-effect oracle would need
+gFileConfirm observability the build does not emit.
+
+Three positive controls run inside the gate and mutate the route/env or the
+captured output, never the sources: the OFF-arm 3-player run (the behaviour a
+clamped-to-two admission would produce) must FAIL the ON-arm assertions, an ON-arm
+run with its `aparty_session` lines stripped must FAIL them too, and the R26
+refuse-arm output with its `aparty_file_refused` line stripped must FAIL the
+refusal arm.
+
+Save fixture: the check writes its own EEPROM image — a started, checksum-valid
+Adventure One save in slot 0, built with the `harness_utils` bit-stream encoders
+(the same slot shape `check_adventure_two.py` resumes on its Adventure One arm,
+minus its progress) — so the host's single FILE_SELECT confirm resumes an
+existing file (slots 1 and 2 are empty, which the R26 refuse arm confirms first).
+The new-game shared-scene envelope is AP-11, out of scope here. No developer save
+is read or written; every run uses a private temporary directory.
+
+### Adventure Party hub roster — `tests/check_adventure_party_hub.py`
+
+```bash
+python3 tests/check_adventure_party_hub.py                 # ~4-5 min, muted + headless
+python3 tests/check_adventure_party_hub.py --players 3 -v
+```
+
+The AP-08 focused route: with a party session active (admission proven by
+`check_adventure_party_admission.py`), an Adventure LOBBY load spawns the WHOLE
+party atomically. For 2, 3 and 4 players it proves, from the running binary:
+N human racers with the joined seat→character identity (`aparty_roster` + the
+`[PACE]`/`[PACEn]` probes); N viewports in the existing
+`VIEWPORT_LAYOUT_<N>_PLAYERS` composition — the 3P arm keeps the fourth-quadrant
+minimap — with per-quadrant pixel evidence; a per-viewport hub HUD (`hud_init`
+reports N viewports); a stable per-seat input binding (seat *i* reads only
+controller port *i*, no swap) demonstrated by driving each pad in isolation and
+asserting only that racer moves; no fail-closed spawn abort; and a stable roster
+generation. With the enhancement off, three/four controllers route to Tracks and
+no `aparty_` line appears.
+
+Two positive controls run inside the gate: a flat-field control flattens each
+viewport region of a real hub frame and requires the same scorer to reject it
+(a blank viewport must not pass), and a swapped-binding control re-attributes
+each driving round to a rotated seat and requires the motion analysis to fail
+(so it genuinely discriminates the binding). Note the hub viewport-liveness
+floor is deliberately looser than `check_race_multiplayer.py`'s — a lobby is not
+a race track, so a free-driving racer may briefly face a wall — but it still sits
+far above the single-colour flat fill the positive control produces.
+
+Save fixture: the started Adventure One slot-0 save from
+`check_adventure_party_admission.py` (imported), resumed by the host's FILE_SELECT
+confirm. No developer save is read or written.
+
+Key measurement finding: AP-08 overrides the racer/viewport count *inside*
+`track_setup_racers` (not `gNumberOfActivePlayers`), so the `level_load`
+`numPlayers` field stays 0 even for a party — the roster-expansion signal is the
+`aparty_layout`/`aparty_roster`/`aparty_binding` traces and `hud_init`, not
+`numPlayers`. `check_enhancement_authority.py`'s 3P profile and
+`check_adventure_party_admission.py` were updated to assert `aparty_layout`
+accordingly (was: the pre-AP-08 "hub still 1P" tripwire).
+
+### Adventure Party lobby interactions — `tests/check_adventure_party_transition.py`
+
+```bash
+python3 tests/check_adventure_party_transition.py            # ~3-4 min, muted + headless
+python3 tests/check_adventure_party_transition.py -v
+```
+
+The AP-09/10 focused route: with a party in the central hub, every shared lobby
+interaction resolves to ONE authority, proven from the running binary's `aparty_`
+traces (the AP-05 schema):
+
+- **Doors/exits** — any participant may trigger, but the pure reducer
+  (`adventure_party_arbitrate_transition`) latches exactly ONE whole-party
+  transition per level generation. A *single* door (host only) drives one
+  authored load and re-forms the WHOLE party at the destination lobby
+  (`aparty_transition` once + destination `aparty_roster`/`aparty_layout`); two
+  racers into the door in the same window still yield one transition — the lowest
+  seat wins, the loser's door is rejected (`aparty_interaction action=2
+  verdict=-1`), and there is no second load. Proven at 2P and 3P.
+- **Golden balloons** — two non-host seats race a shared hub balloon and it is
+  collected exactly once (`aparty_interaction action=3 verdict=0`), by a non-host
+  seat; the per-course collected flag makes the double-collect a mechanical
+  impossibility (first toucher wins).
+- **Pause** — a non-host `Start` opens the ONE shared pause (`aparty_interaction
+  action=1` with a non-host seat) and the host owns the resume decision
+  (`action=1 verdict=0` from seat 0). One `gIsPaused` / one pause menu, never
+  per-viewport.
+- **Disconnect** — dropping a bound pad during the lobby (the `MDKR_AP_DROP_PAD`
+  injector; the input-script presence mask is whole-route and cannot) forces the
+  shared pause (`aparty_interaction seat=<dropped> action=1 verdict=-3`); the
+  pure `adventure_party_disconnect_should_pause` decision it rests on is unit-
+  tested ROM-free in `test_adventure_party_policy`.
+
+Racers are steered by the `MDKR_AP_SEAT_ROUTE` test injector (each named seat
+follows its own waypoint route to a door `E<dest>` or balloon `B<id>`), the only
+way to send exactly one seat, or different seats, at a door — the shared
+`MDKR_DRIVE_ROUTE` drives every human at one target. Two positive controls run
+inside the gate: the single-door output must FAIL the conflicting assertions (a
+single door has no losing-door rejection), and stripping the `aparty_transition`
+lines must FAIL the single-door assertions (no latched transition). The off arm
+(doors behave stock) is covered by `check_adventure_hub.py`.
+
+Save fixture: the started Adventure One slot-0 save from
+`check_adventure_party_admission.py` (imported), resumed by the host's FILE_SELECT
+confirm. No developer save is read or written.
+
+R16 two-hop: the gate also drives central hub → world lobby → **back** (the
+shared `MDKR_DRIVE_ROUTE`, level-scoped, which per-seat routes cannot span) and
+asserts two lobby→lobby `aparty_transition` latches in two consecutive
+generations with the full 3-seat roster re-formed at BOTH destinations. This is
+the R16 fix (Task 9): `ADVENTURE_PARTY_EVENT_LOBBY_TRANSITION` takes a
+lobby→lobby door through the one `enter_level` generation bump, which clears the
+first hop's terminal latch so the second door can latch — the release the
+arbiter latch otherwise never gets within a session (the Task 8 single-hop
+limitation is resolved).
+
+### Adventure Party default race loop — `tests/check_adventure_party_race_loop.py`
+
+```bash
+python3 tests/check_adventure_party_race_loop.py            # ~8 min, muted + headless
+python3 tests/check_adventure_party_race_loop.py -v
+```
+
+The AP-12 / R16 focused route: with a party resumed into the central hub, the
+whole party crosses **hub → world lobby** (a lobby→lobby door, the R16
+`LOBBY_TRANSITION` bump) and then **lobby → race**, each as one arbitrated
+whole-party transition, and a DEFAULT balloon race then runs with ALL N humans
+plus CPUs filling to a SIX-racer total. Proven from the running binary's traces:
+
+- **Six-racer field** — the `racefield:` adapter diagnostic reports
+  `humans=N cpus=6-N total=6 viewports=N` for N in {2,3,4} (2P=4 CPUs, 3P=3,
+  4P=2); the field rule (a humans-only field would auto-award a co-op win) is a
+  direct assertion. The race entry publishes the full N-seat `aparty_roster`, the
+  `aparty_layout viewports=N`, and N `aparty_binding seat=i port=i` — the party
+  entered the race whole, per-seat binding held.
+- **Winner independence** — a **host win**, a **non-host-human win**, and a
+  **CPU win** each returns the SAME party to the lobby: the returned lobby
+  publishes the identical roster / layout / per-seat binding, the session
+  generation (sgen) is unchanged, and the level generation (lgen) advanced
+  (`RACE_START` then `RACE_RESULT_COMMITTED`). No lead swap, no roster swap — all
+  the retail lead-swap paths are gated on `is_in_two_player_adventure()`, which a
+  party never sets. Winners are forced with the `MDKR_AP_RACE_WINNER` test hook
+  (by stable `racerIndex`), because an AI-driven CPU field never naturally lets a
+  chosen human win — the host finishes first and the non-host humans are
+  force-finished last; the hook permutes finish positions after the port-1 human
+  has genuinely finished (it changes the verdict, not the drive).
+- **Retry** — postrace TRY AGAIN reloads the SAME race (two race loads with no
+  lobby load between them, the party six-racer field re-fielded both times) and
+  the session stays `ACTIVE_RACE` (exactly one `ACTIVE_RACE` entry — no
+  `RACE_RESULT_COMMITTED` between the loads).
+- **Quit-to-lobby** — a mid-race host pause → RETURN TO LOBBY
+  (`PAUSE_QUIT_LOBBY`, driven by the `MDKR_TEST_PAUSE_QUIT` hook) returns the
+  party to the lobby (`RACE_RESULT_COMMITTED`), roster/layout/binding intact, no
+  double-load.
+
+Driving: the shared `MDKR_DRIVE_ROUTE` steers every human at the hub/lobby doors
+(the party travels as one; the arbiter latches a single whole-party transition);
+in the race, unrouted, `MDKR_AUTOPILOT` drives all humans while the CPUs fill the
+field; `MDKR_FORCE_LAPS=1` keeps each arm short. Two positive controls run inside
+the gate: stripping `aparty_roster` from a return output must FAIL the
+party-returned-intact assertion, and replaying a 2P output through the 4P field
+assertions must FAIL (a 2P field is humans=2/cpus=4, not humans=4/cpus=2). The 4P
+arm is field-rule only (four viewports render ~4× slower; the winner/return
+matrix is the 3P arms). The off arm — the 1P adventure race loop unchanged — is
+`check_adventure_race_loop.py`.
+
+Award semantics are OUT OF SCOPE here (AP-13 owns team-condition → exact-once
+commit): the gate asserts no save/award bytes. For the record, the interim retail
+finish code writes a first-clear reward (RACE_CLEARED + a world balloon) iff the
+first-place racer (`gRacersByPosition[0]`) is a human and `settings->gNumRacers ==
+1` — so a host OR non-host human win writes it and a CPU win writes nothing; AP-13
+reconciles this.
+
+Save fixture: the started Adventure One slot-0 save from
+`check_adventure_party_admission.py` (imported), resumed by the host's FILE_SELECT
+confirm. No developer save is read or written.
+
+### Adventure Party AP-18 campaign qualification — `tests/check_adventure_party_campaign.py`
+
+```bash
+python3 tests/check_adventure_party_campaign.py --build build --rom baserom.us.v80.z64
+python3 tests/check_adventure_party_campaign.py --self-test
+```
+
+AP-18 turns the campaign-support claim into an exhaustive, ROM-derived
+manifest. `tests/data/adventure_party_campaign_manifest.json` must account for
+each of the six playable Adventure lobbies and all thirty-four save-eligible
+courses exactly once. The checker independently decodes the level-header world
+and race type, level enum name, save order, default vehicle, and available
+vehicle mask, and compares those facts to every manifest row. The manifest also
+records the actual party-facing vehicle set, including the retail multiplayer
+narrowing (no hovercraft on Spaceport Alpha; no plane on Frosty Village). It
+requires the complete central-hub outbound/return transition set, all entry-door classes,
+and the Adventure One/Two, default, silver, challenge, boss, trophy, Taj and two
+deliberate fail-closed campaign branches to have an explicit party policy and
+witness. Removing one course is an in-process mutation control and must fail.
+
+The full arm then replaces the interim AP test-hook entry where retail geometry
+is headless-drivable. A legitimately boss-beaten save crosses the central hub,
+Dino Domain lobby and the **real Ancient Lake door**; the race's own retail
+predicate reports a silver race and finishes with eight team coins. A first-boss
+checkpoint crosses the real Hot Top door, wins the fourth race, returns to the
+lobby, then crosses the **real Tricky door**. That one route is the multi-hop
+`0 -> 12 -> 7 -> 12 -> 38 -> 12` breadth witness: it must suspend host-solo,
+finish as player index zero, restore an exact three-seat roster, and restore the
+same vehicle recorded on the pre-suspend lobby load at retail boss-return
+entrance 5. Stripping a silver transition and mutating only that restored
+vehicle must each fail their oracle.
+
+The conflicting-transition arm uses two genuinely different Dino race doors,
+E5 (Ancient Lake) and E3 (Fossil Canyon). The checker requires that exact pair
+in the per-seat route contract. With both routes active, exactly one of those
+destinations may latch/load and the other interaction must be rejected by the
+terminal transition latch. The rejection oracle is scoped after the Dino lobby
+load so an unrelated same-E12 hub collision cannot satisfy it; stripping that
+rejection is a positive control and must fail.
+
+No `MDKR_LOAD_TRACK`, `MDKR_SILVER_FORCE`, `MDKR_CHALLENGE_FORCE`, or
+`MDKR_TROPHY_FORCE` is allowed in this gate. Challenge and trophy policy remain
+covered by AP-15/AP-16, but their door geometry is not mislabeled as a real-door
+pass: the manifest records the exact headless limit. With the ROM-authored Dino
+key bit (`1 << keyID == 2`) set, E11 direct steering stalls at a measured minimum
+708.3 units from the exit (70-unit key-door open radius), behind the authored
+wall. The real trophy cabinet NPC is at `(933,-6,-2172)` in Dino Domain; two
+legitimate boss-beaten-save approaches either wedge at the interior wall or let
+another independently mobile party racer hit a real boss/overworld exit first.
+These are navigation-driver limits, not waived gameplay assertions; the
+manifest keeps them visible until a pathfinding-capable headless route can
+replace the two remaining envelope retargets.
+
+### Adventure Party AP-19 resource/performance — `tests/check_adventure_party_performance.py`
+
+```bash
+python3 tests/check_adventure_party_performance.py --build build --rom baserom.us.v80.z64
+python3 tests/check_adventure_party_performance.py --self-test
+python3 tests/check_adventure_party_performance_soaks.py --build build --rom baserom.us.v80.z64
+python3 tests/check_adventure_party_performance_soaks.py --self-test
+```
+
+The release invocation is one serialized four-camera process at the qualification
+window (640x480) and performs **twenty** genuine Dino Domain
+world-lobby → Ancient Lake → world-lobby cycles. The route does not reload or
+re-form the party between cycles: each race is a production one-lap replay field,
+each postrace return is selected from the live menu, and the session generation
+stays one while every race/return pair advances the level generation exactly twice.
+Each side of every cycle must republish exactly four identity controller bindings,
+four viewports, and four HUDs.
+The checked-in script contains sparse course-camera advance edges; each run
+projects those edges only through its requested cycle horizon. After the twentieth
+ordered door step there is no input edge at the return entrance, so the final
+lobby can flush its resource generation without accidentally starting cycle 21.
+
+The private save is the standard started Adventure-One fixture with only Ancient
+Lake's two-bit status pre-cleared at its ROM-derived save ordinal. That makes all
+twenty race loads ordinary no-award replays; otherwise the first natural human
+win schedules a one-player course cinematic before a later entry, contaminating
+the equivalence set. Progression itself remains AP-13's independently checked
+scope.
+
+Budgets are data, not constants hidden in the checker:
+`tests/data/adventure_party_performance_budgets.json` freezes the retail four-player
+display-list capacity at 11,000 Gfx commands and the qualification ceiling at
+10,750, preserving at least 250 commands of headroom. The capacity is the actual
+four-player allocation (`gNumF3dCmdsPerPlayer[2..3]`), not an inferred limit.
+The measured worst case is 10,507 on a legitimate 4P Dino-E0 return to the
+central hub: 493 commands below hard capacity and 243 below the qualification
+ceiling. The gate reads every
+`gfxtask` submitted in the four-camera central hub, world lobby, and race spans;
+the ordinary initial-entry 4P hub measurement is 9,670. `maximum_high_water_bytes`
+restates the same ceiling in the units the engine reports, and `load_budgets`
+pins it to `qualification_max_commands * 8` so the two cannot drift apart. That
+row is checked against the engine's own `[TRACE] dl_high_water` witness rather
+than the host census, which covers the whole process instead of the selected
+four-camera spans and reads the length against the row actually installed: the
+twenty-cycle arm measures 77,128 of 86,000 bytes against an 88,000-byte
+four-player row, and the five-rebuild Taj arm 73,752. A run that emits no
+witness at all fails, so the counter cannot quietly stop. It also requires at least 1 MiB main-
+pool free and a 512 KiB largest free block, bounded texture/registry occupancy,
+zero ambiguous/full registry inserts, and coherent fixed audio/controller pools.
+The last five equivalent race and lobby generations must have identical main-pool
+and audio-heap ownership. Texture/shader and pointer-registry counters may perform
+their documented one-generation retirement transfer, but the terminal two may not
+establish a new high or retain a rising three-generation suffix, and every count
+remains under its formal ceiling. A process that
+merely survives, or one whose individually plausible counters grow per generation,
+fails.
+
+The same check compiles `tests/data/adventure_party_performance_churn.c` against
+the production reducer and executes 20,000 complete FORM → race → optional
+host-solo suspension/restore → QUIT → DESTROY lifetimes. Session and level
+generations must land exactly at 20,000 and 70,000, while every dissolved session
+has zero roster, suspended roster, latch, and token state. Parser controls inject
+generation growth, a swapped controller binding, a retained churn failure, and a
+display-list over-budget relationship, an over-budget and a missing
+display-list high-water witness; each must be rejected. `--self-test` runs
+only those controls. `--development-cycles 1..19` is explicitly non-qualifying
+and is never used by the manifest.
+
+### Adventure Party AP-19 soak companion — `tests/check_adventure_party_performance_soaks.py`
+
+The serialized companion closes AP-19's other two literal repeated-operation
+criteria in real game processes. Its 4P Taj pair runs the same 640x480 scene
+with one and five CAR/HOVERCRAFT rebuilds. Every rebuild must publish exactly
+four live racers, the exact roster/bindings and four-view layout. Both arms then
+cross real E12 and E0 doors so queued renderer/registry retirement settles at a
+normalized central-hub endpoint; main/audio ownership, renderer-live and
+registry-live must match exactly. The measured five-transform endpoint is
+`mainLive=589`, `mainUsed=3831696`, `mainFree=12907120`,
+`mainLargest=12656336`, `rendererLive=0`, `registryLive=30`; its DL high-water
+is 9269/10750 commands.
+
+The boss arm uses AP-17's legal unbeaten checkpoint and five natural defeats,
+so no save mutation or first-win presentation makes the generations unequal.
+Each completed host-solo run must restore all four seats with `match=1`, advance
+the level generation exactly once, and begin one terminal flush suspension that
+publishes the fifth restore's renderer ownership. The last five boss and restore
+generations must plateau under the same formal memory/renderer/registry budgets;
+the measured DL high-water is 4283. A pre-cleared boss is deliberately not used:
+retail rematches self-reload and would never exercise the restore adapter.
+Mutation controls reject an extra Taj racer, retained final memory, boss growth,
+and a swapped restored controller.
+
+### Adventure Party exact-once progression — `tests/check_adventure_party_progress.py`
+
+```bash
+python3 tests/check_adventure_party_progress.py            # ~10 min, muted + headless
+python3 tests/check_adventure_party_progress.py -v
+```
+
+The AP-13 gate: a co-op default-race win writes EXACTLY ONE existing retail
+campaign commit, and nothing else does. Proven from the running binary + the
+persisted EEPROM:
+
+- **Byte-equivalence, per winner seat.** A party win with seat 0/1/2/3 forced
+  first (2P/3P/4P, by stable `racerIndex` — `apracewinner`) persists a 40-byte
+  slot **byte-identical** to a 1P win of Ancient Lake driven from the same started
+  save. The tolerated-difference whitelist is **EMPTY**: the save slot holds only
+  campaign progression (no character/start-order rows — those live in the runtime
+  `Settings.racers[]`, never serialised), so a party win writes the same bytes as
+  a 1P win. The commit is decided by the PARTY team condition + an exact-once
+  token (`aparty_award op=issue…result=1` then `op=consume…result=0`), NOT the
+  retail arm — which for a party would fire by accident on `settings->gNumRacers
+  == 1` and could neither enforce exact-once nor survive the finish/door hand-off
+  relabelling the winner `PLAYER_COMPUTER`.
+- **Exact-once.** Each fresh win emits exactly one token issue+consume(ok) pair
+  and exactly one `RACE_CLEARED` write (`[BOSSW]`). After the win auto-returns,
+  the shared route **re-enters the now-cleared course**; the permit fails closed
+  on the `RACE_CLEARED` bit, so the second race mints no token and writes no flag
+  — the save still shows one clear and balloons `(2,1)`.
+- **No mutation on a non-win.** A CPU-first loss (`MDKR_AP_RACE_WINNER=cpu`) and a
+  mid-race quit-to-lobby persist status VISITED only, write no `RACE_CLEARED`, and
+  consume no token.
+- **Round-trip.** The party-progressed save loads + resumes with the enhancement
+  OFF: a 1P process reads Ancient Lake back as CLEARED (`[BOSSW]`) and its
+  checksum survives.
+- **Positive controls (output/replay only).** A CPU-loss output replayed through
+  the win assertions must FAIL; a win output with its token consume + flag write
+  duplicated must FAIL the exactly-once assertion.
+
+Keys and hub balloons are exact-once + collector-agnostic *structurally* and are
+NOT re-plumbed (see the report): `obj_loop_worldkey` commits `settings->keys` for
+ANY live human (`playerIndex != PLAYER_COMPUTER` — every party seat qualifies),
+the bit is idempotent, `free_object` retires the key, and `obj_init_worldkey`
+deletes an already-collected key on re-entry. A read-only `worldkey:` trace
+(mirroring `silvercoin:`) and an `MDKR_OBJDUMP` `WORLDKEY` line make the collector
+observable.
+
+Save fixture: the same started Adventure One slot-0 save; every run is in a
+private temp dir. Off arm — 1P awards unchanged — is `check_adventure_race_loop.py`
+and `check_campaign_progression.py`.
+
+### Adventure Party host-solo challenge — `tests/check_adventure_party_challenges.py`
+
+```bash
+python3 tests/check_adventure_party_challenges.py         # ~15 min, muted + headless
+python3 tests/check_adventure_party_challenges.py -v
+```
+
+The AP-15 gate: a party entering a four-racer special challenge SUSPENDS to a
+retail host-solo challenge and is RESTORED to the exact party on return. Proven
+from the running binary + the persisted EEPROM (3P, a 2P arm, and a 1P reference):
+
+- **Suspension envelope.** The challenge loads host-solo — `aparty_session
+  state=SOLO_ACTIVITY` with the party roster captured as the suspended facts, the
+  retail FOUR-racer field (`[CHALLENGE] racers=4`), and NO party race field (no
+  `racefield:`).
+- **Exact-once win.** A host win commits the retail amulet EXACTLY once
+  (`courseFlags RACE_CLEARED` + `ttAmulet++`) through the unchanged challenge-finish
+  path, gated by one `aparty_award` challenge token issue+consume
+  (`kind=COMPLETION_CHALLENGE`); the persisted 40-byte slot is BYTE-IDENTICAL to a
+  **1P** win of the same challenge resumed from the same started save (empty
+  whitelist, the house compare from `check_adventure_party_progress.py`).
+- **No commit on defeat.** `MDKR_CHALLENGE_OUTCOME=loss` mints no token, leaves
+  `ttAmulet` unchanged, and still restores the party.
+- **Restore + re-entry.** Every return runs `RESTORING_PARTY` and
+  `aparty_restore match=1`; the challenge re-enters (a 2nd `SOLO_ACTIVITY`).
+- **Positive controls (output only):** a restore-with-different-roster replay must
+  FAIL restore; stripping the suspension traces must FAIL suspend.
+
+Entry: the world-lobby challenge/key door is unreachable by a headless AI line, so
+the party drives a reachable race door and that load is retargeted to the challenge
+(`MDKR_LOAD_TRACK`) — the same arrival-adapter seam (`ACTIVE_LOBBY` →
+`RACETYPE_CHALLENGE` load → `SOLO_START` → restore). `MDKR_CHALLENGE_OUTCOME` drives
+the production challenge to its win/loss. Off arm — 1P challenges unchanged — is
+`check_challenge_modes.py` / `check_campaign_progression.py`.
+
+### Adventure Party host-solo boss — `tests/check_adventure_party_boss_restore.py`
+
+```bash
+python3 tests/check_adventure_party_boss_restore.py       # ~15 min, muted + headless
+python3 tests/check_adventure_party_boss_restore.py -v
+```
+
+The AP-17 gate: a 3P party entering a boss SUSPENDS to a retail host-solo boss and
+is RESTORED on return. Proven from the running binary + the persisted EEPROM:
+
+- **Suspension envelope.** `aparty_session state=SOLO_ACTIVITY` with the suspended
+  roster; no party race field (`racefield:` absent); the host (`playerIndex 0`) is
+  the sole human at the boss finish.
+- **Exact-once first win.** A first win commits `settings->bosses |= worldBit`
+  (save delta `bosses 0x0 -> 0x2`, boss course CLEARED) through the unchanged
+  `racer_boss_finish` path, witnessed by one `aparty_award` boss token issue+consume
+  (`kind=COMPLETION_BOSS`); the win cutscene (level 57) presents.
+- **No award on defeat.** A loss sets no boss bit and consumes no token, and still
+  restores the party.
+- **Rematch.** Re-entering the beaten boss re-suspends host-solo (a 2nd
+  `SOLO_ACTIVITY`) and refuses a new token (`aparty_award op=issue result=0`).
+- **Restore.** `aparty_restore match=1` on the returns.
+- **Positive controls (output only):** a return-with-one-racer replay must FAIL
+  restore; a doubled boss-award replay must FAIL exactly-once.
+
+Entry is by the same reachable-race-door retarget as the challenge gate (the boss
+door is behind geometry no headless line paths through, and the production
+balloon-race route that reaches it crashes a party's spatial audio — a pre-existing
+AP-12 defect, see `check_adventure_party_boss_restore.py`'s docstring and the task
+report). The boss-door warp and `racer_boss_finish` are retail, 1P-anchored by
+`check_first_boss_progression.py` / `check_boss_win_verdict.py`.
+
+### Adventure Party team-shared silver coins — `tests/check_adventure_party_silver.py`
+
+```bash
+python3 tests/check_adventure_party_silver.py            # ~20 min, muted + headless
+python3 tests/check_adventure_party_silver.py -v
+```
+
+The AP-14 gate: in a party silver-coin race the coins are TEAM-SHARED — any human
+collects, all viewports see it vanish, one team counter, eight team coins plus any
+human first wins, awarding the retail silver clear exactly once. Proven from the
+running binary + the persisted EEPROM (3P central scene, a 2P arm, a 1P reference):
+
+- **Team-shared collection, any human.** The `silvercoin` trace shows a NON-HOST
+  seat (`playerIndex>0`) collecting a coin, every coin retired for ALL viewports
+  (`invis=0x600` = both engine invisibility bits, so viewports 0/1 directly and
+  2/3 by the `(viewport & 1)` alias), and the ONE team tally incrementing `1..8`
+  each exactly once (no double-collect).
+- **HUD parity.** Every party viewport draws the same one team total
+  (`silverhud viewport=N teamCoins=..`, all N reaching 8).
+- **Exact-once win.** Eight team coins + a human first commits
+  `RACE_CLEARED_SILVER_COINS` once through the unchanged `set_course_finish_flags`
+  path — reading the TEAM total, not the leading racer's own `silverCoinCount`
+  (`silvercoinfinish teamCoins=8 coins=0`) — gated by one `aparty_award` SILVER
+  token (`activity=3`) issue+consume; the persisted 40-byte slot is BYTE-IDENTICAL
+  to a **1P** silver win of the same course (empty whitelist, the house compare).
+- **No award on a CPU-first finish.** With eight team coins banked but no human
+  first (no `MDKR_ADVENTURE_WIN` rotation), no token is minted and no silver flag
+  written.
+- **Replay.** Re-entering after the silver clear is no longer a silver race
+  (`RACE_CLEARED_SILVER_COINS` -> `gIsSilverCoinRace` FALSE): no coins, no second
+  award, no crash — driven directly by the win arm's two Ancient Lake loads.
+- **Positive controls (output only):** a seven-team-coin output must FAIL the win
+  assertions; a coin-trace-stripped output must FAIL them too.
+
+Entry: a headless party cannot drive a boss-beaten world lobby's silver-coin door
+(the door only appears with the boss beaten + course cleared, and that lobby
+repositions the party far from it — measured across 15 attempts). So, per the R20
+retarget precedent, the party drives the PROVEN started-save route into Ancient
+Lake (which `check_adventure_party_progress.py` navigates and wins) and
+`MDKR_SILVER_FORCE=5` flips THAT course to silver at its own load only — the world
+lobby stays the reachable boss-not-beaten started-save lobby, and the coins,
+counter and award are the game's own party path. Adventure Two: **NOT RUN**
+(AP-16 owns the A2 matrix). Off arm — 1P silver unchanged — is
+`check_campaign_progression.py` (seam A).
+
+### Adventure Party trophy series — `tests/check_adventure_party_trophy.py`
+
+```
+python3 tests/check_adventure_party_trophy.py            # ~20 min, muted + headless
+python3 tests/check_adventure_party_trophy.py -v
+python3 tests/check_adventure_party_trophy.py --players 3
+```
+
+AP-16 Part A (the last v1 activity ticket). **Measurement first:** the retail
+Adventure trophy race fields EIGHT racers (`track_setup_racers` defaults
+`gNumRacers` to 8, a 1P trophy keeps it, and the rankings width is 8). Part A
+measured that this eight-racer field renders four viewports within the per-frame
+DL/matrix/vertex budgets — the 4P DL high-water is **6354 Gfx**, far under the
+**11000** 4P budget (and under the always-present 4-viewport hub's 9670) — so the
+trophy row is a **SPLIT** (N humans + 8-N CPUs to the retail eight-racer total, N
+viewports), never a shrunken/improvised field. The gate proves, for a 4P (or
+`--players 3`) party: entry to the real trophy series, every round is the retail
+8-racer split (`racefield total=8`), all four production rounds run with
+accumulating standings (`trophyround points0` climbs, four `trophyrankings`), and
+a gold championship writes the Dino trophy exactly once via **one
+`COMPLETION_TROPHY` token** (`aparty_award` issue+consume, activity=8 kind=3)
+beside the upgrade-only retail write, persisting a save slot **byte-identical to a
+1P gold** (the whole 40-byte progression slot, empty whitelist — which subsumes a
+no-balloon / no-`RACE_CLEARED`-write assertion for the trophy rounds); the series is
+one `ACTIVE_RACE` span returning to the same lobby. A 1P-ref
+awards the same gold with **no** party token. Two positive controls fire
+(duplicate-consume, stripped-field). **Route reachability (R20/R24 precedent):** a
+headless party cannot drive the world-lobby cabinet (a boss-beaten fixture wedges
+on a central-hub Taj-summon `SHARED_DIALOGUE`; the boss-beaten lobby repositions
+the party), so the gate keeps the reachable boss-not-beaten lobby (the AP-13
+progress route) and `MDKR_TROPHY_FORCE_ENTER` forces the cabinet's own
+`begin_trophy_race_teleport()` there — the least-fake entry; the cabinet's
+precondition-gated collision/dialogue is covered 1P by `check_trophy_series.py`.
+
+### Adventure Party — Adventure Two matrix — `tests/check_adventure_party_adventure_two.py`
+
+```
+python3 tests/check_adventure_party_adventure_two.py     # ~30 min, muted + headless
+python3 tests/check_adventure_party_adventure_two.py -v
+```
+
+AP-16 Part C. Adventure Two is a **required matrix arm, not a separate
+implementation**: an A2-flagged party fixture (`CUTSCENE_ADVENTURE_TWO` set,
+Adventure Two picked at GAME SELECT via a DOWN) drives the SAME party policy with
+**no new game-side branch** (the boundary scanner is unchanged; the party
+admission, hub-formation, race-field, silver and award adapters are all
+A1/A2-agnostic — the A2-specific mirroring / A2 coin init is orthogonal retail code
+keyed on `is_in_adventure_two`). Three arms: (1) 3P admission → hub on A2 (the party
+forms a 3-seat session and resumes the A2 save); (2) a default race win is exact-once
+(`aparty_award` + one `RACE_CLEARED`) and its save slot is **byte-identical** to a 1P
+A2 win of the same mirrored course; (3) a silver scene banks ONE team tally over the
+**A2 coin object set** (`obj_init_silvercoin_adv2`) — any human collect, `invis=0x600`
+for all viewports, one SILVER award — the AP-14 machinery unchanged. The load-bearing
+no-new-adapters witness is `racefield: level=5 humans=3 cpus=3 total=6 viewports=3`
+with `adventure_mode: level=5 adventureTwo=1 mirrored=1` (the identical six-racer
+party split on the mirrored course). Positive controls fire. If A2 had needed any new
+game-side branch this would be BLOCKED (it did not).
+
+### Adventure Party Taj transaction — `tests/check_adventure_party_taj.py`
+
+```bash
+python3 tests/check_adventure_party_taj.py            # ~5-6 min, muted + headless
+python3 tests/check_adventure_party_taj.py -v
+```
+
+The AP-11 gate: Taj's vehicle transform rebuilds the WHOLE party transactionally
+instead of the retail single racer, and the shared dialogue is a proper
+SHARED_DIALOGUE envelope. Read from the running binary's `aparty_` traces plus the
+`aparty_transform` diagnostic:
+
+- **Non-host summon, host choice.** Seat 1 drives into Taj (`MDKR_AP_SEAT_ROUTE`);
+  any occupied seat may trigger the interaction (`aparty_interaction seat=1
+  action=2 verdict=0` then `aparty_session state=SHARED_DIALOGUE`), and the host
+  owns the menu regardless of who summoned (`taj_menu_loop` reads
+  `input_pressed(PLAYER_ONE)`; `aparty_interaction seat=0 action=0 verdict=0`).
+- **Whole-party transform.** Retail `transform_player_vehicle` rebuilds the roster
+  as exactly ONE racer; the party path rebuilds ALL N with the new shared vehicle
+  and the same seat->character identities. The oracle is `aparty_transform
+  path=party n=N live=N` — `live` is the post-rebuild `gNumRacers`, so a collapse
+  reads `live=1`. Exactly one transform is emitted (rebuilt once), the roster
+  (`aparty_roster`, characters unchanged) and split layout (`aparty_layout
+  viewports=N`) are republished, and the `[RACERINPUT]` witness confirms
+  `port == player == racer` for every seat afterward (binding survives the
+  transform).
+- **R10 latch lifecycle.** The dialogue latch RELEASES on completion
+  (`SHARED_DIALOGUE -> ACTIVE_LOBBY` at the SAME level generation — the transform
+  is within-lobby, never a reload), and no transition fires between the latch and
+  the release (retail freezes racer input during the scene, and the arbiter
+  rejects any door while the session is not `ACTIVE_LOBBY`). Doors working FROM
+  `ACTIVE_LOBBY` is proven by `check_adventure_party_transition`.
+- **R27 challenge refusal.** The in-hub Taj CHALLENGE rows are not classified for
+  a party yet (a challenge would spawn a lone Taj-vs-host race and strand the other
+  seats), so a host CHALLENGE-row selection during the party `SHARED_DIALOGUE` is
+  fail-closed refused (`aparty_taj_challenge: ... refused=1`) instead of starting a
+  race. Run with `MDKR_TAJ_PROBE=1` so `[TAJ] phase=accept`
+  (`init_racer_for_challenge`) would appear IF a challenge race started — it must
+  NOT; no extra racer spawns; the party is intact; and a vehicle TRANSFORM still
+  works afterward (the same whole-party oracle, `live==3`). The refusal keys on a
+  live party SESSION, never on player count — the fixture unlocks a challenge
+  (`TAJ_FLAGS_CAR_CHAL_UNLOCKED`) so the row is reachable, and vehicle-transform
+  rows are unaffected.
+- **Positive controls.** Rewriting the transform line to `live=1` (a collapsed
+  roster) must FAIL the whole-party assertion; stripping the `SHARED_DIALOGUE`
+  lines must FAIL the latch assertion; stripping the `aparty_taj_challenge` line
+  must FAIL the R27 refusal arm; and injecting a `[TAJ] phase=accept` line must
+  FAIL the R27 no-race oracle.
+- **Off arm.** `check_taj_p2_adventure.py` is run and quoted (retail JOINTVENTURE
+  2P Taj, the lead-swap machinery a party never engages, is untouched — and it
+  reaches challenges normally, which the R27 refusal must never block: the refusal
+  keys on a party session, not on player count).
+
+Only the summoner drives: a second moving racer near a lobby door raises a door
+textbox that blocks `npc_dialogue_loop` (and diverges shell-vs-headless), so the
+deterministic route keeps exactly one mover and the menu is host input. Save
+fixture: the started Adventure One slot-0 save; every run is in a private temp dir.
+
+### Adventure Party with custom characters — `tests/check_adventure_party_custom_characters.py`
+
+```bash
+python3 tests/check_adventure_party_custom_characters.py \
+  --build build --rom baserom.us.v80.z64
+```
+
+Cross-feature release gate for D1, D2, D6 and D7. It builds and installs four
+license-clean generated packages matching the exact retail donors selected by
+the 2P/3P party fixtures. A real 3P admission must publish the ordinary donor-id
+party roster while every seat renders its own package HUD identity. Taj's
+whole-party vehicle rebuild and a host-solo boss return must publish the same
+package-to-seat relationships at their live-racer seams. Finally, a 2P party
+win with customs must write a slot byte-identical to the same party win without
+custom presentation. Package ids remain outside the reducer and EEPROM; the
+`aparty_custom_identity` trace joins presentation to a live donor racer only for
+diagnostics. All arms require real WebGPU replacement draws, and donor mismatch
+plus missing transformed-seat positive controls must fail.
+
 ### Harness isolation — `tests/check_harness_isolation.py`
 
 ```bash
@@ -6222,6 +8559,42 @@ and scripted drives fall short of their goal (the mechanism documented in
 save-dir assignment without a video-config pin (or `save_env`), with two
 documented exemptions (`check_ghost_bank_capacity.py`, `check_shell_dropfile.py`)
 and a `--self-test` proving the scanner is not vacuous.
+
+### Save-directory hermeticity — `tests/test_check_save_dir_hermeticity.py`
+
+```bash
+python3 tests/test_check_save_dir_hermeticity.py        # ctest: check_save_dir_hermeticity
+python3 tests/test_check_save_dir_hermeticity.py --list  # the offender list, not a verdict
+```
+
+ROM-free source gate for the sibling defect class the 1.6.0 fixture wave
+uncovered. A check that builds a "hermetic" engine environment by dropping
+every inherited `MDKR*` variable also drops the `MDKR_SAVE_DIR` that
+`tools/run_checks.py` exports per task. Since issue #54 a non-packaged build no
+longer resolves an unpinned save to `$CWD/save`; it resolves it to the shared
+per-user directory, so an adventure-in-progress EEPROM sitting there — left by
+a developer playing, or by an earlier suite task — re-routes the boot flow of
+every such check and reds it for a reason that has nothing to do with the code
+under test ("level never loaded … no `[PVEH]`", "0 flap cues", "trophies 0x0",
+"capture-window positions=0").
+
+The gate parses every `tests/check_*.py` and follows each environment value
+from where it is built to where it is handed to a process, so a pin has to be
+on the environment that actually launches — a pin elsewhere in the same
+function does not satisfy it. It recognises the scrub in every shape the
+corpus uses: an `os.environ` comprehension that filters `MDKR` keys, a
+`pop("MDKR_SAVE_DIR")` or `del env["MDKR_SAVE_DIR"]`, an environment written
+out inline at the launch that inherits nothing, and a factory function whose
+scrubbed return value the caller launches with. Repairs it accepts:
+`harness_utils.save_env(env, run_dir)` (preferred — it pins the video config in
+the same breath, which `check_harness_isolation.py` requires), an explicit
+`env["MDKR_SAVE_DIR"] = …`, `MDKR_SAVE_DIR=…` passed into the call that builds
+the environment, or simply inheriting `os.environ` unscrubbed. Controls: nine
+synthetic fixtures ship with the gate — five offending shapes it must reject
+and four pinned shapes it must accept — and they run ahead of the corpus scan
+on every invocation, so a scanner that stopped matching fails loudly instead of
+passing an empty sweep. One documented exemption,
+`check_portable_paths.py`, whose subject *is* unpinned save resolution.
 
 ### Delta inventory — `tests/check_delta_inventory.py`
 
@@ -6253,6 +8626,33 @@ marker landing on that exact line cannot be silently swallowed. Positive
 control: a seeded bare `//!@Delta` must be rejected; a negative control
 proves a properly classified marker is accepted.
 
+### Test assertions armed — `tests/check_test_assertions_armed_wrapper.py`
+
+```bash
+python3 tools/check_test_assertions_armed.py --self-test
+```
+
+Structural gate for `tools/check_test_assertions_armed.py` (the suite runs it
+through the wrapper). CMakeLists.txt defaults `CMAKE_BUILD_TYPE` to Release
+when unset, and Release adds `-DNDEBUG`, which turns every `assert()` in
+`<assert.h>`/`<cassert>` into `((void)0)` -- the call still compiles, the
+check it guards silently never runs, and the test still reports PASS. 22
+test files shipped exactly this way once, fixed with a per-file `#undef
+NDEBUG` before the assert.h/cassert include; a sister project repeated the
+mistake with an allowlist that fell out of date as files were added. This
+gate has no allowlist: it scans every `tests/*.c` and `tests/*.cpp` TU that
+calls `assert(` and requires it to be either TU-armed (`#undef NDEBUG`
+precedes its own assert.h/cassert include) or target-armed (the CMake
+target it is compiled into, found by searching `cmake/tests.cmake` and
+`CMakeLists.txt` add_executable source lists, carries a `-UNDEBUG` compile
+option -- `NDEBUG=0` is explicitly rejected, since `<assert.h>` only tests
+whether NDEBUG is `#defined`). `--self-test` drives both arming predicates
+in both directions -- an undef-free TU, a too-late `#undef`, an assert(
+mentioned only in a comment, a CMake target with and without `-UNDEBUG`, and
+an end-to-end scan over a synthetic offender -- before it scans the real
+tree, so a predicate that stopped firing fails loudly instead of passing an
+empty sweep.
+
 ### CI contract — `tests/check_ci_contract.py`
 
 ```bash
@@ -6266,6 +8666,12 @@ fixtures — every guard is re-run against a deliberately mutated copy of the
 source it inspects and must reject it. It also derives the release version from
 `CMakeLists.txt`'s `MDKR_VERSION` and requires this file's task list to match
 `tools/run_checks.py`'s manifest.
+
+The GPU-routing contract also compares the lobby-takeover CTest success count
+with the check's actual active-view inventory. Stale counts, inventory drift,
+and removal of that success predicate are rejected by mutation controls; the
+application check still asserts offline-shell suppression for every active arm
+and the opposite behavior at the entry chooser.
 
 The exact text it pins lives beside it in `tests/ci_contract_manifest.py`: one
 `Pin` per literal a named file must, or must never, contain, and one `Control`
@@ -6322,6 +8728,76 @@ a missing version, and a wrong version must each be rejected with the reason
 named. A provenance guard that stopped inspecting anything fails here instead of
 accepting every candidate.
 
+### Custom-character binary fuzzer — `tests/fuzz_modern_character_asset.cpp`
+
+Use an authorized test environment, including for the corpus generator below.
+The KTX2/BasisU alignment finding has a local decoder amendment and a
+valid-texture regression covering all four output formats across host buffer
+alignments. Release qualification still requires sanitizer fuzzing and exact
+artifact checks; prior runs do not certify a changed decoder. Keep discovery
+artifacts private and discuss findings at defensive engineering level.
+
+```bash
+python3 tests/generate_modern_character_fuzz_corpus.py
+MDKR_BASISU_LOCAL_CACHE=/path/to/pinned-basisu-mirror \
+  cmake -S . -B build-fuzz -DMDKR_ENABLE_FUZZERS=ON \
+    -DCMAKE_C_COMPILER=$(brew --prefix llvm)/bin/clang \
+    -DCMAKE_CXX_COMPILER=$(brew --prefix llvm)/bin/clang++
+nice -n 15 cmake --build build-fuzz \
+  --target mdkr_modern_character_asset_fuzzer --parallel 2
+CHARACTER_FUZZ_ROOT="$(mktemp -d /tmp/mdkr-character-fuzz.XXXXXX)"
+cp -R tests/fuzz_corpus/modern_character_asset "$CHARACTER_FUZZ_ROOT/corpus"
+nice -n 15 ./build-fuzz/mdkr_modern_character_asset_fuzzer \
+  -max_total_time=600 -artifact_prefix="$CHARACTER_FUZZ_ROOT/" \
+  "$CHARACTER_FUZZ_ROOT/corpus"
+```
+
+ASan+UBSan libFuzzer coverage crosses all three custom-character binary trust
+boundaries in one process: every input reaches the exact shipped MDKC memory
+loader, the PNG-only/no-stdio `stb_image` build, and the exact Basis Universal
+KTX2 inspect/transcode bridge. Valid containers also feed authenticated embedded
+PNG/KTX2 payloads and the portrait PNG through their matching decoder. Decode
+allocation is capped at 16 MiB per input; production limits remain stricter and
+unchanged. The deterministic corpus contains valid and truncated generated PNG,
+valid ETC1S and UASTC/Zstandard textures, a valid generated character,
+checksum-valid malformed/truncated controls, and the minimised reproducer for
+the wrapping-index out-of-memory below. Its generator uses only the
+license-clean test fixtures and must reproduce the tracked bytes exactly. Run
+against a copied corpus when discoveries should remain local; libFuzzer may add
+minimized inputs to a writable corpus directory.
+
+The BasisU target is built with `fuzzer-no-link` instrumentation and the exact
+`stb_image_impl.c` translation unit is compiled into this dedicated target, so
+coverage enters both third-party decoders instead of stopping at their
+first-party bridges. `MDKR_ENABLE_FUZZERS` remains OFF by default and does not
+add fuzz code or sanitizer flags to ordinary release builds.
+
+### KTX2 bridge bounds — `tests/test_modern_character_ktx2.cpp`
+
+```bash
+ctest --test-dir build -R modern_character_ktx2
+```
+
+Drives `mdkr_ktx2_inspect` and `mdkr_ktx2_transcode` over two license-clean
+textures embedded in the test — 8x8 ETC1S/sRGB and 8x8 UASTC/linear Zstandard —
+pinning the reported dimensions, mip count, colour space and the exact
+allocation size for every target format, and requiring a truncated file to be
+refused.
+
+Five hostile arms patch one header field into the valid UASTC texture and
+require both entry points to refuse it, naming the bound that refused it. Four
+cover the KTX2 index's offset/length pairs — key/value, data-format,
+supercompression global data, and a level's own byte range — each with a pair
+whose sum wraps its width, which the pinned transcoder reads as a small region
+and then walks or sizes from the length the pair actually holds. The key/value
+arm is the minimised libFuzzer out-of-memory reproducer, seeded as
+`tests/fuzz_corpus/modern_character_asset/wrapping-key-value-length.ktx2`. The
+fifth arm declares a level uncompressed size far beyond what its mip spans,
+which the Zstandard path allocated whole before reading the file. See
+`docs/open-items/misc.md`, wave "ktx2index". With either bound removed the
+matching arms fail: one by crashing on the walk, one refused for the wrong
+reason after an out-of-bounds read, and three by accepting the file.
+
 ### Online wire-parser fuzzers — `tests/fuzz_match_signal_wire.cpp`, `tests/fuzz_online_live_wire.cpp`
 
 ```bash
@@ -6349,3 +8825,48 @@ libFuzzer runtime; use Homebrew LLVM as above. Seed corpora are derived from
 the suites' wire-level test vectors (valid welcome/hello/ICE frames,
 fragmentation, masked/RSV violations, oversize declarations, a full 201
 create response, chunked state, 4000-class closes).
+
+## Rice packs — `rice_crc_parity`, `ricepack_import`, `rice_crc`
+
+```bash
+ctest --test-dir build --output-on-failure \
+    -R '^(rice_crc_parity|ricepack_import|rice_crc)$'
+```
+
+A Rice/GLideN64 high-resolution pack now loads at runtime, as downloaded: the
+renderer computes the pack's own texture identity while it draws and asks the
+registry for a replacement. `tools/ricepack/` still exists and still converts a
+pack into a digest-keyed content pack, but nothing requires it any more — these
+three gates cover the runtime path and the tool respectively. All three are
+ROM-free, run in under a tenth of a second, and build every fixture they need —
+a handful of four-pixel PNGs, plus deliberately dishonest headers for the cap
+tests.
+
+| Unit | What it owns | The assertion that would otherwise rot |
+|---|---|---|
+| `rice_crc_parity` | `platform/rice_crc.c`, the C port the renderer calls | Nine vectors generated from `tools/ricepack/rice_crc.py` at its default variant, covering every RDP size code, an odd width, a pitch wider than a row, and the smallest geometry the key is defined over; plus five refusals (an undefined `siz`, a zero width, a pitch narrower than a row, a span too short for the walk, and a row shorter than one accumulator read). If the two implementations drift, shipped packs stop resolving while the offline importer keeps working — a split neither side can see alone, and each refusal is a *silently wrong key* rather than a crash if its guard goes |
+| `ricepack_import` | The filename allowlist, the `_all`-over-split precedence, the orphan-half rules, the caps and the manifest | The junk files fall out of the *pattern* — the allowlist is asserted to contain no `Thumbs`/`DS_Store` literal, so a special case cannot creep in; the same pack decides identically with its `_all` sorting before or after the halves it shadows; a re-run is byte-identical; and `complete` coverage is false whenever any input was refused |
+| `rice_crc` | The Python side of the same arithmetic, used by the measurement tool below | The CRC-32 primitive is checked against `zlib.crc32` rather than a remembered constant; row padding is proven to be outside the hash; and the four accumulation variants are proven distinct, so a hit-rate sweep across them measures something |
+
+What no unit here can show is that the arithmetic is the arithmetic Rice uses:
+these gates prove the C and the Python agree with each other and with their own
+vectors. That question was settled by measurement against a real pack, and the
+discriminator is below.
+
+The measurement that settles it is a real-ROM experiment, not a test, and runs
+as one command:
+
+```bash
+python3 tools/ricepack/measure_crc_variants.py \
+    --build build --rom baserom.us.v80.z64 \
+    --pack /path/to/rice-pack --out ~/dkr-crc-experiment
+```
+
+It drives four routes with `MDKR_MOD_TEXTURE_DUMP` set, computes all four
+candidate CRCs over every dumped `<digest>.texels` span, and prints how many of
+the pack's mappable keys each variant matched. A key counts only when the CRC
+*and* the fmt/siz agree, so a wrong variant is expected to score exactly zero —
+which is what makes a single-digit result readable as noise and a three-digit
+one readable as the answer. All-zero across the four means the input is wrong
+before the arithmetic is; the skip counts printed above the table say which.
+`--out` must be outside the repository and is refused otherwise, twice.

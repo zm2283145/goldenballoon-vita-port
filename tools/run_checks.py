@@ -16,12 +16,12 @@ the roles that share a build tree or a local port, the render/GPU checks, and
 the wall-clock measurement checks stay serial (see the SERIAL_ROLES /
 GPU_SERIAL_NAMES / SERIAL_NAMES model below).
 
-A bare ``python3 tools/run_checks.py`` runs the complete suite. There is no
-human gate on testing: automation windows render hidden or ordered behind the
-desktop by design (set ``MDKR_TEST_VISIBLE_HEADLESS=1`` to watch one), so a run
-never seizes focus from interactive work, and bulk children are launched at
-background scheduling priority (wall-clock measurement checks and the browser
-lanes run foreground, one at a time -- see yield_wrapper). ``--with-app-tests``,
+A bare ``python3 tools/run_checks.py`` runs the complete suite only with an
+inherited human-attested ``MDKR_DEDICATED_TEST_DESKTOP=1``. Hidden windows and
+background scheduling are defense in depth, not permission to run on an
+occupied workstation. ``--list`` is the non-executing exception. Bulk children
+are launched at background scheduling priority (wall-clock measurement checks
+and browser lanes run foreground, one at a time -- see yield_wrapper). ``--with-app-tests``,
 ``--with-compiled-tests``, ``--with-browser-tests`` and ``--with-gpu-tests``
 are accepted but ignored: those classes now run by default.
 """
@@ -49,8 +49,11 @@ TESTS = ROOT / "tests"
 # cannot steer a run. These are the variables the suite itself owns and must
 # therefore survive the scrub.
 MDKR_ENV_ALLOWLIST = frozenset({
+    # Inherit the caller's attestation; never manufacture one in this runner.
+    "MDKR_DEDICATED_TEST_DESKTOP",
     "MDKR_SAVE_DIR",
     "MDKR_TEST_SAVE_DIR",
+    "MDKR_TEST_BROWSER_STARTUP_DIAGNOSTICS",
     "MDKR_TEXCACHE_VERIFY",
 })
 
@@ -148,6 +151,8 @@ GPU_SERIAL_NAMES = frozenset({
     "font_sdf",
     "font_outline",
     "native_ui_resolution",
+    "split_screen_pause_resolution",
+    "split_screen_void_coverage",
     "mip_motion",
     "rl1_vertex_colour_ab",
     "remaster_lighting",
@@ -183,6 +188,7 @@ GPU_SERIAL_NAMES = frozenset({
     "video_presets",
     "widescreen_proportions",
     "widescreen_hud_layers",
+    "split_screen_backdrop",
     "framed_world_views",
     "shadow_visual_ab",
     "intro_shrub_sprite",
@@ -191,10 +197,29 @@ GPU_SERIAL_NAMES = frozenset({
     "race_2p_split",
     "race_2p_split_enhanced",
     "race_multiplayer",
+    # Reads per-viewport pixels for the split-screen liveness assertions, so it
+    # must not share a GPU surface with pooled checks.
+    "adventure_party_hub",
+    # AP-19's verdict is the four-camera DL/resource high-water itself. Running
+    # beside another renderer process would invalidate the plateau evidence.
+    "adventure_party_performance",
+    "adventure_party_performance_soaks",
     "challenge_modes",
     "taj_challenges",
     "bonus_character_select",
+    "custom_character_roster",
+    "custom_character_identity_surfaces",
+    "adventure_party_custom_characters",
+    "custom_character_flag_portrait",
+    "character_raw_intake_ui",
+    "character_quit_lifecycle_ui",
+    "character_workshop_history_ui",
+    "character_draft_transfer_ui",
+    "character_portrait_studio_ui",
+    "character_test_evidence_ui",
+    "custom_character_workshop_preview",
     "bonus_results_portraits",
+    "bonus_portrait_pack",
     "taj_character_select",
     "taj_character_select_webgpu",
     "taj_character_select_ultrawide",
@@ -304,6 +329,10 @@ CHECKS = (
     Check("shell_dropfile", "check_shell_dropfile.py", "native",
           "app-shell SDL_DROPFILE ROM acquisition: accepted and refused, "
           "isolated from shared prefs"),
+    Check("launcher_skip", "check_launcher_skip.py", "native",
+          "the opt-in skip boots the remembered ROM through the same final "
+          "check Play uses, and Shift or both shoulders held at launch opens "
+          "the launcher anyway"),
     Check("app_adopted_pacing", "check_app_adopted_pacing.py", "native",
           "app-shell WebGPU-default and GL adopted handoffs at numeric and "
           "uncapped rates"),
@@ -344,31 +373,31 @@ CHECKS = (
     Check("simulation_cadence", "check_simulation_cadence.py", "native",
           "NTSC/PAL source clocks, original/enhanced pacing mechanism, and "
           "explicit oracle policy"),
-    Check("enhancement_authority", "check_enhancement_authority.py", "rom",
+    Check("enhancement_authority", "check_enhancement_authority.py", "native",
           "every enhancement's declared authority class matches its measured "
           "effect on the authoritative state stream, in both directions"),
-    Check("subentry_bounds", "check_subentry_bounds.py", "rom",
+    Check("subentry_bounds", "check_subentry_bounds.py", "native",
           "an out-of-range asset sub-entry index aborts loudly with the "
           "section, index and count, instead of resolving to the section base"),
-    Check("dev_tools_purity", "check_dev_tools_purity.py", "rom",
+    Check("dev_tools_purity", "check_dev_tools_purity.py", "native",
           "every registered developer tool leaves the authoritative state "
           "stream byte-identical when opened"),
-    Check("enh_speedometer", "check_enh_speedometer.py", "rom",
+    Check("enh_speedometer", "check_enh_speedometer.py", "native",
           "the speed readout draws, tracks a standing start, changes nothing "
           "outside its own box, and moves no authoritative state"),
-    Check("enh_draw_distance", "check_enh_draw_distance.py", "rom",
+    Check("enh_draw_distance", "check_enh_draw_distance.py", "native",
           "draw distance and LOD bias extend what is drawn without changing "
           "which objects exist, proving both are render culls"),
-    Check("a11y_race", "check_a11y_race.py", "rom",
+    Check("a11y_race", "check_a11y_race.py", "native",
           "race announcements fire, coalesce, toggle per category, and leave "
           "the authoritative state stream byte-identical"),
-    Check("input_hotplug", "check_input_hotplug.py", "rom",
+    Check("input_hotplug", "check_input_hotplug.py", "native",
           "a pad joining or leaving mid-run reaches the right channel, leaves "
           "exact neutral on removal, and never binds one device to two ports"),
-    Check("rom_checker_page", "check_rom_checker_page.py", "rom",
+    Check("rom_checker_page", "check_rom_checker_page.py", "native",
           "the hosted ROM checker uploads nothing and reaches the same verdict "
           "as the native binary, character for character, on every ROM present"),
-    Check("rom_text_indices", "check_rom_text_indices.py", "rom",
+    Check("rom_text_indices", "check_rom_text_indices.py", "native",
           "no driven route resolves a GAME_TEXT index at or above 259, the "
           "count the 1.0 revisions carry",
           # Eleven-plus serial engine runs across every fixture group: 3600s
@@ -376,20 +405,20 @@ CHECKS = (
           # 20-track sweep + hub (~32 engine runs). Measured shape is a
           # two-hour gate; budget it honestly.
           timeout=7200),
-    Check("a11y_shell", "check_a11y_shell.py", "rom",
+    Check("a11y_shell", "check_a11y_shell.py", "native",
           "every focusable control in the launcher, settings and overlay speaks "
           "its name and value, enumerated from the schema rather than a list"),
-    Check("future_fun_land", "check_future_fun_land.py", "rom",
+    Check("future_fun_land", "check_future_fun_land.py", "native",
           "a full trophy set plus the Wizpig 1 bit opens the lighthouse, and "
           "one trophy short does not"),
-    Check("mod_music_override", "check_mod_music_override.py", "rom",
+    Check("mod_music_override", "check_mod_music_override.py", "native",
           "a pack's music replaces the sequenced original, obeys the music "
           "volume, works from a zip, and moves no authoritative state"),
-    Check("mod_texture_override", "check_mod_texture_override.py", "rom",
+    Check("mod_texture_override", "check_mod_texture_override.py", "native",
           "a pack's textures replace the ROM's, and the Custom content setting "
           "switches them off and back on mid-run through the settings route, "
           "off being byte-identical to having no pack installed"),
-    Check("enh_ai_difficulty", "check_enh_ai_difficulty.py", "rom",
+    Check("enh_ai_difficulty", "check_enh_ai_difficulty.py", "native",
           "opponent skill leaves the authored arm bit-identical to a build "
           "without the enhancement compiled in, and the harder arms measurably "
           "beat it without wedging an opponent",
@@ -397,10 +426,10 @@ CHECKS = (
           # purity baseline before racing twelve-plus arms: the same shape
           # the instrumented/layout roles get the building budget for.
           timeout=BUILDING_TASK_TIMEOUT),
-    Check("tool_freecam", "check_tool_freecam.py", "rom",
+    Check("tool_freecam", "check_tool_freecam.py", "native",
           "detaching and re-attaching the free camera leaves the authoritative "
           "state stream and the re-attached frame byte-identical"),
-    Check("crash_screen", "check_crash_screen.py", "rom",
+    Check("crash_screen", "check_crash_screen.py", "native",
           "a fatal run still prints its [CRASH]/[FATAL] marker first, exits "
           "with the same disposition, and adds a report naming the fault, "
           "tick, track, renderer and log path"),
@@ -433,6 +462,25 @@ CHECKS = (
           "GL/WebGPU cascaded maps, receivers, state invariance, and truthful decal fallback"),
     Check("render_purity", "check_render_purity.py", "release",
           "skip-render authoritative invariance (spec 12.2.1) with divergence control"),
+    Check("dl_high_water", "check_dl_high_water.py", "release",
+          "the display-list high-water witness reports a retail 1P race "
+          "against the row its buffer was allocated to, and a length past "
+          "that row aborts fail-closed"),
+    Check("fast3d_dl_hardening", "check_fast3d_dl_hardening.py", "release",
+          "an injected display-list overflow is walked to a stop by both the "
+          "interpreter and the overlay prepass, with the well-authored party "
+          "and retail 1P routes reporting nothing"),
+    # The release arm proves the walkers stop and the route survives. It cannot
+    # prove what the reads themselves were: a command fetched one past the end
+    # of an 80-byte global, and a fault printer quoting the words of an address
+    # the walk had just refused, both land in mapped memory in a release build
+    # and report success. Measured, not assumed -- with the printer fix
+    # reverted the release arm still passes and this lane aborts. This is the
+    # detector.
+    Check("fast3d_dl_hardening_asan", "check_fast3d_dl_hardening.py", "asan",
+          "ASan witness for the misauthored display-list route -- the "
+          "past-the-end command fetch and fault-printer read the walkers close",
+          ("--injected-only",)),
     Check("camera_obstruction_runtime", "check_camera_obstruction_runtime.py", "release",
           "same-binary legacy/center-ray controls, modern resolved-lens safety "
           "witness, the unset-default arm that must reproduce observe, and the "
@@ -533,6 +581,10 @@ CHECKS = (
           "on-disk per-tick [SIMHASH] artifact mode mirrors the stdout stream "
           "byte-for-byte; the first-divergence comparator fails closed on "
           "divergence, truncation, empty, missing and unparseable inputs"),
+    Check("presentation_rng_split", "check_presentation_rng_split.py", "release",
+          "the authoritative RNG pair stays pinned across presentation-only "
+          "frames while the presentation stream advances, with a "
+          "render-impurity control and a run-to-run identity arm"),
     Check("weather_rng_order", "check_weather_rng_order.py", "release",
           "weather-enabled authored object/weather/HUD RNG order and presentation invariance"),
     Check("weather_presentation_identity",
@@ -624,6 +676,12 @@ CHECKS = (
           "raw pointer/token narrowing confined to typed boundary helpers"),
     Check("delta_inventory", "check_delta_inventory.py", "source",
           "every //!@Delta simulation-cadence site carries an M0 classification"),
+    Check("test_assertions_armed", "check_test_assertions_armed_wrapper.py",
+          "source",
+          "every tests/*.c and tests/*.cpp TU calling assert() is TU- or "
+          "CMake-target-armed against NDEBUG, with unarmed and armed "
+          "positive controls",
+          ("--self-test",)),
     Check("net_roster_owner_guard", "check_net_roster_owner_guard.py", "source",
           "local-Play boot cannot inherit a foreign online roster; ownership is "
           "explicit and the guard is idempotent (compiles + runs standalone)"),
@@ -645,6 +703,12 @@ CHECKS = (
     Check("cadence_gating", "check_cadence_gating.py", "source",
           "no updateRate ==/!= 1/2 mode test outside "
           "platform_sim_cadence_is_enhanced()"),
+    Check("adventure_party_boundaries", "check_adventure_party_boundaries.py",
+          "source",
+          "AP-01 boundary gate: every Adventure count/lead branch declared in "
+          "the inventory, no party-path 2P-global write, online-authority leak, "
+          "ambiguous party-count global, or adventure_party vocabulary leak into "
+          "the test hook / Phone Party infrastructure"),
     Check("camera_track_occlusion_cache", "check_camera_track_occlusion_cache.py", "source",
           "native static visual-triangle camera cache lifecycle and provenance"),
     Check("camera_object_occlusion_cache", "check_camera_object_occlusion_cache.py", "source",
@@ -667,6 +731,18 @@ CHECKS = (
           "opt-in widescreen HUD pixel layout (#51): TT rows share one right "
           "anchor, the race-start hold stays offscreen, identity label and "
           "battle strip stay centered, 4:3 byte-identical with the option on"),
+    Check("split_screen_backdrop", "check_split_screen_backdrop.py", "native",
+          "multiplayer sky backdrop coverage (#61): the >=2-viewport gradient "
+          "quad spans the widescreen frustum with no unpainted sides, and 4:3 "
+          "still derives the ROM's authored 200x150 extent"),
+    Check("split_screen_pause_resolution", "check_split_screen_pause_resolution.py", "native",
+          "P1/P2 pause fonts and output resolution (#61): real owner-colour, "
+          "glyph-contour, scaled-UI and original-font controls on GL/WebGPU "
+          "in Restored and Remastered, with identical simulation", timeout=1800),
+    Check("split_screen_void_coverage", "check_split_screen_void_coverage.py", "native",
+          "Walrus Cove P1/P2 hole coverage without obscuring real scenery (#61): "
+          "authored, disabled and depth-write controls on GL/WebGPU; "
+          "Pure byte identity and unchanged authoritative state", timeout=2400),
     Check("widescreen_minimap_alignment",
           "check_widescreen_minimap_alignment.py", "native",
           "minimap marker-on-map alignment under the widescreen HUD (#57): "
@@ -733,13 +809,67 @@ CHECKS = (
           "save, and terminal-gate controls"),
     Check("taj_challenges", "check_taj_challenges.py", "native",
           "car, hovercraft, and plane Taj challenges: first win, loss, abort, "
-          "replay, completion controls, and save reload"),
+          "replay, completion controls, and save reload",
+          timeout=7200),
     Check("bonus_character_select", "check_bonus_character_select.py", "native",
           "contiguous 13-racer picker with independent Taj, Wizpig, and Terry "
           "actor/placard composition, pose states, and controller navigation"),
+    Check("custom_character_roster", "check_custom_character_roster.py", "native",
+          "isolated generated custom package, independent paginated browser, "
+          "portrait composition, and real controller entry route"),
+    Check("custom_character_identity_surfaces",
+          "check_custom_character_identity_surfaces.py", "native",
+          "generated package donor authority plus authored minimap colour and "
+          "portrait pixels across a real race and post-race flow"),
+    Check("custom_character_flag_portrait",
+          "check_custom_character_flag_portrait.py", "native",
+          "generated package portrait ownership and isolated WebGPU pixels on "
+          "the real Fire Mountain collection-arena flag"),
+    Check("character_raw_intake_ui", "check_character_raw_intake_ui.py", "native",
+          "ROM-free review-first data-only adapter handoff, multi-draft GLB "
+          "intake, same-source branching, source-bound "
+          "mapping restore, accessible no-overwrite LOD-copy authoring, "
+          "close/resume navigation, exact switch/delete/install "
+          "cleanup, legacy migration, source-byte "
+          "purity, corruption refusal, keyboard speech, and 200% compact "
+          "Workshop rendering"),
+    Check("character_quit_lifecycle_ui",
+          "check_character_quit_lifecycle_ui.py", "native",
+          "ROM-free visible/cancellable shutdown settlement, global result "
+          "publication, Play/import exclusion, source purity, and private "
+          "result-file cleanup"),
+    Check("character_workshop_history_ui",
+          "check_character_workshop_history_ui.py", "native",
+          "ROM-free exact-source Identity/Profile/Rig/Fit/Performance/Test "
+          "history routing without installed-byte mutation"),
+    Check("character_draft_transfer_ui",
+          "check_character_draft_transfer_ui.py", "native",
+          "ROM-free exclusive path-private exact-source export, mutation-free "
+          "accessible review, additive atomic import, duplicate idempotence, "
+          "and wrong-source refusal"),
+    Check("character_portrait_studio_ui",
+          "check_character_portrait_studio_ui.py", "native",
+          "ROM-free deterministic portrait style/pixel tools at 200% compact "
+          "layout with keyboard speech and installed-byte purity"),
+    Check("character_test_evidence_ui",
+          "check_character_test_evidence_ui.py", "native",
+          "ROM-free durable 4x4 exact-test matrix, qualified baseline lifecycle, "
+          "device/source/fit/LOD binding, corruption refusal, 200% layout, and "
+          "keyboard plus virtual-controller speech traversal"),
+    Check("custom_character_workshop_preview",
+          "check_custom_character_workshop_preview.py", "native",
+          "script-free exact select/car/hovercraft/plane launches, semantic "
+          "camera/light inspection, exclusive stabilized PNG capture, and real "
+          "one-to-four-player WebGPU character stress with fail-closed inputs"),
     Check("bonus_results_portraits", "check_bonus_results_portraits.py", "native",
           "real post-race Wizpig/Terry portrait ownership, retail dimensions, "
           "and distinct card pixels"),
+    Check("bonus_portrait_pack", "check_bonus_portrait_pack.py", "native",
+          "a pack redraws the generated Taj/Wizpig/Terry cards at their "
+          "published digests on GL and on the shipped WebGPU default, the "
+          "author dump publishes those digests and records an installed "
+          "override whole at its own size, and a pack.ini that switches the "
+          "pack off restores the generated cards byte-for-byte"),
     Check("taj_character_select", "check_taj_character_select.py", "native",
           "visible, contiguous Taj roster tile and real selection across all "
           "four 8/9/9/10-character retail layouts"),
@@ -760,7 +890,8 @@ CHECKS = (
           "lead state"),
     Check("taj_playable", "check_taj_playable.py", "native",
           "Taj unlock, virtual select, carpet lifecycle, OP handling, two-player "
-          "identity, sidecar persistence, and Time Trial quarantine"),
+          "identity, sidecar persistence, and Time Trial quarantine",
+          timeout=3600),
     Check("taj_p2_adventure", "check_taj_p2_adventure.py", "native",
           "P2-visible Taj selection, retail Adventure lead handoff, post-swap "
           "live-port rebinding, and no virtual character IDs"),
@@ -773,7 +904,145 @@ CHECKS = (
     Check("taj_vehicle_sweep", "check_vehicle_sweep.py", "native",
           "Taj identity, presentation, shield anchoring, and dash evidence over "
           "all forty-seven legal track/vehicle pairs",
-          ("--taj", "--frames", "5200")),
+          ("--taj", "--frames", "5200"), timeout=7200),
+    Check("adventure_party_admission", "check_adventure_party_admission.py",
+          "native",
+          "AP-06 Adventure Party menu admission: 2/3/4 players reach the ordinary "
+          "Adventure route and form a session with the enhancement on; a party's "
+          "UN-STARTED file confirm is fail-closed refused (R26) then the started "
+          "file proceeds; copy/erase keep host-only file authority (FIX 1); 1P and "
+          "the off arm are stock; retail 2P globals never engaged"),
+    Check("adventure_party_hub", "check_adventure_party_hub.py", "native",
+          "AP-08 Adventure Party hub roster: 2/3/4 humans spawn atomically with N "
+          "viewports (3P minimap), per-seat input binding, and a per-viewport hub "
+          "HUD; off routes to Tracks; flat-field and swapped-binding controls fire"),
+    Check("adventure_party_transition", "check_adventure_party_transition.py",
+          "native",
+          "AP-09/10 shared lobby interactions: exactly one arbitrated whole-party "
+          "door transition (single + conflicting, 2P/3P), any-seat balloon "
+          "collect-once, non-host pause open with host resume authority, and "
+          "disconnect-forced shared pause; two positive controls fire"),
+    Check("adventure_party_race_loop", "check_adventure_party_race_loop.py",
+          "native",
+          "AP-12/R16 default party race loop: party crosses hub->lobby->race "
+          "(R16 two-hop), a default race fields six racers (N humans + 6-N CPUs, "
+          "N viewports, per-seat binding) at 2P/3P/4P, and a host/non-host/CPU "
+          "win, a retry and a mid-race quit-to-lobby each return the same party "
+          "to the lobby (sgen stable, lgen advanced); two positive controls fire"),
+    Check("adventure_party_performance",
+          "check_adventure_party_performance.py", "native",
+          "AP-19 formal four-player budgets and deterministic plateau: twenty "
+          "world-lobby->race->world-lobby cycles keep main-pool/audio/renderer/"
+          "pointer-registry ownership flat, every four-camera display list below "
+          "the checked-in 10750/11000-command threshold, four controller bindings "
+          "and session generations exact; a ROM-free 20000-lifetime formation/"
+          "suspension/dissolution churn retains no state; mutation controls fire",
+          timeout=14400),
+    Check("adventure_party_performance_soaks",
+          "check_adventure_party_performance_soaks.py", "native",
+          "AP-19 game-side ownership soaks: one versus five four-player Taj "
+          "racer rebuilds reach an exact normalized hub ownership endpoint; "
+          "five real host-solo boss defeat/restore lifetimes plateau main-pool, "
+          "audio, renderer and pointer-registry ownership; display-list, exact "
+          "roster/controller/session and mutation oracles remain mandatory",
+          timeout=14400),
+    Check("adventure_party_taj", "check_adventure_party_taj.py", "native",
+          "AP-11 Taj transaction + shared-scene envelope: a non-host summons Taj "
+          "(shared dialogue latched once), the host owns the vehicle choice, and the "
+          "WHOLE party (2P/3P) transforms transactionally to the new vehicle with the "
+          "same seat->character identities and split layout (live==N, never a collapse "
+          "to 1); the dialogue releases to ACTIVE_LOBBY in the same generation (R10); "
+          "a host CHALLENGE-row selection during the party dialogue is fail-closed "
+          "refused (R27: no TAJ_MODE_RACE, no extra racer, transform still works "
+          "after); four positive controls fire and retail 2P Taj "
+          "(check_taj_p2_adventure) is untouched"),
+    Check("adventure_party_progress", "check_adventure_party_progress.py",
+          "native",
+          "AP-13 exact-once campaign progression: a party default-race win at "
+          "each winner seat (P1/P2/P3/P4, by stable racerIndex) persists a slot "
+          "BYTE-IDENTICAL to a 1P win (empty whitelist), gated by one aparty_award "
+          "token issue+consume and one RACE_CLEARED write; a CPU-first loss and a "
+          "quit write nothing, a win + re-entry of the cleared course still writes "
+          "exactly one clear, and the save round-trips into 1P Adventure; two "
+          "positive controls fire (CPU-as-win, doubled-award)"),
+    Check("adventure_party_challenges", "check_adventure_party_challenges.py",
+          "native",
+          "AP-15 host-solo special-challenge envelope: a party (3P + a 2P arm) "
+          "suspends to a retail four-racer host-solo challenge (SOLO_ACTIVITY + "
+          "suspended roster, [CHALLENGE] racers=4, no party race field), a host WIN "
+          "commits one T.T. amulet piece exactly once (one aparty_award challenge "
+          "token issue+consume, ttAmulet 0->1 CLEARED, byte-identical to a 1P win), "
+          "a re-entry of the cleared challenge refuses a second token, and a defeat "
+          "commits nothing; two positive controls fire (defeat-as-win, "
+          "strip-suspension). The shared return-to-lobby RESTORE is proven by "
+          "check_adventure_party_boss_restore (identical arrival-adapter code)"),
+    Check("adventure_party_boss_restore", "check_adventure_party_boss_restore.py",
+          "native",
+          "AP-17 host-solo boss envelope: a 3P party suspends to a retail host-solo "
+          "boss (SOLO_ACTIVITY + suspended roster, no party race field, host "
+          "finishes), a first WIN commits the world boss bit exactly once (one "
+          "aparty_award boss token issue+consume, save delta), a LOSS awards nothing, "
+          "the beaten boss re-suspends on a rematch and refuses a new token, and "
+          "EVERY return restores the exact party (aparty_restore match=1); two "
+          "positive controls fire (one-racer, doubled-award)"),
+    Check("adventure_party_silver", "check_adventure_party_silver.py",
+          "native",
+          "AP-14 team-shared silver coins: a party silver-coin race (3P central "
+          "scene + a 2P arm) banks ONE team tally -- any human (incl. a non-host "
+          "seat) collects a coin, it vanishes for ALL viewports (invis=0x600), the "
+          "tally increments 1..8 once each, every viewport's HUD shows the same "
+          "total, and EIGHT team coins + a human first awards "
+          "RACE_CLEARED_SILVER_COINS exactly once via a SILVER completion token "
+          "(the finish reading the TEAM total, not the leading racer's own count), "
+          "persisting a slot BYTE-IDENTICAL to a 1P silver win; a CPU-first finish "
+          "with eight team coins awards nothing, and the post-clear replay is no "
+          "longer a silver race (no coins, no second award); two positive controls "
+          "fire (seven-coins, stripped-collection). Adventure Two: NOT RUN "
+          "(AP-16 owns the A2 matrix)",
+          # Five full-race arms plus two replayed positive controls: the gate
+          # finishes but can exceed the default 30-minute task ceiling. Wedge
+          # bound only; the arms keep their own per-run frame budgets.
+          timeout=3600),
+    Check("adventure_party_trophy", "check_adventure_party_trophy.py", "native",
+          "AP-16 Part A = SPLIT: a party enters the real Adventure trophy series "
+          "(forced past the headless-unreachable cabinet via the R20/R24 retarget "
+          "precedent), every round fields the retail EIGHT-racer split (total=8, N "
+          "humans + 8-N CPUs, N viewports -- the measured 4P DL high-water 6354 fits "
+          "the 11000 budget), all four production rounds run with accumulating "
+          "standings, and a gold championship writes the Dino trophy exactly once via "
+          "ONE COMPLETION_TROPHY token, persisting a save slot BYTE-IDENTICAL to a 1P "
+          "gold (whole 40-byte slot, empty whitelist -- subsumes no-balloon/no-RACE_CLEARED "
+          "write for the rounds); a 1P-ref awards the same gold with NO party token; the "
+          "party returns to the same lobby; two positive controls fire "
+          "(duplicate-consume, stripped-field)"),
+    Check("adventure_party_adventure_two", "check_adventure_party_adventure_two.py",
+          "native",
+          "AP-16 Part C matrix: an Adventure-Two-flagged party fixture drives the "
+          "SAME party policy with no new game-side branch -- (1) 3P admission -> hub "
+          "on A2 (party forms, A2 save resumed), (2) a default race win is exact-once "
+          "and byte-identical to a 1P A2 win of the same mirrored course, (3) a silver "
+          "scene banks one team tally over the A2 coin object set (any human collect, "
+          "invis=0x600, one SILVER award); adventure_mode adventureTwo=1 mirrored=1 "
+          "throughout; two positive controls fire"),
+    Check("adventure_party_campaign", "check_adventure_party_campaign.py",
+          "native",
+          "AP-18 release campaign manifest + real-door breadth: ROM-derived exact "
+          "classification of all six lobbies, thirty-four save courses, legal "
+          "vehicles, world transitions, door classes and campaign branches; a "
+          "real silver door, real first-boss door with multi-hop restore and "
+          "vehicle witness, and two distinct simultaneously conflicting race "
+          "doors; challenge-key and "
+          "trophy-cabinet headless geometry limits remain explicit rather than "
+          "being mistaken for behavioural passes; mutation controls fire",
+          timeout=3600),
+    Check("adventure_party_custom_characters",
+          "check_adventure_party_custom_characters.py", "native",
+          "Adventure Party/custom-character composites: a 3P donor-only party "
+          "roster retains three presentation packages, Taj transform and a "
+          "host-solo boss restore preserve every package, and a custom-equipped "
+          "party win writes byte-identical progress to the same plain party win; "
+          "two positive controls fire",
+          timeout=3600),
     Check("adventure_hub", "check_adventure_hub.py", "native",
           "Adventure hub traversal"),
     Check("adventure_two", "check_adventure_two.py", "native",
@@ -932,6 +1201,12 @@ CHECKS = (
     Check("party_capacity", "check_party_capacity.py", "browser_local",
           "real-Worker admission/forged-control floods, restart, weighted "
           "HTTP/socket reserve, telemetry, static recovery and zero kill switch"),
+    Check("online_wire_schema_parity",
+          "check_online_wire_schema_parity.py", "source",
+          "browser Online Room key sets against the Worker match wire schema, "
+          "its command, close, error and signaling vocabularies and the "
+          "/api/ops/health reservation buckets, with the R36 v2-wire gap "
+          "allowlisted member by member"),
     Check("party_internal_api", "check_party_internal_api.py", "source",
           "versioned Worker/Durable Object envelope and pre-storage skew rejection"),
     Check("party_edge_policy", "check_party_edge_policy.py", "source",
@@ -1021,7 +1296,21 @@ CHECKS = (
 # artifacts produced inside that CTest fixture rather than the runner's normal
 # role arguments. ``rom_free_units`` owns their execution.
 CTEST_COMPANION_SCRIPTS = {
+    "check_ai_difficulty_ui.py",
+    "check_match_transport_tls_io.py",
+    "check_online_resolver_budget.py",
+    "check_party_open_transaction.py",
+    "check_network_lifetime.py",
+    "check_match_signal_admission.py",
+    # Cross-layer source contract registered as character_offset_studio_contract
+    # in cmake/tests.cmake; the broad ctest task owns its artifact-free run.
+    "check_character_offset_studio.py",
     "check_multiplayer_boundaries.py",
+    # Registered as the net_failure_ring_impairment CTest (CMakeLists.txt, in
+    # the MDKR_NATIVE_PHONE_PARTY block), which passes it both arms of the
+    # impairment harness; it launches no game and needs no ROM, so the ctest
+    # task owns it.
+    "check_net_failure_ring_impairment.py",
     # Registered as the gamecontrollerdb_lint CTest (cmake/tests.cmake); a
     # plain source lint with no artifacts, run once by the ctest task.
     "check_gamecontrollerdb.py",
@@ -1040,6 +1329,35 @@ CTEST_COMPANION_SCRIPTS = {
 # manufacture that release-only stage, so workflow ownership is explicit here.
 WORKFLOW_COMPANION_SCRIPTS = {
     "check_browser_local_only_release.py",
+    # Release workflows build a platform-specific frozen importer, smoke it
+    # before packaging, then smoke the staged copy again. The ordinary runner
+    # has no frozen-importer artifact role and cannot substitute the game
+    # binary for this executable-shaped contract.
+    "check_frozen_character_importer.py",
+}
+
+# The cross-architecture determinism gate. It is registered as owned/known
+# rather than as a CHECKS entry because this runner CANNOT manufacture what it
+# needs: a second executable of a different CPU architecture, built from the
+# same source with the same configuration. On macOS that means an x86_64 tree
+# alongside the native arm64 one, and an x86_64 SDL2 built from source because
+# Apple Silicon Homebrew ships arm64 only. Putting it in CHECKS would make every
+# suite run on a host without that second tree red for a missing build
+# directory rather than for a defect.
+#
+# It is NOT optional, and it is not a subset the release can quietly skip. The
+# online compatibility identity does not carry the architecture
+# (platform/online/compatibility_identity.h), so cross-architecture sessions are
+# admitted today and no other gate in this tree has ever measured one. The
+# operator runs it directly against the two build directories:
+#
+#   tests/check_crossarch_determinism.py --build build-rel \
+#       --build-x86 build-rel-x86_64 --rom baserom.us.v80.z64
+#
+# See docs/architecture/cross-architecture-determinism.md for how to produce the
+# second tree and for what the gate does and does not prove.
+CROSSARCH_OPERATOR_SCRIPTS = {
+    "check_crossarch_determinism.py",
 }
 
 # The native online-takeover (Golden Balloon beta) regression lanes. Every one
@@ -1076,6 +1394,7 @@ ONLINE_TAKEOVER_SCRIPTS = {
     "check_online_isolation_selftest.py",
     "check_online_joiner_terminal.py",
     "check_online_left_reentry.py",
+    "check_online_lobby_drop.py",
     "check_online_lobby_single_endpoint.py",
     "check_online_lobby_start.py",
     "check_online_lobby_takeover.py",
@@ -1126,7 +1445,7 @@ def validate_manifest() -> None:
     discovered = {path.name for path in TESTS.glob("check_*.py")}
     registered = ({check.script for check in CHECKS if check.script} |
                   CTEST_COMPANION_SCRIPTS | WORKFLOW_COMPANION_SCRIPTS |
-                  ONLINE_TAKEOVER_SCRIPTS)
+                  ONLINE_TAKEOVER_SCRIPTS | CROSSARCH_OPERATOR_SCRIPTS)
     missing = sorted(discovered - registered)
     stale = sorted(registered - discovered)
     duplicate_names = sorted(
@@ -1349,6 +1668,45 @@ def selected_checks(pattern_values: list[str] | None) -> list[Check]:
 # exempting them keeps at most ONE foreground child running at a time.
 FOREGROUND_ROLES = frozenset({"browser", "browser_save", "browser_local"})
 
+# These browser-local gates also consume a native driver. Route the selected
+# build explicitly; their standalone default must not silently select another
+# checkout/build, and missing drivers must fail preflight before a long suite.
+NATIVE_BROWSER_DRIVERS = {
+    "party_native_e2e": "mdkr_native_party_e2e_driver",
+    "party_lan_e2e": "mdkr_native_party_e2e_driver",
+    "online_live_transport_e2e": "mdkr_online_live_transport_e2e_driver",
+}
+
+# These browser-local gates consume the selected game executable itself, not a
+# sibling driver. Keep file routing separate so custom executable names and
+# Windows suffixes are retained exactly as selected by the caller.
+NATIVE_BROWSER_BINARIES = {
+    "browser_online_room_gallery": "native gallery binary",
+}
+
+# These checks launch the local Party Worker, directly or through the shared
+# startup helper. Admit its lockfile-installed entrypoint before any suite
+# subprocess or staged-artifact inspection. The LAN-only route deliberately
+# does not depend on Wrangler. Never fetch a replacement tool from the network.
+PARTY_WORKER_CHECKS = frozenset({
+    "party_capacity",
+    "party_experience_canary_smoke",
+    "party_service_chaos",
+    "party_native_e2e",
+    "online_live_transport_e2e",
+    "browser_online_two_person",
+    "party_firewall_negative",
+})
+PARTY_WRANGLER = ROOT / "services" / "party" / "node_modules" / "wrangler" / "bin" / "wrangler.js"
+
+
+def native_browser_driver(check: Check, native: Path) -> Path | None:
+    name = NATIVE_BROWSER_DRIVERS.get(check.name)
+    if name is None:
+        return None
+    suffix = ".exe" if os.name == "nt" else ""
+    return native.parent / (name + suffix)
+
 
 def yield_wrapper(check: Check) -> list[str]:
     """Launcher prefix that makes a bulk task yield to interactive work.
@@ -1398,7 +1756,12 @@ def command_for(
         return command
     cmd = yield_wrapper(check) + [sys.executable, str(TESTS / check.script)]
     if check.role in {"source", "browser_local"}:
-        pass
+        if check.name in NATIVE_BROWSER_BINARIES:
+            cmd += ["--build", str(native),
+                    "--shell-dir", str(ROOT / "dist" / "web")]
+        elif native_browser_driver(check, native) is not None:
+            cmd += ["--build", str(native.parent),
+                    "--shell-dir", str(ROOT / "dist" / "web")]
     elif check.role == "rom":
         cmd += ["--rom", str(rom)]
     elif check.role == "native":
@@ -1448,9 +1811,10 @@ def command_for(
     # framed_world_views joins them for the region reason as well: PAL composes
     # against a 264-row framebuffer, so how a widescreen host maps the authored
     # 2D envelope is a different question there than on NTSC.
-    if check.name in {"rom_revision", "simulation_cadence",
-                      "arbitrary_presentation_rates", "presentation_breadth",
-                      "taj_character_select_pal", "framed_world_views"}:
+    if (check.name in {"rom_revision", "rom_checker_page", "simulation_cadence",
+                       "arbitrary_presentation_rates", "presentation_breadth",
+                       "framed_world_views"}
+            or check.script == "check_taj_character_select.py"):
         cmd += ["--roms", str(roms)]
     cmd += list(check.args)
     return cmd
@@ -1547,6 +1911,75 @@ def format_duration(seconds: float) -> str:
     return f"{remainder}s"
 
 
+# --- SDL flavor witness --------------------------------------------------------
+# The shipped macOS DMG bundles the pinned upstream SDL2 (macos/README.md);
+# Homebrew's `sdl2` alias resolves to sdl2-compat, a shim over SDL3 with
+# different unfocused-joystick semantics. The 1.6.0 qualification runs drifted
+# between the two flavors without anyone noticing, and a lane went green under
+# the shim while red under the shipping library. Every suite run now names the
+# flavor the binary under test actually linked, and a release qualification can
+# refuse the shim outright with --require-shipping-sdl.
+SDL_FLAVOR_SHIM = "sdl2-compat"
+SDL_FLAVOR_UPSTREAM = "sdl2"
+SDL_FLAVOR_STATIC = "static-or-unlinked"
+
+
+def classify_sdl_link(link_lines: str) -> tuple[str, str]:
+    """Classify the SDL the binary links from `otool -L` / `ldd` output.
+
+    Returns (flavor, detail). Pure so the contract test can feed it synthetic
+    loader output.
+    """
+    for raw in link_lines.splitlines():
+        line = raw.strip()
+        if "SDL2" not in line and "libSDL2" not in line:
+            continue
+        path = line.split(" (", 1)[0].split(" => ", 1)[-1].strip()
+        if "sdl2-compat" in path.lower():
+            return SDL_FLAVOR_SHIM, path
+        version = re.search(r"current version ([0-9.]+)", line)
+        detail = path if version is None else f"{path} (current version {version.group(1)})"
+        return SDL_FLAVOR_UPSTREAM, detail
+    return SDL_FLAVOR_STATIC, ""
+
+
+def sdl_flavor_for_binary(binary: Path) -> tuple[str, str]:
+    if sys.platform == "darwin":
+        command = ["otool", "-L", str(binary)]
+    elif sys.platform.startswith("linux"):
+        command = ["ldd", str(binary)]
+    else:
+        return SDL_FLAVOR_STATIC, "no loader introspection on this platform"
+    try:
+        completed = subprocess.run(
+            command, check=True, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except (OSError, subprocess.CalledProcessError) as error:
+        return SDL_FLAVOR_STATIC, f"loader introspection failed: {error}"
+    flavor, detail = classify_sdl_link(completed.stdout)
+    if flavor == SDL_FLAVOR_UPSTREAM and sys.platform == "darwin":
+        # The dylib name alone cannot tell a renamed shim from upstream; the
+        # shim stamps its own name into the binary, as build_app_bundle.sh
+        # also checks.
+        try:
+            with open(detail.split(" (", 1)[0], "rb") as handle:
+                if b"sdl2-compat:" in handle.read():
+                    return SDL_FLAVOR_SHIM, detail
+        except OSError:
+            pass
+    return flavor, detail
+
+
+def report_sdl_flavor(native: Path, require_shipping: bool) -> None:
+    flavor, detail = sdl_flavor_for_binary(native)
+    print(f"run_checks: sdl flavor: {flavor} {detail}".rstrip(), file=sys.stderr)
+    if require_shipping and flavor == SDL_FLAVOR_SHIM:
+        raise RuntimeError(
+            "the native binary links sdl2-compat, not the shipping SDL2; "
+            "configure with PKG_CONFIG_PATH pointing at the pinned SDL2 "
+            "(macos/Scripts/build_release_sdl2.sh) or drop --require-shipping-sdl")
+
+
 def preflight(
     checks: list[Check],
     native: Path,
@@ -1554,6 +1987,7 @@ def preflight(
     asan: Path,
     rom: Path,
     wasm: Path,
+    require_shipping_sdl: bool = False,
 ) -> None:
     roles = {check.role for check in checks}
     required: list[tuple[str, Path]] = []
@@ -1596,9 +2030,27 @@ def preflight(
         )
     if "browser_save" in roles:
         required.append(("native save CLI", native.parent / "mdkr-save"))
+    for check in checks:
+        if check.name in NATIVE_BROWSER_BINARIES:
+            required.append((f"{check.name} {NATIVE_BROWSER_BINARIES[check.name]}",
+                             native))
+        driver = native_browser_driver(check, native)
+        if driver is not None:
+            required.append((f"{check.name} native driver", driver))
+    worker_checks = sorted({check.name for check in checks} & PARTY_WORKER_CHECKS)
+    if worker_checks:
+        required.append(("lockfile-pinned Party Wrangler (" + ", ".join(worker_checks) + ")",
+                         PARTY_WRANGLER))
     missing = [f"{label}: {path}" for label, path in required if not path.is_file()]
     if missing:
-        raise RuntimeError("missing required artifact(s):\n  " + "\n  ".join(missing))
+        guidance = ("\nInstall the local Party dependencies from "
+                    "services/party/package-lock.json with npm ci in services/party; "
+                    "preflight does not install dependencies."
+                    if worker_checks and not PARTY_WRANGLER.is_file() else "")
+        raise RuntimeError("missing required artifact(s):\n  " + "\n  ".join(missing) + guidance)
+
+    if roles & {"native", "release", "ctest"} and native.is_file():
+        report_sdl_flavor(native, require_shipping_sdl)
 
     if ("ctest" in roles and
             not cmake_cache_bool(native, "MDKR_ENABLE_GPU_TESTS")):
@@ -1699,7 +2151,8 @@ def main() -> int:
     parser.add_argument(
         "--roms",
         default="build/roms",
-        help="optional ROM-revision directory passed to check_rom_revision",
+        help="ROM-revision directory (US and PAL v80). Optional for a subset "
+             "run; a release run needs it, and twelve tasks fail without it",
     )
     parser.add_argument("--wasm", default="build-web/mdkr64_web.wasm")
     parser.add_argument(
@@ -1754,6 +2207,10 @@ def main() -> int:
         )
     parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument(
+        "--require-shipping-sdl", action="store_true",
+        help="fail preflight when the native binary links sdl2-compat instead "
+             "of the pinned upstream SDL2 the releases bundle")
+    parser.add_argument(
         "--require-fresh", action="store_true",
         help="fail instead of warn when a tested artifact is older than the "
              "newest compiled source (qualification runs should set this)")
@@ -1768,11 +2225,9 @@ def main() -> int:
     parser.add_argument("--list", action="store_true", help="list tasks and exit")
     args = parser.parse_args()
 
-    # Desktop safety is a window-layer property, not a refusal to run: every
-    # automation surface is created hidden or ordered behind the desktop, so a
-    # suite run never steals focus from interactive work. There is deliberately
-    # no human attestation step — the only human gate in this project is
-    # blessing a release candidate.
+    # The maintainer's standing local authorization can satisfy the execution
+    # guard below. Hidden-window hints remain defense in depth; they do not
+    # themselves establish authorization or guarantee focus isolation.
 
     # Bulk tasks yield to interactive work by being LAUNCHED into the
     # background band (see yield_wrapper): the runner itself keeps the
@@ -1804,7 +2259,7 @@ def main() -> int:
         checks = [
             check for check in checks if check.role in {"source", "native", "ctest"}
         ]
-    # Enumerate before the opt-in gates below remove roles. --list is a
+    # Enumerate before the execution guard below. --list is a
     # read-only inventory of the manifest: it starts no process, so it must
     # show the whole suite (and answer --only for a gated task) without the
     # dedicated-desktop attestation. Gating what --list can *name* would send
@@ -1822,6 +2277,12 @@ def main() -> int:
         print("run_checks: FAIL — selection is empty", file=sys.stderr)
         return 2
 
+    if os.environ.get("MDKR_DEDICATED_TEST_DESKTOP") != "1":
+        print("run_checks: REFUSED — execution requires a human-attested "
+              "dedicated test desktop (MDKR_DEDICATED_TEST_DESKTOP=1); "
+              "use --list for non-executing inventory", file=sys.stderr)
+        return 2
+
     native = resolve_binary(args.build)
     release = resolve_binary(args.release_build)
     asan = resolve_binary(args.asan_build)
@@ -1829,7 +2290,8 @@ def main() -> int:
     roms = resolve_path(args.roms)
     wasm = resolve_path(args.wasm)
     try:
-        preflight(checks, native, release, asan, rom, wasm)
+        preflight(checks, native, release, asan, rom, wasm,
+                  require_shipping_sdl=args.require_shipping_sdl)
     except RuntimeError as exc:
         print(f"run_checks: FAIL — {exc}", file=sys.stderr)
         return 2

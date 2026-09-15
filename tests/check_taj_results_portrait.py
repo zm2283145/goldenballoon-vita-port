@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import shutil
 import subprocess
@@ -42,6 +43,11 @@ def colour_count(samples: list[tuple[int, int, int]], name: str) -> int:
         elif name == "skin":
             match = (red > 125 and green > 70 and green < red * 0.93 and
                      blue < green * 0.90)
+        elif name == "cyan":
+            # The face/trunk, not the dark blue field behind it. Relative
+            # channels survive the results menu's animated global opacity.
+            match = (green > 60 and blue > 80 and green > red * 1.35 and
+                     blue > green * 1.08 and blue < green * 1.50)
         elif name == "blue":
             match = blue > 90 and blue > red * 1.20 and blue > green * 1.10
         elif name == "gold":
@@ -60,29 +66,35 @@ def colour_count(samples: list[tuple[int, int, int]], name: str) -> int:
 # Diddy's authored result card is predominantly his red cap/shirt. Floor is a
 # fraction of the same 40x40 logical card footprint the samples cover.
 DIDDY_RED_MIN_COVERAGE = 0.05
+# The former 2.5% floor counted the tan FACE as gold. The actual thin turban
+# band/jewel occupies 1.63% even in the dim results phase. Pin that detail with
+# margin, and erase it in a pixel control below so absence cannot pass.
+GOLD_MIN_COVERAGE = 0.012
+TAJ_BOUNDS = (0.34, 0.23, 0.46, 0.39)
 
 
-def validate_capture(capture: Path) -> list[str]:
+def validate_pixels(width: int, height: int, pixels: bytes) -> list[str]:
     failures: list[str] = []
-    width, height, pixels = read_ppm(capture)
     # Both bounds are the same 40x40 logical result-card footprint.
-    taj = portrait_samples(width, height, pixels, (0.34, 0.23, 0.46, 0.39))
+    taj = portrait_samples(width, height, pixels, TAJ_BOUNDS)
     diddy = portrait_samples(width, height, pixels, (0.54, 0.23, 0.66, 0.39))
     if not taj or len(taj) != len(diddy):
         return ["portrait evidence regions are invalid"]
 
     taj_counts = {name: colour_count(taj, name) for name in
-                  ("purple", "skin", "blue", "gold", "red")}
+                  ("purple", "skin", "cyan", "blue", "gold", "red")}
     diddy_counts = {name: colour_count(diddy, name) for name in
                     ("purple", "red")}
     total = len(taj)
     if taj_counts["purple"] < total * 0.12:
         failures.append("Taj card lacks the purple turban/robe")
-    if taj_counts["skin"] < total * 0.08:
-        failures.append("Taj card lacks a visible face/trunk")
+    if taj_counts["cyan"] < total * 0.08:
+        failures.append("Taj card lacks a blue elephant face/trunk")
+    if taj_counts["skin"] > total * 0.04:
+        failures.append("Taj card still has the old tan face/trunk")
     if taj_counts["blue"] < total * 0.25:
         failures.append("Taj card lacks its authored blue field")
-    if taj_counts["gold"] < total * 0.025:
+    if taj_counts["gold"] < total * GOLD_MIN_COVERAGE:
         failures.append("Taj card lacks the gold turban detail")
     if taj_counts["purple"] < diddy_counts["purple"] * 3:
         failures.append("Taj result is not visually distinct from Diddy")
@@ -108,11 +120,33 @@ def validate_capture(capture: Path) -> list[str]:
     return failures
 
 
+def validate_capture(capture: Path) -> list[str]:
+    width, height, pixels = read_ppm(capture)
+    failures = validate_pixels(width, height, pixels)
+    # Remove only the band/jewel colour inside Taj's card. This control must
+    # specifically fail the gold assertion, not merely some other card check.
+    without_gold = bytearray(pixels)
+    x0, y0, x1, y1 = TAJ_BOUNDS
+    for y in range(int(height * y0), int(height * y1)):
+        for x in range(int(width * x0), int(width * x1)):
+            offset = (y * width + x) * 3
+            pixel = tuple(pixels[offset:offset + 3])
+            if colour_count([pixel], "gold"):
+                without_gold[offset:offset + 3] = bytes((34, 72, 190))
+    if "Taj card lacks the gold turban detail" not in validate_pixels(
+            width, height, bytes(without_gold)):
+        failures.append("gold-removal positive control escaped detection")
+    return failures
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--frames", type=int, default=MIN_FRAMES)
+    parser.add_argument("--renderer", choices=("webgpu", "gl"), default="webgpu")
+    parser.add_argument("--keep-frames", type=Path,
+                        help="retain isolated captures and log for visual review")
     parser.add_argument(
         "--timeout", type=int, default=300,
         help="wall-clock limit for the long two-results capture (default: 300s)",
@@ -133,7 +167,13 @@ def main() -> int:
         return 1
 
     failures: list[str] = []
-    with tempfile.TemporaryDirectory(prefix="mdkr-taj-results-") as temporary:
+    if args.keep_frames is not None:
+        args.keep_frames = args.keep_frames.resolve()
+        args.keep_frames.mkdir(parents=True, exist_ok=True)
+    output_root = (contextlib.nullcontext(str(args.keep_frames))
+                   if args.keep_frames is not None else
+                   tempfile.TemporaryDirectory(prefix="mdkr-taj-results-"))
+    with output_root as temporary:
         run_dir = Path(temporary)
         save_dir = run_dir / "save"
         frames_dir = run_dir / "frames"
@@ -148,7 +188,7 @@ def main() -> int:
             MDKR_AUDIO="0",
             MDKR_AUTOPILOT="1",
             MDKR_TRACE="1",
-            MDKR_RENDERER="gl",
+            MDKR_RENDERER=args.renderer,
             MDKR_DUMP_FROM=str(CAPTURE_FRAMES[0]),
             MDKR_DUMP_EVERY=str(CAPTURE_FRAMES[1] - CAPTURE_FRAMES[0]),
             MDKR_SAVE_DIR=str(save_dir),
@@ -179,6 +219,8 @@ def main() -> int:
             )
             return 1
         output = process.stdout or ""
+        if args.keep_frames is not None:
+            (run_dir / "run.log").write_text(output, encoding="utf-8")
         if process.returncode != 0:
             failures.append(f"exit code {process.returncode}")
         for marker in ("[CRASH]", "[FATAL]", "AddressSanitizer",
@@ -186,7 +228,8 @@ def main() -> int:
             if marker in output:
                 failures.append(f"fatal marker in output: {marker}")
         required = {
-            "OpenGL evidence renderer": "[mdkr64] renderer backend: gl",
+            "requested evidence renderer":
+                f"[mdkr64] renderer backend: {args.renderer}",
             "real Rankings menu": "menu_init: menuId=17",
             "retail-sized native portrait":
                 "taj_portrait: source=native-taj-card size=40x40 retail=40x40",

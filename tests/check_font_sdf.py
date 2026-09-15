@@ -26,7 +26,7 @@ from pathlib import Path
 
 from harness_utils import (ASSERT_MARKERS, DEFAULT_BUILD_DIR, fatal_re,
                            FX_MARKERS, read_ppm as read_ppm_bytes,
-                           resolve_binary)
+                           resolve_binary, save_env)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -80,7 +80,8 @@ def normalized_pace(output: str) -> tuple[str, ...]:
     return tuple(rows)
 
 
-def environment(backend: str, disabled: bool) -> dict[str, str]:
+def environment(backend: str, disabled: bool, save_dir: Path
+                ) -> dict[str, str]:
     env = {
         key: value
         for key, value in os.environ.items()
@@ -103,6 +104,14 @@ def environment(backend: str, disabled: bool) -> dict[str, str]:
         # work left to observe. check_font_outline.py owns that path.
         MDKR_HIRES_TEXT="0",
     )
+    # The scrub above also drops the MDKR_SAVE_DIR tools/run_checks.py exports
+    # per task, and since issue #54 a non-packaged build resolves an unpinned
+    # save to the SHARED per-user directory rather than $CWD/save. An unrelated
+    # adventure-in-progress EEPROM sitting there re-routes the boot flow and
+    # this arm's scripted drive never reaches the frames it captures. Pin the
+    # arm's own directory; save_env() pins the video config with it
+    # (check_harness_isolation.py).
+    save_env(env, save_dir)
     if disabled:
         env["MDKR_FONT_SDF"] = "0"
     return env
@@ -116,6 +125,8 @@ def run_arm(
     run_dir = work / label
     dump_dir = run_dir / "frames"
     dump_dir.mkdir(parents=True)
+    save_dir = run_dir / "save"
+    save_dir.mkdir(parents=True)
     command = [
         str(binary),
         "--headless-frames",
@@ -134,7 +145,7 @@ def run_arm(
         proc = subprocess.run(
             command,
             cwd=run_dir,
-            env=environment(backend, disabled),
+            env=environment(backend, disabled, save_dir),
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

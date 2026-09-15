@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -13,7 +14,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from check_browser_online_two_person import (
     SERVICE, WRANGLER, click_action, free_port, node_binary, wait_worker,
@@ -21,6 +22,9 @@ from check_browser_online_two_person import (
 from check_browser_runtime import (
     CDPClient, ChromeProcess, CheckFailure, find_chrome, page_websocket,
     require, wait_value,
+)
+from party_worker_reporting import (
+    STARTUP_DIAGNOSTIC_BYTES, SanitizedWorkerFailure, startup_diagnostic,
 )
 
 
@@ -33,6 +37,21 @@ COMPATIBILITY = {
     "cadenceHz": 30,
 }
 OPS_READ_TOKEN = "capacity-ops-fixture-0123456789abcdef"
+
+
+def require_worker_dependency() -> None:
+    require(WRANGLER.is_file(),
+            "missing lockfile-pinned Wrangler entrypoint; install the local "
+            "services/party dependencies from services/party/package-lock.json "
+            "(npm ci in services/party), then retry; no dependency was installed")
+
+
+def worker_log_size(log: Any) -> int | None:
+    try:
+        log.flush()
+        return os.fstat(log.fileno()).st_size
+    except (OSError, ValueError, AttributeError):
+        return None
 
 
 def request(origin: str, path: str, value: Any | None = None,
@@ -74,9 +93,59 @@ def worker_command(origin: str, shell: Path, state: Path,
 
 def start_worker(origin: str, shell: Path, state: Path, log: Any,
                  max_admissions: int) -> subprocess.Popen[bytes]:
-    process = subprocess.Popen(worker_command(origin, shell, state, max_admissions),
-                               cwd=SERVICE, stdout=log, stderr=subprocess.STDOUT)
-    wait_worker(origin, process, 60)
+    require_worker_dependency()
+    command = worker_command(origin, shell, state, max_admissions)
+    return start_worker_command(command, origin, log)
+
+
+def start_worker_command(command: list[str], origin: str, log: Any,
+                         stop: Callable[[subprocess.Popen[bytes] | None], None] | None = None
+                         ) -> subprocess.Popen[bytes]:
+    require_worker_dependency()
+    stop = stop if stop is not None else stop_worker
+    start_offset = worker_log_size(log)
+    process: subprocess.Popen[bytes] | None = None
+    try:
+        process = subprocess.Popen(command, cwd=SERVICE, stdout=log,
+                                   stderr=subprocess.STDOUT)
+        wait_worker(origin, process, 60)
+    except BaseException as error:
+        # The caller has not received this handle yet; it cannot clean up a
+        # readiness failure in its own finally block. This ownership obligation
+        # also applies to interruption and unexpected readiness exceptions.
+        try:
+            returncode = process.poll() if process is not None else None
+        except Exception:
+            returncode = None
+        reason = ("spawn_failed" if process is None else
+                  "early_exit" if returncode is not None else "readiness_failed")
+        cleanup_failed = False
+        try:
+            stop(process)
+        except Exception:
+            cleanup_failed = True
+        if not isinstance(error, (CheckFailure, OSError, subprocess.SubprocessError)):
+            # Preserve cancellation/control flow and unexpected exception type
+            # after settling the process; do not turn these into normal test
+            # failures or let optional diagnostic work mask the original error.
+            if cleanup_failed and process is not None:
+                try:
+                    print(f"Party Worker cleanup failed for owned PID {process.pid}; "
+                          "original interruption or failure preserved", file=sys.stderr)
+                except Exception:
+                    pass  # A closed diagnostic stream must not mask interruption.
+            raise
+        try:
+            detail = startup_diagnostic(log, start_offset, returncode, reason)
+        except Exception:
+            detail = "sanitized startup diagnostic unavailable"
+        cleanup = (f"; cleanup failed for owned PID {process.pid}"
+                   if cleanup_failed and process is not None else "")
+        # Suppress exception chaining: subprocess errors may embed the command,
+        # including fixture credentials, and Worker text is not safe to echo.
+        raise SanitizedWorkerFailure(
+            f"Party Worker startup failed ({reason}, exit={returncode}); "
+            f"{detail}{cleanup}") from None
     return process
 
 
@@ -108,7 +177,7 @@ def assert_static(origin: str) -> None:
 def run(args: argparse.Namespace) -> None:
     shell = (ROOT / args.shell_dir).resolve()
     require((shell / "index.html").is_file(), "missing web shell")
-    require(WRANGLER.is_file(), "missing lockfile-pinned Wrangler")
+    require_worker_dependency()
     with tempfile.TemporaryDirectory(prefix="mdkr-capacity-") as temporary:
         root = Path(temporary)
         log_path = root / "wrangler.log"

@@ -1,0 +1,36 @@
+# Adventure Party 3-player admission, then a mid-race host pause used to
+# quit-to-lobby. Identical frontend to adventure_party_3p_admit.txt; the only
+# extra input is one host START during the Ancient Lake race (~frame 4800, well
+# inside the measured race window race-load ~3736 .. finish ~5842 with
+# MDKR_FORCE_LAPS=1). The pause opens the ONE shared pause; the closed-loop
+# MDKR_TEST_PAUSE_QUIT hook (menu.c) then drives the open menu to RETURN TO LOBBY
+# and confirms -> PAUSE_QUIT_LOBBY -> the party returns to the world lobby.
+#
+# Save fixture: see tests/check_adventure_party_admission.py (started Adventure
+# One save in slot 0, so the host's FILE_SELECT confirm resumes it).
+
+# --- Title: reveal Start/Options, then Character Select ---
+1250 START 4
+1330 START 4
+
+# --- PLAYER SELECT: players two and three join on their own controllers ---
+1450 A 4 P2
+1490 A 4 P3
+
+# --- Each player confirms their own character ---
+1580 A 4 P1
+1640 A 4 P2
+1700 A 4 P3
+
+# --- "OK?" accept -> GAME_SELECT ---
+1800 A 4 P1
+
+# --- GAME_SELECT: Adventure One is option 0 -> FILE_SELECT ---
+2050 A 4 P1
+
+# --- FILE_SELECT: host (player one) resumes the started slot 0 ---
+2300 A 4 P1
+
+# --- Mid-race: host opens the shared pause (one edge; the closed-loop
+#     MDKR_TEST_PAUSE_QUIT hook then selects RETURN TO LOBBY) ---
+4800 START 4 P1

@@ -25,6 +25,8 @@
 #define _LANGUAGE_C
 #endif
 #include <PR/gbi.h> /* Gfx, Mtx */
+#include "modern_character_capture_projection.h"
+#include "modern_character_gpu_timing.h"
 #include "gfx_font_registry.h"
 #include "gfx_shadow_frame.h" /* GfxShadowReplayViewProjection */
 
@@ -33,6 +35,7 @@ extern "C" {
 #endif
 
 struct GfxRenderingAPI;
+struct GfxModernSkinnedDraw;
 
 /* Mirrors mgb64's gfx_pc.h struct layout exactly so the vendored backends
  * (gfx_opengl.c / gfx_metal.mm), which include "../gfx_pc.h", can share this
@@ -65,6 +68,24 @@ void gfx_reset_renderer_caches(void);
 /* Initialize and publish a replacement backend after a live backend switch. */
 bool gfx_rebind_renderer(struct GfxRenderingAPI *rapi);
 
+/** True when the active backend can draw generic GPU-skinned characters. */
+bool gfx_modern_character_supported(void);
+
+/**
+ * Retain one immutable modern-character draw for a display-list command.
+ *
+ * The draw descriptor and its bone palette are copied into a bounded frontend
+ * ring. The returned nonzero token is embedded with
+ * gDkrDrawModernCharacter(), so presentation replay never follows a pointer
+ * into mutable game/runtime state. A zero result means the command must not be
+ * emitted; the caller should leave its retail donor visible.
+ */
+uint32_t gfx_modern_character_register_draw(
+    const struct GfxModernSkinnedDraw *draw);
+
+/** Retire backend resources before the CPU owner frees an immutable asset. */
+void gfx_modern_character_release_asset(uint64_t asset_id);
+
 /** Update the drawable dimensions (window/framebuffer pixels). Safe to call
  *  every frame; defaults to 320x240 until set. The backends read
  *  gfx_current_dimensions to size their scene targets. */
@@ -91,6 +112,20 @@ void gfx_dkr_set_logical_surface(uint32_t width, uint32_t height);
  * dump/readback callers must use this query rather than sampling SDL again.
  */
 bool gfx_get_capture_dimensions(uint32_t *width, uint32_t *height);
+
+/** Return and read the last isolated modern-character capture target. The
+ * image is exact output-sized, bottom-left-origin, straight RGBA. */
+bool gfx_get_modern_character_capture_dimensions(uint32_t *width,
+                                                  uint32_t *height);
+bool gfx_get_modern_character_capture_projection(
+    MdkrModernCharacterCaptureProjection *projection);
+bool gfx_get_modern_character_scene_projection(
+    MdkrModernCharacterCaptureProjection *projection);
+int gfx_read_modern_character_capture_rgba(int width, int height,
+                                            uint8_t *rgba_out);
+void gfx_begin_modern_character_gpu_timing(void);
+void gfx_finish_modern_character_gpu_timing(
+    MdkrModernCharacterGpuTimingMetrics *out);
 
 /** Begin a frame transaction for one immutable game-authored task. False means
  * no display list may be submitted. authored_tick was latched when the game

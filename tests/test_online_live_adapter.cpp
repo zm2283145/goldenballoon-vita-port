@@ -11,6 +11,8 @@
  */
 #include "online/match_live_adapter.h"
 
+#include "net/net_failure_ring.h"
+#include "net/match_input_bundle.h"
 #include "net/net_impairment.h"
 #include "net/net_roster_runtime.h"
 #include "net/party_link.h"
@@ -543,6 +545,51 @@ void test_transport_failure_preserves_lobby() {
     CHECK(m.member_count == 1u);
 }
 
+/* Two test endpoints share ONE engine runtime. Async preflight completion may
+ * let either endpoint install first; both must still finish preflight and
+ * create independent race transports. Neither zero nor two installers passes. */
+bool singleInstallerReady(const MdkrOnlineLiveLaunchProbe &a,
+                          const MdkrOnlineLiveLaunchProbe &b) {
+    return a.installed != b.installed && a.preflightReady && b.preflightReady;
+}
+
+bool rosterMatchesInstaller(const MdkrOnlineLiveLaunchProbe &a,
+                            const MdkrOnlineLiveLaunchProbe &b,
+                            uint64_t endpointA, uint64_t endpointB,
+                            const MdkrMatchLaunchDescriptorV1 *launch,
+                            const MdkrNetRoster *roster) {
+    if (!singleInstallerReady(a, b) || !a.descriptorBuilt || !b.descriptorBuilt ||
+        !a.phraseConfirmed || !b.phraseConfirmed ||
+        a.refusal != MDKR_MATCH_LAUNCH_ADMITTED ||
+        b.refusal != MDKR_MATCH_LAUNCH_ADMITTED ||
+        endpointA == 0u || endpointB == 0u || endpointA == endpointB ||
+        launch == nullptr || roster == nullptr ||
+        !mdkr_match_launch_descriptor_validate(launch) ||
+        std::memcmp(launch, &a.descriptor, sizeof(*launch)) != 0 ||
+        std::memcmp(launch, &b.descriptor, sizeof(*launch)) != 0) return false;
+
+    const uint64_t installer = a.installed ? endpointA : endpointB;
+    uint8_t localSlots[MDKR_MATCH_SLOTS];
+    unsigned count = 0u;
+    for (unsigned slot = 0u; slot < launch->manifest.slot_count; ++slot) {
+        if (launch->manifest.slot_owner[slot] == installer)
+            localSlots[count++] = static_cast<uint8_t>(slot);
+    }
+    MdkrNetRoster expected{};
+    if (count == 0u || !mdkr_net_roster_init(&expected, &launch->manifest) ||
+        !mdkr_net_roster_configure_local(&expected, localSlots, count) ||
+        !mdkr_net_roster_set_viewports(&expected, localSlots, count)) return false;
+    return roster->canonical_player_count == expected.canonical_player_count &&
+        roster->local_seat_count == expected.local_seat_count &&
+        roster->viewport_count == expected.viewport_count &&
+        std::memcmp(roster->canonical_owner, expected.canonical_owner,
+                    sizeof(expected.canonical_owner)) == 0 &&
+        std::memcmp(roster->local_to_canonical, expected.local_to_canonical,
+                    sizeof(expected.local_to_canonical)) == 0 &&
+        std::memcmp(roster->viewport_to_canonical, expected.viewport_to_canonical,
+                    sizeof(expected.viewport_to_canonical)) == 0;
+}
+
 /* Drive two adapters from create/join through the loopback mesh to the Loading
  * barrier. `bonusIdentityOnA` seeds a non-retail local identity on A to force
  * the retail-identity clamp. Returns the two probes. */
@@ -550,6 +597,9 @@ struct FullRunResult {
     bool reachedLoading = false;
     MdkrOnlineLiveLaunchProbe probeA{};
     MdkrOnlineLiveLaunchProbe probeB{};
+    uint64_t endpointA = 0u;
+    uint64_t endpointB = 0u;
+    bool runtimeMatchesInstaller = false;
     bool raceRun = false;
     bool raceConverged = false;
     uint32_t racedTicks = 0u;
@@ -604,16 +654,66 @@ struct FullRunResult {
     bool receiverLatchedAbort = false;      /* race_peer_lost(B) after A's abort */
     bool receiverInfoPeerLost = false;      /* raceInfo(B).peerLost */
     bool senderStillConnected = false;      /* A did NOT self-latch its own send */
+    /* N5 route quality (routeClockStepMs > 0): each endpoint's own settled
+     * measurement and the operative entry-timing lead it raced with. */
+    bool routeSettled = false;
+    /* D2 (startBeforeRouteSettles): the room chip A showed at the instant
+     * Start was pressed, and whether the record settled and crossed the wire
+     * afterwards, with the race already armed on the floor. */
+    char chipAtStart[MDKR_ONLINE_ROUTE_QUALITY_BYTES] = {0};
+    bool routeSettledAfterStart = false;
+    bool injectedOnA = false;
+    uint8_t inputDelayA = 0u;
+    uint8_t inputDelayB = 0u;
+    /* N7 burst lane (burst != nullptr): how many B->A bundle sends the driver
+     * actually suppressed, and each endpoint's repair witnesses. */
+    unsigned burstDropped = 0u;
+    uint32_t repairRequestsA = 0u;
+    uint32_t repairAnswersSentB = 0u;
+    uint32_t repairAnswersRefusedB = 0u;
+    uint32_t repairAnswersReceivedA = 0u;
+    uint32_t repairTicksRestoredA = 0u;
+    uint64_t meshRejectedAuthorityA = 0u;
 };
 
 /* One net_impairment matrix cell: a named carrier profile + a deterministic
  * seed and its expected honest outcome. */
 enum MatrixExpect { MATRIX_CONVERGE, MATRIX_RECOVER, MATRIX_EITHER };
+/* N7: a deterministic loss BURST on the realtime state channel, long enough to
+ * outlive the 3-tick bundle redundancy. Unlike the seeded profiles this is not
+ * probabilistic: exactly `sends` consecutive B->A bundle transmissions are
+ * suppressed, so the hole the repair must close is an exact, reproducible run
+ * of authored ticks. */
+struct BurstSpec {
+    /* Race normally until A has folded this many confirmed ticks. */
+    unsigned afterTicks = 0u;
+    /* Then suppress this many consecutive B->A bundle sends. */
+    unsigned sends = 0u;
+    /* Positive control: with repair off the identical burst must be visible
+     * as rollback exhaustion or a race that never converges. */
+    bool repairEnabled = true;
+    /* Split the burst in two. In the first half the AUTHOR does not drain
+     * either, so its committed frontier falls behind the requester's and the
+     * first request names ticks it cannot answer yet; in the second it drains
+     * again but its sends stay suppressed, so the ticks it now commits never
+     * reach the requester as bundles. Only a repair can close that run, and
+     * only a re-ask can obtain one. */
+    bool freezeAuthor = false;
+    /* Override the requester's authored-tick re-ask wait; 0 keeps the shipped
+     * bound and a value past the race replays the single-shot latch. */
+    uint32_t reaskTicks = 0u;
+};
+
 struct ImpairmentSpec {
     MdkrNetImpairmentProfileName profile;
     const char *name;
     MatrixExpect expect;
     uint64_t seed;
+    /* N7: repair rides the reliable authority lane, which the driver's
+     * carrier deliberately does not impair, so a profile whose loss outlives
+     * the bundle redundancy is now healed instead of exhausting the rollback
+     * window. Set false to replay a profile in its pre-repair shape. */
+    bool repairEnabled = true;
 };
 
 /* A tiny checksummed tick token carried through the impairment carrier. The
@@ -664,7 +764,11 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
                                const ImpairmentSpec *imp = nullptr,
                                bool realInput = false,
                                unsigned severAfterTicks = 0u,
-                               bool sendAbortFromA = false) {
+                               bool sendAbortFromA = false,
+                               unsigned routeClockStepMs = 0u,
+                               unsigned injectP95OnA = 0u,
+                               const BurstSpec *burst = nullptr,
+                               bool startBeforeRouteSettles = false) {
     FullRunResult result;
     mdkr_net_roster_runtime_clear();
 
@@ -725,6 +829,53 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
         return result;
     }
 
+    /* N5: hold in SELECTING until both endpoints' route measurement settles.
+     * The probe/echo round trip is timed against the fake clock, so the step
+     * size IS the route's measured latency: 10 ms reads as a LAN route, a
+     * larger step as a route whose entry timing must widen. */
+    if (routeClockStepMs != 0u) {
+        const unsigned budget =
+            (MDKR_MATCH_ROUTE_MEASURE_MS + MDKR_MATCH_ROUTE_DRAIN_MS) * 3u;
+        for (unsigned elapsed = 0u; elapsed <= budget;
+             elapsed += routeClockStepMs) {
+            MdkrOnlineLiveLaunchProbe pa{}, pb{};
+            A->service();
+            B->service();
+            mdkr_online_live_adapter_probe(A.get(), &pa);
+            mdkr_online_live_adapter_probe(B.get(), &pb);
+            if (pa.routeMeasured && pb.routeMeasured) {
+                result.routeSettled = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            clock.nowMs += routeClockStepMs;
+        }
+    }
+
+    /* D2: run the window past the cut floors (MDKR_MATCH_ROUTE_CUT_MIN_SPAN_MS
+     * of window and MDKR_MATCH_ROUTE_CUT_MIN_SAMPLES answered), far short of
+     * the 7 s it needs to settle, and then press Start into it. The hub
+     * delivers synchronously, so fake-clock time only passes where a loop
+     * spends it; without this the race would arm in the same millisecond the
+     * window opened and there would be nothing to cut. */
+    if (startBeforeRouteSettles) {
+        for (unsigned elapsed = 0u;
+             elapsed < MDKR_MATCH_ROUTE_CUT_MIN_SPAN_MS + 500u;
+             elapsed += 10u) {
+            A->service();
+            B->service();
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            clock.nowMs += 10u;
+        }
+    }
+
+    /* Give ONE endpoint a slower measured route, so the two resolve DIFFERENT
+     * operative leads over the same descriptor. */
+    if (injectP95OnA != 0u) {
+        result.injectedOnA = mdkr_online_live_adapter_test_set_route_measurement(
+            A.get(), injectP95OnA);
+    }
+
     /* Selections + Ready for both endpoints (one seat each). */
     auto selectReady = [&](IMdkrOnlineAdapter *self, unsigned character) {
         auto until = [&](MdkrOnlineViewAction next) {
@@ -754,6 +905,12 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
         return result;
     }
 
+    /* What the room chip says at the instant Start is pressed. With no settle
+     * loop above, the window is still open here (it runs for 7 s from the
+     * first channel) and the chip must say the check is still happening. */
+    std::snprintf(result.chipAtStart, sizeof(result.chipAtStart), "%s",
+                  viewOf(A.get()).route_quality);
+
     /* Leader starts the race -> BEGIN_LOADING; both follow the lobby phase. */
     A->submit(cmd(A.get(), MDKR_ONLINE_VIEW_ACTION_START_RACE, 0u, 1u));
     result.reachedLoading = pumpUntil(both, clock, [&]() {
@@ -764,13 +921,58 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
             /* A refuses at the clamp; B never reaches consensus without A. */
             return pa.descriptorBuilt || pa.refusal != MDKR_MATCH_LAUNCH_ADMITTED;
         }
-        return pa.installed && pb.preflightReady;
+        return singleInstallerReady(pa, pb);
     }, 30000u);
 
+    /* The measured MPF2 report is published after consensus, so let both
+     * endpoints exchange it before the probe snapshot is taken. */
+    if (routeClockStepMs != 0u) {
+        (void)pumpUntil(both, clock, [&]() {
+            MdkrOnlineLiveLaunchProbe pa{}, pb{};
+            mdkr_online_live_adapter_probe(A.get(), &pa);
+            mdkr_online_live_adapter_probe(B.get(), &pb);
+            return pa.peerRouteMeasurements > 0u &&
+                   pb.peerRouteMeasurements > 0u;
+        }, 5000u);
+    }
+    /* D2: Start beat the window. The race is already armed on the manifest
+     * floor; the cut window must still settle and its record must still be
+     * exchanged, which is what the NEXT race of a tournament runs on. */
+    if (startBeforeRouteSettles) {
+        result.routeSettledAfterStart = pumpUntil(both, clock, [&]() {
+            MdkrOnlineLiveLaunchProbe pa{}, pb{};
+            mdkr_online_live_adapter_probe(A.get(), &pa);
+            mdkr_online_live_adapter_probe(B.get(), &pb);
+            return pa.routeMeasured && pb.routeMeasured &&
+                   pa.peerRouteMeasurements > 0u &&
+                   pb.peerRouteMeasurements > 0u;
+        }, 10000u);
+    }
     mdkr_online_live_adapter_probe(A.get(), &result.probeA);
     mdkr_online_live_adapter_probe(B.get(), &result.probeB);
+    result.endpointA = backendA.began;
+    result.endpointB = backendB.began;
+    result.runtimeMatchesInstaller = rosterMatchesInstaller(
+        result.probeA, result.probeB, result.endpointA, result.endpointB,
+        mdkr_net_roster_runtime_launch_descriptor(), mdkr_net_roster_runtime_get());
+    if (!bonusIdentityOnA) {
+        std::fprintf(stderr,
+            "shared roster: A=%u B=%u preflight=%u/%u runtime_matches=%u\n",
+            result.probeA.installed ? 1u : 0u, result.probeB.installed ? 1u : 0u,
+            result.probeA.preflightReady ? 1u : 0u,
+            result.probeB.preflightReady ? 1u : 0u,
+            result.runtimeMatchesInstaller ? 1u : 0u);
+        CHECK(result.runtimeMatchesInstaller);
+    }
+    {
+        MdkrOnlineLiveRaceInfo delayA{}, delayB{};
+        if (mdkr_online_live_adapter_race_info(A.get(), &delayA))
+            result.inputDelayA = delayA.inputDelay;
+        if (mdkr_online_live_adapter_race_info(B.get(), &delayB))
+            result.inputDelayB = delayB.inputDelay;
+    }
 
-    /* race: with both descriptors installed, feed real sealed input
+    /* race: with both descriptors agreed, feed real sealed input
      * bundles over the loopback mesh for `raceTicks` authored ticks and fold
      * every confirmed canonical frame into a per-endpoint FNV state hash. The
      * two independent endpoints must converge on the identical hash. */
@@ -848,6 +1050,100 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
                 ++cursor;
             }
         };
+        if (burst != nullptr) {
+            /* ---- N7 realtime loss burst ----------------------------- *
+             *
+             * The driver owns every STATE-lane transmission (the
+             * race_drain_local contract), so a suppressed send really is a
+             * lost datagram: no bundle covering those ticks ever crosses the
+             * mesh. The AUTHORITY lane is deliberately untouched -- it is
+             * reliable by construction, and impairing it would model a
+             * channel the transport does not create. */
+            CHECK(mdkr_online_live_adapter_race_set_repair(
+                A.get(), burst->repairEnabled, burst->reaskTicks));
+            CHECK(mdkr_online_live_adapter_race_set_repair(
+                B.get(), burst->repairEnabled, burst->reaskTicks));
+            const uint8_t delay = ia.inputDelay;
+            unsigned burstRemaining = 0u;
+            bool burstArmed = false;
+            for (unsigned step = 0u; step < 20000u; ++step) {
+                A->service();
+                B->service();
+                MdkrOnlineLiveRaceInfo na{}, nb{};
+                mdkr_online_live_adapter_race_info(A.get(), &na);
+                mdkr_online_live_adapter_race_info(B.get(), &nb);
+                if (na.nextTick <= target) {
+                    const uint32_t sealTick = na.nextTick + delay;
+                    (void)mdkr_online_live_adapter_race_drain_local(A.get());
+                    (void)mdkr_online_live_adapter_race_resend(A.get(),
+                                                               sealTick);
+                }
+                if (nb.nextTick <= target) {
+                    const uint32_t sealTick = nb.nextTick + delay;
+                    const bool suppressed = burstRemaining > 0u;
+                    /* A frozen author does not drain either, so it commits
+                     * nothing new and its frontier falls behind the
+                     * requester's -- the state in which a request names ticks
+                     * the author has no answer for yet. The freeze covers only
+                     * the burst's first half; see BurstSpec::freezeAuthor. */
+                    const bool frozen = burst->freezeAuthor &&
+                                        burstRemaining > burst->sends / 2u;
+                    if (!suppressed || !frozen) {
+                        (void)mdkr_online_live_adapter_race_drain_local(
+                            B.get());
+                    }
+                    if (suppressed) {
+                        --burstRemaining;
+                        ++result.burstDropped;
+                    } else {
+                        (void)mdkr_online_live_adapter_race_resend(B.get(),
+                                                                   sealTick);
+                    }
+                }
+                foldReady(A.get(), cursorA, ia.activeSlotMask, hA);
+                foldReady(B.get(), cursorB, ib.activeSlotMask, hB);
+                if (!burstArmed &&
+                    cursorA >= ia.firstTick + burst->afterTicks) {
+                    burstArmed = true;
+                    burstRemaining = burst->sends;
+                }
+                MdkrOnlineLiveRaceStats sa{}, sb{};
+                mdkr_online_live_adapter_race_stats(A.get(), &sa);
+                mdkr_online_live_adapter_race_stats(B.get(), &sb);
+                if (sa.recoveryReason != 0u || sb.recoveryReason != 0u) {
+                    const MdkrOnlineLiveRaceStats &s =
+                        sa.recoveryReason != 0u ? sa : sb;
+                    result.recoveryReason = s.recoveryReason;
+                    result.recoveryFirstTick = s.recoveryFirstTick;
+                    result.recoveryObservedTick = s.recoveryObservedTick;
+                    result.recoverySlot = s.recoverySlot;
+                    break;
+                }
+                if (cursorA > target && cursorB > target) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                clock.nowMs += 2u;
+            }
+            result.racedTicks =
+                (cursorA <= cursorB ? cursorA : cursorB) - ia.firstTick;
+            result.hashA = hA;
+            result.hashB = hB;
+            result.bothReachedTarget = cursorA > target && cursorB > target;
+            result.raceConverged = result.bothReachedTarget && hA == hB;
+            MdkrOnlineLiveRaceStats sa{}, sb{};
+            mdkr_online_live_adapter_race_stats(A.get(), &sa);
+            mdkr_online_live_adapter_race_stats(B.get(), &sb);
+            result.repairRequestsA = sa.repairRequestsSent;
+            result.repairAnswersSentB = sb.repairAnswersSent;
+            result.repairAnswersRefusedB = sb.repairAnswersRefused;
+            result.repairAnswersReceivedA = sa.repairAnswersReceived;
+            result.repairTicksRestoredA = sa.repairTicksRestored;
+            result.meshRejectedAuthorityA = sa.meshRejectedAuthority;
+            result.inputEnvelopesA = sa.inputEnvelopesReceived;
+            result.inputEnvelopesB = sb.inputEnvelopesReceived;
+            result.transportAcceptedA = sa.transportAccepted;
+            result.transportAcceptedB = sb.transportAccepted;
+            return result;
+        }
         if (imp == nullptr) {
             for (unsigned step = 0u; step < 20000u; ++step) {
                 /* service() before the tick drain -- the load-bearing pump
@@ -944,6 +1240,10 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
          * remote input still crosses the mesh -- impairment never shortcuts it.
          * Two carriers model the two directions; each is seeded per endpoint so
          * the whole matrix is reproducible with no wall-clock dependence. */
+        if (!imp->repairEnabled) {
+            CHECK(mdkr_online_live_adapter_race_set_repair(A.get(), false, 0u));
+            CHECK(mdkr_online_live_adapter_race_set_repair(B.get(), false, 0u));
+        }
         MdkrNetImpairmentProfile prof;
         CHECK(mdkr_net_impairment_named_profile(imp->profile, 30u, &prof));
         MdkrNetImpairment simA; /* A -> B */
@@ -1015,10 +1315,60 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
                 result.recoverySlot = s.recoverySlot;
                 break;
             }
+            /* Mid-race severance warm-up, as the unimpaired path does it:
+             * race until A has genuinely confirmed some ticks AND the
+             * carrier's scheduled outage has played out, then hand off to the
+             * severance phase. Without this break a profile the repair lane
+             * heals runs to the target first, and the silence that follows is
+             * an already-finished race rather than a starvation. */
+            if (severAfterTicks > 0u &&
+                cursorA >= ia.firstTick + severAfterTicks &&
+                simTick > prof.outage_end_tick) {
+                break;
+            }
             if (cursorA > target && cursorB > target) break;
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
             clock.nowMs += 2u;
             ++simTick;
+        }
+        if (severAfterTicks > 0u) {
+            /* The carrier has already starved A's confirmed frontier (the
+             * adapter's per-tick progress observations recorded the stall);
+             * now B goes silent for good, so A's own ping ladder resolves the
+             * typed PeerLost and the adapter takes its production loss path. */
+            result.severed = true;
+            result.racedBeforeSever =
+                cursorA > ia.firstTick ? cursorA - ia.firstTick : 0u;
+            /* Predict alone through the silence at the race's real cadence.
+             * A real engine loop keeps drawing frames while the peer is gone,
+             * and that is the only thing that hands the adapter a progress
+             * observation; stepping the fake clock one authored tick at a time
+             * (rather than the loop's 2 ms nudge) is what makes the confirmed
+             * frontier's stall measurable on the scale the race runs on. Held
+             * below the ping interval + stale window, so this phase is the
+             * stall and the jump below is the loss. */
+            for (unsigned step = 0u; step < 240u; ++step) {
+                A->service();
+                MdkrOnlineLiveRaceInfo pending{};
+                mdkr_online_live_adapter_race_info(A.get(), &pending);
+                if (pending.nextTick > target) break;
+                (void)mdkr_online_live_adapter_race_drain_local(A.get());
+                clock.nowMs += 1000u / 30u;
+            }
+            clock.nowMs += kMdkrMatchControlPingIntervalMs + 1u;
+            A->service(); /* A sends the ping B will never answer. */
+            clock.nowMs += kMdkrMatchControlPingTimeoutMs + 1u;
+            for (unsigned step = 0u; step < 5000u; ++step) {
+                A->service();
+                if (mdkr_online_live_adapter_race_peer_lost(A.get())) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                clock.nowMs += 2u;
+            }
+            result.survivorPeerLostAccessor =
+                mdkr_online_live_adapter_race_peer_lost(A.get());
+            MdkrOnlineLiveRaceInfo endA{};
+            mdkr_online_live_adapter_race_info(A.get(), &endA);
+            result.survivorPeerLostInfo = endA.peerLost;
         }
         result.racedTicks =
             (cursorA <= cursorB ? cursorA : cursorB) - ia.firstTick;
@@ -1045,8 +1395,224 @@ FullRunResult driveTwoAdapters(bool bonusIdentityOnA, unsigned raceTicks = 0u,
         result.impOutageDropped = simA.outage_dropped + simB.outage_dropped;
         result.impThrottled = simA.throttled + simB.throttled;
         result.impOverflow = simA.overflow + simB.overflow;
+        result.repairRequestsA = sa.repairRequestsSent;
+        result.repairAnswersSentB = sb.repairAnswersSent;
+        result.repairAnswersReceivedA = sa.repairAnswersReceived;
+        result.repairTicksRestoredA = sa.repairTicksRestored;
+        result.meshRejectedAuthorityA = sa.meshRejectedAuthority;
     }
     return result;
+}
+
+/* ---- N7: input-gap repair over a realtime loss burst ------------------- *
+ *
+ * Twenty-five consecutive B->A bundle sends are suppressed. That is far longer
+ * than the carrier's three ticks of redundancy, so without repair the run of
+ * authored ticks it costs A can never be covered by a later bundle. */
+constexpr unsigned kRepairBurstSends = 25u;
+constexpr unsigned kRepairBurstAfterTicks = 10u;
+constexpr unsigned kRepairRaceTicks = 120u;
+
+void test_repair_heals_a_realtime_burst() {
+    BurstSpec burst;
+    burst.afterTicks = kRepairBurstAfterTicks;
+    burst.sends = kRepairBurstSends;
+    const FullRunResult r = driveTwoAdapters(
+        /*bonusIdentityOnA=*/false, kRepairRaceTicks, /*imp=*/nullptr,
+        /*realInput=*/false, /*severAfterTicks=*/0u, /*sendAbortFromA=*/false,
+        /*routeClockStepMs=*/0u, /*injectP95OnA=*/0u, &burst);
+    CHECK(r.raceRun);
+    /* The burst really happened, on the realtime channel only. */
+    CHECK(r.burstDropped == kRepairBurstSends);
+    /* A named the hole and B filled it from its own committed input. */
+    CHECK(r.repairRequestsA > 0u);
+    CHECK(r.repairAnswersSentB > 0u);
+    CHECK(r.repairAnswersReceivedA > 0u);
+    CHECK(r.repairTicksRestoredA > 0u);
+    /* The run the redundancy could never cover was closed by repair alone. */
+    CHECK(r.repairTicksRestoredA >= kRepairBurstSends -
+                                        MDKR_MATCH_INPUT_BUNDLE_FRAMES);
+    /* Nothing on the authority lane was refused: a repair is either opened and
+     * applied or it never existed. */
+    CHECK(r.meshRejectedAuthorityA == 0u);
+    /* The race finished and BOTH endpoints committed the identical canonical
+     * timeline: a repaired input is the same input. */
+    CHECK(r.bothReachedTarget);
+    CHECK(r.hashA == r.hashB);
+    CHECK(r.raceConverged);
+    /* No rollback exhaustion: the gap never outlived the retained depth. */
+    CHECK(r.recoveryReason == 0u);
+    mdkr_net_roster_runtime_clear();
+}
+
+/* Positive control: the identical burst with repair turned off. The hole the
+ * redundancy cannot cover is then permanent, so A's confirmed frontier stalls
+ * and the gap ages past the retained rollback depth into typed recovery. */
+void test_realtime_burst_without_repair_exhausts_rollback() {
+    BurstSpec burst;
+    burst.afterTicks = kRepairBurstAfterTicks;
+    burst.sends = kRepairBurstSends;
+    burst.repairEnabled = false;
+    const FullRunResult r = driveTwoAdapters(
+        /*bonusIdentityOnA=*/false, kRepairRaceTicks, /*imp=*/nullptr,
+        /*realInput=*/false, /*severAfterTicks=*/0u, /*sendAbortFromA=*/false,
+        /*routeClockStepMs=*/0u, /*injectP95OnA=*/0u, &burst);
+    CHECK(r.raceRun);
+    CHECK(r.burstDropped == kRepairBurstSends);
+    /* Nothing was repaired, because repair was off. */
+    CHECK(r.repairRequestsA == 0u);
+    CHECK(r.repairTicksRestoredA == 0u);
+    /* MDKR_MATCH_RECOVERY_INPUT_GAP == 1: the timeline became unreconcilable
+     * exactly where the burst began, and the race never converged. */
+    CHECK(r.recoveryReason == 1u);
+    CHECK(!r.raceConverged);
+    mdkr_net_roster_runtime_clear();
+}
+
+/* A burst on the realtime channel must not age out a valid authority packet.
+ * The lanes hold separate keys, sequence spaces and replay windows, so the
+ * repair answers that cross DURING the burst -- behind a long run of state
+ * envelopes in wall-clock order -- are opened and applied rather than retired
+ * as replays of them. (test_match_peer_transport pins the same property at the
+ * transport boundary, including the shared-window control that drops the aged
+ * out packet.) */
+/* The author's own sealed frontier can be BEHIND the run a requester names --
+ * a peer whose drain stalled while the requester's ran on. The author then has
+ * nothing to answer with, and a single-shot request latch would strand that gap
+ * until it aged into INPUT_GAP with repair nominally on. The bounded re-ask
+ * window is what closes it once the author catches up. */
+constexpr unsigned kFrozenAuthorBurstSends = 20u;
+
+void test_repair_heals_a_gap_asked_before_the_author_sealed_it() {
+    BurstSpec burst;
+    burst.afterTicks = kRepairBurstAfterTicks;
+    burst.sends = kFrozenAuthorBurstSends;
+    burst.freezeAuthor = true;
+    const FullRunResult r = driveTwoAdapters(
+        /*bonusIdentityOnA=*/false, kRepairRaceTicks, /*imp=*/nullptr,
+        /*realInput=*/false, /*severAfterTicks=*/0u, /*sendAbortFromA=*/false,
+        /*routeClockStepMs=*/0u, /*injectP95OnA=*/0u, &burst);
+    CHECK(r.raceRun);
+    CHECK(r.burstDropped == kFrozenAuthorBurstSends);
+    /* A asked more than once: the first ask could not be answered, and the
+     * re-ask window is what made a second one possible. */
+    CHECK(r.repairRequestsA > 1u);
+    /* The author eventually answered, and the run was closed by repair. */
+    CHECK(r.repairAnswersSentB > 0u);
+    CHECK(r.repairTicksRestoredA > 0u);
+    /* Nothing was refused: one honest requester stays inside its budget. */
+    CHECK(r.repairAnswersRefusedB == 0u);
+    CHECK(r.meshRejectedAuthorityA == 0u);
+    CHECK(r.bothReachedTarget);
+    CHECK(r.hashA == r.hashB);
+    CHECK(r.recoveryReason == 0u);
+    mdkr_net_roster_runtime_clear();
+}
+
+/* Positive control: the identical run with the re-ask window pushed past the
+ * whole race is the single-shot latch. The one request lands while the author
+ * has nothing to answer, is never repeated, and the gap ages out. */
+void test_gap_asked_before_the_author_sealed_it_strands_on_a_single_shot() {
+    BurstSpec burst;
+    burst.afterTicks = kRepairBurstAfterTicks;
+    burst.sends = kFrozenAuthorBurstSends;
+    burst.freezeAuthor = true;
+    burst.reaskTicks = 100000u; /* longer than the race: never re-ask */
+    const FullRunResult r = driveTwoAdapters(
+        /*bonusIdentityOnA=*/false, kRepairRaceTicks, /*imp=*/nullptr,
+        /*realInput=*/false, /*severAfterTicks=*/0u, /*sendAbortFromA=*/false,
+        /*routeClockStepMs=*/0u, /*injectP95OnA=*/0u, &burst);
+    CHECK(r.raceRun);
+    CHECK(r.burstDropped == kFrozenAuthorBurstSends);
+    /* A did ask -- repair is on, and the seam changed only when it may ask
+     * AGAIN. Some ticks still come back (a gap raised after the author caught
+     * up is answerable on its first ask), so the claim is not that repair did
+     * nothing; it is that the gap raised while the author was behind is never
+     * asked for a second time and therefore never closes. */
+    CHECK(r.repairRequestsA > 0u);
+    /* MDKR_MATCH_RECOVERY_INPUT_GAP: that run aged past the retained depth,
+     * where the identical scenario with the shipped re-ask bound converges. */
+    CHECK(r.recoveryReason == 1u);
+    CHECK(!r.raceConverged);
+    mdkr_net_roster_runtime_clear();
+}
+
+void test_realtime_burst_does_not_age_out_authority_packets() {
+    BurstSpec burst;
+    burst.afterTicks = kRepairBurstAfterTicks;
+    burst.sends = kRepairBurstSends;
+    const FullRunResult r = driveTwoAdapters(
+        /*bonusIdentityOnA=*/false, kRepairRaceTicks, /*imp=*/nullptr,
+        /*realInput=*/false, /*severAfterTicks=*/0u, /*sendAbortFromA=*/false,
+        /*routeClockStepMs=*/0u, /*injectP95OnA=*/0u, &burst);
+    CHECK(r.raceRun);
+    /* Far more than one replay window of state envelopes crossed the mesh. */
+    CHECK(r.inputEnvelopesA > 64u);
+    /* Every authority message A opened was delivered as a repair; none was
+     * dropped, and every answer sent was received. */
+    CHECK(r.meshRejectedAuthorityA == 0u);
+    CHECK(r.repairAnswersReceivedA == r.repairAnswersSentB);
+    CHECK(r.repairAnswersReceivedA > 0u);
+    mdkr_net_roster_runtime_clear();
+}
+
+/* Exercise the harness ownership check deterministically for BOTH winners,
+ * independent of the OS's real DTLS completion order. Start from the actual
+ * agreed descriptor and never mutate the installed production runtime. */
+void test_installer_ownership_checks(const FullRunResult &r) {
+    for (bool aWins : {true, false}) {
+        auto a = r.probeA;
+        auto b = r.probeB;
+        a.installed = aWins;
+        b.installed = !aWins;
+        const uint64_t owner = aWins ? r.endpointA : r.endpointB;
+        uint8_t slots[MDKR_MATCH_SLOTS];
+        unsigned count = 0u;
+        for (unsigned i = 0u; i < a.descriptor.manifest.slot_count; ++i) {
+            if (a.descriptor.manifest.slot_owner[i] == owner)
+                slots[count++] = static_cast<uint8_t>(i);
+        }
+        MdkrNetRoster roster{};
+        CHECK(count == 1u); /* this fixture gives each endpoint one seat */
+        CHECK(mdkr_net_roster_init(&roster, &a.descriptor.manifest));
+        CHECK(mdkr_net_roster_configure_local(&roster, slots, count));
+        CHECK(mdkr_net_roster_set_viewports(&roster, slots, count));
+        const auto matches = [&](const MdkrOnlineLiveLaunchProbe &pa,
+                                 const MdkrOnlineLiveLaunchProbe &pb,
+                                 const MdkrNetRoster *candidate) {
+            return rosterMatchesInstaller(pa, pb, r.endpointA, r.endpointB,
+                                          &r.probeA.descriptor, candidate);
+        };
+        CHECK(matches(a, b, &roster));
+        CHECK(!matches(a, b, nullptr));
+        auto otherA = a;
+        auto otherB = b;
+        otherA.installed = otherB.installed = false;
+        CHECK(!matches(otherA, otherB, &roster));
+        otherA.installed = otherB.installed = true;
+        CHECK(!matches(otherA, otherB, &roster));
+        otherA = a;
+        otherB = b;
+        otherA.installed = !a.installed;
+        otherB.installed = !b.installed;
+        CHECK(!matches(otherA, otherB, &roster)); /* wrong owner's local seats */
+        otherA = a;
+        otherB = b;
+        otherA.preflightReady = false;
+        CHECK(!matches(otherA, otherB, &roster));
+        otherA = a;
+        otherB.preflightReady = false;
+        CHECK(!matches(otherA, otherB, &roster));
+        otherB = b;
+        otherB.descriptor.manifest.match_epoch++;
+        CHECK(!matches(otherA, otherB, &roster)); /* no descriptor consensus */
+        auto wrongRoster = roster;
+        wrongRoster.local_to_canonical[0] ^= 1u;
+        CHECK(!matches(a, b, &wrongRoster));
+        wrongRoster = roster;
+        wrongRoster.viewport_to_canonical[0] ^= 1u;
+        CHECK(!matches(a, b, &wrongRoster));
+    }
 }
 
 void test_full_flow_installs_through_builder() {
@@ -1056,7 +1622,7 @@ void test_full_flow_installs_through_builder() {
     CHECK(r.probeA.descriptorBuilt);
     CHECK(r.probeA.refusal == MDKR_MATCH_LAUNCH_ADMITTED);
     CHECK(r.probeA.preflightReady);
-    CHECK(r.probeA.installed);
+    CHECK(r.runtimeMatchesInstaller);
     /* The descriptor was installed into the engine runtime through the builder. */
     CHECK(mdkr_net_roster_runtime_active());
     const MdkrMatchLaunchDescriptorV1 *installed =
@@ -1072,13 +1638,14 @@ void test_full_flow_installs_through_builder() {
     }
     CHECK(r.probeB.preflightReady);
     CHECK(r.probeB.descriptorBuilt);
+    if (r.runtimeMatchesInstaller) test_installer_ownership_checks(r);
     mdkr_net_roster_runtime_clear();
 }
 
 void test_two_endpoint_race_converges() {
     const FullRunResult r = driveTwoAdapters(/*bonusIdentityOnA=*/false,
                                              /*raceTicks=*/240u);
-    CHECK(r.probeA.installed);  /* the process-global roster holder */
+    CHECK(r.runtimeMatchesInstaller);  /* exactly one process-global roster holder */
     CHECK(r.probeA.preflightReady && r.probeB.preflightReady);
     CHECK(r.raceRun);
     CHECK(r.racedTicks >= 240u);
@@ -1707,7 +2274,10 @@ void test_multi_race_lifecycle() {
         CHECK(pa.descriptor.manifest.match_epoch == 2u);
         CHECK(std::memcmp(&pa.descriptor, &pb.descriptor,
                           sizeof(pa.descriptor)) == 0);
-        CHECK(pa.installed); /* the roster re-installed after the clear */
+        /* The roster re-installed after the clear, for whichever endpoint
+         * completed preflight first. Its local seats must belong to that peer. */
+        CHECK(rosterMatchesInstaller(pa, pb, rig.backendA.began, rig.backendB.began,
+            mdkr_net_roster_runtime_launch_descriptor(), mdkr_net_roster_runtime_get()));
     }
     CHECK(rig.pumpBoth([&]() {
         return rig.lobbiesAt(MDKR_ONLINE_RACING);
@@ -1825,6 +2395,74 @@ void test_captured_results_beat_peer_loss_card() {
         CHECK(l.last_placements[0] == 0u);
         CHECK(l.last_placements[1] == 1u);
     }
+    mdkr_net_roster_runtime_clear();
+}
+
+/* A7: a mid-race peer that goes quiet must soften the live status line to a
+ * retrying hiccup on its FIRST missed control-ping interval -- well before
+ * the mesh's own hard PingTimeout verdict -- and must never announce
+ * "Connection lost" ahead of that real verdict. This is the wiring gate:
+ * mdkr_peer_liveness_on_hit/on_miss are pinned in isolation by
+ * test_match_peer_liveness.cpp, but nothing there proves LiveAdapter
+ * actually calls them. Positive control: commenting out updateLiveness()'s
+ * call site in match_live_adapter.cpp's pumpMesh() leaves every existing
+ * CTest green (verified by hand) and only this arm catches it, since it is
+ * the only one that ever reads the status string mid-race before a loss. */
+void test_soft_fail_liveness_precedes_hard_fail_status() {
+    LifecycleRig rig;
+    CHECK(rig.init());
+    if (!rig.A || !rig.B) return;
+    IMdkrOnlineAdapter *A = rig.A.get();
+    IMdkrOnlineAdapter *B = rig.B.get();
+    CHECK(rig.toSelecting());
+    rig.selectReady(A, 1u);
+    rig.selectReady(B, 2u);
+    CHECK(rig.pumpBoth([&]() {
+        return viewOf(A).ready_count == 2u && viewOf(B).ready_count == 2u;
+    }, 3000u));
+    CHECK(rig.startRace());
+    CHECK(rig.pumpBoth([&]() {
+        return viewOf(A).kind == MDKR_ONLINE_VIEW_RACING &&
+               viewOf(B).kind == MDKR_ONLINE_VIEW_RACING;
+    }, 10000u));
+    CHECK(std::strcmp(viewOf(A).status, "Direct Connection") == 0);
+
+    /* B goes silent (its service() is simply never called again): A's
+     * control ping to B goes unanswered. The next scheduled ping was armed
+     * against a fake-clock timestamp set during the busy racing traffic
+     * above, so the first jump only advances far enough to make A actually
+     * SEND that ping (pingOutstandingSinceMs starts fresh, not already
+     * late); a second full interval past THAT is what makes it count as one
+     * missed probe. Still far short of the hard timeout -- this must soften
+     * the status without ending the race or reporting a loss yet. */
+    rig.clock.nowMs += kMdkrMatchControlPingIntervalMs + 1u;
+    A->service();
+    bool sawHiccup = false;
+    for (unsigned step = 0u; step < 3000u; ++step) {
+        A->service();
+        if (std::strcmp(viewOf(A).status, "Connection hiccup — retrying") == 0) {
+            sawHiccup = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        rig.clock.nowMs += 2u;
+    }
+    CHECK(sawHiccup);
+    CHECK(viewOf(A).kind == MDKR_ONLINE_VIEW_RACING);
+    CHECK(!mdkr_online_live_adapter_race_peer_lost(A));
+    /* Never the hard-fail copy ahead of the mesh's own verdict. */
+    CHECK(std::strcmp(viewOf(A).status, "Connection lost") != 0);
+
+    /* Past the full stale deadline: the mesh's real PingTimeout fires and
+     * the usual mid-race recovery flow takes over. */
+    rig.clock.nowMs += kMdkrMatchControlPingTimeoutMs + 1u;
+    for (unsigned step = 0u; step < 5000u; ++step) {
+        A->service();
+        if (mdkr_online_live_adapter_race_peer_lost(A)) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        rig.clock.nowMs += 2u;
+    }
+    CHECK(mdkr_online_live_adapter_race_peer_lost(A));
     mdkr_net_roster_runtime_clear();
 }
 
@@ -2135,8 +2773,14 @@ void test_impairment_matrix() {
         {MDKR_NET_PROFILE_REGIONAL_VARIABLE, "regional-variable",
          MATRIX_CONVERGE, matrixSeed(2u)},
         {MDKR_NET_PROFILE_POOR, "poor", MATRIX_CONVERGE, matrixSeed(3u)},
+        /* The outage's loss run far outlives the bundle's three ticks of
+         * redundancy, so it is exactly what the repair lane exists for: with
+         * repair the race converges, and the SAME profile and seed replayed
+         * without it is the pre-repair rollback exhaustion. */
         {MDKR_NET_PROFILE_TWO_SECOND_OUTAGE, "two-second-outage",
-         MATRIX_RECOVER, matrixSeed(4u)},
+         MATRIX_CONVERGE, matrixSeed(4u)},
+        {MDKR_NET_PROFILE_TWO_SECOND_OUTAGE, "two-second-outage-unrepaired",
+         MATRIX_RECOVER, matrixSeed(4u), /*repairEnabled=*/false},
         {MDKR_NET_PROFILE_ADVERSARIAL, "adversarial", MATRIX_EITHER,
          matrixSeed(5u)},
     };
@@ -2145,7 +2789,7 @@ void test_impairment_matrix() {
             driveTwoAdapters(/*bonusIdentityOnA=*/false, /*raceTicks=*/240u,
                              &spec);
         /* The stack came up and installed under this profile. */
-        CHECK(r.probeA.installed);
+        CHECK(r.runtimeMatchesInstaller);
         CHECK(r.probeA.preflightReady && r.probeB.preflightReady);
         CHECK(r.raceRun);
         /* The carrier was genuinely in the path (non-vacuous) and never
@@ -2205,11 +2849,22 @@ void test_impairment_matrix() {
             CHECK(r.impCorruptDropped > 0u);
         }
         if (spec.profile == MDKR_NET_PROFILE_TWO_SECOND_OUTAGE) {
-            /* The outage genuinely blacked the carrier out and the transport
-             * latched INPUT_GAP once the stall outran the retained window. */
+            /* The outage genuinely blacked the carrier out. */
             CHECK(r.impOutageDropped > 0u);
-            CHECK(r.recoveryReason == 1u); /* INPUT_GAP */
-            CHECK(r.recoveryObservedTick - r.recoveryFirstTick >= 31u);
+            if (spec.repairEnabled) {
+                /* Repair closed the run the redundancy could never cover, and
+                 * every authority message it opened was applied. */
+                CHECK(r.repairRequestsA > 0u);
+                CHECK(r.repairTicksRestoredA > 0u);
+                CHECK(r.meshRejectedAuthorityA == 0u);
+                CHECK(r.recoveryReason == 0u);
+            } else {
+                /* The pre-repair shape: the transport latched INPUT_GAP once
+                 * the stall outran the retained window. */
+                CHECK(r.repairRequestsA == 0u);
+                CHECK(r.recoveryReason == 1u); /* INPUT_GAP */
+                CHECK(r.recoveryObservedTick - r.recoveryFirstTick >= 31u);
+            }
         }
 
         std::fprintf(
@@ -2926,14 +3581,275 @@ void test_stale_retry_cap_terminates_under_cross_type_traffic() {
     mdkr_net_roster_runtime_clear();
 }
 
+/* B4/A4 forensics: the SAME production path as
+ * test_midrace_peer_loss_ends_survivor, but starved by a seeded
+ * net_impairment carrier first, so the adapter's own per-tick progress
+ * observations record a stall before its own PeerLost handler dumps the ring's
+ * tail. Nothing here writes a record or calls dump: every record and the dump
+ * itself come from platform/net + platform/online. Delete the mesh recorder or
+ * the adapter's dump and the lane that reads this dump goes red. */
+void test_forensics_dump_on_midrace_peer_loss() {
+    const ImpairmentSpec outage{MDKR_NET_PROFILE_TWO_SECOND_OUTAGE,
+                                "two-second-outage", MATRIX_RECOVER,
+                                UINT64_C(0x4e455446)};
+    /* Both adapters record into the one process ring, so the pre-severance
+     * half of the dump carries each endpoint's ticks interleaved. */
+    const FullRunResult r =
+        driveTwoAdapters(/*bonusIdentityOnA=*/false, /*raceTicks=*/240u,
+                         /*imp=*/&outage, /*realInput=*/false,
+                         /*severAfterTicks=*/12u);
+    CHECK(r.raceRun);
+    CHECK(r.severed);
+    /* The carrier really starved the link before the loss. */
+    CHECK(r.impOutageDropped > 0u);
+    /* The survivor took the production loss path -- the one that dumps. */
+    CHECK(r.survivorPeerLostAccessor);
+    CHECK(r.survivorPeerLostInfo);
+    std::fprintf(stderr,
+                 "[forensics] peer loss after impairment: racedBeforeSever=%u "
+                 "outageDropped=%llu recording=%d\n",
+                 r.racedBeforeSever,
+                 (unsigned long long)r.impOutageDropped,
+                 mdkr_net_failure_ring_recording() ? 1 : 0);
+    mdkr_net_roster_runtime_clear();
+}
+
+/* N5 A5/B1: the pre-flight route-quality measurement over the REAL loopback
+ * DTLS mesh. Both endpoints replay both lanes at their real cadence and payload
+ * size, exchange the resulting record in their MPF2 reports, and must agree on
+ * the band. A LAN-shaped route leaves the agreed entry timing alone; a route
+ * whose round trip needs more authored ticks widens this endpoint's lead above
+ * the manifest floor while the two endpoints still converge on one canonical
+ * timeline. */
+void test_route_quality_measured_and_agreed() {
+    const FullRunResult r = driveTwoAdapters(
+        /*bonusIdentityOnA=*/false, /*raceTicks=*/60u, /*imp=*/nullptr,
+        /*realInput=*/false, /*severAfterTicks=*/0u, /*sendAbortFromA=*/false,
+        /*routeClockStepMs=*/10u);
+    CHECK(r.routeSettled);
+    CHECK(r.probeA.routeMeasured);
+    CHECK(r.probeB.routeMeasured);
+    /* The record crossed the wire in both directions. */
+    CHECK(r.probeA.peerRouteMeasurements == 1u);
+    CHECK(r.probeB.peerRouteMeasurements == 1u);
+    /* Both peers agree on the band -- each on its own measurement and on the
+     * one it received. */
+    CHECK(r.probeA.routeMeasurement.band == r.probeB.routeMeasurement.band);
+    CHECK(r.probeA.peerRouteMeasurement.band == r.probeB.routeMeasurement.band);
+    CHECK(r.probeB.peerRouteMeasurement.band == r.probeA.routeMeasurement.band);
+    CHECK(r.probeA.routeMeasurement.band == MDKR_MATCH_ROUTE_BAND_STEADY);
+    /* A LAN-shaped route needs no more lead than the manifest already agreed. */
+    CHECK(r.inputDelayA == r.probeA.descriptor.manifest.input_delay);
+    CHECK(r.inputDelayB == r.probeB.descriptor.manifest.input_delay);
+    CHECK(r.raceConverged);
+    std::fprintf(stderr,
+                 "[route] lan p95=%ums score=%u band=%u delay=%u/%u\n",
+                 static_cast<unsigned>(r.probeA.routeMeasurement.p95_rtt_ms),
+                 static_cast<unsigned>(r.probeA.routeMeasurement.score),
+                 static_cast<unsigned>(r.probeA.routeMeasurement.band),
+                 static_cast<unsigned>(r.inputDelayA),
+                 static_cast<unsigned>(r.inputDelayB));
+    mdkr_net_roster_runtime_clear();
+}
+
+/* Positive control for the widen: the same run with a round trip a single
+ * authored tick can no longer absorb must raise BOTH endpoints' operative lead
+ * above the manifest floor, and the two independent endpoints must still fold
+ * the identical canonical state hash. Neuter the widen (return the floor) and
+ * the delay assertion below fails while convergence still passes -- the widen
+ * is the only thing this arm can be measuring. */
+void test_route_quality_widens_entry_timing() {
+    const FullRunResult r = driveTwoAdapters(
+        /*bonusIdentityOnA=*/false, /*raceTicks=*/60u, /*imp=*/nullptr,
+        /*realInput=*/false, /*severAfterTicks=*/0u, /*sendAbortFromA=*/false,
+        /*routeClockStepMs=*/120u);
+    CHECK(r.routeSettled);
+    CHECK(r.probeA.routeMeasured && r.probeB.routeMeasured);
+    CHECK(r.probeA.routeMeasurement.p95_rtt_ms >= 100u);
+    CHECK(r.inputDelayA > r.probeA.descriptor.manifest.input_delay);
+    CHECK(r.inputDelayB > r.probeB.descriptor.manifest.input_delay);
+    CHECK(r.inputDelayA <= MDKR_MATCH_ROUTE_INPUT_DELAY_CAP);
+    CHECK(r.inputDelayB <= MDKR_MATCH_ROUTE_INPUT_DELAY_CAP);
+    /* The widen is per endpoint and outside the descriptor, so the shared
+     * timeline is unchanged: both endpoints still converge byte for byte. */
+    CHECK(r.raceConverged);
+    CHECK(r.hashA == r.hashB);
+    std::fprintf(stderr,
+                 "[route] widened p95=%ums band=%u delay=%u/%u floor=%u\n",
+                 static_cast<unsigned>(r.probeA.routeMeasurement.p95_rtt_ms),
+                 static_cast<unsigned>(r.probeA.routeMeasurement.band),
+                 static_cast<unsigned>(r.inputDelayA),
+                 static_cast<unsigned>(r.inputDelayB),
+                 static_cast<unsigned>(
+                     r.probeA.descriptor.manifest.input_delay));
+    mdkr_net_roster_runtime_clear();
+}
+
+/* N5 item 5: the determinism claim the widen rests on. ONE endpoint is given a
+ * measured route slow enough to widen while the other stays on the manifest
+ * floor, so the two race with DIFFERENT operative leads over the same
+ * descriptor. Sealed bundles carry their own tick numbers, so the shared
+ * canonical timeline must be unaffected: the two independent endpoints fold the
+ * identical state hash. Without the asymmetry this arm would prove nothing the
+ * symmetric one does not. */
+void test_route_quality_asymmetric_leads_still_converge() {
+    const FullRunResult r = driveTwoAdapters(
+        /*bonusIdentityOnA=*/false, /*raceTicks=*/60u, /*imp=*/nullptr,
+        /*realInput=*/false, /*severAfterTicks=*/0u, /*sendAbortFromA=*/false,
+        /*routeClockStepMs=*/10u, /*injectP95OnA=*/240u);
+    CHECK(r.routeSettled);
+    CHECK(r.injectedOnA);
+    /* A widened off the injected measurement; B measured the real LAN route
+     * and stayed on the floor. */
+    CHECK(r.inputDelayA > r.probeA.descriptor.manifest.input_delay);
+    CHECK(r.inputDelayB == r.probeB.descriptor.manifest.input_delay);
+    CHECK(r.inputDelayA != r.inputDelayB);
+    CHECK(r.raceRun);
+    CHECK(r.raceConverged);
+    CHECK(r.hashA == r.hashB);
+    std::fprintf(stderr,
+                 "[route] asymmetric delay=%u/%u floor=%u hash=%llx/%llx\n",
+                 static_cast<unsigned>(r.inputDelayA),
+                 static_cast<unsigned>(r.inputDelayB),
+                 static_cast<unsigned>(
+                     r.probeA.descriptor.manifest.input_delay),
+                 (unsigned long long)r.hashA, (unsigned long long)r.hashB);
+    mdkr_net_roster_runtime_clear();
+}
+
+/* D-N5: Start is never held for the route check. Pressing Start while the
+ * window is still open races on the manifest floor -- and the room chip says
+ * the connection is being checked rather than showing an empty space. The
+ * record must still settle afterwards and must still cross the wire, because
+ * that is what the NEXT race of a tournament resolves its widen and its chip
+ * from. Its positive control is the checking chip itself: make the projection
+ * fall back to an empty chip while the measurement runs and the chip assertion
+ * fails while everything else here still passes. */
+void test_route_start_before_settle_never_blocks() {
+    const FullRunResult r = driveTwoAdapters(
+        /*bonusIdentityOnA=*/false, /*raceTicks=*/60u, /*imp=*/nullptr,
+        /*realInput=*/false, /*severAfterTicks=*/0u, /*sendAbortFromA=*/false,
+        /*routeClockStepMs=*/0u, /*injectP95OnA=*/0u, /*burst=*/nullptr,
+        /*startBeforeRouteSettles=*/true);
+    /* Start arrived first, so this race ran on the agreed floor -- never held,
+     * never widened off a record that did not exist yet. */
+    CHECK(r.inputDelayA == r.probeA.descriptor.manifest.input_delay);
+    CHECK(r.inputDelayB == r.probeB.descriptor.manifest.input_delay);
+    CHECK(std::strcmp(r.chipAtStart, "Checking connection\xe2\x80\xa6") == 0);
+    /* ... and the cut window still settled, on both endpoints, and both
+     * records still crossed the wire as the round's second attestation. */
+    CHECK(r.routeSettledAfterStart);
+    CHECK(r.probeA.routeMeasured && r.probeB.routeMeasured);
+    /* Adopted, and remembered as a cut window -- it saw part of the route. */
+    CHECK(r.probeA.routeCutShort && r.probeB.routeCutShort);
+    CHECK(r.probeA.peerRouteMeasurements > 0u);
+    CHECK(r.probeB.peerRouteMeasurements > 0u);
+    CHECK(r.raceConverged);
+    std::fprintf(stderr,
+                 "[route] start-before-settle chip=\"%s\" delay=%u/%u "
+                 "p95=%ums band=%u\n",
+                 r.chipAtStart, static_cast<unsigned>(r.inputDelayA),
+                 static_cast<unsigned>(r.inputDelayB),
+                 static_cast<unsigned>(r.probeA.routeMeasurement.p95_rtt_ms),
+                 static_cast<unsigned>(r.probeA.routeMeasurement.band));
+    mdkr_net_roster_runtime_clear();
+}
+
+/* D2 fix round: a cut record is held only for the race that cut it. Race 1
+ * starts into an open window, so both endpoints adopt a CUT record; the
+ * rematch boundary retires it (the lanes are idle in the lobby, so a whole
+ * window costs nobody a wait) and race 2 runs on a FULL one. Its positive
+ * control is `rearmRouteReportForNextRace` keeping a cut record like a full
+ * one: race 2 then still reports routeCutShort and never measures again. */
+void test_route_cut_record_is_replaced_next_round() {
+    LifecycleRig rig;
+    CHECK(rig.init());
+    if (!rig.A || !rig.B) return;
+    IMdkrOnlineAdapter *A = rig.A.get();
+    IMdkrOnlineAdapter *B = rig.B.get();
+    auto probeOf = [](IMdkrOnlineAdapter *a) {
+        MdkrOnlineLiveLaunchProbe p{};
+        mdkr_online_live_adapter_probe(a, &p);
+        return p;
+    };
+    /* Spend fake-clock time in the open window; the hub delivers
+     * synchronously, so time only passes where a loop spends it. */
+    auto spendWindow = [&](unsigned ms) {
+        for (unsigned elapsed = 0u; elapsed < ms; elapsed += 10u) {
+            A->service();
+            B->service();
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            rig.clock.nowMs += 10u;
+        }
+    };
+
+    CHECK(rig.toSelecting());
+    /* Past the cut floors, far short of the 7 s the window needs to settle. */
+    spendWindow(MDKR_MATCH_ROUTE_CUT_MIN_SPAN_MS + 500u);
+    CHECK(!probeOf(A).routeMeasured);
+    CHECK(std::strcmp(viewOf(A).route_quality,
+                      "Checking connection\xe2\x80\xa6") == 0);
+
+    rig.selectReady(A, 1u);
+    rig.selectReady(B, 2u);
+    CHECK(rig.pumpBoth([&]() {
+        return viewOf(A).ready_count == 2u && viewOf(B).ready_count == 2u;
+    }, 3000u));
+
+    /* ---- Race 1: Start beat the window ---- */
+    CHECK(rig.startRace());
+    CHECK(rig.pumpBoth([&]() {
+        return probeOf(A).routeMeasured && probeOf(B).routeMeasured;
+    }, 10000u));
+    CHECK(probeOf(A).routeCutShort && probeOf(B).routeCutShort);
+    CHECK(rig.pumpBoth([&]() {
+        return rig.lobbiesAt(MDKR_ONLINE_RACING);
+    }, 10000u));
+    CHECK(rig.driveConvergedTicks(30u));
+
+    const uint8_t placements[4] = {0u, 1u, 0xFFu, 0xFFu};
+    CHECK(mdkr_online_live_adapter_report_results(A, placements));
+    CHECK(rig.pumpBoth([&]() {
+        return rig.lobbiesAt(MDKR_ONLINE_RESULTS);
+    }, 10000u));
+    mdkr_net_roster_runtime_clear();
+
+    /* ---- The rematch boundary retires the cut record ---- */
+    CHECK(A->submit(cmd(A, MDKR_ONLINE_VIEW_ACTION_RACE_AGAIN)).accepted);
+    CHECK(rig.pumpBoth([&]() {
+        return viewOf(A).kind == MDKR_ONLINE_VIEW_SELECTING &&
+               viewOf(B).kind == MDKR_ONLINE_VIEW_SELECTING;
+    }, 10000u));
+    CHECK(!probeOf(A).routeMeasured && !probeOf(B).routeMeasured);
+
+    /* ---- Race 2 runs on a full window ---- */
+    spendWindow(MDKR_MATCH_ROUTE_MEASURE_MS + MDKR_MATCH_ROUTE_DRAIN_MS + 500u);
+    CHECK(probeOf(A).routeMeasured && probeOf(B).routeMeasured);
+    CHECK(!probeOf(A).routeCutShort && !probeOf(B).routeCutShort);
+    CHECK(std::strcmp(viewOf(A).route_quality, "") != 0);
+    CHECK(std::strstr(viewOf(A).route_quality, "Checking") == nullptr);
+    std::fprintf(stderr,
+                 "[route] next-round chip=\"%s\" p95=%ums cut=%u\n",
+                 viewOf(A).route_quality,
+                 static_cast<unsigned>(probeOf(A).routeMeasurement.p95_rtt_ms),
+                 probeOf(A).routeCutShort ? 1u : 0u);
+    mdkr_net_roster_runtime_clear();
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
     bool matrixOnly = false;
     bool latencyOnly = false;
+    bool forensicsOnly = false;
+    bool routeOnly = false;
+    bool repairOnly = false;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--matrix") == 0) matrixOnly = true;
         if (std::strcmp(argv[i], "--latency") == 0) latencyOnly = true;
+        if (std::strcmp(argv[i], "--forensics") == 0) forensicsOnly = true;
+        if (std::strcmp(argv[i], "--route") == 0) routeOnly = true;
+        if (std::strcmp(argv[i], "--repair") == 0) repairOnly = true;
     }
     /* The token gate must be open for the live adapter to construct. The
      * matrix lane runs in its own process, so set it there too. */
@@ -2942,6 +3858,32 @@ int main(int argc, char **argv) {
 #else
     setenv("MDKR_INTERNAL_TEST_TOKEN", "mdkr64-online-live-v1", 1);
 #endif
+    if (repairOnly) {
+        test_repair_heals_a_realtime_burst();
+        test_realtime_burst_without_repair_exhausts_rollback();
+        test_realtime_burst_does_not_age_out_authority_packets();
+        test_repair_heals_a_gap_asked_before_the_author_sealed_it();
+        test_gap_asked_before_the_author_sealed_it_strands_on_a_single_shot();
+        std::fprintf(stderr, "online_live_repair: %d checks, %d failures\n",
+                     g_checks, g_failures);
+        return g_failures == 0 ? 0 : 1;
+    }
+    if (routeOnly) {
+        test_route_quality_measured_and_agreed();
+        test_route_quality_widens_entry_timing();
+        test_route_quality_asymmetric_leads_still_converge();
+        test_route_start_before_settle_never_blocks();
+        test_route_cut_record_is_replaced_next_round();
+        std::fprintf(stderr, "online_live_route: %d checks, %d failures\n",
+                     g_checks, g_failures);
+        return g_failures == 0 ? 0 : 1;
+    }
+    if (forensicsOnly) {
+        test_forensics_dump_on_midrace_peer_loss();
+        std::fprintf(stderr, "online_live_forensics: %d checks, %d failures\n",
+                     g_checks, g_failures);
+        return g_failures == 0 ? 0 : 1;
+    }
     if (matrixOnly) {
         test_impairment_matrix();
         std::fprintf(stderr, "online_live_matrix: %d checks, %d failures\n",
@@ -2970,6 +3912,7 @@ int main(int argc, char **argv) {
     test_multi_race_lifecycle();
     test_race_end_latch_frees_play_here();
     test_captured_results_beat_peer_loss_card();
+    test_soft_fail_liveness_precedes_hard_fail_status();
     test_command_refusal_correlates_by_id();
     test_config_track_precheck_rejects_non_race_id();
     test_race_end_card_survives_late_state();

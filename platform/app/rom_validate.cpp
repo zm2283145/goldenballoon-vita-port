@@ -109,6 +109,20 @@ RomInfo mdkr_validate_rom_progress(const char *path,
     DkrRomValidation validation;
     info.valid = dkr_rom_validate_image(bytes, DKR_ROM_SIZE_BYTES, path,
                                         &options, &validation);
+    if (info.valid) {
+        char profileError[192];
+        if (!mdkr_donor_gameplay_profiles_from_rom(
+                bytes, DKR_ROM_SIZE_BYTES, &validation.id,
+                &info.donor_profiles, profileError, sizeof(profileError))) {
+            /* Gameplay comparison is authoring evidence, not the boot trust
+             * boundary. Preserve a valid ROM verdict while withholding data
+             * we could not prove from its bounded layout. */
+            std::memset(&info.donor_profiles, 0,
+                        sizeof(info.donor_profiles));
+            put(info.donor_profiles_message,
+                sizeof(info.donor_profiles_message), profileError);
+        }
+    }
     std::free(bytes);
 
     const DkrRomId &id = validation.id;

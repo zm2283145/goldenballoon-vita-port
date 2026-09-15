@@ -266,7 +266,11 @@ MdkrCameraObstructionResolverStatus mdkr_camera_obstruction_resolve(
         float recovery;
 
         if (retraction_latched) {
-            clear_run_ticks++;
+            /* Paused/projection-only revalidation proves geometry, not an
+             * elapsed authored tick. It must not spend the release hold. */
+            if (input->fixed_delta_seconds > 0.0f) {
+                clear_run_ticks++;
+            }
             if (clear_run_ticks >= config->release_hold_ticks) {
                 retraction_latched = 0;
                 clear_run_ticks = 0U;

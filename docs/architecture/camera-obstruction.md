@@ -347,6 +347,10 @@ Paused behavior requires an explicit rule: pose time does not advance, but a pen
 display/FOV generation must still be resolved before the next authored image. Use
 zero-time revalidation—no recovery integration—so changing video options cannot
 manufacture a collision or move a stationary camera over time.
+The retraction release hold also measures accepted positive-time authored steps,
+not resolver calls. Repeated zero-time clear queries may update the validated
+projection but cannot consume this hold. A newly detected contact still
+retracts immediately and restarts the hold, even at zero elapsed time.
 
 ### 5.3 Effective projection handshake
 
@@ -1366,6 +1370,46 @@ and the lake route picks up one correction re-engagement it does not have under
 `FULL`. So the racing profile is not free: removing the fan does not smooth the
 camera, it converts a shoulder step into a longer emergency hold. Choosing it
 has to be argued on composition, not on these numbers.
+
+**Qualification update, 2026-09-04:** the hard motion row is not currently
+green and must not be described as such. The pre-cut 1.7 tree reported one
+rapid correction re-engagement on Ancient Lake plus one continuous-surface
+shoulder flip in the 3P+T.T. route. Re-running the same current checker against
+the v1.6.0 binary reported one Ancient Lake and three 3P+T.T. re-engagements
+(zero shoulder flips). That A/B rules out treating the class as a newly
+introduced 1.7 defect, but it does not turn either result into a pass. The
+optional mode stays disclosed and the authored camera stays the default; the
+final candidate still needs its own dedicated-desktop rerun.
+
+**Census correction, 2026-09-06:** the repeated 3P trace isolates a side-label
+crossing while the published eye stays fixed relative to the racer and the
+authored reference ray rotates past it. That is not a new shoulder candidate.
+The census now reports this as `shoulder.basis_crossings`, separately from
+actual camera flips. Its production-backed `camera_motion_shoulder` unit retains
+real immediate and slow switches through the lateral deadband, inactive/invalid
+history resets, and a cumulative-drift bound so repeated float rounding cannot
+hide a genuine slow crossing. Controls reject both the previous miscount and a
+classifier that suppresses actual flips. Optimized and ASan/UBSan units pass.
+The repeated 3P route reports one basis crossing, zero flips, and byte-identical
+published camera-observation rows throughout all 20,463 samples. This changes
+measurement only, not the resolver, published poses, or hard motion thresholds.
+Ancient Lake's separate correction re-engagement remains a hard failure; this
+correction does not establish complete motion or release qualification.
+
+**Event-context follow-up, 2026-09-06 (unqualified candidate):** source inspection
+confirms that the phase machine treats `RECOVERING` as released, not blocked.
+Consequently, adding a proportional expansion limit cannot be assumed to close
+the re-engagement gate simply by extending recovery duration. The hold, phase
+definition, hard window and resolver policy remain unchanged. The ordinary
+level-1 trace now emits each counted re-engagement with its release tick/gap,
+slot, last measured contact and current contact (including normal-validity),
+and recovery/hold/emergency state. Contact history is diagnostic-only and
+survives clear ticks; a different face or agreeing normal does not excuse the
+event. The checker retains each arm's rows in optional baseline JSON and prints
+up to 16 rows per arm, explicitly disclosing missing context from older builds.
+Source/compilation and reporting regression additions are not a motion pass;
+execute the new reporting checks and original complete route gate before
+claiming this instrumentation qualified or the underlying defect fixed.
 
 ### 7.4 Display matrix
 

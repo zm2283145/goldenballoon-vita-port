@@ -107,6 +107,12 @@ REQUIRED = {
     "game/src/save_data.c": (
         "mdkr_extension_bit(extension, &extensionBit)",
     ),
+    "game/src/menu.c": (
+        "settings->trophies = mdkr_trophy_records_merge(",
+        "mdkr_trophy_state(settings->trophies,",
+        "i = WORLD_DINO_DOMAIN; i <= WORLD_FUTURE_FUN_LAND; i++)",
+        "mdkr_trophy_state(settings->trophies, i, &trophyState)",
+    ),
     "game/src/weather.c": (
         "DKR_SHL32(1U, rand_range(0, 32) + 5)",
     ),

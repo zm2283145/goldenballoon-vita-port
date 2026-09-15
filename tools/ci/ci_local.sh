@@ -6,7 +6,8 @@
 # validation lanes (release.yml, windows-validate.yml, macos-release.yml) are
 # manual-only. This script is the one-command local mirror of the ROM-free
 # gates: it runs what correctness.yml's `policy` job runs, needs no ROM or game
-# data by default, and reports a single pass/fail summary.
+# data by default, and reports a single pass/fail summary. Every execution
+# lane requires the caller's human-attested dedicated test desktop.
 #
 # COVERED HERE: release/provenance hygiene, ignored-artifact hygiene, public
 # shell tool syntax, documentation links, and a Release configure+build of the
@@ -15,12 +16,12 @@
 # lane no hosted runner can execute.
 #
 # DELIBERATELY NOT COVERED: the full ROM-gated regression battery
-# (tools/run_checks.py, ~76 tasks across several dedicated build directories --
+# (tools/run_checks.py, across several dedicated build directories --
 # build-rel, build-asan, a linked wasm build, and a real Chrome profile). It
 # needs a legally-owned ROM the contributor supplies locally, takes much
-# longer, and is sequential by design -- several checks create and remove
-# save/eeprom.bin -- so it must not race a concurrent invocation on a shared
-# checkout. It remains the owner-run pre-release gate documented in
+# longer, and serializes GPU, timing and shared-build tasks. Do not race
+# concurrent invocations against the same build trees. It remains the
+# owner-run pre-release gate documented in
 # docs/RELEASE_CHECKLIST.md; pass --with-rom-suite to also run it from here.
 #
 # Usage:
@@ -32,6 +33,13 @@
 # `if` condition; a failing gate is scored, not fatal. -e only catches faults in
 # this script's own control flow.
 set -euo pipefail
+
+# This includes source-script lanes: their subprocess behavior can change.
+# Preserve the caller's attestation; hidden windows do not establish isolation.
+if [ "${MDKR_DEDICATED_TEST_DESKTOP:-}" != "1" ]; then
+  echo "ci_local: REFUSED — execution requires a human-attested dedicated test desktop (MDKR_DEDICATED_TEST_DESKTOP=1)" >&2
+  exit 2
+fi
 
 # Bulk work yields to the interactive desktop by being LAUNCHED at background
 # priority (yield_run below); the script itself keeps the invoking shell's
@@ -64,12 +72,12 @@ ROM_PATH="baserom.us.v80.z64"
 # Native GPU/window tests are opt-in. Even a nominally hidden SDL surface can
 # interact badly with a desktop/window-manager regression, and a local CI
 # command must never take over the maintainer's workstation by default.
-# Ambient shell state must never turn a safe local command into a window/GPU
+# Ambient shell state must never turn the ordinary lane into a window/GPU
 # run. Only the explicit command-line flag below can enable this lane.
 RUN_GPU_TESTS=0
 # Even a supposedly ROM-free CTest inventory is executable code and can gain a
-# mislabelled SDL/Cocoa test. Keep all compiled tests out of the occupied-Mac
-# default. --with-gpu-tests implies this opt-in because that lane is CTest.
+# mislabelled SDL/Cocoa test. Require a separate compiled-test class opt-in
+# even on an attested desktop. --with-gpu-tests implies it: that lane is CTest.
 RUN_COMPILED_TESTS=0
 
 while [ $# -gt 0 ]; do
@@ -166,27 +174,25 @@ if [ -f "$BUILD_DIR/CMakeCache.txt" ] && [ "$RUN_COMPILED_TESTS" -eq 1 ]; then
   fi
 else
   if [ "$RUN_COMPILED_TESTS" -eq 0 ]; then
-    echo "  SKIPPED: all compiled/CTest execution (default occupied-workstation mode)."
+    echo "  SKIPPED: all compiled/CTest execution (requires a test-class opt-in)."
     echo "  Run --with-compiled-tests only on a dedicated test desktop."
   else
     echo "  (skipping ctest - no configured build at $BUILD_DIR; run without --no-build)"
   fi
 fi
 
-# --- Workstation-safe ROM-gated checks (opt-in; application roles stay gated) ---
+# --- Complete ROM-gated suite (opt-in on a dedicated test desktop) ---
 if [ "$WITH_ROM_SUITE" -eq 1 ]; then
   if [ ! -f "$ROM_PATH" ]; then
     echo ""
     echo "  --with-rom-suite requested but ROM not found at: $ROM_PATH" >&2
     echo "  Pass --rom PATH to point at your own legally-dumped ROM." >&2
     fail=$((fail + 1))
-    failed_steps="${failed_steps}\n  - Workstation-safe ROM-gated checks (ROM missing)"
+    failed_steps="${failed_steps}\n  - Complete ROM-gated suite (ROM missing)"
   else
-    # The runner's default is deliberately workstation-safe: native app,
-    # renderer, browser and GPU lanes remain excluded. A complete release pass
-    # is a separate dedicated-desktop operation documented in the release
-    # checklist.
-    step "Workstation-safe ROM-gated checks (tools/run_checks.py)" \
+    # The runner inherits the caller's attestation and includes native app,
+    # renderer, browser and GPU lanes in its complete release pass.
+    step "Complete ROM-gated suite (tools/run_checks.py)" \
       python3 tools/run_checks.py --rom "$ROM_PATH"
   fi
 fi

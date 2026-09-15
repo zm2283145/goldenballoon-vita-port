@@ -37,7 +37,7 @@ import subprocess
 import sys
 import tempfile
 
-from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, cmake_cache_bool, resolve_binary
 
 # One row per setting, produced by Settings_dumpSchemaContract().
 CONTROL_RE = re.compile(
@@ -156,6 +156,27 @@ def walk_launcher(executable: Path, root: Path, timeout: int) -> str:
     return run(executable, env, "launcher keyboard walk", timeout)
 
 
+def walk_content(executable: Path, root: Path, timeout: int) -> str:
+    """Full keyboard walk of the Content destination.
+
+    Content.PacksEnabled and Content.PackDisabled are schema keys like any
+    other, but they are drawn in Content rather than in Settings, so the
+    Settings walk alone cannot prove they speak. This walk covers them, and the
+    coverage check below unions the two -- a key that moves between
+    destinations must keep announcing, wherever it lands.
+    """
+    _home, env = session(root, "walk-content")
+    env.update({
+        "MDKR_APP_PANEL": "Content",
+        "MDKR_APP_SMOKE_FRAMES": str(WALK_FRAMES),
+        "MDKR_ONLINE_ROOM_PREVIEW": "1",
+        "MDKR_APP_SMOKE_A11Y_WALK": "1",
+        "MDKR_APP_SMOKE_INPUT": "keyboard",
+        "MDKR_APP_SMOKE_INPUT_TOKEN": INPUT_TOKEN,
+    })
+    return run(executable, env, "Content keyboard walk", timeout)
+
+
 def walk_panel(executable: Path, root: Path, panel: str, timeout: int) -> str:
     _home, env = session(root, f"panel-{panel}")
     env.update({
@@ -172,27 +193,89 @@ def walk_panel(executable: Path, root: Path, panel: str, timeout: int) -> str:
     return run(executable, env, f"{panel} panel walk", timeout)
 
 
+def _online_room_reachable(beta: bool, preview: bool) -> bool:
+    """Whether these two cache flags compile the Online Room panel in.
+
+    CMakeLists.txt's ``option(MDKR_ENABLE_ONLINE_ROOM_PREVIEW ...)`` is what
+    ``platform/app/ui_launcher.cpp``'s ``#if MDKR_ENABLE_ONLINE_ROOM_PREVIEW``
+    actually compiles against, but a beta build never shows that in its own
+    CMakeCache.txt: ``if(MDKR_ENABLE_ONLINE_BETA) set(MDKR_ENABLE_ONLINE_ROOM_
+    PREVIEW ON)`` there is a non-cache ``set()``, which shadows the cached
+    value for the rest of configure (and so for every ``$<BOOL:...>`` compile
+    definition that reads it) without ever writing the cache entry -- on
+    purpose, so the two release guardrails that key on a literal
+    ``-DMDKR_ENABLE_ONLINE_ROOM_PREVIEW=OFF`` line keep working unmodified.
+    So BETA alone is sufficient: it compiles the panel in whether or not the
+    cache's own PREVIEW entry ever finds out.
+    """
+    return beta or preview
+
+
 def online_room_compiled(executable: Path) -> bool:
     """Whether the build under test compiles the Online Room surface at all.
 
-    Since the 1.3.0 release the room is a compile-time surface
-    (MDKR_ENABLE_ONLINE_ROOM_PREVIEW, OFF in every shipped configuration);
-    MDKR_ONLINE_ROOM_PREVIEW=1 only reveals it where it was compiled in. The
-    build's own cache is the authority here, so the gate demands the panel
+    Since the 1.3.0 release the room is a compile-time surface; a developer
+    build leaves it out, a `--allow-online-beta` release bundle
+    (MDKR_ENABLE_ONLINE_BETA=ON) always compiles it in, and a bare preview
+    build (MDKR_ENABLE_ONLINE_ROOM_PREVIEW=ON, BETA off) reveals it only under
+    MDKR_ONLINE_ROOM_PREVIEW=1. The build's own cache is the authority here
+    (see :func:`_online_room_reachable`), so the gate demands the panel
     exactly where the panel can exist -- neither demanding a preview surface
-    of a release binary, nor quietly excusing a preview build that lost its
-    announcement.
+    of a beta-OFF binary, nor quietly excusing a preview or beta build that
+    lost its announcement.
     """
     cache = executable.parent / "CMakeCache.txt"
     if not cache.is_file():
         raise GateFailure(
             f"cannot tell whether {executable} compiles the Online Room "
             "preview in: no CMakeCache.txt beside it")
-    for line in cache.read_text(errors="replace").splitlines():
-        if line.startswith("MDKR_ENABLE_ONLINE_ROOM_PREVIEW:"):
-            value = line.split("=", 1)[1].strip().upper()
-            return value in ("ON", "1", "TRUE", "YES", "Y")
-    return False
+    return _online_room_reachable(
+        cmake_cache_bool(executable, "MDKR_ENABLE_ONLINE_BETA"),
+        cmake_cache_bool(executable, "MDKR_ENABLE_ONLINE_ROOM_PREVIEW"))
+
+
+def selftest_online_room_detection(root: Path) -> None:
+    """Positive control for :func:`online_room_compiled`'s config-awareness.
+
+    Each of the two real arms below is checked against a stub CMakeCache.txt
+    reporting the OTHER arm's configuration, so a detector that ignores its
+    input (or reads only MDKR_ENABLE_ONLINE_ROOM_PREVIEW, which is exactly the
+    defect this gate used to have) fails here for the stated reason instead of
+    only failing quietly against whichever single build happens to be under
+    test.
+    """
+    fixture = root / "selftest-online-room"
+    fixture.mkdir(parents=True, exist_ok=True)
+    stub_executable = fixture / "mdkr64"
+    stub_executable.write_bytes(b"")
+    cache = fixture / "CMakeCache.txt"
+
+    def detected(beta: str, preview: str) -> bool:
+        cache.write_text(
+            f"MDKR_ENABLE_ONLINE_BETA:BOOL={beta}\n"
+            f"MDKR_ENABLE_ONLINE_ROOM_PREVIEW:BOOL={preview}\n",
+            encoding="utf-8")
+        return online_room_compiled(stub_executable)
+
+    # The shipping beta config this gate exists for: BETA=ON, and the cache's
+    # own PREVIEW entry still reads OFF because CMakeLists.txt forces the
+    # panel in through a non-cache set() (see _online_room_reachable). A
+    # detector keyed only on the PREVIEW entry -- the bug this fix removes --
+    # reads this stub as compiled OUT and fails here.
+    if detected("ON", "OFF") is not True:
+        raise GateFailure(
+            "online room detection self-test: BETA=ON, PREVIEW=OFF must "
+            "read as compiled in (a --allow-online-beta release bundle)")
+    # The developer default: neither flag set, panel absent.
+    if detected("OFF", "OFF") is not False:
+        raise GateFailure(
+            "online room detection self-test: BETA=OFF, PREVIEW=OFF must "
+            "read as compiled out (the developer default)")
+    # A bare preview build (no beta) still works the old way.
+    if detected("OFF", "ON") is not True:
+        raise GateFailure(
+            "online room detection self-test: PREVIEW=ON alone must read as "
+            "compiled in (a non-beta preview build)")
 
 
 def walk_overlay(executable: Path, root: Path, rom: Path, timeout: int) -> str:
@@ -208,7 +291,8 @@ def walk_overlay(executable: Path, root: Path, rom: Path, timeout: int) -> str:
     return run(executable, env, "in-game overlay walk", timeout)
 
 
-def check_launcher(output: str, controls: list[tuple[str, str, str]]) -> str:
+def check_launcher(output: str, controls: list[tuple[str, str, str]],
+                   also: str = "") -> str:
     spoken = utterances(output)
     if not spoken:
         raise GateFailure(
@@ -219,6 +303,11 @@ def check_launcher(output: str, controls: list[tuple[str, str, str]]) -> str:
     focus = [text for category, _priority, text in spoken if category == "focus"]
     sections = [text for category, _priority, text in spoken
                 if category == "section"]
+    # Coverage spans every destination that draws schema rows; the structural
+    # assertions below stay on the launcher walk, which is the one that has an
+    # arrow-key phase and section transitions to assert about.
+    coverage = focus + [text for category, _priority, text in utterances(also)
+                        if category == "focus"]
 
     # Every control, by name AND by the value it is currently on. A row that
     # announces its name but not its setting tells a player where they are and
@@ -226,7 +315,7 @@ def check_launcher(output: str, controls: list[tuple[str, str, str]]) -> str:
     silent: list[str] = []
     valueless: list[str] = []
     for key, label, value in controls:
-        named = [text for text in focus if text.startswith(label)]
+        named = [text for text in coverage if text.startswith(label)]
         if not named:
             silent.append(f"{key} (\"{label}\")")
         elif value and not any(value in text for text in named):
@@ -276,7 +365,8 @@ def check_panels(executable: Path, root: Path, timeout: int) -> str:
     """
     online_room = online_room_compiled(executable)
     announced = []
-    for panel in ("Play", "Online Room", "Diagnostics", "About"):
+    for panel in ("Play", "Online Room", "Diagnostics", "About",
+                  "Character Workshop", "Content"):
         output = walk_panel(executable, root, panel, timeout)
         sections = [text for category, _priority, text in utterances(output)
                     if category == "section"]
@@ -337,9 +427,11 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="mdkr64_a11y_shell_") as temporary:
         root = Path(temporary)
         try:
+            selftest_online_room_detection(root)
             controls = inventory(executable, root, args.timeout)
             launcher = check_launcher(
-                walk_launcher(executable, root, args.timeout), controls)
+                walk_launcher(executable, root, args.timeout), controls,
+                also=walk_content(executable, root, args.timeout))
             panels = check_panels(executable, root, args.timeout)
             overlay = check_overlay(
                 walk_overlay(executable, root, rom, args.timeout), controls)

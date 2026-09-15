@@ -57,17 +57,15 @@ Mutation proof (the taken-dim cue coverage is NON-VACUOUS -- re-runnable):
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import subprocess
-import sys
-import tempfile
 from pathlib import Path
 
 from harness_utils import resolve_binary
 from online_lane_util import (
     DIRECT_BOOT_RE, ENGINE_LIVE_RE, FORBIDDEN_ONLINE, GAMEMODE_ONLINE_SESSION,
-    SESSION_RACE_RE, forbidden_marker, make_fail, run_engine,
+    NET_SELECTIONS_RE, SESSION_RACE_RE, forbidden_marker, make_fail,
+    parse_seat_selections, run_engine, scan_online_to_engine,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -374,12 +372,54 @@ def main() -> int:
                     f"foldVisible={fold_visible} hashVisible={hash_visible} "
                     f"hashPeer={hash_peer})", output)
 
+    # --- The picked racer is the one the race SEATED -----------------------
+    # The lobby pick is an online-catalog id; the engine seats an engine
+    # Character (menu.c get_character_id_from_slot -> mdkr_online_character_to_
+    # engine). This closes the last link of the round trip -- pick -> descriptor
+    # -> spawned racer -- in the id space the race actually uses, so a dropped
+    # translation fails HERE, on the live lane, and not only on the synthetic
+    # direct-load gate. Only the LOCAL pick is pinned: the two descriptor seats
+    # come from the live adapter's own scripted vote, which is a separate script
+    # from the CHARSELECT screen's rendered remote ("RIVAL"), so the other seat's
+    # id is not this lane's to predict. The remaining seats (2,3) are unoccupied
+    # and fall back to the retail slot defaults, so they are not pinned either.
+    seated_line = NET_SELECTIONS_RE.search(output)
+    if seated_line is None:
+        return fail("the race never reported its seated racers "
+                    "([NET-SELECTIONS] ... source=launch-descriptor)", output)
+    seated = parse_seat_selections(seated_line.group(2))
+    if seated is None or len(seated) != 4:
+        return fail(f"unparsable seated-racer list {seated_line.group(2)!r}",
+                    output)
+    online_to_engine = scan_online_to_engine(ROOT)
+    if online_to_engine is None:
+        return fail("could not read the online-id -> engine Character map from "
+                    "its C sources (the seated-identity pin cannot vouch for "
+                    "the racers)")
+    # The scripted room seats exactly two players, so the descriptor owns
+    # seats 0..1; the pick must be seated as its ENGINE character in one of them.
+    wanted_engine = online_to_engine[TARGET_CHARACTER]
+    picked_seats = [seat for seat in range(2)
+                    if seated[seat][0] == wanted_engine]
+    if len(picked_seats) != 1:
+        return fail(f"the local pick (online character {TARGET_CHARACTER} == "
+                    f"engine character {wanted_engine}) was seated in "
+                    f"{len(picked_seats)} of the two descriptor seats, expected "
+                    f"exactly 1; seated={seated}", output)
+    if wanted_engine == TARGET_CHARACTER:
+        return fail(f"online character {TARGET_CHARACTER} maps to itself, so "
+                    f"this lane cannot tell a translated spawn from a raw "
+                    f"passthrough -- pick a racer whose two ids differ", output)
+    seated_pick_seat = picked_seats[0]
+
     print(
         "PASS online charselect: native CHARSELECT entered, drew the real "
         f"portraits, cursor -> Pipsy (char {TARGET_CHARACTER}), published intent "
         f"(char {TARGET_CHARACTER} + default vehicle {default_vehicle} + ready), "
         f"rendered the remote seat {REMOTE_NAME} (char {REMOTE_CHARACTER}) from "
         "the snapshot, local seat converged, advanced on scripted host-start, "
+        f"seated as engine character {wanted_engine} in canonical "
+        f"seat {seated_pick_seat}, "
         f"freed assets, handed off (gGameMode={boot_gamemode} "
         f"gCurrentMenuId={boot_menu_id}) -- race converged racedTicks={raced} "
         f"hash={hash_visible}"

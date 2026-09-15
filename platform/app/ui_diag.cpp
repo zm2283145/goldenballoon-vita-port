@@ -21,7 +21,11 @@ void DiagPanel_draw(LauncherState &s, LauncherAction &out) {
     (void)s;
     (void)out;
 
-    ui::SectionHeader(
+    // A GROUP heading, not a page title. Diagnostics is no longer a destination
+    // of its own -- it is drawn inside About & support, which owns the page
+    // title -- and two title-font headings on one screen is two answers to
+    // "where am I?".
+    ui::GroupHeader(
         "Diagnostics",
         DiagLog_includesPreviousFailure()
             ? "Output from this launcher and the previous failed engine attempt. "
