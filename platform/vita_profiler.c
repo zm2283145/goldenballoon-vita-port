@@ -4,11 +4,15 @@
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
+#include <psp2/kernel/threadmgr.h>
 #include <psp2/net/net.h>
 #include <psp2/sysmodule.h>
 #include <uvdb.h>
 #include <vitaprofiler.h>
 #include <vitadebug_pmu_profiler.h>
+
+extern void mdkr_vita_boot_log(const char *msg);
+extern void mdkr_vita_boot_log_flush(void);
 
 #define RING_CAPACITY 2048u
 #define REPORT_FRAMES 60u
@@ -38,12 +42,12 @@ static const uint32_t pmu_events[] = {
 };
 typedef char scope_size_check[sizeof(struct vp_zone_scope) <= sizeof(MdkrVitaProfileScope) ? 1 : -1];
 
-static void debugnet_try_start(void) {
+static int debugnet_try_start(void) {
     struct uvdb_debugnet_config config;
-    if (debugnet_started || !debugnet_network_ready) return;
+    if (debugnet_started || !debugnet_network_ready) return 0;
     if (debugnet_retry_frames != 0u) {
         debugnet_retry_frames--;
-        return;
+        return 0;
     }
     memset(&config, 0, sizeof(config));
     config.server_ip = MDKR_VITA_DEBUGNET_HOST;
@@ -53,6 +57,7 @@ static void debugnet_try_start(void) {
         debugnet_started = 1;
         (void)uvdb_debugnet_write(UVDB_LOG_INFO,
                                   "[VPROF] DebugNet connected after network startup");
+        return 1;
     } else {
         /* The current VitaDebugger lifecycle contract requires one cleanup
          * pass after a failed start before retrying: setup may have retained a
@@ -61,6 +66,7 @@ static void debugnet_try_start(void) {
         /* Network association can lag sceNetInit during application startup.
          * Retry at one-second intervals without blocking the render thread. */
         debugnet_retry_frames = REPORT_FRAMES;
+        return -1;
     }
 }
 
@@ -145,7 +151,7 @@ void mdkr_vita_profiler_init(void) {
      * granting ownership. Let DebugNet probe asynchronously after startup;
      * failures remain harmless and are retried from the frame loop. */
     debugnet_network_ready = module_result >= 0;
-    debugnet_retry_frames = REPORT_FRAMES;
+    debugnet_retry_frames = 0;
     memset(&nc, 0, sizeof(nc));
     nc.entries = name_entries; nc.entry_capacity = MDKR_VP_ZONE_COUNT + 2;
     nc.text = name_text; nc.text_capacity = sizeof(name_text);
@@ -163,6 +169,16 @@ void mdkr_vita_profiler_init(void) {
              (unsigned)pmu_info.fixed_core, (unsigned)pmu_info.fixed_counter);
     if (debugnet_started) (void)uvdb_debugnet_write(UVDB_LOG_INFO, line);
     if (result != 0 || pmu_info.abi_version != VD_KERNEL_PMU_PROFILER_ABI_VERSION) memset(&pmu_info, 0, sizeof(pmu_info));
+    {
+        char logger_line[160];
+        int logger_result = debugnet_try_start();
+        snprintf(logger_line, sizeof(logger_line),
+                 "profiler: debugnet start=%d module=0x%08x net=0x%08x owner_thread=%d",
+                 logger_result, (unsigned)module_result, (unsigned)net_result,
+                 (int)sceKernelGetThreadId());
+        mdkr_vita_boot_log(logger_line);
+        mdkr_vita_boot_log_flush();
+    }
 }
 
 void mdkr_vita_profiler_shutdown(void) {
