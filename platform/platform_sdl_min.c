@@ -2274,19 +2274,53 @@ static int vita_pack_dialog(const char *message, int yes_no) {
     memset(&result, 0, sizeof(result));
     (void)sceMsgDialogGetResult(&result);
     (void)sceMsgDialogTerm();
+    /* Termination can take another presented frame before the common-dialog
+     * service becomes available for a different dialog mode. */
+    while (sceMsgDialogGetStatus() != SCE_COMMON_DIALOG_STATUS_NONE) {
+        glClear(GL_COLOR_BUFFER_BIT);
+        vglSwapBuffers(GL_TRUE);
+        sceKernelDelayThread(16000);
+    }
     return yes_no ? result.buttonId == SCE_MSG_DIALOG_BUTTON_ID_YES : 1;
 }
 
 static int vita_pack_progress_begin(void) {
     SceMsgDialogProgressBarParam progress;
     SceMsgDialogParam param;
+    int result = SCE_COMMON_DIALOG_ERROR_BUSY;
+    int attempt;
     memset(&progress, 0, sizeof(progress));
     progress.barType = SCE_MSG_DIALOG_PROGRESSBAR_TYPE_PERCENTAGE;
     progress.msg = (const SceChar8 *)"Extracting HD texture pack...";
     sceMsgDialogParamInit(&param);
     param.mode = SCE_MSG_DIALOG_MODE_PROGRESS_BAR;
     param.progBarParam = &progress;
-    return sceMsgDialogInit(&param) >= 0;
+    for (attempt = 0; attempt < 120; ++attempt) {
+        result = sceMsgDialogInit(&param);
+        if (result >= 0) break;
+        if ((unsigned)result != (unsigned)SCE_COMMON_DIALOG_ERROR_BUSY) break;
+        glClear(GL_COLOR_BUFFER_BIT);
+        vglSwapBuffers(GL_TRUE);
+        sceKernelDelayThread(16000);
+    }
+    if (result < 0) {
+        snprintf(s_vitaPackExtractError, sizeof(s_vitaPackExtractError),
+                 "Could not open extraction progress display.\n\nDialog error: 0x%08X",
+                 (unsigned)result);
+        return 0;
+    }
+    for (attempt = 0; attempt < 120; ++attempt) {
+        SceCommonDialogStatus status = sceMsgDialogGetStatus();
+        if (status == SCE_COMMON_DIALOG_STATUS_RUNNING) return 1;
+        if (status == SCE_COMMON_DIALOG_STATUS_FINISHED) break;
+        glClear(GL_COLOR_BUFFER_BIT);
+        vglSwapBuffers(GL_TRUE);
+        sceKernelDelayThread(16000);
+    }
+    snprintf(s_vitaPackExtractError, sizeof(s_vitaPackExtractError),
+             "Extraction progress display did not start.");
+    (void)sceMsgDialogTerm();
+    return 0;
 }
 
 static void vita_pack_progress_update(mz_uint completed, mz_uint total) {
@@ -2360,7 +2394,8 @@ static int vita_pack_extract(const char *zip_path, const char *temporary,
         }
     }
     progress_open = vita_pack_progress_begin();
-    if (progress_open) vita_pack_progress_update(0u, count);
+    if (!progress_open) goto archive_done;
+    vita_pack_progress_update(0u, count);
     stage = "creating temporary folder";
     if (!vita_pack_mkdirs(temporary, 1)) goto archive_done;
     for (i = 0; i < count; ++i) {
@@ -2425,7 +2460,7 @@ static int vita_pack_extract(const char *zip_path, const char *temporary,
 archive_done:
     (void)mz_zip_reader_end(&archive);
 done:
-    if (!extracted) {
+    if (!extracted && s_vitaPackExtractError[0] == '\0') {
         int saved_errno = errno;
         snprintf(s_vitaPackExtractError, sizeof(s_vitaPackExtractError),
                  "Texture-pack extraction failed. ZIP kept.\n\nStage: %s\nEntry: %u / %s\nError: %d\nZIP error: %d",
