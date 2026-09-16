@@ -2334,7 +2334,13 @@ static int vita_pack_extract(const char *zip_path, const char *temporary,
             vglSwapBuffers(GL_TRUE);
         }
     }
+    /* Vita's newlib filesystem supports syncing regular files, but directory
+     * descriptors do not reliably support fsync(). Every extracted file has
+     * already been flushed and synced above, so do not turn that platform
+     * limitation into a false extraction failure. */
+#if !defined(__vita__)
     if (mdkr_parent_directory_sync_utf8(temporary) != 0) goto archive_done;
+#endif
     extracted = 1;
 archive_done:
     (void)mz_zip_reader_end(&archive);
