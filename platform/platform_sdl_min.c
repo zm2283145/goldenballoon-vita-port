@@ -2292,7 +2292,8 @@ static int vita_pack_extract(const char *zip_path, const char *temporary,
     s_vitaPackExtractError[0] = '\0';
     memset(&archive, 0, sizeof(archive));
     stage = "checking temporary folder";
-    if (mdkr_path_query_utf8(temporary, &temporary_exists, NULL, NULL) != 0) {
+    if (mdkr_path_query_utf8(temporary, &temporary_exists, NULL, NULL) != 0 &&
+        errno != ENOENT) {
         vita_pack_set_fs_error(stage, temporary);
         return 0;
     }
