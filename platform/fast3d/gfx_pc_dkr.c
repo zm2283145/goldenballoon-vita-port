@@ -2714,13 +2714,75 @@ static bool dkr_upload_tile_texture(uint8_t td, bool cutout,
     return true;
 }
 
+/* Give pack replacements the same one-time mip treatment as decoded ROM
+ * textures. Without this, a large HD surface is sampled from level zero even
+ * when it occupies only a few pixels, wasting texture bandwidth and shimmering
+ * at distance. */
+static bool dkr_upload_override_texture(const MdkrModTexture *texture,
+                                        bool cutout) {
+    if (texture == NULL || texture->rgba == NULL ||
+        texture->width <= 0 || texture->height <= 0) {
+        return false;
+    }
+#if defined(__vita__)
+    /* vitaGL issue #24 corrupts mip levels for NPOT textures. */
+    const bool mip_dimensions_supported =
+        dkr_dims_are_pot((uint32_t)texture->width,
+                         (uint32_t)texture->height);
+#else
+    const bool mip_dimensions_supported = true;
+#endif
+    if (g_pcMipmaps && mip_dimensions_supported &&
+        gfx_rapi->upload_texture_mipped != NULL &&
+        gfx_mip_level_count(texture->width, texture->height) > 1) {
+        const size_t need =
+            gfx_mip_chain_bytes(texture->width, texture->height);
+        if (ensure_mip_buf(need)) {
+            GfxMipChain chain;
+            bool built = cutout
+                ? gfx_mip_build_cutout(
+                      texture->rgba, texture->width, texture->height,
+                      tex_mip_buf, need, GFX_TEXTURE_EDGE_ALPHA_THRESHOLD_U8,
+                      &chain)
+                : gfx_mip_build(texture->rgba, texture->width, texture->height,
+                                tex_mip_buf, need, &chain);
+#if defined(__vita__)
+            enum { DKR_VITA_OVERRIDE_MAX_MIP_LEVELS = 4 };
+            if (built &&
+                chain.level_count > DKR_VITA_OVERRIDE_MAX_MIP_LEVELS) {
+                chain.level_count = DKR_VITA_OVERRIDE_MAX_MIP_LEVELS;
+            }
+#endif
+            if (built && gfx_rapi->upload_texture_mipped(
+                             chain.level, chain.width, chain.height,
+                             chain.level_count)) {
+                gfx_dkr_mipmapped_uploads++;
+                gfx_dkr_mip_levels_uploaded +=
+                    (uint64_t)chain.level_count;
+                return true;
+            }
+        }
+    }
+    return gfx_rapi->upload_texture(texture->rgba, texture->width,
+                                    texture->height);
+}
+
 /* Every non-content value that can change decoded or uploaded bytes belongs in
  * the key. Source-content lifetime is enforced separately by allocator/font
  * invalidation above (and audited by MDKR_TEXCACHE_VERIFY). Source pitch/span
  * affect row addressing and inferred height, while mip/cutout policy changes
  * the uploaded mip chain without changing level zero. Keeping them explicit
  * avoids first-use-wins textures. */
+#if defined(__vita__)
+/* Replacement textures live twice while resident: decoded RGBA in the mod
+ * store and a second copy owned by vitaGL.  A 1024-entry GPU cache is sensible
+ * on desktop, but lets an HD pack retain far more than the Vita's application
+ * memory.  Reusing 256 texture objects keeps the working set bounded while
+ * still covering substantially more than one ordinary track/HUD scene. */
+#define DKR_TEXCACHE_SIZE 256
+#else
 #define DKR_TEXCACHE_SIZE 1024
+#endif
 struct DkrTexCacheEntry {
     struct DkrTexCacheKey key;
     uint32_t texture_id;
@@ -3062,8 +3124,7 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
             }
         }
         const bool uploaded =
-            over_used ? gfx_rapi->upload_texture(over.rgba, over.width,
-                                                 over.height)
+            over_used ? dkr_upload_override_texture(&over, cutout)
                       : dkr_upload_tile_texture(td, cutout, &uw, &uh, &derived);
         if (over_used) {
             /* The GPU image is the replacement's physical size; the cached
@@ -9207,9 +9268,20 @@ void gfx_run(Gfx *dl) {
     dkr_dbg_clipped = dkr_dbg_clip_dropped = dkr_dbg_clip_degen = 0;
     if (dkr_native_ui_enabled() &&
         gfx_rapi != NULL && gfx_rapi->begin_output_overlay != NULL &&
+#if defined(__vita__)
+        /* Vita renders directly at the 960x544 output size: its scene target,
+         * supersampling and post-process resolve are deliberately unavailable.
+         * RemasterFX alone therefore cannot create a distinct output target.
+         * Avoid walking every display-list command twice in that case; native
+         * UI still takes the normal path because current and output dimensions
+         * are identical. */
+        (gfx_current_dimensions.width != gfx_output_dimensions.width ||
+         gfx_current_dimensions.height != gfx_output_dimensions.height)) {
+#else
         (g_pcRemasterFX ||
          gfx_current_dimensions.width != gfx_output_dimensions.width ||
          gfx_current_dimensions.height != gfx_output_dimensions.height)) {
+#endif
         uintptr_t saved_segments[16];
         DkrOverlayScan scan = {
             G_MTX_DKR_SPACE_WORLD,

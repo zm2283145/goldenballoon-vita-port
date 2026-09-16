@@ -72,7 +72,14 @@
 /* Total decoded pixels held at once. A 4K RGBA texture is 64 MiB, so this is
  * eight of them — generous for a pack that replaces the HUD and a few tracks,
  * and a hard stop for one that replaces everything at 4K. */
+#if defined(__vita__)
+/* Decoded pack pixels are only a staging/cache copy; vitaGL owns another copy
+ * after upload.  The desktop 512 MiB allowance can exhaust the Vita before a
+ * level finishes loading, so keep a bounded 64 MiB LRU working set. */
+#define MDKR_MOD_TEXTURE_CACHE_BYTES_MAX ((size_t)64u * 1024u * 1024u)
+#else
 #define MDKR_MOD_TEXTURE_CACHE_BYTES_MAX ((size_t)512u * 1024u * 1024u)
+#endif
 
 /* The largest side any shipping backend will upload. The store's only size
  * ceiling used to be the cache-bytes one above, which admits ~11585 per side,
@@ -83,7 +90,14 @@
  * pixels held cache the store believed were in use. The importer already caps
  * here (tools/ricepack MAX_TEXTURE_DIMENSION); a pack assembled by any other
  * tool did not. Refusing at admission makes it a reported rejection instead. */
+#if defined(__vita__)
+/* 2048 remains useful for genuinely high-resolution backgrounds while keeping
+ * one RGBA image to 16 MiB per CPU/GPU copy.  Larger pack assets are rejected
+ * before decode and transparently fall back to the original game texture. */
+#define MDKR_MOD_TEXTURE_DIMENSION_MAX 2048
+#else
 #define MDKR_MOD_TEXTURE_DIMENSION_MAX 4096
+#endif
 
 /* PNG decoding can use 16-bit RGBA intermediates even when we request 8-bit
  * output. Keep the admitted pixel budget inside the pinned decoder's integer
