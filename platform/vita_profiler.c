@@ -13,7 +13,8 @@
 #define RING_CAPACITY 2048u
 #define REPORT_FRAMES 60u
 static unsigned char debugnet_memory[1024 * 1024] __attribute__((aligned(64)));
-static uint32_t debugnet_started, net_owned, net_module_owned;
+static uint32_t debugnet_started, debugnet_network_ready;
+static uint32_t debugnet_retry_frames, net_owned, net_module_owned;
 
 static struct vp_context ctx;
 static struct vp_slot slots[RING_CAPACITY];
@@ -36,6 +37,28 @@ static const uint32_t pmu_events[] = {
     VD_KERNEL_PMU_PROFILER_EVENT_BRANCH_MISPREDICT
 };
 typedef char scope_size_check[sizeof(struct vp_zone_scope) <= sizeof(MdkrVitaProfileScope) ? 1 : -1];
+
+static void debugnet_try_start(void) {
+    struct uvdb_debugnet_config config;
+    if (debugnet_started || !debugnet_network_ready) return;
+    if (debugnet_retry_frames != 0u) {
+        debugnet_retry_frames--;
+        return;
+    }
+    memset(&config, 0, sizeof(config));
+    config.server_ip = MDKR_VITA_DEBUGNET_HOST;
+    config.port = MDKR_VITA_DEBUGNET_PORT;
+    config.level = UVDB_LOG_INFO;
+    if (uvdb_debugnet_start(&config) == 0) {
+        debugnet_started = 1;
+        (void)uvdb_debugnet_write(UVDB_LOG_INFO,
+                                  "[VPROF] DebugNet connected after network startup");
+    } else {
+        /* Network association can lag sceNetInit during application startup.
+         * Retry at one-second intervals without blocking the render thread. */
+        debugnet_retry_frames = REPORT_FRAMES;
+    }
+}
 
 static int zone_from_id(uint32_t id) {
     int i; for (i = 0; i < MDKR_VP_ZONE_COUNT; ++i) if (zone_ids[i] == id) return i;
@@ -102,7 +125,6 @@ static void report(void) {
 
 void mdkr_vita_profiler_init(void) {
     struct vp_name_dictionary_config nc;
-    struct uvdb_debugnet_config log_config;
     SceNetInitParam net_config;
     char line[192];
     int i, result, module_result, net_result;
@@ -114,14 +136,8 @@ void mdkr_vita_profiler_init(void) {
     net_config.size = sizeof(debugnet_memory);
     net_result = sceNetInit(&net_config);
     net_owned = net_result == 0;
-    memset(&log_config, 0, sizeof(log_config));
-    log_config.server_ip = MDKR_VITA_DEBUGNET_HOST;
-    log_config.port = MDKR_VITA_DEBUGNET_PORT;
-    log_config.level = UVDB_LOG_INFO;
-    if (module_result >= 0 && net_result >= 0 &&
-        uvdb_debugnet_start(&log_config) == 0) {
-        debugnet_started = 1;
-    }
+    debugnet_network_ready = module_result >= 0 && net_result >= 0;
+    debugnet_retry_frames = REPORT_FRAMES;
     memset(&nc, 0, sizeof(nc));
     nc.entries = name_entries; nc.entry_capacity = MDKR_VP_ZONE_COUNT + 2;
     nc.text = name_text; nc.text_capacity = sizeof(name_text);
@@ -171,9 +187,12 @@ void mdkr_vita_profiler_shutdown(void) {
         (void)sceSysmoduleUnloadModule(SCE_SYSMODULE_NET);
         net_module_owned = 0;
     }
+    debugnet_network_ready = 0;
+    debugnet_retry_frames = 0;
 }
 void mdkr_vita_profiler_frame_begin(void) {
     if (!enabled) return;
+    debugnet_try_start();
     if (!pmu_active && frames == 0u) pmu_open();
     (void)vp_frame_mark(&ctx, frame_id);
 }
