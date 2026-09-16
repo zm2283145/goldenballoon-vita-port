@@ -1171,6 +1171,11 @@ int mdkr_user_mods_directory(char *output, size_t output_size) {
     /* The browser build ships no writable content root; the path resolves so
      * the caller has one code path, and the scan finds nothing. */
     return path_copy(output, output_size, "/mods");
+#elif defined(__vita__)
+    /* Vita has no desktop bundle marker or useful launch working directory.
+     * Keep content beside the ROM, settings, saves and shader cache in the
+     * established writable application data root. */
+    return path_copy(output, output_size, "ux0:data/goldenballoon/mods");
 #else
     char relocation[MDKR_USER_PATH_MAX];
     if (active_relocation_dir(relocation, sizeof(relocation))) {

@@ -329,7 +329,16 @@ static int rice_parse_name(const char *rel, uint32_t *out_crc, int *out_fmt,
              * decades of assets from many authors and many tools, and a pack
              * that shouts _ALL is the same pack. Refusing it would look to the
              * player exactly like a pack that simply did not work. */
-            size_t suffix = (size_t)(dot - end_of_field);
+            const char *suffix_end = dot;
+            /* Some long-lived community packs contain a harmless blank before
+             * `.png`. Filesystems preserve that name and the archive index can
+             * open it exactly, so tolerate ASCII horizontal whitespace here
+             * instead of silently losing an otherwise valid replacement. */
+            while (suffix_end > end_of_field &&
+                   (suffix_end[-1] == ' ' || suffix_end[-1] == '\t')) {
+                suffix_end--;
+            }
+            size_t suffix = (size_t)(suffix_end - end_of_field);
             if (suffix == 4 && ascii_ncasecmp(end_of_field, "_all", 4) == 0) {
                 *out_variant = 0;
             } else if (suffix == 4 &&
