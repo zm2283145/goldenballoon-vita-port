@@ -2188,6 +2188,15 @@ static int s_contentPacksScanned;  /* init has run at least once this process */
 #ifdef __vita__
 #define VITA_PACK_EXTRACT_MAX_FILES 10000u
 #define VITA_PACK_EXTRACT_MAX_BYTES (UINT64_C(2) * 1024u * 1024u * 1024u)
+static char s_vitaPackExtractError[512];
+
+static void vita_pack_set_fs_error(const char *stage, const char *path) {
+    const int saved_errno = errno;
+    snprintf(s_vitaPackExtractError, sizeof(s_vitaPackExtractError),
+             "Texture-pack extraction failed. ZIP kept.\n\nStage: %.64s\nPath: %.300s\nError: %d",
+             stage != NULL ? stage : "unknown",
+             path != NULL ? path : "(none)", saved_errno);
+}
 
 static int vita_pack_ends_zip(const char *name) {
     size_t n = name != NULL ? strlen(name) : 0;
@@ -2277,14 +2286,27 @@ static int vita_pack_extract(const char *zip_path, const char *temporary,
     uint64_t total = 0;
     int extracted = 0;
     int temporary_exists = 0;
+    const char *stage = "opening ZIP";
+    const char *entry_name = "(none)";
+    mz_uint entry_index = 0;
+    s_vitaPackExtractError[0] = '\0';
     memset(&archive, 0, sizeof(archive));
-    if (mdkr_path_query_utf8(temporary, &temporary_exists, NULL, NULL) != 0)
+    stage = "checking temporary folder";
+    if (mdkr_path_query_utf8(temporary, &temporary_exists, NULL, NULL) != 0) {
+        vita_pack_set_fs_error(stage, temporary);
         return 0;
-    if (temporary_exists && !vita_pack_remove_tree(temporary)) return 0;
+    }
+    stage = "cleaning temporary folder";
+    if (temporary_exists && !vita_pack_remove_tree(temporary)) {
+        vita_pack_set_fs_error(stage, temporary);
+        return 0;
+    }
+    stage = "opening ZIP";
     zip = mdkr_fopen_utf8(zip_path, "rb");
     if (zip == NULL || fseek(zip, 0, SEEK_END) != 0 ||
         (end = ftell(zip)) < 0) goto done;
     rewind(zip);
+    stage = "reading ZIP index";
     if (!mz_zip_reader_init_cfile(&archive, zip, (mz_uint64)end, 0)) goto done;
     count = mz_zip_reader_get_num_files(&archive);
     if (count == 0 || count > VITA_PACK_EXTRACT_MAX_FILES) goto archive_done;
@@ -2297,6 +2319,7 @@ static int vita_pack_extract(const char *zip_path, const char *temporary,
             if (total > VITA_PACK_EXTRACT_MAX_BYTES) goto archive_done;
         }
     }
+    stage = "creating temporary folder";
     if (!vita_pack_mkdirs(temporary, 1)) goto archive_done;
     for (i = 0; i < count; ++i) {
         mz_zip_archive_file_stat stat;
@@ -2305,25 +2328,42 @@ static int vita_pack_extract(const char *zip_path, const char *temporary,
         size_t length;
         FILE *file;
         int file_ok;
+        entry_index = i;
+        stage = "reading entry metadata";
         if (!mz_zip_reader_file_stat(&archive, i, &stat)) goto archive_done;
+        entry_name = stat.m_filename;
         length = strlen(stat.m_filename);
         while (length > 0 && stat.m_filename[length - 1] == '/') length--;
         if (length == 0 || length >= sizeof(relative)) goto archive_done;
         memcpy(relative, stat.m_filename, length);
         relative[length] = '\0';
+        stage = "validating entry path";
         if (!mdkr_mod_source_path_is_safe(relative) ||
             !vita_pack_join(output, sizeof(output), temporary, relative)) {
             goto archive_done;
         }
         if (stat.m_is_directory) {
+            stage = "creating entry folder";
             if (!vita_pack_mkdirs(output, 1)) goto archive_done;
             continue;
         }
+        stage = "creating parent folders";
         if (!vita_pack_mkdirs(output, 0)) goto archive_done;
+        stage = "opening output file";
         file = mdkr_fopen_utf8(output, "wb");
         if (file == NULL) goto archive_done;
-        file_ok = mz_zip_reader_extract_to_cfile(&archive, i, file, 0) &&
-                  mdkr_file_sync(file) == 0;
+        stage = "decompressing entry";
+        file_ok = mz_zip_reader_extract_to_cfile(&archive, i, file, 0);
+#if !defined(__vita__)
+        stage = "syncing output file";
+        file_ok = file_ok && mdkr_file_sync(file) == 0;
+#else
+        /* fclose() flushes stdio on Vita. Its fsync() implementation is not
+         * reliable across every ux0 backend and must not reject valid packs. */
+        stage = "flushing output file";
+        file_ok = file_ok && fflush(file) == 0;
+#endif
+        stage = "closing output file";
         if (fclose(file) != 0) file_ok = 0;
         if (!file_ok) {
             (void)mdkr_remove_utf8(output);
@@ -2345,6 +2385,13 @@ static int vita_pack_extract(const char *zip_path, const char *temporary,
 archive_done:
     (void)mz_zip_reader_end(&archive);
 done:
+    if (!extracted) {
+        int saved_errno = errno;
+        snprintf(s_vitaPackExtractError, sizeof(s_vitaPackExtractError),
+                 "Texture-pack extraction failed. ZIP kept.\n\nStage: %s\nEntry: %u / %s\nError: %d\nZIP error: %d",
+                 stage, (unsigned)entry_index, entry_name, saved_errno,
+                 (int)mz_zip_get_last_error(&archive));
+    }
     if (zip != NULL) fclose(zip);
     if (!extracted) {
         (void)vita_pack_remove_tree(temporary);
@@ -2355,14 +2402,21 @@ done:
     /* The destination was already confirmed absent. On POSIX/Vita, the
      * replacing form uses rename(), which supports directories; the
      * no-replace helper intentionally uses link()+unlink() for regular files. */
-    if (mdkr_move_utf8(temporary, destination, 1, 1) != 0) return 0;
+    if (mdkr_move_utf8(temporary, destination, 1, 1) != 0) {
+        vita_pack_set_fs_error("installing extracted folder", destination);
+        return 0;
+    }
     if (mdkr_remove_utf8(zip_path) != 0) {
         char backup[MDKR_MOD_PATH_MAX];
         /* The installed directory is already complete. Keep a recoverable copy
          * without a .zip suffix so it cannot be indexed twice or re-prompted. */
         if (snprintf(backup, sizeof(backup), "%s.extracted-backup", zip_path) >=
-                (int)sizeof(backup) ||
-            mdkr_move_utf8(zip_path, backup, 0, 1) != 0) {
+                (int)sizeof(backup)) {
+            vita_pack_set_fs_error("forming ZIP backup path", zip_path);
+            return 0;
+        }
+        if (mdkr_move_utf8(zip_path, backup, 0, 1) != 0) {
+            vita_pack_set_fs_error("renaming extracted ZIP backup", backup);
             return 0;
         }
     }
@@ -2416,7 +2470,8 @@ void platform_vita_offer_pack_extraction(void) {
             0);
     } else {
         (void)vita_pack_dialog(
-            "Texture-pack extraction failed. The original ZIP was kept and can still be used.",
+            s_vitaPackExtractError[0] != '\0' ? s_vitaPackExtractError :
+            "Texture-pack extraction failed. The original ZIP was kept.",
             0);
     }
 }
