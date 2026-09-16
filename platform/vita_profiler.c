@@ -1,235 +1,711 @@
 #include "vita_profiler.h"
 
 #if defined(__vita__) && defined(MDKR_VITA_PROFILER)
-#include <inttypes.h>
-#include <stdio.h>
-#include <string.h>
+
+#include <psp2/io/fcntl.h>
+#include <psp2/kernel/processmgr.h>
 #include <psp2/kernel/threadmgr.h>
 #include <psp2/net/net.h>
+#include <psp2/net/netctl.h>
 #include <psp2/sysmodule.h>
-#include <uvdb.h>
+
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
 #include <vitaprofiler.h>
-#include <vitadebug_pmu_profiler.h>
+#include <vitaprofiler_stream.h>
+#include <vitaprofiler_tcp_vita.h>
 
 extern void mdkr_vita_boot_log(const char *msg);
 extern void mdkr_vita_boot_log_flush(void);
 
-#define RING_CAPACITY 2048u
-#define REPORT_FRAMES 60u
-static unsigned char debugnet_memory[1024 * 1024] __attribute__((aligned(64)));
-static uint32_t debugnet_started, debugnet_network_ready;
-static uint32_t debugnet_retry_frames, net_owned, net_module_owned;
+#ifndef MDKR_VITA_PROFILER_HOST_A
+#define MDKR_VITA_PROFILER_HOST_A 127
+#endif
+#ifndef MDKR_VITA_PROFILER_HOST_B
+#define MDKR_VITA_PROFILER_HOST_B 0
+#endif
+#ifndef MDKR_VITA_PROFILER_HOST_C
+#define MDKR_VITA_PROFILER_HOST_C 0
+#endif
+#ifndef MDKR_VITA_PROFILER_HOST_D
+#define MDKR_VITA_PROFILER_HOST_D 1
+#endif
+#ifndef MDKR_VITA_PROFILER_PORT
+#define MDKR_VITA_PROFILER_PORT 18195
+#endif
+#ifndef MDKR_VITA_PROFILER_CAPTURE_FRAMES
+#define MDKR_VITA_PROFILER_CAPTURE_FRAMES 300
+#endif
 
-static struct vp_context ctx;
-static struct vp_slot slots[RING_CAPACITY];
-static struct vp_name_dictionary names;
-static struct vp_name_entry name_entries[MDKR_VP_ZONE_COUNT + 2];
-static char name_text[384];
-static uint32_t zone_ids[MDKR_VP_ZONE_COUNT], frame_id, draw_id;
-static uint64_t zone_total[MDKR_VP_ZONE_COUNT], draw_total;
-static uint32_t zone_samples[MDKR_VP_ZONE_COUNT], frames, enabled;
-static struct vd_kernel_pmu_profiler_info pmu_info;
-static struct vd_kernel_pmu_profiler_handle pmu_handle;
-static uint32_t pmu_active, pmu_event_index;
-static const char *const zone_names[MDKR_VP_ZONE_COUNT] = {
-    "game.frame.cpu", "vitagl.render_walk.cpu",
-    "vitagl.replay_walk.cpu", "vitagl.texture_upload.cpu", "vitagl.swap_buffers.cpu"
+#if MDKR_VITA_PROFILER_HOST_A < 0 || MDKR_VITA_PROFILER_HOST_A > 255 || \
+    MDKR_VITA_PROFILER_HOST_B < 0 || MDKR_VITA_PROFILER_HOST_B > 255 || \
+    MDKR_VITA_PROFILER_HOST_C < 0 || MDKR_VITA_PROFILER_HOST_C > 255 || \
+    MDKR_VITA_PROFILER_HOST_D < 0 || MDKR_VITA_PROFILER_HOST_D > 255
+#error "VitaProfiler host octets must each be in [0, 255]"
+#endif
+#if MDKR_VITA_PROFILER_PORT < 1 || MDKR_VITA_PROFILER_PORT > 65535
+#error "VitaProfiler port must be in [1, 65535]"
+#endif
+#if MDKR_VITA_PROFILER_CAPTURE_FRAMES < 0
+#error "VitaProfiler capture frame limit must be zero or positive"
+#endif
+
+#define MDKR_VP_RING_CAPACITY 4096u
+#define MDKR_VP_NAME_CAPACITY (MDKR_VP_ZONE_COUNT + 2u)
+#define MDKR_VP_NAME_TEXT_BYTES 512u
+#define MDKR_VP_DICTIONARY_WIRE_BYTES 2048u
+#define MDKR_VP_NET_MEMORY_BYTES (1024u * 1024u)
+#define MDKR_VP_DRAIN_BATCH 128u
+#define MDKR_VP_CLOSE_RETRIES 4u
+#define MDKR_VP_NETWORK_WAIT_STEPS 200u
+#define MDKR_VP_NETWORK_WAIT_US 100000u
+#define MDKR_VP_IDLE_DELAY_US 2000u
+#define MDKR_VP_THREAD_PRIORITY 0x10000100
+#define MDKR_VP_THREAD_STACK_BYTES (64u * 1024u)
+#define MDKR_VP_ACTIVE_SCOPE_CAPACITY 64u
+#define MDKR_VP_STATUS_PATH "ux0:data/goldenballoon/profiler_status.txt"
+
+enum mdkr_vita_profiler_result {
+    MDKR_VP_RESULT_IDLE = 0,
+    MDKR_VP_RESULT_RUNNING = 1,
+    MDKR_VP_RESULT_COMPLETE = 2,
+    MDKR_VP_RESULT_STOPPED = 3,
+    MDKR_VP_RESULT_FAILED = -1,
 };
-static const uint32_t pmu_events[] = {
-    VD_KERNEL_PMU_PROFILER_EVENT_ICACHE_MISS,
-    VD_KERNEL_PMU_PROFILER_EVENT_DCACHE_MISS,
-    VD_KERNEL_PMU_PROFILER_EVENT_BRANCH_MISPREDICT
+
+static uint8_t s_net_memory[MDKR_VP_NET_MEMORY_BYTES]
+    __attribute__((aligned(64)));
+static struct vp_slot s_slots[MDKR_VP_RING_CAPACITY];
+static struct vp_context s_context;
+static struct vp_name_entry s_name_entries[MDKR_VP_NAME_CAPACITY];
+static char s_name_text[MDKR_VP_NAME_TEXT_BYTES];
+static struct vp_name_dictionary s_names;
+static uint32_t s_zone_ids[MDKR_VP_ZONE_COUNT];
+static uint32_t s_frame_id;
+static uint32_t s_draw_id;
+static uint8_t s_dictionary_wire[MDKR_VP_DICTIONARY_WIRE_BYTES];
+static struct vp_stream_writer s_writer;
+static struct vp_vita_tcp_sce_net_backend s_backend =
+    VP_VITA_TCP_SCE_NET_BACKEND_INITIALIZER;
+static struct vp_vita_tcp_sink s_sink;
+
+static SceUID s_consumer_thread = -1;
+static volatile uint32_t s_stop_requested;
+static volatile uint32_t s_producers_enabled;
+static volatile uint32_t s_capture_complete;
+static volatile uint32_t s_completed_frames;
+static volatile uint32_t s_draw_calls;
+static volatile int32_t s_result = MDKR_VP_RESULT_IDLE;
+static volatile int32_t s_first_error;
+
+/* The game, renderer, and swap hooks are cooperative and run on the same
+ * thread. These fields therefore need no lock; shutdown also runs there. */
+static uint32_t s_frame_active;
+static uint32_t s_context_initialized;
+static uint32_t s_names_initialized;
+static struct vp_zone_scope *s_active_scopes[MDKR_VP_ACTIVE_SCOPE_CAPACITY];
+static uint32_t s_active_scope_count;
+
+static const char *const s_zone_names[MDKR_VP_ZONE_COUNT] = {
+    "game.frame.cpu",
+    "vitagl.render_walk.cpu",
+    "vitagl.replay_walk.cpu",
+    "vitagl.texture_upload.cpu",
+    "vitagl.swap_buffers.cpu",
 };
-typedef char scope_size_check[sizeof(struct vp_zone_scope) <= sizeof(MdkrVitaProfileScope) ? 1 : -1];
 
-static int debugnet_try_start(void) {
-    struct uvdb_debugnet_config config;
-    if (debugnet_started || !debugnet_network_ready) return 0;
-    if (debugnet_retry_frames != 0u) {
-        debugnet_retry_frames--;
-        return 0;
+typedef char mdkr_vp_scope_size_check[
+    sizeof(struct vp_zone_scope) <= sizeof(MdkrVitaProfileScope) ? 1 : -1];
+
+static uint32_t mdkr_vp_load_u32(volatile uint32_t *value) {
+    return __atomic_load_n(value, __ATOMIC_ACQUIRE);
+}
+
+static void mdkr_vp_store_u32(volatile uint32_t *value, uint32_t next) {
+    __atomic_store_n(value, next, __ATOMIC_RELEASE);
+}
+
+static int32_t mdkr_vp_load_i32(volatile int32_t *value) {
+    return __atomic_load_n(value, __ATOMIC_ACQUIRE);
+}
+
+static void mdkr_vp_store_i32(volatile int32_t *value, int32_t next) {
+    __atomic_store_n(value, next, __ATOMIC_RELEASE);
+}
+
+static void mdkr_vp_remember_error(int result) {
+    int32_t expected = 0;
+    if (result == VP_RESULT_OK) {
+        return;
     }
-    memset(&config, 0, sizeof(config));
-    config.server_ip = MDKR_VITA_DEBUGNET_HOST;
-    config.port = MDKR_VITA_DEBUGNET_PORT;
-    config.level = UVDB_LOG_INFO;
-    if (uvdb_debugnet_start(&config) == 0) {
-        debugnet_started = 1;
-        (void)uvdb_debugnet_write(UVDB_LOG_INFO,
-                                  "[VPROF] DebugNet connected after network startup");
-        return 1;
-    } else {
-        /* The current VitaDebugger lifecycle contract requires one cleanup
-         * pass after a failed start before retrying: setup may have retained a
-         * socket, event UID, or worker handle whose release is retryable. */
-        (void)uvdb_debugnet_stop();
-        /* Network association can lag sceNetInit during application startup.
-         * Retry at one-second intervals without blocking the render thread. */
-        debugnet_retry_frames = REPORT_FRAMES;
-        return -1;
+    (void)__atomic_compare_exchange_n(
+        &s_first_error, &expected, (int32_t)result, 0,
+        __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+}
+
+static void mdkr_vp_track_scope(struct vp_zone_scope *scope) {
+    if (scope == NULL || scope->active == 0u) {
+        return;
     }
-}
-
-static int zone_from_id(uint32_t id) {
-    int i; for (i = 0; i < MDKR_VP_ZONE_COUNT; ++i) if (zone_ids[i] == id) return i;
-    return -1;
-}
-
-static void pmu_close_report(void) {
-    struct vd_kernel_pmu_profiler_sample sample;
-    char line[192]; int rd, close_result;
-    if (!pmu_active) return;
-    memset(&sample, 0, sizeof(sample));
-    sample.struct_size = sizeof(sample); sample.abi_version = VD_KERNEL_PMU_PROFILER_ABI_VERSION;
-    rd = vdKernelPmuProfilerRead(&pmu_handle, &sample);
-    close_result = vdKernelPmuProfilerClose(&pmu_handle);
-    snprintf(line, sizeof(line), "[VPROF] pmu event=0x%02x value=%" PRIu64 " read=%d close=%d core=%u lane=%u",
-             (unsigned)pmu_handle.event_code, rd == 0 ? sample.value : UINT64_C(0), rd, close_result,
-             (unsigned)sample.core_id, (unsigned)sample.physical_counter);
-    if (debugnet_started) (void)uvdb_debugnet_write(UVDB_LOG_INFO, line);
-    pmu_active = 0;
-    if (close_result != 0) pmu_info.capabilities = 0; /* fail closed: never re-arm */
-}
-
-static void pmu_open(void) {
-    struct vd_kernel_pmu_profiler_open_request req; char line[96]; int result;
-    const uint32_t required = VD_KERNEL_PMU_PROFILER_CAP_EXACT_RESTORE |
-        VD_KERNEL_PMU_PROFILER_CAP_REAL_EVENTS | VD_KERNEL_PMU_PROFILER_CAP_SAFE_POST_RESTORE_REARM;
-    if (pmu_active || (pmu_info.capabilities & required) != required) return;
-    memset(&req, 0, sizeof(req)); req.struct_size = sizeof(req);
-    req.abi_version = VD_KERNEL_PMU_PROFILER_ABI_VERSION;
-    req.event_code = pmu_events[pmu_event_index]; req.lease_ms = 5000;
-    req.flags = VD_KERNEL_PMU_PROFILER_OPEN_ACK_REAL_EVENT;
-    memset(&pmu_handle, 0, sizeof(pmu_handle));
-    result = vdKernelPmuProfilerOpen(&req, &pmu_handle);
-    if (result == 0) { pmu_active = 1; pmu_event_index = (pmu_event_index + 1) % 3; }
-    else {
-        snprintf(line, sizeof(line), "[VPROF] pmu open failed result=%d", result);
-        if (debugnet_started) (void)uvdb_debugnet_write(UVDB_LOG_ERROR, line);
+    if (s_active_scope_count >= MDKR_VP_ACTIVE_SCOPE_CAPACITY) {
+        mdkr_vp_remember_error(VP_ERROR_CAPACITY);
+        return;
     }
+    s_active_scopes[s_active_scope_count++] = scope;
 }
 
-static void drain_events(void) {
-    struct vp_event ev[128]; size_t n;
-    do { size_t i; n = vp_drain(&ctx, ev, 128);
-        for (i = 0; i < n; ++i) if (ev[i].type == VP_EVENT_ZONE_END && ev[i].value >= 0) {
-            int z = zone_from_id(ev[i].name_id);
-            if (z >= 0) { zone_total[z] += (uint64_t)ev[i].value; zone_samples[z]++; }
+static void mdkr_vp_forget_scope(struct vp_zone_scope *scope) {
+    uint32_t index;
+    if (scope == NULL) {
+        return;
+    }
+    for (index = s_active_scope_count; index > 0u; --index) {
+        if (s_active_scopes[index - 1u] == scope) {
+            const uint32_t tail = s_active_scope_count - index;
+            if (tail != 0u) {
+                memmove(&s_active_scopes[index - 1u],
+                        &s_active_scopes[index],
+                        tail * sizeof(s_active_scopes[0]));
+            }
+            --s_active_scope_count;
+            s_active_scopes[s_active_scope_count] = NULL;
+            return;
         }
-    } while (n != 0);
+    }
 }
 
-static void report(void) {
-    struct vp_stats stats; char line[448]; size_t used = 0; int i;
-    used += (size_t)snprintf(line + used, sizeof(line) - used, "[VPROF] frames=%u", (unsigned)frames);
-    for (i = 0; i < MDKR_VP_ZONE_COUNT && used < sizeof(line); ++i) {
-        uint64_t avg = zone_samples[i] ? zone_total[i] / zone_samples[i] : 0;
-        used += (size_t)snprintf(line + used, sizeof(line) - used, " z%d=%" PRIu64 "us/%u", i, avg, (unsigned)zone_samples[i]);
+static int mdkr_vp_end_scope(struct vp_zone_scope *scope) {
+    int result;
+    if (scope == NULL || scope->active == 0u) {
+        return VP_ERROR_INVALID_ARGUMENT;
     }
-    if (frames && used < sizeof(line)) used += (size_t)snprintf(line + used, sizeof(line) - used, " draws=%" PRIu64, draw_total / frames);
-    if (vp_get_stats(&ctx, &stats) == VP_RESULT_OK && used < sizeof(line))
-        (void)snprintf(line + used, sizeof(line) - used, " dropped=%u", (unsigned)stats.dropped);
-    if (debugnet_started) (void)uvdb_debugnet_write(UVDB_LOG_INFO, line);
-    memset(zone_total, 0, sizeof(zone_total)); memset(zone_samples, 0, sizeof(zone_samples)); draw_total = 0; frames = 0;
+    result = vp_zone_end(&s_context, scope);
+    mdkr_vp_forget_scope(scope);
+    return result;
+}
+
+static void mdkr_vp_unwind_active_scopes(void) {
+    while (s_active_scope_count != 0u) {
+        struct vp_zone_scope *scope =
+            s_active_scopes[--s_active_scope_count];
+        int result;
+        s_active_scopes[s_active_scope_count] = NULL;
+        if (scope == NULL || scope->active == 0u) {
+            continue;
+        }
+        result = vp_zone_end(&s_context, scope);
+        if (result != VP_RESULT_OK) {
+            mdkr_vp_remember_error(result);
+        }
+    }
+}
+
+static void mdkr_vp_write_status(const char *stage) {
+    struct vp_stats ring;
+    struct vp_stream_writer_stats writer;
+    struct vp_vita_tcp_sink_stats sink;
+    char text[1024];
+    int length;
+    SceUID fd;
+
+    memset(&ring, 0, sizeof(ring));
+    memset(&writer, 0, sizeof(writer));
+    memset(&sink, 0, sizeof(sink));
+    if (s_context_initialized != 0u) {
+        (void)vp_get_stats(&s_context, &ring);
+    }
+    (void)vp_stream_writer_get_stats(&s_writer, &writer);
+    (void)vp_vita_tcp_sink_get_stats(&s_sink, &sink);
+
+    length = snprintf(
+        text, sizeof(text),
+        "goldenballoon-vita-profiler=1\n"
+        "stage=%s\nresult=%d\nfirst_error=0x%08X\n"
+        "endpoint=%u.%u.%u.%u:%u\nframes=%u\n"
+        "ring_accepted=%u\nring_dropped=%u\nring_pending=%u\n"
+        "writer_events=%llu\nwriter_lost=%u\nwriter_state=%u\n"
+        "tcp_bytes=%llu\ntcp_failures=%u\ntcp_state=%u\n"
+        "pmu_enabled=0\n",
+        stage != NULL ? stage : "unknown",
+        (int)mdkr_vp_load_i32(&s_result),
+        (unsigned int)mdkr_vp_load_i32(&s_first_error),
+        (unsigned int)MDKR_VITA_PROFILER_HOST_A,
+        (unsigned int)MDKR_VITA_PROFILER_HOST_B,
+        (unsigned int)MDKR_VITA_PROFILER_HOST_C,
+        (unsigned int)MDKR_VITA_PROFILER_HOST_D,
+        (unsigned int)MDKR_VITA_PROFILER_PORT,
+        (unsigned int)mdkr_vp_load_u32(&s_completed_frames),
+        ring.accepted, ring.dropped, ring.pending,
+        (unsigned long long)writer.events_written,
+        writer.events_lost_to_sink, writer.state,
+        (unsigned long long)sink.bytes_sent, sink.failures, sink.state);
+    if (length <= 0) {
+        return;
+    }
+    if ((size_t)length >= sizeof(text)) {
+        length = (int)sizeof(text) - 1;
+    }
+    fd = sceIoOpen(MDKR_VP_STATUS_PATH,
+                   SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0666);
+    if (fd >= 0) {
+        (void)sceIoWrite(fd, text, (SceSize)length);
+        (void)sceIoClose(fd);
+    }
+}
+
+static int mdkr_vp_wait_for_network(void) {
+    uint32_t attempt;
+    for (attempt = 0u; attempt < MDKR_VP_NETWORK_WAIT_STEPS; ++attempt) {
+        int state = SCE_NETCTL_STATE_DISCONNECTED;
+        int result;
+        if (mdkr_vp_load_u32(&s_stop_requested) != 0u) {
+            return VP_RESULT_OK;
+        }
+        result = sceNetCtlInetGetState(&state);
+        if (result < 0) {
+            return result;
+        }
+        if (state == SCE_NETCTL_STATE_CONNECTED) {
+            return VP_RESULT_OK;
+        }
+        sceKernelDelayThread(MDKR_VP_NETWORK_WAIT_US);
+    }
+    return VP_ERROR_IO;
+}
+
+static int mdkr_vp_close_sink(void) {
+    uint32_t attempt;
+    int result = VP_RESULT_OK;
+    for (attempt = 0u; attempt < MDKR_VP_CLOSE_RETRIES; ++attempt) {
+        result = vp_vita_tcp_sink_close(&s_sink);
+        if (result == VP_RESULT_OK) {
+            return result;
+        }
+        mdkr_vp_remember_error(result);
+        sceKernelDelayThread(100000u);
+    }
+    return result;
+}
+
+static int mdkr_vp_drain_and_close_writer(void) {
+    struct vp_stream_writer_stats stats;
+    int result;
+
+    result = vp_stream_writer_get_stats(&s_writer, &stats);
+    if (result != VP_RESULT_OK) {
+        return result;
+    }
+    if (stats.state == VP_STREAM_WRITER_CLOSED) {
+        return VP_RESULT_OK;
+    }
+    if (stats.state != VP_STREAM_WRITER_STREAMING) {
+        return VP_ERROR_STATE;
+    }
+    for (;;) {
+        size_t drained = 0u;
+        result = vp_stream_writer_drain(&s_writer, MDKR_VP_DRAIN_BATCH,
+                                        &drained);
+        if (result != VP_RESULT_OK) {
+            return result;
+        }
+        if (drained == 0u) {
+            break;
+        }
+    }
+    return vp_stream_writer_close(&s_writer);
+}
+
+static int mdkr_vp_consumer(SceSize args, void *argp) {
+    struct vp_vita_tcp_sink_config sink_config;
+    struct vp_stream_writer_config writer_config;
+    SceNetInitParam net_init;
+    SceInt64 stream_start;
+    int net_module_owned = 0;
+    int net_initialized = 0;
+    int netctl_initialized = 0;
+    int sink_initialized = 0;
+    int sink_released = 1;
+    int writer_streaming = 0;
+    int result = VP_RESULT_OK;
+
+    (void)args;
+    (void)argp;
+    mdkr_vp_store_i32(&s_result, MDKR_VP_RESULT_RUNNING);
+    mdkr_vp_write_status("starting");
+
+    /* Profiler builds have one network owner. A debugger/logger that already
+     * owns SceNet is rejected instead of creating two competing lifetimes. */
+    if (sceSysmoduleIsLoaded(SCE_SYSMODULE_NET) == 0) {
+        result = VP_ERROR_BUSY;
+        goto cleanup;
+    }
+    result = sceSysmoduleLoadModule(SCE_SYSMODULE_NET);
+    if (result < 0) {
+        goto cleanup;
+    }
+    net_module_owned = 1;
+
+    memset(&net_init, 0, sizeof(net_init));
+    net_init.memory = s_net_memory;
+    net_init.size = (int)sizeof(s_net_memory);
+    result = sceNetInit(&net_init);
+    if (result < 0) {
+        goto cleanup;
+    }
+    net_initialized = 1;
+
+    result = sceNetCtlInit();
+    if (result < 0) {
+        goto cleanup;
+    }
+    netctl_initialized = 1;
+    mdkr_vp_write_status("waiting-network");
+    result = mdkr_vp_wait_for_network();
+    if (result != VP_RESULT_OK ||
+        mdkr_vp_load_u32(&s_stop_requested) != 0u) {
+        goto cleanup;
+    }
+
+    vp_vita_tcp_sink_config_init(&sink_config);
+    sink_config.endpoint.ipv4[0] = (uint8_t)MDKR_VITA_PROFILER_HOST_A;
+    sink_config.endpoint.ipv4[1] = (uint8_t)MDKR_VITA_PROFILER_HOST_B;
+    sink_config.endpoint.ipv4[2] = (uint8_t)MDKR_VITA_PROFILER_HOST_C;
+    sink_config.endpoint.ipv4[3] = (uint8_t)MDKR_VITA_PROFILER_HOST_D;
+    sink_config.endpoint.port = (uint16_t)MDKR_VITA_PROFILER_PORT;
+    result = vp_vita_tcp_sce_net_ops_init(&s_backend, &sink_config.ops);
+    if (result != VP_RESULT_OK) {
+        goto cleanup;
+    }
+    sink_config.ops_user = &s_backend;
+    result = vp_vita_tcp_sink_init(&s_sink, &sink_config);
+    if (result != VP_RESULT_OK) {
+        goto cleanup;
+    }
+    sink_initialized = 1;
+    sink_released = 0;
+    mdkr_vp_write_status("connecting");
+    result = vp_vita_tcp_sink_connect(&s_sink);
+    if (result != VP_RESULT_OK) {
+        goto cleanup;
+    }
+
+    memset(&writer_config, 0, sizeof(writer_config));
+    writer_config.context = &s_context;
+    writer_config.names = &s_names;
+    writer_config.write = vp_vita_tcp_sink_write;
+    writer_config.write_user = &s_sink;
+    writer_config.dictionary_buffer = s_dictionary_wire;
+    writer_config.dictionary_buffer_capacity = sizeof(s_dictionary_wire);
+    result = vp_stream_writer_init(&s_writer, &writer_config);
+    if (result != VP_RESULT_OK) {
+        goto cleanup;
+    }
+    stream_start = sceKernelGetSystemTimeWide();
+    if (stream_start < 0) {
+        result = VP_ERROR_PLATFORM;
+        goto cleanup;
+    }
+    result = vp_stream_writer_begin(&s_writer, (uint64_t)stream_start);
+    if (result != VP_RESULT_OK) {
+        goto cleanup;
+    }
+    writer_streaming = 1;
+
+    /* Only the consumer performs network I/O. Game/render hooks remain
+     * nonblocking producers and are published after the stream is ready. */
+    mdkr_vp_store_u32(&s_producers_enabled, 1u);
+    mdkr_vp_write_status("capturing");
+    while (mdkr_vp_load_u32(&s_stop_requested) == 0u &&
+           mdkr_vp_load_u32(&s_capture_complete) == 0u) {
+        size_t drained = 0u;
+        result = vp_stream_writer_drain(&s_writer, MDKR_VP_DRAIN_BATCH,
+                                        &drained);
+        if (result != VP_RESULT_OK) {
+            mdkr_vp_store_u32(&s_producers_enabled, 0u);
+            break;
+        }
+        if (drained == 0u) {
+            sceKernelDelayThread(MDKR_VP_IDLE_DELAY_US);
+        }
+    }
+
+    mdkr_vp_store_u32(&s_producers_enabled, 0u);
+    if (result == VP_RESULT_OK) {
+        result = mdkr_vp_drain_and_close_writer();
+        if (result == VP_RESULT_OK) {
+            writer_streaming = 0;
+        }
+    }
+
+cleanup:
+    mdkr_vp_store_u32(&s_producers_enabled, 0u);
+    if (result != VP_RESULT_OK && writer_streaming) {
+        (void)mdkr_vp_drain_and_close_writer();
+    }
+    if (sink_initialized) {
+        const int close_result = mdkr_vp_close_sink();
+        if (close_result == VP_RESULT_OK) {
+            sink_released = 1;
+        }
+        if (result == VP_RESULT_OK && close_result != VP_RESULT_OK) {
+            result = close_result;
+        }
+    }
+
+    /* A retained socket is more important than eager teardown. Never call
+     * sceNetTerm underneath an adapter that still owns a descriptor. */
+    if (sink_released) {
+        if (netctl_initialized) {
+            sceNetCtlTerm();
+            netctl_initialized = 0;
+        }
+        if (net_initialized) {
+            const int net_result = sceNetTerm();
+            if (net_result < 0) {
+                mdkr_vp_remember_error(net_result);
+                if (result == VP_RESULT_OK) {
+                    result = net_result;
+                }
+            } else {
+                net_initialized = 0;
+            }
+        }
+        if (net_module_owned && !net_initialized) {
+            const int module_result =
+                sceSysmoduleUnloadModule(SCE_SYSMODULE_NET);
+            if (module_result < 0) {
+                mdkr_vp_remember_error(module_result);
+                if (result == VP_RESULT_OK) {
+                    result = module_result;
+                }
+            }
+        }
+    }
+
+    if (result != VP_RESULT_OK) {
+        mdkr_vp_remember_error(result);
+        mdkr_vp_store_i32(&s_result, MDKR_VP_RESULT_FAILED);
+        mdkr_vp_write_status("failed");
+    } else if (mdkr_vp_load_u32(&s_capture_complete) != 0u) {
+        mdkr_vp_store_i32(&s_result, MDKR_VP_RESULT_COMPLETE);
+        mdkr_vp_write_status("complete");
+    } else {
+        mdkr_vp_store_i32(&s_result, MDKR_VP_RESULT_STOPPED);
+        mdkr_vp_write_status("stopped");
+    }
+    return 0;
 }
 
 void mdkr_vita_profiler_init(void) {
-    struct vp_name_dictionary_config nc;
-    SceNetInitParam net_config;
-    char line[192];
-    int i, result, module_result, net_result;
-    if (enabled) return;
-    module_result = sceSysmoduleLoadModule(SCE_SYSMODULE_NET);
-    net_module_owned = module_result == 0;
-    memset(&net_config, 0, sizeof(net_config));
-    net_config.memory = debugnet_memory;
-    net_config.size = sizeof(debugnet_memory);
-    net_result = sceNetInit(&net_config);
-    net_owned = net_result == 0;
-    /* A host network owner may have initialized SceNet before the profiler.
-     * In that case sceNetInit reports an existing lifecycle rather than
-     * granting ownership. Let DebugNet probe asynchronously after startup;
-     * failures remain harmless and are retried from the frame loop. */
-    debugnet_network_ready = module_result >= 0;
-    debugnet_retry_frames = 0;
-    memset(&nc, 0, sizeof(nc));
-    nc.entries = name_entries; nc.entry_capacity = MDKR_VP_ZONE_COUNT + 2;
-    nc.text = name_text; nc.text_capacity = sizeof(name_text);
-    if (vp_vita_init(&ctx, slots, RING_CAPACITY) != VP_RESULT_OK || vp_name_dictionary_init(&names, &nc) != VP_RESULT_OK) return;
-    for (i = 0; i < MDKR_VP_ZONE_COUNT; ++i)
-        if (vp_name_dictionary_register(&names, zone_names[i], &zone_ids[i]) != VP_RESULT_OK) return;
-    if (vp_name_dictionary_register(&names, "game.frame", &frame_id) != VP_RESULT_OK ||
-        vp_name_dictionary_register(&names, "vitagl.draw_calls", &draw_id) != VP_RESULT_OK ||
-        vp_name_dictionary_seal(&names) != VP_RESULT_OK) return;
-    enabled = 1; memset(&pmu_info, 0, sizeof(pmu_info));
-    pmu_info.struct_size = sizeof(pmu_info); pmu_info.abi_version = VD_KERNEL_PMU_PROFILER_ABI_VERSION;
-    result = vdKernelPmuProfilerGetInfo(&pmu_info);
-    snprintf(line, sizeof(line), "[VPROF] enabled pmu_info=%d abi=%u caps=0x%08x core=%u lane=%u", result,
-             (unsigned)pmu_info.abi_version, result == 0 ? (unsigned)pmu_info.capabilities : 0,
-             (unsigned)pmu_info.fixed_core, (unsigned)pmu_info.fixed_counter);
-    if (debugnet_started) (void)uvdb_debugnet_write(UVDB_LOG_INFO, line);
-    if (result != 0 || pmu_info.abi_version != VD_KERNEL_PMU_PROFILER_ABI_VERSION) memset(&pmu_info, 0, sizeof(pmu_info));
-    {
-        char logger_line[160];
-        int logger_result = debugnet_try_start();
-        snprintf(logger_line, sizeof(logger_line),
-                 "profiler: debugnet start=%d module=0x%08x net=0x%08x owner_thread=%d",
-                 logger_result, (unsigned)module_result, (unsigned)net_result,
-                 (int)sceKernelGetThreadId());
-        mdkr_vita_boot_log(logger_line);
-        mdkr_vita_boot_log_flush();
+    struct vp_name_dictionary_config name_config;
+    char log_line[160];
+    uint32_t index;
+    int result;
+
+    if (s_consumer_thread >= 0 || s_context_initialized != 0u ||
+        s_names_initialized != 0u) {
+        return;
+    }
+
+    memset(&name_config, 0, sizeof(name_config));
+    name_config.entries = s_name_entries;
+    name_config.entry_capacity = MDKR_VP_NAME_CAPACITY;
+    name_config.text = s_name_text;
+    name_config.text_capacity = sizeof(s_name_text);
+    result = vp_name_dictionary_init(&s_names, &name_config);
+    if (result != VP_RESULT_OK) {
+        goto fail;
+    }
+    s_names_initialized = 1u;
+    for (index = 0u; index < (uint32_t)MDKR_VP_ZONE_COUNT; ++index) {
+        result = vp_name_dictionary_register(
+            &s_names, s_zone_names[index], &s_zone_ids[index]);
+        if (result != VP_RESULT_OK) {
+            goto fail;
+        }
+    }
+    result = vp_name_dictionary_register(&s_names, "game.frame", &s_frame_id);
+    if (result == VP_RESULT_OK) {
+        result = vp_name_dictionary_register(
+            &s_names, "vitagl.draw_calls", &s_draw_id);
+    }
+    if (result == VP_RESULT_OK) {
+        result = vp_name_dictionary_seal(&s_names);
+    }
+    if (result != VP_RESULT_OK) {
+        goto fail;
+    }
+
+    result = vp_vita_init(&s_context, s_slots, MDKR_VP_RING_CAPACITY);
+    if (result != VP_RESULT_OK) {
+        goto fail;
+    }
+    s_context_initialized = 1u;
+
+    mdkr_vp_store_u32(&s_stop_requested, 0u);
+    mdkr_vp_store_u32(&s_producers_enabled, 0u);
+    mdkr_vp_store_u32(&s_capture_complete, 0u);
+    mdkr_vp_store_u32(&s_completed_frames, 0u);
+    mdkr_vp_store_u32(&s_draw_calls, 0u);
+    mdkr_vp_store_i32(&s_result, MDKR_VP_RESULT_IDLE);
+    mdkr_vp_store_i32(&s_first_error, 0);
+    s_frame_active = 0u;
+    s_active_scope_count = 0u;
+    memset(s_active_scopes, 0, sizeof(s_active_scopes));
+    memset(&s_backend, 0, sizeof(s_backend));
+    memset(&s_sink, 0, sizeof(s_sink));
+    memset(&s_writer, 0, sizeof(s_writer));
+
+    s_consumer_thread = sceKernelCreateThread(
+        "GoldenBalloonProfiler", mdkr_vp_consumer, MDKR_VP_THREAD_PRIORITY,
+        MDKR_VP_THREAD_STACK_BYTES, 0, 0, NULL);
+    if (s_consumer_thread < 0) {
+        result = s_consumer_thread;
+        s_consumer_thread = -1;
+        goto fail;
+    }
+    result = sceKernelStartThread(s_consumer_thread, 0, NULL);
+    if (result < 0) {
+        (void)sceKernelDeleteThread(s_consumer_thread);
+        s_consumer_thread = -1;
+        goto fail;
+    }
+
+    snprintf(log_line, sizeof(log_line),
+             "profiler: TCP consumer started for %u.%u.%u.%u:%u",
+             (unsigned int)MDKR_VITA_PROFILER_HOST_A,
+             (unsigned int)MDKR_VITA_PROFILER_HOST_B,
+             (unsigned int)MDKR_VITA_PROFILER_HOST_C,
+             (unsigned int)MDKR_VITA_PROFILER_HOST_D,
+             (unsigned int)MDKR_VITA_PROFILER_PORT);
+    mdkr_vita_boot_log(log_line);
+    mdkr_vita_boot_log_flush();
+    return;
+
+fail:
+    mdkr_vp_remember_error(result);
+    mdkr_vp_store_i32(&s_result, MDKR_VP_RESULT_FAILED);
+    mdkr_vp_write_status("start-failed");
+    if (s_context_initialized != 0u) {
+        vp_deinit(&s_context);
+        s_context_initialized = 0u;
+    }
+    if (s_names_initialized != 0u) {
+        vp_name_dictionary_deinit(&s_names);
+        s_names_initialized = 0u;
     }
 }
 
 void mdkr_vita_profiler_shutdown(void) {
-    struct uvdb_debugnet_stats stats;
-    char line[160];
-    if (enabled) {
-        pmu_close_report();
-        drain_events();
-        if (frames) report();
-        vp_name_dictionary_deinit(&names);
-        vp_deinit(&ctx);
-        enabled = 0;
+    int wait_result;
+
+    if (s_context_initialized != 0u) {
+        mdkr_vp_unwind_active_scopes();
     }
-    if (debugnet_started) {
-        if (uvdb_debugnet_get_stats(&stats) == 0) {
-            snprintf(line, sizeof(line),
-                     "[VPROF] debugnet sent=%u dropped=%u truncated=%u errors=%u",
-                     stats.sent, stats.dropped, stats.truncated,
-                     stats.send_errors);
-            (void)uvdb_debugnet_write(UVDB_LOG_INFO, line);
+    (void)__atomic_exchange_n(&s_draw_calls, 0u, __ATOMIC_ACQ_REL);
+    s_frame_active = 0u;
+    mdkr_vp_store_u32(&s_producers_enabled, 0u);
+    mdkr_vp_store_u32(&s_stop_requested, 1u);
+    if (s_consumer_thread >= 0) {
+        wait_result = sceKernelWaitThreadEnd(s_consumer_thread, NULL, NULL);
+        if (wait_result < 0) {
+            /* Retain shared state if the worker cannot be proven stopped. The
+             * process will reclaim it without a teardown race. */
+            mdkr_vp_remember_error(wait_result);
+            mdkr_vp_store_i32(&s_result, MDKR_VP_RESULT_FAILED);
+            mdkr_vp_write_status("join-failed");
+            return;
         }
-        (void)uvdb_debugnet_stop();
-        debugnet_started = 0;
+        (void)sceKernelDeleteThread(s_consumer_thread);
+        s_consumer_thread = -1;
     }
-    if (net_owned) {
-        (void)sceNetTerm();
-        net_owned = 0;
+    if (s_context_initialized != 0u) {
+        vp_deinit(&s_context);
+        s_context_initialized = 0u;
     }
-    if (net_module_owned) {
-        (void)sceSysmoduleUnloadModule(SCE_SYSMODULE_NET);
-        net_module_owned = 0;
+    if (s_names_initialized != 0u) {
+        vp_name_dictionary_deinit(&s_names);
+        s_names_initialized = 0u;
     }
-    debugnet_network_ready = 0;
-    debugnet_retry_frames = 0;
 }
+
 void mdkr_vita_profiler_frame_begin(void) {
-    debugnet_try_start();
-    if (!enabled) return;
-    if (!pmu_active && frames == 0u) pmu_open();
-    (void)vp_frame_mark(&ctx, frame_id);
+    s_frame_active = 0u;
+    (void)__atomic_exchange_n(&s_draw_calls, 0u, __ATOMIC_ACQ_REL);
+    if (mdkr_vp_load_u32(&s_producers_enabled) != 0u) {
+        s_frame_active = 1u;
+    }
 }
+
 void mdkr_vita_profiler_frame_end(void) {
-    if (!enabled) return;
-    drain_events();
-    frames++;
-    if (frames >= REPORT_FRAMES) { pmu_close_report(); report(); pmu_open(); }
+    uint32_t frames;
+    uint32_t draws;
+    int result;
+
+    if (s_frame_active == 0u) {
+        return;
+    }
+    draws = __atomic_exchange_n(&s_draw_calls, 0u, __ATOMIC_ACQ_REL);
+    result = vp_counter(&s_context, s_draw_id, (int64_t)draws);
+    if (result < VP_RESULT_OK) {
+        mdkr_vp_remember_error(result);
+    }
+    result = vp_frame_mark(&s_context, s_frame_id);
+    if (result < VP_RESULT_OK) {
+        mdkr_vp_remember_error(result);
+    }
+    s_frame_active = 0u;
+    frames = __atomic_add_fetch(&s_completed_frames, 1u, __ATOMIC_ACQ_REL);
+#if MDKR_VITA_PROFILER_CAPTURE_FRAMES > 0
+    if (frames >= (uint32_t)MDKR_VITA_PROFILER_CAPTURE_FRAMES) {
+        mdkr_vp_store_u32(&s_producers_enabled, 0u);
+        mdkr_vp_store_u32(&s_capture_complete, 1u);
+    }
+#else
+    (void)frames;
+#endif
 }
-void mdkr_vita_profiler_zone_begin(MdkrVitaProfileZone z, MdkrVitaProfileScope *s) {
-    if (s) memset(s, 0, sizeof(*s));
-    if (enabled && s && z >= 0 && z < MDKR_VP_ZONE_COUNT) (void)vp_zone_begin(&ctx, zone_ids[z], (struct vp_zone_scope *)s);
+
+void mdkr_vita_profiler_zone_begin(MdkrVitaProfileZone zone,
+                                   MdkrVitaProfileScope *scope) {
+    struct vp_zone_scope *value;
+    if (scope == NULL) {
+        return;
+    }
+    memset(scope, 0, sizeof(*scope));
+    if (s_frame_active == 0u ||
+        mdkr_vp_load_u32(&s_producers_enabled) == 0u ||
+        zone < 0 || zone >= MDKR_VP_ZONE_COUNT) {
+        return;
+    }
+    value = (struct vp_zone_scope *)scope;
+    if (vp_zone_begin(&s_context, s_zone_ids[(uint32_t)zone], value) ==
+        VP_RESULT_OK) {
+        mdkr_vp_track_scope(value);
+    }
 }
-void mdkr_vita_profiler_zone_end(MdkrVitaProfileScope *s) { if (enabled && s) (void)vp_zone_end(&ctx, (struct vp_zone_scope *)s); }
-void mdkr_vita_profiler_count_draw(void) { if (enabled) draw_total++; }
+
+void mdkr_vita_profiler_zone_end(MdkrVitaProfileScope *scope) {
+    struct vp_zone_scope *value;
+    if (scope == NULL) {
+        return;
+    }
+    value = (struct vp_zone_scope *)scope;
+    if (value->active != 0u) {
+        const int result = mdkr_vp_end_scope(value);
+        if (result != VP_RESULT_OK) {
+            mdkr_vp_remember_error(result);
+        }
+    }
+}
+
+void mdkr_vita_profiler_count_draw(void) {
+    if (s_frame_active != 0u &&
+        mdkr_vp_load_u32(&s_producers_enabled) != 0u) {
+        (void)__atomic_add_fetch(&s_draw_calls, 1u, __ATOMIC_RELAXED);
+    }
+}
+
 #endif

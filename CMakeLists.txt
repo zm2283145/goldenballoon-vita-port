@@ -141,11 +141,40 @@ if(VITA)
     option(MDKR_VITA_DEBUGGER
         "Link VitaDebugger and stop for GDB on TCP port 1234 during startup" OFF)
     option(MDKR_VITA_PROFILER
-        "Enable low-overhead VitaProfiler frame and PMU diagnostics" OFF)
-    set(MDKR_VITA_DEBUGNET_HOST "10.1.1.146" CACHE STRING
-        "Development PC IPv4 address for VitaDebugNet profiler reports")
-    set(MDKR_VITA_DEBUGNET_PORT "18194" CACHE STRING
-        "UDP port for VitaDebugNet profiler reports")
+        "Enable a bounded VitaProfiler TCP frame trace" OFF)
+    set(MDKR_VITA_PROFILER_HOST_A "127" CACHE STRING
+        "First IPv4 octet of the VitaProfiler receiver")
+    set(MDKR_VITA_PROFILER_HOST_B "0" CACHE STRING
+        "Second IPv4 octet of the VitaProfiler receiver")
+    set(MDKR_VITA_PROFILER_HOST_C "0" CACHE STRING
+        "Third IPv4 octet of the VitaProfiler receiver")
+    set(MDKR_VITA_PROFILER_HOST_D "1" CACHE STRING
+        "Fourth IPv4 octet of the VitaProfiler receiver")
+    set(MDKR_VITA_PROFILER_PORT "18195" CACHE STRING
+        "TCP port of the VitaProfiler receiver")
+    set(MDKR_VITA_PROFILER_CAPTURE_FRAMES "300" CACHE STRING
+        "Number of complete frames in one VitaProfiler capture; zero is unlimited")
+    if(MDKR_VITA_DEBUGGER AND MDKR_VITA_PROFILER)
+        message(FATAL_ERROR
+            "MDKR_VITA_DEBUGGER and MDKR_VITA_PROFILER cannot share independent SceNet owners")
+    endif()
+    foreach(MDKR_VITA_PROFILER_OCTET IN ITEMS
+            MDKR_VITA_PROFILER_HOST_A MDKR_VITA_PROFILER_HOST_B
+            MDKR_VITA_PROFILER_HOST_C MDKR_VITA_PROFILER_HOST_D)
+        if(NOT "${${MDKR_VITA_PROFILER_OCTET}}" MATCHES "^(0|[1-9][0-9]*)$" OR
+           ${${MDKR_VITA_PROFILER_OCTET}} GREATER 255)
+            message(FATAL_ERROR
+                "${MDKR_VITA_PROFILER_OCTET} must be an integer in [0, 255]")
+        endif()
+    endforeach()
+    if(NOT "${MDKR_VITA_PROFILER_PORT}" MATCHES "^[1-9][0-9]*$" OR
+       MDKR_VITA_PROFILER_PORT LESS 1 OR MDKR_VITA_PROFILER_PORT GREATER 65535)
+        message(FATAL_ERROR "MDKR_VITA_PROFILER_PORT must be in [1, 65535]")
+    endif()
+    if(NOT "${MDKR_VITA_PROFILER_CAPTURE_FRAMES}" MATCHES "^(0|[1-9][0-9]*)$")
+        message(FATAL_ERROR
+            "MDKR_VITA_PROFILER_CAPTURE_FRAMES must be zero or a positive integer")
+    endif()
     set(MDKR_VITADEBUGGER_DIR "${CMAKE_SOURCE_DIR}/../../VitaDebugger" CACHE PATH
         "Path containing VitaDebugger's uvdb.h and libuvdb.a")
     set(MDKR_VITADEBUGGER_KUBRIDGE_DIR "${CMAKE_SOURCE_DIR}/../../kuBridge" CACHE PATH
@@ -676,7 +705,9 @@ if(VITA)
         list(APPEND PLATFORM_SOURCES
             ${MDKR_VITAPROFILER_DIR}/src/vitaprofiler.c
             ${MDKR_VITAPROFILER_DIR}/src/vitaprofiler_vita.c
-            ${MDKR_VITAPROFILER_DIR}/src/vitaprofiler_names.c)
+            ${MDKR_VITAPROFILER_DIR}/src/vitaprofiler_names.c
+            ${MDKR_VITAPROFILER_DIR}/src/vitaprofiler_stream.c
+            ${MDKR_VITAPROFILER_DIR}/src/vitaprofiler_tcp_vita.c)
     endif()
 endif()
 if(VITA AND MDKR_VITA_IMGUI_OVERLAY)
@@ -1200,33 +1231,33 @@ if(NOT EMSCRIPTEN)
         endif()
         if(MDKR_VITA_PROFILER)
             foreach(MDKR_PROFILER_FILE IN ITEMS
-                    "${MDKR_VITADEBUGGER_DIR}/uvdb.h"
-                    "${MDKR_VITADEBUGGER_DIR}/libuvdb.a"
                     "${MDKR_VITAPROFILER_DIR}/include/vitaprofiler.h"
+                    "${MDKR_VITAPROFILER_DIR}/include/vitaprofiler_stream.h"
+                    "${MDKR_VITAPROFILER_DIR}/include/vitaprofiler_tcp_vita.h"
                     "${MDKR_VITAPROFILER_DIR}/src/vitaprofiler.c"
                     "${MDKR_VITAPROFILER_DIR}/src/vitaprofiler_vita.c"
                     "${MDKR_VITAPROFILER_DIR}/src/vitaprofiler_names.c"
-                    "${MDKR_VITADEBUGGER_DIR}/kernel/include/vitadebug_pmu_profiler.h"
-                    "${MDKR_VITADEBUGGER_KERNEL_DIR}/libvitadebug_kernel_stub.a")
+                    "${MDKR_VITAPROFILER_DIR}/src/vitaprofiler_stream.c"
+                    "${MDKR_VITAPROFILER_DIR}/src/vitaprofiler_tcp_vita.c")
                 if(NOT EXISTS "${MDKR_PROFILER_FILE}")
                     message(FATAL_ERROR
                         "MDKR_VITA_PROFILER requires ${MDKR_PROFILER_FILE}")
                 endif()
             endforeach()
             target_include_directories(${MDKR_TARGET} PRIVATE
-                "${MDKR_VITADEBUGGER_DIR}"
-                "${MDKR_VITAPROFILER_DIR}/include"
-                "${MDKR_VITADEBUGGER_DIR}/kernel/include")
+                "${MDKR_VITAPROFILER_DIR}/include")
             target_compile_definitions(${MDKR_TARGET} PRIVATE
                 MDKR_VITA_PROFILER=1
-                MDKR_VITA_DEBUGNET_HOST="${MDKR_VITA_DEBUGNET_HOST}"
-                MDKR_VITA_DEBUGNET_PORT=${MDKR_VITA_DEBUGNET_PORT})
+                MDKR_VITA_PROFILER_HOST_A=${MDKR_VITA_PROFILER_HOST_A}
+                MDKR_VITA_PROFILER_HOST_B=${MDKR_VITA_PROFILER_HOST_B}
+                MDKR_VITA_PROFILER_HOST_C=${MDKR_VITA_PROFILER_HOST_C}
+                MDKR_VITA_PROFILER_HOST_D=${MDKR_VITA_PROFILER_HOST_D}
+                MDKR_VITA_PROFILER_PORT=${MDKR_VITA_PROFILER_PORT}
+                MDKR_VITA_PROFILER_CAPTURE_FRAMES=${MDKR_VITA_PROFILER_CAPTURE_FRAMES})
             target_link_libraries(${MDKR_TARGET} PRIVATE
-                "${MDKR_VITADEBUGGER_DIR}/libuvdb.a"
-                "${MDKR_VITADEBUGGER_KERNEL_DIR}/libvitadebug_kernel_stub.a"
                 SceKernelThreadMgr_stub SceProcessmgr_stub SceSysmem_stub
-                SceLibKernel_stub SceNet_stub SceNetPs_stub SceSysmodule_stub
-                pthread)
+                SceLibKernel_stub SceNet_stub SceNetCtl_stub
+                SceSysmodule_stub pthread)
         endif()
     else()
         # CMAKE_DL_LIBS also carries the dlopen that platform/a11y_speech_linux.c

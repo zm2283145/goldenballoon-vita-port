@@ -9402,6 +9402,7 @@ static bool gfx_dkr_replay_walk_impl(
     mdkr_vita_profiler_zone_begin(MDKR_VP_ZONE_REPLAY_WALK, &profileScope);
     dkr_replay_force_recompose = present_sched_test_force_recompose();
     if (!gfx_shadow_replay_restore(overrides, override_count)) {
+        mdkr_vita_profiler_zone_end(&profileScope);
         return false;
     }
     dkr_replay_pass = true;
