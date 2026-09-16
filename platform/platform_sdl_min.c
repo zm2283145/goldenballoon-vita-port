@@ -2277,6 +2277,44 @@ static int vita_pack_dialog(const char *message, int yes_no) {
     return yes_no ? result.buttonId == SCE_MSG_DIALOG_BUTTON_ID_YES : 1;
 }
 
+static int vita_pack_progress_begin(void) {
+    SceMsgDialogProgressBarParam progress;
+    SceMsgDialogParam param;
+    memset(&progress, 0, sizeof(progress));
+    progress.barType = SCE_MSG_DIALOG_PROGRESSBAR_TYPE_PERCENTAGE;
+    progress.msg = (const SceChar8 *)"Extracting HD texture pack...";
+    sceMsgDialogParamInit(&param);
+    param.mode = SCE_MSG_DIALOG_MODE_PROGRESS_BAR;
+    param.progBarParam = &progress;
+    return sceMsgDialogInit(&param) >= 0;
+}
+
+static void vita_pack_progress_update(mz_uint completed, mz_uint total) {
+    char status[96];
+    unsigned percent = total != 0 ? (unsigned)((uint64_t)completed * 100u / total) : 0u;
+    if (percent > 100u) percent = 100u;
+    snprintf(status, sizeof(status), "Extracting file %u of %u",
+             (unsigned)completed, (unsigned)total);
+    (void)sceMsgDialogProgressBarSetValue(
+        SCE_MSG_DIALOG_PROGRESSBAR_TARGET_BAR_DEFAULT, percent);
+    (void)sceMsgDialogProgressBarSetMsg(
+        SCE_MSG_DIALOG_PROGRESSBAR_TARGET_BAR_DEFAULT,
+        (const SceChar8 *)status);
+    glClear(GL_COLOR_BUFFER_BIT);
+    vglSwapBuffers(GL_TRUE);
+}
+
+static void vita_pack_progress_end(int success) {
+    if (success) vita_pack_progress_update(1u, 1u);
+    (void)sceMsgDialogClose();
+    while (sceMsgDialogGetStatus() != SCE_COMMON_DIALOG_STATUS_FINISHED) {
+        glClear(GL_COLOR_BUFFER_BIT);
+        vglSwapBuffers(GL_TRUE);
+        sceKernelDelayThread(16000);
+    }
+    (void)sceMsgDialogTerm();
+}
+
 static int vita_pack_extract(const char *zip_path, const char *temporary,
                              const char *destination) {
     mz_zip_archive archive;
@@ -2286,6 +2324,7 @@ static int vita_pack_extract(const char *zip_path, const char *temporary,
     uint64_t total = 0;
     int extracted = 0;
     int temporary_exists = 0;
+    int progress_open = 0;
     const char *stage = "opening ZIP";
     const char *entry_name = "(none)";
     mz_uint entry_index = 0;
@@ -2320,6 +2359,8 @@ static int vita_pack_extract(const char *zip_path, const char *temporary,
             if (total > VITA_PACK_EXTRACT_MAX_BYTES) goto archive_done;
         }
     }
+    progress_open = vita_pack_progress_begin();
+    if (progress_open) vita_pack_progress_update(0u, count);
     stage = "creating temporary folder";
     if (!vita_pack_mkdirs(temporary, 1)) goto archive_done;
     for (i = 0; i < count; ++i) {
@@ -2370,10 +2411,8 @@ static int vita_pack_extract(const char *zip_path, const char *temporary,
             (void)mdkr_remove_utf8(output);
             goto archive_done;
         }
-        if ((i & 15u) == 0u) {
-            glClear(GL_COLOR_BUFFER_BIT);
-            vglSwapBuffers(GL_TRUE);
-        }
+        if (progress_open && (((i + 1u) & 7u) == 0u || i + 1u == count))
+            vita_pack_progress_update(i + 1u, count);
     }
     /* Vita's newlib filesystem supports syncing regular files, but directory
      * descriptors do not reliably support fsync(). Every extracted file has
@@ -2394,6 +2433,7 @@ done:
                  (int)mz_zip_get_last_error(&archive));
     }
     if (zip != NULL) fclose(zip);
+    if (progress_open) vita_pack_progress_end(extracted);
     if (!extracted) {
         (void)vita_pack_remove_tree(temporary);
         return 0;
