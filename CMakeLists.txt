@@ -142,6 +142,10 @@ if(VITA)
         "Link VitaDebugger and stop for GDB on TCP port 1234 during startup" OFF)
     option(MDKR_VITA_PROFILER
         "Enable low-overhead VitaProfiler frame and PMU diagnostics" OFF)
+    set(MDKR_VITA_DEBUGNET_HOST "10.1.1.146" CACHE STRING
+        "Development PC IPv4 address for VitaDebugNet profiler reports")
+    set(MDKR_VITA_DEBUGNET_PORT "18194" CACHE STRING
+        "UDP port for VitaDebugNet profiler reports")
     set(MDKR_VITADEBUGGER_DIR "${CMAKE_SOURCE_DIR}/../../VitaDebugger" CACHE PATH
         "Path containing VitaDebugger's uvdb.h and libuvdb.a")
     set(MDKR_VITADEBUGGER_KUBRIDGE_DIR "${CMAKE_SOURCE_DIR}/../../kuBridge" CACHE PATH
@@ -1196,6 +1200,8 @@ if(NOT EMSCRIPTEN)
         endif()
         if(MDKR_VITA_PROFILER)
             foreach(MDKR_PROFILER_FILE IN ITEMS
+                    "${MDKR_VITADEBUGGER_DIR}/uvdb.h"
+                    "${MDKR_VITADEBUGGER_DIR}/libuvdb.a"
                     "${MDKR_VITAPROFILER_DIR}/include/vitaprofiler.h"
                     "${MDKR_VITAPROFILER_DIR}/src/vitaprofiler.c"
                     "${MDKR_VITAPROFILER_DIR}/src/vitaprofiler_vita.c"
@@ -1208,14 +1214,19 @@ if(NOT EMSCRIPTEN)
                 endif()
             endforeach()
             target_include_directories(${MDKR_TARGET} PRIVATE
+                "${MDKR_VITADEBUGGER_DIR}"
                 "${MDKR_VITAPROFILER_DIR}/include"
                 "${MDKR_VITADEBUGGER_DIR}/kernel/include")
             target_compile_definitions(${MDKR_TARGET} PRIVATE
-                MDKR_VITA_PROFILER=1)
+                MDKR_VITA_PROFILER=1
+                MDKR_VITA_DEBUGNET_HOST="${MDKR_VITA_DEBUGNET_HOST}"
+                MDKR_VITA_DEBUGNET_PORT=${MDKR_VITA_DEBUGNET_PORT})
             target_link_libraries(${MDKR_TARGET} PRIVATE
+                "${MDKR_VITADEBUGGER_DIR}/libuvdb.a"
                 "${MDKR_VITADEBUGGER_KERNEL_DIR}/libvitadebug_kernel_stub.a"
                 SceKernelThreadMgr_stub SceProcessmgr_stub SceSysmem_stub
-                SceLibKernel_stub)
+                SceLibKernel_stub SceNet_stub SceNetPs_stub SceSysmodule_stub
+                pthread)
         endif()
     else()
         # CMAKE_DL_LIBS also carries the dlopen that platform/a11y_speech_linux.c

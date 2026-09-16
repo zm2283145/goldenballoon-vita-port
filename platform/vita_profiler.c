@@ -4,13 +4,16 @@
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
+#include <psp2/net/net.h>
+#include <psp2/sysmodule.h>
+#include <uvdb.h>
 #include <vitaprofiler.h>
 #include <vitadebug_pmu_profiler.h>
 
 #define RING_CAPACITY 2048u
 #define REPORT_FRAMES 60u
-extern void mdkr_vita_boot_log(const char *msg);
-extern void mdkr_vita_boot_log_flush(void);
+static unsigned char debugnet_memory[1024 * 1024] __attribute__((aligned(64)));
+static uint32_t debugnet_started, net_owned, net_module_owned;
 
 static struct vp_context ctx;
 static struct vp_slot slots[RING_CAPACITY];
@@ -50,7 +53,8 @@ static void pmu_close_report(void) {
     snprintf(line, sizeof(line), "[VPROF] pmu event=0x%02x value=%" PRIu64 " read=%d close=%d core=%u lane=%u",
              (unsigned)pmu_handle.event_code, rd == 0 ? sample.value : UINT64_C(0), rd, close_result,
              (unsigned)sample.core_id, (unsigned)sample.physical_counter);
-    mdkr_vita_boot_log(line); pmu_active = 0;
+    if (debugnet_started) (void)uvdb_debugnet_write(UVDB_LOG_INFO, line);
+    pmu_active = 0;
     if (close_result != 0) pmu_info.capabilities = 0; /* fail closed: never re-arm */
 }
 
@@ -66,7 +70,10 @@ static void pmu_open(void) {
     memset(&pmu_handle, 0, sizeof(pmu_handle));
     result = vdKernelPmuProfilerOpen(&req, &pmu_handle);
     if (result == 0) { pmu_active = 1; pmu_event_index = (pmu_event_index + 1) % 3; }
-    else { snprintf(line, sizeof(line), "[VPROF] pmu open failed result=%d", result); mdkr_vita_boot_log(line); }
+    else {
+        snprintf(line, sizeof(line), "[VPROF] pmu open failed result=%d", result);
+        if (debugnet_started) (void)uvdb_debugnet_write(UVDB_LOG_ERROR, line);
+    }
 }
 
 static void drain_events(void) {
@@ -89,13 +96,32 @@ static void report(void) {
     if (frames && used < sizeof(line)) used += (size_t)snprintf(line + used, sizeof(line) - used, " draws=%" PRIu64, draw_total / frames);
     if (vp_get_stats(&ctx, &stats) == VP_RESULT_OK && used < sizeof(line))
         (void)snprintf(line + used, sizeof(line) - used, " dropped=%u", (unsigned)stats.dropped);
-    mdkr_vita_boot_log(line); mdkr_vita_boot_log_flush();
+    if (debugnet_started) (void)uvdb_debugnet_write(UVDB_LOG_INFO, line);
     memset(zone_total, 0, sizeof(zone_total)); memset(zone_samples, 0, sizeof(zone_samples)); draw_total = 0; frames = 0;
 }
 
 void mdkr_vita_profiler_init(void) {
-    struct vp_name_dictionary_config nc; char line[192]; int i, result;
+    struct vp_name_dictionary_config nc;
+    struct uvdb_debugnet_config log_config;
+    SceNetInitParam net_config;
+    char line[192];
+    int i, result, module_result, net_result;
     if (enabled) return;
+    module_result = sceSysmoduleLoadModule(SCE_SYSMODULE_NET);
+    net_module_owned = module_result == 0;
+    memset(&net_config, 0, sizeof(net_config));
+    net_config.memory = debugnet_memory;
+    net_config.size = sizeof(debugnet_memory);
+    net_result = sceNetInit(&net_config);
+    net_owned = net_result == 0;
+    memset(&log_config, 0, sizeof(log_config));
+    log_config.server_ip = MDKR_VITA_DEBUGNET_HOST;
+    log_config.port = MDKR_VITA_DEBUGNET_PORT;
+    log_config.level = UVDB_LOG_INFO;
+    if (module_result >= 0 && net_result >= 0 &&
+        uvdb_debugnet_start(&log_config) == 0) {
+        debugnet_started = 1;
+    }
     memset(&nc, 0, sizeof(nc));
     nc.entries = name_entries; nc.entry_capacity = MDKR_VP_ZONE_COUNT + 2;
     nc.text = name_text; nc.text_capacity = sizeof(name_text);
@@ -111,16 +137,40 @@ void mdkr_vita_profiler_init(void) {
     snprintf(line, sizeof(line), "[VPROF] enabled pmu_info=%d abi=%u caps=0x%08x core=%u lane=%u", result,
              (unsigned)pmu_info.abi_version, result == 0 ? (unsigned)pmu_info.capabilities : 0,
              (unsigned)pmu_info.fixed_core, (unsigned)pmu_info.fixed_counter);
-    mdkr_vita_boot_log(line);
+    if (debugnet_started) (void)uvdb_debugnet_write(UVDB_LOG_INFO, line);
     if (result != 0 || pmu_info.abi_version != VD_KERNEL_PMU_PROFILER_ABI_VERSION) memset(&pmu_info, 0, sizeof(pmu_info));
 }
 
 void mdkr_vita_profiler_shutdown(void) {
-    if (!enabled) return;
-    pmu_close_report();
-    drain_events();
-    if (frames) report();
-    vp_name_dictionary_deinit(&names); vp_deinit(&ctx); enabled = 0;
+    struct uvdb_debugnet_stats stats;
+    char line[160];
+    if (enabled) {
+        pmu_close_report();
+        drain_events();
+        if (frames) report();
+        vp_name_dictionary_deinit(&names);
+        vp_deinit(&ctx);
+        enabled = 0;
+    }
+    if (debugnet_started) {
+        if (uvdb_debugnet_get_stats(&stats) == 0) {
+            snprintf(line, sizeof(line),
+                     "[VPROF] debugnet sent=%u dropped=%u truncated=%u errors=%u",
+                     stats.sent, stats.dropped, stats.truncated,
+                     stats.send_errors);
+            (void)uvdb_debugnet_write(UVDB_LOG_INFO, line);
+        }
+        (void)uvdb_debugnet_stop();
+        debugnet_started = 0;
+    }
+    if (net_owned) {
+        (void)sceNetTerm();
+        net_owned = 0;
+    }
+    if (net_module_owned) {
+        (void)sceSysmoduleUnloadModule(SCE_SYSMODULE_NET);
+        net_module_owned = 0;
+    }
 }
 void mdkr_vita_profiler_frame_begin(void) {
     if (!enabled) return;
