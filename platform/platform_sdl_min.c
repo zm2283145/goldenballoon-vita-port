@@ -2229,7 +2229,7 @@ static int vita_pack_remove_tree(const char *path) {
         if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
         if (!mdkr_mod_source_path_is_safe(entry->d_name) ||
             !vita_pack_join(child, sizeof(child), path, entry->d_name) ||
-            mdkr_path_query_utf8(child, &exists, &is_directory, NULL) != 0 ||
+            mdkr_path_query_utf8(child, &exists, NULL, &is_directory) != 0 ||
             !exists) {
             okay = 0;
             continue;
@@ -2346,7 +2346,10 @@ done:
     }
     /* Commit only after miniz and the source file are closed. This matters on
      * filesystems that refuse to unlink an open archive. */
-    if (mdkr_move_utf8(temporary, destination, 0, 1) != 0) return 0;
+    /* The destination was already confirmed absent. On POSIX/Vita, the
+     * replacing form uses rename(), which supports directories; the
+     * no-replace helper intentionally uses link()+unlink() for regular files. */
+    if (mdkr_move_utf8(temporary, destination, 1, 1) != 0) return 0;
     if (mdkr_remove_utf8(zip_path) != 0) {
         char backup[MDKR_MOD_PATH_MAX];
         /* The installed directory is already complete. Keep a recoverable copy
