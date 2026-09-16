@@ -732,6 +732,13 @@ int main(int argc, char **argv) {
     dkr_audio_out_init();
     audioInitialized = true;
 
+#ifdef __vita__
+    /* Directory packs avoid repeated random-access decompression on Vita.
+     * Offer the conversion after vitaGL exists (so the system dialog can be
+     * presented) and before the registry indexes either representation. */
+    platform_vita_offer_pack_extraction();
+#endif
+
     /*
      * Content packs: scan mods/ and bind the texture override layer.
      *

@@ -50,6 +50,10 @@
 #endif
 #if defined(__vita__)
 #include <vitaGL.h>             /* provides real GL entry points; no loader step needed */
+#include <psp2/message_dialog.h>
+#include <psp2/kernel/threadmgr.h>
+#include <dirent.h>
+#include "miniz.h"
 /* vitaGL already #define's GLsync (as a plain int32_t -- see vitaGL.h) but
  * implements no real ARB_sync: no glFenceSync/glClientWaitSync/glDeleteSync.
  * The only callers of those three live in the GL-fence frame-pacing
@@ -2180,6 +2184,234 @@ int platform_modern_character_visibility_diagnostics(
 static MdkrModRegistry s_contentPacks;
 static int s_contentPacksActive;   /* enabled packs the scan actually kept */
 static int s_contentPacksScanned;  /* init has run at least once this process */
+
+#ifdef __vita__
+#define VITA_PACK_EXTRACT_MAX_FILES 10000u
+#define VITA_PACK_EXTRACT_MAX_BYTES (UINT64_C(2) * 1024u * 1024u * 1024u)
+
+static int vita_pack_ends_zip(const char *name) {
+    size_t n = name != NULL ? strlen(name) : 0;
+    return n > 4 && name[n - 4] == '.' &&
+           (name[n - 3] == 'z' || name[n - 3] == 'Z') &&
+           (name[n - 2] == 'i' || name[n - 2] == 'I') &&
+           (name[n - 1] == 'p' || name[n - 1] == 'P');
+}
+
+static int vita_pack_join(char *out, size_t cap, const char *a,
+                          const char *b) {
+    int written = snprintf(out, cap, "%s/%s", a, b);
+    return written > 0 && (size_t)written < cap;
+}
+
+static int vita_pack_mkdirs(const char *path, int include_leaf) {
+    char work[MDKR_MOD_PATH_MAX];
+    size_t i, length = strlen(path);
+    if (length == 0 || length >= sizeof(work)) return 0;
+    memcpy(work, path, length + 1);
+    for (i = 1; i < length; ++i) {
+        if (work[i] != '/') continue;
+        work[i] = '\0';
+        (void)mdkr_mkdir_utf8(work);
+        work[i] = '/';
+    }
+    if (include_leaf) (void)mdkr_mkdir_utf8(work);
+    return 1;
+}
+
+static int vita_pack_remove_tree(const char *path) {
+    DIR *directory = opendir(path);
+    struct dirent *entry;
+    int okay = 1;
+    if (directory == NULL) return errno == ENOENT;
+    while ((entry = readdir(directory)) != NULL) {
+        char child[MDKR_MOD_PATH_MAX];
+        int exists = 0, is_directory = 0;
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+        if (!mdkr_mod_source_path_is_safe(entry->d_name) ||
+            !vita_pack_join(child, sizeof(child), path, entry->d_name) ||
+            mdkr_path_query_utf8(child, &exists, &is_directory, NULL) != 0 ||
+            !exists) {
+            okay = 0;
+            continue;
+        }
+        if (is_directory) {
+            if (!vita_pack_remove_tree(child)) okay = 0;
+        } else if (mdkr_remove_utf8(child) != 0) {
+            okay = 0;
+        }
+    }
+    closedir(directory);
+    if (okay && mdkr_rmdir_utf8(path) != 0 && errno != ENOENT) okay = 0;
+    return okay;
+}
+
+static int vita_pack_dialog(const char *message, int yes_no) {
+    SceMsgDialogUserMessageParam user;
+    SceMsgDialogParam param;
+    SceMsgDialogResult result;
+    memset(&user, 0, sizeof(user));
+    user.buttonType = yes_no ? SCE_MSG_DIALOG_BUTTON_TYPE_YESNO
+                             : SCE_MSG_DIALOG_BUTTON_TYPE_OK;
+    user.msg = (const SceChar8 *)message;
+    sceMsgDialogParamInit(&param);
+    param.mode = SCE_MSG_DIALOG_MODE_USER_MSG;
+    param.userMsgParam = &user;
+    if (sceMsgDialogInit(&param) < 0) return 0;
+    while (sceMsgDialogGetStatus() != SCE_COMMON_DIALOG_STATUS_FINISHED) {
+        glClear(GL_COLOR_BUFFER_BIT);
+        vglSwapBuffers(GL_TRUE);
+        sceKernelDelayThread(16000);
+    }
+    memset(&result, 0, sizeof(result));
+    (void)sceMsgDialogGetResult(&result);
+    (void)sceMsgDialogTerm();
+    return yes_no ? result.buttonId == SCE_MSG_DIALOG_BUTTON_ID_YES : 1;
+}
+
+static int vita_pack_extract(const char *zip_path, const char *temporary,
+                             const char *destination) {
+    mz_zip_archive archive;
+    FILE *zip = NULL;
+    long end;
+    mz_uint count, i;
+    uint64_t total = 0;
+    int extracted = 0;
+    int temporary_exists = 0;
+    memset(&archive, 0, sizeof(archive));
+    if (mdkr_path_query_utf8(temporary, &temporary_exists, NULL, NULL) != 0)
+        return 0;
+    if (temporary_exists && !vita_pack_remove_tree(temporary)) return 0;
+    zip = mdkr_fopen_utf8(zip_path, "rb");
+    if (zip == NULL || fseek(zip, 0, SEEK_END) != 0 ||
+        (end = ftell(zip)) < 0) goto done;
+    rewind(zip);
+    if (!mz_zip_reader_init_cfile(&archive, zip, (mz_uint64)end, 0)) goto done;
+    count = mz_zip_reader_get_num_files(&archive);
+    if (count == 0 || count > VITA_PACK_EXTRACT_MAX_FILES) goto archive_done;
+    for (i = 0; i < count; ++i) {
+        mz_zip_archive_file_stat stat;
+        if (!mz_zip_reader_file_stat(&archive, i, &stat)) goto archive_done;
+        if (!stat.m_is_directory) {
+            if (UINT64_MAX - total < stat.m_uncomp_size) goto archive_done;
+            total += stat.m_uncomp_size;
+            if (total > VITA_PACK_EXTRACT_MAX_BYTES) goto archive_done;
+        }
+    }
+    if (!vita_pack_mkdirs(temporary, 1)) goto archive_done;
+    for (i = 0; i < count; ++i) {
+        mz_zip_archive_file_stat stat;
+        char relative[MDKR_MOD_PATH_MAX];
+        char output[MDKR_MOD_PATH_MAX];
+        size_t length;
+        FILE *file;
+        int file_ok;
+        if (!mz_zip_reader_file_stat(&archive, i, &stat)) goto archive_done;
+        length = strlen(stat.m_filename);
+        while (length > 0 && stat.m_filename[length - 1] == '/') length--;
+        if (length == 0 || length >= sizeof(relative)) goto archive_done;
+        memcpy(relative, stat.m_filename, length);
+        relative[length] = '\0';
+        if (!mdkr_mod_source_path_is_safe(relative) ||
+            !vita_pack_join(output, sizeof(output), temporary, relative)) {
+            goto archive_done;
+        }
+        if (stat.m_is_directory) {
+            if (!vita_pack_mkdirs(output, 1)) goto archive_done;
+            continue;
+        }
+        if (!vita_pack_mkdirs(output, 0)) goto archive_done;
+        file = mdkr_fopen_utf8(output, "wb");
+        if (file == NULL) goto archive_done;
+        file_ok = mz_zip_reader_extract_to_cfile(&archive, i, file, 0) &&
+                  mdkr_file_sync(file) == 0;
+        if (fclose(file) != 0) file_ok = 0;
+        if (!file_ok) {
+            (void)mdkr_remove_utf8(output);
+            goto archive_done;
+        }
+        if ((i & 15u) == 0u) {
+            glClear(GL_COLOR_BUFFER_BIT);
+            vglSwapBuffers(GL_TRUE);
+        }
+    }
+    if (mdkr_parent_directory_sync_utf8(temporary) != 0) goto archive_done;
+    extracted = 1;
+archive_done:
+    (void)mz_zip_reader_end(&archive);
+done:
+    if (zip != NULL) fclose(zip);
+    if (!extracted) {
+        (void)vita_pack_remove_tree(temporary);
+        return 0;
+    }
+    /* Commit only after miniz and the source file are closed. This matters on
+     * filesystems that refuse to unlink an open archive. */
+    if (mdkr_move_utf8(temporary, destination, 0, 1) != 0) return 0;
+    if (mdkr_remove_utf8(zip_path) != 0) {
+        char backup[MDKR_MOD_PATH_MAX];
+        /* The installed directory is already complete. Keep a recoverable copy
+         * without a .zip suffix so it cannot be indexed twice or re-prompted. */
+        if (snprintf(backup, sizeof(backup), "%s.extracted-backup", zip_path) >=
+                (int)sizeof(backup) ||
+            mdkr_move_utf8(zip_path, backup, 0, 1) != 0) {
+            return 0;
+        }
+    }
+    (void)mdkr_parent_directory_sync_utf8(destination);
+    return 1;
+}
+
+void platform_vita_offer_pack_extraction(void) {
+    char mods[MDKR_MOD_PATH_MAX];
+    char zip_path[MDKR_MOD_PATH_MAX];
+    char destination[MDKR_MOD_PATH_MAX];
+    char temporary[MDKR_MOD_PATH_MAX];
+    char message[512];
+    char zip_name[256];
+    DIR *directory;
+    struct dirent *entry;
+    int found = 0;
+    if (!mdkr_user_mods_directory(mods, sizeof(mods))) return;
+    directory = opendir(mods);
+    if (directory == NULL) return;
+    while ((entry = readdir(directory)) != NULL) {
+        size_t length;
+        int exists = 0;
+        if (!vita_pack_ends_zip(entry->d_name) ||
+            !mdkr_mod_source_path_is_safe(entry->d_name) ||
+            !vita_pack_join(zip_path, sizeof(zip_path), mods, entry->d_name)) {
+            continue;
+        }
+        length = strlen(zip_path) - 4u;
+        if (length >= sizeof(destination)) continue;
+        memcpy(destination, zip_path, length);
+        destination[length] = '\0';
+        if (snprintf(temporary, sizeof(temporary), "%s.extracting",
+                     destination) >= (int)sizeof(temporary)) continue;
+        if (mdkr_path_query_utf8(destination, &exists, NULL, NULL) == 0 &&
+            exists) continue;
+        found = 1;
+        snprintf(zip_name, sizeof(zip_name), "%s", entry->d_name);
+        break;
+    }
+    closedir(directory);
+    if (!found) return;
+    snprintf(message, sizeof(message),
+             "An HD texture-pack ZIP was found. Extract it now for faster "
+             "loading? The ZIP will only be removed after extraction succeeds.\n\n%s",
+             zip_name);
+    if (!vita_pack_dialog(message, 1)) return;
+    if (vita_pack_extract(zip_path, temporary, destination)) {
+        (void)vita_pack_dialog(
+            "Texture pack extracted successfully. The original ZIP was removed.",
+            0);
+    } else {
+        (void)vita_pack_dialog(
+            "Texture-pack extraction failed. The original ZIP was kept and can still be used.",
+            0);
+    }
+}
+#endif
 
 /* One entry of Content.PackDisabled. The list is comma-separated, entries are
  * trimmed of surrounding blanks, and the comparison is ASCII case-insensitive

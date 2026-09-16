@@ -428,6 +428,12 @@ int platform_modern_character_visibility_diagnostics(
  * finds nothing, logs nothing, and leaves the store inactive so the renderer
  * never pays for a digest. */
 void platform_content_packs_init(void);
+#ifdef __vita__
+/* Offers to expand the first top-level ZIP in the Vita mods directory before
+ * the registry scans it. The ZIP is removed only after a complete extraction
+ * has been atomically installed. */
+void platform_vita_offer_pack_extraction(void);
+#endif
 void platform_content_packs_shutdown(void);
 /* Flip the texture override layer for a live before/after comparison. Deliberately
  * does NOT write Content.PacksEnabled back: a momentary A/B is not a settings
