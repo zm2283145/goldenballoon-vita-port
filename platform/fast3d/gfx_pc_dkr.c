@@ -67,6 +67,7 @@
 #include "structs.h"     /* Vertex (10B), Triangle (0x10), TexCoords */
 
 #include "gfx_rendering_api.h"
+#include "../vita_profiler.h"
 #include "web_startup_diagnostics.h"
 #include "gfx_cc.h"
 #include "gfx_palette.h"
@@ -9255,7 +9256,9 @@ void gfx_dkr_reset_interpreter_state(void) {
 }
 
 void gfx_run(Gfx *dl) {
+    MdkrVitaProfileScope profileScope;
     if (!gfx_rapi) return;
+    mdkr_vita_profiler_zone_begin(MDKR_VP_ZONE_RENDER_WALK, &profileScope);
     /* A replay re-walks a list this counter already advanced for. Bumping it
      * again would desynchronise MDKR_DL_FRAME filtering and every trace that
      * keys off the frame index from the dumped-frame numbering. */
@@ -9301,6 +9304,7 @@ void gfx_run(Gfx *dl) {
                    dkr_frame_index, dkr_dbg_emitted, dkr_dbg_onscreen,
                    dkr_dbg_clipped, dkr_dbg_clip_dropped, dkr_dbg_clip_degen);
     dkr_trace_this_frame = false;
+    mdkr_vita_profiler_zone_end(&profileScope);
 }
 
 void gfx_run_dl(Gfx *dl) { gfx_run(dl); }
@@ -9385,6 +9389,7 @@ static bool gfx_dkr_replay_walk_impl(
     uint32_t live_arena_size = 0u;
     uint8_t *live_arena_backup = NULL;
     GfxRetainedTaskView retained_task;
+    MdkrVitaProfileScope profileScope;
 
     if (gfx_rapi == NULL || dkr_last_walked_dl == NULL || dkr_replay_pass ||
         !dkr_walk_entry_valid || !gfx_presentation_packet_frozen()) {
@@ -9394,6 +9399,7 @@ static bool gfx_dkr_replay_walk_impl(
             dkr_last_walked_authored_tick, &retained_task)) {
         return false;
     }
+    mdkr_vita_profiler_zone_begin(MDKR_VP_ZONE_REPLAY_WALK, &profileScope);
     dkr_replay_force_recompose = present_sched_test_force_recompose();
     if (!gfx_shadow_replay_restore(overrides, override_count)) {
         return false;
@@ -9528,6 +9534,7 @@ replay_cleanup:
     dkr_replay_pan_yaw_delta_valid = false;
     dkr_replay_pan_yaw_delta_deg = 0.0f;
     dkr_replay_pass = false;
+    mdkr_vita_profiler_zone_end(&profileScope);
     if (dkr_replay_interior_alpha && dkr_replay_dependency_failed &&
         dkr_replay_uncaptured_externals != uncaptured_entry) {
         /* Attribute the abort to the uncaptured external specifically: the

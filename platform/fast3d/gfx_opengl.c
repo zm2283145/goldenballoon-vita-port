@@ -48,6 +48,7 @@
 #include "gfx_texture_edge.h"
 #include "gfx_rendering_api.h"
 #include "gfx_screen_config.h"
+#include "../vita_profiler.h"
 
 #ifdef __vita__
 /* Defined in main_pc.c (not static there specifically so TUs like this one
@@ -2437,7 +2438,10 @@ static bool gfx_opengl_upload_texture_mipped(const uint8_t *const *level_rgba,
                                              const int *level_w, const int *level_h,
                                              int level_count) {
     GLint bound = 0;
+    MdkrVitaProfileScope profileScope;
+    mdkr_vita_profiler_zone_begin(MDKR_VP_ZONE_TEXTURE_UPLOAD, &profileScope);
     if (level_rgba == NULL || level_w == NULL || level_h == NULL || level_count <= 0) {
+        mdkr_vita_profiler_zone_end(&profileScope);
         return false;
     }
     static int unpack_set_mip = 0;
@@ -2458,16 +2462,21 @@ static bool gfx_opengl_upload_texture_mipped(const uint8_t *const *level_rgba,
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, level_count - 1);
 #endif
     if (glGetError() != GL_NO_ERROR) {
+        mdkr_vita_profiler_zone_end(&profileScope);
         return false;
     }
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &bound);
     gfx_gl_set_has_mips((GLuint) bound, 1);
     gfx_gl_set_dims((GLuint) bound, level_w[0], level_h[0]);
+    mdkr_vita_profiler_zone_end(&profileScope);
     return true;
 }
 
 static bool gfx_opengl_upload_texture(const uint8_t *rgba32_buf, int width, int height) {
+    MdkrVitaProfileScope profileScope;
+    mdkr_vita_profiler_zone_begin(MDKR_VP_ZONE_TEXTURE_UPLOAD, &profileScope);
     if (rgba32_buf == NULL || width <= 0 || height <= 0 || width > 4096 || height > 4096) {
+        mdkr_vita_profiler_zone_end(&profileScope);
         return false;
     }
     static int unpack_set = 0;
@@ -2511,6 +2520,7 @@ static bool gfx_opengl_upload_texture(const uint8_t *rgba32_buf, int width, int 
             }
         }
 #endif
+        mdkr_vita_profiler_zone_end(&profileScope);
         return false;
     }
 #if defined(__vita__)
@@ -2544,6 +2554,7 @@ static bool gfx_opengl_upload_texture(const uint8_t *rgba32_buf, int width, int 
             }
         }
 #endif
+        mdkr_vita_profiler_zone_end(&profileScope);
         return false;
     }
 #if defined(__vita__)
@@ -2557,6 +2568,7 @@ static bool gfx_opengl_upload_texture(const uint8_t *rgba32_buf, int width, int 
         }
     }
 #endif
+    mdkr_vita_profiler_zone_end(&profileScope);
     return true;
 }
 
@@ -3127,6 +3139,7 @@ static void gfx_opengl_draw_triangles_cvg_wrap_stencil(size_t buf_vbo_num_tris) 
 }
 
 static void gfx_opengl_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_vbo_num_tris) {
+    mdkr_vita_profiler_count_draw();
 #if defined(__vita__)
     {
         static int s_drawTriLogCount = 0;

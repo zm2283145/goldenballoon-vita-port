@@ -16,6 +16,7 @@
 #include <stdbool.h>
 #include <limits.h>
 #include <string.h>
+#include "vita_profiler.h"
 
 #if defined(__vita__) && defined(MDKR_VITA_DEBUGGER)
 #include <psp2/net/net.h>
@@ -843,10 +844,12 @@ int main(int argc, char **argv) {
 
     /* Phase 4: the game boot chain, collapsed onto this thread. */
     mdkr_vita_boot_log("boot: entering Phase 4 (osInitialize/thread0_create/thread3_main)");
+    mdkr_vita_profiler_init();
     osInitialize();
     thread0_create();
     thread3_main(NULL);   /* returns after a cooperative host-exit request */
     mdkr_vita_boot_log("boot: thread3_main returned; shutting down normally");
+    mdkr_vita_profiler_shutdown();
     exitCode = platform_exit_code();
 
 shutdown:

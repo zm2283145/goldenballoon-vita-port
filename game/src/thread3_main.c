@@ -90,6 +90,7 @@
 #include "rollback/rollback_game_runtime.h"
 #include "taj_mod.h"
 #include "vita_trophy.h"
+#include "vita_profiler.h"
 #ifndef MDKR_ADVENTURE_PARTY_OMIT
 /* AP-10 shared pause + controller-disconnect authority. Behind
  * NATIVE_PORT && !OMIT with an immediate stock else at every call, so OMIT /
@@ -1840,7 +1841,14 @@ void thread3_main(UNUSED void *unused) {
             }
         }
 #endif
-        main_game_loop();
+        {
+            MdkrVitaProfileScope frameScope;
+            mdkr_vita_profiler_frame_begin();
+            mdkr_vita_profiler_zone_begin(MDKR_VP_ZONE_GAME_FRAME, &frameScope);
+            main_game_loop();
+            mdkr_vita_profiler_zone_end(&frameScope);
+            mdkr_vita_profiler_frame_end();
+        }
 #if defined(__vita__)
         {
             static int s_vitaLoopLogCount2 = 0;

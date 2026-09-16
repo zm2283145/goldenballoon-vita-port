@@ -140,6 +140,8 @@ if(VITA)
     endif()
     option(MDKR_VITA_DEBUGGER
         "Link VitaDebugger and stop for GDB on TCP port 1234 during startup" OFF)
+    option(MDKR_VITA_PROFILER
+        "Enable low-overhead VitaProfiler frame and PMU diagnostics" OFF)
     set(MDKR_VITADEBUGGER_DIR "${CMAKE_SOURCE_DIR}/../../VitaDebugger" CACHE PATH
         "Path containing VitaDebugger's uvdb.h and libuvdb.a")
     set(MDKR_VITADEBUGGER_KUBRIDGE_DIR "${CMAKE_SOURCE_DIR}/../../kuBridge" CACHE PATH
@@ -147,6 +149,9 @@ if(VITA)
     set(MDKR_VITADEBUGGER_KERNEL_DIR
         "${MDKR_VITADEBUGGER_DIR}/kernel/build-vfp" CACHE PATH
         "Path containing the matching VitaDebugger kernel import library")
+    set(MDKR_VITAPROFILER_DIR
+        "${MDKR_VITADEBUGGER_DIR}/profiler" CACHE PATH
+        "Path containing VitaProfiler headers and Vita archive")
 elseif(NOT EMSCRIPTEN)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(SDL2 REQUIRED sdl2)
@@ -654,6 +659,7 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/mdkr_challenge.c   # Challenge/battle terminal-event test driver
     ${CMAKE_SOURCE_DIR}/platform/mdkr_taj.c         # Taj challenge lifecycle/outcome test driver
     ${CMAKE_SOURCE_DIR}/platform/vita_trophy.c      # Vita homebrew trophy bridge (no-op elsewhere)
+    ${CMAKE_SOURCE_DIR}/platform/vita_profiler.c    # opt-in Vita frame/PMU diagnostics
 )
 if(VITA)
     # HarfBuzz and SheenBidi are desktop-only dependencies. Imported character
@@ -662,6 +668,12 @@ if(VITA)
         ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_character_text.c)
     list(APPEND PLATFORM_SOURCES
         ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_character_text_vita.c)
+    if(MDKR_VITA_PROFILER)
+        list(APPEND PLATFORM_SOURCES
+            ${MDKR_VITAPROFILER_DIR}/src/vitaprofiler.c
+            ${MDKR_VITAPROFILER_DIR}/src/vitaprofiler_vita.c
+            ${MDKR_VITAPROFILER_DIR}/src/vitaprofiler_names.c)
+    endif()
 endif()
 if(VITA AND MDKR_VITA_IMGUI_OVERLAY)
     list(APPEND PLATFORM_SOURCES
@@ -1181,6 +1193,29 @@ if(NOT EMSCRIPTEN)
                 "${MDKR_VITADEBUGGER_KERNEL_DIR}/libvitadebug_kernel_stub.a"
                 "${MDKR_VITADEBUGGER_KUBRIDGE_DIR}/build-local/libkubridge_stub.a"
                 SceNet_stub SceNetPs_stub pthread)
+        endif()
+        if(MDKR_VITA_PROFILER)
+            foreach(MDKR_PROFILER_FILE IN ITEMS
+                    "${MDKR_VITAPROFILER_DIR}/include/vitaprofiler.h"
+                    "${MDKR_VITAPROFILER_DIR}/src/vitaprofiler.c"
+                    "${MDKR_VITAPROFILER_DIR}/src/vitaprofiler_vita.c"
+                    "${MDKR_VITAPROFILER_DIR}/src/vitaprofiler_names.c"
+                    "${MDKR_VITADEBUGGER_DIR}/kernel/include/vitadebug_pmu_profiler.h"
+                    "${MDKR_VITADEBUGGER_KERNEL_DIR}/libvitadebug_kernel_stub.a")
+                if(NOT EXISTS "${MDKR_PROFILER_FILE}")
+                    message(FATAL_ERROR
+                        "MDKR_VITA_PROFILER requires ${MDKR_PROFILER_FILE}")
+                endif()
+            endforeach()
+            target_include_directories(${MDKR_TARGET} PRIVATE
+                "${MDKR_VITAPROFILER_DIR}/include"
+                "${MDKR_VITADEBUGGER_DIR}/kernel/include")
+            target_compile_definitions(${MDKR_TARGET} PRIVATE
+                MDKR_VITA_PROFILER=1)
+            target_link_libraries(${MDKR_TARGET} PRIVATE
+                "${MDKR_VITADEBUGGER_KERNEL_DIR}/libvitadebug_kernel_stub.a"
+                SceKernelThreadMgr_stub SceProcessmgr_stub SceSysmem_stub
+                SceLibKernel_stub)
         endif()
     else()
         # CMAKE_DL_LIBS also carries the dlopen that platform/a11y_speech_linux.c

@@ -35,6 +35,7 @@
 #include <limits.h>
 #include <time.h>
 #include "png_write_layout.h"
+#include "vita_profiler.h"
 #ifndef __EMSCRIPTEN__
 #ifdef _WIN32
 /* Ahead of SDL_syswm.h, which pulls the same header in without these guards.
@@ -4094,6 +4095,7 @@ void platform_sdl_present(void) {
 #endif
         sdl_gl_resource_heartbeat("before-swap", 0);
 #if defined(__vita__)
+        MdkrVitaProfileScope swapScope;
         {
             static int s_vitaPresentLogCount = 0;
             if (s_vitaPresentLogCount < 8) {
@@ -4106,7 +4108,9 @@ void platform_sdl_present(void) {
             }
             mdkr_vita_boot_log_flush();
         }
+        mdkr_vita_profiler_zone_begin(MDKR_VP_ZONE_BUFFER_SWAP, &swapScope);
         vglSwapBuffers(GL_FALSE);
+        mdkr_vita_profiler_zone_end(&swapScope);
 #else
         SDL_GL_SwapWindow(s_window);
 #endif
