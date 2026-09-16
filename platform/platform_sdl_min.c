@@ -2189,6 +2189,9 @@ static int s_contentPacksScanned;  /* init has run at least once this process */
 #define VITA_PACK_EXTRACT_MAX_FILES 10000u
 #define VITA_PACK_EXTRACT_MAX_BYTES (UINT64_C(2) * 1024u * 1024u * 1024u)
 static char s_vitaPackExtractError[512];
+static SceMsgDialogProgressBarParam s_vitaPackProgress;
+static SceMsgDialogParam s_vitaPackProgressDialog;
+static char s_vitaPackProgressText[96];
 
 static void vita_pack_set_fs_error(const char *stage, const char *path) {
     const int saved_errno = errno;
@@ -2285,18 +2288,18 @@ static int vita_pack_dialog(const char *message, int yes_no) {
 }
 
 static int vita_pack_progress_begin(void) {
-    SceMsgDialogProgressBarParam progress;
-    SceMsgDialogParam param;
     int result = SCE_COMMON_DIALOG_ERROR_BUSY;
     int attempt;
-    memset(&progress, 0, sizeof(progress));
-    progress.barType = SCE_MSG_DIALOG_PROGRESSBAR_TYPE_PERCENTAGE;
-    progress.msg = (const SceChar8 *)"Extracting HD texture pack...";
-    sceMsgDialogParamInit(&param);
-    param.mode = SCE_MSG_DIALOG_MODE_PROGRESS_BAR;
-    param.progBarParam = &progress;
+    memset(&s_vitaPackProgress, 0, sizeof(s_vitaPackProgress));
+    snprintf(s_vitaPackProgressText, sizeof(s_vitaPackProgressText),
+             "Preparing HD texture pack...");
+    s_vitaPackProgress.barType = SCE_MSG_DIALOG_PROGRESSBAR_TYPE_PERCENTAGE;
+    s_vitaPackProgress.msg = (const SceChar8 *)s_vitaPackProgressText;
+    sceMsgDialogParamInit(&s_vitaPackProgressDialog);
+    s_vitaPackProgressDialog.mode = SCE_MSG_DIALOG_MODE_PROGRESS_BAR;
+    s_vitaPackProgressDialog.progBarParam = &s_vitaPackProgress;
     for (attempt = 0; attempt < 120; ++attempt) {
-        result = sceMsgDialogInit(&param);
+        result = sceMsgDialogInit(&s_vitaPackProgressDialog);
         if (result >= 0) break;
         if ((unsigned)result != (unsigned)SCE_COMMON_DIALOG_ERROR_BUSY) break;
         glClear(GL_COLOR_BUFFER_BIT);
@@ -2324,16 +2327,16 @@ static int vita_pack_progress_begin(void) {
 }
 
 static void vita_pack_progress_update(mz_uint completed, mz_uint total) {
-    char status[96];
     unsigned percent = total != 0 ? (unsigned)((uint64_t)completed * 100u / total) : 0u;
     if (percent > 100u) percent = 100u;
-    snprintf(status, sizeof(status), "Extracting file %u of %u",
+    snprintf(s_vitaPackProgressText, sizeof(s_vitaPackProgressText),
+             "Extracting file %u of %u",
              (unsigned)completed, (unsigned)total);
     (void)sceMsgDialogProgressBarSetValue(
         SCE_MSG_DIALOG_PROGRESSBAR_TARGET_BAR_DEFAULT, percent);
     (void)sceMsgDialogProgressBarSetMsg(
         SCE_MSG_DIALOG_PROGRESSBAR_TARGET_BAR_DEFAULT,
-        (const SceChar8 *)status);
+        (const SceChar8 *)s_vitaPackProgressText);
     glClear(GL_COLOR_BUFFER_BIT);
     vglSwapBuffers(GL_TRUE);
 }
