@@ -54,6 +54,10 @@ static void debugnet_try_start(void) {
         (void)uvdb_debugnet_write(UVDB_LOG_INFO,
                                   "[VPROF] DebugNet connected after network startup");
     } else {
+        /* The current VitaDebugger lifecycle contract requires one cleanup
+         * pass after a failed start before retrying: setup may have retained a
+         * socket, event UID, or worker handle whose release is retryable. */
+        (void)uvdb_debugnet_stop();
         /* Network association can lag sceNetInit during application startup.
          * Retry at one-second intervals without blocking the render thread. */
         debugnet_retry_frames = REPORT_FRAMES;
@@ -136,7 +140,11 @@ void mdkr_vita_profiler_init(void) {
     net_config.size = sizeof(debugnet_memory);
     net_result = sceNetInit(&net_config);
     net_owned = net_result == 0;
-    debugnet_network_ready = module_result >= 0 && net_result >= 0;
+    /* A host network owner may have initialized SceNet before the profiler.
+     * In that case sceNetInit reports an existing lifecycle rather than
+     * granting ownership. Let DebugNet probe asynchronously after startup;
+     * failures remain harmless and are retried from the frame loop. */
+    debugnet_network_ready = module_result >= 0;
     debugnet_retry_frames = REPORT_FRAMES;
     memset(&nc, 0, sizeof(nc));
     nc.entries = name_entries; nc.entry_capacity = MDKR_VP_ZONE_COUNT + 2;
@@ -191,8 +199,8 @@ void mdkr_vita_profiler_shutdown(void) {
     debugnet_retry_frames = 0;
 }
 void mdkr_vita_profiler_frame_begin(void) {
-    if (!enabled) return;
     debugnet_try_start();
+    if (!enabled) return;
     if (!pmu_active && frames == 0u) pmu_open();
     (void)vp_frame_mark(&ctx, frame_id);
 }
