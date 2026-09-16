@@ -2189,9 +2189,6 @@ static int s_contentPacksScanned;  /* init has run at least once this process */
 #define VITA_PACK_EXTRACT_MAX_FILES 10000u
 #define VITA_PACK_EXTRACT_MAX_BYTES (UINT64_C(2) * 1024u * 1024u * 1024u)
 static char s_vitaPackExtractError[512];
-static SceMsgDialogProgressBarParam s_vitaPackProgress;
-static SceMsgDialogParam s_vitaPackProgressDialog;
-static char s_vitaPackProgressText[96];
 
 static void vita_pack_set_fs_error(const char *stage, const char *path) {
     const int saved_errno = errno;
@@ -2288,68 +2285,40 @@ static int vita_pack_dialog(const char *message, int yes_no) {
 }
 
 static int vita_pack_progress_begin(void) {
-    int result = SCE_COMMON_DIALOG_ERROR_BUSY;
-    int attempt;
-    memset(&s_vitaPackProgress, 0, sizeof(s_vitaPackProgress));
-    snprintf(s_vitaPackProgressText, sizeof(s_vitaPackProgressText),
-             "Preparing HD texture pack...");
-    s_vitaPackProgress.barType = SCE_MSG_DIALOG_PROGRESSBAR_TYPE_PERCENTAGE;
-    s_vitaPackProgress.msg = (const SceChar8 *)s_vitaPackProgressText;
-    sceMsgDialogParamInit(&s_vitaPackProgressDialog);
-    s_vitaPackProgressDialog.mode = SCE_MSG_DIALOG_MODE_PROGRESS_BAR;
-    s_vitaPackProgressDialog.progBarParam = &s_vitaPackProgress;
-    for (attempt = 0; attempt < 120; ++attempt) {
-        result = sceMsgDialogInit(&s_vitaPackProgressDialog);
-        if (result >= 0) break;
-        if ((unsigned)result != (unsigned)SCE_COMMON_DIALOG_ERROR_BUSY) break;
-        glClear(GL_COLOR_BUFFER_BIT);
-        vglSwapBuffers(GL_TRUE);
-        sceKernelDelayThread(16000);
-    }
-    if (result < 0) {
-        snprintf(s_vitaPackExtractError, sizeof(s_vitaPackExtractError),
-                 "Could not open extraction progress display.\n\nDialog error: 0x%08X",
-                 (unsigned)result);
-        return 0;
-    }
-    for (attempt = 0; attempt < 120; ++attempt) {
-        SceCommonDialogStatus status = sceMsgDialogGetStatus();
-        if (status == SCE_COMMON_DIALOG_STATUS_RUNNING) return 1;
-        if (status == SCE_COMMON_DIALOG_STATUS_FINISHED) break;
-        glClear(GL_COLOR_BUFFER_BIT);
-        vglSwapBuffers(GL_TRUE);
-        sceKernelDelayThread(16000);
-    }
-    snprintf(s_vitaPackExtractError, sizeof(s_vitaPackExtractError),
-             "Extraction progress display did not start.");
-    (void)sceMsgDialogTerm();
-    return 0;
+    /* A native progress message dialog is not consistently composited before
+     * the game's renderer exists. Draw directly through the already-running
+     * vitaGL context instead; this cannot be hidden by common-dialog state. */
+    return 1;
 }
 
 static void vita_pack_progress_update(mz_uint completed, mz_uint total) {
     unsigned percent = total != 0 ? (unsigned)((uint64_t)completed * 100u / total) : 0u;
+    int fill;
     if (percent > 100u) percent = 100u;
-    snprintf(s_vitaPackProgressText, sizeof(s_vitaPackProgressText),
-             "Extracting file %u of %u",
-             (unsigned)completed, (unsigned)total);
-    (void)sceMsgDialogProgressBarSetValue(
-        SCE_MSG_DIALOG_PROGRESSBAR_TARGET_BAR_DEFAULT, percent);
-    (void)sceMsgDialogProgressBarSetMsg(
-        SCE_MSG_DIALOG_PROGRESSBAR_TARGET_BAR_DEFAULT,
-        (const SceChar8 *)s_vitaPackProgressText);
+    fill = (int)(744u * percent / 100u);
+    glDisable(GL_BLEND);
+    glDisable(GL_DEPTH_TEST);
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(0, 0, 960, 544);
+    glClearColor(0.025f, 0.035f, 0.055f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
+    glScissor(100, 224, 760, 80);
+    glClearColor(0.75f, 0.78f, 0.82f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glScissor(108, 232, 744, 64);
+    glClearColor(0.08f, 0.10f, 0.14f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    if (fill > 0) {
+        glScissor(108, 232, fill, 64);
+        glClearColor(0.10f, 0.72f, 0.92f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
+    glDisable(GL_SCISSOR_TEST);
     vglSwapBuffers(GL_TRUE);
 }
 
 static void vita_pack_progress_end(int success) {
     if (success) vita_pack_progress_update(1u, 1u);
-    (void)sceMsgDialogClose();
-    while (sceMsgDialogGetStatus() != SCE_COMMON_DIALOG_STATUS_FINISHED) {
-        glClear(GL_COLOR_BUFFER_BIT);
-        vglSwapBuffers(GL_TRUE);
-        sceKernelDelayThread(16000);
-    }
-    (void)sceMsgDialogTerm();
 }
 
 static int vita_pack_extract(const char *zip_path, const char *temporary,
