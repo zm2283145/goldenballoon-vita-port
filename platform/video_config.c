@@ -1078,15 +1078,15 @@ void mdkr_video_config_defaults(MdkrVideoConfig *config) {
         sizeof(config->values[MDKR_VIDEO_MENU_LANGUAGES].text),
         "%s", "all");
 
-    /*
-     * Content packs apply when they are installed. The default is ON rather
-     * than off because installing a pack IS the opt-in -- an installed pack
-     * that silently does nothing until a second setting is found is the most
-     * common modding support question there is. With no mods directory the
-     * whole path is inert, so this default costs nothing to a player who has
-     * never heard of packs.
-     */
+    /* HD packs are deliberately opt-in on Vita. Their archive scanning, PNG
+     * decoding and GPU uploads can cause visible stalls on the handheld, so an
+     * installed pack must not silently change performance. Desktop keeps the
+     * upstream default; both platforms persist an explicit user choice. */
+#ifdef __vita__
+    config->values[MDKR_CONTENT_PACKS_ENABLED].number = 0.0f;
+#else
     config->values[MDKR_CONTENT_PACKS_ENABLED].number = 1.0f;
+#endif
 
     /*
      * The bonus roster is on by default: it is what the last four

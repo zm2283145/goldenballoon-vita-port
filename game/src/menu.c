@@ -7805,7 +7805,7 @@ enum {
      * to turn the whole remaster off.
      */
     VIDEO_OPTION_SHADOWS,
-    VIDEO_OPTION_SUBTITLES,
+    VIDEO_OPTION_TEXTURE_PACKS,
     VIDEO_OPTION_RETURN,
     VIDEO_OPTION_COUNT
 };
@@ -7819,19 +7819,19 @@ static s32 sAudioPersistencePromptReported;
 
 static const char *const sVideoOptionLabels[VIDEO_OPTION_COUNT] = {
     "PRESENTATION", "SUPERSAMPLING", "ASPECT RATIO", "GAMEPLAY FOV",
-    "TEXTURE FILTERING", "REMASTER EFFECTS", "WORLD SHADOWS", "SUBTITLES",
+    "TEXTURE FILTERING", "REMASTER EFFECTS", "WORLD SHADOWS", "HD TEXTURE PACKS",
     "RETURN"
 };
 
 static const char *const sVideoOptionLabelsDe[VIDEO_OPTION_COUNT] = {
     "DARSTELLUNG", "KANTENGLAETTUNG", "SEITENVERHAELTNIS", "SPIEL-SICHTFELD",
-    "TEXTURFILTER", "REMASTER-EFFEKTE", "WELTSCHATTEN", "UNTERTITEL",
+    "TEXTURFILTER", "REMASTER-EFFEKTE", "WELTSCHATTEN", "HD-TEXTURPAKETE",
     "ZURUECK"
 };
 
 static const char *const sVideoOptionLabelsFr[VIDEO_OPTION_COUNT] = {
     "PRESENTATION", "SUPER-ECHANT.", "FORMAT D'IMAGE", "CHAMP DE VISION",
-    "FILTRAGE TEXTURES", "EFFETS REMASTER", "OMBRES DU MONDE", "SOUS-TITRES",
+    "FILTRAGE TEXTURES", "EFFETS REMASTER", "OMBRES DU MONDE", "PACKS TEXTURES HD",
     "RETOUR"
 };
 
@@ -7844,7 +7844,7 @@ static const char *const sVideoOptionHelp[3][VIDEO_OPTION_COUNT] = {
         "REDUCES DISTANT TRACK SHIMMER",
         "ART-DIRECTED LIGHTING AND TEXT",
         "SOFT LIGHTENS THEM - OFF RESTORES BLOBS",
-        "SHOW SPOKEN DIALOGUE AS TEXT",
+        "REQUIRES AN INSTALLED PACK - DEFAULT OFF",
         "BACK TO OPTIONS"
     },
     {
@@ -7855,7 +7855,7 @@ static const char *const sVideoOptionHelp[3][VIDEO_OPTION_COUNT] = {
         "REDUZIERT FLIMMERN IN DER FERNE",
         "NEUE BELEUCHTUNG UND SCHRIFT",
         "SANFT MILDERT SIE - AUS BRINGT FLECKEN",
-        "GESPROCHENEN TEXT ANZEIGEN",
+        "BRAUCHT EIN INSTALLIERTES PAKET - STANDARD AUS",
         "ZURUECK ZU DEN OPTIONEN"
     },
     {
@@ -7866,7 +7866,7 @@ static const char *const sVideoOptionHelp[3][VIDEO_OPTION_COUNT] = {
         "REDUIT LE SCINTILLEMENT AU LOIN",
         "NOUVEL ECLAIRAGE ET NOUVEAU TEXTE",
         "DOUX LES ALLEGE - ARRET REMET LES TACHES",
-        "AFFICHE LES DIALOGUES PARLES",
+        "PACK INSTALLE REQUIS - ARRET PAR DEFAUT",
         "RETOUR AUX OPTIONS"
     }
 };
@@ -8064,10 +8064,10 @@ static void video_option_value(s32 option, char *out, size_t capacity) {
                 : index == 2 ? video_option_word("OFF", "AUS", "NON")
                 : video_option_word("CUSTOM", "BENUTZER", "PERSONNALISE"));
             break;
-        case VIDEO_OPTION_SUBTITLES:
+        case VIDEO_OPTION_TEXTURE_PACKS:
             video_option_copy(
                 out, capacity,
-                (sEepromSettings & 0x2000000)
+                config->values[MDKR_CONTENT_PACKS_ENABLED].number != 0.0f
                     ? video_option_word("ON", "AN", "OUI")
                     : video_option_word("OFF", "AUS", "NON"));
             break;
@@ -8093,6 +8093,9 @@ static int video_option_locked(s32 option) {
             return mdkr_video_config_runtime_locked(MDKR_VIDEO_REMASTER_FX);
         case VIDEO_OPTION_SHADOWS:
             return mdkr_video_config_runtime_locked(MDKR_VIDEO_WORLD_SHADOWS);
+        case VIDEO_OPTION_TEXTURE_PACKS:
+            return mdkr_video_config_runtime_locked(
+                MDKR_CONTENT_PACKS_ENABLED);
         default:
             return 0;
     }
@@ -8211,19 +8214,11 @@ static MdkrVideoRuntimeResult video_option_change(s32 option, int direction) {
             result = mdkr_video_config_runtime_set(
                 MDKR_VIDEO_WORLD_SHADOWS, sVideoShadowValues[index]);
             break;
-        case VIDEO_OPTION_SUBTITLES:
-            if (sEepromSettings & 0x2000000) {
-                unset_eeprom_settings_value(0x2000000);
-                set_subtitles(0);
-                gOptionMenuStrings[1] =
-                    gMenuText[ASSET_MENU_TEXT_SUBTITLESOFF];
-            } else {
-                set_eeprom_settings_value(0x2000000);
-                set_subtitles(1);
-                gOptionMenuStrings[1] =
-                    gMenuText[ASSET_MENU_TEXT_SUBTITLESON];
-            }
-            result = MDKR_VIDEO_RUNTIME_LIVE;
+        case VIDEO_OPTION_TEXTURE_PACKS:
+            result = mdkr_video_config_runtime_set(
+                MDKR_CONTENT_PACKS_ENABLED,
+                config->values[MDKR_CONTENT_PACKS_ENABLED].number != 0.0f
+                    ? "0" : "1");
             break;
     }
     if (mdkr_trace_enabled()) {
