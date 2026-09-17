@@ -10,13 +10,17 @@ permissions:
 
 concurrency:
   group: vita-vpk-main
-  cancel-in-progress: true
+  # Do not interrupt an in-progress draft asset update.
+  cancel-in-progress: false
 
 jobs:
   build:
     name: Build main Vita VPK
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    outputs:
+      version: ${{ steps.source.outputs.version }}
+      source_sha: ${{ steps.source.outputs.source_sha }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -24,6 +28,7 @@ jobs:
           ref: ${{ github.event_name == 'push' && github.sha || 'main' }}
           persist-credentials: false
       - name: Source identity and ROM-free checks
+        id: source
         shell: bash
         run: |
           set -euo pipefail
@@ -31,10 +36,13 @@ jobs:
           test -n "$version"
           echo "VITA_VERSION=$version" >> "$GITHUB_ENV"
           echo "VITA_SOURCE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           bash -n tools/ci/setup_vita_sdk.sh
           python3 tests/test_audio_sink_evidence_contract.py
           python3 tests/test_output_filter_failure_contract.py
           python3 tests/test_vita_vpk.py
+          python3 tests/test_vita_release_draft.py
       - name: Install pinned VitaSDK and graphics libraries
         shell: bash
         run: bash tools/ci/setup_vita_sdk.sh
@@ -59,7 +67,7 @@ jobs:
           set -euo pipefail
           out=build-vita-ci/artifacts
           mkdir -p "$out"
-          name="GoldenBalloon-Vita-v${VITA_VERSION}-${VITA_SOURCE_SHA:0:8}.vpk"
+          name="GoldenBalloon-Vita-v${VITA_VERSION}-${VITA_SOURCE_SHA:0:8}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.vpk"
           cp build-vita-ci/mdkr64.vpk "$out/$name"
           python3 tools/verify_vita_vpk.py "$out/$name" \
             --version "$VITA_VERSION" > "$out/verification.json"
@@ -88,3 +96,33 @@ jobs:
           path: build-vita-ci/artifacts/
           if-no-files-found: error
           retention-days: 30
+
+  draft-release:
+    name: Prepare release draft
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.build.outputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: GoldenBalloon-Vita-${{ needs.build.outputs.version }}-${{ needs.build.outputs.source_sha }}
+          path: build-vita-ci/artifacts
+      - name: Create or refresh the unpublished version draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPO: ${{ github.repository }}
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+          RELEASE_SOURCE: ${{ needs.build.outputs.source_sha }}
+        run: |
+          python3 tools/ci/draft_vita_release.py \
+            --repo "$RELEASE_REPO" \
+            --version "$RELEASE_VERSION" \
+            --source "$RELEASE_SOURCE" \
+            --artifacts build-vita-ci/artifacts

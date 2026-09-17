@@ -312,6 +312,20 @@ for 30 days and may require a GitHub login to download. These are CI builds, not
 automatically published or hardware-qualified releases; stable releases remain
 on the [Releases page](https://github.com/zm2283145/goldenballoon-vita-port/releases).
 
+For each **new, unpublished version** in `CMakeLists.txt` (`MDKR_VERSION`), a
+successful build also creates or refreshes one **draft GitHub release** with
+the VPK, checksums and build details. Its notes describe merged pull requests
+and direct commits since the previous published stable release, with a link
+to the full comparison. Further builds for that version refresh the draft;
+published releases are never overwritten. Increment the version before
+preparing the next release (for example, `1.7.2` to `1.7.3`).
+
+Open the draft on the Releases page, review/edit the notes, test the VPK, then
+click **Publish release** when ready. Nothing is automatically published.
+Notes added outside the marked generated section are preserved on refresh.
+The workflow uses GitHub's built-in Actions token; no personal access token
+is needed. Only the draft job has release-write permission.
+
 CI uses checksum-pinned VitaSDK packages and matching pinned vitaGL/vitaShaRK
 sources. It includes LiveArea artwork and trophies, but never downloads or
 bundles a ROM, texture pack, or `libshacccg.suprx`. Debugger/profiler integration

@@ -26,6 +26,12 @@ SFO bounds. The PS Vita VPK workflow runs it before building and verifies the
 actual packaged archive before upload. This is packaging coverage, not a
 substitute for installing and playing the resulting build on a Vita.
 
+`python tests/test_vita_release_draft.py` checks versioned draft creation and
+refresh using a fake GitHub API and synthetic VPKs. It covers published-release
+and stale-build skips, note/asset preservation, duplicate drafts, bad
+checksums, upload failures, and stopping if a maintainer publishes mid-run.
+It does not create releases or require credentials.
+
 ## Character release acceptance receipt
 
 `character_release_evidence` runs
