@@ -878,9 +878,19 @@ static const float s_preset[MDKR_VIDEO_KEY_COUNT][3] = {
     [MDKR_VIDEO_REMASTER_FX]  = {      0.0f,     0.0f,       1.0f },
     [MDKR_VIDEO_WIDESCREEN]   = {      1.0f,     1.0f,       1.0f },
     [MDKR_VIDEO_ASPECT]       = {      0.0f,     0.0f,       0.0f }, /* string; see below */
+#if defined(__vita__)
+    /* PS Vita: supersampling (2x = 4x the pixels) and 8-16x anisotropy cost
+     * far more than the SGX543 frame budget allows, so the handheld's
+     * Restored/Remastered presets render at native 960x544 with 2x anisotropy.
+     * A player can still raise either explicitly in the settings. */
+    [MDKR_VIDEO_RENDER_SCALE] = {      1.0f,     1.0f,       1.0f },
+    [MDKR_VIDEO_MSAA]         = {      0.0f,     0.0f,       0.0f },
+    [MDKR_VIDEO_ANISOTROPY]   = {      1.0f,     2.0f,       2.0f },
+#else
     [MDKR_VIDEO_RENDER_SCALE] = {      1.0f,     2.0f,       2.0f },
     [MDKR_VIDEO_MSAA]         = {      0.0f,     0.0f,       0.0f },
     [MDKR_VIDEO_ANISOTROPY]   = {      1.0f,     8.0f,      16.0f },
+#endif
     [MDKR_VIDEO_MIPMAPS]      = {      0.0f,     1.0f,       1.0f },
     /* Pure is byte-exact and never redraws a glyph. Restored and Remastered
      * both get it: unlike the SDF contour pass this is not a look-changing
