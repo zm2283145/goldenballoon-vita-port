@@ -1,3 +1,51 @@
+# Golden Balloon 1.7.2
+
+*Released 2026-09-17.*
+
+## PS Vita
+
+- Retains the committed gameplay-jingle ownership fix: spatial ambience must
+  not stop silver-coin or key ditties. Normal audio and silver-coin pickup
+  jingles were confirmed on real Vita hardware using the reverted working
+  baseline for this release. The unsuccessful experimental audio rewrites are
+  not included.
+- Uses native 960x544 rendering with 2x anisotropic filtering in Restored and
+  Remastered. The Vita backend enforces an effective 1x render scale.
+- Skips the unsupported RemasterFX output post-processing shader before
+  compilation, avoiding the shader-compiler failure that affected subsequent
+  shaders. Incompatible RL-5 per-pixel lighting remains disabled. Restored is
+  recommended; the full desktop Remastered effects are not available on Vita.
+- Adds Vita Rice/GLideN64 pack discovery, an in-game pack toggle, and ZIP
+  extraction with a visible progress screen and Vita-compatible directory
+  installation.
+- Loads Rice replacements asynchronously when decode helpers are available.
+  Adds `tools/ricepack/vita_optimize_pack.py` and `.vtex` loading for RGBA8
+  textures with prebuilt mip chains. Converted packs must be supplied by the
+  user and are not included in the VPK.
+- Excludes the uncommitted per-scene texture-preload work and its related cache
+  changes. That WIP remains local pending HD-pack/audio testing. Ordinary
+  on-demand async texture loading is retained. **Texture pop-in remains a
+  known issue**, and audio performance with heavy enabled packs has not been
+  separately qualified.
+- Includes opt-in Vita profiler/DebugNet lifecycle and renderer/texture metrics
+  for development. The published VPK is built with both debugger and profiler
+  disabled.
+
+The audio implementation is unchanged from the hardware-confirmed baseline.
+Runtime code is taken from committed `ec64a161`, without the local preload WIP;
+the release adds version and documentation updates only. The earlier full
+Adventure completion remains evidence for the Restored baseline, not a newly
+completed 1.7.2 playthrough. If a heavy pack causes audio or frame-time problems,
+disable the pack when troubleshooting.
+
+Install `GoldenBalloon-Vita-v1.7.2.vpk` over the existing `GBLN00001` application.
+Back up saves and retain `ux0:data/goldenballoon/`, including your own ROM and
+optional packs. The VPK includes the 98-trophy pack and LiveArea artwork, but
+no ROM or gameplay assets. NoTrpDrm remains optional for trophies.
+
+The compiled version and Vita package metadata use `MDKR_VERSION` `1.7.2`
+and `APP_VER` `01.72`. Source is tagged `v1.7.2` on the `optimization` branch.
+
 # Golden Balloon 1.7.1
 
 *Released 2026-09-10.*

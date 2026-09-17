@@ -20,21 +20,24 @@ same binary until they have one explicit shared network owner.
 
 ## Build
 
-Use a fresh build directory when changing the receiver address. For a receiver
-at `10.1.1.146`, a typical PowerShell configuration is:
+Use a fresh build directory when changing the receiver address. Set
+`$vitaDebugger` to your VitaDebugger checkout and replace the example private
+LAN addresses with the development computer's and Vita's actual addresses.
+For a receiver at `192.168.1.100`, a typical PowerShell configuration is:
 
 ```powershell
+$vitaDebugger = "C:\src\VitaDebugger"
 cmake -S . -B build-vita-profiler-tcp -G Ninja `
-  -DCMAKE_TOOLCHAIN_FILE=C:/vitasdk/share/vita.toolchain.cmake `
+  "-DCMAKE_TOOLCHAIN_FILE=$env:VITASDK\share\vita.toolchain.cmake" `
   -DCMAKE_BUILD_TYPE=Release `
   -DMDKR_APP=OFF `
   -DMDKR_VITA_PROFILER=ON `
   -DMDKR_VITA_DEBUGGER=OFF `
-  -DMDKR_VITAPROFILER_DIR=D:/Claude/VitaDebugger/profiler `
-  -DMDKR_VITA_PROFILER_HOST_A=10 `
-  -DMDKR_VITA_PROFILER_HOST_B=1 `
+  "-DMDKR_VITAPROFILER_DIR=$vitaDebugger\profiler" `
+  -DMDKR_VITA_PROFILER_HOST_A=192 `
+  -DMDKR_VITA_PROFILER_HOST_B=168 `
   -DMDKR_VITA_PROFILER_HOST_C=1 `
-  -DMDKR_VITA_PROFILER_HOST_D=146 `
+  -DMDKR_VITA_PROFILER_HOST_D=100 `
   -DMDKR_VITA_PROFILER_PORT=18195 `
   -DMDKR_VITA_PROFILER_CAPTURE_FRAMES=300
 cmake --build build-vita-profiler-tcp --parallel
@@ -49,7 +52,7 @@ Before packaging, the Vita ELF should contain `vp_stream_writer_begin` and
 `vp_vita_tcp_sink_connect`, and should not contain `uvdb_debugnet_start`:
 
 ```powershell
-arm-vita-eabi-nm build-vita-profiler-tcp/mdkr64 | Select-String `
+arm-vita-eabi-nm build-vita-profiler-tcp\mdkr64 | Select-String `
   'vp_stream_writer_begin|vp_vita_tcp_sink_connect|uvdb_debugnet_start'
 ```
 
@@ -59,8 +62,8 @@ Allow inbound TCP `18195` in the computer firewall. Start the receiver before
 launching the game:
 
 ```powershell
-py -3 D:/Claude/VitaDebugger/profiler/tools/vitaprofiler_trace.py receive `
-  diddy-hd.vptrace --bind 0.0.0.0 --port 18195 --source 10.1.1.93 `
+py -3 "$vitaDebugger\profiler\tools\vitaprofiler_trace.py" receive `
+  diddy-hd.vptrace --bind 0.0.0.0 --port 18195 --source 192.168.1.101 `
   --accept-timeout 120 --idle-timeout 10 --capture-timeout 300 --force
 ```
 
@@ -72,9 +75,9 @@ and releases its socket and SceNet ownership while the game continues.
 Inspect or export a completed capture with:
 
 ```powershell
-py -3 D:/Claude/VitaDebugger/profiler/tools/vitaprofiler_trace.py view `
+py -3 "$vitaDebugger\profiler\tools\vitaprofiler_trace.py" view `
   diddy-hd.vptrace --events 40
-py -3 D:/Claude/VitaDebugger/profiler/tools/vitaprofiler_trace.py chrome `
+py -3 "$vitaDebugger\profiler\tools\vitaprofiler_trace.py" chrome `
   diddy-hd.vptrace diddy-hd.chrome.json --force
 ```
 

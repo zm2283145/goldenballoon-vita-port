@@ -28,8 +28,10 @@
 > for the day-to-day truth about what currently works, what doesn't, and what
 > is actively being debugged.
 >
-> **Status update (1.7.1):** the Restored visual preset is stable and a complete
-> Adventure playthrough has been confirmed on real Vita hardware. The port
+> **Status update (1.7.2):** the release retains the working audio and
+> silver-coin pickup jingles confirmed on real Vita hardware on September 17.
+> A complete Adventure playthrough was confirmed on the earlier Restored
+> baseline; this is not a claim of a new full playthrough for 1.7.2. The port
 > boots, loads a ROM, renders 3D races and menus, saves progress, and includes
 > a 98-trophy pack. The magic-code-gated Save Editor provides a supported way
 > to test and repair Vita save progression.
@@ -44,6 +46,26 @@
 > **High-resolution texture packs are supported on Vita**, including a
 > converter that prepares a pack for the handheld. See
 > [Custom content](#custom-content).
+
+## What's new in v1.7.2
+
+- **Working gameplay jingles retained.** Silver-coin and key ditties use the
+  committed ownership protection against the spatial-ambience stop path.
+  The release keeps the audio code from the hardware-confirmed working build.
+- **Vita rendering defaults:** native 960x544 rendering and 2x anisotropic
+  filtering in Restored and Remastered. Unsupported RemasterFX output
+  post-processing is skipped before it can leave the shader compiler unusable.
+- **HD pack installation:** discover Rice/GLideN64 folders or ZIPs, extract ZIPs
+  on the Vita with visible progress, and enable or disable packs in-game.
+- **HD texture loading:** asynchronous Rice texture decoding and mip generation,
+  plus an offline converter and loader for `.vtex` files containing RGBA8 pixels
+  and prebuilt mipmaps.
+- **Experimental per-scene preload is excluded from this release.** It needs
+  separate HD-pack/audio testing before publication. **Texture pop-in remains
+  possible:** a pending replacement still draws the original texture.
+
+See [release notes](RELEASE_NOTES.md) for the release scope and
+[known issues](PORTING_STATUS.md#known-issues) for the remaining limitations.
 
 ## Quick start (PS Vita)
 
@@ -70,7 +92,7 @@
    Without NoTrpDrm, the game remains playable but trophies are safely
    unavailable.
 2. **Get the ROM.** You need a legally acquired dump of the original game —
-   US v1.1 REV1 (`v80`), as `.z64`. Copy it onto your Vita's memory card at
+   the supported US (`v80`) dump, as `.z64`. Copy it onto your Vita's memory card at
    exactly this path:
 
    ```text
@@ -80,16 +102,19 @@
    There is no in-app ROM picker on Vita yet (see
    [PORTING_STATUS.md](PORTING_STATUS.md)) — the engine looks for the ROM at
    that fixed path only.
-3. **Install.** Copy `mdkr64.vpk` to your Vita (FTP via VitaShell, or a USB
+3. **Install.** Download `GoldenBalloon-Vita-v1.7.2.vpk` from the
+   [v1.7.2 release](https://github.com/zm2283145/goldenballoon-vita-port/releases/tag/v1.7.2).
+   Copy it to your Vita (FTP via VitaShell, or a USB
    cable) and install it from VitaShell like any other VPK.
 4. **Play.** The default Vita controls work out of the box. Open **Options →
    Controls** to view or remap every digital action, assign up to two inputs
    per action, clear individual bindings, or restore the defaults.
 
-**This is the 1.7.1 Vita release.** The default Restored visual preset has
-completed a full Adventure playthrough on tested hardware. **Do not enable the Remastered
-visual preset — it crashes on startup every time; this is a known,
-still-unresolved issue, not something you did wrong.** If something else
+**This is the 1.7.2 Vita release.** Restored remains the recommended preset.
+Remastered skips unsupported post-processing and per-pixel lighting on Vita;
+it does not provide the complete desktop Remastered look. Install over the
+existing `GBLN00001` application without deleting your
+`ux0:data/goldenballoon/` directory; keep a backup of your saves. If something
 breaks, check [PORTING_STATUS.md](PORTING_STATUS.md) first and consider
 opening an issue with what you were doing when it happened.
 
@@ -117,7 +142,7 @@ the shared game/engine code — is in the
 | macOS (Apple silicon) | Upstream, stable |
 | Linux (x86-64) | Upstream, best effort |
 | Browser (WebGPU) | Upstream, stable |
-| **PS Vita** | **This fork, 1.7.1 — complete Adventure playthrough confirmed on the Restored visual preset, with persistent shader caching, non-blocking trophy unlocks, 98 homebrew trophies, persistent control remapping, and a built-in Save Editor. The Remastered preset crashes on startup and should not be used. See [PORTING_STATUS.md](PORTING_STATUS.md) for the exact current state.** |
+| **PS Vita** | **This fork, 1.7.2 — working audio and silver-coin jingles confirmed on hardware, native-resolution defaults, HD texture-pack support, persistent shader caching, non-blocking trophy unlocks, 98 homebrew trophies, control remapping, and a Save Editor. Restored is recommended; experimental preload is excluded. See [PORTING_STATUS.md](PORTING_STATUS.md).** |
 
 ## PS Vita: known limitations
 
@@ -132,7 +157,11 @@ and fixed so far, with root causes).
   the Vita's shader compiler cannot take the programs they need. Grading, SDF
   text and the rest of the preset do apply. Restored stays the default.
 - **No ROM picker.** The ROM must sit at the fixed path
-  `ux0:data/goldenballoon/baserom.us.v80.z64`; only US v1.0 has been tried.
+  `ux0:data/goldenballoon/baserom.us.v80.z64`.
+- **HD texture pop-in remains possible.** Async loading temporarily displays the
+  original texture. The experimental per-scene preloader is not included.
+  Audio performance with heavy enabled packs has not been separately
+  qualified; disable packs when troubleshooting audio or frame-time issues.
 - **No WebGPU, no online play, no Phone Party, no sun-shadow mapping, no
   MSAA.** vitaGL (the Vita's OpenGL-over-sceGxm layer) doesn't expose the GL
   features these need; see the "What's disabled or stubbed on Vita" table in
@@ -199,9 +228,10 @@ D-pad navigation and blocks its input from reaching the menu or game behind it.
 Vita builds render at the handheld's native 960x544 with 2x anisotropic
 filtering in both the Restored and Remastered presets. The desktop presets ask
 for 2x supersampling (four times the pixels) and 8x/16x anisotropy, which the
-SGX543 cannot afford. Both values remain adjustable, and an existing
-`mdkr64.ini` keeps whatever you already chose — delete the `RenderScale` and
-`AnisotropicFiltering` lines to pick up the new defaults.
+SGX543 cannot afford. The Vita backend enforces an effective 1x render scale;
+changing the scale setting does not enable supersampling on Vita. Anisotropic
+filtering remains configurable, and an existing `mdkr64.ini` retains its saved
+value; remove the `AnisotropicFiltering` line to pick up the preset default.
 
 ## PS Vita shader cache and performance
 
@@ -251,7 +281,14 @@ card.
 
 Pack textures are read, decoded and mip-chained on helper threads, so a
 texture that is not ready yet draws the original from the ROM and is replaced
-once it arrives, rather than stalling the race.
+once it arrives, rather than decoding it on the render thread. If helper
+startup fails, the store falls back to synchronous loading.
+
+**Experimental per-scene preloading is not shipped in v1.7.2.** It remains
+development work pending HD-pack/audio testing. Ordinary on-demand asynchronous
+loading is retained, so **this release does not claim to eliminate texture
+pop-in**. Keep packs optional and prefer offline `.vtex` conversion for heavy
+packs. Older development `texcache` lists are not used by this release.
 
 ## No game data is included
 

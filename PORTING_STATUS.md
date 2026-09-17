@@ -1,6 +1,6 @@
 # goldenballoon (mdkr64) — PS Vita port status
 
-This branch (`vita-port`) adds an initial PS Vita target to goldenballoon's
+This branch (`optimization`) maintains the PS Vita target in goldenballoon's
 CMake build, cross-compiled with VitaSDK against **vitaGL** (OpenGL-over-
 sceGxm) and **vitashark** (runtime GLSL→GXP shader compiler), following the
 same libultraship/vitaGL pattern as
@@ -8,7 +8,9 @@ same libultraship/vitaGL pattern as
 (a Banjo-Kazooie Vita port used as the concrete reference for library
 choices, link flags, and the VPK packaging recipe).
 
-**Status: 1.7.1 — complete Adventure playthrough confirmed on real hardware.** It
+**Status: 1.7.2 — working audio and silver-coin jingles confirmed on real
+hardware on 2026-09-17.** A complete Adventure playthrough was confirmed on the
+earlier Restored baseline, not repeated in full for this release. The port
 boots, loads a ROM, saves progress, and plays through the full game on the default
 (Restored) visual preset, with audio, input, textured rendering, correctly
 rendered 3D race/menu scenes, a 98-trophy pack, and a magic-code-gated Save
@@ -16,9 +18,11 @@ Editor, persistent Vita control remapping, a validated on-disk shader cache,
 and asynchronous trophy unlocking. This moved past "builds
 and links clean" through hands-on, on-device bring-up: real crashes and
 rendering bugs, pulled via a boot-time file logger, coredumps, and targeted
-diagnostic logging, root-caused one at a time. **The Remastered visual preset
-currently crashes on startup and must not be used — see
-[Known issues](#known-issues) below.** Fixed so far, in the order they were
+diagnostic logging, root-caused one at a time. **Restored remains recommended.
+Remastered skips incompatible post-processing and per-pixel lighting;
+experimental HD texture preload is excluded from this release.**
+See [Known issues](#known-issues).
+Fixed so far, in the order they were
 hit:
 
 1. **Black screen, audio/input alive.** `platform_sdl_surface_presentable()`
@@ -95,7 +99,7 @@ the git log on this branch for the bring-up history.
    1.00. Fixed by adding the same `__vita__` branch to the fragment header
    selection. Independently confirmed correct, but did **not** fix the
    Remastered-preset crash below — that turned out to be a separate,
-   still-open issue.
+   separately resolved issue described below.
 9. **Bundling LiveArea assets (icon0/bg/startup/`template.xml`) broke a
    fresh VitaShell install every time**, with a generic `0x80104004` error
    — confirmed via a hardware binary search to have nothing to do with the
@@ -117,13 +121,21 @@ the git log on this branch for the bring-up history.
    fresh and display both the background and startup/gate art correctly.
    LiveArea assets are bundled by default now (see Packaging below).
 
-Currently: the Restored preset is stable for normal play. Live debugging
-isolated the former Remastered startup abort to the RL-5 per-pixel-light vertex
-variant (`SHADER_OPT_DFDX_LIGHT`, observed shader ID `0x8090`) being rejected by
-VitaGL/vitaShaRK. The Vita build now retains Remastered grading, tonemapping,
-SDF text and supported effects while disabling only that incompatible RL-5
-path before shader-key and vertex-layout derivation. Hardware validation of
-that fallback is still pending.
+Currently: Restored is the recommended preset. Vita excludes the incompatible
+RL-5 per-pixel-light vertex variant (`SHADER_OPT_DFDX_LIGHT`) before shader-key
+and vertex-layout derivation. It also skips the desktop RemasterFX output
+shader before compilation: rejection of that program could leave the runtime
+compiler unable to compile later, otherwise valid shaders. Remastered retains
+supported grading and SDF text, but not tonemapping, bloom, FXAA, SSAO or RL-5
+per-pixel lighting. The old unconditional "Remastered crashes" guidance is
+superseded by these exclusions.
+
+Since v1.7.1, Vita also gains Rice/GLideN64 pack discovery/toggling, ZIP
+extraction with progress, asynchronous texture decoding and `.vtex` loading
+with prebuilt mipmaps. The release excludes local experimental preload
+lists and related cache changes; it is not a completed pop-in fix. The published
+VPK has `MDKR_VITA_DEBUGGER=OFF` and `MDKR_VITA_PROFILER=OFF`; the optional
+profiler code and texture/renderer counters remain available for development.
 
 **vitaGL / vitaShaRK versions:** the current integration branch builds against
 [Rinnegatamante/vitaGL](https://github.com/Rinnegatamante/vitaGL) commit
@@ -206,7 +218,7 @@ treatment — no Nintendo/Rare IP), committed alongside `template.xml`.
 **ROM placement:** the engine looks for the ROM at a fixed path on Vita —
 `ux0:data/goldenballoon/baserom.us.v80.z64` — since there is no in-app
 ROM-picker UI on this platform yet (see "What's disabled" below). Copy a
-legally-obtained US v1.0 (v80) Diddy Kong Racing ROM there before first
+legally-obtained supported US (v80) Diddy Kong Racing ROM there before first
 launch.
 
 ## Adding trophies to a PS Vita project
@@ -395,50 +407,30 @@ safe and simply causes it to be rebuilt.
 
 ## Known issues
 
-### Remastered visual preset crashes on startup (unresolved)
+### Remastered has reduced effects on Vita
 
-With the Remastered preset active (`g_pcRemasterFX=1`), the very first
-shader compiled every session reliably fails `glCompileShader` with
-`GL_COMPILE_STATUS=0` and an empty info log (`GL_INFO_LOG_LENGTH=0`) —
-no diagnostic text at all. The failing shader is the simplest possible
-combiner (a flat vertex-color pass-through, no texture/lighting/shadow).
-A byte-for-byte comparison against a successful Restored-preset boot log
-proved the shader source, buffer lengths, and surrounding boot-time memory
-state are identical between the failing and succeeding runs — the only
-difference is the raw value of `g_pcRemasterFX`. **Workaround: use the
-Restored (default) preset. Do not enable Remastered.**
+The incompatible RL-5 lighting path and RemasterFX output post-processing
+program are disabled on Vita. This avoids the known startup compiler failure,
+but does not make the desktop effects supported. Restored remains the
+recommended preset. Native 960x544 rendering is enforced by the Vita backend;
+supersampling settings do not increase its effective render scale.
 
-Ruled out so far, each with direct on-device evidence, so this isn't
-re-investigated from scratch next time:
+### HD texture pop-in and pack-dependent performance
 
-- The fragment-shader GLSL version-header bug above (real bug, fixed,
-  but unrelated — the version header is correct in the failing run too).
-- World Shadows / `SHADER_OPT_SUN_SHADOW` (force-disabled on Vita,
-  confirmed inert via boot log before this shader is ever reached).
-- RL-5 / `SHADER_OPT_DFDX_LIGHT` (the failing shader is provably the
-  first one compiled all session, so nothing could have poisoned it).
-- A pending/stale GL error carried into the compile call (drained and
-  logged at function entry; comes back clean).
-- The shader compiler not being "warmed up" yet (a 5x retry with a delay
-  between attempts failed identically every time).
-- Buffer/length corruption handed to `glShaderSource` (logged `strlen()`
-  vs. the tracked length and the raw tail bytes; both clean and correctly
-  terminated in both the failing and succeeding runs).
-- Thread affinity between shader setup and the compile call (this
-  codebase is single-threaded end to end on Vita — confirmed by tracing
-  every thread-creation call to a no-op stub).
-- Deleting and recreating the shader object on retry, in case the first
-  failed compile left the object internally poisoned in vitaGL's own
-  bookkeeping — this did not fix the compile failure, and on at least one
-  run produced a separate, harder crash (a Data Abort deep inside SceGxm
-  on a background rendering thread), so this retry-with-fresh-objects
-  approach has been removed again rather than kept as a partial mitigation.
+Async Rice loading displays original ROM textures while replacements are
+pending. Experimental per-scene preload and its related uncommitted cache
+changes are excluded from v1.7.2 and remain local development work. Existing
+development lists in `ux0:data/goldenballoon/texcache/` are not used.
 
-Root cause is still unknown. The next concrete step is probably to compare
-what `g_pcRemasterFX` actually changes upstream of this shader (uniform
-layout, a `#define` that changes generated shader text length/content in a
-way not caught by the current comparison, etc.) rather than further
-retry/defensive-coding attempts at the compile call itself.
+Audio performance during heavy HD-pack loading has not been separately
+qualified. Preload-related starvation is a hypothesis, not a confirmed root
+cause; excluding that WIP does not prove all pack-dependent stalls are solved.
+Prefer offline `.vtex` conversion for heavy packs and disable packs when
+troubleshooting audio or frame-time issues. No pack or ROM is included.
+
+The release's runtime source is committed `ec64a161`, plus version metadata
+only. The audio implementation matches the working hardware-tested build;
+unsuccessful experimental audio rewrites are not part of this release.
 
 ### Verbose shader-compile diagnostics are off by default
 
@@ -458,12 +450,10 @@ bosses, controls, audio, save persistence, trophy registration and unlocking,
 the Save Editor, and the Controls overlay. The former bring-up verification
 checklist was removed because it no longer described the state of the port.
 
-1. Root-cause the optional Remastered-preset shader-compile crash (see
-   [Known issues](#known-issues)). The supported Restored preset is stable. A
-   VitaDebugger build is now available with `-DMDKR_VITA_DEBUGGER=ON`; it links
-   the local `libuvdb.a` plus matching kuBridge/kernel stubs and stops on TCP
-   port 1234 before renderer startup, allowing the crash to be reproduced under
-   `arm-vita-eabi-gdb` with the unstripped `mdkr64` ELF.
+1. Finish and measure HD preload behavior on hardware, addressing skipped
+   identities and startup ordering before claiming a pop-in fix. Keep the
+   confirmed audio baseline intact. Broader Remastered compatibility testing
+   should retain the incompatible shader exclusions.
 2. Port upstream multiplayer to Vita in stages. First validate deterministic
    two-instance races between a physical Vita and Vita3K, then choose between
    direct Vita-to-Vita ad hoc/LAN transport and the upstream internet room

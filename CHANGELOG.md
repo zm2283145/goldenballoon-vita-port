@@ -12,6 +12,33 @@ save formats). Everything below 1.0.0 predates that commitment.
 
 No changes yet.
 
+## [1.7.2] — 2026-09-17 (PS Vita)
+
+### Fixed
+
+- Preserve the committed jingle ownership fix, with audio and silver-coin
+  pickup jingles confirmed on the release's working hardware baseline.
+- Skip unsupported RemasterFX output shader compilation on Vita; retain the
+  incompatible per-pixel-lighting exclusion and recommend the Restored preset.
+- Use native-resolution rendering and 2x AF defaults for Restored/Remastered.
+- Correct Vita texture-pack extraction and directory installation, with visible
+  extraction progress.
+
+### Added
+
+- Rice/GLideN64 pack discovery and in-game enable/disable controls on Vita.
+- Asynchronous Rice replacement decoding, offline pack conversion, and `.vtex`
+  loading with prebuilt RGBA8 mip chains.
+- Opt-in Vita profiler/DebugNet lifecycle improvements and renderer/texture
+  metrics; the public VPK keeps debugger/profiler integration disabled.
+
+### Changed
+
+- Align README and port-status guidance with current Vita shader limitations.
+- Exclude experimental preload and related uncommitted cache changes pending
+  HD-pack/audio qualification; ordinary async loading remains included.
+- Version the executable as `1.7.2` and the Vita package as `01.72`.
+
 ## [1.7.0] — 2026-09-11
 
 ### Added
