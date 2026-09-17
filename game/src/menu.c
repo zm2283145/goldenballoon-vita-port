@@ -7806,6 +7806,11 @@ enum {
      */
     VIDEO_OPTION_SHADOWS,
     VIDEO_OPTION_TEXTURE_PACKS,
+    /* Vita's reliable 60 FPS path is the port's one-field Enhanced cadence.
+     * The presentation-only replay path is intentionally not offered here:
+     * Vita hardware testing showed held-frame bursts because retained replay
+     * walks are unavailable on this backend. */
+    VIDEO_OPTION_FRAME_RATE,
     VIDEO_OPTION_RETURN,
     VIDEO_OPTION_COUNT
 };
@@ -7820,19 +7825,19 @@ static s32 sAudioPersistencePromptReported;
 static const char *const sVideoOptionLabels[VIDEO_OPTION_COUNT] = {
     "PRESENTATION", "SUPERSAMPLING", "ASPECT RATIO", "GAMEPLAY FOV",
     "TEXTURE FILTERING", "REMASTER EFFECTS", "WORLD SHADOWS", "HD TEXTURE PACKS",
-    "RETURN"
+    "FRAME RATE", "RETURN"
 };
 
 static const char *const sVideoOptionLabelsDe[VIDEO_OPTION_COUNT] = {
     "DARSTELLUNG", "KANTENGLAETTUNG", "SEITENVERHAELTNIS", "SPIEL-SICHTFELD",
     "TEXTURFILTER", "REMASTER-EFFEKTE", "WELTSCHATTEN", "HD-TEXTURPAKETE",
-    "ZURUECK"
+    "BILDRATE", "ZURUECK"
 };
 
 static const char *const sVideoOptionLabelsFr[VIDEO_OPTION_COUNT] = {
     "PRESENTATION", "SUPER-ECHANT.", "FORMAT D'IMAGE", "CHAMP DE VISION",
     "FILTRAGE TEXTURES", "EFFETS REMASTER", "OMBRES DU MONDE", "PACKS TEXTURES HD",
-    "RETOUR"
+    "FREQUENCE D'IMAGE", "RETOUR"
 };
 
 static const char *const sVideoOptionHelp[3][VIDEO_OPTION_COUNT] = {
@@ -7845,6 +7850,7 @@ static const char *const sVideoOptionHelp[3][VIDEO_OPTION_COUNT] = {
         "ART-DIRECTED LIGHTING AND TEXT",
         "SOFT LIGHTENS THEM - OFF RESTORES BLOBS",
         "REQUIRES AN INSTALLED PACK - DEFAULT OFF",
+        "60 FPS ENHANCED CHANGES GAMEPLAY TIMING",
         "BACK TO OPTIONS"
     },
     {
@@ -7856,6 +7862,7 @@ static const char *const sVideoOptionHelp[3][VIDEO_OPTION_COUNT] = {
         "NEUE BELEUCHTUNG UND SCHRIFT",
         "SANFT MILDERT SIE - AUS BRINGT FLECKEN",
         "BRAUCHT EIN INSTALLIERTES PAKET - STANDARD AUS",
+        "60 FPS ERWEITERT AENDERT DAS SPIELTEMPO",
         "ZURUECK ZU DEN OPTIONEN"
     },
     {
@@ -7867,6 +7874,7 @@ static const char *const sVideoOptionHelp[3][VIDEO_OPTION_COUNT] = {
         "NOUVEL ECLAIRAGE ET NOUVEAU TEXTE",
         "DOUX LES ALLEGE - ARRET REMET LES TACHES",
         "PACK INSTALLE REQUIS - ARRET PAR DEFAUT",
+        "60 FPS AMELIORE CHANGE LE RYTHME DU JEU",
         "RETOUR AUX OPTIONS"
     }
 };
@@ -8071,6 +8079,13 @@ static void video_option_value(s32 option, char *out, size_t capacity) {
                     ? video_option_word("ON", "AN", "OUI")
                     : video_option_word("OFF", "AUS", "NON"));
             break;
+        case VIDEO_OPTION_FRAME_RATE:
+            video_option_copy(
+                out, capacity,
+                !strcmp(config->values[MDKR_VIDEO_SIMULATION_CADENCE].text,
+                        "enhanced")
+                    ? "60 FPS ENHANCED" : "30 FPS ORIGINAL");
+            break;
         default:
             break;
     }
@@ -8096,6 +8111,12 @@ static int video_option_locked(s32 option) {
         case VIDEO_OPTION_TEXTURE_PACKS:
             return mdkr_video_config_runtime_locked(
                 MDKR_CONTENT_PACKS_ENABLED);
+        case VIDEO_OPTION_FRAME_RATE:
+            return mdkr_video_config_runtime_locked(
+                       MDKR_VIDEO_SIMULATION_CADENCE) ||
+                   mdkr_video_config_runtime_locked(MDKR_VIDEO_FRAME_LIMIT) ||
+                   mdkr_video_config_runtime_locked(
+                       MDKR_VIDEO_MOTION_SMOOTHING);
         default:
             return 0;
     }
@@ -8220,6 +8241,23 @@ static MdkrVideoRuntimeResult video_option_change(s32 option, int direction) {
                 config->values[MDKR_CONTENT_PACKS_ENABLED].number != 0.0f
                     ? "0" : "1");
             break;
+        case VIDEO_OPTION_FRAME_RATE: {
+            const int enhanced = !strcmp(
+                config->values[MDKR_VIDEO_SIMULATION_CADENCE].text,
+                "enhanced");
+            MdkrVideoRuntimeChange changes[3];
+            changes[0].key = MDKR_VIDEO_SIMULATION_CADENCE;
+            changes[0].value = enhanced ? "original" : "enhanced";
+            /* One authored image per tick: 30 in Original, 60 in Enhanced.
+             * Clear the prior experimental smooth-presentation pair so the
+             * Vita never enters its unsupported retained-replay subloop. */
+            changes[1].key = MDKR_VIDEO_FRAME_LIMIT;
+            changes[1].value = "original";
+            changes[2].key = MDKR_VIDEO_MOTION_SMOOTHING;
+            changes[2].value = "off";
+            result = mdkr_video_config_runtime_set_many(changes, 3);
+            break;
+        }
     }
     if (mdkr_trace_enabled()) {
         char value[40];
@@ -8262,7 +8300,7 @@ static void video_options_render(void) {
               video_options_title(), ALIGN_MIDDLE_CENTER);
 
     set_text_font(ASSET_FONTS_FUNFONT);
-    for (i = 0, y = 58; i < VIDEO_OPTION_COUNT; i++, y += 18) {
+    for (i = 0, y = 48; i < VIDEO_OPTION_COUNT; i++, y += 17) {
         highlight = i == sVideoOptionIndex ? gOptionBlinkTimer * 8 : 0;
         if (highlight > 255) highlight = 511 - highlight;
         if (video_option_locked(i)) {
@@ -8280,16 +8318,16 @@ static void video_options_render(void) {
     }
 
     set_text_colour(192, 224, 255, 0, 255);
-    draw_text(&sMenuCurrDisplayList, POS_CENTRED, 207,
+    draw_text(&sMenuCurrDisplayList, POS_CENTRED, 220,
               (char *) sVideoOptionHelp[video_options_language()][sVideoOptionIndex],
               ALIGN_MIDDLE_CENTER);
     if (sVideoFeedbackTimer > 0) {
         set_text_colour(255, 255, 128, 0, 255);
-        draw_text(&sMenuCurrDisplayList, POS_CENTRED, 224,
+        draw_text(&sMenuCurrDisplayList, POS_CENTRED, 236,
                   sVideoFeedback, ALIGN_MIDDLE_CENTER);
     } else if (mdkr_video_config_restart_pending()) {
         set_text_colour(255, 255, 128, 0, 255);
-        draw_text(&sMenuCurrDisplayList, POS_CENTRED, 224,
+        draw_text(&sMenuCurrDisplayList, POS_CENTRED, 236,
                   (char *) video_option_word(
                       "RESTART REQUIRED - SETTINGS SAVED",
                       "NEUSTART NOETIG - GESPEICHERT",

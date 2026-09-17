@@ -39,6 +39,17 @@ u8 gBlockVoiceLimitChange = FALSE;
 #ifdef NATIVE_PORT
 u8 gDkrReverbEnabled = TRUE;    /* M5: native reverb ON (MDKR_AUDIO_REVERB=0 disables) */
 static u8 sOverlayPauseMix;
+/* The retail game shares one sequence player between spatial ambience and
+ * short gameplay ditties. Its two booleans do not encode which side owns the
+ * player, while audspat_update() calls music_jingle_stop() every frame that no
+ * ambient line is audible. Keep that ownership explicit on native builds so
+ * the ambient stop path cannot cut off silver-coin/key ditties. */
+typedef enum NativeJingleOwner {
+    NATIVE_JINGLE_NONE,
+    NATIVE_JINGLE_SPATIAL,
+    NATIVE_JINGLE_DITTY,
+} NativeJingleOwner;
+static NativeJingleOwner sNativeJingleOwner;
 #define MDKR_PHYSICAL_VOICE_CAPACITY 40u
 #define MDKR_MUSIC_VOICE_CAPACITY 26u
 #define MDKR_JINGLE_VOICE_CAPACITY 16u
@@ -1090,10 +1101,20 @@ UNUSED void sound_get_properties(u8 poolID, u8 *tempo, u8 *volume, u8 *reverb) {
  * Official NAme: amAmbientPlay
  */
 void music_jingle_play_safe(u8 jingleID) {
+#ifdef NATIVE_PORT
+    if (music_jingle_playing() == SEQUENCE_NONE) {
+        music_sequence_start(jingleID, gJinglePlayer);
+        gCurrentJingleID = jingleID;
+        gCanPlayJingle = TRUE;
+        gJinglePlaying = TRUE;
+        sNativeJingleOwner = NATIVE_JINGLE_SPATIAL;
+    }
+#else
     if (music_jingle_playing() == SEQUENCE_NONE) {
         music_sequence_start(gCurrentJingleID = jingleID, gJinglePlayer);
         gJinglePlaying = TRUE;
     }
+#endif
 }
 
 /**
@@ -1142,10 +1163,22 @@ u8 music_can_play(void) {
  * Official Name: amAmbientStop
  */
 void music_jingle_stop(void) {
+#ifdef NATIVE_PORT
+    /* amAmbientStop belongs to the spatial-audio system. Gameplay ditties use
+     * the same player but must be allowed to finish when no ambient line is in
+     * range (the common case during a race). */
+    if (sNativeJingleOwner == NATIVE_JINGLE_SPATIAL) {
+        music_sequence_stop(gJinglePlayer);
+        gCurrentJingleID = SEQUENCE_NONE;
+        gCanPlayJingle = FALSE;
+        sNativeJingleOwner = NATIVE_JINGLE_NONE;
+    }
+#else
     if (music_jingle_playing() == SEQUENCE_NONE) {
         gCurrentJingleID = SEQUENCE_NONE;
         music_sequence_stop(gJinglePlayer);
     }
+#endif
 }
 
 /**
@@ -1282,8 +1315,18 @@ void music_jingle_play(u8 seqID) {
 #ifdef NATIVE_PORT
     GAMEPLAY_EVENT_TRACE(GAMEPLAY_EVENT_MUSIC, seqID, 1, 0, 0);
 #endif
+#ifdef NATIVE_PORT
+    /* Silver coins intentionally form a rising eight-note sequence. Replace
+     * the previous ditty even if it has not naturally drained yet. */
+    music_sequence_start(seqID, gJinglePlayer);
+    gCurrentJingleID = seqID;
+    gCanPlayJingle = TRUE;
+    gJinglePlaying = TRUE;
+    sNativeJingleOwner = NATIVE_JINGLE_DITTY;
+#else
     gCanPlayJingle = TRUE;
     music_sequence_start(gCurrentJingleID = seqID, gJinglePlayer);
+#endif
 }
 
 /**
@@ -1291,11 +1334,27 @@ void music_jingle_play(u8 seqID) {
  * Official Name: amDittyPlaying
  */
 u32 music_jingle_playing(void) {
+#ifdef NATIVE_PORT
+    if (gCurrentJingleID != SEQUENCE_NONE &&
+        (gJingleNextSeqID != SEQUENCE_NONE ||
+         alCSPGetState(gJinglePlayer) == AL_PLAYING)) {
+        return gCurrentJingleID;
+    }
+    if (gJingleNextSeqID == SEQUENCE_NONE &&
+        alCSPGetState(gJinglePlayer) == AL_STOPPED) {
+        gJinglePlaying = FALSE;
+        gCanPlayJingle = FALSE;
+        gCurrentJingleID = SEQUENCE_NONE;
+        sNativeJingleOwner = NATIVE_JINGLE_NONE;
+    }
+    return SEQUENCE_NONE;
+#else
     if (gCurrentJingleID && gCanPlayJingle && (gJinglePlayer->state == AL_PLAYING)) {
         return gCurrentJingleID;
     }
     gCanPlayJingle = FALSE;
     return SEQUENCE_NONE;
+#endif
 }
 
 /**

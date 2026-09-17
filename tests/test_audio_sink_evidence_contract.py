@@ -123,6 +123,21 @@ def main() -> int:
     require("sOverlayPauseMix" in
             AUDIO_SOURCE[jingle_start:jingle_end],
             "effects preview must not unmute jingles during overlay pause")
+
+    require("NATIVE_JINGLE_SPATIAL" in AUDIO_SOURCE and
+            "NATIVE_JINGLE_DITTY" in AUDIO_SOURCE,
+            "native shared jingle player must track spatial versus ditty ownership")
+    stop_start = AUDIO_SOURCE.index("void music_jingle_stop(void)")
+    stop_end = AUDIO_SOURCE.index("\n}", stop_start)
+    stop = AUDIO_SOURCE[stop_start:stop_end]
+    require("sNativeJingleOwner == NATIVE_JINGLE_SPATIAL" in stop,
+            "ambient stop must not tear down a gameplay ditty")
+    play_start = AUDIO_SOURCE.index("void music_jingle_play(u8 seqID)")
+    play_end = AUDIO_SOURCE.index("\n}", play_start)
+    play = AUDIO_SOURCE[play_start:play_end]
+    require("gJinglePlaying = TRUE;" in play and
+            "sNativeJingleOwner = NATIVE_JINGLE_DITTY;" in play,
+            "gameplay ditties must publish active native-player ownership")
     print("audio sink evidence contract: pass")
     return 0
 
