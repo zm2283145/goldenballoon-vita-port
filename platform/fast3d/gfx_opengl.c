@@ -2038,6 +2038,17 @@ static struct ShaderProgram *gfx_opengl_create_and_load_new_shader(uint64_t shad
     }
     dkr_vita_rewrite_glsl_to_legacy(vs_buf, &vs_len, 0);
     dkr_vita_rewrite_glsl_to_legacy(fs_buf, &fs_len, 1);
+    /* The rewrite reports a new length but never wrote a terminator, and it
+     * usually GROWS the text (in/out -> attribute/varying). vitaGL/vitaShaRK
+     * treat the source as a C string, so whatever uninitialised stack bytes
+     * followed the old terminator were compiled too: 'vs_len=188 vs_strlen=213'
+     * in the boot log, then GL_COMPILE_STATUS=0 with an empty info log and
+     * abort(). Stack contents depend on what ran before (e.g. RemasterFX),
+     * which is why it looked settings-dependent. Terminate both explicitly. */
+    if (vs_len >= sizeof(vs_buf)) vs_len = sizeof(vs_buf) - 1;
+    if (fs_len >= sizeof(fs_buf)) fs_len = sizeof(fs_buf) - 1;
+    vs_buf[vs_len] = '\0';
+    fs_buf[fs_len] = '\0';
     {
         static int s_shaderSrcLogCount = 0;
         if (mdkr_vita_debug_enabled() && s_shaderSrcLogCount < 5) {
@@ -3232,6 +3243,7 @@ static GLuint g_output_filter_logical_tex;
 static GLuint g_output_filter_fbo;
 static GLuint g_output_filter_program;
 static GLuint g_output_filter_vao;
+static bool g_output_filter_program_failed;
 static int g_output_filter_copy_w;
 static int g_output_filter_copy_h;
 static int g_output_filter_low_w;
@@ -4201,6 +4213,11 @@ static GLuint gfx_opengl_compile_filter_shader(GLenum type, const char *source) 
     GLuint shader = glCreateShader(type);
     GLint success = GL_FALSE;
 
+    if (shader == 0) {
+        fprintf(stderr, "[fast3d] Output VI filter shader allocation failed\n");
+        return 0;
+    }
+
     glShaderSource(shader, 1, &source, NULL);
     glCompileShader(shader);
     glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
@@ -4502,18 +4519,51 @@ static bool gfx_opengl_ensure_output_filter_program(void) {
         "    outColor = vec4(rgb, color.a);\n"
         "}\n";
 
+    if (g_output_filter_program_failed) {
+        return false;
+    }
+#if defined(__vita__)
+    /* This program is desktop GLSL (#version 330 core, gl_VertexID, const
+     * arrays, integer bit ops) and never went through the Vita legacy-dialect
+     * rewrite. RemasterFX reaches it at the end of the very first frame via
+     * tonemapping; vitaShaRK rejects it, and the failed compile leaves the
+     * runtime compiler unusable, so the NEXT shader -- a trivial combiner --
+     * fails with GL_COMPILE_STATUS=0 and an empty log and the game aborts. The
+     * scene render target these post effects read is forced off on Vita
+     * anyway, so latch the program as unavailable before any compile. */
+    (void)vs_source;
+    (void)fs_source;
+    g_output_filter_program_failed = true;
+    mdkr_vita_boot_log("gfx: output post-filter program disabled on Vita (desktop GLSL; would break vitaShaRK)");
+    return false;
+#endif
+
     if (g_output_filter_program == 0) {
         GLuint vs = gfx_opengl_compile_filter_shader(GL_VERTEX_SHADER, vs_source);
         GLuint fs = gfx_opengl_compile_filter_shader(GL_FRAGMENT_SHADER, fs_source);
         GLint success = GL_FALSE;
 
         if (vs == 0 || fs == 0) {
-            glDeleteShader(vs);
-            glDeleteShader(fs);
+            /* OpenGL defines deleting name zero as a no-op, but VitaGL indexes
+             * the shader table before validating it. Never pass a failed
+             * shader handle back into VitaGL's deletion path. */
+            if (vs != 0) {
+                glDeleteShader(vs);
+            }
+            if (fs != 0) {
+                glDeleteShader(fs);
+            }
+            g_output_filter_program_failed = true;
             return false;
         }
 
         g_output_filter_program = glCreateProgram();
+        if (g_output_filter_program == 0) {
+            glDeleteShader(vs);
+            glDeleteShader(fs);
+            g_output_filter_program_failed = true;
+            return false;
+        }
         glAttachShader(g_output_filter_program, vs);
         glAttachShader(g_output_filter_program, fs);
         glLinkProgram(g_output_filter_program);
@@ -4531,6 +4581,7 @@ static bool gfx_opengl_ensure_output_filter_program(void) {
                     (int)length, error_log);
             glDeleteProgram(g_output_filter_program);
             g_output_filter_program = 0;
+            g_output_filter_program_failed = true;
             return false;
         }
 
