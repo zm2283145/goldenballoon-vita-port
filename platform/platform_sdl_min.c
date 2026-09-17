@@ -2184,6 +2184,7 @@ int platform_modern_character_visibility_diagnostics(
 static MdkrModRegistry s_contentPacks;
 static int s_contentPacksActive;   /* enabled packs the scan actually kept */
 static int s_contentPacksScanned;  /* init has run at least once this process */
+static int s_contentPacksIndexed;  /* registry/store contain a completed scan */
 
 #ifdef __vita__
 #define VITA_PACK_EXTRACT_MAX_FILES 10000u
@@ -2591,6 +2592,7 @@ void platform_content_packs_init(void) {
         mdkr_mod_registry_shutdown(&s_contentPacks);
         mdkr_mod_texture_store_init(NULL);
         mdkr_mod_texture_set_enabled(packs_enabled);
+        s_contentPacksIndexed = 0;
         return;
     }
     /* Release the previous scan first. mdkr_mod_registry_init() documents that
@@ -2600,6 +2602,15 @@ void platform_content_packs_init(void) {
      * string in it. s_contentPacks is a file static, so this is a no-op the
      * first time through. */
     mdkr_mod_registry_shutdown(&s_contentPacks);
+    if (!packs_enabled) {
+        /* OFF is a real startup fast path. Do not enumerate and hash thousands
+         * of Rice/GLideN64 filenames merely to disable every lookup afterward. */
+        mdkr_mod_texture_store_shutdown();
+        mdkr_mod_texture_store_init(NULL);
+        mdkr_mod_texture_set_enabled(false);
+        s_contentPacksIndexed = 0;
+        return;
+    }
     (void)mdkr_mod_registry_init(&s_contentPacks, mods_dir);
 
     /*
@@ -2633,6 +2644,7 @@ void platform_content_packs_init(void) {
 
     mdkr_mod_texture_store_init(&s_contentPacks);
     mdkr_mod_texture_set_enabled(packs_enabled);
+    s_contentPacksIndexed = 1;
 
     registry_skipped = mdkr_mod_registry_skipped(&s_contentPacks);
     if (count == 0 && registry_skipped == 0) {
@@ -2717,9 +2729,19 @@ void platform_content_packs_shutdown(void) {
     mdkr_mod_texture_store_shutdown();
     mdkr_mod_registry_shutdown(&s_contentPacks);
     s_contentPacksActive = 0;
+    s_contentPacksIndexed = 0;
     /* Deliberately not clearing s_contentPacksScanned: a settings panel drawn
      * during shutdown must read the empty registry it was just handed, not
      * rescan the disk on the way out. */
+}
+
+void platform_content_packs_apply_enabled(int enabled) {
+    if (enabled && !s_contentPacksIndexed) {
+        /* The runtime config publishes the new value before invoking its
+         * receivers, so this deferred init observes ON and builds the index. */
+        platform_content_packs_init();
+    }
+    mdkr_mod_texture_set_enabled(enabled != 0 && s_contentPacksIndexed);
 }
 
 void platform_content_packs_toggle(void) {
@@ -5652,6 +5674,11 @@ unsigned platform_present_display_rate(void) {
         mode.refresh_rate <= (int)MDKR_PRESENT_RATE_MAX) {
         return (unsigned)mode.refresh_rate;
     }
+#ifdef __vita__
+    /* SDL-Vita does not consistently populate refresh_rate. The retail Vita
+     * panel is fixed at 60 Hz, so unknown here has one truthful fallback. */
+    return 60u;
+#endif
     /* No window yet, a failed query, or a refresh outside the range the pacer
      * can work with: 0 is the contract's "the host does not report one", and
      * the policy's unknown-refresh branch is what decides from there. Guessing
@@ -5714,6 +5741,15 @@ static void present_pace_lazy_init(void) {
              * unreported refresh keeps a deterministic 60 Hz stand-in. */
             s_presentEffectiveRate = 60u;
         }
+#ifdef __vita__
+        /* VitaGL queues its swap without blocking this CPU thread to vblank.
+         * Desktop GL relies on a blocking swap as its opportunity clock; doing
+         * that here emitted rapid replay bursts followed by long waits. Use an
+         * absolute 60 Hz software grid for evenly spaced Vita opportunities. */
+        backendDisplayDeadline =
+            s_paceMode == PACE_REALTIME &&
+            s_presentEffectiveRate != 0u;
+#endif
 #if defined(MDKR_WEBGPU_BACKEND) && !defined(__EMSCRIPTEN__)
         /*
          * Native WebGPU FIFO constrains surface retirement but does not pace
@@ -6237,14 +6273,18 @@ uint64_t platform_present_display_quantum_units(void) {
  */
 uint64_t platform_vi_present_pace_units(void) {
     uint64_t units;
+    MdkrVitaProfileScope profileScope;
 
+    mdkr_vita_profiler_zone_begin(MDKR_VP_ZONE_PRESENT_PACE, &profileScope);
     present_pace_lazy_init();
     present_pace_poll_display_switch();
     s_viLastPaceRebased = 0;
     if (!s_presentActive) {
         /* Not engaged: one present is one tick, exactly as before. */
         (void)platform_vi_pace_measure();
-        return (uint64_t)g_viLastWallFields * UINT64_C(1000000000);
+        units = (uint64_t)g_viLastWallFields * UINT64_C(1000000000);
+        mdkr_vita_profiler_zone_end(&profileScope);
+        return units;
     }
     if (s_surfaceResumeRebasePending) {
         s_surfaceResumeRebasePending = 0;
@@ -6263,6 +6303,7 @@ uint64_t platform_vi_present_pace_units(void) {
         units = (uint64_t)s_minFields * UINT64_C(1000000000);
         s_viLastPaceRebased = 1;
         pace_credit_units(units);
+        mdkr_vita_profiler_zone_end(&profileScope);
         return units;
     }
     if (s_paceMode == PACE_SYNTH) {
@@ -6428,6 +6469,7 @@ uint64_t platform_vi_present_pace_units(void) {
         s_presentLastNs = now;
     }
     pace_credit_units(units);
+    mdkr_vita_profiler_zone_end(&profileScope);
     return units;
 }
 
@@ -7379,6 +7421,7 @@ int platform_engine_session_begin(void) {
     }
     s_contentPacksScanned = 0;
     s_contentPacksActive = 0;
+    s_contentPacksIndexed = 0;
 
     s_hotplugState = -1;
     memset(s_hotplug, 0, sizeof(s_hotplug));

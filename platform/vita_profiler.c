@@ -53,9 +53,10 @@ extern void mdkr_vita_boot_log_flush(void);
 #endif
 
 #define MDKR_VP_RING_CAPACITY 4096u
-#define MDKR_VP_NAME_CAPACITY (MDKR_VP_ZONE_COUNT + 2u)
-#define MDKR_VP_NAME_TEXT_BYTES 512u
-#define MDKR_VP_DICTIONARY_WIRE_BYTES 2048u
+#define MDKR_VP_NAME_CAPACITY \
+    (MDKR_VP_ZONE_COUNT + MDKR_VP_METRIC_COUNT + MDKR_VP_COUNTER_COUNT + 2u)
+#define MDKR_VP_NAME_TEXT_BYTES 1536u
+#define MDKR_VP_DICTIONARY_WIRE_BYTES 4096u
 #define MDKR_VP_NET_MEMORY_BYTES (1024u * 1024u)
 #define MDKR_VP_DRAIN_BATCH 128u
 #define MDKR_VP_CLOSE_RETRIES 4u
@@ -83,6 +84,8 @@ static struct vp_name_entry s_name_entries[MDKR_VP_NAME_CAPACITY];
 static char s_name_text[MDKR_VP_NAME_TEXT_BYTES];
 static struct vp_name_dictionary s_names;
 static uint32_t s_zone_ids[MDKR_VP_ZONE_COUNT];
+static uint32_t s_metric_ids[MDKR_VP_METRIC_COUNT];
+static uint32_t s_counter_ids[MDKR_VP_COUNTER_COUNT];
 static uint32_t s_frame_id;
 static uint32_t s_draw_id;
 static uint8_t s_dictionary_wire[MDKR_VP_DICTIONARY_WIRE_BYTES];
@@ -97,6 +100,8 @@ static volatile uint32_t s_producers_enabled;
 static volatile uint32_t s_capture_complete;
 static volatile uint32_t s_completed_frames;
 static volatile uint32_t s_draw_calls;
+static volatile uint64_t s_metric_us[MDKR_VP_METRIC_COUNT];
+static volatile uint64_t s_counter_values[MDKR_VP_COUNTER_COUNT];
 static volatile int32_t s_result = MDKR_VP_RESULT_IDLE;
 static volatile int32_t s_first_error;
 
@@ -113,7 +118,35 @@ static const char *const s_zone_names[MDKR_VP_ZONE_COUNT] = {
     "vitagl.render_walk.cpu",
     "vitagl.replay_walk.cpu",
     "vitagl.texture_upload.cpu",
+    "mods.file_read.cpu",
+    "mods.png_decode.cpu",
+    "mods.cache_evict.cpu",
+    "mods.override_upload.cpu",
     "vitagl.swap_buffers.cpu",
+    "presentation.pace.cpu",
+};
+
+static const char *const s_metric_names[MDKR_VP_METRIC_COUNT] = {
+    "render.draw_state.inclusive_us",
+    "render.shader.inclusive_us",
+    "render.texture_bind.inclusive_us",
+    "render.vertex_transform.inclusive_us",
+    "render.triangle_emit.inclusive_us",
+    "render.draw_submit.inclusive_us",
+    "mods.lookup.inclusive_us",
+    "mods.file_read.inclusive_us",
+    "mods.png_decode.inclusive_us",
+    "mods.cache_evict.inclusive_us",
+    "mods.override_upload.inclusive_us",
+};
+
+static const char *const s_counter_names[MDKR_VP_COUNTER_COUNT] = {
+    "mods.resident_hits",
+    "mods.resolves",
+    "mods.evictions",
+    "mods.decoded_bytes",
+    "mods.uploads",
+    "mods.uploaded_bytes",
 };
 
 typedef char mdkr_vp_scope_size_check[
@@ -526,6 +559,20 @@ void mdkr_vita_profiler_init(void) {
             goto fail;
         }
     }
+    for (index = 0u; index < (uint32_t)MDKR_VP_METRIC_COUNT; ++index) {
+        result = vp_name_dictionary_register(
+            &s_names, s_metric_names[index], &s_metric_ids[index]);
+        if (result != VP_RESULT_OK) {
+            goto fail;
+        }
+    }
+    for (index = 0u; index < (uint32_t)MDKR_VP_COUNTER_COUNT; ++index) {
+        result = vp_name_dictionary_register(
+            &s_names, s_counter_names[index], &s_counter_ids[index]);
+        if (result != VP_RESULT_OK) {
+            goto fail;
+        }
+    }
     result = vp_name_dictionary_register(&s_names, "game.frame", &s_frame_id);
     if (result == VP_RESULT_OK) {
         result = vp_name_dictionary_register(
@@ -549,6 +596,8 @@ void mdkr_vita_profiler_init(void) {
     mdkr_vp_store_u32(&s_capture_complete, 0u);
     mdkr_vp_store_u32(&s_completed_frames, 0u);
     mdkr_vp_store_u32(&s_draw_calls, 0u);
+    memset((void *)s_metric_us, 0, sizeof(s_metric_us));
+    memset((void *)s_counter_values, 0, sizeof(s_counter_values));
     mdkr_vp_store_i32(&s_result, MDKR_VP_RESULT_IDLE);
     mdkr_vp_store_i32(&s_first_error, 0);
     s_frame_active = 0u;
@@ -632,8 +681,16 @@ void mdkr_vita_profiler_shutdown(void) {
 }
 
 void mdkr_vita_profiler_frame_begin(void) {
+    uint32_t index;
     s_frame_active = 0u;
     (void)__atomic_exchange_n(&s_draw_calls, 0u, __ATOMIC_ACQ_REL);
+    for (index = 0u; index < (uint32_t)MDKR_VP_METRIC_COUNT; ++index) {
+        (void)__atomic_exchange_n(&s_metric_us[index], 0u, __ATOMIC_ACQ_REL);
+    }
+    for (index = 0u; index < (uint32_t)MDKR_VP_COUNTER_COUNT; ++index) {
+        (void)__atomic_exchange_n(&s_counter_values[index], 0u,
+                                  __ATOMIC_ACQ_REL);
+    }
     if (mdkr_vp_load_u32(&s_producers_enabled) != 0u) {
         s_frame_active = 1u;
     }
@@ -642,6 +699,7 @@ void mdkr_vita_profiler_frame_begin(void) {
 void mdkr_vita_profiler_frame_end(void) {
     uint32_t frames;
     uint32_t draws;
+    uint32_t index;
     int result;
 
     if (s_frame_active == 0u) {
@@ -651,6 +709,22 @@ void mdkr_vita_profiler_frame_end(void) {
     result = vp_counter(&s_context, s_draw_id, (int64_t)draws);
     if (result < VP_RESULT_OK) {
         mdkr_vp_remember_error(result);
+    }
+    for (index = 0u; index < (uint32_t)MDKR_VP_METRIC_COUNT; ++index) {
+        const uint64_t elapsed =
+            __atomic_exchange_n(&s_metric_us[index], 0u, __ATOMIC_ACQ_REL);
+        result = vp_counter(&s_context, s_metric_ids[index], (int64_t)elapsed);
+        if (result < VP_RESULT_OK) {
+            mdkr_vp_remember_error(result);
+        }
+    }
+    for (index = 0u; index < (uint32_t)MDKR_VP_COUNTER_COUNT; ++index) {
+        const uint64_t value = __atomic_exchange_n(
+            &s_counter_values[index], 0u, __ATOMIC_ACQ_REL);
+        result = vp_counter(&s_context, s_counter_ids[index], (int64_t)value);
+        if (result < VP_RESULT_OK) {
+            mdkr_vp_remember_error(result);
+        }
     }
     result = vp_frame_mark(&s_context, s_frame_id);
     if (result < VP_RESULT_OK) {
@@ -706,6 +780,41 @@ void mdkr_vita_profiler_count_draw(void) {
         mdkr_vp_load_u32(&s_producers_enabled) != 0u) {
         (void)__atomic_add_fetch(&s_draw_calls, 1u, __ATOMIC_RELAXED);
     }
+}
+
+uint64_t mdkr_vita_profiler_metric_begin(void) {
+    if (s_frame_active == 0u ||
+        mdkr_vp_load_u32(&s_producers_enabled) == 0u) {
+        return 0u;
+    }
+    return sceKernelGetProcessTimeWide();
+}
+
+void mdkr_vita_profiler_metric_end(MdkrVitaProfileMetric metric,
+                                   uint64_t started_us) {
+    uint64_t ended_us;
+    if (started_us == 0u || metric < 0 || metric >= MDKR_VP_METRIC_COUNT ||
+        s_frame_active == 0u ||
+        mdkr_vp_load_u32(&s_producers_enabled) == 0u) {
+        return;
+    }
+    ended_us = sceKernelGetProcessTimeWide();
+    if (ended_us >= started_us) {
+        (void)__atomic_add_fetch(
+            &s_metric_us[(uint32_t)metric], ended_us - started_us,
+            __ATOMIC_RELAXED);
+    }
+}
+
+void mdkr_vita_profiler_counter_add(MdkrVitaProfileCounter counter,
+                                    uint64_t value) {
+    if (value == 0u || counter < 0 || counter >= MDKR_VP_COUNTER_COUNT ||
+        s_frame_active == 0u ||
+        mdkr_vp_load_u32(&s_producers_enabled) == 0u) {
+        return;
+    }
+    (void)__atomic_add_fetch(&s_counter_values[(uint32_t)counter], value,
+                             __ATOMIC_RELAXED);
 }
 
 #endif

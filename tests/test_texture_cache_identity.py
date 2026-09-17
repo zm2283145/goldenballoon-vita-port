@@ -154,8 +154,11 @@ class TextureCacheIdentityTests(unittest.TestCase):
             r"\.mipmaps\s*=\s*g_pcMipmaps[\s\S]*?upload_texture_mipped",
         )
         self.assertRegex(body, r"\.cutout\s*=\s*cutout")
-        self.assertIn(
-            "dkr_texcache_key_equal(&tex_cache[i].key, &key)", body
+        self.assertIn("dkr_texcache_find(unit, &key)", body)
+        lookup = function_body(self.source, "dkr_texcache_find")
+        self.assertRegex(
+            lookup,
+            r"dkr_texcache_key_equal\(&tex_cache\[(?:slot|recent_slot)\]\.key,\s*key\)",
         )
         # The entry records the derivation the upload ACHIEVED, not the one
         # this bind intended: a derivation that failed and fell back to the
@@ -191,7 +194,17 @@ class TextureCacheIdentityTests(unittest.TestCase):
             body, r"cmt\s*=\s*\(eff_font_remastered\s*\|\|\s*eff_font_outline\)")
 
     def test_decoder_and_key_share_pitch_resolution(self) -> None:
-        upload = function_body(self.source, "dkr_upload_tile_texture")
+        # This function contains mutually exclusive preprocessor branches with
+        # complete compound statements in each arm. A C-unaware brace walker
+        # sees both arms and cannot reliably locate the closing brace, so bound
+        # the source by the following function instead.
+        upload_start = self.source.index(
+            "static bool dkr_upload_tile_texture"
+        )
+        upload_end = self.source.index(
+            "static bool dkr_upload_override_texture", upload_start
+        )
+        upload = self.source[upload_start:upload_end]
         bind = function_body(self.source, "dkr_bind_tile")
         call = "dkr_tile_source_line_bytes(td, source_size_bytes)"
         self.assertIn(call, upload)
@@ -210,6 +223,18 @@ class TextureCacheIdentityTests(unittest.TestCase):
         self.assertGreaterEqual(forget, 0)
         self.assertGreater(select, forget)
         self.assertGreater(upload, select)
+
+    def test_fallback_lookup_uses_the_hash_index(self) -> None:
+        lookup = function_body(self.source, "dkr_texcache_find")
+        self.assertIn("tex_cache_bucket[bucket]", lookup)
+        self.assertIn("tex_cache_chain_next[slot]", lookup)
+        self.assertNotRegex(
+            lookup,
+            r"for\s*\(int slot\s*=\s*0;\s*slot\s*<\s*DKR_TEXCACHE_SIZE",
+        )
+        bind = function_body(self.source, "dkr_bind_tile")
+        self.assertIn("dkr_texcache_index_remove(slot)", bind)
+        self.assertIn("dkr_texcache_index_insert(slot)", bind)
 
 
 if __name__ == "__main__":

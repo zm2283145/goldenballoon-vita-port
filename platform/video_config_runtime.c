@@ -23,6 +23,8 @@
 #include "present_sched.h"
 #include "user_paths.h"
 
+void platform_content_packs_apply_enabled(int enabled);
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -662,11 +664,9 @@ void mdkr_video_config_publish(void) {
      * setting the moment anything is installed. Both calls below are already
      * no-ops when the value has not moved, and both are inert with no pack.
      *
-     * ON->OFF and OFF->ON are BOTH live for textures, because
-     * platform_content_packs_init() scans mods/ and binds the decoded-texture
-     * store unconditionally: the setting has never gated the scan, only
-     * whether the store answers. So turning it back on has something to turn
-     * on, and the flip costs a cache generation rather than a rescan.
+     * ON->OFF and OFF->ON are BOTH live for textures. A boot with packs off
+     * deliberately defers the expensive registry scan; the first live enable
+     * performs it, while later flips reuse that in-memory index.
      *
      * Music is honoured from the next piece of music onwards rather than
      * instantly, and mod_music.h states why: muting the sequence player is a
@@ -676,7 +676,7 @@ void mdkr_video_config_publish(void) {
      * Installing or removing a pack while the game runs is still a restart:
      * that is the scan, not this switch, and nothing here pretends otherwise.
      */
-    mdkr_mod_texture_set_enabled(packs_enabled != 0);
+    platform_content_packs_apply_enabled(packs_enabled != 0);
     mdkr_mod_music_set_enabled(packs_enabled);
 
     g_pcRemasterFX        = (int) c->values[MDKR_VIDEO_REMASTER_FX].number;

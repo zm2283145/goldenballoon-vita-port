@@ -428,6 +428,7 @@ int platform_modern_character_visibility_diagnostics(
  * finds nothing, logs nothing, and leaves the store inactive so the renderer
  * never pays for a digest. */
 void platform_content_packs_init(void);
+void platform_content_packs_apply_enabled(int enabled);
 #ifdef __vita__
 /* Offers to expand the first top-level ZIP in the Vita mods directory before
  * the registry scans it. The ZIP is removed only after a complete extraction
